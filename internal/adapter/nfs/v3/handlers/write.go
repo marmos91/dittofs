@@ -145,12 +145,10 @@ func (h *Handler) Write(
 	// ========================================================================
 	// Step 2: Validate request parameters
 	// ========================================================================
-	// Note: We use a fixed max write size (1MB) to avoid a metadata lookup.
-	// GetFilesystemCapabilities is expensive and the value rarely changes.
-	// The actual capabilities are still enforced by the metadata store.
+	// Structural validation only (handle, overflow, stability). The size cap
+	// is applied as a short-write below, derived from the advertised wtmax.
 
-	const maxWriteSize uint32 = 1 << 20 // 1MB - matches default config
-	if err := validateWriteRequest(req, maxWriteSize); err != nil {
+	if err := validateWriteRequest(req); err != nil {
 		logWarn(ctx.Context, err, "WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
@@ -168,6 +166,25 @@ func (h *Handler) Write(
 	}
 
 	logger.DebugCtx(ctx.Context, "WRITE", "share", ctx.Share)
+
+	// ========================================================================
+	// Step 3b: Short-write to the advertised wtmax (RFC 1813 Section 3.3.7)
+	// ========================================================================
+	// Derive the per-request cap from the same value advertised by FSINFO
+	// (GetFilesystemCapabilities().MaxWriteSize / wtmax) so the WRITE limit can
+	// never drift from what the client was told. RFC 1813 permits the server to
+	// write fewer bytes than requested; an over-large request is short-written
+	// (data truncated, reply Count reflects the actual bytes) rather than
+	// rejected with NFS3ERR_FBIG. This mirrors Linux nfsd, which clamps to
+	// svc_max_payload. A genuine "file too large" (offset overflow / OffsetMax)
+	// still returns NFS3ERR_FBIG below.
+	if caps, capErr := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle); capErr == nil &&
+		caps.MaxWriteSize > 0 && uint32(len(req.Data)) > caps.MaxWriteSize {
+		logger.DebugCtx(ctx.Context, "WRITE: short-write to advertised wtmax",
+			"requested", len(req.Data), "wtmax", caps.MaxWriteSize, "client", clientIP)
+		req.Data = req.Data[:caps.MaxWriteSize]
+		req.Count = caps.MaxWriteSize
+	}
 
 	// ========================================================================
 	// Step 4: Calculate new file size

@@ -48,6 +48,10 @@ type HandlerTestFixture struct {
 	// It owns the memory-backed metadata store.
 	MetadataService *metadata.MetadataService
 
+	// MetaStore is the underlying memory-backed metadata store. Exposed so
+	// tests can adjust static capabilities (e.g. MaxWriteSize) directly.
+	MetaStore *metadatamemory.MemoryMetadataStore
+
 	// BlockStore provides block storage for content operations.
 	BlockStore *engine.Store
 
@@ -130,6 +134,7 @@ func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
 		Handler:         handler,
 		Registry:        reg,
 		MetadataService: reg.GetMetadataService(),
+		MetaStore:       metaStore,
 		BlockStore:      blockSvc,
 		ShareName:       DefaultShareName,
 		RootHandle:      share.RootHandle,
@@ -220,7 +225,7 @@ func (f *HandlerTestFixture) CreateDirectory(path string) metadata.FileHandle {
 		}
 
 		// Create directory
-		dir, err := f.MetadataService.CreateDirectory(authCtx, parentHandle, name, &metadata.FileAttr{
+		dir, _, err := f.MetadataService.CreateDirectory(authCtx, parentHandle, name, &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0755,
 			UID:  DefaultUID,
@@ -263,7 +268,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 	// Create the file
 	name := filepath.Base(path)
-	file, err := f.MetadataService.CreateFile(authCtx, parentHandle, name, &metadata.FileAttr{
+	file, _, err := f.MetadataService.CreateFile(authCtx, parentHandle, name, &metadata.FileAttr{
 		Type: metadata.FileTypeRegular,
 		Mode: 0644,
 		UID:  DefaultUID,
@@ -282,7 +287,7 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 
 		// Update file size in metadata
 		newSize := uint64(len(content))
-		err := f.MetadataService.SetFileAttributes(authCtx, mustEncodeHandle(f.t, file), &metadata.SetAttrs{
+		_, err := f.MetadataService.SetFileAttributes(authCtx, mustEncodeHandle(f.t, file), &metadata.SetAttrs{
 			Size: &newSize,
 		})
 		if err != nil {
@@ -312,7 +317,7 @@ func (f *HandlerTestFixture) CreateSymlink(path, target string) metadata.FileHan
 
 	// Create the symlink
 	name := filepath.Base(path)
-	symlink, err := f.MetadataService.CreateSymlink(authCtx, parentHandle, name, target, &metadata.FileAttr{
+	symlink, _, err := f.MetadataService.CreateSymlink(authCtx, parentHandle, name, target, &metadata.FileAttr{
 		Mode: 0777,
 		UID:  DefaultUID,
 		GID:  DefaultGID,
