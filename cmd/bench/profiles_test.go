@@ -206,6 +206,16 @@ func TestLoadSeed_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestStartProfileSession_RejectsBadPhase guards against a --phase that would
+// escape <profile-dir>/blockstore via filepath.Join.
+func TestStartProfileSession_RejectsBadPhase(t *testing.T) {
+	for _, phase := range []string{"..", ".", "../evil", "a/b", "/abs"} {
+		if _, err := startProfileSession(t.TempDir(), phase, "wl", false); err == nil {
+			t.Errorf("phase %q: expected error, got nil", phase)
+		}
+	}
+}
+
 // TestLoadSeed_Missing surfaces a clear error when the dir has no seed.txt.
 func TestLoadSeed_Missing(t *testing.T) {
 	if _, _, err := loadSeed(t.TempDir()); err == nil {

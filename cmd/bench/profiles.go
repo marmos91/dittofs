@@ -50,6 +50,11 @@ const (
 // region, to flush every profile and restore runtime profiler state. On error
 // the partially-started session is rolled back.
 func startProfileSession(rootDir, phase, workload string, full bool) (*profileSession, error) {
+	// phase is a single directory name, not a path: reject separators / "."/".."
+	// so a stray --phase can't escape <rootDir>/blockstore via filepath.Join.
+	if phase != "" && (phase != filepath.Base(phase) || phase == "." || phase == "..") {
+		return nil, fmt.Errorf("invalid phase %q: must be a single path element", phase)
+	}
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	parts := []string{rootDir, "blockstore"}
 	if phase != "" {
