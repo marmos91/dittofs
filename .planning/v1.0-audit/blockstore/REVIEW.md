@@ -254,6 +254,65 @@ Re-run with the #680 harness (PR #983): five-profile envelope (`--full-profiles`
 
 ---
 
+## 5.2 B1 + C3 resolution (#1007 — 2026-06-02)
+
+The two remaining structural perf items from §5/§5.1 — **B1** (full-tree CAS
+walk per Flush) and **C3** (append-log backpressure ceiling) — were re-profiled
+on develop and resolved as follows.
+
+- **B1 — already RESOLVED on develop (no code change needed).** §6 of REVIEW2.md
+  already verified the per-Flush full CAS walk was replaced: the syncer now
+  maintains an in-memory `pendingHashes` set populated O(1) via `addPendingHash`
+  (fired from `StoreChunk`) and drained in `mirrorOnce` after `MarkSynced`
+  (`engine/syncer.go:91-130,362-440`). `ListUnsynced` (the full `bc.Walk` of the
+  CAS `blocks/` tree) now runs ONLY at startup (`seedPendingFromDisk`) and as a
+  ~10-minute drift reconciler — not per Flush. The flush-churn CPU profile no
+  longer shows the structural O(total-chunks) directory walk on the hot path.
+  Confirmed against current develop; no further work in #1007.
+
+- **C3 — FIXED (this PR).** Root cause was NOT a missing backpressure mechanism
+  (the `pressureCh` + `pressureMaxWait → ErrPressureTimeout` ceiling already
+  exists). It was a **budget-accounting leak** that made the existing
+  backpressure a permanent deadlock. The pressure budget `logBytesTotal` was
+  released by the *compaction-fence position delta* (`targetPos - priorFence`),
+  a CONTIGUOUS high-water mark from the log head. Two paths leaked:
+  1. **Out-of-order overwrites** (the storm's random mid-file WRITEs): a consumed
+     record can sit behind an unconsumed lower-logPos record, so
+     `AdvanceFenceUpTo` stalls and the position delta under-counts the bytes
+     actually rolled up. Stranded bytes never leave `logBytesTotal`.
+  2. **Create/delete churn** (dominant): `DeleteAppendLog` discards a payload's
+     `logIndex` for files deleted mid-write WITHOUT reclaiming the budget their
+     un-rolled-up records reserved.
+  Either way `logBytesTotal` ratcheted to `maxLogBytes` and pinned there;
+  every writer then blocked on `pressureCh` and timed out. Repro: the 20 000-op
+  / 8-worker / ws=64 `mixed-ops-storm` aborts on develop with `append log:
+  pressure wait timed out` at ~50 s; the budget flatlines at exactly the ceiling
+  with `dirtyIntervals=0 liveEntries=0` (all records rolled up, budget still
+  full = pure accounting leak).
+  **Fix:** make `logBytesTotal` an exact running total of un-rolled-up framed
+  record bytes, decoupled from fence contiguity. The rollup releases
+  `retiredBytes` — the summed frame size of every entry the fence actually
+  retired this pass (`logIndex.advanceFenceUpTo`, covers both directly-consumed
+  and R-7 "released-by-overwrite-coverage" records). `DeleteAppendLog` releases
+  `logIndex.LiveBytes()` for the discarded payload. Both go through
+  `FSStore.releaseLogBytes` which floors the total at zero (defends against
+  recovery's resident-bytes seed drifting by a torn-tail record). Result: the
+  20 000-op storm now completes (~477 ops/s, was a hard stall). The
+  compaction fence (`targetPos`) is unchanged and remains authoritative for
+  physical log compaction — only the backpressure budget accounting changed; no
+  CAS content / dedup / rollup-correctness change. Regression tests:
+  `TestC3_DeleteMidWrite_ReclaimsBudget` + `TestC3_OverwriteSameRegion_BudgetDrains`
+  (fs unit) and `TestRunStorm_BackpressureCeiling` (engine `-race` storm).
+
+The `rollup: dropping divergent stable interval` warnings (the §5.1 "new gap")
+are benign under this fix — those records' budget is reclaimed by the fence
+retirement of the overlapping consume that trimmed their index entries, so the
+drops no longer leak budget. Reducing the warning volume (overwrite-into-stable
+reconciliation, akin to #668) remains a separate, non-blocking observability
+follow-up.
+
+---
+
 ## 6. Pre-existing Tracker Mapping
 
 | Issue | Root cause | Severity | PR-B slot |

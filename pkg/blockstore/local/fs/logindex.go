@@ -76,6 +76,15 @@ func (e logEntry) fileEnd() uint64 {
 	return end
 }
 
+// frameBytes returns the on-disk framed size of this record
+// (recordFrameOverhead + payloadLen) — the exact number of bytes AppendWrite
+// reserved in logBytesTotal for it. The single source of truth for the
+// pressure-budget accounting in advanceFenceUpTo / LiveBytes and the rollup's
+// consumed-record tally.
+func (e logEntry) frameBytes() int64 {
+	return int64(recordFrameOverhead) + int64(e.payloadLen)
+}
+
 // logIndex maintains per-file log-position bookkeeping. Entries are
 // appended in arrival order (== logPos order, since AppendWrite advances
 // lf.eofPos monotonically under per-file mu). consumedCoverage is the
@@ -269,6 +278,22 @@ func (idx *logIndex) AdvanceFence() uint64 {
 // entry and is rolled up by a later pass. AdvanceFence (no ceiling) preserves
 // the original behavior for every other caller.
 func (idx *logIndex) AdvanceFenceUpTo(maxLogPos uint64) uint64 {
+	fence, _ := idx.advanceFenceUpTo(maxLogPos)
+	return fence
+}
+
+// advanceFenceUpTo is AdvanceFenceUpTo plus the sum of on-disk framed-record
+// bytes (recordFrameOverhead + payloadLen) for every entry the fence walked
+// past in this call — i.e. every record that leaves the live log this pass.
+// This is the authoritative quantity to release from the pressure budget
+// (logBytesTotal): it covers BOTH records consumed directly this pass AND
+// records the fence retires only because a later overwrite's MarkConsumed
+// fully covered their file region (the R-7 "released without being consumed"
+// case). A per-consumed-record tally misses the latter and leaks budget under
+// out-of-order overwrites (C3). The returned byte count is exactly what
+// trimBelowFenceLocked is about to drop, so it never double-counts across
+// successive passes.
+func (idx *logIndex) advanceFenceUpTo(maxLogPos uint64) (fence uint64, retiredBytes int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	for idx.fenceCursor < len(idx.entries) {
@@ -281,10 +306,11 @@ func (idx *logIndex) AdvanceFenceUpTo(maxLogPos uint64) uint64 {
 		}
 		// Fence advances past the dead entry's full record extent.
 		idx.compactionFence = e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen)
+		retiredBytes += e.frameBytes()
 		idx.fenceCursor++
 	}
 	idx.trimBelowFenceLocked()
-	return idx.compactionFence
+	return idx.compactionFence, retiredBytes
 }
 
 // trimBelowFenceLocked drops the [0:fenceCursor) prefix of `entries`
@@ -334,6 +360,23 @@ func (idx *logIndex) Fence() uint64 {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	return idx.compactionFence
+}
+
+// LiveBytes returns the sum of on-disk framed-record bytes
+// (recordFrameOverhead + payloadLen) for every entry still in the index —
+// i.e. every record that AppendWrite reserved budget for and that no rollup
+// pass has yet retired. DeleteAppendLog uses this to release the pressure
+// budget for a payload being discarded mid-rollup; without it the un-rolled-up
+// records' reserved bytes leak from logBytesTotal forever, ratcheting the
+// global pressure budget to maxLogBytes under create/delete churn (C3).
+func (idx *logIndex) LiveBytes() int64 {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	var total int64
+	for _, e := range idx.entries {
+		total += e.frameBytes()
+	}
+	return total
 }
 
 // SetFence overrides the compaction fence. Intended for recovery, which
