@@ -20,6 +20,10 @@ const (
 	WorkloadDedupHeavy      = "dedup-heavy"
 	WorkloadMixedRW         = "mixed-rw"
 	WorkloadFlushChurn      = "flush-churn"
+	// WorkloadMixedOpStorm is the concurrent WRITE/READ/LIST/DELETE storm.
+	// Unlike the workloads above it runs across Opts.Workers goroutines and
+	// dispatches through RunStorm (storm.go), not the serial RunWorkload loop.
+	WorkloadMixedOpStorm = "mixed-ops-storm"
 )
 
 // Default block sizes — match the legacy cmd/blockstore-perf shape so
@@ -65,6 +69,11 @@ type Opts struct {
 	// Seed is the PRNG seed for offsets and payload fill. 0 is valid.
 	Seed uint64
 
+	// Workers is the goroutine count for concurrent workloads
+	// (mixed-ops-storm). Values < 1 are treated as 1. Ignored by the
+	// serial workloads, which always run single-threaded.
+	Workers int
+
 	// Remote selects the upload backend: "memory" (default) or "s3".
 	Remote string
 
@@ -90,6 +99,18 @@ type Result struct {
 	// before / after the timed region.
 	StatsBefore engine.BlockStoreStats
 	StatsAfter  engine.BlockStoreStats
+
+	// Storm holds the per-op-type tallies for the mixed-ops-storm
+	// workload; nil for every other workload.
+	Storm *StormCounts
+}
+
+// StormCounts tallies executed operations by type for the mixed-ops-storm.
+type StormCounts struct {
+	Writes  int64
+	Reads   int64
+	Lists   int64
+	Deletes int64
 }
 
 // RunWorkload is the single dispatcher used by the cmd/bench CLI. It

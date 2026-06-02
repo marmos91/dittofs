@@ -13,6 +13,13 @@
 // gc, raw-s3-put); those expose their own exported Run* helpers in
 // workloads_extra.go and follow the same Opts / Result contract.
 //
+// The mixed-ops-storm is engine-backed but concurrent, so it has its
+// own entry point — RunStorm(ctx, *engine.Store, Opts) — rather than
+// the serial RunWorkload loop. It fans Opts.Ops across Opts.Workers
+// goroutines issuing WRITE/READ/LIST/DELETE and returns the same
+// Result, with Result.Storm carrying the per-op-type tallies. See
+// storm.go for the keyspace partitioning that keeps the ops race-free.
+//
 // The package is intentionally backend-agnostic at the type level:
 // SetupRemote selects memory vs S3 at runtime based on Opts.Remote,
 // and NewEngine wires the standard FSStore + remote + Syncer stack.
