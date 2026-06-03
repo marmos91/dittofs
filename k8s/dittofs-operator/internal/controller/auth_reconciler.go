@@ -94,6 +94,31 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 	return nil
 }
 
+// newAPIClient builds a DittoFSClient for the given base URL, wiring TLS trust
+// when the pod serves native TLS. With native TLS the operator reaches the API
+// over https and must verify the pod-served certificate; the cert-manager-style
+// cert Secret carries the issuing CA under "ca.crt", which we load into the
+// client's RootCAs so verification succeeds WITHOUT InsecureSkipVerify. When
+// native TLS is off, or the CA key is absent, the client falls back to system
+// roots (unchanged behavior for edge-terminated / plain-http deployments).
+func (r *DittoServerReconciler) newAPIClient(ctx context.Context, ds *dittoiov1alpha1.DittoServer, baseURL string) (*DittoFSClient, error) {
+	if !ds.NativeTLSEnabled() {
+		return NewDittoFSClient(baseURL), nil
+	}
+	certSecret := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: ds.Namespace,
+		Name:      ds.Spec.ControlPlane.CertSecretName,
+	}, certSecret); err != nil {
+		return nil, fmt.Errorf("failed to get control plane cert secret %q for CA trust: %w",
+			ds.Spec.ControlPlane.CertSecretName, err)
+	}
+	// ca.crt is optional in a TLS Secret; when absent fall back to system roots
+	// (e.g. a publicly-trusted certificate needs no private CA).
+	caPEM := certSecret.Data[dittoiov1alpha1.TLSClientCAKey]
+	return NewDittoFSClientWithCA(baseURL, caPEM)
+}
+
 // reconcileAuth is the main auth reconciliation entry point.
 // It provisions or refreshes the operator service account credentials.
 func (r *DittoServerReconciler) reconcileAuth(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) (ctrl.Result, error) {
@@ -193,7 +218,10 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 	}
 
 	// Login as admin
-	apiClient := NewDittoFSClient(apiURL)
+	apiClient, err := r.newAPIClient(ctx, ds, apiURL)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to build API client: %w", err)
+	}
 	tokenResp, err := apiClient.Login(ctx, adminUsername, adminPassword)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to login as admin: %w", err)
@@ -282,7 +310,10 @@ func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *di
 	refreshToken := string(secret.Data["refresh-token"])
 	storedPassword := string(secret.Data["password"])
 
-	apiClient := NewDittoFSClient(apiURL)
+	apiClient, err := r.newAPIClient(ctx, ds, apiURL)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to build API client: %w", err)
+	}
 
 	// Try refresh first (cheapest operation)
 	tokenResp, err := apiClient.RefreshToken(ctx, refreshToken)
@@ -355,7 +386,11 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 	}
 
 	apiURL := ds.GetAPIServiceURL()
-	apiClient := NewDittoFSClient(apiURL)
+	apiClient, err := r.newAPIClient(ctx, ds, apiURL)
+	if err != nil {
+		logger.Info("Failed to build API client for cleanup, skipping", "error", err.Error())
+		return nil
+	}
 
 	// Login as admin
 	tokenResp, err := apiClient.Login(ctx, adminUsername, adminPassword)

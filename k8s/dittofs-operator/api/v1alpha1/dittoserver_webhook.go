@@ -86,6 +86,19 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		}
 	}
 
+	// Native TLS validation: a client-CA Secret (mTLS) needs a server cert.
+	if r.Spec.ControlPlane != nil {
+		if r.Spec.ControlPlane.ClientCASecretName != "" && r.Spec.ControlPlane.CertSecretName == "" {
+			return warnings, fmt.Errorf("controlPlane.clientCASecretName requires controlPlane.certSecretName (mTLS needs a server certificate)")
+		}
+		// A cert Secret implies the API is served over https; tls=false would
+		// make the operator dial http:// and fail. GetAPIServiceURL already
+		// upgrades the scheme, so this is a heads-up, not an error.
+		if r.Spec.ControlPlane.CertSecretName != "" && !r.Spec.ControlPlane.TLS {
+			warnings = append(warnings, "controlPlane.certSecretName is set, so the API serves native TLS; the operator will connect over https regardless of controlPlane.tls")
+		}
+	}
+
 	// Validate port uniqueness and warn about privileged ports
 	portWarnings, err := r.validatePorts()
 	if err != nil {

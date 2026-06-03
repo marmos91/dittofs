@@ -10,6 +10,40 @@ import (
 const ManagedJWTSecretKey = "jwt-secret"
 
 const (
+	// TLSCertMountPath is where the control-plane server certificate Secret is
+	// mounted (read-only) inside the dfs container when native TLS is enabled.
+	TLSCertMountPath = "/tls"
+
+	// TLSClientCAMountPath is where the optional client-CA bundle Secret is
+	// mounted (read-only) for mutual TLS.
+	TLSClientCAMountPath = "/tls-client-ca"
+
+	// Standard kubernetes.io/tls Secret keys (cert-manager defaults).
+	TLSCertKey     = "tls.crt"
+	TLSKeyKey      = "tls.key"
+	TLSClientCAKey = "ca.crt"
+)
+
+// NativeTLSEnabled reports whether the operator should make the dfs pod serve
+// native (in-pod) TLS — i.e. a server-certificate Secret was named.
+func (ds *DittoServer) NativeTLSEnabled() bool {
+	return ds.Spec.ControlPlane != nil && ds.Spec.ControlPlane.CertSecretName != ""
+}
+
+// MutualTLSEnabled reports whether client-certificate verification (mTLS) is
+// requested. A client-CA Secret is only honored alongside a server cert.
+func (ds *DittoServer) MutualTLSEnabled() bool {
+	return ds.NativeTLSEnabled() && ds.Spec.ControlPlane.ClientCASecretName != ""
+}
+
+// TLSCertFilePath / TLSKeyFilePath / TLSClientCAFilePath return the in-container
+// paths the rendered config points controlplane.tls.{cert_file,key_file,client_ca}
+// at, matching where the Secrets are mounted.
+func TLSCertFilePath() string     { return TLSCertMountPath + "/" + TLSCertKey }
+func TLSKeyFilePath() string      { return TLSCertMountPath + "/" + TLSKeyKey }
+func TLSClientCAFilePath() string { return TLSClientCAMountPath + "/" + TLSClientCAKey }
+
+const (
 	// OperatorCredentialsSecretSuffix is the naming convention for the operator credentials Secret.
 	OperatorCredentialsSecretSuffix = "-operator-credentials"
 
@@ -77,7 +111,9 @@ func (ds *DittoServer) GetAPIServiceURL() string {
 		if ds.Spec.ControlPlane.Port > 0 {
 			apiPort = int(ds.Spec.ControlPlane.Port)
 		}
-		if ds.Spec.ControlPlane.TLS {
+		// Either the explicit scheme opt-in (edge termination) or a native
+		// server-cert Secret (in-pod TLS) means the API speaks https.
+		if ds.Spec.ControlPlane.TLS || ds.NativeTLSEnabled() {
 			scheme = "https"
 		}
 	}

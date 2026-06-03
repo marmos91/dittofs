@@ -19,6 +19,8 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,6 +48,36 @@ func NewDittoFSClient(baseURL string) *DittoFSClient {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// NewDittoFSClientWithCA is NewDittoFSClient that additionally trusts the given
+// PEM CA bundle when reaching an https base URL. This lets the operator verify
+// a pod-served native-TLS certificate signed by a private CA (e.g. the ca.crt
+// in a cert-manager-issued Secret) WITHOUT disabling certificate verification.
+// When caPEM is empty the client behaves exactly like NewDittoFSClient (system
+// roots only). An empty/invalid bundle is reported as an error rather than
+// silently falling back, so a misconfigured CA cannot mask an unverified
+// connection.
+func NewDittoFSClientWithCA(baseURL string, caPEM []byte) (*DittoFSClient, error) {
+	if len(caPEM) == 0 {
+		return NewDittoFSClient(baseURL), nil
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("control plane CA bundle contains no valid PEM certificate")
+	}
+	return &DittoFSClient{
+		baseURL: baseURL,
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					RootCAs:    pool,
+				},
+			},
+		},
+	}, nil
 }
 
 // SetToken sets the authentication token for subsequent requests.

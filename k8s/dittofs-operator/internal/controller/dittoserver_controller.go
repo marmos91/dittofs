@@ -758,6 +758,17 @@ func getAPIPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
 	return defaultAPIPort
 }
 
+// probeScheme returns the URI scheme the health probes must use. When the pod
+// serves native TLS the API speaks HTTPS only, so the probes must too;
+// otherwise plain HTTP. The kubelet skips certificate verification for HTTPS
+// probes, so a private CA needs no extra trust here.
+func probeScheme(dittoServer *dittoiov1alpha1.DittoServer) corev1.URIScheme {
+	if dittoServer.NativeTLSEnabled() {
+		return corev1.URISchemeHTTPS
+	}
+	return corev1.URISchemeHTTP
+}
+
 // PreStop hook delay (seconds) applied to the dfs container before SIGTERM.
 const preStopSleepSeconds = 5
 
@@ -898,6 +909,24 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				})
 			}
 
+			// Native TLS: mount the server cert/key Secret (and optional
+			// client-CA Secret) read-only so the rendered controlplane.tls.*
+			// paths resolve and the pod serves HTTPS end-to-end.
+			if dittoServer.NativeTLSEnabled() {
+				volumeMounts = append(volumeMounts, corev1.VolumeMount{
+					Name:      "tls-cert",
+					MountPath: dittoiov1alpha1.TLSCertMountPath,
+					ReadOnly:  true,
+				})
+				if dittoServer.MutualTLSEnabled() {
+					volumeMounts = append(volumeMounts, corev1.VolumeMount{
+						Name:      "tls-client-ca",
+						MountPath: dittoiov1alpha1.TLSClientCAMountPath,
+						ReadOnly:  true,
+					})
+				}
+			}
+
 			metadataSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.MetadataSize)
 			if err != nil {
 				return fmt.Errorf("invalid metadata size: %w", err)
@@ -982,6 +1011,41 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				envVars = append(envVars, buildPostgresEnvVars(dittoServer.Name)...)
 			}
 
+			// Pod volumes: the config ConfigMap, plus the native-TLS cert
+			// (and optional client-CA) Secret(s) when TLS is enabled.
+			podVolumes := []corev1.Volume{
+				{
+					Name: "config",
+					VolumeSource: corev1.VolumeSource{
+						ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{
+								Name: dittoServer.Name + "-config",
+							},
+						},
+					},
+				},
+			}
+			if dittoServer.NativeTLSEnabled() {
+				podVolumes = append(podVolumes, corev1.Volume{
+					Name: "tls-cert",
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: dittoServer.Spec.ControlPlane.CertSecretName,
+						},
+					},
+				})
+				if dittoServer.MutualTLSEnabled() {
+					podVolumes = append(podVolumes, corev1.Volume{
+						Name: "tls-client-ca",
+						VolumeSource: corev1.VolumeSource{
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: dittoServer.Spec.ControlPlane.ClientCASecretName,
+							},
+						},
+					})
+				}
+			}
+
 			statefulSet.Spec = appsv1.StatefulSetSpec{
 				Replicas:    &replicas,
 				ServiceName: dittoServer.Name + "-headless",
@@ -1018,8 +1082,9 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								LivenessProbe: &corev1.Probe{
 									ProbeHandler: corev1.ProbeHandler{
 										HTTPGet: &corev1.HTTPGetAction{
-											Path: "/health",
-											Port: intstr.FromInt32(getAPIPort(dittoServer)),
+											Path:   "/health",
+											Port:   intstr.FromInt32(getAPIPort(dittoServer)),
+											Scheme: probeScheme(dittoServer),
 										},
 									},
 									InitialDelaySeconds: 15,
@@ -1031,8 +1096,9 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								ReadinessProbe: &corev1.Probe{
 									ProbeHandler: corev1.ProbeHandler{
 										HTTPGet: &corev1.HTTPGetAction{
-											Path: "/health/ready",
-											Port: intstr.FromInt32(getAPIPort(dittoServer)),
+											Path:   "/health/ready",
+											Port:   intstr.FromInt32(getAPIPort(dittoServer)),
+											Scheme: probeScheme(dittoServer),
 										},
 									},
 									InitialDelaySeconds: 10,
@@ -1044,8 +1110,9 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								StartupProbe: &corev1.Probe{
 									ProbeHandler: corev1.ProbeHandler{
 										HTTPGet: &corev1.HTTPGetAction{
-											Path: "/health",
-											Port: intstr.FromInt32(getAPIPort(dittoServer)),
+											Path:   "/health",
+											Port:   intstr.FromInt32(getAPIPort(dittoServer)),
+											Scheme: probeScheme(dittoServer),
 										},
 									},
 									InitialDelaySeconds: 0,
@@ -1063,18 +1130,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								},
 							},
 						},
-						Volumes: []corev1.Volume{
-							{
-								Name: "config",
-								VolumeSource: corev1.VolumeSource{
-									ConfigMap: &corev1.ConfigMapVolumeSource{
-										LocalObjectReference: corev1.LocalObjectReference{
-											Name: dittoServer.Name + "-config",
-										},
-									},
-								},
-							},
-						},
+						Volumes: podVolumes,
 					},
 				},
 				VolumeClaimTemplates: volumeClaimTemplates,

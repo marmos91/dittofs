@@ -117,7 +117,7 @@ func buildControlPlaneConfig(ds *dittoiov1alpha1.DittoServer) ControlPlaneConfig
 
 	jwtCfg := getJWTConfig(ds)
 
-	return ControlPlaneConfig{
+	cp := ControlPlaneConfig{
 		// Bind all interfaces: the server's 127.0.0.1 default is unreachable
 		// from the API Service, so in-cluster we always listen on 0.0.0.0.
 		Host: "0.0.0.0",
@@ -127,6 +127,22 @@ func buildControlPlaneConfig(ds *dittoiov1alpha1.DittoServer) ControlPlaneConfig
 			RefreshTokenDuration: stringOrDefault(jwtCfg.RefreshTokenDuration, DefaultRefreshDuration),
 		},
 	}
+
+	// Native TLS: when a server-certificate Secret is named, point the server
+	// at the mounted cert/key (and optional client-CA) so the pod serves HTTPS
+	// end-to-end. The controller mounts the matching Secret(s) at these paths.
+	if ds.NativeTLSEnabled() {
+		tls := &TLSConfig{
+			CertFile: dittoiov1alpha1.TLSCertFilePath(),
+			KeyFile:  dittoiov1alpha1.TLSKeyFilePath(),
+		}
+		if ds.MutualTLSEnabled() {
+			tls.ClientCA = dittoiov1alpha1.TLSClientCAFilePath()
+		}
+		cp.TLS = tls
+	}
+
+	return cp
 }
 
 // getJWTConfig returns the JWT config from the spec, or an empty struct if not configured.

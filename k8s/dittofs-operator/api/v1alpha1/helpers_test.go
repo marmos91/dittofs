@@ -61,6 +61,11 @@ func TestGetAPIServiceURL(t *testing.T) {
 			cp:   &ControlPlaneAPIConfig{Port: 9443, TLS: true},
 			want: "https://srv-api.ns.svc.cluster.local:9443",
 		},
+		{
+			name: "native cert secret upgrades scheme to https even without tls flag",
+			cp:   &ControlPlaneAPIConfig{CertSecretName: "dfs-tls"},
+			want: "https://srv-api.ns.svc.cluster.local:8080",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -79,6 +84,33 @@ func TestGetAPIServiceURL_TLSOptIn(t *testing.T) {
 	ds := newDittoServer("srv", "ns", &ControlPlaneAPIConfig{TLS: true})
 	if !strings.HasPrefix(ds.GetAPIServiceURL(), "https://") {
 		t.Fatalf("expected https:// scheme when TLS is enabled, got %q", ds.GetAPIServiceURL())
+	}
+}
+
+func TestNativeAndMutualTLSEnabled(t *testing.T) {
+	cases := []struct {
+		name       string
+		cp         *ControlPlaneAPIConfig
+		wantNative bool
+		wantMutual bool
+	}{
+		{"nil control plane", nil, false, false},
+		{"no cert secret", &ControlPlaneAPIConfig{}, false, false},
+		{"cert secret only", &ControlPlaneAPIConfig{CertSecretName: "c"}, true, false},
+		{"cert + client-ca", &ControlPlaneAPIConfig{CertSecretName: "c", ClientCASecretName: "ca"}, true, true},
+		// A client-CA without a server cert is not honored (webhook rejects it).
+		{"client-ca only", &ControlPlaneAPIConfig{ClientCASecretName: "ca"}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := newDittoServer("srv", "ns", tc.cp)
+			if got := ds.NativeTLSEnabled(); got != tc.wantNative {
+				t.Errorf("NativeTLSEnabled() = %v, want %v", got, tc.wantNative)
+			}
+			if got := ds.MutualTLSEnabled(); got != tc.wantMutual {
+				t.Errorf("MutualTLSEnabled() = %v, want %v", got, tc.wantMutual)
+			}
+		})
 	}
 }
 

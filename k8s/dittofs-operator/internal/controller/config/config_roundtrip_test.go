@@ -49,6 +49,10 @@ var serverKnownKeys = map[string]bool{
 	"controlplane.port":                       true,
 	"controlplane.jwt.access_token_duration":  true,
 	"controlplane.jwt.refresh_token_duration": true,
+	// Native TLS keys consumed by pkg/controlplane/api TLSConfig.
+	"controlplane.tls.cert_file": true,
+	"controlplane.tls.key_file":  true,
+	"controlplane.tls.client_ca": true,
 
 	"admin.username": true,
 	"admin.email":    true,
