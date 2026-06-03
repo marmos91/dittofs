@@ -1366,6 +1366,21 @@ func (s *Service) SetEnabledForTesting(name string, enabled bool) error {
 	return nil
 }
 
+// SetSharePolicyForTesting overrides a share's DefaultPermission and Squash mode
+// in the registry under lock. Test-only — lets NFS auth tests exercise the
+// export-squash permission policy without a full AddShare flow.
+func (s *Service) SetSharePolicyForTesting(name, defaultPermission string, squash models.SquashMode) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, ok := s.registry[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.DefaultPermission = defaultPermission
+	share.Squash = squash
+	return nil
+}
+
 func (s *Service) GetRootHandle(shareName string) (metadata.FileHandle, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

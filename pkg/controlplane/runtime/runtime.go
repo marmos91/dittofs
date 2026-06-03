@@ -55,6 +55,12 @@ type Runtime struct {
 	mu    sync.RWMutex
 	store store.Store
 
+	// identityStoreOverride, when non-nil, is returned by GetIdentityStore in
+	// place of store. Test-only (set via SetIdentityStoreForTesting) so NFS
+	// auth tests can inject a lightweight IdentityStore without a full
+	// store.Store implementation.
+	identityStoreOverride models.IdentityStore
+
 	metadataService *metadata.Service
 
 	adaptersSvc    *adapters.Service
@@ -723,8 +729,26 @@ func (r *Runtime) EvictBlockStore(ctx context.Context, shareName string, opts sh
 	return r.sharesSvc.EvictBlockStore(ctx, shareName, opts)
 }
 
-func (r *Runtime) GetUserStore() models.UserStore         { return r.store }
-func (r *Runtime) GetIdentityStore() models.IdentityStore { return r.store }
+func (r *Runtime) GetUserStore() models.UserStore { return r.store }
+
+func (r *Runtime) GetIdentityStore() models.IdentityStore {
+	if r.identityStoreOverride != nil {
+		return r.identityStoreOverride
+	}
+	return r.store
+}
+
+// SetIdentityStoreForTesting overrides the identity store returned by
+// GetIdentityStore. Test-only.
+func (r *Runtime) SetIdentityStoreForTesting(s models.IdentityStore) {
+	r.identityStoreOverride = s
+}
+
+// SetSharePolicyForTesting overrides a registered share's DefaultPermission and
+// Squash mode. Test-only.
+func (r *Runtime) SetSharePolicyForTesting(name, defaultPermission string, squash models.SquashMode) error {
+	return r.sharesSvc.SetSharePolicyForTesting(name, defaultPermission, squash)
+}
 
 // GetIdentityMappingStore returns the identity mapping store if supported.
 // Returns nil if the underlying store does not implement IdentityMappingStore.

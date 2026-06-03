@@ -3,11 +3,14 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/pseudofs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 func TestBuildV4AuthContext_ValidHandle(t *testing.T) {
@@ -144,6 +147,120 @@ func TestBuildV4AuthContext_FailsClosedOnMappingFailure(t *testing.T) {
 	if authCtx != nil {
 		t.Errorf("expected nil authCtx on mapping failure, got %+v", authCtx)
 	}
+}
+
+// v4PermIdentityStore is a minimal IdentityStore for the buildV4AuthContext
+// export-squash policy tests. It resolves a single UID→user and a fixed
+// permission for that user.
+type v4PermIdentityStore struct {
+	knownUID uint32
+	user     *models.User
+	perm     models.SharePermission
+}
+
+func (s *v4PermIdentityStore) GetUser(context.Context, string) (*models.User, error) {
+	return nil, models.ErrUserNotFound
+}
+func (s *v4PermIdentityStore) ValidateCredentials(context.Context, string, string) (*models.User, error) {
+	return nil, models.ErrInvalidCredentials
+}
+func (s *v4PermIdentityStore) ListUsers(context.Context) ([]*models.User, error) { return nil, nil }
+func (s *v4PermIdentityStore) GetGuestUser(context.Context, string) (*models.User, error) {
+	return nil, errors.New("guest disabled")
+}
+func (s *v4PermIdentityStore) GetGroup(context.Context, string) (*models.Group, error) {
+	return nil, models.ErrGroupNotFound
+}
+func (s *v4PermIdentityStore) ListGroups(context.Context) ([]*models.Group, error) { return nil, nil }
+func (s *v4PermIdentityStore) GetUserGroups(context.Context, string) ([]*models.Group, error) {
+	return nil, nil
+}
+func (s *v4PermIdentityStore) GetUserByID(context.Context, string) (*models.User, error) {
+	return nil, models.ErrUserNotFound
+}
+func (s *v4PermIdentityStore) IsGuestEnabled(context.Context, string) bool { return false }
+func (s *v4PermIdentityStore) ResolveSharePermission(context.Context, *models.User, string) (models.SharePermission, error) {
+	return s.perm, nil
+}
+func (s *v4PermIdentityStore) GetUserByUID(_ context.Context, uid uint32) (*models.User, error) {
+	if s.user != nil && uid == s.knownUID {
+		return s.user, nil
+	}
+	return nil, models.ErrUserNotFound
+}
+
+func v4PolicyCtx(uid uint32) *types.CompoundContext {
+	u, g := uid, uid
+	return &types.CompoundContext{
+		Context:    context.Background(),
+		ClientAddr: "192.168.1.100:9999",
+		AuthFlavor: 1, // AUTH_UNIX
+		UID:        &u,
+		GID:        &g,
+	}
+}
+
+// TestBuildV4AuthContext_AppliesExportSquashPolicy verifies the #1047 fix: the
+// NFSv4 auth-context builder applies the SAME export-squash permission policy as
+// NFSv3, via the shared auth.ResolveSharePermission. Three behaviors that v4
+// previously skipped:
+//   - default_permission=none denies an unknown UID
+//   - SquashRootToAdmin promotes root (UID 0) — no denial under none-default
+//   - permission=read coerces ShareReadOnly=true
+func TestBuildV4AuthContext_AppliesExportSquashPolicy(t *testing.T) {
+	handle := []byte("/export:00000000-0000-0000-0000-000000000001")
+
+	t.Run("default_permission=none denies unknown UID", func(t *testing.T) {
+		fx := newRealFSTestFixture(t, "/export")
+		fx.handler.Registry.SetIdentityStoreForTesting(&v4PermIdentityStore{})
+		if err := fx.handler.Registry.SetSharePolicyForTesting("/export", "none", models.SquashNone); err != nil {
+			t.Fatalf("set policy: %v", err)
+		}
+
+		_, _, err := fx.handler.buildV4AuthContext(v4PolicyCtx(1234), handle)
+		if !errors.Is(err, auth.ErrShareAccessDenied) {
+			t.Fatalf("expected ErrShareAccessDenied for unknown UID under default_permission=none, got %v", err)
+		}
+	})
+
+	t.Run("SquashRootToAdmin promotes root", func(t *testing.T) {
+		fx := newRealFSTestFixture(t, "/export")
+		fx.handler.Registry.SetIdentityStoreForTesting(&v4PermIdentityStore{})
+		// default_permission=none would deny a non-root unknown UID, but root
+		// must be promoted, not denied.
+		if err := fx.handler.Registry.SetSharePolicyForTesting("/export", "none", models.SquashRootToAdmin); err != nil {
+			t.Fatalf("set policy: %v", err)
+		}
+
+		authCtx, _, err := fx.handler.buildV4AuthContext(v4PolicyCtx(0), handle)
+		if err != nil {
+			t.Fatalf("root must not be denied under root_to_admin: %v", err)
+		}
+		if authCtx == nil {
+			t.Fatal("authCtx is nil for promoted root")
+		}
+	})
+
+	t.Run("permission=read coerces read-only", func(t *testing.T) {
+		fx := newRealFSTestFixture(t, "/export")
+		uid := uint32(1000)
+		fx.handler.Registry.SetIdentityStoreForTesting(&v4PermIdentityStore{
+			knownUID: uid,
+			user:     &models.User{ID: "u1", Username: "alice", UID: &uid},
+			perm:     models.PermissionRead,
+		})
+		if err := fx.handler.Registry.SetSharePolicyForTesting("/export", "read-write", models.SquashNone); err != nil {
+			t.Fatalf("set policy: %v", err)
+		}
+
+		authCtx, _, err := fx.handler.buildV4AuthContext(v4PolicyCtx(uid), handle)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !authCtx.ShareReadOnly {
+			t.Errorf("ShareReadOnly = false, want true for permission=read")
+		}
+	})
 }
 
 func TestEncodeChangeInfo4(t *testing.T) {
