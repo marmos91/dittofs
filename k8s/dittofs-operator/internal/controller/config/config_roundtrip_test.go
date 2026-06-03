@@ -129,6 +129,15 @@ func TestGenerateDittoFSConfig_NoDeadKeys(t *testing.T) {
 				Cache: &dittoiov1alpha1.InfraCacheConfig{Path: "/c", Size: "2GB"},
 			},
 		},
+		"native-mtls": {
+			Spec: dittoiov1alpha1.DittoServerSpec{
+				ControlPlane: &dittoiov1alpha1.ControlPlaneAPIConfig{
+					TLS:                true,
+					CertSecretName:     "tls",
+					ClientCASecretName: "ca",
+				},
+			},
+		},
 	}
 
 	for name, ds := range cases {

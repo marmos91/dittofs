@@ -304,7 +304,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 }
 
 // refreshOperatorToken refreshes the operator's JWT token using the stored credentials.
-func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *dittoiov1alpha1.DittoServer, secret *corev1.Secret, apiURL string) (ctrl.Result, error) { //nolint:unparam // ds used for future per-CR token management
+func (r *DittoServerReconciler) refreshOperatorToken(ctx context.Context, ds *dittoiov1alpha1.DittoServer, secret *corev1.Secret, apiURL string) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
 	refreshToken := string(secret.Data["refresh-token"])

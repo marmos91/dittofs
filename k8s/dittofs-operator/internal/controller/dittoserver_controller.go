@@ -758,15 +758,28 @@ func getAPIPort(dittoServer *dittoiov1alpha1.DittoServer) int32 {
 	return defaultAPIPort
 }
 
-// probeScheme returns the URI scheme the health probes must use. When the pod
-// serves native TLS the API speaks HTTPS only, so the probes must too;
-// otherwise plain HTTP. The kubelet skips certificate verification for HTTPS
-// probes, so a private CA needs no extra trust here.
-func probeScheme(dittoServer *dittoiov1alpha1.DittoServer) corev1.URIScheme {
-	if dittoServer.NativeTLSEnabled() {
-		return corev1.URISchemeHTTPS
+// probeHandler builds the kubelet probe handler for a health path.
+//
+//   - Plain / native-TLS (no mTLS): an HTTPGet probe. The kubelet skips
+//     certificate verification for HTTPS probes, so a private server CA needs
+//     no extra trust here; only the scheme must match the listener.
+//   - Mutual TLS (client_ca set): the listener requires a verified client
+//     certificate, which the kubelet cannot present — an HTTPS HTTPGet probe
+//     would fail the handshake and the pod would never become ready. Fall back
+//     to a TCPSocket probe (port-accepting liveness) so mTLS does not wedge the
+//     rollout. The deeper /health semantics are traded for schedulability.
+func probeHandler(dittoServer *dittoiov1alpha1.DittoServer, path string) corev1.ProbeHandler {
+	port := intstr.FromInt32(getAPIPort(dittoServer))
+	if dittoServer.MutualTLSEnabled() {
+		return corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: port}}
 	}
-	return corev1.URISchemeHTTP
+	scheme := corev1.URISchemeHTTP
+	if dittoServer.NativeTLSEnabled() {
+		scheme = corev1.URISchemeHTTPS
+	}
+	return corev1.ProbeHandler{
+		HTTPGet: &corev1.HTTPGetAction{Path: path, Port: port, Scheme: scheme},
+	}
 }
 
 // PreStop hook delay (seconds) applied to the dfs container before SIGTERM.
@@ -1080,13 +1093,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 								Ports:           buildContainerPorts(dittoServer, existingAdapterPorts(statefulSet)),
 								Env:             envVars,
 								LivenessProbe: &corev1.Probe{
-									ProbeHandler: corev1.ProbeHandler{
-										HTTPGet: &corev1.HTTPGetAction{
-											Path:   "/health",
-											Port:   intstr.FromInt32(getAPIPort(dittoServer)),
-											Scheme: probeScheme(dittoServer),
-										},
-									},
+									ProbeHandler:        probeHandler(dittoServer, "/health"),
 									InitialDelaySeconds: 15,
 									PeriodSeconds:       10,
 									TimeoutSeconds:      5,
@@ -1094,13 +1101,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 									FailureThreshold:    3,
 								},
 								ReadinessProbe: &corev1.Probe{
-									ProbeHandler: corev1.ProbeHandler{
-										HTTPGet: &corev1.HTTPGetAction{
-											Path:   "/health/ready",
-											Port:   intstr.FromInt32(getAPIPort(dittoServer)),
-											Scheme: probeScheme(dittoServer),
-										},
-									},
+									ProbeHandler:        probeHandler(dittoServer, "/health/ready"),
 									InitialDelaySeconds: 10,
 									PeriodSeconds:       5,
 									TimeoutSeconds:      5,
@@ -1108,13 +1109,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 									FailureThreshold:    3,
 								},
 								StartupProbe: &corev1.Probe{
-									ProbeHandler: corev1.ProbeHandler{
-										HTTPGet: &corev1.HTTPGetAction{
-											Path:   "/health",
-											Port:   intstr.FromInt32(getAPIPort(dittoServer)),
-											Scheme: probeScheme(dittoServer),
-										},
-									},
+									ProbeHandler:        probeHandler(dittoServer, "/health"),
 									InitialDelaySeconds: 0,
 									PeriodSeconds:       5,
 									TimeoutSeconds:      5,

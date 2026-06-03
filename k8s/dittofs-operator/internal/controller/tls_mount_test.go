@@ -147,6 +147,18 @@ func TestReconcileStatefulSet_MutualTLSClientCAMount(t *testing.T) {
 	if mount == nil || !mount.ReadOnly || mount.MountPath != v1alpha1.TLSClientCAMountPath {
 		t.Errorf("tls-client-ca mount = %+v, want read-only at %q", mount, v1alpha1.TLSClientCAMountPath)
 	}
+
+	// Under mTLS the kubelet cannot present a client cert, so HTTPS HTTPGet
+	// probes would fail the handshake. The probes must fall back to TCPSocket.
+	c := spec.Containers[0]
+	for _, p := range []*corev1.Probe{c.LivenessProbe, c.ReadinessProbe, c.StartupProbe} {
+		if p == nil || p.TCPSocket == nil {
+			t.Errorf("expected a TCPSocket probe under mTLS, got %+v", p)
+		}
+		if p != nil && p.HTTPGet != nil {
+			t.Error("mTLS probe must not be HTTPGet (handshake needs a client cert)")
+		}
+	}
 }
 
 // TestReconcileStatefulSet_NoTLSNoCertMount asserts the default (no cert Secret)
