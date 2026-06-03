@@ -1,7 +1,18 @@
 # DittoFS benchmark suite
 
-Unified harness for performance work across DittoFS. Six areas, three
-tooling layers.
+Quick-start for the `dfsbench` harness. The canonical performance
+documentation — results, how to run, perf gates, snapshot scale limits — lives
+in **[`docs/BENCHMARKS.md`](../docs/BENCHMARKS.md)**. This file is the developer
+quick-start and a map of the `bench/` packages.
+
+```sh
+go build -o dfsbench ./cmd/bench
+
+./dfsbench blockstore --workload sequential-write --ops 10000   # one workload + pprof
+./dfsbench orchestrate --out result.json --summary              # manifest → versioned JSON
+./dfsbench remote --stack bench --dry-run                       # plan a remote Scaleway run
+go test -bench=. -benchmem -run=^$ ./bench/blockstore/          # micro via Go benchmarks
+```
 
 ## Why one suite
 
@@ -76,6 +87,21 @@ format, schema, and version contract.
 ./dfsbench orchestrate --compare-baseline base.json --compare-candidate new.json
 ```
 
+### Remote runs (Scaleway over SSH)
+
+`dfsbench remote` is the Go replacement for the old `scripts/run-bench.sh` /
+`bench/scripts/run-all.sh` bash glue. It reads the `bench/infra` Pulumi stack
+outputs (public IP for SSH, private-network IP for the mount), scp's a prebuilt
+`dfsbench` binary to the host, runs `orchestrate` over SSH, and pulls the result
+JSON back. See [`docs/BENCHMARKS.md`](../docs/BENCHMARKS.md#remote-runs-scaleway)
+for required env and the full flow; `--dry-run` prints the plan without touching
+the host.
+
+```sh
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dfsbench.linux ./cmd/bench
+./dfsbench remote --stack bench --binary dfsbench.linux --ssh-key ~/.ssh/id_rsa --out remote.json
+```
+
 Use `benchstat` to A/B compare two commits:
 
 ```sh
@@ -127,19 +153,22 @@ make bench-all         # umbrella; stubs other areas for now
 cmd/bench/
   main.go            # cobra root, global flags, env-file pre-run
   blockstore.go      # implemented subcommand
-  stubs.go           # gc / snapshots / metadata / adapters / e2e stubs
+  orchestrate.go     # manifest runner → versioned result JSON + compare
+  remote.go          # drive a run on a Scaleway host over SSH
+  snapshots.go       # snapshot scale workloads
+  stubs.go           # gc / metadata / adapters / e2e stubs
 
 bench/
-  README.md          # this file
+  README.md          # this file (quick-start)
   blockstore/
-    doc.go
     fixture.go       # NewEngine(baseDir, remoteStore)
     remote.go        # SetupRemote(ctx, opts) — memory | s3
-    envfile.go       # ParseEnvFile(path)
+    latency.go       # per-op LatencyRecorder threaded through the runners
     workloads.go     # Opts, Result, RunWorkload, exported workloads
-    workloads_test.go
+  orchestrator/      # versioned schema, manifest, runner, compare, latency math
+  remote/            # SSH/scp/Pulumi-output ports + the remote orchestrator
+  snapshots/ README.md
   gc/        README.md   (stub)
-  snapshots/ README.md   (stub)
   metadata/  README.md   (stub)
   adapters/  README.md   (stub)
   e2e/       README.md   (points at existing infra/ + workloads/ + scripts/)

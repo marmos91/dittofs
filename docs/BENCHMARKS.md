@@ -189,26 +189,92 @@ Performance improvements from the `feat/cache-rewrite` branch optimization cycle
 6. **Resettable upload timeout** — uses LastAccess instead of CreatedAt for upload scheduling
 7. **Removed runtime.GC()** — eliminated forced garbage collection from periodic uploader
 
-## Reproducing
+## Running benchmarks
 
-### Prerequisites
+The benchmark suite has three layers, all driven from the `dfsbench`
+orchestrator binary plus per-package Go `Benchmark*` tests:
 
-- Two Scaleway GP1-XS instances (or equivalent)
-- DFS binary deployed to server at `/usr/local/bin/dfs`
-- SSH access to both machines
+- **In-process micro/macro workloads** — `bench/blockstore`, `bench/snapshots`,
+  driven by `dfsbench <area>` or `go test -bench`. No network, no mount.
+- **Versioned result documents** — `dfsbench orchestrate` runs a manifest of
+  workloads and emits a machine-readable JSON document (host info, per-workload
+  ns/op, throughput, latency p50/p95/p99, succeeded/failed op counts, structured
+  errors, pprof paths). A compare mode flags ns/op regressions between two runs.
+- **Remote infrastructure runs** — `dfsbench remote` drives a benchmark on a
+  Scaleway host (provisioned via the `bench/infra` Pulumi stack) over SSH and
+  collects the result JSON back.
 
-### Running the benchmark
+Build the binary once:
 
 ```bash
-# Build and deploy
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/dfs-linux ./cmd/dfs/main.go
-scp /tmp/dfs-linux root@<server>:/usr/local/bin/dfs
-
-# Run full suite
-./scripts/run-full-bench.sh round-name
+go build -o dfsbench ./cmd/bench
 ```
 
+### In-process workloads
+
+```bash
+# A single blockstore workload with pprof capture:
+./dfsbench blockstore --workload sequential-write --ops 10000
+./dfsbench blockstore --workload random-write --ops 5000 --remote=s3 --env-file ./.env
+
+# A manifest of workloads → one versioned result JSON + a summary table:
+./dfsbench orchestrate --out result.json --summary
+
+# Compare two result documents (exits non-zero on a regression — CI-gateable):
+./dfsbench orchestrate --compare-baseline base.json --compare-candidate new.json
+```
+
+The manifest format, full result schema, and the additive-vs-breaking version
+contract live in [`bench/orchestrator/README.md`](../bench/orchestrator/README.md).
+
+### Remote runs (Scaleway)
+
+The `bench/infra` Pulumi stack provisions an ephemeral server VM (with a block
+volume) and a persistent client VM on a private network. `dfsbench remote` then
+drives a run against an already-provisioned host: it reads the server's public
+IP (for SSH) and private-network IP (for the mount) from the stack outputs,
+scp's a prebuilt `dfsbench` binary to the host, runs `orchestrate` over SSH, and
+pulls the result JSON back.
+
+SSH always uses the public IP; the benchmark serves/mounts over the
+private-network IP only — the two are kept distinct so a run is never carried
+over the public path.
+
+Required setup:
+
+- A Pulumi stack provisioned: `cd bench/infra && pulumi up --stack bench`
+  (needs Scaleway credentials in the environment; see `bench/infra/Pulumi.yaml`).
+- SSH access to the server's public IP (`--ssh-key` or an agent).
+- A `linux/amd64` `dfsbench` build to push.
+
+```bash
+# Cross-build the bench binary for the Linux server:
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dfsbench.linux ./cmd/bench
+
+# Resolve the target + print the plan WITHOUT touching the host:
+./dfsbench remote --stack bench --dry-run
+
+# Push the binary, run the bench over SSH, fetch the result:
+./dfsbench remote --stack bench \
+  --binary dfsbench.linux --ssh-key ~/.ssh/id_rsa \
+  --out remote-result.json --summary
+```
+
+Pass `--private-ip` if the stack does not surface the server's private-network
+address (it is assigned by DHCP). Provisioning the VMs themselves stays in
+Pulumi; `dfsbench remote` drives an existing host. Live-infra runs cannot be
+exercised in CI — the orchestrator's SSH/scp/Pulumi-output logic is unit-tested
+with fakes, and `--dry-run` verifies the wiring without credentials.
+
+The remote bench currently runs the in-process `orchestrate` workloads on the
+server (no NFS mount), so the resolved private IP is exported to the remote
+process as `DITTOFS_BENCH_MOUNT_IP` but not yet consumed for a kernel mount.
+That env var is the wiring point for a future client-driven, mount-based runner;
+SSH/scp transport already correctly uses the public IP only.
+
 ### Regenerating charts
+
+The charts above are generated from saved result JSON:
 
 ```bash
 python3 -m venv /tmp/bench-charts
@@ -218,16 +284,126 @@ python3 -m venv /tmp/bench-charts
 
 Charts are saved to `docs/assets/bench-*.png`.
 
-## Raw Data
+## Local perf gates
 
-JSON results for each system are stored in `results/round-24/`:
+Several in-tree microbenchmark gates protect hot paths under `go test`. They
+are skipped under `go test -short`; the heaviest ones are additionally opt-in
+via an env var because they allocate several GiB. These run on any machine — no
+mount or cloud infra needed.
 
+### Hash + chunker gates
+
+- **BLAKE3 throughput** — `TestBLAKE3AtLeast3xSHA256` (in `pkg/block/`) requires
+  BLAKE3 ≥ 3× SHA-256 throughput on amd64 when `D41_STRICT_GATE=1` is set. By
+  default, and always on arm64, it relaxes to ≥ 0.5× — Go's `crypto/sha256` uses
+  ARMv8 SHA hardware acceleration while `lukechampine.com/blake3` has no NEON
+  path on Apple Silicon, so a 3× ratio is not reachable there.
+- **FastCDC boundary stability** — `TestChunker_BoundaryStability_70pct` (in
+  `pkg/block/chunker/`) requires ≥ 70% of chunk boundaries preserved across
+  1–4096 byte shifts of the input stream.
+
+```bash
+D41_STRICT_GATE=1 go test -run=TestBLAKE3AtLeast3xSHA256 ./pkg/block/
+go test -run=TestChunker_BoundaryStability_70pct ./pkg/block/chunker/
 ```
-results/round-24/
-├── dittofs-s3-nfs3.json
-├── dittofs-s3-nfs41.json
-├── kernel-nfs.json
-└── juicefs-s3.json
+
+### Read-path regression gate
+
+The read-path stack (binary-search lookup over `[]BlockRef`, CAS-keyed cache,
+per-share metadata coordinator) is guarded by an in-tree microbench gate in
+`pkg/block/engine/`:
+
+- `BenchmarkPerfGate_Phase12RandReadRegression` enforces rand-read IOPS staying
+  within 5% of a per-machine microbench floor (the `phase12MicrobenchFloorIOPS`
+  constant, conservatively anchored at 50,000 IOPS).
+- `TestPerfGate_Phase12_BinarySearchOverhead` caps `findBlocksForRange` average
+  cost across a large `[]BlockRef`.
+
+This microbench runs against the in-process memory local store with no remote —
+a CPU-floor measurement of the read path, NOT real S3. Real-S3 read throughput
+is captured separately by the macro reports above.
+
+```bash
+go test -bench=BenchmarkPerfGate_Phase12RandReadRegression -benchtime=10s -run=^$ \
+    ./pkg/block/engine/...
+go test -run=TestPerfGate_Phase12_BinarySearchOverhead -count=1 -v ./pkg/block/engine/...
 ```
 
-Each JSON file contains per-workload metrics: throughput/IOPS, latency percentiles (P50/P95/P99), total operations, and error counts.
+To re-baseline on a new machine class: capture several runs, take the lowest
+ops/sec, multiply by 0.90, and update the floor constant — a deliberate
+calibration event that must be reviewed in PR.
+
+### A/B comparing commits
+
+For ad-hoc before/after work, run any package's `Benchmark*` against two commits
+and diff with `benchstat`:
+
+```bash
+go test -bench=. -count=10 -run=^$ ./bench/blockstore/ > before.txt
+# ... check out the other commit ...
+go test -bench=. -count=10 -run=^$ ./bench/blockstore/ > after.txt
+benchstat before.txt after.txt
+```
+
+## Snapshot scale limits
+
+Snapshot `create` does a metadata `Backup` (a streamed dump plus an in-RAM
+`HashSet` of every referenced block hash), writes a hash manifest, drains
+uploads, then verifies durability by HEAD-probing every manifest hash at
+concurrency 16. `restore` reads the manifest back, resets, restores the dump,
+and re-verifies. The workloads in `bench/snapshots/` isolate the three cost
+centers (backup, manifest, verify) so a single benchmark can sweep file counts
+without standing up adapters / the control-plane DB / real S3.
+
+```bash
+# CI-safe sweep (1e4 / 1e5 files; 1e6 cases skipped under -short):
+go test -bench=. -benchmem -short -run=^$ ./bench/snapshots/
+
+# Full sweep including 1e6-file scales (heavy — minutes, multi-GB allocs):
+go test -bench=. -benchmem -benchtime=1x -run=^$ -timeout=900s ./bench/snapshots/
+
+# One ad-hoc seed→backup→manifest→verify pass with per-stage wall time:
+./dfsbench snapshots --files 1000000 --blocks-per-file 8
+```
+
+### Indicative numbers (Apple M1 Max, memory engine, in-memory remote)
+
+All-unique blocks (`--dedup 1`, the worst case for HashSet + manifest RAM),
+`benchtime=1x`. `dump_bytes` is streamed to a discard writer — it is the
+serialized dump size, not a resident buffer.
+
+| Scale (files × blocks) | unique hashes | backup ns/op | dump_bytes | manifest_bytes | verify ns/op (probes) |
+| ---------------------- | ------------: | -----------: | ---------: | -------------: | --------------------: |
+| 1e5 × 1                |       100,000 |        1.15 s |    35.0 MB |        6.5 MB |     0.14 s (100,000) |
+| 1e5 × 8                |       800,000 |        1.45 s |    67.2 MB |       52.0 MB |     1.39 s (800,000) |
+| 1e6 × 1                |     1,000,000 |        5.92 s |   350.0 MB |       65.0 MB |     1.95 s (1,000,000) |
+| 1e6 × 8                |     8,000,000 |       18.25 s |   672.0 MB |      520.0 MB |    25.27 s (8,000,000) |
+
+### Established limits & budget
+
+- **The badger dump is streamed.** The badger engine (KV-by-KV) and the manifest
+  writer emit to an `io.Writer` without buffering the whole dump. The dominant
+  create-path resident allocation is then the returned `HashSet`: one 32-byte
+  `ContentHash` per **unique** block, ~26 B/entry in the Go map. **Budget ~25 MB
+  of HashSet RAM per 1 M unique blocks**; 8 M unique blocks ≈ 200 MB.
+- **Manifest on disk is 65 bytes/hash** (64 hex + LF): 65 MB per 1 M hashes,
+  520 MB at 8 M. Written streamed; read back into a resident HashSet on restore.
+- **Verify is N HEAD round-trips at concurrency 16**, holding nothing across
+  probes. The in-memory-remote times above are a floor with zero network
+  latency. For an S3 budget, multiply the probe count by the real per-HEAD RTT ÷
+  16: e.g. 8 M probes at 20 ms/HEAD ≈ 167 minutes of verify, plus 8 M HEAD
+  charges. Large shares should size their verify window from the manifest hash
+  count, or create with `--no-verify` and accept `remote_durable=false`.
+- **The memory metadata engine is not suitable for TB/M-file shares.** It
+  gob-encodes its entire snapshot into one buffer during Backup. **Use the
+  badger engine for large shares; it streams the dump KV-by-KV.** Badger restore
+  also streams: entries apply via a bounded `WriteBatch`, the integrity CRC is
+  verified last, and any failure triggers `DropAll` to leave the store
+  empty/retryable.
+
+## Raw data
+
+Each result JSON contains per-workload metrics: throughput/IOPS, latency
+percentiles (p50/p95/p99), total + succeeded + failed operation counts, and
+structured per-op errors. `dfsbench orchestrate --summary` prints the same data
+as a table.
