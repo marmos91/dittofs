@@ -20,7 +20,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -32,7 +31,7 @@ import (
 // and uses SessionManager for unified session/credit tracking.
 // Thread-safe: all mutable state uses sync.Map or atomic operations.
 type Handler struct {
-	Registry  *runtime.Runtime
+	Registry  smbRuntime
 	StartTime time.Time
 
 	// Server identity

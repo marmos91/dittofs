@@ -6,7 +6,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -44,7 +43,7 @@ func formatUID(uid *uint32) string {
 //   - error: If identity mapping fails, access is denied, or context is cancelled
 func BuildAuthContextWithMapping(
 	nfsCtx *NFSHandlerContext,
-	reg *runtime.Runtime,
+	reg nfsRuntime,
 	shareName string,
 ) (*metadata.AuthContext, error) {
 	ctx := nfsCtx.Context

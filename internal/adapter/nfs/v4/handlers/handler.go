@@ -13,7 +13,6 @@ import (
 	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
 
 // OpHandler is the type signature for individual NFSv4 operation handlers.
@@ -32,7 +31,7 @@ type V41OpHandler func(ctx *types.CompoundContext, v41ctx *types.V41RequestConte
 // the opDispatchTable (v4.0) and v41DispatchTable (v4.1).
 type Handler struct {
 	// Registry provides access to all stores and shares.
-	Registry *runtime.Runtime
+	Registry nfsRuntime
 
 	// PseudoFS is the pseudo-filesystem for virtual namespace navigation.
 	PseudoFS *pseudofs.PseudoFS
@@ -85,7 +84,7 @@ type Handler struct {
 //
 // All operation handlers are initialized to return NFS4ERR_NOTSUPP except
 // for OP_ILLEGAL which returns NFS4ERR_OP_ILLEGAL.
-func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager ...*state.StateManager) *Handler {
+func NewHandler(registry nfsRuntime, pfs *pseudofs.PseudoFS, stateManager ...*state.StateManager) *Handler {
 	var sm *state.StateManager
 	if len(stateManager) > 0 && stateManager[0] != nil {
 		sm = stateManager[0]
