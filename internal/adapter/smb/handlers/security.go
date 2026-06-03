@@ -310,7 +310,7 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 //     0-ACE DACL on the wire; do NOT synthesize a default.
 //   - file.ACL != nil, len>0   → emit stored ACEs as-is.
 //
-// Note: server-side access checks and computeMaximalAccess (create.go) still
+// Note: server-side access checks and Service.ComputeMaximalAccess still
 // fall back to POSIX mode bits for nil ACL — this is intentional. The SD shape
 // here is what the client sees; actual access enforcement keeps the legacy
 // POSIX semantics so Unix mode bits stay authoritative on the server.

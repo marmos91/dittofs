@@ -601,7 +601,7 @@ func TestHandleCreate_MxAcContext(t *testing.T) {
 			},
 		}
 
-		access := computeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
 		if access != 0x001F01FF {
 			t.Errorf("Owner access = 0x%08x, expected 0x001F01FF (GENERIC_ALL)", access)
 		}
@@ -625,7 +625,7 @@ func TestHandleCreate_MxAcContext(t *testing.T) {
 			},
 		}
 
-		access := computeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
 		// Group bits: r-x (5) => read + execute
 		expectedRead := uint32(0x00120089)
 		expectedExec := uint32(0x001200A0)
@@ -653,7 +653,7 @@ func TestHandleCreate_MxAcContext(t *testing.T) {
 			},
 		}
 
-		access := computeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
 		// Other bits: --- (0) => minimum access only
 		expected := uint32(0x00100000 | 0x00020000) // SYNCHRONIZE | READ_CONTROL
 		if access != expected {
@@ -683,7 +683,7 @@ func TestHandleCreate_MxAcContext(t *testing.T) {
 	})
 }
 
-// TestHandleCreate_MxAcContext_ACL verifies that computeMaximalAccess returns
+// TestHandleCreate_MxAcContext_ACL verifies that ComputeMaximalAccess returns
 // SD-evaluated rights when the file carries an explicit DACL (MS-SMB2
 // §2.2.13.2). The POSIX path is preserved verbatim when file.ACL == nil and
 // is exercised by TestHandleCreate_MxAcContext above; here we cover the new
@@ -729,7 +729,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			},
 		}
 
-		access := computeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
 		if access&acl.ACE4_WRITE_DATA != 0 {
 			t.Errorf("ACE4_WRITE_DATA must be cleared, got 0x%08x", access)
 		}
@@ -777,7 +777,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			},
 		}
 
-		access := computeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
 		if access != want {
 			t.Errorf("MxAc = 0x%08x, expected 0x%08x (explicit 0x%08x + owner-implicit 0x%08x per MS-DTYP §2.5.3.2)",
 				access, want, explicit, ownerImplicit)
@@ -805,7 +805,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			},
 		}
 
-		access := computeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
 		if access != ownerImplicit {
 			t.Errorf("Empty ACL: owner must receive only implicit RC|WRITE_DAC, got 0x%08x want 0x%08x", access, ownerImplicit)
 		}
@@ -837,7 +837,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 				ACL:  &acl.ACL{},
 			},
 		}
-		access := computeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
 		want := uint32(acl.ACE4_READ_ACL | acl.ACE4_WRITE_ACL | acl.ACE4_WRITE_OWNER)
 		if access != want {
 			t.Errorf("Admin owner MxAc = 0x%08x, want 0x%08x (RC|WRITE_DAC|WRITE_OWNER)", access, want)
@@ -856,7 +856,7 @@ func TestHandleCreate_MxAcContext_ACL(t *testing.T) {
 			},
 		}
 
-		access := computeMaximalAccess(file, authCtx)
+		access := (&metadata.Service{}).ComputeMaximalAccess(file, authCtx)
 		if access != 0x001F01FF {
 			t.Errorf("POSIX fallback owner access = 0x%08x, expected 0x001F01FF", access)
 		}

@@ -631,9 +631,18 @@ const (
 
 	// accessMaskPosixGenericAll is the Windows GENERIC_ALL bundle used for
 	// MAXIMUM_ALLOWED on the no-DACL path (root bypass + nil-ACL case). The
-	// numeric value is the same one computeMaximalAccess emits for an owner
-	// on the POSIX fallback in internal/adapter/smb/handlers/create.go.
+	// numeric value is the same one ComputeMaximalAccess emits for an owner
+	// on the POSIX fallback.
 	accessMaskPosixGenericAll uint32 = 0x001F01FF
+
+	// POSIX-mode→access-mask bundles used by ComputeMaximalAccess when a file
+	// carries no explicit DACL. Each maps a POSIX rwx bit to the Windows
+	// access-right bundle a holder of that permission is granted (MS-SMB2
+	// §2.2.13.2 MaximalAccess reply).
+	accessMaskPosixRead    uint32 = 0x00120089 // FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE
+	accessMaskPosixWrite   uint32 = 0x00120116 // FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE
+	accessMaskPosixExecute uint32 = 0x001200A0 // FILE_EXECUTE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE
+	accessMaskPosixMinimal uint32 = 0x00120000 // READ_CONTROL | SYNCHRONIZE
 )
 
 // CheckFileAccess validates a CREATE DesiredAccess request against an
@@ -902,6 +911,97 @@ func parentGrantsDeleteChild(parent *File, authCtx *AuthContext) bool {
 	}
 	parentEvalCtx := buildFileAccessEvalContext(parent, authCtx)
 	return acl.Evaluate(parent.ACL, parentEvalCtx, acl.ACE4_DELETE_CHILD)
+}
+
+// ComputeMaximalAccess computes the maximal access mask a requester is
+// granted on file, for use in the MS-SMB2 §2.2.13.2 MxAc create-context
+// reply. It is the single source of truth for maximal-access evaluation;
+// protocol adapters call it instead of reimplementing ACL/POSIX evaluation.
+//
+// When the file carries an explicit DACL (file.ACL != nil), each MS-DTYP
+// access-right bit in acl.ProbeBitsAll is probed against the DACL using the
+// same EvaluateContext shape as CheckFileAccess, so the MxAc reply stays
+// consistent with permission checks on subsequent operations against the same
+// handle. The owner short-circuit is intentionally NOT applied on the ACL
+// path: MS-SMB2 §2.2.13.2 requires the reply to reflect SD evaluation, and an
+// owner can legitimately be restricted by an OWNER_RIGHTS ACE (MS-DTYP
+// §2.5.3). Root (UID 0) still short-circuits to GENERIC_ALL, mirroring
+// CheckFileAccessWithParentGeneric.
+//
+// When file.ACL is nil, the POSIX fallback maps the file's mode bits:
+//   - Owner: GENERIC_ALL.
+//   - Group member / other: the rwx bundles (accessMaskPosixRead/Write/Execute).
+//   - Any authenticated user with no granted bits still receives the minimal
+//     READ_CONTROL | SYNCHRONIZE set.
+func (s *Service) ComputeMaximalAccess(file *File, authCtx *AuthContext) uint32 {
+	// ACL-aware path: probe each defined access-right bit against the SD.
+	// No owner short-circuit — the DACL may legitimately restrict the owner.
+	if file.ACL != nil {
+		// Root bypass mirrors CheckFileAccessWithParentGeneric. Hoisted above
+		// evalCtx construction to avoid the allocation on the root-admin hot
+		// path.
+		if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
+			return accessMaskPosixGenericAll
+		}
+		evalCtx := buildFileAccessEvalContext(file, authCtx)
+		var granted uint32
+		// acl.ProbeBitsAll is the shared probe set (mirrors the MAXIMUM_ALLOWED
+		// branch of CheckFileAccessWithParentGeneric). ExpandGenericMask is
+		// applied defensively so any future additions carrying GENERIC_* bits
+		// are normalized per MS-DTYP §2.5.3 before evaluation.
+		for _, bit := range acl.ProbeBitsAll {
+			probe := acl.ExpandGenericMask(bit)
+			if acl.Evaluate(file.ACL, evalCtx, probe) {
+				granted |= probe
+			}
+		}
+		// Result also expanded for defense-in-depth: per MS-DTYP §2.5.3 the
+		// MaximalAccess reply must contain only resolved rights.
+		return acl.ExpandGenericMask(granted)
+	}
+
+	// POSIX fallback: owner gets GENERIC_ALL.
+	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == file.UID {
+		return accessMaskPosixGenericAll
+	}
+
+	// Compute from POSIX mode bits for a non-owner. Use group permission bits
+	// when the requester is a member of the file's owning group, otherwise the
+	// "other" bits.
+	isGroupMember := authCtx != nil && authCtx.Identity != nil && authCtx.Identity.GID != nil && *authCtx.Identity.GID == file.GID
+	if !isGroupMember && authCtx != nil && authCtx.Identity != nil {
+		for _, gid := range authCtx.Identity.GIDs {
+			if gid == file.GID {
+				isGroupMember = true
+				break
+			}
+		}
+	}
+
+	var permBits uint32
+	if isGroupMember {
+		permBits = uint32((file.Mode >> 3) & 0x7) // group bits
+	} else {
+		permBits = uint32(file.Mode & 0x7) // other bits
+	}
+
+	var access uint32
+	if permBits&0x4 != 0 { // read
+		access |= accessMaskPosixRead
+	}
+	if permBits&0x2 != 0 { // write
+		access |= accessMaskPosixWrite
+	}
+	if permBits&0x1 != 0 { // execute
+		access |= accessMaskPosixExecute
+	}
+
+	// Ensure at minimum READ_CONTROL | SYNCHRONIZE for any authenticated user.
+	if access == 0 {
+		access = accessMaskPosixMinimal
+	}
+
+	return access
 }
 
 // buildFileAccessEvalContext mirrors evaluateACLPermissions's EvaluateContext
