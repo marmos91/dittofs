@@ -36,7 +36,7 @@ const DefaultGID = uint32(1000)
 //
 // Use NewHandlerFixture to create a fixture for each test.
 type HandlerTestFixture struct {
-	t *testing.T
+	t testing.TB
 
 	// Handler is the NFS v3 handler under test.
 	Handler *handlers.Handler
@@ -71,7 +71,7 @@ type HandlerTestFixture struct {
 //   - Handler with the registry configured
 //
 // The fixture automatically cleans up on test completion.
-func NewHandlerFixture(t *testing.T) *HandlerTestFixture {
+func NewHandlerFixture(t testing.TB) *HandlerTestFixture {
 	t.Helper()
 
 	ctx := context.Background()
@@ -400,6 +400,7 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 	file := f.GetFile(path)
 	if file == nil {
 		f.t.Fatalf("File %q does not exist", path)
+		return nil // unreachable after Fatalf; keeps staticcheck happy for testing.TB
 	}
 
 	ctx := context.Background()
@@ -439,7 +440,7 @@ func (f *HandlerTestFixture) authContext() *metadata.AuthContext {
 }
 
 // mustEncodeHandle encodes a file to a handle, failing the test on error.
-func mustEncodeHandle(t *testing.T, file *metadata.File) metadata.FileHandle {
+func mustEncodeHandle(t testing.TB, file *metadata.File) metadata.FileHandle {
 	t.Helper()
 	handle, err := metadata.EncodeFileHandle(file)
 	if err != nil {

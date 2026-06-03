@@ -240,7 +240,7 @@ func (h *Handler) Commit(
 	// ========================================================================
 
 	// Build auth context for metadata flush
-	authCtx, authErr := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
+	authCtx, authErr := h.GetCachedAuthContext(ctx)
 	if authErr == nil {
 		// Flush pending metadata for this specific file
 		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle)

@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
@@ -27,16 +29,38 @@ type Handler struct {
 }
 
 // authCacheKey generates a cache key for auth context caching.
-func authCacheKey(share string, uid, gid *uint32) string {
+//
+// The key covers every input that BuildAuthContextWithMapping resolves on:
+// the share, the auth flavor (which selects the AuthMethod string), and the
+// full credential set (UID, primary GID, and supplementary GIDs). Including
+// the supplementary GIDs and flavor avoids returning a cached context that
+// was built for a different credential set that happens to share UID/GID.
+func authCacheKey(ctx *NFSHandlerContext) string {
 	uidVal := uint32(0xFFFFFFFF) // sentinel for nil
 	gidVal := uint32(0xFFFFFFFF)
-	if uid != nil {
-		uidVal = *uid
+	if ctx.UID != nil {
+		uidVal = *ctx.UID
 	}
-	if gid != nil {
-		gidVal = *gid
+	if ctx.GID != nil {
+		gidVal = *ctx.GID
 	}
-	return fmt.Sprintf("%s:%d:%d", share, uidVal, gidVal)
+
+	var b strings.Builder
+	b.WriteString(ctx.Share)
+	appendUint(&b, uint64(ctx.AuthFlavor))
+	appendUint(&b, uint64(uidVal))
+	appendUint(&b, uint64(gidVal))
+	for _, g := range ctx.GIDs {
+		appendUint(&b, uint64(g))
+	}
+	return b.String()
+}
+
+// appendUint writes ":<n>" to b without the reflection overhead of fmt, since
+// authCacheKey runs on every cached-op RPC.
+func appendUint(b *strings.Builder, n uint64) {
+	b.WriteByte(':')
+	b.WriteString(strconv.FormatUint(n, 10))
 }
 
 // GetCachedAuthContext returns a cached auth context or builds a new one.
@@ -44,7 +68,7 @@ func authCacheKey(share string, uid, gid *uint32) string {
 func (h *Handler) GetCachedAuthContext(
 	ctx *NFSHandlerContext,
 ) (*metadata.AuthContext, error) {
-	key := authCacheKey(ctx.Share, ctx.UID, ctx.GID)
+	key := authCacheKey(ctx)
 
 	// Fast path: check cache
 	if cached, ok := h.authCache.Load(key); ok {
@@ -65,8 +89,15 @@ func (h *Handler) GetCachedAuthContext(
 		return nil, err
 	}
 
-	// Cache for future requests
-	h.authCache.Store(key, authCtx)
+	// Cache only the request-independent fields. Storing authCtx directly would
+	// pin the first request's Context (and any values/cancellation attached to
+	// it) and ClientAddr for the lifetime of the entry; the hit path always
+	// re-derives those from the current request anyway.
+	h.authCache.Store(key, &metadata.AuthContext{
+		AuthMethod:    authCtx.AuthMethod,
+		Identity:      authCtx.Identity,
+		ShareReadOnly: authCtx.ShareReadOnly,
+	})
 
 	return authCtx, nil
 }

@@ -135,7 +135,7 @@ func (h *Handler) Link(
 	// Step 4: Build AuthContext for permission checking
 	// ========================================================================
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
+	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
 		// Check if error is due to context cancellation
 		if ctx.Context.Err() != nil {
