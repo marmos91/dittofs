@@ -3,6 +3,7 @@ package attrs
 import (
 	"bytes"
 	"encoding/binary"
+	"sync"
 	"testing"
 
 	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
@@ -438,4 +439,82 @@ func TestEncodePseudoFSAttrsFileIDNeverZero(t *testing.T) {
 	if mountedOnFileID == 0 {
 		t.Error("FATTR4_MOUNTED_ON_FILEID encoded as 0 (illegal; crashes macOS client)")
 	}
+}
+
+// TestSetLeaseTime_NoDataRace exercises concurrent SetLeaseTime writes against
+// FATTR4_LEASE_TIME encode reads. Run with -race to detect the data race that
+// existed before leaseTimeSeconds was made atomic.
+func TestSetLeaseTime_NoDataRace(t *testing.T) {
+	// Restore original value after test.
+	orig := GetLeaseTime()
+	t.Cleanup(func() { SetLeaseTime(orig) })
+
+	const goroutines = 8
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	// Half goroutines write.
+	for i := 0; i < goroutines; i++ {
+		go func(v uint32) {
+			defer wg.Done()
+			<-ready
+			SetLeaseTime(v)
+		}(uint32(30 + i))
+	}
+
+	// Half goroutines read via the encode path (exercises a read site).
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-ready
+			node := newMockNode()
+			var buf bytes.Buffer
+			var req []uint32
+			SetBit(&req, FATTR4_LEASE_TIME)
+			_ = EncodePseudoFSAttrs(&buf, req, node)
+		}()
+	}
+
+	close(ready)
+	wg.Wait()
+}
+
+// TestSetIdentityMapper_NoDataRace exercises concurrent SetIdentityMapper writes
+// against FATTR4_OWNER encode reads (resolveOwnerString). Run with -race to detect
+// the data race that existed before identityMapper became an atomic.Pointer.
+func TestSetIdentityMapper_NoDataRace(t *testing.T) {
+	// Restore nil after test.
+	t.Cleanup(func() { SetIdentityMapper(nil) })
+
+	const goroutines = 8
+	ready := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	// Half goroutines swap the mapper.
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-ready
+			SetIdentityMapper(nil)
+		}()
+	}
+
+	// Half goroutines read via OWNER encoding (calls resolveOwnerString).
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-ready
+			node := newMockNode()
+			var buf bytes.Buffer
+			var req []uint32
+			SetBit(&req, FATTR4_OWNER)
+			SetBit(&req, FATTR4_OWNER_GROUP)
+			_ = EncodePseudoFSAttrs(&buf, req, node)
+		}()
+	}
+
+	close(ready)
+	wg.Wait()
 }
