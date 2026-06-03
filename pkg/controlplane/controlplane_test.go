@@ -2,11 +2,28 @@ package controlplane
 
 import (
 	"context"
+	"runtime"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
+
+// guardPprofGlobals snapshots the process-global pprof sampling knobs and
+// restores them after the test. api.NewServer (invoked by New when an API
+// config is present) calls runtime.SetMutexProfileFraction /
+// runtime.SetBlockProfileRate unconditionally; without this guard, constructing
+// the server here would leak that mutation into other packages' tests when
+// `go test ./...` runs them in the same process.
+func guardPprofGlobals(t *testing.T) {
+	t.Helper()
+	prevMutex := runtime.SetMutexProfileFraction(-1) // -1 reads without changing
+	runtime.SetMutexProfileFraction(prevMutex)       // restore the read-back value
+	t.Cleanup(func() {
+		runtime.SetMutexProfileFraction(prevMutex)
+		runtime.SetBlockProfileRate(0)
+	})
+}
 
 func memConfig() *store.Config {
 	return &store.Config{
@@ -67,6 +84,8 @@ func TestNew_NoAPIServer(t *testing.T) {
 // With an API config present, New constructs the API server and applies the
 // default restore timeout when RestoreHTTPTimeout is zero.
 func TestNew_WithAPIServer(t *testing.T) {
+	guardPprofGlobals(t)
+
 	apiCfg := &api.APIConfig{}
 	apiCfg.ApplyDefaults()
 	apiCfg.Port = 0 // ephemeral / unbound — New does not Start the server

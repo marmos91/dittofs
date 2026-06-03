@@ -32,6 +32,16 @@ func newTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+// mustCreate inserts a setup row and fails fast on error so a broken
+// fixture surfaces at its source rather than as a confusing downstream
+// assertion failure.
+func mustCreate(t *testing.T, db *gorm.DB, w *widget) {
+	t.Helper()
+	if err := db.Create(w).Error; err != nil {
+		t.Fatalf("setup create %+v: %v", w, err)
+	}
+}
+
 func TestDedup(t *testing.T) {
 	cases := []struct {
 		name string
@@ -99,7 +109,7 @@ func TestIsUniqueConstraintError(t *testing.T) {
 func TestGetByField(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
-	db.Create(&widget{ID: "1", Name: "alpha", Kind: "k"})
+	mustCreate(t, db, &widget{ID: "1", Name: "alpha", Kind: "k"})
 
 	notFound := errors.New("nope")
 
@@ -134,8 +144,8 @@ func TestListAll(t *testing.T) {
 		t.Errorf("len = %d, want 0", len(got))
 	}
 
-	db.Create(&widget{ID: "1", Name: "a"})
-	db.Create(&widget{ID: "2", Name: "b"})
+	mustCreate(t, db, &widget{ID: "1", Name: "a"})
+	mustCreate(t, db, &widget{ID: "2", Name: "b"})
 	got, err = listAll[widget](db, ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -166,13 +176,19 @@ func TestCreateWithID(t *testing.T) {
 	})
 
 	t.Run("honors provided id", func(t *testing.T) {
-		w := &widget{Name: "fixed"}
+		// Mirror real callers: when currentID is supplied, the entity already
+		// carries that ID, so createWithID must not overwrite it nor insert an
+		// empty primary key.
+		w := &widget{ID: "fixed-id", Name: "fixed"}
 		id, err := createWithID[widget](db, ctx, w, setID, "fixed-id", dupErr)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if id != "fixed-id" {
 			t.Errorf("id = %q, want fixed-id", id)
+		}
+		if w.ID != "fixed-id" {
+			t.Errorf("entity ID overwritten to %q, want fixed-id", w.ID)
 		}
 	})
 
@@ -197,16 +213,18 @@ func TestDeleteByField(t *testing.T) {
 	ctx := context.Background()
 	notFound := errors.New("nope")
 
-	db.Create(&widget{ID: "1", Name: "a", Kind: "x"})
-	db.Create(&widget{ID: "2", Name: "b", Kind: "x"})
-	db.Create(&widget{ID: "3", Name: "c", Kind: "y"})
+	mustCreate(t, db, &widget{ID: "1", Name: "a", Kind: "x"})
+	mustCreate(t, db, &widget{ID: "2", Name: "b", Kind: "x"})
+	mustCreate(t, db, &widget{ID: "3", Name: "c", Kind: "y"})
 
 	// Deletes both kind=x rows.
 	if err := deleteByField[widget](db, ctx, "kind", "x", notFound); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
 	var remaining []widget
-	db.Find(&remaining)
+	if err := db.Find(&remaining).Error; err != nil {
+		t.Fatalf("find remaining: %v", err)
+	}
 	if len(remaining) != 1 || remaining[0].Kind != "y" {
 		t.Errorf("after delete, remaining = %+v", remaining)
 	}
