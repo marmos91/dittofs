@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"sync"
-
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -22,22 +20,29 @@ type PendingPipeRead struct {
 	Callback  AsyncPipeReadCallback
 }
 
+// Secondary-index slots for PipeReadRegistry, in configured order.
+const (
+	pipeIdxFileID = iota
+	pipeIdxMessageID
+)
+
 // PipeReadRegistry tracks outstanding async pipe READ operations.
 // Each named-pipe handle can have at most one pending read at a time.
 // Thread-safe; all methods acquire the mutex.
 type PipeReadRegistry struct {
-	mu          sync.Mutex
-	byFileID    map[[16]byte]*PendingPipeRead
-	byMessageID map[uint64]*PendingPipeRead
-	byAsyncId   map[uint64]*PendingPipeRead
+	reg *pendingRegistry[PendingPipeRead]
 }
 
 // NewPipeReadRegistry creates an empty registry.
 func NewPipeReadRegistry() *PipeReadRegistry {
 	return &PipeReadRegistry{
-		byFileID:    make(map[[16]byte]*PendingPipeRead),
-		byMessageID: make(map[uint64]*PendingPipeRead),
-		byAsyncId:   make(map[uint64]*PendingPipeRead),
+		reg: newPendingRegistry(registryConfig[PendingPipeRead]{
+			asyncID: func(p *PendingPipeRead) uint64 { return p.AsyncId },
+			indexes: []keyFunc[PendingPipeRead]{
+				func(p *PendingPipeRead) any { return p.FileID },
+				func(p *PendingPipeRead) any { return p.MessageID },
+			},
+		}),
 	}
 }
 
@@ -45,20 +50,17 @@ func NewPipeReadRegistry() *PipeReadRegistry {
 // for the same FileID, it is replaced (the old entry is completed first via
 // its callback with STATUS_CANCELLED to avoid leaking async slots).
 func (r *PipeReadRegistry) Register(p *PendingPipeRead) {
-	r.mu.Lock()
+	r.reg.mu.Lock()
 	var displaced *PendingPipeRead
-	if old, ok := r.byFileID[p.FileID]; ok {
+	if old := r.reg.lookupLocked(pipeIdxFileID, p.FileID); old != nil {
 		displaced = old
-		delete(r.byMessageID, old.MessageID)
-		delete(r.byAsyncId, old.AsyncId)
+		r.reg.removeLocked(old.AsyncId)
 		logger.Warn("PipeReadRegistry: replacing existing pending read",
 			"fileID", p.FileID,
 			"oldAsyncId", old.AsyncId)
 	}
-	r.byFileID[p.FileID] = p
-	r.byMessageID[p.MessageID] = p
-	r.byAsyncId[p.AsyncId] = p
-	r.mu.Unlock()
+	r.reg.insertLocked(p)
+	r.reg.mu.Unlock()
 
 	if displaced != nil && displaced.Callback != nil {
 		go func(pr *PendingPipeRead) {
@@ -69,63 +71,27 @@ func (r *PipeReadRegistry) Register(p *PendingPipeRead) {
 	}
 }
 
-// removeLocked deletes p from all three indexes. Caller must hold r.mu.
-func (r *PipeReadRegistry) removeLocked(p *PendingPipeRead) {
-	delete(r.byFileID, p.FileID)
-	delete(r.byMessageID, p.MessageID)
-	delete(r.byAsyncId, p.AsyncId)
-}
-
 // UnregisterByFileID removes and returns the pending read for the given FileID.
 // Returns nil if none is registered.
 func (r *PipeReadRegistry) UnregisterByFileID(fileID [16]byte) *PendingPipeRead {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	p, ok := r.byFileID[fileID]
-	if !ok {
-		return nil
-	}
-	r.removeLocked(p)
-	return p
+	return r.reg.unregisterByIndex(pipeIdxFileID, fileID)
 }
 
 // UnregisterByMessageID removes and returns the pending read with the given MessageID.
 // Returns nil if none is registered.
 func (r *PipeReadRegistry) UnregisterByMessageID(messageID uint64) *PendingPipeRead {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	p, ok := r.byMessageID[messageID]
-	if !ok {
-		return nil
-	}
-	r.removeLocked(p)
-	return p
+	return r.reg.unregisterByIndex(pipeIdxMessageID, messageID)
 }
 
 // UnregisterByAsyncId removes and returns the pending read with the given AsyncId.
 // Returns nil if none is registered.
 func (r *PipeReadRegistry) UnregisterByAsyncId(asyncId uint64) *PendingPipeRead {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	p, ok := r.byAsyncId[asyncId]
-	if !ok {
-		return nil
-	}
-	r.removeLocked(p)
-	return p
+	return r.reg.unregisterByAsyncID(asyncId)
 }
 
 // UnregisterAllForSession removes and returns all pending reads for the given session.
 func (r *PipeReadRegistry) UnregisterAllForSession(sessionID uint64) []*PendingPipeRead {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var result []*PendingPipeRead
-	for _, p := range r.byFileID {
-		if p.SessionID != sessionID {
-			continue
-		}
-		r.removeLocked(p)
-		result = append(result, p)
-	}
-	return result
+	return r.reg.unregisterMatching(func(p *PendingPipeRead) bool {
+		return p.SessionID == sessionID
+	})
 }

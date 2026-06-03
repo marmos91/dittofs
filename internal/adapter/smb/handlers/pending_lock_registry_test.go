@@ -128,7 +128,7 @@ func TestPendingLockRegistry_UnregisterAllForSession(t *testing.T) {
 
 func TestPendingLockRegistry_OverflowRejected(t *testing.T) {
 	r := NewPendingLockRegistry()
-	r.maxOps = 2
+	r.reg.maxOps = 2
 	_ = r.Register(newTestPendingLock(1, 10, 100, 1000, 50, nil))
 	_ = r.Register(newTestPendingLock(1, 10, 101, 1001, 50, nil))
 	overflow := newTestPendingLock(1, 10, 102, 1002, 50, nil)

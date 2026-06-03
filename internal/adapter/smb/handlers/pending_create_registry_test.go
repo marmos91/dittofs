@@ -163,7 +163,7 @@ func TestPendingCreateRegistry_RegisterRejectsDuplicateAsyncId(t *testing.T) {
 
 func TestPendingCreateRegistry_RegisterOverflow(t *testing.T) {
 	r := NewPendingCreateRegistry()
-	r.maxOps = 2 // shrink for test speed
+	r.reg.maxOps = 2 // shrink for test speed
 	var calls atomic.Int32
 
 	if err := r.Register(newTestPendingCreate(1, 1, 1, 1, &calls)); err != nil {
