@@ -1160,6 +1160,135 @@ func TestFreeStateid(t *testing.T) {
 		}
 	})
 
+	t.Run("free_one_lock_stateid_does_not_delete_shared_owner", func(t *testing.T) {
+		lm := lock.NewManager()
+		sm := NewStateManager(90 * time.Second)
+		sm.SetLockManager(lm)
+		defer sm.Shutdown()
+
+		// Two separate open states on two different files, same lock owner.
+		fh1 := []byte("fh-shared-owner-file1")
+		fh2 := []byte("fh-shared-owner-file2")
+		lockOwnerData := []byte("shared-lock-owner")
+		clientID := uint64(0)
+
+		open1, err := sm.OpenFile(clientID, []byte("open-owner"), 1, fh1,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile 1: %v", err)
+		}
+		conf1, err := sm.ConfirmOpen(&open1.Stateid, 2)
+		if err != nil {
+			t.Fatalf("ConfirmOpen 1: %v", err)
+		}
+
+		open2, err := sm.OpenFile(clientID, []byte("open-owner"), 3, fh2,
+			types.OPEN4_SHARE_ACCESS_BOTH, types.OPEN4_SHARE_DENY_NONE, types.CLAIM_NULL)
+		if err != nil {
+			t.Fatalf("OpenFile 2: %v", err)
+		}
+		// open2 uses a confirmed owner; no OPEN_CONFIRM needed.
+
+		// Acquire a lock on file1 with the shared lock owner.
+		lock1, err := sm.LockNew(
+			clientID, lockOwnerData, 1,
+			&conf1.Stateid, 4,
+			fh1, types.WRITE_LT, 0, 100, false,
+		)
+		if err != nil {
+			t.Fatalf("LockNew on fh1: %v", err)
+		}
+		if lock1.Denied != nil {
+			t.Fatal("unexpected conflict for lock on fh1")
+		}
+
+		// LOCKU to release the actual byte-range lock before FREE_STATEID.
+		_, err = sm.UnlockFile(&lock1.Stateid, 2, types.WRITE_LT, 0, 100)
+		if err != nil {
+			t.Fatalf("UnlockFile on fh1: %v", err)
+		}
+
+		// Acquire a lock on file2 with the SAME lock owner — this reuses the
+		// existing LockOwner entry in sm.lockOwners and creates a second LockState.
+		lock2, err := sm.LockNew(
+			clientID, lockOwnerData, 3,
+			&open2.Stateid, 5,
+			fh2, types.WRITE_LT, 0, 50, false,
+		)
+		if err != nil {
+			t.Fatalf("LockNew on fh2: %v", err)
+		}
+		if lock2.Denied != nil {
+			t.Fatal("unexpected conflict for lock on fh2")
+		}
+
+		// Confirm there are two LockState entries in lockStateByOther.
+		sm.mu.RLock()
+		lockStateCount := 0
+		loKey := makeLockOwnerKey(clientID, lockOwnerData)
+		owner, ownerExists := sm.lockOwners[loKey]
+		for _, ls := range sm.lockStateByOther {
+			if ls.LockOwner == owner {
+				lockStateCount++
+			}
+		}
+		sm.mu.RUnlock()
+		if !ownerExists {
+			t.Fatal("lock owner should exist before FREE_STATEID")
+		}
+		if lockStateCount != 2 {
+			t.Fatalf("expected 2 lock states for shared owner, got %d", lockStateCount)
+		}
+
+		// FREE_STATEID on the first lock stateid (already unlocked).
+		if err := sm.FreeStateid(clientID, &lock1.Stateid); err != nil {
+			t.Fatalf("FreeStateid lock1: %v", err)
+		}
+
+		// The lock owner MUST still be present — lock2's LockState still references it.
+		sm.mu.RLock()
+		_, ownerStillExists := sm.lockOwners[loKey]
+		sm.mu.RUnlock()
+		if !ownerStillExists {
+			t.Error("BUG: freeing one lock stateid must not delete the shared LockOwner " +
+				"while another LockState still references it")
+		}
+
+		// CacheLockOwnerResult must still work for the surviving owner.
+		sm.CacheLockOwnerResult(clientID, lockOwnerData, types.NFS4_OK, []byte("cached"))
+
+		sm.mu.RLock()
+		loKey2 := makeLockOwnerKey(clientID, lockOwnerData)
+		lo2, exists2 := sm.lockOwners[loKey2]
+		var cachedData []byte
+		if exists2 && lo2.LastResult != nil {
+			cachedData = lo2.LastResult.Data
+		}
+		sm.mu.RUnlock()
+		if !exists2 {
+			t.Fatal("lock owner not found after CacheLockOwnerResult")
+		}
+		if string(cachedData) != "cached" {
+			t.Errorf("cache not written: got %q, want %q", cachedData, "cached")
+		}
+
+		// Now LOCKU and FREE_STATEID the second stateid; owner should be deleted then.
+		_, err = sm.UnlockFile(&lock2.Stateid, 4, types.WRITE_LT, 0, 50)
+		if err != nil {
+			t.Fatalf("UnlockFile on fh2: %v", err)
+		}
+		if err := sm.FreeStateid(clientID, &lock2.Stateid); err != nil {
+			t.Fatalf("FreeStateid lock2: %v", err)
+		}
+
+		sm.mu.RLock()
+		_, ownerGone := sm.lockOwners[loKey]
+		sm.mu.RUnlock()
+		if ownerGone {
+			t.Error("lock owner should be deleted after its last LockState is freed")
+		}
+	})
+
 	t.Run("free_open_stateid", func(t *testing.T) {
 		sm := NewStateManager(90 * time.Second)
 		defer sm.Shutdown()
