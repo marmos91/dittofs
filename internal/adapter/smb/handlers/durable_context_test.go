@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -2369,4 +2371,101 @@ func TestReopen2_NegativeLadder_Preserved(t *testing.T) {
 			t.Errorf("lease handle, no lease ctx: got %s, want OBJECT_NAME_NOT_FOUND", status)
 		}
 	})
+}
+
+// TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle verifies that
+// ProcessAppInstanceId releases byte-range locks held by a persisted
+// (disconnected) durable handle when a new open with the same AppInstanceId
+// displaces it. Before the fix the call was UnlockAllForSession(0) which is
+// always a no-op for SMB locks (sessions never carry ID 0); the test fails
+// before the fix and passes after.
+func TestProcessAppInstanceId_ReleasesLocksOnPersistedHandle(t *testing.T) {
+	h, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	h.DurableStore = newMockDurableStore()
+	metaSvc := rt.GetMetadataService()
+
+	// Create the file that the persisted handle will reference and resolve its
+	// metadata handle (the lock key).
+	if _, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "locked.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	file, _, err := h.lookupCaseInsensitive(rootAuthCtx(), metaSvc, rootHandle, "locked.txt")
+	if err != nil || file == nil {
+		t.Fatalf("lookup locked.txt: file=%v err=%v", file, err)
+	}
+	fileHandle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	// Build an OriginalFileID that will be used as the lock's OpenID key.
+	origFileID := [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
+	openID := fmt.Sprintf("%x", origFileID)
+
+	// Acquire a byte-range lock as the disconnected open would have.
+	fl := metadata.FileLock{
+		SessionID:  42,
+		OpenID:     openID,
+		ClientID:   "smb:42",
+		Offset:     0,
+		Length:     1,
+		Exclusive:  true,
+		AcquiredAt: time.Now(),
+	}
+	if err := metaSvc.LockFile(rootAuthCtx(), fileHandle, fl); err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+
+	// Confirm the lock is recorded.
+	lm, err := metaSvc.GetLockManagerForHandle(fileHandle)
+	if err != nil {
+		t.Fatalf("GetLockManagerForHandle: %v", err)
+	}
+	if len(lm.ListLocks(string(fileHandle))) == 0 {
+		t.Fatal("setup: expected at least one lock before displacement")
+	}
+
+	// Build a persisted durable handle carrying the same AppInstanceId.
+	appID := [16]byte{0xAA, 0xBB, 0xCC, 0xDD}
+	// Volatile-zeroed FileID (as stored by buildPersistedDurableHandle).
+	persistedFileID := [16]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	mock := h.DurableStore.(*mockDurableStore)
+	_ = mock.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+		ID:             "test-handle",
+		FileID:         persistedFileID,
+		OriginalFileID: origFileID, // full FileID — lock owner key
+		MetadataHandle: fileHandle,
+		AppInstanceId:  appID,
+		ShareName:      smbCtx.ShareName,
+		Path:           "/locked.txt",
+		DisconnectedAt: time.Now(),
+		TimeoutMs:      60000,
+	})
+
+	// Build a new CREATE context carrying the same AppInstanceId.
+	appIDBytes := make([]byte, 20)
+	binary.LittleEndian.PutUint16(appIDBytes[0:2], 20) // StructureSize
+	copy(appIDBytes[4:20], appID[:])
+	newOpenCtxs := []CreateContext{
+		{Name: AppInstanceIdTag, Data: appIDBytes},
+	}
+
+	// Call ProcessAppInstanceId — this should displace the persisted handle
+	// and release its byte-range lock.
+	ProcessAppInstanceId(context.Background(), h.DurableStore, h, newOpenCtxs)
+
+	// The persisted handle must have been deleted.
+	remaining, _ := mock.GetDurableHandle(context.Background(), "test-handle")
+	if remaining != nil {
+		t.Error("persisted handle should have been deleted by ProcessAppInstanceId")
+	}
+
+	// The byte-range lock must have been released.
+	for _, l := range lm.ListLocks(string(fileHandle)) {
+		if l.OpenID == openID {
+			t.Errorf("lock under openID %q still present after ProcessAppInstanceId — UnlockAllForOpen not called correctly", openID)
+		}
+	}
 }

@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -23,6 +24,7 @@ type DurableHandleScavenger struct {
 	interval  time.Duration // scavenger tick interval
 	timeoutMs uint32        // default timeout for handles
 	startTime time.Time     // server start time for restart detection
+	inFlight  sync.Map      // in-flight handle IDs: LoadOrStore before cleanup, Delete after
 }
 
 // NewDurableHandleScavenger creates a new scavenger instance.
@@ -134,13 +136,24 @@ func (s *DurableHandleScavenger) expireHandles(ctx context.Context) {
 // cleanupAndDelete performs full cleanup for a durable handle (release locks,
 // flush caches), then deletes it from the store.
 func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.PersistedDurableHandle) {
+	if _, loaded := s.inFlight.LoadOrStore(h.ID, struct{}{}); loaded {
+		// Another goroutine is already cleaning up this handle; skip to avoid
+		// double side-effects (double unlock, double flush, double delete-on-close).
+		return
+	}
+	defer s.inFlight.Delete(h.ID)
+
 	if s.handler != nil && s.handler.Registry != nil {
 		metaSvc := s.handler.Registry.GetMetadataService()
 
 		// Release byte-range locks
 		if metaSvc != nil && len(h.MetadataHandle) > 0 {
-			// Use session ID 0 to indicate scavenger cleanup (not tied to a session)
-			if err := metaSvc.UnlockAllForSession(ctx, h.MetadataHandle, 0); err != nil {
+			fileID := h.OriginalFileID
+			if fileID == ([16]byte{}) {
+				fileID = h.FileID
+			}
+			openID := fmt.Sprintf("%x", fileID)
+			if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, openID); err != nil {
 				logger.Debug("DurableHandleScavenger: failed to release locks",
 					"id", h.ID, "path", h.Path, "error", err)
 			}

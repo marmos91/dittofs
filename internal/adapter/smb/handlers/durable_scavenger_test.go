@@ -3,10 +3,13 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -14,6 +17,15 @@ import (
 type mockDurableStore struct {
 	mu      sync.RWMutex
 	handles map[string]*lock.PersistedDurableHandle
+
+	// deleteCalls counts the number of DeleteDurableHandle invocations (across
+	// all IDs). Used to assert that a single handle's cleanup side-effects do
+	// not run twice under concurrent callers.
+	deleteCalls atomic.Int32
+	// deleteDelay, if set, makes DeleteDurableHandle sleep before mutating the
+	// map. This widens the window in which two concurrent cleanupAndDelete
+	// callers can interleave, so the in-flight gate is actually exercised.
+	deleteDelay time.Duration
 }
 
 func newMockDurableStore() *mockDurableStore {
@@ -104,6 +116,10 @@ func (s *mockDurableStore) GetDurableHandlesByFileHandle(_ context.Context, fh [
 }
 
 func (s *mockDurableStore) DeleteDurableHandle(_ context.Context, id string) error {
+	s.deleteCalls.Add(1)
+	if s.deleteDelay > 0 {
+		time.Sleep(s.deleteDelay)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.handles, id)
@@ -394,5 +410,136 @@ func TestScavengerHandleConflictingOpen(t *testing.T) {
 	h, _ := store.GetDurableHandle(context.Background(), "orphaned")
 	if h != nil {
 		t.Fatal("expected orphaned handle to be removed after conflicting open")
+	}
+}
+
+// TestScavengerCleanupReleasesLocks verifies that cleanupAndDelete releases
+// byte-range locks held by an expired durable handle using UnlockAllForOpen
+// keyed on OriginalFileID, not the sessionID=0 no-op.
+func TestScavengerCleanupReleasesLocks(t *testing.T) {
+	handler, rt, smbCtx, rootHandle, rootAuth := setupDaclTest(t)
+	store := newMockDurableStore()
+	metaSvc := rt.GetMetadataService()
+
+	if _, _, err := metaSvc.CreateFile(rootAuth, rootHandle, "scav.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644}); err != nil {
+		t.Fatalf("CreateFile: %v", err)
+	}
+	file, _, err := handler.lookupCaseInsensitive(rootAuthCtx(), metaSvc, rootHandle, "scav.txt")
+	if err != nil || file == nil {
+		t.Fatalf("lookup scav.txt: file=%v err=%v", file, err)
+	}
+	fileHandle, err := metadata.EncodeFileHandle(file)
+	if err != nil {
+		t.Fatalf("EncodeFileHandle: %v", err)
+	}
+
+	origFileID := [16]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+		0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00}
+	openID := fmt.Sprintf("%x", origFileID)
+
+	fl := metadata.FileLock{
+		SessionID:  99,
+		OpenID:     openID,
+		ClientID:   "smb:99",
+		Offset:     0,
+		Length:     512,
+		Exclusive:  true,
+		AcquiredAt: time.Now(),
+	}
+	if err := metaSvc.LockFile(rootAuthCtx(), fileHandle, fl); err != nil {
+		t.Fatalf("LockFile: %v", err)
+	}
+
+	persistedFileID := [16]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	now := time.Now()
+	expired := &lock.PersistedDurableHandle{
+		ID:              "scav-expired",
+		FileID:          persistedFileID,
+		OriginalFileID:  origFileID,
+		MetadataHandle:  fileHandle,
+		ShareName:       smbCtx.ShareName,
+		Path:            "/scav.txt",
+		DisconnectedAt:  now.Add(-2 * time.Second),
+		TimeoutMs:       1000,
+		ServerStartTime: now,
+	}
+	_ = store.PutDurableHandle(context.Background(), expired)
+
+	scavenger := NewDurableHandleScavenger(store, handler, 50*time.Millisecond, 60000, now)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		scavenger.Run(ctx)
+		close(done)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+
+	lm, err := metaSvc.GetLockManagerForHandle(fileHandle)
+	if err != nil {
+		t.Fatalf("GetLockManagerForHandle: %v", err)
+	}
+	for _, l := range lm.ListLocks(string(fileHandle)) {
+		if l.OpenID == openID {
+			t.Errorf("lock under openID %q still held after scavenger expiry — cleanupAndDelete did not release it", openID)
+		}
+	}
+}
+
+// TestCleanupAndDelete_ConcurrentCallersOnSameHandle proves that when two
+// callers (e.g. the ticker via expireHandles and the REST force-close via
+// ForceExpireDurableHandle) target the same handle simultaneously, the
+// cleanup side-effects run exactly once. Without the in-flight gate, both
+// goroutines observe the handle as present and each performs the full
+// cleanup-and-delete, double-executing unlock/flush/delete-on-close.
+func TestCleanupAndDelete_ConcurrentCallersOnSameHandle(t *testing.T) {
+	store := newMockDurableStore()
+	// Widen the interleaving window so both callers are inside
+	// cleanupAndDelete at the same time before either deletes the record.
+	store.deleteDelay = 20 * time.Millisecond
+	now := time.Now()
+
+	// An already-expired handle so expireHandles also targets it.
+	_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
+		ID:              "dup-1",
+		Path:            "/dup/file",
+		ShareName:       "share",
+		DisconnectedAt:  now.Add(-5 * time.Second),
+		TimeoutMs:       1000,
+		ServerStartTime: now,
+	})
+
+	scavenger := NewDurableHandleScavenger(store, nil, 1*time.Hour, 1000, now)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Caller A: REST force-close path.
+	go func() {
+		defer wg.Done()
+		_ = scavenger.ForceExpireDurableHandle(context.Background(), "dup-1")
+	}()
+
+	// Caller B: ticker path. expireHandles reads the (still-present) handle
+	// and calls cleanupAndDelete concurrently with caller A.
+	go func() {
+		defer wg.Done()
+		scavenger.expireHandles(context.Background())
+	}()
+
+	wg.Wait()
+
+	// The handle must be gone regardless of which caller won the race.
+	if store.count() != 0 {
+		t.Fatalf("expected 0 handles after concurrent cleanup, got %d", store.count())
+	}
+
+	// The decisive assertion: the delete (and therefore the full cleanup
+	// body) must have executed exactly once. Before the in-flight gate this
+	// is 2; with the gate it is 1.
+	if got := store.deleteCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 DeleteDurableHandle call, got %d (side-effects ran more than once)", got)
 	}
 }
