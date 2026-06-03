@@ -517,21 +517,27 @@ func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, fir
 		if i == 0 {
 			opCode = firstOpCode
 		} else {
-			// Check context cancellation between operations
-			select {
-			case <-compCtx.Context.Done():
+			// Check context cancellation between operations. Mirror the
+			// SEQUENCE-bearing path (dispatchV41): instead of returning a bare
+			// error (which makes the RPC layer drop the reply and reset the
+			// connection), encode a partial response with NFS4ERR_DELAY so the
+			// client receives a well-formed reply and can retry.
+			if compCtx.Context.Err() != nil {
 				logger.Debug("NFSv4.1 COMPOUND cancelled between ops",
 					"op_index", i,
 					"total_ops", numOps,
 					"client", compCtx.ClientAddr)
-				return nil, compCtx.Context.Err()
-			default:
+				lastStatus = types.NFS4ERR_DELAY
+				break
 			}
 
+			// Read operation code. On decode error, encode the partial response
+			// gathered so far rather than dropping the reply.
 			var err error
 			opCode, err = xdr.DecodeUint32(reader)
 			if err != nil {
-				return nil, fmt.Errorf("decode v4.1 op %d opcode: %w", i, err)
+				lastStatus = types.NFS4ERR_BADXDR
+				break
 			}
 		}
 
