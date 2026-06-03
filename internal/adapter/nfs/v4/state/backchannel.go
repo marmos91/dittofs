@@ -146,6 +146,12 @@ type BackchannelSender struct {
 
 	nextXID atomic.Uint32
 
+	// nextCBSeqID is the per-slot CB_SEQUENCE seqID counter (RFC 8881
+	// §2.10.6.1). It is independent of nextXID: the backchannel uses a single
+	// slot, so a single monotonic counter incrementing by exactly 1 per send
+	// is correct. Zero-value starts at 0, giving first seqID=1 on first Add(1).
+	nextCBSeqID atomic.Uint32
+
 	callbackTimeout time.Duration
 }
 
@@ -267,7 +273,7 @@ func (bs *BackchannelSender) sendCallbackWithRetry(ctx context.Context, req Call
 // sendCallback is the core send logic for a single callback attempt.
 func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackRequest) error {
 	// 1. Allocate slot 0 with monotonic seqid (simplified EOS)
-	seqID := bs.nextXID.Add(1)
+	seqID := bs.nextCBSeqID.Add(1)
 	slotID := uint32(0)
 	highestSlotID := uint32(0)
 	if bs.slotTable != nil {

@@ -385,12 +385,88 @@ func TestBackchannelSender_SequenceIDIncrement(t *testing.T) {
 	}()
 	seqID2 := readAndReply()
 
-	// The seqID should be different and increasing between calls
-	if seqID1 == seqID2 {
-		t.Errorf("seqID should increment between callbacks: seqID1=%d, seqID2=%d", seqID1, seqID2)
+	// RFC 8881 §2.10.6.1: CB_SEQUENCE seqID must increment by exactly 1 per send.
+	if seqID2 != seqID1+1 {
+		t.Errorf("CB_SEQUENCE seqID must increment by exactly 1: seqID1=%d seqID2=%d (want %d)", seqID1, seqID2, seqID1+1)
 	}
-	if seqID2 <= seqID1 {
-		t.Errorf("seqID should increase: seqID1=%d, seqID2=%d", seqID1, seqID2)
+}
+
+// TestBackchannelSender_SeqIDAndXIDAreIndependent proves the CB_SEQUENCE seqID
+// counter and the RPC XID counter are fully decoupled. A shared counter (the
+// prior bug) made CB_SEQUENCE seqIDs skip by 2, violating RFC 8881 §2.10.6.1.
+func TestBackchannelSender_SeqIDAndXIDAreIndependent(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+
+	// Pre-skew the XID counter to prove the two counters diverge and do not
+	// share state: after this, XIDs start at 6 while CB seqIDs still start at 1.
+	sender.nextXID.Add(5)
+
+	clientConn, serverConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = serverConn.Close() }()
+
+	connID := uint64(4100)
+	pending := sm.RegisterConnWriter(connID, func(data []byte) error {
+		_, err := serverConn.Write(data)
+		return err
+	})
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+
+	// Helper to read one CB_COMPOUND frame and extract both the RPC XID and the
+	// CB_SEQUENCE seqID, then deliver a mock reply.
+	readAndReply := func() (xid, seqID uint32) {
+		var headerBuf [4]byte
+		if _, err := io.ReadFull(clientConn, headerBuf[:]); err != nil {
+			t.Fatalf("read header: %v", err)
+		}
+		header := binary.BigEndian.Uint32(headerBuf[:])
+		fragLen := header & 0x7FFFFFFF
+		body := make([]byte, fragLen)
+		if _, err := io.ReadFull(clientConn, body); err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if len(body) < 60+16+4 {
+			t.Fatalf("body too short: %d bytes", len(body))
+		}
+		xid = binary.BigEndian.Uint32(body[0:4])
+		seqID = binary.BigEndian.Uint32(body[60+16 : 60+16+4])
+
+		pending.Deliver(xid, buildMockCBCompoundReplyBody(xid))
+		return xid, seqID
+	}
+
+	go func() {
+		recallOp := EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01})
+		_ = sender.sendCallback(context.Background(), CallbackRequest{
+			OpCode:  types.OP_CB_RECALL,
+			Payload: recallOp,
+		})
+	}()
+	xid1, seqID1 := readAndReply()
+
+	go func() {
+		recallOp := EncodeCBRecallOp(&types.Stateid4{Seqid: 2}, false, []byte{0x02})
+		_ = sender.sendCallback(context.Background(), CallbackRequest{
+			OpCode:  types.OP_CB_RECALL,
+			Payload: recallOp,
+		})
+	}()
+	xid2, seqID2 := readAndReply()
+
+	// CB_SEQUENCE seqID increments by exactly 1, independent of XID activity.
+	if seqID2 != seqID1+1 {
+		t.Errorf("CB_SEQUENCE seqID must increment by exactly 1: seqID1=%d seqID2=%d (want %d)", seqID1, seqID2, seqID1+1)
+	}
+	// RPC XID increments by exactly 1, independently.
+	if xid2 != xid1+1 {
+		t.Errorf("RPC XID must increment by exactly 1: xid1=%d xid2=%d (want %d)", xid1, xid2, xid1+1)
+	}
+	// The two counters are genuinely independent: with the XID pre-skewed, the
+	// first XID and first seqID must not coincide.
+	if xid1 == seqID1 {
+		t.Errorf("seqID and XID counters must be independent: xid1=%d seqID1=%d", xid1, seqID1)
 	}
 }
 
