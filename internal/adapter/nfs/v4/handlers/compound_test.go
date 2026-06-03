@@ -2458,3 +2458,131 @@ func encodeGetAttrArgsForCancel() []byte {
 	_ = xdr.WriteUint32(&buf, 0) // bitmap length = 0
 	return buf.Bytes()
 }
+
+// ============================================================================
+// Unified COMPOUND dispatch (dispatchOne / runCompoundOps)
+// ============================================================================
+
+// TestCompound_V40_CancelledContext_EncodesPartialReply verifies the v4.0 loop
+// (which has no SEQUENCE/slot cache) still encodes a partial NFS4ERR_DELAY reply
+// on cancellation between ops, rather than dropping the reply. This mirrors the
+// v4.1 cancel behavior now that both share runCompoundOps.
+func TestCompound_V40_CancelledContext_EncodesPartialReply(t *testing.T) {
+	h := newTestHandler()
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	// op0 succeeds and cancels the context; the cancel is then observed at the
+	// op1 boundary (before GETATTR dispatches), so op0's result is preserved.
+	h.opDispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+		cancel()
+		return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_PUTROOTFH, Data: encodeStatusOnly(types.NFS4_OK)}
+	}
+
+	ctx := &types.CompoundContext{Context: cancelCtx, ClientAddr: "127.0.0.1:12345"}
+
+	data := buildCompoundArgs([]byte("v40-cxl"), 0, []uint32{types.OP_PUTROOTFH, types.OP_GETATTR})
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound returned error (reply would be dropped): %v", err)
+	}
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode response error: %v", err)
+	}
+	if decoded.Status != types.NFS4ERR_DELAY {
+		t.Errorf("status = %d, want NFS4ERR_DELAY (%d)", decoded.Status, types.NFS4ERR_DELAY)
+	}
+	if decoded.NumResults != 1 {
+		t.Errorf("numResults = %d, want 1 (only op0 dispatched before cancel)", decoded.NumResults)
+	}
+}
+
+// TestCompound_V40_IllegalVsNotSupp verifies dispatchOne's v4.0 opcode-range
+// classification: an opcode just past the v4.0 range (OP_RELEASE_LOCKOWNER) is
+// illegal, while a valid-but-unhandled v4.0 opcode is NOTSUPP.
+func TestCompound_V40_IllegalVsNotSupp(t *testing.T) {
+	h := newTestHandler()
+	ctx := newTestCompoundContext()
+
+	// OP_BIND_CONN_TO_SESSION (41) is > OP_RELEASE_LOCKOWNER (39) → illegal in v4.0.
+	data := buildCompoundArgs([]byte("v40-illegal"), 0, []uint32{types.OP_BIND_CONN_TO_SESSION})
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+	decoded, err := decodeCompoundResponse(resp)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if decoded.Status != types.NFS4ERR_OP_ILLEGAL {
+		t.Errorf("opcode > v4.0 range: status = %d, want NFS4ERR_OP_ILLEGAL (%d)", decoded.Status, types.NFS4ERR_OP_ILLEGAL)
+	}
+	if decoded.NumResults != 1 || decoded.Results[0].OpCode != types.OP_ILLEGAL {
+		t.Errorf("illegal result opcode = %v, want OP_ILLEGAL", decoded.Results)
+	}
+}
+
+// TestCompound_DispatchOne_MinorVersionRouting verifies the unified dispatchOne
+// applies the right per-minor-version semantics: a v4.0-only op (SETCLIENTID)
+// is dispatched normally under v4.0 but rejected with NOTSUPP under v4.1; and a
+// handler registered only in the v4.1 table is reached only when isV41=true.
+func TestCompound_DispatchOne_MinorVersionRouting(t *testing.T) {
+	t.Run("v4.0-only op rejected under v4.1", func(t *testing.T) {
+		h := newTestHandler()
+		// Register a v4.0 SETCLIENTID handler that, if reached, would succeed.
+		h.opDispatchTable[types.OP_SETCLIENTID] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+			return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_SETCLIENTID, Data: encodeStatusOnly(types.NFS4_OK)}
+		}
+		ctx := newTestCompoundContext()
+
+		// Under v4.0 the op dispatches to the registered handler.
+		args := encodeSetClientIDArgsForReject()
+		if res := h.dispatchOne(ctx, nil, types.OP_SETCLIENTID, bytes.NewReader(args), false); res.Status != types.NFS4_OK {
+			t.Errorf("v4.0 SETCLIENTID status = %d, want NFS4_OK", res.Status)
+		}
+
+		// Under v4.1 the same op is rejected with NOTSUPP (args consumed).
+		if res := h.dispatchOne(ctx, nil, types.OP_SETCLIENTID, bytes.NewReader(args), true); res.Status != types.NFS4ERR_NOTSUPP {
+			t.Errorf("v4.1 SETCLIENTID status = %d, want NFS4ERR_NOTSUPP (%d)", res.Status, types.NFS4ERR_NOTSUPP)
+		}
+	})
+
+	t.Run("v4.1-only handler reached only under v4.1", func(t *testing.T) {
+		h := newTestHandler()
+		const probeOp = types.OP_RECLAIM_COMPLETE
+		var reached bool
+		h.v41DispatchTable[probeOp] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+			reached = true
+			return &types.CompoundResult{Status: types.NFS4_OK, OpCode: probeOp, Data: encodeStatusOnly(types.NFS4_OK)}
+		}
+		// Ensure no v4.0 table entry shadows it.
+		delete(h.opDispatchTable, probeOp)
+		ctx := newTestCompoundContext()
+
+		// Under v4.0 the v4.1 table is not consulted → handler not reached.
+		reached = false
+		if res := h.dispatchOne(ctx, nil, probeOp, bytes.NewReader(nil), false); reached {
+			t.Errorf("v4.0 must not reach v4.1 handler (status=%d)", res.Status)
+		}
+
+		// Under v4.1 the handler is reached.
+		reached = false
+		if res := h.dispatchOne(ctx, nil, probeOp, bytes.NewReader(nil), true); !reached || res.Status != types.NFS4_OK {
+			t.Errorf("v4.1 must reach v4.1 handler: reached=%v status=%d", reached, res.Status)
+		}
+	})
+}
+
+// encodeSetClientIDArgsForReject builds minimal valid SETCLIENTID args so the
+// v4.0-only rejection path can consume them without a stream-desync error.
+func encodeSetClientIDArgsForReject() []byte {
+	var buf bytes.Buffer
+	var verifier [8]byte
+	_, _ = buf.Write(verifier[:])               // verifier (8 bytes)
+	_ = xdr.WriteXDROpaque(&buf, []byte("cid")) // client id string
+	_ = xdr.WriteUint32(&buf, 0)                // cb_program
+	_ = xdr.WriteXDROpaque(&buf, []byte("tcp")) // netid
+	_ = xdr.WriteXDROpaque(&buf, []byte("a"))   // addr
+	_ = xdr.WriteUint32(&buf, 0)                // callback_ident
+	return buf.Bytes()
+}

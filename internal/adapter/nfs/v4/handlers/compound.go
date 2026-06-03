@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 
@@ -108,6 +107,152 @@ func rejectV40OnlyOp(opCode uint32, reader io.Reader, clientAddr string) *types.
 	return notSuppHandler(opCode)
 }
 
+// dispatchOne resolves and runs a single COMPOUND operation, returning its
+// result. It is the single op-dispatch decision shared by the v4.0 and v4.1
+// loops (mirroring the single op-table + loop structure of the Linux nfsd
+// COMPOUND processor).
+//
+// isV41 selects v4.1 dispatch semantics, which differ from v4.0 in three ways:
+//   - v4.0-only operations (SETCLIENTID, RENEW, …) are rejected with NOTSUPP
+//     after consuming their args (v4.0 has no such concept).
+//   - the v4.1 dispatch table is consulted before the shared v4.0 table.
+//   - the "valid but unimplemented" opcode range extends through
+//     OP_RECLAIM_COMPLETE (v4.1) instead of OP_RELEASE_LOCKOWNER (v4.0).
+//
+// v41ctx carries the per-request v4.1 session context and is nil for the
+// exempt-op path (e.g. EXCHANGE_ID before any SEQUENCE); it is only passed to
+// v4.1 handlers, which tolerate a nil context for exempt ops.
+//
+// The returned result always has OpCode set (defaulting to the dispatched
+// opCode when a handler left it zero).
+func (h *Handler) dispatchOne(compCtx *types.CompoundContext, v41ctx *types.V41RequestContext, opCode uint32, reader io.Reader, isV41 bool) *types.CompoundResult {
+	// Adapter-level operation blocklist: blocked ops return NOTSUPP.
+	if h.IsOperationBlocked(opCode) {
+		logger.Debug("NFSv4 COMPOUND op blocked by adapter settings",
+			"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
+		result := notSuppHandler(opCode)
+		result.OpCode = opCode
+		return result
+	}
+
+	var result *types.CompoundResult
+	switch {
+	case isV41 && v40OnlyOps[opCode]:
+		result = rejectV40OnlyOp(opCode, reader, compCtx.ClientAddr)
+
+	case isV41 && h.v41DispatchTable[opCode] != nil:
+		result = h.v41DispatchTable[opCode](compCtx, v41ctx, reader)
+
+	case h.opDispatchTable[opCode] != nil:
+		result = h.opDispatchTable[opCode](compCtx, reader)
+
+	case opCode >= 3 && opCode <= h.maxValidOpCode(isV41):
+		// Valid operation number for this minor version but not implemented.
+		result = notSuppHandler(opCode)
+
+	default:
+		// Truly illegal operation number.
+		result = &types.CompoundResult{
+			Status: types.NFS4ERR_OP_ILLEGAL,
+			OpCode: types.OP_ILLEGAL,
+			Data:   encodeStatusOnly(types.NFS4ERR_OP_ILLEGAL),
+		}
+	}
+
+	if result.OpCode == 0 && opCode != 0 {
+		result.OpCode = opCode
+	}
+	return result
+}
+
+// maxValidOpCode returns the highest opcode that is a valid operation number
+// for the active minor version (used to distinguish "valid but unimplemented"
+// from "illegal opcode").
+func (h *Handler) maxValidOpCode(isV41 bool) uint32 {
+	if isV41 {
+		return types.OP_RECLAIM_COMPLETE
+	}
+	return types.OP_RELEASE_LOCKOWNER
+}
+
+// compoundLoopParams configures runCompoundOps for a specific COMPOUND variant.
+type compoundLoopParams struct {
+	// isV41 selects v4.1 dispatch semantics in dispatchOne.
+	isV41 bool
+	// v41ctx is the per-request v4.1 session context (nil for v4.0 and for the
+	// v4.1 exempt-op path).
+	v41ctx *types.V41RequestContext
+	// firstOpCode, when hasFirstOpCode is set, is an opcode already read from
+	// the reader and dispatched as the first iteration (the exempt-op path
+	// peeks the first opcode before deciding how to dispatch).
+	firstOpCode    uint32
+	hasFirstOpCode bool
+	// startIndex is the op index the loop starts at (1 for the SEQUENCE-bearing
+	// v4.1 path, which has already produced the SEQUENCE result).
+	startIndex uint32
+	// hardErrOnDecodeError controls opcode-decode failure handling: v4.0 returns
+	// the error (the RPC layer faults the call); the v4.1 paths instead encode a
+	// partial NFS4ERR_BADXDR reply so completed-op results are preserved and the
+	// slot is cached (the merged cancel/partial-reply fix).
+	hardErrOnDecodeError bool
+}
+
+// runCompoundOps is the single COMPOUND operation loop shared by the v4.0 and
+// v4.1 dispatchers. It appends each op's result to results, stops on the first
+// non-OK status (RFC 7530 §16.2) or on cancellation (encoding NFS4ERR_DELAY),
+// and returns the accumulated results, the last status, and a fatal error
+// (non-nil only when hardErrOnDecodeError is set and an opcode fails to decode).
+func (h *Handler) runCompoundOps(compCtx *types.CompoundContext, numOps uint32, reader io.Reader, p compoundLoopParams) ([]types.CompoundResult, uint32, error) {
+	results := make([]types.CompoundResult, 0, int(numOps))
+	lastStatus := uint32(types.NFS4_OK)
+
+	for i := p.startIndex; i < numOps; i++ {
+		var opCode uint32
+		if p.hasFirstOpCode && i == p.startIndex {
+			opCode = p.firstOpCode
+		} else {
+			// Check context cancellation between operations. Encode a partial
+			// response with NFS4ERR_DELAY (rather than returning a bare error,
+			// which would make the RPC layer drop the reply and reset the
+			// connection) so the client receives a well-formed reply and can
+			// retry — and, on the v4.1 path, so the slot reply is cached.
+			if compCtx.Context.Err() != nil {
+				logger.Debug("NFSv4 COMPOUND cancelled between ops",
+					"op_index", i, "total_ops", numOps, "client", compCtx.ClientAddr)
+				lastStatus = types.NFS4ERR_DELAY
+				break
+			}
+
+			var err error
+			opCode, err = xdr.DecodeUint32(reader)
+			if err != nil {
+				if p.hardErrOnDecodeError {
+					return nil, 0, fmt.Errorf("decode op %d opcode: %w", i, err)
+				}
+				lastStatus = types.NFS4ERR_BADXDR
+				break
+			}
+		}
+
+		result := h.dispatchOne(compCtx, p.v41ctx, opCode, reader, p.isV41)
+		results = append(results, *result)
+		lastStatus = result.Status
+
+		logger.Debug("NFSv4 COMPOUND op dispatched",
+			"op_index", i, "opcode", opCode, "op_name", types.OpName(opCode),
+			"status", result.Status, "client", compCtx.ClientAddr)
+
+		if result.Status != types.NFS4_OK {
+			logger.Debug("NFSv4 COMPOUND op failed, stopping",
+				"op_index", i, "opcode", opCode, "op_name", types.OpName(opCode),
+				"status", result.Status, "client", compCtx.ClientAddr)
+			break
+		}
+	}
+
+	return results, lastStatus, nil
+}
+
 // ProcessCompound is the main NFSv4 COMPOUND dispatcher.
 //
 // Per RFC 7530 Section 16.2, COMPOUND bundles multiple operations into a single
@@ -204,92 +349,15 @@ func (h *Handler) dispatchV40(compCtx *types.CompoundContext, tag []byte, numOps
 		return encodeCompoundResponse(types.NFS4ERR_RESOURCE, tag, nil)
 	}
 
-	// Sequential dispatch loop
-	results := make([]types.CompoundResult, 0, int(numOps))
-	var lastStatus uint32 = types.NFS4_OK
-
-	for i := uint32(0); i < numOps; i++ {
-		// Check context cancellation between operations.
-		// Instead of returning an error (which would cause the RPC layer to
-		// silently drop the reply, hanging the client), encode a partial
-		// response with NFS4ERR_DELAY so the client can retry.
-		if compCtx.Context.Err() != nil {
-			logger.Debug("NFSv4 COMPOUND cancelled between ops",
-				"op_index", i,
-				"total_ops", numOps,
-				"client", compCtx.ClientAddr)
-			lastStatus = types.NFS4ERR_DELAY
-			break
-		}
-
-		// Read operation code
-		opCode, err := xdr.DecodeUint32(reader)
-		if err != nil {
-			return nil, fmt.Errorf("decode op %d opcode: %w", i, err)
-		}
-
-		// Check adapter-level operation blocklist before dispatch.
-		// Blocked operations return NFS4ERR_NOTSUPP per locked decision.
-		if h.IsOperationBlocked(opCode) {
-			logger.Debug("NFSv4 COMPOUND op blocked by adapter settings",
-				"op_index", i,
-				"opcode", opCode,
-				"op_name", types.OpName(opCode),
-				"client", compCtx.ClientAddr)
-
-			result := notSuppHandler(opCode)
-			result.OpCode = opCode
-			results = append(results, *result)
-			lastStatus = result.Status
-			break
-		}
-
-		// Dispatch to v4.0 handler
-		var result *types.CompoundResult
-		handler, ok := h.opDispatchTable[opCode]
-		if ok {
-			result = handler(compCtx, reader)
-		} else {
-			// Unknown opcode: check if it's in the valid v4.0 range (3-39)
-			// or truly illegal/unknown
-			if opCode < 3 || opCode > types.OP_RELEASE_LOCKOWNER {
-				// Truly illegal operation number
-				result = &types.CompoundResult{
-					Status: types.NFS4ERR_OP_ILLEGAL,
-					OpCode: types.OP_ILLEGAL,
-					Data:   encodeStatusOnly(types.NFS4ERR_OP_ILLEGAL),
-				}
-			} else {
-				// Valid v4.0 operation number but not yet implemented
-				result = notSuppHandler(opCode)
-			}
-		}
-
-		// Set the opcode on the result (in case handler didn't set it)
-		if result.OpCode == 0 && opCode != 0 {
-			result.OpCode = opCode
-		}
-
-		results = append(results, *result)
-		lastStatus = result.Status
-
-		// Log every operation for debugging
-		logger.Debug("NFSv4 COMPOUND op dispatched",
-			"op_index", i,
-			"opcode", opCode,
-			"op_name", types.OpName(opCode),
-			"status", result.Status,
-			"client", compCtx.ClientAddr)
-
-		if result.Status != types.NFS4_OK {
-			logger.Debug("NFSv4 COMPOUND op failed, stopping",
-				"op_index", i,
-				"opcode", opCode,
-				"op_name", types.OpName(opCode),
-				"status", result.Status,
-				"client", compCtx.ClientAddr)
-			break
-		}
+	// v4.0 has no SEQUENCE/replay cache, so an opcode that fails to decode is a
+	// fatal protocol error (hardErrOnDecodeError) rather than a cached partial
+	// reply.
+	results, lastStatus, err := h.runCompoundOps(compCtx, numOps, reader, compoundLoopParams{
+		isV41:                false,
+		hardErrOnDecodeError: true,
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return encodeCompoundResponse(lastStatus, tag, results)
@@ -405,93 +473,21 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 		return encoded, nil
 	}
 
-	// Build results starting with SEQUENCE result
-	results := make([]types.CompoundResult, 0, int(numOps))
+	// Dispatch the remaining ops (the SEQUENCE result is prepended below).
+	// startIndex=1 because op 0 was SEQUENCE. Decode errors encode a partial
+	// reply (hardErrOnDecodeError=false) so the defer still caches the slot
+	// response, preserving replay semantics for the ops that did complete.
+	opResults, lastStatus, _ := h.runCompoundOps(compCtx, numOps, reader, compoundLoopParams{
+		isV41:                true,
+		v41ctx:               v41ctx,
+		startIndex:           1,
+		hardErrOnDecodeError: false,
+	})
+
+	// Build results starting with the SEQUENCE result.
+	results := make([]types.CompoundResult, 0, len(opResults)+1)
 	results = append(results, *seqResult)
-	var lastStatus uint32 = types.NFS4_OK
-
-	// Dispatch remaining ops (numOps - 1)
-	for i := uint32(1); i < numOps; i++ {
-		// Check context cancellation between operations.
-		// Instead of returning an error (which would skip slot caching and break
-		// replay semantics), encode the partial response so the defer caches it.
-		if compCtx.Context.Err() != nil {
-			logger.Debug("NFSv4.1 COMPOUND cancelled between ops",
-				"op_index", i,
-				"total_ops", numOps,
-				"client", compCtx.ClientAddr)
-			lastStatus = types.NFS4ERR_DELAY
-			break
-		}
-
-		// Read operation code. On decode error, encode partial response so the
-		// defer caches it (preserving replay semantics for completed ops).
-		opCode, err := xdr.DecodeUint32(reader)
-		if err != nil {
-			lastStatus = types.NFS4ERR_BADXDR
-			break
-		}
-
-		// Check adapter-level operation blocklist before dispatch.
-		if h.IsOperationBlocked(opCode) {
-			logger.Debug("NFSv4.1 COMPOUND op blocked by adapter settings",
-				"op_index", i,
-				"opcode", opCode,
-				"op_name", types.OpName(opCode),
-				"client", compCtx.ClientAddr)
-
-			result := notSuppHandler(opCode)
-			result.OpCode = opCode
-			results = append(results, *result)
-			lastStatus = result.Status
-			break
-		}
-
-		// Dispatch: reject v4.0-only, then v4.1 table, then v4.0 fallback.
-		var result *types.CompoundResult
-
-		if v40OnlyOps[opCode] {
-			result = rejectV40OnlyOp(opCode, reader, compCtx.ClientAddr)
-		} else if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
-			result = v41Handler(compCtx, v41ctx, reader)
-		} else if v40Handler, ok := h.opDispatchTable[opCode]; ok {
-			result = v40Handler(compCtx, reader)
-		} else if opCode >= 3 && opCode <= types.OP_RECLAIM_COMPLETE {
-			result = notSuppHandler(opCode)
-		} else {
-			result = &types.CompoundResult{
-				Status: types.NFS4ERR_OP_ILLEGAL,
-				OpCode: types.OP_ILLEGAL,
-				Data:   encodeStatusOnly(types.NFS4ERR_OP_ILLEGAL),
-			}
-		}
-
-		if result.OpCode == 0 && opCode != 0 {
-			result.OpCode = opCode
-		}
-
-		results = append(results, *result)
-		lastStatus = result.Status
-
-		logger.Debug("NFSv4.1 COMPOUND op dispatched",
-			"op_index", i,
-			"opcode", opCode,
-			"op_name", types.OpName(opCode),
-			"status", result.Status,
-			"session_id", hex.EncodeToString(v41ctx.SessionID[:]),
-			"slot", v41ctx.SlotID,
-			"client", compCtx.ClientAddr)
-
-		if result.Status != types.NFS4_OK {
-			logger.Debug("NFSv4.1 COMPOUND op failed, stopping",
-				"op_index", i,
-				"opcode", opCode,
-				"op_name", types.OpName(opCode),
-				"status", result.Status,
-				"client", compCtx.ClientAddr)
-			break
-		}
-	}
+	results = append(results, opResults...)
 
 	encoded, encErr := encodeCompoundResponse(lastStatus, tag, results)
 	if encErr != nil {
@@ -504,101 +500,18 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	return encoded, nil
 }
 
-// dispatchV41Ops dispatches a v4.1 COMPOUND starting from firstOpCode.
-// Used for both exempt ops (v41ctx=nil) and could be used after SEQUENCE.
-// The firstOpCode has already been read from the reader.
+// dispatchV41Ops dispatches a v4.1 COMPOUND starting from firstOpCode (already
+// read from the reader). Used for the exempt-op path, where the first op is not
+// SEQUENCE (e.g. EXCHANGE_ID) and so v41ctx is nil. Decode errors encode a
+// partial reply rather than dropping it (matching the SEQUENCE-bearing path).
 func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, firstOpCode uint32, numOps uint32, v41ctx *types.V41RequestContext, reader io.Reader) ([]byte, error) {
-	results := make([]types.CompoundResult, 0, int(numOps))
-	var lastStatus uint32 = types.NFS4_OK
-
-	// Process all ops, starting with firstOpCode already read
-	for i := uint32(0); i < numOps; i++ {
-		var opCode uint32
-		if i == 0 {
-			opCode = firstOpCode
-		} else {
-			// Check context cancellation between operations. Mirror the
-			// SEQUENCE-bearing path (dispatchV41): instead of returning a bare
-			// error (which makes the RPC layer drop the reply and reset the
-			// connection), encode a partial response with NFS4ERR_DELAY so the
-			// client receives a well-formed reply and can retry.
-			if compCtx.Context.Err() != nil {
-				logger.Debug("NFSv4.1 COMPOUND cancelled between ops",
-					"op_index", i,
-					"total_ops", numOps,
-					"client", compCtx.ClientAddr)
-				lastStatus = types.NFS4ERR_DELAY
-				break
-			}
-
-			// Read operation code. On decode error, encode the partial response
-			// gathered so far rather than dropping the reply.
-			var err error
-			opCode, err = xdr.DecodeUint32(reader)
-			if err != nil {
-				lastStatus = types.NFS4ERR_BADXDR
-				break
-			}
-		}
-
-		// Check adapter-level operation blocklist before dispatch.
-		if h.IsOperationBlocked(opCode) {
-			logger.Debug("NFSv4.1 COMPOUND op blocked by adapter settings",
-				"op_index", i,
-				"opcode", opCode,
-				"op_name", types.OpName(opCode),
-				"client", compCtx.ClientAddr)
-
-			result := notSuppHandler(opCode)
-			result.OpCode = opCode
-			results = append(results, *result)
-			lastStatus = result.Status
-			break
-		}
-
-		// Dispatch: reject v4.0-only, then v4.1 table, then v4.0 fallback.
-		var result *types.CompoundResult
-
-		if v40OnlyOps[opCode] {
-			result = rejectV40OnlyOp(opCode, reader, compCtx.ClientAddr)
-		} else if v41Handler, ok := h.v41DispatchTable[opCode]; ok {
-			result = v41Handler(compCtx, v41ctx, reader)
-		} else if v40Handler, ok := h.opDispatchTable[opCode]; ok {
-			result = v40Handler(compCtx, reader)
-		} else if opCode >= 3 && opCode <= types.OP_RECLAIM_COMPLETE {
-			result = notSuppHandler(opCode)
-		} else {
-			result = &types.CompoundResult{
-				Status: types.NFS4ERR_OP_ILLEGAL,
-				OpCode: types.OP_ILLEGAL,
-				Data:   encodeStatusOnly(types.NFS4ERR_OP_ILLEGAL),
-			}
-		}
-
-		if result.OpCode == 0 && opCode != 0 {
-			result.OpCode = opCode
-		}
-
-		results = append(results, *result)
-		lastStatus = result.Status
-
-		logger.Debug("NFSv4.1 COMPOUND op dispatched",
-			"op_index", i,
-			"opcode", opCode,
-			"op_name", types.OpName(opCode),
-			"status", result.Status,
-			"client", compCtx.ClientAddr)
-
-		if result.Status != types.NFS4_OK {
-			logger.Debug("NFSv4.1 COMPOUND op failed, stopping",
-				"op_index", i,
-				"opcode", opCode,
-				"op_name", types.OpName(opCode),
-				"status", result.Status,
-				"client", compCtx.ClientAddr)
-			break
-		}
-	}
+	results, lastStatus, _ := h.runCompoundOps(compCtx, numOps, reader, compoundLoopParams{
+		isV41:                true,
+		v41ctx:               v41ctx,
+		firstOpCode:          firstOpCode,
+		hasFirstOpCode:       true,
+		hardErrOnDecodeError: false,
+	})
 
 	return encodeCompoundResponse(lastStatus, tag, results)
 }
