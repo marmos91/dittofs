@@ -1343,7 +1343,7 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 	}
 
 	if FindCreateContext(req.CreateContexts, "MxAc") != nil {
-		maxAccess := computeMaximalAccess(file, authCtx)
+		maxAccess := metaSvc.ComputeMaximalAccess(file, authCtx)
 		mxW := smbenc.NewWriter(8)
 		mxW.WriteUint32(0)
 		mxW.WriteUint32(maxAccess)
