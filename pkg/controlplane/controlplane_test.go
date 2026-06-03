@@ -44,7 +44,11 @@ func TestNew_NoAPIServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cp.Close()
+	t.Cleanup(func() {
+		if err := cp.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 
 	if cp.Store() == nil {
 		t.Error("Store() is nil")
@@ -76,7 +80,11 @@ func TestNew_WithAPIServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New with API: %v", err)
 	}
-	defer cp.Close()
+	t.Cleanup(func() {
+		if err := cp.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 
 	if cp.APIServer() == nil {
 		t.Error("APIServer() should be non-nil when API is configured")
@@ -88,7 +96,11 @@ func TestEnsureAdminUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer cp.Close()
+	t.Cleanup(func() {
+		if err := cp.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 
 	ctx := context.Background()
 	pw, err := cp.EnsureAdminUser(ctx)
