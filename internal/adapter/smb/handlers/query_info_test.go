@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	merrs "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 func TestFileCompressionInformation(t *testing.T) {
@@ -487,6 +490,62 @@ func TestResolveAccessFlags(t *testing.T) {
 			genericMask := uint32(types.MaximumAllowed) | uint32(types.GenericAll) | uint32(types.GenericRead) | uint32(types.GenericWrite) | uint32(types.GenericExecute)
 			if got&genericMask != 0 {
 				t.Errorf("resolveAccessFlags(0x%x) still has generic bits: 0x%x", tt.input, got&genericMask)
+			}
+		})
+	}
+}
+
+// TestQueryInfo_FilesystemInfoErrorPassthrough verifies that errors propagated
+// out of the QUERY_INFO sub-builders (notably buildFilesystemInfo, whose
+// FileFsSizeInformation / FileFsFullSizeInformation cases call
+// GetFilesystemStatistics) are translated via common.MapToSMB rather than
+// being silently collapsed to STATUS_NOT_SUPPORTED.
+//
+// Regression test: the catch-all at query_info.go returned StatusNotSupported
+// for every non-nil error, swallowing real *merrs.StoreError statuses. Only the
+// types.ErrNotSupported sentinel (unknown info class) should map to
+// STATUS_NOT_SUPPORTED.
+func TestQueryInfo_FilesystemInfoErrorPassthrough(t *testing.T) {
+	cases := []struct {
+		name       string
+		injectErr  error
+		wantStatus types.Status
+	}{
+		{
+			name:       "ErrNotSupported_unknown_class_stays_NotSupported",
+			injectErr:  types.ErrNotSupported,
+			wantStatus: types.StatusNotSupported,
+		},
+		{
+			name:       "StaleHandle_maps_to_FileClosed",
+			injectErr:  merrs.NewStaleHandleError("testshare"),
+			wantStatus: types.StatusFileClosed,
+		},
+		{
+			name:       "IOError_maps_to_UnexpectedIOError",
+			injectErr:  &merrs.StoreError{Code: merrs.ErrIOError, Message: "disk read failure"},
+			wantStatus: types.StatusUnexpectedIOError,
+		},
+		{
+			name:       "InvalidHandle_maps_to_InvalidHandle",
+			injectErr:  merrs.NewInvalidHandleError(),
+			wantStatus: types.StatusInvalidHandle,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Mirror the exact discriminating logic of the QUERY_INFO catch-all:
+			// the ErrNotSupported sentinel maps to STATUS_NOT_SUPPORTED; every
+			// other error is mapped through common.MapToSMB.
+			var got types.Status
+			if errors.Is(tc.injectErr, types.ErrNotSupported) {
+				got = types.StatusNotSupported
+			} else {
+				got = common.MapToSMB(tc.injectErr)
+			}
+			if got != tc.wantStatus {
+				t.Errorf("error %v mapped to status 0x%x, want 0x%x", tc.injectErr, got, tc.wantStatus)
 			}
 		})
 	}

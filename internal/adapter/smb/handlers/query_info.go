@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -403,7 +404,15 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 	}
 
 	if err != nil {
-		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+		// An unknown info class surfaces as the ErrNotSupported sentinel and must
+		// map to STATUS_NOT_SUPPORTED. Real store errors (e.g. from
+		// GetFilesystemStatistics) carry their own status and must be translated
+		// faithfully rather than collapsed to STATUS_NOT_SUPPORTED.
+		if errors.Is(err, types.ErrNotSupported) {
+			return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusNotSupported}}, nil
+		}
+		logger.Debug("QUERY_INFO: metadata/filesystem error", "error", err)
+		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
 
 	// Truncate if necessary.
