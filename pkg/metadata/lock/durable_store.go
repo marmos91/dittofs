@@ -2,8 +2,88 @@ package lock
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
+
+// DurableMismatchKind classifies why a durable-handle reconnect identity check
+// failed. Each kind maps to a distinct SMB2 status at the protocol boundary
+// (the adapter is responsible for that translation), keeping the matching rules
+// themselves in the lock domain.
+type DurableMismatchKind int
+
+const (
+	// MismatchShare — the reconnecting tree connect is for a different share
+	// than the one that owned the persisted handle (MS-SMB2 §3.3.5.9.7/12).
+	MismatchShare DurableMismatchKind = iota
+	// MismatchPath — the reconnect CREATE names a different path than the
+	// persisted open (lease/path-checked reopens only).
+	MismatchPath
+	// MismatchUser — the reconnecting session belongs to a different user than
+	// the one that established the durable open.
+	MismatchUser
+)
+
+// DurableHandleMismatchError is returned by ValidateReconnect when a persisted
+// durable handle does not match the reconnect request's identity/path/share.
+// It is a sentinel-style typed error: callers inspect Kind to decide how to
+// surface the failure, while the persisted handle is left intact (a transient
+// mismatched retry must not destroy a still-reclaimable open).
+type DurableHandleMismatchError struct {
+	Kind     DurableMismatchKind
+	Expected string
+	Actual   string
+}
+
+func (e *DurableHandleMismatchError) Error() string {
+	var field string
+	switch e.Kind {
+	case MismatchShare:
+		field = "share name"
+	case MismatchPath:
+		field = "path"
+	case MismatchUser:
+		field = "username"
+	default:
+		field = "field"
+	}
+	return fmt.Sprintf("durable handle reconnect %s mismatch: expected %q, got %q", field, e.Expected, e.Actual)
+}
+
+// ReconnectIdentity carries the identity/path/share the reconnect CREATE
+// presents, to be matched against a persisted durable handle.
+type ReconnectIdentity struct {
+	ShareName string
+	Username  string
+	// Filename is compared against the persisted Path only when CheckPath is
+	// set. A V1/V2 oplock-backed (non-lease) reconnect ignores the filename
+	// per MS-SMB2 §3.3.5.9.7/12 (mirrors Samba smbd_smb2_create_durable_lease_check,
+	// which only path-checks lease-backed reopens), so the caller passes
+	// CheckPath=false in that case.
+	Filename  string
+	CheckPath bool
+}
+
+// ValidateReconnect checks that a persisted durable handle matches the identity
+// presented by a reconnect CREATE. It returns a *DurableHandleMismatchError (so
+// callers can switch on Kind) when share name, path, or user identity does not
+// match, and nil when the handle is reclaimable by this request. Session-key
+// hashes are intentionally NOT compared: per MS-SMB2 §3.3.5.9.7/12 the server
+// validates the user identity, not the session key, and NTLM KEY_EXCH gives
+// each session a fresh ExportedSessionKey so the hash differs across reconnect
+// even for the same credentials.
+func (h *PersistedDurableHandle) ValidateReconnect(req ReconnectIdentity) error {
+	if h.ShareName != req.ShareName {
+		return &DurableHandleMismatchError{Kind: MismatchShare, Expected: h.ShareName, Actual: req.ShareName}
+	}
+	if req.CheckPath && h.Path != req.Filename {
+		return &DurableHandleMismatchError{Kind: MismatchPath, Expected: h.Path, Actual: req.Filename}
+	}
+	if h.Username != req.Username {
+		return &DurableHandleMismatchError{Kind: MismatchUser, Expected: h.Username, Actual: req.Username}
+	}
+	return nil
+}
 
 // PersistedDurableHandle is the storage representation of a durable open.
 // When a client disconnects, the open file state is serialized into this struct
