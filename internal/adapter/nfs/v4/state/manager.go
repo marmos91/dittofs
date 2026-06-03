@@ -210,6 +210,11 @@ type StateManager struct {
 	// backchannelFaults tracks per-client backchannel fault state. Set when a
 	// callback send fails, cleared on success. Protected by connMu.
 	backchannelFaults map[uint64]bool
+
+	// cbNullFunc verifies the callback path during SETCLIENTID_CONFIRM. It
+	// defaults to SendCBNull and is only overridden by tests (set once at
+	// construction, before any goroutine reads it).
+	cbNullFunc func(context.Context, CallbackInfo) error
 }
 
 // NewStateManager creates a new StateManager with the given lease duration.
@@ -262,6 +267,7 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		connWriters:       make(map[uint64]ConnWriter),
 		cbRepliesByConn:   make(map[uint64]*PendingCBReplies),
 		backchannelFaults: make(map[uint64]bool),
+		cbNullFunc:        SendCBNull,
 	}
 }
 
@@ -403,6 +409,14 @@ func (sm *StateManager) createNewClient(clientIDStr string, verifier [8]byte, ca
 // unconfirmed record that will replace the confirmed one when confirmed.
 // Caller must hold sm.mu.
 func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
+	// RFC 7530 Section 9.1.1: if the confirmed record was established by a
+	// principal and this request carries a different non-empty principal,
+	// reject with NFS4ERR_CLID_INUSE. Prevents a third party that knows the
+	// client ID string + verifier from hijacking the client's lease/state.
+	if confirmed.Principal != "" && principal != "" && confirmed.Principal != principal {
+		return nil, ErrClientIDInUse
+	}
+
 	// Remove any existing unconfirmed record for this name
 	if old := sm.unconfirmedByName[clientIDStr]; old != nil {
 		// Only delete from clientsByID if it's a different ID than the confirmed client.
@@ -451,6 +465,15 @@ func (sm *StateManager) reuseConfirmedClient(confirmed *ClientRecord, clientIDSt
 // the new one is confirmed in SETCLIENTID_CONFIRM.
 // Caller must hold sm.mu.
 func (sm *StateManager) handleClientReboot(clientIDStr string, verifier [8]byte, callback CallbackInfo, clientAddr, principal string) (*SetClientIDResult, error) {
+	// RFC 7530 Section 9.1.1: a reboot (different verifier) from a different
+	// non-empty principal than the confirmed record is a hijack attempt, not a
+	// real reboot. Reject with NFS4ERR_CLID_INUSE.
+	if confirmed := sm.clientsByName[clientIDStr]; confirmed != nil {
+		if confirmed.Principal != "" && principal != "" && confirmed.Principal != principal {
+			return nil, ErrClientIDInUse
+		}
+	}
+
 	// Remove any existing unconfirmed record for this name
 	if old := sm.unconfirmedByName[clientIDStr]; old != nil {
 		delete(sm.clientsByID, old.ClientID)
@@ -611,13 +634,17 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 	// This runs in a goroutine so SETCLIENTID_CONFIRM returns immediately.
 	if record.Callback.Addr != "" {
 		cbInfo := record.Callback
+		recordPtr := record // capture this record generation's pointer identity
 		go func() {
-			err := SendCBNull(context.Background(), cbInfo)
+			err := sm.cbNullFunc(context.Background(), cbInfo)
 			sm.mu.Lock()
 			defer sm.mu.Unlock()
 			rec, ok := sm.clientsByID[clientID]
-			if !ok {
-				return // Client was removed while CB_NULL was in flight
+			if !ok || rec != recordPtr {
+				// Client was removed, or this client ID now points at a
+				// different record generation (reboot / re-SETCLIENTID) while
+				// CB_NULL was in flight. Do not touch the replacement.
+				return
 			}
 			rec.CBPathUp = (err == nil)
 			if err != nil {
@@ -1746,9 +1773,52 @@ func (sm *StateManager) LockNew(
 		return nil, err
 	}
 
-	// 4. Find or create lock-owner
+	// 4. Probe the lock-owner WITHOUT allocating. Seqid validation (step 6)
+	// must run before any state is inserted into the maps; otherwise a bad
+	// lock seqid would strand a freshly-allocated lock-owner / lock-state
+	// (they would be reused by a later valid LOCK with a wrong LastSeqID=0
+	// baseline).
 	loKey := makeLockOwnerKey(lockClientID, lockOwnerData)
 	lockOwner, ownerExists := sm.lockOwners[loKey]
+
+	// 6. Validate lock seqid on lock-owner BEFORE any allocation.
+	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
+	if lockSeqid != 0 {
+		if ownerExists {
+			lockValidation := lockOwner.ValidateSeqID(lockSeqid)
+			switch lockValidation {
+			case SeqIDBad:
+				return nil, ErrBadSeqid
+			case SeqIDReplay:
+				// Replay the exact cached LOCK reply. Returning NFS4ERR_BAD_SEQID
+				// here (the previous behavior) is treated as fatal by the Linux
+				// client and drops the lock-owner -> silent lock loss.
+				if lockOwner.LastResult != nil {
+					return nil, &ReplayError{Status: lockOwner.LastResult.Status, Data: lockOwner.LastResult.Data}
+				}
+				return nil, ErrBadSeqid
+			case SeqIDOK:
+				// A fresh lock seqid alongside a replayed open seqid is an
+				// inconsistent retransmit; treat as bad seqid.
+				if openSeqIsReplay {
+					return nil, ErrBadSeqid
+				}
+			}
+		} else {
+			// Brand-new lock-owner: the only valid lock seqid is nextSeqID(0)
+			// (== 1) per RFC 7530 Section 9.1.4. Reject anything else before
+			// allocating, so a bad seqid leaves no orphaned state behind.
+			if lockSeqid != nextSeqID(0) {
+				return nil, ErrBadSeqid
+			}
+		}
+	} else if openSeqIsReplay {
+		// Open seqid replayed but the lock-owner is brand new / not yet
+		// seqid-tracked: nothing consistent to replay.
+		return nil, ErrBadSeqid
+	}
+
+	// 4b. Find or create lock-owner -- only after seqid validation passes.
 	if !ownerExists {
 		clientRecord := sm.clientsByID[lockClientID]
 		lockOwner = &LockOwner{
@@ -1787,34 +1857,6 @@ func (sm *StateManager) LockNew(
 		// Register in maps
 		openState.LockStates = append(openState.LockStates, lockState)
 		sm.lockStateByOther[other] = lockState
-	}
-
-	// 6. Validate lock seqid on lock-owner
-	// seqid=0 is the v4.1 bypass convention: slot table provides replay protection
-	if ownerExists && lockSeqid != 0 {
-		lockValidation := lockOwner.ValidateSeqID(lockSeqid)
-		switch lockValidation {
-		case SeqIDBad:
-			return nil, ErrBadSeqid
-		case SeqIDReplay:
-			// Replay the exact cached LOCK reply. Returning NFS4ERR_BAD_SEQID
-			// here (the previous behavior) is treated as fatal by the Linux
-			// client and drops the lock-owner -> silent lock loss.
-			if lockOwner.LastResult != nil {
-				return nil, &ReplayError{Status: lockOwner.LastResult.Status, Data: lockOwner.LastResult.Data}
-			}
-			return nil, ErrBadSeqid
-		case SeqIDOK:
-			// A fresh lock seqid alongside a replayed open seqid is an
-			// inconsistent retransmit; treat as bad seqid.
-			if openSeqIsReplay {
-				return nil, ErrBadSeqid
-			}
-		}
-	} else if openSeqIsReplay {
-		// Open seqid replayed but the lock-owner is brand new / not yet
-		// seqid-tracked: nothing consistent to replay.
-		return nil, ErrBadSeqid
 	}
 
 	// 7. Acquire the lock via unified lock manager
@@ -1993,10 +2035,13 @@ func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offse
 					Length:   el.Length,
 					LockType: conflictType,
 				}
-				// Parse OwnerID to extract clientID and ownerData
-				// Format: "nfs4:{clientid}:{owner_hex}"
-				denied.Owner.ClientID = 0 // Default if parsing fails
-				denied.Owner.OwnerData = []byte(el.Owner.OwnerID)
+				// Parse OwnerID to extract clientID and ownerData.
+				// Format: "nfs4:{clientid}:{owner_hex}". Use the shared helper
+				// so OwnerData is the decoded opaque bytes, not the raw format
+				// string (LOCKT uses the same path).
+				denied.Owner.ClientID = 0    // default; parseConflictOwner overwrites on success
+				denied.Owner.OwnerData = nil // default
+				parseConflictOwner(el.Owner.OwnerID, denied)
 				return denied, nil
 			}
 		}
@@ -2641,12 +2686,9 @@ func (sm *StateManager) reapExpiredSessions() {
 				"client_id", fmt.Sprintf("0x%x", record.ClientID),
 				"client_addr", record.ClientAddr)
 
-			// Destroy all sessions for this client with "lease_expired" reason
-			for _, session := range sm.sessionsByClientID[record.ClientID] {
-				delete(sm.sessionsByID, session.SessionID)
-			}
-			delete(sm.sessionsByClientID, record.ClientID)
-
+			// Defer all session teardown to purgeV41Client, which stops each
+			// session's backchannel sender before deleting it. Deleting the
+			// sessions here would empty sessionsByClientID and leak the senders.
 			toPurge = append(toPurge, record)
 			continue
 		}

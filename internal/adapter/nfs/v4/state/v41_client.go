@@ -318,8 +318,11 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 		sm.removeDelegFromFile(deleg)
 	}
 
-	// Destroy all sessions for this client
+	// Destroy all sessions for this client. Stop each session's backchannel
+	// sender BEFORE removing it from sessionsByID -- stopBackchannelSender
+	// looks the session up there, so deleting first would leak the goroutine.
 	for _, session := range sm.sessionsByClientID[record.ClientID] {
+		sm.stopBackchannelSender(session.SessionID)
 		delete(sm.sessionsByID, session.SessionID)
 	}
 	delete(sm.sessionsByClientID, record.ClientID)
