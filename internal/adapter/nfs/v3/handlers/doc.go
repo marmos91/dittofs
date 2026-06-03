@@ -89,8 +89,15 @@ func (h *Handler) GetCachedAuthContext(
 		return nil, err
 	}
 
-	// Cache for future requests
-	h.authCache.Store(key, authCtx)
+	// Cache only the request-independent fields. Storing authCtx directly would
+	// pin the first request's Context (and any values/cancellation attached to
+	// it) and ClientAddr for the lifetime of the entry; the hit path always
+	// re-derives those from the current request anyway.
+	h.authCache.Store(key, &metadata.AuthContext{
+		AuthMethod:    authCtx.AuthMethod,
+		Identity:      authCtx.Identity,
+		ShareReadOnly: authCtx.ShareReadOnly,
+	})
 
 	return authCtx, nil
 }
