@@ -1145,13 +1145,37 @@ func (r *Runtime) restoreSnapshot(
 	defer rlock.Unlock()
 
 	// --- precheck ---
-	enabled, err := r.sharesSvc.IsShareEnabled(shareName)
-	if err != nil {
-		return "", err
-	}
-	if enabled {
-		return "", fmt.Errorf("restore snapshot %q on share %q: %w",
-			snapID, shareName, models.ErrShareEnabled)
+	// The Enabled precheck guards operator-initiated restores: a destructive
+	// Reset+replay must never run under a live share. The startup rollback
+	// path (recoverInterruptedRestores → isRollback=true) is exempt: the share
+	// may legitimately have loaded Enabled at boot, and refusing here would
+	// wedge the rollback on every subsequent boot, leaving the share stuck
+	// half-restored. Mirror the isRollback exemptions on the safety-snap and
+	// marker blocks below — force-disable the share for the rollback's
+	// duration so the destructive steps still run under a quiesced share.
+	if !internal.isRollback {
+		enabled, err := r.sharesSvc.IsShareEnabled(shareName)
+		if err != nil {
+			return "", err
+		}
+		if enabled {
+			return "", fmt.Errorf("restore snapshot %q on share %q: %w",
+				snapID, shareName, models.ErrShareEnabled)
+		}
+	} else {
+		// Force-disable the share for the rollback. The destructive
+		// Reset+replay below must run under a quiesced share; a share that
+		// loaded Enabled at boot would otherwise corrupt mid-rollback. The
+		// share STAYS disabled afterwards, matching the operator-restore
+		// contract (restore leaves the share disabled for inspection). An
+		// already-disabled share is a benign no-op.
+		derr := r.DisableShare(ctx, shareName)
+		if derr != nil && !errors.Is(derr, shares.ErrShareAlreadyDisabled) {
+			return "", fmt.Errorf("restore snapshot %q on share %q: force-disable for rollback: %w: %v",
+				snapID, shareName, models.ErrRestoreAborted, derr)
+		}
+		logger.Info("snapshot restore: rollback force-disabled share before reset",
+			"snapshot_id", snapID, "share", shareName)
 	}
 
 	snap, err := r.store.GetSnapshot(ctx, shareName, snapID)
