@@ -26,9 +26,8 @@ func formatUID(uid *uint32) string {
 
 // permissionResult holds the result of permission resolution.
 type permissionResult struct {
-	permission models.SharePermission
-	readOnly   bool
-	username   string
+	readOnly bool
+	username string
 }
 
 // BuildAuthContextWithMapping creates an AuthContext with share-level identity mapping applied.
@@ -148,7 +147,6 @@ func resolveNFSSharePermission(
 		share.Squash == models.SquashRootToAdmin ||
 		share.Squash == models.SquashAllToAdmin
 	if isCallerRoot && rootHasAdmin {
-		result.permission = models.PermissionAdmin
 		result.readOnly = share.ReadOnly
 		result.username = "root"
 		return result, nil
@@ -167,7 +165,6 @@ func resolveNFSSharePermission(
 			return nil, ErrShareAccessDenied
 		}
 
-		result.permission = defaultPerm
 		result.readOnly = share.ReadOnly || defaultPerm == models.PermissionRead
 		logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", defaultPerm, "readOnly", result.readOnly)
 		return result, nil
@@ -189,7 +186,6 @@ func resolveNFSSharePermission(
 		return nil, ErrShareAccessDenied
 	}
 
-	result.permission = perm
 	result.readOnly = share.ReadOnly || perm == models.PermissionRead
 	result.username = user.Username
 	logger.DebugCtx(ctx, "User permission resolved", "share", shareName, "user", user.Username, "permission", perm, "readOnly", result.readOnly)

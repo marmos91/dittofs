@@ -269,23 +269,3 @@ func validateFileHandle(handle []byte) error {
 
 	return nil
 }
-
-// ExtractFileIDFromHandle extracts a file ID from a file handle.
-//
-// This is a thin wrapper around metadata.HandleToINode() which provides the
-// canonical implementation for converting file handles to inode numbers.
-//
-// IMPORTANT: All code that needs to convert handles to file IDs MUST use
-// metadata.HandleToINode() to ensure consistent inode generation across
-// the system. Using different methods will cause "fileid changed" errors
-// from NFS clients.
-//
-// Parameters:
-//   - handle: The file handle
-//
-// Returns:
-//   - uint64: The extracted file ID (SHA-256 hash of handle)
-//   - error: Always nil (kept for API compatibility)
-func ExtractFileIDFromHandle(handle []byte) (uint64, error) {
-	return metadata.HandleToINode(handle), nil
-}
