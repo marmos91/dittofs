@@ -285,7 +285,7 @@ func (h *Handler) Write(
 	err = common.WriteToBlockStore(ctx.Context, blockStore, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {
 		logError(ctx.Context, err, "WRITE failed: BlockStore write error", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "payload_id", writeIntent.PayloadID, "client", clientIP)
-		status := xdr.MapContentErrorToNFSStatus(err)
+		status := common.MapContentToNFS3(err)
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 	logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "payload_id", writeIntent.PayloadID)

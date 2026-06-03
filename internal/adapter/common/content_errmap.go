@@ -13,11 +13,10 @@ import (
 // Content-error mapping.
 //
 // Block-store content errors (failed reads from remote/cache, transient
-// backend failures) map to I/O-class codes in every protocol. Today the
-// only typed signal is block.ErrRemoteUnavailable; a string-match
-// heuristic for "cache full" is intentionally kept OUT of common/ and
-// stays at the NFSv3 call site (see internal/adapter/nfs/xdr/errors.go:
-// MapContentErrorToNFSStatus) — the typed-error path lives here.
+// backend failures) map to I/O-class codes in every protocol. The typed
+// sentinels (engine.ErrStoreClosed and the block.Err* family) are matched
+// here via errors.Is; every protocol arm (NFSv3/4, SMB) calls the matching
+// MapContentTo* accessor so the mapping lives in exactly one place.
 //
 // Per-protocol fallback when the specific error is unknown:
 //   - NFSv3 → NFS3ErrIO (EIO)
