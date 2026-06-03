@@ -488,6 +488,16 @@ func extractXIDFromRequest(conn net.Conn) (uint32, error) {
 	return xid, nil
 }
 
+// enableLoopbackCallback flips the loopback SSRF guard off for the duration of
+// a test that drives the dial-out path against a 127.0.0.1 mock listener, then
+// restores the production default.
+func enableLoopbackCallback(t *testing.T) {
+	t.Helper()
+	prev := allowLoopbackCallback
+	allowLoopbackCallback = true
+	t.Cleanup(func() { allowLoopbackCallback = prev })
+}
+
 func makeCallbackInfoFromListener(l net.Listener) CallbackInfo {
 	addr := l.Addr().(*net.TCPAddr)
 	ip := addr.IP.To4()
@@ -507,6 +517,7 @@ func makeCallbackInfoFromListener(l net.Listener) CallbackInfo {
 }
 
 func TestSendCBRecall_Success(t *testing.T) {
+	enableLoopbackCallback(t)
 	// Start a mock TCP server
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -555,6 +566,7 @@ func TestSendCBRecall_Success(t *testing.T) {
 }
 
 func TestSendCBRecall_ConnectionRefused(t *testing.T) {
+	enableLoopbackCallback(t)
 	// Use a callback address with a port that's not listening
 	callback := CallbackInfo{
 		Program: 0x40000000,
@@ -572,6 +584,7 @@ func TestSendCBRecall_ConnectionRefused(t *testing.T) {
 }
 
 func TestSendCBRecall_Timeout(t *testing.T) {
+	enableLoopbackCallback(t)
 	// Start a listener that accepts but never responds
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -610,6 +623,7 @@ func TestSendCBRecall_Timeout(t *testing.T) {
 }
 
 func TestSendCBNull_Success(t *testing.T) {
+	enableLoopbackCallback(t)
 	// Start a mock TCP server
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -655,6 +669,7 @@ func TestSendCBNull_Success(t *testing.T) {
 }
 
 func TestSendCBNull_ConnectionRefused(t *testing.T) {
+	enableLoopbackCallback(t)
 	callback := CallbackInfo{
 		Program: 0x40000000,
 		NetID:   "tcp",
@@ -668,6 +683,7 @@ func TestSendCBNull_ConnectionRefused(t *testing.T) {
 }
 
 func TestSendCBNull_Timeout(t *testing.T) {
+	enableLoopbackCallback(t)
 	// Start a listener that accepts but never responds
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -798,6 +814,7 @@ func TestReadAndValidateCBReply_NFS4Error(t *testing.T) {
 // ============================================================================
 
 func TestSendCBRecall_VerifyWireFormat(t *testing.T) {
+	enableLoopbackCallback(t)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -875,7 +892,151 @@ func TestSendCBRecall_VerifyWireFormat(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// validateCallbackHost Tests (SSRF guard)
+// ============================================================================
+
+func TestValidateCallbackHost_Loopback_IPv4(t *testing.T) {
+	if err := validateCallbackHost("127.0.0.1"); err == nil {
+		t.Fatal("expected error for loopback IPv4, got nil")
+	}
+}
+
+func TestValidateCallbackHost_Loopback_IPv6(t *testing.T) {
+	if err := validateCallbackHost("::1"); err == nil {
+		t.Fatal("expected error for loopback IPv6, got nil")
+	}
+}
+
+func TestValidateCallbackHost_LinkLocal_IPv4(t *testing.T) {
+	if err := validateCallbackHost("169.254.169.254"); err == nil {
+		t.Fatal("expected error for link-local IPv4, got nil")
+	}
+}
+
+func TestValidateCallbackHost_LinkLocal_IPv6(t *testing.T) {
+	if err := validateCallbackHost("fe80::1"); err == nil {
+		t.Fatal("expected error for link-local IPv6, got nil")
+	}
+}
+
+func TestValidateCallbackHost_Normal_IPv4(t *testing.T) {
+	if err := validateCallbackHost("10.1.2.3"); err != nil {
+		t.Fatalf("unexpected error for routable IPv4: %v", err)
+	}
+}
+
+func TestValidateCallbackHost_Normal_IPv6(t *testing.T) {
+	if err := validateCallbackHost("2001:db8::1"); err != nil {
+		t.Fatalf("unexpected error for routable IPv6: %v", err)
+	}
+}
+
+func TestValidateCallbackHost_Invalid(t *testing.T) {
+	if err := validateCallbackHost("not-an-ip"); err == nil {
+		t.Fatal("expected error for non-IP string, got nil")
+	}
+}
+
+// TestSendCBRecall_LoopbackRejected verifies that a callback to a loopback
+// address is rejected at address validation, not at dial time.
+func TestSendCBRecall_LoopbackRejected(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	addr := l.Addr().(*net.TCPAddr)
+	p1 := addr.Port / 256
+	p2 := addr.Port % 256
+	uaddr := fmt.Sprintf("127.0.0.1.%d.%d", p1, p2)
+
+	callback := CallbackInfo{
+		Program: 0x40000000,
+		NetID:   "tcp",
+		Addr:    uaddr,
+	}
+	stateid := &types.Stateid4{Seqid: 1}
+	fh := []byte{0x01}
+
+	if err := SendCBRecall(context.Background(), callback, stateid, false, fh); err == nil {
+		t.Fatal("expected error: loopback callback address must be rejected")
+	}
+}
+
+// TestSendCBNull_LinkLocalRejected verifies that a link-local callback
+// address is rejected at address validation.
+func TestSendCBNull_LinkLocalRejected(t *testing.T) {
+	callback := CallbackInfo{
+		Program: 0x40000000,
+		NetID:   "tcp",
+		// 169.254.169.254 encoded: p1=0, p2=80 -> port 80
+		Addr: "169.254.169.254.0.80",
+	}
+	if err := SendCBNull(context.Background(), callback); err == nil {
+		t.Fatal("expected error: link-local callback address must be rejected")
+	}
+}
+
+// ============================================================================
+// ValidateCBReply verifier-length overflow Tests
+// ============================================================================
+
+// buildReplyWithVerfLen builds a raw (unframed) RPC reply buffer with the
+// given verifier body length field and no verifier body bytes.
+func buildReplyWithVerfLen(verfLen uint32) []byte {
+	var buf bytes.Buffer
+	_ = binary.Write(&buf, binary.BigEndian, uint32(1234))               // XID
+	_ = binary.Write(&buf, binary.BigEndian, uint32(rpc.RPCReply))       // MsgType
+	_ = binary.Write(&buf, binary.BigEndian, uint32(rpc.RPCMsgAccepted)) // reply_stat
+	_ = binary.Write(&buf, binary.BigEndian, uint32(rpc.AuthNull))       // verf_flavor
+	_ = binary.Write(&buf, binary.BigEndian, verfLen)                    // verf_len
+	return buf.Bytes()
+}
+
+func TestValidateCBReply_VerfLen_Overflow_FFFFFFFF(t *testing.T) {
+	if err := ValidateCBReply(buildReplyWithVerfLen(0xFFFFFFFF)); err == nil {
+		t.Fatal("expected error for verfLen=0xFFFFFFFF, got nil")
+	}
+}
+
+func TestValidateCBReply_VerfLen_Overflow_FFFFFFFD(t *testing.T) {
+	if err := ValidateCBReply(buildReplyWithVerfLen(0xFFFFFFFD)); err == nil {
+		t.Fatal("expected error for verfLen=0xFFFFFFFD, got nil")
+	}
+}
+
+func TestValidateCBReply_VerfLen_ExceedsMaxFragment(t *testing.T) {
+	if err := ValidateCBReply(buildReplyWithVerfLen(MaxFragmentSize + 1)); err == nil {
+		t.Fatalf("expected error for verfLen=%d (MaxFragmentSize+1), got nil", MaxFragmentSize+1)
+	}
+}
+
+func TestValidateCBReply_VerfLen_AtMaxFragment(t *testing.T) {
+	if err := ValidateCBReply(buildReplyWithVerfLen(MaxFragmentSize)); err == nil {
+		t.Fatal("expected error for verfLen=MaxFragmentSize, got nil")
+	}
+}
+
+func TestValidateCBReply_VerfLen_SmallNonZero(t *testing.T) {
+	var buf bytes.Buffer
+	_ = binary.Write(&buf, binary.BigEndian, uint32(1234))               // XID
+	_ = binary.Write(&buf, binary.BigEndian, uint32(rpc.RPCReply))       // MsgType
+	_ = binary.Write(&buf, binary.BigEndian, uint32(rpc.RPCMsgAccepted)) // reply_stat
+	_ = binary.Write(&buf, binary.BigEndian, uint32(rpc.AuthNull))       // verf_flavor
+	_ = binary.Write(&buf, binary.BigEndian, uint32(8))                  // verf_len = 8
+	buf.Write(make([]byte, 8))                                           // 8-byte verifier body
+	_ = binary.Write(&buf, binary.BigEndian, uint32(rpc.RPCSuccess))     // accept_stat
+	_ = binary.Write(&buf, binary.BigEndian, uint32(types.NFS4_OK))      // nfsstat4
+
+	if err := ValidateCBReply(buf.Bytes()); err != nil {
+		t.Fatalf("unexpected error for small valid verfLen: %v", err)
+	}
+}
+
 func TestSendCBNull_VerifyProcedure(t *testing.T) {
+	enableLoopbackCallback(t)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)

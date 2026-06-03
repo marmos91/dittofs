@@ -295,6 +295,9 @@ func ValidateCBReply(replyBuf []byte) error {
 		return fmt.Errorf("read verf length: %w", err)
 	}
 	if verfLen > 0 {
+		if verfLen > MaxFragmentSize {
+			return fmt.Errorf("verifier length %d exceeds maximum %d", verfLen, MaxFragmentSize)
+		}
 		// XDR opaque fields are padded to 4-byte boundaries
 		paddedLen := int64((verfLen + 3) &^ 3)
 		if _, err := reader.Seek(paddedLen, io.SeekCurrent); err != nil {

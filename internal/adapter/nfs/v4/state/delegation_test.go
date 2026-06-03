@@ -1092,6 +1092,7 @@ func TestRevokedDelegation_ReturnSucceeds(t *testing.T) {
 // ============================================================================
 
 func TestCBPathUp_VerifiedOnConfirm(t *testing.T) {
+	enableLoopbackCallback(t)
 	sm := NewStateManager(90 * time.Second)
 
 	// Start a mock TCP listener that accepts CB_NULL
