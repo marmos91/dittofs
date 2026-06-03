@@ -294,6 +294,13 @@ func DefaultMode(fileType FileType) uint32 {
 // the automatic ARCHIVE bit for regular files).
 const modeMask = uint32(0o7777) | 0x40000 | 0x80000 | 0x100000 | 0x200000 // Unix perms + Compressed + System + Readonly + Sparse
 
+// dosAttributeModeBits are the high-word DOS attribute bits that may be flipped
+// via SetAttrs.ModeOrMask / ModeAndNotMask. POSIX permission, setid and sticky
+// bits (0o7777) are deliberately excluded so the mask path cannot smuggle
+// SUID/SGID or permission bits past the SUID/SGID stripping in
+// SetFileAttributes.
+const dosAttributeModeBits = uint32(0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x200000) // Explicit+Archive+Compressed+System+Readonly+Sparse
+
 // ApplyModeDefault applies the default mode if the provided mode is 0.
 // Masks to valid bits (Unix permissions + extended DOS flags) to prevent
 // stray bits while preserving protocol-level attribute tracking.

@@ -290,12 +290,18 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// Atomic mode-bit masks: applied within the same store read-modify-write
 	// as the rest of SetFileAttributes so concurrent bit flips (e.g. SET_SPARSE
 	// racing SET_COMPRESSION) cannot clobber each other with a stale snapshot.
+	//
+	// These fields exist solely for FSCTL-managed DOS attribute bits (high word).
+	// They are applied AFTER the POSIX SUID/SGID stripping above, so they must
+	// not be allowed to carry permission/setid/sticky bits — otherwise a caller
+	// could set e.g. SGID via ModeOrMask and bypass that validation. Whitelist
+	// the masks down to the known DOS attribute bits before applying.
 	if attrs.ModeOrMask != nil {
-		file.Mode |= *attrs.ModeOrMask
+		file.Mode |= *attrs.ModeOrMask & dosAttributeModeBits
 		modified = true
 	}
 	if attrs.ModeAndNotMask != nil {
-		file.Mode &^= *attrs.ModeAndNotMask
+		file.Mode &^= *attrs.ModeAndNotMask & dosAttributeModeBits
 		modified = true
 	}
 

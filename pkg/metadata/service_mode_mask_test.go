@@ -60,3 +60,32 @@ func TestSetFileAttributes_ModeOrMask_ConcurrentSetClear_NoLoss(t *testing.T) {
 	assert.Equal(t, uint32(0o644), f.Mode&0o777,
 		"POSIX permission bits must not be corrupted by concurrent mode-bit flips")
 }
+
+// TestSetFileAttributes_ModeOrMask_CannotSmuggleSetid verifies that the
+// ModeOrMask / ModeAndNotMask fields cannot be used to set POSIX permission or
+// setid bits, bypassing the SUID/SGID stripping in SetFileAttributes. The masks
+// are whitelisted down to the high-word DOS attribute bits before being applied.
+func TestSetFileAttributes_ModeOrMask_CannotSmuggleSetid(t *testing.T) {
+	t.Parallel()
+	fx := newTestFixture(t)
+
+	_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "smuggle.txt", &metadata.FileAttr{
+		Mode: 0o644,
+	})
+	require.NoError(t, err)
+	handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "smuggle.txt")
+	require.NoError(t, err)
+
+	// Attempt to OR in SGID (0o2000), SUID (0o4000) and extra perm bits (0o777)
+	// alongside a legitimate DOS attribute bit. Only the DOS bit must take.
+	m := modeDOSSparseBit | 0o4000 | 0o2000 | 0o777
+	_, err = fx.service.SetFileAttributes(fx.rootContext(), handle, &metadata.SetAttrs{ModeOrMask: &m})
+	require.NoError(t, err)
+
+	f, err := fx.service.GetFile(context.Background(), handle)
+	require.NoError(t, err)
+	assert.Equal(t, modeDOSSparseBit, f.Mode&modeDOSSparseBit, "DOS sparse bit should be set via the mask")
+	assert.Zero(t, f.Mode&0o4000, "SUID must not be settable via ModeOrMask")
+	assert.Zero(t, f.Mode&0o2000, "SGID must not be settable via ModeOrMask")
+	assert.Equal(t, uint32(0o644), f.Mode&0o777, "POSIX permission bits must not be altered via ModeOrMask")
+}
