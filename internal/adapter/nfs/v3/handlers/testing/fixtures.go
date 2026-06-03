@@ -400,6 +400,7 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 	file := f.GetFile(path)
 	if file == nil {
 		f.t.Fatalf("File %q does not exist", path)
+		return nil // unreachable after Fatalf; keeps staticcheck happy for testing.TB
 	}
 
 	ctx := context.Background()
