@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // MkdirRequest represents a MKDIR request from an NFS client.
 // The client provides the parent directory handle, the name for the new directory,
@@ -83,9 +81,7 @@ type MkdirResponse struct {
 	WccAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Mkdir handles NFS MKDIR (RFC 1813 Section 3.3.9).
 // Creates a new subdirectory within a parent directory with specified attributes.
@@ -113,18 +109,10 @@ func (h *Handler) Mkdir(
 
 	logger.InfoCtx(ctx.Context, "MKDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateMkdirRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "MKDIR validation failed", "name", req.Name, "client", clientIP, "error", err)
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Get metadata store from context
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -135,10 +123,6 @@ func (h *Handler) Mkdir(
 	parentHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "MKDIR", "share", ctx.Share, "name", req.Name)
 
-	// ========================================================================
-	// Step 3: Verify parent directory exists and is valid
-	// ========================================================================
-
 	parentFile, status, err := h.getFileOrError(ctx, parentHandle, "MKDIR", req.DirHandle)
 	if parentFile == nil {
 		return &MkdirResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
@@ -146,10 +130,6 @@ func (h *Handler) Mkdir(
 
 	// Capture pre-operation attributes for WCC data
 	wccBefore := xdr.CaptureWccAttr(&parentFile.FileAttr)
-
-	// ========================================================================
-	// Step 3: Build AuthContext with share-level identity mapping
-	// ========================================================================
 
 	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "MKDIR", req.Name, req.DirHandle)
 	if authCtx == nil {
@@ -187,10 +167,6 @@ func (h *Handler) Mkdir(
 			WccAfter:        wccAfter,
 		}, ctx.Context.Err()
 	}
-
-	// ========================================================================
-	// Step 4: Check if directory name already exists using Lookup
-	// ========================================================================
 
 	_, err = metaSvc.Lookup(authCtx, parentHandle, req.Name)
 	if err != nil && ctx.Context.Err() != nil {
@@ -241,9 +217,6 @@ func (h *Handler) Mkdir(
 		}, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 5: Create directory via store.Create()
-	// ========================================================================
 	// The store.Create() method handles both regular files and directories
 	// based on the Type field in FileAttr.
 	//
@@ -318,10 +291,6 @@ func (h *Handler) Mkdir(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Build success response with new directory attributes
-	// ========================================================================
-
 	// Encode the file handle for the new directory
 	newHandle, err := metadata.EncodeFileHandle(newDirFile)
 	if err != nil {
@@ -348,9 +317,7 @@ func (h *Handler) Mkdir(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateMkdirRequest validates MKDIR request parameters.
 //

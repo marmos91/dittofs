@@ -457,8 +457,8 @@ func (h *Handler) executeCopyChunks(
 			logger.Warn("COPYCHUNK: source read failed",
 				"chunk", i, "srcPath", srcOpen.Path, "error", err)
 			// COPYCHUNK source read is a content-path op: MapContentToSMB
-			// maps a closed-store error (source share removed mid-copy,
-			// area-7 H-A) to STATUS_FILE_CLOSED and preserves the
+			// maps a closed-store error (source share removed
+			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
 			return copyChunkPartialResponse(ctlCode, dstFileID,
@@ -495,7 +495,7 @@ func (h *Handler) executeCopyChunks(
 				"chunk", i, "dstPath", dstOpen.Path, "error", err)
 			// COPYCHUNK destination write is a content-path op:
 			// MapContentToSMB maps a closed-store error (dest share removed
-			// mid-copy, area-7 H-A) to STATUS_FILE_CLOSED and preserves the
+			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
 			return copyChunkPartialResponse(ctlCode, dstFileID,

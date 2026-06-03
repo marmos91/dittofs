@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeFsInfoRequest decodes an FSINFO request from XDR-encoded bytes.
 //
@@ -55,9 +53,7 @@ func DecodeFsInfoRequest(data []byte) (*FsInfoRequest, error) {
 	return &FsInfoRequest{Handle: handle}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the FsInfoResponse into XDR-encoded bytes suitable for
 // transmission over the network.

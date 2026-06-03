@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeReadDirPlusRequest decodes a READDIRPLUS request from XDR-encoded bytes.
 //
@@ -46,9 +44,7 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode directory handle
-	// ========================================================================
 
 	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -58,36 +54,28 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// ========================================================================
 	// Decode cookie (8 bytes, big-endian)
-	// ========================================================================
 
 	var cookie uint64
 	if err := binary.Read(reader, binary.BigEndian, &cookie); err != nil {
 		return nil, fmt.Errorf("failed to read cookie: %w", err)
 	}
 
-	// ========================================================================
 	// Decode cookieverf (8 bytes, big-endian)
-	// ========================================================================
 
 	var cookieVerf uint64
 	if err := binary.Read(reader, binary.BigEndian, &cookieVerf); err != nil {
 		return nil, fmt.Errorf("failed to read cookieverf: %w", err)
 	}
 
-	// ========================================================================
 	// Decode dircount (4 bytes, big-endian)
-	// ========================================================================
 
 	var dirCount uint32
 	if err := binary.Read(reader, binary.BigEndian, &dirCount); err != nil {
 		return nil, fmt.Errorf("failed to read dircount: %w", err)
 	}
 
-	// ========================================================================
 	// Decode maxcount (4 bytes, big-endian)
-	// ========================================================================
 
 	var maxCount uint32
 	if err := binary.Read(reader, binary.BigEndian, &maxCount); err != nil {
@@ -105,9 +93,7 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the ReadDirPlusResponse into XDR-encoded bytes suitable
 // for transmission over the network.
@@ -155,42 +141,32 @@ func DecodeReadDirPlusRequest(data []byte) (*ReadDirPlusRequest, error) {
 func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write post-op directory attributes (both success and failure cases)
-	// ========================================================================
 
 	if err := xdr.EncodeOptionalFileAttr(&buf, resp.DirAttr); err != nil {
 		return nil, fmt.Errorf("failed to encode directory attributes: %w", err)
 	}
 
-	// ========================================================================
 	// Error case: Return early (no entries)
-	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding READDIRPLUS error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
-	// ========================================================================
 	// Success case: Write cookie verifier
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.CookieVerf); err != nil {
 		return nil, fmt.Errorf("failed to write cookieverf: %w", err)
 	}
 
-	// ========================================================================
 	// Write directory entries
-	// ========================================================================
 
 	for _, entry := range resp.Entries {
 		// value_follows = TRUE (1) - indicates an entry follows
@@ -224,18 +200,14 @@ func (resp *ReadDirPlusResponse) Encode() ([]byte, error) {
 		}
 	}
 
-	// ========================================================================
 	// Write end-of-list marker
-	// ========================================================================
 
 	// value_follows = FALSE (0) - indicates no more entries
 	if err := binary.Write(&buf, binary.BigEndian, uint32(0)); err != nil {
 		return nil, fmt.Errorf("failed to write end-of-list marker: %w", err)
 	}
 
-	// ========================================================================
 	// Write EOF flag
-	// ========================================================================
 
 	eofVal := uint32(0)
 	if resp.Eof {

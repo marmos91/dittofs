@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // CommitRequest represents a COMMIT request from an NFS client.
 // The client requests that the server flush any cached writes for a specified
@@ -74,9 +72,7 @@ type CommitResponse struct {
 	WriteVerifier uint64
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Commit handles NFS COMMIT (RFC 1813 Section 3.3.21).
 // Flushes cached unstable writes to stable storage for a file byte range.
@@ -92,27 +88,15 @@ func (h *Handler) Commit(
 
 	logger.InfoCtx(ctx.Context, "COMMIT", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Check for context cancellation before starting work
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "COMMIT cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Validate request parameters
-	// ========================================================================
-
 	if err := validateCommitRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "COMMIT validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", err)
 		return &CommitResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 3: Get metadata service
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -121,10 +105,6 @@ func (h *Handler) Commit(
 	}
 
 	handle := metadata.FileHandle(req.Handle)
-
-	// ========================================================================
-	// Step 4: Verify file exists and capture pre-operation state
-	// ========================================================================
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
@@ -153,10 +133,6 @@ func (h *Handler) Commit(
 			AttrAfter:       wccAfter,
 		}, nil
 	}
-
-	// ========================================================================
-	// Step 4b: Perform commit operation - flush block store to stable storage
-	// ========================================================================
 
 	// Check context before potentially long flush operation
 	if ctx.isContextCancelled() {
@@ -189,10 +165,6 @@ func (h *Handler) Commit(
 			WriteVerifier:   serverBootTime,
 		}, nil
 	}
-
-	// ========================================================================
-	// Step 5: Flush data to BlockStore (uses local cache internally)
-	// ========================================================================
 
 	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
@@ -235,10 +207,6 @@ func (h *Handler) Commit(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Flush pending metadata writes (deferred commit optimization)
-	// ========================================================================
-
 	// Build auth context for metadata flush
 	authCtx, authErr := h.GetCachedAuthContext(ctx)
 	if authErr == nil {
@@ -265,9 +233,7 @@ func (h *Handler) Commit(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateCommitRequest validates COMMIT request parameters.
 //

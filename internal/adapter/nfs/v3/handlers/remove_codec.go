@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeRemoveRequest decodes a REMOVE request from XDR-encoded bytes.
 //
@@ -49,9 +47,7 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode directory handle
-	// ========================================================================
 
 	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -61,9 +57,7 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// ========================================================================
 	// Decode filename
-	// ========================================================================
 
 	filename, err := xdr.DecodeString(reader)
 	if err != nil {
@@ -84,9 +78,7 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the RemoveResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -120,17 +112,13 @@ func DecodeRemoveRequest(data []byte) (*RemoveRequest, error) {
 func (resp *RemoveResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write directory WCC data (both success and failure cases)
-	// ========================================================================
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the parent directory.
 

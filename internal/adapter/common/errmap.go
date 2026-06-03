@@ -13,7 +13,7 @@ import (
 // protoCodes carries the per-protocol status code for a single
 // merrs.ErrorCode row. Every row in errorMap populates all three columns —
 // Go's struct literal rules guarantee that adding a new ErrorCode populates
-// NFS3/NFS4/SMB at once (ADAPT-03 "one edit, not two" contract).
+// NFS3/NFS4/SMB at once, so a new code is mapped for every protocol in one edit.
 type protoCodes struct {
 	NFS3 uint32
 	NFS4 uint32
@@ -32,23 +32,22 @@ var defaultCodes = protoCodes{
 // errorMap is the single source of truth for merrs.ErrorCode -> protocol
 // status code (general/non-lock context).
 //
-// Authority per column (consolidated during ADAPT-03):
+// Authority per column:
 //   - NFS3 column: internal/adapter/nfs/xdr/errors.go (MapStoreErrorToNFSStatus
 //     is the audit-logging wrapper and is more complete than
-//     internal/adapter/nfs/v3/handlers/create.go's mapMetadataErrorToNFS —
-//     per PATTERNS.md gotcha #2 / #6). xdr/errors.go includes ErrLocked,
-//     ErrPrivilegeRequired, ErrNameTooLong rows that create.go partially
-//     omitted.
-//   - NFS4 column: internal/adapter/nfs/v4/types/errors.go:11-70. Includes
+//     internal/adapter/nfs/v3/handlers/create.go's mapMetadataErrorToNFS).
+//     xdr/errors.go includes ErrLocked, ErrPrivilegeRequired, ErrNameTooLong
+//     rows that create.go partially omitted.
+//   - NFS4 column: internal/adapter/nfs/v4/types/errors.go. Includes
 //     lock codes (ErrLocked → NFS4ERR_LOCKED, ErrDeadlock → NFS4ERR_DEADLOCK,
 //     ErrGracePeriod → NFS4ERR_GRACE) that NFSv3 had to fall back on
 //     NFS3ErrJukebox for.
-//   - SMB column: internal/adapter/smb/handlers/converters.go:354-395 for
+//   - SMB column: internal/adapter/smb/handlers/converters.go for
 //     general (non-lock) context. Lock-context deltas go in lock_errmap.go.
 //
-// Three-way drift surfaced during consolidation (see PATTERNS.md
-// gotcha #7). Each row with a drift item is annotated inline with the
-// authority source and the fallback chosen for the omitting protocol:
+// The three protocols drifted historically. Each row with a drift item is
+// annotated inline with the authority source and the fallback chosen for the
+// omitting protocol:
 //
 //   - NFSv3 omitted ErrDeadlock, ErrGracePeriod, ErrLockLimitExceeded,
 //     ErrLockConflict, ErrQuotaExceeded, ErrLockNotFound,
@@ -261,7 +260,7 @@ var errorMap = map[merrs.ErrorCode]protoCodes{
 func lookupErrorRow(err error) protoCodes {
 	// engine.ErrStoreClosed is a block-store-lifecycle sentinel (not a
 	// merrs.StoreError) returned when a data op hits a Store that an admin
-	// removed/hot-reloaded mid-transfer (area-7 H-A). Map it to the same
+	// removed/hot-reloaded mid-transfer. Map it to the same
 	// stale-handle row as merrs.ErrStaleHandle so the client observes the
 	// share going away (NFS *_STALE / SMB STATUS_FILE_CLOSED) rather than a
 	// generic I/O / server fault.

@@ -439,7 +439,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			} else {
 				authCtx.HasDeleteAccess = true
 
-				// Dir-lease parent-key suppression (#470 C6/C7): when the closer's
+				// Dir-lease parent-key suppression: when the closer's
 				// parent key matches the DOC-setter's parent key, use the closer's
 				// key for suppression (test_unlink_same_*). When they differ, no
 				// suppression — ALL parent dir leases break (test_unlink_different_*).
@@ -553,7 +553,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// that modified the file (WRITE occurred) breaks parent-dir leases. The
 	// WRITE itself does NOT break — only the CLOSE triggers the break so
 	// directory caching is only invalidated once the mutation is committed.
-	// Parent-key suppression (MS-SMB2 §3.3.4.20, #470 C2) applies: if the
+	// Parent-key suppression (MS-SMB2 §3.3.4.20) applies: if the
 	// closing handle carried a ParentLeaseKey matching the parent's dir lease,
 	// that lease is suppressed. Covers smb2.dirlease.v2_request: write without
 	// parent key -> close breaks dir lease; write with parent key -> close

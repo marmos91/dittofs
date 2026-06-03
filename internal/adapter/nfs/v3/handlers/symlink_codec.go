@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeSymlinkRequest decodes a SYMLINK request from XDR-encoded bytes.
 //
@@ -54,9 +52,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode directory handle
-	// ========================================================================
 
 	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -66,27 +62,21 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// ========================================================================
 	// Decode symlink name
-	// ========================================================================
 
 	name, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode symlink name: %w", err)
 	}
 
-	// ========================================================================
 	// Decode symlink attributes
-	// ========================================================================
 
 	attr, err := xdr.DecodeSetAttrs(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode attributes: %w", err)
 	}
 
-	// ========================================================================
 	// Decode target path
-	// ========================================================================
 
 	target, err := xdr.DecodeString(reader)
 	if err != nil {
@@ -103,9 +93,7 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the SymlinkResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -144,17 +132,13 @@ func DecodeSymlinkRequest(data []byte) (*SymlinkRequest, error) {
 func (resp *SymlinkResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("write status: %w", err)
 	}
 
-	// ========================================================================
 	// Success case: Write symlink handle and attributes
-	// ========================================================================
 
 	if resp.Status == types.NFS3OK {
 		// Write post-op file handle (optional)
@@ -168,9 +152,7 @@ func (resp *SymlinkResponse) Encode() ([]byte, error) {
 		}
 	}
 
-	// ========================================================================
 	// Write directory WCC data (both success and failure cases)
-	// ========================================================================
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the parent directory.
 

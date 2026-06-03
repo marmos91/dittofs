@@ -22,9 +22,9 @@ import (
 // manifest hashes into the block-GC mark phase, scoped to a fixed share
 // list captured at construction time.
 //
-// D-23-02 filter: a snapshot contributes its hashes iff its on-disk
+// Filter: a snapshot contributes its hashes iff its on-disk
 // manifest.hashes file exists, regardless of state. The on-disk manifest
-// is the ground truth (Phase 22 D-04); its existence is the only fact
+// is the ground truth; its existence is the only fact
 // GC needs. This covers three windows the prior state='ready' filter
 // missed: (1) creating-post-manifest-pre-flip, (2) failed-retained-for-retry,
 // (3) failed → creating retry (same id, same dir, atomic overwrite).
@@ -40,7 +40,7 @@ import (
 // AcquireDeleteLock(shareName) Lock-s the SAME shared mutex. Because
 // every provider built for a share borrows the SAME pointer, a delete
 // arriving on a different provider instance still blocks (or is blocked
-// by) any concurrent mark. D-23-04.
+// by) any concurrent mark.
 type SnapshotHoldProvider struct {
 	rt     *Runtime
 	shares []string
@@ -55,7 +55,7 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 		return nil
 	}
 
-	// D-23-04: RLock every borrowed per-share mutex to block concurrent
+	// RLock every borrowed per-share mutex to block concurrent
 	// snapshot-delete writers from removing rows + dirs mid-stream.
 	// Locks are acquired in the construction order baked into p.locks;
 	// the delete path acquires a single share's lock at a time, so
@@ -93,7 +93,7 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 			manifestPath := snap.ManifestPath(localStoreDir)
 			if _, err := os.Stat(manifestPath); err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
-					// D-23-02: no manifest = no hold. Covers
+					// No manifest = no hold. Covers
 					// pre-manifest-write creating rows and
 					// operator-deleted ready/failed manifests.
 					continue
@@ -189,12 +189,12 @@ func isTransientSharingViolation(err error) bool {
 }
 
 // AcquireDeleteLock is the write-side counterpart used by the snapshot
-// orchestration layer (Phase 23 plans 23-04/05) before invoking
+// orchestration layer before invoking
 // store.DeleteSnapshot + os.RemoveAll of the snapshot dir. Holding the
 // lock blocks new HeldHashes callers (across ALL provider instances
 // scoped to the same share) until release is invoked, so a concurrent
 // GC mark phase never observes a snapshot whose row has been removed
-// but whose manifest is still being read (or vice versa). D-23-04.
+// but whose manifest is still being read (or vice versa).
 //
 // The looked-up mutex is the SAME pointer that any concurrently-built
 // SnapshotHoldProvider would have borrowed for shareName via
@@ -235,7 +235,7 @@ func (r *Runtime) snapshotHoldForRemote(shareNames []string) engine.HoldProvider
 // thereafter so every caller for the same share name sees the SAME
 // pointer — required for AcquireDeleteLock(shareName) to actually
 // block any concurrent HeldHashes that has the corresponding RLock,
-// regardless of which provider instance constructed each. D-23-04.
+// regardless of which provider instance constructed each.
 func (r *Runtime) snapshotDeleteLock(shareName string) *sync.RWMutex {
 	r.snapDeleteLocksMu.Lock()
 	defer r.snapDeleteLocksMu.Unlock()

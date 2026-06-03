@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeWriteRequest decodes a WRITE request from XDR-encoded bytes.
 //
@@ -68,27 +66,21 @@ func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 		return nil, fmt.Errorf("failed to read offset: %w", err)
 	}
 
-	// ========================================================================
 	// Decode count
-	// ========================================================================
 
 	var count uint32
 	if err := binary.Read(reader, binary.BigEndian, &count); err != nil {
 		return nil, fmt.Errorf("failed to read count: %w", err)
 	}
 
-	// ========================================================================
 	// Decode stability level
-	// ========================================================================
 
 	var stable uint32
 	if err := binary.Read(reader, binary.BigEndian, &stable); err != nil {
 		return nil, fmt.Errorf("failed to read stable: %w", err)
 	}
 
-	// ========================================================================
 	// Decode data
-	// ========================================================================
 
 	// Read data length
 	var dataLen uint32
@@ -150,9 +142,7 @@ func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the WriteResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -193,17 +183,13 @@ func DecodeWriteRequest(data []byte) (*WriteRequest, error) {
 func (resp *WriteResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write WCC data (Weak Cache Consistency)
-	// ========================================================================
 	// WCC data is included in both success and error cases to help
 	// clients maintain cache consistency.
 
@@ -246,18 +232,14 @@ func (resp *WriteResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode post-op attributes: %w", err)
 	}
 
-	// ========================================================================
 	// Error case: Return early if status is not OK
-	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding WRITE error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
-	// ========================================================================
 	// Success case: Write count, committed, and verifier
-	// ========================================================================
 
 	// Write count (number of bytes actually written)
 	if err := binary.Write(&buf, binary.BigEndian, resp.Count); err != nil {

@@ -477,7 +477,7 @@ type OpenFile struct {
 	// Used by the dir-lease parent-key suppression rule (MS-SMB2 §3.3.4.20):
 	// SET_INFO / WRITE / CLOSE-on-delete on this handle MUST NOT break the
 	// parent dir lease whose LeaseKey matches this value. The field is
-	// meaningful only when HasParentLeaseKey is true (#470 C2).
+	// meaningful only when HasParentLeaseKey is true.
 	ParentLeaseKey    [16]byte
 	HasParentLeaseKey bool
 
@@ -1380,7 +1380,7 @@ func (h *Handler) handleDeleteOnClose(ctx context.Context, sess *session.Session
 	authCtx := h.buildCleanupAuthContext(ctx, sess)
 	// Thread the closing handle's RqLs ParentLeaseKey so notifyDirChange can
 	// apply the MS-SMB2 §3.3.4.20 / Samba `dirlease_should_break` parent-key
-	// suppression rule on the parent dir lease (#470 C6/C7).
+	// suppression rule on the parent dir lease.
 	PropagateOpenFileParentLeaseKey(authCtx, openFile)
 	metaSvc := h.Registry.GetMetadataService()
 

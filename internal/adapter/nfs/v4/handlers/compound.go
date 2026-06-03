@@ -425,7 +425,7 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 
 	// Replay: return cached COMPOUND response bytes directly
 	if cachedReply != nil {
-		logger.Info("NFSv4.1 COMPOUND replay cache hit",
+		logger.Debug("NFSv4.1 COMPOUND replay cache hit",
 			"client", compCtx.ClientAddr)
 		return cachedReply, nil
 	}

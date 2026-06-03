@@ -2,9 +2,7 @@ package handlers
 
 import "time"
 
-// ============================================================================
 // Server Instance Tracking
-// ============================================================================
 
 // serverBootTime stores the time when the NFS server started.
 // This is used as the write verifier to help clients detect server restarts.

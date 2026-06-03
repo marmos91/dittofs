@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // LookupRequest represents a LOOKUP request from an NFS client.
 // The client provides a directory handle and a filename to search for.
@@ -67,9 +65,7 @@ type LookupResponse struct {
 	DirAttr *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Lookup handles NFS LOOKUP (RFC 1813 Section 3.3.3).
 // Resolves a filename in a directory to a file handle and attributes.
@@ -89,10 +85,6 @@ func (h *Handler) Lookup(
 		"client", clientIP,
 		"auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Check for context cancellation before starting work
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "LOOKUP cancelled",
 			"name", req.Filename,
@@ -102,10 +94,6 @@ func (h *Handler) Lookup(
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Validate request parameters
-	// ========================================================================
-
 	if err := validateLookupRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "LOOKUP validation failed",
 			"name", req.Filename,
@@ -113,10 +101,6 @@ func (h *Handler) Lookup(
 			"error", err)
 		return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 3: Get metadata from registry
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -128,10 +112,6 @@ func (h *Handler) Lookup(
 	logger.DebugCtx(ctx.Context, "LOOKUP",
 		"share", ctx.Share,
 		"name", req.Filename)
-
-	// ========================================================================
-	// Step 4: Verify directory handle exists and is valid
-	// ========================================================================
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
@@ -168,10 +148,6 @@ func (h *Handler) Lookup(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 4: Build AuthContext with share-level identity mapping
-	// ========================================================================
-
 	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -197,9 +173,6 @@ func (h *Handler) Lookup(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 5: Look up the child via store
-	// ========================================================================
 	// The store.Lookup() method atomically:
 	// - Checks search/execute permission on the directory
 	// - Finds the child by name (including "." and "..")
@@ -243,9 +216,6 @@ func (h *Handler) Lookup(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Build success response with file handle and attributes
-	// ========================================================================
 	// store.Lookup() already returned the File object with attributes,
 	// so we don't need a separate GetFile() call!
 
@@ -289,9 +259,7 @@ func (h *Handler) Lookup(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateLookupRequest validates LOOKUP request parameters.
 //

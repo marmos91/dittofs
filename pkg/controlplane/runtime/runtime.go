@@ -85,9 +85,9 @@ type Runtime struct {
 	adapterProvidersMu sync.RWMutex
 
 	// snapInFlight tracks per-share in-flight snapshot orchestration
-	// goroutines so RemoveShare (plan 23-05) and Runtime.Shutdown can
+	// goroutines so RemoveShare and Runtime.Shutdown can
 	// cancel + wait before tearing down state. Keyed by share name.
-	// See pkg/controlplane/runtime/snapshot.go (Phase 23, D-23-17).
+	// See pkg/controlplane/runtime/snapshot.go.
 	snapInFlight   map[string]*snapInFlight
 	snapInFlightMu sync.Mutex
 
@@ -98,7 +98,7 @@ type Runtime struct {
 	// for that share — across multiple GC runs and the delete path —
 	// looks up the SAME mutex pointer here, so a per-instance mutex on
 	// the provider can never collude with a delete on a different
-	// provider instance. D-23-04.
+	// provider instance.
 	snapDeleteLocks   map[string]*sync.RWMutex
 	snapDeleteLocksMu sync.Mutex
 
@@ -113,10 +113,10 @@ type Runtime struct {
 	restoreLocks   map[string]*sync.Mutex
 	restoreLocksMu sync.Mutex
 
-	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown
-	// (plan 23-05). Snapshot orchestration goroutines derive their
+	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown.
+	// Snapshot orchestration goroutines derive their
 	// child ctx from this so they outlive any caller request ctx
-	// but die promptly on Runtime shutdown. D-23-17.
+	// but die promptly on Runtime shutdown.
 	runtimeCtx    context.Context
 	runtimeCancel context.CancelFunc
 
@@ -146,8 +146,8 @@ func New(s store.Store) *Runtime {
 		statusCheckers:   newCheckerCache(StatusCacheTTL),
 	}
 
-	// Long-lived ctx for snapshot orchestration goroutines (D-23-17).
-	// Cancelled by Runtime shutdown in plan 23-05.
+	// Long-lived ctx for snapshot orchestration goroutines.
+	// Cancelled by Runtime shutdown.
 	rt.runtimeCtx, rt.runtimeCancel = context.WithCancel(context.Background())
 
 	// Install the recycle-bin policy on the shared metadata service. The
@@ -186,7 +186,7 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 // Shutdown drains in-flight snapshot goroutines, stops all protocol
 // adapters, and closes metadata stores in that order.
 //
-// ORDER IS LOAD-BEARING (D-23-17):
+// ORDER IS LOAD-BEARING:
 //
 //  1. shutdownSnapshots — cancel in-flight snapshot goroutines and wait.
 //     These goroutines call into Backupable.Backup (on metadata stores)
@@ -403,18 +403,18 @@ func (r *Runtime) RegisterShareForTesting(name string) {
 
 // RemoveShare removes a share. Snapshot orchestration goroutines for the
 // share are cancelled and drained BEFORE the per-share snapshots/ tree is
-// wiped (Phase 22 D-15 hook inside sharesSvc.RemoveShare) — without this
+// wiped (hook inside sharesSvc.RemoveShare) — without this
 // ordering a still-running snap goroutine could write into the
 // about-to-be-deleted directory.
 //
-// Per Phase 22 invariant (shares/service.go:776 "DB row is the source of
+// Per the invariant in shares/service.go ("DB row is the source of
 // truth"), snapshot DB rows are NOT cascade-deleted: the cancelled
-// goroutine has already flipped its row to state=failed per D-23-09 (or the
-// startup-recovery sweep in plan 23-05 / D-23-18 will), and that orphan row
+// goroutine has already flipped its row to state=failed (or the
+// startup-recovery sweep will), and that orphan row
 // is harmless because the on-disk manifest is wiped and the hold filter
-// (D-23-02) returns false once the snapshots/ tree is gone. D-23-17.
+// returns false once the snapshots/ tree is gone.
 func (r *Runtime) RemoveShare(name string) error {
-	r.cancelAndWaitInFlightSnaps(name) // D-23-17: drain BEFORE tree wipe
+	r.cancelAndWaitInFlightSnaps(name) // drain BEFORE tree wipe
 	// sharesSvc.RemoveShare now performs ordered best-effort teardown and may
 	// return an aggregated error (REVIEW M4). We must NOT early-return on it:
 	// the metadata deregistration below is what prevents the unbounded
@@ -550,11 +550,11 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	// an explicit Trash().Stop() from Runtime.Shutdown.
 	r.Trash().Start(ctx)
 
-	// D-23-18: Reconcile snapshot rows abandoned by a prior crash BEFORE
+	// Reconcile snapshot rows abandoned by a prior crash BEFORE
 	// adapters start serving. Metadata stores and shares are already
 	// registered by the cmd/dfs boot sequence at this point; running
 	// recovery here means by the time the first CreateSnapshot RPC
-	// arrives, the Phase 22 D-08 partial unique index slot for any
+	// arrives, the partial unique index slot for any
 	// previously-crashed share is already released. Failure is logged
 	// but non-fatal: the operator can still serve, and DeleteSnapshot
 	// reconciles whatever rows we could not flip.
@@ -581,7 +581,7 @@ func (r *Runtime) Serve(ctx context.Context) error {
 // StopAllAdapters / CloseMetadataStores. Direct callers should prefer
 // Runtime.Shutdown which orchestrates the full sequence; this method
 // exists to satisfy lifecycle.SnapshotDrainer without exporting
-// internal lifecycle details. D-23-17 #R3-1.
+// internal lifecycle details.
 func (r *Runtime) ShutdownSnapshots(ctx context.Context) {
 	r.shutdownSnapshots(ctx)
 }
@@ -833,8 +833,8 @@ func (r *Runtime) NFSClientProvider() any { return r.GetAdapterProvider("nfs") }
 //
 // The done map keys are snapshot IDs; each chan is buffered (cap 1) and
 // receives exactly one snapResult before the goroutine closes it, so
-// WaitForSnapshot (plan 23-06) can surface the orchestration error via
-// errors.Is without consulting the DB. D-23-17.
+// WaitForSnapshot can surface the orchestration error via
+// errors.Is without consulting the DB.
 type snapInFlight struct {
 	wg sync.WaitGroup
 	// cancels is keyed by snapshot ID so completed snapshots can release
@@ -855,7 +855,7 @@ type snapInFlight struct {
 }
 
 // snapResult is sent exactly once on a snap's done channel, immediately
-// before close. nil err == success; non-nil err is wrapped per D-23-12.
+// before close. nil err == success; non-nil err is wrapped.
 type snapResult struct {
 	err error
 }

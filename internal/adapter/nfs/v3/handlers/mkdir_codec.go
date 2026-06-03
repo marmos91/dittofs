@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeMkdirRequest decodes a MKDIR request from XDR-encoded bytes.
 //
@@ -76,9 +74,7 @@ func DecodeMkdirRequest(data []byte) (*MkdirRequest, error) {
 	return req, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the MkdirResponse into XDR-encoded bytes suitable for
 // transmission over the network.

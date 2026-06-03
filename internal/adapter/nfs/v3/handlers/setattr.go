@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // SetAttrRequest represents a SETATTR request from an NFS client.
 // The client provides a file handle and a set of attributes to modify.
@@ -72,9 +70,7 @@ type SetAttrResponse struct {
 	AttrAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // SetAttr handles NFS SETATTR (RFC 1813 Section 3.3.2).
 // Modifies file attributes (mode, uid, gid, size, atime, mtime) with optional ctime guard.
@@ -85,9 +81,7 @@ func (h *Handler) SetAttr(
 	ctx *NFSHandlerContext,
 	req *SetAttrRequest,
 ) (*SetAttrResponse, error) {
-	// ========================================================================
 	// Context Cancellation Check - Entry Point
-	// ========================================================================
 	// Check if the client has disconnected or the request has timed out
 	// before we start any operations. This is especially important for
 	// SETATTR operations that may involve expensive content truncation.
@@ -108,10 +102,6 @@ func (h *Handler) SetAttr(
 		"client", clientIP,
 		"auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateSetAttrRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "SETATTR validation failed",
 			"handle", fmt.Sprintf("%x", req.Handle),
@@ -119,10 +109,6 @@ func (h *Handler) SetAttr(
 			"error", err)
 		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Get metadata store from context
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -135,10 +121,6 @@ func (h *Handler) SetAttr(
 	logger.DebugCtx(ctx.Context, "SETATTR",
 		"share", ctx.Share)
 
-	// ========================================================================
-	// Step 3: Get current file attributes for WCC and guard check
-	// ========================================================================
-
 	currentFile, status, err := h.getFileOrError(ctx, fileHandle, "SETATTR", req.Handle)
 	if currentFile == nil {
 		return &SetAttrResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
@@ -147,9 +129,7 @@ func (h *Handler) SetAttr(
 	// Capture pre-operation attributes for WCC data
 	wccBefore := xdr.CaptureWccAttr(&currentFile.FileAttr)
 
-	// ========================================================================
 	// Handle Empty SETATTR (No-Op)
-	// ========================================================================
 	// If no attributes are specified, return success immediately with current
 	// attributes. This is valid NFS behavior - macOS Finder and other clients
 	// sometimes send empty SETATTR requests (possibly for access verification).
@@ -172,9 +152,7 @@ func (h *Handler) SetAttr(
 		}, nil
 	}
 
-	// ========================================================================
 	// Context Cancellation Check - After Metadata Lookup
-	// ========================================================================
 	// Check again after metadata lookup, before guard check and attribute update
 	if ctx.isContextCancelled() {
 		logger.DebugCtx(ctx.Context, "SETATTR: request cancelled after metadata lookup",
@@ -183,9 +161,6 @@ func (h *Handler) SetAttr(
 		return nil, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 3: Check guard condition if specified
-	// ========================================================================
 	// The guard implements optimistic concurrency control by checking if
 	// the file's ctime has changed since the client last read it.
 	// If it has changed, another client has modified the file and this
@@ -221,10 +196,6 @@ func (h *Handler) SetAttr(
 			"ctime", fmt.Sprintf("%d.%d", currentCtime.Seconds, currentCtime.Nseconds))
 	}
 
-	// ========================================================================
-	// Step 4: Build authentication context with share-level identity mapping
-	// ========================================================================
-
 	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, fileHandle, &currentFile.FileAttr, "SETATTR", "", req.Handle)
 	if authCtx == nil {
 		return &SetAttrResponse{
@@ -234,9 +205,6 @@ func (h *Handler) SetAttr(
 		}, err
 	}
 
-	// ========================================================================
-	// Step 5: Apply attribute updates via store
-	// ========================================================================
 	// The store is responsible for:
 	// - Checking ownership (for chown/chmod)
 	// - Checking write permission (for size/time changes)
@@ -349,9 +317,6 @@ func (h *Handler) SetAttr(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 5b: Reclaim block-store space on size-down truncation
-	// ========================================================================
 	// SetFileAttributes prunes FileAttr.Blocks past the new size, but the
 	// per-share block store still holds the dropped CAS chunks. Mirror the
 	// CREATE-with-truncate path (truncateExistingFile): drive
@@ -371,10 +336,6 @@ func (h *Handler) SetAttr(
 				"handle", fmt.Sprintf("%x", req.Handle), "size", *req.NewAttr.Size, "error", tErr)
 		}
 	}
-
-	// ========================================================================
-	// Step 6: Build success response with updated attributes
-	// ========================================================================
 
 	// H9: prefer the file's pre/post attributes captured atomically with the
 	// SetFileAttributes mutation. The wccBefore read at handler entry can race a
@@ -405,9 +366,7 @@ func (h *Handler) SetAttr(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateSetAttrRequest validates SETATTR request parameters.
 //
@@ -470,9 +429,7 @@ func validateSetAttrRequest(req *SetAttrRequest) *validationError {
 	return nil
 }
 
-// ============================================================================
 // Utility Functions
-// ============================================================================
 
 // logSetAttrRequest logs which attributes are being set in a SETATTR request.
 // This provides detailed debugging information about the operation.

@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // RemoveRequest represents a REMOVE request from an NFS client.
 // The client provides a directory handle and filename to delete.
@@ -60,9 +58,7 @@ type RemoveResponse struct {
 	DirWccAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Remove handles NFS REMOVE (RFC 1813 Section 3.3.12).
 // Deletes a non-directory file from a parent directory (symlinks and special files included).
@@ -85,18 +81,10 @@ func (h *Handler) Remove(
 
 	logger.InfoCtx(ctx.Context, "REMOVE", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateRemoveRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "REMOVE validation failed", "name", req.Filename, "client", clientIP, "error", err)
 		return &RemoveResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Resolve per-share metadata service and block store from directory handle
-	// ========================================================================
 
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
@@ -107,10 +95,6 @@ func (h *Handler) Remove(
 	}
 
 	logger.DebugCtx(ctx.Context, "REMOVE", "share", ctx.Share, "name", req.Filename)
-
-	// ========================================================================
-	// Step 3: Capture pre-operation directory attributes for WCC
-	// ========================================================================
 
 	dirFile, status, err := h.getFileOrError(ctx, dirHandle, "REMOVE", req.DirHandle)
 	if dirFile == nil {
@@ -135,10 +119,6 @@ func (h *Handler) Remove(
 		}, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 4: Build authentication context with share-level identity mapping
-	// ========================================================================
-
 	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "REMOVE", req.Filename, req.DirHandle)
 	if authCtx == nil {
 		return &RemoveResponse{
@@ -148,9 +128,6 @@ func (h *Handler) Remove(
 		}, err
 	}
 
-	// ========================================================================
-	// Step 4.5: Cross-protocol oplock break before deletion
-	// ========================================================================
 	// Resolve child handle for oplock break. Best-effort: if lookup fails,
 	// proceed with the removal (the store will report the actual error).
 	if breaker := h.getOplockBreaker(); breaker != nil {
@@ -162,9 +139,6 @@ func (h *Handler) Remove(
 		}
 	}
 
-	// ========================================================================
-	// Step 5: Remove file via store
-	// ========================================================================
 	// The store handles:
 	// - Verifying parent is a directory
 	// - Verifying the file exists
@@ -212,9 +186,6 @@ func (h *Handler) Remove(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 5.5: Delete content if file has content
-	// ========================================================================
 	// After successfully removing the metadata, attempt to delete the actual
 	// file content. This is done after metadata removal to ensure consistency:
 	// if metadata is removed but content deletion fails, the content becomes
@@ -238,10 +209,6 @@ func (h *Handler) Remove(
 		}
 	}
 
-	// ========================================================================
-	// Step 6: Build success response with updated directory attributes
-	// ========================================================================
-
 	// H9: use the parent attributes captured atomically with the removal,
 	// falling back to a fresh read only if the store did not return them.
 	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, dirHandle, dirWcc, wccBefore)
@@ -259,9 +226,7 @@ func (h *Handler) Remove(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateRemoveRequest validates REMOVE request parameters.
 //

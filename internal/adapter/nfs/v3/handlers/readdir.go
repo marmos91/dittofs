@@ -18,9 +18,7 @@ func directoryMtimeVerifier(mtime time.Time) uint64 {
 	return uint64(mtime.UnixNano())
 }
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // ReadDirRequest represents a READDIR request from an NFS client.
 // The client requests a list of directory entries, optionally resuming
@@ -87,9 +85,7 @@ type ReadDirResponse struct {
 	Eof bool
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // ReadDir handles NFS READDIR (RFC 1813 Section 3.3.16).
 // Lists directory entries (fileid, name, cookie) with cookie-based pagination.
@@ -112,18 +108,10 @@ func (h *Handler) ReadDir(
 
 	logger.InfoCtx(ctx.Context, "READDIR", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateReadDirRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "READDIR validation failed", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &ReadDirResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Get metadata store from context
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -134,10 +122,6 @@ func (h *Handler) ReadDir(
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
 	logger.DebugCtx(ctx.Context, "READDIR", "share", ctx.Share)
-
-	// ========================================================================
-	// Step 3: Verify directory handle exists and is valid
-	// ========================================================================
 
 	dirFile, status, err := h.getFileOrError(ctx, dirHandle, "READDIR", req.DirHandle)
 	if dirFile == nil {
@@ -157,9 +141,7 @@ func (h *Handler) ReadDir(
 		}, nil
 	}
 
-	// ========================================================================
 	// Cookie Verifier Validation (RFC 1813 Section 3.3.16)
-	// ========================================================================
 	// Generate verifier from directory mtime - changes when directory is modified
 	currentVerifier := directoryMtimeVerifier(dirFile.Mtime)
 
@@ -177,10 +159,6 @@ func (h *Handler) ReadDir(
 			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
 			"client", clientIP)
 	}
-
-	// ========================================================================
-	// Step 3: Build authentication context for store
-	// ========================================================================
 
 	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
@@ -223,9 +201,6 @@ func (h *Handler) ReadDir(
 		}, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 4: Read directory entries via store
-	// ========================================================================
 	// The store is responsible for:
 	// - Checking read/execute permission on the directory
 	// - Building "." and ".." entries
@@ -263,9 +238,6 @@ func (h *Handler) ReadDir(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 5: Convert metadata entries to NFS wire format
-	// ========================================================================
 	// No cancellation check here - this is fast pure computation
 
 	nfsEntries := make([]*types.DirEntry, 0, len(page.Entries))
@@ -276,10 +248,6 @@ func (h *Handler) ReadDir(
 			Cookie: entry.Cookie, // Cookie from MetadataService
 		})
 	}
-
-	// ========================================================================
-	// Step 6: Build success response
-	// ========================================================================
 
 	// Generate directory attributes for response
 	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
@@ -300,9 +268,7 @@ func (h *Handler) ReadDir(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateReadDirRequest validates READDIR request parameters.
 //
@@ -358,9 +324,7 @@ func validateReadDirRequest(req *ReadDirRequest) *validationError {
 	return nil
 }
 
-// ============================================================================
 // Utility Functions
-// ============================================================================
 
 // getLastCookie returns the cookie of the last entry in the list.
 // Returns 0 if the list is empty.

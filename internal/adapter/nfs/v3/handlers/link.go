@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // LinkRequest represents a LINK request from an NFS client.
 // The LINK procedure creates a hard link to an existing file.
@@ -66,9 +64,7 @@ type LinkResponse struct {
 	DirWccAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Link handles NFS LINK (RFC 1813 Section 3.3.15).
 // Creates a hard link to an existing file in a target directory.
@@ -84,9 +80,6 @@ func (h *Handler) Link(
 
 	logger.InfoCtx(ctx.Context, "LINK", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Check for context cancellation early
-	// ========================================================================
 	// LINK involves multiple operations, so respect cancellation to avoid
 	// wasting resources on abandoned requests
 
@@ -95,18 +88,10 @@ func (h *Handler) Link(
 		return nil, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 2: Validate request parameters
-	// ========================================================================
-
 	if err := validateLinkRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "LINK validation failed", "name", req.Name, "client", clientIP, "error", err)
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 3: Get metadata store from context and verify cross-share restriction
-	// ========================================================================
 
 	// Decode file handle to verify it's from the same share
 	fileHandle := metadata.FileHandle(req.FileHandle)
@@ -131,10 +116,6 @@ func (h *Handler) Link(
 	dirHandle := metadata.FileHandle(req.DirHandle)
 	logger.DebugCtx(ctx.Context, "LINK", "share", ctx.Share, "name", req.Name)
 
-	// ========================================================================
-	// Step 4: Build AuthContext for permission checking
-	// ========================================================================
-
 	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
 		// Check if error is due to context cancellation
@@ -147,18 +128,10 @@ func (h *Handler) Link(
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 4: Check cancellation before first store operation
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.DebugCtx(ctx.Context, "LINK cancelled before GetFile", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
-
-	// ========================================================================
-	// Step 5: Verify source file exists and is a regular file
-	// ========================================================================
 
 	fileAttr, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
@@ -172,18 +145,10 @@ func (h *Handler) Link(
 		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIsDir}}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Check cancellation before target directory lookup
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.DebugCtx(ctx.Context, "LINK cancelled before directory lookup", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
-
-	// ========================================================================
-	// Step 7: Verify target directory exists and is a directory
-	// ========================================================================
 
 	dirFile, err := metaSvc.GetFile(ctx.Context, dirHandle)
 	if err != nil {
@@ -208,18 +173,10 @@ func (h *Handler) Link(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 8: Check cancellation before name conflict check
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.DebugCtx(ctx.Context, "LINK cancelled before name check", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 		return nil, ctx.Context.Err()
 	}
-
-	// ========================================================================
-	// Step 9: Check if name already exists in target directory using Lookup
-	// ========================================================================
 
 	_, err = metaSvc.Lookup(authCtx, dirHandle, req.Name)
 	if err == nil {
@@ -238,9 +195,6 @@ func (h *Handler) Link(
 	}
 	// If error, file doesn't exist (good) - continue with link creation
 
-	// ========================================================================
-	// Step 10: Check cancellation before write operation
-	// ========================================================================
 	// This is the most critical check as CreateHardLink modifies filesystem state
 
 	if ctx.isContextCancelled() {
@@ -248,9 +202,6 @@ func (h *Handler) Link(
 		return nil, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 11: Create the hard link via store
-	// ========================================================================
 	// The store is responsible for:
 	// - Verifying write access to the target directory
 	// - Adding the new directory entry
@@ -275,9 +226,6 @@ func (h *Handler) Link(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 12: Build success response with updated attributes
-	// ========================================================================
 	// No cancellation check here - operation succeeded, fetching attributes
 	// is best-effort for cache consistency
 
@@ -303,13 +251,9 @@ func (h *Handler) Link(
 	}, nil
 }
 
-// ============================================================================
 // Helper Functions
-// ============================================================================
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateLinkRequest validates LINK request parameters.
 //

@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeReadRequest decodes a READ request from XDR-encoded bytes.
 //
@@ -78,9 +76,7 @@ func DecodeReadRequest(data []byte) (*ReadRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the ReadResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -133,34 +129,26 @@ func (resp *ReadResponse) Encode() ([]byte, error) {
 	estimatedSize := 110 + int(resp.Count) + 3
 	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write post-op attributes (both success and error cases)
-	// ========================================================================
 
 	if err := xdr.EncodeOptionalFileAttr(buf, resp.Attr); err != nil {
 		return nil, fmt.Errorf("failed to encode attributes: %w", err)
 	}
 
-	// ========================================================================
 	// Error case: Return early if status is not OK
-	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding READ error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
-	// ========================================================================
 	// Success case: Write count, EOF flag, and data
-	// ========================================================================
 
 	// Write count (number of bytes read)
 	if err := binary.Write(buf, binary.BigEndian, resp.Count); err != nil {

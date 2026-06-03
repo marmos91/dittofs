@@ -964,7 +964,7 @@ func (lm *LeaseManager) BreakFileHandleLeasesOnDelete(
 //
 // excludeParentLeaseKey + hasExcludeKey carry the originating handle's
 // ParentLeaseKey (when set on its RqLs) so the dir-lease parent-key
-// suppression rule (MS-SMB2 §3.3.4.20, #470 C2) is applied in breakOpLocks.
+// suppression rule (MS-SMB2 §3.3.4.20) is applied in breakOpLocks.
 func (lm *LeaseManager) resolveParentBreakArgs(
 	parentHandle lock.FileHandle,
 	shareName string,
@@ -1005,7 +1005,7 @@ func (lm *LeaseManager) resolveParentBreakArgs(
 //
 // excludeParentLeaseKey + hasExcludeKey carry the originating handle's RqLs
 // ParentLeaseKey for the dir-lease parent-key suppression rule (MS-SMB2
-// §3.3.4.20, #470 C2). Pass the zero key + false when there is no parent-key
+// §3.3.4.20). Pass the zero key + false when there is no parent-key
 // linkage to honor.
 func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 	ctx context.Context,
@@ -1042,7 +1042,7 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 // mask atomically — i.e. an RH parent lease must transition RH → "" via ONE
 // LEASE_BREAK_NOTIFICATION, not via the two-step (strip-H then strip-R) pattern
 // used by the non-destructive CREATE path (BreakParentHandleLeasesOnCreate +
-// BreakParentReadLeasesOnModify). smb2.dirlease.overwrite (#470 C4) asserts
+// BreakParentReadLeasesOnModify). smb2.dirlease.overwrite asserts
 // exactly two break notifications for the test scenario — one on the file
 // lease, one on the dir lease — so the two-step pattern produces three and
 // fails the test.
@@ -1050,7 +1050,7 @@ func (lm *LeaseManager) BreakParentHandleLeasesOnCreate(
 // Waits for LEASE_BREAK_ACK with parentLeaseBreakWaitTimeout (same ack-wait
 // guarantee as BreakParentHandleLeasesOnCreate). excludeClientID +
 // excludeParentLeaseKey + hasExcludeKey carry the suppression rules from
-// MS-SMB2 §3.3.4.20 (#470 C2) so a same-client or parent-key-linked dir
+// MS-SMB2 §3.3.4.20 so a same-client or parent-key-linked dir
 // lease is not broken.
 func (lm *LeaseManager) BreakParentDirLeasesOnDestructiveCreate(
 	ctx context.Context,

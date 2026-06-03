@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // FsStatRequest represents an FSSTAT request from an NFS client.
 // The client provides a file handle to query filesystem statistics for.
@@ -75,9 +73,7 @@ type FsStatResponse struct {
 	Invarsec uint32
 }
 
-// ============================================================================
 // Handler Implementation
-// ============================================================================
 
 // FsStat handles NFS FSSTAT (RFC 1813 Section 3.3.18).
 // Returns volatile filesystem statistics: total/free/available bytes and file slots.
@@ -90,18 +86,10 @@ func (h *Handler) FsStat(
 ) (*FsStatResponse, error) {
 	logger.DebugCtx(ctx.Context, "FSSTAT request", "handle", fmt.Sprintf("%x", req.Handle), "client", ctx.ClientAddr)
 
-	// ========================================================================
-	// Step 1: Check for context cancellation before starting work
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "FSSTAT cancelled", "handle", fmt.Sprintf("%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Validate file handle
-	// ========================================================================
 
 	// Validate file handle
 	if len(req.Handle) == 0 {
@@ -121,19 +109,13 @@ func (h *Handler) FsStat(
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
-	// ========================================================================
-	// Step 3: Verify the file handle exists
-	// ========================================================================
-
 	// Check context before store call
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "FSSTAT cancelled before GetFile", "handle", fmt.Sprintf("%x", req.Handle), "client", ctx.ClientAddr, "error", ctx.Context.Err())
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
 	// Get metadata from registry
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -149,10 +131,6 @@ func (h *Handler) FsStat(
 	}
 
 	logger.DebugCtx(ctx.Context, "FSSTAT", "share", ctx.Share, "path", file.Path)
-
-	// ========================================================================
-	// Step 4: Retrieve filesystem statistics from the store
-	// ========================================================================
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
@@ -171,10 +149,6 @@ func (h *Handler) FsStat(
 		logError(ctx.Context, fmt.Errorf("store returned nil statistics"), "FSSTAT failed: store returned nil statistics", "client", ctx.ClientAddr)
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
-
-	// ========================================================================
-	// Step 5: Build success response with file attributes and stats
-	// ========================================================================
 
 	// Generate file ID from handle for attributes
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)

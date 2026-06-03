@@ -61,9 +61,7 @@ func safeAdd(a, b uint64) (uint64, bool) {
 	return sum, overflow
 }
 
-// ============================================================================
 // Error Logging Helpers
-// ============================================================================
 
 // logError logs an error.
 // Use this for actual errors that indicate something went wrong.
@@ -83,9 +81,7 @@ func logWarn(ctx context.Context, err error, msg string, args ...any) {
 	logger.WarnCtx(ctx, msg, args...)
 }
 
-// ============================================================================
 // MFsymlink Detection for NFS/SMB Interoperability
-// ============================================================================
 //
 // MFsymlinks are 1067-byte files with "XSym\n" header used by macOS/Windows
 // SMB clients for symlink creation. When accessed via NFS, these files should

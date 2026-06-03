@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeMknodRequest decodes a MKNOD request from XDR-encoded bytes.
 //
@@ -52,9 +50,7 @@ func DecodeMknodRequest(data []byte) (*MknodRequest, error) {
 	reader := bytes.NewReader(data)
 	req := &MknodRequest{}
 
-	// ========================================================================
 	// Decode parent directory handle
-	// ========================================================================
 
 	handle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -65,9 +61,7 @@ func DecodeMknodRequest(data []byte) (*MknodRequest, error) {
 	}
 	req.DirHandle = handle
 
-	// ========================================================================
 	// Decode special file name
-	// ========================================================================
 
 	name, err := xdr.DecodeString(reader)
 	if err != nil {
@@ -75,9 +69,7 @@ func DecodeMknodRequest(data []byte) (*MknodRequest, error) {
 	}
 	req.Name = name
 
-	// ========================================================================
 	// Decode file type (discriminated union)
-	// ========================================================================
 
 	var fileType uint32
 	if err := binary.Read(reader, binary.BigEndian, &fileType); err != nil {
@@ -85,9 +77,7 @@ func DecodeMknodRequest(data []byte) (*MknodRequest, error) {
 	}
 	req.Type = fileType
 
-	// ========================================================================
 	// Decode type-specific data based on discriminated union
-	// ========================================================================
 
 	switch fileType {
 	case types.NF3CHR, types.NF3BLK:
@@ -133,9 +123,7 @@ func DecodeMknodRequest(data []byte) (*MknodRequest, error) {
 	return req, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the MknodResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -167,17 +155,13 @@ func DecodeMknodRequest(data []byte) (*MknodRequest, error) {
 func (resp *MknodResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("write status: %w", err)
 	}
 
-	// ========================================================================
 	// Success case: Write handle and attributes
-	// ========================================================================
 
 	if resp.Status == types.NFS3OK {
 		// Write new file handle (post_op_fh3 - optional)
@@ -191,9 +175,7 @@ func (resp *MknodResponse) Encode() ([]byte, error) {
 		}
 	}
 
-	// ========================================================================
 	// Write WCC data for parent directory (both success and failure)
-	// ========================================================================
 
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the parent directory.

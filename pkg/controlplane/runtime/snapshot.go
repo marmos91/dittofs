@@ -744,8 +744,7 @@ func (r *Runtime) failSnap(shareName, snapID string, cause error) {
 //
 // Lock discipline: snapInFlightMu is held only long enough to snapshot the
 // cancel funcs + take a reference to the WaitGroup, then released BEFORE the
-// wg.Wait. Per PATTERNS.md shared-pattern §lock-protected registry: never
-// block under the registry mutex.
+// wg.Wait, so the registry mutex is never held across a blocking wait.
 func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
 	r.snapInFlightMu.Lock()
 	entry, ok := r.snapInFlight[shareName]

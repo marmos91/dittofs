@@ -29,7 +29,7 @@ func MapContentToNFS3(err error) uint32 {
 		return nfs3types.NFS3OK
 	}
 	// The block store was Closed under the in-flight op — the share was
-	// removed/hot-reloaded mid-transfer (area-7 H-A). STALE tells the
+	// removed/hot-reloaded mid-transfer. STALE tells the
 	// client the handle no longer refers to a live object.
 	if goerrors.Is(err, engine.ErrStoreClosed) {
 		return nfs3types.NFS3ErrStale
@@ -64,7 +64,7 @@ func MapContentToNFS4(err error) uint32 {
 	if err == nil {
 		return nfs4types.NFS4_OK
 	}
-	// Closed store under an in-flight op (area-7 H-A) → STALE.
+	// Closed store under an in-flight op → STALE.
 	if goerrors.Is(err, engine.ErrStoreClosed) {
 		return nfs4types.NFS4ERR_STALE
 	}
@@ -89,7 +89,7 @@ func MapContentToSMB(err error) smbtypes.Status {
 	if err == nil {
 		return smbtypes.StatusSuccess
 	}
-	// Closed store under an in-flight op (area-7 H-A): the share went away
+	// Closed store under an in-flight op: the share went away
 	// mid-transfer. STATUS_FILE_CLOSED is the closest SMB stale-handle
 	// signal (matches the merrs.ErrStaleHandle row in errmap.go).
 	if goerrors.Is(err, engine.ErrStoreClosed) {

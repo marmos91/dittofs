@@ -7,9 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // Write Request Validation
-// ============================================================================
 
 // validateWriteRequest validates WRITE request parameters.
 //

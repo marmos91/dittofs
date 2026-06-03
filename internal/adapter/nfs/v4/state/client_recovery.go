@@ -124,8 +124,8 @@ func (sm *StateManager) recordReclaimCompleteLocked(clientIDString string) {
 }
 
 // validateReclaimVerifier rejects a CLAIM_PREVIOUS reclaim whose boot verifier
-// does not match the PRE-RESTART durable verifier (RFC 7530 §9.1.4, area-4 H8
-// §3.4): a changed verifier means the client rebooted and must NOT reclaim prior
+// does not match the PRE-RESTART durable verifier (RFC 7530 §9.1.4):
+// a changed verifier means the client rebooted and must NOT reclaim prior
 // state.
 //
 // It compares against the boot-load snapshot (bootRecoveryVerifiers), not the
@@ -155,8 +155,8 @@ func (sm *StateManager) validateReclaimVerifier(clientIDString string, bootVerif
 }
 
 // LoadClientRecovery reads the durable recovery records on boot and starts the
-// v4 grace period seeded with the prior clients' stable identity strings (the
-// area-4 H8 core: today the v4 roster is empty on a fresh process so v4 grace
+// v4 grace period seeded with the prior clients' stable identity strings:
+// today the v4 roster is empty on a fresh process so v4 grace
 // is a no-op; now it is the durable prior-client set).
 //
 // Records whose ReclaimComplete is already true are NOT waited on (a second

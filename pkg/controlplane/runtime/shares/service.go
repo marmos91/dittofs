@@ -912,7 +912,7 @@ func (s *Service) releaseRemoteStore(configID string) {
 // first (under the lock) so the share disappears from routing immediately;
 // the remaining steps are pure resource teardown.
 //
-// bs.Close() is now drain-safe (area-7 H-A): it takes the engine's lifecycle
+// bs.Close() is now drain-safe: it takes the engine's lifecycle
 // write lock, which blocks until all in-flight WriteAt/ReadAt/Flush ops on the
 // store have completed, so calling it here outside s.mu can no longer race a
 // client mid-transfer into a torn op or panic.

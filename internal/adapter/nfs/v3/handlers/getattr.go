@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // GetAttrRequest represents a GETATTR request from an NFS client.
 // The client provides a file handle to retrieve attributes for.
@@ -44,9 +42,7 @@ type GetAttrResponse struct {
 	Attr *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // GetAttr handles NFS GETATTR (RFC 1813 Section 3.3.1).
 // Returns file attributes (type, mode, size, timestamps, ownership) for a file handle.
@@ -77,10 +73,6 @@ func (h *Handler) GetAttr(
 		"client", clientIP,
 		"auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateGetAttrRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "GETATTR validation failed",
 			"handle", fmt.Sprintf("%x", req.Handle),
@@ -89,18 +81,10 @@ func (h *Handler) GetAttr(
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Get metadata from registry
-	// ========================================================================
-
 	if _, err := getMetadataService(h.Registry); err != nil {
 		logger.ErrorCtx(ctx.Context, "GETATTR failed: metadata service not initialized", "client", clientIP, "error", err)
 		return &GetAttrResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
-
-	// ========================================================================
-	// Step 3: Verify file handle exists and retrieve attributes
-	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
@@ -113,9 +97,6 @@ func (h *Handler) GetAttr(
 		"share", ctx.Share,
 		"path", file.Path)
 
-	// ========================================================================
-	// Step 4: Generate file attributes with proper file ID
-	// ========================================================================
 	// The file ID is extracted from the handle for NFS protocol purposes.
 	// This is a protocol-layer concern for creating the wire format.
 	// No cancellation check here - this operation is extremely fast (pure computation)
@@ -142,9 +123,7 @@ func (h *Handler) GetAttr(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateGetAttrRequest validates GETATTR request parameters.
 //

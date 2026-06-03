@@ -15,9 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // ReadRequest represents a READ request from an NFS client.
 // The client specifies a file handle, offset, and number of bytes to read.
@@ -93,9 +91,7 @@ func (r *ReadResponse) Release() {
 	}
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Read handles NFS READ (RFC 1813 Section 3.3.6).
 // Reads data from a regular file at a given offset, returning bytes and EOF flag.
@@ -106,9 +102,7 @@ func (h *Handler) Read(
 	ctx *NFSHandlerContext,
 	req *ReadRequest,
 ) (*ReadResponse, error) {
-	// ========================================================================
 	// Context Cancellation Check - Entry Point
-	// ========================================================================
 	// Check if the client has disconnected or the request has timed out
 	// before we start any expensive operations.
 	if ctx.isContextCancelled() {
@@ -121,10 +115,6 @@ func (h *Handler) Read(
 
 	logger.DebugCtx(ctx.Context, "READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateReadRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "READ validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP, "error", err)
 		return &ReadResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
@@ -136,10 +126,6 @@ func (h *Handler) Read(
 		req.Offset = uint64(types.OffsetMax)
 	}
 
-	// ========================================================================
-	// Step 2: Resolve per-share block store from file handle
-	// ========================================================================
-
 	fileHandle := metadata.FileHandle(req.Handle)
 
 	blockStore, err := common.ResolveForRead(ctx.Context, h.Registry, fileHandle)
@@ -149,10 +135,6 @@ func (h *Handler) Read(
 	}
 
 	logger.DebugCtx(ctx.Context, "READ: share", "share", ctx.Share)
-
-	// ========================================================================
-	// Step 3: Verify file exists and is a regular file
-	// ========================================================================
 
 	file, status, err := h.getFileOrError(ctx, fileHandle, "READ", req.Handle)
 	if file == nil {
@@ -172,18 +154,13 @@ func (h *Handler) Read(
 		}, nil
 	}
 
-	// ========================================================================
 	// Context Cancellation Check - After Metadata Lookup
-	// ========================================================================
 	// Check again before opening content (which may be expensive)
 	if ctx.isContextCancelled() {
 		logger.DebugCtx(ctx.Context, "READ: request cancelled after metadata lookup", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return nil, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 3b: Cross-protocol oplock break
-	// ========================================================================
 	// Fire-and-forget: NFS proceeds even if break is pending (per Samba behavior).
 	if breaker := h.getOplockBreaker(); breaker != nil {
 		if err := breaker.CheckAndBreakForRead(ctx.Context, lock.FileHandle(string(fileHandle))); err != nil {
@@ -191,10 +168,6 @@ func (h *Handler) Read(
 				"handle", fileHandle, "result", err)
 		}
 	}
-
-	// ========================================================================
-	// Step 3c: Check for empty file or offset beyond EOF
-	// ========================================================================
 
 	// If file has no content, return empty data with EOF
 	if file.PayloadID == "" || file.Size == 0 {
@@ -230,9 +203,6 @@ func (h *Handler) Read(
 	readEnd := min(req.Offset+uint64(req.Count), file.Size)
 	actualLength := uint32(readEnd - req.Offset)
 
-	// ========================================================================
-	// Step 4: Read data from BlockStore
-	// ========================================================================
 	// All reads go through BlockStore.ReadAt which reads from block store.
 
 	logger.DebugCtx(ctx.Context, "READ: reading from BlockStore", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", actualLength, "payload_id", file.PayloadID)
@@ -261,10 +231,6 @@ func (h *Handler) Read(
 	if req.Offset+uint64(n) >= file.Size {
 		eof = true
 	}
-
-	// ========================================================================
-	// Step 5: Build success response
-	// ========================================================================
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 

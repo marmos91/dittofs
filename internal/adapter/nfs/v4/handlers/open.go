@@ -49,9 +49,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		return openError(types.NFS4ERR_ROFS)
 	}
 
-	// ========================================================================
 	// Decode OPEN4args
-	// ========================================================================
 
 	// 1. seqid (uint32) - open-owner sequence number
 	seqid, err := xdr.DecodeUint32(reader)
@@ -167,9 +165,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		return openError(types.NFS4ERR_BADXDR)
 	}
 
-	// ========================================================================
 	// Dispatch by claim type
-	// ========================================================================
 
 	switch claimType {
 	case types.CLAIM_NULL:
@@ -225,9 +221,7 @@ func (h *Handler) handleOpenClaimNull(
 		return openError(status)
 	}
 
-	// ========================================================================
 	// Build auth context and get services
-	// ========================================================================
 
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
@@ -251,9 +245,7 @@ func (h *Handler) handleOpenClaimNull(
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
-	// ========================================================================
 	// Execute OPEN logic
-	// ========================================================================
 
 	var fileHandle metadata.FileHandle
 	var created bool
@@ -327,9 +319,7 @@ func (h *Handler) handleOpenClaimNull(
 		}
 	}
 
-	// ========================================================================
 	// Check delegation conflicts BEFORE creating state
-	// ========================================================================
 	// If another client holds a conflicting delegation, trigger async CB_RECALL
 	// and return NFS4ERR_DELAY so the client retries the entire OPEN.
 
@@ -342,9 +332,7 @@ func (h *Handler) handleOpenClaimNull(
 		return openError(types.NFS4ERR_DELAY)
 	}
 
-	// ========================================================================
 	// Create tracked state via StateManager
-	// ========================================================================
 
 	openResult, stateErr := h.StateManager.OpenFile(
 		clientID, ownerData, seqid,
@@ -374,9 +362,7 @@ func (h *Handler) handleOpenClaimNull(
 		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
 	}
 
-	// ========================================================================
 	// Try to grant a delegation
-	// ========================================================================
 
 	delegType, shouldGrant := h.StateManager.ShouldGrantDelegation(clientID, []byte(fileHandle), shareAccess)
 	var deleg *state.DelegationState
@@ -397,9 +383,7 @@ func (h *Handler) handleOpenClaimNull(
 		"delegation", delegType,
 		"client", ctx.ClientAddr)
 
-	// ========================================================================
 	// Encode OPEN4resok
-	// ========================================================================
 
 	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
 		beforeCtime, afterCtime, deleg)

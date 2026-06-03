@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeAccessRequest decodes an ACCESS request from XDR-encoded bytes.
 //
@@ -66,9 +64,7 @@ func DecodeAccessRequest(data []byte) (*AccessRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the AccessResponse into XDR-encoded bytes suitable for
 // transmission over the network.

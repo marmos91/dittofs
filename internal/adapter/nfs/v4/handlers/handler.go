@@ -185,12 +185,10 @@ func NewHandler(registry *runtime.Runtime, pfs *pseudofs.PseudoFS, stateManager 
 	//   // serialize snapshots to disk
 	//   handler.StateManager.Shutdown()
 
-	// ============================================================================
 	// NFSv4.1 dispatch table (stub handlers for all 19 v4.1 operations)
-	// ============================================================================
 	//
 	// Each stub decodes its operation's XDR args (to prevent stream desync)
-	// and returns NFS4ERR_NOTSUPP. Real handlers replace stubs in Phases 17-24.
+	// and returns NFS4ERR_NOTSUPP.
 
 	// BACKCHANNEL_CTL: update callback program and security params (RFC 8881 Section 18.33)
 	h.v41DispatchTable[types.OP_BACKCHANNEL_CTL] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {

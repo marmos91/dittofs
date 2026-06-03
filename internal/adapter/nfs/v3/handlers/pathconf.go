@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // PathConfRequest represents a PATHCONF request from an NFS client.
 // The client provides a file handle to query POSIX-compatible information
@@ -88,9 +86,7 @@ type PathConfResponse struct {
 	CasePreserving bool
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // PathConf handles NFS PATHCONF (RFC 1813 Section 3.3.20).
 // Returns POSIX filesystem properties: max links, name length, case sensitivity, chown restrictions.
@@ -106,27 +102,15 @@ func (h *Handler) PathConf(
 
 	logger.InfoCtx(ctx.Context, "PATHCONF", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Check for context cancellation before starting work
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "PATHCONF cancelled", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Validate file handle
-	// ========================================================================
-
 	if err := validatePathConfHandle(req.Handle); err != nil {
 		logger.WarnCtx(ctx.Context, "PATHCONF validation failed", "client", clientIP, "error", err)
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 3: Verify the file handle exists and is valid in the store
-	// ========================================================================
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
@@ -149,9 +133,6 @@ func (h *Handler) PathConf(
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	// ========================================================================
-	// Step 4: Retrieve filesystem capabilities from the store
-	// ========================================================================
 	// FilesystemCapabilities contains POSIX-compatible properties
 	// that map directly to PATHCONF response fields
 
@@ -167,18 +148,11 @@ func (h *Handler) PathConf(
 		return &PathConfResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 5: Generate file attributes for cache consistency
-	// ========================================================================
-
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.InfoCtx(ctx.Context, "PATHCONF successful", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 	logger.DebugCtx(ctx.Context, "PATHCONF properties", "linkmax", caps.MaxHardLinkCount, "namemax", caps.MaxFilenameLen, "no_trunc", !caps.TruncatesLongNames, "chown_restricted", caps.ChownRestricted, "case_insensitive", !caps.CaseSensitive, "case_preserving", caps.CasePreserving)
 
-	// ========================================================================
-	// Step 6: Build response with filesystem capabilities
-	// ========================================================================
 	// Map FilesystemCapabilities fields to PATHCONF response fields
 
 	return &PathConfResponse{
@@ -193,9 +167,7 @@ func (h *Handler) PathConf(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validatePathConfHandle validates a PATHCONF file handle.
 //

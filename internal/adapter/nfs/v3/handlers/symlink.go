@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // SymlinkRequest represents a SYMLINK request from an NFS client.
 // The client provides a parent directory handle, a name for the new symlink,
@@ -83,9 +81,7 @@ type SymlinkResponse struct {
 	DirAttrAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Symlink handles NFS SYMLINK (RFC 1813 Section 3.3.10).
 // Creates a symbolic link in a directory pointing to a target pathname (absolute or relative).
@@ -108,18 +104,10 @@ func (h *Handler) Symlink(
 
 	logger.InfoCtx(ctx.Context, "SYMLINK", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateSymlinkRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "SYMLINK validation failed", "name", req.Name, "target", req.Target, "client", clientIP, "error", err)
 		return &SymlinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Get metadata store from context
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -130,10 +118,6 @@ func (h *Handler) Symlink(
 	dirHandle := metadata.FileHandle(req.DirHandle)
 
 	logger.DebugCtx(ctx.Context, "SYMLINK", "share", ctx.Share, "name", req.Name, "target", req.Target)
-
-	// ========================================================================
-	// Step 3: Verify parent directory exists and capture pre-op attributes
-	// ========================================================================
 
 	dirFile, status, err := h.getFileOrError(ctx, dirHandle, "SYMLINK", req.DirHandle)
 	if dirFile == nil {
@@ -171,10 +155,6 @@ func (h *Handler) Symlink(
 		}, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 3: Build authentication context for store
-	// ========================================================================
-
 	authCtx, nfsDirAttr, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "SYMLINK", req.Name, req.DirHandle)
 	if authCtx == nil {
 		return &SymlinkResponse{
@@ -184,9 +164,6 @@ func (h *Handler) Symlink(
 		}, err
 	}
 
-	// ========================================================================
-	// Step 4: Convert client attributes to metadata format
-	// ========================================================================
 	// Use convertSetAttrsToMetadata to ensure consistent attribute handling
 	// across all file creation operations (MKDIR, MKNOD, SYMLINK, CREATE).
 	// This properly applies:
@@ -203,9 +180,6 @@ func (h *Handler) Symlink(
 
 	symlinkAttr := xdr.ConvertSetAttrsToMetadata(metadata.FileTypeSymlink, &req.Attr, authCtx)
 
-	// ========================================================================
-	// Step 5: Create symlink via store
-	// ========================================================================
 	// The store is responsible for:
 	// - Checking write permission on parent directory
 	// - Verifying name doesn't already exist
@@ -252,10 +226,6 @@ func (h *Handler) Symlink(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Encode file handle and prepare response
-	// ========================================================================
-
 	// Encode the file handle for the symlink
 	symlinkHandle, err := metadata.EncodeFileHandle(createdSymlink)
 	if err != nil {
@@ -282,9 +252,7 @@ func (h *Handler) Symlink(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateSymlinkRequest validates SYMLINK request parameters.
 //
