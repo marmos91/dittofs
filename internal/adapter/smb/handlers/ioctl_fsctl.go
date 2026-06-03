@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // handleGetCompression handles FSCTL_GET_COMPRESSION [MS-FSCC] 2.3.9.
@@ -113,17 +112,10 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	// Apply the compression bit via an atomic mode mask so the store performs
-	// the OR/AND-NOT inside its own read-modify-write — a concurrent
-	// SET_COMPRESSION / SET_SPARSE cannot clobber this flip with a stale Mode
-	// snapshot.
-	mask := modeDOSCompressed
-	var attrs metadata.SetAttrs
-	if compressed {
-		attrs.ModeOrMask = &mask
-	} else {
-		attrs.ModeAndNotMask = &mask
-	}
+	// Flip the compression bit atomically inside the store (see
+	// modeBitMaskAttrs): a concurrent SET_COMPRESSION / SET_SPARSE cannot clobber
+	// it with a stale Mode snapshot.
+	attrs := modeBitMaskAttrs(modeDOSCompressed, compressed)
 	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
 		logger.Warn("FSCTL_SET_COMPRESSION: failed to persist mode", "error", err)
 		// Non-fatal: per-handle state is still set

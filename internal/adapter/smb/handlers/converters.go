@@ -746,3 +746,19 @@ func decodeWTF8Runes(s string) []rune {
 	}
 	return runes
 }
+
+// modeBitMaskAttrs builds a metadata.SetAttrs that flips a single FSCTL-managed
+// mode bit (e.g. modeDOSSparse, modeDOSCompressed) atomically inside the store's
+// own read-modify-write. Using the mask form rather than reading Mode in the
+// handler and writing it back avoids a lost-update race when two IOCTLs
+// (SET_SPARSE vs SET_COMPRESSION) touch independent bits concurrently.
+func modeBitMaskAttrs(bit uint32, set bool) metadata.SetAttrs {
+	mask := bit
+	var attrs metadata.SetAttrs
+	if set {
+		attrs.ModeOrMask = &mask
+	} else {
+		attrs.ModeAndNotMask = &mask
+	}
+	return attrs
+}

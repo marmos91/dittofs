@@ -505,8 +505,8 @@ func (h *Handler) setFileInfoFromStore(
 		//     are preserved:
 		//       * POSIX permission bits (0o7777) — an out-of-band NFS
 		//         chmod must survive a stream SET_INFO.
-		//       * modeDOSCompressed (0x40000) — FSCTL-managed (FSCTL_SET_COMPRESSION)
-		//         * modeDOSSparse (0x200000) — FSCTL-managed (FSCTL_SET_SPARSE)
+		//       * modeDOSCompressed (0x40000) — FSCTL-managed (FSCTL_SET_COMPRESSION).
+		//       * modeDOSSparse (0x200000) — FSCTL-managed (FSCTL_SET_SPARSE).
 		//         Both live on the base file and are never derived from FileAttributes.
 		//
 		// The base SetFileAttributes call is fire-and-forget: a failure to

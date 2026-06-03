@@ -556,3 +556,31 @@ func TestUTF16LE_WideACaseFold(t *testing.T) {
 		t.Fatalf("ASCII 'a' must NOT fold to fullwidth 'ａ': %q vs %q", ascii, wideLower)
 	}
 }
+
+// TestModeBitMaskAttrs pins the OR-vs-AND-NOT mapping of the mode-mask helper
+// shared by the SET_SPARSE / SET_COMPRESSION IOCTL handlers: set==true ORs the
+// bit in, set==false clears it, and exactly one of the two masks is populated.
+func TestModeBitMaskAttrs(t *testing.T) {
+	t.Run("set ORs the bit in", func(t *testing.T) {
+		attrs := modeBitMaskAttrs(modeDOSSparse, true)
+		if attrs.ModeOrMask == nil || *attrs.ModeOrMask != modeDOSSparse {
+			t.Fatalf("expected ModeOrMask=%#x, got %v", modeDOSSparse, attrs.ModeOrMask)
+		}
+		if attrs.ModeAndNotMask != nil {
+			t.Errorf("expected ModeAndNotMask nil when set=true, got %#x", *attrs.ModeAndNotMask)
+		}
+		if attrs.Mode != nil {
+			t.Errorf("helper must not touch the absolute Mode field")
+		}
+	})
+
+	t.Run("clear AND-NOTs the bit out", func(t *testing.T) {
+		attrs := modeBitMaskAttrs(modeDOSCompressed, false)
+		if attrs.ModeAndNotMask == nil || *attrs.ModeAndNotMask != modeDOSCompressed {
+			t.Fatalf("expected ModeAndNotMask=%#x, got %v", modeDOSCompressed, attrs.ModeAndNotMask)
+		}
+		if attrs.ModeOrMask != nil {
+			t.Errorf("expected ModeOrMask nil when set=false, got %#x", *attrs.ModeOrMask)
+		}
+	})
+}

@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"encoding/hex"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -180,12 +179,7 @@ func (dh *DurableHandleHandler) ForceClose(w http.ResponseWriter, r *http.Reques
 func cleanupDurableHandle(ctx context.Context, h *lock.PersistedDurableHandle, rt *runtime.Runtime, handleID string) {
 	// Step 1: Release byte-range locks
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil && len(h.MetadataHandle) > 0 {
-		fileID := h.OriginalFileID
-		if fileID == ([16]byte{}) {
-			fileID = h.FileID
-		}
-		openID := fmt.Sprintf("%x", fileID)
-		if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, openID); err != nil {
+		if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, h.LockOpenID()); err != nil {
 			logger.Debug("cleanupDurableHandle: failed to release locks",
 				"id", handleID, "error", err)
 		}

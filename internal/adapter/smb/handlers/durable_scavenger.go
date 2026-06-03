@@ -148,12 +148,7 @@ func (s *DurableHandleScavenger) cleanupAndDelete(ctx context.Context, h *lock.P
 
 		// Release byte-range locks
 		if metaSvc != nil && len(h.MetadataHandle) > 0 {
-			fileID := h.OriginalFileID
-			if fileID == ([16]byte{}) {
-				fileID = h.FileID
-			}
-			openID := fmt.Sprintf("%x", fileID)
-			if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, openID); err != nil {
+			if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, h.LockOpenID()); err != nil {
 				logger.Debug("DurableHandleScavenger: failed to release locks",
 					"id", h.ID, "path", h.Path, "error", err)
 			}
