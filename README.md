@@ -19,7 +19,7 @@
 NFSv3/v4.0/v4.1 and SMB2/3 servers in userspace — no FUSE, no kernel modules — with
 pluggable metadata and block stores you can mix and match per share.
 
-[Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Contributing](docs/CONTRIBUTING.md)
+[Website](https://dittofs.io) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Contributing](docs/CONTRIBUTING.md)
 
 </div>
 
