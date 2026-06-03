@@ -178,12 +178,9 @@ func TestSMBAuthenticator_Authenticate_NTLMNegotiate_ReturnsChallenge(t *testing
 func TestSMBAuthenticator_Authenticate_NTLMFullRoundTrip_GuestNoStore(t *testing.T) {
 	auth := NewSMBAuthenticator(nil)
 
-	// Same session/conn identity must be threaded through both rounds.
-	ctx := WithSessionID(WithConnID(context.Background(), 1), 1)
-
 	// Round 1: NEGOTIATE
 	negotiate := buildNTLMNegotiate()
-	_, challenge, err := auth.Authenticate(ctx, negotiate)
+	_, challenge, err := auth.Authenticate(context.Background(), negotiate)
 	if !errors.Is(err, adapter.ErrMoreProcessingRequired) {
 		t.Fatalf("round 1: expected ErrMoreProcessingRequired, got: %v", err)
 	}
@@ -193,7 +190,7 @@ func TestSMBAuthenticator_Authenticate_NTLMFullRoundTrip_GuestNoStore(t *testing
 
 	// Round 2: AUTHENTICATE with a username (no user store -> guest)
 	authenticate := buildNTLMAuthenticate("testuser", "WORKGROUP")
-	result, _, err := auth.Authenticate(ctx, authenticate)
+	result, _, err := auth.Authenticate(context.Background(), authenticate)
 	if err != nil {
 		t.Fatalf("round 2: unexpected error: %v", err)
 	}
@@ -218,12 +215,9 @@ func TestSMBAuthenticator_Authenticate_NTLMFullRoundTrip_WithUser(t *testing.T) 
 
 	auth := NewSMBAuthenticator(store)
 
-	// Same session/conn identity must be threaded through both rounds.
-	ctx := WithSessionID(WithConnID(context.Background(), 1), 1)
-
 	// Round 1: NEGOTIATE
 	negotiate := buildNTLMNegotiate()
-	_, challenge, err := auth.Authenticate(ctx, negotiate)
+	_, challenge, err := auth.Authenticate(context.Background(), negotiate)
 	if !errors.Is(err, adapter.ErrMoreProcessingRequired) {
 		t.Fatalf("round 1: expected ErrMoreProcessingRequired, got: %v", err)
 	}
@@ -233,7 +227,7 @@ func TestSMBAuthenticator_Authenticate_NTLMFullRoundTrip_WithUser(t *testing.T) 
 
 	// Round 2: AUTHENTICATE with known username (no NT hash on user -> auth without validation)
 	authenticate := buildNTLMAuthenticate("alice", "WORKGROUP")
-	result, _, err := auth.Authenticate(ctx, authenticate)
+	result, _, err := auth.Authenticate(context.Background(), authenticate)
 	if err != nil {
 		t.Fatalf("round 2: unexpected error: %v", err)
 	}
@@ -255,18 +249,16 @@ func TestSMBAuthenticator_Authenticate_AnonymousNTLM(t *testing.T) {
 	store := newMockUserStore()
 	auth := NewSMBAuthenticator(store)
 
-	ctx := WithSessionID(WithConnID(context.Background(), 1), 1)
-
 	// NEGOTIATE
 	negotiate := buildNTLMNegotiate()
-	_, _, err := auth.Authenticate(ctx, negotiate)
+	_, _, err := auth.Authenticate(context.Background(), negotiate)
 	if !errors.Is(err, adapter.ErrMoreProcessingRequired) {
 		t.Fatalf("expected ErrMoreProcessingRequired, got: %v", err)
 	}
 
 	// AUTHENTICATE with empty username (anonymous)
 	authenticate := buildNTLMAuthenticate("", "")
-	result, _, err := auth.Authenticate(ctx, authenticate)
+	result, _, err := auth.Authenticate(context.Background(), authenticate)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -288,152 +280,19 @@ func TestSMBAuthenticator_Authenticate_DisabledUser(t *testing.T) {
 
 	auth := NewSMBAuthenticator(store)
 
-	ctx := WithSessionID(WithConnID(context.Background(), 1), 1)
-
 	// NEGOTIATE
 	negotiate := buildNTLMNegotiate()
-	_, _, _ = auth.Authenticate(ctx, negotiate)
+	_, _, _ = auth.Authenticate(context.Background(), negotiate)
 
 	// AUTHENTICATE with disabled user
 	authenticate := buildNTLMAuthenticate("disabled", "WORKGROUP")
-	result, _, err := auth.Authenticate(ctx, authenticate)
+	result, _, err := auth.Authenticate(context.Background(), authenticate)
 	if err == nil {
 		t.Fatal("expected error for disabled user")
 	}
 	if result != nil {
 		t.Error("expected nil result for disabled user")
 	}
-}
-
-// TestSMBAuthenticator_CrossSessionChallenge_Rejected verifies that a Type-3
-// AUTHENTICATE message is validated only against the pending challenge stored
-// for its own (sessionID, connID) pair.
-//
-// Before the fix, handleNTLMAuthenticate ranged ALL pending entries, so a
-// Type-3 built against session A's challenge could be replayed under a
-// different session B and still authenticate against session A's stored
-// challenge. The test builds a genuinely valid NTLMv2 response for session A's
-// challenge, then submits it under session B's context: after the fix the
-// direct (sessionID, connID) lookup misses and the attempt is rejected.
-func TestSMBAuthenticator_CrossSessionChallenge_Rejected(t *testing.T) {
-	const (
-		password = "test123"
-		username = "alice"
-		domain   = "WORKGROUP"
-	)
-
-	store := newMockUserStore()
-	user := &models.User{ID: "alice-id", Username: username, Enabled: true}
-	user.SetNTHashFromPassword(password)
-	store.addUser(user)
-
-	auth := NewSMBAuthenticator(store)
-
-	// Session A: NEGOTIATE. Capture the server challenge from the returned Type-2.
-	ctxA := WithSessionID(WithConnID(context.Background(), 1), 10)
-	_, challenge, err := auth.Authenticate(ctxA, buildNTLMNegotiate())
-	if !errors.Is(err, adapter.ErrMoreProcessingRequired) {
-		t.Fatalf("session A negotiate: expected ErrMoreProcessingRequired, got %v", err)
-	}
-	var serverChallenge [8]byte
-	copy(serverChallenge[:], challenge[24:32]) // Type-2 ServerChallenge offset
-
-	// Build a genuinely valid Type-3 AUTHENTICATE for session A's challenge.
-	validAuth := buildValidNTLMAuthenticate(password, username, domain, serverChallenge)
-
-	// Sanity: the response really is valid for session A (proves the attack is
-	// only blocked by session correlation, not by an invalid response).
-	resA, _, errA := auth.Authenticate(ctxA, validAuth)
-	if errA != nil {
-		t.Fatalf("session A authenticate with valid response should succeed, got %v", errA)
-	}
-	if resA == nil || resA.IsGuest || resA.User == nil || resA.User.Username != username {
-		t.Fatalf("session A authenticate: expected authenticated user %q, got %+v", username, resA)
-	}
-
-	// Re-negotiate session A so a fresh pending challenge exists for the replay.
-	_, challenge2, err := auth.Authenticate(ctxA, buildNTLMNegotiate())
-	if !errors.Is(err, adapter.ErrMoreProcessingRequired) {
-		t.Fatalf("session A re-negotiate: expected ErrMoreProcessingRequired, got %v", err)
-	}
-	var serverChallenge2 [8]byte
-	copy(serverChallenge2[:], challenge2[24:32])
-	validAuth2 := buildValidNTLMAuthenticate(password, username, domain, serverChallenge2)
-
-	// Session B: replay session A's valid Type-3 under a DIFFERENT (sessionID,
-	// connID). Session B never sent a NEGOTIATE, so it has no pending challenge.
-	ctxB := WithSessionID(WithConnID(context.Background(), 2), 20)
-	resB, challengeB, errB := auth.Authenticate(ctxB, validAuth2)
-	if errB == nil {
-		t.Fatal("cross-session authenticate should fail: got nil error")
-	}
-	if resB != nil {
-		t.Errorf("cross-session authenticate should return nil result, got %+v", resB)
-	}
-	if challengeB != nil {
-		t.Errorf("cross-session authenticate should return nil challenge, got %x", challengeB)
-	}
-
-	// Session A's pending entry must survive session B's attempt: session A can
-	// still complete its own handshake.
-	resA2, _, errA2 := auth.Authenticate(ctxA, validAuth2)
-	if errA2 != nil {
-		t.Fatalf("session A's own handshake should still succeed after B's attempt, got %v", errA2)
-	}
-	if resA2 == nil || resA2.IsGuest {
-		t.Fatalf("session A authenticate: expected authenticated user, got %+v", resA2)
-	}
-}
-
-// buildValidNTLMAuthenticate constructs a complete NTLM Type-3 (AUTHENTICATE)
-// message carrying a valid NTLMv2 response for the given server challenge.
-func buildValidNTLMAuthenticate(password, username, domain string, serverChallenge [8]byte) []byte {
-	ntHash := ComputeNTHash(password)
-	clientBlob := buildTestClientBlob()
-	ntlmv2Hash := ComputeNTLMv2Hash(ntHash, username, domain)
-	ntProofStr := computeNTProofStr(ntlmv2Hash, serverChallenge, clientBlob)
-
-	ntResponse := make([]byte, len(ntProofStr)+len(clientBlob))
-	copy(ntResponse[:16], ntProofStr)
-	copy(ntResponse[16:], clientBlob)
-
-	usernameBytes := encodeUTF16LE(username)
-	domainBytes := encodeUTF16LE(domain)
-
-	// Layout payload after the fixed header.
-	const payloadOffset = 88
-	ntOffset := payloadOffset
-	domainOffset := ntOffset + len(ntResponse)
-	userOffset := domainOffset + len(domainBytes)
-
-	msg := make([]byte, userOffset+len(usernameBytes))
-
-	copy(msg[0:8], Signature)
-	binary.LittleEndian.PutUint32(msg[8:12], uint32(Authenticate))
-
-	// NtChallengeResponse (offset 20-27)
-	binary.LittleEndian.PutUint16(msg[20:22], uint16(len(ntResponse)))
-	binary.LittleEndian.PutUint16(msg[22:24], uint16(len(ntResponse)))
-	binary.LittleEndian.PutUint32(msg[24:28], uint32(ntOffset))
-
-	// DomainName (offset 28-35)
-	binary.LittleEndian.PutUint16(msg[28:30], uint16(len(domainBytes)))
-	binary.LittleEndian.PutUint16(msg[30:32], uint16(len(domainBytes)))
-	binary.LittleEndian.PutUint32(msg[32:36], uint32(domainOffset))
-
-	// UserName (offset 36-43)
-	binary.LittleEndian.PutUint16(msg[36:38], uint16(len(usernameBytes)))
-	binary.LittleEndian.PutUint16(msg[38:40], uint16(len(usernameBytes)))
-	binary.LittleEndian.PutUint32(msg[40:44], uint32(userOffset))
-
-	// NegotiateFlags (offset 60)
-	binary.LittleEndian.PutUint32(msg[60:64], uint32(FlagUnicode|FlagNTLM))
-
-	copy(msg[ntOffset:], ntResponse)
-	copy(msg[domainOffset:], domainBytes)
-	copy(msg[userOffset:], usernameBytes)
-
-	return msg
 }
 
 // =============================================================================

@@ -30,43 +30,6 @@ const (
 	maxPendingAuths = 1000
 )
 
-// pendingAuthKey correlates the NTLM NEGOTIATE and AUTHENTICATE rounds of a
-// single handshake. It mirrors the handler-layer key (see handler.go): parallel
-// binds on the same session from different connections must not clobber each
-// other, so both the session ID and connection ID participate in the key.
-type pendingAuthKey struct {
-	sessionID uint64
-	connID    uint64
-}
-
-type ctxKeySessionID struct{}
-
-type ctxKeyConnID struct{}
-
-// WithSessionID returns a context carrying the SMB session ID used to correlate
-// the NTLM NEGOTIATE and AUTHENTICATE rounds of a single handshake. Both calls
-// for the same exchange must carry the same value.
-func WithSessionID(parent context.Context, id uint64) context.Context {
-	return context.WithValue(parent, ctxKeySessionID{}, id)
-}
-
-// WithConnID returns a context carrying the TCP connection ID used to correlate
-// the NTLM NEGOTIATE and AUTHENTICATE rounds of a single handshake. Both calls
-// for the same exchange must carry the same value.
-func WithConnID(parent context.Context, id uint64) context.Context {
-	return context.WithValue(parent, ctxKeyConnID{}, id)
-}
-
-func sessionIDFromCtx(ctx context.Context) uint64 {
-	v, _ := ctx.Value(ctxKeySessionID{}).(uint64)
-	return v
-}
-
-func connIDFromCtx(ctx context.Context) uint64 {
-	v, _ := ctx.Value(ctxKeyConnID{}).(uint64)
-	return v
-}
-
 // SMBAuthenticator implements adapter.Authenticator for SMB protocol authentication.
 //
 // It handles SPNEGO-wrapped tokens, detecting whether the client is using NTLM
@@ -85,12 +48,10 @@ type SMBAuthenticator struct {
 	userStore models.UserStore
 
 	// pendingAuths tracks in-progress NTLM handshakes.
-	// Key: pendingAuthKey{sessionID, connID}, Value: *pendingNTLMAuth
+	// Key: session ID (uint64), Value: *pendingNTLMAuth
 	pendingAuths sync.Map
 
-	// nextSessionID generates a fallback session ID when the caller does not
-	// inject one via WithSessionID. The atomic counter guarantees uniqueness so
-	// concurrent fallback negotiations cannot collide.
+	// nextSessionID generates unique session IDs for tracking auth rounds.
 	nextSessionID atomic.Uint64
 }
 
@@ -179,7 +140,7 @@ func (a *SMBAuthenticator) handleNTLMToken(ctx context.Context, ntlmToken []byte
 
 	switch msgType {
 	case Negotiate:
-		return a.handleNTLMNegotiate(ctx, wrapSPNEGO)
+		return a.handleNTLMNegotiate(wrapSPNEGO)
 
 	case Authenticate:
 		return a.handleNTLMAuthenticate(ctx, ntlmToken)
@@ -191,22 +152,16 @@ func (a *SMBAuthenticator) handleNTLMToken(ctx context.Context, ntlmToken []byte
 
 // handleNTLMNegotiate processes an NTLM Type 1 (NEGOTIATE) message.
 // Returns a Type 2 (CHALLENGE) message with ErrMoreProcessingRequired.
-func (a *SMBAuthenticator) handleNTLMNegotiate(ctx context.Context, wrapSPNEGO bool) (*adapter.AuthResult, []byte, error) {
+func (a *SMBAuthenticator) handleNTLMNegotiate(wrapSPNEGO bool) (*adapter.AuthResult, []byte, error) {
 	// Evict stale pending auths before adding a new one
 	a.evictStalePendingAuths()
 
 	// Build challenge
 	challengeMsg, serverChallenge := BuildChallenge()
 
-	// Correlate this handshake by (sessionID, connID). Callers thread these via
-	// WithSessionID/WithConnID. If no session ID was injected, fall back to a
-	// unique counter value so concurrent fallback negotiations cannot collide.
-	sessionID := sessionIDFromCtx(ctx)
-	if sessionID == 0 {
-		sessionID = a.nextSessionID.Add(1)
-	}
-	key := pendingAuthKey{sessionID: sessionID, connID: connIDFromCtx(ctx)}
-	a.pendingAuths.Store(key, &pendingNTLMAuth{
+	// Generate session ID and store pending auth
+	sessionID := a.nextSessionID.Add(1)
+	a.pendingAuths.Store(sessionID, &pendingNTLMAuth{
 		serverChallenge: serverChallenge,
 		createdAt:       time.Now(),
 	})
@@ -251,53 +206,24 @@ func (a *SMBAuthenticator) handleNTLMAuthenticate(ctx context.Context, ntlmToken
 		return &adapter.AuthResult{IsGuest: true}, nil, nil
 	}
 
-	// Try NTLMv2 validation against this session's pending challenge only.
+	// Try NTLMv2 validation against all pending auths
 	ntHash, hasNTHash := user.GetNTHash()
 	if hasNTHash && len(authMsg.NtChallengeResponse) > 0 {
-		// Look up the pending challenge stored for this exact (sessionID, connID)
-		// pair. A direct lookup makes cross-session validation impossible: a
-		// Type-3 from another session cannot match a challenge stored under a
-		// different key.
-		key := pendingAuthKey{sessionID: sessionIDFromCtx(ctx), connID: connIDFromCtx(ctx)}
-		v, ok := a.pendingAuths.Load(key)
-		if !ok {
-			return nil, nil, errors.New("ntlm: no pending authentication for session")
-		}
-		pending := v.(*pendingNTLMAuth)
-		a.pendingAuths.Delete(key) // consume the challenge
+		sessionKey, pending, matchedID := a.validateAgainstPendingAuths(ntHash, authMsg)
+		if pending != nil {
+			// Derive signing key
+			signingKey := DeriveSigningKey(sessionKey, authMsg.NegotiateFlags, authMsg.EncryptedRandomSessionKey)
+			a.cleanupPendingAuth(matchedID)
 
-		hostname, _ := os.Hostname()
-		domainsToTry := uniqueStrings([]string{
-			authMsg.Domain,
-			"",
-			strings.ToUpper(hostname),
-			"WORKGROUP",
-		})
-
-		var sessionKey [16]byte
-		var validationErr error = errors.New("ntlm: authentication failed")
-		for _, domain := range domainsToTry {
-			sessionKey, validationErr = ValidateNTLMv2Response(
-				ntHash,
-				authMsg.Username,
-				domain,
-				pending.serverChallenge,
-				authMsg.NtChallengeResponse,
-			)
-			if validationErr == nil {
-				break
-			}
-		}
-		if validationErr != nil {
-			return nil, nil, errors.New("ntlm: authentication failed")
+			return &adapter.AuthResult{
+				User:       user,
+				SessionKey: signingKey[:],
+				IsGuest:    false,
+			}, nil, nil
 		}
 
-		signingKey := DeriveSigningKey(sessionKey, authMsg.NegotiateFlags, authMsg.EncryptedRandomSessionKey)
-		return &adapter.AuthResult{
-			User:       user,
-			SessionKey: signingKey[:],
-			IsGuest:    false,
-		}, nil, nil
+		// Validation failed - no matching pending auth found
+		return nil, nil, errors.New("ntlm: authentication failed")
 	}
 
 	// User exists but no NT hash - allow without credential validation
@@ -305,6 +231,56 @@ func (a *SMBAuthenticator) handleNTLMAuthenticate(ctx context.Context, ntlmToken
 		User:    user,
 		IsGuest: false,
 	}, nil, nil
+}
+
+// validateAgainstPendingAuths tries to validate the NTLM response against
+// all pending authentication challenges. Returns the session key, the
+// matching pending auth, and the matched session ID on success.
+// On failure, returns zero values and matchedID 0.
+func (a *SMBAuthenticator) validateAgainstPendingAuths(
+	ntHash [16]byte,
+	authMsg *AuthenticateMessage,
+) ([16]byte, *pendingNTLMAuth, uint64) {
+	hostname, _ := os.Hostname()
+	domainsToTry := uniqueStrings([]string{
+		authMsg.Domain,
+		"",
+		strings.ToUpper(hostname),
+		"WORKGROUP",
+	})
+
+	var resultKey [16]byte
+	var matchedPending *pendingNTLMAuth
+	var matchedID uint64
+
+	a.pendingAuths.Range(func(key, value any) bool {
+		pending := value.(*pendingNTLMAuth)
+
+		for _, domain := range domainsToTry {
+			sessionKey, err := ValidateNTLMv2Response(
+				ntHash,
+				authMsg.Username,
+				domain,
+				pending.serverChallenge,
+				authMsg.NtChallengeResponse,
+			)
+			if err == nil {
+				resultKey = sessionKey
+				matchedPending = pending
+				matchedID = key.(uint64)
+				return false // stop iteration
+			}
+		}
+		return true // continue
+	})
+
+	return resultKey, matchedPending, matchedID
+}
+
+// cleanupPendingAuth removes the pending auth entry for the given session ID.
+// Only deletes the specific entry to avoid breaking concurrent handshakes.
+func (a *SMBAuthenticator) cleanupPendingAuth(sessionID uint64) {
+	a.pendingAuths.Delete(sessionID)
 }
 
 // evictStalePendingAuths removes expired entries and enforces the max count.
