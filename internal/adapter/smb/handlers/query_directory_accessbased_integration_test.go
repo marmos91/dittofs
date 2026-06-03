@@ -132,9 +132,9 @@ func setupAccessBasedReproShare(t *testing.T) (*Handler, *runtime.Runtime, metad
 // owner's SID with the per-iteration mask plus SEC_STD_SYNCHRONIZE.
 func setSDForAccessBased(t *testing.T, ownerUID uint32, accessMask uint32) []byte {
 	t.Helper()
-	// defaultSIDMapper is the package-level mapper used by the handler.
+	// GetSIDMapper returns the package-level mapper used by the handler.
 	// UserSID(1000) returns the canonical wpts-admin SID for this build.
-	ownerSID := defaultSIDMapper.UserSID(ownerUID)
+	ownerSID := GetSIDMapper().UserSID(ownerUID)
 	ownerSIDStr := sid.FormatSID(ownerSID)
 	ownerBytes := buildSID(t, ownerSIDStr)
 

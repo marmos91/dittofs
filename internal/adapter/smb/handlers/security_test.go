@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/auth/sid"
@@ -1473,4 +1474,42 @@ func TestBuildSD_GoldenBytes(t *testing.T) {
 	if parsedACL.ACEs[0].AccessMask != 0x001F01FF {
 		t.Errorf("round-trip ACE mask = 0x%08x, want 0x001F01FF", parsedACL.ACEs[0].AccessMask)
 	}
+}
+
+// TestSetSIDMapper_DataRace verifies that concurrent calls to SetSIDMapper and
+// GetSIDMapper (plus a BuildSecurityDescriptor reader) do not race.
+// Run with: go test -race ./internal/adapter/smb/handlers/
+func TestSetSIDMapper_DataRace(t *testing.T) {
+	// Restore the deterministic mapper after the test so subsequent tests in
+	// the package see the same fixed (0,0,0) mapper TestMain installed.
+	defer SetSIDMapper(sid.NewSIDMapper(0, 0, 0))
+
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+		},
+	}
+
+	const goroutines = 8
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				// Writer goroutine: swap the mapper.
+				m := sid.NewSIDMapper(uint32(i), uint32(i+1), uint32(i+2))
+				SetSIDMapper(m)
+			} else {
+				// Reader goroutine: read via GetSIDMapper and via BuildSecurityDescriptor.
+				_ = GetSIDMapper()
+				_, _ = BuildSecurityDescriptor(file, allSecInfo)
+			}
+		}()
+	}
+	wg.Wait()
 }
