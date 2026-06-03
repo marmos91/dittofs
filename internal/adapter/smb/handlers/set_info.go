@@ -324,13 +324,18 @@ func (h *Handler) setFileInfoFromStore(
 		// modeDOSExplicit + modeDOSReadonly are both set.
 		// Per MS-FSCC 2.4.7: FILE_ATTRIBUTE_COMPRESSED is NOT settable via
 		// FileBasicInformation; it is controlled only via FSCTL_SET_COMPRESSION.
-		// Preserve the existing modeDOSCompressed bit so SET_INFO doesn't
-		// accidentally clear compression state that was set via FSCTL.
+		// Likewise, FILE_ATTRIBUTE_SPARSE_FILE is set only via FSCTL_SET_SPARSE.
+		// Preserve both FSCTL-managed bits so SET_INFO does not accidentally
+		// clear compression or sparse state.
 		if fileAttrs != 0 {
 			mode := SMBModeFromAttrs(fileAttrs, openFile.IsDirectory)
-			// Preserve modeDOSCompressed from existing metadata
+			// Preserve FSCTL-managed bits from existing metadata:
+			// modeDOSCompressed (FSCTL_SET_COMPRESSION) and modeDOSSparse
+			// (FSCTL_SET_SPARSE) are both controlled exclusively by IOCTLs —
+			// they must not be cleared by a FileBasicInformation SET_INFO that
+			// only intends to update DOS attributes (HIDDEN, READONLY, etc.).
 			if curFile, curErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); curErr == nil {
-				mode |= curFile.Mode & modeDOSCompressed
+				mode |= curFile.Mode & (modeDOSCompressed | modeDOSSparse)
 			}
 			setAttrs.Mode = &mode
 			// Per MS-FSCC 2.6: propagate FILE_ATTRIBUTE_HIDDEN into the metadata
@@ -500,9 +505,9 @@ func (h *Handler) setFileInfoFromStore(
 		//     are preserved:
 		//       * POSIX permission bits (0o7777) — an out-of-band NFS
 		//         chmod must survive a stream SET_INFO.
-		//       * modeDOSCompressed (0x40000) — FSCTL-managed, lives on
-		//         the base file and is never derived from FileAttributes
-		//         on a stream SET_INFO.
+		//       * modeDOSCompressed (0x40000) — FSCTL-managed (FSCTL_SET_COMPRESSION)
+		//         * modeDOSSparse (0x200000) — FSCTL-managed (FSCTL_SET_SPARSE)
+		//         Both live on the base file and are never derived from FileAttributes.
 		//
 		// The base SetFileAttributes call is fire-and-forget: a failure to
 		// propagate is logged at the metadata layer and does not roll back
