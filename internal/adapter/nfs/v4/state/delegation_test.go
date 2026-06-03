@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -1383,5 +1384,188 @@ func TestShutdown_StopsRecallTimers(t *testing.T) {
 	// Delegation should NOT be revoked (timer was cancelled by shutdown)
 	if deleg.Revoked {
 		t.Error("delegation should NOT be revoked -- timer was stopped by Shutdown")
+	}
+}
+
+// ============================================================================
+// Concurrency / lifecycle regression tests
+// ============================================================================
+
+// TestReturnDelegation_ConcurrentRevoke verifies that a concurrent RevokeDelegation
+// racing the sm.mu drop inside ReturnDelegation (directory delegation path) does not
+// corrupt state: the delegation must be fully cleaned up and the Revoked flag preserved.
+func TestReturnDelegation_ConcurrentRevoke(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	fh := []byte("fh-concurrent-revoke")
+	deleg := sm.GrantDelegation(100, fh, types.OPEN_DELEGATE_READ)
+
+	// Mark as directory delegation so ReturnDelegation drops sm.mu mid-function.
+	sm.mu.Lock()
+	deleg.IsDirectory = true
+	sm.mu.Unlock()
+
+	// Launch ReturnDelegation and RevokeDelegation concurrently.
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		_ = sm.ReturnDelegation(&deleg.Stateid)
+	}()
+
+	go func() {
+		defer wg.Done()
+		sm.RevokeDelegation(deleg.Stateid.Other)
+	}()
+
+	wg.Wait()
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	// delegByFile must not contain the delegation after either path completes.
+	for _, d := range sm.delegByFile[string(fh)] {
+		if d == deleg {
+			t.Error("delegation must be removed from delegByFile")
+		}
+	}
+
+	// The delegation must not appear as an active (non-revoked) entry in delegByOther.
+	// If it remains (kept for stale detection by RevokeDelegation), it must be Revoked.
+	if d, ok := sm.delegByOther[deleg.Stateid.Other]; ok && !d.Revoked {
+		t.Error("if delegation remains in delegByOther it must be marked Revoked")
+	}
+}
+
+// TestCheckDelegationConflict_RecallsAllReadDelegations verifies that when a WRITE
+// open conflicts with multiple READ delegations, ALL holders are recalled -- not just
+// the first one encountered.
+func TestCheckDelegationConflict_RecallsAllReadDelegations(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+
+	fh := []byte("fh-multi-read-deleg-conflict")
+
+	// Grant READ delegations to three different clients.
+	d1 := sm.GrantDelegation(101, fh, types.OPEN_DELEGATE_READ)
+	d2 := sm.GrantDelegation(102, fh, types.OPEN_DELEGATE_READ)
+	d3 := sm.GrantDelegation(103, fh, types.OPEN_DELEGATE_READ)
+
+	// Client 200 opens for WRITE: conflicts with all three READ delegations.
+	conflict, err := sm.CheckDelegationConflict(fh, 200, types.OPEN4_SHARE_ACCESS_WRITE)
+	if err != nil {
+		t.Fatalf("CheckDelegationConflict: %v", err)
+	}
+	if !conflict {
+		t.Fatal("expected conflict=true with three READ delegations and WRITE access")
+	}
+
+	// The flags must be set synchronously before any goroutines launch.
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	for i, d := range []*DelegationState{d1, d2, d3} {
+		if !d.RecallSent {
+			t.Errorf("delegation[%d] (clientID=%d): RecallSent should be true", i, d.ClientID)
+		}
+		if d.RecallTime.IsZero() {
+			t.Errorf("delegation[%d] (clientID=%d): RecallTime should be set", i, d.ClientID)
+		}
+	}
+}
+
+// TestRecentlyRecalled_NoRaceOnExpiry verifies that concurrent calls to
+// ShouldGrantDelegation (which takes RLock and calls isRecentlyRecalled) do not
+// race when the TTL has just expired.
+func TestRecentlyRecalled_NoRaceOnExpiry(t *testing.T) {
+	sm := NewStateManager(90 * time.Second)
+	sm.recentlyRecalledTTL = 10 * time.Millisecond
+
+	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
+	callback := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
+	result, err := sm.SetClientID("client-race-recalled", verifier, callback, "10.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("SetClientID: %v", err)
+	}
+	if err = sm.ConfirmClientID(result.ClientID, result.ConfirmVerifier); err != nil {
+		t.Fatalf("ConfirmClientID: %v", err)
+	}
+	setCBPathUp(sm, result.ClientID)
+
+	fh := []byte("fh-race-recalled")
+	sm.mu.Lock()
+	sm.addRecentlyRecalled(fh)
+	sm.mu.Unlock()
+
+	// Wait for the TTL to expire.
+	time.Sleep(20 * time.Millisecond)
+
+	// Hammer ShouldGrantDelegation from multiple goroutines concurrently.
+	// Before the fix: go test -race detects a concurrent write (delete) and read
+	// on sm.recentlyRecalled.  After the fix: no race.
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sm.ShouldGrantDelegation(result.ClientID, fh, types.OPEN4_SHARE_ACCESS_READ)
+		}()
+	}
+	wg.Wait()
+}
+
+// TestSendRecallV41_StopCh verifies that the goroutine spawned by sendRecallV41
+// exits promptly when the BackchannelSender is stopped, rather than blocking
+// for the full 30-second time.After timeout.
+func TestSendRecallV41_StopCh(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+
+	// Register a connection that accepts bytes but never delivers a reply,
+	// simulating a client that sent CB_RECALL but disappeared.
+	clientConn, serverConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = serverConn.Close() }()
+
+	connID := uint64(9001)
+	sm.RegisterConnWriter(connID, func(data []byte) error {
+		_, err := serverConn.Write(data)
+		return err
+	})
+	if _, err := sm.BindConnToSession(connID, sessionID, types.CDFC4_FORE_OR_BOTH); err != nil {
+		t.Fatalf("BindConnToSession: %v", err)
+	}
+
+	// Drain the server side without replying.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := clientConn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	fh := []byte("fh-stop-recall")
+	deleg := sm.GrantDelegation(sender.clientID, fh, types.OPEN_DELEGATE_READ)
+	deleg.RecallSent = true
+	deleg.RecallTime = time.Now()
+
+	recallDone := make(chan struct{})
+	go func() {
+		sm.sendRecallV41(deleg, sender)
+		close(recallDone)
+	}()
+
+	// Give the goroutine a moment to reach the select.
+	time.Sleep(30 * time.Millisecond)
+
+	// Stop the sender -- the goroutine must exit well before 30 seconds.
+	sender.Stop()
+
+	select {
+	case <-recallDone:
+		// OK -- exited promptly.
+	case <-time.After(2 * time.Second):
+		t.Fatal("sendRecallV41 goroutine did not exit within 2s after sender.Stop()")
 	}
 }

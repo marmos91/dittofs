@@ -206,6 +206,10 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	// Prune expired recently-recalled entries while we hold the write lock so the
+	// map stays bounded (isRecentlyRecalled is read-only under RLock).
+	sm.pruneStaleRecentlyRecalledLocked()
+
 	// Check total active delegation count against limit
 	if sm.maxDelegations > 0 && sm.countActiveDelegations() >= sm.maxDelegations {
 		return nil
@@ -291,6 +295,13 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 
 	deleg.StopRecallTimer()
 
+	// Remove the delegation from both maps eagerly, while we still hold sm.mu.
+	// For directory delegations we drop sm.mu below to flush notifications; if we
+	// deferred the delete until after re-acquiring the lock, a concurrent
+	// RevokeDelegation could observe the still-present entry and corrupt state.
+	delete(sm.delegByOther, stateid.Other)
+	sm.removeDelegFromFile(deleg)
+
 	// For directory delegations: flush pending notifications before removal.
 	// Must release sm.mu because flushDirNotifications needs RLock for backchannel.
 	if deleg.IsDirectory {
@@ -307,9 +318,6 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 		sm.flushDirNotifications(deleg)
 		sm.mu.Lock()
 	}
-
-	delete(sm.delegByOther, stateid.Other)
-	sm.removeDelegFromFile(deleg)
 
 	lmDelegID := deleg.LockManagerDelegID
 	fhKey := string(deleg.FileHandle)
@@ -460,6 +468,10 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
+	// Recall every conflicting delegation, not just the first one. With multiple
+	// READ holders on a file, recalling only the first leaves the others active,
+	// so a conflicting WRITE open would spin on NFS4ERR_DELAY indefinitely.
+	var conflicting []*DelegationState
 	for _, deleg := range sm.delegByFile[string(fileHandle)] {
 		if deleg.ClientID == clientID || deleg.Revoked {
 			continue
@@ -471,14 +483,15 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 		if isConflict {
 			deleg.RecallSent = true
 			deleg.RecallTime = time.Now()
-
-			go sm.sendRecall(deleg)
-
-			return true, nil
+			conflicting = append(conflicting, deleg)
 		}
 	}
 
-	return false, nil
+	for _, deleg := range conflicting {
+		go sm.sendRecall(deleg)
+	}
+
+	return len(conflicting) > 0, nil
 }
 
 // startRevocationTimer starts a recall timer on the delegation that will revoke it
@@ -537,6 +550,14 @@ func (sm *StateManager) sendRecallV41(deleg *DelegationState, sender *Backchanne
 		logger.Debug("CB_RECALL (v4.1) sent successfully",
 			"client_id", deleg.ClientID,
 			"deleg_type", deleg.DelegType)
+
+	case <-sender.stopCh:
+		// Backchannel sender stopped (session destroy or server shutdown).
+		// Abort the wait immediately instead of leaking this goroutine for up
+		// to 30 seconds on the timer below.
+		logger.Debug("CB_RECALL (v4.1) aborted: backchannel sender stopped",
+			"client_id", deleg.ClientID)
+		sm.startRevocationTimer(deleg, 5*time.Second)
 
 	case <-time.After(30 * time.Second):
 		logger.Warn("CB_RECALL (v4.1) result timeout",
@@ -682,18 +703,31 @@ func (sm *StateManager) addRecentlyRecalled(fileHandle []byte) {
 }
 
 // isRecentlyRecalled returns true if the file handle was recently recalled
-// within the TTL window. Also lazily cleans up expired entries.
+// within the TTL window.
+//
+// This method is read-only: it never mutates sm.recentlyRecalled, so it is
+// safe to call while holding only an RLock. Stale entries are pruned by the
+// write-lock holders via pruneStaleRecentlyRecalledLocked.
 //
 // Caller must hold sm.mu (RLock or Lock).
 func (sm *StateManager) isRecentlyRecalled(fileHandle []byte) bool {
-	fhKey := string(fileHandle)
-	recallTime, exists := sm.recentlyRecalled[fhKey]
+	recallTime, exists := sm.recentlyRecalled[string(fileHandle)]
 	if !exists {
 		return false
 	}
-	if time.Since(recallTime) > sm.recentlyRecalledTTL {
-		delete(sm.recentlyRecalled, fhKey)
-		return false
+	return time.Since(recallTime) <= sm.recentlyRecalledTTL
+}
+
+// pruneStaleRecentlyRecalledLocked removes entries whose TTL has expired,
+// keeping the recently-recalled cache bounded. Called from write-lock paths
+// (e.g. GrantDelegation) so the read-only isRecentlyRecalled never has to
+// mutate the map under an RLock.
+//
+// Caller must hold sm.mu.Lock (write lock).
+func (sm *StateManager) pruneStaleRecentlyRecalledLocked() {
+	for fhKey, recallTime := range sm.recentlyRecalled {
+		if time.Since(recallTime) > sm.recentlyRecalledTTL {
+			delete(sm.recentlyRecalled, fhKey)
+		}
 	}
-	return true
 }
