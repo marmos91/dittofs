@@ -2631,3 +2631,148 @@ func TestNotifyChange_WriteModified_RespectsNarrowFilter(t *testing.T) {
 		t.Error("FILE_NAME-only watcher must NOT be notified of a WRITE MODIFIED event")
 	}
 }
+
+// TestFlushWatcher_StaleTimerAfterRearm_IsNoop verifies that a flushWatcher
+// callback from a stale timer (fired after the watcher was replaced) is a
+// no-op: it must NOT drain or unregister the new watcher, and must NOT invoke
+// the new watcher's AsyncCallback.
+func TestFlushWatcher_StaleTimerAfterRearm_IsNoop(t *testing.T) {
+	r := newTestNotifyRegistry() // flushDelay = 1h (timers never fire spontaneously)
+
+	fileID := [16]byte{0x55}
+	var callbackCount atomic.Int32
+
+	// Register watcher A — captures generation G1.
+	wA := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 100,
+		WatchPath: "/d", ShareName: "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  64 * 1024,
+		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			callbackCount.Add(1)
+			return nil
+		},
+	}
+	mustRegister(t, r, wA)
+	genA := wA.generation
+
+	// Buffer an event so flushTimer is set on wA.
+	r.mu.Lock()
+	r.bufferEventLocked(wA, FileNotifyInformation{Action: FileActionAdded, FileName: "x.txt"})
+	r.mu.Unlock()
+
+	// Cancel wA — unregisterLocked stops its timer (Stop returns false if
+	// already fired, but under flushDelay=1h it hasn't fired).
+	r.Unregister(fileID)
+
+	// Register watcher B for the same fileID — gets generation G2 > G1.
+	wB := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 11, AsyncId: 101,
+		WatchPath: "/d", ShareName: "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		MaxOutputLength:  64 * 1024,
+		AsyncCallback: func(_, _, _ uint64, _ *ChangeNotifyResponse) error {
+			callbackCount.Add(1)
+			return nil
+		},
+	}
+	mustRegister(t, r, wB)
+
+	if wB.generation == genA {
+		t.Fatalf("wB.generation = %d must differ from genA = %d", wB.generation, genA)
+	}
+
+	// Simulate the stale timer firing: call flushWatcher with A's generation.
+	// Before the fix this finds wB (same fileID) and destroys it.
+	// After the fix the generation mismatch makes it a no-op.
+	r.flushWatcher(fileID, genA)
+
+	// wB must still be registered and its callback must NOT have been invoked.
+	if got := r.WatcherCount(); got != 1 {
+		t.Errorf("WatcherCount = %d after stale flushWatcher; want 1 (wB must survive)", got)
+	}
+	if n := callbackCount.Load(); n != 0 {
+		t.Errorf("AsyncCallback invoked %d times; want 0 (stale timer must be no-op)", n)
+	}
+
+	// Legitimate flush for wB must still work.
+	r.mu.Lock()
+	r.bufferEventLocked(wB, FileNotifyInformation{Action: FileActionAdded, FileName: "y.txt"})
+	r.mu.Unlock()
+	r.flushWatcher(fileID, wB.generation)
+
+	if n := callbackCount.Load(); n != 1 {
+		t.Errorf("Legitimate flushWatcher invoked callback %d times; want 1", n)
+	}
+	if got := r.WatcherCount(); got != 0 {
+		t.Errorf("WatcherCount = %d after legitimate flush; want 0", got)
+	}
+}
+
+// TestArmedBuffer_RenameDoesNotDoubleChargeAncestorWatcher is the regression
+// test for the NotifyRename double-charge bug on cross-directory renames.
+//
+// Scenario: a WatchTree watcher rooted at "/" is armed but has no live pending
+// notify. A file is renamed from /src/old.txt to /dst/new.txt (cross-dir).
+// The watcher should be charged exactly two FILE_NOTIFY_INFORMATION entries:
+//   - RENAMED_OLD_NAME "src/old.txt"  (relative to "/")
+//   - RENAMED_NEW_NAME "dst/new.txt"  (relative to "/")
+//
+// Before the fix, chargeArmedBuffer was called twice (once per parent path)
+// with both filenames each time, charging 4 entries and triggering a false
+// overflow. After the fix, chargeArmedRename charges each handle exactly once.
+func TestArmedBuffer_RenameDoesNotDoubleChargeAncestorWatcher(t *testing.T) {
+	r := newTestNotifyRegistry()
+
+	fileID := [16]byte{0x77}
+	var overflowCount atomic.Int32
+
+	// Compute the exact byte cost of the two correct entries:
+	//   RENAMED_OLD_NAME "src/old.txt"
+	//   RENAMED_NEW_NAME "dst/new.txt"
+	twoEntryCost := encodedNotifyEntrySize("src/old.txt") + encodedNotifyEntrySize("dst/new.txt")
+
+	// MaxOutputLength = twoEntryCost: fits the correct 2 entries exactly, but
+	// would overflow if 4 entries (the buggy path) were charged.
+	maxLen := twoEntryCost
+
+	first := &PendingNotify{
+		FileID: fileID, SessionID: 1, ConnID: 1, MessageID: 10, AsyncId: 100,
+		WatchPath: "/", ShareName: "s",
+		CompletionFilter: FileNotifyChangeFileName,
+		WatchTree:        true,
+		MaxOutputLength:  maxLen,
+		AsyncCallback:    func(_, _, _ uint64, _ *ChangeNotifyResponse) error { return nil },
+		OnOverflow: func(_ [16]byte) {
+			overflowCount.Add(1)
+		},
+	}
+	mustRegister(t, r, first)
+	// Cancel to leave handle armed-but-unwatched.
+	if r.UnregisterByAsyncId(100) == nil {
+		t.Fatal("expected to unregister")
+	}
+
+	// Cross-directory rename: /src/old.txt -> /dst/new.txt
+	r.NotifyRename("s", "/src", "old.txt", "/dst", "new.txt", FileNotifyChangeFileName)
+
+	// The armed handle should be charged exactly 2 entries total.
+	// Before fix: 4 entries charged -> overflow fires.
+	// After fix:  2 entries charged -> no overflow (fits within maxLen exactly).
+	if got := overflowCount.Load(); got != 0 {
+		t.Errorf("OnOverflow fired %d times; want 0 (ancestor watcher double-charged by buggy path)", got)
+	}
+
+	// Confirm buffered bytes on the armed handle equals the 2-entry cost.
+	r.mu.RLock()
+	armed := r.armed[string(fileID[:])]
+	var bufferedBytes uint32
+	if armed != nil {
+		bufferedBytes = armed.BufferedBytes
+	}
+	r.mu.RUnlock()
+
+	if bufferedBytes != twoEntryCost {
+		t.Errorf("armed.BufferedBytes = %d; want %d (exactly 2 rename entries)", bufferedBytes, twoEntryCost)
+	}
+}

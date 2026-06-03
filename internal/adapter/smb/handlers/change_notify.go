@@ -218,6 +218,16 @@ type PendingNotify struct {
 	// MarkInterimSent, on the goroutine that writes the interim.
 	// Protected by NotifyRegistry.mu.
 	deferredFinal func()
+
+	// generation is a per-Register monotonic stamp used to detect a stale
+	// flush-timer callback. unregisterLocked stops the timer, but per Go's
+	// time.Timer contract Stop() does not cancel an already-fired timer whose
+	// goroutine is still racing to acquire r.mu. If a new watcher for the same
+	// FileID registers in that window, the stale callback must not drain or
+	// unregister it. flushWatcher therefore captures the generation live at
+	// the time the timer armed and bails out on mismatch.
+	// Protected by NotifyRegistry.mu.
+	generation uint64
 }
 
 // NotifyRegistry manages pending CHANGE_NOTIFY requests from SMB2 clients.
@@ -279,6 +289,11 @@ type NotifyRegistry struct {
 	// (smb2.notify.mask). MarkInterimSent fires the deferred response after
 	// writing interim and clears this map entry. Keyed by (ConnID, MessageID).
 	pendingInterim map[notifyMsgKey]*PendingNotify
+
+	// nextGeneration is incremented on every Register and stamped onto the
+	// registered PendingNotify.generation. Used to detect stale flush-timer
+	// callbacks after a re-arm on the same FileID. Always mutated under r.mu.
+	nextGeneration uint64
 
 	// flushDelay is the per-registry accumulation window for buffered events.
 	// Defaults to notifyFlushDelay (100µs) in production. Tests that drive
@@ -604,6 +619,12 @@ func (r *NotifyRegistry) Register(notify *PendingNotify) error {
 			r.unregisterLocked(oldByMsg)
 		}
 	}
+
+	// Stamp a fresh generation so a stale flush timer from a prior watcher on
+	// this FileID (whose Stop() lost the race against its own fired callback)
+	// is recognised as stale by flushWatcher and treated as a no-op.
+	r.nextGeneration++
+	notify.generation = r.nextGeneration
 
 	r.byFileID[string(notify.FileID[:])] = notify
 	r.byMsgKey[msgKey] = notify
@@ -1000,9 +1021,82 @@ func (r *NotifyRegistry) NotifyRename(shareName, oldParentPath, oldFileName, new
 	}
 	r.mu.Unlock()
 
-	r.chargeArmedBuffer(shareName, oldParentPath, filter, []string{oldFileName, newFileName}, liveFileIDs)
-	if newParentPath != oldParentPath {
-		r.chargeArmedBuffer(shareName, newParentPath, filter, []string{oldFileName, newFileName}, liveFileIDs)
+	r.chargeArmedRename(shareName, oldParentPath, oldFileName, newParentPath, newFileName, filter, liveFileIDs)
+}
+
+// chargeArmedRename charges the byte cost of one RENAMED_OLD_NAME +
+// RENAMED_NEW_NAME pair against every armed handle that would have matched
+// either the old or new parent path. Each handle is charged exactly once: the
+// old-side relative path for RENAMED_OLD_NAME and the new-side relative path
+// for RENAMED_NEW_NAME.
+//
+// This replaces a pair of chargeArmedBuffer calls (one per parent path) that
+// double-charged an armed WatchTree ancestor on a cross-directory rename: the
+// ancestor matched oldParentPath on the first call (charging both filenames)
+// AND newParentPath on the second (charging both again), accumulating 4 entries
+// for an event that puts only 2 on the wire and tripping a false overflow.
+//
+// Handles in skipFileIDs (live watchers already served the event one-shot) are
+// excluded.
+func (r *NotifyRegistry) chargeArmedRename(
+	shareName, oldParentPath, oldFileName, newParentPath, newFileName string,
+	filter uint32,
+	skipFileIDs map[[16]byte]struct{},
+) {
+	type pendingFire struct {
+		fn OnOverflow
+		id [16]byte
+	}
+	var toFire []pendingFire
+
+	r.mu.Lock()
+	if len(r.armed) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	for _, a := range r.armed {
+		if a.ShareName != shareName {
+			continue
+		}
+		if _, live := skipFileIDs[a.FileID]; live {
+			continue
+		}
+		if a.CompletionFilter&filter == 0 {
+			continue
+		}
+		if a.Overflowed {
+			continue
+		}
+		matchesOld := a.WatchPath == oldParentPath || (a.WatchTree && pathIsAncestor(a.WatchPath, oldParentPath))
+		matchesNew := a.WatchPath == newParentPath || (a.WatchTree && pathIsAncestor(a.WatchPath, newParentPath))
+		if !matchesOld && !matchesNew {
+			continue
+		}
+		// Charge exactly the entries this handle would see on the wire: one
+		// RENAMED_OLD_NAME entry and one RENAMED_NEW_NAME entry, each with its
+		// own per-watcher relative path. A root WatchTree ancestor matches both
+		// sides of a cross-dir rename and is charged exactly 2 entries — not 4.
+		var addBytes uint32
+		if matchesOld {
+			oldRel := relativePathFromWatch(a.WatchPath, oldParentPath, oldFileName)
+			addBytes += encodedNotifyEntrySize(oldRel)
+		}
+		if matchesNew {
+			newRel := relativePathFromWatch(a.WatchPath, newParentPath, newFileName)
+			addBytes += encodedNotifyEntrySize(newRel)
+		}
+		a.BufferedBytes += addBytes
+		if a.MaxOutputLength == 0 || a.BufferedBytes > a.MaxOutputLength {
+			a.Overflowed = true
+			if a.OnOverflow != nil {
+				toFire = append(toFire, pendingFire{fn: a.OnOverflow, id: a.FileID})
+			}
+		}
+	}
+	r.mu.Unlock()
+
+	for _, f := range toFire {
+		f.fn(f.id)
 	}
 }
 
@@ -1167,8 +1261,9 @@ func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNot
 	notify.bufferedChanges = append(notify.bufferedChanges, change)
 	if notify.flushTimer == nil {
 		fileID := notify.FileID
+		gen := notify.generation
 		notify.flushTimer = time.AfterFunc(r.flushDelay, func() {
-			r.flushWatcher(fileID)
+			r.flushWatcher(fileID, gen)
 		})
 	}
 }
@@ -1176,10 +1271,13 @@ func (r *NotifyRegistry) bufferEventLocked(notify *PendingNotify, change FileNot
 // flushWatcher drains the buffered events for a watcher identified by fileID,
 // unregisters it (one-shot), and sends the async response. Called by the flush
 // timer after notifyFlushDelay.
-func (r *NotifyRegistry) flushWatcher(fileID [16]byte) {
+func (r *NotifyRegistry) flushWatcher(fileID [16]byte, gen uint64) {
 	r.mu.Lock()
 	notify, ok := r.byFileID[string(fileID[:])]
-	if !ok {
+	if !ok || notify.generation != gen {
+		// Either the watcher was already unregistered, or a newer watcher
+		// re-armed this FileID after a stale timer fired. In both cases this
+		// callback is stale and must not drain or unregister the live watcher.
 		r.mu.Unlock()
 		return
 	}
