@@ -75,6 +75,14 @@ DittoFS passes the pjdfstest POSIX suite at 99.99% (8,788/8,789) across all thre
 metadata backends; the single expected failure is the NFSv3 32-bit timestamp limit
 (year 2106). See the [FAQ](docs/FAQ.md) for known limitations.
 
+On the SMB side, DittoFS passes the Samba **smbtorture** and Microsoft **Windows
+Protocol Test Suite (WPTS)** conformance batteries on the implementable surface —
+every test that a single-node userspace VFS can satisfy. The remaining known-failures
+are genuinely out-of-scope features (RSVD shared-VHD, Service Witness clustering,
+Storage QoS, DFS namespaces, kernel oplocks, NTFS-internal pseudo-files) plus a
+handful of upstream-Samba known-fails; none are fixable protocol gaps. See
+[docs/SMB.md](docs/SMB.md) and [docs/WINDOWS_TESTING.md](docs/WINDOWS_TESTING.md).
+
 ## Quick Start
 
 ### Install
