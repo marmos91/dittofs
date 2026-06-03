@@ -336,6 +336,9 @@ func TestHandleCreateSession_RoundTripWithDestroy(t *testing.T) {
 	clientID, seqID := registerExchangeID(t, h, "cs-roundtrip-client")
 
 	ctx := newTestCompoundContext()
+	// A real client's connection is bound to the session at CREATE_SESSION time;
+	// the subsequent standalone DESTROY_SESSION is authorized via that binding.
+	ctx.ConnectionID = 7700
 	secParms := []types.CallbackSecParms4{{CbSecFlavor: 0}}
 	csArgs := encodeCreateSessionArgsWithSec(clientID, seqID, 0, secParms)
 
