@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
@@ -37,27 +38,27 @@ func buildSID(t *testing.T, sidStr string) []byte {
 
 // buildACE builds a single ACE (type + flags + size + mask + sid).
 func buildACE(aceType, aceFlags uint8, accessMask uint32, sidBytes []byte) []byte {
-	var buf bytes.Buffer
+	w := smbenc.NewWriter(8 + len(sidBytes))
 	aceSize := uint16(8 + len(sidBytes))
-	buf.WriteByte(aceType)
-	buf.WriteByte(aceFlags)
-	writeUint16ToBuf(&buf, aceSize)
-	writeUint32ToBuf(&buf, accessMask)
-	buf.Write(sidBytes)
-	return buf.Bytes()
+	w.WriteUint8(aceType)
+	w.WriteUint8(aceFlags)
+	w.WriteUint16(aceSize)
+	w.WriteUint32(accessMask)
+	w.WriteBytes(sidBytes)
+	return w.Bytes()
 }
 
 // buildRawDACL builds a DACL: AclRev(1) + Sbz1(1) + AclSize(2) + AceCount(2) + Sbz2(2) + ACEs.
 func buildRawDACL(aceCount uint16, aces []byte) []byte {
-	var buf bytes.Buffer
+	w := smbenc.NewWriter(8 + len(aces))
 	aclSize := uint16(8 + len(aces))
-	buf.WriteByte(2) // AclRevision = ACL_REVISION (2)
-	buf.WriteByte(0) // Sbz1
-	writeUint16ToBuf(&buf, aclSize)
-	writeUint16ToBuf(&buf, aceCount)
-	writeUint16ToBuf(&buf, 0) // Sbz2
-	buf.Write(aces)
-	return buf.Bytes()
+	w.WriteUint8(2) // AclRevision = ACL_REVISION (2)
+	w.WriteUint8(0) // Sbz1
+	w.WriteUint16(aclSize)
+	w.WriteUint16(aceCount)
+	w.WriteUint16(0) // Sbz2
+	w.WriteBytes(aces)
+	return w.Bytes()
 }
 
 // buildSelfRelativeSD assembles a self-relative SD per MS-DTYP §2.4.6.
@@ -67,12 +68,12 @@ func buildRawDACL(aceCount uint16, aces []byte) []byte {
 // Pass nil for dacl to indicate no DACL.
 func buildSelfRelativeSD(t *testing.T, control uint16, ownerSID, groupSID, daclBytes []byte) []byte {
 	t.Helper()
-	var buf bytes.Buffer
+	w := smbenc.NewWriter(20 + len(daclBytes) + len(ownerSID) + len(groupSID))
 
 	// Header
-	buf.WriteByte(1) // Revision
-	buf.WriteByte(0) // Sbz1
-	writeUint16ToBuf(&buf, control|0x8000)
+	w.WriteUint8(1) // Revision
+	w.WriteUint8(0) // Sbz1
+	w.WriteUint16(control | 0x8000)
 
 	// Offsets — fill in after we know layout
 	// Order on wire: DACL after header, Owner after DACL, Group after Owner.
@@ -94,21 +95,21 @@ func buildSelfRelativeSD(t *testing.T, control uint16, ownerSID, groupSID, daclB
 		offsetGroup = cursor
 	}
 
-	writeUint32ToBuf(&buf, offsetOwner)
-	writeUint32ToBuf(&buf, offsetGroup)
-	writeUint32ToBuf(&buf, offsetSACL)
-	writeUint32ToBuf(&buf, offsetDACL)
+	w.WriteUint32(offsetOwner)
+	w.WriteUint32(offsetGroup)
+	w.WriteUint32(offsetSACL)
+	w.WriteUint32(offsetDACL)
 
 	if daclBytes != nil {
-		buf.Write(daclBytes)
+		w.WriteBytes(daclBytes)
 	}
 	if ownerSID != nil {
-		buf.Write(ownerSID)
+		w.WriteBytes(ownerSID)
 	}
 	if groupSID != nil {
-		buf.Write(groupSID)
+		w.WriteBytes(groupSID)
 	}
-	return buf.Bytes()
+	return w.Bytes()
 }
 
 // ---------------------------------------------------------------------------

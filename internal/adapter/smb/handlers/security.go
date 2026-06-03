@@ -17,7 +17,6 @@
 package handlers
 
 import (
-	"bytes"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -161,16 +160,16 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	isNullDACL := includeDACL && file.ACL != nil && file.ACL.NullDACL
 
 	// Build DACL
-	var daclBuf bytes.Buffer
+	daclBuf := smbenc.NewWriter(64)
 	var fileACL *acl.ACL
 	if includeDACL && !isNullDACL {
-		fileACL = buildDACL(&daclBuf, file)
+		fileACL = buildDACL(daclBuf, file)
 	}
 
 	// Build SACL (empty stub if requested)
-	var saclBuf bytes.Buffer
+	saclBuf := smbenc.NewWriter(aclHeaderSize)
 	if includeSACL {
-		buildEmptySACL(&saclBuf)
+		buildEmptySACL(saclBuf)
 	}
 
 	// Compute SD control flags dynamically
@@ -220,7 +219,7 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	if includeOwner {
 		ownerOffset = currentOffset
 		currentOffset += uint32(sid.SIDSize(ownerSID))
-		currentOffset = alignTo4(currentOffset)
+		currentOffset = (currentOffset + 3) &^ 3 // align to 4-byte boundary
 	}
 
 	if includeGroup {
@@ -228,39 +227,39 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	}
 
 	// Build the complete Security Descriptor
-	var buf bytes.Buffer
+	buf := smbenc.NewWriter(int(currentOffset))
 
 	// Header (20 bytes)
-	buf.WriteByte(1) // Revision
-	buf.WriteByte(0) // Sbz1
-	writeUint16ToBuf(&buf, control)
-	writeUint32ToBuf(&buf, ownerOffset)
-	writeUint32ToBuf(&buf, groupOffset)
-	writeUint32ToBuf(&buf, saclOffset)
-	writeUint32ToBuf(&buf, daclOffset)
+	buf.WriteUint8(1) // Revision
+	buf.WriteUint8(0) // Sbz1
+	buf.WriteUint16(control)
+	buf.WriteUint32(ownerOffset)
+	buf.WriteUint32(groupOffset)
+	buf.WriteUint32(saclOffset)
+	buf.WriteUint32(daclOffset)
 
 	// Body in Windows convention order: SACL, DACL, Owner, Group
 
 	// SACL
 	if includeSACL {
-		buf.Write(saclBuf.Bytes())
+		buf.WriteBytes(saclBuf.Bytes())
 	}
 
 	// DACL
 	if includeDACL {
-		buf.Write(daclBuf.Bytes())
+		buf.WriteBytes(daclBuf.Bytes())
 	}
 
 	// Owner SID
 	if includeOwner {
-		sid.EncodeSID(&buf, ownerSID)
-		padTo4(&buf)
+		encodeSID(buf, ownerSID)
+		buf.Pad(4)
 	}
 
 	// Group SID
 	if includeGroup {
-		sid.EncodeSID(&buf, groupSID)
-		padTo4(&buf)
+		encodeSID(buf, groupSID)
+		buf.Pad(4)
 	}
 
 	return buf.Bytes(), nil
@@ -317,7 +316,7 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 // POSIX semantics so Unix mode bits stay authoritative on the server.
 //
 // Returns the source ACL used for SD control flag computation.
-func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
+func buildDACL(buf *smbenc.Writer, file *metadata.File) *acl.ACL {
 	var aces []windowsACE
 	var fileACL *acl.ACL
 
@@ -349,22 +348,22 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 	}
 
 	// Write ACL header (8 bytes) per MS-DTYP Section 2.4.5
-	buf.WriteByte(2) // AclRevision (2 = standard)
-	buf.WriteByte(0) // Sbz1
-	writeUint16ToBuf(buf, uint16(totalACLSize))
-	writeUint16ToBuf(buf, uint16(len(aces)))
-	writeUint16ToBuf(buf, 0) // Sbz2
+	buf.WriteUint8(2) // AclRevision (2 = standard)
+	buf.WriteUint8(0) // Sbz1
+	buf.WriteUint16(uint16(totalACLSize))
+	buf.WriteUint16(uint16(len(aces)))
+	buf.WriteUint16(0) // Sbz2
 
 	// Write each ACE per MS-DTYP Section 2.4.4.2
 	for i := range aces {
 		ace := &aces[i]
 		aceSize := uint16(aceHeaderSize + sid.SIDSize(ace.sid))
 
-		buf.WriteByte(ace.aceType)  // AceType
-		buf.WriteByte(ace.aceFlags) // AceFlags
-		writeUint16ToBuf(buf, aceSize)
-		writeUint32ToBuf(buf, ace.accessMask)
-		sid.EncodeSID(buf, ace.sid)
+		buf.WriteUint8(ace.aceType)  // AceType
+		buf.WriteUint8(ace.aceFlags) // AceFlags
+		buf.WriteUint16(aceSize)
+		buf.WriteUint32(ace.accessMask)
+		encodeSID(buf, ace.sid)
 	}
 
 	return fileACL
@@ -372,12 +371,12 @@ func buildDACL(buf *bytes.Buffer, file *metadata.File) *acl.ACL {
 
 // buildEmptySACL writes a valid empty SACL to buf.
 // The SACL has revision=2, count=0, and total size=8 bytes.
-func buildEmptySACL(buf *bytes.Buffer) {
-	buf.WriteByte(2)                     // AclRevision
-	buf.WriteByte(0)                     // Sbz1
-	writeUint16ToBuf(buf, aclHeaderSize) // AclSize = 8
-	writeUint16ToBuf(buf, 0)             // AceCount = 0
-	writeUint16ToBuf(buf, 0)             // Sbz2
+func buildEmptySACL(buf *smbenc.Writer) {
+	buf.WriteUint8(2)              // AclRevision
+	buf.WriteUint8(0)              // Sbz1
+	buf.WriteUint16(aclHeaderSize) // AclSize = 8
+	buf.WriteUint16(0)             // AceCount = 0
+	buf.WriteUint16(0)             // Sbz2
 }
 
 // ============================================================================
@@ -577,39 +576,17 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 }
 
 // ============================================================================
-// Alignment Helpers
+// Encoding Helpers
 // ============================================================================
 
-// writeUint16ToBuf writes a little-endian uint16 to a bytes.Buffer.
-func writeUint16ToBuf(buf *bytes.Buffer, v uint16) {
-	var tmp [2]byte
-	tmp[0] = byte(v)
-	tmp[1] = byte(v >> 8)
-	buf.Write(tmp[:])
-}
-
-// writeUint32ToBuf writes a little-endian uint32 to a bytes.Buffer.
-func writeUint32ToBuf(buf *bytes.Buffer, v uint32) {
-	var tmp [4]byte
-	tmp[0] = byte(v)
-	tmp[1] = byte(v >> 8)
-	tmp[2] = byte(v >> 16)
-	tmp[3] = byte(v >> 24)
-	buf.Write(tmp[:])
-}
-
-// alignTo4 rounds up a value to the next 4-byte boundary.
-func alignTo4(n uint32) uint32 {
-	return (n + 3) &^ 3
-}
-
-// padTo4 pads a buffer to a 4-byte boundary with zeros.
-func padTo4(buf *bytes.Buffer) {
-	rem := buf.Len() % 4
-	if rem != 0 {
-		padding := 4 - rem
-		for range padding {
-			buf.WriteByte(0)
-		}
+// encodeSID writes a binary SID to w per MS-DTYP Section 2.4.2. It mirrors
+// sid.EncodeSID, which targets *bytes.Buffer, for the smbenc.Writer-based SD
+// builders here.
+func encodeSID(w *smbenc.Writer, s *sid.SID) {
+	w.WriteUint8(s.Revision)
+	w.WriteUint8(s.SubAuthorityCount)
+	w.WriteBytes(s.IdentifierAuthority[:])
+	for _, sa := range s.SubAuthorities {
+		w.WriteUint32(sa)
 	}
 }
