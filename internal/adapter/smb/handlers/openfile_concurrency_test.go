@@ -236,3 +236,85 @@ func TestFreezeFields_ConcurrentReadWrite_NoRace(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// TestDOCPropagation_ConcurrentClose_NoRace pins the lock discipline on the
+// CLOSE delete-on-close propagation path. The writer mimics the
+// close.go/handler.go DOC-propagation Range callback (writing DeletePending +
+// the parent-key fields onto a *sibling* OpenFile); the reader mimics
+// isFileDeletePending probing DeletePending. Fails under -race if either side
+// drops the lock.
+func TestDOCPropagation_ConcurrentClose_NoRace(t *testing.T) {
+	t.Parallel()
+
+	handle := []byte{0xDE, 0xAD}
+	of2 := &OpenFile{FileID: [16]byte{2}, MetadataHandle: handle}
+
+	const iters = 500
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Writer: propagates DOC fields onto of2 under its lock (the fixed path).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			of2.mu.Lock()
+			of2.DeletePending = true
+			of2.DeleteOnCloseParentKey = [16]byte{byte(i)}
+			of2.HasDeleteOnCloseParentKey = true
+			of2.mu.Unlock()
+		}
+	}()
+
+	// Reader: reads DeletePending under RLock (the fixed isFileDeletePending).
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			of2.mu.RLock()
+			_ = of2.DeletePending
+			_ = of2.DeleteOnCloseParentKey
+			of2.mu.RUnlock()
+		}
+	}()
+
+	wg.Wait()
+}
+
+// TestBaseFileDeletePending_ConcurrentClose_NoRace pins the lock discipline on
+// the deferred base-file delete propagation path. The writer mimics the
+// rangeStreamsOfBase callback; the reader mimics isFileOrBaseDeletePending.
+// Fails under -race if either side drops the lock.
+func TestBaseFileDeletePending_ConcurrentClose_NoRace(t *testing.T) {
+	t.Parallel()
+
+	stream := &OpenFile{FileID: [16]byte{3}}
+	ph := metadata.FileHandle{0xAB, 0xCD}
+
+	const iters = 500
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			stream.mu.Lock()
+			stream.BaseFileDeletePending = i%2 == 0
+			stream.BaseFileDeleteParentHandle = ph
+			stream.BaseFileDeleteFileName = fmt.Sprintf("f%d", i)
+			stream.DeleteOnCloseParentKey = [16]byte{byte(i)}
+			stream.HasDeleteOnCloseParentKey = i%2 == 0
+			stream.mu.Unlock()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iters; i++ {
+			stream.mu.RLock()
+			_ = stream.BaseFileDeletePending
+			_ = stream.BaseFileDeleteFileName
+			stream.mu.RUnlock()
+		}
+	}()
+
+	wg.Wait()
+}
