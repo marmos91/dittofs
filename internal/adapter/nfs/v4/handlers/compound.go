@@ -516,6 +516,14 @@ func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, fir
 	return encodeCompoundResponse(lastStatus, tag, results)
 }
 
+// EncodeAbortCompound encodes a COMPOUND4res with the given status, an empty
+// tag, and zero results. It is used to reject a COMPOUND before the request
+// body is decoded (e.g. a pre-flight auth failure where the request tag is not
+// yet known). RFC 7530 §15.1 permits replying with an empty tag and zero results.
+func EncodeAbortCompound(status uint32) ([]byte, error) {
+	return encodeCompoundResponse(status, []byte{}, nil)
+}
+
 // encodeCompoundResponse encodes a COMPOUND4res response.
 //
 // Wire format:

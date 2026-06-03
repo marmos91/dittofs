@@ -335,7 +335,20 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 
 	case v4types.NFSPROC4_COMPOUND:
 		// Extract CompoundContext with auth credentials
-		compCtx := v4handlers.ExtractV4HandlerContext(ctx, call, clientAddr)
+		compCtx, authStatus := v4handlers.ExtractV4HandlerContext(ctx, call, clientAddr)
+		if authStatus != v4types.NFS4_OK {
+			// GSS auth flavor claimed but no verified identity — abort before
+			// decoding any ops. We cannot echo the COMPOUND tag here because the
+			// request body has not been decoded; RFC 7530 §15.1 permits replying
+			// with NFS4ERR_WRONGSEC, an empty tag, and zero results.
+			logger.Warn("NFSv4 COMPOUND rejected: unauthenticated GSS flavor",
+				"status", authStatus, "client", clientAddr)
+			reply, encErr := v4handlers.EncodeAbortCompound(authStatus)
+			if encErr != nil {
+				return nil, fmt.Errorf("encode GSS auth error reply: %w", encErr)
+			}
+			return reply, nil
+		}
 		compCtx.ConnectionID = c.connectionID
 
 		result, err := c.server.v4Handler.ProcessCompound(compCtx, data)
