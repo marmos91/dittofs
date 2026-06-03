@@ -105,16 +105,31 @@ func WriteSummary(w io.Writer, doc *Document) {
 		_, _ = fmt.Fprintf(w, "abort_reason=%s\n", doc.AbortReason)
 	}
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "WORKLOAD\tOUTCOME\tOPS\tNS/OP\tOPS/SEC\tMB/SEC")
+	_, _ = fmt.Fprintln(tw, "WORKLOAD\tOUTCOME\tOPS\tFAILED\tNS/OP\tP50µs\tP95µs\tP99µs\tMB/SEC")
 	for _, name := range sortedKeys(doc.Workloads) {
 		r := doc.Workloads[name]
 		if r.Metrics == nil {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t-\t-\t-\t-\n", name, r.Outcome)
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t-\t-\t-\t-\t-\t-\t-\n", name, r.Outcome)
 			continue
 		}
 		mbps := r.Metrics.BytesPerSec / (1024 * 1024)
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%.1f\t%.1f\t%.2f\n",
-			name, r.Outcome, r.Metrics.Ops, r.Metrics.NsPerOp, r.Metrics.OpsPerSec, mbps)
+		p50, p95, p99 := "-", "-", "-"
+		if l := r.Metrics.Latency; l != nil {
+			p50 = fmt.Sprintf("%.1f", float64(l.P50Ns)/1000)
+			p95 = fmt.Sprintf("%.1f", float64(l.P95Ns)/1000)
+			p99 = fmt.Sprintf("%.1f", float64(l.P99Ns)/1000)
+		}
+		failed := int64(-1) // rendered as "-" when op counts were not recorded
+		if r.Metrics.OpCounts != nil {
+			failed = r.Metrics.OpCounts.Failed
+		}
+		failedStr := "-"
+		if failed >= 0 {
+			failedStr = fmt.Sprintf("%d", failed)
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%.1f\t%s\t%s\t%s\t%.2f\n",
+			name, r.Outcome, r.Metrics.Ops, failedStr,
+			r.Metrics.NsPerOp, p50, p95, p99, mbps)
 	}
 	_ = tw.Flush()
 }

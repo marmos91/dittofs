@@ -95,22 +95,27 @@ func RunConcurrent(ctx context.Context, bs *engine.Store, opts Opts) (Result, er
 	}
 
 	var moved atomic.Int64
+	lat := NewLatencyRecorder(opts.Ops)
 	statsBefore := bs.GetStats()
 	start := time.Now()
 	err := runWorkerPool(ctx, workers, opts.Ops, opts.Seed, func(worker int, rng *rand.Rand, op int) error {
 		size := opSize(rng)
 		p := pid(worker, op)
 		buf := make([]byte, size)
+		opStart := time.Now()
 		if isRead {
 			if _, err := bs.ReadAt(ctx, p, nil, buf, 0); err != nil {
+				lat.Record(time.Since(opStart), false)
 				return fmt.Errorf("%s read %s: %w", opts.Workload, p, err)
 			}
 		} else {
 			fillRandom(rng, buf)
 			if _, err := bs.WriteAt(ctx, p, nil, buf, 0); err != nil {
+				lat.Record(time.Since(opStart), false)
 				return fmt.Errorf("%s write %s: %w", opts.Workload, p, err)
 			}
 		}
+		lat.Record(time.Since(opStart), true)
 		moved.Add(int64(size))
 		return nil
 	})
@@ -126,6 +131,7 @@ func RunConcurrent(ctx context.Context, bs *engine.Store, opts Opts) (Result, er
 		Bytes:       moved.Load(),
 		StatsBefore: statsBefore,
 		StatsAfter:  statsAfter,
+		Latency:     lat,
 	}, nil
 }
 

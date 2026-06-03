@@ -163,9 +163,23 @@ func engineRunner(ctx context.Context, p orchestrator.WorkloadParams) (orchestra
 		return orchestrator.RunOutput{}, err
 	}
 
-	out := orchestrator.RunOutput{
-		Metrics: orchestrator.MetricsFromRun(res.Duration.Nanoseconds(), int64(res.Ops), res.Bytes),
+	metrics := orchestrator.MetricsFromRun(res.Duration.Nanoseconds(), int64(res.Ops), res.Bytes)
+	// Fold in the per-op latency distribution + succeeded/failed breakdown the
+	// runner recorded. These are additive schema fields (no version bump): a
+	// runner that records no samples leaves them nil/zero.
+	if res.Latency != nil {
+		metrics.Latency = orchestrator.LatencyFromSamples(res.Latency.Samples())
+		succeeded, failed := res.Latency.Counts()
+		if succeeded+failed > 0 {
+			metrics.OpCounts = &orchestrator.OpCounts{
+				Total:     succeeded + failed,
+				Succeeded: succeeded,
+				Failed:    failed,
+			}
+		}
 	}
+
+	out := orchestrator.RunOutput{Metrics: metrics}
 	if profDir != "" {
 		out.ProfilePaths = profileFiles(profDir, orchFullProfiles)
 	}
@@ -269,11 +283,11 @@ func runCompare(cmd *cobra.Command) error {
 	if orchCompareBase == "" || orchCompareCand == "" {
 		return fmt.Errorf("compare mode needs both --compare-baseline and --compare-candidate")
 	}
-	base, err := decodeResultFile(orchCompareBase)
+	base, err := orchestrator.DecodeFile(orchCompareBase)
 	if err != nil {
 		return fmt.Errorf("baseline: %w", err)
 	}
-	cand, err := decodeResultFile(orchCompareCand)
+	cand, err := orchestrator.DecodeFile(orchCompareCand)
 	if err != nil {
 		return fmt.Errorf("candidate: %w", err)
 	}
@@ -283,13 +297,4 @@ func runCompare(cmd *cobra.Command) error {
 		return fmt.Errorf("regression detected beyond %.1f%% threshold", orchCompareThresh)
 	}
 	return nil
-}
-
-func decodeResultFile(path string) (*orchestrator.Document, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	return orchestrator.DecodeDocument(f)
 }

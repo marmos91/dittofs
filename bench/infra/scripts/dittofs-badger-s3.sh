@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # dittofs-badger-s3.sh — DittoFS with BadgerDB metadata + S3 block store
 #
-# Builds DittoFS from source, creates a configuration using BadgerDB for
-# metadata and S3 for remote block storage, then starts the dfs server with an
-# NFS export at /export on port 12049.
+# Uses prebuilt DittoFS binaries (scp'd to the host by `bench remote`), creates
+# a configuration using BadgerDB for metadata and S3 for remote block storage,
+# then starts the dfs server with an NFS export at /export on port 12049.
 #
 # Requires S3 credentials via environment variables:
 #   S3_BUCKET, S3_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
@@ -28,8 +28,12 @@ fi
 EXPORT_DIR="${EXPORT_DIR:-/export}"
 DATA_DIR="${DATA_DIR:-/data}"
 NFS_PORT="${NFS_PORT:-12049}"
-DITTOFS_REPO="${DITTOFS_REPO:-https://github.com/marmos91/dittofs.git}"
-DITTOFS_BRANCH="${DITTOFS_BRANCH:-main}"
+# DFS_BIN / DFSCTL_BIN: paths to prebuilt binaries already installed on the
+# host (the `bench remote` orchestrator scp's the exact tree-under-test here).
+# This replaces the old in-script `go build` of a hardcoded branch (baseline
+# failure mode B4) — benchmarks now always run the binary the caller chose.
+DFS_BIN="${DFS_BIN:-/usr/local/bin/dfs}"
+DFSCTL_BIN="${DFSCTL_BIN:-/usr/local/bin/dfsctl}"
 BADGER_PATH="${BADGER_PATH:-/data/metadata/badger}"
 PAYLOAD_PATH="${PAYLOAD_PATH:-/data/cache}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/dfs}"
@@ -49,33 +53,29 @@ S3_PREFIX="${S3_PREFIX:-dittofs-bench/}"
 log() { echo "[dittofs-badger-s3] $(date '+%H:%M:%S') $*"; }
 
 # ---------------------------------------------------------------------------
-# 1. Ensure Go is on PATH (from base snapshot)
+# 1. Verify the prebuilt binaries are present
 # ---------------------------------------------------------------------------
-export PATH="/usr/local/go/bin:${HOME}/go/bin:${PATH}"
-
-# ---------------------------------------------------------------------------
-# 2. Build DittoFS from source
-# ---------------------------------------------------------------------------
-DITTOFS_SRC="/opt/dittofs"
-if [ -d "${DITTOFS_SRC}" ]; then
-    cd "${DITTOFS_SRC}"
-    git fetch origin "${DITTOFS_BRANCH}"
-    git checkout "${DITTOFS_BRANCH}"
-    git reset --hard "origin/${DITTOFS_BRANCH}"
-else
-    log "Cloning DittoFS repository..."
-    git clone --branch "${DITTOFS_BRANCH}" --depth 1 "${DITTOFS_REPO}" "${DITTOFS_SRC}"
+# The binaries are scp'd to the host by the `bench remote` orchestrator (or
+# installed manually). No git clone / go build here — the bench runs exactly
+# the tree the caller chose, not a hardcoded branch.
+if [ ! -x "${DFS_BIN}" ]; then
+    log "ERROR: dfs server binary not found at ${DFS_BIN}." >&2
+    log "Build linux/amd64 'dfs' and scp it to the host (or install manually), then set DFS_BIN." >&2
+    exit 1
 fi
-
-cd "${DITTOFS_SRC}"
-log "Building dfs server..."
-go build -o /usr/local/bin/dfs ./cmd/dfs/
-chmod +x /usr/local/bin/dfs
-log "dfs binary built successfully."
-
-log "Building dfsctl..."
-go build -o /usr/local/bin/dfsctl ./cmd/dfsctl/
-chmod +x /usr/local/bin/dfsctl
+if [ ! -x "${DFSCTL_BIN}" ]; then
+    log "ERROR: dfsctl binary not found at ${DFSCTL_BIN}." >&2
+    exit 1
+fi
+# Make them addressable as `dfs` / `dfsctl` regardless of where they live.
+# Skip the symlink when the binary is already at the standard path — `ln -sf`
+# with identical source and dest fails, which under `set -e` would abort.
+link_std() {
+    [ "$1" = "$2" ] || ln -sf "$1" "$2"
+}
+link_std "${DFS_BIN}" /usr/local/bin/dfs
+link_std "${DFSCTL_BIN}" /usr/local/bin/dfsctl
+log "Using prebuilt dfs (${DFS_BIN}) and dfsctl (${DFSCTL_BIN})."
 
 # ---------------------------------------------------------------------------
 # 3. Create directories

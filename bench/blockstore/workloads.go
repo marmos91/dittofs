@@ -108,6 +108,11 @@ type Result struct {
 	// Storm holds the per-op-type tallies for the mixed-ops-storm
 	// workload; nil for every other workload.
 	Storm *StormCounts
+
+	// Latency is the per-op timing recorder for the timed loop. Non-nil for
+	// every Run* helper; carries the raw samples + success/fail tally the
+	// orchestrator turns into p50/p95/p99 and the ops breakdown.
+	Latency *LatencyRecorder
 }
 
 // StormCounts tallies executed operations by type for the mixed-ops-storm.
@@ -145,11 +150,14 @@ func RunWorkload(ctx context.Context, bs *engine.Store, opts Opts) (Result, erro
 		return Result{}, err
 	}
 
+	lat := NewLatencyRecorder(opts.Ops)
 	statsBefore := bs.GetStats()
 	start := time.Now()
 	var total int64
 	for i := 0; i < opts.Ops; i++ {
+		opStart := time.Now()
 		n, err := step(i)
+		lat.Record(time.Since(opStart), err == nil)
 		if err != nil {
 			return Result{}, fmt.Errorf("%s op=%d: %w", opts.Workload, i, err)
 		}
@@ -164,6 +172,7 @@ func RunWorkload(ctx context.Context, bs *engine.Store, opts Opts) (Result, erro
 		Bytes:       total,
 		StatsBefore: statsBefore,
 		StatsAfter:  statsAfter,
+		Latency:     lat,
 	}, nil
 }
 

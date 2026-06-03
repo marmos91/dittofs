@@ -58,7 +58,7 @@ func deployBench(ctx *pulumi.Context) error {
 	}
 
 	// Attach to the private network.
-	_, err = scaleway.NewInstancePrivateNic(ctx, "server-pn", &scaleway.InstancePrivateNicArgs{
+	serverNic, err := scaleway.NewInstancePrivateNic(ctx, "server-pn", &scaleway.InstancePrivateNicArgs{
 		ServerId:         server.ID(),
 		PrivateNetworkId: pulumi.String(privateNetworkID),
 	})
@@ -66,8 +66,15 @@ func deployBench(ctx *pulumi.Context) error {
 		return err
 	}
 
-	// Exports for the orchestrator script.
+	// serverPrivateIP is the address the bench mounts/serves on. The public
+	// serverIP is for SSH only — the `bench remote` orchestrator keeps them
+	// distinct so a run never mounts over the public path (baseline B5).
+	serverPrivateIP := serverNic.PrivateIps.Index(pulumi.Int(0)).Address().Elem()
+
+	// Exports for the orchestrator (read via `pulumi stack output --json`).
 	ctx.Export("serverIP", serverIP.Address)
+	ctx.Export("serverPrivateIP", serverPrivateIP)
+	ctx.Export("privateNetworkID", pulumi.String(privateNetworkID))
 	ctx.Export("system", pulumi.String(systemName))
 	ctx.Export("protocol", pulumi.String(system.Protocol))
 	ctx.Export("port", pulumi.Int(system.Port))

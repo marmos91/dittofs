@@ -135,6 +135,17 @@ A CI gate asserts `outcome == "completed"` and that every workload completed.
   runners that plug into the same manifest + schema. The `WorkloadRunner`
   injection point and the per-workload `params`/`metrics`/`profile_paths` shape
   are designed to accept them without a schema bump.
-- **Latency percentiles** — `metrics` currently reports duration/ops/throughput;
-  p50/p95/p99 are an additive field (no version bump) once a runner records
-  per-op timings.
+
+## Additive fields (no version bump)
+
+These were added after `schema_version` 1 as `omitempty` fields under each
+workload's `metrics`. Per the version contract they did NOT bump
+`schema_version` — older documents lack them and older consumers ignore them:
+
+- `latency` — `{p50_ns, p95_ns, p99_ns}`, the per-op latency distribution
+  (nearest-rank percentiles over the recorded samples).
+- `ops_breakdown` — `{total, succeeded, failed}` operation counts.
+- `errors` — `[{op, offset, error_kind, count}]` structured per-op failures.
+
+The blockstore runners record per-op timings via `bench/blockstore.LatencyRecorder`;
+the orchestrator turns the samples into percentiles with `LatencyFromSamples`.

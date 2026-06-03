@@ -84,15 +84,18 @@ func RunWalk(ctx context.Context, local *fs.FSStore, opts Opts) (Result, error) 
 	if _, err := SeedLocalChunks(ctx, local, opts); err != nil {
 		return Result{}, err
 	}
+	lat := NewLatencyRecorder(opts.Ops)
 	start := time.Now()
 	var visited int64
 	if err := local.Walk(ctx, func(_ block.ContentHash, _ block.Meta) error {
+		opStart := time.Now()
 		visited++
+		lat.Record(time.Since(opStart), true)
 		return nil
 	}); err != nil {
 		return Result{}, err
 	}
-	return Result{Duration: time.Since(start), Ops: int(visited)}, nil
+	return Result{Duration: time.Since(start), Ops: int(visited), Latency: lat}, nil
 }
 
 // RunDelete seeds opts.Ops chunks and times deleting them all.
@@ -101,13 +104,17 @@ func RunDelete(ctx context.Context, local *fs.FSStore, opts Opts) (Result, error
 	if err != nil {
 		return Result{}, err
 	}
+	lat := NewLatencyRecorder(len(hashes))
 	start := time.Now()
 	for i, h := range hashes {
+		opStart := time.Now()
 		if err := local.Delete(ctx, h); err != nil {
+			lat.Record(time.Since(opStart), false)
 			return Result{}, fmt.Errorf("delete %d: %w", i, err)
 		}
+		lat.Record(time.Since(opStart), true)
 	}
-	return Result{Duration: time.Since(start), Ops: len(hashes)}, nil
+	return Result{Duration: time.Since(start), Ops: len(hashes), Latency: lat}, nil
 }
 
 // gcReconciler is a single-share MultiShareReconciler over a memory
@@ -167,18 +174,22 @@ func RunGC(ctx context.Context, remoteStore remote.RemoteStore, opts Opts, garba
 		}
 	}
 	rec := &gcReconciler{share: "perf-gc", store: ms}
+	lat := NewLatencyRecorder(opts.Ops)
 	start := time.Now()
 	for i := 0; i < opts.Ops; i++ {
+		opStart := time.Now()
 		stats := engine.CollectGarbage(ctx, remoteStore, rec, &engine.Options{
 			// 1 h grace; in-memory remote backdates LastModified by 2 h
 			// at seed so synthetic objects fall outside the window.
 			GracePeriod: time.Hour,
 		})
 		if stats.ErrorCount > 0 {
+			lat.Record(time.Since(opStart), false)
 			return Result{}, fmt.Errorf("gc op=%d errors=%d first=%v", i, stats.ErrorCount, stats.FirstErrors)
 		}
+		lat.Record(time.Since(opStart), true)
 	}
-	return Result{Duration: time.Since(start), Ops: opts.Ops}, nil
+	return Result{Duration: time.Since(start), Ops: opts.Ops, Latency: lat}, nil
 }
 
 // RunRawS3Put writes opts.Ops unique CAS chunks directly via
@@ -189,15 +200,19 @@ func RunRawS3Put(ctx context.Context, remoteStore remote.RemoteStore, opts Opts)
 		return Result{}, fmt.Errorf("raw-s3-put requires remote=s3")
 	}
 	buf := make([]byte, opts.BlockSize)
+	lat := NewLatencyRecorder(opts.Ops)
 	start := time.Now()
 	var total int64
 	for i := 0; i < opts.Ops; i++ {
 		copy(buf, fmt.Sprintf("perf-raws3-%016x", uint64(i)))
 		h := block.ContentHash(blake3.Sum256(buf))
+		opStart := time.Now()
 		if err := remoteStore.Put(ctx, h, buf); err != nil {
+			lat.Record(time.Since(opStart), false)
 			return Result{}, fmt.Errorf("put %d: %w", i, err)
 		}
+		lat.Record(time.Since(opStart), true)
 		total += int64(len(buf))
 	}
-	return Result{Duration: time.Since(start), Ops: opts.Ops, Bytes: total}, nil
+	return Result{Duration: time.Since(start), Ops: opts.Ops, Bytes: total, Latency: lat}, nil
 }

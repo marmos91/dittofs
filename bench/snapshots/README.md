@@ -64,7 +64,7 @@ probes, _ := snap.RunVerify(ctx, rs, backup.HashSet)
 
 ## Established limits & memory ceiling
 
-See [`test/e2e/BENCHMARKS.md`](../../test/e2e/BENCHMARKS.md#snapshot-scale-limits)
+See [`docs/BENCHMARKS.md`](../../docs/BENCHMARKS.md#snapshot-scale-limits)
 for the measured ceiling and the per-block verify budget. Summary:
 
 - The metadata dump is **streamed by the badger engine** (KV-by-KV; the
