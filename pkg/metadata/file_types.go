@@ -133,17 +133,24 @@ type FileAttr struct {
 
 // SetAttrs specifies which attributes to update in a SetFileAttributes call.
 type SetAttrs struct {
-	Mode         *uint32
-	UID          *uint32
-	GID          *uint32
-	Size         *uint64
-	Atime        *time.Time
-	Mtime        *time.Time
-	AtimeNow     bool
-	MtimeNow     bool
-	CreationTime *time.Time
-	Ctime        *time.Time
-	Hidden       *bool
+	Mode *uint32
+	// ModeOrMask, when non-nil, ORs the given bits into the stored Mode
+	// atomically within SetFileAttributes. Used instead of Mode when only
+	// specific bits should be set without reading the mode in the caller.
+	ModeOrMask *uint32
+	// ModeAndNotMask, when non-nil, clears the given bits from the stored
+	// Mode atomically within SetFileAttributes.
+	ModeAndNotMask *uint32
+	UID            *uint32
+	GID            *uint32
+	Size           *uint64
+	Atime          *time.Time
+	Mtime          *time.Time
+	AtimeNow       bool
+	MtimeNow       bool
+	CreationTime   *time.Time
+	Ctime          *time.Time
+	Hidden         *bool
 
 	// ACL sets the NFSv4 ACL on the file.
 	// When non-nil, the ACL is validated (canonical ordering, max ACEs) before applying.

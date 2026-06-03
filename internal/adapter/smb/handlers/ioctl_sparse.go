@@ -98,24 +98,20 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
-	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
-	}
-	newMode := file.Mode
+	// Apply the sparse bit via an atomic mode mask so the store performs the
+	// OR/AND-NOT inside its own read-modify-write — a concurrent SET_SPARSE /
+	// SET_COMPRESSION cannot clobber this flip with a stale Mode snapshot.
+	mask := modeDOSSparse
+	var attrs metadata.SetAttrs
 	if setSparse {
-		newMode |= modeDOSSparse
+		attrs.ModeOrMask = &mask
 	} else {
-		newMode &^= modeDOSSparse
+		attrs.ModeAndNotMask = &mask
 	}
-	if newMode != file.Mode {
-		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
-			Mode: &newMode,
-		}); err != nil {
-			logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
-				"path", openFile.Path, "error", err)
-			return NewErrorResult(common.MapToSMB(err)), nil
-		}
+	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
+		logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
+			"path", openFile.Path, "error", err)
+		return NewErrorResult(common.MapToSMB(err)), nil
 	}
 
 	logger.Debug("IOCTL FSCTL_SET_SPARSE: applied",

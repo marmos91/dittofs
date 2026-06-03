@@ -287,6 +287,18 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		modified = true
 	}
 
+	// Atomic mode-bit masks: applied within the same store read-modify-write
+	// as the rest of SetFileAttributes so concurrent bit flips (e.g. SET_SPARSE
+	// racing SET_COMPRESSION) cannot clobber each other with a stale snapshot.
+	if attrs.ModeOrMask != nil {
+		file.Mode |= *attrs.ModeOrMask
+		modified = true
+	}
+	if attrs.ModeAndNotMask != nil {
+		file.Mode &^= *attrs.ModeAndNotMask
+		modified = true
+	}
+
 	// Track if ownership changed (for SUID/SGID clearing)
 	ownershipChanged := false
 

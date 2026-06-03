@@ -1325,6 +1325,55 @@ func TestMetadataService_SetFileAttributes(t *testing.T) {
 
 		require.Error(t, err)
 	})
+
+	// High-word DOS attribute bit used by the SMB sparse-file FSCTL handler.
+	const modeDOSSparse = uint32(0x200000)
+
+	t.Run("mode_or_mask_sets_bits_without_reading_caller_side", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "sparse.txt", &metadata.FileAttr{
+			Mode: 0o644,
+		})
+		require.NoError(t, err)
+		handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "sparse.txt")
+		require.NoError(t, err)
+
+		mask := modeDOSSparse
+		_, err = fx.service.SetFileAttributes(fx.rootContext(), handle, &metadata.SetAttrs{
+			ModeOrMask: &mask,
+		})
+		require.NoError(t, err)
+
+		file, err := fx.store.GetFile(context.Background(), handle)
+		require.NoError(t, err)
+		assert.NotZero(t, file.Mode&modeDOSSparse, "sparse bit must be set")
+		assert.Equal(t, uint32(0o644), file.Mode&0o777, "POSIX bits must be preserved")
+	})
+
+	t.Run("mode_and_not_mask_clears_bits", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "sparse.txt", &metadata.FileAttr{
+			Mode: 0o644 | modeDOSSparse,
+		})
+		require.NoError(t, err)
+		handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "sparse.txt")
+		require.NoError(t, err)
+
+		mask := modeDOSSparse
+		_, err = fx.service.SetFileAttributes(fx.rootContext(), handle, &metadata.SetAttrs{
+			ModeAndNotMask: &mask,
+		})
+		require.NoError(t, err)
+
+		file, err := fx.store.GetFile(context.Background(), handle)
+		require.NoError(t, err)
+		assert.Zero(t, file.Mode&modeDOSSparse, "sparse bit must be cleared")
+		assert.Equal(t, uint32(0o644), file.Mode&0o777, "POSIX bits must be preserved")
+	})
 }
 
 // ============================================================================
