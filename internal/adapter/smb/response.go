@@ -187,7 +187,7 @@ func ProcessSingleRequest(
 		"client", handlerCtx.ClientAddr)
 
 	// Execute handler
-	result, err := cmd.Handler(handlerCtx, connInfo.Handler, connInfo.Handler.Registry, body)
+	result, err := cmd.Handler(handlerCtx, connInfo.Handler, body)
 	if err != nil {
 		logger.Debug("Handler error", "command", cmd.Name, "error", err)
 		return SendErrorResponse(reqHeader, types.StatusInternalError, connInfo)
@@ -506,7 +506,7 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 		"messageID", reqHeader.MessageID,
 		"client", handlerCtx.ClientAddr)
 
-	result, err := cmd.Handler(handlerCtx, connInfo.Handler, connInfo.Handler.Registry, body)
+	result, err := cmd.Handler(handlerCtx, connInfo.Handler, body)
 	if err != nil {
 		logger.Debug("Handler error", "command", cmd.Name, "error", err)
 		return &HandlerResult{Status: types.StatusInternalError, Data: MakeErrorBody()}, fileID, handlerCtx

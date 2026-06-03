@@ -70,8 +70,6 @@ type smbResponse interface {
 //   - decode: Function to parse body into typed request
 //   - handle: Function to process request and return response
 //   - errorStatus: NT_STATUS code to use when decode/handle fails
-//   - makeErrorResp: retained for signature compatibility with existing
-//     callers; unused since the outer layer substitutes the ERROR body.
 //
 // **Returns:**
 //   - *HandlerResult: Contains encoded response data and status code
@@ -81,7 +79,6 @@ func handleRequest[Req smbRequest, Resp smbResponse](
 	decode func([]byte) (Req, error),
 	handle func(Req) (Resp, error),
 	errorStatus types.Status,
-	_ func(types.Status) Resp,
 ) (*HandlerResult, error) {
 	req, err := decode(body)
 	if err != nil {
