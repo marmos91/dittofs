@@ -267,7 +267,7 @@ func (h *Handler) Write(
 	}
 
 	// Build WCC attributes from pre-write state
-	nfsWccAttr := buildWccAttr(writeIntent.PreWriteAttr)
+	nfsWccAttr := xdr.CaptureWccAttr(writeIntent.PreWriteAttr)
 
 	// ========================================================================
 	// Step 7: Write data to BlockStore (uses local cache internally)
@@ -369,10 +369,7 @@ func (h *Handler) buildWriteErrorResponse(
 	preWriteAttr *metadata.FileAttr,
 	currentAttr *metadata.FileAttr,
 ) *WriteResponse {
-	var wccBefore *types.WccAttr
-	if preWriteAttr != nil {
-		wccBefore = buildWccAttr(preWriteAttr)
-	}
+	wccBefore := xdr.CaptureWccAttr(preWriteAttr)
 
 	var wccAfter *types.NFSFileAttr
 	if currentAttr != nil {
