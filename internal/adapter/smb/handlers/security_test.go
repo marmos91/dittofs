@@ -1412,3 +1412,65 @@ func TestParseSD_ExpandsGenericMaskInACE(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildSD_GoldenBytes pins the exact wire encoding of a self-relative
+// Security Descriptor (owner + group + DACL + empty SACL) byte-for-byte. It
+// guards the smbenc.Writer-based encoder (and the encodeSID bridge) against
+// any drift in field order, little-endian packing, or 4-byte padding. Uses the
+// deterministic (0,0,0) SIDMapper installed by TestMain.
+func TestBuildSD_GoldenBytes(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Flag: 0, AccessMask: 0x001F01FF, Who: "OWNER@"},
+				},
+			},
+		},
+	}
+
+	secInfo := uint32(OwnerSecurityInformation | GroupSecurityInformation | DACLSecurityInformation | SACLSecurityInformation)
+	got, err := BuildSecurityDescriptor(file, secInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+
+	want := []byte{
+		0x01, 0x00, 0x14, 0x80, 0x48, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00,
+		0x14, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x02, 0x00, 0x08, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x2c, 0x00, 0x01, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x24, 0x00, 0xff, 0x01, 0x1f, 0x00, 0x01, 0x05, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x05, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb8, 0x0b, 0x00, 0x00,
+		0x01, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x15, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0xb8, 0x0b, 0x00, 0x00, 0x01, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
+		0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0xb9, 0x0b, 0x00, 0x00,
+	}
+
+	if !bytes.Equal(got, want) {
+		t.Errorf("SD wire encoding drifted:\n got (%d bytes) = % x\nwant (%d bytes) = % x", len(got), got, len(want), want)
+	}
+
+	// Round-trip: the golden bytes must parse back to the same owner/group.
+	ownerUID, ownerGID, parsedACL, err := ParseSecurityDescriptor(got)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor(golden): %v", err)
+	}
+	if ownerUID == nil || *ownerUID != 1000 {
+		t.Errorf("round-trip owner UID = %v, want 1000", ownerUID)
+	}
+	if ownerGID == nil || *ownerGID != 1000 {
+		t.Errorf("round-trip owner GID = %v, want 1000", ownerGID)
+	}
+	if parsedACL == nil || len(parsedACL.ACEs) != 1 {
+		t.Fatalf("round-trip ACL = %+v, want 1 ACE", parsedACL)
+	}
+	if parsedACL.ACEs[0].AccessMask != 0x001F01FF {
+		t.Errorf("round-trip ACE mask = 0x%08x, want 0x001F01FF", parsedACL.ACEs[0].AccessMask)
+	}
+}
