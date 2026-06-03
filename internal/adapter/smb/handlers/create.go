@@ -1265,6 +1265,7 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 	// ADS auto-create: when the disposition would create the stream,
 	// ensure the base file exists first. Per MS-FSA, creating a named
 	// stream implicitly creates the base file.
+	var adsBaseCreatedByUs bool
 	if isADS && (createAction == types.FileCreated || createAction == types.FileOverwritten || createAction == types.FileSuperseded) {
 		if f, _, _ := h.lookupCaseInsensitive(authCtx, metaSvc, parentHandle, adsBaseFileName); f == nil {
 			baseAttr := &metadata.FileAttr{
@@ -1288,8 +1289,12 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 						"base", adsBaseFileName, "error", createBaseErr)
 					return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(createBaseErr)}}, nil
 				}
+			} else {
+				// We exclusively created the base file; record ownership so
+				// the lease-rejection rollback path can clean it up.
+				adsBaseCreatedByUs = true
+				logger.Debug("CREATE: ADS auto-created base file", "base", adsBaseFileName)
 			}
-			logger.Debug("CREATE: ADS auto-created base file", "base", adsBaseFileName)
 		}
 	}
 
@@ -1435,6 +1440,8 @@ func (h *Handler) Create(ctx *SMBHandlerContext, req *CreateRequest) (*CreateRes
 		excludeOwner:         excludeOwner,
 		appInstanceProcessed: true,
 		appInstanceId:        appInstanceId,
+		adsBaseFileName:      adsBaseFileName,
+		adsBaseCreatedByUs:   adsBaseCreatedByUs,
 	}).finalize()
 
 	// SMB3 replay protection (MS-SMB2 §3.3.5.9): reserve the DH2Q CreateGuid for

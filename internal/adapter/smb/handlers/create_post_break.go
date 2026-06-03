@@ -47,6 +47,17 @@ type createDraft struct {
 	// smb2.durable-v2-open.app-instance asserts break_info.count == 0).
 	appInstanceProcessed bool
 	appInstanceId        [16]byte
+	// adsBaseFileName is the name of the base file that was implicitly
+	// created by the ADS auto-create path (create.go Step 6) — e.g.
+	// "file.txt" when baseName is "file.txt:StreamName".
+	// Empty for non-ADS opens.
+	adsBaseFileName string
+	// adsBaseCreatedByUs is true when THIS CREATE request called
+	// CreateFile for adsBaseFileName and succeeded (i.e. the base was
+	// newly created by us, not pre-existing and not raced-in by a peer).
+	// Used by the ErrLeaseKeyInUse rollback to decide whether to also
+	// remove the base file.
+	adsBaseCreatedByUs bool
 }
 
 // finalize computes the opaque file handle for the existing file (if any) and
@@ -964,6 +975,17 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 						if _, _, delErr := metaSvc.RemoveFile(authCtx, parentHandle, baseName); delErr != nil {
 							logger.Warn("CREATE: failed to roll back orphaned file after lease rejection",
 								"name", baseName, "error", delErr)
+						}
+						// If this CREATE also auto-created the base file (ADS
+						// path), roll that back too. Without this the base file is
+						// left orphaned: the stream entry is gone but the base
+						// inode is unreachable and a subsequent FILE_CREATE on the
+						// base name hits ErrAlreadyExists.
+						if d.adsBaseCreatedByUs && d.adsBaseFileName != "" {
+							if _, _, delBaseErr := metaSvc.RemoveFile(authCtx, parentHandle, d.adsBaseFileName); delBaseErr != nil {
+								logger.Warn("CREATE: failed to roll back orphaned ADS base file after lease rejection",
+									"name", d.adsBaseFileName, "error", delBaseErr)
+							}
 						}
 						return &CreateResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}
 					case types.FileOverwritten, types.FileSuperseded:
