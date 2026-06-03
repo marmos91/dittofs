@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
@@ -56,6 +57,26 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 		}, shareName, nil
 	}
 
+	// Get share for the export-squash permission policy. On error GetShare
+	// returns a nil share; ResolveSharePermission treats a nil share as "no
+	// policy info" (allow with defaults) and the ApplyIdentityMapping step
+	// below still fails closed if the share is genuinely gone.
+	share, _ := h.Registry.GetShare(shareName)
+
+	// Apply the export-squash permission policy (default_permission=none denial,
+	// root→admin promotion, guest/known-user read-only coercion). This is the
+	// SAME policy the v3 path applies via auth.ResolveSharePermission; v4
+	// previously skipped it, so default_permission=none did not deny unknown
+	// UIDs and read-only coercion never fired.
+	permResult, err := auth.ResolveSharePermission(
+		ctx.Context, h.Registry.GetIdentityStore(), share, shareName, ctx.ClientAddr, ctx.UID)
+	if err != nil {
+		return nil, "", err
+	}
+	if permResult.Username != "" {
+		originalIdentity.Username = permResult.Username
+	}
+
 	// Apply share-level identity mapping (all_squash, root_squash).
 	//
 	// Fail closed on mapping failure (parity with the v3 path,
@@ -72,20 +93,13 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 		return nil, "", fmt.Errorf("apply identity mapping: %w", err)
 	}
 
-	// Get share for read-only flag
-	shareReadOnly := false
-	share, shareErr := h.Registry.GetShare(shareName)
-	if shareErr == nil && share != nil {
-		shareReadOnly = share.ReadOnly
-	}
-
 	// Create auth context with the effective (mapped) identity
 	authCtx := &metadata.AuthContext{
 		Context:       ctx.Context,
 		ClientAddr:    ctx.ClientAddr,
 		AuthMethod:    authMethod,
 		Identity:      effectiveIdentity,
-		ShareReadOnly: shareReadOnly,
+		ShareReadOnly: permResult.ReadOnly,
 	}
 
 	return authCtx, shareName, nil
