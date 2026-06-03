@@ -471,7 +471,8 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 	// Recall every conflicting delegation, not just the first one. With multiple
 	// READ holders on a file, recalling only the first leaves the others active,
 	// so a conflicting WRITE open would spin on NFS4ERR_DELAY indefinitely.
-	var conflicting []*DelegationState
+	var conflicting bool
+	var toRecall []*DelegationState
 	for _, deleg := range sm.delegByFile[string(fileHandle)] {
 		if deleg.ClientID == clientID || deleg.Revoked {
 			continue
@@ -481,17 +482,26 @@ func (sm *StateManager) CheckDelegationConflict(fileHandle []byte, clientID uint
 			(deleg.DelegType == types.OPEN_DELEGATE_READ && shareAccess&types.OPEN4_SHARE_ACCESS_WRITE != 0)
 
 		if isConflict {
-			deleg.RecallSent = true
-			deleg.RecallTime = time.Now()
-			conflicting = append(conflicting, deleg)
+			conflicting = true
+			// Recall every conflicting delegation, but only the FIRST time each
+			// is observed. A retried OPEN (which keeps seeing NFS4ERR_DELAY) must
+			// not spawn a second concurrent recall goroutine for the same
+			// delegation — that races on its recall timer/state. The in-flight
+			// recall stays pending until the delegation is returned; meanwhile we
+			// still report a conflict so the caller keeps returning NFS4ERR_DELAY.
+			if !deleg.RecallSent {
+				deleg.RecallSent = true
+				deleg.RecallTime = time.Now()
+				toRecall = append(toRecall, deleg)
+			}
 		}
 	}
 
-	for _, deleg := range conflicting {
+	for _, deleg := range toRecall {
 		go sm.sendRecall(deleg)
 	}
 
-	return len(conflicting) > 0, nil
+	return conflicting, nil
 }
 
 // startRevocationTimer starts a recall timer on the delegation that will revoke it
