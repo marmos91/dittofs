@@ -84,6 +84,13 @@ type Share struct {
 	// for semantics (refs #739).
 	ContinuousAvailability bool
 
+	// AllowMFsymlink enables automatic MFsymlink-to-real-symlink conversion on
+	// CLOSE. Default false. When false, 1067-byte XSym files written by
+	// macOS/Windows clients are stored as regular files and never promoted to
+	// symlinks (the conversion target is client-controlled, so promotion is
+	// opt-in).
+	AllowMFsymlink bool
+
 	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
 	// Read per-delete via the locked TrashSettingsForShare accessor (NOT off a
 	// shared *Share pointer) so it is concurrency-safe and takes effect live.
@@ -181,6 +188,10 @@ type ShareConfig struct {
 	// advertises SMB2_SHARE_CAP_CONTINUOUS_AVAILABILITY and enables SMB3
 	// persistent durable handles (refs #739).
 	ContinuousAvailability bool
+
+	// AllowMFsymlink mirrors the Share field above: when true, 1067-byte XSym
+	// MFsymlink files are converted to real symlinks on CLOSE. Default false.
+	AllowMFsymlink bool
 
 	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
 	// Read per-delete via the locked TrashSettingsForShare accessor (NOT off a
@@ -582,6 +593,7 @@ func (s *Service) prepareShare(
 		ChangeNotifyDisabled:             config.ChangeNotifyDisabled,
 		StreamsDisabled:                  config.StreamsDisabled,
 		ContinuousAvailability:           config.ContinuousAvailability,
+		AllowMFsymlink:                   config.AllowMFsymlink,
 		TrashEnabled:                     config.TrashEnabled,
 		TrashRetentionDays:               config.TrashRetentionDays,
 		TrashRestrictToAdmin:             config.TrashRestrictToAdmin,

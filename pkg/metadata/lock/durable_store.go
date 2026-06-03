@@ -191,6 +191,20 @@ type PersistedDurableHandle struct {
 	ClientGUID [16]byte
 }
 
+// LockOpenID returns the OpenID used to key this handle's byte-range locks
+// (UnlockAllForOpen). Byte-range locks are recorded under hex(OriginalFileID);
+// pre-OriginalFileID legacy rows fall back to FileID. Cleanup paths
+// (scavenger, AppInstanceId failover, ForceClose) must release locks by this
+// ID rather than by session — session-based release is a no-op for a
+// disconnected handle whose session is gone.
+func (h *PersistedDurableHandle) LockOpenID() string {
+	fileID := h.OriginalFileID
+	if fileID == ([16]byte{}) {
+		fileID = h.FileID
+	}
+	return fmt.Sprintf("%x", fileID)
+}
+
 // DurableHandleStore provides persistence for SMB3 durable handle state.
 // Implementations exist in memory, badger, and postgres stores.
 //

@@ -173,7 +173,9 @@ func TestValidateSymlinkTarget(t *testing.T) {
 		wantErr bool
 	}{
 		{"empty target", "", true},
-		{"valid target", "/path/to/target", false},
+		// POSIX symlink targets are permissive: absolute and `..` targets are
+		// legal for the general symlink-creation path.
+		{"absolute target", "/path/to/target", false},
 		{"relative target", "../other", false},
 	}
 
@@ -181,6 +183,52 @@ func TestValidateSymlinkTarget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := ValidateSymlinkTarget(tt.target)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateMFsymlinkTarget pins the stricter validation applied to
+// client-controlled MFsymlink targets before promotion to a real symlink:
+// empty, absolute, and `..`-traversal targets are all rejected.
+func TestValidateMFsymlinkTarget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		target  string
+		wantErr bool
+	}{
+		{"empty target", "", true},
+
+		// Absolute paths — rejected (escape the share root).
+		{"absolute unix path", "/path/to/target", true},
+		{"absolute etc passwd", "/etc/passwd", true},
+		{"absolute path with dots", "/foo/../etc/passwd", true},
+
+		// Parent traversal — rejected.
+		{"bare dotdot", "../other", true},
+		{"dotdot in middle", "a/../../../etc", true},
+		{"dotdot as only component", "..", true},
+		{"windows-style traversal", "..\\etc", true},
+
+		// Valid relative paths — accepted.
+		{"single component", "target", false},
+		{"relative subdir", "a/b/c", false},
+		{"hidden file relative", ".hidden", false},
+		{"single dot segment", "./link", false},
+		{"long valid target", strings.Repeat("a/", 50) + "f", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateMFsymlinkTarget(tt.target)
 
 			if tt.wantErr {
 				assert.Error(t, err)

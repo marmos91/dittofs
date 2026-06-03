@@ -542,6 +542,13 @@ func ParseCompoundCommand(data []byte) (*header.SMB2Header, []byte, []byte, erro
 		return nil, nil, nil, fmt.Errorf("compound NextCommand not 8-byte aligned: %d", hdr.NextCommand)
 	}
 
+	// NextCommand must point past the header; a smaller value (e.g. 8, 16, 32 —
+	// all 8-byte aligned) would produce a negative-length slice at body
+	// extraction below (data[HeaderSize:NextCommand]).
+	if hdr.NextCommand > 0 && hdr.NextCommand < uint32(header.HeaderSize) {
+		return nil, nil, nil, fmt.Errorf("compound NextCommand too small: %d", hdr.NextCommand)
+	}
+
 	// Extract body for this command
 	var body []byte
 	var remaining []byte
@@ -796,6 +803,25 @@ func (s *compoundLoopState) processRemaining(
 		}
 		remaining = nextRemaining
 
+		// Handle related operations - inherit IDs from previous command.
+		// Per MS-SMB2 2.2.3.1, related operations use 0xFFFFFFFFFFFFFFFF for
+		// SessionID and 0xFFFFFFFF for TreeID to indicate "use previous value".
+		//
+		// This MUST run before signature verification: the per-sub-command
+		// signing check (VerifyCompoundCommandSignature) looks up the session by
+		// hdr.SessionID. If the wire sentinel (0xFFFFFFFFFFFFFFFF) reached that
+		// lookup it would miss (ok=false) and silently skip the integrity check
+		// for every related sub-command — an auth bypass. Resolving the sentinel
+		// to the real SessionID first ensures the signing gate sees the session.
+		if hdr.IsRelated() {
+			if hdr.SessionID == 0 || hdr.SessionID == 0xFFFFFFFFFFFFFFFF {
+				hdr.SessionID = s.lastSessionID
+			}
+			if hdr.TreeID == 0 || hdr.TreeID == 0xFFFFFFFF {
+				hdr.TreeID = s.lastTreeID
+			}
+		}
+
 		// Verify signature for this compound sub-command.
 		// Per MS-SMB2 3.2.5.1.1: skip signing verification when the message was
 		// received inside an encrypted (TRANSFORM_HEADER) envelope — encryption
@@ -851,18 +877,6 @@ func (s *compoundLoopState) processRemaining(
 			s.responses = append(s.responses, compoundResponse{respHeader: errHeader, body: errBody})
 			s.lastCmdFailed = true
 			continue
-		}
-
-		// Handle related operations - inherit IDs from previous command.
-		// Per MS-SMB2 2.2.3.1, related operations use 0xFFFFFFFFFFFFFFFF for
-		// SessionID and 0xFFFFFFFF for TreeID to indicate "use previous value".
-		if hdr.IsRelated() {
-			if hdr.SessionID == 0 || hdr.SessionID == 0xFFFFFFFFFFFFFFFF {
-				hdr.SessionID = s.lastSessionID
-			}
-			if hdr.TreeID == 0 || hdr.TreeID == 0xFFFFFFFF {
-				hdr.TreeID = s.lastTreeID
-			}
 		}
 
 		// Per Windows Server behavior: CHANGE_NOTIFY can only go async as the

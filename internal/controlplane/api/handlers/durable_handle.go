@@ -179,7 +179,7 @@ func (dh *DurableHandleHandler) ForceClose(w http.ResponseWriter, r *http.Reques
 func cleanupDurableHandle(ctx context.Context, h *lock.PersistedDurableHandle, rt *runtime.Runtime, handleID string) {
 	// Step 1: Release byte-range locks
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil && len(h.MetadataHandle) > 0 {
-		if err := metaSvc.UnlockAllForSession(ctx, h.MetadataHandle, 0); err != nil {
+		if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, h.LockOpenID()); err != nil {
 			logger.Debug("cleanupDurableHandle: failed to release locks",
 				"id", handleID, "error", err)
 		}

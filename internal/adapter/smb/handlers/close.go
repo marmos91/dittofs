@@ -246,8 +246,12 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// real symlinks in the metadata store for NFS interoperability.
 
 	if !openFile.IsDirectory && openFile.PayloadID != "" && !openFile.DeletePending && !openFile.InitialDeleteOnClose {
-		if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile); converted {
-			logger.Debug("CLOSE: converted MFsymlink to symlink", "path", openFile.Path)
+		// MFsymlink conversion promotes client-controlled file content to a real
+		// symlink, so it is opt-in per share (default disabled).
+		if tree, treeOK := h.GetTree(ctx.TreeID); treeOK && tree.AllowMFsymlink {
+			if converted, _ := h.checkAndConvertMFsymlink(ctx, openFile); converted {
+				logger.Debug("CLOSE: converted MFsymlink to symlink", "path", openFile.Path)
+			}
 		}
 	}
 
@@ -393,9 +397,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 					return true
 				}
 				if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+					// Guard the write: concurrent QUERY_INFO/WRITE goroutines on
+					// the same session may be reading these fields on `other`.
+					other.mu.Lock()
 					other.DeletePending = true
 					other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
 					other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+					other.mu.Unlock()
 					h.StoreOpenFile(other)
 				}
 				return true
@@ -409,11 +417,16 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			// the last stream CLOSE triggers the base file removal.
 			basePrefix := openFile.FileName + ":"
 			h.rangeStreamsOfBase(openFile.FileID, openFile.ParentHandle, basePrefix, func(other *OpenFile) bool {
+				// Guard the write: concurrent readers on the stream handle
+				// (QUERY_INFO / open path via isFileOrBaseDeletePending) may be
+				// reading these fields on `other`.
+				other.mu.Lock()
 				other.BaseFileDeletePending = true
 				other.BaseFileDeleteParentHandle = openFile.ParentHandle
 				other.BaseFileDeleteFileName = openFile.FileName
 				other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
 				other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+				other.mu.Unlock()
 				h.StoreOpenFile(other)
 				return true
 			})
@@ -885,6 +898,13 @@ func (h *Handler) convertToRealSymlink(ctx *SMBHandlerContext, openFile *OpenFil
 	authCtx, err := BuildAuthContext(ctx)
 	if err != nil {
 		return err
+	}
+
+	// Reject targets that escape the share root (absolute or `..`-traversal).
+	// MFsymlink content is fully client-controlled, so an unsanitized target
+	// could otherwise point an NFS client outside the share.
+	if err := metadata.ValidateMFsymlinkTarget(target); err != nil {
+		return fmt.Errorf("MFsymlink target rejected: %w", err)
 	}
 
 	// Get the parent handle and filename for removal and creation

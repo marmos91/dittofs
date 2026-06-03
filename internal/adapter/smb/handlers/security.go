@@ -18,6 +18,7 @@ package handlers
 
 import (
 	"fmt"
+	"sync/atomic"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
@@ -104,21 +105,28 @@ const aceHeaderSize = 8
 // A fallback mapper with zeroed sub-authorities is used if SetSIDMapper
 // is not called (e.g., in unit tests). This maintains backward compatibility
 // with the old behavior of S-1-5-21-0-0-0-{RID} SIDs.
-var defaultSIDMapper = sid.NewSIDMapper(0, 0, 0)
+//
+// The pointer is stored atomically so that concurrent RPC goroutines reading
+// the mapper and the adapter wiring goroutine calling SetSIDMapper do not race.
+var _defaultSIDMapper atomic.Pointer[sid.SIDMapper]
+
+func init() {
+	_defaultSIDMapper.Store(sid.NewSIDMapper(0, 0, 0))
+}
 
 // SetSIDMapper sets the package-level SIDMapper used for all security
 // descriptor operations. Must be called before any SMB connections are
 // accepted to avoid race conditions.
 func SetSIDMapper(m *sid.SIDMapper) {
 	if m != nil {
-		defaultSIDMapper = m
+		_defaultSIDMapper.Store(m)
 	}
 }
 
 // GetSIDMapper returns the current package-level SIDMapper.
 // Useful for tests that need to inspect the mapper state.
 func GetSIDMapper() *sid.SIDMapper {
-	return defaultSIDMapper
+	return _defaultSIDMapper.Load()
 }
 
 // ============================================================================
@@ -152,9 +160,11 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	includeDACL := (additionalSecInfo & DACLSecurityInformation) != 0
 	includeSACL := (additionalSecInfo & SACLSecurityInformation) != 0
 
-	// Build SIDs using the shared mapper
-	ownerSID := defaultSIDMapper.UserSID(file.UID)
-	groupSID := defaultSIDMapper.GroupSID(file.GID)
+	// Build SIDs using the shared mapper. Snapshot the atomic pointer once so
+	// a concurrent SetSIDMapper does not race this read.
+	mapper := _defaultSIDMapper.Load()
+	ownerSID := mapper.UserSID(file.UID)
+	groupSID := mapper.GroupSID(file.GID)
 
 	// Null DACL: SE_DACL_PRESENT set but no DACL body (daclOffset stays 0)
 	isNullDACL := includeDACL && file.ACL != nil && file.ACL.NullDACL
@@ -277,11 +287,12 @@ type windowsACE struct {
 // Handles special identifiers (OWNER@, GROUP@, EVERYONE@, SYSTEM@,
 // ADMINISTRATORS@) and falls back to SIDMapper.PrincipalToSID for others.
 func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
+	mapper := _defaultSIDMapper.Load()
 	switch who {
 	case acl.SpecialOwner:
-		return defaultSIDMapper.UserSID(fileUID)
+		return mapper.UserSID(fileUID)
 	case acl.SpecialGroup:
-		return defaultSIDMapper.GroupSID(fileGID)
+		return mapper.GroupSID(fileGID)
 	case acl.SpecialEveryone:
 		return sid.WellKnownEveryone
 	case acl.SpecialOwnerRights:
@@ -295,7 +306,7 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 	case acl.SpecialAdministrators:
 		return sid.WellKnownAdministrators
 	default:
-		return defaultSIDMapper.PrincipalToSID(who, fileUID, fileGID)
+		return mapper.PrincipalToSID(who, fileUID, fileGID)
 	}
 }
 
@@ -418,6 +429,10 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 		return nil, nil, nil, fmt.Errorf("security descriptor too short: %d bytes", len(data))
 	}
 
+	// Snapshot the atomic mapper pointer once so a concurrent SetSIDMapper
+	// does not race the reads below.
+	mapper := _defaultSIDMapper.Load()
+
 	// Parse header
 	r := smbenc.NewReader(data)
 	r.Skip(2) // Revision(1) + Sbz1(1)
@@ -434,7 +449,7 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 	if offsetOwner > 0 && int(offsetOwner) < len(data) {
 		s, _, err := sid.DecodeSID(data[offsetOwner:])
 		if err == nil {
-			if uid, ok := defaultSIDMapper.UIDFromSID(s); ok {
+			if uid, ok := mapper.UIDFromSID(s); ok {
 				ownerUID = &uid
 			}
 		}
@@ -444,9 +459,9 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 	if offsetGroup > 0 && int(offsetGroup) < len(data) {
 		s, _, err := sid.DecodeSID(data[offsetGroup:])
 		if err == nil {
-			if gid, ok := defaultSIDMapper.GIDFromSID(s); ok {
+			if gid, ok := mapper.GIDFromSID(s); ok {
 				ownerGID = &gid
-			} else if uid, ok := defaultSIDMapper.UIDFromSID(s); ok {
+			} else if uid, ok := mapper.UIDFromSID(s); ok {
 				ownerGID = &uid
 			}
 		}
@@ -507,6 +522,9 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 		return nil, fmt.Errorf("DACL too short: %d bytes", len(data))
 	}
 
+	// Snapshot the atomic mapper pointer once for SID→principal resolution.
+	mapper := _defaultSIDMapper.Load()
+
 	// Parse ACL header
 	aclR := smbenc.NewReader(data)
 	aclR.Skip(2) // AclRevision(1) + Sbz1(1)
@@ -553,7 +571,7 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 		}
 
 		// Convert SID to NFSv4 principal
-		who := defaultSIDMapper.SIDToPrincipal(s)
+		who := mapper.SIDToPrincipal(s)
 
 		// Expand GENERIC_* bits to file-object-specific rights per
 		// MS-DTYP §2.4.3 / §2.5.3 before storing. Generic rights MUST

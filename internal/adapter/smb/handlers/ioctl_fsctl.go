@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // handleGetCompression handles FSCTL_GET_COMPRESSION [MS-FSCC] 2.3.9.
@@ -101,34 +100,25 @@ func (h *Handler) handleSetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	// Persist compression state to metadata via mode bit (modeDOSCompressed).
 	// This ensures FILE_ATTRIBUTE_COMPRESSED survives handle close/reopen.
 	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
-	if err != nil {
-		return NewErrorResult(common.MapToSMB(err)), nil
+
+	// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded
+	// session BEFORE BuildAuthContext — otherwise ctx.User==nil falls
+	// into the anonymous arm and synthesises UID-0 (root), bypassing
+	// DACL checks on SetFileAttributes (#619, same class as #603).
+	h.primeAuthContextFromOpenFile(ctx, openFile)
+	authCtx, authErr := BuildAuthContext(ctx)
+	if authErr != nil {
+		logger.Warn("FSCTL_SET_COMPRESSION: failed to build auth context", "error", authErr)
+		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 
-	newMode := file.Mode
-	if compressed {
-		newMode |= modeDOSCompressed
-	} else {
-		newMode &^= modeDOSCompressed
-	}
-
-	if newMode != file.Mode {
-		// Prime ctx.User / IsGuest / TreeID from the OpenFile's recorded
-		// session BEFORE BuildAuthContext — otherwise ctx.User==nil falls
-		// into the anonymous arm and synthesises UID-0 (root), bypassing
-		// DACL checks on SetFileAttributes (#619, same class as #603).
-		h.primeAuthContextFromOpenFile(ctx, openFile)
-
-		authCtx, authErr := BuildAuthContext(ctx)
-		if authErr != nil {
-			logger.Warn("FSCTL_SET_COMPRESSION: failed to build auth context", "error", authErr)
-		} else if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
-			Mode: &newMode,
-		}); err != nil {
-			logger.Warn("FSCTL_SET_COMPRESSION: failed to persist mode", "error", err)
-			// Non-fatal: per-handle state is still set
-		}
+	// Flip the compression bit atomically inside the store (see
+	// modeBitMaskAttrs): a concurrent SET_COMPRESSION / SET_SPARSE cannot clobber
+	// it with a stale Mode snapshot.
+	attrs := modeBitMaskAttrs(modeDOSCompressed, compressed)
+	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
+		logger.Warn("FSCTL_SET_COMPRESSION: failed to persist mode", "error", err)
+		// Non-fatal: per-handle state is still set
 	}
 
 	resp := buildIoctlResponse(FsctlSetCompression, fileID, nil)

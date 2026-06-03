@@ -306,6 +306,11 @@ type TreeConnection struct {
 	// granted as a persistent durable handle (#739, smbtorture
 	// smb2.durable-v2-open.persistent-open-{oplock,lease}).
 	ContinuousAvailability bool
+	// AllowMFsymlink mirrors the share-level toggle. When false (default),
+	// 1067-byte XSym files written by macOS/Windows clients are stored as
+	// regular files. When true, they are converted to real symlinks on CLOSE.
+	// The conversion target is client-controlled, so promotion is opt-in.
+	AllowMFsymlink bool
 }
 
 // OpenFile represents an open file handle created by the CREATE command.
@@ -1251,9 +1256,13 @@ func (h *Handler) closeFilesWithFilter(
 						return true
 					}
 					if bytes.Equal(other.MetadataHandle, openFile.MetadataHandle) {
+						// Guard the write: concurrent QUERY_INFO/WRITE goroutines
+						// on the same session may be reading these fields.
+						other.mu.Lock()
 						other.DeletePending = true
 						other.DeleteOnCloseParentKey = openFile.DeleteOnCloseParentKey
 						other.HasDeleteOnCloseParentKey = openFile.HasDeleteOnCloseParentKey
+						other.mu.Unlock()
 						h.StoreOpenFile(other)
 					}
 					return true
@@ -1906,7 +1915,12 @@ func (h *Handler) isFileDeletePending(fileHandle metadata.FileHandle) bool {
 		if !bytes.Equal(existing.MetadataHandle, fileHandle) {
 			return true
 		}
-		if existing.DeletePending {
+		// DeletePending is concurrently written by CLOSE DOC propagation under
+		// existing.mu — read it under the read lock.
+		existing.mu.RLock()
+		dp := existing.DeletePending
+		existing.mu.RUnlock()
+		if dp {
 			pending = true
 			return false
 		}
@@ -1946,7 +1960,12 @@ func (h *Handler) isFileOrBaseDeletePending(fileHandle metadata.FileHandle, file
 		if existing.IsPipe || len(existing.MetadataHandle) == 0 {
 			return true
 		}
-		if !existing.BaseFileDeletePending {
+		// BaseFileDeletePending is concurrently written by CLOSE deferred-delete
+		// propagation under existing.mu — read it under the read lock.
+		existing.mu.RLock()
+		bdp := existing.BaseFileDeletePending
+		existing.mu.RUnlock()
+		if !bdp {
 			return true
 		}
 		existingBase := adsBasePath(existing.Path)

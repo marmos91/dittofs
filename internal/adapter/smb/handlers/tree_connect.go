@@ -172,6 +172,7 @@ func (h *Handler) TreeConnect(ctx *SMBHandlerContext, body []byte) (*HandlerResu
 		ChangeNotifyDisabled:   share.ChangeNotifyDisabled,
 		StreamsDisabled:        share.StreamsDisabled,
 		ContinuousAvailability: share.ContinuousAvailability,
+		AllowMFsymlink:         share.AllowMFsymlink,
 	}
 	h.StoreTree(tree)
 

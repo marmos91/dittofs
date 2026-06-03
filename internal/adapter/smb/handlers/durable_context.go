@@ -1030,7 +1030,10 @@ func ProcessAppInstanceId(
 			handler.flushFileCache(ctx, cleanupFile)
 			if len(h.MetadataHandle) > 0 && handler.Registry != nil {
 				if metaSvc := handler.Registry.GetMetadataService(); metaSvc != nil {
-					_ = metaSvc.UnlockAllForSession(ctx, h.MetadataHandle, 0)
+					if err := metaSvc.UnlockAllForOpen(ctx, h.MetadataHandle, h.LockOpenID()); err != nil {
+						logger.Debug("ProcessAppInstanceId: failed to release locks",
+							"id", h.ID, "path", h.Path, "error", err)
+					}
 				}
 			}
 		}

@@ -98,24 +98,14 @@ func (h *Handler) handleSetSparse(ctx *SMBHandlerContext, body []byte) (*Handler
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
 	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
-	if err != nil {
+	// Flip the sparse bit atomically inside the store (see modeBitMaskAttrs):
+	// a concurrent SET_SPARSE / SET_COMPRESSION cannot clobber it with a stale
+	// Mode snapshot.
+	attrs := modeBitMaskAttrs(modeDOSSparse, setSparse)
+	if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &attrs); err != nil {
+		logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
+			"path", openFile.Path, "error", err)
 		return NewErrorResult(common.MapToSMB(err)), nil
-	}
-	newMode := file.Mode
-	if setSparse {
-		newMode |= modeDOSSparse
-	} else {
-		newMode &^= modeDOSSparse
-	}
-	if newMode != file.Mode {
-		if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
-			Mode: &newMode,
-		}); err != nil {
-			logger.Warn("IOCTL FSCTL_SET_SPARSE: failed to persist mode",
-				"path", openFile.Path, "error", err)
-			return NewErrorResult(common.MapToSMB(err)), nil
-		}
 	}
 
 	logger.Debug("IOCTL FSCTL_SET_SPARSE: applied",

@@ -198,11 +198,54 @@ func ValidateSpecialFileType(fileType FileType) error {
 }
 
 // ValidateSymlinkTarget validates that the symlink target is not empty.
+//
+// This is the general symlink-creation validator (NFS SYMLINK, REST). POSIX
+// symlink targets are intentionally permissive — absolute targets and `..`
+// components are legal — so only the empty target is rejected here. For the
+// SMB MFsymlink-to-symlink promotion path, where the target is fully
+// client-controlled content being auto-converted, use the stricter
+// ValidateMFsymlinkTarget below.
 func ValidateSymlinkTarget(target string) error {
 	if target == "" {
 		return &StoreError{
 			Code:    ErrInvalidArgument,
 			Message: "symlink target cannot be empty",
+		}
+	}
+	return nil
+}
+
+// ValidateMFsymlinkTarget validates a symlink target decoded from
+// client-supplied SMB MFsymlink (XSym) content before it is promoted to a real
+// symlink on CLOSE. Unlike ValidateSymlinkTarget, it rejects targets that can
+// escape the share root: empty, absolute, or containing any `..` component.
+// This guards against an SMB client smuggling a traversal target (e.g.
+// "../../etc/passwd" or "/etc/shadow") that an NFS client could then follow
+// outside the share.
+func ValidateMFsymlinkTarget(target string) error {
+	if err := ValidateSymlinkTarget(target); err != nil {
+		return err
+	}
+	// Reject absolute paths: they escape the share root on any OS.
+	if strings.HasPrefix(target, "/") {
+		return &StoreError{
+			Code:    ErrInvalidArgument,
+			Message: "symlink target must not be absolute",
+			Path:    target,
+		}
+	}
+	// Reject targets that contain `..` components: path traversal outside the
+	// share root. Normalize backslashes too — MFsymlink content is
+	// macOS/POSIX-generated so forward slash is the only live separator, but
+	// reject backslash as a separator for defence in depth.
+	cleaned := strings.ReplaceAll(target, "\\", "/")
+	for _, component := range strings.Split(cleaned, "/") {
+		if component == ".." {
+			return &StoreError{
+				Code:    ErrInvalidArgument,
+				Message: "symlink target must not contain path traversal",
+				Path:    target,
+			}
 		}
 	}
 	return nil
@@ -250,6 +293,13 @@ func DefaultMode(fileType FileType) uint32 {
 // so they must not be preserved through CREATE defaults (which would suppress
 // the automatic ARCHIVE bit for regular files).
 const modeMask = uint32(0o7777) | 0x40000 | 0x80000 | 0x100000 | 0x200000 // Unix perms + Compressed + System + Readonly + Sparse
+
+// dosAttributeModeBits are the high-word DOS attribute bits that may be flipped
+// via SetAttrs.ModeOrMask / ModeAndNotMask. POSIX permission, setid and sticky
+// bits (0o7777) are deliberately excluded so the mask path cannot smuggle
+// SUID/SGID or permission bits past the SUID/SGID stripping in
+// SetFileAttributes.
+const dosAttributeModeBits = uint32(0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x200000) // Explicit+Archive+Compressed+System+Readonly+Sparse
 
 // ApplyModeDefault applies the default mode if the provided mode is 0.
 // Masks to valid bits (Unix permissions + extended DOS flags) to prevent

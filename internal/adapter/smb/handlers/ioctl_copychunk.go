@@ -247,27 +247,27 @@ func (h *Handler) handleSrvCopyChunk(ctx *SMBHandlerContext, body []byte) (*Hand
 // Destination requires FILE_WRITE_DATA or FILE_APPEND_DATA.
 // For FSCTL_SRV_COPYCHUNK (not COPYCHUNK_WRITE), destination also requires FILE_READ_DATA.
 func validateCopyChunkAccess(ctlCode uint32, src, dst *OpenFile) types.Status {
-	srcAccess := types.AccessMask(src.DesiredAccess)
-	dstAccess := types.AccessMask(dst.DesiredAccess)
+	srcAccess := types.AccessMask(src.GrantedAccess)
+	dstAccess := types.AccessMask(dst.GrantedAccess)
 
 	// Source must have read or execute
 	if srcAccess&types.FileReadData == 0 && srcAccess&types.FileExecute == 0 {
 		logger.Debug("COPYCHUNK: source lacks read/execute access",
-			"path", src.Path, "access", fmt.Sprintf("0x%08X", src.DesiredAccess))
+			"path", src.Path, "access", fmt.Sprintf("0x%08X", src.GrantedAccess))
 		return types.StatusAccessDenied
 	}
 
 	// Destination must have write or append
 	if dstAccess&types.FileWriteData == 0 && dstAccess&types.FileAppendData == 0 {
 		logger.Debug("COPYCHUNK: destination lacks write access",
-			"path", dst.Path, "access", fmt.Sprintf("0x%08X", dst.DesiredAccess))
+			"path", dst.Path, "access", fmt.Sprintf("0x%08X", dst.GrantedAccess))
 		return types.StatusAccessDenied
 	}
 
 	// FSCTL_SRV_COPYCHUNK (not _WRITE) also requires read on destination
 	if ctlCode == FsctlSrvCopyChunk && dstAccess&types.FileReadData == 0 {
 		logger.Debug("COPYCHUNK: destination lacks read access (required for non-WRITE variant)",
-			"path", dst.Path, "access", fmt.Sprintf("0x%08X", dst.DesiredAccess))
+			"path", dst.Path, "access", fmt.Sprintf("0x%08X", dst.GrantedAccess))
 		return types.StatusAccessDenied
 	}
 
