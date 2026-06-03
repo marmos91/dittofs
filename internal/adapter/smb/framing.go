@@ -302,6 +302,14 @@ func parseSMB2Message(message []byte, verifier SigningVerifier, logRequest bool)
 // compound data from a parsed SMB2 message.
 func splitCompoundBody(message []byte, hdr *header.SMB2Header) (body, remaining []byte) {
 	if hdr.NextCommand > 0 {
+		if int(hdr.NextCommand) < header.HeaderSize {
+			// Malformed: NextCommand points inside the header, which would make
+			// message[HeaderSize:NextCommand] a negative-length slice and panic.
+			// Return an empty body and no remaining data; the dispatch layer then
+			// rejects the truncated body via the command's StructureSize check.
+			body = message[header.HeaderSize:header.HeaderSize]
+			return
+		}
 		bodyEnd := min(int(hdr.NextCommand), len(message))
 		body = message[header.HeaderSize:bodyEnd]
 		if int(hdr.NextCommand) < len(message) {
