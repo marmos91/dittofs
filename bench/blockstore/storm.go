@@ -157,6 +157,7 @@ func RunStorm(ctx context.Context, bs *engine.Store, opts Opts) (Result, error) 
 	churn := &churnPool{}
 
 	var counts StormCounts
+	lat := NewLatencyRecorder(opts.Ops)
 	statsBefore := bs.GetStats()
 	start := time.Now()
 
@@ -171,7 +172,7 @@ func RunStorm(ctx context.Context, bs *engine.Store, opts Opts) (Result, error) 
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
-			if err := runStormWorker(gctx, bs, opts, weights, stable, churn, worker, workers, &counts); err != nil {
+			if err := runStormWorker(gctx, bs, opts, weights, stable, churn, worker, workers, &counts, lat); err != nil {
 				errOnce.Do(func() {
 					firstErr = err
 					cancel()
@@ -199,6 +200,7 @@ func RunStorm(ctx context.Context, bs *engine.Store, opts Opts) (Result, error) 
 		StatsBefore: statsBefore,
 		StatsAfter:  statsAfter,
 		Storm:       &counts,
+		Latency:     lat,
 	}, nil
 }
 
@@ -206,7 +208,7 @@ func RunStorm(ctx context.Context, bs *engine.Store, opts Opts) (Result, error) 
 // indices i where i%workers == worker. The worker owns a private PRNG and
 // scratch buffers; only the stable set, churn pool, and atomic counters are
 // shared.
-func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, weights stormWeights, stable []string, churn *churnPool, worker, workers int, counts *StormCounts) error {
+func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, weights stormWeights, stable []string, churn *churnPool, worker, workers int, counts *StormCounts, lat *LatencyRecorder) error {
 	rng := workerRNG(opts.Seed, worker)
 	wbuf := make([]byte, opts.BlockSize)
 	rbuf := make([]byte, opts.BlockSize)
@@ -216,6 +218,7 @@ func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, weights st
 		if ctx.Err() != nil {
 			return nil // another worker failed; stop quietly
 		}
+		opStart := time.Now()
 		switch pickStormOp(rng, weights) {
 		case opWrite:
 			if rng.IntN(stormCreateOdds) == 0 {
@@ -224,6 +227,7 @@ func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, weights st
 				// races a half-written file.
 				pid := churn.nextName()
 				if err := seedPayload(ctx, bs, pid, seededBytes(rng.Uint64(), StormFileSize)); err != nil {
+					lat.Record(time.Since(opStart), false)
 					return err
 				}
 				churn.add(pid)
@@ -231,18 +235,23 @@ func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, weights st
 				pid := stable[rng.IntN(len(stable))]
 				fillRandom(rng, wbuf)
 				if _, err := bs.WriteAt(ctx, pid, nil, wbuf, rng.Uint64N(maxOff+1)); err != nil {
+					lat.Record(time.Since(opStart), false)
 					return fmt.Errorf("storm write %s: %w", pid, err)
 				}
 			}
+			lat.Record(time.Since(opStart), true)
 			atomic.AddInt64(&counts.Writes, 1)
 		case opRead:
 			pid := stable[rng.IntN(len(stable))]
 			if _, err := bs.ReadAt(ctx, pid, nil, rbuf, rng.Uint64N(maxOff+1)); err != nil {
+				lat.Record(time.Since(opStart), false)
 				return fmt.Errorf("storm read %s: %w", pid, err)
 			}
+			lat.Record(time.Since(opStart), true)
 			atomic.AddInt64(&counts.Reads, 1)
 		case opList:
 			_ = bs.ListFiles()
+			lat.Record(time.Since(opStart), true)
 			atomic.AddInt64(&counts.Lists, 1)
 		case opDelete:
 			pid, ok := churn.popRandom(rng)
@@ -250,8 +259,10 @@ func runStormWorker(ctx context.Context, bs *engine.Store, opts Opts, weights st
 				continue // nothing to delete yet
 			}
 			if err := bs.Delete(ctx, pid, nil); err != nil {
+				lat.Record(time.Since(opStart), false)
 				return fmt.Errorf("storm delete %s: %w", pid, err)
 			}
+			lat.Record(time.Since(opStart), true)
 			atomic.AddInt64(&counts.Deletes, 1)
 		}
 	}

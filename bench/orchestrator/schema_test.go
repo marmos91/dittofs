@@ -128,3 +128,66 @@ func TestMetricsFromRunZeroDuration(t *testing.T) {
 		t.Errorf("zero duration must not divide: %+v", m)
 	}
 }
+
+// TestAdditiveLatencyFields confirms the latency / ops-breakdown / errors
+// fields round-trip without bumping schema_version. They are additive: a
+// document carrying them must still report schema_version 1.
+func TestAdditiveLatencyFields(t *testing.T) {
+	doc := sampleDoc()
+	w := doc.Workloads["seq-write"]
+	w.Metrics.Latency = &Latency{P50Ns: 100, P95Ns: 500, P99Ns: 900}
+	w.Metrics.OpCounts = OpCounts{Total: 1000, Succeeded: 998, Failed: 2}
+	w.Metrics.Errors = []OpError{{Op: "write", Offset: 4096, ErrorKind: "timeout", Count: 2}}
+	doc.Workloads["seq-write"] = w
+
+	b, err := doc.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := DecodeDocument(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.SchemaVersion != 1 {
+		t.Fatalf("additive fields must not bump schema_version: got %d, want 1", got.SchemaVersion)
+	}
+	gw := got.Workloads["seq-write"]
+	if gw.Metrics.Latency == nil || gw.Metrics.Latency.P95Ns != 500 {
+		t.Errorf("latency not round-tripped: %+v", gw.Metrics.Latency)
+	}
+	if gw.Metrics.OpCounts.Failed != 2 || gw.Metrics.OpCounts.Total != 1000 {
+		t.Errorf("ops breakdown not round-tripped: %+v", gw.Metrics.OpCounts)
+	}
+	if len(gw.Metrics.Errors) != 1 || gw.Metrics.Errors[0].ErrorKind != "timeout" {
+		t.Errorf("errors not round-tripped: %+v", gw.Metrics.Errors)
+	}
+}
+
+// TestOmittedLatencyFields confirms a document WITHOUT the additive fields
+// (the schema_version-1 shape) still decodes cleanly and leaves them empty —
+// the backward-compatibility half of the additive contract.
+func TestOmittedLatencyFields(t *testing.T) {
+	doc := sampleDoc() // sampleDoc sets no latency/ops/errors
+	b, err := doc.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The emitted JSON must not carry empty additive objects (omitempty).
+	if bytes.Contains(b, []byte("\"latency\"")) {
+		t.Error("latency present despite no samples (omitempty failed)")
+	}
+	if bytes.Contains(b, []byte("\"errors\"")) {
+		t.Error("errors present despite no failures (omitempty failed)")
+	}
+	got, err := DecodeDocument(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	gw := got.Workloads["seq-write"]
+	if gw.Metrics.Latency != nil {
+		t.Errorf("latency should be nil, got %+v", gw.Metrics.Latency)
+	}
+	if gw.Metrics.OpCounts.Total != 0 {
+		t.Errorf("op counts should be zero, got %+v", gw.Metrics.OpCounts)
+	}
+}

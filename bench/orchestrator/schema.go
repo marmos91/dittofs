@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"time"
 )
 
@@ -106,6 +107,12 @@ type WorkloadResult struct {
 }
 
 // Metrics holds the measured numbers for one workload run.
+//
+// Latency, OpCounts, and Errors are ADDITIVE fields (introduced after
+// schema_version 1). Per the version contract they do NOT bump SchemaVersion:
+// they are omitempty so older documents that lack them round-trip unchanged,
+// and consumers that predate them ignore the unknown fields. A producer that
+// records per-op timings populates them; one that does not leaves them nil/zero.
 type Metrics struct {
 	DurationNs int64   `json:"duration_ns"`
 	Ops        int64   `json:"ops"`
@@ -115,6 +122,41 @@ type Metrics struct {
 	// workloads that do not move payload (walk/delete/gc).
 	Bytes       int64   `json:"bytes"`
 	BytesPerSec float64 `json:"bytes_per_sec"`
+
+	// Latency carries the per-op p50/p95/p99 distribution. Nil when the runner
+	// did not record per-op timings.
+	Latency *Latency `json:"latency,omitempty"`
+	// OpCounts breaks Ops into succeeded/failed. Zero value when not recorded.
+	OpCounts OpCounts `json:"ops_breakdown,omitempty"`
+	// Errors is the structured per-op failure tally. Empty when no op failed (or
+	// when failures were not recorded).
+	Errors []OpError `json:"errors,omitempty"`
+}
+
+// Latency is the per-op latency distribution for one workload, in nanoseconds.
+type Latency struct {
+	P50Ns int64 `json:"p50_ns"`
+	P95Ns int64 `json:"p95_ns"`
+	P99Ns int64 `json:"p99_ns"`
+}
+
+// OpCounts splits a workload's operations into succeeded and failed. Total is
+// the sum and mirrors Metrics.Ops; it is stored so a consumer reading only the
+// breakdown is self-describing.
+type OpCounts struct {
+	Total     int64 `json:"total"`
+	Succeeded int64 `json:"succeeded"`
+	Failed    int64 `json:"failed"`
+}
+
+// OpError is a structured failure record: the op kind, the offset it targeted
+// (0 when not applicable), a coarse error kind, and how many times it occurred.
+// It mirrors the PLAN target schema's errors:[{op,offset,error_kind,count}].
+type OpError struct {
+	Op        string `json:"op"`
+	Offset    int64  `json:"offset,omitempty"`
+	ErrorKind string `json:"error_kind"`
+	Count     int64  `json:"count"`
 }
 
 // NewDocument builds a Document stamped with the current SchemaVersion and the
@@ -165,6 +207,18 @@ func DecodeDocument(r io.Reader) (*Document, error) {
 		return nil, err
 	}
 	return &d, nil
+}
+
+// DecodeFile opens path and decodes a result document from it via
+// DecodeDocument (so the schema_version is verified). It is the file-path
+// convenience used by compare mode and the remote orchestrator.
+func DecodeFile(path string) (*Document, error) {
+	f, err := os.Open(path) //nolint:gosec // path is operator-supplied
+	if err != nil {
+		return nil, fmt.Errorf("open result %q: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+	return DecodeDocument(f)
 }
 
 // ParseTimestamp validates an RFC3339 timestamp string, returning it normalized
