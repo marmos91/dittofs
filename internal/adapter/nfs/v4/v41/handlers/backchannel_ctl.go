@@ -35,6 +35,16 @@ func HandleBackchannelCtl(
 		}
 	}
 
+	// BACKCHANNEL_CTL requires SEQUENCE context; reject if sent outside a session.
+	if v41ctx == nil {
+		logger.Debug("BACKCHANNEL_CTL: no session context", "client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_OP_NOT_IN_SESSION,
+			OpCode: types.OP_BACKCHANNEL_CTL,
+			Data:   EncodeStatusOnly(types.NFS4ERR_OP_NOT_IN_SESSION),
+		}
+	}
+
 	// Look up the session from the V41RequestContext session ID
 	session := d.StateManager.GetSession(v41ctx.SessionID)
 	if session == nil {

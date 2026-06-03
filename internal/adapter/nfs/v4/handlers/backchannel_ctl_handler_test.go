@@ -222,6 +222,72 @@ func TestBackchannelCtl_BadXDR(t *testing.T) {
 	}
 }
 
+// TestBackchannelCtl_NoSession verifies NFS4ERR_OP_NOT_IN_SESSION when
+// BACKCHANNEL_CTL is dispatched without a SEQUENCE-established session context
+// (v41ctx == nil). A compound that starts with a session-exempt op
+// (EXCHANGE_ID) reaches the handler with v41ctx == nil, exercising the
+// handler-level nil guard directly.
+func TestBackchannelCtl_NoSession(t *testing.T) {
+	h := newTestHandler()
+	ctx := newTestCompoundContext()
+
+	var verifier [8]byte
+	copy(verifier[:], "testverf")
+	eidArgs := encodeExchangeIdArgs([]byte("bctl-no-session-client"), verifier, 0, types.SP4_NONE, nil)
+	bctlArgs := encodeBackchannelCtlArgs(0x50000000, []types.CallbackSecParms4{
+		{CbSecFlavor: 0}, // AUTH_NONE
+	})
+
+	ops := []compoundOp{
+		{opCode: types.OP_EXCHANGE_ID, data: eidArgs},
+		{opCode: types.OP_BACKCHANNEL_CTL, data: bctlArgs},
+	}
+	data := buildCompoundArgsWithOps([]byte("bctl-no-session"), 1, ops)
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	// EXCHANGE_ID returns a full result body, so decode the response manually
+	// (the shared decodeCompoundResponse helper only handles status-only ops).
+	reader := bytes.NewReader(resp)
+	status, _ := xdr.DecodeUint32(reader) // overall status
+	if status != types.NFS4ERR_OP_NOT_IN_SESSION {
+		t.Errorf("overall status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
+			status, types.NFS4ERR_OP_NOT_IN_SESSION)
+	}
+	_, _ = xdr.DecodeOpaque(reader) // tag
+	numResults, _ := xdr.DecodeUint32(reader)
+	if numResults != 2 {
+		t.Fatalf("numResults = %d, want 2", numResults)
+	}
+
+	// EXCHANGE_ID result (succeeds with v41ctx == nil, since it is exempt).
+	eidOp, _ := xdr.DecodeUint32(reader)
+	if eidOp != types.OP_EXCHANGE_ID {
+		t.Errorf("result[0] opcode = %d, want OP_EXCHANGE_ID (%d)", eidOp, types.OP_EXCHANGE_ID)
+	}
+	var eidRes types.ExchangeIdRes
+	if err := eidRes.Decode(reader); err != nil {
+		t.Fatalf("decode ExchangeIdRes: %v", err)
+	}
+	if eidRes.Status != types.NFS4_OK {
+		t.Errorf("EXCHANGE_ID status = %d, want NFS4_OK", eidRes.Status)
+	}
+
+	// BACKCHANNEL_CTL result: rejected with NFS4ERR_OP_NOT_IN_SESSION.
+	bctlOp, _ := xdr.DecodeUint32(reader)
+	if bctlOp != types.OP_BACKCHANNEL_CTL {
+		t.Errorf("result[1] opcode = %d, want OP_BACKCHANNEL_CTL (%d)", bctlOp, types.OP_BACKCHANNEL_CTL)
+	}
+	bctlStatus, _ := xdr.DecodeUint32(reader)
+	if bctlStatus != types.NFS4ERR_OP_NOT_IN_SESSION {
+		t.Errorf("BACKCHANNEL_CTL status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
+			bctlStatus, types.NFS4ERR_OP_NOT_IN_SESSION)
+	}
+}
+
 // TestBackchannelCtl_NoAcceptableSecurity verifies NFS4ERR_INVAL when only
 // RPCSEC_GSS is offered (no AUTH_NONE or AUTH_SYS).
 func TestBackchannelCtl_NoAcceptableSecurity(t *testing.T) {
