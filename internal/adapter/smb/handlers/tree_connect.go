@@ -279,6 +279,20 @@ func (h *Handler) handleIPCShare(ctx *SMBHandlerContext) (*HandlerResult, error)
 		logger.Debug("IPC$ access denied: no valid session", "sessionID", ctx.SessionID)
 		return NewErrorResult(types.StatusUserSessionDeleted), nil
 	}
+	// Reject the pre-auth anonymous session (ID 0), null sessions (anonymous
+	// NTLM), and guest sessions. IPC$ requires a successfully authenticated
+	// session per [MS-SMB2] Section 3.3.5.7 — share enumeration via pipe RPC
+	// must not be available to unauthenticated callers. The SessionID==0 check
+	// is the primary defense (the manager pre-seeds an anonymous credit-tracking
+	// session at ID 0); IsNull/IsGuest cover sessions that carry no real identity
+	// despite a non-zero ID.
+	if sess.SessionID == 0 || sess.IsNull || sess.IsGuest {
+		logger.Debug("IPC$ access denied: unauthenticated or anonymous session",
+			"sessionID", ctx.SessionID,
+			"isNull", sess.IsNull,
+			"isGuest", sess.IsGuest)
+		return NewErrorResult(types.StatusAccessDenied), nil
+	}
 
 	// Create tree connection for IPC$ with PIPE share type
 	treeID := h.GenerateTreeID()

@@ -209,6 +209,58 @@ func TestTreeConnect_IPCShare(t *testing.T) {
 	})
 }
 
+// TestTreeConnect_IPCShare_RejectsSessionIDZero verifies that a TREE_CONNECT to
+// IPC$ carrying SessionID=0 (the pre-auth anonymous credit-tracking slot) is
+// rejected. Otherwise an unauthenticated client could obtain a pipe-RPC channel
+// for share enumeration without ever authenticating.
+func TestTreeConnect_IPCShare_RejectsSessionIDZero(t *testing.T) {
+	h := NewHandler()
+	// Do NOT create any session. SessionID=0 is the pre-auth anonymous slot
+	// that the session manager pre-seeds for credit tracking.
+	ctx := newTreeConnectTestContext(0)
+
+	body := buildTreeConnectRequestBody("\\\\server\\IPC$")
+	result, err := h.TreeConnect(ctx, body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusAccessDenied {
+		t.Errorf("SessionID=0 IPC$ TREE_CONNECT: got status 0x%x, want StatusAccessDenied (0x%x)",
+			result.Status, types.StatusAccessDenied)
+	}
+	// No tree connection must be stored.
+	if ctx.TreeID != 0 {
+		t.Errorf("TreeID = %d, want 0 (tree must not be created for anonymous session)", ctx.TreeID)
+	}
+}
+
+// TestTreeConnect_IPCShare_RejectsNullSession verifies that a null session
+// (anonymous NTLM: empty username, not guest) is rejected from IPC$ even if it
+// somehow carries a non-zero SessionID.
+func TestTreeConnect_IPCShare_RejectsNullSession(t *testing.T) {
+	h := NewHandler()
+	// Manually create a null session: username="" isGuest=false → IsNull=true.
+	nullSess := session.NewSession(42, "127.0.0.1:12345", false, "", "")
+	if !nullSess.IsNull {
+		t.Fatal("test precondition: NewSession with empty username must produce IsNull=true")
+	}
+	h.SessionManager.StoreSession(nullSess)
+
+	ctx := newTreeConnectTestContext(nullSess.SessionID)
+	body := buildTreeConnectRequestBody("\\\\server\\IPC$")
+	result, err := h.TreeConnect(ctx, body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Status != types.StatusAccessDenied {
+		t.Errorf("null session IPC$ TREE_CONNECT: got status 0x%x, want StatusAccessDenied (0x%x)",
+			result.Status, types.StatusAccessDenied)
+	}
+	if ctx.TreeID != 0 {
+		t.Errorf("TreeID = %d, want 0", ctx.TreeID)
+	}
+}
+
 // =============================================================================
 // parseSharePath Tests
 // =============================================================================
