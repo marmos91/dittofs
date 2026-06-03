@@ -157,13 +157,35 @@ type ControlPlaneAPIConfig struct {
 	// API. When true the operator connects over https:// so the admin and
 	// operator service-account credentials it sends are not transmitted in
 	// cleartext over the pod network. This requires the dfs control plane API to
-	// be served over TLS (terminated at the server or by an in-cluster mesh/
-	// sidecar that exposes the API service on https). Defaults to false (http://)
-	// for backward compatibility; in-cluster credentialed deployments should
-	// enable it once TLS termination is in place.
+	// be served over TLS — either natively (see CertSecretName, which makes the
+	// pod serve HTTPS end-to-end) or terminated by an in-cluster mesh/sidecar
+	// that exposes the API service on https. Defaults to false (http://) for
+	// backward compatibility; in-cluster credentialed deployments should enable
+	// it once TLS termination is in place.
 	// +kubebuilder:default=false
 	// +optional
 	TLS bool `json:"tls,omitempty"`
+
+	// CertSecretName names a Kubernetes Secret containing the server
+	// certificate and private key the dfs pod uses to serve native TLS
+	// (HTTPS) on the control plane API. When set, the operator mounts the
+	// Secret read-only into the dfs container and renders
+	// controlplane.tls.cert_file / key_file so the API is served over TLS
+	// end-to-end inside the cluster, rather than relying only on edge
+	// termination.
+	//
+	// The Secret must use the standard kubernetes.io/tls keys "tls.crt" and
+	// "tls.key" (e.g. a cert-manager-issued Certificate Secret). Setting this
+	// implies TLS=true (https scheme) for the operator's own API calls.
+	// +optional
+	CertSecretName string `json:"certSecretName,omitempty"`
+
+	// ClientCASecretName optionally names a Secret containing a CA bundle used
+	// to require and verify client certificates (mutual TLS) on the control
+	// plane API. The CA bundle must be stored under the key "ca.crt". Only
+	// honored when CertSecretName is also set (mTLS needs a server cert).
+	// +optional
+	ClientCASecretName string `json:"clientCASecretName,omitempty"`
 }
 
 // IdentityConfig defines identity store and JWT authentication configuration

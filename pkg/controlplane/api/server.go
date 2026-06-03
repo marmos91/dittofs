@@ -75,6 +75,20 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, resto
 		return nil, fmt.Errorf("failed to configure TLS: %w", err)
 	}
 
+	// Default-posture nudge: a non-loopback bind with no native TLS means
+	// login credentials and JWTs cross the network in cleartext unless an edge
+	// terminator (ingress / mesh / reverse proxy) wraps them. We do NOT
+	// hard-require TLS (back-compat: many deployments terminate at the edge),
+	// so this is a startup WARN pointing at the TLS / external-termination docs
+	// rather than a fatal error.
+	if tlsConfig == nil && isNonLoopbackHost(config.Host) {
+		logger.Warn("control plane API is bound to a non-loopback address with TLS disabled; "+
+			"login credentials and tokens will traverse the network in CLEARTEXT. "+
+			"Configure controlplane.tls.{cert_file,key_file} for native TLS, or terminate TLS at an ingress/mesh. "+
+			"See docs/SECURITY.md.",
+			"host", config.Host)
+	}
+
 	// Get JWT secret from config (prefers env var)
 	jwtSecret := config.GetJWTSecret()
 	if len(jwtSecret) < 32 {
@@ -245,6 +259,29 @@ func (s *Server) TLSEnabled() bool {
 // mTLSEnabled reports whether the server requires verified client certificates.
 func (s *Server) mTLSEnabled() bool {
 	return s.tlsConfig != nil && s.tlsConfig.ClientAuth == tls.RequireAndVerifyClientCert
+}
+
+// isNonLoopbackHost reports whether host binds the API to something other than
+// loopback. An empty host defaults to 127.0.0.1 (loopback) elsewhere, so it is
+// treated as loopback here. A wildcard bind (0.0.0.0 / ::) reaches off-host and
+// counts as non-loopback. A named host that does not parse as an IP (e.g. a
+// hostname) is conservatively treated as non-loopback so the cleartext warning
+// is not silently skipped.
+func isNonLoopbackHost(host string) bool {
+	switch host {
+	case "", "127.0.0.1", "::1", "[::1]", "localhost":
+		return false
+	}
+	// Strip brackets from an IPv6 literal like "[::]".
+	h := host
+	if len(h) >= 2 && h[0] == '[' && h[len(h)-1] == ']' {
+		h = h[1 : len(h)-1]
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return !ip.IsLoopback()
+	}
+	// Non-IP host (hostname): assume it resolves off-host.
+	return true
 }
 
 // displayAddr returns a host:port that is routable for example/log URLs. A

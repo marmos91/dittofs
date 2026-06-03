@@ -1145,13 +1145,41 @@ func (r *Runtime) restoreSnapshot(
 	defer rlock.Unlock()
 
 	// --- precheck ---
-	enabled, err := r.sharesSvc.IsShareEnabled(shareName)
-	if err != nil {
-		return "", err
-	}
-	if enabled {
-		return "", fmt.Errorf("restore snapshot %q on share %q: %w",
-			snapID, shareName, models.ErrShareEnabled)
+	// The Enabled precheck guards operator-initiated restores: a destructive
+	// Reset+replay must never run under a live share. The startup rollback
+	// path (recoverInterruptedRestores → isRollback=true) is exempt: the share
+	// may legitimately have loaded Enabled at boot, and refusing here would
+	// wedge the rollback on every subsequent boot, leaving the share stuck
+	// half-restored. Mirror the isRollback exemptions on the safety-snap and
+	// marker blocks below — force-disable the share for the rollback's
+	// duration so the destructive steps still run under a quiesced share.
+	if !internal.isRollback {
+		enabled, err := r.sharesSvc.IsShareEnabled(shareName)
+		if err != nil {
+			return "", err
+		}
+		if enabled {
+			return "", fmt.Errorf("restore snapshot %q on share %q: %w",
+				snapID, shareName, models.ErrShareEnabled)
+		}
+	} else {
+		// Force-disable the share for the rollback so the destructive
+		// Reset+replay runs under a quiesced share, and so it stays disabled
+		// afterwards (matching the operator-restore contract). Recovery runs
+		// BEFORE adapters serve, so this is belt-and-suspenders rather than a
+		// concurrency barrier — hence best-effort: an already-disabled share is
+		// a benign no-op, and a share whose control-plane DB row is absent
+		// (e.g. removed out from under a stranded marker) must not wedge boot.
+		switch derr := r.DisableShare(ctx, shareName); {
+		case derr == nil:
+			logger.Info("snapshot restore: rollback force-disabled share before reset",
+				"snapshot_id", snapID, "share", shareName)
+		case errors.Is(derr, shares.ErrShareAlreadyDisabled):
+			// Already quiesced; nothing to do.
+		default:
+			logger.Warn("snapshot restore: rollback could not force-disable share, proceeding (recovery precedes adapter serving)",
+				"snapshot_id", snapID, "share", shareName, "error", derr)
+		}
 	}
 
 	snap, err := r.store.GetSnapshot(ctx, shareName, snapID)

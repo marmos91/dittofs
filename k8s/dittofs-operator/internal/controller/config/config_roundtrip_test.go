@@ -49,6 +49,10 @@ var serverKnownKeys = map[string]bool{
 	"controlplane.port":                       true,
 	"controlplane.jwt.access_token_duration":  true,
 	"controlplane.jwt.refresh_token_duration": true,
+	// Native TLS keys consumed by pkg/controlplane/api TLSConfig.
+	"controlplane.tls.cert_file": true,
+	"controlplane.tls.key_file":  true,
+	"controlplane.tls.client_ca": true,
 
 	"admin.username": true,
 	"admin.email":    true,
@@ -123,6 +127,15 @@ func TestGenerateDittoFSConfig_NoDeadKeys(t *testing.T) {
 					Admin: &dittoiov1alpha1.AdminConfig{Username: "root"},
 				},
 				Cache: &dittoiov1alpha1.InfraCacheConfig{Path: "/c", Size: "2GB"},
+			},
+		},
+		"native-mtls": {
+			Spec: dittoiov1alpha1.DittoServerSpec{
+				ControlPlane: &dittoiov1alpha1.ControlPlaneAPIConfig{
+					TLS:                true,
+					CertSecretName:     "tls",
+					ClientCASecretName: "ca",
+				},
 			},
 		},
 	}

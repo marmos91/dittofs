@@ -19,6 +19,8 @@ package controller
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -46,6 +48,52 @@ func NewDittoFSClient(baseURL string) *DittoFSClient {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// NewDittoFSClientWithCA is NewDittoFSClient that additionally trusts the given
+// PEM CA bundle when reaching an https base URL. This lets the operator verify
+// a pod-served native-TLS certificate signed by a private CA (e.g. the ca.crt
+// in a cert-manager-issued Secret) WITHOUT disabling certificate verification.
+// When caPEM is empty the client behaves exactly like NewDittoFSClient (system
+// roots only). An empty/invalid bundle is reported as an error rather than
+// silently falling back, so a misconfigured CA cannot mask an unverified
+// connection.
+//
+// The CA is ADDED to the system trust pool (not a replacement), so a publicly
+// trusted server cert keeps verifying and a bundle carrying only an
+// intermediate still chains to a system root. The transport is cloned from
+// http.DefaultTransport so proxy support and the standard dial/idle timeouts
+// are preserved.
+func NewDittoFSClientWithCA(baseURL string, caPEM []byte) (*DittoFSClient, error) {
+	if len(caPEM) == 0 {
+		return NewDittoFSClient(baseURL), nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		// No system pool available (rare; e.g. some scratch images): start fresh
+		// so the operator-provided CA still establishes trust.
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("control plane CA bundle contains no valid PEM certificate")
+	}
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, fmt.Errorf("unexpected default HTTP transport type %T", http.DefaultTransport)
+	}
+	transport = transport.Clone()
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{}
+	}
+	transport.TLSClientConfig.MinVersion = tls.VersionTLS12
+	transport.TLSClientConfig.RootCAs = pool
+	return &DittoFSClient{
+		baseURL: baseURL,
+		httpClient: &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: transport,
+		},
+	}, nil
 }
 
 // SetToken sets the authentication token for subsequent requests.

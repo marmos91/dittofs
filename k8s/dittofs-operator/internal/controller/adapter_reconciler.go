@@ -63,7 +63,10 @@ func (r *DittoServerReconciler) getAuthenticatedClient(ctx context.Context, ds *
 		return nil, fmt.Errorf("operator credentials secret is missing server-url or access-token")
 	}
 
-	apiClient := NewDittoFSClient(serverURL)
+	apiClient, err := r.newAPIClient(ctx, ds, serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build API client: %w", err)
+	}
 	apiClient.SetToken(accessToken)
 
 	return apiClient, nil

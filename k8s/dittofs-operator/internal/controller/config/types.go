@@ -50,6 +50,19 @@ type ControlPlaneConfig struct {
 	Host string    `yaml:"host"`
 	Port int       `yaml:"port"`
 	JWT  JWTConfig `yaml:"jwt"`
+	// TLS renders controlplane.tls.* so the pod serves native (in-pod) HTTPS.
+	// Omitted entirely (omitempty on the pointer) unless a cert Secret was
+	// named, preserving the plain-http / edge-terminated default.
+	TLS *TLSConfig `yaml:"tls,omitempty"`
+}
+
+// TLSConfig points the server at the cert/key (and optional client-CA) files
+// mounted from the operator-provided Secret(s). It mirrors the dfs
+// controlplane.tls config keys.
+type TLSConfig struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	ClientCA string `yaml:"client_ca,omitempty"`
 }
 
 // JWTConfig configures JWT authentication.

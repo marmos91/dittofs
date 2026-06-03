@@ -1,0 +1,60 @@
+# DittoFS with pod-level native TLS on the control plane API.
+#
+# When controlPlane.certSecretName is set, the operator mounts the named TLS
+# Secret into the dfs pod and renders controlplane.tls.{cert_file,key_file} so
+# the API is served over HTTPS end-to-end inside the cluster (not just at an
+# edge terminator). The operator's own API calls then use https and verify the
+# pod certificate against the Secret's ca.crt — no InsecureSkipVerify.
+#
+# The cert Secret must be a standard kubernetes.io/tls Secret (keys tls.crt /
+# tls.key), e.g. one issued by cert-manager. For mutual TLS, also set
+# clientCASecretName to a Secret carrying the client CA bundle under ca.crt.
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  labels:
+    app.kubernetes.io/name: dittofs-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: dittoserver-tls-sample
+  namespace: dittofs
+spec:
+  image: marmos91c/dittofs:latest
+  replicas: 1
+
+  storage:
+    metadataSize: "10Gi"
+    contentSize: "50Gi"
+
+  identity:
+    jwt:
+      secretRef:
+        name: dittofs-jwt-secret
+        key: secret
+    admin:
+      username: admin
+      passwordSecretRef:
+        name: dittofs-admin-secret
+        key: password-hash
+
+  database:
+    type: sqlite
+    sqlite:
+      path: "/data/controlplane/controlplane.db"
+
+  cache:
+    path: "/data/cache"
+    size: "1GB"
+
+  # Control plane REST API: native TLS.
+  controlPlane:
+    port: 8080
+    tls: true
+    # A kubernetes.io/tls Secret (e.g. cert-manager-issued) with tls.crt/tls.key.
+    certSecretName: dittofs-controlplane-tls
+    # Optional: enable mutual TLS by trusting a client CA bundle (ca.crt).
+    # clientCASecretName: dittofs-client-ca
+
+  nfsPort: 12049
+
+  service:
+    type: "ClusterIP"
