@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -705,9 +706,9 @@ func processV2Reconnect(
 // place that mutates the durable store on reconnect, which is what makes the
 // path safe against the V1/V2 reconnect TOCTOU window.
 //
-// TODO: per CLAUDE.md invariant 1 the identity check (username) belongs in
-// pkg/metadata/lock — e.g. inside the Consume* call returning a typed mismatch
-// error. Left in the handler for this iteration to keep the scope small.
+// The share/path/identity matching itself lives in the lock domain
+// (PersistedDurableHandle.ValidateReconnect, pkg/metadata/lock) per CLAUDE.md
+// invariant 1; the handler only maps the typed mismatch back to an SMB status.
 func validateAndRestore(
 	ctx context.Context,
 	durableStore lock.DurableHandleStore,
@@ -721,33 +722,40 @@ func validateAndRestore(
 	checkPath bool,
 	consume func(ctx context.Context) (*lock.PersistedDurableHandle, error),
 ) (*OpenFile, types.Status, error) {
-	if handle.ShareName != shareName {
-		logger.Debug("validateAndRestore: share name mismatch",
-			"expected", handle.ShareName,
-			"actual", shareName)
-		return nil, types.StatusObjectNameNotFound, nil
-	}
-
-	// V1 oplock-backed reconnect ignores the filename per MS-SMB2 §3.3.5.9.7
-	// (mirrors Samba `smbd_smb2_create_durable_lease_check` which only path-
-	// checks lease-backed reopens). Caller passes checkPath=false in that case.
-	if checkPath && handle.Path != filename {
-		logger.Debug("validateAndRestore: path mismatch",
-			"expected", handle.Path,
-			"actual", filename)
-		return nil, types.StatusInvalidParameter, nil
-	}
-
-	if handle.Username != username {
-		logger.Debug("validateAndRestore: username mismatch",
-			"expected", handle.Username,
-			"actual", username)
-		return nil, types.StatusAccessDenied, nil
+	// Identity/path/share matching is owned by the lock domain. Map the typed
+	// mismatch back to the SMB status the reconnect ladder expects (share →
+	// OBJECT_NAME_NOT_FOUND, path → INVALID_PARAMETER, user → ACCESS_DENIED).
+	// V1/V2 oplock-backed reconnect ignores the filename per MS-SMB2 §3.3.5.9.7/12
+	// (mirrors Samba `smbd_smb2_create_durable_lease_check`, which only path-checks
+	// lease-backed reopens), so checkPath is false in that case.
+	if err := handle.ValidateReconnect(lock.ReconnectIdentity{
+		ShareName: shareName,
+		Username:  username,
+		Filename:  filename,
+		CheckPath: checkPath,
+	}); err != nil {
+		var mismatch *lock.DurableHandleMismatchError
+		if errors.As(err, &mismatch) {
+			logger.Debug("validateAndRestore: reconnect identity mismatch",
+				"kind", mismatch.Kind,
+				"expected", mismatch.Expected,
+				"actual", mismatch.Actual)
+			switch mismatch.Kind {
+			case lock.MismatchPath:
+				return nil, types.StatusInvalidParameter, nil
+			case lock.MismatchUser:
+				return nil, types.StatusAccessDenied, nil
+			default: // MismatchShare and any future kinds
+				return nil, types.StatusObjectNameNotFound, nil
+			}
+		}
+		logger.Warn("validateAndRestore: reconnect validation error", "error", err)
+		return nil, types.StatusInternalError, err
 	}
 
 	// NOTE: We intentionally do NOT compare session key hashes here.
 	// Per MS-SMB2 3.3.5.9.7/12, the server validates the user identity
-	// (username check above), not the session key. With NTLM KEY_EXCH,
+	// (ValidateReconnect above), not the session key. With NTLM KEY_EXCH,
 	// each session generates a random ExportedSessionKey, so the session
 	// key hash will differ between the original and reconnect sessions
 	// even for the same user with the same credentials.
