@@ -101,6 +101,20 @@ func encodeCreateRegularFileArgs(name string) []byte {
 	return buf.Bytes()
 }
 
+// encodeCreateUnknownTypeArgs encodes CREATE4args with an unrecognized objtype.
+// objname and createattrs are fully encoded so that the default-case consume test
+// can verify the reader is left clean for the following op.
+func encodeCreateUnknownTypeArgs(name string) []byte {
+	var buf bytes.Buffer
+	_ = xdr.WriteUint32(&buf, 255) // objtype = 255, unrecognized by the server
+	// objname (XDR string)
+	_ = xdr.WriteXDRString(&buf, name)
+	// createattrs: empty bitmap + empty opaque
+	_ = xdr.WriteUint32(&buf, 0) // bitmap length = 0
+	_ = xdr.WriteUint32(&buf, 0) // attr data length = 0
+	return buf.Bytes()
+}
+
 // encodeRemoveArgs encodes REMOVE4args.
 func encodeRemoveArgs(target string) []byte {
 	var buf bytes.Buffer
@@ -372,6 +386,116 @@ func TestCreate_RegularFile_ReturnsBadType(t *testing.T) {
 	if result.Status != types.NFS4ERR_BADTYPE {
 		t.Errorf("CREATE regular file status = %d, want NFS4ERR_BADTYPE (%d)",
 			result.Status, types.NFS4ERR_BADTYPE)
+	}
+}
+
+// TestCreate_UnknownType_ReturnsBadType verifies that CREATE with an unrecognized
+// objtype returns NFS4ERR_BADTYPE.
+func TestCreate_UnknownType_ReturnsBadType(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	args := encodeCreateUnknownTypeArgs("ghost")
+	result := fx.handler.handleCreate(ctx, bytes.NewReader(args))
+
+	if result.Status != types.NFS4ERR_BADTYPE {
+		t.Errorf("CREATE unknown type status = %d, want NFS4ERR_BADTYPE (%d)",
+			result.Status, types.NFS4ERR_BADTYPE)
+	}
+}
+
+// TestCreate_UnknownType_ConsumesArgs is the regression test for the default-case
+// XDR stream desync bug. The CREATE handler shares its reader with the COMPOUND
+// dispatcher, so on every exit path it must consume exactly its own arguments
+// (objtype + objname + createattrs) and leave the reader positioned at the next
+// operation's opcode. Before the fix the default case returned after reading only
+// objtype, leaving objname (8 XDR-padded bytes for "ghost") + createattrs (8 bytes
+// of empty fattr4) on the reader — desyncing every following operation.
+//
+// We assert on the reader directly: a sentinel opcode is appended after the CREATE
+// args; after handleCreate returns, exactly that 4-byte sentinel must remain. Before
+// the fix 20 bytes remain (16 unconsumed CREATE args + the 4-byte sentinel) and the
+// next DecodeUint32 returns the leading bytes of the unconsumed "ghost" string, not
+// the sentinel opcode.
+func TestCreate_UnknownType_ConsumesArgs(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	var buf bytes.Buffer
+	buf.Write(encodeCreateUnknownTypeArgs("ghost"))
+	// Sentinel: the opcode the COMPOUND dispatcher would read next.
+	_ = xdr.WriteUint32(&buf, types.OP_GETFH)
+
+	reader := bytes.NewReader(buf.Bytes())
+	result := fx.handler.handleCreate(ctx, reader)
+
+	if result.Status != types.NFS4ERR_BADTYPE {
+		t.Fatalf("CREATE unknown type status = %d, want NFS4ERR_BADTYPE (%d)",
+			result.Status, types.NFS4ERR_BADTYPE)
+	}
+
+	// Only the 4-byte sentinel opcode must remain on the reader.
+	if remaining := reader.Len(); remaining != 4 {
+		t.Fatalf("reader has %d bytes left after CREATE, want 4 (only the next opcode); "+
+			"handler did not consume objname+createattrs (XDR stream desync)", remaining)
+	}
+
+	// And that remaining opcode must decode as the sentinel, proving the reader is
+	// aligned on the next operation boundary.
+	nextOp, err := xdr.DecodeUint32(reader)
+	if err != nil {
+		t.Fatalf("decode next opcode: %v", err)
+	}
+	if nextOp != types.OP_GETFH {
+		t.Errorf("next opcode = %d, want OP_GETFH (%d) — reader is desynced",
+			nextOp, types.OP_GETFH)
+	}
+}
+
+// TestCreate_RegularFile_ConsumesArgs is the NF4REG counterpart to
+// TestCreate_UnknownType_ConsumesArgs. NF4REG now falls through to the same
+// arg-consuming BADTYPE path as unknown objtypes, so it must likewise leave the
+// shared reader positioned exactly at the next operation's opcode. A sentinel
+// opcode is appended after the CREATE args; after handleCreate returns, only
+// that 4-byte sentinel must remain.
+func TestCreate_RegularFile_ConsumesArgs(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	var buf bytes.Buffer
+	buf.Write(encodeCreateRegularFileArgs("myfile.txt"))
+	// Sentinel: the opcode the COMPOUND dispatcher would read next.
+	_ = xdr.WriteUint32(&buf, types.OP_GETFH)
+
+	reader := bytes.NewReader(buf.Bytes())
+	result := fx.handler.handleCreate(ctx, reader)
+
+	if result.Status != types.NFS4ERR_BADTYPE {
+		t.Fatalf("CREATE regular file status = %d, want NFS4ERR_BADTYPE (%d)",
+			result.Status, types.NFS4ERR_BADTYPE)
+	}
+
+	if remaining := reader.Len(); remaining != 4 {
+		t.Fatalf("reader has %d bytes left after CREATE NF4REG, want 4 (only the next opcode); "+
+			"handler did not consume objname+createattrs (XDR stream desync)", remaining)
+	}
+
+	nextOp, err := xdr.DecodeUint32(reader)
+	if err != nil {
+		t.Fatalf("decode next opcode: %v", err)
+	}
+	if nextOp != types.OP_GETFH {
+		t.Errorf("next opcode = %d, want OP_GETFH (%d) — reader is desynced",
+			nextOp, types.OP_GETFH)
 	}
 }
 

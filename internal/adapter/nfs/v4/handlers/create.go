@@ -89,19 +89,17 @@ func (h *Handler) handleCreate(ctx *types.CompoundContext, reader io.Reader) *ty
 		// Directory: no type-specific data
 
 	case types.NF4REG:
-		// Regular files must be created via OPEN, not CREATE
-		// Consume remaining args before returning error
-		_, _ = xdr.DecodeString(reader)
-		skipFattr4(reader)
-
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_BADTYPE,
-			OpCode: types.OP_CREATE,
-			Data:   encodeStatusOnly(types.NFS4ERR_BADTYPE),
-		}
+		// Regular files must be created via OPEN, not CREATE. Fall through to the
+		// BADTYPE handling below, which also consumes the remaining args.
+		fallthrough
 
 	default:
-		// Unknown type
+		// Unsupported/unknown objtype (NF4REG or anything we don't recognize).
+		// Consume the remaining args (objname + createattrs) before returning so
+		// the XDR stream stays aligned for any following COMPOUND ops.
+		_, _ = xdr.DecodeString(reader) // objname
+		skipFattr4(reader)              // createattrs
+
 		return &types.CompoundResult{
 			Status: types.NFS4ERR_BADTYPE,
 			OpCode: types.OP_CREATE,
