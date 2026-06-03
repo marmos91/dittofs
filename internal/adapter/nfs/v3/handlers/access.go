@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // AccessRequest represents an ACCESS request from an NFS client.
 // The client wants to verify if it has specific permissions on a file or directory.
@@ -60,9 +58,7 @@ type AccessResponse struct {
 	Access uint32
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Access handles NFS ACCESS (RFC 1813 Section 3.3.4).
 // Checks whether the client has specific permissions on a file or directory.
@@ -92,10 +88,6 @@ func (h *Handler) Access(
 		"client", clientIP,
 		"auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateAccessRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "ACCESS validation failed",
 			"handle", fmt.Sprintf("%x", req.Handle),
@@ -103,10 +95,6 @@ func (h *Handler) Access(
 			"error", err)
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Get metadata service
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -117,10 +105,6 @@ func (h *Handler) Access(
 	fileHandle := metadata.FileHandle(req.Handle)
 
 	logger.DebugCtx(ctx.Context, "ACCESS", "share", ctx.Share)
-
-	// ========================================================================
-	// Step 3: Verify file handle exists and is valid
-	// ========================================================================
 
 	file, err := metaSvc.GetFile(ctx.Context, fileHandle)
 	if err != nil {
@@ -150,10 +134,6 @@ func (h *Handler) Access(
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 3: Build AuthContext with share-level identity mapping
-	// ========================================================================
-
 	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -171,20 +151,12 @@ func (h *Handler) Access(
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 4: Translate NFS access bits to generic permissions
-	// ========================================================================
-
 	requestedPerms := nfsAccessToPermissions(req.Access, file.Type)
 
 	logger.DebugCtx(ctx.Context, "ACCESS translation",
 		"nfs_access", fmt.Sprintf("0x%x", req.Access),
 		"generic_perms", fmt.Sprintf("0x%x", requestedPerms),
 		"type", file.Type)
-
-	// ========================================================================
-	// Step 5: Check permissions via store
-	// ========================================================================
 
 	grantedPerms, err := metaSvc.CheckPermissions(authCtx, fileHandle, requestedPerms)
 	if err != nil {
@@ -203,19 +175,11 @@ func (h *Handler) Access(
 		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Translate granted permissions back to NFS access bits
-	// ========================================================================
-
 	grantedAccess := permissionsToNFSAccess(grantedPerms, file.Type)
 
 	logger.DebugCtx(ctx.Context, "ACCESS translation",
 		"generic_perms", fmt.Sprintf("0x%x", grantedPerms),
 		"nfs_access", fmt.Sprintf("0x%x", grantedAccess))
-
-	// ========================================================================
-	// Step 7: Build response with granted permissions and attributes
-	// ========================================================================
 
 	// Generate file ID from handle for NFS attributes
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
@@ -241,9 +205,7 @@ func (h *Handler) Access(
 	}, nil
 }
 
-// ============================================================================
 // Helper Functions
-// ============================================================================
 
 // nfsAccessToPermissions translates NFS ACCESS bits to generic Permission flags.
 //
@@ -349,9 +311,7 @@ func permissionsToNFSAccess(perms metadata.Permission, fileType metadata.FileTyp
 	return nfsAccess
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateAccessRequest validates ACCESS request parameters.
 //

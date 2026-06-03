@@ -12,9 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // RenameRequest represents a RENAME request from an NFS client.
 // The client provides source and destination directory handles and names
@@ -76,9 +74,7 @@ type RenameResponse struct {
 	ToDirWccAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Rename handles NFS RENAME (RFC 1813 Section 3.3.14).
 // Moves/renames a file or directory between directories, atomically replacing target if it exists.
@@ -101,18 +97,10 @@ func (h *Handler) Rename(
 
 	logger.InfoCtx(ctx.Context, "RENAME", "from", req.FromName, "from_dir", fmt.Sprintf("0x%x", req.FromDirHandle), "to", req.ToName, "to_dir", fmt.Sprintf("0x%x", req.ToDirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateRenameRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "RENAME validation failed", "from", req.FromName, "to", req.ToName, "client", clientIP, "error", err)
 		return &RenameResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Get metadata store from context and validate handles
-	// ========================================================================
 
 	metaSvc, svcErr := getMetadataService(h.Registry)
 	if svcErr != nil {
@@ -138,10 +126,6 @@ func (h *Handler) Rename(
 	}
 
 	logger.DebugCtx(ctx.Context, "RENAME", "share", ctx.Share, "from", req.FromName, "to", req.ToName)
-
-	// ========================================================================
-	// Step 3: Verify source directory exists and is valid
-	// ========================================================================
 
 	fromDirFile, status, err := h.getFileOrError(ctx, fromDirHandle, "RENAME", req.FromDirHandle)
 	if fromDirFile == nil {
@@ -176,10 +160,6 @@ func (h *Handler) Rename(
 			FromDirWccAfter:  fromDirWccAfter,
 		}, ctx.Context.Err()
 	}
-
-	// ========================================================================
-	// Step 3: Verify destination directory exists and is valid
-	// ========================================================================
 
 	toDirFile, status, err := h.getFileOrError(ctx, toDirHandle, "RENAME", req.ToDirHandle)
 	if toDirFile == nil {
@@ -232,10 +212,6 @@ func (h *Handler) Rename(
 		}, ctx.Context.Err()
 	}
 
-	// ========================================================================
-	// Step 4: Build authentication context for store
-	// ========================================================================
-
 	authCtx, fromDirWccAfter, err := h.buildAuthContextWithWCCError(ctx, fromDirHandle, &fromDirFile.FileAttr, "RENAME", req.FromName, req.FromDirHandle)
 	if authCtx == nil {
 		toDirWccAfter := h.convertFileAttrToNFS(toDirHandle, &toDirFile.FileAttr)
@@ -249,9 +225,6 @@ func (h *Handler) Rename(
 		}, err
 	}
 
-	// ========================================================================
-	// Step 4.5: Cross-protocol oplock break on source and destination
-	// ========================================================================
 	// Break oplocks on source file and (if it exists) destination file.
 	// Best-effort: lookup failures don't block the rename operation.
 	if breaker := h.getOplockBreaker(); breaker != nil {
@@ -270,9 +243,6 @@ func (h *Handler) Rename(
 		}
 	}
 
-	// ========================================================================
-	// Step 5: Perform rename via store
-	// ========================================================================
 	// The store is responsible for:
 	// - Verifying source file exists
 	// - Checking write permissions on both directories
@@ -287,9 +257,7 @@ func (h *Handler) Rename(
 
 	renameWcc, err := metaSvc.Move(authCtx, fromDirHandle, req.FromName, toDirHandle, req.ToName)
 	if err == nil {
-		// ====================================================================
 		// NFS-specific: Handle silly rename (.nfs* pattern)
-		// ====================================================================
 		// When an NFS client deletes a file that's still open, it renames the
 		// file to a temporary name starting with ".nfs". We mark such files as
 		// orphaned (nlink=0) so that fstat() returns the correct link count.
@@ -358,10 +326,6 @@ func (h *Handler) Rename(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Build success response with updated WCC data
-	// ========================================================================
-
 	// H9: use the source/destination directory attributes captured atomically
 	// inside the Move transaction. The pre-op snapshots read at handler entry
 	// can race a concurrent mutation in the window; the in-transaction captures
@@ -389,9 +353,7 @@ func (h *Handler) Rename(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateRenameRequest validates RENAME request parameters.
 //

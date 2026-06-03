@@ -5,9 +5,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // NullRequest represents a NULL request from an NFS client.
 // The NULL procedure takes no arguments per RFC 1813.
@@ -36,9 +34,7 @@ type NullResponse struct {
 	NFSResponseBase // Embeds Status field and GetStatus() method
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Null handles NFS NULL (RFC 1813 Appendix I, procedure 0).
 // No-op ping/health check verifying the NFSv3 service is running and reachable.
@@ -49,9 +45,7 @@ func (h *Handler) Null(
 	ctx *NFSHandlerContext,
 	req *NullRequest,
 ) (*NullResponse, error) {
-	// ========================================================================
 	// Context Cancellation Check
-	// ========================================================================
 	// Check if the client has disconnected or the request has timed out.
 	// While NULL is extremely fast, we should still respect cancellation to
 	// avoid wasting resources on abandoned requests (e.g., during server shutdown,
@@ -75,9 +69,7 @@ func (h *Handler) Null(
 
 	logger.DebugCtx(ctx.Context, "NULL", "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
 	// Optional: store health check
-	// ========================================================================
 	// NOTE: Health check removed as NULL doesn't have a file handle to decode
 	// and shouldn't depend on any particular share. NULL must always succeed
 	// per RFC 1813 regardless of backend state.

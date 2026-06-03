@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeReadLinkRequest decodes a READLINK request from XDR-encoded bytes.
 //
@@ -59,9 +57,7 @@ func DecodeReadLinkRequest(data []byte) (*ReadLinkRequest, error) {
 	return &ReadLinkRequest{Handle: handle}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the ReadLinkResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -98,17 +94,13 @@ func DecodeReadLinkRequest(data []byte) (*ReadLinkRequest, error) {
 func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write post-op symlink attributes (both success and error cases)
-	// ========================================================================
 	// Including attributes on error helps clients maintain cache consistency
 	// for the symlink itself, even when reading the target fails
 
@@ -116,18 +108,14 @@ func (resp *ReadLinkResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode attributes: %w", err)
 	}
 
-	// ========================================================================
 	// Error case: Return without target path
-	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding READLINK error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
-	// ========================================================================
 	// Success case: Write target path
-	// ========================================================================
 
 	// Write target path as XDR string (length + data + padding)
 	if err := xdr.WriteXDRString(&buf, resp.Target); err != nil {

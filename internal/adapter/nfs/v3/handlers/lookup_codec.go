@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeLookupRequest decodes a LOOKUP request from XDR-encoded bytes.
 //
@@ -80,9 +78,7 @@ func DecodeLookupRequest(data []byte) (*LookupRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the LookupResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -120,17 +116,13 @@ func DecodeLookupRequest(data []byte) (*LookupRequest, error) {
 func (resp *LookupResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// ========================================================================
 	// Error case: Return status + optional directory attributes
-	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoding LOOKUP error response",
@@ -144,9 +136,7 @@ func (resp *LookupResponse) Encode() ([]byte, error) {
 		return buf.Bytes(), nil
 	}
 
-	// ========================================================================
 	// Success case: Write file handle, file attributes, dir attributes
-	// ========================================================================
 
 	// Write file handle (opaque data: length + data + padding)
 	if err := xdr.WriteXDROpaque(&buf, resp.FileHandle); err != nil {

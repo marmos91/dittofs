@@ -535,7 +535,7 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 	// Get pipe state
 	pipe := h.PipeManager.GetPipe(req.FileID)
 	if pipe == nil {
-		logger.Warn("READ: pipe not found", "fileID", fmt.Sprintf("%x", req.FileID))
+		logger.Debug("READ: pipe not found", "fileID", fmt.Sprintf("%x", req.FileID))
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 

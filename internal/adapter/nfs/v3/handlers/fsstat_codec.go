@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Encoding and Decoding
-// ============================================================================
 
 // DecodeFsStatRequest decodes an FSSTAT request from XDR-encoded bytes.
 //

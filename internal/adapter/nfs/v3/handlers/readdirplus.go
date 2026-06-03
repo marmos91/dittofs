@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // XDR size accounting (RFC 1813 Section 3.3.17 maxcount / dircount budgets)
-// ============================================================================
 
 // readDirPlusFattr3Size is the fixed XDR-encoded size of an fattr3 structure
 // (RFC 1813 Section 2.3.1): 5×uint32 + 2×uint64 + specdata3(2×uint32) +
@@ -44,9 +42,7 @@ func readDirPlusEntryExtraSize(handleLen int) uint32 {
 	return 4 + readDirPlusFattr3Size + 4 + xdrOpaqueLen(handleLen)
 }
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // ReadDirPlusRequest represents a READDIRPLUS request from an NFS client.
 // The client provides a directory handle and parameters to retrieve directory
@@ -150,9 +146,7 @@ type DirPlusEntry struct {
 	FileHandle []byte
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // ReadDirPlus handles NFS READDIRPLUS (RFC 1813 Section 3.3.17).
 // Lists directory entries with full attributes and file handles, eliminating LOOKUP+GETATTR round trips.
@@ -168,27 +162,15 @@ func (h *Handler) ReadDirPlus(
 
 	logger.InfoCtx(ctx.Context, "READDIRPLUS", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "dircount", req.DirCount, "maxcount", req.MaxCount, "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Check for context cancellation before starting work
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "READDIRPLUS cancelled", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Validate request parameters
-	// ========================================================================
-
 	if err := validateReadDirPlusRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "READDIRPLUS validation failed", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 3: Verify directory handle exists and is valid
-	// ========================================================================
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
@@ -196,9 +178,7 @@ func (h *Handler) ReadDirPlus(
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
 	// Get metadata store from context
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -206,9 +186,7 @@ func (h *Handler) ReadDirPlus(
 		return &ReadDirPlusResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
 	// Check if READDIRPLUS is disabled for this share
-	// ========================================================================
 	// Per RFC 1813, servers may refuse READDIRPLUS for operational reasons.
 	// This matches Linux kernel's NFSEXP_NOREADDIRPLUS flag behavior.
 
@@ -241,9 +219,7 @@ func (h *Handler) ReadDirPlus(
 		}, nil
 	}
 
-	// ========================================================================
 	// Cookie Verifier Validation (RFC 1813 Section 3.3.17)
-	// ========================================================================
 	// Generate verifier from directory mtime - changes when directory is modified
 	currentVerifier := directoryMtimeVerifier(dirFile.Mtime)
 
@@ -261,10 +237,6 @@ func (h *Handler) ReadDirPlus(
 			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
 			"client", clientIP)
 	}
-
-	// ========================================================================
-	// Step 4: Build authentication context for store
-	// ========================================================================
 
 	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
@@ -290,9 +262,6 @@ func (h *Handler) ReadDirPlus(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 5: Get directory entries from store
-	// ========================================================================
 	// The store retrieves the directory entries via ReadDirectory.
 	// We need to use Lookup for each entry to get handles and full attributes.
 
@@ -325,19 +294,13 @@ func (h *Handler) ReadDirPlus(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Build response with directory entries
-	// ========================================================================
-
 	// Generate directory file ID for attributes
 	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 	// Build entries list - look up each entry to get handle and full attributes
 	entries := make([]*DirPlusEntry, 0, len(page.Entries))
 
-	// ========================================================================
 	// Byte-budget accounting (RFC 1813 Section 3.3.17)
-	// ========================================================================
 	// maxcount bounds the total READDIRPLUS3resok reply size; dircount bounds
 	// the "directory information" portion (the fields READDIR would have
 	// returned: fileid + name + cookie), excluding the per-entry attributes and
@@ -438,10 +401,6 @@ func (h *Handler) ReadDirPlus(
 		logger.DebugCtx(ctx.Context, "READDIRPLUS: added entry", "name", entry.Name, "cookie", entry.Cookie, "fileid", entry.ID)
 	}
 
-	// ========================================================================
-	// Step 7: Build success response
-	// ========================================================================
-
 	// EOF is true only when there are no more pages AND we did not stop early
 	// due to the maxcount/dircount budget. If the budget was exhausted (or we
 	// emitted fewer entries than the page contained), eof MUST be false so the
@@ -461,9 +420,7 @@ func (h *Handler) ReadDirPlus(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateReadDirPlusRequest validates READDIRPLUS request parameters.
 //

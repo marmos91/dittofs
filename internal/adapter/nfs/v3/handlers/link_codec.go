@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeLinkRequest decodes a LINK request from XDR-encoded bytes.
 //
@@ -52,9 +50,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode source file handle
-	// ========================================================================
 
 	fileHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -64,9 +60,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 		return nil, fmt.Errorf("invalid file handle length: 0 (must be > 0)")
 	}
 
-	// ========================================================================
 	// Decode target directory handle
-	// ========================================================================
 
 	dirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -76,9 +70,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 		return nil, fmt.Errorf("invalid directory handle length: 0 (must be > 0)")
 	}
 
-	// ========================================================================
 	// Decode link name
-	// ========================================================================
 
 	name, err := xdr.DecodeString(reader)
 	if err != nil {
@@ -94,9 +86,7 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the LinkResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -130,17 +120,13 @@ func DecodeLinkRequest(data []byte) (*LinkRequest, error) {
 func (resp *LinkResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write post-op file attributes (optional)
-	// ========================================================================
 	// Present for both success and failure cases to help clients
 	// maintain cache consistency
 
@@ -148,9 +134,7 @@ func (resp *LinkResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("encode file attributes: %w", err)
 	}
 
-	// ========================================================================
 	// Write directory WCC data (always present)
-	// ========================================================================
 	// Weak cache consistency data helps clients detect if the directory
 	// changed during the operation
 

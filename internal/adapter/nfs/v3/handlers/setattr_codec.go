@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeSetAttrRequest decodes a SETATTR request from XDR-encoded bytes.
 //
@@ -42,9 +40,7 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode file handle
-	// ========================================================================
 
 	handle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -54,18 +50,14 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 		return nil, fmt.Errorf("invalid handle length: 0 (must be > 0)")
 	}
 
-	// ========================================================================
 	// Decode new attributes (sattr3)
-	// ========================================================================
 
 	newAttr, err := xdr.DecodeSetAttrs(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode attributes: %w", err)
 	}
 
-	// ========================================================================
 	// Decode guard (sattrguard3)
-	// ========================================================================
 
 	guard := types.TimeGuard{}
 
@@ -108,9 +100,7 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the SetAttrResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -147,17 +137,13 @@ func DecodeSetAttrRequest(data []byte) (*SetAttrRequest, error) {
 func (resp *SetAttrResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write WCC data (both success and failure cases)
-	// ========================================================================
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the file.
 

@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeRenameRequest decodes a RENAME request from XDR-encoded bytes.
 //
@@ -55,9 +53,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode source directory handle
-	// ========================================================================
 
 	fromDirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -67,18 +63,14 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 		return nil, fmt.Errorf("invalid source directory handle length: 0 (must be > 0)")
 	}
 
-	// ========================================================================
 	// Decode source name
-	// ========================================================================
 
 	fromName, err := xdr.DecodeString(reader)
 	if err != nil {
 		return nil, fmt.Errorf("decode source name: %w", err)
 	}
 
-	// ========================================================================
 	// Decode destination directory handle
-	// ========================================================================
 
 	toDirHandle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -88,9 +80,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 		return nil, fmt.Errorf("invalid destination directory handle length: 0 (must be > 0)")
 	}
 
-	// ========================================================================
 	// Decode destination name
-	// ========================================================================
 
 	toName, err := xdr.DecodeString(reader)
 	if err != nil {
@@ -107,9 +97,7 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the RenameResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -147,25 +135,19 @@ func DecodeRenameRequest(data []byte) (*RenameRequest, error) {
 func (resp *RenameResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write WCC data for source directory (both success and failure)
-	// ========================================================================
 
 	if err := xdr.EncodeWccData(&buf, resp.FromDirWccBefore, resp.FromDirWccAfter); err != nil {
 		return nil, fmt.Errorf("encode source directory wcc data: %w", err)
 	}
 
-	// ========================================================================
 	// Write WCC data for destination directory (both success and failure)
-	// ========================================================================
 
 	if err := xdr.EncodeWccData(&buf, resp.ToDirWccBefore, resp.ToDirWccAfter); err != nil {
 		return nil, fmt.Errorf("encode destination directory wcc data: %w", err)

@@ -12,9 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // ReadLinkRequest represents a READLINK request from an NFS client.
 // The client provides a file handle for a symbolic link and requests
@@ -58,9 +56,7 @@ type ReadLinkResponse struct {
 	Target string
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // ReadLink handles NFS READLINK (RFC 1813 Section 3.3.5).
 // Reads the target pathname stored in a symbolic link for client-side path resolution.
@@ -71,9 +67,7 @@ func (h *Handler) ReadLink(
 	ctx *NFSHandlerContext,
 	req *ReadLinkRequest,
 ) (*ReadLinkResponse, error) {
-	// ========================================================================
 	// Context Cancellation Check - Entry Point
-	// ========================================================================
 	// Check if the client has disconnected or the request has timed out
 	// before we start processing. While READLINK is fast, we should still
 	// respect cancellation to avoid wasted work on abandoned requests.
@@ -87,10 +81,6 @@ func (h *Handler) ReadLink(
 
 	logger.InfoCtx(ctx.Context, "READLINK", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateReadLinkRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "READLINK validation failed", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", err)
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
@@ -100,9 +90,6 @@ func (h *Handler) ReadLink(
 
 	// Symlink file resolved in store
 
-	// ========================================================================
-	// Step 3: Build authentication context for store
-	// ========================================================================
 	// The store needs authentication details to enforce access control
 	// on the symbolic link (read permission checking)
 
@@ -118,9 +105,6 @@ func (h *Handler) ReadLink(
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 3: Read symlink target via store
-	// ========================================================================
 	// The store is responsible for:
 	// - Verifying the handle is a valid symlink
 	// - Checking read permission on the symlink
@@ -167,10 +151,6 @@ func (h *Handler) ReadLink(
 		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: status}}, nil
 	}
 
-	// ========================================================================
-	// Step 4: Generate file attributes for cache consistency
-	// ========================================================================
-
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
 	logger.InfoCtx(ctx.Context, "READLINK successful", "handle", fmt.Sprintf("%x", req.Handle), "target", target, "target_len", len(target), "client", clientIP)
@@ -184,9 +164,7 @@ func (h *Handler) ReadLink(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateReadLinkRequest validates READLINK request parameters.
 //
@@ -226,9 +204,7 @@ func validateReadLinkRequest(req *ReadLinkRequest) *validationError {
 	return nil
 }
 
-// ============================================================================
 // Error Mapping
-// ============================================================================
 
 // mapReadLinkErrorToNFSStatus maps store errors to NFS status codes.
 // This provides consistent error handling across the READLINK operation.

@@ -218,7 +218,6 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
 
-	// Step 1: PrepareWrite -- validates permissions, returns intent
 	intent, err := metaSvc.PrepareWrite(authCtx, fileHandle, newSize)
 	if err != nil {
 		status := common.MapToNFS4(err)
@@ -247,7 +246,6 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"client", ctx.ClientAddr)
 	}
 
-	// Step 2: Write actual data via BlockStore.
 	// Routed through common.WriteToBlockStore so any future []BlockRef
 	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(ctx.Context, blockStore, intent.PayloadID, data, offset)
@@ -263,7 +261,6 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 		}
 	}
 
-	// Step 3: CommitWrite -- updates metadata (size, timestamps)
 	_, err = metaSvc.CommitWrite(authCtx, intent)
 	if err != nil {
 		status := common.MapToNFS4(err)

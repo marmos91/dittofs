@@ -126,7 +126,7 @@ type StateManager struct {
 	graceDuration time.Duration
 
 	// recoveryStore provides server-global durable persistence of confirmed
-	// client identities for reboot/grace recovery (area-4 H8). Optional: when
+	// client identities for reboot/grace recovery. Optional: when
 	// nil the StateManager behaves exactly as before (no durable recovery),
 	// which keeps bare test constructions working. Set via
 	// SetClientRecoveryStore, wired by the NFS adapter to the first share's
@@ -601,7 +601,7 @@ func (sm *StateManager) ConfirmClientID(clientID uint64, confirmVerifier [8]byte
 		"client_addr", record.ClientAddr)
 
 	// Persist a durable client-recovery record so this client can reclaim its
-	// state after an ungraceful server restart (area-4 H8). Best-effort under
+	// state after an ungraceful server restart. Best-effort under
 	// sm.mu: a persist failure logs a durability alarm but the confirm STILL
 	// succeeds (the in-memory record is authoritative for this process). No-op
 	// when no recovery store is wired.
@@ -697,7 +697,7 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 		"client_addr", record.ClientAddr)
 
 	// The client's lease lapsed without renewal: it no longer holds reclaimable
-	// state, so drop its durable recovery record (area-4 H8). Best-effort; no-op
+	// state, so drop its durable recovery record. Best-effort; no-op
 	// when no recovery store is wired.
 	sm.deleteClientRecoveryLocked(record.ClientIDString)
 
@@ -1042,7 +1042,7 @@ func (sm *StateManager) OpenFile(
 		if !sm.IsInGrace() {
 			return nil, ErrNoGrace
 		}
-		// Verifier-gated reclaim (RFC 7530 §9.1.4, area-4 H8 §3.4): a reclaiming
+		// Verifier-gated reclaim (RFC 7530 §9.1.4): a reclaiming
 		// client whose ClientIDString matches a pre-restart record but whose
 		// BootVerifier changed rebooted and must NOT reclaim prior state.
 		// validateReclaimVerifier self-gates on the boot-load snapshot, so it is
@@ -1067,7 +1067,7 @@ func (sm *StateManager) OpenFile(
 			}
 		}
 		// v4.0 has no RECLAIM_COMPLETE; the first successful CLAIM_PREVIOUS is
-		// the analog reclaim marker (area-4 H8 §3.3). Persist it so a second
+		// the analog reclaim marker. Persist it so a second
 		// restart inside one grace window does not wait on this client again.
 		if rec != nil {
 			sm.mu.Lock()
@@ -2459,7 +2459,7 @@ func (sm *StateManager) CreateSession(
 		record.Lease = NewLeaseState(record.ClientID, sm.leaseDuration, nil)
 		record.LastRenewal = time.Now()
 
-		// Persist a durable client-recovery record (area-4 H8). v4.1 has no
+		// Persist a durable client-recovery record. v4.1 has no
 		// nfs_client_id4 string; the stable identity is co_ownerid, so the
 		// record is keyed by its string form. Best-effort under sm.mu.
 		sm.persistClientRecoveryLocked(record.ClientID, v41RecoveryKey(record.OwnerID), record.Verifier, record.Principal)

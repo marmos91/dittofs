@@ -44,7 +44,7 @@ type StoreCloser interface {
 // control-plane DB during graceful shutdown — without this hook the
 // normal server path (signal -> ctx cancel -> lifecycle.shutdown) would
 // call StopAllAdapters + CloseMetadataStores directly while snapshot
-// goroutines still hold references to the closing stores. D-23-17.
+// goroutines still hold references to the closing stores.
 type SnapshotDrainer interface {
 	ShutdownSnapshots(ctx context.Context)
 }
@@ -157,7 +157,7 @@ func (s *Service) SetAPIServer(server AuxiliaryServer) {
 // BEFORE StopAllAdapters + CloseMetadataStores — otherwise those
 // goroutines would race a closing metadata store / control-plane DB.
 // Pass nil to skip snapshot draining (tests that do not exercise the
-// snapshot pipeline). D-23-17 #R3-1.
+// snapshot pipeline).
 func (s *Service) Serve(
 	ctx context.Context,
 	settings SettingsInitializer,
@@ -246,7 +246,7 @@ func (s *Service) shutdown(
 	// per-snap ctx derives from it) and waits, bounded by the shutdown
 	// timeout. Orphans after the timeout will still exit on their own
 	// since runtimeCtx is already cancelled; we just may proceed before
-	// every wg.Done fires. D-23-17 #R3-1.
+	// every wg.Done fires.
 	if snapshotDrainer != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
 		snapshotDrainer.ShutdownSnapshots(drainCtx)

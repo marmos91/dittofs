@@ -12,9 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// ============================================================================
 // Write Stability Levels (RFC 1813 Section 3.3.7)
-// ============================================================================
 
 // Write stability levels control how the server handles data persistence.
 // These constants define when data must be committed to stable storage.
@@ -35,9 +33,7 @@ const (
 	FileSyncWrite = 2
 )
 
-// ============================================================================
 // Flush Reasons
-// ============================================================================
 
 // FlushReason indicates why a block store flush was triggered.
 type FlushReason string
@@ -56,9 +52,7 @@ const (
 	FlushReasonTimeout FlushReason = "timeout"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // WriteRequest represents a WRITE request from an NFS client.
 // The client specifies a file handle, offset, data to write, and
@@ -115,9 +109,7 @@ type WriteResponse struct {
 	Verf            uint64             // Write verifier
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Write handles NFS WRITE (RFC 1813 Section 3.3.7).
 // Writes data to a regular file at a given offset using two-phase PrepareWrite/CommitWrite pattern.
@@ -133,18 +125,11 @@ func (h *Handler) Write(
 
 	logger.DebugCtx(ctx.Context, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Check for context cancellation before starting work
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logWarn(ctx.Context, ctx.Context.Err(), "WRITE cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Validate request parameters
-	// ========================================================================
 	// Structural validation only (handle, overflow, stability). The size cap
 	// is applied as a short-write below, derived from the advertised wtmax.
 
@@ -152,10 +137,6 @@ func (h *Handler) Write(
 		logWarn(ctx.Context, err, "WRITE validation failed", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 3: Resolve per-share metadata service and block store from file handle
-	// ========================================================================
 
 	fileHandle := metadata.FileHandle(req.Handle)
 
@@ -167,9 +148,6 @@ func (h *Handler) Write(
 
 	logger.DebugCtx(ctx.Context, "WRITE", "share", ctx.Share)
 
-	// ========================================================================
-	// Step 3b: Short-write to the advertised wtmax (RFC 1813 Section 3.3.7)
-	// ========================================================================
 	// Derive the per-request cap from the same value advertised by FSINFO
 	// (GetFilesystemCapabilities().MaxWriteSize / wtmax) so the WRITE limit can
 	// never drift from what the client was told. RFC 1813 permits the server to
@@ -186,9 +164,6 @@ func (h *Handler) Write(
 		req.Count = caps.MaxWriteSize
 	}
 
-	// ========================================================================
-	// Step 4: Calculate new file size
-	// ========================================================================
 	// Note: File existence and type validation is done by PrepareWrite.
 	// This eliminates a redundant GetFile call.
 
@@ -207,10 +182,6 @@ func (h *Handler) Write(
 		return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrFBig}}, nil
 	}
 
-	// ========================================================================
-	// Step 5: Build AuthContext with share-level identity mapping (cached)
-	// ========================================================================
-
 	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
 		// Check if the error is due to context cancellation
@@ -227,9 +198,6 @@ func (h *Handler) Write(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 5b: Cross-protocol oplock break
-	// ========================================================================
 	// Fire-and-forget: per Samba behavior, NFS proceeds even if break is pending.
 	// The break notification is sent to the SMB client asynchronously.
 	if breaker := h.getOplockBreaker(); breaker != nil {
@@ -239,9 +207,6 @@ func (h *Handler) Write(
 		}
 	}
 
-	// ========================================================================
-	// Step 6: Prepare write operation (validate permissions)
-	// ========================================================================
 	// PrepareWrite validates permissions but does NOT modify metadata yet.
 	// Metadata is updated by CommitWrite after BlockStore write succeeds.
 
@@ -269,10 +234,6 @@ func (h *Handler) Write(
 	// Build WCC attributes from pre-write state
 	nfsWccAttr := xdr.CaptureWccAttr(writeIntent.PreWriteAttr)
 
-	// ========================================================================
-	// Step 7: Write data to BlockStore (uses local cache internally)
-	// ========================================================================
-
 	// Check context before write operation
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "WRITE cancelled before write", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
@@ -290,10 +251,6 @@ func (h *Handler) Write(
 	}
 	logger.DebugCtx(ctx.Context, "WRITE: cached successfully", "payload_id", writeIntent.PayloadID)
 
-	// ========================================================================
-	// Step 8: Commit metadata changes after successful BlockStore write
-	// ========================================================================
-
 	updatedFile, err := metaSvc.CommitWrite(authCtx, writeIntent)
 	if err != nil {
 		logError(ctx.Context, err, "WRITE failed: CommitWrite error (content written but metadata not updated)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", len(req.Data), "client", clientIP)
@@ -305,17 +262,11 @@ func (h *Handler) Write(
 		return h.buildWriteErrorResponse(status, fileHandle, writeIntent.PreWriteAttr, writeIntent.PreWriteAttr), nil
 	}
 
-	// ========================================================================
-	// Step 9: Build success response
-	// ========================================================================
-
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
 
 	logger.DebugCtx(ctx.Context, "WRITE successful", "file", updatedFile.PayloadID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
 
-	// ========================================================================
 	// Stability Level Design Decision (RFC 1813 Section 3.3.7)
-	// ========================================================================
 	//
 	// We always return UNSTABLE because Cache is always enabled.
 	// This is RFC-compliant because:
@@ -357,9 +308,7 @@ func (h *Handler) Write(
 	}, nil
 }
 
-// ============================================================================
 // Write Helper Functions
-// ============================================================================
 
 // buildWriteErrorResponse creates a consistent error response with WCC data.
 // This centralizes error response creation to reduce duplication.

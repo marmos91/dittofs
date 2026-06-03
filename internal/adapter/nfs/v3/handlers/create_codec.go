@@ -9,9 +9,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeCreateRequest decodes a CREATE request from XDR-encoded bytes.
 //
@@ -95,9 +93,7 @@ func DecodeCreateRequest(data []byte) (*CreateRequest, error) {
 	return req, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the CreateResponse into XDR-encoded bytes.
 //

@@ -7,9 +7,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // Read Request Validation
-// ============================================================================
 
 // validateReadRequest validates READ request parameters.
 //

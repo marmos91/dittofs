@@ -12,9 +12,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // CreateRequest represents an NFS CREATE request (RFC 1813 Section 3.3.8).
 //
@@ -73,9 +71,7 @@ type CreateResponse struct {
 	DirAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Create handles NFS CREATE (RFC 1813 Section 3.3.8).
 // Creates a new regular file in UNCHECKED, GUARDED, or EXCLUSIVE mode.
@@ -98,18 +94,10 @@ func (h *Handler) Create(
 
 	logger.InfoCtx(ctx.Context, "CREATE", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "mode", createModeName(req.Mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateCreateRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "CREATE validation failed", "file", req.Filename, "client", clientIP, "error", err)
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Resolve per-share services from directory handle
-	// ========================================================================
 
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
@@ -119,10 +107,6 @@ func (h *Handler) Create(
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrStale}}, nil
 	}
 	logger.DebugCtx(ctx.Context, "CREATE", "share", ctx.Share, "file", req.Filename)
-
-	// ========================================================================
-	// Step 3: Verify parent directory exists and is valid
-	// ========================================================================
 
 	parentFile, status, err := h.getFileOrError(ctx, parentHandle, "CREATE", req.DirHandle)
 	if parentFile == nil {
@@ -146,10 +130,6 @@ func (h *Handler) Create(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 3b: Build AuthContext with share-level identity mapping
-	// ========================================================================
-
 	authCtx, dirWccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "CREATE", req.Filename, req.DirHandle)
 	if authCtx == nil {
 		return &CreateResponse{
@@ -165,10 +145,6 @@ func (h *Handler) Create(
 		logger.DebugCtx(ctx.Context, "CREATE cancelled before existence check", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
-
-	// ========================================================================
-	// Step 4: Check if file already exists using Lookup
-	// ========================================================================
 
 	var existingFile *metadata.File
 	existingFile, err = metaSvc.Lookup(authCtx, parentHandle, req.Filename)
@@ -187,10 +163,6 @@ func (h *Handler) Create(
 		logger.DebugCtx(ctx.Context, "CREATE cancelled before file operation", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "exists", fileExists, "client", clientIP, "error", ctx.Context.Err())
 		return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 	}
-
-	// ========================================================================
-	// Step 5: Handle creation based on mode
-	// ========================================================================
 
 	var fileHandle metadata.FileHandle
 	var fileAttr *metadata.FileAttr
@@ -294,10 +266,6 @@ func (h *Handler) Create(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Handle errors from file creation/truncation
-	// ========================================================================
-
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
@@ -326,9 +294,6 @@ func (h *Handler) Create(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 7: Pre-warm caches for subsequent WRITE operations
-	// ========================================================================
 	// This eliminates cold-start penalty on the first WRITE to this file.
 	// We already have the file metadata and auth context, so caching is free.
 
@@ -346,10 +311,6 @@ func (h *Handler) Create(
 		}
 		metaSvc.PrewarmWriteCache(fileHandle, cachedFile)
 	}
-
-	// ========================================================================
-	// Step 8: Build success response
-	// ========================================================================
 
 	// Convert metadata to NFS attributes
 	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, fileAttr)
@@ -370,9 +331,7 @@ func (h *Handler) Create(
 	}, nil
 }
 
-// ============================================================================
 // Helper Functions for File Operations
-// ============================================================================
 
 // createNewFile creates a new file using the metadata store's Create method.
 //
@@ -423,7 +382,6 @@ func createNewFile(
 	// This enables clients to safely retry file creation after network failures.
 	//
 	// DESIGN NOTE: Intentional deviation from Linux kernel implementation
-	// ====================================================================
 	// Linux's fs/nfsd stores the verifier in atime/mtime fields:
 	//   attrs->ia_atime.tv_sec = verf[0];
 	//   attrs->ia_mtime.tv_sec = verf[1];
@@ -588,9 +546,7 @@ func applySetAttrsToFileAttr(fileAttr *metadata.FileAttr, setAttrs *metadata.Set
 	// Atime/Mtime will be set by repository to current time
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateCreateRequest validates CREATE request parameters.
 //

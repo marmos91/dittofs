@@ -842,7 +842,7 @@ func (h *Handler) setFileInfoFromStore(
 		// conflicts. Stream renames don't traverse the directory layer and
 		// returned earlier above; we're past that branch here.
 		//
-		// Conflict-gated dst-parent dir-lease pre-break (#470 C3 / smbtorture
+		// Conflict-gated dst-parent dir-lease pre-break (smbtorture
 		// smb2.dirlease.rename_dst_parent, lease.c:7331): when an existing
 		// holder on dst-parent denies the implicit destructive open with
 		// SHARING_VIOLATION, the dst-parent's RH dir-lease holder must observe
@@ -1132,7 +1132,7 @@ func (h *Handler) setFileInfoFromStore(
 		openFile.ParentHandle = toDir
 		h.StoreOpenFile(openFile)
 
-		// Per MS-FSA 2.1.5.14.10 + #470 C3 (smbtorture smb2.dirlease.rename):
+		// Per MS-FSA 2.1.5.14.10 (smbtorture smb2.dirlease.rename):
 		// rename changes directory contents on BOTH source and destination
 		// parents. Break Handle + Read dir leases on each (RH → ""), honoring
 		// the renamer's ParentLeaseKey suppression from C2. Skip the dst
@@ -1228,7 +1228,7 @@ func (h *Handler) setFileInfoFromStore(
 		}
 
 		// Mark file for deletion on close and record the DOC setter's
-		// parent key for unlink parent-key suppression (#470 C6/C7).
+		// parent key for unlink parent-key suppression.
 		openFile.DeletePending = deletePending
 		if deletePending {
 			openFile.DeleteOnCloseParentKey = openFile.ParentLeaseKey
@@ -1848,7 +1848,7 @@ func (h *Handler) breakParentDirLeasesForContentChange(ctx *SMBHandlerContext, a
 }
 
 // breakParentDirLeasesForContentChangeOn is the multi-parent variant used by
-// the rename branch (#470 C3): break parent directory leases to None on an
+// the rename branch: break parent directory leases to None on an
 // arbitrary directory handle (src-parent or dst-parent), honoring the
 // originating handle's ParentLeaseKey suppression from C2.
 //
@@ -1876,7 +1876,7 @@ func (h *Handler) breakParentDirLeasesForContentChangeOn(ctx *SMBHandlerContext,
 
 	parentLockHandle := lock.FileHandle(parentHandle)
 
-	// Apply parent-key suppression only (MS-SMB2 §3.3.4.20, #470 C2): if
+	// Apply parent-key suppression only (MS-SMB2 §3.3.4.20): if
 	// the originating handle's CREATE carried an RqLs with ParentLeaseKey
 	// set, the matching parent dir lease MUST NOT be broken. No ClientID
 	// exclusion — same-client breaks fire when the key doesn't match.
@@ -1990,7 +1990,7 @@ func DecodeFileLinkInfo(buffer []byte) (*FileLinkInfo, error) {
 // ReplaceIfExists is FALSE; STATUS_FILE_IS_A_DIRECTORY if the open file is a
 // directory (hard-linking directories is forbidden, MS-FSA 2.1.5.14.5).
 //
-// Directory-lease coordination (#470 C5 — smb2.dirlease.hardlink): a hardlink
+// Directory-lease coordination (smb2.dirlease.hardlink): a hardlink
 // is an add-entry in the destination parent. We thread the open file's RqLs
 // ParentLeaseKey into the auth context so:
 //   - MetadataService.notifyDirChange forwards it to OnDirChange, which
@@ -2082,7 +2082,7 @@ func (h *Handler) handleFileLinkInformation(
 		}
 	}
 
-	// #470 C5: thread the open file's ParentLeaseKey into the auth context so
+	// Thread the open file's ParentLeaseKey into the auth context so
 	// MetadataService.notifyDirChange forwards it to OnDirChange and the
 	// dir-lease parent-key suppression rule (MS-SMB2 §3.3.4.20) skips the
 	// matching parent dir lease (same-key holder does not get broken).

@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeCommitRequest decodes a COMMIT request from XDR-encoded bytes.
 //
@@ -78,9 +76,7 @@ func DecodeCommitRequest(data []byte) (*CommitRequest, error) {
 	}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the CommitResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -116,17 +112,13 @@ func DecodeCommitRequest(data []byte) (*CommitRequest, error) {
 func (resp *CommitResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("failed to write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write file WCC data (both success and failure cases)
-	// ========================================================================
 	// WCC (Weak Cache Consistency) data helps clients maintain cache coherency
 	// by providing before-and-after snapshots of the file.
 
@@ -134,9 +126,7 @@ func (resp *CommitResponse) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("failed to encode file wcc data: %w", err)
 	}
 
-	// ========================================================================
 	// Write write verifier (only on success)
-	// ========================================================================
 
 	if resp.Status == types.NFS3OK {
 		if err := binary.Write(&buf, binary.BigEndian, resp.WriteVerifier); err != nil {

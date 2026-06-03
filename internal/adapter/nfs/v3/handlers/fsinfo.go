@@ -126,9 +126,7 @@ func (h *Handler) FsInfo(
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadHandle}}, nil
 	}
 
-	// ========================================================================
 	// Get metadata from registry
-	// ========================================================================
 
 	metaSvc, svcErr := getMetadataService(h.Registry)
 	if svcErr != nil {
@@ -199,9 +197,7 @@ func (h *Handler) FsInfo(
 	}, nil
 }
 
-// ============================================================================
 // Helper Functions
-// ============================================================================
 
 // buildNFSProperties builds the NFS properties bitmask from FilesystemCapabilities.
 //
@@ -239,9 +235,7 @@ func durationToTimeVal(d time.Duration) types.TimeVal {
 	}
 }
 
-// ============================================================================
 // Utility Functions
-// ============================================================================
 
 // validateFileHandle performs basic validation on a file handle.
 // This includes checking for nil, empty, and excessively long handles.

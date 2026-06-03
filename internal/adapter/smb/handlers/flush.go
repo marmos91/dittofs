@@ -239,7 +239,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 		logger.Warn("FLUSH: failed", "path", openFile.Path, "error", flushErr)
 		// FLUSH is a content-path op (same as NFS COMMIT): MapContentToSMB
 		// maps a closed-store error (the share was removed/hot-reloaded
-		// mid-flush, area-7 H-A) to STATUS_FILE_CLOSED and preserves the
+		// mid-flush) to STATUS_FILE_CLOSED and preserves the
 		// CAS-corruption / remote-unavailable mappings, defaulting to the
 		// I/O-class status for opaque failures.
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: common.MapContentToSMB(flushErr)}}, nil

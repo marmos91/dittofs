@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // MknodRequest represents a MKNOD request from an NFS client.
 // The MKNOD procedure creates a special file (device, socket, or FIFO).
@@ -116,9 +114,7 @@ type MknodResponse struct {
 	DirAttrAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Mknod handles NFS MKNOD (RFC 1813 Section 3.3.11).
 // Creates a special file: character/block device, socket, or FIFO.
@@ -129,9 +125,7 @@ func (h *Handler) Mknod(
 	ctx *NFSHandlerContext,
 	req *MknodRequest,
 ) (*MknodResponse, error) {
-	// ========================================================================
 	// Context Cancellation Check - Entry Point
-	// ========================================================================
 	// Check if the client has disconnected or the request has timed out
 	// before we start processing. While MKNOD is typically fast (metadata only),
 	// we should still respect cancellation to avoid wasted work.
@@ -150,18 +144,10 @@ func (h *Handler) Mknod(
 
 	logger.InfoCtx(ctx.Context, "MKNOD", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Validate request parameters
-	// ========================================================================
-
 	if err := validateMknodRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "MKNOD validation failed", "name", req.Name, "type", req.Type, "client", clientIP, "error", err)
 		return &MknodResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 2: Decode share name from directory file handle
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -172,10 +158,6 @@ func (h *Handler) Mknod(
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
 	logger.DebugCtx(ctx.Context, "MKNOD", "share", ctx.Share, "name", req.Name, "type", req.Type)
-
-	// ========================================================================
-	// Step 3: Verify parent directory exists and is valid
-	// ========================================================================
 
 	parentFile, status, err := h.getFileOrError(ctx, parentHandle, "MKNOD", req.DirHandle)
 	if parentFile == nil {
@@ -199,10 +181,6 @@ func (h *Handler) Mknod(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 3: Build AuthContext for permission checking
-	// ========================================================================
-
 	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "MKNOD", req.Name, req.DirHandle)
 	if authCtx == nil {
 		return &MknodResponse{
@@ -212,18 +190,12 @@ func (h *Handler) Mknod(
 		}, err
 	}
 
-	// ========================================================================
 	// Context Cancellation Check - After Parent Lookup
-	// ========================================================================
 	// Check again after parent verification, before child operations
 	if ctx.isContextCancelled() {
 		logger.DebugCtx(ctx.Context, "MKNOD: request cancelled after parent lookup", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 		return nil, ctx.Context.Err()
 	}
-
-	// ========================================================================
-	// Step 4: Check if special file name already exists using Lookup
-	// ========================================================================
 
 	_, err = metaSvc.Lookup(authCtx, parentHandle, req.Name)
 	if err == nil {
@@ -242,9 +214,6 @@ func (h *Handler) Mknod(
 	}
 	// If error from Lookup, file doesn't exist (good) - continue
 
-	// ========================================================================
-	// Step 5: Create special file via store.CreateSpecialFile()
-	// ========================================================================
 	// The store is responsible for:
 	// - Converting NFS file type to metadata file type
 	// - Building complete file attributes with defaults
@@ -318,10 +287,6 @@ func (h *Handler) Mknod(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 6: Build success response with new file attributes
-	// ========================================================================
-
 	// Encode the file handle for the new special file
 	newHandle, err := metadata.EncodeFileHandle(newFile)
 	if err != nil {
@@ -348,9 +313,7 @@ func (h *Handler) Mknod(
 	}, nil
 }
 
-// ============================================================================
 // Helper Functions
-// ============================================================================
 
 // nfsTypeToMetadataType converts NFS file type to metadata file type.
 //
@@ -395,9 +358,7 @@ func specialFileTypeName(fileType uint32) string {
 	}
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateMknodRequest validates MKNOD request parameters.
 //

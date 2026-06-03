@@ -110,7 +110,7 @@ func (g *GracePeriodState) StartGrace(expectedClientIDs []uint64) {
 }
 
 // StartGraceWithRoster begins the grace period with a durable boot-loaded
-// reclaim roster keyed by stable client identity string (the area-4 H8 path),
+// reclaim roster keyed by stable client identity string,
 // optionally alongside any same-epoch numeric client IDs.
 //
 // The string roster is authoritative for early-exit after an ungraceful restart:

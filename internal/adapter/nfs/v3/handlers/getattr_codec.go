@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeGetAttrRequest decodes a GETATTR request from XDR-encoded bytes.
 //
@@ -60,9 +58,7 @@ func DecodeGetAttrRequest(data []byte) (*GetAttrRequest, error) {
 	return &GetAttrRequest{Handle: handle}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the GetAttrResponse into XDR-encoded bytes suitable for
 // transmission over the network.

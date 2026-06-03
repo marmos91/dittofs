@@ -519,7 +519,7 @@ func (h *Handler) handlePipeWrite(ctx *SMBHandlerContext, req *WriteRequest, ope
 	// Get pipe state
 	pipe := h.PipeManager.GetPipe(req.FileID)
 	if pipe == nil {
-		logger.Warn("WRITE: pipe not found", "fileID", fmt.Sprintf("%x", req.FileID))
+		logger.Debug("WRITE: pipe not found", "fileID", fmt.Sprintf("%x", req.FileID))
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidHandle}}, nil
 	}
 

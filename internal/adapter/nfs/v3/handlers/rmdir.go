@@ -11,9 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// ============================================================================
 // Request and Response Structures
-// ============================================================================
 
 // RmdirRequest represents a RMDIR request from an NFS client.
 // The client provides a parent directory handle and the name of the
@@ -62,9 +60,7 @@ type RmdirResponse struct {
 	DirWccAfter *types.NFSFileAttr
 }
 
-// ============================================================================
 // Protocol Handler
-// ============================================================================
 
 // Rmdir handles NFS RMDIR (RFC 1813 Section 3.3.13).
 // Removes an empty directory from a parent directory (must contain only "." and "..").
@@ -80,27 +76,15 @@ func (h *Handler) Rmdir(
 
 	logger.InfoCtx(ctx.Context, "RMDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
-	// ========================================================================
-	// Step 1: Check for context cancellation before starting work
-	// ========================================================================
-
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "RMDIR cancelled", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	// ========================================================================
-	// Step 2: Validate request parameters
-	// ========================================================================
-
 	if err := validateRmdirRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "RMDIR validation failed", "name", req.Name, "client", clientIP, "error", err)
 		return &RmdirResponse{NFSResponseBase: NFSResponseBase{Status: err.nfsStatus}}, nil
 	}
-
-	// ========================================================================
-	// Step 3: Get metadata store from context
-	// ========================================================================
 
 	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
@@ -111,10 +95,6 @@ func (h *Handler) Rmdir(
 	parentHandle := metadata.FileHandle(req.DirHandle)
 
 	logger.DebugCtx(ctx.Context, "RMDIR", "share", ctx.Share, "name", req.Name)
-
-	// ========================================================================
-	// Step 4: Verify parent directory exists and is valid
-	// ========================================================================
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
@@ -145,10 +125,6 @@ func (h *Handler) Rmdir(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 4: Build authentication context with share-level identity mapping
-	// ========================================================================
-
 	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "RMDIR", req.Name, req.DirHandle)
 	if authCtx == nil {
 		return &RmdirResponse{
@@ -158,9 +134,6 @@ func (h *Handler) Rmdir(
 		}, err
 	}
 
-	// ========================================================================
-	// Step 5: Remove directory via store
-	// ========================================================================
 	// The store is responsible for:
 	// - Verifying the directory exists
 	// - Verifying it's actually a directory
@@ -204,10 +177,6 @@ func (h *Handler) Rmdir(
 		}, nil
 	}
 
-	// ========================================================================
-	// Step 5: Build success response with updated parent attributes
-	// ========================================================================
-
 	// H9: use the parent attributes captured atomically with the removal.
 	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, parentHandle, dirWcc, wccBefore)
 
@@ -222,9 +191,7 @@ func (h *Handler) Rmdir(
 	}, nil
 }
 
-// ============================================================================
 // Request Validation
-// ============================================================================
 
 // validateRmdirRequest validates RMDIR request parameters.
 //
@@ -313,9 +280,7 @@ func validateRmdirRequest(req *RmdirRequest) *validationError {
 	return nil
 }
 
-// ============================================================================
 // Error Mapping
-// ============================================================================
 
 // mapRmdirErrorToNFSStatus maps store errors to NFS status codes.
 // This provides consistent error mapping for RMDIR operations.

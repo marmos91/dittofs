@@ -10,9 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodePathConfRequest decodes a PATHCONF request from XDR-encoded bytes.
 //
@@ -47,9 +45,7 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 
 	reader := bytes.NewReader(data)
 
-	// ========================================================================
 	// Decode file handle
-	// ========================================================================
 
 	handle, err := xdr.DecodeFileHandleFromReader(reader)
 	if err != nil {
@@ -64,9 +60,7 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 	return &PathConfRequest{Handle: handle}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the PathConfResponse into XDR-encoded bytes suitable for
 // transmission over the network.
@@ -112,34 +106,26 @@ func DecodePathConfRequest(data []byte) (*PathConfRequest, error) {
 func (resp *PathConfResponse) Encode() ([]byte, error) {
 	var buf bytes.Buffer
 
-	// ========================================================================
 	// Write status code
-	// ========================================================================
 
 	if err := binary.Write(&buf, binary.BigEndian, resp.Status); err != nil {
 		return nil, fmt.Errorf("write status: %w", err)
 	}
 
-	// ========================================================================
 	// Write post-op attributes (both success and error cases)
-	// ========================================================================
 
 	if err := xdr.EncodeOptionalFileAttr(&buf, resp.Attr); err != nil {
 		return nil, fmt.Errorf("encode attributes: %w", err)
 	}
 
-	// ========================================================================
 	// If status is not OK, return early (no PATHCONF data on error)
-	// ========================================================================
 
 	if resp.Status != types.NFS3OK {
 		logger.Debug("Encoded PATHCONF error response", "status", resp.Status)
 		return buf.Bytes(), nil
 	}
 
-	// ========================================================================
 	// Write PATHCONF properties in RFC-specified order
-	// ========================================================================
 
 	// Write linkmax
 	if err := binary.Write(&buf, binary.BigEndian, resp.Linkmax); err != nil {

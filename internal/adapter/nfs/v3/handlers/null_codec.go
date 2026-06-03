@@ -6,9 +6,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// ============================================================================
 // XDR Decoding
-// ============================================================================
 
 // DecodeNullRequest decodes a NULL request from XDR-encoded bytes.
 //
@@ -46,9 +44,7 @@ func DecodeNullRequest(data []byte) (*NullRequest, error) {
 	return &NullRequest{}, nil
 }
 
-// ============================================================================
 // XDR Encoding
-// ============================================================================
 
 // Encode serializes the NullResponse into XDR-encoded bytes suitable for
 // transmission over the network.
