@@ -156,7 +156,12 @@ func (p Plan) BenchCommand() string {
 		parts = append(parts, MountIPEnv+"="+shellQuote(p.Target.PrivateIP))
 	}
 	parts = append(parts, p.RemoteBinary, "orchestrate", "--out", shellQuote(p.RemoteResultPath))
-	if p.RemoteManifestPath != "" {
+	// Only pass --manifest when a local manifest was actually pushed. Gating on
+	// RemoteManifestPath would be wrong: the CLI defaults that path to a
+	// non-empty value even when no manifest is supplied, which would make the
+	// remote bench try to load a file that was never scp'd. ManifestPath being
+	// set is the true signal that a manifest exists on the host.
+	if p.ManifestPath != "" {
 		parts = append(parts, "--manifest", shellQuote(p.RemoteManifestPath))
 	}
 	if p.RunID != "" {

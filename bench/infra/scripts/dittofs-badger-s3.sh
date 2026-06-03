@@ -59,8 +59,8 @@ log() { echo "[dittofs-badger-s3] $(date '+%H:%M:%S') $*"; }
 # installed manually). No git clone / go build here — the bench runs exactly
 # the tree the caller chose, not a hardcoded branch.
 if [ ! -x "${DFS_BIN}" ]; then
-    log "ERROR: dfs binary not found at ${DFS_BIN}." >&2
-    log "Push it first: 'dfsbench remote --binary <linux/amd64 dfs>' or scp manually, then set DFS_BIN." >&2
+    log "ERROR: dfs server binary not found at ${DFS_BIN}." >&2
+    log "Build linux/amd64 'dfs' and scp it to the host (or install manually), then set DFS_BIN." >&2
     exit 1
 fi
 if [ ! -x "${DFSCTL_BIN}" ]; then
@@ -68,8 +68,13 @@ if [ ! -x "${DFSCTL_BIN}" ]; then
     exit 1
 fi
 # Make them addressable as `dfs` / `dfsctl` regardless of where they live.
-ln -sf "${DFS_BIN}" /usr/local/bin/dfs
-ln -sf "${DFSCTL_BIN}" /usr/local/bin/dfsctl
+# Skip the symlink when the binary is already at the standard path — `ln -sf`
+# with identical source and dest fails, which under `set -e` would abort.
+link_std() {
+    [ "$1" = "$2" ] || ln -sf "$1" "$2"
+}
+link_std "${DFS_BIN}" /usr/local/bin/dfs
+link_std "${DFSCTL_BIN}" /usr/local/bin/dfsctl
 log "Using prebuilt dfs (${DFS_BIN}) and dfsctl (${DFSCTL_BIN})."
 
 # ---------------------------------------------------------------------------

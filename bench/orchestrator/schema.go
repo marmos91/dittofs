@@ -126,8 +126,10 @@ type Metrics struct {
 	// Latency carries the per-op p50/p95/p99 distribution. Nil when the runner
 	// did not record per-op timings.
 	Latency *Latency `json:"latency,omitempty"`
-	// OpCounts breaks Ops into succeeded/failed. Zero value when not recorded.
-	OpCounts OpCounts `json:"ops_breakdown,omitempty"`
+	// OpCounts breaks Ops into succeeded/failed. Pointer (not a value struct) so
+	// omitempty actually omits it — encoding/json never omits a zero-value
+	// struct, only a nil pointer. Nil when not recorded.
+	OpCounts *OpCounts `json:"ops_breakdown,omitempty"`
 	// Errors is the structured per-op failure tally. Empty when no op failed (or
 	// when failures were not recorded).
 	Errors []OpError `json:"errors,omitempty"`

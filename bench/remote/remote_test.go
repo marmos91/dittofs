@@ -203,8 +203,10 @@ func TestOrchestratorRun_NilExecutor(t *testing.T) {
 
 func TestBenchCommand(t *testing.T) {
 	p := Plan{
+		Target:             Target{PrivateIP: "10.0.0.3"},
 		RemoteBinary:       "/usr/local/bin/dfsbench",
 		RemoteResultPath:   "/tmp/r.json",
+		ManifestPath:       "local-m.json",
 		RemoteManifestPath: "/tmp/m.json",
 		RunID:              "run 1",
 		Timestamp:          "2026-01-02T15:04:05Z",
@@ -212,7 +214,7 @@ func TestBenchCommand(t *testing.T) {
 	}
 	cmd := p.BenchCommand()
 	for _, want := range []string{
-		"/usr/local/bin/dfsbench orchestrate",
+		MountIPEnv + "='10.0.0.3' /usr/local/bin/dfsbench orchestrate",
 		"--out '/tmp/r.json'",
 		"--manifest '/tmp/m.json'",
 		"--run-id 'run 1'", // spaces survive via quoting
@@ -222,6 +224,20 @@ func TestBenchCommand(t *testing.T) {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("command %q missing %q", cmd, want)
 		}
+	}
+}
+
+// TestBenchCommand_NoManifest confirms --manifest is omitted when no local
+// manifest was supplied, even though RemoteManifestPath defaults non-empty —
+// the remote bench then uses its built-in default manifest.
+func TestBenchCommand_NoManifest(t *testing.T) {
+	p := Plan{
+		RemoteBinary:       "/usr/local/bin/dfsbench",
+		RemoteResultPath:   "/tmp/r.json",
+		RemoteManifestPath: "/tmp/bench-manifest.json", // CLI default, nothing pushed
+	}
+	if cmd := p.BenchCommand(); strings.Contains(cmd, "--manifest") {
+		t.Errorf("--manifest must be omitted without a pushed manifest: %q", cmd)
 	}
 }
 

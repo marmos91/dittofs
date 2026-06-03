@@ -136,7 +136,7 @@ func TestAdditiveLatencyFields(t *testing.T) {
 	doc := sampleDoc()
 	w := doc.Workloads["seq-write"]
 	w.Metrics.Latency = &Latency{P50Ns: 100, P95Ns: 500, P99Ns: 900}
-	w.Metrics.OpCounts = OpCounts{Total: 1000, Succeeded: 998, Failed: 2}
+	w.Metrics.OpCounts = &OpCounts{Total: 1000, Succeeded: 998, Failed: 2}
 	w.Metrics.Errors = []OpError{{Op: "write", Offset: 4096, ErrorKind: "timeout", Count: 2}}
 	doc.Workloads["seq-write"] = w
 
@@ -155,7 +155,7 @@ func TestAdditiveLatencyFields(t *testing.T) {
 	if gw.Metrics.Latency == nil || gw.Metrics.Latency.P95Ns != 500 {
 		t.Errorf("latency not round-tripped: %+v", gw.Metrics.Latency)
 	}
-	if gw.Metrics.OpCounts.Failed != 2 || gw.Metrics.OpCounts.Total != 1000 {
+	if gw.Metrics.OpCounts == nil || gw.Metrics.OpCounts.Failed != 2 || gw.Metrics.OpCounts.Total != 1000 {
 		t.Errorf("ops breakdown not round-tripped: %+v", gw.Metrics.OpCounts)
 	}
 	if len(gw.Metrics.Errors) != 1 || gw.Metrics.Errors[0].ErrorKind != "timeout" {
@@ -172,12 +172,12 @@ func TestOmittedLatencyFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	// The emitted JSON must not carry empty additive objects (omitempty).
-	if bytes.Contains(b, []byte("\"latency\"")) {
-		t.Error("latency present despite no samples (omitempty failed)")
-	}
-	if bytes.Contains(b, []byte("\"errors\"")) {
-		t.Error("errors present despite no failures (omitempty failed)")
+	// The emitted JSON must not carry empty additive objects (omitempty). This
+	// is exactly why OpCounts is a pointer — a value struct would always encode.
+	for _, field := range []string{`"latency"`, `"ops_breakdown"`, `"errors"`} {
+		if bytes.Contains(b, []byte(field)) {
+			t.Errorf("%s present despite no samples (omitempty failed):\n%s", field, b)
+		}
 	}
 	got, err := DecodeDocument(bytes.NewReader(b))
 	if err != nil {
@@ -187,7 +187,7 @@ func TestOmittedLatencyFields(t *testing.T) {
 	if gw.Metrics.Latency != nil {
 		t.Errorf("latency should be nil, got %+v", gw.Metrics.Latency)
 	}
-	if gw.Metrics.OpCounts.Total != 0 {
-		t.Errorf("op counts should be zero, got %+v", gw.Metrics.OpCounts)
+	if gw.Metrics.OpCounts != nil {
+		t.Errorf("op counts should be nil, got %+v", gw.Metrics.OpCounts)
 	}
 }

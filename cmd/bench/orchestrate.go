@@ -171,7 +171,7 @@ func engineRunner(ctx context.Context, p orchestrator.WorkloadParams) (orchestra
 		metrics.Latency = orchestrator.LatencyFromSamples(res.Latency.Samples())
 		succeeded, failed := res.Latency.Counts()
 		if succeeded+failed > 0 {
-			metrics.OpCounts = orchestrator.OpCounts{
+			metrics.OpCounts = &orchestrator.OpCounts{
 				Total:     succeeded + failed,
 				Succeeded: succeeded,
 				Failed:    failed,
