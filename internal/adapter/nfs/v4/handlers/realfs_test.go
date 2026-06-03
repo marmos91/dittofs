@@ -25,6 +25,7 @@ import (
 // realFSTestFixture holds state for real-FS handler tests.
 type realFSTestFixture struct {
 	handler    *Handler
+	rt         *runtime.Runtime
 	metaSvc    *metadata.Service
 	store      metadata.Store
 	rootHandle metadata.FileHandle
@@ -95,6 +96,7 @@ func newRealFSTestFixture(t *testing.T, shareName string) *realFSTestFixture {
 
 	return &realFSTestFixture{
 		handler:    handler,
+		rt:         rt,
 		metaSvc:    metaSvc,
 		store:      store,
 		rootHandle: rootHandle,

@@ -212,8 +212,8 @@ func TestBuildV4AuthContext_AppliesExportSquashPolicy(t *testing.T) {
 
 	t.Run("default_permission=none denies unknown UID", func(t *testing.T) {
 		fx := newRealFSTestFixture(t, "/export")
-		fx.handler.Registry.SetIdentityStoreForTesting(&v4PermIdentityStore{})
-		if err := fx.handler.Registry.SetSharePolicyForTesting("/export", "none", models.SquashNone); err != nil {
+		fx.rt.SetIdentityStoreForTesting(&v4PermIdentityStore{})
+		if err := fx.rt.SetSharePolicyForTesting("/export", "none", models.SquashNone); err != nil {
 			t.Fatalf("set policy: %v", err)
 		}
 
@@ -225,10 +225,10 @@ func TestBuildV4AuthContext_AppliesExportSquashPolicy(t *testing.T) {
 
 	t.Run("SquashRootToAdmin promotes root", func(t *testing.T) {
 		fx := newRealFSTestFixture(t, "/export")
-		fx.handler.Registry.SetIdentityStoreForTesting(&v4PermIdentityStore{})
+		fx.rt.SetIdentityStoreForTesting(&v4PermIdentityStore{})
 		// default_permission=none would deny a non-root unknown UID, but root
 		// must be promoted, not denied.
-		if err := fx.handler.Registry.SetSharePolicyForTesting("/export", "none", models.SquashRootToAdmin); err != nil {
+		if err := fx.rt.SetSharePolicyForTesting("/export", "none", models.SquashRootToAdmin); err != nil {
 			t.Fatalf("set policy: %v", err)
 		}
 
@@ -244,12 +244,12 @@ func TestBuildV4AuthContext_AppliesExportSquashPolicy(t *testing.T) {
 	t.Run("permission=read coerces read-only", func(t *testing.T) {
 		fx := newRealFSTestFixture(t, "/export")
 		uid := uint32(1000)
-		fx.handler.Registry.SetIdentityStoreForTesting(&v4PermIdentityStore{
+		fx.rt.SetIdentityStoreForTesting(&v4PermIdentityStore{
 			knownUID: uid,
 			user:     &models.User{ID: "u1", Username: "alice", UID: &uid},
 			perm:     models.PermissionRead,
 		})
-		if err := fx.handler.Registry.SetSharePolicyForTesting("/export", "read-write", models.SquashNone); err != nil {
+		if err := fx.rt.SetSharePolicyForTesting("/export", "read-write", models.SquashNone); err != nil {
 			t.Fatalf("set policy: %v", err)
 		}
 

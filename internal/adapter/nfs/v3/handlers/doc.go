@@ -10,7 +10,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -20,7 +19,7 @@ import (
 type Handler struct {
 	// Registry provides access to all stores and shares
 	// Exported to allow injection by the NFS adapter
-	Registry *runtime.Runtime
+	Registry nfsRuntime
 
 	// authCache caches auth contexts per (share, UID, GID) to avoid
 	// repeated registry lookups on every WRITE request.

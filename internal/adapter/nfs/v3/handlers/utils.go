@@ -8,7 +8,6 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/mfsymlink"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -29,7 +28,7 @@ var ErrMetadataServiceNotInitialized = errors.New("metadata service not initiali
 // getServicesForHandle returns both the metadata service and the per-share block store
 // resolved from the given file handle.
 // Returns an error if either service is not initialized or handle resolution fails.
-func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle metadata.FileHandle) (*metadata.Service, *engine.Store, error) {
+func getServicesForHandle(reg nfsRuntime, ctx context.Context, handle metadata.FileHandle) (*metadata.Service, *engine.Store, error) {
 	metaSvc := reg.GetMetadataService()
 	if metaSvc == nil {
 		return nil, nil, ErrMetadataServiceNotInitialized
@@ -45,7 +44,7 @@ func getServicesForHandle(reg *runtime.Runtime, ctx context.Context, handle meta
 
 // getMetadataService returns the metadata service from the runtime.
 // Returns an error if the service is not initialized.
-func getMetadataService(reg *runtime.Runtime) (*metadata.Service, error) {
+func getMetadataService(reg nfsRuntime) (*metadata.Service, error) {
 	metaSvc := reg.GetMetadataService()
 	if metaSvc == nil {
 		return nil, ErrMetadataServiceNotInitialized
@@ -110,7 +109,7 @@ type MFsymlinkResult struct {
 // symlinks before they are converted on CLOSE.
 func checkMFsymlink(
 	ctx context.Context,
-	reg *runtime.Runtime,
+	reg nfsRuntime,
 	handle metadata.FileHandle,
 	file *metadata.File,
 ) MFsymlinkResult {
@@ -165,7 +164,7 @@ func checkMFsymlink(
 // readMFsymlinkContentForNFS reads content from the block store (uses local cache internally).
 func readMFsymlinkContentForNFS(
 	ctx context.Context,
-	reg *runtime.Runtime,
+	reg nfsRuntime,
 	handle metadata.FileHandle,
 	payloadID metadata.PayloadID,
 ) ([]byte, error) {

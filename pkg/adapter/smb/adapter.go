@@ -479,7 +479,10 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 
 	// Wire identity resolver if runtime is already injected (SetRuntime may
 	// have been called before SetKerberosProvider depending on init order).
-	s.wireIdentityResolver(s.handler.Registry)
+	// Use the adapter's concrete runtime (same object set on handler.Registry)
+	// since identity-resolver wiring is an adapter-layer concern that needs
+	// methods outside the handler's narrow smbRuntime role interface.
+	s.wireIdentityResolver(s.Registry)
 
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal(),
