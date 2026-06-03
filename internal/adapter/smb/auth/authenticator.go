@@ -275,7 +275,7 @@ func (a *SMBAuthenticator) handleNTLMAuthenticate(ctx context.Context, ntlmToken
 		})
 
 		var sessionKey [16]byte
-		var validationErr error = errors.New("ntlm: authentication failed")
+		validationErr := errors.New("ntlm: authentication failed")
 		for _, domain := range domainsToTry {
 			sessionKey, validationErr = ValidateNTLMv2Response(
 				ntHash,
