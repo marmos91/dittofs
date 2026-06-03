@@ -22,6 +22,7 @@ database:
 
 # Control plane API server
 controlplane:
+  host: "0.0.0.0"
   port: 8080
   jwt:
     secret: "smb-conformance-test-secret-key-32ch"
