@@ -200,18 +200,30 @@ func (h *Handler) GetServerName() string {
 
 // admitPeerState enforces SM_NOTIFY state-number monotonicity for a monitored
 // host (H17). It returns true and records incoming as the new last-seen state
-// only when incoming strictly exceeds the previously stored state for monName.
-// An equal-or-lower state is a replay/stale notification and returns false
-// without mutating stored state.
+// only when incoming is a forward advance over the previously stored state for
+// monName, using RFC 1982 serial-number arithmetic (the state is conceptually a
+// uint32 that wraps). A replay (equal) or retrograde state returns false without
+// mutating stored state.
 //
-// The first NOTIFY ever seen for a monName is admitted (any positive state is
-// greater than the zero-value default), then recorded.
+// The first NOTIFY ever seen for a monName is admitted (its difference from the
+// zero-value default is a small positive forward advance), then recorded.
 func (h *Handler) admitPeerState(monName string, incoming int32) bool {
 	h.peerStateMu.Lock()
 	defer h.peerStateMu.Unlock()
 
-	if incoming <= h.peerState[monName] {
-		return false
+	// Serial-number arithmetic per RFC 1982: NSM state numbers are conceptually
+	// uint32 and increment monotonically, so they wrap from MaxInt32 to MinInt32
+	// without going backwards. Admit if (incoming - stored) mod 2^32 is in
+	// (0, 2^31): the values differ AND the high bit of the wrapped difference is
+	// clear ("went forwards"). A signed comparison would wrongly reject a
+	// legitimate reboot once the counter wraps past math.MaxInt32.
+	stored := h.peerState[monName]
+	if incoming == stored {
+		return false // exact replay
+	}
+	diff := uint32(incoming) - uint32(stored)
+	if diff >= 0x80000000 {
+		return false // stale / retrograde (high bit set means "went backwards")
 	}
 	h.peerState[monName] = incoming
 	return true

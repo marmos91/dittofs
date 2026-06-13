@@ -92,6 +92,49 @@ func TestContextDeleteNonexistent(t *testing.T) {
 	store.Delete([]byte("does-not-exist"))
 }
 
+// Deleting a handle that is not present must not decrement the maintained
+// counter; otherwise the cap accounting drifts and the store would silently
+// accept contexts beyond maxContexts.
+func TestContextDeleteNonexistentDoesNotDecrementCount(t *testing.T) {
+	store := NewContextStore(100, 10*time.Minute)
+	defer store.Stop()
+
+	ctx := newTestContext("alice", "EXAMPLE.COM")
+	store.Store(ctx)
+	if store.Count() != 1 {
+		t.Fatalf("expected 1 context after store, got %d", store.Count())
+	}
+
+	store.Delete([]byte("never-stored"))
+	if store.Count() != 1 {
+		t.Fatalf("delete of absent handle changed count: want 1, got %d", store.Count())
+	}
+}
+
+// Deleting the same handle twice must decrement the counter exactly once. A
+// double-decrement would push Count negative and corrupt the capacity check in
+// Store, letting the store grow without bound.
+func TestContextDoubleDeleteDecrementsOnce(t *testing.T) {
+	store := NewContextStore(2, 10*time.Minute)
+	defer store.Stop()
+
+	ctx := newTestContext("bob", "EXAMPLE.COM")
+	store.Store(ctx)
+
+	store.Delete(ctx.Handle)
+	store.Delete(ctx.Handle) // second delete is a no-op for the counter
+	if store.Count() != 0 {
+		t.Fatalf("double delete drove count off zero: got %d", store.Count())
+	}
+
+	// The cap must still admit exactly maxContexts contexts after the no-op delete.
+	store.Store(newTestContext("c1", "EXAMPLE.COM"))
+	store.Store(newTestContext("c2", "EXAMPLE.COM"))
+	if store.Count() != 2 {
+		t.Fatalf("expected count to cap at 2, got %d", store.Count())
+	}
+}
+
 func TestContextTTLCleanup(t *testing.T) {
 	// Use a very short TTL so we can test cleanup
 	store := NewContextStore(100, 10*time.Millisecond)
@@ -175,6 +218,28 @@ func TestContextMaxContextsEviction(t *testing.T) {
 	}
 	if _, ok := store.Lookup(ctx4.Handle); !ok {
 		t.Fatal("expected fourth context to still exist")
+	}
+}
+
+func TestContextMaxContextsRaceNoBurst(t *testing.T) {
+	const maxCtx = 5
+	store := NewContextStore(maxCtx, time.Minute)
+	defer store.Stop()
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			store.Store(newTestContext("race", "EXAMPLE.COM"))
+		}()
+	}
+	wg.Wait()
+
+	got := store.Count()
+	if got > maxCtx {
+		t.Fatalf("maxContexts=%d exceeded under concurrency: got %d contexts", maxCtx, got)
 	}
 }
 
@@ -309,4 +374,17 @@ func TestContextUnlimitedMaxContexts(t *testing.T) {
 	if store.Count() != 100 {
 		t.Fatalf("expected 100 contexts with unlimited max, got %d", store.Count())
 	}
+}
+
+func TestContextStoreStopIdempotent(t *testing.T) {
+	// Before the fix, the second Stop() panics with "close of closed channel".
+	store := NewContextStore(10, time.Minute)
+	store.Stop()
+	// Must not panic:
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Stop() panicked on second call: %v", r)
+		}
+	}()
+	store.Stop()
 }

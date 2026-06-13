@@ -186,6 +186,22 @@ func TestUnwrapIntegrityRejectsTruncatedData(t *testing.T) {
 	}
 }
 
+func TestReadXDROpaqueShortRead(t *testing.T) {
+	// Build an XDR opaque header claiming 8 bytes of data, but supply only 4.
+	// With reader.Read this would succeed and return zero-filled data[4:8].
+	// With io.ReadFull this must return io.ErrUnexpectedEOF wrapped in an error.
+	buf := make([]byte, 4+4) // length(4) = 8, then only 4 data bytes
+	binary.BigEndian.PutUint32(buf[0:4], 8)
+	copy(buf[4:], []byte{0x01, 0x02, 0x03, 0x04})
+	// NOTE: no padding bytes beyond the 4 supplied data bytes
+
+	reader := bytes.NewReader(buf)
+	_, err := readXDROpaque(reader)
+	if err == nil {
+		t.Fatal("expected error on short-read; reader.Read would silently succeed with zero-fill")
+	}
+}
+
 // ============================================================================
 // WrapIntegrity Format Tests (server wraps reply for client)
 // ============================================================================

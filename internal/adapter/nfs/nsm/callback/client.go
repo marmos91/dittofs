@@ -34,6 +34,30 @@ const (
 	rpcVersion = 2
 )
 
+// allowNSMLoopbackCallback permits dialling loopback addresses from the NSM
+// callback client. False in production; set true only by tests that bind a
+// listener on 127.0.0.1.
+var allowNSMLoopbackCallback = false
+
+// validateNSMCallbackHost rejects callback addresses that must not be dialled:
+// loopback (127.x, ::1) and link-local unicast (169.254.0.0/16, fe80::/10).
+// host must be an IP literal; hostnames are rejected (NSM callbacks are
+// internal and should never require DNS resolution). This mirrors the v4
+// callback SSRF guard in v4/state/callback.go.
+func validateNSMCallbackHost(host string) error {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("NSM callback host %q is not a valid IP literal", host)
+	}
+	if ip.IsLoopback() && !allowNSMLoopbackCallback {
+		return fmt.Errorf("NSM callback host %q is a loopback address", host)
+	}
+	if ip.IsLinkLocalUnicast() {
+		return fmt.Errorf("NSM callback host %q is a link-local address", host)
+	}
+	return nil
+}
+
 // Client sends SM_NOTIFY callbacks to registered monitors.
 //
 // Client is stateless and thread-safe. Each callback creates a fresh TCP
@@ -90,6 +114,9 @@ func (c *Client) Send(
 		// No port specified, use default
 		host = addr
 		port = fmt.Sprintf("%d", DefaultNSMPort)
+	}
+	if err := validateNSMCallbackHost(host); err != nil {
+		return fmt.Errorf("callback address rejected: %w", err)
 	}
 	addr = net.JoinHostPort(host, port)
 

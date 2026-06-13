@@ -48,3 +48,23 @@ func TestMknod_InvalidHandle(t *testing.T) {
 	assert.NotEqualValues(t, types.NFS3OK, resp.Status,
 		"Invalid handle should not return NFS3OK")
 }
+
+// TestMknod_ExistingFileReturnsWCC drives the "already exists" path and verifies
+// WCC data is returned without a nil-pointer dereference.
+func TestMknod_ExistingFileReturnsWCC(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	fx.CreateFile("existing-sock", nil)
+
+	req := &handlers.MknodRequest{
+		DirHandle: fx.RootHandle,
+		Name:      "existing-sock",
+		Type:      types.NF3SOCK,
+	}
+	resp, err := fx.Handler.Mknod(fx.ContextWithUID(0, 0), req)
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrExist, resp.Status)
+	assert.NotNil(t, resp.DirAttrBefore, "DirAttrBefore must be present on error")
+	assert.NotNil(t, resp.DirAttrAfter, "DirAttrAfter must be present on error")
+}

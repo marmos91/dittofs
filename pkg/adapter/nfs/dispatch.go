@@ -202,8 +202,8 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 	default:
 		logger.Debug("Unknown program", "program", call.Program)
-		// Send PROC_UNAVAIL error reply for unknown programs
-		errorReply, err := rpc.MakeErrorReply(call.XID, rpc.RPCProcUnavail)
+		// Send PROG_UNAVAIL error reply for unknown programs (RFC 5531 §9)
+		errorReply, err := rpc.MakeErrorReply(call.XID, rpc.RPCProgUnavail)
 		if err != nil {
 			return fmt.Errorf("make error reply: %w", err)
 		}

@@ -2,13 +2,33 @@ package handlers
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"net"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nsm/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
+
+// validateCallbackName enforces that the SM_MON my_name callback address is a
+// safe IP literal. NSM callback addresses must be IP literals (no DNS names),
+// must not be loopback, and must not be link-local (which covers the cloud
+// instance metadata address 169.254.169.254). Violations return STAT_FAIL.
+func validateCallbackName(name string) error {
+	ip := net.ParseIP(name)
+	if ip == nil {
+		return fmt.Errorf("callback my_name %q is not an IP literal", name)
+	}
+	if ip.IsLoopback() {
+		return fmt.Errorf("callback my_name %q is a loopback address", name)
+	}
+	if ip.IsLinkLocalUnicast() {
+		return fmt.Errorf("callback my_name %q is a link-local address", name)
+	}
+	return nil
+}
 
 // Mon handles NSM MON (RFC 1813, SM procedure 2).
 // Registers caller for SM_NOTIFY callbacks when a monitored host's state changes.
@@ -35,6 +55,16 @@ func (h *Handler) Mon(ctx *NSMHandlerContext, data []byte) (*HandlerResult, erro
 		"callback_prog", mon.MonID.MyID.MyProg,
 		"callback_vers", mon.MonID.MyID.MyVers,
 		"callback_proc", mon.MonID.MyID.MyProc)
+
+	// Reject unsafe callback addresses (SSRF guard): the my_name is fully
+	// client-controlled and is later dialled verbatim by the callback client.
+	if err := validateCallbackName(mon.MonID.MyID.MyName); err != nil {
+		logger.Warn("NSM MON rejected: unsafe callback address",
+			"client", ctx.ClientAddr,
+			"callback_host", mon.MonID.MyID.MyName,
+			"error", err)
+		return encodeStatFailure(state)
+	}
 
 	// Generate client ID from client address and callback info
 	// This ensures uniqueness per client/callback combination

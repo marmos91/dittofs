@@ -10,7 +10,7 @@
 // The Wrap token is a GSS-API WrapToken per RFC 4121 Section 4.2.6.2.
 // For krb5p, the token provides both confidentiality and integrity.
 // For client->server: KeyUsageInitiatorSeal (24)
-// For server->client: KeyUsageAcceptorSeal (26)
+// For server->client: KeyUsageAcceptorSeal (22)
 //
 // RFC 4121 Section 4.2.4 defines the encrypted Wrap token format:
 //   - Wire format: header (16 bytes) | encrypt(plaintext | filler | header_copy)
@@ -253,7 +253,7 @@ func rotateLeft(data []byte, n int) []byte {
 // Per RFC 2203 Section 5.3.3.4.3 and RFC 4121 Section 4.2.4:
 // 1. Build plaintext: XDR(seq_num) + replyBody
 // 2. Build to-be-encrypted: plaintext | filler | header_copy (with EC=0, RRC=0)
-// 3. Encrypt using acceptor seal key usage (26)
+// 3. Encrypt using acceptor seal key usage (22)
 // 4. Build wire format: header (16 bytes) | ciphertext
 // 5. Encode as rpc_gss_priv_data: XDR opaque(wrap_token_bytes)
 //
@@ -308,7 +308,7 @@ func WrapPrivacy(sessionKey types.EncryptionKey, seqNum uint32, replyBody []byte
 	copy(toEncrypt, plaintext)
 	copy(toEncrypt[len(plaintext):], headerCopy)
 
-	// 6. Encrypt using acceptor seal key usage (26)
+	// 6. Encrypt using acceptor seal key usage (22)
 	_, ciphertext, err := encType.EncryptMessage(sessionKey.KeyValue, toEncrypt, KeyUsageAcceptorSeal)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt Wrap token: %w", err)

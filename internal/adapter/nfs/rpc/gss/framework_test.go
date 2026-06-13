@@ -300,9 +300,10 @@ func TestProcessDESTROYRemovesContext(t *testing.T) {
 	// Find the context handle
 	handle := extractContextHandle(t, proc)
 
-	// Send DESTROY
+	// Send DESTROY with a valid call-header MIC (required after the MIC-verification fix).
 	destroyCredBody := buildDESTROYCredBody(t, handle, 1)
-	destroyResult := proc.Process(context.Background(), destroyCredBody, nil, nil, nil)
+	destroyMIC := signHeaderMIC(t, mockVerifierSessionKey, destroyCredBody)
+	destroyResult := proc.Process(context.Background(), destroyCredBody, destroyMIC, destroyCredBody, nil)
 
 	if destroyResult.Err != nil {
 		t.Fatalf("DESTROY failed: %v", destroyResult.Err)
@@ -336,6 +337,68 @@ func TestProcessDESTROYUnknownContext(t *testing.T) {
 	if !result.IsControl {
 		t.Fatal("expected IsControl=true for DESTROY")
 	}
+}
+
+func TestProcessDESTROYRequiresMIC(t *testing.T) {
+	verifier := newMockVerifier("alice", "EXAMPLE.COM")
+	proc := NewGSSProcessor(verifier, newTestMapper(), 100, 10*time.Minute)
+	defer proc.Stop()
+
+	// Establish a context.
+	initCred := &RPCGSSCredV1{GSSProc: RPCGSSInit, SeqNum: 0, Service: RPCGSSSvcNone}
+	initCredBody, _ := EncodeGSSCred(initCred)
+	initRes := proc.Process(context.Background(), initCredBody, nil, nil,
+		encodeOpaqueToken([]byte("mock-token")))
+	if initRes.Err != nil {
+		t.Fatalf("INIT failed: %v", initRes.Err)
+	}
+	handle := extractContextHandle(t, proc)
+
+	destroyCred := &RPCGSSCredV1{
+		GSSProc: RPCGSSDestroy,
+		SeqNum:  1,
+		Service: RPCGSSSvcNone,
+		Handle:  handle,
+	}
+	destroyCredBody, _ := EncodeGSSCred(destroyCred)
+
+	t.Run("no MIC rejects DESTROY", func(t *testing.T) {
+		// No verifBody supplied — must be rejected before Delete.
+		res := proc.Process(context.Background(), destroyCredBody, nil, destroyCredBody, nil)
+		if res.Err == nil {
+			t.Fatal("expected rejection for DESTROY without MIC")
+		}
+		if res.AuthStat != AuthStatCredProblem {
+			t.Fatalf("expected AuthStatCredProblem, got %d", res.AuthStat)
+		}
+		// Context must still exist — DESTROY was rejected.
+		if proc.ContextCount() != 1 {
+			t.Fatalf("expected context to survive rejected DESTROY, got %d", proc.ContextCount())
+		}
+	})
+
+	t.Run("MIC under wrong key rejects DESTROY", func(t *testing.T) {
+		wrongKey := types.EncryptionKey{KeyType: 17, KeyValue: []byte("WRONG-session-ky")}
+		mic := signHeaderMIC(t, wrongKey, destroyCredBody)
+		res := proc.Process(context.Background(), destroyCredBody, mic, destroyCredBody, nil)
+		if res.Err == nil {
+			t.Fatal("expected rejection for DESTROY with wrong-key MIC")
+		}
+		if proc.ContextCount() != 1 {
+			t.Fatalf("context must survive rejected DESTROY, got %d", proc.ContextCount())
+		}
+	})
+
+	t.Run("valid MIC accepts DESTROY", func(t *testing.T) {
+		mic := signHeaderMIC(t, mockVerifierSessionKey, destroyCredBody)
+		res := proc.Process(context.Background(), destroyCredBody, mic, destroyCredBody, nil)
+		if res.Err != nil {
+			t.Fatalf("DESTROY with valid MIC failed: %v", res.Err)
+		}
+		if proc.ContextCount() != 0 {
+			t.Fatalf("expected context deleted after valid DESTROY, got %d", proc.ContextCount())
+		}
+	})
 }
 
 func TestProcessDATAWithValidContext(t *testing.T) {
@@ -1108,7 +1171,8 @@ func TestGSSLifecycle_Full(t *testing.T) {
 		Handle:  handle,
 	}
 	destroyCredBody, _ := EncodeGSSCred(destroyCred)
-	destroyResult := proc.Process(context.Background(), destroyCredBody, nil, nil, nil)
+	destroyMIC := signHeaderMIC(t, mockVerifierSessionKey, destroyCredBody)
+	destroyResult := proc.Process(context.Background(), destroyCredBody, destroyMIC, destroyCredBody, nil)
 
 	if destroyResult.Err != nil {
 		t.Fatalf("Step 5: DESTROY failed: %v", destroyResult.Err)

@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	"github.com/jcmturner/gokrb5/v8/gssapi"
 	"github.com/jcmturner/gokrb5/v8/types"
@@ -152,7 +153,7 @@ func readXDROpaque(reader *bytes.Reader) ([]byte, error) {
 	}
 
 	data := make([]byte, length)
-	if _, err := reader.Read(data); err != nil {
+	if _, err := io.ReadFull(reader, data); err != nil {
 		return nil, fmt.Errorf("read opaque data: %w", err)
 	}
 

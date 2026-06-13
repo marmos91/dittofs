@@ -410,7 +410,7 @@ func (p *GSSProcessor) Process(ctx context.Context, credBody []byte, verifBody [
 	case RPCGSSData:
 		return p.handleData(ctx, cred, verifBody, headerPreimage, requestBody)
 	case RPCGSSDestroy:
-		return p.handleDestroy(cred)
+		return p.handleDestroy(cred, verifBody, headerPreimage)
 	default:
 		return &GSSProcessResult{
 			Err: fmt.Errorf("unknown RPCSEC_GSS procedure: %d", cred.GSSProc),
@@ -848,11 +848,34 @@ func (p *GSSProcessor) resolveIdentity(ctx context.Context, principal, realm str
 // 1. Look up context by handle
 // 2. Delete context from store (if found)
 // 3. Return empty reply with IsControl=true
-func (p *GSSProcessor) handleDestroy(cred *RPCGSSCredV1) *GSSProcessResult {
+func (p *GSSProcessor) handleDestroy(cred *RPCGSSCredV1, verifBody []byte, headerPreimage []byte) *GSSProcessResult {
 	// Lookup context (may not exist if already expired)
-	_, found := p.contexts.Lookup(cred.Handle)
+	gssCtx, found := p.contexts.Lookup(cred.Handle)
 	if !found {
 		logger.Debug("GSS DESTROY for unknown context (may have expired)")
+	}
+
+	// Verify call-header MIC on DESTROY, same as for DATA (RFC 2203 Section 5.3.3.2).
+	// An unauthenticated DESTROY lets any peer that learns a 16-byte context handle
+	// tear down the security context without possessing the session key.
+	if found {
+		if err := verifyHeaderMIC(gssCtx.SessionKey, headerPreimage, verifBody); err != nil {
+			logger.Debug("GSS DESTROY: call-header MIC verification failed",
+				"principal", gssCtx.Principal,
+				"error", err,
+			)
+			return &GSSProcessResult{
+				Err:      fmt.Errorf("RPCSEC_GSS_CREDPROBLEM: DESTROY MIC verification failed: %w", err),
+				AuthStat: AuthStatCredProblem,
+			}
+		}
+		if !gssCtx.SeqWindow.Accept(cred.SeqNum) {
+			logger.Debug("GSS DESTROY: sequence number rejected (duplicate or out of window)",
+				"seq_num", cred.SeqNum,
+				"principal", gssCtx.Principal,
+			)
+			return &GSSProcessResult{SilentDiscard: true}
+		}
 	}
 
 	// Delete the context
