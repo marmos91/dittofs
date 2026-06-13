@@ -29,7 +29,7 @@ func TestHandleRPCCall_UnknownProgram_ReturnsProgUnavail(t *testing.T) {
 
 	// net.Pipe gives a synchronous, in-process full-duplex connection.
 	client, server := net.Pipe()
-	t.Cleanup(func() { client.Close(); server.Close() })
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 
 	conn := NewNFSConnection(adapter, server, 1)
 
