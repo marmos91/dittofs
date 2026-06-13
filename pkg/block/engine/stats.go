@@ -130,10 +130,11 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats, files []string) {
 			stats.BlocksTotal++
 			switch b.State {
 			case block.BlockStatePending:
-				// Pending now covers both legacy Dirty (no LocalPath / no key)
-				// and Local (complete, awaiting sync). Distinguish by data
-				// state to keep the existing introspection counters meaningful.
-				if b.LocalPath != "" || b.BlockStoreKey != "" {
+				// A CAS-pending block with a non-zero hash is locally present in the
+				// CAS store; a zero hash means the block is truly dirty/in-flight
+				// (rollup not yet complete). LocalPath and BlockStoreKey are legacy
+				// signals irrelevant on the CAS path.
+				if !b.Hash.IsZero() {
 					stats.BlocksLocal++
 				} else {
 					stats.BlocksDirty++

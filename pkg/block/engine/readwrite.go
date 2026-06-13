@@ -408,31 +408,52 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 //     reclaimed only when no row anywhere references the hash, so a hash a
 //     sibling file still uses stays alive even after this row is reaped.
 //
-// No-ops when the coordinator is unwired (tests/fixtures) or when nothing
-// was superseded (pure append, first write).
+// No-ops when the coordinator is unwired or when priorOffsets is empty
+// (first write). When newBlocks is empty all prior rows are reaped
+// unconditionally (file truncated to zero bytes this pass).
 func (bs *Store) reapSupersededFileBlocks(ctx context.Context, payloadID string, priorOffsets []uint64, newBlocks []block.BlockRef) error {
-	if bs.coordinator == nil || len(priorOffsets) == 0 || len(newBlocks) == 0 {
+	if bs.coordinator == nil || len(priorOffsets) == 0 {
 		return nil
 	}
-	regionStart := newBlocks[0].Offset
-	var regionEnd uint64
-	newOffsets := make(map[uint64]struct{}, len(newBlocks))
-	for _, b := range newBlocks {
-		if b.Offset < regionStart {
-			regionStart = b.Offset
+
+	// superseded decides whether a prior offset is reaped this pass.
+	//
+	// When newBlocks is empty no chunks were produced (file truncated to zero
+	// bytes, or the reconstructed stream was entirely clipped by the
+	// truncation fence): every prior row is unconditionally superseded.
+	// Otherwise a prior offset is superseded only when it falls inside the
+	// rewritten region [regionStart, regionEnd) and is not itself a reused
+	// offset (those rows were overwritten in place by FileBlock.Put and are
+	// the current generation).
+	var superseded func(off uint64) bool
+	if len(newBlocks) == 0 {
+		superseded = func(uint64) bool { return true }
+	} else {
+		regionStart := newBlocks[0].Offset
+		var regionEnd uint64
+		newOffsets := make(map[uint64]struct{}, len(newBlocks))
+		for _, b := range newBlocks {
+			if b.Offset < regionStart {
+				regionStart = b.Offset
+			}
+			if end := b.Offset + uint64(b.Size); end > regionEnd {
+				regionEnd = end
+			}
+			newOffsets[b.Offset] = struct{}{}
 		}
-		if end := b.Offset + uint64(b.Size); end > regionEnd {
-			regionEnd = end
+		superseded = func(off uint64) bool {
+			if off < regionStart || off >= regionEnd {
+				return false // outside the rewritten region — untouched, keep.
+			}
+			_, isNew := newOffsets[off]
+			return !isNew // reused offset is the current generation — keep.
 		}
-		newOffsets[b.Offset] = struct{}{}
 	}
+
 	reaped := make(map[uint64]struct{}, len(priorOffsets))
 	for _, off := range priorOffsets {
-		if off < regionStart || off >= regionEnd {
-			continue // outside the rewritten region — untouched, keep.
-		}
-		if _, isNew := newOffsets[off]; isNew {
-			continue // reused offset — current generation (overwritten in place).
+		if !superseded(off) {
+			continue
 		}
 		if _, done := reaped[off]; done {
 			continue

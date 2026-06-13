@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -273,5 +276,103 @@ func TestResetLocalState_DropsStaleLog(t *testing.T) {
 	}
 	if !bytes.Equal(got, snapBytes) {
 		t.Fatalf("ResetLocalState did not drop stale log: read returned mutated bytes (C2 corruption)\n got[:8]=%q want[:8]=%q", got[:8], snapBytes[:8])
+	}
+}
+
+// TestResetLocalState_DropsNestedLog reproduces the residual-log bug for
+// slash-bearing payloadIDs. logPath produces a nested file
+// ({baseDir}/logs/{share}/{path}.log); the old flat os.ReadDir sweep
+// only saw top-level entries and skipped subdirectories, leaving stale
+// log files in place after a restore. After ResetLocalState, no .log
+// files must exist anywhere under the logs/ directory tree.
+func TestResetLocalState_DropsNestedLog(t *testing.T) {
+	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+	fbs := newMemFileBlockStore()
+	persister := func(ctx context.Context, payloadID string, blocks []block.BlockRef, _ block.ObjectID) error {
+		return fbs.persist(ctx, payloadID, blocks)
+	}
+
+	bc := newFSStoreForTestWithFBS(t, fbs, FSStoreOptions{
+		MaxLogBytes:       1 << 30,
+		RollupWorkers:     2,
+		StabilizationMS:   3_600_000,
+		RollupStore:       rs,
+		ObjectIDPersister: persister,
+	})
+
+	ctx := context.Background()
+	// Slash-bearing payloadID: log lands at logs/myshare/subdir/fileA.log
+	const payloadID = "myshare/subdir/fileA"
+
+	// Snapshot state: write and drain to CAS.
+	snapBytes := bytes.Repeat([]byte{'A'}, 4096)
+	if err := bc.AppendWrite(ctx, payloadID, snapBytes, 0); err != nil {
+		t.Fatalf("AppendWrite snapshot: %v", err)
+	}
+	if err := bc.DrainRollups(ctx); err != nil {
+		t.Fatalf("DrainRollups: %v", err)
+	}
+
+	// Post-snapshot mutation: log-only, not rolled up.
+	mutBytes := bytes.Repeat([]byte{'B'}, 4096)
+	if err := bc.AppendWrite(ctx, payloadID, mutBytes, 0); err != nil {
+		t.Fatalf("AppendWrite mutation: %v", err)
+	}
+
+	// Confirm the nested log file actually exists on disk before reset.
+	logFile := filepath.Join(bc.baseDir, "logs", "myshare", "subdir", "fileA.log")
+	if _, err := os.Stat(logFile); err != nil {
+		t.Fatalf("expected nested log file at %s before reset: %v", logFile, err)
+	}
+
+	// Orphan the log fd: close it and drop the logFDs entry while leaving
+	// the .log file on disk. This models the production residual case the
+	// sweep is meant to catch — an interrupted DeleteAppendLog or a restart
+	// where the file survived but no live fd references it. The per-shard
+	// teardown loop in ResetLocalState only unlinks paths it finds via live
+	// fds, so an orphaned nested log can ONLY be removed by the residual
+	// sweep. The old flat os.ReadDir sweep skipped subdirectories and thus
+	// left this nested file in place after reset.
+	sh := bc.shardFor(payloadID)
+	sh.mu.Lock()
+	if lf := sh.logFDs[payloadID]; lf != nil && lf.f != nil {
+		_ = lf.f.Close()
+	}
+	delete(sh.logFDs, payloadID)
+	sh.mu.Unlock()
+
+	// The orphaned nested log must still be on disk.
+	if _, err := os.Stat(logFile); err != nil {
+		t.Fatalf("expected orphaned nested log at %s to survive fd eviction: %v", logFile, err)
+	}
+
+	if err := bc.ResetLocalState(ctx); err != nil {
+		t.Fatalf("ResetLocalState: %v", err)
+	}
+
+	// PRIMARY ASSERTION: no .log files anywhere under logs/ after reset.
+	logsDir := filepath.Join(bc.baseDir, "logs")
+	var residual []string
+	_ = filepath.WalkDir(logsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(d.Name(), ".log") {
+			residual = append(residual, path)
+		}
+		return nil
+	})
+	if len(residual) > 0 {
+		t.Fatalf("ResetLocalState left %d residual .log file(s) in nested subdirs (bug reproduced):\n%v",
+			len(residual), residual)
+	}
+
+	// SECONDARY ASSERTION: read resolves through CAS (snapshot bytes), not stale log.
+	got := make([]byte, 4096)
+	if _, err := bc.ReadPayloadAt(ctx, payloadID, got, 0); err != nil {
+		t.Fatalf("ReadPayloadAt after reset: %v", err)
+	}
+	if !bytes.Equal(got, snapBytes) {
+		t.Fatalf("stale log overlay after reset: got[:8]=%q want[:8]=%q", got[:8], snapBytes[:8])
 	}
 }

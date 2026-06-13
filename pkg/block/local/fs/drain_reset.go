@@ -265,20 +265,20 @@ func (bc *FSStore) ResetLocalState(_ context.Context) error {
 	}
 	bc.logBytesTotal.Store(0)
 
-	// Best-effort: remove any residual .log files left under the logs dir
-	// that had no live fd (e.g. orphaned by an interrupted DeleteAppendLog).
-	// A missing logs dir is fine — nothing was ever written.
+	// Best-effort: remove any residual .log files (including nested subdirs
+	// created by slash-bearing payloadIDs) that had no live fd — e.g.,
+	// orphaned by an interrupted DeleteAppendLog. Use RemoveAll + MkdirAll
+	// to clear the entire tree atomically rather than a flat ReadDir that
+	// misses nested layouts. A missing logs dir is fine — MkdirAll is
+	// skipped so we don't create an empty directory that never existed.
 	logsDir := filepath.Join(bc.baseDir, "logs")
-	if entries, derr := os.ReadDir(logsDir); derr == nil {
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			full := filepath.Join(logsDir, e.Name())
-			if rerr := os.Remove(full); rerr != nil && !os.IsNotExist(rerr) {
-				logger.Warn("ResetLocalState: residual log unlink failed",
-					"path", full, "error", rerr)
-			}
+	if _, serr := os.Stat(logsDir); serr == nil {
+		if rerr := os.RemoveAll(logsDir); rerr != nil {
+			logger.Warn("ResetLocalState: failed to remove logs dir",
+				"path", logsDir, "error", rerr)
+		} else if merr := os.MkdirAll(logsDir, 0755); merr != nil {
+			logger.Warn("ResetLocalState: failed to recreate logs dir after removal",
+				"path", logsDir, "error", merr)
 		}
 	}
 
