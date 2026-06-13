@@ -499,7 +499,6 @@ func TestCreate_RegularFile_ConsumesArgs(t *testing.T) {
 	}
 }
 
-
 func TestCreate_NoCurrentFH(t *testing.T) {
 	pfs := pseudofs.New()
 	h := NewHandler(nil, pfs)

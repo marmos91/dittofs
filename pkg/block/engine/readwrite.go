@@ -415,41 +415,45 @@ func (bs *Store) reapSupersededFileBlocks(ctx context.Context, payloadID string,
 	if bs.coordinator == nil || len(priorOffsets) == 0 {
 		return nil
 	}
-	// Fast path: no new chunks were produced (file truncated to zero bytes
-	// or the reconstructed stream was entirely clipped by the truncation
-	// fence). Every prior row is unconditionally superseded — reap all.
+
+	// superseded decides whether a prior offset is reaped this pass.
+	//
+	// When newBlocks is empty no chunks were produced (file truncated to zero
+	// bytes, or the reconstructed stream was entirely clipped by the
+	// truncation fence): every prior row is unconditionally superseded.
+	// Otherwise a prior offset is superseded only when it falls inside the
+	// rewritten region [regionStart, regionEnd) and is not itself a reused
+	// offset (those rows were overwritten in place by FileBlock.Put and are
+	// the current generation).
+	var superseded func(off uint64) bool
 	if len(newBlocks) == 0 {
-		reaped := make(map[uint64]struct{}, len(priorOffsets))
-		for _, off := range priorOffsets {
-			if _, done := reaped[off]; done {
-				continue
+		superseded = func(uint64) bool { return true }
+	} else {
+		regionStart := newBlocks[0].Offset
+		var regionEnd uint64
+		newOffsets := make(map[uint64]struct{}, len(newBlocks))
+		for _, b := range newBlocks {
+			if b.Offset < regionStart {
+				regionStart = b.Offset
 			}
-			reaped[off] = struct{}{}
-			if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, off); err != nil {
-				return fmt.Errorf("reap superseded block %s/%d: %w", payloadID, off, err)
+			if end := b.Offset + uint64(b.Size); end > regionEnd {
+				regionEnd = end
 			}
+			newOffsets[b.Offset] = struct{}{}
 		}
-		return nil
+		superseded = func(off uint64) bool {
+			if off < regionStart || off >= regionEnd {
+				return false // outside the rewritten region — untouched, keep.
+			}
+			_, isNew := newOffsets[off]
+			return !isNew // reused offset is the current generation — keep.
+		}
 	}
-	regionStart := newBlocks[0].Offset
-	var regionEnd uint64
-	newOffsets := make(map[uint64]struct{}, len(newBlocks))
-	for _, b := range newBlocks {
-		if b.Offset < regionStart {
-			regionStart = b.Offset
-		}
-		if end := b.Offset + uint64(b.Size); end > regionEnd {
-			regionEnd = end
-		}
-		newOffsets[b.Offset] = struct{}{}
-	}
+
 	reaped := make(map[uint64]struct{}, len(priorOffsets))
 	for _, off := range priorOffsets {
-		if off < regionStart || off >= regionEnd {
-			continue // outside the rewritten region — untouched, keep.
-		}
-		if _, isNew := newOffsets[off]; isNew {
-			continue // reused offset — current generation (overwritten in place).
+		if !superseded(off) {
+			continue
 		}
 		if _, done := reaped[off]; done {
 			continue
