@@ -25,8 +25,13 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // newAdapterService creates an adapter Service for testing.
@@ -691,6 +696,64 @@ func TestReconcileContainerPorts_StatefulSetNotFound(t *testing.T) {
 	err := r.reconcileContainerPorts(context.Background(), ds, activeAdapters)
 	if err != nil {
 		t.Errorf("Expected nil error when StatefulSet not found, got: %v", err)
+	}
+}
+
+func TestReconcileContainerPorts_ReFetchReturnsNoContainers_ReturnsError(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+
+	// First read: StatefulSet has one container with a static port.
+	// This allows the early guard to pass and produces a non-empty desiredPorts
+	// (adapter-nfs is new), which triggers the re-fetch path.
+	staticPorts := []corev1.ContainerPort{
+		{Name: "api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
+	}
+	sts := newTestStatefulSet("test-server", "default", staticPorts)
+
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatalf("failed to add core scheme: %v", err)
+	}
+	if err := dittoiov1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("failed to add v1alpha1 scheme: %v", err)
+	}
+
+	getCallCount := 0
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithRuntimeObjects(ds, sts).
+		WithStatusSubresource(&dittoiov1alpha1.DittoServer{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := c.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				// Strip containers out of the StatefulSet on the second Get call
+				// (the re-fetch for optimistic locking).
+				if ss, ok := obj.(*appsv1.StatefulSet); ok {
+					getCallCount++
+					if getCallCount >= 2 {
+						ss.Spec.Template.Spec.Containers = nil
+					}
+				}
+				return nil
+			},
+		}).
+		Build()
+
+	r := &DittoServerReconciler{
+		Client:   fakeClient,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(100),
+	}
+
+	activeAdapters := map[string]AdapterInfo{
+		"nfs": {Type: "nfs", Enabled: true, Running: true, Port: 12049},
+	}
+
+	err := r.reconcileContainerPorts(context.Background(), ds, activeAdapters)
+	if err == nil {
+		t.Fatal("expected an error when re-fetched StatefulSet has no containers, got nil")
 	}
 }
 

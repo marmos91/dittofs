@@ -509,6 +509,11 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 		return fmt.Errorf("failed to re-fetch StatefulSet: %w", err)
 	}
 
+	// Guard against a race where the StatefulSet was mutated between the two reads.
+	if len(fresh.Spec.Template.Spec.Containers) == 0 {
+		return fmt.Errorf("re-fetched StatefulSet %s/%s has no containers, cannot update ports", ds.Namespace, ds.Name)
+	}
+
 	// Update container ports (only PodTemplateSpec, never VolumeClaimTemplates).
 	fresh.Spec.Template.Spec.Containers[0].Ports = desiredPorts
 
