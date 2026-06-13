@@ -13,6 +13,7 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -221,25 +222,48 @@ func (lh *LocalstackHelper) ListS3Prefix(t *testing.T, bucket, prefix string) []
 
 // CleanupBucket removes a bucket and all its contents if it exists.
 func (lh *LocalstackHelper) CleanupBucket(ctx context.Context, bucketName string) {
-	listResp, err := lh.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucketName),
-	})
-	if err != nil {
-		return // Bucket doesn't exist
+	// Paginate through all objects — ListObjectsV2 returns at most 1000 per page.
+	var toDelete []types.ObjectIdentifier
+	var continuation *string
+	for {
+		resp, err := lh.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+			Bucket:            aws.String(bucketName),
+			ContinuationToken: continuation,
+		})
+		if err != nil {
+			return // Bucket does not exist or is inaccessible; nothing to do.
+		}
+		for _, obj := range resp.Contents {
+			toDelete = append(toDelete, types.ObjectIdentifier{Key: obj.Key})
+		}
+		if resp.IsTruncated == nil || !*resp.IsTruncated {
+			break
+		}
+		continuation = resp.NextContinuationToken
 	}
 
-	if listResp != nil {
-		for _, obj := range listResp.Contents {
-			_, _ = lh.Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-				Bucket: aws.String(bucketName),
-				Key:    obj.Key,
-			})
+	// Delete in batches of up to 1000 (S3 DeleteObjects limit).
+	const batchSize = 1000
+	for i := 0; i < len(toDelete); i += batchSize {
+		end := i + batchSize
+		if end > len(toDelete) {
+			end = len(toDelete)
+		}
+		batch := toDelete[i:end]
+		_, err := lh.Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(bucketName),
+			Delete: &types.Delete{Objects: batch},
+		})
+		if err != nil {
+			lh.T.Logf("CleanupBucket: failed to delete objects from %s: %v", bucketName, err)
 		}
 	}
 
-	_, _ = lh.Client.DeleteBucket(ctx, &s3.DeleteBucketInput{
+	if _, err := lh.Client.DeleteBucket(ctx, &s3.DeleteBucketInput{
 		Bucket: aws.String(bucketName),
-	})
+	}); err != nil {
+		lh.T.Logf("CleanupBucket: failed to delete bucket %s: %v", bucketName, err)
+	}
 }
 
 // Cleanup removes all created buckets and their contents.
