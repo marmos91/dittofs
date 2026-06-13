@@ -127,6 +127,14 @@ func testLock_CleanShutdownMarker(t *testing.T, factory LockStoreFactory) {
 	if err := store.SetCleanShutdown(ctx, false); err != nil {
 		t.Fatalf("SetCleanShutdown(false) #2: %v", err)
 	}
+	// Read-back: backends that silently ignore the false write must fail here.
+	got, err = store.GetCleanShutdown(ctx)
+	if err != nil {
+		t.Fatalf("GetCleanShutdown (after false #2): %v", err)
+	}
+	if got {
+		t.Fatalf("after SetCleanShutdown(false) #2, GetCleanShutdown = true; toggle-to-false not persisted (grace-period wedge class)")
+	}
 
 	// Marker must be independent of the server epoch on backends that share a
 	// singleton row (postgres): bumping the epoch must not flip the marker.

@@ -230,9 +230,10 @@ func testINV02_LeakInjection(t *testing.T, factory StoreFactory) {
 // delete/copy, name for parent-child unlink, and the FileBlock IDs
 // used to seed FileBlock rows so cleanup paths know what to decrement.
 type fuzzFileEntry struct {
-	handle   metadata.FileHandle
-	name     string
-	blockIDs []string
+	handle    metadata.FileHandle
+	name      string
+	blockIDs  []string
+	payloadID string
 }
 
 // workerState mirrors the inline anonymous struct in testINV02_PropertyFuzz
@@ -259,13 +260,18 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 		return fmt.Errorf("DecodeFileHandle: %w", err)
 	}
 
+	// payloadID is the common prefix of every block ID for this file, so
+	// store.ListFileBlocks(payloadID) recovers exactly this file's rows
+	// (it matches IDs beginning with "{payloadID}/").
+	payloadID := fmt.Sprintf("inv02/%d/%d", workerID, opID)
+
 	blockIDs := make([]string, 0, nBlocks)
 	refs := make([]block.BlockRef, 0, nBlocks)
 	now := time.Now()
 	for i := 0; i < nBlocks; i++ {
 		hashSeed := fmt.Sprintf("inv02-w%d-op%d-blk%d", workerID, opID, i)
 		h := hashOfSeed(hashSeed)
-		blockID := fmt.Sprintf("inv02/%d/%d/%d", workerID, opID, i)
+		blockID := fmt.Sprintf("%s/%d", payloadID, i)
 		fb := &block.FileBlock{
 			ID:            blockID,
 			Hash:          h,
@@ -293,14 +299,15 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 		ShareName: shareName,
 		Path:      "/" + name,
 		FileAttr: metadata.FileAttr{
-			Type:   metadata.FileTypeRegular,
-			Mode:   0o644,
-			UID:    1000,
-			GID:    1000,
-			Mtime:  now,
-			Ctime:  now,
-			Atime:  now,
-			Blocks: refs,
+			Type:      metadata.FileTypeRegular,
+			Mode:      0o644,
+			UID:       1000,
+			GID:       1000,
+			Mtime:     now,
+			Ctime:     now,
+			Atime:     now,
+			Blocks:    refs,
+			PayloadID: metadata.PayloadID(payloadID),
 		},
 	}
 	if err := store.PutFile(ctx, file); err != nil {
@@ -316,7 +323,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 		return fmt.Errorf("SetLinkCount: %w", err)
 	}
 
-	ws.files = append(ws.files, fuzzFileEntry{handle: handle, name: name, blockIDs: blockIDs})
+	ws.files = append(ws.files, fuzzFileEntry{handle: handle, name: name, blockIDs: blockIDs, payloadID: payloadID})
 	return nil
 }
 
@@ -395,19 +402,24 @@ func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, r
 		return fmt.Errorf("DecodeFileHandle copy: %w", err)
 	}
 	now := time.Now()
+	// The copy shares the source's FileBlock rows (O(1) dedup copy), so it
+	// also shares the source's PayloadID — store.ListFileBlocks(payloadID)
+	// then recovers the same rows under a single payloadID. The reconcile
+	// de-dupes by payloadID and by FileBlock ID so a shared row is summed once.
 	dst := &metadata.File{
 		ID:        fileID,
 		ShareName: shareName,
 		Path:      "/" + name,
 		FileAttr: metadata.FileAttr{
-			Type:   metadata.FileTypeRegular,
-			Mode:   0o644,
-			UID:    1000,
-			GID:    1000,
-			Mtime:  now,
-			Ctime:  now,
-			Atime:  now,
-			Blocks: srcBlocks,
+			Type:      metadata.FileTypeRegular,
+			Mode:      0o644,
+			UID:       1000,
+			GID:       1000,
+			Mtime:     now,
+			Ctime:     now,
+			Atime:     now,
+			Blocks:    srcBlocks,
+			PayloadID: metadata.PayloadID(src.payloadID),
 		},
 	}
 	if err := store.PutFile(ctx, dst); err != nil {
@@ -427,7 +439,7 @@ func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, r
 	// decrement the same rows the create+copy IncrementRefCount bumps
 	// touched. Tracking with the same blockIDs ensures the math closes.
 	dstBlockIDs := append([]string(nil), src.blockIDs...)
-	ws.files = append(ws.files, fuzzFileEntry{handle: handle, name: name, blockIDs: dstBlockIDs})
+	ws.files = append(ws.files, fuzzFileEntry{handle: handle, name: name, blockIDs: dstBlockIDs, payloadID: src.payloadID})
 	return nil
 }
 
@@ -495,43 +507,55 @@ func isConcurrentQuiesceConflict(err error) bool {
 
 // reconcileINV02 walks the named share and computes:
 //
-//	totalRefs     = ∑ len(FileAttr.Blocks)         across all files
-//	totalRefCount = ∑ FileBlock.RefCount           across distinct hashes
+//	totalRefs     = ∑ len(FileAttr.Blocks)   across all files
+//	totalRefCount = ∑ FileBlock.RefCount     across all FileBlock rows
+//	                                          (keyed by ID, not hash)
 //
 // Returns both values so callers (the property fuzz + the leak-injection
 // scenario) can distinguish "invariant holds" from "invariant violated"
 // without fataling inside the helper.
 //
-// The distinct-hash dedup on RefCount sums mirrors the
-// post-fix world: one FileBlock row per hash. Legacy multi-row data is
-// tolerated because GetByHash returns ANY one row per the contract,
-// and all rows with the same hash carry the same RefCount semantics.
+// RefCount is summed per-FileBlock-ID rather than per-distinct-hash: a
+// backend that stores two FileBlock rows carrying the same content hash
+// (legal after dedup-copy operations) must contribute each row's RefCount
+// to the sum. Summing per distinct hash via GetByHash returns ANY one row
+// and silently hides a leaked or inflated RefCount on the other row(s).
 func reconcileINV02(ctx context.Context, store metadata.Store, shareName string) (totalRefs, totalRefCount uint64, err error) {
-	// 1) ∑ FileBlock.RefCount across distinct hashes via EnumerateFileBlocks.
-	seen := make(map[block.ContentHash]struct{})
-	enumErr := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
-		if _, ok := seen[h]; ok {
-			return nil
-		}
-		seen[h] = struct{}{}
-		fb, getErr := store.GetByHash(ctx, h)
-		if getErr != nil {
-			return fmt.Errorf("GetByHash %x: %w", h[:8], getErr)
-		}
-		if fb != nil {
-			totalRefCount += uint64(fb.RefCount)
-		}
-		return nil
-	})
-	if enumErr != nil {
-		return 0, 0, fmt.Errorf("EnumerateFileBlocks: %w", enumErr)
-	}
-
-	// 2) ∑ len(FileAttr.Blocks) across every regular file in the share.
 	rootHandle, rootErr := store.GetRootHandle(ctx, shareName)
 	if rootErr != nil {
 		return 0, 0, fmt.Errorf("GetRootHandle: %w", rootErr)
 	}
+
+	// 1) ∑ FileBlock.RefCount across all FileBlock rows, keyed by ID (not
+	//    hash), so duplicate-hash rows each contribute their own RefCount.
+	seenPayloads := make(map[string]struct{})
+	seenIDs := make(map[string]struct{})
+	if enumWalkErr := walkShareFiles(ctx, store, rootHandle, func(f *metadata.File) error {
+		pid := string(f.PayloadID)
+		if pid == "" {
+			return nil
+		}
+		if _, ok := seenPayloads[pid]; ok {
+			return nil
+		}
+		seenPayloads[pid] = struct{}{}
+		rows, listErr := store.ListFileBlocks(ctx, pid)
+		if listErr != nil {
+			return fmt.Errorf("ListFileBlocks(%s): %w", pid, listErr)
+		}
+		for _, fb := range rows {
+			if _, ok := seenIDs[fb.ID]; ok {
+				continue
+			}
+			seenIDs[fb.ID] = struct{}{}
+			totalRefCount += uint64(fb.RefCount)
+		}
+		return nil
+	}); enumWalkErr != nil {
+		return 0, 0, fmt.Errorf("walkShareFiles (enum pass): %w", enumWalkErr)
+	}
+
+	// 2) ∑ len(FileAttr.Blocks) across every regular file in the share.
 	if walkErr := walkShareFiles(ctx, store, rootHandle, func(f *metadata.File) error {
 		totalRefs += uint64(len(f.Blocks))
 		return nil
