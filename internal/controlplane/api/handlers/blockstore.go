@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -8,17 +9,26 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
 
+// BlockStoreRuntime is the narrow Runtime surface needed by
+// BlockStoreStatsHandler. Defining the interface here (rather than depending on
+// *runtime.Runtime directly) keeps the handler unit-testable: tests substitute
+// a fake that returns canned responses, mirroring the BlockGCRuntime idiom in
+// block_gc.go. *runtime.Runtime satisfies this interface implicitly.
+type BlockStoreRuntime interface {
+	GetBlockStoreStats(shareName string) (*shares.BlockStoreStatsResponse, error)
+	EvictBlockStore(ctx context.Context, shareName string, opts shares.EvictOptions) (*shares.EvictResult, error)
+}
+
 // BlockStoreStatsHandler handles block store stats and eviction endpoints.
 type BlockStoreStatsHandler struct {
-	runtime *runtime.Runtime
+	runtime BlockStoreRuntime
 }
 
 // NewBlockStoreStatsHandler creates a new block store stats handler.
-func NewBlockStoreStatsHandler(rt *runtime.Runtime) *BlockStoreStatsHandler {
+func NewBlockStoreStatsHandler(rt BlockStoreRuntime) *BlockStoreStatsHandler {
 	return &BlockStoreStatsHandler{runtime: rt}
 }
 
@@ -39,8 +49,11 @@ func (h *BlockStoreStatsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 
 	stats, err := h.runtime.GetBlockStoreStats(shareName)
 	if err != nil {
-		logger.Debug("Block store stats error", "share", shareName, "error", err)
-		NotFound(w, err.Error())
+		// Strip the underlying err string from the response body — it
+		// echoes the share path and storage-config detail verbatim. The
+		// full error is logged at Debug for operator postmortems.
+		logger.Debug("block store stats error", "share", shareName, "error", err)
+		NotFound(w, "share not found")
 		return
 	}
 
@@ -71,8 +84,11 @@ func (h *BlockStoreStatsHandler) Evict(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.runtime.EvictBlockStore(r.Context(), shareName, opts)
 	if err != nil {
-		logger.Debug("Block store evict error", "share", shareName, "error", err)
-		BadRequest(w, err.Error())
+		// Strip the underlying err string from the response body — it
+		// leaks the share path and storage topology (e.g. "no remote store
+		// configured"). The full error is logged at Debug.
+		logger.Debug("block store evict error", "share", shareName, "error", err)
+		BadRequest(w, "eviction failed")
 		return
 	}
 

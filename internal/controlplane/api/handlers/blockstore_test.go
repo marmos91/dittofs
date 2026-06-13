@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -224,6 +225,82 @@ func TestBlockStoreHandler_Evict_SafetyError(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Evict() status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// fakeBlockStoreRuntime implements BlockStoreRuntime for exercising the real
+// BlockStoreStatsHandler (as opposed to the testBlockStoreHandler shim above).
+type fakeBlockStoreRuntime struct {
+	stats    *shares.BlockStoreStatsResponse
+	statsErr error
+	evict    *shares.EvictResult
+	evictErr error
+}
+
+func (f *fakeBlockStoreRuntime) GetBlockStoreStats(_ string) (*shares.BlockStoreStatsResponse, error) {
+	return f.stats, f.statsErr
+}
+
+func (f *fakeBlockStoreRuntime) EvictBlockStore(_ context.Context, _ string, _ shares.EvictOptions) (*shares.EvictResult, error) {
+	return f.evict, f.evictErr
+}
+
+// TestBlockStoreStatsHandler_Stats_ErrorDetailNotLeaked asserts that when
+// GetBlockStoreStats returns an error the handler writes a static 404 body
+// rather than leaking the internal error string.
+func TestBlockStoreStatsHandler_Stats_ErrorDetailNotLeaked(t *testing.T) {
+	internalMsg := `share "/secret-share" not found`
+	fake := &fakeBlockStoreRuntime{statsErr: errors.New(internalMsg)}
+	h := NewBlockStoreStatsHandler(fake)
+
+	req := newChiRequestForBlockStore(http.MethodGet,
+		"/api/v1/shares/secret-share/blockstore/stats", nil, "name", "/secret-share")
+	w := httptest.NewRecorder()
+	h.Stats(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+	var p Problem
+	if err := json.NewDecoder(w.Body).Decode(&p); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if strings.Contains(p.Detail, "secret-share") {
+		t.Errorf("Detail leaks internal share name: %q", p.Detail)
+	}
+	if p.Detail != "share not found" {
+		t.Errorf("Detail = %q, want %q", p.Detail, "share not found")
+	}
+}
+
+// TestBlockStoreStatsHandler_Evict_ErrorDetailNotLeaked asserts that when
+// EvictBlockStore returns an error the handler writes a static 400 body
+// rather than leaking internal storage topology details.
+func TestBlockStoreStatsHandler_Evict_ErrorDetailNotLeaked(t *testing.T) {
+	internalMsg := `cannot evict local blocks for share "/secret-share": no remote store configured (data would be lost)`
+	fake := &fakeBlockStoreRuntime{evictErr: errors.New(internalMsg)}
+	h := NewBlockStoreStatsHandler(fake)
+
+	body, _ := json.Marshal(BlockStoreEvictRequest{})
+	req := newChiRequestForBlockStore(http.MethodPost,
+		"/api/v1/shares/secret-share/blockstore/evict",
+		bytes.NewReader(body), "name", "/secret-share")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.Evict(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	var p Problem
+	if err := json.NewDecoder(w.Body).Decode(&p); err != nil {
+		t.Fatalf("decode problem: %v", err)
+	}
+	if strings.Contains(p.Detail, "secret-share") || strings.Contains(p.Detail, "remote store") {
+		t.Errorf("Detail leaks internal detail: %q", p.Detail)
+	}
+	if p.Detail != "eviction failed" {
+		t.Errorf("Detail = %q, want %q", p.Detail, "eviction failed")
 	}
 }
 
