@@ -377,6 +377,139 @@ func TestUserGroupMembership(t *testing.T) {
 	})
 }
 
+func TestUpdatePasswordAndFlags(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	store.CreateUser(ctx, &models.User{
+		Username:           "pwuser",
+		PasswordHash:       "old-hash",
+		NTHash:             "old-nt",
+		MustChangePassword: true,
+		Role:               "user",
+	})
+
+	t.Run("updates password, nt hash, and flag atomically", func(t *testing.T) {
+		if err := store.UpdatePasswordAndFlags(ctx, "pwuser", "new-hash", "new-nt", false); err != nil {
+			t.Fatalf("UpdatePasswordAndFlags: %v", err)
+		}
+		u, err := store.GetUser(ctx, "pwuser")
+		if err != nil {
+			t.Fatalf("GetUser: %v", err)
+		}
+		if u.PasswordHash != "new-hash" {
+			t.Errorf("password hash = %q, want new-hash", u.PasswordHash)
+		}
+		if u.NTHash != "new-nt" {
+			t.Errorf("nt hash = %q, want new-nt", u.NTHash)
+		}
+		if u.MustChangePassword {
+			t.Error("MustChangePassword should be cleared")
+		}
+	})
+
+	t.Run("can re-set the must-change flag", func(t *testing.T) {
+		if err := store.UpdatePasswordAndFlags(ctx, "pwuser", "h2", "n2", true); err != nil {
+			t.Fatalf("UpdatePasswordAndFlags: %v", err)
+		}
+		u, _ := store.GetUser(ctx, "pwuser")
+		if !u.MustChangePassword {
+			t.Error("MustChangePassword should be set")
+		}
+	})
+
+	t.Run("unknown user returns ErrUserNotFound", func(t *testing.T) {
+		err := store.UpdatePasswordAndFlags(ctx, "nope", "h", "n", false)
+		if !errors.Is(err, models.ErrUserNotFound) {
+			t.Errorf("expected ErrUserNotFound, got %v", err)
+		}
+	})
+}
+
+func TestReplaceUserGroups(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	store.CreateUser(ctx, &models.User{Username: "repluser", PasswordHash: "h", Role: "user"})
+	store.CreateGroup(ctx, &models.Group{Name: "g1"})
+	store.CreateGroup(ctx, &models.Group{Name: "g2"})
+	store.CreateGroup(ctx, &models.Group{Name: "g3"})
+
+	groupNames := func(t *testing.T) map[string]bool {
+		t.Helper()
+		groups, err := store.GetUserGroups(ctx, "repluser")
+		if err != nil {
+			t.Fatalf("GetUserGroups: %v", err)
+		}
+		set := map[string]bool{}
+		for _, g := range groups {
+			set[g.Name] = true
+		}
+		return set
+	}
+
+	t.Run("sets initial memberships", func(t *testing.T) {
+		if err := store.ReplaceUserGroups(ctx, "repluser", []string{"g1", "g2"}); err != nil {
+			t.Fatalf("ReplaceUserGroups: %v", err)
+		}
+		got := groupNames(t)
+		if !got["g1"] || !got["g2"] || got["g3"] || len(got) != 2 {
+			t.Errorf("groups = %v, want {g1,g2}", got)
+		}
+	})
+
+	t.Run("replaces (adds and removes) atomically", func(t *testing.T) {
+		if err := store.ReplaceUserGroups(ctx, "repluser", []string{"g2", "g3"}); err != nil {
+			t.Fatalf("ReplaceUserGroups: %v", err)
+		}
+		got := groupNames(t)
+		if got["g1"] || !got["g2"] || !got["g3"] || len(got) != 2 {
+			t.Errorf("groups = %v, want {g2,g3}", got)
+		}
+	})
+
+	t.Run("deduplicates input", func(t *testing.T) {
+		if err := store.ReplaceUserGroups(ctx, "repluser", []string{"g1", "g1", "g1"}); err != nil {
+			t.Fatalf("ReplaceUserGroups: %v", err)
+		}
+		got := groupNames(t)
+		if !got["g1"] || len(got) != 1 {
+			t.Errorf("groups = %v, want {g1}", got)
+		}
+	})
+
+	t.Run("empty list clears all memberships", func(t *testing.T) {
+		if err := store.ReplaceUserGroups(ctx, "repluser", nil); err != nil {
+			t.Fatalf("ReplaceUserGroups: %v", err)
+		}
+		if got := groupNames(t); len(got) != 0 {
+			t.Errorf("groups = %v, want empty", got)
+		}
+	})
+
+	t.Run("unknown group rolls back and returns ErrGroupNotFound", func(t *testing.T) {
+		store.ReplaceUserGroups(ctx, "repluser", []string{"g1"})
+		err := store.ReplaceUserGroups(ctx, "repluser", []string{"g2", "nope"})
+		if !errors.Is(err, models.ErrGroupNotFound) {
+			t.Errorf("expected ErrGroupNotFound, got %v", err)
+		}
+		// Prior memberships must be untouched on failure.
+		got := groupNames(t)
+		if !got["g1"] || len(got) != 1 {
+			t.Errorf("groups after failed replace = %v, want unchanged {g1}", got)
+		}
+	})
+
+	t.Run("unknown user returns ErrUserNotFound", func(t *testing.T) {
+		err := store.ReplaceUserGroups(ctx, "ghost", []string{"g1"})
+		if !errors.Is(err, models.ErrUserNotFound) {
+			t.Errorf("expected ErrUserNotFound, got %v", err)
+		}
+	})
+}
+
 func TestCreateUserWithGroups(t *testing.T) {
 	s := createTestStore(t)
 	defer s.Close()

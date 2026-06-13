@@ -3,6 +3,7 @@ package trash
 import (
 	"context"
 	stderrors "errors"
+	"fmt"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -444,4 +445,42 @@ func TestStatusUnknownShareReturnsNotFound(t *testing.T) {
 	_, err := tt.svc.Status(tt.ctx, "/nope")
 	require.Error(t, err)
 	assert.True(t, metadata.IsNotFoundError(err))
+}
+
+// TestEmptyPrunesIntermediaryDirsAcrossPages guards pruneEmptyDirs against
+// skipping entries that fall on pages beyond the first. It forces small pages
+// (10 entries) via prunePageBytes, then creates 12 recycled-file intermediary
+// dirs so the bin has entries on both page 1 (d00–d09) and page 2 (d10–d11).
+// All 12 orphan dirs must be swept after Empty.
+func TestEmptyPrunesIntermediaryDirsAcrossPages(t *testing.T) {
+	t.Parallel()
+	tt := newTestTrash(t)
+
+	// Force pruneEmptyDirs to use pages of 10 entries: maxBytes=2000 →
+	// limit = max(2000/200, 10) = 10.
+	tt.svc.prunePageBytes = 2000
+
+	const nDirs = 12 // spans 2 pages of 10
+	dirs := make([]string, nDirs)
+	for i := range dirs {
+		dirs[i] = fmt.Sprintf("d%02d", i)
+		tt.recycleAt(dirs[i], "f.txt")
+	}
+
+	n, err := tt.svc.Empty(tt.ctx, tt.deps.shareName, false)
+	require.NoError(t, err)
+	assert.Equal(t, nDirs, n)
+
+	// Every intermediary dir must be gone from #recycle.
+	bh := tt.binHandle()
+	for _, d := range dirs {
+		_, err := tt.deps.svc.GetChild(tt.ctx.Context, bh, d)
+		assert.True(t, metadata.IsNotFoundError(err),
+			"orphan intermediary dir %q must be pruned after Empty, got %v", d, err)
+	}
+
+	// Bin itself survives; entries list is empty.
+	entries, err := tt.svc.List(tt.ctx, tt.deps.shareName)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }

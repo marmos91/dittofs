@@ -616,6 +616,44 @@ func TestRetryOnConflict_NoSleep(t *testing.T) {
 	}
 }
 
+func TestConflictResult(t *testing.T) {
+	conflictErr := apierrors.NewConflict(
+		schema.GroupResource{Group: "dittofs.dittofs.com", Resource: "dittoservers"},
+		"test", fmt.Errorf("rv mismatch"),
+	)
+
+	t.Run("conflict requeues without surfacing an error", func(t *testing.T) {
+		res, err := conflictResult(conflictErr)
+		if err != nil {
+			t.Fatalf("expected nil error for conflict, got %v", err)
+		}
+		if res.RequeueAfter != retryBackoffBase {
+			t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, retryBackoffBase)
+		}
+	})
+
+	t.Run("non-conflict error is returned unchanged", func(t *testing.T) {
+		other := fmt.Errorf("boom")
+		res, err := conflictResult(other)
+		if err != other {
+			t.Errorf("expected the original error to pass through, got %v", err)
+		}
+		if res.RequeueAfter != 0 {
+			t.Errorf("RequeueAfter = %v, want 0 (rate limiter applies)", res.RequeueAfter)
+		}
+	})
+
+	t.Run("nil error yields empty result", func(t *testing.T) {
+		res, err := conflictResult(nil)
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if res.RequeueAfter != 0 {
+			t.Errorf("RequeueAfter = %v, want 0", res.RequeueAfter)
+		}
+	})
+}
+
 func setupDittoServerReconciler(t *testing.T, f fields) *DittoServerReconciler {
 	s := testScheme(t)
 	fakeClient := fake.NewClientBuilder().

@@ -78,6 +78,10 @@ type Service struct {
 	deps     Deps
 	interval time.Duration
 	stopCh   chan struct{}
+	// prunePageBytes is a test hook: non-zero passes this as maxBytes to
+	// ReadDirectory inside pruneEmptyDirs, capping pages to max(prunePageBytes/200,
+	// 10) entries. Zero (production) uses ReadDirectory's default 1000-entry cap.
+	prunePageBytes uint32
 }
 
 // New constructs a trash Service. A zero reapInterval defaults to one hour. The
@@ -436,38 +440,59 @@ func (s *Service) OnDisable(ctx *metadata.AuthContext, shareName string) error {
 // Empty) is never removed here. Not-empty / already-gone removals are ignored
 // so a concurrent recycle racing the sweep cannot fail an Empty.
 func (s *Service) pruneEmptyDirs(ctx *metadata.AuthContext, svc *metadata.Service, dirHandle metadata.FileHandle) error {
-	page, err := svc.ReadDirectory(ctx, dirHandle, 0, 0)
-	if err != nil {
-		return err
-	}
-	for i := range page.Entries {
-		e := &page.Entries[i]
-		attr, err := s.entryAttr(ctx, svc, dirHandle, e)
+	var cookie uint64
+	for {
+		page, err := svc.ReadDirectory(ctx, dirHandle, cookie, s.prunePageBytes)
 		if err != nil {
 			return err
 		}
-		if attr.Type != metadata.FileTypeDirectory {
-			continue
-		}
-		childHandle, err := svc.GetChild(ctx.Context, dirHandle, e.Name)
-		if err != nil {
-			if metadata.IsNotFoundError(err) {
+		restart := false
+		for i := range page.Entries {
+			e := &page.Entries[i]
+			attr, err := s.entryAttr(ctx, svc, dirHandle, e)
+			if err != nil {
+				return err
+			}
+			if attr.Type != metadata.FileTypeDirectory {
 				continue
 			}
-			return err
+			childHandle, err := svc.GetChild(ctx.Context, dirHandle, e.Name)
+			if err != nil {
+				if metadata.IsNotFoundError(err) {
+					continue
+				}
+				return err
+			}
+			// Recurse first so the deepest empties are removed before their
+			// parent is reconsidered.
+			if err := s.pruneEmptyDirs(ctx, svc, childHandle); err != nil {
+				return err
+			}
+			// Attempt removal; a non-empty or already-gone directory is fine.
+			_, err = svc.RemoveDirectory(ctx, dirHandle, e.Name)
+			switch {
+			case err == nil:
+				// Removal shifts cursor positions; restart the outer loop from
+				// the beginning so we do not skip entries on subsequent pages.
+				restart = true
+			case metadata.IsNotFoundError(err) || isNotEmpty(err):
+				// Concurrent recycle or a non-empty child: leave it in place.
+			default:
+				return err
+			}
+			if restart {
+				break
+			}
 		}
-		// Recurse first so the deepest empties are removed before their parent
-		// is reconsidered.
-		if err := s.pruneEmptyDirs(ctx, svc, childHandle); err != nil {
-			return err
+		if restart {
+			cookie = 0
+			continue
 		}
-		// Attempt removal; a non-empty or already-gone directory is fine.
-		if _, err := svc.RemoveDirectory(ctx, dirHandle, e.Name); err != nil &&
-			!metadata.IsNotFoundError(err) && !isNotEmpty(err) {
-			return err
+		if !page.HasMore {
+			return nil
 		}
+		cookie = page.NextCookie
 	}
-	return nil
 }
 
 // isNotEmpty reports whether err is a StoreError for a non-empty directory.

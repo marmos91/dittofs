@@ -494,6 +494,19 @@ func TestMatchHostname_FCrDNS_ValidRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMatchHostname_FCrDNS_ForwardLookupError covers the branch where the
+// forward (A/AAAA) lookup of a PTR candidate fails: the candidate cannot be
+// confirmed, so it must be skipped and access denied.
+func TestMatchHostname_FCrDNS_ForwardLookupError(t *testing.T) {
+	fake := &fakeDNSResolver{
+		ptr:    map[string][]string{"192.168.1.50": {"host.example.com."}},
+		fwdErr: map[string]error{"host.example.com": net.UnknownNetworkError("SERVFAIL")},
+	}
+	if matchHostname(fake, "192.168.1.50", "host.example.com") {
+		t.Error("forward lookup failure must not confirm the PTR candidate")
+	}
+}
+
 // --- DNS Cache tests ---
 
 func TestDNSCache_Defaults(t *testing.T) {
@@ -534,6 +547,31 @@ func TestDNSCache_ServesFromCache(t *testing.T) {
 	}
 	if len(hostnames) != 1 || hostnames[0] != "cached-host.example.com." {
 		t.Errorf("Expected cached hostname, got %v", hostnames)
+	}
+}
+
+func TestDNSCache_LookupHostServesFromCacheUnderFwdKey(t *testing.T) {
+	c := newDNSCache(5*time.Minute, 1*time.Minute)
+
+	// A reverse entry keyed by the bare hostname must NOT satisfy a forward
+	// lookup: lookupHost namespaces its key under "fwd:" to avoid collision.
+	c.mu.Lock()
+	c.entries["host.example.com"] = &dnsCacheEntry{
+		hostnames: []string{"should-not-be-returned"},
+		expiresAt: time.Now().Add(5 * time.Minute),
+	}
+	c.entries["fwd:host.example.com"] = &dnsCacheEntry{
+		hostnames: []string{"192.168.1.50"},
+		expiresAt: time.Now().Add(5 * time.Minute),
+	}
+	c.mu.Unlock()
+
+	addrs, err := c.lookupHost("host.example.com")
+	if err != nil {
+		t.Fatalf("lookupHost: %v", err)
+	}
+	if len(addrs) != 1 || addrs[0] != "192.168.1.50" {
+		t.Errorf("lookupHost returned %v, want [192.168.1.50] from the fwd: entry", addrs)
 	}
 }
 
