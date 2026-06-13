@@ -5,7 +5,7 @@ package store
 import (
 	"context"
 	"errors"
-	"strings"
+	"net/url"
 	"testing"
 	"time"
 
@@ -1197,24 +1197,26 @@ func TestPostgresDSN(t *testing.T) {
 	}
 
 	dsn := config.DSN()
-
 	if dsn == "" {
-		t.Error("expected non-empty DSN")
+		t.Fatal("expected non-empty DSN")
 	}
-	// Check that all parts are present
-	if !contains(dsn, "host=localhost") {
-		t.Error("DSN should contain host")
-	}
-	if !contains(dsn, "port=5432") {
-		t.Error("DSN should contain port")
-	}
-	if !contains(dsn, "sslmode=require") {
-		t.Error("DSN should contain sslmode")
-	}
-}
 
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("DSN() is not a valid URL: %v", err)
+	}
+	if u.Hostname() != "localhost" {
+		t.Errorf("host = %q, want localhost", u.Hostname())
+	}
+	if u.Port() != "5432" {
+		t.Errorf("port = %q, want 5432", u.Port())
+	}
+	if u.Query().Get("sslmode") != "require" {
+		t.Errorf("sslmode = %q, want require", u.Query().Get("sslmode"))
+	}
+	if u.Query().Get("sslrootcert") != "/path/to/cert" {
+		t.Errorf("sslrootcert = %q, want /path/to/cert", u.Query().Get("sslrootcert"))
+	}
 }
 
 // TestAccessBasedEnumerationBackfill verifies that the post-AutoMigrate

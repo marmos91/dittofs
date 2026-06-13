@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -81,19 +82,30 @@ func (c PostgresConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// DSN returns the PostgreSQL connection string.
+// DSN returns the PostgreSQL connection string in URL form so that net/url
+// percent-encoding handles credentials and paths with special characters
+// (spaces, @, :, /, ', \, etc.) without manual libpq keyword=value quoting.
+// gorm.io/driver/postgres passes the DSN to pgx, which accepts the URL form.
 func (c *PostgresConfig) DSN() string {
-	dsn := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s",
-		c.Host, c.Port, c.User, c.Password, c.Database)
-
-	if c.SSLMode != "" {
-		dsn += fmt.Sprintf(" sslmode=%s", c.SSLMode)
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(c.User, c.Password),
+		Host:   fmt.Sprintf("%s:%d", c.Host, c.Port),
+		Path:   c.Database,
 	}
+
+	q := url.Values{}
+	sslMode := c.SSLMode
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	q.Set("sslmode", sslMode)
 	if c.SSLRootCert != "" {
-		dsn += fmt.Sprintf(" sslrootcert=%s", c.SSLRootCert)
+		q.Set("sslrootcert", c.SSLRootCert)
 	}
+	u.RawQuery = q.Encode()
 
-	return dsn
+	return u.String()
 }
 
 // Config contains database configuration.
