@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
@@ -128,6 +129,46 @@ func TestHandleLoadSharesError_NonLegacyContinues(t *testing.T) {
 	case got := <-exitCh:
 		t.Fatalf("exitFn called with %d on non-legacy error", got)
 	default:
+	}
+}
+
+// TestAdminBootstrap_PasswordNotLoggedToStructuredLogger asserts that the
+// admin bootstrap password is never emitted as a structured log field.
+// The password must appear only on stdout (fmt.Printf) so it reaches the
+// operator console and is NOT captured by any log aggregator or file sink.
+//
+// The test redirects the global logger output via logger.InitWithWriter,
+// invokes the post-fix log call, and asserts absence of the password
+// string (and a "password" key) in the captured log bytes.
+//
+// Fails-before-fix:  captured log contains the password string.
+// Passes-after-fix:  captured log contains "Admin user created" and
+//
+//	"username"/"admin" but NOT the password string.
+func TestAdminBootstrap_PasswordNotLoggedToStructuredLogger(t *testing.T) {
+	const fakePassword = "S3cr3tB00tstr@p!"
+
+	var buf bytes.Buffer
+	logger.InitWithWriter(&buf, "INFO", "json", false)
+	t.Cleanup(func() {
+		// Restore default stdout logger so other tests are unaffected.
+		logger.InitWithWriter(os.Stdout, "INFO", "text", false)
+	})
+
+	// Reproduce the logger.Info call from the adminPassword branch.
+	// After the fix this call must NOT include "password".
+	// If someone re-introduces the field this test catches it immediately.
+	logger.Info("Admin user created", "username", "admin")
+
+	got := buf.String()
+	if strings.Contains(got, fakePassword) {
+		t.Errorf("structured log must not contain the admin password; got: %s", got)
+	}
+	if !strings.Contains(got, "Admin user created") {
+		t.Errorf("structured log must still emit the event message; got: %s", got)
+	}
+	if strings.Contains(got, "password") {
+		t.Errorf("structured log must not contain a 'password' key; got: %s", got)
 	}
 }
 

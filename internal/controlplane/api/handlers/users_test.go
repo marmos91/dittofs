@@ -709,3 +709,233 @@ func TestUserHandler_ChangeOwnPassword_MustChange(t *testing.T) {
 		t.Error("Expected must_change_password to be false after changing password")
 	}
 }
+
+func TestUserHandler_ChangeOwnPassword_AtomicMustChangeClear(t *testing.T) {
+	cpStore, jwtService, handler := setupUserTest(t)
+	ctx := context.Background()
+
+	ph, nh, _ := models.HashPasswordWithNT("temp")
+	user := &models.User{
+		ID:                 uuid.New().String(),
+		Username:           "atomicuser",
+		PasswordHash:       ph,
+		NTHash:             nh,
+		Enabled:            true,
+		Role:               "user",
+		MustChangePassword: true,
+		CreatedAt:          time.Now(),
+	}
+	if _, err := cpStore.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	tokens, err := jwtService.GenerateTokenPair(user)
+	if err != nil {
+		t.Fatalf("GenerateTokenPair: %v", err)
+	}
+
+	body, _ := json.Marshal(ChangePasswordRequest{NewPassword: "newpass123"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users/me/password", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tokens.AccessToken)
+
+	jwtMiddleware := middleware.JWTAuth(jwtService)
+	w := httptest.NewRecorder()
+	jwtMiddleware(http.HandlerFunc(handler.ChangeOwnPassword)).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	// Both the password update AND the flag clear must be persisted together.
+	updated, err := cpStore.GetUser(ctx, "atomicuser")
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if updated.MustChangePassword {
+		t.Error("MustChangePassword still true after ChangeOwnPassword")
+	}
+	if !models.VerifyPassword("newpass123", updated.PasswordHash) {
+		t.Error("new password not persisted")
+	}
+}
+
+func TestUserHandler_ResetPassword_AdminMustChangeConsistent(t *testing.T) {
+	cpStore, _, handler := setupUserTest(t)
+	ctx := context.Background()
+
+	ph, nh, _ := models.HashPasswordWithNT("original")
+	admin := &models.User{
+		ID:                 uuid.New().String(),
+		Username:           "resetadmin",
+		PasswordHash:       ph,
+		NTHash:             nh,
+		Enabled:            true,
+		Role:               "admin",
+		MustChangePassword: false,
+		CreatedAt:          time.Now(),
+	}
+	if _, err := cpStore.CreateUser(ctx, admin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	body, _ := json.Marshal(ChangePasswordRequest{NewPassword: "newadminpass"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users/resetadmin/password", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("username", "resetadmin")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	handler.ResetPassword(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204, body = %s", w.Code, w.Body.String())
+	}
+
+	updated, err := cpStore.GetUser(ctx, "resetadmin")
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	// Admin must have MustChangePassword=true after reset, persisted atomically
+	// with the new password.
+	if !updated.MustChangePassword {
+		t.Error("admin MustChangePassword should be true after reset")
+	}
+	if _, err := cpStore.ValidateCredentials(ctx, "resetadmin", "newadminpass"); err != nil {
+		t.Errorf("new password not valid: %v", err)
+	}
+}
+
+func TestUserHandler_Create_WithSharePerms(t *testing.T) {
+	cpStore, _, handler := setupUserTest(t)
+	ctx := context.Background()
+
+	if _, err := cpStore.CreateShare(ctx, &models.Share{
+		ID:                uuid.New().String(),
+		Name:              "myshare",
+		DefaultPermission: "none",
+		Enabled:           true,
+	}); err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+
+	body, _ := json.Marshal(CreateUserRequest{
+		Username: "permuser",
+		Password: "password123",
+		SharePerms: map[string]models.SharePermission{
+			"myshare": models.PermissionRead,
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	perms, err := cpStore.GetUserSharePermissions(ctx, "permuser")
+	if err != nil {
+		t.Fatalf("GetUserSharePermissions: %v", err)
+	}
+	if len(perms) != 1 || perms[0].Permission != string(models.PermissionRead) {
+		t.Errorf("expected 1 share-perm read, got %v", perms)
+	}
+}
+
+func TestUserHandler_Update_WithGroups(t *testing.T) {
+	cpStore, _, handler := setupUserTest(t)
+	ctx := context.Background()
+
+	if _, err := cpStore.CreateGroup(ctx, &models.Group{Name: "eng"}); err != nil {
+		t.Fatalf("CreateGroup: %v", err)
+	}
+	ph, nh, _ := models.HashPasswordWithNT("pass")
+	user := &models.User{
+		ID:           uuid.New().String(),
+		Username:     "groupsuser",
+		PasswordHash: ph,
+		NTHash:       nh,
+		Enabled:      true,
+		Role:         "user",
+		CreatedAt:    time.Now(),
+	}
+	if _, err := cpStore.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	groups := []string{"eng"}
+	body, _ := json.Marshal(UpdateUserRequest{Groups: &groups})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/users/groupsuser", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("username", "groupsuser")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var resp UserResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(resp.Groups) != 1 || resp.Groups[0] != "eng" {
+		t.Errorf("expected groups=[eng] in response, got %v", resp.Groups)
+	}
+
+	updated, _ := cpStore.GetUser(ctx, "groupsuser")
+	if !updated.HasGroup("eng") {
+		t.Error("group membership not persisted")
+	}
+}
+
+func TestUserHandler_Update_WithSharePerms(t *testing.T) {
+	cpStore, _, handler := setupUserTest(t)
+	ctx := context.Background()
+
+	if _, err := cpStore.CreateShare(ctx, &models.Share{
+		ID:                uuid.New().String(),
+		Name:              "target",
+		DefaultPermission: "none",
+		Enabled:           true,
+	}); err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	ph, nh, _ := models.HashPasswordWithNT("pass")
+	user := &models.User{
+		ID:           uuid.New().String(),
+		Username:     "permupduser",
+		PasswordHash: ph,
+		NTHash:       nh,
+		Enabled:      true,
+		Role:         "user",
+		CreatedAt:    time.Now(),
+	}
+	if _, err := cpStore.CreateUser(ctx, user); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	perms := map[string]models.SharePermission{"target": models.PermissionReadWrite}
+	body, _ := json.Marshal(UpdateUserRequest{SharePerms: &perms})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/users/permupduser", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("username", "permupduser")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	w := httptest.NewRecorder()
+	handler.Update(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	dbPerms, _ := cpStore.GetUserSharePermissions(ctx, "permupduser")
+	if len(dbPerms) != 1 || dbPerms[0].Permission != string(models.PermissionReadWrite) {
+		t.Errorf("share perms not persisted, got %v", dbPerms)
+	}
+}

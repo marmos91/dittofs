@@ -11,6 +11,18 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
+// netgroupIDExpr returns a SQL expression that extracts the netgroup_id field
+// from the JSON config column of share_adapter_configs, scoped to the dialect.
+// Using a JSON path query avoids the false-positive substring matches that a
+// plain LIKE '%<uuid>%' produces when the UUID appears in unrelated JSON fields.
+func netgroupIDExpr(dbType DatabaseType) string {
+	if dbType == DatabaseTypePostgres {
+		return "config::jsonb->>'netgroup_id' = ?"
+	}
+	// SQLite (default)
+	return "json_extract(config, '$.netgroup_id') = ?"
+}
+
 func (s *GORMStore) GetNetgroup(ctx context.Context, name string) (*models.Netgroup, error) {
 	return getByField[models.Netgroup](s.db, ctx, "name", name, models.ErrNetgroupNotFound, "Members")
 }
@@ -56,7 +68,7 @@ func (s *GORMStore) DeleteNetgroup(ctx context.Context, name string) error {
 		// The netgroup_id is stored inside share_adapter_configs.config JSON blob.
 		var refCount int64
 		if err := tx.Model(&models.ShareAdapterConfig{}).
-			Where("adapter_type = ? AND config LIKE ?", "nfs", "%"+netgroup.ID+"%").
+			Where("adapter_type = ? AND "+netgroupIDExpr(s.config.Type), "nfs", netgroup.ID).
 			Count(&refCount).Error; err != nil {
 			return err
 		}
@@ -134,7 +146,7 @@ func (s *GORMStore) GetSharesByNetgroup(ctx context.Context, netgroupName string
 	// Find share IDs from NFS adapter configs that reference this netgroup in their JSON config.
 	var configs []models.ShareAdapterConfig
 	if err := s.db.WithContext(ctx).
-		Where("adapter_type = ? AND config LIKE ?", "nfs", "%"+netgroup.ID+"%").
+		Where("adapter_type = ? AND "+netgroupIDExpr(s.config.Type), "nfs", netgroup.ID).
 		Find(&configs).Error; err != nil {
 		return nil, err
 	}

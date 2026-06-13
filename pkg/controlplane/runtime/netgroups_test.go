@@ -355,101 +355,155 @@ func TestCheckNetgroupAccess_ConcurrentSetShareNetgroup(t *testing.T) {
 }
 
 // --- matchHostname tests ---
-// matchHostname is now a package-level function that uses the package-level DNS cache.
-// We test it by pre-populating the DNS cache to avoid real DNS lookups.
+// matchHostname now takes a dnsResolver so we can drive both the reverse (PTR)
+// and forward (A/AAAA) lookups deterministically without touching the network.
+// fakeDNSResolver implements dnsResolver from canned maps.
+
+type fakeDNSResolver struct {
+	ptr    map[string][]string // ip -> []hostname (reverse / PTR)
+	fwd    map[string][]string // hostname -> []ip (forward / A/AAAA)
+	ptrErr map[string]error    // optional per-ip PTR error
+	fwdErr map[string]error    // optional per-hostname forward error
+}
+
+func (f *fakeDNSResolver) lookupAddr(ip string) ([]string, error) {
+	if f.ptrErr != nil {
+		if err, ok := f.ptrErr[ip]; ok {
+			return nil, err
+		}
+	}
+	return f.ptr[ip], nil
+}
+
+func (f *fakeDNSResolver) lookupHost(hostname string) ([]string, error) {
+	if f.fwdErr != nil {
+		if err, ok := f.fwdErr[hostname]; ok {
+			return nil, err
+		}
+	}
+	return f.fwd[hostname], nil
+}
 
 func TestMatchHostname_ExactMatch(t *testing.T) {
-	ensureDNSCache()
-
-	// Pre-populate DNS cache with a known result
-	pkgDNSCache.mu.Lock()
-	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
-		hostnames: []string{"host.example.com."},
-		expiresAt: time.Now().Add(5 * time.Minute),
+	fake := &fakeDNSResolver{
+		ptr: map[string][]string{"192.168.1.50": {"host.example.com."}},
+		fwd: map[string][]string{"host.example.com": {"192.168.1.50"}},
 	}
-	pkgDNSCache.mu.Unlock()
 
-	if !matchHostname("192.168.1.50", "host.example.com") {
+	if !matchHostname(fake, "192.168.1.50", "host.example.com") {
 		t.Error("Expected exact hostname match")
 	}
 }
 
 func TestMatchHostname_ExactMatch_CaseInsensitive(t *testing.T) {
-	ensureDNSCache()
-
-	pkgDNSCache.mu.Lock()
-	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
-		hostnames: []string{"Host.Example.COM."},
-		expiresAt: time.Now().Add(5 * time.Minute),
+	fake := &fakeDNSResolver{
+		ptr: map[string][]string{"192.168.1.50": {"Host.Example.COM."}},
+		// Forward lookup keyed on the normalized (trailing-dot-stripped) name.
+		fwd: map[string][]string{"Host.Example.COM": {"192.168.1.50"}},
 	}
-	pkgDNSCache.mu.Unlock()
 
-	if !matchHostname("192.168.1.50", "host.example.com") {
+	if !matchHostname(fake, "192.168.1.50", "host.example.com") {
 		t.Error("Expected case-insensitive hostname match")
 	}
 }
 
 func TestMatchHostname_WildcardMatch(t *testing.T) {
-	ensureDNSCache()
-
-	pkgDNSCache.mu.Lock()
-	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
-		hostnames: []string{"web01.example.com."},
-		expiresAt: time.Now().Add(5 * time.Minute),
+	fake := &fakeDNSResolver{
+		ptr: map[string][]string{"192.168.1.50": {"web01.example.com."}},
+		fwd: map[string][]string{"web01.example.com": {"192.168.1.50"}},
 	}
-	pkgDNSCache.mu.Unlock()
 
-	if !matchHostname("192.168.1.50", "*.example.com") {
+	if !matchHostname(fake, "192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard hostname match")
 	}
 }
 
 func TestMatchHostname_WildcardNoMatch(t *testing.T) {
-	ensureDNSCache()
-
-	pkgDNSCache.mu.Lock()
-	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
-		hostnames: []string{"host.other.com."},
-		expiresAt: time.Now().Add(5 * time.Minute),
+	fake := &fakeDNSResolver{
+		ptr: map[string][]string{"192.168.1.50": {"host.other.com."}},
+		// FCrDNS passes (forward resolves back to client IP) but the pattern
+		// still does not match the different domain.
+		fwd: map[string][]string{"host.other.com": {"192.168.1.50"}},
 	}
-	pkgDNSCache.mu.Unlock()
 
-	if matchHostname("192.168.1.50", "*.example.com") {
+	if matchHostname(fake, "192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard NOT to match different domain")
 	}
 }
 
 func TestMatchHostname_DNSLookupFails(t *testing.T) {
-	ensureDNSCache()
-
-	// Pre-populate with an error entry
-	pkgDNSCache.mu.Lock()
-	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
-		err:       net.UnknownNetworkError("no PTR record"),
-		expiresAt: time.Now().Add(1 * time.Minute),
+	fake := &fakeDNSResolver{
+		ptrErr: map[string]error{"192.168.1.50": net.UnknownNetworkError("no PTR record")},
 	}
-	pkgDNSCache.mu.Unlock()
 
 	// Should return false gracefully, not panic
-	if matchHostname("192.168.1.50", "host.example.com") {
+	if matchHostname(fake, "192.168.1.50", "host.example.com") {
 		t.Error("Expected no match when DNS lookup fails")
 	}
 }
 
 func TestMatchHostname_MultipleHostnames(t *testing.T) {
-	ensureDNSCache()
-
-	// IP has multiple PTR records
-	pkgDNSCache.mu.Lock()
-	pkgDNSCache.entries["192.168.1.50"] = &dnsCacheEntry{
-		hostnames: []string{"alias1.other.com.", "actual.example.com."},
-		expiresAt: time.Now().Add(5 * time.Minute),
+	fake := &fakeDNSResolver{
+		// IP has multiple PTR records
+		ptr: map[string][]string{"192.168.1.50": {"alias1.other.com.", "actual.example.com."}},
+		fwd: map[string][]string{
+			"alias1.other.com":   {"192.168.1.50"},
+			"actual.example.com": {"192.168.1.50"},
+		},
 	}
-	pkgDNSCache.mu.Unlock()
 
 	// Should match against the second hostname
-	if !matchHostname("192.168.1.50", "*.example.com") {
+	if !matchHostname(fake, "192.168.1.50", "*.example.com") {
 		t.Error("Expected wildcard to match second PTR record")
+	}
+}
+
+// TestMatchHostname_FCrDNS_SpoofedPTR is the security regression for this fix.
+// An attacker controls 10.99.99.99 and sets its PTR record to a trusted
+// hostname they do not own. The forward lookup of that hostname returns the
+// real owner's IP, not the attacker's, so FCrDNS must reject the candidate.
+func TestMatchHostname_FCrDNS_SpoofedPTR(t *testing.T) {
+	fake := &fakeDNSResolver{
+		ptr: map[string][]string{
+			"10.99.99.99": {"trusted.example.com."},
+		},
+		fwd: map[string][]string{
+			// Forward lookup of the PTR result returns the real owner's IP,
+			// not the attacker.
+			"trusted.example.com": {"192.168.1.100"},
+		},
+	}
+	if matchHostname(fake, "10.99.99.99", "trusted.example.com") {
+		t.Error("FCrDNS bypass: spoofed PTR record must not grant access")
+	}
+}
+
+// TestMatchHostname_FCrDNS_ValidRoundTrip guards legitimate use: PTR resolves to
+// a hostname whose forward lookup resolves back to the client IP.
+func TestMatchHostname_FCrDNS_ValidRoundTrip(t *testing.T) {
+	fake := &fakeDNSResolver{
+		ptr: map[string][]string{
+			"192.168.1.50": {"host.example.com."},
+		},
+		fwd: map[string][]string{
+			"host.example.com": {"192.168.1.50"},
+		},
+	}
+	if !matchHostname(fake, "192.168.1.50", "host.example.com") {
+		t.Error("FCrDNS valid round-trip must still grant access")
+	}
+}
+
+// TestMatchHostname_FCrDNS_ForwardLookupError covers the branch where the
+// forward (A/AAAA) lookup of a PTR candidate fails: the candidate cannot be
+// confirmed, so it must be skipped and access denied.
+func TestMatchHostname_FCrDNS_ForwardLookupError(t *testing.T) {
+	fake := &fakeDNSResolver{
+		ptr:    map[string][]string{"192.168.1.50": {"host.example.com."}},
+		fwdErr: map[string]error{"host.example.com": net.UnknownNetworkError("SERVFAIL")},
+	}
+	if matchHostname(fake, "192.168.1.50", "host.example.com") {
+		t.Error("forward lookup failure must not confirm the PTR candidate")
 	}
 }
 
@@ -493,6 +547,31 @@ func TestDNSCache_ServesFromCache(t *testing.T) {
 	}
 	if len(hostnames) != 1 || hostnames[0] != "cached-host.example.com." {
 		t.Errorf("Expected cached hostname, got %v", hostnames)
+	}
+}
+
+func TestDNSCache_LookupHostServesFromCacheUnderFwdKey(t *testing.T) {
+	c := newDNSCache(5*time.Minute, 1*time.Minute)
+
+	// A reverse entry keyed by the bare hostname must NOT satisfy a forward
+	// lookup: lookupHost namespaces its key under "fwd:" to avoid collision.
+	c.mu.Lock()
+	c.entries["host.example.com"] = &dnsCacheEntry{
+		hostnames: []string{"should-not-be-returned"},
+		expiresAt: time.Now().Add(5 * time.Minute),
+	}
+	c.entries["fwd:host.example.com"] = &dnsCacheEntry{
+		hostnames: []string{"192.168.1.50"},
+		expiresAt: time.Now().Add(5 * time.Minute),
+	}
+	c.mu.Unlock()
+
+	addrs, err := c.lookupHost("host.example.com")
+	if err != nil {
+		t.Fatalf("lookupHost: %v", err)
+	}
+	if len(addrs) != 1 || addrs[0] != "192.168.1.50" {
+		t.Errorf("lookupHost returned %v, want [192.168.1.50] from the fwd: entry", addrs)
 	}
 }
 

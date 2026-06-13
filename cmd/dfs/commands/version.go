@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"fmt"
 	"runtime"
 
 	"github.com/spf13/cobra"
@@ -15,15 +14,15 @@ var versionCmd = &cobra.Command{
 	Long:  `Display the DittoFS version, build information, and system details.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if versionShort {
-			fmt.Println(Version)
+			cmd.Println(Version)
 			return
 		}
 
-		fmt.Printf("dittofs %s\n", Version)
-		fmt.Printf("  Commit:     %s\n", Commit)
-		fmt.Printf("  Built:      %s\n", Date)
-		fmt.Printf("  Go version: %s\n", runtime.Version())
-		fmt.Printf("  OS/Arch:    %s/%s\n", runtime.GOOS, runtime.GOARCH)
+		cmd.Printf("%s %s\n", cmd.Root().Name(), Version)
+		cmd.Printf("  Commit:     %s\n", Commit)
+		cmd.Printf("  Built:      %s\n", Date)
+		cmd.Printf("  Go version: %s\n", runtime.Version())
+		cmd.Printf("  OS/Arch:    %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	},
 }
 

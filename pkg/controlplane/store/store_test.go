@@ -5,7 +5,7 @@ package store
 import (
 	"context"
 	"errors"
-	"strings"
+	"net/url"
 	"testing"
 	"time"
 
@@ -377,6 +377,139 @@ func TestUserGroupMembership(t *testing.T) {
 	})
 }
 
+func TestUpdatePasswordAndFlags(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	store.CreateUser(ctx, &models.User{
+		Username:           "pwuser",
+		PasswordHash:       "old-hash",
+		NTHash:             "old-nt",
+		MustChangePassword: true,
+		Role:               "user",
+	})
+
+	t.Run("updates password, nt hash, and flag atomically", func(t *testing.T) {
+		if err := store.UpdatePasswordAndFlags(ctx, "pwuser", "new-hash", "new-nt", false); err != nil {
+			t.Fatalf("UpdatePasswordAndFlags: %v", err)
+		}
+		u, err := store.GetUser(ctx, "pwuser")
+		if err != nil {
+			t.Fatalf("GetUser: %v", err)
+		}
+		if u.PasswordHash != "new-hash" {
+			t.Errorf("password hash = %q, want new-hash", u.PasswordHash)
+		}
+		if u.NTHash != "new-nt" {
+			t.Errorf("nt hash = %q, want new-nt", u.NTHash)
+		}
+		if u.MustChangePassword {
+			t.Error("MustChangePassword should be cleared")
+		}
+	})
+
+	t.Run("can re-set the must-change flag", func(t *testing.T) {
+		if err := store.UpdatePasswordAndFlags(ctx, "pwuser", "h2", "n2", true); err != nil {
+			t.Fatalf("UpdatePasswordAndFlags: %v", err)
+		}
+		u, _ := store.GetUser(ctx, "pwuser")
+		if !u.MustChangePassword {
+			t.Error("MustChangePassword should be set")
+		}
+	})
+
+	t.Run("unknown user returns ErrUserNotFound", func(t *testing.T) {
+		err := store.UpdatePasswordAndFlags(ctx, "nope", "h", "n", false)
+		if !errors.Is(err, models.ErrUserNotFound) {
+			t.Errorf("expected ErrUserNotFound, got %v", err)
+		}
+	})
+}
+
+func TestReplaceUserGroups(t *testing.T) {
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	store.CreateUser(ctx, &models.User{Username: "repluser", PasswordHash: "h", Role: "user"})
+	store.CreateGroup(ctx, &models.Group{Name: "g1"})
+	store.CreateGroup(ctx, &models.Group{Name: "g2"})
+	store.CreateGroup(ctx, &models.Group{Name: "g3"})
+
+	groupNames := func(t *testing.T) map[string]bool {
+		t.Helper()
+		groups, err := store.GetUserGroups(ctx, "repluser")
+		if err != nil {
+			t.Fatalf("GetUserGroups: %v", err)
+		}
+		set := map[string]bool{}
+		for _, g := range groups {
+			set[g.Name] = true
+		}
+		return set
+	}
+
+	t.Run("sets initial memberships", func(t *testing.T) {
+		if err := store.ReplaceUserGroups(ctx, "repluser", []string{"g1", "g2"}); err != nil {
+			t.Fatalf("ReplaceUserGroups: %v", err)
+		}
+		got := groupNames(t)
+		if !got["g1"] || !got["g2"] || got["g3"] || len(got) != 2 {
+			t.Errorf("groups = %v, want {g1,g2}", got)
+		}
+	})
+
+	t.Run("replaces (adds and removes) atomically", func(t *testing.T) {
+		if err := store.ReplaceUserGroups(ctx, "repluser", []string{"g2", "g3"}); err != nil {
+			t.Fatalf("ReplaceUserGroups: %v", err)
+		}
+		got := groupNames(t)
+		if got["g1"] || !got["g2"] || !got["g3"] || len(got) != 2 {
+			t.Errorf("groups = %v, want {g2,g3}", got)
+		}
+	})
+
+	t.Run("deduplicates input", func(t *testing.T) {
+		if err := store.ReplaceUserGroups(ctx, "repluser", []string{"g1", "g1", "g1"}); err != nil {
+			t.Fatalf("ReplaceUserGroups: %v", err)
+		}
+		got := groupNames(t)
+		if !got["g1"] || len(got) != 1 {
+			t.Errorf("groups = %v, want {g1}", got)
+		}
+	})
+
+	t.Run("empty list clears all memberships", func(t *testing.T) {
+		if err := store.ReplaceUserGroups(ctx, "repluser", nil); err != nil {
+			t.Fatalf("ReplaceUserGroups: %v", err)
+		}
+		if got := groupNames(t); len(got) != 0 {
+			t.Errorf("groups = %v, want empty", got)
+		}
+	})
+
+	t.Run("unknown group rolls back and returns ErrGroupNotFound", func(t *testing.T) {
+		store.ReplaceUserGroups(ctx, "repluser", []string{"g1"})
+		err := store.ReplaceUserGroups(ctx, "repluser", []string{"g2", "nope"})
+		if !errors.Is(err, models.ErrGroupNotFound) {
+			t.Errorf("expected ErrGroupNotFound, got %v", err)
+		}
+		// Prior memberships must be untouched on failure.
+		got := groupNames(t)
+		if !got["g1"] || len(got) != 1 {
+			t.Errorf("groups after failed replace = %v, want unchanged {g1}", got)
+		}
+	})
+
+	t.Run("unknown user returns ErrUserNotFound", func(t *testing.T) {
+		err := store.ReplaceUserGroups(ctx, "ghost", []string{"g1"})
+		if !errors.Is(err, models.ErrUserNotFound) {
+			t.Errorf("expected ErrUserNotFound, got %v", err)
+		}
+	})
+}
+
 func TestCreateUserWithGroups(t *testing.T) {
 	s := createTestStore(t)
 	defer s.Close()
@@ -695,6 +828,61 @@ func TestSharePermissions(t *testing.T) {
 		}
 	})
 
+	t.Run("set user share permission is idempotent upsert (first call persists)", func(t *testing.T) {
+		// Use a fresh user/share pair distinct from the shared fixtures so this
+		// sub-test is independent of execution order.
+		uUser := &models.User{Username: "upsert-user", PasswordHash: "h"}
+		store.CreateUser(ctx, uUser)
+		uMeta := &models.MetadataStoreConfig{Name: "upsert-meta", Type: "memory"}
+		uMetaID, _ := store.CreateMetadataStore(ctx, uMeta)
+		uLocal := &models.BlockStoreConfig{Name: "upsert-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+		uLocalID, _ := store.CreateBlockStore(ctx, uLocal)
+		uShare := &models.Share{Name: "/upsert-share", MetadataStoreID: uMetaID, LocalBlockStoreID: uLocalID}
+		store.CreateShare(ctx, uShare)
+
+		shareInfo, _ := store.GetShare(ctx, "/upsert-share")
+		userInfo, _ := store.GetUser(ctx, "upsert-user")
+
+		// First call — before the fix this silently dropped the row.
+		perm1 := &models.UserSharePermission{
+			UserID:     userInfo.ID,
+			ShareID:    shareInfo.ID,
+			ShareName:  "/upsert-share",
+			Permission: "read",
+		}
+		if err := store.SetUserSharePermission(ctx, perm1); err != nil {
+			t.Fatalf("first SetUserSharePermission: %v", err)
+		}
+		got, err := store.GetUserSharePermission(ctx, "upsert-user", "/upsert-share")
+		if err != nil {
+			t.Fatalf("GetUserSharePermission after first set: %v", err)
+		}
+		if got == nil {
+			t.Fatal("permission not persisted on first SetUserSharePermission call (nil returned) — upsert bug still present")
+		}
+		if got.Permission != "read" {
+			t.Errorf("expected 'read' after first set, got %q", got.Permission)
+		}
+
+		// Second call — must overwrite, not error.
+		perm2 := &models.UserSharePermission{
+			UserID:     userInfo.ID,
+			ShareID:    shareInfo.ID,
+			ShareName:  "/upsert-share",
+			Permission: "read-write",
+		}
+		if err := store.SetUserSharePermission(ctx, perm2); err != nil {
+			t.Fatalf("second SetUserSharePermission: %v", err)
+		}
+		got2, err := store.GetUserSharePermission(ctx, "upsert-user", "/upsert-share")
+		if err != nil {
+			t.Fatalf("GetUserSharePermission after second set: %v", err)
+		}
+		if got2 == nil || got2.Permission != "read-write" {
+			t.Errorf("expected 'read-write' after second set, got %v", got2)
+		}
+	})
+
 	t.Run("get user share permission", func(t *testing.T) {
 		perm, err := store.GetUserSharePermission(ctx, "permuser", "/permshare")
 		if err != nil {
@@ -719,6 +907,59 @@ func TestSharePermissions(t *testing.T) {
 		err := store.SetGroupSharePermission(ctx, perm)
 		if err != nil {
 			t.Fatalf("failed to set group permission: %v", err)
+		}
+	})
+
+	t.Run("set group share permission is idempotent upsert (first call persists)", func(t *testing.T) {
+		uGroup := &models.Group{Name: "upsert-group"}
+		store.CreateGroup(ctx, uGroup)
+		uMeta2 := &models.MetadataStoreConfig{Name: "upsert-meta2", Type: "memory"}
+		uMetaID2, _ := store.CreateMetadataStore(ctx, uMeta2)
+		uLocal2 := &models.BlockStoreConfig{Name: "upsert-local2", Kind: models.BlockStoreKindLocal, Type: "fs"}
+		uLocalID2, _ := store.CreateBlockStore(ctx, uLocal2)
+		uShare2 := &models.Share{Name: "/upsert-gshare", MetadataStoreID: uMetaID2, LocalBlockStoreID: uLocalID2}
+		store.CreateShare(ctx, uShare2)
+
+		shareInfo, _ := store.GetShare(ctx, "/upsert-gshare")
+		groupInfo, _ := store.GetGroup(ctx, "upsert-group")
+
+		// First call — before the fix this silently dropped the row.
+		gperm1 := &models.GroupSharePermission{
+			GroupID:    groupInfo.ID,
+			ShareID:    shareInfo.ID,
+			ShareName:  "/upsert-gshare",
+			Permission: "read",
+		}
+		if err := store.SetGroupSharePermission(ctx, gperm1); err != nil {
+			t.Fatalf("first SetGroupSharePermission: %v", err)
+		}
+		ggot, err := store.GetGroupSharePermission(ctx, "upsert-group", "/upsert-gshare")
+		if err != nil {
+			t.Fatalf("GetGroupSharePermission after first set: %v", err)
+		}
+		if ggot == nil {
+			t.Fatal("permission not persisted on first SetGroupSharePermission call (nil returned) — upsert bug still present")
+		}
+		if ggot.Permission != "read" {
+			t.Errorf("expected 'read' after first set, got %q", ggot.Permission)
+		}
+
+		// Second call — must overwrite, not error.
+		gperm2 := &models.GroupSharePermission{
+			GroupID:    groupInfo.ID,
+			ShareID:    shareInfo.ID,
+			ShareName:  "/upsert-gshare",
+			Permission: "admin",
+		}
+		if err := store.SetGroupSharePermission(ctx, gperm2); err != nil {
+			t.Fatalf("second SetGroupSharePermission: %v", err)
+		}
+		ggot2, err := store.GetGroupSharePermission(ctx, "upsert-group", "/upsert-gshare")
+		if err != nil {
+			t.Fatalf("GetGroupSharePermission after second set: %v", err)
+		}
+		if ggot2 == nil || ggot2.Permission != "admin" {
+			t.Errorf("expected 'admin' after second set, got %v", ggot2)
 		}
 	})
 
@@ -1197,24 +1438,26 @@ func TestPostgresDSN(t *testing.T) {
 	}
 
 	dsn := config.DSN()
-
 	if dsn == "" {
-		t.Error("expected non-empty DSN")
+		t.Fatal("expected non-empty DSN")
 	}
-	// Check that all parts are present
-	if !contains(dsn, "host=localhost") {
-		t.Error("DSN should contain host")
-	}
-	if !contains(dsn, "port=5432") {
-		t.Error("DSN should contain port")
-	}
-	if !contains(dsn, "sslmode=require") {
-		t.Error("DSN should contain sslmode")
-	}
-}
 
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("DSN() is not a valid URL: %v", err)
+	}
+	if u.Hostname() != "localhost" {
+		t.Errorf("host = %q, want localhost", u.Hostname())
+	}
+	if u.Port() != "5432" {
+		t.Errorf("port = %q, want 5432", u.Port())
+	}
+	if u.Query().Get("sslmode") != "require" {
+		t.Errorf("sslmode = %q, want require", u.Query().Get("sslmode"))
+	}
+	if u.Query().Get("sslrootcert") != "/path/to/cert" {
+		t.Errorf("sslrootcert = %q, want /path/to/cert", u.Query().Get("sslrootcert"))
+	}
 }
 
 // TestAccessBasedEnumerationBackfill verifies that the post-AutoMigrate

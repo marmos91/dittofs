@@ -172,6 +172,17 @@ func TestCopyPayload_AtomicSuccess(t *testing.T) {
 		t.Errorf("dst.Size = %d, want 12288", dstFile.Size)
 	}
 
+	// Ctime must be >= the Mtime that CopyPayload wrote (they are set to the
+	// same time.Now() call, so equality is the expected case; >= guards
+	// against sub-nanosecond clock skew on unusual hosts).
+	if dstFile.Ctime.IsZero() {
+		t.Error("dst.Ctime is zero after CopyPayload; expected it to be updated with Mtime")
+	}
+	if dstFile.Ctime.Before(dstFile.Mtime) {
+		t.Errorf("dst.Ctime %v is before dst.Mtime %v; Ctime must advance with content change",
+			dstFile.Ctime, dstFile.Mtime)
+	}
+
 	// Cache: InvalidateFile fired POST-txn for dst.
 	if len(cache.calls) != 1 {
 		t.Fatalf("got %d InvalidateFile calls, want 1", len(cache.calls))
@@ -289,6 +300,57 @@ func TestCopyPayload_NilCacheTolerated(t *testing.T) {
 
 	if len(coord.incrementCalls) != 1 {
 		t.Errorf("got %d IncrementRefCount calls, want 1", len(coord.incrementCalls))
+	}
+}
+
+// TestCopyPayload_CtimeUpdated verifies that CopyPayload advances dstFile.Ctime
+// along with dstFile.Mtime (content change = metadata change, POSIX §4.3).
+func TestCopyPayload_CtimeUpdated(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	coord := &fakeCoordinator{}
+	bs := newCopyTestEngineWithMS(t, coord, ms)
+
+	srcBlocks := []block.BlockRef{
+		{Hash: block.ContentHash{0xCC}, Offset: 0, Size: 4096},
+	}
+	srcHandle := putTestFile(t, ms, "/ctime-src.bin", "ctime-src-pid", srcBlocks, 4096)
+
+	// Seed dst with a known old Ctime so we can detect it did not change.
+	oldTime := time.Now().Add(-1 * time.Hour)
+	dstHandle := putTestFile(t, ms, "/ctime-dst.bin", "ctime-dst-pid", nil, 0)
+	// Overwrite Ctime to a known-old value via a direct PutFile before the copy.
+	dstFilePre, err := ms.GetFile(ctx, dstHandle)
+	if err != nil {
+		t.Fatalf("GetFile(dst) pre-copy: %v", err)
+	}
+	dstFilePre.Ctime = oldTime
+	dstFilePre.Mtime = oldTime
+	if err := ms.PutFile(ctx, dstFilePre); err != nil {
+		t.Fatalf("PutFile(dst) seed old Ctime: %v", err)
+	}
+
+	preCopy := time.Now()
+
+	if err := CopyPayload(ctx, bs, ms, nil, srcHandle, dstHandle, "ctime-src-pid", "ctime-dst-pid"); err != nil {
+		t.Fatalf("CopyPayload failed: %v", err)
+	}
+
+	dstFile, err := ms.GetFile(ctx, dstHandle)
+	if err != nil {
+		t.Fatalf("GetFile(dst) post-copy: %v", err)
+	}
+
+	if !dstFile.Ctime.After(oldTime) {
+		t.Errorf("dst.Ctime %v not advanced past old value %v; CopyPayload must update Ctime",
+			dstFile.Ctime, oldTime)
+	}
+	if dstFile.Ctime.Before(preCopy) {
+		t.Errorf("dst.Ctime %v is before the copy started at %v", dstFile.Ctime, preCopy)
+	}
+	// Ctime and Mtime must be set to the same instant inside CopyPayload.
+	if !dstFile.Ctime.Equal(dstFile.Mtime) {
+		t.Errorf("dst.Ctime %v != dst.Mtime %v; they must be set together", dstFile.Ctime, dstFile.Mtime)
 	}
 }
 

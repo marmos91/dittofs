@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -34,7 +35,12 @@ func (s *GORMStore) GetUserSharePermission(ctx context.Context, username, shareN
 }
 
 func (s *GORMStore) SetUserSharePermission(ctx context.Context, perm *models.UserSharePermission) error {
-	return s.db.WithContext(ctx).Save(perm).Error
+	return s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "user_id"}, {Name: "share_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"share_name", "permission"}),
+		}).
+		Create(perm).Error
 }
 
 func (s *GORMStore) DeleteUserSharePermission(ctx context.Context, username, shareName string) error {
@@ -99,7 +105,12 @@ func (s *GORMStore) GetGroupSharePermission(ctx context.Context, groupName, shar
 }
 
 func (s *GORMStore) SetGroupSharePermission(ctx context.Context, perm *models.GroupSharePermission) error {
-	return s.db.WithContext(ctx).Save(perm).Error
+	return s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "group_id"}, {Name: "share_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"share_name", "permission"}),
+		}).
+		Create(perm).Error
 }
 
 func (s *GORMStore) DeleteGroupSharePermission(ctx context.Context, groupName, shareName string) error {

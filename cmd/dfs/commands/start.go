@@ -112,7 +112,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to ensure admin user: %w", err)
 	}
 	if adminPassword != "" {
-		logger.Info("Admin user created", "username", "admin", "password", adminPassword)
+		logger.Info("Admin user created", "username", "admin")
 		fmt.Printf("\n*** IMPORTANT: Admin user created with password: %s ***\n", adminPassword)
 		fmt.Println("Please save this password. It will not be shown again.")
 		fmt.Println()

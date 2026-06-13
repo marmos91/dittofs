@@ -75,6 +75,7 @@ func CopyPayload(
 		dstFile.Blocks = newBlocks
 		dstFile.Size = srcFile.Size
 		dstFile.Mtime = time.Now()
+		dstFile.Ctime = dstFile.Mtime // content change is also a metadata change
 		if err := tx.PutFile(ctx, dstFile); err != nil {
 			return fmt.Errorf("persist dst file attr: %w", err)
 		}

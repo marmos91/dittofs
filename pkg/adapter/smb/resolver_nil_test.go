@@ -1,6 +1,7 @@
 package smb
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/uuid"
@@ -51,6 +52,53 @@ func TestResolver_GetLockManagerForHandle_MissingShareReturnsNilInterface(t *tes
 	if lm != nil {
 		t.Fatalf("GetLockManagerForHandle for a missing share must return a nil "+
 			"interface, got non-nil interface %#v (typed-nil regression)", lm)
+	}
+}
+
+// TestWireIdentityResolver_NoOpPreservesIdentityUnsub verifies that the early
+// return in wireIdentityResolver (no Kerberos provider, or nil runtime) does NOT
+// touch the identityUnsub field. The nil-guard must run before any prior unsub
+// is invoked, otherwise a stale subscription could be cancelled on a no-op call.
+func TestWireIdentityResolver_NoOpPreservesIdentityUnsub(t *testing.T) {
+	a := New(Config{})
+
+	// No Kerberos provider and a nil runtime: wireIdentityResolver must be a
+	// no-op and must not set identityUnsub.
+	a.wireIdentityResolver(nil)
+	if a.identityUnsub != nil {
+		t.Fatal("wireIdentityResolver no-op must not set identityUnsub")
+	}
+
+	// Inject a fake prior unsub and confirm a no-op call leaves it intact and
+	// does NOT invoke it (the nil-rt / nil-provider guard precedes the unsub).
+	called := false
+	a.identityUnsub = func() { called = true }
+	a.wireIdentityResolver(nil)
+	if called {
+		t.Fatal("wireIdentityResolver no-op must not invoke the prior identityUnsub")
+	}
+	if a.identityUnsub == nil {
+		t.Fatal("wireIdentityResolver no-op must preserve identityUnsub")
+	}
+}
+
+// TestStop_DrainsIdentityUnsub verifies that Stop invokes and clears the
+// identityUnsub function. Before the fix the identity subscription was appended
+// to shareUnsubscribers; this confirms it is now tracked and drained separately.
+func TestStop_DrainsIdentityUnsub(t *testing.T) {
+	a := New(Config{})
+
+	called := false
+	a.identityUnsub = func() { called = true }
+
+	if err := a.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: unexpected error %v", err)
+	}
+	if !called {
+		t.Fatal("Stop must invoke identityUnsub")
+	}
+	if a.identityUnsub != nil {
+		t.Fatal("Stop must clear identityUnsub")
 	}
 }
 

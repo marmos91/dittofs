@@ -18,16 +18,20 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/internal/controller/config"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
@@ -524,6 +528,128 @@ func TestGetTerminationGracePeriodSeconds(t *testing.T) {
 		}
 		if got := getTerminationGracePeriodSeconds(ds); got != override {
 			t.Errorf("expected override %d, got %d", override, got)
+		}
+	})
+}
+
+// TestGenerateRandomSecret_NoBias asserts the generated secret draws from a
+// uniform symbol distribution. The previous implementation indexed a 62-char
+// alphabet with `randomBytes[i] % 62`; since 256 % 62 == 6, the first six
+// symbols were ~25% more likely than the rest (modular bias). base64.RawURL
+// uses a 64-symbol alphabet (256 % 64 == 0), so every symbol is equiprobable.
+func TestGenerateRandomSecret_NoBias(t *testing.T) {
+	const nBytes = 32
+	const iterations = 10_000
+
+	freq := make(map[byte]int)
+	for i := 0; i < iterations; i++ {
+		s, err := generateRandomSecret(nBytes)
+		if err != nil {
+			t.Fatalf("generateRandomSecret error: %v", err)
+		}
+		if len(s) == 0 {
+			t.Fatal("got empty secret")
+		}
+		for _, c := range []byte(s) {
+			freq[c]++
+		}
+	}
+
+	total := 0
+	for _, n := range freq {
+		total += n
+	}
+
+	const alphabet = 64 // base64url has 64 symbols
+	expected := float64(total) / float64(alphabet)
+	tolerance := expected * 0.30
+	for ch, n := range freq {
+		if float64(n) < expected-tolerance || float64(n) > expected+tolerance {
+			t.Errorf("char %q count %d outside [%.0f, %.0f] (expected %.0f) -- possible modular bias",
+				ch, n, expected-tolerance, expected+tolerance, expected)
+		}
+	}
+}
+
+// TestGenerateRandomSecret_UniqueAcrossCalls guards against a zeroed-byte or
+// constant-return regression: two 32-byte secrets must differ.
+func TestGenerateRandomSecret_UniqueAcrossCalls(t *testing.T) {
+	a, err := generateRandomSecret(32)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	b, err := generateRandomSecret(32)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+	if a == b {
+		t.Error("two calls returned identical secrets (collision extremely unlikely with correct implementation)")
+	}
+}
+
+// TestRetryOnConflict_NoSleep asserts retryOnConflict no longer blocks the
+// reconcile goroutine with time.Sleep on conflict. The previous implementation
+// slept (i+1)*100ms per attempt -> 600ms total over three attempts.
+func TestRetryOnConflict_NoSleep(t *testing.T) {
+	conflictErr := apierrors.NewConflict(
+		schema.GroupResource{Group: "dittofs.dittofs.com", Resource: "dittoservers"},
+		"test", fmt.Errorf("rv mismatch"),
+	)
+
+	calls := 0
+	start := time.Now()
+	err := retryOnConflict(func() error {
+		calls++
+		return conflictErr
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected conflict error to be returned after exhausting retries")
+	}
+	if calls != maxRetries {
+		t.Errorf("expected %d calls, got %d", maxRetries, calls)
+	}
+	// Before fix: elapsed >= 600ms (100+200+300ms sleeps). After fix: well under 50ms.
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("retryOnConflict blocked for %v; expected <50ms (no sleep)", elapsed)
+	}
+}
+
+func TestConflictResult(t *testing.T) {
+	conflictErr := apierrors.NewConflict(
+		schema.GroupResource{Group: "dittofs.dittofs.com", Resource: "dittoservers"},
+		"test", fmt.Errorf("rv mismatch"),
+	)
+
+	t.Run("conflict requeues without surfacing an error", func(t *testing.T) {
+		res, err := conflictResult(conflictErr)
+		if err != nil {
+			t.Fatalf("expected nil error for conflict, got %v", err)
+		}
+		if res.RequeueAfter != retryBackoffBase {
+			t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, retryBackoffBase)
+		}
+	})
+
+	t.Run("non-conflict error is returned unchanged", func(t *testing.T) {
+		other := fmt.Errorf("boom")
+		res, err := conflictResult(other)
+		if err != other {
+			t.Errorf("expected the original error to pass through, got %v", err)
+		}
+		if res.RequeueAfter != 0 {
+			t.Errorf("RequeueAfter = %v, want 0 (rate limiter applies)", res.RequeueAfter)
+		}
+	})
+
+	t.Run("nil error yields empty result", func(t *testing.T) {
+		res, err := conflictResult(nil)
+		if err != nil {
+			t.Errorf("expected nil error, got %v", err)
+		}
+		if res.RequeueAfter != 0 {
+			t.Errorf("RequeueAfter = %v, want 0", res.RequeueAfter)
 		}
 	})
 }

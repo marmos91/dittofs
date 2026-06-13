@@ -66,6 +66,11 @@ type UserStore interface {
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	UpdatePassword(ctx context.Context, username, passwordHash, ntHash string) error
 
+	// UpdatePasswordAndFlags updates a user's password hash, NT hash, and
+	// MustChangePassword flag in a single atomic operation.
+	// Returns models.ErrUserNotFound if the user doesn't exist.
+	UpdatePasswordAndFlags(ctx context.Context, username, passwordHash, ntHash string, mustChangePassword bool) error
+
 	// UpdateLastLogin updates the user's last login timestamp.
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	UpdateLastLogin(ctx context.Context, username string, timestamp time.Time) error
@@ -134,6 +139,13 @@ type GroupStore interface {
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	// No error if the user was not in the group.
 	RemoveUserFromGroup(ctx context.Context, username, groupName string) error
+
+	// ReplaceUserGroups replaces all group memberships for a user in a single
+	// atomic transaction. Existing memberships not in groupNames are removed;
+	// memberships in groupNames not yet assigned are added.
+	// Returns models.ErrUserNotFound if the user doesn't exist.
+	// Returns models.ErrGroupNotFound if any group name doesn't exist.
+	ReplaceUserGroups(ctx context.Context, username string, groupNames []string) error
 
 	// GetGroupMembers returns all users who are members of a group.
 	// Returns models.ErrGroupNotFound if the group doesn't exist.

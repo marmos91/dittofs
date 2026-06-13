@@ -143,6 +143,25 @@ func (s *GORMStore) UpdatePassword(ctx context.Context, username, passwordHash, 
 	return nil
 }
 
+func (s *GORMStore) UpdatePasswordAndFlags(ctx context.Context, username, passwordHash, ntHash string, mustChangePassword bool) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&models.User{}).
+			Where("username = ?", username).
+			Updates(map[string]any{
+				"password_hash":        passwordHash,
+				"nt_hash":              ntHash,
+				"must_change_password": mustChangePassword,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return models.ErrUserNotFound
+		}
+		return nil
+	})
+}
+
 func (s *GORMStore) UpdateLastLogin(ctx context.Context, username string, timestamp time.Time) error {
 	result := s.db.WithContext(ctx).
 		Model(&models.User{}).

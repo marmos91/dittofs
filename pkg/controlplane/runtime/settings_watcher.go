@@ -61,11 +61,16 @@ func NewSettingsWatcher(s store.Store, pollInterval time.Duration) *SettingsWatc
 	if pollInterval <= 0 {
 		pollInterval = DefaultPollInterval
 	}
+	// stopped starts already-closed so that Stop() called before Start()
+	// returns immediately instead of deadlocking on <-w.stopped (no goroutine
+	// would ever close it). Start() re-creates it as a fresh open channel.
+	stopped := make(chan struct{})
+	close(stopped)
 	return &SettingsWatcher{
 		store:        s,
 		pollInterval: pollInterval,
 		stopCh:       make(chan struct{}),
-		stopped:      make(chan struct{}),
+		stopped:      stopped,
 	}
 }
 
@@ -91,6 +96,11 @@ func (w *SettingsWatcher) LoadInitial(ctx context.Context) error {
 //
 // The goroutine continues until Stop() is called or the context is cancelled.
 func (w *SettingsWatcher) Start(ctx context.Context) {
+	// Re-create the channels as fresh, open channels. stopped was created
+	// already-closed (so Stop-before-Start is safe); the goroutine below will
+	// close it on exit. Resetting stopCh allows a Start→Stop→Start→Stop cycle.
+	w.stopped = make(chan struct{})
+	w.stopCh = make(chan struct{})
 	go func() {
 		defer close(w.stopped)
 
