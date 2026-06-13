@@ -177,15 +177,23 @@ func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
 	}
 
 	s.mu.Lock()
-	s.stores[shareName] = store
+	// Do NOT publish the store yet — it is published atomically with the lock
+	// manager below so the share is never observable in a partially-ready state
+	// (store visible, lock manager absent).
 	_, exists := s.lockManagers[shareName]
-	// Snapshot this share's removal generation under the same lock that publishes
-	// our store. A RemoveStoreForShare for this share that lands while we recover
-	// (outside s.mu) bumps it; the publish re-check below aborts when it advanced.
+	// Snapshot this share's removal generation under the same lock. A
+	// RemoveStoreForShare for this share that lands while we recover (outside
+	// s.mu) bumps it; the publish re-check below aborts when it advanced.
 	startGen := s.removeGen[shareName]
 	s.mu.Unlock()
 
 	if exists {
+		// Share already has a lock manager; replace only the store reference
+		// under a fresh lock so the replacement is atomic and visible. The lock
+		// manager is ephemeral and intentionally not replaced.
+		s.mu.Lock()
+		s.stores[shareName] = store
+		s.mu.Unlock()
 		return nil
 	}
 
@@ -256,18 +264,15 @@ func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
 	//     stays deleted but lockManagers/dirChangeNotifiers come back, leaving
 	//     stale routing and a lock manager that is never torn down (leak).
 	//
-	// We detect a removal-mid-flight by checking that OUR store is still the one
-	// registered for this share. RemoveStoreForShare deletes s.stores[shareName];
-	// a same-name re-register installs a DIFFERENT store value. Either way, if
-	// the entry is gone or no longer ours, we must abort the publish.
-	cur, stillOurs := s.stores[shareName]
+	// We detect a removal-mid-flight via the removal generation snapshotted in
+	// the first lock block. RemoveStoreForShare bumps s.removeGen[shareName]; if
+	// it advanced while we recovered outside the lock, the share was removed and
+	// we must abort the publish rather than resurrect it.
 	_, lmExists := s.lockManagers[shareName]
-	// A removal that landed during recovery bumps removeGen. The store-pointer
-	// check below misses the case where the same store pointer is re-published
-	// after the removal (the entry then looks "still ours"), so the generation
-	// check is the authoritative removed-mid-flight signal; the pointer check
-	// remains as a defence-in-depth for a different-store re-register.
-	removedMidFlight := !lmExists && (s.removeGen[shareName] != startGen || !stillOurs || cur != store)
+	// The generation delta is the authoritative removed-mid-flight signal. (The
+	// store is not yet in s.stores — it is published below alongside the lock
+	// manager — so there is no store pointer to compare here.)
+	removedMidFlight := !lmExists && s.removeGen[shareName] != startGen
 	if lmExists || removedMidFlight {
 		// Our manager may have armed a grace timer above. It was never
 		// published, so abort that timer without firing onGraceEnd — letting it
@@ -297,6 +302,12 @@ func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
 		lm.AbortGracePeriod()
 		return nil
 	}
+	// Publish store, lock manager, and dir-change notifier atomically under this
+	// single s.mu acquisition so the share is never observable in a
+	// partially-ready state (store visible, lock manager absent). A
+	// lockManagerForHandle / storeForHandle that arrives during recovery sees
+	// neither and consistently reports the share as not-yet-ready.
+	s.stores[shareName] = store
 	s.lockManagers[shareName] = lm
 	// Wire LockManager as DirChangeNotifier: mutations on this share will
 	// dispatch directory lease breaks via the lock manager.
