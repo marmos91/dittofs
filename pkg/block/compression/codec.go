@@ -38,7 +38,7 @@ var zstdCodec codec = &zstdImpl{}
 
 type zstdImpl struct{}
 
-var zstdEncoderPool = sync.Pool{
+var zstdEncoderPool = &sync.Pool{
 	New: func() any {
 		// Discard the bound writer here; callers Reset() before use.
 		enc, err := zstd.NewWriter(io.Discard,
@@ -54,7 +54,7 @@ var zstdEncoderPool = sync.Pool{
 	},
 }
 
-var zstdDecoderPool = sync.Pool{
+var zstdDecoderPool = &sync.Pool{
 	New: func() any {
 		dec, err := zstd.NewReader(nil,
 			zstd.WithDecoderConcurrency(1),
@@ -90,10 +90,14 @@ func (h *zstdEncoderHandle) Close() error {
 		return nil
 	}
 	h.closed = true
-	err := h.enc.Close()
-	zstdEncoderPool.Put(h.enc)
+	enc := h.enc
 	h.enc = nil
-	return err
+	if err := enc.Close(); err != nil {
+		// enc is in an undefined state; let the GC reclaim it.
+		return err
+	}
+	zstdEncoderPool.Put(enc)
+	return nil
 }
 
 func (zstdImpl) DecodeStream(r io.Reader) (io.ReadCloser, error) {
@@ -136,13 +140,13 @@ var lz4Codec codec = &lz4Impl{}
 
 type lz4Impl struct{}
 
-var lz4WriterPool = sync.Pool{
+var lz4WriterPool = &sync.Pool{
 	New: func() any {
 		return lz4.NewWriter(io.Discard)
 	},
 }
 
-var lz4ReaderPool = sync.Pool{
+var lz4ReaderPool = &sync.Pool{
 	New: func() any {
 		return lz4.NewReader(nil)
 	},
@@ -168,10 +172,14 @@ func (h *lz4EncoderHandle) Close() error {
 		return nil
 	}
 	h.closed = true
-	err := h.w.Close()
-	lz4WriterPool.Put(h.w)
+	w := h.w
 	h.w = nil
-	return err
+	if err := w.Close(); err != nil {
+		// w is in an undefined state; let the GC reclaim it.
+		return err
+	}
+	lz4WriterPool.Put(w)
+	return nil
 }
 
 func (lz4Impl) DecodeStream(r io.Reader) (io.ReadCloser, error) {
