@@ -695,6 +695,61 @@ func TestSharePermissions(t *testing.T) {
 		}
 	})
 
+	t.Run("set user share permission is idempotent upsert (first call persists)", func(t *testing.T) {
+		// Use a fresh user/share pair distinct from the shared fixtures so this
+		// sub-test is independent of execution order.
+		uUser := &models.User{Username: "upsert-user", PasswordHash: "h"}
+		store.CreateUser(ctx, uUser)
+		uMeta := &models.MetadataStoreConfig{Name: "upsert-meta", Type: "memory"}
+		uMetaID, _ := store.CreateMetadataStore(ctx, uMeta)
+		uLocal := &models.BlockStoreConfig{Name: "upsert-local", Kind: models.BlockStoreKindLocal, Type: "fs"}
+		uLocalID, _ := store.CreateBlockStore(ctx, uLocal)
+		uShare := &models.Share{Name: "/upsert-share", MetadataStoreID: uMetaID, LocalBlockStoreID: uLocalID}
+		store.CreateShare(ctx, uShare)
+
+		shareInfo, _ := store.GetShare(ctx, "/upsert-share")
+		userInfo, _ := store.GetUser(ctx, "upsert-user")
+
+		// First call — before the fix this silently dropped the row.
+		perm1 := &models.UserSharePermission{
+			UserID:     userInfo.ID,
+			ShareID:    shareInfo.ID,
+			ShareName:  "/upsert-share",
+			Permission: "read",
+		}
+		if err := store.SetUserSharePermission(ctx, perm1); err != nil {
+			t.Fatalf("first SetUserSharePermission: %v", err)
+		}
+		got, err := store.GetUserSharePermission(ctx, "upsert-user", "/upsert-share")
+		if err != nil {
+			t.Fatalf("GetUserSharePermission after first set: %v", err)
+		}
+		if got == nil {
+			t.Fatal("permission not persisted on first SetUserSharePermission call (nil returned) — upsert bug still present")
+		}
+		if got.Permission != "read" {
+			t.Errorf("expected 'read' after first set, got %q", got.Permission)
+		}
+
+		// Second call — must overwrite, not error.
+		perm2 := &models.UserSharePermission{
+			UserID:     userInfo.ID,
+			ShareID:    shareInfo.ID,
+			ShareName:  "/upsert-share",
+			Permission: "read-write",
+		}
+		if err := store.SetUserSharePermission(ctx, perm2); err != nil {
+			t.Fatalf("second SetUserSharePermission: %v", err)
+		}
+		got2, err := store.GetUserSharePermission(ctx, "upsert-user", "/upsert-share")
+		if err != nil {
+			t.Fatalf("GetUserSharePermission after second set: %v", err)
+		}
+		if got2 == nil || got2.Permission != "read-write" {
+			t.Errorf("expected 'read-write' after second set, got %v", got2)
+		}
+	})
+
 	t.Run("get user share permission", func(t *testing.T) {
 		perm, err := store.GetUserSharePermission(ctx, "permuser", "/permshare")
 		if err != nil {
@@ -719,6 +774,59 @@ func TestSharePermissions(t *testing.T) {
 		err := store.SetGroupSharePermission(ctx, perm)
 		if err != nil {
 			t.Fatalf("failed to set group permission: %v", err)
+		}
+	})
+
+	t.Run("set group share permission is idempotent upsert (first call persists)", func(t *testing.T) {
+		uGroup := &models.Group{Name: "upsert-group"}
+		store.CreateGroup(ctx, uGroup)
+		uMeta2 := &models.MetadataStoreConfig{Name: "upsert-meta2", Type: "memory"}
+		uMetaID2, _ := store.CreateMetadataStore(ctx, uMeta2)
+		uLocal2 := &models.BlockStoreConfig{Name: "upsert-local2", Kind: models.BlockStoreKindLocal, Type: "fs"}
+		uLocalID2, _ := store.CreateBlockStore(ctx, uLocal2)
+		uShare2 := &models.Share{Name: "/upsert-gshare", MetadataStoreID: uMetaID2, LocalBlockStoreID: uLocalID2}
+		store.CreateShare(ctx, uShare2)
+
+		shareInfo, _ := store.GetShare(ctx, "/upsert-gshare")
+		groupInfo, _ := store.GetGroup(ctx, "upsert-group")
+
+		// First call — before the fix this silently dropped the row.
+		gperm1 := &models.GroupSharePermission{
+			GroupID:    groupInfo.ID,
+			ShareID:    shareInfo.ID,
+			ShareName:  "/upsert-gshare",
+			Permission: "read",
+		}
+		if err := store.SetGroupSharePermission(ctx, gperm1); err != nil {
+			t.Fatalf("first SetGroupSharePermission: %v", err)
+		}
+		ggot, err := store.GetGroupSharePermission(ctx, "upsert-group", "/upsert-gshare")
+		if err != nil {
+			t.Fatalf("GetGroupSharePermission after first set: %v", err)
+		}
+		if ggot == nil {
+			t.Fatal("permission not persisted on first SetGroupSharePermission call (nil returned) — upsert bug still present")
+		}
+		if ggot.Permission != "read" {
+			t.Errorf("expected 'read' after first set, got %q", ggot.Permission)
+		}
+
+		// Second call — must overwrite, not error.
+		gperm2 := &models.GroupSharePermission{
+			GroupID:    groupInfo.ID,
+			ShareID:    shareInfo.ID,
+			ShareName:  "/upsert-gshare",
+			Permission: "admin",
+		}
+		if err := store.SetGroupSharePermission(ctx, gperm2); err != nil {
+			t.Fatalf("second SetGroupSharePermission: %v", err)
+		}
+		ggot2, err := store.GetGroupSharePermission(ctx, "upsert-group", "/upsert-gshare")
+		if err != nil {
+			t.Fatalf("GetGroupSharePermission after second set: %v", err)
+		}
+		if ggot2 == nil || ggot2.Permission != "admin" {
+			t.Errorf("expected 'admin' after second set, got %v", ggot2)
 		}
 	})
 
