@@ -167,17 +167,13 @@ func followLogs(logFile string, initialLines int, since time.Time) error {
 
 	reader := bufio.NewReader(file)
 
-	// Set up signal handling for graceful exit
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigCh
-		cancel()
-	}()
+	// Set up signal handling for graceful exit.
+	// signal.NotifyContext registers the signal channel and cancels ctx on
+	// SIGINT/SIGTERM. The deferred stop() guarantees signal.Stop is called on
+	// every return path, unregistering the channel and avoiding a leaked
+	// goroutine + signal registration.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	fmt.Fprintf(os.Stderr, "Following %s (Ctrl+C to stop)...\n", logFile)
 
@@ -195,10 +191,12 @@ func followLogs(logFile string, initialLines int, since time.Time) error {
 				// Read and print new lines
 				for {
 					line, err := reader.ReadString('\n')
+					if line != "" {
+						fmt.Print(line)
+					}
 					if err != nil {
 						break
 					}
-					fmt.Print(line)
 				}
 			}
 
