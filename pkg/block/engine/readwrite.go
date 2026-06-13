@@ -408,10 +408,27 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 //     reclaimed only when no row anywhere references the hash, so a hash a
 //     sibling file still uses stays alive even after this row is reaped.
 //
-// No-ops when the coordinator is unwired (tests/fixtures) or when nothing
-// was superseded (pure append, first write).
+// No-ops when the coordinator is unwired or when priorOffsets is empty
+// (first write). When newBlocks is empty all prior rows are reaped
+// unconditionally (file truncated to zero bytes this pass).
 func (bs *Store) reapSupersededFileBlocks(ctx context.Context, payloadID string, priorOffsets []uint64, newBlocks []block.BlockRef) error {
-	if bs.coordinator == nil || len(priorOffsets) == 0 || len(newBlocks) == 0 {
+	if bs.coordinator == nil || len(priorOffsets) == 0 {
+		return nil
+	}
+	// Fast path: no new chunks were produced (file truncated to zero bytes
+	// or the reconstructed stream was entirely clipped by the truncation
+	// fence). Every prior row is unconditionally superseded — reap all.
+	if len(newBlocks) == 0 {
+		reaped := make(map[uint64]struct{}, len(priorOffsets))
+		for _, off := range priorOffsets {
+			if _, done := reaped[off]; done {
+				continue
+			}
+			reaped[off] = struct{}{}
+			if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, off); err != nil {
+				return fmt.Errorf("reap superseded block %s/%d: %w", payloadID, off, err)
+			}
+		}
 		return nil
 	}
 	regionStart := newBlocks[0].Offset
