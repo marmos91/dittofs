@@ -386,10 +386,23 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 		}
 	}
 
-	// Remove lock-owner from lockOwners map
+	// Remove lock-owner from lockOwners map only when no other LockState
+	// still references this owner (reference-count to zero). A LockOwner can
+	// be shared across multiple LockState entries (one per open-state/file),
+	// so deleting it on the first free would blind replay-detection and the
+	// owner caches for the still-live lock states.
 	if lockState.LockOwner != nil {
 		lockKey := makeLockOwnerKey(lockState.LockOwner.ClientID, lockState.LockOwner.OwnerData)
-		delete(sm.lockOwners, lockKey)
+		ownerStillReferenced := false
+		for _, ls := range sm.lockStateByOther {
+			if ls.LockOwner == lockState.LockOwner {
+				ownerStillReferenced = true
+				break
+			}
+		}
+		if !ownerStillReferenced {
+			delete(sm.lockOwners, lockKey)
+		}
 	}
 
 	// Remove from parent open state's LockStates slice

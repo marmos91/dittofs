@@ -133,16 +133,24 @@ func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cooki
 	// avoiding a duplicate store lookup.
 	currentVerifier := directoryMtimeVerifier(page.DirMtime)
 
-	// Validate incoming cookie verifier for non-initial requests (advisory only).
-	// cookie=0 means initial request; cookieVerf all-zeros means client doesn't use verifiers.
-	// On mismatch, log at debug level but continue serving entries (matches NFSv3 behavior).
+	// Validate incoming cookie verifier for non-initial requests.
+	// cookie=0 means initial request, so the verifier is ignored; an all-zeros
+	// cookieVerf likewise means the client does not use verifiers.
+	// On a non-zero-cookie verifier mismatch, return NFS4ERR_BAD_COOKIE per
+	// RFC 7530 Section 16.24.5: the directory changed since the cookie was
+	// issued, so the cookie is no longer valid and the client must restart.
 	incomingVerf := binary.BigEndian.Uint64(cookieVerf[:])
 	if cookie != 0 && incomingVerf != 0 && incomingVerf != currentVerifier {
-		logger.Debug("NFSv4 READDIR: directory modified since last read, continuing with current entries",
+		logger.Debug("NFSv4 READDIR: cookieverf mismatch, returning NFS4ERR_BAD_COOKIE",
 			"handle", fmt.Sprintf("%x", ctx.CurrentFH),
 			"incoming_verf", fmt.Sprintf("0x%016x", incomingVerf),
 			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
 			"client", ctx.ClientAddr)
+		return &types.CompoundResult{
+			Status: types.NFS4ERR_BAD_COOKIE,
+			OpCode: types.OP_READDIR,
+			Data:   encodeStatusOnly(types.NFS4ERR_BAD_COOKIE),
+		}
 	}
 
 	// Debug logging for READDIR

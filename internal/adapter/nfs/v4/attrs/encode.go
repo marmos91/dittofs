@@ -79,17 +79,24 @@ const DefaultLeaseTime = 90
 
 // leaseTimeSeconds holds the configured lease time for FATTR4_LEASE_TIME.
 // Updated by SetLeaseTime() from the handler when StateManager is available.
-var leaseTimeSeconds uint32 = DefaultLeaseTime
+// Uses atomic.Uint32 to avoid data races with concurrent GETATTR encoding.
+var leaseTimeSeconds atomic.Uint32
+
+func init() {
+	leaseTimeSeconds.Store(DefaultLeaseTime)
+}
 
 // SetLeaseTime configures the lease time returned by FATTR4_LEASE_TIME.
 // Called by the handler layer when StateManager provides the lease duration.
+// Thread-safe: uses atomic store.
 func SetLeaseTime(seconds uint32) {
-	leaseTimeSeconds = seconds
+	leaseTimeSeconds.Store(seconds)
 }
 
 // GetLeaseTime returns the currently configured lease time in seconds.
+// Thread-safe: uses atomic load.
 func GetLeaseTime() uint32 {
-	return leaseTimeSeconds
+	return leaseTimeSeconds.Load()
 }
 
 // Filesystem capability defaults (matching metadata store defaults).
@@ -118,19 +125,29 @@ func SetFilesystemCapabilities(maxFileSize uint64, maxReadSize, maxWriteSize uin
 }
 
 // identityMapper holds the configured identity mapper for FATTR4_OWNER/OWNER_GROUP encoding.
-// When nil, the numeric UID/GID format is used as fallback.
-var identityMapper identity.IdentityMapper
+// When nil (zero Pointer), the numeric UID/GID format is used as fallback.
+// Uses atomic.Pointer to avoid data races with concurrent GETATTR encoding.
+var identityMapper atomic.Pointer[identity.IdentityMapper]
 
 // SetIdentityMapper configures the identity mapper used for FATTR4_OWNER
 // and FATTR4_OWNER_GROUP encoding. When set, UIDs/GIDs are reverse-resolved
 // to user@domain/group@domain format. When nil, numeric format is used.
+// Thread-safe: uses atomic store.
 func SetIdentityMapper(mapper identity.IdentityMapper) {
-	identityMapper = mapper
+	if mapper == nil {
+		identityMapper.Store(nil)
+		return
+	}
+	identityMapper.Store(&mapper)
 }
 
 // GetIdentityMapper returns the currently configured identity mapper, or nil.
+// Thread-safe: uses atomic load.
 func GetIdentityMapper() identity.IdentityMapper {
-	return identityMapper
+	if p := identityMapper.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // ============================================================================
@@ -323,7 +340,7 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 
 	case FATTR4_LEASE_TIME:
 		// uint32: lease duration in seconds (configured via SetLeaseTime)
-		return xdr.WriteUint32(buf, leaseTimeSeconds)
+		return xdr.WriteUint32(buf, leaseTimeSeconds.Load())
 
 	case FATTR4_RDATTR_ERROR:
 		// nfsstat4: NFS4_OK (no error)
@@ -551,7 +568,7 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 
 	case FATTR4_LEASE_TIME:
 		// uint32: lease duration in seconds (configured via SetLeaseTime)
-		return xdr.WriteUint32(buf, leaseTimeSeconds)
+		return xdr.WriteUint32(buf, leaseTimeSeconds.Load())
 
 	case FATTR4_RDATTR_ERROR:
 		return xdr.WriteUint32(buf, v4types.NFS4_OK)
@@ -707,10 +724,11 @@ func NeedsFilesystemStats(requested []uint32) bool {
 // matching idmapd configuration would cause the client to map all owners to
 // nobody (65534).
 func resolveOwnerString(uid uint32) string {
-	if identityMapper != nil {
+	if p := identityMapper.Load(); p != nil {
+		mapper := *p
 		// Try numeric UID format as the principal for reverse lookup
 		principal := fmt.Sprintf("%d@localdomain", uid)
-		resolved, err := identityMapper.Resolve(context.Background(), principal)
+		resolved, err := mapper.Resolve(context.Background(), principal)
 		if err == nil && resolved != nil && resolved.Found && resolved.Username != "" {
 			domain := resolved.Domain
 			if domain == "" {

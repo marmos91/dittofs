@@ -118,6 +118,35 @@ func encodeCBCompound(callbackIdent uint32, ops []byte) []byte {
 // Connection Helpers
 // ============================================================================
 
+// allowLoopbackCallback permits dialling loopback callback addresses. It is
+// false in production (loopback callbacks are an SSRF vector) and is only set
+// to true by tests that drive the dial-out path against a 127.0.0.1 mock
+// listener.
+var allowLoopbackCallback = false
+
+// validateCallbackHost rejects callback addresses that must not be dialled
+// from the server: loopback (127.x, ::1) and link-local unicast
+// (169.254.0.0/16 — which covers the cloud-instance metadata endpoint
+// 169.254.169.254 — and fe80::/10). Dialling such addresses turns the NFS
+// callback path into an SSRF relay into the server's own network context.
+//
+// ParseUniversalAddr always returns an IP literal, so net.ParseIP must succeed
+// for any address that passed address parsing; a nil result here means the host
+// string is malformed and must be rejected.
+func validateCallbackHost(host string) error {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("callback host %q is not a valid IP address", host)
+	}
+	if ip.IsLoopback() && !allowLoopbackCallback {
+		return fmt.Errorf("callback host %q is a loopback address", host)
+	}
+	if ip.IsLinkLocalUnicast() {
+		return fmt.Errorf("callback host %q is a link-local address", host)
+	}
+	return nil
+}
+
 // dialCallback establishes a TCP connection to a client's callback address.
 // It parses the universal address, dials with the context deadline, and sets
 // I/O deadlines on the connection. The caller must close the returned connection.
@@ -125,6 +154,10 @@ func dialCallback(ctx context.Context, callback CallbackInfo) (net.Conn, error) 
 	host, port, err := ParseUniversalAddr(callback.NetID, callback.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("parse callback address: %w", err)
+	}
+
+	if err := validateCallbackHost(host); err != nil {
+		return nil, fmt.Errorf("callback address rejected: %w", err)
 	}
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))

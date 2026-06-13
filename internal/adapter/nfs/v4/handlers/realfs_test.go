@@ -589,19 +589,54 @@ func TestReadDir_RealFS_VerifierMismatch(t *testing.T) {
 	binary.BigEndian.PutUint64(staleVerf[:], initial.verifier^0xFF)
 
 	// Second READDIR with a real cookie from the first page and stale verifier.
-	// Advisory-only mismatch: should return NFS4_OK, not an error.
+	// RFC 7530 §16.24.5 requires NFS4ERR_BAD_COOKIE on stale verifier.
 	ctx2 := newRealFSContext(0, 0)
 	ctx2.CurrentFH = make([]byte, len(fx.rootHandle))
 	copy(ctx2.CurrentFH, fx.rootHandle)
 
 	result2 := fx.handler.readDirRealFS(ctx2, initial.lastCookie, staleVerf, 8192, attrRequest)
-	if result2.Status != types.NFS4_OK {
-		t.Fatalf("READDIR with stale verifier status = %d, want NFS4_OK (advisory only)", result2.Status)
+	if result2.Status != types.NFS4ERR_BAD_COOKIE {
+		t.Fatalf("READDIR with stale verifier status = %d, want NFS4ERR_BAD_COOKIE (%d)",
+			result2.Status, types.NFS4ERR_BAD_COOKIE)
+	}
+}
+
+func TestReadDir_RealFS_ZeroCookieIgnoresVerifierMismatch(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+
+	fx.createTestFile(t, fx.rootHandle, "aaa.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	ctx := newRealFSContext(0, 0)
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	var attrRequest []uint32
+	attrs.SetBit(&attrRequest, attrs.FATTR4_TYPE)
+
+	// Garbage verifier with cookie=0 must be silently ignored (initial READDIR).
+	var junkVerf [8]byte
+	binary.BigEndian.PutUint64(junkVerf[:], 0xDEADBEEFCAFEBABE)
+
+	result := fx.handler.readDirRealFS(ctx, 0, junkVerf, 8192, attrRequest)
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("initial READDIR (cookie=0) must ignore verifier mismatch, got status %d", result.Status)
 	}
 
-	stale := parseReadDirResponse(t, result2)
-	if len(stale.entryNames) == 0 {
-		t.Error("expected entries to be served despite verifier mismatch, got none")
+	// All-zero verifier with cookie!=0 must also be silently ignored (client
+	// does not use verifiers).
+	resp := parseReadDirResponse(t, result)
+	if resp.lastCookie == 0 {
+		t.Fatal("expected at least one entry")
+	}
+
+	var zeroVerf [8]byte
+	ctx2 := newRealFSContext(0, 0)
+	ctx2.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx2.CurrentFH, fx.rootHandle)
+
+	result2 := fx.handler.readDirRealFS(ctx2, resp.lastCookie, zeroVerf, 8192, attrRequest)
+	if result2.Status != types.NFS4_OK {
+		t.Fatalf("READDIR with zero verifier must ignore mismatch, got status %d", result2.Status)
 	}
 }
 

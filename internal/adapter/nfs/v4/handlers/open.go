@@ -245,6 +245,23 @@ func (h *Handler) handleOpenClaimNull(
 	}
 	beforeCtime := uint64(parentFile.Ctime.UnixNano())
 
+	// For OPEN4_CREATE where the file may not yet exist, check the delegation
+	// conflict against the parent directory — the file handle is not yet known.
+	// This prevents orphaning a newly-created file if NFS4ERR_DELAY must be
+	// returned. If another client holds a conflicting delegation, trigger async
+	// CB_RECALL and return NFS4ERR_DELAY so the client retries the entire OPEN.
+	// For OPEN4_NOCREATE the file exists; the conflict is checked after lookup.
+	if openType == types.OPEN4_CREATE {
+		conflict, _ := h.StateManager.CheckDelegationConflict([]byte(parentHandle), clientID, shareAccess)
+		if conflict {
+			logger.Debug("NFSv4 OPEN CLAIM_NULL CREATE delegation conflict, returning NFS4ERR_DELAY",
+				"file", filename,
+				"client_id", clientID,
+				"client", ctx.ClientAddr)
+			return openError(types.NFS4ERR_DELAY)
+		}
+	}
+
 	// Execute OPEN logic
 
 	var fileHandle metadata.FileHandle
@@ -265,6 +282,18 @@ func (h *Handler) handleOpenClaimNull(
 			return openError(common.MapToNFS4(accessErr))
 		}
 		fileHandle = fh
+
+		// The file exists; check the delegation conflict against its own handle.
+		// If another client holds a conflicting delegation, trigger async
+		// CB_RECALL and return NFS4ERR_DELAY so the client retries the OPEN.
+		conflict, _ := h.StateManager.CheckDelegationConflict([]byte(fileHandle), clientID, shareAccess)
+		if conflict {
+			logger.Debug("NFSv4 OPEN CLAIM_NULL NOCREATE delegation conflict, returning NFS4ERR_DELAY",
+				"file", filename,
+				"client_id", clientID,
+				"client", ctx.ClientAddr)
+			return openError(types.NFS4ERR_DELAY)
+		}
 	} else {
 		// OPEN4_CREATE: create or open existing
 		child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, filename)
@@ -283,6 +312,19 @@ func (h *Handler) handleOpenClaimNull(
 				return openError(common.MapToNFS4(accessErr))
 			}
 			fileHandle = fh
+
+			// The file already exists; opening it via UNCHECKED4 is an open of
+			// an existing file. Check the delegation conflict against its own
+			// handle. If another client holds a conflicting delegation, trigger
+			// async CB_RECALL and return NFS4ERR_DELAY so the client retries.
+			conflict, _ := h.StateManager.CheckDelegationConflict([]byte(fileHandle), clientID, shareAccess)
+			if conflict {
+				logger.Debug("NFSv4 OPEN CLAIM_NULL CREATE/UNCHECKED4 existing-file delegation conflict, returning NFS4ERR_DELAY",
+					"file", filename,
+					"client_id", clientID,
+					"client", ctx.ClientAddr)
+				return openError(types.NFS4ERR_DELAY)
+			}
 		} else {
 			// File doesn't exist: create it
 			uid, gid := effectiveUIDGID(authCtx)
@@ -317,19 +359,6 @@ func (h *Handler) handleOpenClaimNull(
 		if getErr == nil {
 			afterCtime = uint64(parentFileAfter.Ctime.UnixNano())
 		}
-	}
-
-	// Check delegation conflicts BEFORE creating state
-	// If another client holds a conflicting delegation, trigger async CB_RECALL
-	// and return NFS4ERR_DELAY so the client retries the entire OPEN.
-
-	conflict, _ := h.StateManager.CheckDelegationConflict([]byte(fileHandle), clientID, shareAccess)
-	if conflict {
-		logger.Debug("NFSv4 OPEN delegation conflict, returning NFS4ERR_DELAY",
-			"file", filename,
-			"client_id", clientID,
-			"client", ctx.ClientAddr)
-		return openError(types.NFS4ERR_DELAY)
 	}
 
 	// Create tracked state via StateManager
@@ -669,6 +698,12 @@ func (h *Handler) handleOpenClaimDelegateCur(
 			OpCode: types.OP_OPEN,
 			Data:   openResult.CachedData,
 		}
+	}
+
+	// In NFSv4.1, OPEN_CONFIRM was removed; auto-confirm if needed.
+	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
+		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
 	}
 
 	logger.Debug("NFSv4 OPEN CLAIM_DELEGATE_CUR successful",
