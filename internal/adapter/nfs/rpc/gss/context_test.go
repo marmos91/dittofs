@@ -92,6 +92,49 @@ func TestContextDeleteNonexistent(t *testing.T) {
 	store.Delete([]byte("does-not-exist"))
 }
 
+// Deleting a handle that is not present must not decrement the maintained
+// counter; otherwise the cap accounting drifts and the store would silently
+// accept contexts beyond maxContexts.
+func TestContextDeleteNonexistentDoesNotDecrementCount(t *testing.T) {
+	store := NewContextStore(100, 10*time.Minute)
+	defer store.Stop()
+
+	ctx := newTestContext("alice", "EXAMPLE.COM")
+	store.Store(ctx)
+	if store.Count() != 1 {
+		t.Fatalf("expected 1 context after store, got %d", store.Count())
+	}
+
+	store.Delete([]byte("never-stored"))
+	if store.Count() != 1 {
+		t.Fatalf("delete of absent handle changed count: want 1, got %d", store.Count())
+	}
+}
+
+// Deleting the same handle twice must decrement the counter exactly once. A
+// double-decrement would push Count negative and corrupt the capacity check in
+// Store, letting the store grow without bound.
+func TestContextDoubleDeleteDecrementsOnce(t *testing.T) {
+	store := NewContextStore(2, 10*time.Minute)
+	defer store.Stop()
+
+	ctx := newTestContext("bob", "EXAMPLE.COM")
+	store.Store(ctx)
+
+	store.Delete(ctx.Handle)
+	store.Delete(ctx.Handle) // second delete is a no-op for the counter
+	if store.Count() != 0 {
+		t.Fatalf("double delete drove count off zero: got %d", store.Count())
+	}
+
+	// The cap must still admit exactly maxContexts contexts after the no-op delete.
+	store.Store(newTestContext("c1", "EXAMPLE.COM"))
+	store.Store(newTestContext("c2", "EXAMPLE.COM"))
+	if store.Count() != 2 {
+		t.Fatalf("expected count to cap at 2, got %d", store.Count())
+	}
+}
+
 func TestContextTTLCleanup(t *testing.T) {
 	// Use a very short TTL so we can test cleanup
 	store := NewContextStore(100, 10*time.Millisecond)

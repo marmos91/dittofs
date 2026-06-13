@@ -178,7 +178,7 @@ func (h *Handler) Read(
 		}, nil
 	}
 
-	metaSvc, _, err := getServicesForHandle(h.Registry, ctx.Context, fileHandle)
+	metaSvc, err := getMetadataService(h.Registry)
 	if err != nil {
 		logger.ErrorCtx(ctx.Context, "READ failed: metadata service not available", "client", clientIP, "error", err)
 		return &ReadResponse{

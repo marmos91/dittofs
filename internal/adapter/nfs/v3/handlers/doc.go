@@ -108,6 +108,23 @@ func (h *Handler) convertFileAttrToNFS(fileHandle metadata.FileHandle, fileAttr 
 	return xdr.MetadataToNFS(fileAttr, fileid)
 }
 
+// wccAfterOrFallback returns the post-op WCC attributes for handle by fetching
+// the current file from the store, falling back to the supplied pre-op
+// attributes when the fetch fails or returns nil. This guards against
+// dereferencing a nil *metadata.File on the WCC error paths (a best-effort
+// GetFile is intentionally ignored for its error).
+func (h *Handler) wccAfterOrFallback(
+	ctx *NFSHandlerContext,
+	metaSvc *metadata.Service,
+	handle metadata.FileHandle,
+	fallback *metadata.FileAttr,
+) *types.NFSFileAttr {
+	if updated, err := metaSvc.GetFile(ctx.Context, handle); err == nil && updated != nil {
+		return h.convertFileAttrToNFS(handle, &updated.FileAttr)
+	}
+	return h.convertFileAttrToNFS(handle, fallback)
+}
+
 // dirWccPair derives the WCC before/after attributes for a directory (or, for
 // SETATTR, a file) from the atomic *metadata.DirWcc a mutation returned (H9).
 //

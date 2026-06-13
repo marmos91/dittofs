@@ -184,13 +184,7 @@ func (h *Handler) Link(
 		logger.DebugCtx(ctx.Context, "LINK failed: name already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Get updated directory attributes for WCC
-		updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
-		var dirWccAfter *types.NFSFileAttr
-		if updatedDirFile != nil {
-			dirWccAfter = h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
-		} else {
-			dirWccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
-		}
+		dirWccAfter := h.wccAfterOrFallback(ctx, metaSvc, dirHandle, &dirFile.FileAttr)
 
 		return &LinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -218,13 +212,7 @@ func (h *Handler) Link(
 		logError(ctx.Context, err, "LINK failed: store error", "name", req.Name, "client", clientIP)
 
 		// Get updated directory attributes for WCC
-		updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
-		var dirWccAfter *types.NFSFileAttr
-		if updatedDirFile != nil {
-			dirWccAfter = h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
-		} else {
-			dirWccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
-		}
+		dirWccAfter := h.wccAfterOrFallback(ctx, metaSvc, dirHandle, &dirFile.FileAttr)
 
 		// Map store errors to NFS status codes
 		status := common.MapToNFS3(err)

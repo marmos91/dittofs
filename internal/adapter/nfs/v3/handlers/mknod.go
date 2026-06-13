@@ -203,13 +203,7 @@ func (h *Handler) Mknod(
 		logger.DebugCtx(ctx.Context, "MKNOD failed: file already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Get updated parent attributes for WCC data
-		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		var wccAfter *types.NFSFileAttr
-		if updatedParentFile != nil {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
-		} else {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-		}
+		wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 		return &MknodResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -279,13 +273,7 @@ func (h *Handler) Mknod(
 		logError(ctx.Context, err, "MKNOD failed: store error", "name", req.Name, "type", req.Type, "client", clientIP)
 
 		// Get updated parent attributes for WCC data
-		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		var wccAfter *types.NFSFileAttr
-		if updatedParentFile != nil {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
-		} else {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-		}
+		wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 		// Map store errors to NFS status codes
 		status := common.MapToNFS3(err)

@@ -174,13 +174,7 @@ func (h *Handler) Mkdir(
 		logger.DebugCtx(ctx.Context, "MKDIR cancelled during existence check", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
-		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		var wccAfter *types.NFSFileAttr
-		if updatedParentFile != nil {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
-		} else {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-		}
+		wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -194,13 +188,7 @@ func (h *Handler) Mkdir(
 		logger.DebugCtx(ctx.Context, "MKDIR failed: directory already exists", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		// Get updated parent attributes for WCC data
-		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		var wccAfter *types.NFSFileAttr
-		if updatedParentFile != nil {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
-		} else {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-		}
+		wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -217,13 +205,7 @@ func (h *Handler) Mkdir(
 		logger.DebugCtx(ctx.Context, "MKDIR cancelled before create operation", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
 		// Get updated parent attributes for WCC data
-		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		var wccAfter *types.NFSFileAttr
-		if updatedParentFile != nil {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
-		} else {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-		}
+		wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -280,13 +262,7 @@ func (h *Handler) Mkdir(
 			logger.DebugCtx(ctx.Context, "MKDIR cancelled during create operation", "name", req.Name, "client", clientIP, "error", ctx.Context.Err())
 
 			// Get updated parent attributes for WCC data
-			updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-			var wccAfter *types.NFSFileAttr
-			if updatedParentFile != nil {
-				wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
-			} else {
-				wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-			}
+			wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 			return &MkdirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -298,13 +274,7 @@ func (h *Handler) Mkdir(
 		logError(ctx.Context, err, "MKDIR failed: store error", "name", req.Name, "client", clientIP)
 
 		// Get updated parent attributes for WCC data
-		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		var wccAfter *types.NFSFileAttr
-		if updatedParentFile != nil {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
-		} else {
-			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
-		}
+		wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 		// Map store errors to NFS status codes
 		status := common.MapToNFS3(err)
