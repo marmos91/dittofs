@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -128,4 +129,57 @@ func TestHandleStoreError(t *testing.T) {
 			}
 		})
 	}
+}
+
+type simpleBody struct {
+	Name string `json:"name"`
+}
+
+func TestDecodeJSONBody(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		body := strings.NewReader(`{"name":"hello"}`)
+		req := httptest.NewRequest(http.MethodPost, "/", body)
+		rr := httptest.NewRecorder()
+		var v simpleBody
+		if !decodeJSONBody(rr, req, &v) {
+			t.Fatal("expected true, got false")
+		}
+		if v.Name != "hello" {
+			t.Fatalf("Name = %q, want hello", v.Name)
+		}
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		body := strings.NewReader(`not-json`)
+		req := httptest.NewRequest(http.MethodPost, "/", body)
+		rr := httptest.NewRecorder()
+		var v simpleBody
+		if decodeJSONBody(rr, req, &v) {
+			t.Fatal("expected false, got true")
+		}
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+		}
+		if ct := rr.Header().Get("Content-Type"); ct != ContentTypeProblemJSON {
+			t.Fatalf("Content-Type = %q, want %q", ct, ContentTypeProblemJSON)
+		}
+	})
+
+	t.Run("body too large", func(t *testing.T) {
+		// Build a payload that exceeds maxRequestBodyBytes.
+		// Wrap in a JSON string so it is syntactically valid JSON up to the cut.
+		big := `{"name":"` + strings.Repeat("a", maxRequestBodyBytes) + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(big))
+		rr := httptest.NewRecorder()
+		var v simpleBody
+		if decodeJSONBody(rr, req, &v) {
+			t.Fatal("expected false, got true")
+		}
+		if rr.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want 413", rr.Code)
+		}
+		if ct := rr.Header().Get("Content-Type"); ct != ContentTypeProblemJSON {
+			t.Fatalf("Content-Type = %q, want %q", ct, ContentTypeProblemJSON)
+		}
+	})
 }

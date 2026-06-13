@@ -181,10 +181,25 @@ func restoreRedactedArray(oldArr, newArr []any) bool {
 	return changed
 }
 
+// maxRequestBodyBytes is the upper bound on any JSON request body accepted
+// by the control-plane API. 1 MiB is well above the largest legitimate
+// payload (share config + ACL) and prevents OOM / DoS via unbounded reads.
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 // decodeJSONBody decodes a JSON request body into the provided pointer.
-// Returns true if successful, false if decoding fails (error response is written automatically).
+// The body is capped at maxRequestBodyBytes; exceeding the limit yields a
+// 413 response. Any other decode failure yields a 400 response.
+// Returns true if successful; error response is written automatically.
 func decodeJSONBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			WriteProblem(w, http.StatusRequestEntityTooLarge,
+				"Request Entity Too Large",
+				"request body exceeds the 1 MiB limit")
+			return false
+		}
 		BadRequest(w, "Invalid request body")
 		return false
 	}
