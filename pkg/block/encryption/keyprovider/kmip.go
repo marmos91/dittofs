@@ -142,7 +142,11 @@ func fetchKMIPSymmetricKey(ctx context.Context, endpoint string, tlsCfg *tls.Con
 			item.ResultStatus, item.ResultReason, item.ResultMessage)
 	}
 	var payload kmip.GetResponsePayload
-	if err := ttlv.Unmarshal(item.ResponsePayload.(ttlv.TTLV), &payload); err != nil {
+	raw, ok := item.ResponsePayload.(ttlv.TTLV)
+	if !ok {
+		return nil, fmt.Errorf("keyprovider: kmip Get payload is not TTLV (got %T)", item.ResponsePayload)
+	}
+	if err := ttlv.Unmarshal(raw, &payload); err != nil {
 		return nil, fmt.Errorf("keyprovider: kmip decode Get payload: %w", err)
 	}
 	if payload.ObjectType != kmip14.ObjectTypeSymmetricKey {

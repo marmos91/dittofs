@@ -303,6 +303,61 @@ func TestKMIP_FetchSymmetricKey_ServerFailure(t *testing.T) {
 	}
 }
 
+// kmipNilPayloadResponse returns a success-status ResponseMessage with no
+// ResponsePayload field. The library leaves ResponsePayload as nil after
+// decode, so a bare type assertion in fetchKMIPSymmetricKey would panic.
+func kmipNilPayloadResponse(t *testing.T) ttlv.TTLV {
+	t.Helper()
+	resp := kmip.ResponseMessage{
+		ResponseHeader: kmip.ResponseHeader{
+			ProtocolVersion: kmip.ProtocolVersion{ProtocolVersionMajor: 1, ProtocolVersionMinor: 4},
+			TimeStamp:       time.Now(),
+			BatchCount:      1,
+		},
+		BatchItem: []kmip.ResponseBatchItem{{
+			Operation:    kmip14.OperationGet,
+			ResultStatus: kmip14.ResultStatusSuccess,
+			// ResponsePayload intentionally omitted (nil interface{}).
+		}},
+	}
+	raw, err := ttlv.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal nil-payload kmip response: %v", err)
+	}
+	return raw
+}
+
+// TestKMIP_FetchSymmetricKey_NilPayload verifies that a success-status KMIP
+// response with a missing ResponsePayload does not panic but returns a
+// descriptive error.
+func TestKMIP_FetchSymmetricKey_NilPayload(t *testing.T) {
+	dir := t.TempDir()
+	srvCert, srvKey, srvPEM := genSelfSigned(t, dir, "server")
+	cliCert, cliKey, _ := genSelfSigned(t, dir, "client")
+	caPath := filepath.Join(dir, "ca.pem")
+	if err := os.WriteFile(caPath, srvPEM, 0o600); err != nil {
+		t.Fatalf("write ca: %v", err)
+	}
+
+	srv := startFakeKMIP(t, serverTLSConfig(t, srvCert, srvKey), kmipNilPayloadResponse(t))
+
+	cfg := Config{
+		Kind:       KindKMIP,
+		Endpoint:   srv.addr(),
+		ClientCert: cliCert,
+		ClientKey:  cliKey,
+		ServerCA:   caPath,
+		KeyUID:     "k",
+	}
+	_, err := newKMIPProvider(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("want error for nil ResponsePayload, got nil")
+	}
+	if !strings.Contains(err.Error(), "payload is not TTLV") {
+		t.Errorf("error should mention payload type, got %q", err.Error())
+	}
+}
+
 // TestKMIP_DialError verifies a connection to a dead endpoint surfaces a
 // dial error rather than hanging.
 func TestKMIP_DialError(t *testing.T) {
