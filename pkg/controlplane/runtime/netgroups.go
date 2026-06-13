@@ -37,9 +37,17 @@ type dnsCache struct {
 
 // dnsCacheEntry holds a cached DNS lookup result.
 type dnsCacheEntry struct {
-	hostnames []string  // reverse DNS results
+	hostnames []string  // reverse DNS results (or forward-lookup addresses for "fwd:" keys)
 	err       error     // cached error (negative cache)
 	expiresAt time.Time // when this entry expires
+}
+
+// dnsResolver abstracts the DNS lookups used by netgroup hostname matching so
+// the matcher can be unit-tested without real network calls. *dnsCache is the
+// production implementation.
+type dnsResolver interface {
+	lookupAddr(ip string) ([]string, error)       // PTR lookup (reverse)
+	lookupHost(hostname string) ([]string, error) // A/AAAA lookup (forward)
 }
 
 // newDNSCache creates a new DNS cache with the given TTLs.
@@ -93,6 +101,47 @@ func (c *dnsCache) lookupAddr(ip string) ([]string, error) {
 	c.mu.Unlock()
 
 	return hostnames, err
+}
+
+// lookupHost performs a forward DNS lookup (A/AAAA) with caching.
+// Used by FCrDNS verification: a PTR-derived hostname is only trusted if it
+// resolves forward back to the original client IP. Cache entries are namespaced
+// under "fwd:" to avoid colliding with reverse-lookup entries keyed by IP.
+func (c *dnsCache) lookupHost(hostname string) ([]string, error) {
+	now := time.Now()
+	key := "fwd:" + hostname
+
+	// Check cache under read lock
+	c.mu.RLock()
+	entry, exists := c.entries[key]
+	c.mu.RUnlock()
+
+	if exists && now.Before(entry.expiresAt) {
+		return entry.hostnames, entry.err
+	}
+
+	// Cache miss or expired - perform lookup
+	addrs, err := net.LookupHost(hostname)
+
+	// Store result
+	var ttl time.Duration
+	if err != nil {
+		ttl = c.negTTL
+	} else {
+		ttl = c.ttl
+	}
+
+	c.mu.Lock()
+	c.entries[key] = &dnsCacheEntry{
+		hostnames: addrs,
+		err:       err,
+		expiresAt: now.Add(ttl),
+	}
+	// Piggyback cleanup of expired entries
+	c.cleanExpiredLocked(now)
+	c.mu.Unlock()
+
+	return addrs, err
 }
 
 // cleanExpiredLocked removes expired entries. Must be called with write lock held.
@@ -188,7 +237,7 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 			}
 
 		case "hostname":
-			if matchHostname(ipString, member.Value) {
+			if matchHostname(pkgDNSCache, ipString, member.Value) {
 				return true, nil
 			}
 		}
@@ -201,8 +250,14 @@ func (r *Runtime) CheckNetgroupAccess(ctx context.Context, shareName string, cli
 // matchHostname checks if a client IP's reverse DNS matches a hostname pattern.
 // Supports wildcards: "*.example.com" matches any hostname ending in ".example.com".
 // Falls back gracefully if DNS lookup fails (returns false, does not block).
-func matchHostname(clientIP string, pattern string) bool {
-	hostnames, err := pkgDNSCache.lookupAddr(clientIP)
+//
+// Each PTR-derived candidate hostname is verified with Forward-Confirmed reverse
+// DNS (FCrDNS): the candidate is only trusted for pattern matching if a forward
+// lookup of that hostname resolves back to the original client IP. This defeats
+// PTR-spoofing, where an attacker who controls the reverse zone for their own IP
+// points it at a trusted hostname they do not actually own.
+func matchHostname(r dnsResolver, clientIP string, pattern string) bool {
+	hostnames, err := r.lookupAddr(clientIP)
 	if err != nil {
 		// DNS lookup failed - fall back to no match
 		logger.Debug("Reverse DNS lookup failed, falling back to IP matching",
@@ -214,6 +269,16 @@ func matchHostname(clientIP string, pattern string) bool {
 	for _, hostname := range hostnames {
 		// Normalize: remove trailing dot from PTR records
 		hostname = strings.TrimSuffix(hostname, ".")
+
+		// FCrDNS: the candidate hostname must resolve forward back to the
+		// client IP, otherwise a spoofed PTR record could impersonate any
+		// trusted hostname. Skip candidates that do not round-trip.
+		if !forwardConfirms(r, hostname, clientIP) {
+			logger.Debug("FCrDNS verification failed, skipping PTR candidate",
+				"client_ip", clientIP,
+				"candidate", hostname)
+			continue
+		}
 
 		if strings.HasPrefix(pattern, "*.") {
 			// Wildcard pattern: *.example.com matches any.example.com
@@ -229,6 +294,26 @@ func matchHostname(clientIP string, pattern string) bool {
 		}
 	}
 
+	return false
+}
+
+// forwardConfirms reports whether a forward lookup of hostname yields an address
+// equal to clientIP, completing the Forward-Confirmed reverse DNS check.
+func forwardConfirms(r dnsResolver, hostname, clientIP string) bool {
+	addrs, err := r.lookupHost(hostname)
+	if err != nil {
+		return false
+	}
+	want := net.ParseIP(clientIP)
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil && want != nil && ip.Equal(want) {
+			return true
+		}
+		// Fall back to string comparison if either side is unparseable.
+		if addr == clientIP {
+			return true
+		}
+	}
 	return false
 }
 
