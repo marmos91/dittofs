@@ -196,7 +196,14 @@ func (h *Handler) Create(
 		// with the client's token. If they match, this is a retry - return success.
 		if fileExists {
 			// Check if idempotency token matches - this indicates a retry
-			if existingFile.IdempotencyToken == req.Verf && req.Verf != 0 {
+			// RFC 1813 §3.3.8: a CREATE EXCLUSIVE retry is detected by comparing
+			// the stored idempotency token with the supplied verifier. They match
+			// on a genuine retransmission; a mismatch is a real conflict. Note we
+			// do NOT special-case a zero verifier here: createNewFile stores the
+			// verifier unconditionally for EXCLUSIVE creates, so a legitimate
+			// zero-verifier retry (stored 0 == req 0) is correctly recognised
+			// rather than being mis-flagged as a conflict.
+			if existingFile.IdempotencyToken == req.Verf {
 				// Token matches - this is a retry of a successful create
 				logger.InfoCtx(ctx.Context, "CREATE EXCLUSIVE retry detected",
 					"file", req.Filename, "token", fmt.Sprintf("0x%016x", req.Verf), "client", clientIP)
@@ -410,7 +417,10 @@ func createNewFile(
 	// Per RFC 1813, the verifier comparison is opaque - how it's stored
 	// is implementation-defined as long as the same verifier can be
 	// retrieved on CREATE retry to detect duplicate requests.
-	if req.Mode == types.CreateExclusive && req.Verf != 0 {
+	// Store the verifier unconditionally for EXCLUSIVE creates (including a zero
+	// verifier). This lets a subsequent EXCLUSIVE retry with the same verifier —
+	// zero or not — be recognised as a retry instead of a false conflict.
+	if req.Mode == types.CreateExclusive {
 		fileAttr.IdempotencyToken = req.Verf
 	}
 

@@ -79,3 +79,27 @@ func TestLink_InvalidHandle(t *testing.T) {
 	assert.NotEqualValues(t, types.NFS3OK, resp.Status,
 		"Invalid handle should not return NFS3OK")
 }
+
+// TestLink_NameExistsReturnsWCC drives the "name already exists" branch and
+// verifies it returns NFS3ErrExist with non-nil WCC fields without a nil-pointer
+// dereference (regression guard for the discarded-error GetFile paths).
+func TestLink_NameExistsReturnsWCC(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	// Create source file
+	fileHandle := fx.CreateFile("src.txt", []byte("hello"))
+	// Create an existing entry at the target name
+	fx.CreateFile("existing-link.txt", []byte("other"))
+
+	req := &handlers.LinkRequest{
+		FileHandle: fileHandle,
+		DirHandle:  fx.RootHandle,
+		Name:       "existing-link.txt", // already exists -> drives name-exists path
+	}
+	resp, err := fx.Handler.Link(fx.Context(), req)
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrExist, resp.Status)
+	assert.NotNil(t, resp.DirWccBefore, "WCC before must be set even on error")
+	assert.NotNil(t, resp.DirWccAfter, "WCC after must be set even on error")
+}

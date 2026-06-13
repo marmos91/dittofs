@@ -363,3 +363,22 @@ func TestMkdir_NilAttr(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3OK, resp.Status)
 }
+
+// TestMkdir_ExistingDirectoryReturnsWCC drives the "already exists" error path
+// and verifies it returns non-nil WCC data without a nil-pointer dereference.
+func TestMkdir_ExistingDirectoryReturnsWCC(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	fx.CreateDirectory("existing")
+
+	req := &handlers.MkdirRequest{
+		DirHandle: fx.RootHandle,
+		Name:      "existing",
+	}
+	resp, err := fx.Handler.Mkdir(fx.ContextWithUID(0, 0), req)
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrExist, resp.Status)
+	assert.NotNil(t, resp.WccBefore, "WCC before must be present on NFS3ErrExist")
+	assert.NotNil(t, resp.WccAfter, "WCC after must be present on NFS3ErrExist")
+}

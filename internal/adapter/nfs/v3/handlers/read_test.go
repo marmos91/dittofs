@@ -6,6 +6,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	handlertesting "github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers/testing"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -389,4 +390,65 @@ func TestRead_LargeFile(t *testing.T) {
 	assert.EqualValues(t, count, resp.Count)
 	assert.Equal(t, content[offset:offset+uint64(count)], resp.Data)
 	assert.False(t, resp.Eof)
+}
+
+// TestRead_PermissionDenied verifies that READ on a mode-000 file owned by root
+// returns NFS3ErrAccess when the caller is a non-root user, proving the
+// PrepareRead permission gate is active.
+func TestRead_PermissionDenied(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	rootCtx := fx.ContextWithUID(0, 0)
+
+	// Create a file as root (UID 0).
+	createResp, err := fx.Handler.Create(rootCtx, &handlers.CreateRequest{
+		DirHandle: fx.RootHandle,
+		Filename:  "secret.txt",
+		Mode:      types.CreateUnchecked,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, createResp.Status)
+	fileHandle := createResp.FileHandle
+
+	// chmod 000 via SETATTR so no one but root may read.
+	mode := uint32(0000)
+	setattrResp, err := fx.Handler.SetAttr(rootCtx, &handlers.SetAttrRequest{
+		Handle:  fileHandle,
+		NewAttr: metadata.SetAttrs{Mode: &mode},
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, setattrResp.Status)
+
+	// Read as non-root user (uid=1000) -> must be denied.
+	req := &handlers.ReadRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  100,
+	}
+	resp, err := fx.Handler.Read(fx.Context(), req) // fx.Context() uses uid=1000
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrAccess, resp.Status,
+		"READ on mode-000 root-owned file by non-root must return NFS3ErrAccess")
+}
+
+// TestRead_PermissionGranted verifies that a readable file (mode 0644 owned by
+// the caller) is still readable after the PrepareRead gate is added.
+func TestRead_PermissionGranted(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	// CreateFile makes the file mode 0644 owned by DefaultUID (1000).
+	content := []byte("readable content")
+	fileHandle := fx.CreateFile("readable.txt", content)
+
+	req := &handlers.ReadRequest{
+		Handle: fileHandle,
+		Offset: 0,
+		Count:  uint32(len(content)),
+	}
+	resp, err := fx.Handler.Read(fx.Context(), req) // uid=1000, file owned by 1000, mode 0644
+
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp.Status)
+	assert.Equal(t, content, resp.Data)
 }

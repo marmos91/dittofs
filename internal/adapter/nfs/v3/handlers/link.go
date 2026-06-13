@@ -185,7 +185,12 @@ func (h *Handler) Link(
 
 		// Get updated directory attributes for WCC
 		updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
-		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
+		var dirWccAfter *types.NFSFileAttr
+		if updatedDirFile != nil {
+			dirWccAfter = h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
+		} else {
+			dirWccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
+		}
 
 		return &LinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -214,7 +219,12 @@ func (h *Handler) Link(
 
 		// Get updated directory attributes for WCC
 		updatedDirFile, _ := metaSvc.GetFile(ctx.Context, dirHandle)
-		dirWccAfter := h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
+		var dirWccAfter *types.NFSFileAttr
+		if updatedDirFile != nil {
+			dirWccAfter = h.convertFileAttrToNFS(dirHandle, &updatedDirFile.FileAttr)
+		} else {
+			dirWccAfter = h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
+		}
 
 		// Map store errors to NFS status codes
 		status := common.MapToNFS3(err)
@@ -236,7 +246,14 @@ func (h *Handler) Link(
 		// Continue with cached attributes - this shouldn't happen but handle gracefully
 	}
 
-	nfsFileAttr := h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
+	var nfsFileAttr *types.NFSFileAttr
+	if updatedFile != nil {
+		nfsFileAttr = h.convertFileAttrToNFS(fileHandle, &updatedFile.FileAttr)
+	} else {
+		// fileAttr was fetched earlier (and succeeded) before the link; fall
+		// back to it so we never dereference a nil GetFile result.
+		nfsFileAttr = h.convertFileAttrToNFS(fileHandle, &fileAttr.FileAttr)
+	}
 
 	// H9: use the directory attributes captured atomically with the link.
 	dirWccBefore, nfsDirAttr := h.dirWccPair(ctx, metaSvc, dirHandle, dirWcc, dirWccBefore)

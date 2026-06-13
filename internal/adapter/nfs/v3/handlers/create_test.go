@@ -422,3 +422,70 @@ func TestCreate_InvalidMode(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3ErrInval, resp.Status, "Invalid mode should return NFS3ErrInval")
 }
+
+// TestCreate_ExclusiveZeroVerifierRetry verifies that a zero verifier is not
+// falsely classified as a conflict when the file was created with Verf=0.
+func TestCreate_ExclusiveZeroVerifierRetry(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	req := &handlers.CreateRequest{
+		DirHandle: fx.RootHandle,
+		Filename:  "zero-verf.txt",
+		Mode:      types.CreateExclusive,
+		Verf:      0, // zero verifier
+	}
+	// First create must succeed
+	resp1, err := fx.Handler.Create(fx.ContextWithUID(0, 0), req)
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp1.Status, "initial zero-verifier EXCLUSIVE create must succeed")
+
+	// Retry with same (zero) verifier: must be recognised as a retry (NFS3OK).
+	resp2, err := fx.Handler.Create(fx.ContextWithUID(0, 0), req)
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp2.Status,
+		"zero-verifier retry must return NFS3OK, not NFS3ErrExist")
+	assert.NotNil(t, resp2.FileHandle, "retry must return the existing file handle")
+}
+
+// TestCreate_ExclusiveZeroVerifierNewFile verifies a first create with Verf=0 succeeds.
+func TestCreate_ExclusiveZeroVerifierNewFile(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	req := &handlers.CreateRequest{
+		DirHandle: fx.RootHandle,
+		Filename:  "zero-new.txt",
+		Mode:      types.CreateExclusive,
+		Verf:      0,
+	}
+	resp, err := fx.Handler.Create(fx.ContextWithUID(0, 0), req)
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp.Status)
+	assert.NotNil(t, resp.FileHandle)
+}
+
+// TestCreate_ExclusiveZeroVsNonZeroVerifierConflict tests that Verf=0 sent
+// against a file created with Verf!=0 is still a conflict.
+func TestCreate_ExclusiveZeroVsNonZeroVerifierConflict(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	req1 := &handlers.CreateRequest{
+		DirHandle: fx.RootHandle,
+		Filename:  "nonzero.txt",
+		Mode:      types.CreateExclusive,
+		Verf:      42,
+	}
+	resp1, err := fx.Handler.Create(fx.ContextWithUID(0, 0), req1)
+	require.NoError(t, err)
+	require.EqualValues(t, types.NFS3OK, resp1.Status)
+
+	req2 := &handlers.CreateRequest{
+		DirHandle: fx.RootHandle,
+		Filename:  "nonzero.txt",
+		Mode:      types.CreateExclusive,
+		Verf:      0, // different verifier
+	}
+	resp2, err := fx.Handler.Create(fx.ContextWithUID(0, 0), req2)
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3ErrExist, resp2.Status,
+		"zero verifier vs stored non-zero verifier must conflict")
+}

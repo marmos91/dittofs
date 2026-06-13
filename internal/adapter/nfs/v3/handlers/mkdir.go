@@ -175,7 +175,12 @@ func (h *Handler) Mkdir(
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+		var wccAfter *types.NFSFileAttr
+		if updatedParentFile != nil {
+			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+		} else {
+			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+		}
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -190,7 +195,12 @@ func (h *Handler) Mkdir(
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+		var wccAfter *types.NFSFileAttr
+		if updatedParentFile != nil {
+			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+		} else {
+			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+		}
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrExist},
@@ -208,7 +218,12 @@ func (h *Handler) Mkdir(
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+		var wccAfter *types.NFSFileAttr
+		if updatedParentFile != nil {
+			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+		} else {
+			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+		}
 
 		return &MkdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -266,7 +281,12 @@ func (h *Handler) Mkdir(
 
 			// Get updated parent attributes for WCC data
 			updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-			wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+			var wccAfter *types.NFSFileAttr
+			if updatedParentFile != nil {
+				wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+			} else {
+				wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+			}
 
 			return &MkdirResponse{
 				NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -279,7 +299,12 @@ func (h *Handler) Mkdir(
 
 		// Get updated parent attributes for WCC data
 		updatedParentFile, _ := metaSvc.GetFile(ctx.Context, parentHandle)
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+		var wccAfter *types.NFSFileAttr
+		if updatedParentFile != nil {
+			wccAfter = h.convertFileAttrToNFS(parentHandle, &updatedParentFile.FileAttr)
+		} else {
+			wccAfter = h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+		}
 
 		// Map store errors to NFS status codes
 		status := common.MapToNFS3(err)

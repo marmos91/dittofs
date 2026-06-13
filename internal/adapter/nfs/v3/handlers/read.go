@@ -161,6 +161,44 @@ func (h *Handler) Read(
 		return nil, ctx.Context.Err()
 	}
 
+	// Enforce read permission before returning any file content. Without this
+	// any client holding a valid handle could read arbitrary file bytes,
+	// bypassing the file's mode/owner/group checks (WRITE already gates on
+	// PrepareWrite; READ must gate on PrepareRead symmetrically).
+	authCtx, err := h.GetCachedAuthContext(ctx)
+	if err != nil {
+		if ctx.Context.Err() != nil {
+			return nil, ctx.Context.Err()
+		}
+		logError(ctx.Context, err, "READ failed: failed to build auth context",
+			"handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		return &ReadResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			Attr:            h.convertFileAttrToNFS(fileHandle, &file.FileAttr),
+		}, nil
+	}
+
+	metaSvc, _, err := getServicesForHandle(h.Registry, ctx.Context, fileHandle)
+	if err != nil {
+		logger.ErrorCtx(ctx.Context, "READ failed: metadata service not available", "client", clientIP, "error", err)
+		return &ReadResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			Attr:            h.convertFileAttrToNFS(fileHandle, &file.FileAttr),
+		}, nil
+	}
+
+	if _, err := metaSvc.PrepareRead(authCtx, fileHandle); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		status := common.MapToNFS3(err)
+		logger.DebugCtx(ctx.Context, "READ denied", "handle", fmt.Sprintf("0x%x", req.Handle), "status", status, "client", clientIP, "error", err)
+		return &ReadResponse{
+			NFSResponseBase: NFSResponseBase{Status: status},
+			Attr:            h.convertFileAttrToNFS(fileHandle, &file.FileAttr),
+		}, nil
+	}
+
 	// Fire-and-forget: NFS proceeds even if break is pending (per Samba behavior).
 	if breaker := h.getOplockBreaker(); breaker != nil {
 		if err := breaker.CheckAndBreakForRead(ctx.Context, lock.FileHandle(string(fileHandle))); err != nil {
