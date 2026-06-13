@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/pkg/auth"
-	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -52,12 +51,16 @@ type Adapter interface {
 	// Implementations should store the runtime for use during operation to
 	// resolve shares and access their corresponding stores.
 	//
+	// The parameter is typed as any to satisfy the adapters.RuntimeSetter
+	// interface, which cannot import *runtime.Runtime without creating an
+	// import cycle. Implementations type-assert to *runtime.Runtime.
+	//
 	// Parameters:
 	//   - rt: Runtime containing all metadata stores, content stores, and shares
 	//
 	// Thread safety:
 	// Called before Serve(), no synchronization needed.
-	SetRuntime(rt *runtime.Runtime)
+	SetRuntime(rt any)
 
 	// Stop initiates graceful shutdown of the protocol server.
 	//

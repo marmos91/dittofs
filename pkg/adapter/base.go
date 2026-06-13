@@ -511,8 +511,13 @@ func (b *BaseAdapter) Stop(ctx context.Context) error {
 
 	case <-ctx.Done():
 		remaining := b.ConnCount.Load()
-		logger.Warn(b.protocolName+" shutdown context cancelled",
+		logger.Warn(b.protocolName+" shutdown context cancelled - forcing closure",
 			"active", remaining, "error", ctx.Err())
+		// Mirror the timeout branch in gracefulShutdown: when the shutdown
+		// deadline expires, force-close active connections rather than
+		// abandoning them. This triggers the deferred cleanup chain
+		// (WaitGroup.Done, semaphore release, ConnCount decrement, metrics).
+		b.forceCloseConnections()
 		return ctx.Err()
 	}
 }

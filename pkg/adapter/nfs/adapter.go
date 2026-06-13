@@ -29,6 +29,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
+// Compile-time assertion that NFSAdapter satisfies the adapter.Adapter
+// interface. Guards against method-signature drift (e.g. SetRuntime regaining
+// a concrete *runtime.Runtime parameter).
+var _ adapter.Adapter = (*NFSAdapter)(nil)
+
 // DefaultMaxConnections is the connection cap applied when MaxConnections is
 // left at its zero value. A non-zero default ensures the accept-loop semaphore
 // is always built, preventing unauthenticated connection-exhaustion DoS.

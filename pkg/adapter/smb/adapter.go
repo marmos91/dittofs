@@ -22,6 +22,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
+// Compile-time assertion that Adapter satisfies the adapter.Adapter interface.
+// Guards against method-signature drift (e.g. SetRuntime regaining a concrete
+// *runtime.Runtime parameter).
+var _ adapter.Adapter = (*Adapter)(nil)
+
 // Adapter implements the adapter.Adapter interface for SMB2 protocol.
 //
 // This adapter provides an SMB2 server with:
@@ -71,6 +76,14 @@ type Adapter struct {
 	// shareUnsubscribers holds unsubscribe functions returned by rt.OnShareChange.
 	// Called during Stop to prevent stale callbacks from accumulating across restarts.
 	shareUnsubscribers []func()
+
+	// identityUnsub is the unsubscribe function for the OnIdentityMappingChange
+	// subscription registered by wireIdentityResolver. Stored separately from
+	// shareUnsubscribers so that re-injection (SetKerberosProvider called after
+	// SetRuntime, or vice-versa) can cancel the prior subscription before
+	// registering a new one, preventing duplicate callbacks and stale cache
+	// invalidations.
+	identityUnsub func()
 
 	// kerberosProvider is retained for lifecycle management. It owns a
 	// background keytab-reload goroutine that must be stopped in Stop().
@@ -501,8 +514,15 @@ func (s *Adapter) wireIdentityResolver(rt *runtime.Runtime) {
 	realm := adapter.ExtractRealm(s.handler.KerberosProvider.ServicePrincipal())
 	resolver := adapter.BuildIdentityResolver(rt, realm)
 	s.handler.IdentityResolver = resolver
-	unsub := rt.OnIdentityMappingChange(resolver.InvalidateCache)
-	s.shareUnsubscribers = append(s.shareUnsubscribers, unsub)
+
+	// Cancel any prior subscription before registering a new one.
+	// wireIdentityResolver is called from both SetRuntime and SetKerberosProvider
+	// (whichever runs second), so without this guard each re-inject adds a
+	// duplicate callback that fires on every identity mapping change.
+	if s.identityUnsub != nil {
+		s.identityUnsub()
+	}
+	s.identityUnsub = rt.OnIdentityMappingChange(resolver.InvalidateCache)
 }
 
 const (
@@ -557,44 +577,19 @@ func (s *Adapter) findDurableHandleStore() lock.DurableHandleStore {
 	return nil
 }
 
-// OnReconnect is called when an SMB session reconnects after server restart.
-//
-// During the grace period, OnReconnect triggers lease reclaim for all leases
-// the client previously held. This allows SMB clients to restore their caching
-// state after server restart, maintaining cache consistency.
-//
-// Parameters:
-//   - ctx: Context for cancellation
-//   - sessionID: The reconnecting session ID
-//   - clientID: The connection tracker client ID
-//
-// Implementation note: This is a minimal implementation for gap closure.
-// Full implementation would enumerate persisted leases for the session and
-// call HandleLeaseReclaim for each one. Currently, the reclaim happens
-// implicitly when the client requests the same lease key during grace period.
-func (s *Adapter) OnReconnect(ctx context.Context, sessionID uint64, clientID string) {
-	logger.Info("SMB session reconnected",
-		"sessionID", sessionID,
-		"clientID", clientID)
-
-	// During grace period, leases will be reclaimed when the client
-	// makes a CREATE request with its known lease key.
-	// The RequestLeaseWithReclaim method handles this transparently.
-	//
-	// A full implementation would:
-	// 1. Query LockStore for all leases owned by this clientID
-	// 2. Prepare them for reclaim on first access
-	// 3. Notify client of available leases to reclaim
-	//
-	// For this gap closure, we rely on implicit reclaim in RequestLeaseWithReclaim.
-}
-
 // Stop initiates graceful shutdown of the SMB server.
 //
 // Stop unsubscribes from share change notifications, closes the Kerberos
 // provider (stopping its keytab hot-reload goroutine), then delegates to
 // BaseAdapter.Stop() for the shared shutdown sequence.
 func (s *Adapter) Stop(ctx context.Context) error {
+	// Unsubscribe from the identity mapping change callback registered by
+	// wireIdentityResolver (tracked separately from shareUnsubscribers).
+	if s.identityUnsub != nil {
+		s.identityUnsub()
+		s.identityUnsub = nil
+	}
+
 	// Unsubscribe from share change notifications to prevent stale callbacks
 	// from accumulating across adapter restarts.
 	for _, unsub := range s.shareUnsubscribers {
