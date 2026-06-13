@@ -318,7 +318,14 @@ func testCrossProtocolConflict(t *testing.T, nfsMount, smbMount *framework.Mount
 		t.Logf("XPRO-03: SMB shared lock blocked (platform-specific): %v", err)
 	} else {
 		t.Log("XPRO-03: SMB shared lock acquired (multiple readers)")
-		defer framework.UnlockFileRange(t, smbSharedLock)
+		// Safety-net release for early bail-outs. Step 4 releases the lock
+		// explicitly and nils smbSharedLock, making this deferred call a no-op
+		// on the happy path (avoids a double unlock of the same handle).
+		defer func() {
+			if smbSharedLock != nil {
+				framework.UnlockFileRange(t, smbSharedLock)
+			}
+		}()
 	}
 
 	// Step 3: Attempt exclusive lock via NFS (should fail - SMB shared exists if acquired)
