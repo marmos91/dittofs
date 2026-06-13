@@ -124,6 +124,30 @@ func (s *GORMStore) RemoveUserFromGroup(ctx context.Context, username, groupName
 	})
 }
 
+func (s *GORMStore) ReplaceUserGroups(ctx context.Context, username string, groupNames []string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user models.User
+		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
+			return convertNotFoundError(err, models.ErrUserNotFound)
+		}
+
+		unique := dedup(groupNames)
+		var groups []models.Group
+		if len(unique) > 0 {
+			if err := tx.Where("name IN ?", unique).Find(&groups).Error; err != nil {
+				return err
+			}
+			if len(groups) != len(unique) {
+				return models.ErrGroupNotFound
+			}
+		}
+
+		// Replace replaces the entire association set atomically (GORM many2many):
+		// a single DELETE of the existing join rows followed by a batch INSERT.
+		return tx.Model(&user).Association("Groups").Replace(&groups)
+	})
+}
+
 func (s *GORMStore) GetGroupMembers(ctx context.Context, groupName string) ([]*models.User, error) {
 	var group models.Group
 	if err := s.db.WithContext(ctx).Where("name = ?", groupName).First(&group).Error; err != nil {

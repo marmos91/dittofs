@@ -11,9 +11,19 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
 
+// userStore is the minimal store surface needed by UserHandler. It composes the
+// sub-interfaces required to manage users plus their group memberships and
+// share permissions. store.Store satisfies it because Store embeds all of these.
+type userStore interface {
+	store.UserStore
+	store.GroupStore
+	store.PermissionStore
+	store.ShareStore
+}
+
 // UserHandler handles user management API endpoints.
 type UserHandler struct {
-	store      store.UserStore
+	store      userStore
 	jwtService *auth.JWTService
 }
 
@@ -21,7 +31,7 @@ type UserHandler struct {
 // new tokens after password changes to ensure users receive fresh credentials.
 // Returns an error if jwtService is nil, allowing callers to handle the
 // misconfiguration gracefully (e.g., at startup).
-func NewUserHandler(s store.UserStore, jwtService *auth.JWTService) (*UserHandler, error) {
+func NewUserHandler(s userStore, jwtService *auth.JWTService) (*UserHandler, error) {
 	if jwtService == nil {
 		return nil, errors.New("NewUserHandler: jwtService is required and must not be nil")
 	}
@@ -121,6 +131,12 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		InternalServerError(w, "Failed to create user")
 		return
 	}
+
+	// Apply any requested share permissions. These are best-effort and
+	// non-transactional with user creation: an unresolvable share or invalid
+	// permission is skipped rather than rolling back the created user. The
+	// dedicated permissions endpoint remains the canonical management path.
+	h.applySharePerms(r, user.ID, req.SharePerms)
 
 	WriteJSONCreated(w, userToResponse(user))
 }
@@ -229,7 +245,54 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Replace group memberships if the caller provided a Groups list.
+	if req.Groups != nil {
+		if err := h.store.ReplaceUserGroups(r.Context(), username, *req.Groups); err != nil {
+			if errors.Is(err, models.ErrGroupNotFound) {
+				BadRequest(w, "One or more specified groups do not exist")
+				return
+			}
+			InternalServerError(w, "Failed to update user groups")
+			return
+		}
+	}
+
+	// Apply any requested share permissions (best-effort; see Create).
+	if req.SharePerms != nil {
+		h.applySharePerms(r, user.ID, *req.SharePerms)
+	}
+
+	// Re-fetch so the response reflects the updated groups and permissions.
+	user, err = h.store.GetUser(r.Context(), username)
+	if err != nil {
+		InternalServerError(w, "Failed to reload user")
+		return
+	}
+
 	WriteJSONOK(w, userToResponse(user))
+}
+
+// applySharePerms applies the requested share permissions to a user. It is
+// best-effort: invalid permissions and unresolvable share names are skipped so
+// a bad entry never blocks user create/update. Logged at debug per the
+// expected-error logging convention.
+func (h *UserHandler) applySharePerms(r *http.Request, userID string, perms map[string]models.SharePermission) {
+	for shareName, perm := range perms {
+		if !perm.IsValid() {
+			continue
+		}
+		sh, err := h.store.GetShare(r.Context(), shareName)
+		if err != nil {
+			// Share not found (or other lookup error): skip silently.
+			continue
+		}
+		_ = h.store.SetUserSharePermission(r.Context(), &models.UserSharePermission{
+			UserID:     userID,
+			ShareID:    sh.ID,
+			ShareName:  sh.Name,
+			Permission: string(perm),
+		})
+	}
 }
 
 // Delete handles DELETE /api/v1/users/{username}.
@@ -296,19 +359,16 @@ func (h *UserHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update password
-	if err := h.store.UpdatePassword(r.Context(), username, passwordHash, ntHashHex); err != nil {
-		InternalServerError(w, "Failed to update password")
-		return
-	}
-
 	// Set must change password flag only for admin users.
 	// Admin accounts are high-privilege, so reset passwords are treated as temporary
 	// credentials that must be personalized. For regular users, the admin-set password
 	// is considered final per deployment policy (admins can choose a permanent password).
-	user.MustChangePassword = user.Role == string(models.RoleAdmin)
-	if err := h.store.UpdateUser(r.Context(), user); err != nil {
-		InternalServerError(w, "Failed to update user")
+	mustChange := user.Role == string(models.RoleAdmin)
+
+	// Update password and the must-change flag atomically so a partial failure
+	// cannot leave the new password persisted while the flag is stale.
+	if err := h.store.UpdatePasswordAndFlags(r.Context(), username, passwordHash, ntHashHex, mustChange); err != nil {
+		InternalServerError(w, "Failed to update password")
 		return
 	}
 
@@ -367,18 +427,17 @@ func (h *UserHandler) ChangeOwnPassword(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Update password
-	if err := h.store.UpdatePassword(r.Context(), claims.Username, passwordHash, ntHashHex); err != nil {
+	// Update the password and clear the must-change flag atomically. Doing both
+	// in one operation prevents a partial failure from persisting the new
+	// password while leaving MustChangePassword set, which would lock the user
+	// out (the old password needed to satisfy the current-password gate is gone).
+	if err := h.store.UpdatePasswordAndFlags(r.Context(), claims.Username, passwordHash, ntHashHex, false); err != nil {
 		InternalServerError(w, "Failed to update password")
 		return
 	}
 
-	// Clear must change password flag
+	// Reflect the cleared flag on the in-memory user for token generation.
 	user.MustChangePassword = false
-	if err := h.store.UpdateUser(r.Context(), user); err != nil {
-		InternalServerError(w, "Failed to update user")
-		return
-	}
 
 	// Generate new tokens with updated claims (MustChangePassword = false)
 	tokenPair, err := h.jwtService.GenerateTokenPair(user)
