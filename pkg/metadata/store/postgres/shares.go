@@ -235,6 +235,12 @@ func (s *PostgresMetadataStore) ListShares(ctx context.Context) ([]string, error
 		names = append(names, name)
 	}
 
+	// Surface any error that terminated the iteration early so a partial
+	// share list is not returned as if it were complete.
+	if err := rows.Err(); err != nil {
+		return nil, mapPgError(err, "ListShares", "")
+	}
+
 	return names, nil
 }
 

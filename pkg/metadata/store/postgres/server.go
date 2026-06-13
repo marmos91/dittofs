@@ -127,34 +127,36 @@ func (s *PostgresMetadataStore) SetFilesystemCapabilities(capabilities metadata.
 // UsedBytes is read from the atomic counter (O(1), always fresh).
 // File count uses the stats cache for efficiency.
 func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
-	// Read usage from atomic counter (O(1), always fresh).
-	bytesUsed := uint64(s.usedBytes.Load())
-
-	// Check cache for file count.
-	if cached, valid := s.statsCache.get(); valid {
-		// Update UsedBytes from atomic counter (cache may be stale for bytes).
-		cached.UsedBytes = bytesUsed
-		if cached.TotalBytes > bytesUsed {
-			cached.AvailableBytes = cached.TotalBytes - bytesUsed
-		} else {
-			cached.AvailableBytes = 0
-		}
-		return &cached, nil
+	// Scope the aggregate to the share encoded in the handle. The atomic
+	// usedBytes counter and statsCache are store-wide (sum across all shares),
+	// so they cannot answer a per-share query; both are bypassed here in favour
+	// of a scoped SQL aggregate. An invalid handle falls back to the store-wide
+	// totals (single-share compatible).
+	shareName, _, decodeErr := decodeFileHandle(handle)
+	if decodeErr != nil {
+		shareName = ""
 	}
 
-	// Cache miss - query file count only (usage comes from atomic counter).
-	query := `SELECT COUNT(*) FROM files`
-
-	var filesUsed int64
-	err := s.queryRow(ctx, query).Scan(&filesUsed)
+	var bytesUsed, filesUsed int64
+	var err error
+	if shareName != "" {
+		err = s.queryRow(ctx,
+			`SELECT COALESCE(SUM(size), 0), COUNT(*) FROM files WHERE share_name = $1`,
+			shareName,
+		).Scan(&bytesUsed, &filesUsed)
+	} else {
+		err = s.queryRow(ctx,
+			`SELECT COALESCE(SUM(size), 0), COUNT(*) FROM files`,
+		).Scan(&bytesUsed, &filesUsed)
+	}
 	if err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
 
 	totalBytes := uint64(1 << 50) // 1 PB (effectively unlimited)
 	availableBytes := uint64(0)
-	if totalBytes > bytesUsed {
-		availableBytes = totalBytes - bytesUsed
+	if totalBytes > uint64(bytesUsed) {
+		availableBytes = totalBytes - uint64(bytesUsed)
 	}
 
 	totalFiles := uint64(1 << 32) // 4 billion files
@@ -166,14 +168,14 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, han
 	stats := metadata.FilesystemStatistics{
 		TotalBytes:     totalBytes,
 		AvailableBytes: availableBytes,
-		UsedBytes:      bytesUsed,
+		UsedBytes:      uint64(bytesUsed),
 		TotalFiles:     totalFiles,
 		AvailableFiles: availableFiles,
 		UsedFiles:      uint64(filesUsed),
 	}
 
-	// Update cache.
-	s.statsCache.set(stats)
-
+	// Do NOT populate statsCache here: the cache is store-wide and would be
+	// polluted by a per-share result. The cache remains valid only for the
+	// store-wide path elsewhere.
 	return &stats, nil
 }

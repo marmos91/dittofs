@@ -116,6 +116,9 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 			Code:    metadata.ErrIOError,
 			Message: fmt.Sprintf("%s: transaction conflict, retry", operation),
 			Path:    path,
+			// Preserve the raw PgError so isRetryableError (which uses
+			// errors.As) can detect 40001 through the unwrap chain and retry.
+			Cause: pgErr,
 		}
 
 	// 40P01: deadlock_detected
@@ -124,6 +127,9 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 			Code:    metadata.ErrIOError,
 			Message: fmt.Sprintf("%s: deadlock detected, retry", operation),
 			Path:    path,
+			// Preserve the raw PgError so isRetryableError can detect 40P01
+			// through the unwrap chain and retry.
+			Cause: pgErr,
 		}
 
 	// 53100: disk_full

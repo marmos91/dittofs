@@ -362,6 +362,13 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		entries = append(entries, entry)
 	}
 
+	// Surface any error that terminated the iteration early (e.g. a network
+	// drop mid-stream). Without this check a partial result would be returned
+	// as a complete, successful listing.
+	if err := rows.Err(); err != nil {
+		return nil, "", mapPgError(err, "ListChildren", "")
+	}
+
 	nextCursor := ""
 	if len(entries) >= limit {
 		nextCursor = entries[len(entries)-1].Name
