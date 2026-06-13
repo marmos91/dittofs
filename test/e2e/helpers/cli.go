@@ -190,6 +190,14 @@ func UniqueTestName(prefix string) string {
 func LoginAsAdmin(t *testing.T, serverURL string) *CLIRunner {
 	t.Helper()
 
+	// Isolate credential storage to a per-test temp dir so dfsctl login never
+	// reads or writes the developer's real ~/.config/dfsctl/config.json.
+	// dfsctl login writes XDG_CONFIG_HOME/dfsctl/config.json; the child process
+	// inherits this env, and extractTokenFromLogin reads from the same path.
+	// t.Setenv restores the original value and t.TempDir removes the directory
+	// when the test ends.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	runner := NewCLIRunner(serverURL, "")
 
 	// Try to login as admin
