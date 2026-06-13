@@ -3,6 +3,7 @@ package metadata
 import (
 	"context"
 	"errors"
+	"net"
 
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
@@ -50,6 +51,14 @@ func (s *Service) CheckShareAccess(ctx context.Context, shareName, clientAddr, a
 	opts, err := store.GetShareOptions(ctx, shareName)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// Strip port from clientAddr so IP ACL patterns match correctly.
+	// ClientAddr may arrive as "IP:port" from protocol handlers; pattern
+	// entries are bare IPs or CIDR ranges that net.ParseIP / net.ParseCIDR
+	// cannot match against a host:port string.
+	if host, _, err := net.SplitHostPort(clientAddr); err == nil {
+		clientAddr = host
 	}
 
 	// Step 1: Check authentication requirements
