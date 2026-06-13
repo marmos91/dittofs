@@ -337,7 +337,7 @@ func TestWrapPrivacyVerifiableByClient(t *testing.T) {
 		ciphertext = rotateLeft(ciphertext, int(rrc))
 	}
 
-	// Decrypt using acceptor seal key usage (26)
+	// Decrypt using acceptor seal key usage (22)
 	decrypted, err := crypto.DecryptMessage(ciphertext, key, KeyUsageAcceptorSeal)
 	if err != nil {
 		t.Fatalf("decrypt failed: %v", err)

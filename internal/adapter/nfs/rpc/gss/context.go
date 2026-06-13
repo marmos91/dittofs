@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jcmturner/gokrb5/v8/types"
@@ -165,6 +166,8 @@ type ContextStore struct {
 	contextTTL    time.Duration
 	cleanupTicker *time.Ticker
 	stopCh        chan struct{}
+	stopOnce      sync.Once
+	count         atomic.Int64
 }
 
 // cleanupInterval is the time between TTL cleanup sweeps.
@@ -206,12 +209,23 @@ func NewContextStore(maxContexts int, contextTTL time.Duration) *ContextStore {
 //   - ctx: The context to store (must have a non-nil Handle)
 func (cs *ContextStore) Store(ctx *GSSContext) {
 	if cs.maxContexts > 0 {
-		count := cs.Count()
-		if count >= cs.maxContexts {
+		// Atomically claim a slot. If over capacity, evict first.
+		// Loop until the slot is secured so concurrent INITs cannot both bypass the cap.
+		for {
+			n := cs.count.Load()
+			if n < int64(cs.maxContexts) {
+				// Try to claim the slot with a CAS; retry if another goroutine won the race.
+				if cs.count.CompareAndSwap(n, n+1) {
+					break
+				}
+				continue
+			}
+			// At or over cap: evict oldest (which decrements count) then retry claiming.
 			cs.evictOldest()
 		}
+	} else {
+		cs.count.Add(1)
 	}
-
 	cs.contexts.Store(string(ctx.Handle), ctx)
 }
 
@@ -245,20 +259,17 @@ func (cs *ContextStore) Lookup(handle []byte) (*GSSContext, bool) {
 // Parameters:
 //   - handle: The context handle to remove
 func (cs *ContextStore) Delete(handle []byte) {
-	cs.contexts.Delete(string(handle))
+	_, loaded := cs.contexts.LoadAndDelete(string(handle))
+	if loaded {
+		cs.count.Add(-1)
+	}
 }
 
 // Count returns the number of active contexts in the store.
 //
-// This iterates the sync.Map, so it is O(n). Use for metrics and
-// capacity checks, not in hot paths.
+// This is an O(1) atomic read of the maintained counter.
 func (cs *ContextStore) Count() int {
-	count := 0
-	cs.contexts.Range(func(_, _ interface{}) bool {
-		count++
-		return true
-	})
-	return count
+	return int(cs.count.Load())
 }
 
 // Stop stops the background cleanup goroutine and ticker.
@@ -266,8 +277,10 @@ func (cs *ContextStore) Count() int {
 // Must be called when the GSS processor is shut down to prevent
 // goroutine leaks.
 func (cs *ContextStore) Stop() {
-	close(cs.stopCh)
-	cs.cleanupTicker.Stop()
+	cs.stopOnce.Do(func() {
+		close(cs.stopCh)
+		cs.cleanupTicker.Stop()
+	})
 }
 
 // cleanupLoop runs the periodic TTL cleanup.
@@ -294,7 +307,7 @@ func (cs *ContextStore) cleanup() {
 				"realm", ctx.Realm,
 				"idle", now.Sub(lastUsed).String(),
 			)
-			cs.contexts.Delete(key)
+			cs.Delete([]byte(key.(string)))
 		}
 		return true
 	})
@@ -325,6 +338,6 @@ func (cs *ContextStore) evictOldest() {
 				"realm", ctx.Realm,
 			)
 		}
-		cs.contexts.Delete(oldestKey)
+		cs.Delete([]byte(oldestKey.(string)))
 	}
 }

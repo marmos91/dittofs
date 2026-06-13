@@ -178,6 +178,28 @@ func TestContextMaxContextsEviction(t *testing.T) {
 	}
 }
 
+func TestContextMaxContextsRaceNoBurst(t *testing.T) {
+	const maxCtx = 5
+	store := NewContextStore(maxCtx, time.Minute)
+	defer store.Stop()
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			store.Store(newTestContext("race", "EXAMPLE.COM"))
+		}()
+	}
+	wg.Wait()
+
+	got := store.Count()
+	if got > maxCtx {
+		t.Fatalf("maxContexts=%d exceeded under concurrency: got %d contexts", maxCtx, got)
+	}
+}
+
 func TestContextConcurrentAccess(t *testing.T) {
 	store := NewContextStore(1000, 10*time.Minute)
 	defer store.Stop()
@@ -309,4 +331,17 @@ func TestContextUnlimitedMaxContexts(t *testing.T) {
 	if store.Count() != 100 {
 		t.Fatalf("expected 100 contexts with unlimited max, got %d", store.Count())
 	}
+}
+
+func TestContextStoreStopIdempotent(t *testing.T) {
+	// Before the fix, the second Stop() panics with "close of closed channel".
+	store := NewContextStore(10, time.Minute)
+	store.Stop()
+	// Must not panic:
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Stop() panicked on second call: %v", r)
+		}
+	}()
+	store.Stop()
 }
