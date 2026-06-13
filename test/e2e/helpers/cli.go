@@ -20,6 +20,15 @@ type CLIRunner struct {
 	serverURL string
 	token     string
 	binary    string
+
+	// xdgConfigHome, when non-empty, isolates this runner's dfsctl credential
+	// storage. Every dfsctl invocation runs with XDG_CONFIG_HOME set to this
+	// directory (set per-exec, not via a process-global env mutation), and the
+	// runner's token extraction reads config.json from this same directory.
+	// This keeps credential I/O confined to a per-test temp dir regardless of
+	// call order. When empty, dfsctl inherits the ambient environment and
+	// token extraction falls back to XDG_CONFIG_HOME / ~/.config.
+	xdgConfigHome string
 }
 
 // NewCLIRunner creates a new CLI runner for the given server URL and auth token.
@@ -91,6 +100,7 @@ func (r *CLIRunner) ServerURL() string {
 func (r *CLIRunner) execDfsctl(args ...string) ([]byte, error) {
 	binary := r.getBinary()
 	cmd := exec.Command(binary, args...)
+	cmd.Env = r.commandEnv()
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -110,6 +120,7 @@ func (r *CLIRunner) execDfsctl(args ...string) ([]byte, error) {
 func (r *CLIRunner) execDfsctlWithInput(input string, args ...string) ([]byte, error) {
 	binary := r.getBinary()
 	cmd := exec.Command(binary, args...)
+	cmd.Env = r.commandEnv()
 
 	cmd.Stdin = strings.NewReader(input)
 
@@ -124,6 +135,35 @@ func (r *CLIRunner) execDfsctlWithInput(input string, args ...string) ([]byte, e
 	}
 
 	return stdout.Bytes(), nil
+}
+
+// commandEnv returns the environment for a dfsctl child process. When the
+// runner is isolated, XDG_CONFIG_HOME is overridden per-exec so credential I/O
+// stays confined to the runner's temp dir; otherwise the ambient environment
+// is inherited unchanged.
+func (r *CLIRunner) commandEnv() []string {
+	if r.xdgConfigHome == "" {
+		return nil // nil means inherit the parent's environment
+	}
+	return append(os.Environ(), "XDG_CONFIG_HOME="+r.xdgConfigHome)
+}
+
+// configHomeDir returns the directory dfsctl uses to resolve
+// <configHome>/dfsctl/config.json for this runner. It mirrors dfsctl's own
+// resolution: the runner's isolated dir when set, else XDG_CONFIG_HOME, else
+// ~/.config.
+func (r *CLIRunner) configHomeDir() (string, error) {
+	if r.xdgConfigHome != "" {
+		return r.xdgConfigHome, nil
+	}
+	if env := os.Getenv("XDG_CONFIG_HOME"); env != "" {
+		return env, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home dir: %w", err)
+	}
+	return filepath.Join(home, ".config"), nil
 }
 
 // getBinary returns the path to the dfsctl binary.
@@ -192,6 +232,15 @@ func LoginAsAdmin(t *testing.T, serverURL string) *CLIRunner {
 
 	runner := NewCLIRunner(serverURL, "")
 
+	// Isolate credential storage to a per-test temp dir so dfsctl login never
+	// reads or writes the developer's real ~/.config/dfsctl/config.json. The
+	// runner carries this dir and applies it as XDG_CONFIG_HOME on every dfsctl
+	// invocation (per-exec, not via a process-global env mutation), and reads
+	// the resulting config.json back from the same dir. t.TempDir is removed
+	// when the test ends. Any runner derived from this one (e.g. via
+	// LoginAsUser) inherits the same isolation.
+	runner.xdgConfigHome = t.TempDir()
+
 	// Try to login as admin
 	// The login command doesn't support --output json, so we use RunRaw
 	output, err := runner.RunRaw(
@@ -204,8 +253,11 @@ func LoginAsAdmin(t *testing.T, serverURL string) *CLIRunner {
 		t.Fatalf("Failed to login as admin: %v\nOutput: %s", err, string(output))
 	}
 
-	// Extract token from the login response or credentials file
-	token := extractTokenFromLogin(t, serverURL)
+	// Extract token from the credentials file in the runner's isolated dir.
+	token, err := runner.extractToken(serverURL)
+	if err != nil {
+		t.Fatalf("Failed to extract token after login: %v", err)
+	}
 	runner.SetToken(token)
 
 	return runner
@@ -226,56 +278,15 @@ func GetAdminPassword() string {
 	return "adminpassword"
 }
 
-// extractTokenFromLogin extracts the auth token after login.
-// This reads from the credentials file that dfsctl creates.
-func extractTokenFromLogin(t *testing.T, serverURL string) string {
-	t.Helper()
-
-	// Get credentials file path (matches internal/cli/credentials/store.go)
-	// Uses XDG_CONFIG_HOME or ~/.config
-	configHome := os.Getenv("XDG_CONFIG_HOME")
-	if configHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			t.Fatalf("Failed to get home dir: %v", err)
-		}
-		configHome = filepath.Join(home, ".config")
-	}
-
-	credFile := filepath.Join(configHome, "dfsctl", "config.json")
-	data, err := os.ReadFile(credFile)
+// extractToken reads the auth token for serverURL from the dfsctl credentials
+// file in this runner's config dir. For an isolated runner that is the per-test
+// temp dir, so token extraction stays paired with the dir the login wrote to.
+func (r *CLIRunner) extractToken(serverURL string) (string, error) {
+	configHome, err := r.configHomeDir()
 	if err != nil {
-		t.Fatalf("Failed to read credentials file: %v", err)
+		return "", err
 	}
-
-	// Parse the credentials file
-	var creds map[string]interface{}
-	if err := json.Unmarshal(data, &creds); err != nil {
-		t.Fatalf("Failed to parse credentials file: %v", err)
-	}
-
-	// The credentials file stores contexts with server URLs
-	// Find the matching context
-	contexts, ok := creds["contexts"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("No contexts found in credentials file")
-	}
-
-	for _, ctx := range contexts {
-		ctxMap, ok := ctx.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		// Field name is "server_url" in JSON (snake_case)
-		if ctxMap["server_url"] == serverURL {
-			if token, ok := ctxMap["access_token"].(string); ok {
-				return token
-			}
-		}
-	}
-
-	t.Fatalf("No token found for server %s in credentials file", serverURL)
-	return ""
+	return parseTokenFromCredentialsFile(configHome, serverURL)
 }
 
 // ParseJSONResponse parses a JSON response into the given struct.

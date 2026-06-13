@@ -13,6 +13,7 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -167,18 +168,12 @@ type S3ObjectInfo struct {
 	Size int64
 }
 
-// ListS3PrefixWithSizes lists all objects under the given prefix in
-// the given bucket, returning their key + size. DEDUP-02 + DEDUP-03
-// use this for byte-summation assertions; mirrors the CleanupBucket
-// enumeration pattern.
-func (lh *LocalstackHelper) ListS3PrefixWithSizes(t *testing.T, bucket, prefix string) []S3ObjectInfo {
-	t.Helper()
-	if lh.Client == nil {
-		t.Fatalf("ListS3PrefixWithSizes: S3 client not initialized")
-	}
-	var out []S3ObjectInfo
+// listAllObjects paginates ListObjectsV2 (max 1000 entries/page) and returns
+// every object under prefix in bucket. It is the single enumeration primitive
+// behind both ListS3PrefixWithSizes and CleanupBucket.
+func (lh *LocalstackHelper) listAllObjects(ctx context.Context, bucket, prefix string) ([]types.Object, error) {
+	var out []types.Object
 	var continuation *string
-	ctx := context.Background()
 	for {
 		resp, err := lh.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:            aws.String(bucket),
@@ -186,23 +181,40 @@ func (lh *LocalstackHelper) ListS3PrefixWithSizes(t *testing.T, bucket, prefix s
 			ContinuationToken: continuation,
 		})
 		if err != nil {
-			t.Fatalf("ListS3PrefixWithSizes: list %s/%s: %v", bucket, prefix, err)
+			return nil, err
 		}
-		for _, obj := range resp.Contents {
-			var size int64
-			if obj.Size != nil {
-				size = *obj.Size
-			}
-			key := ""
-			if obj.Key != nil {
-				key = *obj.Key
-			}
-			out = append(out, S3ObjectInfo{Key: key, Size: size})
-		}
+		out = append(out, resp.Contents...)
 		if resp.IsTruncated == nil || !*resp.IsTruncated {
 			break
 		}
 		continuation = resp.NextContinuationToken
+	}
+	return out, nil
+}
+
+// ListS3PrefixWithSizes lists all objects under the given prefix in
+// the given bucket, returning their key + size. DEDUP-02 + DEDUP-03
+// use this for byte-summation assertions.
+func (lh *LocalstackHelper) ListS3PrefixWithSizes(t *testing.T, bucket, prefix string) []S3ObjectInfo {
+	t.Helper()
+	if lh.Client == nil {
+		t.Fatalf("ListS3PrefixWithSizes: S3 client not initialized")
+	}
+	objs, err := lh.listAllObjects(context.Background(), bucket, prefix)
+	if err != nil {
+		t.Fatalf("ListS3PrefixWithSizes: list %s/%s: %v", bucket, prefix, err)
+	}
+	out := make([]S3ObjectInfo, 0, len(objs))
+	for _, obj := range objs {
+		var size int64
+		if obj.Size != nil {
+			size = *obj.Size
+		}
+		key := ""
+		if obj.Key != nil {
+			key = *obj.Key
+		}
+		out = append(out, S3ObjectInfo{Key: key, Size: size})
 	}
 	return out
 }
@@ -221,25 +233,36 @@ func (lh *LocalstackHelper) ListS3Prefix(t *testing.T, bucket, prefix string) []
 
 // CleanupBucket removes a bucket and all its contents if it exists.
 func (lh *LocalstackHelper) CleanupBucket(ctx context.Context, bucketName string) {
-	listResp, err := lh.Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucketName),
-	})
+	objs, err := lh.listAllObjects(ctx, bucketName, "")
 	if err != nil {
-		return // Bucket doesn't exist
+		return // Bucket does not exist or is inaccessible; nothing to do.
+	}
+	toDelete := make([]types.ObjectIdentifier, len(objs))
+	for i, obj := range objs {
+		toDelete[i] = types.ObjectIdentifier{Key: obj.Key}
 	}
 
-	if listResp != nil {
-		for _, obj := range listResp.Contents {
-			_, _ = lh.Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-				Bucket: aws.String(bucketName),
-				Key:    obj.Key,
-			})
+	// Delete in batches of up to 1000 (S3 DeleteObjects limit).
+	const batchSize = 1000
+	for i := 0; i < len(toDelete); i += batchSize {
+		end := i + batchSize
+		if end > len(toDelete) {
+			end = len(toDelete)
+		}
+		_, err := lh.Client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(bucketName),
+			Delete: &types.Delete{Objects: toDelete[i:end]},
+		})
+		if err != nil {
+			lh.T.Logf("CleanupBucket: failed to delete objects from %s: %v", bucketName, err)
 		}
 	}
 
-	_, _ = lh.Client.DeleteBucket(ctx, &s3.DeleteBucketInput{
+	if _, err := lh.Client.DeleteBucket(ctx, &s3.DeleteBucketInput{
 		Bucket: aws.String(bucketName),
-	})
+	}); err != nil {
+		lh.T.Logf("CleanupBucket: failed to delete bucket %s: %v", bucketName, err)
+	}
 }
 
 // Cleanup removes all created buckets and their contents.

@@ -271,8 +271,9 @@ func (r *CLIRunner) Login(serverURL, username, password string) (string, error) 
 		return "", fmt.Errorf("login failed: %w\noutput: %s", err, string(output))
 	}
 
-	// Extract token from credentials file
-	token, err := extractTokenFromCredentialsFile(serverURL)
+	// Extract token from the credentials file in this runner's config dir
+	// (the isolated temp dir when the runner was created via LoginAsAdmin).
+	token, err := r.extractToken(serverURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to extract token after login: %w", err)
 	}
@@ -281,9 +282,13 @@ func (r *CLIRunner) Login(serverURL, username, password string) (string, error) 
 }
 
 // LoginAsUser creates a new CLIRunner logged in as the specified user.
+// The derived runner inherits the receiver's credential isolation, so a user
+// login performed through an isolated admin runner stays confined to the same
+// per-test temp dir.
 func (r *CLIRunner) LoginAsUser(serverURL, username, password string) (*CLIRunner, error) {
-	// Create a new runner for this user
+	// Create a new runner for this user, inheriting the isolated config dir.
 	newRunner := NewCLIRunner(serverURL, "")
+	newRunner.xdgConfigHome = r.xdgConfigHome
 
 	token, err := newRunner.Login(serverURL, username, password)
 	if err != nil {
@@ -294,14 +299,10 @@ func (r *CLIRunner) LoginAsUser(serverURL, username, password string) (*CLIRunne
 	return newRunner, nil
 }
 
-// extractTokenFromCredentialsFile reads the token from the credentials file.
-// This is the internal version used by other helpers.
-func extractTokenFromCredentialsFile(serverURL string) (string, error) {
-	return ExtractTokenFromCredentialsFile(serverURL)
-}
-
-// ExtractTokenFromCredentialsFile reads the token from the credentials file.
-// Exported version for use in tests that need direct token extraction.
+// ExtractTokenFromCredentialsFile reads the token from the credentials file in
+// the ambient config location (XDG_CONFIG_HOME or ~/.config). Exported for
+// tests that drive dfsctl through a non-isolated runner and need to read the
+// token directly. Isolated runners should use extractToken instead.
 func ExtractTokenFromCredentialsFile(serverURL string) (string, error) {
 	// Get credentials file path (matches internal/cli/credentials/store.go)
 	// Uses XDG_CONFIG_HOME or ~/.config
@@ -314,6 +315,13 @@ func ExtractTokenFromCredentialsFile(serverURL string) (string, error) {
 		configHome = filepath.Join(home, ".config")
 	}
 
+	return parseTokenFromCredentialsFile(configHome, serverURL)
+}
+
+// parseTokenFromCredentialsFile reads <configHome>/dfsctl/config.json and
+// returns the access token for serverURL. Shared by the runner-scoped and
+// ambient token extractors so both honor the same on-disk format.
+func parseTokenFromCredentialsFile(configHome, serverURL string) (string, error) {
 	credFile := filepath.Join(configHome, "dfsctl", "config.json")
 	data, err := os.ReadFile(credFile)
 	if err != nil {

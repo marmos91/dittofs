@@ -171,16 +171,15 @@ func testNFSLockBlocksSMBLease(t *testing.T, nfsMount, smbMount *framework.Mount
 	// Step 4: Try to acquire lock via SMB using flock
 	// This should either fail (if SMB translates to byte-range lock) or succeed
 	// (if SMB uses only leases for caching). Platform behavior varies.
+	// SMB exclusive lock MUST be blocked: DittoFS routes both NFS (NLM) and SMB byte-range
+	// locks through the same unified lock manager, so overlapping exclusive locks across
+	// protocols must conflict regardless of the kernel's own lock-namespace separation.
 	smbLock, err := framework.TryLockFileRange(t, smbPath, 0, 0, true)
-	if err != nil {
-		t.Logf("XPRO-01: SMB exclusive lock blocked as expected (cross-protocol conflict): %v", err)
-		// This is the expected behavior - NFS lock should block SMB lock
-	} else {
-		// On some platforms, SMB locks may not conflict with NFS locks
-		// at the kernel level (independent lock namespaces)
-		t.Logf("XPRO-01: SMB lock acquired (platform-specific behavior - independent lock namespaces)")
+	if smbLock != nil {
 		framework.UnlockFileRange(t, smbLock)
 	}
+	assert.ErrorIs(t, err, framework.ErrLockWouldBlock,
+		"XPRO-01: SMB exclusive lock must be blocked by DittoFS unified lock manager while NFS exclusive lock is held")
 
 	// Step 5: Release NFS lock
 	framework.UnlockFileRange(t, nfsLock)
@@ -319,17 +318,34 @@ func testCrossProtocolConflict(t *testing.T, nfsMount, smbMount *framework.Mount
 		t.Logf("XPRO-03: SMB shared lock blocked (platform-specific): %v", err)
 	} else {
 		t.Log("XPRO-03: SMB shared lock acquired (multiple readers)")
-		defer framework.UnlockFileRange(t, smbSharedLock)
+		// Safety-net release for early bail-outs. Step 4 releases the lock
+		// explicitly and nils smbSharedLock, making this deferred call a no-op
+		// on the happy path (avoids a double unlock of the same handle).
+		defer func() {
+			if smbSharedLock != nil {
+				framework.UnlockFileRange(t, smbSharedLock)
+			}
+		}()
 	}
 
 	// Step 3: Attempt exclusive lock via NFS (should fail - SMB shared exists if acquired)
 	nfsExclusiveLock, err := framework.TryLockFileRange(t, nfsPath, 0, 0, true)
-	if err != nil {
-		t.Logf("XPRO-03: NFS exclusive lock correctly blocked while shared locks exist: %v", err)
+	if smbSharedLock != nil {
+		// SMB shared lock is held — NFS exclusive MUST be blocked by the unified lock manager.
+		if nfsExclusiveLock != nil {
+			framework.UnlockFileRange(t, nfsExclusiveLock)
+		}
+		assert.ErrorIs(t, err, framework.ErrLockWouldBlock,
+			"XPRO-03: NFS exclusive lock must be blocked while cross-protocol SMB shared lock is held")
 	} else {
-		// This might happen if SMB shared lock wasn't acquired
-		t.Log("XPRO-03: NFS exclusive lock acquired (no conflicting locks)")
-		framework.UnlockFileRange(t, nfsExclusiveLock)
+		// SMB shared lock was not acquired (conservative platform behaviour); NFS exclusive
+		// is uncontested by SMB and may legitimately succeed.
+		if nfsExclusiveLock != nil {
+			t.Log("XPRO-03: NFS exclusive lock acquired (no active SMB shared lock to conflict)")
+			framework.UnlockFileRange(t, nfsExclusiveLock)
+		} else {
+			t.Logf("XPRO-03: NFS exclusive lock blocked by own NFS shared lock (expected): %v", err)
+		}
 	}
 
 	// Step 4: Release SMB lock (if acquired)
@@ -596,13 +612,14 @@ func testOverlappingByteRangeLockConflict(t *testing.T, nfsMount, smbMount *fram
 	t.Log("NFS locked bytes [256:768]")
 
 	// SMB attempts lock on [0:512] - overlaps with NFS [256:768]
+	// Overlapping byte-range locks across protocols MUST conflict via DittoFS's unified
+	// lock manager. NFS holds [256:768]; SMB [0:512] overlaps in [256:512] — must block.
 	smbLock, err := framework.TryLockFileRange(t, smbPath, 0, 512, true)
-	if err != nil {
-		t.Logf("SMB lock on [0:512] correctly blocked due to overlap with NFS [256:768]: %v", err)
-	} else {
-		t.Log("SMB lock on [0:512] unexpectedly acquired (platform-specific lock namespaces)")
+	if smbLock != nil {
 		framework.UnlockFileRange(t, smbLock)
 	}
+	assert.ErrorIs(t, err, framework.ErrLockWouldBlock,
+		"overlapping cross-protocol byte-range lock [0:512] must be blocked by NFS lock [256:768]")
 
 	framework.UnlockFileRange(t, nfsLock)
 	nfsLock = nil
