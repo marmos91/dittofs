@@ -178,10 +178,10 @@ func TestHandleDestroySession_OwnerStandalone_OverDifferentConnection(t *testing
 			t.Fatalf("CREATE_SESSION %s error: %v", tag, err)
 		}
 		reader := bytes.NewReader(resp)
-		xdr.DecodeUint32(reader) // overall status
-		xdr.DecodeOpaque(reader) // tag
-		xdr.DecodeUint32(reader) // numResults
-		xdr.DecodeUint32(reader) // opcode
+		_, _ = xdr.DecodeUint32(reader) // overall status
+		_, _ = xdr.DecodeOpaque(reader) // tag
+		_, _ = xdr.DecodeUint32(reader) // numResults
+		_, _ = xdr.DecodeUint32(reader) // opcode
 		var csRes types.CreateSessionRes
 		if err := csRes.Decode(reader); err != nil {
 			t.Fatalf("decode CreateSessionRes %s: %v", tag, err)
@@ -241,10 +241,10 @@ func TestHandleDestroySession_OwnershipCheck_NFS4ERR_NOT_SAME(t *testing.T) {
 		t.Fatalf("CREATE_SESSION A error: %v", err)
 	}
 	readerA := bytes.NewReader(csRespA)
-	xdr.DecodeUint32(readerA) // overall status
-	xdr.DecodeOpaque(readerA) // tag
-	xdr.DecodeUint32(readerA) // numResults
-	xdr.DecodeUint32(readerA) // opcode
+	_, _ = xdr.DecodeUint32(readerA) // overall status
+	_, _ = xdr.DecodeOpaque(readerA) // tag
+	_, _ = xdr.DecodeUint32(readerA) // numResults
+	_, _ = xdr.DecodeUint32(readerA) // opcode
 	var csResA types.CreateSessionRes
 	if err := csResA.Decode(readerA); err != nil {
 		t.Fatalf("decode CreateSessionRes A: %v", err)
@@ -261,10 +261,10 @@ func TestHandleDestroySession_OwnershipCheck_NFS4ERR_NOT_SAME(t *testing.T) {
 		t.Fatalf("CREATE_SESSION B error: %v", err)
 	}
 	readerB := bytes.NewReader(csRespB)
-	xdr.DecodeUint32(readerB)
-	xdr.DecodeOpaque(readerB)
-	xdr.DecodeUint32(readerB)
-	xdr.DecodeUint32(readerB)
+	_, _ = xdr.DecodeUint32(readerB)
+	_, _ = xdr.DecodeOpaque(readerB)
+	_, _ = xdr.DecodeUint32(readerB)
+	_, _ = xdr.DecodeUint32(readerB)
 	var csResB types.CreateSessionRes
 	if err := csResB.Decode(readerB); err != nil {
 		t.Fatalf("decode CreateSessionRes B: %v", err)
@@ -292,13 +292,13 @@ func TestHandleDestroySession_OwnershipCheck_NFS4ERR_NOT_SAME(t *testing.T) {
 	if overallStatus == types.NFS4_OK {
 		t.Fatal("overall status should be non-OK (DESTROY_SESSION must fail)")
 	}
-	xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeOpaque(reader) // tag
 	numResults, _ := xdr.DecodeUint32(reader)
 	if numResults < 2 {
 		t.Fatalf("numResults = %d, want >= 2 (SEQUENCE + DESTROY_SESSION)", numResults)
 	}
 	// Skip SEQUENCE result
-	xdr.DecodeUint32(reader) // opcode
+	_, _ = xdr.DecodeUint32(reader) // opcode
 	var seqRes types.SequenceRes
 	if err := seqRes.Decode(reader); err != nil {
 		t.Fatalf("decode SequenceRes: %v", err)
@@ -342,14 +342,14 @@ func TestHandleDestroySession_OwnerCanDestroy_WithSequence(t *testing.T) {
 	}
 
 	reader := bytes.NewReader(resp)
-	xdr.DecodeUint32(reader) // overall status
-	xdr.DecodeOpaque(reader) // tag
+	_, _ = xdr.DecodeUint32(reader) // overall status
+	_, _ = xdr.DecodeOpaque(reader) // tag
 	numResults, _ := xdr.DecodeUint32(reader)
 	if numResults < 2 {
 		t.Fatalf("numResults = %d, want 2 (SEQUENCE + DESTROY_SESSION)", numResults)
 	}
 	// Skip SEQUENCE
-	xdr.DecodeUint32(reader)
+	_, _ = xdr.DecodeUint32(reader)
 	var seqRes types.SequenceRes
 	_ = seqRes.Decode(reader)
 	// Read DESTROY_SESSION
