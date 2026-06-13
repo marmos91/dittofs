@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"fmt"
+	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -117,16 +119,28 @@ func (c *PostgresMetadataStoreConfig) Validate() error {
 	return nil
 }
 
-// ConnectionString builds a PostgreSQL connection string from the config
+// ConnectionString builds a URL-format PostgreSQL DSN from the config.
+//
+// Using url.URL ensures that every field (user, password, host, database,
+// and query parameters) is percent-encoded by net/url. This prevents any
+// field value from injecting extra DSN parameters — e.g. a password of
+// "secret sslmode=disable" can no longer override the operator-configured
+// sslmode, as the space and "=" are encoded as part of the password value.
+//
+// The URL format is accepted unchanged by all call sites: pgxpool.ParseConfig,
+// database/sql with the pgx/v5/stdlib driver, and golang-migrate's postgres
+// driver all parse "postgres://" URLs natively.
 func (c *PostgresMetadataStoreConfig) ConnectionString() string {
-	return fmt.Sprintf(
-		"host=%s port=%d dbname=%s user=%s password=%s sslmode=%s connect_timeout=%d",
-		c.Host,
-		c.Port,
-		c.Database,
-		c.User,
-		c.Password,
-		c.SSLMode,
-		int(c.ConnectTimeout.Seconds()),
-	)
+	q := url.Values{}
+	q.Set("sslmode", c.SSLMode)
+	q.Set("connect_timeout", strconv.Itoa(int(c.ConnectTimeout.Seconds())))
+
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(c.User, c.Password),
+		Host:     fmt.Sprintf("%s:%d", c.Host, c.Port),
+		Path:     "/" + c.Database,
+		RawQuery: q.Encode(),
+	}
+	return u.String()
 }
