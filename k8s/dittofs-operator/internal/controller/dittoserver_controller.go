@@ -99,6 +99,19 @@ func conflictResult(err error) (ctrl.Result, error) {
 	return ctrl.Result{}, err
 }
 
+// stepError converts a failed reconcile step into a Reconcile result: a
+// transient optimistic-lock conflict is requeued (freeing the goroutine
+// immediately), anything else is recorded as a warning event, logged, and
+// returned. Centralizing this keeps Reconcile's per-step error handling uniform.
+func (r *DittoServerReconciler) stepError(ctx context.Context, ds *dittoiov1alpha1.DittoServer, what string, err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{RequeueAfter: retryBackoffBase}, nil
+	}
+	r.Recorder.Eventf(ds, corev1.EventTypeWarning, "ReconcileFailed", "Failed to reconcile %s: %v", what, err)
+	logf.FromContext(ctx).Error(err, "Failed to reconcile "+what)
+	return ctrl.Result{}, err
+}
+
 // DittoServerReconciler reconciles a DittoServer object
 type DittoServerReconciler struct {
 	client.Client
@@ -195,13 +208,7 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if err := r.reconcileAPIService(ctx, dittoServer); err != nil {
-		if apierrors.IsConflict(err) {
-			return ctrl.Result{RequeueAfter: retryBackoffBase}, nil
-		}
-		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
-			"Failed to reconcile API Service: %v", err)
-		logger.Error(err, "Failed to reconcile API Service")
-		return ctrl.Result{}, err
+		return r.stepError(ctx, dittoServer, "API Service", err)
 	}
 
 	// Reconcile PerconaPGCluster if Percona is enabled
@@ -241,13 +248,7 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	configHash, err := r.reconcileStatefulSet(ctx, dittoServer, replicas)
 	if err != nil {
-		if apierrors.IsConflict(err) {
-			return ctrl.Result{RequeueAfter: retryBackoffBase}, nil
-		}
-		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
-			"Failed to reconcile StatefulSet: %v", err)
-		logger.Error(err, "Failed to reconcile StatefulSet")
-		return ctrl.Result{}, err
+		return r.stepError(ctx, dittoServer, "StatefulSet", err)
 	}
 
 	statefulSet := &appsv1.StatefulSet{}
@@ -731,7 +732,7 @@ func (r *DittoServerReconciler) reconcileJWTSecret(ctx context.Context, dittoSer
 // ceil(nBytes * 4 / 3). The base64 alphabet has 64 symbols (256 % 64 == 0), so
 // there is no modular bias. Returns an error if random generation fails (should
 // never happen with crypto/rand).
-func generateRandomSecret(nBytes int) (string, error) {
+func generateRandomSecret(nBytes int) (string, error) { //nolint:unparam // byte length kept as a parameter for the test suite's length/bias coverage
 	b := make([]byte, nBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("failed to generate random bytes: %w", err)
