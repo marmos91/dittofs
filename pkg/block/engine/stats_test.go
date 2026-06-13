@@ -3,6 +3,8 @@ package engine
 import (
 	"context"
 	"testing"
+
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // TestStats_EmptyStore verifies Stats() returns UsedSize==0 for an empty store.
@@ -108,4 +110,76 @@ func TestStats_AverageSize(t *testing.T) {
 	}
 
 	// When ContentCount == 0, AverageSize should be 0 (tested by empty store test).
+}
+
+// TestGetStats_PopulateBlockCounts_CASPendingCountedAsLocal verifies that a
+// CAS-path Pending FileBlock (non-zero Hash, no LocalPath / BlockStoreKey) is
+// classified as locally present rather than dirty. Before the fix the
+// discriminator keyed on LocalPath/BlockStoreKey, which are never set on the
+// CAS path, so every rolled-up chunk was mis-counted as dirty.
+func TestGetStats_PopulateBlockCounts_CASPendingCountedAsLocal(t *testing.T) {
+	bs := newTestEngine(t, 0, 0)
+	ctx := context.Background()
+
+	fbs := bs.fileBlockStore.(*stubFileBlockStore)
+
+	// Block A: CAS-path Pending — non-zero hash, no LocalPath, no BlockStoreKey.
+	// Before fix -> BlocksDirty (wrong). After fix -> BlocksLocal (correct).
+	var hashA block.ContentHash
+	hashA[0] = 0xAB
+	blockA := &block.FileBlock{
+		ID:    "payload-test/0",
+		Hash:  hashA,
+		State: block.BlockStatePending,
+	}
+
+	// Block B: truly dirty/in-flight — zero hash.
+	// Both before and after fix -> BlocksDirty (correct).
+	blockB := &block.FileBlock{
+		ID:    "payload-test/8388608",
+		Hash:  block.ContentHash{}, // zero
+		State: block.BlockStatePending,
+	}
+
+	// Block C: Remote — must go to BlocksRemote.
+	var hashC block.ContentHash
+	hashC[0] = 0xCD
+	blockC := &block.FileBlock{
+		ID:            "payload-test/16777216",
+		Hash:          hashC,
+		BlockStoreKey: "cas/cd/00/cd00",
+		State:         block.BlockStateRemote,
+	}
+
+	if err := fbs.Put(ctx, blockA); err != nil {
+		t.Fatalf("Put blockA: %v", err)
+	}
+	if err := fbs.Put(ctx, blockB); err != nil {
+		t.Fatalf("Put blockB: %v", err)
+	}
+	if err := fbs.Put(ctx, blockC); err != nil {
+		t.Fatalf("Put blockC: %v", err)
+	}
+
+	// Register the payload so ListFiles returns it and ListFileBlocks is called.
+	if _, err := bs.WriteAt(ctx, "payload-test", nil, []byte("x"), 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+
+	stats := bs.GetStats()
+
+	if stats.BlocksTotal != 3 {
+		t.Errorf("BlocksTotal: got %d, want 3", stats.BlocksTotal)
+	}
+	if stats.BlocksLocal != 1 {
+		// Before fix this is 0 (block A goes to BlocksDirty).
+		t.Errorf("BlocksLocal: got %d, want 1 (block A — CAS Pending with non-zero hash)", stats.BlocksLocal)
+	}
+	if stats.BlocksDirty != 1 {
+		// Before fix this is 2 (block A is misclassified here).
+		t.Errorf("BlocksDirty: got %d, want 1 (block B — truly dirty, zero hash)", stats.BlocksDirty)
+	}
+	if stats.BlocksRemote != 1 {
+		t.Errorf("BlocksRemote: got %d, want 1 (block C)", stats.BlocksRemote)
+	}
 }
