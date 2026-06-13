@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"sync"
@@ -66,6 +67,12 @@ const (
 
 // retryOnConflict wraps an operation with retry logic for optimistic locking conflicts.
 // This is necessary because CreateOrUpdate can race with status updates from other controllers.
+//
+// Retries are immediate (no sleep): a burst of back-to-back CAS conflicts within
+// the same goroutine scheduling quantum is resolved cheaply, but the goroutine is
+// never blocked. If all attempts conflict, the conflict error is returned and the
+// caller must convert it via conflictResult so the work queue reschedules the
+// reconcile rather than the goroutine busy-waiting.
 func retryOnConflict(fn func() error) error {
 	var err error
 	for i := 0; i < maxRetries; i++ {
@@ -76,9 +83,20 @@ func retryOnConflict(fn func() error) error {
 		if !apierrors.IsConflict(err) {
 			return err
 		}
-		time.Sleep(time.Duration(i+1) * retryBackoffBase)
 	}
 	return err
+}
+
+// conflictResult converts a persistent optimistic-lock conflict into a
+// requeue-after result so the reconcile goroutine is freed immediately and the
+// work queue reschedules after retryBackoffBase. Non-conflict errors are
+// returned unchanged so the work queue's rate limiter applies exponential
+// back-off.
+func conflictResult(err error) (ctrl.Result, error) {
+	if apierrors.IsConflict(err) {
+		return ctrl.Result{RequeueAfter: retryBackoffBase}, nil
+	}
+	return ctrl.Result{}, err
 }
 
 // DittoServerReconciler reconciles a DittoServer object
@@ -121,7 +139,9 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	if !dittoServer.DeletionTimestamp.IsZero() {
 		requeue, err := r.handleDeletion(ctx, dittoServer)
 		if err != nil {
-			return ctrl.Result{}, err
+			// A persistent finalizer-removal conflict is requeued (not surfaced
+			// as an error) so the goroutine is freed immediately.
+			return conflictResult(err)
 		}
 		if requeue {
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -175,6 +195,9 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	if err := r.reconcileAPIService(ctx, dittoServer); err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{RequeueAfter: retryBackoffBase}, nil
+		}
 		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
 			"Failed to reconcile API Service: %v", err)
 		logger.Error(err, "Failed to reconcile API Service")
@@ -218,6 +241,9 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	configHash, err := r.reconcileStatefulSet(ctx, dittoServer, replicas)
 	if err != nil {
+		if apierrors.IsConflict(err) {
+			return ctrl.Result{RequeueAfter: retryBackoffBase}, nil
+		}
 		r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "ReconcileFailed",
 			"Failed to reconcile StatefulSet: %v", err)
 		logger.Error(err, "Failed to reconcile StatefulSet")
@@ -699,19 +725,18 @@ func (r *DittoServerReconciler) reconcileJWTSecret(ctx context.Context, dittoSer
 	return nil
 }
 
-// generateRandomSecret generates a cryptographically secure random string of the given length.
-// Returns an error if random generation fails (should never happen with crypto/rand).
-func generateRandomSecret(length int) (string, error) {
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	result := make([]byte, length)
-	randomBytes := make([]byte, length)
-	if _, err := rand.Read(randomBytes); err != nil {
+// generateRandomSecret generates a cryptographically secure random string.
+// nBytes raw bytes are read from crypto/rand and returned as a base64
+// RawURL-encoded string (no padding, URL-safe alphabet). The output length is
+// ceil(nBytes * 4 / 3). The base64 alphabet has 64 symbols (256 % 64 == 0), so
+// there is no modular bias. Returns an error if random generation fails (should
+// never happen with crypto/rand).
+func generateRandomSecret(nBytes int) (string, error) {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
-	for i := range result {
-		result[i] = chars[int(randomBytes[i])%len(chars)]
-	}
-	return string(result), nil
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func (r *DittoServerReconciler) reconcileConfigMap(ctx context.Context, dittoServer *dittoiov1alpha1.DittoServer) error {
