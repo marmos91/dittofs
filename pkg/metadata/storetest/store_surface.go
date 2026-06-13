@@ -28,6 +28,120 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("ServerConfigRoundTrip", func(t *testing.T) { testServerConfigRoundTrip(t, factory) })
 	t.Run("Healthcheck", func(t *testing.T) { testHealthcheck(t, factory) })
 	t.Run("Pagination", func(t *testing.T) { testListChildrenPagination(t, factory) })
+	t.Run("DeleteSharePurgesUsedBytesAndObjectIndex", func(t *testing.T) { testDeleteSharePurgesCounters(t, factory) })
+	t.Run("ListChildrenCursorAfterDeletedEntry", func(t *testing.T) { testListChildrenCursorAfterDelete(t, factory) })
+}
+
+func testDeleteSharePurgesCounters(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/purge-test"
+	rootHandle := createTestShare(t, store, shareName)
+	handle := createTestFile(t, store, shareName, rootHandle, "big.bin", 0o644)
+	setFileSize(t, store, handle, 8192)
+
+	// Set an ObjectID so the objectIndex secondary mapping is exercised.
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	for i := range file.ObjectID {
+		file.ObjectID[i] = byte(i + 1)
+	}
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile with ObjectID: %v", err)
+	}
+
+	if got := store.GetUsedBytes(); got != 8192 {
+		t.Fatalf("pre-delete GetUsedBytes() = %d, want 8192", got)
+	}
+
+	if err := store.DeleteShare(ctx, shareName); err != nil {
+		t.Fatalf("DeleteShare() failed: %v", err)
+	}
+
+	// usedBytes must return to 0 after the share is deleted.
+	if got := store.GetUsedBytes(); got != 0 {
+		t.Fatalf("post-delete GetUsedBytes() = %d, want 0 — DeleteShare did not decrement usedBytes", got)
+	}
+
+	// Recreating the share and a file with the same ObjectID must not produce
+	// ErrConflict — the objectIndex entry must have been purged.
+	root2 := createTestShare(t, store, shareName)
+	handle2 := createTestFile(t, store, shareName, root2, "big.bin", 0o644)
+	file2, err := store.GetFile(ctx, handle2)
+	if err != nil {
+		t.Fatalf("GetFile after recreate: %v", err)
+	}
+	for i := range file2.ObjectID {
+		file2.ObjectID[i] = byte(i + 1) // same ObjectID as before
+	}
+	if err := store.PutFile(ctx, file2); err != nil {
+		t.Fatalf("PutFile same ObjectID after DeleteShare: got ErrConflict or unexpected error: %v — objectIndex was not purged by DeleteShare", err)
+	}
+}
+
+func testListChildrenCursorAfterDelete(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/cursor-del"
+	rootHandle := createTestShare(t, store, shareName)
+
+	// Create entries a, b, c, d, e in sorted order.
+	for _, name := range []string{"a", "b", "c", "d", "e"} {
+		createTestFile(t, store, shareName, rootHandle, name, 0o644)
+	}
+
+	// Page 1: limit=2, cursor="". Returns ["a","b"], nextCursor="b".
+	page1, cur1, err := store.ListChildren(ctx, rootHandle, "", 2)
+	if err != nil {
+		t.Fatalf("ListChildren page1: %v", err)
+	}
+	if len(page1) != 2 || page1[0].Name != "a" || page1[1].Name != "b" {
+		t.Fatalf("page1 = %v, want [a b]", namesOf(page1))
+	}
+	if cur1 != "b" {
+		t.Fatalf("cursor after page1 = %q, want 'b'", cur1)
+	}
+
+	// Delete the cursor entry "b" to simulate a file deleted between READDIR calls.
+	bHandle, err := store.GetChild(ctx, rootHandle, "b")
+	if err != nil {
+		t.Fatalf("GetChild(b): %v", err)
+	}
+	if err := store.DeleteChild(ctx, rootHandle, "b"); err != nil {
+		t.Fatalf("DeleteChild(b): %v", err)
+	}
+	if err := store.DeleteFile(ctx, bHandle); err != nil {
+		t.Fatalf("DeleteFile(b): %v", err)
+	}
+
+	// Page 2: cursor="b" but "b" no longer exists. Must return ["c","d"], not restart from "a".
+	page2, _, err := store.ListChildren(ctx, rootHandle, cur1, 2)
+	if err != nil {
+		t.Fatalf("ListChildren page2: %v", err)
+	}
+	for _, e := range page2 {
+		if e.Name == "a" || e.Name == "b" {
+			t.Errorf("page2 contains %q — cursor did not advance past deleted entry, READDIR restarted", e.Name)
+		}
+	}
+	if len(page2) == 0 {
+		t.Fatal("page2 is empty — no entries after deleted cursor")
+	}
+	if page2[0].Name != "c" {
+		t.Errorf("page2[0] = %q, want 'c' — cursor must resume after the deleted entry's sorted position", page2[0].Name)
+	}
+}
+
+func namesOf(entries []metadata.DirEntry) []string {
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.Name
+	}
+	return out
 }
 
 // setFileSize reads a file, sets its logical Size, and writes it back. Used to

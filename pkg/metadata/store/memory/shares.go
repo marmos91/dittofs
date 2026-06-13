@@ -135,31 +135,14 @@ func (store *MemoryMetadataStore) DeleteShare(ctx context.Context, shareName str
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	store.mu.Lock()
-	defer store.mu.Unlock()
-
-	if _, exists := store.shares[shareName]; !exists {
-		return &metadata.StoreError{
-			Code:    metadata.ErrNotFound,
-			Message: "share not found",
-			Path:    shareName,
-		}
-	}
-
-	// Remove all files belonging to this share
-	for key, fd := range store.files {
-		if fd.ShareName == shareName {
-			delete(store.files, key)
-			delete(store.parents, key)
-			delete(store.children, key)
-			delete(store.linkCounts, key)
-			delete(store.deviceNumbers, key)
-		}
-	}
-
-	delete(store.shares, shareName)
-	return nil
+	// Delegate to the transaction path: tx.DeleteShare handles objectIndex
+	// cleanup and pendingDelta accounting, and WithTransaction commits the
+	// delta to usedBytes atomically on success (or restores the snapshot on
+	// failure). The store-level body previously skipped both, leaking
+	// usedBytes and stale objectIndex entries.
+	return store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return tx.DeleteShare(ctx, shareName)
+	})
 }
 
 // ListShares returns the names of all shares.
