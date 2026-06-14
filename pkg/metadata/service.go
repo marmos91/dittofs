@@ -560,7 +560,14 @@ func (s *Service) lockManagerForHandle(handle FileHandle) (*LockManager, error) 
 	if err != nil {
 		return nil, err
 	}
+	return s.lockManagerForShare(shareName)
+}
 
+// lockManagerForShare returns the lock manager for an already-decoded share
+// name. Splitting this out of lockManagerForHandle lets callers that have
+// already decoded the handle (see storeAndLockManagerForHandle) avoid a second
+// UUID parse.
+func (s *Service) lockManagerForShare(shareName string) (*LockManager, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -571,6 +578,29 @@ func (s *Service) lockManagerForHandle(handle FileHandle) (*LockManager, error) 
 	// Decoded handle names a share with no lock manager (removed share):
 	// stale-handle StoreError so callers map to *STALE.
 	return nil, NewStaleHandleError(shareName)
+}
+
+// storeAndLockManagerForHandle resolves both the metadata store and the lock
+// manager for a handle with a SINGLE DecodeFileHandle call. The store and
+// lock-manager handlers (LockFile, UnlockFile, TestLock, …) need both, and
+// calling storeForHandle + lockManagerForHandle separately parsed the same
+// handle's UUID twice per operation. The share name is decoded once here and
+// reused for both share-keyed lookups. Handle opacity is preserved: callers
+// still pass an opaque FileHandle and never see the decoded components.
+func (s *Service) storeAndLockManagerForHandle(handle FileHandle) (Store, *LockManager, error) {
+	shareName, _, err := DecodeFileHandle(handle)
+	if err != nil {
+		return nil, nil, err
+	}
+	store, err := s.GetStoreForShare(shareName)
+	if err != nil {
+		return nil, nil, err
+	}
+	lm, err := s.lockManagerForShare(shareName)
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, lm, nil
 }
 
 // GetLockManagerForHandle returns the lock manager for the share that owns
@@ -754,7 +784,12 @@ func (s *Service) GetQuotaForShare(shareName string) int64 {
 // When a quota is configured for the share, the returned TotalBytes and
 // AvailableBytes are overlaid with quota-adjusted values.
 func (s *Service) GetFilesystemStatistics(ctx context.Context, handle FileHandle) (*FilesystemStatistics, error) {
-	store, err := s.storeForHandle(handle)
+	// Decode once: the share name is reused for the quota overlay below.
+	shareName, _, err := DecodeFileHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+	store, err := s.GetStoreForShare(shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -764,7 +799,6 @@ func (s *Service) GetFilesystemStatistics(ctx context.Context, handle FileHandle
 	}
 
 	// Apply quota overlay if configured
-	shareName := shareNameForHandle(handle)
 	quotaBytes := s.GetQuotaForShare(shareName)
 	if quotaBytes > 0 {
 		quota := uint64(quotaBytes)
@@ -822,12 +856,7 @@ func (s *Service) LockFile(ctx *AuthContext, handle FileHandle, lock FileLock) e
 		return err
 	}
 
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return err
-	}
-
-	lm, err := s.lockManagerForHandle(handle)
+	store, lm, err := s.storeAndLockManagerForHandle(handle)
 	if err != nil {
 		return err
 	}
@@ -877,12 +906,7 @@ func (s *Service) UnlockFile(ctx context.Context, handle FileHandle, openID stri
 		return err
 	}
 
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return err
-	}
-
-	lm, err := s.lockManagerForHandle(handle)
+	store, lm, err := s.storeAndLockManagerForHandle(handle)
 	if err != nil {
 		return err
 	}
@@ -944,12 +968,7 @@ func (s *Service) TestLock(ctx *AuthContext, handle FileHandle, sessionID, offse
 		return false, nil, err
 	}
 
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return false, nil, err
-	}
-
-	lm, err := s.lockManagerForHandle(handle)
+	store, lm, err := s.storeAndLockManagerForHandle(handle)
 	if err != nil {
 		return false, nil, err
 	}
@@ -977,12 +996,7 @@ func (s *Service) ListLocks(ctx *AuthContext, handle FileHandle) ([]FileLock, er
 		return nil, err
 	}
 
-	store, err := s.storeForHandle(handle)
-	if err != nil {
-		return nil, err
-	}
-
-	lm, err := s.lockManagerForHandle(handle)
+	store, lm, err := s.storeAndLockManagerForHandle(handle)
 	if err != nil {
 		return nil, err
 	}
