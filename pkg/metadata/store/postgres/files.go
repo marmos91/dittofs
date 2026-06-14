@@ -161,9 +161,11 @@ func (s *PostgresMetadataStore) GetParent(ctx context.Context, handle metadata.F
 // SetParent sets the parent handle for a file/directory.
 //
 // Parent tracking is handled implicitly by parent_child_map via SetChild, so
-// this is a no-op and avoids the cost of opening an empty transaction.
+// this performs no write. It still honours context cancellation, matching the
+// prior WithTransaction-based implementation, while avoiding the cost of
+// opening an empty transaction.
 func (s *PostgresMetadataStore) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
-	return nil
+	return ctx.Err()
 }
 
 // GetLinkCount returns the hard link count for a file.
