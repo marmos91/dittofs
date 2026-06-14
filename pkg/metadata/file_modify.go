@@ -142,6 +142,23 @@ func (s *Service) LookupCaseInsensitive(ctx *AuthContext, dirHandle FileHandle, 
 		}
 		for _, entry := range entries {
 			if equalFoldName(entry.Name, name) {
+				// Fast path: stores populate entry.Handle (DirEntry.Handle is
+				// MUST-populate). The initial exact-case s.Lookup above already
+				// validated the directory and execute/traverse permission, so a
+				// second s.Lookup would redundantly re-run GetFile(dir) + type
+				// check + permission check + GetChild. Fetch the matched file
+				// directly from its handle instead.
+				if len(entry.Handle) != 0 {
+					match, matchErr := store.GetFile(ctx.Context, entry.Handle)
+					if matchErr != nil {
+						if IsNotFoundError(matchErr) {
+							continue
+						}
+						return nil, "", matchErr
+					}
+					return match, entry.Name, nil
+				}
+				// Fallback for stores that leave Handle empty: full Lookup.
 				match, matchErr := s.Lookup(ctx, dirHandle, entry.Name)
 				if matchErr != nil {
 					if IsNotFoundError(matchErr) {

@@ -75,8 +75,14 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 		return nil, err
 	}
 
-	// Resolve the store once for use throughout this method.
-	store, err := s.storeForHandle(handle)
+	// Decode the handle once and reuse the share name for both the store
+	// lookup and the quota check below (avoids a second UUID parse on this
+	// write hot path).
+	shareName, _, err := DecodeFileHandle(handle)
+	if err != nil {
+		return nil, err
+	}
+	store, err := s.GetStoreForShare(shareName)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +128,6 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 	// quota until the next check catches up. Hard atomic enforcement would require
 	// kernel-level integration which is impractical for userspace NFS/SMB servers.
 	// Truncate (shrink) and zero-byte writes are always allowed.
-	shareName := shareNameForHandle(handle)
 	quotaBytes := s.GetQuotaForShare(shareName)
 	if quotaBytes > 0 && newSize > file.Size {
 		currentUsed := store.GetUsedBytes()

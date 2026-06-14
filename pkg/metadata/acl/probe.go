@@ -33,3 +33,14 @@ var ProbeBitsAll = [...]uint32{
 	ACE4_WRITE_OWNER,
 	ACE4_SYNCHRONIZE,
 }
+
+// ProbeMaskAll is the OR of every bit in ProbeBitsAll — the single-call
+// probeMask for EvaluateGranted when computing the full effective-rights set
+// (MAXIMUM_ALLOWED / MxAc). Kept in sync with ProbeBitsAll via package init.
+var ProbeMaskAll = func() uint32 {
+	var m uint32
+	for _, b := range ProbeBitsAll {
+		m |= b
+	}
+	return m
+}()

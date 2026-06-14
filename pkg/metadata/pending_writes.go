@@ -214,13 +214,25 @@ func (t *PendingWritesTracker) PopAllPending() []PendingEntry {
 	defer t.mu.Unlock()
 
 	result := make([]PendingEntry, 0, len(t.pending))
+	keys := make([]string, 0, len(t.pending))
 	for key, state := range t.pending {
 		result = append(result, PendingEntry{
 			Handle: FileHandle(key),
 			State:  state,
 		})
+		keys = append(keys, key)
 	}
 	t.pending = make(map[string]*PendingWriteState)
+
+	// Clean up the per-file flush locks for the popped entries to prevent
+	// unbounded growth of flushLocks (mirrors PopPending). Lock ordering is
+	// t.mu -> t.flushMu, consistent with PopPending, so no deadlock.
+	t.flushMu.Lock()
+	for _, key := range keys {
+		delete(t.flushLocks, key)
+	}
+	t.flushMu.Unlock()
+
 	return result
 }
 

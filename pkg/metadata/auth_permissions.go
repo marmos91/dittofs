@@ -793,22 +793,13 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 		return explicit, nil
 	}
 
-	// DACL-present path: per-bit acl.Evaluate.
+	// DACL-present path: single-pass acl.EvaluateGranted. It accumulates the
+	// per-bit allow/deny decisions across the whole DACL in one walk and
+	// returns the granted subset of `explicit` — bit-identical to probing each
+	// requested bit through acl.Evaluate individually, without conflating
+	// per-bit DENY semantics.
 	evalCtx := buildFileAccessEvalContext(file, authCtx)
-	var granted uint32
-	// Per-bit probe: acl.Evaluate(mask, …) returns true only when ALL bits in
-	// mask are allowed, so we must probe each requested bit individually —
-	// anything else conflates per-bit DENY semantics.
-	probe := explicit
-	for bit := uint32(1); bit != 0 && probe != 0; bit <<= 1 {
-		if probe&bit == 0 {
-			continue
-		}
-		if acl.Evaluate(file.ACL, evalCtx, bit) {
-			granted |= bit
-		}
-		probe &^= bit
-	}
+	granted := acl.EvaluateGranted(file.ACL, evalCtx, explicit)
 
 	// MS-FSA §2.1.4.13 "Algorithm to Check Access to an Existing File":
 	// FILE_READ_ATTRIBUTES is always granted from the containing directory
@@ -845,12 +836,9 @@ func (s *Service) CheckFileAccessWithParentGeneric(file *File, parent *File, aut
 		// bits the requester is allowed (independent of what they asked for,
 		// minus the MAXIMUM_ALLOWED bit itself). Mirrors computeMaximalAccess
 		// so the handle's effective access matches the MxAc reply.
-		var effective uint32
-		for _, bit := range acl.ProbeBitsAll {
-			if acl.Evaluate(file.ACL, evalCtx, bit) {
-				effective |= bit
-			}
-		}
+		// Single-pass effective-rights computation over the same evalCtx,
+		// equivalent to probing each acl.ProbeBitsAll bit through acl.Evaluate.
+		effective := acl.EvaluateGranted(file.ACL, evalCtx, acl.ProbeMaskAll)
 		// Apply parent FILE_DELETE_CHILD override to the MAXIMUM_ALLOWED
 		// effective-rights set too so the open's GrantedAccess (which the
 		// caller propagates into Open.GrantedAccess and surfaces via MxAc)
@@ -953,19 +941,13 @@ func (s *Service) ComputeMaximalAccess(file *File, authCtx *AuthContext) uint32 
 			return accessMaskPosixGenericAll
 		}
 		evalCtx := buildFileAccessEvalContext(file, authCtx)
-		var granted uint32
-		// acl.ProbeBitsAll is the shared probe set (mirrors the MAXIMUM_ALLOWED
-		// branch of CheckFileAccessWithParentGeneric). ExpandGenericMask is
-		// applied defensively so any future additions carrying GENERIC_* bits
-		// are normalized per MS-DTYP §2.5.3 before evaluation.
-		for _, bit := range acl.ProbeBitsAll {
-			probe := acl.ExpandGenericMask(bit)
-			if acl.Evaluate(file.ACL, evalCtx, probe) {
-				granted |= probe
-			}
-		}
-		// Result also expanded for defense-in-depth: per MS-DTYP §2.5.3 the
-		// MaximalAccess reply must contain only resolved rights.
+		// Single-pass probe over acl.ProbeMaskAll (the OR of acl.ProbeBitsAll),
+		// mirroring the MAXIMUM_ALLOWED branch of
+		// CheckFileAccessWithParentGeneric. ProbeBitsAll contains only specific
+		// rights, so the previous per-bit ExpandGenericMask was a no-op; the
+		// result is still expanded defensively per MS-DTYP §2.5.3 so the
+		// MaximalAccess reply contains only resolved rights.
+		granted := acl.EvaluateGranted(file.ACL, evalCtx, acl.ProbeMaskAll)
 		return acl.ExpandGenericMask(granted)
 	}
 

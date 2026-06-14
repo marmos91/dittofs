@@ -271,6 +271,95 @@ func Evaluate(a *ACL, evalCtx *EvaluateContext, requestedMask uint32) bool {
 	return (allowedBits & requestedMask) == requestedMask
 }
 
+// EvaluateGranted computes, in a SINGLE pass over the DACL, the subset of
+// probeMask that the requester is granted. It is the multi-bit analog of
+// Evaluate: where Evaluate answers "are ALL bits in mask allowed?" (and must
+// be called once per probed bit to discover a granted subset), EvaluateGranted
+// answers "which of these bits are allowed?" and walks the ACE list only once.
+//
+// The result is bit-identical to probing each set bit of probeMask through
+// Evaluate individually and OR-ing the ones that return true. This holds
+// because Evaluate's allow/deny accumulation is per-bit-independent —
+// first-match-wins applies separately to each bit position via
+// `ace.AccessMask &^ (allowedBits | deniedBits)` — and the OWNER_RIGHTS
+// pre-scan and MS-DTYP §2.5.3.2 owner-implicit grant likewise act per-bit.
+// Early termination in Evaluate only short-circuits once a decision is reached
+// and never alters the final allow/deny outcome for any bit.
+//
+// Returns 0 immediately for an empty probeMask or a nil ACL (matching
+// Evaluate's "nil ACL grants nothing" contract). NullDACL grants every probed
+// bit.
+func EvaluateGranted(a *ACL, evalCtx *EvaluateContext, probeMask uint32) uint32 {
+	// Empty probe or nil ACL grants nothing (matches Evaluate's nil-ACL contract).
+	if probeMask == 0 || a == nil {
+		return 0
+	}
+	if a.NullDACL {
+		return probeMask
+	}
+
+	requesterIsOwner := evalCtx.UID == evalCtx.FileOwnerUID
+	var ownerRightsPresent bool
+	if requesterIsOwner {
+		for i := range a.ACEs {
+			ace := &a.ACEs[i]
+			if ace.IsInheritOnly() {
+				continue
+			}
+			if ace.Who != SpecialOwnerRights {
+				continue
+			}
+			if ace.Type != ACE4_ACCESS_ALLOWED_ACE_TYPE &&
+				ace.Type != ACE4_ACCESS_DENIED_ACE_TYPE {
+				continue
+			}
+			ownerRightsPresent = true
+			break
+		}
+	}
+
+	var allowedBits uint32
+	var deniedBits uint32
+
+	for i := range a.ACEs {
+		ace := &a.ACEs[i]
+
+		if ace.IsInheritOnly() {
+			continue
+		}
+		if !aceMatchesWhoWithOwnerRights(ace, evalCtx, ownerRightsPresent) {
+			continue
+		}
+
+		switch ace.Type {
+		case ACE4_ACCESS_ALLOWED_ACE_TYPE:
+			newBits := ace.AccessMask &^ (allowedBits | deniedBits)
+			allowedBits |= newBits
+
+		case ACE4_ACCESS_DENIED_ACE_TYPE:
+			newBits := ace.AccessMask &^ (allowedBits | deniedBits)
+			deniedBits |= newBits
+
+		case ACE4_SYSTEM_AUDIT_ACE_TYPE, ACE4_SYSTEM_ALARM_ACE_TYPE:
+			continue
+		}
+
+		// Early termination: every probed bit has been decided either way.
+		if (allowedBits|deniedBits)&probeMask == probeMask {
+			break
+		}
+	}
+
+	if requesterIsOwner && !ownerRightsPresent {
+		allowedBits |= ownerImplicitRights &^ deniedBits
+		if evalCtx.RequesterHasTakeOwnership {
+			allowedBits |= takeOwnershipImplicitRight &^ deniedBits
+		}
+	}
+
+	return allowedBits & probeMask
+}
+
 // aceMatchesWhoWithOwnerRights checks if an ACE applies to the given
 // evaluation context. When ownerRightsPresent is true AND the requester is the
 // file owner, OWNER@ ACEs are made to not-match and OWNER_RIGHTS ACEs are
