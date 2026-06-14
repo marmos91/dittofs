@@ -277,11 +277,19 @@ func MakeSuccessReply(xid uint32, data []byte) ([]byte, error) {
 		AcceptStat: RPCSuccess, // 0 = SUCCESS (procedure executed successfully)
 	}
 
-	// PERFORMANCE OPTIMIZATION: Pre-allocate buffer for reply header
-	// Size: RPC reply header (~28 bytes) + procedure data
-	replyHeaderSize := 28
-	estimatedSize := replyHeaderSize + len(data)
+	// PERFORMANCE OPTIMIZATION: Marshal the entire reply into a single buffer,
+	// reserving 4 leading placeholder bytes for the record-marking fragment
+	// header. This avoids a second allocation for the fragment header and the
+	// full-payload copy that prepending it would otherwise require.
+	// Size: 4 (fragment header) + RPC reply header (~28 bytes) + procedure data
+	const replyHeaderSize = 28
+	estimatedSize := 4 + replyHeaderSize + len(data)
 	buf := bytes.NewBuffer(make([]byte, 0, estimatedSize))
+
+	// Reserve 4 placeholder bytes for the fragment header; patched in below
+	// once the total record length is known. WriteString avoids allocating a
+	// throwaway byte slice for the placeholder.
+	buf.WriteString("\x00\x00\x00\x00")
 
 	// Marshal the reply header using XDR encoding
 	// This converts the struct to network byte order
@@ -294,20 +302,12 @@ func MakeSuccessReply(xid uint32, data []byte) ([]byte, error) {
 	// This data should already be XDR-encoded by the caller
 	buf.Write(data)
 
-	// Prepend RPC fragment header (4 bytes)
+	// Patch the RPC fragment header (first 4 bytes) in place.
 	// Format: [last_fragment_bit (1 bit)][fragment_length (31 bits)]
-	replyData := buf.Bytes()
-	fragmentHeader := make([]byte, 4)
-
-	// Set high bit (0x80000000) to indicate last fragment
-	// OR with length to combine both fields
-	// 0x80000000 = binary 10000000_00000000_00000000_00000000
-	binary.BigEndian.PutUint32(fragmentHeader, 0x80000000|uint32(len(replyData)))
-
-	// PERFORMANCE OPTIMIZATION: Pre-allocate final buffer to avoid append reallocation
-	result := make([]byte, 0, 4+len(replyData))
-	result = append(result, fragmentHeader...)
-	result = append(result, replyData...)
+	// The fragment length covers everything after the 4-byte header. The high
+	// bit (0x80000000) marks this as the last (and only) fragment.
+	result := buf.Bytes()
+	binary.BigEndian.PutUint32(result[:4], 0x80000000|uint32(len(result)-4))
 	return result, nil
 }
 
