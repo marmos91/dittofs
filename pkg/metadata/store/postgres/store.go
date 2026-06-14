@@ -26,9 +26,6 @@ type PostgresMetadataStore struct {
 	// capabilities holds the filesystem capabilities
 	capabilities metadata.FilesystemCapabilities
 
-	// statsCache caches filesystem statistics
-	statsCache *statsCache
-
 	// logger for structured logging
 	logger *slog.Logger
 
@@ -74,15 +71,6 @@ type PostgresMetadataStore struct {
 	storeID string
 }
 
-// statsCache holds cached filesystem statistics
-type statsCache struct {
-	stats     metadata.FilesystemStatistics
-	hasStats  bool
-	timestamp time.Time
-	ttl       time.Duration
-	mu        sync.RWMutex
-}
-
 // NewPostgresMetadataStore creates a new PostgreSQL-backed metadata store
 func NewPostgresMetadataStore(
 	ctx context.Context,
@@ -126,12 +114,9 @@ func NewPostgresMetadataStore(
 		pool:         pool,
 		config:       cfg,
 		capabilities: capabilities,
-		statsCache: &statsCache{
-			ttl: cfg.StatsCacheTTL,
-		},
-		logger: log,
-		ctx:    storeCtx,
-		cancel: cancel,
+		logger:       log,
+		ctx:          storeCtx,
+		cancel:       cancel,
 	}
 
 	// Initialize the usedBytes counter from a SQL SUM query.
@@ -308,26 +293,4 @@ func initializeFilesystemCapabilities(ctx context.Context, pool *pgxpool.Pool, c
 	)
 
 	return err
-}
-
-// Helper method to get cached stats
-func (sc *statsCache) get() (metadata.FilesystemStatistics, bool) {
-	sc.mu.RLock()
-	defer sc.mu.RUnlock()
-
-	if !sc.hasStats || time.Since(sc.timestamp) >= sc.ttl {
-		return metadata.FilesystemStatistics{}, false
-	}
-
-	return sc.stats, true
-}
-
-// Helper method to set cached stats
-func (sc *statsCache) set(stats metadata.FilesystemStatistics) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-
-	sc.stats = stats
-	sc.hasStats = true
-	sc.timestamp = time.Now()
 }

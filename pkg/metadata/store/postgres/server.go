@@ -123,23 +123,16 @@ func (s *PostgresMetadataStore) SetFilesystemCapabilities(capabilities metadata.
 // Filesystem Statistics
 // ============================================================================
 
-// GetFilesystemStatistics returns filesystem statistics with caching.
-// UsedBytes is read from the atomic counter (O(1), always fresh).
-// File count uses the stats cache for efficiency.
+// GetFilesystemStatistics returns filesystem statistics scoped to the share
+// encoded in the handle. The store-wide atomic usedBytes counter cannot answer
+// a per-share query, so a scoped SQL aggregate (statfsQuery) is used instead.
+// An undecodable handle falls back to the store-wide totals (single-share
+// compatible).
 func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
-	// Scope the aggregate to the share encoded in the handle. The atomic
-	// usedBytes counter and statsCache are store-wide (sum across all shares),
-	// so they cannot answer a per-share query; both are bypassed here in favour
-	// of a scoped SQL aggregate (statfsQuery). An invalid handle falls back to
-	// the store-wide totals (single-share compatible).
 	sql, args := statfsQuery(handle)
 	var bytesUsed, filesUsed int64
 	if err := s.queryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
-
-	// Do NOT populate statsCache here: the cache is store-wide and would be
-	// polluted by a per-share result. The cache remains valid only for the
-	// store-wide path elsewhere.
 	return buildFilesystemStatistics(bytesUsed, filesUsed), nil
 }
