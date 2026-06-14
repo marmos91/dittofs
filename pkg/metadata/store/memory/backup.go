@@ -35,7 +35,7 @@ const (
 // memoryBackupSnapshot is the gob-encoded payload written inside the
 // envelope. All fields are exported so gob can encode/decode them.
 // The struct mirrors the data portion of MemoryMetadataStore; transient
-// caches (sessions, attrPool) and config limits
+// caches (sessions) and config limits
 // (maxStorageBytes, maxFiles) are excluded.
 type memoryBackupSnapshot struct {
 	Shares        map[string]*shareData

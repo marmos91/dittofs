@@ -58,9 +58,9 @@ func TestDeriveMode_OwnerGroupEveryone(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := DeriveMode(tt.acl)
+			got := deriveMode(tt.acl)
 			if got != tt.wantMode {
-				t.Errorf("DeriveMode() = 0%o, want 0%o", got, tt.wantMode)
+				t.Errorf("deriveMode() = 0%o, want 0%o", got, tt.wantMode)
 			}
 		})
 	}
@@ -75,9 +75,9 @@ func TestDeriveMode_SkipsDenyACEs(t *testing.T) {
 	}}
 
 	// DENY ACEs are not used for mode derivation.
-	got := DeriveMode(a)
+	got := deriveMode(a)
 	if got != 0755 {
-		t.Errorf("DeriveMode() = 0%o, want 0755 (DENY ACEs should not affect mode)", got)
+		t.Errorf("deriveMode() = 0%o, want 0755 (DENY ACEs should not affect mode)", got)
 	}
 }
 
@@ -89,9 +89,9 @@ func TestDeriveMode_SkipsInheritOnlyACEs(t *testing.T) {
 		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
 	}}
 
-	got := DeriveMode(a)
+	got := deriveMode(a)
 	if got != 0444 {
-		t.Errorf("DeriveMode() = 0%o, want 0444 (INHERIT_ONLY ACEs should not affect mode)", got)
+		t.Errorf("deriveMode() = 0%o, want 0444 (INHERIT_ONLY ACEs should not affect mode)", got)
 	}
 }
 
@@ -104,9 +104,9 @@ func TestDeriveMode_SkipsNamedPrincipals(t *testing.T) {
 	}}
 
 	// Named principals are not OWNER@/GROUP@/EVERYONE@.
-	got := DeriveMode(a)
+	got := deriveMode(a)
 	if got != 0444 {
-		t.Errorf("DeriveMode() = 0%o, want 0444 (named principals should not affect mode)", got)
+		t.Errorf("deriveMode() = 0%o, want 0444 (named principals should not affect mode)", got)
 	}
 }
 
@@ -119,9 +119,9 @@ func TestDeriveMode_MultipleOwnerACEs(t *testing.T) {
 		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
 	}}
 
-	got := DeriveMode(a)
+	got := deriveMode(a)
 	if got != 0644 {
-		t.Errorf("DeriveMode() = 0%o, want 0644 (multiple OWNER@ ACEs should OR)", got)
+		t.Errorf("deriveMode() = 0%o, want 0644 (multiple OWNER@ ACEs should OR)", got)
 	}
 }
 
@@ -342,10 +342,10 @@ func TestModeRoundTrip(t *testing.T) {
 		}}
 
 		adjusted := AdjustACLForMode(base, mode)
-		derived := DeriveMode(adjusted)
+		derived := deriveMode(adjusted)
 
 		if derived != mode {
-			t.Errorf("round-trip mode 0%o: AdjustACLForMode -> DeriveMode = 0%o", mode, derived)
+			t.Errorf("round-trip mode 0%o: AdjustACLForMode -> deriveMode = 0%o", mode, derived)
 		}
 	}
 }

@@ -88,8 +88,8 @@ func TestIsSpecialWho(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := IsSpecialWho(tt.who); got != tt.want {
-			t.Errorf("IsSpecialWho(%q) = %v, want %v", tt.who, got, tt.want)
+		if got := isSpecialWho(tt.who); got != tt.want {
+			t.Errorf("isSpecialWho(%q) = %v, want %v", tt.who, got, tt.want)
 		}
 	}
 }
@@ -152,8 +152,8 @@ func TestACETypeString(t *testing.T) {
 
 	for _, tt := range tests {
 		ace := &ACE{Type: tt.typ, Who: SpecialEveryone}
-		if got := ace.TypeString(); got != tt.want {
-			t.Errorf("TypeString() for type %d = %q, want %q", tt.typ, got, tt.want)
+		if got := ace.typeString(); got != tt.want {
+			t.Errorf("typeString() for type %d = %q, want %q", tt.typ, got, tt.want)
 		}
 	}
 }

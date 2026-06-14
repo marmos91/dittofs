@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -92,7 +93,7 @@ func (s *postgresClientStore) GetClientRegistration(ctx context.Context, clientI
 		&reg.ServerEpoch,
 	)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil // Not found returns nil, nil
 	}
 	if err != nil {

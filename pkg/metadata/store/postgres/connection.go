@@ -67,14 +67,3 @@ func createConnectionPool(ctx context.Context, cfg *PostgresMetadataStoreConfig,
 
 	return pool, nil
 }
-
-// closeConnectionPool closes the PostgreSQL connection pool gracefully
-func closeConnectionPool(pool *pgxpool.Pool, logger *slog.Logger) {
-	if pool == nil {
-		return
-	}
-
-	logger.Info("Closing PostgreSQL connection pool...")
-	pool.Close()
-	logger.Info("PostgreSQL connection pool closed")
-}

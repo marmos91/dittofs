@@ -30,7 +30,7 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 		return nil, err
 	}
 
-	shareName, id, err := decodeFileHandle(handle)
+	shareName, id, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -94,7 +94,7 @@ func (s *PostgresMetadataStore) GetChild(ctx context.Context, dirHandle metadata
 		return nil, err
 	}
 
-	shareName, parentID, err := decodeFileHandle(dirHandle)
+	shareName, parentID, err := metadata.DecodeFileHandle(dirHandle)
 	if err != nil {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -139,7 +139,7 @@ func (s *PostgresMetadataStore) GetParent(ctx context.Context, handle metadata.F
 		return nil, err
 	}
 
-	shareName, childID, err := decodeFileHandle(handle)
+	shareName, childID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -159,10 +159,13 @@ func (s *PostgresMetadataStore) GetParent(ctx context.Context, handle metadata.F
 }
 
 // SetParent sets the parent handle for a file/directory.
+//
+// Parent tracking is handled implicitly by parent_child_map via SetChild, so
+// this performs no write. It still honours context cancellation, matching the
+// prior WithTransaction-based implementation, while avoiding the cost of
+// opening an empty transaction.
 func (s *PostgresMetadataStore) SetParent(ctx context.Context, handle metadata.FileHandle, parentHandle metadata.FileHandle) error {
-	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.SetParent(ctx, handle, parentHandle)
-	})
+	return ctx.Err()
 }
 
 // GetLinkCount returns the hard link count for a file.
@@ -173,7 +176,7 @@ func (s *PostgresMetadataStore) GetLinkCount(ctx context.Context, handle metadat
 		return 0, err
 	}
 
-	_, fileID, err := decodeFileHandle(handle)
+	_, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return 0, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -205,7 +208,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		return nil, "", err
 	}
 
-	shareName, parentID, err := decodeFileHandle(dirHandle)
+	shareName, parentID, err := metadata.DecodeFileHandle(dirHandle)
 	if err != nil {
 		return nil, "", &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,

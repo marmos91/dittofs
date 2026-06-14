@@ -101,7 +101,7 @@ func TestSynthesizeFromMode_0755_Directory(t *testing.T) {
 	for i, ace := range acl.ACEs {
 		ciOi := uint32(ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE)
 		if ace.Flag&ciOi != ciOi {
-			t.Errorf("ACE %d (%s %s): missing CI+OI flags, flag=0x%08x", i, ace.TypeString(), ace.Who, ace.Flag)
+			t.Errorf("ACE %d (%s %s): missing CI+OI flags, flag=0x%08x", i, ace.typeString(), ace.Who, ace.Flag)
 		}
 	}
 
@@ -159,7 +159,7 @@ func TestSynthesizeFromMode_0644_File(t *testing.T) {
 		ciOi := uint32(ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE)
 		if ace.Flag&ciOi != 0 {
 			t.Errorf("ACE %d (%s %s): file ACE should not have CI+OI flags, flag=0x%08x",
-				i, ace.TypeString(), ace.Who, ace.Flag)
+				i, ace.typeString(), ace.Who, ace.Flag)
 		}
 	}
 
@@ -336,7 +336,7 @@ func TestSynthesizeInheritanceFlags(t *testing.T) {
 	dirACL := SynthesizeFromMode(0755, 1000, 1000, true)
 	for i, ace := range dirACL.ACEs {
 		if ace.Flag&ciOi != ciOi {
-			t.Errorf("dir ACE %d (%s %s): missing CI+OI, flag=0x%08x", i, ace.TypeString(), ace.Who, ace.Flag)
+			t.Errorf("dir ACE %d (%s %s): missing CI+OI, flag=0x%08x", i, ace.typeString(), ace.Who, ace.Flag)
 		}
 	}
 
@@ -344,7 +344,7 @@ func TestSynthesizeInheritanceFlags(t *testing.T) {
 	fileACL := SynthesizeFromMode(0755, 1000, 1000, false)
 	for i, ace := range fileACL.ACEs {
 		if ace.Flag&ciOi != 0 {
-			t.Errorf("file ACE %d (%s %s): unexpected CI+OI, flag=0x%08x", i, ace.TypeString(), ace.Who, ace.Flag)
+			t.Errorf("file ACE %d (%s %s): unexpected CI+OI, flag=0x%08x", i, ace.typeString(), ace.Who, ace.Flag)
 		}
 	}
 }

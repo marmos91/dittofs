@@ -137,7 +137,7 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 		return nil, err
 	}
 
-	shareName, id, err := decodeFileHandle(handle)
+	shareName, id, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -390,7 +390,7 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 		return err
 	}
 
-	shareName, id, err := decodeFileHandle(handle)
+	shareName, id, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -437,7 +437,7 @@ func (tx *postgresTransaction) GetChild(ctx context.Context, dirHandle metadata.
 		return nil, err
 	}
 
-	shareName, parentID, err := decodeFileHandle(dirHandle)
+	shareName, parentID, err := metadata.DecodeFileHandle(dirHandle)
 	if err != nil {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -471,7 +471,7 @@ func (tx *postgresTransaction) SetChild(ctx context.Context, dirHandle metadata.
 		return err
 	}
 
-	_, parentID, err := decodeFileHandle(dirHandle)
+	_, parentID, err := metadata.DecodeFileHandle(dirHandle)
 	if err != nil {
 		return &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -479,7 +479,7 @@ func (tx *postgresTransaction) SetChild(ctx context.Context, dirHandle metadata.
 		}
 	}
 
-	_, childID, err := decodeFileHandle(childHandle)
+	_, childID, err := metadata.DecodeFileHandle(childHandle)
 	if err != nil {
 		return &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -506,7 +506,7 @@ func (tx *postgresTransaction) DeleteChild(ctx context.Context, dirHandle metada
 		return err
 	}
 
-	_, parentID, err := decodeFileHandle(dirHandle)
+	_, parentID, err := metadata.DecodeFileHandle(dirHandle)
 	if err != nil {
 		return &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -532,7 +532,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		return nil, "", err
 	}
 
-	shareName, parentID, err := decodeFileHandle(dirHandle)
+	shareName, parentID, err := metadata.DecodeFileHandle(dirHandle)
 	if err != nil {
 		return nil, "", &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -688,7 +688,7 @@ func (tx *postgresTransaction) GetParent(ctx context.Context, handle metadata.Fi
 		return nil, err
 	}
 
-	shareName, childID, err := decodeFileHandle(handle)
+	shareName, childID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -718,7 +718,7 @@ func (tx *postgresTransaction) GetLinkCount(ctx context.Context, handle metadata
 		return 0, err
 	}
 
-	_, fileID, err := decodeFileHandle(handle)
+	_, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return 0, &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -741,7 +741,7 @@ func (tx *postgresTransaction) SetLinkCount(ctx context.Context, handle metadata
 		return err
 	}
 
-	_, fileID, err := decodeFileHandle(handle)
+	_, fileID, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return &metadata.StoreError{
 			Code:    metadata.ErrInvalidHandle,
@@ -1103,7 +1103,7 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 			},
 		}, nil
 	}
-	if err != pgx.ErrNoRows {
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, mapPgError(err, "CreateRootDirectory", shareName)
 	}
 

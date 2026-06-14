@@ -1359,7 +1359,7 @@ func sessionIDFromOwnerID(ownerID string) (uint64, bool) {
 func (lm *Manager) RequestLease(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
 	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
 	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
-	return lm.requestLeaseImpl(ctx, fileHandle, leaseKey, parentLeaseKey, ownerID, clientID, shareName, requestedState, isDirectory)
+	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey, ownerID, clientID, shareName, requestedState, isDirectory, false, false)
 }
 
 // RequestLeaseAsOplock is the traditional-oplock variant of RequestLease.

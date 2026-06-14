@@ -229,15 +229,14 @@ func (tx *memoryTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// tx.store.files[key]. The caller (WithTransaction) holds the write
 	// lock; tx.store.files is mutated directly without per-call locking.
 	//
-	// (review iteration 1): race detection MUST run before
-	// stale-entry cleanup. memory's WithTransaction has no rollback (see
-	// transaction.go WithTransaction docstring): "If fn returns an error,
-	// no rollback is needed since operations are performed directly on the
-	// maps." If we cleaned the old index entry first and then returned
-	// ErrConflict on the race check, the file row would still hold the
-	// old ObjectID but the index would no longer map it — a subsequent
-	// FindByObjectID(oldObjectID) would return nil even though the file
-	// persists with that ObjectID. Reorder so a failed PutFile leaves
+	// race detection MUST run before stale-entry cleanup. Although
+	// WithTransaction snapshots and restores every map on error, ordering the
+	// race check first keeps the no-partial-mutation invariant obvious and
+	// independent of the rollback mechanics: if we cleaned the old index entry
+	// first and then returned ErrConflict on the race check, the file row would
+	// still hold the old ObjectID but the index would no longer map it — a
+	// subsequent FindByObjectID(oldObjectID) would return nil even though the
+	// file persists with that ObjectID. Reorder so a failed PutFile leaves
 	// every map untouched.
 	//
 	// Step 1: race detection (first-committer-wins). If someone
