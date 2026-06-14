@@ -303,31 +303,35 @@ func (a *cliMetadataAdapter) walkDir(ctx context.Context, dirHandle metadata.Fil
 			return fmt.Errorf("list children at %q: %w", prefix, err)
 		}
 		for _, e := range entries {
-			file, err := a.store.GetFile(ctx, e.Handle)
-			if err != nil {
-				return fmt.Errorf("get file %s%s: %w", prefix, e.Name, err)
+			// ListChildren populates e.Attr for performance; use it directly
+			// and fall back to GetFile only when the store left it nil.
+			attr := e.Attr
+			if attr == nil {
+				file, err := a.store.GetFile(ctx, e.Handle)
+				if err != nil {
+					return fmt.Errorf("get file %s%s: %w", prefix, e.Name, err)
+				}
+				attr = &file.FileAttr
 			}
-			if file.Type == metadata.FileTypeDirectory {
+			if attr.Type == metadata.FileTypeDirectory {
 				if err := a.walkDir(ctx, e.Handle, prefix+e.Name+"/", out); err != nil {
 					return err
 				}
 				continue
 			}
-			if file.Type != metadata.FileTypeRegular || file.Size == 0 {
+			if attr.Type != metadata.FileTypeRegular || attr.Size == 0 {
 				continue
 			}
-			if len(file.Blocks) > 0 {
+			if len(attr.Blocks) > 0 {
 				continue
 			}
-			handle, err := metadata.EncodeFileHandle(file)
-			if err != nil {
-				return fmt.Errorf("encode handle for %s%s: %w", prefix, e.Name, err)
-			}
+			// e.Handle is EncodeShareHandle(shareName, id), identical to
+			// EncodeFileHandle(file), so no GetFile/re-encode is needed.
 			*out = append(*out, migrate.LegacyFileInfo{
-				Handle:    handle,
+				Handle:    e.Handle,
 				Path:      prefix + e.Name,
-				PayloadID: file.PayloadID,
-				Size:      int64(file.Size),
+				PayloadID: attr.PayloadID,
+				Size:      int64(attr.Size),
 				BlockSize: block.BlockSize,
 			})
 		}
