@@ -112,15 +112,26 @@ func advanceEpoch(lease *OpLock) {
 	lease.Epoch++
 }
 
-// findLeaseByKey scans unifiedLocks for a lock with the given leaseKey.
+// findLeaseByKey resolves the lock holding the given leaseKey.
 // Returns (handleKey, *UnifiedLock, index) or ("", nil, -1) if not found.
 // Must be called with lm.mu held.
+//
+// Uses leaseKeyIndex (leaseKey -> handleKey, maintained by reindexHandleLocked)
+// to jump straight to the owning bucket instead of scanning every lock in
+// unifiedLocks. The in-bucket scan locates the record's slice index, which the
+// index does not (and must not) track because slice positions shift on every
+// filtered rebuild. The index entry is a hint reconciled from the live slice on
+// every mutation; if it ever points at a stale bucket, the in-bucket scan
+// simply finds no match and the lookup reports "not found" — the same outcome
+// the old full scan produced for an absent key.
 func (lm *Manager) findLeaseByKey(leaseKey [16]byte) (string, *UnifiedLock, int) {
-	for handleKey, locks := range lm.unifiedLocks {
-		for i, lock := range locks {
-			if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
-				return handleKey, lock, i
-			}
+	handleKey, ok := lm.leaseKeyIndex[leaseKey]
+	if !ok {
+		return "", nil, -1
+	}
+	for i, lock := range lm.unifiedLocks[handleKey] {
+		if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
+			return handleKey, lock, i
 		}
 	}
 	return "", nil, -1
@@ -844,6 +855,7 @@ func (lm *Manager) createAndGrantLease(
 	}
 
 	lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], newLock)
+	lm.indexAddLockLocked(handleKey, newLock)
 
 	lm.persistUnifiedLockLocked(newLock)
 
@@ -1033,23 +1045,32 @@ func (lm *Manager) releaseLeaseImpl(ctx context.Context, leaseKey [16]byte) erro
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	// Find and remove all locks with matching lease key
+	// Find and remove all locks with matching lease key. The same lease key
+	// constant can be bound on multiple files (distinct handleKey buckets), so
+	// this intentionally scans every bucket rather than consulting the
+	// single-bucket leaseKeyIndex — ReleaseLease must scrub the key everywhere.
 	for handleKey, locks := range lm.unifiedLocks {
 		var remaining []*UnifiedLock
+		mutated := false
 		for _, lock := range locks {
 			if lock.Lease != nil && lock.Lease.LeaseKey == leaseKey {
 				// Remove from persistent store
 				lm.deleteUnifiedLockLocked(lock)
+				mutated = true
 				continue // Skip (remove) this lock
 			}
 			remaining = append(remaining, lock)
 		}
 
+		if !mutated {
+			continue
+		}
 		if len(remaining) == 0 {
 			delete(lm.unifiedLocks, handleKey)
 		} else {
 			lm.unifiedLocks[handleKey] = remaining
 		}
+		lm.reindexHandleLocked(handleKey, locks)
 	}
 
 	return nil
@@ -1130,6 +1151,7 @@ func (lm *Manager) releaseLeaseForHandleImpl(ctx context.Context, handleKey stri
 	} else {
 		lm.unifiedLocks[handleKey] = remaining
 	}
+	lm.reindexHandleLocked(handleKey, locks)
 
 	if hadBreaking {
 		lm.signalBreakWaitLocked(handleKey)

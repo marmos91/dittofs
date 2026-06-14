@@ -10,7 +10,6 @@ package lease
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -58,15 +57,19 @@ const handleLeaseBreakWaitTimeout = 5 * time.Second
 // (timeout-disconnect, breaking3, etc.) rely on the shorter bound.
 const TraditionalOplockBreakWaitTimeout = 35 * time.Second
 
-// clientLeaseKey scopes lease-key bindings by (Owner.ClientID, lease-key
-// hex) because lock.Manager allows two distinct clients to each hold a
-// record under the same numeric LeaseKey on different files (per round-3
+// clientLeaseKey scopes lease-key bindings by (Owner.ClientID, lease key)
+// because lock.Manager allows two distinct clients to each hold a record
+// under the same numeric LeaseKey on different files (per round-3
 // `lease_match` scoping). Without this composite key, client B's lease
 // would overwrite client A's break-routing binding in `leaseClientGUID`,
 // or — sticky-on-first — route B's breaks to A's primary session.
+//
+// Key holds the raw 16-byte lease key (not a hex string): it is the map key
+// for every hot-path lease lookup, so using the array directly keeps those
+// paths allocation-free. Hex is computed only for logging.
 type clientLeaseKey struct {
 	ClientID string
-	KeyHex   string
+	Key      [16]byte
 }
 
 // LockManagerResolver resolves the LockManager for a given share name.
@@ -86,8 +89,8 @@ type LockManagerResolver interface {
 type LeaseManager struct {
 	resolver   LockManagerResolver
 	notifier   LeaseBreakNotifier
-	sessionMap map[string]uint64 // hex(leaseKey) -> sessionID
-	leaseShare map[string]string // hex(leaseKey) -> shareName (for resolution)
+	sessionMap map[[16]byte]uint64 // leaseKey -> sessionID
+	leaseShare map[[16]byte]string // leaseKey -> shareName (for resolution)
 	// leaseV2 records whether each lease was granted from an
 	// SMB2_CREATE_REQUEST_LEASE_V2 context. Per MS-SMB2 §2.2.23.2 the
 	// NewEpoch field of a break notification MUST be zero for V1 leases;
@@ -103,8 +106,8 @@ type LeaseManager struct {
 	// version-not-yet-known (mark absent), we track BOTH versions
 	// explicitly via parallel maps; a single bool can't carry the third
 	// state. leaseV1 is true iff first grant was V1.
-	leaseV2 map[string]bool // hex(leaseKey) -> true iff V2-established
-	leaseV1 map[string]bool // hex(leaseKey) -> true iff V1-established
+	leaseV2 map[[16]byte]bool // leaseKey -> true iff V2-established
+	leaseV1 map[[16]byte]bool // leaseKey -> true iff V1-established
 
 	// leaseClientGUID records the ClientGUID that first granted each
 	// (clientID, leaseKey) pair. Per MS-SMB2 §3.3.5.9.8 a lease is bound to
@@ -115,7 +118,7 @@ type LeaseManager struct {
 	// Sticky on FIRST grant: a same-(clientID,key) reopen does NOT change
 	// the recorded GUID.
 	//
-	// Composite-keyed by (clientID, keyHex) because lock.Manager scopes
+	// Composite-keyed by (clientID, leaseKey) because lock.Manager scopes
 	// lease-key uniqueness per Owner.ClientID — two distinct clients may
 	// each hold a record under the same numeric LeaseKey on different
 	// files, and break routing must not collide between them.
@@ -148,10 +151,10 @@ func NewLeaseManager(resolver LockManagerResolver, notifier LeaseBreakNotifier) 
 	return &LeaseManager{
 		resolver:             resolver,
 		notifier:             notifier,
-		sessionMap:           make(map[string]uint64),
-		leaseShare:           make(map[string]string),
-		leaseV2:              make(map[string]bool),
-		leaseV1:              make(map[string]bool),
+		sessionMap:           make(map[[16]byte]uint64),
+		leaseShare:           make(map[[16]byte]string),
+		leaseV2:              make(map[[16]byte]bool),
+		leaseV1:              make(map[[16]byte]bool),
 		leaseClientGUID:      make(map[clientLeaseKey][16]byte),
 		clientPrimarySession: make(map[[16]byte]uint64),
 	}
@@ -280,10 +283,9 @@ func (lm *LeaseManager) requestLeaseInternal(
 	//
 	// Pre-registering is safe: if the grant fails or returns None, we
 	// remove the entry below.
-	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.Lock()
-	lm.sessionMap[keyHex] = sessionID
-	lm.leaseShare[keyHex] = shareName
+	lm.sessionMap[leaseKey] = sessionID
+	lm.leaseShare[leaseKey] = shareName
 	// Bind the lease to a ClientGUID on FIRST grant (sticky). Cross-client
 	// key reuse is rejected upstream by lease_match (ErrLeaseKeyInUse), so
 	// the only paths that re-enter here on the same key are same-client
@@ -291,7 +293,7 @@ func (lm *LeaseManager) requestLeaseInternal(
 	// callers (legacy paths) leave the binding unset and fall back to the
 	// per-lease sessionMap for break dispatch.
 	if clientGUID != ([16]byte{}) {
-		clk := clientLeaseKey{ClientID: clientID, KeyHex: keyHex}
+		clk := clientLeaseKey{ClientID: clientID, Key: leaseKey}
 		if _, bound := lm.leaseClientGUID[clk]; !bound {
 			lm.leaseClientGUID[clk] = clientGUID
 		}
@@ -337,7 +339,7 @@ func (lm *LeaseManager) requestLeaseInternal(
 		)
 	}
 	if err != nil && !errors.Is(err, lock.ErrLeaseBreakInProgress) {
-		lm.removeLeaseMapping(keyHex)
+		lm.removeLeaseMapping(leaseKey)
 		return 0, 0, err
 	}
 
@@ -349,7 +351,7 @@ func (lm *LeaseManager) requestLeaseInternal(
 	//     and surfaces ErrLeaseAckNotBreaking (smbtorture breaking5).
 	if grantedState == lock.LeaseStateNone {
 		if _, _, found := lockMgr.GetLeaseState(ctx, leaseKey); !found {
-			lm.removeLeaseMapping(keyHex)
+			lm.removeLeaseMapping(leaseKey)
 		}
 	}
 
@@ -378,16 +380,14 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	acknowledgedState uint32,
 	epoch uint16,
 ) error {
-	keyHex := hex.EncodeToString(leaseKey[:])
-
 	lm.mu.RLock()
-	shareName := lm.leaseShare[keyHex]
+	shareName := lm.leaseShare[leaseKey]
 	lm.mu.RUnlock()
 
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		logger.Debug("AcknowledgeLeaseBreak: no lock manager for lease (CLOSE-beat-ack), treating as success",
-			"leaseKey", keyHex)
+			"leaseKey", fmt.Sprintf("%x", leaseKey))
 		return nil
 	}
 
@@ -395,8 +395,8 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 	if err != nil {
 		if errors.Is(err, lock.ErrLeaseAckNotFound) {
 			logger.Debug("AcknowledgeLeaseBreak: lease record absent (CLOSE-beat-ack), treating as success",
-				"leaseKey", keyHex)
-			lm.removeLeaseMapping(keyHex)
+				"leaseKey", fmt.Sprintf("%x", leaseKey))
+			lm.removeLeaseMapping(leaseKey)
 			return nil
 		}
 		return err
@@ -412,17 +412,15 @@ func (lm *LeaseManager) AcknowledgeLeaseBreak(
 
 // ReleaseLease delegates to the shared LockManager and removes the session mapping.
 func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) error {
-	keyHex := hex.EncodeToString(leaseKey[:])
-
 	// Resolve the LockManager for this lease's share
 	lm.mu.RLock()
-	shareName := lm.leaseShare[keyHex]
+	shareName := lm.leaseShare[leaseKey]
 	lm.mu.RUnlock()
 
 	lockMgr := lm.resolveLockManager(shareName)
 	if lockMgr == nil {
 		// Already released or no manager
-		lm.removeLeaseMapping(keyHex)
+		lm.removeLeaseMapping(leaseKey)
 		return nil
 	}
 
@@ -431,7 +429,7 @@ func (lm *LeaseManager) ReleaseLease(ctx context.Context, leaseKey [16]byte) err
 		return err
 	}
 
-	lm.removeLeaseMapping(keyHex)
+	lm.removeLeaseMapping(leaseKey)
 	return nil
 }
 
@@ -454,7 +452,7 @@ func (lm *LeaseManager) ReleaseLeaseForHandle(ctx context.Context, fileHandle lo
 	// this key — otherwise a concurrent open on a different file would lose
 	// break-dispatch routing.
 	if _, _, found := lockMgr.GetLeaseState(ctx, leaseKey); !found {
-		lm.removeLeaseMapping(hex.EncodeToString(leaseKey[:]))
+		lm.removeLeaseMapping(leaseKey)
 	}
 	return nil
 }
@@ -465,15 +463,8 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 	lm.mu.RLock()
 	// Collect all lease keys for this session
 	var keysToRelease [][16]byte
-	for keyHex, sid := range lm.sessionMap {
+	for key, sid := range lm.sessionMap {
 		if sid == sessionID {
-			var key [16]byte
-			if b, err := hex.DecodeString(keyHex); err == nil && len(b) == 16 {
-				copy(key[:], b)
-			} else {
-				logger.Warn("LeaseManager: invalid lease key hex", "keyHex", keyHex, "error", err)
-				continue
-			}
 			keysToRelease = append(keysToRelease, key)
 		}
 	}
@@ -514,7 +505,7 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 			if boundGUID != guid {
 				continue
 			}
-			candidateSID, ok := lm.sessionMap[clk.KeyHex]
+			candidateSID, ok := lm.sessionMap[clk.Key]
 			if !ok || candidateSID == sessionID {
 				continue // skip the released session
 			}
@@ -536,10 +527,8 @@ func (lm *LeaseManager) ReleaseSessionLeases(ctx context.Context, sessionID uint
 
 // GetLeaseState delegates to the shared LockManager.
 func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (state uint32, epoch uint16, found bool) {
-	keyHex := hex.EncodeToString(leaseKey[:])
-
 	lm.mu.RLock()
-	shareName := lm.leaseShare[keyHex]
+	shareName := lm.leaseShare[leaseKey]
 	lm.mu.RUnlock()
 
 	lockMgr := lm.resolveLockManager(shareName)
@@ -554,7 +543,7 @@ func (lm *LeaseManager) GetLeaseState(ctx context.Context, leaseKey [16]byte) (s
 func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64, found bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	sid, ok := lm.sessionMap[hex.EncodeToString(leaseKey[:])]
+	sid, ok := lm.sessionMap[leaseKey]
 	return sid, ok
 }
 
@@ -581,15 +570,14 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 func (lm *LeaseManager) GetSessionForBreak(leaseKey [16]byte, clientID string) (sessionID uint64, found bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	keyHex := hex.EncodeToString(leaseKey[:])
 	if clientID != "" {
-		if guid, ok := lm.leaseClientGUID[clientLeaseKey{ClientID: clientID, KeyHex: keyHex}]; ok {
+		if guid, ok := lm.leaseClientGUID[clientLeaseKey{ClientID: clientID, Key: leaseKey}]; ok {
 			if sid, ok := lm.clientPrimarySession[guid]; ok {
 				return sid, true
 			}
 		}
 	}
-	sid, ok := lm.sessionMap[keyHex]
+	sid, ok := lm.sessionMap[leaseKey]
 	return sid, ok
 }
 
@@ -597,10 +585,9 @@ func (lm *LeaseManager) GetSessionForBreak(leaseKey [16]byte, clientID string) (
 // Used during durable handle reconnect to associate the existing lease with
 // the new session for break notification routing.
 func (lm *LeaseManager) UpdateSessionForLease(leaseKey [16]byte, sessionID uint64) {
-	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
-	lm.sessionMap[keyHex] = sessionID
+	lm.sessionMap[leaseKey] = sessionID
 }
 
 // SetNotifier sets the lease break notifier for sending break notifications.
@@ -1146,10 +1133,8 @@ func (lm *LeaseManager) BreakParentReadLeasesOnModify(
 // Per MS-SMB2 3.3.5.9: For V2 leases, the server should track the client's
 // epoch from the RqLs create context.
 func (lm *LeaseManager) SetLeaseEpoch(leaseKey [16]byte, epoch uint16) {
-	keyHex := hex.EncodeToString(leaseKey[:])
-
 	lm.mu.RLock()
-	shareName := lm.leaseShare[keyHex]
+	shareName := lm.leaseShare[leaseKey]
 	lm.mu.RUnlock()
 
 	lockMgr := lm.resolveLockManager(shareName)
@@ -1212,14 +1197,15 @@ func (lm *LeaseManager) LeaseCount() int {
 }
 
 // RangeLeases iterates over all tracked leases, calling fn for each.
-// The callback receives (leaseKeyHex, sessionID, shareName).
+// The callback receives (leaseKey, sessionID, shareName); callers that need a
+// hex string for logging format it themselves (fmt.Sprintf("%x", leaseKey)).
 // Return false to stop iteration. Used for state debugging instrumentation.
-func (lm *LeaseManager) RangeLeases(fn func(leaseKeyHex string, sessionID uint64, shareName string) bool) {
+func (lm *LeaseManager) RangeLeases(fn func(leaseKey [16]byte, sessionID uint64, shareName string) bool) {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	for keyHex, sid := range lm.sessionMap {
-		shareName := lm.leaseShare[keyHex]
-		if !fn(keyHex, sid, shareName) {
+	for key, sid := range lm.sessionMap {
+		shareName := lm.leaseShare[key]
+		if !fn(key, sid, shareName) {
 			return
 		}
 	}
@@ -1232,20 +1218,20 @@ func (lm *LeaseManager) RangeLeases(fn func(leaseKeyHex string, sessionID uint64
 // ClientGUID, not by lease key, and other leases of the same client may
 // still need it for break routing. The map is reaped by ReleaseSessionLeases
 // when the corresponding session disappears.
-func (lm *LeaseManager) removeLeaseMapping(keyHex string) {
+func (lm *LeaseManager) removeLeaseMapping(leaseKey [16]byte) {
 	lm.mu.Lock()
-	delete(lm.sessionMap, keyHex)
-	delete(lm.leaseShare, keyHex)
-	delete(lm.leaseV2, keyHex)
-	delete(lm.leaseV1, keyHex)
-	// leaseClientGUID is composite-keyed by (clientID, keyHex). The caller
+	delete(lm.sessionMap, leaseKey)
+	delete(lm.leaseShare, leaseKey)
+	delete(lm.leaseV2, leaseKey)
+	delete(lm.leaseV1, leaseKey)
+	// leaseClientGUID is composite-keyed by (clientID, leaseKey). The caller
 	// of removeLeaseMapping is the cleanup path of RequestLease for a
 	// failed grant; for a bound entry, the matching clientID is whichever
-	// client first bound it. Sweep all entries with this keyHex suffix —
-	// safe because at most one (clientID, keyHex) is ever bound here per
+	// client first bound it. Sweep all entries with this leaseKey —
+	// safe because at most one (clientID, leaseKey) is ever bound here per
 	// client (round-3 same-client cross-file rejection).
 	for clk := range lm.leaseClientGUID {
-		if clk.KeyHex == keyHex {
+		if clk.Key == leaseKey {
 			delete(lm.leaseClientGUID, clk)
 		}
 	}
@@ -1262,16 +1248,15 @@ func (lm *LeaseManager) removeLeaseMapping(keyHex string) {
 // grantedState is non-None, passing isV2 derived from the request's
 // create-context size (V2 = 52 bytes, V1 = 32 bytes).
 func (lm *LeaseManager) MarkLeaseVersionIfUnset(leaseKey [16]byte, isV2 bool) {
-	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
-	if lm.leaseV1[keyHex] || lm.leaseV2[keyHex] {
+	if lm.leaseV1[leaseKey] || lm.leaseV2[leaseKey] {
 		return
 	}
 	if isV2 {
-		lm.leaseV2[keyHex] = true
+		lm.leaseV2[leaseKey] = true
 	} else {
-		lm.leaseV1[keyHex] = true
+		lm.leaseV1[leaseKey] = true
 	}
 }
 
@@ -1279,10 +1264,9 @@ func (lm *LeaseManager) MarkLeaseVersionIfUnset(leaseKey [16]byte, isV2 bool) {
 // Returns false for V1-established leases AND for unknown keys (safe default:
 // treat as V1 and send NewEpoch = 0 rather than leak a non-zero epoch).
 func (lm *LeaseManager) IsV2(leaseKey [16]byte) bool {
-	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	return lm.leaseV2[keyHex]
+	return lm.leaseV2[leaseKey]
 }
 
 // IsLeaseVersionKnown reports whether the lease's version has been recorded
@@ -1290,10 +1274,9 @@ func (lm *LeaseManager) IsV2(leaseKey [16]byte) bool {
 // fired). Used by the response-encoding path to decide whether to use the
 // established version or fall back to the current request's format.
 func (lm *LeaseManager) IsLeaseVersionKnown(leaseKey [16]byte) bool {
-	keyHex := hex.EncodeToString(leaseKey[:])
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	return lm.leaseV1[keyHex] || lm.leaseV2[keyHex]
+	return lm.leaseV1[leaseKey] || lm.leaseV2[leaseKey]
 }
 
 // resolveLockManager resolves the LockManager for a share name.

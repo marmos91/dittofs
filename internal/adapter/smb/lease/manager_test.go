@@ -928,3 +928,74 @@ func TestBreakParentDirLeasesOnDestructiveCreate_PlumbsParentKeySuppression(t *t
 		t.Errorf("ExcludeParentDirLeaseKey = %x, want %x", excludeOwner.ExcludeParentDirLeaseKey, parentKey)
 	}
 }
+
+// TestLeaseKeyRawMapRoundTrip pins the [16]byte map-key change: the session,
+// share, and version maps must round-trip a raw lease key, distinct keys must
+// not collide, and RangeLeases must yield the raw key (not a hex string). This
+// guards the perf change (raw-array keys instead of per-op hex encoding) from
+// regressing lease bookkeeping.
+func TestLeaseKeyRawMapRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	mgr := lock.NewManager()
+	lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+	ctx := context.Background()
+
+	keyA := [16]byte{0x01, 0x02, 0x03}
+	keyB := [16]byte{0x01, 0x02, 0x04} // differs only in last byte
+	const sessA uint64 = 5
+	const sessB uint64 = 6
+
+	if _, _, err := lm.RequestLease(ctx, lock.FileHandle("fA"), keyA, [16]byte{},
+		sessA, [16]byte{}, "oA", "cA", "share1", lock.LeaseStateRead, false); err != nil {
+		t.Fatalf("RequestLease A: %v", err)
+	}
+	lm.MarkLeaseVersionIfUnset(keyA, true)
+
+	if _, _, err := lm.RequestLease(ctx, lock.FileHandle("fB"), keyB, [16]byte{},
+		sessB, [16]byte{}, "oB", "cB", "share1", lock.LeaseStateRead, false); err != nil {
+		t.Fatalf("RequestLease B: %v", err)
+	}
+	lm.MarkLeaseVersionIfUnset(keyB, false)
+
+	// Distinct keys must not collide across any map.
+	if sid, ok := lm.GetSessionForLease(keyA); !ok || sid != sessA {
+		t.Errorf("session(keyA) = %d ok=%v, want %d", sid, ok, sessA)
+	}
+	if sid, ok := lm.GetSessionForLease(keyB); !ok || sid != sessB {
+		t.Errorf("session(keyB) = %d ok=%v, want %d", sid, ok, sessB)
+	}
+	if !lm.IsV2(keyA) {
+		t.Errorf("keyA should be V2")
+	}
+	if lm.IsV2(keyB) {
+		t.Errorf("keyB should be V1")
+	}
+
+	// RangeLeases yields raw keys; collect and verify both are present.
+	seen := map[[16]byte]uint64{}
+	lm.RangeLeases(func(k [16]byte, sid uint64, _ string) bool {
+		seen[k] = sid
+		return true
+	})
+	if seen[keyA] != sessA {
+		t.Errorf("RangeLeases keyA session = %d, want %d", seen[keyA], sessA)
+	}
+	if seen[keyB] != sessB {
+		t.Errorf("RangeLeases keyB session = %d, want %d", seen[keyB], sessB)
+	}
+
+	// Release A; B must remain intact (no cross-key wipe).
+	if err := lm.ReleaseLease(ctx, keyA); err != nil {
+		t.Fatalf("ReleaseLease A: %v", err)
+	}
+	if _, ok := lm.GetSessionForLease(keyA); ok {
+		t.Errorf("keyA session mapping should be gone after release")
+	}
+	if sid, ok := lm.GetSessionForLease(keyB); !ok || sid != sessB {
+		t.Errorf("keyB session mapping must survive A's release: %d ok=%v", sid, ok)
+	}
+	if !lm.IsLeaseVersionKnown(keyB) {
+		t.Errorf("keyB version mark must survive A's release")
+	}
+}

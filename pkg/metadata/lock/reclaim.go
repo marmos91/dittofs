@@ -151,6 +151,7 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 				return existing.Clone(), nil
 			}
 			lm.unifiedLocks[handleKey] = append(lm.unifiedLocks[handleKey], lock)
+			lm.indexAddLockLocked(handleKey, lock)
 			lm.mu.Unlock()
 
 			logger.Debug("ReclaimLease: lease reclaimed",
