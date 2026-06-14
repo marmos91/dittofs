@@ -122,32 +122,22 @@ func effectiveAccessForOpen(desiredAccess uint32, disposition types.CreateDispos
 	return desiredAccess | uint32(types.FileWriteData)
 }
 
-// hasOtherNonStatOpenForFile reports whether any open in h.files refers to
-// the same metadata handle as fileHandle (excluding the open identified by
-// selfFileID) AND has a non-stat-only access mask. Stat-only opens are
-// excluded because Samba's `disallow_write_lease` predicate
-// (source3/smbd/open.c lines 2397-2403) ignores them — they do not invalidate
-// the exclusive caching premise of a Batch/Exclusive grant on a subsequent
-// opener.
-//
-// Used by the traditional-oplock grant path to coerce Batch/Exclusive to
-// LEVEL_II when a previously-existing raw (non-oplocked) open is present.
-// Callers must additionally verify that no lease/oplock record exists for the
-// file via LeaseManager.HasAnyLeaseRecord — when a record exists (even at
-// LeaseStateNone post-break-timeout), bestGrantableState already handles the
-// grant correctly and the coarse OpenFile coercion would incorrectly demote
-// a grant that the lease layer would otherwise allow (smbtorture batch22b
-// post-timeout re-grant).
-func (h *Handler) hasOtherNonStatOpenForFile(fileHandle metadata.FileHandle, selfFileID [16]byte) bool {
-	hasNonStat, _ := h.scanNonStatOpensForFile(fileHandle, selfFileID, [16]byte{}, false)
-	return hasNonStat
-}
-
 // scanNonStatOpensForFile walks h.files once and reports two predicates used by
 // the post-break traditional-oplock grant path:
 //
 //   - hasNonStat: any non-stat-only OpenFile on the same metadata handle
-//     (excluding selfFileID) exists. Equivalent to hasOtherNonStatOpenForFile.
+//     (excluding the open identified by selfFileID) exists. Stat-only opens
+//     are excluded because Samba's `disallow_write_lease` predicate
+//     (source3/smbd/open.c lines 2397-2403) ignores them — they do not
+//     invalidate the exclusive caching premise of a Batch/Exclusive grant on a
+//     subsequent opener. Used to coerce Batch/Exclusive to LEVEL_II when a
+//     previously-existing raw (non-oplocked) open is present. Callers must
+//     additionally verify that no lease/oplock record exists for the file via
+//     LeaseManager.HasAnyLeaseRecord — when a record exists (even at
+//     LeaseStateNone post-break-timeout) bestGrantableState already handles the
+//     grant correctly and the coarse OpenFile coercion would incorrectly demote
+//     a grant the lease layer would otherwise allow (smbtorture batch22b
+//     post-timeout re-grant).
 //   - hasSameClient: any such open is also owned by clientGUID (the
 //     ClientGUID-scoped variant). Only computed when checkSameClient is true —
 //     callers that don't yet have a connection identity skip it.
