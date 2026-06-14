@@ -139,12 +139,12 @@ func (h *Handler) AuditSessionCleanup(sessionID uint64) int {
 
 	// Check leases
 	if h.LeaseManager != nil {
-		h.LeaseManager.RangeLeases(func(leaseKeyHex string, sid uint64, shareName string) bool {
+		h.LeaseManager.RangeLeases(func(leaseKey [16]byte, sid uint64, shareName string) bool {
 			if sid == sessionID {
 				leaked++
 				logger.Warn("LEAKED lease after session cleanup",
 					"sessionID", sessionID,
-					"leaseKey", leaseKeyHex,
+					"leaseKey", fmt.Sprintf("%x", leaseKey),
 					"shareName", shareName,
 				)
 			}

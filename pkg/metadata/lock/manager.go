@@ -696,9 +696,22 @@ type Manager struct {
 	locks          map[string][]FileLock     // handle key -> locks (legacy)
 	unifiedLocks   map[string][]*UnifiedLock // handle key -> unified locks
 	breakCallbacks []BreakCallbacks          // registered break callbacks
-	gracePeriod    *GracePeriodManager       // grace period state (may be nil)
-	handleChecker  HandleChecker             // checks if file handles still exist (for reclaim)
-	lockStore      LockStore                 // persistent lock store (optional)
+
+	// Reverse indexes over unifiedLocks, maintained by reindexHandleLocked
+	// (see indexes.go). leaseKeyIndex maps a lease key to the set of handleKey
+	// buckets (ref-counted per bucket) that hold a record for it — the same
+	// numeric lease key may be bound on multiple files (distinct buckets), so
+	// the index must track every holder, giving findLeaseByKey a candidate set
+	// to probe instead of a full scan. clientHandleIndex maps a clientID to the
+	// set of handleKeys (ref-counted per bucket) that hold at least one of its
+	// locks, bounding RemoveClientLocks to affected files. Both are derived
+	// state and require lm.mu (write to mutate, read to look up).
+	leaseKeyIndex     map[[16]byte]map[string]int
+	clientHandleIndex map[string]map[string]int
+
+	gracePeriod   *GracePeriodManager // grace period state (may be nil)
+	handleChecker HandleChecker       // checks if file handles still exist (for reclaim)
+	lockStore     LockStore           // persistent lock store (optional)
 
 	// clientRecoveryStore is the NFSv4 client recovery store used for
 	// principal verification during lease reclaim. Optional — nil disables
@@ -739,6 +752,8 @@ func newBaseManager(recentlyBrokenTTL time.Duration) *Manager {
 	return &Manager{
 		locks:                   make(map[string][]FileLock),
 		unifiedLocks:            make(map[string][]*UnifiedLock),
+		leaseKeyIndex:           make(map[[16]byte]map[string]int),
+		clientHandleIndex:       make(map[string]map[string]int),
 		recentlyBroken:          newRecentlyBrokenCache(recentlyBrokenTTL),
 		breakWaitChans:          make(map[string]chan struct{}),
 		delegationRecallTimeout: DefaultDelegationRecallTimeout,
@@ -1301,7 +1316,9 @@ func (lm *Manager) RestoreLocks(persisted []*PersistedLock) error {
 			lm.locks[pl.FileID] = append(lm.locks[pl.FileID], fileLockFromPersisted(pl))
 			continue
 		}
-		lm.unifiedLocks[pl.FileID] = append(lm.unifiedLocks[pl.FileID], FromPersistedLock(pl))
+		ul := FromPersistedLock(pl)
+		lm.unifiedLocks[pl.FileID] = append(lm.unifiedLocks[pl.FileID], ul)
+		lm.indexAddLockLocked(pl.FileID, ul)
 	}
 	return nil
 }
@@ -1857,6 +1874,7 @@ func (lm *Manager) AddUnifiedLock(handleKey string, lock *UnifiedLock) error {
 
 	// Add new lock
 	lm.unifiedLocks[handleKey] = append(existing, lock)
+	lm.indexAddLockLocked(handleKey, lock)
 	lm.persistUnifiedLockLocked(lock)
 	return nil
 }
@@ -1939,6 +1957,7 @@ func (lm *Manager) RemoveUnifiedLock(handleKey string, owner LockOwner, offset, 
 	} else {
 		lm.unifiedLocks[handleKey] = newLocks
 	}
+	lm.reindexHandleLocked(handleKey, existing)
 
 	return nil
 }
@@ -1965,7 +1984,9 @@ func (lm *Manager) ListUnifiedLocks(handleKey string) []*UnifiedLock {
 // wait channels for a file.
 func (lm *Manager) RemoveFileUnifiedLocks(handleKey string) {
 	lm.mu.Lock()
+	old := lm.unifiedLocks[handleKey]
 	delete(lm.unifiedLocks, handleKey)
+	lm.reindexHandleLocked(handleKey, old)
 	delete(lm.breakWaitChans, handleKey)
 	lm.mu.Unlock()
 }
@@ -2789,6 +2810,7 @@ func (lm *Manager) GrantDelegation(handleKey string, delegation *Delegation) err
 	}
 
 	lm.unifiedLocks[handleKey] = append(locks, newLock)
+	lm.indexAddLockLocked(handleKey, newLock)
 	return nil
 }
 
@@ -2846,9 +2868,10 @@ func (lm *Manager) revokeTimedOutLease(handleKey string, leaseKey [16]byte) {
 // than waiting for their context deadline.
 func (lm *Manager) removeMatchingLocksAndSignal(handleKey string, deletePersisted bool, match func(*UnifiedLock) bool) bool {
 	lm.mu.Lock()
+	old := lm.unifiedLocks[handleKey]
 	var remaining []*UnifiedLock
 	found := false
-	for _, l := range lm.unifiedLocks[handleKey] {
+	for _, l := range old {
 		if match(l) {
 			found = true
 			if deletePersisted {
@@ -2867,6 +2890,7 @@ func (lm *Manager) removeMatchingLocksAndSignal(handleKey string, deletePersiste
 	} else {
 		lm.unifiedLocks[handleKey] = remaining
 	}
+	lm.reindexHandleLocked(handleKey, old)
 	lm.mu.Unlock()
 
 	lm.signalBreakWait(handleKey)
@@ -2892,6 +2916,7 @@ func (lm *Manager) ReturnDelegation(handleKey string, delegationID string) error
 	} else {
 		lm.unifiedLocks[handleKey] = remaining
 	}
+	lm.reindexHandleLocked(handleKey, locks)
 	lm.mu.Unlock()
 
 	lm.signalBreakWait(handleKey)
@@ -3144,7 +3169,9 @@ func (lm *Manager) RemoveAllLocks(handleKey string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 	delete(lm.locks, handleKey)
+	old := lm.unifiedLocks[handleKey]
 	delete(lm.unifiedLocks, handleKey)
+	lm.reindexHandleLocked(handleKey, old)
 	delete(lm.breakWaitChans, handleKey)
 
 	if lm.lockStore != nil {
@@ -3159,11 +3186,24 @@ func (lm *Manager) RemoveAllLocks(handleKey string) {
 // RemoveClientLocks removes all unified locks held by a specific client. The
 // persisted bulk-delete runs synchronously under lm.mu for the same ordering
 // reason as RemoveAllLocks.
+//
+// clientHandleIndex (clientID -> set of handleKeys, see indexes.go) bounds the
+// work to the buckets the client actually appears in instead of scanning every
+// entry in unifiedLocks under the global mutex.
 func (lm *Manager) RemoveClientLocks(clientID string) {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	for handleKey, locks := range lm.unifiedLocks {
+	// Snapshot the affected handleKeys before mutating: reindexHandleLocked
+	// updates clientHandleIndex underneath us, so iterating the map directly
+	// would mutate it mid-range.
+	var handleKeys []string
+	for handleKey := range lm.clientHandleIndex[clientID] {
+		handleKeys = append(handleKeys, handleKey)
+	}
+
+	for _, handleKey := range handleKeys {
+		locks := lm.unifiedLocks[handleKey]
 		var remaining []*UnifiedLock
 		for _, lock := range locks {
 			if lock.Owner.ClientID != clientID {
@@ -3175,6 +3215,7 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 		} else {
 			lm.unifiedLocks[handleKey] = remaining
 		}
+		lm.reindexHandleLocked(handleKey, locks)
 	}
 
 	if lm.lockStore != nil {
@@ -3200,6 +3241,15 @@ func (lm *Manager) RemoveClientLocks(clientID string) {
 // The persisted bulk-delete runs synchronously under lm.mu for the same
 // ordering reason as RemoveClientLocks. Calling with a prefix that matches no
 // locks is safe and returns 0.
+//
+// Unlike RemoveClientLocks, this intentionally keeps the full unifiedLocks
+// scan: the predicate is a prefix match on Owner.OwnerID, and there is no
+// reverse index keyed by OwnerID prefix (an exact-OwnerID index could not
+// answer a prefix query without either materializing every prefix or scanning
+// the index keys anyway, so it would not bound the work). NSM crash cleanup is
+// rare and not on the steady-state lease/lock hot path, so the scan is
+// acceptable; the index maintenance below still keeps clientHandleIndex /
+// leaseKeyIndex consistent for the records this removes.
 func (lm *Manager) ReleaseByOwnerPrefix(prefix string) int {
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
@@ -3207,19 +3257,25 @@ func (lm *Manager) ReleaseByOwnerPrefix(prefix string) int {
 	released := 0
 	for handleKey, locks := range lm.unifiedLocks {
 		var remaining []*UnifiedLock
+		mutated := false
 		for _, lock := range locks {
 			if strings.HasPrefix(lock.Owner.OwnerID, prefix) {
 				lm.deleteUnifiedLockLocked(lock)
 				released++
+				mutated = true
 				continue
 			}
 			remaining = append(remaining, lock)
+		}
+		if !mutated {
+			continue
 		}
 		if len(remaining) == 0 {
 			delete(lm.unifiedLocks, handleKey)
 		} else {
 			lm.unifiedLocks[handleKey] = remaining
 		}
+		lm.reindexHandleLocked(handleKey, locks)
 	}
 
 	return released
