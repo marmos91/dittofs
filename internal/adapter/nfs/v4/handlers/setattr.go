@@ -168,28 +168,16 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		}
 	}
 
-	// 7a. On a size-down, capture the file's PRE-truncate FileAttr.Blocks so
-	// the block store can reap RefCount on dropped chunks after the metadata
-	// write (#832). Fetched BEFORE SetFileAttributes prunes FileAttr.Blocks.
-	// preTruncateBlocks stays nil unless this is a genuine shrink, so the
-	// reclaim below is skipped for grows / no-ops.
-	var (
-		preTruncateBlocks []block.BlockRef
-		preTruncatePID    metadata.PayloadID
-		newSize           uint64
-	)
+	// 7. Apply attributes via MetadataService (all-or-nothing semantics), then
+	// reclaim block-store space on a size-down truncation (#832). See
+	// applySetAttrsWithTruncateReclaim for the pre-blocks-snapshot ordering.
+	// The pre-op file is only needed when the size changes (the reclaim is a
+	// no-op otherwise), so skip the extra read for mode/owner/time-only SETATTRs.
+	var preFile *metadata.File
 	if setAttrs.Size != nil {
-		if cur, getErr := metaSvc.GetFile(ctx.Context, metadata.FileHandle(ctx.CurrentFH)); getErr == nil && cur != nil {
-			if *setAttrs.Size < cur.Size && cur.PayloadID != "" {
-				preTruncateBlocks = cur.Blocks
-				preTruncatePID = cur.PayloadID
-				newSize = *setAttrs.Size
-			}
-		}
+		preFile, _ = metaSvc.GetFile(ctx.Context, metadata.FileHandle(ctx.CurrentFH))
 	}
-
-	// 7. Apply attributes via MetadataService (all-or-nothing semantics)
-	if _, err := metaSvc.SetFileAttributes(authCtx, metadata.FileHandle(ctx.CurrentFH), setAttrs); err != nil {
+	if err := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, metadata.FileHandle(ctx.CurrentFH), preFile, setAttrs); err != nil {
 		nfsStatus := common.MapToNFS4(err)
 		logger.Debug("NFSv4 SETATTR failed",
 			"error", err,
@@ -202,23 +190,6 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 			Status: nfsStatus,
 			OpCode: types.OP_SETATTR,
 			Data:   encodeSetAttrError(nfsStatus),
-		}
-	}
-
-	// 7b. Reclaim block-store space on size-down truncation. Mirror the v3
-	// SETATTR / CREATE-with-truncate path: drive blockStore.Truncate with the
-	// pre-truncate FileAttr.Blocks snapshot so the engine reaps RefCount on
-	// every dropped block and the GC sweep can reclaim the remote chunks
-	// (#832). Best-effort: a failure is logged but does not fail the
-	// already-committed metadata update. Handler coordinates metaSvc +
-	// blockStore exactly as the WRITE path does (invariants #1/#5).
-	if preTruncateBlocks != nil {
-		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH)); bsErr != nil {
-			logger.Warn("NFSv4 SETATTR: cannot resolve block store for truncate reclaim",
-				"handle", string(ctx.CurrentFH), "error", bsErr)
-		} else if _, tErr := blockStore.Truncate(ctx.Context, string(preTruncatePID), preTruncateBlocks, newSize); tErr != nil {
-			logger.Warn("NFSv4 SETATTR: block store truncate reclaim failed",
-				"handle", string(ctx.CurrentFH), "size", newSize, "error", tErr)
 		}
 	}
 
@@ -247,6 +218,57 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		OpCode: types.OP_SETATTR,
 		Data:   encodeSetAttrSuccess(requestedBitmap),
 	}
+}
+
+// applySetAttrsWithTruncateReclaim applies attrs to the file via
+// MetadataService.SetFileAttributes and, on a size-down truncation, reclaims
+// the block-store space of the dropped tail. preFile is the file as observed
+// BEFORE the metadata write (so its FileAttr.Blocks still describes the full
+// pre-truncate extent); it may be nil when unavailable, in which case the
+// reclaim is skipped. The block-store Truncate is best-effort: the metadata
+// write is authoritative and already committed, so a reclaim failure is logged
+// but not surfaced as an error. This mirrors the v3 SETATTR / CREATE-truncate
+// path and keeps the handler coordinating metaSvc + blockStore per CLAUDE.md
+// invariants #1/#5. Used by both SETATTR and OPEN(UNCHECKED4) on an existing
+// file.
+func (h *Handler) applySetAttrsWithTruncateReclaim(
+	ctx *types.CompoundContext,
+	metaSvc *metadata.Service,
+	authCtx *metadata.AuthContext,
+	handle metadata.FileHandle,
+	preFile *metadata.File,
+	attrs *metadata.SetAttrs,
+) error {
+	// Capture the pre-truncate FileAttr.Blocks snapshot BEFORE SetFileAttributes
+	// prunes them, so the engine reaps RefCount on every dropped block (#832).
+	// Stays nil unless this is a genuine shrink, so reclaim is skipped for
+	// grows / no-ops.
+	var (
+		preTruncateBlocks []block.BlockRef
+		preTruncatePID    metadata.PayloadID
+		newSize           uint64
+	)
+	if attrs.Size != nil && preFile != nil &&
+		*attrs.Size < preFile.Size && preFile.PayloadID != "" {
+		preTruncateBlocks = preFile.Blocks
+		preTruncatePID = preFile.PayloadID
+		newSize = *attrs.Size
+	}
+
+	if _, err := metaSvc.SetFileAttributes(authCtx, handle, attrs); err != nil {
+		return err
+	}
+
+	if preTruncateBlocks != nil {
+		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, handle); bsErr != nil {
+			logger.Warn("NFSv4 truncate reclaim: cannot resolve block store",
+				"handle", string(handle), "error", bsErr)
+		} else if _, tErr := blockStore.Truncate(ctx.Context, string(preTruncatePID), preTruncateBlocks, newSize); tErr != nil {
+			logger.Warn("NFSv4 truncate reclaim: block store truncate failed",
+				"handle", string(handle), "size", newSize, "error", tErr)
+		}
+	}
+	return nil
 }
 
 // isSignificantAttrChange returns true if the attribute bitmap contains

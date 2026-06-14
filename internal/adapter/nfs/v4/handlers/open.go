@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -112,6 +113,10 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 
 	var createMode uint32
 	var createAttrs *metadata.SetAttrs
+	// createVerifier carries the 8-byte EXCLUSIVE4/EXCLUSIVE4_1 createverf4 as a
+	// uint64. Non-nil only for exclusive-create modes; it drives RFC 7530
+	// §16.16.3 idempotent-retry detection in the CLAIM_NULL path.
+	var createVerifier *uint64
 
 	if openType == types.OPEN4_CREATE {
 		// Decode createhow4: createmode (uint32)
@@ -132,17 +137,21 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 			}
 			createAttrs = setAttrs
 		case types.EXCLUSIVE4:
-			// Decode verifier (8 bytes) -- treat as GUARDED4
-			var verifier [8]byte
-			if _, err := io.ReadFull(reader, verifier[:]); err != nil {
+			// EXCLUSIVE4 (RFC 7530 §16.16.3): createverf4 (8 bytes). The
+			// verifier is preserved so a retransmitted exclusive create with
+			// the same verifier is idempotent, while a different verifier on an
+			// existing file yields NFS4ERR_EXIST. Stored via FileAttr's
+			// idempotency token (same mechanism as NFSv3 CREATE EXCLUSIVE).
+			verifier, vErr := decodeVerifier(reader)
+			if vErr != nil {
 				return openError(types.NFS4ERR_BADXDR)
 			}
-			createMode = types.GUARDED4
+			createVerifier = &verifier
 		case types.EXCLUSIVE4_1:
 			// NFSv4.1 exclusive create (RFC 8881 Section 18.16.3):
 			// createverf4 (8 bytes) + cattr (fattr4)
-			var verifier [8]byte
-			if _, err := io.ReadFull(reader, verifier[:]); err != nil {
+			verifier, vErr := decodeVerifier(reader)
+			if vErr != nil {
 				return openError(types.NFS4ERR_BADXDR)
 			}
 			setAttrs, _, fattr4Err := attrs.DecodeFattr4ToSetAttrs(reader)
@@ -153,7 +162,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 				return openError(types.NFS4ERR_BADXDR)
 			}
 			createAttrs = setAttrs
-			createMode = types.GUARDED4
+			createVerifier = &verifier
 		default:
 			return openError(types.NFS4ERR_INVAL)
 		}
@@ -179,7 +188,7 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		}
 
 		return h.handleOpenClaimNull(ctx, reader, seqid, shareAccess, shareDeny,
-			clientID, ownerData, openType, createMode, claimType, createAttrs)
+			clientID, ownerData, openType, createMode, claimType, createAttrs, createVerifier)
 
 	case types.CLAIM_PREVIOUS:
 		return h.handleOpenClaimPrevious(ctx, reader, seqid, shareAccess, shareDeny,
@@ -210,6 +219,7 @@ func (h *Handler) handleOpenClaimNull(
 	clientID uint64, ownerData []byte,
 	openType, createMode, claimType uint32,
 	createAttrs *metadata.SetAttrs,
+	createVerifier *uint64,
 ) *types.CompoundResult {
 	// CLAIM_NULL: decode filename (component4 = XDR string)
 	filename, err := xdr.DecodeString(reader)
@@ -298,11 +308,35 @@ func (h *Handler) handleOpenClaimNull(
 		// OPEN4_CREATE: create or open existing
 		child, lookupErr := metaSvc.Lookup(authCtx, parentHandle, filename)
 		if lookupErr == nil {
-			// File exists
-			if createMode == types.GUARDED4 {
+			// File exists.
+			switch {
+			case createVerifier != nil:
+				// EXCLUSIVE4 / EXCLUSIVE4_1 (RFC 7530 §16.16.3): a retransmitted
+				// exclusive create is idempotent iff it presents the same
+				// verifier that created the file. The verifier is persisted in
+				// the file's idempotency token at create time. Match -> treat as
+				// a successful (idempotent) open returning a fresh stateid;
+				// mismatch -> NFS4ERR_EXIST.
+				//
+				// A zero stored token is the default for files NOT created via an
+				// exclusive create (UNCHECKED4 / GUARDED4 / NFSv3 non-exclusive),
+				// so it must never be accepted as an idempotent match — otherwise
+				// a stray verifier==0 exclusive OPEN would silently re-open any
+				// such file instead of returning NFS4ERR_EXIST. Real clients pick
+				// a non-zero (random/clock-based) verifier, so requiring a
+				// non-zero token here loses only the pathological zero-verifier
+				// retry while closing the false-match hole.
+				if *createVerifier == 0 || child.IdempotencyToken != *createVerifier {
+					logger.Debug("NFSv4 OPEN EXCLUSIVE verifier mismatch on existing file",
+						"file", filename,
+						"client", ctx.ClientAddr)
+					return openError(types.NFS4ERR_EXIST)
+				}
+				// Verifier matches: fall through to open the existing file.
+			case createMode == types.GUARDED4:
 				return openError(types.NFS4ERR_EXIST)
 			}
-			// UNCHECKED4: open existing -- no error
+
 			fh, encErr := metadata.EncodeFileHandle(child)
 			if encErr != nil {
 				return openError(types.NFS4ERR_SERVERFAULT)
@@ -325,18 +359,55 @@ func (h *Handler) handleOpenClaimNull(
 					"client", ctx.ClientAddr)
 				return openError(types.NFS4ERR_DELAY)
 			}
+
+			// UNCHECKED4 on an existing file applies the supplied createattrs
+			// (RFC 7530 §16.16: "the existing file is opened ... and the
+			// attributes specified are set"). Only the attributes the client
+			// actually sent are applied (the createAttrs bitmap), so e.g.
+			// size=0 truncates while unset attributes are left untouched.
+			// SetFileAttributes enforces its own permission checks. Exclusive
+			// creates do not carry settable createattrs in EXCLUSIVE4, and an
+			// EXCLUSIVE4_1 retry must not re-mutate the existing file, so this
+			// is gated to UNCHECKED4.
+			if createMode == types.UNCHECKED4 && createAttrs != nil {
+				// A size change is a write to the file. Mirror the SETATTR
+				// gating (RFC 7530 §5.11): a size-bearing createattrs on an
+				// open that does not carry WRITE access is rejected with
+				// NFS4ERR_OPENMODE, so a read-only OPEN cannot truncate the
+				// file even when POSIX permissions would otherwise allow it.
+				if createAttrs.Size != nil && shareAccess&types.OPEN4_SHARE_ACCESS_WRITE == 0 {
+					logger.Debug("NFSv4 OPEN UNCHECKED4 rejected: size change on read-only open",
+						"file", filename,
+						"share_access", shareAccess,
+						"client", ctx.ClientAddr)
+					return openError(types.NFS4ERR_OPENMODE)
+				}
+				// child was fetched via Lookup above and still reflects the full
+				// pre-truncate extent, so it is the pre-op snapshot the reclaim
+				// needs. Shared with the SETATTR path.
+				if setErr := h.applySetAttrsWithTruncateReclaim(ctx, metaSvc, authCtx, fileHandle, child, createAttrs); setErr != nil {
+					return openError(common.MapToNFS4(setErr))
+				}
+			}
 		} else {
-			// File doesn't exist: create it
+			// File doesn't exist: create it.
 			uid, gid := effectiveUIDGID(authCtx)
 			fileMode := uint32(0o644) // Default mode
 			if createAttrs != nil && createAttrs.Mode != nil {
 				fileMode = *createAttrs.Mode
 			}
-			newFile, _, createErr := metaSvc.CreateFile(authCtx, parentHandle, filename, &metadata.FileAttr{
+			newAttr := &metadata.FileAttr{
 				Mode: fileMode,
 				UID:  uid,
 				GID:  gid,
-			})
+			}
+			// Persist the exclusive-create verifier so a later retransmission
+			// with the same verifier is recognised as an idempotent retry
+			// (RFC 7530 §16.16.3). Same mechanism as NFSv3 CREATE EXCLUSIVE.
+			if createVerifier != nil {
+				newAttr.IdempotencyToken = *createVerifier
+			}
+			newFile, _, createErr := metaSvc.CreateFile(authCtx, parentHandle, filename, newAttr)
 			if createErr != nil {
 				return openError(common.MapToNFS4(createErr))
 			}
@@ -714,6 +785,19 @@ func (h *Handler) handleOpenClaimDelegateCur(
 	// No delegation grant (client already has one)
 	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
 		beforeCtime, beforeCtime, nil)
+}
+
+// decodeVerifier reads an 8-byte createverf4 and returns it as a uint64
+// (big-endian), matching the NFSv3 CREATE EXCLUSIVE verifier representation so
+// both protocols store and compare the verifier identically via FileAttr's
+// idempotency token. The verifier is opaque per RFC 7530 §16.16.3; the only
+// requirement is that the same wire bytes round-trip to the same value.
+func decodeVerifier(reader io.Reader) (uint64, error) {
+	var verifier [8]byte
+	if _, err := io.ReadFull(reader, verifier[:]); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint64(verifier[:]), nil
 }
 
 // openError builds an OPEN error result for the given NFS4 status code.
