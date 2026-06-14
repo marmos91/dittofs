@@ -61,6 +61,23 @@ type OpenOwner struct {
 
 	// ClientRecord is a back-reference to the owning client record.
 	ClientRecord *ClientRecord
+
+	// key is the precomputed composite map key (clientID + hex(ownerData)).
+	// It is cached at owner creation so hot-path lookups and comparisons reuse
+	// it instead of re-running makeOwnerKey (fmt.Sprintf + hex.EncodeToString)
+	// on every stateful op. OwnerData/ClientID are immutable after creation,
+	// so the cached key never goes stale.
+	key openOwnerKey
+}
+
+// Key returns the cached composite map key for this open-owner. Owners
+// constructed via the StateManager always carry a cached key; the fallback
+// covers literal-built instances (e.g. in tests).
+func (oo *OpenOwner) Key() openOwnerKey {
+	if oo.key == "" {
+		return makeOwnerKey(oo.ClientID, oo.OwnerData)
+	}
+	return oo.key
 }
 
 // ValidateSeqID checks whether a seqid is valid for this open-owner.

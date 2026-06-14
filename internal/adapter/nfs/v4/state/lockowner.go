@@ -35,6 +35,21 @@ type LockOwner struct {
 
 	// ClientRecord is a back-reference to the owning client record.
 	ClientRecord *ClientRecord
+
+	// key is the precomputed composite map key (clientID + hex(ownerData)),
+	// cached at creation so hot-path lookups reuse it instead of re-running
+	// makeLockOwnerKey. ClientID/OwnerData are immutable after creation.
+	key lockOwnerKey
+}
+
+// Key returns the cached composite map key for this lock-owner. Owners
+// constructed via the StateManager always carry a cached key; the fallback
+// covers literal-built instances (e.g. in tests).
+func (lo *LockOwner) Key() lockOwnerKey {
+	if lo.key == "" {
+		return makeLockOwnerKey(lo.ClientID, lo.OwnerData)
+	}
+	return lo.key
 }
 
 // ValidateSeqID checks whether a seqid is valid for this lock-owner.
@@ -89,6 +104,32 @@ type lockOwnerKey string
 // makeLockOwnerKey creates a lockOwnerKey from a client ID and owner data.
 func makeLockOwnerKey(clientID uint64, ownerData []byte) lockOwnerKey {
 	return lockOwnerKey(fmt.Sprintf("%d:%s", clientID, hex.EncodeToString(ownerData)))
+}
+
+// lockManagerOwnerIDPrefix is the namespace prefix the StateManager stamps onto
+// every LockManager owner ID so NFSv4 byte-range locks are distinguishable from
+// other protocols (e.g. SMB) sharing the unified lock map.
+const lockManagerOwnerIDPrefix = "nfs4:"
+
+// lockManagerOwnerID builds the LockManager owner ID for an NFSv4 lock-owner.
+// It is exactly lockManagerOwnerIDPrefix + makeLockOwnerKey(...) so the lock
+// manager identity stays in lock-step with the internal lock-owner map key:
+// callers that have a (clientID, ownerData) pair but no *LockOwner use this.
+func lockManagerOwnerID(clientID uint64, ownerData []byte) string {
+	return lockManagerOwnerIDPrefix + string(makeLockOwnerKey(clientID, ownerData))
+}
+
+// LockManagerOwnerID returns the LockManager owner ID for this lock-owner,
+// reusing the cached map key instead of recomputing the hex encoding. It agrees
+// byte-for-byte with the free lockManagerOwnerID(clientID, ownerData) helper.
+// Lock-owners constructed via the StateManager always have a cached key; the
+// fallback covers literal-built instances (e.g. in tests) so the method is
+// always correct.
+func (lo *LockOwner) LockManagerOwnerID() string {
+	if lo.key == "" {
+		return lockManagerOwnerID(lo.ClientID, lo.OwnerData)
+	}
+	return lockManagerOwnerIDPrefix + string(lo.key)
 }
 
 // ============================================================================

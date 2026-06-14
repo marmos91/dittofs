@@ -193,6 +193,36 @@ func (sm *StateManager) removeDelegFromFile(deleg *DelegationState) {
 	}
 }
 
+// markDelegRevokedLocked marks a delegation revoked and updates the per-client
+// revoked-delegation index. It is idempotent: re-marking an already-revoked
+// delegation does not double-count. Caller must hold sm.mu.
+func (sm *StateManager) markDelegRevokedLocked(deleg *DelegationState) {
+	if deleg.Revoked {
+		return
+	}
+	deleg.Revoked = true
+	sm.revokedDelegCount[deleg.ClientID]++
+}
+
+// deleteDelegByOtherLocked removes a delegation from delegByOther, keeping the
+// per-client revoked-delegation index consistent (decrementing the count when a
+// revoked delegation leaves the table). This is the single removal path for
+// delegByOther so the index can never drift. Caller must hold sm.mu.
+func (sm *StateManager) deleteDelegByOtherLocked(other [types.NFS4_OTHER_SIZE]byte) {
+	deleg, ok := sm.delegByOther[other]
+	if !ok {
+		return
+	}
+	if deleg.Revoked {
+		if n := sm.revokedDelegCount[deleg.ClientID]; n <= 1 {
+			delete(sm.revokedDelegCount, deleg.ClientID)
+		} else {
+			sm.revokedDelegCount[deleg.ClientID] = n - 1
+		}
+	}
+	delete(sm.delegByOther, other)
+}
+
 // GrantDelegation creates a new delegation for a client on a file.
 //
 // It generates a delegation stateid with type tag 0x03, creates a
@@ -299,7 +329,7 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 	// For directory delegations we drop sm.mu below to flush notifications; if we
 	// deferred the delete until after re-acquiring the lock, a concurrent
 	// RevokeDelegation could observe the still-present entry and corrupt state.
-	delete(sm.delegByOther, stateid.Other)
+	sm.deleteDelegByOtherLocked(stateid.Other)
 	sm.removeDelegFromFile(deleg)
 
 	// For directory delegations: flush pending notifications before removal.
@@ -383,10 +413,9 @@ func (sm *StateManager) GetDelegationsForFile(fileHandle []byte) []*DelegationSt
 // Caller must hold sm.mu.
 func (sm *StateManager) countOpensOnFile(fileHandle []byte, excludeClientID uint64) int {
 	count := 0
-	for _, openState := range sm.openStateByOther {
-		if bytes.Equal(openState.FileHandle, fileHandle) &&
-			openState.Owner != nil &&
-			openState.Owner.ClientID != excludeClientID {
+	// Iterate only the opens on this file via the per-file open index.
+	for _, openState := range sm.openStateByFile[string(fileHandle)] {
+		if openState.Owner != nil && openState.Owner.ClientID != excludeClientID {
 			count++
 		}
 	}
