@@ -311,7 +311,7 @@ func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 		port = 12049
 	}
 
-	adapter := nfs.New(nfs.NFSConfig{Enabled: true, Port: port}, nil)
+	adapter := nfs.New(nfs.NFSConfig{Enabled: true, Port: port})
 	if kerberosConfig != nil && kerberosConfig.Enabled {
 		adapter.SetKerberosConfig(kerberosConfig)
 	}

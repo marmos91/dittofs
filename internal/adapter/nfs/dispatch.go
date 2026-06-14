@@ -82,25 +82,6 @@ func ExtractHandlerContext(
 // Consolidated Dispatch Entry Point
 // ============================================================================
 
-// DispatchResult contains the result of dispatching an RPC call.
-type DispatchResult struct {
-	// Data contains the XDR-encoded response to send to the client.
-	Data []byte
-
-	// ProgramName identifies which program handled the request (e.g., "NFS", "Mount").
-	ProgramName string
-
-	// ProcedureName is the human-readable name of the dispatched procedure.
-	ProcedureName string
-
-	// HandlerResult is the structured handler result for NFS/Mount procedures.
-	// Nil for v4, NLM, NSM, and portmap (which use different result types).
-	HandlerResult *HandlerResult
-
-	// Err is the error returned by the handler, if any.
-	Err error
-}
-
 // DispatchDeps contains the dependencies required by Dispatch to route and
 // execute RPC procedure calls. This struct avoids circular imports between
 // pkg/adapter/nfs and internal/adapter/nfs by accepting handlers as interfaces.
@@ -395,19 +376,13 @@ type nfsProcedure struct {
 
 	// Handler is the function that processes this procedure
 	Handler nfsProcedureHandler
-
-	// NeedsAuth indicates whether this procedure requires authentication.
-	// If true and AUTH_UNIX parsing fails, the procedure may still execute
-	// but with nil credentials.
-	NeedsAuth bool
 }
 
 // NfsDispatchTable maps NFSv3 procedure numbers to their handlers.
 // This replaces the large switch statement in handleNFSProcedure.
 //
 // The table is initialized once at package init time for efficiency.
-// Each entry contains the procedure name, handler function, and metadata
-// about authentication requirements.
+// Each entry contains the procedure name and handler function.
 //
 // Note: NFSv4 uses its own COMPOUND internal dispatch (v4/handlers/compound.go)
 // and does not use this table. ProgramNFS handles both v3 and v4, with
@@ -435,9 +410,8 @@ type mountProcedureHandler func(
 
 // mountProcedure contains metadata about a Mount procedure for dispatch.
 type mountProcedure struct {
-	Name      string
-	Handler   mountProcedureHandler
-	NeedsAuth bool
+	Name    string
+	Handler mountProcedureHandler
 }
 
 // MountDispatchTable maps Mount procedure numbers to their handlers.

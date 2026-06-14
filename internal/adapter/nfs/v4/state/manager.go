@@ -2854,21 +2854,6 @@ func (sm *StateManager) removeConnFromSessionLocked(connectionID uint64, session
 	}
 }
 
-// UnbindAllForSession removes all connection bindings for a session.
-// Called when a session is destroyed.
-//
-// Thread-safe: acquires sm.connMu.Lock.
-func (sm *StateManager) UnbindAllForSession(sessionID types.SessionId4) {
-	sm.connMu.Lock()
-	defer sm.connMu.Unlock()
-
-	bindings := sm.connBySession[sessionID]
-	for _, b := range bindings {
-		delete(sm.connByID, b.ConnectionID)
-	}
-	delete(sm.connBySession, sessionID)
-}
-
 // GetConnectionBindings returns a copy of all connection bindings for a session.
 //
 // Thread-safe: acquires sm.connMu.RLock.

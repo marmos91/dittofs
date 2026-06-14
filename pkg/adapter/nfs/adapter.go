@@ -319,10 +319,7 @@ func (c *NFSConfig) validate() error {
 // Returns a configured but not yet started NFSAdapter.
 //
 // Panics if config validation fails.
-func New(
-	nfsConfig NFSConfig,
-	_ any, // unused, kept for API compatibility
-) *NFSAdapter {
+func New(nfsConfig NFSConfig) *NFSAdapter {
 	// Apply defaults for zero values
 	nfsConfig.applyDefaults()
 

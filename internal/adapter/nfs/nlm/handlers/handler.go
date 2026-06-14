@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
-	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
@@ -36,7 +35,6 @@ type NLMLockService interface {
 // Handler holds references to:
 //   - NLMLockService for performing lock operations (uses LockManager directly)
 //   - BlockingQueue for managing pending blocking lock requests
-//   - Config for configurable timeouts (e.g., lease break timeout)
 //
 // Thread Safety:
 // Handler is safe for concurrent use by multiple goroutines.
@@ -44,7 +42,6 @@ type NLMLockService interface {
 type Handler struct {
 	nlmService    NLMLockService
 	blockingQueue *blocking.BlockingQueue
-	config        *config.Config
 }
 
 // NewHandler creates a new NLM handler with the given NLM lock service and blocking queue.
@@ -57,22 +54,9 @@ type Handler struct {
 //
 // Returns a configured Handler ready to process NLM requests.
 func NewHandler(nlmService NLMLockService, blockingQueue *blocking.BlockingQueue) *Handler {
-	return NewHandlerWithConfig(nlmService, blockingQueue, nil)
-}
-
-// NewHandlerWithConfig creates a new NLM handler with config for cross-protocol settings.
-//
-// Parameters:
-//   - nlmService: The NLM lock service for performing lock operations.
-//   - blockingQueue: The blocking queue for managing pending lock requests.
-//   - cfg: The config containing lock settings (lease break timeout, etc.)
-//
-// Returns a configured Handler with cross-protocol support.
-func NewHandlerWithConfig(nlmService NLMLockService, blockingQueue *blocking.BlockingQueue, cfg *config.Config) *Handler {
 	return &Handler{
 		nlmService:    nlmService,
 		blockingQueue: blockingQueue,
-		config:        cfg,
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -104,8 +103,6 @@ func DecodeSetAttrs(reader io.Reader) (*metadata.SetAttrs, error) {
 			return nil, fmt.Errorf("read uid: %w", err)
 		}
 		attr.UID = &uid
-		// Debug: log raw UID from wire
-		logger.Debug("XDR DecodeSetAttrs: UID from wire", "set_uid_flag", setUID, "uid_value", uid)
 	} else if setUID != 0 {
 		return nil, fmt.Errorf("invalid set_uid discriminator: %d (expected 0 or 1)", setUID)
 	}

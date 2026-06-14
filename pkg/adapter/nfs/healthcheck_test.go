@@ -18,7 +18,7 @@ func minimalEnabledConfig() nfs.NFSConfig {
 func TestNFSAdapter_Healthcheck_DisabledWhenConfigOff(t *testing.T) {
 	cfg := minimalEnabledConfig()
 	cfg.Enabled = false
-	a := nfs.New(cfg, nil)
+	a := nfs.New(cfg)
 
 	rep := a.Healthcheck(context.Background())
 	if rep.Status != health.StatusDisabled {
@@ -30,7 +30,7 @@ func TestNFSAdapter_Healthcheck_DisabledWhenConfigOff(t *testing.T) {
 }
 
 func TestNFSAdapter_Healthcheck_UnknownBeforeStart(t *testing.T) {
-	a := nfs.New(minimalEnabledConfig(), nil)
+	a := nfs.New(minimalEnabledConfig())
 	rep := a.Healthcheck(context.Background())
 	// The base adapter has not been started, so the override delegates
 	// and returns unknown.
