@@ -197,11 +197,23 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 	adminSecret := &corev1.Secret{}
 	adminSecretName := ds.GetAdminCredentialsSecretName()
 
-	// If user provided admin password via spec, use that Secret
+	// passwordKey is the Secret key holding the admin password (cleartext). For
+	// the operator-managed auto-generated Secret this is always "password"; for a
+	// user-provided PasswordSecretRef it is the caller's chosen key. Reading a
+	// fixed "password" key for the user case was a bug — it ignored ref.Key and
+	// read an empty value, so admin login failed and the server never reached Ready.
+	passwordKey := "password"
+
+	// If user provided admin password via spec, use that Secret + key.
+	var specAdminUsername string
 	if ds.Spec.Identity != nil && ds.Spec.Identity.Admin != nil &&
 		ds.Spec.Identity.Admin.PasswordSecretRef != nil {
 		ref := ds.Spec.Identity.Admin.PasswordSecretRef
 		adminSecretName = ref.Name
+		if ref.Key != "" {
+			passwordKey = ref.Key
+		}
+		specAdminUsername = ds.Spec.Identity.Admin.Username
 	}
 
 	if err := r.Get(ctx, client.ObjectKey{
@@ -212,7 +224,20 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 	}
 
 	adminUsername := string(adminSecret.Data["username"])
-	adminPassword := string(adminSecret.Data["password"])
+	adminPassword := string(adminSecret.Data[passwordKey])
+	// Fail fast with an actionable error when the referenced key is absent/empty,
+	// rather than attempting a login with a blank password (which surfaces as a
+	// generic 401 and an indefinitely un-Ready DittoServer).
+	if adminPassword == "" {
+		return ctrl.Result{}, fmt.Errorf(
+			"admin credentials secret %s has no value under key %q (it must hold the cleartext admin password)",
+			adminSecretName, passwordKey)
+	}
+	// Username precedence: Secret "username" key, then spec.identity.admin.username,
+	// then the "admin" default.
+	if adminUsername == "" {
+		adminUsername = specAdminUsername
+	}
 	if adminUsername == "" {
 		adminUsername = "admin"
 	}
@@ -361,10 +386,17 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 	// Read admin credentials
 	adminSecret := &corev1.Secret{}
 	adminSecretName := ds.GetAdminCredentialsSecretName()
+	passwordKey := "password"
+	var specAdminUsername string
 
 	if ds.Spec.Identity != nil && ds.Spec.Identity.Admin != nil &&
 		ds.Spec.Identity.Admin.PasswordSecretRef != nil {
-		adminSecretName = ds.Spec.Identity.Admin.PasswordSecretRef.Name
+		ref := ds.Spec.Identity.Admin.PasswordSecretRef
+		adminSecretName = ref.Name
+		if ref.Key != "" {
+			passwordKey = ref.Key
+		}
+		specAdminUsername = ds.Spec.Identity.Admin.Username
 	}
 
 	if err := r.Get(ctx, client.ObjectKey{
@@ -380,7 +412,10 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 	}
 
 	adminUsername := string(adminSecret.Data["username"])
-	adminPassword := string(adminSecret.Data["password"])
+	adminPassword := string(adminSecret.Data[passwordKey])
+	if adminUsername == "" {
+		adminUsername = specAdminUsername
+	}
 	if adminUsername == "" {
 		adminUsername = "admin"
 	}

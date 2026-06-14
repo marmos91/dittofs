@@ -129,8 +129,11 @@ type DatabaseConfig struct {
 
 // SQLiteConfig configures SQLite database
 type SQLiteConfig struct {
-	// Path is the database file path inside the container
-	// +kubebuilder:default="/data/controlplane/controlplane.db"
+	// Path is the database file path inside the container. It MUST live under a
+	// persistent volume (the operator mounts the "metadata" PVC at /data/metadata)
+	// — a path on the ephemeral container overlay is wiped on every pod restart,
+	// silently dropping all metadata-store and share definitions.
+	// +kubebuilder:default="/data/metadata/controlplane/controlplane.db"
 	Path string `json:"path,omitempty"`
 }
 

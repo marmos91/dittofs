@@ -184,6 +184,70 @@ func TestProvisionOperatorAccount_Success(t *testing.T) {
 	}
 }
 
+// TestProvisionOperatorAccount_UserProvidedPasswordKey is a regression test for
+// the bug where the reconciler read a hardcoded Data["password"] key and ignored
+// the user's passwordSecretRef.Key — yielding an empty password, a failed admin
+// login, and a server that never reached Ready. The referenced Secret here has
+// ONLY the user's chosen key (no "password" key), so the old code would send an
+// empty password and the mock login (which verifies the cleartext) would reject.
+func TestProvisionOperatorAccount_UserProvidedPasswordKey(t *testing.T) {
+	const userKey = "adminpw"
+	const userPass = "user-chosen-cleartext-pass"
+
+	ds := newTestDittoServer("test-server", "default")
+	ds.Spec.Identity = &dittoiov1alpha1.IdentityConfig{
+		Admin: &dittoiov1alpha1.AdminConfig{
+			Username: "admin",
+			PasswordSecretRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "user-admin-secret"},
+				Key:                  userKey,
+			},
+		},
+	}
+
+	// User-provided Secret carries the password ONLY under their chosen key.
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "user-admin-secret",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{userKey: []byte(userPass)},
+	}
+
+	r := setupAuthReconciler(t, ds, adminSecret)
+
+	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
+		"POST /api/v1/auth/login": func(w http.ResponseWriter, req *http.Request) {
+			var body struct {
+				Username string `json:"username"`
+				Password string `json:"password"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			// The operator-account login uses a separately generated password, so
+			// accept it. Every OTHER login is the admin bootstrap and must carry
+			// BOTH the expected admin username AND the cleartext read from ref.Key —
+			// a wrong username or password here means the fix regressed.
+			if body.Username != dittoiov1alpha1.OperatorServiceAccountUsername {
+				if body.Username != "admin" || body.Password != userPass {
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(`{"error":"bad admin credentials"}`))
+					return
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(tokenJSON("test-access-token", 900))
+		},
+		"POST /api/v1/users": func(w http.ResponseWriter, req *http.Request) {
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"id":"1","username":"k8s-operator","role":"operator"}`))
+		},
+	})
+
+	if _, err := r.provisionOperatorAccount(context.Background(), ds, server.URL); err != nil {
+		t.Fatalf("provisionOperatorAccount must read passwordSecretRef.Key and log in with the cleartext: %v", err)
+	}
+}
+
 func TestProvisionOperatorAccount_UserAlreadyExists(t *testing.T) {
 	ds := newTestDittoServer("test-server", "default")
 
