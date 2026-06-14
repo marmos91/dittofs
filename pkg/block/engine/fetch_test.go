@@ -112,7 +112,12 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToCaller(t *testing.T) {
 
 	m := newFetchSyncer(loc, rs, fbs)
 
-	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0)
+	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+	if err != nil {
+		t.Fatalf("listFileBlocksSnapshot: %v", err)
+	}
+
+	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
 	if err == nil {
 		t.Fatalf("inlineFetchOrWait returned nil err; want error wrapping %v", errBoomLocalPut)
 	}
@@ -154,6 +159,11 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 
 	m := newFetchSyncer(loc, rs, fbs)
 
+	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+	if err != nil {
+		t.Fatalf("listFileBlocksSnapshot: %v", err)
+	}
+
 	// Goroutine A: enters inlineFetchOrWait first, registers the in-flight
 	// entry, and blocks inside local.Put on loc.release.
 	type result struct {
@@ -163,7 +173,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	}
 	chA := make(chan result, 1)
 	go func() {
-		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0)
+		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
 		chA <- result{d, dl, e}
 	}()
 
@@ -179,7 +189,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	// the waiter branch, and blocks on <-existing.done.
 	chB := make(chan result, 1)
 	go func() {
-		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0)
+		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
 		chB <- result{d, dl, e}
 	}()
 

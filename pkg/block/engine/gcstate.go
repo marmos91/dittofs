@@ -76,8 +76,9 @@ func NewGCState(rootDir, runID string) (*GCState, error) {
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return nil, fmt.Errorf("gcstate: mkdir %s: %w", runDir, err)
 	}
-	// Drop the incomplete marker. If MarkComplete is never called, the
-	// next CleanStaleGCStateDirs sweep will reclaim this directory.
+	// Create the incomplete marker. MarkComplete removes it on a clean run;
+	// if the run crashes before MarkComplete, the marker survives and the
+	// next CleanStaleGCStateDirs sweep reclaims this directory.
 	if f, err := os.Create(filepath.Join(runDir, gcStateIncompleteFlag)); err != nil {
 		return nil, fmt.Errorf("gcstate: create incomplete flag: %w", err)
 	} else {

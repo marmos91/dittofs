@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -70,6 +71,32 @@ func TestSyncQueue_DoubleStart(t *testing.T) {
 	q.Start(ctx)
 	q.Start(ctx) // Should be a no-op
 
+	q.Stop(time.Second)
+}
+
+// TestSyncQueue_StopConcurrentAndRepeated asserts that Stop() is safe to call
+// concurrently and more than once: the sync.Once guard around close(stopCh)
+// must prevent a double-close panic. Run under -race.
+func TestSyncQueue_StopConcurrentAndRepeated(t *testing.T) {
+	cfg := DefaultSyncQueueConfig()
+	q := NewSyncQueue(nil, cfg)
+
+	ctx := context.Background()
+	q.Start(ctx)
+
+	const callers = 8
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			q.Stop(time.Second) // must not panic on double-close(stopCh)
+		}()
+	}
+	wg.Wait()
+
+	// A further sequential Stop after all goroutines returned must also be a
+	// no-op rather than panicking.
 	q.Stop(time.Second)
 }
 
