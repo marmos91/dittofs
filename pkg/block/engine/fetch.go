@@ -226,22 +226,6 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 	return offset / uint64(BlockSize), (offset + uint64(length) - 1) / uint64(BlockSize)
 }
 
-// allBlocksLocal returns true if every block in the range is already in the
-// local store. It scans the per-payload FileBlock rows ONCE and reuses that
-// snapshot across the range, replacing the previous N store scans.
-func (m *Syncer) allBlocksLocal(ctx context.Context, payloadID string, startIdx, endIdx uint64) bool {
-	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
-	if err != nil {
-		return false
-	}
-	for blockIdx := startIdx; blockIdx <= endIdx; blockIdx++ {
-		if !m.blockIsLocalFromRows(ctx, rows, blockIdx) {
-			return false
-		}
-	}
-	return true
-}
-
 // EnsureAvailableAndRead downloads blocks and copies data directly to dest, avoiding
 // a second local ReadAt. Demanded blocks are downloaded inline in the caller's goroutine
 // prefetch uses the worker pool. Returns (filled, error).
@@ -261,8 +245,9 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	// Single point-in-time scan of the per-payload FileBlock rows, reused for
 	// the all-local fast path, the per-block locality checks below, and the
 	// inline fetch hash lookups. This replaces the prior 2N store scans (one
-	// per block in allBlocksLocal + one per block in the loop, plus one more
-	// inside each inlineFetchOrWait) with a single O(M) scan per read.
+	// per block in the all-local check + one per block in the download loop,
+	// plus one more inside each inlineFetchOrWait) with a single O(M) scan per
+	// read.
 	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
 	if err != nil {
 		return false, err
