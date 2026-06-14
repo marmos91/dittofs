@@ -174,6 +174,12 @@ type StoreError struct {
 	// own range) from cross-handle conflicts for the LOCK_NOT_GRANTED vs
 	// FILE_LOCK_CONFLICT status mapping (MS-SMB2 3.3.5.14).
 	ConflictOwnerID string
+
+	// Cause is the underlying error that produced this StoreError. It is set
+	// for retryable database errors (e.g. Postgres SQLSTATE 40001/40P01) so
+	// that errors.As can find the raw driver error (such as *pgconn.PgError)
+	// through the unwrap chain and the transaction layer can decide to retry.
+	Cause error
 }
 
 // Error implements the error interface.
@@ -183,6 +189,11 @@ func (e *StoreError) Error() string {
 	}
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
+
+// Unwrap returns the underlying cause so errors.As/errors.Is can traverse the
+// chain to the original driver error (e.g. *pgconn.PgError). Returns nil when
+// no cause was set, which is the common case.
+func (e *StoreError) Unwrap() error { return e.Cause }
 
 // ============================================================================
 // Generic Factory Functions (no lock type dependencies)

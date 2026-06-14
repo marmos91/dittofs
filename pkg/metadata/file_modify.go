@@ -412,6 +412,16 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		modified = true
 	}
 
+	if attrs.AtimeNow {
+		file.Atime = now
+		modified = true
+	}
+
+	if attrs.MtimeNow {
+		file.Mtime = now
+		modified = true
+	}
+
 	if attrs.CreationTime != nil {
 		file.CreationTime = *attrs.CreationTime
 		modified = true
@@ -844,7 +854,9 @@ func (s *Service) updateDescendantPaths(ctx context.Context, tx Transaction, dir
 				// Replace old path prefix with new prefix
 				if strings.HasPrefix(child.Path, oldPrefix) {
 					child.Path = newPrefix + child.Path[len(oldPrefix):]
-					_ = tx.PutFile(ctx, child)
+					if err := tx.PutFile(ctx, child); err != nil {
+						return fmt.Errorf("update path for %s: %w", child.Path, err)
+					}
 				}
 
 				// Enqueue subdirectories for recursive traversal

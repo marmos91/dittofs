@@ -44,20 +44,12 @@ func (s *PostgresMetadataStore) queryRow(ctx context.Context, sql string, args .
 	acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
 	defer cancel()
 
-	// Acquire connection from pool
-	conn, err := s.pool.Acquire(acquireCtx)
-	if err != nil {
-		if acquireCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-			// Acquire timed out, not the parent context
-			return &errorRow{err: fmt.Errorf("connection acquire timeout after %v: pool may be exhausted", poolConnectionAcquireTimeout)}
-		}
-		return &errorRow{err: mapPgError(err, "queryRow", sql)}
-	}
-
-	// Execute query - this will release connection after row is scanned or closed
-	// Note: The connection is released when the Row is scanned or when Scan returns an error
-	row := conn.QueryRow(ctx, sql, args...)
-	return &poolRow{row: row, conn: conn}
+	// pgxpool.Pool.QueryRow manages the connection lifecycle internally: the
+	// underlying connection is released when Scan is called, regardless of the
+	// scan result. This eliminates the manual Acquire/Release pair and the
+	// connection leak that occurred when Scan was never called (panic path,
+	// early return, or a discarded result).
+	return s.pool.QueryRow(acquireCtx, sql, args...)
 }
 
 // query executes a query that returns rows with connection acquire timeout.
@@ -163,18 +155,6 @@ type errorRow struct {
 
 func (r *errorRow) Scan(dest ...any) error {
 	return r.err
-}
-
-// poolRow wraps a pgx.Row and releases the connection after Scan
-type poolRow struct {
-	row  pgx.Row
-	conn *pgxpool.Conn
-}
-
-func (r *poolRow) Scan(dest ...any) error {
-	err := r.row.Scan(dest...)
-	r.conn.Release()
-	return err
 }
 
 // poolRows wraps pgx.Rows and releases the connection when closed

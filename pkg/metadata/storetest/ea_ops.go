@@ -25,6 +25,50 @@ func runEAOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("PutDoesNotAliasCallerEAs", func(t *testing.T) { testEAPutNoAlias(t, factory) })
 	t.Run("GetDoesNotAliasStoredEAs", func(t *testing.T) { testEAGetNoAlias(t, factory) })
 	t.Run("PersistsAcrossReads", func(t *testing.T) { testEAPersistsAcrossReads(t, factory) })
+	t.Run("TxListChildrenDoesNotAliasEAs", func(t *testing.T) { testEATxListChildrenNoAlias(t, factory) })
+}
+
+func testEATxListChildrenNoAlias(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	root := createTestShare(t, store, "/test-tx-ea")
+	handle := createTestFile(t, store, "/test-tx-ea", root, "ea-tx.txt", 0o600)
+	putFileWithEAs(t, store, handle, map[string][]byte{"TXEA": []byte("original")})
+
+	// Use WithTransaction to call ListChildren — this exercises the tx path.
+	var dirEntryEAs map[string][]byte
+	if err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		entries, _, err := tx.ListChildren(ctx, root, "", 100)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.Name == "ea-tx.txt" && e.Attr != nil {
+				dirEntryEAs = e.Attr.EAs
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("WithTransaction(ListChildren): %v", err)
+	}
+
+	if dirEntryEAs == nil {
+		t.Fatal("DirEntry.Attr.EAs nil from tx ListChildren — EA not hydrated")
+	}
+
+	// Mutate the returned EAs map after the transaction.
+	dirEntryEAs["TXEA"][0] = 'X'
+	dirEntryEAs["Injected"] = []byte("evil")
+
+	// The stored file must be unaffected.
+	stored := getEAs(t, store, handle)
+	if _, ok := stored["Injected"]; ok {
+		t.Fatal("tx ListChildren aliased EA map — caller insert leaked into the store")
+	}
+	if !bytes.Equal(stored["TXEA"], []byte("original")) {
+		t.Fatalf("tx ListChildren aliased EA value — byte edit corrupted the store: got %q", stored["TXEA"])
+	}
 }
 
 // putFileWithEAs sets the supplied EA map on the file and stores it.

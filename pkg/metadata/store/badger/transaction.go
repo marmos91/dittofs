@@ -1140,7 +1140,11 @@ func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle
 				return decErr
 			}
 			fileCount++
-			usedSize += file.Size
+			// Mirror initUsedBytesCounter / GetUsedBytes: only regular files
+			// contribute to used bytes. fileCount still counts every inode.
+			if file.Type == metadata.FileTypeRegular {
+				usedSize += file.Size
+			}
 			return nil
 		})
 		if err != nil {

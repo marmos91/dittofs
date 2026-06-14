@@ -293,10 +293,15 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	var oldSize uint64
 	if file.Type == metadata.FileTypeRegular {
 		var oldSizeVal sql.NullInt64
-		_ = tx.tx.QueryRow(ctx,
+		// Only ErrNoRows (no prior row -> oldSize stays 0) is benign. A real
+		// error (connection drop, timeout) must abort, otherwise oldSize is
+		// silently treated as 0 and the usedBytes delta is computed wrong.
+		if scanErr := tx.tx.QueryRow(ctx,
 			`SELECT size FROM files WHERE id = $1 AND share_name = $2 AND file_type = $3`,
 			file.ID, file.ShareName, int(metadata.FileTypeRegular),
-		).Scan(&oldSizeVal)
+		).Scan(&oldSizeVal); scanErr != nil && !errors.Is(scanErr, pgx.ErrNoRows) {
+			return mapPgError(scanErr, "PutFile", "read old size")
+		}
 		if oldSizeVal.Valid {
 			oldSize = uint64(oldSizeVal.Int64)
 		}
@@ -663,6 +668,13 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		entries = append(entries, entry)
 	}
 
+	// Surface any error that terminated the iteration early (e.g. a network
+	// drop mid-stream). Without this check a partial result would be returned
+	// as a complete, successful listing.
+	if err := rows.Err(); err != nil {
+		return nil, "", mapPgError(err, "ListChildren", "")
+	}
+
 	nextCursor := ""
 	if len(entries) >= limit {
 		nextCursor = entries[len(entries)-1].Name
@@ -1003,6 +1015,12 @@ func (tx *postgresTransaction) ListShares(ctx context.Context) ([]string, error)
 		names = append(names, name)
 	}
 
+	// Surface any error that terminated the iteration early so a partial
+	// share list is not returned as if it were complete.
+	if err := rows.Err(); err != nil {
+		return nil, mapPgError(err, "ListShares", "")
+	}
+
 	return names, nil
 }
 
@@ -1241,29 +1259,17 @@ func (tx *postgresTransaction) GetFilesystemStatistics(ctx context.Context, hand
 		return nil, err
 	}
 
-	query := `
-		SELECT
-			COALESCE(SUM(size), 0) AS total_bytes_used,
-			COUNT(*) AS total_files_used
-		FROM files
-	`
-
+	// Scope the aggregate to the share encoded in the handle (statfsQuery).
+	// Without the WHERE predicate every share reports the store-wide total. An
+	// invalid handle falls back to the store-wide aggregate (single-share
+	// compatible).
+	sql, args := statfsQuery(handle)
 	var bytesUsed, filesUsed int64
-	err := tx.tx.QueryRow(ctx, query).Scan(&bytesUsed, &filesUsed)
-	if err != nil {
+	if err := tx.tx.QueryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
 
-	stats := metadata.FilesystemStatistics{
-		TotalBytes:     1 << 50, // 1 PB (effectively unlimited)
-		AvailableBytes: (1 << 50) - uint64(bytesUsed),
-		UsedBytes:      uint64(bytesUsed),
-		TotalFiles:     1 << 32, // 4 billion files
-		AvailableFiles: (1 << 32) - uint64(filesUsed),
-		UsedFiles:      uint64(filesUsed),
-	}
-
-	return &stats, nil
+	return buildFilesystemStatistics(bytesUsed, filesUsed), nil
 }
 
 // ============================================================================

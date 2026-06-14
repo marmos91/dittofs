@@ -95,10 +95,17 @@ func RunDurableHandleStoreTests(t *testing.T, factory StoreFactory) {
 }
 
 // getDurableStore extracts the DurableHandleStore from a factory-created store.
+// Skips the calling test (via t.Skip) if the store does not implement
+// DurableHandleStoreProvider, so adding a new backend that omits the
+// interface is a skip, not a panic-induced binary abort.
 func getDurableStore(t *testing.T, factory StoreFactory) lock.DurableHandleStore {
 	t.Helper()
 	store := factory(t)
-	provider := store.(DurableHandleStoreProvider)
+	provider, ok := store.(DurableHandleStoreProvider)
+	if !ok {
+		t.Skipf("store %T does not implement DurableHandleStoreProvider", store)
+		return nil // unreachable; t.Skip calls runtime.Goexit
+	}
 	return provider.DurableHandleStore()
 }
 

@@ -302,16 +302,8 @@ func (store *MemoryMetadataStore) ListChildren(ctx context.Context, dirHandle me
 	// Get sorted entries
 	sortedNames := sortedChildNames(childrenMap)
 
-	// Find start position based on cursor
-	startIdx := 0
-	if cursor != "" {
-		for i, name := range sortedNames {
-			if name == cursor {
-				startIdx = i + 1
-				break
-			}
-		}
-	}
+	// Find start position based on cursor.
+	startIdx := childPageStart(sortedNames, cursor)
 
 	if limit <= 0 {
 		limit = 1000 // Default limit

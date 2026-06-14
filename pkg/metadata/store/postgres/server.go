@@ -123,57 +123,16 @@ func (s *PostgresMetadataStore) SetFilesystemCapabilities(capabilities metadata.
 // Filesystem Statistics
 // ============================================================================
 
-// GetFilesystemStatistics returns filesystem statistics with caching.
-// UsedBytes is read from the atomic counter (O(1), always fresh).
-// File count uses the stats cache for efficiency.
+// GetFilesystemStatistics returns filesystem statistics scoped to the share
+// encoded in the handle. The store-wide atomic usedBytes counter cannot answer
+// a per-share query, so a scoped SQL aggregate (statfsQuery) is used instead.
+// An undecodable handle falls back to the store-wide totals (single-share
+// compatible).
 func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, handle metadata.FileHandle) (*metadata.FilesystemStatistics, error) {
-	// Read usage from atomic counter (O(1), always fresh).
-	bytesUsed := uint64(s.usedBytes.Load())
-
-	// Check cache for file count.
-	if cached, valid := s.statsCache.get(); valid {
-		// Update UsedBytes from atomic counter (cache may be stale for bytes).
-		cached.UsedBytes = bytesUsed
-		if cached.TotalBytes > bytesUsed {
-			cached.AvailableBytes = cached.TotalBytes - bytesUsed
-		} else {
-			cached.AvailableBytes = 0
-		}
-		return &cached, nil
-	}
-
-	// Cache miss - query file count only (usage comes from atomic counter).
-	query := `SELECT COUNT(*) FROM files`
-
-	var filesUsed int64
-	err := s.queryRow(ctx, query).Scan(&filesUsed)
-	if err != nil {
+	sql, args := statfsQuery(handle)
+	var bytesUsed, filesUsed int64
+	if err := s.queryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
-
-	totalBytes := uint64(1 << 50) // 1 PB (effectively unlimited)
-	availableBytes := uint64(0)
-	if totalBytes > bytesUsed {
-		availableBytes = totalBytes - bytesUsed
-	}
-
-	totalFiles := uint64(1 << 32) // 4 billion files
-	availableFiles := uint64(0)
-	if totalFiles > uint64(filesUsed) {
-		availableFiles = totalFiles - uint64(filesUsed)
-	}
-
-	stats := metadata.FilesystemStatistics{
-		TotalBytes:     totalBytes,
-		AvailableBytes: availableBytes,
-		UsedBytes:      bytesUsed,
-		TotalFiles:     totalFiles,
-		AvailableFiles: availableFiles,
-		UsedFiles:      uint64(filesUsed),
-	}
-
-	// Update cache.
-	s.statsCache.set(stats)
-
-	return &stats, nil
+	return buildFilesystemStatistics(bytesUsed, filesUsed), nil
 }

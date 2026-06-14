@@ -186,6 +186,63 @@ func (s *badgerLockStore) deleteLockTx(txn *badgerdb.Txn, lockID string) error {
 	return nil
 }
 
+// deleteLocksByIndexPrefixTx deletes every lock whose ID is referenced by a
+// secondary-index entry under prefix, operating entirely within txn so the
+// deletions participate in the caller's transaction (atomic with the rest of
+// the operation and rolled back on an OCC retry). Returns the number deleted.
+func (s *badgerLockStore) deleteLocksByIndexPrefixTx(txn *badgerdb.Txn, prefix []byte) (int, error) {
+	opts := badgerdb.DefaultIteratorOptions
+	opts.Prefix = prefix
+	it := txn.NewIterator(opts)
+
+	var lockIDs []string
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		if err := it.Item().Value(func(val []byte) error {
+			lockIDs = append(lockIDs, string(val))
+			return nil
+		}); err != nil {
+			it.Close()
+			return 0, err
+		}
+	}
+	// Close the iterator before issuing writes: Badger disallows mutating a
+	// txn while one of its iterators is still open.
+	it.Close()
+
+	count := 0
+	for _, lockID := range lockIDs {
+		if err := s.deleteLockTx(txn, lockID); err != nil {
+			continue // Ignore errors for individual locks
+		}
+		count++
+	}
+	return count, nil
+}
+
+// incrementServerEpochTx increments and returns the new epoch within txn.
+func (s *badgerLockStore) incrementServerEpochTx(txn *badgerdb.Txn) (uint64, error) {
+	epoch, err := s.getServerEpochTx(txn)
+	if err != nil {
+		return 0, err
+	}
+	newEpoch := epoch + 1
+	val := make([]byte, 8)
+	binary.LittleEndian.PutUint64(val, newEpoch)
+	if err := txn.Set([]byte(prefixServerEpoch), val); err != nil {
+		return 0, err
+	}
+	return newEpoch, nil
+}
+
+// setCleanShutdownTx records the clean-shutdown marker within txn.
+func (s *badgerLockStore) setCleanShutdownTx(txn *badgerdb.Txn, clean bool) error {
+	val := []byte{0}
+	if clean {
+		val = []byte{1}
+	}
+	return txn.Set([]byte(keyCleanShutdown), val)
+}
+
 // ListLocks returns locks matching the query.
 func (s *badgerLockStore) ListLocks(ctx context.Context, query lock.LockQuery) ([]*lock.PersistedLock, error) {
 	if err := ctx.Err(); err != nil {
@@ -286,33 +343,9 @@ func (s *badgerLockStore) DeleteLocksByClient(ctx context.Context, clientID stri
 
 	count := 0
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
-		// Find all locks for this client
-		prefix := []byte(prefixLockByClient + clientID + ":")
-		opts := badgerdb.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		var lockIDs []string
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			err := it.Item().Value(func(val []byte) error {
-				lockIDs = append(lockIDs, string(val))
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-		}
-
-		// Delete each lock
-		for _, lockID := range lockIDs {
-			if err := s.deleteLockTx(txn, lockID); err != nil {
-				continue // Ignore errors for individual locks
-			}
-			count++
-		}
-
-		return nil
+		var derr error
+		count, derr = s.deleteLocksByIndexPrefixTx(txn, []byte(prefixLockByClient+clientID+":"))
+		return derr
 	})
 	return count, err
 }
@@ -325,33 +358,9 @@ func (s *badgerLockStore) DeleteLocksByFile(ctx context.Context, fileID string) 
 
 	count := 0
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
-		// Find all locks for this file
-		prefix := []byte(prefixLockByFile + fileID + ":")
-		opts := badgerdb.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-
-		var lockIDs []string
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			err := it.Item().Value(func(val []byte) error {
-				lockIDs = append(lockIDs, string(val))
-				return nil
-			})
-			if err != nil {
-				return err
-			}
-		}
-
-		// Delete each lock
-		for _, lockID := range lockIDs {
-			if err := s.deleteLockTx(txn, lockID); err != nil {
-				continue
-			}
-			count++
-		}
-
-		return nil
+		var derr error
+		count, derr = s.deleteLocksByIndexPrefixTx(txn, []byte(prefixLockByFile+fileID+":"))
+		return derr
 	})
 	return count, err
 }
@@ -401,16 +410,9 @@ func (s *badgerLockStore) IncrementServerEpoch(ctx context.Context) (uint64, err
 
 	var newEpoch uint64
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
-		epoch, err := s.getServerEpochTx(txn)
-		if err != nil {
-			return err
-		}
-
-		newEpoch = epoch + 1
-		key := []byte(prefixServerEpoch)
-		val := make([]byte, 8)
-		binary.LittleEndian.PutUint64(val, newEpoch)
-		return txn.Set(key, val)
+		var ierr error
+		newEpoch, ierr = s.incrementServerEpochTx(txn)
+		return ierr
 	})
 	return newEpoch, err
 }
@@ -447,11 +449,7 @@ func (s *badgerLockStore) SetCleanShutdown(ctx context.Context, clean bool) erro
 	}
 
 	return s.db.Update(func(txn *badgerdb.Txn) error {
-		val := []byte{0}
-		if clean {
-			val = []byte{1}
-		}
-		return txn.Set([]byte(keyCleanShutdown), val)
+		return s.setCleanShutdownTx(txn, clean)
 	})
 }
 
@@ -626,10 +624,11 @@ func (tx *badgerTransaction) DeleteLocksByClient(ctx context.Context, clientID s
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	// This requires iterating and deleting, which is complex within a transaction
-	// For now, delegate to the store (will use its own transaction)
+	// Operate within the caller's transaction so the deletions are atomic with
+	// the rest of the operation and are discarded if WithTransaction retries on
+	// an OCC conflict (the store-level method would commit out-of-band).
 	tx.store.initLockStore()
-	return tx.store.lockStore.DeleteLocksByClient(ctx, clientID)
+	return tx.store.lockStore.deleteLocksByIndexPrefixTx(tx.txn, []byte(prefixLockByClient+clientID+":"))
 }
 
 func (tx *badgerTransaction) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
@@ -637,7 +636,7 @@ func (tx *badgerTransaction) DeleteLocksByFile(ctx context.Context, fileID strin
 		return 0, err
 	}
 	tx.store.initLockStore()
-	return tx.store.lockStore.DeleteLocksByFile(ctx, fileID)
+	return tx.store.lockStore.deleteLocksByIndexPrefixTx(tx.txn, []byte(prefixLockByFile+fileID+":"))
 }
 
 func (tx *badgerTransaction) GetServerEpoch(ctx context.Context) (uint64, error) {
@@ -652,8 +651,12 @@ func (tx *badgerTransaction) IncrementServerEpoch(ctx context.Context) (uint64, 
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	// Increment within the caller's transaction. The store-level method opens
+	// its own db.Update, so on an OCC retry of the outer transaction the epoch
+	// would be bumped once per attempt (double-increment); keeping it in tx.txn
+	// makes the increment exactly-once per committed transaction.
 	tx.store.initLockStore()
-	return tx.store.lockStore.IncrementServerEpoch(ctx)
+	return tx.store.lockStore.incrementServerEpochTx(tx.txn)
 }
 
 func (tx *badgerTransaction) GetCleanShutdown(ctx context.Context) (bool, error) {
@@ -668,8 +671,11 @@ func (tx *badgerTransaction) SetCleanShutdown(ctx context.Context, clean bool) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Write within the caller's transaction so the marker is only durable if
+	// the outer transaction commits (the store-level method commits out-of-band
+	// regardless of the outer transaction's fate).
 	tx.store.initLockStore()
-	return tx.store.lockStore.SetCleanShutdown(ctx, clean)
+	return tx.store.lockStore.setCleanShutdownTx(tx.txn, clean)
 }
 
 func (tx *badgerTransaction) ReclaimLease(ctx context.Context, fileHandle lock.FileHandle, leaseKey [16]byte, clientID string) (*lock.UnifiedLock, error) {

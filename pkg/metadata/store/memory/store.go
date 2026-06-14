@@ -559,3 +559,21 @@ func sortedChildNames(childrenMap map[string]metadata.FileHandle) []string {
 	sort.Strings(sorted)
 	return sorted
 }
+
+// childPageStart returns the index into sortedNames where a READDIR page should
+// begin given the previous page's cursor.
+//
+// It uses binary search so the page starts after the cursor's lexicographic
+// position even when the cursor entry itself was deleted between pages — a
+// linear scan would fail to find the deleted name, reset to 0, and replay
+// already-returned entries.
+func childPageStart(sortedNames []string, cursor string) int {
+	if cursor == "" {
+		return 0
+	}
+	idx := sort.SearchStrings(sortedNames, cursor)
+	if idx < len(sortedNames) && sortedNames[idx] == cursor {
+		idx++
+	}
+	return idx
+}

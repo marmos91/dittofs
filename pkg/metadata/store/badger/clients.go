@@ -2,6 +2,7 @@ package badger
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -19,7 +20,9 @@ const (
 	// Primary key: nsm:client:{clientID} -> JSON(PersistedClientRegistration)
 	prefixNSMClient = "nsm:client:"
 
-	// Index by MonName: nsm:monname:{monName}:{clientID} -> clientID
+	// Index by MonName: nsm:monname:{hex(monName)}:{clientID} -> clientID.
+	// MonName is hex-encoded so an attacker-controlled ':' cannot forge an
+	// extra key segment (see monNameIndexPrefix).
 	prefixNSMByMonName = "nsm:monname:"
 )
 
@@ -31,7 +34,7 @@ const (
 //
 // Storage Model:
 //   - Primary storage: nsm:client:{clientID} -> JSON(PersistedClientRegistration)
-//   - Secondary index: nsm:monname:{monName}:{clientID} -> clientID
+//   - Secondary index: nsm:monname:{hex(monName)}:{clientID} -> clientID
 //
 // Thread Safety:
 // All operations use BadgerDB's transaction support for atomicity.
@@ -44,6 +47,20 @@ func newBadgerClientStore(db *badgerdb.DB) *badgerClientStore {
 	return &badgerClientStore{
 		db: db,
 	}
+}
+
+// monNameIndexPrefix builds the secondary-index key prefix for a MonName.
+//
+// MonName comes straight from the network (SM_MON mon_id.mon_name, an
+// unauthenticated XDR field) and is otherwise unvalidated. Embedding it raw
+// in a ':'-separated Badger key lets a crafted MonName containing ':' inject
+// extra key segments — e.g. MonName "legithost:victimClientID" plants a key
+// that a later prefix scan for "legithost" would match, deleting the victim's
+// registration. Hex-encoding MonName makes the ':' separator unambiguous so
+// the segment boundary cannot be forged, and keeps the clientID suffix the
+// only TrimPrefix-recoverable part of the key.
+func monNameIndexPrefix(monName string) string {
+	return prefixNSMByMonName + hex.EncodeToString([]byte(monName)) + ":"
 }
 
 // PutClientRegistration stores or updates a client registration.
@@ -73,7 +90,7 @@ func (s *badgerClientStore) putClientRegistrationTx(txn *badgerdb.Txn, reg *lock
 
 	// Store MonName index (for DeleteClientRegistrationsByMonName)
 	if reg.MonName != "" {
-		monNameKey := []byte(prefixNSMByMonName + reg.MonName + ":" + reg.ClientID)
+		monNameKey := []byte(monNameIndexPrefix(reg.MonName) + reg.ClientID)
 		if err := txn.Set(monNameKey, []byte(reg.ClientID)); err != nil {
 			return err
 		}
@@ -143,7 +160,7 @@ func (s *badgerClientStore) deleteClientRegistrationTx(txn *badgerdb.Txn, client
 
 	// Delete MonName index
 	if reg.MonName != "" {
-		monNameKey := []byte(prefixNSMByMonName + reg.MonName + ":" + clientID)
+		monNameKey := []byte(monNameIndexPrefix(reg.MonName) + clientID)
 		if err := txn.Delete(monNameKey); err != nil && err != badgerdb.ErrKeyNotFound {
 			return err
 		}
@@ -247,8 +264,9 @@ func (s *badgerClientStore) DeleteClientRegistrationsByMonName(ctx context.Conte
 	// First, collect all client IDs for this MonName using the index
 	var clientIDs []string
 	err := s.db.View(func(txn *badgerdb.Txn) error {
+		prefix := monNameIndexPrefix(monName)
 		opts := badgerdb.DefaultIteratorOptions
-		opts.Prefix = []byte(prefixNSMByMonName + monName + ":")
+		opts.Prefix = []byte(prefix)
 		opts.PrefetchValues = false // Only need keys
 
 		it := txn.NewIterator(opts)
@@ -256,9 +274,8 @@ func (s *badgerClientStore) DeleteClientRegistrationsByMonName(ctx context.Conte
 
 		for it.Rewind(); it.Valid(); it.Next() {
 			key := it.Item().KeyCopy(nil)
-			// Key format: nsm:monname:{monName}:{clientID}
-			// Extract clientID from the key
-			prefix := prefixNSMByMonName + monName + ":"
+			// Key format: nsm:monname:{hex(monName)}:{clientID}. MonName is
+			// hex-encoded (no ':'), so the trailing clientID is unambiguous.
 			clientID := strings.TrimPrefix(string(key), prefix)
 			clientIDs = append(clientIDs, clientID)
 		}

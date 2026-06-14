@@ -259,11 +259,12 @@ func ApplyIdentityMapping(identity *Identity, mapping *IdentityMapping) *Identit
 	// Map all users to anonymous -- no need to deep copy slices
 	if mapping.MapAllToAnonymous {
 		return &Identity{
-			UID:      mapping.AnonymousUID,
-			GID:      mapping.AnonymousGID,
-			SID:      mapping.AnonymousSID,
-			Username: identity.Username,
-			Domain:   identity.Domain,
+			UID: mapping.AnonymousUID,
+			GID: mapping.AnonymousGID,
+			SID: mapping.AnonymousSID,
+			// Username and Domain intentionally omitted:
+			// all_squash collapses to anonymous; named-principal ACE matching
+			// must not survive the squash.
 		}
 	}
 

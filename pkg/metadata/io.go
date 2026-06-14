@@ -137,16 +137,12 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 		}
 	}
 
-	// Check write permission
-	// Owner can always write to their own files (even if mode is 0444)
-	// This matches POSIX semantics where permissions are checked at open() time.
-	isOwner := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID == file.UID
-
-	if !isOwner {
-		// Non-owner: check permissions using normal Unix permission bits
-		if err := s.checkWritePermission(ctx, handle); err != nil {
-			return nil, err
-		}
+	// Check write permission. Always route through checkWritePermission so that
+	// DOS READONLY (mode bit 0x100000) is enforced for owners. calculatePermissions
+	// already handles owner vs non-owner mode-bit evaluation correctly (owner gets
+	// bits 6-8), and it gates on 0x100000 regardless of ownership.
+	if err := s.checkWritePermission(ctx, handle); err != nil {
+		return nil, err
 	}
 
 	// Make a copy of current attributes for PreWriteAttr
