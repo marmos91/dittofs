@@ -8,6 +8,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
@@ -156,12 +157,24 @@ func (h *Handler) Write(
 	// rejected with NFS3ERR_FBIG. This mirrors Linux nfsd, which clamps to
 	// svc_max_payload. A genuine "file too large" (offset overflow / OffsetMax)
 	// still returns NFS3ERR_FBIG below.
-	if caps, capErr := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle); capErr == nil &&
-		caps.MaxWriteSize > 0 && uint32(len(req.Data)) > caps.MaxWriteSize {
+	//
+	// wtmax is a static store-level limit, so it is read from the process-wide
+	// cache (populated by FSINFO) instead of a per-RPC GetFilesystemCapabilities
+	// lookup. On a cold cache (WRITE before any FSINFO) we fetch once and
+	// populate it; the common mount sequence (FSINFO precedes WRITE) keeps the
+	// store off the hot WRITE path entirely.
+	maxWriteSize := cachedMaxWriteSize()
+	if maxWriteSize == 0 {
+		if caps, capErr := metaSvc.GetFilesystemCapabilities(ctx.Context, fileHandle); capErr == nil && caps != nil {
+			maxWriteSize = caps.MaxWriteSize
+			setMaxWriteSize(maxWriteSize)
+		}
+	}
+	if maxWriteSize > 0 && uint32(len(req.Data)) > maxWriteSize {
 		logger.DebugCtx(ctx.Context, "WRITE: short-write to advertised wtmax",
-			"requested", len(req.Data), "wtmax", caps.MaxWriteSize, "client", clientIP)
-		req.Data = req.Data[:caps.MaxWriteSize]
-		req.Count = caps.MaxWriteSize
+			"requested", len(req.Data), "wtmax", maxWriteSize, "client", clientIP)
+		req.Data = req.Data[:maxWriteSize]
+		req.Count = maxWriteSize
 	}
 
 	// Note: File existence and type validation is done by PrepareWrite.
@@ -266,28 +279,31 @@ func (h *Handler) Write(
 
 	logger.DebugCtx(ctx.Context, "WRITE successful", "file", updatedFile.PayloadID, "offset", bytesize.ByteSize(req.Offset), "requested", bytesize.ByteSize(req.Count), "written", bytesize.ByteSize(len(req.Data)), "new_size", bytesize.ByteSize(updatedFile.Size), "client", clientIP)
 
-	// Stability Level Design Decision (RFC 1813 Section 3.3.7)
+	// Stability Level (RFC 1813 Section 3.3.7)
 	//
-	// We always return UNSTABLE because Cache is always enabled.
-	// This is RFC-compliant because:
+	// The `stable` field is the client's request. The server reports what it
+	// ACTUALLY did via the `committed` field.
 	//
-	// RFC 1813 says: "The server may choose to write the data to stable storage
-	// or may hold it in the server's internal buffers to be written later."
+	// Default: UNSTABLE. Cache is always enabled, so an unstable WRITE leaves the
+	// data in the local cache (crash-safe via the WAL) and the client calls COMMIT
+	// when it needs durability. This is much faster for high-latency backends (S3
+	// writes are 100ms+; batching on COMMIT is 10-100x faster for sequential I/O).
 	//
-	// The `stable` field is the client's PREFERENCE, not a mandate. The server
-	// returns what it ACTUALLY did via the `committed` field. Clients handle
-	// UNSTABLE correctly by calling COMMIT when they need durability.
-	//
-	// Why this design:
-	//   - S3 backends: Synchronous writes to S3 are slow (100ms+ per request).
-	//     Async flush on COMMIT is 10-100x faster for sequential writes.
-	//   - Performance: Buffering writes and flushing in batches is more efficient
-	//     for any remote or high-latency storage backend.
-	//   - Client compatibility: All NFS clients handle UNSTABLE correctly and
-	//     will call COMMIT before closing files or when fsync() is called.
-	//
+	// When the client requests DATA_SYNC or FILE_SYNC, RFC 1813 requires the data
+	// (and, for FILE_SYNC, metadata) to be on stable storage before the reply. We
+	// honor that by flushing this file synchronously and reporting the requested
+	// stability level, mirroring the COMMIT path. On flush failure we fall back to
+	// reporting UNSTABLE rather than failing the WRITE — the bytes are still in the
+	// crash-safe cache and the client can retry COMMIT.
 	committed := uint32(UnstableWrite)
-	logger.DebugCtx(ctx.Context, "WRITE: returning UNSTABLE (flush on COMMIT)")
+	if req.Stable >= DataSyncWrite {
+		if err := h.flushStableWrite(ctx, metaSvc, blockStore, fileHandle, writeIntent.PayloadID, authCtx, req.Stable); err != nil {
+			logError(ctx.Context, err, "WRITE: stable flush failed, downgrading to UNSTABLE",
+				"handle", fmt.Sprintf("0x%x", req.Handle), "stable_requested", req.Stable, "client", clientIP)
+		} else {
+			committed = req.Stable
+		}
+	}
 
 	logger.DebugCtx(ctx.Context, "WRITE details", "stable_requested", req.Stable, "committed", committed, "size", bytesize.ByteSize(updatedFile.Size), "type", updatedFile.Type, "mode", fmt.Sprintf("%o", updatedFile.Mode))
 
@@ -303,12 +319,47 @@ func (h *Handler) Write(
 		// be updated to report the actual number of bytes written instead of
 		// len(req.Data), and the WriteAt contract should document that behavior.
 		Count:     uint32(len(req.Data)),
-		Committed: committed,      // UNSTABLE when using cache, tells client to call COMMIT
+		Committed: committed,      // requested stability if flushed, else UNSTABLE (client calls COMMIT)
 		Verf:      serverBootTime, // Server boot time for restart detection
 	}, nil
 }
 
 // Write Helper Functions
+
+// flushStableWrite forces this file's cached data (and, for FILE_SYNC, metadata)
+// to stable storage so a DATA_SYNC / FILE_SYNC WRITE can be acknowledged as
+// committed, per RFC 1813 Section 3.3.7. It mirrors the COMMIT path: flush the
+// block store, then persist any pending metadata for the file.
+//
+// RFC 1813 distinguishes the two stable levels:
+//   - DATA_SYNC (1): only the file data must be on stable storage. A metadata
+//     flush failure is tolerated — it is reconciled by a later COMMIT — and the
+//     write is still reported at the requested level.
+//   - FILE_SYNC (2): both data AND metadata must be on stable storage before the
+//     reply. A metadata flush failure must therefore propagate so the caller
+//     reports UNSTABLE instead of falsely claiming FILE_SYNC durability.
+func (h *Handler) flushStableWrite(
+	ctx *NFSHandlerContext,
+	metaSvc *metadata.Service,
+	blockStore *engine.Store,
+	handle metadata.FileHandle,
+	payloadID metadata.PayloadID,
+	authCtx *metadata.AuthContext,
+	stable uint32,
+) error {
+	if err := common.CommitBlockStore(ctx.Context, blockStore, payloadID); err != nil {
+		return err
+	}
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle); err != nil {
+		if stable >= FileSyncWrite {
+			// FILE_SYNC requires durable metadata; surface the failure.
+			return err
+		}
+		logger.WarnCtx(ctx.Context, "WRITE: DATA_SYNC metadata flush failed (data durable, will reconcile)",
+			"handle", fmt.Sprintf("0x%x", handle), "error", err)
+	}
+	return nil
+}
 
 // buildWriteErrorResponse creates a consistent error response with WCC data.
 // This centralizes error response creation to reduce duplication.

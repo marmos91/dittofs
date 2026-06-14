@@ -89,7 +89,10 @@ func TestReadDirPlus_InvalidHandle(t *testing.T) {
 // TestReadDirPlus_StaleVerifierContinues tests that READDIRPLUS continues serving entries
 // when the cookie verifier is stale (directory modified between paginated reads).
 // This prevents macOS Finder error -8062 during concurrent directory operations.
-func TestReadDirPlus_StaleVerifierContinues(t *testing.T) {
+// TestReadDirPlus_StaleVerifierBadCookie verifies that a non-zero-cookie
+// READDIRPLUS carrying a stale cookie verifier returns NFS3ERR_BAD_COOKIE per
+// RFC 1813 Section 3.3.17, mirroring the NFSv4 READDIR behavior.
+func TestReadDirPlus_StaleVerifierBadCookie(t *testing.T) {
 	fx := handlertesting.NewHandlerFixture(t)
 
 	// Setup: Create a directory with files
@@ -116,7 +119,7 @@ func TestReadDirPlus_StaleVerifierContinues(t *testing.T) {
 	// Modify the directory (changes mtime, invalidates verifier)
 	fx.CreateFile("stale/file3.txt", []byte("3"))
 
-	// Second read with old verifier and a real non-zero cookie — should succeed, not BAD_COOKIE
+	// Second read with old verifier and a real non-zero cookie — must return BAD_COOKIE.
 	resp2, err := fx.Handler.ReadDirPlus(fx.Context(), &handlers.ReadDirPlusRequest{
 		DirHandle:  dirHandle,
 		Cookie:     resumeCookie,
@@ -125,17 +128,39 @@ func TestReadDirPlus_StaleVerifierContinues(t *testing.T) {
 		MaxCount:   65536,
 	})
 	require.NoError(t, err)
-	assert.EqualValues(t, types.NFS3OK, resp2.Status, "Stale verifier should not return BAD_COOKIE")
+	assert.EqualValues(t, types.NFS3ErrBadCookie, resp2.Status, "stale verifier must return NFS3ERR_BAD_COOKIE")
+}
 
-	// Ensure pagination semantics are preserved: the second page should not repeat earlier entries
-	// and should include the newly created file3.txt.
-	names := make([]string, len(resp2.Entries))
-	for i, entry := range resp2.Entries {
-		names[i] = entry.Name
-	}
-	assert.Contains(t, names, "file3.txt", "second page should include newly created file")
-	assert.NotContains(t, names, "file1.txt", "second page should not repeat earlier entries")
-	assert.NotContains(t, names, "file2.txt", "second page should not repeat earlier entries")
+// TestReadDirPlus_ZeroCookieIgnoresVerifierMismatch verifies the verifier check
+// is bypassed for the initial request (cookie=0) and for verifier-less clients
+// (verifier=0), even when the supplied verifier is garbage.
+func TestReadDirPlus_ZeroCookieIgnoresVerifierMismatch(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	fx.CreateFile("zc/aaa.txt", []byte("1"))
+	dirHandle := fx.MustGetHandle("zc")
+
+	resp, err := fx.Handler.ReadDirPlus(fx.Context(), &handlers.ReadDirPlusRequest{
+		DirHandle:  dirHandle,
+		Cookie:     0,
+		CookieVerf: 0xDEADBEEFCAFEBABE,
+		DirCount:   8192,
+		MaxCount:   65536,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp.Status, "initial READDIRPLUS (cookie=0) must ignore verifier mismatch")
+	require.NotEmpty(t, resp.Entries, "expected entries from initial READDIRPLUS")
+	resumeCookie := resp.Entries[len(resp.Entries)-1].Cookie
+
+	resp2, err := fx.Handler.ReadDirPlus(fx.Context(), &handlers.ReadDirPlusRequest{
+		DirHandle:  dirHandle,
+		Cookie:     resumeCookie,
+		CookieVerf: 0,
+		DirCount:   8192,
+		MaxCount:   65536,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp2.Status, "zero verifier must bypass the cookie check")
 }
 
 // TestReadDirPlus_MaxCountTruncation verifies H11: when the client's maxcount
