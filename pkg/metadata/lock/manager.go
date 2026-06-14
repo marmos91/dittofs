@@ -140,9 +140,12 @@ type LockManager interface {
 	ReleaseLeaseForHandle(ctx context.Context, handleKey string, leaseKey [16]byte) error
 
 	// ReclaimLease reclaims a lease during grace period (both SMB and NFS).
+	// clientID must match the owner recorded on the persisted lease; a
+	// mismatch is rejected to prevent lease-stealing. Pass "" to skip the
+	// owner check (callers without a stable client identity).
 	// Returns the reclaimed lock or error if lease doesn't exist or directory deleted.
 	ReclaimLease(ctx context.Context, leaseKey [16]byte,
-		requestedState uint32, isDirectory bool) (*UnifiedLock, error)
+		requestedState uint32, isDirectory bool, clientID string) (*UnifiedLock, error)
 
 	// GetLeaseState returns the current state and epoch for a lease key.
 	// found=false if no lease exists with that key.
@@ -696,9 +699,14 @@ type Manager struct {
 	gracePeriod    *GracePeriodManager       // grace period state (may be nil)
 	handleChecker  HandleChecker             // checks if file handles still exist (for reclaim)
 	lockStore      LockStore                 // persistent lock store (optional)
-	epoch          uint64                    // current server epoch (stamped on persisted locks)
-	shareName      string                    // share this manager serves (stamped on persisted byte-range locks)
-	recentlyBroken *recentlyBrokenCache      // prevents directory lease storms
+
+	// clientRecoveryStore is the NFSv4 client recovery store used for
+	// principal verification during lease reclaim. Optional — nil disables
+	// the NFSv4 principal check (SMB-only deployments).
+	clientRecoveryStore ClientRecoveryStore
+	epoch               uint64               // current server epoch (stamped on persisted locks)
+	shareName           string               // share this manager serves (stamped on persisted byte-range locks)
+	recentlyBroken      *recentlyBrokenCache // prevents directory lease storms
 
 	// Delegation-related fields
 	breakWaitChans          map[string]chan struct{} // per-handleKey channel for break wait
@@ -1107,6 +1115,15 @@ func (lm *Manager) SetLockStore(store LockStore) {
 	lm.lockStore = store
 }
 
+// SetClientRecoveryStore wires the NFSv4 client recovery store used for
+// principal verification during lease reclaim. Optional — when nil the
+// NFSv4 principal check is skipped (SMB-only deployments).
+func (lm *Manager) SetClientRecoveryStore(store ClientRecoveryStore) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	lm.clientRecoveryStore = store
+}
+
 // SetEpoch records the current server epoch stamped on persisted locks.
 func (lm *Manager) SetEpoch(epoch uint64) {
 	lm.mu.Lock()
@@ -1390,10 +1407,24 @@ func (lm *Manager) ReleaseLease(ctx context.Context, leaseKey [16]byte) error {
 	return lm.releaseLeaseImpl(ctx, leaseKey)
 }
 
-// ReclaimLease reclaims a lease during grace period.
+// ReclaimLease reclaims a lease during grace period. clientID must match the
+// lease owner recorded on the persisted record (lease-stealing guard); pass ""
+// to skip the owner check. This is the LockManager-interface entrypoint used by
+// SMB, which has no RPCSEC_GSS principal to verify.
 func (lm *Manager) ReclaimLease(ctx context.Context, leaseKey [16]byte,
-	requestedState uint32, isDirectory bool) (*UnifiedLock, error) {
-	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory)
+	requestedState uint32, isDirectory bool, clientID string) (*UnifiedLock, error) {
+	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory, clientID, "")
+}
+
+// ReclaimLeaseWithPrincipal is the NFSv4 reclaim path that additionally
+// verifies the incoming RPCSEC_GSS / AUTH_SYS principal matches the one
+// recorded in the V4ClientRecoveryRecord for clientID. The principal check
+// runs only when a ClientRecoveryStore is wired (SetClientRecoveryStore) and
+// incomingPrincipal is non-empty; an empty principal skips the check. Returns
+// a lock-not-found error when the clientID or principal does not match.
+func (lm *Manager) ReclaimLeaseWithPrincipal(ctx context.Context, leaseKey [16]byte,
+	requestedState uint32, isDirectory bool, clientID string, incomingPrincipal string) (*UnifiedLock, error) {
+	return lm.reclaimLeaseImpl(ctx, leaseKey, requestedState, isDirectory, clientID, incomingPrincipal)
 }
 
 // ReleaseLeaseForHandle removes lease records matching leaseKey from a
@@ -2778,24 +2809,59 @@ func delegationToLockType(dt DelegationType) LockType {
 
 // RevokeDelegation force-revokes a delegation, removing it from the lock map.
 func (lm *Manager) RevokeDelegation(handleKey string, delegationID string) error {
-	lm.mu.Lock()
+	found := lm.removeMatchingLocksAndSignal(handleKey, false, func(l *UnifiedLock) bool {
+		return l.Delegation != nil && l.Delegation.DelegationID == delegationID
+	})
+	if !found {
+		return fmt.Errorf("delegation %s not found on handle %s", delegationID, handleKey)
+	}
+	return nil
+}
 
-	locks := lm.unifiedLocks[handleKey]
-	found := false
+// revokeTimedOutLease removes all in-memory lease records matching leaseKey
+// from handleKey, deletes their persisted records (best-effort), and signals
+// WaitForBreakCompletion waiters. Called by OpLockBreakScanner after the
+// persistent record has already been deleted by the scanner's DeleteLock call;
+// this method handles the in-memory half.
+//
+// This is the lease analogue of RevokeDelegation: same mutex discipline,
+// same signalBreakWait call so parked CREATEs unblock immediately rather
+// than waiting for their context deadline.
+func (lm *Manager) revokeTimedOutLease(handleKey string, leaseKey [16]byte) {
+	// Best-effort delete of each removed record's persisted copy: the scanner
+	// already deleted the canonical PersistedLock by ID; this handles any
+	// sibling records sharing the same LeaseKey.
+	lm.removeMatchingLocksAndSignal(handleKey, true, func(l *UnifiedLock) bool {
+		return l.Lease != nil && l.Lease.LeaseKey == leaseKey
+	})
+}
+
+// removeMatchingLocksAndSignal removes every UnifiedLock on handleKey for which
+// match returns true, then wakes any WaitForBreakCompletion / parked-CREATE
+// waiters. When deletePersisted is true, each removed lock's persisted record is
+// deleted (best-effort) under lm.mu. Returns true if at least one lock matched.
+//
+// Shared by RevokeDelegation and revokeTimedOutLease: same mutex discipline,
+// same post-unlock signalBreakWait so parked CREATEs unblock immediately rather
+// than waiting for their context deadline.
+func (lm *Manager) removeMatchingLocksAndSignal(handleKey string, deletePersisted bool, match func(*UnifiedLock) bool) bool {
+	lm.mu.Lock()
 	var remaining []*UnifiedLock
-	for _, l := range locks {
-		if l.Delegation != nil && l.Delegation.DelegationID == delegationID {
+	found := false
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if match(l) {
 			found = true
-			continue // Drop from remaining (removed from map)
+			if deletePersisted {
+				lm.deleteUnifiedLockLocked(l)
+			}
+			continue
 		}
 		remaining = append(remaining, l)
 	}
-
 	if !found {
 		lm.mu.Unlock()
-		return fmt.Errorf("delegation %s not found on handle %s", delegationID, handleKey)
+		return false
 	}
-
 	if len(remaining) == 0 {
 		delete(lm.unifiedLocks, handleKey)
 	} else {
@@ -2804,7 +2870,7 @@ func (lm *Manager) RevokeDelegation(handleKey string, delegationID string) error
 	lm.mu.Unlock()
 
 	lm.signalBreakWait(handleKey)
-	return nil
+	return true
 }
 
 // ReturnDelegation handles a client returning a delegation. Idempotent:

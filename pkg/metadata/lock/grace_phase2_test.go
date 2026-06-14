@@ -86,7 +86,7 @@ func TestReclaimLease_MarksClientReclaimed(t *testing.T) {
 	require.True(t, lm.IsInGracePeriod(), "grace must be active after EnterGracePeriod")
 
 	// Reclaim the lease.
-	_, err := lm.ReclaimLease(ctx, leaseKey, LeaseStateRead, false)
+	_, err := lm.ReclaimLease(ctx, leaseKey, LeaseStateRead, false, "client-1")
 	require.NoError(t, err, "lease reclaim during grace must succeed")
 
 	// The reclaim must have recorded the client; with the only expected client

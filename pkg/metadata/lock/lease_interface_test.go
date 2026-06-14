@@ -182,7 +182,7 @@ func TestLockManager_HasLeaseOperations(t *testing.T) {
 	_ = err
 
 	// ReclaimLease should exist
-	_, err = lm.ReclaimLease(ctx, leaseKey, LeaseStateRead, false)
+	_, err = lm.ReclaimLease(ctx, leaseKey, LeaseStateRead, false, "")
 	_ = err
 
 	// GetLeaseState should exist

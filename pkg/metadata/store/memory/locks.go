@@ -246,6 +246,7 @@ func cloneLock(lk *lock.PersistedLock) *lock.PersistedLock {
 		BreakToState:        lk.BreakToState,
 		BreakingToRequired:  lk.BreakingToRequired,
 		Breaking:            lk.Breaking,
+		BreakStarted:        lk.BreakStarted,
 		IsDirectory:         lk.IsDirectory,
 		IsTraditionalOplock: lk.IsTraditionalOplock,
 		// Delegation fields

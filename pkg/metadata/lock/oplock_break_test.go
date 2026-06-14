@@ -148,7 +148,8 @@ func createBreakingLease(id string, leaseKey [16]byte, breakStart time.Time) *Pe
 		LeaseState:   LeaseStateRead | LeaseStateWrite,
 		Breaking:     true,
 		BreakToState: LeaseStateRead,
-		AcquiredAt:   breakStart, // Break start time
+		AcquiredAt:   breakStart,
+		BreakStarted: breakStart, // break-clock, not grant-clock
 	}
 }
 
@@ -444,5 +445,174 @@ func TestOpLockBreakScanner_ByteRangeLocksIgnored(t *testing.T) {
 	locks, _ := store.ListLocks(context.Background(), LockQuery{})
 	if len(locks) != 1 {
 		t.Errorf("Expected byte-range lock to still exist, but found %d locks", len(locks))
+	}
+}
+
+// TestOpLockBreakScanner_UsesBreakStartedNotAcquiredAt verifies that the
+// scanner measures timeout from BreakStarted, not AcquiredAt. A lease held
+// for a long time (large AcquiredAt offset) must NOT be revoked if
+// BreakStarted is recent.
+func TestOpLockBreakScanner_UsesBreakStartedNotAcquiredAt(t *testing.T) {
+	store := newMockLockStore()
+	callback := &mockOpLockBreakCallback{}
+
+	// 200ms timeout, 10ms scan interval.
+	scanner := NewOpLockBreakScannerWithInterval(store, callback, 200*time.Millisecond, 10*time.Millisecond)
+
+	var leaseKey [16]byte
+	copy(leaseKey[:], []byte("longheldbreaklse"))
+
+	// Lease was granted 10 minutes ago (AcquiredAt far in the past),
+	// but the break was only initiated just now (BreakStarted = now).
+	pl := &PersistedLock{
+		ID:           "lease-longheld",
+		ShareName:    "share1",
+		FileID:       "file1",
+		OwnerID:      "smb:client1",
+		ClientID:     "client1",
+		LeaseKey:     leaseKey[:],
+		LeaseState:   LeaseStateRead | LeaseStateWrite,
+		Breaking:     true,
+		BreakToState: LeaseStateRead,
+		AcquiredAt:   time.Now().Add(-10 * time.Minute), // very old grant
+		BreakStarted: time.Now(),                        // break JUST started
+	}
+	_ = store.PutLock(context.Background(), pl)
+
+	scanner.Start()
+	defer scanner.Stop()
+
+	// Wait 3 scan cycles — well under the 200ms break timeout.
+	time.Sleep(50 * time.Millisecond)
+
+	// Callback must NOT have fired: the break just started, not yet expired.
+	if len(callback.getTimedOutKeys()) != 0 {
+		t.Fatal("scanner revoked a long-held lease whose break just started (using AcquiredAt instead of BreakStarted)")
+	}
+	locks, _ := store.ListLocks(context.Background(), LockQuery{})
+	if len(locks) != 1 {
+		t.Fatalf("expected lease to still exist, got %d locks", len(locks))
+	}
+}
+
+// TestOpLockBreakScanner_LegacyZeroBreakStartedNotRevoked verifies the
+// backwards-compatibility path: a breaking lease persisted before BreakStarted
+// existed has a zero BreakStarted. The scanner must treat that conservatively
+// (reference = now) and NOT immediately revoke it, even though AcquiredAt is far
+// in the past. Otherwise every legacy in-flight break would be revoked on the
+// first scan after upgrade.
+func TestOpLockBreakScanner_LegacyZeroBreakStartedNotRevoked(t *testing.T) {
+	store := newMockLockStore()
+	callback := &mockOpLockBreakCallback{}
+
+	// 5s timeout so a "now" reference cannot expire during the test window.
+	scanner := NewOpLockBreakScannerWithInterval(store, callback, 5*time.Second, 10*time.Millisecond)
+
+	var leaseKey [16]byte
+	copy(leaseKey[:], []byte("legacynobreakset"))
+
+	pl := &PersistedLock{
+		ID:           "legacy-lease",
+		ShareName:    "share1",
+		FileID:       "file1",
+		OwnerID:      "smb:client1",
+		ClientID:     "client1",
+		LeaseKey:     leaseKey[:],
+		LeaseState:   LeaseStateRead | LeaseStateWrite,
+		Breaking:     true,
+		BreakToState: LeaseStateRead,
+		AcquiredAt:   time.Now().Add(-10 * time.Minute), // old grant
+		// BreakStarted intentionally left zero (legacy record).
+	}
+	_ = store.PutLock(context.Background(), pl)
+
+	scanner.Start()
+	defer scanner.Stop()
+
+	time.Sleep(60 * time.Millisecond) // several scan cycles
+
+	if len(callback.getTimedOutKeys()) != 0 {
+		t.Fatal("scanner revoked a legacy zero-BreakStarted lease on first scan (should use now as reference)")
+	}
+	locks, _ := store.ListLocks(context.Background(), LockQuery{})
+	if len(locks) != 1 {
+		t.Fatalf("expected legacy lease to still exist, got %d locks", len(locks))
+	}
+}
+
+// TestOpLockBreakScanner_RevokeUnblocksWaitForBreakCompletion verifies that
+// after the scanner force-revokes a timed-out lease from the store, any
+// goroutine blocked in Manager.WaitForBreakCompletion is unblocked promptly
+// (well within the context deadline) rather than waiting for its own deadline.
+func TestOpLockBreakScanner_RevokeUnblocksWaitForBreakCompletion(t *testing.T) {
+	ctx := context.Background()
+
+	store := newMockLockStore()
+	lm := NewManager()
+	lm.SetLockStore(store)
+
+	// 100ms break timeout, 20ms scan interval — fast for testing.
+	scanner := NewOpLockBreakScannerWithInterval(store, nil, 100*time.Millisecond, 20*time.Millisecond)
+	scanner.SetLockManager(lm)
+
+	var leaseKey [16]byte
+	copy(leaseKey[:], []byte("waitunblockkey12"))
+
+	// Add breaking lease to both Manager (in-memory) and store (persisted).
+	breakingLock := &UnifiedLock{
+		ID:         "lease-wait-test",
+		Owner:      LockOwner{OwnerID: "smb:client1", ClientID: "client1", ShareName: "share1"},
+		FileHandle: FileHandle("file-wait"),
+		Type:       LockTypeShared,
+		AcquiredAt: time.Now().Add(-5 * time.Minute), // granted long ago
+		Lease: &OpLock{
+			LeaseKey:     leaseKey,
+			LeaseState:   LeaseStateRead | LeaseStateWrite,
+			Breaking:     true,
+			BreakToState: LeaseStateRead,
+			BreakStarted: time.Now().Add(-200 * time.Millisecond), // break already expired
+		},
+	}
+	// Insert directly into in-memory map to bypass conflict-check path.
+	lm.mu.Lock()
+	lm.unifiedLocks["file-wait"] = append(lm.unifiedLocks["file-wait"], breakingLock)
+	lm.mu.Unlock()
+
+	// Persist it so the scanner can find it.
+	pl := ToPersistedLock(breakingLock, 1)
+	pl.ShareName = "share1"
+	_ = store.PutLock(ctx, pl)
+
+	scanner.Start()
+	defer scanner.Stop()
+
+	// WaitForBreakCompletion with a 2-second deadline: if Bug 2 is present the
+	// goroutine blocks for the full 2s and returns DeadlineExceeded.
+	// With the fix it returns nil well within 500ms (the scanner fires within
+	// 100ms+20ms).
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- lm.WaitForBreakCompletion(waitCtx, "file-wait")
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WaitForBreakCompletion returned error after scanner revoke: %v", err)
+		}
+		// Pass: unblocked before the 2s deadline.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("WaitForBreakCompletion was not unblocked within 500ms after scanner force-revoke (Bug 2 not fixed)")
+	}
+
+	// Verify in-memory lease is gone.
+	lm.mu.RLock()
+	remaining := lm.unifiedLocks["file-wait"]
+	lm.mu.RUnlock()
+	if len(remaining) != 0 {
+		t.Fatalf("expected no in-memory leases after revoke, got %d", len(remaining))
 	}
 }

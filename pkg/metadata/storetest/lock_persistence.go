@@ -438,6 +438,7 @@ func kitchenSinkLock() *lock.PersistedLock {
 		BreakToState:          lock.LeaseStateRead | lock.LeaseStateHandle,
 		BreakingToRequired:    lock.LeaseStateRead,
 		Breaking:              true,
+		BreakStarted:          time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
 		ParentLeaseKey:        bytes16(0x22),
 		IsDirectory:           true,
 		IsTraditionalOplock:   true,
