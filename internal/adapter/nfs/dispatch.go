@@ -382,8 +382,7 @@ type nfsProcedure struct {
 // This replaces the large switch statement in handleNFSProcedure.
 //
 // The table is initialized once at package init time for efficiency.
-// Each entry contains the procedure name, handler function, and metadata
-// about authentication requirements.
+// Each entry contains the procedure name and handler function.
 //
 // Note: NFSv4 uses its own COMPOUND internal dispatch (v4/handlers/compound.go)
 // and does not use this table. ProgramNFS handles both v3 and v4, with
