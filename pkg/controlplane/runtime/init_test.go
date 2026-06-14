@@ -296,8 +296,8 @@ func TestPerShareBlockStoreRemoteSharing(t *testing.T) {
 	}
 
 	// Both BlockStores should have non-nil remote stores.
-	remote1 := s1.BlockStore.RemoteForTesting()
-	remote2 := s2.BlockStore.RemoteForTesting()
+	remote1 := s1.BlockStore.RemoteStore()
+	remote2 := s2.BlockStore.RemoteStore()
 	if remote1 == nil || remote2 == nil {
 		t.Fatal("both BlockStores should have non-nil remote stores")
 	}
@@ -324,7 +324,7 @@ func TestPerShareBlockStoreRemoteSharing(t *testing.T) {
 	}
 
 	// share-2's remote store should still work.
-	if err := s2.BlockStore.RemoteForTesting().HealthCheck(ctx); err != nil {
+	if err := s2.BlockStore.RemoteStore().HealthCheck(ctx); err != nil {
 		t.Fatalf("remote store should still be healthy after removing one share: %v", err)
 	}
 

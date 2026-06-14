@@ -43,10 +43,6 @@ func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keypr
 	return &EncryptedRemote{inner: inner, aead: policy.AEAD, provider: provider}, nil
 }
 
-// AEAD returns the algorithm this decorator emits on Put. Reads accept
-// any algorithm encoded in the wire frame regardless.
-func (d *EncryptedRemote) AEAD() AEAD { return d.aead }
-
 // Put encrypts data and stores the framed result under hash. The block
 // key is fresh per call; the plaintext hash is bound into the AEAD's
 // additional data so a swapped block fails authentication on Get.

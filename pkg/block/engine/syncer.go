@@ -144,10 +144,6 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		config.PrefetchBlocks = DefaultPrefetchBlocks
 	}
 	// — apply CAS-path defaults.
-	// ClaimBatchSize default removed (field deleted).
-	if config.UploadConcurrency <= 0 {
-		config.UploadConcurrency = 8
-	}
 	if config.ClaimTimeout <= 0 {
 		config.ClaimTimeout = 10 * time.Minute
 	}
