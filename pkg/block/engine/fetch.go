@@ -42,14 +42,15 @@ func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockId
 }
 
 // listFileBlocksSnapshot returns a point-in-time snapshot of the FileBlock rows
-// for payloadID with a single O(M) store scan. A sparse / not-yet-uploaded
-// payload (ErrFileBlockNotFound) yields (nil, nil). Callers that need to test
-// many block indices for one read should fetch the snapshot ONCE and pass it to
-// resolveFileBlockFromRows / blockIsLocalFromRows, collapsing the previous O(N)
-// store scans (one per block index) into a single scan per read. The snapshot
-// is point-in-time: a concurrent writer that mutates the block set after the
-// scan is not reflected for the remainder of that read, which is the acceptable
-// (and arguably more correct) per-read isolation semantics.
+// for payloadID with a single ListFileBlocks store scan. A sparse / not-yet-
+// uploaded payload (ErrFileBlockNotFound) yields (nil, nil). Callers that need
+// to test many block indices for one read should fetch the snapshot ONCE and
+// pass it to resolveFileBlockFromRows / blockIsLocalFromRows: each block lookup
+// then walks the in-memory snapshot instead of issuing its own store scan,
+// collapsing the previous N store scans (one per block index) into one. The
+// snapshot is point-in-time: a concurrent writer that mutates the block set
+// after the scan is not reflected for the remainder of that read, which is the
+// acceptable (and arguably more correct) per-read isolation semantics.
 func (m *Syncer) listFileBlocksSnapshot(ctx context.Context, payloadID string) ([]*block.FileBlock, error) {
 	rows, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
 	if err != nil {
@@ -242,11 +243,12 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 
 	startBlockIdx, endBlockIdx := blockRange(offset, length)
 
-	// Single point-in-time scan of the per-payload FileBlock rows, reused for
-	// the all-local fast path, the per-block locality checks below, and the
-	// inline fetch hash lookups. This replaces the prior 2N store scans (one
+	// Single point-in-time store scan of the per-payload FileBlock rows,
+	// reused for the all-local fast path, the per-block locality checks below,
+	// and the inline fetch hash lookups (all of which walk this in-memory
+	// snapshot). This replaces the prior 2N+ ListFileBlocks store scans (one
 	// per block in the all-local check + one per block in the download loop,
-	// plus one more inside each inlineFetchOrWait) with a single O(M) scan per
+	// plus one more inside each inlineFetchOrWait) with a single store scan per
 	// read.
 	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
 	if err != nil {
