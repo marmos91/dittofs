@@ -1302,13 +1302,20 @@ func (sm *StateManager) removeOpenStateFromFileLocked(os *OpenState) {
 	fhKey := string(os.FileHandle)
 	states := sm.openStateByFile[fhKey]
 	for i, s := range states {
-		if s == os {
-			sm.openStateByFile[fhKey] = append(states[:i], states[i+1:]...)
-			break
+		if s != os {
+			continue
 		}
-	}
-	if len(sm.openStateByFile[fhKey]) == 0 {
-		delete(sm.openStateByFile, fhKey)
+		// Shift the tail down, nil out the now-unused last slot so the backing
+		// array does not retain the removed OpenState, then reslice.
+		copy(states[i:], states[i+1:])
+		states[len(states)-1] = nil
+		states = states[:len(states)-1]
+		if len(states) == 0 {
+			delete(sm.openStateByFile, fhKey)
+		} else {
+			sm.openStateByFile[fhKey] = states
+		}
+		return
 	}
 }
 
