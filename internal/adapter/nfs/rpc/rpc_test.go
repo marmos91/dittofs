@@ -415,3 +415,57 @@ func TestHeaderMICPreimage(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+// ============================================================================
+// MakeSuccessReply Tests
+// ============================================================================
+
+func TestMakeSuccessReply(t *testing.T) {
+	t.Run("WireFormatAndRecordMarker", func(t *testing.T) {
+		xid := uint32(0xABCD1234)
+		data := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04}
+
+		reply, err := MakeSuccessReply(xid, data)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, len(reply), 4)
+
+		// Fragment header: last-fragment bit set, length = everything after it.
+		fragHeader := binary.BigEndian.Uint32(reply[0:4])
+		assert.NotZero(t, fragHeader&0x80000000, "last fragment bit must be set")
+		assert.Equal(t, uint32(len(reply)-4), fragHeader&0x7FFFFFFF,
+			"fragment length must equal record body length")
+
+		// The XDR-decoded reply body must round-trip the original fields, and
+		// the trailing bytes must equal the supplied procedure data verbatim.
+		var decoded RPCReplyMessage
+		n, err := xdr.Unmarshal(bytes.NewReader(reply[4:]), &decoded)
+		require.NoError(t, err)
+		assert.Equal(t, xid, decoded.XID)
+		assert.Equal(t, uint32(RPCReply), decoded.MsgType)
+		assert.Equal(t, uint32(RPCMsgAccepted), decoded.ReplyState)
+		assert.Equal(t, uint32(RPCSuccess), decoded.AcceptStat)
+		assert.Equal(t, data, reply[4+n:], "procedure data must be appended verbatim")
+	})
+
+	t.Run("HandlesEmptyData", func(t *testing.T) {
+		reply, err := MakeSuccessReply(1, nil)
+		require.NoError(t, err)
+		fragHeader := binary.BigEndian.Uint32(reply[0:4])
+		assert.NotZero(t, fragHeader&0x80000000)
+		assert.Equal(t, uint32(len(reply)-4), fragHeader&0x7FFFFFFF)
+	})
+}
+
+func TestParseUnixAuth_Truncated(t *testing.T) {
+	full := encodeAuthUnix(validAuthUnixCredentials())
+
+	// Every strict prefix shorter than the full body is malformed and must
+	// produce an error rather than a partial/garbage credential.
+	for n := 1; n < len(full); n++ {
+		_, err := ParseUnixAuth(full[:n])
+		// A prefix is only valid if it happens to land exactly on the end of
+		// the GID array; otherwise it must error. The full body's final field
+		// is the last GID, so any strict prefix is short.
+		require.Error(t, err, "prefix length %d should be rejected", n)
+	}
+}

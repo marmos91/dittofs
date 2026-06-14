@@ -215,60 +215,35 @@ func EncodeFileAttr(buf *bytes.Buffer, attr *types.NFSFileAttr) error {
 		return fmt.Errorf("file attributes are nil")
 	}
 
-	// Write all fields in order per RFC 1813
-	if err := binary.Write(buf, binary.BigEndian, attr.Type); err != nil {
-		return fmt.Errorf("write type: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Mode); err != nil {
-		return fmt.Errorf("write mode: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Nlink); err != nil {
-		return fmt.Errorf("write nlink: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.UID); err != nil {
-		return fmt.Errorf("write uid: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.GID); err != nil {
-		return fmt.Errorf("write gid: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Size); err != nil {
-		return fmt.Errorf("write size: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Used); err != nil {
-		return fmt.Errorf("write used: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Rdev); err != nil {
-		return fmt.Errorf("write rdev: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Fsid); err != nil {
-		return fmt.Errorf("write fsid: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Fileid); err != nil {
-		return fmt.Errorf("write fileid: %w", err)
-	}
+	// fattr3 is a fixed-size structure: 5 uint32 + 2 uint64 + specdata3 (2
+	// uint32) + 2 uint64 + 3 nfstime3 (each 2 uint32) = 84 bytes. Encode all
+	// fields directly into a stack-allocated array via binary.BigEndian to
+	// avoid the per-field reflection overhead of binary.Write.
+	var b [84]byte
+	binary.BigEndian.PutUint32(b[0:4], attr.Type)
+	binary.BigEndian.PutUint32(b[4:8], attr.Mode)
+	binary.BigEndian.PutUint32(b[8:12], attr.Nlink)
+	binary.BigEndian.PutUint32(b[12:16], attr.UID)
+	binary.BigEndian.PutUint32(b[16:20], attr.GID)
+	binary.BigEndian.PutUint64(b[20:28], attr.Size)
+	binary.BigEndian.PutUint64(b[28:36], attr.Used)
+	// rdev (specdata3): major then minor
+	binary.BigEndian.PutUint32(b[36:40], attr.Rdev.Major)
+	binary.BigEndian.PutUint32(b[40:44], attr.Rdev.Minor)
+	binary.BigEndian.PutUint64(b[44:52], attr.Fsid)
+	binary.BigEndian.PutUint64(b[52:60], attr.Fileid)
+	// atime (nfstime3): seconds then nseconds
+	binary.BigEndian.PutUint32(b[60:64], attr.Atime.Seconds)
+	binary.BigEndian.PutUint32(b[64:68], attr.Atime.Nseconds)
+	// mtime (nfstime3)
+	binary.BigEndian.PutUint32(b[68:72], attr.Mtime.Seconds)
+	binary.BigEndian.PutUint32(b[72:76], attr.Mtime.Nseconds)
+	// ctime (nfstime3)
+	binary.BigEndian.PutUint32(b[76:80], attr.Ctime.Seconds)
+	binary.BigEndian.PutUint32(b[80:84], attr.Ctime.Nseconds)
 
-	// Write atime (nfstime3)
-	if err := binary.Write(buf, binary.BigEndian, attr.Atime.Seconds); err != nil {
-		return fmt.Errorf("write atime seconds: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Atime.Nseconds); err != nil {
-		return fmt.Errorf("write atime nseconds: %w", err)
-	}
-
-	// Write mtime (nfstime3)
-	if err := binary.Write(buf, binary.BigEndian, attr.Mtime.Seconds); err != nil {
-		return fmt.Errorf("write mtime seconds: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Mtime.Nseconds); err != nil {
-		return fmt.Errorf("write mtime nseconds: %w", err)
-	}
-
-	// Write ctime (nfstime3)
-	if err := binary.Write(buf, binary.BigEndian, attr.Ctime.Seconds); err != nil {
-		return fmt.Errorf("write ctime seconds: %w", err)
-	}
-	if err := binary.Write(buf, binary.BigEndian, attr.Ctime.Nseconds); err != nil {
-		return fmt.Errorf("write ctime nseconds: %w", err)
+	if _, err := buf.Write(b[:]); err != nil {
+		return fmt.Errorf("write fattr3: %w", err)
 	}
 
 	return nil

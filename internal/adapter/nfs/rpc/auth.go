@@ -1,9 +1,9 @@
 package rpc
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 )
 
 // Authentication Flavors
@@ -120,18 +120,35 @@ func ParseUnixAuth(body []byte) (*UnixAuth, error) {
 	}
 
 	auth := &UnixAuth{}
-	reader := bytes.NewReader(body)
+
+	// PERFORMANCE OPTIMIZATION: Decode directly from the body slice with a
+	// manual offset instead of wrapping it in a bytes.Reader and using
+	// reflection-based binary.Read. off tracks the current read position.
+	off := 0
+
+	// readUint32 consumes the next big-endian uint32, returning an error if
+	// fewer than 4 bytes remain (equivalent to binary.Read's truncation error).
+	readUint32 := func(field string) (uint32, error) {
+		if off+4 > len(body) {
+			return 0, fmt.Errorf("read %s: %w", field, io.ErrUnexpectedEOF)
+		}
+		v := binary.BigEndian.Uint32(body[off : off+4])
+		off += 4
+		return v, nil
+	}
 
 	// Read stamp (4 bytes, big-endian)
 	// This is an arbitrary client-generated identifier
-	if err := binary.Read(reader, binary.BigEndian, &auth.Stamp); err != nil {
-		return nil, fmt.Errorf("read stamp: %w", err)
+	stamp, err := readUint32("stamp")
+	if err != nil {
+		return nil, err
 	}
+	auth.Stamp = stamp
 
 	// Read machine name length (4 bytes, big-endian)
-	var nameLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &nameLen); err != nil {
-		return nil, fmt.Errorf("read machine name length: %w", err)
+	nameLen, err := readUint32("machine name length")
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate machine name length to prevent excessive memory allocation
@@ -141,35 +158,43 @@ func ParseUnixAuth(body []byte) (*UnixAuth, error) {
 	}
 
 	// Read machine name bytes
-	nameBytes := make([]byte, nameLen)
-	if err := binary.Read(reader, binary.BigEndian, &nameBytes); err != nil {
-		return nil, fmt.Errorf("read machine name: %w", err)
+	if off+int(nameLen) > len(body) {
+		return nil, fmt.Errorf("read machine name: %w", io.ErrUnexpectedEOF)
 	}
-	auth.MachineName = string(nameBytes)
+	auth.MachineName = string(body[off : off+int(nameLen)])
+	off += int(nameLen)
 
 	// Skip XDR padding to align to 4-byte boundary
-	// XDR strings are padded to ensure the next field starts at a 4-byte boundary
-	padding := (4 - (nameLen % 4)) % 4
-	for i := uint32(0); i < padding; i++ {
-		_, _ = reader.ReadByte()
+	// XDR strings are padded to ensure the next field starts at a 4-byte
+	// boundary. Matching the previous behaviour, padding bytes past the end of
+	// the body are tolerated rather than treated as an error.
+	padding := int((4 - (nameLen % 4)) % 4)
+	if off+padding > len(body) {
+		off = len(body)
+	} else {
+		off += padding
 	}
 
 	// Read UID (4 bytes, big-endian)
 	// This is the effective user ID on the client
-	if err := binary.Read(reader, binary.BigEndian, &auth.UID); err != nil {
-		return nil, fmt.Errorf("read uid: %w", err)
+	uid, err := readUint32("uid")
+	if err != nil {
+		return nil, err
 	}
+	auth.UID = uid
 
 	// Read GID (4 bytes, big-endian)
 	// This is the effective primary group ID on the client
-	if err := binary.Read(reader, binary.BigEndian, &auth.GID); err != nil {
-		return nil, fmt.Errorf("read gid: %w", err)
+	gid, err := readUint32("gid")
+	if err != nil {
+		return nil, err
 	}
+	auth.GID = gid
 
 	// Read supplementary GIDs count (4 bytes, big-endian)
-	var gidsLen uint32
-	if err := binary.Read(reader, binary.BigEndian, &gidsLen); err != nil {
-		return nil, fmt.Errorf("read gids length: %w", err)
+	gidsLen, err := readUint32("gids length")
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate GID count to prevent excessive memory allocation
@@ -182,9 +207,11 @@ func ParseUnixAuth(body []byte) (*UnixAuth, error) {
 	// These represent additional group memberships beyond the primary GID
 	auth.GIDs = make([]uint32, gidsLen)
 	for i := uint32(0); i < gidsLen; i++ {
-		if err := binary.Read(reader, binary.BigEndian, &auth.GIDs[i]); err != nil {
-			return nil, fmt.Errorf("read gid[%d]: %w", i, err)
+		g, err := readUint32(fmt.Sprintf("gid[%d]", i))
+		if err != nil {
+			return nil, err
 		}
+		auth.GIDs[i] = g
 	}
 
 	return auth, nil
