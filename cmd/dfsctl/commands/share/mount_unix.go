@@ -145,6 +145,14 @@ func mountSMBLinux(sharePath, mountPoint string, port int, username, password, s
 	}
 	defer func() { _ = os.Remove(credFile) }()
 
+	// The credentials path itself is interpolated into the comma-delimited -o
+	// string, so a temp dir containing a comma or newline (e.g. an attacker-
+	// controlled TMPDIR) could reintroduce option injection via the filename.
+	// Reject such a path rather than build a corrupt option list.
+	if strings.ContainsAny(credFile, ",\r\n") {
+		return fmt.Errorf("temporary credentials path %q contains a comma or newline; set TMPDIR to a path without those characters", credFile)
+	}
+
 	opts := fmt.Sprintf("vers=2.1,port=%d,credentials=%s", port, credFile)
 
 	// If running as root with SUDO_UID, set uid/gid so files are owned by original user
