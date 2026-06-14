@@ -45,12 +45,11 @@ func (h *Handler) handleGetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 		attrs.SetLeaseTime(uint32(leaseDur.Seconds()))
 	}
 
-	// Ensure filesystem capabilities (maxread/maxwrite/maxfilesize) are current
-	if metaSvc, err := getMetadataServiceForCtx(h); err == nil {
-		if caps, err := metaSvc.GetFilesystemCapabilities(ctx.Context, metadata.FileHandle(ctx.CurrentFH)); err == nil && caps != nil {
-			attrs.SetFilesystemCapabilities(caps.MaxFileSize, caps.MaxReadSize, caps.MaxWriteSize)
-		}
-	}
+	// Filesystem capabilities (maxread/maxwrite/maxfilesize) are populated once
+	// at adapter startup and refreshed on SettingsWatcher change events via the
+	// atomic globals in the attrs package (see pkg/adapter/nfs/settings.go).
+	// They are process-global config, so GETATTR no longer issues a per-request
+	// store read transaction to fetch them.
 
 	// Check if current FH is a pseudo-fs handle
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) {
