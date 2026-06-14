@@ -286,8 +286,7 @@ func (c *Cache) evictLocked() {
 // dedup is preserved).
 //
 // CACHE-05 surgical invalidation: callers compute the removed-hash diff
-// (via common.diffRemovedHashes) from the old/new BlockRef lists and
-// pass it here. Drop semantics
+// from the old/new BlockRef lists and pass it here. Drop semantics
 // preserve duplicate-hash multiplicity expectations (callers may pass
 // the same hash multiple times; the cache just drops it on first
 // match).

@@ -91,36 +91,6 @@ func TestAuthenticator_AllReturnErrUnsupported(t *testing.T) {
 	}
 }
 
-func TestAuthenticator_Providers_ReturnsCopy(t *testing.T) {
-	p := &mockProvider{name: "orig", canHandle: func(_ []byte) bool { return false }}
-	auth := NewAuthenticator(p)
-
-	providers := auth.Providers()
-	if len(providers) != 1 || providers[0].Name() != "orig" {
-		t.Fatal("Providers() should return the registered provider")
-	}
-
-	// Mutate the returned slice — should not affect internal state
-	providers[0] = &mockProvider{name: "mutated"}
-	if auth.Providers()[0].Name() != "orig" {
-		t.Error("mutating Providers() return value should not affect authenticator")
-	}
-}
-
-func TestAuthenticator_Providers_NilAuthenticator(t *testing.T) {
-	var auth *Authenticator
-	if auth.Providers() != nil {
-		t.Error("nil Authenticator.Providers() should return nil")
-	}
-}
-
-func TestAuthenticator_Providers_Empty(t *testing.T) {
-	auth := NewAuthenticator()
-	if auth.Providers() != nil {
-		t.Error("empty Authenticator.Providers() should return nil")
-	}
-}
-
 func TestAuthenticator_ConcurrentAuthenticate(t *testing.T) {
 	p := &mockProvider{
 		name:       "concurrent",

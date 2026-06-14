@@ -138,7 +138,7 @@ func (m *SIDMapper) GIDFromSID(s *SID) (uint32, bool) {
 
 	offset := rid - 1001
 	if offset%2 != 0 {
-		return 0, false // Even offset = user SID, not group
+		return 0, false // Odd offset = user SID, not group
 	}
 
 	return offset / 2, true

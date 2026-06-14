@@ -45,19 +45,6 @@ type BaseConfig struct {
 	// ShutdownTimeout is the maximum duration to wait for active connections
 	// to complete during graceful shutdown.
 	ShutdownTimeout time.Duration
-
-	// MetricsLogInterval is the interval at which to log server metrics.
-	// 0 disables periodic metrics logging.
-	MetricsLogInterval time.Duration
-}
-
-// MetricsRecorder allows protocol adapters to record connection lifecycle
-// metrics. NFS provides an implementation; SMB may provide nil (no metrics).
-type MetricsRecorder interface {
-	RecordConnectionAccepted()
-	RecordConnectionClosed()
-	RecordConnectionForceClosed()
-	SetActiveConnections(count int32)
 }
 
 // OnConnectionClose is an optional callback invoked when a connection's serve
@@ -70,8 +57,8 @@ type OnConnectionClose func(addr string)
 // BaseAdapter provides shared TCP lifecycle management for protocol adapters.
 //
 // Both NFS and SMB adapters embed this struct and delegate listener management,
-// graceful shutdown, connection tracking, and metrics logging to it. Protocol-
-// specific behavior is injected via ConnectionFactory and PreAccept hooks.
+// graceful shutdown, and connection tracking to it. Protocol-specific behavior
+// is injected via ConnectionFactory and PreAccept hooks.
 //
 // Thread safety:
 // All exported methods are safe for concurrent use. The shutdown mechanism uses
@@ -82,10 +69,6 @@ type BaseAdapter struct {
 
 	// protocolName is the human-readable protocol name for logging (e.g., "NFS", "SMB")
 	protocolName string
-
-	// Metrics is an optional recorder for connection lifecycle metrics.
-	// If nil, no metrics are collected (zero overhead).
-	Metrics MetricsRecorder
 
 	// listener is the TCP listener for accepting connections.
 	// Closed during shutdown to stop accepting new connections.
@@ -104,7 +87,7 @@ type BaseAdapter struct {
 	Shutdown chan struct{}
 
 	// ConnCount tracks the current number of active connections.
-	// Used for metrics and shutdown logging.
+	// Used for shutdown logging.
 	ConnCount atomic.Int32
 
 	// connSemaphore limits the number of concurrent connections if MaxConnections > 0.
@@ -237,11 +220,6 @@ func (b *BaseAdapter) ServeWithFactory(
 		b.initiateShutdown()
 	}()
 
-	// Start metrics logging if enabled
-	if b.Config.MetricsLogInterval > 0 {
-		go b.logMetrics(ctx)
-	}
-
 	// Accept connections until shutdown
 	for {
 		// Acquire connection semaphore if connection limiting is enabled
@@ -307,12 +285,7 @@ func (b *BaseAdapter) ServeWithFactory(
 		connAddr := tcpConn.RemoteAddr().String()
 		b.ActiveConnections.Store(connAddr, tcpConn)
 
-		// Record metrics for connection accepted
 		currentConns := b.ConnCount.Load()
-		if b.Metrics != nil {
-			b.Metrics.RecordConnectionAccepted()
-			b.Metrics.SetActiveConnections(currentConns)
-		}
 
 		// Log new connection
 		logger.Debug(b.protocolName+" connection accepted", "address", tcpConn.RemoteAddr(), "active", currentConns)
@@ -336,12 +309,6 @@ func (b *BaseAdapter) ServeWithFactory(
 				b.ConnCount.Add(-1)
 				if b.connSemaphore != nil {
 					<-b.connSemaphore
-				}
-
-				// Record metrics for connection closed
-				if b.Metrics != nil {
-					b.Metrics.RecordConnectionClosed()
-					b.Metrics.SetActiveConnections(b.ConnCount.Load())
 				}
 
 				logger.Debug(b.protocolName+" connection closed", "address", tcp.RemoteAddr(), "active", b.ConnCount.Load())
@@ -454,9 +421,6 @@ func (b *BaseAdapter) forceCloseConnections() {
 		} else {
 			closedCount++
 			logger.Debug("Force-closed connection", "address", addr)
-			if b.Metrics != nil {
-				b.Metrics.RecordConnectionForceClosed()
-			}
 		}
 
 		return true
@@ -516,31 +480,10 @@ func (b *BaseAdapter) Stop(ctx context.Context) error {
 		// Mirror the timeout branch in gracefulShutdown: when the shutdown
 		// deadline expires, force-close active connections rather than
 		// abandoning them. This triggers the deferred cleanup chain
-		// (WaitGroup.Done, semaphore release, ConnCount decrement, metrics).
+		// (WaitGroup.Done, semaphore release, ConnCount decrement).
 		b.forceCloseConnections()
 		return ctx.Err()
 	}
-}
-
-// logMetrics periodically logs server metrics for monitoring.
-func (b *BaseAdapter) logMetrics(ctx context.Context) {
-	ticker := time.NewTicker(b.Config.MetricsLogInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			activeConns := b.ConnCount.Load()
-			logger.Info(b.protocolName+" metrics", "active_connections", activeConns)
-		}
-	}
-}
-
-// GetActiveConnections returns the current number of active connections.
-func (b *BaseAdapter) GetActiveConnections() int32 {
-	return b.ConnCount.Load()
 }
 
 // GetListenerAddr returns the address the server is listening on.

@@ -26,29 +26,3 @@ import (
 type CacheInvalidator interface {
 	InvalidateFile(payloadID metadata.PayloadID, removedHashes []block.ContentHash)
 }
-
-// diffRemovedHashes returns hashes present in oldBlocks but absent from
-// newBlocks. Duplicates in oldBlocks (the same hash appearing at multiple
-// offsets — legitimate when an identical chunk repeats in a file) are
-// reported once per occurrence so callers can preserve refcount
-// multiplicity.
-//
-// Used by the WriteToBlockStore + CopyPayload helpers to compute
-// the surgical invalidation payload. For the "drop-all" case (CopyPayload
-// destination), callers pass nil rather than a precomputed diff.
-func diffRemovedHashes(oldBlocks, newBlocks []block.BlockRef) []block.ContentHash {
-	if len(oldBlocks) == 0 {
-		return nil
-	}
-	newSet := make(map[block.ContentHash]struct{}, len(newBlocks))
-	for _, b := range newBlocks {
-		newSet[b.Hash] = struct{}{}
-	}
-	var removed []block.ContentHash
-	for _, b := range oldBlocks {
-		if _, ok := newSet[b.Hash]; !ok {
-			removed = append(removed, b.Hash)
-		}
-	}
-	return removed
-}

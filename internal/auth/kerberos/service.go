@@ -50,10 +50,6 @@ type AuthResult struct {
 
 	// APReq is the parsed AP-REQ message, preserved for AP-REP construction.
 	APReq messages.APReq
-
-	// APRepToken contains the raw AP-REP bytes (not GSS-wrapped).
-	// Protocol-specific framing is handled by callers.
-	APRepToken []byte
 }
 
 // KerberosService provides shared Kerberos authentication used by both
@@ -97,7 +93,9 @@ func (s *KerberosService) Provider() *pkgkerberos.Provider {
 //   - Principal and Realm from the decrypted ticket
 //   - SessionKey with subkey preference (authenticator subkey if present)
 //   - APReq for use in BuildMutualAuth
-//   - APRepToken is empty (call BuildMutualAuth separately if mutual auth is needed)
+//
+// Mutual authentication is not handled here; callers invoke BuildMutualAuth
+// separately when an AP-REP token is required.
 func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal string) (*AuthResult, error) {
 	if s.provider == nil {
 		return nil, fmt.Errorf("kerberos provider not configured")

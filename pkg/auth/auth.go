@@ -105,17 +105,6 @@ func (a *Authenticator) Authenticate(ctx context.Context, token []byte) (*AuthRe
 	return nil, ErrUnsupportedMechanism
 }
 
-// Providers returns the list of registered auth providers.
-// Useful for diagnostics and logging.
-func (a *Authenticator) Providers() []AuthProvider {
-	if a == nil || len(a.providers) == 0 {
-		return nil
-	}
-	copied := make([]AuthProvider, len(a.providers))
-	copy(copied, a.providers)
-	return copied
-}
-
 // Standard authentication errors.
 var (
 	// ErrAuthFailed indicates that authentication was attempted but failed
