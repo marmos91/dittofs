@@ -233,6 +233,24 @@ func EncodeDirectoryEntry(entry *DirectoryEntry, nextOffset uint32) []byte {
 // Protocol Handler
 // ============================================================================
 
+// entriesByFoldedName sorts directory entries by a parallel slice of
+// pre-folded (lower-cased) names, so the QUERY_DIRECTORY case-insensitive sort
+// folds each name once instead of twice per comparison. The two slices are
+// permuted in lockstep; comparison is a plain string compare on the folded key.
+type entriesByFoldedName struct {
+	entries []metadata.DirEntry
+	folded  []string
+}
+
+func (s *entriesByFoldedName) Len() int { return len(s.entries) }
+
+func (s *entriesByFoldedName) Less(i, j int) bool { return s.folded[i] < s.folded[j] }
+
+func (s *entriesByFoldedName) Swap(i, j int) {
+	s.entries[i], s.entries[j] = s.entries[j], s.entries[i]
+	s.folded[i], s.folded[j] = s.folded[j], s.folded[i]
+}
+
 // QueryDirectory handles SMB2 QUERY_DIRECTORY command [MS-SMB2] 2.2.33, 2.2.34.
 //
 // QUERY_DIRECTORY enumerates files and subdirectories in a directory handle,
@@ -407,9 +425,16 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 
 	// Sort entries by name (case-insensitive) for consistent enumeration order.
 	// SMB clients (including smbtorture) expect directory entries in sorted order.
-	sort.Slice(filteredEntries, func(i, j int) bool {
-		return strings.ToLower(filteredEntries[i].Name) < strings.ToLower(filteredEntries[j].Name)
-	})
+	// Pre-fold each name once into a parallel slice and sort against the folded
+	// keys, instead of calling strings.ToLower twice on every comparison
+	// (O(N log N) temporary strings on large directories). The folded slice is
+	// permuted in lockstep with the entries so the comparator stays a plain
+	// string compare; the resulting order is identical to the prior comparator.
+	foldedNames := make([]string, len(filteredEntries))
+	for i := range filteredEntries {
+		foldedNames[i] = strings.ToLower(filteredEntries[i].Name)
+	}
+	sort.Sort(&entriesByFoldedName{entries: filteredEntries, folded: foldedNames})
 
 	isWildcardSearch := req.FileName == "" || req.FileName == "*" || req.FileName == "*.*" || req.FileName == "<"
 

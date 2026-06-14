@@ -139,10 +139,50 @@ func effectiveAccessForOpen(desiredAccess uint32, disposition types.CreateDispos
 // a grant that the lease layer would otherwise allow (smbtorture batch22b
 // post-timeout re-grant).
 func (h *Handler) hasOtherNonStatOpenForFile(fileHandle metadata.FileHandle, selfFileID [16]byte) bool {
+	hasNonStat, _ := h.scanNonStatOpensForFile(fileHandle, selfFileID, [16]byte{}, false)
+	return hasNonStat
+}
+
+// scanNonStatOpensForFile walks h.files once and reports two predicates used by
+// the post-break traditional-oplock grant path:
+//
+//   - hasNonStat: any non-stat-only OpenFile on the same metadata handle
+//     (excluding selfFileID) exists. Equivalent to hasOtherNonStatOpenForFile.
+//   - hasSameClient: any such open is also owned by clientGUID (the
+//     ClientGUID-scoped variant). Only computed when checkSameClient is true —
+//     callers that don't yet have a connection identity skip it.
+//
+// The same-client carve-out distinguishes the two arms of smbtorture
+// smb2.oplock.batch22{a,b}:
+//
+//   - batch22b (different ClientGUID, tree2 opens after tree1's batch break
+//     times out): tree2 must receive a fresh BATCH grant — the abandoned
+//     holder is on a different client, so its still-alive OpenFile does not
+//     invalidate batch caching semantics for the new client.
+//   - batch22a (same ClientGUID, h2 opens on tree1 after h1's batch break
+//     times out): h2 must receive LEVEL_II — h1 is still alive on this
+//     client and may hold dirty cached data, so exclusive batch caching
+//     cannot be granted again to the same client.
+//
+// The all-tombstones gate (OnlyTimeoutTombstoneRecords) handles the
+// different-client side by skipping the strip when only timeout tombstones
+// remain; hasSameClient carves out the same-client exception: even after
+// timeout, a same-ClientGUID non-stat open constrains the new grant. Mirrors
+// Samba's `disallow_write_lease` predicate (source3/smbd/open.c lines
+// 2397-2403), which gates on whether the existing entry's connection matches
+// the requestor's client; we approximate via ClientGUID equality.
+//
+// Folding both predicates into one Range pass avoids a redundant O(F) scan per
+// CREATE on the traditional-oplock grant path.
+func (h *Handler) scanNonStatOpensForFile(
+	fileHandle metadata.FileHandle,
+	selfFileID [16]byte,
+	clientGUID [16]byte,
+	checkSameClient bool,
+) (hasNonStat, hasSameClient bool) {
 	if len(fileHandle) == 0 {
-		return false
+		return false, false
 	}
-	found := false
 	h.files.Range(func(_, value any) bool {
 		other := value.(*OpenFile)
 		if other.FileID == selfFileID {
@@ -159,68 +199,19 @@ func (h *Handler) hasOtherNonStatOpenForFile(fileHandle metadata.FileHandle, sel
 		if isOplockStatOpen(other.DesiredAccess) {
 			return true
 		}
-		found = true
-		return false
+		hasNonStat = true
+		if checkSameClient && other.ClientGUID == clientGUID {
+			hasSameClient = true
+		}
+		// Stop early once both flags are settled (hasSameClient implies
+		// hasNonStat; when same-client is not requested, the first non-stat
+		// open is conclusive).
+		if !checkSameClient || hasSameClient {
+			return false
+		}
+		return true
 	})
-	return found
-}
-
-// hasSameClientNonStatOpenForFile is the ClientGUID-scoped variant of
-// hasOtherNonStatOpenForFile. It reports whether any open in h.files on the
-// same metadata handle (excluding selfFileID) is owned by the SAME SMB
-// ClientGUID AND has a non-stat-only access mask.
-//
-// Used by the post-break trad-oplock grant path to distinguish the two arms
-// of smbtorture smb2.oplock.batch22{a,b}:
-//
-//   - batch22b (different ClientGUID, tree2 opens after tree1's batch break
-//     times out): tree2 must receive a fresh BATCH grant — the abandoned
-//     holder is on a different client, so its still-alive OpenFile does not
-//     invalidate batch caching semantics for the new client.
-//   - batch22a (same ClientGUID, h2 opens on tree1 after h1's batch break
-//     times out): h2 must receive LEVEL_II — h1 is still alive on this
-//     client and may hold dirty cached data, so exclusive batch caching
-//     cannot be granted again to the same client.
-//
-// The all-tombstones gate (OnlyTimeoutTombstoneRecords) handles the
-// different-client side by skipping the strip when only timeout tombstones
-// remain. This helper carves out the same-client exception: even after
-// timeout, a same-ClientGUID non-stat open constrains the new grant.
-//
-// Mirrors Samba's `disallow_write_lease` predicate (source3/smbd/open.c
-// lines 2397-2403) which gates on whether the existing entry's connection
-// matches the requestor's client — Samba's share entries carry the open's
-// connection identity directly; we approximate via ClientGUID equality.
-func (h *Handler) hasSameClientNonStatOpenForFile(
-	fileHandle metadata.FileHandle,
-	selfFileID [16]byte,
-	clientGUID [16]byte,
-) bool {
-	if len(fileHandle) == 0 {
-		return false
-	}
-	found := false
-	h.files.Range(func(_, value any) bool {
-		other := value.(*OpenFile)
-		if other.FileID == selfFileID {
-			return true
-		}
-		if len(other.MetadataHandle) == 0 {
-			return true
-		}
-		if !bytes.Equal(other.MetadataHandle, fileHandle) {
-			return true
-		}
-		if other.ClientGUID != clientGUID {
-			return true
-		}
-		if isOplockStatOpen(other.DesiredAccess) {
-			return true
-		}
-		found = true
-		return false
-	})
-	return found
+	return hasNonStat, hasSameClient
 }
 
 // breakAndMaybeParkCreate dispatches the handle-lease break required before
@@ -280,13 +271,32 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// break to None; share-mode violation or DELETE_ON_CLOSE → strip
 	// Handle so other holders drop cached handles ahead of the delete;
 	// otherwise → strip Write.
+	//
+	// Compute the share-mode conflict once for the break-reason decision and
+	// reuse it as the FIRST poll of the share-conflict-wait closure below.
+	// Whenever we reach the conflict scan the disposition is non-destructive
+	// (destructive is handled by the prior switch case), so
+	// effectiveAccessForOpen(req) == req.DesiredAccess here and the wait
+	// closure's effectiveAccess matches this scan's input — the cached result
+	// is exact. The scan only runs when delete-on-close is unset (otherwise the
+	// reason is already SharingViolation and no scan is needed).
+	//
+	// initialConflict is consumed at most once by the wait closure; every
+	// subsequent poll must re-scan because a holder CLOSE/ACK can clear the
+	// conflict. conflictComputed records whether the scan actually ran.
+	var initialConflict, conflictComputed bool
 	reason := lock.BreakReasonDefault
 	switch {
 	case isDestructiveDisposition(d.req.CreateDisposition):
 		reason = lock.BreakReasonDestructive
-	case d.req.CreateOptions&types.FileDeleteOnClose != 0,
-		h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.filename):
+	case d.req.CreateOptions&types.FileDeleteOnClose != 0:
 		reason = lock.BreakReasonSharingViolation
+	default:
+		initialConflict = h.checkShareModeConflict(d.existingHandle, d.req.DesiredAccess, d.req.ShareAccess, d.filename)
+		conflictComputed = true
+		if initialConflict {
+			reason = lock.BreakReasonSharingViolation
+		}
 	}
 
 	var waitExceptKey [16]byte
@@ -419,7 +429,18 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	defer cancelWait()
 	if shareConflictWait {
 		effectiveAccess := effectiveAccessForOpen(d.req.DesiredAccess, d.req.CreateDisposition)
+		// Reuse the conflict scan already performed for the break-reason
+		// decision on the FIRST poll, then re-scan on every subsequent poll
+		// (a holder CLOSE/ACK can clear the conflict). The cached result is
+		// only valid when the reason was driven by initialConflict
+		// (conflictComputed); the delete-on-close path set the reason without
+		// scanning, so it falls straight through to a live scan.
+		firstPoll := conflictComputed
 		conflictPresent := func() bool {
+			if firstPoll {
+				firstPoll = false
+				return initialConflict
+			}
 			return d.existingHandle != nil &&
 				h.checkShareModeConflict(d.existingHandle, effectiveAccess, d.req.ShareAccess, d.filename)
 		}
@@ -1088,16 +1109,20 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 		lockFileHandle := lock.FileHandle(fileHandle)
 		onlyTimeoutTombstone := h.LeaseManager.OnlyTimeoutTombstoneRecords(lockFileHandle, tree.ShareName)
 		hasActiveRecord := h.LeaseManager.HasActiveLeaseRecord(lockFileHandle, tree.ShareName, [16]byte{})
-		hasNonStatOpen := h.hasOtherNonStatOpenForFile(fileHandle, smbFileID)
-		// Only consult the same-client carve-out once NEGOTIATE has
-		// established a connection identity. Without CryptoState the
-		// requestor's identity is unknown — falling through would zero-
-		// vs-zero match unrelated pre-NEGOTIATE opens (regressed
+		// Single O(F) pass over h.files yields both the non-stat-open flag and
+		// the same-client carve-out. The same-client check is only consulted
+		// once NEGOTIATE has established a connection identity — without
+		// CryptoState the requestor's identity is unknown and a zero-vs-zero
+		// match would catch unrelated pre-NEGOTIATE opens (regressed
 		// smb2.compound.interim2 when the early gate was removed).
-		hasSameClientOpen := false
-		if ctx != nil && ctx.ConnCryptoState != nil {
-			hasSameClientOpen = h.hasSameClientNonStatOpenForFile(fileHandle, smbFileID, connClientGUID(ctx))
+		checkSameClient := ctx != nil && ctx.ConnCryptoState != nil
+		var sameClientGUID [16]byte
+		if checkSameClient {
+			sameClientGUID = connClientGUID(ctx)
 		}
+		hasNonStatOpen, hasSameClientOpen := h.scanNonStatOpensForFile(
+			fileHandle, smbFileID, sameClientGUID, checkSameClient,
+		)
 		if (!onlyTimeoutTombstone && (hasActiveRecord || hasNonStatOpen)) ||
 			(onlyTimeoutTombstone && hasSameClientOpen) {
 			requestedState &^= (lock.LeaseStateWrite | lock.LeaseStateHandle)

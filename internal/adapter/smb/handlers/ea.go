@@ -173,6 +173,48 @@ func encodeFullEaInformation(eas map[string][]byte) []byte {
 // FILE_ALL_INFORMATION / FILE_EA_INFORMATION. Matches encodeFullEaInformation's
 // layout exactly (including inter-entry 4-byte padding).
 func fullEaInformationSize(eas map[string][]byte) uint32 {
-	encoded := encodeFullEaInformation(eas)
-	return uint32(len(encoded))
+	// Accumulate the chain length arithmetically, avoiding the allocation of
+	// the full encoded chain just to measure it. The filter rules MUST match
+	// encodeFullEaInformation exactly: the reserved ACL-xattr slot is never
+	// enumerated, and entries whose name/value exceed the wire field widths
+	// (EaNameLength uint8 / EaValueLength uint16) are skipped. Each entry is
+	// fixed-header(8) + name + NUL(1) + value; every entry except the LAST is
+	// padded up to a 4-byte boundary.
+	//
+	// Which entry is "last" matters because per-entry padding depends on the
+	// entry's own length, so the names are sorted with the same comparator as
+	// the encoder to identify the unpadded final entry. Sorting the name slice
+	// is far cheaper than materialising the whole byte chain.
+	names := make([]string, 0, len(eas))
+	for name := range eas {
+		if isReservedACLXattrName(name) {
+			continue
+		}
+		if len(name) > 0xFF || len(eas[name]) > 0xFFFF {
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return 0
+	}
+	sort.Slice(names, func(i, j int) bool {
+		li, lj := strings.ToUpper(names[i]), strings.ToUpper(names[j])
+		if li == lj {
+			return names[i] < names[j]
+		}
+		return li < lj
+	})
+
+	var total int
+	for idx, name := range names {
+		entry := 8 + len(name) + 1 + len(eas[name])
+		if idx < len(names)-1 {
+			if pad := entry % 4; pad != 0 {
+				entry += 4 - pad
+			}
+		}
+		total += entry
+	}
+	return uint32(total)
 }
