@@ -22,7 +22,7 @@ func TestDeleteClientRegistrationsByMonName_NoKeyInjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Victim: a legitimate registration monitoring host "victim".
 	if err := store.PutClientRegistration(ctx, &lock.PersistedClientRegistration{
@@ -79,7 +79,7 @@ func TestDeleteClientRegistrationsByMonName_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	for _, id := range []string{"c1", "c2"} {
 		if err := store.PutClientRegistration(ctx, &lock.PersistedClientRegistration{
