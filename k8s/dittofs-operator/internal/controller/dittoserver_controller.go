@@ -1295,12 +1295,18 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 		false,
 	))
 
-	// Admin password hash (optional - only if user configured it)
+	// Admin password (optional - only if user configured it). The referenced
+	// Secret key must hold the admin password in CLEARTEXT: the server bootstraps
+	// the admin user from DITTOFS_ADMIN_INITIAL_PASSWORD (hashing it itself) and
+	// has no consumed password-hash bootstrap path. Injecting a bcrypt hash here
+	// was a no-op — the server ignored it and generated a random password that
+	// neither the user nor the operator knew, so admin login (and thus operator
+	// service-account provisioning) failed and the server never reached Ready.
 	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.Admin != nil &&
 		dittoServer.Spec.Identity.Admin.PasswordSecretRef != nil {
 		ref := dittoServer.Spec.Identity.Admin.PasswordSecretRef
 		envVars = append(envVars, secretEnvVar(
-			"DITTOFS_ADMIN_PASSWORD_HASH",
+			"DITTOFS_ADMIN_INITIAL_PASSWORD",
 			ref.Name,
 			ref.Key,
 			false,

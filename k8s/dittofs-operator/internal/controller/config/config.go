@@ -18,13 +18,18 @@ const (
 	// TerminationGracePeriodSeconds from it so the grace period and the server's
 	// per-stage shutdown budget stay coupled.
 	DefaultShutdownTimeoutSeconds = 30
-	DefaultSQLitePath             = "/data/controlplane/controlplane.db"
-	DefaultAPIPort                = 8080
-	DefaultAccessDuration         = "15m"
-	DefaultRefreshDuration        = "168h" // 7 days
-	DefaultCachePath              = "/data/cache"
-	DefaultCacheSize              = "1GB"
-	DefaultAdminUsername          = "admin"
+	// DefaultSQLitePath lives UNDER the persistent "metadata" PVC (mounted at
+	// /data/metadata) so the control-plane DB — which holds the metadata-store
+	// registry and share definitions — survives pod restart/reschedule. A path
+	// outside a PVC (e.g. /data/controlplane) sits on the ephemeral container
+	// overlay and is wiped on every restart, silently orphaning all on-disk data.
+	DefaultSQLitePath      = "/data/metadata/controlplane/controlplane.db"
+	DefaultAPIPort         = 8080
+	DefaultAccessDuration  = "15m"
+	DefaultRefreshDuration = "168h" // 7 days
+	DefaultCachePath       = "/data/cache"
+	DefaultCacheSize       = "1GB"
+	DefaultAdminUsername   = "admin"
 )
 
 // GenerateDittoFSConfig generates DittoFS configuration YAML from the CRD spec.
