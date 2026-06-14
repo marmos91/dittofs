@@ -705,6 +705,40 @@ func TestShareOperations(t *testing.T) {
 		}
 	})
 
+	t.Run("allow_mfsymlink round-trips through create and update", func(t *testing.T) {
+		// Guards the explicit column:allow_mfsymlink pin — GORM's default
+		// naming would mangle the "MFsymlink" initialism, so the field-map and
+		// backfill literal would target a column AutoMigrate never created.
+		share := &models.Share{
+			Name:              "/export-mfsymlink",
+			MetadataStoreID:   metaStoreID,
+			LocalBlockStoreID: localBlockStoreID,
+			AllowMFsymlink:    true,
+		}
+		if _, err := store.CreateShare(ctx, share); err != nil {
+			t.Fatalf("failed to create share: %v", err)
+		}
+		got, err := store.GetShare(ctx, "/export-mfsymlink")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		if !got.AllowMFsymlink {
+			t.Error("expected CreateShare with AllowMFsymlink=true to persist true")
+		}
+
+		got.AllowMFsymlink = false
+		if err := store.UpdateShare(ctx, got); err != nil {
+			t.Fatalf("failed to update share: %v", err)
+		}
+		updated, err := store.GetShare(ctx, "/export-mfsymlink")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		if updated.AllowMFsymlink {
+			t.Error("expected UpdateShare to persist AllowMFsymlink=false")
+		}
+	})
+
 	t.Run("create share persists acl_flag_inherited_canonicalization=false (#514 GORM default override)", func(t *testing.T) {
 		// Refs #514: GORM substitutes the SQL `default:true` for the
 		// Go zero-value `false`, silently coercing operator intent.

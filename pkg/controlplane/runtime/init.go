@@ -199,6 +199,7 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
 			StreamsDisabled:                  share.StreamsDisabled,
 			ContinuousAvailability:           share.ContinuousAvailability,
+			AllowMFsymlink:                   share.AllowMFsymlink,
 			TrashEnabled:                     share.TrashEnabled,
 			TrashRetentionDays:               share.TrashRetentionDays,
 			TrashRestrictToAdmin:             share.TrashRestrictToAdmin,

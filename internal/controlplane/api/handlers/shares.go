@@ -94,6 +94,9 @@ type CreateShareRequest struct {
 	// ContinuousAvailability — Refs #739. Pointer so nil keeps default false
 	// (no CA / persistent handles); a non-nil pointer is an explicit set.
 	ContinuousAvailability *bool `json:"continuous_availability,omitempty"`
+	// AllowMFsymlink — pointer so nil keeps default false (XSym files stored
+	// as regular files); a non-nil pointer is an explicit set.
+	AllowMFsymlink *bool `json:"allow_mfsymlink,omitempty"`
 	// Per-share recycle-bin policy (#190). Pointers so nil keeps the
 	// server default (trash disabled, zero limits).
 	TrashEnabled         *bool    `json:"trash_enabled,omitempty"`
@@ -134,6 +137,9 @@ type UpdateShareRequest struct {
 	// ContinuousAvailability — Refs #739. nil = no change; non-nil = explicit
 	// set. Persisted on UpdateShare; takes effect on adapter restart.
 	ContinuousAvailability *bool `json:"continuous_availability,omitempty"`
+	// AllowMFsymlink — nil = no change; non-nil = explicit set. Persisted on
+	// UpdateShare; takes effect on adapter restart.
+	AllowMFsymlink *bool `json:"allow_mfsymlink,omitempty"`
 	// Per-share recycle-bin policy (#190). nil = no change; non-nil =
 	// explicit set. Unlike the adapter-restart fields above, these apply
 	// LIVE via the runtime (SetShareTrashConfig); turning trash off also
@@ -183,6 +189,9 @@ type ShareResponse struct {
 	// ContinuousAvailability mirrors models.Share — Refs #739. No omitempty:
 	// operators render the explicit CA state.
 	ContinuousAvailability bool `json:"continuous_availability"`
+	// AllowMFsymlink mirrors models.Share. No omitempty: operators render the
+	// explicit MFsymlink-conversion state.
+	AllowMFsymlink bool `json:"allow_mfsymlink"`
 	// Per-share recycle-bin policy (#190). No omitempty: these are
 	// operator-meaningful state that consumers (dfsctl share show) render
 	// explicitly.
@@ -355,6 +364,12 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		continuousAvailability = *req.ContinuousAvailability
 	}
 
+	// MFsymlink conversion defaults off (XSym files stored as regular files).
+	allowMFsymlink := false
+	if req.AllowMFsymlink != nil {
+		allowMFsymlink = *req.AllowMFsymlink
+	}
+
 	// Per-share recycle bin (#190). All knobs default to the disabled/zero
 	// state; non-nil pointers are explicit sets.
 	trashEnabled := false
@@ -403,6 +418,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		ChangeNotifyDisabled:             cnDisabled,
 		StreamsDisabled:                  streamsDisabled,
 		ContinuousAvailability:           continuousAvailability,
+		AllowMFsymlink:                   allowMFsymlink,
 		TrashEnabled:                     trashEnabled,
 		TrashRetentionDays:               trashRetentionDays,
 		TrashRestrictToAdmin:             trashRestrictToAdmin,
@@ -462,6 +478,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
 			StreamsDisabled:                  share.StreamsDisabled,
 			ContinuousAvailability:           share.ContinuousAvailability,
+			AllowMFsymlink:                   share.AllowMFsymlink,
 			TrashEnabled:                     share.TrashEnabled,
 			TrashRetentionDays:               share.TrashRetentionDays,
 			TrashRestrictToAdmin:             share.TrashRestrictToAdmin,
@@ -609,6 +626,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.ContinuousAvailability != nil {
 		// Refs #739. Persisted to DB; takes effect on adapter restart.
 		share.ContinuousAvailability = *req.ContinuousAvailability
+	}
+	if req.AllowMFsymlink != nil {
+		// Persisted to DB; takes effect on adapter restart.
+		share.AllowMFsymlink = *req.AllowMFsymlink
 	}
 	// Per-share recycle bin (#190). Persisted here, then applied LIVE via the
 	// runtime below (with auto-empty on disable).
@@ -1163,6 +1184,7 @@ func shareToResponse(s *models.Share) ShareResponse {
 		ChangeNotifyDisabled:             s.ChangeNotifyDisabled,
 		StreamsDisabled:                  s.StreamsDisabled,
 		ContinuousAvailability:           s.ContinuousAvailability,
+		AllowMFsymlink:                   s.AllowMFsymlink,
 		TrashEnabled:                     s.TrashEnabled,
 		TrashRetentionDays:               s.TrashRetentionDays,
 		TrashRestrictToAdmin:             s.TrashRestrictToAdmin,
