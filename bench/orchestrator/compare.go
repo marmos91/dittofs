@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"text/tabwriter"
 )
 
@@ -40,7 +40,7 @@ func Compare(baseline, candidate *Document, thresholdPct float64) []Comparison {
 	for n := range names {
 		sorted = append(sorted, n)
 	}
-	sort.Strings(sorted)
+	slices.Sort(sorted)
 
 	out := make([]Comparison, 0, len(sorted))
 	for _, n := range sorted {
@@ -139,6 +139,6 @@ func sortedKeys(m map[string]WorkloadResult) []string {
 	for k := range m {
 		out = append(out, k)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

@@ -87,13 +87,13 @@ func startDaemon() error {
 	cmd.Stderr = lf
 
 	if err := cmd.Start(); err != nil {
-		lf.Close()
+		_ = lf.Close()
 		return fmt.Errorf("failed to start daemon: %w", err)
 	}
 
 	// Close the log file handle in the parent process.
 	// The child process inherits its own file descriptor, so this is safe.
-	lf.Close()
+	_ = lf.Close()
 
 	// Write PID file
 	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {

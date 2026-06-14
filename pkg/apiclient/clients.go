@@ -86,11 +86,6 @@ func (c *Client) DisconnectClient(clientID string) error {
 // Kept for backward compatibility with existing CLI code.
 type ClientInfo = ClientRecord
 
-// EvictClient is deprecated: use DisconnectClient instead.
-func (c *Client) EvictClient(clientID string) error {
-	return c.DisconnectClient(clientID)
-}
-
 // --- Legacy NFS-specific session types (kept for NFS session endpoints) ---
 
 // ConnectionInfo represents a single bound connection in a session.

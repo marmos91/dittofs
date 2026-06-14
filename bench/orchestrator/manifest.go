@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 )
 
 // WorkloadParams is one manifest entry: a named workload plus the knobs the
@@ -97,6 +97,6 @@ func (m Manifest) Names() []string {
 	for _, w := range m.Workloads {
 		out = append(out, w.Name)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }

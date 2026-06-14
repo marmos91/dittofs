@@ -20,13 +20,13 @@ Use --config to specify a custom path.
 
 Examples:
   # Initialize with default location
-  dittofs init
+  dfs init
 
   # Initialize with custom path
-  dittofs init --config /etc/dittofs/config.yaml
+  dfs init --config /etc/dittofs/config.yaml
 
   # Force overwrite existing config
-  dittofs init --force`,
+  dfs init --force`,
 	RunE: runInit,
 }
 

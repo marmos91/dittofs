@@ -29,18 +29,6 @@ const (
 	DefaultGCGarbage = 0.3
 )
 
-// IsEngineWorkload reports whether name routes through RunWorkload
-// (i.e. needs a wired engine.Store). Extra workloads (walk/delete/
-// gc/raw-s3-put) take their own dispatchers.
-func IsEngineWorkload(name string) bool {
-	switch name {
-	case WorkloadSequentialWrite, WorkloadRandomWrite, WorkloadDedupHeavy, WorkloadMixedRW, WorkloadFlushChurn:
-		return true
-	default:
-		return false
-	}
-}
-
 // NewLocalStore wires a bare FSStore (no engine, no syncer) for the
 // walk + delete workloads, which exercise local CAS enumeration and
 // chunk removal without engine overhead.

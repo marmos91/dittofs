@@ -53,7 +53,7 @@ func runStop(cmd *cobra.Command, args []string) error {
 	// Read PID file
 	pidData, err := os.ReadFile(pidPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("PID file not found: %s\n\nIs the server running?", pidPath)
 		}
 		return fmt.Errorf("failed to read PID file: %w", err)

@@ -367,25 +367,16 @@ func findDfsBinary(t *testing.T) string {
 	return localBinary
 }
 
-// findProjectRoot locates the project root by looking for go.mod.
+// findProjectRoot locates the project root by looking for go.mod, failing the
+// test if it cannot be found.
 func findProjectRoot(t *testing.T) string {
 	t.Helper()
 
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Failed to get working directory: %v", err)
+	root := findProjectRootForCLI()
+	if root == "." {
+		t.Fatalf("Could not find project root (go.mod not found)")
 	}
-
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("Could not find project root (go.mod not found)")
-		}
-		dir = parent
-	}
+	return root
 }
 
 // StartServerProcessWithConfig starts a DittoFS server using a pre-created config file.
