@@ -864,6 +864,7 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 
 	// Read entries
 	var entryNames []string
+	var entryCookies []uint64
 	for {
 		hasNext, err := xdr.DecodeUint32(extraReader)
 		if err != nil || hasNext == 0 {
@@ -871,7 +872,8 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 		}
 
 		// cookie
-		_, _ = xdr.DecodeUint64(extraReader)
+		c, _ := xdr.DecodeUint64(extraReader)
+		entryCookies = append(entryCookies, c)
 
 		// name
 		name, err := xdr.DecodeString(extraReader)
@@ -894,15 +896,84 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 		t.Errorf("eof = %d, want 1 (true)", eof)
 	}
 
-	// Should contain "data" and "export" (sorted)
-	if len(entryNames) != 2 {
-		t.Fatalf("entry count = %d, want 2, got %v", len(entryNames), entryNames)
+	// Should contain ".", "..", then "data" and "export" (children sorted).
+	// "." has cookie 1, ".." cookie 2, children start at cookie 3.
+	want := []string{".", "..", "data", "export"}
+	if len(entryNames) != len(want) {
+		t.Fatalf("entry count = %d, want %d, got %v", len(entryNames), len(want), entryNames)
 	}
-	if entryNames[0] != "data" {
-		t.Errorf("entry[0] = %q, want \"data\"", entryNames[0])
+	for i, w := range want {
+		if entryNames[i] != w {
+			t.Errorf("entry[%d] = %q, want %q", i, entryNames[i], w)
+		}
 	}
-	if entryNames[1] != "export" {
-		t.Errorf("entry[1] = %q, want \"export\"", entryNames[1])
+	wantCookies := []uint64{1, 2, 3, 4}
+	for i, w := range wantCookies {
+		if entryCookies[i] != w {
+			t.Errorf("cookie[%d] = %d, want %d", i, entryCookies[i], w)
+		}
+	}
+}
+
+// TestReadDir_PseudoFSRoot_CookieContinuation verifies that resuming a READDIR
+// with a non-zero cookie skips already-returned entries (including the
+// synthesized "." and ".." entries) and continues from the next child.
+func TestReadDir_PseudoFSRoot_CookieContinuation(t *testing.T) {
+	h := newTestHandlerWithShares([]string{"/export", "/data/archive"})
+	ctx := newOpsTestContext()
+
+	// Resume after cookie 2 ("..") -- should return only the children.
+	data := encodeCompoundWithOps("", 0, []encodedOp{
+		encodePutRootFH(),
+		encodeReadDir(2, 8192, attrs.FATTR4_TYPE),
+	})
+
+	resp, err := h.ProcessCompound(ctx, data)
+	if err != nil {
+		t.Fatalf("ProcessCompound error: %v", err)
+	}
+
+	decoded, _ := decodeCompoundResp(resp)
+	if decoded.Results[1].Status != types.NFS4_OK {
+		t.Fatalf("READDIR status = %d, want NFS4_OK", decoded.Results[1].Status)
+	}
+
+	extraReader := bytes.NewReader(decoded.Results[1].ExtraData)
+	cookieVerf := make([]byte, 8)
+	_, _ = extraReader.Read(cookieVerf)
+
+	var entryNames []string
+	var entryCookies []uint64
+	for {
+		hasNext, err := xdr.DecodeUint32(extraReader)
+		if err != nil || hasNext == 0 {
+			break
+		}
+		c, _ := xdr.DecodeUint64(extraReader)
+		entryCookies = append(entryCookies, c)
+		name, err := xdr.DecodeString(extraReader)
+		if err != nil {
+			t.Fatalf("decode entry name: %v", err)
+		}
+		entryNames = append(entryNames, name)
+		_, _ = attrs.DecodeBitmap4(extraReader)
+		_, _ = xdr.DecodeOpaque(extraReader)
+	}
+
+	want := []string{"data", "export"}
+	if len(entryNames) != len(want) {
+		t.Fatalf("entry count = %d, want %d, got %v", len(entryNames), len(want), entryNames)
+	}
+	for i, w := range want {
+		if entryNames[i] != w {
+			t.Errorf("entry[%d] = %q, want %q", i, entryNames[i], w)
+		}
+	}
+	wantCookies := []uint64{3, 4}
+	for i, w := range wantCookies {
+		if entryCookies[i] != w {
+			t.Errorf("cookie[%d] = %d, want %d", i, entryCookies[i], w)
+		}
 	}
 }
 

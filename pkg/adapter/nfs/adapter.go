@@ -24,6 +24,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
@@ -514,6 +515,22 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// for thread-safe reads. Settings are consumed here at startup and on
 	// each new connection (grandfathering per locked decision).
 	s.applyNFSSettings(rt)
+
+	// Populate filesystem capabilities (FATTR4_MAXFILESIZE/MAXREAD/MAXWRITE) once
+	// at startup. These are store-level config consumed by GETATTR, so they live
+	// in process-global atomics in the attrs package and are NOT re-read per
+	// request or per connection — only here and on settings-change events.
+	s.applyFilesystemCapabilities(rt)
+
+	// Refresh cached state (blocked-ops set, lease/grace, filesystem
+	// capabilities) whenever settings change on the 10s poll, so long-lived
+	// connections pick up changes without re-reading live settings per request.
+	if sw := rt.GetSettingsWatcher(); sw != nil {
+		sw.OnNFSSettingsChange(func(_ *models.NFSAdapterSettings) {
+			s.applyNFSSettings(rt)
+			s.applyFilesystemCapabilities(rt)
+		})
+	}
 
 	// Boot/initial-recovery wiring is complete: boot shares already in
 	// lock-manager grace have been caught up above and the durable v4 reclaim

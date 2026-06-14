@@ -2586,3 +2586,40 @@ func encodeSetClientIDArgsForReject() []byte {
 	_ = xdr.WriteUint32(&buf, 0)                // callback_ident
 	return buf.Bytes()
 }
+
+// TestIsOperationBlocked_CacheHit verifies that IsOperationBlocked consults the
+// cached blocked-ops set populated by SetBlockedOps (the hot-path optimization),
+// rather than re-parsing live settings on each call.
+func TestIsOperationBlocked_CacheHit(t *testing.T) {
+	h := newTestHandler() // Registry is nil -> purely cache-driven
+
+	// Nothing blocked initially.
+	if h.IsOperationBlocked(types.OP_READ) {
+		t.Fatalf("OP_READ unexpectedly blocked before SetBlockedOps")
+	}
+
+	// Block READ and DELEGPURGE via their human-readable names.
+	h.SetBlockedOps([]string{types.OpName(types.OP_READ), types.OpName(types.OP_DELEGPURGE)})
+
+	if !h.IsOperationBlocked(types.OP_READ) {
+		t.Errorf("OP_READ should be blocked after SetBlockedOps")
+	}
+	if !h.IsOperationBlocked(types.OP_DELEGPURGE) {
+		t.Errorf("OP_DELEGPURGE should be blocked after SetBlockedOps")
+	}
+	if h.IsOperationBlocked(types.OP_WRITE) {
+		t.Errorf("OP_WRITE should not be blocked")
+	}
+
+	// Unrecognised names are silently ignored and do not block anything.
+	h.SetBlockedOps([]string{"NOT_A_REAL_OP"})
+	if h.IsOperationBlocked(types.OP_READ) {
+		t.Errorf("OP_READ should be cleared after replacing the blocked set")
+	}
+
+	// An empty set clears all blocks.
+	h.SetBlockedOps(nil)
+	if h.IsOperationBlocked(types.OP_DELEGPURGE) {
+		t.Errorf("OP_DELEGPURGE should be cleared after empty SetBlockedOps")
+	}
+}

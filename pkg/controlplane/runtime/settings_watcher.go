@@ -41,11 +41,22 @@ type SettingsWatcher struct {
 	smbVersion int
 
 	// Callbacks invoked when settings change (after initial load)
+	nfsCallbacks []func(*models.NFSAdapterSettings)
 	smbCallbacks []func(*models.SMBAdapterSettings)
 
 	pollInterval time.Duration
 	stopCh       chan struct{}
 	stopped      chan struct{} // closed when polling goroutine exits
+}
+
+// OnNFSSettingsChange registers a callback invoked whenever NFS settings change
+// (after the initial load). Used by the NFS adapter to refresh cached state such
+// as the blocked-operations set and filesystem capabilities without re-reading
+// live settings on every request.
+func (w *SettingsWatcher) OnNFSSettingsChange(cb func(*models.NFSAdapterSettings)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.nfsCallbacks = append(w.nfsCallbacks, cb)
 }
 
 // OnSMBSettingsChange registers a callback invoked whenever SMB settings change.
@@ -219,6 +230,14 @@ func (w *SettingsWatcher) pollNFSSettings(ctx context.Context) error {
 				"max_compound_ops", settings.MaxCompoundOps,
 				"blocked_operations", settings.GetBlockedOperations(),
 			)
+
+			// Notify registered callbacks so adapters can refresh cached state.
+			w.mu.RLock()
+			cbs := w.nfsCallbacks
+			w.mu.RUnlock()
+			for _, cb := range cbs {
+				cb(settings)
+			}
 		}
 	}
 

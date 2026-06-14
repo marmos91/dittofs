@@ -1,6 +1,7 @@
 package nfs
 
 import (
+	"context"
 	"time"
 
 	v4attrs "github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
@@ -58,7 +59,10 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	}
 	s.v4Handler.StateManager.SetMaxConnectionsPerSession(settings.V4MaxConnectionsPerSession)
 
-	// Operation blocklist -> v4 Handler
+	// Operation blocklist -> v4 Handler.
+	// SetBlockedOps parses the names into a uint32 set once here so the hot
+	// COMPOUND dispatch path (Handler.IsOperationBlocked) only does a map lookup
+	// instead of a per-op JSON unmarshal + linear scan.
 	blockedOps := settings.GetBlockedOperations()
 	s.v4Handler.SetBlockedOps(blockedOps)
 	if len(blockedOps) > 0 {
@@ -76,4 +80,38 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	}
 	logger.Debug("NFS adapter: applied portmapper settings from DB",
 		"enabled", settings.PortmapperEnabled, "port", s.config.Portmapper.Port)
+}
+
+// applyFilesystemCapabilities resolves the filesystem capabilities
+// (FATTR4_MAXFILESIZE/MAXREAD/MAXWRITE) from the metadata store and stores them
+// in the attrs package's process-global atomics. Capabilities are store-level
+// configuration, so a single share's root handle is representative; GETATTR then
+// reads the cached globals instead of issuing a read transaction per request.
+func (s *NFSAdapter) applyFilesystemCapabilities(rt *runtime.Runtime) {
+	metaSvc := rt.GetMetadataService()
+	if metaSvc == nil {
+		return
+	}
+	shares := rt.ListShares()
+	if len(shares) == 0 {
+		return
+	}
+
+	for _, shareName := range shares {
+		root, err := rt.GetRootHandle(shareName)
+		if err != nil {
+			continue
+		}
+		caps, err := metaSvc.GetFilesystemCapabilities(context.Background(), root)
+		if err != nil || caps == nil {
+			continue
+		}
+		v4attrs.SetFilesystemCapabilities(caps.MaxFileSize, caps.MaxReadSize, caps.MaxWriteSize)
+		logger.Debug("NFS adapter: applied filesystem capabilities",
+			"share", shareName,
+			"max_file_size", caps.MaxFileSize,
+			"max_read", caps.MaxReadSize,
+			"max_write", caps.MaxWriteSize)
+		return
+	}
 }

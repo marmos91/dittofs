@@ -220,14 +220,17 @@ func (h *Handler) handleRead(ctx *types.CompoundContext, reader io.Reader) *type
 
 // encodeRead4resok encodes a successful READ4 response.
 func encodeRead4resok(eof bool, data []byte) *types.CompoundResult {
-	var buf bytes.Buffer
-	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-	_ = xdr.WriteBool(&buf, eof)
-
 	if data == nil {
 		data = []byte{}
 	}
-	_ = xdr.WriteXDROpaque(&buf, data)
+
+	// Pre-size the buffer to the exact READ4resok wire size so encoding does not
+	// grow (and reallocate) the backing slice mid-write:
+	//   status(4) + eof bool(4) + opaque-length(4) + data + XDR pad (0-3 bytes).
+	buf := bytes.NewBuffer(make([]byte, 0, 12+len(data)+3))
+	_ = xdr.WriteUint32(buf, types.NFS4_OK)
+	_ = xdr.WriteBool(buf, eof)
+	_ = xdr.WriteXDROpaque(buf, data)
 
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,

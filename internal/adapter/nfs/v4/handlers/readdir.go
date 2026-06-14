@@ -266,6 +266,30 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 	// List children (sorted by name)
 	children := h.PseudoFS.ListChildren(node)
 
+	// Build the ordered entry list with stable cookies. RFC 7530 directories
+	// are expected to include the "." (self) and ".." (parent) entries; some
+	// clients (and POSIX getdents-style readers) rely on them. They occupy the
+	// first two cookies so children start at cookie 3. The parent of the
+	// pseudo-fs root is itself (Parent points back to root), which yields the
+	// correct ".." == "." semantics at the top of the namespace.
+	parent := node.Parent
+	if parent == nil {
+		parent = node
+	}
+	type pseudoEntry struct {
+		cookie uint64
+		name   string
+		node   *pseudofs.PseudoNode
+	}
+	entries := make([]pseudoEntry, 0, len(children)+2)
+	entries = append(entries,
+		pseudoEntry{cookie: 1, name: ".", node: node},
+		pseudoEntry{cookie: 2, name: "..", node: parent},
+	)
+	for i, child := range children {
+		entries = append(entries, pseudoEntry{cookie: uint64(i + 3), name: child.Name, node: child})
+	}
+
 	// Build response
 	var buf bytes.Buffer
 	_ = xdr.WriteUint32(&buf, types.NFS4_OK)
@@ -281,12 +305,9 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 	// entry4: cookie (uint64) + name (XDR string) + attrs (fattr4)
 	encodedSize := uint32(buf.Len())
 	allEntriesEncoded := true
-	for i, child := range children {
-		// Cookie is child index + 1 (0 means "start from beginning")
-		entryCookie := uint64(i + 1)
-
-		// Skip entries with cookie <= requested cookie
-		if entryCookie <= cookie {
+	for _, entry := range entries {
+		// Skip entries with cookie <= requested cookie (continuation support).
+		if entry.cookie <= cookie {
 			continue
 		}
 
@@ -297,13 +318,13 @@ func (h *Handler) readDirPseudoFS(ctx *types.CompoundContext, cookie uint64, max
 		_ = xdr.WriteUint32(&entryBuf, 1)
 
 		// cookie (uint64)
-		_ = xdr.WriteUint64(&entryBuf, entryCookie)
+		_ = xdr.WriteUint64(&entryBuf, entry.cookie)
 
 		// name (XDR string)
-		_ = xdr.WriteXDRString(&entryBuf, child.Name)
+		_ = xdr.WriteXDRString(&entryBuf, entry.name)
 
 		// attrs (fattr4)
-		_ = attrs.EncodePseudoFSAttrs(&entryBuf, attrRequest, child)
+		_ = attrs.EncodePseudoFSAttrs(&entryBuf, attrRequest, entry.node)
 
 		// Check maxcount limit (approximate: include overhead for remaining entries)
 		entrySize := uint32(entryBuf.Len())
