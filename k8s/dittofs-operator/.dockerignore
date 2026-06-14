@@ -2,6 +2,12 @@
 # Ignore everything by default and re-include only needed files
 **
 
+# Re-include directories first — without this, `**` excludes the directory
+# entries themselves and Docker never descends into them, so the `!**/*.go`
+# negation below can't reach nested source (e.g. cmd/main.go) and the
+# from-source build fails with "stat /workspace/cmd: directory not found".
+!**/
+
 # Re-include Go source files (but not *_test.go)
 !**/*.go
 **/*_test.go
