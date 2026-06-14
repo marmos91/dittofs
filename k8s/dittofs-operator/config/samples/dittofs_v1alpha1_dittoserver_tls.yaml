@@ -34,12 +34,12 @@ spec:
       username: admin
       passwordSecretRef:
         name: dittofs-admin-secret
-        key: password-hash
+        key: password
 
   database:
     type: sqlite
     sqlite:
-      path: "/data/controlplane/controlplane.db"
+      path: "/data/metadata/controlplane/controlplane.db"
 
   cache:
     path: "/data/cache"
@@ -54,7 +54,6 @@ spec:
     # Optional: enable mutual TLS by trusting a client CA bundle (ca.crt).
     # clientCASecretName: dittofs-client-ca
 
-  nfsPort: 12049
 
   service:
     type: "ClusterIP"

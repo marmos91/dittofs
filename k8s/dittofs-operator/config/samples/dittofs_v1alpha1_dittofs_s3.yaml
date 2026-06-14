@@ -19,7 +19,7 @@ spec:
       username: admin
       passwordSecretRef:
         name: dittofs-admin-secret
-        key: password-hash
+        key: password
 # After this DittoServer is Ready, create S3-backed stores via the REST API:
 #
 #   dfsctl store block remote add --name s3-content --type s3 \

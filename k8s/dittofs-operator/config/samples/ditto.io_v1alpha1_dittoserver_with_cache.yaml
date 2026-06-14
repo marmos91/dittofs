@@ -34,13 +34,13 @@ spec:
       username: admin
       passwordSecretRef:
         name: dittofs-admin-secret
-        key: password-hash
+        key: password
 
   # Control plane database
   database:
     type: sqlite
     sqlite:
-      path: "/data/controlplane/controlplane.db"
+      path: "/data/metadata/controlplane/controlplane.db"
 
   # Large WAL-backed cache for performance
   cache:
@@ -52,7 +52,6 @@ spec:
     port: 8080
 
   # NFS server port (non-privileged default)
-  nfsPort: 12049
 
   # Service configuration
   service:

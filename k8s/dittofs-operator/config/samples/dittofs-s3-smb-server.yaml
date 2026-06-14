@@ -36,13 +36,13 @@ spec:
       username: admin
       passwordSecretRef:
         name: dittofs-admin-secret
-        key: password-hash
+        key: password
 
   # Control plane database
   database:
     type: sqlite
     sqlite:
-      path: "/data/controlplane/controlplane.db"
+      path: "/data/metadata/controlplane/controlplane.db"
 
   # WAL-backed cache - larger for S3 workloads
   cache:
@@ -54,7 +54,6 @@ spec:
     port: 8080
 
   # NFS server port (non-privileged default)
-  nfsPort: 12049
 
   # SMB configuration
   smb:
