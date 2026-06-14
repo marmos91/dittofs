@@ -24,38 +24,24 @@ const (
 
 	// GSSTokenIDAPRep is the 2-byte token identifier for KRB_AP_REP.
 	GSSTokenIDAPRep uint16 = 0x0200
-
-	// GSSTokenIDKRBError is the 2-byte token identifier for KRB_ERROR.
-	GSSTokenIDKRBError uint16 = 0x0300
 )
 
-// Pre-encoded DER OID bytes (tag 0x06 + length + value) for the Kerberos V5
-// mechanism OIDs. Callers pick the one that matches the mechanism negotiated
-// at the outer layer (SPNEGO supportedMech, RPCSEC_GSS mechanism).
-var (
-	// KerberosV5OIDBytes is the DER-encoded OID 1.2.840.113554.1.2.2
-	// (standard Kerberos V5 mechanism, RFC 4121).
-	KerberosV5OIDBytes = []byte{
-		0x06, 0x09,
-		0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02,
-	}
-
-	// MSKerberosV5OIDBytes is the DER-encoded OID 1.2.840.48018.1.2.2
-	// (Microsoft Kerberos V5 mechanism). Echoed back when a Windows / SSPI
-	// client advertises this OID in SPNEGO negotiation.
-	MSKerberosV5OIDBytes = []byte{
-		0x06, 0x09,
-		0x2a, 0x86, 0x48, 0x82, 0xf7, 0x12, 0x01, 0x02, 0x02,
-	}
-)
+// KerberosV5OIDBytes is the pre-encoded DER OID bytes (tag 0x06 + length +
+// value) for the standard Kerberos V5 mechanism OID 1.2.840.113554.1.2.2
+// (RFC 4121). It is the full DER encoding expected by WrapGSSToken.
+var KerberosV5OIDBytes = []byte{
+	0x06, 0x09,
+	0x2a, 0x86, 0x48, 0x86, 0xf7, 0x12, 0x01, 0x02, 0x02,
+}
 
 // WrapGSSToken wraps a Kerberos message (e.g. AP-REQ, AP-REP, KRB-ERROR) in a
 // GSS-API InitialContextToken envelope per RFC 2743 Section 3.1.
 //
 // oidBytes must be the full DER encoding of the mechanism OID including the
-// 0x06 tag and length prefix (see KerberosV5OIDBytes / MSKerberosV5OIDBytes).
-// tokenID is the 2-byte Kerberos token identifier (GSSTokenIDAPReq / APRep /
-// KRBError). innerToken is the already-encoded Kerberos message.
+// 0x06 tag and length prefix (see KerberosV5OIDBytes).
+// tokenID is the 2-byte Kerberos token identifier (e.g. GSSTokenIDAPReq,
+// GSSTokenIDAPRep — any Kerberos message token ID is accepted).
+// innerToken is the already-encoded Kerberos message.
 func WrapGSSToken(innerToken []byte, oidBytes []byte, tokenID uint16) []byte {
 	innerLen := len(oidBytes) + 2 + len(innerToken) // +2 for tokenID
 	lengthBytes := encodeASN1Length(innerLen)

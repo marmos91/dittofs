@@ -55,24 +55,7 @@ func TestWrapGSSToken_LongForm(t *testing.T) {
 	}
 }
 
-// TestWrapGSSToken_MSOID ensures the Microsoft Kerberos V5 OID is emitted
-// unchanged (this is what Windows / SSPI clients advertise in SPNEGO).
-func TestWrapGSSToken_MSOID(t *testing.T) {
-	inner := []byte{0x00}
-	wrapped := WrapGSSToken(inner, MSKerberosV5OIDBytes, GSSTokenIDAPReq)
-
-	// OID block starts at offset 2 (short-form length).
-	if !bytes.Equal(wrapped[2:2+len(MSKerberosV5OIDBytes)], MSKerberosV5OIDBytes) {
-		t.Fatalf("MS OID not echoed: got % x", wrapped[2:2+len(MSKerberosV5OIDBytes)])
-	}
-	// DER index 5 within the OID (wrapped offset 2+5=7) is 0x82 for the MS
-	// OID and 0x86 for the standard OID. Guards against swapping the constants.
-	if wrapped[2+5] != 0x82 {
-		t.Fatalf("expected MS OID marker 0x82 at wrapped offset 7 (OID DER index 5), got 0x%02x", wrapped[2+5])
-	}
-}
-
-// TestWrapGSSToken_TokenIDs verifies all three valid Kerberos token IDs
+// TestWrapGSSToken_TokenIDs verifies the valid Kerberos token IDs
 // are encoded big-endian as RFC 4121 Section 4.1 requires.
 func TestWrapGSSToken_TokenIDs(t *testing.T) {
 	cases := []struct {
@@ -82,7 +65,6 @@ func TestWrapGSSToken_TokenIDs(t *testing.T) {
 	}{
 		{"AP-REQ", GSSTokenIDAPReq, []byte{0x01, 0x00}},
 		{"AP-REP", GSSTokenIDAPRep, []byte{0x02, 0x00}},
-		{"KRB-ERROR", GSSTokenIDKRBError, []byte{0x03, 0x00}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

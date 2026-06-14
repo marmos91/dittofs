@@ -174,29 +174,3 @@ func RequirePasswordChange(allowedPaths ...string) func(http.Handler) http.Handl
 		})
 	}
 }
-
-// OptionalJWTAuth is like JWTAuth but doesn't require authentication.
-// If a valid token is present, claims are stored in context.
-// If no token or invalid token, request continues without claims.
-func OptionalJWTAuth(jwtService *auth.JWTService) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tokenString, ok := extractBearerToken(r)
-			if !ok {
-				// No valid token - continue without claims
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			claims, err := jwtService.ValidateAccessToken(tokenString)
-			if err != nil {
-				// Invalid token - continue without claims
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			ctx := context.WithValue(r.Context(), claimsContextKey, claims)
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
-	}
-}

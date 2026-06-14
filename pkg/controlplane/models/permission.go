@@ -92,14 +92,6 @@ func ParseSharePermission(s string) SharePermission {
 	return PermissionNone
 }
 
-// MaxPermission returns the higher of two permissions.
-func MaxPermission(a, b SharePermission) SharePermission {
-	if a.Level() > b.Level() {
-		return a
-	}
-	return b
-}
-
 // SquashMode defines the identity mapping mode for NFS shares.
 // This matches the Synology NAS squash options.
 //
@@ -160,53 +152,4 @@ func ParseSquashMode(s string) SquashMode {
 		return m
 	}
 	return DefaultSquashMode
-}
-
-// MapsRoot returns true if this mode affects root (UID 0).
-func (s SquashMode) MapsRoot() bool {
-	switch s {
-	case SquashRootToGuest, SquashAllToAdmin, SquashAllToGuest:
-		return true
-	default:
-		return false
-	}
-}
-
-// MapsAllUsers returns true if this mode affects all users.
-func (s SquashMode) MapsAllUsers() bool {
-	switch s {
-	case SquashAllToAdmin, SquashAllToGuest:
-		return true
-	default:
-		return false
-	}
-}
-
-// AllSquashModes returns all valid squash modes for display/validation.
-func AllSquashModes() []SquashMode {
-	return []SquashMode{
-		SquashNone,
-		SquashRootToAdmin,
-		SquashRootToGuest,
-		SquashAllToAdmin,
-		SquashAllToGuest,
-	}
-}
-
-// SquashModeDescription returns a human-readable description of the squash mode.
-func (s SquashMode) Description() string {
-	switch s {
-	case SquashNone:
-		return "No mapping - UIDs pass through"
-	case SquashRootToAdmin:
-		return "Map root to admin (default)"
-	case SquashRootToGuest:
-		return "Map root to guest (root_squash)"
-	case SquashAllToAdmin:
-		return "Map all users to admin"
-	case SquashAllToGuest:
-		return "Map all users to guest (all_squash)"
-	default:
-		return "Unknown"
-	}
 }

@@ -124,8 +124,9 @@ func (m *SIDMapper) UIDFromSID(s *SID) (uint32, bool) {
 }
 
 // GIDFromSID extracts the Unix GID from a domain group SID.
-// Returns (gid, true) if the SID matches the machine domain and has an odd
-// RID offset (group pattern). Returns (0, false) otherwise.
+// Returns (gid, true) if the SID matches the machine domain and encodes a
+// group (group SIDs use an odd RID: RID = 1001 + 2*gid, so rid-1001 is even).
+// Returns (0, false) otherwise.
 func (m *SIDMapper) GIDFromSID(s *SID) (uint32, bool) {
 	if !m.IsDomainSID(s) {
 		return 0, false
@@ -138,7 +139,7 @@ func (m *SIDMapper) GIDFromSID(s *SID) (uint32, bool) {
 
 	offset := rid - 1001
 	if offset%2 != 0 {
-		return 0, false // Even offset = user SID, not group
+		return 0, false // Odd offset = user SID, not group
 	}
 
 	return offset / 2, true

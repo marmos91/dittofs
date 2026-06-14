@@ -181,13 +181,3 @@ func (s *JWTService) ValidateRefreshToken(tokenString string) (*Claims, error) {
 
 	return claims, nil
 }
-
-// GetAccessTokenDuration returns the configured access token duration.
-func (s *JWTService) GetAccessTokenDuration() time.Duration {
-	return s.config.AccessTokenDuration
-}
-
-// GetRefreshTokenDuration returns the configured refresh token duration.
-func (s *JWTService) GetRefreshTokenDuration() time.Duration {
-	return s.config.RefreshTokenDuration
-}

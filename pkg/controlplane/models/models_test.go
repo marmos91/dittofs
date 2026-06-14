@@ -346,25 +346,3 @@ func TestParseSharePermission(t *testing.T) {
 		})
 	}
 }
-
-func TestMaxPermission(t *testing.T) {
-	tests := []struct {
-		a, b     SharePermission
-		expected SharePermission
-	}{
-		{PermissionNone, PermissionRead, PermissionRead},
-		{PermissionRead, PermissionNone, PermissionRead},
-		{PermissionRead, PermissionReadWrite, PermissionReadWrite},
-		{PermissionAdmin, PermissionRead, PermissionAdmin},
-		{PermissionNone, PermissionNone, PermissionNone},
-		{PermissionAdmin, PermissionAdmin, PermissionAdmin},
-	}
-
-	for _, tt := range tests {
-		t.Run(string(tt.a)+"_"+string(tt.b), func(t *testing.T) {
-			if got := MaxPermission(tt.a, tt.b); got != tt.expected {
-				t.Errorf("MaxPermission(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.expected)
-			}
-		})
-	}
-}

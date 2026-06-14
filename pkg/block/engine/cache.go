@@ -285,12 +285,11 @@ func (c *Cache) evictLocked() {
 // listed remain — including hashes shared by other files (CACHE-02
 // dedup is preserved).
 //
-// CACHE-05 surgical invalidation: callers compute the removed-hash diff
-// (via common.diffRemovedHashes) from the old/new BlockRef lists and
-// pass it here. Drop semantics
-// preserve duplicate-hash multiplicity expectations (callers may pass
-// the same hash multiple times; the cache just drops it on first
-// match).
+// CACHE-05 surgical invalidation: callers pass the set of hashes to drop —
+// typically a computed old/new BlockRef diff, but delete paths may pass a
+// file's full hash list (or nil). Drop semantics preserve duplicate-hash
+// multiplicity expectations (callers may pass the same hash multiple times;
+// the cache just drops it on first match).
 func (c *Cache) InvalidateFile(payloadID string, removedHashes []block.ContentHash) {
 	if c == nil || c.closed.Load() {
 		return
