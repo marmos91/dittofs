@@ -101,11 +101,6 @@ var systemsByName = func() map[string]*System {
 	return m
 }()
 
-// AllSystems returns the full list of competitors to benchmark.
-func AllSystems() []System {
-	return allSystems
-}
-
 // FindSystem returns the system with the given name, or nil if not found.
 func FindSystem(name string) *System {
 	return systemsByName[name]

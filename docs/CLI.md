@@ -97,7 +97,7 @@ Configuration management
 
 Manage DittoFS configuration files.
 
-Use 'dittofs init' to create a new configuration file.
+Use 'dfs init' to create a new configuration file.
 
 Subcommands:
   edit      Open configuration in editor
@@ -245,13 +245,13 @@ Use --config to specify a custom path.
 
 Examples:
   # Initialize with default location
-  dittofs init
+  dfs init
 
   # Initialize with custom path
-  dittofs init --config /etc/dittofs/config.yaml
+  dfs init --config /etc/dittofs/config.yaml
 
   # Force overwrite existing config
-  dittofs init --force
+  dfs init --force
 
 ```
 dfs init [flags]

@@ -180,22 +180,3 @@ func WaitForSettingsReload(t *testing.T) {
 	t.Log("Waiting for settings watcher reload (12s)...")
 	time.Sleep(12 * time.Second)
 }
-
-// =============================================================================
-// Pointer Helpers
-// =============================================================================
-
-// BoolPtr returns a pointer to a bool value.
-func BoolPtr(v bool) *bool {
-	return &v
-}
-
-// IntPtr returns a pointer to an int value.
-func IntPtr(v int) *int {
-	return &v
-}
-
-// StringPtr returns a pointer to a string value.
-func StringPtr(v string) *string {
-	return &v
-}

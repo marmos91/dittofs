@@ -3,6 +3,7 @@ package commands
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -57,7 +58,7 @@ func init() {
 
 func runLogs(cmd *cobra.Command, args []string) error {
 	// Load configuration to find log file
-	cfg, err := config.Load(cfgFile)
+	cfg, err := config.Load(GetConfigFile())
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
@@ -70,7 +71,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if log file exists
-	if _, err := os.Stat(logOutput); os.IsNotExist(err) {
+	if _, err := os.Stat(logOutput); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("log file not found: %s\nThe server may not have started yet or is logging elsewhere", logOutput)
 	}
 

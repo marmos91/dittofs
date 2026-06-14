@@ -1,6 +1,6 @@
 package orchestrator
 
-import "sort"
+import "slices"
 
 // LatencyFromSamples computes p50/p95/p99 from a set of per-op nanosecond
 // latencies. It returns nil for an empty input (no per-op timings → no latency
@@ -20,7 +20,7 @@ func LatencyFromSamples(samplesNs []int64) *Latency {
 	}
 	s := make([]int64, len(samplesNs))
 	copy(s, samplesNs)
-	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	slices.Sort(s)
 	return &Latency{
 		P50Ns: percentile(s, 50),
 		P95Ns: percentile(s, 95),

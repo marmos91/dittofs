@@ -61,21 +61,6 @@ func (r *CLIRunner) RunRaw(args ...string) ([]byte, error) {
 	return r.execDfsctl(args...)
 }
 
-// RunWithInput executes dfsctl and provides stdin input.
-func (r *CLIRunner) RunWithInput(input string, args ...string) ([]byte, error) {
-	// Prepend standard args
-	fullArgs := []string{"--output", "json"}
-	if r.serverURL != "" {
-		fullArgs = append(fullArgs, "--server", r.serverURL)
-	}
-	if r.token != "" {
-		fullArgs = append(fullArgs, "--token", r.token)
-	}
-	fullArgs = append(fullArgs, args...)
-
-	return r.execDfsctlWithInput(input, fullArgs...)
-}
-
 // SetToken updates the authentication token.
 func (r *CLIRunner) SetToken(token string) {
 	r.token = token
@@ -109,27 +94,6 @@ func (r *CLIRunner) execDfsctl(args ...string) ([]byte, error) {
 	err := cmd.Run()
 	if err != nil {
 		// Include stderr in error for better debugging
-		return stdout.Bytes(), fmt.Errorf("dfsctl %s failed: %w\nstderr: %s",
-			strings.Join(args, " "), err, stderr.String())
-	}
-
-	return stdout.Bytes(), nil
-}
-
-// execDfsctlWithInput runs the dfsctl binary with stdin input.
-func (r *CLIRunner) execDfsctlWithInput(input string, args ...string) ([]byte, error) {
-	binary := r.getBinary()
-	cmd := exec.Command(binary, args...)
-	cmd.Env = r.commandEnv()
-
-	cmd.Stdin = strings.NewReader(input)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
 		return stdout.Bytes(), fmt.Errorf("dfsctl %s failed: %w\nstderr: %s",
 			strings.Join(args, " "), err, stderr.String())
 	}

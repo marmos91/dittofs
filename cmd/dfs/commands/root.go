@@ -2,8 +2,6 @@
 package commands
 
 import (
-	"os"
-
 	"github.com/marmos91/dittofs/cmd/dfs/commands/config"
 	"github.com/spf13/cobra"
 )
@@ -65,15 +63,4 @@ func init() {
 // GetConfigFile returns the config file path from the global flag.
 func GetConfigFile() string {
 	return cfgFile
-}
-
-// PrintErr prints an error message to stderr.
-func PrintErr(format string, args ...any) {
-	rootCmd.PrintErrf(format+"\n", args...)
-}
-
-// Exit prints an error and exits with code 1.
-func Exit(format string, args ...any) {
-	PrintErr(format, args...)
-	os.Exit(1)
 }

@@ -11,7 +11,7 @@ var Cmd = &cobra.Command{
 	Short: "Configuration management",
 	Long: `Manage DittoFS configuration files.
 
-Use 'dittofs init' to create a new configuration file.
+Use 'dfs init' to create a new configuration file.
 
 Subcommands:
   edit      Open configuration in editor

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,10 +34,10 @@ func runConfigEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check if file exists
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+	if _, err := os.Stat(configPath); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("configuration file not found: %s\n\n"+
 			"Create it first with:\n"+
-			"  dfs config init --config %s",
+			"  dfs init --config %s",
 			configPath, configPath)
 	}
 

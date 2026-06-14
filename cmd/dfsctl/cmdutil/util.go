@@ -120,11 +120,6 @@ func GetAuthenticatedClient() (*apiclient.Client, error) {
 	return apiclient.New(url).WithToken(tok), nil
 }
 
-// GetOutputFormat returns the output format string.
-func GetOutputFormat() string {
-	return Flags.Output
-}
-
 // GetOutputFormatParsed returns the parsed output format.
 func GetOutputFormatParsed() (output.Format, error) {
 	return output.ParseFormat(Flags.Output)
