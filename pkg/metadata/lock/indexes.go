@@ -2,11 +2,13 @@
 //
 // Two indexes are maintained:
 //
-//   - leaseKeyIndex: leaseKey [16]byte -> handleKey. Lets findLeaseByKey
-//     resolve a lease in O(1) instead of scanning every (handleKey, lock)
-//     pair in unifiedLocks. A lease key resolves to whichever handleKey bucket
-//     most recently added a record for it; reindexHandleLocked rebinds it from
-//     the live slice on every mutation, so the binding never drifts.
+//   - leaseKeyIndex: leaseKey [16]byte -> set of handleKeys (ref-counted per
+//     bucket) that hold a record for it. Lets findLeaseByKey probe only the
+//     buckets that actually hold the key instead of scanning every
+//     (handleKey, lock) pair in unifiedLocks. The same numeric lease key may be
+//     bound on multiple files at once (distinct handleKey buckets — see
+//     hasLeaseKeyOnOtherFile), so the index tracks every holder; removing a
+//     record from one bucket never drops the bindings in the others.
 //
 //   - clientHandleIndex: clientID -> set of handleKeys that hold at least one
 //     lock owned by that client (reference-counted per bucket). Lets
@@ -28,7 +30,7 @@ package lock
 // Must be called with lm.mu held for writing.
 func (lm *Manager) ensureIndexes() {
 	if lm.leaseKeyIndex == nil {
-		lm.leaseKeyIndex = make(map[[16]byte]string)
+		lm.leaseKeyIndex = make(map[[16]byte]map[string]int)
 	}
 	if lm.clientHandleIndex == nil {
 		lm.clientHandleIndex = make(map[string]map[string]int)
@@ -44,12 +46,16 @@ func (lm *Manager) indexAddLockLocked(handleKey string, l *UnifiedLock) {
 	lm.ensureIndexes()
 
 	if l.Lease != nil {
-		// Last add for a given key wins the bucket binding. findLeaseByKey
-		// previously returned the first (handleKey, lock) match while scanning
-		// non-deterministic map iteration order; binding to whichever bucket
-		// most recently added the key is equally valid and is reconciled from
-		// the live slice on every reindex.
-		lm.leaseKeyIndex[l.Lease.LeaseKey] = handleKey
+		// Track this bucket as a holder of the key. A lease record may share a
+		// numeric key with records on other files, so the index counts holders
+		// per bucket rather than binding to a single one — removing one bucket's
+		// record can never orphan another bucket that still holds the key.
+		buckets := lm.leaseKeyIndex[l.Lease.LeaseKey]
+		if buckets == nil {
+			buckets = make(map[string]int)
+			lm.leaseKeyIndex[l.Lease.LeaseKey] = buckets
+		}
+		buckets[handleKey]++
 	}
 
 	if cid := l.Owner.ClientID; cid != "" {
@@ -71,11 +77,18 @@ func (lm *Manager) indexRemoveLockLocked(handleKey string, l *UnifiedLock) {
 	lm.ensureIndexes()
 
 	if l.Lease != nil {
-		// Only drop the leaseKey binding if it still points at this bucket.
-		// A re-add in another bucket (same key across files) may have rebound
-		// it; the bucket that now owns the binding keeps it.
-		if lm.leaseKeyIndex[l.Lease.LeaseKey] == handleKey {
-			delete(lm.leaseKeyIndex, l.Lease.LeaseKey)
+		// Decrement this bucket's holder count; only drop the bucket (and the
+		// whole key entry, once empty) when it holds no more records for the
+		// key. Other buckets that share the same numeric key are untouched.
+		if buckets := lm.leaseKeyIndex[l.Lease.LeaseKey]; buckets != nil {
+			if n := buckets[handleKey]; n > 1 {
+				buckets[handleKey] = n - 1
+			} else {
+				delete(buckets, handleKey)
+				if len(buckets) == 0 {
+					delete(lm.leaseKeyIndex, l.Lease.LeaseKey)
+				}
+			}
 		}
 	}
 

@@ -19,11 +19,11 @@ func assertIndexesConsistent(t *testing.T, lm *Manager) {
 
 	// Expected clientHandleIndex: per (clientID, handleKey) the count of locks.
 	wantClient := make(map[string]map[string]int)
-	// Expected leaseKeyIndex: each lease key must resolve to a bucket that
-	// actually still contains a record for it. (The exact bucket among
-	// cross-file duplicates is a hint, so we validate "resolves to a real
-	// holder" rather than a specific bucket.)
-	leaseKeyBuckets := make(map[[16]byte]map[string]bool)
+	// Expected leaseKeyIndex: per lease key, the count of records each bucket
+	// holds for it. The index is ref-counted per bucket and must match this
+	// recomputation exactly — every holder bucket tracked, none dropped while
+	// a record remains.
+	wantLease := make(map[[16]byte]map[string]int)
 
 	for handleKey, locks := range lm.unifiedLocks {
 		for _, l := range locks {
@@ -34,10 +34,10 @@ func assertIndexesConsistent(t *testing.T, lm *Manager) {
 				wantClient[cid][handleKey]++
 			}
 			if l.Lease != nil {
-				if leaseKeyBuckets[l.Lease.LeaseKey] == nil {
-					leaseKeyBuckets[l.Lease.LeaseKey] = make(map[string]bool)
+				if wantLease[l.Lease.LeaseKey] == nil {
+					wantLease[l.Lease.LeaseKey] = make(map[string]int)
 				}
-				leaseKeyBuckets[l.Lease.LeaseKey][handleKey] = true
+				wantLease[l.Lease.LeaseKey][handleKey]++
 			}
 		}
 	}
@@ -54,17 +54,19 @@ func assertIndexesConsistent(t *testing.T, lm *Manager) {
 	}
 	assert.Equal(t, wantClient, gotClient, "clientHandleIndex drifted from unifiedLocks")
 
-	// Every lease key in the index must point at a bucket that still holds it,
-	// and every lease key present in unifiedLocks must be in the index.
-	for key, hk := range lm.leaseKeyIndex {
-		buckets := leaseKeyBuckets[key]
-		require.NotNil(t, buckets, "leaseKeyIndex has stale key %x not present in unifiedLocks", key)
-		assert.True(t, buckets[hk], "leaseKeyIndex[%x]=%q does not hold the key", key, hk)
+	// leaseKeyIndex must equal the recomputed per-bucket holder counts exactly:
+	// every bucket holding the key tracked with the right count, and no stale
+	// keys/buckets left behind.
+	gotLease := make(map[[16]byte]map[string]int)
+	for key, set := range lm.leaseKeyIndex {
+		for hk, n := range set {
+			if gotLease[key] == nil {
+				gotLease[key] = make(map[string]int)
+			}
+			gotLease[key][hk] = n
+		}
 	}
-	for key := range leaseKeyBuckets {
-		_, ok := lm.leaseKeyIndex[key]
-		assert.True(t, ok, "lease key %x present in unifiedLocks but missing from leaseKeyIndex", key)
-	}
+	assert.Equal(t, wantLease, gotLease, "leaseKeyIndex drifted from unifiedLocks")
 }
 
 func TestIndex_StaysConsistentAcrossLeaseLifecycle(t *testing.T) {
@@ -119,6 +121,40 @@ func TestIndex_ReleaseLeaseForHandleKeepsOtherFileBinding(t *testing.T) {
 
 	_, _, found := mgr.GetLeaseState(ctx, key)
 	assert.True(t, found, "fileB lease record must survive fileA release")
+}
+
+// TestIndex_ReleaseBoundBucketKeepsOtherFileResolvable pins the case the
+// single-bucket index got wrong: the same numeric lease key on two files, then
+// releasing the bucket that was added LAST (the one a single-bucket index would
+// have bound the key to). The remaining file's record must stay resolvable —
+// dropping the whole key entry here would make findLeaseByKey report "not
+// found" for a record that still exists.
+func TestIndex_ReleaseBoundBucketKeepsOtherFileResolvable(t *testing.T) {
+	t.Parallel()
+	mgr := NewManager()
+	ctx := context.Background()
+	key := [16]byte{4, 2}
+
+	_, _, err := mgr.RequestLease(ctx, FileHandle("fileA"), key, [16]byte{}, "ownerA", "clientA", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+	// fileB added last — under the old single-bucket index this is the bucket
+	// the key resolved to.
+	_, _, err = mgr.RequestLease(ctx, FileHandle("fileB"), key, [16]byte{}, "ownerB", "clientB", "/share", LeaseStateRead, false)
+	require.NoError(t, err)
+	assertIndexesConsistent(t, mgr)
+
+	// Release the last-added bucket. fileA's record must survive and resolve.
+	require.NoError(t, mgr.ReleaseLeaseForHandle(ctx, "fileB", key))
+	assertIndexesConsistent(t, mgr)
+
+	mgr.mu.RLock()
+	hk, lk, _ := mgr.findLeaseByKey(key)
+	mgr.mu.RUnlock()
+	assert.Equal(t, "fileA", hk, "fileA must still resolve after releasing fileB")
+	require.NotNil(t, lk, "fileA lease record must remain resolvable")
+
+	_, _, found := mgr.GetLeaseState(ctx, key)
+	assert.True(t, found, "fileA lease record must survive fileB release")
 }
 
 func TestIndex_RemoveClientLocksTouchesOnlyClientBuckets(t *testing.T) {

@@ -698,13 +698,15 @@ type Manager struct {
 	breakCallbacks []BreakCallbacks          // registered break callbacks
 
 	// Reverse indexes over unifiedLocks, maintained by reindexHandleLocked
-	// (see indexes.go). leaseKeyIndex maps a lease key to the handleKey bucket
-	// holding its record, giving findLeaseByKey an O(1) lookup. clientHandleIndex
-	// maps a clientID to the set of handleKeys (ref-counted per bucket) that
-	// hold at least one of its locks, bounding RemoveClientLocks to affected
-	// files. Both are derived state and require lm.mu (write to mutate, read to
-	// look up).
-	leaseKeyIndex     map[[16]byte]string
+	// (see indexes.go). leaseKeyIndex maps a lease key to the set of handleKey
+	// buckets (ref-counted per bucket) that hold a record for it — the same
+	// numeric lease key may be bound on multiple files (distinct buckets), so
+	// the index must track every holder, giving findLeaseByKey a candidate set
+	// to probe instead of a full scan. clientHandleIndex maps a clientID to the
+	// set of handleKeys (ref-counted per bucket) that hold at least one of its
+	// locks, bounding RemoveClientLocks to affected files. Both are derived
+	// state and require lm.mu (write to mutate, read to look up).
+	leaseKeyIndex     map[[16]byte]map[string]int
 	clientHandleIndex map[string]map[string]int
 
 	gracePeriod   *GracePeriodManager // grace period state (may be nil)
@@ -750,7 +752,7 @@ func newBaseManager(recentlyBrokenTTL time.Duration) *Manager {
 	return &Manager{
 		locks:                   make(map[string][]FileLock),
 		unifiedLocks:            make(map[string][]*UnifiedLock),
-		leaseKeyIndex:           make(map[[16]byte]string),
+		leaseKeyIndex:           make(map[[16]byte]map[string]int),
 		clientHandleIndex:       make(map[string]map[string]int),
 		recentlyBroken:          newRecentlyBrokenCache(recentlyBrokenTTL),
 		breakWaitChans:          make(map[string]chan struct{}),
