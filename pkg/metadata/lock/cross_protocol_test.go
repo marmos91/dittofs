@@ -103,6 +103,91 @@ func TestConflictsWith_AccessMode_BothNoneNoConflict(t *testing.T) {
 	}
 }
 
+// TestConflictsWith_AccessMode_DenyHolderBlocksNoneOpener is the regression
+// test for the AND-vs-OR bug: a holder with a deny mode must block a new
+// opener even when the new opener carries AccessModeNone.
+//
+// Before the fix, accessModesConflict required BOTH sides to be non-None
+// (AND), so a DenyRead/DenyWrite/DenyAll holder silently allowed a
+// None-mode opener through.
+func TestConflictsWith_AccessMode_DenyHolderBlocksNoneOpener(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		holderMode AccessMode
+	}{
+		{"DenyRead holder vs None opener", AccessModeDenyRead},
+		{"DenyWrite holder vs None opener", AccessModeDenyWrite},
+		{"DenyAll holder vs None opener", AccessModeDenyAll},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			holder := &UnifiedLock{
+				Owner:      LockOwner{OwnerID: "smb:client1"},
+				AccessMode: tc.holderMode,
+				Offset:     0, Length: 0, Type: LockTypeShared,
+			}
+			opener := &UnifiedLock{
+				Owner:      LockOwner{OwnerID: "smb:client2"},
+				AccessMode: AccessModeNone, // new opener imposes no deny
+				Offset:     0, Length: 0, Type: LockTypeShared,
+			}
+
+			if !holder.ConflictsWith(opener) {
+				t.Errorf("holder with %v must conflict with an AccessModeNone opener; deny-mode holder blocks ALL subsequent opens", tc.holderMode)
+			}
+			// Conflict is symmetric at this layer.
+			if !opener.ConflictsWith(holder) {
+				t.Errorf("opener with AccessModeNone vs %v holder must also conflict when checked from the opener side", tc.holderMode)
+			}
+		})
+	}
+}
+
+// TestConflictsWith_AccessMode_NoneHolderBlockedByDenyOpener is the mirror:
+// an existing opener with AccessModeNone must be blocked by a new opener
+// that arrives with a deny mode — the new opener is asserting exclusivity
+// that the existing None-open already violates.
+func TestConflictsWith_AccessMode_NoneHolderBlockedByDenyOpener(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		newMode AccessMode
+	}{
+		{"existing None vs new DenyRead", AccessModeDenyRead},
+		{"existing None vs new DenyWrite", AccessModeDenyWrite},
+		{"existing None vs new DenyAll", AccessModeDenyAll},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			existing := &UnifiedLock{
+				Owner:      LockOwner{OwnerID: "smb:client1"},
+				AccessMode: AccessModeNone,
+				Offset:     0, Length: 0, Type: LockTypeShared,
+			}
+			newcomer := &UnifiedLock{
+				Owner:      LockOwner{OwnerID: "smb:client2"},
+				AccessMode: tc.newMode,
+				Offset:     0, Length: 0, Type: LockTypeShared,
+			}
+
+			if !existing.ConflictsWith(newcomer) {
+				t.Errorf("existing None open must conflict with a new %v opener", tc.newMode)
+			}
+		})
+	}
+}
+
 // --- Case 2: OpLock vs OpLock ---
 
 func TestConflictsWith_OpLock_ReadReadNoConflict(t *testing.T) {

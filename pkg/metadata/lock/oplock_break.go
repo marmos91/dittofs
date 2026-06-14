@@ -270,8 +270,14 @@ func (s *OpLockBreakScanner) scanExpiredLeaseBreaks(now time.Time) {
 			continue
 		}
 
-		// Check if break has expired (AcquiredAt is updated when break initiated)
-		breakDeadline := pl.AcquiredAt.Add(timeout)
+		// Check if break has expired (BreakStarted is set when break initiated)
+		breakRef := pl.BreakStarted
+		if breakRef.IsZero() {
+			// Legacy record persisted before BreakStarted was stored.
+			// Use now as the break reference: conservative — never prematurely revoke.
+			breakRef = now
+		}
+		breakDeadline := breakRef.Add(timeout)
 		if !now.After(breakDeadline) {
 			continue
 		}
@@ -281,7 +287,7 @@ func (s *OpLockBreakScanner) scanExpiredLeaseBreaks(now time.Time) {
 
 		logger.Debug("OpLockBreakScanner: break timeout expired",
 			"leaseKey", fmt.Sprintf("%x", leaseKey),
-			"breakStarted", pl.AcquiredAt,
+			"breakStarted", breakRef,
 			"deadline", breakDeadline,
 			"timeout", timeout)
 
@@ -295,6 +301,13 @@ func (s *OpLockBreakScanner) scanExpiredLeaseBreaks(now time.Time) {
 
 		logger.Debug("OpLockBreakScanner: lease force-revoked",
 			"leaseKey", fmt.Sprintf("%x", leaseKey))
+
+		// Evict the in-memory record and unblock any WaitForBreakCompletion
+		// waiters BEFORE notifying the callback. Ordering:
+		// store delete → in-memory evict + signal → callback notification.
+		if s.lockManager != nil {
+			s.lockManager.revokeTimedOutLease(pl.FileID, leaseKey)
+		}
 
 		if s.callback != nil {
 			s.callback.OnLeaseBreakTimeout(leaseKey)

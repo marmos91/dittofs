@@ -177,7 +177,9 @@ func TestFromPersistedLock_Lease(t *testing.T) {
 	assert.Equal(t, uint32(0x01), lock.Lease.BreakToState)
 	assert.True(t, lock.Lease.Breaking)
 
-	// BreakStarted is runtime-only, should be zero
+	// BreakStarted was not set on this persisted record, so it round-trips
+	// as zero. (When set on a breaking lease it IS persisted — see
+	// TestPersistedLock_RoundTrip_Lease.)
 	assert.True(t, lock.Lease.BreakStarted.IsZero())
 }
 
@@ -238,6 +240,7 @@ func TestPersistedLock_RoundTrip_Lease(t *testing.T) {
 			LeaseState:   LeaseStateRead | LeaseStateWrite,
 			BreakToState: LeaseStateRead,
 			Breaking:     true,
+			BreakStarted: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC),
 			Epoch:        77,
 		},
 	}
@@ -260,6 +263,33 @@ func TestPersistedLock_RoundTrip_Lease(t *testing.T) {
 	assert.Equal(t, original.Lease.BreakToState, restored.Lease.BreakToState)
 	assert.Equal(t, original.Lease.Breaking, restored.Lease.Breaking)
 	assert.Equal(t, original.Lease.Epoch, restored.Lease.Epoch)
+	// BreakStarted on a breaking lease must survive persistence — the scanner
+	// computes the break deadline from it, so dropping it would make a
+	// post-restart scanner mis-time (or never time out) an in-flight break.
+	assert.Equal(t, original.Lease.BreakStarted, restored.Lease.BreakStarted)
+}
+
+// TestToPersistedLock_DropsBreakStartedWhenNotBreaking pins the persistence
+// gate: BreakStarted is only meaningful while a lease is Breaking. A non-breaking
+// lease must not carry a stale break clock into storage, so the scanner can
+// never treat a never-broken lease as if a break were in flight.
+func TestToPersistedLock_DropsBreakStartedWhenNotBreaking(t *testing.T) {
+	t.Parallel()
+
+	original := &UnifiedLock{
+		ID:    "not-breaking",
+		Owner: LockOwner{OwnerID: "smb:lease:x", ClientID: "c", ShareName: "/s"},
+		Lease: &OpLock{
+			LeaseKey:     [16]byte{1},
+			LeaseState:   LeaseStateRead,
+			Breaking:     false,
+			BreakStarted: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), // stray
+		},
+	}
+
+	persisted := ToPersistedLock(original, 1)
+	assert.True(t, persisted.BreakStarted.IsZero(),
+		"BreakStarted must not be persisted for a non-breaking lease")
 }
 
 // ============================================================================

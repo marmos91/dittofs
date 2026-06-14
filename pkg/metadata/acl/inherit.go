@@ -337,7 +337,18 @@ func PropagateACL(parentACL *ACL, existingACL *ACL, isDirectory bool, creator Cr
 	combined = append(combined, explicit...)
 	combined = append(combined, inheritedACEs...)
 
-	result := &ACL{ACEs: combined}
+	// Preserve the child's own per-SD flags: SE_DACL_PROTECTED (blocks ancestor
+	// propagation), the ACL source, and the null-DACL marker are properties of
+	// the child SD and are never inherited — so they must survive a propagation
+	// pass rather than being silently zeroed. Erasing Protected here would let a
+	// subsequent pass overwrite the child's explicitly protected ACEs with
+	// parent-derived ones.
+	result := &ACL{
+		ACEs:      combined,
+		Source:    existingACL.Source,
+		Protected: existingACL.Protected,
+		NullDACL:  existingACL.NullDACL,
+	}
 	// MS-DTYP §2.5.3.4.2: SE_DACL_AUTO_INHERITED propagates from parent to
 	// child on the child's recomputed SD. Protected is per-SD and never
 	// inherited. See ComputeInheritedACL for spec/Samba references.

@@ -106,6 +106,11 @@ type PersistedLock struct {
 	// False for byte-range locks.
 	Breaking bool `json:"breaking,omitempty"`
 
+	// BreakStarted is when the lease break was initiated (Breaking=true).
+	// Used by the scanner to compute the break deadline.
+	// Zero when not breaking. Omitted from storage for non-breaking leases.
+	BreakStarted time.Time `json:"break_started,omitempty"`
+
 	// ParentLeaseKey is the V2 parent lease key for cache tree correlation.
 	// Empty for byte-range locks and V1 leases.
 	ParentLeaseKey []byte `json:"parent_lease_key,omitempty"`
@@ -360,6 +365,9 @@ func ToPersistedLock(lock *UnifiedLock, epoch uint64) *PersistedLock {
 		pl.BreakToState = lock.Lease.BreakToState
 		pl.BreakingToRequired = lock.Lease.BreakingToRequired
 		pl.Breaking = lock.Lease.Breaking
+		if lock.Lease.Breaking {
+			pl.BreakStarted = lock.Lease.BreakStarted
+		}
 		pl.IsDirectory = lock.Lease.IsDirectory
 		pl.IsTraditionalOplock = lock.Lease.IsTraditionalOplock
 
@@ -431,7 +439,7 @@ func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
 			ParentLeaseKey:      parentLeaseKey,
 			IsDirectory:         pl.IsDirectory,
 			IsTraditionalOplock: pl.IsTraditionalOplock,
-			// BreakStarted is runtime-only, not persisted
+			BreakStarted:        pl.BreakStarted,
 		}
 		// Backwards compat: locks persisted before BreakingToRequired existed
 		// have BreakingToRequired==0. The zero value is ambiguous (could mean

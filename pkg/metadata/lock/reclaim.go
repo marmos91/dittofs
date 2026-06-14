@@ -12,9 +12,7 @@ package lock
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
@@ -22,12 +20,29 @@ import (
 //
 // Steps:
 //  1. Check grace period is active (reclaim only allowed during grace)
-//  2. Query persistent store for the lease by leaseKey
-//  3. For directories, verify handle still exists via HandleChecker
-//  4. Validate requestedState matches or is subset of persisted state
-//  5. Restore lease in memory and return the reclaimed UnifiedLock
+//  2. Query persistent store for the lease, pre-filtered by clientID when non-empty
+//  3. Assert the persisted record's ClientID matches clientID (lease-stealing guard)
+//  4. Optionally assert incomingPrincipal matches V4ClientRecoveryRecord.Principal
+//  5. For directories, verify handle still exists via HandleChecker
+//  6. Validate requestedState is a subset of the persisted state
+//  7. Restore lease in memory and return the reclaimed UnifiedLock
+//
+// clientID is the reclaiming client's stable identity. When non-empty it is
+// both pushed into the store query AND re-asserted against the matched record;
+// a mismatch is rejected with a lock-not-found error so one client cannot steal
+// another's lease. When empty, the owner check is skipped (callers with no
+// stable client identity).
+//
+// incomingPrincipal is the RPCSEC_GSS / AUTH_SYS principal of the reclaiming
+// NFSv4 client. The principal check runs only when lm.clientRecoveryStore is
+// wired and incomingPrincipal is non-empty; SMB callers pass "".
+//
+// When no lockStore is configured:
+//   - If the lease is already in memory, mark it reclaimed and return it.
+//   - Otherwise return an explicit error; there is no file handle to anchor a
+//     stub, and returning a dangling, uncleanable object would orphan it.
 func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
-	requestedState uint32, isDirectory bool) (*UnifiedLock, error) {
+	requestedState uint32, isDirectory bool, clientID string, incomingPrincipal string) (*UnifiedLock, error) {
 
 	// Step 1: Check grace period
 	if !lm.IsInGracePeriod() {
@@ -37,9 +52,11 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 	// Step 2: Try to find persisted lease via lockStore
 	if lm.lockStore != nil {
 		isLease := true
-		persistedLocks, err := lm.lockStore.ListLocks(ctx, LockQuery{
-			IsLease: &isLease,
-		})
+		query := LockQuery{IsLease: &isLease}
+		if clientID != "" {
+			query.ClientID = clientID
+		}
+		persistedLocks, err := lm.lockStore.ListLocks(ctx, query)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query persisted leases: %w", err)
 		}
@@ -55,20 +72,55 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 				continue
 			}
 
+			// Step 3: Caller-identity check — reject lease-stealing. The store
+			// query is already filtered by clientID when non-empty, but assert
+			// here too so an over-permissive store backend cannot let a wrong
+			// client through (defence in depth at the trust boundary).
+			if clientID != "" && pl.ClientID != clientID {
+				logger.Debug("ReclaimLease: clientID mismatch, rejecting steal attempt",
+					"leaseKey", fmt.Sprintf("%x", leaseKey),
+					"wantClientID", clientID,
+					"gotClientID", pl.ClientID)
+				return nil, NewLockNotFoundError("")
+			}
+
+			// Step 4: NFSv4 principal check (only when the recovery store is
+			// wired and the caller supplied a principal to verify). A reclaiming
+			// client whose principal differs from the one recorded at confirm
+			// time must NOT reclaim another client's prior state.
+			if lm.clientRecoveryStore != nil && incomingPrincipal != "" {
+				recs, rerr := lm.clientRecoveryStore.ListClientRecovery(ctx)
+				if rerr != nil {
+					return nil, fmt.Errorf("failed to fetch client recovery records: %w", rerr)
+				}
+				for _, rec := range recs {
+					if rec.ClientIDString == pl.ClientID {
+						if rec.Principal != "" && rec.Principal != incomingPrincipal {
+							logger.Debug("ReclaimLease: principal mismatch, rejecting reclaim",
+								"leaseKey", fmt.Sprintf("%x", leaseKey),
+								"wantPrincipal", incomingPrincipal,
+								"recordPrincipal", rec.Principal)
+							return nil, NewLockNotFoundError("")
+						}
+						break
+					}
+				}
+			}
+
 			// Found matching persisted lease
 			// Validate isDirectory matches persisted record
 			if isDirectory != pl.IsDirectory {
 				return nil, fmt.Errorf("isDirectory mismatch: request=%v, persisted=%v", isDirectory, pl.IsDirectory)
 			}
 
-			// Step 3: For directories, check handle still exists
+			// Step 5: For directories, check handle still exists
 			if pl.IsDirectory && lm.handleChecker != nil {
 				if !lm.handleChecker.HandleExists(FileHandle(pl.FileID)) {
 					return nil, fmt.Errorf("directory handle no longer exists, cannot reclaim lease")
 				}
 			}
 
-			// Step 4: Validate requested state is subset of persisted
+			// Step 6: Validate requested state is subset of persisted
 			if requestedState&^pl.LeaseState != 0 {
 				return nil, fmt.Errorf("requested state %s exceeds persisted state %s",
 					LeaseStateToString(requestedState),
@@ -82,7 +134,7 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 			// manager's own mutex, not lm.mu, so it is safe outside lm.mu.
 			lm.MarkReclaimed(pl.ClientID)
 
-			// Step 5: Restore in memory (idempotent: skip if already reclaimed)
+			// Step 7: Restore in memory (idempotent: skip if already reclaimed)
 			lock := FromPersistedLock(pl)
 			lock.Lease.LeaseState = requestedState
 			lock.Reclaim = true
@@ -123,23 +175,9 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 		return existingLock.Clone(), nil
 	}
 
-	// Create a minimal reclaimed lease in memory
-	reclaimedLock := &UnifiedLock{
-		ID: uuid.New().String(),
-		Owner: LockOwner{
-			OwnerID: fmt.Sprintf("reclaim:%x", leaseKey),
-		},
-		AcquiredAt: time.Now(),
-		Reclaim:    true,
-		Lease: &OpLock{
-			LeaseKey:    leaseKey,
-			LeaseState:  requestedState,
-			IsDirectory: isDirectory,
-			Epoch:       1,
-		},
-	}
-
-	// We don't have a file handle for this lease without persistence
-	// This path is primarily for testing
-	return reclaimedLock, nil
+	// No lock store AND no in-memory lease: there is no file handle to anchor a
+	// stub, so fabricating one and returning it would orphan an object that
+	// RemoveFileUnifiedLocks / RemoveClientLocks can never clean up. Return an
+	// explicit error instead.
+	return nil, fmt.Errorf("cannot reclaim: no file handle and no lock store")
 }

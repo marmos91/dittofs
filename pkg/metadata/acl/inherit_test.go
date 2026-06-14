@@ -340,6 +340,100 @@ func TestPropagateACL_ReplacesInheritedKeepsExplicit(t *testing.T) {
 	}
 }
 
+// TestPropagateACL_PreservesChildSDFlags is the regression net for the audit
+// finding that PropagateACL silently cleared the child's per-SD flags
+// (Protected/Source/NullDACL) on every parent-ACL-change propagation pass.
+// Protected=true on a child blocks ancestor propagation; erasing it lets the
+// next pass overwrite the child's explicitly protected ACEs with parent-derived
+// ones. Source and NullDACL are likewise per-SD and must survive. AutoInherited
+// is intentionally governed by the parent and is asserted separately.
+func TestPropagateACL_PreservesChildSDFlags(t *testing.T) {
+	newParentACL := &ACL{
+		ACEs: []ACE{
+			{
+				Type:       ACE4_ACCESS_ALLOWED_ACE_TYPE,
+				Flag:       ACE4_FILE_INHERIT_ACE,
+				AccessMask: ACE4_READ_DATA | ACE4_EXECUTE,
+				Who:        SpecialOwner,
+			},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		parentACL         *ACL
+		existing          *ACL
+		wantProtected     bool
+		wantNullDACL      bool
+		wantSource        ACLSource
+		wantAutoInherited bool
+	}{
+		{
+			name:      "Protected preserved on child",
+			parentACL: newParentACL,
+			existing: &ACL{
+				Protected: true,
+				Source:    ACLSourceSMBExplicit,
+				ACEs: []ACE{
+					{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: "alice@example.com"},
+				},
+			},
+			wantProtected: true,
+			wantSource:    ACLSourceSMBExplicit,
+		},
+		{
+			name:      "NullDACL and Source preserved",
+			parentACL: newParentACL,
+			existing: &ACL{
+				NullDACL: true,
+				Source:   ACLSourceNFSExplicit,
+				ACEs: []ACE{
+					{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: "bob@example.com"},
+				},
+			},
+			wantNullDACL: true,
+			wantSource:   ACLSourceNFSExplicit,
+		},
+		{
+			name: "AutoInherited propagates from parent over child value",
+			parentACL: &ACL{
+				AutoInherited: true,
+				ACEs:          newParentACL.ACEs,
+			},
+			existing: &ACL{
+				Protected:     true,
+				AutoInherited: false,
+				ACEs: []ACE{
+					{Type: ACE4_ACCESS_DENIED_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: "carol@example.com"},
+				},
+			},
+			wantProtected:     true,
+			wantAutoInherited: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := PropagateACL(tt.parentACL, tt.existing, false, Creator{})
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if result.Protected != tt.wantProtected {
+				t.Errorf("Protected: got %v, want %v (child SD flag must survive propagation)", result.Protected, tt.wantProtected)
+			}
+			if result.NullDACL != tt.wantNullDACL {
+				t.Errorf("NullDACL: got %v, want %v", result.NullDACL, tt.wantNullDACL)
+			}
+			if result.Source != tt.wantSource {
+				t.Errorf("Source: got %q, want %q", result.Source, tt.wantSource)
+			}
+			if result.AutoInherited != tt.wantAutoInherited {
+				t.Errorf("AutoInherited: got %v, want %v", result.AutoInherited, tt.wantAutoInherited)
+			}
+		})
+	}
+}
+
 func TestPropagateACL_NilExisting(t *testing.T) {
 	parentACL := &ACL{ACEs: []ACE{
 		{

@@ -1307,7 +1307,7 @@ func TestReclaimLease_NotInGracePeriod(t *testing.T) {
 	leaseKey := [16]byte{1, 2, 3}
 
 	// Not in grace period - should fail
-	_, err := mgr.ReclaimLease(ctx, leaseKey, LeaseStateRead, false)
+	_, err := mgr.ReclaimLease(ctx, leaseKey, LeaseStateRead, false, "")
 	assert.Error(t, err, "should fail when not in grace period")
 }
 

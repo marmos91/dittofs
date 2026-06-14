@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -46,16 +48,16 @@ const lockColumns = `id, share_name, file_id, owner_id, client_id, lock_type,
 	lease_key, lease_state, lease_epoch, break_to_state, breaking_to_required,
 	breaking, parent_lease_key, is_directory, is_traditional_oplock,
 	delegation_id, deleg_type, deleg_breaking, deleg_recalled, deleg_revoked,
-	deleg_notification_mask`
+	deleg_notification_mask, break_started`
 
-// putLockSQL is the upsert statement, parameterized $1..$28 in lockColumns
+// putLockSQL is the upsert statement, parameterized $1..$29 in lockColumns
 // order. The ON CONFLICT clause re-syncs every column so an overwrite never
 // leaves stale lease/delegation state behind.
 const putLockSQL = `
 	INSERT INTO locks (` + lockColumns + `)
 	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
 	        $14, $15, $16, $17, $18, $19, $20, $21, $22,
-	        $23, $24, $25, $26, $27, $28)
+	        $23, $24, $25, $26, $27, $28, $29)
 	ON CONFLICT (id) DO UPDATE SET
 		share_name = EXCLUDED.share_name,
 		file_id = EXCLUDED.file_id,
@@ -83,7 +85,8 @@ const putLockSQL = `
 		deleg_breaking = EXCLUDED.deleg_breaking,
 		deleg_recalled = EXCLUDED.deleg_recalled,
 		deleg_revoked = EXCLUDED.deleg_revoked,
-		deleg_notification_mask = EXCLUDED.deleg_notification_mask
+		deleg_notification_mask = EXCLUDED.deleg_notification_mask,
+		break_started = EXCLUDED.break_started
 `
 
 // putLockArgs returns the argument list for putLockSQL in lockColumns order.
@@ -123,6 +126,10 @@ func putLockArgs(lk *lock.PersistedLock) []interface{} {
 		lk.DelegRecalled,
 		lk.DelegRevoked,
 		lk.DelegNotificationMask,
+		// break_started is nullable: a zero BreakStarted (no in-flight break)
+		// stores as SQL NULL and scans back to the zero time, matching the
+		// memory/badger JSON round-trip.
+		nullTimeIfZero(lk.BreakStarted),
 	}
 }
 
@@ -132,6 +139,16 @@ func nilIfEmpty(b []byte) []byte {
 		return nil
 	}
 	return b
+}
+
+// nullTimeIfZero maps a zero time.Time to a NULL sql.NullTime so a zeroed
+// nullable timestamp column round-trips as the zero time rather than a driver
+// default, and a non-zero time stores faithfully.
+func nullTimeIfZero(t time.Time) sql.NullTime {
+	if t.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t, Valid: true}
 }
 
 // PutLock persists a lock using upsert.
@@ -162,7 +179,8 @@ type rowScanner interface {
 func scanLock(row rowScanner) (*lock.PersistedLock, error) {
 	var lk lock.PersistedLock
 	var offsetStr, lengthStr string
-	if err := row.Scan(scanArgs(&lk, &offsetStr, &lengthStr)...); err != nil {
+	var breakStarted sql.NullTime
+	if err := row.Scan(scanArgs(&lk, &offsetStr, &lengthStr, &breakStarted)...); err != nil {
 		return nil, err
 	}
 	off, err := strconv.ParseUint(offsetStr, 10, 64)
@@ -175,6 +193,10 @@ func scanLock(row rowScanner) (*lock.PersistedLock, error) {
 	}
 	lk.Offset = off
 	lk.Length = length
+	// break_started is nullable; a NULL leaves BreakStarted at its zero value.
+	if breakStarted.Valid {
+		lk.BreakStarted = breakStarted.Time
+	}
 	return &lk, nil
 }
 
@@ -182,7 +204,7 @@ func scanLock(row rowScanner) (*lock.PersistedLock, error) {
 // byte_offset/byte_length NUMERIC columns scan into the caller's string holders
 // (offsetStr/lengthStr); scanLock parses them into lk.Offset/lk.Length. A new
 // column is wired in exactly one place here.
-func scanArgs(lk *lock.PersistedLock, offsetStr, lengthStr *string) []interface{} {
+func scanArgs(lk *lock.PersistedLock, offsetStr, lengthStr *string, breakStarted *sql.NullTime) []interface{} {
 	return []interface{}{
 		&lk.ID,
 		&lk.ShareName,
@@ -212,6 +234,7 @@ func scanArgs(lk *lock.PersistedLock, offsetStr, lengthStr *string) []interface{
 		&lk.DelegRecalled,
 		&lk.DelegRevoked,
 		&lk.DelegNotificationMask,
+		breakStarted,
 	}
 }
 
