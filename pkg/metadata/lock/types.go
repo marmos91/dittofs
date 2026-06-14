@@ -347,11 +347,18 @@ func (ul *UnifiedLock) ConflictsWith(other *UnifiedLock) bool {
 
 // accessModesConflict checks if two access modes (SMB share reservations) conflict.
 //
-// AccessModeNone never conflicts with anything. Any deny mode (DenyRead,
-// DenyWrite, DenyAll) conflicts with any non-None mode on the other side.
-// The check is symmetric: if a denies and b is non-None, or vice versa.
+// A deny-mode holder (DenyRead, DenyWrite, DenyAll) blocks any subsequent
+// opener regardless of what AccessMode that opener carries, including None.
+// Conversely, a new opener that carries a deny mode must be blocked if there
+// is already any open on the file (even one with AccessModeNone), because the
+// new opener is asserting exclusive access rights that the existing open would
+// violate. AccessModeNone only means "I impose no restrictions on others"; it
+// does NOT mean "I am immune to restrictions imposed by others".
+//
+// The minimum correct check is therefore OR not AND: if either side is
+// non-None, the combination must be tested for conflict.
 func accessModesConflict(a, b AccessMode) bool {
-	return a != AccessModeNone && b != AccessModeNone
+	return a != AccessModeNone || b != AccessModeNone
 }
 
 // UnifiedLockConflict describes a conflicting lock for error reporting.
