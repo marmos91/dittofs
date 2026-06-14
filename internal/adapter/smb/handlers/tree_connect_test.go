@@ -469,6 +469,7 @@ func newTreeConnectABEHandler(t *testing.T, shareName string, abe bool) (*Handle
 		Name:                   shareName,
 		MetadataStore:          "test-meta",
 		Enabled:                true,
+		DefaultPermission:      "read-write",
 		AccessBasedEnumeration: abe,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
@@ -582,6 +583,7 @@ func newTreeConnectCAHandler(t *testing.T, shareName string, ca bool) (*Handler,
 		Name:                   shareName,
 		MetadataStore:          "test-meta",
 		Enabled:                true,
+		DefaultPermission:      "read-write",
 		ContinuousAvailability: ca,
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
@@ -902,9 +904,10 @@ func newTreeConnectGateHandler(t *testing.T, shareName string, enabled bool) (*H
 	}
 
 	cfg := &runtime.ShareConfig{
-		Name:          shareName,
-		MetadataStore: "test-meta",
-		Enabled:       true,
+		Name:              shareName,
+		MetadataStore:     "test-meta",
+		Enabled:           true,
+		DefaultPermission: "read-write",
 		RootAttr: &metadata.FileAttr{
 			Type: metadata.FileTypeDirectory,
 			Mode: 0o755,

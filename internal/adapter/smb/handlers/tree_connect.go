@@ -387,11 +387,18 @@ func resolveSharePermission(
 		return defaultPerm, "guest"
 	}
 
-	// No session or unauthenticated. TREE_CONNECT always follows an
-	// authenticated or guest SESSION_SETUP, so this branch should be
-	// unreachable in practice — but defaulting an unauthenticated caller to
-	// read-write would be an authorization bypass. Deny instead (the caller
-	// maps PermissionNone to STATUS_ACCESS_DENIED).
+	// Session exists but its identity was not resolved to a User (e.g. an
+	// authenticated username with no matching user record) and it is not a
+	// guest: apply the share's default permission, same as a guest. NOT
+	// read-write — defaulting an unresolved identity to read-write is an
+	// authorization bypass (a share with no configured default resolves to
+	// PermissionNone, i.e. access denied).
+	if sess != nil {
+		return defaultPerm, sess.Username
+	}
+
+	// No session at all — deny (the caller maps PermissionNone to
+	// STATUS_ACCESS_DENIED).
 	return models.PermissionNone, ""
 }
 
