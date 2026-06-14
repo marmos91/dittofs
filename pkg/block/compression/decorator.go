@@ -42,10 +42,6 @@ func NewRemote(inner remote.RemoteStore, p CompressionPolicy) (*Decorator, error
 	return &Decorator{inner: inner, algo: p.Algo, codec: c}, nil
 }
 
-// Algo returns the algorithm this decorator emits on Put. Reads accept
-// any algorithm encoded in the wire frame regardless.
-func (d *Decorator) Algo() Algo { return d.algo }
-
 // --- write path ---------------------------------------------------------
 
 // Put compresses data; if the result is strictly smaller than the input

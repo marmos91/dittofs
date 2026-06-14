@@ -1,12 +1,13 @@
 package fs
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"sort"
+	"slices"
 
 	"github.com/marmos91/dittofs/pkg/block"
 )
@@ -214,7 +215,7 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 		}
 		abs = append(abs, rowAbs{fb: fb, absOffset: off})
 	}
-	sort.Slice(abs, func(i, j int) bool { return abs[i].absOffset < abs[j].absOffset })
+	slices.SortFunc(abs, func(a, b rowAbs) int { return cmp.Compare(a.absOffset, b.absOffset) })
 
 	reqEnd := reqStart + uint64(len(dest))
 	for _, r := range abs {

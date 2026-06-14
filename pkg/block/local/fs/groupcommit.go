@@ -3,7 +3,6 @@ package fs
 import (
 	"context"
 	"sync"
-	"time"
 )
 
 // groupCommit is the per-file fsync coalescing coordinator.
@@ -37,28 +36,12 @@ import (
 // the same bypass branch. The check-then-set sequence happens entirely
 // under g.mu so this race cannot manifest in practice; the comment is
 // kept to flag the invariant for future maintainers.
-//
-// No config knob: the window const below stays hardcoded until bench
-// data justifies tuning.
 type groupCommit struct {
-	mu      sync.Mutex
-	pending []chan error
-	//nolint:unused //: reserved for future timer-armed batching; the current in-flight-piggyback design has no timer site
-	timer    *time.Timer
+	mu       sync.Mutex
+	pending  []chan error
 	inFlight bool
 	fsyncFn  func() error
 }
-
-// groupCommitWindow is the maximum wait inside the coordinator before
-// a hypothetical timer-armed batch fires. 1ms is chosen
-// empirically as the smallest window that still coalesces bursts on
-// rotational and NVMe disks; tighter would defeat batching, looser
-// would penalize single-writer latency. The constant is deliberately
-// not exposed as a config knob — bench data justifies tuning, not a
-// milestone-19 surface.
-//
-//nolint:unused //: paired with the reserved timer field; both light up when timer-armed batching ships
-const groupCommitWindow = 1 * time.Millisecond
 
 // newGroupCommit constructs a coordinator bound to fsyncFn. The
 // coordinator does not own the file; it only owns the fan-in queue.

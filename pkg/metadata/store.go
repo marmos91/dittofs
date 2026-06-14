@@ -354,8 +354,7 @@ type Store interface {
 	// GetFileBlock retrieves a FileBlock by its ID. Engine-internal
 	// surface narrowed the public
 	// FileBlockStore to 6 methods, but the read-path resolver
-	// (engine.fetch.resolveFileBlock), the dedup-delete path
-	// (engine.dedup.DeleteWithRefCount), and the recovery scan
+	// (engine.fetch.resolveFileBlock) and the recovery scan
 	// (local/fs/recovery.go) still need a by-ID lookup until 14
 	// reroutes reads through FileAttr.Blocks. See block.EngineFileBlockStore.
 	GetFileBlock(ctx context.Context, id string) (*block.FileBlock, error)

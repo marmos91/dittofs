@@ -229,14 +229,3 @@ func TestNilRemoteStoreFetchBlock(t *testing.T) {
 		t.Error("fetchBlock with nil remoteStore should return nil data")
 	}
 }
-
-func TestNilRemoteStoreEnsureAvailable(t *testing.T) {
-	m, _, cleanup := newNilRemoteStoreEnv(t)
-	defer cleanup()
-	ctx := context.Background()
-
-	err := m.EnsureAvailable(ctx, "test/file.bin", 0, 1024)
-	if err != nil {
-		t.Fatalf("EnsureAvailable with nil remoteStore should return nil, got: %v", err)
-	}
-}

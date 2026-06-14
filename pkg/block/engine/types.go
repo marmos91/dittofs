@@ -2,7 +2,6 @@ package engine
 
 import (
 	"errors"
-	"fmt"
 	"time"
 )
 
@@ -63,12 +62,6 @@ type TransferRequest struct {
 	Done       chan error   // Completion channel; nil for async (fire-and-forget)
 }
 
-// BlockKey returns a unique string key for this block. Internal to
-// the engine after block.FormatStoreKey was removed.
-func (r TransferRequest) BlockKey() string {
-	return fmt.Sprintf("%s/%d", r.PayloadID, r.BlockIndex)
-}
-
 // Config holds configuration for the Syncer.
 type SyncerConfig struct {
 	ParallelUploads    int           // Concurrent block uploads (default: 16)
@@ -88,12 +81,7 @@ type SyncerConfig struct {
 	// mirror them on the engine-local config struct so the syncer can be
 	// constructed without depending on pkg/config (avoids an import cycle
 	// from local/fs and other low-level callers).
-	//
-	// ClaimBatchSize removed — the field was set/defaulted
-	// but never read by the syncer claim path; the
-	// deprecation cycle ends here.
-	UploadConcurrency int           // Per-share upload goroutine pool size (default: 8)
-	ClaimTimeout      time.Duration // Max age of a Syncing row before the janitor requeues it (default: 10m)
+	ClaimTimeout time.Duration // Max age of a Syncing row before the janitor requeues it (default: 10m)
 }
 
 // DefaultConfig returns the default Syncer configuration tuned for S3 performance.
@@ -109,8 +97,7 @@ func DefaultConfig() SyncerConfig {
 		HealthCheckFailureThreshold: 3,
 		UnhealthyCheckInterval:      5 * time.Second,
 		// — match pkg/config defaults.
-		UploadConcurrency: 8,
-		ClaimTimeout:      10 * time.Minute,
+		ClaimTimeout: 10 * time.Minute,
 	}
 }
 

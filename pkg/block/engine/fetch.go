@@ -417,58 +417,6 @@ func copyBlockToDest(dest, data []byte, blockIdx, offset, length uint64) bool {
 	return false
 }
 
-// EnsureAvailable ensures the requested data range is in the local store, downloading if needed.
-// Blocks until data is available and triggers prefetch for upcoming blocks.
-func (m *Syncer) EnsureAvailable(ctx context.Context, payloadID string, offset uint64, length uint32) error {
-	if length == 0 {
-		return nil
-	}
-	if !m.canProcess(ctx) {
-		return ErrClosed
-	}
-	if m.remoteStore == nil {
-		return nil // Local-only: all data must be in local store, no downloads possible
-	}
-
-	startBlockIdx, endBlockIdx := blockRange(offset, length)
-	if m.allBlocksLocal(ctx, payloadID, startBlockIdx, endBlockIdx) {
-		return nil
-	}
-
-	// Health gate: fail fast when remote is unreachable
-	if !m.IsRemoteHealthy() {
-		m.offlineReadsBlocked.Add(1)
-		m.logOfflineRead("EnsureAvailable", payloadID, startBlockIdx)
-		return m.remoteUnavailableError()
-	}
-
-	var doneChannels []chan error
-
-	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		done := m.enqueueDownload(payloadID, blockIdx)
-		if done != nil {
-			doneChannels = append(doneChannels, done)
-		}
-	}
-
-	for i := range m.config.PrefetchBlocks {
-		m.enqueuePrefetch(payloadID, endBlockIdx+1+uint64(i))
-	}
-
-	for _, done := range doneChannels {
-		select {
-		case err := <-done:
-			if err != nil {
-				return err
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	return nil
-}
-
 // enqueueDownload enqueues a download with in-flight dedup (broadcast pattern).
 // Returns a channel to wait on, or nil if already available locally.
 func (m *Syncer) enqueueDownload(payloadID string, blockIdx uint64) chan error {

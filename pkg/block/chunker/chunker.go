@@ -1,17 +1,12 @@
 package chunker
 
 // Chunker performs FastCDC content-defined chunking over a byte stream.
-// Zero value is not usable — construct via NewChunker. Chunker state is
-// reset between calls; callers treat each Next invocation as stateless on
-// the prior call's tail.
+// It holds no cross-call state — each Next invocation is computed purely
+// from its arguments.
 type Chunker struct{}
 
 // NewChunker returns a chunker configured with the package defaults.
 func NewChunker() *Chunker { return &Chunker{} }
-
-// Reset clears internal state. Placeholder for future stateful extensions
-// currently Chunker holds no cross-call state.
-func (c *Chunker) Reset() {}
 
 // Next returns the boundary (exclusive end index) of the next chunk within data.
 //
