@@ -1,6 +1,7 @@
 package signing
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -99,6 +100,84 @@ func TestNewSigner_Dispatch(t *testing.T) {
 			if typeName != tt.wantType {
 				t.Errorf("NewSigner(%v, 0x%04x, explicit=%v) = %s, want %s",
 					tt.dialect, tt.signingAlg, tt.explicit, typeName, tt.wantType)
+			}
+		})
+	}
+}
+
+// signingMessage builds a deterministic SMB2 message with a non-zero
+// signature field, so tests can assert Sign neither mutates the caller's
+// buffer nor depends on the field already being zeroed.
+func signingMessage() []byte {
+	msg := make([]byte, SMB2HeaderSize+40)
+	for i := range msg {
+		msg[i] = byte(i*7 + 3)
+	}
+	msg[0], msg[1], msg[2], msg[3] = 0xFE, 'S', 'M', 'B'
+	return msg
+}
+
+func eachSigner(key []byte) []struct {
+	name   string
+	signer Signer
+} {
+	return []struct {
+		name   string
+		signer Signer
+	}{
+		{"HMAC", NewHMACSigner(key)},
+		{"CMAC", NewCMACSigner(key)},
+		{"GMAC", NewGMACSigner(key)},
+	}
+}
+
+// TestSign_DoesNotMutateBuffer guards the public Sign contract: it must leave
+// the caller's buffer byte-identical on return (including the original,
+// non-zero signature field). A regression here corrupts the outbound PDU.
+func TestSign_DoesNotMutateBuffer(t *testing.T) {
+	key := make([]byte, 16)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+
+	for _, tc := range eachSigner(key) {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := signingMessage()
+			orig := make([]byte, len(msg))
+			copy(orig, msg)
+
+			_ = tc.signer.Sign(msg)
+
+			if !bytes.Equal(msg, orig) {
+				t.Errorf("%s.Sign mutated the caller's buffer", tc.name)
+			}
+		})
+	}
+}
+
+// TestSignInPlace_MatchesSign is the golden cross-check that the allocation-free
+// outbound path produces byte-identical signatures to the copying Sign path.
+// SignInPlace assumes the 16-byte signature field is already zeroed, which is
+// exactly the precondition SignMessage establishes before calling it.
+func TestSignInPlace_MatchesSign(t *testing.T) {
+	key := make([]byte, 16)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+
+	for _, tc := range eachSigner(key) {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := signingMessage()
+
+			want := tc.signer.Sign(msg)
+
+			zeroed := make([]byte, len(msg))
+			copy(zeroed, msg)
+			zeroSignatureField(zeroed)
+			got := tc.signer.SignInPlace(zeroed)
+
+			if want != got {
+				t.Errorf("%s: SignInPlace=%x != Sign=%x", tc.name, got, want)
 			}
 		})
 	}

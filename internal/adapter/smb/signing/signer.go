@@ -21,7 +21,15 @@ const (
 type Signer interface {
 	// Sign computes the signature for an SMB2 message.
 	// The signature field (bytes 48-63) is zeroed internally before computation.
+	// Sign does not mutate the caller's buffer.
 	Sign(message []byte) [SignatureSize]byte
+
+	// SignInPlace computes the signature assuming the 16-byte signature field
+	// (bytes 48-63) is already zeroed. It does NOT copy the message and does
+	// NOT mutate it, avoiding a full-message allocation per PDU. Callers must
+	// zero the signature field before calling. Used by the outbound
+	// SignMessage path.
+	SignInPlace(message []byte) [SignatureSize]byte
 
 	// Verify checks if the message signature is valid.
 	// Returns true if the signature is correct.
@@ -79,7 +87,10 @@ func SignMessage(signer Signer, message []byte) {
 	flags |= 0x00000008
 	binary.LittleEndian.PutUint32(message[16:20], flags)
 
+	// SignMessage owns the buffer here: it has just zeroed the signature
+	// field, so use SignInPlace to avoid the redundant full-message copy
+	// that Sign would make.
 	zeroSignatureField(message)
-	sig := signer.Sign(message)
+	sig := signer.SignInPlace(message)
 	copy(message[SignatureOffset:], sig[:])
 }

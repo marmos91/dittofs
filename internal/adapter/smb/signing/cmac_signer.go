@@ -132,6 +132,10 @@ func (s *CMACSigner) cmacMAC(data []byte) [16]byte {
 
 // Sign computes the AES-CMAC signature for an SMB2 message.
 // The signature field (bytes 48-63) is zeroed before computation.
+//
+// Sign copies the message so it never mutates the caller's buffer. The
+// outbound SignMessage path, which has already zeroed the signature field,
+// uses SignInPlace to avoid the copy.
 func (s *CMACSigner) Sign(message []byte) [SignatureSize]byte {
 	if len(message) < SMB2HeaderSize {
 		return [SignatureSize]byte{}
@@ -140,7 +144,18 @@ func (s *CMACSigner) Sign(message []byte) [SignatureSize]byte {
 	msgCopy := make([]byte, len(message))
 	copy(msgCopy, message)
 	zeroSignatureField(msgCopy)
-	return s.cmacMAC(msgCopy)
+	return s.SignInPlace(msgCopy)
+}
+
+// SignInPlace computes the AES-CMAC signature assuming the 16-byte signature
+// field (bytes 48-63) is already zeroed. It does NOT copy and does NOT mutate
+// the message. Used by the outbound SignMessage path, which zeroes the field
+// itself before signing — avoiding a full-message allocation per PDU.
+func (s *CMACSigner) SignInPlace(message []byte) [SignatureSize]byte {
+	if len(message) < SMB2HeaderSize {
+		return [SignatureSize]byte{}
+	}
+	return s.cmacMAC(message)
 }
 
 // Verify checks if the message signature is valid using constant-time comparison.
