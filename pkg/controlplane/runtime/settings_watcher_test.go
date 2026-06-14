@@ -386,3 +386,82 @@ func TestSettingsWatcher_NilBeforeLoad(t *testing.T) {
 		t.Error("Expected nil SMB settings before LoadInitial")
 	}
 }
+
+// bumpNFSLeaseTime updates the NFS adapter's LeaseTime, which bumps the settings
+// Version and triggers the watcher's NFS change path.
+func bumpNFSLeaseTime(t *testing.T, cpStore store.Store, adapterID string, v int) {
+	t.Helper()
+	ctx := context.Background()
+	settings, err := cpStore.GetNFSAdapterSettings(ctx, adapterID)
+	if err != nil {
+		t.Fatalf("GetNFSAdapterSettings: %v", err)
+	}
+	settings.LeaseTime = v
+	if err := cpStore.UpdateNFSAdapterSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateNFSAdapterSettings: %v", err)
+	}
+}
+
+// TestSettingsWatcher_NFSCallbackFires verifies that a registered NFS
+// settings-change callback fires (with the new settings) after the initial load
+// when the settings version changes on a poll.
+func TestSettingsWatcher_NFSCallbackFires(t *testing.T) {
+	cpStore, adapter := createTestStoreWithAdapter(t)
+	ctx := context.Background()
+
+	watcher := NewSettingsWatcher(cpStore, 25*time.Millisecond)
+
+	var gotLeaseTime atomic.Int64
+	watcher.OnNFSSettingsChange(func(s *models.NFSAdapterSettings) {
+		if s != nil {
+			gotLeaseTime.Store(int64(s.LeaseTime))
+		}
+	})
+
+	// Prime currentVersion > 0 so the next change fires the callback (callbacks
+	// are intentionally not invoked on the initial load).
+	if err := watcher.LoadInitial(ctx); err != nil {
+		t.Fatalf("LoadInitial: %v", err)
+	}
+
+	watcher.Start(ctx)
+	defer watcher.Stop()
+
+	bumpNFSLeaseTime(t, cpStore, adapter.ID, 321)
+	waitFor(t, 2*time.Second, func() bool { return gotLeaseTime.Load() == 321 })
+}
+
+// TestSettingsWatcher_NFSCallbackPanicRecovers verifies that a panic raised by
+// an NFS change callback does not kill the polling goroutine: subsequent changes
+// are still detected.
+func TestSettingsWatcher_NFSCallbackPanicRecovers(t *testing.T) {
+	cpStore, adapter := createTestStoreWithAdapter(t)
+	ctx := context.Background()
+
+	watcher := NewSettingsWatcher(cpStore, 25*time.Millisecond)
+
+	var panicked atomic.Bool
+	watcher.OnNFSSettingsChange(func(*models.NFSAdapterSettings) {
+		if panicked.CompareAndSwap(false, true) {
+			panic("boom from NFS settings callback")
+		}
+	})
+
+	if err := watcher.LoadInitial(ctx); err != nil {
+		t.Fatalf("LoadInitial: %v", err)
+	}
+
+	watcher.Start(ctx)
+	defer watcher.Stop()
+
+	// First change triggers the panicking callback; the watcher must recover.
+	bumpNFSLeaseTime(t, cpStore, adapter.ID, 111)
+	waitFor(t, 2*time.Second, func() bool { return panicked.Load() })
+
+	// A change after the panic proves polling resumed.
+	bumpNFSLeaseTime(t, cpStore, adapter.ID, 222)
+	waitFor(t, 2*time.Second, func() bool {
+		s := watcher.GetNFSSettings()
+		return s != nil && s.LeaseTime == 222
+	})
+}

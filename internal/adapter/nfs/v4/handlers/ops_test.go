@@ -872,7 +872,10 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 		}
 
 		// cookie
-		c, _ := xdr.DecodeUint64(extraReader)
+		c, err := xdr.DecodeUint64(extraReader)
+		if err != nil {
+			t.Fatalf("decode entry cookie: %v", err)
+		}
 		entryCookies = append(entryCookies, c)
 
 		// name
@@ -908,6 +911,9 @@ func TestReadDir_PseudoFSRoot(t *testing.T) {
 		}
 	}
 	wantCookies := []uint64{1, 2, 3, 4}
+	if len(entryCookies) != len(wantCookies) {
+		t.Fatalf("cookie count = %d, want %d, got %v", len(entryCookies), len(wantCookies), entryCookies)
+	}
 	for i, w := range wantCookies {
 		if entryCookies[i] != w {
 			t.Errorf("cookie[%d] = %d, want %d", i, entryCookies[i], w)
@@ -949,7 +955,10 @@ func TestReadDir_PseudoFSRoot_CookieContinuation(t *testing.T) {
 		if err != nil || hasNext == 0 {
 			break
 		}
-		c, _ := xdr.DecodeUint64(extraReader)
+		c, err := xdr.DecodeUint64(extraReader)
+		if err != nil {
+			t.Fatalf("decode entry cookie: %v", err)
+		}
 		entryCookies = append(entryCookies, c)
 		name, err := xdr.DecodeString(extraReader)
 		if err != nil {
@@ -970,6 +979,9 @@ func TestReadDir_PseudoFSRoot_CookieContinuation(t *testing.T) {
 		}
 	}
 	wantCookies := []uint64{3, 4}
+	if len(entryCookies) != len(wantCookies) {
+		t.Fatalf("cookie count = %d, want %d, got %v", len(entryCookies), len(wantCookies), entryCookies)
+	}
 	for i, w := range wantCookies {
 		if entryCookies[i] != w {
 			t.Errorf("cookie[%d] = %d, want %d", i, entryCookies[i], w)

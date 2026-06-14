@@ -82,11 +82,23 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 		"enabled", settings.PortmapperEnabled, "port", s.config.Portmapper.Port)
 }
 
+// fsCapabilitiesProbeTimeout bounds the metadata read issued when refreshing
+// the cached filesystem capabilities, so a slow/hung backend cannot stall
+// adapter startup or the SettingsWatcher poll goroutine.
+const fsCapabilitiesProbeTimeout = 5 * time.Second
+
 // applyFilesystemCapabilities resolves the filesystem capabilities
 // (FATTR4_MAXFILESIZE/MAXREAD/MAXWRITE) from the metadata store and stores them
-// in the attrs package's process-global atomics. Capabilities are store-level
-// configuration, so a single share's root handle is representative; GETATTR then
-// reads the cached globals instead of issuing a read transaction per request.
+// in the attrs package's process-global atomics. GETATTR then reads the cached
+// globals instead of issuing a read transaction per request.
+//
+// The advertised capabilities are intentionally a single process-global value
+// (matching the attrs-package atomic design). They model server-wide limits;
+// the metadata stores return these as static configuration, so a single share's
+// root handle is representative. If a future deployment backs different shares
+// with stores configured for materially different read/write/file-size limits,
+// this would advertise one share's limits for all — at that point capability
+// caching should move to a per-store keyed cache or into the service layer.
 func (s *NFSAdapter) applyFilesystemCapabilities(rt *runtime.Runtime) {
 	metaSvc := rt.GetMetadataService()
 	if metaSvc == nil {
@@ -97,12 +109,15 @@ func (s *NFSAdapter) applyFilesystemCapabilities(rt *runtime.Runtime) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), fsCapabilitiesProbeTimeout)
+	defer cancel()
+
 	for _, shareName := range shares {
 		root, err := rt.GetRootHandle(shareName)
 		if err != nil {
 			continue
 		}
-		caps, err := metaSvc.GetFilesystemCapabilities(context.Background(), root)
+		caps, err := metaSvc.GetFilesystemCapabilities(ctx, root)
 		if err != nil || caps == nil {
 			continue
 		}
