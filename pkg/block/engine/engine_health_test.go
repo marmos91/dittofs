@@ -58,7 +58,7 @@ func (f *fakeRemoteStore) SetHealthy(h bool) { f.healthy.Store(h) }
 // RollupStore + a tight stabilization window so the
 // AppendWrite → rollup → CAS chunk → FileBlock-row pipeline runs
 // promptly inside the test.
-func newHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
+func buildHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -105,13 +105,57 @@ func newHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 		t.Fatalf("engine.New() error = %v", err)
 	}
 
+	return bs, fakeRemote
+}
+
+// newHealthTestEngine builds and starts a health test engine with the remote
+// initially healthy.
+func newHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
+	t.Helper()
+	bs, fakeRemote := buildHealthTestEngine(t)
 	if err := bs.Start(context.Background()); err != nil {
 		t.Fatalf("engine.Start() error = %v", err)
 	}
+	t.Cleanup(func() { _ = bs.Close() })
+	return bs, fakeRemote
+}
 
+// TestEngineHealthEvictionSuspended_RemoteUnhealthyAtStart is a regression test
+// for the health-callback ordering bug: the callback must be wired BEFORE the
+// syncer starts, otherwise the initial "unhealthy" transition fired by the
+// startup probe is lost and eviction stays enabled while the remote is down —
+// risking eviction of not-yet-mirrored local CAS chunks. With the remote
+// unhealthy from the outset there is no later transition to recover the lost
+// signal, so the only thing keeping eviction suspended is correct startup
+// wiring + reconciliation.
+func TestEngineHealthEvictionSuspended_RemoteUnhealthyAtStart(t *testing.T) {
+	bs, fakeRemote := buildHealthTestEngine(t)
+	// Remote is unhealthy BEFORE Start, so the initial transition fires during
+	// startup (the window the old code dropped).
+	fakeRemote.SetHealthy(false)
+
+	if err := bs.Start(context.Background()); err != nil {
+		t.Fatalf("engine.Start() error = %v", err)
+	}
 	t.Cleanup(func() { _ = bs.Close() })
 
-	return bs, fakeRemote
+	// Allow the startup probe + threshold to settle, then assert eviction is
+	// suspended. No further health transition occurs (remote stays down), so a
+	// pass here proves the startup signal was not dropped.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if bs.GetStats().EvictionSuspended {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stats := bs.GetStats()
+	if stats.RemoteHealthy {
+		t.Fatal("expected remote unhealthy at start")
+	}
+	if !stats.EvictionSuspended {
+		t.Fatal("expected eviction suspended when remote is unhealthy at start (health callback wired before syncer start)")
+	}
 }
 
 // TestEngineHealthEvictionSuspension verifies that when remote goes unhealthy
