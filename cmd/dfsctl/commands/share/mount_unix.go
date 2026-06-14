@@ -143,7 +143,7 @@ func mountSMBLinux(sharePath, mountPoint string, port int, username, password, s
 	if err != nil {
 		return err
 	}
-	defer os.Remove(credFile)
+	defer func() { _ = os.Remove(credFile) }()
 
 	opts := fmt.Sprintf("vers=2.1,port=%d,credentials=%s", port, credFile)
 
@@ -193,19 +193,19 @@ func writeCIFSCredentials(username, password string) (string, error) {
 	// Restrict to owner read/write before writing any secret. CreateTemp already
 	// uses 0600, but set it explicitly so the guarantee does not depend on umask.
 	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return "", fmt.Errorf("failed to secure credentials file: %w", err)
 	}
 
 	contents := fmt.Sprintf("username=%s\npassword=%s\n", username, password)
 	if _, err := f.WriteString(contents); err != nil {
-		f.Close()
-		os.Remove(f.Name())
+		_ = f.Close()
+		_ = os.Remove(f.Name())
 		return "", fmt.Errorf("failed to write credentials file: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
+		_ = os.Remove(f.Name())
 		return "", fmt.Errorf("failed to write credentials file: %w", err)
 	}
 	return f.Name(), nil
