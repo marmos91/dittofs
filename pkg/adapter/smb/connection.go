@@ -17,6 +17,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/header"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/clients"
 )
 
@@ -315,7 +316,7 @@ func (c *Connection) Serve(ctx context.Context) {
 			switch {
 			case err == io.EOF:
 				logger.Debug("SMB connection closed by client", "address", clientAddr)
-			case isNetTimeout(err):
+			case adapter.IsNetTimeout(err):
 				logger.Debug("SMB connection timed out", "address", clientAddr, "error", err)
 			case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 				logger.Debug("SMB connection cancelled", "address", clientAddr, "error", err)
@@ -598,12 +599,6 @@ func (c *Connection) handleRequestPanic(clientAddr string, messageID uint64) {
 			"error", r,
 			"stack", stack)
 	}
-}
-
-// isNetTimeout reports whether err is a network timeout error.
-func isNetTimeout(err error) bool {
-	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // isDecryptionError reports whether err is a transform header decryption failure.

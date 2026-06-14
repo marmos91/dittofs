@@ -95,7 +95,7 @@ func TestReleaseData_NilIsNoop(t *testing.T) {
 		ReleaseData: nil, // non-pooled path
 	}
 
-	if err := SendResponse(reqHeader, ctx, result, ci); err != nil {
+	if err := sendResponseNoHooks(reqHeader, ctx, result, ci); err != nil {
 		t.Fatalf("SendResponse returned error: %v", err)
 	}
 	// No assertion needed beyond "did not panic".
@@ -164,7 +164,7 @@ func TestReleaseData_FiresOnWriteError(t *testing.T) {
 	}
 
 	// Expect a write error — but ReleaseData MUST still fire.
-	err := SendResponse(reqHeader, ctx, result, ci)
+	err := sendResponseNoHooks(reqHeader, ctx, result, ci)
 	if err == nil {
 		// We really expected an error; accept either outcome but require the
 		// release still fired.
@@ -257,7 +257,7 @@ func TestReleaseData_PlainWriteFires(t *testing.T) {
 		},
 	}
 
-	if err := SendResponse(reqHeader, ctx, result, ci); err != nil {
+	if err := sendResponseNoHooks(reqHeader, ctx, result, ci); err != nil {
 		t.Fatalf("SendResponse returned error: %v", err)
 	}
 	if got := count.Load(); got != 1 {

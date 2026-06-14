@@ -271,19 +271,8 @@ func FileAttrToSMBTimes(attr *metadata.FileAttr) (creation, access, write, chang
 	return
 }
 
-// FileAttrToFileBasicInfo converts metadata FileAttr to SMB FILE_BASIC_INFORMATION
-// [MS-FSCC] 2.4.7. Populates creation, access, write, and change timestamps,
-// plus the SMB file attributes bitmask. Used by QUERY_INFO to respond to
-// FileBasicInformation queries from clients.
-//
-// Note: callers that have the filename available should prefer
-// FileAttrToFileBasicInfoWithName so the dot-prefix IsHiddenFile check applies.
-func FileAttrToFileBasicInfo(attr *metadata.FileAttr) *FileBasicInfo {
-	return FileAttrToFileBasicInfoWithName(attr, "")
-}
-
-// FileAttrToFileBasicInfoWithName is the name-aware variant of
-// FileAttrToFileBasicInfo: it applies IsHiddenFile so dot-prefixed entries
+// FileAttrToFileBasicInfoWithName converts metadata FileAttr to SMB
+// FILE_BASIC_INFORMATION [MS-FSCC] 2.4.7. It applies IsHiddenFile so dot-prefixed entries
 // surface FILE_ATTRIBUTE_HIDDEN even when attr.Hidden was not explicitly set.
 // Required by smbtorture smb2.dosmode which creates ".dotfile" and asserts the
 // HIDDEN bit via FileBasicInformation (source4/torture/smb2/dosmode.c:158).
@@ -329,20 +318,10 @@ func FileAttrToFileStandardInfo(attr *metadata.FileAttr, isDeletePending bool) *
 	}
 }
 
-// FileAttrToFileNetworkOpenInfo converts metadata FileAttr to SMB FILE_NETWORK_OPEN_INFORMATION
-// [MS-FSCC] 2.4.27. Combines timestamps, allocation size, end of file, and attributes
-// into a single structure. This is a performance optimization for SMB2 CREATE since
-// clients can retrieve all open information in a single query instead of multiple calls.
-//
-// Note: callers that have the filename available should prefer
-// FileAttrToFileNetworkOpenInfoWithName so the dot-prefix IsHiddenFile check applies.
-func FileAttrToFileNetworkOpenInfo(attr *metadata.FileAttr) *FileNetworkOpenInfo {
-	return FileAttrToFileNetworkOpenInfoWithName(attr, "")
-}
-
-// FileAttrToFileNetworkOpenInfoWithName is the name-aware variant of
-// FileAttrToFileNetworkOpenInfo: it applies IsHiddenFile so dot-prefixed entries
-// surface FILE_ATTRIBUTE_HIDDEN.
+// FileAttrToFileNetworkOpenInfoWithName converts metadata FileAttr to SMB
+// FILE_NETWORK_OPEN_INFORMATION [MS-FSCC] 2.4.27. Combines timestamps, allocation
+// size, end of file, and attributes into a single structure. It applies
+// IsHiddenFile so dot-prefixed entries surface FILE_ATTRIBUTE_HIDDEN.
 func FileAttrToFileNetworkOpenInfoWithName(attr *metadata.FileAttr, name string) *FileNetworkOpenInfo {
 	creation, access, write, change := FileAttrToSMBTimes(attr)
 	// Get appropriate size (MFsymlink size for symlinks)
@@ -357,30 +336,6 @@ func FileAttrToFileNetworkOpenInfoWithName(attr *metadata.FileAttr, name string)
 		AllocationSize: allocationSize,
 		EndOfFile:      size,
 		FileAttributes: FileAttrToSMBAttributesWithName(attr, name),
-	}
-}
-
-// FileAttrToDirectoryEntry converts metadata File to an SMB directory listing entry
-// for QUERY_DIRECTORY responses [MS-SMB2] 2.2.33. Populates all fields including
-// timestamps, sizes, attributes, and the file index used for enumeration continuations.
-// For symlinks, sizes reflect the MFsymlink on-disk representation.
-func FileAttrToDirectoryEntry(file *metadata.File, name string, fileIndex uint64) *DirectoryEntry {
-	creation, access, write, change := FileAttrToSMBTimes(&file.FileAttr)
-	// Get appropriate size (MFsymlink size for symlinks)
-	size := getSMBSize(&file.FileAttr)
-	allocationSize := calculateAllocationSize(size)
-
-	return &DirectoryEntry{
-		FileName:       name,
-		FileIndex:      fileIndex,
-		CreationTime:   creation,
-		LastAccessTime: access,
-		LastWriteTime:  write,
-		ChangeTime:     change,
-		EndOfFile:      size,
-		AllocationSize: allocationSize,
-		FileAttributes: FileAttrToSMBAttributes(&file.FileAttr),
-		FileID:         fileIndex, // Use index as FileID for now
 	}
 }
 
@@ -414,20 +369,6 @@ func DirEntryToDirectoryEntry(entry *metadata.DirEntry, fileIndex uint64) *Direc
 	}
 
 	return dirEntry
-}
-
-// SMBAttributesToFileType converts SMB file attributes to the corresponding
-// metadata FileType. Checks FileAttributeDirectory and FileAttributeReparsePoint
-// flags to distinguish directories, symlinks, and regular files. Used during
-// SET_INFO operations to determine the target file type from client-provided attributes.
-func SMBAttributesToFileType(attrs types.FileAttributes) metadata.FileType {
-	if attrs&types.FileAttributeDirectory != 0 {
-		return metadata.FileTypeDirectory
-	}
-	if attrs&types.FileAttributeReparsePoint != 0 {
-		return metadata.FileTypeSymlink
-	}
-	return metadata.FileTypeRegular
 }
 
 // DecodeBasicInfoToSetAttrs decodes FILE_BASIC_INFORMATION from a raw buffer

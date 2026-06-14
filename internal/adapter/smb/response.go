@@ -623,8 +623,11 @@ func SendResponseWithHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandle
 	return err
 }
 
-// SendResponse sends an SMB2 response with credit management and signing.
-func SendResponse(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
+// sendResponseNoHooks sends an SMB2 response with credit management and signing
+// but WITHOUT running after-hooks. It MUST NOT be used for SESSION_SETUP
+// responses, which require the preauth-hash after-hook (see SendResponseWithHooks
+// and issue #362). Retained for tests that exercise the bare send path.
+func sendResponseNoHooks(reqHeader *header.SMB2Header, ctx *handlers.SMBHandlerContext, result *HandlerResult, connInfo *ConnInfo) error {
 	respHeader, body := buildResponseHeaderAndBody(reqHeader, ctx, result, connInfo)
 	requestEncrypted := ctx != nil && ctx.RequestEncrypted
 	suppressSetupEncryption := result.IsBinding

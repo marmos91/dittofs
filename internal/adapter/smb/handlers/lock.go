@@ -728,16 +728,6 @@ func rollbackLocks(
 	}
 }
 
-// encodeLockResponseBody encodes the canonical 4-byte SMB2 LOCK response
-// body (StructureSize=4, Reserved=0). Shared by the synchronous and
-// async-park completion paths.
-func encodeLockResponseBody() []byte {
-	w := smbenc.NewWriter(4)
-	w.WriteUint16(4) // StructureSize
-	w.WriteUint16(0) // Reserved
-	return w.Bytes()
-}
-
 // Note: lockErrorToStatus was consolidated into
 // internal/adapter/common/lock_errmap.go. Callers now use
 // common.MapLockToSMB — lock-context and general-context mappings are now
