@@ -130,6 +130,63 @@ func TestOpen_Exclusive4_RetryDifferentVerifier(t *testing.T) {
 	}
 }
 
+// TestOpen_Exclusive4_ZeroVerifierOnExistingFileConflicts verifies that an
+// EXCLUSIVE4 OPEN carrying an all-zero verifier does NOT false-match a
+// pre-existing non-exclusive file (whose idempotency token defaults to 0): it
+// must return NFS4ERR_EXIST rather than being mistaken for an idempotent retry.
+func TestOpen_Exclusive4_ZeroVerifierOnExistingFileConflicts(t *testing.T) {
+	const clientID = uint64(0xABCD)
+	owner := []byte("zero-verf-owner")
+
+	fx := newIOTestFixture(t, "/export")
+	ctx := newRealFSContext(0, 0)
+
+	// Pre-create a file via a normal (non-exclusive) path -> token stays 0.
+	fx.createRegularFile(t, fx.rootHandle, "plain.txt", 0o644, 0, 0)
+
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+	args := encodeOpenExclusiveArgs(1, types.OPEN4_SHARE_ACCESS_BOTH,
+		types.OPEN4_SHARE_DENY_NONE, clientID, owner, 0, "plain.txt")
+	r := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if r.Status != types.NFS4ERR_EXIST {
+		t.Fatalf("EXCLUSIVE4 zero-verifier on existing non-exclusive file status = %d, want NFS4ERR_EXIST", r.Status)
+	}
+}
+
+// TestOpen_Unchecked4_SizeOnReadOnlyOpenRejected verifies that an UNCHECKED4
+// OPEN that requests a size change (truncate) but does not carry WRITE access
+// is rejected with NFS4ERR_OPENMODE, mirroring the SETATTR size-change gating.
+func TestOpen_Unchecked4_SizeOnReadOnlyOpenRejected(t *testing.T) {
+	const clientID = uint64(0x5151)
+	owner := []byte("ro-trunc-owner")
+
+	fx := newIOTestFixture(t, "/export")
+	ctx := newRealFSContext(0, 0)
+
+	fh := fx.createRegularFile(t, fx.rootHandle, "ro.txt", 0o644, 0, 0)
+	fx.writeContent(t, fh, []byte("some content"))
+
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+	// READ-only open requesting size=0.
+	args := encodeOpenUncheckedSizeArgs(1, types.OPEN4_SHARE_ACCESS_READ,
+		types.OPEN4_SHARE_DENY_NONE, clientID, owner, 0, "ro.txt")
+	r := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if r.Status != types.NFS4ERR_OPENMODE {
+		t.Fatalf("UNCHECKED4 size change on read-only open status = %d, want NFS4ERR_OPENMODE", r.Status)
+	}
+
+	// The file must NOT have been truncated.
+	post, err := fx.metaSvc.GetFile(context.Background(), fh)
+	if err != nil {
+		t.Fatalf("get file: %v", err)
+	}
+	if post.Size == 0 {
+		t.Fatalf("file was truncated despite read-only open rejection")
+	}
+}
+
 // TestOpen_Unchecked4_ExistingFileTruncates verifies RFC 7530 §16.16: an
 // UNCHECKED4 OPEN of an existing file applies the supplied createattrs. A
 // requested size=0 must truncate the file's metadata size to zero.

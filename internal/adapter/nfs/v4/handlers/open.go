@@ -317,7 +317,16 @@ func (h *Handler) handleOpenClaimNull(
 				// the file's idempotency token at create time. Match -> treat as
 				// a successful (idempotent) open returning a fresh stateid;
 				// mismatch -> NFS4ERR_EXIST.
-				if child.IdempotencyToken != *createVerifier {
+				//
+				// A zero stored token is the default for files NOT created via an
+				// exclusive create (UNCHECKED4 / GUARDED4 / NFSv3 non-exclusive),
+				// so it must never be accepted as an idempotent match — otherwise
+				// a stray verifier==0 exclusive OPEN would silently re-open any
+				// such file instead of returning NFS4ERR_EXIST. Real clients pick
+				// a non-zero (random/clock-based) verifier, so requiring a
+				// non-zero token here loses only the pathological zero-verifier
+				// retry while closing the false-match hole.
+				if *createVerifier == 0 || child.IdempotencyToken != *createVerifier {
 					logger.Debug("NFSv4 OPEN EXCLUSIVE verifier mismatch on existing file",
 						"file", filename,
 						"client", ctx.ClientAddr)
@@ -361,6 +370,18 @@ func (h *Handler) handleOpenClaimNull(
 			// EXCLUSIVE4_1 retry must not re-mutate the existing file, so this
 			// is gated to UNCHECKED4.
 			if createMode == types.UNCHECKED4 && createAttrs != nil {
+				// A size change is a write to the file. Mirror the SETATTR
+				// gating (RFC 7530 §5.11): a size-bearing createattrs on an
+				// open that does not carry WRITE access is rejected with
+				// NFS4ERR_OPENMODE, so a read-only OPEN cannot truncate the
+				// file even when POSIX permissions would otherwise allow it.
+				if createAttrs.Size != nil && shareAccess&types.OPEN4_SHARE_ACCESS_WRITE == 0 {
+					logger.Debug("NFSv4 OPEN UNCHECKED4 rejected: size change on read-only open",
+						"file", filename,
+						"share_access", shareAccess,
+						"client", ctx.ClientAddr)
+					return openError(types.NFS4ERR_OPENMODE)
+				}
 				// child was fetched via Lookup above and still reflects the full
 				// pre-truncate extent, so it is the pre-op snapshot the reclaim
 				// needs. Shared with the SETATTR path.
