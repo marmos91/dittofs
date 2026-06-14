@@ -396,10 +396,14 @@ func (bs *Store) Start(ctx context.Context) error {
 	// Use background context so these outlive the calling request context.
 	bs.local.Start(context.Background())
 
-	// Start syncer background goroutines (periodic uploader, transfer queue).
-	bs.syncer.Start(context.Background())
-
-	// Wire health callback to toggle eviction on remote health changes.
+	// Wire the health callback BEFORE starting the syncer. The health monitor
+	// captures the callback at Start time (startHealthMonitor reads
+	// m.onHealthChanged once); registering it afterwards means an initial
+	// "unhealthy" transition fired by the syncer's eager startup probe is
+	// delivered to a nil callback and lost — leaving eviction enabled while the
+	// remote is down, which can evict local CAS chunks before they are mirrored
+	// (silent data loss on read).
+	//
 	// When remote goes unhealthy, suspend eviction to prevent evicting blocks
 	// that cannot be re-downloaded. When healthy again, re-enable eviction.
 	bs.syncer.SetHealthCallback(func(healthy bool) {
@@ -410,6 +414,15 @@ func (bs *Store) Start(ctx context.Context) error {
 			logger.Warn("Remote store unhealthy: eviction suspended")
 		}
 	})
+
+	// Start syncer background goroutines (periodic uploader, transfer queue).
+	bs.syncer.Start(context.Background())
+
+	// Reconcile eviction with the post-start health state, covering the case
+	// where the initial probe settled health without driving a transition
+	// callback (e.g. it started unhealthy with no prior state to transition
+	// from).
+	bs.local.SetEvictionEnabled(bs.syncer.IsRemoteHealthy())
 
 	// Wire the Cache in Start so the loadByHash closure captures bs and
 	// NewCache spawns workers immediately. A single Cache type replaces
