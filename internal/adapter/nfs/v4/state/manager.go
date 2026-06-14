@@ -45,6 +45,15 @@ type StateManager struct {
 	// This is the primary lookup table for stateid validation.
 	openStateByOther map[[types.NFS4_OTHER_SIZE]byte]*OpenState
 
+	// openStateByFile indexes live OpenState records by file handle
+	// (string(fileHandle)). It is a secondary index kept consistent with
+	// openStateByOther at every insert/remove so share-conflict checks
+	// (shareConflictLocked) and delegation grant checks (countOpensOnFile)
+	// iterate only the opens on the target file instead of scanning every
+	// open in the server. Maintained via addOpenStateToFileLocked /
+	// removeOpenStateFromFileLocked.
+	openStateByFile map[string][]*OpenState
+
 	// openOwners maps open-owner keys to OpenOwner records.
 	// Key is composite of clientID + hex(ownerData).
 	openOwners map[openOwnerKey]*OpenOwner
@@ -72,6 +81,14 @@ type StateManager struct {
 	// delegByFile maps file handle (string key) to a list of DelegationState records.
 	// Used for conflict detection: "does any client hold a delegation for this file?"
 	delegByFile map[string][]*DelegationState
+
+	// revokedDelegCount counts, per client ID, the number of delegations that
+	// have been marked Revoked but are still retained in delegByOther (for
+	// stale-stateid detection). It is a secondary index so GetStatusFlags can
+	// answer "does this client have any revoked delegation?" in O(1) on the
+	// SEQUENCE hot path instead of scanning every delegation in the server.
+	// Maintained via markDelegRevokedLocked and deleteDelegByOtherLocked.
+	revokedDelegCount map[uint64]int
 
 	// delegStateidMap maps LockManager DelegationID (UUID string) to NFS Stateid4.
 	// This enables NFSBreakHandler to look up the NFS wire-format stateid when
@@ -102,7 +119,7 @@ type StateManager struct {
 
 	// lockManager is the unified lock manager for actual byte-range conflict
 	// detection and cross-protocol locking. Set via SetLockManager() or constructor.
-	lockManager *lock.Manager
+	lockManager lock.LockManager
 
 	// bootEpoch is the server boot epoch, used as the high 32 bits of
 	// client IDs to ensure uniqueness across server restarts.
@@ -238,12 +255,14 @@ func NewStateManager(leaseDuration time.Duration, graceDuration ...time.Duration
 		clientsByName:       make(map[string]*ClientRecord),
 		unconfirmedByName:   make(map[string]*ClientRecord),
 		openStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*OpenState),
+		openStateByFile:     make(map[string][]*OpenState),
 		openOwners:          make(map[openOwnerKey]*OpenOwner),
 		closedOwnerByOther:  make(map[[types.NFS4_OTHER_SIZE]byte]*OpenOwner),
 		lockOwners:          make(map[lockOwnerKey]*LockOwner),
 		lockStateByOther:    make(map[[types.NFS4_OTHER_SIZE]byte]*LockState),
 		delegByOther:        make(map[[types.NFS4_OTHER_SIZE]byte]*DelegationState),
 		delegByFile:         make(map[string][]*DelegationState),
+		revokedDelegCount:   make(map[uint64]int),
 		delegStateidMap:     make(map[string]types.Stateid4),
 		recentlyRecalled:    make(map[string]time.Time),
 		recentlyRecalledTTL: RecentlyRecalledTTL,
@@ -738,8 +757,7 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 
 				// Remove actual locks from unified lock manager
 				if sm.lockManager != nil {
-					ownerID := fmt.Sprintf("nfs4:%d:%s", lockState.LockOwner.ClientID,
-						hex.EncodeToString(lockState.LockOwner.OwnerData))
+					ownerID := lockState.LockOwner.LockManagerOwnerID()
 					handleKey := string(lockState.FileHandle)
 					locks := sm.lockManager.ListUnifiedLocks(handleKey)
 					for _, l := range locks {
@@ -754,16 +772,15 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 
 				// Remove lock-owner from lockOwners map
 				if lockState.LockOwner != nil {
-					lockKey := makeLockOwnerKey(lockState.LockOwner.ClientID, lockState.LockOwner.OwnerData)
-					delete(sm.lockOwners, lockKey)
+					delete(sm.lockOwners, lockState.LockOwner.Key())
 				}
 			}
 
 			delete(sm.openStateByOther, openState.Stateid.Other)
+			sm.removeOpenStateFromFileLocked(openState)
 		}
 		// Remove the owner from the openOwners map
-		ownerKey := makeOwnerKey(owner.ClientID, owner.OwnerData)
-		delete(sm.openOwners, ownerKey)
+		delete(sm.openOwners, owner.Key())
 	}
 
 	// Drop any retained closed-stateid -> owner replay entries for this client.
@@ -778,7 +795,7 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 		if deleg.ClientID != clientID {
 			continue
 		}
-		delete(sm.delegByOther, other)
+		sm.deleteDelegByOtherLocked(other)
 		sm.removeDelegFromFile(deleg)
 
 		logger.Info("Delegation revoked on lease expiry",
@@ -818,7 +835,7 @@ func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte)
 		return
 	}
 
-	deleg.Revoked = true
+	sm.markDelegRevokedLocked(deleg)
 	sm.removeDelegFromFile(deleg)
 	sm.addRecentlyRecalled(deleg.FileHandle)
 
@@ -1143,6 +1160,7 @@ func (sm *StateManager) OpenFile(
 			Confirmed:    false,
 			OpenStates:   make([]*OpenState, 0),
 			ClientRecord: clientRecord,
+			key:          ownerKey,
 		}
 		copy(owner.OwnerData, ownerData)
 		sm.openOwners[ownerKey] = owner
@@ -1214,6 +1232,7 @@ func (sm *StateManager) OpenFile(
 
 		owner.OpenStates = append(owner.OpenStates, openState)
 		sm.openStateByOther[other] = openState
+		sm.addOpenStateToFileLocked(openState)
 	}
 
 	// Determine rflags: OPEN4_RESULT_CONFIRM only if owner is not yet confirmed
@@ -1255,12 +1274,11 @@ func (sm *StateManager) shareConflictLocked(
 	fileHandle []byte,
 	reqAccess, reqDeny uint32,
 ) bool {
-	for _, os := range sm.openStateByOther {
-		if !bytes.Equal(os.FileHandle, fileHandle) {
-			continue
-		}
+	// Iterate only the opens on this file via the secondary per-file index
+	// (openStateByFile), not every open in the server.
+	for _, os := range sm.openStateByFile[string(fileHandle)] {
 		// Same owner: bits are OR-merged, never in conflict with themselves.
-		if os.Owner != nil && makeOwnerKey(os.Owner.ClientID, os.Owner.OwnerData) == ownerKey {
+		if os.Owner != nil && os.Owner.Key() == ownerKey {
 			continue
 		}
 		if reqAccess&os.ShareDeny != 0 || reqDeny&os.ShareAccess != 0 {
@@ -1268,6 +1286,30 @@ func (sm *StateManager) shareConflictLocked(
 		}
 	}
 	return false
+}
+
+// addOpenStateToFileLocked inserts an OpenState into the per-file open index.
+// Caller must hold sm.mu.
+func (sm *StateManager) addOpenStateToFileLocked(os *OpenState) {
+	fhKey := string(os.FileHandle)
+	sm.openStateByFile[fhKey] = append(sm.openStateByFile[fhKey], os)
+}
+
+// removeOpenStateFromFileLocked removes an OpenState from the per-file open
+// index, dropping the file's slot entirely when it becomes empty so the map
+// stays bounded. Caller must hold sm.mu.
+func (sm *StateManager) removeOpenStateFromFileLocked(os *OpenState) {
+	fhKey := string(os.FileHandle)
+	states := sm.openStateByFile[fhKey]
+	for i, s := range states {
+		if s == os {
+			sm.openStateByFile[fhKey] = append(states[:i], states[i+1:]...)
+			break
+		}
+	}
+	if len(sm.openStateByFile[fhKey]) == 0 {
+		delete(sm.openStateByFile, fhKey)
+	}
 }
 
 // CacheOpenOwnerResult stores the encoded reply for an open-owner so that a
@@ -1476,8 +1518,9 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenS
 		}
 	}
 
-	// Remove the open state from the "other" map
+	// Remove the open state from the "other" map and per-file index.
 	delete(sm.openStateByOther, stateid.Other)
+	sm.removeOpenStateFromFileLocked(openState)
 
 	// Remember which retained owner this now-closed stateid belonged to so a
 	// retransmitted CLOSE can still resolve the owner's cached reply.
@@ -1504,8 +1547,7 @@ func (sm *StateManager) CloseFile(stateid *types.Stateid4, seqid uint32) (*OpenS
 	// replay its cached reply (RFC 7530 §9.1.7); that entry is reaped on lease
 	// expiry.
 	if len(owner.OpenStates) == 0 {
-		ownerKey := makeOwnerKey(owner.ClientID, owner.OwnerData)
-		delete(sm.openOwners, ownerKey)
+		delete(sm.openOwners, owner.Key())
 		if owner.ClientRecord != nil {
 			delete(owner.ClientRecord.OpenOwners, string(owner.OwnerData))
 		}
@@ -1673,7 +1715,7 @@ func (sm *StateManager) RenewLease(clientID uint64) error {
 
 // SetLockManager sets the unified lock manager for byte-range conflict detection.
 // Called by the NFS adapter after construction to inject the lock manager.
-func (sm *StateManager) SetLockManager(lm *lock.Manager) {
+func (sm *StateManager) SetLockManager(lm lock.LockManager) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.lockManager = lm
@@ -1826,6 +1868,7 @@ func (sm *StateManager) LockNew(
 			OwnerData:    make([]byte, len(lockOwnerData)),
 			LastSeqID:    0,
 			ClientRecord: clientRecord,
+			key:          loKey,
 		}
 		copy(lockOwner.OwnerData, lockOwnerData)
 		sm.lockOwners[loKey] = lockOwner
@@ -1993,7 +2036,7 @@ func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offse
 
 	// Build the protocol-agnostic lock owner
 	owner := lock.LockOwner{
-		OwnerID:   fmt.Sprintf("nfs4:%d:%s", lockState.LockOwner.ClientID, hex.EncodeToString(lockState.LockOwner.OwnerData)),
+		OwnerID:   lockState.LockOwner.LockManagerOwnerID(),
 		ClientID:  fmt.Sprintf("nfs4:%d", lockState.LockOwner.ClientID),
 		ShareName: "",
 	}
@@ -2085,7 +2128,7 @@ func (sm *StateManager) TestLock(
 	}
 
 	// Build the owner ID string using the same format as acquireLock
-	ownerID := fmt.Sprintf("nfs4:%d:%s", clientID, hex.EncodeToString(ownerData))
+	ownerID := lockManagerOwnerID(clientID, ownerData)
 
 	// Map lock type to shared/exclusive
 	var mappedType lock.LockType
@@ -2213,7 +2256,7 @@ func (sm *StateManager) UnlockFile(
 	// 4. Release the lock via unified lock manager
 	if sm.lockManager != nil {
 		owner := lock.LockOwner{
-			OwnerID:   fmt.Sprintf("nfs4:%d:%s", lockOwner.ClientID, hex.EncodeToString(lockOwner.OwnerData)),
+			OwnerID:   lockOwner.LockManagerOwnerID(),
 			ClientID:  fmt.Sprintf("nfs4:%d", lockOwner.ClientID),
 			ShareName: "",
 		}
@@ -2271,8 +2314,7 @@ func (sm *StateManager) ReleaseLockOwner(clientID uint64, ownerData []byte) erro
 
 	// Check if this lock-owner has any active locks in the lock manager
 	if sm.lockManager != nil {
-		ownerID := fmt.Sprintf("nfs4:%d:%s", lockOwner.ClientID,
-			hex.EncodeToString(lockOwner.OwnerData))
+		ownerID := lockOwner.LockManagerOwnerID()
 
 		// Find all lock states for this lock-owner by scanning lockStateByOther
 		for _, ls := range sm.lockStateByOther {
@@ -2408,12 +2450,10 @@ func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
 		flags |= types.SEQ4_STATUS_EXPIRED_ALL_STATE_REVOKED
 	}
 
-	// Check for revoked delegations for this client
-	for _, deleg := range sm.delegByOther {
-		if deleg.ClientID == session.ClientID && deleg.Revoked {
-			flags |= types.SEQ4_STATUS_RECALLABLE_STATE_REVOKED
-			break
-		}
+	// Check for revoked delegations for this client via the per-client
+	// revoked-delegation index (O(1)) instead of scanning every delegation.
+	if sm.revokedDelegCount[session.ClientID] > 0 {
+		flags |= types.SEQ4_STATUS_RECALLABLE_STATE_REVOKED
 	}
 
 	return flags

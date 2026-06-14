@@ -376,8 +376,7 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 
 	// Remove actual locks from unified lock manager
 	if sm.lockManager != nil && lockState.LockOwner != nil {
-		ownerID := fmt.Sprintf("nfs4:%d:%s", lockState.LockOwner.ClientID,
-			hex.EncodeToString(lockState.LockOwner.OwnerData))
+		ownerID := lockState.LockOwner.LockManagerOwnerID()
 		handleKey := string(lockState.FileHandle)
 		for _, l := range sm.lockManager.ListUnifiedLocks(handleKey) {
 			if l.Owner.OwnerID == ownerID {
@@ -392,7 +391,6 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 	// so deleting it on the first free would blind replay-detection and the
 	// owner caches for the still-live lock states.
 	if lockState.LockOwner != nil {
-		lockKey := makeLockOwnerKey(lockState.LockOwner.ClientID, lockState.LockOwner.OwnerData)
 		ownerStillReferenced := false
 		for _, ls := range sm.lockStateByOther {
 			if ls.LockOwner == lockState.LockOwner {
@@ -401,7 +399,7 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 			}
 		}
 		if !ownerStillReferenced {
-			delete(sm.lockOwners, lockKey)
+			delete(sm.lockOwners, lockState.LockOwner.Key())
 		}
 	}
 
@@ -445,8 +443,9 @@ func (sm *StateManager) freeOpenStateidLocked(clientID uint64, stateid *types.St
 		}
 	}
 
-	// Remove from openStateByOther
+	// Remove from openStateByOther and the per-file index
 	delete(sm.openStateByOther, stateid.Other)
+	sm.removeOpenStateFromFileLocked(openState)
 
 	// Remove from owner's OpenStates slice
 	if openState.Owner != nil {
@@ -462,8 +461,7 @@ func (sm *StateManager) freeOpenStateidLocked(clientID uint64, stateid *types.St
 
 		// If owner has no more open states, clean up the owner
 		if len(openState.Owner.OpenStates) == 0 {
-			ownerKey := makeOwnerKey(openState.Owner.ClientID, openState.Owner.OwnerData)
-			delete(sm.openOwners, ownerKey)
+			delete(sm.openOwners, openState.Owner.Key())
 		}
 	}
 
@@ -488,8 +486,8 @@ func (sm *StateManager) freeDelegStateidLocked(clientID uint64, stateid *types.S
 	// Stop recall timer if running
 	deleg.StopRecallTimer()
 
-	// Remove from delegByOther
-	delete(sm.delegByOther, stateid.Other)
+	// Remove from delegByOther (keeps revoked-delegation index consistent)
+	sm.deleteDelegByOtherLocked(stateid.Other)
 
 	// Remove from delegByFile
 	sm.removeDelegFromFile(deleg)

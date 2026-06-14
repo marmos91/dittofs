@@ -1,7 +1,6 @@
 package state
 
 import (
-	"encoding/hex"
 	"fmt"
 	"os"
 	"time"
@@ -314,7 +313,7 @@ func (sm *StateManager) purgeV41Client(record *V41ClientRecord) {
 		}
 		sm.cleanupDirDelegation(deleg)
 		deleg.StopRecallTimer()
-		delete(sm.delegByOther, other)
+		sm.deleteDelegByOtherLocked(other)
 		sm.removeDelegFromFile(deleg)
 	}
 
@@ -460,8 +459,7 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 
 				// Remove actual locks from unified lock manager (matches onLeaseExpired)
 				if sm.lockManager != nil && lockState.LockOwner != nil {
-					ownerID := fmt.Sprintf("nfs4:%d:%s", lockState.LockOwner.ClientID,
-						hex.EncodeToString(lockState.LockOwner.OwnerData))
+					ownerID := lockState.LockOwner.LockManagerOwnerID()
 					handleKey := string(lockState.FileHandle)
 					for _, l := range sm.lockManager.ListUnifiedLocks(handleKey) {
 						if l.Owner.OwnerID == ownerID {
@@ -471,14 +469,13 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 				}
 
 				if lockState.LockOwner != nil {
-					lockKey := makeLockOwnerKey(lockState.LockOwner.ClientID, lockState.LockOwner.OwnerData)
-					delete(sm.lockOwners, lockKey)
+					delete(sm.lockOwners, lockState.LockOwner.Key())
 				}
 			}
 			delete(sm.openStateByOther, openState.Stateid.Other)
+			sm.removeOpenStateFromFileLocked(openState)
 		}
-		ownerKey := makeOwnerKey(owner.ClientID, owner.OwnerData)
-		delete(sm.openOwners, ownerKey)
+		delete(sm.openOwners, owner.Key())
 	}
 
 	// Clean up delegations for the evicted client
@@ -488,7 +485,7 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 		}
 		deleg.StopRecallTimer()
 		sm.cleanupDirDelegation(deleg)
-		delete(sm.delegByOther, other)
+		sm.deleteDelegByOtherLocked(other)
 		sm.removeDelegFromFile(deleg)
 	}
 
