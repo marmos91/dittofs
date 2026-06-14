@@ -133,7 +133,19 @@ func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter, server
 }
 
 func mountSMBLinux(sharePath, mountPoint string, port int, username, password, serverHost string) error {
-	opts := fmt.Sprintf("vers=2.1,port=%d,username=%s,password=%s", port, username, password)
+	// Credentials are written to a private temp file passed via the documented
+	// CIFS "credentials=" option rather than placed inline in the comma-delimited
+	// -o string. mount.cifs splits -o on commas, so a username or password that
+	// contains a comma, newline, or '=' would otherwise corrupt the option list
+	// or smuggle in arbitrary mount options (credential/option injection). The
+	// credentials file is created 0600 and removed after the mount completes.
+	credFile, err := writeCIFSCredentials(username, password)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(credFile)
+
+	opts := fmt.Sprintf("vers=2.1,port=%d,credentials=%s", port, credFile)
 
 	// If running as root with SUDO_UID, set uid/gid so files are owned by original user
 	if os.Geteuid() == 0 {
@@ -160,6 +172,43 @@ func mountSMBLinux(sharePath, mountPoint string, port int, username, password, s
 	}
 	fmt.Printf("Mounted %s at %s via SMB (port %d)\n", sharePath, mountPoint, port)
 	return nil
+}
+
+// writeCIFSCredentials writes a mount.cifs credentials file (username/password
+// on separate lines) to a securely-created 0600 temp file and returns its path.
+// The caller is responsible for removing the file. A username or password
+// containing a newline is rejected: the credentials file format is line-based,
+// so an embedded newline could inject a "domain=" line or otherwise corrupt the
+// file. Commas and '=' are safe inside the file (only the -o option string
+// splits on them), so they need no escaping here.
+func writeCIFSCredentials(username, password string) (string, error) {
+	if strings.ContainsAny(username, "\r\n") || strings.ContainsAny(password, "\r\n") {
+		return "", fmt.Errorf("SMB username/password must not contain newline characters")
+	}
+
+	f, err := os.CreateTemp("", "dfsctl-cifs-creds-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create credentials file: %w", err)
+	}
+	// Restrict to owner read/write before writing any secret. CreateTemp already
+	// uses 0600, but set it explicitly so the guarantee does not depend on umask.
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", fmt.Errorf("failed to secure credentials file: %w", err)
+	}
+
+	contents := fmt.Sprintf("username=%s\npassword=%s\n", username, password)
+	if _, err := f.WriteString(contents); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", fmt.Errorf("failed to write credentials file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("failed to write credentials file: %w", err)
+	}
+	return f.Name(), nil
 }
 
 func mountSMBDarwin(sharePath, mountPoint string, port int, username, password, serverHost string) error {

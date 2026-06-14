@@ -204,7 +204,22 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// recycle (Move into #recycle) followed by recreating the original name would
 	// then fail "already exists" on postgres only (#190). path_hash is maintained
 	// by the files_path_hash_trigger, so updating path refreshes it.
+	//
+	// The leading CTE reads the pre-update size under FOR UPDATE and the UPDATE
+	// joins against it, so a single round-trip both locks the row and returns
+	// its old size for usedBytes delta tracking. This replaces a separate
+	// SELECT-then-UPDATE that left a serialization window between the two
+	// statements (the read size could be stale by the time the UPDATE ran).
+	// RETURNING old.size yields exactly one row when the file existed and zero
+	// rows when it did not — the same not-found signal the previous
+	// RowsAffected()==0 check relied on.
 	updateQuery := `
+		WITH old AS (
+			SELECT id, share_name, size
+			FROM files
+			WHERE id = $22 AND share_name = $23
+			FOR UPDATE
+		)
 		UPDATE files SET
 			path = $1,
 			file_type = $2,
@@ -227,7 +242,9 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			deleted_at = $19,
 			original_path = $20,
 			deleted_by = $21
-		WHERE id = $22 AND share_name = $23
+		FROM old
+		WHERE files.id = old.id AND files.share_name = old.share_name
+		RETURNING old.size
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -289,26 +306,14 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		deletedAtArg = &n
 	}
 
-	// Query old size for delta tracking (only for regular files).
-	var oldSize uint64
-	if file.Type == metadata.FileTypeRegular {
-		var oldSizeVal sql.NullInt64
-		// Only ErrNoRows (no prior row -> oldSize stays 0) is benign. A real
-		// error (connection drop, timeout) must abort, otherwise oldSize is
-		// silently treated as 0 and the usedBytes delta is computed wrong.
-		if scanErr := tx.tx.QueryRow(ctx,
-			`SELECT size FROM files WHERE id = $1 AND share_name = $2 AND file_type = $3`,
-			file.ID, file.ShareName, int(metadata.FileTypeRegular),
-		).Scan(&oldSizeVal); scanErr != nil && !errors.Is(scanErr, pgx.ErrNoRows) {
-			return mapPgError(scanErr, "PutFile", "read old size")
-		}
-		if oldSizeVal.Valid {
-			oldSize = uint64(oldSizeVal.Int64)
-		}
-	}
-
-	// Try UPDATE first (most common case for existing files)
-	result, err := tx.tx.Exec(ctx, updateQuery,
+	// Try UPDATE first (most common case for existing files). The CTE locks the
+	// row and RETURNING old.size hands back the pre-update size in the same
+	// round-trip, so there is no separate SELECT and no window between read and
+	// write. A returned row means the file existed (and we have its old size);
+	// pgx.ErrNoRows means it did not, so we fall through to INSERT.
+	var oldSizeVal sql.NullInt64
+	updated := true
+	scanErr := tx.tx.QueryRow(ctx, updateQuery,
 		file.Path,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
 		timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
@@ -317,22 +322,29 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		file.Hidden, aclJSON, easJSON, objectIDArg,
 		deletedAtArg, file.OriginalPath, file.DeletedBy,
 		file.ID, file.ShareName,
-	)
-	if err != nil {
-		return mapPgError(err, "PutFile", "")
+	).Scan(&oldSizeVal)
+	switch {
+	case scanErr == nil:
+		// Row existed and was updated; oldSizeVal holds the pre-update size.
+	case errors.Is(scanErr, pgx.ErrNoRows):
+		updated = false
+	default:
+		return mapPgError(scanErr, "PutFile", "")
 	}
 
-	// Track size delta for regular files after successful update/insert.
+	// Track size delta for regular files after a successful update.
 	// Accumulated on the tx and applied once after a successful commit so a
 	// serialization/deadlock retry never double-counts.
-	if file.Type == metadata.FileTypeRegular {
-		if result.RowsAffected() > 0 {
-			tx.pendingDelta += int64(file.Size) - int64(oldSize)
+	if updated && file.Type == metadata.FileTypeRegular {
+		var oldSize uint64
+		if oldSizeVal.Valid {
+			oldSize = uint64(oldSizeVal.Int64)
 		}
+		tx.pendingDelta += int64(file.Size) - int64(oldSize)
 	}
 
 	// If no rows were updated, the file doesn't exist - do an INSERT
-	if result.RowsAffected() == 0 {
+	if !updated {
 		insertQuery := `
 			INSERT INTO files (
 				id, share_name, path, file_type, mode, uid, gid, size,
@@ -345,7 +357,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			)
 		`
 
-		_, err = tx.tx.Exec(ctx, insertQuery,
+		if _, err := tx.tx.Exec(ctx, insertQuery,
 			file.ID, file.ShareName, file.Path,
 			file.Type, file.Mode, file.UID, file.GID, file.Size,
 			timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
@@ -353,8 +365,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 			file.Hidden, aclJSON, easJSON, objectIDArg,
 			deletedAtArg, file.OriginalPath, file.DeletedBy,
-		)
-		if err != nil {
+		); err != nil {
 			return mapPgError(err, "PutFile", "")
 		}
 
