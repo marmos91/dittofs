@@ -39,7 +39,6 @@ func newTLSDittoServer(certSecret, clientCASecret string) *v1alpha1.DittoServer 
 			ControlPlane: cp,
 			Storage: v1alpha1.StorageSpec{
 				MetadataSize: "1Gi",
-				CacheSize:    "1Gi",
 			},
 		},
 	}

@@ -15,19 +15,14 @@ spec:
   storage:
     metadataSize: "10Gi"
     contentSize: "50Gi"
-    cacheSize: "5Gi"
     # storageClassName: standard  # Optional: uses default if not specified
 
   # Database configuration (SQLite by default)
   database:
     type: sqlite
     sqlite:
-      path: /data/metadata/controlplane/controlplane.db
+      path: /data/controlplane/controlplane.db
 
-  # Cache configuration (WAL-backed for crash recovery)
-  cache:
-    path: /data/cache
-    size: "1GB"
 
   # Control plane REST API
   controlPlane:

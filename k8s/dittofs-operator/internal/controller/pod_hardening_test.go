@@ -192,7 +192,6 @@ func newHardeningDittoServer() *v1alpha1.DittoServer {
 			Image: "marmos91c/dittofs:test",
 			Storage: v1alpha1.StorageSpec{
 				MetadataSize: "1Gi",
-				CacheSize:    "1Gi",
 			},
 		},
 	}

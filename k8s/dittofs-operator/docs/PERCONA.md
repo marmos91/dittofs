@@ -117,7 +117,6 @@ metadata:
 spec:
   storage:
     metadataSize: "10Gi"
-    cacheSize: "5Gi"
 
   # Enable Percona PostgreSQL
   percona:
@@ -478,7 +477,6 @@ spec:
   storage:
     metadataSize: "10Gi"
     contentSize: "50Gi"
-    cacheSize: "5Gi"
 
   percona:
     enabled: true

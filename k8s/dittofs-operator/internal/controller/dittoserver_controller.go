@@ -928,12 +928,12 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 
 			volumeMounts := []corev1.VolumeMount{
 				{
-					Name:      "metadata",
-					MountPath: "/data/metadata",
+					Name:      "controlplane",
+					MountPath: "/data/controlplane",
 				},
 				{
-					Name:      "cache",
-					MountPath: "/data/cache",
+					Name:      "metadata",
+					MountPath: "/data/store/metadata",
 				},
 				{
 					Name:      "config",
@@ -944,7 +944,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 			if dittoServer.Spec.Storage.ContentSize != "" {
 				volumeMounts = append(volumeMounts, corev1.VolumeMount{
 					Name:      "content",
-					MountPath: "/data/content",
+					MountPath: "/data/store/block",
 				})
 			}
 
@@ -1014,16 +1014,22 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				})
 			}
 
-			// Cache PVC (ALWAYS required for WAL persistence)
-			cacheSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.CacheSize)
+			// Control-plane PVC (ALWAYS required): holds the control-plane SQLite DB
+			// — the metadata-store registry + share definitions. Mounted at
+			// /data/controlplane; small by nature (default 1Gi). Without a
+			// persistent volume here, every pod restart wipes all stores and shares.
+			controlPlaneSize := dittoServer.Spec.Storage.ControlPlaneSize
+			if controlPlaneSize == "" {
+				controlPlaneSize = "1Gi"
+			}
+			cpSize, err := resource.ParseQuantity(controlPlaneSize)
 			if err != nil {
-				return fmt.Errorf("invalid cache size: %w", err)
+				return fmt.Errorf("invalid control plane size: %w", err)
 			}
 
-			// Cache VolumeClaimTemplate - always required for WAL persistence
 			volumeClaimTemplates = append(volumeClaimTemplates, corev1.PersistentVolumeClaim{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "cache",
+					Name: "controlplane",
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
 					AccessModes: []corev1.PersistentVolumeAccessMode{
@@ -1032,7 +1038,7 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					StorageClassName: dittoServer.Spec.Storage.StorageClassName,
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: cacheSize,
+							corev1.ResourceStorage: cpSize,
 						},
 					},
 				},

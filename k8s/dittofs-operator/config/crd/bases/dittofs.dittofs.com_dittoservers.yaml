@@ -91,18 +91,6 @@ spec:
                     - LoadBalancer
                     type: string
                 type: object
-              cache:
-                description: Cache configures the WAL-backed cache
-                properties:
-                  path:
-                    default: /data/cache
-                    description: Path is the directory for cache WAL file
-                    type: string
-                  size:
-                    default: 1GB
-                    description: Size is the maximum cache size (e.g., "1GB", "512MB")
-                    type: string
-                type: object
               controlPlane:
                 description: ControlPlane configures the REST API server
                 properties:
@@ -182,12 +170,12 @@ spec:
                     description: SQLite configuration (used when Type=sqlite)
                     properties:
                       path:
-                        default: /data/metadata/controlplane/controlplane.db
+                        default: /data/controlplane/controlplane.db
                         description: |-
                           Path is the database file path inside the container. It MUST live under a
-                          persistent volume (the operator mounts the "metadata" PVC at /data/metadata)
-                          — a path on the ephemeral container overlay is wiped on every pod restart,
-                          silently dropping all metadata-store and share definitions.
+                          persistent volume (the operator mounts the control-plane PVC at
+                          /data/controlplane) — a path on the ephemeral container overlay is wiped on
+                          every pod restart, silently dropping all metadata-store and share definitions.
                         type: string
                     type: object
                   type:
@@ -881,24 +869,26 @@ spec:
               storage:
                 description: Storage configures PVCs for internal server storage
                 properties:
-                  cacheSize:
-                    default: 5Gi
-                    description: |-
-                      Size for cache PVC (mounted at /data/cache)
-                      Required for WAL persistence - enables crash recovery
-                    example: 5Gi
-                    pattern: ^[0-9]+(Gi|Mi|Ti)$
-                    type: string
                   contentSize:
                     description: |-
-                      Size for content store PVC (mounted at /data/content)
-                      Used for local filesystem content backend (not needed if using pure S3)
+                      Size for the block/content store PVC (mounted at /data/store/block).
+                      Holds local CAS chunks and the block-store append-log (the durable WAL
+                      replayed on crash recovery). Not needed for pure-S3 shares.
                     example: 50Gi
+                    pattern: ^[0-9]+(Gi|Mi|Ti)$
+                    type: string
+                  controlPlaneSize:
+                    default: 1Gi
+                    description: |-
+                      Size for the control-plane PVC (mounted at /data/controlplane), which
+                      holds the control-plane SQLite database (metadata-store registry + share
+                      definitions). Small by nature; defaults to 1Gi.
+                    example: 1Gi
                     pattern: ^[0-9]+(Gi|Mi|Ti)$
                     type: string
                   metadataSize:
                     description: |-
-                      Size for metadata store PVC (mounted at /data/metadata)
+                      Size for the metadata store PVC (mounted at /data/store/metadata)
                       Used by BadgerDB or other metadata backends
                     example: 10Gi
                     pattern: ^[0-9]+(Gi|Mi|Ti)$
@@ -909,7 +899,6 @@ spec:
                       If not specified, uses the cluster's default StorageClass
                     type: string
                 required:
-                - cacheSize
                 - metadataSize
                 type: object
               terminationGracePeriodSeconds:

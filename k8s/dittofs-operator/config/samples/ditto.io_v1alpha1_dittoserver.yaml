@@ -33,12 +33,8 @@ spec:
   database:
     type: sqlite
     sqlite:
-      path: "/data/metadata/controlplane/controlplane.db"
+      path: "/data/controlplane/controlplane.db"
 
-  # WAL-backed cache configuration
-  cache:
-    path: "/data/cache"
-    size: "1GB"
 
   # Control plane REST API configuration
   controlPlane:

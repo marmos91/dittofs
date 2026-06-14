@@ -55,7 +55,6 @@ var _ = Describe("DittoServer deletion", func() {
 			},
 			Spec: dittoiov1alpha1.DittoServerSpec{
 				Storage: dittoiov1alpha1.StorageSpec{
-					CacheSize:    "1Gi",
 					MetadataSize: "1Gi",
 				},
 			},

@@ -68,7 +68,6 @@ metadata:
 spec:
   storage:
     metadataSize: "10Gi"
-    cacheSize: "5Gi"
   identity:
     jwt:
       secretRef:

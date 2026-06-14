@@ -74,7 +74,6 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.StorageSpec{
 									MetadataSize: "10Gi",
 									ContentSize:  "100Gi",
-									CacheSize:    "5Gi",
 								},
 							),
 							v1alpha1.WithResources(
@@ -119,7 +118,6 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.WithStorage(
 									v1alpha1.StorageSpec{
 										MetadataSize: "5Gi",
-										CacheSize:    "5Gi",
 									},
 								),
 							),
@@ -153,7 +151,6 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.WithStorage(
 									v1alpha1.StorageSpec{
 										MetadataSize: "5Gi",
-										CacheSize:    "5Gi",
 									},
 								),
 							),
@@ -187,7 +184,6 @@ func TestReconcileDittoServer(t *testing.T) {
 								v1alpha1.WithStorage(
 									v1alpha1.StorageSpec{
 										MetadataSize: "10Gi",
-										CacheSize:    "5Gi",
 									},
 								),
 							),
@@ -237,7 +233,6 @@ func TestReconcileDittoServer(t *testing.T) {
 							v1alpha1.WithStorage(
 								v1alpha1.StorageSpec{
 									MetadataSize: "5Gi",
-									CacheSize:    "5Gi",
 								},
 							),
 							v1alpha1.WithDatabase(&v1alpha1.DatabaseConfig{
@@ -245,10 +240,6 @@ func TestReconcileDittoServer(t *testing.T) {
 								SQLite: &v1alpha1.SQLiteConfig{
 									Path: "/data/controlplane/controlplane.db",
 								},
-							}),
-							v1alpha1.WithCache(&v1alpha1.InfraCacheConfig{
-								Path: "/data/cache",
-								Size: "1GB",
 							}),
 						),
 					),
