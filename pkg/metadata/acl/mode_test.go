@@ -274,6 +274,62 @@ func TestAdjustACLForMode_DoesNotModifyOriginal(t *testing.T) {
 	}
 }
 
+// TestAdjustACLForMode_PreservesSDFlags is the regression net for the audit
+// finding that AdjustACLForMode returned a fresh &ACL{ACEs: newACEs} and thereby
+// dropped the SD-level flags (Protected/AutoInherited/NullDACL/Source) on every
+// chmod. Dropping Protected re-exposes a shielded object to ancestor
+// propagation; dropping AutoInherited causes inheritance-flag drift.
+func TestAdjustACLForMode_PreservesSDFlags(t *testing.T) {
+	baseACEs := []ACE{
+		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialOwner},
+		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialGroup},
+		{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: ACE4_READ_DATA, Who: SpecialEveryone},
+	}
+
+	tests := []struct {
+		name string
+		in   *ACL
+	}{
+		{
+			name: "Protected and Source preserved",
+			in:   &ACL{Protected: true, Source: ACLSourceSMBExplicit, ACEs: baseACEs},
+		},
+		{
+			name: "AutoInherited preserved",
+			in:   &ACL{AutoInherited: true, Source: ACLSourceNFSExplicit, ACEs: baseACEs},
+		},
+		{
+			name: "NullDACL preserved",
+			in:   &ACL{NullDACL: true, Source: ACLSourceWindowsDefault, ACEs: baseACEs},
+		},
+		{
+			name: "all SD flags set",
+			in:   &ACL{Protected: true, AutoInherited: true, NullDACL: true, Source: ACLSourcePOSIXDerived, ACEs: baseACEs},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := AdjustACLForMode(tt.in, 0755)
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			if result.Protected != tt.in.Protected {
+				t.Errorf("Protected dropped on chmod: got %v, want %v", result.Protected, tt.in.Protected)
+			}
+			if result.AutoInherited != tt.in.AutoInherited {
+				t.Errorf("AutoInherited dropped on chmod: got %v, want %v", result.AutoInherited, tt.in.AutoInherited)
+			}
+			if result.NullDACL != tt.in.NullDACL {
+				t.Errorf("NullDACL dropped on chmod: got %v, want %v", result.NullDACL, tt.in.NullDACL)
+			}
+			if result.Source != tt.in.Source {
+				t.Errorf("Source dropped on chmod: got %q, want %q", result.Source, tt.in.Source)
+			}
+		})
+	}
+}
+
 func TestModeRoundTrip(t *testing.T) {
 	// Set mode -> derive mode should match.
 	modes := []uint32{0755, 0644, 0777, 0000, 0700, 0500, 0400}

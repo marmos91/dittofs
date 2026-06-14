@@ -96,7 +96,18 @@ func AdjustACLForMode(a *ACL, newMode uint32) *ACL {
 		}
 	}
 
-	return &ACL{ACEs: newACEs}
+	// Preserve the SD-level flags: chmod only rewrites the special-identifier
+	// rwx bits, it never changes whether the DACL is protected from ancestor
+	// inheritance, auto-inherited, a null DACL, or its source. Dropping these
+	// (especially Protected) would silently re-expose a shielded object to
+	// ancestor propagation on the next ComputeInheritedACL pass.
+	return &ACL{
+		ACEs:          newACEs,
+		Source:        a.Source,
+		Protected:     a.Protected,
+		AutoInherited: a.AutoInherited,
+		NullDACL:      a.NullDACL,
+	}
 }
 
 // rwxMaskBits is the set of ACE mask bits that correspond to rwx permissions.
