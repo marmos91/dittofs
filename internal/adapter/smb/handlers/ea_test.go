@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -171,5 +172,58 @@ func TestFileAttrEAHelpers_CaseInsensitiveAndPreserveCase(t *testing.T) {
 	a.ApplyEAMutations([]metadata.EAMutation{{Name: "mixedea", Delete: true}})
 	if a.EAs != nil {
 		t.Fatalf("deleting the last EA must nil the map, got %v", a.EAs)
+	}
+}
+
+// TestFullEaInformationSize_MatchesEncodedLength asserts the arithmetic size
+// helper returns exactly len(encodeFullEaInformation(...)) across empty,
+// single, and multi-EA inputs with varying name/value lengths (including
+// entries that need 4-byte padding and entries that are already aligned), plus
+// the reserved ACL-xattr and oversized-field skips.
+func TestFullEaInformationSize_MatchesEncodedLength(t *testing.T) {
+	cases := []struct {
+		name string
+		eas  map[string][]byte
+	}{
+		{"empty", nil},
+		{"empty-map", map[string][]byte{}},
+		{"single-aligned", map[string][]byte{"AB": []byte("xy")}},
+		{"single-needs-pad", map[string][]byte{"NAME": []byte("v")}},
+		{"single-zero-value", map[string][]byte{"FLAG": nil}},
+		{
+			"multi-varied",
+			map[string][]byte{
+				"a":          []byte("1"),
+				"BB":         []byte("value-two"),
+				"ccc":        []byte(""),
+				"LongerName": bytes.Repeat([]byte("x"), 37),
+				"zEnd":       []byte("last"),
+			},
+		},
+		{
+			"reserved-skipped",
+			map[string][]byte{
+				reservedACLXattrName: bytes.Repeat([]byte("z"), 100),
+				"keepme":             []byte("data"),
+			},
+		},
+		{
+			"oversized-skipped",
+			map[string][]byte{
+				strings.Repeat("n", 0x100): []byte("v"),                        // name > 0xFF, skipped
+				"big":                      bytes.Repeat([]byte("v"), 0x10000), // value > 0xFFFF, skipped
+				"ok":                       []byte("fine"),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := uint32(len(encodeFullEaInformation(tc.eas)))
+			got := fullEaInformationSize(tc.eas)
+			if got != want {
+				t.Fatalf("fullEaInformationSize = %d, want len(encode) = %d", got, want)
+			}
+		})
 	}
 }

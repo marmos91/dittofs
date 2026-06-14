@@ -443,7 +443,7 @@ func shouldPersistDurableOnDisconnect(
 //     downgrading its own lease (smb2.lease.upgrade3, smb2.lease.break). Samba
 //     keys conflict on the share entry's connection identity; we approximate via
 //     ClientGuid equality, the same approximation used by
-//     hasSameClientNonStatOpenForFile.
+//     scanNonStatOpensForFile's same-client carve-out.
 //
 // Pipes, directories, and the requestor's own opens (same SMB FileID) never
 // contribute. The decision only strips W — it never blocks the grant or sends a
