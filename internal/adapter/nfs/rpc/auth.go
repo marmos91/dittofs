@@ -204,14 +204,16 @@ func ParseUnixAuth(body []byte) (*UnixAuth, error) {
 	}
 
 	// Read each supplementary GID (4 bytes each, big-endian)
-	// These represent additional group memberships beyond the primary GID
+	// These represent additional group memberships beyond the primary GID.
+	// Inlined (rather than via readUint32) so the success path performs no
+	// fmt.Sprintf allocation per element; the index is only formatted on error.
 	auth.GIDs = make([]uint32, gidsLen)
 	for i := uint32(0); i < gidsLen; i++ {
-		g, err := readUint32(fmt.Sprintf("gid[%d]", i))
-		if err != nil {
-			return nil, err
+		if off+4 > len(body) {
+			return nil, fmt.Errorf("read gid[%d]: %w", i, io.ErrUnexpectedEOF)
 		}
-		auth.GIDs[i] = g
+		auth.GIDs[i] = binary.BigEndian.Uint32(body[off : off+4])
+		off += 4
 	}
 
 	return auth, nil
