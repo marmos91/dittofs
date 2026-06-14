@@ -34,6 +34,24 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 // zero for any reachable block; the dispatchRemoteFetch helper enforces
 // this.
 func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockIdx uint64) (*block.FileBlock, error) {
+	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+	if err != nil {
+		return nil, err
+	}
+	return resolveFileBlockFromRows(rows, blockIdx), nil
+}
+
+// listFileBlocksSnapshot returns a point-in-time snapshot of the FileBlock rows
+// for payloadID with a single ListFileBlocks store scan. A sparse / not-yet-
+// uploaded payload (ErrFileBlockNotFound) yields (nil, nil). Callers that need
+// to test many block indices for one read should fetch the snapshot ONCE and
+// pass it to resolveFileBlockFromRows / blockIsLocalFromRows: each block lookup
+// then walks the in-memory snapshot instead of issuing its own store scan,
+// collapsing the previous N store scans (one per block index) into one. The
+// snapshot is point-in-time: a concurrent writer that mutates the block set
+// after the scan is not reflected for the remainder of that read, which is the
+// acceptable (and arguably more correct) per-read isolation semantics.
+func (m *Syncer) listFileBlocksSnapshot(ctx context.Context, payloadID string) ([]*block.FileBlock, error) {
 	rows, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
 	if err != nil {
 		if errors.Is(err, block.ErrFileBlockNotFound) {
@@ -41,8 +59,15 @@ func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockId
 		}
 		return nil, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
+	return rows, nil
+}
+
+// resolveFileBlockFromRows finds the FileBlock covering blockIdx's byte window
+// within an already-fetched row snapshot. See resolveFileBlock for the offset-
+// covering semantics. Returns nil when no row covers the window.
+func resolveFileBlockFromRows(rows []*block.FileBlock, blockIdx uint64) *block.FileBlock {
 	if len(rows) == 0 {
-		return nil, nil
+		return nil
 	}
 	target := blockIdx * uint64(BlockSize)
 	for _, fb := range rows {
@@ -54,10 +79,10 @@ func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockId
 			continue
 		}
 		if target >= abs && target < abs+uint64(fb.DataSize) {
-			return fb, nil
+			return fb
 		}
 	}
-	return nil, nil
+	return nil
 }
 
 // blockIsLocal reports whether the bytes for (payloadID, blockIdx) are
@@ -70,10 +95,24 @@ func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockId
 // non-true outcome as "must round-trip to remote".
 func (m *Syncer) blockIsLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
 	fb, err := m.resolveFileBlock(ctx, payloadID, blockIdx)
-	if err != nil || fb == nil {
+	if err != nil {
 		return false
 	}
-	if fb.Hash.IsZero() {
+	return m.blockIsLocalFromRow(ctx, fb)
+}
+
+// blockIsLocalFromRows answers blockIsLocal against an already-fetched row
+// snapshot, avoiding a fresh ListFileBlocks scan per block index.
+func (m *Syncer) blockIsLocalFromRows(ctx context.Context, rows []*block.FileBlock, blockIdx uint64) bool {
+	return m.blockIsLocalFromRow(ctx, resolveFileBlockFromRows(rows, blockIdx))
+}
+
+// blockIsLocalFromRow reports whether the resolved FileBlock's CAS chunk is
+// present in the local store. A nil row, a zero hash (sparse / pre-CAS drift),
+// or a local.Has error all yield false — the caller treats any non-true outcome
+// as "must round-trip to remote".
+func (m *Syncer) blockIsLocalFromRow(ctx context.Context, fb *block.FileBlock) bool {
+	if fb == nil || fb.Hash.IsZero() {
 		return false
 	}
 	has, err := m.local.Has(ctx, fb.Hash)
@@ -188,16 +227,6 @@ func blockRange(offset uint64, length uint32) (start, end uint64) {
 	return offset / uint64(BlockSize), (offset + uint64(length) - 1) / uint64(BlockSize)
 }
 
-// allBlocksLocal returns true if every block in the range is already in the local store.
-func (m *Syncer) allBlocksLocal(ctx context.Context, payloadID string, startIdx, endIdx uint64) bool {
-	for blockIdx := startIdx; blockIdx <= endIdx; blockIdx++ {
-		if !m.blockIsLocal(ctx, payloadID, blockIdx) {
-			return false
-		}
-	}
-	return true
-}
-
 // EnsureAvailableAndRead downloads blocks and copies data directly to dest, avoiding
 // a second local ReadAt. Demanded blocks are downloaded inline in the caller's goroutine
 // prefetch uses the worker pool. Returns (filled, error).
@@ -213,7 +242,27 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	}
 
 	startBlockIdx, endBlockIdx := blockRange(offset, length)
-	if m.allBlocksLocal(ctx, payloadID, startBlockIdx, endBlockIdx) {
+
+	// Single point-in-time store scan of the per-payload FileBlock rows,
+	// reused for the all-local fast path, the per-block locality checks below,
+	// and the inline fetch hash lookups (all of which walk this in-memory
+	// snapshot). This replaces the prior 2N+ ListFileBlocks store scans (one
+	// per block in the all-local check + one per block in the download loop,
+	// plus one more inside each inlineFetchOrWait) with a single store scan per
+	// read.
+	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+	if err != nil {
+		return false, err
+	}
+
+	allLocal := true
+	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
+		if !m.blockIsLocalFromRows(ctx, rows, blockIdx) {
+			allLocal = false
+			break
+		}
+	}
+	if allLocal {
 		return false, nil
 	}
 
@@ -228,12 +277,12 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	needLocalReadAt := false
 
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		if m.blockIsLocal(ctx, payloadID, blockIdx) {
+		if m.blockIsLocalFromRows(ctx, rows, blockIdx) {
 			needLocalReadAt = true
 			continue
 		}
 
-		data, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, blockIdx)
+		data, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, blockIdx, rows)
 		if err != nil {
 			return false, err
 		}
@@ -266,7 +315,10 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 
 // inlineFetchOrWait downloads a block inline or waits for an in-flight download.
 // Returns (data, true, nil) for inline download, (nil, false, nil) if piggybacked on existing.
-func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, bool, error) {
+//
+// rows is the caller's point-in-time FileBlock snapshot for payloadID; the
+// block is resolved from it instead of re-scanning the store.
+func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, rows []*block.FileBlock) ([]byte, bool, error) {
 	key := inFlightKey(payloadID, blockIdx)
 
 	m.inFlightMu.Lock()
@@ -298,11 +350,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 		}
 	}()
 
-	fb, err := m.resolveFileBlock(ctx, payloadID, blockIdx)
-	if err != nil {
-		completionErr = err
-		return nil, false, err
-	}
+	fb := resolveFileBlockFromRows(rows, blockIdx)
 	if fb == nil {
 		return nil, true, nil
 	}

@@ -27,7 +27,8 @@ type SyncQueue struct {
 	wg              gosync.WaitGroup
 	stopCh          chan struct{}
 	stoppedCh       chan struct{}
-	started         bool // tracks whether Start() was called
+	stopOnce        gosync.Once // guards close(stopCh) against concurrent/repeated Stop()
+	started         bool        // tracks whether Start() was called
 
 	// workerCtx is the parent context for per-request contexts created in
 	// processRequest. It is cancelled when stopCh is closed so that in-flight
@@ -113,6 +114,7 @@ func (q *SyncQueue) Start(ctx context.Context) {
 
 // Stop gracefully shuts down the transfer queue.
 // It waits for pending uploads to complete (with timeout).
+// Safe to call multiple times and from concurrent goroutines.
 func (q *SyncQueue) Stop(timeout time.Duration) {
 	q.mu.Lock()
 	if !q.started {
@@ -122,7 +124,11 @@ func (q *SyncQueue) Stop(timeout time.Duration) {
 	q.mu.Unlock()
 
 	logger.Info("Stopping transfer queue", "pending", q.Pending())
-	close(q.stopCh)
+	// sync.Once guards close(stopCh) so concurrent/repeated Stop() calls
+	// cannot double-close the channel (panic). Mirrors HealthMonitor.Stop().
+	q.stopOnce.Do(func() {
+		close(q.stopCh)
+	})
 
 	select {
 	case <-q.stoppedCh:
