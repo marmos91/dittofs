@@ -230,7 +230,10 @@ func (s *PostgresMetadataStore) Close() error {
 	s.cancel()
 
 	// Close connection pool
-	closeConnectionPool(s.pool, s.logger)
+	if s.pool != nil {
+		s.logger.Info("Closing PostgreSQL connection pool")
+		s.pool.Close()
+	}
 
 	s.logger.Info("PostgreSQL metadata store closed")
 	return nil

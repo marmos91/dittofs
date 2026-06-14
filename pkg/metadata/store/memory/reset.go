@@ -13,7 +13,7 @@ var _ metadata.Resetable = (*MemoryMetadataStore)(nil)
 
 // Reset truncates all in-memory metadata state under the store-level
 // write lock. Engine-identity fields (capabilities, maxStorageBytes,
-// maxFiles, storeID, attrPool) are preserved — they are static config,
+// maxFiles, storeID) are preserved — they are static config,
 // not data, and altering them would change the engine's API-level
 // identity. Lazy sub-stores are nilled to mirror Restore's
 // "never-initialized" branches.

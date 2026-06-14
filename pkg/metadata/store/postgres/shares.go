@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -478,7 +479,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		&hidden,
 	)
 
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil // Not found, not an error
 	}
 	if err != nil {

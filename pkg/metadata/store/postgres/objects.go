@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -48,7 +49,7 @@ func (s *PostgresMetadataStore) GetFileBlock(ctx context.Context, id string) (*m
 	row := s.queryRow(ctx, query, id)
 
 	block, err := scanFileBlock(row)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, metadata.ErrFileBlockNotFound
 	}
 	if err != nil {
@@ -152,7 +153,7 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 	query := `UPDATE file_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 RETURNING ref_count`
 	var newCount uint32
 	err := s.queryRow(ctx, query, id).Scan(&newCount)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, metadata.ErrFileBlockNotFound
 	}
 	if err != nil {
@@ -195,7 +196,7 @@ func decrementAndReapTx(ctx context.Context, tx pgx.Tx, id string) (uint32, erro
 	err := tx.QueryRow(ctx,
 		`UPDATE file_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 RETURNING ref_count`,
 		id).Scan(&newCount)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil // tolerate already-swept row
 	}
 	if err != nil {
@@ -270,7 +271,7 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 	row := s.queryRow(ctx, query, hash.String())
 
 	block, err := scanFileBlock(row)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -489,7 +490,7 @@ func (tx *postgresTransaction) GetFileBlock(ctx context.Context, id string) (*me
 		FROM file_blocks WHERE id = $1`
 	row := tx.tx.QueryRow(ctx, query, id)
 	block, err := scanFileBlock(row)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, metadata.ErrFileBlockNotFound
 	}
 	if err != nil {
@@ -585,7 +586,7 @@ func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string)
 	query := `UPDATE file_blocks SET ref_count = GREATEST(ref_count - 1, 0) WHERE id = $1 RETURNING ref_count`
 	var newCount uint32
 	err := tx.tx.QueryRow(ctx, query, id).Scan(&newCount)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, metadata.ErrFileBlockNotFound
 	}
 	if err != nil {
@@ -636,7 +637,7 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`
 	row := tx.tx.QueryRow(ctx, query, hash.String())
 	block, err := scanFileBlock(row)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {

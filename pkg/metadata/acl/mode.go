@@ -7,13 +7,13 @@ const (
 	modeExecute = 0x1
 )
 
-// DeriveMode derives Unix mode bits from an ACL for display purposes.
+// deriveMode derives Unix mode bits from an ACL for display purposes.
 // It scans OWNER@, GROUP@, and EVERYONE@ ALLOW ACEs and maps their
 // mask bits to the corresponding rwx triplets per RFC 7530 Section 6.4.1.
 //
 // Returns the composed 9-bit mode (e.g., 0755, 0644).
 // If the ACL is nil, returns 0.
-func DeriveMode(a *ACL) uint32 {
+func deriveMode(a *ACL) uint32 {
 	if a == nil {
 		return 0
 	}

@@ -317,6 +317,7 @@ func (l *OpLock) Clone() *OpLock {
 		ParentLeaseKey:      l.ParentLeaseKey, // Fixed-size array, copied by value
 		IsDirectory:         l.IsDirectory,
 		IsTraditionalOplock: l.IsTraditionalOplock,
+		BrokenViaTimeout:    l.BrokenViaTimeout,
 	}
 }
 

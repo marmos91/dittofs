@@ -68,13 +68,13 @@ func TestWindowsFlagsRoundTrip(t *testing.T) {
 		winFlags uint8
 	}{
 		{"no flags", 0},
-		{"CI", 0x01},
-		{"OI", 0x02},
+		{"OI", 0x01},
+		{"CI", 0x02},
 		{"NP", 0x04},
 		{"IO", 0x08},
 		{"INHERITED", 0x10},
-		{"CI+OI", 0x03},
-		{"CI+OI+INHERITED", 0x13},
+		{"OI+CI", 0x03},
+		{"OI+CI+INHERITED", 0x13},
 		{"all flags", 0x1F},
 	}
 

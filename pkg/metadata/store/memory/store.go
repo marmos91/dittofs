@@ -190,10 +190,6 @@ type MemoryMetadataStore struct {
 	// 0 means unlimited (constrained only by available memory).
 	maxFiles uint64
 
-	// attrPool is a sync.Pool for FileAttr allocations to reduce GC pressure.
-	// This pool is used to recycle FileAttr objects during copy operations.
-	attrPool sync.Pool
-
 	// sessions tracks active share mount sessions for monitoring and DUMP.
 	// Key: composite key "shareName|clientAddr"
 	// Value: ShareSession with mount timestamp
@@ -338,13 +334,6 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		rollupOffsets: make(map[string]uint64),
 		// ObjectID -> handle-key secondary index.
 		objectIndex: make(map[block.ContentHash]string),
-	}
-
-	// Initialize the sync.Pool for FileAttr allocations
-	store.attrPool = sync.Pool{
-		New: func() any {
-			return &metadata.FileAttr{}
-		},
 	}
 
 	return store

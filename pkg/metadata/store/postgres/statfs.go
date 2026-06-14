@@ -25,7 +25,7 @@ const (
 // Both the pool and transaction implementations share this so the scoping rule
 // lives in exactly one place.
 func statfsQuery(handle metadata.FileHandle) (sql string, args []any) {
-	shareName, _, decodeErr := decodeFileHandle(handle)
+	shareName, _, decodeErr := metadata.DecodeFileHandle(handle)
 	if decodeErr != nil {
 		shareName = ""
 	}

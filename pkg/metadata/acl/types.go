@@ -163,9 +163,9 @@ type ACL struct {
 	NullDACL      bool      `json:"null_dacl,omitempty"`      // Windows null DACL — no DACL present (everyone full access)
 }
 
-// IsSpecialWho reports whether who is one of the special identifiers:
+// isSpecialWho reports whether who is one of the special identifiers:
 // OWNER@, GROUP@, EVERYONE@, or OwnerRights@.
-func IsSpecialWho(who string) bool {
+func isSpecialWho(who string) bool {
 	return who == SpecialOwner || who == SpecialGroup || who == SpecialEveryone || who == SpecialOwnerRights
 }
 
@@ -181,8 +181,8 @@ func (a *ACE) IsInherited() bool {
 	return a.Flag&ACE4_INHERITED_ACE != 0
 }
 
-// TypeString returns a human-readable representation of the ACE type.
-func (a *ACE) TypeString() string {
+// typeString returns a human-readable representation of the ACE type.
+func (a *ACE) typeString() string {
 	switch a.Type {
 	case ACE4_ACCESS_ALLOWED_ACE_TYPE:
 		return "ALLOW"

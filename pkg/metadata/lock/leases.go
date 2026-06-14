@@ -216,20 +216,6 @@ func (lm *Manager) hasPersistedLeaseKeyOnOtherFile(ctx context.Context, leaseKey
 	return false
 }
 
-// RequestLease requests a new or upgraded lease on a file or directory.
-//
-// For new leases, the granted state may be less than requested if conflicts exist.
-// For existing leases with the same key, this performs an upgrade if the transition is valid.
-//
-// Returns (LeaseStateNone, 0, nil) for rejected requests (invalid state, recently-broken,
-// NLM conflicts, cross-key conflicts, invalid downgrade).
-func (lm *Manager) requestLeaseImpl(ctx context.Context, fileHandle FileHandle, leaseKey [16]byte,
-	parentLeaseKey [16]byte, ownerID string, clientID string, shareName string,
-	requestedState uint32, isDirectory bool) (grantedState uint32, epoch uint16, err error) {
-	return lm.requestLeaseImplWithMode(ctx, fileHandle, leaseKey, parentLeaseKey,
-		ownerID, clientID, shareName, requestedState, isDirectory, false, false)
-}
-
 // requestLeaseImplWithMode is the underlying lease-grant implementation with
 // the additional `isTraditionalOplock` flag distinguishing real SMB2.1+ leases
 // from synthetic-key records modeling traditional oplocks (LEVEL_II/Exclusive/
