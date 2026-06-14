@@ -515,7 +515,16 @@ else
         "smb2.acls:acls"
         "smb2.acls_non_canonical:acls_non_canonical:smbnoncanon"
         "smb2.aio_delay:aio_delay"
-        "smb2.bench:bench"
+        # smb2.bench is intentionally NOT run: it is a throughput benchmark
+        # family (echo, oplock1, path-contention-shared, read, session-setup),
+        # not a conformance suite. The tests measure round-trip timing and
+        # complete-or-time-out under load, so under CI contention (linux/amd64
+        # via QEMU) they flake to failure — and because they normally pass,
+        # none are recorded in KNOWN_FAILURES.md, so a flaked run surfaces as a
+        # spurious "new failure" and reds the whole job. Benchmarks exercise no
+        # protocol behaviour the functional suites don't already cover, so we
+        # drop them from the gate entirely (kills the recurring flake, saves the
+        # emulated runtime). Run them ad hoc with `--filter smb2.bench`.
         "smb2.change_notify_disabled:change_notify_disabled:change_notify_disabled"
         "smb2.charset:charset"
         "smb2.compound:compound"
@@ -626,7 +635,9 @@ else
     # NOTE: Skipped interactive hold tests:
     #   smb2.hold-oplock    - waits 5 min for oplock events (no real test)
     #   smb2.hold-sharemode - blocks indefinitely waiting for SIGINT
-    log_warn "Skipped: smb2.hold-oplock, smb2.hold-sharemode (interactive hold tests)"
+    # Also skipped: smb2.bench (throughput benchmarks — flaky under load, no
+    # conformance signal; see the SUITES list above).
+    log_warn "Skipped: smb2.hold-oplock, smb2.hold-sharemode (interactive hold tests), smb2.bench (benchmarks)"
 fi
 
 # Collect DittoFS logs
