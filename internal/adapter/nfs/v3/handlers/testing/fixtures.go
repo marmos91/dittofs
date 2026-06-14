@@ -74,6 +74,11 @@ type HandlerTestFixture struct {
 func NewHandlerFixture(t testing.TB) *HandlerTestFixture {
 	t.Helper()
 
+	// The wtmax capability cache is process-global; clear it so each fixture
+	// starts cold and tests that set distinct wtmax values do not bleed into
+	// one another.
+	handlers.ResetCapsCacheForTest()
+
 	ctx := context.Background()
 
 	// Create stores

@@ -365,9 +365,11 @@ func TestWrite_FileSyncStability(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, types.NFS3OK, resp.Status)
 	assert.EqualValues(t, uint32(5), resp.Count)
-	// With Cache always enabled, we always return UNSTABLE (0)
-	// Server is allowed to return less stable than requested per RFC 1813
-	assert.EqualValues(t, uint32(0), resp.Committed)
+	// A FILE_SYNC request triggers a synchronous flush; on success the server
+	// reports the requested stability level (FILE_SYNC = 2) per RFC 1813
+	// Section 3.3.7.
+	assert.EqualValues(t, uint32(handlers.FileSyncWrite), resp.Committed,
+		"FILE_SYNC WRITE must report FILE_SYNC when the flush succeeds")
 }
 
 // TestWrite_InvalidStability tests WRITE with invalid stability level.

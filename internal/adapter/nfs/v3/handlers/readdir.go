@@ -145,19 +145,26 @@ func (h *Handler) ReadDir(
 	// Generate verifier from directory mtime - changes when directory is modified
 	currentVerifier := directoryMtimeVerifier(dirFile.Mtime)
 
-	// Validate cookie verifier for non-initial requests
-	// Initial request (cookie=0) or clients that don't use verifiers (verifier=0) bypass this check
-	// Note: We intentionally do NOT return NFS3ErrBadCookie on verifier mismatch.
-	// Our verifier is mtime-based, so it changes on every directory modification.
-	// Returning BAD_COOKIE during concurrent writes (e.g., macOS Finder copy)
-	// causes clients to fail with error -8062. We treat mismatches as advisory
-	// and continue serving entries from the cookie position, matching Linux knfsd.
+	// Validate cookie verifier for non-initial requests.
+	// Initial request (cookie=0) or clients that don't use verifiers (verifier=0)
+	// bypass this check. On a non-zero-cookie verifier mismatch, return
+	// NFS3ErrBadCookie per RFC 1813 Section 3.3.16 — the cookie was issued
+	// against a different directory snapshot and is no longer meaningful.
+	// This mirrors the NFSv4 READDIR behavior (NFS4ERR_BAD_COOKIE).
 	if req.Cookie != 0 && req.CookieVerf != 0 && req.CookieVerf != currentVerifier {
-		logger.DebugCtx(ctx.Context, "READDIR: directory modified since last read, continuing with current entries",
+		logger.DebugCtx(ctx.Context, "READDIR: cookieverf mismatch, returning NFS3ErrBadCookie",
 			"handle", fmt.Sprintf("%x", req.DirHandle),
 			"expected_verf", fmt.Sprintf("0x%016x", req.CookieVerf),
 			"current_verf", fmt.Sprintf("0x%016x", currentVerifier),
 			"client", clientIP)
+
+		// Include directory attributes even on error for cache consistency
+		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
+
+		return &ReadDirResponse{
+			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrBadCookie},
+			DirAttr:         nfsDirAttr,
+		}, nil
 	}
 
 	authCtx, err := h.GetCachedAuthContext(ctx)

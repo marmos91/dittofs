@@ -366,7 +366,11 @@ func TestReadDir_NestedDirectory(t *testing.T) {
 // TestReadDir_StaleVerifierContinues tests that READDIR continues serving entries
 // when the cookie verifier is stale (directory modified between paginated reads).
 // This prevents macOS Finder error -8062 during concurrent directory operations.
-func TestReadDir_StaleVerifierContinues(t *testing.T) {
+// TestReadDir_StaleVerifierBadCookie verifies that a non-zero-cookie READDIR
+// carrying a stale cookie verifier returns NFS3ERR_BAD_COOKIE per RFC 1813
+// Section 3.3.16. The cookie was issued against a different directory snapshot
+// and is no longer meaningful. This mirrors the NFSv4 READDIR behavior.
+func TestReadDir_StaleVerifierBadCookie(t *testing.T) {
 	fx := handlertesting.NewHandlerFixture(t)
 
 	// Setup: Create a directory with files
@@ -392,7 +396,7 @@ func TestReadDir_StaleVerifierContinues(t *testing.T) {
 	// Modify the directory (changes mtime, invalidates verifier)
 	fx.CreateFile("stale/file3.txt", []byte("3"))
 
-	// Second read with old verifier and a real non-zero cookie — should succeed, not BAD_COOKIE
+	// Second read with old verifier and a real non-zero cookie — must return BAD_COOKIE.
 	resp2, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
 		DirHandle:  dirHandle,
 		Cookie:     resumeCookie,
@@ -400,16 +404,39 @@ func TestReadDir_StaleVerifierContinues(t *testing.T) {
 		Count:      8192,
 	})
 	require.NoError(t, err)
-	assert.EqualValues(t, types.NFS3OK, resp2.Status, "Stale verifier should not return BAD_COOKIE")
+	assert.EqualValues(t, types.NFS3ErrBadCookie, resp2.Status, "stale verifier must return NFS3ERR_BAD_COOKIE")
+}
 
-	// Verify that we continue from the cookie position:
-	// - the new file3.txt appears after resuming
-	// - previously returned entries (file1.txt, file2.txt) are not re-returned
-	require.NotEmpty(t, resp2.Entries, "expected entries when resuming directory read after modification")
-	names2 := extractEntryNames(resp2.Entries)
-	assert.Contains(t, names2, "file3.txt", "resumed READDIR should include newly created file3.txt")
-	assert.NotContains(t, names2, "file1.txt", "resumed READDIR should not re-return file1.txt")
-	assert.NotContains(t, names2, "file2.txt", "resumed READDIR should not re-return file2.txt")
+// TestReadDir_ZeroCookieIgnoresVerifierMismatch verifies that the verifier
+// check is bypassed for the initial request (cookie=0) and for clients that do
+// not use verifiers (verifier=0), even when the supplied verifier is garbage.
+func TestReadDir_ZeroCookieIgnoresVerifierMismatch(t *testing.T) {
+	fx := handlertesting.NewHandlerFixture(t)
+
+	fx.CreateFile("zc/aaa.txt", []byte("1"))
+	dirHandle := fx.MustGetHandle("zc")
+
+	// Initial READDIR (cookie=0) must ignore a junk verifier.
+	resp, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
+		DirHandle:  dirHandle,
+		Cookie:     0,
+		CookieVerf: 0xDEADBEEFCAFEBABE,
+		Count:      8192,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp.Status, "initial READDIR (cookie=0) must ignore verifier mismatch")
+	require.NotEmpty(t, resp.Entries, "expected entries from initial READDIR")
+	resumeCookie := resp.Entries[len(resp.Entries)-1].Cookie
+
+	// Non-zero cookie but zero verifier (client does not use verifiers) must also be ignored.
+	resp2, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
+		DirHandle:  dirHandle,
+		Cookie:     resumeCookie,
+		CookieVerf: 0,
+		Count:      8192,
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, types.NFS3OK, resp2.Status, "zero verifier must bypass the cookie check")
 }
 
 // extractEntryNames extracts the names from directory entries.

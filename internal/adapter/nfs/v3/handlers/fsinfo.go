@@ -168,6 +168,10 @@ func (h *Handler) FsInfo(
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
+	// Cache the advertised wtmax so WRITE can clamp over-large requests without
+	// a per-RPC GetFilesystemCapabilities lookup.
+	setMaxWriteSize(capabilities.MaxWriteSize)
+
 	// Convert metadata attributes to NFS wire format
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
