@@ -39,7 +39,8 @@ var KerberosV5OIDBytes = []byte{
 //
 // oidBytes must be the full DER encoding of the mechanism OID including the
 // 0x06 tag and length prefix (see KerberosV5OIDBytes).
-// tokenID is the 2-byte Kerberos token identifier (GSSTokenIDAPReq / APRep).
+// tokenID is the 2-byte Kerberos token identifier (e.g. GSSTokenIDAPReq,
+// GSSTokenIDAPRep — any Kerberos message token ID is accepted).
 // innerToken is the already-encoded Kerberos message.
 func WrapGSSToken(innerToken []byte, oidBytes []byte, tokenID uint16) []byte {
 	innerLen := len(oidBytes) + 2 + len(innerToken) // +2 for tokenID
