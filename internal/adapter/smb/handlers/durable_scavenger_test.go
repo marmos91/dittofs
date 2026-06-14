@@ -383,36 +383,6 @@ func TestScavengerForceExpireNotFound(t *testing.T) {
 	}
 }
 
-func TestScavengerHandleConflictingOpen(t *testing.T) {
-	store := newMockDurableStore()
-	now := time.Now()
-
-	fileHandle := []byte{0x01, 0x02, 0x03, 0x04}
-
-	// Put an orphaned durable handle for a file
-	_ = store.PutDurableHandle(context.Background(), &lock.PersistedDurableHandle{
-		ID:              "orphaned",
-		MetadataHandle:  fileHandle,
-		Path:            "/test/conflict",
-		ShareName:       "share1",
-		DisconnectedAt:  now.Add(-1 * time.Second),
-		TimeoutMs:       60000,
-		ServerStartTime: now,
-	})
-
-	scavenger := NewDurableHandleScavenger(store, nil, 1*time.Hour, 60000, now)
-
-	expired := scavenger.HandleConflictingOpen(context.Background(), fileHandle)
-	if expired != 1 {
-		t.Fatalf("expected 1 handle force-expired, got %d", expired)
-	}
-
-	h, _ := store.GetDurableHandle(context.Background(), "orphaned")
-	if h != nil {
-		t.Fatal("expected orphaned handle to be removed after conflicting open")
-	}
-}
-
 // TestScavengerCleanupReleasesLocks verifies that cleanupAndDelete releases
 // byte-range locks held by an expired durable handle using UnlockAllForOpen
 // keyed on OriginalFileID, not the sessionID=0 no-op.

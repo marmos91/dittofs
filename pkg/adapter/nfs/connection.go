@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/pool"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/clients"
 )
 
@@ -124,19 +125,13 @@ func (c *NFSConnection) logReadError(err error, clientAddr string) {
 	switch {
 	case err == io.EOF:
 		logger.Debug("Connection closed by client", "address", clientAddr)
-	case isNetTimeout(err):
+	case adapter.IsNetTimeout(err):
 		logger.Debug("Connection timed out", "address", clientAddr, "error", err)
 	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 		logger.Debug("Connection cancelled", "address", clientAddr, "error", err)
 	default:
 		logger.Debug("Error reading request", "address", clientAddr, "error", err)
 	}
-}
-
-// isNetTimeout returns true if err is a network timeout.
-func isNetTimeout(err error) bool {
-	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // dispatchRequest launches an RPC call handler in a goroutine for concurrent

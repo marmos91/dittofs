@@ -265,15 +265,3 @@ func NewSMBHandlerContext(ctx context.Context, clientAddr string, sessionID uint
 		MessageID:  messageID,
 	}
 }
-
-// WithUser returns a copy of the context with user identity populated
-func (c *SMBHandlerContext) WithUser(user *models.User, permission models.SharePermission) *SMBHandlerContext {
-	newCtx := *c
-	newCtx.User = user
-	newCtx.Permission = permission
-	if user != nil {
-		newCtx.Username = user.Username
-		newCtx.IsGuest = false
-	}
-	return &newCtx
-}

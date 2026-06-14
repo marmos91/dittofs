@@ -248,35 +248,6 @@ func TestBuildChallenge(t *testing.T) {
 }
 
 // =============================================================================
-// BuildMinimalTargetInfo Tests
-// =============================================================================
-
-func TestBuildMinimalTargetInfo(t *testing.T) {
-	info := BuildMinimalTargetInfo()
-
-	t.Run("HasCorrectLength", func(t *testing.T) {
-		// Minimal target info is just the EOL terminator (4 bytes)
-		if len(info) != 4 {
-			t.Errorf("TargetInfo length = %d, expected 4", len(info))
-		}
-	})
-
-	t.Run("EndsWithEOL", func(t *testing.T) {
-		// AvId should be 0 (EOL)
-		avId := binary.LittleEndian.Uint16(info[0:2])
-		if AvID(avId) != AvEOL {
-			t.Errorf("AvId = %d, expected %d (AvEOL)", avId, AvEOL)
-		}
-
-		// AvLen should be 0
-		avLen := binary.LittleEndian.Uint16(info[2:4])
-		if avLen != 0 {
-			t.Errorf("AvLen = %d, expected 0", avLen)
-		}
-	})
-}
-
-// =============================================================================
 // MessageType Tests
 // =============================================================================
 

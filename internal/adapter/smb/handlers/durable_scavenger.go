@@ -213,25 +213,3 @@ func (s *DurableHandleScavenger) ForceExpireDurableHandle(ctx context.Context, h
 	s.cleanupAndDelete(ctx, h)
 	return nil
 }
-
-// HandleConflictingOpen force-expires all orphaned durable handles for a given
-// file handle. This is called when a new open arrives for a file that has
-// orphaned durable handles.
-//
-// Returns the number of handles that were force-expired.
-func (s *DurableHandleScavenger) HandleConflictingOpen(ctx context.Context, fileHandle []byte) int {
-	handles, err := s.store.GetDurableHandlesByFileHandle(ctx, fileHandle)
-	if err != nil {
-		logger.Warn("DurableHandleScavenger: failed to look up handles for conflicting open",
-			"error", err)
-		return 0
-	}
-
-	for _, h := range handles {
-		s.cleanupAndDelete(ctx, h)
-		logger.Debug("DurableHandleScavenger: force-expired handle for conflicting open",
-			"id", h.ID, "path", h.Path)
-	}
-
-	return len(handles)
-}

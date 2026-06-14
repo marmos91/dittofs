@@ -361,15 +361,3 @@ func PropagateOpenFileParentLeaseKey(authCtx *metadata.AuthContext, openFile *Op
 func HasWritePermission(ctx *SMBHandlerContext) bool {
 	return ctx.Permission == models.PermissionReadWrite || ctx.Permission == models.PermissionAdmin
 }
-
-// HasReadPermission checks if the SMB context has read permission for the share.
-func HasReadPermission(ctx *SMBHandlerContext) bool {
-	return ctx.Permission == models.PermissionRead ||
-		ctx.Permission == models.PermissionReadWrite ||
-		ctx.Permission == models.PermissionAdmin
-}
-
-// HasAdminPermission checks if the SMB context has admin permission for the share.
-func HasAdminPermission(ctx *SMBHandlerContext) bool {
-	return ctx.Permission == models.PermissionAdmin
-}

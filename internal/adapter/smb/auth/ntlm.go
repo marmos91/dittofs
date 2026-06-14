@@ -470,17 +470,6 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	return msg, serverChallenge
 }
 
-// BuildMinimalTargetInfo creates a minimal AV_PAIR list with just the terminator.
-// Useful for testing NTLM message parsing without full target info.
-//
-// [MS-NLMP] Section 2.2.2.1
-func BuildMinimalTargetInfo() []byte {
-	return []byte{
-		0x00, 0x00, // AvId: AvEOL
-		0x00, 0x00, // AvLen: 0
-	}
-}
-
 // buildTargetInfo creates a complete AV_PAIR list required by Windows clients.
 //
 // Windows NTLM clients require the following AV_PAIRs in the TargetInfo:

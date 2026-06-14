@@ -224,7 +224,7 @@ func (h *Handler) resumePendingLock(
 			err := metaSvc.LockFile(authCtx, openFile.MetadataHandle, fileLock)
 			if err == nil {
 				finalStatus = types.StatusSuccess
-				finalBody = encodeLockResponseBody()
+				finalBody, _ = (&LockResponse{}).Encode()
 				// Mirror the sync path in lock.go: parked LOCK requests that
 				// finally succeed mark the open as having held a byte-range
 				// lock. The authoritative source of truth at disconnect-time

@@ -21,12 +21,9 @@ var allFFFileID = bytes.Repeat([]byte{0xFF}, 16)
 
 // Common IOCTL/FSCTL codes [MS-FSCC] 2.3
 const (
-	FsctlDfsGetReferrals        uint32 = 0x00060194 // [MS-FSCC] 2.3.16
-	FsctlPipeWait               uint32 = 0x00110018 // [MS-FSCC] 2.3.49
 	FsctlPipeTransceive         uint32 = 0x0011C017 // [MS-FSCC] 2.3.50 - Named pipe transact
 	FsctlValidateNegotiateInfo  uint32 = 0x00140204 // [MS-SMB2] 2.2.31.4
 	FsctlQueryNetworkInterfInfo uint32 = 0x001401FC // [MS-SMB2] 2.2.32.5
-	FsctlPipePeek               uint32 = 0x0011400C // [MS-FSCC] 2.3.48
 	FsctlSrvEnumerateSnapshots  uint32 = 0x00144064 // [MS-SMB2] 2.2.32.2
 	FsctlSrvRequestResumeKey    uint32 = 0x00140078 // [MS-SMB2] 2.2.32.3
 	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1

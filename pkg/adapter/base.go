@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -12,6 +13,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/auth"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 )
+
+// IsNetTimeout reports whether err is a network timeout error. Shared by the
+// NFS and SMB connection loops.
+func IsNetTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
 
 // ConnectionHandler represents a protocol-specific connection that can serve
 // requests. Each protocol adapter creates its own connection type implementing

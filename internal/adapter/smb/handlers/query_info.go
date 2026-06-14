@@ -105,22 +105,6 @@ type FileNetworkOpenInfo struct {
 	FileAttributes types.FileAttributes
 }
 
-// FileAllInfo represents FILE_ALL_INFORMATION [MS-FSCC] 2.4.2.
-//
-// This structure combines multiple info classes into one response.
-// It's a convenience structure that provides all commonly-needed file information.
-type FileAllInfo struct {
-	BasicInfo     FileBasicInfo
-	StandardInfo  FileStandardInfo
-	InternalInfo  uint64 // FileIndex
-	EaInfo        uint32 // EaSize
-	AccessInfo    uint32 // AccessFlags
-	PositionInfo  uint64 // CurrentByteOffset
-	ModeInfo      uint32 // Mode
-	AlignmentInfo uint32 // AlignmentRequirement
-	NameInfo      string // FileName
-}
-
 // ============================================================================
 // Encoding/Decoding Functions
 // ============================================================================
@@ -1118,7 +1102,7 @@ func (h *Handler) buildFilesystemInfo(ctx context.Context, class types.FileInfoC
 		w.WriteUint32(bytesPerSector)
 		return w.Bytes(), nil
 
-	case 4: // FileFsDeviceInformation [MS-FSCC] 2.5.9
+	case 4: // FileFsDeviceInformation [MS-FSCC] 2.5.10
 		// DeviceType (4 bytes) + Characteristics (4 bytes) = 8 bytes
 		w := smbenc.NewWriter(8)
 		w.WriteUint32(0x00000007) // FILE_DEVICE_DISK
@@ -1280,11 +1264,10 @@ func toSMBPath(path string) string {
 	return "\\" + strings.ReplaceAll(path, "/", "\\")
 }
 
-// resolveAccessFlags returns the effective access flags for the open file.
-// MAXIMUM_ALLOWED and GENERIC_ALL are resolved to FILE_ALL_ACCESS (0x001F01FF).
-// resolveAccessFlags normalizes an access mask for FileAccessInformation.
-// Per MS-SMB2: GENERIC_* and MAXIMUM_ALLOWED are resolved to specific rights
-// at CREATE time. FileAccessInformation should report the effective rights.
+// resolveAccessFlags normalizes an access mask, expanding GENERIC_* and
+// MAXIMUM_ALLOWED bits to their specific-rights equivalents (FILE_ALL_ACCESS,
+// 0x001F01FF). Per MS-SMB2 these are resolved to specific rights at CREATE time,
+// so FileAccessInformation reports the effective rights.
 func resolveAccessFlags(desiredAccess uint32) uint32 {
 	resolved := desiredAccess
 
