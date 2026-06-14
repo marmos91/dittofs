@@ -140,6 +140,17 @@ type NFSAdapter struct {
 	// retransmits the same request (RPC-timeout retry on a hard mount), so the
 	// retry does not re-execute and return a spurious EEXIST/ENOENT/NOT_SYNC.
 	drc *duplicateRequestCache
+
+	// blockedOpsMu protects v3BlockedOps from concurrent read/write access.
+	blockedOpsMu sync.RWMutex
+
+	// v3BlockedOps is the parsed set of NFSv3 procedure names blocked at the
+	// adapter level, keyed by procedure name (e.g. "WRITE", "REMOVE"). It is
+	// parsed once from NFSAdapterSettings.BlockedOperations in applyNFSSettings
+	// (at startup and on each settings-change event) so the hot v3 dispatch path
+	// (isOperationBlocked) does a single map lookup instead of a per-RPC JSON
+	// unmarshal + linear scan.
+	v3BlockedOps map[string]bool
 }
 
 // NFSTimeoutsConfig groups all timeout-related configuration.

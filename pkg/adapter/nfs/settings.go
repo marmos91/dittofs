@@ -59,12 +59,18 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	}
 	s.v4Handler.StateManager.SetMaxConnectionsPerSession(settings.V4MaxConnectionsPerSession)
 
-	// Operation blocklist -> v4 Handler.
-	// SetBlockedOps parses the names into a uint32 set once here so the hot
-	// COMPOUND dispatch path (Handler.IsOperationBlocked) only does a map lookup
-	// instead of a per-op JSON unmarshal + linear scan.
+	// Operation blocklist. GetBlockedOperations does a JSON unmarshal of the
+	// stored blocklist, so it is parsed exactly once here (on startup and on
+	// each settings-change event) and cached for both protocol versions:
+	//   - v4: SetBlockedOps parses the names into a uint32 set so the hot
+	//     COMPOUND dispatch path (Handler.IsOperationBlocked) only does a map
+	//     lookup instead of a per-op JSON unmarshal + linear scan.
+	//   - v3: the names are cached in s.v3BlockedOps as a name-keyed set so the
+	//     hot RPC dispatch path (isOperationBlocked) only does a map lookup
+	//     instead of a per-RPC JSON unmarshal + linear scan.
 	blockedOps := settings.GetBlockedOperations()
 	s.v4Handler.SetBlockedOps(blockedOps)
+	s.setV3BlockedOps(blockedOps)
 	if len(blockedOps) > 0 {
 		logger.Info("NFS adapter: operation blocklist active",
 			"blocked_ops", blockedOps)
