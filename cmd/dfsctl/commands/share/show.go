@@ -74,6 +74,7 @@ func (sd ShareDetail) Rows() [][]string {
 		{"Change Notify Disabled", fmt.Sprintf("%v", s.ChangeNotifyDisabled)},
 		{"Streams Disabled", fmt.Sprintf("%v", s.StreamsDisabled)},
 		{"Continuous Availability", fmt.Sprintf("%v", s.ContinuousAvailability)},
+		{"Allow MFsymlink", fmt.Sprintf("%v", s.AllowMFsymlink)},
 		{"Retention", retPolicy},
 	}
 

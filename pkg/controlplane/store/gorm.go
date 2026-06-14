@@ -394,6 +394,15 @@ func New(config *Config) (*GORMStore, error) {
 		return nil, fmt.Errorf("failed to backfill shares.continuous_availability: %w", err)
 	}
 
+	// Backfill shares.allow_mfsymlink for rows that predate the column — same
+	// SQLite ALTER TABLE NULL quirk as the toggles above.
+	if err := db.Exec(
+		"UPDATE shares SET allow_mfsymlink = ? WHERE allow_mfsymlink IS NULL",
+		false,
+	).Error; err != nil {
+		return nil, fmt.Errorf("failed to backfill shares.allow_mfsymlink: %w", err)
+	}
+
 	// --- Post-AutoMigrate migrations ---
 	// Step 2: Migrate legacy Share payload_store_id column to local/remote block store IDs.
 	postMigrator := db.Migrator()

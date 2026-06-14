@@ -57,6 +57,15 @@ type Share struct {
 	// false, a persistent-handle request degrades to a plain durable handle.
 	// Default false (refs #739).
 	ContinuousAvailability bool `gorm:"default:false;not null" json:"continuous_availability"`
+	// AllowMFsymlink enables automatic conversion of 1067-byte XSym
+	// (Minshall+French) symlink files written by macOS/Windows SMB clients into
+	// real symlinks on CLOSE. The conversion target is client-controlled, so
+	// promotion is opt-in. Default false (XSym files are stored as regular
+	// files and never promoted).
+	// Column pinned explicitly: GORM's default naming would mangle the
+	// "MFsymlink" initialism into a different snake_case column than the
+	// "allow_mfsymlink" the store field-map and backfill use.
+	AllowMFsymlink bool `gorm:"column:allow_mfsymlink;default:false;not null" json:"allow_mfsymlink"`
 	// TrashEnabled turns on the per-share recycle bin (#190). Default false.
 	TrashEnabled bool `gorm:"default:false;not null" json:"trash_enabled"`
 	// TrashRetentionDays auto-empties bin entries older than N days (0 = keep forever).
