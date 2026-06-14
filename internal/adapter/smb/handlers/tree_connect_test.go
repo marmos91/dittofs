@@ -868,6 +868,20 @@ func TestResolveSharePermission_RootBypass(t *testing.T) {
 			t.Errorf("Username should be 'guest', got %q", username)
 		}
 	})
+
+	t.Run("NoSessionDeniesInsteadOfReadWrite", func(t *testing.T) {
+		// A nil/unauthenticated session must NOT fall through to read-write
+		// (authorization bypass). It should deny so the caller returns
+		// STATUS_ACCESS_DENIED.
+		share := &runtime.Share{Name: "/export", Squash: "", DefaultPermission: "read-write"}
+		defaultPerm := models.PermissionReadWrite
+
+		perm, _ := resolveSharePermission(ctx, nil, share, defaultPerm, nil)
+
+		if perm != models.PermissionNone {
+			t.Errorf("nil session should resolve to PermissionNone (deny), got %v", perm)
+		}
+	})
 }
 
 // =============================================================================

@@ -387,8 +387,12 @@ func resolveSharePermission(
 		return defaultPerm, "guest"
 	}
 
-	// No session or unauthenticated - default to read-write for backwards compatibility
-	return models.PermissionReadWrite, ""
+	// No session or unauthenticated. TREE_CONNECT always follows an
+	// authenticated or guest SESSION_SETUP, so this branch should be
+	// unreachable in practice — but defaulting an unauthenticated caller to
+	// read-write would be an authorization bypass. Deny instead (the caller
+	// maps PermissionNone to STATUS_ACCESS_DENIED).
+	return models.PermissionNone, ""
 }
 
 // isRootUser checks if the user has UID 0 (root).
