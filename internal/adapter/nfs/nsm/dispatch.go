@@ -37,10 +37,6 @@ type NSMProcedure struct {
 
 	// Handler is the function that processes this procedure
 	Handler NSMProcedureHandler
-
-	// NeedsAuth indicates whether this procedure requires authentication.
-	// NSM procedures typically don't require authentication.
-	NeedsAuth bool
 }
 
 // NSMDispatchTable maps NSM procedure numbers to their handlers.
@@ -58,34 +54,28 @@ func init() {
 func initNSMDispatchTable() {
 	NSMDispatchTable = map[uint32]*NSMProcedure{
 		types.SMProcNull: {
-			Name:      "NULL",
-			Handler:   handleNSMNull,
-			NeedsAuth: false,
+			Name:    "NULL",
+			Handler: handleNSMNull,
 		},
 		types.SMProcStat: {
-			Name:      "STAT",
-			Handler:   handleNSMStat,
-			NeedsAuth: false,
+			Name:    "STAT",
+			Handler: handleNSMStat,
 		},
 		types.SMProcMon: {
-			Name:      "MON",
-			Handler:   handleNSMMon,
-			NeedsAuth: false,
+			Name:    "MON",
+			Handler: handleNSMMon,
 		},
 		types.SMProcUnmon: {
-			Name:      "UNMON",
-			Handler:   handleNSMUnmon,
-			NeedsAuth: false,
+			Name:    "UNMON",
+			Handler: handleNSMUnmon,
 		},
 		types.SMProcUnmonAll: {
-			Name:      "UNMON_ALL",
-			Handler:   handleNSMUnmonAll,
-			NeedsAuth: false,
+			Name:    "UNMON_ALL",
+			Handler: handleNSMUnmonAll,
 		},
 		types.SMProcNotify: {
-			Name:      "NOTIFY",
-			Handler:   handleNSMNotify,
-			NeedsAuth: false,
+			Name:    "NOTIFY",
+			Handler: handleNSMNotify,
 		},
 	}
 }
@@ -140,13 +130,4 @@ func handleNSMNotify(
 	data []byte,
 ) (*handlers.HandlerResult, error) {
 	return handler.Notify(ctx, data)
-}
-
-// ============================================================================
-// Status Code Helpers
-// ============================================================================
-
-// NSMStatusToString returns a human-readable string for an NSM status code.
-func NSMStatusToString(status uint32) string {
-	return types.ResultString(status)
 }

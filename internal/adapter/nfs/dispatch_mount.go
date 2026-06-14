@@ -12,34 +12,28 @@ import (
 func initMountDispatchTable() {
 	MountDispatchTable = map[uint32]*mountProcedure{
 		mount.MountProcNull: {
-			Name:      "NULL",
-			Handler:   handleMountNull,
-			NeedsAuth: true,
+			Name:    "NULL",
+			Handler: handleMountNull,
 		},
 		mount.MountProcMnt: {
-			Name:      "MNT",
-			Handler:   handleMountMnt,
-			NeedsAuth: true,
+			Name:    "MNT",
+			Handler: handleMountMnt,
 		},
 		mount.MountProcDump: {
-			Name:      "DUMP",
-			Handler:   handleMountDump,
-			NeedsAuth: false,
+			Name:    "DUMP",
+			Handler: handleMountDump,
 		},
 		mount.MountProcUmnt: {
-			Name:      "UMNT",
-			Handler:   handleMountUmnt,
-			NeedsAuth: false,
+			Name:    "UMNT",
+			Handler: handleMountUmnt,
 		},
 		mount.MountProcUmntAll: {
-			Name:      "UMNTALL",
-			Handler:   handleMountUmntAll,
-			NeedsAuth: false,
+			Name:    "UMNTALL",
+			Handler: handleMountUmntAll,
 		},
 		mount.MountProcExport: {
-			Name:      "EXPORT",
-			Handler:   handleMountExport,
-			NeedsAuth: false,
+			Name:    "EXPORT",
+			Handler: handleMountExport,
 		},
 	}
 }

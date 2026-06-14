@@ -188,29 +188,6 @@ func TestMountDispatchTable_Completeness(t *testing.T) {
 	}
 }
 
-// TestNFSDispatchTable_AuthRequirements verifies NeedsAuth flags.
-func TestNFSDispatchTable_AuthRequirements(t *testing.T) {
-	// Procedures that do NOT require auth
-	noAuthProcs := map[uint32]bool{
-		types.NFSProcNull:     true,
-		types.NFSProcGetAttr:  true,
-		types.NFSProcFsStat:   true,
-		types.NFSProcFsInfo:   true,
-		types.NFSProcPathConf: true,
-		types.NFSProcMknod:    true,
-	}
-
-	for procNum, entry := range NfsDispatchTable {
-		if noAuthProcs[procNum] {
-			assert.False(t, entry.NeedsAuth,
-				"NFS procedure %d (%s) should not require auth", procNum, entry.Name)
-		} else {
-			assert.True(t, entry.NeedsAuth,
-				"NFS procedure %d (%s) should require auth", procNum, entry.Name)
-		}
-	}
-}
-
 // ============================================================================
 // Version Negotiation Tests
 // ============================================================================

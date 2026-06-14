@@ -67,23 +67,3 @@ const (
 	// ProtoUDP is the UDP protocol identifier (IPPROTO_UDP = 17).
 	ProtoUDP uint32 = 17
 )
-
-// ProcedureName returns a human-readable name for a portmap procedure number.
-func ProcedureName(proc uint32) string {
-	switch proc {
-	case ProcNull:
-		return "NULL"
-	case ProcSet:
-		return "SET"
-	case ProcUnset:
-		return "UNSET"
-	case ProcGetport:
-		return "GETPORT"
-	case ProcDump:
-		return "DUMP"
-	case ProcCallit:
-		return "CALLIT"
-	default:
-		return "UNKNOWN"
-	}
-}

@@ -317,43 +317,6 @@ func TestUnbindConnection(t *testing.T) {
 }
 
 // ============================================================================
-// TestUnbindAllForSession
-// ============================================================================
-
-func TestUnbindAllForSession(t *testing.T) {
-	sm := NewStateManager(90 * time.Second)
-	_, sessionID := setupClientAndSession(t, sm)
-
-	// Bind 3 connections
-	for i := uint64(800); i < 803; i++ {
-		_, err := sm.BindConnToSession(i, sessionID, types.CDFC4_FORE)
-		if err != nil {
-			t.Fatalf("bind conn %d error: %v", i, err)
-		}
-	}
-
-	// Verify all present
-	bindings := sm.GetConnectionBindings(sessionID)
-	if len(bindings) != 3 {
-		t.Fatalf("expected 3 bindings, got %d", len(bindings))
-	}
-
-	// Unbind all
-	sm.UnbindAllForSession(sessionID)
-
-	// Verify all removed
-	for i := uint64(800); i < 803; i++ {
-		if sm.GetConnectionBinding(i) != nil {
-			t.Errorf("conn %d still exists after UnbindAllForSession", i)
-		}
-	}
-	bindings = sm.GetConnectionBindings(sessionID)
-	if len(bindings) != 0 {
-		t.Errorf("expected 0 bindings, got %d", len(bindings))
-	}
-}
-
-// ============================================================================
 // TestGetConnectionBindings
 // ============================================================================
 

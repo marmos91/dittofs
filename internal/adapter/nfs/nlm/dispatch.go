@@ -40,9 +40,6 @@ type NLMProcedure struct {
 
 	// Handler is the function that processes this procedure
 	Handler NLMProcedureHandler
-
-	// NeedsAuth indicates whether this procedure requires authentication.
-	NeedsAuth bool
 }
 
 // NLMDispatchTable maps NLM procedure numbers to their handlers.
@@ -60,44 +57,36 @@ func init() {
 func initNLMDispatchTable() {
 	NLMDispatchTable = map[uint32]*NLMProcedure{
 		types.NLMProcNull: {
-			Name:      "NULL",
-			Handler:   handleNLMNull,
-			NeedsAuth: false,
+			Name:    "NULL",
+			Handler: handleNLMNull,
 		},
 		types.NLMProcTest: {
-			Name:      "TEST",
-			Handler:   handleNLMTest,
-			NeedsAuth: true,
+			Name:    "TEST",
+			Handler: handleNLMTest,
 		},
 		types.NLMProcLock: {
-			Name:      "LOCK",
-			Handler:   handleNLMLock,
-			NeedsAuth: true,
+			Name:    "LOCK",
+			Handler: handleNLMLock,
 		},
 		types.NLMProcCancel: {
-			Name:      "CANCEL",
-			Handler:   handleNLMCancel,
-			NeedsAuth: true,
+			Name:    "CANCEL",
+			Handler: handleNLMCancel,
 		},
 		types.NLMProcUnlock: {
-			Name:      "UNLOCK",
-			Handler:   handleNLMUnlock,
-			NeedsAuth: true,
+			Name:    "UNLOCK",
+			Handler: handleNLMUnlock,
 		},
 		types.NLMProcShare: {
-			Name:      "SHARE",
-			Handler:   handleNLMShare,
-			NeedsAuth: true,
+			Name:    "SHARE",
+			Handler: handleNLMShare,
 		},
 		types.NLMProcUnshare: {
-			Name:      "UNSHARE",
-			Handler:   handleNLMUnshare,
-			NeedsAuth: true,
+			Name:    "UNSHARE",
+			Handler: handleNLMUnshare,
 		},
 		types.NLMProcFreeAll: {
-			Name:      "FREE_ALL",
-			Handler:   handleNLMFreeAll,
-			NeedsAuth: false, // FREE_ALL is called by rpc.statd, uses AUTH_NULL
+			Name:    "FREE_ALL",
+			Handler: handleNLMFreeAll,
 		},
 	}
 }
@@ -328,13 +317,4 @@ func handleNLMUnshare(
 	}
 
 	return &HandlerResult{Data: encoded, NLMStatus: resp.Status}, nil
-}
-
-// ============================================================================
-// Status Code Helpers
-// ============================================================================
-
-// NLMStatusToString returns a human-readable string for an NLM status code.
-func NLMStatusToString(status uint32) string {
-	return types.StatusString(status)
 }

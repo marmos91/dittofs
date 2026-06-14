@@ -65,7 +65,7 @@ func UnwrapIntegrity(sessionKey types.EncryptionKey, credSeqNum uint32, requestB
 	// Set the payload for verification
 	micToken.Payload = databodyInteg
 
-	// Verify the checksum using initiator sign key usage (23)
+	// Verify the checksum using initiator sign key usage (25)
 	ok, err := micToken.Verify(sessionKey, KeyUsageInitiatorSign)
 	if err != nil {
 		return nil, 0, fmt.Errorf("verify MIC: %w", err)
@@ -95,7 +95,7 @@ func UnwrapIntegrity(sessionKey types.EncryptionKey, credSeqNum uint32, requestB
 //
 // Per RFC 2203 Section 5.3.3.4.2:
 // 1. Build databody_integ: XDR(seq_num) + replyBody
-// 2. Compute MIC over databody_integ using KeyUsageAcceptorSign (25)
+// 2. Compute MIC over databody_integ using KeyUsageAcceptorSign (23)
 // 3. Encode rpc_gss_integ_data: XDR opaque(databody_integ) + XDR opaque(mic_token_bytes)
 //
 // Parameters:
@@ -112,7 +112,7 @@ func WrapIntegrity(sessionKey types.EncryptionKey, seqNum uint32, replyBody []by
 	binary.BigEndian.PutUint32(databodyInteg[0:4], seqNum)
 	copy(databodyInteg[4:], replyBody)
 
-	// 2. Compute MIC over databody_integ using acceptor sign key usage (25)
+	// 2. Compute MIC over databody_integ using acceptor sign key usage (23)
 	micToken := gssapi.MICToken{
 		Flags:     gssapi.MICTokenFlagSentByAcceptor,
 		SndSeqNum: uint64(seqNum),

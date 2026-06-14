@@ -25,7 +25,7 @@ func TestHandleRPCCall_UnknownProgram_ReturnsProgUnavail(t *testing.T) {
 	adapter := New(NFSConfig{
 		Enabled: true,
 		Port:    12049,
-	}, nil)
+	})
 
 	// net.Pipe gives a synchronous, in-process full-duplex connection.
 	client, server := net.Pipe()
