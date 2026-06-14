@@ -223,13 +223,16 @@ func TestProvisionOperatorAccount_UserProvidedPasswordKey(t *testing.T) {
 				Password string `json:"password"`
 			}
 			_ = json.NewDecoder(req.Body).Decode(&body)
-			// The admin login must carry the cleartext read from ref.Key. The
-			// subsequent operator-account login uses a separately generated
-			// password, so only assert on the admin login here.
-			if body.Username == "admin" && body.Password != userPass {
-				w.WriteHeader(http.StatusUnauthorized)
-				w.Write([]byte(`{"error":"bad password"}`))
-				return
+			// The operator-account login uses a separately generated password, so
+			// accept it. Every OTHER login is the admin bootstrap and must carry
+			// BOTH the expected admin username AND the cleartext read from ref.Key —
+			// a wrong username or password here means the fix regressed.
+			if body.Username != dittoiov1alpha1.OperatorServiceAccountUsername {
+				if body.Username != "admin" || body.Password != userPass {
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(`{"error":"bad admin credentials"}`))
+					return
+				}
 			}
 			w.WriteHeader(http.StatusOK)
 			w.Write(tokenJSON("test-access-token", 900))

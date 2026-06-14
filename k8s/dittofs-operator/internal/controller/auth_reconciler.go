@@ -225,6 +225,14 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 
 	adminUsername := string(adminSecret.Data["username"])
 	adminPassword := string(adminSecret.Data[passwordKey])
+	// Fail fast with an actionable error when the referenced key is absent/empty,
+	// rather than attempting a login with a blank password (which surfaces as a
+	// generic 401 and an indefinitely un-Ready DittoServer).
+	if adminPassword == "" {
+		return ctrl.Result{}, fmt.Errorf(
+			"admin credentials secret %s has no value under key %q (it must hold the cleartext admin password)",
+			adminSecretName, passwordKey)
+	}
 	// Username precedence: Secret "username" key, then spec.identity.admin.username,
 	// then the "admin" default.
 	if adminUsername == "" {

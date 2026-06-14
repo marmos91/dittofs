@@ -1,7 +1,7 @@
 # Build the manager binary.
 # Base tracks the go.mod toolchain (go 1.25.x); keep in sync to avoid a
 # GOTOOLCHAIN=auto re-download on every build.
-FROM golang:1.25 AS builder
+FROM golang:1.25.1 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

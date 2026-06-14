@@ -182,8 +182,12 @@ spec:
                     description: SQLite configuration (used when Type=sqlite)
                     properties:
                       path:
-                        default: /data/controlplane/controlplane.db
-                        description: Path is the database file path inside the container
+                        default: /data/metadata/controlplane/controlplane.db
+                        description: |-
+                          Path is the database file path inside the container. It MUST live under a
+                          persistent volume (the operator mounts the "metadata" PVC at /data/metadata)
+                          — a path on the ephemeral container overlay is wiped on every pod restart,
+                          silently dropping all metadata-store and share definitions.
                         type: string
                     type: object
                   type:
