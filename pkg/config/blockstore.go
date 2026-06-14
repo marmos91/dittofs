@@ -15,7 +15,7 @@ type BlockstoreLocalConfig struct {
 	// DedupLRUSize is the slot count for the in-memory hash dedup LRU.
 	// Default 4096 when zero. Surface for the RAM-only per-share hash
 	// LRU consulted between FastCDC.Next() and Put(hash, data) in
-	// pkg/blockstore/local/fs/rollup.go.
+	// pkg/block/local/fs/rollup.go.
 	DedupLRUSize int `mapstructure:"dedup_lru_size" yaml:"dedup_lru_size"`
 }
 

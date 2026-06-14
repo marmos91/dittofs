@@ -52,7 +52,7 @@ Implement a custom local store when you need:
 - **Custom eviction**: Access-pattern-aware eviction beyond simple LRU
 - **Encryption at rest**: Hardware-accelerated encryption for local blocks
 
-**Reference implementation**: `pkg/blockstore/local/fs/` (filesystem-backed local store)
+**Reference implementation**: `pkg/block/local/fs/` (filesystem-backed local store)
 
 ### Remote Store Use Cases
 
@@ -62,7 +62,7 @@ Implement a custom remote store when you need:
 - **Specialized storage**: Tape archives, HSM systems, data lakes
 - **Tiering**: Automatic hot/cold data movement based on access patterns
 
-**Reference implementation**: `pkg/blockstore/remote/s3/` (S3-backed remote store)
+**Reference implementation**: `pkg/block/remote/s3/` (S3-backed remote store)
 
 ## Understanding the Architecture
 
@@ -159,39 +159,46 @@ with batches of 1000 rows.
 
 ### FileBlockStore narrowing
 
-`pkg/blockstore.FileBlockStore` is exactly **6 hash-keyed CRUD methods**.
-Backend implementations are simpler; engine-internal helpers live on a
-separate wider interface.
+`pkg/block.FileBlockStore` is the narrow public FileBlock surface.
+Backend implementations are simpler than the engine-internal helpers, which
+live on a separate wider interface.
 
 ```go
-// pkg/blockstore/store.go
+// pkg/block/fileblock.go
 type FileBlockStore interface {
-    // GetByHash looks up the FileBlock with the given content hash.
-    // Returns ErrFileBlockNotFound when no row matches.
+    // GetByHash returns any FileBlock with the given content hash, or
+    // (nil, nil) when absent (multiple rows may share a hash; best-effort).
     GetByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
 
-    // Put inserts or updates a FileBlock keyed by hash.
-    Put(ctx context.Context, fb *FileBlock) error
+    // Put creates or replaces a FileBlock by ID (upsert by ID, not hash).
+    Put(ctx context.Context, block *FileBlock) error
 
-    // Delete removes the FileBlock with the given hash. Idempotent —
-    // deleting a non-existent hash is not an error.
-    Delete(ctx context.Context, hash ContentHash) error
+    // Delete removes a FileBlock by ID. Returns ErrFileBlockNotFound if absent.
+    Delete(ctx context.Context, id string) error
 
-    // IncrementRefCount atomically bumps the FileBlock's RefCount by 1.
-    IncrementRefCount(ctx context.Context, hash ContentHash) error
+    // IncrementRefCount atomically bumps RefCount for the given FileBlock id.
+    IncrementRefCount(ctx context.Context, id string) error
 
-    // DecrementRefCount atomically decrements RefCount; returns the new
-    // value. Callers MUST NOT decrement below zero.
-    DecrementRefCount(ctx context.Context, hash ContentHash) (int64, error)
+    // DecrementRefCount atomically decrements; returns the new count.
+    DecrementRefCount(ctx context.Context, id string) (uint32, error)
 
-    // ListPending streams every Pending FileBlock to fn. Used by syncer.
-    ListPending(ctx context.Context, fn func(*FileBlock) error) error
+    // DecrementRefCountAndReap atomically decrements and, if the count hits 0,
+    // deletes the row in the same critical section. Returns the new count.
+    DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error)
+
+    // AddRef atomically increments RefCount on the row indexed by hash
+    // (the dedup LRU hit path). Returns ErrUnknownHash if no row exists.
+    AddRef(ctx context.Context, hash ContentHash, payloadID string, blockRef BlockRef) error
+
+    // ListPending returns up to `limit` Pending FileBlocks older than
+    // `olderThan`, for the syncer claim path.
+    ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
 }
 ```
 
-**Engine-internal companion interface:** `pkg/blockstore.EngineFileBlockStore`
+**Engine-internal companion interface:** `pkg/block.EngineFileBlockStore`
 extends `FileBlockStore` with `GetFileBlock(ctx, id)` and
-`ListFileBlocks(ctx, fn)` for the engine's hot paths. All three built-in
+`ListFileBlocks(ctx, payloadID)` for the engine's hot paths. All three built-in
 backends (memory, badger, postgres) satisfy it without changes — the
 narrow public surface is a documentation concern, not a runtime
 restriction. Custom backends implementing `FileBlockStore` SHOULD also
@@ -206,7 +213,7 @@ per hash for older data; the public `GetByHash` surface hides that detail.
 
 `FileAttr.Blocks []blockstore.BlockRef` is the authoritative content list
 for every file. `BlockRef` is the 3-tuple `(Hash, Offset, Size)` — see
-`pkg/blockstore/types.go`. The list MUST be sorted by `Offset` and is
+`pkg/block/types.go`. The list MUST be sorted by `Offset` and is
 populated on every sync finalization.
 
 Encoding requirements per backend:
@@ -396,68 +403,50 @@ Local stores provide fast, per-share block storage. Each share gets an isolated 
 
 ### The LocalStore Interface
 
-The `pkg/blockstore/local.LocalStore` interface defines the contract:
+The `pkg/block/local.LocalStore` interface defines the contract. Storage is
+**content-addressed** — chunks are keyed by their BLAKE3 `block.ContentHash`,
+not by a block ID + offset. The interface embeds the content-addressed
+`block.BlockStoreAppend` surface and adds lifecycle, per-payload admin,
+rollup-drain, and retention methods. See `pkg/block/local/local.go` for the
+authoritative definition; the embedded CAS contract is:
 
 ```go
-type LocalStore interface {
-    // ReadAt reads block data at the given offset
-    ReadAt(ctx context.Context, blockID string, p []byte, offset int64) (int, error)
+type Store interface { // block.Store, embedded by LocalStore via BlockStoreAppend
+    // Put writes data under the key derived from hash (idempotent for
+    // identical bytes). Returns an error on a zero hash.
+    Put(ctx context.Context, hash ContentHash, data []byte) error
 
-    // WriteAt writes block data at the given offset
-    WriteAt(ctx context.Context, blockID string, data []byte, offset int64) (int, error)
+    // Get returns the chunk bytes addressed by hash (freshly allocated,
+    // never aliasing internal storage). Returns ErrChunkNotFound if absent.
+    Get(ctx context.Context, hash ContentHash) ([]byte, error)
 
-    // Delete removes a block from local storage
-    Delete(ctx context.Context, blockID string) error
+    // GetRange returns the byte sub-range [offset, offset+length).
+    GetRange(ctx context.Context, hash ContentHash, offset, length int64) ([]byte, error)
 
-    // Exists checks if a block exists locally
-    Exists(ctx context.Context, blockID string) (bool, error)
+    // Has reports whether the store holds the object addressed by hash.
+    Has(ctx context.Context, hash ContentHash) (bool, error)
 
-    // Flush ensures all pending writes are persisted
-    Flush(ctx context.Context, blockID string) error
+    // Delete removes the object addressed by hash.
+    Delete(ctx context.Context, hash ContentHash) error
 
-    // List returns all block IDs in local storage
-    List(ctx context.Context) ([]string, error)
+    // Head returns object metadata (size, last-modified) without the body.
+    Head(ctx context.Context, hash ContentHash) (ObjectInfo, error)
 
-    // Close releases resources
-    Close() error
+    // Walk enumerates every stored object. Return ErrStopWalk to exit early.
+    Walk(ctx context.Context, fn func(ObjectInfo) error) error
 }
 ```
 
-### Implementation Pattern
-
-```go
-package mylocal
-
-import (
-    "context"
-)
-
-type MyLocalStore struct {
-    basePath string
-    // Your backend (filesystem, NVMe, etc.)
-}
-
-func New(basePath string) (*MyLocalStore, error) {
-    // Initialize your storage backend
-    return &MyLocalStore{basePath: basePath}, nil
-}
-
-func (s *MyLocalStore) ReadAt(ctx context.Context, blockID string, p []byte, offset int64) (int, error) {
-    // Read block data from your backend
-    // Return bytes read and any error
-}
-
-func (s *MyLocalStore) WriteAt(ctx context.Context, blockID string, data []byte, offset int64) (int, error) {
-    // Write block data to your backend
-    // Return bytes written and any error
-}
-
-// ... implement remaining interface methods
-```
+`BlockStoreAppend` adds `AppendWrite` and `DeleteAppendLog` for the append-log
+write path. `LocalStore` then layers on lifecycle (`Start`, `Close`),
+per-payload admin (`Truncate`, `EvictMemory`, `GetFileSize`, `ListFiles`,
+`ReadPayloadAt`), snapshot drain/reset (`DrainRollups`, `ResetLocalState`),
+and retention policy (`SetRetentionPolicy`, `SetEvictionEnabled`) — consult
+`pkg/block/local/local.go` for the full method set and per-method contract.
 
 ### Reference Implementation
 
-See `pkg/blockstore/local/fs/` for a complete filesystem-backed local store implementation that handles:
+See `pkg/block/local/fs/` for a complete filesystem-backed local store implementation that handles:
 - Per-share isolated directories
 - Atomic writes
 - Block listing for sync operations
@@ -486,13 +475,26 @@ package mylocal_test
 
 import (
     "testing"
-    "github.com/marmos91/dittofs/pkg/blockstore/local/localtest"
+
+    "github.com/marmos91/dittofs/pkg/block"
+    "github.com/marmos91/dittofs/pkg/block/blockstoretest"
 )
 
 func TestMyLocalStore(t *testing.T) {
-    store, cleanup := createTestStore(t)
-    defer cleanup()
-    localtest.RunLocalStoreTests(t, store)
+    // The factory returns a fresh store plus a cleanup closure per subtest.
+    factory := func(t *testing.T) (block.Store, func()) {
+        store, cleanup := createTestStore(t)
+        return store, cleanup
+    }
+    blockstoretest.BlockStoreConformance(t, factory)
+
+    // If your store implements the append-write absorber (block.BlockStoreAppend),
+    // also run the append conformance suite:
+    appendFactory := func(t *testing.T) (block.BlockStoreAppend, func()) {
+        store, cleanup := createTestAppendStore(t)
+        return store, cleanup
+    }
+    blockstoretest.BlockStoreAppendConformance(t, appendFactory)
 }
 ```
 
@@ -502,23 +504,28 @@ Remote stores provide durable block storage shared across shares via ref countin
 
 ### The RemoteStore Interface
 
-The `pkg/blockstore/remote.RemoteStore` interface defines the contract:
+The `pkg/block/remote.RemoteStore` interface defines the contract. Like the
+local store, remote storage is **content-addressed**: the interface embeds the
+CAS `block.Store` surface (`Put`, `Get`, `GetRange`, `Has`, `Delete`, `Head`,
+`Walk` — keyed by `block.ContentHash`) and adds verification + health methods.
+See `pkg/block/remote/remote.go` for the authoritative definition:
 
 ```go
 type RemoteStore interface {
-    // ReadBlock reads an entire block from remote storage
-    ReadBlock(ctx context.Context, blockID string) ([]byte, error)
+    block.Store // CAS Put/Get/GetRange/Has/Delete/Head/Walk
 
-    // WriteBlock writes an entire block to remote storage
-    WriteBlock(ctx context.Context, blockID string, data []byte) error
+    // ReadBlockVerified GETs the object addressed by hash and verifies the
+    // body's BLAKE3 hash matches `expected` before returning bytes. Returns
+    // block.ErrCASContentMismatch on any verification failure.
+    ReadBlockVerified(ctx context.Context, hash block.ContentHash, expected block.ContentHash) ([]byte, error)
 
-    // DeleteBlock removes a block from remote storage
-    DeleteBlock(ctx context.Context, blockID string) error
-
-    // HealthCheck verifies the remote store is accessible
+    // HealthCheck is the legacy error-returning probe used by the syncer.
     HealthCheck(ctx context.Context) error
 
-    // Close releases resources
+    // Healthcheck returns a structured health.Report (satisfies health.Checker).
+    Healthcheck(ctx context.Context) health.Report
+
+    // Close releases resources.
     Close() error
 }
 ```
@@ -530,6 +537,8 @@ package myremote
 
 import (
     "context"
+
+    "github.com/marmos91/dittofs/pkg/block"
 )
 
 type MyRemoteStore struct {
@@ -545,19 +554,25 @@ func New(config Config) (*MyRemoteStore, error) {
     return &MyRemoteStore{client: client, bucket: config.Bucket}, nil
 }
 
-func (s *MyRemoteStore) ReadBlock(ctx context.Context, blockID string) ([]byte, error) {
-    // Fetch block from cloud storage
-    return s.client.GetObject(ctx, s.bucket, blockID)
+// objectKey derives the storage key from the content hash. The CAS key is
+// the hash; backends typically use its hex form, optionally sharded.
+func (s *MyRemoteStore) objectKey(hash block.ContentHash) string {
+    return hash.String()
 }
 
-func (s *MyRemoteStore) WriteBlock(ctx context.Context, blockID string, data []byte) error {
-    // Upload block to cloud storage
-    return s.client.PutObject(ctx, s.bucket, blockID, data)
+func (s *MyRemoteStore) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
+    // Fetch the chunk addressed by hash. Return block.ErrChunkNotFound if absent.
+    return s.client.GetObject(ctx, s.bucket, s.objectKey(hash))
 }
 
-func (s *MyRemoteStore) DeleteBlock(ctx context.Context, blockID string) error {
-    // Remove block from cloud storage (idempotent)
-    err := s.client.DeleteObject(ctx, s.bucket, blockID)
+func (s *MyRemoteStore) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
+    // Upload the chunk under its content-hash key (idempotent for identical bytes).
+    return s.client.PutObject(ctx, s.bucket, s.objectKey(hash), data)
+}
+
+func (s *MyRemoteStore) Delete(ctx context.Context, hash block.ContentHash) error {
+    // Remove the chunk (idempotent).
+    err := s.client.DeleteObject(ctx, s.bucket, s.objectKey(hash))
     if err != nil && !isNotFoundError(err) {
         return err
     }
@@ -572,6 +587,9 @@ func (s *MyRemoteStore) HealthCheck(ctx context.Context) error {
 func (s *MyRemoteStore) Close() error {
     return s.client.Close()
 }
+
+// ... implement the remaining block.Store methods (GetRange, Has, Head, Walk),
+// ReadBlockVerified, and Healthcheck — see pkg/block/remote/s3 for a full example.
 ```
 
 ### Ref Counting
@@ -585,7 +603,7 @@ This means your `Close()` implementation should release all resources (connectio
 
 ### Reference Implementation
 
-See `pkg/blockstore/remote/s3/` for a production S3 remote store implementation with:
+See `pkg/block/remote/s3/` for a production S3 remote store implementation with:
 - Configurable retry with exponential backoff
 - Health check via HEAD bucket
 - Efficient multipart uploads for large blocks
@@ -660,21 +678,27 @@ package myremote_test
 
 import (
     "testing"
-    "github.com/marmos91/dittofs/pkg/blockstore/remote/remotetest"
+
+    "github.com/marmos91/dittofs/pkg/block"
+    "github.com/marmos91/dittofs/pkg/block/blockstoretest"
 )
 
 func TestMyRemoteStore(t *testing.T) {
-    store, cleanup := createTestStore(t)
-    defer cleanup()
-    remotetest.RunRemoteStoreTests(t, store)
+    factory := func(t *testing.T) (block.Store, func()) {
+        store, cleanup := createTestStore(t)
+        return store, cleanup
+    }
+    blockstoretest.BlockStoreConformance(t, factory)
 }
 ```
 
-The conformance suite (`remotetest`) includes scenarios for
-`WriteBlockWithHash` (header is set; key shape matches `cas/...`;
-re-PUT is idempotent) and `ReadBlockVerified` (round-trip succeeds;
-header-mismatch returns `ErrCASContentMismatch`; body-mismatch returns
-`ErrCASContentMismatch`; corrupt bytes never surface upstream).
+The `BlockStoreConformance` suite pins the CAS contract: `Put` + `Get`
+round-trip with no aliasing, idempotent re-`Put` of identical bytes,
+`Get`/`GetRange`/`Has`/`Head`/`Delete` semantics, and `Walk` enumeration.
+The dedicated `ReadBlockVerified` path on `RemoteStore` (round-trip succeeds;
+body-mismatch returns `block.ErrCASContentMismatch`; corrupt bytes never
+surface upstream) is exercised separately — see `pkg/block/remote/s3` for the
+verification tests.
 
 ## Best Practices
 
@@ -708,7 +732,7 @@ func (s *MyStore) ReadBlock(ctx context.Context, blockID string) ([]byte, error)
 
 ## Testing Your Implementation
 
-1. **Conformance tests**: Run the provided test suites (`localtest`/`remotetest`)
+1. **Conformance tests**: Run the provided test suite (`pkg/block/blockstoretest`)
 2. **Concurrency tests**: Verify thread safety with parallel reads/writes
 3. **Error handling tests**: Test behavior with canceled contexts, network failures
 4. **Integration tests**: Test with the full DittoFS stack (create share, mount, read/write)
@@ -753,12 +777,12 @@ Users can then create your store via CLI:
 
 ## Additional Resources
 
-- **Interface Definitions**: `pkg/blockstore/local/local.go`, `pkg/blockstore/remote/remote.go`
+- **Interface Definitions**: `pkg/block/local/local.go`, `pkg/block/remote/remote.go`
 - **Reference Implementations**:
-  - Local: `pkg/blockstore/local/fs/`, `pkg/blockstore/local/memory/`
-  - Remote: `pkg/blockstore/remote/s3/`, `pkg/blockstore/remote/memory/`
+  - Local: `pkg/block/local/fs/`, `pkg/block/local/memory/`
+  - Remote: `pkg/block/remote/s3/`, `pkg/block/remote/memory/`
   - Metadata: `pkg/metadata/store/memory/`, `pkg/metadata/store/badger/`, `pkg/metadata/store/postgres/`
-- **Conformance Tests**: `pkg/blockstore/local/localtest/`, `pkg/blockstore/remote/remotetest/`, `pkg/metadata/storetest/`
+- **Conformance Tests**: `pkg/block/blockstoretest/` (block stores), `pkg/metadata/storetest/` (metadata stores)
 - **Architecture**: `docs/ARCHITECTURE.md`
 - **Configuration**: `docs/CONFIGURATION.md`
 - **Contributing**: `docs/CONTRIBUTING.md`

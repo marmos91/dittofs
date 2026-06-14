@@ -19,8 +19,8 @@ import (
 // RemoteStore is the unified content-addressed remote block storage
 // interface. Implemented by
 //
-//   - pkg/blockstore/remote/s3.Store
-//   - pkg/blockstore/remote/memory.Store
+//   - pkg/block/remote/s3.Store
+//   - pkg/block/remote/memory.Store
 //
 // Every method is keyed by block.ContentHash; no opaque "block key"
 // strings appear on this surface. Backends derive their on-disk / on-wire

@@ -15,9 +15,9 @@
 //     (Put / Get / GetRange / Has / Delete / Head / Walk). Idempotent
 //     same-bytes Put, no opaque "block key" strings, every method
 //     takes a context.Context first. Implemented by:
-//     *pkg/blockstore/local/fs.FSStore (local CAS chunks);
-//     *pkg/blockstore/remote/s3.Store (S3-backed CAS);
-//     *pkg/blockstore/remote/memory.Store (in-memory CAS for tests).
+//     *pkg/block/local/fs.FSStore (local CAS chunks);
+//     *pkg/block/remote/s3.Store (S3-backed CAS);
+//     *pkg/block/remote/memory.Store (in-memory CAS for tests).
 //
 //   - BlockStoreAppend — embeds BlockStore and adds AppendWrite +
 //     DeleteAppendLog for the random-write absorber tier (the per-file
@@ -120,7 +120,7 @@
 //
 // The offline one-shot legacy-to-CAS migration ships as the cobra
 // subcommand `dfs migrate-to-cas`, backed by the shared library at
-// pkg/blockstore/migrate/migrate_to_cas.go (MigrateShareToCAS). The
+// pkg/block/migrate/migrate_to_cas.go (MigrateShareToCAS). The
 // command is server-side and offline (refuses to run while the dfs
 // PID lockfile exists), idempotent via a per-share journal
 // (.dittofs-migrate-to-cas.state), and writes the .cas-migrated-v1
@@ -193,12 +193,12 @@
 // them to a specific milestone tag.
 //
 // Apply the markers on the symbol's godoc, not on internal callers
-// the goal is for `grep -rn 'TRANSITIONAL-' ./pkg/blockstore` to
+// the goal is for `grep -rn 'TRANSITIONAL-' ./pkg/block` to
 // enumerate every deferral surface in one pass and for new contributors
 // to recognize the convention without consulting a roadmap.
 //
 // audit: at the close of the write-path RAM-optimization
-// phase, every TRANSITIONAL-NEXT-MILESTONE marker in pkg/blockstore/
+// phase, every TRANSITIONAL-NEXT-MILESTONE marker in pkg/block/
 // points at #519 ("Deferred to v0.17+") — the five v0.17 anchor sites
 // are pinned hot-tail RAM + zstd compression (chunkstore.go), O_DIRECT
 // (appendwrite.go), tmpfs spill (appendlog.go), and cold-cache prefetch

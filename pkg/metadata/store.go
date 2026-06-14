@@ -213,7 +213,7 @@ type ServerConfig interface {
 // ============================================================================
 
 // FileBlockStore defines operations for content-addressed file block management.
-// Type alias to block.FileBlockStore -- all definitions live in pkg/blockstore.
+// Type alias to block.FileBlockStore -- all definitions live in pkg/block.
 type FileBlockStore = block.FileBlockStore
 
 // ============================================================================

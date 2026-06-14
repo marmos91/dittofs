@@ -14,7 +14,7 @@
 // Or directly
 //
 //	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$ \
-//	    ./pkg/blockstore/engine/...
+//	    ./pkg/block/engine/...
 package engine
 
 import (
@@ -195,7 +195,7 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 // via
 //
 //	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$ \
-//	    ./pkg/blockstore/engine/...
+//	    ./pkg/block/engine/...
 //
 // Local runs: make bench-phase12.
 //
@@ -250,7 +250,7 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 		b.Fatalf("rand-read perf gate FAILED: %.0f IOPS, floor %.0f (microbench baseline %.0f, tolerance %.0f%%). "+
 			"Likely culprits: findBlocksForRange linearisation, Cache.OnRead lock contention, "+
 			"loadByHash regression. Profile with: go test -bench BenchmarkPerfGate_Phase12 "+
-			"-cpuprofile=cpu.prof ./pkg/blockstore/engine/...",
+			"-cpuprofile=cpu.prof ./pkg/block/engine/...",
 			opsPerSec, floor, microbenchFloorIOPS, tolerance*100)
 	}
 }

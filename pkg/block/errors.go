@@ -142,7 +142,7 @@ var (
 
 	// ErrUnknownHash is returned by FileBlockStore.AddRef when no
 	// FileBlock row exists for the given hash. The LRU hit path
-	// (Opt 1 — see pkg/blockstore/local/fs/rollup.go) MUST
+	// (Opt 1 — see pkg/block/local/fs/rollup.go) MUST
 	// fall back to the full Put path on this sentinel; the LRU may
 	// be ahead of the metadata store after a crash (RAM-only LRU
 	// see), or the hash may not be present yet.

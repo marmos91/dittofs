@@ -8,12 +8,12 @@
 // package cannot import them back.
 //
 // As of the merge, the previously separate sibling packages
-// pkg/blockstore/{readbuffer,sync,gc} are folded into this package. The merge
+// pkg/block/{readbuffer,sync,gc} are folded into this package. The merge
 // preserves all public behaviour; only the package path, a handful of
 // collision-resolving type/function names, and the package-qualified call
 // sites changed.
 //
-// # Read buffer and prefetch (formerly pkg/blockstore/readbuffer)
+// # Read buffer and prefetch (formerly pkg/block/readbuffer)
 //
 // ReadBuffer is an LRU block buffer that stores full 8MB blocks (matching
 // block.BlockSize) as heap-allocated []byte slices with copy-on-read
@@ -35,7 +35,7 @@
 // Non-blocking submit drops requests when the worker channel is full
 // providing natural backpressure.
 //
-// # Syncer (formerly pkg/blockstore/sync)
+// # Syncer (formerly pkg/block/sync)
 //
 // The syncer is responsible for moving data between the local store and the
 // remote block store (S3 or memory). It handles
@@ -58,7 +58,7 @@
 // The Syncer struct is created via NewSyncer() and requires a LocalStore
 // RemoteStore, and FileBlockStore.
 //
-// # Block garbage collection (formerly pkg/blockstore/gc)
+// # Block garbage collection (formerly pkg/block/gc)
 //
 // Orphan blocks are blocks that exist in the block store but have no
 // corresponding metadata. This can happen when file deletion fails after

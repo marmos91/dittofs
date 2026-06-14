@@ -30,7 +30,7 @@ type Factory func(t *testing.T) (block.Store, func())
 // own _test.go files via a backend-specific factory.
 //
 // The scenarios pin the contract documented on the BlockStore interface
-// in pkg/blockstore/blockstore.go
+// in pkg/block/blockstore.go
 //
 //   - Put + Get round-trip with no-aliasing of internal storage.
 //   - Get on an unstored hash returns block.ErrChunkNotFound.
@@ -82,7 +82,7 @@ func BlockStoreConformance(t *testing.T, factory Factory) {
 }
 
 // blake3Sum is the conformance suite's shared hashing helper. It mirrors
-// blake3ContentHash at pkg/blockstore/local/fs/rollup.go:449 — the
+// blake3ContentHash at pkg/block/local/fs/rollup.go:449 — the
 // rollup loop hashes chunk bytes the same way before storing them, so
 // the suite's fixtures share the rollup's content-address contract.
 // Shared with appendlog.go (same package, no import needed).

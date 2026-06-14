@@ -1,6 +1,6 @@
 // Package blockstoretest provides a unified conformance suite for the
 // BlockStore and BlockStoreAppend contracts declared in
-// pkg/blockstore/blockstore.go.
+// pkg/block/blockstore.go.
 //
 // Two top-level entrypoints are exposed:
 //
@@ -12,12 +12,12 @@
 //     the fs backend implements BlockStoreAppend and therefore calls
 //     this entrypoint.
 //
-// This package replaces pkg/blockstore/local/localtest and
-// pkg/blockstore/remote/remotetest. The three fs-internal scenarios
+// This package replaces pkg/block/local/localtest and
+// pkg/block/remote/remotetest. The three fs-internal scenarios
 // that cannot be expressed through the interface surface
 // (PressureChannel_INV05, TornWriteRecovery_LSL06,
 // RollupOffsetMonotone_INV03) live in
-// pkg/blockstore/local/fs/appendlog_internals_test.go.
+// pkg/block/local/fs/appendlog_internals_test.go.
 //
 // Each scenario uses a factory that returns a fresh (BlockStore
 // cleanup) pair per subtest, so subtests do not share state and

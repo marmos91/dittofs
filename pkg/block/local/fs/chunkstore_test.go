@@ -171,7 +171,7 @@ func TestChunkStore_ShardPath_TwoLevel(t *testing.T) {
 }
 
 // TestChunkPathFormat closes the FIX-9 audit gap: TestContentHash_CASKey_Format
-// (in pkg/blockstore) only validates the hex string helper, not the on-disk
+// (in pkg/block) only validates the hex string helper, not the on-disk
 // path layout that StoreChunk actually uses. This test calls StoreChunk with a
 // known-hex hash and asserts the resulting file lives at the documented
 // blocks/{hex[0:2]}/{hex[2:4]}/{hex} layout under baseDir — a regression

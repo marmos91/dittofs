@@ -22,7 +22,7 @@ import (
 // These helpers exist only to support the conformance scenarios
 // (10) and the eviction scenarios. They are
 // not part of the production FSStore API. The -06 mega-PR
-// retired the legacy pkg/blockstore/local/localtest/ package that
+// retired the legacy pkg/block/local/localtest/ package that
 // originally consumed these hooks; the scenarios now live inside the
 // fs package as external `_test.go` files.
 

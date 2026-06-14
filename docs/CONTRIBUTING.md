@@ -287,30 +287,40 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 
 **Block Store (Local):**
 
-1. Implement `pkg/blockstore/local.LocalStore` interface (ReadAt, WriteAt, Delete, Exists, Flush, List, Close)
-2. Support random-access reads/writes
+1. Implement `pkg/block/local.LocalStore` interface. It embeds the
+   content-addressed `block.BlockStoreAppend` surface (`Put`, `Get`,
+   `GetRange`, `Has`, `Delete`, `Head`, `Walk`, plus `AppendWrite` /
+   `DeleteAppendLog`) and adds per-payload admin, lifecycle, rollup-drain,
+   and retention methods — see `pkg/block/local/local.go` for the full list.
+2. Storage is content-addressed (keyed by `block.ContentHash`), not by
+   block ID/offset
 3. Each share gets an isolated local storage directory
-4. Test with conformance suite in `pkg/blockstore/local/localtest/`
+4. Test with the conformance suite in `pkg/block/blockstoretest/`
+   (`BlockStoreConformance` for the CAS contract, `BlockStoreAppendConformance`
+   for the append-write absorber)
 
 **Block Store (Remote):**
 
-1. Implement `pkg/blockstore/remote.RemoteStore` interface (ReadBlock, WriteBlock, DeleteBlock, HealthCheck, Close)
+1. Implement `pkg/block/remote.RemoteStore` interface. It embeds the
+   content-addressed `block.Store` surface and adds `ReadBlockVerified`,
+   `HealthCheck`, `Healthcheck`, and `Close` — see
+   `pkg/block/remote/remote.go`.
 2. Remote stores are shared across shares via ref counting
-3. Test with conformance suite in `pkg/blockstore/remote/remotetest/`
+3. Test with the `BlockStoreConformance` suite in `pkg/block/blockstoretest/`
 
 Example:
 ```go
-// pkg/blockstore/local/mybackend/store.go
+// pkg/block/local/mybackend/store.go
 type MyLocalStore struct {
     basePath string
 }
 
-func (s *MyLocalStore) ReadAt(ctx context.Context, blockID string, p []byte, offset int64) (int, error) {
-    // Read block data from your backend
+func (s *MyLocalStore) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
+    // Write the chunk to your backend under the content-hash key
 }
 
-func (s *MyLocalStore) WriteAt(ctx context.Context, blockID string, data []byte, offset int64) (int, error) {
-    // Write block data to your backend
+func (s *MyLocalStore) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
+    // Return the chunk bytes addressed by hash (freshly allocated, no aliasing)
 }
 ```
 

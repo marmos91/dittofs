@@ -66,7 +66,7 @@ func (r *recordingPutCache) InvalidateFile(string, []block.ContentHash) {}
 func (r *recordingPutCache) Stats() CacheStats                          { return CacheStats{} }
 func (r *recordingPutCache) Close() error                               { return nil }
 
-// hashContent mirrors blake3ContentHash from pkg/blockstore/local/fs/rollup.go
+// hashContent mirrors blake3ContentHash from pkg/block/local/fs/rollup.go
 // (private to that package). Tests need the same content-address hash
 // so seeded ObjectIDs match what the production eager-dedup path
 // computes from arbitrary test data.

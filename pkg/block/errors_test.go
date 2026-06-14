@@ -38,7 +38,7 @@ func TestErrLegacyLayoutDetected_DetectsThroughWrap(t *testing.T) {
 }
 
 // TestSentinelMessages_HaveBlockstorePrefix asserts the existing
-// convention from pkg/blockstore/errors.go (every package sentinel
+// convention from pkg/block/errors.go (every package sentinel
 // message starts with "blockstore:").
 func TestSentinelMessages_HaveBlockstorePrefix(t *testing.T) {
 	for _, e := range []error{

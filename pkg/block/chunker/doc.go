@@ -5,11 +5,11 @@
 // MaskS biases against short chunks; large-region mask MaskL biases toward
 // the average. Breakpoints are detected via a rolling Gear hash
 // (gear.go). This package is consumed by the local block store's rollup
-// pool (pkg/blockstore/local/fs/rollup.go) and is pure / stateless across
+// pool (pkg/block/local/fs/rollup.go) and is pure / stateless across
 // calls to NewChunker.
 //
 // Boundary-stability guarantee: random 1-4096 byte prefix shifts preserve
 // >=70% of chunk boundaries; enforced by TestChunker_BoundaryStability_70pct.
 //
-// CAS key format: see ContentHash.CASKey() in pkg/blockstore/types.go.
+// CAS key format: see ContentHash.CASKey() in pkg/block/types.go.
 package chunker

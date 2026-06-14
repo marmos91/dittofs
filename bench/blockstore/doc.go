@@ -1,5 +1,5 @@
 // Package blockstore contains exported workload drivers for the
-// pkg/blockstore engine. Engine-backed workloads share one entry
+// pkg/block engine. Engine-backed workloads share one entry
 // point — RunWorkload(ctx, *engine.Store, Opts) Result — which
 // dispatches on Opts.Workload, seeds the working set outside the
 // timed region, runs Opts.Ops iterations, and returns Result

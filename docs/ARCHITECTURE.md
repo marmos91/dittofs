@@ -197,8 +197,8 @@ DittoFS uses a three-tier storage model for block data:
 │  - Internal sequential prefetch     │
 │    (3-trigger threshold)            │
 │  - Cross-file dedup                 │
-│  - Configurable budget per share    │
-│    (cache.size_mib, default 256)    │
+│  - RAM budget auto-sized per share  │
+│    from available system memory     │
 │  - Volatile (lost on restart)       │
 └──────────────┬──────────────────────┘
                │ cache miss
@@ -1116,7 +1116,11 @@ exception in `gc.go`.
 
 The `Cache` type (`pkg/block/engine/cache.go`) is keyed solely by
 `ContentHash`. It combines read buffering and prefetch into a single
-per-share type with a single budget (`cache.size_mib`, default 256 MiB).
+per-share type. The cache is **in-memory (RAM-only), CAS-keyed, and
+volatile** — there is no cache-budget config knob. Its byte budget
+(`maxBytes`, passed to `NewCache`) is **auto-deduced from available system
+memory at startup** (`AvailableMemory / 8`, clamped to a floor; see
+`pkg/block/defaults.go`), wired into the engine as `ReadBufferBytes`.
 Two files reading the same chunk hit the same entry (cross-file dedup).
 
 ```go
@@ -1130,10 +1134,11 @@ suppress speculative prefetch on accidental two-block runs in random-IO
 workloads). Bounded concurrency: 4 worker goroutines per cache by default.
 LRU eviction.
 
-Single-copy reads: on Linux/Darwin, `readFromCAS` (`cache_mmap_unix.go`)
-`mmap`s the local CAS chunk and `copy(dest, mapped[offset:])` once. Chunks
-below 64 KiB use `os.ReadFile` (mmap setup overhead dominates tiny reads).
-Windows uses `os.ReadFile` only.
+Cache misses load through `local.Get` — a single content-addressed local
+read that returns a freshly allocated buffer, which the Cache copies into its
+LRU slot. There is no `mmap`/page-cache fast path on any platform (the cache
+is RAM-only); the allocation simply moves earlier in the pipeline than the
+former mmap-then-copy design.
 
 `InvalidateFile` is **surgical**: the caller passes only the hashes that
 disappeared from the file, so other files still referencing those hashes
@@ -1155,9 +1160,10 @@ threading, so changes to the read/write path stay confined to the helpers.
   last-run summary at `<localStore>/audit-state/last-inv02.json`. See
   `docs/CLI.md` for the full reference and `docs/FAQ.md` for operator
   guidance.
-- Cache and prefetch knobs (`cache.size_mib`, `cache.prefetch_threshold`,
-  `cache.prefetch_max_depth`, `cache.prefetch_workers`) are documented
-  in `docs/CONFIGURATION.md`.
+- The cache has no operator-facing config knobs: its RAM budget is
+  auto-deduced from available system memory at startup (see
+  `pkg/block/defaults.go`), the sequential-prefetch trigger (3 consecutive
+  reads) is fixed, and the prefetch worker count defaults to 4 in code.
 
 ## File-Level Dedup: ObjectID + Merkle Root
 

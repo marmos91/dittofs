@@ -21,7 +21,7 @@ import (
 // FileBlockStore (so the no-FBS-call assertion can probe).
 //
 // -06 inlined the scenarios here from
-// pkg/blockstore/local/localtest/eviction_lsl08_suite.go (deleted in
+// pkg/block/local/localtest/eviction_lsl08_suite.go (deleted in
 // this plan). The scenarios remain fs-specific — they exercise CAS
 // chunk paths, LRU eviction policy, and the FBS-call invariant —
 // none of which appear on the unified BlockStore contract.

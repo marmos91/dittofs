@@ -12,7 +12,7 @@ import (
 const HashSize = block.HashSize
 
 // ContentHash represents a BLAKE3-256 hash of content.
-// Type alias to block.ContentHash -- all definitions live in pkg/blockstore.
+// Type alias to block.ContentHash -- all definitions live in pkg/block.
 type ContentHash = block.ContentHash
 
 // ParseContentHash parses a hex-encoded hash string.
@@ -49,7 +49,7 @@ const (
 // ============================================================================
 
 // FileBlock is the single block entity in DittoFS.
-// Type alias to block.FileBlock -- all definitions live in pkg/blockstore.
+// Type alias to block.FileBlock -- all definitions live in pkg/block.
 type FileBlock = block.FileBlock
 
 // NewFileBlock creates a new pending FileBlock with the given ID and cache path.

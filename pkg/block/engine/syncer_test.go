@@ -43,8 +43,8 @@ import (
 //
 // Two backend fixtures
 //
-// - memory — pkg/blockstore/remote/memory.New(). Always available.
-// - s3 — pkg/blockstore/remote/s3.NewFromConfig against a
+// - memory — pkg/block/remote/memory.New(). Always available.
+// - s3 — pkg/block/remote/s3.NewFromConfig against a
 //               Localstack/MinIO endpoint. Gated on
 // DITTOFS_TEST_S3_ENDPOINT (with DITTOFS_TEST_S3_ACCESS_KEY
 // DITTOFS_TEST_S3_SECRET_KEY, DITTOFS_TEST_S3_BUCKET

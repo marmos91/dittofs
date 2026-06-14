@@ -84,8 +84,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 Absolutely! Implement either or both of these interfaces:
 
 - **Metadata Store**: `pkg/metadata/Store` interface
-- **Local Block Store**: `pkg/blockstore/local.LocalStore` interface
-- **Remote Block Store**: `pkg/blockstore/remote.RemoteStore` interface
+- **Local Block Store**: `pkg/block/local.LocalStore` interface
+- **Remote Block Store**: `pkg/block/remote.RemoteStore` interface
 
 See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for implementation guidelines.
 
@@ -270,7 +270,7 @@ See [CLI.md](CLI.md) for the full reference.
 ### What's a BlockRef?
 
 A `BlockRef` is the 3-tuple `(Hash ContentHash, Offset uint64, Size
-uint32)` defined in `pkg/blockstore/types.go`. `FileAttr.Blocks
+uint32)` defined in `pkg/block/types.go`. `FileAttr.Blocks
 []BlockRef` is the **authoritative content list** for every file: which
 chunks compose the file, where each chunk sits inside the file, and how
 big it is.
@@ -278,7 +278,7 @@ big it is.
 The list is:
 
 - **Sorted by `Offset`** so the engine can binary-search it
-  (`findBlocksForRange` in `pkg/blockstore/engine/range.go`).
+  (`findBlocksForRange` in `pkg/block/engine/range.go`).
 - **Populated on every sync finalization** — the engine returns the
   new `[]BlockRef` from `WriteAt`/`Truncate`/`Delete`/`CopyPayload`
   and the caller persists it in the same metadata transaction.

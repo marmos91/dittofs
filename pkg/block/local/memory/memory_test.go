@@ -28,7 +28,7 @@ func TestMemoryStore_BlockStoreConformance(t *testing.T) {
 }
 
 // TestMemoryStore_BlockStoreAppendConformance runs the random-write
-// absorber suite from pkg/blockstore/blockstoretest against the local
+// absorber suite from pkg/block/blockstoretest against the local
 // in-memory backend. Three scenarios `t.Skip` on the interface-only
 // surface (require fs-internal probes); the two portable scenarios
 // (AppendLogRoundTrip, ConcurrentStorm) exercise the public surface

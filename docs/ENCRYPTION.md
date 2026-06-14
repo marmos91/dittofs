@@ -81,7 +81,7 @@ dfsctl store block remote add \
 Generate a fresh key file (no dedicated subcommand — call the Go helper directly):
 
 ```go
-import "github.com/marmos91/dittofs/pkg/blockstore/encryption/keyprovider"
+import "github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
 
 bytes, _ := keyprovider.GenerateKeyFile("your-strong-passphrase")
 os.WriteFile("/etc/dittofs/keys/share.key", bytes, 0o600)
@@ -130,7 +130,7 @@ DITTOFS_TEST_KMIP=1 \
   DITTOFS_TEST_KMIP_KEY=test/fixtures/kmip/client.key \
   DITTOFS_TEST_KMIP_CA=test/fixtures/kmip/ca.pem \
   DITTOFS_TEST_KMIP_KEY_UID=<your-key-uid> \
-  go test ./pkg/blockstore/encryption/keyprovider/...
+  go test ./pkg/block/encryption/keyprovider/...
 ```
 
 ## Prior art

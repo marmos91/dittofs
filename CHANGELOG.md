@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Block-level compression on remote stores (opt-in).** A new
-  `pkg/blockstore/compression` decorator transparently compresses block
+  `pkg/block/compression` decorator transparently compresses block
   payloads before upload and decompresses on download. Configured per
   remote via the `compression` key in the block-store config JSON
   (`{ "compression": { "algo": "zstd" } }` or `{ "compression": { "algo": "lz4" } }`).
