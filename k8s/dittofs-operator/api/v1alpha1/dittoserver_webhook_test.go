@@ -51,7 +51,6 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
-						CacheSize:    "5Gi",
 					},
 					Identity: &IdentityConfig{
 						JWT: &JWTConfig{
@@ -78,17 +77,12 @@ func TestDittoServerValidation(t *testing.T) {
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
 						ContentSize:  "50Gi",
-						CacheSize:    "5Gi",
 					},
 					Database: &DatabaseConfig{
 						Type: "sqlite",
 						SQLite: &SQLiteConfig{
 							Path: "/data/controlplane/controlplane.db",
 						},
-					},
-					Cache: &InfraCacheConfig{
-						Path: "/data/cache",
-						Size: "1GB",
 					},
 					ControlPlane: &ControlPlaneAPIConfig{
 						Port: 8080,
@@ -143,7 +137,6 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
-						CacheSize:    "5Gi",
 					},
 					// Identity missing - controller will auto-generate JWT secret
 				},
@@ -160,7 +153,6 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
-						CacheSize:    "5Gi",
 					},
 					Identity: &IdentityConfig{
 						JWT: &JWTConfig{
@@ -187,7 +179,6 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
-						CacheSize:    "5Gi",
 					},
 					Identity: &IdentityConfig{
 						JWT: &JWTConfig{
@@ -223,7 +214,6 @@ func TestDittoServerValidation(t *testing.T) {
 				Spec: DittoServerSpec{
 					Storage: StorageSpec{
 						MetadataSize: "10Gi",
-						CacheSize:    "5Gi",
 					},
 					Identity: &IdentityConfig{
 						JWT: &JWTConfig{
@@ -283,7 +273,6 @@ func TestStorageClassValidation(t *testing.T) {
 		Spec: DittoServerSpec{
 			Storage: StorageSpec{
 				MetadataSize:     "10Gi",
-				CacheSize:        "5Gi",
 				StorageClassName: &scName,
 			},
 			Identity: &IdentityConfig{
@@ -323,7 +312,6 @@ func TestStorageClassValidation_Exists(t *testing.T) {
 		Spec: DittoServerSpec{
 			Storage: StorageSpec{
 				MetadataSize:     "10Gi",
-				CacheSize:        "5Gi",
 				StorageClassName: &scName,
 			},
 			Identity: &IdentityConfig{
@@ -361,7 +349,6 @@ func TestPerconaPrecedenceWarning(t *testing.T) {
 		Spec: DittoServerSpec{
 			Storage: StorageSpec{
 				MetadataSize: "10Gi",
-				CacheSize:    "5Gi",
 			},
 			Identity: &IdentityConfig{
 				JWT: &JWTConfig{
@@ -407,7 +394,6 @@ func TestPerconaBackupRequiredFields(t *testing.T) {
 		Spec: DittoServerSpec{
 			Storage: StorageSpec{
 				MetadataSize: "10Gi",
-				CacheSize:    "5Gi",
 			},
 			Identity: &IdentityConfig{
 				JWT: &JWTConfig{
@@ -449,7 +435,6 @@ func TestPerconaDisabled(t *testing.T) {
 		Spec: DittoServerSpec{
 			Storage: StorageSpec{
 				MetadataSize: "10Gi",
-				CacheSize:    "5Gi",
 			},
 			Identity: &IdentityConfig{
 				JWT: &JWTConfig{
@@ -489,7 +474,6 @@ func TestPerconaStorageClassValidation(t *testing.T) {
 		Spec: DittoServerSpec{
 			Storage: StorageSpec{
 				MetadataSize: "10Gi",
-				CacheSize:    "5Gi",
 			},
 			Identity: &IdentityConfig{
 				JWT: &JWTConfig{
@@ -530,7 +514,6 @@ func TestPerconaBackupMissingBucket(t *testing.T) {
 		Spec: DittoServerSpec{
 			Storage: StorageSpec{
 				MetadataSize: "10Gi",
-				CacheSize:    "5Gi",
 			},
 			Identity: &IdentityConfig{
 				JWT: &JWTConfig{

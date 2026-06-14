@@ -26,10 +26,6 @@ type DittoServerSpec struct {
 	// +optional
 	Database *DatabaseConfig `json:"database,omitempty"`
 
-	// Cache configures the WAL-backed cache
-	// +optional
-	Cache *InfraCacheConfig `json:"cache,omitempty"`
-
 	// ControlPlane configures the REST API server
 	// +optional
 	ControlPlane *ControlPlaneAPIConfig `json:"controlPlane,omitempty"`
@@ -83,26 +79,28 @@ type DittoServerSpec struct {
 // StorageSpec defines storage volumes for the DittoFS server pod's internal use
 // The operator creates PVCs based on these specs and mounts them in the server pod
 type StorageSpec struct {
-	// Size for metadata store PVC (mounted at /data/metadata)
+	// Size for the metadata store PVC (mounted at /data/store/metadata)
 	// Used by BadgerDB or other metadata backends
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^[0-9]+(Gi|Mi|Ti)$`
 	// +kubebuilder:example="10Gi"
 	MetadataSize string `json:"metadataSize"`
 
-	// Size for content store PVC (mounted at /data/content)
-	// Used for local filesystem content backend (not needed if using pure S3)
+	// Size for the block/content store PVC (mounted at /data/store/block).
+	// Holds local CAS chunks and the block-store append-log (the durable WAL
+	// replayed on crash recovery). Not needed for pure-S3 shares.
 	// +kubebuilder:validation:Pattern=`^[0-9]+(Gi|Mi|Ti)$`
 	// +kubebuilder:example="50Gi"
 	ContentSize string `json:"contentSize,omitempty"`
 
-	// Size for cache PVC (mounted at /data/cache)
-	// Required for WAL persistence - enables crash recovery
-	// +kubebuilder:validation:Required
+	// Size for the control-plane PVC (mounted at /data/controlplane), which
+	// holds the control-plane SQLite database (metadata-store registry + share
+	// definitions). Small by nature; defaults to 1Gi.
 	// +kubebuilder:validation:Pattern=`^[0-9]+(Gi|Mi|Ti)$`
-	// +kubebuilder:default="5Gi"
-	// +kubebuilder:example="5Gi"
-	CacheSize string `json:"cacheSize"`
+	// +kubebuilder:default="1Gi"
+	// +kubebuilder:example="1Gi"
+	// +optional
+	ControlPlaneSize string `json:"controlPlaneSize,omitempty"`
 
 	// StorageClass for the server's PVCs
 	// If not specified, uses the cluster's default StorageClass
@@ -130,22 +128,11 @@ type DatabaseConfig struct {
 // SQLiteConfig configures SQLite database
 type SQLiteConfig struct {
 	// Path is the database file path inside the container. It MUST live under a
-	// persistent volume (the operator mounts the "metadata" PVC at /data/metadata)
-	// — a path on the ephemeral container overlay is wiped on every pod restart,
-	// silently dropping all metadata-store and share definitions.
-	// +kubebuilder:default="/data/metadata/controlplane/controlplane.db"
+	// persistent volume (the operator mounts the control-plane PVC at
+	// /data/controlplane) — a path on the ephemeral container overlay is wiped on
+	// every pod restart, silently dropping all metadata-store and share definitions.
+	// +kubebuilder:default="/data/controlplane/controlplane.db"
 	Path string `json:"path,omitempty"`
-}
-
-// InfraCacheConfig configures the WAL-backed cache for crash recovery
-type InfraCacheConfig struct {
-	// Path is the directory for cache WAL file
-	// +kubebuilder:default="/data/cache"
-	Path string `json:"path,omitempty"`
-
-	// Size is the maximum cache size (e.g., "1GB", "512MB")
-	// +kubebuilder:default="1GB"
-	Size string `json:"size,omitempty"`
 }
 
 // ControlPlaneAPIConfig configures the control plane REST API

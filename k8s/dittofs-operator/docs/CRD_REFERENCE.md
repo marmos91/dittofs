@@ -32,9 +32,9 @@ graph TB
         SVC2[Service - File<br>NFS/SMB ports]
         SVC3[Service - API<br>REST API port]
         SVC4[Service - Metrics<br>optional]
-        PVC1[PVC - Metadata<br>/data/metadata]
-        PVC2[PVC - Cache<br>/data/cache]
-        PVC3[PVC - Content<br>optional]
+        PVC1[PVC - Control Plane<br>/data/controlplane]
+        PVC2[PVC - Metadata<br>/data/store/metadata]
+        PVC3[PVC - Block/Content<br>/data/store/block · optional]
     end
 
     subgraph "Optional - Percona Integration"
@@ -77,21 +77,20 @@ The storage section configures PVCs for the DittoFS server pod's internal use.
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
-| `storage.metadataSize` | string | - | **Yes** | Size for metadata store PVC (mounted at `/data/metadata`). Used by BadgerDB or other metadata backends. |
-| `storage.cacheSize` | string | `5Gi` | **Yes** | Size for cache PVC (mounted at `/data/cache`). Required for WAL persistence - enables crash recovery. |
-| `storage.contentSize` | string | - | No | Size for content store PVC (mounted at `/data/content`). Used for local filesystem content backend (not needed if using pure S3). |
+| `storage.controlPlaneSize` | string | `1Gi` | No | Size for the control-plane PVC (mounted at `/data/controlplane`). Holds the control-plane SQLite DB — the metadata-store registry and share definitions. Small by nature. |
+| `storage.metadataSize` | string | - | **Yes** | Size for metadata store PVC (mounted at `/data/store/metadata`). Used by BadgerDB or other metadata backends. |
+| `storage.contentSize` | string | - | No | Size for the block/content store PVC (mounted at `/data/store/block`). Holds local CAS chunks and the block-store append-log (the durable WAL replayed on crash recovery). Not needed for pure-S3 shares. |
 | `storage.storageClassName` | string | - | No | StorageClass for the server's PVCs. If not specified, uses the cluster's default StorageClass. |
 
 **Validation Rules:**
 - Size fields must match pattern `^[0-9]+(Gi|Mi|Ti)$` (e.g., `10Gi`, `512Mi`, `1Ti`)
 - `metadataSize` is required
-- `cacheSize` is required (defaults to `5Gi`)
+- `controlPlaneSize` is optional (defaults to `1Gi`)
 
 **Examples:**
 ```yaml
 storage:
   metadataSize: "10Gi"
-  cacheSize: "5Gi"
   contentSize: "50Gi"  # Optional, for local filesystem backend
   storageClassName: "fast-ssd"
 ```
@@ -126,22 +125,6 @@ database:
   postgresSecretRef:
     name: postgres-credentials
     key: connection-string
-```
-
-### Cache Configuration (`cache`)
-
-Configures the WAL-backed cache for crash recovery.
-
-| Field | Type | Default | Required | Description |
-|-------|------|---------|----------|-------------|
-| `cache.path` | string | `/data/cache` | No | Directory for cache WAL file |
-| `cache.size` | string | `1GB` | No | Maximum cache size (e.g., `1GB`, `512MB`) |
-
-**Examples:**
-```yaml
-cache:
-  path: "/data/cache"
-  size: "2GB"
 ```
 
 ### Service Configuration (`service`)
@@ -448,7 +431,6 @@ metadata:
 spec:
   storage:
     metadataSize: "1Gi"
-    cacheSize: "1Gi"
 ```
 
 ### Production with S3 Block Store
@@ -466,14 +448,11 @@ spec:
 
   storage:
     metadataSize: "10Gi"
-    cacheSize: "20Gi"
     storageClassName: "fast-ssd"
 
   database:
     type: sqlite
 
-  cache:
-    size: "5GB"
 
   service:
     type: LoadBalancer
@@ -545,7 +524,6 @@ spec:
 
   storage:
     metadataSize: "10Gi"
-    cacheSize: "20Gi"
     contentSize: "100Gi"
     storageClassName: "fast-ssd"
 
@@ -604,7 +582,6 @@ metadata:
 spec:
   storage:
     metadataSize: "10Gi"
-    cacheSize: "10Gi"
 
   nfsPort: 12049
 

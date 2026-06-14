@@ -171,7 +171,6 @@ kubectl describe pvc metadata-dittofs-sample-0
 spec:
   storage:
     metadataSize: "10Gi"
-    cacheSize: "5Gi"
     storageClassName: "standard"  # Use an existing StorageClass
 ```
 

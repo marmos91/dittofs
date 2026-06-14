@@ -126,7 +126,6 @@ func TestGenerateDittoFSConfig_NoDeadKeys(t *testing.T) {
 					},
 					Admin: &dittoiov1alpha1.AdminConfig{Username: "root"},
 				},
-				Cache: &dittoiov1alpha1.InfraCacheConfig{Path: "/c", Size: "2GB"},
 			},
 		},
 		"native-mtls": {

@@ -44,13 +44,6 @@ func WithDatabase(database *DatabaseConfig) func(*DittoServerSpec) {
 	}
 }
 
-// WithCache sets the Cache of a DittoServerSpec
-func WithCache(cache *InfraCacheConfig) func(*DittoServerSpec) {
-	return func(obj *DittoServerSpec) {
-		obj.Cache = cache
-	}
-}
-
 // WithControlPlane sets the ControlPlane of a DittoServerSpec
 func WithControlPlane(controlPlane *ControlPlaneAPIConfig) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {

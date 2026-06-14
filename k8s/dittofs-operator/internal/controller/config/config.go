@@ -18,17 +18,15 @@ const (
 	// TerminationGracePeriodSeconds from it so the grace period and the server's
 	// per-stage shutdown budget stay coupled.
 	DefaultShutdownTimeoutSeconds = 30
-	// DefaultSQLitePath lives UNDER the persistent "metadata" PVC (mounted at
-	// /data/metadata) so the control-plane DB — which holds the metadata-store
-	// registry and share definitions — survives pod restart/reschedule. A path
-	// outside a PVC (e.g. /data/controlplane) sits on the ephemeral container
-	// overlay and is wiped on every restart, silently orphaning all on-disk data.
-	DefaultSQLitePath      = "/data/metadata/controlplane/controlplane.db"
+	// DefaultSQLitePath lives UNDER the dedicated control-plane PVC (mounted at
+	// /data/controlplane) so the control-plane DB — which holds the metadata-store
+	// registry and share definitions — survives pod restart/reschedule. A path on
+	// the ephemeral container overlay is wiped on every restart, silently orphaning
+	// all on-disk data.
+	DefaultSQLitePath      = "/data/controlplane/controlplane.db"
 	DefaultAPIPort         = 8080
 	DefaultAccessDuration  = "15m"
 	DefaultRefreshDuration = "168h" // 7 days
-	DefaultCachePath       = "/data/cache"
-	DefaultCacheSize       = "1GB"
 	DefaultAdminUsername   = "admin"
 )
 
@@ -48,7 +46,6 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 		ShutdownTimeout: DefaultShutdownTimeout,
 		Database:        buildDatabaseConfig(dittoServer),
 		ControlPlane:    buildControlPlaneConfig(dittoServer),
-		Cache:           buildCacheConfig(dittoServer),
 	}
 
 	// Add admin config with username only (password hash injected via env var)
@@ -164,25 +161,4 @@ func stringOrDefault(value, defaultValue string) string {
 		return defaultValue
 	}
 	return value
-}
-
-// buildCacheConfig constructs cache configuration
-func buildCacheConfig(ds *dittoiov1alpha1.DittoServer) CacheConfig {
-	cfg := CacheConfig{
-		Path: DefaultCachePath,
-		Size: DefaultCacheSize,
-	}
-
-	if ds.Spec.Cache == nil {
-		return cfg
-	}
-
-	if ds.Spec.Cache.Path != "" {
-		cfg.Path = ds.Spec.Cache.Path
-	}
-	if ds.Spec.Cache.Size != "" {
-		cfg.Size = ds.Spec.Cache.Size
-	}
-
-	return cfg
 }

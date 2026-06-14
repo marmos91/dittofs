@@ -8,7 +8,6 @@ spec:
   replicas: 1
   storage:
     metadataSize: "10Gi"
-    cacheSize: "5Gi"
     # No contentSize needed - using S3 for payload
   identity:
     jwt:

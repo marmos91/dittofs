@@ -7,7 +7,6 @@ type DittoFSConfig struct {
 	ShutdownTimeout string             `yaml:"shutdown_timeout"`
 	Database        DatabaseConfig     `yaml:"database"`
 	ControlPlane    ControlPlaneConfig `yaml:"controlplane"`
-	Cache           CacheConfig        `yaml:"cache"`
 	Admin           AdminConfig        `yaml:"admin,omitempty"`
 }
 
@@ -72,12 +71,6 @@ type TLSConfig struct {
 type JWTConfig struct {
 	AccessTokenDuration  string `yaml:"access_token_duration"`
 	RefreshTokenDuration string `yaml:"refresh_token_duration"`
-}
-
-// CacheConfig configures the WAL-backed cache
-type CacheConfig struct {
-	Path string `yaml:"path"`
-	Size string `yaml:"size,omitempty"`
 }
 
 // AdminConfig configures the initial admin user

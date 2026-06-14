@@ -18,7 +18,6 @@ spec:
   storage:
     metadataSize: "10Gi"
     contentSize: "50Gi"
-    cacheSize: "5Gi"
     # storageClassName: "fast-ssd"  # Optional, uses default if not set
 
   # Percona PostgreSQL for control plane metadata

@@ -46,7 +46,6 @@ func newTestDittoServer(name, namespace string) *dittoiov1alpha1.DittoServer {
 				dittoiov1alpha1.WithStorage(
 					dittoiov1alpha1.StorageSpec{
 						MetadataSize: "5Gi",
-						CacheSize:    "5Gi",
 					},
 				),
 			),

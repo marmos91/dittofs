@@ -19,7 +19,7 @@ func TestValidateDittoServer_TLS(t *testing.T) {
 			Spec: DittoServerSpec{
 				// Storage is required earlier in validation; provide it so the
 				// TLS rules under test are actually reached.
-				Storage:      StorageSpec{MetadataSize: "1Gi", CacheSize: "1Gi"},
+				Storage:      StorageSpec{MetadataSize: "1Gi"},
 				ControlPlane: cp,
 			},
 		}
