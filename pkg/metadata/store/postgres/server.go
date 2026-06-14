@@ -130,52 +130,16 @@ func (s *PostgresMetadataStore) GetFilesystemStatistics(ctx context.Context, han
 	// Scope the aggregate to the share encoded in the handle. The atomic
 	// usedBytes counter and statsCache are store-wide (sum across all shares),
 	// so they cannot answer a per-share query; both are bypassed here in favour
-	// of a scoped SQL aggregate. An invalid handle falls back to the store-wide
-	// totals (single-share compatible).
-	shareName, _, decodeErr := decodeFileHandle(handle)
-	if decodeErr != nil {
-		shareName = ""
-	}
-
+	// of a scoped SQL aggregate (statfsQuery). An invalid handle falls back to
+	// the store-wide totals (single-share compatible).
+	sql, args := statfsQuery(handle)
 	var bytesUsed, filesUsed int64
-	var err error
-	if shareName != "" {
-		err = s.queryRow(ctx,
-			`SELECT COALESCE(SUM(size), 0), COUNT(*) FROM files WHERE share_name = $1`,
-			shareName,
-		).Scan(&bytesUsed, &filesUsed)
-	} else {
-		err = s.queryRow(ctx,
-			`SELECT COALESCE(SUM(size), 0), COUNT(*) FROM files`,
-		).Scan(&bytesUsed, &filesUsed)
-	}
-	if err != nil {
+	if err := s.queryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
-	}
-
-	totalBytes := uint64(1 << 50) // 1 PB (effectively unlimited)
-	availableBytes := uint64(0)
-	if totalBytes > uint64(bytesUsed) {
-		availableBytes = totalBytes - uint64(bytesUsed)
-	}
-
-	totalFiles := uint64(1 << 32) // 4 billion files
-	availableFiles := uint64(0)
-	if totalFiles > uint64(filesUsed) {
-		availableFiles = totalFiles - uint64(filesUsed)
-	}
-
-	stats := metadata.FilesystemStatistics{
-		TotalBytes:     totalBytes,
-		AvailableBytes: availableBytes,
-		UsedBytes:      uint64(bytesUsed),
-		TotalFiles:     totalFiles,
-		AvailableFiles: availableFiles,
-		UsedFiles:      uint64(filesUsed),
 	}
 
 	// Do NOT populate statsCache here: the cache is store-wide and would be
 	// polluted by a per-share result. The cache remains valid only for the
 	// store-wide path elsewhere.
-	return &stats, nil
+	return buildFilesystemStatistics(bytesUsed, filesUsed), nil
 }

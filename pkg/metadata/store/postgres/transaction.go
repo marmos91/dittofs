@@ -1259,46 +1259,17 @@ func (tx *postgresTransaction) GetFilesystemStatistics(ctx context.Context, hand
 		return nil, err
 	}
 
-	// Scope the aggregate to the share encoded in the handle. Without the
-	// WHERE predicate every share reports the store-wide total. An invalid
-	// handle falls back to the store-wide aggregate (single-share compatible).
-	shareName, _, decodeErr := decodeFileHandle(handle)
-	if decodeErr != nil {
-		shareName = ""
-	}
-
+	// Scope the aggregate to the share encoded in the handle (statfsQuery).
+	// Without the WHERE predicate every share reports the store-wide total. An
+	// invalid handle falls back to the store-wide aggregate (single-share
+	// compatible).
+	sql, args := statfsQuery(handle)
 	var bytesUsed, filesUsed int64
-	var err error
-	if shareName != "" {
-		err = tx.tx.QueryRow(ctx, `
-			SELECT
-				COALESCE(SUM(size), 0) AS total_bytes_used,
-				COUNT(*) AS total_files_used
-			FROM files
-			WHERE share_name = $1
-		`, shareName).Scan(&bytesUsed, &filesUsed)
-	} else {
-		err = tx.tx.QueryRow(ctx, `
-			SELECT
-				COALESCE(SUM(size), 0) AS total_bytes_used,
-				COUNT(*) AS total_files_used
-			FROM files
-		`).Scan(&bytesUsed, &filesUsed)
-	}
-	if err != nil {
+	if err := tx.tx.QueryRow(ctx, sql, args...).Scan(&bytesUsed, &filesUsed); err != nil {
 		return nil, mapPgError(err, "GetFilesystemStatistics", "")
 	}
 
-	stats := metadata.FilesystemStatistics{
-		TotalBytes:     1 << 50, // 1 PB (effectively unlimited)
-		AvailableBytes: (1 << 50) - uint64(bytesUsed),
-		UsedBytes:      uint64(bytesUsed),
-		TotalFiles:     1 << 32, // 4 billion files
-		AvailableFiles: (1 << 32) - uint64(filesUsed),
-		UsedFiles:      uint64(filesUsed),
-	}
-
-	return &stats, nil
+	return buildFilesystemStatistics(bytesUsed, filesUsed), nil
 }
 
 // ============================================================================

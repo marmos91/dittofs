@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"sort"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -403,17 +402,8 @@ func (tx *memoryTransaction) ListChildren(ctx context.Context, dirHandle metadat
 	// Get sorted entries
 	sortedNames := sortedChildNames(childrenMap)
 
-	// Find start position based on cursor. Use binary search so the page
-	// starts after the cursor's lexicographic position even when the cursor
-	// entry itself was deleted between READDIR pages (linear scan would
-	// reset startIdx to 0 and produce duplicate entries).
-	startIdx := 0
-	if cursor != "" {
-		startIdx = sort.SearchStrings(sortedNames, cursor)
-		if startIdx < len(sortedNames) && sortedNames[startIdx] == cursor {
-			startIdx++
-		}
-	}
+	// Find start position based on cursor.
+	startIdx := childPageStart(sortedNames, cursor)
 
 	if limit <= 0 {
 		limit = 1000 // Default limit

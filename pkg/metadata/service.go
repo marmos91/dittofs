@@ -177,29 +177,24 @@ func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
 	}
 
 	s.mu.Lock()
-	// Do NOT publish the store yet — it is published atomically with the lock
-	// manager below so the share is never observable in a partially-ready state
-	// (store visible, lock manager absent).
+	// Do NOT publish the store yet (in the new-share path) — it is published
+	// atomically with the lock manager below so the share is never observable
+	// in a partially-ready state (store visible, lock manager absent).
 	_, exists := s.lockManagers[shareName]
-	// Snapshot this share's removal generation under the same lock. A
-	// RemoveStoreForShare for this share that lands while we recover (outside
-	// s.mu) bumps it; the publish re-check below aborts when it advanced.
-	startGen := s.removeGen[shareName]
-	s.mu.Unlock()
-
 	if exists {
-		// Share already has a lock manager; replace only the store reference
-		// under a fresh lock so the replacement is atomic and visible. The lock
+		// Share already has a lock manager; replace only the store reference.
+		// This is atomic and visible under the lock we already hold. The lock
 		// manager is ephemeral and intentionally not replaced.
-		s.mu.Lock()
 		s.stores[shareName] = store
 		s.mu.Unlock()
 		return nil
 	}
-
-	// Snapshot grace config under s.mu (read once; both fields are set before
-	// any RegisterStoreForShare call per their doc contract).
-	s.mu.Lock()
+	// Snapshot this share's removal generation under the same lock. A
+	// RemoveStoreForShare for this share that lands while we recover (outside
+	// s.mu) bumps it; the publish re-check below aborts when it advanced.
+	startGen := s.removeGen[shareName]
+	// Snapshot grace config under the same lock (read once; both fields are set
+	// before any RegisterStoreForShare call per their doc contract).
 	graceDuration := s.graceDuration
 	graceCoordinator := s.graceCoordinator
 	byteRangeReleaseHook := s.byteRangeReleaseHook
