@@ -96,13 +96,13 @@ func TestReleaseData_NilIsNoop(t *testing.T) {
 	}
 
 	if err := sendResponseNoHooks(reqHeader, ctx, result, ci); err != nil {
-		t.Fatalf("SendResponse returned error: %v", err)
+		t.Fatalf("sendResponseNoHooks returned error: %v", err)
 	}
 	// No assertion needed beyond "did not panic".
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: ReleaseData set — SendResponse invokes it exactly once after a
+// Test 2: ReleaseData set — sendResponseNoHooks invokes it exactly once after a
 // successful wire write.
 // ---------------------------------------------------------------------------
 
@@ -168,9 +168,9 @@ func TestReleaseData_FiresOnWriteError(t *testing.T) {
 	if err == nil {
 		// We really expected an error; accept either outcome but require the
 		// release still fired.
-		t.Logf("SendResponse did not return an error on closed conn; continuing")
+		t.Logf("sendResponseNoHooks did not return an error on closed conn; continuing")
 	} else if !errors.Is(err, io.ErrClosedPipe) && !isTransportError(err) {
-		t.Logf("SendResponse returned unexpected error (ok): %v", err)
+		t.Logf("sendResponseNoHooks returned unexpected error (ok): %v", err)
 	}
 	if got := count.Load(); got != 1 {
 		t.Fatalf("ReleaseData fire count = %d, want 1 (must fire even on write error)", got)
@@ -258,7 +258,7 @@ func TestReleaseData_PlainWriteFires(t *testing.T) {
 	}
 
 	if err := sendResponseNoHooks(reqHeader, ctx, result, ci); err != nil {
-		t.Fatalf("SendResponse returned error: %v", err)
+		t.Fatalf("sendResponseNoHooks returned error: %v", err)
 	}
 	if got := count.Load(); got != 1 {
 		t.Fatalf("ReleaseData fire count on plain path = %d, want 1", got)
