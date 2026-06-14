@@ -473,7 +473,7 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 
 // sentinelFileName is the per-share boot-guard marker written by
 // `dfs migrate-to-cas` at the successful completion of a share migration.
-// Kept in sync with pkg/blockstore/migrate.SentinelFileName.
+// Kept in sync with pkg/block/migrate.SentinelFileName.
 const sentinelFileName = ".cas-migrated-v1"
 
 // legacyLayoutWalkDepthCap bounds the depth-limited `.blk` probe so a

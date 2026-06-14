@@ -32,7 +32,7 @@ import (
 	// entrypoint for reconciliation. It MUST bind
 	// metadata.Store to enumerate FileAttr.Blocks across the share's
 	// directory tree (GetRootHandle, GetFile, ListChildren). Lifting these
-	// helpers into pkg/blockstore would create a circular import.
+	// helpers into pkg/block would create a circular import.
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 

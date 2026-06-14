@@ -62,7 +62,7 @@ type MigrateStatusRuntime interface {
 // and dfsctl share a single contract. Admin-only auth is enforced by
 // the router placing the route inside JWTAuth + RequireAdmin middleware.
 //
-// This file imports `pkg/blockstore/migrate` (the journal type, placed
+// This file imports `pkg/block/migrate` (the journal type, placed
 // in pkg/ from day one for exactly this reason) rather than
 // `cmd/dfsctl/...`, which Go's build system forbids from being imported
 // by internal/.

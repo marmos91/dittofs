@@ -8,7 +8,7 @@ import (
 // CacheInvalidator is the minimal cache-surface adapter helpers (and the
 // common.CopyPayload helper) depend on for surgical post-transaction
 // invalidation. It is defined here in package common rather than imported
-// from pkg/blockstore/engine so that adapter helpers remain decoupled from
+// from pkg/block/engine so that adapter helpers remain decoupled from
 // the concrete engine.Cache type — the engine's Cache type implements this
 // interface implicitly via its InvalidateFile method.
 //

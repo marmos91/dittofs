@@ -20,7 +20,7 @@ import (
 // surface (RefCount mutations, FileAttr.Blocks persistence) to a concrete
 // metadata.Store so the engine package itself can satisfy the
 // strict-grep boundary (zero pkg/metadata imports under
-// pkg/blockstore/engine/*.go).
+// pkg/block/engine/*.go).
 //
 // Transaction ownership rule (BLOCKER-1/2/3 resolution): the engine
 // NEVER opens a metadata txn. The CALLER (per-share runtime wrapper for

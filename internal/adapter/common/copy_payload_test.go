@@ -64,7 +64,7 @@ func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]blo
 }
 
 // FindByObjectID stub. Adapter-common tests don't exercise short-circuit
-// lookups (those live in pkg/blockstore/engine and pkg/metadata/storetest);
+// lookups (those live in pkg/block/engine and pkg/metadata/storetest);
 // satisfy the interface so the fake satisfies engine.MetadataCoordinator.
 func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.BlockRef, error) {
 	return nil, nil

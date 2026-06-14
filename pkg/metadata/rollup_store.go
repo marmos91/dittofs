@@ -1,7 +1,7 @@
 // Package metadata — rollup_store.go.
 //
 // RollupStore persists the per-file append-log rollup_offset for the hybrid
-// local tier. See pkg/blockstore/local/fs/rollup.go for the consumer; see
+// local tier. See pkg/block/local/fs/rollup.go for the consumer; see
 // planning/phases/10-fastcdc-chunker-hybrid-local-store-a1/10-CONTEXT.md
 // for the atomicity contract.
 package metadata

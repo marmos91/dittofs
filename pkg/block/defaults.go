@@ -6,7 +6,7 @@ import (
 )
 
 // SystemDetector provides system resource information for deduction.
-// This mirrors sysinfo.Detector but lives in pkg/blockstore to avoid
+// This mirrors sysinfo.Detector but lives in pkg/block to avoid
 // importing internal/ from pkg/. The sysinfo.Detector satisfies this
 // interface structurally (duck typing).
 type SystemDetector interface {

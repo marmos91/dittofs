@@ -723,7 +723,7 @@ func contextErr(ctx context.Context, err error) error {
 }
 
 // blake3ContentHash returns the 32-byte BLAKE3 hash of data. Mirrors
-// pkg/blockstore/local/fs/rollup.go:blake3ContentHash (CAS chunk
+// pkg/block/local/fs/rollup.go:blake3ContentHash (CAS chunk
 // hashing contract).
 func blake3ContentHash(data []byte) block.ContentHash {
 	var h block.ContentHash

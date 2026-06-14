@@ -326,7 +326,7 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 	// blocking the explicit caller until the periodic uploader's tick
 	// finishes could span minutes of remote I/O and translate into
 	// protocol-client D-state. Callers MUST NOT spin-retry: see godoc
-	// above and the Flusher.Flush contract in pkg/blockstore.
+	// above and the Flusher.Flush contract in pkg/block.
 	if !m.uploading.CompareAndSwap(false, true) {
 		return &block.FlushResult{Finalized: false}, nil
 	}
@@ -450,7 +450,7 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 // parallel blockStates slice for the trigger
 // evaluation. Projection: ListFileBlocks(payloadID) yields the FastCDC
 // chunker output already produced by the local-store rollup
-// (pkg/blockstore/local/fs/rollup.go:rollupFile populates Pending
+// (pkg/block/local/fs/rollup.go:rollupFile populates Pending
 // FileBlocks at chunk boundaries with the BLAKE3-256 chunk hash as
 // FileBlock.Hash). expects the trigger to fire only when
 // every projected block is Pending; this helper returns the FULL

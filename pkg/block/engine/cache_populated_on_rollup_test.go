@@ -97,7 +97,7 @@ func waitForChunks(t *testing.T, bs *Store, payloadID string, timeout time.Durat
 // . Write data spanning multiple chunks; drive engine.Flush
 // assert every post-rollup chunk hash is reachable in bs.cache.
 //
-// Payload sizing: pkg/blockstore/chunker emits a single chunk for data
+// Payload sizing: pkg/block/chunker emits a single chunk for data
 // up to MinChunkSize (1 MiB) when final=true. To force multiple chunk
 // emissions we write 12 MiB of varied bytes which crosses several
 // FastCDC breakpoints. We then assert all emitted hashes are

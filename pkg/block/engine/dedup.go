@@ -24,7 +24,7 @@ import (
 // finalize machinery so cache invalidation invariants remain identical
 // to the speculative path's hit.
 //
-// ObjectID semantics (verified against pkg/blockstore/objectid.go)
+// ObjectID semantics (verified against pkg/block/objectid.go)
 // ComputeObjectID returns BLAKE3(prefix || h0 || ... || hN-1), so the
 // single-block ObjectID is BLAKE3(prefix || hash(data)) — NOT a bare
 // leaf hash. A previously-quiesced file dedups to this ObjectID only

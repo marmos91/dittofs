@@ -34,7 +34,7 @@ import (
 // caller-supplied context (NOT a txn-bound ctx). The coordinator
 // implementation (per-share runtime wrapper) is responsible for binding
 // its RefCount UPDATEs to whatever txn is currently active for the
-// caller's context — see pkg/blockstore/engine/coordinator.go for the
+// caller's context — see pkg/block/engine/coordinator.go for the
 // contract. The metadata.Transaction passed to fn here is the canonical
 // place where dst's PutFile lands; engine increments piggyback on the
 // same txn through the coordinator's per-impl mechanism.

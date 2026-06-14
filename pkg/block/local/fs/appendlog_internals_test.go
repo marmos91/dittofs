@@ -22,9 +22,9 @@ import (
 //
 // Inlined these three scenarios (PressureChannel_INV05
 // TornWriteRecovery_LSL06, RollupOffsetMonotone_INV03) from
-// pkg/blockstore/local/localtest/appendlog_suite.go (deleted in this
+// pkg/block/local/localtest/appendlog_suite.go (deleted in this
 // plan). The other two scenarios from that suite (AppendLogRoundTrip
-// ConcurrentStorm) now live in pkg/blockstore/blockstoretest as
+// ConcurrentStorm) now live in pkg/block/blockstoretest as
 // BlockStoreAppendConformance subtests; the fs backend invokes them
 // via fs_conformance_test.go.
 //

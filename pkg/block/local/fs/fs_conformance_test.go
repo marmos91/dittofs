@@ -35,7 +35,7 @@ func newFSStoreForConformance(t *testing.T) *fs.FSStore {
 }
 
 // TestFSStore_BlockStoreConformance runs the unified
-// BlockStoreConformance suite from pkg/blockstore/blockstoretest against
+// BlockStoreConformance suite from pkg/block/blockstoretest against
 // *fs.FSStore. The fs backend satisfies the BlockStore contract by way
 // of its embedded BlockStoreAppend implementation (07 lands the
 // missing Put/Has/Walk/etc. methods that complete the interface).
@@ -50,7 +50,7 @@ func TestFSStore_BlockStoreConformance(t *testing.T) {
 }
 
 // TestFSStore_BlockStoreAppendConformance runs the random-write
-// absorber suite from pkg/blockstore/blockstoretest against
+// absorber suite from pkg/block/blockstoretest against
 // *fs.FSStore. The fs backend implements BlockStoreAppend in full
 // (s3 and memory-remote implement only BlockStore).
 //

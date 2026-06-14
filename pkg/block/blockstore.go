@@ -44,9 +44,9 @@ type Meta struct {
 // no opaque "block key" strings appear on this surface.
 //
 // Implementations
-//   - pkg/blockstore/local/fs.FSStore (also implements BlockStoreAppend)
-//   - pkg/blockstore/remote/s3.Store
-//   - pkg/blockstore/remote/memory.Store
+//   - pkg/block/local/fs.FSStore (also implements BlockStoreAppend)
+//   - pkg/block/remote/s3.Store
+//   - pkg/block/remote/memory.Store
 //
 // All methods take ctx context.Context as the first argument and MUST
 // honor cancellation. All hash arguments are the full 32-byte

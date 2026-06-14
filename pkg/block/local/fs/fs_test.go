@@ -153,7 +153,7 @@ func (c *countingFileBlockStore) TotalCount() int {
 }
 
 // writeSentinelForTest writes a minimal valid `.cas-migrated-v1` marker
-// at the share-dir root. Mirrors pkg/blockstore/migrate.writeSentinel's
+// at the share-dir root. Mirrors pkg/block/migrate.writeSentinel's
 // contract (file content is opaque to the boot guard; presence is what
 // matters).
 func writeSentinelForTest(t *testing.T, shareDir string) {

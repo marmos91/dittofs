@@ -101,7 +101,7 @@ type FileBlockStore interface {
 	// an existing block — it never creates one.
 	//
 	// Returns ErrUnknownHash if no FileBlock row exists for the given
-	// hash. Callers (see pkg/blockstore/local/fs/rollup.go LRU hit
+	// hash. Callers (see pkg/block/local/fs/rollup.go LRU hit
 	// path) MUST fall back to the full Put path on this sentinel —
 	// the LRU may be ahead of the metadata store after a crash, or
 	// the hash may not be present yet.
@@ -142,7 +142,7 @@ type FileBlockStore interface {
 // FileBlockStore. The engine + local/fs packages still need by-ID
 // and per-file lookups for the dual-read read path, recovery,
 // dedup-delete and stats fan-out (callers under
-// pkg/blockstore/{engine,local/fs}/).
+// pkg/block/{engine,local/fs}/).
 //
 // All three metadata backends (memory/badger/postgres) satisfy this
 // interface — the methods are concrete on the backend struct, just

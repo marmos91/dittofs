@@ -72,7 +72,7 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 //
 // WriteAt remains a per-write append into the local store — it does
 // NOT chunk or assemble BlockRefs. The FastCDC chunker runs at the
-// local-store rollup layer (pkg/blockstore/local/fs/rollup.go
+// local-store rollup layer (pkg/block/local/fs/rollup.go
 // rollupFile), which produces Pending FileBlocks carrying chunk
 // hashes. Syncer.Flush projects ListFileBlocks(payloadID) into the
 // canonical sorted []BlockRef list at quiesce time and invokes either
@@ -103,7 +103,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	bs.cache.OnRead(payloadID, nil, 0)
 	// the FastCDC chunker output is
 	// produced by the local-store rollup pump
-	// (pkg/blockstore/local/fs/rollup.go:rollupFile) and lands as
+	// (pkg/block/local/fs/rollup.go:rollupFile) and lands as
 	// Pending FileBlocks with chunk-hash populated. The canonical
 	// []BlockRef projection is built at Flush time from
 	// ListFileBlocks(payloadID) — see Syncer.snapshotPendingBlockRefs

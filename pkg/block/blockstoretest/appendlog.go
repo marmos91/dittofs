@@ -38,7 +38,7 @@ type AppendFactory func(t *testing.T) (block.BlockStoreAppend, func())
 //
 // The three SKIPPED scenarios are exercised by the fs backend via
 // fs-internal `_test.go` files
-// (pkg/blockstore/local/fs/appendlog_internals_test.go) that hold the
+// (pkg/block/local/fs/appendlog_internals_test.go) that hold the
 // scenarios verbatim and call the fs-internal *ForTest probes.
 func BlockStoreAppendConformance(t *testing.T, factory AppendFactory) {
 	t.Helper()
@@ -159,7 +159,7 @@ func testRecreateAfterDeleteAppendLog(t *testing.T, factory AppendFactory) {
 // fs backend continues to exercise this scenario via the legacy
 // fs-internal appendlog_internals_test.go scenarios.
 func testPressureChannelINV05(t *testing.T, factory AppendFactory) {
-	t.Skip("PressureChannel_INV05 is not portable to BlockStoreAppend: requires fs-internal SetMaxLogBytesForTest + LogBytesTotalForTest probes. The fs backend exercises this via pkg/blockstore/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
+	t.Skip("PressureChannel_INV05 is not portable to BlockStoreAppend: requires fs-internal SetMaxLogBytesForTest + LogBytesTotalForTest probes. The fs backend exercises this via pkg/block/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
 }
 
 // testTornWriteRecoveryLSL06 asserts that appending random garbage
@@ -175,9 +175,9 @@ func testPressureChannelINV05(t *testing.T, factory AppendFactory) {
 // on-disk paths or recovery hooks — recovery is a backend-internal
 // concern. The fs backend continues to exercise this scenario via
 // the fs-internal appendlog_internals_test.go scenarios in
-// pkg/blockstore/local/fs/.
+// pkg/block/local/fs/.
 func testTornWriteRecoveryLSL06(t *testing.T, factory AppendFactory) {
-	t.Skip("TornWriteRecovery_LSL06 is not portable to BlockStoreAppend: requires direct on-disk log access + ReopenForTest / IntervalsLenForTest fs-internal probes. The fs backend exercises this via pkg/blockstore/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
+	t.Skip("TornWriteRecovery_LSL06 is not portable to BlockStoreAppend: requires direct on-disk log access + ReopenForTest / IntervalsLenForTest fs-internal probes. The fs backend exercises this via pkg/block/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
 }
 
 // testConcurrentStorm asserts no deadlock and no silent data loss
@@ -202,7 +202,7 @@ func testTornWriteRecoveryLSL06(t *testing.T, factory AppendFactory) {
 // LogBytesTotalForTest / RollupOffsetForTest internal probes for
 // deterministic assertions instead of polling Walk.
 func testConcurrentStorm(t *testing.T, factory AppendFactory) {
-	t.Skip("ConcurrentStorm is not portable to BlockStoreAppend: the only portable rollup-progress hook is polling Walk, which is timing-dependent and flakes on CI runners with slow shared IO. The fs backend exercises this via pkg/blockstore/local/fs/appendlog_internals_test.go using fs-internal probes for deterministic assertions.")
+	t.Skip("ConcurrentStorm is not portable to BlockStoreAppend: the only portable rollup-progress hook is polling Walk, which is timing-dependent and flakes on CI runners with slow shared IO. The fs backend exercises this via pkg/block/local/fs/appendlog_internals_test.go using fs-internal probes for deterministic assertions.")
 }
 
 // testRollupOffsetMonotoneINV03 asserts that if metadata has
@@ -219,5 +219,5 @@ func testConcurrentStorm(t *testing.T, factory AppendFactory) {
 // continues to exercise this scenario via the legacy fs-internal
 // appendlog_internals_test.go scenarios.
 func testRollupOffsetMonotoneINV03(t *testing.T, factory AppendFactory) {
-	t.Skip("RollupOffsetMonotone_INV03 is not portable to BlockStoreAppend: requires header-CRC corruption + ReopenForTest / HeaderRollupOffsetForTest fs-internal probes. The fs backend exercises this via pkg/blockstore/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
+	t.Skip("RollupOffsetMonotone_INV03 is not portable to BlockStoreAppend: requires header-CRC corruption + ReopenForTest / HeaderRollupOffsetForTest fs-internal probes. The fs backend exercises this via pkg/block/local/fs/appendlog_internals_test.go (the scenarios were moved out of the deleted localtest package by Plan 17-06).")
 }

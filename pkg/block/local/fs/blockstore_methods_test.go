@@ -250,7 +250,7 @@ func TestFSStore_Walk_StopWalkSentinel(t *testing.T) {
 
 	t.Run("CleanExitOnWrappedErrStopWalk", func(t *testing.T) {
 		// Callers idiomatically wrap ErrStopWalk via fmt.Errorf("%w", ...)
-		// (see pkg/blockstore/errors.go). errors.Is must detect through
+		// (see pkg/block/errors.go). errors.Is must detect through
 		// the wrap and still trigger clean exit.
 		bc := newFSStoreForTest(t, FSStoreOptions{})
 		_ = seedChunks(t, bc, 3)

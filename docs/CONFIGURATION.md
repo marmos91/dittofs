@@ -317,7 +317,7 @@ Related glossary terms: [TLS / mTLS](GLOSSARY.md#authentication).
 
 ### 6. Block Store Configuration
 
-Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/blockstore/engine/` and composes a local tier, a remote tier, the unified CAS-keyed in-memory `Cache`, a syncer (async local-to-remote transfer), and a garbage collector.
+Per-share block storage is configured via `dfsctl store` / `dfsctl share` commands (not the server config file). Each share owns an isolated local storage directory plus a reference to a remote store (S3 or filesystem). The block store lives in `pkg/block/engine/` and composes a local tier, a remote tier, the unified CAS-keyed in-memory `Cache`, a syncer (async local-to-remote transfer), and a garbage collector.
 
 #### Append-log tier
 
@@ -350,35 +350,30 @@ The local `fs` store requires a metadata backend that implements
 `metadata.RollupStore` to persist each log's `rollup_offset`; memory, badger,
 and postgres all qualify.
 
-#### Syncer + GC knobs
+#### GC knobs
 
 The CAS write path uses an async syncer and a fail-closed mark-sweep
-garbage collector. Their knobs live inside the per-share local block store's
-`config` JSON under the `syncer` and `gc` sub-maps:
+garbage collector. The syncer's sizing (upload concurrency, claim timeout,
+etc.) is **not** an operator-facing config section — it is auto-deduced from
+system resources at startup and constructed in code; there is no `syncer:`
+config block (a stale `syncer:` section in a config file is tolerated but
+ignored, logged as an unknown key).
+
+The mark-sweep GC is the one tunable surface, configured via the top-level
+`gc:` server-config section:
 
 ```yaml
-blockstore:
-  syncer:
-    tick: 30s                   # Periodic sync interval. Default 30s.
-    upload_concurrency: 8       # Parallel uploads per share.
-                                # Default 8. Caps S3 connections per
-                                # share; predictable throughput.
-    claim_timeout: 10m          # Janitor at syncer Start requeues any
-                                # Syncing row whose last_sync_attempt_at
-                                # is older than this back to Pending.
-                                # Default 10m. Tune lower for workloads
-                                # with strict RPO; higher for slow links.
-  gc:
-    grace_period: 1h            # Objects whose LastModified is newer than
-                                # (snapshot - grace_period) are NEVER
-                                # deleted. Default 1h. Values in (0, 5m)
-                                # are REJECTED at config load; values in
-                                # [5m, 10m) are accepted but emit a
-                                # warning. The cushion protects in-flight
-                                # uploads whose metadata-txn lands after
-                                # the snapshot.
-    dry_run_sample_size: 1000   # Maximum candidate keys reported in
-                                # --dry-run mode. Default 1000.
+gc:
+  grace_period: 1h            # Objects whose LastModified is newer than
+                              # (snapshot - grace_period) are NEVER
+                              # deleted. Default 1h. Values in (0, 5m)
+                              # are REJECTED at config load; values in
+                              # [5m, 10m) are accepted but emit a
+                              # warning. The cushion protects in-flight
+                              # uploads whose metadata-txn lands after
+                              # the snapshot.
+  dry_run_sample_size: 1000   # Maximum candidate keys reported in
+                              # --dry-run mode. Default 1000.
 ```
 
 **Tuning guidance:**
@@ -389,23 +384,12 @@ blockstore:
   hashes_marked / objects_swept ratio for your workload, then schedule
   the real run via cron at the cadence that matches your delete rate.
   No periodic-GC scheduler ships today; trigger GC on demand or via cron.
-- `syncer.upload_concurrency` × `syncer.tick` × average chunk size
-  (~4 MiB with the default FastCDC) bounds steady-state upload
-  throughput per share.
-- `syncer.claim_timeout` controls how aggressively the restart-recovery
-  janitor requeues stuck `Syncing` rows: shorter values surface stalls
-  faster, longer values tolerate slow remotes. The default 10m fits
-  most S3 workloads.
 - `gc.grace_period` MUST be longer than your worst-case
   metadata-commit latency after a successful PUT. The default 1h is
   comfortable for any commit path that completes in seconds.
 
-Env-var mapping (dot-path convention; viper binds the top-level `syncer`
-and `gc` blocks directly, with no `blockstore.` prefix):
-`DITTOFS_SYNCER_TICK`,
-`DITTOFS_SYNCER_CLAIM_BATCH_SIZE`,
-`DITTOFS_SYNCER_UPLOAD_CONCURRENCY`,
-`DITTOFS_SYNCER_CLAIM_TIMEOUT`,
+Env-var mapping (dot-path convention; the top-level `gc` block binds
+directly):
 `DITTOFS_GC_GRACE_PERIOD`,
 `DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
 
