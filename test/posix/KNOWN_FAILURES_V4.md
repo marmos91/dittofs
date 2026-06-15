@@ -32,17 +32,4 @@ Categories:
 | removexattr/* | feature | NFSv4 named attributes not implemented | - |
 | open/03.t | env | PATH_MAX test fails: mount-point prefix pushes the absolute path over PATH_MAX in the Linux VFS before NFS sees it — client-side, affects any non-root mount | - |
 | unlink/14.t | proto | NFSv4 silly-rename: open file + unlink triggers rename instead of remove, nlink stays 1 (same as Linux knfsd) | - |
-| chmod/03.t | bug | Deep/long composite path (~4000 chars) fails on the PostgreSQL backend (memory/badger pass) | #1153 |
-| chown/03.t | bug | Deep/long composite path fails on the PostgreSQL backend | #1153 |
-| ftruncate/03.t | bug | Deep/long composite path fails on the PostgreSQL backend | #1153 |
-| link/03.t | bug | Deep/long composite path fails on the PostgreSQL backend | #1153 |
-| truncate/03.t | bug | Deep/long composite path fails on the PostgreSQL backend | #1153 |
-| unlink/03.t | bug | Deep/long composite path fails on the PostgreSQL backend | #1153 |
-| rename/23.t | bug | Long-path rename fails on the PostgreSQL backend | #1153 |
-| chown/07.t | bug | Intermittent EEXIST/EIO on the PostgreSQL backend — collateral of the deep-path bug leaving orphaned rows | #1153 |
-| link/04.t | bug | Intermittent EEXIST/EIO on the PostgreSQL backend — collateral of the deep-path bug | #1153 |
-| open/22.t | bug | Intermittent EEXIST / nlink mismatch on the PostgreSQL backend — collateral of the deep-path bug | #1153 |
-| truncate/06.t | bug | Intermittent EEXIST on the PostgreSQL backend — collateral of the deep-path bug | #1153 |
-| ftruncate/06.t | bug | Intermittent EEXIST on the PostgreSQL backend — collateral of the deep-path bug | #1153 |
-| unlink/04.t | bug | Intermittent EEXIST on the PostgreSQL backend — collateral of the deep-path bug | #1153 |
-| chmod/11.t | bug | Intermittent EEXIST on the PostgreSQL backend — collateral of the deep-path bug | #1153 |
+| rename/23.t | bug | PostgreSQL rename-overwrite of an existing target returns EEXIST (nlink ends at 2); memory/badger pass. Not a long-path bug — normal-length names | #1160 |
