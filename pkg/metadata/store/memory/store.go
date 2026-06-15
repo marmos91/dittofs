@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,10 +33,6 @@ type fileData struct {
 	// ShareName tracks which share this file belongs to.
 	// Used to enforce share-level policies (e.g., read-only shares).
 	ShareName string
-
-	// Path stores the full path within the share (e.g., "/documents/report.pdf").
-	// Required for directory rename path propagation.
-	Path string
 }
 
 // deviceNumber stores major and minor device numbers for special files.
@@ -519,9 +516,87 @@ func (store *MemoryMetadataStore) buildFileWithNlink(
 	return &metadata.File{
 		ID:        id,
 		ShareName: shareName,
-		Path:      fileData.Path,
+		Path:      store.derivePathLocked(handle),
 		FileAttr:  attr,
 	}, nil
+}
+
+// derivePathLocked reconstructs an inode's logical path by walking parent
+// edges up to the share root (#1166). parents/children are the sole source of
+// truth for the namespace, so the returned File.Path always reflects the
+// inode's current location and can never go stale the way a stored path could
+// after a hard-linked name is renamed or unlinked.
+//
+// For a hard-linked inode (reachable under N names) the walk is deterministic
+// but arbitrary: at each level it follows the lexicographically smallest child
+// name, yielding ONE valid reachable path. POSIX does not guarantee which path
+// stat() reflects for a multiply-linked file, so any reachable path is correct.
+// An inode with no parent edge (a share root, or an orphaned/unlinked-but-open
+// inode) resolves to "/".
+//
+// Caller MUST hold the lock (read or write). The walk follows parent edges
+// directly — at each level it scans only the parent's direct children (small)
+// to recover the edge name, never the whole store. The depth guard turns a
+// corrupt parent cycle (which no filesystem op can create) into a bounded
+// result instead of an infinite loop.
+func (store *MemoryMetadataStore) derivePathLocked(handle metadata.FileHandle) string {
+	const maxDepth = 4096
+
+	var components []string
+	current := handle
+	for depth := 0; depth < maxDepth; depth++ {
+		key := handleToKey(current)
+		parent, ok := store.parents[key]
+		if !ok {
+			break // reached a share root or an orphaned inode
+		}
+
+		name := store.childNameLocked(parent, current)
+		if name == "" {
+			// Parent edge exists but no matching child entry (inconsistent
+			// state); stop rather than loop or emit an empty component.
+			break
+		}
+		components = append(components, name)
+		current = parent
+	}
+
+	if len(components) == 0 {
+		return "/"
+	}
+
+	// components are leaf-first; reverse to root-first.
+	var b strings.Builder
+	for i := len(components) - 1; i >= 0; i-- {
+		b.WriteByte('/')
+		b.WriteString(components[i])
+	}
+	return b.String()
+}
+
+// childNameLocked returns the lexicographically smallest name under which
+// child is linked into parent, or "" if no such edge exists. Caller MUST hold
+// the lock. Matches postgres' deterministic ORDER BY child_name edge choice so
+// the derived path is consistent across backends for hard-linked inodes.
+func (store *MemoryMetadataStore) childNameLocked(
+	parent metadata.FileHandle,
+	child metadata.FileHandle,
+) string {
+	childKey := handleToKey(child)
+	childrenMap, ok := store.children[handleToKey(parent)]
+	if !ok {
+		return ""
+	}
+	best := ""
+	for name, h := range childrenMap {
+		if handleToKey(h) != childKey {
+			continue
+		}
+		if best == "" || name < best {
+			best = name
+		}
+	}
+	return best
 }
 
 // generateFileHandle creates a UUID-based file handle from a share name.

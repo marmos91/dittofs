@@ -10,10 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestBatchA_Move_DescendantPathUpdate verifies that a directory rename updates
-// the persisted Path of descendant files. The fix propagates tx.PutFile errors
-// inside updateDescendantPaths instead of silently discarding them; this
-// regression guard confirms the success path persists the new descendant path.
+// TestBatchA_Move_DescendantPathUpdate verifies that a descendant file's
+// derived Path reflects a renamed ancestor directory. File.Path is no longer
+// stored or rewritten on rename (#1166): every backend reconstructs it on read
+// from the namespace edges, so a parent-directory rename is observed by the
+// child's next GetFile without any explicit path-update pass.
 func TestBatchA_Move_DescendantPathUpdate(t *testing.T) {
 	t.Parallel()
 	fx := newTestFixture(t)
