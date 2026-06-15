@@ -44,36 +44,66 @@ Per-op postgres read cost is materially high (100s of µs loopback, ms-class
 remote). memory is already the zero-cost floor (it *is* a RAM cache — no cache to
 add there); badger is cheap enough that a cache is marginal.
 
-## Part 2 — e2e on scw VM + server pprof (PENDING)
+## Part 2 — e2e on scw VM + server pprof (DONE)
 
-Gate 2 — *is the cost actually hit on the realistic path* — is unanswered by the
-micro-bench, because NFS/SMB clients absorb most repeat GETATTR/LOOKUP in their
-own attr cache. Needs: dfs server (postgres metadata, `controlplane.pprof: true`)
-on a scw VM, client mount, metadata-heavy browse, scrape server `/debug/pprof`.
+Setup: single Scaleway VM (PRO2-XXS, 2 vCPU, Ubuntu 24.04), postgres@16 local,
+`dfs` with **postgres** metadata + fs block store + `controlplane.pprof: true`.
+NFS share `/export` mounted loopback (vers=3). Seeded 50 dirs × 400 files = 20k.
+Workload = repeated **cold** `find /mnt/bench/tree -ls` with `drop_caches` each
+pass, so the NFS client re-issues every LOOKUP/GETATTR to the server (defeats
+client attr-caching — measures the server's per-op handling cost). 30 s CPU
+profile scraped from `/debug/pprof/profile` during the browse.
 
-Caveat for executing Part 2: the existing `bench/infra` competitor matrix uses
-**badger**, not postgres, and does not enable pprof — a `dittofs-postgres`
-install script + pprof config are prerequisites.
+Standalone signal: a single cold crawl of 20k files took **~17 s** — only 2 full
+passes fit in 34 s. Metadata browse is server-bound.
 
-## Recommendation (interim)
+CPU profile (30 s, 18.77 s samples), cumulative share of dfs server CPU:
 
-Gate 1 is clearly met for postgres; gate 2 decides it. Two honest readings:
+| frame | cum % |
+|---|---|
+| NFS dispatch (`handleRPCCall`) | 70.9% |
+| `handleNFSLookup` (LOOKUP — the `find` hot op) | 64.3% |
+| `metadata.Service.Lookup` | 46.8% |
+| **`postgres.GetFile`** (the backend read) | **43.7%** |
+| pgx `Query` / `queryRow` | 39.6% / 36.6% |
+| `Syscall6` (flat — pg round-trip + NFS writes) | 31.3% (flat) |
+| `pgconn.ExecPrepared` | 27.9% |
 
-- **If** Part 2 shows the server frequently serves cold metadata reads (cache
-  cold/insufficient client TTLs, large working sets, READDIR-heavy crawls) →
-  build an **opt-in read-through LRU+TTL in `MetadataService`**, keyed by handle
-  and (dirHandle,name), invalidated on every write/rename/remove/ACL/EA/
-  link-count change, **default off, postgres-focused**. Single-node single-writer
-  makes invalidation tractable (all mutations funnel through the runtime).
-- **If** client attr-caching already absorbs the reads (small hot sets, repeated
-  stat) → the server rarely pays this cost; **do not add the cache** (surface =
-  debt). Record the negative result.
+`ExecPrepared` confirms prepared statements were active (consistent with Part 1:
+the cost is the round-trip + the GetFile query, not planning). Loopback postgres
+here — a **remote** managed pg shifts even more time into the syscall/RTT bucket.
 
-Do not commit to building the cache until Part 2 quantifies hot-path frequency.
+### Gate 2 verdict: MET.
+When the server actually handles metadata ops (NFSv3 LOOKUP → `Service.Lookup`
+→ `postgres.GetFile`), the backend read is the **dominant** server cost —
+~44% of CPU in `GetFile`, ~64% in the LOOKUP handler (mostly the pg query). A
+read-through cache on `GetFile`/`GetChild` directly attacks this.
+
+## Final verdict: BUILD the cache (opt-in, postgres-focused)
+
+Both gates met. Recommended follow-up (separate issue/PR):
+
+- **Opt-in read-through LRU+TTL cache in `MetadataService`**, in front of the
+  backend store, keyed by handle (`GetFile`) and (dirHandle,name) (`GetChild`).
+- **Write-driven invalidation** on every mutation that touches an entry —
+  write/setattr/rename/remove/link/ACL/EA/link-count. Single-node single-writer:
+  all mutations funnel through the runtime, so invalidation is tractable (no
+  distributed coherence).
+- **Default off; enable for postgres** (and any future remote metadata backend).
+  memory needs none (it *is* RAM); badger is borderline — leave it opt-in.
+- Bound the cache (entry count + TTL) so a large crawl can't pin unbounded RAM;
+  TTL also caps staleness if an invalidation path is ever missed.
+- Guard with a conformance test that asserts no stale read survives a mutation
+  (the invalidation is the only correctness risk).
+
+Caveat: this helps the *cold-cache / large-working-set / crawl* regime measured
+here. Small hot working sets are already absorbed by the NFS/SMB client attr
+cache and won't exercise the server cache — which is fine; default-off means
+deployments opt in when their workload is metadata-crawl-heavy on postgres.
 
 ## Status
 
 - [x] Part 1 micro-bench built + run (memory/badger/postgres). Gate 1 MET.
 - [x] Prepared-statements confound measured + ruled out.
-- [ ] Part 2 e2e scw run + server pprof (needs dittofs-postgres provisioning + pprof).
-- [ ] Final verdict.
+- [x] Part 2 e2e scw run + server pprof. Gate 2 MET (postgres GetFile ~44% server CPU).
+- [x] Final verdict: build opt-in read-through cache, postgres-focused, default off.
