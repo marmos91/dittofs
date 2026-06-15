@@ -123,8 +123,8 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 	// Syncer + FSStore directly, bypassing engine.New): every rolled-up
 	// chunk registers in the syncer pending-upload set so the mirror loop
 	// has something to drain.
-	bc.SetOnChunkComplete(func(hash block.ContentHash, _ []byte, _ string) {
-		m.addPendingHash(hash)
+	bc.SetOnChunkComplete(func(hash block.ContentHash, data []byte, _ string) {
+		m.addPendingHash(hash, int64(len(data)))
 	})
 	t.Cleanup(func() {
 		_ = m.Close()

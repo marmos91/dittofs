@@ -44,7 +44,7 @@ func TestMirrorOnce_EvictedUnsyncedHash_NotSilentlyDropped(t *testing.T) {
 	sum := blake3.Sum256([]byte("never-stored-chunk"))
 	var h block.ContentHash
 	copy(h[:], sum[:])
-	syncer.addPendingHash(h)
+	syncer.addPendingHash(h, 0)
 
 	if got := syncer.pendingLen(); got != 1 {
 		t.Fatalf("precondition: pendingLen = %d, want 1", got)

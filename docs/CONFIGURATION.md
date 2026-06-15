@@ -405,6 +405,67 @@ See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep)
 for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
 `dfsctl store block gc` command.
 
+#### Local cache size limit & write backpressure
+
+When a share has a **remote** block store configured (S3 or filesystem
+remote), the on-disk local tier is a **temporary write-through cache**, not
+durable storage — every chunk is mirrored to the remote and may be evicted
+locally once synced. To stop a fast writer with a slow/lagging uploader from
+filling the host volume, the local cache is bounded and writes apply
+**graceful, observable backpressure** when it fills:
+
+- **Bounded cache.** If a remote is configured and you set no explicit
+  per-share size (`dfsctl share … --local-store-size`), the cache is capped at
+  `blockstore.local.default_remote_cache_size` (default **10 GiB**). An
+  explicit `--local-store-size` always wins. **Local-only shares are
+  unaffected** — they keep their existing system-deduced local size and never
+  apply remote-cache backpressure.
+- **Backpressure stall.** When the cache is full and every cached chunk is
+  still unsynced, a write **stalls** waiting for the syncer to drain to the
+  remote and free space, rather than failing. The stall is bounded by
+  `blockstore.local.backpressure_max_wait` (default **60s**).
+- **Hard failure only when the remote cannot drain.** If the remote is
+  **unhealthy** (genuinely unreachable, not merely slow) or the backpressure
+  window is exceeded, the write fails with disk-full
+  (`NFS3ERR_NOSPC` / `NFS4ERR_NOSPC` / SMB `STATUS_DISK_FULL`) instead of
+  silently filling the disk.
+
+**Diagnosing a stall.** Backpressure engage/release events are logged
+(rate-limited) at `INFO`, so a stalled writer is never a mystery:
+
+```
+INFO  local cache backpressure engaged: waiting for syncer to drain
+      store=… disk_used=10737418240 max_disk=10737418240 needed=…
+      unsynced_bytes=… remote_healthy=true max_wait_ms=60000
+INFO  local cache backpressure released  store=… reason=space_freed
+      disk_used=… max_disk=… unsynced_bytes=… remote_healthy=true stall_ms=…
+```
+
+`reason` distinguishes a clean recovery (`space_freed`) from a failure
+(`window_exceeded`, `remote_unhealthy`).
+
+These knobs live in the top-level server-config `blockstore.local` block:
+
+```yaml
+blockstore:
+  local:
+    default_remote_cache_size: 10737418240   # 10 GiB; cap for remote-backed
+                                             # shares with no explicit size.
+                                             # Defaults to 10 GiB if unset.
+    backpressure_max_wait: 60s               # Max time a write stalls for the
+                                             # syncer to drain before disk-full.
+    dedup_lru_size: 4096                      # In-memory dedup LRU slot count.
+```
+
+Env-var mapping (dot-path convention):
+`DITTOFS_BLOCKSTORE_LOCAL_DEFAULT_REMOTE_CACHE_SIZE`,
+`DITTOFS_BLOCKSTORE_LOCAL_BACKPRESSURE_MAX_WAIT`,
+`DITTOFS_BLOCKSTORE_LOCAL_DEDUP_LRU_SIZE`.
+
+> Prometheus metrics for cache pressure / unsynced bytes are tracked
+> separately (server-wide instrumentation, issue #1188); today the signal is
+> the structured logs above.
+
 #### Recycle bin (trash)
 
 The recycle bin is configured **per share** via `dfsctl share create` /

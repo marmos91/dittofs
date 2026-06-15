@@ -335,8 +335,9 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			bs.loadCache().Put(hash, data)
 			// Register the freshly-stored chunk for upload without a
 			// directory walk (B1). The syncer drains this set on each
-			// mirror pass; harmless when no remote is configured.
-			bs.syncer.addPendingHash(hash)
+			// mirror pass; harmless when no remote is configured. The byte
+			// size feeds the syncer's unsynced-bytes backpressure counter.
+			bs.syncer.addPendingHash(hash, int64(len(data)))
 		})
 
 		// (3) Install the per-chunk emitter (the in-memory backend
@@ -370,8 +371,9 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 				// Register for upload (B1). The in-memory backend creates
 				// chunks via this emitter rather than onChunkComplete, so
 				// without this the mirror loop's pending set would never
-				// see memory-backend chunks.
-				bs.syncer.addPendingHash(hash)
+				// see memory-backend chunks. size is the chunk's byte
+				// length, feeding the unsynced-bytes backpressure counter.
+				bs.syncer.addPendingHash(hash, int64(size))
 			})
 		}
 	}
