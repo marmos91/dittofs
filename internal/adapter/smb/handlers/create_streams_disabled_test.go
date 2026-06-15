@@ -198,7 +198,7 @@ func TestQueryInfo_FsAttrs_NamedStreamsBit(t *testing.T) {
 			// buildFilesystemInfo needs an OpenFile to source the handle.
 			// The streams-disabled gate is applied based on tree state,
 			// which is what the call site (handler) reads — mirror that.
-			info, err := h.buildFilesystemInfo(smbCtx.Context, 5, metaSvc, rootHandle, tc.streamsDisabled)
+			info, err := h.buildFilesystemInfo(smbCtx.Context, 5, metaSvc, rootHandle, tc.streamsDisabled, nil)
 			if err != nil {
 				t.Fatalf("buildFilesystemInfo: %v", err)
 			}

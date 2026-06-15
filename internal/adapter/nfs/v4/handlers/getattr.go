@@ -112,10 +112,11 @@ func (h *Handler) getAttrRealFS(ctx *types.CompoundContext, requested []uint32) 
 			"client", ctx.ClientAddr)
 	}
 
-	// Fetch filesystem statistics if any space attributes are requested (bits 59-61)
+	// Fetch filesystem statistics if any space attributes are requested (bits 59-61).
+	// Pass the caller's identity so per-user/per-group quotas are reflected.
 	var fsStats *metadata.FilesystemStatistics
 	if attrs.NeedsFilesystemStats(requested) {
-		if stats, statsErr := metaSvc.GetFilesystemStatistics(authCtx.Context, metadata.FileHandle(ctx.CurrentFH)); statsErr == nil {
+		if stats, statsErr := metaSvc.GetFilesystemStatisticsForIdentity(authCtx.Context, metadata.FileHandle(ctx.CurrentFH), authCtx.Identity); statsErr == nil {
 			fsStats = stats
 		}
 	}

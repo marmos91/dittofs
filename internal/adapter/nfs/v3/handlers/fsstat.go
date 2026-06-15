@@ -138,7 +138,15 @@ func (h *Handler) FsStat(
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 	}
 
-	stats, err := metaSvc.GetFilesystemStatistics(ctx.Context, metadata.FileHandle(req.Handle))
+	// Resolve the caller's identity so per-user/per-group quotas are reflected
+	// in the reported space (best-effort: fall back to nil identity on error,
+	// which yields the share-level overlay only).
+	var statIdentity *metadata.Identity
+	if authCtx, authErr := h.GetCachedAuthContext(ctx); authErr == nil && authCtx != nil {
+		statIdentity = authCtx.Identity
+	}
+
+	stats, err := metaSvc.GetFilesystemStatisticsForIdentity(ctx.Context, metadata.FileHandle(req.Handle), statIdentity)
 	if err != nil {
 		logError(ctx.Context, err, "FSSTAT failed: error retrieving statistics", "client", ctx.ClientAddr)
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
