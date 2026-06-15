@@ -31,6 +31,13 @@ var errBackchannelReply = errors.New("backchannel reply routed")
 // without emitting any RPC reply.
 var errDropReply = errors.New("duplicate request dropped")
 
+// errReplyAlreadySent is a sentinel error signalling that a dispatch branch has
+// already written the single authoritative reply for this request (e.g. the
+// NFSv4 unknown-procedure PROC_UNAVAIL path). handleRPCCall recognises it and
+// returns without emitting a second reply on the same XID — unlike errDropReply,
+// it does not imply a duplicate request, so it is logged distinctly.
+var errReplyAlreadySent = errors.New("reply already sent by handler")
+
 // NFSConnection handles a single NFS client TCP connection.
 // Requests are read sequentially from the wire but dispatched concurrently
 // via goroutines, bounded by requestSem. Replies are serialized by writeMu.

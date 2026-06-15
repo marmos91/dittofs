@@ -360,7 +360,12 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		return result, err
 
 	default:
-		// NFSv4 only has 2 procedures -- anything else is invalid
+		// NFSv4 only has 2 procedures -- anything else is invalid. Write the
+		// single authoritative PROC_UNAVAIL reply here, then signal the
+		// dispatcher to emit nothing further via errReplyAlreadySent. Returning
+		// (nil, nil) instead would fall through to handleRPCCall's sendReply,
+		// writing a SECOND (empty MSG_ACCEPTED) reply on the same XID and
+		// corrupting the TCP stream for all subsequent requests.
 		logger.Debug("Unknown NFSv4 procedure",
 			"procedure", call.Procedure,
 			"client", clientAddr)
@@ -368,7 +373,10 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		if err != nil {
 			return nil, fmt.Errorf("make NFSv4 proc unavail reply: %w", err)
 		}
-		return nil, c.writeReply(call.XID, errorReply)
+		if writeErr := c.writeReply(call.XID, errorReply); writeErr != nil {
+			return nil, writeErr
+		}
+		return nil, errReplyAlreadySent
 	}
 }
 

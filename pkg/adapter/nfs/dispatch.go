@@ -218,6 +218,13 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 			return nil
 		}
 
+		// A dispatch branch already wrote the single authoritative reply (e.g.
+		// the NFSv4 unknown-procedure PROC_UNAVAIL path): write nothing further.
+		if errors.Is(err, errReplyAlreadySent) {
+			logger.Debug("Reply already sent by handler", "program", call.Program, "procedure", call.Procedure, "xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr)
+			return nil
+		}
+
 		// Check if error was due to context cancellation
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			logger.Debug("Handler cancelled", "program", call.Program, "procedure", call.Procedure, "xid", fmt.Sprintf("0x%x", call.XID), "client", clientAddr, "error", err)

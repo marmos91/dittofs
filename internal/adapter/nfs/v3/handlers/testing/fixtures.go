@@ -73,6 +73,22 @@ type HandlerTestFixture struct {
 // The fixture automatically cleans up on test completion.
 func NewHandlerFixture(t testing.TB) *HandlerTestFixture {
 	t.Helper()
+	return NewHandlerFixtureWithStore(t, nil)
+}
+
+// NewHandlerFixtureWithStore is like NewHandlerFixture but lets a test wrap the
+// underlying memory metadata store before it is registered with the runtime.
+//
+// The wrap function receives the concrete memory store (already wired to the
+// block store / syncer) and returns the metadata.Store to register. This lets a
+// test inject fault behaviour (e.g. a GetFile that returns nil) to exercise
+// handler error paths that the plain memory store cannot reach. A nil wrap
+// registers the memory store unchanged.
+func NewHandlerFixtureWithStore(
+	t testing.TB,
+	wrap func(*metadatamemory.MemoryMetadataStore) metadata.Store,
+) *HandlerTestFixture {
+	t.Helper()
 
 	// The wtmax capability cache is process-global; clear it so each fixture
 	// starts cold and tests that set distinct wtmax values do not bleed into
@@ -108,7 +124,14 @@ func NewHandlerFixture(t testing.TB) *HandlerTestFixture {
 	// Create registry
 	reg := runtime.New(nil)
 
-	if err := reg.RegisterMetadataStore("test-metaSvc", metaStore); err != nil {
+	// Register the (optionally wrapped) metadata store. The block store/syncer
+	// above always reference the concrete inner store; the wrapper only changes
+	// what the runtime's metadata Service sees.
+	var registerStore metadata.Store = metaStore
+	if wrap != nil {
+		registerStore = wrap(metaStore)
+	}
+	if err := reg.RegisterMetadataStore("test-metaSvc", registerStore); err != nil {
 		t.Fatalf("Failed to register metadata store: %v", err)
 	}
 
