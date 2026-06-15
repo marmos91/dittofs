@@ -140,8 +140,13 @@ make run
 # Run tests
 make test
 
-# Build container image
-make docker-build IMG=<registry>/dittofs-operator:tag
+# Deploy the operator to the current kube context.
+# By default this uses the published image (marmos91c/dittofs-operator:latest).
+make deploy
+
+# Build and deploy from source instead, by pointing IMG at your own registry:
+make docker-build docker-push IMG=<your-registry>/dittofs-operator:tag
+make deploy IMG=<your-registry>/dittofs-operator:tag
 ```
 
 ## License

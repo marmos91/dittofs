@@ -1,5 +1,8 @@
-# Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+# Image URL to use all building/pushing image targets.
+# Defaults to the published image so `make deploy` works out of the box.
+# Override (e.g. `make docker-build docker-push IMG=<your-registry>/dittofs-operator:tag`)
+# to build and deploy from source.
+IMG ?= marmos91c/dittofs-operator:latest
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))

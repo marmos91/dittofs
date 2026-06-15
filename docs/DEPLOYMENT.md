@@ -126,7 +126,7 @@ exposure for the NFS/SMB protocols.
 
 ```bash
 # From the operator directory
-cd operator
+cd k8s/dittofs-operator
 make deploy
 
 # Create a DittoFS instance
@@ -136,5 +136,10 @@ kubectl apply -f config/samples/dittofs_v1alpha1_dittofs.yaml
 kubectl get dittofs
 ```
 
-See the [`operator/`](../operator/) directory for the CRD reference, RBAC, and Helm chart
-configuration.
+`make deploy` uses the published operator image (`marmos91c/dittofs-operator:latest`) by
+default. To build and deploy from source instead, point `IMG` at your own registry:
+`make docker-build docker-push IMG=<your-registry>/dittofs-operator:tag` then
+`make deploy IMG=<your-registry>/dittofs-operator:tag`.
+
+See the [`k8s/dittofs-operator/`](../k8s/dittofs-operator/) directory for the CRD reference,
+RBAC, and Helm chart configuration.
