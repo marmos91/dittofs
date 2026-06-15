@@ -60,8 +60,9 @@ func TestBlockStoreAuditHandler_RunAudit_Success(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("RunAudit: expected 200, got %d (body=%q)", w.Code, w.Body.String())
 	}
-	if len(fake.calls) != 1 || fake.calls[0] != "myshare" {
-		t.Fatalf("RunAudit: expected single call for myshare, got %+v", fake.calls)
+	// Handler normalizes the bare URL param to the registry's leading-slash key.
+	if len(fake.calls) != 1 || fake.calls[0] != "/myshare" {
+		t.Fatalf("RunAudit: expected single call for /myshare, got %+v", fake.calls)
 	}
 
 	var resp BlockStoreAuditResponse

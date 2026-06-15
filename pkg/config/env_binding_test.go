@@ -244,3 +244,60 @@ func TestConfigEnvKeys_CoversKnownKeys(t *testing.T) {
 		}
 	}
 }
+
+// TestLoad_EnvOnly_NoConfigFile verifies that env-var overrides are honoured
+// even when NO config file exists on disk — the container/CI deployment case.
+// Before the fix, Load short-circuited to GetDefaultConfig() on the no-file
+// path, bypassing v.Unmarshal entirely and silently dropping every bound
+// DITTOFS_* env var (violating the documented env > file > defaults precedence).
+func TestLoad_EnvOnly_NoConfigFile(t *testing.T) {
+	// Point at a path that does not exist so readConfigFile reports no file.
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	t.Setenv("DITTOFS_DATABASE_TYPE", "postgres")
+	t.Setenv("DITTOFS_DATABASE_POSTGRES_HOST", "db.internal")
+	t.Setenv("DITTOFS_DATABASE_POSTGRES_DATABASE", "dfs")
+	t.Setenv("DITTOFS_DATABASE_POSTGRES_USER", "dfs")
+	t.Setenv("DITTOFS_CONTROLPLANE_PORT", "9292")
+	t.Setenv("DITTOFS_LOGGING_LEVEL", "ERROR")
+	t.Setenv("DITTOFS_CONTROLPLANE_SECRET", "env-only-secret-key-minimum-32-characters!")
+
+	cfg, err := Load(missing)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Database.Type != store.DatabaseTypePostgres {
+		t.Errorf("database.type: env override dropped on no-file path, got %q want postgres", cfg.Database.Type)
+	}
+	if cfg.ControlPlane.Port != 9292 {
+		t.Errorf("controlplane.port: env override dropped on no-file path, got %d want 9292", cfg.ControlPlane.Port)
+	}
+	if cfg.Logging.Level != "ERROR" {
+		t.Errorf("logging.level: env override dropped on no-file path, got %q want ERROR", cfg.Logging.Level)
+	}
+	if cfg.ControlPlane.JWT.Secret != "env-only-secret-key-minimum-32-characters!" {
+		t.Errorf("controlplane.jwt.secret: env override dropped on no-file path, got %q", cfg.ControlPlane.JWT.Secret)
+	}
+}
+
+// TestLoad_NoFileNoEnv_StillDefaults guards that removing the GetDefaultConfig
+// short-circuit did not regress the plain no-file/no-env path: defaults must
+// still be applied for every field the env doesn't set.
+func TestLoad_NoFileNoEnv_StillDefaults(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	cfg, err := Load(missing)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ControlPlane.Port != 8080 {
+		t.Errorf("default controlplane.port: got %d want 8080", cfg.ControlPlane.Port)
+	}
+	if cfg.Admin.Username != "admin" {
+		t.Errorf("default admin.username: got %q want admin", cfg.Admin.Username)
+	}
+	if cfg.Database.Type != store.DatabaseTypeSQLite {
+		t.Errorf("default database.type: got %q want sqlite", cfg.Database.Type)
+	}
+}

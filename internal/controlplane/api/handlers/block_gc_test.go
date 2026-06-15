@@ -87,8 +87,11 @@ func TestBlockStoreHandler_RunGC_Success_NotDryRun(t *testing.T) {
 	if len(fake.runCalls) != 1 {
 		t.Fatalf("RunGC: expected 1 RunBlockGCForShare call, got %d", len(fake.runCalls))
 	}
-	if fake.runCalls[0].share != "myshare" {
-		t.Fatalf("RunGC: expected share=myshare, got %q", fake.runCalls[0].share)
+	// The handler must normalize the bare URL param ("myshare") to the
+	// registry's leading-slash key ("/myshare") before calling the runtime;
+	// otherwise the lookup always fails with ErrShareNotFound.
+	if fake.runCalls[0].share != "/myshare" {
+		t.Fatalf("RunGC: expected normalized share=/myshare, got %q", fake.runCalls[0].share)
 	}
 	if fake.runCalls[0].dryRun {
 		t.Fatal("RunGC: expected dryRun=false")
@@ -355,5 +358,28 @@ func TestBlockStoreHandler_GCStatus_NilRuntime(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("GCStatus: expected 500 on nil runtime, got %d", w.Code)
+	}
+}
+
+// TestBlockStoreHandler_RunGC_NormalizesShareName is the regression guard for
+// the missing-normalizeShareName bug: the bare chi URL param ("myshare") must
+// be normalized to the registry key ("/myshare") before reaching the runtime,
+// otherwise every real share resolves to ErrShareNotFound. Verifies for both a
+// bare name and an already-slashed name.
+func TestBlockStoreHandler_RunGC_NormalizesShareName(t *testing.T) {
+	for _, urlParam := range []string{"myshare", "/myshare"} {
+		fake := &fakeGCRuntime{runStats: &engine.GCStats{}}
+		h := NewBlockStoreGCHandler(fake)
+
+		req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", urlParam, nil)
+		w := httptest.NewRecorder()
+		h.RunGC(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("RunGC(%q): expected 200, got %d", urlParam, w.Code)
+		}
+		if len(fake.runCalls) != 1 || fake.runCalls[0].share != "/myshare" {
+			t.Fatalf("RunGC(%q): expected runtime called with /myshare, got %+v", urlParam, fake.runCalls)
+		}
 	}
 }

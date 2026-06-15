@@ -45,7 +45,13 @@ func (h *BlockStoreStatsHandler) Stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The per-share route carries {name}; the global route does not. An empty
+	// param means "all shares" — only normalize (prepend the registry's leading
+	// slash) when a share name is actually present.
 	shareName := chi.URLParam(r, "name")
+	if shareName != "" {
+		shareName = normalizeShareName(shareName)
+	}
 
 	stats, err := h.runtime.GetBlockStoreStats(shareName)
 	if err != nil {
@@ -67,7 +73,12 @@ func (h *BlockStoreStatsHandler) Evict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// As in Stats: empty {name} is the global route ("all shares"); only
+	// normalize when a per-share name is actually present.
 	shareName := chi.URLParam(r, "name")
+	if shareName != "" {
+		shareName = normalizeShareName(shareName)
+	}
 
 	var req BlockStoreEvictRequest
 	if r.Body != nil && r.ContentLength != 0 {

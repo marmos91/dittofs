@@ -79,8 +79,8 @@ func (h *BlockStoreGCHandler) RunGC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := chi.URLParam(r, "name")
-	if name == "" {
+	name := normalizeShareName(chi.URLParam(r, "name"))
+	if name == "/" {
 		BadRequest(w, "share name is required")
 		return
 	}
@@ -128,8 +128,8 @@ func (h *BlockStoreGCHandler) GCStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := chi.URLParam(r, "name")
-	if name == "" {
+	name := normalizeShareName(chi.URLParam(r, "name"))
+	if name == "/" {
 		BadRequest(w, "share name is required")
 		return
 	}

@@ -184,3 +184,62 @@ func TestHandleLoadSharesError_NilNoop(t *testing.T) {
 		t.Errorf("handleLoadSharesError returned stop=true on nil error")
 	}
 }
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns what
+// was written. Used to assert the first-run admin password is (or is not)
+// surfaced to stdout depending on whether stdout is a terminal.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	t.Cleanup(func() { os.Stdout = orig })
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		_ = r.Close()
+		done <- buf.String()
+	}()
+
+	fn()
+	_ = w.Close()
+	out := <-done
+	os.Stdout = orig
+	return out
+}
+
+// TestEmitAdminPassword_TerminalPrintsSecret asserts that on an interactive
+// terminal the plaintext password is shown to the operator.
+func TestEmitAdminPassword_TerminalPrintsSecret(t *testing.T) {
+	origIsTerm := isTerminal
+	t.Cleanup(func() { isTerminal = origIsTerm })
+	isTerminal = func(uintptr) bool { return true }
+
+	const secret = "s3cr3t-first-run-password"
+	out := captureStdout(t, func() { emitAdminPassword(secret) })
+
+	if !strings.Contains(out, secret) {
+		t.Errorf("interactive terminal: expected password in stdout, got %q", out)
+	}
+}
+
+// TestEmitAdminPassword_NonTerminalSuppressesSecret asserts that when stdout is
+// not a terminal (daemon mode — stdout redirected to a persistent log file) the
+// plaintext password is NOT written, closing the world-readable-log leak.
+func TestEmitAdminPassword_NonTerminalSuppressesSecret(t *testing.T) {
+	origIsTerm := isTerminal
+	t.Cleanup(func() { isTerminal = origIsTerm })
+	isTerminal = func(uintptr) bool { return false }
+
+	const secret = "s3cr3t-first-run-password"
+	out := captureStdout(t, func() { emitAdminPassword(secret) })
+
+	if strings.Contains(out, secret) {
+		t.Errorf("non-terminal (daemon log): password leaked to stdout: %q", out)
+	}
+}

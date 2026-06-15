@@ -71,10 +71,21 @@ func startDaemon() error {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 
-	// Open log file for daemon output
-	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	// Open log file for daemon output. 0600 (owner-only) rather than 0644:
+	// the log can carry sensitive operational detail, and on first run the
+	// child may surface an admin-credential notice here. World-readable logs
+	// would expose that to any local user.
+	lf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to open log file %s: %w", logPath, err)
+	}
+	// O_CREATE honours the mode only when the file did not already exist; an
+	// existing log keeps its prior (possibly 0644) perms, so tighten it.
+	// Chmod the already-open descriptor (not the path) to avoid a symlink-
+	// following TOCTOU on an operator-specified --log-file.
+	if err := lf.Chmod(0600); err != nil {
+		_ = lf.Close()
+		return fmt.Errorf("failed to secure log file %s: %w", logPath, err)
 	}
 
 	cmd := exec.Command(executable, args...)

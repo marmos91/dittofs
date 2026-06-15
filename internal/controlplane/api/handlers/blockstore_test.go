@@ -231,18 +231,71 @@ func TestBlockStoreHandler_Evict_SafetyError(t *testing.T) {
 // fakeBlockStoreRuntime implements BlockStoreRuntime for exercising the real
 // BlockStoreStatsHandler (as opposed to the testBlockStoreHandler shim above).
 type fakeBlockStoreRuntime struct {
-	stats    *shares.BlockStoreStatsResponse
-	statsErr error
-	evict    *shares.EvictResult
-	evictErr error
+	stats     *shares.BlockStoreStatsResponse
+	statsErr  error
+	evict     *shares.EvictResult
+	evictErr  error
+	lastShare string
 }
 
-func (f *fakeBlockStoreRuntime) GetBlockStoreStats(_ string) (*shares.BlockStoreStatsResponse, error) {
+func (f *fakeBlockStoreRuntime) GetBlockStoreStats(shareName string) (*shares.BlockStoreStatsResponse, error) {
+	f.lastShare = shareName
 	return f.stats, f.statsErr
 }
 
-func (f *fakeBlockStoreRuntime) EvictBlockStore(_ context.Context, _ string, _ shares.EvictOptions) (*shares.EvictResult, error) {
+func (f *fakeBlockStoreRuntime) EvictBlockStore(_ context.Context, shareName string, _ shares.EvictOptions) (*shares.EvictResult, error) {
+	f.lastShare = shareName
 	return f.evict, f.evictErr
+}
+
+// TestBlockStoreStatsHandler_NormalizesShareName verifies the real handler
+// prepends the registry's leading slash for a bare per-share URL param while
+// leaving the global route (no {name}) as the empty "all shares" key.
+func TestBlockStoreStatsHandler_NormalizesShareName(t *testing.T) {
+	t.Run("per_share_normalized", func(t *testing.T) {
+		fake := &fakeBlockStoreRuntime{stats: &shares.BlockStoreStatsResponse{}}
+		h := NewBlockStoreStatsHandler(fake)
+		req := newChiRequestForBlockStore(http.MethodGet,
+			"/api/v1/shares/myshare/blockstore/stats", nil, "name", "myshare")
+		h.Stats(httptest.NewRecorder(), req)
+		if fake.lastShare != "/myshare" {
+			t.Fatalf("Stats: runtime got %q, want /myshare", fake.lastShare)
+		}
+	})
+
+	t.Run("global_stays_empty", func(t *testing.T) {
+		fake := &fakeBlockStoreRuntime{stats: &shares.BlockStoreStatsResponse{}}
+		h := NewBlockStoreStatsHandler(fake)
+		req := newChiRequestForBlockStore(http.MethodGet, "/api/v1/blockstore/stats", nil)
+		h.Stats(httptest.NewRecorder(), req)
+		if fake.lastShare != "" {
+			t.Fatalf("Stats (global): runtime got %q, want empty (all shares)", fake.lastShare)
+		}
+	})
+
+	t.Run("evict_per_share_normalized", func(t *testing.T) {
+		fake := &fakeBlockStoreRuntime{evict: &shares.EvictResult{}}
+		h := NewBlockStoreStatsHandler(fake)
+		body, _ := json.Marshal(BlockStoreEvictRequest{})
+		req := newChiRequestForBlockStore(http.MethodPost,
+			"/api/v1/shares/myshare/blockstore/evict", bytes.NewReader(body), "name", "myshare")
+		h.Evict(httptest.NewRecorder(), req)
+		if fake.lastShare != "/myshare" {
+			t.Fatalf("Evict: runtime got %q, want /myshare", fake.lastShare)
+		}
+	})
+
+	t.Run("evict_global_stays_empty", func(t *testing.T) {
+		fake := &fakeBlockStoreRuntime{evict: &shares.EvictResult{}}
+		h := NewBlockStoreStatsHandler(fake)
+		body, _ := json.Marshal(BlockStoreEvictRequest{})
+		req := newChiRequestForBlockStore(http.MethodPost,
+			"/api/v1/blockstore/evict", bytes.NewReader(body))
+		h.Evict(httptest.NewRecorder(), req)
+		if fake.lastShare != "" {
+			t.Fatalf("Evict (global): runtime got %q, want empty (all shares)", fake.lastShare)
+		}
+	})
 }
 
 // TestBlockStoreStatsHandler_Stats_ErrorDetailNotLeaked asserts that when

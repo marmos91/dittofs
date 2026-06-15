@@ -189,25 +189,19 @@ start_server() {
     # Create data directory
     mkdir -p "$DATA_DIR"
 
-    # Start server in foreground (to capture admin password)
+    # Start server in foreground. The admin password is set deterministically
+    # via DITTOFS_ADMIN_INITIAL_PASSWORD so the harness knows it without
+    # scraping the log — the daemon no longer prints generated secrets to a
+    # non-interactive (file-redirected) stdout.
     local log_file="/tmp/dittofs-posix-server.log"
+    local admin_password="$TEST_PASSWORD"
 
-    "$DITTOFS_BIN" start --foreground --config "$CONFIG_FILE" > "$log_file" 2>&1 &
+    DITTOFS_ADMIN_INITIAL_PASSWORD="$admin_password" \
+        "$DITTOFS_BIN" start --foreground --config "$CONFIG_FILE" > "$log_file" 2>&1 &
     local server_pid=$!
 
-    # Wait a bit for the server to start and print the admin password
+    # Wait a bit for the server to start.
     sleep 3
-
-    # Extract admin password from log (if this is first start)
-    local admin_password
-    admin_password=$(grep -o 'password: [^ ]*' "$log_file" 2>/dev/null | head -1 | awk '{print $2}' || echo "")
-
-    if [[ -z "$admin_password" ]]; then
-        # If no password in log, might be a restart - use a known test password
-        log_warn "Could not extract admin password from log"
-        log_warn "If this is a fresh start, check $log_file for the password"
-        admin_password="$TEST_PASSWORD"
-    fi
 
     echo "$admin_password" > /tmp/dittofs-admin-password
     echo "$server_pid" > /tmp/dittofs-server.pid

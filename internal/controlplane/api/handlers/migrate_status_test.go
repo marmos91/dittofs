@@ -26,9 +26,11 @@ type fakeMigrateStatusRuntime struct {
 	mdsErr      error
 	localDir    string
 	localDirErr error
+	gotShare    string // last share name passed to GetMetadataStoreForShare
 }
 
-func (f *fakeMigrateStatusRuntime) GetMetadataStoreForShare(_ string) (metadata.Store, error) {
+func (f *fakeMigrateStatusRuntime) GetMetadataStoreForShare(share string) (metadata.Store, error) {
+	f.gotShare = share
 	if f.mdsErr != nil {
 		return nil, f.mdsErr
 	}
@@ -44,8 +46,15 @@ func (f *fakeMigrateStatusRuntime) LocalStoreDir(_ string) (string, error) {
 
 // memoryMDSWithShare creates a memory metadata store with a registered
 // share that has the given BlockLayout configured.
+//
+// The share is registered under the normalized (leading-slash) key, matching
+// production: the runtime share registry and the metadata store are both keyed
+// by normalizeShareName output, and the migrate-status handler normalizes the
+// bare ?share= query param before every store lookup. Callers pass the bare
+// name; the fixture normalizes it.
 func memoryMDSWithShare(t *testing.T, share string, layout metadata.BlockLayout) metadata.Store {
 	t.Helper()
+	share = normalizeShareName(share)
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = mds.Close() })
 
@@ -80,6 +89,49 @@ func TestMigrateStatus_MissingShare(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "share")
+}
+
+// TestMigrateStatus_NormalizesShareName is the regression guard for the
+// validation/lookup mismatch: the bare ?share=myshare query param must be
+// normalized to the runtime registry's leading-slash key ("/myshare") before
+// the GetMetadataStoreForShare lookup, otherwise every real share 404/500s.
+// The response still echoes the bare name the caller passed.
+func TestMigrateStatus_NormalizesShareName(t *testing.T) {
+	mds := memoryMDSWithShare(t, "myshare", metadata.BlockLayoutLegacy)
+	fake := &fakeMigrateStatusRuntime{mds: mds, localDir: t.TempDir()}
+	h := NewMigrateStatusHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/blockstore/migrate/status?share=myshare&with_total=false", nil)
+	w := httptest.NewRecorder()
+	h.Status(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+	assert.Equal(t, "/myshare", fake.gotShare, "runtime lookup must receive the normalized name")
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "myshare", resp["share"], "response echoes the bare caller-supplied name")
+}
+
+// TestMigrateStatus_RejectsPathTraversal asserts share names with path
+// separators or traversal segments are rejected with 400 before any runtime
+// lookup, defending the store-layer path join.
+func TestMigrateStatus_RejectsPathTraversal(t *testing.T) {
+	for _, bad := range []string{"../etc", "a/b", "..", ".", `a\b`} {
+		fake := &fakeMigrateStatusRuntime{}
+		h := NewMigrateStatusHandler(fake)
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/blockstore/migrate/status?share="+bad, nil)
+		w := httptest.NewRecorder()
+		h.Status(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("share=%q: expected 400, got %d", bad, w.Code)
+		}
+		if fake.gotShare != "" {
+			t.Errorf("share=%q: runtime must not be called, got %q", bad, fake.gotShare)
+		}
+	}
 }
 
 // TestMigrateStatus_UnknownShare asserts the 404 path when the share is

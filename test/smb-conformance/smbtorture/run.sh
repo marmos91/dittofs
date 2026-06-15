@@ -279,17 +279,11 @@ PROFILE="$PROFILE" docker compose up -d dittofs
 
 wait_until "docker compose exec dittofs wget -q --spider http://localhost:8080/health/ready" 60 "DittoFS"
 
-# Extract auto-generated admin password
-log_step "Extracting admin password from DittoFS logs..."
-admin_password=""
-admin_password=$(docker compose logs dittofs 2>/dev/null | grep -o 'password: [^ ]*' | head -1 | awk '{print $2}' || echo "")
-if [[ -z "$admin_password" ]]; then
-    log_error "Could not extract admin password from DittoFS logs"
-    exit 1
-fi
-if $VERBOSE; then
-    log_info "Admin password extracted"
-fi
+# The admin password is set deterministically via DITTOFS_ADMIN_INITIAL_PASSWORD
+# in docker-compose.yml (defaulting to DITTOFS_CONTROLPLANE_SECRET), so the
+# harness knows it without scraping the log — the daemon no longer prints
+# generated secrets to a non-interactive container stdout.
+admin_password="${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}"
 
 # Bootstrap DittoFS (same as WPTS -- creates shares, users, SMB adapter).
 # The KERBEROS env var tells bootstrap.sh to configure the SMB adapter with

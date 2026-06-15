@@ -206,18 +206,25 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 				return m.UserSID(uint32(uid))
 			}
 		}
-		// Fallback: use a hash-based RID. Guard against empty/invalid
-		// principals and avoid mapping to UID 0 / WellKnownAdministrators.
-		var rid uint32
+		// Fallback for a principal with no POSIX mapping: synthesize a SID
+		// from a 32-bit hash of the name. It MUST NOT be decodable by
+		// UIDFromSID/GIDFromSID — those treat any 5-sub-authority machine
+		// domain SID with RID >= 1000 as a Unix UID/GID (user RID = uid*2+1000,
+		// group RID = gid*2+1001), so SIDToPrincipal would return a numeric
+		// "{n}@localdomain" instead of round-tripping the SID back through the
+		// "sid:" form — breaking SIDToPrincipal(PrincipalToSID(who)) and any
+		// ACE-WHO lookup that relies on that identity.
+		//
+		// Use the full 32-bit hash as an EXTRA (6th) sub-authority so the SID
+		// has SubAuthorityCount == 6. IsDomainSID requires exactly 5, so both
+		// decoders reject it and the SID round-trips via "sid:" — while keeping
+		// the full 2^32 hash space, so collisions between distinct principals
+		// (which would alias ACL identities) stay vanishingly rare.
+		var h uint32
 		for _, c := range who {
-			rid = rid*31 + uint32(c)
+			h = h*31 + uint32(c)
 		}
-		if rid == 0 {
-			rid = 1
-		}
-		// Generate a domain SID directly so we do not trigger any uid==0
-		// special-cases that may exist in UserSID.
-		return m.makeDomainSID(rid)
+		return m.makeFallbackSID(h)
 	}
 }
 
@@ -258,6 +265,29 @@ func (m *SIDMapper) SIDToPrincipal(s *SID) string {
 	}
 
 	return "sid:" + sidStr
+}
+
+// makeFallbackSID constructs a SID for a non-POSIX principal from a name hash.
+//
+// It appends the hash as a 6th sub-authority (SubAuthorityCount == 6), so
+// IsDomainSID — which requires exactly 5 — rejects it. UIDFromSID/GIDFromSID
+// therefore never decode it as a numeric UID/GID, and SIDToPrincipal preserves
+// it verbatim as the "sid:" round-trip form. The full 32-bit hash keeps
+// cross-principal collisions rare.
+func (m *SIDMapper) makeFallbackSID(hash uint32) *SID {
+	return &SID{
+		Revision:            1,
+		SubAuthorityCount:   6,
+		IdentifierAuthority: [6]byte{0, 0, 0, 0, 0, 5},
+		SubAuthorities: []uint32{
+			21,
+			m.machineSID[0],
+			m.machineSID[1],
+			m.machineSID[2],
+			0, // fixed RID slot, distinct from the user/group RID encoding
+			hash,
+		},
+	}
 }
 
 // makeDomainSID constructs a full domain SID with the machine sub-authorities and the given RID.
