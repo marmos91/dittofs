@@ -132,7 +132,8 @@ func (sm *StateManager) isCurrentEpoch(other [types.NFS4_OTHER_SIZE]byte) bool {
 //     on any op; the READ-bypass (all-ones) stateid is accepted ONLY when
 //     op == StateidOpRead and otherwise rejected with NFS4ERR_BAD_STATEID
 //     (RFC 7530 Section 9.1.4.3). Both return (nil, nil) when accepted.
-//  2. Route by type tag: open stateids -> openStateByOther, delegation -> delegByOther
+//  2. Route by type tag: open -> openStateByOther, lock -> lockStateByOther
+//     (returns the parent open state), delegation -> delegByOther
 //  3. If not found -> NFS4ERR_BAD_STATEID (or NFS4ERR_STALE_STATEID for wrong epoch)
 //  4. Compare seqid: < current -> NFS4ERR_OLD_STATEID; > current -> NFS4ERR_BAD_STATEID
 //  5. Verify filehandle matches (if provided and non-nil) -> NFS4ERR_BAD_STATEID
@@ -170,7 +171,15 @@ func (sm *StateManager) ValidateStateid(stateid *types.Stateid4, currentFH []byt
 		return sm.validateDelegStateid(stateid, currentFH)
 	}
 
-	// Open stateids (type 0x01) and lock stateids (type 0x02) use openStateByOther
+	// Lock stateids (type 0x02) are stored in lockStateByOther, never in
+	// openStateByOther. RFC 7530 Section 9.1.4.1 permits a lock stateid on
+	// READ/WRITE, so validate it against the lock state and return the parent
+	// open state (whose share-access bits the caller enforces).
+	if stateType == StateTypeLock {
+		return sm.validateLockStateid(stateid, currentFH)
+	}
+
+	// Open stateids (type 0x01) use openStateByOther.
 	openState, exists := sm.openStateByOther[stateid.Other]
 	if !exists {
 		if !sm.isCurrentEpoch(stateid.Other) {
@@ -296,6 +305,77 @@ func (sm *StateManager) validateDelegStateid(stateid *types.Stateid4, currentFH 
 	return nil, nil
 }
 
+// validateLockStateid validates a lock stateid (type 0x02) presented to an
+// I/O operation (READ/WRITE/SETATTR-size). Lock stateids live in
+// lockStateByOther; on success this returns the parent OpenState so the caller
+// can enforce that open's share-access mode (RFC 7530 Section 9.1.4.1).
+// Caller must hold sm.mu.RLock.
+func (sm *StateManager) validateLockStateid(stateid *types.Stateid4, currentFH []byte) (*OpenState, error) {
+	lockState, exists := sm.lockStateByOther[stateid.Other]
+	if !exists {
+		if !sm.isCurrentEpoch(stateid.Other) {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_STALE_STATEID,
+				Message: "stateid from previous server incarnation",
+			}
+		}
+		return nil, &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: "lock stateid not found",
+		}
+	}
+
+	// Compare seqid. Per RFC 8881 Section 8.2.2, seqid=0 in a non-special
+	// stateid bypasses the seqid comparison entirely.
+	if stateid.Seqid != 0 {
+		if stateid.Seqid < lockState.Stateid.Seqid {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_OLD_STATEID,
+				Message: fmt.Sprintf("lock stateid seqid %d < current %d", stateid.Seqid, lockState.Stateid.Seqid),
+			}
+		}
+		if stateid.Seqid > lockState.Stateid.Seqid {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_BAD_STATEID,
+				Message: fmt.Sprintf("lock stateid seqid %d > current %d", stateid.Seqid, lockState.Stateid.Seqid),
+			}
+		}
+	}
+
+	// Verify filehandle matches the locked file.
+	if len(currentFH) > 0 && len(lockState.FileHandle) > 0 {
+		if !bytes.Equal(currentFH, lockState.FileHandle) {
+			return nil, &NFS4StateError{
+				Status:  types.NFS4ERR_BAD_STATEID,
+				Message: "lock stateid filehandle mismatch",
+			}
+		}
+	}
+
+	openState := lockState.OpenState
+	if openState == nil {
+		// A lock stateid must always derive from an open; a nil parent means
+		// inconsistent state rather than a client error.
+		return nil, &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: "lock stateid has no parent open state",
+		}
+	}
+
+	// Implicit lease renewal for the owning client (RFC 7530 Section 9.6).
+	if openState.Owner != nil && openState.Owner.ClientRecord != nil {
+		lease := openState.Owner.ClientRecord.Lease
+		if lease != nil {
+			if lease.IsExpired() {
+				return nil, ErrExpired
+			}
+			lease.Renew()
+		}
+	}
+
+	return openState, nil
+}
+
 // ============================================================================
 // FreeStateid (RFC 8881 Section 18.38)
 // ============================================================================
@@ -371,6 +451,16 @@ func (sm *StateManager) freeLockStateidLocked(clientID uint64, stateid *types.St
 		}
 	}
 
+	// RFC 8881 Section 18.38.3: the stateid must belong to the requesting
+	// session's client. Reject cross-client frees so a peer that learns
+	// another client's stateid.Other bytes cannot destroy its locks.
+	if lockState.LockOwner == nil || lockState.LockOwner.ClientID != clientID {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: "lock stateid does not belong to client",
+		}
+	}
+
 	// Remove from lockStateByOther
 	delete(sm.lockStateByOther, stateid.Other)
 
@@ -435,6 +525,15 @@ func (sm *StateManager) freeOpenStateidLocked(clientID uint64, stateid *types.St
 		}
 	}
 
+	// RFC 8881 Section 18.38.3: the stateid must belong to the requesting
+	// session's client.
+	if openState.Owner == nil || openState.Owner.ClientID != clientID {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: "open stateid does not belong to client",
+		}
+	}
+
 	// Check if any lock stateids reference this open
 	if len(openState.LockStates) > 0 {
 		return &NFS4StateError{
@@ -480,6 +579,15 @@ func (sm *StateManager) freeDelegStateidLocked(clientID uint64, stateid *types.S
 		return &NFS4StateError{
 			Status:  types.NFS4ERR_BAD_STATEID,
 			Message: "delegation stateid not found",
+		}
+	}
+
+	// RFC 8881 Section 18.38.3: the stateid must belong to the requesting
+	// session's client.
+	if deleg.ClientID != clientID {
+		return &NFS4StateError{
+			Status:  types.NFS4ERR_BAD_STATEID,
+			Message: "delegation stateid does not belong to client",
 		}
 	}
 

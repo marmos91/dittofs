@@ -1991,12 +1991,19 @@ func (sm *StateManager) LockExisting(
 		}
 	}
 
-	// 3. Validate stateid seqid (only for non-replay LOCK)
-	if lockStateid.Seqid < lockState.Stateid.Seqid {
-		return nil, ErrOldStateid
-	}
-	if lockStateid.Seqid > lockState.Stateid.Seqid {
-		return nil, ErrBadStateid
+	// 3. Validate stateid seqid (only for non-replay LOCK).
+	// Per RFC 8881 Section 8.2.2, a v4.1 client may send stateid seqid=0 to
+	// mean "the most recent seqid"; the slot table already provides replay
+	// protection, so the server MUST bypass the seqid comparison in that case.
+	// lockState.Stateid.Seqid starts at 1 after LockNew, so without this bypass
+	// every v4.1 LOCK via LockExisting would return NFS4ERR_OLD_STATEID.
+	if lockStateid.Seqid != 0 {
+		if lockStateid.Seqid < lockState.Stateid.Seqid {
+			return nil, ErrOldStateid
+		}
+		if lockStateid.Seqid > lockState.Stateid.Seqid {
+			return nil, ErrBadStateid
+		}
 	}
 
 	// 4. Validate open mode for lock type
@@ -2252,12 +2259,18 @@ func (sm *StateManager) UnlockFile(
 		}
 	}
 
-	// 3. Validate stateid seqid (only for non-replay LOCKU)
-	if lockStateid.Seqid < lockState.Stateid.Seqid {
-		return nil, ErrOldStateid
-	}
-	if lockStateid.Seqid > lockState.Stateid.Seqid {
-		return nil, ErrBadStateid
+	// 3. Validate stateid seqid (only for non-replay LOCKU).
+	// Per RFC 8881 Section 8.2.2, a v4.1 client may send stateid seqid=0;
+	// bypass the seqid comparison as in LockExisting. lockState.Stateid.Seqid
+	// is >=2 after any prior LOCK, so without this bypass every v4.1 LOCKU
+	// would return NFS4ERR_OLD_STATEID, making unlock impossible.
+	if lockStateid.Seqid != 0 {
+		if lockStateid.Seqid < lockState.Stateid.Seqid {
+			return nil, ErrOldStateid
+		}
+		if lockStateid.Seqid > lockState.Stateid.Seqid {
+			return nil, ErrBadStateid
+		}
 	}
 
 	// 4. Release the lock via unified lock manager

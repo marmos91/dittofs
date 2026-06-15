@@ -196,7 +196,16 @@ func (sm *StateManager) ExchangeID(
 			"client_addr", clientAddr)
 
 	case existing.Verifier == verifier:
-		// Case 2: Same owner + same verifier -- idempotent (update impl info)
+		// Case 2: Same owner + same verifier -- idempotent return.
+		// RFC 8881 Section 18.35.4: if the existing record was established by a
+		// principal and this request carries a different non-empty principal,
+		// reject with NFS4ERR_CLID_INUSE (mirrors the v4.0 SETCLIENTID Case 5
+		// guard in reuseConfirmedClient). Without this a third party that knows
+		// a confirmed client's co_ownerid + co_verifier could overwrite the
+		// stored principal and hijack the client's lease/state.
+		if existing.Principal != "" && princ != "" && existing.Principal != princ {
+			return nil, ErrClientIDInUse
+		}
 		existing.ClientAddr = clientAddr
 		existing.Principal = princ
 		existing.LastRenewal = time.Now()
