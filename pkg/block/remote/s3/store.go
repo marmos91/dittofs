@@ -202,6 +202,10 @@ func normalizeEndpoint(endpoint string) string {
 // or private/internal hosts) — the classic SSRF pivot.
 var ErrUnsafeEndpoint = errors.New("s3 block store: unsafe endpoint")
 
+// endpointResolveTimeout bounds the DNS lookup ValidateEndpoint performs for a
+// hostname endpoint so a hung resolver cannot stall the config-create path.
+const endpointResolveTimeout = 5 * time.Second
+
 // ValidateEndpoint rejects S3 endpoints that point at addresses an attacker
 // could use to pivot the server into the internal network (SSRF). It runs
 // at config-create time, before any HealthCheck/HeadBucket fires, so a
@@ -210,16 +214,20 @@ var ErrUnsafeEndpoint = errors.New("s3 block store: unsafe endpoint")
 //
 // An empty endpoint is allowed (the SDK uses the real AWS endpoint, which
 // is public). Otherwise the endpoint is normalized, its host is resolved,
-// and EVERY resolved IP must be a public unicast address. We reject:
-//   - unspecified / multicast / loopback addresses,
+// and EVERY resolved IP is checked. We reject UNCONDITIONALLY:
+//   - unspecified / multicast addresses,
 //   - link-local unicast (169.254.0.0/16, fe80::/10) — covers the cloud
-//     metadata endpoint 169.254.169.254,
-//   - private / unique-local ranges (RFC1918, fc00::/7) and other
-//     non-global-unicast space.
+//     metadata endpoint 169.254.169.254.
 //
-// allowPrivate is an explicit opt-out (config key "allow_private_endpoint")
+// We additionally reject loopback, private / unique-local (RFC1918,
+// fc00::/7), and other non-global-unicast space UNLESS allowPrivate is set.
+// allowPrivate (config key "allow_private_endpoint") is an explicit opt-out
 // for operators running MinIO/Localstack/co-located object stores on a
-// private network; it still rejects link-local/metadata addresses.
+// private network; it still rejects the unconditional set above (so the
+// metadata endpoint is never reachable).
+//
+// DNS resolution for a hostname endpoint is bounded by endpointResolveTimeout
+// so a slow/hung resolver cannot stall the config-create path indefinitely.
 func ValidateEndpoint(endpoint string, allowPrivate bool) error {
 	if endpoint == "" {
 		return nil
@@ -242,12 +250,14 @@ func ValidateEndpoint(endpoint string, allowPrivate bool) error {
 	if addr, perr := netip.ParseAddr(host); perr == nil {
 		ips = []netip.Addr{addr}
 	} else {
-		resolved, lerr := net.LookupIP(host)
+		ctx, cancel := context.WithTimeout(context.Background(), endpointResolveTimeout)
+		defer cancel()
+		resolved, lerr := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if lerr != nil {
 			return fmt.Errorf("%w: resolve host %q: %v", ErrUnsafeEndpoint, host, lerr)
 		}
-		for _, ip := range resolved {
-			if a, ok := netip.AddrFromSlice(ip); ok {
+		for _, ipa := range resolved {
+			if a, ok := netip.AddrFromSlice(ipa.IP); ok {
 				ips = append(ips, a.Unmap())
 			}
 		}
