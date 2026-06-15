@@ -262,10 +262,20 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 	// Create operator user
 	err = apiClient.CreateUser(ctx, dittoiov1alpha1.OperatorServiceAccountUsername, operatorPassword, "operator")
 	if err != nil {
-		// If user already exists, proceed to login
+		// If the user already exists, it was provisioned by a previous run with a
+		// password the operator no longer knows (e.g. the credentials Secret was
+		// deleted, or a control-plane DB reset recreated the account out of band).
+		// Re-set the password to the freshly generated value using the admin
+		// session so the value we write into the credentials Secret is guaranteed
+		// to authenticate via /auth/login. Without this the stored password silently
+		// diverges from the server and an external consumer of the Secret cannot
+		// rely on it.
 		var apiErr *DittoFSAPIError
 		if errors.As(err, &apiErr) && apiErr.IsConflict() {
-			logger.Info("Operator service account already exists, proceeding to login")
+			logger.Info("Operator service account already exists, resetting its password to reconcile credentials")
+			if resetErr := apiClient.ResetUserPassword(ctx, dittoiov1alpha1.OperatorServiceAccountUsername, operatorPassword); resetErr != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to reset existing operator service account password: %w", resetErr)
+			}
 		} else {
 			return ctrl.Result{}, fmt.Errorf("failed to create operator service account: %w", err)
 		}
