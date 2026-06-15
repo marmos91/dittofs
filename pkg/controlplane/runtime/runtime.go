@@ -159,6 +159,12 @@ func New(s store.Store) *Runtime {
 	// take effect immediately.
 	rt.metadataService.SetTrashPolicy(&trashPolicy{sharesSvc: rt.sharesSvc})
 
+	// Persist quota grace-timer transitions back to the control-plane DB so the
+	// soft->grace->hard state survives restart. Only when a store is present.
+	if s != nil {
+		rt.metadataService.SetQuotaGracePersister(&quotaGracePersister{rt: rt})
+	}
+
 	rt.adaptersSvc = adapters.New(s, DefaultShutdownTimeout)
 	rt.adaptersSvc.SetRuntime(rt)
 
@@ -390,6 +396,12 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	// Always set explicitly to ensure consistency after restarts when a
 	// quota was removed (set to 0) via the API.
 	r.metadataService.SetQuotaForShare(config.Name, config.QuotaBytes)
+	// Load per-identity (user/group) quotas from the control-plane DB so they
+	// are enforced immediately after a restart. Best-effort: a load failure
+	// must not prevent the share from coming up.
+	if err := r.LoadIdentityQuotasForShare(ctx, config.Name); err != nil {
+		logger.Warn("failed to load identity quotas for share", "share", config.Name, "error", err)
+	}
 	return nil
 }
 

@@ -48,6 +48,10 @@ func modelQuotaToIdentityQuota(q *models.Quota) (metadata.IdentityQuota, bool) {
 // from the control-plane DB into the metadata service. Called during AddShare so
 // quotas are enforced immediately after a restart.
 func (r *Runtime) LoadIdentityQuotasForShare(ctx context.Context, shareName string) error {
+	// No control-plane store (test fixtures, embedded use): nothing to load.
+	if r.store == nil {
+		return nil
+	}
 	quotas, err := r.store.ListQuotas(ctx, shareName)
 	if err != nil {
 		return err

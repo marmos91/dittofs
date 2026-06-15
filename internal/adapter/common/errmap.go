@@ -132,14 +132,13 @@ var errorMap = map[merrs.ErrorCode]protoCodes{
 		SMB:  smbtypes.StatusDiskFull,
 	},
 	merrs.ErrQuotaExceeded: {
-		// NFSv3: create.go:604-605 has NFS3ErrDquot; xdr/errors.go omits —
-		// use create.go value.
-		// SMB: converters.go omits; fallback StatusDiskFull (closest SMB
-		// signal — SMB does not distinguish quota from free-space exhaustion
-		// at this layer).
+		// Disk-quota exhaustion (per-user/per-group quota full), distinct from
+		// genuine ENOSPC (ErrNoSpace). NFS maps to DQUOT; SMB maps to
+		// STATUS_QUOTA_EXCEEDED so Windows clients distinguish quota from a full
+		// volume.
 		NFS3: nfs3types.NFS3ErrDquot,
 		NFS4: nfs4types.NFS4ERR_DQUOT,
-		SMB:  smbtypes.StatusDiskFull,
+		SMB:  smbtypes.StatusQuotaExceeded,
 	},
 	merrs.ErrReadOnly: {
 		// SMB: converters.go omits; fallback StatusAccessDenied (SMB has no

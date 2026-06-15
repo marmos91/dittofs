@@ -47,6 +47,16 @@ type Service struct {
 	cookies            *CookieManager                    // NFS/SMB cookie to store token translation
 	quotas             map[string]int64                  // shareName -> quota in bytes (0 = unlimited)
 
+	// identityQuotas holds hot-updatable per-user / per-group quota limits,
+	// loaded from the control-plane DB and consulted on the write/create hot
+	// path. Has its own mutex (does not contend with s.mu).
+	identityQuotas *quotaLimits
+
+	// quotaGracePersist, if set, is invoked when the enforcer starts or clears a
+	// grace timer so the control-plane row's grace_started_at can be persisted.
+	// A zero time clears the timer. Registered via SetQuotaGracePersister.
+	quotaGracePersist QuotaGracePersister
+
 	// removeGen counts RemoveStoreForShare calls per share. RegisterStoreForShare
 	// snapshots a share's counter before recovering its lock manager outside s.mu
 	// and re-checks it at publish: any removal of that share during recovery bumps
@@ -110,8 +120,45 @@ func New() *Service {
 		deferredCommit:     true, // Enable deferred commits by default
 		cookies:            NewCookieManager(),
 		quotas:             make(map[string]int64),
+		identityQuotas:     newQuotaLimits(),
 		removeGen:          make(map[string]uint64),
 	}
+}
+
+// QuotaGracePersister persists a per-identity quota's grace timer transition
+// back to the control-plane store. t is the new grace_started_at (zero clears
+// it). Implementations must be safe for concurrent use and should not block the
+// caller for long (the write/create hot path invokes this when grace state
+// changes).
+type QuotaGracePersister interface {
+	PersistQuotaGrace(shareName string, scope QuotaScope, id uint32, t time.Time)
+}
+
+// SetQuotaGracePersister installs the grace-timer persistence hook.
+func (s *Service) SetQuotaGracePersister(p QuotaGracePersister) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.quotaGracePersist = p
+}
+
+// SetIdentityQuota installs or replaces a single per-identity quota for a share.
+func (s *Service) SetIdentityQuota(shareName string, iq IdentityQuota) {
+	s.identityQuotas.set(shareName, iq)
+}
+
+// RemoveIdentityQuota deletes a single per-identity quota for a share.
+func (s *Service) RemoveIdentityQuota(shareName string, scope QuotaScope, id uint32) {
+	s.identityQuotas.remove(shareName, scope, id)
+}
+
+// ReplaceIdentityQuotas atomically replaces all per-identity quotas for a share.
+func (s *Service) ReplaceIdentityQuotas(shareName string, quotas []IdentityQuota) {
+	s.identityQuotas.replaceShare(shareName, quotas)
+}
+
+// GetIdentityQuota returns the exact-keyed quota for (scope,id) on a share.
+func (s *Service) GetIdentityQuota(shareName string, scope QuotaScope, id uint32) (IdentityQuota, bool) {
+	return s.identityQuotas.get(shareName, scope, id)
 }
 
 // SetDeferredCommit enables or disables deferred metadata commits.
@@ -782,8 +829,19 @@ func (s *Service) GetQuotaForShare(shareName string) int64 {
 
 // GetFilesystemStatistics returns filesystem statistics.
 // When a quota is configured for the share, the returned TotalBytes and
-// AvailableBytes are overlaid with quota-adjusted values.
+// AvailableBytes are overlaid with quota-adjusted values. This convenience
+// form has no caller identity, so per-user/per-group quotas are not reflected;
+// use GetFilesystemStatisticsForIdentity from protocol FSSTAT handlers.
 func (s *Service) GetFilesystemStatistics(ctx context.Context, handle FileHandle) (*FilesystemStatistics, error) {
+	return s.GetFilesystemStatisticsForIdentity(ctx, handle, nil)
+}
+
+// GetFilesystemStatisticsForIdentity returns filesystem statistics with the
+// quota overlay narrowed to the smallest applicable quota: the per-share quota
+// AND (when identity is non-nil and a per-user/per-group quota applies) the
+// caller's identity quota. This is what `df` / FSSTAT / SMB FS_FULL_SIZE report,
+// so a quota'd user sees their own ceiling rather than the raw volume.
+func (s *Service) GetFilesystemStatisticsForIdentity(ctx context.Context, handle FileHandle, identity *Identity) (*FilesystemStatistics, error) {
 	// Decode once: the share name is reused for the quota overlay below.
 	shareName, _, err := DecodeFileHandle(handle)
 	if err != nil {
@@ -798,19 +856,93 @@ func (s *Service) GetFilesystemStatistics(ctx context.Context, handle FileHandle
 		return nil, err
 	}
 
-	// Apply quota overlay if configured
-	quotaBytes := s.GetQuotaForShare(shareName)
-	if quotaBytes > 0 {
-		quota := uint64(quotaBytes)
-		stats.TotalBytes = quota
-		if stats.UsedBytes > quota {
-			stats.AvailableBytes = 0
-		} else {
-			stats.AvailableBytes = quota - stats.UsedBytes
-		}
+	// Apply per-share quota overlay if configured.
+	if quotaBytes := s.GetQuotaForShare(shareName); quotaBytes > 0 {
+		applyByteQuotaOverlay(stats, uint64(quotaBytes), stats.UsedBytes)
 	}
 
+	// Apply the tighter of the caller's user / group quota, if any.
+	s.applyIdentityQuotaOverlay(shareName, store, stats, identity)
+
 	return stats, nil
+}
+
+// applyByteQuotaOverlay narrows TotalBytes/AvailableBytes to a byte ceiling
+// against the given used value. Only narrows (never widens) Total so the
+// smallest applicable quota wins across successive overlays.
+func applyByteQuotaOverlay(stats *FilesystemStatistics, ceiling, used uint64) {
+	if ceiling == 0 {
+		return
+	}
+	if stats.TotalBytes == 0 || ceiling < stats.TotalBytes {
+		stats.TotalBytes = ceiling
+	}
+	var avail uint64
+	if used < ceiling {
+		avail = ceiling - used
+	}
+	if avail < stats.AvailableBytes {
+		stats.AvailableBytes = avail
+	}
+}
+
+// applyFileQuotaOverlay narrows TotalFiles/AvailableFiles to an inode ceiling.
+func applyFileQuotaOverlay(stats *FilesystemStatistics, ceiling, used uint64) {
+	if ceiling == 0 {
+		return
+	}
+	if stats.TotalFiles == 0 || ceiling < stats.TotalFiles {
+		stats.TotalFiles = ceiling
+	}
+	var avail uint64
+	if used < ceiling {
+		avail = ceiling - used
+	}
+	if avail < stats.AvailableFiles {
+		stats.AvailableFiles = avail
+	}
+}
+
+// applyIdentityQuotaOverlay narrows the stats to the caller's per-user and
+// per-group quota (bytes + inodes), using that identity's live usage rather
+// than the share-wide used total. No-op when identity is nil or has no UID, or
+// when no quota applies.
+func (s *Service) applyIdentityQuotaOverlay(shareName string, store Store, stats *FilesystemStatistics, identity *Identity) {
+	if identity == nil || identity.UID == nil || !s.identityQuotas.hasAny(shareName) {
+		return
+	}
+	uid := *identity.UID
+
+	if iq, ok := s.identityQuotas.resolveUser(shareName, uid); ok {
+		if usage, err := store.GetQuotaUsage(QuotaScopeUser, uid); err == nil {
+			if iq.LimitBytes > 0 {
+				applyByteQuotaOverlay(stats, uint64(iq.LimitBytes), uint64(max64(usage.Bytes, 0)))
+			}
+			if iq.LimitFiles > 0 {
+				applyFileQuotaOverlay(stats, uint64(iq.LimitFiles), uint64(max64(usage.Files, 0)))
+			}
+		}
+	}
+	if identity.GID != nil {
+		gid := *identity.GID
+		if iq, ok := s.identityQuotas.get(shareName, QuotaScopeGroup, gid); ok {
+			if usage, err := store.GetQuotaUsage(QuotaScopeGroup, gid); err == nil {
+				if iq.LimitBytes > 0 {
+					applyByteQuotaOverlay(stats, uint64(iq.LimitBytes), uint64(max64(usage.Bytes, 0)))
+				}
+				if iq.LimitFiles > 0 {
+					applyFileQuotaOverlay(stats, uint64(iq.LimitFiles), uint64(max64(usage.Files, 0)))
+				}
+			}
+		}
+	}
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // GetFilesystemCapabilities returns filesystem capabilities.
