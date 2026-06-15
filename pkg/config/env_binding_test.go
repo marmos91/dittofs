@@ -50,6 +50,64 @@ controlplane:
 	}
 }
 
+// TestLoad_RequireInitialPasswordChange covers the opt-out knob for the forced
+// admin first-login password change: it defaults to true, is settable to false
+// via the config file, and is overridable to false via env.
+func TestLoad_RequireInitialPasswordChange(t *testing.T) {
+	t.Run("defaults to true when absent", func(t *testing.T) {
+		content := `
+database:
+  type: sqlite
+controlplane:
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
+`
+		cfg, err := Load(writeConfigFile(t, content))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.ControlPlane.RequiresInitialPasswordChange() {
+			t.Error("expected forced password change on by default")
+		}
+	})
+
+	t.Run("file opt-out", func(t *testing.T) {
+		content := `
+database:
+  type: sqlite
+controlplane:
+  require_initial_password_change: false
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
+`
+		cfg, err := Load(writeConfigFile(t, content))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.ControlPlane.RequiresInitialPasswordChange() {
+			t.Error("expected forced password change off when file sets it false")
+		}
+	})
+
+	t.Run("env opt-out", func(t *testing.T) {
+		content := `
+database:
+  type: sqlite
+controlplane:
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
+`
+		t.Setenv("DITTOFS_CONTROLPLANE_REQUIRE_INITIAL_PASSWORD_CHANGE", "false")
+		cfg, err := Load(writeConfigFile(t, content))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.ControlPlane.RequiresInitialPasswordChange() {
+			t.Error("expected forced password change off when env sets it false")
+		}
+	})
+}
+
 // TestLoad_DatabaseTypeFromEnv_TypeOmittedFromFile reproduces round-2 §2.2(b):
 // a container supplies postgres connection details in the file but omits
 // database.type, then sets DITTOFS_DATABASE_TYPE=postgres via env. Before the
@@ -233,6 +291,7 @@ func TestConfigEnvKeys_CoversKnownKeys(t *testing.T) {
 		"controlplane.tls.min_version",
 		"controlplane.jwt.secret",
 		"controlplane.pprof",
+		"controlplane.require_initial_password_change",
 		"admin.username",
 		"kerberos.enabled",
 		"gc.grace_period",

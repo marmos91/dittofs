@@ -80,6 +80,21 @@ type APIConfig struct {
 	// to the default 1_000_000 — to turn profiling off entirely, set Pprof to
 	// false rather than zeroing this.
 	PprofBlockRateNs int `mapstructure:"pprof_block_rate_ns" validate:"omitempty,min=0" yaml:"pprof_block_rate_ns"`
+
+	// RequireInitialPasswordChange controls whether the bootstrap admin user
+	// is forced to set a new password on first login. Default: true (secure by
+	// default). Set to false for automated/test deployments that provision the
+	// admin password out-of-band and don't want the forced first-login change.
+	// It is a pointer so an unset value defaults to true (forced change on)
+	// rather than to the bool zero value (off). Use RequiresInitialPasswordChange().
+	RequireInitialPasswordChange *bool `mapstructure:"require_initial_password_change" yaml:"require_initial_password_change"`
+}
+
+// RequiresInitialPasswordChange reports whether the bootstrap admin must change
+// its password on first login. An unset value defaults to true so the forced
+// change is on unless an operator explicitly opts out.
+func (c *APIConfig) RequiresInitialPasswordChange() bool {
+	return c.RequireInitialPasswordChange == nil || *c.RequireInitialPasswordChange
 }
 
 // JWTConfig configures JWT token generation and validation.
@@ -211,6 +226,12 @@ func (c *APIConfig) ApplyDefaults() {
 		if c.PprofBlockRateNs == 0 {
 			c.PprofBlockRateNs = 1_000_000
 		}
+	}
+	// Force the bootstrap admin's first-login password change by default
+	// (secure by default). Operators opt out by setting it to false.
+	if c.RequireInitialPasswordChange == nil {
+		v := true
+		c.RequireInitialPasswordChange = &v
 	}
 	// JWT defaults
 	if c.JWT.AccessTokenDuration == 0 {

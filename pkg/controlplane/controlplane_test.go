@@ -122,7 +122,7 @@ func TestEnsureAdminUser(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	pw, err := cp.EnsureAdminUser(ctx)
+	pw, err := cp.EnsureAdminUser(ctx, true)
 	if err != nil {
 		t.Fatalf("EnsureAdminUser: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestEnsureAdminUser(t *testing.T) {
 		t.Error("expected a generated password on first creation")
 	}
 	// Idempotent: second call returns empty password (user already exists).
-	pw2, err := cp.EnsureAdminUser(ctx)
+	pw2, err := cp.EnsureAdminUser(ctx, true)
 	if err != nil {
 		t.Fatalf("EnsureAdminUser (2nd): %v", err)
 	}
