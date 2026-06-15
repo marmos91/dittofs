@@ -121,19 +121,29 @@ func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
 	m.pendingMu.Lock()
 	// prev is the zero value (0) when the hash is new, so size-prev charges
 	// the full size on first insert and only the delta on re-add — never
-	// double-counting a hash already pending (CAS dedup).
+	// double-counting a hash already pending (CAS dedup). The counter update
+	// stays INSIDE pendingMu so it is serialized against mirrorOnce's drain
+	// (which deletes from the map and subtracts under the same lock): an
+	// add that interleaved a concurrent drain otherwise leaked a phantom
+	// positive byte count that no future drain would ever subtract.
 	prev := m.pendingHashes[h]
 	m.pendingHashes[h] = size
-	m.pendingMu.Unlock()
 	m.unsyncedBytes.Add(size - prev)
+	m.pendingMu.Unlock()
 }
 
 // UnsyncedBytes returns the running total on-disk size of CAS chunks present
 // locally but not yet mirrored to remote. This is the backpressure signal
 // the local store consults: a non-zero value with a healthy remote means a
-// stalled writer can make progress once the syncer drains.
+// stalled writer can make progress once the syncer drains. Clamped at zero:
+// a transient drift reconcile that re-seeds a still-pending hash with a
+// best-effort size of 0 (its bytes vanished mid-walk) can briefly push the
+// raw counter negative, which must not read as "nothing pending".
 func (m *Syncer) UnsyncedBytes() int64 {
-	return m.unsyncedBytes.Load()
+	if v := m.unsyncedBytes.Load(); v > 0 {
+		return v
+	}
+	return 0
 }
 
 // seedPendingFromDisk reconciles the in-memory pending set against the
