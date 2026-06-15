@@ -274,3 +274,69 @@ func TestShareHandler_Update_TrashRejectsNegative(t *testing.T) {
 		t.Fatalf("Update(negative retention) = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
 }
+
+// seedStores creates a metadata store + local block store (no share) and
+// returns their names, so a Create request can reference real stores and reach
+// the default_permission validation rather than failing the store-existence
+// checks first.
+func seedStores(t *testing.T, cpStore store.Store, name string) (metaName, blockName string) {
+	t.Helper()
+	ctx := context.Background()
+
+	metaStore := &models.MetadataStoreConfig{
+		ID: uuid.New().String(), Name: "m-" + name, Type: "memory", CreatedAt: time.Now(),
+	}
+	if _, err := cpStore.CreateMetadataStore(ctx, metaStore); err != nil {
+		t.Fatalf("CreateMetadataStore: %v", err)
+	}
+	blockStore := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "b-" + name, Kind: models.BlockStoreKindLocal, Type: "memory", CreatedAt: time.Now(),
+	}
+	if _, err := cpStore.CreateBlockStore(ctx, blockStore); err != nil {
+		t.Fatalf("CreateBlockStore: %v", err)
+	}
+	return metaStore.Name, blockStore.Name
+}
+
+// TestShareHandler_Create_RejectsInvalidDefaultPermission verifies an
+// unrecognized default_permission is rejected with 400 rather than stored and
+// echoed back — ParseSharePermission silently maps unknown strings to
+// PermissionNone (total deny), so a typo like "read_write" would look granted
+// while denying every unknown-UID client (#1180).
+func TestShareHandler_Create_RejectsInvalidDefaultPermission(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	metaName, blockName := seedStores(t, cpStore, "s-perm-bad")
+
+	body, _ := json.Marshal(CreateShareRequest{
+		Name:              "/perm-bad",
+		MetadataStoreID:   metaName,
+		LocalBlockStore:   blockName,
+		DefaultPermission: "read_write", // underscore — the valid token is "read-write"
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Create(invalid default_permission) = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestShareHandler_Update_RejectsInvalidDefaultPermission is the update-path
+// counterpart of the create check (#1180).
+func TestShareHandler_Update_RejectsInvalidDefaultPermission(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-perm-upd")
+
+	body := []byte(`{"default_permission":"read_write"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-perm-upd", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withShareName(req, "s-perm-upd")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Update(invalid default_permission) = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}

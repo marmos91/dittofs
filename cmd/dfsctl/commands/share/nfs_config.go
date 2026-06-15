@@ -55,7 +55,7 @@ var nfsConfigSetCmd = &cobra.Command{
 
 func init() {
 	nfsConfigSetCmd.Flags().StringVar(&nfsCfgNetgroup, "netgroup", "", "Netgroup name to associate (empty string clears the association)")
-	nfsConfigSetCmd.Flags().StringVar(&nfsCfgSquash, "squash", "", "Squash mode (none|root|all)")
+	nfsConfigSetCmd.Flags().StringVar(&nfsCfgSquash, "squash", "", "Squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest)")
 	nfsConfigSetCmd.Flags().StringVar(&nfsCfgAllowAuthSys, "allow-auth-sys", "", "Allow AUTH_SYS flavor (true|false)")
 	nfsConfigSetCmd.Flags().StringVar(&nfsCfgRequireKerberos, "require-kerberos", "", "Require Kerberos auth (true|false)")
 

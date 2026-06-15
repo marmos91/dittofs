@@ -275,6 +275,12 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	defaultPerm := req.DefaultPermission
 	if defaultPerm == "" {
 		defaultPerm = "read-write"
+	} else if !models.SharePermission(defaultPerm).IsValid() {
+		// Validate the raw string, not ParseSharePermission's result: Parse maps
+		// anything unrecognized to PermissionNone (which is itself valid), so an
+		// operator who typos "read_write" would silently get total deny (#1180).
+		BadRequest(w, "Invalid default_permission: "+defaultPerm+" (want none|read|read-write|admin)")
+		return
 	}
 
 	// Validate BlockedOperations entries
@@ -661,6 +667,10 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		share.SetTrashExcludePatterns(req.TrashExcludePatterns)
 	}
 	if req.DefaultPermission != nil {
+		if *req.DefaultPermission != "" && !models.SharePermission(*req.DefaultPermission).IsValid() {
+			BadRequest(w, "Invalid default_permission: "+*req.DefaultPermission+" (want none|read|read-write|admin)")
+			return
+		}
 		share.DefaultPermission = *req.DefaultPermission
 	}
 	if req.BlockedOperations != nil {

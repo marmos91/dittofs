@@ -205,7 +205,7 @@ func TestShareNFSConfig_PatchOtherFields(t *testing.T) {
 	cpStore, handler, shareID := setupShareNFSConfigTest(t)
 	ctx := context.Background()
 
-	w := doRequest(t, handler.Patch, http.MethodPatch, `{"squash":"all","allow_auth_sys":false}`)
+	w := doRequest(t, handler.Patch, http.MethodPatch, `{"squash":"all_to_guest","allow_auth_sys":false}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("Patch() status = %d, want 200, body = %s", w.Code, w.Body.String())
 	}
@@ -218,10 +218,25 @@ func TestShareNFSConfig_PatchOtherFields(t *testing.T) {
 	if err := cfg.ParseConfig(&opts); err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
-	if opts.Squash != "all" {
-		t.Errorf("Squash = %q, want all", opts.Squash)
+	if opts.Squash != "all_to_guest" {
+		t.Errorf("Squash = %q, want all_to_guest", opts.Squash)
 	}
 	if opts.AllowAuthSys {
 		t.Errorf("AllowAuthSys = true, want false")
+	}
+}
+
+// TestShareNFSConfig_PatchRejectsInvalidSquash verifies an unrecognized squash
+// value is rejected with 400 rather than silently persisted and then falling
+// back to the default at use time (#1181). "root"/"all" are common mistakes —
+// the real enum is none|root_to_admin|root_to_guest|all_to_admin|all_to_guest.
+func TestShareNFSConfig_PatchRejectsInvalidSquash(t *testing.T) {
+	_, handler, _ := setupShareNFSConfigTest(t)
+
+	for _, bad := range []string{"root", "all", "read_write"} {
+		w := doRequest(t, handler.Patch, http.MethodPatch, `{"squash":"`+bad+`"}`)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("Patch(squash=%q) status = %d, want 400, body = %s", bad, w.Code, w.Body.String())
+		}
 	}
 }
