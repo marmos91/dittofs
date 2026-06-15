@@ -25,7 +25,7 @@ on:
       - 'internal/adapter/nfs/**'
       - 'internal/adapter/smb/**'
       - 'pkg/metadata/**'
-      - 'pkg/blockstore/**'
+      - 'pkg/block/**'
       - 'pkg/controlplane/**'
       - 'pkg/config/**'
       - 'test/e2e/**'

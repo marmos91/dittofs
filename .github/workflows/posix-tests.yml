@@ -21,7 +21,7 @@ on:
       - 'pkg/adapter/base.go'
       - 'internal/adapter/nfs/**'
       - 'pkg/metadata/**'
-      - 'pkg/blockstore/**'
+      - 'pkg/block/**'
       - 'pkg/controlplane/**'
       - 'pkg/config/**'
       - 'test/posix/**'
