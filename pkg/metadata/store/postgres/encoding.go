@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -65,6 +66,19 @@ func pgNanosToTime(n int64) time.Time {
 // as a reconstructed expression (inodePathExpr) walking parent_child_map up to
 // the share root. For a hard-linked inode this yields one of its paths.
 func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
+	return fileRowToFileWithNlinkAndBlocks(row, false)
+}
+
+// fileRowToFileWithNlinkAndBlocks decodes a file row that optionally carries a
+// trailing blocks column. When withBlocks is true the SELECT list MUST append
+// blockRefsAggExpr as its final column; the row's FileAttr.Blocks is then
+// hydrated in the same round-trip rather than via a second loadFileBlockRefs
+// query (#1176). With withBlocks=false this is identical to the pre-#1176 read.
+//
+// The folded aggregate is ordered by "offset" ASC and decoded into the same
+// []block.BlockRef shape loadFileBlockRefs produces — an empty/absent set
+// (directories, symlinks, blockless regular files) yields a nil slice.
+func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.File, error) {
 	var (
 		id           uuid.UUID
 		shareName    string
@@ -90,9 +104,10 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		originalPath string
 		deletedBy    string
 		linkCount    sql.NullInt32
+		blocksJSON   []byte
 	)
 
-	err := row.Scan(
+	dest := []any{
 		&id,
 		&shareName,
 		&path,
@@ -117,8 +132,12 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 		&originalPath,
 		&deletedBy,
 		&linkCount,
-	)
-	if err != nil {
+	}
+	if withBlocks {
+		dest = append(dest, &blocksJSON)
+	}
+
+	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
 
@@ -201,5 +220,81 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 	file.OriginalPath = originalPath
 	file.DeletedBy = deletedBy
 
+	// Folded block refs (#1176): when the SELECT appended blockRefsAggExpr,
+	// hydrate FileAttr.Blocks from that aggregate rather than a second query.
+	if withBlocks && len(blocksJSON) > 0 {
+		blocks, err := decodeBlockRefsJSON(blocksJSON)
+		if err != nil {
+			return nil, err
+		}
+		file.Blocks = blocks
+	}
+
 	return file, nil
+}
+
+// blockRefsAggExpr is a correlated scalar subquery aggregating a file's
+// file_block_refs rows into a single JSON array, ordered by "offset" ASC to
+// match loadFileBlockRefs. Splice it as the FINAL column of
+// a SELECT whose inode row is aliased `f` (it references f.id) and decode the
+// result with fileRowToFileWithNlinkAndBlocks(row, true).
+//
+// Each element is [offset, size, hash_hex]; hash is encode(...,'hex') so the
+// BYTEA round-trips byte-for-byte. An inode with no refs yields SQL NULL, which
+// decodes to a nil slice (parity with loadFileBlockRefs on an empty set).
+const blockRefsAggExpr = `(
+	SELECT json_agg(
+		json_build_array(fbr."offset", fbr.size, encode(fbr.hash, 'hex'))
+		ORDER BY fbr."offset" ASC
+	)
+	FROM file_block_refs fbr
+	WHERE fbr.file_id = f.id
+)`
+
+// decodeBlockRefsJSON decodes the JSON array produced by blockRefsAggExpr into
+// []block.BlockRef, applying the same hash-length validation as
+// loadFileBlockRefs (a malformed hash is surfaced as an error, never coerced to
+// a half-decoded ref).
+func decodeBlockRefsJSON(raw []byte) ([]block.BlockRef, error) {
+	// Element shape: [offset(int64), size(int32), hash_hex(string)].
+	var rows [][3]json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("decode folded block refs: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]block.BlockRef, 0, len(rows))
+	for _, r := range rows {
+		var (
+			off     int64
+			sz      int32
+			hashHex string
+		)
+		if err := json.Unmarshal(r[0], &off); err != nil {
+			return nil, fmt.Errorf("decode folded block ref offset: %w", err)
+		}
+		if err := json.Unmarshal(r[1], &sz); err != nil {
+			return nil, fmt.Errorf("decode folded block ref size: %w", err)
+		}
+		if err := json.Unmarshal(r[2], &hashHex); err != nil {
+			return nil, fmt.Errorf("decode folded block ref hash: %w", err)
+		}
+		rawHash, err := hex.DecodeString(hashHex)
+		if err != nil {
+			return nil, fmt.Errorf("decode folded block ref hash hex: %w", err)
+		}
+		if len(rawHash) != block.HashSize {
+			return nil, fmt.Errorf(
+				"folded block ref hash has unexpected length %d (want %d)",
+				len(rawHash), block.HashSize,
+			)
+		}
+		var br block.BlockRef
+		copy(br.Hash[:], rawHash)
+		br.Offset = uint64(off)
+		br.Size = uint32(sz)
+		out = append(out, br)
+	}
+	return out, nil
 }

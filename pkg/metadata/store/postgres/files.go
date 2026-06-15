@@ -38,6 +38,11 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 		}
 	}
 
+	// Fold FileAttr.Blocks into the metadata read via a correlated aggregate
+	// (#1176): one round-trip instead of the metadata SELECT plus a separate
+	// loadFileBlockRefs. blockRefsAggExpr yields NULL for directories,
+	// symlinks, and blockless files, so the decoded slice stays nil for them —
+	// byte-identical to the prior two-query behaviour.
 	query := `
 		SELECT
 			f.id, f.share_name, ` + inodePathExpr + `,
@@ -45,26 +50,17 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
+			f.deleted_at, f.original_path, f.deleted_by, lc.link_count,
+			` + blockRefsAggExpr + `
 		FROM inodes f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
 	`
 
 	row := s.queryRow(ctx, query, id, shareName)
-	file, err := fileRowToFileWithNlink(row)
+	file, err := fileRowToFileWithNlinkAndBlocks(row, true)
 	if err != nil {
 		return nil, mapPgError(err, "GetFile", "")
-	}
-
-	// load FileAttr.Blocks from file_block_refs.
-	// Only regular files carry BlockRef payloads; directories/symlinks have none.
-	if file.Type == metadata.FileTypeRegular {
-		blocks, err := s.loadFileBlockRefs(ctx, id)
-		if err != nil {
-			return nil, mapPgError(err, "GetFile", "load blocks")
-		}
-		file.Blocks = blocks
 	}
 
 	return file, nil

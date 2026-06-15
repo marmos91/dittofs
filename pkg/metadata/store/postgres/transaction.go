@@ -193,6 +193,9 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 		}
 	}
 
+	// Fold FileAttr.Blocks into the metadata read (#1176): one round-trip
+	// instead of the SELECT plus a separate getFileBlockRefs. See GetFile
+	// (pool path) and blockRefsAggExpr for the equivalence rationale.
 	query := `
 		SELECT
 			f.id, f.share_name, ` + inodePathExpr + `,
@@ -200,25 +203,17 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
+			f.deleted_at, f.original_path, f.deleted_by, lc.link_count,
+			` + blockRefsAggExpr + `
 		FROM inodes f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
 	`
 
 	row := tx.tx.QueryRow(ctx, query, id, shareName)
-	file, err := fileRowToFileWithNlink(row)
+	file, err := fileRowToFileWithNlinkAndBlocks(row, true)
 	if err != nil {
 		return nil, mapPgError(err, "GetFile", "")
-	}
-
-	// load FileAttr.Blocks inside the same tx.
-	if file.Type == metadata.FileTypeRegular {
-		blocks, err := getFileBlockRefs(ctx, tx.tx, id)
-		if err != nil {
-			return nil, mapPgError(err, "GetFile", "load blocks")
-		}
-		file.Blocks = blocks
 	}
 
 	// Debug logging to trace file type issues
