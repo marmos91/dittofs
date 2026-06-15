@@ -54,10 +54,13 @@ jobs:
       CONCLUSION: ${{ github.event.workflow_run.conclusion }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       RUN_URL: ${{ github.event.workflow_run.html_url }}
+      # Any non-success terminal conclusion (failure, timed_out, cancelled,
+      # action_required, …) means develop is not green and must alarm.
+      IS_RED: ${{ github.event.workflow_run.conclusion != 'success' }}
 
     steps:
       - name: Ensure develop-red label exists
-        if: env.CONCLUSION == 'failure'
+        if: env.IS_RED == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -68,7 +71,7 @@ jobs:
             --description "develop branch CI is red (P0)" 2>/dev/null || true
 
       - name: Send failure email
-        if: env.CONCLUSION == 'failure' && env.HAS_SMTP == 'true'
+        if: env.IS_RED == 'true' && env.HAS_SMTP == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
@@ -81,14 +84,15 @@ jobs:
           body: |
             develop CI is RED.
 
-            Workflow: ${{ env.WORKFLOW }}
-            Commit:   ${{ env.HEAD_SHA }}
-            Run:      ${{ env.RUN_URL }}
+            Workflow:   ${{ env.WORKFLOW }}
+            Conclusion: ${{ env.CONCLUSION }}
+            Commit:     ${{ env.HEAD_SHA }}
+            Run:        ${{ env.RUN_URL }}
 
             Fix or revert before merging onto develop.
 
       - name: Open or update develop-red issue
-        if: env.CONCLUSION == 'failure'
+        if: env.IS_RED == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -96,8 +100,8 @@ jobs:
           # printf (not an indented heredoc) so no leading YAML whitespace
           # leaks into the Markdown body (4+ leading spaces => code block).
           # shellcheck disable=SC2016  # %s placeholders are printf args, not shell expansion
-          COMMENT=$(printf '**%s** failed on `develop`.\n\n- Commit: `%s`\n- Run: %s' \
-            "$WORKFLOW" "$HEAD_SHA" "$RUN_URL")
+          COMMENT=$(printf '**%s** concluded `%s` on `develop`.\n\n- Commit: `%s`\n- Run: %s' \
+            "$WORKFLOW" "$CONCLUSION" "$HEAD_SHA" "$RUN_URL")
 
           EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
             --json number --jq '.[0].number // empty')
@@ -106,7 +110,7 @@ jobs:
             gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
             echo "Commented on existing develop-red issue #$EXISTING"
           else
-            BODY=$(printf 'develop CI is RED. Builds on develop are landing on a broken base.\n\n%s\n\nThis issue auto-closes when the next postsubmit run on develop is green.' \
+            BODY=$(printf 'develop CI is RED. Builds on develop are landing on a broken base.\n\n%s\n\nThis issue auto-closes once every monitored conformance workflow is green on develop.' \
               "$COMMENT")
             gh issue create --repo "$REPO" \
               --title "🔴 develop CI is RED" \
@@ -123,12 +127,32 @@ jobs:
         run: |
           EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
             --json number --jq '.[0].number // empty')
-          if [ -n "$EXISTING" ]; then
+          if [ -z "$EXISTING" ]; then
+            echo "No open develop-red issue; nothing to close."
+            exit 0
+          fi
+
+          # Only reopen the tree once EVERY monitored workflow's latest
+          # completed run on develop is success — otherwise one workflow going
+          # green while another is still red would falsely close the issue.
+          ALL_GREEN=true
+          for wf in posix-tests.yml smb-conformance.yml e2e-tests.yml nfs-kerberos.yml; do
+            CONC=$(gh run list --repo "$REPO" --workflow "$wf" --branch develop \
+              --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"')
+            echo "  $wf -> $CONC"
+            if [ "$CONC" != "success" ] && [ "$CONC" != "none" ]; then
+              ALL_GREEN=false
+            fi
+          done
+
+          if [ "$ALL_GREEN" = true ]; then
             gh issue close "$EXISTING" --repo "$REPO" \
-              --comment "✅ develop green again at \`${HEAD_SHA}\` (${WORKFLOW}) — tree reopened."
+              --comment "✅ develop green again at \`${HEAD_SHA}\` — all conformance workflows passing. Tree reopened."
             echo "Closed develop-red issue #$EXISTING"
           else
-            echo "No open develop-red issue; nothing to close."
+            gh issue comment "$EXISTING" --repo "$REPO" \
+              --body "**${WORKFLOW}** is green at \`${HEAD_SHA}\`, but another monitored workflow is still red — keeping this open until all pass."
+            echo "Kept develop-red issue #$EXISTING open (not all workflows green)"
           fi
 
   # ---------------------------------------------------------------------------
@@ -162,8 +186,10 @@ jobs:
           fi
 
           # Find any existing bot warning comment by its hidden marker.
-          EXISTING_COMMENT=$(gh api "repos/$REPO/issues/$PR/comments" \
-            --jq "[.[] | select(.body | contains(\"$MARKER\"))][0].id // empty")
+          # --paginate walks all pages so a stale marker is never missed (which
+          # would otherwise post a duplicate comment each run).
+          EXISTING_COMMENT=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1)
 
           BODY=$(printf '%s\n⚠️ **develop is currently RED (see #%s).** Your PR builds on a broken base — fix/await develop before merging. (Warning only; this does not block the merge.)' \
             "$MARKER" "$ISSUE")
