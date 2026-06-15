@@ -53,50 +53,6 @@ func putFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks [
 	return nil
 }
 
-// getFileBlockRefs returns all rows for fileID ordered by offset ASC.
-// Returns nil (no error) if no rows exist.
-//
-// Used by GetFile to populate FileAttr.Blocks. The covering index
-// (PRIMARY KEY ... INCLUDE(size, hash)) means this is index-only; no
-// heap fetch on the cold-cache read path.
-func getFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) ([]block.BlockRef, error) {
-	rows, err := tx.Query(ctx,
-		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1 ORDER BY "offset" ASC`,
-		fileID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
-	}
-	defer rows.Close()
-
-	var out []block.BlockRef
-	for rows.Next() {
-		var off int64
-		var sz int32
-		var raw []byte
-		if err := rows.Scan(&off, &sz, &raw); err != nil {
-			return nil, fmt.Errorf("scan file_block_ref: %w", err)
-		}
-		// T-12-06 mitigation: never coerce a malformed BYTEA hash to a
-		// half-decoded BlockRef — surface the error explicitly.
-		if len(raw) != block.HashSize {
-			return nil, fmt.Errorf(
-				"file_block_refs.hash for %s/%d has unexpected length %d (want %d)",
-				fileID, off, len(raw), block.HashSize,
-			)
-		}
-		var br block.BlockRef
-		copy(br.Hash[:], raw)
-		br.Offset = uint64(off)
-		br.Size = uint32(sz)
-		out = append(out, br)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate file_block_refs: %w", err)
-	}
-	return out, nil
-}
-
 // deleteFileBlockRefs removes all rows for fileID. The FK cascade
 // handles this automatically when the files row is deleted; this helper
 // is exposed for callers that pre-clear refs without dropping the row.
@@ -112,9 +68,10 @@ func deleteFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) error
 	return nil
 }
 
-// loadFileBlockRefs loads all rows for fileID via the pool (not a tx).
-// Used by GetFile, which intentionally avoids a tx for read performance.
-// Same SQL as getFileBlockRefs but routed through the store's pool helper.
+// loadFileBlockRefs loads all rows for fileID via the pool (not a tx),
+// ordered by offset ASC; returns a nil slice when no rows exist.
+// Used by FindByObjectID. GetFile no longer calls this — it folds the same
+// rows into its metadata read via blockRefsAggExpr (#1176).
 func (s *PostgresMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uuid.UUID) ([]block.BlockRef, error) {
 	rows, err := s.query(ctx,
 		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1 ORDER BY "offset" ASC`,
