@@ -56,18 +56,17 @@ jobs:
       - name: Set profile
         id: profile
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo 'stores=["memory"]' >> "$GITHUB_OUTPUT"
-            echo 'run_postgres=false' >> "$GITHUB_OUTPUT"
-            echo 'is_scheduled=false' >> "$GITHUB_OUTPUT"
+          # Run the full backend matrix (memory + badger + postgres) on every
+          # event, including PRs. Postgres is the production backend and its
+          # path-keyed store is where most CI-blind bugs have hidden, so PRs
+          # must cover it. Known backend-specific gaps are tracked in the
+          # KNOWN_FAILURES tables (graded yellow, not red) until fixed.
+          echo 'stores=["memory","badger"]' >> "$GITHUB_OUTPUT"
+          echo 'run_postgres=true' >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            echo 'is_scheduled=true' >> "$GITHUB_OUTPUT"
           else
-            echo 'stores=["memory","badger"]' >> "$GITHUB_OUTPUT"
-            echo 'run_postgres=true' >> "$GITHUB_OUTPUT"
-            if [[ "${{ github.event_name }}" == "schedule" ]]; then
-              echo 'is_scheduled=true' >> "$GITHUB_OUTPUT"
-            else
-              echo 'is_scheduled=false' >> "$GITHUB_OUTPUT"
-            fi
+            echo 'is_scheduled=false' >> "$GITHUB_OUTPUT"
           fi
 
   # Build binaries once and share across test jobs
