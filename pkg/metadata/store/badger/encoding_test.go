@@ -69,9 +69,16 @@ func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
 	// Non-Blocks fields preserved.
 	assert.Equal(t, original.ID, decoded.ID)
 	assert.Equal(t, original.ShareName, decoded.ShareName)
-	assert.Equal(t, original.Path, decoded.Path)
 	assert.Equal(t, original.Size, decoded.Size)
 	assert.Equal(t, original.Mode, decoded.Mode)
+
+	// Path is intentionally NOT persisted (#1166): it is always derived from
+	// parent edges on read, so encodeFile zeroes it before serializing. This
+	// prevents a stale stored path (e.g. the pre-move path on a rename) from
+	// ever landing on disk. decodeFile tolerates the empty field; GetFile
+	// overwrites Path via derivePath. The caller's struct is not mutated.
+	assert.Empty(t, decoded.Path, "encodeFile must not persist File.Path")
+	assert.Equal(t, "/foo.bin", original.Path, "encodeFile must not mutate the caller's File")
 }
 
 // TestBadgerEncodeFile_LegacyBlobNoBlocks asserts that a

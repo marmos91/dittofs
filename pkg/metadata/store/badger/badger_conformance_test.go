@@ -120,6 +120,95 @@ func TestBadgerStore_CleanShutdownMarkerDurable(t *testing.T) {
 	require.NoError(t, s2.Close())
 }
 
+// TestBadgerStore_DerivePathReverseIndex pins the cn:<parent>:<child> reverse
+// index used by derivePath (#1166): after cross-directory moves, a parent-dir
+// rename, and delete+recreate of a name, GetFile must always return the current
+// derived path and never a stale name left behind by the previous edge. A
+// regression in reverse-index maintenance (a leftover or un-repointed cn: key)
+// surfaces here as a wrong or empty derived path.
+func TestBadgerStore_DerivePathReverseIndex(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "metadata.db")
+	store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+
+	shareName := "/rev"
+	require.NoError(t, store.CreateShare(ctx, &metadata.Share{Name: shareName}))
+	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory, Mode: 0o755,
+	})
+	require.NoError(t, err)
+	rootHandle, err := metadata.EncodeFileHandle(rootFile)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	mkChild := func(parent metadata.FileHandle, name string, dir bool) metadata.FileHandle {
+		h, err := store.GenerateHandle(ctx, shareName, "/"+name)
+		require.NoError(t, err)
+		_, id, err := metadata.DecodeFileHandle(h)
+		require.NoError(t, err)
+		typ := metadata.FileTypeRegular
+		if dir {
+			typ = metadata.FileTypeDirectory
+		}
+		require.NoError(t, store.PutFile(ctx, &metadata.File{
+			ID: id, ShareName: shareName,
+			FileAttr: metadata.FileAttr{
+				Type: typ, Mode: 0o644,
+				Mtime: now, Ctime: now, Atime: now, CreationTime: now,
+			},
+		}))
+		require.NoError(t, store.SetParent(ctx, h, parent))
+		require.NoError(t, store.SetChild(ctx, parent, name, h))
+		return h
+	}
+
+	// Build /dirA/file and a sibling /dirB.
+	dirA := mkChild(rootHandle, "dirA", true)
+	dirB := mkChild(rootHandle, "dirB", true)
+	fileH := mkChild(dirA, "file", false)
+
+	got, err := store.GetFile(ctx, fileH)
+	require.NoError(t, err)
+	assert.Equal(t, "/dirA/file", got.Path, "initial derived path")
+
+	// Cross-directory move /dirA/file -> /dirB/moved: repoints the parent edge
+	// AND the reverse name edge. A stale cn: entry would surface the old name.
+	require.NoError(t, store.DeleteChild(ctx, dirA, "file"))
+	require.NoError(t, store.SetChild(ctx, dirB, "moved", fileH))
+	require.NoError(t, store.SetParent(ctx, fileH, dirB))
+
+	got, err = store.GetFile(ctx, fileH)
+	require.NoError(t, err)
+	assert.Equal(t, "/dirB/moved", got.Path, "derived path after cross-dir move")
+
+	// Rename the parent directory dirB -> dirC; the descendant's path must
+	// reflect it on read with no per-descendant writes.
+	require.NoError(t, store.DeleteChild(ctx, rootHandle, "dirB"))
+	require.NoError(t, store.SetChild(ctx, rootHandle, "dirC", dirB))
+
+	got, err = store.GetFile(ctx, fileH)
+	require.NoError(t, err)
+	assert.Equal(t, "/dirC/moved", got.Path, "descendant path after parent-dir rename")
+
+	// Delete the "moved" name, then recreate a NEW file under the same name in
+	// the same directory. The new inode must derive /dirC/moved — never inherit
+	// a stale reverse edge from the deleted inode.
+	require.NoError(t, store.DeleteChild(ctx, dirB, "moved"))
+	fresh := mkChild(dirB, "moved", false)
+	require.NotEqual(t, string(fresh), string(fileH))
+	got, err = store.GetFile(ctx, fresh)
+	require.NoError(t, err)
+	assert.Equal(t, "/dirC/moved", got.Path, "recreated name derives its own path, no stale resurface")
+
+	// The original (now unlinked) inode has no parent edge left, so it derives
+	// the root sentinel rather than a stale name.
+	got, err = store.GetFile(ctx, fileH)
+	require.NoError(t, err)
+	assert.Equal(t, "/", got.Path, "unlinked inode derives '/' (no stale reverse edge)")
+}
+
 func TestBadgerStore_PutGetFile_BlocksRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "metadata.db")

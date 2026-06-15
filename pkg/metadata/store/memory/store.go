@@ -576,8 +576,14 @@ func (store *MemoryMetadataStore) derivePathLocked(handle metadata.FileHandle) s
 
 // childNameLocked returns the lexicographically smallest name under which
 // child is linked into parent, or "" if no such edge exists. Caller MUST hold
-// the lock. Matches postgres' deterministic ORDER BY child_name edge choice so
-// the derived path is consistent across backends for hard-linked inodes.
+// the lock.
+//
+// For a same-directory hard link this matches postgres' ORDER BY child_name
+// edge choice. For a cross-directory hard link the backends can legitimately
+// differ: postgres orders by (parent_id, child_name) across UUID-string parent
+// IDs, whereas memory and badger resolve the single canonical parent edge — so
+// the chosen name may differ. All choices yield a valid reachable path, which
+// is all POSIX requires (cross-backend tests accept either with ||).
 func (store *MemoryMetadataStore) childNameLocked(
 	parent metadata.FileHandle,
 	child metadata.FileHandle,
