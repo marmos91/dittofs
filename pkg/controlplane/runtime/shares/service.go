@@ -287,12 +287,12 @@ type LocalStoreDefaults struct {
 	DedupLRUSize int
 
 	// DefaultRemoteCacheSize is the on-disk ceiling applied to a share's
-	// local tier when a REMOTE block store is configured but neither
-	// MaxSize nor the per-share LocalStoreSize is set. With a remote
-	// configured the local tier is a bounded write-through cache; without
-	// this ceiling a fast writer could exhaust the host volume. 0 disables
-	// the conditional ceiling (local stays unlimited even with a remote).
-	// Local-only shares ignore this entirely.
+	// local tier when a REMOTE block store is configured but no explicit
+	// per-share LocalStoreSize is set. With a remote configured the local
+	// tier is a bounded write-through cache; without this ceiling a fast
+	// writer could exhaust the host volume. 0 leaves the conditional ceiling
+	// off (the share keeps its system-deduced local size even with a
+	// remote). Local-only shares ignore this entirely.
 	DefaultRemoteCacheSize uint64
 
 	// BackpressureMaxWait is how long a write stalls waiting for the syncer

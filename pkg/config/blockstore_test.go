@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -50,6 +51,52 @@ func TestBlockstoreLocalConfig_Validate_AcceptsPositive(t *testing.T) {
 	c := BlockstoreLocalConfig{DedupLRUSize: 1024}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate(): got %v, want nil for 1024", err)
+	}
+}
+
+func TestBlockstoreLocalConfig_ApplyDefaults_SetsRemoteCacheAndBackpressure(t *testing.T) {
+	c := BlockstoreLocalConfig{}
+	c.ApplyDefaults()
+	if c.DefaultRemoteCacheSize != 10<<30 {
+		t.Errorf("DefaultRemoteCacheSize: got %d, want %d (10 GiB)", c.DefaultRemoteCacheSize, 10<<30)
+	}
+	if c.BackpressureMaxWait != 60*time.Second {
+		t.Errorf("BackpressureMaxWait: got %s, want 60s", c.BackpressureMaxWait)
+	}
+}
+
+func TestBlockstoreLocalConfig_ApplyDefaults_PreservesRemoteCacheAndBackpressure(t *testing.T) {
+	c := BlockstoreLocalConfig{
+		DefaultRemoteCacheSize: 1 << 30,
+		BackpressureMaxWait:    30 * time.Second,
+	}
+	c.ApplyDefaults()
+	if c.DefaultRemoteCacheSize != 1<<30 {
+		t.Errorf("DefaultRemoteCacheSize: got %d, want 1 GiB preserved", c.DefaultRemoteCacheSize)
+	}
+	if c.BackpressureMaxWait != 30*time.Second {
+		t.Errorf("BackpressureMaxWait: got %s, want 30s preserved", c.BackpressureMaxWait)
+	}
+}
+
+func TestBlockstoreLocalConfig_Validate_RejectsNegativeBackpressureWait(t *testing.T) {
+	c := BlockstoreLocalConfig{DedupLRUSize: 1024, BackpressureMaxWait: -1}
+	err := c.Validate()
+	if err == nil {
+		t.Fatalf("Validate() = nil for negative backpressure_max_wait, want error")
+	}
+	if !strings.Contains(err.Error(), "blockstore.local.backpressure_max_wait") {
+		t.Fatalf("Validate() error %q must contain dotted path 'blockstore.local.backpressure_max_wait'", err.Error())
+	}
+}
+
+func TestBlockstoreLocalConfig_Validate_AcceptsZeroNewKnobs(t *testing.T) {
+	// Zero for the new knobs means "apply the built-in default" (filled by
+	// ApplyDefaults), so Validate must accept a config that only sets the
+	// required DedupLRUSize.
+	c := BlockstoreLocalConfig{DedupLRUSize: 1024}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate(): got %v, want nil with zero new knobs", err)
 	}
 }
 

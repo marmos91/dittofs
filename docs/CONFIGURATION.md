@@ -410,8 +410,8 @@ filling the host volume, the local cache is bounded and writes apply
   per-share size (`dfsctl share … --local-store-size`), the cache is capped at
   `blockstore.local.default_remote_cache_size` (default **10 GiB**). An
   explicit `--local-store-size` always wins. **Local-only shares are
-  unaffected** — they keep their (unlimited / system-deduced) local size and
-  never apply remote-cache backpressure.
+  unaffected** — they keep their existing system-deduced local size and never
+  apply remote-cache backpressure.
 - **Backpressure stall.** When the cache is full and every cached chunk is
   still unsynced, a write **stalls** waiting for the syncer to drain to the
   remote and free space, rather than failing. The stall is bounded by
@@ -443,7 +443,7 @@ blockstore:
   local:
     default_remote_cache_size: 10737418240   # 10 GiB; cap for remote-backed
                                              # shares with no explicit size.
-                                             # 0 = no conditional cap.
+                                             # Defaults to 10 GiB if unset.
     backpressure_max_wait: 60s               # Max time a write stalls for the
                                              # syncer to drain before disk-full.
     dedup_lru_size: 4096                      # In-memory dedup LRU slot count.

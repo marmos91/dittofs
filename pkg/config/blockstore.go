@@ -40,8 +40,8 @@ type BlockstoreLocalConfig struct {
 	// share's local tier when a remote block store is configured but no
 	// explicit per-share size is set. Bounds the write-through cache so a
 	// fast writer cannot exhaust the host volume while the syncer lags.
-	// Default 10 GiB when zero. Local-only shares ignore this — they keep
-	// an unlimited local tier.
+	// Default 10 GiB when zero (ApplyDefaults). Local-only shares ignore
+	// this — they keep their existing (system-deduced) local size.
 	DefaultRemoteCacheSize uint64 `mapstructure:"default_remote_cache_size" yaml:"default_remote_cache_size"`
 
 	// BackpressureMaxWait is how long a write blocks waiting for the syncer

@@ -135,10 +135,11 @@ func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
 // UnsyncedBytes returns the running total on-disk size of CAS chunks present
 // locally but not yet mirrored to remote. This is the backpressure signal
 // the local store consults: a non-zero value with a healthy remote means a
-// stalled writer can make progress once the syncer drains. Clamped at zero:
-// a transient drift reconcile that re-seeds a still-pending hash with a
-// best-effort size of 0 (its bytes vanished mid-walk) can briefly push the
-// raw counter negative, which must not read as "nothing pending".
+// stalled writer can make progress once the syncer drains. The raw counter
+// can briefly go negative when a drift reconcile re-seeds a still-pending
+// hash with a best-effort size of 0 (its bytes vanished mid-walk); this
+// method clamps such a transient to 0 so callers always see a non-negative
+// pending-byte count.
 func (m *Syncer) UnsyncedBytes() int64 {
 	if v := m.unsyncedBytes.Load(); v > 0 {
 		return v
