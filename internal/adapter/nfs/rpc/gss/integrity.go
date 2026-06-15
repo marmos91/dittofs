@@ -114,7 +114,7 @@ func WrapIntegrity(sessionKey types.EncryptionKey, seqNum uint32, replyBody []by
 	binary.BigEndian.PutUint32(databodyInteg[0:4], seqNum)
 	copy(databodyInteg[4:], replyBody)
 
-	// 2. Compute MIC over databody_integ using acceptor sign key usage (25)
+	// 2. Compute MIC over databody_integ using acceptor sign key usage (23)
 	micToken := gssapi.MICToken{
 		Flags:     acceptorMICFlags(hasAcceptorSubkey),
 		SndSeqNum: uint64(seqNum),
