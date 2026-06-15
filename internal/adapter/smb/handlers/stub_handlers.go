@@ -29,6 +29,7 @@ const (
 	FsctlSrvCopyChunk           uint32 = 0x001440F2 // [MS-SMB2] 2.2.32.1
 	FsctlSrvCopyChunkWrite      uint32 = 0x001480F2 // [MS-SMB2] 2.2.32.1
 	FsctlGetReparsePoint        uint32 = 0x000900A8 // [MS-FSCC] 2.3.30
+	FsctlSetReparsePoint        uint32 = 0x000900D4 // [MS-FSCC] 2.3.69 - Set reparse point (symlink create)
 	FsctlIsPathnameValid        uint32 = 0x0009002C // [MS-FSCC] 2.3.33 - Pathname validation
 	FsctlGetNtfsVolumeData      uint32 = 0x00090064 // [MS-FSCC] 2.3.29 - NTFS volume data
 	FsctlReadFileUsnData        uint32 = 0x000900EB // [MS-FSCC] 2.3.56 - Read file USN data
@@ -85,6 +86,14 @@ const (
 // Reparse point constants [MS-FSCC] 2.1.2.1
 const (
 	IoReparseTagSymlink uint32 = 0xA000000C
+	// IoReparseTagNfs is the NFS reparse tag [MS-FSCC] 2.1.2.6. Modern Linux
+	// cifs.ko with mount option `reparse=nfs` creates symlinks using this tag
+	// (carrying an NFS_SPECFILE_LNK sub-buffer) instead of IO_REPARSE_TAG_SYMLINK.
+	IoReparseTagNfs uint32 = 0x80000014
+
+	// nfsSpecfileLnk is the NFS_SPECFILE_LNK type tag that prefixes the symlink
+	// target inside an IO_REPARSE_TAG_NFS reparse buffer [MS-FSCC] 2.1.2.6.
+	nfsSpecfileLnk uint64 = 0x00000000014B4E4C // "LNK\x01" little-endian
 )
 
 // handleGetReparsePoint handles FSCTL_GET_REPARSE_POINT for readlink

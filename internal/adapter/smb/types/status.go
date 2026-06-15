@@ -196,6 +196,11 @@ const (
 	// StatusNotAReparsePoint indicates the file is not a reparse point.
 	StatusNotAReparsePoint Status = 0xC0000275
 
+	// StatusIoReparseTagMismatch indicates the reparse tag in a
+	// FSCTL_SET_REPARSE_POINT request does not match a tag the server can
+	// handle. Per MS-ERREF 2.3.1.
+	StatusIoReparseTagMismatch Status = 0xC0000278
+
 	// StatusFileLockConflict indicates an I/O operation (READ/WRITE) conflicts
 	// with an existing byte-range lock held by another session.
 	// Per MS-SMB2 3.3.5.15 (Read) and 3.3.5.16 (Write).
@@ -344,6 +349,8 @@ func (s Status) String() string {
 		return "STATUS_UNEXPECTED_IO_ERROR"
 	case StatusNotAReparsePoint:
 		return "STATUS_NOT_A_REPARSE_POINT"
+	case StatusIoReparseTagMismatch:
+		return "STATUS_IO_REPARSE_TAG_MISMATCH"
 	case StatusFileLockConflict:
 		return "STATUS_FILE_LOCK_CONFLICT"
 	case StatusLockNotGranted:

@@ -1392,6 +1392,16 @@ func (h *Handler) completeCreateAfterBreak(ctx *SMBHandlerContext, d *createDraf
 			"maximalAccess", fmt.Sprintf("0x%08x", maxAccess))
 	}
 
+	if aapl := FindCreateContext(req.CreateContexts, aaplCreateContextTag); aapl != nil {
+		if aaplResp := buildAAPLServerQueryResponse(aapl.Data); aaplResp != nil {
+			resp.CreateContexts = append(resp.CreateContexts, CreateContext{
+				Name: aaplCreateContextTag,
+				Data: aaplResp,
+			})
+			logger.Debug("CREATE: AAPL response added (UNIX-based volume caps)")
+		}
+	}
+
 	if FindCreateContext(req.CreateContexts, "QFid") != nil {
 		qfidFileID := h.baseFileUUID(authCtx, parentHandle, baseName, file.ID)
 		qfidResp := make([]byte, 32)
