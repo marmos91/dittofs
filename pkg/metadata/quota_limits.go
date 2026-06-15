@@ -148,6 +148,27 @@ func (q *quotaLimits) replaceShare(share string, quotas []IdentityQuota) {
 	q.byShare[share] = m
 }
 
+// ConfiguredQuota pairs a share with one of its configured identity quotas.
+// Used for observability enumeration.
+type ConfiguredQuota struct {
+	Share string
+	Quota IdentityQuota
+}
+
+// snapshot returns a copy of every configured identity quota across all shares.
+// Bounded by the number of explicitly-configured quota principals.
+func (q *quotaLimits) snapshot() []ConfiguredQuota {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	var out []ConfiguredQuota
+	for share, m := range q.byShare {
+		for _, iq := range m {
+			out = append(out, ConfiguredQuota{Share: share, Quota: *iq})
+		}
+	}
+	return out
+}
+
 // get returns a copy of the quota for an exact (scope,id), or false.
 func (q *quotaLimits) get(share string, scope QuotaScope, id uint32) (IdentityQuota, bool) {
 	q.mu.RLock()

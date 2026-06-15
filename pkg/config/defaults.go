@@ -26,6 +26,7 @@ func ApplyDefaults(cfg *Config) {
 	cfg.GC.ApplyDefaults()
 	cfg.Snapshot.ApplyDefaults()
 	cfg.Blockstore.ApplyDefaults()
+	cfg.Metrics.ApplyDefaults()
 }
 
 // applyLoggingDefaults sets logging defaults and normalizes values.

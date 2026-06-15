@@ -1696,6 +1696,23 @@ type EvictResult struct {
 	BytesFreed               int64 `json:"bytes_freed"`
 }
 
+// MetricsBlockStats returns per-share block-store stats for observability. It
+// uses the lite stats path (no per-file block-count DB walk) so a metrics
+// scrape never pays for the per-block-state counts, which are not exported.
+func (s *Service) MetricsBlockStats() []ShareBlockStoreStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var out []ShareBlockStoreStats
+	for name, share := range s.registry {
+		if share.BlockStore == nil {
+			continue
+		}
+		out = append(out, ShareBlockStoreStats{ShareName: name, Stats: share.BlockStore.GetStatsLite()})
+	}
+	return out
+}
+
 // GetBlockStoreStats returns block store statistics, optionally filtered by share name.
 // If shareName is empty, returns aggregated stats across all shares with per-share breakdown.
 func (s *Service) GetBlockStoreStats(shareName string) (*BlockStoreStatsResponse, error) {
@@ -1753,6 +1770,8 @@ func addBlockStoreStats(dst *engine.BlockStoreStats, src engine.BlockStoreStats)
 	dst.PendingUploads += src.PendingUploads
 	dst.CompletedSyncs += src.CompletedSyncs
 	dst.FailedSyncs += src.FailedSyncs
+	dst.UnsyncedBytes += src.UnsyncedBytes
+	dst.OfflineReadsBlocked += src.OfflineReadsBlocked
 	if src.HasRemote {
 		dst.HasRemote = true
 	}

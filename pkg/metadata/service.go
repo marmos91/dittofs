@@ -161,6 +161,13 @@ func (s *Service) GetIdentityQuota(shareName string, scope QuotaScope, id uint32
 	return s.identityQuotas.get(shareName, scope, id)
 }
 
+// ListIdentityQuotas returns a snapshot of every configured per-identity quota
+// across all shares. Intended for observability (metrics); the result is
+// bounded by the number of explicitly-configured quota principals.
+func (s *Service) ListIdentityQuotas() []ConfiguredQuota {
+	return s.identityQuotas.snapshot()
+}
+
 // SetDeferredCommit enables or disables deferred metadata commits.
 // When enabled, CommitWrite batches updates until FlushPendingWrites is called.
 // This significantly improves write performance for sequential workloads.
