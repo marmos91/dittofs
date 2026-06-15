@@ -178,6 +178,67 @@ func TestPrimeAuthContext_PreservesFixtureUserWhenSessionUserNil(t *testing.T) {
 	}
 }
 
+// TestBuildAuthContext_NullSessionMapsToNobodyNotRoot is the negative control
+// for the anonymous-NTLM-to-UID-0 root-bypass (audit #1132 HIGH). A null /
+// anonymous SMB session has ctx.User==nil and ctx.IsGuest==false. Before the
+// fix BuildAuthContext mapped it to UID=0/GID=0, which trips the UID==0 root
+// short-circuit in pkg/metadata/auth_permissions.go and grants
+// root-equivalent access to every file regardless of POSIX bits or ACLs.
+//
+// The mapping MUST resolve to the unprivileged nobody/nogroup (65534)
+// identity so per-file permission checks still apply. Accepting the anonymous
+// *connection* stays legal (smb2.anon-signing / anon-encryption); only the
+// identity mapping changes.
+func TestBuildAuthContext_NullSessionMapsToNobodyNotRoot(t *testing.T) {
+	ctx := &SMBHandlerContext{
+		Context: context.Background(),
+		User:    nil,   // anonymous / null
+		IsGuest: false, // NOT a guest — this is the null-session arm
+	}
+
+	authCtx, err := BuildAuthContext(ctx)
+	if err != nil {
+		t.Fatalf("BuildAuthContext: %v", err)
+	}
+	if authCtx.Identity == nil || authCtx.Identity.UID == nil || authCtx.Identity.GID == nil {
+		t.Fatal("null session produced no UID/GID identity")
+	}
+	if *authCtx.Identity.UID == 0 || *authCtx.Identity.GID == 0 {
+		t.Fatalf("null/anonymous session mapped to UID=%d/GID=%d — this hits the metadata UID==0 root bypass and grants root to unauthenticated clients",
+			*authCtx.Identity.UID, *authCtx.Identity.GID)
+	}
+	if *authCtx.Identity.UID != 65534 || *authCtx.Identity.GID != 65534 {
+		t.Errorf("null session UID/GID = %d/%d, want 65534/65534 (nobody/nogroup)",
+			*authCtx.Identity.UID, *authCtx.Identity.GID)
+	}
+}
+
+// TestBuildOpenerAuthContext_NullOpenerMapsToNobodyNotRoot is the negative
+// control for the same root-bypass on the handle-bound opener path
+// (buildOpenerAuthContext). A handle opened by a null session (OpenerUser==nil,
+// OpenerIsGuest==false, OpenerIsNull==true) must rebuild to the unprivileged
+// nobody identity, never UID=0.
+func TestBuildOpenerAuthContext_NullOpenerMapsToNobodyNotRoot(t *testing.T) {
+	h := NewHandler()
+	ctx := &SMBHandlerContext{Context: context.Background()}
+	openFile := &OpenFile{
+		OpenerUser:    nil,
+		OpenerIsGuest: false,
+		OpenerIsNull:  true,
+	}
+
+	authCtx := h.buildOpenerAuthContext(ctx, openFile)
+	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
+		t.Fatal("null opener produced no identity")
+	}
+	if *authCtx.Identity.UID == 0 {
+		t.Fatalf("null opener mapped to UID=0 — root bypass on the handle-bound path")
+	}
+	if *authCtx.Identity.UID != 65534 {
+		t.Errorf("null opener UID = %d, want 65534 (nobody)", *authCtx.Identity.UID)
+	}
+}
+
 // TestPropagateOpenFileParentLeaseKey_Set asserts that the helper copies
 // OpenFile.ParentLeaseKey / HasParentLeaseKey onto the AuthContext so the
 // metadata layer can route the value into notifyDirChange (#470 C6/C7).

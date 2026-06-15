@@ -547,6 +547,60 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 	return sid, ok
 }
 
+// VerifyLeaseAckOwnership reports whether a session presenting a
+// LEASE_BREAK_ACK for leaseKey is entitled to acknowledge it, per MS-SMB2
+// §3.3.5.22.2 step 1 ("the server MUST locate the lease ... whose LeaseKey
+// matches ... and whose ClientGuid matches the Connection.ClientGuid"). A
+// lease is bound to a (ClientGuid, LeaseKey) pair, so an ack is valid only
+// when it arrives from the owning client.
+//
+// Authorization rule:
+//   - The lease must exist (sessionMap is the authoritative leaseKey registry).
+//   - The ack is authorized if the acking sessionID is the lease's registering
+//     session (the common case), OR the ack's connection ClientGUID matches the
+//     lease's recorded (ClientGuid, LeaseKey) binding (multichannel / durable
+//     reconnect on a different session of the same client).
+//
+// Returns false when the lease is unknown so a stray ack for a non-existent
+// lease key cannot be used to probe state. A zero connGUID never matches a
+// recorded non-zero GUID, so an attacker who cannot reproduce the victim's
+// ClientGUID is rejected.
+//
+// Cost: O(1) for the legitimate-owner ack (the only ack a well-behaved client
+// sends) via the sessionMap fast path below. The ClientGUID scan runs only for
+// acks whose sessionID does NOT already own the lease — and is bounded by the
+// number of distinct clients holding this EXACT leaseKey (effectively 1 for
+// real clients, which use random 16-byte keys), not the total lease count.
+func (lm *LeaseManager) VerifyLeaseAckOwnership(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	// Lease must exist (sessionMap is the authoritative leaseKey registry).
+	sid, known := lm.sessionMap[leaseKey]
+	if !known {
+		return false
+	}
+
+	// Fast path: the registering session is acking its own lease. O(1).
+	if sid == sessionID {
+		return true
+	}
+
+	// Otherwise the ack may still be legitimate via the ClientGUID binding
+	// (multichannel / durable reconnect on a different session of the same
+	// client). Match the ack's connection GUID against the lease's recorded
+	// binding. A zero connGUID never matches a recorded non-zero GUID.
+	if connGUID != ([16]byte{}) {
+		for clk, guid := range lm.leaseClientGUID {
+			if clk.Key == leaseKey && guid == connGUID {
+				return true
+			}
+		}
+	}
+	// Neither the owning session nor a matching ClientGUID binding -> reject.
+	return false
+}
+
 // GetSessionForBreak returns the sessionID that should receive a break
 // notification for the given lease. Per MS-SMB2 §3.3.4.7 and Samba
 // `smbXsrv_pending_break_submit` (source3/smbd/smb2_server.c) the break is

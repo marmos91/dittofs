@@ -136,7 +136,17 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 	h := NewHandler()
 	h.Registry = rt
 
+	// Authenticated session whose identity (UID/GID 0) matches the file
+	// owner created above. A null/anonymous session would map to the
+	// unprivileged nobody (65534) and be denied write on the 0o644 files
+	// (audit #1132 — null sessions no longer get root).
+	sessUID, sessGID := uint32(0), uint32(0)
 	sess := h.CreateSession("127.0.0.1:54321", false, "tester", "")
+	sess.User = &models.User{
+		Username: "tester",
+		UID:      &sessUID,
+		Groups:   []models.Group{{GID: &sessGID}},
+	}
 	const treeID uint32 = 1
 	h.StoreTree(&TreeConnection{TreeID: treeID, SessionID: sess.SessionID, ShareName: shareName})
 
@@ -332,7 +342,15 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 
 	h := NewHandler()
 	h.Registry = rt
+	// Authenticated session whose UID/GID 0 matches the file owner; a null
+	// session would map to nobody (65534) and be denied write (audit #1132).
+	sessUID, sessGID := uint32(0), uint32(0)
 	sess := h.CreateSession("127.0.0.1:54321", false, "tester", "")
+	sess.User = &models.User{
+		Username: "tester",
+		UID:      &sessUID,
+		Groups:   []models.Group{{GID: &sessGID}},
+	}
 	const treeID uint32 = 1
 	h.StoreTree(&TreeConnection{TreeID: treeID, SessionID: sess.SessionID, ShareName: shareName})
 

@@ -142,20 +142,25 @@ func TestFlush_PrimesAuthContextFromOpenFile(t *testing.T) {
 		t.Errorf("ctx.TreeID = %d, want %d", ctx.TreeID, treeID)
 	}
 
-	// Negative: with no prime, BuildAuthContext mints UID-0 root. Confirm
-	// the bug exists in the bare path so the positive prime fix is
-	// actually load-bearing.
+	// Negative: with no prime, BuildAuthContext takes the User==nil arm and
+	// mints the unprivileged nobody (65534) identity — NOT the authenticated
+	// opener (bob). The prime is what restores the real opener's UID; this
+	// asserts the bare path differs (and is non-privileged) so the prime is
+	// load-bearing. Crucially the bare path must NOT be root (UID=0), which
+	// would bypass all metadata permission checks (audit #1132).
 	bareCtx := NewSMBHandlerContext(context.TODO(), "127.0.0.1:0", 0, 0, 1)
 	bareAuth, err := BuildAuthContext(bareCtx)
 	if err != nil {
 		t.Fatalf("BuildAuthContext (bare): %v", err)
 	}
-	if bareAuth.Identity == nil || bareAuth.Identity.UID == nil || *bareAuth.Identity.UID != 0 {
-		gotUID := uint32(0xffffffff)
-		if bareAuth.Identity != nil && bareAuth.Identity.UID != nil {
-			gotUID = *bareAuth.Identity.UID
-		}
-		t.Errorf("bare-ctx BuildAuthContext.UID = %d, want 0 (root) — anonymous arm is what the prime is supposed to bypass; test fixture has drifted", gotUID)
+	if bareAuth.Identity == nil || bareAuth.Identity.UID == nil {
+		t.Fatal("bare-ctx BuildAuthContext produced no UID")
+	}
+	if *bareAuth.Identity.UID == 0 {
+		t.Errorf("bare-ctx BuildAuthContext.UID = 0 (root) — null session must map to unprivileged nobody, not root (audit #1132)")
+	}
+	if *bareAuth.Identity.UID != 65534 {
+		t.Errorf("bare-ctx BuildAuthContext.UID = %d, want 65534 (nobody); the prime restores the real opener UID", *bareAuth.Identity.UID)
 	}
 }
 

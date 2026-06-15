@@ -31,7 +31,26 @@ var implicitAuthenticatedGroupSIDs = []string{
 const (
 	defaultUID = uint32(1000)
 	defaultGID = uint32(1000)
+
+	// nobodyUID/nobodyGID is the unprivileged identity that guest AND
+	// null/anonymous SMB sessions map to. It MUST never be 0 (root): UID 0
+	// trips the metadata UID==0 root short-circuit (auth_permissions.go) and
+	// bypasses all POSIX bits / ACLs (audit #1132). Per MS-DTYP §2.4.2.4
+	// anonymous and guest logons are excluded from "Authenticated Users", so
+	// neither gets elevated authority.
+	nobodyUID = uint32(65534)
+	nobodyGID = uint32(65534)
 )
+
+// setUnprivilegedIdentity points the AuthContext identity at the nobody/nogroup
+// (65534) UID/GID. Used for guest and null/anonymous sessions so per-file
+// permission checks still apply. Centralised so the two call sites cannot drift
+// back to a privileged mapping.
+func setUnprivilegedIdentity(authCtx *metadata.AuthContext) {
+	uid, gid := nobodyUID, nobodyGID
+	authCtx.Identity.UID = &uid
+	authCtx.Identity.GID = &gid
+}
 
 // BuildAuthContext creates a metadata.AuthContext from SMB handler context.
 //
@@ -59,20 +78,13 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 		BypassTraverseChecking: true,
 	}
 
-	if ctx.IsGuest {
-		// Guest session - use nobody/nogroup
-		guestUID := uint32(65534) // nobody
-		guestGID := uint32(65534) // nogroup
-		authCtx.Identity.UID = &guestUID
-		authCtx.Identity.GID = &guestGID
-	} else {
-		// Anonymous/null session - use root (for now)
-		// This allows basic operations but should be restricted by share permissions
-		rootUID := uint32(0)
-		rootGID := uint32(0)
-		authCtx.Identity.UID = &rootUID
-		authCtx.Identity.GID = &rootGID
-	}
+	// Both guest AND null/anonymous sessions map to the unprivileged
+	// nobody/nogroup identity. An anonymous SMB *connect* is spec-legal
+	// (smb2.anon-signing / anon-encryption rely on it), but the resulting
+	// principal MUST be non-privileged so per-file POSIX bits and NFSv4 ACLs
+	// are still enforced. See nobodyUID for the UID=0 root-bypass rationale
+	// (audit #1132).
+	setUnprivilegedIdentity(authCtx)
 
 	// Set share-level permission flags for guest/anonymous sessions
 	authCtx.ShareWritable = HasWritePermission(ctx)
@@ -183,10 +195,10 @@ func mergeImplicitAuthSIDs(userGroupSIDs []string) []string {
 // operations CREATE / READ / WRITE / QUERY_DIRECTORY (the four current
 // callers of this helper) arrive keyed only by FileID — the SMB2 dispatcher
 // has no user state to prefill ctx.User with. Without this hand-off
-// BuildAuthContext takes the ctx.User==nil arm and synthesises a UID-0
-// "anonymous/root" identity, which then trips the UID-0 root-bypass at the
-// top of metadata permission checks (e.g. ABE filterByAccess) and silently
-// grants root.
+// BuildAuthContext takes the ctx.User==nil arm and synthesises an
+// unprivileged nobody (65534) identity instead of the authenticated user's
+// UID, causing follow-up ops to be authorized as nobody rather than the
+// real opener.
 //
 // We also realign ctx.TreeID / ctx.SessionID onto the IDs the open was
 // created against. Downstream gates (notably treeHasAccessBasedEnumeration
@@ -239,8 +251,8 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 //
 // Guest and null sessions have User=nil but carry IsGuest/IsNull on the
 // session — the snapshot preserves those flags so the rebuilt opener
-// AuthContext maps back to the same nobody/65534 (or root-fallback)
-// identity rather than re-resolving against the current session's user.
+// AuthContext maps back to the same unprivileged nobody/65534 identity
+// rather than re-resolving against the current session's user.
 //
 // smbtorture smb2.session.reauth4 / reauth5 gate on this — the tests open
 // h1 / dh1 as U1, re-auth the session to anonymous, then SET_INFO SD on
@@ -317,19 +329,10 @@ func (h *Handler) buildOpenerAuthContext(ctx *SMBHandlerContext, openFile *OpenF
 		Identity:               &metadata.Identity{},
 		BypassTraverseChecking: true,
 	}
-	if openFile.OpenerIsGuest {
-		guestUID := uint32(65534) // nobody
-		guestGID := uint32(65534) // nogroup
-		authCtx.Identity.UID = &guestUID
-		authCtx.Identity.GID = &guestGID
-	} else {
-		// Anonymous/null opener — fall back to root, matching the
-		// existing BuildAuthContext(ctx.User==nil, IsGuest==false) arm.
-		rootUID := uint32(0)
-		rootGID := uint32(0)
-		authCtx.Identity.UID = &rootUID
-		authCtx.Identity.GID = &rootGID
-	}
+	// Guest AND null/anonymous openers both map to the unprivileged
+	// nobody/nogroup identity, matching the BuildAuthContext User==nil arm.
+	// Never UID=0 — see nobodyUID for the root-bypass rationale.
+	setUnprivilegedIdentity(authCtx)
 	authCtx.ShareWritable = HasWritePermission(ctx)
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 	return authCtx

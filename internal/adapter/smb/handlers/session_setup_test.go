@@ -1036,10 +1036,11 @@ func TestConfigureSessionSigningWithKey_Encryption(t *testing.T) {
 		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
 			t.Fatalf("unexpected error result: %v", errResult.Status)
 		}
-		if sess.CryptoState == nil || sess.CryptoState.Encryptor == nil {
+		cs := sess.GetCryptoState()
+		if cs == nil || cs.Encryptor == nil {
 			t.Error("Encryptor not created in preferred mode (per-share enforcement needs it)")
 		}
-		if sess.CryptoState.Decryptor == nil {
+		if cs.Decryptor == nil {
 			t.Error("Decryptor not created in preferred mode")
 		}
 		if sess.ShouldEncrypt() {
@@ -1109,7 +1110,7 @@ func TestConfigureSessionSigningWithKey_IsNullEncryptionGate(t *testing.T) {
 		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
 			t.Fatalf("unexpected error result: %v", errResult.Status)
 		}
-		if sess.CryptoState != nil && sess.CryptoState.Decryptor != nil {
+		if scs := sess.GetCryptoState(); scs != nil && scs.Decryptor != nil {
 			t.Error("Decryptor derived on IsNull session without prior auth (would break anon-encryption1/3)")
 		}
 	})
@@ -1129,7 +1130,7 @@ func TestConfigureSessionSigningWithKey_IsNullEncryptionGate(t *testing.T) {
 		if errResult := h.configureSessionSigningWithKey(sess, sessionKey, ctx); errResult != nil {
 			t.Fatalf("unexpected error result: %v", errResult.Status)
 		}
-		if sess.CryptoState == nil || sess.CryptoState.Decryptor == nil {
+		if scs := sess.GetCryptoState(); scs == nil || scs.Decryptor == nil {
 			t.Error("Decryptor NOT derived on IsNull session with prior auth (would break anon-encryption2)")
 		}
 	})

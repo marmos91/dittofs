@@ -739,8 +739,9 @@ func TestTreeConnect_RequiredModeRejectsUnencryptedSession(t *testing.T) {
 
 		// Create a session WITH encryption
 		sess := h.CreateSession("127.0.0.1:12345", false, "testuser", "DOMAIN")
-		sess.CryptoState.EncryptData = true
-		sess.CryptoState.Encryptor = &mockEncryptor{}
+		sessCrypto := sess.GetCryptoState()
+		sessCrypto.EncryptData = true
+		sessCrypto.Encryptor = &mockEncryptor{}
 
 		share := &runtime.Share{
 			Name:        "/encrypted",

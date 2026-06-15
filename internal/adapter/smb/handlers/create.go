@@ -2183,8 +2183,9 @@ func isOplockStatOpen(desiredAccess uint32) bool {
 // This is used for durable handle security validation during reconnect.
 // Returns zero hash if the session has no crypto state or signing key.
 func computeSessionKeyHash(sess *session.Session) [32]byte {
-	if sess == nil || sess.CryptoState == nil || len(sess.CryptoState.SigningKey) == 0 {
+	cs := sess.GetCryptoState()
+	if cs == nil || len(cs.SigningKey) == 0 {
 		return [32]byte{}
 	}
-	return sha256.Sum256(sess.CryptoState.SigningKey)
+	return sha256.Sum256(cs.SigningKey)
 }

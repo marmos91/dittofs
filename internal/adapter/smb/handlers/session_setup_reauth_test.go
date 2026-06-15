@@ -350,3 +350,67 @@ func TestSessionSetup_FailedReauth_UnparseableType3_DestroysSession(t *testing.T
 
 	f.assertSessionDestroyedAndNotifyCleaned(t, result.Status)
 }
+
+// TestSessionSetup_UserWithoutNTHash_Rejected is the negative control for the
+// no-NT-hash authentication bypass (audit #1132 HIGH). An enabled user that
+// has no NT hash configured (no password ever set) must NOT be granted an
+// authenticated session merely because a client knows the username — that is a
+// missing-authentication / privilege-escalation vulnerability.
+//
+// Before the fix, completeNTLMAuth's "transitional mode" branch created a full
+// Session with IsGuest=false and User=<the real user>, granting the user's
+// identity and all share/file permissions with no credential check. The fix
+// rejects the logon with STATUS_LOGON_FAILURE and creates no authenticated
+// session.
+func TestSessionSetup_UserWithoutNTHash_Rejected(t *testing.T) {
+	cpStore := newInMemoryStoreForTest(t)
+	// Enabled user with NO NT hash (no SetNTHashFromPassword call) -> hasNTHash
+	// is false in completeNTLMAuth.
+	noHash := &models.User{Username: "dave", Enabled: true}
+	if _, err := cpStore.CreateUser(context.Background(), noHash); err != nil {
+		t.Fatalf("CreateUser(no hash): %v", err)
+	}
+	if _, ok := noHash.GetNTHash(); ok {
+		t.Fatal("test precondition: user unexpectedly has an NT hash")
+	}
+
+	h := NewHandler()
+	h.NtlmEnabled = true
+	h.Registry = runtime.New(cpStore)
+
+	// Fresh session: NEGOTIATE (TYPE_1) then AUTHENTICATE (TYPE_3).
+	ctx1 := newTestContext(0)
+	negResult, err := h.SessionSetup(ctx1, buildSessionSetupRequestBody(validNTLMNegotiateMessage()))
+	if err != nil {
+		t.Fatalf("NEGOTIATE error: %v", err)
+	}
+	if negResult.Status != types.StatusMoreProcessingRequired {
+		t.Fatalf("NEGOTIATE status = 0x%x, want MORE_PROCESSING_REQUIRED", negResult.Status)
+	}
+	sessionID := ctx1.SessionID
+
+	// AUTHENTICATE with the username but a present NtChallengeResponse blob.
+	// hasNTHash is false, so the validation block is skipped and execution
+	// reaches the no-credential branch regardless of the response bytes.
+	ntResponse := make([]byte, 16+28+4)
+	ntResponse[16] = 0x01
+	ntResponse[17] = 0x01
+	ctx2 := newTestContext(sessionID)
+	result, err := h.SessionSetup(ctx2, buildSessionSetupRequestBody(
+		buildNTLMAuthenticateForTest("dave", "WORKGROUP", ntResponse),
+	))
+	if err != nil {
+		t.Fatalf("AUTHENTICATE error: %v", err)
+	}
+
+	if result.Status != types.StatusLogonFailure {
+		t.Errorf("AUTHENTICATE status = 0x%x, want STATUS_LOGON_FAILURE — a user with no NT hash must not authenticate",
+			uint32(result.Status))
+	}
+
+	// No authenticated session for this user may exist.
+	if sess, ok := h.GetSession(sessionID); ok && !sess.IsGuest && sess.User != nil {
+		t.Errorf("authenticated session created for credential-less user %q (User=%+v); the no-NT-hash bypass is still open",
+			sess.Username, sess.User)
+	}
+}
