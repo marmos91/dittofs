@@ -523,13 +523,6 @@ func TestSetIdentityMapper_NoDataRace(t *testing.T) {
 // Write-only attribute regression (RFC 7530 Section 5.7)
 // ============================================================================
 
-// TestSupportedAttrsExcludesWriteOnlyTimeSet asserts that the write-only
-// SETATTR attributes FATTR4_TIME_ACCESS_SET (48) and FATTR4_TIME_MODIFY_SET
-// (54) are NOT advertised in FATTR4_SUPPORTED_ATTRS. Per RFC 7530 Section 5.7
-// these are write-only (valid only in SETATTR / EXCLUSIVE4_1 create) and must
-// not appear in the supported-attrs bitmap. Advertising them caused GETATTR to
-// fail: Intersect() would include them in the response bitmap, and the encoder
-// has no case for them, hitting the "unsupported attribute bit" error path.
 // TestSupportedAttrsAdvertisesTimeSet pins the #1152 fix: FATTR4_TIME_ACCESS_SET
 // and FATTR4_TIME_MODIFY_SET MUST be advertised in FATTR4_SUPPORTED_ATTRS. The
 // Linux NFSv4 client gates whether it sends these settable time attributes in

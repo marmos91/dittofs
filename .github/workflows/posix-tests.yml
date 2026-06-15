@@ -194,8 +194,12 @@ jobs:
             *)         KF=test/posix/KNOWN_FAILURES.md ;;
           esac
 
+          # errexit is on (Actions default) + pipefail above; disable around the
+          # pipeline so a graded-red run still captures rc and writes the summary.
+          set +e
           ./test/posix/parse-results.sh "$LOG_FILE" "$KF" "$RUNNER_TEMP" | tee ~/posix-grade.txt
           rc=${PIPESTATUS[0]}
+          set -e
 
           {
             echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }} — graded"
@@ -333,8 +337,12 @@ jobs:
             *)         KF=test/posix/KNOWN_FAILURES.md ;;
           esac
 
+          # errexit is on (Actions default) + pipefail above; disable around the
+          # pipeline so a graded-red run still captures rc and writes the summary.
+          set +e
           ./test/posix/parse-results.sh "$LOG_FILE" "$KF" "$RUNNER_TEMP" | tee ~/posix-grade.txt
           rc=${PIPESTATUS[0]}
+          set -e
 
           {
             echo "## NFS v${{ matrix.nfs_version }} / PostgreSQL — graded"
