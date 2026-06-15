@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -29,13 +30,22 @@ func TestBackupTablesCoversAllMigrations(t *testing.T) {
 
 	// CREATE TABLE [IF NOT EXISTS] <name> — capture the bare table name.
 	createTableRE := regexp.MustCompile(`(?im)^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)`)
+	// ALTER TABLE [IF EXISTS] <old> RENAME TO <new> — a rename retires <old>
+	// and introduces <new> (e.g. files -> inodes in 000032).
+	renameTableRE := regexp.MustCompile(`(?im)^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s+RENAME\s+TO\s+([A-Za-z_][A-Za-z0-9_]*)`)
 
-	seen := map[string]string{} // table -> migration file
+	// Migrations apply in lexical filename order; process them that way so a
+	// later RENAME correctly supersedes an earlier CREATE.
+	var files []string
 	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".up.sql") {
-			continue
+		if strings.HasSuffix(e.Name(), ".up.sql") {
+			files = append(files, e.Name())
 		}
+	}
+	sort.Strings(files)
+
+	seen := map[string]string{} // live table -> migration file that created it
+	for _, name := range files {
 		path := filepath.Join(migrationsDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -49,6 +59,19 @@ func TestBackupTablesCoversAllMigrations(t *testing.T) {
 			}
 			if _, exists := seen[tbl]; !exists {
 				seen[tbl] = name
+			}
+		}
+		// Apply renames after creates in the same file: the old name is no
+		// longer a live table; the new name inherits its provenance.
+		for _, m := range renameTableRE.FindAllStringSubmatch(string(data), -1) {
+			oldName, newName := m[1], m[2]
+			src, existed := seen[oldName]
+			delete(seen, oldName)
+			if !existed {
+				src = name
+			}
+			if _, exists := seen[newName]; !exists {
+				seen[newName] = src
 			}
 		}
 	}

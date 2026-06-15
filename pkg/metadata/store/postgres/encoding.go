@@ -60,6 +60,10 @@ func pgNanosToTime(n int64) time.Time {
 // fileRowToFileWithNlink converts a database row to a File struct, including link count.
 // Expected columns: id, share_name, path, file_type, mode, uid, gid, size,
 // atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, acl, object_id, deleted_at, original_path, deleted_by, link_count
+//
+// The `path` column is no longer stored on the inode (#1166); callers supply it
+// as a reconstructed expression (inodePathExpr) walking parent_child_map up to
+// the share root. For a hard-linked inode this yields one of its paths.
 func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 	var (
 		id           uuid.UUID

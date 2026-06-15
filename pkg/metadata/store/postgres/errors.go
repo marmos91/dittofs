@@ -53,7 +53,7 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 	// 23505: unique_violation
 	case "23505":
 		// Distinguish the object_id (file-level dedup) uniqueness
-		// violation from a path-hash collision. The files_object_id_idx
+		// violation from any other unique collision. The inodes_object_id_idx
 		// partial unique index enforces "one ObjectID -> one file"; a
 		// second file with byte-identical content (same Merkle-root
 		// ObjectID) trips it. Callers (the rollup persist path) treat
@@ -61,10 +61,10 @@ func mapPgErrorCode(pgErr *pgconn.PgError, operation, path string) error {
 		// covered by the canonical file's manifest — so it must surface
 		// as ErrConflict, NOT the generic ErrAlreadyExists. The defensive
 		// message-text fallback mirrors the runtime coordinator's
-		// detection for drivers that strip ConstraintName. Path-hash
-		// collisions (unique_share_path_hash_active) stay ErrAlreadyExists
-		// so the path uniqueness contract is preserved.
-		if pgErr.ConstraintName == "files_object_id_idx" ||
+		// detection for drivers that strip ConstraintName. Any other unique
+		// violation (e.g. a duplicate parent_child_map name) stays
+		// ErrAlreadyExists.
+		if pgErr.ConstraintName == "inodes_object_id_idx" ||
 			(pgErr.ConstraintName == "" && strings.Contains(pgErr.Message, "object_id")) {
 			return &metadata.StoreError{
 				Code:    metadata.ErrConflict,

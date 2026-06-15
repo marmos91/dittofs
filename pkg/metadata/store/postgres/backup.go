@@ -27,7 +27,13 @@ const (
 	// Increment when the payload layout changes (new table, changed
 	// framing, etc.) and add a migration path in Restore.
 	// v2 adds the v4_client_recovery table section.
-	postgresSchemaVersion = uint32(2)
+	// v3 renames the files table to inodes and drops the path/path_hash
+	// columns (#1166). The payload layout changed (the inode section name and
+	// its column set), so restore rejects older streams with
+	// ErrSchemaVersionMismatch — consistent with the v1->v2 bump, which added
+	// a table with no cross-version restore shim. Pre-1.0 backups are not
+	// forward-portable across schema versions.
+	postgresSchemaVersion = uint32(3)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order
@@ -40,7 +46,7 @@ const (
 var backupTables = []string{
 	"server_config",
 	"filesystem_capabilities",
-	"files",
+	"inodes",
 	"shares",
 	"parent_child_map",
 	"link_counts",
@@ -352,7 +358,7 @@ func reconcileFileBlockHashes(ctx context.Context, raw *pgconn.PgConn) error {
 		UPDATE file_blocks fb
 		SET hash = encode(r.hash, 'hex')
 		FROM file_block_refs r
-		JOIN files f ON f.id = r.file_id
+		JOIN inodes f ON f.id = r.file_id
 		WHERE fb.hash IS NULL
 		  AND f.content_id IS NOT NULL
 		  AND fb.id = f.content_id || '/' || r."offset"`

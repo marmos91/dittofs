@@ -30,10 +30,10 @@ func statfsQuery(handle metadata.FileHandle) (sql string, args []any) {
 		shareName = ""
 	}
 	if shareName != "" {
-		return `SELECT COALESCE(SUM(size), 0), COUNT(*) FROM files WHERE share_name = $1 AND file_type = $2`,
+		return `SELECT COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE share_name = $1 AND file_type = $2`,
 			[]any{shareName, int(metadata.FileTypeRegular)}
 	}
-	return `SELECT COALESCE(SUM(size), 0), COUNT(*) FROM files WHERE file_type = $1`,
+	return `SELECT COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = $1`,
 		[]any{int(metadata.FileTypeRegular)}
 }
 

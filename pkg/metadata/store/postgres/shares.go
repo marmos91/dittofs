@@ -105,7 +105,7 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 		return err
 	}
 
-	// The shares.root_file_id column is NOT NULL with an FK to files(id), so
+	// The shares.root_file_id column is NOT NULL with an FK to inodes(id), so
 	// a share row cannot exist before its root inode — a bare
 	// INSERT INTO shares (share_name, options, ...) is structurally
 	// impossible (it raises a not_null_violation on root_file_id) and never
@@ -126,12 +126,12 @@ func (s *PostgresMetadataStore) CreateShare(ctx context.Context, share *metadata
 
 	// Duplicate detection: a share is "created" once its root inode exists.
 	// This read is the common-case fast path; it is not the integrity
-	// authority. Two creators racing the same name both pass this check and
-	// reach CreateRootDirectory, but the partial unique index
-	// unique_share_path_hash_active on files(share_name, path_hash) admits
-	// only one root inode at path "/" — the loser's insert fails rather than
-	// silently orphaning an inode. (Production also serializes share creation
-	// upstream in the control plane.)
+	// authority. The shares table PRIMARY KEY(share_name) is the authority —
+	// two creators racing the same name both pass this check and reach
+	// CreateRootDirectory, but the second INSERT INTO shares conflicts on the
+	// primary key (the ON CONFLICT upsert just re-points root_file_id, leaving
+	// at most one root). (Production also serializes share creation upstream in
+	// the control plane.)
 	existing, err := s.getExistingRootDirectory(ctx, share.Name)
 	if err != nil {
 		return fmt.Errorf("create share %q: check existing: %w", share.Name, err)
@@ -310,7 +310,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		if needsUpdate {
 			now := time.Now()
 			updateQuery := `
-				UPDATE files
+				UPDATE inodes
 				SET mode = $1, uid = $2, gid = $3, ctime = $4
 				WHERE id = $5
 			`
@@ -349,25 +349,24 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 
 	now := time.Now()
 
-	// Insert root directory file
+	// Insert root directory inode
 	insertFileQuery := `
-		INSERT INTO files (
-			id, share_name, path,
+		INSERT INTO inodes (
+			id, share_name,
 			file_type, mode, uid, gid, size,
 			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
-			$1, $2, $3,
-			$4, $5, $6, $7, $8,
-			$9, $10, $11, $12,
-			$13, $14, $15, $16
+			$1, $2,
+			$3, $4, $5, $6, $7,
+			$8, $9, $10, $11,
+			$12, $13, $14, $15
 		)
 	`
 
 	_, err = tx.Exec(ctx, insertFileQuery,
 		rootID,                            // id
 		shareName,                         // share_name
-		"/",                               // path (root)
 		int16(metadata.FileTypeDirectory), // file_type
 		int32(mode),                       // mode
 		int32(uid),                        // uid
@@ -444,11 +443,13 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 // getExistingRootDirectory checks if a root directory already exists for the share
 // and returns it if found. Returns nil, nil if not found.
 func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, shareName string) (*metadata.File, error) {
+	// Resolve the root inode via shares.root_file_id (the share row is the
+	// authoritative pointer to its root) now that the path column is gone (#1166).
 	query := `
 		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
 			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
-		FROM files f
-		WHERE f.share_name = $1 AND f.path = '/'
+		FROM inodes f
+		WHERE f.id = (SELECT root_file_id FROM shares WHERE share_name = $1)
 	`
 
 	var (
