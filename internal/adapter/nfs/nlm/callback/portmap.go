@@ -144,8 +144,10 @@ func readGetportReply(conn net.Conn) (uint32, error) {
 	if err := readU32(r, &verfLen); err != nil {
 		return 0, err
 	}
-	if verfLen > 0 {
-		if _, err := io.CopyN(io.Discard, r, int64(verfLen)); err != nil {
+	// XDR opaque fields are padded to a 4-byte boundary; skip the padded length
+	// so the trailing accept_stat/port are read from the correct offset.
+	if padded := (verfLen + 3) &^ 3; padded > 0 {
+		if _, err := io.CopyN(io.Discard, r, int64(padded)); err != nil {
 			return 0, fmt.Errorf("getport reply: read verifier: %w", err)
 		}
 	}

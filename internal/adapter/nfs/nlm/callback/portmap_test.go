@@ -14,8 +14,10 @@ import (
 )
 
 // fakePortmapper accepts one TCP connection, reads the record-marked GETPORT
-// call, and replies with a successful RPC reply carrying replyPort.
-func fakePortmapper(t *testing.T, ln net.Listener, replyPort uint32) {
+// call, and replies with a successful RPC reply carrying replyPort. verfLen is
+// the verifier opaque length to advertise: the verifier body is XDR-padded to a
+// 4-byte boundary, exercising the reader's padding handling.
+func fakePortmapper(t *testing.T, ln net.Listener, replyPort uint32, verfLen int) {
 	t.Helper()
 	conn, err := ln.Accept()
 	if err != nil {
@@ -34,15 +36,16 @@ func fakePortmapper(t *testing.T, ln net.Listener, replyPort uint32) {
 		return
 	}
 
-	// Extract the XID from the call we just read is not needed; a real client
-	// validates only the port here, so we reply with a fixed XID of 0.
 	var body bytes.Buffer
 	write := func(v uint32) { _ = binary.Write(&body, binary.BigEndian, v) }
-	write(0)         // xid
-	write(1)         // msg_type = REPLY
-	write(0)         // reply_stat = MSG_ACCEPTED
-	write(0)         // verifier flavor = AUTH_NULL
-	write(0)         // verifier length = 0
+	write(0)               // xid
+	write(1)               // msg_type = REPLY
+	write(0)               // reply_stat = MSG_ACCEPTED
+	write(0)               // verifier flavor = AUTH_NULL
+	write(uint32(verfLen)) // verifier length
+	if padded := (verfLen + 3) &^ 3; padded > 0 {
+		body.Write(make([]byte, padded)) // verifier body + XDR padding
+	}
 	write(0)         // accept_stat = SUCCESS
 	write(replyPort) // port
 
@@ -63,20 +66,9 @@ func TestResolveNLMCallbackPort_UsesPortmapNotHardcoded(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 
 	const advertised = 54045
-	go fakePortmapper(t, ln, advertised)
+	go fakePortmapper(t, ln, advertised, 0)
 
-	// Point the resolver at our fake portmapper's actual address by overriding
-	// the host:port through a direct dial: ResolveNLMCallbackPort always dials
-	// host:111, so we run the fake listener on an ephemeral port and verify the
-	// wire logic via a thin wrapper that targets the listener address.
-	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatalf("parse listener port: %v", err)
-	}
-
-	got, err := resolveViaPortmapAddr(context.Background(), host, port,
-		types.ProgramNLM, types.NLMVersion4)
+	got, err := resolveListener(t, ln)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -86,4 +78,39 @@ func TestResolveNLMCallbackPort_UsesPortmapNotHardcoded(t *testing.T) {
 	if got == 12049 {
 		t.Fatalf("resolved port is the old hardcoded 12049; portmap lookup not used")
 	}
+}
+
+// TestResolveNLMCallbackPort_NonAlignedVerifier exercises the XDR padding of the
+// reply verifier: a verifier length that is not a multiple of 4 must still leave
+// the reader aligned so accept_stat/port are read from the right offset. Without
+// rounding the skip up to a 4-byte boundary the port resolves incorrectly.
+func TestResolveNLMCallbackPort_NonAlignedVerifier(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	const advertised = 4045
+	go fakePortmapper(t, ln, advertised, 5) // 5-byte verifier -> 3 bytes padding
+
+	got, err := resolveListener(t, ln)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if got != advertised {
+		t.Fatalf("resolved port = %d, want %d (verifier padding mishandled)", got, advertised)
+	}
+}
+
+// resolveListener runs the GETPORT query against the fake portmapper bound to ln.
+func resolveListener(t *testing.T, ln net.Listener) (uint16, error) {
+	t.Helper()
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse listener port: %v", err)
+	}
+	return resolveViaPortmapAddr(context.Background(), host, port,
+		types.ProgramNLM, types.NLMVersion4)
 }

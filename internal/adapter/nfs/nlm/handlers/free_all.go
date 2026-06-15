@@ -83,12 +83,29 @@ func (h *Handler) FreeAll(ctx *NLMHandlerContext) ([]byte, error) {
 		return EncodeFreeAllResponse(&FreeAllResponse{})
 	}
 
+	// Reject an empty or over-long caller name before logging or using it. The
+	// XDR string decoder accepts up to 1MB; a malicious peer could otherwise
+	// inflate logs and force expensive cleanup with a giant name. NLM caller
+	// names are hostnames, bounded by MAXNAMELEN (1024).
+	if req.Name == "" || len(req.Name) > MaxCallerNameLen {
+		logger.Warn("FREE_ALL: rejected invalid client name",
+			"name_len", len(req.Name),
+			"from", ctx.ClientAddr)
+		return EncodeFreeAllResponse(&FreeAllResponse{})
+	}
+
 	logger.Info("FREE_ALL: received",
 		"client", req.Name,
 		"from", ctx.ClientAddr)
 
-	if req.Name == "" {
-		logger.Warn("FREE_ALL: empty client name; ignoring", "from", ctx.ClientAddr)
+	// Lock-theft guard: FREE_ALL releases ALL of a client's locks from a single
+	// client-supplied name, so it is an even simpler spoofing vector than
+	// UNLOCK/CANCEL. Refuse if the name is bound to a different transport source
+	// host (a rebooting client's source IP matches the host that locked).
+	if !h.callerBinding.authorized(req.Name, ctx.ClientAddr) {
+		logger.Warn("FREE_ALL rejected: caller_name bound to a different client (possible lock theft)",
+			"client", req.Name,
+			"from", ctx.ClientAddr)
 		return EncodeFreeAllResponse(&FreeAllResponse{})
 	}
 

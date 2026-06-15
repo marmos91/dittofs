@@ -5,6 +5,10 @@ import (
 	"sync"
 )
 
+// MaxCallerNameLen bounds an NLM caller_name (a client hostname). RFC 1813
+// MAXNAMELEN is 1024; anything larger is rejected as malformed/abusive.
+const MaxCallerNameLen = 1024
+
 // callerBinding maps an NLM caller_name to the transport source host (IP) that
 // first acquired a lock under that name. NLM v4 is advisory and unauthenticated
 // by RFC 1813 design: every field of an UNLOCK/CANCEL request (caller_name,
