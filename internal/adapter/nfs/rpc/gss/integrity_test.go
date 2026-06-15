@@ -211,7 +211,7 @@ func TestWrapIntegrityProducesValidFormat(t *testing.T) {
 	seqNum := uint32(7)
 	args := []byte("hello")
 
-	wrapped, err := WrapIntegrity(key, seqNum, args)
+	wrapped, err := WrapIntegrity(key, seqNum, args, false)
 	if err != nil {
 		t.Fatalf("WrapIntegrity failed: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestWrapIntegrityVerifiableByClient(t *testing.T) {
 	seqNum := uint32(42)
 	replyBody := []byte("nfs-reply-data")
 
-	wrapped, err := WrapIntegrity(key, seqNum, replyBody)
+	wrapped, err := WrapIntegrity(key, seqNum, replyBody, false)
 	if err != nil {
 		t.Fatalf("WrapIntegrity failed: %v", err)
 	}

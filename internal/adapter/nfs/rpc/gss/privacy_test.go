@@ -252,7 +252,7 @@ func TestWrapPrivacyProducesValidFormat(t *testing.T) {
 	seqNum := uint32(7)
 	args := []byte("hello")
 
-	wrapped, err := WrapPrivacy(key, seqNum, args)
+	wrapped, err := WrapPrivacy(key, seqNum, args, false)
 	if err != nil {
 		t.Fatalf("WrapPrivacy failed: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestWrapPrivacyVerifiableByClient(t *testing.T) {
 	seqNum := uint32(42)
 	replyBody := []byte("nfs-reply-data")
 
-	wrapped, err := WrapPrivacy(key, seqNum, replyBody)
+	wrapped, err := WrapPrivacy(key, seqNum, replyBody, false)
 	if err != nil {
 		t.Fatalf("WrapPrivacy failed: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestWrapPrivacyVerifiableByClient(t *testing.T) {
 func TestWrapPrivacySealedFlagSet(t *testing.T) {
 	key := testSessionKey()
 
-	wrapped, err := WrapPrivacy(key, 1, []byte("test"))
+	wrapped, err := WrapPrivacy(key, 1, []byte("test"), false)
 	if err != nil {
 		t.Fatalf("WrapPrivacy failed: %v", err)
 	}

@@ -35,7 +35,7 @@ func (c *NFSConnection) sendGSSReply(xid uint32, data []byte, sessionInfo *gss.G
 	switch sessionInfo.Service {
 	case gss.RPCGSSSvcIntegrity:
 		// krb5i: wrap reply body with MIC
-		wrapped, err := gss.WrapIntegrity(sessionInfo.SessionKey, sessionInfo.SeqNum, data)
+		wrapped, err := gss.WrapIntegrity(sessionInfo.SessionKey, sessionInfo.SeqNum, data, sessionInfo.HasAcceptorSubkey)
 		if err != nil {
 			return fmt.Errorf("wrap GSS integrity reply: %w", err)
 		}
@@ -43,7 +43,7 @@ func (c *NFSConnection) sendGSSReply(xid uint32, data []byte, sessionInfo *gss.G
 
 	case gss.RPCGSSSvcPrivacy:
 		// krb5p: wrap reply body with encryption
-		wrapped, err := gss.WrapPrivacy(sessionInfo.SessionKey, sessionInfo.SeqNum, data)
+		wrapped, err := gss.WrapPrivacy(sessionInfo.SessionKey, sessionInfo.SeqNum, data, sessionInfo.HasAcceptorSubkey)
 		if err != nil {
 			return fmt.Errorf("wrap GSS privacy reply: %w", err)
 		}
@@ -53,8 +53,10 @@ func (c *NFSConnection) sendGSSReply(xid uint32, data []byte, sessionInfo *gss.G
 		// krb5 (svc_none): reply body sent as-is
 	}
 
-	// Compute the reply verifier: MIC of the sequence number
-	mic, err := gss.ComputeReplyVerifier(sessionInfo.SessionKey, sessionInfo.SeqNum)
+	// Compute the reply verifier: MIC of the sequence number.
+	// When the acceptor produced a subkey during mutual auth, the verifier MIC
+	// must carry FLAG_ACCEPTOR_SUBKEY per RFC 4121 §4.2.2.
+	mic, err := gss.ComputeReplyVerifier(sessionInfo.SessionKey, sessionInfo.SeqNum, sessionInfo.HasAcceptorSubkey)
 	if err != nil {
 		return fmt.Errorf("compute GSS reply verifier: %w", err)
 	}

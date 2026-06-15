@@ -261,11 +261,13 @@ func rotateLeft(data []byte, n int) []byte {
 //   - sessionKey: The session key from the GSS context
 //   - seqNum: The sequence number for this reply
 //   - replyBody: The XDR-encoded procedure results
+//   - hasAcceptorSubkey: Whether the context used an acceptor subkey (from AP-REP).
+//     When true, RFC 4121 §4.2.2 requires FLAG_ACCEPTOR_SUBKEY on this acceptor Wrap token.
 //
 // Returns:
 //   - []byte: The encoded rpc_gss_priv_data
 //   - error: If encryption/wrapping fails
-func WrapPrivacy(sessionKey types.EncryptionKey, seqNum uint32, replyBody []byte) ([]byte, error) {
+func WrapPrivacy(sessionKey types.EncryptionKey, seqNum uint32, replyBody []byte, hasAcceptorSubkey bool) ([]byte, error) {
 	// 1. Build plaintext: XDR(seq_num) + replyBody
 	plaintext := make([]byte, 4+len(replyBody))
 	binary.BigEndian.PutUint32(plaintext[0:4], seqNum)
@@ -278,8 +280,12 @@ func WrapPrivacy(sessionKey types.EncryptionKey, seqNum uint32, replyBody []byte
 	}
 
 	// 3. Build the header (to be sent in plaintext)
-	// Flags: SentByAcceptor (0x01) | Sealed (0x02) = 0x03
+	// Flags: SentByAcceptor (0x01) | Sealed (0x02), plus AcceptorSubkey (0x04)
+	// when the acceptor produced a subkey during mutual auth (RFC 4121 §4.2.2).
 	flags := byte(wrapFlagSentByAcceptor | wrapFlagSealed)
+	if hasAcceptorSubkey {
+		flags |= wrapFlagAcceptorSubkey
+	}
 
 	// For sealed tokens, EC = filler size (we use 0 for simplicity)
 	// The encryption provides integrity, so we don't need padding for checksum

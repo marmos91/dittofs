@@ -492,14 +492,15 @@ func (p *GSSProcessor) handleInit(cred *RPCGSSCredV1, requestBody []byte) *GSSPr
 	// Create the GSS context
 	now := time.Now()
 	gssCtx := &GSSContext{
-		Handle:     handle,
-		Principal:  verified.Principal,
-		Realm:      verified.Realm,
-		SessionKey: verified.SessionKey,
-		SeqWindow:  NewSeqWindow(DefaultSeqWindowSize),
-		Service:    cred.Service,
-		CreatedAt:  now,
-		LastUsed:   now,
+		Handle:            handle,
+		Principal:         verified.Principal,
+		Realm:             verified.Realm,
+		SessionKey:        verified.SessionKey,
+		SeqWindow:         NewSeqWindow(DefaultSeqWindowSize),
+		Service:           cred.Service,
+		HasAcceptorSubkey: verified.HasAcceptorSubkey,
+		CreatedAt:         now,
+		LastUsed:          now,
 	}
 
 	// CRITICAL: Store context BEFORE building reply.
@@ -723,12 +724,13 @@ func (p *GSSProcessor) handleData(ctx context.Context, cred *RPCGSSCredV1, verif
 	)
 
 	return &GSSProcessResult{
-		ProcessedData: processedData,
-		Identity:      ident,
-		IsControl:     false,
-		SeqNum:        cred.SeqNum,
-		Service:       cred.Service,
-		SessionKey:    gssCtx.SessionKey,
+		ProcessedData:     processedData,
+		Identity:          ident,
+		IsControl:         false,
+		SeqNum:            cred.SeqNum,
+		Service:           cred.Service,
+		SessionKey:        gssCtx.SessionKey,
+		HasAcceptorSubkey: gssCtx.HasAcceptorSubkey,
 	}
 }
 
