@@ -26,7 +26,6 @@ func newStubCmd(area, short string) *cobra.Command {
 
 var (
 	gcCmd       = newStubCmd("gc", "Garbage collection benchmarks (stub)")
-	metadataCmd = newStubCmd("metadata", "Metadata store benchmarks (listings, rename, links, ACL) (stub)")
 	adaptersCmd = newStubCmd("adapters", "NFS / SMB framing benchmarks (stub)")
 	e2eCmd      = newStubCmd("e2e", "External-client end-to-end benchmarks (fio, iozone, smbtorture-perf) (stub)")
 )

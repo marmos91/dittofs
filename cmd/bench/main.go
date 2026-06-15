@@ -32,7 +32,7 @@ var rootCmd = &cobra.Command{
   blockstore   local fs + remote + syncer (implemented)
   gc           garbage collection (stub)
   snapshots    reference-CAS snapshots (stub)
-  metadata     listings, rename, links, ACL (stub)
+  metadata     store read latency: getattr / lookup / readdir (implemented)
   adapters     NFS / SMB framing perf (stub)
   e2e          real NFS / SMB clients driving fio, iozone, smbtorture-perf (stub)
 

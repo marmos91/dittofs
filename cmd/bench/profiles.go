@@ -42,21 +42,22 @@ const (
 	blockProfileRate = 1
 )
 
-// startProfileSession creates <root>/blockstore/[<phase>/]<workload>-<UTC-ts>/
-// and begins CPU profiling. When phase is non-empty (e.g. "baseline" or
-// "post-fix") it is inserted as a parent directory so before/after captures
-// sit side by side. When full is set it also turns on the mutex and block
-// profilers. The caller must invoke stop() exactly once, after the timed
-// region, to flush every profile and restore runtime profiler state. On error
-// the partially-started session is rolled back.
-func startProfileSession(rootDir, phase, workload string, full bool) (*profileSession, error) {
+// startProfileSession creates <root>/<area>/[<phase>/]<workload>-<UTC-ts>/
+// and begins CPU profiling. area names the bench family ("blockstore",
+// "metadata", …) so captures from different areas don't collide. When phase is
+// non-empty (e.g. "baseline" or "post-fix") it is inserted as a parent
+// directory so before/after captures sit side by side. When full is set it also
+// turns on the mutex and block profilers. The caller must invoke stop() exactly
+// once, after the timed region, to flush every profile and restore runtime
+// profiler state. On error the partially-started session is rolled back.
+func startProfileSession(rootDir, area, phase, workload string, full bool) (*profileSession, error) {
 	// phase is a single directory name, not a path: reject separators / "."/".."
-	// so a stray --phase can't escape <rootDir>/blockstore via filepath.Join.
+	// so a stray --phase can't escape <rootDir>/<area> via filepath.Join.
 	if phase != "" && (phase != filepath.Base(phase) || phase == "." || phase == "..") {
 		return nil, fmt.Errorf("invalid phase %q: must be a single path element", phase)
 	}
 	ts := time.Now().UTC().Format("20060102T150405Z")
-	parts := []string{rootDir, "blockstore"}
+	parts := []string{rootDir, area}
 	if phase != "" {
 		parts = append(parts, phase)
 	}

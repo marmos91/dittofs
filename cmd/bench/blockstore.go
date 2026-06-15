@@ -136,7 +136,7 @@ func runStormWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	}
 	defer engineClose()
 
-	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, "blockstore", bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ func runConcurrentWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench
 	}
 	defer engineClose()
 
-	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, "blockstore", bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
@@ -210,7 +210,7 @@ func runEngineWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opt
 	}
 	defer engineClose()
 
-	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, "blockstore", bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
@@ -237,7 +237,7 @@ func runLocalWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	}
 	defer closeFn()
 
-	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, "blockstore", bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
@@ -270,7 +270,7 @@ func runGCWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts) e
 	}
 	defer remoteClose()
 
-	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, "blockstore", bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
@@ -297,7 +297,7 @@ func runRawS3Workload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	}
 	defer remoteClose()
 
-	sess, err := startProfileSession(opts.ProfileDir, bsPhase, opts.Workload, bsFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, "blockstore", bsPhase, opts.Workload, bsFullProfiles)
 	if err != nil {
 		return err
 	}
