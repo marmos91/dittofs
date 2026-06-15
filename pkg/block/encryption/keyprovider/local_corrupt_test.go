@@ -57,6 +57,14 @@ func TestLocal_DecodeKeyFile_CorruptFields(t *testing.T) {
 		{"unsupported_kdf", func(kf *localKeyFile) { kf.KDF.Algo = "scrypt" }},
 		{"unsupported_wrap", func(kf *localKeyFile) { kf.Wrap = "chacha20" }},
 		{"empty_master_key_id", func(kf *localKeyFile) { kf.MasterKeyID = "" }},
+		// KDF lower-bound guards: without these argon2.IDKey panics and
+		// crashes the daemon at startup (time=0 / threads=0), or OOM-kills it
+		// (huge memory_kib). They must surface as ErrKeyFileCorrupt instead.
+		{"kdf_time_zero", func(kf *localKeyFile) { kf.KDF.Time = 0 }},
+		{"kdf_threads_zero", func(kf *localKeyFile) { kf.KDF.Threads = 0 }},
+		{"kdf_memory_zero", func(kf *localKeyFile) { kf.KDF.MemoryKiB = 0 }},
+		{"kdf_memory_huge", func(kf *localKeyFile) { kf.KDF.MemoryKiB = ^uint32(0) }},
+		{"kdf_time_huge", func(kf *localKeyFile) { kf.KDF.Time = ^uint32(0) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

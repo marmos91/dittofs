@@ -104,7 +104,7 @@ func (m *Syncer) tryEagerSmallFileDedup(
 	// observed; bs.cache is never nil thanks to the Null Object pattern
 	// installed by engine.New.
 	if m.bs != nil {
-		m.bs.cache.Put(h, data)
+		m.bs.loadCache().Put(h, data)
 	}
 
 	logger.Debug("eager small-file dedup short-circuit hit",
@@ -376,7 +376,7 @@ func (m *Syncer) applyFileLevelDedupHit(
 				removed = append(removed, br.Hash)
 			}
 		}
-		m.bs.cache.InvalidateFile(payloadID, removed)
+		m.bs.loadCache().InvalidateFile(payloadID, removed)
 	}
 
 	// 5. Per-file append-log truncation. Best-effort: a failure

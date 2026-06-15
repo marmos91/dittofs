@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"sync"
 
 	"github.com/marmos91/dittofs/pkg/block"
 )
@@ -107,9 +108,21 @@ func (bc *FSStore) replayLogIntoDest(_ context.Context, payloadID string, dest [
 	sh.mu.RLock()
 	lf := sh.logFDs[payloadID]
 	mu := sh.logLocks[payloadID]
+	idx := sh.logIndices[payloadID]
 	sh.mu.RUnlock()
 	if lf == nil || mu == nil {
 		return nil
+	}
+
+	// Index-assisted seek: the per-payload logIndex already records the log
+	// position and file-offset extent of every committed record, so we can
+	// pread ONLY the records overlapping [reqStart, reqEnd) instead of
+	// scanning the whole log (O(total records)) on every read. The rollup
+	// path uses the same lookup (rollup.go); the read path now matches it.
+	// Fall back to the full sequential scan only when no index is wired
+	// (fixtures that drive the log without AppendWrite's bookkeeping).
+	if idx != nil {
+		return bc.replayViaIndex(lf, mu, idx, dest, reqStart, reqEnd, covered)
 	}
 
 	// Open a separate read-only fd so we don't disturb the append fd's
@@ -125,23 +138,68 @@ func (bc *FSStore) replayLogIntoDest(_ context.Context, payloadID string, dest [
 		return fmt.Errorf("ReadPayloadAt: open log: %w", err)
 	}
 	defer func() { _ = rf.Close() }()
+	return replayViaScan(rf, dest, reqStart, reqEnd, covered)
+}
 
-	// We do NOT take the per-file mutex here. Writers append at EOF and
-	// fsync each record before returning; the on-disk log is monotonic
-	// (records only grow upward) so a concurrent reader sees either a
-	// committed record or hits EOF/short-read mid-frame. readRecord
-	// returns (_, _, false, nil) on torn-tail / EOF, terminating the
-	// loop cleanly. The post-record CRC catches torn writes that
-	// reached the platter but were not yet fsynced — those are skipped
-	// as if the record did not exist (consistent with what the writer
-	// thinks: a fsync that has not returned has not yet acknowledged
-	// the write).
+// replayViaIndex reads only the records the logIndex reports as overlapping
+// [reqStart, reqEnd) via per-record preads. Entries are returned in logPos
+// (arrival) order so applying them in order preserves "last write at the
+// same offset wins", matching the sequential-scan semantics. Every index
+// entry references a fully-fsynced frame (AppendWrite indexes a record only
+// after its Sync succeeds), so readRecordAt always sees a complete frame.
+//
+// The per-file mutex is held across the fd-open + entry snapshot + preads.
+// This is required for correctness, not just the append-cursor isolation the
+// scan path relies on: maybeCompactLog (rollup Phase C) renames a rewritten
+// log over the same path AND rebases every entry's logPos, both under this
+// mutex. Without the lock a read could snapshot pre-compaction logPos values
+// and pread them against the post-compaction file (or vice-versa), yielding a
+// spurious CRC mismatch. Holding mu serializes the read against AppendWrite,
+// rollup, and compaction exactly as the rollup's own Phase-A pread loop does.
+// The fd is opened under the lock so it pins the same on-disk generation the
+// snapshotted logPos values index.
+func (bc *FSStore) replayViaIndex(lf *logFile, mu *sync.Mutex, idx *logIndex, dest []byte, reqStart, reqEnd uint64, covered []bool) error {
+	if reqEnd <= reqStart {
+		return nil
+	}
+	mu.Lock()
+	defer mu.Unlock()
 
-	// Seek past the 64-byte header.
+	rf, err := os.Open(lf.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("ReadPayloadAt: open log: %w", err)
+	}
+	defer func() { _ = rf.Close() }()
+
+	entries := idx.EntriesForInterval(reqStart, reqEnd-reqStart, nil)
+	for _, e := range entries {
+		recOff, payload, rerr := readRecordAt(rf, e.logPos, e.payloadLen)
+		if rerr != nil {
+			return fmt.Errorf("ReadPayloadAt: readRecordAt(logPos=%d): %w", e.logPos, rerr)
+		}
+		copyRecordIntoDest(recOff, payload, dest, reqStart, reqEnd, covered)
+	}
+	return nil
+}
+
+// replayViaScan is the index-free fallback: it scans every record from the
+// log header forward. Used only when no logIndex is available.
+//
+// We do NOT take the per-file mutex here. Writers append at EOF and fsync
+// each record before returning; the on-disk log is monotonic (records only
+// grow upward) so a concurrent reader sees either a committed record or hits
+// EOF/short-read mid-frame. readRecord returns (_, _, false, nil) on
+// torn-tail / EOF, terminating the loop cleanly. The post-record CRC catches
+// torn writes that reached the platter but were not yet fsynced — those are
+// skipped as if the record did not exist (consistent with what the writer
+// thinks: a fsync that has not returned has not yet acknowledged the write).
+func replayViaScan(rf io.ReadSeeker, dest []byte, reqStart, reqEnd uint64, covered []bool) error {
 	if _, err := rf.Seek(int64(logHeaderSize), io.SeekStart); err != nil {
 		return fmt.Errorf("ReadPayloadAt: seek past header: %w", err)
 	}
-
 	for {
 		recOff, payload, ok, rerr := readRecord(rf)
 		if rerr != nil {
@@ -150,29 +208,27 @@ func (bc *FSStore) replayLogIntoDest(_ context.Context, payloadID string, dest [
 		if !ok {
 			break
 		}
-		recEnd := recOff + uint64(len(payload))
-		// Skip records that do not intersect the requested window.
-		if recEnd <= reqStart || recOff >= reqEnd {
-			continue
-		}
-		// Compute intersection [hi, lo) and copy into dest.
-		copyStart := recOff
-		if copyStart < reqStart {
-			copyStart = reqStart
-		}
-		copyEnd := recEnd
-		if copyEnd > reqEnd {
-			copyEnd = reqEnd
-		}
-		destIdx := copyStart - reqStart
-		srcIdx := copyStart - recOff
-		n := copyEnd - copyStart
-		copy(dest[destIdx:destIdx+n], payload[srcIdx:srcIdx+n])
-		for i := destIdx; i < destIdx+n; i++ {
-			covered[i] = true
-		}
+		copyRecordIntoDest(recOff, payload, dest, reqStart, reqEnd, covered)
 	}
 	return nil
+}
+
+// copyRecordIntoDest copies the portion of one record's payload that
+// intersects [reqStart, reqEnd) into dest and marks those bytes covered.
+func copyRecordIntoDest(recOff uint64, payload, dest []byte, reqStart, reqEnd uint64, covered []bool) {
+	recEnd := recOff + uint64(len(payload))
+	if recEnd <= reqStart || recOff >= reqEnd {
+		return
+	}
+	copyStart := max(recOff, reqStart)
+	copyEnd := min(recEnd, reqEnd)
+	destIdx := copyStart - reqStart
+	srcIdx := copyStart - recOff
+	n := copyEnd - copyStart
+	copy(dest[destIdx:destIdx+n], payload[srcIdx:srcIdx+n])
+	for i := destIdx; i < destIdx+n; i++ {
+		covered[i] = true
+	}
 }
 
 // fillFromCASManifest walks the FileBlock manifest for payloadID and

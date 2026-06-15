@@ -79,7 +79,7 @@ func (bs *Store) GetStats() BlockStoreStats {
 	localStats := bs.local.Stats()
 	files := bs.local.ListFiles()
 
-	cacheStats := bs.cache.Stats()
+	cacheStats := bs.loadCache().Stats()
 
 	pending, completed, failed := bs.syncer.Queue().Stats()
 	_, uploads, _ := bs.syncer.Queue().PendingByType()

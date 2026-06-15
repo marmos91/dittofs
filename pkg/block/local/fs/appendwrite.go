@@ -421,6 +421,21 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 	// fsync(O_SYNC) — revisit the fsyncFn closure at construction
 	// (logFile creation in getOrCreateLog / recovery.go).
 	if err := lf.groupCommit.Sync(ctx); err != nil {
+		// writeRecord already advanced the OS fd position by n bytes, but we
+		// have NOT advanced lf.eofPos yet (that happens below). If we simply
+		// returned here, the next AppendWrite to this payload would write its
+		// record at fd_pos = old_eofPos + n while capturing logPos = eofPos
+		// (the pre-write value), recording a logIndex entry that points at the
+		// orphaned, un-fsync'd frame instead of the new one — permanently
+		// wedging rollup with a wrong file_offset / CRC mismatch. Evict the fd
+		// exactly as the writeRecord-error path does so the next call reopens
+		// fresh from the on-disk eofPos and the orphaned tail is ignored.
+		mu.Unlock()
+		muUnlocked = true
+		tsh.mu.Lock()
+		delete(tsh.logFDs, payloadID)
+		tsh.mu.Unlock()
+		_ = lf.f.Close()
 		return fmt.Errorf("log fsync: %w", err)
 	}
 	// Advance the log-position cursor only after the writeRecord +

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/marmos91/dittofs/internal/pathutil"
+	s3store "github.com/marmos91/dittofs/pkg/block/remote/s3"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
@@ -78,6 +79,16 @@ func ValidateBlockStoreConfig(kind models.BlockStoreKind, storeType string, cfg 
 			secretAccessKey, ok := config["secret_access_key"].(string)
 			if !ok || secretAccessKey == "" {
 				return errors.New("s3 remote block store requires secret_access_key in config")
+			}
+			// SSRF guard: reject endpoints pointing at cloud metadata,
+			// loopback, link-local, or private/internal hosts before the
+			// create-time HealthCheck can dial them. allow_private_endpoint
+			// opts in to private object stores (MinIO/Localstack) but still
+			// blocks the metadata endpoint.
+			endpoint, _ := config["endpoint"].(string)
+			allowPrivate, _ := config["allow_private_endpoint"].(bool)
+			if err := s3store.ValidateEndpoint(endpoint, allowPrivate); err != nil {
+				return err
 			}
 			if err := validateCompressionSubconfig(config); err != nil {
 				return err
