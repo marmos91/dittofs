@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/stretchr/testify/assert"
@@ -114,27 +115,29 @@ func TestRemoveFile_ConcurrentCreateHardLink(t *testing.T) {
 var errPutFileInjected = errors.New("injected PutFile failure")
 
 // faultyStore wraps a MetadataStore and, inside WithTransaction, makes
-// tx.PutFile fail for a single targeted ShareName/Path. Everything else
-// delegates to the real store so the rest of the rename runs normally up to
-// the injected failure.
+// tx.PutFile fail for a single targeted file ID. Everything else delegates to
+// the real store so the rest of the rename runs normally up to the injected
+// failure. Keying on the inode ID (not File.Path) keeps the fault stable: Path
+// is now always derived on read (#1166), so it is no longer a reliable
+// discriminator at PutFile time.
 type faultyStore struct {
 	metadata.Store
-	failPath string // File.Path that should fail PutFile
+	failID uuid.UUID // file ID whose PutFile should fail
 }
 
 func (f *faultyStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	return f.Store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return fn(&faultyTx{Transaction: tx, failPath: f.failPath})
+		return fn(&faultyTx{Transaction: tx, failID: f.failID})
 	})
 }
 
 type faultyTx struct {
 	metadata.Transaction
-	failPath string
+	failID uuid.UUID
 }
 
 func (t *faultyTx) PutFile(ctx context.Context, file *metadata.File) error {
-	if file.Path == t.failPath {
+	if file.ID == t.failID {
 		return errPutFileInjected
 	}
 	return t.Transaction.PutFile(ctx, file)
@@ -162,9 +165,9 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 
 	svc := metadata.New()
 	// Register a store that, once armed, fails the moved file's ctime PutFile.
-	// File.Path is no longer mutated by Move (#1166), so the inode the rename
-	// writes still carries its pre-move derived path "/myfile.txt" at PutFile
-	// time. Arm it only just before the Move so setup CREATEs are unaffected.
+	// The fault is keyed on the inode's ID (stable across the rename) rather
+	// than File.Path, which is no longer mutated/persisted by Move (#1166). Arm
+	// it only just before the Move so setup CREATEs are unaffected.
 	faulty := &faultyStore{Store: store}
 	require.NoError(t, svc.RegisterStoreForShare(shareName, faulty))
 
@@ -188,9 +191,11 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 
 	srcHandle, err := store.GetChild(ctx, rootHandle, "myfile.txt")
 	require.NoError(t, err)
+	_, srcID, err := metadata.DecodeFileHandle(srcHandle)
+	require.NoError(t, err)
 
-	// Arm the fault: the moved inode's ctime PutFile carries Path "/myfile.txt".
-	faulty.failPath = "/myfile.txt"
+	// Arm the fault: the moved inode's ctime PutFile (keyed by inode ID).
+	faulty.failID = srcID
 
 	// The move must fail with the injected error.
 	_, err = svc.Move(rootCtx, rootHandle, "myfile.txt", destHandle, "moved.txt")

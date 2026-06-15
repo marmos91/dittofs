@@ -45,6 +45,7 @@ const (
 	prefixFile         = "f:"
 	prefixParent       = "p:"
 	prefixChild        = "c:"
+	prefixChildName    = "cn:" // (parentUUID, childUUID) -> child name (reverse edge)
 	prefixShare        = "s:"
 	prefixLinkCount    = "l:"
 	prefixDeviceNumber = "d:"
@@ -75,6 +76,22 @@ func keyChild(parentID uuid.UUID, childName string) []byte {
 // keyChildPrefix generates a key prefix for range scanning children: "c:<parentUUID>:"
 func keyChildPrefix(parentID uuid.UUID) []byte {
 	return []byte(prefixChild + parentID.String() + ":")
+}
+
+// keyChildName generates the reverse-edge key "cn:<parentUUID>:<childUUID>"
+// whose value is the name under which child is linked into parent. It gives
+// derivePath an O(1) child->name lookup instead of scanning every c:<parent>:*
+// entry per path component (#1166). One key exists per directed (parent, child)
+// edge, so a hard link to a different directory writes a distinct key and never
+// disturbs the canonical parent's edge.
+func keyChildName(parentID, childID uuid.UUID) []byte {
+	return []byte(prefixChildName + parentID.String() + ":" + childID.String())
+}
+
+// keyChildNamePrefix generates a key prefix for range scanning a directory's
+// reverse edges: "cn:<parentUUID>:"
+func keyChildNamePrefix(parentID uuid.UUID) []byte {
+	return []byte(prefixChildName + parentID.String() + ":")
 }
 
 // keyShare generates a key for share configuration: "s:<shareName>"
@@ -119,6 +136,15 @@ type shareData struct {
 // ============================================================================
 
 func encodeFile(file *metadata.File) ([]byte, error) {
+	// Path is always derived from parent edges on read (#1166), never trusted
+	// from storage. Zero it before serializing so no badger row persists a
+	// stale/misleading path (e.g. the pre-move path on a rename). decodeFile
+	// tolerates the absent field; GetFile overwrites Path via derivePath.
+	if file.Path != "" {
+		clone := *file
+		clone.Path = ""
+		file = &clone
+	}
 	bytes, err := json.Marshal(file)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode file: %w", err)

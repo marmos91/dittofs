@@ -382,19 +382,25 @@ func deleteFileKeys(txn *badgerdb.Txn, id uuid.UUID, objectID metadata.ContentHa
 	return nil
 }
 
-// deleteChildEntries removes every c:<parentID>:<name> mapping under a
-// directory. Collects keys under the held txn iterator first, then deletes,
-// to avoid mutating keys out from under the iterator.
+// deleteChildEntries removes every c:<parentID>:<name> forward mapping and the
+// matching cn:<parentID>:<child> reverse mapping under a directory. Collects
+// keys under the held txn iterator first, then deletes, to avoid mutating keys
+// out from under the iterator.
 func deleteChildEntries(txn *badgerdb.Txn, parentID uuid.UUID) error {
-	prefix := keyChildPrefix(parentID)
-	opts := badgerdb.DefaultIteratorOptions
-	opts.PrefetchValues = false
-	it := txn.NewIterator(opts)
-	var keys [][]byte
-	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-		keys = append(keys, it.Item().KeyCopy(nil))
+	prefixes := [][]byte{
+		keyChildPrefix(parentID),
+		keyChildNamePrefix(parentID),
 	}
-	it.Close()
+	var keys [][]byte
+	for _, prefix := range prefixes {
+		opts := badgerdb.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		it := txn.NewIterator(opts)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			keys = append(keys, it.Item().KeyCopy(nil))
+		}
+		it.Close()
+	}
 	for _, k := range keys {
 		if err := txn.Delete(k); err != nil && err != badgerdb.ErrKeyNotFound {
 			return err

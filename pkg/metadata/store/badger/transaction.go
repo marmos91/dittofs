@@ -212,9 +212,11 @@ func (tx *badgerTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 }
 
 // derivePath reconstructs an inode's logical path by walking parent edges
-// (p:<child> -> parent) up to the share root (#1166). For a hard-linked inode
-// (N names) it follows the lexicographically smallest child name at each level
-// — matching memory and postgres — yielding one valid reachable path. An inode
+// (p:<child> -> parent) up to the share root (#1166), resolving each level's
+// name via the O(1) cn:<parent>:<child> reverse edge (see childName). For an
+// inode hard-linked under multiple names it yields one valid reachable path
+// (the recorded edge name, which for a cross-directory hard link may differ
+// from postgres' lexicographic choice — both are POSIX-acceptable). An inode
 // with no parent edge (share root or orphaned/unlinked-but-open) resolves to
 // "/". The depth guard bounds a corrupt parent cycle (no filesystem op can
 // create one) into a finite result.
@@ -257,32 +259,32 @@ func (tx *badgerTransaction) derivePath(fileID uuid.UUID) string {
 	return b.String()
 }
 
-// childName returns the lexicographically smallest name under which child is
-// linked into parent, or "" if no such edge exists. Children are stored as
-// c:<parentID>:<name> ordered by key, so the first matching entry in a forward
-// scan is the smallest name — matching postgres' ORDER BY child_name.
+// childName returns a name under which child is linked into parent, or "" if no
+// such edge exists. It reads the cn:<parent>:<child> reverse edge in O(1) — the
+// single per-component lookup that keeps derivePath off any directory scan
+// (#1166). Stores written before reverse edges existed fall back to a one-time
+// forward scan; that scan's result self-heals into a reverse edge on the next
+// SetChild/DeleteChild for the name.
+//
+// For an inode hard-linked under N names in the same directory the reverse edge
+// records one live name (not necessarily the lexicographically smallest, unlike
+// postgres' ORDER BY child_name); the derived path is still a valid reachable
+// name, which is all POSIX requires (cross-backend tests accept either).
 func (tx *badgerTransaction) childName(parentID, child uuid.UUID) string {
-	prefix := keyChildPrefix(parentID)
-	opts := badgerdb.DefaultIteratorOptions
-	opts.Prefix = prefix
-	it := tx.txn.NewIterator(opts)
-	defer it.Close()
-
-	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-		item := it.Item()
-		var id uuid.UUID
-		if err := item.Value(func(val []byte) error {
-			var e error
-			id, e = uuid.FromBytes(val)
-			return e
-		}); err != nil {
-			continue
-		}
-		if id == child {
-			return extractNameFromChildKey(item.Key(), prefix)
+	if item, err := tx.txn.Get(keyChildName(parentID, child)); err == nil {
+		if name, vErr := item.ValueCopy(nil); vErr == nil {
+			return string(name)
 		}
 	}
-	return ""
+	// Legacy fallback: reverse edge absent (pre-#1166 store). Scan forward once.
+	return tx.childNameByScan(parentID, child)
+}
+
+// childNameByScan finds child's name under parent by scanning c:<parent>:*. O(N
+// children); used only as the legacy fallback when the cn: reverse edge is
+// missing, never on the steady-state read path.
+func (tx *badgerTransaction) childNameByScan(parentID, child uuid.UUID) string {
+	return tx.anyOtherChildName(parentID, child, "")
 }
 
 func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) error {
@@ -491,8 +493,13 @@ func (tx *badgerTransaction) SetChild(ctx context.Context, dirHandle metadata.Fi
 		}
 	}
 
-	// Store child UUID bytes
-	return tx.txn.Set(keyChild(dirID, name), childID[:])
+	// Store child UUID bytes plus the reverse edge cn:<parent>:<child> -> name
+	// so derivePath resolves the child's name under this parent in O(1) instead
+	// of scanning every c:<parent>:* entry (#1166).
+	if err := tx.txn.Set(keyChild(dirID, name), childID[:]); err != nil {
+		return err
+	}
+	return tx.txn.Set(keyChildName(dirID, childID), []byte(name))
 }
 
 func (tx *badgerTransaction) DeleteChild(ctx context.Context, dirHandle metadata.FileHandle, name string) error {
@@ -509,7 +516,7 @@ func (tx *badgerTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 		}
 	}
 
-	_, err = tx.txn.Get(keyChild(dirID, name))
+	item, err := tx.txn.Get(keyChild(dirID, name))
 	if err == badgerdb.ErrKeyNotFound {
 		return &metadata.StoreError{
 			Code:    metadata.ErrNotFound,
@@ -520,7 +527,86 @@ func (tx *badgerTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 		return err
 	}
 
-	return tx.txn.Delete(keyChild(dirID, name))
+	// Capture the child UUID so the reverse edge cn:<parent>:<child> can be torn
+	// down (or repointed) in lockstep with the forward c:<parent>:<name> edge.
+	var childID uuid.UUID
+	if vErr := item.Value(func(val []byte) error {
+		var e error
+		childID, e = uuid.FromBytes(val)
+		return e
+	}); vErr != nil {
+		return vErr
+	}
+
+	if err := tx.txn.Delete(keyChild(dirID, name)); err != nil {
+		return err
+	}
+
+	return tx.removeChildNameEdge(dirID, childID, name)
+}
+
+// removeChildNameEdge keeps the cn:<parent>:<child> reverse edge consistent
+// after the forward c:<parent>:<name> edge is deleted. If the reverse edge still
+// records the just-removed name, it is either repointed to another remaining
+// name for the same (parent, child) pair — the multi-hard-link-in-one-directory
+// case — or dropped when no edge remains. A reverse edge recording a different
+// name (already repointed by a prior rename) is left untouched.
+func (tx *badgerTransaction) removeChildNameEdge(parentID, childID uuid.UUID, removedName string) error {
+	cnKey := keyChildName(parentID, childID)
+	item, err := tx.txn.Get(cnKey)
+	if goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+		return nil // legacy store without reverse edges, or already gone
+	}
+	if err != nil {
+		return err
+	}
+	recorded, err := item.ValueCopy(nil)
+	if err != nil {
+		return err
+	}
+	if string(recorded) != removedName {
+		return nil // reverse edge points at a still-live name; nothing to do
+	}
+
+	// The recorded name was just unlinked. Find any other surviving name for the
+	// same (parent, child) pair so a hard link in the same directory keeps a
+	// valid derived path; if none remain, delete the reverse edge.
+	if other := tx.anyOtherChildName(parentID, childID, removedName); other != "" {
+		return tx.txn.Set(cnKey, []byte(other))
+	}
+	return tx.txn.Delete(cnKey)
+}
+
+// anyOtherChildName scans this directory for a name (≠ exclude) mapping to
+// child by walking c:<parent>:*; "" if none. O(N children). Reached only off the
+// hot path: the legacy childNameByScan fallback (exclude "") and the rare
+// multi-hard-link-in-one-directory repoint during DeleteChild.
+func (tx *badgerTransaction) anyOtherChildName(parentID, child uuid.UUID, exclude string) string {
+	prefix := keyChildPrefix(parentID)
+	opts := badgerdb.DefaultIteratorOptions
+	opts.Prefix = prefix
+	it := tx.txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		item := it.Item()
+		name := extractNameFromChildKey(item.Key(), prefix)
+		if name == "" || name == exclude {
+			continue
+		}
+		var id uuid.UUID
+		if err := item.Value(func(val []byte) error {
+			var e error
+			id, e = uuid.FromBytes(val)
+			return e
+		}); err != nil {
+			continue
+		}
+		if id == child {
+			return name
+		}
+	}
+	return ""
 }
 
 func (tx *badgerTransaction) ListChildren(ctx context.Context, dirHandle metadata.FileHandle, cursor string, limit int) ([]metadata.DirEntry, string, error) {
