@@ -19,7 +19,7 @@ All three metadata stores achieve parity with a single expected failure.
 
 NFSv3's `nfstime3` structure uses a 32-bit unsigned integer for seconds, limiting timestamps to year 2106. This is a protocol limitation, not a DittoFS bug.
 
-See `test/posix/known_failures.txt` for the complete list of known limitations.
+See `test/posix/KNOWN_FAILURES.md` for the complete list of known limitations.
 
 ## Test Environment
 

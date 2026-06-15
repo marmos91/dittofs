@@ -628,7 +628,7 @@ This pass rate applies to **all metadata backends** (Memory, BadgerDB, PostgreSQ
 
 **Note**: Only `utimensat/09.t:test5` actually fails in current pjdfstest runs. Other patterns either don't have tests in the suite or the tests are skipped.
 
-See `test/posix/known_failures.txt` for the complete list with detailed explanations.
+See `test/posix/KNOWN_FAILURES.md` for the complete list with detailed explanations.
 
 ## Still Have Questions?
 

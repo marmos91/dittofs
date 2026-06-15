@@ -17,6 +17,11 @@
 
 set -euo pipefail
 
+# Shared known-failures (blacklist) loader — same parser the POSIX harness uses.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../common/known-failures.sh
+source "${SCRIPT_DIR}/../common/known-failures.sh"
+
 # --------------------------------------------------------------------------
 # Arguments
 # --------------------------------------------------------------------------
@@ -79,47 +84,20 @@ if [[ "$TOTAL" -eq 0 ]]; then
 fi
 
 # --------------------------------------------------------------------------
-# Load known failures from KNOWN_FAILURES.md
+# Load known failures from KNOWN_FAILURES.md (shared parser), then mirror into
+# the legacy KNOWN_FAILURES/KNOWN_REASONS names this script's body references.
 # --------------------------------------------------------------------------
+kf_load "$KNOWN_FAILURES_FILE"
 declare -A KNOWN_FAILURES
 declare -A KNOWN_REASONS
-# Workaround: bash set -u treats empty associative arrays as unbound
 KNOWN_FAILURES[_]="" ; unset 'KNOWN_FAILURES[_]'
 KNOWN_REASONS[_]=""  ; unset 'KNOWN_REASONS[_]'
-
-if [[ -f "$KNOWN_FAILURES_FILE" ]]; then
-    while IFS= read -r line; do
-        # Skip empty lines, comments, markdown headers
-        [[ -z "$line" ]] && continue
-        [[ "$line" == \#* ]] && continue
-
-        # Only process lines that look like markdown table rows (start with |)
-        [[ "$line" != \|* ]] && continue
-
-        # Skip separator rows (e.g., |---|---|---|---|)
-        [[ "$line" =~ ^\|[[:space:]]*-+ ]] && continue
-
-        # Split on | — table rows start with |, so field 1 is empty, field 2 is the test name
-        IFS='|' read -r _ name _ reason _ <<< "$line"
-
-        # Trim whitespace from name
-        name="${name#"${name%%[![:space:]]*}"}"
-        name="${name%"${name##*[![:space:]]}"}"
-
-        # Skip the header row
-        [[ "$name" == "Test Name" ]] && continue
-        [[ -z "$name" ]] && continue
-
-        # Trim whitespace from reason
-        reason="${reason#"${reason%%[![:space:]]*}"}"
-        reason="${reason%"${reason##*[![:space:]]}"}"
-
-        KNOWN_FAILURES["$name"]=1
-        KNOWN_REASONS["$name"]="${reason:-unknown}"
-    done < "$KNOWN_FAILURES_FILE"
-fi
-
-KNOWN_COUNT=${#KNOWN_FAILURES[@]}
+for _kf_name in "${!KF_KNOWN[@]}"; do
+    KNOWN_FAILURES["$_kf_name"]=1
+    KNOWN_REASONS["$_kf_name"]="${KF_REASON[$_kf_name]}"
+done
+unset _kf_name
+KNOWN_COUNT=$KF_COUNT
 
 # --------------------------------------------------------------------------
 # Print header

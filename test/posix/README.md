@@ -157,7 +157,7 @@ NFSv4 uses different mount options than NFSv3:
 
 ### Known Failures
 
-NFSv4-specific known failures are documented in `known_failures_v4.txt`. Key differences from NFSv3:
+NFSv4-specific known failures are documented in `KNOWN_FAILURES_V4.md`. Key differences from NFSv3:
 
 - **Locking**: NFSv4 has integrated locking (no NLM), so locking tests may behave differently
 - **Extended attributes**: NFSv4 named attributes (OPENATTR) not implemented
@@ -213,8 +213,8 @@ Some tests will fail or be skipped due to NFSv3/DittoFS limitations:
 
 See [docs/KNOWN_LIMITATIONS.md](../../docs/KNOWN_LIMITATIONS.md) for detailed explanations of each limitation.
 
-See `known_failures.txt` for expected NFSv3 test failures with reasons.
-See `known_failures_v4.txt` for expected NFSv4-specific test failures with reasons.
+See `KNOWN_FAILURES.md` for expected NFSv3 test failures with reasons.
+See `KNOWN_FAILURES_V4.md` for expected NFSv4-specific test failures with reasons.
 
 ## Files
 
@@ -225,8 +225,8 @@ test/posix/
 ├── teardown-posix.sh        # Cleanup script
 ├── run-posix.sh             # Test runner (supports --nfs-version for logging)
 ├── Dockerfile.pjdfstest     # pjdfstest container (for macOS/Docker)
-├── known_failures.txt       # Expected NFSv3 failures with reasons
-├── known_failures_v4.txt    # Expected NFSv4-specific failures with reasons
+├── KNOWN_FAILURES.md       # Expected NFSv3 failures with reasons
+├── KNOWN_FAILURES_V4.md    # Expected NFSv4-specific failures with reasons
 ├── configs/                 # Configuration files
 │   └── config.yaml          # Single config (paths set via env vars)
 └── results/                 # Test results (not committed)
