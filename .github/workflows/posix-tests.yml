@@ -12,9 +12,8 @@ name: POSIX Compliance Tests
 on:
   push:
     branches: [develop, main]
-  pull_request:
-    branches: [develop, main]
-    paths:
+    # Skip docs-only pushes; keep the same broad surface as the PR trigger.
+    paths: &code_paths
       - 'cmd/dfs/**'
       - 'cmd/dfsctl/**'
       - 'pkg/adapter/nfs/**'
@@ -30,6 +29,9 @@ on:
       - 'go.sum'
       - 'flake.nix'
       - 'flake.lock'
+  pull_request:
+    branches: [develop, main]
+    paths: *code_paths
   schedule:
     # Weekly on Sunday at 4 AM UTC
     - cron: '0 4 * * 0'
@@ -62,6 +64,19 @@ jobs:
 
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Persist the Go module + build cache across runs. The Nix CI shell's
+      # Go toolchain writes to the default $HOME cache dirs; keyed on go.sum so
+      # a dependency change invalidates it. Caches inputs only, never results.
+      - name: Cache Go build and modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-posix-go-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-posix-go-
 
       - name: Build DittoFS binaries
         run: |

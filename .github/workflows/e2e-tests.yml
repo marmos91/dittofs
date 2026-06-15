@@ -15,9 +15,8 @@ name: E2E Tests
 on:
   push:
     branches: [develop, main]
-  pull_request:
-    branches: [develop, main]
-    paths:
+    # Skip docs-only pushes; keep the same broad surface as the PR trigger.
+    paths: &code_paths
       - 'cmd/dfs/**'
       - 'pkg/adapter/nfs/**'
       - 'pkg/adapter/smb/**'
@@ -34,6 +33,9 @@ on:
       - 'go.sum'
       - 'flake.nix'
       - 'flake.lock'
+  pull_request:
+    branches: [develop, main]
+    paths: *code_paths
   workflow_dispatch:
 
 concurrency:
@@ -97,6 +99,12 @@ jobs:
 
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # Note: no actions/cache for the Go module/build cache here. E2E runs
+      # `go test` under `sudo -E`, which writes root-owned files into
+      # $HOME/.cache/go-build and $HOME/go/pkg/mod — caching those would make
+      # the post-run cache save fail on permissions. The Nix store (Go toolchain
+      # and nix-fetched deps) is already persisted via magic-nix-cache above.
 
       - name: Install system dependencies
         env:

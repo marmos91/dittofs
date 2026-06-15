@@ -9,28 +9,32 @@ name: NFS Kerberos
 on:
   push:
     branches: [develop, main]
-    paths:
+    paths: &code_paths
+      - 'cmd/dfs/**'
+      - 'cmd/dfsctl/**'
+      - 'pkg/adapter/nfs/**'
+      - 'pkg/adapter/base.go'
       - 'internal/adapter/nfs/**'
       - 'internal/auth/kerberos/**'
       - 'pkg/auth/kerberos/**'
+      - 'pkg/metadata/**'
+      - 'pkg/block/**'
+      - 'pkg/controlplane/**'
+      - 'pkg/config/**'
       - 'test/nfs-conformance/**'
       - '.github/workflows/nfs-kerberos.yml'
+      - 'go.mod'
+      - 'go.sum'
+      - 'flake.nix'
+      - 'flake.lock'
   pull_request:
     branches: [develop, main]
-    paths:
-      - 'internal/adapter/nfs/**'
-      - 'internal/auth/kerberos/**'
-      - 'pkg/auth/kerberos/**'
-      - 'test/nfs-conformance/**'
-      - '.github/workflows/nfs-kerberos.yml'
+    paths: *code_paths
 
 jobs:
   nfs-kerberos:
     name: NFS sec=krb5 mount test
     runs-on: ubuntu-latest
-    # Initially allow failures while the baseline is being established.
-    # Remove once the first green run is confirmed.
-    continue-on-error: true
     timeout-minutes: 15
 
     steps:
