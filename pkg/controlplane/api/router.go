@@ -228,6 +228,17 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Post("/{id}/restore", snapshotHandler.Restore)
 				})
 
+				// Per-share snapshot policy (schedule + retention). RequireAdmin
+				// is inherited from the parent /shares group. The cross-share
+				// list endpoint is registered separately below.
+				snapshotPolicyHandler := handlers.NewSnapshotPolicyHandler(rt)
+				r.Route("/{name}/snapshot-policy", func(r chi.Router) {
+					r.Put("/", snapshotPolicyHandler.Upsert)
+					r.Get("/", snapshotPolicyHandler.Get)
+					r.Delete("/", snapshotPolicyHandler.Delete)
+					r.Post("/run", snapshotPolicyHandler.Run)
+				})
+
 				// Per-share recycle-bin (trash) lifecycle. RequireAdmin is
 				// inherited from the parent /shares group, so Empty and the
 				// rest are admin-only by construction; end-user restore happens
@@ -276,6 +287,13 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// inherited admin middleware); persists last-inv02.json
 				// under the share's audit-state directory.
 				r.Post("/{name}/audit/refcounts", blockAuditHandler.RunAudit)
+			})
+
+			// Cross-share snapshot policy listing (admin only). Per-share
+			// upsert/get/delete/run live under /shares/{name}/snapshot-policy.
+			r.Route("/snapshot-policies", func(r chi.Router) {
+				r.Use(apiMiddleware.RequireAdmin())
+				r.Get("/", handlers.NewSnapshotPolicyHandler(rt).List)
 			})
 
 			// Global block store management (admin only)
