@@ -8,12 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/snapshotsched"
 )
 
-// snapshotSchedPollInterval is the default cadence of the snapshot scheduler.
-// One minute is fine-grained enough for hour/day policy intervals while a pass
-// over a policy-free fleet is a single cheap query. Overridable via the
-// control-plane config (see SetSnapshotSchedulerPollInterval).
-const snapshotSchedPollInterval = time.Minute
-
 // SetSnapshotSchedulerConfig configures the background snapshot scheduler
 // before Serve launches it. A zero pollInterval keeps the built-in default.
 // disabled=true prevents Serve from starting the scheduler at all. Must be
@@ -33,11 +27,8 @@ func (r *Runtime) SnapshotScheduler() *snapshotsched.Service {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.snapSchedSvc == nil {
-		interval := r.snapSchedPollInterval
-		if interval <= 0 {
-			interval = snapshotSchedPollInterval
-		}
-		r.snapSchedSvc = snapshotsched.New(&snapSchedDeps{rt: r}, interval)
+		// New defaults a zero/negative interval to its built-in cadence.
+		r.snapSchedSvc = snapshotsched.New(&snapSchedDeps{rt: r}, r.snapSchedPollInterval)
 	}
 	return r.snapSchedSvc
 }
