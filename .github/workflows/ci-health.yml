@@ -1,0 +1,179 @@
+# CI Health — develop-red alarm + forcing function
+#
+# Centralizes all conformance alerting. Per-workflow ad-hoc "create regression
+# issue" steps were removed in favor of this single owner.
+#
+# Two responsibilities:
+#
+#   alarm (workflow_run): when a conformance workflow finishes a POSTSUBMIT or
+#     PERIODIC run on develop (push or schedule — NOT a PR run):
+#       - on failure: email alarm (if SMTP secrets present) + open/comment a
+#         deduped P0 `develop-red` issue.
+#       - on success: close any open `develop-red` issue ("tree reopened").
+#
+#   warn-on-pr (pull_request): if develop is currently RED, post/update a single
+#     loud (warn-only, non-blocking) comment on the PR.
+#
+# Email is guarded so it no-ops cleanly when secrets are absent — CI never fails
+# just because SMTP secrets are not configured yet.
+
+name: CI Health
+
+on:
+  workflow_run:
+    workflows:
+      - "POSIX Compliance Tests"
+      - "SMB Conformance Tests"
+      - "E2E Tests"
+      - "NFS Kerberos"
+    types: [completed]
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Alarm: react to a finished conformance run on develop.
+  # Only postsubmit/periodic runs (push or schedule on develop) trigger alerts;
+  # PR-triggered conformance runs are ignored here (warn-on-pr handles PRs).
+  # ---------------------------------------------------------------------------
+  alarm:
+    name: develop-red alarm
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')
+    env:
+      HAS_SMTP: ${{ secrets.SMTP_PASSWORD != '' }}
+      WORKFLOW: ${{ github.event.workflow_run.name }}
+      CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+
+    steps:
+      - name: Ensure develop-red label exists
+        if: env.CONCLUSION == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh label create develop-red \
+            --repo "$REPO" \
+            --color B60205 \
+            --description "develop branch CI is red (P0)" 2>/dev/null || true
+
+      - name: Send failure email
+        if: env.CONCLUSION == 'failure' && env.HAS_SMTP == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "🔴 DittoFS develop CI RED: ${{ env.WORKFLOW }} @ ${{ env.HEAD_SHA }}"
+          to: ${{ secrets.ALERT_EMAIL_TO }}
+          from: DittoFS CI <${{ secrets.SMTP_USERNAME }}>
+          body: |
+            develop CI is RED.
+
+            Workflow: ${{ env.WORKFLOW }}
+            Commit:   ${{ env.HEAD_SHA }}
+            Run:      ${{ env.RUN_URL }}
+
+            Fix or revert before merging onto develop.
+
+      - name: Open or update develop-red issue
+        if: env.CONCLUSION == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # printf (not an indented heredoc) so no leading YAML whitespace
+          # leaks into the Markdown body (4+ leading spaces => code block).
+          # shellcheck disable=SC2016  # %s placeholders are printf args, not shell expansion
+          COMMENT=$(printf '**%s** failed on `develop`.\n\n- Commit: `%s`\n- Run: %s' \
+            "$WORKFLOW" "$HEAD_SHA" "$RUN_URL")
+
+          EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
+            echo "Commented on existing develop-red issue #$EXISTING"
+          else
+            BODY=$(printf 'develop CI is RED. Builds on develop are landing on a broken base.\n\n%s\n\nThis issue auto-closes when the next postsubmit run on develop is green.' \
+              "$COMMENT")
+            gh issue create --repo "$REPO" \
+              --title "🔴 develop CI is RED" \
+              --label develop-red \
+              --assignee marmos91 \
+              --body "$BODY"
+          fi
+
+      - name: Close develop-red issue on green
+        if: env.CONCLUSION == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue close "$EXISTING" --repo "$REPO" \
+              --comment "✅ develop green again at \`${HEAD_SHA}\` (${WORKFLOW}) — tree reopened."
+            echo "Closed develop-red issue #$EXISTING"
+          else
+            echo "No open develop-red issue; nothing to close."
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Forcing function (warn-only): if develop is currently RED, warn on the PR.
+  # Idempotent via a hidden marker so the same comment is updated, not stacked.
+  # ---------------------------------------------------------------------------
+  warn-on-pr:
+    name: warn if develop is red
+    runs-on: ubuntu-latest
+    # Same-repo PRs only: fork PRs get a read-only GITHUB_TOKEN, so commenting
+    # would fail and turn this warn-only check into a red job.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Post/update develop-red warning
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          MARKER="<!-- ci-health:develop-red-warning -->"
+
+          ISSUE=$(gh issue list --repo "$REPO" --label develop-red --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [ -z "$ISSUE" ]; then
+            echo "develop is green; no warning needed."
+            exit 0
+          fi
+
+          # Find any existing bot warning comment by its hidden marker.
+          EXISTING_COMMENT=$(gh api "repos/$REPO/issues/$PR/comments" \
+            --jq "[.[] | select(.body | contains(\"$MARKER\"))][0].id // empty")
+
+          BODY=$(printf '%s\n⚠️ **develop is currently RED (see #%s).** Your PR builds on a broken base — fix/await develop before merging. (Warning only; this does not block the merge.)' \
+            "$MARKER" "$ISSUE")
+
+          if [ -n "$EXISTING_COMMENT" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING_COMMENT" \
+              -f body="$BODY" >/dev/null
+            echo "Updated existing warning comment $EXISTING_COMMENT"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" \
+              -f body="$BODY" >/dev/null
+            echo "Posted new warning comment"
+          fi
