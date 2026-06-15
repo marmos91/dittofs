@@ -51,8 +51,11 @@ const (
 // once, after the timed region, to flush every profile and restore runtime
 // profiler state. On error the partially-started session is rolled back.
 func startProfileSession(rootDir, area, phase, workload string, full bool) (*profileSession, error) {
-	// phase is a single directory name, not a path: reject separators / "."/".."
-	// so a stray --phase can't escape <rootDir>/<area> via filepath.Join.
+	// area and phase are single directory names, not paths: reject separators /
+	// "."/".." so neither can escape <rootDir> via filepath.Join.
+	if area == "" || area != filepath.Base(area) || area == "." || area == ".." {
+		return nil, fmt.Errorf("invalid area %q: must be a single path element", area)
+	}
 	if phase != "" && (phase != filepath.Base(phase) || phase == "." || phase == "..") {
 		return nil, fmt.Errorf("invalid phase %q: must be a single path element", phase)
 	}
