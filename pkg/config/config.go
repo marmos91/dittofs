@@ -137,16 +137,34 @@ type SnapshotConfig struct {
 	// Runtime.RestoreSnapshot in the REST handler. Defaults to 30
 	// minutes when unset.
 	RestoreHTTPTimeout time.Duration `mapstructure:"restore_http_timeout" yaml:"restore_http_timeout"`
+
+	// SchedulerPollInterval is the cadence at which the background snapshot
+	// scheduler scans policies for due snapshots. Defaults to one minute when
+	// unset. The per-share policy interval (not this knob) controls how often
+	// a given share is actually snapshotted.
+	SchedulerPollInterval time.Duration `mapstructure:"scheduler_poll_interval" yaml:"scheduler_poll_interval"`
+
+	// SchedulerDisabled turns the background snapshot scheduler off entirely.
+	// Per-share policies are still persisted and can be run manually, but no
+	// automatic create/prune occurs while disabled.
+	SchedulerDisabled bool `mapstructure:"scheduler_disabled" yaml:"scheduler_disabled"`
 }
 
 // DefaultRestoreHTTPTimeout is the fallback applied by ApplyDefaults when
 // SnapshotConfig.RestoreHTTPTimeout is zero.
 const DefaultRestoreHTTPTimeout = 30 * time.Minute
 
+// DefaultSchedulerPollInterval is the fallback applied by ApplyDefaults when
+// SnapshotConfig.SchedulerPollInterval is zero.
+const DefaultSchedulerPollInterval = time.Minute
+
 // ApplyDefaults fills any zero-valued field with the defaults.
 func (c *SnapshotConfig) ApplyDefaults() {
 	if c.RestoreHTTPTimeout == 0 {
 		c.RestoreHTTPTimeout = DefaultRestoreHTTPTimeout
+	}
+	if c.SchedulerPollInterval == 0 {
+		c.SchedulerPollInterval = DefaultSchedulerPollInterval
 	}
 }
 
@@ -154,6 +172,9 @@ func (c *SnapshotConfig) ApplyDefaults() {
 func (c *SnapshotConfig) Validate() error {
 	if c.RestoreHTTPTimeout < 0 {
 		return fmt.Errorf("snapshot.restore_http_timeout must be >= 0 (got %s)", c.RestoreHTTPTimeout)
+	}
+	if c.SchedulerPollInterval < 0 {
+		return fmt.Errorf("snapshot.scheduler_poll_interval must be >= 0 (got %s)", c.SchedulerPollInterval)
 	}
 	return nil
 }

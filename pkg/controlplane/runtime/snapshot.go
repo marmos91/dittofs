@@ -36,6 +36,12 @@ type CreateSnapshotOpts struct {
 	// WriteManifestAtomic. The target row must currently be in state
 	// 'failed' — anything else returns ErrSnapshotRetryTargetNotFailed.
 	RetryOf string
+
+	// Scheduled marks the snapshot as produced by the background snapshot
+	// scheduler. Only scheduled snapshots are eligible for automatic
+	// retention pruning. Ignored on the RetryOf path (the existing row's
+	// flag is preserved).
+	Scheduled bool
 }
 
 // CreateSnapshot orchestrates an asynchronous share snapshot. The call
@@ -145,6 +151,7 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 			ShareName:      shareName,
 			State:          models.StateCreating,
 			MetadataEngine: metadataEngine,
+			Scheduled:      opts.Scheduled,
 		}
 		if _, cerr := r.store.CreateSnapshot(ctx, snap); cerr != nil {
 			// ErrSnapshotStateConflict is surfaced as-is so callers can

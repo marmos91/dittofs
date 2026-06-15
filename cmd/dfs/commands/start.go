@@ -150,6 +150,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize runtime: %w", err)
 	}
 
+	// Configure the background snapshot scheduler before Serve launches it.
+	rt.SetSnapshotSchedulerConfig(cfg.Snapshot.SchedulerPollInterval, cfg.Snapshot.SchedulerDisabled)
+
 	// Auto-deduce block store defaults from system resources
 	detector := sysinfo.NewDetector()
 	deduced := block.DeduceDefaults(detector)

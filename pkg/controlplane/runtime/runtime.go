@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/lifecycle"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/stores"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/snapshotsched"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/trash"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -75,6 +76,15 @@ type Runtime struct {
 	// constructed lazily by Trash() and started/stopped by the lifecycle
 	// Serve/shutdown path. Guarded by mu.
 	trashSvc *trash.Service
+
+	// snapSchedSvc is the background snapshot scheduler (policy-driven
+	// create + prune), constructed lazily by SnapshotScheduler() and
+	// started/stopped by the lifecycle Serve/shutdown path. Guarded by mu.
+	snapSchedSvc *snapshotsched.Service
+	// snapSchedPollInterval overrides the scheduler poll cadence (0 = default).
+	// snapSchedDisabled, when true, prevents Serve from launching it.
+	snapSchedPollInterval time.Duration
+	snapSchedDisabled     bool
 
 	localStoreDefaults *shares.LocalStoreDefaults
 	syncerDefaults     *shares.SyncerDefaults
@@ -216,9 +226,13 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	// idempotent so a double-stop (this + ctx cancellation) is harmless.
 	r.mu.RLock()
 	ts := r.trashSvc
+	ss := r.snapSchedSvc
 	r.mu.RUnlock()
 	if ts != nil {
 		ts.Stop()
+	}
+	if ss != nil {
+		ss.Stop()
 	}
 
 	r.shutdownSnapshots(ctx)
@@ -549,6 +563,13 @@ func (r *Runtime) Serve(ctx context.Context) error {
 	// sweeper it exits on ctx cancellation (the lifecycle shutdown path) or on
 	// an explicit Trash().Stop() from Runtime.Shutdown.
 	r.Trash().Start(ctx)
+
+	// Launch the snapshot scheduler unless disabled. Same lifecycle as the
+	// reaper: exits on ctx cancellation or SnapshotScheduler().Stop() from
+	// Runtime.Shutdown. Policy-free fleets pay one ListPolicies query per tick.
+	if !r.snapSchedDisabled {
+		r.SnapshotScheduler().Start(ctx)
+	}
 
 	// Reconcile snapshot rows abandoned by a prior crash BEFORE
 	// adapters start serving. Metadata stores and shares are already
