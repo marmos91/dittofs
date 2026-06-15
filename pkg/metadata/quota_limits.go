@@ -51,6 +51,15 @@ type quotaLimits struct {
 	mu sync.RWMutex
 	// byShare[share][key] = limit
 	byShare map[string]map[identityQuotaKey]*IdentityQuota
+
+	// dynGrace holds ephemeral grace timers for default-user fallbacks, keyed by
+	// the REAL uid (not the default-user sentinel) so each user gets an
+	// independent grace window. These are NOT persisted: a default-user quota is
+	// a shared fallback whose single DB row cannot hold per-user grace state, so
+	// the timer is in-memory only and resets on restart (acceptable for the
+	// fallback case; explicit user/group quotas keep their persisted per-row
+	// grace). Keyed share -> (scope,realID) -> grace start.
+	dynGrace map[string]map[identityQuotaKey]time.Time
 }
 
 type identityQuotaKey struct {
@@ -59,7 +68,43 @@ type identityQuotaKey struct {
 }
 
 func newQuotaLimits() *quotaLimits {
-	return &quotaLimits{byShare: make(map[string]map[identityQuotaKey]*IdentityQuota)}
+	return &quotaLimits{
+		byShare:  make(map[string]map[identityQuotaKey]*IdentityQuota),
+		dynGrace: make(map[string]map[identityQuotaKey]time.Time),
+	}
+}
+
+// dynGraceStartedAt returns the ephemeral default-user grace timer for a real
+// identity (zero if none).
+func (q *quotaLimits) dynGraceStartedAt(share string, scope QuotaScope, realID uint32) time.Time {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	if m := q.dynGrace[share]; m != nil {
+		return m[identityQuotaKey{scope, realID}]
+	}
+	return time.Time{}
+}
+
+// setDynGrace sets (zero clears) the ephemeral default-user grace timer for a
+// real identity.
+func (q *quotaLimits) setDynGrace(share string, scope QuotaScope, realID uint32, t time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	m := q.dynGrace[share]
+	if t.IsZero() {
+		if m != nil {
+			delete(m, identityQuotaKey{scope, realID})
+			if len(m) == 0 {
+				delete(q.dynGrace, share)
+			}
+		}
+		return
+	}
+	if m == nil {
+		m = make(map[identityQuotaKey]time.Time)
+		q.dynGrace[share] = m
+	}
+	m[identityQuotaKey{scope, realID}] = t
 }
 
 // set installs or replaces a single identity quota for a share.

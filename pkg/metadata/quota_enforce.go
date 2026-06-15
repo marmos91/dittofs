@@ -75,9 +75,16 @@ func (s *Service) enforceOne(shareName string, store Store, scope QuotaScope, us
 		}
 	}
 
+	// A default-user fallback (the resolved quota is keyed by the DefaultUserID
+	// sentinel) must track grace PER REAL USER, not on the shared sentinel row —
+	// otherwise one user's soft breach would start/expire grace for everyone.
+	// Such grace is ephemeral (in-memory, keyed by the real usageID). Explicit
+	// user/group quotas use the persisted per-row grace.
+	isDefaultUserFallback := scope == QuotaScopeUser && iq.ID == DefaultUserID
+
 	if !overSoft {
 		// Under all soft thresholds: clear any running grace timer.
-		s.clearGrace(shareName, iq.Scope, iq.ID, &iq)
+		s.clearGrace(shareName, scope, usageID, isDefaultUserFallback, iq.ID)
 		return nil
 	}
 
@@ -88,17 +95,10 @@ func (s *Service) enforceOne(shareName string, store Store, scope QuotaScope, us
 	}
 
 	now := time.Now()
-	// Re-read the grace timer under lock: a concurrent clearGrace (because this
-	// identity's usage dropped below soft on another write) may have reset it
-	// since iq was copied out of the map, so the local copy can be stale.
-	graceStart, ok := s.identityQuotas.liveGraceStartedAt(shareName, iq.Scope, iq.ID)
-	if !ok {
-		// Quota was removed concurrently — nothing to enforce.
-		return nil
-	}
+	graceStart := s.liveGrace(shareName, scope, usageID, isDefaultUserFallback, iq.ID)
 	if graceStart.IsZero() {
 		// Start the grace window now; allow this op.
-		s.startGrace(shareName, iq.Scope, iq.ID, &iq, now)
+		s.startGrace(shareName, scope, usageID, isDefaultUserFallback, iq.ID, now)
 		return nil
 	}
 	// Grace running: enforce soft-as-hard once the window has elapsed.
@@ -108,20 +108,35 @@ func (s *Service) enforceOne(shareName string, store Store, scope QuotaScope, us
 	return nil
 }
 
-func (s *Service) startGrace(shareName string, scope QuotaScope, id uint32, iq *IdentityQuota, t time.Time) {
-	if s.identityQuotas.updateGraceStartedAt(shareName, scope, id, t) {
-		iq.GraceStartedAt = t
-		s.persistGrace(shareName, scope, id, t)
+// liveGrace reads the current grace start for an enforced identity: the
+// ephemeral per-real-user timer for a default-user fallback, otherwise the
+// persisted per-row timer. Re-reading here (rather than trusting the copied iq)
+// avoids acting on a value a concurrent clear has already reset.
+func (s *Service) liveGrace(shareName string, scope QuotaScope, usageID uint32, isDefaultUserFallback bool, rowID uint32) time.Time {
+	if isDefaultUserFallback {
+		return s.identityQuotas.dynGraceStartedAt(shareName, scope, usageID)
+	}
+	t, _ := s.identityQuotas.liveGraceStartedAt(shareName, scope, rowID)
+	return t
+}
+
+func (s *Service) startGrace(shareName string, scope QuotaScope, usageID uint32, isDefaultUserFallback bool, rowID uint32, t time.Time) {
+	if isDefaultUserFallback {
+		s.identityQuotas.setDynGrace(shareName, scope, usageID, t)
+		return
+	}
+	if s.identityQuotas.updateGraceStartedAt(shareName, scope, rowID, t) {
+		s.persistGrace(shareName, scope, rowID, t)
 	}
 }
 
-func (s *Service) clearGrace(shareName string, scope QuotaScope, id uint32, iq *IdentityQuota) {
-	if iq.GraceStartedAt.IsZero() {
+func (s *Service) clearGrace(shareName string, scope QuotaScope, usageID uint32, isDefaultUserFallback bool, rowID uint32) {
+	if isDefaultUserFallback {
+		s.identityQuotas.setDynGrace(shareName, scope, usageID, time.Time{})
 		return
 	}
-	if s.identityQuotas.updateGraceStartedAt(shareName, scope, id, time.Time{}) {
-		iq.GraceStartedAt = time.Time{}
-		s.persistGrace(shareName, scope, id, time.Time{})
+	if s.identityQuotas.updateGraceStartedAt(shareName, scope, rowID, time.Time{}) {
+		s.persistGrace(shareName, scope, rowID, time.Time{})
 	}
 }
 

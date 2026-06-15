@@ -134,6 +134,48 @@ func TestQuotaEnforcement_DefaultUserFallthrough(t *testing.T) {
 	}
 }
 
+func TestQuotaEnforcement_DefaultUserGraceIsPerUser(t *testing.T) {
+	t.Parallel()
+	fx := newTestFixture(t)
+
+	// Default-user quota with soft=100, hard=10000, grace=1s. Two different
+	// users both fall through to it; one user's grace must NOT affect the other.
+	fx.service.SetIdentityQuota(fx.shareName, metadata.IdentityQuota{
+		Scope:        metadata.QuotaScopeUser,
+		ID:           metadata.DefaultUserID,
+		SoftBytes:    100,
+		LimitBytes:   10000,
+		GraceSeconds: 1,
+	})
+
+	userA := fx.authContext(1000, 1000)
+	userB := fx.authContext(1001, 1001)
+	fileA, _, err := fx.service.CreateFile(userA, fx.rootHandle, "a.bin", &metadata.FileAttr{Mode: 0o644})
+	require.NoError(t, err)
+	fileB, _, err := fx.service.CreateFile(userB, fx.rootHandle, "b.bin", &metadata.FileAttr{Mode: 0o644})
+	require.NoError(t, err)
+	hA := handleForFile(t, fileA)
+	hB := handleForFile(t, fileB)
+
+	// User A crosses soft → starts A's (per-user, ephemeral) grace window.
+	if _, err := fx.service.PrepareWrite(userA, hA, 200); err != nil {
+		t.Fatalf("user A over-soft within grace should be allowed, got %v", err)
+	}
+
+	// The persisted default-user row's grace timer must NOT have been set
+	// (per-user grace is ephemeral, keyed by the real uid).
+	iq, ok := fx.service.GetIdentityQuota(fx.shareName, metadata.QuotaScopeUser, metadata.DefaultUserID)
+	require.True(t, ok)
+	require.True(t, iq.GraceStartedAt.IsZero(), "shared default-user row must not carry per-user grace")
+
+	// User B, who never breached soft before, also gets its OWN fresh grace
+	// window on first crossing — it is not treated as already-expired because of
+	// user A's earlier breach.
+	if _, err := fx.service.PrepareWrite(userB, hB, 200); err != nil {
+		t.Fatalf("user B's first over-soft must start its own grace, got %v", err)
+	}
+}
+
 func TestQuotaEnforcement_GroupQuota(t *testing.T) {
 	t.Parallel()
 	fx := newTestFixture(t)

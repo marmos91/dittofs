@@ -179,6 +179,12 @@ func (h *QuotaHandler) Set(w http.ResponseWriter, r *http.Request) {
 			BadRequest(w, "Invalid limit_bytes: "+err.Error())
 			return
 		}
+		// ParseByteSize returns a uint64-backed value; reject sizes that would
+		// overflow the int64 limit column (and be treated as "no limit").
+		if bs.Int64() < 0 {
+			BadRequest(w, "limit_bytes too large")
+			return
+		}
 		limitBytes = bs.Int64()
 	}
 	if req.SoftBytes != "" {
@@ -187,10 +193,23 @@ func (h *QuotaHandler) Set(w http.ResponseWriter, r *http.Request) {
 			BadRequest(w, "Invalid soft_bytes: "+err.Error())
 			return
 		}
+		if bs.Int64() < 0 {
+			BadRequest(w, "soft_bytes too large")
+			return
+		}
 		softBytes = bs.Int64()
 	}
 	if req.LimitFiles < 0 || req.SoftFiles < 0 || req.GraceSeconds < 0 {
 		BadRequest(w, "limit_files, soft_files and grace_seconds must be >= 0")
+		return
+	}
+	// Enforce the soft <= hard invariant when both dimensions are set.
+	if limitBytes > 0 && softBytes > 0 && softBytes > limitBytes {
+		BadRequest(w, "soft_bytes must not exceed limit_bytes")
+		return
+	}
+	if req.LimitFiles > 0 && req.SoftFiles > 0 && req.SoftFiles > req.LimitFiles {
+		BadRequest(w, "soft_files must not exceed limit_files")
 		return
 	}
 

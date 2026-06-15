@@ -73,7 +73,17 @@ func (s *GORMStore) UpsertQuota(ctx context.Context, quota *models.Quota) error 
 			}
 			quota.CreatedAt = now
 			quota.UpdatedAt = now
-			return tx.Create(quota).Error
+			if createErr := tx.Create(quota).Error; createErr != nil {
+				// A concurrent create for the same (share, scope, identity)
+				// races past the existence check and trips the unique index;
+				// surface it as the domain duplicate error so the handler
+				// returns 409, mirroring CreateShare.
+				if isUniqueConstraintError(createErr) {
+					return models.ErrDuplicateQuota
+				}
+				return createErr
+			}
+			return nil
 		default:
 			return err
 		}
