@@ -45,7 +45,11 @@ func TestRun_HermeticBackends(t *testing.T) {
 				if res.Latency == nil {
 					t.Fatal("Latency is nil, want populated percentiles")
 				}
-				if res.Latency.P50Ns <= 0 || res.Latency.P99Ns < res.Latency.P50Ns {
+				// Percentiles must be non-negative and monotonic. A zero is
+				// valid: an in-RAM op can be faster than the platform clock's
+				// resolution (notably Windows' coarse timer), so p50/p95
+				// legitimately read 0ns.
+				if res.Latency.P50Ns < 0 || res.Latency.P95Ns < res.Latency.P50Ns || res.Latency.P99Ns < res.Latency.P95Ns {
 					t.Errorf("bad latency block: p50=%d p95=%d p99=%d",
 						res.Latency.P50Ns, res.Latency.P95Ns, res.Latency.P99Ns)
 				}
