@@ -248,7 +248,7 @@ func runOneWorkload(ctx context.Context, opts bsbench.Opts, tmpDir string) (bsbe
 
 // capture wraps fn in a profile session and returns the result + profile dir.
 func capture(opts bsbench.Opts, fn func() (bsbench.Result, error)) (bsbench.Result, string, error) {
-	sess, err := startProfileSession(opts.ProfileDir, orchPhase, opts.Workload, orchFullProfiles)
+	sess, err := startProfileSession(opts.ProfileDir, "blockstore", orchPhase, opts.Workload, orchFullProfiles)
 	if err != nil {
 		return bsbench.Result{}, "", err
 	}

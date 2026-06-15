@@ -16,7 +16,7 @@ import (
 // does NOT write mutex/block.
 func TestProfileSession_BasicProfilesNonEmpty(t *testing.T) {
 	root := t.TempDir()
-	sess, err := startProfileSession(root, "", "unit", false)
+	sess, err := startProfileSession(root, "blockstore", "", "unit", false)
 	if err != nil {
 		t.Fatalf("startProfileSession: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestProfileSession_BasicProfilesNonEmpty(t *testing.T) {
 // contention here proves the session enables them.
 func TestProfileSession_FullProfilesNonEmpty(t *testing.T) {
 	root := t.TempDir()
-	sess, err := startProfileSession(root, "", "unit-full", true)
+	sess, err := startProfileSession(root, "blockstore", "", "unit-full", true)
 	if err != nil {
 		t.Fatalf("startProfileSession: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestProfileSession_FullProfilesNonEmpty(t *testing.T) {
 // TestProfileSession_StopIdempotent confirms the deferred safety stop is
 // a no-op once the happy-path stop has run.
 func TestProfileSession_StopIdempotent(t *testing.T) {
-	sess, err := startProfileSession(t.TempDir(), "", "unit-idem", false)
+	sess, err := startProfileSession(t.TempDir(), "blockstore", "", "unit-idem", false)
 	if err != nil {
 		t.Fatalf("startProfileSession: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestStartProfileSession_PhaseSubdir(t *testing.T) {
 	root := t.TempDir()
 	// Only one CPU profile can be active per process, so each session is
 	// stopped before the next starts.
-	sess, err := startProfileSession(root, "baseline", "wl", false)
+	sess, err := startProfileSession(root, "blockstore", "baseline", "wl", false)
 	if err != nil {
 		t.Fatalf("startProfileSession: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestStartProfileSession_PhaseSubdir(t *testing.T) {
 		t.Errorf("phase not in path: %s", sessDir)
 	}
 
-	flat, err := startProfileSession(root, "", "wl", false)
+	flat, err := startProfileSession(root, "blockstore", "", "wl", false)
 	if err != nil {
 		t.Fatalf("startProfileSession (flat): %v", err)
 	}
@@ -182,7 +182,7 @@ func TestLoadSeed_RoundTrip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sess, err := startProfileSession(t.TempDir(), "", "mixed-ops-storm", true)
+			sess, err := startProfileSession(t.TempDir(), "blockstore", "", "mixed-ops-storm", true)
 			if err != nil {
 				t.Fatalf("startProfileSession: %v", err)
 			}
@@ -210,7 +210,7 @@ func TestLoadSeed_RoundTrip(t *testing.T) {
 // escape <profile-dir>/blockstore via filepath.Join.
 func TestStartProfileSession_RejectsBadPhase(t *testing.T) {
 	for _, phase := range []string{"..", ".", "../evil", "a/b", "/abs"} {
-		if _, err := startProfileSession(t.TempDir(), phase, "wl", false); err == nil {
+		if _, err := startProfileSession(t.TempDir(), "blockstore", phase, "wl", false); err == nil {
 			t.Errorf("phase %q: expected error, got nil", phase)
 		}
 	}
