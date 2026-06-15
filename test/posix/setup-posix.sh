@@ -257,7 +257,7 @@ configure_via_api() {
             "$DITTOFSCTL_BIN" store block local add --name default --type memory
             log_info "Creating remote block store..."
             "$DITTOFSCTL_BIN" store block remote add --name default --type s3 \
-                --config '{"bucket":"dittofs-posix-test","region":"us-east-1","endpoint":"http://localhost:4566","force_path_style":true}'
+                --config '{"bucket":"dittofs-posix-test","region":"us-east-1","endpoint":"http://localhost:4566","force_path_style":true,"access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
             ;;
         *)
             # Default: memory block store
