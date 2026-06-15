@@ -79,31 +79,38 @@ When the server actually handles metadata ops (NFSv3 LOOKUP → `Service.Lookup`
 ~44% of CPU in `GetFile`, ~64% in the LOOKUP handler (mostly the pg query). A
 read-through cache on `GetFile`/`GetChild` directly attacks this.
 
-## Final verdict: BUILD the cache (opt-in, postgres-focused)
+## Verdict: query-reduction yes (#1176); cache deferred (#1173)
 
-Both gates met. Recommended follow-up (separate issue/PR):
+Both gates are technically met — but **160 µs/op is acceptable** in absolute
+terms, and the 44%-CPU figure came from a `drop_caches`-forced cold crawl (worst
+case). So the conclusion is **not** "build the cache now":
 
-- **Opt-in read-through LRU+TTL cache in `MetadataService`**, in front of the
-  backend store, keyed by handle (`GetFile`) and (dirHandle,name) (`GetChild`).
-- **Write-driven invalidation** on every mutation that touches an entry —
-  write/setattr/rename/remove/link/ACL/EA/link-count. Single-node single-writer:
-  all mutations funnel through the runtime, so invalidation is tractable (no
-  distributed coherence).
-- **Default off; enable for postgres** (and any future remote metadata backend).
-  memory needs none (it *is* RAM); badger is borderline — leave it opt-in.
-- Bound the cache (entry count + TTL) so a large crawl can't pin unbounded RAM;
-  TTL also caps staleness if an invalidation path is ever missed.
-- Guard with a conformance test that asserts no stale read survives a mutation
-  (the invalidation is the only correctness risk).
+1. **Do the cheap, unconditional win first — query-reduction (#1176).** The cost
+   is round-trip + the 2-query `GetFile`, not indexing (point lookups already) or
+   planning (prepared statements made no difference). Collapse `GetFile`'s 1–2
+   queries into one, batch READDIR hydration, review the pool. Helps *every*
+   postgres deployment, no invalidation risk. "Why not."
 
-Caveat: this helps the *cold-cache / large-working-set / crawl* regime measured
-here. Small hot working sets are already absorbed by the NFS/SMB client attr
-cache and won't exercise the server cache — which is fine; default-off means
-deployments opt in when their workload is metadata-crawl-heavy on postgres.
+2. **Defer the cache decision (#1173) pending a scaling + scale-out study.** Open
+   questions before committing: how latency/throughput hold up under concurrency;
+   whether per-op cost stays flat as the dataset grows to millions of entries;
+   and — decisively — **k8s scale-out**. Multiple `dfs` replicas sharing one
+   postgres **break the single-node single-writer assumption** that made cache
+   invalidation tractable: a per-pod cache would need cross-pod invalidation
+   (`LISTEN/NOTIFY` / pub-sub / short TTL), much harder. So the cache is *not*
+   obviously worth it in the world we actually care about, and #1176 may be the
+   better lever there.
+
+If a cache is ever built (design constraints, carried to #1173): opt-in
+read-through LRU+TTL in `MetadataService`, default off, postgres-focused,
+write-invalidated, **cross-pod-safe invalidation designed in from the start**,
+guarded by a conformance test asserting no stale read survives a mutation.
 
 ## Status
 
 - [x] Part 1 micro-bench built + run (memory/badger/postgres). Gate 1 MET.
 - [x] Prepared-statements confound measured + ruled out.
 - [x] Part 2 e2e scw run + server pprof. Gate 2 MET (postgres GetFile ~44% server CPU).
-- [x] Final verdict: build opt-in read-through cache, postgres-focused, default off.
+- [x] Verdict: query-reduction is the action (#1176); cache decision deferred
+      pending scaling + k8s scale-out study (#1173). 160 µs/op is acceptable;
+      indexing won't help (already point lookups).
