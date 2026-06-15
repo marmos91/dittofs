@@ -347,12 +347,24 @@ func TestBuildAAPLServerQueryResponse(t *testing.T) {
 		t.Fatalf("ServerCaps = 0x%x, missing UNIX_BASED bit", caps)
 	}
 
-	// Non-server-query command code → no response.
-	other := smbenc.NewWriter(8)
+	// Non-server-query command code (full 24-byte request) → no response.
+	other := smbenc.NewWriter(24)
 	other.WriteUint32(99)
 	other.WriteUint32(0)
+	other.WriteUint64(0x7)
+	other.WriteUint64(0)
 	if got := buildAAPLServerQueryResponse(other.Bytes()); got != nil {
 		t.Fatalf("non-query command returned %d bytes, want nil", len(got))
+	}
+
+	// Server query that does NOT request server caps (bit 0 clear) → no response.
+	noCaps := smbenc.NewWriter(24)
+	noCaps.WriteUint32(aaplCommandServerQuery)
+	noCaps.WriteUint32(0)
+	noCaps.WriteUint64(0x6) // volcaps|model, but not server caps
+	noCaps.WriteUint64(0)
+	if got := buildAAPLServerQueryResponse(noCaps.Bytes()); got != nil {
+		t.Fatalf("caps-not-requested returned %d bytes, want nil", len(got))
 	}
 
 	// Too-short data → no response.
