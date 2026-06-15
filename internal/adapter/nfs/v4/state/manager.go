@@ -2490,7 +2490,12 @@ func (sm *StateManager) GetStatusFlags(session *Session) uint32 {
 //   - sequenceID == record.SequenceID + 1: new request -- create session
 //   - otherwise: misordered -- return error
 //
-// On success, returns the CreateSessionResult and nil cached bytes.
+// On success, returns the CreateSessionResult and nil cached bytes. The encoded
+// XDR response is also cached on the client record under sm.mu in the same
+// critical section as the sequence-ID bump, so a concurrent retransmit that
+// matches record.SequenceID always observes a populated cache (RFC 8881
+// Section 18.36 replay requirement) — there is no window where the seqid has
+// advanced but the cache is still nil.
 // On replay, returns nil result and the cached XDR response bytes.
 // On error, returns an appropriate NFS4StateError.
 //
@@ -2573,22 +2578,53 @@ func (sm *StateManager) CreateSession(
 	// Increment sequence ID
 	record.SequenceID++
 
-	logger.Info("CREATE_SESSION: session created",
-		"client_id", fmt.Sprintf("0x%x", clientID),
-		"session_id", session.SessionID.String(),
-		"fore_slots", negotiatedFore.MaxRequests)
-
-	return &CreateSessionResult{
+	result := &CreateSessionResult{
 		SessionID:        session.SessionID,
 		SequenceID:       record.SequenceID,
 		Flags:            responseFlags,
 		ForeChannelAttrs: negotiatedFore,
 		BackChannelAttrs: negotiatedBack,
-	}, nil, nil
+	}
+
+	// Encode and cache the XDR response under the same sm.mu critical section
+	// as the seqid bump. This guarantees a retransmit matching record.SequenceID
+	// always finds CachedCreateSessionRes populated (RFC 8881 Section 18.36),
+	// closing the replay window that would otherwise return NFS4ERR_SEQ_MISORDERED.
+	res := &types.CreateSessionRes{
+		Status:           types.NFS4_OK,
+		SessionID:        result.SessionID,
+		SequenceID:       result.SequenceID,
+		Flags:            result.Flags,
+		ForeChannelAttrs: result.ForeChannelAttrs,
+		BackChannelAttrs: result.BackChannelAttrs,
+	}
+	var buf bytes.Buffer
+	if err := res.Encode(&buf); err != nil {
+		return nil, nil, &NFS4StateError{
+			Status:  types.NFS4ERR_SERVERFAULT,
+			Message: fmt.Sprintf("failed to encode CREATE_SESSION response: %v", err),
+		}
+	}
+	cached := make([]byte, buf.Len())
+	copy(cached, buf.Bytes())
+	record.CachedCreateSessionRes = cached
+	result.EncodedRes = cached
+
+	logger.Info("CREATE_SESSION: session created",
+		"client_id", fmt.Sprintf("0x%x", clientID),
+		"session_id", session.SessionID.String(),
+		"fore_slots", negotiatedFore.MaxRequests)
+
+	return result, nil, nil
 }
 
-// CacheCreateSessionResponse stores the full XDR-encoded CREATE_SESSION
-// response bytes on the client record for replay detection.
+// CacheCreateSessionResponse stores the full XDR-encoded CREATE_SESSION response
+// bytes on the client record for replay detection.
+//
+// The normal CREATE_SESSION path no longer needs this: CreateSession already
+// encodes and caches the response atomically with the sequence-ID bump (see
+// above), which is what closes the replay window. This method remains as an
+// explicit override for the rare caller that wants to replace the cached bytes.
 // Thread-safe: acquires sm.mu.Lock.
 func (sm *StateManager) CacheCreateSessionResponse(clientID uint64, responseBytes []byte) {
 	sm.mu.Lock()
@@ -2599,7 +2635,6 @@ func (sm *StateManager) CacheCreateSessionResponse(clientID uint64, responseByte
 		return
 	}
 
-	// Copy the bytes to avoid holding references to caller's buffer
 	cached := make([]byte, len(responseBytes))
 	copy(cached, responseBytes)
 	record.CachedCreateSessionRes = cached
@@ -3193,9 +3228,10 @@ func (sm *StateManager) UpdateBackchannelParams(sessionID types.SessionId4, cbPr
 	session.CbProgram = cbProgram
 	session.BackchannelSecParms = secParms
 
-	// Update the sender's program number if it exists
+	// Update the sender's program number if it exists. The sender's Run
+	// goroutine reads cbProgram without sm.mu, so the field is atomic.
 	if session.backchannelSender != nil {
-		session.backchannelSender.cbProgram = cbProgram
+		session.backchannelSender.cbProgram.Store(cbProgram)
 	}
 
 	logger.Info("Backchannel params updated",

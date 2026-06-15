@@ -135,7 +135,12 @@ func (p *PendingCBReplies) Cancel(xid uint32) {
 type BackchannelSender struct {
 	sessionID types.SessionId4
 	clientID  uint64
-	cbProgram uint32
+
+	// cbProgram is the callback RPC program number. It is read by the Run
+	// goroutine (sendCallback) and updated by BackchannelCtl via
+	// StateManager.UpdateBackchannelParams, so it is accessed atomically to
+	// avoid a data race between the two goroutines.
+	cbProgram atomic.Uint32
 
 	queue chan CallbackRequest
 	sm    *StateManager
@@ -163,16 +168,17 @@ func NewBackchannelSender(
 	slotTable *SlotTable,
 	sm *StateManager,
 ) *BackchannelSender {
-	return &BackchannelSender{
+	bs := &BackchannelSender{
 		sessionID:       sessionID,
 		clientID:        clientID,
-		cbProgram:       cbProgram,
 		queue:           make(chan CallbackRequest, backchannelQueueSize),
 		sm:              sm,
 		slotTable:       slotTable,
 		stopCh:          make(chan struct{}),
 		callbackTimeout: defaultBackchannelTimeout,
 	}
+	bs.cbProgram.Store(cbProgram)
+	return bs
 }
 
 // Run is the main loop for the BackchannelSender goroutine.
@@ -288,7 +294,7 @@ func (bs *BackchannelSender) sendCallback(ctx context.Context, req CallbackReque
 
 	// 4. Build RPC CALL message
 	xid := bs.nextXID.Add(1)
-	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram, types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs)
+	callMsg := BuildCBRPCCallMessage(xid, bs.cbProgram.Load(), types.NFS4_CALLBACK_VERSION, types.CB_PROC_COMPOUND, compoundArgs)
 
 	// 5. Add record marking
 	framedMsg := AddCBRecordMark(callMsg, true)

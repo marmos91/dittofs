@@ -645,4 +645,10 @@ type CreateSessionResult struct {
 	Flags            uint32
 	ForeChannelAttrs types.ChannelAttrs
 	BackChannelAttrs types.ChannelAttrs
+
+	// EncodedRes holds the full XDR-encoded success response. It is produced and
+	// cached for replay under sm.mu in the same critical section that bumps the
+	// client sequence ID, so the handler can return it directly without a second
+	// encode/cache round-trip (which would reopen the replay window).
+	EncodedRes []byte
 }

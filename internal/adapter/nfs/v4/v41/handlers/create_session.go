@@ -1,7 +1,6 @@
 package v41handlers
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 
@@ -75,28 +74,10 @@ func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41Reques
 		}
 	}
 
-	// Encode the success response
-	res := &types.CreateSessionRes{
-		Status:           types.NFS4_OK,
-		SessionID:        result.SessionID,
-		SequenceID:       result.SequenceID,
-		Flags:            result.Flags,
-		ForeChannelAttrs: result.ForeChannelAttrs,
-		BackChannelAttrs: result.BackChannelAttrs,
-	}
-
-	var buf bytes.Buffer
-	if err := res.Encode(&buf); err != nil {
-		logger.Error("CREATE_SESSION: encode response error", "error", err)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
-			OpCode: types.OP_CREATE_SESSION,
-			Data:   EncodeStatusOnly(types.NFS4ERR_SERVERFAULT),
-		}
-	}
-
-	// Cache the encoded response bytes for replay detection
-	d.StateManager.CacheCreateSessionResponse(args.ClientID, buf.Bytes())
+	// The state manager already encoded the success response and cached it for
+	// replay detection atomically with the sequence-ID bump (RFC 8881 Section
+	// 18.36). Reuse those bytes directly; re-encoding here would reopen the
+	// replay window the state manager closed.
 
 	// Auto-bind the connection that created the session as fore-channel.
 	// This is best-effort: CREATE_SESSION already succeeded, so we only
@@ -119,6 +100,6 @@ func HandleCreateSession(d *Deps, ctx *types.CompoundContext, _ *types.V41Reques
 	return &types.CompoundResult{
 		Status: types.NFS4_OK,
 		OpCode: types.OP_CREATE_SESSION,
-		Data:   buf.Bytes(),
+		Data:   result.EncodedRes,
 	}
 }

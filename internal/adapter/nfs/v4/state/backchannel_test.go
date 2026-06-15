@@ -315,6 +315,51 @@ func TestBackchannelSender_Stop(t *testing.T) {
 	}
 }
 
+// TestBackchannelSender_CbProgramRace exercises the two real call sites that
+// touch BackchannelSender.cbProgram concurrently: UpdateBackchannelParams
+// (BACKCHANNEL_CTL) writes it, while sendCallback (the Run-goroutine read path)
+// reads it on every callback. Before the fix cbProgram was a plain uint32 read
+// without sm.mu, so `go test -race` flagged a data race here. With cbProgram as
+// an atomic.Uint32 this test must pass cleanly under -race.
+func TestBackchannelSender_CbProgramRace(t *testing.T) {
+	sender, sm, sessionID := createTestBackchannelSender(t)
+
+	// Attach the sender to the session so UpdateBackchannelParams targets it.
+	sm.mu.Lock()
+	sm.sessionsByID[sessionID].backchannelSender = sender
+	sm.mu.Unlock()
+
+	const iterations = 500
+	done := make(chan struct{}, 2)
+
+	// Writer: BACKCHANNEL_CTL updating the callback program number.
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for i := 0; i < iterations; i++ {
+			if err := sm.UpdateBackchannelParams(sessionID, 0x40000000+uint32(i), nil); err != nil {
+				t.Errorf("UpdateBackchannelParams: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Reader: sendCallback reads cbProgram before failing (no bound connection),
+	// which is the exact unsynchronised read the race covered.
+	go func() {
+		defer func() { done <- struct{}{} }()
+		recallOp := EncodeCBRecallOp(&types.Stateid4{Seqid: 1}, false, []byte{0x01})
+		for i := 0; i < iterations; i++ {
+			_ = sender.sendCallback(context.Background(), CallbackRequest{
+				OpCode:  types.OP_CB_RECALL,
+				Payload: recallOp,
+			})
+		}
+	}()
+
+	<-done
+	<-done
+}
+
 // TestBackchannelSender_SequenceIDIncrement verifies seqID increments between callbacks.
 func TestBackchannelSender_SequenceIDIncrement(t *testing.T) {
 	sender, sm, sessionID := createTestBackchannelSender(t)
