@@ -31,6 +31,7 @@ var (
 	mdPGUser     string
 	mdPGPassword string
 	mdPGSSLMode  string
+	mdPGPrepare  bool
 )
 
 var metadataCmd = &cobra.Command{
@@ -77,6 +78,7 @@ func init() {
 	f.StringVar(&mdPGUser, "pg-user", "postgres", "postgres user")
 	f.StringVar(&mdPGPassword, "pg-password", "postgres", "postgres password")
 	f.StringVar(&mdPGSSLMode, "pg-sslmode", "disable", "postgres sslmode")
+	f.BoolVar(&mdPGPrepare, "pg-prepare", true, "use server-side prepared statements (production default)")
 }
 
 func runMetadata(cmd *cobra.Command, _ []string) error {
@@ -106,6 +108,7 @@ func runMetadata(cmd *cobra.Command, _ []string) error {
 		User:     mdPGUser,
 		Password: mdPGPassword,
 		SSLMode:  mdPGSSLMode,
+		Prepare:  mdPGPrepare,
 	})
 	if err != nil {
 		return fmt.Errorf("open %s store: %w", mdBackend, err)
