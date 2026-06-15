@@ -17,6 +17,11 @@
 
 set -euo pipefail
 
+# Shared known-failures (blacklist) loader — same parser the POSIX harness uses.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../common/known-failures.sh
+source "${SCRIPT_DIR}/../../common/known-failures.sh"
+
 # --------------------------------------------------------------------------
 # Arguments
 # --------------------------------------------------------------------------
@@ -46,95 +51,15 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # --------------------------------------------------------------------------
-# Load known failures from KNOWN_FAILURES.md
+# Load known failures from KNOWN_FAILURES.md (shared parser).
 # --------------------------------------------------------------------------
-declare -A KNOWN_FAILURES
-declare -A KNOWN_REASONS
-# Workaround: bash set -u treats empty associative arrays as unbound
-KNOWN_FAILURES[_]="" ; unset 'KNOWN_FAILURES[_]'
-KNOWN_REASONS[_]=""  ; unset 'KNOWN_REASONS[_]'
+kf_load "$KNOWN_FAILURES_FILE"
+KNOWN_COUNT=$KF_COUNT
 
-if [[ -f "$KNOWN_FAILURES_FILE" ]]; then
-    while IFS= read -r line; do
-        # Skip empty lines, comments, markdown headers
-        [[ -z "$line" ]] && continue
-        [[ "$line" == \#* ]] && continue
-
-        # Only process lines that look like markdown table rows (start with |)
-        [[ "$line" != \|* ]] && continue
-
-        # Skip separator rows (e.g., |---|---|---|---|)
-        [[ "$line" =~ ^\|[[:space:]]*-+ ]] && continue
-
-        # Split on | -- field 1 is empty (leading |), field 2 is test name
-        IFS='|' read -r _ name _ reason _ <<< "$line"
-
-        # Trim whitespace from name
-        name="${name#"${name%%[![:space:]]*}"}"
-        name="${name%"${name##*[![:space:]]}"}"
-
-        # Skip the header row
-        [[ "$name" == "Test Name" ]] && continue
-        [[ -z "$name" ]] && continue
-
-        # Trim whitespace from reason
-        reason="${reason#"${reason%%[![:space:]]*}"}"
-        reason="${reason%"${reason##*[![:space:]]}"}"
-
-        # Support wildcard patterns (e.g., smb2.durable-open.*)
-        KNOWN_FAILURES["$name"]=1
-        KNOWN_REASONS["$name"]="${reason:-unknown}"
-    done < "$KNOWN_FAILURES_FILE"
-fi
-
-KNOWN_COUNT=${#KNOWN_FAILURES[@]}
-
-# --------------------------------------------------------------------------
-# Helper: check if test name matches any known failure (including wildcards)
-# --------------------------------------------------------------------------
-is_known_failure() {
-    local test_name="$1"
-
-    # Exact match
-    if [[ -n "${KNOWN_FAILURES[$test_name]+_}" ]]; then
-        return 0
-    fi
-
-    # Wildcard match: check patterns ending with .*
-    for pattern in "${!KNOWN_FAILURES[@]}"; do
-        if [[ "$pattern" == *'.*' ]]; then
-            local prefix="${pattern%.\*}"
-            if [[ "$test_name" == "$prefix"* ]]; then
-                return 0
-            fi
-        fi
-    done
-
-    return 1
-}
-
-get_known_reason() {
-    local test_name="$1"
-
-    # Exact match
-    if [[ -n "${KNOWN_REASONS[$test_name]+_}" ]]; then
-        echo "${KNOWN_REASONS[$test_name]}"
-        return
-    fi
-
-    # Wildcard match
-    for pattern in "${!KNOWN_REASONS[@]}"; do
-        if [[ "$pattern" == *'.*' ]]; then
-            local prefix="${pattern%.\*}"
-            if [[ "$test_name" == "$prefix"* ]]; then
-                echo "${KNOWN_REASONS[$pattern]}"
-                return
-            fi
-        fi
-    done
-
-    echo "unknown"
-}
+# Back-compat thin wrappers over the shared kf_* API so the body below keeps
+# its original call sites.
+is_known_failure() { kf_is_known "$1"; }
+get_known_reason() { kf_reason "$1"; }
 
 # --------------------------------------------------------------------------
 # Parse smbtorture output

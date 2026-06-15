@@ -115,51 +115,27 @@ if [[ -z "$EFFECTIVE_NFS_VERSION" ]]; then
     EFFECTIVE_NFS_VERSION=$(mount | grep "$MOUNT_POINT" | sed -n 's/.*vers=\([0-9.]*\).*/\1/p' 2>/dev/null || echo "")
 fi
 
-# Select known failures file based on NFS version
+# Known-failures blacklist (shared parser + Markdown-table format, identical to
+# the SMB conformance harness — see test/common/known-failures.sh).
+# shellcheck source=../common/known-failures.sh
+source "$SCRIPT_DIR/../common/known-failures.sh"
+
 case "$EFFECTIVE_NFS_VERSION" in
     4|4.0|4.1|4.2)
-        KNOWN_FAILURES_FILE="$SCRIPT_DIR/known_failures_v4.txt"
+        KNOWN_FAILURES_FILE="$SCRIPT_DIR/KNOWN_FAILURES_V4.md"
         ;;
     *)
-        KNOWN_FAILURES_FILE="$SCRIPT_DIR/known_failures.txt"
+        KNOWN_FAILURES_FILE="$SCRIPT_DIR/KNOWN_FAILURES.md"
         ;;
 esac
 
-# Parse file-level exclusion patterns from known failures file
-EXCLUDE_PATTERNS=()
-if [[ -f "$KNOWN_FAILURES_FILE" ]]; then
-    while IFS='|' read -r pattern _; do
-        # Trim leading/trailing whitespace
-        pattern="${pattern#"${pattern%%[![:space:]]*}"}"
-        pattern="${pattern%"${pattern##*[![:space:]]}"}"
-        # Skip comments and empty lines
-        [[ -z "$pattern" || "$pattern" == \#* ]] && continue
-        # Skip non-file patterns (:: separator = test name, not file path)
-        [[ "$pattern" == *::* ]] && continue
-        # Strip subtest marker (:testN) to get file-level path
-        pattern="${pattern%%:test[0-9]*}"
-        EXCLUDE_PATTERNS+=("$pattern")
-    done < "$KNOWN_FAILURES_FILE"
-fi
+kf_load "$KNOWN_FAILURES_FILE"
+EXCLUDE_PATTERNS=("${!KF_KNOWN[@]}")
 
-# Check if a test file matches any exclusion pattern
+# Check if a test file matches any exclusion pattern (kf_is_known handles both
+# the .* prefix and shell-glob wildcard styles plus the implicit .t suffix).
 is_excluded() {
-    local test_path="$1"  # relative to tests dir, e.g. "unlink/14.t"
-    for pat in "${EXCLUDE_PATTERNS[@]}"; do
-        # shellcheck disable=SC2254
-        case "$test_path" in
-            $pat) return 0 ;;
-        esac
-        # Try with .t suffix for patterns without extension (e.g. "open/etxtbsy")
-        if [[ "$pat" != *.t && "$pat" != *\* ]]; then
-            # shellcheck disable=SC2254
-            case "$test_path" in
-                ${pat}.t) return 0 ;;
-                ${pat}/*) return 0 ;;
-            esac
-        fi
-    done
-    return 1
+    kf_is_known "$1"
 }
 
 echo "Running POSIX compliance tests..."

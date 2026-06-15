@@ -218,12 +218,18 @@ func SupportedAttrs() []uint32 {
 	SetBit(&bitmap, FATTR4_SPACE_FREE)
 	SetBit(&bitmap, FATTR4_SPACE_AVAIL)
 	SetBit(&bitmap, FATTR4_TIME_ACCESS)
+	SetBit(&bitmap, FATTR4_TIME_ACCESS_SET)
 	SetBit(&bitmap, FATTR4_TIME_METADATA)
 	SetBit(&bitmap, FATTR4_TIME_MODIFY)
+	SetBit(&bitmap, FATTR4_TIME_MODIFY_SET)
 	SetBit(&bitmap, FATTR4_MOUNTED_ON_FILEID)
 	// FATTR4_TIME_ACCESS_SET (48) and FATTR4_TIME_MODIFY_SET (54) are write-only
-	// (RFC 7530 Section 5.7): they are valid only in SETATTR/EXCLUSIVE4_1 create and
-	// must not appear in FATTR4_SUPPORTED_ATTRS. See WritableAttrs/exclcreatAttrs.
+	// settable attributes (RFC 7530 Section 5.7). They are advertised in
+	// FATTR4_SUPPORTED_ATTRS because the Linux NFSv4 client gates whether it
+	// sends TIME_*_SET in SETATTR on their presence here: dropping them makes
+	// the client issue an empty SETATTR for utimensat()/touch, so the times
+	// silently never change (#1152). GETATTR of these write-only bits is
+	// handled as a no-op by the encoder so advertising them is safe.
 
 	// NFSv4.1 exclusive create attributes (word 2)
 	SetBit(&bitmap, FATTR4_SUPPATTR_EXCLCREAT)
@@ -245,9 +251,26 @@ func SupportedAttrs() []uint32 {
 // Only attributes that are both requested and supported are encoded.
 // Attribute values are written in ascending bit-number order within the
 // opaque data block.
+// writeOnlyResponseAttrs are advertised as settable in FATTR4_SUPPORTED_ATTRS
+// but have no read representation: a GETATTR must never echo or encode them.
+// They are settable-only (RFC 7530 Section 5.7) and are listed in SUPPORTED so
+// the Linux client sends them in SETATTR (see #1152), but a GETATTR response
+// drops them so no value is encoded for a non-existent reader.
+var writeOnlyResponseAttrs = []uint32{FATTR4_TIME_ACCESS_SET, FATTR4_TIME_MODIFY_SET}
+
+// responseAttrBitmap returns the attributes to encode in a GETATTR response:
+// the requested∩supported set with the write-only settable bits removed.
+func responseAttrBitmap(requested, supported []uint32) []uint32 {
+	bitmap := Intersect(requested, supported)
+	for _, bit := range writeOnlyResponseAttrs {
+		ClearBit(bitmap, bit)
+	}
+	return bitmap
+}
+
 func EncodePseudoFSAttrs(buf *bytes.Buffer, requested []uint32, node PseudoFSAttrSource) error {
 	supported := SupportedAttrs()
-	responseBitmap := Intersect(requested, supported)
+	responseBitmap := responseAttrBitmap(requested, supported)
 
 	// Encode the response bitmap
 	if err := EncodeBitmap4(buf, responseBitmap); err != nil {
@@ -490,7 +513,7 @@ func SupportedRealAttrs() []uint32 {
 //   - fsStats: Optional filesystem statistics for SPACE_TOTAL/FREE/AVAIL (can be nil)
 func EncodeRealFileAttrs(buf *bytes.Buffer, requested []uint32, file *metadata.File, handle metadata.FileHandle, fsStats ...*metadata.FilesystemStatistics) error {
 	supported := SupportedRealAttrs()
-	responseBitmap := Intersect(requested, supported)
+	responseBitmap := responseAttrBitmap(requested, supported)
 
 	// Encode the response bitmap
 	if err := EncodeBitmap4(buf, responseBitmap); err != nil {
