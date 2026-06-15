@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"fmt"
-	"net"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
@@ -146,6 +145,9 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 	}
 
 	if result.Success {
+		// Pin this caller_name to the transport source so a different host
+		// cannot later UNLOCK/CANCEL this client's locks via a spoofed name.
+		h.callerBinding.bind(req.Lock.CallerName, ctx.ClientAddr)
 		logger.Debug("NLM LOCK granted",
 			"client", ctx.ClientAddr,
 			"owner", ownerID)
@@ -167,7 +169,7 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 			},
 			Cookie:       req.Cookie,
 			Exclusive:    req.Exclusive,
-			CallbackAddr: extractCallbackAddr(ctx.ClientAddr),
+			CallbackHost: hostOf(ctx.ClientAddr),
 			CallbackProg: types.ProgramNLM,
 			CallbackVers: types.NLMVersion4,
 			CallerName:   req.Lock.CallerName,
@@ -199,6 +201,9 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 			}, nil
 		}
 
+		// Pin caller_name to source so a CANCEL spoofing this name from another
+		// host cannot dequeue this client's pending blocking request.
+		h.callerBinding.bind(req.Lock.CallerName, ctx.ClientAddr)
 		logger.Debug("NLM LOCK queued",
 			"client", ctx.ClientAddr,
 			"owner", ownerID)
@@ -234,27 +239,4 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 		Cookie: req.Cookie,
 		Status: types.NLM4Denied,
 	}, nil
-}
-
-// extractCallbackAddr constructs the callback address from the client address.
-//
-// Per NLM protocol, the callback is sent to the client's IP with the standard
-// NLM port (same as the main NLM port). Some implementations use a separate
-// callback port, but most use the same port.
-//
-// Parameters:
-//   - clientAddr: Client address in "host:port" format
-//
-// Returns the callback address in "host:port" format using standard NLM port.
-func extractCallbackAddr(clientAddr string) string {
-	host, _, err := net.SplitHostPort(clientAddr)
-	if err != nil {
-		// If we can't parse, use the original address
-		return clientAddr
-	}
-	// Use the standard NLM port (same as NFS port typically)
-	// NLM callbacks go to the same port the client is listening on
-	// which is typically a dynamic port chosen by the client
-	// For now, use the standard approach of connecting back to standard NLM port
-	return net.JoinHostPort(host, "12049")
 }

@@ -35,8 +35,11 @@ type Waiter struct {
 	// Exclusive is whether the lock is exclusive (write) or shared (read)
 	Exclusive bool
 
-	// CallbackAddr is the client's callback address (IP:port)
-	CallbackAddr string
+	// CallbackHost is the client's transport source host (IP), used to resolve
+	// the NLM_GRANTED callback target at grant time. The callback PORT is not
+	// stored here: it is looked up from the client's portmapper when the grant
+	// is actually delivered, so a stale/guessed port is never dialed.
+	CallbackHost string
 
 	// CallbackProg is the client's callback program number (NLM)
 	CallbackProg uint32

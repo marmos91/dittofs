@@ -70,9 +70,11 @@ func EncodeFreeAllResponse(_ *FreeAllResponse) ([]byte, error) {
 }
 
 // FreeAll handles NLM FREE_ALL (RFC 1813, NLM procedure 23).
-// Releases all locks held by a crashed client, triggered by NSM (rpc.statd) on reboot.
-// Decodes and logs the request; actual lock cleanup is coordinated by adapter OnClientCrash.
-// Best-effort cleanup; each NLM handler instance serves one share, adapter handles cross-share.
+// Releases all byte-range locks held by the named client and drains its blocking
+// waiters, triggered by the client's lock manager on reboot. This runs the same
+// per-share cleanup as NSM SM_NOTIFY crash detection so that a lost or delayed
+// SM_NOTIFY does not leave a rebooted client's locks orphaned (defense in depth):
+// FREE_ALL and SM_NOTIFY are independent crash signals and either must suffice.
 // Errors: none (returns void per NLM specification; decode errors are logged).
 func (h *Handler) FreeAll(ctx *NLMHandlerContext) ([]byte, error) {
 	req, err := DecodeFreeAllRequest(ctx.Data)
@@ -85,9 +87,21 @@ func (h *Handler) FreeAll(ctx *NLMHandlerContext) ([]byte, error) {
 		"client", req.Name,
 		"from", ctx.ClientAddr)
 
-	// The actual lock release is triggered by the adapter's OnClientCrash
-	// callback, which iterates all shares and their lock managers.
-	// This handler serves as the NLM RPC endpoint for logging and validation.
+	if req.Name == "" {
+		logger.Warn("FREE_ALL: empty client name; ignoring", "from", ctx.ClientAddr)
+		return EncodeFreeAllResponse(&FreeAllResponse{})
+	}
+
+	// Release the named client's locks via the adapter-wired cleanup, which
+	// iterates all shares' lock managers and the blocking queue. Idempotent and
+	// safe if the client held no locks. Cleanup is gated on grace period inside
+	// the wired routine, mirroring NSM crash handling.
+	if h.crashCleanup != nil {
+		h.crashCleanup(req.Name)
+	} else {
+		logger.Warn("FREE_ALL: no crash-cleanup wired; locks not released",
+			"client", req.Name)
+	}
 
 	return EncodeFreeAllResponse(&FreeAllResponse{})
 }

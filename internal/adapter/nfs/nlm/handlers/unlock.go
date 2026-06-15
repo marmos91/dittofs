@@ -74,6 +74,21 @@ func (h *Handler) Unlock(ctx *NLMHandlerContext, req *UnlockRequest) (*UnlockRes
 		"offset", req.Lock.Offset,
 		"length", req.Lock.Length)
 
+	// Lock-theft guard: refuse to release a lock for a caller_name that is bound
+	// to a different transport source host. We still return NLM4Granted (the spec
+	// makes UNLOCK idempotent and we must not leak whether the victim's lock
+	// exists), but we perform no release.
+	if !h.callerBinding.authorized(req.Lock.CallerName, ctx.ClientAddr) {
+		logger.Warn("NLM UNLOCK rejected: caller_name bound to a different client (possible lock theft)",
+			"client", ctx.ClientAddr,
+			"caller", req.Lock.CallerName,
+			"owner", ownerID)
+		return &UnlockResponse{
+			Cookie: req.Cookie,
+			Status: types.NLM4Granted,
+		}, nil
+	}
+
 	// Convert file handle
 	handle := req.Lock.FH
 

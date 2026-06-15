@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -187,6 +188,14 @@ func TestNLMWaiter_GrantedWhenSMBHolderReleases(t *testing.T) {
 	// callback listener so the GRANTED callback succeeds deterministically.
 	cb := newFakeNLMCallbackListener(t)
 
+	// The callback port is resolved from the client's portmapper at grant time.
+	// Stand in a deterministic resolver that points at our fake listener so the
+	// GRANTED callback target is exactly cb.addr() without a portmap round-trip.
+	restore := callback.SetCallbackAddrResolver(func(_ context.Context, _ string) (string, error) {
+		return cb.addr(), nil
+	})
+	t.Cleanup(restore)
+
 	const nlmOwnerID = "nlm:clientX:7:aa"
 	waiter := &blocking.Waiter{
 		Lock: lock.NewUnifiedLock(
@@ -195,7 +204,7 @@ func TestNLMWaiter_GrantedWhenSMBHolderReleases(t *testing.T) {
 			0, 100, lock.LockTypeExclusive,
 		),
 		Exclusive:    true,
-		CallbackAddr: cb.addr(),
+		CallbackHost: "127.0.0.1",
 		CallbackProg: 100021, // NLM program (value irrelevant to the fake listener)
 		CallbackVers: 4,
 		CallerName:   "clientX",

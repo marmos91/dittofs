@@ -83,6 +83,20 @@ func (h *Handler) Cancel(ctx *NLMHandlerContext, req *CancelRequest) (*CancelRes
 		"offset", req.Lock.Offset,
 		"length", req.Lock.Length)
 
+	// Lock-theft guard: refuse to cancel a pending request for a caller_name
+	// bound to a different transport source host. Return NLM4Granted (idempotent,
+	// no information leak) without dequeuing the victim's waiter.
+	if !h.callerBinding.authorized(req.Lock.CallerName, ctx.ClientAddr) {
+		logger.Warn("NLM CANCEL rejected: caller_name bound to a different client (possible lock theft)",
+			"client", ctx.ClientAddr,
+			"caller", req.Lock.CallerName,
+			"owner", ownerID)
+		return &CancelResponse{
+			Cookie: req.Cookie,
+			Status: types.NLM4Granted,
+		}, nil
+	}
+
 	// Convert file handle
 	handle := req.Lock.FH
 	handleKey := string(handle)
