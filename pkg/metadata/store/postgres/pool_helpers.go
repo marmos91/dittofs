@@ -40,16 +40,27 @@ func (s *PostgresMetadataStore) queryRow(ctx context.Context, sql string, args .
 		return &errorRow{err: ctx.Err()}
 	}
 
-	// Apply connection acquire timeout
+	// The acquire timeout bounds ONLY the connection acquisition — it must not
+	// outlive this function via the returned Row. pgx.QueryRow is lazy: the row
+	// data is read from the wire inside the caller's Scan(), bound to whatever
+	// context was passed to QueryRow. If we passed acquireCtx (cancelled by the
+	// defer below the instant this function returns) the caller's Scan would run
+	// against an already-cancelled context and intermittently fail with
+	// "context canceled" depending on whether the row had buffered yet. So scope
+	// acquireCtx to Acquire only, then run the query on the parent ctx — the same
+	// pattern as query()/exec() — and release the connection after Scan.
 	acquireCtx, cancel := context.WithTimeout(ctx, poolConnectionAcquireTimeout)
 	defer cancel()
 
-	// pgxpool.Pool.QueryRow manages the connection lifecycle internally: the
-	// underlying connection is released when Scan is called, regardless of the
-	// scan result. This eliminates the manual Acquire/Release pair and the
-	// connection leak that occurred when Scan was never called (panic path,
-	// early return, or a discarded result).
-	return s.pool.QueryRow(acquireCtx, sql, args...)
+	conn, err := s.pool.Acquire(acquireCtx)
+	if err != nil {
+		if acquireCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return &errorRow{err: fmt.Errorf("connection acquire timeout after %v: pool may be exhausted", poolConnectionAcquireTimeout)}
+		}
+		return &errorRow{err: mapPgError(err, "queryRow", sql)}
+	}
+
+	return &poolRow{row: conn.QueryRow(ctx, sql, args...), conn: conn}
 }
 
 // query executes a query that returns rows with connection acquire timeout.
@@ -155,6 +166,20 @@ type errorRow struct {
 
 func (r *errorRow) Scan(dest ...any) error {
 	return r.err
+}
+
+// poolRow wraps a single-row pgx.Row and releases the pooled connection once
+// the caller scans it. The query runs on the caller's (parent) context, so the
+// connection must stay checked out until Scan reads the row off the wire — at
+// which point it is released exactly once.
+type poolRow struct {
+	row  pgx.Row
+	conn *pgxpool.Conn
+}
+
+func (r *poolRow) Scan(dest ...any) error {
+	defer r.conn.Release()
+	return r.row.Scan(dest...)
 }
 
 // poolRows wraps pgx.Rows and releases the connection when closed
