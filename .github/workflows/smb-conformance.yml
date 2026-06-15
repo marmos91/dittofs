@@ -157,13 +157,21 @@ jobs:
         # persistent-backend signal (#1158): memory (fastest) + badger-fs (the
         # only PR profile that exercises the fs local store path; faster than the
         # s3 profiles). The full set runs on push to develop and the weekly cron.
-        # workflow_dispatch runs the single chosen profile.
+        #
+        # workflow_dispatch runs the single chosen profile, but only the profiles
+        # smbtorture's run.sh actually supports (memory, memory-fs, badger-fs);
+        # the shared dispatch input also offers the s3 profiles for the WPTS job,
+        # which smbtorture rejects at profile validation — so an s3 dispatch falls
+        # back to memory here rather than failing the whole job.
         profile: >-
           ${{
             github.event_name == 'pull_request'
               && fromJson('["memory", "badger-fs"]')
-            || github.event_name == 'workflow_dispatch'
+            || (github.event_name == 'workflow_dispatch'
+                && contains(fromJson('["memory", "memory-fs", "badger-fs"]'), inputs.profile))
               && fromJson(format('["{0}"]', inputs.profile))
+            || github.event_name == 'workflow_dispatch'
+              && fromJson('["memory"]')
             || fromJson('["memory", "memory-fs", "badger-fs"]')
           }}
 
