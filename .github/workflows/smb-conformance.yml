@@ -12,7 +12,7 @@ on:
       - 'pkg/adapter/smb/**'
       - 'internal/adapter/smb/**'
       - 'pkg/metadata/**'
-      - 'pkg/blockstore/**'
+      - 'pkg/block/**'
       - 'pkg/controlplane/**'
       - 'test/smb-conformance/**'
       - 'pkg/adapter/base.go'
@@ -23,7 +23,7 @@ on:
       - 'pkg/adapter/smb/**'
       - 'internal/adapter/smb/**'
       - 'pkg/metadata/**'
-      - 'pkg/blockstore/**'
+      - 'pkg/block/**'
       - 'pkg/controlplane/**'
       - 'test/smb-conformance/**'
       - 'pkg/adapter/base.go'
@@ -57,11 +57,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Full store matrix on every event (PR/push/cron) — badger and postgres
+        # SMB behavior must be covered at PR time, not only post-merge.
+        # workflow_dispatch still runs a single chosen profile.
         profile: >-
           ${{
-            github.event_name == 'pull_request'
-              && fromJson('["memory"]')
-            || github.event_name == 'workflow_dispatch'
+            github.event_name == 'workflow_dispatch'
               && fromJson(format('["{0}"]', inputs.profile))
             || fromJson('["memory", "memory-fs", "badger-fs", "badger-s3", "postgres-s3"]')
           }}

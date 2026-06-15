@@ -124,8 +124,11 @@ create_block_stores() {
             ;;
         *-s3)
             $DFSCTL store block local add --name default --type memory
+            # Localstack is a deliberate private-network test endpoint; opt it past
+            # the S3 SSRF guard (added in #1124) which otherwise rejects the
+            # private 172.x address that "localstack" resolves to.
             $DFSCTL store block remote add --name default --type s3 \
-                --config '{"bucket":"dittofs-test","region":"us-east-1","endpoint":"http://localstack:4566","force_path_style":true,"access_key_id":"test","secret_access_key":"test"}'
+                --config '{"bucket":"dittofs-test","region":"us-east-1","endpoint":"http://localstack:4566","force_path_style":true,"access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
             ;;
         *)
             log_error "Unknown profile payload pattern: ${PROFILE}"
