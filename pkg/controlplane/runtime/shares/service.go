@@ -285,6 +285,21 @@ type LocalStoreDefaults struct {
 	// when set, otherwise this global YAML default (blockstore.local.dedup_lru_size)
 	// is applied, otherwise FSStore falls back to its own internal default.
 	DedupLRUSize int
+
+	// DefaultRemoteCacheSize is the on-disk ceiling applied to a share's
+	// local tier when a REMOTE block store is configured but neither
+	// MaxSize nor the per-share LocalStoreSize is set. With a remote
+	// configured the local tier is a bounded write-through cache; without
+	// this ceiling a fast writer could exhaust the host volume. 0 disables
+	// the conditional ceiling (local stays unlimited even with a remote).
+	// Local-only shares ignore this entirely.
+	DefaultRemoteCacheSize uint64
+
+	// BackpressureMaxWait is how long a write stalls waiting for the syncer
+	// to drain (freeing cache space) before returning ErrDiskFull, when the
+	// remote is healthy but every cached chunk is unsynced. 0 defers to the
+	// FSStore default (60s).
+	BackpressureMaxWait time.Duration
 }
 
 // SyncerDefaults holds default syncer configuration applied to all shares.
@@ -618,13 +633,32 @@ func (s *Service) prepareShare(
 
 // mergeLocalStoreDefaults returns a copy of the system defaults with per-share
 // overrides applied. Non-zero ShareConfig values take precedence.
-func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig) *LocalStoreDefaults {
+//
+// remoteConfigured signals that the share has a remote block store, which
+// makes the local tier a bounded write-through cache rather than durable
+// storage. In that case, when the operator set no explicit per-share size
+// (config.LocalStoreSize == 0), apply the DefaultRemoteCacheSize ceiling so
+// a fast writer cannot exhaust the host volume — this takes precedence over
+// the generic system-deduced MaxSize, which is sized for the durable
+// local-only tier rather than a transient cache. An explicit per-share
+// --local-store-size always wins. Local-only shares keep the existing
+// MaxSize unchanged.
+func mergeLocalStoreDefaults(defaults *LocalStoreDefaults, config *ShareConfig, remoteConfigured bool) *LocalStoreDefaults {
 	if defaults == nil {
 		defaults = &LocalStoreDefaults{}
 	}
 	merged := *defaults // shallow copy
-	if config.LocalStoreSize > 0 {
+	switch {
+	case config.LocalStoreSize > 0:
+		// Explicit per-share override always wins.
 		merged.MaxSize = uint64(config.LocalStoreSize)
+	case remoteConfigured && merged.DefaultRemoteCacheSize > 0:
+		// Remote-backed share, no explicit override: bound the
+		// write-through cache at the remote-cache default.
+		merged.MaxSize = merged.DefaultRemoteCacheSize
+		logger.Info("applying default local-cache ceiling for remote-backed share",
+			"share", config.Name,
+			"max_size", merged.MaxSize)
 	}
 	if config.ReadBufferSize > 0 {
 		merged.ReadBufferBytes = config.ReadBufferSize
@@ -651,8 +685,11 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("block store config %q has kind %q, expected %q", config.LocalBlockStoreID, localCfg.Kind, models.BlockStoreKindLocal)
 	}
 
-	// Merge per-share size overrides into effective defaults.
-	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config)
+	// Merge per-share size overrides into effective defaults. A configured
+	// remote makes the local tier a bounded write-through cache, so the
+	// conditional default ceiling applies (see mergeLocalStoreDefaults).
+	remoteConfigured := config.RemoteBlockStoreID != ""
+	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config, remoteConfigured)
 
 	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileBlockStore)
 	if err != nil {
@@ -686,6 +723,23 @@ func (s *Service) createBlockStoreForShare(
 	}
 
 	syncer := engine.NewSyncer(localStore, engineRemote, fileBlockStore, syncerCfg)
+
+	// Inject the read-only syncer accessor into the local store so its
+	// eviction path can engage remote-cache backpressure (stall a writer
+	// while the syncer drains, instead of failing with ErrDiskFull) when a
+	// remote is configured. Local-only shares (engineRemote == nil) keep the
+	// nil source — eviction stays on its evictMaxWait fallback. The
+	// interface handed in is narrow and never the FileBlockStore (LSL-08).
+	if engineRemote != nil {
+		if bp, ok := localStore.(interface {
+			SetBackpressureSource(interface {
+				IsRemoteHealthy() bool
+				UnsyncedBytes() int64
+			})
+		}); ok {
+			bp.SetBackpressureSource(syncer)
+		}
+	}
 
 	cleanup := func() {
 		_ = syncer.Close()
@@ -1851,6 +1905,14 @@ func CreateLocalStoreFromConfig(
 		maxMemory = defaults.MaxMemory
 	}
 
+	// Remote-cache backpressure window (how long a write stalls for the
+	// syncer to drain before ErrDiskFull). Threaded into FSStoreOptions
+	// below; zero defers to the FSStore default.
+	var backpressureMaxWait time.Duration
+	if defaults != nil {
+		backpressureMaxWait = defaults.BackpressureMaxWait
+	}
+
 	// Per-store max_size from config JSON takes precedence over defaults
 	if v, ok := config["max_size"]; ok {
 		if n, ok := v.(float64); ok && n > 0 {
@@ -1865,6 +1927,7 @@ func CreateLocalStoreFromConfig(
 	// surface through FSStoreOptions to fs.NewWithOptions; invalid values
 	// are warned and ignored.
 	var fsOpts fs.FSStoreOptions
+	fsOpts.BackpressureMaxWait = backpressureMaxWait
 	if _, ok := config["use_append_log"]; ok {
 		logger.Warn("block store config has use_append_log: append is mandatory in v0.16+, flag is ignored")
 	}

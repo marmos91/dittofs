@@ -87,7 +87,7 @@ func TestMirrorLoop_PropagatesPutError(t *testing.T) {
 		local:           local,
 		remoteStore:     rs,
 		syncedHashStore: noopSyncedHashStore{},
-		pendingHashes:   make(map[block.ContentHash]struct{}),
+		pendingHashes:   make(map[block.ContentHash]int64),
 	}
 	if _, err := m.seedPendingFromDisk(ctx); err != nil {
 		t.Fatalf("seedPendingFromDisk: %v", err)

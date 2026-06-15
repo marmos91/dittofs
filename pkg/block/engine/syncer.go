@@ -88,26 +88,53 @@ type Syncer struct {
 	firstOfflineRead    atomic.Bool  // Tracks if WARN was already logged since last healthy->unhealthy transition
 	offlineReadsBlocked atomic.Int64 // Count of read operations blocked by remote unavailability
 
-	// pendingHashes is the set of CAS hashes present locally but not yet
-	// mirrored to remote. Populated O(1) by addPendingHash (fired from the
-	// onChunkComplete chokepoint) and drained by mirrorOnce after each
-	// MarkSynced. This replaces the per-tick full directory walk of the
-	// CAS tree: the steady-state mirror loop now consumes this set instead
-	// of rediscovering unsynced chunks via ListUnsynced. A startup
+	// pendingHashes maps each CAS hash present locally but not yet mirrored
+	// to remote to its on-disk byte size. Populated O(1) by addPendingHash
+	// (fired from the onChunkComplete chokepoint) and drained by mirrorOnce
+	// after each MarkSynced. This replaces the per-tick full directory walk
+	// of the CAS tree: the steady-state mirror loop now consumes this set
+	// instead of rediscovering unsynced chunks via ListUnsynced. A startup
 	// reconciliation (seedPendingFromDisk) re-seeds it after a restart,
 	// since the set is volatile and orphaned chunks written-but-not-synced
 	// before a crash would otherwise be missed.
+	//
+	// The per-hash size feeds unsyncedBytes, the backpressure signal the
+	// local store consults to decide whether to keep stalling a writer.
 	pendingMu     gosync.Mutex
-	pendingHashes map[block.ContentHash]struct{}
+	pendingHashes map[block.ContentHash]int64
+
+	// unsyncedBytes is the running total on-disk size of pendingHashes:
+	// the number of cache bytes that cannot be evicted until they reach
+	// remote. The local store reads it (via UnsyncedBytes) to decide
+	// whether a backpressure stall can make progress. Charged once per
+	// distinct hash (CAS dedup): re-adding a hash already pending does not
+	// double-count, and a drained hash subtracts exactly what it added.
+	unsyncedBytes atomic.Int64
 }
 
-// addPendingHash registers a newly-stored CAS hash for the next mirror
-// pass. Fired from the onChunkComplete callback (engine.New) on every
-// successful StoreChunk. Safe for concurrent use; O(1).
-func (m *Syncer) addPendingHash(h block.ContentHash) {
+// addPendingHash registers a newly-stored CAS hash (of the given on-disk
+// byte size) for the next mirror pass. Fired from the onChunkComplete
+// callback (engine.New) on every successful StoreChunk. Safe for concurrent
+// use; O(1). Charges unsyncedBytes once per distinct hash — re-adding a hash
+// already pending updates the recorded size but does not double-count.
+func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
 	m.pendingMu.Lock()
-	m.pendingHashes[h] = struct{}{}
+	prev, existed := m.pendingHashes[h]
+	m.pendingHashes[h] = size
 	m.pendingMu.Unlock()
+	if existed {
+		m.unsyncedBytes.Add(size - prev)
+	} else {
+		m.unsyncedBytes.Add(size)
+	}
+}
+
+// UnsyncedBytes returns the running total on-disk size of CAS chunks present
+// locally but not yet mirrored to remote. This is the backpressure signal
+// the local store consults: a non-zero value with a healthy remote means a
+// stalled writer can make progress once the syncer drains.
+func (m *Syncer) UnsyncedBytes() int64 {
+	return m.unsyncedBytes.Load()
 }
 
 // seedPendingFromDisk reconciles the in-memory pending set against the
@@ -123,7 +150,16 @@ func (m *Syncer) seedPendingFromDisk(ctx context.Context) (int, error) {
 		if err != nil {
 			return n, fmt.Errorf("seed pending: %w", err)
 		}
-		m.addPendingHash(hash)
+		// Recover each unsynced chunk's on-disk size so unsyncedBytes is
+		// accurate after a restart. A chunk that vanished between the
+		// ListUnsynced walk and this Head (external delete / concurrent
+		// evict) is recorded as zero bytes rather than aborting the seed —
+		// the next drift reconcile re-walks disk and corrects the set.
+		var size int64
+		if meta, herr := m.local.Head(ctx, hash); herr == nil {
+			size = meta.Size
+		}
+		m.addPendingHash(hash, size)
 		n++
 	}
 	return n, nil
@@ -155,7 +191,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		config:         config,
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
-		pendingHashes:  make(map[block.ContentHash]struct{}),
+		pendingHashes:  make(map[block.ContentHash]int64),
 	}
 
 	queueConfig := DefaultSyncQueueConfig()
@@ -433,7 +469,10 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 			return fmt.Errorf("mark synced %s: %w", hash, err)
 		}
 		m.pendingMu.Lock()
-		delete(m.pendingHashes, hash)
+		if size, ok := m.pendingHashes[hash]; ok {
+			delete(m.pendingHashes, hash)
+			m.unsyncedBytes.Add(-size)
+		}
 		m.pendingMu.Unlock()
 	}
 	if lostBeforeMirror {

@@ -16,11 +16,44 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/time/rate"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// backpressureSource is the narrow, read-only window the eviction path
+// consults during a remote-cache backpressure stall. It exposes ONLY the
+// syncer's drain progress — never the FileBlockStore — preserving invariant
+// LSL-08 (eviction must not reach into engine-level metadata). The engine's
+// *Syncer satisfies it.
+type backpressureSource interface {
+	// IsRemoteHealthy reports whether the remote store is reachable, i.e.
+	// whether the syncer can drain unsynced chunks and free cache space.
+	IsRemoteHealthy() bool
+	// UnsyncedBytes is the running total of cache bytes not yet mirrored to
+	// remote — the bytes a backpressure stall is waiting to see drained.
+	UnsyncedBytes() int64
+}
+
+// SetBackpressureSource injects the read-only syncer accessor the eviction
+// path consults during a remote-cache stall. Called once during share wiring
+// after the syncer is constructed. Passing nil (local-only stores, fixtures)
+// leaves ensureSpace on its evictMaxWait fallback. The argument is a narrow
+// interface — never the FileBlockStore — per invariant LSL-08.
+func (bc *FSStore) SetBackpressureSource(src backpressureSource) {
+	bc.bpSource = src
+}
+
+// BackpressureStats returns the internal backpressure counters: the number
+// of times a writer entered a remote-cache stall and the total time writers
+// spent stalled. Exposed for tests and a future Prometheus exporter; not
+// wired into the REST surface in this iteration.
+func (bc *FSStore) BackpressureStats() (engageCount int64, totalStall time.Duration) {
+	return bc.bpEngageCount.Load(), time.Duration(bc.bpStallNanos.Load())
+}
 
 // retentionConfig holds retention policy settings read/written atomically.
 type retentionConfig struct {
@@ -196,6 +229,38 @@ type FSStore struct {
 	// tests shrink it to avoid a 30s wall-clock wait when asserting the
 	// unsynced-only-LRU back-pressure path.
 	evictMaxWait time.Duration
+
+	// backpressureMaxWait caps how long ensureSpace stalls a writer while
+	// the LRU has no evictable candidate (every cached chunk is still
+	// unsynced) but the remote is HEALTHY — i.e. the syncer can still drain
+	// and free cache space. Distinct from evictMaxWait: this is the
+	// remote-cache backpressure window. When the remote is unhealthy (the
+	// syncer cannot drain), ensureSpace returns ErrDiskFull immediately
+	// rather than waiting out this window. Defaults to 60s (installed by
+	// newFSStore); same-package tests shrink it.
+	backpressureMaxWait time.Duration
+
+	// bpSource is the read-only seam into the syncer's drain progress that
+	// ensureSpace consults during the backpressure window: whether the
+	// remote is healthy (can drain) and how many cache bytes are still
+	// unsynced (whether a stall can make progress). Injected post-
+	// construction via SetBackpressureSource — nil on local-only stores and
+	// in fixtures, in which case ensureSpace falls back to evictMaxWait
+	// semantics. NEVER hand the FileBlockStore here: this is a narrow,
+	// non-FileBlockStore interface, preserving invariant LSL-08.
+	bpSource backpressureSource
+
+	// Backpressure observability counters (internal; not yet exposed via
+	// REST — a future Prometheus pass reads them directly). bpEngageCount
+	// increments once each time a writer enters the remote-cache stall;
+	// bpStallNanos accumulates the total time writers spent stalled. Both
+	// are atomic so concurrent writers can update them lock-free.
+	bpEngageCount atomic.Int64
+	bpStallNanos  atomic.Int64
+
+	// bpLogLimiter rate-limits the engage/release Info logs so a sustained
+	// fast-writer / slow-uploader workload does not flood the log.
+	bpLogLimiter *rate.Limiter
 
 	// logBytesTotal is the current total bytes of un-rolled-up log content
 	// across every payloadID in this FSStore. Incremented by AppendWrite
@@ -384,11 +449,16 @@ func newFSStore(baseDir string, maxDisk, maxMemory int64, fileBlockStore block.E
 	for i := range bc.logShards {
 		bc.logShards[i] = newLogShard()
 	}
-	bc.maxLogBytes = 1 << 30              // 1 GiB default
-	bc.stabilizationMS = 250              // default
-	bc.rollupWorkers = 2                  // default
-	bc.pressureMaxWait = 30 * time.Second // default — #670 defense-in-depth
-	bc.evictMaxWait = 30 * time.Second    // default ensureSpace back-pressure cap
+	bc.maxLogBytes = 1 << 30                  // 1 GiB default
+	bc.stabilizationMS = 250                  // default
+	bc.rollupWorkers = 2                      // default
+	bc.pressureMaxWait = 30 * time.Second     // default — #670 defense-in-depth
+	bc.evictMaxWait = 30 * time.Second        // default ensureSpace back-pressure cap
+	bc.backpressureMaxWait = 60 * time.Second // default remote-cache backpressure window
+	// Rate-limit backpressure engage/release logs: at most one line every
+	// 5s plus a small burst, so a sustained stall does not flood the log
+	// while still surfacing the first engage and the eventual release.
+	bc.bpLogLimiter = rate.NewLimiter(rate.Every(5*time.Second), 2)
 	// rollupCh buffered so AppendWrite's non-blocking send rarely drops
 	// on drop, the ticker arm in chunkRollupWorker picks up the payload
 	// on the next scan.
@@ -430,6 +500,9 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 		// Required for tests that drive the pressure loop directly
 		// without a rollup worker; not recommended in production.
 		bc.pressureMaxWait = 0
+	}
+	if opts.BackpressureMaxWait > 0 {
+		bc.backpressureMaxWait = opts.BackpressureMaxWait
 	}
 	bc.rollupStore = opts.RollupStore
 	bc.syncedHashStore = opts.SyncedHashStore
@@ -802,6 +875,12 @@ type FSStoreOptions struct {
 	// D-state. Pick an upper-bound value clearly larger than any
 	// legitimate rollup latency under load — this is NOT an SLA.
 	PressureMaxWait time.Duration
+
+	// BackpressureMaxWait bounds how long ensureSpace stalls a writer while
+	// every cached chunk is unsynced but the remote is healthy (the syncer
+	// can still drain). Zero defers to the 60s default. Distinct from the
+	// internal evict wait. See FSStore.backpressureMaxWait.
+	BackpressureMaxWait time.Duration
 
 	// CompactionThresholdBytes controls when physical log compaction
 	// runs (#579). After a rollup pass advances idx.compactionFence
