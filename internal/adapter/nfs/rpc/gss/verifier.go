@@ -26,18 +26,20 @@ import (
 // Parameters:
 //   - sessionKey: The session key from the GSS context (decrypted service ticket)
 //   - seqNum: The sequence number from the RPCSEC_GSS credential
+//   - hasAcceptorSubkey: Whether the context used an acceptor subkey (from AP-REP).
+//     When true, RFC 4121 §4.2.2 requires FLAG_ACCEPTOR_SUBKEY on this acceptor MIC.
 //
 // Returns:
 //   - []byte: The MIC token bytes (reply verifier body)
 //   - error: If MIC computation fails (e.g., unsupported encryption type)
-func ComputeReplyVerifier(sessionKey types.EncryptionKey, seqNum uint32) ([]byte, error) {
+func ComputeReplyVerifier(sessionKey types.EncryptionKey, seqNum uint32, hasAcceptorSubkey bool) ([]byte, error) {
 	// XDR-encode the sequence number as uint32 (4 bytes big-endian)
 	seqBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(seqBytes, seqNum)
 
 	// Create a GSS-API MIC token per RFC 4121
 	micToken := gssapi.MICToken{
-		Flags:     gssapi.MICTokenFlagSentByAcceptor, // Server is the acceptor
+		Flags:     acceptorMICFlags(hasAcceptorSubkey),
 		SndSeqNum: uint64(seqNum),
 		Payload:   seqBytes,
 	}
@@ -95,23 +97,10 @@ func ComputeInitVerifier(sessionKey types.EncryptionKey, seqWindow uint32, hasAc
 	winBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(winBytes, seqWindow)
 
-	// Build flags for the MIC token.
-	// Per RFC 4121 Section 4.2.2:
-	// - Bit 0 (SentByAcceptor): Set because server is the acceptor
-	// - Bit 2 (AcceptorSubkey): Set when acceptor subkey is used for the MIC
-	//
-	// CRITICAL: When we include a subkey in EncAPRepPart, the client sets
-	// ctx->have_acceptor_subkey = 1 and expects FLAG_ACCEPTOR_SUBKEY in MIC tokens.
-	// Without this flag, gss_verify_mic() may fail or use wrong key.
-	var flags byte = gssapi.MICTokenFlagSentByAcceptor
-	if hasAcceptorSubkey {
-		flags |= gssapi.MICTokenFlagAcceptorSubkey
-	}
-
 	// Create a GSS-API MIC token per RFC 4121
 	// For INIT response, we use sequence number 0 since context is being established
 	micToken := gssapi.MICToken{
-		Flags:     flags,
+		Flags:     acceptorMICFlags(hasAcceptorSubkey),
 		SndSeqNum: 0, // Initial sequence
 		Payload:   winBytes,
 	}
@@ -129,4 +118,21 @@ func ComputeInitVerifier(sessionKey types.EncryptionKey, seqWindow uint32, hasAc
 	}
 
 	return micBytes, nil
+}
+
+// acceptorMICFlags returns the RFC 4121 §4.2.2 flag byte for an acceptor
+// (server) MIC token.
+//
+//   - Bit 0 (SentByAcceptor): always set, the server is the context acceptor.
+//   - Bit 2 (AcceptorSubkey): set when the acceptor produced a subkey in the
+//     AP-REP during mutual auth. The client (MIT krb5 / libtirpc) records
+//     have_acceptor_subkey=1 and requires FLAG_ACCEPTOR_SUBKEY on every
+//     subsequent acceptor token; omitting it fails gss_verify_mic with
+//     GSS_S_BAD_SIG.
+func acceptorMICFlags(hasAcceptorSubkey bool) byte {
+	flags := byte(gssapi.MICTokenFlagSentByAcceptor)
+	if hasAcceptorSubkey {
+		flags |= gssapi.MICTokenFlagAcceptorSubkey
+	}
+	return flags
 }

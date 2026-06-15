@@ -102,11 +102,13 @@ func UnwrapIntegrity(sessionKey types.EncryptionKey, credSeqNum uint32, requestB
 //   - sessionKey: The session key from the GSS context
 //   - seqNum: The sequence number for this reply
 //   - replyBody: The XDR-encoded procedure results
+//   - hasAcceptorSubkey: Whether the context used an acceptor subkey (from AP-REP).
+//     When true, RFC 4121 §4.2.2 requires FLAG_ACCEPTOR_SUBKEY on this acceptor MIC.
 //
 // Returns:
 //   - []byte: The encoded rpc_gss_integ_data
 //   - error: If MIC computation fails
-func WrapIntegrity(sessionKey types.EncryptionKey, seqNum uint32, replyBody []byte) ([]byte, error) {
+func WrapIntegrity(sessionKey types.EncryptionKey, seqNum uint32, replyBody []byte, hasAcceptorSubkey bool) ([]byte, error) {
 	// 1. Build databody_integ: XDR(seq_num) + replyBody
 	databodyInteg := make([]byte, 4+len(replyBody))
 	binary.BigEndian.PutUint32(databodyInteg[0:4], seqNum)
@@ -114,7 +116,7 @@ func WrapIntegrity(sessionKey types.EncryptionKey, seqNum uint32, replyBody []by
 
 	// 2. Compute MIC over databody_integ using acceptor sign key usage (23)
 	micToken := gssapi.MICToken{
-		Flags:     gssapi.MICTokenFlagSentByAcceptor,
+		Flags:     acceptorMICFlags(hasAcceptorSubkey),
 		SndSeqNum: uint64(seqNum),
 		Payload:   databodyInteg,
 	}

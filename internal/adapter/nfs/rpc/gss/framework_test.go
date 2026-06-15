@@ -16,11 +16,12 @@ import (
 // mockVerifier implements Verifier for testing without a real KDC.
 type mockVerifier struct {
 	// result to return on VerifyToken calls
-	principal  string
-	realm      string
-	sessionKey types.EncryptionKey
-	apRepToken []byte
-	err        error
+	principal         string
+	realm             string
+	sessionKey        types.EncryptionKey
+	apRepToken        []byte
+	hasAcceptorSubkey bool
+	err               error
 }
 
 func newMockVerifier(principal, realm string) *mockVerifier {
@@ -43,10 +44,11 @@ func (v *mockVerifier) VerifyToken(gssToken []byte) (*VerifiedContext, error) {
 		return nil, v.err
 	}
 	return &VerifiedContext{
-		Principal:  v.principal,
-		Realm:      v.realm,
-		SessionKey: v.sessionKey,
-		APRepToken: v.apRepToken,
+		Principal:         v.principal,
+		Realm:             v.realm,
+		SessionKey:        v.sessionKey,
+		APRepToken:        v.apRepToken,
+		HasAcceptorSubkey: v.hasAcceptorSubkey,
 	}, nil
 }
 
@@ -464,6 +466,70 @@ func TestProcessDATAWithValidContext(t *testing.T) {
 	}
 	if result.Service != RPCGSSSvcNone {
 		t.Fatalf("expected Service %d, got %d", RPCGSSSvcNone, result.Service)
+	}
+}
+
+// TestProcessDATAPropagatesAcceptorSubkey proves that an acceptor subkey
+// produced during context establishment (mutual auth) flows from handleInit,
+// through the persisted GSSContext, into the handleData result so the DATA
+// reply path can set FLAG_ACCEPTOR_SUBKEY. Without the plumbing the result's
+// HasAcceptorSubkey is always false and every DATA reply MIC omits the flag,
+// which MIT krb5/libtirpc reject with GSS_S_BAD_SIG (RFC 4121 §4.2.2). This
+// test FAILS unless the field is threaded end-to-end.
+func TestProcessDATAPropagatesAcceptorSubkey(t *testing.T) {
+	verifier := newMockVerifier("alice", "EXAMPLE.COM")
+	// Simulate a mutual-auth INIT that produced an acceptor subkey in the AP-REP.
+	verifier.hasAcceptorSubkey = true
+	mapper := newTestMapper()
+	proc := NewGSSProcessor(verifier, mapper, 100, 10*time.Minute)
+	defer proc.Stop()
+
+	// INIT at svc_none so the svc_none DATA call below is not a downgrade.
+	initCred := &RPCGSSCredV1{GSSProc: RPCGSSInit, SeqNum: 0, Service: RPCGSSSvcNone}
+	initCredBody, err := EncodeGSSCred(initCred)
+	if err != nil {
+		t.Fatalf("encode INIT cred: %v", err)
+	}
+	initResult := proc.Process(context.Background(), initCredBody, nil, nil, encodeOpaqueToken([]byte("mock-ap-req-token")))
+	if initResult.Err != nil {
+		t.Fatalf("INIT failed: %v", initResult.Err)
+	}
+	if !initResult.HasAcceptorSubkey {
+		t.Fatal("INIT result should report HasAcceptorSubkey=true")
+	}
+
+	// The persisted context must record the subkey flag.
+	handle := extractContextHandle(t, proc)
+	gssCtx, ok := proc.contexts.Lookup(handle)
+	if !ok {
+		t.Fatal("context not stored")
+	}
+	if !gssCtx.HasAcceptorSubkey {
+		t.Fatal("persisted GSSContext lost HasAcceptorSubkey")
+	}
+
+	// A subsequent DATA request must carry the subkey flag in its result so the
+	// reply verifier/wrap path can set FLAG_ACCEPTOR_SUBKEY.
+	dataCred := &RPCGSSCredV1{GSSProc: RPCGSSData, SeqNum: 1, Service: RPCGSSSvcNone, Handle: handle}
+	dataCredBody, err := EncodeGSSCred(dataCred)
+	if err != nil {
+		t.Fatalf("encode DATA cred: %v", err)
+	}
+	result := processDATA(t, proc, mockVerifierSessionKey, dataCredBody, []byte("args"))
+	if result.Err != nil {
+		t.Fatalf("DATA failed: %v", result.Err)
+	}
+	if !result.HasAcceptorSubkey {
+		t.Fatal("DATA result must report HasAcceptorSubkey=true (subkey flag not propagated to reply path)")
+	}
+
+	// And the resulting reply MIC must actually carry the flag.
+	mic, err := ComputeReplyVerifier(result.SessionKey, result.SeqNum, result.HasAcceptorSubkey)
+	if err != nil {
+		t.Fatalf("ComputeReplyVerifier failed: %v", err)
+	}
+	if mic[2]&gssapi.MICTokenFlagAcceptorSubkey == 0 {
+		t.Fatalf("DATA reply MIC missing AcceptorSubkey flag, got flags 0x%02x", mic[2])
 	}
 }
 

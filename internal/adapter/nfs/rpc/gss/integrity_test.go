@@ -211,7 +211,7 @@ func TestWrapIntegrityProducesValidFormat(t *testing.T) {
 	seqNum := uint32(7)
 	args := []byte("hello")
 
-	wrapped, err := WrapIntegrity(key, seqNum, args)
+	wrapped, err := WrapIntegrity(key, seqNum, args, false)
 	if err != nil {
 		t.Fatalf("WrapIntegrity failed: %v", err)
 	}
@@ -282,12 +282,50 @@ func TestWrapIntegrityProducesValidFormat(t *testing.T) {
 	}
 }
 
+// integMICFlags wraps a reply via WrapIntegrity and returns the flags byte of
+// the embedded checksum MIC token (byte 2 of the second XDR opaque field).
+func integMICFlags(t *testing.T, key krbTypes.EncryptionKey, hasAcceptorSubkey bool) byte {
+	t.Helper()
+	wrapped, err := WrapIntegrity(key, 7, []byte("hello"), hasAcceptorSubkey)
+	if err != nil {
+		t.Fatalf("WrapIntegrity failed: %v", err)
+	}
+	reader := bytes.NewReader(wrapped)
+	databody, err := readXDROpaque(reader)
+	if err != nil {
+		t.Fatalf("read databody_integ: %v", err)
+	}
+	_ = databody
+	checksum, err := readXDROpaque(reader)
+	if err != nil {
+		t.Fatalf("read checksum: %v", err)
+	}
+	if len(checksum) < 16 || checksum[0] != 0x04 || checksum[1] != 0x04 {
+		t.Fatalf("invalid MIC token in checksum: %x", checksum)
+	}
+	return checksum[2]
+}
+
+// TestWrapIntegritySetsAcceptorSubkeyFlag asserts that the krb5i reply MIC
+// carries FLAG_ACCEPTOR_SUBKEY iff the context was established with an acceptor
+// subkey (RFC 4121 §4.2.2).
+func TestWrapIntegritySetsAcceptorSubkeyFlag(t *testing.T) {
+	key := testSessionKey()
+
+	if flags := integMICFlags(t, key, true); flags&gssapi.MICTokenFlagAcceptorSubkey == 0 {
+		t.Fatalf("expected AcceptorSubkey flag set, got flags 0x%02x", flags)
+	}
+	if flags := integMICFlags(t, key, false); flags&gssapi.MICTokenFlagAcceptorSubkey != 0 {
+		t.Fatalf("expected AcceptorSubkey flag clear, got flags 0x%02x", flags)
+	}
+}
+
 func TestWrapIntegrityVerifiableByClient(t *testing.T) {
 	key := testSessionKey()
 	seqNum := uint32(42)
 	replyBody := []byte("nfs-reply-data")
 
-	wrapped, err := WrapIntegrity(key, seqNum, replyBody)
+	wrapped, err := WrapIntegrity(key, seqNum, replyBody, false)
 	if err != nil {
 		t.Fatalf("WrapIntegrity failed: %v", err)
 	}

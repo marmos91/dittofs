@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/gssapi"
 	krbTypes "github.com/jcmturner/gokrb5/v8/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 )
@@ -24,7 +25,7 @@ func TestComputeReplyVerifierProducesNonEmptyMIC(t *testing.T) {
 		key.KeyValue[i] = byte(i + 1)
 	}
 
-	mic, err := ComputeReplyVerifier(key, 42)
+	mic, err := ComputeReplyVerifier(key, 42, false)
 	if err != nil {
 		t.Fatalf("ComputeReplyVerifier failed: %v", err)
 	}
@@ -51,12 +52,12 @@ func TestComputeReplyVerifierDifferentSeqNums(t *testing.T) {
 		key.KeyValue[i] = byte(i + 1)
 	}
 
-	mic1, err := ComputeReplyVerifier(key, 1)
+	mic1, err := ComputeReplyVerifier(key, 1, false)
 	if err != nil {
 		t.Fatalf("ComputeReplyVerifier(1) failed: %v", err)
 	}
 
-	mic2, err := ComputeReplyVerifier(key, 2)
+	mic2, err := ComputeReplyVerifier(key, 2, false)
 	if err != nil {
 		t.Fatalf("ComputeReplyVerifier(2) failed: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestComputeReplyVerifierUnsupportedEtype(t *testing.T) {
 		KeyValue: []byte("test-key"),
 	}
 
-	_, err := ComputeReplyVerifier(key, 1)
+	_, err := ComputeReplyVerifier(key, 1, false)
 	if err == nil {
 		t.Fatal("expected error for unsupported encryption type")
 	}
@@ -89,7 +90,7 @@ func TestComputeReplyVerifierMICTokenFormat(t *testing.T) {
 		key.KeyValue[i] = byte(i + 1)
 	}
 
-	mic, err := ComputeReplyVerifier(key, 100)
+	mic, err := ComputeReplyVerifier(key, 100, false)
 	if err != nil {
 		t.Fatalf("ComputeReplyVerifier failed: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestComputeReplyVerifierMatchesManualChecksum(t *testing.T) {
 		t.Skip("unknown checksum size for etype")
 	}
 
-	mic, err := ComputeReplyVerifier(key, seqNum)
+	mic, err := ComputeReplyVerifier(key, seqNum, false)
 	if err != nil {
 		t.Fatalf("ComputeReplyVerifier failed: %v", err)
 	}
@@ -141,6 +142,44 @@ func TestComputeReplyVerifierMatchesManualChecksum(t *testing.T) {
 	expectedSize := 16 + int(checksumSize)
 	if len(mic) != expectedSize {
 		t.Fatalf("expected MIC size %d, got %d", expectedSize, len(mic))
+	}
+}
+
+// TestComputeReplyVerifierSetsAcceptorSubkeyFlag asserts that a DATA reply
+// verifier carries FLAG_ACCEPTOR_SUBKEY (bit 2) when, and only when, the
+// context was established with an acceptor subkey (mutual auth). RFC 4121
+// §4.2.2 requires the flag on every acceptor token once a subkey was included
+// in the AP-REP; without it MIT krb5/libtirpc gss_verify_mic rejects the reply
+// with GSS_S_BAD_SIG, breaking krb5i/krb5p. This test FAILS if the flag is not
+// plumbed into ComputeReplyVerifier.
+func TestComputeReplyVerifierSetsAcceptorSubkeyFlag(t *testing.T) {
+	key := krbTypes.EncryptionKey{
+		KeyType:  17, // aes128-cts-hmac-sha1-96
+		KeyValue: make([]byte, 16),
+	}
+	for i := range key.KeyValue {
+		key.KeyValue[i] = byte(i + 1)
+	}
+
+	// With an acceptor subkey, bit 2 (AcceptorSubkey) must be set.
+	withSubkey, err := ComputeReplyVerifier(key, 7, true)
+	if err != nil {
+		t.Fatalf("ComputeReplyVerifier(hasAcceptorSubkey=true) failed: %v", err)
+	}
+	if withSubkey[2]&gssapi.MICTokenFlagAcceptorSubkey == 0 {
+		t.Fatalf("expected AcceptorSubkey flag set on reply MIC, got flags 0x%02x", withSubkey[2])
+	}
+	if withSubkey[2]&gssapi.MICTokenFlagSentByAcceptor == 0 {
+		t.Fatalf("expected SentByAcceptor flag set on reply MIC, got flags 0x%02x", withSubkey[2])
+	}
+
+	// Without an acceptor subkey, bit 2 must remain clear.
+	noSubkey, err := ComputeReplyVerifier(key, 7, false)
+	if err != nil {
+		t.Fatalf("ComputeReplyVerifier(hasAcceptorSubkey=false) failed: %v", err)
+	}
+	if noSubkey[2]&gssapi.MICTokenFlagAcceptorSubkey != 0 {
+		t.Fatalf("expected AcceptorSubkey flag clear on reply MIC, got flags 0x%02x", noSubkey[2])
 	}
 }
 

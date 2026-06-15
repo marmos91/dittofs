@@ -158,9 +158,10 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 
 		// Store session info for reply verifier computation and body wrapping
 		ctx = gss.ContextWithSessionInfo(ctx, &gss.GSSSessionInfo{
-			SessionKey: gssResult.SessionKey,
-			SeqNum:     gssResult.SeqNum,
-			Service:    gssResult.Service,
+			SessionKey:        gssResult.SessionKey,
+			SeqNum:            gssResult.SeqNum,
+			Service:           gssResult.Service,
+			HasAcceptorSubkey: gssResult.HasAcceptorSubkey,
 		})
 	}
 

@@ -66,6 +66,12 @@ type GSSSessionInfo struct {
 	// Service is the RPCSEC_GSS service level (none/integrity/privacy).
 	// Needed by the reply path to determine which wrapping to apply.
 	Service uint32
+
+	// HasAcceptorSubkey indicates the acceptor produced a subkey in the AP-REP
+	// during context establishment (mutual auth). When true, RFC 4121 §4.2.2
+	// requires FLAG_ACCEPTOR_SUBKEY on every acceptor MIC/Wrap token, including
+	// DATA reply verifiers and krb5i/krb5p reply wrapping.
+	HasAcceptorSubkey bool
 }
 
 // ContextWithSessionInfo returns a new context carrying GSS session info.
@@ -111,6 +117,12 @@ type GSSContext struct {
 	// Service is the protection level negotiated during INIT.
 	// One of RPCGSSSvcNone, RPCGSSSvcIntegrity, or RPCGSSSvcPrivacy.
 	Service uint32
+
+	// HasAcceptorSubkey records whether the acceptor produced a subkey in the
+	// AP-REP during context establishment (mutual auth). When true, RFC 4121
+	// §4.2.2 requires FLAG_ACCEPTOR_SUBKEY on every subsequent acceptor MIC/Wrap
+	// token; the DATA reply path reads this to set the flag correctly.
+	HasAcceptorSubkey bool
 
 	// CreatedAt is the time the context was established.
 	CreatedAt time.Time

@@ -252,7 +252,7 @@ func TestWrapPrivacyProducesValidFormat(t *testing.T) {
 	seqNum := uint32(7)
 	args := []byte("hello")
 
-	wrapped, err := WrapPrivacy(key, seqNum, args)
+	wrapped, err := WrapPrivacy(key, seqNum, args, false)
 	if err != nil {
 		t.Fatalf("WrapPrivacy failed: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestWrapPrivacyVerifiableByClient(t *testing.T) {
 	seqNum := uint32(42)
 	replyBody := []byte("nfs-reply-data")
 
-	wrapped, err := WrapPrivacy(key, seqNum, replyBody)
+	wrapped, err := WrapPrivacy(key, seqNum, replyBody, false)
 	if err != nil {
 		t.Fatalf("WrapPrivacy failed: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestWrapPrivacyVerifiableByClient(t *testing.T) {
 func TestWrapPrivacySealedFlagSet(t *testing.T) {
 	key := testSessionKey()
 
-	wrapped, err := WrapPrivacy(key, 1, []byte("test"))
+	wrapped, err := WrapPrivacy(key, 1, []byte("test"), false)
 	if err != nil {
 		t.Fatalf("WrapPrivacy failed: %v", err)
 	}
@@ -396,6 +396,39 @@ func TestWrapPrivacySealedFlagSet(t *testing.T) {
 	ec := binary.BigEndian.Uint16(tokenBytes[4:6])
 	if ec != 0 {
 		t.Fatalf("expected EC=0 (no filler), got %d", ec)
+	}
+}
+
+// privacyWrapFlags wraps a reply via WrapPrivacy and returns the flags byte of
+// the Wrap token header (byte 2 of the XDR opaque databody_priv).
+func privacyWrapFlags(t *testing.T, key krbTypes.EncryptionKey, hasAcceptorSubkey bool) byte {
+	t.Helper()
+	wrapped, err := WrapPrivacy(key, 1, []byte("test"), hasAcceptorSubkey)
+	if err != nil {
+		t.Fatalf("WrapPrivacy failed: %v", err)
+	}
+	reader := bytes.NewReader(wrapped)
+	tokenBytes, err := readXDROpaque(reader)
+	if err != nil {
+		t.Fatalf("read databody_priv: %v", err)
+	}
+	if len(tokenBytes) < wrapTokenHdrLen {
+		t.Fatalf("wrap token too short: %d bytes", len(tokenBytes))
+	}
+	return tokenBytes[2]
+}
+
+// TestWrapPrivacySetsAcceptorSubkeyFlag asserts that the krb5p reply Wrap token
+// carries FLAG_ACCEPTOR_SUBKEY (0x04) iff the context was established with an
+// acceptor subkey (RFC 4121 §4.2.2).
+func TestWrapPrivacySetsAcceptorSubkeyFlag(t *testing.T) {
+	key := testSessionKey()
+
+	if flags := privacyWrapFlags(t, key, true); flags&wrapFlagAcceptorSubkey == 0 {
+		t.Fatalf("expected AcceptorSubkey flag set, got flags 0x%02x", flags)
+	}
+	if flags := privacyWrapFlags(t, key, false); flags&wrapFlagAcceptorSubkey != 0 {
+		t.Fatalf("expected AcceptorSubkey flag clear, got flags 0x%02x", flags)
 	}
 }
 
