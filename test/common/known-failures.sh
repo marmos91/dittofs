@@ -77,6 +77,8 @@ kf_load() {
         KF_REASON["$name"]="${reason:-unknown}"
     done < "$file"
 
+    # KF_COUNT is part of the public API for scripts that source this file.
+    # shellcheck disable=SC2034  # consumed by callers (parse-results.sh, run-posix.sh)
     KF_COUNT=${#KF_KNOWN[@]}
 }
 
