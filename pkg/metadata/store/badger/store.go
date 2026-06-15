@@ -121,6 +121,16 @@ type BadgerMetadataStore struct {
 	// Initialized from a full file scan on startup.
 	usedBytes atomic.Int64
 
+	// userUsage / groupUsage track per-identity usage (bytes + file count) for
+	// regular files, keyed by owner uid / gid. In-memory cache mirroring
+	// usedBytes, seeded from a full file scan on startup (so it is always
+	// reconstructed from the durable file rows — back-compatible with existing
+	// dumps). Updated from a transaction's pending per-identity deltas exactly
+	// once on successful commit. Guarded by quotaMu.
+	quotaMu    sync.Mutex
+	userUsage  map[uint32]*metadata.UsageStat
+	groupUsage map[uint32]*metadata.UsageStat
+
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the cfg:store_id key in BadgerDB. Created on first open of
 	// a fresh directory with a fresh ULID; read thereafter. Immutable for
@@ -408,9 +418,25 @@ func (s *BadgerMetadataStore) GetUsedBytes() int64 {
 	return s.usedBytes.Load()
 }
 
-// initUsedBytesCounter scans all file entries once at startup to initialize the atomic counter.
+// initUsedBytesCounter scans all file entries once at startup to initialize the
+// store-wide atomic counter and the per-identity usage cache (userUsage /
+// groupUsage). Both are reconstructed from the durable file rows, so a store
+// opened from an existing dump (with no separately persisted counters) is always
+// seeded correctly — back-compatible by construction.
 func (s *BadgerMetadataStore) initUsedBytesCounter() error {
 	var totalUsed int64
+	userUsage := make(map[uint32]*metadata.UsageStat)
+	groupUsage := make(map[uint32]*metadata.UsageStat)
+
+	addUsage := func(m map[uint32]*metadata.UsageStat, id uint32, bytes int64) {
+		u := m[id]
+		if u == nil {
+			u = &metadata.UsageStat{}
+			m[id] = u
+		}
+		u.Bytes += bytes
+		u.Files++
+	}
 
 	err := s.db.View(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -429,6 +455,8 @@ func (s *BadgerMetadataStore) initUsedBytesCounter() error {
 				}
 				if file.Type == metadata.FileTypeRegular {
 					totalUsed += int64(file.Size)
+					addUsage(userUsage, file.UID, int64(file.Size))
+					addUsage(groupUsage, file.GID, int64(file.Size))
 				}
 				return nil
 			})
@@ -443,7 +471,26 @@ func (s *BadgerMetadataStore) initUsedBytesCounter() error {
 	}
 
 	s.usedBytes.Store(totalUsed)
+	s.quotaMu.Lock()
+	s.userUsage = userUsage
+	s.groupUsage = groupUsage
+	s.quotaMu.Unlock()
 	return nil
+}
+
+// GetQuotaUsage returns per-identity usage for the given scope and id.
+// O(1) cache read under quotaMu. A missing key returns a zero UsageStat.
+func (s *BadgerMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	m := s.userUsage
+	if scope == metadata.QuotaScopeGroup {
+		m = s.groupUsage
+	}
+	if u, ok := m[id]; ok {
+		return *u, nil
+	}
+	return metadata.UsageStat{}, nil
 }
 
 // NewBadgerMetadataStoreWithDefaults creates a new BadgerDB metadata store with sensible defaults.

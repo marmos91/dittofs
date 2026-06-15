@@ -314,6 +314,17 @@ func (s *Service) createEntry(
 	}
 	newFile.Nlink = GetInitialLinkCount(fileType)
 
+	// Per-identity inode (file-count) quota enforcement. Only regular files
+	// contribute to usage counters, so only their creation is gated here.
+	// Charged to the new file's owner (newAttr.UID/GID). Runs before the
+	// transaction so a rejected create never touches the store. Returns
+	// ErrQuotaExceeded (-> DQUOT / STATUS_QUOTA_EXCEEDED).
+	if fileType == FileTypeRegular {
+		if err := s.checkIdentityQuotas(parent.ShareName, store, newAttr.UID, newAttr.GID, int64(newAttr.Size), 1); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	// Inherit ACL from parent if parent has one. CREATOR_OWNER / CREATOR_GROUP
 	// placeholders are substituted with the requester's frozen identity per
 	// MS-DTYP §2.5.3.4. For anonymous creates (no UID/GID on the identity)

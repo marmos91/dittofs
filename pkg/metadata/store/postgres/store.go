@@ -60,6 +60,16 @@ type PostgresMetadataStore struct {
 	// Initialized from a SQL SUM query on startup.
 	usedBytes atomic.Int64
 
+	// userUsage / groupUsage track per-identity usage (bytes + file count) for
+	// regular files, keyed by owner uid / gid. In-memory cache mirroring
+	// usedBytes, seeded from a SQL GROUP BY query on startup (the files table is
+	// the source of truth, so it is always reconstructed correctly). Updated
+	// from a transaction's pending per-identity deltas exactly once on
+	// successful commit. Guarded by quotaMu.
+	quotaMu    sync.Mutex
+	userUsage  map[uint32]*metadata.UsageStat
+	groupUsage map[uint32]*metadata.UsageStat
+
 	// storeID is the engine-persistent identifier for this store instance,
 	// backed by the server_config.store_id column. Created on first open
 	// (or after migration 000008 on an existing database) with a fresh
@@ -155,7 +165,12 @@ func (s *PostgresMetadataStore) GetUsedBytes() int64 {
 	return s.usedBytes.Load()
 }
 
-// initUsedBytesCounter initializes the atomic counter from a SQL SUM query.
+// initUsedBytesCounter initializes the store-wide atomic counter from a SQL SUM
+// query and seeds the per-identity usage cache (userUsage / groupUsage) from
+// GROUP BY aggregates. Both are reconstructed from the inodes table (the source
+// of truth), so a store opened against an existing database is always seeded
+// correctly. The inodes(uid) / inodes(gid) indexes (migration 000033) keep the
+// GROUP BY scans cheap.
 func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error {
 	query := `SELECT COALESCE(SUM(size), 0) FROM inodes WHERE file_type = $1`
 	var totalUsed int64
@@ -164,7 +179,98 @@ func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error 
 		return fmt.Errorf("failed to query used bytes: %w", err)
 	}
 	s.usedBytes.Store(totalUsed)
+
+	userUsage, err := s.seedUsageByColumn(ctx, "uid")
+	if err != nil {
+		return err
+	}
+	groupUsage, err := s.seedUsageByColumn(ctx, "gid")
+	if err != nil {
+		return err
+	}
+	s.quotaMu.Lock()
+	s.userUsage = userUsage
+	s.groupUsage = groupUsage
+	s.quotaMu.Unlock()
 	return nil
+}
+
+// seedUsageByColumn aggregates per-identity usage (bytes + count) for regular
+// files grouped by the given owner column ("uid" or "gid"). The column name is
+// a fixed internal constant, never user input.
+func (s *PostgresMetadataStore) seedUsageByColumn(ctx context.Context, col string) (map[uint32]*metadata.UsageStat, error) {
+	query := fmt.Sprintf(
+		`SELECT %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes WHERE file_type = $1 GROUP BY %s`,
+		col, col,
+	)
+	rows, err := s.pool.Query(ctx, query, int(metadata.FileTypeRegular))
+	if err != nil {
+		return nil, fmt.Errorf("failed to seed %s usage: %w", col, err)
+	}
+	defer rows.Close()
+	out := make(map[uint32]*metadata.UsageStat)
+	for rows.Next() {
+		var id int64
+		var bytes, files int64
+		if err := rows.Scan(&id, &bytes, &files); err != nil {
+			return nil, fmt.Errorf("failed to scan %s usage: %w", col, err)
+		}
+		out[uint32(id)] = &metadata.UsageStat{Bytes: bytes, Files: files}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed iterating %s usage: %w", col, err)
+	}
+	return out, nil
+}
+
+// GetQuotaUsage returns per-identity usage for the given scope and id.
+// O(1) cache read under quotaMu. A missing key returns a zero UsageStat.
+func (s *PostgresMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32) (metadata.UsageStat, error) {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	m := s.userUsage
+	if scope == metadata.QuotaScopeGroup {
+		m = s.groupUsage
+	}
+	if u, ok := m[id]; ok {
+		return *u, nil
+	}
+	return metadata.UsageStat{}, nil
+}
+
+// applyQuotaDelta folds a per-identity usage delta into the in-memory usage
+// cache. Called post-commit (matching usedBytes). Buckets that drop to zero or
+// below are removed.
+func (s *PostgresMetadataStore) applyQuotaDelta(delta map[pgQuotaKey]metadata.UsageStat) {
+	if len(delta) == 0 {
+		return
+	}
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	for k, d := range delta {
+		m := s.userUsage
+		if k.scope == metadata.QuotaScopeGroup {
+			m = s.groupUsage
+		}
+		cur := m[k.id]
+		if cur == nil {
+			cur = &metadata.UsageStat{}
+			m[k.id] = cur
+		}
+		cur.Bytes += d.Bytes
+		cur.Files += d.Files
+		// Negative values indicate accounting drift (should never happen):
+		// clamp to zero so the enforcer never reads a too-permissive total.
+		if cur.Bytes < 0 {
+			cur.Bytes = 0
+		}
+		if cur.Files < 0 {
+			cur.Files = 0
+		}
+		if cur.Bytes == 0 && cur.Files == 0 {
+			delete(m, k.id)
+		}
+	}
 }
 
 // ensureStoreID reads the engine-persistent store_id from server_config; if

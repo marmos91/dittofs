@@ -34,6 +34,52 @@ type postgresTransaction struct {
 	store        *PostgresMetadataStore
 	tx           pgx.Tx
 	pendingDelta int64
+	// quotaDelta accumulates per-identity usage changes (bytes + file count)
+	// keyed by (scope, id). Applied to the store's in-memory userUsage/
+	// groupUsage cache exactly once after a successful commit, identical to
+	// pendingDelta (so a serialization/deadlock retry never double-counts).
+	quotaDelta map[pgQuotaKey]metadata.UsageStat
+}
+
+// pgQuotaKey identifies a per-identity usage bucket inside a transaction's
+// accumulated delta.
+type pgQuotaKey struct {
+	scope metadata.QuotaScope
+	id    uint32
+}
+
+// addQuota records a usage delta for the file's owner identity (both user and
+// group scopes). See memory store addQuota for the create/resize/chown cases.
+func (tx *postgresTransaction) addQuota(uid, gid uint32, bytes, files int64) {
+	if bytes == 0 && files == 0 {
+		return
+	}
+	if tx.quotaDelta == nil {
+		tx.quotaDelta = make(map[pgQuotaKey]metadata.UsageStat)
+	}
+	u := tx.quotaDelta[pgQuotaKey{metadata.QuotaScopeUser, uid}]
+	u.Bytes += bytes
+	u.Files += files
+	tx.quotaDelta[pgQuotaKey{metadata.QuotaScopeUser, uid}] = u
+	g := tx.quotaDelta[pgQuotaKey{metadata.QuotaScopeGroup, gid}]
+	g.Bytes += bytes
+	g.Files += files
+	tx.quotaDelta[pgQuotaKey{metadata.QuotaScopeGroup, gid}] = g
+}
+
+// addQuotaKeyed merges a single pre-keyed usage delta (used when folding the
+// per-identity totals freed by DeleteShare).
+func (tx *postgresTransaction) addQuotaKeyed(k pgQuotaKey, d metadata.UsageStat) {
+	if d.Bytes == 0 && d.Files == 0 {
+		return
+	}
+	if tx.quotaDelta == nil {
+		tx.quotaDelta = make(map[pgQuotaKey]metadata.UsageStat)
+	}
+	cur := tx.quotaDelta[k]
+	cur.Bytes += d.Bytes
+	cur.Files += d.Files
+	tx.quotaDelta[k] = cur
 }
 
 // isRetryableError checks if a PostgreSQL error is retryable (deadlock or serialization failure)
@@ -121,6 +167,8 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 		if ptx.pendingDelta != 0 {
 			s.usedBytes.Add(ptx.pendingDelta)
 		}
+		// Apply per-identity usage deltas once, after commit.
+		s.applyQuotaDelta(ptx.quotaDelta)
 		return nil // Success
 	}
 
@@ -208,7 +256,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// RowsAffected()==0 check relied on.
 	updateQuery := `
 		WITH old AS (
-			SELECT id, share_name, size
+			SELECT id, share_name, size, uid, gid, file_type
 			FROM inodes
 			WHERE id = $21 AND share_name = $22
 			FOR UPDATE
@@ -236,7 +284,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			deleted_by = $20
 		FROM old
 		WHERE inodes.id = old.id AND inodes.share_name = old.share_name
-		RETURNING old.size
+		RETURNING old.size, old.uid, old.gid, old.file_type
 	`
 
 	var deviceMajor, deviceMinor *int32
@@ -304,6 +352,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// write. A returned row means the file existed (and we have its old size);
 	// pgx.ErrNoRows means it did not, so we fall through to INSERT.
 	var oldSizeVal sql.NullInt64
+	var oldUIDVal, oldGIDVal, oldTypeVal sql.NullInt64
 	updated := true
 	scanErr := tx.tx.QueryRow(ctx, updateQuery,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
@@ -313,7 +362,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		file.Hidden, aclJSON, easJSON, objectIDArg,
 		deletedAtArg, file.OriginalPath, file.DeletedBy,
 		file.ID, file.ShareName,
-	).Scan(&oldSizeVal)
+	).Scan(&oldSizeVal, &oldUIDVal, &oldGIDVal, &oldTypeVal)
 	switch {
 	case scanErr == nil:
 		// Row existed and was updated; oldSizeVal holds the pre-update size.
@@ -332,6 +381,22 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			oldSize = uint64(oldSizeVal.Int64)
 		}
 		tx.pendingDelta += int64(file.Size) - int64(oldSize)
+
+		// Per-identity usage. The previous row may not have been a regular file
+		// (type change), in which case it contributed nothing before.
+		oldWasRegular := oldTypeVal.Valid && metadata.FileType(oldTypeVal.Int64) == metadata.FileTypeRegular
+		oldUID := uint32(oldUIDVal.Int64)
+		oldGID := uint32(oldGIDVal.Int64)
+		switch {
+		case !oldWasRegular:
+			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+		case oldUID == file.UID && oldGID == file.GID:
+			tx.addQuota(file.UID, file.GID, int64(file.Size)-int64(oldSize), 0)
+		default:
+			// Chown: move bytes + inode from old owner to new owner.
+			tx.addQuota(oldUID, oldGID, -int64(oldSize), -1)
+			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
+		}
 	}
 
 	// If no rows were updated, the file doesn't exist - do an INSERT
@@ -361,8 +426,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		}
 
 		// Track new regular file size.
-		if file.Type == metadata.FileTypeRegular && file.Size > 0 {
-			tx.pendingDelta += int64(file.Size)
+		if file.Type == metadata.FileTypeRegular {
+			if file.Size > 0 {
+				tx.pendingDelta += int64(file.Size)
+			}
+			tx.addQuota(file.UID, file.GID, int64(file.Size), 1)
 		}
 
 		// Debug logging for new file inserts
@@ -400,13 +468,14 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 		}
 	}
 
-	// Read size before deletion for counter tracking.
+	// Read size + owner before deletion for counter tracking.
 	var fileType int
 	var fileSize int64
+	var fileUID, fileGID int64
 	_ = tx.tx.QueryRow(ctx,
-		`SELECT file_type, size FROM inodes WHERE id = $1 AND share_name = $2`,
+		`SELECT file_type, size, uid, gid FROM inodes WHERE id = $1 AND share_name = $2`,
 		id, shareName,
-	).Scan(&fileType, &fileSize)
+	).Scan(&fileType, &fileSize, &fileUID, &fileGID)
 
 	// Delete the file. link_counts.file_id and parent_child_map.parent_id both
 	// declare ON DELETE CASCADE against inodes(id), so deleting the inode row
@@ -426,9 +495,12 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 		}
 	}
 
-	// Subtract size from the pending delta for regular files.
-	if metadata.FileType(fileType) == metadata.FileTypeRegular && fileSize > 0 {
-		tx.pendingDelta -= fileSize
+	// Subtract size from the pending delta + per-identity usage for regular files.
+	if metadata.FileType(fileType) == metadata.FileTypeRegular {
+		if fileSize > 0 {
+			tx.pendingDelta -= fileSize
+		}
+		tx.addQuota(uint32(fileUID), uint32(fileGID), -fileSize, -1)
 	}
 
 	return nil
@@ -961,6 +1033,16 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 		return mapPgError(err, "DeleteShare", shareName)
 	}
 
+	// Capture per-identity usage about to be removed (uid + gid) so the
+	// in-memory usage cache stays accurate. Aggregated before the rows are
+	// deleted; applied to the tx quota delta (post-commit) below.
+	if err := tx.collectShareQuotaFreed(ctx, shareName, "uid", metadata.QuotaScopeUser); err != nil {
+		return err
+	}
+	if err := tx.collectShareQuotaFreed(ctx, shareName, "gid", metadata.QuotaScopeGroup); err != nil {
+		return err
+	}
+
 	// Drop the share row first: shares.root_file_id references inodes(id)
 	// WITHOUT ON DELETE CASCADE, so the inode rows cannot be removed while
 	// the share still points at the root inode.
@@ -992,6 +1074,34 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 		tx.pendingDelta -= freedBytes
 	}
 
+	return nil
+}
+
+// collectShareQuotaFreed aggregates per-identity usage for the regular files of
+// a share being deleted (grouped by uid or gid) and records the negative delta
+// on the tx so the in-memory usage cache is decremented post-commit. The column
+// is a fixed internal constant, never user input.
+func (tx *postgresTransaction) collectShareQuotaFreed(ctx context.Context, shareName, col string, scope metadata.QuotaScope) error {
+	query := fmt.Sprintf(
+		`SELECT %s, COALESCE(SUM(size), 0), COUNT(*) FROM inodes
+		 WHERE share_name = $1 AND file_type = $2 GROUP BY %s`,
+		col, col,
+	)
+	rows, err := tx.tx.Query(ctx, query, shareName, int(metadata.FileTypeRegular))
+	if err != nil {
+		return mapPgError(err, "DeleteShare", shareName)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, bytes, files int64
+		if err := rows.Scan(&id, &bytes, &files); err != nil {
+			return mapPgError(err, "DeleteShare", shareName)
+		}
+		tx.addQuotaKeyed(pgQuotaKey{scope, uint32(id)}, metadata.UsageStat{Bytes: -bytes, Files: -files})
+	}
+	if err := rows.Err(); err != nil {
+		return mapPgError(err, "DeleteShare", shareName)
+	}
 	return nil
 }
 

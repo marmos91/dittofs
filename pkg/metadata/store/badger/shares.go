@@ -199,6 +199,7 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	}
 
 	var freedBytes int64
+	var quotaFreed map[badgerQuotaKey]metadata.UsageStat
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyShare(shareName))
 		if err == badgerdb.ErrKeyNotFound {
@@ -212,11 +213,12 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 			return err
 		}
 
-		freed, err := s.deleteShareFiles(txn, shareName)
+		freed, quota, err := s.deleteShareFiles(txn, shareName)
 		if err != nil {
 			return err
 		}
 		freedBytes = freed
+		quotaFreed = quota
 
 		return txn.Delete(keyShare(shareName))
 	})
@@ -227,7 +229,43 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	if freedBytes > 0 {
 		s.usedBytes.Add(-freedBytes)
 	}
+	s.applyQuotaDelta(quotaFreed)
 	return nil
+}
+
+// applyQuotaDelta folds a per-identity usage delta into the in-memory usage
+// cache. Called post-commit (matching usedBytes). Buckets that drop to zero or
+// below are removed.
+func (s *BadgerMetadataStore) applyQuotaDelta(delta map[badgerQuotaKey]metadata.UsageStat) {
+	if len(delta) == 0 {
+		return
+	}
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	for k, d := range delta {
+		m := s.userUsage
+		if k.scope == metadata.QuotaScopeGroup {
+			m = s.groupUsage
+		}
+		cur := m[k.id]
+		if cur == nil {
+			cur = &metadata.UsageStat{}
+			m[k.id] = cur
+		}
+		cur.Bytes += d.Bytes
+		cur.Files += d.Files
+		// Negative values indicate accounting drift (should never happen):
+		// clamp to zero so the enforcer never reads a too-permissive total.
+		if cur.Bytes < 0 {
+			cur.Bytes = 0
+		}
+		if cur.Files < 0 {
+			cur.Files = 0
+		}
+		if cur.Bytes == 0 && cur.Files == 0 {
+			delete(m, k.id)
+		}
+	}
 }
 
 // deleteShareFiles removes every file inode and its dependent keys (parent,
@@ -245,13 +283,15 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 // pendingDelta and the pool-path applies it after db.Update returns nil — so a
 // conflict/serialization retry that re-runs the enclosing Update never
 // double-counts. The counter is statfs-only, not quota-enforcing.
-func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (freedBytes int64, err error) {
+func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (freedBytes int64, quota map[badgerQuotaKey]metadata.UsageStat, err error) {
 	type doomed struct {
 		id       uuid.UUID
 		objectID metadata.ContentHash
 		isDir    bool
 		size     uint64
 		isReg    bool
+		uid      uint32
+		gid      uint32
 	}
 	var victims []doomed
 
@@ -264,7 +304,7 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 		val, vErr := item.ValueCopy(nil)
 		if vErr != nil {
 			it.Close()
-			return 0, fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
+			return 0, nil, fmt.Errorf("badger DeleteShare: copy file value: %w", vErr)
 		}
 		file, decErr := decodeFile(val)
 		if decErr != nil {
@@ -281,27 +321,42 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 			isDir:    file.Type == metadata.FileTypeDirectory,
 			size:     file.Size,
 			isReg:    file.Type == metadata.FileTypeRegular,
+			uid:      file.UID,
+			gid:      file.GID,
 		})
 	}
 	it.Close()
 
+	quota = make(map[badgerQuotaKey]metadata.UsageStat)
 	for _, v := range victims {
 		if delErr := deleteFileKeys(txn, v.id, v.objectID); delErr != nil {
-			return 0, delErr
+			return 0, nil, delErr
 		}
 		// Directories own c:<uuid>:<name> child entries; prefix-scan and
 		// delete them so no dangling mapping survives the share.
 		if v.isDir {
 			if delErr := deleteChildEntries(txn, v.id); delErr != nil {
-				return 0, delErr
+				return 0, nil, delErr
 			}
 		}
-		if v.isReg && v.size > 0 {
-			freedBytes += int64(v.size)
+		if v.isReg {
+			if v.size > 0 {
+				freedBytes += int64(v.size)
+			}
+			uk := badgerQuotaKey{metadata.QuotaScopeUser, v.uid}
+			us := quota[uk]
+			us.Bytes -= int64(v.size)
+			us.Files--
+			quota[uk] = us
+			gk := badgerQuotaKey{metadata.QuotaScopeGroup, v.gid}
+			gs := quota[gk]
+			gs.Bytes -= int64(v.size)
+			gs.Files--
+			quota[gk] = gs
 		}
 	}
 
-	return freedBytes, nil
+	return freedBytes, quota, nil
 }
 
 // deleteFileKeys removes the primary file row plus its parent, link-count, and

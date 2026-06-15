@@ -190,6 +190,11 @@ const (
 	// StatusDiskFull indicates the disk is full.
 	StatusDiskFull Status = 0xC000007F
 
+	// StatusQuotaExceeded indicates a disk quota was exceeded (NT
+	// STATUS_QUOTA_EXCEEDED). Distinct from StatusDiskFull: the volume has space
+	// but the caller's per-user/per-group quota is full.
+	StatusQuotaExceeded Status = 0xC0000044
+
 	// StatusUnexpectedIOError indicates an unexpected I/O error occurred.
 	StatusUnexpectedIOError Status = 0xC00000E9
 
@@ -345,6 +350,8 @@ func (s Status) String() string {
 		return "STATUS_NOTIFY_ENUM_DIR"
 	case StatusDiskFull:
 		return "STATUS_DISK_FULL"
+	case StatusQuotaExceeded:
+		return "STATUS_QUOTA_EXCEEDED"
 	case StatusUnexpectedIOError:
 		return "STATUS_UNEXPECTED_IO_ERROR"
 	case StatusNotAReparsePoint:

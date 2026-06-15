@@ -655,6 +655,56 @@ Shares are managed at runtime via `dfsctl` and persisted in the control plane da
 - **Resource Efficiency**: Remote stores are shared (ref counted) when multiple shares reference the same config
 - **Flexible Topologies**: Mix local-only and remote-backed storage per-share
 
+#### Per-share and per-identity quotas
+
+DittoFS supports two complementary quota layers, both enforced by NFS *and* SMB:
+
+1. **Per-share quota** (`dfsctl share create/edit --quota-bytes`) — a single byte
+   ceiling for the whole share. Exceeding it returns `NFS3ERR_NOSPC` /
+   `STATUS_DISK_FULL`.
+
+2. **Per-identity quotas** (`dfsctl quota …`) — per-**user** (uid) and per-**group**
+   (gid) limits, plus an optional **default-user** fallback applied to any user
+   without an explicit quota. Each quota bounds both **bytes** and **inodes**
+   (file count) and supports a **soft** threshold with a **grace period** before
+   the soft threshold is enforced as a hard limit. Usage is charged to the file
+   *owner* (standard quota semantics). Exceeding a hard limit (or an expired
+   soft+grace) returns `NFS3ERR_DQUOT` / `NFS4ERR_DQUOT` /
+   `STATUS_QUOTA_EXCEEDED`. `df` / FSSTAT and SMB `FS_FULL_SIZE_INFORMATION`
+   report the smallest applicable quota for the calling identity.
+
+```bash
+# Per-user quota: uid 1000 limited to 10 GiB / 100k files, soft at 8 GiB,
+# 7-day grace (604800s) before the soft byte threshold becomes hard.
+./dfsctl quota set /cloud --scope user --id 1000 \
+    --limit-bytes 10GiB --soft-bytes 8GiB \
+    --limit-files 100000 --soft-files 90000 --grace-seconds 604800
+
+# Per-group quota: gid 2000 limited to 50 GiB.
+./dfsctl quota set /cloud --scope group --id 2000 --limit-bytes 50GiB
+
+# Default-user fallback (applies to any user without an explicit quota).
+./dfsctl quota set /cloud --scope default-user --limit-bytes 5GiB
+
+# Inspect and remove.
+./dfsctl quota list /cloud
+./dfsctl quota rm /cloud --scope user --id 1000
+```
+
+Per-identity quota usage is tracked incrementally by every metadata backend
+(memory / badger / postgres), keyed by owner uid and gid, and is reconstructed
+from the file rows on startup. A `chown` that changes a file's owner moves its
+bytes and inode count between identities. Limits live in the control-plane DB
+and are also manageable via the REST API
+(`/api/v1/shares/{name}/quotas[/{scope}/{id}]`).
+
+> **Note**: enforcement is best-effort (matching the per-share soft quota):
+> under high write concurrency a few operations may briefly exceed a limit until
+> usage catches up. This is standard for userspace NFS/SMB servers.
+>
+> **Kubernetes operator**: the operator manages infrastructure only — there is
+> no Share/Quota CRD. Quotas are managed via the REST API / `dfsctl` as above.
+
 ### 9. User Management
 
 DittoFS supports a unified user management system for both NFS and SMB protocols. Users, groups, and their permissions are stored in the control plane database (see [Database Configuration](#4-database-control-plane)) and can be managed via:

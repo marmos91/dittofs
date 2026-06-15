@@ -13,6 +13,7 @@ import (
 	groupcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/group"
 	idmapcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/idmap"
 	netgroupcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/netgroup"
+	quotacmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/quota"
 	settingscmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/settings"
 	sharecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/share"
 	storecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/store"
@@ -77,6 +78,7 @@ func init() {
 	rootCmd.AddCommand(usercmd.Cmd)
 	rootCmd.AddCommand(groupcmd.Cmd)
 	rootCmd.AddCommand(sharecmd.Cmd)
+	rootCmd.AddCommand(quotacmd.Cmd)
 	rootCmd.AddCommand(trashcmd.Cmd)
 	rootCmd.AddCommand(storecmd.Cmd)
 	rootCmd.AddCommand(adaptercmd.Cmd)

@@ -142,6 +142,17 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 		}
 	}
 
+	// Per-identity (user/group) byte quota enforcement. Charged to the file
+	// OWNER (standard quota semantics), not the writer. A growth-only check:
+	// shrink/truncate is always allowed. Returns ErrQuotaExceeded (-> DQUOT /
+	// STATUS_QUOTA_EXCEEDED), distinct from the ErrNoSpace share check above.
+	if newSize > file.Size {
+		byteDelta := int64(newSize - file.Size)
+		if err := s.checkIdentityQuotas(shareName, store, file.UID, file.GID, byteDelta, 0); err != nil {
+			return nil, err
+		}
+	}
+
 	// Check write permission. Always route through checkWritePermission so that
 	// DOS READONLY (mode bit 0x100000) is enforced for owners. calculatePermissions
 	// already handles owner vs non-owner mode-bit evaluation correctly (owner gets
