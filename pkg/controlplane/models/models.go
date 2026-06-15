@@ -9,6 +9,7 @@ func AllModels() []any {
 		&BlockStoreConfig{},
 		&Share{},
 		&Snapshot{},
+		&SnapshotPolicy{},
 		&RestoreMarker{},
 		&ShareAccessRule{},
 		&ShareAdapterConfig{},

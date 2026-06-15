@@ -157,6 +157,12 @@ func (s *GORMStore) DeleteShare(ctx context.Context, name string) error {
 			return err
 		}
 
+		// Delete the snapshot policy (if any) for this share so a reused
+		// share name does not inherit a stale schedule.
+		if err := tx.Where("share_name = ?", share.Name).Delete(&models.SnapshotPolicy{}).Error; err != nil {
+			return err
+		}
+
 		// Delete share
 		return tx.Delete(&share).Error
 	})
