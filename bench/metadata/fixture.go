@@ -111,7 +111,7 @@ func defaultCaps() metadata.FilesystemCapabilities {
 // FilesPerDir regular files. The slices are the working sets the hot loop draws
 // from — fileHandles for getattr, (lookupDir,lookupName) pairs for lookup,
 // dirHandles for readdir.
-type tree struct {
+type Tree struct {
 	dirHandles  []metadata.FileHandle
 	fileHandles []metadata.FileHandle
 	lookupDir   []metadata.FileHandle
@@ -130,7 +130,7 @@ const benchShareName = "/bench"
 // seedTree populates the store with Dirs × FilesPerDir entries and returns the
 // working sets. Mirrors storetest's createTestShare/Dir/File helpers, minus the
 // *testing.T coupling so it runs from the bench binary.
-func seedTree(ctx context.Context, store metadata.Store, dirs, filesPerDir int) (*tree, error) {
+func seedTree(ctx context.Context, store metadata.Store, dirs, filesPerDir int) (*Tree, error) {
 	if r, ok := store.(resetter); ok {
 		if err := r.Reset(ctx); err != nil {
 			return nil, fmt.Errorf("reset: %w", err)
@@ -142,10 +142,11 @@ func seedTree(ctx context.Context, store metadata.Store, dirs, filesPerDir int) 
 		return nil, err
 	}
 
-	t := &tree{}
+	t := &Tree{}
 	for d := 0; d < dirs; d++ {
 		dirName := fmt.Sprintf("dir%06d", d)
-		dirHandle, err := putChild(ctx, store, benchShareName, rootHandle, dirName, metadata.FileTypeDirectory, 0o755, 2)
+		dirPath := joinPath("/", dirName)
+		dirHandle, err := putChild(ctx, store, rootHandle, dirPath, dirName, metadata.FileTypeDirectory, 0o755, 2)
 		if err != nil {
 			return nil, err
 		}
@@ -153,7 +154,8 @@ func seedTree(ctx context.Context, store metadata.Store, dirs, filesPerDir int) 
 
 		for f := 0; f < filesPerDir; f++ {
 			fileName := fmt.Sprintf("file%06d", f)
-			fileHandle, err := putChild(ctx, store, benchShareName, dirHandle, fileName, metadata.FileTypeRegular, 0o644, 1)
+			filePath := joinPath(dirPath, fileName)
+			fileHandle, err := putChild(ctx, store, dirHandle, filePath, fileName, metadata.FileTypeRegular, 0o644, 1)
 			if err != nil {
 				return nil, err
 			}
@@ -184,14 +186,14 @@ func createShare(ctx context.Context, store metadata.Store, shareName string) (m
 	return rootHandle, nil
 }
 
-// putChild creates one directory or regular file under parentHandle and wires
-// the parent/child/link-count edges, mirroring storetest.createTestFile/Dir.
-func putChild(ctx context.Context, store metadata.Store, shareName string, parentHandle metadata.FileHandle, name string, ftype metadata.FileType, mode uint32, nlink uint32) (metadata.FileHandle, error) {
-	fullPath, err := childFullPath(ctx, store, parentHandle, name)
-	if err != nil {
-		return nil, err
-	}
-	handle, err := store.GenerateHandle(ctx, shareName, fullPath)
+// putChild creates one directory or regular file at fullPath under
+// parentHandle and wires the parent/child/link-count edges, mirroring
+// storetest.createTestFile/Dir. fullPath is the entry's absolute path; it is
+// supplied by the caller (rather than re-derived from the store) so path-keyed
+// backends (postgres) get a unique, non-empty path per entry without an extra
+// round-trip during seeding.
+func putChild(ctx context.Context, store metadata.Store, parentHandle metadata.FileHandle, fullPath, name string, ftype metadata.FileType, mode uint32, nlink uint32) (metadata.FileHandle, error) {
+	handle, err := store.GenerateHandle(ctx, benchShareName, fullPath)
 	if err != nil {
 		return nil, fmt.Errorf("GenerateHandle(%q): %w", fullPath, err)
 	}
@@ -200,7 +202,7 @@ func putChild(ctx context.Context, store metadata.Store, shareName string, paren
 		return nil, fmt.Errorf("DecodeFileHandle: %w", err)
 	}
 	file := &metadata.File{
-		ShareName: shareName,
+		ShareName: benchShareName,
 		Path:      fullPath,
 		FileAttr: metadata.FileAttr{
 			Type: ftype,
@@ -225,16 +227,11 @@ func putChild(ctx context.Context, store metadata.Store, shareName string, paren
 	return handle, nil
 }
 
-// childFullPath joins the parent directory's path with name so path-keyed
-// backends (postgres) get a unique, non-empty path per entry.
-func childFullPath(ctx context.Context, store metadata.Store, parentHandle metadata.FileHandle, name string) (string, error) {
-	parent, err := store.GetFile(ctx, parentHandle)
-	if err != nil {
-		return "", fmt.Errorf("GetFile(parent): %w", err)
+// joinPath joins a parent directory path with a child name, collapsing the
+// root ("" or "/") so children of root come out as "/name", not "//name".
+func joinPath(parent, name string) string {
+	if parent == "" || parent == "/" {
+		return "/" + name
 	}
-	parentPath := parent.Path
-	if parentPath == "" || parentPath == "/" {
-		return "/" + name, nil
-	}
-	return parentPath + "/" + name, nil
+	return parent + "/" + name
 }
