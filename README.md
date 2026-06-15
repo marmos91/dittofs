@@ -134,6 +134,13 @@ DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
 ```bash
 # 1. Start the server (see above), then log in
 ./dfsctl login --server http://localhost:8080 --username admin
+
+# 1a. REQUIRED on first login: change the admin password.
+# The bootstrap admin starts with a forced-password-change flag — until you
+# clear it here, every other command (including `user create` below) is
+# rejected with HTTP 403 "Password change required. Please change your
+# password before proceeding." (Skipped automatically if you set your own
+# DITTOFS_ADMIN_INITIAL_PASSWORD at first start.)
 ./dfsctl user change-password
 
 # 2. Create a user mapped to your host UID (needed for NFS write access)
