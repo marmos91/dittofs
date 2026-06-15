@@ -54,10 +54,15 @@ func ResolveSharePermission(
 ) (SharePermissionResult, error) {
 	var result SharePermissionResult
 
-	// No identity store or share - no policy information available, allow with
-	// share defaults. (A nil UID is NOT treated this way: an anonymous AUTH_NULL
-	// caller must still be gated by the share's default_permission policy below.)
+	// No identity store or share - no per-user policy is resolvable, so allow
+	// with share defaults. Still honour the share-level read-only flag when a
+	// share is present: an unavailable identity store must never silently make a
+	// read-only export writable. (A nil UID is NOT short-circuited here: an
+	// anonymous AUTH_NULL caller is gated by default_permission below.)
 	if identityStore == nil || share == nil {
+		if share != nil {
+			result.ReadOnly = share.ReadOnly
+		}
 		return result, nil
 	}
 

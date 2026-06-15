@@ -178,6 +178,21 @@ func TestResolveSharePermission_NilInputsAllow(t *testing.T) {
 	}
 }
 
+// When no identity store is available but the share is read-only, the result
+// must still be read-only — an unavailable/unconfigured identity store must not
+// silently make a read-only export writable.
+func TestResolveSharePermission_NilStoreHonoursShareReadOnly(t *testing.T) {
+	share := &runtime.Share{Name: "/export", ReadOnly: true}
+
+	res, err := ResolveSharePermission(context.Background(), nil, share, "/export", "127.0.0.1:1", ptrUID(1000))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.ReadOnly {
+		t.Errorf("nil identity store with read-only share: ReadOnly = false, want true")
+	}
+}
+
 // Negative control for the AUTH_NULL share-permission bypass: an anonymous
 // caller (nil UID, e.g. AUTH_NULL credentials) must be DENIED on a share with
 // default_permission=none. Before the fix the nil-UID early return granted

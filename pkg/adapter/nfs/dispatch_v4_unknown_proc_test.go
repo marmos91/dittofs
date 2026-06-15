@@ -75,7 +75,7 @@ func TestHandleRPCCall_NFSv4UnknownProcedure_SingleReply(t *testing.T) {
 	// The handler must have returned already. With the bug it would still be
 	// blocked writing a SECOND reply to the synchronous pipe (no second reader),
 	// so this select would time out. handleRPCCall recognises the internal
-	// errDropReply signal and returns nil (no further reply, no error).
+	// errReplyAlreadySent signal and returns nil (no further reply, no error).
 	select {
 	case err := <-errCh:
 		if err != nil {

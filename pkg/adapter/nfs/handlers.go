@@ -362,7 +362,7 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 	default:
 		// NFSv4 only has 2 procedures -- anything else is invalid. Write the
 		// single authoritative PROC_UNAVAIL reply here, then signal the
-		// dispatcher to emit nothing further via errDropReply. Returning
+		// dispatcher to emit nothing further via errReplyAlreadySent. Returning
 		// (nil, nil) instead would fall through to handleRPCCall's sendReply,
 		// writing a SECOND (empty MSG_ACCEPTED) reply on the same XID and
 		// corrupting the TCP stream for all subsequent requests.
@@ -376,7 +376,7 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		if writeErr := c.writeReply(call.XID, errorReply); writeErr != nil {
 			return nil, writeErr
 		}
-		return nil, errDropReply
+		return nil, errReplyAlreadySent
 	}
 }
 

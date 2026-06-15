@@ -24,17 +24,19 @@ import (
 // incoming message is a backchannel REPLY (msg_type=1) rather than a CALL.
 var errBackchannelReply = errors.New("backchannel reply routed")
 
-// errDropReply is a sentinel error signalling that handleRPCCall must NOT write
-// a reply for this request, because the authoritative reply has already been
-// (or will be) sent elsewhere. Two cases use it:
-//   - DRC in-progress: the request is a duplicate of an op still in flight; the
-//     original request owns the XID and sends the single reply (nfsd RC_DROPIT).
-//   - A dispatch branch that already wrote its own reply (e.g. the NFSv4
-//     unknown-procedure PROC_UNAVAIL path) and must prevent the fall-through
-//     sendReply from emitting a second reply on the same XID.
-//
-// handleRPCCall recognises it and returns without emitting any further reply.
+// errDropReply is a sentinel error signalling that no reply must be written for
+// this request: it is a duplicate of an op still in flight (DRC in-progress).
+// The original request owns the XID and will send the single authoritative
+// reply, mirroring nfsd's RC_DROPIT. handleRPCCall recognises it and returns
+// without emitting any RPC reply.
 var errDropReply = errors.New("duplicate request dropped")
+
+// errReplyAlreadySent is a sentinel error signalling that a dispatch branch has
+// already written the single authoritative reply for this request (e.g. the
+// NFSv4 unknown-procedure PROC_UNAVAIL path). handleRPCCall recognises it and
+// returns without emitting a second reply on the same XID — unlike errDropReply,
+// it does not imply a duplicate request, so it is logged distinctly.
+var errReplyAlreadySent = errors.New("reply already sent by handler")
 
 // NFSConnection handles a single NFS client TCP connection.
 // Requests are read sequentially from the wire but dispatched concurrently
