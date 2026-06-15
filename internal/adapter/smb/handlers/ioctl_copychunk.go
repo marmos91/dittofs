@@ -418,12 +418,30 @@ func (h *Handler) executeCopyChunks(
 	var totalBytesWritten uint64
 	var lastWritePayloadID metadata.PayloadID
 
+	// flushCommitted forces the deferred write metadata for the chunks committed
+	// so far to the store (SMB requires immediate cross-session visibility). It
+	// is invoked once on the success path and on each partial-error return,
+	// rather than per chunk inside the loop: flushing every 1 MiB chunk meant up
+	// to 256 redundant store round-trips even though the next PrepareWrite
+	// immediately reopened a pending transaction. Only the last flush before
+	// returning is observable; a partial copy must still flush what it committed.
+	flushCommitted := func() {
+		if chunksWritten == 0 {
+			return
+		}
+		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, dstOpen.MetadataHandle); flushErr != nil {
+			logger.Debug("COPYCHUNK: deferred metadata flush failed (non-fatal)",
+				"dstPath", dstOpen.Path, "error", flushErr)
+		}
+	}
+
 	for i, chunk := range chunks {
 		// Validate source range: SourceOffset + Length must not exceed source file size
 		if chunk.SourceOffset+uint64(chunk.Length) > srcSize {
 			logger.Debug("COPYCHUNK: source range exceeds file size",
 				"chunk", i, "srcOff", chunk.SourceOffset,
 				"len", chunk.Length, "srcSize", srcSize)
+			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				statusInvalidViewSize, chunksWritten, totalBytesWritten), nil
 		}
@@ -434,6 +452,7 @@ func (h *Handler) executeCopyChunks(
 			srcOpen.SessionID, chunk.SourceOffset, uint64(chunk.Length), false,
 		); lockErr != nil {
 			logger.Debug("COPYCHUNK: source locked", "chunk", i, "error", lockErr)
+			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				types.StatusFileLockConflict, chunksWritten, totalBytesWritten), nil
 		}
@@ -444,6 +463,7 @@ func (h *Handler) executeCopyChunks(
 			dstOpen.SessionID, chunk.TargetOffset, uint64(chunk.Length), true,
 		); lockErr != nil {
 			logger.Debug("COPYCHUNK: destination locked", "chunk", i, "error", lockErr)
+			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				types.StatusFileLockConflict, chunksWritten, totalBytesWritten), nil
 		}
@@ -461,6 +481,7 @@ func (h *Handler) executeCopyChunks(
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
+			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
 		}
@@ -469,6 +490,7 @@ func (h *Handler) executeCopyChunks(
 		if uint32(n) < chunk.Length {
 			logger.Debug("COPYCHUNK: short read from source (possible concurrent truncation)",
 				"chunk", i, "expected", chunk.Length, "got", n)
+			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				statusInvalidViewSize, chunksWritten, totalBytesWritten), nil
 		}
@@ -482,6 +504,7 @@ func (h *Handler) executeCopyChunks(
 		if err != nil {
 			logger.Warn("COPYCHUNK: prepare write failed",
 				"chunk", i, "dstPath", dstOpen.Path, "error", err)
+			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				common.MapToSMB(err), chunksWritten, totalBytesWritten), nil
 		}
@@ -498,6 +521,7 @@ func (h *Handler) executeCopyChunks(
 			// mid-copy) to STATUS_FILE_CLOSED and preserves the
 			// CAS-corruption / remote-unavailable mappings, defaulting to
 			// the I/O-class status for opaque failures.
+			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				common.MapContentToSMB(err), chunksWritten, totalBytesWritten), nil
 		}
@@ -506,20 +530,17 @@ func (h *Handler) executeCopyChunks(
 		if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
 			logger.Warn("COPYCHUNK: commit write failed",
 				"chunk", i, "dstPath", dstOpen.Path, "error", err)
+			flushCommitted()
 			return copyChunkPartialResponse(ctlCode, dstFileID,
 				types.StatusInternalError, chunksWritten, totalBytesWritten), nil
-		}
-
-		// Flush deferred metadata (SMB requires immediate visibility)
-		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, dstOpen.MetadataHandle); flushErr != nil {
-			logger.Debug("COPYCHUNK: deferred metadata flush failed (non-fatal)",
-				"dstPath", dstOpen.Path, "error", flushErr)
 		}
 
 		lastWritePayloadID = writeOp.PayloadID
 		chunksWritten++
 		totalBytesWritten += uint64(chunk.Length)
 	}
+
+	flushCommitted()
 
 	// Update cached PayloadID on destination (matches write.go pattern).
 	// This ensures close.go flushes block store data correctly.

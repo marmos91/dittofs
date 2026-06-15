@@ -754,6 +754,13 @@ func isSupportedDirInfoClass(c types.FileInfoClass) bool {
 // FILE_ALL_INFORMATION for the same file — smb2.dir.one asserts
 // id_both_directory_info/ea_size == all_info2/ea_size (dir.c:673).
 func writeDirEntryEaSize(entry []byte, attr *metadata.FileAttr) {
+	// attr is nil for "." / ".." when GetFile fails and per the documented-
+	// optional DirEntry.Attr contract. A nil attr carries no EAs, so EaSize is
+	// 0 — leave the field zero rather than dereferencing attr.EAs and panicking
+	// (mirrors the nil guard in resolveDirEntryFields).
+	if attr == nil {
+		return
+	}
 	eaSize := fullEaInformationSize(attr.EAs)
 	if eaSize == 0 {
 		return
