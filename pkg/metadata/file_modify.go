@@ -1,7 +1,6 @@
 package metadata
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -787,27 +786,18 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 			}
 		}
 
-		// Update path and timestamps. PutFile(srcFile) is tx-critical: a stale
-		// File.Path breaks the Path-keyed postgres snapshot/restore and the
-		// descendant-path rewrite below. Return the error so a failure rolls
-		// the whole rename back rather than committing a relinked entry with
-		// the old Path.
+		// Bump ctime on the renamed inode. The namespace edge has already been
+		// relinked above (DeleteChild/SetChild/SetParent); File.Path is no
+		// longer stored — every backend derives it on read from the
+		// parent_child_map / parent edges (#1166), so a rename just moves the
+		// edge and the new path is reconstructed fresh on the next GetFile.
+		// This is what makes hard links correct: renaming one name can never
+		// stale another name's path. PutFile is tx-critical: a failed ctime
+		// write must roll the whole rename back.
 		now := time.Now()
-		oldPath := srcFile.Path
-		srcFile.Path = destPath
 		srcFile.Ctime = now
 		if err := tx.PutFile(ctx.Context, srcFile); err != nil {
 			return err
-		}
-
-		// For directory renames, recursively update all descendants' paths.
-		// Propagate the error: a partial descendant rewrite leaves stale
-		// child Paths that diverge from the parent, corrupting the Path-keyed
-		// postgres namespace. Roll the rename back instead.
-		if srcFile.Type == FileTypeDirectory {
-			if err := s.updateDescendantPaths(ctx.Context, tx, srcHandle, oldPath, destPath); err != nil {
-				return err
-			}
 		}
 
 		srcDir.Mtime = now
@@ -841,55 +831,6 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	}
 
 	return rename, nil
-}
-
-// updateDescendantPaths recursively updates the Path field of all descendants
-// of a renamed directory. Uses iterative (queue-based) traversal to avoid
-// stack overflow on deep trees.
-func (s *Service) updateDescendantPaths(ctx context.Context, tx Transaction, dirHandle FileHandle, oldPrefix, newPrefix string) error {
-	queue := []FileHandle{dirHandle}
-
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-
-		cursor := ""
-		for {
-			entries, nextCursor, err := tx.ListChildren(ctx, current, cursor, 100)
-			if err != nil {
-				return fmt.Errorf("list children for path update: %w", err)
-			}
-
-			for _, entry := range entries {
-				child, err := tx.GetFile(ctx, entry.Handle)
-				if err != nil {
-					logger.Debug("updateDescendantPaths: skip unreadable child",
-						"name", entry.Name, "error", err)
-					continue
-				}
-
-				// Replace old path prefix with new prefix
-				if strings.HasPrefix(child.Path, oldPrefix) {
-					child.Path = newPrefix + child.Path[len(oldPrefix):]
-					if err := tx.PutFile(ctx, child); err != nil {
-						return fmt.Errorf("update path for %s: %w", child.Path, err)
-					}
-				}
-
-				// Enqueue subdirectories for recursive traversal
-				if child.Type == FileTypeDirectory {
-					queue = append(queue, entry.Handle)
-				}
-			}
-
-			if nextCursor == "" {
-				break
-			}
-			cursor = nextCursor
-		}
-	}
-
-	return nil
 }
 
 // MarkFileAsOrphaned sets a file's link count to 0, marking it as orphaned.

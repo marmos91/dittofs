@@ -393,17 +393,18 @@ func (store *MemoryMetadataStore) GetFileByPayloadID(
 	defer store.mu.RUnlock()
 
 	// Scan all files for matching PayloadID
-	for _, fileData := range store.files {
+	for key, fileData := range store.files {
 		if fileData.Attr.PayloadID == payloadID {
-			// Return File with just the attributes we need
-			// ID and Path aren't needed by the flusher (only Size is used)
 			attr := *fileData.Attr
 			attr.Blocks = cloneBlocks(fileData.Attr.Blocks)
 			attr.ACL = cloneACL(fileData.Attr.ACL)
 			attr.EAs = cloneEAs(fileData.Attr.EAs)
 			return &metadata.File{
 				ShareName: fileData.ShareName,
-				FileAttr:  attr,
+				// Path derived from parent edges (#1166), never the stale
+				// stored field.
+				Path:     store.derivePathLocked(metadata.FileHandle(key)),
+				FileAttr: attr,
 			}, nil
 		}
 	}

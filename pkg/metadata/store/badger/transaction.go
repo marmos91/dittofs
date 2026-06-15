@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	goerrors "errors"
 	"fmt"
+	"strings"
 	"time"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
@@ -201,7 +202,87 @@ func (tx *badgerTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 		}
 	}
 
+	// Derive File.Path from the parent/children keyspace rather than trusting
+	// the stored proto field (#1166): parent edges are the sole source of
+	// truth, so the returned path always reflects the inode's current location
+	// and never goes stale after a hard-linked name is renamed or unlinked.
+	file.Path = tx.derivePath(fileID)
+
 	return file, nil
+}
+
+// derivePath reconstructs an inode's logical path by walking parent edges
+// (p:<child> -> parent) up to the share root (#1166). For a hard-linked inode
+// (N names) it follows the lexicographically smallest child name at each level
+// — matching memory and postgres — yielding one valid reachable path. An inode
+// with no parent edge (share root or orphaned/unlinked-but-open) resolves to
+// "/". The depth guard bounds a corrupt parent cycle (no filesystem op can
+// create one) into a finite result.
+func (tx *badgerTransaction) derivePath(fileID uuid.UUID) string {
+	const maxDepth = 4096
+
+	var components []string
+	current := fileID
+	for depth := 0; depth < maxDepth; depth++ {
+		item, err := tx.txn.Get(keyParent(current))
+		if err != nil {
+			break // reached a share root or an orphaned inode
+		}
+		var parentID uuid.UUID
+		if vErr := item.Value(func(val []byte) error {
+			var pErr error
+			parentID, pErr = uuid.FromBytes(val)
+			return pErr
+		}); vErr != nil {
+			break
+		}
+
+		name := tx.childName(parentID, current)
+		if name == "" {
+			break // parent edge with no matching child entry (inconsistent)
+		}
+		components = append(components, name)
+		current = parentID
+	}
+
+	if len(components) == 0 {
+		return "/"
+	}
+
+	var b strings.Builder
+	for i := len(components) - 1; i >= 0; i-- {
+		b.WriteByte('/')
+		b.WriteString(components[i])
+	}
+	return b.String()
+}
+
+// childName returns the lexicographically smallest name under which child is
+// linked into parent, or "" if no such edge exists. Children are stored as
+// c:<parentID>:<name> ordered by key, so the first matching entry in a forward
+// scan is the smallest name — matching postgres' ORDER BY child_name.
+func (tx *badgerTransaction) childName(parentID, child uuid.UUID) string {
+	prefix := keyChildPrefix(parentID)
+	opts := badgerdb.DefaultIteratorOptions
+	opts.Prefix = prefix
+	it := tx.txn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		item := it.Item()
+		var id uuid.UUID
+		if err := item.Value(func(val []byte) error {
+			var e error
+			id, e = uuid.FromBytes(val)
+			return e
+		}); err != nil {
+			continue
+		}
+		if id == child {
+			return extractNameFromChildKey(item.Key(), prefix)
+		}
+	}
+	return ""
 }
 
 func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) error {
@@ -1304,6 +1385,10 @@ func (tx *badgerTransaction) GetFileByPayloadID(ctx context.Context, payloadID m
 						file.Nlink = 1
 					}
 				}
+				// Derive Path from the parent keyspace (#1166) so a
+				// rename/relink can never surface a stale stored path —
+				// consistent with the store-level GetFileByPayloadID and GetFile.
+				file.Path = tx.derivePath(file.ID)
 				result = file
 				return errFound
 			}

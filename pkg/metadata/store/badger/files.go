@@ -98,6 +98,10 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 							file.Nlink = 1
 						}
 					}
+					// Derive Path from the parent keyspace (#1166) so a
+					// rename/relink can never surface a stale stored path.
+					btx := &badgerTransaction{store: s, txn: txn}
+					file.Path = btx.derivePath(file.ID)
 					result = file
 					return errFound
 				}

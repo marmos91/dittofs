@@ -140,11 +140,11 @@ func (t *faultyTx) PutFile(ctx context.Context, file *metadata.File) error {
 	return t.Transaction.PutFile(ctx, file)
 }
 
-// TestMove_RollsBackOnPutFileFailure asserts the rename is atomic: when
-// PutFile(srcFile) (the new-path write) fails mid-transaction, the whole Move
-// rolls back — the source stays at its original name/path and the destination
-// name is not created. Previously Move discarded these errors with `_ =` and
-// committed a partial rename (entry relinked, File.Path stale).
+// TestMove_RollsBackOnPutFileFailure asserts the rename is atomic: when the
+// PutFile(srcFile) ctime write fails mid-transaction, the whole Move rolls
+// back — the source stays at its original name and the destination name is not
+// created. Previously Move discarded these errors with `_ =` and committed a
+// partial rename (entry relinked but the inode write lost).
 func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 	t.Parallel()
 
@@ -161,8 +161,11 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	svc := metadata.New()
-	// Register a store that fails PutFile for the moved file's NEW path.
-	faulty := &faultyStore{Store: store, failPath: "/dest/moved.txt"}
+	// Register a store that, once armed, fails the moved file's ctime PutFile.
+	// File.Path is no longer mutated by Move (#1166), so the inode the rename
+	// writes still carries its pre-move derived path "/myfile.txt" at PutFile
+	// time. Arm it only just before the Move so setup CREATEs are unaffected.
+	faulty := &faultyStore{Store: store}
 	require.NoError(t, svc.RegisterStoreForShare(shareName, faulty))
 
 	rootCtx := &metadata.AuthContext{
@@ -185,6 +188,9 @@ func TestMove_RollsBackOnPutFileFailure(t *testing.T) {
 
 	srcHandle, err := store.GetChild(ctx, rootHandle, "myfile.txt")
 	require.NoError(t, err)
+
+	// Arm the fault: the moved inode's ctime PutFile carries Path "/myfile.txt".
+	faulty.failPath = "/myfile.txt"
 
 	// The move must fail with the injected error.
 	_, err = svc.Move(rootCtx, rootHandle, "myfile.txt", destHandle, "moved.txt")

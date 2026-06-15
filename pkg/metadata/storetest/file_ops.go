@@ -13,6 +13,8 @@ func runFileOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("GetFile", func(t *testing.T) { testGetFile(t, factory) })
 	t.Run("DeleteFile", func(t *testing.T) { testDeleteFile(t, factory) })
 	t.Run("CreateHardLink", func(t *testing.T) { testCreateHardLink(t, factory) })
+	t.Run("HardLinkRenameKeepsOtherName", func(t *testing.T) { testHardLinkRenameKeepsOtherName(t, factory) })
+	t.Run("DerivedPathReflectsParentRename", func(t *testing.T) { testDerivedPathReflectsParentRename(t, factory) })
 	t.Run("SetFileAttributes", func(t *testing.T) { testSetFileAttributes(t, factory) })
 	t.Run("Rename", func(t *testing.T) { testRename(t, factory) })
 	t.Run("GetFileNotFound", func(t *testing.T) { testGetFileNotFound(t, factory) })
@@ -248,6 +250,145 @@ func testCreateHardLink(t *testing.T, factory StoreFactory) {
 	}
 	if string(h1) != string(h2) {
 		t.Error("hard link handles should be identical")
+	}
+}
+
+// testHardLinkRenameKeepsOtherName is the core regression #1166 enables:
+// renaming one name of a hard-linked inode must not break, stale, or detach the
+// inode's other names. This was the postgres-only failure class (the single
+// canonical files.path went dead when the matching name was renamed away). With
+// File.Path derived from the namespace on every backend, the survivor stays
+// fully reachable.
+//
+// Steps: create A, hard-link it as B, rename A->C; assert (a) B still resolves
+// to the same inode, (b) GetFile on the inode succeeds with a valid derived
+// path that is one of the live names (B or C), (c) link count unchanged at 2.
+// Then unlink C and assert B still resolves and nlink decremented to 1.
+func testHardLinkRenameKeepsOtherName(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	// Create A and a second hard link B to the same inode.
+	handle := createTestFile(t, store, "/test", rootHandle, "A", 0644)
+	if err := store.SetChild(ctx, rootHandle, "B", handle); err != nil {
+		t.Fatalf("SetChild(B) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+
+	// Rename A -> C (drop the old edge, add the new one). The inode keeps its
+	// other name B; only the A edge is replaced by C.
+	if err := store.DeleteChild(ctx, rootHandle, "A"); err != nil {
+		t.Fatalf("DeleteChild(A) failed: %v", err)
+	}
+	if err := store.SetChild(ctx, rootHandle, "C", handle); err != nil {
+		t.Fatalf("SetChild(C) failed: %v", err)
+	}
+
+	// (a) B still resolves to the same inode.
+	bHandle, err := store.GetChild(ctx, rootHandle, "B")
+	if err != nil {
+		t.Fatalf("GetChild(B) after rename failed: %v", err)
+	}
+	if string(bHandle) != string(handle) {
+		t.Errorf("B resolves to a different inode after renaming A->C")
+	}
+	// A is gone; C resolves to the inode.
+	if _, err := store.GetChild(ctx, rootHandle, "A"); err == nil {
+		t.Error("GetChild(A) should fail after rename A->C")
+	}
+	cHandle, err := store.GetChild(ctx, rootHandle, "C")
+	if err != nil {
+		t.Fatalf("GetChild(C) failed: %v", err)
+	}
+	if string(cHandle) != string(handle) {
+		t.Errorf("C resolves to a different inode")
+	}
+
+	// (b) GetFile succeeds and returns a valid derived path that is one of the
+	// inode's live names (B or C) — never the renamed-away A.
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile after rename failed: %v", err)
+	}
+	if file.Path != "/B" && file.Path != "/C" {
+		t.Errorf("derived path = %q, want a live name (/B or /C)", file.Path)
+	}
+
+	// (c) link count unchanged at 2.
+	count, err := store.GetLinkCount(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetLinkCount failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("link count after rename = %d, want 2", count)
+	}
+
+	// Unlink C: drop the edge and decrement nlink. B must remain reachable.
+	if err := store.DeleteChild(ctx, rootHandle, "C"); err != nil {
+		t.Fatalf("DeleteChild(C) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 1); err != nil {
+		t.Fatalf("SetLinkCount(1) failed: %v", err)
+	}
+
+	bHandle, err = store.GetChild(ctx, rootHandle, "B")
+	if err != nil {
+		t.Fatalf("GetChild(B) after unlink(C) failed: %v", err)
+	}
+	if string(bHandle) != string(handle) {
+		t.Errorf("B resolves to a different inode after unlink(C)")
+	}
+
+	file, err = store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile after unlink(C) failed: %v", err)
+	}
+	if file.Path != "/B" {
+		t.Errorf("derived path after unlink(C) = %q, want /B", file.Path)
+	}
+	if file.Nlink != 1 {
+		t.Errorf("Nlink after unlink(C) = %d, want 1", file.Nlink)
+	}
+}
+
+// testDerivedPathReflectsParentRename asserts File.Path is read-derived: after
+// renaming a parent directory, a child's GetFile returns the new path with no
+// explicit per-descendant path-update pass (#1166 deleted updateDescendantPaths).
+func testDerivedPathReflectsParentRename(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	dirHandle := createTestDir(t, store, "/test", rootHandle, "olddir")
+	childHandle := createTestFile(t, store, "/test", dirHandle, "child.txt", 0644)
+
+	// Sanity: original derived path.
+	child, err := store.GetFile(ctx, childHandle)
+	if err != nil {
+		t.Fatalf("GetFile(child) failed: %v", err)
+	}
+	if child.Path != "/olddir/child.txt" {
+		t.Fatalf("initial child path = %q, want /olddir/child.txt", child.Path)
+	}
+
+	// Rename the parent directory edge only — no descendant path writes.
+	if err := store.DeleteChild(ctx, rootHandle, "olddir"); err != nil {
+		t.Fatalf("DeleteChild(olddir) failed: %v", err)
+	}
+	if err := store.SetChild(ctx, rootHandle, "newdir", dirHandle); err != nil {
+		t.Fatalf("SetChild(newdir) failed: %v", err)
+	}
+
+	// The child's path is reconstructed fresh from the namespace.
+	child, err = store.GetFile(ctx, childHandle)
+	if err != nil {
+		t.Fatalf("GetFile(child) after parent rename failed: %v", err)
+	}
+	if child.Path != "/newdir/child.txt" {
+		t.Errorf("derived child path = %q, want /newdir/child.txt", child.Path)
 	}
 }
 
