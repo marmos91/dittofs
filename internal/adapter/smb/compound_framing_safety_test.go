@@ -73,7 +73,7 @@ func TestProcessRemaining_RelatedSignatureNotSkipped(t *testing.T) {
 	// Authenticated (non-guest, non-null) session with signing required so an
 	// unsigned message trips the signing gate in VerifyCompoundCommandSignature.
 	sess := ci.Handler.CreateSession("127.0.0.1:1", false, "alice", "WORKGROUP")
-	sess.CryptoState.SigningRequired = true
+	sess.GetCryptoState().SigningRequired = true
 
 	// Related sub-command with the wire sentinel SessionID; NOT signed.
 	hdr := &header.SMB2Header{

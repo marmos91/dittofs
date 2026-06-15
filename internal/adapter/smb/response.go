@@ -792,7 +792,10 @@ func sendDispatchError(reqHeader *header.SMB2Header, status types.Status, connIn
 		return SendErrorResponse(reqHeader, status, connInfo)
 	}
 	sess, ok := connInfo.Handler.GetSession(reqHeader.SessionID)
-	if !ok || sess.CryptoState == nil || sess.CryptoState.Encryptor == nil {
+	if !ok {
+		return SendErrorResponse(reqHeader, status, connInfo)
+	}
+	if cs := sess.GetCryptoState(); cs == nil || cs.Encryptor == nil {
 		return SendErrorResponse(reqHeader, status, connInfo)
 	}
 
@@ -871,7 +874,7 @@ func SendSignatureFailureResponse(reqHeader *header.SMB2Header, status types.Sta
 func sendMessageWithSigner(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, signingSessionID uint64) error {
 	smbPayload := append(hdr.Encode(), body...)
 	sess, ok := connInfo.Handler.GetSession(signingSessionID)
-	if !ok || sess.CryptoState == nil {
+	if !ok || sess.GetCryptoState() == nil {
 		// Falls back to plain unsigned send.
 		return WriteNetBIOSFrame(connInfo.Conn, connInfo.WriteMu, connInfo.WriteTimeout, smbPayload)
 	}
@@ -935,8 +938,8 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, respon
 			isSessionSetup := hdr.Command == types.SMB2SessionSetup
 			isSessionSetupSuccess := isSessionSetup && hdr.Status == types.StatusSuccess
 			isInterim := isSessionSetup && hdr.Status != types.StatusSuccess
-			if isSessionSetupSuccess && sess.NewlyCreated {
-				sess.NewlyCreated = false // Clear so subsequent messages get encrypted
+			if isSessionSetupSuccess && sess.IsNewlyCreated() {
+				sess.ClearNewlyCreated() // Clear so subsequent messages get encrypted
 				suppressSessionSetupEncryption = true
 			}
 			// Encrypt when the session forces it (mode=required), the
@@ -949,8 +952,8 @@ func sendMessage(hdr *header.SMB2Header, body []byte, connInfo *ConnInfo, respon
 			// must still get encrypted responses — pull the tree-level flag
 			// and honour responseEncrypted.
 			shouldEncrypt := sess.ShouldEncrypt() || responseEncrypted
-			if !shouldEncrypt && hdr.TreeID != 0 && sess.CryptoState != nil &&
-				sess.CryptoState.Encryptor != nil {
+			if cs := sess.GetCryptoState(); !shouldEncrypt && hdr.TreeID != 0 && cs != nil &&
+				cs.Encryptor != nil {
 				if tree, ok := connInfo.Handler.GetTree(hdr.TreeID); ok && tree.EncryptData {
 					shouldEncrypt = true
 				}

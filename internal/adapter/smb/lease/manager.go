@@ -547,6 +547,54 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 	return sid, ok
 }
 
+// VerifyLeaseAckOwnership reports whether a session presenting a
+// LEASE_BREAK_ACK for leaseKey is entitled to acknowledge it, per MS-SMB2
+// §3.3.5.22.2 step 1 ("the server MUST locate the lease ... whose LeaseKey
+// matches ... and whose ClientGuid matches the Connection.ClientGuid"). A
+// lease is bound to a (ClientGuid, LeaseKey) pair, so an ack is valid only
+// when it arrives from the owning client.
+//
+// Authorization rule (most-specific first):
+//   - If a ClientGUID was recorded for this leaseKey (the normal lease-V2 /
+//     multi-session path) the ack's connection ClientGUID MUST match it.
+//   - Otherwise (no GUID recorded — traditional oplock-as-lease, durable
+//     reconnect paths, and tests that don't thread a CryptoState) fall back
+//     to the per-lease sessionMap and require the ack's sessionID to match.
+//
+// Returns false when the lease is unknown so a stray ack for a non-existent
+// lease key cannot be used to probe state. A zero connGUID never matches a
+// recorded non-zero GUID, so an attacker who cannot reproduce the victim's
+// ClientGUID is rejected.
+func (lm *LeaseManager) VerifyLeaseAckOwnership(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+
+	// Prefer ClientGUID binding when one was recorded for this key.
+	matchedGUID := false
+	for clk, guid := range lm.leaseClientGUID {
+		if clk.Key != leaseKey {
+			continue
+		}
+		matchedGUID = true
+		if guid == connGUID && connGUID != ([16]byte{}) {
+			return true
+		}
+	}
+	if matchedGUID {
+		// A GUID binding exists but the ack's connection GUID didn't match
+		// any of them (or was zero): reject.
+		return false
+	}
+
+	// Legacy fallback: no ClientGUID binding. Require the per-lease session
+	// to match the acking session.
+	sid, ok := lm.sessionMap[leaseKey]
+	if !ok {
+		return false
+	}
+	return sid == sessionID
+}
+
 // GetSessionForBreak returns the sessionID that should receive a break
 // notification for the given lease. Per MS-SMB2 §3.3.4.7 and Samba
 // `smbXsrv_pending_break_submit` (source3/smbd/smb2_server.c) the break is

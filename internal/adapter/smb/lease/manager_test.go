@@ -229,6 +229,83 @@ func TestGetSessionForBreak_FallsBackToSessionMap(t *testing.T) {
 	}
 }
 
+// TestVerifyLeaseAckOwnership is the negative control for the LEASE_BREAK_ACK
+// ownership gate (audit #1132 HIGH). Per MS-SMB2 §3.3.5.22.2 step 1, only the
+// client that owns the lease may acknowledge its break. Before the fix
+// handleLeaseBreakAck trusted the wire-supplied leaseKey with no ownership
+// check, so any authenticated session could downgrade another client's lease.
+func TestVerifyLeaseAckOwnership(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ClientGUIDBound_OwnerAcceptedImposterRejected", func(t *testing.T) {
+		mgr := lock.NewManager()
+		lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+
+		ownerGUID := [16]byte{0xCA, 0xFE, 0xBA, 0xBE}
+		const ownerSession uint64 = 100
+		leaseKey := [16]byte{0x01}
+		fh := lock.FileHandle("file-1")
+
+		if _, _, err := lm.RequestLease(context.Background(), fh,
+			leaseKey, [16]byte{}, ownerSession, ownerGUID,
+			"owner-1", "client-1", "share1",
+			lock.LeaseStateRead|lock.LeaseStateWrite, false); err != nil {
+			t.Fatalf("RequestLease: %v", err)
+		}
+
+		// Owning client's connection GUID is accepted (sessionID irrelevant
+		// when a GUID binding exists — break routing is client-level).
+		if !lm.VerifyLeaseAckOwnership(leaseKey, ownerSession, ownerGUID) {
+			t.Error("owning client's ack rejected — should be accepted")
+		}
+
+		// An attacker session on a DIFFERENT client GUID must be rejected even
+		// though it knows the (fixed, well-known) lease key.
+		attackerGUID := [16]byte{0xDE, 0xAD, 0xBE, 0xEF}
+		const attackerSession uint64 = 999
+		if lm.VerifyLeaseAckOwnership(leaseKey, attackerSession, attackerGUID) {
+			t.Error("imposter client's ack accepted — lease downgrade by non-owner is possible")
+		}
+
+		// A zero connection GUID must never match a recorded non-zero binding.
+		if lm.VerifyLeaseAckOwnership(leaseKey, attackerSession, [16]byte{}) {
+			t.Error("zero-GUID ack accepted against a GUID-bound lease")
+		}
+	})
+
+	t.Run("LegacyNoGUID_SessionMapEnforced", func(t *testing.T) {
+		mgr := lock.NewManager()
+		lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+
+		const ownerSession uint64 = 42
+		leaseKey := [16]byte{0xAB}
+		fh := lock.FileHandle("file-1")
+
+		// Zero ClientGUID -> falls back to per-lease sessionMap.
+		if _, _, err := lm.RequestLease(context.Background(), fh,
+			leaseKey, [16]byte{}, ownerSession, [16]byte{},
+			"owner-1", "client-1", "share1",
+			lock.LeaseStateRead, false); err != nil {
+			t.Fatalf("RequestLease: %v", err)
+		}
+
+		if !lm.VerifyLeaseAckOwnership(leaseKey, ownerSession, [16]byte{}) {
+			t.Error("owning session's ack rejected in sessionMap fallback")
+		}
+		if lm.VerifyLeaseAckOwnership(leaseKey, ownerSession+1, [16]byte{}) {
+			t.Error("non-owning session's ack accepted in sessionMap fallback — cross-session lease downgrade possible")
+		}
+	})
+
+	t.Run("UnknownLeaseRejected", func(t *testing.T) {
+		mgr := lock.NewManager()
+		lm := NewLeaseManager(&fakeResolver{mgr: mgr}, nil)
+		if lm.VerifyLeaseAckOwnership([16]byte{0xFF}, 1, [16]byte{}) {
+			t.Error("ack for a non-existent lease accepted")
+		}
+	})
+}
+
 // TestReleaseSessionLeases_ReapsClientPrimary verifies that when a session
 // is torn down (LOGOFF / disconnect), any clientPrimarySession entry that
 // pointed at it is removed. Without this the next break for a lease bound

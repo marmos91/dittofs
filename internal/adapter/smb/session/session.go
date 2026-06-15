@@ -74,18 +74,29 @@ type Session struct {
 	// for permission checking and share access control.
 	User *models.User
 
-	// CryptoState holds per-session cryptographic state (signing keys, signer,
+	// cryptoState holds per-session cryptographic state (signing keys, signer,
 	// encryption/decryption keys). Replaces the old Signing field.
 	// For 2.x: HMAC-SHA256 signer. For 3.x: CMAC/GMAC signer + KDF-derived keys.
-	CryptoState *SessionCryptoState
+	//
+	// Stored as an atomic pointer: SESSION_SETUP re-authentication
+	// (configureSessionSigningWithKey -> SetCryptoState) swaps the whole
+	// SessionCryptoState on an already-published session while in-flight
+	// requests on the same session read it via ShouldSign / ShouldEncrypt /
+	// VerifyMessage / DecryptMessage and the response path. A plain pointer
+	// store/load across goroutines is a data race under the Go memory model
+	// and can observe a torn or partially-initialised state. Access only via
+	// GetCryptoState / SetCryptoState (and the wrapper methods below).
+	cryptoState atomic.Pointer[SessionCryptoState]
 
-	// NewlyCreated is true for sessions just established via SESSION_SETUP.
+	// newlyCreated is true for sessions just established via SESSION_SETUP.
 	// The framing layer uses this to suppress encryption on the initial
 	// SESSION_SETUP SUCCESS response (client hasn't derived keys yet).
 	// For re-authenticated sessions this is false, so the response is encrypted
 	// with existing keys as expected by the client.
-	// Cleared by the framing layer after the first response.
-	NewlyCreated bool
+	// Cleared by the framing layer after the first response. Atomic because the
+	// per-request dispatch goroutines race the clear against subsequent reads
+	// (response.go) — mirrors LoggedOff.
+	newlyCreated atomic.Bool
 
 	// ExpiresAt holds the Kerberos ticket end time for Kerberos-authenticated
 	// sessions. Zero value means no expiration (NTLM or guest sessions).
@@ -200,17 +211,17 @@ type Credits struct {
 // Called internally by SessionManager.CreateSession.
 func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, domain string) *Session {
 	s := &Session{
-		SessionID:    sessionID,
-		IsGuest:      isGuest,
-		IsNull:       username == "" && !isGuest,
-		CreatedAt:    time.Now(),
-		ClientAddr:   clientAddr,
-		Username:     username,
-		Domain:       domain,
-		CryptoState:  &SessionCryptoState{},
-		NewlyCreated: true,
-		channels:     make(map[uint64]*Channel),
+		SessionID:  sessionID,
+		IsGuest:    isGuest,
+		IsNull:     username == "" && !isGuest,
+		CreatedAt:  time.Now(),
+		ClientAddr: clientAddr,
+		Username:   username,
+		Domain:     domain,
+		channels:   make(map[uint64]*Channel),
 	}
+	s.cryptoState.Store(&SessionCryptoState{})
+	s.newlyCreated.Store(true)
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
 }
@@ -219,18 +230,18 @@ func NewSession(sessionID uint64, clientAddr string, isGuest bool, username, dom
 // Use this when the user has been authenticated against the UserStore.
 func NewSessionWithUser(sessionID uint64, clientAddr string, user *models.User, domain string) *Session {
 	s := &Session{
-		SessionID:    sessionID,
-		IsGuest:      false,
-		IsNull:       false,
-		CreatedAt:    time.Now(),
-		ClientAddr:   clientAddr,
-		Username:     user.Username,
-		Domain:       domain,
-		User:         user,
-		CryptoState:  &SessionCryptoState{},
-		NewlyCreated: true,
-		channels:     make(map[uint64]*Channel),
+		SessionID:  sessionID,
+		IsGuest:    false,
+		IsNull:     false,
+		CreatedAt:  time.Now(),
+		ClientAddr: clientAddr,
+		Username:   user.Username,
+		Domain:     domain,
+		User:       user,
+		channels:   make(map[uint64]*Channel),
 	}
+	s.cryptoState.Store(&SessionCryptoState{})
+	s.newlyCreated.Store(true)
 	s.credits.LastActivity.Store(time.Now().Unix())
 	return s
 }
@@ -339,69 +350,107 @@ type SessionStats struct {
 	HighWaterMark       uint32
 }
 
+// GetCryptoState returns the session's current cryptographic state via an
+// atomic load. May return nil before the state is initialised. All readers
+// MUST use this accessor (never the field) so the SESSION_SETUP re-auth swap
+// in SetCryptoState is observed atomically.
+func (s *Session) GetCryptoState() *SessionCryptoState {
+	if s == nil {
+		return nil
+	}
+	return s.cryptoState.Load()
+}
+
+// IsNewlyCreated reports whether this session was just established via
+// SESSION_SETUP and has not yet had its first response sent. The framing
+// layer uses it to suppress encryption on the initial SESSION_SETUP SUCCESS
+// response. Atomic load — the clear (ClearNewlyCreated) races per-request
+// dispatch goroutines.
+func (s *Session) IsNewlyCreated() bool {
+	return s.newlyCreated.Load()
+}
+
+// ClearNewlyCreated marks the session as no longer newly created, so
+// subsequent responses are encrypted with the now-derived keys.
+func (s *Session) ClearNewlyCreated() {
+	s.newlyCreated.Store(false)
+}
+
 // SetSigningKey sets the signing key from the session key.
 // This creates a CryptoState with an HMACSigner for SMB 2.x sessions.
 // For 3.x sessions, use SetCryptoState with DeriveAllKeys instead.
 func (s *Session) SetSigningKey(sessionKey []byte) {
-	s.CryptoState = DeriveAllKeys(sessionKey, types.Dialect0202, [64]byte{}, 0, signing.SigningAlgHMACSHA256, false)
+	s.cryptoState.Store(DeriveAllKeys(sessionKey, types.Dialect0202, [64]byte{}, 0, signing.SigningAlgHMACSHA256, false))
 }
 
 // EnableSigning enables message signing for this session.
+//
+// The current crypto state is copied, the signing flags are set on the copy,
+// and the copy is published atomically. Mutating the published state in place
+// would race in-flight readers that loaded the same pointer.
 func (s *Session) EnableSigning(required bool) {
-	if s.CryptoState == nil {
+	cur := s.cryptoState.Load()
+	if cur == nil {
 		return
 	}
-	s.CryptoState.SigningEnabled = true
-	s.CryptoState.SigningRequired = required
+	updated := *cur
+	updated.SigningEnabled = true
+	updated.SigningRequired = required
+	s.cryptoState.Store(&updated)
 }
 
 // SetCryptoState sets the session's cryptographic state directly.
 // Used by session setup when KDF-derived keys are available (3.x sessions).
 func (s *Session) SetCryptoState(cs *SessionCryptoState) {
-	s.CryptoState = cs
+	s.cryptoState.Store(cs)
 }
 
 // ShouldEncrypt returns true if outgoing messages should be encrypted.
 func (s *Session) ShouldEncrypt() bool {
-	return s.CryptoState.ShouldEncrypt()
+	return s.cryptoState.Load().ShouldEncrypt()
 }
 
 // EncryptWithNonce encrypts plaintext using a pre-generated nonce and AAD.
 // Used by the encryption middleware which needs to control the nonce.
 func (s *Session) EncryptWithNonce(nonce, plaintext, aad []byte) ([]byte, error) {
-	if s.CryptoState == nil || s.CryptoState.Encryptor == nil {
+	cs := s.cryptoState.Load()
+	if cs == nil || cs.Encryptor == nil {
 		return nil, fmt.Errorf("session has no encryptor")
 	}
-	return s.CryptoState.Encryptor.EncryptWithNonce(nonce, plaintext, aad)
+	return cs.Encryptor.EncryptWithNonce(nonce, plaintext, aad)
 }
 
 // DecryptMessage decrypts ciphertext using the given nonce and AAD.
 func (s *Session) DecryptMessage(nonce, ciphertext, aad []byte) ([]byte, error) {
-	if s.CryptoState == nil || s.CryptoState.Decryptor == nil {
+	cs := s.cryptoState.Load()
+	if cs == nil || cs.Decryptor == nil {
 		return nil, fmt.Errorf("session has no decryptor")
 	}
-	return s.CryptoState.Decryptor.Decrypt(nonce, ciphertext, aad)
+	return cs.Decryptor.Decrypt(nonce, ciphertext, aad)
 }
 
 func (s *Session) EncryptorNonceSize() int {
-	if s.CryptoState == nil || s.CryptoState.Encryptor == nil {
+	cs := s.cryptoState.Load()
+	if cs == nil || cs.Encryptor == nil {
 		return 0
 	}
-	return s.CryptoState.Encryptor.NonceSize()
+	return cs.Encryptor.NonceSize()
 }
 
 func (s *Session) DecryptorNonceSize() int {
-	if s.CryptoState == nil || s.CryptoState.Decryptor == nil {
+	cs := s.cryptoState.Load()
+	if cs == nil || cs.Decryptor == nil {
 		return 0
 	}
-	return s.CryptoState.Decryptor.NonceSize()
+	return cs.Decryptor.NonceSize()
 }
 
 func (s *Session) EncryptorOverhead() int {
-	if s.CryptoState == nil || s.CryptoState.Encryptor == nil {
+	cs := s.cryptoState.Load()
+	if cs == nil || cs.Encryptor == nil {
 		return 0
 	}
-	return s.CryptoState.Encryptor.Overhead()
+	return cs.Encryptor.Overhead()
 }
 
 // IsNullSession reports whether this session was created with anonymous
@@ -414,19 +463,20 @@ func (s *Session) IsNullSession() bool {
 
 // ShouldSign returns true if outgoing messages should be signed.
 func (s *Session) ShouldSign() bool {
-	return s.CryptoState.ShouldSign()
+	return s.cryptoState.Load().ShouldSign()
 }
 
 // ShouldVerify returns true if incoming messages should have signatures verified.
 func (s *Session) ShouldVerify() bool {
-	return s.CryptoState.ShouldVerify()
+	return s.cryptoState.Load().ShouldVerify()
 }
 
 // SignMessage signs an SMB2 message in place using the session's signer.
 // This should be called before sending a message if signing is enabled.
 func (s *Session) SignMessage(message []byte) {
-	if s.CryptoState.ShouldSign() {
-		signing.SignMessage(s.CryptoState.Signer, message)
+	cs := s.cryptoState.Load()
+	if cs.ShouldSign() {
+		signing.SignMessage(cs.Signer, message)
 	}
 }
 
@@ -445,10 +495,11 @@ func (s *Session) SignMessageOnChannel(connID uint64, message []byte) {
 // VerifyMessage verifies the signature of an SMB2 message.
 // Returns true if the signature is valid or if signing is not enabled.
 func (s *Session) VerifyMessage(message []byte) bool {
-	if !s.CryptoState.ShouldVerify() {
+	cs := s.cryptoState.Load()
+	if !cs.ShouldVerify() {
 		return true
 	}
-	return s.CryptoState.Signer.Verify(message)
+	return cs.Signer.Verify(message)
 }
 
 // VerifyMessageOnChannel verifies an incoming message's signature against the

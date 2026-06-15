@@ -802,6 +802,17 @@ func (h *Handler) handleLeaseBreakAck(ctx *SMBHandlerContext, body []byte) (*Han
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
+	// MS-SMB2 §3.3.5.22.2 step 1: only the client that owns the lease may
+	// acknowledge its break. Without this gate any authenticated session
+	// could fabricate an ack for an arbitrary 16-byte leaseKey it does not
+	// own and downgrade another client's lease (data-integrity / DoS).
+	if !h.LeaseManager.VerifyLeaseAckOwnership(ack.LeaseKey, ctx.SessionID, connClientGUID(ctx)) {
+		logger.Warn("LEASE_BREAK_ACK: ownership check failed — session does not own lease",
+			"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),
+			"sessionID", ctx.SessionID)
+		return NewErrorResult(types.StatusInvalidParameter), nil
+	}
+
 	if err := h.LeaseManager.AcknowledgeLeaseBreak(ctx.Context, ack.LeaseKey, ack.LeaseState, 0); err != nil {
 		logger.Warn("LEASE_BREAK_ACK: acknowledgment failed",
 			"leaseKey", fmt.Sprintf("%x", ack.LeaseKey),

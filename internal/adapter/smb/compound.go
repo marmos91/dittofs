@@ -478,7 +478,7 @@ func compoundShouldEncrypt(connInfo *ConnInfo, hdr *header.SMB2Header, requestEn
 		return false
 	}
 	sess, ok := connInfo.Handler.GetSession(hdr.SessionID)
-	if !ok || sess.CryptoState == nil || sess.CryptoState.Encryptor == nil {
+	if cs := sess.GetCryptoState(); !ok || cs == nil || cs.Encryptor == nil {
 		return false
 	}
 	return sess.ShouldEncrypt() || requestEncrypted
@@ -610,7 +610,8 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 	}
 
 	isSigned := hdr.Flags.IsSigned()
-	if sess.CryptoState != nil && sess.CryptoState.SigningRequired && !isSigned {
+	sessCrypto := sess.GetCryptoState()
+	if sessCrypto != nil && sessCrypto.SigningRequired && !isSigned {
 		return fmt.Errorf("STATUS_ACCESS_DENIED: compound message not signed")
 	}
 
@@ -618,7 +619,7 @@ func VerifyCompoundCommandSignature(data []byte, hdr *header.SMB2Header, connInf
 	// from authenticated sessions require disconnect.
 	if !isSigned && connInfo.CryptoState != nil && connInfo.CryptoState.GetDialect() == types.Dialect0311 &&
 		!sess.IsGuest && !sess.IsNull &&
-		sess.CryptoState != nil && sess.CryptoState.ShouldVerify() {
+		sessCrypto != nil && sessCrypto.ShouldVerify() {
 		return fmt.Errorf("SMB 3.1.1: unsigned unencrypted compound request requires disconnect")
 	}
 

@@ -1215,41 +1215,25 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				return h.buildAuthenticatedResponse(pending, signingKey[:], authMsg.NegotiateFlags, sess.ShouldEncrypt()), nil
 			}
 
-			// SECURITY: User exists but no valid NT hash configured.
-			// This is a transitional mode that allows authentication without password validation.
-			// Any client knowing the username can authenticate - this bypasses credential checks entirely.
-			// To fix: run 'dittofs user passwd <username>' to set an NT hash for this user.
-			// Client may have presented an NTLM response, but we can't verify it due to missing NT hash.
-			logger.Warn("SECURITY: User authenticated without credential validation (no NT hash configured)",
+			// SECURITY: User exists and is enabled, but either has no NT hash
+			// configured or presented no NTLM response to validate against it.
+			// We CANNOT prove the client controls this account, so we MUST NOT
+			// grant the user's authenticated identity. Doing so previously let
+			// any client that merely knew a valid username authenticate as that
+			// user (missing-authentication / privilege-escalation). Reject the
+			// logon. An account with no password set is unusable for password
+			// auth by design — set one with 'dittofs user passwd <username>'.
+			logger.Warn("SECURITY: rejecting NTLM logon — no credential to validate (no NT hash configured or no NTLM response)",
 				"username", authMsg.Username,
-				"action", "run 'dittofs user passwd' to fix")
+				"hasNTHash", hasNTHash,
+				"action", "run 'dittofs user passwd' to set a password")
 
-			ctx.IsGuest = false
-
-			if pending.IsBinding {
-				// Without a validated signing key we cannot derive a channel
-				// signing key; a bind here would leave the channel unsigned.
-				return NewErrorResult(types.StatusLogonFailure), nil
-			}
-
+			// Re-auth and bind must fail closed without replacing/keeping the
+			// existing session (MS-SMB2 §3.3.5.5.2 / §3.3.5.5.3).
 			if pending.IsReauth {
-				if result := h.tryReauthUpdate(pending, resolvedUsername, authMsg.Domain, user, false); result != nil {
-					return result, nil
-				}
+				h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			}
-
-			sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
-			sess.OriginConnID = ctx.ConnID
-			recordSessionBindIdentity(sess, ctx)
-
-			// No signing without proper session key derivation
-			logger.Debug("NTLM authentication complete (no credential validation)",
-				"sessionID", sess.SessionID,
-				"username", sess.Username,
-				"domain", sess.Domain,
-				"isGuest", sess.IsGuest)
-
-			return h.buildAuthenticatedResponse(pending, nil, authMsg.NegotiateFlags, false), nil
+			return NewErrorResult(types.StatusLogonFailure), nil
 		}
 
 		// User not found or disabled
