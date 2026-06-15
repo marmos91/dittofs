@@ -19,12 +19,52 @@ package controller
 import (
 	"context"
 	"errors"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 )
+
+// reconcileAuthenticatedState runs the reconciliation steps that require an
+// authenticated DittoFS API: adapter discovery, per-adapter Services, network
+// policies, and snapshot policies. Extracted from Reconcile to keep that
+// method's cyclomatic complexity in check. Returns the adapter sub-reconciler's
+// result (carrying any requeue cadence) and a non-nil error only for the
+// security-critical NetworkPolicy step, which the caller propagates.
+func (r *DittoServerReconciler) reconcileAuthenticatedState(ctx context.Context, ds *dittoiov1alpha1.DittoServer) (ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+
+	adapterResult, _ := r.reconcileAdapters(ctx, ds)
+
+	// Service reconciliation: sync adapter Services based on discovered state.
+	if err := r.reconcileAdapterServices(ctx, ds); err != nil {
+		logger.Error(err, "Failed to reconcile adapter services")
+		r.Recorder.Eventf(ds, corev1.EventTypeWarning, "AdapterServiceFailed",
+			"Failed to reconcile adapter services: %v", err)
+		// Don't block reconciliation -- adapter services are best-effort.
+	}
+
+	// NetworkPolicy reconciliation: restrict ingress to active adapter ports.
+	if err := r.reconcileNetworkPolicies(ctx, ds); err != nil {
+		logger.Error(err, "Failed to reconcile adapter network policies")
+		r.Recorder.Eventf(ds, corev1.EventTypeWarning, "NetworkPolicyFailed",
+			"Failed to reconcile adapter network policies: %v", err)
+		// NetworkPolicies are security-critical, propagate error.
+		return ctrl.Result{}, err
+	}
+
+	// Snapshot policy reconciliation: push declared per-share policies.
+	// Best-effort — a share that does not exist yet is skipped and retried on
+	// the next reconcile; failures must not block the loop.
+	if requeue := r.reconcileSnapshotPolicies(ctx, ds); requeue && adapterResult.RequeueAfter == 0 {
+		adapterResult.RequeueAfter = 30 * time.Second
+	}
+
+	return adapterResult, nil
+}
 
 // reconcileSnapshotPolicies pushes each declared per-share snapshot policy to
 // the DittoFS API. It is best-effort and idempotent (PUT upsert): a share that

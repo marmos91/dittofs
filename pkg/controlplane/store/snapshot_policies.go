@@ -15,6 +15,10 @@ import (
 // schedule/retention config columns are overwritten — a config change must not
 // reset the run clock. ON CONFLICT (share_name) makes this a single atomic
 // statement on both SQLite and Postgres.
+//
+// On return, *policy is overwritten with the persisted row so the caller always
+// observes DB truth (the preserved ID/CreatedAt/LastRunAt on the update path),
+// not the values we attempted to insert.
 func (s *GORMStore) UpsertSnapshotPolicy(ctx context.Context, policy *models.SnapshotPolicy) error {
 	if policy.ID == "" {
 		policy.ID = uuid.New().String()
@@ -23,12 +27,22 @@ func (s *GORMStore) UpsertSnapshotPolicy(ctx context.Context, policy *models.Sna
 	policy.CreatedAt = now
 	policy.UpdatedAt = now
 
-	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+	db := s.db.WithContext(ctx)
+	if err := db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "share_name"}},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"enabled", "interval", "keep_last", "ttl", "name_prefix", "updated_at",
 		}),
-	}).Create(policy).Error
+	}).Create(policy).Error; err != nil {
+		return err
+	}
+
+	var saved models.SnapshotPolicy
+	if err := db.Where("share_name = ?", policy.ShareName).First(&saved).Error; err != nil {
+		return err
+	}
+	*policy = saved
+	return nil
 }
 
 func (s *GORMStore) GetSnapshotPolicy(ctx context.Context, shareName string) (*models.SnapshotPolicy, error) {

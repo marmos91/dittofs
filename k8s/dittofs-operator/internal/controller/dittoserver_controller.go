@@ -288,33 +288,13 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 
-		// Adapter discovery: only if authenticated
+		// Adapter discovery + dependent reconciliation: only if authenticated.
 		var adapterResult ctrl.Result
 		if conditions.IsConditionTrue(dittoServer.Status.Conditions, conditions.ConditionAuthenticated) {
-			adapterResult, _ = r.reconcileAdapters(ctx, dittoServer)
-
-			// Service reconciliation: sync adapter Services based on discovered state
-			if err := r.reconcileAdapterServices(ctx, dittoServer); err != nil {
-				logger.Error(err, "Failed to reconcile adapter services")
-				r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "AdapterServiceFailed",
-					"Failed to reconcile adapter services: %v", err)
-				// Don't block reconciliation -- adapter services are best-effort
-			}
-
-			// NetworkPolicy reconciliation: restrict ingress to active adapter ports
-			if err := r.reconcileNetworkPolicies(ctx, dittoServer); err != nil {
-				logger.Error(err, "Failed to reconcile adapter network policies")
-				r.Recorder.Eventf(dittoServer, corev1.EventTypeWarning, "NetworkPolicyFailed",
-					"Failed to reconcile adapter network policies: %v", err)
-				// NetworkPolicies are security-critical, propagate error
-				return ctrl.Result{}, err
-			}
-
-			// Snapshot policy reconciliation: push declared per-share policies.
-			// Best-effort — a share that does not exist yet is skipped and
-			// retried on the next reconcile; failures must not block the loop.
-			if requeue := r.reconcileSnapshotPolicies(ctx, dittoServer); requeue && adapterResult.RequeueAfter == 0 {
-				adapterResult.RequeueAfter = 30 * time.Second
+			var rerr error
+			adapterResult, rerr = r.reconcileAuthenticatedState(ctx, dittoServer)
+			if rerr != nil {
+				return ctrl.Result{}, rerr
 			}
 		}
 

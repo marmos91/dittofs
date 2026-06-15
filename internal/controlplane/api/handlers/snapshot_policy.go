@@ -94,15 +94,9 @@ func (h *SnapshotPolicyHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 		h.handleErr(w, "snapshot policy upsert", []any{"share", name}, err)
 		return
 	}
-
-	// Re-read so the response reflects the persisted row (ID, timestamps,
-	// preserved LastRunAt).
-	saved, err := h.runtime.GetSnapshotPolicy(r.Context(), name)
-	if err != nil {
-		h.handleErr(w, "snapshot policy upsert reload", []any{"share", name}, err)
-		return
-	}
-	WriteJSONOK(w, policyToWire(saved))
+	// The store overwrites *policy with the persisted row (preserved ID /
+	// CreatedAt / LastRunAt), so the response reflects DB truth directly.
+	WriteJSONOK(w, policyToWire(policy))
 }
 
 // Get handles GET /api/v1/shares/{name}/snapshot-policy.
