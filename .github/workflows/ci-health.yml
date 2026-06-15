@@ -54,6 +54,8 @@ jobs:
       CONCLUSION: ${{ github.event.workflow_run.conclusion }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       RUN_URL: ${{ github.event.workflow_run.html_url }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      REPO: ${{ github.repository }}
       # Any non-success terminal conclusion (failure, timed_out, cancelled,
       # action_required, …) means develop is not green and must alarm.
       IS_RED: ${{ github.event.workflow_run.conclusion != 'success' }}
@@ -70,26 +72,61 @@ jobs:
             --color B60205 \
             --description "develop branch CI is red (P0)" 2>/dev/null || true
 
+      # Gather failed-job links + best-effort failing test names, then build the
+      # email (HTML + text), subject, and issue markdown. The Python script is
+      # committed + unit-testable, which keeps fragile body templating out of YAML.
+      - name: Collect failure details
+        if: env.IS_RED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          # Failed jobs: name, deep log URL, and the failed step name.
+          gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[]
+                  | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")
+                  | {name, url: .html_url, step: ([.steps[]? | select(.conclusion == "failure" or .conclusion == "timed_out") | .name] | join(", "))}' \
+            > /tmp/failed_jobs.ndjson || true
+
+          # Best-effort failing test names from the failed steps' logs.
+          gh run view "$RUN_ID" --repo "$REPO" --log-failed > /tmp/failed.log 2>/dev/null || true
+          {
+            # POSIX: the grader prints "New failures not in <KF>:" then "  - <file>".
+            sed -n '/New failures not in/,/^[[:space:]]*$/p' /tmp/failed.log | grep -oE '[a-z_]+/[0-9]+\.t'
+            # Generic TAP failures ("not ok ... rename/23.t").
+            grep -i 'not ok' /tmp/failed.log | grep -oE '[a-z_]+/[0-9]+\.t'
+            # smbtorture / WPTS test ids near a FAIL line.
+            grep -iE 'fail' /tmp/failed.log | grep -oE 'smb2\.[A-Za-z0-9_.]+'
+          } 2>/dev/null | sort -u > /tmp/failing_tests.txt || true
+
+          python3 .github/scripts/ci_health_email.py
+
+          # Hand the built content to later steps (multiline-safe).
+          {
+            echo "MAIL_SUBJECT=$(cat /tmp/mail_subject)"
+            echo "MAIL_HTML<<__CIH_HTML__"; cat /tmp/mail.html; echo; echo "__CIH_HTML__"
+            echo "MAIL_TEXT<<__CIH_TEXT__"; cat /tmp/mail.txt; echo; echo "__CIH_TEXT__"
+            echo "ISSUE_MD<<__CIH_ISSUE__"; cat /tmp/issue.md; echo; echo "__CIH_ISSUE__"
+          } >> "$GITHUB_ENV"
+
       - name: Send failure email
         if: env.IS_RED == 'true' && env.HAS_SMTP == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
+          # Port 465 = implicit TLS; 587 = STARTTLS (the action's default).
+          secure: ${{ secrets.SMTP_PORT == '465' }}
           username: ${{ secrets.SMTP_USERNAME }}
           password: ${{ secrets.SMTP_PASSWORD }}
-          subject: "🔴 DittoFS develop CI RED: ${{ env.WORKFLOW }} @ ${{ env.HEAD_SHA }}"
+          subject: ${{ env.MAIL_SUBJECT }}
           to: ${{ secrets.ALERT_EMAIL_TO }}
-          from: DittoFS CI <${{ secrets.SMTP_USERNAME }}>
-          body: |
-            develop CI is RED.
-
-            Workflow:   ${{ env.WORKFLOW }}
-            Conclusion: ${{ env.CONCLUSION }}
-            Commit:     ${{ env.HEAD_SHA }}
-            Run:        ${{ env.RUN_URL }}
-
-            Fix or revert before merging onto develop.
+          # MUST be an SES-verified identity — SMTP_USERNAME is the access-key id,
+          # not an address, so it would bounce. ALERT_EMAIL_FROM is the verified sender.
+          from: DittoFS CI <${{ secrets.ALERT_EMAIL_FROM }}>
+          html_body: ${{ env.MAIL_HTML }}
+          body: ${{ env.MAIL_TEXT }}
 
       - name: Open or update develop-red issue
         if: env.IS_RED == 'true'
@@ -97,11 +134,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          # printf (not an indented heredoc) so no leading YAML whitespace
-          # leaks into the Markdown body (4+ leading spaces => code block).
-          # shellcheck disable=SC2016  # %s placeholders are printf args, not shell expansion
-          COMMENT=$(printf '**%s** concluded `%s` on `develop`.\n\n- Commit: `%s`\n- Run: %s' \
-            "$WORKFLOW" "$CONCLUSION" "$HEAD_SHA" "$RUN_URL")
+          # ISSUE_MD is built by the "Collect failure details" step — failed-job
+          # links + best-effort failing test names, same facts as the email.
+          COMMENT="$ISSUE_MD"
 
           EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
             --json number --jq '.[0].number // empty')
