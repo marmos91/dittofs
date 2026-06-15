@@ -526,6 +526,36 @@ type SnapshotStore interface {
 	MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64) error
 }
 
+// SnapshotPolicyStore provides per-share snapshot policy CRUD for the
+// background snapshot scheduler. At most one policy exists per share (keyed by
+// share name via the unique index on share_name). Policy rows cascade-delete
+// with their share (see DeleteShare).
+type SnapshotPolicyStore interface {
+	// UpsertSnapshotPolicy inserts or updates the policy for policy.ShareName.
+	// On insert a UUID is generated into policy.ID when empty. On update the
+	// existing row's ID, CreatedAt and LastRunAt are preserved — only the
+	// schedule/retention config (Interval, KeepLast, TTL, Enabled, NamePrefix)
+	// is overwritten so a config change never resets the run clock.
+	UpsertSnapshotPolicy(ctx context.Context, policy *models.SnapshotPolicy) error
+
+	// GetSnapshotPolicy returns the policy for shareName, or
+	// models.ErrSnapshotPolicyNotFound if none exists.
+	GetSnapshotPolicy(ctx context.Context, shareName string) (*models.SnapshotPolicy, error)
+
+	// ListSnapshotPolicies returns every policy across all shares, ordered by
+	// share_name. Returns an empty slice (not nil) when none exist.
+	ListSnapshotPolicies(ctx context.Context) ([]*models.SnapshotPolicy, error)
+
+	// DeleteSnapshotPolicy removes the policy for shareName. Returns
+	// models.ErrSnapshotPolicyNotFound if no row matches.
+	DeleteSnapshotPolicy(ctx context.Context, shareName string) error
+
+	// TouchSnapshotPolicyRun records that the scheduler ran the policy for
+	// shareName at ranAt (sets LastRunAt). Returns
+	// models.ErrSnapshotPolicyNotFound if no row matches.
+	TouchSnapshotPolicyRun(ctx context.Context, shareName string, ranAt time.Time) error
+}
+
 // RestoreMarkerStore provides durable restore-in-progress marker CRUD.
 //
 // A restore marker records that a RestoreSnapshot is mid-flight for a share:
@@ -661,6 +691,7 @@ type Store interface {
 	SettingsStore
 	AdminStore
 	SnapshotStore
+	SnapshotPolicyStore
 	RestoreMarkerStore
 	HealthStore
 }

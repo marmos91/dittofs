@@ -19,6 +19,7 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
   - [Shares (Exports)](#8-shares-exports)
   - [User Management](#9-user-management)
   - [Protocol Adapters](#10-protocol-adapters)
+  - [Snapshot Scheduler](#14-snapshot-scheduler)
 - [Environment Variables](#environment-variables)
 - [Configuration Precedence](#configuration-precedence)
 - [Configuration Examples](#configuration-examples)
@@ -1214,6 +1215,32 @@ identity:
         local_uid: 1000
         local_gid: 1000
 ```
+
+### 14. Snapshot Scheduler
+
+Controls the background scheduler that drives per-share snapshot policies
+(schedule + retention). Policies themselves are configured per share via
+`dfsctl share snapshot-policy` or the REST API — see
+[SNAPSHOTS.md §12](SNAPSHOTS.md#12-scheduled-snapshots-policies). These
+knobs only tune the daemon-wide scheduler loop.
+
+```yaml
+snapshot:
+  # How often the daemon scans for due policies. The per-share policy
+  # interval (not this knob) controls how often a share is snapshotted.
+  scheduler_poll_interval: 1m   # default 1m
+  # Turn the scheduler off entirely. Policies are still stored and can be
+  # run manually with `dfsctl share snapshot-policy run`.
+  scheduler_disabled: false     # default false
+  # Per-request budget for the synchronous restore endpoint.
+  restore_http_timeout: 30m     # default 30m
+```
+
+| Key | Env var | Default |
+|---|---|---|
+| `snapshot.scheduler_poll_interval` | `DITTOFS_SNAPSHOT_SCHEDULER_POLL_INTERVAL` | `1m` |
+| `snapshot.scheduler_disabled` | `DITTOFS_SNAPSHOT_SCHEDULER_DISABLED` | `false` |
+| `snapshot.restore_http_timeout` | `DITTOFS_SNAPSHOT_RESTORE_HTTP_TIMEOUT` | `30m` |
 
 ## Migration
 

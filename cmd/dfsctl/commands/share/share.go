@@ -4,6 +4,7 @@ package share
 import (
 	"github.com/marmos91/dittofs/cmd/dfsctl/commands/share/permission"
 	"github.com/marmos91/dittofs/cmd/dfsctl/commands/share/snapshot"
+	"github.com/marmos91/dittofs/cmd/dfsctl/commands/share/snapshotpolicy"
 	"github.com/spf13/cobra"
 )
 
@@ -50,9 +51,10 @@ func init() {
 	// Root-level verbs (no target name).
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(createCmd)
-	Cmd.AddCommand(permission.Cmd) // nested sub-tree keeps its own shape
-	Cmd.AddCommand(snapshot.Cmd)   // nested sub-tree keeps its own shape
-	Cmd.AddCommand(listMountsCmd)  // list-mounts is a list, not a per-share verb
+	Cmd.AddCommand(permission.Cmd)     // nested sub-tree keeps its own shape
+	Cmd.AddCommand(snapshot.Cmd)       // nested sub-tree keeps its own shape
+	Cmd.AddCommand(snapshotpolicy.Cmd) // nested sub-tree keeps its own shape
+	Cmd.AddCommand(listMountsCmd)      // list-mounts is a list, not a per-share verb
 
 	// Per-share verbs — each leaf uses cobra.ExactArgs(1) with args[0] = <name>
 	Cmd.AddCommand(showCmd)

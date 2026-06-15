@@ -30,6 +30,10 @@ var (
 	ErrSnapshotNotFound      = errors.New("snapshot not found")
 	ErrSnapshotStateConflict = errors.New("snapshot is not in a state that allows this operation")
 
+	// ErrSnapshotPolicyNotFound is returned when no snapshot policy exists
+	// for the requested share.
+	ErrSnapshotPolicyNotFound = errors.New("snapshot policy not found")
+
 	// Phase 23 (D-23-12): orchestration sentinels surfaced to REST in Phase 25.
 	ErrSnapshotBackupFailed         = errors.New("snapshot backup failed")
 	ErrSnapshotVerifyFailed         = errors.New("snapshot verify failed: missing hashes on remote after drain")

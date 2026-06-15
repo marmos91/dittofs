@@ -623,6 +623,12 @@ dfsctl
       list           List snapshots for a share
       restore        Restore a snapshot into a (disabled) share
       show           Show details of a snapshot
+    snapshot-policy Manage scheduled snapshot policies (schedule + retention)
+      delete         Delete a share's snapshot policy
+      list           List all snapshot policies
+      run            Trigger a share's snapshot policy now (manual override)
+      set            Create or update a share's snapshot policy
+      show           Show a share's snapshot policy
     unmount        Unmount a mounted share
   status         Show server status
   store          Store management
@@ -3161,7 +3167,7 @@ Flags:
       --allow-auth-sys string     Allow AUTH_SYS flavor (true|false)
       --netgroup string           Netgroup name to associate (empty string clears the association)
       --require-kerberos string   Require Kerberos auth (true|false)
-      --squash string             Squash mode (none|root|all)
+      --squash string             Squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest)
 ```
 
 Global flags:
@@ -3558,6 +3564,171 @@ Show details of a snapshot
 
 ```
 dfsctl share snapshot show <share> <id>
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share snapshot-policy`
+
+Manage scheduled snapshot policies (schedule + retention)
+
+Manage per-share snapshot policies.
+
+A snapshot policy makes a share snapshot itself automatically on a fixed
+interval and prunes old scheduler-created snapshots past the retention
+bounds (keep-last and/or ttl). Manually-created snapshots are never pruned.
+
+Examples:
+  # Daily snapshots, keep the newest 7, drop anything older than 30 days
+  dfsctl share snapshot-policy set /archive --interval @daily --keep-last 7 --ttl 720h
+
+  # Show a share's policy
+  dfsctl share snapshot-policy show /archive
+
+  # List every policy
+  dfsctl share snapshot-policy list
+
+  # Trigger the policy immediately, ignoring its interval
+  dfsctl share snapshot-policy run /archive
+
+  # Remove a share's policy
+  dfsctl share snapshot-policy delete /archive
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share snapshot-policy delete`
+
+Delete a share's snapshot policy
+
+Delete a share's snapshot policy. Existing snapshots are not removed;
+only the schedule and automatic pruning stop.
+
+```
+dfsctl share snapshot-policy delete <share> [flags]
+```
+
+Flags:
+
+```
+      --yes   Skip confirmation prompt
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share snapshot-policy list`
+
+List all snapshot policies
+
+```
+dfsctl share snapshot-policy list
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share snapshot-policy run`
+
+Trigger a share's snapshot policy now (manual override)
+
+Run a share's snapshot policy immediately, ignoring its interval.
+
+This creates a scheduled snapshot now, advances the policy's run clock, and
+prunes per the retention bounds. Useful to take an out-of-band snapshot
+without changing the schedule.
+
+```
+dfsctl share snapshot-policy run <share>
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share snapshot-policy set`
+
+Create or update a share's snapshot policy
+
+Create or update a share's snapshot policy.
+
+--interval accepts a Go duration ("24h", "6h", "1h30m") or a shorthand
+(@hourly, @daily, @weekly). Retention is bounded by --keep-last (0 = no
+count bound) and --ttl (Go duration, empty = no age bound); a snapshot is
+pruned when it falls outside the newest keep-last OR is older than ttl.
+
+Re-running set on an existing policy updates the config but preserves the
+run clock (it does not reset the next-run time).
+
+Examples:
+  dfsctl share snapshot-policy set /archive --interval @daily --keep-last 7 --ttl 720h
+  dfsctl share snapshot-policy set /archive --interval 6h --disabled
+
+```
+dfsctl share snapshot-policy set <share> [flags]
+```
+
+Flags:
+
+```
+      --disabled             Create the policy disabled (no automatic snapshots)
+      --interval string      Snapshot cadence: Go duration or @hourly/@daily/@weekly (required)
+      --keep-last int        Keep only the newest N scheduled snapshots (0 = unlimited)
+      --name-prefix string   Name prefix for scheduler-created snapshots (default "scheduled")
+      --ttl string           Prune scheduled snapshots older than this Go duration (empty = no age bound)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl share snapshot-policy show`
+
+Show a share's snapshot policy
+
+```
+dfsctl share snapshot-policy show <share>
 ```
 
 Global flags:
