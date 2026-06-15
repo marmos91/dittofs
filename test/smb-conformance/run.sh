@@ -383,27 +383,12 @@ run_compose() {
     PROFILE="$PROFILE" docker compose up -d dittofs
     wait_until "docker compose exec dittofs wget -q --spider http://localhost:8080/health/ready" 60 "DittoFS"
 
-    # Extract auto-generated admin password from container logs.
-    # /health/ready can flip green before the admin user creation log line is
-    # emitted on cold start, so retry briefly before giving up.
-    log_step "Extracting admin password from DittoFS logs..."
-    local admin_password=""
-    local attempt=1
-    while [ "$attempt" -le 20 ]; do
-        admin_password=$(docker compose logs dittofs 2>/dev/null | grep -o 'password: [^ ]*' | head -1 | awk '{print $2}' || echo "")
-        if [[ -n "$admin_password" ]]; then
-            break
-        fi
-        sleep 1
-        attempt=$((attempt + 1))
-    done
-    if [[ -z "$admin_password" ]]; then
-        log_error "Could not extract admin password from DittoFS logs"
-        return 1
-    fi
-    if $VERBOSE; then
-        log_info "Admin password extracted"
-    fi
+    # The admin password is set deterministically via
+    # DITTOFS_ADMIN_INITIAL_PASSWORD in docker-compose.yml (defaulting to
+    # DITTOFS_CONTROLPLANE_SECRET), so the harness knows it without scraping the
+    # log — the daemon no longer prints generated secrets to a non-interactive
+    # container stdout.
+    local admin_password="${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}"
 
     # Bootstrap DittoFS
     log_step "Bootstrapping DittoFS (profile: ${PROFILE})..."
@@ -448,22 +433,18 @@ run_local() {
     esac
     render_ptfconfig
 
-    # Start DittoFS in background
+    # Start DittoFS in background. The admin password is set deterministically
+    # via DITTOFS_ADMIN_INITIAL_PASSWORD so the harness knows it without
+    # scraping the log — the daemon no longer prints generated secrets to a
+    # non-interactive (file-redirected) stdout.
     log_step "Starting DittoFS (profile: ${PROFILE})..."
-    "${SCRIPT_DIR}/dfs" start --foreground --config "${SCRIPT_DIR}/configs/${PROFILE}.yaml" \
+    local admin_password="${DITTOFS_CONTROLPLANE_SECRET:-WptsConformanceTesting2026!Secret}"
+    DITTOFS_ADMIN_INITIAL_PASSWORD="${admin_password}" \
+        "${SCRIPT_DIR}/dfs" start --foreground --config "${SCRIPT_DIR}/configs/${PROFILE}.yaml" \
         > "${RESULTS_DIR}/dittofs.log" 2>&1 &
     DITTOFS_PID=$!
 
     wait_until "curl -sf http://localhost:8080/health/ready" 60 "DittoFS"
-
-    # Extract auto-generated admin password from server log
-    log_step "Extracting admin password from DittoFS logs..."
-    local admin_password=""
-    admin_password=$(grep -o 'password: [^ ]*' "${RESULTS_DIR}/dittofs.log" 2>/dev/null | head -1 | awk '{print $2}' || echo "")
-    if [[ -z "$admin_password" ]]; then
-        log_error "Could not extract admin password from DittoFS log"
-        return 1
-    fi
 
     # Bootstrap
     log_step "Bootstrapping DittoFS (profile: ${PROFILE})..."
