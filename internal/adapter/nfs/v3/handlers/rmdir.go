@@ -147,9 +147,10 @@ func (h *Handler) Rmdir(
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "RMDIR cancelled before RemoveDirectory", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
 
-		// Get updated parent attributes for WCC data
-		parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+		// Post-op WCC: the context is already cancelled here, so a re-fetch
+		// typically returns (nil, err); wccAfterOrFallback guards the nil and
+		// falls back to the pre-op parent attributes.
+		wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 		return &RmdirResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
@@ -163,9 +164,10 @@ func (h *Handler) Rmdir(
 	if err != nil {
 		logger.DebugCtx(ctx.Context, "RMDIR failed: store error", "name", req.Name, "client", clientIP, "error", err)
 
-		// Get updated parent attributes for WCC data
-		parentFile, _ = metaSvc.GetFile(ctx.Context, parentHandle)
-		wccAfter := h.convertFileAttrToNFS(parentHandle, &parentFile.FileAttr)
+		// Post-op WCC: on RemoveDirectory failure the parent may no longer be
+		// accessible, so a re-fetch can return (nil, err); wccAfterOrFallback
+		// guards the nil and falls back to the pre-op parent attributes.
+		wccAfter := h.wccAfterOrFallback(ctx, metaSvc, parentHandle, &parentFile.FileAttr)
 
 		// Map store errors to NFS status codes
 		status := mapRmdirErrorToNFSStatus(err)
