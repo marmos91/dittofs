@@ -151,9 +151,10 @@ func TestResolveSharePermission_KnownUserPermissionNoneDenied(t *testing.T) {
 	}
 }
 
-// Guard rails: a nil identity store, share, or UID must allow with defaults
-// (never deny) — this is the "no policy info" degrade path both v3 and v4 rely
-// on (e.g. nil registry / AUTH_NULL).
+// Guard rails: a nil identity store or share means no policy information is
+// available, so resolution must allow with defaults (never deny). A nil UID
+// (AUTH_NULL) is NOT in this set: an anonymous caller is gated by the share's
+// default_permission policy (see the AnonymousAuthNull tests below).
 func TestResolveSharePermission_NilInputsAllow(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -163,7 +164,6 @@ func TestResolveSharePermission_NilInputsAllow(t *testing.T) {
 	}{
 		{"nil store", nil, &runtime.Share{}, ptrUID(0)},
 		{"nil share", newPermMockStore(), nil, ptrUID(0)},
-		{"nil uid", newPermMockStore(), &runtime.Share{DefaultPermission: "none"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,6 +175,68 @@ func TestResolveSharePermission_NilInputsAllow(t *testing.T) {
 				t.Errorf("expected zero result, got %+v", res)
 			}
 		})
+	}
+}
+
+// Negative control for the AUTH_NULL share-permission bypass: an anonymous
+// caller (nil UID, e.g. AUTH_NULL credentials) must be DENIED on a share with
+// default_permission=none. Before the fix the nil-UID early return granted
+// full read-write access, nullifying the export permission model.
+func TestResolveSharePermission_AnonymousAuthNullDeniedWhenDefaultNone(t *testing.T) {
+	store := newPermMockStore()
+	share := &runtime.Share{
+		Name:              "/export",
+		DefaultPermission: "none",
+		Squash:            models.SquashNone,
+	}
+
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil)
+	if !errors.Is(err, ErrShareAccessDenied) {
+		t.Fatalf("anonymous AUTH_NULL caller on default_permission=none: expected ErrShareAccessDenied, got %v", err)
+	}
+}
+
+// An anonymous AUTH_NULL caller on a read-only export must be coerced to
+// read-only, not granted read-write. Before the fix the nil-UID early return
+// returned ReadOnly=false even on read-only exports.
+func TestResolveSharePermission_AnonymousAuthNullCoercedReadOnly(t *testing.T) {
+	store := newPermMockStore()
+
+	t.Run("share read-only flag", func(t *testing.T) {
+		share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", ReadOnly: true}
+		res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !res.ReadOnly {
+			t.Errorf("AUTH_NULL on read-only export: ReadOnly = false, want true")
+		}
+	})
+
+	t.Run("default_permission=read", func(t *testing.T) {
+		share := &runtime.Share{Name: "/export", DefaultPermission: "read"}
+		res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !res.ReadOnly {
+			t.Errorf("AUTH_NULL on default_permission=read: ReadOnly = false, want true")
+		}
+	})
+}
+
+// A read-write share with no read-only flag still allows the anonymous caller —
+// the fix must not break legitimate anon-allowed shares.
+func TestResolveSharePermission_AnonymousAuthNullAllowedReadWrite(t *testing.T) {
+	store := newPermMockStore()
+	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write"}
+
+	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ReadOnly {
+		t.Errorf("AUTH_NULL on read-write export: ReadOnly = true, want false")
 	}
 }
 

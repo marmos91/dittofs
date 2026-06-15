@@ -30,8 +30,11 @@ type SharePermissionResult struct {
 // shared by the NFSv3 and NFSv4 auth-context builders.
 //
 // The policy:
-//   - No identity store, share, or UID → allow with share defaults (read-write,
-//     honouring share.ReadOnly).
+//   - No identity store or share → no policy information available; allow with
+//     share defaults (read-write, honouring share.ReadOnly).
+//   - No UID (AUTH_NULL / AUTH_NONE anonymous caller) → treated as guest, NOT
+//     bypassed: denied when default_permission is "none", otherwise granted with
+//     read-only coerced when the default permission is "read".
 //   - Root (UID 0) under a squash mode that keeps root privileged (none,
 //     root_to_admin, all_to_admin, or empty/default) → admin, username "root".
 //   - Unknown UID → guest: denied when default_permission is "none", otherwise
@@ -51,12 +54,30 @@ func ResolveSharePermission(
 ) (SharePermissionResult, error) {
 	var result SharePermissionResult
 
-	// No identity store or UID - allow with share defaults.
-	if identityStore == nil || share == nil || uid == nil {
+	// No identity store or share - no policy information available, allow with
+	// share defaults. (A nil UID is NOT treated this way: an anonymous AUTH_NULL
+	// caller must still be gated by the share's default_permission policy below.)
+	if identityStore == nil || share == nil {
 		return result, nil
 	}
 
 	defaultPerm := models.ParseSharePermission(share.DefaultPermission)
+
+	// AUTH_NULL / AUTH_NONE anonymous caller (no UID asserted). This must NOT
+	// bypass the export permission model: gate it through the same guest policy
+	// as an unknown UID so default_permission=none denies it and read-only
+	// exports / default_permission=read coerce it to read-only.
+	if uid == nil {
+		if defaultPerm == models.PermissionNone {
+			logger.DebugCtx(ctx, "Share access denied (anonymous AUTH_NULL caller, default permission is none)",
+				"share", shareName, "client", clientAddr)
+			return SharePermissionResult{}, ErrShareAccessDenied
+		}
+		result.ReadOnly = share.ReadOnly || defaultPerm == models.PermissionRead
+		logger.DebugCtx(ctx, "Anonymous (AUTH_NULL) guest access granted",
+			"share", shareName, "permission", defaultPerm, "readOnly", result.ReadOnly, "client", clientAddr)
+		return result, nil
+	}
 
 	// Check if caller is root (UID 0) and squash mode doesn't map root away.
 	// Root has full admin access when squash mode is: none, root_to_admin,
