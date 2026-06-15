@@ -21,7 +21,9 @@ Most package managers install both.
 ### Debian / Ubuntu (APT)
 
 ```bash
-curl -fsSL https://s3.cubbit.eu/dittofs-binaries/apt/dittofs.gpg.key \
+# --retry rides out a transient 503 from the object store mid-publish; if you
+# still see "gpg: no valid OpenPGP data found", retry in a minute.
+curl -fsSL --retry 5 --retry-connrefused https://s3.cubbit.eu/dittofs-binaries/apt/dittofs.gpg.key \
   | gpg --dearmor --yes | sudo tee /usr/share/keyrings/dittofs.gpg > /dev/null
 echo "deb [signed-by=/usr/share/keyrings/dittofs.gpg] https://s3.cubbit.eu/dittofs-binaries/apt stable main" \
   | sudo tee /etc/apt/sources.list.d/dfs.list
