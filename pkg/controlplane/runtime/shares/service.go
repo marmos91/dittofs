@@ -728,16 +728,11 @@ func (s *Service) createBlockStoreForShare(
 	// eviction path can engage remote-cache backpressure (stall a writer
 	// while the syncer drains, instead of failing with ErrDiskFull) when a
 	// remote is configured. Local-only shares (engineRemote == nil) keep the
-	// nil source — eviction stays on its evictMaxWait fallback. The
-	// interface handed in is narrow and never the FileBlockStore (LSL-08).
+	// nil source — eviction stays on its evictMaxWait fallback. FSStore takes
+	// a narrow read-only interface, never the FileBlockStore (LSL-08).
 	if engineRemote != nil {
-		if bp, ok := localStore.(interface {
-			SetBackpressureSource(interface {
-				IsRemoteHealthy() bool
-				UnsyncedBytes() int64
-			})
-		}); ok {
-			bp.SetBackpressureSource(syncer)
+		if fsStore, ok := localStore.(*fs.FSStore); ok {
+			fsStore.SetBackpressureSource(syncer)
 		}
 	}
 

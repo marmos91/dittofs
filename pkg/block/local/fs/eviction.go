@@ -120,9 +120,10 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 					// First time stalling on the remote-cache path for this
 					// request: arm the longer deadline, count the engage, and
 					// log it (rate-limited).
+					maxWait := bc.effectiveBackpressureMaxWait()
 					engaged = true
 					stallStart = time.Now()
-					deadline = stallStart.Add(bc.effectiveBackpressureMaxWait())
+					deadline = stallStart.Add(maxWait)
 					bc.bpEngageCount.Add(1)
 					if bc.bpLogLimiter == nil || bc.bpLogLimiter.Allow() {
 						logger.Info("local cache backpressure engaged: waiting for syncer to drain",
@@ -132,7 +133,7 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 							"needed", needed,
 							"unsynced_bytes", bc.bpSource.UnsyncedBytes(),
 							"remote_healthy", true,
-							"max_wait_ms", bc.effectiveBackpressureMaxWait().Milliseconds())
+							"max_wait_ms", maxWait.Milliseconds())
 					}
 				}
 			}

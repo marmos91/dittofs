@@ -119,14 +119,13 @@ type Syncer struct {
 // already pending updates the recorded size but does not double-count.
 func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
 	m.pendingMu.Lock()
-	prev, existed := m.pendingHashes[h]
+	// prev is the zero value (0) when the hash is new, so size-prev charges
+	// the full size on first insert and only the delta on re-add — never
+	// double-counting a hash already pending (CAS dedup).
+	prev := m.pendingHashes[h]
 	m.pendingHashes[h] = size
 	m.pendingMu.Unlock()
-	if existed {
-		m.unsyncedBytes.Add(size - prev)
-	} else {
-		m.unsyncedBytes.Add(size)
-	}
+	m.unsyncedBytes.Add(size - prev)
 }
 
 // UnsyncedBytes returns the running total on-disk size of CAS chunks present
