@@ -147,13 +147,13 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 
 	query := `
 		SELECT
-			f.id, f.share_name, f.path,
+			f.id, f.share_name, ` + inodePathExpr + `,
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
 			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
-		FROM files f
+		FROM inodes f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
 	`
@@ -192,18 +192,11 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// For existing files (updates), use UPDATE directly to avoid unique constraint issues.
 	// This is more efficient and handles concurrent updates properly.
 	//
-	// The unique constraint on (share_name, path_hash) WHERE nlink > 0 can cause
-	// spurious "already exists" errors when using INSERT ... ON CONFLICT (id)
-	// because that clause doesn't handle conflicts on the path_hash constraint.
-	//
-	// path MUST be in the SET list: Move relocates a node by setting File.Path
-	// to its new location and calling PutFile. The memory/badger backends persist
-	// the whole File, so their path moves; if this UPDATE omitted path, the
-	// relocated row would keep its old path (and trigger-derived path_hash),
-	// leaving the original path occupied under unique_share_path_hash_active. A
-	// recycle (Move into #recycle) followed by recreating the original name would
-	// then fail "already exists" on postgres only (#190). path_hash is maintained
-	// by the files_path_hash_trigger, so updating path refreshes it.
+	// Namespace uniqueness lives in parent_child_map(parent_id, child_name); the
+	// inodes row no longer carries a path/path_hash column (#1166), so a Move is
+	// just a parent_child_map re-link (SetChild/DeleteChild) — there is nothing
+	// path-related to update on the inode row here. content_id is still set:
+	// it keys file_blocks and is consumed by GetFileByPayloadID.
 	//
 	// The leading CTE reads the pre-update size under FOR UPDATE and the UPDATE
 	// joins against it, so a single round-trip both locks the row and returns
@@ -216,34 +209,33 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	updateQuery := `
 		WITH old AS (
 			SELECT id, share_name, size
-			FROM files
-			WHERE id = $22 AND share_name = $23
+			FROM inodes
+			WHERE id = $21 AND share_name = $22
 			FOR UPDATE
 		)
-		UPDATE files SET
-			path = $1,
-			file_type = $2,
-			mode = $3,
-			uid = $4,
-			gid = $5,
-			size = $6,
-			atime = $7,
-			mtime = $8,
-			ctime = $9,
-			creation_time = $10,
-			content_id = $11,
-			link_target = $12,
-			device_major = $13,
-			device_minor = $14,
-			hidden = $15,
-			acl = $16,
-			eas = $17,
-			object_id = $18,
-			deleted_at = $19,
-			original_path = $20,
-			deleted_by = $21
+		UPDATE inodes SET
+			file_type = $1,
+			mode = $2,
+			uid = $3,
+			gid = $4,
+			size = $5,
+			atime = $6,
+			mtime = $7,
+			ctime = $8,
+			creation_time = $9,
+			content_id = $10,
+			link_target = $11,
+			device_major = $12,
+			device_minor = $13,
+			hidden = $14,
+			acl = $15,
+			eas = $16,
+			object_id = $17,
+			deleted_at = $18,
+			original_path = $19,
+			deleted_by = $20
 		FROM old
-		WHERE files.id = old.id AND files.share_name = old.share_name
+		WHERE inodes.id = old.id AND inodes.share_name = old.share_name
 		RETURNING old.size
 	`
 
@@ -314,7 +306,6 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	var oldSizeVal sql.NullInt64
 	updated := true
 	scanErr := tx.tx.QueryRow(ctx, updateQuery,
-		file.Path,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
 		timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
 		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
@@ -346,19 +337,19 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	// If no rows were updated, the file doesn't exist - do an INSERT
 	if !updated {
 		insertQuery := `
-			INSERT INTO files (
-				id, share_name, path, file_type, mode, uid, gid, size,
+			INSERT INTO inodes (
+				id, share_name, file_type, mode, uid, gid, size,
 				atime, mtime, ctime, creation_time, content_id, link_target,
 				device_major, device_minor, hidden, acl, eas, object_id,
 				deleted_at, original_path, deleted_by
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-				$20, $21, $22, $23
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+				$19, $20, $21, $22
 			)
 		`
 
 		if _, err := tx.tx.Exec(ctx, insertQuery,
-			file.ID, file.ShareName, file.Path,
+			file.ID, file.ShareName,
 			file.Type, file.Mode, file.UID, file.GID, file.Size,
 			timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
 			timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
@@ -413,17 +404,17 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 	var fileType int
 	var fileSize int64
 	_ = tx.tx.QueryRow(ctx,
-		`SELECT file_type, size FROM files WHERE id = $1 AND share_name = $2`,
+		`SELECT file_type, size FROM inodes WHERE id = $1 AND share_name = $2`,
 		id, shareName,
 	).Scan(&fileType, &fileSize)
 
 	// Delete the file. link_counts.file_id and parent_child_map.parent_id both
-	// declare ON DELETE CASCADE against files(id), so deleting the file row
+	// declare ON DELETE CASCADE against inodes(id), so deleting the inode row
 	// reaps this node's link-count and (if it is a directory) its child-map
 	// rows automatically. We do NOT delete this file from its parent's children
 	// map here — that is the responsibility of DeleteChild, which the service
 	// layer calls separately. This matches the memory and badger stores.
-	result, err := tx.tx.Exec(ctx, `DELETE FROM files WHERE id = $1 AND share_name = $2`, id, shareName)
+	result, err := tx.tx.Exec(ctx, `DELETE FROM inodes WHERE id = $1 AND share_name = $2`, id, shareName)
 	if err != nil {
 		return mapPgError(err, "DeleteFile", "")
 	}
@@ -562,7 +553,7 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.eas, f.object_id,
 		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM parent_child_map dc
-		LEFT JOIN files f ON dc.child_id = f.id
+		LEFT JOIN inodes f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
 		ORDER BY dc.child_name
@@ -772,10 +763,9 @@ func (tx *postgresTransaction) SetLinkCount(ctx context.Context, handle metadata
 		return mapPgError(err, "SetLinkCount", "")
 	}
 
-	// Also update files.nlink column for the partial unique constraint
-	// The unique index on (share_name, path_hash) WHERE nlink > 0 requires
-	// the nlink column to be kept in sync with link_counts table.
-	nlinkQuery := `UPDATE files SET nlink = $1 WHERE id = $2`
+	// Also keep the inodes.nlink column in sync with the link_counts table so
+	// GETATTR can read the link count straight off the inode row without a join.
+	nlinkQuery := `UPDATE inodes SET nlink = $1 WHERE id = $2`
 	_, err = tx.tx.Exec(ctx, nlinkQuery, count, fileID)
 	if err != nil {
 		return mapPgError(err, "SetLinkCount (nlink update)", "")
@@ -964,15 +954,15 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 	// lifetime.
 	var freedBytes int64
 	if err := tx.tx.QueryRow(ctx,
-		`SELECT COALESCE(SUM(size), 0) FROM files
+		`SELECT COALESCE(SUM(size), 0) FROM inodes
 		 WHERE share_name = $1 AND file_type = $2 AND size > 0`,
 		shareName, int(metadata.FileTypeRegular),
 	).Scan(&freedBytes); err != nil {
 		return mapPgError(err, "DeleteShare", shareName)
 	}
 
-	// Drop the share row first: shares.root_file_id references files(id)
-	// WITHOUT ON DELETE CASCADE, so the files rows cannot be removed while
+	// Drop the share row first: shares.root_file_id references inodes(id)
+	// WITHOUT ON DELETE CASCADE, so the inode rows cannot be removed while
 	// the share still points at the root inode.
 	result, err := tx.tx.Exec(ctx, `DELETE FROM shares WHERE share_name = $1`, shareName)
 	if err != nil {
@@ -986,13 +976,12 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 		}
 	}
 
-	// Delete all file rows for the share. The store.go:161 contract is
+	// Delete all inode rows for the share. The store.go:161 contract is
 	// "removes a share and all its metadata"; dropping only the share row
-	// orphans every files/parent_child_map/link_counts/file_block_refs row
-	// and leaves the root inode occupying the unique root-path index, so a
-	// same-name recreation fails with ErrAlreadyExists. parent_child_map,
-	// link_counts, and file_block_refs all cascade from files(id).
-	if _, err := tx.tx.Exec(ctx, `DELETE FROM files WHERE share_name = $1`, shareName); err != nil {
+	// orphans every inodes/parent_child_map/link_counts/file_block_refs row.
+	// parent_child_map, link_counts, and file_block_refs all cascade from
+	// inodes(id).
+	if _, err := tx.tx.Exec(ctx, `DELETE FROM inodes WHERE share_name = $1`, shareName); err != nil {
 		return mapPgError(err, "DeleteShare", shareName)
 	}
 
@@ -1055,13 +1044,15 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		mode = 0o755
 	}
 
-	// Check if root directory already exists (idempotent behavior)
+	// Check if root directory already exists (idempotent behavior). The root is
+	// resolved via shares.root_file_id — with the path column gone (#1166), the
+	// share row is the authoritative pointer to its root inode.
 	checkQuery := `
 		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
 			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
-		FROM files f
+		FROM inodes f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
-		WHERE f.share_name = $1 AND f.path = '/'
+		WHERE f.id = (SELECT root_file_id FROM shares WHERE share_name = $1)
 	`
 
 	var (
@@ -1123,23 +1114,22 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 	now := time.Now()
 
 	insertFileQuery := `
-		INSERT INTO files (
-			id, share_name, path,
+		INSERT INTO inodes (
+			id, share_name,
 			file_type, mode, uid, gid, size,
 			atime, mtime, ctime, creation_time,
 			content_id, link_target, device_major, device_minor
 		) VALUES (
-			$1, $2, $3,
-			$4, $5, $6, $7, $8,
-			$9, $10, $11, $12,
-			$13, $14, $15, $16
+			$1, $2,
+			$3, $4, $5, $6, $7,
+			$8, $9, $10, $11,
+			$12, $13, $14, $15
 		)
 	`
 
 	_, err = tx.tx.Exec(ctx, insertFileQuery,
 		rootID,                            // id
 		shareName,                         // share_name
-		"/",                               // path (root)
 		int16(metadata.FileTypeDirectory), // file_type
 		int32(mode),                       // mode
 		int32(uid),                        // uid
@@ -1304,13 +1294,13 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 	// for files with paths near PATH_MAX (4096 bytes).
 	query := `
 		SELECT
-			f.id, f.share_name, f.path,
+			f.id, f.share_name, ` + inodePathExpr + `,
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
 			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
-		FROM files f
+		FROM inodes f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)
 		LIMIT 1

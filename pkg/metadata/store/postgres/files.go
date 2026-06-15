@@ -40,13 +40,13 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 
 	query := `
 		SELECT
-			f.id, f.share_name, f.path,
+			f.id, f.share_name, ` + inodePathExpr + `,
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
 			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
-		FROM files f
+		FROM inodes f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
 	`
@@ -232,7 +232,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.eas, f.object_id,
 		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
 		FROM parent_child_map dc
-		LEFT JOIN files f ON dc.child_id = f.id
+		LEFT JOIN inodes f ON dc.child_id = f.id
 		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
 		ORDER BY dc.child_name
@@ -434,7 +434,7 @@ func (s *PostgresMetadataStore) FindByObjectID(ctx context.Context, objectID blo
 
 	var fileID uuid.UUID
 	err := s.queryRow(ctx,
-		`SELECT id FROM files WHERE object_id = $1 LIMIT 1`,
+		`SELECT id FROM inodes WHERE object_id = $1 LIMIT 1`,
 		objectID[:],
 	).Scan(&fileID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -461,13 +461,13 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 	// for files with paths near PATH_MAX (4096 bytes).
 	query := `
 		SELECT
-			f.id, f.share_name, f.path,
+			f.id, f.share_name, ` + inodePathExpr + `,
 			f.file_type, f.mode, f.uid, f.gid, f.size,
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
 			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
-		FROM files f
+		FROM inodes f
 		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)
 		LIMIT 1
@@ -498,7 +498,7 @@ func (s *PostgresMetadataStore) CountObjectIDIndexRows(ctx context.Context, obje
 	}
 	var n int
 	err := s.queryRow(ctx,
-		`SELECT count(*) FROM files WHERE object_id = $1`,
+		`SELECT count(*) FROM inodes WHERE object_id = $1`,
 		objectID[:],
 	).Scan(&n)
 	if err != nil {

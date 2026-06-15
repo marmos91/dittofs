@@ -157,7 +157,7 @@ func (s *PostgresMetadataStore) GetUsedBytes() int64 {
 
 // initUsedBytesCounter initializes the atomic counter from a SQL SUM query.
 func (s *PostgresMetadataStore) initUsedBytesCounter(ctx context.Context) error {
-	query := `SELECT COALESCE(SUM(size), 0) FROM files WHERE file_type = $1`
+	query := `SELECT COALESCE(SUM(size), 0) FROM inodes WHERE file_type = $1`
 	var totalUsed int64
 	err := s.pool.QueryRow(ctx, query, int(metadata.FileTypeRegular)).Scan(&totalUsed)
 	if err != nil {
