@@ -1275,12 +1275,16 @@ func TestBlockStoreOperationsBasic(t *testing.T) {
 }
 
 func TestEnsureAdminUser(t *testing.T) {
+	// EnsureAdminUser disables the forced change when an initial password is
+	// supplied via env; clear it so the MustChangePassword assertions below are
+	// deterministic regardless of the developer/CI shell.
+	t.Setenv(models.EnvAdminInitialPassword, "")
 	store := createTestStore(t)
 	defer store.Close()
 	ctx := context.Background()
 
 	t.Run("creates admin if not exists", func(t *testing.T) {
-		password, err := store.EnsureAdminUser(ctx)
+		password, err := store.EnsureAdminUser(ctx, true)
 		if err != nil {
 			t.Fatalf("failed to ensure admin user: %v", err)
 		}
@@ -1296,10 +1300,14 @@ func TestEnsureAdminUser(t *testing.T) {
 		if user.Role != "admin" {
 			t.Errorf("expected admin role, got %q", user.Role)
 		}
+		// Default behavior: admin must change its password on first login.
+		if !user.MustChangePassword {
+			t.Error("expected MustChangePassword=true when forced change is required")
+		}
 	})
 
 	t.Run("second call returns empty password", func(t *testing.T) {
-		password, err := store.EnsureAdminUser(ctx)
+		password, err := store.EnsureAdminUser(ctx, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1317,6 +1325,34 @@ func TestEnsureAdminUser(t *testing.T) {
 			t.Error("admin should be initialized")
 		}
 	})
+}
+
+// TestEnsureAdminUser_OptOutForcedChange verifies that the
+// require_initial_password_change knob, when disabled, provisions the bootstrap
+// admin without the forced first-login password change.
+func TestEnsureAdminUser_OptOutForcedChange(t *testing.T) {
+	// Clear the env override so this exercises the requireInitialPasswordChange
+	// path rather than the env-driven skip.
+	t.Setenv(models.EnvAdminInitialPassword, "")
+	store := createTestStore(t)
+	defer store.Close()
+	ctx := context.Background()
+
+	password, err := store.EnsureAdminUser(ctx, false)
+	if err != nil {
+		t.Fatalf("failed to ensure admin user: %v", err)
+	}
+	if password == "" {
+		t.Error("expected non-empty initial password")
+	}
+
+	user, err := store.GetUser(ctx, "admin")
+	if err != nil {
+		t.Fatalf("admin user should exist: %v", err)
+	}
+	if user.MustChangePassword {
+		t.Error("expected MustChangePassword=false when forced change is disabled")
+	}
 }
 
 func TestEnsureDefaultGroups(t *testing.T) {
@@ -1365,7 +1401,7 @@ func TestEnsureDefaultGroups(t *testing.T) {
 
 	t.Run("adds admin user to admins group", func(t *testing.T) {
 		// Create admin user first
-		_, err := store.EnsureAdminUser(ctx)
+		_, err := store.EnsureAdminUser(ctx, true)
 		if err != nil {
 			t.Fatalf("failed to ensure admin user: %v", err)
 		}

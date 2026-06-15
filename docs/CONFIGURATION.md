@@ -218,6 +218,13 @@ controlplane:
   write_timeout: 10s         # Max time to write response
   idle_timeout: 60s          # Max idle time for keep-alive
 
+  # Force the bootstrap "admin" user to set a new password on first login.
+  # Default true (secure by default). Set to false for automated/test
+  # deployments that provision the admin password out-of-band and don't want
+  # the forced first-login change. (Supplying DITTOFS_ADMIN_INITIAL_PASSWORD
+  # also skips the forced change, since the operator already chose the password.)
+  require_initial_password_change: true
+
   # Native TLS (optional). DittoFS only loads these files; it does not issue,
   # renew, or rotate certificates. When cert_file and key_file are both set,
   # the API serves HTTPS and hot-reloads the files when they change on disk.
@@ -255,6 +262,7 @@ controlplane:
 | `read_timeout` | `10s` | Maximum duration to read request |
 | `write_timeout` | `10s` | Maximum duration to write response |
 | `idle_timeout` | `60s` | Maximum idle time for keep-alive |
+| `require_initial_password_change` | `true` | Force the bootstrap `admin` user to change its password on first login. Set to `false` to opt out (automated/test deployments). Also skipped when `DITTOFS_ADMIN_INITIAL_PASSWORD` is set |
 | `pprof` | `false` | Expose Go `/debug/pprof/*` profiling endpoints |
 | `pprof_mutex_rate` | `100` (when `pprof: true`; else `0`) | Mutex contention sampling, 1 per N events. Applied only when `pprof: true`; unset/`0` then falls back to `100`. Without it `/debug/pprof/mutex` is header-only. Disable profiling via `pprof: false`, not by zeroing this |
 | `pprof_block_rate_ns` | `1000000` (when `pprof: true`; else `0`) | Block profiling rate in ns, 1 sample per N ns blocked. Applied only when `pprof: true`; unset/`0` then falls back to `1000000`. Without it `/debug/pprof/block` is header-only. Disable profiling via `pprof: false`, not by zeroing this |

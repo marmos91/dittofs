@@ -197,7 +197,7 @@ func (s *GORMStore) ValidateCredentials(ctx context.Context, username, password 
 	return user, nil
 }
 
-func (s *GORMStore) EnsureAdminUser(ctx context.Context) (string, error) {
+func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool) (string, error) {
 	// Check if admin exists
 	_, err := s.GetUser(ctx, models.AdminUsername)
 	if err == nil {
@@ -225,8 +225,10 @@ func (s *GORMStore) EnsureAdminUser(ctx context.Context) (string, error) {
 	// Create admin user
 	admin := models.DefaultAdminUser(passwordHash, ntHash)
 
-	// If password was explicitly set via env var, don't require change
-	if passwordFromEnv {
+	// Don't force the first-login password change when the operator opted out,
+	// or when the password was supplied out-of-band via the env var (the
+	// operator already chose it, so there's nothing to force a change for).
+	if !requireInitialPasswordChange || passwordFromEnv {
 		admin.MustChangePassword = false
 	}
 

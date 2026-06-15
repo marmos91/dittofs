@@ -138,9 +138,12 @@ DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
 # 1a. REQUIRED on first login: change the admin password.
 # The bootstrap admin starts with a forced-password-change flag — until you
 # clear it here, every other command (including `user create` below) is
-# rejected with HTTP 403 "Password change required. Please change your
-# password before proceeding." (Skipped automatically if you set your own
-# DITTOFS_ADMIN_INITIAL_PASSWORD at first start.)
+# rejected with HTTP 403:
+#   account "admin" must set a new password before performing other operations;
+#   run 'dfsctl user change-password' (as "admin") to set one
+# This forced change is skipped automatically when you set your own
+# DITTOFS_ADMIN_INITIAL_PASSWORD at first start, and can be disabled entirely
+# via controlplane.require_initial_password_change: false (see docs/CONFIGURATION.md).
 ./dfsctl user change-password
 
 # 2. Create a user mapped to your host UID (needed for NFS write access)

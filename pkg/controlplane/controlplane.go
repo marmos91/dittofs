@@ -126,8 +126,11 @@ func (cp *ControlPlane) APIServer() *api.Server {
 
 // EnsureAdminUser creates the admin user if it doesn't exist.
 // Returns the generated password (empty string if user already exists).
-func (cp *ControlPlane) EnsureAdminUser(ctx context.Context) (string, error) {
-	return cp.store.EnsureAdminUser(ctx)
+//
+// requireInitialPasswordChange controls whether a freshly created admin is
+// forced to change its password on first login (see APIConfig.RequiresInitialPasswordChange).
+func (cp *ControlPlane) EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool) (string, error) {
+	return cp.store.EnsureAdminUser(ctx, requireInitialPasswordChange)
 }
 
 // IdentityStore returns the store as an IdentityStore interface.

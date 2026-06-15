@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
@@ -419,7 +420,7 @@ func TestRequirePasswordChange(t *testing.T) {
 	})
 
 	t.Run("user must change password - blocked", func(t *testing.T) {
-		claims := &auth.Claims{UserID: "user-123", Username: "testuser", Role: "user", MustChangePassword: true}
+		claims := &auth.Claims{UserID: "user-123", Username: "admin", Role: "admin", MustChangePassword: true}
 		ctx := context.WithValue(context.Background(), claimsContextKey, claims)
 
 		handler := RequirePasswordChange("/api/v1/users/me/password")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -432,6 +433,16 @@ func TestRequirePasswordChange(t *testing.T) {
 
 		if rr.Code != http.StatusForbidden {
 			t.Errorf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+		}
+		// The message must name the authenticated account and point at the
+		// exact command, so an operator onboarding as "admin" isn't confused
+		// into thinking it's about the user they're trying to create.
+		body := rr.Body.String()
+		if !strings.Contains(body, `"admin"`) {
+			t.Errorf("expected error to name the account %q, got %q", "admin", body)
+		}
+		if !strings.Contains(body, "dfsctl user change-password") {
+			t.Errorf("expected error to mention 'dfsctl user change-password', got %q", body)
 		}
 	})
 

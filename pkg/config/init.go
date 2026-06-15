@@ -124,6 +124,11 @@ controlplane:
   read_timeout: 10s
   write_timeout: 10s
   idle_timeout: 60s
+  # Force the bootstrap "admin" user to set a new password on first login.
+  # Default true (secure by default). Uncomment and set to false for
+  # automated/test deployments that provision the admin password out-of-band.
+  # (Setting DITTOFS_ADMIN_INITIAL_PASSWORD also skips the forced change.)
+  # require_initial_password_change: false
   # Native TLS (optional). DittoFS only LOADS these files — it is not a CA and
   # does not issue, renew, or rotate certificates (leave that to the platform,
   # e.g. cert-manager). When cert_file and key_file are both set, the API

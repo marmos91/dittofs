@@ -442,7 +442,12 @@ type AdminStore interface {
 	// If no admin user exists, creates one with a generated password.
 	// Returns the initial password if a new admin was created, empty string otherwise.
 	// This should be called during server startup.
-	EnsureAdminUser(ctx context.Context) (initialPassword string, err error)
+	//
+	// requireInitialPasswordChange controls whether a newly created admin is
+	// flagged to change its password on first login. When false (or when the
+	// password was supplied via DITTOFS_ADMIN_INITIAL_PASSWORD) the admin is
+	// created without the forced change.
+	EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool) (initialPassword string, err error)
 
 	// IsAdminInitialized returns whether the admin user has been initialized.
 	IsAdminInitialized(ctx context.Context) (bool, error)

@@ -3,6 +3,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -164,9 +165,16 @@ func RequirePasswordChange(allowedPaths ...string) func(http.Handler) http.Handl
 				return
 			}
 
-			// Block if user must change password
+			// Block if the authenticated user must change their password.
+			// The message names the account so an operator onboarding as
+			// "admin" doesn't mistake it for a problem with the user they're
+			// trying to create, and points at the exact command to unblock.
 			if claims.MustChangePassword {
-				http.Error(w, "Password change required. Please change your password before proceeding.", http.StatusForbidden)
+				http.Error(w, fmt.Sprintf(
+					"account %q must set a new password before performing other operations; "+
+						"run 'dfsctl user change-password' (as %q) to set one",
+					claims.Username, claims.Username,
+				), http.StatusForbidden)
 				return
 			}
 
