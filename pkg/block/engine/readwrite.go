@@ -31,7 +31,7 @@ func (bs *Store) ReadAt(ctx context.Context, payloadID string, blocks []block.Bl
 	// is a no-op so the unconditional call is safe (Null Object).
 	if len(blocks) > 0 {
 		hashes := blockRefHashes(blocks)
-		bs.cache.OnRead(payloadID, hashes, computeFileSize(blocks))
+		bs.loadCache().OnRead(payloadID, hashes, computeFileSize(blocks))
 	}
 	return n, nil
 }
@@ -100,7 +100,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	// OnRead's empty-hashes signal — keeps prefetch from chasing
 	// pre-write hashes after the underlying data shifted. nullCache is
 	// a no-op (Null Object).
-	bs.cache.OnRead(payloadID, nil, 0)
+	bs.loadCache().OnRead(payloadID, nil, 0)
 	// the FastCDC chunker output is
 	// produced by the local-store rollup pump
 	// (pkg/block/local/fs/rollup.go:rollupFile) and lands as
@@ -195,7 +195,7 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 	// any in-flight prefetch state); cache entry invalidation is the
 	// caller's responsibility via common.WriteToBlockStore (post-txn).
 	// nullCache is a no-op.
-	bs.cache.OnRead(payloadID, nil, 0)
+	bs.loadCache().OnRead(payloadID, nil, 0)
 
 	// Remote sweep is best-effort: GC will reconcile stragglers, so a
 	// failure here does NOT roll back the coordinator decrements (matches
@@ -244,11 +244,11 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 	// is the strongest signal). nullCache is a no-op; for the real
 	// Cache this also clears the per-payload sequential tracker.
 	if len(blocks) > 0 {
-		bs.cache.InvalidateFile(payloadID, blockRefHashes(blocks))
+		bs.loadCache().InvalidateFile(payloadID, blockRefHashes(blocks))
 	} else {
 		// Legacy/dual-read empty-blocks path: at least reset the
 		// per-payload tracker so prefetch doesn't chase stale hashes.
-		bs.cache.OnRead(payloadID, nil, 0)
+		bs.loadCache().OnRead(payloadID, nil, 0)
 	}
 
 	// Decrement RefCount for every BlockRef hash before remote cleanup

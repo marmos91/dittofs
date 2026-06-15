@@ -11,6 +11,8 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -193,6 +195,93 @@ func normalizeEndpoint(endpoint string) string {
 		}
 	}
 	return "https://" + endpoint
+}
+
+// ErrUnsafeEndpoint indicates a configured S3 endpoint resolves to an
+// address that must not be dialed (cloud metadata, loopback, link-local,
+// or private/internal hosts) — the classic SSRF pivot.
+var ErrUnsafeEndpoint = errors.New("s3 block store: unsafe endpoint")
+
+// ValidateEndpoint rejects S3 endpoints that point at addresses an attacker
+// could use to pivot the server into the internal network (SSRF). It runs
+// at config-create time, before any HealthCheck/HeadBucket fires, so a
+// malicious "endpoint":"http://169.254.169.254/..." is refused before the
+// S3 SDK ever issues a request.
+//
+// An empty endpoint is allowed (the SDK uses the real AWS endpoint, which
+// is public). Otherwise the endpoint is normalized, its host is resolved,
+// and EVERY resolved IP must be a public unicast address. We reject:
+//   - unspecified / multicast / loopback addresses,
+//   - link-local unicast (169.254.0.0/16, fe80::/10) — covers the cloud
+//     metadata endpoint 169.254.169.254,
+//   - private / unique-local ranges (RFC1918, fc00::/7) and other
+//     non-global-unicast space.
+//
+// allowPrivate is an explicit opt-out (config key "allow_private_endpoint")
+// for operators running MinIO/Localstack/co-located object stores on a
+// private network; it still rejects link-local/metadata addresses.
+func ValidateEndpoint(endpoint string, allowPrivate bool) error {
+	if endpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(normalizeEndpoint(endpoint))
+	if err != nil {
+		return fmt.Errorf("%w: parse %q: %v", ErrUnsafeEndpoint, endpoint, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%w: scheme %q must be http or https", ErrUnsafeEndpoint, u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("%w: missing host in %q", ErrUnsafeEndpoint, endpoint)
+	}
+
+	// Resolve to IPs. A literal IP resolves to itself; a hostname is looked
+	// up so an attacker cannot smuggle 169.254.169.254 behind a DNS name.
+	var ips []netip.Addr
+	if addr, perr := netip.ParseAddr(host); perr == nil {
+		ips = []netip.Addr{addr}
+	} else {
+		resolved, lerr := net.LookupIP(host)
+		if lerr != nil {
+			return fmt.Errorf("%w: resolve host %q: %v", ErrUnsafeEndpoint, host, lerr)
+		}
+		for _, ip := range resolved {
+			if a, ok := netip.AddrFromSlice(ip); ok {
+				ips = append(ips, a.Unmap())
+			}
+		}
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("%w: host %q resolved to no addresses", ErrUnsafeEndpoint, host)
+	}
+	for _, ip := range ips {
+		if err := checkEndpointIP(ip, host, allowPrivate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkEndpointIP rejects a single resolved address that is unsafe to dial.
+func checkEndpointIP(ip netip.Addr, host string, allowPrivate bool) error {
+	switch {
+	case ip.IsUnspecified():
+		return fmt.Errorf("%w: host %q resolves to unspecified address", ErrUnsafeEndpoint, host)
+	case ip.IsMulticast():
+		return fmt.Errorf("%w: host %q resolves to multicast address", ErrUnsafeEndpoint, host)
+	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
+		// 169.254.0.0/16 / fe80::/10 — covers the 169.254.169.254 metadata
+		// endpoint. Never allowed, even under allowPrivate.
+		return fmt.Errorf("%w: host %q resolves to link-local address %s (cloud metadata)", ErrUnsafeEndpoint, host, ip)
+	}
+	if allowPrivate {
+		return nil
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || !ip.IsGlobalUnicast() {
+		return fmt.Errorf("%w: host %q resolves to private/internal address %s (set allow_private_endpoint=true to permit)", ErrUnsafeEndpoint, host, ip)
+	}
+	return nil
 }
 
 // isValidScheme checks whether s is a valid URI scheme per RFC 3986.

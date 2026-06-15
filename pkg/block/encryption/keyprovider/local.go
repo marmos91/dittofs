@@ -26,6 +26,23 @@ const localPEMType = "DITTOFS ENCRYPTED MASTER KEY"
 
 const localKeyFileVersion = 1
 
+// Argon2 KDF parameter bounds enforced on read. The lower bounds keep
+// argon2.IDKey from panicking on a corrupt/tampered file (it panics when
+// time < 1 or threads < 1) and reject a key file weaker than was ever
+// generated. The upper bounds cap unwrap cost so an attacker who can write
+// the key file cannot turn startup into an OOM-kill or a multi-minute
+// hang: maxArgonMemoryKiB ≈ 4 GiB and maxArgonTime/maxArgonThreads are far
+// above any sane configuration. Defaults written by GenerateKeyFile
+// (t=3, m=64 MiB, p=4) sit comfortably inside this window.
+const (
+	minArgonTime      = 1
+	maxArgonTime      = 64
+	minArgonMemoryKiB = 8 * 1024
+	maxArgonMemoryKiB = 4 * 1024 * 1024
+	minArgonThreads   = 1
+	maxArgonThreads   = 64
+)
+
 // argon2Params holds the KDF parameters persisted alongside the wrapped
 // master key. Defaults follow the OWASP 2024 password-storage cheat
 // sheet for Argon2id (m=64 MiB, t=3, p=4).
@@ -154,7 +171,27 @@ func decodeKeyFile(raw []byte) (*localKeyFile, error) {
 	if kf.MasterKeyID == "" {
 		return nil, fmt.Errorf("%w: empty master_key_id", ErrKeyFileCorrupt)
 	}
+	if err := validateKDFParams(kf.KDF); err != nil {
+		return nil, err
+	}
 	return &kf, nil
+}
+
+// validateKDFParams bounds the Argon2 parameters read from disk before they
+// reach argon2.IDKey. Without these guards a corrupt or attacker-replaced
+// key file with time=0 or threads=0 panics the daemon at startup, and a
+// huge memory_kib triggers an OOM-kill — both an availability/DoS vector.
+func validateKDFParams(p argon2Params) error {
+	if p.Time < minArgonTime || p.Time > maxArgonTime {
+		return fmt.Errorf("%w: kdf time %d out of range [%d,%d]", ErrKeyFileCorrupt, p.Time, minArgonTime, maxArgonTime)
+	}
+	if p.MemoryKiB < minArgonMemoryKiB || p.MemoryKiB > maxArgonMemoryKiB {
+		return fmt.Errorf("%w: kdf memory_kib %d out of range [%d,%d]", ErrKeyFileCorrupt, p.MemoryKiB, minArgonMemoryKiB, maxArgonMemoryKiB)
+	}
+	if p.Threads < minArgonThreads || p.Threads > maxArgonThreads {
+		return fmt.Errorf("%w: kdf threads %d out of range [%d,%d]", ErrKeyFileCorrupt, p.Threads, minArgonThreads, maxArgonThreads)
+	}
+	return nil
 }
 
 func unwrapMasterKey(kf *localKeyFile, passphrase string) ([]byte, error) {

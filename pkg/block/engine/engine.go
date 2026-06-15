@@ -96,7 +96,16 @@ type Store struct {
 	// Cache type. Never nil — the constructor substitutes nullCache{}
 	// for a disabled budget so engine code does not need defensive
 	// nil-checks (Null Object pattern).
-	cache cacheInterface
+	//
+	// The field is mutated after construction — Start swaps in the real
+	// Cache and DestroyCache swaps in nullCache{} — while concurrent data
+	// ops and the OnChunkComplete rollup goroutine read it. Those mutations
+	// race the closeMu.RLock'd readers (RLock does not serialize against
+	// other RLock holders), so every access goes through cacheMu, not the
+	// raw field. cacheMu is a leaf lock taken only for the field swap, never
+	// held across cache operations.
+	cache   cacheInterface
+	cacheMu sync.RWMutex
 
 	readBufferBytes int64 // budget for the cache (0 = disabled / Null Object)
 	prefetchWorkers int   // stored from config, used in Start()
@@ -323,7 +332,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		// above — install once at construction; FSStore guarantees no
 		// chunk activity fires before Start completes.
 		hooks.SetOnChunkComplete(func(hash block.ContentHash, data []byte, _ string) {
-			bs.cache.Put(hash, data)
+			bs.loadCache().Put(hash, data)
 			// Register the freshly-stored chunk for upload without a
 			// directory walk (B1). The syncer drains this set on each
 			// mirror pass; harmless when no remote is configured.
@@ -434,7 +443,7 @@ func (bs *Store) Start(ctx context.Context) error {
 	if bs.readBufferBytes > 0 {
 		realCache := NewCache(bs.readBufferBytes, bs.prefetchWorkers, bs.loadByHash)
 		if realCache != nil {
-			bs.cache = realCache
+			bs.storeCache(realCache)
 		}
 	}
 
@@ -508,8 +517,10 @@ func (bs *Store) Close() error {
 	}
 	bs.closed = true
 
-	// Cache is never nil thanks to the Null Object pattern.
-	_ = bs.cache.Close()
+	// Cache is never nil thanks to the Null Object pattern. Swap in the
+	// Null Object under cacheMu so any concurrent OnChunkComplete read sees
+	// a live cache, then close the real one we just detached.
+	_ = bs.storeCache(nullCache{}).Close()
 
 	var errs []error
 	if err := bs.syncer.Close(); err != nil {
@@ -562,6 +573,26 @@ func (bs *Store) EvictLocal(ctx context.Context, payloadID string) error {
 	return bs.local.DeleteAppendLog(ctx, payloadID)
 }
 
+// loadCache returns the current cache under cacheMu. Always non-nil (Null
+// Object pattern). Callers invoke the returned interface's methods OUTSIDE
+// the lock — cacheMu only guards the field read.
+func (bs *Store) loadCache() cacheInterface {
+	bs.cacheMu.RLock()
+	c := bs.cache
+	bs.cacheMu.RUnlock()
+	return c
+}
+
+// storeCache swaps the cache field under cacheMu and returns the previous
+// value so the caller can close it after releasing the lock.
+func (bs *Store) storeCache(c cacheInterface) cacheInterface {
+	bs.cacheMu.Lock()
+	prev := bs.cache
+	bs.cache = c
+	bs.cacheMu.Unlock()
+	return prev
+}
+
 // DestroyCache closes the in-memory read cache and replaces it with a
 // no-op implementation. Intended for shutdown / share-removal teardown
 // and for the REST evict path that drops the read buffer wholesale.
@@ -577,10 +608,10 @@ func (bs *Store) DestroyCache() int {
 		return 0
 	}
 
-	entries := bs.cache.Stats().Entries
-	_ = bs.cache.Close()
-	// Replace closed cache with the Null Object so subsequent operations
-	// remain a no-op without ever returning an error path.
-	bs.cache = nullCache{}
+	// Swap in the Null Object first so concurrent readers never observe a
+	// closed cache, then close the previous one after the field is updated.
+	prev := bs.storeCache(nullCache{})
+	entries := prev.Stats().Entries
+	_ = prev.Close()
 	return entries
 }
