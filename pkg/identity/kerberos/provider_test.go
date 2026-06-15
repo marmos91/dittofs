@@ -124,15 +124,67 @@ func TestProvider_UnknownUser(t *testing.T) {
 	}
 }
 
-func TestProvider_NumericUID(t *testing.T) {
+// TestProvider_NumericPrincipalRequiresLookup ensures a Kerberos principal
+// whose name is a decimal integer cannot assert an arbitrary UID. The numeric
+// name must be validated through userLookup like any other name; if no DittoFS
+// user with that name exists, resolution must fail (Found=false).
+//
+// Without the fix the provider parsed the numeric name straight into UID=N and
+// returned Found=true, so a KDC account named "0" would be granted UID=0 (root)
+// without ever existing in DittoFS — a privilege-escalation hole.
+func TestProvider_NumericPrincipalRequiresLookup(t *testing.T) {
 	p := New("EXAMPLE.COM", nil, aliceLookup)
 
-	result, _ := p.Resolve(context.Background(), &identity.Credential{
+	// "0@EXAMPLE.COM" must NOT be granted UID=0: no DittoFS user named "0".
+	result, err := p.Resolve(context.Background(), &identity.Credential{
+		Provider:   "kerberos",
+		ExternalID: "0@EXAMPLE.COM",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Found {
+		t.Fatalf("numeric principal must not bypass userLookup; got privileged %+v", result)
+	}
+
+	// An arbitrary UID that does not correspond to a DittoFS user must
+	// likewise be rejected rather than trusted.
+	result, err = p.Resolve(context.Background(), &identity.Credential{
 		Provider:   "kerberos",
 		ExternalID: "1000@EXAMPLE.COM",
 	})
-	if !result.Found || result.UID != 1000 {
-		t.Fatalf("expected numeric UID 1000, got %+v", result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Found {
+		t.Fatalf("numeric principal 1000 must require a matching DittoFS user; got %+v", result)
+	}
+}
+
+// TestProvider_NumericPrincipalValidUser confirms the legitimate mapping path
+// is preserved: a numeric name that DOES correspond to a configured DittoFS
+// user resolves through userLookup to that user's real UID/GID.
+func TestProvider_NumericPrincipalValidUser(t *testing.T) {
+	lookup := func(_ context.Context, username string) (*identity.ResolvedIdentity, error) {
+		if username == "1000" {
+			return &identity.ResolvedIdentity{Username: "1000", UID: 4242, GID: 4242, Found: true}, nil
+		}
+		return &identity.ResolvedIdentity{Found: false}, nil
+	}
+	p := New("EXAMPLE.COM", nil, lookup)
+
+	result, err := p.Resolve(context.Background(), &identity.Credential{
+		Provider:   "kerberos",
+		ExternalID: "1000@EXAMPLE.COM",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Found || result.UID != 4242 || result.GID != 4242 {
+		t.Fatalf("expected validated user 1000 -> UID/GID 4242, got %+v", result)
+	}
+	if result.Domain != "EXAMPLE.COM" {
+		t.Fatalf("expected domain EXAMPLE.COM, got %s", result.Domain)
 	}
 }
 

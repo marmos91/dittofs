@@ -8,7 +8,6 @@ package kerberos
 
 import (
 	"context"
-	"strconv"
 	"strings"
 
 	"github.com/marmos91/dittofs/pkg/identity"
@@ -55,9 +54,15 @@ func (p *Provider) CanResolve(cred *identity.Credential) bool {
 //
 // Resolution order:
 //  1. Explicit mapping in LinkStore: ("kerberos", "alice@EXAMPLE.COM") → username
-//  2. Convention: if realm matches, strip realm and look up bare username
-//  3. Numeric UID: "1000@EXAMPLE.COM" → UID=1000 (AUTH_SYS interop)
-//  4. Found=false if unmapped
+//  2. Convention: if realm matches, strip realm and look up bare name as a
+//     DittoFS username via userLookup
+//  3. Found=false if unmapped
+//
+// The bare name is always validated through userLookup before any UID/GID is
+// granted — including names that happen to be decimal integers. A principal
+// such as "0@EXAMPLE.COM" does NOT bypass identity mapping; it only resolves
+// if a DittoFS user named "0" actually exists. This prevents a KDC account
+// with a numeric name from asserting an arbitrary (e.g. privileged) UID.
 func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*identity.ResolvedIdentity, error) {
 	if p.store != nil {
 		username, found, err := p.store.GetLink(ctx, ProviderName, cred.ExternalID)
@@ -80,16 +85,6 @@ func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*ide
 	name, domain := parsePrincipal(cred.ExternalID)
 	if domain == "" || !strings.EqualFold(domain, p.realm) {
 		return &identity.ResolvedIdentity{Found: false}, nil
-	}
-
-	if uid, err := strconv.ParseUint(name, 10, 32); err == nil {
-		return &identity.ResolvedIdentity{
-			Username: name,
-			UID:      uint32(uid),
-			GID:      uint32(uid),
-			Domain:   domain,
-			Found:    true,
-		}, nil
 	}
 
 	resolved, err := p.userLookup(ctx, name)
