@@ -3,34 +3,47 @@
 # Validates NFS sec=krb5 mount + file operations using a real MIT Kerberos
 # KDC and Linux kernel NFS client. Catches interop bugs that the gokrb5-only
 # integration tests cannot detect (see #339, #335).
+#
+# Tiered:
+#   presubmit (PR): runs ONLY when kerberos/NFS source paths change — a narrow
+#                   targeted presubmit so a direct krb change still gets PR
+#                   feedback, but ordinary PRs skip it.
+#   postsubmit (push develop) + nightly cron + dispatch: runs unconditionally.
+#
+# Gates the build: nfs-kerberos has been consistently green on develop, so
+# continue-on-error is removed.
 
 name: NFS Kerberos
 
 on:
   push:
     branches: [develop, main]
-    paths:
-      - 'internal/adapter/nfs/**'
-      - 'internal/auth/kerberos/**'
-      - 'pkg/auth/kerberos/**'
-      - 'test/nfs-conformance/**'
-      - '.github/workflows/nfs-kerberos.yml'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
   pull_request:
     branches: [develop, main]
+    # Narrow targeted presubmit: only direct krb/NFS source changes run on PRs.
     paths:
-      - 'internal/adapter/nfs/**'
       - 'internal/auth/kerberos/**'
       - 'pkg/auth/kerberos/**'
+      - 'internal/adapter/nfs/**'
       - 'test/nfs-conformance/**'
       - '.github/workflows/nfs-kerberos.yml'
+  schedule:
+    # Nightly at 4 AM UTC.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
 
 jobs:
   nfs-kerberos:
     name: NFS sec=krb5 mount test
     runs-on: ubuntu-latest
-    # Initially allow failures while the baseline is being established.
-    # Remove once the first green run is confirmed.
-    continue-on-error: true
     timeout-minutes: 15
 
     steps:
