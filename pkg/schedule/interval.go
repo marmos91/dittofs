@@ -1,7 +1,7 @@
-// Package schedule provides cadence parsing helpers shared by the snapshot
-// policy server-side validation and the dfsctl CLI. It deliberately supports
-// only a minimal surface: Go duration strings plus a few @-shorthands. No cron
-// expressions (DittoFS has no cron dependency and is single-node, pre-1.0).
+// Package schedule provides the snapshot cadence parser used by the snapshot
+// policy server-side validation. It deliberately supports only a minimal
+// surface: Go duration strings plus a few @-shorthands. No cron expressions
+// (DittoFS has no cron dependency and is single-node, pre-1.0).
 package schedule
 
 import (
@@ -41,9 +41,4 @@ func ParseInterval(s string) (time.Duration, error) {
 		return 0, fmt.Errorf("schedule: interval must be positive, got %q", s)
 	}
 	return d, nil
-}
-
-// FormatInterval renders a duration for display as a Go duration string.
-func FormatInterval(d time.Duration) string {
-	return d.String()
 }
