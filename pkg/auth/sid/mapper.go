@@ -206,15 +206,21 @@ func (m *SIDMapper) PrincipalToSID(who string, fileOwnerUID, fileOwnerGID uint32
 				return m.UserSID(uint32(uid))
 			}
 		}
-		// Fallback: use a hash-based RID. Guard against empty/invalid
-		// principals and avoid mapping to UID 0 / WellKnownAdministrators.
-		var rid uint32
+		// Fallback: use a hash-based RID for a principal with no POSIX
+		// mapping. The RID MUST stay below 1000: every RID >= 1000 in the
+		// machine domain is decoded by UIDFromSID/GIDFromSID as a Unix
+		// UID/GID (user RID = uid*2+1000, group RID = gid*2+1001), so a
+		// hash RID in that range would make SIDToPrincipal return a numeric
+		// "{n}@localdomain" instead of round-tripping the SID back through
+		// the "sid:" form — breaking SIDToPrincipal(PrincipalToSID(who)) and
+		// any ACE-WHO lookup that relies on that identity. Constrain the hash
+		// to the reserved [1, 999] RID range, which both decoders reject
+		// (rid < 1000 / rid < 1001), so the SID survives the round trip.
+		var h uint32
 		for _, c := range who {
-			rid = rid*31 + uint32(c)
+			h = h*31 + uint32(c)
 		}
-		if rid == 0 {
-			rid = 1
-		}
+		rid := h%999 + 1 // [1, 999]
 		// Generate a domain SID directly so we do not trigger any uid==0
 		// special-cases that may exist in UserSID.
 		return m.makeDomainSID(rid)

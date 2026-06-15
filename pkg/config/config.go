@@ -409,12 +409,17 @@ func Load(configPath string) (*Config, error) {
 		return nil, err
 	}
 
-	// If no config file was found, use defaults
-	if !configFileFound {
-		return GetDefaultConfig(), nil
-	}
-
 	// Unmarshal into config struct with custom decode hooks.
+	//
+	// This runs even when no config file was found. setupViper already bound
+	// every DITTOFS_* env key, and v.Unmarshal is the only path that applies
+	// those bindings; short-circuiting to GetDefaultConfig() on the no-file
+	// path would silently drop every env override (e.g.
+	// DITTOFS_DATABASE_TYPE=postgres, DITTOFS_CONTROLPLANE_SECRET) for
+	// container/CI deployments that ship no config file, violating the
+	// documented "env > file > defaults" precedence. Unmarshalling into a zero
+	// struct then ApplyDefaults yields defaults for every field the env doesn't
+	// set, identical to the file path.
 	//
 	// Capture unknown keys via decoder Metadata and log them as a warning
 	// rather than silently dropping them — this surfaces typos and stale keys
@@ -429,7 +434,9 @@ func Load(configPath string) (*Config, error) {
 	); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-	if len(md.Unused) > 0 {
+	// Unknown-key warnings only make sense when a file was actually parsed;
+	// the env-only path has no file keys to be reported as unused.
+	if configFileFound && len(md.Unused) > 0 {
 		sort.Strings(md.Unused)
 		fmt.Fprintf(os.Stderr, "WARNING: config contains unknown keys (ignored): %s\n", strings.Join(md.Unused, ", "))
 	}

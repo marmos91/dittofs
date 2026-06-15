@@ -22,7 +22,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
+
+// isTerminal reports whether the given file descriptor is an interactive
+// terminal. Indirected through a package-level var so tests can drive both
+// branches of emitAdminPassword deterministically.
+var isTerminal = func(fd uintptr) bool {
+	return term.IsTerminal(int(fd))
+}
 
 // EX_CONFIG is the exit code per sysexits(3) — "configuration error".
 // Used by the legacy-layout boot guard when a share directory still
@@ -113,9 +121,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	if adminPassword != "" {
 		logger.Info("Admin user created", "username", "admin")
-		fmt.Printf("\n*** IMPORTANT: Admin user created with password: %s ***\n", adminPassword)
-		fmt.Println("Please save this password. It will not be shown again.")
-		fmt.Println()
+		emitAdminPassword(adminPassword)
 	}
 
 	// Ensure default groups exist (admins, operators, users) and add admin to admins group
@@ -382,6 +388,26 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 	}
 	logger.Warn("Failed to load some shares", "error", err)
 	return false
+}
+
+// emitAdminPassword surfaces a freshly-generated first-run admin password.
+//
+// It prints the plaintext password ONLY when stdout is an interactive terminal
+// (an operator watching a foreground `dfs start`). In daemon mode the child's
+// stdout is redirected to a persistent log file; writing the password there
+// leaves a long-lived on-disk copy of an admin credential readable by anyone
+// who can read the log. When stdout is not a terminal we instead emit a
+// secret-free notice directing the operator to reset the password via dfsctl.
+func emitAdminPassword(password string) {
+	if isTerminal(os.Stdout.Fd()) {
+		fmt.Printf("\n*** IMPORTANT: Admin user created with password: %s ***\n", password)
+		fmt.Println("Please save this password. It will not be shown again.")
+		fmt.Println()
+		return
+	}
+	// Daemon / non-interactive: never write the secret to the log.
+	logger.Warn("Admin user created with a generated password; " +
+		"reset it with 'dfsctl user passwd admin' (the password is not written to the log)")
 }
 
 // formatLegacyLayoutDirective renders the multi-line operator directive

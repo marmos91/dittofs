@@ -494,3 +494,55 @@ func TestPrincipalToSID_SIDPrefixRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestPrincipalToSID_HashFallback_RoundTrips verifies that a non-numeric
+// principal with no POSIX mapping survives SIDToPrincipal(PrincipalToSID(who)).
+// The hash-based fallback previously emitted a domain RID >= 1000, which
+// SIDToPrincipal decodes as a numeric UID/GID — so the round trip returned a
+// "{n}@localdomain" string instead of the principal, breaking ACE-WHO lookups
+// for NFSv4-originated principals routed through SMB QUERY_SECURITY.
+func TestPrincipalToSID_HashFallback_RoundTrips(t *testing.T) {
+	m := NewSIDMapper(100, 200, 300)
+
+	// Principals that hit the hash fallback (non-numeric, no "@" numeric prefix,
+	// not a "sid:" form). Span enough inputs to exercise both the would-be
+	// UID-range and GID-range collisions.
+	principals := []string{
+		"alice",
+		"bob",
+		"DOMAIN\\service",
+		"some-very-long-principal-name-that-hashes-oddly",
+		"x",
+		"developers",
+		"a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+	}
+
+	for _, who := range principals {
+		sid := m.PrincipalToSID(who, 1000, 1000)
+
+		// The fallback SID must NOT be decodable as a UID or GID, otherwise the
+		// round trip cannot recover the principal.
+		if uid, ok := m.UIDFromSID(sid); ok {
+			t.Errorf("PrincipalToSID(%q) decodes as UID %d (RID collides with UID space)", who, uid)
+		}
+		if gid, ok := m.GIDFromSID(sid); ok {
+			t.Errorf("PrincipalToSID(%q) decodes as GID %d (RID collides with GID space)", who, gid)
+		}
+
+		// Round trip: must come back as the "sid:" form (stable identity), and
+		// re-parsing that must reproduce the identical SID.
+		got := m.SIDToPrincipal(sid)
+		if !hasSIDPrefix(got) {
+			t.Errorf("SIDToPrincipal(PrincipalToSID(%q)) = %q, want sid:... form", who, got)
+			continue
+		}
+		sid2 := m.PrincipalToSID(got, 1000, 1000)
+		if FormatSID(sid) != FormatSID(sid2) {
+			t.Errorf("round trip not stable for %q: %s != %s", who, FormatSID(sid), FormatSID(sid2))
+		}
+	}
+}
+
+func hasSIDPrefix(s string) bool {
+	return len(s) >= 4 && s[:4] == "sid:"
+}

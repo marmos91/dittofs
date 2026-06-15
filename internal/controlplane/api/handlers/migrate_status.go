@@ -119,15 +119,24 @@ func (h *MigrateStatusHandler) Status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	share := r.URL.Query().Get("share")
-	if share == "" {
+	// Validate the raw user input first: reject path separators and traversal
+	// segments before they reach store-layer code that joins the name into a
+	// path. The query param carries the bare share name ("myshare"), never the
+	// leading slash, so isValidShareName intentionally bars "/".
+	rawShare := r.URL.Query().Get("share")
+	if rawShare == "" {
 		BadRequest(w, "share is required")
 		return
 	}
-	if !isValidShareName(share) {
+	if !isValidShareName(rawShare) {
 		BadRequest(w, "invalid share name")
 		return
 	}
+
+	// The runtime share registry keys shares with a leading slash ("/myshare").
+	// Normalize to that form for every runtime lookup; the bare name is only
+	// used for validation above and for echoing back in the response.
+	share := normalizeShareName(rawShare)
 
 	// 1. Read BlockLayout via the existing GetMetadataStoreForShare
 	//    method (BLOCKER 2 fix — `MetadataStoreFor` from the
@@ -149,7 +158,7 @@ func (h *MigrateStatusHandler) Status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := migrateStatusResponse{
-		Share: share,
+		Share: rawShare,
 	}
 	if opts != nil {
 		// ParseBlockLayout-coerced enum stringifies to the on-the-wire
