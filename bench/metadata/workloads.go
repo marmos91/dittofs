@@ -72,17 +72,37 @@ func (o *Opts) Validate() error {
 	return nil
 }
 
-// Run seeds a Dirs × FilesPerDir tree, then drives Ops read operations across
-// Workers goroutines against the shared store, recording per-op latency. The
-// timed region covers only the hot loop — seeding is excluded.
-func Run(ctx context.Context, store metadata.Store, opts Opts) (Result, error) {
+// Seed populates the store with a Dirs × FilesPerDir tree and returns the
+// working sets the hot loop draws from. It is separated from RunOnTree so a
+// caller can wrap only the read loop in a pprof capture — seeding's write-path
+// samples would otherwise pollute the profile.
+func Seed(ctx context.Context, store metadata.Store, opts Opts) (*Tree, error) {
 	if err := opts.Validate(); err != nil {
-		return Result{}, err
+		return nil, err
 	}
-
 	t, err := seedTree(ctx, store, opts.Dirs, opts.FilesPerDir)
 	if err != nil {
-		return Result{}, fmt.Errorf("seed: %w", err)
+		return nil, fmt.Errorf("seed: %w", err)
+	}
+	return t, nil
+}
+
+// Run seeds a tree then drives the read workload — convenience for tests. The
+// CLI uses Seed + RunOnTree so the profile excludes seeding.
+func Run(ctx context.Context, store metadata.Store, opts Opts) (Result, error) {
+	t, err := Seed(ctx, store, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	return RunOnTree(ctx, store, t, opts)
+}
+
+// RunOnTree drives Ops read operations across Workers goroutines against the
+// shared store and the pre-seeded tree, recording per-op latency. The timed
+// region covers only the hot loop.
+func RunOnTree(ctx context.Context, store metadata.Store, t *Tree, opts Opts) (Result, error) {
+	if err := opts.Validate(); err != nil {
+		return Result{}, err
 	}
 
 	rec := bsbench.NewLatencyRecorder(opts.Ops)
@@ -143,7 +163,7 @@ func pickOp(workload string, rng *rand.Rand) string {
 
 // runOp executes one read against the store. readdir paginates the chosen
 // directory to completion so the cost reflects a full listing.
-func runOp(ctx context.Context, store metadata.Store, op string, t *tree, rng *rand.Rand, limit int) error {
+func runOp(ctx context.Context, store metadata.Store, op string, t *Tree, rng *rand.Rand, limit int) error {
 	switch op {
 	case WorkloadGetAttr:
 		h := t.fileHandles[rng.Intn(len(t.fileHandles))]

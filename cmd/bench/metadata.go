@@ -115,6 +115,13 @@ func runMetadata(cmd *cobra.Command, _ []string) error {
 	}
 	defer cleanup()
 
+	// Seed before starting the profile session so the capture reflects only the
+	// read hot loop, not the write-path samples of building the fixture tree.
+	tree, err := mdbench.Seed(ctx, store, opts)
+	if err != nil {
+		return err
+	}
+
 	sess, err := startProfileSession(flagProfileDir, "metadata", mdPhase, mdWorkload, mdFullProfiles)
 	if err != nil {
 		return err
@@ -124,7 +131,7 @@ func runMetadata(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	res, err := mdbench.Run(ctx, store, opts)
+	res, err := mdbench.RunOnTree(ctx, store, tree, opts)
 	if stopErr := sess.stop(); err == nil {
 		err = stopErr
 	}
