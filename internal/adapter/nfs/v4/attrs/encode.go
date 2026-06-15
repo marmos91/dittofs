@@ -218,11 +218,12 @@ func SupportedAttrs() []uint32 {
 	SetBit(&bitmap, FATTR4_SPACE_FREE)
 	SetBit(&bitmap, FATTR4_SPACE_AVAIL)
 	SetBit(&bitmap, FATTR4_TIME_ACCESS)
-	SetBit(&bitmap, FATTR4_TIME_ACCESS_SET)
 	SetBit(&bitmap, FATTR4_TIME_METADATA)
 	SetBit(&bitmap, FATTR4_TIME_MODIFY)
-	SetBit(&bitmap, FATTR4_TIME_MODIFY_SET)
 	SetBit(&bitmap, FATTR4_MOUNTED_ON_FILEID)
+	// FATTR4_TIME_ACCESS_SET (48) and FATTR4_TIME_MODIFY_SET (54) are write-only
+	// (RFC 7530 Section 5.7): they are valid only in SETATTR/EXCLUSIVE4_1 create and
+	// must not appear in FATTR4_SUPPORTED_ATTRS. See WritableAttrs/exclcreatAttrs.
 
 	// NFSv4.1 exclusive create attributes (word 2)
 	SetBit(&bitmap, FATTR4_SUPPATTR_EXCLCREAT)

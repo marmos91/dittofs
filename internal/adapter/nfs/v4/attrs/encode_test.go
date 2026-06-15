@@ -518,3 +518,77 @@ func TestSetIdentityMapper_NoDataRace(t *testing.T) {
 	close(ready)
 	wg.Wait()
 }
+
+// ============================================================================
+// Write-only attribute regression (RFC 7530 Section 5.7)
+// ============================================================================
+
+// TestSupportedAttrsExcludesWriteOnlyTimeSet asserts that the write-only
+// SETATTR attributes FATTR4_TIME_ACCESS_SET (48) and FATTR4_TIME_MODIFY_SET
+// (54) are NOT advertised in FATTR4_SUPPORTED_ATTRS. Per RFC 7530 Section 5.7
+// these are write-only (valid only in SETATTR / EXCLUSIVE4_1 create) and must
+// not appear in the supported-attrs bitmap. Advertising them caused GETATTR to
+// fail: Intersect() would include them in the response bitmap, and the encoder
+// has no case for them, hitting the "unsupported attribute bit" error path.
+func TestSupportedAttrsExcludesWriteOnlyTimeSet(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		bit  uint32
+	}{
+		{"FATTR4_TIME_ACCESS_SET", FATTR4_TIME_ACCESS_SET},
+		{"FATTR4_TIME_MODIFY_SET", FATTR4_TIME_MODIFY_SET},
+	} {
+		if IsBitSet(SupportedAttrs(), tc.bit) {
+			t.Errorf("SupportedAttrs() advertises write-only bit %s (%d)", tc.name, tc.bit)
+		}
+		if IsBitSet(SupportedRealAttrs(), tc.bit) {
+			t.Errorf("SupportedRealAttrs() advertises write-only bit %s (%d)", tc.name, tc.bit)
+		}
+	}
+}
+
+// TestGetattrWriteOnlyTimeSetDoesNotFail verifies that a GETATTR requesting the
+// write-only time-set bits does not error: since they are no longer supported,
+// Intersect drops them and they are simply absent from the response bitmap.
+func TestGetattrWriteOnlyTimeSetDoesNotFail(t *testing.T) {
+	node := newMockNode()
+
+	var requested []uint32
+	SetBit(&requested, FATTR4_TIME_ACCESS_SET)
+	SetBit(&requested, FATTR4_TIME_MODIFY_SET)
+	// Mix in a normal attribute to ensure encoding still happens.
+	SetBit(&requested, FATTR4_TYPE)
+
+	var buf bytes.Buffer
+	if err := EncodePseudoFSAttrs(&buf, requested, node); err != nil {
+		t.Fatalf("EncodePseudoFSAttrs failed on write-only bits: %v", err)
+	}
+
+	responseBitmap, err := DecodeBitmap4(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("decode response bitmap: %v", err)
+	}
+	if IsBitSet(responseBitmap, FATTR4_TIME_ACCESS_SET) {
+		t.Error("FATTR4_TIME_ACCESS_SET leaked into GETATTR response bitmap")
+	}
+	if IsBitSet(responseBitmap, FATTR4_TIME_MODIFY_SET) {
+		t.Error("FATTR4_TIME_MODIFY_SET leaked into GETATTR response bitmap")
+	}
+	if !IsBitSet(responseBitmap, FATTR4_TYPE) {
+		t.Error("FATTR4_TYPE missing from response bitmap")
+	}
+}
+
+// TestWritableAndExclcreatStillIncludeTimeSet guards the inverse: the
+// write-only bits must remain valid for SETATTR and EXCLUSIVE4_1 create even
+// though they are excluded from SUPPORTED_ATTRS.
+func TestWritableAndExclcreatStillIncludeTimeSet(t *testing.T) {
+	for _, bit := range []uint32{FATTR4_TIME_ACCESS_SET, FATTR4_TIME_MODIFY_SET} {
+		if !IsBitSet(WritableAttrs(), bit) {
+			t.Errorf("WritableAttrs() missing write-only bit %d", bit)
+		}
+		if !IsBitSet(exclcreatAttrs(), bit) {
+			t.Errorf("exclcreatAttrs() missing write-only bit %d", bit)
+		}
+	}
+}

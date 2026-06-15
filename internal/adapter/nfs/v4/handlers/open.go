@@ -697,8 +697,8 @@ func (h *Handler) handleOpenClaimDelegateCur(
 		return openError(types.NFS4ERR_BADXDR)
 	}
 
-	// Validate the delegation stateid
-	_, delegErr := h.StateManager.ValidateDelegationStateid(delegStateid)
+	// Validate the delegation stateid.
+	deleg, delegErr := h.StateManager.ValidateDelegationStateid(delegStateid)
 	if delegErr != nil {
 		nfsStatus := mapStateError(delegErr)
 		logger.Debug("NFSv4 OPEN CLAIM_DELEGATE_CUR: invalid delegation stateid",
@@ -706,6 +706,19 @@ func (h *Handler) handleOpenClaimDelegateCur(
 			"nfs_status", nfsStatus,
 			"client", ctx.ClientAddr)
 		return openError(nfsStatus)
+	}
+
+	// The delegation stateid only proves it exists; it must also be owned by the
+	// client issuing this OPEN. Without this check, any client presenting a
+	// syntactically valid delegation stateid (e.g. observed on the wire) could
+	// open the delegated file under a foreign delegation. RFC 7530 Section 8.2:
+	// a stateid is scoped to the client that was granted it.
+	if deleg.ClientID != clientID {
+		logger.Debug("NFSv4 OPEN CLAIM_DELEGATE_CUR: delegation owned by another client",
+			"deleg_client_id", deleg.ClientID,
+			"open_client_id", clientID,
+			"client", ctx.ClientAddr)
+		return openError(types.NFS4ERR_BAD_STATEID)
 	}
 
 	if status := types.ValidateUTF8Filename(filename); status != types.NFS4_OK {
@@ -748,16 +761,35 @@ func (h *Handler) handleOpenClaimDelegateCur(
 		return openError(types.NFS4ERR_SERVERFAULT)
 	}
 
+	// The delegation stateid must reference the file being opened. Presenting a
+	// delegation for one file to open a different file is a bad stateid.
+	if !bytes.Equal(deleg.FileHandle, fileHandle) {
+		logger.Debug("NFSv4 OPEN CLAIM_DELEGATE_CUR: delegation file handle mismatch",
+			"file", filename,
+			"client", ctx.ClientAddr)
+		return openError(types.NFS4ERR_BAD_STATEID)
+	}
+
+	// Enforce file permissions for the requested share_access, exactly as the
+	// CLAIM_NULL paths do. A delegation stateid proves the client held a
+	// delegation, not that this RPC caller may read/write the file.
+	if accessErr := checkOpenAccess(metaSvc, authCtx, fileHandle, shareAccess); accessErr != nil {
+		return openError(common.MapToNFS4(accessErr))
+	}
+
 	ctx.CurrentFH = make([]byte, len(fileHandle))
 	copy(ctx.CurrentFH, fileHandle)
 
-	// Create tracked state via StateManager (use CLAIM_NULL for state tracking).
-	// The client already has a delegation, so no conflict check or grant needed.
+	// Create tracked state via StateManager. CLAIM_DELEGATE_CUR is permitted
+	// during the grace period (RFC 7530 Section 8.4.2): the client already holds a
+	// delegation, so this is not a new open that must wait for grace to end.
+	// Passing the real claim type skips the CLAIM_NULL grace gate while still
+	// running the share-reservation conflict scan.
 	openResult, stateErr := h.StateManager.OpenFile(
 		clientID, ownerData, seqid,
 		[]byte(fileHandle),
 		shareAccess, shareDeny,
-		types.CLAIM_NULL,
+		types.CLAIM_DELEGATE_CUR,
 	)
 	if stateErr != nil {
 		return openError(mapStateError(stateErr))

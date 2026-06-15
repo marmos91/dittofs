@@ -340,3 +340,130 @@ func TestOpenClaimDelegateCur_V40_ConfirmFlagPreserved(t *testing.T) {
 		t.Fatalf("rflags = %#x, OPEN4_RESULT_CONFIRM must be set for a new v4.0 owner", rflags)
 	}
 }
+
+// ============================================================================
+// Bug 3 — CLAIM_DELEGATE_CUR security and grace-period handling (#1127)
+// ============================================================================
+
+// TestOpenClaimDelegateCur_DuringGrace_Succeeds verifies that CLAIM_DELEGATE_CUR
+// is honored during the grace period (RFC 7530 Section 8.4.2): a client that
+// held a delegation before restart must be able to reclaim via this path. Before
+// the fix the handler passed CLAIM_NULL to OpenFile, which the grace gate
+// rejected with NFS4ERR_GRACE.
+func TestOpenClaimDelegateCur_DuringGrace_Succeeds(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	const clientA = uint64(0xC0FFEE)
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "grace.txt", 0o644, 0, 0)
+	deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
+	if deleg == nil {
+		t.Fatalf("GrantDelegation returned nil")
+	}
+
+	// Put the server into grace, as it would be just after a restart.
+	fx.handler.StateManager.StartGracePeriod([]uint64{clientA})
+	if !fx.handler.StateManager.IsInGrace() {
+		t.Fatalf("expected server to be in grace")
+	}
+
+	ctx := newRealFSContext(0, 0)
+	ctx.SkipOwnerSeqid = true // v4.1 session
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	args := encodeOpenArgsDelegateCur(
+		1,
+		types.OPEN4_SHARE_ACCESS_BOTH,
+		types.OPEN4_SHARE_DENY_NONE,
+		clientA,
+		[]byte("owner-grace"),
+		types.OPEN4_NOCREATE,
+		&deleg.Stateid,
+		"grace.txt",
+	)
+
+	result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if result.Status != types.NFS4_OK {
+		t.Fatalf("OPEN CLAIM_DELEGATE_CUR during grace status = %d, want NFS4_OK", result.Status)
+	}
+}
+
+// TestOpenClaimDelegateCur_ForeignDelegation_Rejected verifies that a client
+// cannot use a delegation stateid owned by a different client. Before the fix
+// the delegation's ClientID was discarded and never compared to the OPEN arg's
+// clientID, letting any client open the file under a foreign delegation.
+func TestOpenClaimDelegateCur_ForeignDelegation_Rejected(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	const ownerClient = uint64(0xA11CE)
+	const attackerClient = uint64(0xBADBAD)
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "foreign.txt", 0o644, 0, 0)
+	deleg := fx.handler.StateManager.GrantDelegation(ownerClient, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
+	if deleg == nil {
+		t.Fatalf("GrantDelegation returned nil")
+	}
+
+	ctx := newRealFSContext(0, 0)
+	ctx.SkipOwnerSeqid = true
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	// Attacker presents the victim's delegation stateid with its OWN clientID.
+	args := encodeOpenArgsDelegateCur(
+		1,
+		types.OPEN4_SHARE_ACCESS_BOTH,
+		types.OPEN4_SHARE_DENY_NONE,
+		attackerClient,
+		[]byte("attacker-owner"),
+		types.OPEN4_NOCREATE,
+		&deleg.Stateid,
+		"foreign.txt",
+	)
+
+	result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if result.Status != types.NFS4ERR_BAD_STATEID {
+		t.Fatalf("OPEN CLAIM_DELEGATE_CUR with foreign delegation status = %d, want NFS4ERR_BAD_STATEID", result.Status)
+	}
+}
+
+// TestOpenClaimDelegateCur_EnforcesFilePermissions verifies that the path runs
+// the same POSIX permission check as the CLAIM_NULL paths. A non-root client
+// opening a file it has no write access to must be denied even with a valid,
+// self-owned delegation stateid. Before the fix checkOpenAccess was never
+// called on this path.
+func TestOpenClaimDelegateCur_EnforcesFilePermissions(t *testing.T) {
+	fx := newIOTestFixture(t, "/export")
+
+	const clientA = uint64(0xD00D)
+	// File owned by uid 1000, mode 0600 (rw for owner only).
+	fileHandle := fx.createRegularFile(t, fx.rootHandle, "secret.txt", 0o600, 1000, 1000)
+	deleg := fx.handler.StateManager.GrantDelegation(clientA, []byte(fileHandle), types.OPEN_DELEGATE_WRITE)
+	if deleg == nil {
+		t.Fatalf("GrantDelegation returned nil")
+	}
+
+	// Requester is uid 2000 — no access to a 0600 file owned by uid 1000.
+	ctx := newRealFSContext(2000, 2000)
+	ctx.SkipOwnerSeqid = true
+	ctx.CurrentFH = make([]byte, len(fx.rootHandle))
+	copy(ctx.CurrentFH, fx.rootHandle)
+
+	args := encodeOpenArgsDelegateCur(
+		1,
+		types.OPEN4_SHARE_ACCESS_WRITE,
+		types.OPEN4_SHARE_DENY_NONE,
+		clientA,
+		[]byte("owner-noperm"),
+		types.OPEN4_NOCREATE,
+		&deleg.Stateid,
+		"secret.txt",
+	)
+
+	result := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if result.Status == types.NFS4_OK {
+		t.Fatalf("OPEN CLAIM_DELEGATE_CUR with no file permission succeeded; want access error")
+	}
+	if result.Status != types.NFS4ERR_ACCESS {
+		t.Fatalf("OPEN CLAIM_DELEGATE_CUR status = %d, want NFS4ERR_ACCESS", result.Status)
+	}
+}
