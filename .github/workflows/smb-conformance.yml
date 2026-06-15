@@ -6,6 +6,10 @@
 name: SMB Conformance Tests
 
 on:
+  # Path-scoped to SMB/store/controlplane/auth code so docs-only and
+  # unrelated changes never trigger this heavy suite (#1157). A Kerberos-only
+  # code change must still exercise the smbtorture-kerberos job, so the auth
+  # kerberos packages are listed explicitly alongside the SMB adapter paths.
   push:
     branches: [develop]
     paths:
@@ -14,6 +18,8 @@ on:
       - 'pkg/metadata/**'
       - 'pkg/block/**'
       - 'pkg/controlplane/**'
+      - 'pkg/auth/kerberos/**'
+      - 'internal/auth/kerberos/**'
       - 'test/smb-conformance/**'
       - 'pkg/adapter/base.go'
       - '.github/workflows/smb-conformance.yml'
@@ -25,6 +31,8 @@ on:
       - 'pkg/metadata/**'
       - 'pkg/block/**'
       - 'pkg/controlplane/**'
+      - 'pkg/auth/kerberos/**'
+      - 'internal/auth/kerberos/**'
       - 'test/smb-conformance/**'
       - 'pkg/adapter/base.go'
       - '.github/workflows/smb-conformance.yml'
@@ -144,10 +152,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # smbtorture is heavy (~30+ sub-suites, 45-min budget per profile), so
+        # the PR matrix is kept lean for latency (#1157) while still giving a
+        # persistent-backend signal (#1158): memory (fastest) + badger-fs (the
+        # only PR profile that exercises the fs local store path; faster than the
+        # s3 profiles). The full set runs on push to develop and the weekly cron.
+        # workflow_dispatch runs the single chosen profile.
         profile: >-
           ${{
             github.event_name == 'pull_request'
-              && fromJson('["memory"]')
+              && fromJson('["memory", "badger-fs"]')
             || github.event_name == 'workflow_dispatch'
               && fromJson(format('["{0}"]', inputs.profile))
             || fromJson('["memory", "memory-fs", "badger-fs"]')
@@ -183,9 +197,29 @@ jobs:
           retention-days: 30
 
   smbtorture-kerberos:
-    name: smbtorture Kerberos
+    name: smbtorture Kerberos / ${{ matrix.filter }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Cover Kerberos-sensitive operations beyond session setup. The
+        # kerberos session key signs/encrypts every PDU, so the authenticated
+        # data path (read) and byte-range locking (lock) exercise the key past
+        # SPNEGO. These run as an explicit small set (one filter per parallel
+        # job), NOT the whole battery, to stay under the 30-min budget.
+        #
+        # smb2.create is intentionally NOT in this set: it has known failures
+        # (create.quota-fake-file, create.gentest) catalogued in
+        # KNOWN_FAILURES.md, but run.sh --kerberos only loads the
+        # session-scoped KNOWN_FAILURES_KERBEROS.md, so those expected fails
+        # would be graded as new failures and red the job. Add it here once the
+        # kerberos known-failures list covers the create suite.
+        filter:
+          - smb2.session
+          - smb2.read
+          - smb2.lock
 
     steps:
       - name: Checkout
@@ -197,17 +231,17 @@ jobs:
       - name: Run smbtorture with Kerberos
         run: |
           cd test/smb-conformance/smbtorture
-          ./run.sh --kerberos --filter smb2.session --verbose
+          ./run.sh --kerberos --filter ${{ matrix.filter }} --verbose
 
       - name: Add step summary
         if: always()
         run: |
           RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
           if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
-            echo "## smbtorture Kerberos" >> "$GITHUB_STEP_SUMMARY"
+            echo "## smbtorture Kerberos: ${{ matrix.filter }}" >> "$GITHUB_STEP_SUMMARY"
             cat "$RESULTS_DIR/summary.txt" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "## smbtorture Kerberos" >> "$GITHUB_STEP_SUMMARY"
+            echo "## smbtorture Kerberos: ${{ matrix.filter }}" >> "$GITHUB_STEP_SUMMARY"
             echo "No results found." >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -215,6 +249,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smbtorture-kerberos
+          name: smbtorture-kerberos-${{ matrix.filter }}
           path: test/smb-conformance/results/smbtorture-*/
           retention-days: 30

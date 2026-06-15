@@ -6,6 +6,11 @@
 name: SMB Client Compatibility
 
 on:
+  # Path-scoped to SMB adapter code: docs-only changes never trigger this
+  # suite (#1157). PRs are excluded entirely (native-client mounts are too
+  # slow for the PR gate); coverage is push-to-develop + weekly + manual.
+  # Go builds here cache modules via actions/setup-go (cache: true, keyed on
+  # go.sum) in each job below.
   push:
     branches: [develop]
     paths:
