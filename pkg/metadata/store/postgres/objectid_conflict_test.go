@@ -167,11 +167,17 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 	}
 }
 
-// TestPostgresPutFile_PathConflictStaysErrAlreadyExists verifies the path-hash
-// uniqueness contract is preserved: a second active file at the same
-// (share, path) still maps to ErrAlreadyExists (NOT ErrConflict), so the
-// error-mapping split does not weaken path uniqueness.
-func TestPostgresPutFile_PathConflictStaysErrAlreadyExists(t *testing.T) {
+// TestPostgresPutFile_DuplicatePathAllowed pins the post-#1165 contract: the
+// store no longer enforces path-hash uniqueness. Migration 000031 dropped
+// unique_share_path_hash_active because it was incompatible with hard links (a
+// rename overwriting a multiply-linked destination momentarily leaves two
+// active rows sharing a path_hash — pjdfstest rename/23, #1160). Namespace
+// uniqueness — no two entries with the same name in a directory — is enforced
+// by parent_child_map UNIQUE(parent_id, child_name), NOT files.path_hash, so a
+// raw PutFile of a DIFFERENT id at the SAME (share, path) with nlink>0 must now
+// succeed instead of failing with ErrAlreadyExists. This guards against the
+// index being reintroduced (which would re-break hard-link rename on postgres).
+func TestPostgresPutFile_DuplicatePathAllowed(t *testing.T) {
 	store := newConflictTestStore(t)
 	ctx := context.Background()
 
@@ -180,8 +186,8 @@ func TestPostgresPutFile_PathConflictStaysErrAlreadyExists(t *testing.T) {
 
 	_ = conflictTestFile(t, store, shareName, "dup.bin")
 
-	// A DIFFERENT id at the SAME path with nlink>0 collides on
-	// unique_share_path_hash_active.
+	// A DIFFERENT id at the SAME path with nlink>0 used to collide on
+	// unique_share_path_hash_active; with that index dropped it is accepted.
 	dupFile := &metadata.File{
 		ID:        uuid.New(),
 		ShareName: shareName,
@@ -191,9 +197,7 @@ func TestPostgresPutFile_PathConflictStaysErrAlreadyExists(t *testing.T) {
 			Mode: 0o644,
 		},
 	}
-	if perr := store.PutFile(ctx, dupFile); perr == nil {
-		t.Fatal("PutFile at duplicate path should have failed")
-	} else if !isAlreadyExists(perr) {
-		t.Fatalf("path collision must stay ErrAlreadyExists, got %v", perr)
+	if perr := store.PutFile(ctx, dupFile); perr != nil {
+		t.Fatalf("duplicate-path PutFile should now succeed (path_hash uniqueness dropped in #1165), got %v", perr)
 	}
 }
