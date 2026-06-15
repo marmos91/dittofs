@@ -354,10 +354,10 @@ func (sm *StateManager) validateLockStateid(stateid *types.Stateid4, currentFH [
 
 	openState := lockState.OpenState
 	if openState == nil {
-		// A lock stateid must always derive from an open; a nil parent means
-		// inconsistent state rather than a client error.
+		// A lock stateid must always derive from an open; a nil parent is an
+		// internal invariant violation, not a client error.
 		return nil, &NFS4StateError{
-			Status:  types.NFS4ERR_BAD_STATEID,
+			Status:  types.NFS4ERR_SERVERFAULT,
 			Message: "lock stateid has no parent open state",
 		}
 	}

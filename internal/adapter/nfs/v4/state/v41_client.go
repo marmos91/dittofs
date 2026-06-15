@@ -207,7 +207,11 @@ func (sm *StateManager) ExchangeID(
 			return nil, ErrClientIDInUse
 		}
 		existing.ClientAddr = clientAddr
-		existing.Principal = princ
+		// Only adopt a non-empty incoming principal; never clear a stored
+		// principal with an empty one (that would weaken the hijack guard).
+		if princ != "" {
+			existing.Principal = princ
+		}
 		existing.LastRenewal = time.Now()
 		applyImplInfo(existing, clientImplId)
 		record = existing

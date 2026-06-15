@@ -261,6 +261,7 @@ func TestUnlockFile_V41Seqid0(t *testing.T) {
 // hijack the client.
 func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
+	defer sm.Shutdown()
 
 	ownerID := []byte("client-owner-principal")
 	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
@@ -291,6 +292,18 @@ func TestExchangeID_Case2_PrincipalMismatch(t *testing.T) {
 	// The legitimate principal can still EXCHANGE_ID idempotently.
 	if _, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345", "alice"); err != nil {
 		t.Fatalf("idempotent EXCHANGE_ID by owning principal: %v", err)
+	}
+
+	// An idempotent call with no principal (e.g. AUTH_NONE) must not clear the
+	// stored principal — otherwise the hijack guard could be reset.
+	if _, err := sm.ExchangeID(ownerID, verifier, 0, nil, "10.0.0.1:12345"); err != nil {
+		t.Fatalf("idempotent EXCHANGE_ID with empty principal: %v", err)
+	}
+	sm.mu.RLock()
+	rec = sm.v41ClientsByOwner[string(ownerID)]
+	sm.mu.RUnlock()
+	if rec == nil || rec.Principal != "alice" {
+		t.Errorf("empty-principal call cleared stored principal: got %q", recPrincipal(rec))
 	}
 }
 
