@@ -8,6 +8,7 @@ func AllModels() []any {
 		&MetadataStoreConfig{},
 		&BlockStoreConfig{},
 		&Share{},
+		&Quota{},
 		&Snapshot{},
 		&RestoreMarker{},
 		&ShareAccessRule{},

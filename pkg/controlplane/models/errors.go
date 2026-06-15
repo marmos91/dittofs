@@ -17,6 +17,10 @@ var (
 	ErrShareNotFound  = errors.New("share not found")
 	ErrDuplicateShare = errors.New("share already exists")
 
+	// Quota errors
+	ErrQuotaNotFound  = errors.New("quota not found")
+	ErrDuplicateQuota = errors.New("quota already exists for this identity")
+
 	// Store errors
 	ErrStoreNotFound  = errors.New("store not found")
 	ErrDuplicateStore = errors.New("store already exists")

@@ -226,6 +226,30 @@ type ShareStore interface {
 	ListShareAdapterConfigs(ctx context.Context, shareID string) ([]models.ShareAdapterConfig, error)
 }
 
+// QuotaStore provides per-identity (user/group/default-user) quota CRUD for a
+// share. identityID is nil for the default-user scope.
+type QuotaStore interface {
+	// ListQuotas returns all quotas for a share.
+	ListQuotas(ctx context.Context, shareName string) ([]*models.Quota, error)
+
+	// ListAllQuotas returns every quota across all shares (startup seed).
+	ListAllQuotas(ctx context.Context) ([]*models.Quota, error)
+
+	// GetQuota returns a single quota by (share, scope, identity).
+	// Returns models.ErrQuotaNotFound when absent.
+	GetQuota(ctx context.Context, shareName, scope string, identityID *uint32) (*models.Quota, error)
+
+	// UpsertQuota creates or updates a quota for (share, scope, identity).
+	UpsertQuota(ctx context.Context, quota *models.Quota) error
+
+	// DeleteQuota removes a quota for (share, scope, identity).
+	// Returns models.ErrQuotaNotFound when absent.
+	DeleteQuota(ctx context.Context, shareName, scope string, identityID *uint32) error
+
+	// SetQuotaGraceStartedAt persists a grace-timer transition (nil clears it).
+	SetQuotaGraceStartedAt(ctx context.Context, shareName, scope string, identityID *uint32, t *time.Time) error
+}
+
 // PermissionStore provides user and group share permission operations.
 //
 // Permission resolution follows the order: user explicit > group permissions
@@ -654,6 +678,7 @@ type Store interface {
 	UserStore
 	GroupStore
 	ShareStore
+	QuotaStore
 	PermissionStore
 	MetadataStoreConfigStore
 	BlockStoreConfigStore
