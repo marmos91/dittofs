@@ -37,7 +37,8 @@ type Opts struct {
 	ReaddirLimit int
 }
 
-// Result is one run's aggregate. Latency is nil only when Ops is 0.
+// Result is one run's aggregate. Latency is always populated for a successful
+// run (Validate rejects Ops <= 0 and every op records a sample).
 type Result struct {
 	Backend  string
 	Workload string

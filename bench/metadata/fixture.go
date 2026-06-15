@@ -118,20 +118,17 @@ type Tree struct {
 	lookupName  []string
 }
 
-// resetter is implemented by backends that reuse a persistent database
-// (postgres). Truncating before a seed keeps reruns idempotent — without it a
-// second run collides on the share name.
-type resetter interface {
-	Reset(ctx context.Context) error
-}
-
 const benchShareName = "/bench"
 
 // seedTree populates the store with Dirs × FilesPerDir entries and returns the
 // working sets. Mirrors storetest's createTestShare/Dir/File helpers, minus the
 // *testing.T coupling so it runs from the bench binary.
 func seedTree(ctx context.Context, store metadata.Store, dirs, filesPerDir int) (*Tree, error) {
-	if r, ok := store.(resetter); ok {
+	// All three backends implement metadata.Resetable. Truncating before a seed
+	// keeps reruns idempotent — without it a second run collides on the share
+	// name. The capability check stays so the bench survives a backend that
+	// ever omits it.
+	if r, ok := store.(metadata.Resetable); ok {
 		if err := r.Reset(ctx); err != nil {
 			return nil, fmt.Errorf("reset: %w", err)
 		}
