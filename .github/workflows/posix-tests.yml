@@ -4,8 +4,7 @@
 # Tests all metadata store backends: Memory, BadgerDB, PostgreSQL.
 # Tests NFSv3, NFSv4.0, and NFSv4.1 protocol versions.
 #
-# PR: memory store only (3 jobs) — fast feedback on NFS correctness.
-# Push/Cron: full matrix (memory + badger + postgres = 9 jobs).
+# All events (PR/Push/Cron): full matrix (memory + badger + postgres = 9 jobs).
 # Weekly cron: Sunday 4 AM UTC with auto-issue on regression.
 
 name: POSIX Compliance Tests
@@ -44,36 +43,14 @@ env:
   DITTOFS_MOUNT: /tmp/dittofs-test
 
 jobs:
-  # Determine test profile based on trigger event
-  determine-profile:
-    name: Determine Profile
-    runs-on: ubuntu-latest
-    outputs:
-      stores: ${{ steps.profile.outputs.stores }}
-      run_postgres: ${{ steps.profile.outputs.run_postgres }}
-      is_scheduled: ${{ steps.profile.outputs.is_scheduled }}
-    steps:
-      - name: Set profile
-        id: profile
-        run: |
-          # Run the full backend matrix (memory + badger + postgres) on every
-          # event, including PRs. Postgres is the production backend and its
-          # path-keyed store is where most CI-blind bugs have hidden, so PRs
-          # must cover it. Known backend-specific gaps are tracked in the
-          # KNOWN_FAILURES tables (graded yellow, not red) until fixed.
-          echo 'stores=["memory","badger"]' >> "$GITHUB_OUTPUT"
-          echo 'run_postgres=true' >> "$GITHUB_OUTPUT"
-          if [[ "${{ github.event_name }}" == "schedule" ]]; then
-            echo 'is_scheduled=true' >> "$GITHUB_OUTPUT"
-          else
-            echo 'is_scheduled=false' >> "$GITHUB_OUTPUT"
-          fi
-
-  # Build binaries once and share across test jobs
+  # Build binaries once and share across test jobs.
+  # The full backend matrix (memory + badger + postgres) runs on every event,
+  # including PRs — postgres is the production backend and its path-keyed store
+  # is where most CI-blind bugs have hidden. Known backend-specific gaps are
+  # tracked in the KNOWN_FAILURES tables (graded yellow, not red) until fixed.
   build:
     name: Build Binaries
     runs-on: ubuntu-latest
-    needs: determine-profile
     timeout-minutes: 10
 
     steps:
@@ -105,13 +82,13 @@ jobs:
   posix-nfs:
     name: NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }}
     runs-on: ubuntu-latest
-    needs: [determine-profile, build]
+    needs: build
     timeout-minutes: 60
 
     strategy:
       fail-fast: false
       matrix:
-        store: ${{ fromJSON(needs.determine-profile.outputs.stores) }}
+        store: [memory, badger]
         nfs_version: ['3', '4', '4.1']
 
     steps:
@@ -225,8 +202,7 @@ jobs:
   posix-nfs-postgres:
     name: NFS v${{ matrix.nfs_version }} / PostgreSQL
     runs-on: ubuntu-latest
-    needs: [determine-profile, build]
-    if: needs.determine-profile.outputs.run_postgres == 'true'
+    needs: build
     timeout-minutes: 60
 
     strategy:
@@ -367,7 +343,7 @@ jobs:
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [determine-profile, posix-nfs, posix-nfs-postgres]
+    needs: [posix-nfs, posix-nfs-postgres]
     if: always()
 
     steps:
@@ -423,10 +399,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-    needs: [determine-profile, posix-nfs, posix-nfs-postgres]
+    needs: [posix-nfs, posix-nfs-postgres]
     if: >-
       always() &&
-      needs.determine-profile.outputs.is_scheduled == 'true' &&
+      github.event_name == 'schedule' &&
       (needs.posix-nfs.result == 'failure' || needs.posix-nfs-postgres.result == 'failure')
 
     steps:
