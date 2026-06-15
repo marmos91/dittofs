@@ -38,4 +38,3 @@ Categories:
 | posix_fallocate/* | feature | No ALLOCATE procedure in NFSv3 | - |
 | utimensat/09.t | proto | NFSv3 nfstime3 uses uint32 seconds — cannot represent values >= 2^32 (year 2106) | - |
 | open/03.t | env | PATH_MAX test fails: mount-point prefix pushes the absolute path over PATH_MAX in the Linux VFS before NFS sees it — client-side, affects any non-root mount | - |
-| rename/23.t | bug | PostgreSQL rename-overwrite of an existing target returns EEXIST (nlink ends at 2); memory/badger pass. Not a long-path bug — normal-length names | #1160 |

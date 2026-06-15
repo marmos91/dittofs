@@ -1,0 +1,23 @@
+-- Drop the active-path uniqueness index on files (#1160).
+--
+-- unique_share_path_hash_active enforced "at most one active inode per
+-- (share, path)". That invariant is incompatible with hard links: a single
+-- inode reachable under N names has only ONE files.path column, so when a
+-- rename overwrites a multiply-linked destination, the surviving inode keeps
+-- its old path while the source is relocated onto it — two active rows briefly
+-- share a path_hash and PostgreSQL rejects the rename with a unique violation
+-- ("PutFile: already exists" -> NFS4ERR_EXIST). The memory and badger backends
+-- have no such index and handle this correctly; this was the lone postgres-only
+-- divergence behind pjdfstest rename/23 (and earlier #190's recycle failure).
+--
+-- Namespace uniqueness — no two entries with the same name in a directory — is
+-- already enforced by the parent_child_map PRIMARY KEY/UNIQUE(parent_id,
+-- child_name), from which full-path uniqueness follows transitively. The
+-- files.path column is a denormalized convenience (snapshot/restore, logging);
+-- path resolution on the live data path goes through parent_child_map, not
+-- path_hash. Dropping the UNIQUE index therefore removes a redundant guard that
+-- only ever turned the hard-link limitation into a hard failure.
+--
+-- The non-unique idx_files_share_path_hash lookup index is retained.
+
+DROP INDEX IF EXISTS unique_share_path_hash_active;
