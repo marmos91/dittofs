@@ -17,8 +17,9 @@ Operator guide: model, CLI, restore runbook, recovery paths, failure modes.
 - [9. The verify gate](#9-the-verify-gate)
 - [10. GC hold semantics](#10-gc-hold-semantics)
 - [11. Failure modes and recovery](#11-failure-modes-and-recovery)
-- [12. Limitations](#12-limitations)
-- [13. REST API reference](#13-rest-api-reference)
+- [12. Scheduled snapshots (policies)](#12-scheduled-snapshots-policies)
+- [13. Limitations](#13-limitations)
+- [14. REST API reference](#14-rest-api-reference)
 
 ## 1. Overview
 
@@ -862,7 +863,83 @@ slow remote.
 not remotely durable). Re-run create with `--retry=<failed-id>` to
 re-attempt against the same row.
 
-## 12. Limitations
+## 12. Scheduled snapshots (policies)
+
+A **snapshot policy** makes a share snapshot itself automatically on a
+fixed interval and prunes old scheduler-created snapshots. One policy
+exists per share. The scheduler is process-local (single-node, like the
+rest of the snapshot surface): it runs inside the daemon and polls due
+policies on a configurable interval.
+
+### Cadence and retention
+
+- **Interval** — a Go duration (`24h`, `6h`, `1h30m`) or a shorthand
+  (`@hourly`, `@daily`, `@weekly`). The share is snapshotted when this
+  much time has elapsed since its last scheduled run.
+- **Retention** — two independent bounds, either or both:
+  - `keep-last N` — keep only the newest `N` scheduler-created snapshots
+    (`0` disables the count bound).
+  - `ttl` — drop scheduler-created snapshots older than this Go duration
+    (empty/`0` disables the age bound).
+  - A snapshot is pruned when it falls **outside the newest `N`** OR is
+    **older than `ttl`**.
+- **Manual snapshots are never auto-pruned.** Only snapshots created by
+  the scheduler are eligible; anything made with `snapshot create`
+  (`scheduled=false`) is left untouched.
+- **Overlap is skipped.** If a snapshot for the share is already in
+  flight when the policy comes due, the scheduler logs and skips that
+  tick (it does not queue a second one); the next tick retries.
+
+### CLI
+
+```bash
+# Daily snapshots, keep the newest 7, drop anything older than 30 days
+dfsctl share snapshot-policy set /archive --interval @daily --keep-last 7 --ttl 720h
+
+# Inspect / list
+dfsctl share snapshot-policy show /archive
+dfsctl share snapshot-policy list
+
+# Manual override: run the policy now, ignoring the interval
+dfsctl share snapshot-policy run /archive
+
+# Stop scheduling (existing snapshots are kept)
+dfsctl share snapshot-policy delete /archive
+```
+
+The scheduler feeds the same snapshot pool as on-demand creation, so
+policy-created snapshots list, show, and restore exactly like manual ones.
+
+### Configuration
+
+- `snapshot.scheduler_poll_interval` (default `1m`,
+  `DITTOFS_SNAPSHOT_SCHEDULER_POLL_INTERVAL`) — how often the daemon
+  scans for due policies. The per-share `interval` (not this knob)
+  governs how often a share is actually snapshotted.
+- `snapshot.scheduler_disabled` (default `false`,
+  `DITTOFS_SNAPSHOT_SCHEDULER_DISABLED`) — turn the scheduler off
+  entirely. Policies are still stored and can be run manually with
+  `snapshot-policy run`.
+
+### Kubernetes operator
+
+The operator's `DittoServer` CRD accepts a `spec.snapshotPolicies` list
+that the operator pushes to the API once authenticated. A share that does
+not exist yet is skipped and retried on the next reconcile. The operator
+only upserts the declared policies — it never deletes a policy removed
+from the list, so manually-created policies are preserved.
+
+```yaml
+spec:
+  snapshotPolicies:
+    - share: /archive
+      interval: "@daily"
+      keepLast: 7
+      ttl: "720h"
+      enabled: true
+```
+
+## 13. Limitations
 
 - **No cross-share restore.** A snapshot of `/photos` can only be
   restored back into `/photos`. There is no surface to clone or
@@ -879,9 +956,6 @@ re-attempt against the same row.
 - **Single-node only.** Snapshots live alongside the share inside
   one daemon's local store. There is no cluster-aware snapshot
   surface yet.
-- **No scheduled snapshots.** Snapshot creation is on demand only.
-  Wire `dfsctl share snapshot create` into your cron/systemd
-  timer if you want a recurring cadence.
 - **No portable archive format.** Snapshots cannot be exported,
   emailed, or restored on a different daemon's storage. They
   protect against accidental writes and deletes; they do not
@@ -892,7 +966,7 @@ For background on these decisions, see
 For the CLI surface, see
 [CLI.md — Share Snapshots](CLI.md#share-snapshots).
 
-## 13. REST API reference
+## 14. REST API reference
 
 All snapshot endpoints live under the existing
 `/api/v1/shares` admin group and inherit `RequireAdmin`. Auth is
@@ -907,6 +981,22 @@ the brief reference.
 | `GET` | `/api/v1/shares/{name}/snapshots/{id}` | Get one snapshot record | `200 OK` + full record |
 | `DELETE` | `/api/v1/shares/{name}/snapshots/{id}` | Delete a snapshot | `204 No Content` |
 | `POST` | `/api/v1/shares/{name}/snapshots/{id}/restore` | Restore a share from a snapshot (sync) | `200 OK` + body `{snapshot_id, safety_snapshot_id, share}` |
+| `PUT` | `/api/v1/shares/{name}/snapshot-policy` | Create/update the share's snapshot policy | `200 OK` + policy record |
+| `GET` | `/api/v1/shares/{name}/snapshot-policy` | Get the share's snapshot policy | `200 OK` (or `404`) |
+| `DELETE` | `/api/v1/shares/{name}/snapshot-policy` | Delete the share's snapshot policy | `204 No Content` |
+| `POST` | `/api/v1/shares/{name}/snapshot-policy/run` | Run the policy now (manual override) | `202 Accepted` + body `{snapshot_id, share}` |
+| `GET` | `/api/v1/snapshot-policies` | List policies across all shares | `200 OK` + JSON array |
+
+### Snapshot policy body (PUT)
+
+```json
+{ "interval": "@daily", "keep_last": 7, "ttl": "720h", "enabled": true, "name_prefix": "scheduled" }
+```
+
+`interval` is required (Go duration or `@hourly`/`@daily`/`@weekly`).
+`keep_last` `0` and `ttl` empty/`0` disable that retention bound.
+`enabled` defaults to `true` when omitted. A `PUT` for a nonexistent
+share returns `404`; an invalid `interval`/`ttl` returns `400`.
 
 ### Create body
 

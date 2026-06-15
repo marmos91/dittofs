@@ -12,12 +12,12 @@ import "time"
 // OR is older than TTL (when TTL>0). A zero bound disables that dimension.
 // Manually-created snapshots (Snapshot.Scheduled=false) are never auto-pruned.
 type SnapshotPolicy struct {
-	ID         string        `gorm:"primaryKey;size:36" json:"id"`
-	ShareName  string        `gorm:"uniqueIndex;not null;size:255" json:"share_name"`
+	ID        string `gorm:"primaryKey;size:36" json:"id"`
+	ShareName string `gorm:"uniqueIndex;not null;size:255" json:"share_name"`
 	// No SQL default:true — GORM would coerce an explicit Go false back to the
 	// default on INSERT (refs #514). Callers always set Enabled explicitly;
 	// the REST/runtime layer defaults it to true when a request omits it.
-	Enabled bool `gorm:"not null" json:"enabled"`
+	Enabled    bool          `gorm:"not null" json:"enabled"`
 	Interval   time.Duration `gorm:"not null" json:"interval"`            // cadence between snapshots (ns)
 	KeepLast   int           `gorm:"not null;default:0" json:"keep_last"` // 0 = no count bound
 	TTL        time.Duration `gorm:"not null;default:0" json:"ttl"`       // 0 = no age bound (ns)
