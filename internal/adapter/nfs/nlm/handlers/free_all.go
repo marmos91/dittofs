@@ -70,9 +70,11 @@ func EncodeFreeAllResponse(_ *FreeAllResponse) ([]byte, error) {
 }
 
 // FreeAll handles NLM FREE_ALL (RFC 1813, NLM procedure 23).
-// Releases all locks held by a crashed client, triggered by NSM (rpc.statd) on reboot.
-// Decodes and logs the request; actual lock cleanup is coordinated by adapter OnClientCrash.
-// Best-effort cleanup; each NLM handler instance serves one share, adapter handles cross-share.
+// Releases all byte-range locks held by the named client and drains its blocking
+// waiters, triggered by the client's lock manager on reboot. This runs the same
+// per-share cleanup as NSM SM_NOTIFY crash detection so that a lost or delayed
+// SM_NOTIFY does not leave a rebooted client's locks orphaned (defense in depth):
+// FREE_ALL and SM_NOTIFY are independent crash signals and either must suffice.
 // Errors: none (returns void per NLM specification; decode errors are logged).
 func (h *Handler) FreeAll(ctx *NLMHandlerContext) ([]byte, error) {
 	req, err := DecodeFreeAllRequest(ctx.Data)
@@ -81,13 +83,42 @@ func (h *Handler) FreeAll(ctx *NLMHandlerContext) ([]byte, error) {
 		return EncodeFreeAllResponse(&FreeAllResponse{})
 	}
 
+	// Reject an empty or over-long caller name before logging or using it. The
+	// XDR string decoder accepts up to 1MB; a malicious peer could otherwise
+	// inflate logs and force expensive cleanup with a giant name. NLM caller
+	// names are hostnames, bounded by MAXNAMELEN (1024).
+	if req.Name == "" || len(req.Name) > MaxCallerNameLen {
+		logger.Warn("FREE_ALL: rejected invalid client name",
+			"name_len", len(req.Name),
+			"from", ctx.ClientAddr)
+		return EncodeFreeAllResponse(&FreeAllResponse{})
+	}
+
 	logger.Info("FREE_ALL: received",
 		"client", req.Name,
 		"from", ctx.ClientAddr)
 
-	// The actual lock release is triggered by the adapter's OnClientCrash
-	// callback, which iterates all shares and their lock managers.
-	// This handler serves as the NLM RPC endpoint for logging and validation.
+	// Lock-theft guard: FREE_ALL releases ALL of a client's locks from a single
+	// client-supplied name, so it is an even simpler spoofing vector than
+	// UNLOCK/CANCEL. Refuse if the name is bound to a different transport source
+	// host (a rebooting client's source IP matches the host that locked).
+	if !h.callerBinding.authorized(req.Name, ctx.ClientAddr) {
+		logger.Warn("FREE_ALL rejected: caller_name bound to a different client (possible lock theft)",
+			"client", req.Name,
+			"from", ctx.ClientAddr)
+		return EncodeFreeAllResponse(&FreeAllResponse{})
+	}
+
+	// Release the named client's locks via the adapter-wired cleanup, which
+	// iterates all shares' lock managers and the blocking queue. Idempotent and
+	// safe if the client held no locks. Cleanup is gated on grace period inside
+	// the wired routine, mirroring NSM crash handling.
+	if h.crashCleanup != nil {
+		h.crashCleanup(req.Name)
+	} else {
+		logger.Warn("FREE_ALL: no crash-cleanup wired; locks not released",
+			"client", req.Name)
+	}
 
 	return EncodeFreeAllResponse(&FreeAllResponse{})
 }

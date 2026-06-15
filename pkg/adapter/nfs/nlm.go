@@ -466,6 +466,16 @@ func (s *NFSAdapter) initNSMHandler(rt *runtime.Runtime, metadataService *metada
 		return s.handleClientCrash(ctx, clientID, metadataService)
 	}
 
+	// Wire NLM FREE_ALL to the same crash-cleanup routine. FREE_ALL is an
+	// independent crash signal from SM_NOTIFY: a rebooting client's lock manager
+	// sends it directly to the server. Without this, FREE_ALL was a no-op and a
+	// lost/delayed SM_NOTIFY left the client's locks orphaned.
+	if s.nlmHandler != nil {
+		s.nlmHandler.SetCrashCleanup(func(clientID string) {
+			_ = s.handleClientCrash(context.Background(), clientID, metadataService)
+		})
+	}
+
 	// Create NSM notifier for parallel SM_NOTIFY on restart
 	s.nsmNotifier = nsm.NewNotifier(nsm.NotifierConfig{
 		Handler:       s.nsmHandler,

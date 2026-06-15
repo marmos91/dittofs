@@ -57,6 +57,16 @@ func SendGrantedCallback(
 	vers uint32,
 	args *types.NLM4GrantedArgs,
 ) error {
+	// SSRF guard: never dial an address that did not originate from a validated
+	// client source. The host portion of addr is always derived from the NLM
+	// request's transport source IP (never from client-supplied wire fields), but
+	// we additionally reject addresses that could be used to reach internal
+	// infrastructure or trigger amplification (unspecified, multicast, link-local
+	// multicast). This bounds the dial target to a plausible unicast NLM client.
+	if err := validateCallbackAddr(addr); err != nil {
+		return fmt.Errorf("reject callback address %s: %w", addr, err)
+	}
+
 	// Create a context with 5s total deadline for the entire operation
 	// This is a LOCKED DECISION from CONTEXT.md: 5 second timeout total
 	callbackCtx, cancel := context.WithTimeout(ctx, CallbackTimeout)
@@ -106,6 +116,46 @@ func SendGrantedCallback(
 		return fmt.Errorf("read reply: %w", err)
 	}
 
+	return nil
+}
+
+// validateCallbackAddr rejects callback destinations that are unsafe to dial.
+//
+// The host must be a literal IP (callback addresses are always built from the
+// request's transport source IP, never a client-supplied hostname, so DNS is
+// never involved). Mirroring the v4/NSM callback SSRF guards
+// (v4/state/callback.go, nsm/callback/client.go) we reject:
+//   - the unspecified address and an invalid port (malformed targets),
+//   - multicast (amplification),
+//   - link-local unicast (169.254.0.0/16 / fe80::/10) — this covers the
+//     cloud-instance metadata endpoint 169.254.169.254, the canonical SSRF
+//     pivot, so the NLM callback path can never be coerced into reaching it.
+//
+// Loopback is deliberately allowed: unlike the server-initiated v4/NSM
+// callbacks (which target remotely-registered clients), an NLM_GRANTED callback
+// targets the lock requester's own source IP, which is legitimately loopback for
+// an NFS mount co-located with the server.
+func validateCallbackAddr(addr string) error {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("malformed address: %w", err)
+	}
+	if portStr == "" || portStr == "0" {
+		return fmt.Errorf("invalid port %q", portStr)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("host %q is not a literal IP", host)
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("unspecified host %q", host)
+	}
+	if ip.IsMulticast() {
+		return fmt.Errorf("multicast host %q", host)
+	}
+	if ip.IsLinkLocalUnicast() {
+		return fmt.Errorf("link-local host %q", host)
+	}
 	return nil
 }
 
