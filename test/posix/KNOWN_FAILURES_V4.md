@@ -32,4 +32,3 @@ Categories:
 | removexattr/* | feature | NFSv4 named attributes not implemented | - |
 | open/03.t | env | PATH_MAX test fails: mount-point prefix pushes the absolute path over PATH_MAX in the Linux VFS before NFS sees it — client-side, affects any non-root mount | - |
 | unlink/14.t | proto | NFSv4 silly-rename: open file + unlink triggers rename instead of remove, nlink stays 1 (same as Linux knfsd) | - |
-| rename/23.t | bug | PostgreSQL rename-overwrite of an existing target returns EEXIST (nlink ends at 2); memory/badger pass. Not a long-path bug — normal-length names | #1160 |
