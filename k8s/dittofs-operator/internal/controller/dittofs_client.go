@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -283,6 +284,26 @@ func (c *DittoFSClient) ResetUserPassword(ctx context.Context, username, newPass
 		NewPassword: newPassword,
 	}
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/v1/users/%s/password", username), req, nil)
+}
+
+// UpsertSnapshotPolicyRequest is the body for PUT
+// /api/v1/shares/{share}/snapshot-policy. Mirrors the canonical wire shape in
+// pkg/controlplane/api/dto (the operator cannot import that package: separate
+// go.mod).
+type UpsertSnapshotPolicyRequest struct {
+	Interval   string `json:"interval"`
+	KeepLast   int    `json:"keep_last,omitempty"`
+	TTL        string `json:"ttl,omitempty"`
+	Enabled    *bool  `json:"enabled,omitempty"`
+	NamePrefix string `json:"name_prefix,omitempty"`
+}
+
+// UpsertSnapshotPolicy creates or updates a share's snapshot policy. A 404
+// (share not yet created) surfaces as a *DittoFSAPIError with StatusCode 404,
+// which the reconciler treats as a retryable skip.
+func (c *DittoFSClient) UpsertSnapshotPolicy(ctx context.Context, share string, req UpsertSnapshotPolicyRequest) error {
+	return c.do(ctx, http.MethodPut,
+		fmt.Sprintf("/api/v1/shares/%s/snapshot-policy", url.PathEscape(share)), req, nil)
 }
 
 // AdapterInfo represents an adapter returned by the DittoFS API.

@@ -50,6 +50,14 @@ type DittoServerSpec struct {
 	// +optional
 	Percona *PerconaConfig `json:"percona,omitempty"`
 
+	// SnapshotPolicies declares per-share scheduled snapshot policies. The
+	// operator pushes each entry to the DittoFS API once authenticated; shares
+	// not yet created are skipped and retried on the next reconcile. The
+	// operator only upserts the declared policies — it does not delete policies
+	// removed from this list, so manually-created policies are preserved.
+	// +optional
+	SnapshotPolicies []ShareSnapshotPolicySpec `json:"snapshotPolicies,omitempty"`
+
 	// Resources configures container resource requirements
 	// +optional
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -397,6 +405,37 @@ type PerconaBackupConfig struct {
 	// +kubebuilder:validation:Minimum=1
 	// +optional
 	RetentionDays *int32 `json:"retentionDays,omitempty"`
+}
+
+// ShareSnapshotPolicySpec declares a scheduled snapshot policy for one share.
+// It maps to the DittoFS snapshot-policy REST surface
+// (PUT /api/v1/shares/{share}/snapshot-policy).
+type ShareSnapshotPolicySpec struct {
+	// Share is the share name the policy applies to (e.g. "/archive").
+	Share string `json:"share"`
+
+	// Interval is the snapshot cadence: a Go duration ("24h", "6h") or an
+	// @-shorthand (@hourly, @daily, @weekly).
+	Interval string `json:"interval"`
+
+	// KeepLast keeps only the newest N scheduler-created snapshots (0 = no
+	// count bound).
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	KeepLast *int32 `json:"keepLast,omitempty"`
+
+	// TTL prunes scheduler-created snapshots older than this Go duration
+	// (empty = no age bound).
+	// +optional
+	TTL string `json:"ttl,omitempty"`
+
+	// Enabled toggles automatic snapshotting. Defaults to true when omitted.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// NamePrefix labels scheduler-created snapshots (default "scheduled").
+	// +optional
+	NamePrefix string `json:"namePrefix,omitempty"`
 }
 
 func init() {

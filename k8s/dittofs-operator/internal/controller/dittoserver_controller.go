@@ -309,6 +309,13 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 				// NetworkPolicies are security-critical, propagate error
 				return ctrl.Result{}, err
 			}
+
+			// Snapshot policy reconciliation: push declared per-share policies.
+			// Best-effort — a share that does not exist yet is skipped and
+			// retried on the next reconcile; failures must not block the loop.
+			if requeue := r.reconcileSnapshotPolicies(ctx, dittoServer); requeue && adapterResult.RequeueAfter == 0 {
+				adapterResult.RequeueAfter = 30 * time.Second
+			}
 		}
 
 		// Use minimum RequeueAfter from all sub-reconcilers

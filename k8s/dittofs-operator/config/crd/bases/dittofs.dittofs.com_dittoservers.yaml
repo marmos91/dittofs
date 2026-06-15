@@ -866,6 +866,53 @@ spec:
                     - LoadBalancer
                     type: string
                 type: object
+              snapshotPolicies:
+                description: |-
+                  SnapshotPolicies declares per-share scheduled snapshot policies. The
+                  operator pushes each entry to the DittoFS API once authenticated; shares
+                  not yet created are skipped and retried on the next reconcile. The
+                  operator only upserts the declared policies — it does not delete policies
+                  removed from this list, so manually-created policies are preserved.
+                items:
+                  description: |-
+                    ShareSnapshotPolicySpec declares a scheduled snapshot policy for one share.
+                    It maps to the DittoFS snapshot-policy REST surface
+                    (PUT /api/v1/shares/{share}/snapshot-policy).
+                  properties:
+                    enabled:
+                      description: Enabled toggles automatic snapshotting. Defaults
+                        to true when omitted.
+                      type: boolean
+                    interval:
+                      description: |-
+                        Interval is the snapshot cadence: a Go duration ("24h", "6h") or an
+                        @-shorthand (@hourly, @daily, @weekly).
+                      type: string
+                    keepLast:
+                      description: |-
+                        KeepLast keeps only the newest N scheduler-created snapshots (0 = no
+                        count bound).
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    namePrefix:
+                      description: NamePrefix labels scheduler-created snapshots (default
+                        "scheduled").
+                      type: string
+                    share:
+                      description: Share is the share name the policy applies to (e.g.
+                        "/archive").
+                      type: string
+                    ttl:
+                      description: |-
+                        TTL prunes scheduler-created snapshots older than this Go duration
+                        (empty = no age bound).
+                      type: string
+                  required:
+                  - interval
+                  - share
+                  type: object
+                type: array
               storage:
                 description: Storage configures PVCs for internal server storage
                 properties:
