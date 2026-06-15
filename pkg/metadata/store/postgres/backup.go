@@ -326,6 +326,16 @@ func (s *PostgresMetadataStore) Restore(ctx context.Context, r io.Reader) error 
 		return fmt.Errorf("restore: commit: %w", err)
 	}
 
+	// The DB has been fully repopulated, but the in-memory usedBytes counter
+	// still holds the pre-restore value (often 0 from the prior Reset truncate).
+	// Recompute it from the committed rows so GetUsedBytes — and the quota guard
+	// in metadata/io.go that reads it — reflect the restored contents without a
+	// process restart. The query runs on the pool, which now sees the committed
+	// data. Badger's restore path does the same at backup.go:291 for parity.
+	if err := s.initUsedBytesCounter(ctx); err != nil {
+		return fmt.Errorf("restore: reinitialize used-bytes counter: %w", err)
+	}
+
 	return nil
 }
 
