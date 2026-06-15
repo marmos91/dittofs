@@ -16,6 +16,7 @@
 #   postgres       - PostgreSQL metadata store (requires running postgres)
 #   memory-content - Memory metadata + memory block store
 #   cache-s3       - Memory metadata + S3 block store (requires localstack)
+#   postgres-s3    - PostgreSQL metadata + S3 block store (requires postgres + localstack)
 #
 # NFS versions:
 #   3   - NFSv3 (default, backward compatible)
@@ -52,7 +53,7 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             echo "Usage: $0 [config-type] [--nfs-version 3|4|4.0|4.1]"
             echo ""
-            echo "Config types: memory (default), badger, postgres, memory-content, cache-s3"
+            echo "Config types: memory (default), badger, postgres, memory-content, cache-s3, postgres-s3"
             echo "NFS versions: 3 (default), 4, 4.0, 4.1"
             echo ""
             echo "Examples:"
@@ -240,7 +241,7 @@ configure_via_api() {
             "$DITTOFSCTL_BIN" store metadata add --name default --type badger \
                 --config "{\"db_path\":\"${DATA_DIR}/metadata\"}"
             ;;
-        postgres)
+        postgres|postgres-s3)
             "$DITTOFSCTL_BIN" store metadata add --name default --type postgres \
                 --config '{"host":"localhost","port":5432,"user":"dittofs","password":"dittofs","database":"dittofs_test","sslmode":"disable","max_conns":50,"min_conns":10}'
             ;;
@@ -252,7 +253,7 @@ configure_via_api() {
         memory-content)
             "$DITTOFSCTL_BIN" store block local add --name default --type memory
             ;;
-        cache-s3)
+        cache-s3|postgres-s3)
             "$DITTOFSCTL_BIN" store block local add --name default --type memory
             log_info "Creating remote block store..."
             "$DITTOFSCTL_BIN" store block remote add --name default --type s3 \
@@ -266,7 +267,7 @@ configure_via_api() {
 
     # Create share
     log_info "Creating share..."
-    if [[ "$CONFIG_TYPE" == "cache-s3" ]]; then
+    if [[ "$CONFIG_TYPE" == "cache-s3" || "$CONFIG_TYPE" == "postgres-s3" ]]; then
         "$DITTOFSCTL_BIN" share create --name /export --metadata default --local default --remote default
     else
         "$DITTOFSCTL_BIN" share create --name /export --metadata default --local default
