@@ -27,6 +27,7 @@ import (
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/utils/conditions"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -263,9 +264,22 @@ func TestProvisionOperatorAccount_UserAlreadyExists(t *testing.T) {
 
 	r := setupAuthReconciler(t, ds, adminSecret)
 
-	// Mock DittoFS API that returns 409 Conflict on CreateUser
+	// When the operator user already exists (409 on CreateUser), provisioning
+	// must reset its password to the freshly generated value so the password it
+	// writes into the credentials Secret authenticates. The mock server tracks
+	// the reset password and only accepts an operator login that presents it.
+	var resetPassword string
 	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
 		"POST /api/v1/auth/login": func(w http.ResponseWriter, req *http.Request) {
+			var body LoginRequest
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			// Admin login always succeeds; operator login must present the reset password.
+			if body.Username == dittoiov1alpha1.OperatorServiceAccountUsername && body.Password != resetPassword {
+				w.Header().Set("Content-Type", "application/problem+json")
+				w.WriteHeader(http.StatusUnauthorized)
+				w.Write([]byte(`{"type":"about:blank","title":"Unauthorized","status":401,"detail":"Invalid credentials"}`))
+				return
+			}
 			w.WriteHeader(http.StatusOK)
 			w.Write(tokenJSON("operator-token", 900))
 		},
@@ -275,11 +289,23 @@ func TestProvisionOperatorAccount_UserAlreadyExists(t *testing.T) {
 			w.WriteHeader(http.StatusConflict)
 			w.Write([]byte(`{"type":"about:blank","title":"Conflict","status":409,"detail":"User already exists"}`))
 		},
+		"POST /api/v1/users/{username}/password": func(w http.ResponseWriter, req *http.Request) {
+			var body struct {
+				NewPassword string `json:"new_password"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			resetPassword = body.NewPassword
+			w.WriteHeader(http.StatusNoContent)
+		},
 	})
 
 	result, err := r.provisionOperatorAccount(context.Background(), ds, server.URL)
 	if err != nil {
 		t.Fatalf("provisionOperatorAccount should succeed when user already exists, got: %v", err)
+	}
+
+	if resetPassword == "" {
+		t.Fatal("expected provisioning to reset the existing operator password, but no reset was issued")
 	}
 
 	// Verify it still created the credentials Secret
@@ -298,6 +324,124 @@ func TestProvisionOperatorAccount_UserAlreadyExists(t *testing.T) {
 
 	if string(credSecret.Data["access-token"]) != "operator-token" {
 		t.Errorf("Expected access token 'operator-token', got %s", string(credSecret.Data["access-token"]))
+	}
+
+	// The invariant: the password stored in the Secret is exactly the one the
+	// server now accepts. An external consumer reading it can authenticate.
+	if got := string(credSecret.Data["password"]); got != resetPassword {
+		t.Errorf("stored password %q does not match the server-side reset password %q", got, resetPassword)
+	}
+}
+
+// TestReconcileAuth_DBReset_ReprovisionsAuthenticatableSecret is the regression
+// test for #1182. It reproduces a control-plane DB reset: the credentials Secret
+// survives in K8s but the operator user is wiped from the DB. The first reconcile
+// takes the refresh path, both refresh and re-login fail (user gone), so the stale
+// Secret is deleted. The second reconcile re-provisions from scratch. The invariant
+// under test is that, end to end, the Secret ends up holding a password the server
+// actually accepts and a freshly minted access token — not the stale pre-reset values.
+func TestReconcileAuth_DBReset_ReprovisionsAuthenticatableSecret(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ds.GetAdminCredentialsSecretName(),
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("admin-pass"),
+		},
+	}
+
+	// Stale credentials Secret carried over from before the reset.
+	staleSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ds.GetOperatorCredentialsSecretName(),
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"username":      []byte(dittoiov1alpha1.OperatorServiceAccountUsername),
+			"password":      []byte("stale-pre-reset-password"),
+			"access-token":  []byte("stale-access-token"),
+			"refresh-token": []byte("stale-refresh-token"),
+			"server-url":    []byte("http://old-url"),
+		},
+	}
+
+	r := setupAuthReconciler(t, ds, adminSecret, staleSecret)
+
+	// Server state after the DB reset: only the admin (re-bootstrapped from the
+	// initial-password env var) exists; the operator user is gone until created.
+	operatorExists := false
+	operatorPassword := ""
+	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
+		"POST /api/v1/auth/refresh": func(w http.ResponseWriter, req *http.Request) {
+			// Signature is still valid (stable JWT key) but the user no longer exists.
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"type":"about:blank","title":"Unauthorized","status":401,"detail":"User not found"}`))
+		},
+		"POST /api/v1/auth/login": func(w http.ResponseWriter, req *http.Request) {
+			var body LoginRequest
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			if body.Username == dittoiov1alpha1.OperatorServiceAccountUsername {
+				if !operatorExists || body.Password != operatorPassword {
+					w.Header().Set("Content-Type", "application/problem+json")
+					w.WriteHeader(http.StatusUnauthorized)
+					w.Write([]byte(`{"type":"about:blank","title":"Unauthorized","status":401,"detail":"Invalid credentials"}`))
+					return
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(tokenJSON("fresh-access-token", 900))
+		},
+		"POST /api/v1/users": func(w http.ResponseWriter, req *http.Request) {
+			var body struct {
+				Username string `json:"username"`
+				Password string `json:"password"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&body)
+			operatorExists = true
+			operatorPassword = body.Password
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"id":"1","username":"k8s-operator","role":"operator"}`))
+		},
+	})
+
+	ctx := context.Background()
+
+	// First reconcile: refresh + re-login fail, stale Secret is deleted.
+	credSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "default", Name: ds.GetOperatorCredentialsSecretName()}, credSecret); err != nil {
+		t.Fatalf("failed to read stale credentials secret: %v", err)
+	}
+	if _, err := r.refreshOperatorToken(ctx, ds, credSecret, server.URL); err == nil {
+		t.Fatal("expected refresh+re-login to fail after a DB reset, got nil error")
+	}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "default", Name: ds.GetOperatorCredentialsSecretName()}, credSecret); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected stale credentials secret to be deleted, got err=%v", err)
+	}
+
+	// Second reconcile: re-provision from scratch now that the Secret is gone.
+	if _, err := r.provisionOperatorAccount(ctx, ds, server.URL); err != nil {
+		t.Fatalf("re-provisioning after DB reset failed: %v", err)
+	}
+
+	// Invariant: the Secret now holds a password the server accepts and a fresh token.
+	final := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: "default", Name: ds.GetOperatorCredentialsSecretName()}, final); err != nil {
+		t.Fatalf("failed to read re-provisioned credentials secret: %v", err)
+	}
+	if string(final.Data["password"]) == "stale-pre-reset-password" {
+		t.Error("Secret still holds the stale pre-reset password")
+	}
+	if string(final.Data["password"]) != operatorPassword {
+		t.Errorf("stored password %q does not match the server-side operator password %q",
+			string(final.Data["password"]), operatorPassword)
+	}
+	if string(final.Data["access-token"]) != "fresh-access-token" {
+		t.Errorf("expected fresh access token, got %q", string(final.Data["access-token"]))
 	}
 }
 

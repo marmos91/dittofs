@@ -271,6 +271,20 @@ func (c *DittoFSClient) DeleteUser(ctx context.Context, username string) error {
 	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/users/%s", username), nil, nil)
 }
 
+// ResetUserPassword sets a new password for an existing user (admin only).
+// Used to make provisioning authoritative: when the operator service account
+// already exists with a password the operator does not know, resetting it to a
+// freshly generated value guarantees the value written into the credentials
+// Secret actually authenticates.
+func (c *DittoFSClient) ResetUserPassword(ctx context.Context, username, newPassword string) error {
+	req := struct {
+		NewPassword string `json:"new_password"`
+	}{
+		NewPassword: newPassword,
+	}
+	return c.do(ctx, http.MethodPost, fmt.Sprintf("/api/v1/users/%s/password", username), req, nil)
+}
+
 // AdapterInfo represents an adapter returned by the DittoFS API.
 // Only fields needed by the operator are included.
 type AdapterInfo struct {
