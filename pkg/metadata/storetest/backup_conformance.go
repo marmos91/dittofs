@@ -68,6 +68,47 @@ func RunBackupConformanceSuite(t *testing.T, factory BackupableStoreFactory) {
 	t.Run("LiveSetUnionsManifestNegativeControl", func(t *testing.T) {
 		testBackup_LiveSetUnionsManifestNegativeControl(t, factory)
 	})
+
+	t.Run("UsedBytesAfterRestore", func(t *testing.T) {
+		testBackup_UsedBytesAfterRestore(t, factory)
+	})
+}
+
+// testBackup_UsedBytesAfterRestore pins the quota-counter invariant: after
+// Restore the in-memory usedBytes counter MUST reflect the restored regular-file
+// bytes, not the destination's pre-restore value. GetUsedBytes feeds the quota
+// guard in metadata/io.go; a stale 0 (the value a freshly-opened store holds on
+// an empty DB) silently disables quota enforcement until the process restarts.
+// The postgres restore path failed to recompute the counter; memory and badger
+// recompute it. This conformance test catches the divergence for every backend.
+func testBackup_UsedBytesAfterRestore(t *testing.T, factory BackupableStoreFactory) {
+	srcStore := factory(t)
+	srcB := asBackupable(t, srcStore)
+	ctx := t.Context()
+
+	// populateTestData writes two regular files of 8 MiB and 6 MiB.
+	populateTestData(t, srcStore, "ub")
+	const wantBytes = int64((8 << 20) + (6 << 20))
+
+	if got := srcStore.GetUsedBytes(); got != wantBytes {
+		t.Fatalf("source GetUsedBytes() = %d, want %d (fixture sanity)", got, wantBytes)
+	}
+
+	var buf bytes.Buffer
+	if _, err := srcB.Backup(ctx, &buf); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	// Restore into a fresh store, whose usedBytes counter starts at 0.
+	dstStore := factory(t)
+	dstB := asBackupable(t, dstStore)
+	if err := dstB.Restore(ctx, &buf); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	if got := dstStore.GetUsedBytes(); got != wantBytes {
+		t.Fatalf("restored GetUsedBytes() = %d, want %d — restore did not recompute the quota counter", got, wantBytes)
+	}
 }
 
 // testBackup_LiveSetSupersetOfBackup pins the GC-vs-snapshot invariant fixed in

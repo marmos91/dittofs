@@ -3,6 +3,7 @@ package badger
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -15,15 +16,32 @@ import (
 // BadgerDB LockStore Implementation
 // ============================================================================
 
-// Key prefixes for lock storage
+// Key prefixes for lock storage. The indexed segment (fileID/ownerID/clientID)
+// is hex-encoded so an attacker-controlled ':' cannot forge an extra key
+// segment (see lockIndexPrefix).
 const (
 	prefixLock         = "lock:"     // Primary: lock:{lockID}
-	prefixLockByFile   = "lkfile:"   // Index: lkfile:{fileID}:{lockID}
-	prefixLockByOwner  = "lkowner:"  // Index: lkowner:{ownerID}:{lockID}
-	prefixLockByClient = "lkclient:" // Index: lkclient:{clientID}:{lockID}
+	prefixLockByFile   = "lkfile:"   // Index: lkfile:{hex(fileID)}:{lockID}
+	prefixLockByOwner  = "lkowner:"  // Index: lkowner:{hex(ownerID)}:{lockID}
+	prefixLockByClient = "lkclient:" // Index: lkclient:{hex(clientID)}:{lockID}
 	prefixServerEpoch  = "srvepoch"  // Single key for epoch
 	keyCleanShutdown   = "srvclean"  // Single key for clean-shutdown marker
 )
+
+// lockIndexPrefix builds a secondary-index key prefix for one indexed value.
+//
+// fileID, ownerID and clientID all carry raw, unauthenticated, network-supplied
+// strings — and OwnerID/FileID legitimately contain ':' (e.g. NLM OwnerID
+// "nlm:caller:svid:oh", FileID = string(FileHandle)). Embedding them raw in a
+// ':'-separated Badger key lets a crafted value inject extra key segments: an
+// OwnerID "victim-owner:fake-lock-id" would plant a key that a later prefix scan
+// for "victim-owner" matches, letting deleteLocksByIndexPrefixTx remove another
+// owner's locks. Hex-encoding the indexed value makes the ':' separator
+// unambiguous so the segment boundary cannot be forged. Mirrors the MonName fix
+// in clients.go:monNameIndexPrefix.
+func lockIndexPrefix(prefix, value string) string {
+	return prefix + hex.EncodeToString([]byte(value)) + ":"
+}
 
 // badgerLockStore implements lock.LockStore using BadgerDB.
 //
@@ -81,19 +99,19 @@ func (s *badgerLockStore) putLockTx(txn *badgerdb.Txn, lk *lock.PersistedLock) e
 	lockIDBytes := []byte(lk.ID)
 
 	// Index by file
-	fileKey := []byte(prefixLockByFile + lk.FileID + ":" + lk.ID)
+	fileKey := []byte(lockIndexPrefix(prefixLockByFile, lk.FileID) + lk.ID)
 	if err := txn.Set(fileKey, lockIDBytes); err != nil {
 		return err
 	}
 
 	// Index by owner
-	ownerKey := []byte(prefixLockByOwner + lk.OwnerID + ":" + lk.ID)
+	ownerKey := []byte(lockIndexPrefix(prefixLockByOwner, lk.OwnerID) + lk.ID)
 	if err := txn.Set(ownerKey, lockIDBytes); err != nil {
 		return err
 	}
 
 	// Index by client
-	clientKey := []byte(prefixLockByClient + lk.ClientID + ":" + lk.ID)
+	clientKey := []byte(lockIndexPrefix(prefixLockByClient, lk.ClientID) + lk.ID)
 	if err := txn.Set(clientKey, lockIDBytes); err != nil {
 		return err
 	}
@@ -168,17 +186,17 @@ func (s *badgerLockStore) deleteLockTx(txn *badgerdb.Txn, lockID string) error {
 	}
 
 	// Delete secondary indexes
-	fileKey := []byte(prefixLockByFile + lk.FileID + ":" + lockID)
+	fileKey := []byte(lockIndexPrefix(prefixLockByFile, lk.FileID) + lockID)
 	if err := txn.Delete(fileKey); err != nil && err != badgerdb.ErrKeyNotFound {
 		return err
 	}
 
-	ownerKey := []byte(prefixLockByOwner + lk.OwnerID + ":" + lockID)
+	ownerKey := []byte(lockIndexPrefix(prefixLockByOwner, lk.OwnerID) + lockID)
 	if err := txn.Delete(ownerKey); err != nil && err != badgerdb.ErrKeyNotFound {
 		return err
 	}
 
-	clientKey := []byte(prefixLockByClient + lk.ClientID + ":" + lockID)
+	clientKey := []byte(lockIndexPrefix(prefixLockByClient, lk.ClientID) + lockID)
 	if err := txn.Delete(clientKey); err != nil && err != badgerdb.ErrKeyNotFound {
 		return err
 	}
@@ -265,11 +283,11 @@ func (s *badgerLockStore) listLocksTx(txn *badgerdb.Txn, query lock.LockQuery) (
 	// Choose the best index based on query
 	switch {
 	case query.FileID != "":
-		prefix = prefixLockByFile + query.FileID + ":"
+		prefix = lockIndexPrefix(prefixLockByFile, query.FileID)
 	case query.OwnerID != "":
-		prefix = prefixLockByOwner + query.OwnerID + ":"
+		prefix = lockIndexPrefix(prefixLockByOwner, query.OwnerID)
 	case query.ClientID != "":
-		prefix = prefixLockByClient + query.ClientID + ":"
+		prefix = lockIndexPrefix(prefixLockByClient, query.ClientID)
 	default:
 		// No specific filter, scan all locks
 		prefix = prefixLock
@@ -344,7 +362,7 @@ func (s *badgerLockStore) DeleteLocksByClient(ctx context.Context, clientID stri
 	count := 0
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		var derr error
-		count, derr = s.deleteLocksByIndexPrefixTx(txn, []byte(prefixLockByClient+clientID+":"))
+		count, derr = s.deleteLocksByIndexPrefixTx(txn, []byte(lockIndexPrefix(prefixLockByClient, clientID)))
 		return derr
 	})
 	return count, err
@@ -359,7 +377,7 @@ func (s *badgerLockStore) DeleteLocksByFile(ctx context.Context, fileID string) 
 	count := 0
 	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		var derr error
-		count, derr = s.deleteLocksByIndexPrefixTx(txn, []byte(prefixLockByFile+fileID+":"))
+		count, derr = s.deleteLocksByIndexPrefixTx(txn, []byte(lockIndexPrefix(prefixLockByFile, fileID)))
 		return derr
 	})
 	return count, err
@@ -628,7 +646,7 @@ func (tx *badgerTransaction) DeleteLocksByClient(ctx context.Context, clientID s
 	// the rest of the operation and are discarded if WithTransaction retries on
 	// an OCC conflict (the store-level method would commit out-of-band).
 	tx.store.initLockStore()
-	return tx.store.lockStore.deleteLocksByIndexPrefixTx(tx.txn, []byte(prefixLockByClient+clientID+":"))
+	return tx.store.lockStore.deleteLocksByIndexPrefixTx(tx.txn, []byte(lockIndexPrefix(prefixLockByClient, clientID)))
 }
 
 func (tx *badgerTransaction) DeleteLocksByFile(ctx context.Context, fileID string) (int, error) {
@@ -636,7 +654,7 @@ func (tx *badgerTransaction) DeleteLocksByFile(ctx context.Context, fileID strin
 		return 0, err
 	}
 	tx.store.initLockStore()
-	return tx.store.lockStore.deleteLocksByIndexPrefixTx(tx.txn, []byte(prefixLockByFile+fileID+":"))
+	return tx.store.lockStore.deleteLocksByIndexPrefixTx(tx.txn, []byte(lockIndexPrefix(prefixLockByFile, fileID)))
 }
 
 func (tx *badgerTransaction) GetServerEpoch(ctx context.Context) (uint64, error) {
