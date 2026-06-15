@@ -157,6 +157,28 @@ func TestHandleErrorFactoriesMapToHandleStatuses(t *testing.T) {
 	}
 }
 
+// TestQuotaExceededMapsToDquot locks the #1151 contract: a per-identity quota
+// breach (ErrQuotaExceeded) maps to DQUOT on NFS and STATUS_QUOTA_EXCEEDED on
+// SMB — distinct from a genuine full volume (ErrNoSpace -> NOSPC / DISK_FULL).
+func TestQuotaExceededMapsToDquot(t *testing.T) {
+	quota := &merrs.StoreError{Code: merrs.ErrQuotaExceeded, Message: "quota exceeded"}
+	if got := MapToNFS3(quota); got != nfs3types.NFS3ErrDquot {
+		t.Errorf("MapToNFS3(ErrQuotaExceeded) = %d, want NFS3ErrDquot", got)
+	}
+	if got := MapToNFS4(quota); got != nfs4types.NFS4ERR_DQUOT {
+		t.Errorf("MapToNFS4(ErrQuotaExceeded) = %d, want NFS4ERR_DQUOT", got)
+	}
+	if got := MapToSMB(quota); got != smbtypes.StatusQuotaExceeded {
+		t.Errorf("MapToSMB(ErrQuotaExceeded) = %v, want StatusQuotaExceeded", got)
+	}
+
+	// ErrNoSpace stays NOSPC / DISK_FULL — quota must NOT collapse into it.
+	nospace := &merrs.StoreError{Code: merrs.ErrNoSpace, Message: "no space"}
+	if got := MapToSMB(nospace); got != smbtypes.StatusDiskFull {
+		t.Errorf("MapToSMB(ErrNoSpace) = %v, want StatusDiskFull", got)
+	}
+}
+
 // TestMapContentToNFS3 exercises nil + ErrRemoteUnavailable + unknown.
 func TestMapContentToNFS3(t *testing.T) {
 	if got := MapContentToNFS3(nil); got != nfs3types.NFS3OK {
