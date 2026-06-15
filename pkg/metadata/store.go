@@ -375,6 +375,19 @@ type Store interface {
 	// This is an O(1) read from an atomic counter.
 	GetUsedBytes() int64
 
+	// GetQuotaUsage returns the per-identity usage (bytes + file count) for the
+	// given scope (user/group) and identity id (uid or gid). Regular files only,
+	// charged to the file owner (FileAttr.UID / FileAttr.GID). This mirrors
+	// GetUsedBytes but keyed by owner identity so per-user/per-group quotas can
+	// be enforced and reported. An identity with no owned regular files returns a
+	// zero UsageStat and a nil error.
+	//
+	// Like GetUsedBytes, this is intended to be O(1): backends maintain keyed
+	// counters updated transactionally alongside the size delta, seeded at
+	// startup from an aggregate scan (badger/postgres) or naturally accumulated
+	// (memory).
+	GetQuotaUsage(scope QuotaScope, id uint32) (UsageStat, error)
+
 	// ========================================================================
 	// Store Lifecycle (not transactional)
 	// ========================================================================

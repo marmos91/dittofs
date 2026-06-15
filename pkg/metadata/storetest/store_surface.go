@@ -23,6 +23,8 @@ func runStoreSurfaceTests(t *testing.T, factory StoreFactory) {
 	t.Run("DeleteShareViaTransaction", func(t *testing.T) { testDeleteShareViaTransaction(t, factory) })
 	t.Run("DuplicateCreateShare", func(t *testing.T) { testDuplicateCreateShare(t, factory) })
 	t.Run("GetUsedBytes", func(t *testing.T) { testGetUsedBytes(t, factory) })
+	t.Run("GetQuotaUsage", func(t *testing.T) { testGetQuotaUsage(t, factory) })
+	t.Run("GetQuotaUsageChown", func(t *testing.T) { testGetQuotaUsageChown(t, factory) })
 	t.Run("GetFileByPayloadID", func(t *testing.T) { testGetFileByPayloadID(t, factory) })
 	t.Run("FilesystemMetaStatsCaps", func(t *testing.T) { testFilesystemMetaStatsCaps(t, factory) })
 	t.Run("ServerConfigRoundTrip", func(t *testing.T) { testServerConfigRoundTrip(t, factory) })
@@ -323,6 +325,163 @@ func testGetUsedBytes(t *testing.T, factory StoreFactory) {
 	if got := store.GetUsedBytes(); got != 0 {
 		t.Fatalf("GetUsedBytes() = %d, want 0 after deleting the only file", got)
 	}
+}
+
+// createTestFileOwned creates a regular file owned by a specific uid/gid and a
+// given size, wiring parent/child/link-count like createTestFile. Used by the
+// per-identity quota usage conformance tests.
+func createTestFileOwned(t *testing.T, store metadata.Store, shareName string, dirHandle metadata.FileHandle, name string, uid, gid uint32, size uint64) metadata.FileHandle {
+	t.Helper()
+	ctx := t.Context()
+
+	fullPath := childFullPath(t, store, dirHandle, name)
+	handle, err := store.GenerateHandle(ctx, shareName, fullPath)
+	if err != nil {
+		t.Fatalf("GenerateHandle() failed: %v", err)
+	}
+	_, id, err := metadata.DecodeFileHandle(handle)
+	if err != nil {
+		t.Fatalf("DecodeFileHandle() failed: %v", err)
+	}
+	file := &metadata.File{
+		ShareName: shareName,
+		Path:      fullPath,
+		ID:        id,
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular,
+			Mode: 0o644,
+			UID:  uid,
+			GID:  gid,
+			Size: size,
+		},
+	}
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() failed: %v", err)
+	}
+	if err := store.SetParent(ctx, handle, dirHandle); err != nil {
+		t.Fatalf("SetParent() failed: %v", err)
+	}
+	if err := store.SetChild(ctx, dirHandle, name, handle); err != nil {
+		t.Fatalf("SetChild() failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 1); err != nil {
+		t.Fatalf("SetLinkCount() failed: %v", err)
+	}
+	return handle
+}
+
+func wantUsage(t *testing.T, store metadata.Store, scope metadata.QuotaScope, id uint32, wantBytes, wantFiles int64) {
+	t.Helper()
+	u, err := store.GetQuotaUsage(scope, id)
+	if err != nil {
+		t.Fatalf("GetQuotaUsage(%v, %d) failed: %v", scope, id, err)
+	}
+	if u.Bytes != wantBytes || u.Files != wantFiles {
+		t.Fatalf("GetQuotaUsage(%v, %d) = {Bytes:%d Files:%d}, want {Bytes:%d Files:%d}",
+			scope, id, u.Bytes, u.Files, wantBytes, wantFiles)
+	}
+}
+
+// testGetQuotaUsage verifies per-identity usage accounting (bytes + file count)
+// for both user and group scopes across create / grow / truncate / delete, and
+// that distinct owners are tracked independently. Directories must never count.
+func testGetQuotaUsage(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/quota-usage"
+	rootHandle := createTestShare(t, store, shareName)
+
+	// Fresh share: every identity reports zero.
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 0, 0)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 0, 0)
+
+	// uid=1000/gid=2000 creates a 500-byte file.
+	hA := createTestFileOwned(t, store, shareName, rootHandle, "a.bin", 1000, 2000, 500)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 500, 1)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 500, 1)
+
+	// uid=1000/gid=2000 creates a second 300-byte file: bytes+count roll up.
+	createTestFileOwned(t, store, shareName, rootHandle, "b.bin", 1000, 2000, 300)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 800, 2)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 800, 2)
+
+	// A different owner (uid=1001/gid=2000) is tracked independently for the
+	// user scope; the shared gid rolls them together.
+	createTestFileOwned(t, store, shareName, rootHandle, "c.bin", 1001, 2000, 100)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 800, 2)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1001, 100, 1)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 900, 3)
+
+	// A directory must not count toward any identity.
+	createTestDir(t, store, shareName, rootHandle, "subdir")
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 800, 2)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 900, 3)
+
+	// Grow a.bin from 500 to 900: only the byte counter for its owner moves.
+	setFileSize(t, store, hA, 900)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 1200, 2)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 1300, 3)
+
+	// Truncate a.bin down to 100: byte counter shrinks, count unchanged.
+	setFileSize(t, store, hA, 100)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 400, 2)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 500, 3)
+
+	// Delete a.bin: bytes+count removed from its owner.
+	if err := store.DeleteChild(ctx, rootHandle, "a.bin"); err != nil {
+		t.Fatalf("DeleteChild() failed: %v", err)
+	}
+	if err := store.DeleteFile(ctx, hA); err != nil {
+		t.Fatalf("DeleteFile() failed: %v", err)
+	}
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 300, 1)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 400, 2)
+}
+
+// testGetQuotaUsageChown verifies that changing a regular file's UID/GID via
+// PutFile moves its bytes+count from the old identity to the new — the
+// easy-to-miss accounting event called out by #1151.
+func testGetQuotaUsageChown(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	const shareName = "/quota-chown"
+	rootHandle := createTestShare(t, store, shareName)
+
+	handle := createTestFileOwned(t, store, shareName, rootHandle, "f.bin", 1000, 2000, 400)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 400, 1)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 400, 1)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1001, 0, 0)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2001, 0, 0)
+
+	// Chown to uid=1001/gid=2001: usage moves wholesale.
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	file.UID = 1001
+	file.GID = 2001
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() chown failed: %v", err)
+	}
+	wantUsage(t, store, metadata.QuotaScopeUser, 1000, 0, 0)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2000, 0, 0)
+	wantUsage(t, store, metadata.QuotaScopeUser, 1001, 400, 1)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2001, 400, 1)
+
+	// Chown only the gid (uid stays 1001): user scope unchanged, group moves.
+	file, err = store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	file.GID = 2002
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() gid-only chown failed: %v", err)
+	}
+	wantUsage(t, store, metadata.QuotaScopeUser, 1001, 400, 1)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2001, 0, 0)
+	wantUsage(t, store, metadata.QuotaScopeGroup, 2002, 400, 1)
 }
 
 // testGetFileByPayloadID verifies the flusher's content-id lookup: a file
