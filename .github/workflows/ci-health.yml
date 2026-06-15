@@ -1,0 +1,240 @@
+# CI Health — develop-red alarm + forcing function
+#
+# Centralizes all conformance alerting. Per-workflow ad-hoc "create regression
+# issue" steps were removed in favor of this single owner.
+#
+# Two responsibilities:
+#
+#   alarm (workflow_run): when a conformance workflow finishes a POSTSUBMIT or
+#     PERIODIC run on develop (push or schedule — NOT a PR run):
+#       - on failure: email alarm (if SMTP secrets present) + open/comment a
+#         deduped P0 `develop-red` issue.
+#       - on success: close any open `develop-red` issue ("tree reopened").
+#
+#   warn-on-pr (pull_request): if develop is currently RED, post/update a single
+#     loud (warn-only, non-blocking) comment on the PR.
+#
+# Email is guarded so it no-ops cleanly when secrets are absent — CI never fails
+# just because SMTP secrets are not configured yet.
+
+name: CI Health
+
+on:
+  workflow_run:
+    workflows:
+      - "POSIX Compliance Tests"
+      - "SMB Conformance Tests"
+      - "E2E Tests"
+      - "NFS Kerberos"
+    types: [completed]
+  pull_request:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Alarm: react to a finished conformance run on develop.
+  # Only postsubmit/periodic runs (push or schedule on develop) trigger alerts;
+  # PR-triggered conformance runs are ignored here (warn-on-pr handles PRs).
+  # ---------------------------------------------------------------------------
+  alarm:
+    name: develop-red alarm
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.head_branch == 'develop' &&
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')
+    env:
+      HAS_SMTP: ${{ secrets.SMTP_PASSWORD != '' }}
+      WORKFLOW: ${{ github.event.workflow_run.name }}
+      CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      REPO: ${{ github.repository }}
+      # Any non-success terminal conclusion (failure, timed_out, cancelled,
+      # action_required, …) means develop is not green and must alarm.
+      IS_RED: ${{ github.event.workflow_run.conclusion != 'success' }}
+
+    steps:
+      - name: Ensure develop-red label exists
+        if: env.IS_RED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh label create develop-red \
+            --repo "$REPO" \
+            --color B60205 \
+            --description "develop branch CI is red (P0)" 2>/dev/null || true
+
+      # Gather failed-job links + best-effort failing test names, then build the
+      # email (HTML + text), subject, and issue markdown. The Python script is
+      # committed + unit-testable, which keeps fragile body templating out of YAML.
+      - name: Collect failure details
+        if: env.IS_RED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          # Failed jobs: name, deep log URL, and the failed step name.
+          gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[]
+                  | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")
+                  | {name, url: .html_url, step: ([.steps[]? | select(.conclusion == "failure" or .conclusion == "timed_out") | .name] | join(", "))}' \
+            > /tmp/failed_jobs.ndjson || true
+
+          # Best-effort failing test names from the failed steps' logs.
+          gh run view "$RUN_ID" --repo "$REPO" --log-failed > /tmp/failed.log 2>/dev/null || true
+          {
+            # POSIX: the grader prints "New failures not in <KF>:" then "  - <file>".
+            sed -n '/New failures not in/,/^[[:space:]]*$/p' /tmp/failed.log | grep -oE '[a-z_]+/[0-9]+\.t'
+            # Generic TAP failures ("not ok ... rename/23.t").
+            grep -i 'not ok' /tmp/failed.log | grep -oE '[a-z_]+/[0-9]+\.t'
+            # smbtorture / WPTS test ids near a FAIL line.
+            grep -iE 'fail' /tmp/failed.log | grep -oE 'smb2\.[A-Za-z0-9_.]+'
+          } 2>/dev/null | sort -u > /tmp/failing_tests.txt || true
+
+          python3 .github/scripts/ci_health_email.py
+
+          # Hand the built content to later steps (multiline-safe).
+          {
+            echo "MAIL_SUBJECT=$(cat /tmp/mail_subject)"
+            echo "MAIL_HTML<<__CIH_HTML__"; cat /tmp/mail.html; echo; echo "__CIH_HTML__"
+            echo "MAIL_TEXT<<__CIH_TEXT__"; cat /tmp/mail.txt; echo; echo "__CIH_TEXT__"
+            echo "ISSUE_MD<<__CIH_ISSUE__"; cat /tmp/issue.md; echo; echo "__CIH_ISSUE__"
+          } >> "$GITHUB_ENV"
+
+      - name: Send failure email
+        if: env.IS_RED == 'true' && env.HAS_SMTP == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          # Port 465 = implicit TLS; 587 = STARTTLS (the action's default).
+          secure: ${{ secrets.SMTP_PORT == '465' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: ${{ env.MAIL_SUBJECT }}
+          to: ${{ secrets.ALERT_EMAIL_TO }}
+          # MUST be an SES-verified identity — SMTP_USERNAME is the access-key id,
+          # not an address, so it would bounce. ALERT_EMAIL_FROM is the verified sender.
+          from: DittoFS CI <${{ secrets.ALERT_EMAIL_FROM }}>
+          html_body: ${{ env.MAIL_HTML }}
+          body: ${{ env.MAIL_TEXT }}
+
+      - name: Open or update develop-red issue
+        if: env.IS_RED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # ISSUE_MD is built by the "Collect failure details" step — failed-job
+          # links + best-effort failing test names, same facts as the email.
+          COMMENT="$ISSUE_MD"
+
+          EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
+            echo "Commented on existing develop-red issue #$EXISTING"
+          else
+            BODY=$(printf 'develop CI is RED. Builds on develop are landing on a broken base.\n\n%s\n\nThis issue auto-closes once every monitored conformance workflow is green on develop.' \
+              "$COMMENT")
+            gh issue create --repo "$REPO" \
+              --title "🔴 develop CI is RED" \
+              --label develop-red \
+              --assignee marmos91 \
+              --body "$BODY"
+          fi
+
+      - name: Close develop-red issue on green
+        if: env.CONCLUSION == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
+            --json number --jq '.[0].number // empty')
+          if [ -z "$EXISTING" ]; then
+            echo "No open develop-red issue; nothing to close."
+            exit 0
+          fi
+
+          # Only reopen the tree once EVERY monitored workflow's latest
+          # completed run on develop is success — otherwise one workflow going
+          # green while another is still red would falsely close the issue.
+          ALL_GREEN=true
+          for wf in posix-tests.yml smb-conformance.yml e2e-tests.yml nfs-kerberos.yml; do
+            CONC=$(gh run list --repo "$REPO" --workflow "$wf" --branch develop \
+              --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"')
+            echo "  $wf -> $CONC"
+            if [ "$CONC" != "success" ] && [ "$CONC" != "none" ]; then
+              ALL_GREEN=false
+            fi
+          done
+
+          if [ "$ALL_GREEN" = true ]; then
+            gh issue close "$EXISTING" --repo "$REPO" \
+              --comment "✅ develop green again at \`${HEAD_SHA}\` — all conformance workflows passing. Tree reopened."
+            echo "Closed develop-red issue #$EXISTING"
+          else
+            gh issue comment "$EXISTING" --repo "$REPO" \
+              --body "**${WORKFLOW}** is green at \`${HEAD_SHA}\`, but another monitored workflow is still red — keeping this open until all pass."
+            echo "Kept develop-red issue #$EXISTING open (not all workflows green)"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Forcing function (warn-only): if develop is currently RED, warn on the PR.
+  # Idempotent via a hidden marker so the same comment is updated, not stacked.
+  # ---------------------------------------------------------------------------
+  warn-on-pr:
+    name: warn if develop is red
+    runs-on: ubuntu-latest
+    # Same-repo PRs only: fork PRs get a read-only GITHUB_TOKEN, so commenting
+    # would fail and turn this warn-only check into a red job.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    steps:
+      - name: Post/update develop-red warning
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          MARKER="<!-- ci-health:develop-red-warning -->"
+
+          ISSUE=$(gh issue list --repo "$REPO" --label develop-red --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [ -z "$ISSUE" ]; then
+            echo "develop is green; no warning needed."
+            exit 0
+          fi
+
+          # Find any existing bot warning comment by its hidden marker.
+          # --paginate walks all pages so a stale marker is never missed (which
+          # would otherwise post a duplicate comment each run).
+          EXISTING_COMMENT=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1)
+
+          BODY=$(printf '%s\n⚠️ **develop is currently RED (see #%s).** Your PR builds on a broken base — fix/await develop before merging. (Warning only; this does not block the merge.)' \
+            "$MARKER" "$ISSUE")
+
+          if [ -n "$EXISTING_COMMENT" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING_COMMENT" \
+              -f body="$BODY" >/dev/null
+            echo "Updated existing warning comment $EXISTING_COMMENT"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" \
+              -f body="$BODY" >/dev/null
+            echo "Posted new warning comment"
+          fi

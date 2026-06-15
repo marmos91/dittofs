@@ -1,38 +1,46 @@
 # POSIX Compliance Tests for DittoFS
 #
-# Runs pjdfstest (8,789 tests) to validate filesystem behavior against POSIX standards.
-# Tests all metadata store backends: Memory, BadgerDB, PostgreSQL.
-# Tests NFSv3, NFSv4.0, and NFSv4.1 protocol versions.
+# Runs pjdfstest (8,789 tests) to validate filesystem behavior against POSIX
+# standards across NFSv3, NFSv4.0, and NFSv4.1.
 #
-# All events (PR/Push/Cron): full matrix (memory + badger + postgres = 9 jobs).
-# Weekly cron: Sunday 4 AM UTC with auto-issue on regression.
+# Tiered by EVENT, not by path. A change to any shared code (e.g. a metadata
+# store) can break every protocol, so conformance runs on ALL non-docs PRs.
+# Path filters skip docs-only changes only.
+#
+#   presubmit  (pull_request): memory + postgres-s3   × 3 versions =  6 jobs
+#   postsubmit (push develop) + nightly cron:
+#              memory, badger, postgres, postgres-s3   × 3 versions = 12 jobs
+#
+# postgres-s3 = PostgreSQL metadata + S3 (Localstack) remote block store; the
+# profile-matrix job carries both a postgres service and a localstack service,
+# and setup-posix.sh uses only what each profile needs.
 
 name: POSIX Compliance Tests
 
 on:
   push:
     branches: [develop, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
   pull_request:
     branches: [develop, main]
-    paths:
-      - 'cmd/dfs/**'
-      - 'cmd/dfsctl/**'
-      - 'pkg/adapter/nfs/**'
-      - 'pkg/adapter/base.go'
-      - 'internal/adapter/nfs/**'
-      - 'pkg/metadata/**'
-      - 'pkg/block/**'
-      - 'pkg/controlplane/**'
-      - 'pkg/config/**'
-      - 'test/posix/**'
-      - '.github/workflows/posix-tests.yml'
-      - 'go.mod'
-      - 'go.sum'
-      - 'flake.nix'
-      - 'flake.lock'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
   schedule:
-    # Weekly on Sunday at 4 AM UTC
-    - cron: '0 4 * * 0'
+    # Nightly at 4 AM UTC.
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -44,10 +52,6 @@ env:
 
 jobs:
   # Build binaries once and share across test jobs.
-  # The full backend matrix (memory + badger + postgres) runs on every event,
-  # including PRs — postgres is the production backend and its path-keyed store
-  # is where most CI-blind bugs have hidden. Known backend-specific gaps are
-  # tracked in the KNOWN_FAILURES tables (graded yellow, not red) until fixed.
   build:
     name: Build Binaries
     runs-on: ubuntu-latest
@@ -78,9 +82,12 @@ jobs:
             dfsctl
           retention-days: 1
 
-  # NFS POSIX tests for memory and badger stores (no external services needed)
+  # Profile-driven POSIX matrix. The job always provisions both a postgres
+  # service and a localstack service; setup-posix.sh activates only the
+  # backends a given profile requires (postgres* → postgres, *-s3 → S3).
+  # Idle services are cheap and keep the matrix to a single job definition.
   posix-nfs:
-    name: NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }}
+    name: NFS v${{ matrix.nfs_version }} / ${{ matrix.profile }}
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 60
@@ -88,126 +95,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        store: [memory, badger]
-        nfs_version: ['3', '4', '4.1']
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
-
-      - name: Install NFS client utilities
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nfs-common
-
-      - name: Download binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: dfs-binaries
-
-      - name: Make binaries executable
-        run: chmod +x dfs dfsctl
-
-      - name: Build pjdfstest in Nix
-        run: |
-          PJDFSTEST=$(nix build .#pjdfstest --print-out-paths)
-          echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
-
-      - name: Setup DittoFS
-        id: setup
-        run: |
-          if [ "${{ matrix.nfs_version }}" != "3" ]; then
-            sudo -E ./test/posix/setup-posix.sh ${{ matrix.store }} --nfs-version ${{ matrix.nfs_version }}
-          else
-            sudo -E ./test/posix/setup-posix.sh ${{ matrix.store }}
-          fi
-
-      - name: Debug - Show server log on failure
-        if: failure() && steps.setup.outcome == 'failure'
-        run: |
-          echo "=== Server Log ==="
-          cat /tmp/dittofs-posix-server.log 2>/dev/null || echo "No server log found"
-          echo ""
-          echo "=== Process List ==="
-          ps aux | grep dfs || true
-          echo ""
-          echo "=== Port 8080 ==="
-          ss -tlnp | grep 8080 || echo "Port 8080 not listening"
-          echo ""
-          echo "=== Port 12049 ==="
-          ss -tlnp | grep 12049 || echo "Port 12049 not listening"
-
-      - name: Run POSIX tests
-        run: |
-          TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
-          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.store }}.log
-
-          cd $DITTOFS_MOUNT
-          sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
-            2>&1 | tee "$LOG_FILE" || true
-
-          echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }} Results" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -30 "$LOG_FILE" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Grade results against known-failures blacklist
-        run: |
-          set -o pipefail
-          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.store }}.log
-
-          # Blacklist model (matches the SMB conformance harness): every failure
-          # must be on the version-appropriate KNOWN_FAILURES table, or the job
-          # is red. v4.0 and v4.1 share the v4 table.
-          case "${{ matrix.nfs_version }}" in
-            4|4.0|4.1) KF=test/posix/KNOWN_FAILURES_V4.md ;;
-            *)         KF=test/posix/KNOWN_FAILURES.md ;;
-          esac
-
-          # errexit is on (Actions default) + pipefail above; disable around the
-          # pipeline so a graded-red run still captures rc and writes the summary.
-          set +e
-          ./test/posix/parse-results.sh "$LOG_FILE" "$KF" "$RUNNER_TEMP" | tee ~/posix-grade.txt
-          rc=${PIPESTATUS[0]}
-          set -e
-
-          {
-            echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.store == 'badger' && 'BadgerDB' || 'Memory' }} — graded"
-            [ -f "$RUNNER_TEMP/summary.txt" ] && cat "$RUNNER_TEMP/summary.txt"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          exit "$rc"
-
-      - name: Cleanup
-        if: always()
-        run: sudo ./test/posix/teardown-posix.sh || true
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.store }}-results
-          path: |
-            ~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.store }}.log
-            /tmp/dittofs-posix-server.log
-          retention-days: 30
-
-  # PostgreSQL store tests (requires postgres service container)
-  posix-nfs-postgres:
-    name: NFS v${{ matrix.nfs_version }} / PostgreSQL
-    runs-on: ubuntu-latest
-    needs: build
-    timeout-minutes: 60
-
-    strategy:
-      fail-fast: false
-      matrix:
+        # presubmit: memory + postgres-s3; postsubmit/nightly: full backends.
+        profile: >-
+          ${{ github.event_name == 'pull_request'
+              && fromJson('["memory", "postgres-s3"]')
+              || fromJson('["memory", "badger", "postgres", "postgres-s3"]') }}
         nfs_version: ['3', '4', '4.1']
 
     services:
@@ -226,6 +118,24 @@ jobs:
           --health-timeout 5s
           --health-retries 5
           --shm-size=256mb
+
+      localstack:
+        image: localstack/localstack:4.13.1
+        env:
+          SERVICES: s3
+          EAGER_SERVICE_LOADING: "1"
+          GATEWAY_LISTEN: "0.0.0.0:4566"
+          DISABLE_CORS_CHECKS: "1"
+          DISABLE_CUSTOM_CORS_S3: "1"
+          DEBUG: "0"
+          LOCALSTACK_HOST: localhost:4566
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl -sf https://localhost:4566/_localstack/health -k || curl -sf http://localhost:4566/_localstack/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -256,6 +166,7 @@ jobs:
           echo "PJDFSTEST_DIR=$PJDFSTEST" >> $GITHUB_ENV
 
       - name: Tune PostgreSQL for testing
+        if: startsWith(matrix.profile, 'postgres')
         run: |
           PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET synchronous_commit = 'off';"
           PGPASSWORD=dittofs psql -h localhost -U dittofs -d dittofs_test -c "ALTER SYSTEM SET checkpoint_timeout = '30min';"
@@ -266,9 +177,9 @@ jobs:
         id: setup
         run: |
           if [ "${{ matrix.nfs_version }}" != "3" ]; then
-            sudo -E ./test/posix/setup-posix.sh postgres --nfs-version ${{ matrix.nfs_version }}
+            sudo -E ./test/posix/setup-posix.sh ${{ matrix.profile }} --nfs-version ${{ matrix.nfs_version }}
           else
-            sudo -E ./test/posix/setup-posix.sh postgres
+            sudo -E ./test/posix/setup-posix.sh ${{ matrix.profile }}
           fi
 
       - name: Debug - Show server log on failure
@@ -289,13 +200,13 @@ jobs:
       - name: Run POSIX tests
         run: |
           TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
-          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-postgres.log
+          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.profile }}.log
 
           cd $DITTOFS_MOUNT
           sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
             2>&1 | tee "$LOG_FILE" || true
 
-          echo "## NFS v${{ matrix.nfs_version }} / PostgreSQL Results" >> $GITHUB_STEP_SUMMARY
+          echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.profile }} Results" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -30 "$LOG_FILE" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -303,10 +214,11 @@ jobs:
       - name: Grade results against known-failures blacklist
         run: |
           set -o pipefail
-          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-postgres.log
+          LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.profile }}.log
 
-          # Blacklist model (matches the SMB conformance harness): v4.0 and v4.1
-          # share the v4 table.
+          # Blacklist model (matches the SMB conformance harness): every failure
+          # must be on the version-appropriate KNOWN_FAILURES table, or the job
+          # is red. v4.0 and v4.1 share the v4 table.
           case "${{ matrix.nfs_version }}" in
             4|4.0|4.1) KF=test/posix/KNOWN_FAILURES_V4.md ;;
             *)         KF=test/posix/KNOWN_FAILURES.md ;;
@@ -320,7 +232,7 @@ jobs:
           set -e
 
           {
-            echo "## NFS v${{ matrix.nfs_version }} / PostgreSQL — graded"
+            echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.profile }} — graded"
             [ -f "$RUNNER_TEMP/summary.txt" ] && cat "$RUNNER_TEMP/summary.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -334,16 +246,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: posix-nfs-v${{ matrix.nfs_version }}-postgres-results
+          name: posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.profile }}-results
           path: |
-            ~/posix-nfs-v${{ matrix.nfs_version }}-postgres.log
+            ~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.profile }}.log
             /tmp/dittofs-posix-server.log
           retention-days: 30
 
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [posix-nfs, posix-nfs-postgres]
+    needs: [posix-nfs]
     if: always()
 
     steps:
@@ -370,20 +282,20 @@ jobs:
             esac
 
             echo "## NFS v${version}" >> $GITHUB_STEP_SUMMARY
-            echo "| Store | Status |" >> $GITHUB_STEP_SUMMARY
-            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Profile | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
 
-            for store in memory badger postgres; do
-              LOG="results/posix-nfs-v${version}-${store}-results/posix-nfs-v${version}-${store}.log"
+            for profile in memory badger postgres postgres-s3; do
+              LOG="results/posix-nfs-v${version}-${profile}-results/posix-nfs-v${version}-${profile}.log"
 
               if [ -f "$LOG" ]; then
                 if ./test/posix/parse-results.sh "$LOG" "$KF" >/dev/null 2>&1; then
-                  echo "| ${store^} | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY
+                  echo "| ${profile} | :white_check_mark: Pass |" >> $GITHUB_STEP_SUMMARY
                 else
-                  echo "| ${store^} | :x: Fail |" >> $GITHUB_STEP_SUMMARY
+                  echo "| ${profile} | :x: Fail |" >> $GITHUB_STEP_SUMMARY
                 fi
               else
-                echo "| ${store^} | :grey_question: Skipped |" >> $GITHUB_STEP_SUMMARY
+                echo "| ${profile} | :grey_question: Skipped |" >> $GITHUB_STEP_SUMMARY
               fi
             done
 
@@ -392,51 +304,3 @@ jobs:
 
           echo "**Known failures:** see \`test/posix/KNOWN_FAILURES.md\` (NFSv3) and" >> $GITHUB_STEP_SUMMARY
           echo "\`test/posix/KNOWN_FAILURES_V4.md\` (NFSv4.x)." >> $GITHUB_STEP_SUMMARY
-
-  # Create a GitHub issue on weekly schedule regression
-  auto-issue:
-    name: Create Regression Issue
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    needs: [posix-nfs, posix-nfs-postgres]
-    if: >-
-      always() &&
-      github.event_name == 'schedule' &&
-      (needs.posix-nfs.result == 'failure' || needs.posix-nfs-postgres.result == 'failure')
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Create or update issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          NFS_RESULT="${{ needs.posix-nfs.result }}"
-          PG_RESULT="${{ needs.posix-nfs-postgres.result }}"
-
-          BODY="## POSIX Regression Detected
-
-          The weekly POSIX compliance run on \`develop\` found unexpected failures.
-
-          | Job | Result |
-          |-----|--------|
-          | posix-nfs | ${NFS_RESULT} |
-          | posix-nfs-postgres | ${PG_RESULT} |
-
-          **Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-          Please investigate and fix before the next release."
-
-          # De-duplicate: if an open issue already exists, comment instead of creating a new one
-          EXISTING=$(gh issue list --label "bug" --label "ci" --state open --search "POSIX regression detected" --json number --jq '.[0].number // empty')
-
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --body "$BODY"
-            echo "Updated existing issue #$EXISTING"
-          else
-            gh issue create \
-              --title "POSIX regression detected (weekly run $(date +%Y-%m-%d))" \
-              --body "$BODY" \
-              --label "bug" --label "ci"
-          fi

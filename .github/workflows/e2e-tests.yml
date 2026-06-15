@@ -12,28 +12,34 @@
 
 name: E2E Tests
 
+# Tiered by EVENT, not by path: E2E runs a single representative full-matrix
+# config on every non-docs change (path filters skip docs only), plus a
+# nightly cron. There is no heavy per-store matrix to tier here.
+
 on:
   push:
     branches: [develop, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
   pull_request:
     branches: [develop, main]
-    paths:
-      - 'cmd/dfs/**'
-      - 'pkg/adapter/nfs/**'
-      - 'pkg/adapter/smb/**'
-      - 'pkg/adapter/base.go'
-      - 'internal/adapter/nfs/**'
-      - 'internal/adapter/smb/**'
-      - 'pkg/metadata/**'
-      - 'pkg/block/**'
-      - 'pkg/controlplane/**'
-      - 'pkg/config/**'
-      - 'test/e2e/**'
-      - '.github/workflows/e2e-tests.yml'
-      - 'go.mod'
-      - 'go.sum'
-      - 'flake.nix'
-      - 'flake.lock'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
+  schedule:
+    # Nightly at 4 AM UTC.
+    - cron: '0 4 * * *'
   workflow_dispatch:
 
 concurrency:

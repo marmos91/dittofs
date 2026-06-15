@@ -1,45 +1,41 @@
 # SMB Conformance Tests
 #
-# Runs Microsoft WPTS FileServer BVT (all profiles, every event) plus the
-# Samba smbtorture battery against the DittoFS SMB adapter. smbtorture is
-# tiered: memory + badger-fs on PRs (latency), the broader set on develop push
-# and weekly cron. A separate job runs smbtorture under Kerberos auth.
+# Runs Microsoft WPTS FileServer BVT + Samba smbtorture against the DittoFS
+# SMB adapter.
+#
+# Tiered by EVENT, not by path. Shared code (e.g. a metadata store) can break
+# SMB, so conformance runs on ALL non-docs PRs; path filters skip docs only.
+#
+#   WPTS BVT     presubmit: memory + postgres-s3; postsubmit/nightly: all 5.
+#   smbtorture   presubmit: memory + badger-fs (run.sh has no *-s3 profile);
+#                postsubmit/nightly: memory + memory-fs + badger-fs.
+#   Kerberos     OFF presubmit — push-to-develop + nightly cron + dispatch only.
 
 name: SMB Conformance Tests
 
 on:
-  # Path-scoped to SMB/store/controlplane/auth code so docs-only and
-  # unrelated changes never trigger this heavy suite (#1157). A Kerberos-only
-  # code change must still exercise the smbtorture-kerberos job, so the auth
-  # kerberos packages are listed explicitly alongside the SMB adapter paths.
   push:
     branches: [develop]
-    paths:
-      - 'pkg/adapter/smb/**'
-      - 'internal/adapter/smb/**'
-      - 'pkg/metadata/**'
-      - 'pkg/block/**'
-      - 'pkg/controlplane/**'
-      - 'pkg/auth/kerberos/**'
-      - 'internal/auth/kerberos/**'
-      - 'test/smb-conformance/**'
-      - 'pkg/adapter/base.go'
-      - '.github/workflows/smb-conformance.yml'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
   pull_request:
     branches: [develop, main]
-    paths:
-      - 'pkg/adapter/smb/**'
-      - 'internal/adapter/smb/**'
-      - 'pkg/metadata/**'
-      - 'pkg/block/**'
-      - 'pkg/controlplane/**'
-      - 'pkg/auth/kerberos/**'
-      - 'internal/auth/kerberos/**'
-      - 'test/smb-conformance/**'
-      - 'pkg/adapter/base.go'
-      - '.github/workflows/smb-conformance.yml'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
   schedule:
-    - cron: '0 3 * * 1'  # Weekly Monday 3 AM UTC
+    - cron: '0 4 * * *'  # Nightly 4 AM UTC
   workflow_dispatch:
     inputs:
       profile:
@@ -67,13 +63,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Full store matrix on every event (PR/push/cron) — badger and postgres
-        # SMB behavior must be covered at PR time, not only post-merge.
-        # workflow_dispatch still runs a single chosen profile.
+        # presubmit: memory + postgres-s3 (run in parallel ≈ one profile
+        # wall-clock); postsubmit + nightly: all 5 profiles. workflow_dispatch
+        # runs the single chosen profile.
         profile: >-
           ${{
             github.event_name == 'workflow_dispatch'
               && fromJson(format('["{0}"]', inputs.profile))
+            || github.event_name == 'pull_request'
+              && fromJson('["memory", "postgres-s3"]')
             || fromJson('["memory", "memory-fs", "badger-fs", "badger-s3", "postgres-s3"]')
           }}
 
@@ -131,21 +129,6 @@ jobs:
           path: test/smb-conformance/results/
           retention-days: 30
 
-      - name: Create regression issue (weekly)
-        if: failure() && github.event_name == 'schedule'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          RESULTS_DIR=$(ls -td test/smb-conformance/results/*/ 2>/dev/null | head -1)
-          BODY="SMB conformance tests failed for profile \`${{ matrix.profile }}\` during weekly regression run."
-          if [ -n "$RESULTS_DIR" ]; then
-            BODY="${BODY}\n\nResults: See GitHub Actions artifacts for this run."
-          fi
-          gh issue create \
-            --title "SMB Conformance Regression: ${{ matrix.profile }}" \
-            --body "$BODY" \
-            --label "bug,smb,conformance" || true
-
   smbtorture:
     name: smbtorture / ${{ matrix.profile }}
     runs-on: ubuntu-latest
@@ -154,23 +137,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # smbtorture is heavy (~30+ sub-suites, 45-min budget per profile), so
-        # the PR matrix is kept lean for latency (#1157) while still giving a
-        # persistent-backend signal (#1158): memory (fastest) + badger-fs (the
-        # only PR profile that exercises the fs local store path; faster than the
-        # s3 profiles). The full set runs on push to develop and the weekly cron.
-        #
-        # workflow_dispatch runs the single chosen profile, but only the profiles
-        # smbtorture's run.sh actually supports (memory, memory-fs, badger-fs);
-        # the shared dispatch input also offers the s3 profiles for the WPTS job,
-        # which smbtorture rejects at profile validation — so an s3 dispatch falls
-        # back to memory here rather than failing the whole job.
+        # smbtorture run.sh supports only memory/memory-fs/badger-fs (no *-s3),
+        # so presubmit pairs memory + badger-fs (parallel ≈ one profile). A
+        # workflow_dispatch with an unsupported (*-s3) profile clamps to memory
+        # rather than crashing run.sh.
         profile: >-
           ${{
             github.event_name == 'pull_request'
               && fromJson('["memory", "badger-fs"]')
-            || (github.event_name == 'workflow_dispatch'
-                && contains(fromJson('["memory", "memory-fs", "badger-fs"]'), inputs.profile))
+            || github.event_name == 'workflow_dispatch'
+              && contains(fromJson('["memory", "memory-fs", "badger-fs"]'), inputs.profile)
               && fromJson(format('["{0}"]', inputs.profile))
             || github.event_name == 'workflow_dispatch'
               && fromJson('["memory"]')
@@ -207,29 +183,12 @@ jobs:
           retention-days: 30
 
   smbtorture-kerberos:
-    name: smbtorture Kerberos / ${{ matrix.filter }}
+    name: smbtorture Kerberos
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
-    strategy:
-      fail-fast: false
-      matrix:
-        # Cover Kerberos-sensitive operations beyond session setup. The
-        # kerberos session key signs/encrypts every PDU, so the authenticated
-        # data path (read) and byte-range locking (lock) exercise the key past
-        # SPNEGO. These run as an explicit small set (one filter per parallel
-        # job), NOT the whole battery, to stay under the 30-min budget.
-        #
-        # smb2.create is intentionally NOT in this set: it has known failures
-        # (create.quota-fake-file, create.gentest) catalogued in
-        # KNOWN_FAILURES.md, but run.sh --kerberos only loads the
-        # session-scoped KNOWN_FAILURES_KERBEROS.md, so those expected fails
-        # would be graded as new failures and red the job. Add it here once the
-        # kerberos known-failures list covers the create suite.
-        filter:
-          - smb2.session
-          - smb2.read
-          - smb2.lock
+    # OFF presubmit: Kerberos is expensive and rarely the regressing surface on
+    # an ordinary PR. Runs on push-to-develop, nightly cron, and manual dispatch.
+    if: github.event_name != 'pull_request'
 
     steps:
       - name: Checkout
@@ -238,20 +197,33 @@ jobs:
       # The self-contained KDC (test/smb-conformance/kdc) is started via
       # the docker-compose "kerberos" profile by run.sh --kerberos. No
       # external KDC or secrets required.
+      #
+      # Filters cover the krb-sensitive ops, not just session setup: a
+      # truncated/garbled GSS session key surfaces on read/lock too.
+      # run.sh takes a single --filter, so iterate (one suite per invocation)
+      # to keep each run inside the harness's per-suite timeout budget.
+      #
+      # smb2.create is intentionally excluded: its known failures are catalogued
+      # only in the non-Kerberos KNOWN_FAILURES.md, so it would grade as NEW
+      # failures under --kerberos. Re-add once a Kerberos KF list covers it.
       - name: Run smbtorture with Kerberos
         run: |
           cd test/smb-conformance/smbtorture
-          ./run.sh --kerberos --filter ${{ matrix.filter }} --verbose
+          rc=0
+          for f in smb2.session smb2.read smb2.lock; do
+            ./run.sh --kerberos --filter "$f" --verbose || rc=$?
+          done
+          exit "$rc"
 
       - name: Add step summary
         if: always()
         run: |
           RESULTS_DIR=$(ls -td test/smb-conformance/results/smbtorture-*/ 2>/dev/null | head -1 || true)
           if [ -n "$RESULTS_DIR" ] && [ -f "$RESULTS_DIR/summary.txt" ]; then
-            echo "## smbtorture Kerberos: ${{ matrix.filter }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "## smbtorture Kerberos" >> "$GITHUB_STEP_SUMMARY"
             cat "$RESULTS_DIR/summary.txt" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "## smbtorture Kerberos: ${{ matrix.filter }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "## smbtorture Kerberos" >> "$GITHUB_STEP_SUMMARY"
             echo "No results found." >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -259,6 +231,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smbtorture-kerberos-${{ matrix.filter }}
+          name: smbtorture-kerberos
           path: test/smb-conformance/results/smbtorture-*/
           retention-days: 30
