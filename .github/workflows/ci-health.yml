@@ -79,6 +79,7 @@ jobs:
         if: env.IS_RED == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -uo pipefail
 
@@ -89,16 +90,14 @@ jobs:
                   | {name, url: .html_url, step: ([.steps[]? | select(.conclusion == "failure" or .conclusion == "timed_out") | .name] | join(", "))}' \
             > /tmp/failed_jobs.ndjson || true
 
-          # Best-effort failing test names from the failed steps' logs.
+          # Failed-step logs — the email builder attributes failing test names
+          # to each job by parsing the "<job>\t<step>\t<line>" prefix.
           gh run view "$RUN_ID" --repo "$REPO" --log-failed > /tmp/failed.log 2>/dev/null || true
-          {
-            # POSIX: the grader prints "New failures not in <KF>:" then "  - <file>".
-            sed -n '/New failures not in/,/^[[:space:]]*$/p' /tmp/failed.log | grep -oE '[a-z_]+/[0-9]+\.t'
-            # Generic TAP failures ("not ok ... rename/23.t").
-            grep -i 'not ok' /tmp/failed.log | grep -oE '[a-z_]+/[0-9]+\.t'
-            # smbtorture / WPTS test ids near a FAIL line.
-            grep -iE 'fail' /tmp/failed.log | grep -oE 'smb2\.[A-Za-z0-9_.]+'
-          } 2>/dev/null | sort -u > /tmp/failing_tests.txt || true
+
+          # Commit subject + author for context in the alarm.
+          COMMIT_MSG=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null | head -1 || true)
+          COMMIT_AUTHOR=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.author.name' 2>/dev/null || true)
+          export COMMIT_MSG COMMIT_AUTHOR
 
           python3 .github/scripts/ci_health_email.py
 
