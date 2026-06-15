@@ -23,6 +23,7 @@ func init() {
 	ioctlDispatch = map[uint32]IOCTLHandler{
 		FsctlValidateNegotiateInfo:  (*Handler).handleValidateNegotiateInfo,
 		FsctlGetReparsePoint:        (*Handler).handleGetReparsePoint,
+		FsctlSetReparsePoint:        (*Handler).handleSetReparsePoint,
 		FsctlPipeTransceive:         (*Handler).handlePipeTransceive,
 		FsctlGetNtfsVolumeData:      (*Handler).handleGetNtfsVolumeData,
 		FsctlReadFileUsnData:        (*Handler).handleReadFileUsnData,
