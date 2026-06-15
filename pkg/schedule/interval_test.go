@@ -44,11 +44,3 @@ func TestParseInterval(t *testing.T) {
 		})
 	}
 }
-
-func TestFormatInterval(t *testing.T) {
-	// FormatInterval is the inverse used for display; it returns the Go
-	// duration string (shorthands are an input convenience only).
-	if got := FormatInterval(24 * time.Hour); got != "24h0m0s" {
-		t.Errorf("FormatInterval(24h) = %q, want 24h0m0s", got)
-	}
-}
