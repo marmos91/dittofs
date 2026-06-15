@@ -121,6 +121,13 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Squash != nil {
+		// Validate rather than store-and-echo: ParseSquashMode silently falls back
+		// to the default (root_to_admin) for anything unrecognized, so `--squash root`
+		// would quietly become "no root squash" without an error (#1181).
+		if *req.Squash != "" && !models.SquashMode(*req.Squash).IsValid() {
+			BadRequest(w, "Invalid squash: "+*req.Squash+" (want none|root_to_admin|root_to_guest|all_to_admin|all_to_guest)")
+			return
+		}
 		opts.Squash = *req.Squash
 	}
 	if req.AnonymousUID != nil {
