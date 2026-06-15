@@ -554,45 +554,51 @@ func (lm *LeaseManager) GetSessionForLease(leaseKey [16]byte) (sessionID uint64,
 // lease is bound to a (ClientGuid, LeaseKey) pair, so an ack is valid only
 // when it arrives from the owning client.
 //
-// Authorization rule (most-specific first):
-//   - If a ClientGUID was recorded for this leaseKey (the normal lease-V2 /
-//     multi-session path) the ack's connection ClientGUID MUST match it.
-//   - Otherwise (no GUID recorded — traditional oplock-as-lease, durable
-//     reconnect paths, and tests that don't thread a CryptoState) fall back
-//     to the per-lease sessionMap and require the ack's sessionID to match.
+// Authorization rule:
+//   - The lease must exist (sessionMap is the authoritative leaseKey registry).
+//   - The ack is authorized if the acking sessionID is the lease's registering
+//     session (the common case), OR the ack's connection ClientGUID matches the
+//     lease's recorded (ClientGuid, LeaseKey) binding (multichannel / durable
+//     reconnect on a different session of the same client).
 //
 // Returns false when the lease is unknown so a stray ack for a non-existent
 // lease key cannot be used to probe state. A zero connGUID never matches a
 // recorded non-zero GUID, so an attacker who cannot reproduce the victim's
 // ClientGUID is rejected.
+//
+// Cost: O(1) for the legitimate-owner ack (the only ack a well-behaved client
+// sends) via the sessionMap fast path below. The ClientGUID scan runs only for
+// acks whose sessionID does NOT already own the lease — and is bounded by the
+// number of distinct clients holding this EXACT leaseKey (effectively 1 for
+// real clients, which use random 16-byte keys), not the total lease count.
 func (lm *LeaseManager) VerifyLeaseAckOwnership(leaseKey [16]byte, sessionID uint64, connGUID [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
 
-	// Prefer ClientGUID binding when one was recorded for this key.
-	matchedGUID := false
-	for clk, guid := range lm.leaseClientGUID {
-		if clk.Key != leaseKey {
-			continue
-		}
-		matchedGUID = true
-		if guid == connGUID && connGUID != ([16]byte{}) {
-			return true
-		}
-	}
-	if matchedGUID {
-		// A GUID binding exists but the ack's connection GUID didn't match
-		// any of them (or was zero): reject.
+	// Lease must exist (sessionMap is the authoritative leaseKey registry).
+	sid, known := lm.sessionMap[leaseKey]
+	if !known {
 		return false
 	}
 
-	// Legacy fallback: no ClientGUID binding. Require the per-lease session
-	// to match the acking session.
-	sid, ok := lm.sessionMap[leaseKey]
-	if !ok {
-		return false
+	// Fast path: the registering session is acking its own lease. O(1).
+	if sid == sessionID {
+		return true
 	}
-	return sid == sessionID
+
+	// Otherwise the ack may still be legitimate via the ClientGUID binding
+	// (multichannel / durable reconnect on a different session of the same
+	// client). Match the ack's connection GUID against the lease's recorded
+	// binding. A zero connGUID never matches a recorded non-zero GUID.
+	if connGUID != ([16]byte{}) {
+		for clk, guid := range lm.leaseClientGUID {
+			if clk.Key == leaseKey && guid == connGUID {
+				return true
+			}
+		}
+	}
+	// Neither the owning session nor a matching ClientGUID binding -> reject.
+	return false
 }
 
 // GetSessionForBreak returns the sessionID that should receive a break

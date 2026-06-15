@@ -1228,8 +1228,11 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				"hasNTHash", hasNTHash,
 				"action", "run 'dittofs user passwd' to set a password")
 
-			// Re-auth and bind must fail closed without replacing/keeping the
-			// existing session (MS-SMB2 §3.3.5.5.2 / §3.3.5.5.3).
+			// Fail closed. On re-auth the existing authenticated session MUST be
+			// destroyed (MS-SMB2 §3.3.5.5.3) so the prior identity cannot
+			// survive a failed re-auth. On bind the existing session is left
+			// intact (MS-SMB2 §3.3.5.5.2) — only this bind attempt fails. A
+			// fresh SESSION_SETUP simply returns LOGON_FAILURE with no session.
 			if pending.IsReauth {
 				h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			}

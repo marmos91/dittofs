@@ -253,10 +253,18 @@ func TestVerifyLeaseAckOwnership(t *testing.T) {
 			t.Fatalf("RequestLease: %v", err)
 		}
 
-		// Owning client's connection GUID is accepted (sessionID irrelevant
-		// when a GUID binding exists — break routing is client-level).
+		// Owning session acks its own lease.
 		if !lm.VerifyLeaseAckOwnership(leaseKey, ownerSession, ownerGUID) {
-			t.Error("owning client's ack rejected — should be accepted")
+			t.Error("owning session's ack rejected — should be accepted")
+		}
+
+		// Multichannel / durable reconnect: a DIFFERENT session of the SAME
+		// client (same ClientGUID) acks. Break routing is client-level, so
+		// this must be accepted via the GUID binding even though the sessionID
+		// differs from the registering one.
+		const otherOwnerSession uint64 = 101
+		if !lm.VerifyLeaseAckOwnership(leaseKey, otherOwnerSession, ownerGUID) {
+			t.Error("same-client different-session ack rejected — multichannel/durable owner must be accepted via ClientGUID")
 		}
 
 		// An attacker session on a DIFFERENT client GUID must be rejected even
