@@ -669,3 +669,27 @@ func TestDirEntryEaSize_MatchesFullEaInformationSize(t *testing.T) {
 		t.Errorf("no-EA entry: EaSize = %d, want 0", got)
 	}
 }
+
+// TestDirEntryEaSize_NilAttrNoPanic verifies that the EaSize-carrying directory
+// encoders do not panic when attr is nil. attr is nil for "." / ".." when
+// GetFile fails and per the documented-optional DirEntry.Attr contract; before
+// the fix writeDirEntryEaSize dereferenced attr.EAs and panicked on any
+// EaSize-carrying FileInfoClass when the metadata store errored. A nil attr
+// carries no EAs, so EaSize must be 0.
+func TestDirEntryEaSize_NilAttrNoPanic(t *testing.T) {
+	readEaSize := func(entry []byte) uint32 {
+		return uint32(entry[64]) | uint32(entry[65])<<8 | uint32(entry[66])<<16 | uint32(entry[67])<<24
+	}
+
+	cases := map[string][]byte{
+		"both":   encodeBothDirEntry(".", nil, 1),
+		"idboth": encodeIdBothDirEntry(".", nil, 1, 0x1234),
+		"full":   encodeFullDirEntry(".", nil, 1),
+		"idfull": encodeIdFullDirEntry(".", nil, 1, 0x1234),
+	}
+	for name, entry := range cases {
+		if got := readEaSize(entry); got != 0 {
+			t.Errorf("%s: nil-attr EaSize = %d, want 0", name, got)
+		}
+	}
+}

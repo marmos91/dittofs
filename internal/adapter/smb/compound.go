@@ -220,18 +220,18 @@ func ProcessCompoundRequest(ctx context.Context, firstHeader *header.SMB2Header,
 		}
 	}
 
-	respHeader, body := buildResponseHeaderAndBody(firstHeader, handlerCtx, result, connInfo)
-	// collect ReleaseData from the sub-result so sendCompoundResponses
-	// can fire it AFTER the composed wire write — not between sub-responses.
-	var firstRelease func()
+	// A nil result signals "no response should be sent" — only CANCEL does this
+	// per MS-SMB2 §3.3.5.16. Compounding CANCEL is prohibited by spec, but a
+	// malicious or buggy client can still send it; building a response from the
+	// nil result would dereference result.Status and panic the connection
+	// goroutine (DoS). Skip emitting a response for this subcommand and continue
+	// processing the rest of the chain, mirroring the standalone path.
 	if result != nil {
-		firstRelease = result.ReleaseData
-	}
-	state.responses = append(state.responses, compoundResponse{respHeader: respHeader, body: body, releaseData: firstRelease})
-	if handlerCtx != nil && handlerCtx.PostSend != nil {
-		state.postSendHooks = append(state.postSendHooks, handlerCtx.PostSend)
-	}
-	if result != nil {
+		respHeader, body := buildResponseHeaderAndBody(firstHeader, handlerCtx, result, connInfo)
+		state.responses = append(state.responses, compoundResponse{respHeader: respHeader, body: body, releaseData: result.ReleaseData})
+		if handlerCtx != nil && handlerCtx.PostSend != nil {
+			state.postSendHooks = append(state.postSendHooks, handlerCtx.PostSend)
+		}
 		state.lastCmdSessionFailed = isSessionLevelError(result.Status)
 		state.lastCmdFailed = result.Status.IsError()
 		if state.lastCmdFailed {
@@ -977,6 +977,15 @@ func (s *compoundLoopState) processRemaining(
 			s.markStartedAsyncIDs = append(s.markStartedAsyncIDs, cmdResult.AsyncId)
 		}
 
+		// A nil result signals "no response should be sent" (CANCEL, per
+		// MS-SMB2 §3.3.5.16). Passing it to buildResponseHeaderAndBody would
+		// dereference cmdResult.Status and panic the connection goroutine.
+		// Compounding CANCEL is prohibited by spec, but the server must not
+		// crash on malformed client input — skip this subcommand's response.
+		if cmdResult == nil {
+			continue
+		}
+
 		rh, rb := buildResponseHeaderAndBody(hdr, cmdCtx, cmdResult, connInfo)
 		// Per MS-SMB2 3.3.5.2.7: if the request had FLAGS_RELATED_OPERATIONS,
 		// the response MUST also have FLAGS_RELATED_OPERATIONS set.
@@ -985,11 +994,7 @@ func (s *compoundLoopState) processRemaining(
 		}
 		// propagate the sub-result's ReleaseData so the composed wire
 		// write can fire it post-write (see compoundResponse doc comment).
-		var subRelease func()
-		if cmdResult != nil {
-			subRelease = cmdResult.ReleaseData
-		}
-		s.responses = append(s.responses, compoundResponse{respHeader: rh, body: rb, releaseData: subRelease})
+		s.responses = append(s.responses, compoundResponse{respHeader: rh, body: rb, releaseData: cmdResult.ReleaseData})
 
 		// Collect any PostSend hook (CLOSE→CHANGE_NOTIFY cleanup) so it can
 		// fire strictly after the compound frame has been written.

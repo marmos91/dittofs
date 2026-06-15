@@ -875,6 +875,88 @@ func TestCheckShareModeConflict_ADSCrossStream(t *testing.T) {
 	})
 }
 
+// TestCheckShareModeConflict_MaximumAllowed verifies that a handle opened with
+// MAXIMUM_ALLOWED (0x02000000) is treated as carrying write+delete rights for
+// share-mode enforcement. MAXIMUM_ALLOWED resolves to the maximal granted
+// rights (write+delete on a writable handle), and the raw bit survives in
+// OpenFile.DesiredAccess (ExpandGenericMask strips GENERIC_* but not
+// MAXIMUM_ALLOWED). Before the fix hasWrite/hasDelete omitted the bit, so a
+// MAXIMUM_ALLOWED opener was treated as read-only and bypassed SHARE_WRITE /
+// SHARE_DELETE enforcement in both directions.
+func TestCheckShareModeConflict_MaximumAllowed(t *testing.T) {
+	const (
+		fileReadData    = uint32(0x00000001)
+		fileWriteData   = uint32(0x00000002)
+		fileShareRead   = uint32(0x01)
+		fileShareWrite  = uint32(0x02)
+		fileShareDelete = uint32(0x04)
+		maximumAllowed  = uint32(0x02000000)
+	)
+
+	t.Run("ExistingMaxAllowed_NewNoWriteShare_WriteConflict", func(t *testing.T) {
+		h := NewHandler()
+		// Existing MAXIMUM_ALLOWED handle that does NOT share write.
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt",
+			DesiredAccess:  maximumAllowed,
+			ShareAccess:    fileShareRead, // no FILE_SHARE_WRITE
+			MetadataHandle: []byte{0x01},
+		})
+		// New writer with full sharing must conflict: the existing
+		// MAXIMUM_ALLOWED handle holds write and does not share it.
+		if !h.checkShareModeConflict([]byte{0x01}, fileWriteData, fileShareRead|fileShareWrite|fileShareDelete, "file.txt") {
+			t.Error("Expected conflict: existing MAXIMUM_ALLOWED holds write but does not share it")
+		}
+	})
+
+	t.Run("ExistingMaxAllowed_NewNoDeleteShare_DeleteConflict", func(t *testing.T) {
+		h := NewHandler()
+		const deleteAccess = uint32(0x00010000)
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt",
+			DesiredAccess:  maximumAllowed,
+			ShareAccess:    fileShareRead | fileShareWrite, // no FILE_SHARE_DELETE
+			MetadataHandle: []byte{0x01},
+		})
+		if !h.checkShareModeConflict([]byte{0x01}, deleteAccess, fileShareRead|fileShareWrite|fileShareDelete, "file.txt") {
+			t.Error("Expected conflict: existing MAXIMUM_ALLOWED holds delete but does not share it")
+		}
+	})
+
+	t.Run("NewMaxAllowed_ExistingNoWriteShare_WriteConflict", func(t *testing.T) {
+		h := NewHandler()
+		// Existing read handle that does NOT share write.
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt",
+			DesiredAccess:  fileReadData,
+			ShareAccess:    fileShareRead, // no FILE_SHARE_WRITE
+			MetadataHandle: []byte{0x01},
+		})
+		// New MAXIMUM_ALLOWED opener implies write; the existing handle does
+		// not share write, so this must conflict.
+		if !h.checkShareModeConflict([]byte{0x01}, maximumAllowed, fileShareRead|fileShareWrite|fileShareDelete, "file.txt") {
+			t.Error("Expected conflict: new MAXIMUM_ALLOWED implies write, existing handle does not share write")
+		}
+	})
+
+	t.Run("NewMaxAllowed_ExistingNoDeleteShare_DeleteConflict", func(t *testing.T) {
+		h := NewHandler()
+		h.StoreOpenFile(&OpenFile{
+			FileID:         h.GenerateFileID(),
+			Path:           "file.txt",
+			DesiredAccess:  fileReadData,
+			ShareAccess:    fileShareRead | fileShareWrite, // no FILE_SHARE_DELETE
+			MetadataHandle: []byte{0x01},
+		})
+		if !h.checkShareModeConflict([]byte{0x01}, maximumAllowed, fileShareRead|fileShareWrite|fileShareDelete, "file.txt") {
+			t.Error("Expected conflict: new MAXIMUM_ALLOWED implies delete, existing handle does not share delete")
+		}
+	})
+}
+
 // =============================================================================
 // PendingAuth Struct Tests
 // =============================================================================

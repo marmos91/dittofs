@@ -2031,12 +2031,20 @@ func (h *Handler) checkShareModeConflict(fileHandle metadata.FileHandle, newDesi
 		return access&(fileReadData|fileExecute|genericRead|genericAll|maxAllowed) != 0
 	}
 	// Helper: does access mask imply write?
+	// MAXIMUM_ALLOWED resolves to the maximal granted rights, which include
+	// write+delete on a writable handle. Samba's share_conflict evaluates the
+	// resolved effective mask; DittoFS keeps the raw 0x02000000 bit in
+	// OpenFile.DesiredAccess (ExpandGenericMask strips GENERIC_* but not
+	// MAXIMUM_ALLOWED), so it must be treated as write/delete here too —
+	// otherwise a MAXIMUM_ALLOWED opener is wrongly treated as read-only and
+	// bypasses SHARE_WRITE / SHARE_DELETE enforcement (matches hasRead above and
+	// the module-level hasWriteAccess/hasDeleteAccess).
 	hasWrite := func(access uint32) bool {
-		return access&(fileWriteData|fileAppendData|genericWrite|genericAll) != 0
+		return access&(fileWriteData|fileAppendData|genericWrite|genericAll|maxAllowed) != 0
 	}
 	// Helper: does access mask imply delete?
 	hasDelete := func(access uint32) bool {
-		return access&(deleteAccess|genericAll) != 0
+		return access&(deleteAccess|genericAll|maxAllowed) != 0
 	}
 
 	newBase := adsBasePath(filePath)

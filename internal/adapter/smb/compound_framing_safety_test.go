@@ -100,3 +100,94 @@ func TestProcessRemaining_RelatedSignatureNotSkipped(t *testing.T) {
 			got, types.StatusAccessDenied)
 	}
 }
+
+// cancelBody is the 4-byte SMB2 CANCEL request body (StructureSize=4, Reserved=0).
+// A CANCEL handler returns a nil result (MS-SMB2 §3.3.5.16: no response) only
+// when the body is at least 4 bytes; a shorter body yields an error result.
+var cancelBody = []byte{0x04, 0x00, 0x00, 0x00}
+
+// encodeCompoundCommand encodes hdr+body as one compound member. When withNext
+// is true the member is padded to an 8-byte-aligned length and its NextCommand
+// field is set to that length so a following member can be appended.
+func encodeCompoundCommand(hdr *header.SMB2Header, body []byte, withNext bool) []byte {
+	if withNext {
+		// 8-byte align so NextCommand satisfies the alignment + min-size gates.
+		total := (header.HeaderSize + len(body) + 7) &^ 7
+		hdr.NextCommand = uint32(total)
+	}
+	frame := append(hdr.Encode(), body...)
+	if withNext {
+		for len(frame) < int(hdr.NextCommand) {
+			frame = append(frame, 0)
+		}
+	}
+	return frame
+}
+
+// TestProcessRemaining_CancelSubcommandNoPanic verifies that a CANCEL appearing
+// as a subsequent compound command does not panic. ProcessRequestWithFileID...
+// returns a nil result for CANCEL (MS-SMB2 §3.3.5.16 requires no response);
+// before the fix processRemaining passed that nil to buildResponseHeaderAndBody,
+// which dereferenced result.Status and crashed the connection goroutine (DoS).
+// After the fix the nil subcommand is skipped and the chain continues.
+func TestProcessRemaining_CancelSubcommandNoPanic(t *testing.T) {
+	ci := newConnInfoForDispatch(t, 1, types.Dialect0311)
+
+	// CANCEL (yields nil result) chained to a trailing CANCEL. Both emit no
+	// response per §3.3.5.16, so the response list must be empty — and the
+	// loop must not panic on the first nil.
+	first := encodeCompoundCommand(&header.SMB2Header{Command: types.SMB2Cancel, MessageID: 2}, cancelBody, true)
+	second := encodeCompoundCommand(&header.SMB2Header{Command: types.SMB2Cancel, MessageID: 3}, cancelBody, false)
+	frame := append(first, second...)
+
+	state := compoundLoopState{lastSessionID: 0, lastTreeID: 0}
+	state.processRemaining(context.Background(), frame, ci, false, nil)
+
+	if len(state.responses) != 0 {
+		t.Fatalf("CANCEL subcommands must emit no response, got %d", len(state.responses))
+	}
+}
+
+// TestProcessRemaining_CancelThenRealCommandContinues verifies that after a nil
+// CANCEL subcommand the loop continues and still emits a response for the next
+// command (a nil result must skip, not abort the chain). The trailing command
+// uses an invalid command code so prepareDispatch returns a non-nil error
+// result (STATUS_INVALID_PARAMETER) — proving the following member was
+// processed despite the preceding nil.
+func TestProcessRemaining_CancelThenRealCommandContinues(t *testing.T) {
+	ci := newConnInfoForDispatch(t, 1, types.Dialect0311)
+
+	const invalidCommand = types.Command(0xFFFF)
+	first := encodeCompoundCommand(&header.SMB2Header{Command: types.SMB2Cancel, MessageID: 2}, cancelBody, true)
+	second := encodeCompoundCommand(&header.SMB2Header{Command: invalidCommand, MessageID: 3}, nil, false)
+	frame := append(first, second...)
+
+	state := compoundLoopState{lastSessionID: 0, lastTreeID: 0}
+	state.processRemaining(context.Background(), frame, ci, false, nil)
+
+	if len(state.responses) != 1 {
+		t.Fatalf("expected 1 response (CANCEL skipped, invalid command answered), got %d", len(state.responses))
+	}
+	if got := state.responses[0].respHeader.Status; got != types.StatusInvalidParameter {
+		t.Fatalf("trailing command status = 0x%x, want STATUS_INVALID_PARAMETER (0x%x)", got, types.StatusInvalidParameter)
+	}
+}
+
+// TestProcessCompoundRequest_CancelFirstNoPanic verifies that a CANCEL as the
+// FIRST command of a compound does not panic. The first-command path in
+// ProcessCompoundRequest previously passed the nil CANCEL result straight to
+// buildResponseHeaderAndBody (result.Status nil deref → connection-goroutine
+// crash). After the fix the nil first command is skipped and the remaining
+// chain is processed.
+func TestProcessCompoundRequest_CancelFirstNoPanic(t *testing.T) {
+	ci := newConnInfoForDispatch(t, 1, types.Dialect0311)
+
+	const invalidCommand = types.Command(0xFFFF)
+	firstHeader := &header.SMB2Header{Command: types.SMB2Cancel, MessageID: 2}
+	// Trailing member: invalid command → non-nil error response, proving the
+	// chain continued past the nil first command.
+	remaining := encodeCompoundCommand(&header.SMB2Header{Command: invalidCommand, MessageID: 3}, nil, false)
+
+	// This must not panic.
+	ProcessCompoundRequest(context.Background(), firstHeader, cancelBody, firstHeader.Encode(), remaining, ci, false, nil)
+}
