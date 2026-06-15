@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -395,29 +396,57 @@ func TestCreateSession_Replay(t *testing.T) {
 	}
 }
 
-func TestCreateSession_ReplayNoCachedResponse(t *testing.T) {
+// TestCreateSession_ReplayAfterImplicitCache verifies that CreateSession
+// populates the replay cache atomically with the seqid bump (RFC 8881
+// Section 18.36): a retransmit that arrives before the handler does any
+// follow-up work must still observe the cached XDR response, never
+// NFS4ERR_SEQ_MISORDERED.
+//
+// Before the fix the cache was populated in a separate lock acquisition by
+// the handler (CacheCreateSessionResponse), leaving a window where the seqid
+// had advanced but the cache was still nil — a replay in that window returned
+// ErrSeqMisordered and broke Linux mount.
+func TestCreateSession_ReplayAfterImplicitCache(t *testing.T) {
 	sm := NewStateManager(DefaultLeaseDuration)
 	clientID, seqID := registerV41Client(t, sm)
 
-	// First request - but don't cache the response
-	_, _, err := sm.CreateSession(
+	// First request. The handler does NOT call CacheCreateSessionResponse;
+	// CreateSession itself must have populated the cache under sm.mu.
+	first, cached, err := sm.CreateSession(
 		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
 	if err != nil {
 		t.Fatalf("CreateSession error: %v", err)
 	}
+	if cached != nil {
+		t.Fatal("Expected nil cached bytes for new session")
+	}
+	if len(first.EncodedRes) == 0 {
+		t.Fatal("CreateSession must return the encoded response bytes")
+	}
 
-	// Replay with same seqid (record's SequenceID is now seqID)
-	_, _, err = sm.CreateSession(
+	// Immediate replay with the same seqid -- no intervening cache call.
+	replayResult, replayCached, err := sm.CreateSession(
 		clientID, seqID, 0,
 		defaultForeAttrs(), defaultBackAttrs(), 0, nil,
 	)
-	if err == nil {
-		t.Fatal("Expected error for replay without cached response")
+	if err != nil {
+		t.Fatalf("replay must succeed with cached response, got error: %v", err)
 	}
-	if !errors.Is(err, ErrSeqMisordered) {
-		t.Errorf("Expected ErrSeqMisordered, got: %v", err)
+	if replayResult != nil {
+		t.Error("Replay should return nil result")
+	}
+	if replayCached == nil {
+		t.Fatal("Replay must return the cached XDR response, not ErrSeqMisordered")
+	}
+	if !bytes.Equal(replayCached, first.EncodedRes) {
+		t.Error("Replayed bytes must equal the original encoded response")
+	}
+
+	// The replay must NOT have created a second session.
+	if sessions := sm.ListSessionsForClient(clientID); len(sessions) != 1 {
+		t.Errorf("Expected 1 session after replay, got %d", len(sessions))
 	}
 }
 
