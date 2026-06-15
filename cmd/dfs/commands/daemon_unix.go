@@ -81,7 +81,9 @@ func startDaemon() error {
 	}
 	// O_CREATE honours the mode only when the file did not already exist; an
 	// existing log keeps its prior (possibly 0644) perms, so tighten it.
-	if err := os.Chmod(logPath, 0600); err != nil {
+	// Chmod the already-open descriptor (not the path) to avoid a symlink-
+	// following TOCTOU on an operator-specified --log-file.
+	if err := lf.Chmod(0600); err != nil {
 		_ = lf.Close()
 		return fmt.Errorf("failed to secure log file %s: %w", logPath, err)
 	}

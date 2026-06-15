@@ -19,6 +19,7 @@ func TestValidateEndpoint(t *testing.T) {
 		{"metadata endpoint bare", "169.254.169.254"},
 		{"metadata endpoint host:port", "169.254.169.254:80"},
 		{"link-local v6", "http://[fe80::1]:80"},
+		{"link-local v6 with zone", "http://[fe80::1%25en0]:80"},
 		{"loopback v4", "http://127.0.0.1:9000"},
 		{"loopback bare", "127.0.0.1:9000"},
 		{"loopback v6", "http://[::1]:9000"},
