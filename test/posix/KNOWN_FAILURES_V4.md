@@ -32,14 +32,6 @@ Categories:
 | removexattr/* | feature | NFSv4 named attributes not implemented | - |
 | open/03.t | env | PATH_MAX test fails: mount-point prefix pushes the absolute path over PATH_MAX in the Linux VFS before NFS sees it — client-side, affects any non-root mount | - |
 | unlink/14.t | proto | NFSv4 silly-rename: open file + unlink triggers rename instead of remove, nlink stays 1 (same as Linux knfsd) | - |
-| utimensat/00.t | bug | Explicit/UTIME timestamp set not reflected by lstat over the NFSv4 mount | #1152 |
-| utimensat/01.t | bug | UTIME_NOW timestamp semantics over the NFSv4 mount | #1152 |
-| utimensat/02.t | bug | UTIME_OMIT timestamp semantics over the NFSv4 mount | #1152 |
-| utimensat/04.t | bug | Independent atime/mtime set ordering over the NFSv4 mount | #1152 |
-| utimensat/05.t | bug | utimensat symlink (AT_SYMLINK_NOFOLLOW) semantics over the NFSv4 mount | #1152 |
-| utimensat/06.t | bug | utimensat timestamp semantics over the NFSv4 mount | #1152 |
-| utimensat/08.t | bug | utimensat permission semantics over the NFSv4 mount | #1152 |
-| utimensat/09.t | bug | utimensat timestamp edge case over the NFSv4 mount | #1152 |
 | chmod/03.t | bug | Deep/long composite path (~4000 chars) fails on the PostgreSQL backend (memory/badger pass) | #1152 |
 | chown/03.t | bug | Deep/long composite path fails on the PostgreSQL backend | #1152 |
 | ftruncate/03.t | bug | Deep/long composite path fails on the PostgreSQL backend | #1152 |
