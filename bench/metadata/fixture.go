@@ -34,6 +34,11 @@ type PGConfig struct {
 	User     string
 	Password string
 	SSLMode  string
+	// Prepare toggles server-side prepared statements. Production defaults it
+	// true; the store's ApplyDefaults leaves a zero-value bool false, so it is
+	// set explicitly here. Measuring both isolates how much of the postgres
+	// read cost is query re-planning vs the round-trip itself.
+	Prepare bool
 }
 
 // OpenStore constructs the requested backend and returns it alongside a cleanup
@@ -61,13 +66,14 @@ func OpenStore(ctx context.Context, backend string, pg PGConfig) (metadata.Store
 
 	case BackendPostgres:
 		cfg := &postgres.PostgresMetadataStoreConfig{
-			Host:        pg.Host,
-			Port:        pg.Port,
-			Database:    pg.Database,
-			User:        pg.User,
-			Password:    pg.Password,
-			SSLMode:     pg.SSLMode,
-			AutoMigrate: true,
+			Host:              pg.Host,
+			Port:              pg.Port,
+			Database:          pg.Database,
+			User:              pg.User,
+			Password:          pg.Password,
+			SSLMode:           pg.SSLMode,
+			AutoMigrate:       true,
+			PrepareStatements: pg.Prepare,
 		}
 		s, err := postgres.NewPostgresMetadataStore(ctx, cfg, defaultCaps())
 		if err != nil {
