@@ -596,6 +596,10 @@ dfsctl
     list           List all netgroups
     remove-member  Remove a member from a netgroup
     show           Show netgroup details
+  quota          Per-identity quota management
+    list           List all quotas on a share
+    rm             Remove a per-identity quota
+    set            Create or update a per-identity quota
   settings       Server settings management
     get            Get a setting value
     list           List all settings
@@ -2566,6 +2570,158 @@ Global flags:
   -v, --verbose         Enable verbose output
 ```
 
+### `dfsctl quota`
+
+Per-identity quota management
+
+Manage per-identity (user/group/default-user) storage quotas on a share.
+
+Quotas bound both bytes and inode (file) count, with optional soft thresholds
+and a grace period before a soft threshold is enforced as hard. These operations
+require admin privileges.
+
+Examples:
+  # List all quotas on a share
+  dfsctl quota list /archive
+
+  # Set a per-user quota (uid 1000)
+  dfsctl quota set /archive --scope user --id 1000 --limit-bytes 10GiB --limit-files 100000
+
+  # Set the default-user fallback quota (applies to users without an explicit quota)
+  dfsctl quota set /archive --scope default-user --limit-bytes 1GiB
+
+  # Set a per-group quota with soft thresholds and a grace period
+  dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-bytes 45GiB --grace-seconds 604800
+
+  # Remove a per-user quota
+  dfsctl quota rm /archive --scope user --id 1000
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl quota list`
+
+List all quotas on a share
+
+List all per-identity quotas configured on a share.
+
+Examples:
+  # List quotas as a table
+  dfsctl quota list /archive
+
+  # List as JSON
+  dfsctl quota list /archive -o json
+
+```
+dfsctl quota list <share>
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl quota rm`
+
+Remove a per-identity quota
+
+Remove a per-identity quota from a share.
+
+This action is irreversible. You will be prompted for confirmation
+unless --force is specified.
+
+Examples:
+  # Remove a per-user quota (uid 1000)
+  dfsctl quota rm /archive --scope user --id 1000
+
+  # Remove the default-user fallback quota
+  dfsctl quota rm /archive --scope default-user
+
+  # Remove without confirmation
+  dfsctl quota rm /archive --scope group --id 2000 --force
+
+```
+dfsctl quota rm <share> [flags]
+```
+
+Flags:
+
+```
+  -f, --force          Skip confirmation prompt
+      --id int         Identity id (uid for user, gid for group). Required for user/group; omit for default-user. (default -1)
+      --scope string   Quota scope (user|group|default-user) (required)
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
+### `dfsctl quota set`
+
+Create or update a per-identity quota
+
+Create or update a per-identity quota on a share.
+
+The --scope flag selects user, group, or default-user. For user/group scopes an
+identity --id (uid or gid) is required. The default-user scope is a fallback
+applied to any user without an explicit user quota and takes no --id.
+
+A byte or file limit of 0 (the default) means "no limit on that dimension".
+
+Examples:
+  # Per-user quota (uid 1000): 10GiB / 100k files
+  dfsctl quota set /archive --scope user --id 1000 --limit-bytes 10GiB --limit-files 100000
+
+  # Default-user fallback quota
+  dfsctl quota set /archive --scope default-user --limit-bytes 1GiB
+
+  # Per-group quota with soft thresholds and a 7-day grace period
+  dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-bytes 45GiB --grace-seconds 604800
+
+```
+dfsctl quota set <share> [flags]
+```
+
+Flags:
+
+```
+      --grace-seconds int    Seconds usage may exceed a soft threshold before it is enforced as hard. 0 = grace disabled.
+      --id int               Identity id (uid for user, gid for group). Required for user/group; omit for default-user. (default -1)
+      --limit-bytes string   Hard byte ceiling (e.g., '10GiB', '500MiB'). 0/empty = unlimited.
+      --limit-files int      Hard inode (file-count) ceiling. 0 = unlimited.
+      --scope string         Quota scope (user|group|default-user) (required)
+      --soft-bytes string    Soft byte threshold (e.g., '8GiB'). 0/empty = none.
+      --soft-files int       Soft inode threshold. 0 = none.
+```
+
+Global flags:
+
+```
+      --no-color        Disable colored output
+  -o, --output string   Output format (table|json|yaml) (default "table")
+      --server string   Server URL (overrides stored credential)
+      --token string    Bearer token (overrides stored credential)
+  -v, --verbose         Enable verbose output
+```
+
 ### `dfsctl settings`
 
 Server settings management
@@ -3161,7 +3317,7 @@ Flags:
       --allow-auth-sys string     Allow AUTH_SYS flavor (true|false)
       --netgroup string           Netgroup name to associate (empty string clears the association)
       --require-kerberos string   Require Kerberos auth (true|false)
-      --squash string             Squash mode (none|root|all)
+      --squash string             Squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest)
 ```
 
 Global flags:
