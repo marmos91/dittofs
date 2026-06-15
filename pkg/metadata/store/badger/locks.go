@@ -39,6 +39,15 @@ const (
 // owner's locks. Hex-encoding the indexed value makes the ':' separator
 // unambiguous so the segment boundary cannot be forged. Mirrors the MonName fix
 // in clients.go:monNameIndexPrefix.
+//
+// No on-disk migration is needed for the format change: startup lock recovery
+// (service.go) enumerates locks via the primary lock:{lockID} keys
+// (ListLocks with only a ShareName filter takes the default primaryKey scan),
+// which this change does not touch — so every persisted lock is still found and
+// re-graced. Stale legacy index entries left by a pre-upgrade run are
+// unreachable by the new scans and harmless: lock state is ephemeral runtime
+// state, cleared on clean shutdown and rebuilt under a fresh grace period after
+// an unclean one.
 func lockIndexPrefix(prefix, value string) string {
 	return prefix + hex.EncodeToString([]byte(value)) + ":"
 }

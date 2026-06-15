@@ -7,14 +7,14 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// TestDeleteLocksByOwner_NoKeyInjection asserts that an OwnerID containing the
+// TestListLocksByOwner_NoKeyInjection asserts that an OwnerID containing the
 // key separator ':' cannot forge an extra index segment that a prefix scan for
 // a different (victim) owner would match. NLM OwnerIDs legitimately contain ':'
 // (e.g. "nlm:caller:svid:oh") and come straight from the wire, so without
 // hex-encoding the indexed value an attacker registering OwnerID
-// "victim:fakeLockID" plants a key under the "victim" prefix that a bulk delete
-// for the victim owner would also reap.
-func TestDeleteLocksByOwner_NoKeyInjection(t *testing.T) {
+// "victim:fakeLockID" plants a key under the "victim" prefix that an owner-keyed
+// scan for the victim would also match.
+func TestListLocksByOwner_NoKeyInjection(t *testing.T) {
 	ctx := context.Background()
 	store := newLockTestStore(t)
 
@@ -40,7 +40,7 @@ func TestDeleteLocksByOwner_NoKeyInjection(t *testing.T) {
 		t.Fatalf("Put attacker lock: %v", err)
 	}
 
-	// Deleting locks owned by "victim" via the owner index (ListLocks routes
+	// Scanning locks owned by "victim" via the owner index (ListLocks routes
 	// through prefixLockByOwner) must touch exactly the genuine victim lock.
 	locks, err := store.ListLocks(ctx, lock.LockQuery{OwnerID: "victim"})
 	if err != nil {
