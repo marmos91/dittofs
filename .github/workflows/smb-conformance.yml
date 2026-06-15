@@ -1,7 +1,9 @@
 # SMB Conformance Tests
 #
-# Runs Microsoft WPTS FileServer BVT tests against DittoFS SMB adapter.
-# Tiered matrix: memory-only on PRs, all profiles on develop push and weekly cron.
+# Runs Microsoft WPTS FileServer BVT (all profiles, every event) plus the
+# Samba smbtorture battery against the DittoFS SMB adapter. smbtorture is
+# tiered: memory + badger-fs on PRs (latency), the broader set on develop push
+# and weekly cron. A separate job runs smbtorture under Kerberos auth.
 
 name: SMB Conformance Tests
 
