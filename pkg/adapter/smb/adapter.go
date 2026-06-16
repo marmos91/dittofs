@@ -20,6 +20,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
+	"github.com/marmos91/dittofs/pkg/netutil"
 )
 
 // Compile-time assertion that Adapter satisfies the adapter.Adapter interface.
@@ -140,9 +141,27 @@ func New(config Config) *Adapter {
 		Mode:           config.Encryption.Mode,
 		AllowedCiphers: config.Encryption.AllowedCiphers,
 	}
+	// Keep EncryptionEnabled (which gates CapEncryption in NEGOTIATE for SMB
+	// 3.0/3.0.2) in sync with the configured mode at construction time, so the
+	// adapter is self-consistent even before SetRuntime/applySMBSettings runs
+	// (e.g. tests, or SMB 3.0 clients connecting between New and SetRuntime).
+	handler.EncryptionEnabled = config.Encryption.Mode != "disabled"
 	logger.Debug("SMB encryption configuration",
 		"mode", handler.EncryptionConfig.Mode,
 		"allowed_ciphers", handler.EncryptionConfig.AllowedCiphers)
+
+	// Default-posture nudge: binding SMB to a non-loopback address with
+	// encryption explicitly disabled means file data and metadata cross the
+	// network in cleartext. The shipped default is "preferred" (encrypts SMB
+	// 3.x), so this only fires when an admin opted out. Mirror the control-plane
+	// API's cleartext WARN rather than hard-failing (wire-compat with SMB 2.x).
+	if config.Encryption.Mode == "disabled" && netutil.IsNonLoopbackHost(config.BindAddress) {
+		logger.Warn("SMB is bound to a non-loopback address with encryption disabled; "+
+			"file data and metadata will traverse the network in CLEARTEXT. "+
+			"Set adapters.smb.encryption.encryption_mode to \"preferred\" or \"required\". "+
+			"See docs/SECURITY.md.",
+			"bind_address", config.BindAddress)
+	}
 
 	// Build BaseAdapter config from SMB config
 	baseConfig := adapter.BaseConfig{

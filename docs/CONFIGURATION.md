@@ -1022,7 +1022,7 @@ adapters:
       # "required"  - Only SMB 3.x clients with encryption can connect.
       #               2.x clients are rejected. Unencrypted requests on encrypted
       #               sessions return STATUS_ACCESS_DENIED.
-      encryption_mode: disabled   # disabled | preferred | required (default: disabled)
+      encryption_mode: preferred  # disabled | preferred | required (default: preferred)
 
       # Server cipher preference order (first = most preferred).
       # Empty list means all ciphers are allowed in the default order.
@@ -1044,12 +1044,20 @@ dfsctl share create --name /secure --metadata default --encrypt-data
 | Mode | Behavior | Use Case |
 |------|----------|----------|
 | `disabled` | No encryption for any session | Legacy clients, testing |
-| `preferred` | Encrypt 3.x sessions; allow unencrypted 2.x | Mixed environments |
+| `preferred` | Encrypt 3.x sessions; allow unencrypted 2.x | Mixed environments (**default**) |
 | `required` | Reject 2.x clients; encrypt all 3.x sessions | High-security environments |
+
+> **Secure default:** As of v1.0.0 the shipped default is `preferred`, so SMB 3.x
+> sessions are encrypted out of the box while remaining wire-compatible with SMB 2.x
+> clients. Set `encryption_mode: required` to mandate encryption for sensitive
+> deployments (this rejects SMB 2.x clients, which cannot encrypt). If SMB is bound to
+> a non-loopback address with `encryption_mode: disabled`, `dfs` logs a startup WARN
+> because file data then traverses the network in cleartext. See
+> [docs/SECURITY.md](SECURITY.md#smb3-security-model) for the hardened template.
 
 **Enforcement Rules:**
 
-1. **SESSION_SETUP**: When mode is `preferred` or `required`, encryption keys are derived for SMB 3.x sessions, and the `SMB2_SESSION_FLAG_ENCRYPT_DATA` flag is set in the response.
+1. **SESSION_SETUP**: When mode is `preferred` or `required`, AEAD encryption keys are derived for SMB 3.x sessions. In `required` mode the `SMB2_SESSION_FLAG_ENCRYPT_DATA` flag is set in the response and every subsequent message on the session must be encrypted. In `preferred` mode the keys are available for per-share enforcement, but the session flag is **not** set — message encryption is only forced on trees connected to shares with `encrypt_data=true`.
 2. **TREE_CONNECT**: When a share has `encrypt_data=true` and mode is `required`, unencrypted sessions are rejected with `STATUS_ACCESS_DENIED`. In `preferred` mode, unencrypted sessions are allowed (mixed model).
 3. **Guest sessions**: Never encrypted (no session key for key derivation).
 4. **SMB 2.x clients**: Never encrypted (encryption requires SMB 3.0+). In `required` mode, 2.x clients are rejected at NEGOTIATE.

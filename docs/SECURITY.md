@@ -125,18 +125,31 @@ SMB3 provides encryption using AEAD (Authenticated Encryption with Associated Da
 | AES-256-GCM | 3.1.1 | 256-bit | Fast (higher security, slightly slower than 128) |
 | AES-256-CCM | 3.0+ | 256-bit | Good (highest security AES-CCM variant) |
 
+SMB on-the-wire confidentiality is provided **by SMB3 in-protocol encryption** (the AEAD ciphers above) — not by TLS or QUIC. SMB-over-QUIC is tracked separately as a post-1.0 transport option and is out of scope for the v1.0.0 "SMB encryption" requirement, which this in-protocol encryption satisfies.
+
 **Encryption modes:**
 
-- **`disabled`**: No encryption. Suitable for testing only.
-- **`preferred`**: SMB 3.x sessions are encrypted; unencrypted SMB 2.x sessions are still accepted. Recommended for mixed environments.
+- **`disabled`**: No encryption. Suitable for testing only. If SMB is bound to a non-loopback address in this mode, `dfs` logs a startup WARN because file data traverses the network in cleartext.
+- **`preferred`** *(shipped default)*: SMB 3.x sessions are encrypted; unencrypted SMB 2.x sessions are still accepted. Confidentiality is on out of the box for capable clients while remaining wire-compatible with SMB 2.x.
 - **`required`**: Only encrypted SMB 3.x clients can connect. SMB 2.x clients are rejected at NEGOTIATE. **Recommended for production** with sensitive data.
 
 **Per-session vs per-share encryption:**
 
 - **Per-session**: When encryption is `preferred` or `required`, all traffic on an SMB 3.x session is encrypted after SESSION_SETUP completes.
-- **Per-share**: Individual shares can require encryption via the `encrypt_data` flag. Unencrypted sessions accessing an encrypted share receive `STATUS_ACCESS_DENIED`.
+- **Per-share**: Individual shares can require encryption via the `encrypt_data` flag (`dfsctl share create --encrypt-data`). Unencrypted sessions accessing an encrypted share receive `STATUS_ACCESS_DENIED`. This lets an admin force encryption on sensitive shares while leaving others compatible.
 
-**Security recommendation:** Set `encryption_mode: required` for environments handling sensitive data. This eliminates unencrypted traffic and rejects legacy clients that cannot encrypt.
+**Security recommendation:** The shipped default is `preferred` (secure-by-default, wire-compatible). For environments handling sensitive data, harden the SMB adapter to mandate both encryption and signing:
+
+```yaml
+adapters:
+  smb:
+    encryption:
+      encryption_mode: required   # reject SMB 2.x; encrypt all SMB 3.x sessions
+    signing:
+      required: true              # reject unsigned messages (tamper protection)
+```
+
+This eliminates unencrypted traffic, rejects legacy clients that cannot encrypt, and prevents message tampering. For shares that must stay SMB 2.x-compatible, keep the global mode at `preferred` and set `encrypt_data` on the sensitive shares instead.
 
 ### SMB3 Signing
 
@@ -374,12 +387,13 @@ shares:
 
 ### Encryption in Transit
 
-DittoFS supports in-transit encryption for both data-plane protocols: **SMB3** encrypts in-protocol (AES-GCM/CCM, see [SMB3 Encryption](#smb3-encryption)), and **NFS** can use **NFS-over-TLS (RFC 9289)** to wrap RPC traffic in TLS 1.3 (below). Without one of these — or network-level encryption — file data and AUTH_UNIX credentials travel in cleartext over TCP.
+DittoFS supports in-transit encryption for both data-plane protocols: **SMB3** encrypts in-protocol (AES-GCM/CCM, see [SMB3 Encryption](#smb3-encryption)) — on by default (`encryption_mode: preferred`), with `required` or per-share `encrypt_data` to mandate it — and **NFS** can use **NFS-over-TLS (RFC 9289)** to wrap RPC traffic in TLS 1.3 (below). Without one of these — or network-level encryption — file data and AUTH_UNIX credentials travel in cleartext over TCP.
 
 **Implications:**
 - Plaintext NFS data can be intercepted without TLS or network-level encryption
 - Prefer NFS-over-TLS or SMB3 encryption; otherwise use VPN, IPsec, or WireGuard
 - SMB message signing protects integrity but not confidentiality (use encryption for that)
+- In SMB `preferred` mode, legacy SMB 2.x clients (which cannot encrypt) still transmit in cleartext; set `encryption_mode: required` to reject them, or `encrypt_data` to force encryption on sensitive shares
 
 #### NFS-over-TLS (RFC 9289)
 

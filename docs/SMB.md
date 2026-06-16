@@ -812,10 +812,17 @@ DittoFS supports three encryption modes:
 | Mode | Behavior |
 |------|----------|
 | `disabled` | No encryption for any session |
-| `preferred` | Encrypt SMB 3.x sessions that support it; allow unencrypted 2.x |
+| `preferred` | Encrypt SMB 3.x sessions that support it; allow unencrypted 2.x (**default**) |
 | `required` | Reject SMB 2.x clients; encrypt all SMB 3.x sessions |
 
-**Per-session encryption** (`Session.EncryptData`): When mode is `preferred` or `required`, sessions negotiating SMB 3.x have `SMB2_SESSION_FLAG_ENCRYPT_DATA` set in SESSION_SETUP response. All subsequent messages on the session are encrypted.
+The shipped default is `preferred`: confidentiality is on by default for SMB 3.x
+clients without breaking SMB 2.x compatibility. Use `required` to force encryption
+on the whole server, or set per-share `encrypt_data` (below) to force it only on
+sensitive shares. SMB confidentiality is provided **by SMB3 in-protocol encryption**,
+not TLS or QUIC — see [docs/SECURITY.md](SECURITY.md#smb3-security-model). SMB-over-QUIC
+is tracked separately as a post-1.0 transport option.
+
+**Per-session encryption** (`Session.EncryptData`): When mode is `required`, sessions negotiating SMB 3.x have `SMB2_SESSION_FLAG_ENCRYPT_DATA` set in the SESSION_SETUP response and all subsequent messages on the session are encrypted. When mode is `preferred`, AEAD keys are still derived for SMB 3.x sessions (so per-share encryption can use them), but the session flag is **not** set — whole-session message encryption is only enforced in `required` mode or for shares with `encrypt_data=true`.
 
 **Per-share encryption** (`Share.EncryptData`): Individual shares can require encryption via the `encrypt_data` flag in share configuration. When set, `SMB2_SHAREFLAG_ENCRYPT_DATA` is returned in TREE_CONNECT response.
 
