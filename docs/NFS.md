@@ -287,10 +287,36 @@ NFS uses RPC authentication flavors:
 | AUTH_UNIX | 1 | Unix UID/GID credentials |
 | AUTH_SHORT | 2 | Short-hand credential |
 | RPCSEC_GSS | 6 | Kerberos/GSS-API (NFSv4) |
+| AUTH_TLS | 7 | RFC 9289 STARTTLS probe (transport upgrade, not a data flavor) |
 
 **AUTH_UNIX format:** Stamp (4 bytes), machine name (string), UID (4 bytes), GID (4 bytes), supplementary GIDs (array, max 16).
 
-**Security note:** AUTH_UNIX credentials are not cryptographically secured and can be spoofed. NFSv4 adds RPCSEC_GSS for Kerberos-based authentication. For production deployments, consider running on trusted networks, enabling Kerberos (NFSv4/v4.1), or using VPN/network-level encryption.
+**Security note:** AUTH_UNIX credentials are not cryptographically secured and can be spoofed. NFSv4 adds RPCSEC_GSS for Kerberos-based authentication. For production deployments, consider running on trusted networks, enabling Kerberos (NFSv4/v4.1), or using NFS-over-TLS (below) / VPN / network-level encryption.
+
+### NFS-over-TLS (RFC 9289)
+
+DittoFS can encrypt NFS wire traffic with TLS 1.3, using the opportunistic `AUTH_TLS` STARTTLS mechanism from RFC 9289. A client opens TCP and sends a `NULL` RPC with `auth_flavor = AUTH_TLS (7)`; the server replies with the 8-octet `"STARTTLS"` verifier, then both perform a TLS 1.3 handshake on the **same** connection. All subsequent RPC traffic is encrypted. Because Go performs the handshake and crypto in userspace, no kernel TLS (`kTLS`) or `tlshd` daemon is needed on the server.
+
+DittoFS only loads cert files — issuance/renewal/rotation is the platform's job; rotated files are hot-reloaded with no restart (shared with the control-plane TLS path via `internal/tlsconfig`).
+
+```yaml
+adapters:
+  nfs:
+    tls:
+      cert_file: /etc/dittofs/tls/tls.crt
+      key_file:  /etc/dittofs/tls/tls.key
+      client_ca: /etc/dittofs/tls/ca.crt   # optional → mutual TLS (client-cert auth)
+      min_version: "1.3"                    # RFC 9289 floor is TLS 1.3
+      mode: opportunistic                   # "opportunistic" (default) | "require"
+```
+
+- **`opportunistic`** (default): clients that send the `AUTH_TLS` probe are upgraded; clients that do not are still served in plaintext. Lets a TLS rollout proceed without breaking existing mounts.
+- **`require`**: a connection must upgrade via `AUTH_TLS` before any other RPC; plaintext requests are rejected (connection dropped).
+
+**Client interop:**
+
+- **Linux:** `mount -o vers=4.1,xprtsec=tls …` — requires `tlshd` (ktls-utils) and `CONFIG_NET_HANDSHAKE` (RHEL 9.x / upstream kernel 6.7+).
+- **macOS:** no NFS-over-TLS client — use Kerberos or a network-level tunnel instead.
 
 ### Error Handling
 

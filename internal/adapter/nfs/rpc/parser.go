@@ -478,6 +478,18 @@ func MakeProgMismatchReply(xid uint32, low uint32, high uint32) ([]byte, error) 
 	return result, nil
 }
 
+// MakeStartTLSReply constructs the server's reply to an AUTH_TLS NULL probe
+// (RFC 9289 §5.1). It is an ordinary MSG_ACCEPTED/SUCCESS NULL reply whose
+// reply verifier carries the flavor AUTH_NONE and the 8-octet ASCII body
+// "STARTTLS"; the client reads that body as the signal to begin the TLS
+// handshake on the same connection.
+func MakeStartTLSReply(xid uint32) ([]byte, error) {
+	return MakeGSSSuccessReply(xid, nil, OpaqueAuth{
+		Flavor: AuthNull,
+		Body:   []byte(StartTLSVerifier),
+	})
+}
+
 // MakeGSSSuccessReply constructs an RPC success reply with a GSS verifier.
 //
 // This is identical to MakeSuccessReply except it uses the provided verifier

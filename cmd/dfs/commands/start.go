@@ -390,7 +390,31 @@ func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 		port = 12049
 	}
 
-	adapter := nfs.New(nfs.NFSConfig{Enabled: true, Port: port})
+	nfsCfg := nfs.NFSConfig{Enabled: true, Port: port}
+
+	parsedConfig, err := cfg.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse adapter config: %w", err)
+	}
+	if tlsCfg, ok := parsedConfig["tls"].(map[string]any); ok {
+		if v, ok := tlsCfg["cert_file"].(string); ok {
+			nfsCfg.TLS.CertFile = v
+		}
+		if v, ok := tlsCfg["key_file"].(string); ok {
+			nfsCfg.TLS.KeyFile = v
+		}
+		if v, ok := tlsCfg["client_ca"].(string); ok {
+			nfsCfg.TLS.ClientCA = v
+		}
+		if v, ok := tlsCfg["min_version"].(string); ok {
+			nfsCfg.TLS.MinVersion = v
+		}
+		if v, ok := tlsCfg["mode"].(string); ok {
+			nfsCfg.TLS.Mode = v
+		}
+	}
+
+	adapter := nfs.New(nfsCfg)
 	if kerberosConfig != nil && kerberosConfig.Enabled {
 		adapter.SetKerberosConfig(kerberosConfig)
 	}

@@ -38,7 +38,18 @@ const (
 	// Provides Kerberos-based authentication with optional integrity
 	// and privacy protection. Defined in RFC 2203.
 	AuthRPCSECGSS uint32 = 6
+
+	// AuthTLS indicates an RPC-with-TLS STARTTLS probe (RFC 9289 §5.1). A
+	// client sends a NULL procedure call with this credential flavor to ask
+	// the server to begin a TLS handshake on the same connection. It is never
+	// a real authentication flavor for data operations — only the NULL probe.
+	AuthTLS uint32 = 7
 )
+
+// StartTLSVerifier is the 8-octet ASCII string a server returns in the reply
+// verifier of an AUTH_TLS NULL probe to advertise that it is willing to start
+// TLS on the connection (RFC 9289 §5.1).
+const StartTLSVerifier = "STARTTLS"
 
 // UnixAuth represents Unix-style authentication credentials (AUTH_UNIX)
 // as defined in RFC 1831 Section 9.2.
