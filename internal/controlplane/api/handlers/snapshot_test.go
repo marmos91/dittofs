@@ -310,6 +310,29 @@ func TestSnapshotHandler_Get_HappyPath(t *testing.T) {
 	}
 }
 
+func TestSnapshotHandler_Get_ScheduledRoundTrips(t *testing.T) {
+	fake := &fakeSnapshotRuntime{
+		getFn: func(_ context.Context, _, snapID string) (*models.Snapshot, error) {
+			return &models.Snapshot{ID: snapID, ShareName: "/data", State: models.StateReady, Scheduled: true}, nil
+		},
+	}
+	h := NewSnapshotHandler(fake, 30*time.Second, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/shares/data/snapshots/snap-1", nil)
+	rr := httptest.NewRecorder()
+	newSnapshotRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var got dto.Snapshot
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got.Scheduled {
+		t.Fatalf("scheduled = false, want true (body=%+v)", got)
+	}
+}
+
 func TestSnapshotHandler_Get_NotFound(t *testing.T) {
 	fake := &fakeSnapshotRuntime{
 		getFn: func(_ context.Context, _, _ string) (*models.Snapshot, error) {
