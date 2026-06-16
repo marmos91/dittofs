@@ -378,8 +378,9 @@ func TestPostgres_Restore_ReconcilesNullHashFileBlocks(t *testing.T) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	// content_id (PayloadID) is the prefix of the file_blocks row ID. The
-	// engine derives it from share + path; set it explicitly here so the
-	// reconcile join (file_blocks.id = content_id || '/' || offset) lands.
+	// production engine now derives it from share + inode UUID (#1166 PR-3);
+	// here we set a fixed value explicitly so the reconcile join
+	// (file_blocks.id = content_id || '/' || offset) lands deterministically.
 	payloadID := "restore-reconcile/vm.img"
 	file.PayloadID = metadata.PayloadID(payloadID)
 	file.Blocks = []block.BlockRef{

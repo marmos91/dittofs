@@ -13,6 +13,7 @@ func runFileOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("GetFile", func(t *testing.T) { testGetFile(t, factory) })
 	t.Run("DeleteFile", func(t *testing.T) { testDeleteFile(t, factory) })
 	t.Run("CreateHardLink", func(t *testing.T) { testCreateHardLink(t, factory) })
+	t.Run("ContentIdStableAcrossRename", func(t *testing.T) { testContentIdStableAcrossRename(t, factory) })
 	t.Run("HardLinkRenameKeepsOtherName", func(t *testing.T) { testHardLinkRenameKeepsOtherName(t, factory) })
 	t.Run("DerivedPathReflectsParentRename", func(t *testing.T) { testDerivedPathReflectsParentRename(t, factory) })
 	t.Run("SetFileAttributes", func(t *testing.T) { testSetFileAttributes(t, factory) })
@@ -389,6 +390,72 @@ func testDerivedPathReflectsParentRename(t *testing.T, factory StoreFactory) {
 	}
 	if child.Path != "/newdir/child.txt" {
 		t.Errorf("derived child path = %q, want /newdir/child.txt", child.Path)
+	}
+}
+
+// testContentIdStableAcrossRename verifies that a regular file's PayloadID
+// (block-store content_id) is independent of its path: it survives a rename to
+// a different directory unchanged, and GetFileByPayloadID still resolves to the
+// same inode afterwards. UUID-based PayloadIDs (#1166 PR-3) make content_id
+// stable across rename — a path-derived content_id would have gone stale and
+// broken the flusher's GetFileByPayloadID lookup after the move.
+func testContentIdStableAcrossRename(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	dirHandle := createTestDir(t, store, "/test", rootHandle, "src")
+	handle := createTestFile(t, store, "/test", dirHandle, "blob.dat", 0o644)
+
+	// Stamp a PayloadID the way the service does at create time, then capture
+	// it. The store-level harness bypasses the service, so set it explicitly.
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	const payloadID = metadata.PayloadID("test/blob-content-id")
+	file.PayloadID = payloadID
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() with PayloadID failed: %v", err)
+	}
+
+	// Rename across directories: drop the old edge, add a new one under root.
+	if err := store.DeleteChild(ctx, dirHandle, "blob.dat"); err != nil {
+		t.Fatalf("DeleteChild(src/blob.dat) failed: %v", err)
+	}
+	if err := store.SetChild(ctx, rootHandle, "renamed.dat", handle); err != nil {
+		t.Fatalf("SetChild(renamed.dat) failed: %v", err)
+	}
+	if err := store.SetParent(ctx, handle, rootHandle); err != nil {
+		t.Fatalf("SetParent(root) failed: %v", err)
+	}
+
+	// The derived path changed, but the PayloadID must not.
+	moved, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() after rename failed: %v", err)
+	}
+	if moved.Path != "/renamed.dat" {
+		t.Errorf("derived path after rename = %q, want /renamed.dat", moved.Path)
+	}
+	if moved.PayloadID != payloadID {
+		t.Errorf("PayloadID changed across rename: got %q, want %q", moved.PayloadID, payloadID)
+	}
+
+	// And the content-id lookup must still resolve after the move, returning
+	// the same inode's content_id and its new derived path.
+	got, err := store.GetFileByPayloadID(ctx, payloadID)
+	if err != nil {
+		t.Fatalf("GetFileByPayloadID() after rename failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetFileByPayloadID() after rename returned nil file")
+	}
+	if got.PayloadID != payloadID {
+		t.Errorf("GetFileByPayloadID returned PayloadID %q, want %q", got.PayloadID, payloadID)
+	}
+	if got.Path != "/renamed.dat" {
+		t.Errorf("GetFileByPayloadID returned path %q, want /renamed.dat", got.Path)
 	}
 }
 

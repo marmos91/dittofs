@@ -297,7 +297,7 @@ func (s *Service) createEntry(
 
 	// Set content ID for regular files
 	if fileType == FileTypeRegular {
-		newAttr.PayloadID = PayloadID(buildPayloadID(parent.ShareName, fullPath))
+		newAttr.PayloadID = PayloadID(buildPayloadID(parent.ShareName, id))
 	}
 
 	// Set device numbers for block/char devices

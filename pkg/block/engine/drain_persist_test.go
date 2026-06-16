@@ -201,10 +201,10 @@ func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
 }
 
 // createRealFile creates a file row through the metadata store the way the
-// production CreateFile path does — crucially setting PayloadID =
-// buildPayloadID(share, path) so the rollup-persist GetFileByPayloadID
-// lookup resolves to THIS row. It does NOT pre-populate Blocks (doing so
-// would mask the rollup-persist bug under test).
+// production CreateFile path does — crucially setting a UUID-based PayloadID
+// (buildPayloadID(share, id), see #1166 PR-3) so the rollup-persist
+// GetFileByPayloadID lookup resolves to THIS row. It does NOT pre-populate
+// Blocks (doing so would mask the rollup-persist bug under test).
 func createRealFile(t *testing.T, store metadata.Store, shareName, name string, rootHandle metadata.FileHandle) (string, metadata.FileHandle) {
 	t.Helper()
 	ctx := context.Background()
@@ -217,7 +217,7 @@ func createRealFile(t *testing.T, store metadata.Store, shareName, name string, 
 	if err != nil {
 		t.Fatalf("DecodeFileHandle: %v", err)
 	}
-	payloadID := strings.TrimPrefix(shareName, "/") + "/" + strings.TrimPrefix(path, "/")
+	payloadID := strings.TrimPrefix(shareName, "/") + "/" + id.String()
 	file := &metadata.File{
 		ID:        id,
 		ShareName: shareName,

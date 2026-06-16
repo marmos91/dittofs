@@ -503,20 +503,22 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 //     tombstone, on-disk state and in-memory state for this payloadID
 //     are fully reset. Any AppendWrite that arrives AFTER step 5
 //     fresh-creates state via getOrCreateLog as if the payload never
-//     existed, which is exactly the desired semantics for the
-//     "unlink + create at same path" workflow DittoFS's path-based
-//     PayloadID strategy requires (see
-//     metadata/file_helpers.go:buildPayloadID — PayloadID is derived
-//     from shareName + path, so recreating a file at the same path
-//     reuses the same PayloadID).
+//     existed. Files created after #1166 PR-3 get a UUID-based
+//     PayloadID (metadata/file_helpers.go:buildPayloadID), so a
+//     recreate-at-same-path uses a fresh content_id; this reset path
+//     is still exercised on delete to reclaim the deleted file's own
+//     append-log state and must leave the store ready for a
+//     subsequent fresh log.
 //
 // This reverses the FIX-8 invariant (which kept the tombstone for the
 // FSStore lifetime to eliminate a clear-on-success resurrection race).
-// FIX-8 assumed callers would allocate a fresh PayloadID on recreate
-// DittoFS's path-based PayloadID strategy violates that assumption
-// breaking POSIX recreate-at-same-name workflows over NFSv3 (which
-// has no silly-rename masking — see pjdfstest chmod/12.t, unlink/14.t
-// open/00.t).
+// FIX-8 assumed callers would allocate a fresh PayloadID on recreate;
+// the older path-based PayloadID scheme violated that assumption,
+// breaking POSIX recreate-at-same-name workflows over NFSv3 (which has
+// no silly-rename masking — see pjdfstest chmod/12.t, unlink/14.t,
+// open/00.t). With UUID-based PayloadIDs recreates get a fresh id by
+// construction, but the FSStore reset on delete must still leave state
+// ready for the next fresh log.
 //
 // Ordering (Blocker 3 fix)
 //  1. Set tombstone under the shard lock so new AppendWrites and new rollupFile
@@ -634,10 +636,11 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	// before step 1, so it is safe to allow fresh recreates from this
 	// point on. This reverses the original FIX-8 invariant (which kept
 	// the tombstone for the FSStore lifetime to eliminate a
-	// clear-on-success resurrection race) — DittoFS's PayloadID is
-	// derived from the file's path (metadata/file_helpers.go
-	// buildPayloadID), so 'unlink + create at same path' must reuse
-	// the PayloadID and must therefore succeed.
+	// clear-on-success resurrection race). Files created after #1166 PR-3
+	// get a UUID-based PayloadID (metadata/file_helpers.go buildPayloadID),
+	// so a recreate-at-same-path gets a fresh content_id; this reset still
+	// runs on delete to reclaim the deleted file's own state and must
+	// leave the store ready for a subsequent fresh log.
 	sh.mu.Lock()
 	// C3: release the pressure budget for any record still live in this
 	// payload's logIndex. AppendWrite reserved recordFrameOverhead+payloadLen

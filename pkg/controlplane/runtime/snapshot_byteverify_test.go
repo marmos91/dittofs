@@ -222,9 +222,11 @@ func (f *byteVerifyFixture) close() {
 	}
 }
 
-// createEmptyFile creates a regular file inode under the share root with its
-// Path + PayloadID set the way the production create path does. It does NOT
-// set FileAttr.Blocks — the engine's post-flush coordinator owns that.
+// createEmptyFile creates a regular file inode under the share root. It sets a
+// deterministic path-based PayloadID via metadata.BuildPayloadID purely for
+// test self-consistency (the fixture both stores and queries the same value);
+// the production create path now derives a UUID-based PayloadID (#1166 PR-3).
+// It does NOT set FileAttr.Blocks — the engine's post-flush coordinator owns that.
 func (f *byteVerifyFixture) createEmptyFile(ctx context.Context, name string) metadata.PayloadID {
 	f.t.Helper()
 	root, err := f.meta.GetRootHandle(ctx, f.shareName)
