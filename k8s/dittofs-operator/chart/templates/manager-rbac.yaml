@@ -118,6 +118,22 @@ rules:
   - perconapgclusters/status
   verbs:
   - get
+# ServiceMonitor management for the optional Prometheus integration. The
+# operator only creates a ServiceMonitor when the CRD is present and the user
+# opts in (spec.metrics.serviceMonitor.enabled); this grant is harmless on
+# clusters without the prometheus-operator installed.
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

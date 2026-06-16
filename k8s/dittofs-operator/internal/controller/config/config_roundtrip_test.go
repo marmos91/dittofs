@@ -57,6 +57,17 @@ var serverKnownKeys = map[string]bool{
 	"admin.username": true,
 	"admin.email":    true,
 
+	// Metrics keys consumed by pkg/config MetricsConfig (server tree, develop):
+	//   MetricsConfig{Enabled, Host, Port, Path, Auth, TokenFile, TLS}.
+	// The operator emits the scalar subset (no metrics.tls.* — in-cluster the
+	// endpoint is plain HTTP behind the metrics Service + NetworkPolicy).
+	"metrics.enabled":    true,
+	"metrics.host":       true,
+	"metrics.port":       true,
+	"metrics.path":       true,
+	"metrics.auth":       true,
+	"metrics.token_file": true,
+
 	// The server has no Cache field; the rendered cache.* block is a known
 	// dead key tracked separately (round-1 M-CFG-1). It is intentionally NOT
 	// listed here so that, were the cache block to grow new keys, this test
@@ -137,6 +148,14 @@ func TestGenerateDittoFSConfig_NoDeadKeys(t *testing.T) {
 				},
 			},
 		},
+		"metrics-token": {
+			Spec: dittoiov1alpha1.DittoServerSpec{
+				Metrics: &dittoiov1alpha1.MetricsSpec{
+					Enabled:           true,
+					BearerTokenSecret: &corev1.SecretKeySelector{},
+				},
+			},
+		},
 	}
 
 	for name, ds := range cases {
@@ -175,5 +194,64 @@ func TestGenerateDittoFSConfig_IssuerNotRendered(t *testing.T) {
 	}
 	if strings.Contains(yamlStr, "issuer") {
 		t.Errorf("rendered config still references the dead jwt issuer key:\n%s", yamlStr)
+	}
+}
+
+// TestGenerateDittoFSConfig_MetricsOmittedWhenDisabled verifies the metrics:
+// block is absent unless explicitly enabled, preserving the server's
+// disabled-by-default behavior.
+func TestGenerateDittoFSConfig_MetricsOmittedWhenDisabled(t *testing.T) {
+	yamlStr, err := GenerateDittoFSConfig(&dittoiov1alpha1.DittoServer{})
+	if err != nil {
+		t.Fatalf("GenerateDittoFSConfig: %v", err)
+	}
+	if strings.Contains(yamlStr, "metrics:") {
+		t.Errorf("rendered config should not contain a metrics block when disabled:\n%s", yamlStr)
+	}
+}
+
+// TestGenerateDittoFSConfig_MetricsEnabled verifies the rendered metrics block
+// binds 0.0.0.0 and, with a bearer token Secret, switches auth to token with
+// the mounted token-file path.
+func TestGenerateDittoFSConfig_MetricsEnabled(t *testing.T) {
+	ds := &dittoiov1alpha1.DittoServer{
+		Spec: dittoiov1alpha1.DittoServerSpec{
+			Metrics: &dittoiov1alpha1.MetricsSpec{
+				Enabled:           true,
+				Port:              19090,
+				Path:              "/m",
+				BearerTokenSecret: &corev1.SecretKeySelector{},
+			},
+		},
+	}
+	yamlStr, err := GenerateDittoFSConfig(ds)
+	if err != nil {
+		t.Fatalf("GenerateDittoFSConfig: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(yamlStr), &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	m, ok := doc["metrics"].(map[string]any)
+	if !ok {
+		t.Fatalf("metrics block missing:\n%s", yamlStr)
+	}
+	if m["enabled"] != true {
+		t.Errorf("metrics.enabled = %v, want true", m["enabled"])
+	}
+	if m["host"] != "0.0.0.0" {
+		t.Errorf("metrics.host = %v, want 0.0.0.0", m["host"])
+	}
+	if m["port"] != 19090 {
+		t.Errorf("metrics.port = %v, want 19090", m["port"])
+	}
+	if m["path"] != "/m" {
+		t.Errorf("metrics.path = %v, want /m", m["path"])
+	}
+	if m["auth"] != "token" {
+		t.Errorf("metrics.auth = %v, want token", m["auth"])
+	}
+	if m["token_file"] != dittoiov1alpha1.MetricsTokenFilePath() {
+		t.Errorf("metrics.token_file = %v, want %s", m["token_file"], dittoiov1alpha1.MetricsTokenFilePath())
 	}
 }

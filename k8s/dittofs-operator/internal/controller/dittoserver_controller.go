@@ -37,6 +37,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
@@ -138,6 +139,7 @@ type DittoServerReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=pgv2.percona.com,resources=perconapgclusters/status,verbs=get
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile ensures the cluster state matches the desired DittoServer spec.
 func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -209,6 +211,13 @@ func (r *DittoServerReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if err := r.reconcileAPIService(ctx, dittoServer); err != nil {
 		return r.stepError(ctx, dittoServer, "API Service", err)
+	}
+
+	// Reconcile the metrics integration (metrics Service + optional, CRD-gated
+	// ServiceMonitor). No-op when metrics are disabled; never fails the
+	// reconcile merely because the prometheus-operator CRDs are absent.
+	if err := r.reconcileMetrics(ctx, dittoServer); err != nil {
+		return r.stepError(ctx, dittoServer, "Metrics", err)
 	}
 
 	// Reconcile PerconaPGCluster if Percona is enabled
@@ -664,6 +673,15 @@ func (r *DittoServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		builder = builder.Owns(&pgv2.PerconaPGCluster{})
 	}
 
+	// Conditionally own ServiceMonitor only if the prometheus-operator CRDs are
+	// installed, so the controller self-heals an externally deleted monitor. On
+	// clusters without the CRDs this watch is skipped (no hard dependency).
+	if _, err := mgr.GetRESTMapper().RESTMapping(serviceMonitorGVK.GroupKind(), serviceMonitorGVK.Version); err == nil {
+		sm := &unstructured.Unstructured{}
+		sm.SetGroupVersionKind(serviceMonitorGVK)
+		builder = builder.Owns(sm)
+	}
+
 	return builder.Complete(r)
 }
 
@@ -953,6 +971,16 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				}
 			}
 
+			// Metrics bearer token: mount the referenced Secret read-only so the
+			// rendered metrics.token_file path resolves to the scrape token.
+			if dittoServer.MetricsBearerTokenSecret() != nil {
+				volumeMounts = append(volumeMounts, corev1.VolumeMount{
+					Name:      metricsTokenVolumeName,
+					MountPath: dittoiov1alpha1.MetricsTokenMountPath,
+					ReadOnly:  true,
+				})
+			}
+
 			metadataSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.MetadataSize)
 			if err != nil {
 				return fmt.Errorf("invalid metadata size: %w", err)
@@ -1076,6 +1104,21 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 						},
 					})
 				}
+			}
+			// Metrics bearer token: project the referenced Secret key to a single
+			// file the rendered metrics.token_file points at.
+			if ref := dittoServer.MetricsBearerTokenSecret(); ref != nil {
+				podVolumes = append(podVolumes, corev1.Volume{
+					Name: metricsTokenVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: ref.Name,
+							Items: []corev1.KeyToPath{
+								{Key: ref.Key, Path: dittoiov1alpha1.MetricsTokenFileName},
+							},
+						},
+					},
+				})
 			}
 
 			statefulSet.Spec = appsv1.StatefulSetSpec{
@@ -1243,6 +1286,16 @@ func buildContainerPorts(dittoServer *dittoiov1alpha1.DittoServer, existingPorts
 			ContainerPort: apiPort,
 			Protocol:      corev1.ProtocolTCP,
 		},
+	}
+
+	// Expose the metrics endpoint port when metrics are enabled, so the metrics
+	// Service / ServiceMonitor target a named container port.
+	if dittoServer.MetricsEnabled() {
+		ports = append(ports, corev1.ContainerPort{
+			Name:          metricsPortName,
+			ContainerPort: dittoServer.MetricsPort(),
+			Protocol:      corev1.ProtocolTCP,
+		})
 	}
 
 	// Preserve existing dynamic adapter ports to avoid unnecessary StatefulSet restarts.

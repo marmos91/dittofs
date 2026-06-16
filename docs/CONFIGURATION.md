@@ -20,6 +20,7 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
   - [User Management](#9-user-management)
   - [Protocol Adapters](#10-protocol-adapters)
   - [Snapshot Scheduler](#14-snapshot-scheduler)
+- [Metrics (Prometheus)](#metrics-prometheus)
 - [Environment Variables](#environment-variables)
 - [Configuration Precedence](#configuration-precedence)
 - [Configuration Examples](#configuration-examples)
@@ -137,18 +138,11 @@ Traces include:
 Application-wide server configuration:
 
 ```yaml
-server:
-  shutdown_timeout: 30s   # Maximum time to wait for graceful shutdown
-
-  metrics:
-    enabled: false
-    port: 9090
-
-  rate_limiting:
-    enabled: false
-    requests_per_second: 5000
-    burst: 10000
+shutdown_timeout: 30s   # Maximum time to wait for graceful shutdown
 ```
+
+> The Prometheus `metrics:` block is a top-level key, documented in its own
+> section below ([Metrics (Prometheus)](#metrics-prometheus)).
 
 ### 4. Database (Control Plane)
 
@@ -1435,6 +1429,206 @@ boot guard exits 78 on any share whose sentinel is missing.
 
 - [docs/CLI.md — `dfs migrate-to-cas`](CLI.md#dfs-migrate-to-cas) for the
   full command-line reference (synopsis, flag table, exit codes, examples).
+
+## Metrics (Prometheus)
+
+DittoFS exposes a Prometheus `/metrics` endpoint on a **dedicated listener**,
+separate from the control-plane API and the protocol adapters. It is **opt-in
+and disabled by default**. When enabled it serves the standard Go/process
+collectors plus the DittoFS instruments (request RED metrics per adapter,
+connection counts, sync/remote/local-store/quota/GC gauges, and snapshot
+timestamps).
+
+```yaml
+# Top-level metrics block (NOT nested under `server:`).
+metrics:
+  enabled: true            # opt-in; default false
+  host: 127.0.0.1          # bind interface; default loopback only
+  port: 9090               # default 9090
+  path: /metrics           # default /metrics
+  auth: none               # "none" (default) or "token"
+  token_file: ""           # path to a file holding the Bearer token (auth: token)
+  tls:                     # optional; reuses the control-plane TLS shape
+    cert_file: ""
+    key_file: ""
+    client_ca: ""          # set for mTLS
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Turn the metrics listener on. |
+| `host` | `127.0.0.1` | Bind interface. Binds loopback by default; set `0.0.0.0` to expose it deliberately (pair with a firewall/NetworkPolicy). |
+| `port` | `9090` | TCP port for the endpoint. |
+| `path` | `/metrics` | HTTP path. Must start with `/`. |
+| `auth` | `none` | `none` (rely on bind host + network policy) or `token` (require a Bearer token). |
+| `token_file` | | File whose trimmed contents are the expected Bearer token. Required when `auth: token`. |
+| `tls.cert_file` / `tls.key_file` | | Serve the endpoint over HTTPS. |
+| `tls.client_ca` | | Require + verify client certificates (mTLS). |
+
+> **Security**: the endpoint binds `127.0.0.1` by default so it is not reachable
+> off-host without an explicit `host` change. In production prefer one of:
+> bind loopback and scrape via a sidecar; restrict with a firewall/NetworkPolicy;
+> or enable `auth: token` (and/or TLS). Never expose `0.0.0.0` unauthenticated on
+> an untrusted network.
+
+### Environment variable overrides
+
+Every key is overridable with the `DITTOFS_METRICS_*` prefix:
+
+| Variable | Maps to |
+|----------|---------|
+| `DITTOFS_METRICS_ENABLED` | `metrics.enabled` |
+| `DITTOFS_METRICS_HOST` | `metrics.host` |
+| `DITTOFS_METRICS_PORT` | `metrics.port` |
+| `DITTOFS_METRICS_PATH` | `metrics.path` |
+| `DITTOFS_METRICS_AUTH` | `metrics.auth` |
+| `DITTOFS_METRICS_TOKEN_FILE` | `metrics.token_file` |
+| `DITTOFS_METRICS_TLS_CERT_FILE` | `metrics.tls.cert_file` |
+| `DITTOFS_METRICS_TLS_KEY_FILE` | `metrics.tls.key_file` |
+| `DITTOFS_METRICS_TLS_CLIENT_CA` | `metrics.tls.client_ca` |
+
+```bash
+export DITTOFS_METRICS_ENABLED=true
+export DITTOFS_METRICS_HOST=0.0.0.0
+export DITTOFS_METRICS_PORT=9090
+```
+
+### Ownership model
+
+**DittoFS is only a scrape target.** It never runs, bundles, manages, or depends
+on a Prometheus/Thanos/Mimir instance. Point your cluster's existing Prometheus
+at the endpoint. For production, the standard path is the
+[kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
+(prometheus-operator) with long-term storage via Thanos or Mimir. DittoFS ships
+**no** dashboards or compose artifacts — the guidance below is enough to wire it
+into any standard stack.
+
+### Scraping (standalone Prometheus)
+
+Add a static or service-discovery scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: dittofs
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["dittofs-host:9090"]
+    # When auth: token is enabled:
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/dittofs-token
+```
+
+### Scraping (Kubernetes via the operator)
+
+The DittoFS Kubernetes operator wires this up for you when you opt in on the
+`DittoServer` spec. It renders the metrics container port, a dedicated metrics
+`Service` carrying `prometheus.io/scrape` annotations (for annotation-based
+discovery), and — **only if the `monitoring.coreos.com` CRDs are installed and
+you enable it** — a `ServiceMonitor` for the prometheus-operator. If those CRDs
+are absent the operator skips the `ServiceMonitor` (logged) and never fails the
+reconcile.
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: example
+spec:
+  storage:
+    metadataSize: 10Gi
+  metrics:
+    enabled: true            # renders the metrics Service + scrape annotations
+    port: 9090
+    path: /metrics
+    # bearerTokenSecret:     # optional authed scrape
+    #   name: dittofs-metrics-token
+    #   key: token
+    serviceMonitor:
+      enabled: true          # requires the prometheus-operator CRDs
+      interval: 30s
+      labels:                # match your Prometheus serviceMonitorSelector
+        release: kube-prometheus-stack
+```
+
+### Core series (⭐ = key signals)
+
+| Metric | Meaning |
+|--------|---------|
+| ⭐ `dittofs_adapter_requests_total{protocol,op,status}` | Per-protocol request RED counter (`status` is `ok` or `error`). |
+| `dittofs_adapter_request_duration_seconds{protocol,op}` | Request latency histogram. |
+| `dittofs_adapter_connections_total{protocol}` | Connections accepted since start, by protocol. |
+| `dittofs_client_connections_active{protocol}` | Active client connections, by protocol. |
+| `dittofs_auth_attempts_total{protocol}` / `dittofs_auth_failures_total{protocol}` | Authentication attempts and failures. |
+| ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
+| ⭐ `dittofs_sync_pending_bytes{share}` | On-disk bytes present locally but not yet mirrored to the remote (data at risk). |
+| `dittofs_localstore_disk_used_bytes{share}` | Local block-store disk bytes in use. |
+| `dittofs_localstore_evictions_total{share}` / `dittofs_localstore_backpressure_total{share}` | Cache evictions and backpressure events. |
+| `dittofs_quota_used_bytes{scope,principal,share}` | Bytes used by a quota principal (`scope` user/group, `principal` is the uid/gid). |
+| `dittofs_gc_runs_total` / `dittofs_gc_last_run_timestamp_seconds` / `dittofs_gc_freed_bytes_total` | GC run count, last-run time, bytes reclaimed. |
+| ⭐ `dittofs_snapshot_operations_total{op,result}` | Snapshot operations by `op` (create/delete/restore) and `result` (ok/error). |
+| `dittofs_snapshot_duration_seconds` | Snapshot operation latency histogram. |
+
+### Example alert expressions
+
+```yaml
+groups:
+  - name: dittofs
+    rules:
+      # Scheduled snapshots stale: no successful create in 24h.
+      - alert: DittoFSSnapshotStale
+        expr: |
+          (time() - max(timestamp(dittofs_snapshot_operations_total{op="create",result="ok"})))
+            > 86400
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "DittoFS has had no successful snapshot create in >24h"
+
+      # Remote block store unreachable.
+      - alert: DittoFSRemoteDown
+        expr: dittofs_remote_up == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "DittoFS remote store for {{ $labels.share }} is down"
+
+      # Sync backlog growing (unsynced data not draining).
+      - alert: DittoFSSyncBacklogGrowing
+        expr: delta(dittofs_sync_pending_bytes[30m]) > 0 and dittofs_sync_pending_bytes > 1e9
+        for: 30m
+        labels: { severity: warning }
+        annotations:
+          summary: "DittoFS sync backlog for {{ $labels.share }} is growing"
+
+      # Local cache disk usage near a target ceiling (adjust threshold to your PVC size).
+      - alert: DittoFSLocalStoreNearLimit
+        expr: dittofs_localstore_disk_used_bytes > 0.9 * 100e9
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "DittoFS local store for {{ $labels.share }} is near its disk limit"
+
+      # Elevated adapter error rate (>5% of requests over 5m).
+      - alert: DittoFSAdapterErrorRate
+        expr: |
+          sum(rate(dittofs_adapter_requests_total{status="error"}[5m])) by (protocol)
+            / sum(rate(dittofs_adapter_requests_total[5m])) by (protocol) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "DittoFS {{ $labels.protocol }} error rate above 5%"
+```
+
+### Dashboard guidance
+
+Build (or import) a Grafana dashboard around the ⭐ core series: an adapter RED
+row (rate of `dittofs_adapter_requests_total`, error ratio, latency percentiles
+from `dittofs_adapter_request_duration_seconds`), a durability row
+(`dittofs_remote_up`, `dittofs_sync_pending_bytes`, and snapshot success rate
+from `dittofs_snapshot_operations_total`), and a capacity row
+(`dittofs_localstore_disk_used_bytes`, `dittofs_quota_used_bytes`). DittoFS does
+not ship a dashboard JSON; these series are stable and named for direct use.
 
 ## Environment Variables
 

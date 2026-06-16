@@ -61,6 +61,38 @@ metricsService:
       targetPort: 8443
   type: ClusterIP
 
+# Prometheus integration for DittoServer instances.
+#
+# IMPORTANT: this chart installs the OPERATOR, not DittoServer instances. The
+# DittoFS metrics surface is configured per-DittoServer via its `spec.metrics`
+# block (see the CRD / docs/CONFIGURATION.md). The settings below are NOT applied
+# automatically — they document the recommended shape and let downstream
+# automation template a DittoServer.spec.metrics from one place.
+#
+# Ownership model: DittoFS only exposes a scrape target plus optional integration
+# glue (a metrics Service with prometheus.io/* annotations and an optional
+# ServiceMonitor). It never runs or bundles Prometheus/Thanos — rely on the
+# cluster's prometheus-operator (e.g. kube-prometheus-stack). The ServiceMonitor
+# is emitted ONLY when the monitoring.coreos.com CRDs are present AND
+# serviceMonitor.enabled is true; otherwise it is skipped without error.
+metrics:
+  # Enable the DittoFS /metrics endpoint, the metrics Service, and the
+  # prometheus.io/scrape annotations on DittoServer instances. Opt-in.
+  enabled: false
+  # Metrics endpoint / Service port.
+  port: 9090
+  # Metrics HTTP path.
+  path: /metrics
+  serviceMonitor:
+    # Emit a monitoring.coreos.com/v1 ServiceMonitor (requires the
+    # prometheus-operator CRDs; skipped at reconcile time if absent).
+    enabled: false
+    # Scrape interval; empty uses the Prometheus default.
+    interval: ""
+    # Labels added to the ServiceMonitor so a Prometheus serviceMonitorSelector
+    # can match it, e.g. {release: kube-prometheus-stack}.
+    labels: {}
+
 # Service account configuration
 serviceAccount:
   annotations: {}

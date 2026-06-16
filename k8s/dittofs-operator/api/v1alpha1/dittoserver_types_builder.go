@@ -79,6 +79,13 @@ func WithService(service ServiceSpec) func(*DittoServerSpec) {
 	}
 }
 
+// WithMetrics sets the Metrics of a DittoServerSpec
+func WithMetrics(metrics *MetricsSpec) func(*DittoServerSpec) {
+	return func(obj *DittoServerSpec) {
+		obj.Metrics = metrics
+	}
+}
+
 // WithResources sets the Resources of a DittoServerSpec
 func WithResources(resources corev1.ResourceRequirements) func(*DittoServerSpec) {
 	return func(obj *DittoServerSpec) {
