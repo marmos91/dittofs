@@ -185,6 +185,12 @@ func (r *CertReloader) changed() bool {
 // plaintext. The returned config uses GetCertificate for hot-reload and, when
 // a client CA is set, requires and verifies client certificates (mTLS).
 func ServerConfig(cfg Config) (*tls.Config, error) {
+	// Validate first so an inconsistent partial config (e.g. cert_file without
+	// key_file, or a client CA without a server cert) is reported loudly rather
+	// than silently treated as "TLS disabled" by the Enabled() check below.
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if !cfg.Enabled() {
 		return nil, nil
 	}

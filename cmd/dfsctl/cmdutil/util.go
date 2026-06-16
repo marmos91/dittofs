@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/marmos91/dittofs/internal/cli/credentials"
 	"github.com/marmos91/dittofs/internal/cli/output"
@@ -65,9 +66,15 @@ type GlobalFlags struct {
 	TLSSkipVerifySet bool
 }
 
+// skipVerifyWarnOnce ensures the man-in-the-middle warning is printed at most
+// once per process, even though TLSClientOptions may be called several times
+// per command (e.g. token refresh followed by the final client build).
+var skipVerifyWarnOnce sync.Once
+
 // TLSClientOptions translates resolved TLS parameters into apiclient options.
-// It also emits the man-in-the-middle warning once when verification is
-// disabled. Empty parameters produce no options (default transport behavior).
+// It also emits the man-in-the-middle warning (once per process) when
+// verification is disabled. Empty parameters produce no options (default
+// transport behavior).
 func TLSClientOptions(caCert, clientCert, clientKey string, skipVerify bool) []apiclient.ClientOption {
 	var opts []apiclient.ClientOption
 	if caCert != "" {
@@ -77,9 +84,11 @@ func TLSClientOptions(caCert, clientCert, clientKey string, skipVerify bool) []a
 		opts = append(opts, apiclient.WithClientCert(clientCert, clientKey))
 	}
 	if skipVerify {
-		_, _ = fmt.Fprintln(os.Stderr,
-			"WARNING: TLS certificate verification disabled (--tls-skip-verify); "+
-				"the connection is vulnerable to man-in-the-middle attacks")
+		skipVerifyWarnOnce.Do(func() {
+			_, _ = fmt.Fprintln(os.Stderr,
+				"WARNING: TLS certificate verification disabled (--tls-skip-verify); "+
+					"the connection is vulnerable to man-in-the-middle attacks")
+		})
 		opts = append(opts, apiclient.WithInsecureSkipVerify(true))
 	}
 	return opts

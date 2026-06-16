@@ -109,14 +109,14 @@ func (c *Client) applyTLS() error {
 	if c.caCertPath != "" {
 		caPEM, err := os.ReadFile(c.caCertPath)
 		if err != nil {
-			return fmt.Errorf("read CA cert %s: %w", c.caCertPath, err)
+			return fmt.Errorf("read CA cert %q: %w", c.caCertPath, err)
 		}
 		pool, err := x509.SystemCertPool()
 		if err != nil || pool == nil {
 			pool = x509.NewCertPool()
 		}
 		if !pool.AppendCertsFromPEM(caPEM) {
-			return fmt.Errorf("CA cert %s contains no valid PEM certificate", c.caCertPath)
+			return fmt.Errorf("CA cert %q contains no valid PEM certificate", c.caCertPath)
 		}
 		tlsCfg.RootCAs = pool
 	}
@@ -124,7 +124,7 @@ func (c *Client) applyTLS() error {
 	if c.clientCertPath != "" {
 		cert, err := tls.LoadX509KeyPair(c.clientCertPath, c.clientKeyPath)
 		if err != nil {
-			return fmt.Errorf("load client key pair (cert=%s key=%s): %w", c.clientCertPath, c.clientKeyPath, err)
+			return fmt.Errorf("load client key pair (cert=%q key=%q): %w", c.clientCertPath, c.clientKeyPath, err)
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
 	}
