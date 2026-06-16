@@ -49,6 +49,11 @@ Use "dfsctl [command] --help" for more information about a command.`,
 		cmdutil.Flags.Output, _ = cmd.Flags().GetString("output")
 		cmdutil.Flags.NoColor, _ = cmd.Flags().GetBool("no-color")
 		cmdutil.Flags.Verbose, _ = cmd.Flags().GetBool("verbose")
+		cmdutil.Flags.CACert, _ = cmd.Flags().GetString("cacert")
+		cmdutil.Flags.ClientCert, _ = cmd.Flags().GetString("client-cert")
+		cmdutil.Flags.ClientKey, _ = cmd.Flags().GetString("client-key")
+		cmdutil.Flags.TLSSkipVerify, _ = cmd.Flags().GetBool("tls-skip-verify")
+		cmdutil.Flags.TLSSkipVerifySet = cmd.Flags().Changed("tls-skip-verify")
 	},
 }
 
@@ -69,6 +74,13 @@ func init() {
 	rootCmd.PersistentFlags().StringP("output", "o", "table", "Output format (table|json|yaml)")
 	rootCmd.PersistentFlags().Bool("no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "Enable verbose output")
+
+	// TLS escape-hatch overrides (login-time flags persist into the context;
+	// these override the stored material for a single invocation).
+	rootCmd.PersistentFlags().String("cacert", "", "Path to a PEM CA bundle trusted for the server certificate (overrides stored)")
+	rootCmd.PersistentFlags().String("client-cert", "", "Path to a PEM client certificate for mutual TLS (overrides stored)")
+	rootCmd.PersistentFlags().String("client-key", "", "Path to the PEM client private key for mutual TLS (overrides stored)")
+	rootCmd.PersistentFlags().Bool("tls-skip-verify", false, "Disable TLS certificate verification (insecure; overrides stored)")
 
 	// Add subcommands
 	rootCmd.AddCommand(versionCmd)

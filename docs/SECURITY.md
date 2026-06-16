@@ -408,6 +408,21 @@ This TLS support is deliberately thin and follows the etcd/MinIO/Vault-client no
 
 See [docs/CONFIGURATION.md](CONFIGURATION.md#tls-and-bind-address) for the full option reference and [docs/DEPLOYMENT.md](DEPLOYMENT.md) for deployment topologies. Note this covers the **control plane API only** — NFS/SMB data-plane traffic still relies on network-level encryption (below).
 
+**`dfsctl` client-side TLS.** When the API is served behind a private CA or mutual TLS, the `dfsctl` client needs the matching trust material. It is captured **once at login** and reused by every later command — TLS is a property of the login context, not a per-request flag:
+
+```bash
+# Private CA: trust the server certificate
+dfsctl login --server https://host:port --cacert /etc/dittofs/tls/ca.crt -u admin
+
+# Mutual TLS: also present a client certificate
+dfsctl login --server https://host:port --cacert ca.crt \
+    --client-cert client.crt --client-key client.key -u admin
+
+dfsctl share list   # reuses the stored CA / client cert — no flags needed
+```
+
+The login stores the certificate **file paths** (not their contents) in the per-context credential file. Each command re-reads the files, so certbot / cert-manager rotation is picked up automatically on the next invocation — the paths must stay readable. The same flags exist as root-level escape hatches (`dfsctl --cacert … share list`) and take precedence over the stored context for a single command. `--tls-skip-verify` disables certificate verification and is **insecure** (vulnerable to man-in-the-middle); it prints a warning and is intended only for development against self-signed certs. Setting `--client-cert` without `--client-key` is rejected.
+
 ### Network-Level Protection
 
 **Use VPN or encrypted tunnels:**

@@ -16,6 +16,11 @@ var (
 	loginUsername    string
 	loginPassword    string
 	loginContextName string
+
+	loginCACert        string
+	loginClientCert    string
+	loginClientKey     string
+	loginTLSSkipVerify bool
 )
 
 var loginCmd = &cobra.Command{
@@ -43,6 +48,10 @@ func init() {
 	loginCmd.Flags().StringVarP(&loginUsername, "username", "u", "", "Username")
 	loginCmd.Flags().StringVarP(&loginPassword, "password", "p", "", "Password")
 	loginCmd.Flags().StringVarP(&loginContextName, "context", "c", "", "Context name (defaults to current or auto-generated)")
+	loginCmd.Flags().StringVar(&loginCACert, "cacert", "", "Path to a PEM CA bundle trusted for the server certificate")
+	loginCmd.Flags().StringVar(&loginClientCert, "client-cert", "", "Path to a PEM client certificate for mutual TLS")
+	loginCmd.Flags().StringVar(&loginClientKey, "client-key", "", "Path to the PEM client private key for mutual TLS")
+	loginCmd.Flags().BoolVar(&loginTLSSkipVerify, "tls-skip-verify", false, "Disable TLS certificate verification (insecure)")
 }
 
 func runLogin(cmd *cobra.Command, args []string) error {
@@ -83,8 +92,10 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Create API client
-	client := apiclient.New(serverURLStr)
+	// Create API client. TLS material is captured here and persisted into the
+	// context below so later commands reuse it without re-specifying flags.
+	tlsOpts := cmdutil.TLSClientOptions(loginCACert, loginClientCert, loginClientKey, loginTLSSkipVerify)
+	client := apiclient.New(serverURLStr, tlsOpts...)
 
 	// Attempt login
 	fmt.Printf("Logging in to %s as %s...\n", serverURLStr, username)
@@ -117,11 +128,15 @@ func runLogin(cmd *cobra.Command, args []string) error {
 
 	// Save credentials
 	ctx := &credentials.Context{
-		ServerURL:    serverURLStr,
-		Username:     username,
-		AccessToken:  tokens.AccessToken,
-		RefreshToken: tokens.RefreshToken,
-		ExpiresAt:    tokens.ExpiresAt,
+		ServerURL:     serverURLStr,
+		Username:      username,
+		AccessToken:   tokens.AccessToken,
+		RefreshToken:  tokens.RefreshToken,
+		ExpiresAt:     tokens.ExpiresAt,
+		CACert:        loginCACert,
+		ClientCert:    loginClientCert,
+		ClientKey:     loginClientKey,
+		TLSSkipVerify: loginTLSSkipVerify,
 	}
 
 	if err := store.SetContext(contextName, ctx); err != nil {
