@@ -2,6 +2,7 @@ package nfs
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +56,12 @@ type NFSConnection struct {
 	// pendingCBReplies routes NFSv4.1 backchannel REPLY messages.
 	// nil unless the connection is bound for back-channel.
 	pendingCBReplies *state.PendingCBReplies
+
+	// tlsUpgraded records whether this connection has completed an RFC 9289
+	// STARTTLS upgrade. Once true, c.conn is a *tls.Conn and all traffic is
+	// encrypted. Only touched from the single Serve read loop (the upgrade is
+	// handled synchronously before any request is dispatched concurrently).
+	tlsUpgraded bool
 }
 
 func NewNFSConnection(server *NFSAdapter, conn net.Conn, connectionID uint64) *NFSConnection {
@@ -107,9 +114,82 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 			return
 		}
 
+		// RFC 9289 gate: when TLS is configured and this connection has not yet
+		// upgraded, intercept the AUTH_TLS STARTTLS probe (and, in require mode,
+		// reject plaintext) before dispatching the request concurrently.
+		if c.server.tlsConfig != nil && !c.tlsUpgraded {
+			handled, gateErr := c.handleTLSGate(ctx, call, rawMessage, clientAddr)
+			if gateErr != nil {
+				logger.Debug("NFS TLS gate closed connection", "address", clientAddr, "error", gateErr)
+				return
+			}
+			if handled {
+				c.resetIdleTimeout(clientAddr)
+				continue
+			}
+		}
+
 		c.dispatchRequest(ctx, clientAddr, call, rawMessage)
 		c.resetIdleTimeout(clientAddr)
 	}
+}
+
+// handleTLSGate enforces the RFC 9289 STARTTLS policy on a not-yet-upgraded
+// connection. It returns handled=true when it has consumed the request (a
+// successful upgrade, or a require-mode rejection that closes the connection);
+// handled=false means the caller should dispatch the request normally
+// (opportunistic mode, non-probe request). A non-nil error means the read loop
+// must terminate. On every handled/error path the pooled rawMessage is
+// released here, since the request is not forwarded to dispatchRequest.
+func (c *NFSConnection) handleTLSGate(ctx context.Context, call *rpc.RPCCallMessage, rawMessage []byte, clientAddr string) (bool, error) {
+	// A STARTTLS probe is a NULL procedure call carrying the AUTH_TLS flavor.
+	if call.Procedure == 0 && call.GetAuthFlavor() == rpc.AuthTLS {
+		pool.Put(rawMessage)
+		if err := c.startTLS(ctx, call.XID, clientAddr); err != nil {
+			return true, fmt.Errorf("STARTTLS upgrade: %w", err)
+		}
+		return true, nil
+	}
+
+	// Not a probe. In require mode, plaintext RPC is not allowed before the
+	// upgrade — drop the connection. In opportunistic mode, serve it normally.
+	if c.server.tlsRequire {
+		pool.Put(rawMessage)
+		return true, fmt.Errorf("require-TLS: rejecting plaintext request (program=%d procedure=%d flavor=%d) from %s",
+			call.Program, call.Procedure, call.GetAuthFlavor(), clientAddr)
+	}
+	return false, nil
+}
+
+// startTLS answers an AUTH_TLS probe with the "STARTTLS" verifier and performs
+// the TLS 1.3 handshake on the same TCP connection, swapping c.conn for the
+// resulting *tls.Conn (RFC 9289 §5.1). Because tls.Conn satisfies net.Conn, the
+// RPC framing and dispatch paths are unchanged after the swap. It runs
+// synchronously in the Serve read loop, before any request is dispatched, so no
+// concurrent goroutine touches c.conn during the handshake.
+func (c *NFSConnection) startTLS(ctx context.Context, xid uint32, clientAddr string) error {
+	reply, err := rpc.MakeStartTLSReply(xid)
+	if err != nil {
+		return fmt.Errorf("build STARTTLS reply: %w", err)
+	}
+	if err := c.writeReply(xid, reply); err != nil {
+		return fmt.Errorf("write STARTTLS verifier: %w", err)
+	}
+
+	// Clear the idle/read deadline for the handshake; the read loop re-arms it
+	// after the upgrade via resetIdleTimeout.
+	_ = c.conn.SetDeadline(time.Time{})
+
+	tlsConn := tls.Server(c.conn, c.server.tlsConfig)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		return fmt.Errorf("TLS handshake: %w", err)
+	}
+
+	c.conn = tlsConn
+	c.tlsUpgraded = true
+	logger.Info("NFS connection upgraded to TLS", "address", clientAddr,
+		"version", tls.VersionName(tlsConn.ConnectionState().Version))
+	return nil
 }
 
 // isShuttingDown checks if the connection should close due to context

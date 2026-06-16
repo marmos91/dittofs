@@ -61,11 +61,12 @@
 - Identity mapping (root squash, all squash)
 - AUTH_UNIX support for trusted-network deployments
 - Native, file-based TLS (and optional mutual TLS) for the control plane API, with on-disk certificate hot-reload; loopback-only bind by default ([Control Plane API: TLS and Bind Address](#control-plane-api-tls-and-bind-address))
+- NFS-over-TLS (RFC 9289): opportunistic `AUTH_TLS` STARTTLS upgrade to TLS 1.3, with optional mutual TLS, sharing the control-plane cert hot-reload path ([NFS-over-TLS](#nfs-over-tls-rfc-9289))
 
 ### Remaining Limitations
 
 - No formal security audit performed
-- No built-in encryption in transit for NFS (use VPN or network-level encryption)
+- NFS-over-TLS requires a client that supports RFC 9289 (`xprtsec=tls`); macOS has no such client (use Kerberos or a network tunnel)
 - No built-in encryption at rest
 - No audit logging for file operations
 
@@ -373,12 +374,30 @@ shares:
 
 ### Encryption in Transit
 
-DittoFS does not currently provide built-in TLS encryption for NFS or SMB wire traffic. While Kerberos provides authentication and message integrity, file data is transmitted in cleartext over TCP unless network-level encryption is used.
+DittoFS supports in-transit encryption for both data-plane protocols: **SMB3** encrypts in-protocol (AES-GCM/CCM, see [SMB3 Encryption](#smb3-encryption)), and **NFS** can use **NFS-over-TLS (RFC 9289)** to wrap RPC traffic in TLS 1.3 (below). Without one of these — or network-level encryption — file data and AUTH_UNIX credentials travel in cleartext over TCP.
 
 **Implications:**
-- File data can be intercepted without network-level encryption
-- Use VPN, IPsec, or WireGuard to protect data in transit
-- SMB message signing protects integrity but not confidentiality
+- Plaintext NFS data can be intercepted without TLS or network-level encryption
+- Prefer NFS-over-TLS or SMB3 encryption; otherwise use VPN, IPsec, or WireGuard
+- SMB message signing protects integrity but not confidentiality (use encryption for that)
+
+#### NFS-over-TLS (RFC 9289)
+
+DittoFS implements the opportunistic `AUTH_TLS` STARTTLS upgrade from RFC 9289: a client sends a `NULL` RPC with `auth_flavor = AUTH_TLS`, the server replies with the `"STARTTLS"` verifier, and both perform a TLS 1.3 handshake on the same connection — all subsequent traffic is encrypted. The handshake runs in userspace (no kernel TLS / `tlshd` on the server). Setting `client_ca` requires and verifies a client certificate (mutual TLS).
+
+```yaml
+adapters:
+  nfs:
+    tls:
+      cert_file: /etc/dittofs/tls/tls.crt
+      key_file:  /etc/dittofs/tls/tls.key
+      client_ca: /etc/dittofs/tls/ca.crt   # optional → mutual TLS
+      mode: opportunistic                   # "opportunistic" (default) | "require"
+```
+
+- **`opportunistic`** still serves non-TLS clients in plaintext (smooth rollout); **`require`** rejects plaintext until a connection upgrades.
+- As with the control-plane API, DittoFS only loads cert files and hot-reloads them on rotation; issuance/renewal is the platform's responsibility.
+- Client support: Linux `mount -o vers=4.1,xprtsec=tls` needs `tlshd` + `CONFIG_NET_HANDSHAKE` (RHEL 9.x / kernel 6.7+); macOS has no NFS-over-TLS client. See [docs/NFS.md](NFS.md#nfs-over-tls-rfc-9289).
 
 ### Control Plane API: TLS and Bind Address
 

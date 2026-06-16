@@ -2,11 +2,14 @@ package nfs
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/marmos91/dittofs/internal/tlsconfig"
 
 	mount "github.com/marmos91/dittofs/internal/adapter/nfs/mount/handlers"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/blocking"
@@ -151,6 +154,15 @@ type NFSAdapter struct {
 	// (isOperationBlocked) does a single map lookup instead of a per-RPC JSON
 	// unmarshal + linear scan.
 	v3BlockedOps map[string]bool
+
+	// tlsConfig is the server TLS config used to upgrade connections that send
+	// an AUTH_TLS STARTTLS probe (RFC 9289). nil when TLS is not configured, in
+	// which case connections stay plaintext. Built once in Serve.
+	tlsConfig *tls.Config
+
+	// tlsRequire mirrors NFSTLSConfig.Mode == "require": when true, a connection
+	// must upgrade via AUTH_TLS before any other RPC is served.
+	tlsRequire bool
 }
 
 // NFSTimeoutsConfig groups all timeout-related configuration.
@@ -232,6 +244,55 @@ type NFSConfig struct {
 	// via rpcinfo/showmount without requiring a system-level rpcbind daemon.
 	// Default: enabled on port 10111.
 	Portmapper PortmapConfig `mapstructure:"portmapper"`
+
+	// TLS configures opportunistic NFS-over-TLS (RFC 9289). When the cert/key
+	// files are set, the server answers an AUTH_TLS STARTTLS probe and upgrades
+	// the connection to TLS 1.3. Unset = plaintext only (back-compat).
+	TLS NFSTLSConfig `mapstructure:"tls"`
+}
+
+// NFSTLSConfig configures NFS-over-TLS (RFC 9289). It mirrors the control
+// plane's file-based TLS config and reuses internal/tlsconfig for cert loading
+// and hot-reload. DittoFS only consumes cert files; lifecycle (issuance,
+// renewal, rotation) is the platform's responsibility.
+type NFSTLSConfig struct {
+	// CertFile / KeyFile are the PEM server certificate and private key. Both
+	// must be set to enable TLS; setting one without the other is an error.
+	CertFile string `mapstructure:"cert_file"`
+	KeyFile  string `mapstructure:"key_file"`
+
+	// ClientCA is a PEM CA bundle. When set, the server requires and verifies a
+	// client certificate (mutual TLS).
+	ClientCA string `mapstructure:"client_ca"`
+
+	// MinVersion is the minimum TLS version: "1.2" or "1.3" (default "1.2").
+	MinVersion string `mapstructure:"min_version"`
+
+	// Mode selects the upgrade policy:
+	//   - "opportunistic" (default): non-TLS clients are still served in
+	//     plaintext; only clients that send the AUTH_TLS probe are upgraded.
+	//   - "require": every connection must upgrade via AUTH_TLS before any
+	//     other RPC; plaintext requests are rejected.
+	Mode string `mapstructure:"mode"`
+}
+
+// NFSTLSModeRequire is the Mode value that rejects plaintext RPC until a
+// connection has upgraded via AUTH_TLS.
+const NFSTLSModeRequire = "require"
+
+// shared converts the wire config into the backend-agnostic tlsconfig.Config.
+func (t NFSTLSConfig) shared() tlsconfig.Config {
+	return tlsconfig.Config{
+		CertFile:   t.CertFile,
+		KeyFile:    t.KeyFile,
+		ClientCA:   t.ClientCA,
+		MinVersion: t.MinVersion,
+	}
+}
+
+// Enabled reports whether TLS is configured (both cert and key set).
+func (t NFSTLSConfig) Enabled() bool {
+	return t.shared().Enabled()
 }
 
 // PortmapConfig holds configuration for the embedded portmapper.
@@ -573,6 +634,28 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 // Serve() should only be called once per NFSAdapter instance.
 func (s *NFSAdapter) Serve(ctx context.Context) error {
 	logger.Debug("NFS config", "max_connections", s.config.MaxConnections, "read_timeout", s.config.Timeouts.Read, "write_timeout", s.config.Timeouts.Write, "idle_timeout", s.config.Timeouts.Idle)
+
+	// Build the server TLS config (loads + parses the cert files now, so a bad
+	// cert path fails at startup rather than on the first STARTTLS probe). nil
+	// when TLS is not configured, in which case connections stay plaintext.
+	if err := s.config.TLS.shared().Validate(); err != nil {
+		return fmt.Errorf("adapters.nfs.tls.%w", err)
+	}
+	tlsCfg, err := tlsconfig.ServerConfig(s.config.TLS.shared())
+	if err != nil {
+		return fmt.Errorf("configure NFS TLS: %w", err)
+	}
+	s.tlsConfig = tlsCfg
+	s.tlsRequire = s.config.TLS.Enabled() && s.config.TLS.Mode == NFSTLSModeRequire
+	if tlsCfg != nil {
+		// TLS 1.3 is the RFC 9289 floor; raise the configured minimum if needed.
+		if tlsCfg.MinVersion < tls.VersionTLS13 {
+			tlsCfg.MinVersion = tls.VersionTLS13
+		}
+		logger.Info("NFS-over-TLS enabled (RFC 9289)",
+			"mode", map[bool]string{true: NFSTLSModeRequire, false: "opportunistic"}[s.tlsRequire],
+			"mtls", s.config.TLS.ClientCA != "")
+	}
 
 	// Start embedded portmapper (RFC 1057) for NFS service discovery.
 	// This allows clients to query rpcinfo/showmount without needing
