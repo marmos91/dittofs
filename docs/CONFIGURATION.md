@@ -1576,12 +1576,14 @@ spec:
 groups:
   - name: dittofs
     rules:
-      # Scheduled snapshots stale: no successful create in 24h. Uses the
-      # last-success gauge (its value is the snapshot time); timestamp() on a
-      # counter would return the scrape time, not the last snapshot time.
+      # Scheduled snapshots stale: a share with no successful create in 24h.
+      # Uses the last-success gauge (its value is the snapshot time); timestamp()
+      # on a counter would return the scrape time, not the last snapshot time.
+      # Evaluated PER SHARE — an aggregate max() would let a freshly-snapshotted
+      # share mask one that has never been snapshotted.
       - alert: DittoFSSnapshotStale
         expr: |
-          (time() - max(dittofs_snapshot_last_success_timestamp_seconds)) > 86400
+          (time() - dittofs_snapshot_last_success_timestamp_seconds) > 86400
         for: 1h
         labels: { severity: warning }
         annotations:

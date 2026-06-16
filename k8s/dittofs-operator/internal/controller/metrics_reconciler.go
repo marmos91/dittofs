@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
+	"strconv"
 
 	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	"github.com/marmos91/dittofs/k8s/dittofs-operator/pkg/resources"
@@ -79,7 +81,7 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, ds 
 
 	annotations := map[string]string{
 		prometheusScrapeAnnotation: labelTrue,
-		prometheusPortAnnotation:   fmt.Sprintf("%d", ds.MetricsPort()),
+		prometheusPortAnnotation:   strconv.Itoa(int(ds.MetricsPort())),
 		prometheusPathAnnotation:   ds.MetricsPath(),
 	}
 
@@ -221,38 +223,34 @@ func (r *DittoServerReconciler) buildServiceMonitor(ds *dittoiov1alpha1.DittoSer
 	serviceLabels := metricsServiceLabels(ds.Name)
 	monitorLabels := make(map[string]string)
 
-	endpoint := map[string]interface{}{
+	endpoint := map[string]any{
 		"port": metricsPortName,
 		"path": ds.MetricsPath(),
 	}
 	if sm := ds.Spec.Metrics.ServiceMonitor; sm != nil {
-		for k, v := range sm.Labels {
-			monitorLabels[k] = v
-		}
+		maps.Copy(monitorLabels, sm.Labels)
 		if sm.Interval != "" {
 			endpoint["interval"] = sm.Interval
 		}
 	}
-	for k, v := range serviceLabels {
-		monitorLabels[k] = v
-	}
+	maps.Copy(monitorLabels, serviceLabels)
 	if ref := ds.MetricsBearerTokenSecret(); ref != nil {
-		endpoint["bearerTokenSecret"] = map[string]interface{}{
+		endpoint["bearerTokenSecret"] = map[string]any{
 			"name": ref.Name,
 			"key":  ref.Key,
 		}
 	}
 
 	obj := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"spec": map[string]interface{}{
-				"selector": map[string]interface{}{
+		Object: map[string]any{
+			"spec": map[string]any{
+				"selector": map[string]any{
 					"matchLabels": toStringMap(serviceLabels),
 				},
-				"namespaceSelector": map[string]interface{}{
-					"matchNames": []interface{}{ds.Namespace},
+				"namespaceSelector": map[string]any{
+					"matchNames": []any{ds.Namespace},
 				},
-				"endpoints": []interface{}{endpoint},
+				"endpoints": []any{endpoint},
 			},
 		},
 	}
@@ -263,10 +261,10 @@ func (r *DittoServerReconciler) buildServiceMonitor(ds *dittoiov1alpha1.DittoSer
 	return obj
 }
 
-// toStringMap converts a map[string]string to the map[string]interface{} shape
+// toStringMap converts a map[string]string to the map[string]any shape
 // unstructured nested fields require.
-func toStringMap(in map[string]string) map[string]interface{} {
-	out := make(map[string]interface{}, len(in))
+func toStringMap(in map[string]string) map[string]any {
+	out := make(map[string]any, len(in))
 	for k, v := range in {
 		out[k] = v
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	dittoiov1alpha1 "github.com/marmos91/dittofs/k8s/dittofs-operator/api/v1alpha1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -452,6 +453,38 @@ func TestReconcileNetworkPolicies_BaselineCreated(t *testing.T) {
 
 	if len(baselineNP.OwnerReferences) == 0 {
 		t.Errorf("Baseline NetworkPolicy has no owner references")
+	}
+}
+
+func TestBaselineIngressPorts_MetricsGating(t *testing.T) {
+	hasPort := func(ports []networkingv1.NetworkPolicyPort, p int32) bool {
+		for _, np := range ports {
+			if np.Port != nil && np.Port.IntVal == p {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Metrics disabled: API port only, no metrics port.
+	off := newTestDittoServer("np-metrics-off", "default")
+	offPorts := baselineIngressPorts(off)
+	if !hasPort(offPorts, getAPIPort(off)) {
+		t.Errorf("baseline ingress missing API port when metrics off")
+	}
+	if hasPort(offPorts, off.MetricsPort()) {
+		t.Errorf("baseline ingress should NOT include metrics port when metrics disabled")
+	}
+
+	// Metrics enabled: metrics port present so Prometheus can scrape under default-deny.
+	on := newTestDittoServer("np-metrics-on", "default")
+	on.Spec.Metrics = &dittoiov1alpha1.MetricsSpec{Enabled: true}
+	onPorts := baselineIngressPorts(on)
+	if !hasPort(onPorts, getAPIPort(on)) {
+		t.Errorf("baseline ingress missing API port when metrics on")
+	}
+	if !hasPort(onPorts, on.MetricsPort()) {
+		t.Errorf("baseline ingress missing metrics port %d when metrics enabled", on.MetricsPort())
 	}
 }
 
