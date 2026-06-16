@@ -6,6 +6,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
 // smbRuntime is the consumer-defined role interface for the SMB handlers.
@@ -32,6 +33,10 @@ type smbRuntime interface {
 	// Identity / auth backends.
 	GetUserStore() models.UserStore
 	GetIdentityMappingStore() store.IdentityMappingStore
+
+	// Metrics returns the inline metrics sink (may be nil; all Record* methods
+	// are nil-receiver safe). SESSION_SETUP uses it to record SMB auth attempts.
+	Metrics() *metrics.Metrics
 }
 
 var _ smbRuntime = (*runtime.Runtime)(nil)

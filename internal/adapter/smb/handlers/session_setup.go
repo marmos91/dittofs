@@ -19,6 +19,16 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
+// recordAuth emits one SMB authentication-attempt metric (and a failure when
+// ok is false) for the given mechanism (ntlm|krb5). No-op when no runtime or no
+// metrics backend is wired; Metrics().RecordAuth is itself nil-receiver safe.
+func (h *Handler) recordAuth(mechanism string, ok bool) {
+	if h == nil || h.Registry == nil {
+		return
+	}
+	h.Registry.Metrics().RecordAuth("smb", mechanism, ok)
+}
+
 // SESSION_SETUP request structure offsets [MS-SMB2] 2.2.5
 const (
 	sessionSetupStructureSizeOffset     = 0  // 2 bytes: Always 25
@@ -1012,18 +1022,28 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 //  6. Creating an authenticated or guest session
 //  7. Configuring session signing with the derived key
 //  8. Cleaning up the pending authentication state
-func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte) (*HandlerResult, error) {
+func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte) (result *HandlerResult, retErr error) {
 	// Get and validate pending auth
 	pending, ok := h.GetPendingAuth(ctx.SessionID, ctx.ConnID)
 	if !ok {
 		logger.Debug("No pending auth for session",
 			"sessionID", ctx.SessionID,
 			"connID", ctx.ConnID)
+		// No pending handshake: a stray TYPE_3 is a protocol error, not a
+		// credential verdict — not counted as an NTLM auth attempt.
 		return NewErrorResult(types.StatusInvalidParameter), nil
 	}
 
 	// Remove pending auth (handshake complete)
 	h.DeletePendingAuth(ctx.SessionID, ctx.ConnID)
+
+	// Record the terminal NTLM auth verdict: this is the TYPE_3 (AUTHENTICATE)
+	// completion, so exactly one attempt is counted per handshake. Success is any
+	// non-error result (StatusSuccess for validated/anonymous/guest sessions);
+	// LOGON_FAILURE / INVALID_PARAMETER count as failures.
+	defer func() {
+		h.recordAuth("ntlm", result != nil && !result.Status.IsError())
+	}()
 
 	// Extract NTLM token (unwrap SPNEGO if needed)
 	ntlmToken, _, _ := extractNTLMToken(securityBuffer)

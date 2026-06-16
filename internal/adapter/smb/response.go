@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
@@ -12,6 +13,36 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// recordRequest emits one SMB RED sample (rate/errors/duration) for op. status
+// is the bounded ok|error label; SMB carries a precise per-command NTSTATUS, so
+// callers derive it from the result/error rather than collapsing every failure
+// into "error" only on transport faults. No-op when connInfo carries no metrics
+// backend. op is lower-cased to keep the {protocol,op} label set bounded and
+// stable regardless of the dispatch table's casing.
+func recordRequest(connInfo *ConnInfo, op string, isError bool, start time.Time) {
+	if connInfo == nil || connInfo.Metrics == nil {
+		return
+	}
+	status := "ok"
+	if isError {
+		status = "error"
+	}
+	connInfo.Metrics.RecordRequest("smb", strings.ToLower(op), status, time.Since(start))
+}
+
+// commandName resolves a bounded operation label for an SMB2 command code.
+// Commands absent from the dispatch table collapse to the single label
+// types.Command.String() yields for unmapped codes ("UNKNOWN", lower-cased to
+// "unknown" by recordRequest) — deliberately a constant rather than the numeric
+// code so an unrecognised-command flood cannot blow up {protocol,op}
+// cardinality. Used on the pre-dispatch error path where no *Command exists.
+func commandName(cmd types.Command) string {
+	if c, ok := DispatchTable[cmd]; ok {
+		return c.Name
+	}
+	return cmd.String()
+}
 
 // ProcessSingleRequest dispatches an SMB2 request to the appropriate handler.
 // This is used for non-compound (single) requests with full credit tracking.
@@ -39,6 +70,19 @@ func ProcessSingleRequest(
 		return ctx.Err()
 	default:
 	}
+
+	// RED metrics: one sample per handled request via a single deferred emit.
+	// metricOp defaults to the request's command name and is refined to the
+	// dispatch-table name once the command resolves; metricErr is flipped on
+	// every protocol-level failure (credit/sequence rejects, pre-dispatch gate
+	// errors, handler errors, and error-class NTSTATUS results). CANCEL (nil
+	// result, no response) leaves metricErr false and records as ok.
+	start := time.Now()
+	metricOp := commandName(reqHeader.Command)
+	metricErr := false
+	defer func() {
+		recordRequest(connInfo, metricOp, metricErr, start)
+	}()
 
 	// Track request for adaptive credit management
 	connInfo.SessionManager.RequestStarted(reqHeader.SessionID)
@@ -73,6 +117,7 @@ func ProcessSingleRequest(
 				"command", reqHeader.Command.String(),
 				"creditCharge", reqHeader.CreditCharge,
 				"error", err)
+			metricErr = true
 			return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
 		}
 	}
@@ -84,6 +129,7 @@ func ProcessSingleRequest(
 				"messageID", reqHeader.MessageID,
 				"creditCharge", charge,
 				"exempt", exempt)
+			metricErr = true
 			return SendErrorResponse(reqHeader, types.StatusInvalidParameter, connInfo)
 		}
 	}
@@ -99,6 +145,7 @@ func ProcessSingleRequest(
 		// session/expiry gate so it always dispatches to its handler, which
 		// cancels the pending op and returns nil (no response), per MS-SMB2
 		// §3.3.5.16.
+		metricErr = true
 		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
@@ -119,6 +166,7 @@ func ProcessSingleRequest(
 
 	// Per MS-SMB2 3.3.5.2.1: enforce encryption requirements.
 	if errStatus := checkEncryptionRequired(reqHeader, connInfo, isEncrypted); errStatus != 0 {
+		metricErr = true
 		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
@@ -129,6 +177,7 @@ func ProcessSingleRequest(
 		logger.Debug("Channel-sequence verification rejected request",
 			"command", reqHeader.Command.String(),
 			"messageID", reqHeader.MessageID)
+		metricErr = true
 		return sendDispatchError(reqHeader, errStatus, connInfo, isEncrypted)
 	}
 
@@ -181,6 +230,9 @@ func ProcessSingleRequest(
 		handlerCtx.RequestAsyncId = reqHeader.AsyncId
 	}
 
+	// Refine the RED op label now that the dispatch table resolved the command.
+	metricOp = cmd.Name
+
 	logger.Debug("Dispatching SMB2 command",
 		"command", cmd.Name,
 		"messageID", reqHeader.MessageID,
@@ -190,6 +242,7 @@ func ProcessSingleRequest(
 	result, err := cmd.Handler(handlerCtx, connInfo.Handler, body)
 	if err != nil {
 		logger.Debug("Handler error", "command", cmd.Name, "error", err)
+		metricErr = true
 		return SendErrorResponse(reqHeader, types.StatusInternalError, connInfo)
 	}
 
@@ -201,8 +254,15 @@ func ProcessSingleRequest(
 			logger.Warn("Handler returned nil result for non-CANCEL command",
 				"command", cmd.Name, "client", handlerCtx.ClientAddr)
 		}
+		// A nil result means no response was sent (CANCEL per §3.3.5.16). The
+		// request was still handled successfully — record it as ok via the defer.
 		return nil
 	}
+
+	// Derive the precise ok|error status from the handler's NTSTATUS — SMB
+	// returns a precise per-command status, so use it rather than collapsing
+	// every non-transport failure into ok (unlike NFSv4's coarse compound).
+	metricErr = result.Status.IsError()
 
 	// DropConnection: close TCP without sending a response.
 	// Used for fatal protocol violations (e.g., VALIDATE_NEGOTIATE failure).
@@ -422,8 +482,19 @@ func prepareDispatch(ctx context.Context, reqHeader *header.SMB2Header, connInfo
 // [MS-SMB2] 3.3.5.5). Callers on the compound path MUST thread per-subcommand
 // wire bytes here; the first-command caller can pass the concatenation of
 // firstHeader.Encode() and firstBody when no sliced buffer is available.
-func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.SMB2Header, body []byte, rawMessage []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (*HandlerResult, [16]byte, *handlers.SMBHandlerContext) {
+func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.SMB2Header, body []byte, rawMessage []byte, connInfo *ConnInfo, isEncrypted bool, asyncNotifyCallback handlers.AsyncResponseCallback) (retResult *HandlerResult, retFileID [16]byte, retCtx *handlers.SMBHandlerContext) {
 	var fileID [16]byte
+
+	// RED metrics: one sample per compound subcommand. SMB carries a precise
+	// per-command NTSTATUS, so each subcommand is recorded with its own
+	// op/status rather than collapsed into a single compound sample. The defer
+	// reads the named result so it records whatever status the handler (or a
+	// pre-dispatch gate) produced; a nil result (CANCEL, no response) records ok.
+	start := time.Now()
+	metricOp := commandName(reqHeader.Command)
+	defer func() {
+		recordRequest(connInfo, metricOp, retResult != nil && retResult.Status.IsError(), start)
+	}()
 
 	cmd, handlerCtx, errStatus := prepareDispatch(ctx, reqHeader, connInfo)
 	if errStatus != 0 {
@@ -500,6 +571,9 @@ func ProcessRequestWithFileIDAndCallback(ctx context.Context, reqHeader *header.
 	if reqHeader.Command == types.SMB2Cancel && reqHeader.Flags.IsAsync() {
 		handlerCtx.RequestAsyncId = reqHeader.AsyncId
 	}
+
+	// Refine the RED op label now that the dispatch table resolved the command.
+	metricOp = cmd.Name
 
 	logger.Debug("Dispatching SMB2 command",
 		"command", cmd.Name,

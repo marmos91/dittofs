@@ -189,6 +189,11 @@ func (c *Connection) connInfo() *smb.ConnInfo {
 		// Max size = 2 * MaxSessionCredits to allow generous window growth.
 		SequenceWindow: smb.NewSequenceWindowForConnection(c.server.sessionManager),
 	}
+	// Source the metrics sink from the runtime (nil-safe Record* methods). Left
+	// nil when the server runs without a metrics backend; dispatch guards for it.
+	if rt := c.server.Registry; rt != nil {
+		ci.Metrics = rt.Metrics()
+	}
 	// Wrap the session tracker so that session creation/deletion also
 	// registers/deregisters the ConnInfo in the adapter's session→connection
 	// map. This enables lease break notifications to be routed to the correct
