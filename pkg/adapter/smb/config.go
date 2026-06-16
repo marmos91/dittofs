@@ -184,12 +184,12 @@ func (c *SigningConfig) ToSigningConfig() signing.SigningConfig {
 //     Unencrypted requests on encrypted sessions return STATUS_ACCESS_DENIED.
 //
 // Default values:
-//   - Mode: "disabled"
+//   - Mode: "preferred"
 //   - AllowedCiphers: [AES-256-GCM, AES-256-CCM, AES-128-GCM, AES-128-CCM]
 type EncryptionConfig struct {
 	// Mode controls the encryption policy.
 	// Valid values: "disabled", "preferred", "required"
-	// Default: "disabled"
+	// Default: "preferred" (encrypts SMB 3.x sessions, still accepts SMB 2.x)
 	Mode string `mapstructure:"encryption_mode"`
 
 	// AllowedCiphers is an ordered list of allowed cipher IDs.
@@ -213,7 +213,12 @@ func DefaultAllowedCiphers() []uint16 {
 // applyDefaults fills in zero values with sensible defaults.
 func (c *EncryptionConfig) applyDefaults() {
 	if c.Mode == "" {
-		c.Mode = "disabled"
+		// Secure-by-default: "preferred" transparently encrypts SMB 3.x sessions
+		// that support it while still accepting SMB 2.x (which cannot encrypt),
+		// so confidentiality is on out of the box without breaking wire compat.
+		// Set "required" to mandate encryption (rejecting SMB 2.x), or "disabled"
+		// to opt out entirely.
+		c.Mode = "preferred"
 	}
 	if len(c.AllowedCiphers) == 0 {
 		c.AllowedCiphers = DefaultAllowedCiphers()
