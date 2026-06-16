@@ -20,6 +20,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
 // DefaultShutdownTimeout is the default timeout for graceful shutdown.
@@ -71,6 +72,12 @@ type Runtime struct {
 	identitySvc    *identity.Service
 	mountTracker   *MountTracker
 	clientRegistry *ClientRegistry
+
+	// metrics is the Prometheus metrics handle, set at startup. It is the
+	// carrier for inline adapter instruments (RED, connection, auth counters):
+	// adapters reach it via Runtime so no per-adapter plumbing is needed. May
+	// be nil; all metrics.Metrics Record* methods are nil-safe.
+	metrics *metrics.Metrics
 
 	// trashSvc is the recycle-bin service (list/restore/empty + reaper),
 	// constructed lazily by Trash() and started/stopped by the lifecycle
@@ -566,6 +573,21 @@ func (r *Runtime) GetBlockStoreForHandle(ctx context.Context, handle metadata.Fi
 
 func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 	r.lifecycleSvc.SetAPIServer(server)
+}
+
+// SetMetrics installs the Prometheus metrics handle. Call once at startup
+// before Serve. Passing nil disables inline instrument recording.
+func (r *Runtime) SetMetrics(m *metrics.Metrics) {
+	r.metrics = m
+}
+
+// Metrics returns the Prometheus metrics handle (may be nil). All Record*
+// methods on the returned value are nil-safe, so callers need not check.
+func (r *Runtime) Metrics() *metrics.Metrics {
+	if r == nil {
+		return nil
+	}
+	return r.metrics
 }
 
 func (r *Runtime) Serve(ctx context.Context) error {

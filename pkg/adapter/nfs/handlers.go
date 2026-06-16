@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"time"
 
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
@@ -30,6 +31,16 @@ import (
 // - Support graceful server shutdown
 //
 // Returns the reply data or an error if the handler fails.
+// recordOp records one NFS operation for the RED metrics (rate, errors,
+// duration). ok is the protocol-level success of the operation.
+func (c *NFSConnection) recordOp(op string, start time.Time, ok bool) {
+	status := "ok"
+	if !ok {
+		status = "error"
+	}
+	c.server.Registry.Metrics().RecordRequest("nfs", op, status, time.Since(start))
+}
+
 func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCallMessage, data []byte, clientAddr string) ([]byte, error) {
 	// Log first v3 call per server lifetime
 	c.server.logV3FirstUse()
@@ -115,12 +126,14 @@ func (c *NFSConnection) handleNFSProcedure(ctx context.Context, call *rpc.RPCCal
 	}
 
 	// Dispatch to handler
+	start := time.Now()
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.nfsHandler,
 		c.server.Registry,
 		data,
 	)
+	c.recordOp(procedure.Name, start, err == nil && (result == nil || result.NFSStatus == 0))
 
 	if result == nil {
 		if useDRC {
@@ -172,12 +185,14 @@ func (c *NFSConnection) handleMountProcedure(ctx context.Context, call *rpc.RPCC
 	}
 
 	// Dispatch to handler
+	start := time.Now()
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.mountHandler,
 		c.server.Registry,
 		data,
 	)
+	c.recordOp("MOUNT_"+procedure.Name, start, err == nil)
 
 	if result == nil {
 		return nil, err
@@ -238,12 +253,14 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 	}
 
 	// Dispatch to handler
+	start := time.Now()
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.nlmHandler,
 		c.server.Registry,
 		data,
 	)
+	c.recordOp("NLM_"+procedure.Name, start, err == nil)
 
 	if result == nil {
 		return nil, err
@@ -305,11 +322,13 @@ func (c *NFSConnection) handleNSMProcedure(ctx context.Context, call *rpc.RPCCal
 	}
 
 	// Dispatch to handler
+	start := time.Now()
 	result, err := procedure.Handler(
 		handlerCtx,
 		c.server.nsmHandler,
 		data,
 	)
+	c.recordOp("NSM_"+procedure.Name, start, err == nil)
 
 	if result == nil {
 		return nil, err
@@ -330,7 +349,10 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 
 	switch call.Procedure {
 	case v4types.NFSPROC4_NULL:
-		return c.server.v4Handler.HandleNull(data)
+		start := time.Now()
+		reply, err := c.server.v4Handler.HandleNull(data)
+		c.recordOp("NULL", start, err == nil)
+		return reply, err
 
 	case v4types.NFSPROC4_COMPOUND:
 		// Extract CompoundContext with auth credentials
@@ -350,7 +372,13 @@ func (c *NFSConnection) handleNFSv4Procedure(ctx context.Context, call *rpc.RPCC
 		}
 		compCtx.ConnectionID = c.connectionID
 
+		// COMPOUND status here is coarse: per-op NFS4ERR codes are encoded inside
+		// the XDR result and the RPC always succeeds, so err only reflects
+		// wire/decode failures. Per-op v4 RED needs ProcessCompound to surface a
+		// status (follow-up); this records traffic + latency + transport errors.
+		start := time.Now()
 		result, err := c.server.v4Handler.ProcessCompound(compCtx, data)
+		c.recordOp("COMPOUND", start, err == nil)
 
 		// After COMPOUND completes, check if this connection was bound for
 		// back-channel. If so, register a ConnWriter and PendingCBReplies

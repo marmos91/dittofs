@@ -64,6 +64,12 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		}
 		gssResult := c.server.gssProcessor.Process(ctx, call.GetAuthBody(), call.GetVerifierBody(), headerPreimage, procedureData)
 
+		// Record the Kerberos/RPCSEC_GSS auth outcome (skip silent discards,
+		// which are sequence drops rather than credential decisions).
+		if !gssResult.SilentDiscard {
+			c.server.Registry.Metrics().RecordAuth("nfs", "krb5", gssResult.Err == nil)
+		}
+
 		// Handle GSS processing errors (CREDPROBLEM / CTXPROBLEM)
 		if gssResult.Err != nil {
 			// Determine the auth_stat from the structured result field
