@@ -2591,7 +2591,7 @@ func encodeSetClientIDArgsForReject() []byte {
 // cached blocked-ops set populated by SetBlockedOps (the hot-path optimization),
 // rather than re-parsing live settings on each call.
 func TestIsOperationBlocked_CacheHit(t *testing.T) {
-	h := newTestHandler() // Registry is nil -> purely cache-driven
+	h := newTestHandler() // IsOperationBlocked always consults the cache
 
 	// Nothing blocked initially.
 	if h.IsOperationBlocked(types.OP_READ) {
