@@ -15,6 +15,15 @@ func runFileOpsTests(t *testing.T, factory StoreFactory) {
 	t.Run("CreateHardLink", func(t *testing.T) { testCreateHardLink(t, factory) })
 	t.Run("ContentIdStableAcrossRename", func(t *testing.T) { testContentIdStableAcrossRename(t, factory) })
 	t.Run("HardLinkRenameKeepsOtherName", func(t *testing.T) { testHardLinkRenameKeepsOtherName(t, factory) })
+	t.Run("HardLinkUnlinkFirstNameKeepsInode", func(t *testing.T) { testHardLinkUnlinkFirstNameKeepsInode(t, factory) })
+	t.Run("HardLinkGetAttrAfterUnlinkShowsCorrectNlink", func(t *testing.T) {
+		testHardLinkGetAttrAfterUnlinkShowsCorrectNlink(t, factory)
+	})
+	t.Run("HardLinkMoveOneNameAcrossDirectoriesPreservesOther", func(t *testing.T) {
+		testHardLinkMoveOneNameAcrossDirectoriesPreservesOther(t, factory)
+	})
+	t.Run("HardLinkListChildrenShowsNlinkGT1", func(t *testing.T) { testHardLinkListChildrenShowsNlinkGT1(t, factory) })
+	t.Run("HardLinkGetParentIsValid", func(t *testing.T) { testHardLinkGetParentIsValid(t, factory) })
 	t.Run("DerivedPathReflectsParentRename", func(t *testing.T) { testDerivedPathReflectsParentRename(t, factory) })
 	t.Run("SetFileAttributes", func(t *testing.T) { testSetFileAttributes(t, factory) })
 	t.Run("Rename", func(t *testing.T) { testRename(t, factory) })
@@ -456,6 +465,281 @@ func testContentIdStableAcrossRename(t *testing.T, factory StoreFactory) {
 	}
 	if got.Path != "/renamed.dat" {
 		t.Errorf("GetFileByPayloadID returned path %q, want /renamed.dat", got.Path)
+	}
+}
+
+// testHardLinkUnlinkFirstNameKeepsInode verifies that unlinking the first name
+// of a hard-linked inode leaves the second name fully functional: it still
+// resolves to the SAME handle and GetFile on that handle returns intact
+// attributes. This is the survivor-reachability half of #1166 — the inode must
+// not become unreachable when the name that happened to match a (now removed)
+// canonical path is unlinked.
+func testHardLinkUnlinkFirstNameKeepsInode(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	// Create A, hard-link B to the same inode, nlink=2.
+	handle := createTestFile(t, store, "/test", rootHandle, "A", 0644)
+	if err := store.SetChild(ctx, rootHandle, "B", handle); err != nil {
+		t.Fatalf("SetChild(B) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+
+	// Stamp a recognizable attribute so we can prove content/attrs survive.
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	file.Size = 4096
+	if err := store.PutFile(ctx, file); err != nil {
+		t.Fatalf("PutFile() failed: %v", err)
+	}
+
+	// Unlink A: drop its edge and decrement nlink to 1.
+	if err := store.DeleteChild(ctx, rootHandle, "A"); err != nil {
+		t.Fatalf("DeleteChild(A) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 1); err != nil {
+		t.Fatalf("SetLinkCount(1) failed: %v", err)
+	}
+
+	// A is gone; B still resolves to the SAME handle.
+	if _, err := store.GetChild(ctx, rootHandle, "A"); err == nil {
+		t.Error("GetChild(A) should fail after unlink")
+	} else if !metadata.IsNotFoundError(err) {
+		t.Errorf("GetChild(A) after unlink: expected not found error, got: %v", err)
+	}
+	bHandle, err := store.GetChild(ctx, rootHandle, "B")
+	if err != nil {
+		t.Fatalf("GetChild(B) after unlink(A) failed: %v", err)
+	}
+	if string(bHandle) != string(handle) {
+		t.Errorf("B resolves to a different inode after unlink(A)")
+	}
+
+	// GetFile via the surviving inode succeeds with intact attributes and a
+	// valid derived path that is the live name.
+	got, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() after unlink(A) failed: %v", err)
+	}
+	if got.Size != 4096 {
+		t.Errorf("Size after unlink(A) = %d, want 4096 — attrs not intact", got.Size)
+	}
+	if got.Path != "/B" {
+		t.Errorf("derived path after unlink(A) = %q, want /B", got.Path)
+	}
+}
+
+// testHardLinkGetAttrAfterUnlinkShowsCorrectNlink verifies the nlink contract as
+// names are unlinked one at a time: nlink=2 with both names, nlink=1 after the
+// first unlink, and the inode gone after the last name is removed (matching
+// testDeleteFile's not-found contract on every backend).
+func testHardLinkGetAttrAfterUnlinkShowsCorrectNlink(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	handle := createTestFile(t, store, "/test", rootHandle, "A", 0644)
+	if err := store.SetChild(ctx, rootHandle, "B", handle); err != nil {
+		t.Fatalf("SetChild(B) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+
+	// Both names present: nlink=2.
+	file, err := store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() failed: %v", err)
+	}
+	if file.Nlink != 2 {
+		t.Errorf("Nlink with both names = %d, want 2", file.Nlink)
+	}
+
+	// Unlink A: nlink=1.
+	if err := store.DeleteChild(ctx, rootHandle, "A"); err != nil {
+		t.Fatalf("DeleteChild(A) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 1); err != nil {
+		t.Fatalf("SetLinkCount(1) failed: %v", err)
+	}
+	file, err = store.GetFile(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetFile() after unlink(A) failed: %v", err)
+	}
+	if file.Nlink != 1 {
+		t.Errorf("Nlink after unlink(A) = %d, want 1", file.Nlink)
+	}
+
+	// Unlink B (the last name): drop the edge, delete the inode. The cross-
+	// backend contract for a fully-unlinked inode is the same not-found result
+	// testDeleteFile asserts.
+	if err := store.DeleteChild(ctx, rootHandle, "B"); err != nil {
+		t.Fatalf("DeleteChild(B) failed: %v", err)
+	}
+	if err := store.DeleteFile(ctx, handle); err != nil {
+		t.Fatalf("DeleteFile() failed: %v", err)
+	}
+	if _, err := store.GetFile(ctx, handle); err == nil {
+		t.Error("GetFile() should fail after the last name is unlinked")
+	} else if !metadata.IsNotFoundError(err) {
+		t.Errorf("expected not found error after last unlink, got: %v", err)
+	}
+}
+
+// testHardLinkMoveOneNameAcrossDirectoriesPreservesOther verifies that moving
+// one name of a multi-linked inode to a different directory leaves the inode's
+// other name (in a different directory) untouched and still resolving to the
+// same handle. One inode, multiple names across directories — moving a name is
+// an edge operation, not an inode operation.
+func testHardLinkMoveOneNameAcrossDirectoriesPreservesOther(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	dir1 := createTestDir(t, store, "/test", rootHandle, "dir1")
+	dir2 := createTestDir(t, store, "/test", rootHandle, "dir2")
+	dir3 := createTestDir(t, store, "/test", rootHandle, "dir3")
+
+	// Create A in dir1, hard-link B in dir2 to the same inode (nlink=2).
+	handle := createTestFile(t, store, "/test", dir1, "A", 0644)
+	if err := store.SetChild(ctx, dir2, "B", handle); err != nil {
+		t.Fatalf("SetChild(dir2/B) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+
+	// Move dir1/A -> dir3/newname: drop the old edge, add the new one.
+	if err := store.DeleteChild(ctx, dir1, "A"); err != nil {
+		t.Fatalf("DeleteChild(dir1/A) failed: %v", err)
+	}
+	if err := store.SetChild(ctx, dir3, "newname", handle); err != nil {
+		t.Fatalf("SetChild(dir3/newname) failed: %v", err)
+	}
+	if err := store.SetParent(ctx, handle, dir3); err != nil {
+		t.Fatalf("SetParent(dir3) failed: %v", err)
+	}
+
+	// dir2/B is unchanged and still resolves to the same handle.
+	bHandle, err := store.GetChild(ctx, dir2, "B")
+	if err != nil {
+		t.Fatalf("GetChild(dir2/B) after move failed: %v", err)
+	}
+	if string(bHandle) != string(handle) {
+		t.Errorf("dir2/B resolves to a different inode after moving the other name")
+	}
+
+	// The moved name resolves to the same handle too — one inode, two names.
+	movedHandle, err := store.GetChild(ctx, dir3, "newname")
+	if err != nil {
+		t.Fatalf("GetChild(dir3/newname) failed: %v", err)
+	}
+	if string(movedHandle) != string(handle) {
+		t.Errorf("dir3/newname resolves to a different inode")
+	}
+
+	// The old location is gone.
+	if _, err := store.GetChild(ctx, dir1, "A"); err == nil {
+		t.Error("GetChild(dir1/A) should fail after move")
+	} else if !metadata.IsNotFoundError(err) {
+		t.Errorf("GetChild(dir1/A) after move: expected not found error, got: %v", err)
+	}
+
+	// nlink is unchanged: a move is not an unlink.
+	count, err := store.GetLinkCount(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetLinkCount failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("link count after move = %d, want 2", count)
+	}
+}
+
+// testHardLinkListChildrenShowsNlinkGT1 verifies that a directory listing
+// surfaces the elevated link count of a hard-linked inode. When the entry's
+// Attr is populated (the READDIRPLUS fast path) its Nlink must be >= 2; when a
+// backend leaves Attr nil, GetFile on the entry's handle must report it. Either
+// way the listing path must not lose the multi-link signal.
+func testHardLinkListChildrenShowsNlinkGT1(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	handle := createTestFile(t, store, "/test", rootHandle, "A", 0644)
+	if err := store.SetChild(ctx, rootHandle, "B", handle); err != nil {
+		t.Fatalf("SetChild(B) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+
+	entries, _, err := store.ListChildren(ctx, rootHandle, "", 0)
+	if err != nil {
+		t.Fatalf("ListChildren failed: %v", err)
+	}
+
+	var seen int
+	for _, e := range entries {
+		if string(e.Handle) != string(handle) {
+			continue
+		}
+		seen++
+		var nlink uint32
+		if e.Attr != nil {
+			nlink = e.Attr.Nlink
+		} else {
+			f, err := store.GetFile(ctx, e.Handle)
+			if err != nil {
+				t.Fatalf("GetFile(%q) failed: %v", e.Name, err)
+			}
+			nlink = f.Nlink
+		}
+		if nlink < 2 {
+			t.Errorf("entry %q nlink = %d, want >= 2 for a hard-linked inode", e.Name, nlink)
+		}
+	}
+	// Both names point at the inode, so it must appear twice in the listing.
+	if seen != 2 {
+		t.Errorf("hard-linked inode appeared %d times in listing, want 2", seen)
+	}
+}
+
+// testHardLinkGetParentIsValid verifies that GetParent on a multi-linked inode
+// (names in two different directories) returns a VALID parent handle — one of
+// the two real parents — never an error or a zero/garbage handle. Postgres
+// resolves this via LIMIT 1 over parent_child_map, so the contract is "one of
+// the real parents", not a single deterministic answer.
+func testHardLinkGetParentIsValid(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	rootHandle := createTestShare(t, store, "/test")
+	ctx := t.Context()
+
+	dir1 := createTestDir(t, store, "/test", rootHandle, "dir1")
+	dir2 := createTestDir(t, store, "/test", rootHandle, "dir2")
+
+	// Create A in dir1, hard-link B in dir2 to the same inode (nlink=2).
+	handle := createTestFile(t, store, "/test", dir1, "A", 0644)
+	if err := store.SetChild(ctx, dir2, "B", handle); err != nil {
+		t.Fatalf("SetChild(dir2/B) failed: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, handle, 2); err != nil {
+		t.Fatalf("SetLinkCount(2) failed: %v", err)
+	}
+
+	parent, err := store.GetParent(ctx, handle)
+	if err != nil {
+		t.Fatalf("GetParent on multi-linked inode failed: %v", err)
+	}
+	if len(parent) == 0 {
+		t.Fatal("GetParent returned a zero/empty handle")
+	}
+	if string(parent) != string(dir1) && string(parent) != string(dir2) {
+		t.Errorf("GetParent returned %x, want one of the two real parents (dir1 or dir2)", parent)
 	}
 }
 
