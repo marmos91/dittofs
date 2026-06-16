@@ -22,7 +22,16 @@ import (
 // Validates the AP-REQ, normalizes the session key to 16 bytes for SMB3 KDF,
 // resolves the principal to a DittoFS username, and creates an authenticated session.
 // [MS-SMB2] Section 3.3.5.5.3
-func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, parsedToken *auth.ParsedToken) (*HandlerResult, error) {
+func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, parsedToken *auth.ParsedToken) (result *HandlerResult, retErr error) {
+	// Record the terminal Kerberos auth verdict exactly once. The AP-REQ both
+	// negotiates and completes (single-shot), so every return from this function
+	// is a final verdict: success is any non-error result; AP-REQ verification
+	// failures, unknown principals, and missing config all return LOGON_FAILURE
+	// and count as failed krb5 attempts.
+	defer func() {
+		h.recordAuth("krb5", result != nil && !result.Status.IsError())
+	}()
+
 	// Check that KerberosService is configured (not just the provider).
 	// KerberosService encapsulates AP-REQ verification, replay detection,
 	// and subkey preference logic shared across NFS and SMB.
@@ -298,7 +307,17 @@ func (h *Handler) buildKerberosAcceptResponse(
 // registration. The caller (handleSessionBind) has already validated the bind
 // matrix (dialect / signing-algo / cipher) and seeded the per-channel preauth
 // hash. smbtorture smb2.session.bind1 / bind2 / bind_invalid_auth.
-func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Session, parsedToken *auth.ParsedToken) (*HandlerResult, error) {
+func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Session, parsedToken *auth.ParsedToken) (result *HandlerResult, retErr error) {
+	// Record the terminal Kerberos bind verdict exactly once. Like
+	// handleKerberosAuth this path is single-shot (the AP-REQ both authenticates
+	// and completes the bind), so every return is a final verdict — success is
+	// any non-error result; LOGON_FAILURE / ACCESS_DENIED count as failed krb5
+	// attempts. NTLM bind verdicts are already recorded in completeNTLMAuth via
+	// its pending.IsBinding branch.
+	defer func() {
+		h.recordAuth("krb5", result != nil && !result.Status.IsError())
+	}()
+
 	if h.KerberosService == nil {
 		logger.Debug("Kerberos bind attempted but no KerberosService configured")
 		return NewErrorResult(types.StatusLogonFailure), nil
@@ -432,7 +451,7 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 
 	// Binding response matches the existing session's encrypt-data state per
 	// §3.3.5.5; the BINDING flag is request-only and not echoed.
-	result := h.buildSessionSetupResponse(types.StatusSuccess, sessionEncryptFlag(sess), spnegoResp)
+	result = h.buildSessionSetupResponse(types.StatusSuccess, sessionEncryptFlag(sess), spnegoResp)
 	result.IsBinding = true
 	return result, nil
 }

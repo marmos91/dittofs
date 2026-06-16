@@ -19,6 +19,17 @@ type LockedWriter struct {
 	sync.Mutex
 }
 
+// MetricsRecorder is the minimal sink the SMB dispatch path uses to emit
+// protocol RED (rate/errors/duration) and authentication metrics. It is
+// satisfied by *metrics.Metrics (whose methods are all nil-receiver safe), and
+// declared here so internal/ dispatch does not depend on pkg/metrics. All
+// implementations MUST tolerate being called on a nil/absent backend; callers
+// still guard for a nil ConnInfo.Metrics to avoid a nil-interface deref.
+type MetricsRecorder interface {
+	RecordRequest(protocol, op, status string, d time.Duration)
+	RecordAuth(protocol, mechanism string, ok bool)
+}
+
 // ConnInfo provides the connection context needed by dispatch and compound
 // request processing functions. This decouples internal/ protocol logic from
 // the Connection struct in pkg/adapter/smb/.
@@ -42,6 +53,11 @@ type ConnInfo struct {
 
 	// SessionManager provides session and credit management.
 	SessionManager *session.Manager
+
+	// Metrics records per-request RED (rate/errors/duration) and is consulted
+	// on the SMB dispatch path. Nil when the server runs without a metrics
+	// backend; every call site guards for nil. See MetricsRecorder.
+	Metrics MetricsRecorder
 
 	// WriteMu serializes writes to the connection.
 	WriteMu *LockedWriter
