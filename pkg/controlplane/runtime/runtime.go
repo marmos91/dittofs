@@ -416,6 +416,11 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.LoadIdentityQuotasForShare(ctx, config.Name); err != nil {
 		logger.Warn("failed to load identity quotas for share", "share", config.Name, "error", err)
 	}
+	// Restore durable default-user grace timers so default-user soft→grace→hard
+	// enforcement survives a restart. Best-effort, same as identity quotas.
+	if err := r.LoadDefaultUserGraceForShare(ctx, config.Name); err != nil {
+		logger.Warn("failed to load default-user grace timers for share", "share", config.Name, "error", err)
+	}
 	return nil
 }
 
@@ -452,6 +457,12 @@ func (r *Runtime) RemoveShare(name string) error {
 	// registration above. Without this the service maps grow unbounded across
 	// add/remove churn and a same-name re-add reuses the stale lock manager.
 	r.metadataService.RemoveStoreForShare(name)
+	// Purge durable default-user grace timers for the gone share so the
+	// user_grace side table cannot accumulate orphan rows across add/remove
+	// churn. Best-effort, off the critical path.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r.PurgeDefaultUserGrace(ctx, name)
 	return rmErr
 }
 

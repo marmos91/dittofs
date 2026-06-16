@@ -122,7 +122,12 @@ func (s *Service) liveGrace(shareName string, scope QuotaScope, usageID uint32, 
 
 func (s *Service) startGrace(shareName string, scope QuotaScope, usageID uint32, isDefaultUserFallback bool, rowID uint32, t time.Time) {
 	if isDefaultUserFallback {
-		s.identityQuotas.setDynGrace(shareName, scope, usageID, t)
+		// Per-real-user grace for a default-user fallback. Persist the durable
+		// side-table copy only when the in-memory timer actually changed, so it
+		// survives a restart without churning the DB on every write.
+		if s.identityQuotas.setDynGrace(shareName, scope, usageID, t) {
+			s.persistDefaultUserGrace(shareName, usageID, t)
+		}
 		return
 	}
 	if s.identityQuotas.updateGraceStartedAt(shareName, scope, rowID, t) {
@@ -132,7 +137,12 @@ func (s *Service) startGrace(shareName string, scope QuotaScope, usageID uint32,
 
 func (s *Service) clearGrace(shareName string, scope QuotaScope, usageID uint32, isDefaultUserFallback bool, rowID uint32) {
 	if isDefaultUserFallback {
-		s.identityQuotas.setDynGrace(shareName, scope, usageID, time.Time{})
+		// Reap the durable timer only when one was actually running: clearGrace
+		// fires on every under-soft op, so the changed-guard avoids a DB delete
+		// per write for users that were never in grace.
+		if s.identityQuotas.setDynGrace(shareName, scope, usageID, time.Time{}) {
+			s.persistDefaultUserGrace(shareName, usageID, time.Time{})
+		}
 		return
 	}
 	if s.identityQuotas.updateGraceStartedAt(shareName, scope, rowID, time.Time{}) {
@@ -146,5 +156,14 @@ func (s *Service) persistGrace(shareName string, scope QuotaScope, id uint32, t 
 	s.mu.RUnlock()
 	if p != nil {
 		p.PersistQuotaGrace(shareName, scope, id, t)
+	}
+}
+
+func (s *Service) persistDefaultUserGrace(shareName string, uid uint32, t time.Time) {
+	s.mu.RLock()
+	p := s.quotaGracePersist
+	s.mu.RUnlock()
+	if p != nil {
+		p.PersistDefaultUserGrace(shareName, uid, t)
 	}
 }

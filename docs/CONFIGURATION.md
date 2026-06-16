@@ -698,6 +698,17 @@ bytes and inode count between identities. Limits live in the control-plane DB
 and are also manageable via the REST API
 (`/api/v1/shares/{name}/quotas[/{scope}/{id}]`).
 
+The **soft → grace → hard** state machine records when an identity first crosses
+its soft threshold and enforces the soft limit as hard once the grace window
+elapses. For an explicit user/group quota the grace timer lives on the quota
+row. For the **default-user** fallback the timer is inherently per-user (each
+user trips soft at a different time, and the single shared template row cannot
+hold per-user state), so it is recorded in a small side table keyed by
+`(share, uid)`, written the first time a default-user breaches soft and reaped
+when usage drops back under soft. This makes default-user grace **durable across
+a server restart** — a restart no longer hands every over-soft default user a
+fresh grace window.
+
 > **Note**: enforcement is best-effort (matching the per-share soft quota):
 > under high write concurrency a few operations may briefly exceed a limit until
 > usage catches up. This is standard for userspace NFS/SMB servers.
