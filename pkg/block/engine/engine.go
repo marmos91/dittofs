@@ -541,6 +541,18 @@ func (bs *Store) Close() error {
 	return bs.closeErr
 }
 
+// SetMetrics forwards the inline metrics recorder to the underlying local
+// store when it participates in the [local.MetricsAware] capability surface
+// (the *fs.FSStore eviction/backpressure path). Stores that emit no inline
+// metrics (e.g. the in-memory store) simply don't implement MetricsAware, so
+// this is a no-op for them. The runtime calls this after it learns its metrics
+// handle — shares are constructed before the registry exists.
+func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
+	if aware, ok := bs.local.(local.MetricsAware); ok {
+		aware.SetMetrics(rec)
+	}
+}
+
 // --- Test helpers ---
 
 // LocalForTest returns the engine's underlying local store as the

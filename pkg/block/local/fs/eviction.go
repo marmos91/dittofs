@@ -78,6 +78,9 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 		}
 		stall := time.Since(stallStart)
 		bc.bpStallNanos.Add(int64(stall))
+		if rec := bc.recordMetrics(); rec != nil {
+			rec.RecordBackpressure(stall)
+		}
 		if bc.bpLogLimiter == nil || bc.bpLogLimiter.Allow() {
 			logger.Info("local cache backpressure released",
 				"store", bc.baseDir,

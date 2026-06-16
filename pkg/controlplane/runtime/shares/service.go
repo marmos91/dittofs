@@ -347,6 +347,14 @@ type Service struct {
 	remoteStores    map[string]*sharedRemote // configID -> shared remote
 	nextCallbackID  int
 	changeCallbacks map[int]func(shares []string)
+
+	// metricsRec is the inline metrics recorder threaded into every per-share
+	// block store's eviction/backpressure path. Shares are constructed before
+	// the metrics registry exists, so the runtime installs it post-startup via
+	// SetMetrics (which back-fills already-registered shares); createBlockStore-
+	// ForShare applies it to shares added later. Guarded by mu. Nil disables
+	// inline recording.
+	metricsRec local.MetricsRecorder
 }
 
 func New() *Service {
@@ -786,6 +794,18 @@ func (s *Service) createBlockStoreForShare(
 	if err := bs.Start(ctx); err != nil {
 		cleanup()
 		return fmt.Errorf("failed to start BlockStore: %w", err)
+	}
+
+	// Thread the inline metrics recorder into the new store's eviction/
+	// backpressure path. nil when the runtime has not yet installed a handle
+	// (startup share-loading precedes metrics.New); SetMetrics back-fills
+	// those shares once it arrives. Read under mu — SetMetrics may run
+	// concurrently on another goroutine.
+	s.mu.RLock()
+	rec := s.metricsRec
+	s.mu.RUnlock()
+	if rec != nil {
+		bs.SetMetrics(rec)
 	}
 
 	// Safe without lock: share is not yet in the registry.
@@ -1462,6 +1482,29 @@ func (s *Service) ListShares() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// SetMetrics installs the inline metrics recorder and back-fills every
+// already-registered share's block store with it. Called once by the runtime
+// after the metrics registry is built (which happens after startup share
+// loading). Shares added afterwards pick the recorder up in
+// createBlockStoreForShare. Idempotent and nil-tolerant.
+func (s *Service) SetMetrics(rec local.MetricsRecorder) {
+	s.mu.Lock()
+	s.metricsRec = rec
+	stores := make([]*engine.Store, 0, len(s.registry))
+	for _, sh := range s.registry {
+		if sh.BlockStore != nil {
+			stores = append(stores, sh.BlockStore)
+		}
+	}
+	s.mu.Unlock()
+	// Apply outside the lock — SetMetrics only swaps an atomic pointer in the
+	// store, but keeping store calls off s.mu avoids any future lock-ordering
+	// surprise.
+	for _, bs := range stores {
+		bs.SetMetrics(rec)
+	}
 }
 
 func (s *Service) ShareExists(name string) bool {

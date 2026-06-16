@@ -2,12 +2,23 @@ package runtime
 
 import (
 	"context"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// gcResult maps accumulated GC stats to a bounded result label for the
+// gc_runs_total counter: "error" if the pass captured any per-object or
+// fatal error, "ok" otherwise.
+func gcResult(total *engine.GCStats) string {
+	if total == nil || total.ErrorCount > 0 {
+		return "error"
+	}
+	return "ok"
+}
 
 // RunBlockGC is the runtime callable entrypoint for block-store garbage
 // collection. It enumerates every share with a remote block store,
@@ -49,6 +60,14 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 
 	gcDefaults := r.gcDefaultsSnapshot()
 	total := &engine.GCStats{}
+	// Inline GC metrics: treat the whole multi-remote invocation as one pass.
+	// `running` flips 1→0 across the loop (also surfaces a stuck/incomplete
+	// pass); GCFinished records the accumulated totals + result + duration.
+	gcStart := time.Now()
+	r.metrics.GCStarted()
+	defer func() {
+		r.metrics.GCFinished(gcResult(total), total.ObjectsSwept, total.BytesFreed, time.Since(gcStart))
+	}()
 	for _, entry := range entries {
 		opts := &engine.Options{
 			DryRun: dryRun,
@@ -128,6 +147,11 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 
 	gcDefaults := r.gcDefaultsSnapshot()
 	total := &engine.GCStats{}
+	gcStart := time.Now()
+	r.metrics.GCStarted()
+	defer func() {
+		r.metrics.GCFinished(gcResult(total), total.ObjectsSwept, total.BytesFreed, time.Since(gcStart))
+	}()
 	for _, entry := range entries {
 		opts := &engine.Options{
 			DryRun:      dryRun,
