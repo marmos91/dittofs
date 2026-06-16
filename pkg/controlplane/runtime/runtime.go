@@ -588,8 +588,16 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 
 // SetMetrics installs the Prometheus metrics handle. Call once at startup
 // before Serve. Passing nil disables inline instrument recording.
+//
+// It also threads the handle down into every per-share block store's
+// eviction/backpressure path: those stores are constructed during startup
+// share loading, which precedes metrics.New, so the handle is back-filled
+// here (and createBlockStoreForShare applies it to shares added later).
 func (r *Runtime) SetMetrics(m *metrics.Metrics) {
 	r.metrics = m
+	// *metrics.Metrics satisfies local.MetricsRecorder; its Record* methods
+	// are nil-safe so a nil m still installs a safe no-op recorder.
+	r.sharesSvc.SetMetrics(m)
 }
 
 // Metrics returns the Prometheus metrics handle (may be nil). All Record*

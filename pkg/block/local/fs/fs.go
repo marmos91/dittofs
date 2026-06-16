@@ -38,6 +38,20 @@ type backpressureSource interface {
 	UnsyncedBytes() int64
 }
 
+// metricsRecorder is the inline-metrics seam the eviction/backpressure path
+// emits to. It aliases the parent-package capability type [local.MetricsRecorder]
+// so the engine can wire it via the [local.MetricsAware] capability surface,
+// mirroring how the chunk-lifecycle hooks are wired. Keeping it an interface
+// keeps this low-level store free of the prometheus dependency; the runtime
+// hands the handle down post-construction (shares are built before the metrics
+// registry exists). A nil recorder makes every Record* a no-op.
+type metricsRecorder = local.MetricsRecorder
+
+// Compile-time assertion: the engine wires metrics via the
+// [local.MetricsAware] capability surface (a type assertion on the LocalStore),
+// so a signature drift here would otherwise silently disable eviction metrics.
+var _ local.MetricsAware = (*FSStore)(nil)
+
 // SetBackpressureSource injects the read-only syncer accessor the eviction
 // path consults during a remote-cache stall. Called once during share wiring
 // after the syncer is constructed. Passing nil (local-only stores, fixtures)
@@ -45,6 +59,26 @@ type backpressureSource interface {
 // interface — never the FileBlockStore — per invariant LSL-08.
 func (bc *FSStore) SetBackpressureSource(src backpressureSource) {
 	bc.bpSource = src
+}
+
+// SetMetrics installs the inline metrics recorder for eviction/backpressure
+// events. Safe to call after the store is serving (the engine wires it in
+// when the runtime hands down its metrics handle); the hot path reads it
+// atomically. Passing a nil recorder, or a recorder whose underlying handle
+// is nil, makes every Record* a no-op.
+func (bc *FSStore) SetMetrics(rec metricsRecorder) {
+	bc.metrics.Store(&rec)
+}
+
+// recordMetrics returns the installed recorder, or a nil interface if none has
+// been wired. The returned value is an interface, so callers must nil-check it
+// before invoking a Record* method (a method call on a nil interface panics —
+// unlike the nil *metrics.Metrics concrete receiver, which is itself no-op).
+func (bc *FSStore) recordMetrics() metricsRecorder {
+	if p := bc.metrics.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // BackpressureStats returns the internal backpressure counters: the number
@@ -257,6 +291,15 @@ type FSStore struct {
 	// are atomic so concurrent writers can update them lock-free.
 	bpEngageCount atomic.Int64
 	bpStallNanos  atomic.Int64
+
+	// metrics is the inline Prometheus recorder for eviction/backpressure
+	// events. Held behind an atomic.Pointer because the share-wiring path
+	// constructs this store BEFORE the metrics registry exists, so the
+	// runtime swaps the handle in post-construction via SetMetrics while the
+	// hot path (lruEvictOne, ensureSpace) reads it concurrently. The pointer
+	// always holds a stable addressable metricsRecorder; the inner value may
+	// be a nil *metrics.Metrics, whose Record* methods are themselves no-ops.
+	metrics atomic.Pointer[metricsRecorder]
 
 	// bpLogLimiter rate-limits the engage/release Info logs so a sustained
 	// fast-writer / slow-uploader workload does not flood the log.
@@ -759,6 +802,9 @@ func (bc *FSStore) lruEvictOne(ctx context.Context) (int64, error) {
 			bc.lruIndex[hash] = bc.lruList.PushBack(entry)
 			bc.lruMu.Unlock()
 			return 0, fmt.Errorf("evict %s: %w", path, err)
+		}
+		if rec := bc.recordMetrics(); rec != nil {
+			rec.RecordEviction(size)
 		}
 		return size, nil
 	}
