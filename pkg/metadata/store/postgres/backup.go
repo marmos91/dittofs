@@ -28,12 +28,14 @@ const (
 	// framing, etc.) and add a migration path in Restore.
 	// v2 adds the v4_client_recovery table section.
 	// v3 renames the files table to inodes and drops the path/path_hash
-	// columns (#1166). The payload layout changed (the inode section name and
-	// its column set), so restore rejects older streams with
-	// ErrSchemaVersionMismatch — consistent with the v1->v2 bump, which added
-	// a table with no cross-version restore shim. Pre-1.0 backups are not
-	// forward-portable across schema versions.
-	postgresSchemaVersion = uint32(3)
+	// columns (#1166). v4 drops the legacy link_counts table; the hard-link
+	// count is consolidated onto inodes.nlink as the sole source of truth
+	// (#1166, part 4), so the backup table set no longer includes link_counts.
+	// The payload layout changed (one fewer table section), so restore rejects
+	// pre-v4 streams with ErrSchemaVersionMismatch — consistent with the prior
+	// bumps, which added/removed tables with no cross-version restore shim.
+	// Pre-1.0 backups are not forward-portable across schema versions.
+	postgresSchemaVersion = uint32(4)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order
@@ -49,7 +51,6 @@ var backupTables = []string{
 	"inodes",
 	"shares",
 	"parent_child_map",
-	"link_counts",
 	"pending_writes",
 	"file_block_refs",
 	"file_blocks",

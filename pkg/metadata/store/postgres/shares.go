@@ -349,18 +349,20 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 
 	now := time.Now()
 
-	// Insert root directory inode
+	// Insert root directory inode. Directories start with nlink = 2 ("." and the
+	// parent's entry). nlink is the sole source of truth for the hard-link count
+	// (#1166).
 	insertFileQuery := `
 		INSERT INTO inodes (
 			id, share_name,
 			file_type, mode, uid, gid, size,
 			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor
+			content_id, link_target, device_major, device_minor, nlink
 		) VALUES (
 			$1, $2,
 			$3, $4, $5, $6, $7,
 			$8, $9, $10, $11,
-			$12, $13, $14, $15
+			$12, $13, $14, $15, 2
 		)
 	`
 
@@ -381,17 +383,6 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		nil,                               // device_major (NULL)
 		nil,                               // device_minor (NULL)
 	)
-	if err != nil {
-		return nil, mapPgError(err, "CreateRootDirectory", shareName)
-	}
-
-	// Insert into link_counts (directories start with link count = 2: "." and parent reference)
-	insertLinkCountQuery := `
-		INSERT INTO link_counts (file_id, link_count)
-		VALUES ($1, $2)
-	`
-
-	_, err = tx.Exec(ctx, insertLinkCountQuery, rootID, 2)
 	if err != nil {
 		return nil, mapPgError(err, "CreateRootDirectory", shareName)
 	}
@@ -427,6 +418,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		FileAttr: metadata.FileAttr{
 			Type:         metadata.FileTypeDirectory,
 			Mode:         mode,
+			Nlink:        2, // Root directories have 2 links ("." and parent's entry)
 			UID:          uid,
 			GID:          gid,
 			Size:         0,
@@ -447,7 +439,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 	// authoritative pointer to its root) now that the path column is gone (#1166).
 	query := `
 		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden
+			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.nlink
 		FROM inodes f
 		WHERE f.id = (SELECT root_file_id FROM shares WHERE share_name = $1)
 	`
@@ -464,6 +456,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		ctime        int64
 		creationTime int64
 		hidden       bool
+		nlink        int32
 	)
 
 	err := s.queryRow(ctx, query, shareName).Scan(
@@ -478,6 +471,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		&ctime,
 		&creationTime,
 		&hidden,
+		&nlink,
 	)
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -494,6 +488,7 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 		FileAttr: metadata.FileAttr{
 			Type:         metadata.FileType(fileType),
 			Mode:         uint32(mode),
+			Nlink:        uint32(nlink),
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),

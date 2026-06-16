@@ -50,10 +50,9 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, lc.link_count,
+			f.deleted_at, f.original_path, f.deleted_by, f.nlink,
 			` + blockRefsAggExpr + `
 		FROM inodes f
-		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
 	`
 
@@ -166,7 +165,7 @@ func (s *PostgresMetadataStore) SetParent(ctx context.Context, handle metadata.F
 
 // GetLinkCount returns the hard link count for a file.
 // Uses direct pool query without transaction for better performance.
-// Returns 0 if the file doesn't track link counts or doesn't exist.
+// Returns 0 if the file doesn't exist. nlink is the sole source of truth (#1166).
 func (s *PostgresMetadataStore) GetLinkCount(ctx context.Context, handle metadata.FileHandle) (uint32, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -181,7 +180,7 @@ func (s *PostgresMetadataStore) GetLinkCount(ctx context.Context, handle metadat
 	}
 
 	var count uint32
-	err = s.queryRow(ctx, `SELECT link_count FROM link_counts WHERE file_id = $1`, fileID).Scan(&count)
+	err = s.queryRow(ctx, `SELECT nlink FROM inodes WHERE id = $1`, fileID).Scan(&count)
 	if err != nil {
 		// Not found means count is 0
 		return 0, nil
@@ -226,10 +225,9 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
 		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.eas, f.object_id,
-		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
+		       f.deleted_at, f.original_path, f.deleted_by, f.nlink
 		FROM parent_child_map dc
 		LEFT JOIN inodes f ON dc.child_id = f.id
-		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
 		ORDER BY dc.child_name
 		LIMIT $3
@@ -462,9 +460,8 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
+			f.deleted_at, f.original_path, f.deleted_by, f.nlink
 		FROM inodes f
-		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)
 		LIMIT 1
 	`
