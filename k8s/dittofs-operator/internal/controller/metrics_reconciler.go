@@ -78,7 +78,7 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, ds 
 	labels := metricsServiceLabels(ds.Name)
 
 	annotations := map[string]string{
-		prometheusScrapeAnnotation: "true",
+		prometheusScrapeAnnotation: labelTrue,
 		prometheusPortAnnotation:   fmt.Sprintf("%d", ds.MetricsPort()),
 		prometheusPathAnnotation:   ds.MetricsPath(),
 	}
@@ -98,7 +98,7 @@ func (r *DittoServerReconciler) reconcileMetricsService(ctx context.Context, ds 
 // Service.
 func metricsServiceLabels(crName string) map[string]string {
 	labels := podSelectorLabels(crName)
-	labels["dittofs.io/metrics-service"] = "true"
+	labels["dittofs.io/metrics-service"] = labelTrue
 	return labels
 }
 
