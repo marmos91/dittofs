@@ -249,15 +249,16 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 // TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse reproduces the
 // full-battery pollution that broke smb2.ioctl.copy_chunk_sparse_dest at
 // ioctl.c:1772 ("sparse did not pass class") even though the standalone run
-// passed. PayloadIDs are path-derived, so an earlier copychunk test
-// (copy_chunk_src_exceed_multi) writes a NON-ZERO pattern into the dest path's
-// leading region, then the dest is unlinked and recreated at the SAME path —
-// reusing the same PayloadID. If the unlink does not purge the block-store
-// append log, the recreated 0-byte dest's sparse hole reads the prior file's
-// stale non-zero bytes.
+// passed. An earlier copychunk test (copy_chunk_src_exceed_multi) writes a
+// NON-ZERO pattern into the dest path's leading region, then the dest is
+// unlinked and recreated at the SAME path.
 //
-// This drives the REAL delete-on-close path (Handler.Close with DeletePending),
-// which must purge the block-store payload so the recreate reads zeros.
+// Since #1166 PR-3 a recreated file gets a FRESH UUID-based PayloadID, so the
+// new dest reads its sparse hole as zeros by construction — it never aliases
+// the prior file's append log. This test still drives the REAL delete-on-close
+// path (Handler.Close with DeletePending), which purges the deleted file's own
+// payload to reclaim its append-log/CAS state; it asserts both that the recreate
+// gets a fresh PayloadID and that the sparse hole reads zeros.
 func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	ctx := context.Background()
 
@@ -375,8 +376,10 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	}
 
 	// openDst creates "dst" at the share root and returns a wired OpenFile
-	// for it. The PayloadID is path-derived, so every call returns the SAME
-	// PayloadID — exactly the reuse the smbtorture battery exercises.
+	// for it. Since #1166 PR-3 each create gets a fresh UUID-based PayloadID,
+	// so successive calls return DIFFERENT PayloadIDs even at the same path —
+	// the recreate the smbtorture battery exercises no longer aliases the
+	// prior file's content.
 	openDst := func(fileID [16]byte) (*OpenFile, metadata.FileHandle) {
 		t.Helper()
 		dstFile, _, err := metaSvc.CreateFile(authCtx, rootHandle, "dst", &metadata.FileAttr{
@@ -431,13 +434,13 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 		t.Fatalf("round1 Close (delete-on-close): %v", err)
 	}
 
-	// --- Round 2: recreate dest at the same path (same PayloadID), then
-	// the sparse_dest copy into [4096,8192). The leading [0,4096) hole MUST
-	// read zeros — not the stale round-1 pattern. ---
+	// --- Round 2: recreate dest at the same path, then the sparse_dest copy
+	// into [4096,8192). The leading [0,4096) hole MUST read zeros — not the
+	// stale round-1 pattern. ---
 	dst2, _ := openDst([16]byte{3})
-	if dst2.PayloadID != dst1.PayloadID {
-		t.Fatalf("test invariant: recreated dest should reuse the path-derived PayloadID (got %q vs %q)",
-			dst2.PayloadID, dst1.PayloadID)
+	if dst2.PayloadID == dst1.PayloadID {
+		t.Fatalf("test invariant: recreated dest should get a fresh UUID-based PayloadID, not reuse %q",
+			dst1.PayloadID)
 	}
 	chunks2 := []copyChunk{{SourceOffset: 0, TargetOffset: 4096, Length: 4096}}
 	res2, err := h.executeCopyChunks(smbCtx, FsctlSrvCopyChunk, dst2.FileID, srcOpen, dst2, chunks2)

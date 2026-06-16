@@ -177,15 +177,27 @@ func TestObjectIDPopulation_NFSWriteQuiesce(t *testing.T) {
 	require.NoError(t, err, "open second Postgres handle for verification")
 	t.Cleanup(func() { _ = mds.Close() })
 
-	// ---- Resolve the file row by PayloadID ----
+	// ---- Resolve the file row ----
 	//
-	// PayloadID format is path-based: BuildPayloadID(shareName, fullPath) ->
-	// "objid-pop/test.bin" (leading slashes stripped per
-	// pkg/metadata/validation.go BuildPayloadID).
-	payloadID := metadata.PayloadID(metadata.BuildPayloadID(shareName, "/test.bin"))
-	file, err := mds.GetFileByPayloadID(t.Context(), payloadID)
-	require.NoErrorf(t, err, "GetFileByPayloadID(%s)", string(payloadID))
-	require.NotNilf(t, file, "GetFileByPayloadID(%s) returned nil file", string(payloadID))
+	// Files created after #1166 PR-3 get a UUID-based PayloadID, so we cannot
+	// reconstruct the content_id from the path. Walk the namespace from the
+	// share root to the file, then read its stored attributes (including the
+	// PayloadID the server assigned at create time).
+	rootHandle, err := mds.GetRootHandle(t.Context(), shareName)
+	require.NoErrorf(t, err, "GetRootHandle(%s)", shareName)
+	fileHandle, err := mds.GetChild(t.Context(), rootHandle, "test.bin")
+	require.NoError(t, err, "GetChild(root, test.bin)")
+	file, err := mds.GetFile(t.Context(), fileHandle)
+	require.NoError(t, err, "GetFile(test.bin)")
+	require.NotNil(t, file, "GetFile(test.bin) returned nil file")
+
+	// The stored PayloadID must round-trip through GetFileByPayloadID, and
+	// resolve to the SAME inode we walked to above.
+	byPayload, err := mds.GetFileByPayloadID(t.Context(), file.PayloadID)
+	require.NoErrorf(t, err, "GetFileByPayloadID(%s)", string(file.PayloadID))
+	require.NotNilf(t, byPayload, "GetFileByPayloadID(%s) returned nil file", string(file.PayloadID))
+	require.Equalf(t, file.ID, byPayload.ID,
+		"GetFileByPayloadID(%s) resolved to a different inode", string(file.PayloadID))
 
 	// ---- REQUIRED RED ASSERT (must-have #1, 13-VERIFICATION.md:257-266) ----
 	require.Falsef(t, file.FileAttr.ObjectID.IsZero(),
@@ -204,7 +216,7 @@ func TestObjectIDPopulation_NFSWriteQuiesce(t *testing.T) {
 
 	// ---- Telemetry parity: emit at slog INFO for trend tracking ----
 	slog.Info("DEDUP-04 objectid populated",
-		"payload_id", string(payloadID),
+		"payload_id", string(file.PayloadID),
 		"object_id", file.FileAttr.ObjectID.String(),
 		"blocks", len(file.FileAttr.Blocks),
 		"size", objectIDPopulationPayloadSize)

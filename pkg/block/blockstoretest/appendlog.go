@@ -96,11 +96,10 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 	}
 
 	// DeleteAppendLog resets the per-file append log. After it returns, a
-	// subsequent AppendWrite for the same payloadID must succeed
-	// (per BlockStoreAppend.DeleteAppendLog godoc — recreate semantics
-	// required by DittoFS's path-based PayloadID lifecycle). The
-	// already-rolled-up chunks remain in the store (orphan-chunk
-	// sweep is GC's job, not DeleteAppendLog's).
+	// subsequent AppendWrite for the same payloadID must succeed (per
+	// BlockStoreAppend.DeleteAppendLog godoc — this resurrect path runs
+	// on delete to reclaim the deleted file's log). The already-rolled-up
+	// chunks remain (orphan-chunk sweep is GC's job, not DeleteAppendLog's).
 	if err := bs.DeleteAppendLog(ctx, payloadID); err != nil {
 		t.Fatalf("DeleteAppendLog: %v", err)
 	}
@@ -121,10 +120,12 @@ func testAppendLogRoundTrip(t *testing.T, factory AppendFactory) {
 // testRecreateAfterDeleteAppendLog asserts that DeleteAppendLog does NOT
 // permanently tombstone a payloadID: a subsequent AppendWrite for the
 // same payloadID must succeed and start a fresh log. This is required
-// by DittoFS's path-based PayloadID lifecycle (an unlink-then-create
-// at the same path reuses the same PayloadID and must work — POSIX
-// recreate semantics surfaced via NFSv3 / pjdfstest chmod/12.t
-// unlink/14.t, open/00.t).
+// on delete: DeleteAppendLog must reclaim the deleted file's log and
+// leave the store ready for a fresh one. Files created after #1166
+// PR-3 get UUID-based PayloadIDs, so recreate-at-same-path uses a
+// fresh content_id (historically a path-derived recreate reused the
+// id — POSIX recreate via NFSv3, pjdfstest chmod/12.t, unlink/14.t,
+// open/00.t).
 //
 // The scenario writes once, deletes the log, then writes again at the
 // same payloadID and asserts the second write returns nil.
@@ -143,7 +144,7 @@ func testRecreateAfterDeleteAppendLog(t *testing.T, factory AppendFactory) {
 		t.Fatalf("DeleteAppendLog: %v", err)
 	}
 	if err := bs.AppendWrite(ctx, payloadID, payload, 0); err != nil {
-		t.Fatalf("AppendWrite after DeleteAppendLog (recreate semantics required by path-based PayloadID lifecycle): %v", err)
+		t.Fatalf("AppendWrite after DeleteAppendLog (store must accept a fresh log after delete): %v", err)
 	}
 }
 

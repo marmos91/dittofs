@@ -189,12 +189,13 @@ type BlockStoreAppend interface {
 	// payload (no-op return nil). After DeleteAppendLog returns, the
 	// payload's append-log state is fully reset; a subsequent
 	// AppendWrite for the same payloadID MUST succeed and start a
-	// fresh log (recreate semantics). This is required by DittoFS's
-	// path-based PayloadID lifecycle (metadata/file_helpers.go
-	// buildPayloadID derives PayloadID from shareName + path, so
-	// 'unlink + create at same path' reuses the same PayloadID).
-	// Backends that maintain a tombstone for race-safety reasons MUST
-	// clear it before DeleteAppendLog returns.
+	// fresh log (recreate semantics). Files created after #1166 PR-3
+	// get a UUID-based PayloadID (metadata/file_helpers.go
+	// buildPayloadID), so 'unlink + create at same path' allocates a
+	// fresh content_id rather than reusing one; this method is still
+	// invoked on delete with the deleted file's own PayloadID to reclaim
+	// its append-log state. Backends that maintain a tombstone for
+	// race-safety reasons MUST clear it before DeleteAppendLog returns.
 	//
 	// Orphan content-addressed chunks already emitted by a prior
 	// rollup are NOT removed here — they are swept by the mark-sweep

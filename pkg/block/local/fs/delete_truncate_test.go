@@ -41,9 +41,11 @@ func TestDelete_FreshPayload_UnlinksLog(t *testing.T) {
 
 	// Per-file state cleared. The tombstone is also cleared on success
 	// so subsequent AppendWrites at the same PayloadID resurrect a
-	// fresh log (DittoFS's path-based PayloadID lifecycle — see the
-	// BlockStoreAppend.DeleteLog godoc and FSStore.DeleteAppendLog
-	// tombstone-lifecycle comment for why FIX-8 was reverted).
+	// fresh log. Files created after #1166 PR-3 get a UUID-based
+	// PayloadID, so recreates get a fresh id; this resurrect path still
+	// runs on delete (see the BlockStoreAppend.DeleteLog godoc and the
+	// FSStore.DeleteAppendLog tombstone-lifecycle comment for why FIX-8
+	// was reverted).
 	bcSh := bc.shardFor("file1")
 	bcSh.mu.RLock()
 	_, hasFD := bcSh.logFDs["file1"]
@@ -521,11 +523,13 @@ func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 
 // TestDelete_Then_Write_ResurrectsLog verifies the post-Phase-18
 // invariant: a DeleteAppendLog followed by an AppendWrite on the SAME
-// payloadID must succeed and create a fresh log. This is required by
-// DittoFS's path-based PayloadID lifecycle — metadata.buildPayloadID
-// derives PayloadID from shareName + path, so 'unlink + create at
-// same path' reuses the PayloadID. Exposed by pjdfstest chmod/12.t
-// unlink/14.t, open/00.t on NFSv3 (NFSv4 silly-rename masks it).
+// payloadID must succeed and create a fresh log. Files created after
+// #1166 PR-3 get a UUID-based PayloadID, so the common case is a fresh
+// id on recreate; this same-id resurrect contract still matters because
+// DeleteAppendLog runs on delete and the store must remain usable for
+// any subsequent log on that id. Historically a path-derived recreate
+// reused the id (exposed by pjdfstest chmod/12.t, unlink/14.t,
+// open/00.t on NFSv3; NFSv4 silly-rename masks it).
 //
 // Reverses the prior FIX-8 invariant (tombstone permanent for the
 // process lifetime) — the drain barrier in DeleteAppendLog step 2

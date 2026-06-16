@@ -1343,13 +1343,16 @@ func (h *Handler) closeFilesWithFilter(
 }
 
 // purgeBlockStorePayload best-effort deletes a deleted file's block-store
-// payload. PayloadIDs are path-derived (metadata.buildPayloadID), so a later
-// create at the same path reuses the same PayloadID; without this purge the
-// recreated file would read stale bytes from the prior file's append log
-// (e.g. a sparse hole would surface non-zero bytes —
-// smb2.ioctl.copy_chunk_sparse_dest). Callers invoke this only AFTER the
-// metadata removal succeeds, so a block-store miss is harmless and GC reclaims
-// any straggler CAS chunks; all errors are logged at Debug and swallowed.
+// payload using that file's own stored PayloadID. Files created after #1166
+// PR-3 get a UUID-based PayloadID (metadata.buildPayloadID), so a recreate at
+// the same path now gets a fresh content_id and cannot collide with this
+// file's bytes. This purge is still required to reclaim the deleted file's
+// append-log/CAS state (otherwise its append log and tracked size would leak;
+// historically a path-derived recreate could even read its stale bytes —
+// e.g. a sparse hole surfacing non-zero bytes, smb2.ioctl.copy_chunk_sparse_dest).
+// Callers invoke this only AFTER the metadata removal succeeds, so a block-store
+// miss is harmless and GC reclaims any straggler CAS chunks; all errors are
+// logged at Debug and swallowed.
 func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.FileHandle, payloadID metadata.PayloadID, path, caller string) {
 	if payloadID == "" || len(handle) == 0 {
 		return

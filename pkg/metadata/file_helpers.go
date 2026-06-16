@@ -1,6 +1,10 @@
 package metadata
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/google/uuid"
+)
 
 // buildPath constructs a full path from parent path and child name.
 func buildPath(parentPath, childName string) string {
@@ -10,9 +14,14 @@ func buildPath(parentPath, childName string) string {
 	return parentPath + "/" + childName
 }
 
-// buildPayloadID constructs a content ID from share name and path.
-func buildPayloadID(shareName, path string) string {
-	return strings.TrimPrefix(shareName, "/") + "/" + strings.TrimPrefix(path, "/")
+// buildPayloadID constructs a content ID from share name and the inode UUID.
+// UUID-based (not path-based) so the content_id is stable across rename/relink:
+// renaming changes the path but not the inode's UUID, so GetFileByPayloadID
+// keeps resolving (issue #1166). Existing path-based content_ids written before
+// this change continue to work — PayloadID is stored at create time and read
+// back from the inode field, never recomputed from path.
+func buildPayloadID(shareName string, id uuid.UUID) string {
+	return strings.TrimPrefix(shareName, "/") + "/" + id.String()
 }
 
 // MakeRdev encodes major and minor device numbers into a single Rdev value.

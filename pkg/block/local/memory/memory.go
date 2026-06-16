@@ -323,10 +323,11 @@ func (s *MemoryStore) ListUnsynced(ctx context.Context) iter.Seq2[block.ContentH
 // A prior DeleteAppendLog on the same payloadID does NOT permanently
 // block subsequent AppendWrites: the memory store's rollup is
 // synchronous under the same write lock as DeleteAppendLog, so there is no
-// async-rollup-completion race to guard against. Recreate-at-same-id
-// is supported (DittoFS's metadata layer derives PayloadID from
-// shareName + path, so 'unlink + create at same path' reuses the
-// same payloadID — see metadata/file_helpers.go buildPayloadID).
+// async-rollup-completion race to guard against. Recreate-at-same-id is
+// supported. Files created after #1166 PR-3 get a UUID-based PayloadID
+// (metadata/file_helpers.go buildPayloadID), so 'unlink + create at same
+// path' yields a fresh content_id; DeleteAppendLog still runs on delete
+// with the deleted file's own PayloadID to reclaim its append-log state.
 //
 // Implements block.BlockStoreAppend.
 func (s *MemoryStore) AppendWrite(_ context.Context, payloadID string, data []byte, offset uint64) error {
@@ -438,8 +439,9 @@ func (s *MemoryStore) ReadPayloadAt(_ context.Context, payloadID string, dest []
 // the tracked file-size entry. Already-rolled-up CAS chunks remain in
 // the store — orphan-chunk cleanup is GC's responsibility per the
 // contract. Subsequent AppendWrites for the same payloadID resurrect
-// a fresh log (required by DittoFS's path-based PayloadID lifecycle
-// unlink + create at the same path reuses the same PayloadID).
+// a fresh log. Files created after #1166 PR-3 get a UUID-based
+// PayloadID, so this runs on delete to reclaim the deleted file's own
+// log; a recreate-at-same-path gets a fresh content_id.
 //
 // Implements block.BlockStoreAppend.
 func (s *MemoryStore) DeleteAppendLog(_ context.Context, payloadID string) error {
