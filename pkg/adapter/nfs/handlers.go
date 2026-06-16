@@ -32,7 +32,10 @@ import (
 //
 // Returns the reply data or an error if the handler fails.
 // recordOp records one NFS operation for the RED metrics (rate, errors,
-// duration). ok is the protocol-level success of the operation.
+// duration). status is intentionally a bounded ok|error rather than the precise
+// NFS status code: labelling by raw status would multiply series by op ×
+// ~20 codes. The ok bit is derived accurately from the handler's NFSStatus (v3)
+// so it reflects protocol-level failures, not just transport errors.
 func (c *NFSConnection) recordOp(op string, start time.Time, ok bool) {
 	status := "ok"
 	if !ok {

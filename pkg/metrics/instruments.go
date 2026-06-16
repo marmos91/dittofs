@@ -11,8 +11,10 @@ import (
 // emits existing state at scrape time. They are registered on the owned
 // registry in New.
 //
-// All Record* methods are nil-receiver safe: when metrics are disabled no
-// *Metrics is constructed, so call sites can invoke them unconditionally.
+// All Record* methods are nil-receiver safe so call sites can invoke them
+// unconditionally: a call site that holds no metrics handle (a nil *Metrics)
+// simply no-ops. (The server itself builds the registry unconditionally and
+// gates only the /metrics listener, but other callers/tests may pass nil.)
 type instruments struct {
 	requests     *prometheus.CounterVec   // {protocol,op,status}
 	reqDuration  *prometheus.HistogramVec // {protocol,op}
