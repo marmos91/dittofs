@@ -16,8 +16,8 @@ import (
 // implicitly (compile-time assertion below).
 //
 // It is kept separate from the NFSv3 interface because the two protocols use
-// overlapping but distinct method sets (v4 needs root-handle resolution,
-// handle→share routing and live settings; v3 needs the adapter-provider hook).
+// overlapping but distinct method sets (v4 needs root-handle resolution and
+// handle→share routing; v3 needs the adapter-provider hook).
 type nfsRuntime interface {
 	// Per-share block-store resolution (used via common.ResolveFor*).
 	common.BlockStoreRegistry
