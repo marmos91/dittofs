@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/credentials"
@@ -54,6 +55,15 @@ func init() {
 	loginCmd.Flags().BoolVar(&loginTLSSkipVerify, "tls-skip-verify", false, "Disable TLS certificate verification (insecure)")
 }
 
+// absPath resolves p to an absolute path so it can be persisted and re-read
+// from a different working directory. An empty path stays empty (unset).
+func absPath(p string) (string, error) {
+	if p == "" {
+		return "", nil
+	}
+	return filepath.Abs(p)
+}
+
 func runLogin(cmd *cobra.Command, args []string) error {
 	// Load credential store
 	store, err := credentials.NewStore()
@@ -90,6 +100,20 @@ func runLogin(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return cmdutil.HandleAbort(err)
 		}
+	}
+
+	// Normalize TLS cert paths to absolute before they are captured and
+	// persisted. The stored paths are re-read by later commands from a
+	// potentially different working directory, so a relative path supplied here
+	// (e.g. --cacert ca.pem) would otherwise resolve against the wrong cwd.
+	if loginCACert, err = absPath(loginCACert); err != nil {
+		return fmt.Errorf("resolve --cacert: %w", err)
+	}
+	if loginClientCert, err = absPath(loginClientCert); err != nil {
+		return fmt.Errorf("resolve --client-cert: %w", err)
+	}
+	if loginClientKey, err = absPath(loginClientKey); err != nil {
+		return fmt.Errorf("resolve --client-key: %w", err)
 	}
 
 	// Create API client. TLS material is captured here and persisted into the

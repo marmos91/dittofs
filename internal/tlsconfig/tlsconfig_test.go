@@ -175,6 +175,12 @@ func TestServerConfig(t *testing.T) {
 	if _, err := ServerConfig(Config{CertFile: "/nonexistent/c", KeyFile: "/nonexistent/k"}); err == nil {
 		t.Fatal("expected error for missing cert files")
 	}
+
+	// Inconsistent partial config must error loudly, not silently fall back to
+	// nil (plaintext) via Enabled()==false.
+	if _, err := ServerConfig(Config{CertFile: "/c"}); err == nil {
+		t.Fatal("expected error for cert_file without key_file, got nil (silent plaintext fallback)")
+	}
 }
 
 func TestCertReloader_HotSwap(t *testing.T) {
