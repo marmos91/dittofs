@@ -587,7 +587,10 @@ func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
 }
 
 // SetMetrics installs the Prometheus metrics handle. Call once at startup
-// before Serve. Passing nil disables inline instrument recording.
+// before Serve. Passing nil makes all inline instrument recording a no-op (a
+// nil *metrics.Metrics is wrapped in a non-nil local.MetricsRecorder interface,
+// but every Record* method early-returns on the nil receiver, so nothing is
+// emitted — the observable effect is the same as "disabled").
 //
 // It also threads the handle down into every per-share block store's
 // eviction/backpressure path: those stores are constructed during startup

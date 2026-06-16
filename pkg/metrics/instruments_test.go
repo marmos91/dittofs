@@ -94,7 +94,7 @@ func TestInstruments_GC(t *testing.T) {
 # HELP dittofs_gc_freed_bytes_total Bytes freed by block-store GC.
 # TYPE dittofs_gc_freed_bytes_total counter
 dittofs_gc_freed_bytes_total 1.00663296e+08
-# HELP dittofs_gc_running 1 while a block-store GC pass is in progress, 0 otherwise.
+# HELP dittofs_gc_running Number of block-store GC passes currently in progress (0 when idle; >1 when passes overlap). >0 indicates a pass is running.
 # TYPE dittofs_gc_running gauge
 dittofs_gc_running 0
 # HELP dittofs_gc_runs_total Block-store GC passes completed, by result (ok|error).
@@ -121,7 +121,7 @@ func TestInstruments_GCRunningGauge(t *testing.T) {
 	m := New("t", "c")
 	m.GCStarted()
 	expected := `
-# HELP dittofs_gc_running 1 while a block-store GC pass is in progress, 0 otherwise.
+# HELP dittofs_gc_running Number of block-store GC passes currently in progress (0 when idle; >1 when passes overlap). >0 indicates a pass is running.
 # TYPE dittofs_gc_running gauge
 dittofs_gc_running 1
 `
@@ -141,7 +141,7 @@ func TestInstruments_GCRunningConcurrent(t *testing.T) {
 	// Pass B finishes first; gauge must stay >0 because pass A is still running.
 	m.GCFinished("ok", 0, 0, time.Second)
 	expected := `
-# HELP dittofs_gc_running 1 while a block-store GC pass is in progress, 0 otherwise.
+# HELP dittofs_gc_running Number of block-store GC passes currently in progress (0 when idle; >1 when passes overlap). >0 indicates a pass is running.
 # TYPE dittofs_gc_running gauge
 dittofs_gc_running 1
 `
@@ -150,7 +150,7 @@ dittofs_gc_running 1
 	}
 	m.GCFinished("ok", 0, 0, time.Second) // pass A finishes; gauge back to 0
 	expected0 := `
-# HELP dittofs_gc_running 1 while a block-store GC pass is in progress, 0 otherwise.
+# HELP dittofs_gc_running Number of block-store GC passes currently in progress (0 when idle; >1 when passes overlap). >0 indicates a pass is running.
 # TYPE dittofs_gc_running gauge
 dittofs_gc_running 0
 `

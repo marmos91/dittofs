@@ -100,7 +100,7 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		}, []string{"result"}),
 		gcRunning: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: Namespace, Subsystem: "gc", Name: "running",
-			Help: "1 while a block-store GC pass is in progress, 0 otherwise.",
+			Help: "Number of block-store GC passes currently in progress (0 when idle; >1 when passes overlap). >0 indicates a pass is running.",
 		}),
 		gcLastRunTime: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: Namespace, Subsystem: "gc", Name: "last_run_timestamp_seconds",
