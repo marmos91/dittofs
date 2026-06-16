@@ -274,6 +274,93 @@ spec:
                 default: marmos91c/dittofs:latest
                 description: Image is the container image for DittoFS server
                 type: string
+              metrics:
+                description: |-
+                  Metrics configures the Prometheus /metrics surface and its integration
+                  with an in-cluster Prometheus (metrics Service, scrape annotations,
+                  optional ServiceMonitor). Opt-in; disabled by default.
+                properties:
+                  bearerTokenSecret:
+                    description: |-
+                      BearerTokenSecret optionally references a Secret holding a bearer token
+                      the endpoint requires for scraping (server auth mode "token"). The token
+                      file is mounted into the dfs container and the matching ServiceMonitor (if
+                      emitted) is configured to present the same token. When unset the endpoint
+                      is unauthenticated and relies on the metrics Port + NetworkPolicy for
+                      isolation.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  enabled:
+                    default: false
+                    description: |-
+                      Enabled turns on the DittoFS metrics endpoint and renders the metrics
+                      container port plus a metrics Service carrying prometheus.io/scrape
+                      annotations for annotation-based discovery. Default: false (opt-in).
+                    type: boolean
+                  path:
+                    default: /metrics
+                    description: |-
+                      Path is the HTTP path the metrics are served on. Default: /metrics.
+                      Must start with "/" (matches the server-side config.Validate check).
+                    pattern: ^/.*
+                    type: string
+                  port:
+                    default: 9090
+                    description: |-
+                      Port is the TCP port the metrics endpoint binds to inside the container
+                      and the port the metrics Service exposes. Default: 9090.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  serviceMonitor:
+                    description: |-
+                      ServiceMonitor configures emission of a monitoring.coreos.com/v1
+                      ServiceMonitor selecting the metrics Service, for clusters running the
+                      prometheus-operator.
+                    properties:
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled requests creation of a ServiceMonitor for the metrics Service.
+                          It is honored only when the monitoring.coreos.com/v1 CRD is present in the
+                          cluster; otherwise it is skipped (logged) and the reconcile does not fail.
+                          Default: false.
+                        type: boolean
+                      interval:
+                        description: |-
+                          Interval is the Prometheus scrape interval (e.g. "30s"). When empty the
+                          Prometheus default applies.
+                        type: string
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Labels are added to the ServiceMonitor's metadata.labels so it can be
+                          matched by a Prometheus serviceMonitorSelector (e.g. {release: kube-prometheus-stack}).
+                        type: object
+                    type: object
+                type: object
               percona:
                 description: |-
                   Percona configures auto-creation of PerconaPGCluster for PostgreSQL metadata store

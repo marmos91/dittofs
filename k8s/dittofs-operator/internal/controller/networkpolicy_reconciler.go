@@ -125,7 +125,11 @@ func baselineNetworkPolicyName(crName string) string {
 }
 
 // baselineIngressPorts returns the ingress ports for the baseline NetworkPolicy.
-// Always includes the API port.
+// Always includes the API port; includes the metrics port when metrics are
+// enabled so a Prometheus scrape reaches the listener under namespace
+// default-deny. The metrics listener binds 0.0.0.0 and (in auth=none mode)
+// relies on this NetworkPolicy rule for its isolation story — without the rule
+// the documented "rely on Port + NetworkPolicy" model is a no-op.
 func baselineIngressPorts(ds *dittoiov1alpha1.DittoServer) []networkingv1.NetworkPolicyPort {
 	tcp := corev1.ProtocolTCP
 	ports := []networkingv1.NetworkPolicyPort{
@@ -133,6 +137,12 @@ func baselineIngressPorts(ds *dittoiov1alpha1.DittoServer) []networkingv1.Networ
 			Protocol: &tcp,
 			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: getAPIPort(ds)},
 		},
+	}
+	if ds.MetricsEnabled() {
+		ports = append(ports, networkingv1.NetworkPolicyPort{
+			Protocol: &tcp,
+			Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: ds.MetricsPort()},
+		})
 	}
 	return ports
 }

@@ -45,6 +45,12 @@ type DittoServerSpec struct {
 	// Service configures the Kubernetes Service
 	Service ServiceSpec `json:"service,omitempty"`
 
+	// Metrics configures the Prometheus /metrics surface and its integration
+	// with an in-cluster Prometheus (metrics Service, scrape annotations,
+	// optional ServiceMonitor). Opt-in; disabled by default.
+	// +optional
+	Metrics *MetricsSpec `json:"metrics,omitempty"`
+
 	// Percona configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
 	// When enabled, the operator creates a PerconaPGCluster owned by this DittoServer
 	// +optional
@@ -265,6 +271,77 @@ type ServiceSpec struct {
 
 	// Service annotations (e.g., for cloud load balancer configuration)
 	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// MetricsSpec configures the DittoFS Prometheus /metrics surface and its
+// integration with an in-cluster Prometheus. The endpoint is opt-in and the
+// integration glue (metrics Service, scrape annotations, ServiceMonitor) is
+// emitted ONLY when explicitly enabled here.
+//
+// Ownership model: DittoFS provides the scrape target and the optional
+// integration objects only. It never runs, bundles, or depends on a
+// Prometheus/Thanos instance — that is the cluster's responsibility (typically
+// the prometheus-operator / kube-prometheus-stack). The ServiceMonitor is
+// additionally gated by a CRD-discovery check: if monitoring.coreos.com CRDs
+// are absent, it is skipped (logged at Info) and never fails the reconcile.
+type MetricsSpec struct {
+	// Enabled turns on the DittoFS metrics endpoint and renders the metrics
+	// container port plus a metrics Service carrying prometheus.io/scrape
+	// annotations for annotation-based discovery. Default: false (opt-in).
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Port is the TCP port the metrics endpoint binds to inside the container
+	// and the port the metrics Service exposes. Default: 9090.
+	// +kubebuilder:default=9090
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	// +optional
+	Port int32 `json:"port,omitempty"`
+
+	// Path is the HTTP path the metrics are served on. Default: /metrics.
+	// Must start with "/" (matches the server-side config.Validate check).
+	// +kubebuilder:default="/metrics"
+	// +kubebuilder:validation:Pattern=`^/.*`
+	// +optional
+	Path string `json:"path,omitempty"`
+
+	// BearerTokenSecret optionally references a Secret holding a bearer token
+	// the endpoint requires for scraping (server auth mode "token"). The token
+	// file is mounted into the dfs container and the matching ServiceMonitor (if
+	// emitted) is configured to present the same token. When unset the endpoint
+	// is unauthenticated and relies on the metrics Port + NetworkPolicy for
+	// isolation.
+	// +optional
+	BearerTokenSecret *corev1.SecretKeySelector `json:"bearerTokenSecret,omitempty"`
+
+	// ServiceMonitor configures emission of a monitoring.coreos.com/v1
+	// ServiceMonitor selecting the metrics Service, for clusters running the
+	// prometheus-operator.
+	// +optional
+	ServiceMonitor *ServiceMonitorSpec `json:"serviceMonitor,omitempty"`
+}
+
+// ServiceMonitorSpec configures the optional prometheus-operator ServiceMonitor.
+type ServiceMonitorSpec struct {
+	// Enabled requests creation of a ServiceMonitor for the metrics Service.
+	// It is honored only when the monitoring.coreos.com/v1 CRD is present in the
+	// cluster; otherwise it is skipped (logged) and the reconcile does not fail.
+	// Default: false.
+	// +kubebuilder:default=false
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Interval is the Prometheus scrape interval (e.g. "30s"). When empty the
+	// Prometheus default applies.
+	// +optional
+	Interval string `json:"interval,omitempty"`
+
+	// Labels are added to the ServiceMonitor's metadata.labels so it can be
+	// matched by a Prometheus serviceMonitorSelector (e.g. {release: kube-prometheus-stack}).
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // DittoServerStatus defines the observed state of DittoServer

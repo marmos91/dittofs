@@ -119,3 +119,60 @@ func (ds *DittoServer) GetAPIServiceURL() string {
 	}
 	return fmt.Sprintf("%s://%s-api.%s.svc.cluster.local:%d", scheme, ds.Name, ds.Namespace, apiPort)
 }
+
+// Metrics defaults shared by the config generator and the controller so the
+// rendered config, container port, and Service always agree.
+const (
+	// DefaultMetricsPort is the metrics endpoint port when unset.
+	DefaultMetricsPort = 9090
+	// DefaultMetricsPath is the metrics HTTP path when unset.
+	DefaultMetricsPath = "/metrics"
+	// MetricsTokenMountPath is where the bearer-token Secret is mounted (read-only)
+	// inside the dfs container when BearerTokenSecret is set.
+	MetricsTokenMountPath = "/metrics-token"
+	// MetricsTokenFileName is the file the bearer token is projected to.
+	MetricsTokenFileName = "token"
+)
+
+// MetricsEnabled reports whether the metrics endpoint should be turned on.
+func (ds *DittoServer) MetricsEnabled() bool {
+	return ds.Spec.Metrics != nil && ds.Spec.Metrics.Enabled
+}
+
+// MetricsPort returns the metrics endpoint/Service port, applying the default.
+func (ds *DittoServer) MetricsPort() int32 {
+	if ds.Spec.Metrics != nil && ds.Spec.Metrics.Port > 0 {
+		return ds.Spec.Metrics.Port
+	}
+	return DefaultMetricsPort
+}
+
+// MetricsPath returns the metrics HTTP path, applying the default.
+func (ds *DittoServer) MetricsPath() string {
+	if ds.Spec.Metrics != nil && ds.Spec.Metrics.Path != "" {
+		return ds.Spec.Metrics.Path
+	}
+	return DefaultMetricsPath
+}
+
+// MetricsBearerTokenSecret returns the configured bearer-token Secret selector,
+// or nil when the endpoint is unauthenticated.
+func (ds *DittoServer) MetricsBearerTokenSecret() *corev1.SecretKeySelector {
+	if ds.Spec.Metrics != nil {
+		return ds.Spec.Metrics.BearerTokenSecret
+	}
+	return nil
+}
+
+// ServiceMonitorEnabled reports whether a prometheus-operator ServiceMonitor
+// has been requested (subject to the CRD-discovery gate in the controller).
+func (ds *DittoServer) ServiceMonitorEnabled() bool {
+	return ds.MetricsEnabled() && ds.Spec.Metrics.ServiceMonitor != nil &&
+		ds.Spec.Metrics.ServiceMonitor.Enabled
+}
+
+// MetricsTokenFilePath returns the in-container path the bearer token is mounted
+// at, which the rendered metrics.token_file config points to.
+func MetricsTokenFilePath() string {
+	return MetricsTokenMountPath + "/" + MetricsTokenFileName
+}

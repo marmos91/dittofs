@@ -46,6 +46,7 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 		ShutdownTimeout: DefaultShutdownTimeout,
 		Database:        buildDatabaseConfig(dittoServer),
 		ControlPlane:    buildControlPlaneConfig(dittoServer),
+		Metrics:         buildMetricsConfig(dittoServer),
 	}
 
 	// Add admin config with username only (password hash injected via env var)
@@ -145,6 +146,34 @@ func buildControlPlaneConfig(ds *dittoiov1alpha1.DittoServer) ControlPlaneConfig
 	}
 
 	return cp
+}
+
+// buildMetricsConfig renders the metrics: block when the CRD opts metrics in.
+// Returns nil (no metrics: key) when disabled, preserving the server's
+// disabled-by-default behavior. The endpoint always binds 0.0.0.0 in-cluster
+// (the metrics Service cannot reach a loopback-bound listener); isolation is
+// provided by the dedicated metrics Service + NetworkPolicy. When a bearer
+// token Secret is referenced, auth=token and the token file path points at the
+// mounted Secret.
+func buildMetricsConfig(ds *dittoiov1alpha1.DittoServer) *MetricsConfig {
+	if !ds.MetricsEnabled() {
+		return nil
+	}
+
+	cfg := &MetricsConfig{
+		Enabled: true,
+		Host:    "0.0.0.0",
+		Port:    int(ds.MetricsPort()),
+		Path:    ds.MetricsPath(),
+		Auth:    "none",
+	}
+
+	if ds.MetricsBearerTokenSecret() != nil {
+		cfg.Auth = "token"
+		cfg.TokenFile = dittoiov1alpha1.MetricsTokenFilePath()
+	}
+
+	return cfg
 }
 
 // getJWTConfig returns the JWT config from the spec, or an empty struct if not configured.

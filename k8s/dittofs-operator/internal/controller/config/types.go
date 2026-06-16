@@ -8,6 +8,23 @@ type DittoFSConfig struct {
 	Database        DatabaseConfig     `yaml:"database"`
 	ControlPlane    ControlPlaneConfig `yaml:"controlplane"`
 	Admin           AdminConfig        `yaml:"admin,omitempty"`
+	// Metrics renders the top-level metrics: block so the dfs server exposes the
+	// Prometheus /metrics endpoint. Omitted entirely (nil pointer) unless the
+	// CRD opts metrics in, preserving the disabled-by-default server behavior.
+	Metrics *MetricsConfig `yaml:"metrics,omitempty"`
+}
+
+// MetricsConfig mirrors the dfs server metrics: config keys (pkg/config).
+// Bind host is always 0.0.0.0 in-cluster: the server's 127.0.0.1 default is
+// unreachable from the metrics Service. Network isolation is provided by the
+// metrics Service scope and NetworkPolicy, not by loopback binding.
+type MetricsConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Host      string `yaml:"host"`
+	Port      int    `yaml:"port"`
+	Path      string `yaml:"path"`
+	Auth      string `yaml:"auth,omitempty"`
+	TokenFile string `yaml:"token_file,omitempty"`
 }
 
 // LoggingConfig controls logging behavior
