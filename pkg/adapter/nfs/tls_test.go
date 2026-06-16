@@ -37,7 +37,10 @@ func mkCert(t *testing.T, cn string, isCA bool, parent *tlsTestCert) tlsTestCert
 	if err != nil {
 		t.Fatal(err)
 	}
-	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatal(err)
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: cn},
@@ -61,9 +64,15 @@ func mkCert(t *testing.T, cn string, isCA bool, parent *tlsTestCert) tlsTestCert
 	if err != nil {
 		t.Fatal(err)
 	}
-	parsed, _ := x509.ParseCertificate(der)
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyDER, _ := x509.MarshalECPrivateKey(key)
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 	return tlsTestCert{certPEM: certPEM, keyPEM: keyPEM, cert: parsed, key: key}
 }
@@ -120,6 +129,7 @@ func runStartTLSServer(ln net.Listener, srv *NFSAdapter, errc chan<- error) {
 		errc <- err
 		return
 	}
+	defer func() { _ = conn.Close() }()
 	c := &NFSConnection{server: srv, conn: conn}
 	if err := c.startTLS(context.Background(), 1, "test"); err != nil {
 		errc <- err
@@ -202,7 +212,10 @@ func TestNFSConnection_StartTLS_MTLS(t *testing.T) {
 
 	// Case 1: client presents a valid cert → handshake succeeds.
 	t.Run("valid client cert accepted", func(t *testing.T) {
-		ln, _ := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer func() { _ = ln.Close() }()
 		errc := make(chan error, 1)
 		go runStartTLSServer(ln, newSrv(), errc)
@@ -234,7 +247,10 @@ func TestNFSConnection_StartTLS_MTLS(t *testing.T) {
 
 	// Case 2: no client cert → server rejects at handshake.
 	t.Run("missing client cert rejected", func(t *testing.T) {
-		ln, _ := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer func() { _ = ln.Close() }()
 		errc := make(chan error, 1)
 		go runStartTLSServer(ln, newSrv(), errc)
@@ -280,5 +296,18 @@ func TestNFSConnection_HandleTLSGate(t *testing.T) {
 	// just confirm detection does not fall through to the plaintext path.
 	if nullProbe.Procedure != 0 || nullProbe.GetAuthFlavor() != rpc.AuthTLS {
 		t.Fatal("probe detection predicate is wrong")
+	}
+}
+
+func TestNFSTLSConfig_ValidateMode(t *testing.T) {
+	for _, m := range []string{"", NFSTLSModeOpportunistic, NFSTLSModeRequire} {
+		if err := (NFSTLSConfig{Mode: m}).validateMode(); err != nil {
+			t.Errorf("mode %q: unexpected error %v", m, err)
+		}
+	}
+	for _, m := range []string{"required", "opportunistc", "tls", "REQUIRE"} {
+		if err := (NFSTLSConfig{Mode: m}).validateMode(); err == nil {
+			t.Errorf("mode %q: expected error, got nil", m)
+		}
 	}
 }

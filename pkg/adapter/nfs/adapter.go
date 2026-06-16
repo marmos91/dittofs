@@ -265,7 +265,10 @@ type NFSTLSConfig struct {
 	// client certificate (mutual TLS).
 	ClientCA string `mapstructure:"client_ca"`
 
-	// MinVersion is the minimum TLS version: "1.2" or "1.3" (default "1.2").
+	// MinVersion is the configured minimum TLS version: "1.2" or "1.3". RFC 9289
+	// mandates TLS 1.3, so the effective floor is always raised to 1.3 even when
+	// "1.2" is set; the knob exists only for forward-compatibility symmetry with
+	// the control-plane TLS config.
 	MinVersion string `mapstructure:"min_version"`
 
 	// Mode selects the upgrade policy:
@@ -276,9 +279,26 @@ type NFSTLSConfig struct {
 	Mode string `mapstructure:"mode"`
 }
 
-// NFSTLSModeRequire is the Mode value that rejects plaintext RPC until a
-// connection has upgraded via AUTH_TLS.
-const NFSTLSModeRequire = "require"
+// NFS TLS Mode values. An empty Mode is treated as opportunistic.
+const (
+	// NFSTLSModeOpportunistic upgrades clients that send the AUTH_TLS probe but
+	// still serves non-TLS clients in plaintext.
+	NFSTLSModeOpportunistic = "opportunistic"
+	// NFSTLSModeRequire rejects plaintext RPC until a connection has upgraded
+	// via AUTH_TLS.
+	NFSTLSModeRequire = "require"
+)
+
+// validateMode rejects an unknown TLS Mode so a typo (e.g. "required") does not
+// silently fall back to opportunistic. An empty Mode is allowed (opportunistic).
+func (t NFSTLSConfig) validateMode() error {
+	switch t.Mode {
+	case "", NFSTLSModeOpportunistic, NFSTLSModeRequire:
+		return nil
+	default:
+		return fmt.Errorf("invalid mode %q (use %q or %q)", t.Mode, NFSTLSModeOpportunistic, NFSTLSModeRequire)
+	}
+}
 
 // shared converts the wire config into the backend-agnostic tlsconfig.Config.
 func (t NFSTLSConfig) shared() tlsconfig.Config {
@@ -641,6 +661,9 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 	if err := s.config.TLS.shared().Validate(); err != nil {
 		return fmt.Errorf("adapters.nfs.tls.%w", err)
 	}
+	if err := s.config.TLS.validateMode(); err != nil {
+		return fmt.Errorf("adapters.nfs.tls.%w", err)
+	}
 	tlsCfg, err := tlsconfig.ServerConfig(s.config.TLS.shared())
 	if err != nil {
 		return fmt.Errorf("configure NFS TLS: %w", err)
@@ -653,7 +676,7 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 			tlsCfg.MinVersion = tls.VersionTLS13
 		}
 		logger.Info("NFS-over-TLS enabled (RFC 9289)",
-			"mode", map[bool]string{true: NFSTLSModeRequire, false: "opportunistic"}[s.tlsRequire],
+			"mode", map[bool]string{true: NFSTLSModeRequire, false: NFSTLSModeOpportunistic}[s.tlsRequire],
 			"mtls", s.config.TLS.ClientCA != "")
 	}
 

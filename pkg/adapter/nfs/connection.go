@@ -62,7 +62,19 @@ type NFSConnection struct {
 	// encrypted. Only touched from the single Serve read loop (the upgrade is
 	// handled synchronously before any request is dispatched concurrently).
 	tlsUpgraded bool
+
+	// startedDispatch records whether any request has been dispatched
+	// concurrently on this connection. A STARTTLS upgrade is only honored
+	// before the first dispatch (RFC 9289: the AUTH_TLS NULL is the first RPC),
+	// so the synchronous handshake can never race an in-flight plaintext reply.
+	// Only touched from the single Serve read loop.
+	startedDispatch bool
 }
+
+// tlsHandshakeTimeout bounds the STARTTLS handshake so a client that sends the
+// AUTH_TLS probe but never completes the TLS handshake cannot pin a connection
+// (and, in require mode, exhaust connection slots) indefinitely.
+const tlsHandshakeTimeout = 30 * time.Second
 
 func NewNFSConnection(server *NFSAdapter, conn net.Conn, connectionID uint64) *NFSConnection {
 	return &NFSConnection{
@@ -114,10 +126,13 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 			return
 		}
 
-		// RFC 9289 gate: when TLS is configured and this connection has not yet
-		// upgraded, intercept the AUTH_TLS STARTTLS probe (and, in require mode,
-		// reject plaintext) before dispatching the request concurrently.
-		if c.server.tlsConfig != nil && !c.tlsUpgraded {
+		// RFC 9289 gate: when TLS is configured and this connection has neither
+		// upgraded nor dispatched a request yet, intercept the AUTH_TLS STARTTLS
+		// probe (and, in require mode, reject plaintext) before any concurrent
+		// dispatch. Gating on !startedDispatch means the synchronous handshake
+		// can never race an in-flight plaintext reply; a probe arriving after
+		// plaintext traffic (opportunistic) is treated as an ordinary NULL.
+		if c.server.tlsConfig != nil && !c.tlsUpgraded && !c.startedDispatch {
 			handled, gateErr := c.handleTLSGate(ctx, call, rawMessage, clientAddr)
 			if gateErr != nil {
 				logger.Debug("NFS TLS gate closed connection", "address", clientAddr, "error", gateErr)
@@ -130,6 +145,7 @@ func (c *NFSConnection) Serve(ctx context.Context) {
 		}
 
 		c.dispatchRequest(ctx, clientAddr, call, rawMessage)
+		c.startedDispatch = true
 		c.resetIdleTimeout(clientAddr)
 	}
 }
@@ -176,9 +192,10 @@ func (c *NFSConnection) startTLS(ctx context.Context, xid uint32, clientAddr str
 		return fmt.Errorf("write STARTTLS verifier: %w", err)
 	}
 
-	// Clear the idle/read deadline for the handshake; the read loop re-arms it
-	// after the upgrade via resetIdleTimeout.
-	_ = c.conn.SetDeadline(time.Time{})
+	// Bound the handshake with a fresh deadline so a client that probes but
+	// never completes the TLS handshake cannot pin the connection. The read
+	// loop re-arms the idle deadline after the upgrade via resetIdleTimeout.
+	_ = c.conn.SetDeadline(time.Now().Add(tlsHandshakeTimeout))
 
 	tlsConn := tls.Server(c.conn, c.server.tlsConfig)
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
