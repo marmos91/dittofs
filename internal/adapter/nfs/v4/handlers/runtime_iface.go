@@ -33,9 +33,6 @@ type nfsRuntime interface {
 	// Identity / auth.
 	GetIdentityStore() models.IdentityStore
 	ApplyIdentityMapping(shareName string, ident *metadata.Identity) (*metadata.Identity, error)
-
-	// Live NFS adapter settings (blocked-operation gating).
-	GetNFSSettings() *models.NFSAdapterSettings
 }
 
 var _ nfsRuntime = (*runtime.Runtime)(nil)

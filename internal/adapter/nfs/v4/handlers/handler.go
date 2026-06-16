@@ -346,24 +346,14 @@ func (h *Handler) SetBlockedOps(opNames []string) {
 // IsOperationBlocked returns true if the given operation number is blocked
 // at the adapter level. Per-share blocked operations are checked separately
 // in the COMPOUND dispatcher using the CompoundContext after PUTFH resolves.
-// Reads live settings from the SettingsWatcher when available, falling back
-// to the local blockedOps cache (used in tests or before settings load).
+//
+// This consults the pre-parsed blockedOps set, which is populated by
+// SetBlockedOps from the SettingsWatcher in applyNFSSettings (on startup and
+// on each settings-change event, with hot-reload support). Doing a single map
+// lookup here keeps the hot COMPOUND dispatch path free of the per-op JSON
+// unmarshal + linear name scan that reading live settings would incur — see
+// the NFSv3 isOperationBlocked path, which is structured the same way.
 func (h *Handler) IsOperationBlocked(opNum uint32) bool {
-	if h.Registry != nil {
-		settings := h.Registry.GetNFSSettings()
-		if settings != nil {
-			blockedOps := settings.GetBlockedOperations()
-			// Check if this operation is in the blocked list
-			for _, name := range blockedOps {
-				if num, ok := types.OpNameToNum(name); ok && num == opNum {
-					return true
-				}
-			}
-			return false
-		}
-	}
-
-	// Fall back to local cache (for tests or when settings not available)
 	h.blockedOpsMu.RLock()
 	blocked := h.blockedOps[opNum]
 	h.blockedOpsMu.RUnlock()
