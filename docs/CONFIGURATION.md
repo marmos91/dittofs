@@ -1559,15 +1559,16 @@ spec:
 | `dittofs_adapter_request_duration_seconds{protocol,op}` | Request latency histogram. |
 | `dittofs_adapter_connections_total{protocol}` | Connections accepted since start, by protocol. |
 | `dittofs_client_connections_active{protocol}` | Active client connections, by protocol. |
-| `dittofs_auth_attempts_total{protocol}` / `dittofs_auth_failures_total{protocol}` | Authentication attempts and failures. |
+| `dittofs_auth_attempts_total{protocol,mechanism}` / `dittofs_auth_failures_total{protocol,mechanism}` | Authentication attempts and failures (`mechanism` is `sys`/`krb5`/`ntlm`). |
 | ⭐ `dittofs_remote_up{share}` | `1` if the share's remote backend is healthy, else `0`. |
 | ⭐ `dittofs_sync_pending_bytes{share}` | On-disk bytes present locally but not yet mirrored to the remote (data at risk). |
 | `dittofs_localstore_disk_used_bytes{share}` | Local block-store disk bytes in use. |
-| `dittofs_localstore_evictions_total{share}` / `dittofs_localstore_backpressure_total{share}` | Cache evictions and backpressure events. |
+| `dittofs_localstore_evictions_total` / `dittofs_localstore_backpressure_total` | Local block-store evictions and write-backpressure events (process-wide). |
 | `dittofs_quota_used_bytes{scope,principal,share}` | Bytes used by a quota principal (`scope` user/group, `principal` is the uid/gid). |
-| `dittofs_gc_runs_total` / `dittofs_gc_last_run_timestamp_seconds` / `dittofs_gc_freed_bytes_total` | GC run count, last-run time, bytes reclaimed. |
+| `dittofs_gc_runs_total{result}` / `dittofs_gc_last_run_timestamp_seconds` / `dittofs_gc_freed_bytes_total` | GC run count (`result` ok/error), last-run time, bytes reclaimed. |
 | ⭐ `dittofs_snapshot_operations_total{op,result}` | Snapshot operations by `op` (create/delete/restore) and `result` (ok/error). |
-| `dittofs_snapshot_duration_seconds` | Snapshot operation latency histogram. |
+| `dittofs_snapshot_duration_seconds{op}` | Snapshot operation latency histogram, by `op` (create/delete/restore). |
+| ⭐ `dittofs_snapshot_last_success_timestamp_seconds{share}` | Unix time of the last successful snapshot create (backup-freshness signal). |
 
 ### Example alert expressions
 
@@ -1575,11 +1576,12 @@ spec:
 groups:
   - name: dittofs
     rules:
-      # Scheduled snapshots stale: no successful create in 24h.
+      # Scheduled snapshots stale: no successful create in 24h. Uses the
+      # last-success gauge (its value is the snapshot time); timestamp() on a
+      # counter would return the scrape time, not the last snapshot time.
       - alert: DittoFSSnapshotStale
         expr: |
-          (time() - max(timestamp(dittofs_snapshot_operations_total{op="create",result="ok"})))
-            > 86400
+          (time() - max(dittofs_snapshot_last_success_timestamp_seconds)) > 86400
         for: 1h
         labels: { severity: warning }
         annotations:

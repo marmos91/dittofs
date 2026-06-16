@@ -972,8 +972,10 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 			}
 
 			// Metrics bearer token: mount the referenced Secret read-only so the
-			// rendered metrics.token_file path resolves to the scrape token.
-			if dittoServer.MetricsBearerTokenSecret() != nil {
+			// rendered metrics.token_file path resolves to the scrape token. Only
+			// when metrics are enabled — otherwise the listener is off and mounting
+			// the Secret would expose it into the pod for no reason.
+			if dittoServer.MetricsEnabled() && dittoServer.MetricsBearerTokenSecret() != nil {
 				volumeMounts = append(volumeMounts, corev1.VolumeMount{
 					Name:      metricsTokenVolumeName,
 					MountPath: dittoiov1alpha1.MetricsTokenMountPath,
@@ -1106,8 +1108,9 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				}
 			}
 			// Metrics bearer token: project the referenced Secret key to a single
-			// file the rendered metrics.token_file points at.
-			if ref := dittoServer.MetricsBearerTokenSecret(); ref != nil {
+			// file the rendered metrics.token_file points at. Gated on MetricsEnabled
+			// so a disabled listener never projects the Secret into the pod.
+			if ref := dittoServer.MetricsBearerTokenSecret(); dittoServer.MetricsEnabled() && ref != nil {
 				podVolumes = append(podVolumes, corev1.Volume{
 					Name: metricsTokenVolumeName,
 					VolumeSource: corev1.VolumeSource{

@@ -319,8 +319,10 @@ spec:
                     type: boolean
                   path:
                     default: /metrics
-                    description: 'Path is the HTTP path the metrics are served on.
-                      Default: /metrics.'
+                    description: |-
+                      Path is the HTTP path the metrics are served on. Default: /metrics.
+                      Must start with "/" (matches the server-side config.Validate check).
+                    pattern: ^/.*
                     type: string
                   port:
                     default: 9090

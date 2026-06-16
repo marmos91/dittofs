@@ -301,7 +301,9 @@ type MetricsSpec struct {
 	Port int32 `json:"port,omitempty"`
 
 	// Path is the HTTP path the metrics are served on. Default: /metrics.
+	// Must start with "/" (matches the server-side config.Validate check).
 	// +kubebuilder:default="/metrics"
+	// +kubebuilder:validation:Pattern=`^/.*`
 	// +optional
 	Path string `json:"path,omitempty"`
 
