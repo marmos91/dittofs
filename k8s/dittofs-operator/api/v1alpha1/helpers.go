@@ -156,9 +156,11 @@ func (ds *DittoServer) MetricsPath() string {
 }
 
 // MetricsBearerTokenSecret returns the configured bearer-token Secret selector,
-// or nil when the endpoint is unauthenticated.
+// or nil when the endpoint is unauthenticated OR metrics are disabled. Gating on
+// MetricsEnabled ensures the token Secret is never mounted/projected into the pod
+// when the /metrics listener is off (avoids needlessly exposing the token).
 func (ds *DittoServer) MetricsBearerTokenSecret() *corev1.SecretKeySelector {
-	if ds.Spec.Metrics != nil {
+	if ds.MetricsEnabled() {
 		return ds.Spec.Metrics.BearerTokenSecret
 	}
 	return nil
