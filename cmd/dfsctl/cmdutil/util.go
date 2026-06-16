@@ -52,6 +52,37 @@ type GlobalFlags struct {
 	Output    string
 	NoColor   bool
 	Verbose   bool
+
+	// TLS escape-hatch overrides. When set they take precedence over the TLS
+	// material stored in the active login context. TLSSkipVerifySet records
+	// whether --tls-skip-verify was explicitly passed, so the stored value is
+	// only overridden on an explicit flag (a bare false flag would otherwise
+	// silently re-enable verification).
+	CACert           string
+	ClientCert       string
+	ClientKey        string
+	TLSSkipVerify    bool
+	TLSSkipVerifySet bool
+}
+
+// TLSClientOptions translates resolved TLS parameters into apiclient options.
+// It also emits the man-in-the-middle warning once when verification is
+// disabled. Empty parameters produce no options (default transport behavior).
+func TLSClientOptions(caCert, clientCert, clientKey string, skipVerify bool) []apiclient.ClientOption {
+	var opts []apiclient.ClientOption
+	if caCert != "" {
+		opts = append(opts, apiclient.WithCACert(caCert))
+	}
+	if clientCert != "" || clientKey != "" {
+		opts = append(opts, apiclient.WithClientCert(clientCert, clientKey))
+	}
+	if skipVerify {
+		_, _ = fmt.Fprintln(os.Stderr,
+			"WARNING: TLS certificate verification disabled (--tls-skip-verify); "+
+				"the connection is vulnerable to man-in-the-middle attacks")
+		opts = append(opts, apiclient.WithInsecureSkipVerify(true))
+	}
+	return opts
 }
 
 // GetAuthenticatedClient returns an API client configured from the current context.
@@ -60,7 +91,8 @@ type GlobalFlags struct {
 func GetAuthenticatedClient() (*apiclient.Client, error) {
 	// Check for explicit flags first
 	if Flags.ServerURL != "" && Flags.Token != "" {
-		return apiclient.New(Flags.ServerURL).WithToken(Flags.Token), nil
+		opts := TLSClientOptions(Flags.CACert, Flags.ClientCert, Flags.ClientKey, Flags.TLSSkipVerify)
+		return apiclient.New(Flags.ServerURL, opts...).WithToken(Flags.Token), nil
 	}
 
 	// Load credential store
@@ -90,9 +122,29 @@ func GetAuthenticatedClient() (*apiclient.Client, error) {
 		tok = Flags.Token
 	}
 
+	// Resolve TLS material: stored context is the baseline; root override flags
+	// take precedence when present.
+	caCert := ctx.CACert
+	if Flags.CACert != "" {
+		caCert = Flags.CACert
+	}
+	clientCert := ctx.ClientCert
+	if Flags.ClientCert != "" {
+		clientCert = Flags.ClientCert
+	}
+	clientKey := ctx.ClientKey
+	if Flags.ClientKey != "" {
+		clientKey = Flags.ClientKey
+	}
+	skipVerify := ctx.TLSSkipVerify
+	if Flags.TLSSkipVerifySet {
+		skipVerify = Flags.TLSSkipVerify
+	}
+	tlsOpts := TLSClientOptions(caCert, clientCert, clientKey, skipVerify)
+
 	// Check if token is expired and try to refresh
 	if ctx.IsExpired() && ctx.HasRefreshToken() {
-		client := apiclient.New(url)
+		client := apiclient.New(url, tlsOpts...)
 		newTokens, err := client.RefreshToken(ctx.RefreshToken)
 		if err != nil {
 			// Refresh failed, user needs to re-login
@@ -117,7 +169,7 @@ func GetAuthenticatedClient() (*apiclient.Client, error) {
 		return nil, fmt.Errorf("no access token. Run 'dfsctl login' first")
 	}
 
-	return apiclient.New(url).WithToken(tok), nil
+	return apiclient.New(url, tlsOpts...).WithToken(tok), nil
 }
 
 // GetOutputFormatParsed returns the parsed output format.

@@ -4,10 +4,13 @@ package apiclient
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -17,6 +20,16 @@ type Client struct {
 	httpClient         *http.Client
 	token              string
 	restoreHTTPTimeout time.Duration
+
+	// TLS intent captured by the With* options and resolved once in New.
+	caCertPath         string
+	clientCertPath     string
+	clientKeyPath      string
+	insecureSkipVerify bool
+	// tlsErr holds a deferred TLS-configuration failure (bad CA file, missing
+	// client key, etc.). New does not return an error, so the failure is
+	// surfaced on the first request instead of being silently dropped.
+	tlsErr error
 }
 
 // ClientOption configures a Client at construction time.
@@ -27,6 +40,30 @@ type ClientOption func(*Client)
 // default 30 second client timeout.
 func WithRestoreTimeout(d time.Duration) ClientOption {
 	return func(c *Client) { c.restoreHTTPTimeout = d }
+}
+
+// WithCACert trusts the PEM-encoded CA bundle at path (in addition to the
+// system roots) when verifying the server certificate. Use it to reach a
+// server that presents a certificate signed by a private CA.
+func WithCACert(path string) ClientOption {
+	return func(c *Client) { c.caCertPath = path }
+}
+
+// WithClientCert presents the PEM-encoded client certificate/key pair for
+// mutual TLS. Both paths are required together; supplying one without the
+// other is a configuration error surfaced on the first request.
+func WithClientCert(certPath, keyPath string) ClientOption {
+	return func(c *Client) {
+		c.clientCertPath = certPath
+		c.clientKeyPath = keyPath
+	}
+}
+
+// WithInsecureSkipVerify disables server certificate verification. This is
+// insecure (vulnerable to man-in-the-middle) and intended only for
+// development against self-signed certs; the CLI emits a warning when set.
+func WithInsecureSkipVerify(skip bool) ClientOption {
+	return func(c *Client) { c.insecureSkipVerify = skip }
 }
 
 // defaultRestoreHTTPTimeout is the timeout applied to the restore HTTP call
@@ -47,7 +84,59 @@ func New(baseURL string, opts ...ClientOption) *Client {
 	for _, opt := range opts {
 		opt(c)
 	}
+	// Resolve TLS material once. Only build a custom transport when a TLS
+	// option was set, so the default behavior (system-root trust over the
+	// shared default transport) is preserved for plain HTTP / public-CA TLS.
+	if c.caCertPath != "" || c.clientCertPath != "" || c.clientKeyPath != "" || c.insecureSkipVerify {
+		if err := c.applyTLS(); err != nil {
+			c.tlsErr = err
+		}
+	}
 	return c
+}
+
+// applyTLS builds a *tls.Config from the captured options and installs it on a
+// cloned default transport (preserving proxy/keep-alive defaults). It is the
+// single place client TLS material is read from disk.
+func (c *Client) applyTLS() error {
+	if (c.clientCertPath == "") != (c.clientKeyPath == "") {
+		return fmt.Errorf("client certificate and key must be provided together (got cert=%q key=%q)", c.clientCertPath, c.clientKeyPath)
+	}
+
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	tlsCfg.InsecureSkipVerify = c.insecureSkipVerify //nolint:gosec // opt-in via --tls-skip-verify; the CLI warns when enabled
+
+	if c.caCertPath != "" {
+		caPEM, err := os.ReadFile(c.caCertPath)
+		if err != nil {
+			return fmt.Errorf("read CA cert %s: %w", c.caCertPath, err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return fmt.Errorf("CA cert %s contains no valid PEM certificate", c.caCertPath)
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	if c.clientCertPath != "" {
+		cert, err := tls.LoadX509KeyPair(c.clientCertPath, c.clientKeyPath)
+		if err != nil {
+			return fmt.Errorf("load client key pair (cert=%s key=%s): %w", c.clientCertPath, c.clientKeyPath, err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return fmt.Errorf("unexpected default HTTP transport type %T", http.DefaultTransport)
+	}
+	tr := base.Clone()
+	tr.TLSClientConfig = tlsCfg
+	c.httpClient.Transport = tr
+	return nil
 }
 
 // WithToken returns a new client with the given token.
@@ -57,6 +146,11 @@ func (c *Client) WithToken(token string) *Client {
 		httpClient:         c.httpClient,
 		token:              token,
 		restoreHTTPTimeout: c.restoreHTTPTimeout,
+		caCertPath:         c.caCertPath,
+		clientCertPath:     c.clientCertPath,
+		clientKeyPath:      c.clientKeyPath,
+		insecureSkipVerify: c.insecureSkipVerify,
+		tlsErr:             c.tlsErr,
 	}
 }
 
@@ -93,6 +187,13 @@ func (c *Client) doCtx(ctx context.Context, method, path string, body, result an
 // cancellation and overall deadline; the http.Client's Timeout still acts
 // as an upper bound.
 func (c *Client) doVia(ctx context.Context, hc *http.Client, method, path string, body, result any) error {
+	// Surface a deferred TLS-configuration failure (captured in New) before
+	// attempting any I/O, so the user gets a precise error instead of an
+	// opaque transport failure.
+	if c.tlsErr != nil {
+		return c.tlsErr
+	}
+
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)

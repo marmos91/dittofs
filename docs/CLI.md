@@ -692,11 +692,15 @@ Use "dfsctl [command] --help" for more information about a command.
 Flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter`
@@ -727,11 +731,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter disable`
@@ -754,11 +762,15 @@ dfsctl adapter disable <type>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter edit`
@@ -798,11 +810,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter enable`
@@ -836,11 +852,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter list`
@@ -863,11 +883,15 @@ dfsctl adapter list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings`
@@ -898,11 +922,15 @@ dfsctl adapter settings <type>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings nfs`
@@ -918,11 +946,15 @@ dfsctl adapter settings nfs
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings nfs reset`
@@ -955,11 +987,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings nfs show`
@@ -984,11 +1020,15 @@ dfsctl adapter settings nfs show
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings nfs update`
@@ -1045,11 +1085,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings smb`
@@ -1065,11 +1109,15 @@ dfsctl adapter settings smb
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings smb reset`
@@ -1102,11 +1150,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings smb show`
@@ -1131,11 +1183,15 @@ dfsctl adapter settings smb show
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl adapter settings smb update`
@@ -1178,11 +1234,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl bench`
@@ -1210,11 +1270,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl bench compare`
@@ -1237,11 +1301,15 @@ dfsctl bench compare FILE [FILE...]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl bench run`
@@ -1284,11 +1352,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl bench storage-tiers`
@@ -1335,11 +1407,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl client`
@@ -1367,11 +1443,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl client disconnect`
@@ -1404,11 +1484,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl client list`
@@ -1447,11 +1531,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl client sessions`
@@ -1473,11 +1561,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl client sessions destroy`
@@ -1509,11 +1601,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl client sessions list`
@@ -1536,11 +1632,15 @@ dfsctl client sessions list <client-id>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl completion`
@@ -1588,11 +1688,15 @@ dfsctl completion [bash|zsh|fish|powershell]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl context`
@@ -1614,11 +1718,15 @@ Subcommands:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl context current`
@@ -1647,10 +1755,14 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl context delete`
@@ -1681,11 +1793,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl context list`
@@ -1711,11 +1827,15 @@ dfsctl context list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl context rename`
@@ -1735,11 +1855,15 @@ dfsctl context rename <old-name> <new-name>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl context use`
@@ -1761,11 +1885,15 @@ dfsctl context use <name>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl grace`
@@ -1791,11 +1919,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl grace end`
@@ -1819,11 +1951,15 @@ dfsctl grace end
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl grace status`
@@ -1853,11 +1989,15 @@ dfsctl grace status
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl group`
@@ -1895,11 +2035,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl group add-user`
@@ -1919,11 +2063,15 @@ dfsctl group add-user <group> <username>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl group create`
@@ -1957,11 +2105,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl group delete`
@@ -1993,11 +2145,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl group edit`
@@ -2033,11 +2189,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl group get`
@@ -2060,11 +2220,15 @@ dfsctl group get <name>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl group list`
@@ -2090,11 +2254,15 @@ dfsctl group list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl group remove-user`
@@ -2114,11 +2282,15 @@ dfsctl group remove-user <group> <username>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl idmap`
@@ -2153,11 +2325,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl idmap add`
@@ -2191,11 +2367,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl idmap list`
@@ -2227,11 +2407,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl idmap remove`
@@ -2268,11 +2452,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl login`
@@ -2301,10 +2489,14 @@ dfsctl login [flags]
 Flags:
 
 ```
-  -c, --context string    Context name (defaults to current or auto-generated)
-  -p, --password string   Password
-      --server string     Server URL (default "http://localhost:8080")
-  -u, --username string   Username
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate
+      --client-cert string   Path to a PEM client certificate for mutual TLS
+      --client-key string    Path to the PEM client private key for mutual TLS
+  -c, --context string       Context name (defaults to current or auto-generated)
+  -p, --password string      Password
+      --server string        Server URL (default "http://localhost:8080")
+      --tls-skip-verify      Disable TLS certificate verification (insecure)
+  -u, --username string      Username
 ```
 
 Global flags:
@@ -2336,11 +2528,15 @@ dfsctl logout
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl netgroup`
@@ -2374,11 +2570,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl netgroup add-member`
@@ -2411,11 +2611,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl netgroup create`
@@ -2444,11 +2648,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl netgroup delete`
@@ -2483,11 +2691,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl netgroup list`
@@ -2510,11 +2722,15 @@ dfsctl netgroup list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl netgroup remove-member`
@@ -2542,11 +2758,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl netgroup show`
@@ -2569,11 +2789,15 @@ dfsctl netgroup show <name>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl quota`
@@ -2605,11 +2829,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl quota list`
@@ -2632,11 +2860,15 @@ dfsctl quota list <share>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl quota rm`
@@ -2673,11 +2905,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl quota set`
@@ -2721,11 +2957,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl settings`
@@ -2750,11 +2990,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl settings get`
@@ -2777,11 +3021,15 @@ dfsctl settings get <key>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl settings list`
@@ -2804,11 +3052,15 @@ dfsctl settings list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl settings set`
@@ -2831,11 +3083,15 @@ dfsctl settings set <key> <value>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share`
@@ -2879,11 +3135,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share create`
@@ -2959,11 +3219,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share delete`
@@ -2995,11 +3259,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share disable`
@@ -3031,11 +3299,15 @@ dfsctl share disable <name>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share edit`
@@ -3117,11 +3389,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share enable`
@@ -3148,11 +3424,15 @@ dfsctl share enable <name>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share list`
@@ -3178,11 +3458,15 @@ dfsctl share list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share list-mounts`
@@ -3211,11 +3495,15 @@ dfsctl share list-mounts [share]
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share mount`
@@ -3271,11 +3559,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share nfs-config`
@@ -3302,11 +3594,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share nfs-config set`
@@ -3329,11 +3625,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share nfs-config show`
@@ -3347,11 +3647,15 @@ dfsctl share nfs-config show <name>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share permission`
@@ -3379,11 +3683,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share permission grant`
@@ -3420,11 +3728,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share permission list`
@@ -3447,11 +3759,15 @@ dfsctl share permission list <share>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share permission revoke`
@@ -3481,11 +3797,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share show`
@@ -3508,11 +3828,15 @@ dfsctl share show <name>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot`
@@ -3544,11 +3868,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot create`
@@ -3590,11 +3918,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot delete`
@@ -3623,11 +3955,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot list`
@@ -3664,11 +4000,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot restore`
@@ -3707,11 +4047,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot show`
@@ -3725,11 +4069,15 @@ dfsctl share snapshot show <share> <id>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot-policy`
@@ -3761,11 +4109,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot-policy delete`
@@ -3788,11 +4140,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot-policy list`
@@ -3806,11 +4162,15 @@ dfsctl share snapshot-policy list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot-policy run`
@@ -3830,11 +4190,15 @@ dfsctl share snapshot-policy run <share>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot-policy set`
@@ -3872,11 +4236,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share snapshot-policy show`
@@ -3890,11 +4258,15 @@ dfsctl share snapshot-policy show <share>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl share unmount`
@@ -3931,11 +4303,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl status`
@@ -3964,11 +4340,15 @@ dfsctl status
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store`
@@ -4002,11 +4382,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block`
@@ -4035,11 +4419,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block audit-refcounts`
@@ -4068,11 +4456,15 @@ dfsctl store block audit-refcounts <share>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block evict`
@@ -4120,11 +4512,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block gc`
@@ -4164,11 +4560,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block gc-status`
@@ -4193,11 +4593,15 @@ dfsctl store block gc-status <share>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block health`
@@ -4235,11 +4639,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block local`
@@ -4264,11 +4672,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block local add`
@@ -4314,11 +4726,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block local edit`
@@ -4355,11 +4771,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block local list`
@@ -4382,11 +4802,15 @@ dfsctl store block local list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block local remove`
@@ -4417,11 +4841,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block remote`
@@ -4446,11 +4874,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block remote add`
@@ -4518,11 +4950,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block remote edit`
@@ -4563,11 +4999,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block remote list`
@@ -4590,11 +5030,15 @@ dfsctl store block remote list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block remote remove`
@@ -4625,11 +5069,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store block stats`
@@ -4664,11 +5112,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store metadata`
@@ -4693,11 +5145,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store metadata add`
@@ -4750,11 +5206,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store metadata edit`
@@ -4794,11 +5254,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store metadata health`
@@ -4830,11 +5294,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store metadata list`
@@ -4857,11 +5325,15 @@ dfsctl store metadata list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl store metadata remove`
@@ -4892,11 +5364,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl switch-user`
@@ -4931,11 +5407,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl system`
@@ -4947,11 +5427,15 @@ System-level operations for managing the DittoFS server.
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl system drain-uploads`
@@ -4978,11 +5462,15 @@ dfsctl system drain-uploads
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl trash`
@@ -5004,11 +5492,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl trash empty`
@@ -5036,11 +5528,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl trash list`
@@ -5064,11 +5560,15 @@ dfsctl trash list <share>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl trash restore`
@@ -5098,11 +5598,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl trash status`
@@ -5123,11 +5627,15 @@ dfsctl trash status <share>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl user`
@@ -5158,11 +5666,15 @@ Examples:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl user change-password`
@@ -5195,11 +5707,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl user create`
@@ -5250,11 +5766,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl user delete`
@@ -5286,11 +5806,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl user edit`
@@ -5339,11 +5863,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl user get`
@@ -5366,11 +5894,15 @@ dfsctl user get <username>
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl user list`
@@ -5396,11 +5928,15 @@ dfsctl user list
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl user password`
@@ -5432,11 +5968,15 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 
 ### `dfsctl version`
@@ -5458,10 +5998,14 @@ Flags:
 Global flags:
 
 ```
-      --no-color        Disable colored output
-  -o, --output string   Output format (table|json|yaml) (default "table")
-      --server string   Server URL (overrides stored credential)
-      --token string    Bearer token (overrides stored credential)
-  -v, --verbose         Enable verbose output
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
 ```
 

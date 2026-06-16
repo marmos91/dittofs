@@ -38,6 +38,14 @@ type Context struct {
 	AccessToken  string    `json:"access_token,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	ExpiresAt    time.Time `json:"expires_at,omitempty"`
+
+	// TLS material captured at login and reused by every later command. Paths
+	// are stored (not contents) so the files are re-read each run and survive
+	// certbot/cert-manager rotation; the paths must stay readable.
+	CACert        string `json:"ca_cert,omitempty"`
+	ClientCert    string `json:"client_cert,omitempty"`
+	ClientKey     string `json:"client_key,omitempty"`
+	TLSSkipVerify bool   `json:"tls_skip_verify,omitempty"`
 }
 
 // IsExpired returns true if the access token has expired.
