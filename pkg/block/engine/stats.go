@@ -31,6 +31,12 @@ type BlockStoreStats struct {
 	CompletedSyncs int  `json:"completed_syncs"`
 	FailedSyncs    int  `json:"failed_syncs"`
 
+	// UnsyncedBytes is the running on-disk size of CAS chunks present locally
+	// but not yet mirrored to the remote (the #1136 backpressure signal). It is
+	// the headline data-at-risk gauge: bytes that would be lost if local
+	// storage were lost before the syncer drains them.
+	UnsyncedBytes int64 `json:"unsynced_bytes"`
+
 	RemoteHealthy       bool    `json:"remote_healthy"`
 	EvictionSuspended   bool    `json:"eviction_suspended"`
 	OutageDurationSecs  float64 `json:"outage_duration_seconds"`
@@ -65,8 +71,21 @@ func (bs *Store) Stats() (*block.Stats, error) {
 	}, nil
 }
 
-// GetStats returns comprehensive block store statistics.
-func (bs *Store) GetStats() BlockStoreStats {
+// GetStats returns comprehensive block store statistics, including the
+// per-block-state counts. Those counts require a per-file walk of the file
+// block store (DB I/O), so callers that do not need them should use
+// GetStatsLite.
+func (bs *Store) GetStats() BlockStoreStats { return bs.getStats(true) }
+
+// GetStatsLite returns the same statistics as GetStats but skips the
+// per-block-state counts (BlocksDirty/Local/Remote/Total) and the per-file
+// file-block-store walk that computes them. It is O(1)-ish and safe to call on
+// a hot path such as a metrics scrape.
+func (bs *Store) GetStatsLite() BlockStoreStats { return bs.getStats(false) }
+
+// getStats builds the statistics snapshot. When withBlockCounts is true it also
+// walks the file block store to fill the per-block-state counts.
+func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	// Pin against Close teardown. This method has no error return, so a
 	// closed store reports empty stats rather than racing the
 	// local/syncer/cache teardown Close performs under closeMu.Lock.
@@ -105,9 +124,12 @@ func (bs *Store) GetStats() BlockStoreStats {
 		EvictionSuspended:   bs.remote != nil && !remoteHealthy,
 		OutageDurationSecs:  outageDuration.Seconds(),
 		OfflineReadsBlocked: bs.syncer.OfflineReadsBlocked(),
+		UnsyncedBytes:       bs.syncer.UnsyncedBytes(),
 	}
 
-	bs.populateBlockCounts(&stats, files)
+	if withBlockCounts {
+		bs.populateBlockCounts(&stats, files)
+	}
 
 	return stats
 }

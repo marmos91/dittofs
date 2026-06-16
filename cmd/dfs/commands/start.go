@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -246,6 +248,18 @@ func runStart(cmd *cobra.Command, args []string) error {
 		"port", cfg.ControlPlane.Port,
 		"tls", apiServer.TLSEnabled())
 
+	// Configure the Prometheus metrics endpoint (opt-in). It runs on its own
+	// listener, separate from the API server, so scrapers reach it without API
+	// auth and the two surfaces have independent lifecycles.
+	metricsServer, err := buildMetricsServer(&cfg.Metrics, rt)
+	if err != nil {
+		return err
+	}
+	if metricsServer != nil {
+		logger.Info("metrics endpoint configured",
+			"addr", cfg.Metrics.Addr(), "path", cfg.Metrics.Path, "auth", cfg.Metrics.Auth)
+	}
+
 	// Write PID file if specified
 	if pidFile != "" {
 		if err := os.WriteFile(pidFile, fmt.Appendf(nil, "%d", os.Getpid()), 0644); err != nil {
@@ -259,6 +273,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 	go func() {
 		serverDone <- rt.Serve(ctx)
 	}()
+
+	// Start the metrics listener alongside, cancelled by the same context. A
+	// metrics failure is logged but does not bring down the data plane.
+	if metricsServer != nil {
+		go func() {
+			if err := metricsServer.Serve(ctx); err != nil {
+				logger.Error("metrics server error", "error", err)
+			}
+		}()
+	}
 
 	// Wait for interrupt signal or server error
 	sigChan := make(chan os.Signal, 1)
@@ -300,6 +324,43 @@ func getConfigSource(configFile string) string {
 		return config.GetDefaultConfigPath()
 	}
 	return "defaults"
+}
+
+// buildMetricsServer constructs the Prometheus metrics listener when enabled,
+// wiring the runtime as the read-through metrics provider. Returns (nil, nil)
+// when metrics are disabled.
+func buildMetricsServer(cfg *config.MetricsConfig, rt *runtime.Runtime) (*metrics.Server, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	m := metrics.New(Version, Commit)
+	m.RegisterProvider(rt)
+
+	var token string
+	if cfg.Auth == "token" {
+		b, err := os.ReadFile(cfg.TokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("read metrics token file: %w", err)
+		}
+		token = strings.TrimSpace(string(b))
+		if token == "" {
+			return nil, fmt.Errorf("metrics token file %q is empty", cfg.TokenFile)
+		}
+	}
+
+	srv, err := metrics.NewServer(m, metrics.ServerOptions{
+		Addr:       cfg.Addr(),
+		Path:       cfg.Path,
+		Token:      token,
+		CertFile:   cfg.TLS.CertFile,
+		KeyFile:    cfg.TLS.KeyFile,
+		ClientCA:   cfg.TLS.ClientCA,
+		MinVersion: cfg.TLS.MinVersion,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create metrics server: %w", err)
+	}
+	return srv, nil
 }
 
 // createAdapterFactory returns a factory function that creates protocol adapters

@@ -77,6 +77,10 @@ type Config struct {
 	// Snapshot configures the snapshot create orchestration. Knobs apply
 	// to every Runtime.CreateSnapshot invocation.
 	Snapshot SnapshotConfig `mapstructure:"snapshot" yaml:"snapshot"`
+
+	// Metrics configures the Prometheus metrics endpoint (opt-in, disabled by
+	// default). See MetricsConfig.
+	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
 }
 
 // GCConfig configures the engine.CollectGarbage mark-sweep run. Knobs

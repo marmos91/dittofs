@@ -47,6 +47,10 @@ func Validate(cfg *Config) error {
 		return err
 	}
 
+	if err := cfg.Metrics.Validate(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
