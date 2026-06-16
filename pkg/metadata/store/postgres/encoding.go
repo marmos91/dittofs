@@ -60,7 +60,7 @@ func pgNanosToTime(n int64) time.Time {
 
 // fileRowToFileWithNlink converts a database row to a File struct, including link count.
 // Expected columns: id, share_name, path, file_type, mode, uid, gid, size,
-// atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, acl, object_id, deleted_at, original_path, deleted_by, link_count
+// atime, mtime, ctime, creation_time, content_id, link_target, device_major, device_minor, hidden, acl, eas, object_id, deleted_at, original_path, deleted_by, nlink
 //
 // The `path` column is no longer stored on the inode (#1166); callers supply it
 // as a reconstructed expression (inodePathExpr) walking parent_child_map up to
@@ -103,7 +103,7 @@ func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.Fi
 		deletedAt    sql.NullInt64
 		originalPath string
 		deletedBy    string
-		linkCount    sql.NullInt32
+		nlink        int32
 		blocksJSON   []byte
 	)
 
@@ -131,7 +131,7 @@ func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.Fi
 		&deletedAt,
 		&originalPath,
 		&deletedBy,
-		&linkCount,
+		&nlink,
 	}
 	if withBlocks {
 		dest = append(dest, &blocksJSON)
@@ -139,12 +139,6 @@ func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.Fi
 
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
-	}
-
-	// Default to 1 if link count is not found
-	nlink := uint32(1)
-	if linkCount.Valid {
-		nlink = uint32(linkCount.Int32)
 	}
 
 	file := &metadata.File{
@@ -156,7 +150,7 @@ func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.Fi
 			Mode:         uint32(mode),
 			UID:          uint32(uid),
 			GID:          uint32(gid),
-			Nlink:        nlink,
+			Nlink:        uint32(nlink),
 			Size:         uint64(size),
 			Atime:        pgNanosToTime(atime),
 			Mtime:        pgNanosToTime(mtime),

@@ -426,11 +426,12 @@ func (ph *PostgresHelper) TruncateTables() error {
 	}
 	defer pool.Close()
 
+	// inodes is the post-000032 name for the former files table; link_counts
+	// was dropped in 000034 (hard-link count consolidated onto inodes.nlink).
 	_, err = pool.Exec(ctx, `
 		TRUNCATE TABLE
 			parent_child_map,
-			link_counts,
-			files,
+			inodes,
 			shares
 		CASCADE
 	`)

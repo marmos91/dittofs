@@ -203,10 +203,9 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, lc.link_count,
+			f.deleted_at, f.original_path, f.deleted_by, f.nlink,
 			` + blockRefsAggExpr + `
 		FROM inodes f
-		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = $1 AND f.share_name = $2
 	`
 
@@ -472,10 +471,11 @@ func (tx *postgresTransaction) DeleteFile(ctx context.Context, handle metadata.F
 		id, shareName,
 	).Scan(&fileType, &fileSize, &fileUID, &fileGID)
 
-	// Delete the file. link_counts.file_id and parent_child_map.parent_id both
-	// declare ON DELETE CASCADE against inodes(id), so deleting the inode row
-	// reaps this node's link-count and (if it is a directory) its child-map
-	// rows automatically. We do NOT delete this file from its parent's children
+	// Delete the file. parent_child_map.parent_id declares ON DELETE CASCADE
+	// against inodes(id), so deleting the inode row reaps (if it is a directory)
+	// its child-map rows automatically. The hard-link count lives on the inode
+	// row itself (inodes.nlink), so it is removed with the row. We do NOT delete
+	// this file from its parent's children
 	// map here — that is the responsibility of DeleteChild, which the service
 	// layer calls separately. This matches the memory and badger stores.
 	result, err := tx.tx.Exec(ctx, `DELETE FROM inodes WHERE id = $1 AND share_name = $2`, id, shareName)
@@ -618,10 +618,9 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 	query := `
 		SELECT dc.child_name, dc.child_id, f.file_type, f.mode, f.uid, f.gid, f.size,
 		       f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.acl, f.eas, f.object_id,
-		       f.deleted_at, f.original_path, f.deleted_by, lc.link_count
+		       f.deleted_at, f.original_path, f.deleted_by, f.nlink
 		FROM parent_child_map dc
 		LEFT JOIN inodes f ON dc.child_id = f.id
-		LEFT JOIN link_counts lc ON dc.child_id = lc.file_id
 		WHERE dc.parent_id = $1 AND dc.child_name > $2
 		ORDER BY dc.child_name
 		LIMIT $3
@@ -796,7 +795,7 @@ func (tx *postgresTransaction) GetLinkCount(ctx context.Context, handle metadata
 	}
 
 	var count uint32
-	err = tx.tx.QueryRow(ctx, `SELECT link_count FROM link_counts WHERE file_id = $1`, fileID).Scan(&count)
+	err = tx.tx.QueryRow(ctx, `SELECT nlink FROM inodes WHERE id = $1`, fileID).Scan(&count)
 	if err != nil {
 		// Not found means count is 0
 		return 0, nil
@@ -818,24 +817,11 @@ func (tx *postgresTransaction) SetLinkCount(ctx context.Context, handle metadata
 		}
 	}
 
-	// Update link_counts table
-	query := `
-		INSERT INTO link_counts (file_id, link_count)
-		VALUES ($1, $2)
-		ON CONFLICT (file_id) DO UPDATE SET link_count = EXCLUDED.link_count
-	`
-
-	_, err = tx.tx.Exec(ctx, query, fileID, count)
+	// inodes.nlink is the sole source of truth for the hard-link count (#1166);
+	// GETATTR reads it straight off the inode row without a join.
+	_, err = tx.tx.Exec(ctx, `UPDATE inodes SET nlink = $1 WHERE id = $2`, count, fileID)
 	if err != nil {
 		return mapPgError(err, "SetLinkCount", "")
-	}
-
-	// Also keep the inodes.nlink column in sync with the link_counts table so
-	// GETATTR can read the link count straight off the inode row without a join.
-	nlinkQuery := `UPDATE inodes SET nlink = $1 WHERE id = $2`
-	_, err = tx.tx.Exec(ctx, nlinkQuery, count, fileID)
-	if err != nil {
-		return mapPgError(err, "SetLinkCount (nlink update)", "")
 	}
 
 	return nil
@@ -1055,9 +1041,8 @@ func (tx *postgresTransaction) DeleteShare(ctx context.Context, shareName string
 
 	// Delete all inode rows for the share. The store.go:161 contract is
 	// "removes a share and all its metadata"; dropping only the share row
-	// orphans every inodes/parent_child_map/link_counts/file_block_refs row.
-	// parent_child_map, link_counts, and file_block_refs all cascade from
-	// inodes(id).
+	// orphans every inodes/parent_child_map/file_block_refs row.
+	// parent_child_map and file_block_refs both cascade from inodes(id).
 	if _, err := tx.tx.Exec(ctx, `DELETE FROM inodes WHERE share_name = $1`, shareName); err != nil {
 		return mapPgError(err, "DeleteShare", shareName)
 	}
@@ -1154,9 +1139,8 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 	// share row is the authoritative pointer to its root inode.
 	checkQuery := `
 		SELECT f.id, f.file_type, f.mode, f.uid, f.gid, f.size,
-			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, lc.link_count
+			   f.atime, f.mtime, f.ctime, f.creation_time, f.hidden, f.nlink
 		FROM inodes f
-		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.id = (SELECT root_file_id FROM shares WHERE share_name = $1)
 	`
 
@@ -1172,24 +1156,15 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		ctime        int64
 		creationTime int64
 		hidden       bool
-		linkCount    sql.NullInt32
+		nlink        int32
 	)
 
 	err := tx.tx.QueryRow(ctx, checkQuery, shareName).Scan(
 		&id, &fileType, &existingMode, &existingUID, &existingGID, &size,
-		&atime, &mtime, &ctime, &creationTime, &hidden, &linkCount,
+		&atime, &mtime, &ctime, &creationTime, &hidden, &nlink,
 	)
 
 	if err == nil {
-		// Determine Nlink value
-		var nlink uint32
-		if linkCount.Valid {
-			nlink = uint32(linkCount.Int32)
-		} else {
-			// Root directories always have at least 2 links
-			nlink = 2
-		}
-
 		// Root exists - return it
 		return &metadata.File{
 			ID:        uuid.MustParse(id),
@@ -1198,7 +1173,7 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 			FileAttr: metadata.FileAttr{
 				Type:         metadata.FileType(fileType),
 				Mode:         uint32(existingMode),
-				Nlink:        nlink,
+				Nlink:        uint32(nlink),
 				UID:          uint32(existingUID),
 				GID:          uint32(existingGID),
 				Size:         uint64(size),
@@ -1218,17 +1193,19 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 	rootID := uuid.New()
 	now := time.Now()
 
+	// Directories start with nlink = 2 ("." and the parent's entry). nlink is
+	// the sole source of truth for the hard-link count (#1166).
 	insertFileQuery := `
 		INSERT INTO inodes (
 			id, share_name,
 			file_type, mode, uid, gid, size,
 			atime, mtime, ctime, creation_time,
-			content_id, link_target, device_major, device_minor
+			content_id, link_target, device_major, device_minor, nlink
 		) VALUES (
 			$1, $2,
 			$3, $4, $5, $6, $7,
 			$8, $9, $10, $11,
-			$12, $13, $14, $15
+			$12, $13, $14, $15, 2
 		)
 	`
 
@@ -1249,17 +1226,6 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		nil,                               // device_major (NULL)
 		nil,                               // device_minor (NULL)
 	)
-	if err != nil {
-		return nil, mapPgError(err, "CreateRootDirectory", shareName)
-	}
-
-	// Insert into link_counts
-	insertLinkCountQuery := `
-		INSERT INTO link_counts (file_id, link_count)
-		VALUES ($1, $2)
-	`
-
-	_, err = tx.tx.Exec(ctx, insertLinkCountQuery, rootID, 2)
 	if err != nil {
 		return nil, mapPgError(err, "CreateRootDirectory", shareName)
 	}
@@ -1404,9 +1370,8 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 			f.atime, f.mtime, f.ctime, f.creation_time,
 			f.content_id, f.link_target, f.device_major, f.device_minor,
 			f.hidden, f.acl, f.eas, f.object_id,
-			f.deleted_at, f.original_path, f.deleted_by, lc.link_count
+			f.deleted_at, f.original_path, f.deleted_by, f.nlink
 		FROM inodes f
-		LEFT JOIN link_counts lc ON f.id = lc.file_id
 		WHERE f.content_id_hash = md5($1)
 		LIMIT 1
 	`

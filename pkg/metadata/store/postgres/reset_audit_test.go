@@ -33,6 +33,9 @@ func TestBackupTablesCoversAllMigrations(t *testing.T) {
 	// ALTER TABLE [IF EXISTS] <old> RENAME TO <new> — a rename retires <old>
 	// and introduces <new> (e.g. files -> inodes in 000032).
 	renameTableRE := regexp.MustCompile(`(?im)^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)\s+RENAME\s+TO\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	// DROP TABLE [IF EXISTS] <name> — retires a table (e.g. link_counts in
+	// 000034). A dropped table must NOT remain in backupTables.
+	dropTableRE := regexp.MustCompile(`(?im)^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)`)
 
 	// Migrations apply in lexical filename order; process them that way so a
 	// later RENAME correctly supersedes an earlier CREATE.
@@ -73,6 +76,11 @@ func TestBackupTablesCoversAllMigrations(t *testing.T) {
 			if _, exists := seen[newName]; !exists {
 				seen[newName] = src
 			}
+		}
+		// Apply drops last: a dropped table is no longer live and must not be
+		// expected in backupTables.
+		for _, m := range dropTableRE.FindAllStringSubmatch(string(data), -1) {
+			delete(seen, m[1])
 		}
 	}
 
