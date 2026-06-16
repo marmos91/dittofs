@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +16,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/schedule"
 )
+
+// snapshotNamePrefixRe is the authoritative charset/length rule for a snapshot
+// policy NamePrefix. The prefix is concatenated into a snapshot label
+// (prefix + "-" + timestamp), so it must reject path-traversal and other
+// injection characters. Empty is allowed (falls back to defaultNamePrefix).
+var snapshotNamePrefixRe = regexp.MustCompile(`^[A-Za-z0-9_-]{0,64}$`)
 
 // SnapshotPolicyRuntime is the narrow Runtime surface SnapshotPolicyHandler
 // depends on. Defined here so unit tests can substitute a fake.
@@ -75,6 +82,10 @@ func (h *SnapshotPolicyHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.KeepLast < 0 {
 		BadRequest(w, "keep_last must be >= 0")
+		return
+	}
+	if req.NamePrefix != "" && !snapshotNamePrefixRe.MatchString(req.NamePrefix) {
+		BadRequest(w, "invalid name_prefix: must match ^[A-Za-z0-9_-]{0,64}$")
 		return
 	}
 	enabled := true

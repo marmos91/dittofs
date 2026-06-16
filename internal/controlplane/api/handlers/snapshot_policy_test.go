@@ -103,6 +103,18 @@ func TestSnapshotPolicyHandler_Upsert_InvalidInterval(t *testing.T) {
 	}
 }
 
+func TestSnapshotPolicyHandler_Upsert_InvalidNamePrefix(t *testing.T) {
+	h := NewSnapshotPolicyHandler(&fakeSnapshotPolicyRuntime{})
+	body, _ := json.Marshal(dto.UpsertSnapshotPolicyRequest{Interval: "24h", NamePrefix: "bad prefix!"})
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/data/snapshot-policy", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	newPolicyRouter(h).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+}
+
 func TestSnapshotPolicyHandler_Upsert_NegativeKeepLast(t *testing.T) {
 	h := NewSnapshotPolicyHandler(&fakeSnapshotPolicyRuntime{})
 	body, _ := json.Marshal(dto.UpsertSnapshotPolicyRequest{Interval: "24h", KeepLast: -1})

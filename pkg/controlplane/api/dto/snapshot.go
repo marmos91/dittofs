@@ -12,6 +12,7 @@ type Snapshot struct {
 	Share         string    `json:"share"`
 	State         string    `json:"state"`
 	RemoteDurable bool      `json:"remote_durable"`
+	Scheduled     bool      `json:"scheduled"`
 	ManifestCount int       `json:"manifest_count,omitempty"`
 	DumpBytes     int64     `json:"dump_bytes,omitempty"`
 	RetryOf       string    `json:"retry_of,omitempty"`
