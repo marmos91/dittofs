@@ -305,6 +305,26 @@ func TestServiceMonitorCRDPresent_Gate(t *testing.T) {
 	}
 }
 
+// TestMetricsBearerTokenSecret_GatedOnEnabled verifies the bearer-token Secret
+// is only surfaced (and thus only mounted/projected into the pod) when metrics
+// are enabled, so the token is never exposed while the listener is off.
+func TestMetricsBearerTokenSecret_GatedOnEnabled(t *testing.T) {
+	ref := &corev1.SecretKeySelector{Key: "token"}
+	ref.Name = "tok"
+
+	enabled := newTestDittoServer("s", "default")
+	enabled.Spec.Metrics = &dittoiov1alpha1.MetricsSpec{Enabled: true, BearerTokenSecret: ref}
+	if got := enabled.MetricsBearerTokenSecret(); got == nil {
+		t.Errorf("expected token secret when metrics enabled")
+	}
+
+	disabled := newTestDittoServer("s", "default")
+	disabled.Spec.Metrics = &dittoiov1alpha1.MetricsSpec{Enabled: false, BearerTokenSecret: ref}
+	if got := disabled.MetricsBearerTokenSecret(); got != nil {
+		t.Errorf("token secret must be nil when metrics disabled, got %+v", got)
+	}
+}
+
 func TestBuildContainerPorts_MetricsPort(t *testing.T) {
 	ds := metricsEnabledDittoServer("test-server", "default", nil)
 	ports := buildContainerPorts(ds, nil)
