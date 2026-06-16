@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 )
@@ -69,6 +70,9 @@ func (c *MetricsConfig) ApplyDefaults() {
 func (c *MetricsConfig) Validate() error {
 	if !c.Enabled {
 		return nil
+	}
+	if c.Path != "" && !strings.HasPrefix(c.Path, "/") {
+		return fmt.Errorf("metrics.path %q must start with \"/\"", c.Path)
 	}
 	if c.Auth == "token" && c.TokenFile == "" {
 		return fmt.Errorf("metrics.auth is \"token\" but metrics.token_file is not set")

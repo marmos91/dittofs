@@ -17,7 +17,13 @@ func (r *Runtime) MetricsSnapshot(ctx context.Context) metrics.Snapshot {
 
 	for _, ps := range r.sharesSvc.MetricsBlockStats() {
 		st := ps.Stats
-		logical, _ := r.GetShareUsage(ps.ShareName)
+		// Logical bytes come straight from the metadata store's atomic counter.
+		// Avoid GetShareUsage here — its physical-bytes path calls into the block
+		// store (bs.Stats), and the on-disk figure is already st.LocalDiskUsed.
+		var logical int64
+		if ms, err := r.metadataService.GetStoreForShare(ps.ShareName); err == nil {
+			logical = ms.GetUsedBytes()
+		}
 		held, lastUnix := r.snapshotState(ctx, ps.ShareName)
 		snap.Shares = append(snap.Shares, metrics.ShareSnapshot{
 			Name:                ps.ShareName,
