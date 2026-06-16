@@ -248,6 +248,21 @@ type QuotaStore interface {
 
 	// SetQuotaGraceStartedAt persists a grace-timer transition (nil clears it).
 	SetQuotaGraceStartedAt(ctx context.Context, shareName, scope string, identityID *uint32, t *time.Time) error
+
+	// ListUserGrace returns the durable per-real-user default-user grace timers
+	// for a share, used to reseed the in-memory map after a restart.
+	ListUserGrace(ctx context.Context, shareName string) ([]*models.UserGrace, error)
+
+	// SetUserGrace upserts the durable default-user grace timer for (share, uid).
+	SetUserGrace(ctx context.Context, shareName string, uid uint32, t time.Time) error
+
+	// DeleteUserGrace removes the durable default-user grace timer for
+	// (share, uid). A missing row is not an error.
+	DeleteUserGrace(ctx context.Context, shareName string, uid uint32) error
+
+	// DeleteUserGraceForShare removes all durable default-user grace timers for a
+	// share (on share removal or default-user quota deletion).
+	DeleteUserGraceForShare(ctx context.Context, shareName string) error
 }
 
 // PermissionStore provides user and group share permission operations.

@@ -68,6 +68,40 @@ func (r *Runtime) LoadIdentityQuotasForShare(ctx context.Context, shareName stri
 	return nil
 }
 
+// LoadDefaultUserGraceForShare restores the durable per-real-user default-user
+// grace timers for a share from the control-plane DB into the metadata service.
+// Called during AddShare (after LoadIdentityQuotasForShare) so default-user
+// soft→grace→hard enforcement survives a restart.
+func (r *Runtime) LoadDefaultUserGraceForShare(ctx context.Context, shareName string) error {
+	// No control-plane store (test fixtures, embedded use): nothing to load.
+	if r.store == nil {
+		return nil
+	}
+	rows, err := r.store.ListUserGrace(ctx, shareName)
+	if err != nil {
+		return err
+	}
+	byUID := make(map[uint32]time.Time, len(rows))
+	for _, g := range rows {
+		byUID[g.UID] = g.GraceStartedAt
+	}
+	r.metadataService.SeedDefaultUserGrace(shareName, byUID)
+	return nil
+}
+
+// PurgeDefaultUserGrace removes all durable default-user grace timers for a
+// share. Called when the share is removed or its default-user quota is deleted,
+// so stale rows cannot accumulate once the fallback no longer applies.
+// Best-effort: failures are logged, not surfaced.
+func (r *Runtime) PurgeDefaultUserGrace(ctx context.Context, shareName string) {
+	if r.store == nil {
+		return
+	}
+	if err := r.store.DeleteUserGraceForShare(ctx, shareName); err != nil {
+		logger.Warn("failed to purge default-user grace timers", "share", shareName, "error", err)
+	}
+}
+
 // UpdateIdentityQuota hot-updates a single per-identity quota in the metadata
 // service from a persisted model row. Mirrors UpdateShareQuota.
 func (r *Runtime) UpdateIdentityQuota(q *models.Quota) {
@@ -84,6 +118,31 @@ func (r *Runtime) RemoveIdentityQuota(shareName, scope string, identityID *uint3
 		return
 	}
 	r.metadataService.RemoveIdentityQuota(shareName, mScope, id)
+	switch {
+	case scope == models.QuotaScopeDefaultUser:
+		// Removing the default-user quota retires the fallback entirely, so its
+		// per-real-user grace timers (durable + in-memory) are now dead state.
+		// Purge the durable rows and drop the in-memory map so nothing leaks.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		r.PurgeDefaultUserGrace(ctx, shareName)
+		r.metadataService.SeedDefaultUserGrace(shareName, nil)
+	case scope == models.QuotaScopeUser && identityID != nil:
+		// Removing an explicit user quota reverts this uid to the default-user
+		// fallback. Clear any stale default-user grace timer (in-memory +
+		// durable) so the uid starts a fresh window on its next soft breach
+		// rather than inheriting an expired one left from before the explicit
+		// quota was installed (which would wrongly block writes immediately).
+		r.metadataService.ClearDefaultUserGrace(shareName, *identityID)
+		if r.store != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := r.store.DeleteUserGrace(ctx, shareName, *identityID); err != nil {
+				logger.Warn("failed to reap default-user grace on explicit quota removal",
+					"share", shareName, "uid", *identityID, "error", err)
+			}
+		}
+	}
 }
 
 // GetIdentityQuotaUsage returns the live per-identity usage (bytes + file count)
@@ -169,5 +228,24 @@ func (p *quotaGracePersister) PersistQuotaGrace(shareName string, scope metadata
 	if err := p.rt.store.SetQuotaGraceStartedAt(ctx, shareName, modelScope, identityID, tp); err != nil {
 		logger.Warn("failed to persist quota grace timer",
 			"share", shareName, "scope", modelScope, "error", err)
+	}
+}
+
+// PersistDefaultUserGrace durably records (zero t reaps) the per-real-user grace
+// timer for a default-user quota fallback, keyed by (share, uid) in the
+// user_grace side table. Best-effort: errors are logged, not surfaced to the
+// write path.
+func (p *quotaGracePersister) PersistDefaultUserGrace(shareName string, uid uint32, t time.Time) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var err error
+	if t.IsZero() {
+		err = p.rt.store.DeleteUserGrace(ctx, shareName, uid)
+	} else {
+		err = p.rt.store.SetUserGrace(ctx, shareName, uid, t)
+	}
+	if err != nil {
+		logger.Warn("failed to persist default-user grace timer",
+			"share", shareName, "uid", uid, "error", err)
 	}
 }

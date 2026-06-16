@@ -132,6 +132,16 @@ func New() *Service {
 // changes).
 type QuotaGracePersister interface {
 	PersistQuotaGrace(shareName string, scope QuotaScope, id uint32, t time.Time)
+
+	// PersistDefaultUserGrace durably records (zero t reaps) the per-real-user
+	// grace timer for a default-user quota fallback. uid is the REAL uid (not the
+	// DefaultUserID sentinel). Unlike an explicit quota — whose grace lives on its
+	// own row — a default-user quota is a single shared template row that cannot
+	// hold per-user grace, so the timer is stored in a side table keyed by
+	// (share, uid). Persisting it makes default-user soft→grace→hard enforcement
+	// survive a restart. Same best-effort, non-blocking contract as
+	// PersistQuotaGrace.
+	PersistDefaultUserGrace(shareName string, uid uint32, t time.Time)
 }
 
 // SetQuotaGracePersister installs the grace-timer persistence hook.
@@ -154,6 +164,24 @@ func (s *Service) RemoveIdentityQuota(shareName string, scope QuotaScope, id uin
 // ReplaceIdentityQuotas atomically replaces all per-identity quotas for a share.
 func (s *Service) ReplaceIdentityQuotas(shareName string, quotas []IdentityQuota) {
 	s.identityQuotas.replaceShare(shareName, quotas)
+}
+
+// SeedDefaultUserGrace restores the durable per-real-user default-user grace
+// timers for a share (keyed by real uid), replacing any existing ephemeral
+// entries. Called at share load so default-user soft→grace→hard enforcement
+// survives a restart.
+func (s *Service) SeedDefaultUserGrace(shareName string, byUID map[uint32]time.Time) {
+	s.identityQuotas.seedDynGrace(shareName, byUID)
+}
+
+// ClearDefaultUserGrace drops the in-memory per-real-user default-user grace
+// timer for a single uid on a share. Called when an explicit user quota is
+// removed and the uid reverts to the default-user fallback, so it does not
+// inherit a stale (possibly already-expired) grace window left over from before
+// the explicit quota was installed. The caller reaps the durable side-table row
+// separately.
+func (s *Service) ClearDefaultUserGrace(shareName string, uid uint32) {
+	s.identityQuotas.setDynGrace(shareName, QuotaScopeUser, uid, time.Time{})
 }
 
 // GetIdentityQuota returns the exact-keyed quota for (scope,id) on a share.

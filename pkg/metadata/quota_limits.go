@@ -85,26 +85,58 @@ func (q *quotaLimits) dynGraceStartedAt(share string, scope QuotaScope, realID u
 	return time.Time{}
 }
 
-// setDynGrace sets (zero clears) the ephemeral default-user grace timer for a
-// real identity.
-func (q *quotaLimits) setDynGrace(share string, scope QuotaScope, realID uint32, t time.Time) {
+// setDynGrace sets (zero clears) the per-real-user default-user grace timer for
+// a real identity. It returns whether the stored value actually changed, so the
+// caller persists the durable copy only on a real transition (the clear path
+// runs on every under-soft write and must not churn the DB).
+func (q *quotaLimits) setDynGrace(share string, scope QuotaScope, realID uint32, t time.Time) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	key := identityQuotaKey{scope, realID}
 	m := q.dynGrace[share]
 	if t.IsZero() {
-		if m != nil {
-			delete(m, identityQuotaKey{scope, realID})
-			if len(m) == 0 {
-				delete(q.dynGrace, share)
-			}
+		if m == nil {
+			return false
 		}
-		return
+		if _, ok := m[key]; !ok {
+			return false
+		}
+		delete(m, key)
+		if len(m) == 0 {
+			delete(q.dynGrace, share)
+		}
+		return true
 	}
 	if m == nil {
 		m = make(map[identityQuotaKey]time.Time)
 		q.dynGrace[share] = m
 	}
-	m[identityQuotaKey{scope, realID}] = t
+	if prev, ok := m[key]; ok && prev.Equal(t) {
+		return false
+	}
+	m[key] = t
+	return true
+}
+
+// seedDynGrace installs durable per-real-user default-user grace timers for a
+// share, replacing any existing ephemeral entries. Called at share load to
+// restore grace state persisted across a restart. Entries are keyed by real uid
+// under QuotaScopeUser (the only scope with a default-user fallback).
+func (q *quotaLimits) seedDynGrace(share string, byUID map[uint32]time.Time) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	m := make(map[identityQuotaKey]time.Time, len(byUID))
+	for uid, t := range byUID {
+		if t.IsZero() {
+			continue
+		}
+		m[identityQuotaKey{QuotaScopeUser, uid}] = t
+	}
+	if len(m) == 0 {
+		delete(q.dynGrace, share)
+		return
+	}
+	q.dynGrace[share] = m
 }
 
 // set installs or replaces a single identity quota for a share.
