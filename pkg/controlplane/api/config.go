@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/tlsconfig"
 )
 
 // redactedSecret is the sentinel substituted for sensitive fields when a
@@ -142,11 +143,22 @@ type TLSConfig struct {
 	MinVersion string `mapstructure:"min_version" validate:"omitempty,oneof=1.2 1.3" yaml:"min_version"`
 }
 
+// shared converts the control-plane TLSConfig into the backend-agnostic
+// tlsconfig.Config consumed by internal/tlsconfig.
+func (t TLSConfig) shared() tlsconfig.Config {
+	return tlsconfig.Config{
+		CertFile:   t.CertFile,
+		KeyFile:    t.KeyFile,
+		ClientCA:   t.ClientCA,
+		MinVersion: t.MinVersion,
+	}
+}
+
 // Enabled reports whether TLS is configured (both cert and key set). A single
 // file set without the other is treated as "not enabled" here; Validate
 // rejects that partial configuration with a clear error.
 func (t TLSConfig) Enabled() bool {
-	return t.CertFile != "" && t.KeyFile != ""
+	return t.shared().Enabled()
 }
 
 // Validate checks the API config for internally inconsistent TLS settings.
@@ -154,21 +166,8 @@ func (t TLSConfig) Enabled() bool {
 // min_version are rejected before the server starts. It does not read the
 // cert files from disk — that happens when the server builds its TLS config.
 func (c *APIConfig) Validate() error {
-	certSet := c.TLS.CertFile != ""
-	keySet := c.TLS.KeyFile != ""
-	switch {
-	case certSet && !keySet:
-		return fmt.Errorf("controlplane.tls.cert_file is set but controlplane.tls.key_file is missing; both are required to enable TLS")
-	case keySet && !certSet:
-		return fmt.Errorf("controlplane.tls.key_file is set but controlplane.tls.cert_file is missing; both are required to enable TLS")
-	}
-	if c.TLS.ClientCA != "" && !c.TLS.Enabled() {
-		return fmt.Errorf("controlplane.tls.client_ca requires controlplane.tls.cert_file and controlplane.tls.key_file (mTLS needs a server certificate)")
-	}
-	if c.TLS.MinVersion != "" {
-		if _, ok := minTLSVersions[c.TLS.MinVersion]; !ok {
-			return fmt.Errorf("controlplane.tls.min_version %q is not supported (use \"1.2\" or \"1.3\")", c.TLS.MinVersion)
-		}
+	if err := c.TLS.shared().Validate(); err != nil {
+		return fmt.Errorf("controlplane.tls.%w", err)
 	}
 	return nil
 }

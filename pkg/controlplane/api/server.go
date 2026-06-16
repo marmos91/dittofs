@@ -13,6 +13,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/controlplane/api/auth"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/internal/tlsconfig"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
@@ -70,7 +71,7 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, resto
 	// Build the TLS config (loads + parses the cert files now, so a bad cert
 	// path fails at startup rather than on the first handshake). nil when TLS
 	// is not configured, in which case the server serves plain HTTP.
-	tlsConfig, err := buildTLSConfig(config.TLS)
+	tlsConfig, err := tlsconfig.ServerConfig(config.TLS.shared())
 	if err != nil {
 		return nil, fmt.Errorf("failed to configure TLS: %w", err)
 	}

@@ -301,49 +301,9 @@ func TestAPIServer_MTLS_RejectsNoClientCert_AcceptsValid(t *testing.T) {
 	}
 }
 
-// --- hot reload -------------------------------------------------------------
-
-func TestCertReloader_HotSwap(t *testing.T) {
-	dir := t.TempDir()
-	first := generateCert(t, "first.example", []string{"first.example"}, false, nil)
-	certPath, keyPath := writeCertFiles(t, dir, first)
-
-	reloader, err := newCertReloader(certPath, keyPath)
-	if err != nil {
-		t.Fatalf("newCertReloader: %v", err)
-	}
-
-	got, err := reloader.getCertificate(&tls.ClientHelloInfo{})
-	if err != nil {
-		t.Fatalf("getCertificate: %v", err)
-	}
-	leaf, _ := x509.ParseCertificate(got.Certificate[0])
-	if leaf.Subject.CommonName != "first.example" {
-		t.Fatalf("initial cert CN = %q, want first.example", leaf.Subject.CommonName)
-	}
-
-	// Rotate the files on disk. Force a later mtime so the change is detected
-	// even on coarse-grained filesystem timestamps.
-	second := generateCert(t, "second.example", []string{"second.example"}, false, nil)
-	if err := os.WriteFile(certPath, second.certPEM, 0o600); err != nil {
-		t.Fatalf("rewrite cert: %v", err)
-	}
-	if err := os.WriteFile(keyPath, second.keyPEM, 0o600); err != nil {
-		t.Fatalf("rewrite key: %v", err)
-	}
-	future := time.Now().Add(2 * time.Second)
-	_ = os.Chtimes(certPath, future, future)
-	_ = os.Chtimes(keyPath, future, future)
-
-	got2, err := reloader.getCertificate(&tls.ClientHelloInfo{})
-	if err != nil {
-		t.Fatalf("getCertificate after rotation: %v", err)
-	}
-	leaf2, _ := x509.ParseCertificate(got2.Certificate[0])
-	if leaf2.Subject.CommonName != "second.example" {
-		t.Fatalf("after rotation cert CN = %q, want second.example", leaf2.Subject.CommonName)
-	}
-}
+// Note: cert hot-reload is now covered by internal/tlsconfig
+// (TestCertReloader_HotSwap). The reloader was lifted into that shared package
+// so the control-plane API and the NFS adapter share one cert-loading path.
 
 // --- bind address -----------------------------------------------------------
 
