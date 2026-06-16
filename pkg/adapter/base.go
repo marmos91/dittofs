@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -288,6 +289,7 @@ func (b *BaseAdapter) ServeWithFactory(
 		// Track connection for graceful shutdown
 		b.activeConns.Add(1)
 		b.ConnCount.Add(1)
+		b.Registry.Metrics().RecordConnAccepted(strings.ToLower(b.protocolName))
 
 		// Register connection for forced closure capability
 		connAddr := tcpConn.RemoteAddr().String()
@@ -315,6 +317,7 @@ func (b *BaseAdapter) ServeWithFactory(
 				// Cleanup on connection close
 				b.activeConns.Done()
 				b.ConnCount.Add(-1)
+				b.Registry.Metrics().RecordConnClosed(strings.ToLower(b.protocolName))
 				if b.connSemaphore != nil {
 					<-b.connSemaphore
 				}

@@ -248,10 +248,17 @@ func runStart(cmd *cobra.Command, args []string) error {
 		"port", cfg.ControlPlane.Port,
 		"tls", apiServer.TLSEnabled())
 
+	// Build the metrics registry unconditionally so inline instruments (adapter
+	// RED, connection, auth counters) always record; only the /metrics listener
+	// is gated by config. The runtime carries the handle to every adapter.
+	m := metrics.New(Version, Commit)
+	m.RegisterProvider(rt)
+	rt.SetMetrics(m)
+
 	// Configure the Prometheus metrics endpoint (opt-in). It runs on its own
 	// listener, separate from the API server, so scrapers reach it without API
 	// auth and the two surfaces have independent lifecycles.
-	metricsServer, err := buildMetricsServer(&cfg.Metrics, rt)
+	metricsServer, err := buildMetricsListener(&cfg.Metrics, m)
 	if err != nil {
 		return err
 	}
@@ -326,15 +333,13 @@ func getConfigSource(configFile string) string {
 	return "defaults"
 }
 
-// buildMetricsServer constructs the Prometheus metrics listener when enabled,
-// wiring the runtime as the read-through metrics provider. Returns (nil, nil)
-// when metrics are disabled.
-func buildMetricsServer(cfg *config.MetricsConfig, rt *runtime.Runtime) (*metrics.Server, error) {
+// buildMetricsListener constructs the Prometheus metrics HTTP listener for the
+// given registry when the endpoint is enabled. Returns (nil, nil) when metrics
+// serving is disabled (the registry still exists and records inline metrics).
+func buildMetricsListener(cfg *config.MetricsConfig, m *metrics.Metrics) (*metrics.Server, error) {
 	if !cfg.Enabled {
 		return nil, nil
 	}
-	m := metrics.New(Version, Commit)
-	m.RegisterProvider(rt)
 
 	var token string
 	if cfg.Auth == "token" {

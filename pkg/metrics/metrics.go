@@ -17,6 +17,7 @@ const Namespace = "dittofs"
 // testable and isolated.
 type Metrics struct {
 	registry *prometheus.Registry
+	in       *instruments
 }
 
 // New creates a Metrics with an owned registry pre-populated with the Go
@@ -38,7 +39,7 @@ func New(version, commit string) *Metrics {
 	buildInfo.Set(1)
 	reg.MustRegister(buildInfo)
 
-	return &Metrics{registry: reg}
+	return &Metrics{registry: reg, in: newInstruments(reg)}
 }
 
 // RegisterProvider wires a read-through collector backed by p. The collector
