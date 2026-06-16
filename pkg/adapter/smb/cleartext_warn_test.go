@@ -37,6 +37,7 @@ func TestNew_CleartextWarnOnNonLoopbackDisabledEncryption(t *testing.T) {
 		wantWarn bool
 	}{
 		{"non_loopback_disabled", "0.0.0.0", "disabled", true},
+		{"empty_bind_disabled", "", "disabled", true}, // empty = wildcard (":port")
 		{"non_loopback_preferred", "0.0.0.0", "preferred", false},
 		{"non_loopback_required", "0.0.0.0", "required", false},
 		{"loopback_disabled", "127.0.0.1", "disabled", false},

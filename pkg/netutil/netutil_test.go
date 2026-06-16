@@ -9,7 +9,7 @@ func TestIsNonLoopbackHost(t *testing.T) {
 		host string
 		want bool
 	}{
-		{"", false},          // empty defaults to loopback (127.0.0.1)
+		{"", true},           // empty = wildcard bind (":port", all interfaces)
 		{"127.0.0.1", false}, // explicit loopback
 		{"127.0.0.5", false}, // anything in 127.0.0.0/8 is loopback
 		{"::1", false},

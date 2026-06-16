@@ -135,8 +135,8 @@ SMB on-the-wire confidentiality is provided **by SMB3 in-protocol encryption** (
 
 **Per-session vs per-share encryption:**
 
-- **Per-session**: When encryption is `preferred` or `required`, all traffic on an SMB 3.x session is encrypted after SESSION_SETUP completes.
-- **Per-share**: Individual shares can require encryption via the `encrypt_data` flag (`dfsctl share create --encrypt-data`). Unencrypted sessions accessing an encrypted share receive `STATUS_ACCESS_DENIED`. This lets an admin force encryption on sensitive shares while leaving others compatible.
+- **Per-session**: In `required` mode, `SMB2_SESSION_FLAG_ENCRYPT_DATA` is set at SESSION_SETUP and all traffic on the SMB 3.x session must be encrypted. In `preferred` mode, AEAD keys are derived but the flag is **not** set, so whole-session encryption is not forced (it remains available for per-share enforcement and client opt-in).
+- **Per-share**: Individual shares can require encryption via the `encrypt_data` flag (`dfsctl share create --encrypt-data`). This forces encryption on that tree **regardless of the global mode**: an unencrypted request on an `encrypt_data` tree receives `STATUS_ACCESS_DENIED` (enforced by `checkEncryptionRequired`). It lets an admin force encryption on sensitive shares while leaving others compatible.
 
 **Security recommendation:** The shipped default is `preferred` (secure-by-default, wire-compatible). For environments handling sensitive data, harden the SMB adapter to mandate both encryption and signing:
 

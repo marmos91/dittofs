@@ -1058,7 +1058,7 @@ dfsctl share create --name /secure --metadata default --encrypt-data
 **Enforcement Rules:**
 
 1. **SESSION_SETUP**: When mode is `preferred` or `required`, AEAD encryption keys are derived for SMB 3.x sessions. In `required` mode the `SMB2_SESSION_FLAG_ENCRYPT_DATA` flag is set in the response and every subsequent message on the session must be encrypted. In `preferred` mode the keys are available for per-share enforcement, but the session flag is **not** set — message encryption is only forced on trees connected to shares with `encrypt_data=true`.
-2. **TREE_CONNECT**: When a share has `encrypt_data=true` and mode is `required`, unencrypted sessions are rejected with `STATUS_ACCESS_DENIED`. In `preferred` mode, unencrypted sessions are allowed (mixed model).
+2. **Per-share (`encrypt_data=true`)**: encryption is forced on that tree **regardless of the global mode**. In `required` mode the unencrypted session is rejected at TREE_CONNECT. In `preferred` mode TREE_CONNECT succeeds, but every subsequent unencrypted request on the tree is denied with `STATUS_ACCESS_DENIED` (enforced by `checkEncryptionRequired`) — so plaintext access to an `encrypt_data` share is never actually allowed. The global mode only governs sessions to non-`encrypt_data` shares (mixed model in `preferred`).
 3. **Guest sessions**: Never encrypted (no session key for key derivation).
 4. **SMB 2.x clients**: Never encrypted (encryption requires SMB 3.0+). In `required` mode, 2.x clients are rejected at NEGOTIATE.
 

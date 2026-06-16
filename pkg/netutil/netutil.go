@@ -5,14 +5,16 @@ package netutil
 import "net"
 
 // IsNonLoopbackHost reports whether host binds a listener to something other
-// than loopback. An empty host is treated as loopback (callers default an empty
-// bind address to 127.0.0.1 elsewhere). A wildcard bind (0.0.0.0 / ::) reaches
-// off-host and counts as non-loopback. A named host that does not parse as an
-// IP (e.g. a hostname) is conservatively treated as non-loopback so cleartext
-// warnings are not silently skipped.
+// than loopback. An empty host is a wildcard bind (":port" listens on all
+// interfaces), so it counts as non-loopback; callers that want an empty bind to
+// mean loopback must default it to a loopback literal (e.g. "127.0.0.1") before
+// calling. A wildcard bind (0.0.0.0 / ::) reaches off-host and counts as
+// non-loopback. A named host that does not parse as an IP (e.g. a hostname) is
+// conservatively treated as non-loopback so cleartext warnings are not silently
+// skipped.
 func IsNonLoopbackHost(host string) bool {
 	switch host {
-	case "", "127.0.0.1", "::1", "[::1]", "localhost":
+	case "127.0.0.1", "::1", "[::1]", "localhost":
 		return false
 	}
 	// Strip brackets from an IPv6 literal like "[::]".
