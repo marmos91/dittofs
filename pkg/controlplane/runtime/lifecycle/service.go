@@ -140,12 +140,11 @@ func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) err
 		}
 		s.sidMapper = mapper
 		if store != nil {
-			prior, _ := store.GetSetting(ctx, machineSIDKey)
-			if prior != "" && prior != s.pinnedMachineSID {
-				logger.Warn("Pinned machine SID overrides a different stored value; foreign-SID mappings keyed on the old domain remain unaffected, but local UID->SID encoding changes",
-					"pinned", s.pinnedMachineSID, "stored", prior)
-			}
-			if prior != s.pinnedMachineSID {
+			if prior, _ := store.GetSetting(ctx, machineSIDKey); prior != s.pinnedMachineSID {
+				if prior != "" {
+					logger.Warn("Pinned machine SID overrides a different stored value; foreign-SID mappings keyed on the old domain remain unaffected, but local UID->SID encoding changes",
+						"pinned", s.pinnedMachineSID, "stored", prior)
+				}
 				if err := store.SetSetting(ctx, machineSIDKey, s.pinnedMachineSID); err != nil {
 					logger.Error("Failed to persist pinned machine SID", "sid", s.pinnedMachineSID, "error", err)
 				}
