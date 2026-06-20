@@ -675,8 +675,16 @@ func TestAccess_RealFS_RootGetsAll(t *testing.T) {
 	if supported != allBits {
 		t.Errorf("supported = 0x%x, want 0x%x", supported, allBits)
 	}
-	if access != allBits {
-		t.Errorf("access = 0x%x, want 0x%x (root should get all)", access, allBits)
+
+	// Root gets every bit that is MEANINGFUL for the object type. ACCESS4_LOOKUP
+	// (0x02) is a directory-search right; on a regular file it has no canonical
+	// permission mapping (RFC 7530 §6 / RFC 1813 §3.3.4) and is correctly NOT
+	// granted. This matches the NFSv3 ACCESS handler, which uses the identical
+	// nfsAccessToPermissions / permissionsToNFSAccess translation — the whole
+	// point of routing NFSv4 ACCESS through the central checker.
+	wantRoot := allBits &^ uint32(ACCESS4_LOOKUP)
+	if access != wantRoot {
+		t.Errorf("access = 0x%x, want 0x%x (root gets all meaningful bits; LOOKUP is directory-only)", access, wantRoot)
 	}
 }
 

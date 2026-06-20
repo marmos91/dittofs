@@ -420,7 +420,7 @@ func (h *Handler) QueryDirectory(ctx *SMBHandlerContext, req *QueryDirectoryRequ
 			}
 			return &file.FileAttr
 		}
-		filteredEntries = filterByAccess(filteredEntries, authCtx, hydrate)
+		filteredEntries = filterByAccess(metaSvc, filteredEntries, authCtx, hydrate)
 	}
 
 	// Sort entries by name (case-insensitive) for consistent enumeration order.
@@ -1129,36 +1129,49 @@ func (h *Handler) treeHasAccessBasedEnumeration(treeID uint32) bool {
 // inaccessible under ABE rather than leaking it.
 type attrHydrator func(entry *metadata.DirEntry) *metadata.FileAttr
 
+// abeReadMask is the set of read rights an access-based enumeration requires
+// the caller to hold on an entry for it to remain visible. Mirrors Samba
+// source3/smbd/dir.c::user_can_read_fsp: FILE_READ_DATA | FILE_READ_EA |
+// FILE_READ_ATTRIBUTES | READ_CONTROL. NFSv4 bits intentionally share positions
+// with Windows MS-DTYP rights (RFC 7530 §6.2.1) — READ_DATA == LIST_DIRECTORY
+// (0x1), READ_NAMED_ATTRS == READ_EA (0x8) — so the same mask applies to both
+// files and directories. smb2.acls.ACCESSBASED asserts a file granting only a
+// strict subset of these bits is hidden.
+const abeReadMask = acl.ACE4_READ_DATA |
+	acl.ACE4_READ_NAMED_ATTRS |
+	acl.ACE4_READ_ATTRIBUTES |
+	acl.ACE4_READ_ACL
+
 // filterByAccess returns the subset of entries the requester may read,
 // implementing MS-SRVS SHI1005_FLAGS_ACCESS_BASED_DIRECTORY_ENUM semantics.
-// Files require ACE4_READ_DATA, directories require ACE4_LIST_DIRECTORY
-// (which share the same bit, 0x00000001). When the entry has an ACL attached,
-// the decision is made by acl.Evaluate using the requester's identity. When
-// the entry has no ACL but has attributes, we fall back to Unix mode-bit
-// checks — same convention as security.go's buildDACL (#525): the SD that
-// goes on the wire synthesizes a Windows default, but server-side decisions
-// stay POSIX so mode bits remain authoritative.
+// The per-entry read decision is delegated to the central permission checker
+// (metadata.FileAccessChecker.CheckAttrReadAccess), so ABE visibility honors
+// the same ACL / DENY-ACE / SID evaluation — over one EvaluateContext — that
+// CREATE-time access checks use. The handler does protocol only: it picks the
+// entries and the read mask; the metadata layer owns the decision.
 //
 // When DirEntry.Attr is nil (documented optional, refs #532 review):
 //   - If hydrate is non-nil it is called to look up the attributes; if it
 //     still returns nil the entry is hidden (fail-closed).
 //   - If hydrate is nil the entry is hidden directly. Returning true here
 //     would leak entries that ABE is supposed to suppress.
-func filterByAccess(entries []metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) []metadata.DirEntry {
+func filterByAccess(checker metadata.FileAccessChecker, entries []metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) []metadata.DirEntry {
 	if len(entries) == 0 {
 		return entries
 	}
 
-	// Root bypass mirrors the rest of the metadata layer: UID 0 sees
-	// everything regardless of per-file DACL / mode. Avoids hiding entries
-	// from admin tools that legitimately need a full listing.
+	// Root fast-path: UID 0 sees everything, so skip per-entry hydration and
+	// the checker round-trip entirely (admin tools need a full listing). The
+	// central checker would also grant root, but short-circuiting here avoids
+	// a GetFile per orphaned entry. This is an enumeration optimization, not a
+	// permission decision — the decision itself still lives in the checker.
 	if authCtx != nil && authCtx.Identity != nil && authCtx.Identity.UID != nil && *authCtx.Identity.UID == 0 {
 		return entries
 	}
 
 	out := entries[:0]
 	for i := range entries {
-		if canEnumerateEntry(&entries[i], authCtx, hydrate) {
+		if canEnumerateEntry(checker, &entries[i], authCtx, hydrate) {
 			out = append(out, entries[i])
 		}
 	}
@@ -1166,8 +1179,10 @@ func filterByAccess(entries []metadata.DirEntry, authCtx *metadata.AuthContext, 
 }
 
 // canEnumerateEntry reports whether the requester may see this entry in an
-// access-based enumeration. See filterByAccess for the policy contract.
-func canEnumerateEntry(entry *metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) bool {
+// access-based enumeration. See filterByAccess for the policy contract. The
+// actual read evaluation (ACL when present, POSIX mode-bit fallback, root and
+// anonymous handling) lives in the central checker.
+func canEnumerateEntry(checker metadata.FileAccessChecker, entry *metadata.DirEntry, authCtx *metadata.AuthContext, hydrate attrHydrator) bool {
 	attr := entry.Attr
 	if attr == nil {
 		// Attr is documented optional on DirEntry (pkg/metadata/validation.go).
@@ -1184,85 +1199,5 @@ func canEnumerateEntry(entry *metadata.DirEntry, authCtx *metadata.AuthContext, 
 		}
 	}
 
-	// Mirror Samba source3/smbd/dir.c::user_can_read_fsp: ABE requires the
-	// caller to hold FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES |
-	// READ_CONTROL on the entry. NFSv4 bits intentionally share positions with
-	// Windows MS-DTYP rights (RFC 7530 §6.2.1) — READ_DATA == LIST_DIRECTORY
-	// (0x1), READ_NAMED_ATTRS == READ_EA (0x8), so the same mask applies to
-	// both files and directories. The smbtorture smb2.acls.ACCESSBASED test
-	// asserts a file granting only a strict subset of these bits is hidden.
-	const enumMask = acl.ACE4_READ_DATA |
-		acl.ACE4_READ_NAMED_ATTRS |
-		acl.ACE4_READ_ATTRIBUTES |
-		acl.ACE4_READ_ACL
-
-	if attr.ACL != nil {
-		evalCtx := buildEnumEvalContext(attr, authCtx)
-		return acl.Evaluate(attr.ACL, evalCtx, enumMask)
-	}
-
-	// POSIX fallback — same semantics as
-	// pkg/metadata/auth_permissions.go::calculatePermissions for read.
-	return posixCanRead(attr, authCtx)
-}
-
-// buildEnumEvalContext constructs an acl.EvaluateContext from an attr +
-// AuthContext pair for access-based enumeration decisions.
-func buildEnumEvalContext(attr *metadata.FileAttr, authCtx *metadata.AuthContext) *acl.EvaluateContext {
-	evalCtx := &acl.EvaluateContext{
-		FileOwnerUID: attr.UID,
-		FileOwnerGID: attr.GID,
-	}
-	// Anonymous (no Identity or no UID): force FileOwnerUID to the
-	// AnonymousFileOwnerUID sentinel so the requester's zero-valued UID
-	// cannot collapse onto a root-owned entry's owner and pick up OWNER@
-	// ACEs plus the MS-DTYP §2.5.3.2 owner-implicit grant during ABE
-	// visibility checks. See #540.
-	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
-		evalCtx.FileOwnerUID = acl.AnonymousFileOwnerUID
-		return evalCtx
-	}
-	id := authCtx.Identity
-	if id.UID != nil {
-		evalCtx.UID = *id.UID
-	}
-	if id.GID != nil {
-		evalCtx.GID = *id.GID
-	}
-	evalCtx.GIDs = id.GIDs
-	switch {
-	case id.Username != "" && id.Domain != "":
-		evalCtx.Who = id.Username + "@" + id.Domain
-	case id.Username != "":
-		evalCtx.Who = id.Username
-	}
-	if id.SID != nil {
-		evalCtx.SID = *id.SID
-	}
-	evalCtx.GroupSIDs = id.GroupSIDs
-	// MS-DTYP §2.5.3.2: owner-implicit WRITE_OWNER requires
-	// SeTakeOwnershipPrivilege (admins only). See acl.Evaluate.
-	evalCtx.RequesterHasTakeOwnership = acl.HasTakeOwnershipPrivilege(evalCtx.SID, evalCtx.GroupSIDs)
-	return evalCtx
-}
-
-// posixCanRead implements the read-bit selection used for access-based
-// enumeration on files / directories without an ACL.
-func posixCanRead(attr *metadata.FileAttr, authCtx *metadata.AuthContext) bool {
-	if attr == nil {
-		return true
-	}
-	if authCtx == nil || authCtx.Identity == nil || authCtx.Identity.UID == nil {
-		// Anonymous → only the "other" read bit applies.
-		return attr.Mode&0o004 != 0
-	}
-	uid := *authCtx.Identity.UID
-	switch {
-	case uid == attr.UID:
-		return attr.Mode&0o400 != 0
-	case authCtx.Identity.HasGID(attr.GID):
-		return attr.Mode&0o040 != 0
-	default:
-		return attr.Mode&0o004 != 0
-	}
+	return checker.CheckAttrReadAccess(attr, authCtx, abeReadMask)
 }
