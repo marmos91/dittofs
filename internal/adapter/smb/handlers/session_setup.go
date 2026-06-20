@@ -1739,6 +1739,15 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 	existingSess.IsGuest = isGuest
 	existingSess.IsNull = username == "" && !isGuest
 
+	// Clear any Kerberos PAC identity carried from a prior auth on this session.
+	// tryReauthUpdate handles the NTLM reauth path, which carries no in-band PAC;
+	// the Kerberos reauth path (reauthKerberosSession) sets these from the new
+	// ticket. Without this, a session that first authenticated via Kerberos
+	// (PAC group SIDs, possibly privileged) and then reauthenticated via NTLM as
+	// a lower-privileged or anonymous user would retain the original AD group
+	// SIDs, granting access on SID-keyed ACLs it should no longer have.
+	existingSess.SetPACIdentity(nil, "")
+
 	logger.Info("Session re-authenticated (identity updated, keys retained)",
 		"sessionID", existingSess.SessionID,
 		"username", existingSess.Username,

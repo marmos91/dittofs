@@ -29,6 +29,15 @@ func logFileSize(t *testing.T, bc *FSStore, payloadID string) int64 {
 // fence is frozen by monotonicity at the pre-compaction
 // high-water mark — only the in-memory budget continues to drop as
 // records are consumed.
+// compactionDrainTimeout bounds how long the steady-state compaction tests
+// wait for the rollup workers to drain the on-disk log. The work is fsync-heavy
+// (256 AppendWrites, each durably appended), and Windows CI runners fsync an
+// order of magnitude slower than Linux — a 10s budget intermittently expired
+// there while the log was still draining (logBytesTotal=~640 KiB, mid-drop).
+// The poll returns the instant the bound is met, so a generous ceiling costs
+// no wall-clock on success (≈1-2s on Linux) and only adds headroom on slow I/O.
+const compactionDrainTimeout = 60 * time.Second
+
 func waitForLogBytesBelow(t *testing.T, bc *FSStore, max int64, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -88,7 +97,7 @@ func TestCompaction_BoundedLogSize(t *testing.T) {
 	// is frozen at the pre-compaction high-water mark by
 	// monotonicity — only the in-memory fence and on-disk header
 	// continue to advance.
-	waitForLogBytesBelow(t, bc, 64*1024, 10*time.Second)
+	waitForLogBytesBelow(t, bc, 64*1024, compactionDrainTimeout)
 	// Give the compaction pass a moment to fire after the SetRollupOffset
 	// that advanced the fence past the threshold.
 	time.Sleep(300 * time.Millisecond)
@@ -131,7 +140,7 @@ func TestCompaction_DisabledByNegativeThreshold(t *testing.T) {
 		}
 	}
 	totalBytes := uint64(writes) * uint64(len(chunk))
-	waitForLogBytesBelow(t, bc, 64*1024, 10*time.Second)
+	waitForLogBytesBelow(t, bc, 64*1024, compactionDrainTimeout)
 	// Allow a final rollup tick to settle on disk.
 	time.Sleep(200 * time.Millisecond)
 
@@ -175,7 +184,7 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 		}
 	}
 	phase1Bytes := uint64(phase1Writes) * uint64(len(chunk))
-	waitForLogBytesBelow(t, bc, 32*1024, 10*time.Second)
+	waitForLogBytesBelow(t, bc, 32*1024, compactionDrainTimeout)
 
 	// close the store BEFORE measuring size. Close() joins rollup
 	// and compaction workers, guaranteeing no in-flight compaction can leave

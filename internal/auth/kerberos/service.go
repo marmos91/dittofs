@@ -10,6 +10,7 @@ import (
 	// reject as malformed. See issue #335.
 	"github.com/jcmturner/gofork/encoding/asn1"
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
+	"github.com/jcmturner/gokrb5/v8/credentials"
 	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/service"
@@ -50,6 +51,24 @@ type AuthResult struct {
 
 	// APReq is the parsed AP-REQ message, preserved for AP-REP construction.
 	APReq messages.APReq
+
+	// UserSID is the client's Windows Security Identifier as carried in the
+	// Kerberos PAC (MS-PAC §2.5 KERB_VALIDATION_INFO): the logon domain SID
+	// joined with the user's RID. Empty when the ticket carries no PAC (e.g.
+	// an MIT KDC, or a Samba/AD ticket whose PAC could not be decoded).
+	UserSID string
+
+	// GroupSIDs are the Windows group Security Identifiers delivered in the
+	// Kerberos PAC. Active Directory resolves nested group membership at the
+	// DC and stamps the full transitive set into the ticket, so no LDAP
+	// group-walk is required at authentication time. Empty when the ticket
+	// carries no PAC. These flow into AuthContext.Identity.GroupSIDs for
+	// SID-based ACL evaluation.
+	//
+	// Resolution of these (possibly foreign) SIDs to local UID/GID is the
+	// concern of the durable idmap layer (AD-3 / #1235); AD-1 only makes the
+	// SIDs flow into the live identity.
+	GroupSIDs []string
 }
 
 // KerberosService provides shared Kerberos authentication used by both
@@ -107,16 +126,24 @@ func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal strin
 		return nil, fmt.Errorf("unmarshal AP-REQ: %w", err)
 	}
 
-	// Build gokrb5 service settings from provider
+	// Build gokrb5 service settings from provider.
+	//
+	// DecodePAC is enabled so AD-issued tickets surface their PAC
+	// (MS-PAC) authorization data — specifically the transitive group SIDs the
+	// DC stamped into the ticket. gokrb5 verifies the PAC server signature with
+	// the same keytab key used for the ticket, so a tampered PAC fails
+	// VerifyAPREQ. Tickets without a PAC (e.g. from a plain MIT KDC) verify
+	// exactly as before — creds simply carry no AD attributes.
 	settings := service.NewSettings(
 		s.provider.Keytab(),
 		service.MaxClockSkew(s.provider.MaxClockSkew()),
-		service.DecodePAC(false),
+		service.DecodePAC(true),
 		service.KeytabPrincipal(servicePrincipal),
 	)
 
-	// Verify the AP-REQ
-	ok, _, err := service.VerifyAPREQ(&apReq, settings)
+	// Verify the AP-REQ. On success creds carries the decoded PAC attributes
+	// (when DecodePAC is on and the ticket contained a PAC).
+	ok, creds, err := service.VerifyAPREQ(&apReq, settings)
 	if err != nil {
 		return nil, fmt.Errorf("verify AP-REQ: %w", err)
 	}
@@ -153,10 +180,16 @@ func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal strin
 	clientPrincipal := apReq.Ticket.DecryptedEncPart.CName.PrincipalNameString()
 	clientRealm := apReq.Ticket.DecryptedEncPart.CRealm
 
+	// Extract PAC authorization data (AD group SIDs + user SID) when the ticket
+	// carried a verified PAC. creds is nil for callers/tickets without a PAC.
+	userSID, groupSIDs := extractPACIdentity(creds)
+
 	logger.Debug("Kerberos authentication successful",
 		"principal", clientPrincipal,
 		"realm", clientRealm,
 		"has_subkey", HasSubkey(&apReq),
+		"pac_user_sid", userSID,
+		"pac_group_sid_count", len(groupSIDs),
 	)
 
 	return &AuthResult{
@@ -164,7 +197,39 @@ func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal strin
 		Realm:      clientRealm,
 		SessionKey: contextKey,
 		APReq:      apReq,
+		UserSID:    userSID,
+		GroupSIDs:  groupSIDs,
 	}, nil
+}
+
+// extractPACIdentity pulls the Windows user SID and group SIDs out of the
+// decoded Kerberos PAC. gokrb5 exposes the decoded KERB_VALIDATION_INFO via
+// credentials.ADCredentials (populated by VerifyAPREQ when DecodePAC is on and
+// the ticket contained a PAC). It returns empty values when creds is nil or
+// the ticket carried no AD attributes — i.e. a non-AD KDC — so the rest of the
+// pipeline behaves exactly as it did before PAC decoding was enabled.
+//
+// The user SID is reconstructed from the logon domain SID + the user's RID per
+// MS-PAC §2.5; the group SIDs come straight from
+// KERB_VALIDATION_INFO.GetGroupMembershipSIDs (domain groups, extra SIDs, and
+// resource groups), already formatted as full SID strings.
+func extractPACIdentity(creds *credentials.Credentials) (userSID string, groupSIDs []string) {
+	if creds == nil {
+		return "", nil
+	}
+	ad := creds.GetADCredentials()
+	if ad.LogonDomainID != "" && ad.UserID != 0 {
+		userSID = fmt.Sprintf("%s-%d", ad.LogonDomainID, ad.UserID)
+	}
+	// Copy the slice: GetADCredentials returns ADCredentials by value, but the
+	// GroupMembershipSIDs header still aliases gokrb5's internal backing array.
+	// Returning it directly would let a future gokrb5 mutation corrupt the SIDs
+	// we persist on the session. Own our copy.
+	if len(ad.GroupMembershipSIDs) > 0 {
+		groupSIDs = make([]string, len(ad.GroupMembershipSIDs))
+		copy(groupSIDs, ad.GroupMembershipSIDs)
+	}
+	return userSID, groupSIDs
 }
 
 // BuildMutualAuth constructs a raw AP-REP token for mutual authentication.

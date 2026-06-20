@@ -74,6 +74,23 @@ type Session struct {
 	// for permission checking and share access control.
 	User *models.User
 
+	// pacGroupSIDs / pacUserSID hold the Windows identity delivered in the
+	// client's Kerberos PAC (MS-PAC). For an AD-issued ticket the group SIDs are
+	// the DC-resolved transitive group memberships, merged into every per-request
+	// AuthContext.Identity.GroupSIDs so SID-based ACL ACEs keyed on AD groups
+	// match without an LDAP group-walk. Empty for NTLM/guest/anonymous sessions
+	// and tickets without a PAC. Resolution of these SIDs to a local UID/GID is
+	// the durable idmap layer's concern (AD-3 / #1235).
+	//
+	// Unlike the scalar identity fields above, these are written on SESSION_SETUP
+	// AND refreshed/cleared on re-authentication (Kerberos reauth refreshes,
+	// NTLM reauth clears) while request goroutines read them concurrently. A
+	// slice header is three words, so a torn read is memory-unsafe — not merely
+	// stale. They are therefore private and guarded by mu; access only via
+	// SetPACIdentity / PACIdentity, which copy in and out.
+	pacGroupSIDs []string
+	pacUserSID   string
+
 	// cryptoState holds per-session cryptographic state (signing keys, signer,
 	// encryption/decryption keys). Replaces the old Signing field.
 	// For 2.x: HMAC-SHA256 signer. For 3.x: CMAC/GMAC signer + KDF-derived keys.
@@ -168,7 +185,8 @@ type Session struct {
 	// Credit tracking
 	credits Credits
 
-	// mu protects credit mutation operations
+	// mu protects credit mutation operations and the mutable PAC identity
+	// (pacGroupSIDs/pacUserSID, via SetPACIdentity/PACIdentity).
 	mu sync.Mutex
 
 	// channels holds TCP connections explicitly bound to this session, keyed
@@ -184,6 +202,36 @@ type Session struct {
 	// insert" — is atomic under concurrent binds.
 	channelsMu sync.RWMutex
 	channels   map[uint64]*Channel
+}
+
+// SetPACIdentity stores the Kerberos PAC group SIDs and user SID for the
+// session, replacing any previous set. Called on SESSION_SETUP and on
+// re-authentication (Kerberos reauth refreshes, NTLM reauth clears with a nil
+// slice and empty string). The group SIDs are copied so the caller's slice is
+// never aliased and a concurrent PACIdentity reader can never observe a torn
+// header. Safe for concurrent use.
+func (s *Session) SetPACIdentity(groupSIDs []string, userSID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(groupSIDs) == 0 {
+		s.pacGroupSIDs = nil
+	} else {
+		s.pacGroupSIDs = append([]string(nil), groupSIDs...)
+	}
+	s.pacUserSID = userSID
+}
+
+// PACIdentity returns a copy of the session's Kerberos PAC group SIDs and the
+// user SID. The slice is copied so the caller cannot mutate session state and
+// never shares a backing array with a concurrent SetPACIdentity. Returns
+// (nil, "") for sessions without PAC identity. Safe for concurrent use.
+func (s *Session) PACIdentity() (groupSIDs []string, userSID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pacGroupSIDs) > 0 {
+		groupSIDs = append([]string(nil), s.pacGroupSIDs...)
+	}
+	return groupSIDs, s.pacUserSID
 }
 
 // Credits tracks credit accounting for a session.
