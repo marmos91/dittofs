@@ -333,20 +333,22 @@ func TestInitMachineSIDPinnedOverridesStored(t *testing.T) {
 	}
 }
 
-// An invalid pinned SID is ignored and the normal generate/load path runs.
-func TestInitMachineSIDPinnedInvalidFallsBack(t *testing.T) {
+// An invalid pinned SID aborts initialization rather than silently falling
+// back to a random SID — a bad pin is an explicit operator error that would
+// otherwise diverge this node's local UID->SID encoding from the cluster.
+func TestInitMachineSIDPinnedInvalidFails(t *testing.T) {
 	s := New(0)
 	s.SetPinnedMachineSID("garbage")
 	store := &fakeSIDStore{vals: map[string]string{}}
-	s.initMachineSID(context.Background(), store)
-	if s.SIDMapper() == nil {
-		t.Fatal("SID mapper nil after invalid pin")
+	err := s.initMachineSID(context.Background(), store)
+	if err == nil {
+		t.Fatal("invalid pin must return an error, not fall back")
 	}
-	if s.SIDMapper().MachineSIDString() == "garbage" {
-		t.Error("invalid pin was applied verbatim")
+	if s.SIDMapper() != nil {
+		t.Error("no SID mapper should be set when the pin is invalid")
 	}
-	if !store.setHit {
-		t.Error("fallback path should generate + persist")
+	if store.setHit {
+		t.Error("invalid pin must not generate + persist a fallback SID")
 	}
 }
 

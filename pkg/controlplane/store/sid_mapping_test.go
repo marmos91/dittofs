@@ -292,11 +292,11 @@ func TestUserSIDPersistence(t *testing.T) {
 				t.Errorf("GroupSIDs not persisted: got %v", got.GroupSIDs)
 			}
 
-			// UpdateUser must also persist a changed SID/GroupSIDs.
-			got.SID = "S-1-5-21-50-60-70-9999"
-			got.GroupSIDs = []string{"S-1-5-21-50-60-70-9200"}
-			if err := st2.UpdateUser(ctx, got); err != nil {
-				t.Fatalf("update user: %v", err)
+			// UpdateUserSIDInfo persists a changed SID/GroupSIDs without
+			// reloading or touching the rest of the user.
+			if err := st2.UpdateUserSIDInfo(ctx, "winuser",
+				"S-1-5-21-50-60-70-9999", []string{"S-1-5-21-50-60-70-9200"}); err != nil {
+				t.Fatalf("update user SID info: %v", err)
 			}
 			reloaded, err := st2.GetUser(ctx, "winuser")
 			if err != nil {
@@ -307,6 +307,29 @@ func TestUserSIDPersistence(t *testing.T) {
 			}
 			if len(reloaded.GroupSIDs) != 1 || reloaded.GroupSIDs[0] != "S-1-5-21-50-60-70-9200" {
 				t.Errorf("updated GroupSIDs not persisted: got %v", reloaded.GroupSIDs)
+			}
+
+			// A general UpdateUser with a partial user (no GroupSIDs) must NOT
+			// erase the persisted Windows identity (F4 regression guard).
+			profile, err := st2.GetUser(ctx, "winuser")
+			if err != nil {
+				t.Fatalf("get user before profile update: %v", err)
+			}
+			profile.GroupSIDs = nil
+			profile.SID = ""
+			profile.DisplayName = "Win User"
+			if err := st2.UpdateUser(ctx, profile); err != nil {
+				t.Fatalf("update user profile: %v", err)
+			}
+			afterProfile, err := st2.GetUser(ctx, "winuser")
+			if err != nil {
+				t.Fatalf("get user after profile update: %v", err)
+			}
+			if afterProfile.SID != "S-1-5-21-50-60-70-9999" {
+				t.Errorf("profile UpdateUser clobbered SID: got %q", afterProfile.SID)
+			}
+			if len(afterProfile.GroupSIDs) != 1 {
+				t.Errorf("profile UpdateUser clobbered GroupSIDs: got %v", afterProfile.GroupSIDs)
 			}
 		})
 	}

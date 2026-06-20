@@ -57,6 +57,11 @@ type UserStore interface {
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	UpdateUser(ctx context.Context, user *models.User) error
 
+	// UpdateUserSIDInfo persists only the Windows identity (SID + group SIDs)
+	// resolved by a login flow, without touching other profile fields.
+	// Returns models.ErrUserNotFound if the user doesn't exist.
+	UpdateUserSIDInfo(ctx context.Context, username, sid string, groupSIDs []string) error
+
 	// DeleteUser deletes a user by username.
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	// Also deletes all share permissions for the user.
@@ -758,4 +763,5 @@ type Store interface {
 	SnapshotPolicyStore
 	RestoreMarkerStore
 	HealthStore
+	SIDMappingStore
 }

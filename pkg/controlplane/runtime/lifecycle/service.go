@@ -122,7 +122,7 @@ func (s *Service) SetPinnedMachineSID(machineSID string) {
 //  3. Otherwise a new random SID is generated and persisted.
 //
 // This MUST be called before any adapters are started.
-func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) {
+func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) error {
 	const machineSIDKey = "machine_sid"
 
 	// Operator pin takes precedence and is honored even without a settings
@@ -131,32 +131,35 @@ func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) {
 	if s.pinnedMachineSID != "" {
 		mapper, err := sid.NewSIDMapperFromString(s.pinnedMachineSID)
 		if err != nil {
-			logger.Error("Invalid pinned machine SID, ignoring and falling back",
-				"pinned", s.pinnedMachineSID, "error", err)
-		} else {
-			s.sidMapper = mapper
-			if store != nil {
-				prior, _ := store.GetSetting(ctx, machineSIDKey)
-				if prior != "" && prior != s.pinnedMachineSID {
-					logger.Warn("Pinned machine SID overrides a different stored value; foreign-SID mappings keyed on the old domain remain unaffected, but local UID->SID encoding changes",
-						"pinned", s.pinnedMachineSID, "stored", prior)
-				}
-				if prior != s.pinnedMachineSID {
-					if err := store.SetSetting(ctx, machineSIDKey, s.pinnedMachineSID); err != nil {
-						logger.Error("Failed to persist pinned machine SID", "sid", s.pinnedMachineSID, "error", err)
-					}
+			// A pin is an explicit operator intent for cross-node parity.
+			// Silently falling back to a random SID would diverge this node's
+			// local UID->SID encoding from the rest of the cluster, so abort
+			// instead. The config layer normally rejects this earlier
+			// (IdentityConfig.Validate); this guards programmatic misuse.
+			return fmt.Errorf("invalid pinned machine SID %q: %w", s.pinnedMachineSID, err)
+		}
+		s.sidMapper = mapper
+		if store != nil {
+			prior, _ := store.GetSetting(ctx, machineSIDKey)
+			if prior != "" && prior != s.pinnedMachineSID {
+				logger.Warn("Pinned machine SID overrides a different stored value; foreign-SID mappings keyed on the old domain remain unaffected, but local UID->SID encoding changes",
+					"pinned", s.pinnedMachineSID, "stored", prior)
+			}
+			if prior != s.pinnedMachineSID {
+				if err := store.SetSetting(ctx, machineSIDKey, s.pinnedMachineSID); err != nil {
+					logger.Error("Failed to persist pinned machine SID", "sid", s.pinnedMachineSID, "error", err)
 				}
 			}
-			logger.Info("Using pinned machine SID", "sid", s.pinnedMachineSID)
-			return
 		}
+		logger.Info("Using pinned machine SID", "sid", s.pinnedMachineSID)
+		return nil
 	}
 
 	if store == nil {
 		logger.Warn("No settings store available, generating ephemeral machine SID")
 		s.sidMapper = sid.GenerateMachineSID()
 		logger.Info("Generated ephemeral machine SID", "sid", s.sidMapper.MachineSIDString())
-		return
+		return nil
 	}
 
 	stored, err := store.GetSetting(ctx, machineSIDKey)
@@ -174,7 +177,7 @@ func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) {
 		} else {
 			s.sidMapper = mapper
 			logger.Info("Loaded machine SID from store", "sid", stored)
-			return
+			return nil
 		}
 	}
 
@@ -187,6 +190,7 @@ func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) {
 	} else {
 		logger.Info("Generated and persisted machine SID", "sid", sidStr)
 	}
+	return nil
 }
 
 // SetAPIServer must be called before Serve().
@@ -243,7 +247,9 @@ func (s *Service) serve(
 
 	// Initialize machine SID BEFORE any adapters start.
 	// This ensures consistent identity mapping for all connections.
-	s.initMachineSID(ctx, machineSIDStore)
+	if err := s.initMachineSID(ctx, machineSIDStore); err != nil {
+		return fmt.Errorf("failed to initialize machine SID: %w", err)
+	}
 
 	if settings != nil {
 		if err := settings.LoadInitial(ctx); err != nil {

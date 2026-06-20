@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"gorm.io/gorm/clause"
@@ -38,11 +37,13 @@ func (s *GORMStore) ListSIDMappings(ctx context.Context) ([]*models.SIDMapping, 
 // ON CONFLICT DO NOTHING and the row is re-read, so a racing caller observes
 // the winner's allocation rather than overwriting it.
 func (s *GORMStore) AllocateSIDMapping(ctx context.Context, sid string, unixID uint32, isGroup bool, displayName string) (*models.SIDMapping, error) {
-	// Fast path: return any existing binding without touching it.
+	// Fast path: return any existing binding without touching it. A transient
+	// read error here is deliberately non-fatal — the authoritative
+	// insert(ON CONFLICT DO NOTHING)+re-read below resolves the binding either
+	// way, so a flaky read must not fail an allocation that would otherwise
+	// succeed (this path is on the LDAP/PAC login hot path).
 	if existing, err := s.GetSIDMapping(ctx, sid); err == nil {
 		return existing, nil
-	} else if !errors.Is(err, models.ErrSIDMappingNotFound) {
-		return nil, err
 	}
 
 	row := &models.SIDMapping{
