@@ -92,11 +92,36 @@ func (s *GORMStore) UpdateUser(ctx context.Context, user *models.User) error {
 		return convertNotFoundError(err, models.ErrUserNotFound)
 	}
 
-	// Update specific fields using Select to handle pointers properly
+	// Update specific fields using Select to handle pointers properly.
+	// SID/GroupSIDs are deliberately NOT in this set: an explicit Select forces
+	// the column write even for a zero value, so a caller passing a partial
+	// user (GroupSIDs == nil) would silently erase persisted Windows identity.
+	// Identity columns are written only through UpdateUserSIDInfo, whose
+	// contract is to set exactly those columns.
 	return s.db.WithContext(ctx).
 		Model(&existing).
 		Select("Username", "Enabled", "MustChangePassword", "Role", "UID", "GID", "DisplayName", "Email").
 		Updates(user).Error
+}
+
+// UpdateUserSIDInfo persists the Windows identity (SID + group SIDs) for a user,
+// as resolved by a login flow (Kerberos PAC / NTLMSSP / LDAP, AD-3 #1235).
+// It writes only the sid and group_sids columns, so it can never clobber other
+// profile fields, and is safe to call with the freshly resolved values without
+// first reloading the rest of the user.
+func (s *GORMStore) UpdateUserSIDInfo(ctx context.Context, username, sid string, groupSIDs []string) error {
+	res := s.db.WithContext(ctx).
+		Model(&models.User{}).
+		Where("username = ?", username).
+		Select("SID", "GroupSIDs").
+		Updates(&models.User{SID: sid, GroupSIDs: groupSIDs})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return models.ErrUserNotFound
+	}
+	return nil
 }
 
 func (s *GORMStore) DeleteUser(ctx context.Context, username string) error {

@@ -20,6 +20,7 @@ func AllModels() []any {
 		&AdapterConfig{},
 		&Setting{},
 		&IdentityMapping{},
+		&SIDMapping{},
 		&NFSAdapterSettings{},
 		&SMBAdapterSettings{},
 		&Netgroup{},

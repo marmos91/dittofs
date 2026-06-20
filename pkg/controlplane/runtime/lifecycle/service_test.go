@@ -240,12 +240,12 @@ func TestServeOnlyRunsOnce(t *testing.T) {
 // one when a valid value is stored.
 func TestInitMachineSIDLoadsStored(t *testing.T) {
 	gen := New(0)
-	gen.initMachineSID(context.Background(), nil)
+	mustInitMachineSID(t, gen, nil)
 	stored := gen.SIDMapper().MachineSIDString()
 
 	s := New(0)
 	store := &fakeSIDStore{vals: map[string]string{"machine_sid": stored}}
-	s.initMachineSID(context.Background(), store)
+	mustInitMachineSID(t, s, store)
 	if s.SIDMapper() == nil {
 		t.Fatal("SID mapper nil after load")
 	}
@@ -261,7 +261,7 @@ func TestInitMachineSIDLoadsStored(t *testing.T) {
 func TestInitMachineSIDFirstBootPersists(t *testing.T) {
 	s := New(0)
 	store := &fakeSIDStore{vals: map[string]string{}}
-	s.initMachineSID(context.Background(), store)
+	mustInitMachineSID(t, s, store)
 	if s.SIDMapper() == nil {
 		t.Fatal("SID mapper nil")
 	}
@@ -277,7 +277,7 @@ func TestInitMachineSIDFirstBootPersists(t *testing.T) {
 func TestInitMachineSIDInvalidStoredRegenerates(t *testing.T) {
 	s := New(0)
 	store := &fakeSIDStore{vals: map[string]string{"machine_sid": "not-a-valid-sid"}}
-	s.initMachineSID(context.Background(), store)
+	mustInitMachineSID(t, s, store)
 	if s.SIDMapper() == nil {
 		t.Fatal("SID mapper nil after invalid stored value")
 	}
@@ -293,8 +293,84 @@ func TestInitMachineSIDInvalidStoredRegenerates(t *testing.T) {
 func TestInitMachineSIDReadErrorGenerates(t *testing.T) {
 	s := New(0)
 	store := &fakeSIDStore{getErr: errors.New("db down")}
-	s.initMachineSID(context.Background(), store)
+	mustInitMachineSID(t, s, store)
 	if s.SIDMapper() == nil {
 		t.Error("SID mapper should still be generated despite read error")
+	}
+}
+
+// A pinned machine SID is applied in preference to generation and persisted so
+// it is authoritative (AD-3 #1235).
+func TestInitMachineSIDPinnedApplied(t *testing.T) {
+	const pinned = "S-1-5-21-10-20-30"
+	s := New(0)
+	s.SetPinnedMachineSID(pinned)
+	store := &fakeSIDStore{vals: map[string]string{}}
+	mustInitMachineSID(t, s, store)
+	if s.SIDMapper() == nil {
+		t.Fatal("SID mapper nil after pin")
+	}
+	if s.SIDMapper().MachineSIDString() != pinned {
+		t.Errorf("mapper SID = %q, want pinned %q", s.SIDMapper().MachineSIDString(), pinned)
+	}
+	if store.vals["machine_sid"] != pinned {
+		t.Errorf("pinned SID not persisted: got %q", store.vals["machine_sid"])
+	}
+}
+
+// A pinned SID overrides a different stored value (operator intent wins).
+func TestInitMachineSIDPinnedOverridesStored(t *testing.T) {
+	const pinned = "S-1-5-21-1-1-1"
+	s := New(0)
+	s.SetPinnedMachineSID(pinned)
+	store := &fakeSIDStore{vals: map[string]string{"machine_sid": "S-1-5-21-9-9-9"}}
+	mustInitMachineSID(t, s, store)
+	if s.SIDMapper().MachineSIDString() != pinned {
+		t.Errorf("pinned SID did not override stored value: got %q", s.SIDMapper().MachineSIDString())
+	}
+	if store.vals["machine_sid"] != pinned {
+		t.Errorf("override not persisted: got %q", store.vals["machine_sid"])
+	}
+}
+
+// An invalid pinned SID aborts initialization rather than silently falling
+// back to a random SID — a bad pin is an explicit operator error that would
+// otherwise diverge this node's local UID->SID encoding from the cluster.
+func TestInitMachineSIDPinnedInvalidFails(t *testing.T) {
+	s := New(0)
+	s.SetPinnedMachineSID("garbage")
+	store := &fakeSIDStore{vals: map[string]string{}}
+	err := s.initMachineSID(context.Background(), store)
+	if err == nil {
+		t.Fatal("invalid pin must return an error, not fall back")
+	}
+	if s.SIDMapper() != nil {
+		t.Error("no SID mapper should be set when the pin is invalid")
+	}
+	if store.setHit {
+		t.Error("invalid pin must not generate + persist a fallback SID")
+	}
+}
+
+// Two services pinned to the same SID produce identical mappers (node parity).
+func TestInitMachineSIDPinnedNodeParity(t *testing.T) {
+	const pinned = "S-1-5-21-7-7-7"
+	a, b := New(0), New(0)
+	a.SetPinnedMachineSID(pinned)
+	b.SetPinnedMachineSID(pinned)
+	mustInitMachineSID(t, a, nil)
+	mustInitMachineSID(t, b, nil)
+	if a.SIDMapper().MachineSIDString() != b.SIDMapper().MachineSIDString() {
+		t.Errorf("pinned nodes diverge: %q vs %q",
+			a.SIDMapper().MachineSIDString(), b.SIDMapper().MachineSIDString())
+	}
+}
+
+// mustInitMachineSID runs initMachineSID and fails the test on the error path,
+// for the success-path cases where a returned error is unexpected.
+func mustInitMachineSID(t *testing.T, s *Service, store MachineSIDStore) {
+	t.Helper()
+	if err := s.initMachineSID(context.Background(), store); err != nil {
+		t.Fatalf("initMachineSID: %v", err)
 	}
 }

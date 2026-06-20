@@ -235,6 +235,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
+	// Seed an operator-pinned machine SID (if configured) BEFORE Serve so the
+	// machine SID is resolved before any adapter reads the SID mapper. Pinning
+	// the same SID on every node yields identical local UID->SID encoding.
+	rt.SetPinnedMachineSID(cfg.Identity.MachineSID)
 	rt.SetAdapterFactory(createAdapterFactory(&cfg.Kerberos))
 
 	// Create and set API server

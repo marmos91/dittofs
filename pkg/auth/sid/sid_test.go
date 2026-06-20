@@ -546,3 +546,45 @@ func TestPrincipalToSID_HashFallback_RoundTrips(t *testing.T) {
 func hasSIDPrefix(s string) bool {
 	return len(s) >= 4 && s[:4] == "sid:"
 }
+
+// TestMachineSID_NodeParity is the AD-3 determinism acceptance: two mappers
+// built from the SAME machine SID produce IDENTICAL SIDs/RIDs for the same
+// UID/GID. This guarantees cross-node parity when operators pin one machine
+// SID across a cluster — no per-node state contributes to a local SID.
+func TestMachineSID_NodeParity(t *testing.T) {
+	const machine = "S-1-5-21-3141592-2718281-1618033"
+
+	// Build two independent mappers from the same pinned machine SID, as two
+	// cluster nodes would from the same config.
+	nodeA, err := NewSIDMapperFromString(machine)
+	if err != nil {
+		t.Fatalf("nodeA: %v", err)
+	}
+	nodeB, err := NewSIDMapperFromString(machine)
+	if err != nil {
+		t.Fatalf("nodeB: %v", err)
+	}
+
+	if nodeA.MachineSIDString() != machine || nodeB.MachineSIDString() != machine {
+		t.Fatalf("machine SID not round-tripped: A=%q B=%q want %q",
+			nodeA.MachineSIDString(), nodeB.MachineSIDString(), machine)
+	}
+
+	for _, id := range []uint32{1, 1000, 1001, 65534, 4294967} {
+		if a, b := FormatSID(nodeA.UserSID(id)), FormatSID(nodeB.UserSID(id)); a != b {
+			t.Errorf("UserSID(%d) differs across nodes: %s != %s", id, a, b)
+		}
+		if a, b := FormatSID(nodeA.GroupSID(id)), FormatSID(nodeB.GroupSID(id)); a != b {
+			t.Errorf("GroupSID(%d) differs across nodes: %s != %s", id, a, b)
+		}
+		// And the reverse decode must agree too.
+		ua, oka := nodeA.UIDFromSID(nodeB.UserSID(id))
+		if !oka || ua != id {
+			t.Errorf("cross-node UID decode failed for %d: got (%d,%v)", id, ua, oka)
+		}
+		ga, okg := nodeA.GIDFromSID(nodeB.GroupSID(id))
+		if !okg || ga != id {
+			t.Errorf("cross-node GID decode failed for %d: got (%d,%v)", id, ga, okg)
+		}
+	}
+}

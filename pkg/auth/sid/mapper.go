@@ -17,7 +17,20 @@ import (
 // This guarantees UserSID(n) != GroupSID(n) for all n.
 //
 // The machine SID is of the form S-1-5-21-{a}-{b}-{c} where a, b, c are
-// randomly generated 32-bit values persisted in the control plane store.
+// 32-bit values. On a single node they are generated once and persisted in the
+// control-plane SettingsStore (key "machine_sid"), staying stable across
+// restarts.
+//
+// LOCKED, NODE-SHARED INVARIANT: the machine SID + the RID formula above are
+// the ONLY inputs to a local UID/GID's SID. Given the same machine SID, every
+// node computes the IDENTICAL SID for the same Unix UID/GID — no per-node
+// state is involved. Two nodes that want matching local/algorithmic SIDs MUST
+// therefore share the same machine SID; pin it via config (identity.machine_sid
+// / DITTOFS_IDENTITY_MACHINE_SID). Do NOT change the RID offsets (+1000 user /
+// +1001 group) or the machine-SID shape: doing so would re-encode every
+// already-issued local SID and break cross-node parity and persisted ACLs.
+// FOREIGN (AD/LDAP) domain SIDs are out of scope here — they are not derivable
+// from a local UID and are persisted durably in models.SIDMapping instead.
 type SIDMapper struct {
 	machineSID [3]uint32 // The three sub-authorities of the domain SID
 }

@@ -746,6 +746,14 @@ func (r *Runtime) GetMetadataService() *metadata.Service { return r.metadataServ
 // Returns nil if the runtime has not been started yet (Serve not called).
 func (r *Runtime) SIDMapper() *sid.SIDMapper { return r.lifecycleSvc.SIDMapper() }
 
+// SetPinnedMachineSID seeds an operator-supplied machine SID (config/env) used
+// during Serve(). Must be called before Serve(). Empty string is a no-op.
+// Pinning the same SID on every node makes their local UID->SID mapping
+// identical (cross-node identity parity).
+func (r *Runtime) SetPinnedMachineSID(machineSID string) {
+	r.lifecycleSvc.SetPinnedMachineSID(machineSID)
+}
+
 // SetLocalStoreDefaults sets the default sizing for per-share local stores.
 func (r *Runtime) SetLocalStoreDefaults(cfg *shares.LocalStoreDefaults) {
 	r.mu.Lock()

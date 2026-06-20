@@ -57,6 +57,11 @@ type UserStore interface {
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	UpdateUser(ctx context.Context, user *models.User) error
 
+	// UpdateUserSIDInfo persists only the Windows identity (SID + group SIDs)
+	// resolved by a login flow, without touching other profile fields.
+	// Returns models.ErrUserNotFound if the user doesn't exist.
+	UpdateUserSIDInfo(ctx context.Context, username, sid string, groupSIDs []string) error
+
 	// DeleteUser deletes a user by username.
 	// Returns models.ErrUserNotFound if the user doesn't exist.
 	// Also deletes all share permissions for the user.
@@ -709,6 +714,36 @@ type IdentityMappingStore interface {
 	ListIdentityMappingsForUser(ctx context.Context, username string) ([]*models.IdentityMapping, error)
 }
 
+// SIDMappingStore provides durable foreign-SID -> Unix UID/GID allocation.
+//
+// It is a separate interface from Store (mirroring IdentityMappingStore) so
+// only identity-aware components depend on it. Local/algorithmic SIDs are not
+// stored here — only foreign AD/LDAP domain SIDs that cannot be derived from a
+// local UID. Allocation is idempotent and never remaps an existing SID.
+type SIDMappingStore interface {
+	// GetSIDMapping returns the durable mapping for a foreign domain SID.
+	// Returns models.ErrSIDMappingNotFound if none exists.
+	GetSIDMapping(ctx context.Context, sid string) (*models.SIDMapping, error)
+
+	// ListSIDMappings returns all durable foreign-SID mappings.
+	ListSIDMappings(ctx context.Context) ([]*models.SIDMapping, error)
+
+	// GetSIDMappingsByIDs returns the durable mappings for the given SIDs in a
+	// single query, keyed by SID. SIDs without a mapping are simply absent from
+	// the result (no error) — avoids an N+1 lookup when enriching a user with
+	// many group SIDs.
+	GetSIDMappingsByIDs(ctx context.Context, sids []string) (map[string]*models.SIDMapping, error)
+
+	// AllocateSIDMapping idempotently binds a foreign SID to a Unix UID/GID.
+	// If a mapping already exists, the existing one is returned unchanged
+	// (never remapped). The first caller wins under concurrency.
+	AllocateSIDMapping(ctx context.Context, sid string, unixID uint32, isGroup bool, displayName string) (*models.SIDMapping, error)
+
+	// DeleteSIDMapping removes a mapping (administrative cleanup only).
+	// Returns models.ErrSIDMappingNotFound if none exists.
+	DeleteSIDMapping(ctx context.Context, sid string) error
+}
+
 // Store is the composite control plane persistence interface.
 //
 // It embeds all sub-interfaces to provide the full set of operations.
@@ -734,4 +769,5 @@ type Store interface {
 	SnapshotPolicyStore
 	RestoreMarkerStore
 	HealthStore
+	SIDMappingStore
 }

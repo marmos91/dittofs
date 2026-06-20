@@ -44,6 +44,15 @@ type ResolvedIdentity struct {
 	GIDs     []uint32
 	Domain   string
 	Found    bool
+
+	// SID is the user's Windows Security Identifier, when known. Empty when
+	// no Windows identity is associated with the user. Populated from the
+	// persisted control-plane user record so the same identity surfaces
+	// regardless of which protocol (NFS/SMB) or provider resolved it.
+	SID string
+
+	// GroupSIDs is the list of Windows group SIDs for the user, when known.
+	GroupSIDs []string
 }
 
 // IdentityProvider resolves external credentials to DittoFS users.

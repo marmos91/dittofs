@@ -360,3 +360,44 @@ func TestLoad_NoFileNoEnv_StillDefaults(t *testing.T) {
 		t.Errorf("default database.type: got %q want sqlite", cfg.Database.Type)
 	}
 }
+
+// TestLoad_IdentityMachineSIDFromEnv verifies the machine-SID pin resolves from
+// env (DITTOFS_IDENTITY_MACHINE_SID) and via the config file (AD-3 #1235).
+func TestLoad_IdentityMachineSIDFromEnv(t *testing.T) {
+	content := `
+database:
+  type: sqlite
+controlplane:
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
+`
+	path := writeConfigFile(t, content)
+
+	t.Setenv("DITTOFS_IDENTITY_MACHINE_SID", "S-1-5-21-10-20-30")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Identity.MachineSID != "S-1-5-21-10-20-30" {
+		t.Errorf("identity.machine_sid env override dropped, got %q", cfg.Identity.MachineSID)
+	}
+}
+
+// TestLoad_IdentityMachineSIDInvalidRejected verifies validation rejects a
+// malformed pinned machine SID.
+func TestLoad_IdentityMachineSIDInvalidRejected(t *testing.T) {
+	content := `
+database:
+  type: sqlite
+controlplane:
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
+identity:
+  machine_sid: "not-a-sid"
+`
+	path := writeConfigFile(t, content)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected Load to reject invalid identity.machine_sid")
+	}
+}
