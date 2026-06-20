@@ -32,6 +32,7 @@ func RunCrossProtocolPermissionMatrix(t *testing.T, factory StoreFactory) {
 	t.Run("DenyACE", func(t *testing.T) { testCrossProtocolDenyACE(t, factory) })
 	t.Run("SIDOnlyGrant", func(t *testing.T) { testCrossProtocolSIDOnlyGrant(t, factory) })
 	t.Run("SIDOnlyDeny", func(t *testing.T) { testCrossProtocolSIDOnlyDeny(t, factory) })
+	t.Run("ShareWritableBypass", func(t *testing.T) { testCrossProtocolShareWritableBypass(t, factory) })
 }
 
 // canonOp is a backend-neutral operation the matrix probes through every
@@ -207,6 +208,11 @@ func (f *crossProtocolFixture) rootCtx() *metadata.AuthContext {
 }
 
 // userCtx builds an auth context for the given UID/GID and optional SID.
+//
+// ShareWritable/ShareReadOnly are left at their zero value (false) so the main
+// matrix exercises the full ACL/POSIX evaluation path. The share-level write
+// bypass in checkFilePermissions (which a real SMB session enables by setting
+// ShareWritable=true) is covered separately by testCrossProtocolShareWritableBypass.
 func (f *crossProtocolFixture) userCtx(uid, gid uint32, sid string) *metadata.AuthContext {
 	id := &metadata.Identity{
 		UID:  metadata.Uint32Ptr(uid),
@@ -398,4 +404,52 @@ func testCrossProtocolSIDOnlyDeny(t *testing.T, factory StoreFactory) {
 	other := f.userCtx(7600, 7600, "S-1-5-21-3-3-3-1111")
 	assertLanesAgree(t, f, handle, file, other, opRead, true)
 	assertLanesAgree(t, f, handle, file, other, opWrite, true)
+}
+
+// testCrossProtocolShareWritableBypass exercises the share-level write bypass in
+// checkFilePermissions (auth_permissions.go) — the path a real SMB session turns
+// on by setting AuthContext.ShareWritable=true, and which the rest of the matrix
+// leaves off.
+//
+// The security-critical invariant this pins: with ShareWritable=true and an
+// explicit DENY ACE, the bypass MUST NOT override the DENY (it is gated on
+// !acl.HasExplicitDeny). Write stays denied on every protocol. A share-writable
+// mount must never let a user past an explicit DENY — and it must do so
+// identically on NFS and SMB.
+//
+// KNOWN, OUT-OF-SCOPE DIVERGENCE (not asserted here, deliberately): with an
+// allow-ONLY DACL (no explicit DENY) on a mode 0o000 file and ShareWritable=true,
+// the two protocols disagree. NFS CheckPermissions takes the ShareWritable bypass
+// (skips the ACL) and grants write; SMB's open-time DACL gate (CheckFileAccess)
+// ignores ShareWritable and denies write because the DACL grants only read. This
+// is a pre-existing semantic gap in the ShareWritable shortcut, broader than
+// AD-0's NFSv4-ACCESS consolidation, so it is documented rather than fixed or
+// asserted here. Closing it (deciding whether share-writable should override a
+// positive-grant-only ACL, and on which protocol) is a candidate follow-up.
+func testCrossProtocolShareWritableBypass(t *testing.T, factory StoreFactory) {
+	f := newCrossProtocolFixture(t, factory)
+
+	// writableCtx is a user whose session granted share-level write, as the SMB
+	// session layer sets for a read-write tree connect.
+	writableCtx := func(uid, gid uint32, sid string) *metadata.AuthContext {
+		ctx := f.userCtx(uid, gid, sid)
+		ctx.ShareWritable = true
+		return ctx
+	}
+
+	// Explicit DENY-write ACE + ShareWritable=true → write still denied on every
+	// protocol. The bypass must not override an explicit DENY.
+	denySID := "S-1-5-21-9-9-9-6000"
+	denyWrite := &acl.ACL{
+		ACEs: []acl.ACE{
+			{Type: acl.ACE4_ACCESS_DENIED_ACE_TYPE, Who: "sid:" + denySID, AccessMask: acl.ACE4_WRITE_DATA | acl.ACE4_APPEND_DATA},
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: acl.SpecialEveryone, AccessMask: acl.ACE4_READ_DATA},
+		},
+	}
+	denyFile, denyH := f.createFile(t, "sharewritable_deny.txt", &metadata.FileAttr{
+		Mode: 0o666, UID: 6000, GID: 6000, ACL: denyWrite,
+	})
+	denied := writableCtx(6500, 6500, denySID)
+	assertLanesAgree(t, f, denyH, denyFile, denied, opRead, true)
+	assertLanesAgree(t, f, denyH, denyFile, denied, opWrite, false)
 }
