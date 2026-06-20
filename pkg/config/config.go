@@ -18,6 +18,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/identity/ldap"
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -85,6 +86,15 @@ type Config struct {
 
 	// Identity configures Windows/SID identity mapping. See IdentityConfig.
 	Identity IdentityConfig `mapstructure:"identity" yaml:"identity"`
+
+	// LDAP configures the LDAP/Active Directory identity provider (opt-in,
+	// disabled by default). When enabled, NFS/SMB clients authenticated against
+	// the directory are resolved to Unix UID/GID via RFC2307 attributes (or RID
+	// fallback) and their (optionally nested) AD group memberships. Connections
+	// are encrypted (LDAPS or StartTLS) unless plaintext is explicitly opted in.
+	// Environment overrides follow the DITTOFS_LDAP_* convention, e.g.
+	// DITTOFS_LDAP_URL, DITTOFS_LDAP_BIND_PASSWORD.
+	LDAP ldap.Config `mapstructure:"ldap" yaml:"ldap"`
 }
 
 // IdentityConfig configures Windows/SID identity behavior shared across NFS,

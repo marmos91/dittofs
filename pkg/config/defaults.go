@@ -27,6 +27,7 @@ func ApplyDefaults(cfg *Config) {
 	cfg.Snapshot.ApplyDefaults()
 	cfg.Blockstore.ApplyDefaults()
 	cfg.Metrics.ApplyDefaults()
+	cfg.LDAP.ApplyDefaults()
 }
 
 // applyLoggingDefaults sets logging defaults and normalizes values.

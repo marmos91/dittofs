@@ -12,6 +12,34 @@ type DittoFSConfig struct {
 	// Prometheus /metrics endpoint. Omitted entirely (nil pointer) unless the
 	// CRD opts metrics in, preserving the disabled-by-default server behavior.
 	Metrics *MetricsConfig `yaml:"metrics,omitempty"`
+	// LDAP renders the top-level ldap: block for the LDAP/AD identity provider.
+	// Omitted (nil pointer) unless the CRD configures LDAP. The bind password is
+	// NOT rendered here — it is injected via the DITTOFS_LDAP_BIND_PASSWORD env
+	// var sourced from a Kubernetes Secret.
+	LDAP *LDAPConfig `yaml:"ldap,omitempty"`
+}
+
+// LDAPConfig mirrors the dfs server ldap: config keys (pkg/identity/ldap.Config).
+// The bind password is intentionally absent; it is injected via env var from a
+// Secret, never written to the ConfigMap.
+type LDAPConfig struct {
+	Enabled        bool           `yaml:"enabled"`
+	URL            string         `yaml:"url"`
+	StartTLS       bool           `yaml:"start_tls,omitempty"`
+	AllowPlaintext bool           `yaml:"allow_plaintext,omitempty"`
+	BaseDN         string         `yaml:"base_dn"`
+	BindDN         string         `yaml:"bind_dn"`
+	UserAttr       string         `yaml:"user_attr,omitempty"`
+	Realm          string         `yaml:"realm,omitempty"`
+	Idmap          string         `yaml:"idmap,omitempty"`
+	NestedGroups   bool           `yaml:"nested_groups,omitempty"`
+	TLS            *LDAPTLSConfig `yaml:"tls,omitempty"`
+}
+
+// LDAPTLSConfig mirrors the dfs server ldap.tls: keys.
+type LDAPTLSConfig struct {
+	CACertFile         string `yaml:"ca_cert_file,omitempty"`
+	InsecureSkipVerify bool   `yaml:"insecure_skip_verify,omitempty"`
 }
 
 // MetricsConfig mirrors the dfs server metrics: config keys (pkg/config).

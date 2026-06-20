@@ -207,6 +207,78 @@ type IdentityConfig struct {
 	// Admin user configuration
 	// +optional
 	Admin *AdminConfig `json:"admin,omitempty"`
+
+	// LDAP configures the LDAP/Active Directory identity provider. When set and
+	// enabled, directory principals are resolved to Unix UID/GID (RFC2307 or RID)
+	// with nested AD group membership. The connection is encrypted (LDAPS or
+	// StartTLS) unless plaintext is explicitly allowed.
+	// +optional
+	LDAP *LDAPConfig `json:"ldap,omitempty"`
+}
+
+// LDAPConfig defines the LDAP/Active Directory identity provider settings.
+// The bind password is supplied out-of-band via BindPasswordSecretRef and is
+// injected into the pod as the DITTOFS_LDAP_BIND_PASSWORD env var — it is never
+// written to the config ConfigMap.
+type LDAPConfig struct {
+	// Enabled turns the LDAP identity provider on.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// URL is the directory URL, e.g. "ldaps://dc.example.com:636" (preferred) or
+	// "ldap://dc.example.com:389" (requires StartTLS or AllowPlaintext).
+	// +kubebuilder:validation:Required
+	URL string `json:"url"`
+
+	// StartTLS upgrades a plaintext ldap:// connection to TLS.
+	// +optional
+	StartTLS bool `json:"startTLS,omitempty"`
+
+	// AllowPlaintext is the explicit opt-in to bind over an unencrypted
+	// connection. Off by default; LDAPS or StartTLS is required otherwise.
+	// +optional
+	AllowPlaintext bool `json:"allowPlaintext,omitempty"`
+
+	// BaseDN is the search base, e.g. "DC=example,DC=com".
+	// +kubebuilder:validation:Required
+	BaseDN string `json:"baseDN"`
+
+	// BindDN is the service-account distinguished name used to bind.
+	// +kubebuilder:validation:Required
+	BindDN string `json:"bindDN"`
+
+	// BindPasswordSecretRef references a Secret key holding the bind password.
+	// Injected as DITTOFS_LDAP_BIND_PASSWORD; never stored in the ConfigMap.
+	// +optional
+	BindPasswordSecretRef *corev1.SecretKeySelector `json:"bindPasswordSecretRef,omitempty"`
+
+	// UserAttr is the attribute matched against the bare username (default
+	// "sAMAccountName" for AD).
+	// +optional
+	UserAttr string `json:"userAttr,omitempty"`
+
+	// Realm is the expected AD realm/domain (e.g. "EXAMPLE.COM").
+	// +optional
+	Realm string `json:"realm,omitempty"`
+
+	// Idmap selects UID/GID derivation: "rfc2307" (default) or "rid".
+	// +kubebuilder:validation:Enum=rfc2307;rid
+	// +optional
+	Idmap string `json:"idmap,omitempty"`
+
+	// NestedGroups enables transitive AD group resolution.
+	// +optional
+	NestedGroups bool `json:"nestedGroups,omitempty"`
+
+	// CACertFile is the in-pod path to a CA bundle that verifies the directory
+	// certificate. Mount it from a Secret/ConfigMap; the operator does not manage
+	// the volume.
+	// +optional
+	CACertFile string `json:"caCertFile,omitempty"`
+
+	// InsecureSkipVerify disables directory-certificate verification (lab only).
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 }
 
 // JWTConfig defines JWT authentication settings

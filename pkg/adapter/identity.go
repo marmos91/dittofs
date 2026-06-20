@@ -5,11 +5,13 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/identity"
 	identitykerberos "github.com/marmos91/dittofs/pkg/identity/kerberos"
+	identityldap "github.com/marmos91/dittofs/pkg/identity/ldap"
 )
 
 // ExtractRealm extracts the Kerberos realm from a service principal
@@ -123,8 +125,26 @@ func BuildIdentityResolver(rt *runtime.Runtime, realm string) *identity.Resolver
 	}
 
 	krbProvider := identitykerberos.New(realm, linkStore, userLookup)
-	return identity.NewResolver(
+
+	opts := []identity.ResolverOption{
 		identity.WithProvider(krbProvider),
-		identity.WithCacheTTL(identity.DefaultCacheTTL),
-	)
+	}
+
+	// Register the LDAP/AD provider when the server is configured with LDAP.
+	// It is tried after Kerberos (which resolves via the local user store / PAC)
+	// and before the chain falls through to Found=false, so an AD principal or
+	// SID with no local mapping is resolved against the directory (RFC2307
+	// UID/GID + nested groups). Construction failures are logged and skipped so a
+	// misconfigured directory degrades to Kerberos-only rather than failing boot.
+	if ldapCfg := rt.LDAPConfig(); ldapCfg != nil && ldapCfg.Enabled {
+		ldapProvider, err := identityldap.New(ldapCfg, linkStore, userLookup)
+		if err != nil {
+			logger.Warn("LDAP identity provider not registered (invalid config)", "error", err)
+		} else {
+			opts = append(opts, identity.WithProvider(ldapProvider))
+		}
+	}
+
+	opts = append(opts, identity.WithCacheTTL(identity.DefaultCacheTTL))
+	return identity.NewResolver(opts...)
 }

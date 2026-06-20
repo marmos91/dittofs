@@ -55,6 +55,10 @@ func Validate(cfg *Config) error {
 		return err
 	}
 
+	if err := cfg.LDAP.Validate(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

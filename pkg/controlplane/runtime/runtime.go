@@ -19,6 +19,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/trash"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/marmos91/dittofs/pkg/identity/ldap"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
@@ -138,6 +139,11 @@ type Runtime struct {
 	runtimeCancel context.CancelFunc
 
 	identityChangeCallbacks []func()
+
+	// ldapConfig is the optional LDAP/AD identity provider configuration set at
+	// startup from the server config. When present and Enabled, BuildIdentityResolver
+	// registers an LDAP provider in the identity resolution chain. Guarded by mu.
+	ldapConfig *ldap.Config
 
 	// statusCheckers is the lazy per-entity cached health-checker
 	// map backing [Runtime.BlockStoreChecker],
@@ -842,6 +848,23 @@ func (r *Runtime) GetIdentityMappingStore() store.IdentityMappingStore {
 		return ims
 	}
 	return nil
+}
+
+// SetLDAPConfig sets the LDAP/AD identity provider configuration, sourced from
+// the server config at startup. When cfg is non-nil and Enabled,
+// BuildIdentityResolver registers an LDAP provider in the resolution chain.
+func (r *Runtime) SetLDAPConfig(cfg *ldap.Config) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ldapConfig = cfg
+}
+
+// LDAPConfig returns the configured LDAP/AD identity provider config, or nil if
+// none was set. The returned pointer is the live config; callers must not mutate it.
+func (r *Runtime) LDAPConfig() *ldap.Config {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.ldapConfig
 }
 
 // OnIdentityMappingChange registers a callback invoked when identity mappings

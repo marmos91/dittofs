@@ -1371,6 +1371,20 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 		))
 	}
 
+	// LDAP bind password (optional - only if LDAP configured with a Secret ref).
+	// Injected as DITTOFS_LDAP_BIND_PASSWORD so the cleartext bind password never
+	// lands in the config ConfigMap.
+	if dittoServer.Spec.Identity != nil && dittoServer.Spec.Identity.LDAP != nil &&
+		dittoServer.Spec.Identity.LDAP.BindPasswordSecretRef != nil {
+		ref := dittoServer.Spec.Identity.LDAP.BindPasswordSecretRef
+		envVars = append(envVars, secretEnvVar(
+			"DITTOFS_LDAP_BIND_PASSWORD",
+			ref.Name,
+			ref.Key,
+			false,
+		))
+	}
+
 	// PostgreSQL connection fields (only if Postgres configured and NOT using Percona)
 	// Percona case already injects DATABASE_URL via buildPostgresEnvVars.
 	// Inject individual env vars that Viper maps to database.postgres.* struct fields.

@@ -16,9 +16,10 @@ import (
 // round-2 §2.3 / round-1 §2.1.
 func TestConfigShow_RedactsSecrets(t *testing.T) {
 	const (
-		jwtSecret = "super-secret-jwt-signing-key-32-chars-long"
-		pgPass    = "p0stgr3s-pa55word"
-		adminHash = "$2y$10$abcdefghijklmnopqrstuv"
+		jwtSecret   = "super-secret-jwt-signing-key-32-chars-long"
+		pgPass      = "p0stgr3s-pa55word"
+		adminHash   = "$2y$10$abcdefghijklmnopqrstuv"
+		ldapBindPwd = "ldap-b1nd-s3cret"
 	)
 
 	cfg := GetDefaultConfig()
@@ -31,8 +32,9 @@ func TestConfigShow_RedactsSecrets(t *testing.T) {
 		Password: pgPass,
 	}
 	cfg.Admin.PasswordHash = adminHash
+	cfg.LDAP.BindPassword = ldapBindPwd
 
-	secrets := []string{jwtSecret, pgPass, adminHash}
+	secrets := []string{jwtSecret, pgPass, adminHash, ldapBindPwd}
 
 	t.Run("yaml", func(t *testing.T) {
 		out, err := yaml.Marshal(cfg)

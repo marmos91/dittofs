@@ -14,6 +14,7 @@ require (
 	github.com/gemalto/kmip-go v0.1.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-chi/chi/v5 v5.1.0
+	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/go-playground/validator/v10 v10.28.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
@@ -33,7 +34,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
-	golang.org/x/sync v0.18.0
+	golang.org/x/sync v0.19.0
 	golang.org/x/term v0.42.0
 	golang.org/x/time v0.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
@@ -45,6 +46,7 @@ require (
 require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
+	github.com/Azure/go-ntlmssp v0.1.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ansel1/merry v1.8.1 // indirect
 	github.com/ansel1/merry/v2 v2.2.2 // indirect
@@ -64,6 +66,7 @@ require (
 	github.com/gemalto/flume v1.0.0 // indirect
 	github.com/geoffgarside/ber v1.1.0 // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
+	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.23.0 // indirect
@@ -167,10 +170,10 @@ require (
 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.45.0
-	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/crypto v0.48.0
+	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sys v0.43.0
-	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 )
 

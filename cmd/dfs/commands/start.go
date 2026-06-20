@@ -241,6 +241,16 @@ func runStart(cmd *cobra.Command, args []string) error {
 	rt.SetPinnedMachineSID(cfg.Identity.MachineSID)
 	rt.SetAdapterFactory(createAdapterFactory(&cfg.Kerberos))
 
+	// Thread the LDAP/AD identity provider config into the runtime so the
+	// adapters' BuildIdentityResolver can register the provider when enabled.
+	if cfg.LDAP.Enabled {
+		ldapCfg := cfg.LDAP
+		rt.SetLDAPConfig(&ldapCfg)
+		logger.Info("LDAP identity provider enabled",
+			"url", cfg.LDAP.URL, "base_dn", cfg.LDAP.BaseDN, "idmap", cfg.LDAP.Idmap,
+			"nested_groups", cfg.LDAP.NestedGroups)
+	}
+
 	// Create and set API server
 	apiServer, err := api.NewServer(cfg.ControlPlane, rt, cpStore, cfg.Snapshot.RestoreHTTPTimeout)
 	if err != nil {
