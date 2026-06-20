@@ -221,7 +221,15 @@ func extractPACIdentity(creds *credentials.Credentials) (userSID string, groupSI
 	if ad.LogonDomainID != "" && ad.UserID != 0 {
 		userSID = fmt.Sprintf("%s-%d", ad.LogonDomainID, ad.UserID)
 	}
-	return userSID, ad.GroupMembershipSIDs
+	// Copy the slice: GetADCredentials returns ADCredentials by value, but the
+	// GroupMembershipSIDs header still aliases gokrb5's internal backing array.
+	// Returning it directly would let a future gokrb5 mutation corrupt the SIDs
+	// we persist on the session. Own our copy.
+	if len(ad.GroupMembershipSIDs) > 0 {
+		groupSIDs = make([]string, len(ad.GroupMembershipSIDs))
+		copy(groupSIDs, ad.GroupMembershipSIDs)
+	}
+	return userSID, groupSIDs
 }
 
 // BuildMutualAuth constructs a raw AP-REP token for mutual authentication.

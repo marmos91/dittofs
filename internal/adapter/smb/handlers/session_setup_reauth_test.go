@@ -414,3 +414,46 @@ func TestSessionSetup_UserWithoutNTHash_Rejected(t *testing.T) {
 			sess.Username, sess.User)
 	}
 }
+
+// TestTryReauthUpdate_ClearsKerberosPACIdentity is the regression net for the
+// privilege-escalation class where a session first authenticates via Kerberos
+// (its PAC carries AD group SIDs, possibly privileged) and is then re-
+// authenticated via NTLM as a lower-privileged or anonymous user. The NTLM
+// reauth carries no in-band PAC, so the session's AD credential set MUST revert
+// to empty — otherwise the new identity would inherit the prior principal's PAC
+// group SIDs and gain access on SID-keyed ACLs it should no longer have.
+func TestTryReauthUpdate_ClearsKerberosPACIdentity(t *testing.T) {
+	h := NewHandler()
+
+	const sessionID = uint64(0xc0ffee)
+	kerbUser := &models.User{Username: "alice", Enabled: true}
+	sess := h.CreateSessionWithUser(sessionID, "127.0.0.1:1", kerbUser, "DITTOFS")
+
+	// Simulate the prior Kerberos auth having stamped PAC identity on the session.
+	sess.PACGroupSIDs = []string{
+		"S-1-5-21-1111111111-2222222222-3333333333-512", // Domain Admins
+		"S-1-5-21-1111111111-2222222222-3333333333-513", // Domain Users
+	}
+	sess.PACUserSID = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+
+	// Drive an NTLM reauth onto the same session as a different, lower-priv user.
+	ntlmUser := &models.User{Username: "bob", Enabled: true}
+	pending := &PendingAuth{SessionID: sessionID, IsReauth: true}
+	if res := h.tryReauthUpdate(pending, "bob", "DITTOFS", ntlmUser, false); res == nil {
+		t.Fatal("tryReauthUpdate returned nil for an existing session")
+	}
+
+	got, ok := h.GetSession(sessionID)
+	if !ok {
+		t.Fatal("session disappeared after reauth update")
+	}
+	if got.Username != "bob" {
+		t.Errorf("Username = %q, want bob", got.Username)
+	}
+	if len(got.PACGroupSIDs) != 0 {
+		t.Errorf("PACGroupSIDs not cleared after NTLM reauth: %v — stale AD groups leak privilege", got.PACGroupSIDs)
+	}
+	if got.PACUserSID != "" {
+		t.Errorf("PACUserSID not cleared after NTLM reauth: %q", got.PACUserSID)
+	}
+}
