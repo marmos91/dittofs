@@ -92,10 +92,12 @@ func (s *GORMStore) UpdateUser(ctx context.Context, user *models.User) error {
 		return convertNotFoundError(err, models.ErrUserNotFound)
 	}
 
-	// Update specific fields using Select to handle pointers properly
+	// Update specific fields using Select to handle pointers properly.
+	// SID/GroupSIDs are included so a login flow that enriches the user with
+	// Windows identity (PAC/NTLMSSP/LDAP) persists it (AD-3 #1235).
 	return s.db.WithContext(ctx).
 		Model(&existing).
-		Select("Username", "Enabled", "MustChangePassword", "Role", "UID", "GID", "DisplayName", "Email").
+		Select("Username", "Enabled", "MustChangePassword", "Role", "UID", "GID", "DisplayName", "Email", "SID", "GroupSIDs").
 		Updates(user).Error
 }
 

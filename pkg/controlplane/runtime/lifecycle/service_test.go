@@ -298,3 +298,68 @@ func TestInitMachineSIDReadErrorGenerates(t *testing.T) {
 		t.Error("SID mapper should still be generated despite read error")
 	}
 }
+
+// A pinned machine SID is applied in preference to generation and persisted so
+// it is authoritative (AD-3 #1235).
+func TestInitMachineSIDPinnedApplied(t *testing.T) {
+	const pinned = "S-1-5-21-10-20-30"
+	s := New(0)
+	s.SetPinnedMachineSID(pinned)
+	store := &fakeSIDStore{vals: map[string]string{}}
+	s.initMachineSID(context.Background(), store)
+	if s.SIDMapper() == nil {
+		t.Fatal("SID mapper nil after pin")
+	}
+	if s.SIDMapper().MachineSIDString() != pinned {
+		t.Errorf("mapper SID = %q, want pinned %q", s.SIDMapper().MachineSIDString(), pinned)
+	}
+	if store.vals["machine_sid"] != pinned {
+		t.Errorf("pinned SID not persisted: got %q", store.vals["machine_sid"])
+	}
+}
+
+// A pinned SID overrides a different stored value (operator intent wins).
+func TestInitMachineSIDPinnedOverridesStored(t *testing.T) {
+	const pinned = "S-1-5-21-1-1-1"
+	s := New(0)
+	s.SetPinnedMachineSID(pinned)
+	store := &fakeSIDStore{vals: map[string]string{"machine_sid": "S-1-5-21-9-9-9"}}
+	s.initMachineSID(context.Background(), store)
+	if s.SIDMapper().MachineSIDString() != pinned {
+		t.Errorf("pinned SID did not override stored value: got %q", s.SIDMapper().MachineSIDString())
+	}
+	if store.vals["machine_sid"] != pinned {
+		t.Errorf("override not persisted: got %q", store.vals["machine_sid"])
+	}
+}
+
+// An invalid pinned SID is ignored and the normal generate/load path runs.
+func TestInitMachineSIDPinnedInvalidFallsBack(t *testing.T) {
+	s := New(0)
+	s.SetPinnedMachineSID("garbage")
+	store := &fakeSIDStore{vals: map[string]string{}}
+	s.initMachineSID(context.Background(), store)
+	if s.SIDMapper() == nil {
+		t.Fatal("SID mapper nil after invalid pin")
+	}
+	if s.SIDMapper().MachineSIDString() == "garbage" {
+		t.Error("invalid pin was applied verbatim")
+	}
+	if !store.setHit {
+		t.Error("fallback path should generate + persist")
+	}
+}
+
+// Two services pinned to the same SID produce identical mappers (node parity).
+func TestInitMachineSIDPinnedNodeParity(t *testing.T) {
+	const pinned = "S-1-5-21-7-7-7"
+	a, b := New(0), New(0)
+	a.SetPinnedMachineSID(pinned)
+	b.SetPinnedMachineSID(pinned)
+	a.initMachineSID(context.Background(), nil)
+	b.initMachineSID(context.Background(), nil)
+	if a.SIDMapper().MachineSIDString() != b.SIDMapper().MachineSIDString() {
+		t.Errorf("pinned nodes diverge: %q vs %q",
+			a.SIDMapper().MachineSIDString(), b.SIDMapper().MachineSIDString())
+	}
+}

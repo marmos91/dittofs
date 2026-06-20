@@ -25,7 +25,7 @@ type SIDMapping struct {
 	// SID is the canonical foreign domain SID string (e.g.
 	// "S-1-5-21-111-222-333-1107"). Primary key — uniqueness is the
 	// never-remap guarantee.
-	SID string `gorm:"primaryKey;type:varchar(184)" json:"sid"`
+	SID string `gorm:"column:sid;primaryKey;type:varchar(184)" json:"sid"`
 
 	// UnixID is the allocated Unix identifier: a UID when IsGroup is false,
 	// a GID when IsGroup is true.

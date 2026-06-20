@@ -48,12 +48,12 @@ type User struct {
 	// no source is wired. Persisted as a plain column so the resolver can
 	// populate ResolvedIdentity.SID for a user authenticated over any
 	// protocol (AD-3 #1235).
-	SID string `gorm:"size:184" json:"sid,omitempty"`
+	SID string `gorm:"column:sid;size:184" json:"sid,omitempty"`
 
 	// GroupSIDs is the list of Windows group SIDs for the user, populated
 	// alongside SID. Persisted as a JSON-encoded text column via GORM's
 	// built-in json serializer (AD-3 #1235).
-	GroupSIDs []string `gorm:"serializer:json" json:"group_sids,omitempty"`
+	GroupSIDs []string `gorm:"column:group_sids;serializer:json" json:"group_sids,omitempty"`
 
 	// Many-to-many relationship with groups
 	Groups []Group `gorm:"many2many:user_groups;" json:"groups,omitempty"`
