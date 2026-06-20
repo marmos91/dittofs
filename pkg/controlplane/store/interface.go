@@ -709,6 +709,30 @@ type IdentityMappingStore interface {
 	ListIdentityMappingsForUser(ctx context.Context, username string) ([]*models.IdentityMapping, error)
 }
 
+// SIDMappingStore provides durable foreign-SID -> Unix UID/GID allocation.
+//
+// It is a separate interface from Store (mirroring IdentityMappingStore) so
+// only identity-aware components depend on it. Local/algorithmic SIDs are not
+// stored here — only foreign AD/LDAP domain SIDs that cannot be derived from a
+// local UID. Allocation is idempotent and never remaps an existing SID.
+type SIDMappingStore interface {
+	// GetSIDMapping returns the durable mapping for a foreign domain SID.
+	// Returns models.ErrSIDMappingNotFound if none exists.
+	GetSIDMapping(ctx context.Context, sid string) (*models.SIDMapping, error)
+
+	// ListSIDMappings returns all durable foreign-SID mappings.
+	ListSIDMappings(ctx context.Context) ([]*models.SIDMapping, error)
+
+	// AllocateSIDMapping idempotently binds a foreign SID to a Unix UID/GID.
+	// If a mapping already exists, the existing one is returned unchanged
+	// (never remapped). The first caller wins under concurrency.
+	AllocateSIDMapping(ctx context.Context, sid string, unixID uint32, isGroup bool, displayName string) (*models.SIDMapping, error)
+
+	// DeleteSIDMapping removes a mapping (administrative cleanup only).
+	// Returns models.ErrSIDMappingNotFound if none exists.
+	DeleteSIDMapping(ctx context.Context, sid string) error
+}
+
 // Store is the composite control plane persistence interface.
 //
 // It embeds all sub-interfaces to provide the full set of operations.

@@ -44,15 +44,16 @@ type User struct {
 	LastLogin          *time.Time `json:"last_login,omitempty"`
 
 	// SID is the user's Windows Security Identifier, populated from
-	// Kerberos PAC, NTLMSSP session info, or local ID resolution.
-	// Empty when no source is wired. In-memory only for now — persistent
-	// storage of Windows identity is a follow-up.
-	SID string `gorm:"-" json:"sid,omitempty"`
+	// Kerberos PAC, NTLMSSP session info, or local ID resolution. Empty when
+	// no source is wired. Persisted as a plain column so the resolver can
+	// populate ResolvedIdentity.SID for a user authenticated over any
+	// protocol (AD-3 #1235).
+	SID string `gorm:"size:184" json:"sid,omitempty"`
 
 	// GroupSIDs is the list of Windows group SIDs for the user, populated
-	// alongside SID. In-memory only for now — gorm-excluded until a
-	// persistence strategy (JSON column or join table) is chosen.
-	GroupSIDs []string `gorm:"-" json:"group_sids,omitempty"`
+	// alongside SID. Persisted as a JSON-encoded text column via GORM's
+	// built-in json serializer (AD-3 #1235).
+	GroupSIDs []string `gorm:"serializer:json" json:"group_sids,omitempty"`
 
 	// Many-to-many relationship with groups
 	Groups []Group `gorm:"many2many:user_groups;" json:"groups,omitempty"`
