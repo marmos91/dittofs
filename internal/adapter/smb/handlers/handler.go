@@ -354,6 +354,29 @@ type OpenFile struct {
 	// and MS-FSCC §2.4.1, FileAccessInformation and QUERY_INFO open-level
 	// access gates consult this field, not DesiredAccess (smb2.acls.GENERIC
 	// at acls.c:440).
+	//
+	// Per-op gates are INTENTIONALLY frozen to this snapshot, not re-evaluated
+	// through the central FileAccessChecker on each request:
+	//
+	//   - The single access check happens once, at CREATE, through the central
+	//     metadata.FileAccessChecker (CheckFileAccess / CheckFileAccessWithParent).
+	//     Subsequent READ / WRITE / DELETE / SET_INFO / IOCTL (sparse, copychunk,
+	//     fsctl) handlers gate against this frozen GrantedAccess rather than
+	//     re-running the checker. This is the MS-SMB2 / MS-FSA handle model
+	//     (MS-FSA §2.1.5.2/§2.1.5.3 operate on Open.GrantedAccess; §2.1.5.4
+	//     delete-on-close honors the authorization frozen at open), and it is
+	//     deliberately spec-correct: an open's rights do NOT shrink or grow if
+	//     the DACL changes after the handle is granted. Re-evaluating per-op
+	//     would be a protocol bug, not a fix — a Windows client holding a valid
+	//     handle would start seeing STATUS_ACCESS_DENIED mid-stream.
+	//   - DELETE access verified at open (FILE_DELETE_ON_CLOSE / SET_INFO
+	//     FileDispositionInformation) is propagated to the unlink path via
+	//     AuthContext.HasDeleteAccess so the metadata delete check honors the
+	//     same frozen authorization (see metadata.checkDeletePermission, #388).
+	//
+	// So for SMB the central checker is the SOLE authorizer; per-op handlers
+	// only consult the mask it produced. Centralizing the per-op gates further
+	// would change spec-mandated semantics and is explicitly out of scope.
 	GrantedAccess       uint32
 	IsDirectory         bool
 	IsPipe              bool   // True if this is a named pipe (IPC$)
