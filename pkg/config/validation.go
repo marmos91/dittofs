@@ -51,6 +51,10 @@ func Validate(cfg *Config) error {
 		return err
 	}
 
+	if err := cfg.Identity.Validate(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

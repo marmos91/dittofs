@@ -15,6 +15,7 @@ import (
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
+	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/controlplane/api"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/mitchellh/mapstructure"
@@ -81,6 +82,37 @@ type Config struct {
 	// Metrics configures the Prometheus metrics endpoint (opt-in, disabled by
 	// default). See MetricsConfig.
 	Metrics MetricsConfig `mapstructure:"metrics" yaml:"metrics"`
+
+	// Identity configures Windows/SID identity mapping. See IdentityConfig.
+	Identity IdentityConfig `mapstructure:"identity" yaml:"identity"`
+}
+
+// IdentityConfig configures Windows/SID identity behavior shared across NFS,
+// SMB, and the control plane.
+//
+// Environment variable override:
+//
+//	DITTOFS_IDENTITY_MACHINE_SID pins the machine SID.
+type IdentityConfig struct {
+	// MachineSID, when set, pins this node's machine SID to a fixed
+	// "S-1-5-21-{a}-{b}-{c}" value instead of generating a random one on
+	// first boot. Pin the SAME value on every node in a cluster so they
+	// derive IDENTICAL local/algorithmic SIDs from the same Unix UID/GID
+	// (the RID formula in pkg/auth/sid/mapper.go is a LOCKED, node-shared
+	// invariant). Leave empty for a single node — the SID is then generated
+	// once and persisted, staying stable across restarts.
+	MachineSID string `mapstructure:"machine_sid" yaml:"machine_sid"`
+}
+
+// Validate returns an error if the IdentityConfig has invalid values.
+func (c *IdentityConfig) Validate() error {
+	if c.MachineSID == "" {
+		return nil
+	}
+	if _, err := sid.NewSIDMapperFromString(c.MachineSID); err != nil {
+		return fmt.Errorf("identity.machine_sid %q is invalid: %w", c.MachineSID, err)
+	}
+	return nil
 }
 
 // GCConfig configures the engine.CollectGarbage mark-sweep run. Knobs

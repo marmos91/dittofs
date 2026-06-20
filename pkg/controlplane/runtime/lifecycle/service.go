@@ -68,6 +68,13 @@ type Service struct {
 	// sidMapper is the machine SID mapper, initialized on first Serve().
 	// It is exposed via SIDMapper() for adapters to use.
 	sidMapper *sid.SIDMapper
+
+	// pinnedMachineSID, when non-empty, is an operator-supplied machine SID
+	// (config/env) that initMachineSID seeds in preference to any random
+	// generation. Pinning the machine SID lets multiple cluster nodes derive
+	// IDENTICAL local/algorithmic SIDs from the same Unix UID/GID — see
+	// pkg/auth/sid/mapper.go for the LOCKED RID formula.
+	pinnedMachineSID string
 }
 
 func New(shutdownTimeout time.Duration) *Service {
@@ -92,19 +99,65 @@ func (s *Service) SIDMapper() *sid.SIDMapper {
 	return s.sidMapper
 }
 
-// initMachineSID loads or generates the machine SID from the settings store.
-// On first boot (no stored SID), a new random SID is generated and persisted.
-// On subsequent boots, the stored SID is loaded to ensure consistent mapping.
+// SetPinnedMachineSID records an operator-supplied machine SID to seed during
+// Serve(). Must be called before Serve(). An empty string is a no-op (the
+// machine SID is then loaded-or-generated as before). The value is validated
+// and applied by initMachineSID.
+func (s *Service) SetPinnedMachineSID(machineSID string) {
+	if s.served {
+		panic("cannot set pinned machine SID after Serve() has been called")
+	}
+	s.pinnedMachineSID = machineSID
+}
+
+// initMachineSID resolves the machine SID with the following precedence:
+//
+//  1. An operator-pinned machine SID (SetPinnedMachineSID, from config/env)
+//     is validated and applied; it is persisted to the settings store so it
+//     is authoritative and survives a later boot without the pin. Pinning the
+//     same SID on every node makes their local/algorithmic SIDs identical —
+//     required for cross-node identity parity (see pkg/auth/sid/mapper.go).
+//  2. Otherwise the stored SID (first boot generated + persisted) is loaded,
+//     keeping mapping stable across restarts.
+//  3. Otherwise a new random SID is generated and persisted.
+//
 // This MUST be called before any adapters are started.
 func (s *Service) initMachineSID(ctx context.Context, store MachineSIDStore) {
+	const machineSIDKey = "machine_sid"
+
+	// Operator pin takes precedence and is honored even without a settings
+	// store (ephemeral / test runtimes) so two nodes still derive identical
+	// SIDs from the same config.
+	if s.pinnedMachineSID != "" {
+		mapper, err := sid.NewSIDMapperFromString(s.pinnedMachineSID)
+		if err != nil {
+			logger.Error("Invalid pinned machine SID, ignoring and falling back",
+				"pinned", s.pinnedMachineSID, "error", err)
+		} else {
+			s.sidMapper = mapper
+			if store != nil {
+				prior, _ := store.GetSetting(ctx, machineSIDKey)
+				if prior != "" && prior != s.pinnedMachineSID {
+					logger.Warn("Pinned machine SID overrides a different stored value; foreign-SID mappings keyed on the old domain remain unaffected, but local UID->SID encoding changes",
+						"pinned", s.pinnedMachineSID, "stored", prior)
+				}
+				if prior != s.pinnedMachineSID {
+					if err := store.SetSetting(ctx, machineSIDKey, s.pinnedMachineSID); err != nil {
+						logger.Error("Failed to persist pinned machine SID", "sid", s.pinnedMachineSID, "error", err)
+					}
+				}
+			}
+			logger.Info("Using pinned machine SID", "sid", s.pinnedMachineSID)
+			return
+		}
+	}
+
 	if store == nil {
 		logger.Warn("No settings store available, generating ephemeral machine SID")
 		s.sidMapper = sid.GenerateMachineSID()
 		logger.Info("Generated ephemeral machine SID", "sid", s.sidMapper.MachineSIDString())
 		return
 	}
-
-	const machineSIDKey = "machine_sid"
 
 	stored, err := store.GetSetting(ctx, machineSIDKey)
 	if err != nil {
