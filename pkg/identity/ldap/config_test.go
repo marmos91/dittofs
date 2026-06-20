@@ -1,6 +1,7 @@
 package ldap
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ func TestConfigValidate_PlaintextAllowedWithOptIn(t *testing.T) {
 		URL:            "ldap://dc.example.com:389",
 		BaseDN:         "DC=example,DC=com",
 		BindDN:         "CN=svc,DC=example,DC=com",
+		BindPassword:   "secret",
 		AllowPlaintext: true,
 	}
 	cfg.ApplyDefaults()
@@ -37,11 +39,12 @@ func TestConfigValidate_PlaintextAllowedWithOptIn(t *testing.T) {
 
 func TestConfigValidate_StartTLSPasses(t *testing.T) {
 	cfg := &Config{
-		Enabled:  true,
-		URL:      "ldap://dc.example.com:389",
-		BaseDN:   "DC=example,DC=com",
-		BindDN:   "CN=svc,DC=example,DC=com",
-		StartTLS: true,
+		Enabled:      true,
+		URL:          "ldap://dc.example.com:389",
+		BaseDN:       "DC=example,DC=com",
+		BindDN:       "CN=svc,DC=example,DC=com",
+		BindPassword: "secret",
+		StartTLS:     true,
 	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -51,10 +54,11 @@ func TestConfigValidate_StartTLSPasses(t *testing.T) {
 
 func TestConfigValidate_LDAPSPasses(t *testing.T) {
 	cfg := &Config{
-		Enabled: true,
-		URL:     "ldaps://dc.example.com:636",
-		BaseDN:  "DC=example,DC=com",
-		BindDN:  "CN=svc,DC=example,DC=com",
+		Enabled:      true,
+		URL:          "ldaps://dc.example.com:636",
+		BaseDN:       "DC=example,DC=com",
+		BindDN:       "CN=svc,DC=example,DC=com",
+		BindPassword: "secret",
 	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
@@ -77,13 +81,16 @@ func TestConfigValidate_RequiredFields(t *testing.T) {
 		name string
 		cfg  Config
 	}{
-		{"missing url", Config{Enabled: true, BaseDN: "DC=x", BindDN: "CN=y"}},
-		{"missing base_dn", Config{Enabled: true, URL: "ldaps://x", BindDN: "CN=y"}},
-		{"missing bind_dn", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x"}},
-		{"bad scheme", Config{Enabled: true, URL: "http://x", BaseDN: "DC=x", BindDN: "CN=y"}},
-		{"bad idmap", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y", Idmap: "bogus"}},
-		{"half mTLS", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y", TLS: TLSConfig{ClientCertFile: "a"}}},
-		{"bad min version", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y", TLS: TLSConfig{MinVersion: "1.0"}}},
+		{"missing url", Config{Enabled: true, BaseDN: "DC=x", BindDN: "CN=y", BindPassword: "p"}},
+		{"missing base_dn", Config{Enabled: true, URL: "ldaps://x", BindDN: "CN=y", BindPassword: "p"}},
+		{"missing bind_dn", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindPassword: "p"}},
+		{"missing bind_password", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y"}},
+		{"bad scheme", Config{Enabled: true, URL: "http://x", BaseDN: "DC=x", BindDN: "CN=y", BindPassword: "p"}},
+		{"bad idmap", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y", BindPassword: "p", Idmap: "bogus"}},
+		{"bad user_attr", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y", BindPassword: "p", UserAttr: "bad)attr"}},
+		{"negative max_group_results", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y", BindPassword: "p", MaxGroupResults: -1}},
+		{"half mTLS", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y", BindPassword: "p", TLS: TLSConfig{ClientCertFile: "a"}}},
+		{"bad min version", Config{Enabled: true, URL: "ldaps://x", BaseDN: "DC=x", BindDN: "CN=y", BindPassword: "p", TLS: TLSConfig{MinVersion: "1.0"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -125,6 +132,20 @@ func TestMarshalYAML_RedactsPassword(t *testing.T) {
 	}
 	if strings.Contains(string(data), "supersecret") {
 		t.Errorf("plaintext password leaked: %s", data)
+	}
+}
+
+func TestMarshalJSON_RedactsPassword(t *testing.T) {
+	cfg := Config{BindPassword: "supersecret"}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), redactedSecret) {
+		t.Errorf("bind password not redacted in JSON output: %s", data)
+	}
+	if strings.Contains(string(data), "supersecret") {
+		t.Errorf("plaintext password leaked in JSON: %s", data)
 	}
 }
 

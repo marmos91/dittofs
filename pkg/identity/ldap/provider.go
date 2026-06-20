@@ -167,6 +167,13 @@ func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*ide
 		logger.Debug("ldap: no user matched", "filter", filter, "base", p.cfg.BaseDN)
 		return &identity.ResolvedIdentity{Found: false}, nil
 	}
+	if len(res.Entries) > 1 {
+		// SizeLimit caps this at 2, so >1 means the lookup is ambiguous. The
+		// first entry is used but the resolved identity is non-deterministic —
+		// surface it rather than silently picking one.
+		logger.Warn("ldap: ambiguous user lookup — multiple entries matched, using first",
+			"filter", filter, "base", p.cfg.BaseDN, "count", len(res.Entries))
+	}
 	entry := res.Entries[0]
 
 	username := entry.GetAttributeValue("sAMAccountName")
@@ -235,9 +242,9 @@ func (p *Provider) deriveUIDGID(entry *ldapv3.Entry) (uint32, uint32, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	// idmap_rid identity: UID == RID. The primary GID defaults to the same RID
-	// when no group context is available; resolveGroupGIDs overrides GID with
-	// the primaryGroupID-derived value when present.
+	// idmap_rid identity: UID == RID. With no RFC2307 gidNumber the GID defaults
+	// to the same RID; the user's actual AD primary group (primaryGroupID) is
+	// added to the supplementary set by resolveGroupGIDs.
 	return rid, rid, nil
 }
 
@@ -253,6 +260,19 @@ func (p *Provider) resolveGroupGIDs(ctx context.Context, c conn, userEntry *ldap
 
 	seenGID := map[uint32]struct{}{primaryGID: {}}
 	gids := []uint32{primaryGID}
+
+	// AD does not list a user's primary group in memberOf, so resolve it from
+	// primaryGroupID and add it explicitly. Without this the primary group's GID
+	// is silently missing from the supplementary set (causes access-denied on
+	// files owned by that group in RFC2307 deployments).
+	if pgid, ok, err := p.primaryGroupGID(c, userEntry); err != nil {
+		return nil, err
+	} else if ok {
+		if _, dup := seenGID[pgid]; !dup {
+			seenGID[pgid] = struct{}{}
+			gids = append(gids, pgid)
+		}
+	}
 
 	for _, dn := range groupDNs {
 		gid, ok, err := p.groupGID(c, dn)
@@ -282,13 +302,22 @@ func (p *Provider) groupDNs(c conn, userEntry *ldapv3.Entry) ([]string, error) {
 	filter := fmt.Sprintf("(member:%s:=%s)", matchingRuleInChain, ldapv3.EscapeFilter(userEntry.DN))
 	req := ldapv3.NewSearchRequest(
 		p.cfg.BaseDN,
-		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, 0, int(p.cfg.Timeout.Seconds()), false,
+		// SizeLimit = MaxGroupResults bounds the transitive membership the server
+		// returns, capping the per-group GID lookups that follow.
+		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, p.cfg.MaxGroupResults, int(p.cfg.Timeout.Seconds()), false,
 		fmt.Sprintf("(&(objectClass=group)%s)", filter),
 		[]string{"distinguishedName"}, nil,
 	)
 	res, err := c.Search(req)
 	if err != nil {
-		return nil, fmt.Errorf("ldap: nested group search: %w", err)
+		// A size-limit hit is not fatal: use the (capped) partial result and warn
+		// rather than failing the whole authentication.
+		if res != nil && ldapv3.IsErrorWithCode(err, ldapv3.LDAPResultSizeLimitExceeded) {
+			logger.Warn("ldap: nested group membership exceeds max_group_results, truncating",
+				"dn", userEntry.DN, "max", p.cfg.MaxGroupResults)
+		} else {
+			return nil, fmt.Errorf("ldap: nested group search: %w", err)
+		}
 	}
 	dns := make([]string, 0, len(res.Entries))
 	for _, e := range res.Entries {
@@ -331,6 +360,75 @@ func (p *Provider) groupGID(c conn, dn string) (uint32, bool, error) {
 		// A group with neither gidNumber nor a decodable SID is skipped rather
 		// than failing the whole resolution.
 		logger.Debug("ldap: group has no gidNumber or decodable SID, skipping", "dn", dn, "error", err)
+		return 0, false, nil
+	}
+	return rid, true, nil
+}
+
+// primaryGroupGID resolves the GID of the user's AD primary group, derived from
+// the primaryGroupID RID combined with the user's domain SID. Returns ok=false
+// (no error) when the attributes are absent or malformed, so a missing primary
+// group never fails resolution.
+func (p *Provider) primaryGroupGID(c conn, userEntry *ldapv3.Entry) (uint32, bool, error) {
+	pgStr := userEntry.GetAttributeValue("primaryGroupID")
+	if pgStr == "" {
+		return 0, false, nil
+	}
+	primaryRID, err := parseUint32(pgStr)
+	if err != nil {
+		logger.Debug("ldap: malformed primaryGroupID, skipping", "dn", userEntry.DN, "value", pgStr)
+		return 0, false, nil
+	}
+
+	// In rid mode the GID is the RID directly — no directory round-trip needed.
+	if p.cfg.Idmap == IdmapRID {
+		return primaryRID, true, nil
+	}
+
+	raw := userEntry.GetRawAttributeValue("objectSid")
+	if len(raw) == 0 {
+		return 0, false, nil
+	}
+	userSID, _, err := sid.DecodeSID(raw)
+	if err != nil || len(userSID.SubAuthorities) == 0 {
+		return 0, false, nil
+	}
+	// Primary group SID = user's domain SID with the trailing RID replaced by
+	// primaryGroupID.
+	groupSID := *userSID
+	subs := append([]uint32(nil), userSID.SubAuthorities...)
+	subs[len(subs)-1] = primaryRID
+	groupSID.SubAuthorities = subs
+
+	return p.groupGIDBySID(c, &groupSID)
+}
+
+// groupGIDBySID resolves a group's POSIX GID from its SID (rfc2307 gidNumber,
+// else the group's RID). Returns ok=false when no group matches.
+func (p *Provider) groupGIDBySID(c conn, s *sid.SID) (uint32, bool, error) {
+	req := ldapv3.NewSearchRequest(
+		p.cfg.BaseDN,
+		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, 1, int(p.cfg.Timeout.Seconds()), false,
+		fmt.Sprintf("(&(objectClass=group)(objectSid=%s))", sidToLDAPFilter(s)),
+		[]string{"gidNumber", "objectSid"}, nil,
+	)
+	res, err := c.Search(req)
+	if err != nil {
+		return 0, false, fmt.Errorf("ldap: primary group lookup: %w", err)
+	}
+	if len(res.Entries) == 0 {
+		return 0, false, nil
+	}
+	e := res.Entries[0]
+	if g := e.GetAttributeValue("gidNumber"); g != "" {
+		gid, err := parseUint32(g)
+		if err != nil {
+			return 0, false, fmt.Errorf("ldap: parse primary group gidNumber %q: %w", g, err)
+		}
+		return gid, true, nil
+	}
+	rid, err := ridFromEntry(e)
+	if err != nil {
 		return 0, false, nil
 	}
 	return rid, true, nil

@@ -1346,6 +1346,7 @@ ldap:
   realm: EXAMPLE.COM                     # matches "user@REALM" credentials
   idmap: rfc2307                          # "rfc2307" (uidNumber/gidNumber) or "rid"
   nested_groups: true                     # resolve transitive AD group membership
+  max_group_results: 200                  # cap on (nested) groups resolved per user
   timeout: 10s
   tls:
     ca_cert_file: /etc/dittofs/ad-ca.pem  # CA bundle to verify the directory cert
@@ -1363,11 +1364,12 @@ ldap:
 | `ldap.allow_plaintext` | `DITTOFS_LDAP_ALLOW_PLAINTEXT` | `false` |
 | `ldap.base_dn` | `DITTOFS_LDAP_BASE_DN` | (required when enabled) |
 | `ldap.bind_dn` | `DITTOFS_LDAP_BIND_DN` | (required when enabled) |
-| `ldap.bind_password` | `DITTOFS_LDAP_BIND_PASSWORD` | (empty) |
+| `ldap.bind_password` | `DITTOFS_LDAP_BIND_PASSWORD` | (required when enabled; empty triggers an anonymous bind and is rejected) |
 | `ldap.user_attr` | `DITTOFS_LDAP_USER_ATTR` | `sAMAccountName` |
 | `ldap.realm` | `DITTOFS_LDAP_REALM` | (empty) |
 | `ldap.idmap` | `DITTOFS_LDAP_IDMAP` | `rfc2307` |
 | `ldap.nested_groups` | `DITTOFS_LDAP_NESTED_GROUPS` | `false` |
+| `ldap.max_group_results` | `DITTOFS_LDAP_MAX_GROUP_RESULTS` | `200` |
 | `ldap.timeout` | `DITTOFS_LDAP_TIMEOUT` | `10s` |
 | `ldap.tls.ca_cert_file` | `DITTOFS_LDAP_TLS_CA_CERT_FILE` | (system roots) |
 | `ldap.tls.client_cert_file` | `DITTOFS_LDAP_TLS_CLIENT_CERT_FILE` | (empty) |

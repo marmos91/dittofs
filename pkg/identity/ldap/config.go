@@ -3,11 +3,18 @@ package ldap
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// ldapAttrNameRe matches a syntactically valid LDAP attribute name
+// (RFC 4512 descr: a leading letter followed by letters, digits, or hyphens).
+// Used to reject a misconfigured user_attr before it produces an invalid filter.
+var ldapAttrNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*$`)
 
 // IdmapMode selects how a resolved AD object's POSIX UID/GID is derived.
 type IdmapMode string
@@ -27,9 +34,10 @@ const (
 
 // DefaultPort is the default LDAPS port. Plaintext (389) is never the default.
 const (
-	DefaultTimeout       = 10 * time.Second
-	DefaultUserAttr      = "sAMAccountName"
-	defaultGroupNameAttr = "cn"
+	DefaultTimeout         = 10 * time.Second
+	DefaultUserAttr        = "sAMAccountName"
+	defaultGroupNameAttr   = "cn"
+	DefaultMaxGroupResults = 200
 )
 
 // TLSConfig holds client-side TLS settings for the LDAP connection. DittoFS
@@ -105,6 +113,13 @@ type Config struct {
 	// Timeout bounds each LDAP network operation (dial + bind + search).
 	Timeout time.Duration `mapstructure:"timeout" yaml:"timeout"`
 
+	// MaxGroupResults caps the number of (nested) groups resolved for a single
+	// user. It bounds both the server-side result set of the IN_CHAIN search and
+	// the per-group GID lookups that follow, so a deeply-nested principal cannot
+	// trigger an unbounded fan-out of LDAP round-trips per authentication.
+	// Defaults to DefaultMaxGroupResults.
+	MaxGroupResults int `mapstructure:"max_group_results" yaml:"max_group_results,omitempty"`
+
 	// TLS holds client TLS settings (CA, mTLS, min version).
 	TLS TLSConfig `mapstructure:"tls" yaml:"tls"`
 }
@@ -124,6 +139,19 @@ func (c Config) MarshalYAML() (interface{}, error) {
 	return out, nil
 }
 
+// MarshalJSON redacts the bind password on JSON serialization, mirroring
+// MarshalYAML so a direct json.Marshal of the surrounding config (REST output,
+// audit log, debug dump) can never leak the credential. An empty password
+// stays empty.
+func (c Config) MarshalJSON() ([]byte, error) {
+	type alias Config
+	out := alias(c)
+	if out.BindPassword != "" {
+		out.BindPassword = redactedSecret
+	}
+	return json.Marshal(out)
+}
+
 // ApplyDefaults fills zero-valued fields with their defaults.
 func (c *Config) ApplyDefaults() {
 	if c.UserAttr == "" {
@@ -134,6 +162,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Timeout == 0 {
 		c.Timeout = DefaultTimeout
+	}
+	if c.MaxGroupResults == 0 {
+		c.MaxGroupResults = DefaultMaxGroupResults
 	}
 }
 
@@ -169,6 +200,18 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.BindDN) == "" {
 		return fmt.Errorf("ldap.bind_dn is required (service-account bind is the minimum supported auth)")
+	}
+	if c.BindPassword == "" {
+		// go-ldap sends an unauthenticated (anonymous) bind for an empty
+		// password, which on many AD deployments silently succeeds with read
+		// access — every lookup would then run as an unauthenticated session.
+		return fmt.Errorf("ldap.bind_password is required (an empty password performs an anonymous bind)")
+	}
+	if c.UserAttr != "" && !ldapAttrNameRe.MatchString(c.UserAttr) {
+		return fmt.Errorf("ldap.user_attr %q is not a valid LDAP attribute name", c.UserAttr)
+	}
+	if c.MaxGroupResults < 0 {
+		return fmt.Errorf("ldap.max_group_results must be >= 0 (got %d)", c.MaxGroupResults)
 	}
 	switch c.Idmap {
 	case "", IdmapRFC2307, IdmapRID:
