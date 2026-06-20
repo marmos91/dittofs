@@ -47,6 +47,7 @@ func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, er
 		Database:        buildDatabaseConfig(dittoServer),
 		ControlPlane:    buildControlPlaneConfig(dittoServer),
 		Metrics:         buildMetricsConfig(dittoServer),
+		LDAP:            buildLDAPConfig(dittoServer),
 	}
 
 	// Add admin config with username only (password hash injected via env var)
@@ -171,6 +172,39 @@ func buildMetricsConfig(ds *dittoiov1alpha1.DittoServer) *MetricsConfig {
 	if ds.MetricsBearerTokenSecret() != nil {
 		cfg.Auth = "token"
 		cfg.TokenFile = dittoiov1alpha1.MetricsTokenFilePath()
+	}
+
+	return cfg
+}
+
+// buildLDAPConfig renders the ldap: block when the CRD configures the LDAP/AD
+// identity provider. Returns nil (no ldap: key) when LDAP is absent, preserving
+// the disabled-by-default server behavior. The bind password is never rendered
+// here; it is injected via the DITTOFS_LDAP_BIND_PASSWORD env var from a Secret.
+func buildLDAPConfig(ds *dittoiov1alpha1.DittoServer) *LDAPConfig {
+	if ds.Spec.Identity == nil || ds.Spec.Identity.LDAP == nil {
+		return nil
+	}
+	l := ds.Spec.Identity.LDAP
+
+	cfg := &LDAPConfig{
+		Enabled:        l.Enabled,
+		URL:            l.URL,
+		StartTLS:       l.StartTLS,
+		AllowPlaintext: l.AllowPlaintext,
+		BaseDN:         l.BaseDN,
+		BindDN:         l.BindDN,
+		UserAttr:       l.UserAttr,
+		Realm:          l.Realm,
+		Idmap:          l.Idmap,
+		NestedGroups:   l.NestedGroups,
+	}
+
+	if l.CACertFile != "" || l.InsecureSkipVerify {
+		cfg.TLS = &LDAPTLSConfig{
+			CACertFile:         l.CACertFile,
+			InsecureSkipVerify: l.InsecureSkipVerify,
+		}
 	}
 
 	return cfg

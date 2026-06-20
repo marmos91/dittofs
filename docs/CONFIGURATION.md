@@ -1319,6 +1319,66 @@ snapshot:
 | `snapshot.scheduler_disabled` | `DITTOFS_SNAPSHOT_SCHEDULER_DISABLED` | `false` |
 | `snapshot.restore_http_timeout` | `DITTOFS_SNAPSHOT_RESTORE_HTTP_TIMEOUT` | `30m` |
 
+### 15. LDAP / Active Directory Identity Provider
+
+Resolves directory principals (an `user@REALM` form or an AD SID) to a Unix
+identity by querying LDAP/AD. It reads the **RFC2307** `uidNumber`/`gidNumber`
+POSIX attributes (the `idmap_ad` model) or falls back to **RID**-based
+derivation (`idmap_rid`), and resolves the user's group memberships — including
+nested AD groups via the `LDAP_MATCHING_RULE_IN_CHAIN` matching rule. The
+provider is registered in the identity-resolution chain after Kerberos, so an AD
+principal/SID with no local user mapping is resolved against the directory.
+
+**Security:** the connection is encrypted by default. A plaintext `ldap://`
+connection is **refused** unless it is upgraded with `start_tls: true` or the
+operator explicitly opts in with `allow_plaintext: true`. Prefer `ldaps://`.
+
+```yaml
+ldap:
+  enabled: true
+  url: ldaps://dc.example.com:636        # ldaps:// (preferred) or ldap:// + start_tls
+  start_tls: false                       # upgrade an ldap:// connection to TLS
+  allow_plaintext: false                 # explicit opt-in for an unencrypted bind (off)
+  base_dn: "DC=example,DC=com"
+  bind_dn: "CN=svc-dittofs,CN=Users,DC=example,DC=com"
+  bind_password: "********"              # service-account password (redacted on show)
+  user_attr: sAMAccountName              # attribute matched against the bare username
+  realm: EXAMPLE.COM                     # matches "user@REALM" credentials
+  idmap: rfc2307                          # "rfc2307" (uidNumber/gidNumber) or "rid"
+  nested_groups: true                     # resolve transitive AD group membership
+  timeout: 10s
+  tls:
+    ca_cert_file: /etc/dittofs/ad-ca.pem  # CA bundle to verify the directory cert
+    client_cert_file: ""                  # optional mutual-TLS client cert
+    client_key_file: ""
+    insecure_skip_verify: false           # lab-only escape hatch (off)
+    min_version: "1.2"                    # "1.2" or "1.3"
+```
+
+| Key | Env var | Default |
+|---|---|---|
+| `ldap.enabled` | `DITTOFS_LDAP_ENABLED` | `false` |
+| `ldap.url` | `DITTOFS_LDAP_URL` | (required when enabled) |
+| `ldap.start_tls` | `DITTOFS_LDAP_START_TLS` | `false` |
+| `ldap.allow_plaintext` | `DITTOFS_LDAP_ALLOW_PLAINTEXT` | `false` |
+| `ldap.base_dn` | `DITTOFS_LDAP_BASE_DN` | (required when enabled) |
+| `ldap.bind_dn` | `DITTOFS_LDAP_BIND_DN` | (required when enabled) |
+| `ldap.bind_password` | `DITTOFS_LDAP_BIND_PASSWORD` | (empty) |
+| `ldap.user_attr` | `DITTOFS_LDAP_USER_ATTR` | `sAMAccountName` |
+| `ldap.realm` | `DITTOFS_LDAP_REALM` | (empty) |
+| `ldap.idmap` | `DITTOFS_LDAP_IDMAP` | `rfc2307` |
+| `ldap.nested_groups` | `DITTOFS_LDAP_NESTED_GROUPS` | `false` |
+| `ldap.timeout` | `DITTOFS_LDAP_TIMEOUT` | `10s` |
+| `ldap.tls.ca_cert_file` | `DITTOFS_LDAP_TLS_CA_CERT_FILE` | (system roots) |
+| `ldap.tls.client_cert_file` | `DITTOFS_LDAP_TLS_CLIENT_CERT_FILE` | (empty) |
+| `ldap.tls.client_key_file` | `DITTOFS_LDAP_TLS_CLIENT_KEY_FILE` | (empty) |
+| `ldap.tls.insecure_skip_verify` | `DITTOFS_LDAP_TLS_INSECURE_SKIP_VERIFY` | `false` |
+| `ldap.tls.min_version` | `DITTOFS_LDAP_TLS_MIN_VERSION` | `1.2` |
+
+Admin-configured identity links (`dfsctl idmap add`) take precedence over the
+directory query: a link for an `ldap` external ID resolves to the mapped local
+user before any LDAP search is issued.
+
 ## Migration
 
 ### Required when upgrading from v0.15.x or earlier
