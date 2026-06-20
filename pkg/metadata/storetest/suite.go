@@ -55,6 +55,15 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runPermissionsTests(t, factory)
 	})
 
+	// CrossProtocolPermissions (AD-0) asserts every protocol family — NFSv3,
+	// NFSv4.0, NFSv4.1, SMB — reaches the SAME allow/deny decision for the
+	// SAME file + ACL on THIS backend. It is the cross-protocol regression net
+	// for the AD/LDAP work: DENY ACEs and SID-only grants must enforce
+	// identically across protocols (the bug class the NFSv4 ACCESS fix closes).
+	t.Run("CrossProtocolPermissions", func(t *testing.T) {
+		RunCrossProtocolPermissionMatrix(t, factory)
+	})
+
 	t.Run("DurableHandles", func(t *testing.T) {
 		RunDurableHandleStoreTests(t, factory)
 	})
