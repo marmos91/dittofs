@@ -1269,6 +1269,20 @@ adapters:
 
 ```yaml
 identity:
+  # Pin this node's machine SID (Windows S-1-5-21-{a}-{b}-{c}).
+  #
+  # When unset, the machine SID is generated once on first boot and
+  # persisted, staying stable across restarts. Local/algorithmic SIDs are
+  # derived purely from the machine SID + the Samba RID formula
+  # (user RID = uid*2+1000, group RID = gid*2+1001), so pinning the SAME
+  # value on every node in a cluster makes them compute IDENTICAL SIDs for
+  # the same Unix UID/GID — required for cross-node identity parity.
+  # Foreign (Active Directory / LDAP) domain SIDs are NOT derived this way;
+  # they are bound to stable UID/GIDs durably in the control-plane store.
+  #
+  # Env override: DITTOFS_IDENTITY_MACHINE_SID
+  machine_sid: "S-1-5-21-1111111111-2222222222-3333333333"
+
   # Identity mapping for NFSv4
   idmap:
     domain: example.com
