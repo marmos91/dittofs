@@ -106,8 +106,8 @@ type Config struct {
 	Idmap IdmapMode `mapstructure:"idmap" yaml:"idmap"`
 
 	// NestedGroups enables transitive (nested) group resolution. For AD this
-	// uses the LDAP_MATCHING_RULE_IN_CHAIN matching rule on memberOf. When
-	// false only direct group memberships are returned.
+	// uses the LDAP_MATCHING_RULE_IN_CHAIN matching rule on the group `member`
+	// attribute. When false only direct group memberships are returned.
 	NestedGroups bool `mapstructure:"nested_groups" yaml:"nested_groups"`
 
 	// Timeout bounds each LDAP network operation (dial + bind + search).

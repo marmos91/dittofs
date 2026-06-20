@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -161,5 +160,4 @@ func TestTLSClientConfig_MinVersion(t *testing.T) {
 	if tc.MinVersion != 0x0304 { // tls.VersionTLS13
 		t.Errorf("MinVersion = %x, want TLS1.3", tc.MinVersion)
 	}
-	_ = time.Second
 }

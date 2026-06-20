@@ -1321,7 +1321,7 @@ snapshot:
 
 ### 15. LDAP / Active Directory Identity Provider
 
-Resolves directory principals (an `user@REALM` form or an AD SID) to a Unix
+Resolves directory principals (a `user@REALM` form or an AD SID) to a Unix
 identity by querying LDAP/AD. It reads the **RFC2307** `uidNumber`/`gidNumber`
 POSIX attributes (the `idmap_ad` model) or falls back to **RID**-based
 derivation (`idmap_rid`), and resolves the user's group memberships — including

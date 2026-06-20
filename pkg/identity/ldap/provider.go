@@ -30,9 +30,10 @@ import (
 
 const ProviderName = "ldap"
 
-// matchingRuleInChain is the AD LDAP_MATCHING_RULE_IN_CHAIN OID. Applied to
-// memberOf it returns the transitive (nested) set of groups a user belongs to,
-// resolved server-side by the DC.
+// matchingRuleInChain is the AD LDAP_MATCHING_RULE_IN_CHAIN OID. Applied to the
+// group `member` attribute in a group search (member:<oid>:=<userDN>), it
+// returns the transitive (nested) set of groups a user belongs to, resolved
+// server-side by the DC.
 const matchingRuleInChain = "1.2.840.113556.1.4.1941"
 
 // dialer abstracts the LDAP connection for testability. The production
