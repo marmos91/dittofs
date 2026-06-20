@@ -165,12 +165,11 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 		// group SIDs carried on this request's session. For an AD-issued ticket
 		// the PAC delivers the DC-resolved transitive group set, so a DACL ACE
 		// keyed on an AD group matches even when the local user model never
-		// enumerated it. mergeImplicitAuthSIDs dedups (first occurrence wins).
-		groupSIDs := user.GroupSIDs
-		if len(ctx.PACGroupSIDs) > 0 {
-			groupSIDs = append(append([]string(nil), user.GroupSIDs...), ctx.PACGroupSIDs...)
-		}
-		authCtx.Identity.GroupSIDs = mergeImplicitAuthSIDs(groupSIDs)
+		// enumerated it. slices.Concat allocates a fresh slice (no aliasing of
+		// user.GroupSIDs); mergeImplicitAuthSIDs then dedups (first occurrence wins).
+		authCtx.Identity.GroupSIDs = mergeImplicitAuthSIDs(
+			slices.Concat(user.GroupSIDs, ctx.PACGroupSIDs),
+		)
 	}
 
 	// Set share-level permission flags
