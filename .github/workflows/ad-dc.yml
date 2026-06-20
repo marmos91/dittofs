@@ -1,0 +1,56 @@
+# AD-DC PAC Integration Test (AD-1, #1233)
+#
+# Validates that an Active Directory ticket's Kerberos PAC group SIDs flow
+# through the shared KerberosService into the AuthResult — the property AD-1
+# delivers (DecodePAC + group-SID threading). Uses a real Samba AD-DC in
+# Docker (test/integration/ad-dc), which issues PAC-bearing tickets that a
+# plain MIT KDC cannot.
+#
+# Tiered by EVENT, matching the smbtorture-kerberos job:
+#   postsubmit (push develop) + nightly cron + manual dispatch only.
+# OFF presubmit: building + provisioning a fresh Samba AD domain is expensive
+# (minutes) and AD is rarely the regressing surface on an ordinary PR.
+
+name: AD-DC PAC Test
+
+on:
+  push:
+    branches: [develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '**.png'
+      - '**.jpg'
+      - '**.svg'
+  schedule:
+    - cron: '0 4 * * *'  # Nightly 4 AM UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ad-dc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ad-dc:
+    name: AD PAC group SIDs
+    runs-on: ubuntu-latest
+    # The samba-ad-dc image build + domain provision dominates the wall clock.
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Run AD-DC PAC integration test
+        run: |
+          cd test/integration/ad-dc
+          chmod +x run.sh
+          ./run.sh -v
