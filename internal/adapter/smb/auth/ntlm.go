@@ -344,7 +344,11 @@ func GetMessageType(buf []byte) MessageType {
 //	56      var   Payload            TargetInfo terminator
 //
 // [MS-NLMP] Section 2.2.1.2
-func BuildChallenge() (message []byte, serverChallenge [8]byte) {
+// netbiosDomain and dnsDomain are advertised in the TargetInfo AV_PAIRs. Pass
+// the server's configured AD domain to make the challenge domain-aware; pass
+// empty strings for a standalone server (TargetInfo then advertises
+// WORKGROUP / "local" exactly as before AD-4).
+func BuildChallenge(netbiosDomain, dnsDomain string) (message []byte, serverChallenge [8]byte) {
 	// Generate random 8-byte challenge.
 	// This challenge is used to validate the client's NTLMv2 response
 	// and derive the session key for message signing.
@@ -393,7 +397,7 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 	// Build target info with required AV_PAIRs for Windows compatibility.
 	// Windows clients need at minimum: NbDomainName, NbComputerName,
 	// DnsComputerName, and Timestamp (for NTLMv2 replay protection).
-	targetInfo := buildTargetInfo(hostname)
+	targetInfo := buildTargetInfo(hostname, netbiosDomain, dnsDomain)
 
 	// Calculate payload offsets
 	// Payload starts immediately after the fixed fields (56 bytes)
@@ -484,8 +488,22 @@ func BuildChallenge() (message []byte, serverChallenge [8]byte) {
 // disconnect immediately after receiving the Type 2 message.
 //
 // [MS-NLMP] Section 2.2.2.1
-func buildTargetInfo(hostname string) []byte {
-	domain := "WORKGROUP"
+// netbiosDomain is the NetBIOS short domain advertised in MsvAvNbDomainName
+// and dnsDomain is advertised in MsvAvDnsDomainName. Either may be empty: an
+// empty netbiosDomain falls back to "WORKGROUP" (standalone server) and an
+// empty dnsDomain falls back to "local". This keeps a standalone (non
+// domain-joined) server advertising exactly what it did before AD-4, while a
+// domain-joined server advertises its real AD domain so Windows clients send
+// NTLMv2 responses computed against the right domain.
+func buildTargetInfo(hostname, netbiosDomain, dnsDomain string) []byte {
+	domain := netbiosDomain
+	if domain == "" {
+		domain = "WORKGROUP"
+	}
+	dnsDom := dnsDomain
+	if dnsDom == "" {
+		dnsDom = "local"
+	}
 	nbName := strings.ToUpper(hostname)
 	dnsName := strings.ToLower(hostname)
 
@@ -493,7 +511,7 @@ func buildTargetInfo(hostname string) []byte {
 	nbDomainBytes := encodeUTF16LE(domain)
 	nbComputerBytes := encodeUTF16LE(nbName)
 	dnsComputerBytes := encodeUTF16LE(dnsName)
-	dnsDomainBytes := encodeUTF16LE("local")
+	dnsDomainBytes := encodeUTF16LE(dnsDom)
 
 	// Timestamp: Windows FILETIME (100-nanosecond intervals since 1601-01-01)
 	// Go epoch is 1970-01-01, offset is 116444736000000000 (100ns intervals)

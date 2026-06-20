@@ -20,7 +20,7 @@ func TestNTLMv2CrossValidation(t *testing.T) {
 	clientDomain := "" // go-smb2 typically sends empty domain
 
 	// Step 1: Server builds challenge (as our code does)
-	challengeMsg, serverChallenge := BuildChallenge()
+	challengeMsg, serverChallenge := BuildChallenge("", "")
 
 	// Step 2: Extract TargetName and TargetInfo from challenge (as go-smb2 does)
 	targetNameLen := binary.LittleEndian.Uint16(challengeMsg[12:14])

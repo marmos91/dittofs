@@ -41,7 +41,7 @@ func TestSPNEGORoundTrip(t *testing.T) {
 	// =====================================================
 	// Step 2: Server sends Challenge wrapped in NegTokenResp
 	// =====================================================
-	challengeMsg, serverChallenge := BuildChallenge()
+	challengeMsg, serverChallenge := BuildChallenge("", "")
 	t.Logf("Step 2: Server challenge: %x", serverChallenge)
 
 	spnegoChallengeResp, err := BuildAcceptIncomplete(OIDNTLMSSP, challengeMsg)
