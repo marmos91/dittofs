@@ -90,13 +90,11 @@ func (p *Provider) CanResolve(cred *identity.Credential) bool {
 	if cred.Provider != "" {
 		return cred.Provider == ProviderName
 	}
-	switch cred.ExternalID {
-	case "OWNER@", "GROUP@", "EVERYONE@":
-		return false
-	}
 	if strings.HasPrefix(cred.ExternalID, "S-1-") {
 		return true
 	}
+	// splitPrincipal already rejects the NFSv4 special principals
+	// (OWNER@/GROUP@/EVERYONE@) by returning empty name/realm.
 	name, realm := splitPrincipal(cred.ExternalID)
 	if name == "" || realm == "" {
 		return false
