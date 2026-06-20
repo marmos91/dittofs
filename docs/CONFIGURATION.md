@@ -1260,10 +1260,52 @@ adapters:
     # Kerberos (RPCSEC_GSS) settings
     kerberos:
       enabled: true
-      keytab: /etc/krb5.keytab
-      realm: EXAMPLE.COM
+      keytab_path: /etc/dittofs/dittofs.keytab
       service_principal: nfs/server.example.com@EXAMPLE.COM
+      krb5_conf: /etc/krb5.conf
+
+      # AD domain identity (optional; for an Active-Directory-joined server).
+      # When all three are unset the server is standalone and advertises the
+      # NetBIOS workgroup "WORKGROUP" exactly as a non-domain server does —
+      # leaving these empty is fully backward-compatible.
+      realm: EXAMPLE.COM            # Kerberos realm; defaults to the @REALM of service_principal
+      netbios_domain: EXAMPLE       # NetBIOS short name; NOT derivable, must be set to enable domain-aware SMB
+      dns_domain: example.com       # defaults to the lowercased realm
 ```
+
+| Key | Env var | Default |
+|---|---|---|
+| `kerberos.realm` | `DITTOFS_KERBEROS_REALM` | `@REALM` of `service_principal` |
+| `kerberos.netbios_domain` | `DITTOFS_KERBEROS_NETBIOS_DOMAIN` | (empty → standalone `WORKGROUP`) |
+| `kerberos.dns_domain` | `DITTOFS_KERBEROS_DNS_DOMAIN` | lowercased `realm` |
+
+#### Domain-aware SMB
+
+When `netbios_domain` is set, the SMB server advertises the AD domain in the
+NTLM challenge (`MsvAvNbDomainName` / `MsvAvDnsDomainName`) and stamps it on
+authenticated sessions, so domain users authenticate against the correct domain.
+Unset → the server advertises `WORKGROUP` / `local` (pre-AD-4 standalone
+behavior).
+
+#### Offline keytab import (one keytab, both protocols)
+
+A keytab can hold multiple service principals, so a single file serves SMB and
+NFS. Pre-create the computer/service account in AD and export a keytab
+containing **both** `cifs/<host>@REALM` (SMB) and `nfs/<host>@REALM` (NFS):
+
+```bash
+# On a domain-joined admin host (samba-tool / adcli / Windows ktpass):
+samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
+    --principal=cifs/server.example.com@EXAMPLE.COM
+samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
+    --principal=nfs/server.example.com@EXAMPLE.COM
+```
+
+Point `kerberos.keytab_path` at the combined keytab. The SMB handler selects
+the `cifs/` principal (deriving it from the NFS `service_principal`, or via an
+explicit override); NFS RPCSEC_GSS uses the `nfs/` principal. Online
+`net ads join` + machine-password rotation is out of scope (deferred — see
+#1231).
 
 ### 13. Identity Mapping Configuration
 
