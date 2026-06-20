@@ -69,8 +69,12 @@ func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *ty
 
 // accessRealFS handles ACCESS for real filesystem files.
 //
-// It checks Unix permission bits against the effective UID/GID from
-// the auth context. All 6 access bits are reported as supported.
+// It routes through the central metadata permission checker
+// (MetadataService.CheckPermissions) exactly like the NFSv3 ACCESS handler,
+// so ACLs, DENY ACEs, and SID-based grants are honored identically across
+// protocols. The handler only translates protocol access bits to and from the
+// canonical metadata.Permission vocabulary; all permission logic lives in the
+// metadata layer. All 6 access bits are reported as supported.
 func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *types.CompoundResult {
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
@@ -90,7 +94,8 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 		}
 	}
 
-	file, err := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+	handle := metadata.FileHandle(ctx.CurrentFH)
+	file, err := metaSvc.GetFile(authCtx.Context, handle)
 	if err != nil {
 		status := common.MapToNFS4(err)
 		return &types.CompoundResult{
@@ -100,8 +105,29 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 		}
 	}
 
-	// Check Unix permission bits against UID/GID
-	granted := checkAccessBits(accessReq, file, authCtx)
+	// Translate the requested ACCESS4 bits to the canonical permission
+	// vocabulary, run the central checker, then translate the granted set
+	// back. This is the same path NFSv3 ACCESS uses (see
+	// internal/adapter/nfs/v3/handlers/access.go) — the metadata layer owns
+	// ACL / DENY-ACE / SID evaluation; the handler does protocol only.
+	requestedPerms := nfsAccessToPermissions(accessReq, file.Type)
+
+	grantedPerms, err := metaSvc.CheckPermissions(authCtx, handle, requestedPerms)
+	if err != nil {
+		status := common.MapToNFS4(err)
+		return &types.CompoundResult{
+			Status: status,
+			OpCode: types.OP_ACCESS,
+			Data:   encodeStatusOnly(status),
+		}
+	}
+
+	// Mask back to what the client actually asked for; CheckPermissions only
+	// ever returns a subset of the requested generic flags, but the
+	// permission<->access translation is not perfectly bijective for
+	// directories (LOOKUP and EXECUTE both map to Traverse), so re-AND with
+	// the requested ACCESS4 bits.
+	granted := permissionsToNFSAccess(grantedPerms, file.Type) & accessReq
 
 	// Report all ACCESS4 bits the server can evaluate
 	supported := uint32(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY |
@@ -141,90 +167,80 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 	}
 }
 
-// checkAccessBits checks requested ACCESS bits against file Unix permissions.
+// nfsAccessToPermissions translates NFSv4 ACCESS4 bits to the canonical
+// metadata.Permission vocabulary. NFSv4 ACCESS4 bits (RFC 7530 §6) share the
+// same numeric values and semantics as NFSv3 ACCESS bits (RFC 1813 §3.3.4), so
+// this mirrors internal/adapter/nfs/v3/handlers/access.go::nfsAccessToPermissions
+// to keep cross-protocol enforcement identical.
 //
-// Root (UID 0) gets all access. For other users, it checks the appropriate
-// owner/group/other permission bits based on the effective UID/GID.
-func checkAccessBits(requested uint32, file *metadata.File, authCtx *metadata.AuthContext) uint32 {
-	var granted uint32
+// The translation is context-sensitive on file type: for directories
+// ACCESS4_READ means list, ACCESS4_LOOKUP/EXECUTE mean traverse, and
+// MODIFY/EXTEND mean write; for files the mapping is direct.
+func nfsAccessToPermissions(accessReq uint32, fileType metadata.FileType) metadata.Permission {
+	var perms metadata.Permission
 
-	// Determine effective UID/GID
-	uid := ^uint32(0) // sentinel: invalid UID
-	gid := ^uint32(0)
-	var gids []uint32
-
-	if authCtx.Identity != nil {
-		if authCtx.Identity.UID != nil {
-			uid = *authCtx.Identity.UID
+	if fileType == metadata.FileTypeDirectory {
+		if accessReq&ACCESS4_READ != 0 {
+			perms |= metadata.PermissionListDirectory
 		}
-		if authCtx.Identity.GID != nil {
-			gid = *authCtx.Identity.GID
+		if accessReq&ACCESS4_LOOKUP != 0 {
+			perms |= metadata.PermissionTraverse
 		}
-		gids = authCtx.Identity.GIDs
-	}
-
-	// Root gets everything
-	if uid == 0 {
-		return requested
-	}
-
-	// Determine which permission triad applies
-	mode := file.Mode & 0o7777
-	var readBit, writeBit, execBit bool
-
-	if uid == file.UID {
-		// Owner bits
-		readBit = mode&0o400 != 0
-		writeBit = mode&0o200 != 0
-		execBit = mode&0o100 != 0
-	} else if isInGroup(gid, gids, file.GID) {
-		// Group bits
-		readBit = mode&0o040 != 0
-		writeBit = mode&0o020 != 0
-		execBit = mode&0o010 != 0
+		if accessReq&ACCESS4_EXECUTE != 0 {
+			perms |= metadata.PermissionTraverse
+		}
+		if accessReq&(ACCESS4_MODIFY|ACCESS4_EXTEND) != 0 {
+			perms |= metadata.PermissionWrite
+		}
 	} else {
-		// Other bits
-		readBit = mode&0o004 != 0
-		writeBit = mode&0o002 != 0
-		execBit = mode&0o001 != 0
-	}
-
-	// Map permission bits to ACCESS4 bits
-	if requested&ACCESS4_READ != 0 && readBit {
-		granted |= ACCESS4_READ
-	}
-	if requested&ACCESS4_LOOKUP != 0 {
-		// For directories: execute bit; for files: execute bit
-		if execBit {
-			granted |= ACCESS4_LOOKUP
+		if accessReq&ACCESS4_READ != 0 {
+			perms |= metadata.PermissionRead
+		}
+		if accessReq&(ACCESS4_MODIFY|ACCESS4_EXTEND) != 0 {
+			perms |= metadata.PermissionWrite
+		}
+		if accessReq&ACCESS4_EXECUTE != 0 {
+			perms |= metadata.PermissionExecute
 		}
 	}
-	if requested&ACCESS4_MODIFY != 0 && writeBit {
-		granted |= ACCESS4_MODIFY
-	}
-	if requested&ACCESS4_EXTEND != 0 && writeBit {
-		granted |= ACCESS4_EXTEND
-	}
-	if requested&ACCESS4_DELETE != 0 && writeBit {
-		// Simplified: grant DELETE if write permission on current
-		granted |= ACCESS4_DELETE
-	}
-	if requested&ACCESS4_EXECUTE != 0 && execBit {
-		granted |= ACCESS4_EXECUTE
+
+	if accessReq&ACCESS4_DELETE != 0 {
+		perms |= metadata.PermissionDelete
 	}
 
-	return granted
+	return perms
 }
 
-// isInGroup checks if the given gid or any supplementary gids match the target group.
-func isInGroup(gid uint32, gids []uint32, targetGID uint32) bool {
-	if gid == targetGID {
-		return true
-	}
-	for _, g := range gids {
-		if g == targetGID {
-			return true
+// permissionsToNFSAccess is the inverse of nfsAccessToPermissions, mirroring
+// internal/adapter/nfs/v3/handlers/access.go::permissionsToNFSAccess.
+func permissionsToNFSAccess(perms metadata.Permission, fileType metadata.FileType) uint32 {
+	var accessRes uint32
+
+	if fileType == metadata.FileTypeDirectory {
+		if perms&metadata.PermissionListDirectory != 0 {
+			accessRes |= ACCESS4_READ
+		}
+		if perms&metadata.PermissionTraverse != 0 {
+			accessRes |= ACCESS4_LOOKUP | ACCESS4_EXECUTE
+		}
+		if perms&metadata.PermissionWrite != 0 {
+			accessRes |= ACCESS4_MODIFY | ACCESS4_EXTEND
+		}
+	} else {
+		if perms&metadata.PermissionRead != 0 {
+			accessRes |= ACCESS4_READ
+		}
+		if perms&metadata.PermissionWrite != 0 {
+			accessRes |= ACCESS4_MODIFY | ACCESS4_EXTEND
+		}
+		if perms&metadata.PermissionExecute != 0 {
+			accessRes |= ACCESS4_EXECUTE
 		}
 	}
-	return false
+
+	if perms&metadata.PermissionDelete != 0 {
+		accessRes |= ACCESS4_DELETE
+	}
+
+	return accessRes
 }
