@@ -1746,8 +1746,7 @@ func (h *Handler) tryReauthUpdate(pending *PendingAuth, username, domain string,
 	// (PAC group SIDs, possibly privileged) and then reauthenticated via NTLM as
 	// a lower-privileged or anonymous user would retain the original AD group
 	// SIDs, granting access on SID-keyed ACLs it should no longer have.
-	existingSess.PACGroupSIDs = nil
-	existingSess.PACUserSID = ""
+	existingSess.SetPACIdentity(nil, "")
 
 	logger.Info("Session re-authenticated (identity updated, keys retained)",
 		"sessionID", existingSess.SessionID,

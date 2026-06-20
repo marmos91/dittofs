@@ -247,7 +247,9 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 		// so BuildAuthContextFromUser can merge them into the identity. Follow-up
 		// ops (CREATE/READ/WRITE/QUERY_DIRECTORY) arrive keyed only by FileID and
 		// would otherwise lose the AD group set that was resolved at SESSION_SETUP.
-		ctx.PACGroupSIDs = sess.PACGroupSIDs
+		// PACIdentity copies under the session lock — safe against a concurrent
+		// re-auth refreshing the set.
+		ctx.PACGroupSIDs, _ = sess.PACIdentity()
 	}
 }
 

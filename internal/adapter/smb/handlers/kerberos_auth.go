@@ -143,8 +143,7 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	// the DC and delivered in the ticket) onto the session so every subsequent
 	// request on it can merge them into AuthContext.Identity.GroupSIDs. Also set
 	// them on this SESSION_SETUP request's context for any immediate use.
-	sess.PACGroupSIDs = authResult.GroupSIDs
-	sess.PACUserSID = authResult.UserSID
+	sess.SetPACIdentity(authResult.GroupSIDs, authResult.UserSID)
 	ctx.PACGroupSIDs = authResult.GroupSIDs
 	ctx.SessionID = sessionID
 	ctx.IsGuest = false
@@ -216,8 +215,7 @@ func (h *Handler) reauthKerberosSession(
 	sess.ExpiresAt = ticketEndTime
 	// Refresh the PAC group/user SIDs from the new ticket — group membership may
 	// have changed between the original logon and this re-authentication.
-	sess.PACGroupSIDs = authResult.GroupSIDs
-	sess.PACUserSID = authResult.UserSID
+	sess.SetPACIdentity(authResult.GroupSIDs, authResult.UserSID)
 	ctx.PACGroupSIDs = authResult.GroupSIDs
 	ctx.IsGuest = false
 

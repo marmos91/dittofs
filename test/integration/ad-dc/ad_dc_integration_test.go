@@ -67,7 +67,9 @@ func TestADGroupSIDsFromPAC(t *testing.T) {
 		t.Skip("docker not found, skipping AD-DC integration test")
 	}
 
-	kdcPort, keytabPath, krb5ConfPath, cleanup := setupADDC(t)
+	// krb5ConfPath already encodes the mapped KDC port, so the gokrb5 client
+	// reaches the DC without a separate port argument.
+	_, keytabPath, krb5ConfPath, cleanup := setupADDC(t)
 	defer cleanup()
 
 	// Build the shared KerberosService from a provider backed by the exported
@@ -92,7 +94,7 @@ func TestADGroupSIDsFromPAC(t *testing.T) {
 	// alice authenticates against the DC and obtains a service ticket for the
 	// SMB SPN, then we build the raw AP-REQ (Authenticate expects the raw
 	// AP-REQ, not a GSS-wrapped token).
-	apReqBytes := getADAPREQ(t, krb5ConfPath, kdcPort)
+	apReqBytes := getADAPREQ(t, krb5ConfPath)
 
 	result, err := service.Authenticate(apReqBytes, adSMBSPNFull)
 	if err != nil {
@@ -323,7 +325,7 @@ func dumpADLogs(t *testing.T) {
 // getADAPREQ logs in as alice against the AD-DC and returns the raw AP-REQ
 // bytes for the SMB SPN (NOT GSS-wrapped — KerberosService.Authenticate
 // expects the raw AP-REQ).
-func getADAPREQ(t *testing.T, krb5ConfPath string, _ int) []byte {
+func getADAPREQ(t *testing.T, krb5ConfPath string) []byte {
 	t.Helper()
 
 	cfg, err := krb5config.Load(krb5ConfPath)

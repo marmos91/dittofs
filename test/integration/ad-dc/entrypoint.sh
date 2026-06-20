@@ -9,7 +9,8 @@
 #     bob    -- member of engineering only, NO RFC2307 attrs (RID-fallback case)
 #
 #   Groups:
-#     engineering -- has RFC2307 gidNumber
+#     engineering -- top-level group (group-level RFC2307 gidNumber is left to
+#                    AD-3, which is the consumer; AD-1 only needs membership)
 #     devs        -- nested member of engineering (so alice's PAC carries BOTH
 #                    devs and engineering SIDs: AD resolves nesting at the DC)
 #
@@ -20,10 +21,11 @@
 # A service keytab for the DittoFS SMB/NFS principals is exported to the shared
 # /keytabs volume so the dittofs server (or a Go test) can authenticate tickets.
 #
-# RFC2307 attrs vs RID fallback: alice/devs/engineering get uidNumber/gidNumber
-# (the idmap_ad path AD-3 will read over LDAP); bob/its group get none (the
-# idmap_rid algorithmic-fallback path). AD-1 does not consume these — they are
-# provisioned now so the AD-2/AD-3 PRs gate against the same fixture.
+# RFC2307 attrs vs RID fallback: alice gets uidNumber/gidNumber (the idmap_ad
+# path AD-3 will read over LDAP); bob gets none (the idmap_rid algorithmic-
+# fallback path). AD-1 does not consume these user attrs — they are provisioned
+# now so the AD-2/AD-3 PRs gate against the same fixture. Group-level gidNumbers
+# are AD-3's concern and are stamped there when that path is built.
 
 set -euo pipefail
 
@@ -128,12 +130,8 @@ samba-tool group addmembers devs "$USER_ALICE" >/dev/null 2>&1 || true
 create_user_if_absent "$USER_BOB"
 samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 
-# RFC2307 gidNumber on engineering (group-level POSIX attr the AD-3 idmap reads).
-# alice's group (Domain Users primary) keeps the provision-time default.
-samba-tool group editlocalgroup >/dev/null 2>&1 || true
-
 # --- Service keytab -------------------------------------------------------
-# Register the DittoFS SMB + NFS service principals on the DC's machine account
+# Register the DittoFS SMB + NFS service principals on the Administrator account
 # and export their keys so the server can decrypt client AP-REQs. The PAC is
 # signed with the same key, so a correct keytab is required for PAC validation.
 keytab="$KEYTAB_DIR/dittofs.keytab"

@@ -430,11 +430,10 @@ func TestTryReauthUpdate_ClearsKerberosPACIdentity(t *testing.T) {
 	sess := h.CreateSessionWithUser(sessionID, "127.0.0.1:1", kerbUser, "DITTOFS")
 
 	// Simulate the prior Kerberos auth having stamped PAC identity on the session.
-	sess.PACGroupSIDs = []string{
+	sess.SetPACIdentity([]string{
 		"S-1-5-21-1111111111-2222222222-3333333333-512", // Domain Admins
 		"S-1-5-21-1111111111-2222222222-3333333333-513", // Domain Users
-	}
-	sess.PACUserSID = "S-1-5-21-1111111111-2222222222-3333333333-1001"
+	}, "S-1-5-21-1111111111-2222222222-3333333333-1001")
 
 	// Drive an NTLM reauth onto the same session as a different, lower-priv user.
 	ntlmUser := &models.User{Username: "bob", Enabled: true}
@@ -450,10 +449,11 @@ func TestTryReauthUpdate_ClearsKerberosPACIdentity(t *testing.T) {
 	if got.Username != "bob" {
 		t.Errorf("Username = %q, want bob", got.Username)
 	}
-	if len(got.PACGroupSIDs) != 0 {
-		t.Errorf("PACGroupSIDs not cleared after NTLM reauth: %v — stale AD groups leak privilege", got.PACGroupSIDs)
+	gotGroupSIDs, gotUserSID := got.PACIdentity()
+	if len(gotGroupSIDs) != 0 {
+		t.Errorf("PACGroupSIDs not cleared after NTLM reauth: %v — stale AD groups leak privilege", gotGroupSIDs)
 	}
-	if got.PACUserSID != "" {
-		t.Errorf("PACUserSID not cleared after NTLM reauth: %q", got.PACUserSID)
+	if gotUserSID != "" {
+		t.Errorf("PACUserSID not cleared after NTLM reauth: %q", gotUserSID)
 	}
 }
