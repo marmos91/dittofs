@@ -5,17 +5,14 @@ package store
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
 
 // sidBackend names a control-plane store backend the conformance test runs
-// against. SQLite always runs; postgres runs only when the DSN is present.
+// against.
 type sidBackend struct {
 	name string
 	// open returns a freshly-opened store pointing at the SAME durable
@@ -24,11 +21,15 @@ type sidBackend struct {
 	open func(t *testing.T) *GORMStore
 }
 
-// sidBackends returns the backends to exercise. SQLite uses a file (NOT
-// :memory:, which is wiped on close) so reopen tests observe durable state.
+// sidBackends returns the backends to exercise. The control-plane store is
+// tested on SQLite — the same dialect every other store_test in this package
+// uses — with a file-backed DB (NOT :memory:, which is wiped on close) so the
+// reopen tests observe durable state. Postgres parity for the GORM models is
+// covered by the production AutoMigrate path; this package has no isolated
+// postgres harness (the shared CI database is contended by other suites).
 func sidBackends(t *testing.T) []sidBackend {
 	t.Helper()
-	backends := []sidBackend{
+	return []sidBackend{
 		{
 			name: "sqlite",
 			open: func(t *testing.T) *GORMStore {
@@ -36,31 +37,6 @@ func sidBackends(t *testing.T) []sidBackend {
 			},
 		},
 	}
-
-	if dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN"); dsn != "" {
-		cfg := postgresConfigFromDSN(t, dsn)
-		// Clean the SID/identity tables once so a prior run can't leak rows.
-		// Fail fast on cleanup errors rather than letting leftover rows cause
-		// confusing downstream flakes.
-		cleanup := openPostgresStore(t, cfg)
-		if err := cleanup.db.Exec("DELETE FROM sid_mappings").Error; err != nil {
-			t.Fatalf("cleanup sid_mappings: %v", err)
-		}
-		if err := cleanup.db.Exec("DELETE FROM users").Error; err != nil {
-			t.Fatalf("cleanup users: %v", err)
-		}
-		if err := cleanup.Close(); err != nil {
-			t.Fatalf("close cleanup store: %v", err)
-		}
-		backends = append(backends, sidBackend{
-			name: "postgres",
-			open: func(t *testing.T) *GORMStore {
-				return openPostgresStore(t, cfg)
-			},
-		})
-	}
-
-	return backends
 }
 
 // openSQLiteFileStore opens a file-backed SQLite store under t.TempDir() so the
@@ -93,49 +69,6 @@ func sqliteDirForTest(t *testing.T) string {
 	sqliteDirs[t] = d
 	t.Cleanup(func() { delete(sqliteDirs, t) })
 	return d
-}
-
-func openPostgresStore(t *testing.T, cfg *Config) *GORMStore {
-	t.Helper()
-	st, err := New(cfg)
-	if err != nil {
-		t.Fatalf("open postgres store: %v", err)
-	}
-	return st
-}
-
-// postgresConfigFromDSN parses a libpq key=value DSN into a store Config.
-func postgresConfigFromDSN(t *testing.T, dsn string) *Config {
-	t.Helper()
-	pc := PostgresConfig{Host: "localhost", Port: 5432, SSLMode: "disable"}
-	for _, field := range strings.Fields(dsn) {
-		kv := strings.SplitN(field, "=", 2)
-		if len(kv) != 2 {
-			continue
-		}
-		switch kv[0] {
-		case "host":
-			pc.Host = kv[1]
-		case "port":
-			p, err := strconv.Atoi(kv[1])
-			if err != nil {
-				t.Fatalf("parse DSN port %q: %v", kv[1], err)
-			}
-			pc.Port = p
-		case "dbname", "database":
-			pc.Database = kv[1]
-		case "user":
-			pc.User = kv[1]
-		case "password":
-			pc.Password = kv[1]
-		case "sslmode", "ssl_mode":
-			pc.SSLMode = kv[1]
-		}
-	}
-	if pc.Database == "" {
-		t.Fatalf("DITTOFS_TEST_POSTGRES_DSN %q has no dbname", dsn)
-	}
-	return &Config{Type: DatabaseTypePostgres, Postgres: pc}
 }
 
 // TestSIDMapping_RoundTripAndRestart covers the AD-3 acceptance: a foreign SID
