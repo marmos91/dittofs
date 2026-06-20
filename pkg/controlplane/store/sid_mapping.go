@@ -23,6 +23,24 @@ func (s *GORMStore) ListSIDMappings(ctx context.Context) ([]*models.SIDMapping, 
 	return listAll[models.SIDMapping](s.db, ctx)
 }
 
+// GetSIDMappingsByIDs returns the durable mappings for the given SIDs in a
+// single `WHERE sid IN (...)` query, keyed by SID. Unmapped SIDs are absent
+// from the result.
+func (s *GORMStore) GetSIDMappingsByIDs(ctx context.Context, sids []string) (map[string]*models.SIDMapping, error) {
+	out := make(map[string]*models.SIDMapping, len(sids))
+	if len(sids) == 0 {
+		return out, nil
+	}
+	var rows []models.SIDMapping
+	if err := s.db.WithContext(ctx).Where("sid IN ?", sids).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		out[rows[i].SID] = &rows[i]
+	}
+	return out, nil
+}
+
 // AllocateSIDMapping idempotently binds a foreign domain SID to a stable Unix
 // UID/GID and returns the durable mapping.
 //

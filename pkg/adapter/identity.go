@@ -59,16 +59,13 @@ func BuildIdentityResolver(rt *runtime.Runtime, realm string) *identity.Resolver
 		// into the supplementary group set. A SID with no durable mapping is
 		// skipped (the LDAP provider in AD-2 allocates the mapping at login);
 		// never-remap guarantees a stable GID once allocated.
-		if sidMappingStore != nil {
+		if sidMappingStore != nil && len(user.GroupSIDs) > 0 {
+			mappings, err := sidMappingStore.GetSIDMappingsByIDs(ctx, user.GroupSIDs)
+			if err != nil {
+				return nil, err
+			}
 			for _, gsid := range user.GroupSIDs {
-				m, err := sidMappingStore.GetSIDMapping(ctx, gsid)
-				if err != nil {
-					if errors.Is(err, models.ErrSIDMappingNotFound) {
-						continue
-					}
-					return nil, err
-				}
-				if m.IsGroup {
+				if m, ok := mappings[gsid]; ok && m.IsGroup {
 					gids = append(gids, m.UnixID)
 				}
 			}

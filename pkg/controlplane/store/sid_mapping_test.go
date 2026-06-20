@@ -40,10 +40,18 @@ func sidBackends(t *testing.T) []sidBackend {
 	if dsn := os.Getenv("DITTOFS_TEST_POSTGRES_DSN"); dsn != "" {
 		cfg := postgresConfigFromDSN(t, dsn)
 		// Clean the SID/identity tables once so a prior run can't leak rows.
+		// Fail fast on cleanup errors rather than letting leftover rows cause
+		// confusing downstream flakes.
 		cleanup := openPostgresStore(t, cfg)
-		_ = cleanup.db.Exec("DELETE FROM sid_mappings").Error
-		_ = cleanup.db.Exec("DELETE FROM users").Error
-		_ = cleanup.Close()
+		if err := cleanup.db.Exec("DELETE FROM sid_mappings").Error; err != nil {
+			t.Fatalf("cleanup sid_mappings: %v", err)
+		}
+		if err := cleanup.db.Exec("DELETE FROM users").Error; err != nil {
+			t.Fatalf("cleanup users: %v", err)
+		}
+		if err := cleanup.Close(); err != nil {
+			t.Fatalf("close cleanup store: %v", err)
+		}
 		backends = append(backends, sidBackend{
 			name: "postgres",
 			open: func(t *testing.T) *GORMStore {

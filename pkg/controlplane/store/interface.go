@@ -728,6 +728,12 @@ type SIDMappingStore interface {
 	// ListSIDMappings returns all durable foreign-SID mappings.
 	ListSIDMappings(ctx context.Context) ([]*models.SIDMapping, error)
 
+	// GetSIDMappingsByIDs returns the durable mappings for the given SIDs in a
+	// single query, keyed by SID. SIDs without a mapping are simply absent from
+	// the result (no error) — avoids an N+1 lookup when enriching a user with
+	// many group SIDs.
+	GetSIDMappingsByIDs(ctx context.Context, sids []string) (map[string]*models.SIDMapping, error)
+
 	// AllocateSIDMapping idempotently binds a foreign SID to a Unix UID/GID.
 	// If a mapping already exists, the existing one is returned unchanged
 	// (never remapped). The first caller wins under concurrency.
