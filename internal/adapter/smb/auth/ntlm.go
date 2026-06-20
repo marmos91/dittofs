@@ -354,13 +354,28 @@ func BuildChallenge(netbiosDomain, dnsDomain string) (message []byte, serverChal
 	// and derive the session key for message signing.
 	_, _ = rand.Read(serverChallenge[:])
 
-	// Target name: server hostname for client identification.
-	// Windows clients require a non-empty TargetName when FlagRequestTarget is set.
+	// Target name + target-type flag. Per MS-NLMP §2.2.1.2 / §3.1.5.1.1 the two
+	// TargetType flags are mutually exclusive and the TargetName must match the
+	// one that is set: a DOMAIN-joined server advertises the NetBIOS domain as
+	// TargetName with FlagTargetTypeDomain, while a standalone server advertises
+	// its hostname with FlagTargetTypeServer. Windows clients select their
+	// credential store (domain vault vs local SAM) from this flag, so a
+	// domain-joined server that advertised TargetTypeServer would drive clients
+	// to validate against the wrong store and fail / mis-derive the NTLMv2 hash.
+	// Windows clients also require a non-empty TargetName when FlagRequestTarget
+	// is set.
 	hostname, _ := os.Hostname()
 	if hostname == "" {
 		hostname = "DITTOFS"
 	}
-	targetName := encodeUTF16LE(strings.ToUpper(hostname))
+	var targetName []byte
+	targetTypeFlag := FlagTargetTypeServer
+	if netbiosDomain != "" {
+		targetName = encodeUTF16LE(netbiosDomain)
+		targetTypeFlag = FlagTargetTypeDomain
+	} else {
+		targetName = encodeUTF16LE(strings.ToUpper(hostname))
+	}
 
 	// Flags for server capabilities.
 	//
@@ -386,7 +401,7 @@ func BuildChallenge(netbiosDomain, dnsDomain string) (message []byte, serverChal
 		FlagNTLM | // Support NTLM authentication
 		FlagSign | // Support message integrity (signing)
 		FlagAlwaysSign | // Include signature (even if dummy)
-		FlagTargetTypeServer | // We are a server (not domain controller)
+		targetTypeFlag | // TargetTypeDomain (domain-joined) or TargetTypeServer (standalone)
 		FlagExtendedSecurity | // Support NTLMv2 session security
 		FlagTargetInfo | // Include AV_PAIR list
 		Flag128 | // 128-bit session key strength (required by Linux CIFS client)

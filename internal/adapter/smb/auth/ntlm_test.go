@@ -829,6 +829,39 @@ func TestBuildTargetInfo_DomainAware(t *testing.T) {
 	}
 }
 
+// TestBuildChallenge_TargetTypeFlag pins MS-NLMP §2.2.1.2/§3.1.5.1.1: the
+// CHALLENGE must set FlagTargetTypeDomain (mutually exclusive with
+// FlagTargetTypeServer) when domain-joined, and FlagTargetTypeServer when
+// standalone. A domain-joined server advertising TargetTypeServer drives
+// Windows clients to the wrong credential store.
+func TestBuildChallenge_TargetTypeFlag(t *testing.T) {
+	flagsOf := func(msg []byte) NegotiateFlag {
+		return NegotiateFlag(binary.LittleEndian.Uint32(msg[challengeFlagsOffset : challengeFlagsOffset+4]))
+	}
+
+	t.Run("standalone", func(t *testing.T) {
+		msg, _ := BuildChallenge("", "")
+		f := flagsOf(msg)
+		if f&FlagTargetTypeServer == 0 {
+			t.Error("standalone challenge must set FlagTargetTypeServer")
+		}
+		if f&FlagTargetTypeDomain != 0 {
+			t.Error("standalone challenge must NOT set FlagTargetTypeDomain")
+		}
+	})
+
+	t.Run("domain-joined", func(t *testing.T) {
+		msg, _ := BuildChallenge("CONTOSO", "contoso.com")
+		f := flagsOf(msg)
+		if f&FlagTargetTypeDomain == 0 {
+			t.Error("domain-joined challenge must set FlagTargetTypeDomain")
+		}
+		if f&FlagTargetTypeServer != 0 {
+			t.Error("domain-joined challenge must NOT set FlagTargetTypeServer")
+		}
+	})
+}
+
 // TestBuildTargetInfo_PartialDomain asserts that an empty DNS domain still
 // falls back to "local" even when the NetBIOS domain is set, and vice versa.
 func TestBuildTargetInfo_PartialDomain(t *testing.T) {

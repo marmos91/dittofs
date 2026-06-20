@@ -424,7 +424,7 @@ func (c *KerberosConfig) Validate() error {
 	// TargetInfo at session-setup time.
 	if c.Realm != "" {
 		if strings.ContainsAny(c.Realm, "@/ ") {
-			return fmt.Errorf("kerberos.realm %q is invalid (must not contain '@', '/', or spaces; e.g. CONTOSO.COM)", c.Realm)
+			return fmt.Errorf("kerberos realm %q is invalid (must not contain '@', '/', or spaces; e.g. CONTOSO.COM) — set kerberos.realm/DITTOFS_KERBEROS_REALM explicitly, or check the @REALM suffix of kerberos.service_principal it is derived from", c.Realm)
 		}
 	}
 	if c.NetBIOSDomain != "" {
