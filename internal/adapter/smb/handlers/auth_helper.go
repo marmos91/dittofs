@@ -161,7 +161,16 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 			userSID := user.SID
 			authCtx.Identity.SID = &userSID
 		}
-		authCtx.Identity.GroupSIDs = mergeImplicitAuthSIDs(user.GroupSIDs)
+		// Merge the user's persisted named group SIDs with any Kerberos PAC
+		// group SIDs carried on this request's session. For an AD-issued ticket
+		// the PAC delivers the DC-resolved transitive group set, so a DACL ACE
+		// keyed on an AD group matches even when the local user model never
+		// enumerated it. mergeImplicitAuthSIDs dedups (first occurrence wins).
+		groupSIDs := user.GroupSIDs
+		if len(ctx.PACGroupSIDs) > 0 {
+			groupSIDs = append(append([]string(nil), user.GroupSIDs...), ctx.PACGroupSIDs...)
+		}
+		authCtx.Identity.GroupSIDs = mergeImplicitAuthSIDs(groupSIDs)
 	}
 
 	// Set share-level permission flags
@@ -235,6 +244,11 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 		if sess.User != nil {
 			ctx.User = sess.User
 		}
+		// Carry the session's Kerberos PAC group SIDs onto the request context
+		// so BuildAuthContextFromUser can merge them into the identity. Follow-up
+		// ops (CREATE/READ/WRITE/QUERY_DIRECTORY) arrive keyed only by FileID and
+		// would otherwise lose the AD group set that was resolved at SESSION_SETUP.
+		ctx.PACGroupSIDs = sess.PACGroupSIDs
 	}
 }
 

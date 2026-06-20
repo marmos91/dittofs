@@ -149,6 +149,13 @@ type SMBHandlerContext struct {
 	// This is set from the session during request handling.
 	User *models.User
 
+	// PACGroupSIDs carries the Kerberos PAC group SIDs of the request's
+	// session (when it authenticated via Kerberos against AD). Populated from
+	// Session.PACGroupSIDs by primeAuthContext and the Kerberos SESSION_SETUP
+	// path, then merged into AuthContext.Identity.GroupSIDs by
+	// BuildAuthContextFromUser. Empty for NTLM/guest/anonymous requests.
+	PACGroupSIDs []string
+
 	// Permission is the user's permission level for the current share
 	// This is resolved during TREE_CONNECT and used for access control.
 	Permission models.SharePermission

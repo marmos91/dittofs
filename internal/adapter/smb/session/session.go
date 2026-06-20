@@ -74,6 +74,20 @@ type Session struct {
 	// for permission checking and share access control.
 	User *models.User
 
+	// PACGroupSIDs are the Windows group SIDs delivered in the client's
+	// Kerberos PAC (MS-PAC). For an AD-issued ticket these are the DC-resolved
+	// transitive group memberships. They are captured once at SESSION_SETUP
+	// (Kerberos path) and merged into every per-request AuthContext.Identity
+	// .GroupSIDs so SID-based ACL ACEs keyed on AD groups match — without an
+	// LDAP group-walk. Empty for NTLM/guest/anonymous sessions and for tickets
+	// without a PAC. Read-only after session creation.
+	PACGroupSIDs []string
+
+	// PACUserSID is the client's Windows user SID from the Kerberos PAC, when
+	// present. Captured alongside PACGroupSIDs. Resolution to a local UID/GID
+	// is the durable idmap layer's concern (AD-3 / #1235).
+	PACUserSID string
+
 	// cryptoState holds per-session cryptographic state (signing keys, signer,
 	// encryption/decryption keys). Replaces the old Signing field.
 	// For 2.x: HMAC-SHA256 signer. For 3.x: CMAC/GMAC signer + KDF-derived keys.
