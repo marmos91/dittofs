@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,7 +33,16 @@ type Provider struct {
 	maxClockSkew     time.Duration
 	keytabPath       string
 	keytabManager    *KeytabManager
-	mu               sync.RWMutex
+
+	// AD domain identity (AD-4). All optional: empty values mean the server
+	// behaves as a standalone server (the SMB layer falls back to WORKGROUP).
+	// These are immutable after construction (derived from config once) and so
+	// are not guarded by mu.
+	realm         string // Kerberos realm, e.g. CONTOSO.COM
+	netbiosDomain string // NetBIOS short domain, e.g. CONTOSO ("" => standalone)
+	dnsDomain     string // DNS domain, e.g. contoso.com
+
+	mu sync.RWMutex
 }
 
 // NewProvider creates a new Kerberos provider from configuration.
@@ -71,12 +81,30 @@ func NewProvider(cfg *dconfig.KerberosConfig) (*Provider, error) {
 		return nil, fmt.Errorf("load krb5.conf %s: %w", krb5ConfPath, err)
 	}
 
+	// Resolve the AD domain identity. Realm defaults to the principal's
+	// "@REALM" suffix; DNSDomain defaults to the lowercased realm. NetBIOSDomain
+	// is never derived — when empty the SMB layer uses WORKGROUP (standalone).
+	// ApplyDefaults already fills these when the config flows through it, but
+	// resolve them here too so direct NewProvider callers (e.g. tests) and any
+	// path that bypasses ApplyDefaults still get consistent values.
+	realm := cfg.Realm
+	if realm == "" {
+		realm = extractRealm(servicePrincipal)
+	}
+	dnsDomain := cfg.DNSDomain
+	if dnsDomain == "" && realm != "" {
+		dnsDomain = strings.ToLower(realm)
+	}
+
 	p := &Provider{
 		keytab:           kt,
 		krb5Conf:         krbCfg,
 		servicePrincipal: servicePrincipal,
 		maxClockSkew:     cfg.MaxClockSkew,
 		keytabPath:       keytabPath,
+		realm:            realm,
+		netbiosDomain:    cfg.NetBIOSDomain,
+		dnsDomain:        dnsDomain,
 	}
 
 	// Create and start keytab manager for hot-reload
@@ -102,6 +130,35 @@ func (p *Provider) Keytab() *keytab.Keytab {
 // ServicePrincipal returns the configured service principal name.
 func (p *Provider) ServicePrincipal() string {
 	return p.servicePrincipal
+}
+
+// Realm returns the Kerberos realm the server is joined to (e.g. CONTOSO.COM),
+// or "" if it could not be determined. Immutable after construction.
+func (p *Provider) Realm() string {
+	return p.realm
+}
+
+// NetBIOSDomain returns the configured NetBIOS short domain (e.g. CONTOSO), or
+// "" when the server is standalone (in which case the SMB layer advertises and
+// uses WORKGROUP). Immutable after construction.
+func (p *Provider) NetBIOSDomain() string {
+	return p.netbiosDomain
+}
+
+// DNSDomain returns the DNS domain (e.g. contoso.com), defaulting to the
+// lowercased realm, or "" if neither was configured/derivable. Immutable after
+// construction.
+func (p *Provider) DNSDomain() string {
+	return p.dnsDomain
+}
+
+// extractRealm returns the "@REALM" suffix of a service principal
+// (e.g. "nfs/host@CONTOSO.COM" -> "CONTOSO.COM"), or "" if absent.
+func extractRealm(principal string) string {
+	if idx := strings.LastIndex(principal, "@"); idx >= 0 && idx < len(principal)-1 {
+		return principal[idx+1:]
+	}
+	return ""
 }
 
 // MaxClockSkew returns the maximum allowed clock skew.

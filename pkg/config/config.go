@@ -335,6 +335,41 @@ type KerberosConfig struct {
 	// Override: DITTOFS_KERBEROS_PRINCIPAL (primary), DITTOFS_KERBEROS_SERVICE_PRINCIPAL (compat)
 	ServicePrincipal string `mapstructure:"service_principal" yaml:"service_principal"`
 
+	// Realm is the Kerberos realm the server is joined to (e.g. CONTOSO.COM).
+	//
+	// When empty it is derived from the "@REALM" suffix of ServicePrincipal
+	// (applied in ApplyDefaults). It is used to make the SMB session
+	// domain-aware: it backs the DNS-domain default (lowercased Realm) when
+	// DNSDomain is not set explicitly.
+	//
+	// Optional and back-compatible: when neither Realm nor NetBIOSDomain is
+	// configured, the SMB server behaves exactly as a standalone server
+	// (advertising WORKGROUP), which is today's default.
+	// Override: DITTOFS_KERBEROS_REALM
+	Realm string `mapstructure:"realm" yaml:"realm"`
+
+	// NetBIOSDomain is the short NetBIOS domain name (e.g. CONTOSO).
+	//
+	// This is the domain the SMB server advertises in the NTLM Type-2
+	// TargetInfo (MsvAvNbDomainName) and stamps on a domain user's SMB
+	// session. It CANNOT be reliably derived from the realm (CONTOSO.COM may
+	// have a NetBIOS name unrelated to "CONTOSO"), so it must be set
+	// explicitly to make the server domain-aware.
+	//
+	// Optional and back-compatible: when empty the server advertises and uses
+	// "WORKGROUP" exactly as a standalone server does today.
+	// Override: DITTOFS_KERBEROS_NETBIOS_DOMAIN
+	NetBIOSDomain string `mapstructure:"netbios_domain" yaml:"netbios_domain"`
+
+	// DNSDomain is the DNS domain name (e.g. contoso.com) advertised in the
+	// NTLM Type-2 TargetInfo (MsvAvDnsDomainName).
+	//
+	// When empty it defaults to the lowercased Realm (applied in
+	// ApplyDefaults). When neither is set the server uses its standalone
+	// default DNS domain.
+	// Override: DITTOFS_KERBEROS_DNS_DOMAIN
+	DNSDomain string `mapstructure:"dns_domain" yaml:"dns_domain"`
+
 	// Krb5Conf is the path to the Kerberos configuration file.
 	// Default: /etc/krb5.conf
 	Krb5Conf string `mapstructure:"krb5_conf" yaml:"krb5_conf"`
@@ -382,6 +417,28 @@ func (c *KerberosConfig) Validate() error {
 		// "" is normalized to "static" in ApplyDefaults.
 	default:
 		return fmt.Errorf("kerberos.identity_mapping.strategy %q is not supported (only \"static\")", c.IdentityMapping.Strategy)
+	}
+	// AD domain identity fields are all optional (empty => standalone WORKGROUP
+	// behavior). When set, sanity-check their shape so a transposed realm vs
+	// NetBIOS name is caught at startup rather than producing a malformed NTLM
+	// TargetInfo at session-setup time.
+	if c.Realm != "" {
+		if strings.ContainsAny(c.Realm, "@/ ") {
+			return fmt.Errorf("kerberos.realm %q is invalid (must not contain '@', '/', or spaces; e.g. CONTOSO.COM)", c.Realm)
+		}
+	}
+	if c.NetBIOSDomain != "" {
+		// A NetBIOS short name is a single label: no dots, no '@'/'/' and no
+		// spaces. A dotted value almost always means a DNS/realm name was
+		// placed in the NetBIOS field.
+		if strings.ContainsAny(c.NetBIOSDomain, ".@/ ") {
+			return fmt.Errorf("kerberos.netbios_domain %q is invalid (must be a single NetBIOS label without '.', '@', '/', or spaces; e.g. CONTOSO)", c.NetBIOSDomain)
+		}
+	}
+	if c.DNSDomain != "" {
+		if strings.ContainsAny(c.DNSDomain, "@/ ") {
+			return fmt.Errorf("kerberos.dns_domain %q is invalid (must not contain '@', '/', or spaces; e.g. contoso.com)", c.DNSDomain)
+		}
 	}
 	return nil
 }
