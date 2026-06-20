@@ -46,8 +46,6 @@ USER_PASSWORD="${USER_PASSWORD:-TestPassword01!}"
 DITTOFS_UID="${DITTOFS_UID:-65532}"
 DITTOFS_GID="${DITTOFS_GID:-65532}"
 
-REALM_LOWER="${REALM,,}"
-
 log() { echo "[AD-DC] $*"; }
 
 mkdir -p "$KEYTAB_DIR"
@@ -87,7 +85,7 @@ fi
 log "Starting samba for provisioning..."
 samba -D
 # Wait for the LDAP/KDC stack to accept connections.
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     if samba-tool processes >/dev/null 2>&1; then
         break
     fi
