@@ -27,6 +27,11 @@ func ExtractRealm(principal string) string {
 func BuildIdentityResolver(rt *runtime.Runtime, realm string) *identity.Resolver {
 	cpStore := rt.Store()
 
+	// sidMappingStore, when the control-plane store supports it, resolves
+	// foreign (AD/LDAP) group SIDs to their durable GIDs so a user's Windows
+	// group SIDs contribute Unix supplementary GIDs (AD-3 #1235).
+	sidMappingStore, _ := cpStore.(store.SIDMappingStore)
+
 	userLookup := func(ctx context.Context, username string) (*identity.ResolvedIdentity, error) {
 		user, err := cpStore.GetUser(ctx, username)
 		if err != nil {
@@ -49,12 +54,34 @@ func BuildIdentityResolver(rt *runtime.Runtime, realm string) *identity.Resolver
 				gids = append(gids, *g.GID)
 			}
 		}
+
+		// Resolve persisted foreign group SIDs to durable GIDs and fold them
+		// into the supplementary group set. A SID with no durable mapping is
+		// skipped (the LDAP provider in AD-2 allocates the mapping at login);
+		// never-remap guarantees a stable GID once allocated.
+		if sidMappingStore != nil {
+			for _, gsid := range user.GroupSIDs {
+				m, err := sidMappingStore.GetSIDMapping(ctx, gsid)
+				if err != nil {
+					if errors.Is(err, models.ErrSIDMappingNotFound) {
+						continue
+					}
+					return nil, err
+				}
+				if m.IsGroup {
+					gids = append(gids, m.UnixID)
+				}
+			}
+		}
+
 		return &identity.ResolvedIdentity{
-			Username: user.Username,
-			UID:      uid,
-			GID:      gid,
-			GIDs:     gids,
-			Found:    true,
+			Username:  user.Username,
+			UID:       uid,
+			GID:       gid,
+			GIDs:      gids,
+			Found:     true,
+			SID:       user.SID,
+			GroupSIDs: user.GroupSIDs,
 		}, nil
 	}
 
