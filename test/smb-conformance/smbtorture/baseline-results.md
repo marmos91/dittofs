@@ -123,6 +123,7 @@ These 50 tests were previously masked by wildcard entries in KNOWN_FAILURES.md (
 | smb2.read.dir | read | Directory read works |
 | smb2.rename.close-full-information | rename | Rename + close full info works |
 | smb2.rename.msword | rename | MS Word rename pattern works |
+| smb2.rename.rename_dir_openfile | rename | Dir rename with open child returns ACCESS_DENIED |
 | smb2.rename.no_sharing | rename | Rename with no sharing works |
 | smb2.rename.rename-open | rename | Rename open file works |
 | smb2.rename.rename_dir_bench | rename | Directory rename benchmark works |
@@ -243,7 +244,6 @@ These tests fail despite the related feature being implemented in phases 33-39. 
 |-----------|-------|
 | smb2.rename.no_share_delete_but_delete_access | Permission edge case |
 | smb2.rename.no_share_delete_no_delete_access | Permission edge case |
-| smb2.rename.rename_dir_openfile | Rename dir with open file |
 | smb2.rename.share_delete_and_delete_access | Permission edge case |
 | smb2.rename.simple_modtime | Rename mtime update |
 | smb2.rename.simple_nodelete | Rename without delete access |
@@ -583,10 +583,9 @@ Complete list of all 372 failing tests for reference.
 - smb2.read.eof
 - smb2.read.position
 
-### smb2.rename (6 failures)
+### smb2.rename (5 failures)
 - smb2.rename.no_share_delete_but_delete_access
 - smb2.rename.no_share_delete_no_delete_access
-- smb2.rename.rename_dir_openfile
 - smb2.rename.share_delete_and_delete_access
 - smb2.rename.simple_modtime
 - smb2.rename.simple_nodelete
