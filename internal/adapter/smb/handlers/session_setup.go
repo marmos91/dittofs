@@ -1198,7 +1198,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				// Samba reference: smb2_sesssetup.c:633-637 passes
 				// session_info->session_key from the bind's GENSEC context.
 				if pending.IsBinding {
-					return h.completeSessionBind(ctx, pending, user, authMsg.Domain, signingKey[:], authMsg.NegotiateFlags), nil
+					return h.completeSessionBind(ctx, pending, user, h.sessionDomain(authMsg.Domain), signingKey[:], authMsg.NegotiateFlags), nil
 				}
 
 				if pending.IsReauth {
@@ -1210,7 +1210,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					// them here makes the SUCCESS response's signature diverge
 					// from what the client computes with the unchanged key
 					// (smb2.session.reauth1-5 reject the response).
-					if result := h.tryReauthUpdate(pending, resolvedUsername, authMsg.Domain, user, false); result != nil {
+					if result := h.tryReauthUpdate(pending, resolvedUsername, h.sessionDomain(authMsg.Domain), user, false); result != nil {
 						return result, nil
 					}
 					// Fallthrough: session disappeared between negotiate and auth (unlikely)
