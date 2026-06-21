@@ -257,15 +257,50 @@ func (m *Syncer) applyFileLevelDedupHit(
 	isRetry bool,
 ) (bool, error) {
 	// 1. Increment RefCount on every distinct hash in target.
+	//
+	// `seen` tracks the hashes whose RefCount THIS call has already
+	// successfully incremented, so any early exit can roll them back
+	// and leave no leak. The hash currently being incremented is added
+	// to `seen` only AFTER a successful increment — a failed increment
+	// did NOT bump that hash, so it must be excluded from rollback.
 	seen := make(map[block.ContentHash]struct{}, len(targetBlocks))
 	for _, br := range targetBlocks {
 		if _, ok := seen[br.Hash]; ok {
 			continue
 		}
-		seen[br.Hash] = struct{}{}
 		if err := m.coordinator.IncrementRefCount(ctx, br.Hash); err != nil {
+			// Pending / non-durable donor: the coordinator's
+			// Remote-gated GetByHash resolves a not-yet-durable target
+			// block to "no FileBlock row" and surfaces
+			// metadata.ErrFileBlockNotFound. Deduping onto a target whose
+			// CAS blocks have not reached Remote is genuinely unsafe (the
+			// Remote-gate is correct — issue #1245 Bug A), so this is a
+			// dedup MISS, not a hard error: roll back the increments this
+			// call already made (excluding br.Hash, which was NOT
+			// incremented) and return (false, nil) so the caller falls
+			// through to the normal per-block upload of the file's own
+			// blocks. Dedup collapses later once the donor reaches Remote.
+			if errors.Is(err, block.ErrFileBlockNotFound) {
+				if rbErr := m.rollbackIncrements(ctx, seen, "file-level dedup pending-donor miss rollback"); rbErr != nil {
+					// A failed rollback decrement leaves a permanent +1
+					// RefCount on a CAS chunk; surface it rather than
+					// swallowing the leak, even though the not-found
+					// signal itself is benign.
+					return false, fmt.Errorf("file-level dedup pending-donor miss (refcount rollback also failed): %w", rbErr)
+				}
+				return false, nil
+			}
+			// Any other increment error is a real backend fault: roll
+			// back the increments already made on this call (excluding
+			// br.Hash) before propagating, so a mid-loop failure never
+			// leaks a partial set of RefCount bumps.
+			if rbErr := m.rollbackIncrements(ctx, seen, "file-level dedup increment-error rollback"); rbErr != nil {
+				return false, fmt.Errorf("file-level dedup: increment refcount on target hash %s (refcount rollback also failed): %w",
+					br.Hash.String(), errors.Join(err, rbErr))
+			}
 			return false, fmt.Errorf("file-level dedup: increment refcount on target hash %s: %w", br.Hash.String(), err)
 		}
+		seen[br.Hash] = struct{}{}
 	}
 
 	// 2. Persist target.Blocks + provisional ObjectID (single metadata

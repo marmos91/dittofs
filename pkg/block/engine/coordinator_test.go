@@ -27,6 +27,12 @@ type fakeCoordinator struct {
 	failOnNthIncrement int
 	incCallCount       int
 
+	// Optional: incErr overrides the error returned by failOnNthIncrement.
+	// When nil the generic induced-failure error is used. Set to
+	// block.ErrFileBlockNotFound to simulate a Pending (non-durable) donor
+	// whose Remote-gated GetByHash resolves to no FileBlock row (#1245 Bug A).
+	incErr error
+
 	// Optional: failOnNthDecrement returns an error on the Nth (1-based)
 	// DecrementRefCount call. Zero disables.
 	failOnNthDecrement int
@@ -93,6 +99,9 @@ func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash block.Conten
 	defer f.mu.Unlock()
 	f.incCallCount++
 	if f.failOnNthIncrement > 0 && f.incCallCount == f.failOnNthIncrement {
+		if f.incErr != nil {
+			return f.incErr
+		}
 		return errors.New("fakeCoordinator: induced IncrementRefCount failure")
 	}
 	f.incHashes = append(f.incHashes, hash)
