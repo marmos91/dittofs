@@ -586,6 +586,9 @@ dfsctl
     add            Add an identity mapping
     list           List identity mappings
     remove         Remove an identity mapping
+    sid            Manage foreign-SID UID/GID allocations
+      delete         Delete a foreign-SID UID/GID allocation
+      list           List foreign-SID UID/GID allocations
   login          Authenticate with DittoFS server
   logout         Clear stored credentials
   netgroup       Manage netgroups (IP access control)
@@ -2446,6 +2449,119 @@ Flags:
   -f, --force              Skip confirmation prompt
       --principal string   External identity to remove
       --provider string    Identity provider (e.g., kerberos, oidc, ad) (default "kerberos")
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl idmap sid`
+
+Manage foreign-SID UID/GID allocations
+
+Manage durable foreign-SID to Unix UID/GID allocations.
+
+When DittoFS resolves Active Directory / LDAP principals, foreign domain SIDs
+(of the form `S-1-5-21-<domain>-<rid>`) are durably bound to stable Unix
+UIDs and GIDs. These bindings are allocated exactly once and never remapped, so a
+foreign SID always resolves to the same identity.
+
+This command surfaces that allocation table for administrative inspection and
+cleanup. It is distinct from "dfsctl idmap add/list/remove", which manages the
+authentication-principal to DittoFS-user mappings.
+
+Deletion is an administrative escape hatch: removing a mapping allows a foreign
+SID to be re-allocated to a different UID/GID on its next resolution, which can
+re-attribute files owned by the old UID. Use with care.
+
+Examples:
+  # List all foreign-SID allocations
+  dfsctl idmap sid list
+
+  # Delete a foreign-SID allocation
+  dfsctl idmap sid delete S-1-5-21-111-222-333-1107
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl idmap sid delete`
+
+Delete a foreign-SID UID/GID allocation
+
+Delete a durable foreign-SID to Unix UID/GID allocation.
+
+This is an administrative escape hatch. Removing a mapping allows the foreign SID
+to be re-allocated to a different UID/GID on its next resolution, which can
+re-attribute files owned by the old UID. This action is irreversible. You will be
+prompted for confirmation unless --force is specified.
+
+Examples:
+  # Delete with confirmation
+  dfsctl idmap sid delete S-1-5-21-111-222-333-1107
+
+  # Delete without confirmation
+  dfsctl idmap sid delete S-1-5-21-111-222-333-1107 --force
+
+```
+dfsctl idmap sid delete <sid> [flags]
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl idmap sid list`
+
+List foreign-SID UID/GID allocations
+
+List durable foreign-SID to Unix UID/GID allocations on the DittoFS server.
+
+Examples:
+  # List all foreign-SID allocations
+  dfsctl idmap sid list
+
+  # List as JSON
+  dfsctl idmap sid list -o json
+
+```
+dfsctl idmap sid list
 ```
 
 Global flags:
