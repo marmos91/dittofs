@@ -1386,18 +1386,22 @@ func (h *Handler) closeFilesWithFilter(
 		return true
 	})
 
-	// Second pass: delete collected file handles and clean up associated state
-	for _, fileID := range toDelete {
-		// Unregister any pending CHANGE_NOTIFY watchers for this handle.
-		// The CLOSE handler (close.go) does this for explicit closes, but
-		// closeFilesWithFilter bypasses the CLOSE handler. Without this,
-		// stale watchers persist in the NotifyRegistry after connection
-		// cleanup and can fire during subsequent tests, sending async
-		// responses on dead connections with partially-destroyed sessions.
-		// Per MS-SMB2 3.3.4.1: when the watched handle goes away the
-		// pending request MUST complete with STATUS_NOTIFY_CLEANUP so the
-		// client's async recv unblocks (smb2.notify.tcon, .dir).
-		if h.NotifyRegistry != nil {
+	// Second pass: unregister pending CHANGE_NOTIFY watchers for the collected
+	// handles. The CLOSE handler (close.go) does this for explicit closes, but
+	// closeFilesWithFilter bypasses the CLOSE handler. Without this, stale
+	// watchers persist in the NotifyRegistry after connection cleanup and can
+	// fire during subsequent tests, sending async responses on dead connections
+	// with partially-destroyed sessions. Per MS-SMB2 3.3.4.1: when the watched
+	// handle goes away the pending request MUST complete with
+	// STATUS_NOTIFY_CLEANUP so the client's async recv unblocks
+	// (smb2.notify.tcon, .dir).
+	//
+	// This runs OUTSIDE renameScanMu — it touches only the NotifyRegistry, not
+	// the `files` map a concurrent rename scan inspects — and never blocks on a
+	// wait a concurrent CLOSE must satisfy, preserving the same deadlock-safety
+	// argument as close.go's DrainHandleOps placement.
+	if h.NotifyRegistry != nil {
+		for _, fileID := range toDelete {
 			h.NotifyRegistry.Disarm(fileID)
 			if notify := h.NotifyRegistry.Unregister(fileID); notify != nil && notify.AsyncCallback != nil {
 				cleanupResp := &ChangeNotifyResponse{
@@ -1417,16 +1421,48 @@ func (h *Handler) closeFilesWithFilter(
 				})
 			}
 		}
-		h.DeleteOpenFile(fileID)
 	}
 
-	// Third pass: release per-handle lease/oplock records. Runs after every
-	// DeleteOpenFile above so releaseHandleLeaseRecord's "any other open on the
-	// same file shares this key" scan sees the shrunk table — otherwise sibling
-	// opens of the same file/key (all still present in the first pass) would
-	// each defer to the other and the record would leak.
+	// Third pass: remove the collected handles from the `files` map and release
+	// their per-handle lease/oplock records, all under renameScanMu.
+	//
+	// Lock rationale (mirrors close.go step 10/11): a concurrent SET_INFO
+	// rename's post-break conflict re-scan reads the lock-free `files` map to
+	// decide whether a conflicting holder still exists. If a teardown removed a
+	// handle and then released its lease (which signals the rename's break-wait)
+	// WITHOUT this mutex, the woken rename could observe the holder
+	// half-removed — gone from `files` per the signal yet still mid-removal — or
+	// the reverse, yielding a spurious STATUS_SHARING_VIOLATION. Holding
+	// renameScanMu across the map removal + lease release makes the rename's
+	// authoritative scan run entirely before or entirely after this teardown,
+	// never interleaved. closeFilesWithFilter does no DrainHandleOps wait, so
+	// nothing inside this section blocks on a wait a concurrent CLOSE must
+	// satisfy; the mutex never nests under any LockManager/lease lock (the scan
+	// touches only the sync.Map), so lock ordering stays cycle-free.
+	//
+	// The handleOps tracker is cleared outside the mutex: it is an independent
+	// sync.Map the rename scan never reads, and the in-flight ops for a
+	// teardown handle are not waited on here.
+	//
+	// releaseHandleLeaseRecord runs after every map removal so its "any other
+	// open on the same file shares this key" scan sees the shrunk table —
+	// otherwise sibling opens of the same file/key (all still present in the
+	// first pass) would each defer to the other and the record would leak.
+	h.renameScanMu.Lock()
+	for _, fileID := range toDelete {
+		h.deleteOpenFileEntry(fileID)
+	}
 	for _, openFile := range leaseReleases {
 		h.releaseHandleLeaseRecord(ctx, openFile, caller)
+	}
+	h.renameScanMu.Unlock()
+
+	// Clear the handleOps trackers for the removed handles. deleteOpenFileEntry
+	// (used inside renameScanMu above, consistent with close.go) does not touch
+	// handleOps, so do it here to avoid leaking trackers created by
+	// BeginHandleOp on these FileIDs.
+	for _, fileID := range toDelete {
+		h.handleOps.Delete(string(fileID[:]))
 	}
 
 	if closed > 0 {
