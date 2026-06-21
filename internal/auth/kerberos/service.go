@@ -309,9 +309,10 @@ func extractPACIdentity(creds *credentials.Credentials) (userSID string, groupSI
 //     MIT krb5_gss and Heimdal reject raw AP-REPs with GSS_S_DEFECTIVE_TOKEN
 //     (see #337). Do not skip the wrap.
 //
-// Per RFC 4120 Section 5.5.2, the EncAPRepPart contains:
-//   - ctime/cusec copied from the authenticator (proves we decrypted the ticket)
-//   - subkey (optional): echoed if the client sent a subkey in the authenticator
+// Per RFC 4120 Section 5.5.2, the EncAPRepPart contains ctime/cusec copied from
+// the authenticator (proving we decrypted the ticket). It deliberately carries
+// NO subkey even when the client sent one — see the body for the SPNEGO
+// mechListMIC interop rationale.
 //
 // The EncAPRepPart is encrypted with the session key using key usage 12
 // (AP-REP encrypted part, per RFC 4120 Section 7.5.1).
@@ -322,16 +323,21 @@ func (s *KerberosService) BuildMutualAuth(apReq *messages.APReq, sessionKey type
 		Cusec: apReq.Authenticator.Cusec,
 	}
 
-	// If client sent a subkey, include it in the AP-REP.
-	// This tells the client we've accepted the subkey and will use it
-	// for subsequent operations (MIC computation, wrap/unwrap).
-	if HasSubkey(apReq) {
-		encAPRepPart.Subkey = apReq.Authenticator.SubKey
-		logger.Debug("Including subkey in EncAPRepPart",
-			"etype", apReq.Authenticator.SubKey.KeyType,
-			"key_len", len(apReq.Authenticator.SubKey.KeyValue),
-		)
-	}
+	// The AP-REP intentionally carries NO subkey, even when the client sent one
+	// in its authenticator. Per RFC 4121 Section 4.2.6 the GSS per-message
+	// protocol key is the initiator's authenticator subkey when present; an
+	// acceptor includes an AP-REP subkey only to assert a NEW, acceptor-chosen
+	// key, which then obliges every per-message token to set the AcceptorSubkey
+	// flag (0x04) and key its checksum from that subkey (RFC 4121 Section
+	// 4.2.6.1). Echoing the initiator's own subkey back as an "acceptor subkey"
+	// would put the context into that acceptor-subkey regime while our MIC/Wrap
+	// tokens are still emitted as plain SentByAcceptor (0x01) tokens — a real
+	// Windows/Samba client then verifies the server mechListMIC under the
+	// acceptor-subkey rules and rejects it (NT_STATUS_ACCESS_DENIED, "failed to
+	// verify mechListMIC"). Omitting the AP-REP subkey keeps the context on the
+	// initiator subkey, consistent with the SentByAcceptor-only tokens we emit,
+	// and interoperates with both real clients and the smbtorture battery. Our
+	// own context key is already the initiator subkey (set in Authenticate).
 
 	// Marshal the EncAPRepPart inner SEQUENCE (without APPLICATION tag)
 	encAPRepPartInner, err := asn1.Marshal(encAPRepPart)

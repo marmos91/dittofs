@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/crypto"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/types"
@@ -80,6 +81,56 @@ func TestBuildMutualAuth(t *testing.T) {
 				t.Fatalf("expected APPLICATION 15 tag (0x6F), got 0x%02X", apRepBytes[0])
 			}
 		})
+	}
+}
+
+// TestBuildMutualAuth_OmitsAcceptorSubkey is the #1250 regression guard: even
+// when the client authenticator carries a subkey, the AP-REP must NOT echo it as
+// an acceptor subkey. An asserted AP-REP subkey puts the GSS context into the
+// acceptor-subkey regime (RFC 4121 Section 4.2.6.1), obliging every per-message
+// token to set the AcceptorSubkey flag (0x04) — which our SentByAcceptor-only
+// MIC/Wrap tokens do not — so a real Windows/Samba client rejects the server
+// mechListMIC with NT_STATUS_ACCESS_DENIED.
+func TestBuildMutualAuth_OmitsAcceptorSubkey(t *testing.T) {
+	svc := &KerberosService{replayCache: NewReplayCache(5 * time.Minute)}
+	sessionKey := types.EncryptionKey{
+		KeyType:  etypeID.AES128_CTS_HMAC_SHA1_96,
+		KeyValue: make([]byte, 16),
+	}
+	apReq := &messages.APReq{
+		Authenticator: types.Authenticator{
+			CTime: time.Now().UTC(),
+			Cusec: 7,
+			SubKey: types.EncryptionKey{
+				KeyType:  etypeID.AES256_CTS_HMAC_SHA1_96,
+				KeyValue: make([]byte, 32),
+			},
+		},
+	}
+
+	apRepBytes, err := svc.BuildMutualAuth(apReq, sessionKey)
+	if err != nil {
+		t.Fatalf("BuildMutualAuth failed: %v", err)
+	}
+
+	var apRep messages.APRep
+	if err := apRep.Unmarshal(apRepBytes); err != nil {
+		t.Fatalf("unmarshal AP-REP: %v", err)
+	}
+
+	decrypted, err := crypto.DecryptEncPart(apRep.EncPart, sessionKey, keyUsageAPRepEncPart)
+	if err != nil {
+		t.Fatalf("decrypt EncAPRepPart: %v", err)
+	}
+
+	var encPart messages.EncAPRepPart
+	if err := encPart.Unmarshal(decrypted); err != nil {
+		t.Fatalf("unmarshal EncAPRepPart: %v", err)
+	}
+
+	if encPart.Subkey.KeyType != 0 || len(encPart.Subkey.KeyValue) != 0 {
+		t.Errorf("AP-REP must not echo an acceptor subkey, got KeyType=%d KeyLen=%d",
+			encPart.Subkey.KeyType, len(encPart.Subkey.KeyValue))
 	}
 }
 
