@@ -69,6 +69,37 @@ type Files interface {
 	ListChildren(ctx context.Context, dirHandle FileHandle, cursor string, limit int) ([]DirEntry, string, error)
 
 	// ========================================================================
+	// Extended Attribute (xattr) Operations
+	// ========================================================================
+	//
+	// These present a SINGLE xattr namespace over the two physical backings
+	// DittoFS maintains — inline K/V (FileAttr.EAs) and named-stream child
+	// entities — so every protocol family reads/writes the same data. The
+	// resolution logic is shared across all backends in xattr.go; each backend
+	// delegates to the Resolve* free functions. Precedence is
+	// stream-entity-wins-else-inline. See xattr.go for the full contract.
+
+	// GetXattr returns the value of the named xattr and whether it is present,
+	// merged across both backings (stream wins). Names resolve case-
+	// insensitively. Stream-backed values require block-store access and are
+	// surfaced by the Service-level wrapper; the bare store method cannot read
+	// stream content (no block store at this tier) and reports a
+	// stream-only name as absent.
+	GetXattr(ctx context.Context, handle FileHandle, name string) ([]byte, bool, error)
+
+	// SetXattr writes the xattr value into the inline backing when it fits
+	// (<= XattrInlineMaxBytes); a larger value returns ErrXattrTooLarge.
+	SetXattr(ctx context.Context, handle FileHandle, name string, value []byte) error
+
+	// RemoveXattr removes the named xattr from the inline backing. Returns
+	// ErrNotFound when the name is absent from the inline backing.
+	RemoveXattr(ctx context.Context, handle FileHandle, name string) error
+
+	// ListXattr returns all xattr names on the file, merged from both backings
+	// and de-duplicated case-insensitively, sorted for determinism.
+	ListXattr(ctx context.Context, handle FileHandle) ([]string, error)
+
+	// ========================================================================
 	// Parent Tracking Operations
 	// ========================================================================
 

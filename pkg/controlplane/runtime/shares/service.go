@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"os"
@@ -1660,6 +1661,37 @@ func (s *Service) GetBlockStoreForHandle(ctx context.Context, handle metadata.Fi
 		return nil, fmt.Errorf("share %q has no block store configured", shareName)
 	}
 	return share.BlockStore, nil
+}
+
+// XattrStreamReader returns a metadata.StreamContentReader that materialises a
+// named-stream child's content as an xattr value via the per-share block store.
+// It is wired into metadata.Service.SetXattrStreamReader so the unified xattr
+// resolver can surface stream-entity-backed xattrs (the read half of
+// cross-protocol parity for SMB-created named streams). The metadata layer
+// stays block-engine-agnostic; this wrapper is the single seam where xattr
+// resolution reaches the block store (GetBlockStoreForHandle + ReadAt).
+//
+// A zero-size stream yields an empty value. Streams large enough to exceed an
+// int slice are rejected; named-stream xattr values are expected to be small.
+func (s *Service) XattrStreamReader() metadata.StreamContentReader {
+	return func(ctx context.Context, streamHandle metadata.FileHandle, attr *metadata.FileAttr) ([]byte, error) {
+		if attr == nil || attr.Size == 0 || attr.PayloadID == "" {
+			return []byte{}, nil
+		}
+		if attr.Size > math.MaxInt32 {
+			return nil, fmt.Errorf("stream-backed xattr too large: %d bytes", attr.Size)
+		}
+		bs, err := s.GetBlockStoreForHandle(ctx, streamHandle)
+		if err != nil {
+			return nil, err
+		}
+		buf := make([]byte, int(attr.Size))
+		n, rerr := bs.ReadAt(ctx, string(attr.PayloadID), nil, buf, 0)
+		if rerr != nil && rerr != io.EOF && rerr != io.ErrUnexpectedEOF {
+			return nil, rerr
+		}
+		return buf[:n], nil
+	}
 }
 
 // GetBlockStoreForShare returns the BlockStore for a named share.

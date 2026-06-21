@@ -94,6 +94,18 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runEAOpsTests(t, factory)
 	})
 
+	// XattrOps covers the unified xattr resolver (pkg/metadata/xattr.go) that
+	// presents a single xattr namespace over the inline EA backing and named-
+	// stream child entities: inline get/set/delete/list, case-insensitive
+	// resolution, zero-length values, the >64 KiB ErrXattrTooLarge ceiling,
+	// merged listing (inline + a manually-created stream sibling), stream-
+	// content reads through a test reader, and stream-wins precedence. Pins
+	// cross-backend parity for the resolver the same way EAOps does for the
+	// raw EA map.
+	t.Run("XattrOps", func(t *testing.T) {
+		runXattrOpsTests(t, factory)
+	})
+
 	t.Run("FileBlockOps", func(t *testing.T) {
 		runFileBlockOpsTests(t, factory)
 	})

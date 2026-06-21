@@ -182,6 +182,12 @@ func New(s store.Store) *Runtime {
 	// take effect immediately.
 	rt.metadataService.SetTrashPolicy(&trashPolicy{sharesSvc: rt.sharesSvc})
 
+	// Wire the block-store-backed reader so the unified xattr resolver can
+	// surface named-stream-backed xattr values (the read half of cross-protocol
+	// parity for SMB-created streams). The shares service owns block-store
+	// resolution; the metadata Service stays block-engine-agnostic.
+	rt.metadataService.SetXattrStreamReader(rt.sharesSvc.XattrStreamReader())
+
 	// Persist quota grace-timer transitions back to the control-plane DB so the
 	// soft->grace->hard state survives restart. Only when a store is present.
 	if s != nil {
