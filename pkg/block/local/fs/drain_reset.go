@@ -156,7 +156,6 @@ func (bc *FSStore) GracefulStopRollup(grace time.Duration) error {
 	// safe. Only signal when a pool was actually started.
 	if bc.rollupStarted.Load() {
 		bc.stopRollupOnce.Do(func() {
-			bc.rollupStopped.Store(true)
 			close(bc.stopRollup)
 		})
 		// Join the workers so no pass is in flight on the cancelled runtime

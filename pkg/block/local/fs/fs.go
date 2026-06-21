@@ -355,7 +355,6 @@ type FSStore struct {
 	// is actually closed.
 	stopRollup     chan struct{}
 	stopRollupOnce sync.Once
-	rollupStopped  atomic.Bool
 
 	// rollupDrainGraceDur bounds how long the graceful shutdown drain
 	// (GracefulStopRollup, invoked from Close) spends flushing in-flight /
@@ -1094,7 +1093,8 @@ func (bc *FSStore) Close() error {
 	// proceed with teardown rather than failing Close. No-op when StartRollup
 	// was never invoked.
 	if bc.rollupStarted.Load() && !bc.isClosed() {
-		if err := bc.GracefulStopRollup(bc.rollupDrainGrace()); err != nil {
+		// GracefulStopRollup defers a non-positive grace to its 30s default.
+		if err := bc.GracefulStopRollup(bc.rollupDrainGraceDur); err != nil {
 			logger.Warn("FSStore.Close: graceful rollup drain incomplete; remaining rollups resume on restart",
 				"error", err)
 		}
@@ -1134,15 +1134,6 @@ func (bc *FSStore) Close() error {
 
 func (bc *FSStore) isClosed() bool {
 	return bc.closedFlag.Load()
-}
-
-// rollupDrainGrace returns the bounded grace deadline for the shutdown rollup
-// drain (#1245 Bug C), falling back to 30s if unset.
-func (bc *FSStore) rollupDrainGrace() time.Duration {
-	if bc.rollupDrainGraceDur <= 0 {
-		return 30 * time.Second
-	}
-	return bc.rollupDrainGraceDur
 }
 
 // Start launches the background goroutine that periodically persists queued
