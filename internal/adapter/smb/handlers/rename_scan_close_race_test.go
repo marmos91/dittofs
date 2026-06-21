@@ -23,7 +23,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -165,81 +164,84 @@ func TestRenameScan_vs_Close_NegativeControl(t *testing.T) {
 		of := renamer.(*OpenFile)
 
 		const iters = 200
-		var torn atomic.Bool          // true while a removal is mid-flight
-		var scanProgress atomic.Int64 // bumped once per completed scan
+		var torn atomic.Bool // true while a removal is mid-flight
 		var observedTorn atomic.Bool
 
-		lock := func() {
-			if serialized {
-				h.renameScanMu.Lock()
+		// runScan executes the three authoritative conflict scans, checking the
+		// torn flag immediately before and after each pass. Shared by both
+		// regimes so the workload is identical; only the synchronization differs.
+		runScan := func() {
+			if torn.Load() {
+				observedTorn.Store(true)
 			}
-		}
-		unlock := func() {
-			if serialized {
-				h.renameScanMu.Unlock()
+			_ = h.checkShareDeleteConflict(of)
+			_ = h.checkParentDirRenameConflict(of.FileID, of.MetadataHandle)
+			_ = h.anyOpenChild(of.MetadataHandle)
+			if torn.Load() {
+				observedTorn.Store(true)
 			}
 		}
 
-		var wg sync.WaitGroup
-		wg.Add(2)
+		if !serialized {
+			// Negative control, made DETERMINISTIC (no wall-clock deadlines, no
+			// busy-spin — those flaked under CI load): a one-shot channel
+			// rendezvous opens the torn window and blocks the removal until the
+			// scan has run a full pass inside it. No mutex is held, so the
+			// handshake cannot deadlock. The scan therefore observes torn=true by
+			// construction, regardless of scheduling — proving the race the mutex
+			// must prevent is real.
+			holderID, childID := storeHolder(h, metaHandle, parentHandle)
+			windowOpen := make(chan struct{})
+			scanned := make(chan struct{})
 
-		// Removal goroutine: re-create then remove the conflicting holder. In the
-		// unserialized regime it deliberately holds the torn window open until the
-		// scan goroutine has advanced, so the tear is reliably visible. In the
-		// serialized regime the same open→hold→close sequence is atomic under the
-		// mutex, so no scan can interleave.
-		go func() {
-			defer wg.Done()
-			for i := 0; i < iters; i++ {
-				// Unserialized regime: stop early once the tear is proven, so the
-				// negative control is fast (it only needs ONE observation).
-				if !serialized && observedTorn.Load() {
-					return
-				}
-				holderID, childID := storeHolder(h, metaHandle, parentHandle)
-				lock()
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { // removal
+				defer wg.Done()
 				torn.Store(true)
-				if !serialized {
-					// Keep the window open until the scan side makes progress so
-					// the unsynchronized tear is deterministic, not probabilistic.
-					start := scanProgress.Load()
-					deadline := time.Now().Add(50 * time.Millisecond)
-					for scanProgress.Load() == start && time.Now().Before(deadline) {
-						// spin
-					}
-				}
+				close(windowOpen) // window is now open
+				<-scanned         // hold it open until the scan has run inside it
 				h.deleteOpenFileEntry(holderID)
 				h.deleteOpenFileEntry(childID)
 				torn.Store(false)
-				unlock()
-			}
-		}()
+			}()
+			go func() { // scan
+				defer wg.Done()
+				<-windowOpen
+				runScan()
+				close(scanned)
+			}()
+			wg.Wait()
+			return observedTorn.Load()
+		}
 
-		// Scan goroutine: run the three authoritative conflict scans, checking the
-		// torn flag immediately before and after, and publishing progress.
-		go func() {
+		// Positive regime: the identical scan + removal workload, but every
+		// open→scan→close is atomic under renameScanMu. The removal flips torn
+		// true→false entirely inside the lock and the scan only reads it inside
+		// the lock, so mutual exclusion makes a torn observation impossible by
+		// construction — over a bounded iteration budget, no wall clock needed.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { // removal
 			defer wg.Done()
-			deadline := time.Now().Add(2 * time.Second)
-			for i := 0; i < iters && time.Now().Before(deadline); i++ {
-				// Unserialized regime: one observation is enough to prove the race.
-				if !serialized && observedTorn.Load() {
-					return
-				}
-				lock()
-				if torn.Load() {
-					observedTorn.Store(true)
-				}
-				_ = h.checkShareDeleteConflict(of)
-				_ = h.checkParentDirRenameConflict(of.FileID, of.MetadataHandle)
-				_ = h.anyOpenChild(of.MetadataHandle)
-				if torn.Load() {
-					observedTorn.Store(true)
-				}
-				unlock()
-				scanProgress.Add(1)
+			for i := 0; i < iters; i++ {
+				holderID, childID := storeHolder(h, metaHandle, parentHandle)
+				h.renameScanMu.Lock()
+				torn.Store(true)
+				h.deleteOpenFileEntry(holderID)
+				h.deleteOpenFileEntry(childID)
+				torn.Store(false)
+				h.renameScanMu.Unlock()
 			}
 		}()
-
+		go func() { // scan
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				h.renameScanMu.Lock()
+				runScan()
+				h.renameScanMu.Unlock()
+			}
+		}()
 		wg.Wait()
 		return observedTorn.Load()
 	}
