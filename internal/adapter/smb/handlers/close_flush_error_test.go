@@ -209,3 +209,70 @@ func TestClose_FlushFailure_SurfacedAsNonSuccess(t *testing.T) {
 		t.Fatal("Close: open file handle still registered after CLOSE; failed flush leaked the handle")
 	}
 }
+
+// TestClose_FlushFailure_WinsOverDeleteFailure proves the status precedence in
+// the delete-on-close path: when BOTH the durable block-store flush AND the
+// delete-on-close unlink fail during the same CLOSE, the handler reports the
+// FLUSH (data-loss) status, not the delete error. The block flush failure is a
+// data-integrity signal — silently overwriting it with the delete error would
+// hide from the client that its writes never reached stable storage (#1267
+// precedence regression).
+//
+// The flush is forced to fail by closing the underlying engine.Store (→
+// engine.ErrStoreClosed → STATUS_FILE_CLOSED). The delete-on-close is forced to
+// fail by unlinking the file out-of-band before CLOSE, so the DOC RemoveFile
+// returns ErrNoEntity → STATUS_OBJECT_NAME_NOT_FOUND. The two map to distinct
+// statuses, so the assertion proves which one wins.
+func TestClose_FlushFailure_WinsOverDeleteFailure(t *testing.T) {
+	h, smbCtx, fileHandle, fileID := setupFlushErrorShare(t)
+
+	// Arm delete-on-close on the registered handle so the CLOSE delete path runs.
+	openFile, ok := h.GetOpenFile(fileID)
+	if !ok {
+		t.Fatal("setup: open file not registered")
+	}
+	openFile.InitialDeleteOnClose = true
+	h.StoreOpenFile(openFile)
+
+	// Force the delete-on-close unlink to fail: remove the file out-of-band so
+	// the DOC RemoveFile finds no such child (→ ErrNoEntity).
+	metaSvc := h.Registry.GetMetadataService()
+	uid, gid := uint32(0), uint32(0)
+	authCtx := &metadata.AuthContext{
+		Context:         smbCtx.Context,
+		Identity:        &metadata.Identity{UID: &uid, GID: &gid},
+		HasDeleteAccess: true,
+	}
+	if _, _, err := metaSvc.RemoveFile(authCtx, openFile.ParentHandle, openFile.FileName); err != nil {
+		t.Fatalf("out-of-band RemoveFile: %v", err)
+	}
+
+	// Force the durable flush to fail too: close the share's block store.
+	bs, err := h.Registry.GetBlockStoreForHandle(smbCtx.Context, fileHandle)
+	if err != nil {
+		t.Fatalf("GetBlockStoreForHandle: %v", err)
+	}
+	if err := bs.Close(); err != nil {
+		t.Fatalf("close block store: %v", err)
+	}
+
+	resp, err := h.Close(smbCtx, &CloseRequest{FileID: fileID})
+	if err != nil {
+		t.Fatalf("Close: unexpected error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("Close: nil response")
+	}
+
+	// Precedence guard: the flush (data-loss) status must win over the delete
+	// error. STATUS_OBJECT_NAME_NOT_FOUND is the delete error — seeing it means
+	// the delete clobbered the more-important flush failure (#1267 regression).
+	if resp.Status == types.StatusObjectNameNotFound {
+		t.Fatalf("Close: status = STATUS_OBJECT_NAME_NOT_FOUND — the delete error " +
+			"clobbered the block-flush (data-loss) status (#1267 precedence regression)")
+	}
+	if resp.Status != types.StatusFileClosed {
+		t.Fatalf("Close: status = 0x%08x, expected the flush failure STATUS_FILE_CLOSED (0x%08x) to win over the delete failure",
+			uint32(resp.Status), uint32(types.StatusFileClosed))
+	}
+}

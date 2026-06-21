@@ -529,7 +529,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				}
 
 				if deleteErr != nil {
-					resp.Status = common.MapToSMB(deleteErr)
+					// Surface the delete-on-close failure (#388) — but only when
+					// no durable-flush failure was already recorded in Step 6. A
+					// failed block-store flush is a data-loss signal and takes
+					// precedence: if both fail, the client must see the flush
+					// (data-integrity) status, not the delete error (#1267).
+					if resp.Status == types.StatusSuccess {
+						resp.Status = common.MapToSMB(deleteErr)
+					}
 					logger.Debug("CLOSE: failed to delete",
 						"path", openFile.Path,
 						"isDir", openFile.IsDirectory,
