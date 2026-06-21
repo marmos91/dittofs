@@ -64,14 +64,20 @@ if [ ! -f /var/lib/samba/.provisioned ]; then
     # Provision the domain controller. SAMBA_INTERNAL DNS keeps the fixture
     # self-contained (no bind9 dependency). --use-rfc2307 enables the RFC2307
     # POSIX attribute schema so we can stamp uidNumber/gidNumber on some objects.
+    #
+    # The DC functional level is intentionally left at samba's default: the
+    # "ad dc functional level" smb.conf parameter (and a fixed 2016 level) is not
+    # accepted across all samba versions in debian:bookworm-slim, and the fixture
+    # needs none of it — PAC group SIDs, RFC2307 attrs, and Kerberos all work at
+    # the default level. Pinning it broke provisioning on a freshly rebuilt image
+    # (issue #1252).
     samba-tool domain provision \
         --use-rfc2307 \
         --realm="$REALM" \
         --domain="$DOMAIN" \
         --server-role=dc \
         --dns-backend=SAMBA_INTERNAL \
-        --adminpass="$ADMIN_PASSWORD" \
-        --option="ad dc functional level = 2016"
+        --adminpass="$ADMIN_PASSWORD"
 
     # Samba writes its own krb5.conf during provision; expose it to other
     # containers / the Go test on the shared volume.

@@ -79,13 +79,31 @@ func TestLDAPResolveDomainUser(t *testing.T) {
 		t.Fatalf("ldap.New: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// The deadline must exceed the whole retry window below (up to 15 attempts ×
+	// (15s per-attempt LDAP timeout + 2s backoff)), otherwise the context would
+	// expire mid-loop and the remaining attempts would fail with a misleading
+	// "context deadline exceeded" instead of the real connectivity error.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	res, err := provider.Resolve(ctx, &identity.Credential{ExternalID: "alice@" + adRealm})
+	// Retry on transient connect errors: the entrypoint re-execs samba into the
+	// foreground shortly after provisioning, so LDAP (389) has a brief down
+	// window right when the test first connects ("connection reset by peer").
+	var res *identity.ResolvedIdentity
+	for attempt := 1; attempt <= 15; attempt++ {
+		if ctx.Err() != nil {
+			break
+		}
+		res, err = provider.Resolve(ctx, &identity.Credential{ExternalID: "alice@" + adRealm})
+		if err == nil {
+			break
+		}
+		t.Logf("Resolve(alice) attempt %d/15 not ready yet: %v", attempt, err)
+		time.Sleep(2 * time.Second)
+	}
 	if err != nil {
 		dumpADLogs(t)
-		t.Fatalf("Resolve(alice): %v", err)
+		t.Fatalf("Resolve(alice) failed after retries: %v", err)
 	}
 	t.Logf("Resolved alice: %+v", res)
 
@@ -156,8 +174,12 @@ func setupADDCForLDAP(t *testing.T) (ldapPort int, cleanup func()) {
 	}
 
 	t.Log("Starting AD-DC container (LDAP)...")
+	// --privileged: domain provision sets the sysvol NT ACL (smbd.set_nt_acl),
+	// which is denied on an overlayfs-backed container FS (e.g. Docker Desktop on
+	// macOS). Keeps the fixture portable across developer machines (issue #1252).
 	runOut, err := exec.Command("docker", "run", "-d",
 		"--platform", "linux/amd64",
+		"--privileged",
 		"--name", adContainerName,
 		"-p", "0:389/tcp",
 		adImageName,
