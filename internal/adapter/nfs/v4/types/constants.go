@@ -146,6 +146,20 @@ const (
 )
 
 // ============================================================================
+// NFSv4.2 Operation Numbers (nfs_opnum4)
+// ============================================================================
+//
+// Per RFC 8276 Section 8.6 (extended attributes for NFSv4.2). DittoFS
+// implements only the four RFC 8276 xattr operations from the v4.2 op range.
+
+const (
+	OP_GETXATTR    = 72 // GETXATTR (RFC 8276 Section 8.6)
+	OP_SETXATTR    = 73 // SETXATTR (RFC 8276 Section 8.6)
+	OP_LISTXATTRS  = 74 // LISTXATTRS (RFC 8276 Section 8.6)
+	OP_REMOVEXATTR = 75 // REMOVEXATTR (RFC 8276 Section 8.6)
+)
+
+// ============================================================================
 // NFSv4 Error Codes (nfsstat4)
 // ============================================================================
 //
@@ -267,6 +281,19 @@ const (
 	NFS4ERR_REJECT_DELEG     = 10085 // Reject delegation
 	NFS4ERR_RETURNCONFLICT   = 10086 // Return conflict
 	NFS4ERR_DELEG_REVOKED    = 10087 // Delegation revoked
+)
+
+// --- NFSv4.2 / RFC 8276 Extended Attribute Error Codes ---
+
+const (
+	// NFS4ERR_NOXATTR indicates the named extended attribute does not exist
+	// (RFC 8276 Section 11.2). Returned by GETXATTR/REMOVEXATTR for a missing
+	// xattr and by SETXATTR with SETXATTR4_REPLACE on a missing xattr.
+	NFS4ERR_NOXATTR = 10095
+
+	// NFS4ERR_XATTR2BIG indicates the xattr value (or, for LISTXATTRS, the
+	// reply) exceeds an implementation limit (RFC 8276 Section 11.2).
+	NFS4ERR_XATTR2BIG = 10096
 )
 
 // ============================================================================
@@ -455,6 +482,35 @@ const (
 const (
 	// NFS4_MINOR_VERSION_1 indicates NFSv4.1 per RFC 8881.
 	NFS4_MINOR_VERSION_1 = 1
+
+	// NFS4_MINOR_VERSION_2 indicates NFSv4.2 per RFC 7862. DittoFS implements
+	// only the RFC 8276 extended-attribute operations from this minor version.
+	NFS4_MINOR_VERSION_2 = 2
+)
+
+// ============================================================================
+// NFSv4.2 Extended Attribute ACCESS Bits (RFC 8276 Section 8.1)
+// ============================================================================
+//
+// These augment the RFC 7530 ACCESS4_* bits and describe access to a file's
+// named (extended) attributes rather than its data.
+
+const (
+	ACCESS4_XAREAD  = 0x00000040 // read extended attributes
+	ACCESS4_XAWRITE = 0x00000080 // write/create/remove extended attributes
+	ACCESS4_XALIST  = 0x00000100 // list extended attribute names
+)
+
+// ============================================================================
+// NFSv4.2 SETXATTR option (setxattr_option4) (RFC 8276 Section 8.6)
+// ============================================================================
+//
+// Controls create-vs-replace semantics for the SETXATTR operation.
+
+const (
+	SETXATTR4_EITHER  = 0 // create the xattr or replace an existing one
+	SETXATTR4_CREATE  = 1 // create only; NFS4ERR_EXIST if it already exists
+	SETXATTR4_REPLACE = 2 // replace only; NFS4ERR_NOXATTR if it is missing
 )
 
 // ============================================================================
@@ -690,6 +746,15 @@ func OpName(op uint32) string {
 		return "DESTROY_CLIENTID"
 	case OP_RECLAIM_COMPLETE:
 		return "RECLAIM_COMPLETE"
+	// --- NFSv4.2 / RFC 8276 Extended Attribute Operations ---
+	case OP_GETXATTR:
+		return "GETXATTR"
+	case OP_SETXATTR:
+		return "SETXATTR"
+	case OP_LISTXATTRS:
+		return "LISTXATTRS"
+	case OP_REMOVEXATTR:
+		return "REMOVEXATTR"
 	default:
 		return "UNKNOWN"
 	}
@@ -792,6 +857,12 @@ func init() {
 		"WANT_DELEGATION":      OP_WANT_DELEGATION,
 		"DESTROY_CLIENTID":     OP_DESTROY_CLIENTID,
 		"RECLAIM_COMPLETE":     OP_RECLAIM_COMPLETE,
+
+		// --- NFSv4.2 / RFC 8276 Extended Attribute Operations ---
+		"GETXATTR":    OP_GETXATTR,
+		"SETXATTR":    OP_SETXATTR,
+		"LISTXATTRS":  OP_LISTXATTRS,
+		"REMOVEXATTR": OP_REMOVEXATTR,
 	}
 }
 

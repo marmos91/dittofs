@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	v4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ============================================================================
@@ -591,5 +592,30 @@ func TestWritableAndExclcreatStillIncludeTimeSet(t *testing.T) {
 		if !IsBitSet(exclcreatAttrs(), bit) {
 			t.Errorf("exclcreatAttrs() missing write-only bit %d", bit)
 		}
+	}
+}
+
+// TestXattrSupportAttr verifies the RFC 8276 FATTR4_XATTR_SUPPORT (bit 82,
+// word 2) is advertised in SUPPORTED_ATTRS and encodes as bool true for real
+// files. 82/32 = word 2, 82%32 = 18.
+func TestXattrSupportAttr(t *testing.T) {
+	if FATTR4_XATTR_SUPPORT != 82 {
+		t.Fatalf("FATTR4_XATTR_SUPPORT = %d, want 82", FATTR4_XATTR_SUPPORT)
+	}
+	if FATTR4_XATTR_SUPPORT/32 != 2 || FATTR4_XATTR_SUPPORT%32 != 18 {
+		t.Fatalf("FATTR4_XATTR_SUPPORT word/offset = %d/%d, want 2/18",
+			FATTR4_XATTR_SUPPORT/32, FATTR4_XATTR_SUPPORT%32)
+	}
+	if !IsBitSet(SupportedAttrs(), FATTR4_XATTR_SUPPORT) {
+		t.Error("SupportedAttrs() missing FATTR4_XATTR_SUPPORT")
+	}
+
+	// Real-file encode: bool true (uint32 1).
+	var buf bytes.Buffer
+	if err := encodeRealFileAttr(&buf, FATTR4_XATTR_SUPPORT, &metadata.File{}, metadata.FileHandle("/s:id"), nil); err != nil {
+		t.Fatalf("encodeRealFileAttr(XATTR_SUPPORT): %v", err)
+	}
+	if got := binary.BigEndian.Uint32(buf.Bytes()); got != 1 {
+		t.Errorf("real-file FATTR4_XATTR_SUPPORT encoded = %d, want 1 (true)", got)
 	}
 }

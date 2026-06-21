@@ -272,8 +272,8 @@ func (h *AdapterSettingsHandler) GetDefaults(w http.ResponseWriter, r *http.Requ
 				"preferred_transfer_size":        {Min: ranges.PreferredTransferSizeMin, Max: ranges.PreferredTransferSizeMax},
 				"max_delegations":                {Min: 0, Max: 1000000},
 				"dir_deleg_batch_window_ms":      {Min: 0, Max: 5000},
-				"v4_min_minor_version":           {Min: 0, Max: 1},
-				"v4_max_minor_version":           {Min: 0, Max: 1},
+				"v4_min_minor_version":           {Min: 0, Max: 2},
+				"v4_max_minor_version":           {Min: 0, Max: 2},
 				"v4_max_connections_per_session": {Min: 0, Max: 1024},
 				"portmapper_port":                {Min: ranges.PortmapperPortMin, Max: ranges.PortmapperPortMax},
 			},
@@ -756,8 +756,8 @@ func validateNFSSettings(s *models.NFSAdapterSettings) map[string]string {
 	validateIntRange(errs, "portmapper_port", s.PortmapperPort, ranges.PortmapperPortMin, ranges.PortmapperPortMax)
 	validateIntRange(errs, "max_delegations", s.MaxDelegations, 0, 1000000)
 	validateIntRange(errs, "dir_deleg_batch_window_ms", s.DirDelegBatchWindowMs, 0, 5000)
-	validateIntRange(errs, "v4_min_minor_version", s.V4MinMinorVersion, 0, 1)
-	validateIntRange(errs, "v4_max_minor_version", s.V4MaxMinorVersion, 0, 1)
+	validateIntRange(errs, "v4_min_minor_version", s.V4MinMinorVersion, 0, 2)
+	validateIntRange(errs, "v4_max_minor_version", s.V4MaxMinorVersion, 0, 2)
 	if s.V4MinMinorVersion > s.V4MaxMinorVersion {
 		errs["v4_min_minor_version"] = "must be <= v4_max_minor_version"
 	}

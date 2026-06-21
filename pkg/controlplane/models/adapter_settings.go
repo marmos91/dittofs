@@ -65,9 +65,9 @@ type NFSAdapterSettings struct {
 	MaxDelegations        int  `gorm:"default:10000" json:"max_delegations"`        // max total outstanding delegations (file + directory combined)
 	DirDelegBatchWindowMs int  `gorm:"default:50" json:"dir_deleg_batch_window_ms"` // notification batching window in milliseconds
 
-	// NFSv4 minor version range (0=v4.0, 1=v4.1)
+	// NFSv4 minor version range (0=v4.0, 1=v4.1, 2=v4.2 RFC 8276 xattr ops)
 	V4MinMinorVersion int `gorm:"default:0" json:"v4_min_minor_version"` // minimum NFSv4 minor version
-	V4MaxMinorVersion int `gorm:"default:1" json:"v4_max_minor_version"` // maximum NFSv4 minor version
+	V4MaxMinorVersion int `gorm:"default:2" json:"v4_max_minor_version"` // maximum NFSv4 minor version
 
 	// TODO: Wire NFSv4.1 session limits into StateManager (these fields are not yet active; future: settings watcher).
 	V4MaxSessionSlots          int `gorm:"default:64" json:"v4_max_session_slots"`           // fore channel max slots per session
@@ -224,7 +224,7 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		MaxDelegations:             10000,
 		DirDelegBatchWindowMs:      50,
 		V4MinMinorVersion:          0,
-		V4MaxMinorVersion:          1,
+		V4MaxMinorVersion:          2,
 		V4MaxSessionSlots:          64,
 		V4MaxSessionsPerClient:     16,
 		V4MaxConnectionsPerSession: 16,

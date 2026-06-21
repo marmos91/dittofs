@@ -73,9 +73,16 @@ type Handler struct {
 	// Compounds with minorversion < minMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
 	minMinorVersion uint32
 
-	// maxMinorVersion is the maximum accepted NFSv4 minor version (default 1).
+	// maxMinorVersion is the maximum accepted NFSv4 minor version (default 2).
 	// Compounds with minorversion > maxMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
+	// v4.2 support is limited to the RFC 8276 extended-attribute operations.
 	maxMinorVersion uint32
+
+	// xattrBackend resolves named (extended) attribute operations for the four
+	// RFC 8276 xattr handlers. It is satisfied structurally by *metadata.Service.
+	// Depending on this interface (rather than concrete Service methods) keeps
+	// PR2 decoupled from the unified xattr resolver landing in PR1 (#1285).
+	xattrBackend XattrBackend
 }
 
 // NewHandler creates a new NFSv4 handler with the given runtime, pseudo-fs,
@@ -98,7 +105,7 @@ func NewHandler(registry nfsRuntime, pfs *pseudofs.PseudoFS, stateManager ...*st
 		StateManager:     sm,
 		opDispatchTable:  make(map[uint32]OpHandler),
 		v41DispatchTable: make(map[uint32]V41OpHandler),
-		maxMinorVersion:  1, // default: accept v4.0 and v4.1
+		maxMinorVersion:  2, // default: accept v4.0, v4.1, and v4.2 (RFC 8276 xattr ops)
 	}
 
 	// Initialize v4.1 handler dependencies
@@ -274,7 +281,42 @@ func NewHandler(registry nfsRuntime, pfs *pseudofs.PseudoFS, stateManager ...*st
 		return v41handlers.HandleReclaimComplete(h.v41Deps, ctx, v41ctx, reader)
 	}
 
+	// NFSv4.2 / RFC 8276 extended-attribute operations. These share the v4.1
+	// session/SEQUENCE machinery (RFC 7862 builds on RFC 8881), so they ride the
+	// v41DispatchTable. They are gated to v4.2-only in dispatchOne: a v4.0/v4.1
+	// COMPOUND carrying one of these opcodes gets NFS4ERR_NOTSUPP.
+	h.v41DispatchTable[types.OP_GETXATTR] = func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return h.handleGetXattr(ctx, reader)
+	}
+	h.v41DispatchTable[types.OP_SETXATTR] = func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return h.handleSetXattr(ctx, reader)
+	}
+	h.v41DispatchTable[types.OP_LISTXATTRS] = func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return h.handleListXattrs(ctx, reader)
+	}
+	h.v41DispatchTable[types.OP_REMOVEXATTR] = func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
+		return h.handleRemoveXattr(ctx, reader)
+	}
+
 	return h
+}
+
+// xattrOps is the set of RFC 8276 extended-attribute operation numbers, which
+// are valid only in NFSv4.2 COMPOUNDs. In v4.0/v4.1 COMPOUNDs they must return
+// NFS4ERR_NOTSUPP (mirroring the v40OnlyOps gating in the opposite direction).
+var xattrOps = map[uint32]bool{
+	types.OP_GETXATTR:    true, // op 72
+	types.OP_SETXATTR:    true, // op 73
+	types.OP_LISTXATTRS:  true, // op 74
+	types.OP_REMOVEXATTR: true, // op 75
+}
+
+// SetXattrBackend overrides the extended-attribute backend used by the RFC 8276
+// xattr handlers. When unset, the handlers resolve the backend from the
+// registry's metadata service (see xattrBackendForHandler). Primarily used by
+// tests to inject a fake backend.
+func (h *Handler) SetXattrBackend(b XattrBackend) {
+	h.xattrBackend = b
 }
 
 // v41StubHandler creates a v4.1 stub handler that decodes args and returns NOTSUPP.
@@ -362,7 +404,7 @@ func (h *Handler) IsOperationBlocked(opNum uint32) bool {
 
 // SetMinorVersionRange sets the accepted minor version range for COMPOUND requests.
 // Compounds with minorversion outside [min, max] get NFS4ERR_MINOR_VERS_MISMATCH.
-// Default: min=0, max=1 (both v4.0 and v4.1 enabled).
+// Default: min=0, max=2 (v4.0, v4.1, and v4.2 xattr ops enabled).
 func (h *Handler) SetMinorVersionRange(min, max uint32) {
 	h.minMinorVersion = min
 	h.maxMinorVersion = max

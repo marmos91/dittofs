@@ -386,12 +386,14 @@ func TestNullHandler(t *testing.T) {
 	}
 }
 
-func TestCompoundMinorVersion2(t *testing.T) {
+// TestCompoundMinorVersion3 verifies that minorversion 3 (unsupported) is
+// rejected with NFS4ERR_MINOR_VERS_MISMATCH. v4.2 is now supported (RFC 8276
+// xattr ops), so the unsupported-version boundary moved from 2 to 3.
+func TestCompoundMinorVersion3(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// Minor version 2 should also fail (only 0 supported)
-	data := buildCompoundArgs([]byte("v4.2"), 2, []uint32{types.OP_GETATTR})
+	data := buildCompoundArgs([]byte("v4.3"), 3, []uint32{types.OP_GETATTR})
 	resp, err := h.ProcessCompound(ctx, data)
 	if err != nil {
 		t.Fatalf("ProcessCompound error: %v", err)
@@ -543,11 +545,14 @@ func TestCompound_MinorVersion1_V41Op_NOTSUPP(t *testing.T) {
 	}
 }
 
-func TestCompound_MinorVersion2_Rejected(t *testing.T) {
+// TestCompound_MinorVersion2_RequiresSequence verifies that v4.2 is accepted and
+// routed through the v4.1 session machinery: a non-exempt first op (GETATTR)
+// without a leading SEQUENCE returns NFS4ERR_OP_NOT_IN_SESSION (not a
+// minor-version mismatch), exactly like v4.1.
+func TestCompound_MinorVersion2_RequiresSequence(t *testing.T) {
 	h := newTestHandler()
 	ctx := newTestCompoundContext()
 
-	// minorversion=2 should return NFS4ERR_MINOR_VERS_MISMATCH
 	data := buildCompoundArgs([]byte("v4.2"), 2, []uint32{types.OP_GETATTR})
 	resp, err := h.ProcessCompound(ctx, data)
 	if err != nil {
@@ -559,12 +564,9 @@ func TestCompound_MinorVersion2_Rejected(t *testing.T) {
 		t.Fatalf("decode response error: %v", err)
 	}
 
-	if decoded.Status != types.NFS4ERR_MINOR_VERS_MISMATCH {
-		t.Errorf("status = %d, want NFS4ERR_MINOR_VERS_MISMATCH (%d)",
-			decoded.Status, types.NFS4ERR_MINOR_VERS_MISMATCH)
-	}
-	if decoded.NumResults != 0 {
-		t.Errorf("numResults = %d, want 0", decoded.NumResults)
+	if decoded.Status != types.NFS4ERR_OP_NOT_IN_SESSION {
+		t.Errorf("status = %d, want NFS4ERR_OP_NOT_IN_SESSION (%d)",
+			decoded.Status, types.NFS4ERR_OP_NOT_IN_SESSION)
 	}
 	if string(decoded.Tag) != "v4.2" {
 		t.Errorf("tag = %q, want %q", string(decoded.Tag), "v4.2")
@@ -677,8 +679,9 @@ func TestCompound_V41_AllStubOps(t *testing.T) {
 }
 
 func TestCompound_V41_DispatchTableComplete(t *testing.T) {
-	// Verify all 19 v4.1 operation numbers (40-58) are registered in the
-	// v41DispatchTable. This ensures no operation was missed during setup.
+	// Verify all 19 v4.1 operation numbers (40-58) plus the 4 RFC 8276 xattr
+	// ops (72-75, which share the v41DispatchTable) are registered. This ensures
+	// no operation was missed during setup.
 	h := newTestHandler()
 
 	expectedOps := []uint32{
@@ -701,10 +704,15 @@ func TestCompound_V41_DispatchTableComplete(t *testing.T) {
 		types.OP_WANT_DELEGATION,
 		types.OP_DESTROY_CLIENTID,
 		types.OP_RECLAIM_COMPLETE,
+		// RFC 8276 xattr ops (v4.2) ride the v41DispatchTable.
+		types.OP_GETXATTR,
+		types.OP_SETXATTR,
+		types.OP_LISTXATTRS,
+		types.OP_REMOVEXATTR,
 	}
 
-	if len(h.v41DispatchTable) != 19 {
-		t.Errorf("v41DispatchTable has %d entries, want 19", len(h.v41DispatchTable))
+	if len(h.v41DispatchTable) != 23 {
+		t.Errorf("v41DispatchTable has %d entries, want 23", len(h.v41DispatchTable))
 	}
 
 	for _, opCode := range expectedOps {
@@ -1404,11 +1412,11 @@ func TestCompound_VersionRangeGating(t *testing.T) {
 	})
 
 	t.Run("OutOfRange_Both", func(t *testing.T) {
-		// minorversion=2 should always be rejected regardless of range
+		// minorversion=3 is above the default max (2) and must be rejected.
 		h := newTestHandler()
 		ctx := newTestCompoundContext()
 
-		data := buildCompoundArgs([]byte("v42"), 2, []uint32{types.OP_GETATTR})
+		data := buildCompoundArgs([]byte("v43"), 3, []uint32{types.OP_GETATTR})
 		resp, err := h.ProcessCompound(ctx, data)
 		if err != nil {
 			t.Fatalf("ProcessCompound error: %v", err)
@@ -1419,11 +1427,11 @@ func TestCompound_VersionRangeGating(t *testing.T) {
 			t.Fatalf("decode response error: %v", err)
 		}
 		if decoded.Status != types.NFS4ERR_MINOR_VERS_MISMATCH {
-			t.Errorf("v4.2 status = %d, want NFS4ERR_MINOR_VERS_MISMATCH", decoded.Status)
+			t.Errorf("v4.3 status = %d, want NFS4ERR_MINOR_VERS_MISMATCH", decoded.Status)
 		}
 		// Tag should still be echoed
-		if string(decoded.Tag) != "v42" {
-			t.Errorf("tag = %q, want %q", string(decoded.Tag), "v42")
+		if string(decoded.Tag) != "v43" {
+			t.Errorf("tag = %q, want %q", string(decoded.Tag), "v43")
 		}
 	})
 }
@@ -2537,12 +2545,12 @@ func TestCompound_DispatchOne_MinorVersionRouting(t *testing.T) {
 
 		// Under v4.0 the op dispatches to the registered handler.
 		args := encodeSetClientIDArgsForReject()
-		if res := h.dispatchOne(ctx, nil, types.OP_SETCLIENTID, bytes.NewReader(args), false); res.Status != types.NFS4_OK {
+		if res := h.dispatchOne(ctx, nil, types.OP_SETCLIENTID, bytes.NewReader(args), false, false); res.Status != types.NFS4_OK {
 			t.Errorf("v4.0 SETCLIENTID status = %d, want NFS4_OK", res.Status)
 		}
 
 		// Under v4.1 the same op is rejected with NOTSUPP (args consumed).
-		if res := h.dispatchOne(ctx, nil, types.OP_SETCLIENTID, bytes.NewReader(args), true); res.Status != types.NFS4ERR_NOTSUPP {
+		if res := h.dispatchOne(ctx, nil, types.OP_SETCLIENTID, bytes.NewReader(args), true, false); res.Status != types.NFS4ERR_NOTSUPP {
 			t.Errorf("v4.1 SETCLIENTID status = %d, want NFS4ERR_NOTSUPP (%d)", res.Status, types.NFS4ERR_NOTSUPP)
 		}
 	})
@@ -2561,13 +2569,13 @@ func TestCompound_DispatchOne_MinorVersionRouting(t *testing.T) {
 
 		// Under v4.0 the v4.1 table is not consulted → handler not reached.
 		reached = false
-		if res := h.dispatchOne(ctx, nil, probeOp, bytes.NewReader(nil), false); reached {
+		if res := h.dispatchOne(ctx, nil, probeOp, bytes.NewReader(nil), false, false); reached {
 			t.Errorf("v4.0 must not reach v4.1 handler (status=%d)", res.Status)
 		}
 
 		// Under v4.1 the handler is reached.
 		reached = false
-		if res := h.dispatchOne(ctx, nil, probeOp, bytes.NewReader(nil), true); !reached || res.Status != types.NFS4_OK {
+		if res := h.dispatchOne(ctx, nil, probeOp, bytes.NewReader(nil), true, false); !reached || res.Status != types.NFS4_OK {
 			t.Errorf("v4.1 must reach v4.1 handler: reached=%v status=%d", reached, res.Status)
 		}
 	})

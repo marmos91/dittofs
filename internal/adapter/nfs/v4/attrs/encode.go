@@ -65,6 +65,7 @@ const (
 	FATTR4_SPACE_FREE         = 60 // uint64: free filesystem space in bytes (RFC 7530 Section 5.8.2.29)
 	FATTR4_SPACE_AVAIL        = 61 // uint64: available space for caller in bytes (RFC 7530 Section 5.8.2.30)
 	FATTR4_SUPPATTR_EXCLCREAT = 75 // bitmap4: attrs settable during EXCLUSIVE4_1 create (RFC 8881 Section 5.8.1.10)
+	FATTR4_XATTR_SUPPORT      = 82 // bool: extended attributes supported (RFC 8276 Section 8.4; word 2, bit 18)
 )
 
 // time_how4 constants for SETATTR timestamp setting (RFC 7530 Section 5.7)
@@ -233,6 +234,11 @@ func SupportedAttrs() []uint32 {
 
 	// NFSv4.1 exclusive create attributes (word 2)
 	SetBit(&bitmap, FATTR4_SUPPATTR_EXCLCREAT)
+
+	// NFSv4.2 / RFC 8276 extended attribute support (word 2, bit 18).
+	// Advertising this tells the Linux client that getfattr/setfattr over the
+	// user.* namespace is available, so it issues the RFC 8276 xattr ops.
+	SetBit(&bitmap, FATTR4_XATTR_SUPPORT)
 
 	return bitmap
 }
@@ -468,6 +474,11 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		// of EXCLUSIVE4_1, rather than requiring a follow-up SETATTR.
 		return EncodeBitmap4(buf, exclcreatAttrs())
 
+	case FATTR4_XATTR_SUPPORT:
+		// bool: the pseudo-fs carries no named attributes, but the attribute is
+		// advertised in SUPPORTED_ATTRS, so report false rather than erroring.
+		return xdr.WriteUint32(buf, 0) // false
+
 	default:
 		// Unknown attribute -- should not reach here if Intersect is correct
 		return fmt.Errorf("unsupported attribute bit %d", bit)
@@ -694,6 +705,10 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 
 	case FATTR4_SUPPATTR_EXCLCREAT:
 		return EncodeBitmap4(buf, exclcreatAttrs())
+
+	case FATTR4_XATTR_SUPPORT:
+		// bool: real files support RFC 8276 extended attributes (user.* namespace).
+		return xdr.WriteUint32(buf, 1) // true
 
 	default:
 		return fmt.Errorf("unsupported attribute bit %d", bit)

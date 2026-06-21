@@ -125,7 +125,7 @@ func rejectV40OnlyOp(opCode uint32, reader io.Reader, clientAddr string) *types.
 //
 // The returned result always has OpCode set (defaulting to the dispatched
 // opCode when a handler left it zero).
-func (h *Handler) dispatchOne(compCtx *types.CompoundContext, v41ctx *types.V41RequestContext, opCode uint32, reader io.Reader, isV41 bool) *types.CompoundResult {
+func (h *Handler) dispatchOne(compCtx *types.CompoundContext, v41ctx *types.V41RequestContext, opCode uint32, reader io.Reader, isV41, isV42 bool) *types.CompoundResult {
 	// Adapter-level operation blocklist: blocked ops return NOTSUPP.
 	if h.IsOperationBlocked(opCode) {
 		logger.Debug("NFSv4 COMPOUND op blocked by adapter settings",
@@ -140,13 +140,25 @@ func (h *Handler) dispatchOne(compCtx *types.CompoundContext, v41ctx *types.V41R
 	case isV41 && v40OnlyOps[opCode]:
 		result = rejectV40OnlyOp(opCode, reader, compCtx.ClientAddr)
 
-	case isV41 && h.v41DispatchTable[opCode] != nil:
+	case !isV42 && xattrOps[opCode]:
+		// RFC 8276 xattr ops are valid only under v4.2; reject (NOTSUPP) in
+		// v4.0/v4.1. The opcode is a valid v4.2 op number, so no args are
+		// consumed here — the loop stops on the non-OK status, matching how
+		// rejectV40OnlyOp short-circuits the COMPOUND (RFC 7530 §16.2).
+		logger.Debug("NFSv4 COMPOUND xattr op requires minorversion 2",
+			"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
+		result = notSuppHandler(opCode)
+
+	case isV42 && xattrOps[opCode]:
+		result = h.v41DispatchTable[opCode](compCtx, v41ctx, reader)
+
+	case isV41 && h.v41DispatchTable[opCode] != nil && !xattrOps[opCode]:
 		result = h.v41DispatchTable[opCode](compCtx, v41ctx, reader)
 
 	case h.opDispatchTable[opCode] != nil:
 		result = h.opDispatchTable[opCode](compCtx, reader)
 
-	case opCode >= 3 && opCode <= h.maxValidOpCode(isV41):
+	case opCode >= 3 && opCode <= h.maxValidOpCode(isV41, isV42):
 		// Valid operation number for this minor version but not implemented.
 		result = notSuppHandler(opCode)
 
@@ -168,17 +180,29 @@ func (h *Handler) dispatchOne(compCtx *types.CompoundContext, v41ctx *types.V41R
 // maxValidOpCode returns the highest opcode that is a valid operation number
 // for the active minor version (used to distinguish "valid but unimplemented"
 // from "illegal opcode").
-func (h *Handler) maxValidOpCode(isV41 bool) uint32 {
-	if isV41 {
+//
+// Under v4.2 the range extends through OP_REMOVEXATTR (75) so that the RFC 8276
+// xattr ops are recognised. v4.1 stops at OP_RECLAIM_COMPLETE (58) and v4.0 at
+// OP_RELEASE_LOCKOWNER (39), unchanged from before.
+func (h *Handler) maxValidOpCode(isV41, isV42 bool) uint32 {
+	switch {
+	case isV42:
+		return types.OP_REMOVEXATTR
+	case isV41:
 		return types.OP_RECLAIM_COMPLETE
+	default:
+		return types.OP_RELEASE_LOCKOWNER
 	}
-	return types.OP_RELEASE_LOCKOWNER
 }
 
 // compoundLoopParams configures runCompoundOps for a specific COMPOUND variant.
 type compoundLoopParams struct {
-	// isV41 selects v4.1 dispatch semantics in dispatchOne.
+	// isV41 selects v4.1 dispatch semantics in dispatchOne (SEQUENCE gating,
+	// v4.0-only op rejection). v4.2 is a superset and also sets isV41.
 	isV41 bool
+	// isV42 enables the RFC 8276 xattr ops (72-75) and extends the valid-opcode
+	// ceiling to OP_REMOVEXATTR. Always implies isV41.
+	isV42 bool
 	// v41ctx is the per-request v4.1 session context (nil for v4.0 and for the
 	// v4.1 exempt-op path).
 	v41ctx *types.V41RequestContext
@@ -234,7 +258,7 @@ func (h *Handler) runCompoundOps(compCtx *types.CompoundContext, numOps uint32, 
 			}
 		}
 
-		result := h.dispatchOne(compCtx, p.v41ctx, opCode, reader, p.isV41)
+		result := h.dispatchOne(compCtx, p.v41ctx, opCode, reader, p.isV41, p.isV42)
 		results = append(results, *result)
 		lastStatus = result.Status
 
@@ -260,10 +284,11 @@ func (h *Handler) runCompoundOps(compCtx *types.CompoundContext, numOps uint32, 
 // Execution stops on the first error, and the response includes results up to
 // and including the failed operation.
 //
-// Minorversion routing (per RFC 8881):
+// Minorversion routing (per RFC 8881 / RFC 7862 / RFC 8276):
 //   - 0: NFSv4.0 dispatch table (OpHandler signature)
 //   - 1: NFSv4.1 dispatch table (V41OpHandler), with fallback to v4.0 table
-//   - 2+: NFS4ERR_MINOR_VERS_MISMATCH
+//   - 2: NFSv4.1 dispatch table plus the RFC 8276 xattr ops (72-75)
+//   - 3+: NFS4ERR_MINOR_VERS_MISMATCH
 //
 // COMPOUND4args wire format:
 //
@@ -327,7 +352,13 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 		return h.dispatchV40(compCtx, tag, numOps, reader)
 
 	case types.NFS4_MINOR_VERSION_1:
-		return h.dispatchV41(compCtx, tag, numOps, reader)
+		return h.dispatchV41(compCtx, tag, numOps, reader, false)
+
+	case types.NFS4_MINOR_VERSION_2:
+		// v4.2 reuses the entire v4.1 SEQUENCE/session machinery (RFC 7862
+		// builds on RFC 8881); the only delta is that the RFC 8276 xattr ops
+		// become valid, which the isV42 flag enables in dispatchOne.
+		return h.dispatchV41(compCtx, tag, numOps, reader, true)
 
 	default:
 		logger.Debug("NFSv4 minor version mismatch",
@@ -379,7 +410,7 @@ func (h *Handler) dispatchV40(compCtx *types.CompoundContext, tag []byte, numOps
 //
 // On SEQUENCE replay (duplicate slot+seqid), returns the cached COMPOUND
 // response bytes directly without re-executing any operations.
-func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps uint32, reader io.Reader) ([]byte, error) {
+func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps uint32, reader io.Reader, isV42 bool) ([]byte, error) {
 	// Validate operation count limit
 	if numOps > types.MaxCompoundOps {
 		logger.Debug("NFSv4.1 COMPOUND op count exceeds limit",
@@ -406,7 +437,7 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 			"op_name", types.OpName(firstOpCode),
 			"num_ops", numOps,
 			"client", compCtx.ClientAddr)
-		return h.dispatchV41Ops(compCtx, tag, firstOpCode, numOps, nil, reader)
+		return h.dispatchV41Ops(compCtx, tag, firstOpCode, numOps, nil, reader, isV42)
 	}
 
 	// Non-exempt: first op MUST be SEQUENCE
@@ -479,6 +510,7 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 	// response, preserving replay semantics for the ops that did complete.
 	opResults, lastStatus, _ := h.runCompoundOps(compCtx, numOps, reader, compoundLoopParams{
 		isV41:                true,
+		isV42:                isV42,
 		v41ctx:               v41ctx,
 		startIndex:           1,
 		hardErrOnDecodeError: false,
@@ -504,9 +536,10 @@ func (h *Handler) dispatchV41(compCtx *types.CompoundContext, tag []byte, numOps
 // read from the reader). Used for the exempt-op path, where the first op is not
 // SEQUENCE (e.g. EXCHANGE_ID) and so v41ctx is nil. Decode errors encode a
 // partial reply rather than dropping it (matching the SEQUENCE-bearing path).
-func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, firstOpCode uint32, numOps uint32, v41ctx *types.V41RequestContext, reader io.Reader) ([]byte, error) {
+func (h *Handler) dispatchV41Ops(compCtx *types.CompoundContext, tag []byte, firstOpCode uint32, numOps uint32, v41ctx *types.V41RequestContext, reader io.Reader, isV42 bool) ([]byte, error) {
 	results, lastStatus, _ := h.runCompoundOps(compCtx, numOps, reader, compoundLoopParams{
 		isV41:                true,
+		isV42:                isV42,
 		v41ctx:               v41ctx,
 		firstOpCode:          firstOpCode,
 		hasFirstOpCode:       true,
