@@ -52,10 +52,9 @@ func (c *MetadataConfig) ApplyDefaults() {
 	c.Badger.ApplyDefaults()
 }
 
-// Validate rejects negative cache sizes. Zero is valid (auto-size); any
-// positive value is accepted (the badger engine applies its own floors when a
-// value is set explicitly only insofar as it never goes below Badger's own
-// minimums — operators are trusted with an explicit number).
+// Validate rejects negative cache sizes. Zero is valid (auto-size from
+// available RAM); any positive value is accepted verbatim — an operator who
+// sets an explicit size is trusted with the number.
 func (c *BadgerMetadataConfig) Validate() error {
 	if c.BlockCacheSizeMB < 0 {
 		return fmt.Errorf("metadata.badger.block_cache_mb must be >= 0 (got %d); 0 auto-sizes from available RAM", c.BlockCacheSizeMB)

@@ -104,8 +104,8 @@ func getGlobalBadgerCacheDefaults() (blockCacheMB, indexCacheMB int64) {
 // above Badger's tiny default; the ceilings stop a very large host from handing
 // a single store an unbounded slice of RAM.
 //
-// Example: a 4 GiB host -> block 614 MiB clamped to floor 512? No: 4096*0.15 =
-// 614 MiB (> 512 floor) block, 4096*0.075 = 307 MiB (> 256 floor) index.
+// Example: on a 4 GiB host neither cache hits a bound — block = 4096*0.15 ≈
+// 614 MiB, index = 4096*0.075 ≈ 307 MiB.
 func autoSizeCacheMB(availMem uint64) (blockCacheMB, indexCacheMB int64) {
 	availMB := int64(availMem >> 20)
 	blockCacheMB = clampMB(int64(float64(availMB)*blockCacheMemFraction), minBlockCacheMB, maxBlockCacheMB)
