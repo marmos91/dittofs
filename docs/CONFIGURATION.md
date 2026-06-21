@@ -417,16 +417,30 @@ stands). The effective values are surfaced as `Local Durable` / `Remote
 Durable` in `dfsctl store block stats`.
 
 **CLOSE/COMMIT semantics.** SMB CLOSE and NFS COMMIT (and the NFSv3 stable-WRITE
-path) report success once data is on a **durable** store. The rule is:
+path) call the engine flush. A **hard** flush error (I/O fault, remote rejection,
+metadata error) is **always** surfaced to the client regardless of the settings
+below. Beyond that, whether CLOSE/COMMIT waits for durability is governed by a
+per-share policy flag, `require_durable_commit` (default **false**):
 
+| `require_durable_commit` | CLOSE/COMMIT behavior |
+|--------------------------|-----------------------|
+| `false` (default) | Acknowledge once the flush succeeds — **regardless** of durability. The local→remote mirror stays fully **asynchronous** and observable via the unsynced-bytes metric / `Pending Remote (bytes)`. Ordinary NFS/POSIX writes **never** EIO. |
+| `true` (opt-in) | Acknowledge only when the data is on a **durable** store: `committed := localDurable \|\| (Finalized && remoteDurable)`. Trades latency for synchronous durability on non-fs-local stores. |
+
+Set it per share via the local block store config:
+
+```sh
+dfsctl store block local edit <share> --config '{"require_durable_commit": true}'
 ```
-committed := localDurable || (Finalized && remoteDurable)
-```
+
+A non-bool value is ignored with a startup warning (default `false` stands).
+
+When `require_durable_commit = true`, the strict rule resolves as follows:
 
 - **Production (local `fs`):** `localDurable=true`, so CLOSE/COMMIT ack
-  immediately — there is **no wait** on the remote. The local→remote mirror
-  stays fully **asynchronous** (the syncer keeps draining in the background).
-  This is the fast path and is unchanged from prior releases.
+  immediately — there is **no wait** on the remote, and the mirror stays fully
+  asynchronous. fs-local is always durable, so the flag is effectively a
+  **no-op** there (the fast path is identical to the default).
 - **Volatile local (`memory`) + durable remote (`s3`):** the data is only safe
   once it reaches the durable remote, so CLOSE/COMMIT succeeds only when the
   flush is `Finalized`. While the remote is unhealthy or a mirror pass is
@@ -439,8 +453,15 @@ committed := localDurable || (Finalized && remoteDurable)
   durable, so CLOSE/COMMIT reports the same transient I/O error rather than
   silently acknowledging a write that a crash would lose.
 
+In the **default** configuration none of the above transient errors occur —
+CLOSE/COMMIT acks on a successful flush and the syncer mirrors in the
+background. Use `require_durable_commit = true` only when you need synchronous
+durability guarantees on a volatile-local + durable-remote share and can accept
+the added latency.
+
 `dfsctl store block stats` also shows `Pending Remote (bytes)` — the headline
-data-at-risk gauge (local CAS bytes not yet mirrored to the remote).
+data-at-risk gauge (local CAS bytes not yet mirrored to the remote) — which is
+the way to observe the async mirror backlog under the default policy.
 
 #### GC knobs
 

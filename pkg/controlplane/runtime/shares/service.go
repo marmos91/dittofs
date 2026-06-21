@@ -808,6 +808,18 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("failed to create BlockStore: %w", err)
 	}
 
+	// Apply the per-share strict honest-CLOSE/COMMIT policy (#1274). Read the
+	// optional "require_durable_commit" bool from the local store config the
+	// same way config["durable"] is read; absent or non-bool → false (default:
+	// the commit seam acks once Flush succeeds and the remote mirror stays
+	// async). Set before Start so it governs the very first commit.
+	if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
+		applyRequireDurableCommit(bs, localStoreCfg, config.Name)
+	} else {
+		logger.Warn("failed to read local block store config for require_durable_commit; defaulting to false",
+			"share", config.Name, "error", cfgErr)
+	}
+
 	if err := bs.Start(ctx); err != nil {
 		cleanup()
 		return fmt.Errorf("failed to start BlockStore: %w", err)
@@ -2175,6 +2187,30 @@ func applyDurableOverride(store any, config map[string]any, label, shareName str
 	}
 	setter.SetDurable(b)
 	logger.Info("block store durability overridden by config", "store", label, "share", shareName, "durable", b)
+}
+
+// applyRequireDurableCommit reads the optional per-share
+// "require_durable_commit" bool from the local store config and sets the
+// strict honest-CLOSE/COMMIT policy on the engine Store (#1274). Read the same
+// conservative way as config["durable"]: absent or non-bool → false (default),
+// so the commit seam acks once Flush succeeds and the remote mirror stays
+// async — ordinary NFS/POSIX writes never EIO. When true, CLOSE/COMMIT only
+// succeed once the data is on a durable store.
+func applyRequireDurableCommit(bs *engine.Store, config map[string]any, shareName string) {
+	v, ok := config["require_durable_commit"]
+	if !ok {
+		return
+	}
+	b, ok := v.(bool)
+	if !ok {
+		logger.Warn("block store config has require_durable_commit but it is not a bool; ignoring",
+			"share", shareName, "value", v)
+		return
+	}
+	bs.SetRequireDurableCommit(b)
+	if b {
+		logger.Info("strict honest-CLOSE/COMMIT durability enabled by config", "share", shareName)
+	}
 }
 
 // CreateRemoteStoreFromConfig creates a remote store from type and dynamic config.

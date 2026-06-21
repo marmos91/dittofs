@@ -73,3 +73,26 @@ func TestEngine_RemoteDurable_OverrideTrue(t *testing.T) {
 		t.Fatal("remote store with SetDurable(true) should report durable")
 	}
 }
+
+func TestEngine_RequireDurableCommit_DefaultsFalse(t *testing.T) {
+	localStore := localmemory.New()
+	fbs := newStubFileBlockStore()
+	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
+	bs, err := New(BlockStoreConfig{Local: localStore, Syncer: syncer, FileBlockStore: fbs})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = bs.Close() })
+
+	if bs.RequireDurableCommit() {
+		t.Fatal("require_durable_commit must default to false")
+	}
+	bs.SetRequireDurableCommit(true)
+	if !bs.RequireDurableCommit() {
+		t.Fatal("SetRequireDurableCommit(true) should flip the policy")
+	}
+	bs.SetRequireDurableCommit(false)
+	if bs.RequireDurableCommit() {
+		t.Fatal("SetRequireDurableCommit(false) should clear the policy")
+	}
+}

@@ -53,17 +53,12 @@ func setupMFsymlinkShare(t *testing.T, allowMFsymlink bool, target string) (*Han
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
 
-	// #1274: mark this memory local store durable via the per-store config
-	// override so CLOSE acks SUCCESS (the honest commit rule otherwise reports
-	// ErrNotDurableYet for a volatile memory-local share). This test exercises
-	// MFsymlink conversion, not durability.
-	mfBlockCfg := &models.BlockStoreConfig{
+	// A plain memory local store suffices: require_durable_commit defaults to
+	// false, so CLOSE acks once the flush succeeds regardless of durability
+	// (#1274). This test exercises MFsymlink conversion, not durability.
+	localBSID, err := cps.CreateBlockStore(ctx, &models.BlockStoreConfig{
 		Name: "mfbs", Kind: models.BlockStoreKindLocal, Type: "memory",
-	}
-	if err := mfBlockCfg.SetConfig(map[string]any{"durable": true}); err != nil {
-		t.Fatalf("SetConfig durable: %v", err)
-	}
-	localBSID, err := cps.CreateBlockStore(ctx, mfBlockCfg)
+	})
 	if err != nil {
 		t.Fatalf("CreateBlockStore: %v", err)
 	}
