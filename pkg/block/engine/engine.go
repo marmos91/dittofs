@@ -481,7 +481,16 @@ func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID st
 			wantObjID = zeroObjectID
 		}
 
-		time.Sleep(backoff)
+		// Back off, but stay responsive to cancellation: a plain time.Sleep would
+		// let a canceled rollup linger for the full remaining backoff window. On
+		// cancellation during backoff, fail rather than silently succeed,
+		// preferring the ctx error but reporting the last conflict for context.
+		select {
+		case <-time.After(backoff):
+		case <-ctx.Done():
+			return fmt.Errorf("rollup persist: canceled during backoff (payloadID=%s, lastErr=%v): %w",
+				payloadID, lastErr, ctx.Err())
+		}
 		if backoff < 50*time.Millisecond {
 			backoff *= 2
 		}

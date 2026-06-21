@@ -8,6 +8,12 @@ package badger
 // goroutines. Production code never calls it.
 func SetMaxTransactionRetriesForTest(n int) func() {
 	prev := maxTransactionRetries.Load()
+	// Clamp to at least 1: a value <= 0 would make WithTransaction run zero
+	// attempts and return nil without ever executing the closure (lastErr stays
+	// nil), silently swallowing the work.
+	if n < 1 {
+		n = 1
+	}
 	maxTransactionRetries.Store(int32(n))
 	return func() { maxTransactionRetries.Store(prev) }
 }
