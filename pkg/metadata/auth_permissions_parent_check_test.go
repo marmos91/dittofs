@@ -51,7 +51,6 @@ func TestCheckParentWriteAccess_ACLDenyReturnsAccessDenied(t *testing.T) {
 	authCtx := f.authContext(requesterUID, 1001)
 	sid := requesterSID
 	authCtx.Identity.SID = &sid
-	authCtx.ShareWritable = true
 	authCtx.ShareReadOnly = false
 
 	err = f.service.CheckParentWriteAccess(authCtx, dirHandle)
@@ -65,14 +64,13 @@ func TestCheckParentWriteAccess_ACLDenyReturnsAccessDenied(t *testing.T) {
 }
 
 // TestCheckParentWriteAccess_NoACLAllowsAdd asserts the POSIX-only happy path
-// is unchanged (parent has no explicit ACL; ShareWritable bypass still
-// applies because the P1-1 gate only fires when an ACL is present).
+// is unchanged: a parent with no explicit ACL falls through to the POSIX write
+// check (the root dir is mode 0o777, so a non-owner gets write via "other").
 func TestCheckParentWriteAccess_NoACLAllowsAdd(t *testing.T) {
 	f := newTestFixture(t)
 	authCtx := f.authContext(1001, 1001)
-	authCtx.ShareWritable = true
 	if err := f.service.CheckParentWriteAccess(authCtx, f.rootHandle); err != nil {
-		t.Fatalf("CheckParentWriteAccess on POSIX-only writable parent err = %v, want nil", err)
+		t.Fatalf("CheckParentWriteAccess on POSIX-writable parent err = %v, want nil", err)
 	}
 }
 
@@ -117,9 +115,6 @@ func TestCheckParentCreateAccess_DenyAddFileBlocksFileAllowsDir(t *testing.T) {
 	authCtx := f.authContext(requesterUID, 1001)
 	sid := requesterSID
 	authCtx.Identity.SID = &sid
-	// Disable the share-level write bypass so the ACL is the sole gate
-	// (the bypass would short-circuit deny-ACL evaluation otherwise).
-	authCtx.ShareWritable = false
 
 	// File create: must be denied by the ADD_FILE deny ACE.
 	err = f.service.CheckParentCreateAccess(authCtx, dirHandle, false)
@@ -175,7 +170,6 @@ func TestCheckParentCreateAccess_DenyAddSubdirBlocksDirAllowsFile(t *testing.T) 
 	authCtx := f.authContext(requesterUID, 1001)
 	sid := requesterSID
 	authCtx.Identity.SID = &sid
-	authCtx.ShareWritable = false
 
 	// Directory create: must be denied by the ADD_SUBDIRECTORY deny ACE.
 	err = f.service.CheckParentCreateAccess(authCtx, dirHandle, true)
@@ -195,12 +189,11 @@ func TestCheckParentCreateAccess_DenyAddSubdirBlocksDirAllowsFile(t *testing.T) 
 
 // TestCheckParentCreateAccess_NoACLFallsBackToWriteCheck verifies the
 // POSIX fallback path: when the parent has no ACL, evaluation falls
-// through to the shared PermissionWrite check so mode bits and
-// share-level grants still govern.
+// through to the shared PermissionWrite check so mode bits govern (the root
+// dir is mode 0o777, so a non-owner gets write via "other").
 func TestCheckParentCreateAccess_NoACLFallsBackToWriteCheck(t *testing.T) {
 	f := newTestFixture(t)
 	authCtx := f.authContext(1001, 1001)
-	authCtx.ShareWritable = true
 
 	if err := f.service.CheckParentCreateAccess(authCtx, f.rootHandle, false); err != nil {
 		t.Fatalf("CheckParentCreateAccess(file, no-ACL) err = %v, want nil", err)

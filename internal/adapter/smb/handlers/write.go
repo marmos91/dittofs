@@ -324,6 +324,16 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 		return &WriteResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusAccessDenied}}, nil
 	}
 
+	// SMB write authorization is HANDLE-BASED: the open already enforced the
+	// DACL ceiling (Step 2b verified the handle carries FILE_WRITE_DATA /
+	// FILE_APPEND_DATA via OpenFile.GrantedAccess). Signal the metadata layer
+	// not to re-deny this WRITE on the file's POSIX mode / DOS-READONLY
+	// attribute (smbtorture smb2.durable-open.read-only writes through a handle
+	// opened on a FILE_ATTRIBUTE_READONLY file). An explicit DENY-write ACE
+	// would have stripped write at open, so this flag can only be set when the
+	// open legitimately granted write.
+	authCtx.WriteAuthorizedByHandle = hasWriteAccess(openFile.GrantedAccess)
+
 	// ========================================================================
 	// Step 8: Check for conflicting byte-range locks
 	// ========================================================================
