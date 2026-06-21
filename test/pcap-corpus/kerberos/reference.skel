@@ -1,0 +1,233 @@
+kerberos/kerberos.as_rep_element
+kerberos/kerberos.as_rep_element/kerberos.cname_element
+kerberos/kerberos.as_rep_element/kerberos.cname_element/kerberos.cname_string
+kerberos/kerberos.as_rep_element/kerberos.cname_element/kerberos.cname_string/kerberos.CNameString
+kerberos/kerberos.as_rep_element/kerberos.cname_element/kerberos.name_type
+kerberos/kerberos.as_rep_element/kerberos.crealm
+kerberos/kerberos.as_rep_element/kerberos.enc_part_element
+kerberos/kerberos.as_rep_element/kerberos.enc_part_element/kerberos.etype
+kerberos/kerberos.as_rep_element/kerberos.enc_part_element/kerberos.kvno
+kerberos/kerberos.as_rep_element/kerberos.msg_type=krb-as-rep (11)
+kerberos/kerberos.as_rep_element/kerberos.padata
+kerberos/kerberos.as_rep_element/kerberos.padata/kerberos.PA_DATA_element
+kerberos/kerberos.as_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)
+kerberos/kerberos.as_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value
+kerberos/kerberos.as_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value/kerberos.ETYPE_INFO2_ENTRY_element
+kerberos/kerberos.as_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value/kerberos.ETYPE_INFO2_ENTRY_element/kerberos.etype
+kerberos/kerberos.as_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value/kerberos.ETYPE_INFO2_ENTRY_element/kerberos.info2_salt
+kerberos/kerberos.as_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value/kerberos.ETYPE_INFO2_ENTRY_element/kerberos.s2kparams
+kerberos/kerberos.as_rep_element/kerberos.pvno
+kerberos/kerberos.as_rep_element/kerberos.ticket_element
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.enc_part_element
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.enc_part_element/kerberos.etype
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.enc_part_element/kerberos.kvno
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.realm
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.sname_element
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.sname_element/kerberos.name_type
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.sname_element/kerberos.sname_string
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.sname_element/kerberos.sname_string/kerberos.SNameString
+kerberos/kerberos.as_rep_element/kerberos.ticket_element/kerberos.tkt_vno
+kerberos/kerberos.as_req_element
+kerberos/kerberos.as_req_element/kerberos.msg_type=krb-as-req (10)
+kerberos/kerberos.as_req_element/kerberos.padata
+kerberos/kerberos.as_req_element/kerberos.padata/kerberos.PA_DATA_element
+kerberos/kerberos.as_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-AS-FRESHNESS (150)
+kerberos/kerberos.as_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-AS-FRESHNESS (150)/kerberos.padata_value
+kerberos/kerberos.as_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ENC-TIMESTAMP (2)
+kerberos/kerberos.as_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ENC-TIMESTAMP (2)/kerberos.padata_value
+kerberos/kerberos.as_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-ENC-TIMESTAMP (2)/kerberos.padata_value/kerberos.etype
+kerberos/kerberos.as_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-REQ-ENC-PA-REP (149)
+kerberos/kerberos.as_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-REQ-ENC-PA-REP (149)/kerberos.padata_value
+kerberos/kerberos.as_req_element/kerberos.pvno
+kerberos/kerberos.as_req_element/kerberos.req_body_element
+kerberos/kerberos.as_req_element/kerberos.req_body_element/ber.bitstring.padding
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.cname_element
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.cname_element/kerberos.cname_string
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.cname_element/kerberos.cname_string/kerberos.CNameString
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.cname_element/kerberos.name_type
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc-req-body.etype
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc-req-body.etype/kerberos.ENCTYPE
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.allow.postdate
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.canonicalize
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.constrained.delegation
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.disable.transited.check
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.enc.tkt.in.skey
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.forwardable
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.forwarded
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.opt.hardware.auth
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.postdated
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.proxiable
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.proxy
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.renew
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.renewable
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.renewable.ok
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.request.anonymous
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.reserved
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused10
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused12
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused13
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused17
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused18
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused19
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused20
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused21
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused22
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused23
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused24
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused25
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused29
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused7
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused9
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.validate
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.nonce
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.realm
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.sname_element
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.sname_element/kerberos.name_type
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.sname_element/kerberos.sname_string
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.sname_element/kerberos.sname_string/kerberos.SNameString
+kerberos/kerberos.as_req_element/kerberos.req_body_element/kerberos.till
+kerberos/kerberos.krb_error_element
+kerberos/kerberos.krb_error_element/kerberos.cname_element
+kerberos/kerberos.krb_error_element/kerberos.cname_element/kerberos.cname_string
+kerberos/kerberos.krb_error_element/kerberos.cname_element/kerberos.cname_string/kerberos.CNameString
+kerberos/kerberos.krb_error_element/kerberos.cname_element/kerberos.name_type
+kerberos/kerberos.krb_error_element/kerberos.crealm
+kerberos/kerberos.krb_error_element/kerberos.e_data
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=Unknown (655)
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=Unknown (655)/kerberos.padata_value
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-ENC-TIMESTAMP (2)
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-ENC-TIMESTAMP (2)/kerberos.padata_value
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value/kerberos.ETYPE_INFO2_ENTRY_element
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value/kerberos.ETYPE_INFO2_ENTRY_element/kerberos.etype
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value/kerberos.ETYPE_INFO2_ENTRY_element/kerberos.info2_salt
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-ETYPE-INFO2 (19)/kerberos.padata_value/kerberos.ETYPE_INFO2_ENTRY_element/kerberos.s2kparams
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-PK-AS-REP-19 (15)
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-PK-AS-REP-19 (15)/kerberos.padata_value
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-PK-AS-REQ (16)
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-PK-AS-REQ (16)/kerberos.padata_value
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-PKINIT-KX (147)
+kerberos/kerberos.krb_error_element/kerberos.e_data/kerberos.PA_DATA_element/kerberos.padata_type=pA-PKINIT-KX (147)/kerberos.padata_value
+kerberos/kerberos.krb_error_element/kerberos.e_text
+kerberos/kerberos.krb_error_element/kerberos.error_code
+kerberos/kerberos.krb_error_element/kerberos.msg_type=krb-error (30)
+kerberos/kerberos.krb_error_element/kerberos.pvno
+kerberos/kerberos.krb_error_element/kerberos.realm
+kerberos/kerberos.krb_error_element/kerberos.sname_element
+kerberos/kerberos.krb_error_element/kerberos.sname_element/kerberos.name_type
+kerberos/kerberos.krb_error_element/kerberos.sname_element/kerberos.sname_string
+kerberos/kerberos.krb_error_element/kerberos.sname_element/kerberos.sname_string/kerberos.SNameString
+kerberos/kerberos.krb_error_element/kerberos.stime
+kerberos/kerberos.krb_error_element/kerberos.susec
+kerberos/kerberos.rm.length
+kerberos/kerberos.rm.reserved
+kerberos/kerberos.tgs_rep_element
+kerberos/kerberos.tgs_rep_element/kerberos.cname_element
+kerberos/kerberos.tgs_rep_element/kerberos.cname_element/kerberos.cname_string
+kerberos/kerberos.tgs_rep_element/kerberos.cname_element/kerberos.cname_string/kerberos.CNameString
+kerberos/kerberos.tgs_rep_element/kerberos.cname_element/kerberos.name_type
+kerberos/kerberos.tgs_rep_element/kerberos.crealm
+kerberos/kerberos.tgs_rep_element/kerberos.enc_part_element
+kerberos/kerberos.tgs_rep_element/kerberos.enc_part_element/kerberos.etype
+kerberos/kerberos.tgs_rep_element/kerberos.msg_type=krb-tgs-rep (13)
+kerberos/kerberos.tgs_rep_element/kerberos.padata
+kerberos/kerberos.tgs_rep_element/kerberos.padata/kerberos.PA_DATA_element
+kerberos/kerberos.tgs_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)
+kerberos/kerberos.tgs_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value
+kerberos/kerberos.tgs_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value/kerberos.armored_data_element
+kerberos/kerberos.tgs_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value/kerberos.armored_data_element/kerberos.enc_fast_rep_element
+kerberos/kerberos.tgs_rep_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value/kerberos.armored_data_element/kerberos.enc_fast_rep_element/kerberos.etype
+kerberos/kerberos.tgs_rep_element/kerberos.pvno
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.enc_part_element
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.enc_part_element/kerberos.etype
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.enc_part_element/kerberos.kvno
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.realm
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.sname_element
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.sname_element/kerberos.name_type
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.sname_element/kerberos.sname_string
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.sname_element/kerberos.sname_string/kerberos.SNameString
+kerberos/kerberos.tgs_rep_element/kerberos.ticket_element/kerberos.tkt_vno
+kerberos/kerberos.tgs_req_element
+kerberos/kerberos.tgs_req_element/kerberos.msg_type=krb-tgs-req (12)
+kerberos/kerberos.tgs_req_element/kerberos.padata
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value/kerberos.armored_data_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value/kerberos.armored_data_element/kerberos.enc_fast_req_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value/kerberos.armored_data_element/kerberos.enc_fast_req_element/kerberos.etype
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value/kerberos.armored_data_element/kerberos.req_checksum_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-FX-FAST (136)/kerberos.padata_value/kerberos.armored_data_element/kerberos.req_checksum_element/kerberos.cksumtype
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/ber.bitstring.padding
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ap_options
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ap_options/kerberos.APOptions.mutual.required
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ap_options/kerberos.APOptions.reserved
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ap_options/kerberos.APOptions.use.session.key
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.authenticator_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.authenticator_element/kerberos.etype
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.msg_type=krb-ap-req (14)
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.pvno
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.enc_part_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.enc_part_element/kerberos.etype
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.enc_part_element/kerberos.kvno
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.realm
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.sname_element
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.sname_element/kerberos.name_type
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.sname_element/kerberos.sname_string
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.sname_element/kerberos.sname_string/kerberos.SNameString
+kerberos/kerberos.tgs_req_element/kerberos.padata/kerberos.PA_DATA_element/kerberos.padata_type=pA-TGS-REQ (1)/kerberos.padata_value/kerberos.ap_req_element/kerberos.ticket_element/kerberos.tkt_vno
+kerberos/kerberos.tgs_req_element/kerberos.pvno
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/ber.bitstring.padding
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc-req-body.etype
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc-req-body.etype/kerberos.ENCTYPE
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.allow.postdate
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.canonicalize
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.constrained.delegation
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.disable.transited.check
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.enc.tkt.in.skey
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.forwardable
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.forwarded
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.opt.hardware.auth
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.postdated
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.proxiable
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.proxy
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.renew
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.renewable
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.renewable.ok
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.request.anonymous
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.reserved
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused10
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused12
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused13
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused17
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused18
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused19
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused20
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused21
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused22
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused23
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused24
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused25
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused29
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused7
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.unused9
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.kdc_options/kerberos.KDCOptions.validate
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.nonce
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.realm
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.sname_element
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.sname_element/kerberos.name_type
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.sname_element/kerberos.sname_string
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.sname_element/kerberos.sname_string/kerberos.SNameString
+kerberos/kerberos.tgs_req_element/kerberos.req_body_element/kerberos.till
