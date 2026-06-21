@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
@@ -170,8 +169,11 @@ func runPendingDonorEagerDedup(t *testing.T, ms metadata.Store, sharePrefix stri
 	_ = objectID
 	_ = donorHash
 
-	// File B: identical content. Write then Flush — the eager path fires.
-	pidB := shareNamePrefix(shareName) + "/" + uuid.NewString()
+	// File B: identical content, backed by a REAL metadata File row (so the
+	// pending-donor MISS falls through to a faithful per-block upload +
+	// PersistFileBlocks against B's own row). Write then Flush — the eager
+	// path fires.
+	pidB, _ := createRealFile(t, ms, shareName, "clone.bin", rootHandle)
 	if _, err := bs.WriteAt(ctx, pidB, nil, content, 0); err != nil {
 		t.Fatalf("WriteAt clone: %v", err)
 	}
