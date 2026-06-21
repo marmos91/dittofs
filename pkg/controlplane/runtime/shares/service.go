@@ -339,6 +339,15 @@ type nonClosingRemote struct {
 
 func (n *nonClosingRemote) Close() error { return nil }
 
+// Durable delegates to the wrapped remote chain so the no-op-Close wrapper
+// still implements block.DurabilityReporter. Without this, embedding
+// remote.RemoteStore (which has no Durable method) would silently drop the
+// capability, and engine.Store.RemoteDurable() would type-assert to
+// block.DurabilityReporter, fail, and report NOT durable for every production
+// S3-remote share — breaking the honest COMMIT/CLOSE contract (#1274) with a
+// spurious ErrNotDurableYet on every commit.
+func (n *nonClosingRemote) Durable() bool { return block.IsDurable(n.RemoteStore) }
+
 // Service manages share registration, lookup, and configuration.
 type Service struct {
 	mu       sync.RWMutex
