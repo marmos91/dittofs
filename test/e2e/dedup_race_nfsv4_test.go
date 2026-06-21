@@ -202,6 +202,11 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	t.Logf("all %d concurrent byte-identical writes succeeded over NFSv4.1 (no EIO)",
 		dedupRaceNFSv4Concurrent)
 
+	// Drain the syncer so every block is flushed to S3 before we read back —
+	// this makes the content check below a genuine server→S3→client round-trip
+	// rather than a hit served from the NFSv4.1 local write-back cache.
+	dedupDrainUploads(t, cli)
+
 	// ---- Assert content correctness: every file reads back byte-identical ----
 	allPaths := append([]string{donorPath}, racerPaths...)
 	for _, path := range allPaths {
