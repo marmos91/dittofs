@@ -1219,11 +1219,19 @@ func (bc *FSStore) Stats() local.Stats {
 	return local.Stats{
 		DiskUsed:      bc.diskUsed.Load(),
 		MaxDisk:       bc.maxDisk,
+		MaxLogBytes:   bc.maxLogBytes,
 		MemUsed:       bc.memUsed.Load(),
 		FileCount:     fileCount,
 		MemBlockCount: memBlockCount,
 	}
 }
+
+// MaxLogBytes returns the effective append-log pressure budget in bytes
+// (the resolved max_log_bytes: per-store > global > deduced default).
+// AppendWrite blocks once logBytesTotal exceeds this ceiling and ultimately
+// returns block.ErrPressureTimeout if the rollup cannot drain in time. The
+// value is immutable after construction, so it is read without a lock.
+func (bc *FSStore) MaxLogBytes() int64 { return bc.maxLogBytes }
 
 // updateFileSize updates the tracked file size if the new end offset is larger.
 // Uses double-checked locking: RLock fast path for existing files, Lock for creation.

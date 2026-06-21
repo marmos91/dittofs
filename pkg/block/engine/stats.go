@@ -22,8 +22,15 @@ type BlockStoreStats struct {
 	// LocalMemMax is retained for wire/JSON compatibility but is always 0:
 	// the FSStore no longer tracks a configurable dirty-buffer memory budget
 	// (the former MaxMemory knob was never enforced and was removed). The real
-	// append-log pressure budget is max_log_bytes; see GetStats notes.
+	// append-log pressure budget is AppendLogLimitBytes below.
 	LocalMemMax int64 `json:"local_mem_max"`
+
+	// AppendLogLimitBytes is the effective append-log pressure budget
+	// (resolved max_log_bytes: per-store > global > deduced). AppendWrite
+	// blocks once the on-disk append log exceeds this ceiling and ultimately
+	// returns ErrPressureTimeout if the rollup cannot drain. This is the real
+	// write-pressure ceiling that replaced the inert MaxMemory knob.
+	AppendLogLimitBytes int64 `json:"append_log_limit_bytes"`
 
 	ReadBufferEntries int   `json:"read_buffer_entries"`
 	ReadBufferUsed    int64 `json:"read_buffer_used"`
@@ -111,11 +118,12 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	outageDuration := bs.syncer.RemoteOutageDuration()
 
 	stats := BlockStoreStats{
-		FileCount:     len(files),
-		LocalDiskUsed: localStats.DiskUsed,
-		LocalDiskMax:  localStats.MaxDisk,
-		LocalMemUsed:  localStats.MemUsed,
-		LocalMemMax:   0, // retained for compatibility; FSStore no longer tracks a mem budget
+		FileCount:           len(files),
+		LocalDiskUsed:       localStats.DiskUsed,
+		LocalDiskMax:        localStats.MaxDisk,
+		LocalMemUsed:        localStats.MemUsed,
+		LocalMemMax:         0, // retained for compatibility; FSStore no longer tracks a mem budget
+		AppendLogLimitBytes: localStats.MaxLogBytes,
 
 		ReadBufferEntries:   cacheStats.Entries,
 		ReadBufferUsed:      cacheStats.CurBytes,

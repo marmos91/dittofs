@@ -13,6 +13,7 @@ import (
 type Stats struct {
 	DiskUsed      int64 // Current total size of on-disk block data in bytes
 	MaxDisk       int64 // Configured maximum disk size (0 = unlimited)
+	MaxLogBytes   int64 // Append-log pressure budget in bytes (max_log_bytes)
 	MemUsed       int64 // Current in-memory dirty buffer usage in bytes
 	FileCount     int   // Number of files with local data
 	MemBlockCount int   // Number of in-memory dirty blocks
