@@ -50,6 +50,7 @@ type UserResponse struct {
 	Email              string     `json:"email,omitempty"`
 	Role               string     `json:"role"`
 	UID                *uint32    `json:"uid,omitempty"`
+	GID                *uint32    `json:"gid,omitempty"`
 	Groups             []string   `json:"groups,omitempty"`
 	Enabled            bool       `json:"enabled"`
 	MustChangePassword bool       `json:"must_change_password"`
@@ -211,6 +212,7 @@ func userToResponse(user *models.User) UserResponse {
 		Email:              user.Email,
 		Role:               string(user.Role),
 		UID:                user.UID,
+		GID:                user.GID,
 		Groups:             user.GetGroupNames(),
 		Enabled:            user.Enabled,
 		MustChangePassword: user.MustChangePassword,

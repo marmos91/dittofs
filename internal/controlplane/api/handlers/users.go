@@ -46,6 +46,7 @@ type CreateUserRequest struct {
 	DisplayName string                            `json:"display_name,omitempty"`
 	Role        string                            `json:"role,omitempty"`
 	UID         *uint32                           `json:"uid,omitempty"`
+	GID         *uint32                           `json:"gid,omitempty"`
 	Groups      []string                          `json:"groups,omitempty"`
 	Enabled     *bool                             `json:"enabled,omitempty"`
 	SharePerms  map[string]models.SharePermission `json:"share_permissions,omitempty"`
@@ -57,6 +58,7 @@ type UpdateUserRequest struct {
 	DisplayName *string                            `json:"display_name,omitempty"`
 	Role        *string                            `json:"role,omitempty"`
 	UID         *uint32                            `json:"uid,omitempty"`
+	GID         *uint32                            `json:"gid,omitempty"`
 	Groups      *[]string                          `json:"groups,omitempty"`
 	Enabled     *bool                              `json:"enabled,omitempty"`
 	SharePerms  *map[string]models.SharePermission `json:"share_permissions,omitempty"`
@@ -115,6 +117,7 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		MustChangePassword: role == models.RoleAdmin,
 		Role:               string(role),
 		UID:                req.UID,
+		GID:                req.GID,
 		DisplayName:        req.DisplayName,
 		Email:              req.Email,
 	}
@@ -238,6 +241,9 @@ func (h *UserHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.UID != nil {
 		user.UID = req.UID
+	}
+	if req.GID != nil {
+		user.GID = req.GID
 	}
 
 	if err := h.store.UpdateUser(r.Context(), user); err != nil {
