@@ -142,5 +142,10 @@ func wireXattrName(canonical string) (string, bool) {
 		// No "user." prefix: a non-user-namespace name; hide it from the wire.
 		return "", false
 	}
+	if stripped == "" {
+		// A bare "user." with no key (unexpected backend data): emitting it would
+		// put an empty, invalid name on the wire. Hide it defensively.
+		return "", false
+	}
 	return stripped, true
 }

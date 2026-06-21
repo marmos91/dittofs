@@ -50,6 +50,11 @@ func (h *Handler) handleSetXattr(ctx *types.CompoundContext, reader io.Reader) *
 	if err != nil {
 		return xattrErr(types.OP_SETXATTR, types.NFS4ERR_BADXDR)
 	}
+	// DecodeOpaque enforces a generic 1 MiB XDR cap. A value over our 64 KiB
+	// inline ceiling but within that cap decodes here and the store returns
+	// ErrXattrTooLarge -> NFS4ERR_XATTR2BIG below. A value over 1 MiB is
+	// unreachable from a conformant client (Linux XATTR_SIZE_MAX is 64 KiB) and
+	// surfaces as NFS4ERR_BADXDR — acceptable for malformed input.
 	value, err := xdr.DecodeOpaque(reader)
 	if err != nil {
 		return xattrErr(types.OP_SETXATTR, types.NFS4ERR_BADXDR)

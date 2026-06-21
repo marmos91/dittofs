@@ -14,8 +14,10 @@ import (
 // and PR1's unified resolver will swap in transparently.
 //
 // All names passed across this interface are canonical store names (the
-// "user."-prefixed form — see xattr.go canonicalization), shared with the SMB
-// EA namespace so both protocols observe one set of attributes.
+// "user."-prefixed form — see canonicalizeXattrName). This is the namespace
+// the unified resolver (pkg/metadata/xattr.go) reads and writes; end-to-end
+// cross-protocol name parity with SMB EAs/streams is exercised in PR3, not
+// asserted here.
 type XattrBackend interface {
 	// GetXattr returns the value of the named xattr and whether it is present.
 	GetXattr(ctx *metadata.AuthContext, h metadata.FileHandle, name string) ([]byte, bool, error)
@@ -69,8 +71,12 @@ func canonicalizeXattrName(name string) (canonical string, ok bool) {
 	if name == "" {
 		return "", false
 	}
-	// Already namespaced as user.*: accept verbatim.
+	// Already namespaced as user.*: accept verbatim, but reject the bare prefix
+	// with no key component ("user.") — that would be an empty on-wire name.
 	if strings.HasPrefix(name, xattrUserPrefix) {
+		if name == xattrUserPrefix {
+			return "", false
+		}
 		return name, true
 	}
 	// A bare name in another namespace (system.*, trusted.*, security.*, …) is

@@ -465,6 +465,7 @@ func TestCanonicalizeXattrName(t *testing.T) {
 	}{
 		{"foo", "user.foo", true},
 		{"user.foo", "user.foo", true},
+		{"user.", "", false}, // bare prefix, no key -> invalid
 		{"system.posix_acl_access", "", false},
 		{"trusted.x", "", false},
 		{"security.NTACL", "", false},
