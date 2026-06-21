@@ -79,7 +79,11 @@ func TestLDAPResolveDomainUser(t *testing.T) {
 		t.Fatalf("ldap.New: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// The deadline must exceed the whole retry window below (up to 15 attempts ×
+	// (15s per-attempt LDAP timeout + 2s backoff)), otherwise the context would
+	// expire mid-loop and the remaining attempts would fail with a misleading
+	// "context deadline exceeded" instead of the real connectivity error.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	// Retry on transient connect errors: the entrypoint re-execs samba into the
@@ -87,6 +91,9 @@ func TestLDAPResolveDomainUser(t *testing.T) {
 	// window right when the test first connects ("connection reset by peer").
 	var res *identity.ResolvedIdentity
 	for attempt := 1; attempt <= 15; attempt++ {
+		if ctx.Err() != nil {
+			break
+		}
 		res, err = provider.Resolve(ctx, &identity.Credential{ExternalID: "alice@" + adRealm})
 		if err == nil {
 			break
