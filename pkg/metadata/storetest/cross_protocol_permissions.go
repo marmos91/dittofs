@@ -32,7 +32,7 @@ func RunCrossProtocolPermissionMatrix(t *testing.T, factory StoreFactory) {
 	t.Run("DenyACE", func(t *testing.T) { testCrossProtocolDenyACE(t, factory) })
 	t.Run("SIDOnlyGrant", func(t *testing.T) { testCrossProtocolSIDOnlyGrant(t, factory) })
 	t.Run("SIDOnlyDeny", func(t *testing.T) { testCrossProtocolSIDOnlyDeny(t, factory) })
-	t.Run("ShareWritableBypass", func(t *testing.T) { testCrossProtocolShareWritableBypass(t, factory) })
+	t.Run("ShareCeiling", func(t *testing.T) { testCrossProtocolShareCeiling(t, factory) })
 }
 
 // canonOp is a backend-neutral operation the matrix probes through every
@@ -209,10 +209,10 @@ func (f *crossProtocolFixture) rootCtx() *metadata.AuthContext {
 
 // userCtx builds an auth context for the given UID/GID and optional SID.
 //
-// ShareWritable/ShareReadOnly are left at their zero value (false) so the main
-// matrix exercises the full ACL/POSIX evaluation path. The share-level write
-// bypass in checkFilePermissions (which a real SMB session enables by setting
-// ShareWritable=true) is covered separately by testCrossProtocolShareWritableBypass.
+// ShareReadOnly is left false so the matrix exercises the full ACL/POSIX
+// evaluation path. The share permission is a ceiling, never a floor, so a
+// read-write share is simply the absence of the ShareReadOnly restriction —
+// the file's ACL/POSIX alone decides write.
 func (f *crossProtocolFixture) userCtx(uid, gid uint32, sid string) *metadata.AuthContext {
 	id := &metadata.Identity{
 		UID:  metadata.Uint32Ptr(uid),
@@ -406,39 +406,19 @@ func testCrossProtocolSIDOnlyDeny(t *testing.T, factory StoreFactory) {
 	assertLanesAgree(t, f, handle, file, other, opWrite, true)
 }
 
-// testCrossProtocolShareWritableBypass exercises the share-level write bypass in
-// checkFilePermissions (auth_permissions.go) — the path a real SMB session turns
-// on by setting AuthContext.ShareWritable=true, and which the rest of the matrix
-// leaves off.
+// testCrossProtocolShareCeiling pins the share-permission model: the share grant
+// is a ceiling, never a floor. A read-write share grants no write that the file's
+// own ACL/POSIX denies — it can only restrict — so NFS and SMB reach the same
+// decision from the file's ACL for every case. Mirrors Windows (share ∧ NTFS),
+// NetApp export Access_Type, NFS-Ganesha, and Samba (whose "write list" cannot
+// grant beyond the underlying filesystem perms).
 //
-// The security-critical invariant this pins: with ShareWritable=true and an
-// explicit DENY ACE, the bypass MUST NOT override the DENY (it is gated on
-// !acl.HasExplicitDeny). Write stays denied on every protocol. A share-writable
-// mount must never let a user past an explicit DENY — and it must do so
-// identically on NFS and SMB.
-//
-// KNOWN, OUT-OF-SCOPE DIVERGENCE (not asserted here, deliberately): with an
-// allow-ONLY DACL (no explicit DENY) on a mode 0o000 file and ShareWritable=true,
-// the two protocols disagree. NFS CheckPermissions takes the ShareWritable bypass
-// (skips the ACL) and grants write; SMB's open-time DACL gate (CheckFileAccess)
-// ignores ShareWritable and denies write because the DACL grants only read. This
-// is a pre-existing semantic gap in the ShareWritable shortcut, broader than
-// AD-0's NFSv4-ACCESS consolidation, so it is documented rather than fixed or
-// asserted here. Closing it (deciding whether share-writable should override a
-// positive-grant-only ACL, and on which protocol) is a candidate follow-up.
-func testCrossProtocolShareWritableBypass(t *testing.T, factory StoreFactory) {
+// All cases run on a read-write share (ShareReadOnly=false, the userCtx default).
+func testCrossProtocolShareCeiling(t *testing.T, factory StoreFactory) {
 	f := newCrossProtocolFixture(t, factory)
 
-	// writableCtx is a user whose session granted share-level write, as the SMB
-	// session layer sets for a read-write tree connect.
-	writableCtx := func(uid, gid uint32, sid string) *metadata.AuthContext {
-		ctx := f.userCtx(uid, gid, sid)
-		ctx.ShareWritable = true
-		return ctx
-	}
-
-	// Explicit DENY-write ACE + ShareWritable=true → write still denied on every
-	// protocol. The bypass must not override an explicit DENY.
+	// (1) SECURITY — explicit DENY-write ACE → write denied on every protocol.
+	// A read-write share must never let a user past an explicit DENY.
 	denySID := "S-1-5-21-9-9-9-6000"
 	denyWrite := &acl.ACL{
 		ACEs: []acl.ACE{
@@ -446,10 +426,43 @@ func testCrossProtocolShareWritableBypass(t *testing.T, factory StoreFactory) {
 			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: acl.SpecialEveryone, AccessMask: acl.ACE4_READ_DATA},
 		},
 	}
-	denyFile, denyH := f.createFile(t, "sharewritable_deny.txt", &metadata.FileAttr{
+	denyFile, denyH := f.createFile(t, "ceiling_deny.txt", &metadata.FileAttr{
 		Mode: 0o666, UID: 6000, GID: 6000, ACL: denyWrite,
 	})
-	denied := writableCtx(6500, 6500, denySID)
+	denied := f.userCtx(6500, 6500, denySID)
 	assertLanesAgree(t, f, denyH, denyFile, denied, opRead, true)
 	assertLanesAgree(t, f, denyH, denyFile, denied, opWrite, false)
+
+	// (2) CEILING — allow-ONLY DACL granting only READ, on a mode 0o000 file. The
+	// file grants the requester no write by either ACL or POSIX, so even on a
+	// read-write share write is denied on every protocol, while read stays granted
+	// (the DACL allows it). NFS and SMB agree.
+	allowOnly := &acl.ACL{
+		ACEs: []acl.ACE{
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: acl.SpecialEveryone, AccessMask: acl.ACE4_READ_DATA},
+		},
+	}
+	allowFile, allowH := f.createFile(t, "ceiling_allow_only.txt", &metadata.FileAttr{
+		Mode: 0o000, UID: 7000, GID: 7000, ACL: allowOnly,
+	})
+	other := f.userCtx(7500, 7500, "S-1-5-21-9-9-9-7000")
+	assertLanesAgree(t, f, allowH, allowFile, other, opRead, true)
+	assertLanesAgree(t, f, allowH, allowFile, other, opWrite, false)
+
+	// (3) ADDITIVE GRANT — allow-only DACL that DOES grant the requester write.
+	// Write is granted on every protocol, sourced from the ACL itself: an allow
+	// ACE is additive over the POSIX mode, so a file whose mode denies everyone
+	// still grants write to a principal the DACL names.
+	grantSID := "S-1-5-21-9-9-9-8000"
+	allowWrite := &acl.ACL{
+		ACEs: []acl.ACE{
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: "sid:" + grantSID, AccessMask: acl.ACE4_READ_DATA | acl.ACE4_WRITE_DATA | acl.ACE4_APPEND_DATA},
+		},
+	}
+	grantFile, grantH := f.createFile(t, "ceiling_allow_write.txt", &metadata.FileAttr{
+		Mode: 0o000, UID: 8000, GID: 8000, ACL: allowWrite,
+	})
+	grantee := f.userCtx(8500, 8500, grantSID)
+	assertLanesAgree(t, f, grantH, grantFile, grantee, opRead, true)
+	assertLanesAgree(t, f, grantH, grantFile, grantee, opWrite, true)
 }

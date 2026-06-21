@@ -250,38 +250,12 @@ func (s *Service) checkFilePermissions(ctx *AuthContext, handle FileHandle, requ
 		shareOpts = nil
 	}
 
-	// Share-level write permission bypass:
-	// If the user has share-level write permission (ctx.ShareWritable) and the
-	// file's ACL does not contain an explicit DENY ACE, grant write-related
-	// permissions, bypassing file-level Unix permission checks.
-	//
-	// Bypass remains in effect when:
-	//   - the file has no ACL at all, or
-	//   - the file's ACL is allow-only (no DENY ACE present).
-	// Allow-only ACLs are additive: they only add grants on top of POSIX bits,
-	// so the share-level write grant should still apply. Concretely this keeps
-	// smbtorture stream-inherit-perms (which appends one ALLOW ACE to the
-	// synthesized DACL) and create.multi (which works against allow-only
-	// share-root SDs) passing.
-	//
-	// Bypass disabled only when an explicit DENY ACE is present: a DENY ACE
-	// encodes intent that POSIX bits / share-level grants cannot express and
-	// must take precedence (load-bearing for smbtorture acls.DENY1 and
-	// delete-on-close-perms.*).
-	//
-	// Note: ShareReadOnly takes precedence - if the share is read-only for this
-	// user, write permission is denied regardless of ShareWritable.
-	if ctx.ShareWritable && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
-		// Only grant write-related permissions via the share-level bypass.
-		// Read permissions still go through normal calculatePermissions checks.
-		writePerms := requested & (PermissionWrite | PermissionDelete)
-		if writePerms != 0 {
-			// For write requests, grant what was requested
-			return writePerms, nil
-		}
-		// For non-write requests (read-only), fall through to normal permission check
-	}
-
+	// The share permission is a ceiling, not a floor: a read-write share grants no
+	// write that the file's ACL/POSIX mode denies. Only a read-only share
+	// restricts, which calculatePermissions applies from the share's ReadOnly
+	// option (shareOpts.ReadOnly). Write authority is otherwise decided solely by
+	// the unified ACL/POSIX evaluation below, identically for NFS and SMB. See
+	// AuthContext.ShareReadOnly for the multiprotocol-NAS rationale.
 	return calculatePermissions(file, ctx.Identity, shareOpts, requested), nil
 }
 
@@ -526,7 +500,7 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 	}
 
 	// Without an ACL there's nothing to refine — fall back to the generic
-	// POSIX-write check so mode bits / share-level grants apply uniformly.
+	// POSIX-write check so the parent's mode bits govern.
 	if file.ACL == nil {
 		return s.checkWritePermission(ctx, parentHandle)
 	}
@@ -538,13 +512,8 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 		return &StoreError{Code: ErrAccessDenied, Message: "write permission denied"}
 	}
 
-	// Share-level write bypass mirrors checkFilePermissions: an ALLOW-only
-	// DACL plus ctx.ShareWritable still permits writes (load-bearing for
-	// stream-inherit-perms and create.multi). Only an explicit DENY ACE
-	// disables the bypass.
-	if ctx.ShareWritable && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
-		return nil
-	}
+	// On a read-write share the parent ACL evaluated below is the sole gate for
+	// ADD_FILE / ADD_SUBDIRECTORY; a read-only share already denied above.
 
 	// Root bypass aligns with calculatePermissions/evaluateACLPermissions:
 	// UID 0 gets all permissions except on read-only shares (handled above).

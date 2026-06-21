@@ -32,17 +32,13 @@ type AuthContext struct {
 	ClientAddr string
 
 	// ShareReadOnly indicates whether the user has read-only access to the share
-	// This is determined by share-level user permissions (identity.SharePermission)
-	// When true, all write operations to this share should be denied
+	// (the per-user share permission, identity.SharePermission). When true, all
+	// write operations to this share are denied. The share permission is a ceiling
+	// over the file's own ACL/POSIX rights: a read-only share restricts, while a
+	// read-write share grants nothing on its own — the file's ACL/POSIX decides.
+	// This matches the standard multiprotocol NAS model (Windows share ∧ NTFS,
+	// NetApp export Access_Type, NFS-Ganesha, Samba).
 	ShareReadOnly bool
-
-	// ShareWritable indicates whether the user has share-level write permission.
-	// When true, the user can write to files in the share regardless of file-level
-	// Unix permissions. This is used to implement share-based access control where
-	// authenticated users with share write permission bypass file-level permission checks.
-	// This is similar to how root bypass works, but applies to any user with share
-	// write permission.
-	ShareWritable bool
 
 	// LockClientID is the lock-layer client identifier used for lease exclusion.
 	// This must match the LockOwner.ClientID format used when acquiring leases.
@@ -105,10 +101,9 @@ func NewSystemAuthContext(ctx context.Context) *AuthContext {
 	uid := uint32(0)
 	gid := uint32(0)
 	return &AuthContext{
-		Context:       ctx,
-		AuthMethod:    "system",
-		ClientAddr:    "internal",
-		ShareWritable: true,
+		Context:    ctx,
+		AuthMethod: "system",
+		ClientAddr: "internal",
 		Identity: &Identity{
 			UID:      &uid,
 			GID:      &gid,

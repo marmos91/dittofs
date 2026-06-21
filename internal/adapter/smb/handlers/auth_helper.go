@@ -86,8 +86,9 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 	// (audit #1132).
 	setUnprivilegedIdentity(authCtx)
 
-	// Set share-level permission flags for guest/anonymous sessions
-	authCtx.ShareWritable = HasWritePermission(ctx)
+	// Share-level read-only ceiling for guest/anonymous sessions. A read-write
+	// tree connect grants nothing on its own; the file's ACL/POSIX decides. The
+	// share permission can only restrict, via ShareReadOnly.
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 
 	return authCtx, nil
@@ -140,9 +141,9 @@ func getUserIdentity(user *models.User) (uid, gid uint32) {
 // Falls back to defaults (1000/1000) if not configured.
 //
 // Share Permission:
-// ShareWritable is set based on the SMB context's share permission.
-// This allows users with share-level write permission to bypass file-level
-// Unix permission checks.
+// ShareReadOnly is set from the SMB tree-connect permission and acts as a
+// ceiling — a read-only share denies all writes regardless of the file ACL. A
+// read-write share grants nothing on its own; the file's ACL/POSIX decides.
 func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:                ctx.Context,
@@ -172,9 +173,9 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 		)
 	}
 
-	// Set share-level permission flags
-	// ShareWritable allows bypassing file-level permission checks for write operations
-	authCtx.ShareWritable = HasWritePermission(ctx)
+	// Share-level read-only ceiling. A read-write tree connect grants nothing on
+	// its own; the file's ACL/POSIX decides. The share permission only restricts,
+	// via ShareReadOnly.
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 
 	return authCtx
@@ -348,7 +349,7 @@ func (h *Handler) buildOpenerAuthContext(ctx *SMBHandlerContext, openFile *OpenF
 	// nobody/nogroup identity, matching the BuildAuthContext User==nil arm.
 	// Never UID=0 — see nobodyUID for the root-bypass rationale.
 	setUnprivilegedIdentity(authCtx)
-	authCtx.ShareWritable = HasWritePermission(ctx)
+	// Read-only ceiling only; a read-write share grants nothing on its own.
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 	return authCtx
 }
