@@ -1400,6 +1400,10 @@ func (s *Service) RegisterShareForTesting(name string) {
 		Enabled:           true,
 		DefaultPermission: "read-write",
 		Squash:            models.SquashNone,
+		// Mirror the AddShare default (allowAuthSys defaults true when unset):
+		// a bare test share must permit AUTH_SYS, otherwise the v4 export
+		// auth-flavor policy denies every AUTH_UNIX op.
+		AllowAuthSys: true,
 	}
 }
 
@@ -1467,6 +1471,24 @@ func (s *Service) SetSharePolicyForTesting(name, defaultPermission string, squas
 	}
 	share.DefaultPermission = defaultPermission
 	share.Squash = squash
+	return nil
+}
+
+// SetExportAuthPolicyForTesting overrides a share's AllowAuthSys and
+// RequireKerberos export auth-flavor fields in the registry under lock.
+// Test-only — lets NFS auth tests exercise the per-share export auth-flavor
+// policy (NFS4ERR_WRONGSEC enforcement) without a full AddShare flow. Use this
+// instead of mutating a *Share returned by GetShare, which is now a snapshot
+// copy. Returns ErrShareNotFound if the share is not registered.
+func (s *Service) SetExportAuthPolicyForTesting(name string, allowAuthSys, requireKerberos bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, ok := s.registry[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.AllowAuthSys = allowAuthSys
+	share.RequireKerberos = requireKerberos
 	return nil
 }
 

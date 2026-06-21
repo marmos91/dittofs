@@ -59,7 +59,7 @@ func verifyAttributes(h *Handler, ctx *types.CompoundContext, reader io.Reader) 
 		// Real-fs handle
 		authCtx, _, authErr := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 		if authErr != nil {
-			return false, types.NFS4ERR_SERVERFAULT
+			return false, nfs4StatusForAuthError(authErr)
 		}
 
 		metaSvc, metaErr := getMetadataServiceForCtx(h)

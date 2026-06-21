@@ -238,7 +238,7 @@ func (h *Handler) handleOpenClaimNull(
 		logger.Debug("NFSv4 OPEN auth context failed",
 			"error", err,
 			"client", ctx.ClientAddr)
-		return openError(types.NFS4ERR_SERVERFAULT)
+		return openError(nfs4StatusForAuthError(err))
 	}
 
 	metaSvc, err := getMetadataServiceForCtx(h)
@@ -733,7 +733,7 @@ func (h *Handler) handleOpenClaimDelegateCur(
 
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
-		return openError(types.NFS4ERR_SERVERFAULT)
+		return openError(nfs4StatusForAuthError(err))
 	}
 
 	metaSvc, err := getMetadataServiceForCtx(h)

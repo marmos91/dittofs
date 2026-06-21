@@ -61,10 +61,11 @@ func (h *Handler) lookupInRealFS(ctx *types.CompoundContext, name string) *types
 		logger.Debug("NFSv4 LOOKUP real-FS auth context failed",
 			"error", err,
 			"client", ctx.ClientAddr)
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_LOOKUP,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(st),
 		}
 	}
 

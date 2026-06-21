@@ -105,10 +105,11 @@ func (h *Handler) handleRename(ctx *types.CompoundContext, reader io.Reader) *ty
 		logger.Debug("NFSv4 RENAME auth context failed",
 			"error", err,
 			"client", ctx.ClientAddr)
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_RENAME,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(st),
 		}
 	}
 

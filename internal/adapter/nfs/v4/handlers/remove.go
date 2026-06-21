@@ -63,10 +63,11 @@ func (h *Handler) handleRemove(ctx *types.CompoundContext, reader io.Reader) *ty
 		logger.Debug("NFSv4 REMOVE auth context failed",
 			"error", err,
 			"client", ctx.ClientAddr)
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_REMOVE,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(st),
 		}
 	}
 

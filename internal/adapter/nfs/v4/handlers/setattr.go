@@ -141,10 +141,11 @@ func (h *Handler) handleSetAttr(ctx *types.CompoundContext, reader io.Reader) *t
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
 		logger.Error("NFSv4 SETATTR build auth context failed", "error", err)
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_SETATTR,
-			Data:   encodeSetAttrError(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeSetAttrError(st),
 		}
 	}
 

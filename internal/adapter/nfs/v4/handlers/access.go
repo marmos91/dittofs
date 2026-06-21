@@ -78,10 +78,11 @@ func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *ty
 func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *types.CompoundResult {
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_ACCESS,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(st),
 		}
 	}
 

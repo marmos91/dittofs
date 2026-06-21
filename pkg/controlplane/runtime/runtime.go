@@ -841,6 +841,12 @@ func (r *Runtime) SetSharePolicyForTesting(name, defaultPermission string, squas
 	return r.sharesSvc.SetSharePolicyForTesting(name, defaultPermission, squash)
 }
 
+// SetExportAuthPolicyForTesting overrides a registered share's AllowAuthSys and
+// RequireKerberos export auth-flavor fields. Test-only.
+func (r *Runtime) SetExportAuthPolicyForTesting(name string, allowAuthSys, requireKerberos bool) error {
+	return r.sharesSvc.SetExportAuthPolicyForTesting(name, allowAuthSys, requireKerberos)
+}
+
 // GetIdentityMappingStore returns the identity mapping store if supported.
 // Returns nil if the underlying store does not implement IdentityMappingStore.
 func (r *Runtime) GetIdentityMappingStore() store.IdentityMappingStore {

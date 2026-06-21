@@ -100,10 +100,11 @@ func (h *Handler) handleReadDir(ctx *types.CompoundContext, reader io.Reader) *t
 func (h *Handler) readDirRealFS(ctx *types.CompoundContext, cookie uint64, cookieVerf [8]byte, maxcount uint32, attrRequest []uint32) *types.CompoundResult {
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_READDIR,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(st),
 		}
 	}
 

@@ -41,10 +41,11 @@ func (h *Handler) handleLookupP(ctx *types.CompoundContext, _ io.Reader) *types.
 func (h *Handler) lookupParentInRealFS(ctx *types.CompoundContext) *types.CompoundResult {
 	authCtx, shareName, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_LOOKUPP,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(st),
 		}
 	}
 
