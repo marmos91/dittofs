@@ -74,6 +74,16 @@ func (bc *FSStore) DrainRollups(ctx context.Context) error {
 			if err := bc.rollupFile(ctx, pid, true); err != nil {
 				return fmt.Errorf("DrainRollups: rollup payload %q: %w", pid, err)
 			}
+			// rollupFile demotes a shutdown cancellation / grace-deadline
+			// (context.Canceled / DeadlineExceeded) to nil (#1245 Bug C). If
+			// the drain ctx itself is now done, abort cleanly here rather than
+			// falling through to the no-progress branch, which would emit a
+			// spurious Error-level "residual dirty intervals" alarm on every
+			// graceful shutdown that hits the grace deadline mid-rollup. The
+			// dirty intervals are durable and resume on restart.
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
 			if bc.dirtyLen(pid) < before {
 				progressed = true
 			}
