@@ -135,6 +135,15 @@ func clampMB(v, lo, hi int64) int64 {
 // Each dimension is resolved independently, so an operator can pin the block
 // cache while letting the index cache auto-scale (or vice versa). availMem is
 // the process-available memory in bytes (from sysinfo).
+//
+// A non-positive per-store value (0 or negative) is treated as "unset" and
+// falls through to the global default / auto-sizing — there is no way to
+// request a zero/disabled cache here, which is deliberate: Badger needs a
+// non-zero block cache under compression/encryption, and a thrashing tiny
+// cache is the very bug (#1245 Bug D) this resolution exists to prevent.
+// The config-file path additionally rejects negative values at load time
+// (BadgerMetadataConfig.Validate); the per-store config-map path tolerates
+// them as "unset" rather than erroring.
 func resolveCacheSizesMB(config BadgerMetadataStoreConfig, availMem uint64) (blockCacheMB, indexCacheMB int64) {
 	blockCacheMB = config.BlockCacheSizeMB
 	indexCacheMB = config.IndexCacheSizeMB
@@ -196,9 +205,11 @@ func buildBadgerOptions(config BadgerMetadataStoreConfig, availMem uint64) badge
 
 	// Resolve cache sizes with precedence: explicit > global config >
 	// RAM-relative auto-sizing (see resolveCacheSizesMB / #1245 Bug D). The
-	// resolved sizes are always > 0 (floors enforced), which also satisfies
-	// Badger's requirement that the block cache be non-zero under
-	// compression/encryption.
+	// resolved sizes are always > 0 — an explicit positive value is used
+	// verbatim, otherwise the auto-size path applies floors (>= minBlockCacheMB
+	// / minIndexCacheMB). Either way the block cache stays non-zero, satisfying
+	// Badger's requirement under compression/encryption. (Compression is None
+	// here, so this is currently belt-and-suspenders.)
 	blockCacheMB, indexCacheMB := resolveCacheSizesMB(config, availMem)
 
 	opts = opts.WithBlockCacheSize(blockCacheMB << 20) // MiB -> bytes
