@@ -245,6 +245,10 @@ func decodePACBestEffort(apReq *messages.APReq, kt *keytab.Keytab) (*credentials
 	if err != nil {
 		return nil, err
 	}
+	// Defensive: GetPACType -> ProcessPACInfoBuffers already returns an error
+	// when KerbValidationInfo is absent, so a nil here with err==nil should be
+	// impossible. Guard anyway rather than risk a nil deref (panic in an auth
+	// path) if that gokrb5 contract ever changes.
 	if p.KerbValidationInfo == nil {
 		return nil, fmt.Errorf("PAC carried no KerbValidationInfo")
 	}

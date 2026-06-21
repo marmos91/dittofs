@@ -33,9 +33,10 @@ func TestDecodePACBestEffort_NoPAC(t *testing.T) {
 }
 
 // TestDecodePACBestEffort_MalformedPAC: a ticket that DOES carry a PAC the
-// library cannot decode must return an error (so the caller skips AD attrs)
-// rather than panicking. The key regression property is that the caller treats
-// this as "no AD attributes", never as an authentication failure.
+// library cannot decode (here the PAC blob fails pac.PACType.Unmarshal) must
+// return an error so the caller skips AD attrs rather than panicking. The key
+// regression property is that the caller treats this as "no AD attributes",
+// never as an authentication failure.
 func TestDecodePACBestEffort_MalformedPAC(t *testing.T) {
 	// Inner AD-WIN2K-PAC entry carrying bytes that fail pac.PACType.Unmarshal
 	// (claims 16 buffers but provides none).
