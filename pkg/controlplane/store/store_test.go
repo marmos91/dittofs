@@ -664,6 +664,69 @@ func TestShareOperations(t *testing.T) {
 		}
 	})
 
+	t.Run("update share persists local/buffer/quota/encrypt (#1268)", func(t *testing.T) {
+		// Refs #1268: UpdateShare builds an explicit map for .Updates and
+		// previously omitted these four columns, so `share edit` logged
+		// success while silently dropping them. Set all four to
+		// non-default values and assert each round-trips through GetShare.
+		share := &models.Share{
+			Name:              "/export-1268",
+			MetadataStoreID:   metaStoreID,
+			LocalBlockStoreID: localBlockStoreID,
+		}
+		if _, err := store.CreateShare(ctx, share); err != nil {
+			t.Fatalf("failed to create share: %v", err)
+		}
+
+		got, err := store.GetShare(ctx, "/export-1268")
+		if err != nil {
+			t.Fatalf("failed to get share: %v", err)
+		}
+		got.EncryptData = true
+		got.LocalStoreSize = 123456789
+		got.ReadBufferSize = 65536
+		got.QuotaBytes = 10737418240
+
+		if err := store.UpdateShare(ctx, got); err != nil {
+			t.Fatalf("failed to update share: %v", err)
+		}
+
+		reloaded, err := store.GetShare(ctx, "/export-1268")
+		if err != nil {
+			t.Fatalf("failed to reload share: %v", err)
+		}
+		if !reloaded.EncryptData {
+			t.Error("expected EncryptData to persist as true")
+		}
+		if reloaded.LocalStoreSize != 123456789 {
+			t.Errorf("expected LocalStoreSize 123456789, got %d", reloaded.LocalStoreSize)
+		}
+		if reloaded.ReadBufferSize != 65536 {
+			t.Errorf("expected ReadBufferSize 65536, got %d", reloaded.ReadBufferSize)
+		}
+		if reloaded.QuotaBytes != 10737418240 {
+			t.Errorf("expected QuotaBytes 10737418240, got %d", reloaded.QuotaBytes)
+		}
+
+		// Zero values must also be writable (e.g. disabling encryption,
+		// removing a quota) — map-based .Updates writes explicit zeros.
+		reloaded.EncryptData = false
+		reloaded.QuotaBytes = 0
+		if err := store.UpdateShare(ctx, reloaded); err != nil {
+			t.Fatalf("failed to update share (zeroing): %v", err)
+		}
+		zeroed, err := store.GetShare(ctx, "/export-1268")
+		if err != nil {
+			t.Fatalf("failed to reload share (zeroing): %v", err)
+		}
+		if zeroed.EncryptData {
+			t.Error("expected EncryptData to persist as false")
+		}
+		if zeroed.QuotaBytes != 0 {
+			t.Errorf("expected QuotaBytes 0, got %d", zeroed.QuotaBytes)
+		}
+	})
+
 	t.Run("new share defaults enabled=true", func(t *testing.T) {
 		share := &models.Share{
 			Name:              "/export-enabled-default",
