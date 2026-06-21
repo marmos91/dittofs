@@ -7,7 +7,7 @@ package badger
 // retry-exhausted conflict path without spinning thousands of contending
 // goroutines. Production code never calls it.
 func SetMaxTransactionRetriesForTest(n int) func() {
-	prev := maxTransactionRetries
-	maxTransactionRetries = n
-	return func() { maxTransactionRetries = prev }
+	prev := maxTransactionRetries.Load()
+	maxTransactionRetries.Store(int32(n))
+	return func() { maxTransactionRetries.Store(prev) }
 }

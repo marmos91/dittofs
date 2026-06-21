@@ -6,6 +6,7 @@ import (
 	goerrors "errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	badgerdb "github.com/dgraph-io/badger/v4"
@@ -81,9 +82,15 @@ func (tx *badgerTransaction) addQuota2(k badgerQuotaKey, d metadata.UsageStat) {
 
 // Maximum number of retries for conflict errors.
 // Set high because concurrent writes to the same file can cause many
-// conflicts. A package var (not a const) so tests can lower it to
-// deterministically exercise the retry-exhausted path.
-var maxTransactionRetries = 20
+// conflicts. An atomic (not a const) so tests can lower it via
+// SetMaxTransactionRetriesForTest to deterministically exercise the
+// retry-exhausted path without racing the concurrent reads in
+// WithTransaction / updateWithConflictRetry under `go test -race`.
+var maxTransactionRetries = func() *atomic.Int32 {
+	v := &atomic.Int32{}
+	v.Store(20)
+	return v
+}()
 
 // WithTransaction executes fn within a BadgerDB transaction.
 //
@@ -96,7 +103,7 @@ func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
+	for attempt := 0; attempt < int(maxTransactionRetries.Load()); attempt++ {
 		// pendingDelta is captured outside db.Update so it is read after a
 		// successful commit and reset per attempt (a retried attempt starts
 		// from zero, so a conflict-retry cannot double-count usedBytes).
