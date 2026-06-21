@@ -229,6 +229,21 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	isOwner := identity != nil && identity.UID != nil && *identity.UID == file.UID
 	isRoot := identity != nil && identity.UID != nil && *identity.UID == 0
 
+	// Per-user read-only share ceiling (#1276). Every SETATTR mutation —
+	// chmod, chown/chgrp, ACL replace, explicit/utime-now timestamps, truncate —
+	// is a write, so a read-only user may perform none of them. This guard sits
+	// BEFORE the owner/root bypass below: without it, the isOwner short-circuit
+	// would let a read-only user mutate their own file (most dangerously, install
+	// a permissive DACL on it). Mirrors the write/delete strip in
+	// checkFilePermissions for the data path.
+	if ctx.ShareReadOnly {
+		return nil, &StoreError{
+			Code:    ErrAccessDenied,
+			Message: "read-only share: attribute change denied",
+			Path:    file.Path,
+		}
+	}
+
 	noOwnershipAttrs := attrs.Mode == nil && attrs.UID == nil && attrs.GID == nil
 
 	// POSIX: For utimensat() with UTIME_NOW, write permission is sufficient.
