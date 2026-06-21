@@ -2,6 +2,8 @@ package kerberos
 
 import (
 	"fmt"
+	"io"
+	"log"
 
 	// gokrb5 uses gofork's asn1 package, not the Go stdlib, because stdlib's
 	// encoding/asn1 has known bugs with Kerberos types (GeneralizedTime
@@ -12,6 +14,7 @@ import (
 	"github.com/jcmturner/gokrb5/v8/asn1tools"
 	"github.com/jcmturner/gokrb5/v8/credentials"
 	"github.com/jcmturner/gokrb5/v8/crypto"
+	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/messages"
 	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/jcmturner/gokrb5/v8/types"
@@ -128,27 +131,43 @@ func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal strin
 
 	// Build gokrb5 service settings from provider.
 	//
-	// DecodePAC is enabled so AD-issued tickets surface their PAC
-	// (MS-PAC) authorization data — specifically the transitive group SIDs the
-	// DC stamped into the ticket. gokrb5 verifies the PAC server signature with
-	// the same keytab key used for the ticket, so a tampered PAC fails
-	// VerifyAPREQ. Tickets without a PAC (e.g. from a plain MIT KDC) verify
-	// exactly as before — creds simply carry no AD attributes.
+	// PAC decoding is intentionally DISABLED inside VerifyAPREQ and performed
+	// separately, best-effort, below. gokrb5's VerifyAPREQ couples PAC decoding
+	// to AP-REQ verification: if a ticket carries a PAC it cannot fully decode
+	// (e.g. a plain MIT KDC stamps a PAC with no KerbValidationInfo buffer), it
+	// returns an error and the whole authentication fails. That would break
+	// Kerberos for every non-AD deployment. Decoupling keeps authentication
+	// working for any KDC while still surfacing AD group SIDs when a real
+	// AD-DC ticket carries them.
 	settings := service.NewSettings(
 		s.provider.Keytab(),
 		service.MaxClockSkew(s.provider.MaxClockSkew()),
-		service.DecodePAC(true),
+		service.DecodePAC(false),
 		service.KeytabPrincipal(servicePrincipal),
 	)
 
-	// Verify the AP-REQ. On success creds carries the decoded PAC attributes
-	// (when DecodePAC is on and the ticket contained a PAC).
+	// Verify the AP-REQ (ticket decryption, authenticator check, clock skew).
 	ok, creds, err := service.VerifyAPREQ(&apReq, settings)
 	if err != nil {
 		return nil, fmt.Errorf("verify AP-REQ: %w", err)
 	}
 	if !ok {
 		return nil, fmt.Errorf("AP-REQ verification failed")
+	}
+
+	// Best-effort PAC decode for AD authorization data (transitive group SIDs +
+	// user SID). The PAC server signature is verified with the same keytab key
+	// (GetPACType), so a tampered PAC is rejected. On ANY PAC problem — absent,
+	// partial (MIT KDC), or signature failure — we proceed WITHOUT AD
+	// attributes rather than failing authentication. This is fail-closed for
+	// authorization: a missing/invalid PAC yields no group SIDs (less access),
+	// never elevated access.
+	if ad, perr := decodePACBestEffort(&apReq, s.provider.Keytab()); perr != nil {
+		logger.Debug("PAC decode skipped; proceeding without AD authorization data",
+			"error", perr,
+		)
+	} else if ad != nil {
+		creds.SetADCredentials(*ad)
 	}
 
 	// Extract session key from the decrypted ticket
@@ -202,10 +221,53 @@ func (s *KerberosService) Authenticate(apReqBytes []byte, servicePrincipal strin
 	}, nil
 }
 
+// decodePACBestEffort decodes the MS-PAC carried in a verified AP-REQ ticket
+// and returns the AD authorization attributes, WITHOUT letting a PAC problem
+// fail authentication. It mirrors the credential population gokrb5's
+// VerifyAPREQ does internally, but as a separate, fallible step:
+//
+//   - no PAC in the ticket (typical non-AD KDC)  -> (nil, nil)
+//   - PAC present but undecodable / signature bad -> (nil, err)  [caller skips]
+//   - PAC present and valid                       -> (*ADCredentials, nil)
+//
+// GetPACType verifies the PAC server signature with the keytab key for the
+// ticket's own service principal (sname=nil selects it), so a forged PAC is
+// rejected here and the caller proceeds without AD attributes — fail-closed.
+func decodePACBestEffort(apReq *messages.APReq, kt *keytab.Keytab) (*credentials.ADCredentials, error) {
+	// sname=nil -> GetPACType uses the ticket's own SName to pick the keytab key
+	// (correct for a combined cifs/+nfs/ keytab). The logger is required by the
+	// gokrb5 signature; route it to io.Discard since we surface outcomes via our
+	// own structured logger at the call site.
+	isPAC, p, err := apReq.Ticket.GetPACType(kt, nil, log.New(io.Discard, "", 0))
+	if !isPAC {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if p.KerbValidationInfo == nil {
+		return nil, fmt.Errorf("PAC carried no KerbValidationInfo")
+	}
+	ki := p.KerbValidationInfo
+	return &credentials.ADCredentials{
+		GroupMembershipSIDs: ki.GetGroupMembershipSIDs(),
+		LogOnTime:           ki.LogOnTime.Time(),
+		LogOffTime:          ki.LogOffTime.Time(),
+		PasswordLastSet:     ki.PasswordLastSet.Time(),
+		EffectiveName:       ki.EffectiveName.Value,
+		FullName:            ki.FullName.Value,
+		UserID:              int(ki.UserID),
+		PrimaryGroupID:      int(ki.PrimaryGroupID),
+		LogonServer:         ki.LogonServer.Value,
+		LogonDomainName:     ki.LogonDomainName.Value,
+		LogonDomainID:       ki.LogonDomainID.String(),
+	}, nil
+}
+
 // extractPACIdentity pulls the Windows user SID and group SIDs out of the
 // decoded Kerberos PAC. gokrb5 exposes the decoded KERB_VALIDATION_INFO via
-// credentials.ADCredentials (populated by VerifyAPREQ when DecodePAC is on and
-// the ticket contained a PAC). It returns empty values when creds is nil or
+// credentials.ADCredentials (populated by decodePACBestEffort when the ticket
+// carried a valid PAC). It returns empty values when creds is nil or
 // the ticket carried no AD attributes — i.e. a non-AD KDC — so the rest of the
 // pipeline behaves exactly as it did before PAC decoding was enabled.
 //
