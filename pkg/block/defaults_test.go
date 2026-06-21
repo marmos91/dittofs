@@ -21,7 +21,7 @@ func TestDeduceDefaults(t *testing.T) {
 		cpus           int
 		wantLocalStore uint64
 		wantReadBuffer int64
-		wantPending    uint64
+		wantLogBytes   uint64
 		wantSyncs      int
 		wantFetches    int
 		wantPrefetch   int
@@ -32,7 +32,7 @@ func TestDeduceDefaults(t *testing.T) {
 			cpus:           8,
 			wantLocalStore: 2 * gib, // 25% of 8GiB
 			wantReadBuffer: 1 * gib, // 12.5% of 8GiB
-			wantPending:    1 * gib, // 50% of 2GiB
+			wantLogBytes:   2 * gib, // 25% of 8GiB
 			wantSyncs:      8,       // max(4, 8)
 			wantFetches:    16,      // max(8, 8*2)
 			wantPrefetch:   DefaultPrefetchWorkers,
@@ -43,7 +43,7 @@ func TestDeduceDefaults(t *testing.T) {
 			cpus:           1,
 			wantLocalStore: 256 * mib, // 25% of 512MiB = 128MiB, floor 256MiB
 			wantReadBuffer: 64 * mib,  // 12.5% of 512MiB = 64MiB, exactly at floor
-			wantPending:    128 * mib, // 50% of 256MiB
+			wantLogBytes:   1 * gib,   // 25% of 512MiB = 128MiB, floor 1 GiB
 			wantSyncs:      4,         // max(4, 1) = floor
 			wantFetches:    8,         // max(8, 2) = floor
 			wantPrefetch:   DefaultPrefetchWorkers,
@@ -54,7 +54,7 @@ func TestDeduceDefaults(t *testing.T) {
 			cpus:           1,
 			wantLocalStore: 256 * mib, // 25% of 256MiB = 64MiB, floor 256MiB
 			wantReadBuffer: 64 * mib,  // 12.5% of 256MiB = 32MiB, floor 64MiB
-			wantPending:    128 * mib, // 50% of 256MiB
+			wantLogBytes:   1 * gib,   // 25% of 256MiB = 64MiB, floor 1 GiB
 			wantSyncs:      4,         // floor
 			wantFetches:    8,         // floor
 			wantPrefetch:   DefaultPrefetchWorkers,
@@ -65,7 +65,7 @@ func TestDeduceDefaults(t *testing.T) {
 			cpus:           64,
 			wantLocalStore: 64 * gib, // 25% of 256GiB
 			wantReadBuffer: 32 * gib, // 12.5% of 256GiB
-			wantPending:    32 * gib, // 50% of 64GiB
+			wantLogBytes:   64 * gib, // 25% of 256GiB
 			wantSyncs:      64,       // max(4, 64)
 			wantFetches:    128,      // max(8, 128)
 			wantPrefetch:   DefaultPrefetchWorkers,
@@ -76,7 +76,7 @@ func TestDeduceDefaults(t *testing.T) {
 			cpus:           4,
 			wantLocalStore: 1 * gib,   // 25% of 4GiB
 			wantReadBuffer: 512 * mib, // 12.5% of 4GiB
-			wantPending:    512 * mib, // 50% of 1GiB
+			wantLogBytes:   1 * gib,   // 25% of 4GiB = 1 GiB, exactly at floor
 			wantSyncs:      4,         // max(4, 4)
 			wantFetches:    8,         // max(8, 8)
 			wantPrefetch:   DefaultPrefetchWorkers,
@@ -87,7 +87,7 @@ func TestDeduceDefaults(t *testing.T) {
 			cpus:           32,
 			wantLocalStore: 512 * mib, // 25% of 2GiB
 			wantReadBuffer: 256 * mib, // 12.5% of 2GiB
-			wantPending:    256 * mib, // 50% of 512MiB
+			wantLogBytes:   1 * gib,   // 25% of 2GiB = 512MiB, floor 1 GiB
 			wantSyncs:      32,        // max(4, 32)
 			wantFetches:    64,        // max(8, 64)
 			wantPrefetch:   DefaultPrefetchWorkers,
@@ -105,8 +105,8 @@ func TestDeduceDefaults(t *testing.T) {
 			if got.ReadBufferSize != tt.wantReadBuffer {
 				t.Errorf("ReadBufferSize = %d, want %d", got.ReadBufferSize, tt.wantReadBuffer)
 			}
-			if got.MaxPendingSize != tt.wantPending {
-				t.Errorf("MaxPendingSize = %d, want %d", got.MaxPendingSize, tt.wantPending)
+			if got.MaxLogBytes != tt.wantLogBytes {
+				t.Errorf("MaxLogBytes = %d, want %d", got.MaxLogBytes, tt.wantLogBytes)
 			}
 			if got.ParallelSyncs != tt.wantSyncs {
 				t.Errorf("ParallelSyncs = %d, want %d", got.ParallelSyncs, tt.wantSyncs)
@@ -142,7 +142,7 @@ func TestDeduceDefaults_String(t *testing.T) {
 	}
 	t.Logf("String() = %s", s)
 
-	for _, want := range []string{"LocalStoreSize", "ReadBufferSize", "ParallelSyncs", "ParallelFetches", "MaxPendingSize"} {
+	for _, want := range []string{"LocalStoreSize", "ReadBufferSize", "ParallelSyncs", "ParallelFetches", "MaxLogBytes"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("String() missing %q: %s", want, s)
 		}
@@ -159,12 +159,13 @@ func TestHitFloors_OnlyReportsClamped(t *testing.T) {
 		t.Errorf("expected no floors on 4GiB/4CPU, got %v", floors)
 	}
 
-	// 256MiB/1CPU: everything is clamped.
+	// 256MiB/1CPU: everything is clamped (local_store, read_buffer,
+	// max_log_bytes, parallel_syncs, parallel_fetches).
 	d2 := &mockDetector{memory: 256 * mib, cpus: 1}
 	got2 := DeduceDefaults(d2)
 	floors2 := got2.HitFloors()
-	if len(floors2) != 4 {
-		t.Errorf("expected 4 floors on 256MiB/1CPU, got %d: %v", len(floors2), floors2)
+	if len(floors2) != 5 {
+		t.Errorf("expected 5 floors on 256MiB/1CPU, got %d: %v", len(floors2), floors2)
 	}
 }
 

@@ -37,7 +37,7 @@ func newBackpressureStore(t *testing.T, maxDisk int64) (*FSStore, *memory.Memory
 	t.Helper()
 	dir := t.TempDir()
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := NewWithOptions(dir, maxDisk, 256*1024*1024, mds, FSStoreOptions{
+	bc, err := NewWithOptions(dir, maxDisk, mds, FSStoreOptions{
 		SyncedHashStore: mds,
 	})
 	if err != nil {

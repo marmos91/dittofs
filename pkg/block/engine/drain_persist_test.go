@@ -170,7 +170,7 @@ func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
 	if !ok {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{
+	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 3_600_000, // 1h — async/ticker rollup can never fire

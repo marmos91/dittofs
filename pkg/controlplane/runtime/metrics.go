@@ -31,6 +31,7 @@ func (r *Runtime) MetricsSnapshot(ctx context.Context) metrics.Snapshot {
 			DiskMaxBytes:        st.LocalDiskMax,
 			MemUsedBytes:        st.LocalMemUsed,
 			MemMaxBytes:         st.LocalMemMax,
+			AppendLogLimitBytes: st.AppendLogLimitBytes,
 			UnsyncedBytes:       st.UnsyncedBytes,
 			PendingUploads:      int64(st.PendingUploads),
 			CompletedSyncs:      int64(st.CompletedSyncs),

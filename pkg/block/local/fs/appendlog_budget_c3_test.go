@@ -15,7 +15,7 @@ import (
 func newC3BudgetStore(t *testing.T, maxLogBytes int64) *FSStore {
 	t.Helper()
 	mem := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc, err := NewWithOptions(t.TempDir(), 1<<30, 1<<30, mem, FSStoreOptions{
+	bc, err := NewWithOptions(t.TempDir(), 1<<30, mem, FSStoreOptions{
 		MaxLogBytes:     maxLogBytes,
 		RollupWorkers:   1,
 		StabilizationMS: 1,

@@ -147,9 +147,8 @@ type ObjectIDPersister func(ctx context.Context, payloadID string, blocks []bloc
 // In flushBlock, the map entry is deleted while holding mb.mu to prevent a race
 // where a concurrent writer gets a stale memBlock with nil data.
 type FSStore struct {
-	baseDir   string
-	maxDisk   int64
-	maxMemory int64
+	baseDir string
+	maxDisk int64
 	// the local store is one of the engine-
 	// internal callers that still uses the wider EngineFileBlockStore
 	// surface (GetFileBlock, ListFileBlocks) on top of the narrowed
@@ -468,7 +467,7 @@ type FSStore struct {
 //   - sentinel PRESENT, .blk files PRESENT  → success (sentinel is ground truth)
 //   - sentinel MISSING, no .blk files       → success (fresh install)
 //   - sentinel MISSING, .blk files PRESENT  → block.ErrLegacyLayoutDetected
-func newFSStore(baseDir string, maxDisk, maxMemory int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
+func newFSStore(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
 	if !skipSentinelCheck {
 		if err := checkLegacyLayoutSentinel(baseDir); err != nil {
 			return nil, err
@@ -478,15 +477,10 @@ func newFSStore(baseDir string, maxDisk, maxMemory int64, fileBlockStore block.E
 		return nil, fmt.Errorf("local store: create base dir: %w", err)
 	}
 
-	if maxMemory <= 0 {
-		maxMemory = 256 * 1024 * 1024 // 256MB default
-	}
-
 	defaultRetention := &retentionConfig{policy: block.RetentionLRU}
 	bc := &FSStore{
 		baseDir:       baseDir,
 		maxDisk:       maxDisk,
-		maxMemory:     maxMemory,
 		blockStore:    fileBlockStore,
 		memBlocks:     make(map[blockKey]*memBlock),
 		fileBlocks:    make(map[string]map[uint64]*memBlock),
@@ -975,7 +969,6 @@ type FSStoreOptions struct {
 // Parameters:
 //   - baseDir: directory for .blk block files, created if absent.
 //   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
-//   - maxMemory: memory budget for dirty write buffers in bytes. 0 defaults to 256MB.
 //   - fileBlockStore: persistent store for FileBlock metadata
 //     (local path, upload state, etc.).
 //   - opts: tunables for append-log sizing, rollup pool, dedup LRU,
@@ -985,8 +978,8 @@ type FSStoreOptions struct {
 // Runs the legacy-layout sentinel gate; returns
 // block.ErrLegacyLayoutDetected when the share holds the pre-CAS
 // `.blk` layout without a `.cas-migrated-v1` marker.
-func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
-	return newFSStore(baseDir, maxDisk, maxMemory, fileBlockStore, opts, false)
+func NewWithOptions(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
+	return newFSStore(baseDir, maxDisk, fileBlockStore, opts, false)
 }
 
 // NewFSStoreForMigration constructs an FSStore that skips the legacy-
@@ -1001,8 +994,8 @@ func NewWithOptions(baseDir string, maxDisk, maxMemory int64, fileBlockStore blo
 // the gate would otherwise refuse the open.
 //
 // Behavior is otherwise identical to NewWithOptions.
-func NewFSStoreForMigration(baseDir string, maxDisk, maxMemory int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
-	return newFSStore(baseDir, maxDisk, maxMemory, fileBlockStore, opts, true)
+func NewFSStoreForMigration(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
+	return newFSStore(baseDir, maxDisk, fileBlockStore, opts, true)
 }
 
 // SetObjectIDPersister installs the rollup-completion callback. Safe to
@@ -1226,12 +1219,19 @@ func (bc *FSStore) Stats() local.Stats {
 	return local.Stats{
 		DiskUsed:      bc.diskUsed.Load(),
 		MaxDisk:       bc.maxDisk,
+		MaxLogBytes:   bc.maxLogBytes,
 		MemUsed:       bc.memUsed.Load(),
-		MaxMemory:     bc.maxMemory,
 		FileCount:     fileCount,
 		MemBlockCount: memBlockCount,
 	}
 }
+
+// MaxLogBytes returns the effective append-log pressure budget in bytes
+// (the resolved max_log_bytes: per-store > global > deduced default).
+// AppendWrite blocks once logBytesTotal exceeds this ceiling and ultimately
+// returns block.ErrPressureTimeout if the rollup cannot drain in time. The
+// value is immutable after construction, so it is read without a lock.
+func (bc *FSStore) MaxLogBytes() int64 { return bc.maxLogBytes }
 
 // updateFileSize updates the tracked file size if the new end offset is larger.
 // Uses double-checked locking: RLock fast path for existing files, Lock for creation.

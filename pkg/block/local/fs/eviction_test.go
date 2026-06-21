@@ -19,7 +19,7 @@ func newTestCacheWithDiskLimit(t *testing.T, maxDisk int64) *FSStore {
 	t.Helper()
 	dir := t.TempDir()
 	blockStore := memory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := NewWithOptions(dir, maxDisk, 256*1024*1024, blockStore, FSStoreOptions{})
+	bc, err := NewWithOptions(dir, maxDisk, blockStore, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("failed to create local store: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestLSL08_NoFileBlockStoreCallsDuringEviction(t *testing.T) {
 	dir := t.TempDir()
 	inner := memory.NewMemoryMetadataStoreWithDefaults()
 	spy := newCountingFileBlockStore(inner)
-	bc, err := NewWithOptions(dir, 1500, 256*1024*1024, spy, FSStoreOptions{})
+	bc, err := NewWithOptions(dir, 1500, spy, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestLSL08_LRUSeededOnStartup(t *testing.T) {
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
 
 	// Create a first store, store a chunk, close.
-	bc1, err := NewWithOptions(dir, 1<<30, 256*1024*1024, mds, FSStoreOptions{})
+	bc1, err := NewWithOptions(dir, 1<<30, mds, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("New 1: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestLSL08_LRUSeededOnStartup(t *testing.T) {
 	_ = bc1.Close()
 
 	// Reopen: New() should seed the LRU from disk so hPersist is evictable.
-	bc2, err := NewWithOptions(dir, 600, 256*1024*1024, mds, FSStoreOptions{})
+	bc2, err := NewWithOptions(dir, 600, mds, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("New 2: %v", err)
 	}

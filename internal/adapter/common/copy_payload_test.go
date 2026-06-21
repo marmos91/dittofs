@@ -361,7 +361,7 @@ func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatam
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{})
+	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions failed: %v", err)
 	}

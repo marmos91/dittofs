@@ -42,6 +42,9 @@ type ShareSnapshot struct {
 	DiskMaxBytes  int64
 	MemUsedBytes  int64
 	MemMaxBytes   int64
+	// AppendLogLimitBytes is the append-log pressure budget (max_log_bytes):
+	// the real write-pressure ceiling that replaced the inert MemMaxBytes knob.
+	AppendLogLimitBytes int64
 
 	// Durability / sync backlog.
 	UnsyncedBytes       int64

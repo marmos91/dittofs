@@ -78,7 +78,7 @@ func printBlockStoreStatsTable(resp *apiclient.BlockStoreStatsResponse) error {
 		{"Local Disk Used", formatBytes(t.LocalDiskUsed)},
 		{"Local Disk Max", formatBytes(t.LocalDiskMax)},
 		{"Local Mem Used", formatBytes(t.LocalMemUsed)},
-		{"Local Mem Max", formatBytes(t.LocalMemMax)},
+		{"Append-Log Limit", formatBytes(t.AppendLogLimitBytes)},
 		{"Read Buffer Entries", fmt.Sprintf("%d", t.ReadBufferEntries)},
 		{"Read Buffer Used", formatBytes(t.ReadBufferUsed)},
 		{"Read Buffer Max", formatBytes(t.ReadBufferMax)},

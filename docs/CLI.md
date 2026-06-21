@@ -380,7 +380,6 @@ Flags:
       --dry-run               Walk + sample only; report file count, bytes, estimated dedup ratio, ETA. Writes nothing.
       --json                  Emit one JSON object per second of progress to stdout (machine-parseable)
       --max-disk int          Per-share max-disk budget for the destination FSStore (0 = unlimited)
-      --max-memory int        Per-share max-memory budget for the destination FSStore (0 = 256 MiB default)
       --metadata-dir string   Path to the badger metadata database directory (REQUIRED; the directory passed to the metadata store's 'path' config)
       --share string          Scope migration to one share (default: all shares discovered under <storage-dir>/shares/)
       --storage-dir string    Storage root (REQUIRED; expects <root>/shares/<name>/blocks layout)

@@ -99,7 +99,7 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 	t.Helper()
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.NewWithOptions(tmpDir, 0, 0, ms, fs.FSStoreOptions{
+	bc, err := fs.NewWithOptions(tmpDir, 0, ms, fs.FSStoreOptions{
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 50,
@@ -334,7 +334,7 @@ func TestHealthCallbackInvocation(t *testing.T) {
 func TestHealthMonitorNilRemoteStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.NewWithOptions(tmpDir, 0, 0, ms, fs.FSStoreOptions{})
+	bc, err := fs.NewWithOptions(tmpDir, 0, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)
 	}

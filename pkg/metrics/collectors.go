@@ -17,10 +17,11 @@ type runtimeCollector struct {
 	p Provider
 
 	// Per-share capacity.
-	diskUsed *prometheus.Desc
-	diskMax  *prometheus.Desc
-	memUsed  *prometheus.Desc
-	memMax   *prometheus.Desc
+	diskUsed       *prometheus.Desc
+	diskMax        *prometheus.Desc
+	memUsed        *prometheus.Desc
+	memMax         *prometheus.Desc
+	appendLogLimit *prometheus.Desc
 
 	// Per-share durability / sync.
 	syncPendingBytes   *prometheus.Desc
@@ -59,10 +60,11 @@ func newRuntimeCollector(p Provider) *runtimeCollector {
 	return &runtimeCollector{
 		p: p,
 
-		diskUsed: d(fqdn("localstore", "disk_used_bytes"), "Local block-store disk bytes in use.", share),
-		diskMax:  d(fqdn("localstore", "disk_limit_bytes"), "Local block-store disk byte ceiling (0 = unbounded).", share),
-		memUsed:  d(fqdn("localstore", "memory_used_bytes"), "Local block-store in-memory buffer bytes in use.", share),
-		memMax:   d(fqdn("localstore", "memory_limit_bytes"), "Local block-store in-memory buffer byte ceiling (0 = unbounded).", share),
+		diskUsed:       d(fqdn("localstore", "disk_used_bytes"), "Local block-store disk bytes in use.", share),
+		diskMax:        d(fqdn("localstore", "disk_limit_bytes"), "Local block-store disk byte ceiling (0 = unbounded).", share),
+		memUsed:        d(fqdn("localstore", "memory_used_bytes"), "Local block-store in-memory buffer bytes in use.", share),
+		memMax:         d(fqdn("localstore", "memory_limit_bytes"), "Deprecated: always 0; the in-memory budget was removed. See dittofs_localstore_append_log_limit_bytes.", share),
+		appendLogLimit: d(fqdn("localstore", "append_log_limit_bytes"), "Local block-store append-log pressure budget in bytes (max_log_bytes); writes block with ErrPressureTimeout above this.", share),
 
 		syncPendingBytes:   d(fqdn("sync", "pending_bytes"), "On-disk bytes present locally but not yet mirrored to the remote (data at risk).", share),
 		syncPendingUploads: d(fqdn("sync", "pending_uploads"), "Uploads currently queued to the remote.", share),
@@ -97,7 +99,7 @@ func (c *runtimeCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (c *runtimeCollector) allDescs() []*prometheus.Desc {
 	return []*prometheus.Desc{
-		c.diskUsed, c.diskMax, c.memUsed, c.memMax,
+		c.diskUsed, c.diskMax, c.memUsed, c.memMax, c.appendLogLimit,
 		c.syncPendingBytes, c.syncPendingUploads, c.syncUploadsTotal, c.syncFailuresTotal,
 		c.remoteUp, c.remoteOutage, c.remoteReadsBlocked,
 		c.logicalBytes, c.storeFiles,
@@ -125,6 +127,7 @@ func (c *runtimeCollector) Collect(ch chan<- prometheus.Metric) {
 		gauge(c.diskMax, float64(s.DiskMaxBytes), s.Name)
 		gauge(c.memUsed, float64(s.MemUsedBytes), s.Name)
 		gauge(c.memMax, float64(s.MemMaxBytes), s.Name)
+		gauge(c.appendLogLimit, float64(s.AppendLogLimitBytes), s.Name)
 		gauge(c.logicalBytes, float64(s.LogicalBytes), s.Name)
 		gauge(c.storeFiles, float64(s.FileCount), s.Name)
 		gauge(c.snapshotsActive, float64(s.SnapshotsHeld), s.Name)

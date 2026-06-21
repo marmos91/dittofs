@@ -61,7 +61,7 @@ func newFSStoreForTest(t *testing.T, opts FSStoreOptions) *FSStore {
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
-	bc, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, opts)
+	bc, err := NewWithOptions(dir, 1<<30, nopFBS{}, opts)
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("NewWithOptions: %v", err)

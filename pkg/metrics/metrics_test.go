@@ -73,6 +73,31 @@ dittofs_client_connections_active{protocol="smb"} 1
 	}
 }
 
+// The append-log pressure budget (max_log_bytes) is exposed as a gauge, and the
+// removed in-memory budget gauge keeps emitting 0 for back-compat.
+func TestRuntimeCollector_AppendLogLimitGauge(t *testing.T) {
+	m := newTestMetrics(t, Snapshot{Shares: []ShareSnapshot{{
+		Name:                "alpha",
+		AppendLogLimitBytes: 1 << 30,
+		MemMaxBytes:         0,
+	}}})
+
+	expected := `
+# HELP dittofs_localstore_append_log_limit_bytes Local block-store append-log pressure budget in bytes (max_log_bytes); writes block with ErrPressureTimeout above this.
+# TYPE dittofs_localstore_append_log_limit_bytes gauge
+dittofs_localstore_append_log_limit_bytes{share="alpha"} 1.073741824e+09
+# HELP dittofs_localstore_memory_limit_bytes Deprecated: always 0; the in-memory budget was removed. See dittofs_localstore_append_log_limit_bytes.
+# TYPE dittofs_localstore_memory_limit_bytes gauge
+dittofs_localstore_memory_limit_bytes{share="alpha"} 0
+`
+	if err := testutil.GatherAndCompare(m.Registry(), strings.NewReader(expected),
+		"dittofs_localstore_append_log_limit_bytes",
+		"dittofs_localstore_memory_limit_bytes",
+	); err != nil {
+		t.Fatalf("unexpected metrics: %v", err)
+	}
+}
+
 // Sync/remote series must be suppressed for local-only shares (no remote).
 func TestRuntimeCollector_LocalOnlyShareSkipsSyncSeries(t *testing.T) {
 	m := newTestMetrics(t, Snapshot{Shares: []ShareSnapshot{{

@@ -137,7 +137,7 @@ func BenchmarkAppendWrite_GroupCommit(b *testing.B) {
 func newBenchFSStore(b *testing.B, opts FSStoreOptions) *FSStore {
 	b.Helper()
 	dir := b.TempDir()
-	bc, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, opts)
+	bc, err := NewWithOptions(dir, 1<<30, nopFBS{}, opts)
 	if err != nil {
 		b.Fatalf("NewWithOptions: %v", err)
 	}

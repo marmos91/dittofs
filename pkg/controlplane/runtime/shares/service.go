@@ -274,11 +274,19 @@ type ShareStore interface {
 
 // LocalStoreDefaults holds default sizing for per-share local stores.
 type LocalStoreDefaults struct {
-	MaxSize   uint64 // Maximum local store size per share (0 = unlimited)
-	MaxMemory int64  // Memory budget for dirty buffers per share (0 = 256MB)
+	MaxSize uint64 // Maximum local store size per share (0 = unlimited)
 
 	// ReadBufferBytes is the per-share read buffer budget in bytes (0 = disabled).
 	ReadBufferBytes int64
+
+	// MaxLogBytes is the effective append-log pressure budget (bytes) applied
+	// to a share when its per-share block store config does NOT carry an
+	// explicit `max_log_bytes`. It resolves the global config
+	// blockstore.local.max_log_bytes (when set) or, failing that, the
+	// system-deduced default (DeduceDefaults.MaxLogBytes). 0 leaves the
+	// FSStore's own internal default in force. Precedence at the share level
+	// is: per-store config["max_log_bytes"] > this global/deduced default.
+	MaxLogBytes int64
 
 	// DedupLRUSize is the slot count for the in-memory hash dedup LRU; the
 	// per-share block-store JSON config `dedup_lru_size` takes precedence
@@ -1806,6 +1814,7 @@ func addBlockStoreStats(dst *engine.BlockStoreStats, src engine.BlockStoreStats)
 	dst.LocalDiskMax += src.LocalDiskMax
 	dst.LocalMemUsed += src.LocalMemUsed
 	dst.LocalMemMax += src.LocalMemMax
+	dst.AppendLogLimitBytes += src.AppendLogLimitBytes
 	dst.ReadBufferEntries += src.ReadBufferEntries
 	dst.ReadBufferUsed += src.ReadBufferUsed
 	dst.ReadBufferMax += src.ReadBufferMax
@@ -1956,10 +1965,8 @@ func CreateLocalStoreFromConfig(
 	}
 
 	var maxDisk int64
-	var maxMemory int64
 	if defaults != nil {
 		maxDisk = int64(defaults.MaxSize)
-		maxMemory = defaults.MaxMemory
 	}
 
 	// Remote-cache backpressure window (how long a write stalls for the
@@ -1985,6 +1992,14 @@ func CreateLocalStoreFromConfig(
 	// are warned and ignored.
 	var fsOpts fs.FSStoreOptions
 	fsOpts.BackpressureMaxWait = backpressureMaxWait
+	// Append-log pressure budget default. Precedence (lowest first):
+	// FSStore internal default < global/deduced default (plumbed via
+	// LocalStoreDefaults.MaxLogBytes) < per-store config["max_log_bytes"].
+	// Seed fsOpts.MaxLogBytes from the global/deduced default here; the
+	// per-store config branch below overrides it when present.
+	if defaults != nil && defaults.MaxLogBytes > 0 {
+		fsOpts.MaxLogBytes = defaults.MaxLogBytes
+	}
 	if _, ok := config["use_append_log"]; ok {
 		logger.Warn("block store config has use_append_log: append is mandatory in v0.16+, flag is ignored")
 	}
@@ -2098,7 +2113,7 @@ func CreateLocalStoreFromConfig(
 		if shs, ok := fileBlockStore.(metadata.SyncedHashStore); ok {
 			fsOpts.SyncedHashStore = shs
 		}
-		store, err := fs.NewWithOptions(shareDir, maxDisk, maxMemory, fileBlockStore, fsOpts)
+		store, err := fs.NewWithOptions(shareDir, maxDisk, fileBlockStore, fsOpts)
 		if err != nil {
 			return nil, err
 		}
