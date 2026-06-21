@@ -250,29 +250,34 @@ func (s *Service) checkFilePermissions(ctx *AuthContext, handle FileHandle, requ
 		shareOpts = nil
 	}
 
-	// Share-level write permission bypass:
-	// If the user has share-level write permission (ctx.ShareWritable) and the
-	// file's ACL does not contain an explicit DENY ACE, grant write-related
-	// permissions, bypassing file-level Unix permission checks.
+	// Handle-based SMB write authorization:
+	// SMB is handle-based — a handle granted FILE_WRITE_DATA / FILE_APPEND_DATA
+	// at open (by the DACL-honoring open-time gate Service.CheckFileAccess) must
+	// be able to write regardless of the file's current POSIX mode or
+	// DOS-READONLY attribute. The smbtorture smb2.durable-open.read-only test
+	// CREATEs a FILE_ATTRIBUTE_READONLY file (granted full access at open under a
+	// NULL DACL) and then WRITEs through that handle. When ctx.WriteAuthorizedByHandle
+	// is set, the SMB op handler has confirmed the open carried write access
+	// (derived from OpenFile.GrantedAccess), so the metadata layer must not
+	// re-deny on file-level POSIX bits / DOS-READONLY.
 	//
-	// Bypass remains in effect when:
-	//   - the file has no ACL at all, or
-	//   - the file's ACL is allow-only (no DENY ACE present).
-	// Allow-only ACLs are additive: they only add grants on top of POSIX bits,
-	// so the share-level write grant should still apply. Concretely this keeps
-	// smbtorture stream-inherit-perms (which appends one ALLOW ACE to the
-	// synthesized DACL) and create.multi (which works against allow-only
-	// share-root SDs) passing.
-	//
-	// Bypass disabled only when an explicit DENY ACE is present: a DENY ACE
-	// encodes intent that POSIX bits / share-level grants cannot express and
-	// must take precedence (load-bearing for smbtorture acls.DENY1 and
+	// Defense-in-depth on explicit DENY: the open-time DACL gate already strips
+	// FILE_WRITE_DATA when an explicit DENY-write ACE is present, so a write-
+	// authorized handle can never be minted on such a file and this branch would
+	// not be reached for it in production. We nonetheless keep the
+	// !acl.HasExplicitDeny guard so that even a mis-set flag can never let a
+	// caller past an explicit DENY ACE at the metadata layer — a DENY ACE encodes
+	// intent POSIX bits cannot express and must always win (the same invariant
+	// the former share-level floor pinned for smbtorture acls.DENY1 /
 	// delete-on-close-perms.*).
 	//
-	// Note: ShareReadOnly takes precedence - if the share is read-only for this
-	// user, write permission is denied regardless of ShareWritable.
-	if ctx.ShareWritable && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
-		// Only grant write-related permissions via the share-level bypass.
+	// NFS leaves WriteAuthorizedByHandle false (it has no handle), so NFS writes
+	// continue through the normal calculatePermissions path below.
+	//
+	// Note: ShareReadOnly takes precedence — if the share is read-only for this
+	// user, write permission is denied regardless of this flag.
+	if ctx.WriteAuthorizedByHandle && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
+		// Only grant write-related permissions via the handle authorization.
 		// Read permissions still go through normal calculatePermissions checks.
 		writePerms := requested & (PermissionWrite | PermissionDelete)
 		if writePerms != 0 {
@@ -538,13 +543,14 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 		return &StoreError{Code: ErrAccessDenied, Message: "write permission denied"}
 	}
 
-	// Share-level write bypass mirrors checkFilePermissions: an ALLOW-only
-	// DACL plus ctx.ShareWritable still permits writes (load-bearing for
-	// stream-inherit-perms and create.multi). Only an explicit DENY ACE
-	// disables the bypass.
-	if ctx.ShareWritable && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
-		return nil
-	}
+	// CREATE has no open handle yet, so the handle-based write authorization
+	// used for SMB WRITE/SET_INFO (ctx.WriteAuthorizedByHandle) does not apply
+	// here — the parent-create gate IS the open-time authorization boundary.
+	// We therefore evaluate the parent's DACL precisely below: an ALLOW-only
+	// DACL that grants the requesting principal ADD_FILE / ADD_SUBDIRECTORY
+	// (directly, or via GENERIC_WRITE / GENERIC_ALL expansion in acl.Evaluate)
+	// permits the create, keeping stream-inherit-perms and create.multi passing,
+	// while a parent DACL that does not grant the add bit correctly denies.
 
 	// Root bypass aligns with calculatePermissions/evaluateACLPermissions:
 	// UID 0 gets all permissions except on read-only shares (handled above).

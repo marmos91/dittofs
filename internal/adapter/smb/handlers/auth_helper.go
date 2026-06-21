@@ -86,8 +86,9 @@ func BuildAuthContext(ctx *SMBHandlerContext) (*metadata.AuthContext, error) {
 	// (audit #1132).
 	setUnprivilegedIdentity(authCtx)
 
-	// Set share-level permission flags for guest/anonymous sessions
-	authCtx.ShareWritable = HasWritePermission(ctx)
+	// Set the share-level read-only ceiling for guest/anonymous sessions.
+	// Per-handle write authorization (WriteAuthorizedByHandle) is set by the
+	// WRITE / SET_INFO op handlers from OpenFile.GrantedAccess, not here.
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 
 	return authCtx, nil
@@ -140,9 +141,10 @@ func getUserIdentity(user *models.User) (uid, gid uint32) {
 // Falls back to defaults (1000/1000) if not configured.
 //
 // Share Permission:
-// ShareWritable is set based on the SMB context's share permission.
-// This allows users with share-level write permission to bypass file-level
-// Unix permission checks.
+// ShareReadOnly is set from the SMB context's share permission (the read-only
+// ceiling). Per-handle write authorization (WriteAuthorizedByHandle) is NOT set
+// here — it is set by the WRITE / SET_INFO op handlers from the open handle's
+// GrantedAccess, since SMB write authorization is handle-based.
 func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metadata.AuthContext {
 	authCtx := &metadata.AuthContext{
 		Context:                ctx.Context,
@@ -172,9 +174,9 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 		)
 	}
 
-	// Set share-level permission flags
-	// ShareWritable allows bypassing file-level permission checks for write operations
-	authCtx.ShareWritable = HasWritePermission(ctx)
+	// Set the share-level read-only ceiling. Per-handle write authorization
+	// (WriteAuthorizedByHandle) is set by the WRITE / SET_INFO op handlers from
+	// OpenFile.GrantedAccess, not here — SMB write authorization is handle-based.
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 
 	return authCtx
@@ -348,7 +350,10 @@ func (h *Handler) buildOpenerAuthContext(ctx *SMBHandlerContext, openFile *OpenF
 	// nobody/nogroup identity, matching the BuildAuthContext User==nil arm.
 	// Never UID=0 — see nobodyUID for the root-bypass rationale.
 	setUnprivilegedIdentity(authCtx)
-	authCtx.ShareWritable = HasWritePermission(ctx)
+	// Only the read-only ceiling is share-derived. Per-handle write
+	// authorization (WriteAuthorizedByHandle) is set by the WRITE / SET_INFO op
+	// handlers from OpenFile.GrantedAccess; SET_INFO SecurityDescriptor (the only
+	// current caller of this helper) is WRITE_DAC-gated, not a data write.
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 	return authCtx
 }

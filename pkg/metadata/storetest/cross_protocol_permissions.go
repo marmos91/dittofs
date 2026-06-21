@@ -32,7 +32,7 @@ func RunCrossProtocolPermissionMatrix(t *testing.T, factory StoreFactory) {
 	t.Run("DenyACE", func(t *testing.T) { testCrossProtocolDenyACE(t, factory) })
 	t.Run("SIDOnlyGrant", func(t *testing.T) { testCrossProtocolSIDOnlyGrant(t, factory) })
 	t.Run("SIDOnlyDeny", func(t *testing.T) { testCrossProtocolSIDOnlyDeny(t, factory) })
-	t.Run("ShareWritableBypass", func(t *testing.T) { testCrossProtocolShareWritableBypass(t, factory) })
+	t.Run("HandleWriteAuthorization", func(t *testing.T) { testCrossProtocolHandleWriteAuthorization(t, factory) })
 }
 
 // canonOp is a backend-neutral operation the matrix probes through every
@@ -103,9 +103,20 @@ func nfsLane(name string) protocolLane {
 //     calculatePermissions core every metadata READ/WRITE runs (io.go), reached
 //     here via CheckPermissions. This is the IDENTICAL core the NFS lanes use.
 //
-// A real SMB client must pass both, so the lane ANDs them. The result is the
-// effective allow/deny a Windows client observes, which the suite then asserts
-// matches the NFS lanes — the cross-protocol unification guarantee.
+// SMB write authorization is HANDLE-BASED for files that carry a DACL: gate 1
+// (CheckFileAccess) is the DACL ceiling enforced at open. When the file has a
+// DACL and gate 1 grants write, the production WRITE / SET_INFO handler sets
+// AuthContext.WriteAuthorizedByHandle from the open handle's GrantedAccess, and
+// gate 2 must then honor the handle rather than re-deny on the file's POSIX mode
+// (the smb2.durable-open.read-only scenario). An explicit DENY-write ACE strips
+// write at gate 1, so the handle never carries write and the op is denied — the
+// security invariant the matrix pins.
+//
+// For files with NO DACL, gate 1 is intentionally permissive (NULL DACL grants
+// everything, MS-DTYP §2.5.3) and is therefore not a real authorization — the
+// POSIX-mode per-op check is. The lane leaves WriteAuthorizedByHandle unset in
+// that case so SMB and NFS reach the SAME POSIX decision, preserving the
+// cross-protocol agreement on plain mode-bit files.
 func smbLane() protocolLane {
 	return protocolLane{
 		name: "SMB",
@@ -122,7 +133,9 @@ func smbLane() protocolLane {
 				perm = metadata.PermissionWrite
 			}
 
-			// Gate 1: open-time DACL check.
+			// Gate 1: open-time DACL check. This is the authorization boundary
+			// for SMB — an explicit DENY-write ACE or a DACL that omits write
+			// strips write from the handle here.
 			granted, err := svc.CheckFileAccess(file, authCtx, mask)
 			if err != nil {
 				var storeErr *metadata.StoreError
@@ -136,8 +149,21 @@ func smbLane() protocolLane {
 			}
 
 			// Gate 2: operation-level POSIX/ACL check (same core as NFS + the
-			// metadata READ/WRITE ops).
-			opGranted, err := svc.CheckPermissions(authCtx, handle, perm)
+			// metadata READ/WRITE ops). For writes to a DACL-bearing file, gate 1
+			// was the real DACL authorization and granted write, so the real
+			// handler sets WriteAuthorizedByHandle from OpenFile.GrantedAccess.
+			// Model that on a copy of the context so the shared authCtx the NFS
+			// lanes use stays unmutated. For no-DACL files gate 1 is a permissive
+			// freebie, so we leave the flag unset and SMB falls through to the
+			// same POSIX check NFS runs.
+			opCtx := authCtx
+			if op == opWrite && file.ACL != nil {
+				ctxCopy := *authCtx
+				ctxCopy.WriteAuthorizedByHandle = true
+				opCtx = &ctxCopy
+			}
+
+			opGranted, err := svc.CheckPermissions(opCtx, handle, perm)
 			if err != nil {
 				t.Fatalf("SMB: CheckPermissions(%s) unexpected error: %v", op, err)
 			}
@@ -209,10 +235,11 @@ func (f *crossProtocolFixture) rootCtx() *metadata.AuthContext {
 
 // userCtx builds an auth context for the given UID/GID and optional SID.
 //
-// ShareWritable/ShareReadOnly are left at their zero value (false) so the main
-// matrix exercises the full ACL/POSIX evaluation path. The share-level write
-// bypass in checkFilePermissions (which a real SMB session enables by setting
-// ShareWritable=true) is covered separately by testCrossProtocolShareWritableBypass.
+// WriteAuthorizedByHandle/ShareReadOnly are left at their zero value (false) so
+// the NFS lanes exercise the full ACL/POSIX evaluation path. The SMB lane stamps
+// WriteAuthorizedByHandle itself (handle-based write authorization) when gate 1
+// grants write on a DACL-bearing file — see smbLane and
+// testCrossProtocolHandleWriteAuthorization.
 func (f *crossProtocolFixture) userCtx(uid, gid uint32, sid string) *metadata.AuthContext {
 	id := &metadata.Identity{
 		UID:  metadata.Uint32Ptr(uid),
@@ -406,39 +433,27 @@ func testCrossProtocolSIDOnlyDeny(t *testing.T, factory StoreFactory) {
 	assertLanesAgree(t, f, handle, file, other, opWrite, true)
 }
 
-// testCrossProtocolShareWritableBypass exercises the share-level write bypass in
-// checkFilePermissions (auth_permissions.go) — the path a real SMB session turns
-// on by setting AuthContext.ShareWritable=true, and which the rest of the matrix
-// leaves off.
+// testCrossProtocolHandleWriteAuthorization models SMB's HANDLE-BASED write
+// authorization (#1240) and pins the security invariant against an explicit
+// DENY-write ACE.
 //
-// The security-critical invariant this pins: with ShareWritable=true and an
-// explicit DENY ACE, the bypass MUST NOT override the DENY (it is gated on
-// !acl.HasExplicitDeny). Write stays denied on every protocol. A share-writable
-// mount must never let a user past an explicit DENY — and it must do so
-// identically on NFS and SMB.
+// SMB is handle-based: a handle granted FILE_WRITE_DATA at open (the gate-1
+// CheckFileAccess DACL evaluation) may write regardless of the file's POSIX
+// mode. The smbLane reproduces this by stamping WriteAuthorizedByHandle on the
+// op context whenever gate 1 grants write on a DACL-bearing file. NFS has no
+// handle and re-checks the ACL/POSIX per op.
 //
-// KNOWN, OUT-OF-SCOPE DIVERGENCE (not asserted here, deliberately): with an
-// allow-ONLY DACL (no explicit DENY) on a mode 0o000 file and ShareWritable=true,
-// the two protocols disagree. NFS CheckPermissions takes the ShareWritable bypass
-// (skips the ACL) and grants write; SMB's open-time DACL gate (CheckFileAccess)
-// ignores ShareWritable and denies write because the DACL grants only read. This
-// is a pre-existing semantic gap in the ShareWritable shortcut, broader than
-// AD-0's NFSv4-ACCESS consolidation, so it is documented rather than fixed or
-// asserted here. Closing it (deciding whether share-writable should override a
-// positive-grant-only ACL, and on which protocol) is a candidate follow-up.
-func testCrossProtocolShareWritableBypass(t *testing.T, factory StoreFactory) {
+// The security-critical invariant: with an explicit DENY-write ACE, gate 1
+// strips FILE_WRITE_DATA from the open, so the handle never carries write and
+// the metadata layer is never told WriteAuthorizedByHandle. Write stays denied
+// on every protocol — a handle can never be minted past an explicit DENY, so
+// the metadata-layer handle bypass can never override one.
+func testCrossProtocolHandleWriteAuthorization(t *testing.T, factory StoreFactory) {
 	f := newCrossProtocolFixture(t, factory)
 
-	// writableCtx is a user whose session granted share-level write, as the SMB
-	// session layer sets for a read-write tree connect.
-	writableCtx := func(uid, gid uint32, sid string) *metadata.AuthContext {
-		ctx := f.userCtx(uid, gid, sid)
-		ctx.ShareWritable = true
-		return ctx
-	}
-
-	// Explicit DENY-write ACE + ShareWritable=true → write still denied on every
-	// protocol. The bypass must not override an explicit DENY.
+	// Explicit DENY-write ACE → write denied on every protocol. On SMB the open
+	// (gate 1) denies write, so no write-authorized handle is ever minted; the
+	// metadata-layer handle bypass therefore can never reach this file.
 	denySID := "S-1-5-21-9-9-9-6000"
 	denyWrite := &acl.ACL{
 		ACEs: []acl.ACE{
@@ -446,10 +461,28 @@ func testCrossProtocolShareWritableBypass(t *testing.T, factory StoreFactory) {
 			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: acl.SpecialEveryone, AccessMask: acl.ACE4_READ_DATA},
 		},
 	}
-	denyFile, denyH := f.createFile(t, "sharewritable_deny.txt", &metadata.FileAttr{
+	denyFile, denyH := f.createFile(t, "handle_write_deny.txt", &metadata.FileAttr{
 		Mode: 0o666, UID: 6000, GID: 6000, ACL: denyWrite,
 	})
-	denied := writableCtx(6500, 6500, denySID)
+	denied := f.userCtx(6500, 6500, denySID)
 	assertLanesAgree(t, f, denyH, denyFile, denied, opRead, true)
 	assertLanesAgree(t, f, denyH, denyFile, denied, opWrite, false)
+
+	// Allow-write DACL on a mode 0o000 file: the SMB open grants write (DACL
+	// authorization), so the handle is write-authorized and the write succeeds
+	// despite the file mode granting nothing. NFS, which re-checks the ACL per
+	// op, also grants via the SID-addressed ALLOW. Both protocols agree: WRITE
+	// allowed even though POSIX mode is 0o000 — the handle/ACL is the authority.
+	grantSID := "S-1-5-21-9-9-9-7000"
+	allowWrite := &acl.ACL{
+		ACEs: []acl.ACE{
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: "sid:" + grantSID, AccessMask: acl.ACE4_READ_DATA | acl.ACE4_WRITE_DATA | acl.ACE4_APPEND_DATA},
+		},
+	}
+	allowFile, allowH := f.createFile(t, "handle_write_allow.txt", &metadata.FileAttr{
+		Mode: 0o000, UID: 6000, GID: 6000, ACL: allowWrite,
+	})
+	granted := f.userCtx(6600, 6600, grantSID)
+	assertLanesAgree(t, f, allowH, allowFile, granted, opRead, true)
+	assertLanesAgree(t, f, allowH, allowFile, granted, opWrite, true)
 }

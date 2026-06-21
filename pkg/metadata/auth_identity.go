@@ -36,13 +36,26 @@ type AuthContext struct {
 	// When true, all write operations to this share should be denied
 	ShareReadOnly bool
 
-	// ShareWritable indicates whether the user has share-level write permission.
-	// When true, the user can write to files in the share regardless of file-level
-	// Unix permissions. This is used to implement share-based access control where
-	// authenticated users with share write permission bypass file-level permission checks.
-	// This is similar to how root bypass works, but applies to any user with share
-	// write permission.
-	ShareWritable bool
+	// WriteAuthorizedByHandle indicates that the SMB open handle driving this
+	// operation was granted write access (FILE_WRITE_DATA / FILE_APPEND_DATA) at
+	// CREATE time. When set, the metadata layer must NOT re-deny the write on the
+	// file's current POSIX mode / DOS-READONLY attribute: the DACL ceiling was
+	// already enforced at open by the DACL-honoring open-time gate
+	// (Service.CheckFileAccess), so an explicit DENY-write ACE would have denied
+	// FILE_WRITE_DATA at open and the handle would never carry write.
+	//
+	// SMB is HANDLE-BASED: a handle granted write must remain writable regardless
+	// of the file's mode (the smbtorture smb2.durable-open.read-only scenario
+	// CREATEs a FILE_ATTRIBUTE_READONLY file with full access, then writes through
+	// the handle). This flag is the precise per-handle replacement for the former
+	// coarse share-level ShareWritable floor.
+	//
+	// Set ONLY by SMB op handlers, derived from OpenFile.GrantedAccess. NFS is
+	// PATH-BASED — it has no handle and MUST leave this false so writes continue
+	// to re-check POSIX/ACL per operation. ShareReadOnly remains the ceiling:
+	// when the share is read-only for this user, the write is denied regardless
+	// of this flag.
+	WriteAuthorizedByHandle bool
 
 	// LockClientID is the lock-layer client identifier used for lease exclusion.
 	// This must match the LockOwner.ClientID format used when acquiring leases.
@@ -105,10 +118,15 @@ func NewSystemAuthContext(ctx context.Context) *AuthContext {
 	uid := uint32(0)
 	gid := uint32(0)
 	return &AuthContext{
-		Context:       ctx,
-		AuthMethod:    "system",
-		ClientAddr:    "internal",
-		ShareWritable: true,
+		Context:    ctx,
+		AuthMethod: "system",
+		ClientAddr: "internal",
+		// Internal/system operations run as UID 0 (root), which already
+		// bypasses file-level permission checks in calculatePermissions.
+		// Set WriteAuthorizedByHandle so any write-related metadata call also
+		// skips DOS-READONLY re-denial, matching the prior ShareWritable
+		// behavior for system contexts.
+		WriteAuthorizedByHandle: true,
 		Identity: &Identity{
 			UID:      &uid,
 			GID:      &gid,

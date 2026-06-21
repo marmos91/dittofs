@@ -1302,6 +1302,13 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusInvalidParameter), nil
 		}
 
+		// Setting EOF is a size-changing data write. SMB authorizes it from the
+		// open handle's GrantedAccess (post-DACL intersection at CREATE), not the
+		// file's current POSIX mode — so a handle opened with FILE_WRITE_DATA on a
+		// DOS-READONLY file may truncate it. Signal the metadata layer to
+		// authorize the size change from the handle rather than re-deny on mode.
+		authCtx.WriteAuthorizedByHandle = hasWriteAccess(openFile.GrantedAccess)
+
 		// Break Level II (Read) oplocks held by other clients.
 		// Per MS-SMB2 3.3.5.21.2 / MS-FSA 2.1.5.14.4: truncation is a
 		// data-modifying operation that invalidates read caches.
@@ -1431,6 +1438,10 @@ func (h *Handler) setFileInfoFromStore(
 				metaSvc := h.Registry.GetMetadataService()
 				if curFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil &&
 					requested < curFile.Size {
+					// Allocation-driven truncate is a size-changing data write —
+					// authorize it from the open handle's GrantedAccess, not the
+					// file's POSIX mode (handle-based SMB write authorization).
+					authCtx.WriteAuthorizedByHandle = hasWriteAccess(openFile.GrantedAccess)
 					if _, err := metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, &metadata.SetAttrs{
 						Size: &requested,
 					}); err != nil {

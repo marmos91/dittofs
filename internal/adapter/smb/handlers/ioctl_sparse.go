@@ -501,6 +501,11 @@ var errZeroFillCancelled = errors.New("zero-fill cancelled")
 // allocate more than zeroFillChunkSize regardless of how large the requested
 // range is — smbtorture's hole-punch tests exercise multi-MB ranges.
 func (h *Handler) zeroFillRange(authCtx *metadata.AuthContext, openFile *OpenFile, start, end uint64) error {
+	// SET_ZERO_DATA writes zeros through the handle's data stream; like WRITE it
+	// is handle-based (#1240). The open already authorized write against the DACL
+	// ceiling (the caller gated on FILE_WRITE_DATA), so the metadata layer must
+	// not re-deny on the file's POSIX mode / DOS-READONLY attribute.
+	authCtx.WriteAuthorizedByHandle = hasWriteAccess(openFile.GrantedAccess)
 	metaSvc := h.Registry.GetMetadataService()
 	blockStore, err := common.ResolveForWrite(authCtx.Context, h.Registry, openFile.MetadataHandle)
 	if err != nil {
