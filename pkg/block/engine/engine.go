@@ -441,12 +441,10 @@ func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID st
 	// write loop, which re-surfaces any real fault. The actual write still goes
 	// through the bounded backoff below so a concurrent SSI abort on the
 	// (still-hot) file row / content-hash rows converges instead of failing.
-	if !persistObjID.IsZero() {
-		if owner, ferr := bs.coordinator.FindByObjectID(ctx, persistObjID); ferr == nil && owner != nil {
-			logger.Debug("rollup persist: canonical object_id owner already exists; persisting duplicate's blocks with zero object_id (pre-check)",
-				"payloadID", payloadID, "objectID", persistObjID.String())
-			wantObjID = zeroObjectID
-		}
+	if !persistObjID.IsZero() && bs.canonicalOwnerExists(ctx, persistObjID) {
+		logger.Debug("rollup persist: canonical object_id owner already exists; persisting duplicate's blocks with zero object_id (pre-check)",
+			"payloadID", payloadID, "objectID", persistObjID.String())
+		wantObjID = zeroObjectID
 	}
 
 	// (2) Bounded converging backoff around the claim. The first successful
@@ -477,12 +475,10 @@ func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID st
 		// a still-hot non-object_id key (SSI abort on the file row / content-
 		// hash rows under bulk identical content) — back off and retry the
 		// same zero-objectID write until it commits.
-		if !wantObjID.IsZero() {
-			if owner, ferr := bs.coordinator.FindByObjectID(ctx, wantObjID); ferr == nil && owner != nil {
-				logger.Debug("rollup persist: object_id now owned by another file; converging to zero-objectID write",
-					"payloadID", payloadID, "objectID", wantObjID.String(), "attempt", attempt)
-				wantObjID = zeroObjectID
-			}
+		if !wantObjID.IsZero() && bs.canonicalOwnerExists(ctx, wantObjID) {
+			logger.Debug("rollup persist: object_id now owned by another file; converging to zero-objectID write",
+				"payloadID", payloadID, "objectID", wantObjID.String(), "attempt", attempt)
+			wantObjID = zeroObjectID
 		}
 
 		time.Sleep(backoff)
@@ -492,6 +488,15 @@ func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID st
 	}
 	return fmt.Errorf("rollup persist: did not converge after %d attempts (payloadID=%s): %w",
 		rollupPersistMaxAttempts, payloadID, lastErr)
+}
+
+// canonicalOwnerExists reports whether a file already owns objectID as its
+// canonical Merkle-root pointer. A lookup error is treated as "unknown owner"
+// (non-fatal): the caller falls through to the bounded write loop, which
+// re-surfaces any real fault. Callers must guard against a zero objectID.
+func (bs *Store) canonicalOwnerExists(ctx context.Context, objectID block.ObjectID) bool {
+	owner, err := bs.coordinator.FindByObjectID(ctx, objectID)
+	return err == nil && owner != nil
 }
 
 // Start initializes the store and starts background goroutines.
