@@ -209,16 +209,12 @@ func (d *EncryptedRemote) Healthcheck(ctx context.Context) health.Report {
 	return d.inner.Healthcheck(ctx)
 }
 
-// Durable delegates to the wrapped store (block.DurabilityReporter). Encrypting
-// block bodies does not change where the bytes ultimately land, so a durable
-// inner store stays durable through the decorator. If the wrapped store does
-// not implement DurabilityReporter we fall back to the conservative default
-// (false) so the server never over-promises durability.
+// Durable delegates to the wrapped store via block.IsDurable. Encrypting block
+// bodies does not change where the bytes ultimately land, so a durable inner
+// store stays durable through the decorator; a wrapped store that does not
+// report durability falls back to the conservative default (false).
 func (d *EncryptedRemote) Durable() bool {
-	if r, ok := d.inner.(block.DurabilityReporter); ok {
-		return r.Durable()
-	}
-	return false
+	return block.IsDurable(d.inner)
 }
 
 // decrypt parses the frame, unwraps the block key, and authenticated-

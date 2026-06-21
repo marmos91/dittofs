@@ -689,26 +689,16 @@ func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
 // the server never over-promises durability — every production local backend
 // (fs) implements it, so this only affects bare test fixtures.
 func (bs *Store) LocalDurable() bool {
-	if r, ok := bs.local.(block.DurabilityReporter); ok {
-		return r.Durable()
-	}
-	return false
+	return block.IsDurable(bs.local)
 }
 
 // RemoteDurable reports whether the engine's remote store survives a process
-// crash / restart. A nil remote (local-only share) is not durable by
-// definition. A remote that does not implement DurabilityReporter falls back to
-// the conservative default (false). The type assertion sees through the
-// encryption / compression decorators because they delegate Durable() to the
-// store they wrap.
+// crash / restart. A nil remote (local-only share) and a remote that does not
+// implement DurabilityReporter both fall back to the conservative default
+// (false) via block.IsDurable. The report sees through the encryption /
+// compression decorators because they delegate Durable() to the store they wrap.
 func (bs *Store) RemoteDurable() bool {
-	if bs.remote == nil {
-		return false
-	}
-	if r, ok := bs.remote.(block.DurabilityReporter); ok {
-		return r.Durable()
-	}
-	return false
+	return block.IsDurable(bs.remote)
 }
 
 // RemoteStore returns the per-share remote object store, or nil if the

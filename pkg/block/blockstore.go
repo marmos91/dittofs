@@ -237,3 +237,15 @@ type DurabilityReporter interface {
 	// process crash or restart of the daemon.
 	Durable() bool
 }
+
+// IsDurable reports the conservative durability of store. A store that
+// implements DurabilityReporter answers for itself; one that does not (or a nil
+// store) is treated as NOT durable so callers never over-promise durability.
+// This is the single place the missing-capability default lives — engine
+// accessors and the encryption / compression decorators all route through it.
+func IsDurable(store any) bool {
+	if r, ok := store.(DurabilityReporter); ok {
+		return r.Durable()
+	}
+	return false
+}
