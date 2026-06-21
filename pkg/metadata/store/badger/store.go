@@ -224,7 +224,16 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	// applies metadata-workload defaults and resolves the cache sizes with
 	// precedence: explicit per-store config > global config > RAM-relative
 	// auto-sizing. detectAvailableMemory is indirected for testability.
-	opts := buildBadgerOptions(config, detectAvailableMemory())
+	//
+	// availMem is only consulted on the default-options path (the
+	// RAM-relative auto-sizing fallback). On the custom-options path
+	// buildBadgerOptions returns config.BadgerOptions verbatim and ignores
+	// availMem entirely, so skip the sysinfo probe there.
+	var availMem uint64
+	if config.BadgerOptions == nil {
+		availMem = detectAvailableMemory()
+	}
+	opts := buildBadgerOptions(config, availMem)
 
 	// Crash-consistency (#583, enforced #588): force SyncWrites=true on
 	// every code path — default-options AND custom-options. Default

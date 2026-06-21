@@ -190,6 +190,37 @@ func TestBuildBadgerOptions_CustomOptionsPassthrough(t *testing.T) {
 	}
 }
 
+// TestNewBadgerStore_CustomOptionsSkipsMemoryProbe asserts that the
+// custom-options path does NOT call detectAvailableMemory: buildBadgerOptions
+// returns config.BadgerOptions verbatim and ignores availMem, so probing
+// sysinfo there is wasted work (#1245 Bug D review follow-up).
+func TestNewBadgerStore_CustomOptionsSkipsMemoryProbe(t *testing.T) {
+	orig := detectAvailableMemory
+	t.Cleanup(func() { detectAvailableMemory = orig })
+
+	probed := false
+	detectAvailableMemory = func() uint64 {
+		probed = true
+		return 4 << 30
+	}
+
+	custom := badger.DefaultOptions(t.TempDir()).
+		WithBlockCacheSize(123 * mib).
+		WithIndexCacheSize(45 * mib)
+
+	store, err := NewBadgerMetadataStore(t.Context(), BadgerMetadataStoreConfig{
+		BadgerOptions: &custom,
+	})
+	if err != nil {
+		t.Fatalf("NewBadgerMetadataStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if probed {
+		t.Error("custom-options path must not probe available memory")
+	}
+}
+
 // TestNewBadgerStore_AppliesResolvedCacheSizes is an end-to-end assertion that
 // an opened store's live badger.DB carries the resolved (here: explicit) cache
 // sizes — i.e. the option-builder output actually reaches badger.Open.

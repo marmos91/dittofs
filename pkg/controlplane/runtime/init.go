@@ -74,11 +74,19 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		if err != nil {
 			return nil, fmt.Errorf("failed to expand path %q: %w", dbPath, err)
 		}
-		// Optional per-store Badger cache overrides (#1245 Bug D). When unset
-		// (0) the badger engine falls through to the global config and then
-		// RAM-relative auto-sizing.
+		// Optional per-store Badger cache overrides (#1245 Bug D). The docs
+		// define 0 = unset (fall through to global config then RAM-relative
+		// auto-sizing) and positive = explicit size in MiB. A negative value is
+		// a config error — reject it here rather than letting it silently fall
+		// through to auto-sizing as if it were unset.
 		blockCacheMB := configInt64(config, "block_cache_mb")
+		if blockCacheMB < 0 {
+			return nil, fmt.Errorf("badger metadata store block_cache_mb must be >= 0 (0 = auto), got %d", blockCacheMB)
+		}
 		indexCacheMB := configInt64(config, "index_cache_mb")
+		if indexCacheMB < 0 {
+			return nil, fmt.Errorf("badger metadata store index_cache_mb must be >= 0 (0 = auto), got %d", indexCacheMB)
+		}
 		return badger.NewBadgerMetadataStoreWithDefaultsAndCaches(ctx, dbPath, blockCacheMB, indexCacheMB)
 
 	case "postgres":

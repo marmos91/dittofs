@@ -66,6 +66,38 @@ func TestCreateMetadataStoreFromConfig_BadgerCacheOverride(t *testing.T) {
 	}
 }
 
+// TestCreateMetadataStoreFromConfig_BadgerNegativeCacheRejected asserts that a
+// negative per-store cache override is a config error rather than silently
+// falling through to auto-sizing. 0 = unset/auto, positive = explicit size;
+// negative is invalid (#1245 Bug D).
+func TestCreateMetadataStoreFromConfig_BadgerNegativeCacheRejected(t *testing.T) {
+	badger.SetGlobalBadgerCacheDefaults(0, 0)
+
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"negative block_cache_mb", "block_cache_mb"},
+		{"negative index_cache_mb", "index_cache_mb"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &fakeStoreConfig{cfg: map[string]any{
+				"path": t.TempDir(),
+				tc.key: float64(-1),
+			}}
+
+			store, err := CreateMetadataStoreFromConfig(t.Context(), "badger", cfg)
+			if err == nil {
+				if store != nil {
+					_ = store.Close()
+				}
+				t.Fatalf("expected error for negative %s, got nil", tc.key)
+			}
+		})
+	}
+}
+
 // fakeStoreConfig satisfies the GetConfig interface CreateMetadataStoreFromConfig expects.
 type fakeStoreConfig struct{ cfg map[string]any }
 
