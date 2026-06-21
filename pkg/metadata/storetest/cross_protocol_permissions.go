@@ -33,6 +33,7 @@ func RunCrossProtocolPermissionMatrix(t *testing.T, factory StoreFactory) {
 	t.Run("SIDOnlyGrant", func(t *testing.T) { testCrossProtocolSIDOnlyGrant(t, factory) })
 	t.Run("SIDOnlyDeny", func(t *testing.T) { testCrossProtocolSIDOnlyDeny(t, factory) })
 	t.Run("HandleWriteAuthorization", func(t *testing.T) { testCrossProtocolHandleWriteAuthorization(t, factory) })
+	t.Run("PerUserReadOnlyShare", func(t *testing.T) { testCrossProtocolPerUserReadOnlyShare(t, factory) })
 }
 
 // canonOp is a backend-neutral operation the matrix probes through every
@@ -485,4 +486,54 @@ func testCrossProtocolHandleWriteAuthorization(t *testing.T, factory StoreFactor
 	granted := f.userCtx(6600, 6600, grantSID)
 	assertLanesAgree(t, f, allowH, allowFile, granted, opRead, true)
 	assertLanesAgree(t, f, allowH, allowFile, granted, opWrite, true)
+}
+
+// testCrossProtocolPerUserReadOnlyShare pins the #1276 ceiling: when the
+// requester's PER-USER share permission is read-only (AuthContext.ShareReadOnly),
+// write is denied on every protocol even though the file's POSIX mode or ACL
+// would otherwise grant it — while read stays allowed. This is the restriction
+// direction complementing the handle/ACL grant cases above.
+//
+// ShareReadOnly is the per-user grant (set by NFS auth_helper / SMB tree-connect
+// from the resolved share permission); it is independent of the store-level
+// ShareOptions.ReadOnly. The share here is stored read-write, so only the
+// per-user flag forces the denial. The SMB lane's open-time gate (CheckFileAccess)
+// does not consult ShareReadOnly, so for a DACL-granting file it still mints a
+// write-authorized handle — but the operation-level metadata funnel (gate 2,
+// shared with NFS) strips write under ShareReadOnly, so both protocols agree.
+func testCrossProtocolPerUserReadOnlyShare(t *testing.T, factory StoreFactory) {
+	f := newCrossProtocolFixture(t, factory)
+
+	ownerUID, ownerGID := uint32(1300), uint32(1300)
+
+	// Case 1: no-ACL file, mode 0o666 — POSIX would grant write to everyone.
+	posixFile, posixH := f.createFile(t, "ro_user_posix.txt", &metadata.FileAttr{
+		Mode: 0o666, UID: ownerUID, GID: ownerGID,
+	})
+
+	// Read-write user: baseline write allowed (sanity that the file/grant is real).
+	rw := f.userCtx(ownerUID, ownerGID, "")
+	assertLanesAgree(t, f, posixH, posixFile, rw, opWrite, true)
+
+	// Read-only user (same identity, ShareReadOnly set): read allowed, write denied.
+	ro := f.userCtx(ownerUID, ownerGID, "")
+	ro.ShareReadOnly = true
+	assertLanesAgree(t, f, posixH, posixFile, ro, opRead, true)
+	assertLanesAgree(t, f, posixH, posixFile, ro, opWrite, false)
+
+	// Case 2: DACL granting EVERYONE@ full access — the ACL would grant write,
+	// but the per-user read-only ceiling must still deny it on every protocol.
+	allowAll := &acl.ACL{
+		ACEs: []acl.ACE{
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: acl.SpecialEveryone, AccessMask: 0xFFFFFFFF},
+		},
+	}
+	aclFile, aclH := f.createFile(t, "ro_user_acl.txt", &metadata.FileAttr{
+		Mode: 0o600, UID: ownerUID, GID: ownerGID, ACL: allowAll,
+	})
+
+	roACL := f.userCtx(7700, 7700, "S-1-5-21-1-3-0-7700")
+	roACL.ShareReadOnly = true
+	assertLanesAgree(t, f, aclH, aclFile, roACL, opRead, true)
+	assertLanesAgree(t, f, aclH, aclFile, roACL, opWrite, false)
 }

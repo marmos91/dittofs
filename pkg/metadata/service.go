@@ -1046,13 +1046,15 @@ func (s *Service) LockFile(ctx *AuthContext, handle FileHandle, lock FileLock) e
 		requiredPerm = PermissionRead
 	}
 
-	// Get share options for permission check
-	shareOpts, err := store.GetShareOptions(ctx.Context, file.ShareName)
+	// Route through the shared permission funnel rather than calling
+	// calculatePermissions directly: checkFilePermissions applies the per-user
+	// read-only ceiling (#1276 — a read-only user must not take an exclusive
+	// write lock) and the SMB handle-based write authorization, keeping lock
+	// authorization consistent with every other write path.
+	granted, err := s.checkFilePermissions(ctx, handle, requiredPerm)
 	if err != nil {
-		shareOpts = nil // Continue without share options if unavailable
+		return err
 	}
-
-	granted := calculatePermissions(file, ctx.Identity, shareOpts, requiredPerm)
 	if granted&requiredPerm == 0 {
 		return NewPermissionDeniedError("")
 	}
