@@ -589,12 +589,22 @@ func MustLoad(configPath string) (*Config, error) {
 	// Determine config path
 	if configPath == "" {
 		if !DefaultConfigExists() {
-			return nil, fmt.Errorf("no configuration file found at default location: %s\n\n"+
-				"Please initialize a configuration file first:\n"+
-				"  dittofs init\n\n"+
-				"Or specify a custom config file:\n"+
-				"  dittofs <command> --config /path/to/config.yaml",
+			// No config file at the default location. Rather than hard-fail
+			// (which makes a systemd unit crash-loop), fall back to built-in
+			// defaults + DITTOFS_* env overrides and warn clearly. Load("")
+			// already resolves env > defaults and validates, so a defaults-
+			// only boot is a fully supported configuration. Run `dittofs init`
+			// to materialize a config file when persistent settings are needed.
+			fmt.Fprintf(os.Stderr,
+				"WARNING: no configuration file found at default location: %s\n"+
+					"         starting with built-in defaults (override via DITTOFS_* env vars).\n"+
+					"         Run 'dittofs init' to create a config file for persistent settings.\n",
 				GetDefaultConfigPath())
+			cfg, err := Load("")
+			if err != nil {
+				return nil, fmt.Errorf("failed to load default configuration: %w", err)
+			}
+			return cfg, nil
 		}
 		configPath = GetDefaultConfigPath()
 	} else {

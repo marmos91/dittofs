@@ -345,6 +345,26 @@ type FSStore struct {
 	rollupStarted atomic.Bool
 	rollupWg      sync.WaitGroup
 
+	// stopRollup signals the rollup worker pool to stop accepting NEW
+	// rollups and exit, WITHOUT marking the whole store closed. Closed
+	// exactly once by GracefulStopRollup (guarded by stopRollupOnce) so
+	// the workers join before a fresh-context drain runs. Distinct from
+	// `done` (full-Close signal): graceful shutdown wants to halt the
+	// cancellable-ctx workers and then DRAIN the remaining dirty payloads
+	// on a separate, non-cancelled context (#1245 Bug C) before the store
+	// is actually closed.
+	stopRollup     chan struct{}
+	stopRollupOnce sync.Once
+	rollupStopped  atomic.Bool
+
+	// rollupDrainGraceDur bounds how long the graceful shutdown drain
+	// (GracefulStopRollup, invoked from Close) spends flushing in-flight /
+	// remaining rollups on its fresh, non-cancelled context before giving up
+	// and letting the remainder resume on the next boot. Default 30s (set by
+	// newFSStore); operator-tunable via FSStoreOptions.RollupDrainGrace. A
+	// non-positive value defers to the 30s default inside GracefulStopRollup.
+	rollupDrainGraceDur time.Duration
+
 	// syncedHashStore persists per-CAS-hash local→remote sync state.
 	// Consumed by ListUnsynced to filter the Walk-collected hash set
 	// down to the still-unmirrored subset. Nil-valued on local-only
@@ -477,6 +497,7 @@ func newFSStore(baseDir string, maxDisk, maxMemory int64, fileBlockStore block.E
 		accessTracker: newAccessTracker(),
 		retention:     unsafe.Pointer(defaultRetention),
 		done:          make(chan struct{}),
+		stopRollup:    make(chan struct{}),
 	}
 	bc.evictionEnabled.Store(true)
 
@@ -496,6 +517,7 @@ func newFSStore(baseDir string, maxDisk, maxMemory int64, fileBlockStore block.E
 	bc.stabilizationMS = 250                  // default
 	bc.rollupWorkers = 2                      // default
 	bc.pressureMaxWait = 30 * time.Second     // default — #670 defense-in-depth
+	bc.rollupDrainGraceDur = 30 * time.Second // default — #1245 shutdown drain window
 	bc.evictMaxWait = 30 * time.Second        // default ensureSpace back-pressure cap
 	bc.backpressureMaxWait = 60 * time.Second // default remote-cache backpressure window
 	// Rate-limit backpressure engage/release logs: at most one line every
@@ -546,6 +568,9 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 	}
 	if opts.BackpressureMaxWait > 0 {
 		bc.backpressureMaxWait = opts.BackpressureMaxWait
+	}
+	if opts.RollupDrainGrace > 0 {
+		bc.rollupDrainGraceDur = opts.RollupDrainGrace
 	}
 	bc.rollupStore = opts.RollupStore
 	bc.syncedHashStore = opts.SyncedHashStore
@@ -928,6 +953,14 @@ type FSStoreOptions struct {
 	// internal evict wait. See FSStore.backpressureMaxWait.
 	BackpressureMaxWait time.Duration
 
+	// RollupDrainGrace bounds how long the graceful shutdown drain
+	// (GracefulStopRollup, invoked from Close) spends flushing in-flight /
+	// remaining rollups on a fresh, non-cancelled context before letting the
+	// remainder resume on the next boot (#1245 Bug C). Zero defers to the 30s
+	// default. The drain is best-effort: exceeding it is non-fatal because the
+	// append log is durable and rollups are idempotent on restart.
+	RollupDrainGrace time.Duration
+
 	// CompactionThresholdBytes controls when physical log compaction
 	// runs (#579). After a rollup pass advances idx.compactionFence
 	// the rewrite is invoked if the fence sits more than this many
@@ -1049,6 +1082,24 @@ func (bc *FSStore) getRetention() retentionConfig {
 // goroutine via wg.Wait() before returning. This prevents the goroutine leak
 // previously possible when Start's ctx outlived Close (a).
 func (bc *FSStore) Close() error {
+	// #1245 Bug C: crash-safe rollup drain on shutdown. BEFORE marking the
+	// store closed (which makes rollupFile/DrainRollups short-circuit), stop
+	// accepting new rollups, join the cancellable-ctx worker pool, and drain
+	// any in-flight / remaining dirty payloads on a fresh, non-cancelled
+	// context with a bounded grace deadline. This converts a rollup that was
+	// interrupted by the cancelled runtime context — which previously surfaced
+	// as a fatal context.Canceled / exit-1 — into a clean completion. A
+	// drain that cannot finish within the grace window is non-fatal: the
+	// append log is durable and resumes on the next boot, so we log and
+	// proceed with teardown rather than failing Close. No-op when StartRollup
+	// was never invoked.
+	if bc.rollupStarted.Load() && !bc.isClosed() {
+		if err := bc.GracefulStopRollup(bc.rollupDrainGrace()); err != nil {
+			logger.Warn("FSStore.Close: graceful rollup drain incomplete; remaining rollups resume on restart",
+				"error", err)
+		}
+	}
+
 	bc.closedFlag.Store(true)
 	bc.closeOnce.Do(func() {
 		close(bc.done)
@@ -1083,6 +1134,15 @@ func (bc *FSStore) Close() error {
 
 func (bc *FSStore) isClosed() bool {
 	return bc.closedFlag.Load()
+}
+
+// rollupDrainGrace returns the bounded grace deadline for the shutdown rollup
+// drain (#1245 Bug C), falling back to 30s if unset.
+func (bc *FSStore) rollupDrainGrace() time.Duration {
+	if bc.rollupDrainGraceDur <= 0 {
+		return 30 * time.Second
+	}
+	return bc.rollupDrainGraceDur
 }
 
 // Start launches the background goroutine that periodically persists queued
