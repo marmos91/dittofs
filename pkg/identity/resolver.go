@@ -102,16 +102,38 @@ type cacheResult struct {
 }
 
 func (r *Resolver) resolveUncached(ctx context.Context, cred *Credential) (*ResolvedIdentity, error) {
+	// A credential tagged with an explicit Provider names the PREFERRED provider
+	// (the auth source that produced it, e.g. "kerberos" for an RPCSEC_GSS /
+	// SPNEGO principal). Try it first — but treat Found=false as "try the rest
+	// of the chain", not a terminal answer. This is what realizes the documented
+	// fallback design in BuildIdentityResolver: the Kerberos provider resolves a
+	// principal that maps to a LOCAL DittoFS user, and a domain principal with no
+	// local account falls through to the LDAP/AD directory provider (RFC2307
+	// UID/GID + nested groups). Previously this branch returned the preferred
+	// provider's Found=false directly, so every domain user authenticating over
+	// Kerberos resolved to nobody and the directory was never consulted.
+	preferred := -1
 	if cred.Provider != "" {
-		for _, p := range r.providers {
+		for i, p := range r.providers {
 			if p.Name() == cred.Provider {
-				return p.Resolve(ctx, cred)
+				result, err := p.Resolve(ctx, cred)
+				if err != nil {
+					return nil, err
+				}
+				if result.Found {
+					return result, nil
+				}
+				preferred = i
+				break
 			}
 		}
-		return &ResolvedIdentity{Found: false}, nil
 	}
 
-	for _, p := range r.providers {
+	// Fall through to every other provider that claims the credential by shape.
+	for i, p := range r.providers {
+		if i == preferred {
+			continue // already tried above
+		}
 		if !p.CanResolve(cred) {
 			continue
 		}
