@@ -72,9 +72,9 @@ See each feature's `CAPTURE.md` for the exact commands used.
 | Kerberos / PAC | ✅ reference captured | `kerberos/reference.pcap` — real Samba AD-DC AS/TGS/AP exchange (realm `DITTOFS.AD`) |
 | NFSv4 over krb5 | ◐ DittoFS sample | `nfsv4-acl/dittofs-krb5-sample.pcap` — candidate side; `knfsd` `fattr4_acl` reference is Phase 2 |
 | LDAP RFC2307 | ☐ pending | Samba AD-DC mandates an encrypted bind (`strongAuthRequired` on plaintext :389), so a cleartext-decodable RFC2307 search reference needs StartTLS key material or a non-AD RFC2307 server |
-| SMB SECURITY_DESCRIPTOR | ☐ pending | needs a Samba member server (`smbcacls`) or Windows (`icacls`) — Phase 2 |
+| SMB SECURITY_DESCRIPTOR | ✅ reference + validated | `smb-sd/reference.pcap` (Samba 4.19) vs `dittofs-sample.pcap` — SD field structure **78/78 match**; two value divergences found (`SE_DACL_PROTECTED` omitted; no LSARPC SID→name) — see `smb-sd/CAPTURE.md` |
 
-The Kerberos reference was captured live against the `test/integration/ad-dc/`
-Samba AD-DC; the NFSv4 sample was captured from DittoFS itself during the AD
-domain-user `sec=krb5` validation. The remaining two references are gated on
-additional reference servers (knfsd, Samba member / Windows).
+The Kerberos and SMB SECURITY_DESCRIPTOR references were captured live against
+real Samba servers; the NFSv4 sample was captured from DittoFS during the AD
+domain-user `sec=krb5` validation. The remaining references (LDAP RFC2307,
+`knfsd` `fattr4_acl`) are gated on additional reference servers.
