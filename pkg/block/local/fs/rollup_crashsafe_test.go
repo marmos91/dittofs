@@ -100,11 +100,25 @@ func TestRollupFile_ShutdownCancellationIsBenign(t *testing.T) {
 func TestDrainRollups_ShutdownCancellationIsBenign(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 
+	// Persister gate: signal when the rollup pass has entered Phase B (so the
+	// cancellation lands MID-FLIGHT, not before the drain starts), then block
+	// until the test cancels the context and releases us. Returning ctx.Err()
+	// models a real in-progress persist seeing the cancelled context.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enterOnce sync.Once
+	persister := func(ctx context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
+		enterOnce.Do(func() { close(entered) })
+		<-release
+		return ctx.Err()
+	}
+
 	bc := newFSStoreForTest(t, FSStoreOptions{
-		MaxLogBytes:     1 << 30,
-		RollupWorkers:   2,
-		StabilizationMS: 3_600_000,
-		RollupStore:     rs,
+		MaxLogBytes:       1 << 30,
+		RollupWorkers:     2,
+		StabilizationMS:   3_600_000,
+		RollupStore:       rs,
+		ObjectIDPersister: persister,
 	})
 
 	payload := bytes.Repeat([]byte{0x5A}, 8*1024*1024)
@@ -112,13 +126,27 @@ func TestDrainRollups_ShutdownCancellationIsBenign(t *testing.T) {
 		t.Fatalf("AppendWrite: %v", err)
 	}
 
-	cancelledCtx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- bc.DrainRollups(ctx) }()
+
+	// Wait until the persist is actually in flight, THEN cancel — this exercises
+	// cancellation during an in-progress rollup, not just the early ctx.Err()
+	// guard at the top of DrainRollups.
+	<-entered
 	cancel()
-	err := bc.DrainRollups(cancelledCtx)
+	close(release)
+
+	var err error
+	select {
+	case err = <-errCh:
+	case <-time.After(10 * time.Second):
+		t.Fatal("DrainRollups did not return after mid-flight cancellation")
+	}
 	// DrainRollups returns ctx.Err() directly on cancellation (benign abort),
 	// never a wrapped "DrainRollups: rollup payload" fatal error.
 	if err != nil && err != context.Canceled {
-		t.Fatalf("DrainRollups(cancelled) = %v; want nil or context.Canceled (benign), not a wrapped fatal error", err)
+		t.Fatalf("DrainRollups(cancelled mid-flight) = %v; want nil or context.Canceled (benign), not a wrapped fatal error", err)
 	}
 }
 

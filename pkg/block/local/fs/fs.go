@@ -1092,16 +1092,20 @@ func (bc *FSStore) Close() error {
 	// append log is durable and resumes on the next boot, so we log and
 	// proceed with teardown rather than failing Close. No-op when StartRollup
 	// was never invoked.
-	if bc.rollupStarted.Load() && !bc.isClosed() {
-		// GracefulStopRollup defers a non-positive grace to its 30s default.
-		if err := bc.GracefulStopRollup(bc.rollupDrainGraceDur); err != nil {
-			logger.Warn("FSStore.Close: graceful rollup drain incomplete; remaining rollups resume on restart",
-				"error", err)
-		}
-	}
-
-	bc.closedFlag.Store(true)
+	// The stop/drain + closed-flag + done-signal sequence runs exactly once,
+	// even under concurrent Close() calls: closeOnce serializes it so two
+	// callers can never race two drains against each other (the second blocks
+	// in Do until the first finishes, then falls through to the idempotent
+	// teardown below).
 	bc.closeOnce.Do(func() {
+		if bc.rollupStarted.Load() {
+			// GracefulStopRollup defers a non-positive grace to its 30s default.
+			if err := bc.GracefulStopRollup(bc.rollupDrainGraceDur); err != nil {
+				logger.Warn("FSStore.Close: graceful rollup drain incomplete; remaining rollups resume on restart",
+					"error", err)
+			}
+		}
+		bc.closedFlag.Store(true)
 		close(bc.done)
 	})
 	// Join the Start goroutine (if any) before proceeding with teardown.

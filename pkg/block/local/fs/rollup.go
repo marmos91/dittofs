@@ -138,16 +138,22 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 	}
 }
 
-// isShutdownCancel reports whether err is (or wraps) a context cancellation /
-// deadline-exceeded — the signal that the rollup ctx was torn down by shutdown
-// mid-pass. #1245 Bug C: such an interruption is benign. CAS chunks are
-// content-addressed (re-store is a no-op) and rollup_offset only advances after
-// the FileBlock manifest lands, so an interrupted rollup left durable, resumable
-// state. Callers treat this as "skip + resume on restart", NOT a fatal error
-// that must reach os.Exit. Genuine errors (CRC mismatch, persist failure,
-// divergence) do NOT wrap context.Canceled and are still surfaced.
+// isShutdownCancel reports whether err is (or wraps) a context CANCELLATION —
+// the signal that the rollup ctx was torn down by shutdown mid-pass. #1245 Bug
+// C: such an interruption is benign. CAS chunks are content-addressed (re-store
+// is a no-op) and rollup_offset only advances after the FileBlock manifest
+// lands, so an interrupted rollup left durable, resumable state. Callers treat
+// this as "skip + resume on restart", NOT a fatal error that must reach os.Exit.
+// Genuine errors (CRC mismatch, persist failure, divergence) do NOT wrap
+// context.Canceled and are still surfaced.
+//
+// DeadlineExceeded is deliberately EXCLUDED: the only deadline in this package
+// is GracefulStopRollup's bounded grace window. Demoting it to nil here would
+// let a timed-out drain look like it succeeded; instead the deadline propagates
+// out of rollupFile → DrainRollups → GracefulStopRollup, which classifies it as
+// a non-fatal "drain incomplete, resumes on restart" (errors.Is DeadlineExceeded).
 func isShutdownCancel(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, context.Canceled)
 }
 
 // rollupFile consumes the earliest stable interval for payloadID and commits
