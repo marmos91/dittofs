@@ -99,6 +99,23 @@ func applyKerberosDefaults(cfg *KerberosConfig) {
 		cfg.Krb5Conf = "/etc/krb5.conf"
 	}
 
+	// AD domain identity (AD-4): all optional and back-compatible.
+	//
+	// Realm defaults to the "@REALM" suffix of the service principal so an
+	// operator who already set service_principal=nfs/host@CONTOSO.COM gets a
+	// realm without restating it. NetBIOSDomain is intentionally NOT derived
+	// (it cannot be inferred from the realm) — leaving it empty keeps the
+	// standalone WORKGROUP behavior. DNSDomain defaults to the lowercased
+	// realm, the conventional AD mapping (CONTOSO.COM -> contoso.com).
+	if cfg.Realm == "" {
+		if idx := strings.LastIndex(cfg.ServicePrincipal, "@"); idx >= 0 && idx < len(cfg.ServicePrincipal)-1 {
+			cfg.Realm = cfg.ServicePrincipal[idx+1:]
+		}
+	}
+	if cfg.DNSDomain == "" && cfg.Realm != "" {
+		cfg.DNSDomain = strings.ToLower(cfg.Realm)
+	}
+
 	// Default max clock skew: 5 minutes (standard Kerberos default)
 	if cfg.MaxClockSkew == 0 {
 		cfg.MaxClockSkew = 5 * time.Minute

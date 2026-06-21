@@ -725,7 +725,7 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 	}
 
 	// Build TYPE_2 CHALLENGE
-	challengeMsg, serverChallenge := auth.BuildChallenge()
+	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain)
 
 	pending := &PendingAuth{
 		SessionID:        ctx.SessionID, // bound session's ID
@@ -961,7 +961,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 
 	// Build NTLM Type 2 (CHALLENGE) response
 	// This also returns the server challenge for later validation
-	challengeMsg, serverChallenge := auth.BuildChallenge()
+	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain)
 
 	// Store pending auth to track handshake state
 	// Include the server challenge for NTLMv2 validation in completeNTLMAuth
@@ -1117,7 +1117,8 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					authMsg.Domain,            // Domain from AUTHENTICATE message
 					"",                        // Empty domain
 					strings.ToUpper(hostname), // Server hostname (TargetName)
-					"WORKGROUP",               // Default workgroup
+					h.NetBIOSDomain,           // Configured AD NetBIOS domain (AD-4; "" when standalone)
+					"WORKGROUP",               // Default workgroup (standalone)
 				})
 
 				logger.Debug("NTLMv2 validation attempt",
@@ -1197,7 +1198,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				// Samba reference: smb2_sesssetup.c:633-637 passes
 				// session_info->session_key from the bind's GENSEC context.
 				if pending.IsBinding {
-					return h.completeSessionBind(ctx, pending, user, authMsg.Domain, signingKey[:], authMsg.NegotiateFlags), nil
+					return h.completeSessionBind(ctx, pending, user, h.sessionDomain(authMsg.Domain), signingKey[:], authMsg.NegotiateFlags), nil
 				}
 
 				if pending.IsReauth {
@@ -1209,13 +1210,19 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 					// them here makes the SUCCESS response's signature diverge
 					// from what the client computes with the unchanged key
 					// (smb2.session.reauth1-5 reject the response).
-					if result := h.tryReauthUpdate(pending, resolvedUsername, authMsg.Domain, user, false); result != nil {
+					if result := h.tryReauthUpdate(pending, resolvedUsername, h.sessionDomain(authMsg.Domain), user, false); result != nil {
 						return result, nil
 					}
 					// Fallthrough: session disappeared between negotiate and auth (unlikely)
 				}
 
-				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, authMsg.Domain)
+				// Domain-aware session (AD-4): when the server is joined to an AD
+				// domain (NetBIOSDomain configured) the session reflects that
+				// domain rather than whatever the client put in the AUTHENTICATE
+				// message (which may be empty, the hostname, or "WORKGROUP"). When
+				// standalone (NetBIOSDomain empty) the client-supplied domain is
+				// retained, preserving pre-AD-4 behavior.
+				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, h.sessionDomain(authMsg.Domain))
 				sess.OriginConnID = ctx.ConnID
 				recordSessionBindIdentity(sess, ctx)
 

@@ -294,6 +294,9 @@ func TestConfigEnvKeys_CoversKnownKeys(t *testing.T) {
 		"controlplane.require_initial_password_change",
 		"admin.username",
 		"kerberos.enabled",
+		"kerberos.realm",
+		"kerberos.netbios_domain",
+		"kerberos.dns_domain",
 		"gc.grace_period",
 		"snapshot.restore_http_timeout",
 	}
@@ -337,6 +340,105 @@ func TestLoad_EnvOnly_NoConfigFile(t *testing.T) {
 	}
 	if cfg.ControlPlane.JWT.Secret != "env-only-secret-key-minimum-32-characters!" {
 		t.Errorf("controlplane.jwt.secret: env override dropped on no-file path, got %q", cfg.ControlPlane.JWT.Secret)
+	}
+}
+
+// TestLoad_KerberosDomainFromEnv verifies the AD-4 domain identity env
+// overrides flow through the reflective env binding (no explicit BindEnv).
+func TestLoad_KerberosDomainFromEnv(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	t.Setenv("DITTOFS_KERBEROS_REALM", "CONTOSO.COM")
+	t.Setenv("DITTOFS_KERBEROS_NETBIOS_DOMAIN", "CONTOSO")
+	t.Setenv("DITTOFS_KERBEROS_DNS_DOMAIN", "ad.contoso.com")
+
+	cfg, err := Load(missing)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Kerberos.Realm != "CONTOSO.COM" {
+		t.Errorf("kerberos.realm from env: got %q want CONTOSO.COM", cfg.Kerberos.Realm)
+	}
+	if cfg.Kerberos.NetBIOSDomain != "CONTOSO" {
+		t.Errorf("kerberos.netbios_domain from env: got %q want CONTOSO", cfg.Kerberos.NetBIOSDomain)
+	}
+	if cfg.Kerberos.DNSDomain != "ad.contoso.com" {
+		t.Errorf("kerberos.dns_domain from env (explicit, not derived): got %q want ad.contoso.com", cfg.Kerberos.DNSDomain)
+	}
+}
+
+// TestApplyDefaults_KerberosDomainDerivation verifies realm derives from the
+// service principal and dns_domain derives from the realm, while netbios_domain
+// is never derived. Crucially, an empty config stays empty (standalone).
+func TestApplyDefaults_KerberosDomainDerivation(t *testing.T) {
+	t.Run("derive realm and dns from principal", func(t *testing.T) {
+		cfg := &KerberosConfig{ServicePrincipal: "nfs/host.contoso.com@CONTOSO.COM"}
+		applyKerberosDefaults(cfg)
+		if cfg.Realm != "CONTOSO.COM" {
+			t.Errorf("derived realm: got %q want CONTOSO.COM", cfg.Realm)
+		}
+		if cfg.DNSDomain != "contoso.com" {
+			t.Errorf("derived dns_domain: got %q want contoso.com", cfg.DNSDomain)
+		}
+		if cfg.NetBIOSDomain != "" {
+			t.Errorf("netbios_domain must NOT be derived, got %q", cfg.NetBIOSDomain)
+		}
+	})
+
+	t.Run("explicit values preserved", func(t *testing.T) {
+		cfg := &KerberosConfig{
+			ServicePrincipal: "nfs/host@CONTOSO.COM",
+			Realm:            "OTHER.REALM",
+			DNSDomain:        "explicit.example.com",
+			NetBIOSDomain:    "SHORT",
+		}
+		applyKerberosDefaults(cfg)
+		if cfg.Realm != "OTHER.REALM" {
+			t.Errorf("explicit realm overwritten: got %q", cfg.Realm)
+		}
+		if cfg.DNSDomain != "explicit.example.com" {
+			t.Errorf("explicit dns_domain overwritten: got %q", cfg.DNSDomain)
+		}
+		if cfg.NetBIOSDomain != "SHORT" {
+			t.Errorf("explicit netbios_domain overwritten: got %q", cfg.NetBIOSDomain)
+		}
+	})
+
+	t.Run("standalone stays empty", func(t *testing.T) {
+		// No principal, no domain fields: must remain empty so the SMB layer
+		// falls back to WORKGROUP (backward compatibility).
+		cfg := &KerberosConfig{}
+		applyKerberosDefaults(cfg)
+		if cfg.Realm != "" || cfg.NetBIOSDomain != "" || cfg.DNSDomain != "" {
+			t.Errorf("standalone config should stay empty, got realm=%q netbios=%q dns=%q",
+				cfg.Realm, cfg.NetBIOSDomain, cfg.DNSDomain)
+		}
+	})
+}
+
+// TestKerberosConfig_ValidateDomainShape checks the field-shape validation.
+func TestKerberosConfig_ValidateDomainShape(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     KerberosConfig
+		wantErr bool
+	}{
+		{"empty ok (standalone)", KerberosConfig{}, false},
+		{"valid domain", KerberosConfig{Realm: "CONTOSO.COM", NetBIOSDomain: "CONTOSO", DNSDomain: "contoso.com"}, false},
+		{"netbios with dot rejected", KerberosConfig{NetBIOSDomain: "contoso.com"}, true},
+		{"realm with @ rejected", KerberosConfig{Realm: "host@CONTOSO.COM"}, true},
+		{"dns with space rejected", KerberosConfig{DNSDomain: "contoso com"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Errorf("expected validation error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected validation error: %v", err)
+			}
+		})
 	}
 }
 

@@ -128,7 +128,7 @@ func TestGetMessageType(t *testing.T) {
 // =============================================================================
 
 func TestBuildChallenge(t *testing.T) {
-	msg, serverChallenge := BuildChallenge()
+	msg, serverChallenge := BuildChallenge("", "")
 
 	t.Run("HasCorrectSignature", func(t *testing.T) {
 		if !bytes.Equal(msg[0:8], Signature) {
@@ -176,7 +176,7 @@ func TestBuildChallenge(t *testing.T) {
 	})
 
 	t.Run("GeneratesUniqueChallenge", func(t *testing.T) {
-		msg2, serverChallenge2 := BuildChallenge()
+		msg2, serverChallenge2 := BuildChallenge("", "")
 		challenge1 := msg[24:32]
 		challenge2 := msg2[24:32]
 
@@ -757,4 +757,120 @@ func rc4Encrypt(key, data []byte) []byte {
 	}
 
 	return result
+}
+
+// =============================================================================
+// Domain-aware TargetInfo Tests (AD-4)
+// =============================================================================
+
+// parseAvPairs walks an AV_PAIR list and returns a map of AvID -> decoded
+// UTF-16LE string value. It stops at the MsvAvEOL terminator.
+func parseAvPairs(t *testing.T, buf []byte) map[AvID]string {
+	t.Helper()
+	out := make(map[AvID]string)
+	for len(buf) >= 4 {
+		id := AvID(binary.LittleEndian.Uint16(buf[0:2]))
+		ln := int(binary.LittleEndian.Uint16(buf[2:4]))
+		if id == AvEOL {
+			break
+		}
+		if 4+ln > len(buf) {
+			t.Fatalf("AV_PAIR id=0x%x length %d overruns buffer (%d remaining)", id, ln, len(buf)-4)
+		}
+		val := buf[4 : 4+ln]
+		// Decode UTF-16LE (timestamp is raw bytes, but we only read string AVs).
+		runes := make([]uint16, ln/2)
+		for i := 0; i < ln/2; i++ {
+			runes[i] = binary.LittleEndian.Uint16(val[i*2:])
+		}
+		out[id] = string(utf16Decode(runes))
+		buf = buf[4+ln:]
+	}
+	return out
+}
+
+func utf16Decode(u []uint16) []rune {
+	r := make([]rune, len(u))
+	for i, c := range u {
+		r[i] = rune(c)
+	}
+	return r
+}
+
+// TestBuildTargetInfo_StandaloneDefault asserts the critical backward-compat
+// guarantee: with no domain configured, the TargetInfo advertises WORKGROUP as
+// the NetBIOS domain (and "local" as the DNS domain) exactly as before AD-4.
+func TestBuildTargetInfo_StandaloneDefault(t *testing.T) {
+	info := buildTargetInfo("FILESERVER", "", "")
+	pairs := parseAvPairs(t, info)
+
+	if got := pairs[AvNbDomainName]; got != "WORKGROUP" {
+		t.Errorf("standalone NbDomainName = %q, want %q", got, "WORKGROUP")
+	}
+	if got := pairs[AvDnsDomainName]; got != "local" {
+		t.Errorf("standalone DnsDomainName = %q, want %q", got, "local")
+	}
+	if got := pairs[AvNbComputerName]; got != "FILESERVER" {
+		t.Errorf("NbComputerName = %q, want %q", got, "FILESERVER")
+	}
+}
+
+// TestBuildTargetInfo_DomainAware asserts the AD-4 path: a configured NetBIOS +
+// DNS domain is advertised in the TargetInfo instead of WORKGROUP/local.
+func TestBuildTargetInfo_DomainAware(t *testing.T) {
+	info := buildTargetInfo("FILESERVER", "CONTOSO", "contoso.com")
+	pairs := parseAvPairs(t, info)
+
+	if got := pairs[AvNbDomainName]; got != "CONTOSO" {
+		t.Errorf("domain NbDomainName = %q, want %q", got, "CONTOSO")
+	}
+	if got := pairs[AvDnsDomainName]; got != "contoso.com" {
+		t.Errorf("domain DnsDomainName = %q, want %q", got, "contoso.com")
+	}
+}
+
+// TestBuildChallenge_TargetTypeFlag pins MS-NLMP §2.2.1.2/§3.1.5.1.1: the
+// CHALLENGE must set FlagTargetTypeDomain (mutually exclusive with
+// FlagTargetTypeServer) when domain-joined, and FlagTargetTypeServer when
+// standalone. A domain-joined server advertising TargetTypeServer drives
+// Windows clients to the wrong credential store.
+func TestBuildChallenge_TargetTypeFlag(t *testing.T) {
+	flagsOf := func(msg []byte) NegotiateFlag {
+		return NegotiateFlag(binary.LittleEndian.Uint32(msg[challengeFlagsOffset : challengeFlagsOffset+4]))
+	}
+
+	t.Run("standalone", func(t *testing.T) {
+		msg, _ := BuildChallenge("", "")
+		f := flagsOf(msg)
+		if f&FlagTargetTypeServer == 0 {
+			t.Error("standalone challenge must set FlagTargetTypeServer")
+		}
+		if f&FlagTargetTypeDomain != 0 {
+			t.Error("standalone challenge must NOT set FlagTargetTypeDomain")
+		}
+	})
+
+	t.Run("domain-joined", func(t *testing.T) {
+		msg, _ := BuildChallenge("CONTOSO", "contoso.com")
+		f := flagsOf(msg)
+		if f&FlagTargetTypeDomain == 0 {
+			t.Error("domain-joined challenge must set FlagTargetTypeDomain")
+		}
+		if f&FlagTargetTypeServer != 0 {
+			t.Error("domain-joined challenge must NOT set FlagTargetTypeServer")
+		}
+	})
+}
+
+// TestBuildTargetInfo_PartialDomain asserts that an empty DNS domain still
+// falls back to "local" even when the NetBIOS domain is set, and vice versa.
+func TestBuildTargetInfo_PartialDomain(t *testing.T) {
+	info := buildTargetInfo("FILESERVER", "CONTOSO", "")
+	pairs := parseAvPairs(t, info)
+	if got := pairs[AvNbDomainName]; got != "CONTOSO" {
+		t.Errorf("NbDomainName = %q, want %q", got, "CONTOSO")
+	}
+	if got := pairs[AvDnsDomainName]; got != "local" {
+		t.Errorf("DnsDomainName = %q, want %q (empty dns falls back)", got, "local")
+	}
 }

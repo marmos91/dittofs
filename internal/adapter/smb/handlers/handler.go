@@ -191,6 +191,19 @@ type Handler struct {
 	// When empty, derived from the NFS principal ("nfs/host@REALM" -> "cifs/host@REALM").
 	SMBServicePrincipal string
 
+	// NetBIOSDomain is the AD NetBIOS short domain (e.g. CONTOSO) the server is
+	// joined to. It is advertised in the NTLM Type-2 TargetInfo
+	// (MsvAvNbDomainName), added to the NTLMv2 domain-try list, and stamped on a
+	// domain user's SMB Session. When empty the server is standalone and
+	// advertises/uses "WORKGROUP" exactly as before AD-4. Set by the adapter
+	// from the Kerberos provider's configured domain.
+	NetBIOSDomain string
+
+	// DNSDomain is the AD DNS domain (e.g. contoso.com) advertised in the NTLM
+	// Type-2 TargetInfo (MsvAvDnsDomainName). When empty the standalone default
+	// ("local") is advertised. Set by the adapter from the Kerberos provider.
+	DNSDomain string
+
 	// NtlmEnabled controls whether NTLM authentication is allowed.
 	// When false, NTLM tokens in SESSION_SETUP are rejected with STATUS_LOGON_FAILURE.
 	// Default: true.
@@ -857,6 +870,19 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h.nextFileID.Store(1)
 
 	return h
+}
+
+// sessionDomain returns the domain to stamp on an authenticated SMB session.
+// When the server is domain-joined (NetBIOSDomain configured) it returns the
+// AD NetBIOS short domain (e.g. CONTOSO) so the session reflects the server's
+// domain rather than the realm or whatever the client supplied. When standalone
+// (NetBIOSDomain empty) it returns the caller-provided fallback (the Kerberos
+// realm or the client-supplied NTLM domain), preserving pre-AD-4 behavior.
+func (h *Handler) sessionDomain(fallback string) string {
+	if h.NetBIOSDomain != "" {
+		return h.NetBIOSDomain
+	}
+	return fallback
 }
 
 // GetSession retrieves a session by ID.

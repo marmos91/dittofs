@@ -130,20 +130,48 @@ samba-tool group addmembers devs "$USER_ALICE" >/dev/null 2>&1 || true
 create_user_if_absent "$USER_BOB"
 samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 
-# --- Service keytab -------------------------------------------------------
-# Register the DittoFS SMB + NFS service principals on the Administrator account
-# and export their keys so the server can decrypt client AP-REQs. The PAC is
-# signed with the same key, so a correct keytab is required for PAC validation.
+# --- Combined service keytab ----------------------------------------------
+# Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on the
+# Administrator account and export their keys into ONE keytab. A single keytab
+# serving both protocols is what AD-4 exercises: the dittofs server loads one
+# keytab and decrypts client AP-REQs for either the SMB or the NFS SPN with it.
+#
+# `samba-tool domain exportkeytab <file> --principal=...` APPENDS the principal's
+# keys to <file> when it already exists, so two successive invocations into the
+# same path produce a combined keytab containing both SPNs (each with all the
+# enctypes the DC holds). AD-1's PAC test consumes the cifs/ entry of this same
+# keytab, so keeping both in one file keeps AD-1 working unchanged.
 keytab="$KEYTAB_DIR/dittofs.keytab"
 if [ ! -f "$keytab" ]; then
-    log "Exporting service keytab to $keytab ($SMB_SPN, $NFS_SPN)"
+    log "Registering SPNs and exporting COMBINED keytab to $keytab ($SMB_SPN + $NFS_SPN)"
+
+    # Register both SPNs on Administrator. `spn add` is idempotent-ish: it errors
+    # if the SPN already exists, which is fine on a re-provisioned fixture.
     samba-tool spn add "$SMB_SPN" "$DOMAIN\\Administrator" >/dev/null 2>&1 || true
     samba-tool spn add "$NFS_SPN" "$DOMAIN\\Administrator" >/dev/null 2>&1 || true
+
+    # Export cifs/ then APPEND nfs/ into the same keytab file.
     samba-tool domain exportkeytab "$keytab" \
-        --principal="$SMB_SPN@$REALM" >/dev/null 2>&1 || true
+        --principal="$SMB_SPN@$REALM"
     samba-tool domain exportkeytab "$keytab" \
-        --principal="$NFS_SPN@$REALM" >/dev/null 2>&1 || true
-    # Also export Administrator's key so tests that need a TGT via keytab can.
+        --principal="$NFS_SPN@$REALM"
+
+    # Verify the combined keytab actually carries BOTH principals before we hand
+    # it off. klist -k lists keytab entries; fail loudly here rather than letting
+    # the Go test discover a half-exported keytab much later.
+    if klist -k "$keytab" >/dev/null 2>&1; then
+        if ! klist -k "$keytab" 2>/dev/null | grep -qi "cifs/"; then
+            log "ERROR: combined keytab missing cifs/ principal"; klist -k "$keytab" || true; exit 1
+        fi
+        if ! klist -k "$keytab" 2>/dev/null | grep -qi "nfs/"; then
+            log "ERROR: combined keytab missing nfs/ principal"; klist -k "$keytab" || true; exit 1
+        fi
+        log "Combined keytab verified: carries both cifs/ and nfs/ principals"
+    else
+        log "klist unavailable; skipping in-container keytab verification (Go test re-checks)"
+    fi
+
+    # The dittofs container runs as a non-root uid; make the keytab readable there.
     chown "$DITTOFS_UID:$DITTOFS_GID" "$keytab" 2>/dev/null || true
     chmod 0400 "$keytab" 2>/dev/null || true
 fi

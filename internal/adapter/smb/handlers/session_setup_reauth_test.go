@@ -457,3 +457,28 @@ func TestTryReauthUpdate_ClearsKerberosPACIdentity(t *testing.T) {
 		t.Errorf("PACUserSID not cleared after NTLM reauth: %q", gotUserSID)
 	}
 }
+
+// TestHandler_sessionDomain pins the domain-aware selection used at every
+// session-create/reauth/bind site: a domain-joined server (NetBIOSDomain set)
+// always reports its AD domain; a standalone server falls back to the
+// client-supplied value (pre-AD-4 behavior). The reauth/bind paths route the
+// client domain through this helper so a successful re-auth cannot reset
+// Session.Domain back to an empty/WORKGROUP value on a domain-joined server.
+func TestHandler_sessionDomain(t *testing.T) {
+	t.Run("domain-joined overrides client value", func(t *testing.T) {
+		h := &Handler{NetBIOSDomain: "DITTOFS"}
+		for _, client := range []string{"", "WORKGROUP", "SOMEHOST"} {
+			if got := h.sessionDomain(client); got != "DITTOFS" {
+				t.Errorf("sessionDomain(%q) = %q, want DITTOFS", client, got)
+			}
+		}
+	})
+	t.Run("standalone keeps client value", func(t *testing.T) {
+		h := &Handler{}
+		for _, client := range []string{"", "WORKGROUP", "CORP"} {
+			if got := h.sessionDomain(client); got != client {
+				t.Errorf("sessionDomain(%q) = %q, want %q (standalone)", client, got, client)
+			}
+		}
+	})
+}

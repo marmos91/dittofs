@@ -129,12 +129,15 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	// StoreSession to avoid a data race window where a concurrent reader
 	// could observe a zero ExpiresAt on the published session and skip the
 	// per-request expiry check in prepareDispatch (see #341 A1).
+	// Domain-aware session (AD-4): stamp the configured AD NetBIOS short domain
+	// (e.g. CONTOSO) when domain-joined, else fall back to the Kerberos realm
+	// (e.g. CONTOSO.COM), preserving pre-AD-4 behavior.
 	sessionID := h.GenerateSessionID()
 	sess := h.CreateSessionWithUserAndExpiry(
 		sessionID,
 		ctx.ClientAddr,
 		user,
-		authResult.Realm,
+		h.sessionDomain(authResult.Realm),
 		ticketEndTime,
 	)
 	sess.OriginConnID = ctx.ConnID
@@ -209,7 +212,9 @@ func (h *Handler) reauthKerberosSession(
 	// requests through again (expire1/2 recovery).
 	sess.User = user
 	sess.Username = user.Username
-	sess.Domain = authResult.Realm
+	// Domain-aware session (AD-4): keep the NetBIOS short domain on reauth when
+	// domain-joined; otherwise fall back to the realm (pre-AD-4 behavior).
+	sess.Domain = h.sessionDomain(authResult.Realm)
 	sess.IsGuest = false
 	sess.IsNull = false
 	sess.ExpiresAt = ticketEndTime
