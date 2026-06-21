@@ -186,6 +186,12 @@ jobs:
           go build -o dfsctl cmd/dfsctl/main.go
 
       - name: Start DittoFS and bootstrap SMB
+        env:
+          # Set a known admin password out-of-band. This also clears the
+          # forced first-login change (store/users.go: passwordFromEnv →
+          # MustChangePassword=false), so no fragile log-scrape / change-password
+          # dance is needed (the old scrape broke when the log format changed).
+          DITTOFS_ADMIN_INITIAL_PASSWORD: adminpass123
         run: |
           ./dfs init --force
           ./dfs start &
@@ -200,18 +206,8 @@ jobs:
             sleep 1
           done
 
-          # Extract admin password (format: "password=<pass>" / "password: <pass>").
-          # BSD grep has no -P, so use -oE + sed.
-          ADMIN_PASS=$(./dfs logs 2>&1 | grep -oE 'password[=:] *[^ *]+' | head -1 | sed -E 's/password[=:] *//')
-
-          # Login as admin (initial credentials)
-          ./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASS"
-
-          # The server requires a password change before any privileged operation.
-          # change-password invalidates the session token, so re-login afterwards.
-          NEW_ADMIN_PASS='adminpass123'
-          ./dfsctl user change-password --current "$ADMIN_PASS" --new "$NEW_ADMIN_PASS"
-          ./dfsctl login --server http://localhost:8080 --username admin --password "$NEW_ADMIN_PASS"
+          # Login as admin with the env-configured password (no forced change).
+          ./dfsctl login --server http://localhost:8080 --username admin --password adminpass123
 
           ./dfsctl store metadata add --name mem-meta --type memory
           ./dfsctl store block local add --name mem-payload --type memory
@@ -250,6 +246,25 @@ jobs:
           rmdir /tmp/smbtest/macos-dir
           echo "PASS: delete"
 
+          # Extended attributes (xattr) round-trip (#1248). macOS maps xattrs to
+          # SMB named streams; a generic user.* xattr and a com.apple.* metadata
+          # xattr (Finder tags) must survive a write/read round-trip and a
+          # remount (named-stream persistence).
+          echo "xattr-body" > /tmp/smbtest/xattr-test.txt
+          xattr -w user.dittofs.test "hello-xattr" /tmp/smbtest/xattr-test.txt
+          xattr -w com.apple.metadata:_kMDItemUserTags "taggz" /tmp/smbtest/xattr-test.txt
+          GOT_USER=$(xattr -p user.dittofs.test /tmp/smbtest/xattr-test.txt)
+          GOT_APPLE=$(xattr -p com.apple.metadata:_kMDItemUserTags /tmp/smbtest/xattr-test.txt)
+          [ "$GOT_USER" = "hello-xattr" ] || { echo "FAIL: user xattr round-trip got '$GOT_USER'"; exit 1; }
+          [ "$GOT_APPLE" = "taggz" ] || { echo "FAIL: apple xattr round-trip got '$GOT_APPLE'"; exit 1; }
+          umount /tmp/smbtest
+          mount_smbfs //test:testpass123@localhost:12445/smbbasic /tmp/smbtest
+          GOT_USER2=$(xattr -p user.dittofs.test /tmp/smbtest/xattr-test.txt)
+          [ "$GOT_USER2" = "hello-xattr" ] || { echo "FAIL: user xattr lost after remount got '$GOT_USER2'"; exit 1; }
+          xattr -l /tmp/smbtest/xattr-test.txt
+          rm /tmp/smbtest/xattr-test.txt
+          echo "PASS: xattr round-trip + remount"
+
           umount /tmp/smbtest
 
       - name: Add step summary
@@ -265,6 +280,7 @@ jobs:
             echo "| Directory listing | :white_check_mark: |"
             echo "| Directory create | :white_check_mark: |"
             echo "| Delete | :white_check_mark: |"
+            echo "| xattr round-trip + remount | :white_check_mark: |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup

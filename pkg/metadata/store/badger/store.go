@@ -534,7 +534,7 @@ func defaultStoreConfig(dbPath string) BadgerMetadataStoreConfig {
 			CasePreserving:        true,  // We store exact filenames
 			ChownRestricted:       false, // Allow chown
 			SupportsACLs:          false, // No ACL support yet
-			SupportsExtendedAttrs: false, // No xattr support yet
+			SupportsExtendedAttrs: true,  // EAs persist in the FileAttr JSON blob
 			TruncatesLongNames:    true,  // Reject with error
 
 			// Time Resolution

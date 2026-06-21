@@ -402,7 +402,7 @@ func NewMemoryMetadataStoreWithDefaults() *MemoryMetadataStore {
 			CasePreserving:        true, // We store exact filenames
 			ChownRestricted:       false,
 			SupportsACLs:          false,
-			SupportsExtendedAttrs: false,
+			SupportsExtendedAttrs: true, // EAs persist on FileAttr.EAs (set/query via SMB FileFullEaInformation)
 			TruncatesLongNames:    true, // Reject with error, don't truncate
 
 			// Time Resolution
