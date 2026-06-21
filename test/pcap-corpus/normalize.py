@@ -108,8 +108,17 @@ def main():
     for packet in root.findall("packet"):
         skeleton |= packet_skeleton(packet, protos)
 
-    for line in sorted(skeleton):
-        print(line)
+    out = "\n".join(sorted(skeleton))
+    try:
+        if out:
+            sys.stdout.write(out + "\n")
+            sys.stdout.flush()
+    except BrokenPipeError:
+        # Downstream closed early (e.g. `| head`); exit quietly.
+        try:
+            sys.stdout.close()
+        except BrokenPipeError:
+            pass
 
 
 if __name__ == "__main__":

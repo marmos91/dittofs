@@ -1,0 +1,241 @@
+nfs/nfs.main_opcode
+nfs/nfs.minorversion
+nfs/nfs.nfsstat4
+nfs/nfs.ops.count
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD LU MD XT DL]
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD LU MD XT DL]/nfs.access_check
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD LU MD XT DL]/nfs.access_check/nfs.access_delete
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD LU MD XT DL]/nfs.access_check/nfs.access_extend
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD LU MD XT DL]/nfs.access_check/nfs.access_lookup
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD LU MD XT DL]/nfs.access_check/nfs.access_modify
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD LU MD XT DL]/nfs.access_check/nfs.access_read
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD MD XT DL XE]
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD MD XT DL XE]/nfs.access_check
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD MD XT DL XE]/nfs.access_check/nfs.access_delete
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD MD XT DL XE]/nfs.access_check/nfs.access_execute
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD MD XT DL XE]/nfs.access_check/nfs.access_extend
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD MD XT DL XE]/nfs.access_check/nfs.access_modify
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [Check: RD MD XT DL XE]/nfs.access_check/nfs.access_read
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_rights
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_rights/nfs.access_delete
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_rights/nfs.access_execute
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_rights/nfs.access_extend
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_rights/nfs.access_lookup
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_rights/nfs.access_modify
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_rights/nfs.access_read
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_supported
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_supported/nfs.access_supp_delete
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_supported/nfs.access_supp_execute
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_supported/nfs.access_supp_extend
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_supported/nfs.access_supp_lookup
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_supported/nfs.access_supp_modify
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.access_supported/nfs.access_supp_read
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: LU], [Access Denied: LU XE], [Allowed: RD MD XT DL]/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_rights
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_rights/nfs.access_delete
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_rights/nfs.access_execute
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_rights/nfs.access_extend
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_rights/nfs.access_lookup
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_rights/nfs.access_modify
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_rights/nfs.access_read
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_supported
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_supported/nfs.access_supp_delete
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_supported/nfs.access_supp_execute
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_supported/nfs.access_supp_extend
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_supported/nfs.access_supp_lookup
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_supported/nfs.access_supp_modify
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.access_supported/nfs.access_supp_read
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=ACCESS (3), [NOT Supported: XE], [Access Denied: XE], [Allowed: RD LU MD XT DL]/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=CLOSE (4)
+nfs/nfs.ops.count/nfs.opcode=CLOSE (4)/_ws.expert
+nfs/nfs.ops.count/nfs.opcode=CLOSE (4)/_ws.expert/_ws.expert.group
+nfs/nfs.ops.count/nfs.opcode=CLOSE (4)/_ws.expert/_ws.expert.message
+nfs/nfs.ops.count/nfs.opcode=CLOSE (4)/_ws.expert/_ws.expert.severity
+nfs/nfs.ops.count/nfs.opcode=CLOSE (4)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=CLOSE (4)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=COMMIT (5)
+nfs/nfs.ops.count/nfs.opcode=COMMIT (5)/nfs.count4
+nfs/nfs.ops.count/nfs.opcode=COMMIT (5)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=COMMIT (5)/nfs.offset4
+nfs/nfs.ops.count/nfs.opcode=COMMIT (5)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=COMMIT (5)/nfs.verifier4
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_group
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_other
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_owner
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.name
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_group
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_other
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_owner
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.save_swap_text
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.set_group_id
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.set_user_id
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_group
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_other
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_owner
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.attr_mask/nfs.attr_count
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.change_info.atomic
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.changeid4.after
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.changeid4.before
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.nfs_ftype4
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.pathname.component
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/rpc.fill_bytes
+nfs/nfs.ops.count/nfs.opcode=CREATE (6)/rpc.opaque_length
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Change (3)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Change (3)/nfs.changeid4
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=FSID (8)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=FSID (8)/nfs.fsid4.major
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=FSID (8)/nfs.fsid4.minor
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=FileId (20)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=FileId (20)/nfs.fattr4.fileid
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_group
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_other
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_owner
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.name
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_group
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_other
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_owner
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.save_swap_text
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.set_group_id
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.set_user_id
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_group
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_other
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_owner
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mounted_on_FileId (55)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Mounted_on_FileId (55)/nfs.fattr4.mounted_on_fileid
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=NumLinks (35)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=NumLinks (35)/nfs.fattr4.numlinks
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Owner (36)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Owner (36)/nfs.fattr4_owner
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Owner (36)/rpc.fill_bytes
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Owner (36)/rpc.opaque_length
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Owner_Group (37)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Owner_Group (37)/nfs.fattr4_owner_group
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Owner_Group (37)/rpc.fill_bytes
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Owner_Group (37)/rpc.opaque_length
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=RawDev (41)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=RawDev (41)/nfs.specdata1
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=RawDev (41)/nfs.specdata2
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Size (4)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Size (4)/nfs.fattr4.size
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Space_Used (45)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Space_Used (45)/nfs.fattr4.space_used
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Access (47)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Access (47)/nfs.nfstime4.nseconds
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Access (47)/nfs.nfstime4.seconds
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Metadata (52)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Metadata (52)/nfs.nfstime4.nseconds
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Metadata (52)/nfs.nfstime4.seconds
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Modify (53)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Modify (53)/nfs.nfstime4.nseconds
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Time_Modify (53)/nfs.nfstime4.seconds
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Type (1)
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr=Type (1)/nfs.nfs_ftype4
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.attr_mask/nfs.attr_count
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=GETATTR (9)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=GETFH (10)
+nfs/nfs.ops.count/nfs.opcode=GETFH (10)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=GETFH (10)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=LOOKUP (15)
+nfs/nfs.ops.count/nfs.opcode=LOOKUP (15)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=LOOKUP (15)/nfs.pathname.component
+nfs/nfs.ops.count/nfs.opcode=LOOKUP (15)/nfs.status=ERR_NOENT (2)
+nfs/nfs.ops.count/nfs.opcode=LOOKUP (15)/rpc.fill_bytes
+nfs/nfs.ops.count/nfs.opcode=LOOKUP (15)/rpc.opaque_length
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.change_info.atomic
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.changeid4.after
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.changeid4.before
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.claim_type
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.claim_type/nfs.pathname.component
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.claim_type/rpc.fill_bytes
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.claim_type/rpc.opaque_length
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.delegation_type
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_group
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_other
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.exec_owner
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.name
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_group
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_other
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.read_owner
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.save_swap_text
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.set_group_id
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.set_user_id
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_group
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_other
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Mode (33)/nfs.mode/nfs.mode.write_owner
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Size (4)
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr=Size (4)/nfs.fattr4.size
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.attr_mask/nfs.attr_count
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open.opentype/nfs.createmode4
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open4.share_access
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open4.share_deny
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open_owner4
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open_rflags
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open_rflags/nfs.open_rflags.confirm
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open_rflags/nfs.open_rflags.locktype_posix
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open_rflags/nfs.open_rflags.may_notify_lock
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.open_rflags/nfs.open_rflags.preserve_unlinked
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=OPEN (18)/rpc.opaque_length
+nfs/nfs.ops.count/nfs.opcode=PUTFH (22)
+nfs/nfs.ops.count/nfs.opcode=PUTFH (22)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=PUTFH (22)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.cachethis4
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.high_slotid
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.admin_state_revoked
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.backchannel_fault
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.cb_gss_contexts_expired
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.cb_gss_contexts_expiring
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.cb_path_down
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.cb_path_down_session
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.devid_changed
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.devid_deleted
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.expired_all_state_revoked
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.expired_some_state_revoked
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.lease_moved
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.recallable_state_revoked
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.sequence.flags/nfs.sequence.flags.restart_reclaim_needed
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.session_id4
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.slotid
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=SEQUENCE (53)/nfs.target_high_slotid
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/nfs.count4
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/nfs.data
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/nfs.nfsstat4
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/nfs.offset4
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/nfs.stable_how4
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/nfs.status=OK (0)
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/nfs.verifier4
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/nfs.write.data_length
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/rpc.fill_bytes
+nfs/nfs.ops.count/nfs.opcode=WRITE (38)/rpc.opaque_length
+nfs/nfs.procedure_v4
+nfs/nfs.status=ERR_NOENT (2)
+nfs/nfs.status=OK (0)
+nfs/nfs.tag
+nfs/rpc.opaque_length
+nfs/rpc.programversion
