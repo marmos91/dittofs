@@ -1,6 +1,7 @@
 package metadata_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -8,6 +9,44 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/stretchr/testify/require"
 )
+
+// TestCheckPermissions_StoreReadOnlyShareBlocksHandleBypass asserts the
+// store-level read-only ceiling (ShareOptions.ReadOnly) also beats the SMB
+// handle-based write bypass: if a share is toggled read-only while a client
+// still holds a previously write-authorized handle (WriteAuthorizedByHandle),
+// the per-op check must not let that handle keep writing, even though the
+// per-user ctx.ShareReadOnly is false.
+func TestCheckPermissions_StoreReadOnlyShareBlocksHandleBypass(t *testing.T) {
+	f := newTestFixture(t)
+
+	uid, gid := uint32(1000), uint32(1000)
+	// Create the file BEFORE the share is read-only (a read-only share denies
+	// creation).
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "rw.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: uid, GID: gid})
+	require.NoError(t, err)
+	handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
+	require.NoError(t, err)
+
+	// Register the share options entry (the fixture's CreateRootDirectory builds
+	// the file tree but not the share-options record) and toggle it read-only at
+	// the store level. CreateShare is a no-op-on-exists guard so the test is
+	// robust to either fixture shape.
+	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
+	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
+		&metadata.ShareOptions{ReadOnly: true}))
+
+	// SMB handle granted write at open; per-user ShareReadOnly is false.
+	authCtx := f.authContext(uid, gid)
+	authCtx.WriteAuthorizedByHandle = true
+	authCtx.ShareReadOnly = false
+
+	got, err := f.service.CheckPermissions(authCtx, handle, metadata.PermissionWrite)
+	require.NoError(t, err)
+	if got&metadata.PermissionWrite != 0 {
+		t.Errorf("store-level read-only share must block the handle write bypass, got 0x%x", got)
+	}
+}
 
 // TestCheckPermissions_PerUserReadOnlyStripsWrite asserts the #1276 fix: when a
 // user's PER-USER share permission is read-only (AuthContext.ShareReadOnly), the

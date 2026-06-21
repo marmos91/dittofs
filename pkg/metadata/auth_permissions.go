@@ -274,9 +274,15 @@ func (s *Service) checkFilePermissions(ctx *AuthContext, handle FileHandle, requ
 	// NFS leaves WriteAuthorizedByHandle false (it has no handle), so NFS writes
 	// continue through the normal calculatePermissions path below.
 	//
-	// Note: ShareReadOnly takes precedence — if the share is read-only for this
-	// user, write permission is denied regardless of this flag.
-	if ctx.WriteAuthorizedByHandle && !ctx.ShareReadOnly && !acl.HasExplicitDeny(file.ACL) {
+	// Note: both read-only ceilings take precedence over the handle bypass —
+	// the per-user ctx.ShareReadOnly and the store-level shareOpts.ReadOnly (the
+	// share's configured read-only flag). If share options are toggled to
+	// read-only while a client still holds a previously write-authorized handle,
+	// the bypass must not let that handle keep writing past the share ceiling;
+	// the write falls through to calculatePermissions, which strips write for a
+	// read-only share.
+	shareReadOnly := shareOpts != nil && shareOpts.ReadOnly
+	if ctx.WriteAuthorizedByHandle && !ctx.ShareReadOnly && !shareReadOnly && !acl.HasExplicitDeny(file.ACL) {
 		// Only grant write-related permissions via the handle authorization.
 		// Read permissions still go through normal calculatePermissions checks.
 		writePerms := requested & (PermissionWrite | PermissionDelete)
