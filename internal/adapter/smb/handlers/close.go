@@ -284,16 +284,13 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// ========================================================================
 
 	// Seed the response status with the durable-flush outcome. If the block
-	// store flush above failed, the CLOSE is reported as a failure
-	// (data-integrity, #1267); otherwise it starts as StatusSuccess. The
-	// delete-on-close path below may override this with its own error status,
-	// but it never resets a recorded failure back to success.
-	closeStatus := types.StatusSuccess
-	if flushFailStatus != types.StatusSuccess {
-		closeStatus = flushFailStatus
-	}
+	// store (or pending-metadata) flush above failed, the CLOSE is reported as
+	// a failure (data-integrity, #1267); otherwise flushFailStatus is still its
+	// zero value, StatusSuccess. The delete-on-close path below may override
+	// this with its own error status, but it never resets a recorded failure
+	// back to success.
 	resp := &CloseResponse{
-		SMBResponseBase: SMBResponseBase{Status: closeStatus},
+		SMBResponseBase: SMBResponseBase{Status: flushFailStatus},
 		Flags:           req.Flags,
 	}
 
