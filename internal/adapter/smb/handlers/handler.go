@@ -872,6 +872,19 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	return h
 }
 
+// sessionDomain returns the domain to stamp on an authenticated SMB session.
+// When the server is domain-joined (NetBIOSDomain configured) it returns the
+// AD NetBIOS short domain (e.g. CONTOSO) so the session reflects the server's
+// domain rather than the realm or whatever the client supplied. When standalone
+// (NetBIOSDomain empty) it returns the caller-provided fallback (the Kerberos
+// realm or the client-supplied NTLM domain), preserving pre-AD-4 behavior.
+func (h *Handler) sessionDomain(fallback string) string {
+	if h.NetBIOSDomain != "" {
+		return h.NetBIOSDomain
+	}
+	return fallback
+}
+
 // GetSession retrieves a session by ID.
 // Delegates to SessionManager for unified session/credit management.
 func (h *Handler) GetSession(sessionID uint64) (*session.Session, bool) {

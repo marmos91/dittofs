@@ -1222,11 +1222,7 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 				// message (which may be empty, the hostname, or "WORKGROUP"). When
 				// standalone (NetBIOSDomain empty) the client-supplied domain is
 				// retained, preserving pre-AD-4 behavior.
-				sessionDomain := authMsg.Domain
-				if h.NetBIOSDomain != "" {
-					sessionDomain = h.NetBIOSDomain
-				}
-				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, sessionDomain)
+				sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, h.sessionDomain(authMsg.Domain))
 				sess.OriginConnID = ctx.ConnID
 				recordSessionBindIdentity(sess, ctx)
 
