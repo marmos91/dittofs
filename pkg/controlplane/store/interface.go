@@ -491,7 +491,12 @@ type AdminStore interface {
 	// flagged to change its password on first login. When false (or when the
 	// password was supplied via DITTOFS_ADMIN_INITIAL_PASSWORD) the admin is
 	// created without the forced change.
-	EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool) (initialPassword string, err error)
+	//
+	// configuredPasswordHash, when non-empty and no plaintext env override is
+	// set, is used as the admin's bcrypt password hash directly (a known
+	// control-plane credential with no generated password). It must be a valid
+	// $2a$/$2b$ bcrypt hash. Returns an empty initialPassword in that case.
+	EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool, configuredPasswordHash string) (initialPassword string, err error)
 
 	// IsAdminInitialized returns whether the admin user has been initialized.
 	IsAdminInitialized(ctx context.Context) (bool, error)

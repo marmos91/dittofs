@@ -129,8 +129,8 @@ func (cp *ControlPlane) APIServer() *api.Server {
 //
 // requireInitialPasswordChange controls whether a freshly created admin is
 // forced to change its password on first login (see APIConfig.RequiresInitialPasswordChange).
-func (cp *ControlPlane) EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool) (string, error) {
-	return cp.store.EnsureAdminUser(ctx, requireInitialPasswordChange)
+func (cp *ControlPlane) EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool, configuredPasswordHash string) (string, error) {
+	return cp.store.EnsureAdminUser(ctx, requireInitialPasswordChange, configuredPasswordHash)
 }
 
 // IdentityStore returns the store as an IdentityStore interface.
