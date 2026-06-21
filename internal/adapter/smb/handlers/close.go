@@ -133,10 +133,13 @@ func (resp *CloseResponse) Encode() ([]byte, error) {
 // conversion (SMB-to-NFS symlink interop), handles delete-on-close, releases
 // byte-range locks and oplocks, and unregisters any pending CHANGE_NOTIFY watches.
 //
-// Flush errors are logged but do not fail the CLOSE. Delete-on-close unlink
-// failures are surfaced to the client per MS-SMB2 3.3.5.10 / MS-FSA 2.1.5.4
-// (#388) — the client must know the file was not removed. The handle itself
-// is always released regardless, to prevent resource leaks.
+// Flush errors fail the CLOSE: CLOSE is a durability point (MS-SMB2 3.3.5.10),
+// so a failed block-store (or pending-metadata) flush is mapped to a non-success
+// status rather than silently acknowledged — otherwise the client treats data
+// that never persisted as committed (#1267). Delete-on-close unlink failures are
+// likewise surfaced per MS-SMB2 3.3.5.10 / MS-FSA 2.1.5.4 (#388) — the client
+// must know the file was not removed. The handle itself is always released
+// regardless of any flush/delete failure, to prevent resource leaks.
 func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseResponse, error) {
 	logger.Debug("CLOSE request",
 		"fileID", fmt.Sprintf("%x", req.FileID),
@@ -195,12 +198,31 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability.
 	// Routed through common.CommitBlockStore so any future []BlockRef
 	// plumbing lands in one place (see common/doc.go).
+	//
+	// CLOSE is a durability point (MS-SMB2 3.3.5.10): the client treats a
+	// successful CLOSE as a guarantee that its writes reached stable storage.
+	// If the durable flush fails (e.g. append-log backpressure surfaces
+	// fs.ErrPressureTimeout when the rollup pool is wedged), we MUST surface
+	// the failure as a non-success status rather than silently ack the close —
+	// otherwise the client believes data it never persisted is committed
+	// (silent write truncation, #1267). The mapped status is recorded and
+	// applied to the response below; handle teardown still runs unconditionally
+	// so the failed flush does not leak the open-file/lease state.
+	var flushFailStatus types.Status
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
 		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
 		if bsErr != nil {
+			// A ResolveForWrite failure is NOT a block-store content/durability
+			// error — it surfaces handle-decode / share-registry / config
+			// problems. Map it through the generic mapper (StatusInternalError
+			// etc.), mirroring READ/WRITE/FLUSH which map their resolve/handle
+			// errors via common.MapToSMB. Only the CommitBlockStore failure
+			// below is a true content error (MapContentToSMB).
 			logger.Warn("CLOSE: block store not available for handle", "path", openFile.Path, "error", bsErr)
+			flushFailStatus = common.MapToSMB(bsErr)
 		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, openFile.PayloadID); flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
+			flushFailStatus = common.MapContentToSMB(flushErr)
 		} else {
 			logger.Debug("CLOSE: flushed", "path", openFile.Path, "payloadID", openFile.PayloadID)
 		}
@@ -224,7 +246,15 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle)
 			if metaErr != nil {
 				logger.Warn("CLOSE: metadata flush failed", "path", openFile.Path, "error", metaErr)
-				// Continue with close even if metadata flush fails
+				// Surface the metadata-flush failure too (#1267): if the
+				// deferred size/mtime never persisted, the client must not be
+				// told the CLOSE succeeded. Lower severity than the byte-data
+				// flush above, but still a durability gap. Only record it when
+				// no block-store flush failure was already captured, so the
+				// data-loss signal (block flush) takes precedence in the status.
+				if flushFailStatus == types.StatusSuccess {
+					flushFailStatus = common.MapToSMB(metaErr)
+				}
 			} else if flushed {
 				logger.Debug("CLOSE: metadata flushed", "path", openFile.Path)
 			}
@@ -259,8 +289,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Step 6: Build response with optional attributes
 	// ========================================================================
 
+	// Seed the response status with the durable-flush outcome. If the block
+	// store (or pending-metadata) flush above failed, the CLOSE is reported as
+	// a failure (data-integrity, #1267); otherwise flushFailStatus is still its
+	// zero value, StatusSuccess. The delete-on-close path below may override
+	// this with its own error status, but it never resets a recorded failure
+	// back to success.
 	resp := &CloseResponse{
-		SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+		SMBResponseBase: SMBResponseBase{Status: flushFailStatus},
 		Flags:           req.Flags,
 	}
 
@@ -499,7 +535,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 				}
 
 				if deleteErr != nil {
-					resp.Status = common.MapToSMB(deleteErr)
+					// Surface the delete-on-close failure (#388) — but only when
+					// no durable-flush failure was already recorded in Step 6. A
+					// failed block-store flush is a data-loss signal and takes
+					// precedence: if both fail, the client must see the flush
+					// (data-integrity) status, not the delete error (#1267).
+					if resp.Status == types.StatusSuccess {
+						resp.Status = common.MapToSMB(deleteErr)
+					}
 					logger.Debug("CLOSE: failed to delete",
 						"path", openFile.Path,
 						"isDir", openFile.IsDirectory,
