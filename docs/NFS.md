@@ -316,7 +316,7 @@ accepts (set via `dfsctl adapter edit nfs` / the share's `NFSExportOptions`):
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `allow_auth_sys` | `true` | When `false`, AUTH_SYS (AUTH_UNIX) mounts are refused; only Kerberos is accepted. |
+| `allow_auth_sys` | `true` | When `false`, AUTH_SYS (AUTH_UNIX) mounts/operations are refused. (Set `require_kerberos` to also refuse AUTH_NULL and mandate RPCSEC_GSS — `allow_auth_sys=false` alone only gates AUTH_SYS.) |
 | `require_kerberos` | `false` | When `true`, every mount/operation must use RPCSEC_GSS; AUTH_SYS and AUTH_NULL are refused. |
 | `min_kerberos_level` | `krb5` | Intended minimum GSS protection level (`krb5` / `krb5i` / `krb5p`). **Not yet enforced** — see note below. |
 

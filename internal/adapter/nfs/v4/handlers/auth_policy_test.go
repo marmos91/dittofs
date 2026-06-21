@@ -1,12 +1,49 @@
 package handlers
 
 import (
+	"context"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/attrs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// emptyIdentityStore is a models.IdentityStore with no users: GetUserByUID
+// returns no match so every UID resolves to guest, exercising the
+// default_permission policy in auth.ResolveSharePermission. ResolveSharePermission
+// short-circuits to "allow with defaults" when the identity store is nil, so a
+// non-nil (but empty) store is required to drive the guest-denial path.
+type emptyIdentityStore struct{}
+
+func (emptyIdentityStore) GetUser(context.Context, string) (*models.User, error) {
+	return nil, models.ErrUserNotFound
+}
+func (emptyIdentityStore) ValidateCredentials(context.Context, string, string) (*models.User, error) {
+	return nil, models.ErrUserNotFound
+}
+func (emptyIdentityStore) ListUsers(context.Context) ([]*models.User, error) { return nil, nil }
+func (emptyIdentityStore) GetGuestUser(context.Context, string) (*models.User, error) {
+	return nil, models.ErrUserNotFound
+}
+func (emptyIdentityStore) GetGroup(context.Context, string) (*models.Group, error) {
+	return nil, models.ErrGroupNotFound
+}
+func (emptyIdentityStore) ListGroups(context.Context) ([]*models.Group, error) { return nil, nil }
+func (emptyIdentityStore) GetUserGroups(context.Context, string) ([]*models.Group, error) {
+	return nil, nil
+}
+func (emptyIdentityStore) ResolveSharePermission(context.Context, *models.User, string) (models.SharePermission, error) {
+	return models.PermissionNone, nil
+}
+func (emptyIdentityStore) GetUserByUID(context.Context, uint32) (*models.User, error) {
+	return nil, models.ErrUserNotFound
+}
+func (emptyIdentityStore) GetUserByID(context.Context, string) (*models.User, error) {
+	return nil, models.ErrUserNotFound
+}
+func (emptyIdentityStore) IsGuestEnabled(context.Context, string) bool { return false }
 
 // ============================================================================
 // Export auth-flavor policy enforcement (#1253)
@@ -79,5 +116,29 @@ func TestExportAuthPolicy_DisallowAuthSysRejectsAuthSys(t *testing.T) {
 	if status := getAttrStatusForFile(fx, fileHandle); status != types.NFS4ERR_WRONGSEC {
 		t.Fatalf("AllowAuthSys=false share AUTH_UNIX GETATTR status = %d, want NFS4ERR_WRONGSEC (%d)",
 			status, types.NFS4ERR_WRONGSEC)
+	}
+}
+
+// TestExportAuthPolicy_DefaultPermissionNoneMapsToAccess pins the other half of
+// the status-mapping fix: a share-permission denial (default_permission=none for
+// an unmapped principal — the krb5 machine-principal-maps-to-nobody case) must
+// surface as NFS4ERR_ACCESS, not NFS4ERR_SERVERFAULT. The fixture identity store
+// has no user for UID 1000, so it resolves to guest and default_permission=none
+// denies it.
+func TestExportAuthPolicy_DefaultPermissionNoneMapsToAccess(t *testing.T) {
+	fx := newRealFSTestFixture(t, "/export")
+	fileHandle := fx.createTestFile(t, fx.rootHandle, "f.txt", metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	// A non-nil identity store with no users is required: ResolveSharePermission
+	// allows-with-defaults when the store is nil, so without this the guest
+	// default_permission=none branch never runs.
+	fx.rt.SetIdentityStoreForTesting(emptyIdentityStore{})
+	if err := fx.rt.SetSharePolicyForTesting("/export", "none", models.SquashNone); err != nil {
+		t.Fatalf("SetSharePolicyForTesting: %v", err)
+	}
+
+	if status := getAttrStatusForFile(fx, fileHandle); status != types.NFS4ERR_ACCESS {
+		t.Fatalf("default_permission=none AUTH_UNIX GETATTR status = %d, want NFS4ERR_ACCESS (%d)",
+			status, types.NFS4ERR_ACCESS)
 	}
 }
