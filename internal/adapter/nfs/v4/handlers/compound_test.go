@@ -266,7 +266,7 @@ func TestCompoundMultipleOpsStopOnError(t *testing.T) {
 
 	// Register a test handler that succeeds for a specific op
 	testOp := uint32(types.OP_PUTROOTFH) // Use a known op number
-	h.opDispatchTable[testOp] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+	h.v40DispatchTable[testOp] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 		return &types.CompoundResult{
 			Status: types.NFS4_OK,
 			OpCode: testOp,
@@ -415,7 +415,7 @@ func TestCompoundExactlyMaxOps(t *testing.T) {
 
 	// Register a succeeding handler for testing
 	testOp := uint32(types.OP_PUTROOTFH)
-	h.opDispatchTable[testOp] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+	h.v40DispatchTable[testOp] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 		return &types.CompoundResult{
 			Status: types.NFS4_OK,
 			OpCode: testOp,
@@ -679,9 +679,9 @@ func TestCompound_V41_AllStubOps(t *testing.T) {
 }
 
 func TestCompound_V41_DispatchTableComplete(t *testing.T) {
-	// Verify all 19 v4.1 operation numbers (40-58) plus the 4 RFC 8276 xattr
-	// ops (72-75, which share the v41DispatchTable) are registered. This ensures
-	// no operation was missed during setup.
+	// Verify all 19 v4.1 operation numbers (40-58) are registered in the v4.1
+	// table, and that the 4 RFC 8276 xattr ops (72-75) are registered separately
+	// in the v4.2 table (asserted below). This ensures no op was missed in setup.
 	h := newTestHandler()
 
 	expectedOps := []uint32{
@@ -704,20 +704,32 @@ func TestCompound_V41_DispatchTableComplete(t *testing.T) {
 		types.OP_WANT_DELEGATION,
 		types.OP_DESTROY_CLIENTID,
 		types.OP_RECLAIM_COMPLETE,
-		// RFC 8276 xattr ops (v4.2) ride the v41DispatchTable.
-		types.OP_GETXATTR,
-		types.OP_SETXATTR,
-		types.OP_LISTXATTRS,
-		types.OP_REMOVEXATTR,
 	}
 
-	if len(h.v41DispatchTable) != 23 {
-		t.Errorf("v41DispatchTable has %d entries, want 23", len(h.v41DispatchTable))
+	if len(h.v41DispatchTable) != 19 {
+		t.Errorf("v41DispatchTable has %d entries, want 19", len(h.v41DispatchTable))
 	}
 
 	for _, opCode := range expectedOps {
 		if _, ok := h.v41DispatchTable[opCode]; !ok {
 			t.Errorf("v41DispatchTable missing entry for %s (%d)",
+				types.OpName(opCode), opCode)
+		}
+	}
+
+	// The RFC 8276 xattr ops (v4.2) live in their OWN table, separate from v4.1.
+	expectedV42Ops := []uint32{
+		types.OP_GETXATTR,
+		types.OP_SETXATTR,
+		types.OP_LISTXATTRS,
+		types.OP_REMOVEXATTR,
+	}
+	if len(h.v42DispatchTable) != 4 {
+		t.Errorf("v42DispatchTable has %d entries, want 4", len(h.v42DispatchTable))
+	}
+	for _, opCode := range expectedV42Ops {
+		if _, ok := h.v42DispatchTable[opCode]; !ok {
+			t.Errorf("v42DispatchTable missing entry for %s (%d)",
 				types.OpName(opCode), opCode)
 		}
 	}
@@ -791,14 +803,14 @@ func TestCompound_V40_Regression(t *testing.T) {
 		h := newTestHandler()
 
 		// Register succeeding handlers
-		h.opDispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+		h.v40DispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 			return &types.CompoundResult{
 				Status: types.NFS4_OK,
 				OpCode: types.OP_PUTROOTFH,
 				Data:   encodeStatusOnly(types.NFS4_OK),
 			}
 		}
-		h.opDispatchTable[types.OP_GETATTR] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+		h.v40DispatchTable[types.OP_GETATTR] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 			// Consume args (bitmap)
 			_, _ = xdr.DecodeUint32(reader) // bitmap length
 			return &types.CompoundResult{
@@ -839,7 +851,7 @@ func TestCompound_V40_Regression(t *testing.T) {
 		h := newTestHandler()
 
 		var sawSkipOwnerSeqid bool
-		h.opDispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+		h.v40DispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 			sawSkipOwnerSeqid = ctx.SkipOwnerSeqid
 			return &types.CompoundResult{
 				Status: types.NFS4_OK,
@@ -958,7 +970,7 @@ func TestCompound_V40_Regression(t *testing.T) {
 		// v4.0 multi-op still stops on error
 		h := newTestHandler()
 
-		h.opDispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+		h.v40DispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 			return &types.CompoundResult{
 				Status: types.NFS4_OK,
 				OpCode: types.OP_PUTROOTFH,
@@ -1115,7 +1127,7 @@ func TestCompound_V40_V41_Coexistence(t *testing.T) {
 		h, sessionID := createTestSession(t)
 
 		var sawSkipOwnerSeqid bool
-		h.opDispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+		h.v40DispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 			sawSkipOwnerSeqid = ctx.SkipOwnerSeqid
 			return &types.CompoundResult{
 				Status: types.NFS4_OK,
@@ -2481,7 +2493,7 @@ func TestCompound_V40_CancelledContext_EncodesPartialReply(t *testing.T) {
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	// op0 succeeds and cancels the context; the cancel is then observed at the
 	// op1 boundary (before GETATTR dispatches), so op0's result is preserved.
-	h.opDispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+	h.v40DispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 		cancel()
 		return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_PUTROOTFH, Data: encodeStatusOnly(types.NFS4_OK)}
 	}
@@ -2538,7 +2550,7 @@ func TestCompound_DispatchOne_MinorVersionRouting(t *testing.T) {
 	t.Run("v4.0-only op rejected under v4.1", func(t *testing.T) {
 		h := newTestHandler()
 		// Register a v4.0 SETCLIENTID handler that, if reached, would succeed.
-		h.opDispatchTable[types.OP_SETCLIENTID] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+		h.v40DispatchTable[types.OP_SETCLIENTID] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 			return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_SETCLIENTID, Data: encodeStatusOnly(types.NFS4_OK)}
 		}
 		ctx := newTestCompoundContext()
@@ -2564,7 +2576,7 @@ func TestCompound_DispatchOne_MinorVersionRouting(t *testing.T) {
 			return &types.CompoundResult{Status: types.NFS4_OK, OpCode: probeOp, Data: encodeStatusOnly(types.NFS4_OK)}
 		}
 		// Ensure no v4.0 table entry shadows it.
-		delete(h.opDispatchTable, probeOp)
+		delete(h.v40DispatchTable, probeOp)
 		ctx := newTestCompoundContext()
 
 		// Under v4.0 the v4.1 table is not consulted → handler not reached.

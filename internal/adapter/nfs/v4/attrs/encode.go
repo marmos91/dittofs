@@ -238,6 +238,13 @@ func SupportedAttrs() []uint32 {
 	// NFSv4.2 / RFC 8276 extended attribute support (word 2, bit 18).
 	// Advertising this tells the Linux client that getfattr/setfattr over the
 	// user.* namespace is available, so it issues the RFC 8276 xattr ops.
+	//
+	// This bit is advertised unconditionally (independent of the COMPOUND's
+	// minor version). Per RFC 8276 §8.4 FATTR4_XATTR_SUPPORT is only meaningful
+	// to minorversion-2 clients, and v4.0/v4.1 clients do not query bit 82, so a
+	// constant supported-attrs bitmap is harmless. dispatchOne still gates the
+	// xattr ops themselves to minorversion 2 (NFS4ERR_NOTSUPP otherwise), so a
+	// pre-4.2 client can never act on this bit.
 	SetBit(&bitmap, FATTR4_XATTR_SUPPORT)
 
 	return bitmap

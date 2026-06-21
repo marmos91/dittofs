@@ -47,7 +47,10 @@ func (s *Service) SetXattr(ctx *AuthContext, handle FileHandle, name string, val
 		return err
 	}
 	if ctx.ShareReadOnly {
-		return &StoreError{Code: ErrAccessDenied, Message: "read-only share: xattr write denied"}
+		// ErrReadOnly (→ NFS4ERR_ROFS / EROFS), not ErrAccessDenied, so a
+		// read-only share surfaces "read-only file system" rather than
+		// "permission denied" — matching the pseudo-fs NFS4ERR_ROFS path.
+		return &StoreError{Code: ErrReadOnly, Message: "read-only share: xattr write denied"}
 	}
 	if err := s.checkWritePermission(ctx, handle); err != nil {
 		logger.Debug("SetXattr: write permission denied", "name", name, "error", err)
@@ -65,7 +68,8 @@ func (s *Service) RemoveXattr(ctx *AuthContext, handle FileHandle, name string) 
 		return err
 	}
 	if ctx.ShareReadOnly {
-		return &StoreError{Code: ErrAccessDenied, Message: "read-only share: xattr remove denied"}
+		// ErrReadOnly (→ NFS4ERR_ROFS / EROFS); see SetXattr.
+		return &StoreError{Code: ErrReadOnly, Message: "read-only share: xattr remove denied"}
 	}
 	if err := s.checkWritePermission(ctx, handle); err != nil {
 		logger.Debug("RemoveXattr: write permission denied", "name", name, "error", err)

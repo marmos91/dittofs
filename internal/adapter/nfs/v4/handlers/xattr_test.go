@@ -23,6 +23,10 @@ type fakeXattrBackend struct {
 	store map[string][]byte
 	// forceErr, when set, is returned by every method (to exercise error mapping).
 	forceErr error
+	// setErr / removeErr, when set, are returned only by SetXattr / RemoveXattr
+	// (to exercise per-op error mapping without tripping the GetXattr pre-check).
+	setErr    error
+	removeErr error
 }
 
 func newFakeXattrBackend() *fakeXattrBackend {
@@ -41,6 +45,9 @@ func (f *fakeXattrBackend) SetXattr(_ *metadata.AuthContext, _ metadata.FileHand
 	if f.forceErr != nil {
 		return f.forceErr
 	}
+	if f.setErr != nil {
+		return f.setErr
+	}
 	f.store[name] = value
 	return nil
 }
@@ -48,6 +55,9 @@ func (f *fakeXattrBackend) SetXattr(_ *metadata.AuthContext, _ metadata.FileHand
 func (f *fakeXattrBackend) RemoveXattr(_ *metadata.AuthContext, _ metadata.FileHandle, name string) error {
 	if f.forceErr != nil {
 		return f.forceErr
+	}
+	if f.removeErr != nil {
+		return f.removeErr
 	}
 	delete(f.store, name)
 	return nil
@@ -255,6 +265,17 @@ func TestHandleSetXattr(t *testing.T) {
 			t.Fatalf("status = %d, want ROFS on pseudo-fs", res.Status)
 		}
 	})
+
+	t.Run("oversized value -> XATTR2BIG (RFC 8276 §11.2)", func(t *testing.T) {
+		b := newFakeXattrBackend()
+		// EITHER skips the GetXattr pre-check, so setErr surfaces directly.
+		b.setErr = metadata.ErrXattrTooLarge
+		h := xattrTestHandler(t, b)
+		res := h.handleSetXattr(xattrCtx(realHandle), encSetXattrArgs(types.SETXATTR4_EITHER, "foo", []byte("big")))
+		if res.Status != types.NFS4ERR_XATTR2BIG {
+			t.Fatalf("status = %d, want XATTR2BIG (not the generic INVAL)", res.Status)
+		}
+	})
 }
 
 // --- LISTXATTRS ---
@@ -406,6 +427,21 @@ func TestHandleRemoveXattr(t *testing.T) {
 		res := h.handleRemoveXattr(xattrCtx(realHandle), encRemoveXattrArgs("trusted.foo"))
 		if res.Status != types.NFS4ERR_NOXATTR {
 			t.Fatalf("status = %d, want NOXATTR", res.Status)
+		}
+	})
+
+	t.Run("stream-backed (pre-check passes, remove not-found) -> NOXATTR", func(t *testing.T) {
+		// Models a name that exists via the stream backing (GetXattr pre-check
+		// finds it) but whose RemoveXattr returns ErrNotFound because PR1 does
+		// not delete stream entities. RFC 8276 §11.2: surface NOXATTR, not the
+		// generic NOENT the store error maps to.
+		b := newFakeXattrBackend()
+		b.store["user.foo"] = []byte("v") // pre-check sees it
+		b.removeErr = &metadata.StoreError{Code: metadata.ErrNotFound, Message: "xattr not found"}
+		h := xattrTestHandler(t, b)
+		res := h.handleRemoveXattr(xattrCtx(realHandle), encRemoveXattrArgs("foo"))
+		if res.Status != types.NFS4ERR_NOXATTR {
+			t.Fatalf("status = %d, want NOXATTR (not NOENT)", res.Status)
 		}
 	})
 

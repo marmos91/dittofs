@@ -714,7 +714,7 @@ func TestCompound_V41_SkipOwnerSeqid(t *testing.T) {
 
 	// Install a test v4.0 handler that checks SkipOwnerSeqid
 	var sawSkipOwnerSeqid bool
-	h.opDispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
+	h.v40DispatchTable[types.OP_PUTROOTFH] = func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 		sawSkipOwnerSeqid = ctx.SkipOwnerSeqid
 		return &types.CompoundResult{
 			Status: types.NFS4_OK,

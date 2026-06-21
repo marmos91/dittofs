@@ -135,28 +135,34 @@ func (h *Handler) dispatchOne(compCtx *types.CompoundContext, v41ctx *types.V41R
 		return result
 	}
 
+	// Dispatch precedence is by minor version, highest first: a v4.2 op (the
+	// RFC 8276 xattr ops) is recognised only under minorversion 2; otherwise
+	// fall through to the v4.1 then v4.0 tables (the later minor versions are
+	// supersets). Each table's membership defines its version's op set, so no
+	// per-op allowlists are needed here.
 	var result *types.CompoundResult
 	switch {
 	case isV41 && v40OnlyOps[opCode]:
 		result = rejectV40OnlyOp(opCode, reader, compCtx.ClientAddr)
 
-	case !isV42 && xattrOps[opCode]:
-		// RFC 8276 xattr ops are valid only under v4.2; reject (NOTSUPP) in
-		// v4.0/v4.1. The opcode is a valid v4.2 op number, so no args are
-		// consumed here — the loop stops on the non-OK status, matching how
-		// rejectV40OnlyOp short-circuits the COMPOUND (RFC 7530 §16.2).
+	case isV42 && h.v42DispatchTable[opCode] != nil:
+		result = h.v42DispatchTable[opCode](compCtx, reader)
+
+	case h.v42DispatchTable[opCode] != nil:
+		// v4.2-only op (RFC 8276 xattr) seen under v4.0/v4.1: it is a valid op
+		// number but unsupported → NOTSUPP, which stops the COMPOUND (RFC 7530
+		// §16.2). Unlike rejectV40OnlyOp, the op's args are NOT consumed from
+		// the reader; that is safe because NOTSUPP stops the COMPOUND, so no
+		// later op parses the reader.
 		logger.Debug("NFSv4 COMPOUND xattr op requires minorversion 2",
 			"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
 		result = notSuppHandler(opCode)
 
-	case isV42 && xattrOps[opCode]:
+	case isV41 && h.v41DispatchTable[opCode] != nil:
 		result = h.v41DispatchTable[opCode](compCtx, v41ctx, reader)
 
-	case isV41 && h.v41DispatchTable[opCode] != nil && !xattrOps[opCode]:
-		result = h.v41DispatchTable[opCode](compCtx, v41ctx, reader)
-
-	case h.opDispatchTable[opCode] != nil:
-		result = h.opDispatchTable[opCode](compCtx, reader)
+	case h.v40DispatchTable[opCode] != nil:
+		result = h.v40DispatchTable[opCode](compCtx, reader)
 
 	case opCode >= 3 && opCode <= h.maxValidOpCode(isV41, isV42):
 		// Valid operation number for this minor version but not implemented.
@@ -285,7 +291,7 @@ func (h *Handler) runCompoundOps(compCtx *types.CompoundContext, numOps uint32, 
 // and including the failed operation.
 //
 // Minorversion routing (per RFC 8881 / RFC 7862 / RFC 8276):
-//   - 0: NFSv4.0 dispatch table (OpHandler signature)
+//   - 0: NFSv4.0 dispatch table (V40OpHandler signature)
 //   - 1: NFSv4.1 dispatch table (V41OpHandler), with fallback to v4.0 table
 //   - 2: NFSv4.1 dispatch table plus the RFC 8276 xattr ops (72-75)
 //   - 3+: NFS4ERR_MINOR_VERS_MISMATCH
@@ -369,7 +375,7 @@ func (h *Handler) ProcessCompound(compCtx *types.CompoundContext, data []byte) (
 }
 
 // dispatchV40 executes the v4.0 COMPOUND dispatch loop.
-// Operations are dispatched through opDispatchTable.
+// Operations are dispatched through v40DispatchTable.
 func (h *Handler) dispatchV40(compCtx *types.CompoundContext, tag []byte, numOps uint32, reader io.Reader) ([]byte, error) {
 	// Validate operation count limit
 	if numOps > types.MaxCompoundOps {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -100,6 +101,12 @@ func (h *Handler) handleSetXattr(ctx *types.CompoundContext, reader io.Reader) *
 	}
 
 	if err := backend.SetXattr(authCtx, handle, canonical, value); err != nil {
+		// RFC 8276 §11.2: a value exceeding the server's limit is XATTR2BIG.
+		// ErrXattrTooLarge is a metadata sentinel (ErrInvalidArgument-coded), so
+		// it would otherwise coarsen to NFS4ERR_INVAL via the generic map.
+		if errors.Is(err, metadata.ErrXattrTooLarge) {
+			return xattrErr(types.OP_SETXATTR, types.NFS4ERR_XATTR2BIG)
+		}
 		return xattrErr(types.OP_SETXATTR, common.MapToNFS4(err))
 	}
 

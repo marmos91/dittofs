@@ -72,7 +72,15 @@ func (h *Handler) handleRemoveXattr(ctx *types.CompoundContext, reader io.Reader
 	}
 
 	if err := backend.RemoveXattr(authCtx, handle, canonical); err != nil {
-		return xattrErr(types.OP_REMOVEXATTR, common.MapToNFS4(err))
+		// A "not found" here means the name is only stream-backed (PR1 does not
+		// delete stream entities) or lost a TOCTOU race after the pre-check. Per
+		// RFC 8276 §11.2 a missing xattr is NOXATTR, not the generic NOENT the
+		// store error otherwise maps to.
+		status := common.MapToNFS4(err)
+		if status == types.NFS4ERR_NOENT {
+			status = types.NFS4ERR_NOXATTR
+		}
+		return xattrErr(types.OP_REMOVEXATTR, status)
 	}
 
 	after := h.xattrChangeID(ctx, handle)

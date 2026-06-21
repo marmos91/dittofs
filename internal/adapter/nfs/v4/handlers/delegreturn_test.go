@@ -167,7 +167,7 @@ func TestHandleDelegReturn_Registered(t *testing.T) {
 	h := NewHandler(nil, pfs)
 
 	// Verify DELEGRETURN is registered in the dispatch table
-	if _, exists := h.opDispatchTable[types.OP_DELEGRETURN]; !exists {
+	if _, exists := h.v40DispatchTable[types.OP_DELEGRETURN]; !exists {
 		t.Error("OP_DELEGRETURN should be registered in dispatch table")
 	}
 }
