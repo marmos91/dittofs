@@ -1254,23 +1254,24 @@ adapters:
 
 ### 12. Kerberos Configuration
 
-```yaml
-adapters:
-  nfs:
-    # Kerberos (RPCSEC_GSS) settings
-    kerberos:
-      enabled: true
-      keytab_path: /etc/dittofs/dittofs.keytab
-      service_principal: nfs/server.example.com@EXAMPLE.COM
-      krb5_conf: /etc/krb5.conf
+`kerberos` is a top-level config block (it backs both NFS RPCSEC_GSS and SMB
+SPNEGO — not nested under `adapters`):
 
-      # AD domain identity (optional; for an Active-Directory-joined server).
-      # When all three are unset the server is standalone and advertises the
-      # NetBIOS workgroup "WORKGROUP" exactly as a non-domain server does —
-      # leaving these empty is fully backward-compatible.
-      realm: EXAMPLE.COM            # Kerberos realm; defaults to the @REALM of service_principal
-      netbios_domain: EXAMPLE       # NetBIOS short name; NOT derivable, must be set to enable domain-aware SMB
-      dns_domain: example.com       # defaults to the lowercased realm
+```yaml
+# Kerberos (RPCSEC_GSS + SMB SPNEGO) settings — top-level block
+kerberos:
+  enabled: true
+  keytab_path: /etc/dittofs/dittofs.keytab
+  service_principal: nfs/server.example.com@EXAMPLE.COM
+  krb5_conf: /etc/krb5.conf
+
+  # AD domain identity (optional; for an Active-Directory-joined server).
+  # When all three are unset the server is standalone and advertises the
+  # NetBIOS workgroup "WORKGROUP" exactly as a non-domain server does —
+  # leaving these empty is fully backward-compatible.
+  realm: EXAMPLE.COM            # Kerberos realm; defaults to the @REALM of service_principal
+  netbios_domain: EXAMPLE       # NetBIOS short name; NOT derivable, must be set to enable domain-aware SMB
+  dns_domain: example.com       # defaults to the lowercased realm
 ```
 
 | Key | Env var | Default |
