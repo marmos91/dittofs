@@ -11,9 +11,9 @@ var sidCmd = &cobra.Command{
 	Long: `Manage durable foreign-SID to Unix UID/GID allocations.
 
 When DittoFS resolves Active Directory / LDAP principals, foreign domain SIDs
-(of the form S-1-5-21-<domain>-<rid>) are durably bound to stable Unix UIDs and
-GIDs. These bindings are allocated exactly once and never remapped, so a foreign
-SID always resolves to the same identity.
+(of the form ` + "`S-1-5-21-<domain>-<rid>`" + `) are durably bound to stable Unix
+UIDs and GIDs. These bindings are allocated exactly once and never remapped, so a
+foreign SID always resolves to the same identity.
 
 This command surfaces that allocation table for administrative inspection and
 cleanup. It is distinct from "dfsctl idmap add/list/remove", which manages the

@@ -453,14 +453,14 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 			// Foreign-SID idmap allocations — durable AD/LDAP SID -> Unix UID/GID
 			// table for administrative inspection and cleanup (admin only).
-			if sms, ok := cpStore.(store.SIDMappingStore); ok {
-				r.Route("/sid-mappings", func(r chi.Router) {
-					r.Use(apiMiddleware.RequireAdmin())
-					sidmapHandler := handlers.NewSIDMappingHandler(sms)
-					r.Get("/", sidmapHandler.List)
-					r.Delete("/{sid}", sidmapHandler.Delete)
-				})
-			}
+			// store.Store embeds store.SIDMappingStore, so cpStore always
+			// satisfies it; register unconditionally.
+			r.Route("/sid-mappings", func(r chi.Router) {
+				r.Use(apiMiddleware.RequireAdmin())
+				sidmapHandler := handlers.NewSIDMappingHandler(cpStore)
+				r.Get("/", sidmapHandler.List)
+				r.Delete("/{sid}", sidmapHandler.Delete)
+			})
 
 			// System operations (admin only)
 			r.Route("/system", func(r chi.Router) {
