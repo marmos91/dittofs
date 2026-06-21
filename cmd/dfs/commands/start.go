@@ -117,10 +117,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to initialize control plane store: %w", err)
 	}
 
-	// Ensure admin user exists (generates random password on first run).
-	// Whether the first-login password change is forced is operator-configurable
-	// (controlplane.require_initial_password_change, default true).
-	adminPassword, err := cpStore.EnsureAdminUser(ctx, cfg.ControlPlane.RequiresInitialPasswordChange())
+	// Ensure admin user exists. On first run the password is taken from
+	// admin.password_hash (config), DITTOFS_ADMIN_INITIAL_PASSWORD (env,
+	// plaintext, also enables SMB admin), or a generated random password — in
+	// that precedence. Whether the first-login password change is forced is
+	// operator-configurable (controlplane.require_initial_password_change,
+	// default true) and is skipped when the operator supplied the password.
+	adminPassword, err := cpStore.EnsureAdminUser(ctx, cfg.ControlPlane.RequiresInitialPasswordChange(), cfg.Admin.PasswordHash)
 	if err != nil {
 		return fmt.Errorf("failed to ensure admin user: %w", err)
 	}

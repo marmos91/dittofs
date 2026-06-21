@@ -1848,6 +1848,23 @@ export DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password
 
 > **Note**: `DITTOFS_ADMIN_INITIAL_PASSWORD` is only used during the very first server start when the admin user is created. It has no effect on subsequent starts. When set, the admin account's `MustChangePassword` flag is not enabled.
 
+#### Bootstrap admin password
+
+On the **first** start (when no `admin` user exists yet) the initial admin password is chosen in this precedence:
+
+1. **`DITTOFS_ADMIN_INITIAL_PASSWORD`** (env, plaintext) — sets a known password and also derives the NT hash, so the admin can authenticate over **SMB** as well as the REST/control-plane API.
+2. **`admin.password_hash`** (config, bcrypt `$2a$`/`$2b$`/`$2y$`) — sets a known credential without writing a plaintext secret to disk. No NT hash is derivable from a bcrypt hash, so an admin bootstrapped this way works for the **control-plane/REST API only, not SMB** (use option 1 for SMB). A value that is not a valid bcrypt hash is rejected at startup.
+3. **Auto-generated** — a random password is generated and printed once to the terminal (and, in daemon mode, a warning notes it is not logged; reset it with `dfsctl user passwd admin`).
+
+Options 1 and 2 also skip the forced first-login password change (the operator already chose the password). All three apply only on first start; later starts never change an existing admin's password.
+
+```yaml
+admin:
+  username: admin
+  # bcrypt hash, e.g. from `htpasswd -bnBC 10 "" 'my-secure-password' | tr -d ':\n'`
+  password_hash: "$2b$10$..."
+```
+
 **Examples**:
 
 ```bash

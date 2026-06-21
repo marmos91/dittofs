@@ -222,7 +222,7 @@ func (s *GORMStore) ValidateCredentials(ctx context.Context, username, password 
 	return user, nil
 }
 
-func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool) (string, error) {
+func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordChange bool, configuredPasswordHash string) (string, error) {
 	// Check if admin exists
 	_, err := s.GetUser(ctx, models.AdminUsername)
 	if err == nil {
@@ -234,6 +234,31 @@ func (s *GORMStore) EnsureAdminUser(ctx context.Context, requireInitialPasswordC
 
 	// Check if password was explicitly set via environment variable
 	passwordFromEnv := os.Getenv(models.EnvAdminInitialPassword) != ""
+
+	// A bcrypt hash supplied via config (admin.password_hash) gives operators a
+	// known admin credential without a generated password and without writing a
+	// plaintext secret to disk. The plaintext env var takes precedence because
+	// it can also derive the NT hash for SMB; a bcrypt hash cannot, so an
+	// admin bootstrapped this way can authenticate to the control plane / REST
+	// API but not over SMB (use the env var for that).
+	if configuredPasswordHash != "" && !passwordFromEnv {
+		// Fail fast on a non-bcrypt / malformed hash rather than letting every
+		// admin login fail later with an opaque error. bcrypt.Cost parses the
+		// hash structure and version ($2a$/$2b$/$2y$ are all accepted).
+		if _, err := bcrypt.Cost([]byte(configuredPasswordHash)); err != nil {
+			return "", fmt.Errorf("admin.password_hash is not a valid bcrypt hash (%w); "+
+				"expected a $2a$/$2b$/$2y$ hash, e.g. from `dfsctl` or `htpasswd -bnBC 10 \"\" <pw>`", err)
+		}
+		// No NT hash is derivable from a bcrypt hash (SMB admin needs the
+		// plaintext env var path). Operator chose the password, so do not force
+		// a first-login change.
+		admin := models.DefaultAdminUser(configuredPasswordHash, "")
+		admin.MustChangePassword = false
+		if _, err := s.CreateUser(ctx, admin); err != nil {
+			return "", fmt.Errorf("failed to create admin user: %w", err)
+		}
+		return "", nil
+	}
 
 	// Generate or get password from environment
 	password, err := models.GetOrGenerateAdminPassword()
