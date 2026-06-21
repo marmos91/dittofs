@@ -212,8 +212,14 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	if !openFile.IsDirectory && openFile.PayloadID != "" {
 		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, openFile.MetadataHandle)
 		if bsErr != nil {
+			// A ResolveForWrite failure is NOT a block-store content/durability
+			// error — it surfaces handle-decode / share-registry / config
+			// problems. Map it through the generic mapper (StatusInternalError
+			// etc.), mirroring READ/WRITE/FLUSH which map their resolve/handle
+			// errors via common.MapToSMB. Only the CommitBlockStore failure
+			// below is a true content error (MapContentToSMB).
 			logger.Warn("CLOSE: block store not available for handle", "path", openFile.Path, "error", bsErr)
-			flushFailStatus = common.MapContentToSMB(bsErr)
+			flushFailStatus = common.MapToSMB(bsErr)
 		} else if flushErr := common.CommitBlockStore(ctx.Context, blockStore, openFile.PayloadID); flushErr != nil {
 			logger.Warn("CLOSE: flush failed", "path", openFile.Path, "error", flushErr)
 			flushFailStatus = common.MapContentToSMB(flushErr)
