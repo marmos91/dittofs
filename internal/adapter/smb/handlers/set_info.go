@@ -689,7 +689,16 @@ func (h *Handler) setFileInfoFromStore(
 		// all other opens must have FILE_SHARE_DELETE (0x04) in ShareAccess.
 		// (Destination-parent share-mode probe runs further below, after toDir
 		// is resolved and the stream-rename early return has been ruled out.)
-		if conflict := h.checkShareDeleteConflict(openFile); conflict {
+		//
+		// Held under renameScanMu so the scan-and-decision is atomic vs a
+		// concurrent CLOSE removing the conflicting holder from h.files (which
+		// would otherwise yield an intermittent spurious SHARING_VIOLATION).
+		// No break-wait precedes this gate, so taking the mutex here cannot
+		// deadlock against a CLOSE.
+		h.renameScanMu.Lock()
+		shareDeleteConflict := h.checkShareDeleteConflict(openFile)
+		h.renameScanMu.Unlock()
+		if shareDeleteConflict {
 			logger.Debug("SET_INFO: rename blocked by sharing violation",
 				"path", openFile.Path,
 				"fileID", fmt.Sprintf("%x", openFile.FileID))
@@ -840,6 +849,59 @@ func (h *Handler) setFileInfoFromStore(
 			return setInfoStatus(types.StatusAccessDenied), nil
 		}
 
+		// Directory rename: break H-leases on every open child file (RH→R
+		// strip-H) and wait for each break to drain. After the wait, ANY
+		// remaining open child blocks the parent rename with STATUS_ACCESS_DENIED
+		// per MS-FSA §2.1.5.14 (smbtorture rename_dir_openfile: 8 sub-cases all
+		// hinge on whether every H-leased child closes-on-break or stays open
+		// after ACK). Children without an H-lease are no-op'd by
+		// ComputeLeaseBreakTo and stay open → the open-child recheck produces the
+		// immediate ACCESS_DENIED for the "no-hleases" case.
+		//
+		// PRECEDENCE (Fix A, smbtorture rename_dir_openfile): this open-child
+		// determination runs BEFORE the destination-parent share-mode gate
+		// below. A directory rename whose source has an open child is
+		// ACCESS_DENIED, and that status must win over any SHARING_VIOLATION the
+		// dst-parent gate would otherwise raise — MS-FSA evaluates the source
+		// open-child constraint ahead of the dst-parent implicit-open conflict.
+		//
+		// Deadlock-safety: the per-child break-WAITs run OUTSIDE renameScanMu (a
+		// break can only complete when the child's holder CLOSEs, and CLOSE needs
+		// renameScanMu). Only the final authoritative anyOpenChild scan is taken
+		// under the mutex, so a child whose holder is mid-CLOSE is observed as
+		// either fully present (live → ACCESS_DENIED) or fully gone (→ proceed).
+		if openFile.IsDirectory && h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
+			children := h.snapshotOpenChildren(openFile.MetadataHandle)
+			for _, child := range children {
+				if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(
+					lock.FileHandle(child), openFile.ShareName, lock.BreakReasonSharingViolation,
+				); err != nil {
+					logger.Debug("SET_INFO: dir-rename child break dispatch failed",
+						"child", string(child), "error", err)
+				}
+			}
+			for _, child := range children {
+				waitCtx, cancelChild := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
+				if err := h.LeaseManager.WaitForOtherKeyBreaks(
+					waitCtx, lock.FileHandle(child), openFile.ShareName, [16]byte{},
+				); err != nil {
+					logger.Debug("SET_INFO: dir-rename child break wait completed",
+						"child", string(child), "error", err)
+				}
+				cancelChild()
+			}
+			// Authoritative recheck under the scan mutex (Fix B): serialized vs
+			// a concurrent CLOSE removing the last open child from h.files.
+			h.renameScanMu.Lock()
+			openChild := h.anyOpenChild(openFile.MetadataHandle)
+			h.renameScanMu.Unlock()
+			if openChild {
+				logger.Debug("SET_INFO: dir rename blocked by open child",
+					"dir", openFile.Path)
+				return setInfoStatus(types.StatusAccessDenied), nil
+			}
+		}
+
 		// Per MS-FSA 2.1.5.14.11.3 / Samba smbd_smb2_setinfo_rename_dst_parent_check:
 		// rename takes an implicit open on the destination parent directory
 		// with DELETE+FILE_ADD_FILE and ShareAccess=0. Any existing open of
@@ -863,7 +925,17 @@ func (h *Handler) setFileInfoFromStore(
 		// invalidates the holder's caching, and dispatching strip-H FIRST
 		// would emit two separate notifications where smbtorture rename
 		// otherdir-* (.expect_dstdir_break=true) expects exactly one RH→"".
+		//
+		// Fix B (race): the strip-H break-WAIT inside
+		// breakDstParentDirHandleLeasesForRename runs OUTSIDE renameScanMu
+		// (it can only complete when the dst-parent holder CLOSEs, and CLOSE
+		// needs the mutex). The authoritative post-break re-scan that decides
+		// SHARING_VIOLATION-vs-proceed is taken UNDER the mutex, so a holder
+		// that a concurrent CLOSE is mid-removing is observed atomically — no
+		// spurious SHARING_VIOLATION.
+		h.renameScanMu.Lock()
 		conflict := h.checkParentDirRenameConflict(openFile.FileID, toDir)
+		h.renameScanMu.Unlock()
 		if conflict && !bytes.Equal(toDir, openFile.ParentHandle) {
 			h.breakDstParentDirHandleLeasesForRename(authCtx, toDir, openFile)
 			// Re-check after the strip-H break drained (the holder's break
@@ -871,8 +943,11 @@ func (h *Handler) setFileInfoFromStore(
 			// re-check is clean the rename can proceed without surfacing
 			// SHARING_VIOLATION — required by dirlease.rename_dst_parent
 			// phase-2 (lease.c:7361 expects NT_STATUS_OK after the holder
-			// upgrades the lease and the second setinfo runs).
+			// upgrades the lease and the second setinfo runs). Authoritative
+			// under the mutex.
+			h.renameScanMu.Lock()
 			conflict = h.checkParentDirRenameConflict(openFile.FileID, toDir)
+			h.renameScanMu.Unlock()
 		}
 		if conflict {
 			logger.Debug("SET_INFO: rename blocked by destination-parent sharing violation",
@@ -994,45 +1069,18 @@ func (h *Handler) setFileInfoFromStore(
 		// FileID) blocks the overwrite. The H-lease break above stripped
 		// caching rights, but did NOT close the underlying handle — the
 		// holder must do that itself (smbtorture v2_rename_target_overwrite
-		// stages 1/2: ACK leaves dst open ⇒ ACCESS_DENIED).
-		if isOverwrite && len(dstMetaHandle) > 0 && h.hasOpenHandleOnFile(dstMetaHandle, openFile.FileID) {
-			logger.Debug("SET_INFO: rename overwrite blocked by open handle on destination",
-				"src", openFile.Path,
-				"dst", newPath)
-			return setInfoStatus(types.StatusAccessDenied), nil
-		}
-
-		// Directory rename: break H-leases on every open child file (RH→R
-		// strip-H) and wait for each break to drain. After the wait, ANY
-		// remaining open child blocks the parent rename per MS-FSA §2.1.5.14
-		// (smbtorture rename_dir_openfile: 8 sub-cases all hinge on whether
-		// every H-leased child closes-on-break or stays open after ACK).
-		// Children without an H-lease are no-op'd by ComputeLeaseBreakTo and
-		// stay open → fall through to the open-child recheck below, which
-		// produces the immediate ACCESS_DENIED for the "no-hleases" case.
-		if openFile.IsDirectory && h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
-			children := h.snapshotOpenChildren(openFile.MetadataHandle)
-			for _, child := range children {
-				if err := h.LeaseManager.BreakHandleLeasesOnOpenAsync(
-					lock.FileHandle(child), openFile.ShareName, lock.BreakReasonSharingViolation,
-				); err != nil {
-					logger.Debug("SET_INFO: dir-rename child break dispatch failed",
-						"child", string(child), "error", err)
-				}
-			}
-			for _, child := range children {
-				waitCtx, cancelChild := context.WithTimeout(authCtx.Context, lease.AsyncCreateBreakWaitTimeout)
-				if err := h.LeaseManager.WaitForOtherKeyBreaks(
-					waitCtx, lock.FileHandle(child), openFile.ShareName, [16]byte{},
-				); err != nil {
-					logger.Debug("SET_INFO: dir-rename child break wait completed",
-						"child", string(child), "error", err)
-				}
-				cancelChild()
-			}
-			if h.anyOpenChild(openFile.MetadataHandle) {
-				logger.Debug("SET_INFO: dir rename blocked by open child",
-					"dir", openFile.Path)
+		// stages 1/2: ACK leaves dst open ⇒ ACCESS_DENIED). The break-WAIT
+		// above ran outside renameScanMu; the authoritative open-handle scan
+		// is taken under the mutex so a holder mid-CLOSE is observed
+		// atomically (Fix B — same race class as the dst-parent gate).
+		if isOverwrite && len(dstMetaHandle) > 0 {
+			h.renameScanMu.Lock()
+			dstStillOpen := h.hasOpenHandleOnFile(dstMetaHandle, openFile.FileID)
+			h.renameScanMu.Unlock()
+			if dstStillOpen {
+				logger.Debug("SET_INFO: rename overwrite blocked by open handle on destination",
+					"src", openFile.Path,
+					"dst", newPath)
 				return setInfoStatus(types.StatusAccessDenied), nil
 			}
 		}

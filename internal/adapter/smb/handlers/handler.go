@@ -54,6 +54,32 @@ type Handler struct {
 	files      sync.Map // string(fileID) -> *OpenFile
 	nextFileID atomic.Uint64
 
+	// renameScanMu serializes a SET_INFO rename's share-mode conflict
+	// scan-and-decision against a concurrent CLOSE's authoritative handle
+	// removal. The rename path reads the lock-free `files` sync.Map to decide
+	// whether a conflicting handle still exists (checkShareDeleteConflict,
+	// checkParentDirRenameConflict, anyOpenChild); CLOSE removes the OpenFile
+	// from `files` and then releases the lease / signals the rename's
+	// break-wait. Without serialization the rename's post-break re-scan can
+	// observe a holder that a concurrent CLOSE is in the middle of removing —
+	// the OpenFile is not-yet-deleted from `files` even though the holder has
+	// already signalled the break complete — yielding a spurious
+	// STATUS_SHARING_VIOLATION (intermittent smbtorture
+	// rename_dir_bench / close-full-information / dirlease.rename_dst_parent).
+	//
+	// Lock order / deadlock-safety: the rename MUST NOT hold this mutex while
+	// performing a lease break-WAIT, because that wait can only complete when a
+	// holder CLOSEs — and CLOSE needs this same mutex to remove the handle and
+	// signal. The rename therefore does every break-WAIT OUTSIDE the mutex and
+	// takes it only for the final authoritative re-scan + decision, where it
+	// reads the now-quiescent `files` map. CLOSE holds it across the handle
+	// removal + lease release/signal (close.go step 10/11). The mutex never
+	// nests under any LockManager/lease lock: the rename's `files.Range` scans
+	// touch only the sync.Map, and CLOSE's WaitAndDeleteOpenFile drains only
+	// the *closing* handle's own in-flight ops (never a rename, which registers
+	// under its own distinct FileID).
+	renameScanMu sync.Mutex
+
 	// Named pipe management (for IPC$ RPC)
 	PipeManager *rpc.PipeManager
 
@@ -993,11 +1019,30 @@ func (h *Handler) ReleaseOpenFile(fileID [16]byte) {
 // replaces DeleteOpenFile for the CLOSE handler to prevent the race where
 // CLOSE deletes a handle that QueryDirectory is about to look up.
 func (h *Handler) WaitAndDeleteOpenFile(fileID [16]byte) {
+	h.DrainHandleOps(fileID)
+	h.deleteOpenFileEntry(fileID)
+}
+
+// DrainHandleOps blocks until all in-flight operations registered on fileID
+// (via BeginHandleOp / AcquireOpenFile) have completed, then drops the tracker.
+// Split out of WaitAndDeleteOpenFile so the CLOSE handler can drain the closing
+// handle's in-flight ops OUTSIDE renameScanMu (the drain can be unbounded if a
+// slow QueryDirectory is in flight) and take the mutex only for the actual
+// map removal + lease release/signal — see close.go step 10/11.
+func (h *Handler) DrainHandleOps(fileID [16]byte) {
 	key := string(fileID[:])
 	if v, ok := h.handleOps.Load(key); ok {
 		v.(*handleOpTracker).wg.Wait()
 		h.handleOps.Delete(key)
 	}
+}
+
+// deleteOpenFileEntry removes the OpenFile from the files map and revokes its
+// replay/resume state. The caller is responsible for any draining (see
+// DrainHandleOps). The CLOSE path holds renameScanMu across this call so a
+// concurrent rename's conflict re-scan cannot observe a half-removed handle.
+func (h *Handler) deleteOpenFileEntry(fileID [16]byte) {
+	key := string(fileID[:])
 	h.forgetReplayState(fileID)
 	h.files.Delete(key)
 	h.resumeKeys.revoke(fileID)
