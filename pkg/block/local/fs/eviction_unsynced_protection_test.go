@@ -21,7 +21,7 @@ func newCacheWithSyncedStore(t *testing.T, maxDisk int64) (*FSStore, *memory.Mem
 	t.Helper()
 	dir := t.TempDir()
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := NewWithOptions(dir, maxDisk, 256*1024*1024, mds, FSStoreOptions{
+	bc, err := NewWithOptions(dir, maxDisk, mds, FSStoreOptions{
 		SyncedHashStore: mds,
 	})
 	if err != nil {
@@ -164,7 +164,7 @@ func (s *slowSyncedHashStore) DeleteSynced(ctx context.Context, h block.ContentH
 func TestLRU_EvictTouchRace(t *testing.T) {
 	dir := t.TempDir()
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := NewWithOptions(dir, 1<<30, 256*1024*1024, mds, FSStoreOptions{
+	bc, err := NewWithOptions(dir, 1<<30, mds, FSStoreOptions{
 		SyncedHashStore: &slowSyncedHashStore{inner: mds, delay: 200 * time.Microsecond},
 	})
 	if err != nil {

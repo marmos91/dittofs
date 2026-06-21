@@ -128,7 +128,7 @@ func (bc *FSStore) ForceRollupForTest(ctx context.Context, payloadID string) err
 // metadata. Caller MUST have Close()'d any prior FSStore on the same
 // directory first (concurrent opens race on the log fds).
 func ReopenForTest(baseDir string, rs metadata.RollupStore) (*FSStore, error) {
-	bc, err := NewWithOptions(baseDir, 1<<30, 1<<30, nopFBSForTest{}, FSStoreOptions{
+	bc, err := NewWithOptions(baseDir, 1<<30, nopFBSForTest{}, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 50,

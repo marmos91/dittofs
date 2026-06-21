@@ -103,7 +103,7 @@ func newFSStoreForTestWithFBS(t *testing.T, fbs block.EngineFileBlockStore, opts
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
-	bc, err := NewWithOptions(dir, 1<<30, 1<<30, fbs, opts)
+	bc, err := NewWithOptions(dir, 1<<30, fbs, opts)
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("NewWithOptions: %v", err)

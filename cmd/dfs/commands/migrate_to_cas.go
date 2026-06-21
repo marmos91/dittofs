@@ -44,7 +44,6 @@ var (
 	migrateDryRun      bool
 	migrateJSON        bool
 	migrateMaxDisk     int64
-	migrateMaxMemory   int64
 )
 
 var migrateToCASCmd = &cobra.Command{
@@ -90,8 +89,6 @@ func init() {
 		"Emit one JSON object per second of progress to stdout (machine-parseable)")
 	migrateToCASCmd.Flags().Int64Var(&migrateMaxDisk, "max-disk", 0,
 		"Per-share max-disk budget for the destination FSStore (0 = unlimited)")
-	migrateToCASCmd.Flags().Int64Var(&migrateMaxMemory, "max-memory", 0,
-		"Per-share max-memory budget for the destination FSStore (0 = 256 MiB default)")
 	migrateToCASCmd.Flags().StringVar(&migrateMetadataDir, "metadata-dir", "",
 		"Path to the badger metadata database directory (REQUIRED; the directory passed to the metadata store's 'path' config)")
 }
@@ -174,7 +171,7 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 		// sub-path). FSStore internally creates `blocks/` (CAS) + `logs/`
 		// (append log) as siblings under baseDir.
 		bs, openErr := fs.NewFSStoreForMigration(shareDir,
-			migrateMaxDisk, migrateMaxMemory, nopFileBlockStore{},
+			migrateMaxDisk, nopFileBlockStore{},
 			fs.FSStoreOptions{})
 		if openErr != nil {
 			return fmt.Errorf("open destination store for share %q: %w", name, openErr)

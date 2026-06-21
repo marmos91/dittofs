@@ -308,7 +308,7 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 
 	// First, create an FSStore with append-log on, write one record so
 	// a log file exists, then close.
-	bc1, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
+	bc1, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
@@ -336,7 +336,7 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 	// Crash-recovery pass on a fresh FSStore with the same RollupStore.
 	// rs has no entry for "crashed" (metadata step never committed) and
 	// nopFBS has no block-0 entry — so it qualifies as orphan.
-	bc2, err := NewWithOptions(dir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
+	bc2, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,

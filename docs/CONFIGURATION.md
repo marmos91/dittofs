@@ -338,7 +338,7 @@ logs a startup warning.)
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `max_log_bytes` | int | `1073741824` (1 GiB) | Per-share total-log-bytes budget; writers block on pressure when exceeded. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
+| `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | **Per-share** append-log pressure budget; writers block (`ErrPressureTimeout`) when the buffered log exceeds it. This per-store value takes **precedence** over the global `blockstore.local.max_log_bytes` and the system-deduced default. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
 | `rollup_workers` | int | `2` | Number of rollup goroutines (BLAKE3 + FastCDC) per share. |
 | `stabilization_ms` | int | `250` | Dirty-interval stabilization window in milliseconds before rollup. |
 | `orphan_log_min_age_seconds` | int | `3600` (1h) | Minimum log-file mtime age before the boot-time orphan sweep may unlink it. Prevents fresh (not-yet-rolled-up) logs from being swept when metadata is absent. |
@@ -352,6 +352,38 @@ Env-var mapping follows the dot-path convention:
 The local `fs` store requires a metadata backend that implements
 `metadata.RollupStore` to persist each log's `rollup_offset`; memory, badger,
 and postgres all qualify.
+
+##### Append-log pressure budget (`max_log_bytes`)
+
+`max_log_bytes` is **THE** append-log backpressure lever. The on-disk append
+log buffers freshly-written bytes before the async rollup folds them into CAS
+chunks; once the buffered total exceeds this budget, `AppendWrite` stalls and
+eventually returns `ErrPressureTimeout` (surfaced as disk-full to the
+protocol). It is sized **relative to available memory** — the disk-backed
+pre-flush working set scales with how fast the host absorbs writes — at 25% of
+RAM with a 1 GiB floor (the historical fixed default becomes the minimum on
+small machines). Run `dfs config show --deduced` to see the effective value.
+
+The effective budget resolves with the following **precedence** (highest
+first):
+
+1. **Per-store** block-store `config["max_log_bytes"]` — set per share via
+   `dfsctl store block local edit <share> --config '{"max_log_bytes": 2147483648}'`.
+2. **Global** server-config `blockstore.local.max_log_bytes` — applies to every
+   share that does not set the per-store key.
+3. **System-deduced** default (25% of RAM, floor 1 GiB).
+
+The global knob lives in the top-level server-config `blockstore.local` block
+and binds to the env var `DITTOFS_BLOCKSTORE_LOCAL_MAX_LOG_BYTES`:
+
+```yaml
+blockstore:
+  local:
+    max_log_bytes: 2147483648   # 2 GiB global append-log pressure budget.
+                                # 0 / unset = system-deduced default
+                                # (25% of RAM, floor 1 GiB). A per-store
+                                # config max_log_bytes overrides this.
+```
 
 #### GC knobs
 
@@ -450,6 +482,8 @@ blockstore:
     backpressure_max_wait: 60s               # Max time a write stalls for the
                                              # syncer to drain before disk-full.
     dedup_lru_size: 4096                      # In-memory dedup LRU slot count.
+    max_log_bytes: 2147483648                # Global append-log pressure budget
+                                             # (see above). 0/unset = deduced.
 ```
 
 Env-var mapping (dot-path convention):

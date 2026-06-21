@@ -24,7 +24,7 @@ func TestMirrorOnce_EvictedUnsyncedHash_NotSilentlyDropped(t *testing.T) {
 	ctx := context.Background()
 
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{
+	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
 		SyncedHashStore: ms,
 	})
 	if err != nil {

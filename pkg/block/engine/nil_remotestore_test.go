@@ -16,7 +16,7 @@ func newNilRemoteStoreEnv(t *testing.T) (*Syncer, local.LocalStore, func()) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.NewWithOptions(tmpDir, 0, 0, ms, fs.FSStoreOptions{})
+	bc, err := fs.NewWithOptions(tmpDir, 0, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)
 	}

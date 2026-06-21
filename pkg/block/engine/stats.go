@@ -19,7 +19,11 @@ type BlockStoreStats struct {
 	LocalDiskUsed int64 `json:"local_disk_used"`
 	LocalDiskMax  int64 `json:"local_disk_max"`
 	LocalMemUsed  int64 `json:"local_mem_used"`
-	LocalMemMax   int64 `json:"local_mem_max"`
+	// LocalMemMax is retained for wire/JSON compatibility but is always 0:
+	// the FSStore no longer tracks a configurable dirty-buffer memory budget
+	// (the former MaxMemory knob was never enforced and was removed). The real
+	// append-log pressure budget is max_log_bytes; see GetStats notes.
+	LocalMemMax int64 `json:"local_mem_max"`
 
 	ReadBufferEntries int   `json:"read_buffer_entries"`
 	ReadBufferUsed    int64 `json:"read_buffer_used"`
@@ -107,11 +111,12 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	outageDuration := bs.syncer.RemoteOutageDuration()
 
 	stats := BlockStoreStats{
-		FileCount:           len(files),
-		LocalDiskUsed:       localStats.DiskUsed,
-		LocalDiskMax:        localStats.MaxDisk,
-		LocalMemUsed:        localStats.MemUsed,
-		LocalMemMax:         localStats.MaxMemory,
+		FileCount:     len(files),
+		LocalDiskUsed: localStats.DiskUsed,
+		LocalDiskMax:  localStats.MaxDisk,
+		LocalMemUsed:  localStats.MemUsed,
+		LocalMemMax:   0, // retained for compatibility; FSStore no longer tracks a mem budget
+
 		ReadBufferEntries:   cacheStats.Entries,
 		ReadBufferUsed:      cacheStats.CurBytes,
 		ReadBufferMax:       cacheStats.MaxBytes,

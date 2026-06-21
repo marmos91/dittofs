@@ -45,7 +45,7 @@ func newBenchFSStoreWithLRU(tb testing.TB) (*FSStore, *programmableFBS, *memmeta
 	mem := memmeta.NewMemoryMetadataStoreWithDefaults()
 	wrapped := newProgrammableFBS(mem)
 	dir := tb.TempDir()
-	bc, err := NewWithOptions(dir, 1<<30, 1<<30, wrapped, FSStoreOptions{
+	bc, err := NewWithOptions(dir, 1<<30, wrapped, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 1,

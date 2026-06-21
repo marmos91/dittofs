@@ -41,7 +41,7 @@ func lsl08Factory(t *testing.T) *fs.FSStore {
 	dir := t.TempDir()
 	mds := memmeta.NewMemoryMetadataStoreWithDefaults()
 	spy := &countingFBSWrapper{inner: mds}
-	bc, err := fs.NewWithOptions(dir, 600, 1<<30, spy, fs.FSStoreOptions{})
+	bc, err := fs.NewWithOptions(dir, 600, spy, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}

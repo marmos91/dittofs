@@ -47,7 +47,8 @@ func init() {
 
 func runConfigShow(cmd *cobra.Command, args []string) error {
 	if showDeduced {
-		return runShowDeduced()
+		configPath, _ := cmd.Flags().GetString("config")
+		return runShowDeduced(configPath)
 	}
 
 	// Get config path from parent's persistent flag
@@ -101,11 +102,24 @@ func yamlKeyedView(cfg *config.Config) (interface{}, error) {
 }
 
 // runShowDeduced displays auto-deduced block store defaults with system info.
-func runShowDeduced() error {
+// The append-log budget (max_log_bytes) reflects the effective value: a global
+// blockstore.local.max_log_bytes override (from the config file or DITTOFS_*
+// env) takes precedence over the system-deduced default.
+func runShowDeduced(configPath string) error {
 	detector := sysinfo.NewDetector()
 	deduced := block.DeduceDefaults(detector)
 
 	mem := block.FormatBytes(detector.AvailableMemory())
+
+	// Quiet, env-aware load (Load, not MustLoad): resolves env > file >
+	// defaults without emitting the "no config file" warning, so we can show
+	// the effective max_log_bytes (global override applied if any).
+	effectiveMaxLogBytes := deduced.MaxLogBytes
+	maxLogBytesSource := "25% of " + mem + ", floor 1 GiB"
+	if cfg, err := config.Load(configPath); err == nil && cfg.Blockstore.Local.MaxLogBytes > 0 {
+		effectiveMaxLogBytes = cfg.Blockstore.Local.MaxLogBytes
+		maxLogBytesSource = "blockstore.local.max_log_bytes override"
+	}
 
 	fmt.Printf("# System Resources\n")
 	fmt.Printf("# CPUs: %d (source: runtime.GOMAXPROCS)\n", detector.AvailableCPUs())
@@ -118,8 +132,8 @@ func runShowDeduced() error {
 		block.FormatBytes(deduced.LocalStoreSize), mem)
 	fmt.Printf("read_buffer_size: %s  # 12.5%% of %s\n",
 		block.FormatBytes(uint64(deduced.ReadBufferSize)), mem)
-	fmt.Printf("max_pending_size: %s  # 50%% of local_store_size\n",
-		block.FormatBytes(deduced.MaxPendingSize))
+	fmt.Printf("max_log_bytes: %s  # %s; overridable globally (blockstore.local.max_log_bytes) and per-store\n",
+		block.FormatBytes(effectiveMaxLogBytes), maxLogBytesSource)
 	fmt.Printf("parallel_syncs: %d  # max(4, %d CPUs)\n",
 		deduced.ParallelSyncs, detector.AvailableCPUs())
 	fmt.Printf("parallel_fetches: %d  # max(8, %d CPUs * 2)\n",

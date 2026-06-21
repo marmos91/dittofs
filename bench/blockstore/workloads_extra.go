@@ -34,7 +34,7 @@ const (
 // chunk removal without engine overhead.
 func NewLocalStore(baseDir string) (*fs.FSStore, func(), error) {
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(baseDir, 0, MemBudget, ms, fs.FSStoreOptions{
+	local, err := fs.NewWithOptions(baseDir, 0, ms, fs.FSStoreOptions{
 		MaxLogBytes:     LogBudget,
 		RollupWorkers:   1,
 		StabilizationMS: StabilizationMS,

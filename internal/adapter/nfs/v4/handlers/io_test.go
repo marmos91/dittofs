@@ -41,7 +41,7 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 
 	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	localStore, err := fs.NewWithOptions(tmpDir, 0, 0, metaStore, fs.FSStoreOptions{})
+	localStore, err := fs.NewWithOptions(tmpDir, 0, metaStore, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("create local store: %v", err)
 	}

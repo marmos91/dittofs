@@ -180,7 +180,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	logger.Info("Auto-deduced block store defaults",
 		"local_store_size", block.FormatBytes(deduced.LocalStoreSize),
 		"read_buffer_size", block.FormatBytes(uint64(deduced.ReadBufferSize)),
-		"max_pending_size", block.FormatBytes(deduced.MaxPendingSize),
+		"max_log_bytes", block.FormatBytes(deduced.MaxLogBytes),
 		"parallel_syncs", deduced.ParallelSyncs,
 		"parallel_fetches", deduced.ParallelFetches,
 		"prefetch_workers", deduced.PrefetchWorkers,
@@ -194,11 +194,20 @@ func runStart(cmd *cobra.Command, args []string) error {
 		)
 	}
 
+	// Resolve the effective append-log pressure budget default: the global
+	// config blockstore.local.max_log_bytes wins when set, otherwise the
+	// system-deduced default. A per-share block store config max_log_bytes
+	// still overrides this inside CreateLocalStoreFromConfig.
+	effectiveMaxLogBytes := deduced.MaxLogBytes
+	if cfg.Blockstore.Local.MaxLogBytes > 0 {
+		effectiveMaxLogBytes = cfg.Blockstore.Local.MaxLogBytes
+	}
+
 	// Set per-share defaults BEFORE loading shares (AddShare creates BlockStores).
 	rt.SetLocalStoreDefaults(&shares.LocalStoreDefaults{
 		MaxSize:                deduced.LocalStoreSize,
-		MaxMemory:              block.ClampToInt64(deduced.MaxPendingSize),
 		ReadBufferBytes:        deduced.ReadBufferSize,
+		MaxLogBytes:            block.ClampToInt64(effectiveMaxLogBytes),
 		DedupLRUSize:           cfg.Blockstore.Local.DedupLRUSize,
 		DefaultRemoteCacheSize: cfg.Blockstore.Local.DefaultRemoteCacheSize,
 		BackpressureMaxWait:    cfg.Blockstore.Local.BackpressureMaxWait,

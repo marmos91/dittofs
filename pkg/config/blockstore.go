@@ -50,6 +50,16 @@ type BlockstoreLocalConfig struct {
 	// still unsynced. Default 60s when zero. Distinct from the internal LRU
 	// evict wait.
 	BackpressureMaxWait time.Duration `mapstructure:"backpressure_max_wait" yaml:"backpressure_max_wait"`
+
+	// MaxLogBytes is the per-share append-log pressure budget in bytes: the
+	// on-disk append log buffers freshly-written bytes before the async
+	// rollup folds them into CAS chunks, and AppendWrite stalls
+	// (ErrPressureTimeout) once the buffered total exceeds this budget. This
+	// is THE append-log backpressure lever. 0 means "use the system-deduced
+	// default" (DeduceDefaults: 25% of RAM, floor 1 GiB). A per-share block
+	// store config `max_log_bytes` overrides this global default for that
+	// share; this global default in turn overrides the deduced default.
+	MaxLogBytes uint64 `mapstructure:"max_log_bytes" yaml:"max_log_bytes"`
 }
 
 // ApplyDefaults fills any zero-valued field with the defaults.
@@ -72,10 +82,11 @@ func (c *BlockstoreLocalConfig) Validate() error {
 	if c.DedupLRUSize <= 0 {
 		return fmt.Errorf("blockstore.local.dedup_lru_size must be > 0 (got %d)", c.DedupLRUSize)
 	}
-	// DefaultRemoteCacheSize and BackpressureMaxWait treat zero as "apply
-	// the built-in default" (filled by ApplyDefaults), so Validate only
-	// rejects an explicitly negative backpressure wait — the one
-	// nonsensical value a duration can take.
+	// DefaultRemoteCacheSize, MaxLogBytes, and BackpressureMaxWait treat zero
+	// as "apply the built-in (or system-deduced) default", so Validate only
+	// rejects an explicitly negative backpressure wait — the one nonsensical
+	// value a duration can take. MaxLogBytes is uint64 and so cannot be
+	// negative; any positive value is honored as an explicit override.
 	if c.BackpressureMaxWait < 0 {
 		return fmt.Errorf("blockstore.local.backpressure_max_wait must be >= 0 (got %s)", c.BackpressureMaxWait)
 	}

@@ -19,7 +19,7 @@ import (
 func newOnChunkCompleteFixture(t *testing.T, readBufferBytes int64) (*Store, *fs.FSStore) {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, 16*1024*1024, ms, fs.FSStoreOptions{})
+	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}

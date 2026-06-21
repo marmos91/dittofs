@@ -14,7 +14,6 @@ type Stats struct {
 	DiskUsed      int64 // Current total size of on-disk block data in bytes
 	MaxDisk       int64 // Configured maximum disk size (0 = unlimited)
 	MemUsed       int64 // Current in-memory dirty buffer usage in bytes
-	MaxMemory     int64 // Configured memory budget for dirty buffers
 	FileCount     int   // Number of files with local data
 	MemBlockCount int   // Number of in-memory dirty blocks
 }

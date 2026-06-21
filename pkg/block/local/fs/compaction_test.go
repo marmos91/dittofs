@@ -207,7 +207,7 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 		t.Fatalf("compaction did not trim log: size=%d cumulative writes=%d",
 			preReopenSize, phase1Bytes)
 	}
-	bc2, err := NewWithOptions(baseDir, 1<<30, 1<<30, nopFBS{}, opts)
+	bc2, err := NewWithOptions(baseDir, 1<<30, nopFBS{}, opts)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestCompaction_StaleTempCleanedUpOnRecovery(t *testing.T) {
 	}
 
 	// Reopen and run recovery.
-	bc2, err := NewWithOptions(baseDir, 1<<30, 1<<30, nopFBS{}, FSStoreOptions{
+	bc2, err := NewWithOptions(baseDir, 1<<30, nopFBS{}, FSStoreOptions{
 		MaxLogBytes:     1 << 20,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
