@@ -31,9 +31,14 @@ type AuthContext struct {
 	// Format: "IP:port" or just "IP"
 	ClientAddr string
 
-	// ShareReadOnly indicates whether the user has read-only access to the share
-	// This is determined by share-level user permissions (identity.SharePermission)
-	// When true, all write operations to this share should be denied
+	// ShareReadOnly indicates whether the user has read-only access to the share.
+	// This is the PER-USER share permission, resolved from the user's share grant
+	// (NFS auth_helper / SMB tree-connect), and is independent of the store-level
+	// ShareOptions.ReadOnly enforced inside calculatePermissions — a user can be
+	// read-only on a share whose stored options are read-write. When true the
+	// metadata permission funnel (checkFilePermissions / CheckParentCreateAccess /
+	// checkDeletePermission) strips write+delete so the ceiling applies uniformly
+	// to NFS and SMB, regardless of the file's POSIX mode or ACL grant (#1276).
 	ShareReadOnly bool
 
 	// WriteAuthorizedByHandle indicates that the SMB open handle driving this

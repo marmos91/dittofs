@@ -287,7 +287,19 @@ func (s *Service) checkFilePermissions(ctx *AuthContext, handle FileHandle, requ
 		// For non-write requests (read-only), fall through to normal permission check
 	}
 
-	return calculatePermissions(file, ctx.Identity, shareOpts, requested), nil
+	granted := calculatePermissions(file, ctx.Identity, shareOpts, requested)
+
+	// Per-user read-only ceiling. ctx.ShareReadOnly is the user's resolved share
+	// permission and is independent of the store-level shareOpts.ReadOnly already
+	// applied inside calculatePermissions: a user can be read-only on a share
+	// whose stored options are read-write. Strip write+delete here so the ceiling
+	// is enforced at the single metadata funnel both protocols traverse — NFS
+	// write handlers have no compensating gate of their own, and the SMB
+	// handle-based bypass above is unreachable when ShareReadOnly is set. #1276.
+	if ctx.ShareReadOnly {
+		granted &^= PermissionWrite | PermissionDelete
+	}
+	return granted, nil
 }
 
 // calculatePermissions computes granted permissions based on file attributes and identity.
@@ -538,8 +550,11 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 
 	shareOpts, _ := store.GetShareOptions(ctx.Context, file.ShareName)
 
-	// Share-level read-only beats any ACL grant.
-	if shareOpts != nil && shareOpts.ReadOnly {
+	// Read-only beats any ACL grant — both the per-user share permission
+	// (ctx.ShareReadOnly) and the store-level share option. Without the
+	// ctx.ShareReadOnly arm a read-only user could create entries under an
+	// ALLOW-granting parent DACL on an otherwise read-write share. #1276.
+	if ctx.ShareReadOnly || (shareOpts != nil && shareOpts.ReadOnly) {
 		return &StoreError{Code: ErrAccessDenied, Message: "write permission denied"}
 	}
 
