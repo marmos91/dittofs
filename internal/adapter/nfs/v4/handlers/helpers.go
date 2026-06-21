@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -112,6 +113,28 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 			return nil, "", &authStatusError{
 				status: types.NFS4ERR_WRONGSEC,
 				err:    fmt.Errorf("share %q requires Kerberos", shareName),
+			}
+		}
+		// Enforce the per-share GSS protection floor (min_kerberos_level). A
+		// share configured krb5i/krb5p must reject a GSS session negotiated at a
+		// weaker service level (e.g. plain krb5 authentication-only on a krb5p
+		// privacy share). The negotiated RPCSEC_GSS service level is carried in
+		// the request context by the GSS DATA dispatch, which sets the session
+		// info for every processed RPCSEC_GSS request. We enforce the floor only
+		// when that session info is present: a real GSS session always carries
+		// it, so its absence means the request was not processed as GSS (e.g.
+		// Kerberos is not configured on the server) — applying the default
+		// "krb5" floor there would spuriously deny. Non-GSS flavors are gated
+		// above by AllowAuthSys / RequireKerberos.
+		if ctx.AuthFlavor == rpc.AuthRPCSECGSS {
+			if si := gss.SessionInfoFromContext(ctx.Context); si != nil {
+				if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
+					return nil, "", &authStatusError{
+						status: types.NFS4ERR_WRONGSEC,
+						err: fmt.Errorf("share %q requires min kerberos level %q (negotiated service %d)",
+							shareName, share.MinKerberosLevel, si.Service),
+					}
+				}
 			}
 		}
 	}

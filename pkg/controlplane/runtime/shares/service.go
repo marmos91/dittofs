@@ -1513,6 +1513,22 @@ func (s *Service) SetExportAuthPolicyForTesting(name string, allowAuthSys, requi
 	return nil
 }
 
+// SetMinKerberosLevelForTesting overrides a share's MinKerberosLevel (the GSS
+// protection floor: "", "krb5", "krb5i", "krb5p") in the registry under lock.
+// Test-only — lets NFS auth tests exercise the min_kerberos_level floor
+// (NFS4ERR_WRONGSEC / MOUNT refusal) without a full AddShare flow. Returns
+// ErrShareNotFound if the share is not registered.
+func (s *Service) SetMinKerberosLevelForTesting(name, minLevel string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	share, ok := s.registry[name]
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrShareNotFound, name)
+	}
+	share.MinKerberosLevel = minLevel
+	return nil
+}
+
 func (s *Service) GetRootHandle(shareName string) (metadata.FileHandle, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -10,6 +10,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
@@ -63,6 +66,59 @@ func newMountCtx(reqCtx context.Context) *MountHandlerContext {
 		UID:        &uid,
 		GID:        &gid,
 		GIDs:       []uint32{gid},
+	}
+}
+
+// newGSSMountCtx builds a MountHandlerContext for an RPCSEC_GSS mount carrying
+// the given negotiated service level (gss.RPCGSSSvc*) in the request context,
+// matching how the GSS DATA dispatch threads it through.
+func newGSSMountCtx(reqCtx context.Context, service uint32) *MountHandlerContext {
+	uid := uint32(1000)
+	gid := uint32(1000)
+	return &MountHandlerContext{
+		Context:    gss.ContextWithSessionInfo(reqCtx, &gss.GSSSessionInfo{Service: service}),
+		ClientAddr: "127.0.0.1:12345",
+		AuthFlavor: rpc.AuthRPCSECGSS,
+		UID:        &uid,
+		GID:        &gid,
+		GIDs:       []uint32{gid},
+	}
+}
+
+// TestMount_MinKerberosLevel_RejectsBelowFloor verifies a krb5p share refuses a
+// plain krb5 (authentication-only) GSS mount with MountErrAccess (#1283).
+func TestMount_MinKerberosLevel_RejectsBelowFloor(t *testing.T) {
+	h, ctx := newTestMountHandler(t, "/export", true)
+	if err := h.Registry.(*runtime.Runtime).SetMinKerberosLevelForTesting("/export", models.KerberosLevelKrb5p); err != nil {
+		t.Fatalf("SetMinKerberosLevelForTesting: %v", err)
+	}
+
+	resp, err := h.Mount(newGSSMountCtx(ctx, gss.RPCGSSSvcNone), &MountRequest{DirPath: "/export"})
+	if err != nil {
+		t.Fatalf("Mount returned unexpected error: %v", err)
+	}
+	if resp.Status != MountErrAccess {
+		t.Fatalf("Status = %d, want MountErrAccess (%d)", resp.Status, MountErrAccess)
+	}
+	if len(resp.FileHandle) != 0 {
+		t.Errorf("FileHandle = %x, want empty on access-denied response", resp.FileHandle)
+	}
+}
+
+// TestMount_MinKerberosLevel_AllowsAtFloor verifies a krb5p share accepts a
+// privacy-level GSS mount.
+func TestMount_MinKerberosLevel_AllowsAtFloor(t *testing.T) {
+	h, ctx := newTestMountHandler(t, "/export", true)
+	if err := h.Registry.(*runtime.Runtime).SetMinKerberosLevelForTesting("/export", models.KerberosLevelKrb5p); err != nil {
+		t.Fatalf("SetMinKerberosLevelForTesting: %v", err)
+	}
+
+	resp, err := h.Mount(newGSSMountCtx(ctx, gss.RPCGSSSvcPrivacy), &MountRequest{DirPath: "/export"})
+	if err != nil {
+		t.Fatalf("Mount returned unexpected error: %v", err)
+	}
+	if resp.Status != MountOK {
+		t.Fatalf("Status = %d, want MountOK (%d)", resp.Status, MountOK)
 	}
 }
 

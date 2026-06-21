@@ -318,16 +318,19 @@ accepts (set via `dfsctl adapter edit nfs` / the share's `NFSExportOptions`):
 |--------|---------|--------|
 | `allow_auth_sys` | `true` | When `false`, AUTH_SYS (AUTH_UNIX) mounts/operations are refused. (Set `require_kerberos` to also refuse AUTH_NULL and mandate RPCSEC_GSS — `allow_auth_sys=false` alone only gates AUTH_SYS.) |
 | `require_kerberos` | `false` | When `true`, every mount/operation must use RPCSEC_GSS; AUTH_SYS and AUTH_NULL are refused. |
-| `min_kerberos_level` | `krb5` | Intended minimum GSS protection level (`krb5` / `krb5i` / `krb5p`). **Not yet enforced** — see note below. |
+| `min_kerberos_level` | `krb5` | Minimum GSS protection level a Kerberos session must negotiate (`krb5` = authentication, `krb5i` = + integrity, `krb5p` = + privacy). A session below the floor is refused. |
 
-`allow_auth_sys` and `require_kerberos` are enforced identically on **NFSv3**
-(at MOUNT) and on **NFSv4.0/4.1** (at the first operation that resolves the
-export handle — v4 has no MOUNT call). A refusal surfaces as `NFS4ERR_WRONGSEC`,
-prompting the client to retry with the correct flavor.
+`allow_auth_sys`, `require_kerberos`, and `min_kerberos_level` are enforced
+identically on **NFSv3** (at MOUNT) and on **NFSv4.0/4.1** (at the first
+operation that resolves the export handle — v4 has no MOUNT call). A refusal
+surfaces as `NFS4ERR_WRONGSEC` (v4) / `MNT3ERR_ACCES` (v3), prompting the client
+to retry with the correct flavor.
 
-`min_kerberos_level` is stored and surfaced but **not currently enforced** at the
-NFS layer (neither v3 nor v4): a share set to `krb5p` still accepts a `krb5`
-(integrity/privacy-less) session. Wire-protection enforcement is a known gap.
+`min_kerberos_level` only constrains RPCSEC_GSS sessions: it rejects a Kerberos
+session whose negotiated service level is below the floor (e.g. a plain `krb5`
+authentication-only session on a `krb5p` privacy share). Non-GSS flavors are
+governed by `allow_auth_sys` / `require_kerberos`; pair `min_kerberos_level`
+with `require_kerberos=true` to mandate a protection floor for *all* access.
 
 **Principal → identity mapping (the "access denied after EXCHANGE_ID" case).**
 A successful `sec=krb5` mount has two stages, and they fail differently:
