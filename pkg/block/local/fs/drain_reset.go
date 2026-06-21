@@ -2,9 +2,11 @@ package fs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 )
@@ -72,6 +74,16 @@ func (bc *FSStore) DrainRollups(ctx context.Context) error {
 			if err := bc.rollupFile(ctx, pid, true); err != nil {
 				return fmt.Errorf("DrainRollups: rollup payload %q: %w", pid, err)
 			}
+			// rollupFile demotes a shutdown cancellation / grace-deadline
+			// (context.Canceled / DeadlineExceeded) to nil (#1245 Bug C). If
+			// the drain ctx itself is now done, abort cleanly here rather than
+			// falling through to the no-progress branch, which would emit a
+			// spurious Error-level "residual dirty intervals" alarm on every
+			// graceful shutdown that hits the grace deadline mid-rollup. The
+			// dirty intervals are durable and resume on restart.
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
 			if bc.dirtyLen(pid) < before {
 				progressed = true
 			}
@@ -109,6 +121,81 @@ func (bc *FSStore) DrainRollups(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// GracefulStopRollup implements the crash-safe shutdown drain for the rollup
+// worker pool (#1245 Bug C).
+//
+// The bug it fixes: on shutdown the long-lived runtime context is cancelled,
+// so any rollup pass that is in flight on that context hits
+// context.Canceled in StoreChunk / the ObjectIDPersister and (pre-fix)
+// propagated that as a fatal error to os.Exit (status=1/FAILURE). Rollups are
+// already idempotent + resumable by design — CAS chunks are content-addressed
+// and rollup_offset only advances after the FileBlock manifest lands — so an
+// interrupted rollup is safe to finish on a fresh context.
+//
+// GracefulStopRollup performs that finish:
+//
+//  1. Stop accepting NEW rollups: signal the worker pool (started by
+//     StartRollup on the cancellable runtime ctx) to exit and join it. New
+//     AppendWrites no longer dispatch into a running pool.
+//  2. DRAIN the remaining + in-flight dirty payloads to completion using a
+//     SEPARATE, non-cancelled context bounded by `grace`. The per-file rollup
+//     mutex inside rollupFile serializes this forced pass against any pass that
+//     a worker had in flight, so we never double-roll or race the worker.
+//
+// Returns nil once every drainable payload has been flushed (or only
+// benign tombstoned/divergent residual remains). A drain that exceeds the
+// grace deadline returns a non-fatal context.DeadlineExceeded — the caller
+// (Close) logs it and proceeds; the leftover dirty intervals are durable and
+// resume on the next boot. Idempotent: safe to call more than once and safe
+// to call when StartRollup was never invoked (it then drives the drain
+// directly on the caller's goroutine).
+//
+// grace <= 0 defers to a 30s default.
+func (bc *FSStore) GracefulStopRollup(grace time.Duration) error {
+	if bc.isClosed() {
+		return nil
+	}
+	if grace <= 0 {
+		grace = 30 * time.Second
+	}
+
+	// Step 1: stop accepting new rollups and join the cancellable-ctx
+	// worker pool. closeOnce-style guard so concurrent / repeated calls are
+	// safe. Only signal when a pool was actually started.
+	if bc.rollupStarted.Load() {
+		bc.stopRollupOnce.Do(func() {
+			close(bc.stopRollup)
+		})
+		// Join the workers so no pass is in flight on the cancelled runtime
+		// ctx while we drain on the fresh ctx below. rollupWg is the same
+		// WaitGroup Close() joins; draining it here is safe because the
+		// workers exit on stopRollup.
+		bc.rollupWg.Wait()
+	}
+
+	// Step 2: drain whatever remains on a FRESH, non-cancelled context with a
+	// bounded grace deadline. This is the crux of the fix: the drain context
+	// is decoupled from the cancelled runtime context, so StoreChunk and the
+	// ObjectIDPersister see a live context and the in-flight rollup completes
+	// instead of dying with context.Canceled.
+	drainCtx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+
+	if err := bc.DrainRollups(drainCtx); err != nil {
+		// A grace-deadline timeout is benign: the remaining dirty intervals
+		// are durable (the append log is fsynced) and resume on restart.
+		// ErrDrainIncomplete is likewise non-fatal at shutdown — we did the
+		// best-effort drain and any genuine residual recovers on next boot.
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrDrainIncomplete) {
+			logger.Warn("GracefulStopRollup: drain did not fully complete within grace; remaining rollups resume on restart",
+				"grace", grace, "error", err)
+			return err
+		}
+		return fmt.Errorf("GracefulStopRollup: %w", err)
+	}
+	return nil
 }
 
 // dirtyLen returns the current dirty-interval count for payloadID, or 0
