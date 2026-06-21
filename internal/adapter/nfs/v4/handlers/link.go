@@ -88,10 +88,11 @@ func (h *Handler) handleLink(ctx *types.CompoundContext, reader io.Reader) *type
 		logger.Debug("NFSv4 LINK auth context failed",
 			"error", err,
 			"client", ctx.ClientAddr)
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_LINK,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(st),
 		}
 	}
 

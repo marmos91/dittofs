@@ -38,10 +38,11 @@ func (h *Handler) handleReadLink(ctx *types.CompoundContext, _ io.Reader) *types
 	// Real filesystem handle -- read symlink target
 	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
+		st := nfs4StatusForAuthError(err)
 		return &types.CompoundResult{
-			Status: types.NFS4ERR_SERVERFAULT,
+			Status: st,
 			OpCode: types.OP_READLINK,
-			Data:   encodeStatusOnly(types.NFS4ERR_SERVERFAULT),
+			Data:   encodeStatusOnly(st),
 		}
 	}
 

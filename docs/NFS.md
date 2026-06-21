@@ -293,6 +293,68 @@ NFS uses RPC authentication flavors:
 
 **Security note:** AUTH_UNIX credentials are not cryptographically secured and can be spoofed. NFSv4 adds RPCSEC_GSS for Kerberos-based authentication. For production deployments, consider running on trusted networks, enabling Kerberos (NFSv4/v4.1), or using NFS-over-TLS (below) / VPN / network-level encryption.
 
+### Kerberos exports (RPCSEC_GSS / `sec=krb5`)
+
+NFSv4.0 and NFSv4.1 can authenticate with Kerberos via RPCSEC_GSS. The server
+verifies the client's Kerberos ticket against a keytab and maps the
+authenticated principal to a DittoFS identity for permission checks.
+
+**Mounting (Linux):**
+
+```bash
+# DittoFS listens on 12049, not the default 2049 — pass it explicitly.
+sudo mount -t nfs4 -o vers=4.1,sec=krb5,port=12049 server:/export /mnt/dittofs
+```
+
+The non-default port also applies to the auth handshake; without `port=12049`
+the client connects to 2049 and the mount fails with `Connection refused`
+before Kerberos is ever attempted. (Run the embedded portmapper on 111 to drop
+the explicit port — see [Mounting](#mounting).)
+
+**Per-export policy.** Three NFS export options gate which auth flavors a share
+accepts (set via `dfsctl adapter edit nfs` / the share's `NFSExportOptions`):
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `allow_auth_sys` | `true` | When `false`, AUTH_SYS (AUTH_UNIX) mounts/operations are refused. (Set `require_kerberos` to also refuse AUTH_NULL and mandate RPCSEC_GSS — `allow_auth_sys=false` alone only gates AUTH_SYS.) |
+| `require_kerberos` | `false` | When `true`, every mount/operation must use RPCSEC_GSS; AUTH_SYS and AUTH_NULL are refused. |
+| `min_kerberos_level` | `krb5` | Intended minimum GSS protection level (`krb5` / `krb5i` / `krb5p`). **Not yet enforced** — see note below. |
+
+`allow_auth_sys` and `require_kerberos` are enforced identically on **NFSv3**
+(at MOUNT) and on **NFSv4.0/4.1** (at the first operation that resolves the
+export handle — v4 has no MOUNT call). A refusal surfaces as `NFS4ERR_WRONGSEC`,
+prompting the client to retry with the correct flavor.
+
+`min_kerberos_level` is stored and surfaced but **not currently enforced** at the
+NFS layer (neither v3 nor v4): a share set to `krb5p` still accepts a `krb5`
+(integrity/privacy-less) session. Wire-protection enforcement is a known gap.
+
+**Principal → identity mapping (the "access denied after EXCHANGE_ID" case).**
+A successful `sec=krb5` mount has two stages, and they fail differently:
+
+1. **GSS context establishment** (the client's `EXCHANGE_ID` / context init).
+   This succeeds as soon as the ticket verifies against the server keytab.
+2. **Authorization** of the mapped principal on the export. The authenticated
+   principal is resolved to a DittoFS user (and UID/GID) through the identity
+   store / idmap. A principal with **no mapping** resolves to **nobody**
+   (UID 65534), and nobody is then subject to the export's
+   `default_permission`: if that is `none`, the export denies the operation and
+   the mount fails with `access denied` **even though the Kerberos handshake
+   succeeded**.
+
+This is by design — a host that mounts with its **machine** credential (no user
+`kinit`, e.g. `nfs/host.realm@REALM` from `/etc/krb5.keytab`) authenticates as
+the machine principal, which has no user identity. To grant such a mount:
+
+- add an idmap entry (or a DittoFS user) for the principal so it resolves to a
+  real UID/GID, **or**
+- set the export's `default_permission` to `read` / `read-write` so unmapped
+  (nobody) principals are admitted with that ceiling, **and** ensure the export
+  root's POSIX mode permits the resulting identity to traverse it.
+
+User principals (`alice@REALM`, obtained via `kinit`) that are present in the
+idmap mount and access files as that user with no extra configuration.
+
 ### NFS-over-TLS (RFC 9289)
 
 DittoFS can encrypt NFS wire traffic with TLS 1.3, using the opportunistic `AUTH_TLS` STARTTLS mechanism from RFC 9289. A client opens TCP and sends a `NULL` RPC with `auth_flavor = AUTH_TLS (7)`; the server replies with the 8-octet `"STARTTLS"` verifier, then both perform a TLS 1.3 handshake on the **same** connection. All subsequent RPC traffic is encrypted. Because Go performs the handshake and crypto in userspace, no kernel TLS (`kTLS`) or `tlshd` daemon is needed on the server.

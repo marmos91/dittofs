@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
@@ -11,6 +12,30 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// authStatusError wraps a buildV4AuthContext failure with the NFS4 status the
+// COMPOUND operation should return. Without it every auth failure collapsed to
+// NFS4ERR_SERVERFAULT, which mislabels an authorization denial (a krb5 export
+// policy rejection or a default_permission=none denial) as an internal error.
+type authStatusError struct {
+	status uint32
+	err    error
+}
+
+func (e *authStatusError) Error() string { return e.err.Error() }
+func (e *authStatusError) Unwrap() error { return e.err }
+
+// nfs4StatusForAuthError maps a buildV4AuthContext error to the NFS4 status a
+// handler should return. Typed authStatusError values carry their own status
+// (NFS4ERR_WRONGSEC for an export auth-flavor rejection, NFS4ERR_ACCESS for a
+// share-permission denial); anything else is a genuine internal fault.
+func nfs4StatusForAuthError(err error) uint32 {
+	var ae *authStatusError
+	if errors.As(err, &ae) {
+		return ae.status
+	}
+	return types.NFS4ERR_SERVERFAULT
+}
 
 // buildV4AuthContext creates an AuthContext for NFSv4 real-FS operations.
 //
@@ -29,10 +54,16 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 		return nil, "", fmt.Errorf("decode file handle: %w", err)
 	}
 
-	// Map auth flavor to auth method string
+	// Map auth flavor to auth method string. RPCSEC_GSS (Kerberos) was
+	// previously mislabeled "anonymous", which both confused audit logs and
+	// blocked any per-share auth-flavor policy from telling krb5 apart from a
+	// truly anonymous request.
 	authMethod := "anonymous"
-	if ctx.AuthFlavor == rpc.AuthUnix {
+	switch ctx.AuthFlavor {
+	case rpc.AuthUnix:
 		authMethod = "unix"
+	case rpc.AuthRPCSECGSS:
+		authMethod = "kerberos"
 	}
 
 	// Build identity from Unix credentials (before mapping)
@@ -63,6 +94,28 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 	// below still fails closed if the share is genuinely gone.
 	share, _ := h.Registry.GetShare(shareName)
 
+	// Enforce the per-share export auth-flavor policy. NFSv4.1 has no MOUNT
+	// call, so the RequireKerberos / AllowAuthSys checks the v3 MOUNT handler
+	// applies (mount/handlers/mount.go) never ran on v4 — a share that requires
+	// Kerberos was mountable over AUTH_SYS on v4.1, silently bypassing the
+	// requirement. Mirror the v3 logic here, at the first real-FS op that
+	// resolves the share handle, and surface the refusal as NFS4ERR_WRONGSEC so
+	// the client retries with the correct flavor (SECINFO).
+	if share != nil {
+		if !share.AllowAuthSys && ctx.AuthFlavor == rpc.AuthUnix {
+			return nil, "", &authStatusError{
+				status: types.NFS4ERR_WRONGSEC,
+				err:    fmt.Errorf("share %q does not allow AUTH_SYS", shareName),
+			}
+		}
+		if share.RequireKerberos && ctx.AuthFlavor != rpc.AuthRPCSECGSS {
+			return nil, "", &authStatusError{
+				status: types.NFS4ERR_WRONGSEC,
+				err:    fmt.Errorf("share %q requires Kerberos", shareName),
+			}
+		}
+	}
+
 	// Apply the export-squash permission policy (default_permission=none denial,
 	// root→admin promotion, guest/known-user read-only coercion). This is the
 	// SAME policy the v3 path applies via auth.ResolveSharePermission; v4
@@ -71,6 +124,14 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 	permResult, err := auth.ResolveSharePermission(
 		ctx.Context, h.Registry.GetIdentityStore(), share, shareName, ctx.ClientAddr, ctx.UID)
 	if err != nil {
+		// A share-permission denial (e.g. default_permission=none for an
+		// unmapped principal — the krb5 machine-principal-maps-to-nobody case)
+		// is an authorization decision, not an internal fault: surface it as
+		// NFS4ERR_ACCESS so the client sees "permission denied", not a server
+		// error.
+		if errors.Is(err, auth.ErrShareAccessDenied) {
+			return nil, "", &authStatusError{status: types.NFS4ERR_ACCESS, err: err}
+		}
 		return nil, "", err
 	}
 	if permResult.Username != "" {
