@@ -19,11 +19,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 # samba-ad-dc pulls in the AD-DC role (provisioning + KDC + LDAP). winbind and
 # krb5-user give us kadmin-style tooling and samba-tool dependencies. ldb-tools
 # (ldbadd/ldbmodify) lets entrypoint.sh stamp RFC2307 attributes directly.
+# samba-ad-provision ships the AD schema LDIFs (AD_DS_*.ldf) that
+# `samba-tool domain provision` needs; current debian:bookworm-slim split these
+# out of samba-ad-dc, so provisioning fails without it (issue #1252).
 RUN set -eu; \
     for i in 1 2 3; do \
         apt-get update \
           && apt-get install -y --no-install-recommends \
-               samba samba-ad-dc samba-common-bin winbind \
+               samba samba-ad-dc samba-ad-provision samba-common-bin winbind \
                krb5-user ldb-tools ldap-utils procps \
           && rm -rf /var/lib/apt/lists/* \
           && exit 0; \
