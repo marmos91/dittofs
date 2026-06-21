@@ -180,8 +180,9 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(dedupRaceNFSv4Concurrent)
 	for i := 0; i < dedupRaceNFSv4Concurrent; i++ {
-		racerPaths[i] = mount.FilePath(fmt.Sprintf("racer-%02d.img", i))
-		t.Cleanup(func() { _ = os.Remove(racerPaths[i]) })
+		racerPath := mount.FilePath(fmt.Sprintf("racer-%02d.img", i))
+		racerPaths[i] = racerPath
+		t.Cleanup(func() { _ = os.Remove(racerPath) })
 		go func(idx int) {
 			defer wg.Done()
 			// os.WriteFile here (not framework.WriteFile) so a write/close EIO
