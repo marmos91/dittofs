@@ -88,14 +88,21 @@ func (p *Provider) Name() string { return ProviderName }
 // It claims AD SIDs (S-1-...) and "user@REALM" principals matching the
 // configured realm. The NFSv4 special principals are never claimed.
 func (p *Provider) CanResolve(cred *identity.Credential) bool {
-	if cred.Provider != "" {
-		return cred.Provider == ProviderName
+	// Explicitly addressed to the LDAP provider.
+	if cred.Provider == ProviderName {
+		return true
 	}
+	// An AD object SID is always ours, whatever auth source produced it.
 	if strings.HasPrefix(cred.ExternalID, "S-1-") {
 		return true
 	}
-	// splitPrincipal already rejects the NFSv4 special principals
-	// (OWNER@/GROUP@/EVERYONE@) by returning empty name/realm.
+	// A Kerberos/AD principal "user@REALM" in our realm: claim it as the
+	// directory backing even when the credential carries a different auth-source
+	// tag (e.g. Provider="kerberos" from the NFS/SMB GSS path). The Kerberos
+	// provider resolves principals that map to a local DittoFS user; a domain
+	// principal with no local account falls through to here so it still resolves
+	// to its RFC2307 UID/GID. splitPrincipal rejects the NFSv4 special
+	// principals (OWNER@/GROUP@/EVERYONE@) by returning empty name/realm.
 	name, realm := splitPrincipal(cred.ExternalID)
 	if name == "" || realm == "" {
 		return false

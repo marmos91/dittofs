@@ -242,6 +242,28 @@ func TestCanResolve(t *testing.T) {
 	if !p.CanResolve(&identity.Credential{Provider: ProviderName, ExternalID: "x"}) {
 		t.Error("explicit provider routing should be claimed")
 	}
+
+	// A credential tagged with a DIFFERENT auth source (e.g. Provider="kerberos"
+	// from the NFS/SMB GSS path) must still be claimed by shape: an in-realm
+	// principal or an AD SID is resolved against the directory as the fallback,
+	// while a foreign-realm principal is left for another provider. This is the
+	// fix for the bug where Kerberos-authenticated domain users never reached
+	// the directory and resolved to nobody.
+	taggedCases := []struct {
+		id   string
+		want bool
+	}{
+		{"alice@DITTOFS.AD", true},    // in-realm principal -> claimed
+		{"S-1-5-21-1-2-3-1104", true}, // AD SID -> claimed
+		{"alice@OTHER.REALM", false},  // foreign realm -> not ours
+		{"OWNER@", false},             // NFSv4 special principal -> never
+	}
+	for _, tc := range taggedCases {
+		got := p.CanResolve(&identity.Credential{Provider: "kerberos", ExternalID: tc.id})
+		if got != tc.want {
+			t.Errorf("CanResolve(kerberos-tagged %q) = %v, want %v", tc.id, got, tc.want)
+		}
+	}
 }
 
 func TestNew_RejectsInvalidConfig(t *testing.T) {

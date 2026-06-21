@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -94,6 +95,58 @@ func TestResolver_ChainFirstMatchWins(t *testing.T) {
 	}
 	if second.callCount() != 0 {
 		t.Fatal("second provider should not have been called")
+	}
+}
+
+// TestResolver_PreferredProviderFallsThroughOnNotFound models the production
+// Kerberos→LDAP chain: a credential tagged Provider="kerberos" is tried against
+// the Kerberos provider first, but when that returns Found=false (the principal
+// is not a local DittoFS user) resolution must FALL THROUGH to the directory
+// provider that claims the principal by shape — not stop at the preferred
+// provider. Before the fix a Provider-tagged not-found ended resolution, so
+// every domain user authenticating over Kerberos resolved to nobody.
+func TestResolver_PreferredProviderFallsThroughOnNotFound(t *testing.T) {
+	krb := &mockProvider{name: "kerberos", results: map[string]*ResolvedIdentity{}}
+	dir := &mockProvider{
+		name:     "ldap",
+		canCheck: func(c *Credential) bool { return strings.HasSuffix(c.ExternalID, "@AD") },
+		results:  map[string]*ResolvedIdentity{"alice@AD": {Username: "alice", UID: 10001, GID: 10000, Found: true}},
+	}
+
+	r := NewResolver(WithProvider(krb), WithProvider(dir))
+	result, err := r.Resolve(context.Background(), &Credential{Provider: "kerberos", ExternalID: "alice@AD"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Found || result.UID != 10001 || result.GID != 10000 {
+		t.Fatalf("expected directory fall-through to resolve alice@AD to 10001:10000, got %+v", result)
+	}
+	if krb.callCount() != 1 {
+		t.Fatalf("preferred kerberos provider should be tried exactly once, got %d", krb.callCount())
+	}
+	if dir.callCount() != 1 {
+		t.Fatalf("directory provider should be tried once on fall-through, got %d", dir.callCount())
+	}
+}
+
+// TestResolver_PreferredProviderErrorDoesNotFallThrough pins that an
+// infrastructure error from the preferred provider is surfaced, not masked by
+// falling through to other providers (a transient KDC/DB error must not be
+// silently treated as "unmapped").
+func TestResolver_PreferredProviderErrorDoesNotFallThrough(t *testing.T) {
+	krb := &mockProvider{name: "kerberos", err: errors.New("kdc unreachable")}
+	dir := &mockProvider{
+		name:    "ldap",
+		results: map[string]*ResolvedIdentity{"alice@AD": {Username: "alice", UID: 10001, Found: true}},
+	}
+
+	r := NewResolver(WithProvider(krb), WithProvider(dir))
+	_, err := r.Resolve(context.Background(), &Credential{Provider: "kerberos", ExternalID: "alice@AD"})
+	if err == nil {
+		t.Fatal("expected preferred-provider error to be surfaced, got nil")
+	}
+	if dir.callCount() != 0 {
+		t.Fatalf("directory provider must not be tried after a preferred-provider error, got %d", dir.callCount())
 	}
 }
 
