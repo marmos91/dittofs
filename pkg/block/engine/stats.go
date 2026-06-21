@@ -52,6 +52,16 @@ type BlockStoreStats struct {
 	EvictionSuspended   bool    `json:"eviction_suspended"`
 	OutageDurationSecs  float64 `json:"outage_duration_seconds"`
 	OfflineReadsBlocked int64   `json:"offline_reads_blocked"`
+
+	// LocalDurable / RemoteDurable expose the effective per-store durability
+	// (#1274): the type default (fs/s3 → true, memory → false) unless the
+	// operator overrode it via config["durable"]. They drive the honest
+	// CLOSE/COMMIT contract — a payload is committed iff
+	// LocalDurable || (Finalized && RemoteDurable). RemoteDurable is always
+	// false when HasRemote is false. Surfaced so operators can confirm whether
+	// CLOSE/COMMIT acks are crash-safe for a given share.
+	LocalDurable  bool `json:"local_durable"`
+	RemoteDurable bool `json:"remote_durable"`
 }
 
 // Stats returns storage statistics from the local store.
@@ -138,6 +148,8 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		OutageDurationSecs:  outageDuration.Seconds(),
 		OfflineReadsBlocked: bs.syncer.OfflineReadsBlocked(),
 		UnsyncedBytes:       bs.syncer.UnsyncedBytes(),
+		LocalDurable:        bs.LocalDurable(),
+		RemoteDurable:       bs.RemoteDurable(),
 	}
 
 	if withBlockCounts {

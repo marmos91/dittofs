@@ -83,8 +83,11 @@ func printBlockStoreStatsTable(resp *apiclient.BlockStoreStatsResponse) error {
 		{"Read Buffer Used", formatBytes(t.ReadBufferUsed)},
 		{"Read Buffer Max", formatBytes(t.ReadBufferMax)},
 		{"Has Remote", fmt.Sprintf("%v", t.HasRemote)},
+		{"Local Durable", fmt.Sprintf("%v", t.LocalDurable)},
+		{"Remote Durable", fmt.Sprintf("%v", t.RemoteDurable)},
 		{"Pending Syncs", fmt.Sprintf("%d", t.PendingSyncs)},
 		{"Pending Uploads", fmt.Sprintf("%d", t.PendingUploads)},
+		{"Pending Remote (bytes)", formatBytes(t.UnsyncedBytes)},
 		{"Completed Syncs", fmt.Sprintf("%d", t.CompletedSyncs)},
 		{"Failed Syncs", fmt.Sprintf("%d", t.FailedSyncs)},
 	}

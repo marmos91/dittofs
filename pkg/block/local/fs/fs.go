@@ -118,6 +118,7 @@ var (
 var (
 	_ local.LocalStore          = (*FSStore)(nil)
 	_ local.ChunkLifecycleHooks = (*FSStore)(nil)
+	_ block.DurabilityReporter  = (*FSStore)(nil)
 )
 
 // ObjectIDPersister is invoked after a rollup quiesces successfully.
@@ -214,6 +215,13 @@ type FSStore struct {
 	// evicting remote blocks. Used by local-only mode where there is no
 	// remote store to re-fetch evicted blocks from.
 	evictionEnabled atomic.Bool
+
+	// durable reports whether bytes accepted by this store survive a crash /
+	// restart (block.DurabilityReporter). The fs backend writes to disk and
+	// never evicts un-mirrored chunks, so the type default is true; an operator
+	// may override it via the per-store config["durable"] bool (SetDurable),
+	// e.g. for a tmpfs-backed share where the disk is volatile.
+	durable atomic.Bool
 
 	// retention holds the retention policy and TTL, accessed atomically
 	// to avoid data races between SetRetentionPolicy and concurrent eviction.
@@ -493,6 +501,9 @@ func newFSStore(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBl
 		stopRollup:    make(chan struct{}),
 	}
 	bc.evictionEnabled.Store(true)
+	// Type default: fs-backed local storage is durable (#1274). Overridable
+	// post-construction via SetDurable from the controlplane config["durable"].
+	bc.durable.Store(true)
 
 	// in-process LRU for CAS chunks (see field comments).
 	bc.lruIndex = make(map[block.ContentHash]*list.Element)

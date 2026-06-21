@@ -339,6 +339,15 @@ type nonClosingRemote struct {
 
 func (n *nonClosingRemote) Close() error { return nil }
 
+// Durable delegates to the wrapped remote chain so the no-op-Close wrapper
+// still implements block.DurabilityReporter. Without this, embedding
+// remote.RemoteStore (which has no Durable method) would silently drop the
+// capability, and engine.Store.RemoteDurable() would type-assert to
+// block.DurabilityReporter, fail, and report NOT durable for every production
+// S3-remote share — breaking the honest COMMIT/CLOSE contract (#1274) with a
+// spurious ErrNotDurableYet on every commit.
+func (n *nonClosingRemote) Durable() bool { return block.IsDurable(n.RemoteStore) }
+
 // Service manages share registration, lookup, and configuration.
 type Service struct {
 	mu       sync.RWMutex
@@ -797,6 +806,18 @@ func (s *Service) createBlockStoreForShare(
 	if err != nil {
 		cleanup()
 		return fmt.Errorf("failed to create BlockStore: %w", err)
+	}
+
+	// Apply the per-share strict honest-CLOSE/COMMIT policy (#1274). Read the
+	// optional "require_durable_commit" bool from the local store config the
+	// same way config["durable"] is read; absent or non-bool → false (default:
+	// the commit seam acks once Flush succeeds and the remote mirror stays
+	// async). Set before Start so it governs the very first commit.
+	if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
+		applyRequireDurableCommit(bs, localStoreCfg, config.Name)
+	} else {
+		logger.Warn("failed to read local block store config for require_durable_commit; defaulting to false",
+			"share", config.Name, "error", cfgErr)
 	}
 
 	if err := bs.Start(ctx); err != nil {
@@ -2143,13 +2164,74 @@ func CreateLocalStoreFromConfig(
 			_ = store.Close()
 			return nil, fmt.Errorf("fs local store: StartRollup: %w", err)
 		}
+		applyDurableOverride(store, config, "local "+storeType, shareName)
 		return store, nil
 
 	case "memory":
-		return localmemory.New(), nil
+		store := localmemory.New()
+		applyDurableOverride(store, config, "local "+storeType, shareName)
+		return store, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported local store type: %s", storeType)
+	}
+}
+
+// durableOverrideSetter is implemented by block stores (local and remote) that
+// expose a per-store durability override (block stores embed a
+// block.DurabilityReporter type-default; this lets an operator flip it).
+type durableOverrideSetter interface {
+	SetDurable(bool)
+}
+
+// applyDurableOverride reads an optional "durable" bool from the per-store
+// config and applies it to store when present, overriding the type-default
+// durability (#1274). A non-bool "durable" value is warned and ignored so the
+// type-default stands. label/shareName feed the diagnostic log line.
+func applyDurableOverride(store any, config map[string]any, label, shareName string) {
+	v, ok := config["durable"]
+	if !ok {
+		return
+	}
+	b, ok := v.(bool)
+	if !ok {
+		logger.Warn("block store config has durable but it is not a bool; ignoring",
+			"store", label, "share", shareName, "value", v)
+		return
+	}
+	setter, ok := store.(durableOverrideSetter)
+	if !ok {
+		// Every shipped store implements SetDurable; a store that does not is a
+		// programmer error, surface it instead of silently dropping the override.
+		logger.Warn("block store does not support a durable override; ignoring config[\"durable\"]",
+			"store", label, "share", shareName)
+		return
+	}
+	setter.SetDurable(b)
+	logger.Info("block store durability overridden by config", "store", label, "share", shareName, "durable", b)
+}
+
+// applyRequireDurableCommit reads the optional per-share
+// "require_durable_commit" bool from the local store config and sets the
+// strict honest-CLOSE/COMMIT policy on the engine Store (#1274). Read the same
+// conservative way as config["durable"]: absent or non-bool → false (default),
+// so the commit seam acks once Flush succeeds and the remote mirror stays
+// async — ordinary NFS/POSIX writes never EIO. When true, CLOSE/COMMIT only
+// succeed once the data is on a durable store.
+func applyRequireDurableCommit(bs *engine.Store, config map[string]any, shareName string) {
+	v, ok := config["require_durable_commit"]
+	if !ok {
+		return
+	}
+	b, ok := v.(bool)
+	if !ok {
+		logger.Warn("block store config has require_durable_commit but it is not a bool; ignoring",
+			"share", shareName, "value", v)
+		return
+	}
+	bs.SetRequireDurableCommit(b)
+	if b {
+		logger.Info("strict honest-CLOSE/COMMIT durability enabled by config", "share", shareName)
 	}
 }
 
@@ -2164,7 +2246,9 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 
 	switch storeType {
 	case "memory":
-		return remotememory.New(), nil
+		store := remotememory.New()
+		applyDurableOverride(store, config, "remote "+storeType, "")
+		return store, nil
 
 	case "filesystem":
 		return nil, errors.New("remote store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
@@ -2196,7 +2280,7 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 			forcePathStyle = true
 		}
 
-		return remotes3.NewFromConfig(ctx, remotes3.Config{
+		store, err := remotes3.NewFromConfig(ctx, remotes3.Config{
 			Bucket:         bucket,
 			Region:         region,
 			Endpoint:       endpoint,
@@ -2205,6 +2289,11 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 			KeyPrefix:      prefix,
 			ForcePathStyle: forcePathStyle,
 		})
+		if err != nil {
+			return nil, err
+		}
+		applyDurableOverride(store, config, "remote "+storeType, "")
+		return store, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported remote store type: %s", storeType)

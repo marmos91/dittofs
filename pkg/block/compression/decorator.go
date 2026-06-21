@@ -246,8 +246,17 @@ func (d *Decorator) Healthcheck(ctx context.Context) health.Report {
 	return d.inner.Healthcheck(ctx)
 }
 
+// Durable delegates to the wrapped store via block.IsDurable. Compressing block
+// bodies does not change where the bytes ultimately land, so a durable inner
+// store stays durable through the decorator; a wrapped store that does not
+// report durability falls back to the conservative default (false).
+func (d *Decorator) Durable() bool {
+	return block.IsDurable(d.inner)
+}
+
 // Compile-time interface assertions.
 var (
-	_ block.Store        = (*Decorator)(nil)
-	_ remote.RemoteStore = (*Decorator)(nil)
+	_ block.Store              = (*Decorator)(nil)
+	_ remote.RemoteStore       = (*Decorator)(nil)
+	_ block.DurabilityReporter = (*Decorator)(nil)
 )

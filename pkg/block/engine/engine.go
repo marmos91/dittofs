@@ -128,6 +128,19 @@ type Store struct {
 	closeMu  sync.RWMutex
 	closed   bool  // guarded by closeMu; true once teardown has run
 	closeErr error // memoized result of the first Close (idempotent)
+
+	// requireDurableCommit gates the strict honest-CLOSE/COMMIT rule (#1274).
+	// When false (the default), CommitBlockStore acks once engine.Flush
+	// succeeds regardless of local/remote durability — the remote mirror
+	// stays fully async and observable via the unsynced-bytes metric, so the
+	// fast path is preserved and ordinary NFS/POSIX writes never EIO. When
+	// true (opt-in per-share via config["require_durable_commit"]), CLOSE/
+	// COMMIT only succeed when the data is on a durable store
+	// (localDurable || (Finalized && remoteDurable)), trading latency for
+	// synchronous durability on non-fs-local stores. Set once at
+	// construction; read on the commit path. fs-local is always durable so
+	// the flag is a no-op there.
+	requireDurableCommit bool
 }
 
 // New creates a new Store from the given configuration.
@@ -681,6 +694,41 @@ func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 // admin paths against the concrete *fs.FSStore via a type assertion.
 // Do not use in production code.
 func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
+
+// LocalDurable reports whether the engine's local store survives a process
+// crash / restart (block.DurabilityReporter). It is the localDurable input to
+// the honest CLOSE/COMMIT commit rule (#1274). When the local store does not
+// implement DurabilityReporter the conservative default (false) is returned so
+// the server never over-promises durability — every production local backend
+// (fs) implements it, so this only affects bare test fixtures.
+func (bs *Store) LocalDurable() bool {
+	return block.IsDurable(bs.local)
+}
+
+// RemoteDurable reports whether the engine's remote store survives a process
+// crash / restart. A nil remote (local-only share) and a remote that does not
+// implement DurabilityReporter both fall back to the conservative default
+// (false) via block.IsDurable. The report sees through the encryption /
+// compression decorators because they delegate Durable() to the store they wrap.
+func (bs *Store) RemoteDurable() bool {
+	return block.IsDurable(bs.remote)
+}
+
+// RequireDurableCommit reports whether this share enforces the strict
+// honest-CLOSE/COMMIT durability rule (#1274). When false (the default), the
+// commit seam acks once engine.Flush succeeds and the remote mirror stays
+// async. When true, CLOSE/COMMIT only succeed once the data reaches a durable
+// store. Configured per-share via config["require_durable_commit"].
+func (bs *Store) RequireDurableCommit() bool {
+	return bs.requireDurableCommit
+}
+
+// SetRequireDurableCommit sets the strict honest-CLOSE/COMMIT durability
+// policy for this share. Called once at construction by the shares service
+// from the per-share config["require_durable_commit"] key (default false).
+func (bs *Store) SetRequireDurableCommit(v bool) {
+	bs.requireDurableCommit = v
+}
 
 // RemoteStore returns the per-share remote object store, or nil if the
 // share is local-only. Used by the snapshot sync-gate verify step

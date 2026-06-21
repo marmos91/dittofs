@@ -209,6 +209,14 @@ func (d *EncryptedRemote) Healthcheck(ctx context.Context) health.Report {
 	return d.inner.Healthcheck(ctx)
 }
 
+// Durable delegates to the wrapped store via block.IsDurable. Encrypting block
+// bodies does not change where the bytes ultimately land, so a durable inner
+// store stays durable through the decorator; a wrapped store that does not
+// report durability falls back to the conservative default (false).
+func (d *EncryptedRemote) Durable() bool {
+	return block.IsDurable(d.inner)
+}
+
 // decrypt parses the frame, unwraps the block key, and authenticated-
 // decrypts the ciphertext against hash as AAD. An unframed block on an
 // encryption-enabled share is rejected — it indicates external mutation
@@ -276,6 +284,7 @@ func newAEAD(algo AEAD, key []byte) (cipher.AEAD, error) {
 
 // Compile-time interface assertions.
 var (
-	_ block.Store        = (*EncryptedRemote)(nil)
-	_ remote.RemoteStore = (*EncryptedRemote)(nil)
+	_ block.Store              = (*EncryptedRemote)(nil)
+	_ remote.RemoteStore       = (*EncryptedRemote)(nil)
+	_ block.DurabilityReporter = (*EncryptedRemote)(nil)
 )

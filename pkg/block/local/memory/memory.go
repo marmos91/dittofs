@@ -7,6 +7,7 @@ import (
 	"iter"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"lukechampine.com/blake3"
@@ -22,6 +23,7 @@ import (
 var (
 	_ local.LocalStore          = (*MemoryStore)(nil)
 	_ local.ChunkLifecycleHooks = (*MemoryStore)(nil)
+	_ block.DurabilityReporter  = (*MemoryStore)(nil)
 )
 
 // ErrStoreClosed is an alias for block.ErrStoreClosed for backward compatibility.
@@ -73,6 +75,12 @@ type MemoryStore struct {
 	// rollup's chunk boundaries.
 	chunkEmitter ChunkEmitter
 
+	// durable reports whether accepted bytes survive a crash/restart
+	// (block.DurabilityReporter). In-memory storage is volatile, so the type
+	// default is false; an operator could override via SetDurable, though doing
+	// so for a memory store is almost always a misconfiguration.
+	durable atomic.Bool
+
 	closed bool
 }
 
@@ -122,6 +130,20 @@ func New() *MemoryStore {
 		cas:        make(map[block.ContentHash]casEntry),
 		appendLogs: make(map[string]*appendLog),
 	}
+}
+
+// Durable reports whether accepted bytes survive a crash/restart
+// (block.DurabilityReporter). In-memory storage is volatile, so the type
+// default is false. The zero value of the atomic field already encodes false.
+func (s *MemoryStore) Durable() bool {
+	return s.durable.Load()
+}
+
+// SetDurable overrides the type-default durability. Provided for symmetry with
+// the fs backend so the controlplane can apply config["durable"] uniformly;
+// marking a memory store durable is almost always a misconfiguration.
+func (s *MemoryStore) SetDurable(durable bool) {
+	s.durable.Store(durable)
 }
 
 // GetFileSize returns the tracked file size.
