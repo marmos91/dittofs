@@ -97,6 +97,10 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 		"trash_restrict_to_admin":             share.TrashRestrictToAdmin,
 		"trash_max_bytes":                     share.TrashMaxBytes,
 		"trash_exclude_patterns":              share.TrashExcludePatterns,
+		"encrypt_data":                        share.EncryptData,
+		"local_store_size":                    share.LocalStoreSize,
+		"read_buffer_size":                    share.ReadBufferSize,
+		"quota_bytes":                         share.QuotaBytes,
 		"updated_at":                          share.UpdatedAt,
 	}
 	// Handle remote_block_store_id explicitly: GORM map-based Updates may skip
