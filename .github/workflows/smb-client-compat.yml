@@ -250,6 +250,25 @@ jobs:
           rmdir /tmp/smbtest/macos-dir
           echo "PASS: delete"
 
+          # Extended attributes (xattr) round-trip (#1248). macOS maps xattrs to
+          # SMB named streams; a generic user.* xattr and a com.apple.* metadata
+          # xattr (Finder tags) must survive a write/read round-trip and a
+          # remount (named-stream persistence).
+          echo "xattr-body" > /tmp/smbtest/xattr-test.txt
+          xattr -w user.dittofs.test "hello-xattr" /tmp/smbtest/xattr-test.txt
+          xattr -w com.apple.metadata:_kMDItemUserTags "taggz" /tmp/smbtest/xattr-test.txt
+          GOT_USER=$(xattr -p user.dittofs.test /tmp/smbtest/xattr-test.txt)
+          GOT_APPLE=$(xattr -p com.apple.metadata:_kMDItemUserTags /tmp/smbtest/xattr-test.txt)
+          [ "$GOT_USER" = "hello-xattr" ] || { echo "FAIL: user xattr round-trip got '$GOT_USER'"; exit 1; }
+          [ "$GOT_APPLE" = "taggz" ] || { echo "FAIL: apple xattr round-trip got '$GOT_APPLE'"; exit 1; }
+          umount /tmp/smbtest
+          mount_smbfs //test:testpass123@localhost:12445/smbbasic /tmp/smbtest
+          GOT_USER2=$(xattr -p user.dittofs.test /tmp/smbtest/xattr-test.txt)
+          [ "$GOT_USER2" = "hello-xattr" ] || { echo "FAIL: user xattr lost after remount got '$GOT_USER2'"; exit 1; }
+          xattr -l /tmp/smbtest/xattr-test.txt
+          rm /tmp/smbtest/xattr-test.txt
+          echo "PASS: xattr round-trip + remount"
+
           umount /tmp/smbtest
 
       - name: Add step summary
@@ -265,6 +284,7 @@ jobs:
             echo "| Directory listing | :white_check_mark: |"
             echo "| Directory create | :white_check_mark: |"
             echo "| Delete | :white_check_mark: |"
+            echo "| xattr round-trip + remount | :white_check_mark: |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup
