@@ -31,6 +31,10 @@ func Validate(cfg *Config) error {
 		return err
 	}
 
+	if err := cfg.Metadata.Validate(); err != nil {
+		return err
+	}
+
 	if err := cfg.Kerberos.Validate(); err != nil {
 		return err
 	}

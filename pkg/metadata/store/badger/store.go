@@ -9,7 +9,6 @@ import (
 	"time"
 
 	badger "github.com/dgraph-io/badger/v4"
-	"github.com/dgraph-io/badger/v4/options"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -166,12 +165,17 @@ type BadgerMetadataStoreConfig struct {
 	// If nil, sensible defaults are used
 	BadgerOptions *badger.Options
 
-	// BlockCacheSizeMB is BadgerDB's block cache size in MB (default: 256)
-	// This caches LSM-tree data blocks for faster reads
+	// BlockCacheSizeMB is BadgerDB's block cache size in MiB. This caches
+	// decompressed LSM-tree data blocks for faster reads. When 0 (unset) the
+	// size is resolved from the global config (SetGlobalBadgerCacheDefaults)
+	// or, failing that, RAM-relative auto-sizing (autoSizeCacheMB). See
+	// cache.go / #1245 Bug D.
 	BlockCacheSizeMB int64
 
-	// IndexCacheSizeMB is BadgerDB's index cache size in MB (default: 128)
-	// This caches LSM-tree indices for faster lookups
+	// IndexCacheSizeMB is BadgerDB's index cache size in MiB. This caches
+	// LSM-tree block indices for faster key lookups. When 0 (unset) the size
+	// is resolved from the global config or RAM-relative auto-sizing — see
+	// BlockCacheSizeMB.
 	IndexCacheSizeMB int64
 }
 
@@ -214,40 +218,13 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		return nil, err
 	}
 
-	// Prepare BadgerDB options
-	var opts badger.Options
-	customOpts := config.BadgerOptions != nil
-	if customOpts {
-		opts = *config.BadgerOptions
-	} else {
-		// Use sensible defaults for DittoFS metadata workload
-		opts = badger.DefaultOptions(config.DBPath)
-
-		// Optimize for metadata workload:
-		// - Frequent small reads/writes (file attributes, directory entries)
-		// - Range scans for directory listings (READDIR operations)
-		// - Concurrent access from multiple NFS clients
-		// - Large working set from directory scanning (Finder, ls -R, etc.)
-		// - High cache hit ratio critical for performance
-		opts = opts.WithLoggingLevel(badger.WARNING) // Reduce log noise
-		opts = opts.WithCompression(options.None)    // Metadata is small, compression overhead not worth it
-
-		// Configure cache sizes (with production-ready defaults if not specified)
-		// Production NFS workloads require larger caches to maintain high hit ratios:
-		// - With 256MB caches: ~8% hit ratio (cache thrashing, poor performance)
-		// - With 1GB+ caches: >80% hit ratio (good performance for 100s of concurrent operations)
-		blockCacheMB := config.BlockCacheSizeMB
-		if blockCacheMB == 0 {
-			blockCacheMB = 1024 // Default: 1GB for production NFS workloads
-		}
-		indexCacheMB := config.IndexCacheSizeMB
-		if indexCacheMB == 0 {
-			indexCacheMB = 512 // Default: 512MB for production workloads
-		}
-
-		opts = opts.WithBlockCacheSize(blockCacheMB << 20) // Convert MB to bytes
-		opts = opts.WithIndexCacheSize(indexCacheMB << 20) // Convert MB to bytes
-	}
+	// Prepare BadgerDB options. Option construction (including the resolved
+	// block/index cache sizing — #1245 Bug D) lives in the pure, testable
+	// buildBadgerOptions helper. When config.BadgerOptions is nil the helper
+	// applies metadata-workload defaults and resolves the cache sizes with
+	// precedence: explicit per-store config > global config > RAM-relative
+	// auto-sizing. detectAvailableMemory is indirected for testability.
+	opts := buildBadgerOptions(config, detectAvailableMemory())
 
 	// Crash-consistency (#583, enforced #588): force SyncWrites=true on
 	// every code path — default-options AND custom-options. Default
@@ -507,7 +484,26 @@ func (s *BadgerMetadataStore) GetQuotaUsage(scope metadata.QuotaScope, id uint32
 //   - *BadgerMetadataStore: A new store instance with default configuration
 //   - error: Error if database initialization fails
 func NewBadgerMetadataStoreWithDefaults(ctx context.Context, dbPath string) (*BadgerMetadataStore, error) {
-	return NewBadgerMetadataStore(ctx, BadgerMetadataStoreConfig{
+	return NewBadgerMetadataStore(ctx, defaultStoreConfig(dbPath))
+}
+
+// NewBadgerMetadataStoreWithDefaultsAndCaches is NewBadgerMetadataStoreWithDefaults
+// with explicit Badger block/index cache sizes (in MiB). A zero size for either
+// dimension defers that cache to the global config / RAM-relative auto-sizing
+// (see cache.go / #1245 Bug D). Used by the per-store config-map path so an
+// operator can pin caches on a single metadata store via its config keys
+// (block_cache_mb / index_cache_mb).
+func NewBadgerMetadataStoreWithDefaultsAndCaches(ctx context.Context, dbPath string, blockCacheMB, indexCacheMB int64) (*BadgerMetadataStore, error) {
+	cfg := defaultStoreConfig(dbPath)
+	cfg.BlockCacheSizeMB = blockCacheMB
+	cfg.IndexCacheSizeMB = indexCacheMB
+	return NewBadgerMetadataStore(ctx, cfg)
+}
+
+// defaultStoreConfig returns the standard BadgerMetadataStoreConfig (capabilities
+// and limits) for the given path, with cache sizes left at 0 (auto-sized).
+func defaultStoreConfig(dbPath string) BadgerMetadataStoreConfig {
+	return BadgerMetadataStoreConfig{
 		DBPath: dbPath,
 		Capabilities: metadata.FilesystemCapabilities{
 			// Transfer Sizes
@@ -537,7 +533,7 @@ func NewBadgerMetadataStoreWithDefaults(ctx context.Context, dbPath string) (*Ba
 		},
 		MaxStorageBytes: 0, // Unlimited (reported as available disk space)
 		MaxFiles:        0, // Unlimited (reported as 1 million)
-	})
+	}
 }
 
 // initializeSingletons initializes singleton keys if they don't exist.
@@ -636,6 +632,12 @@ func (s *BadgerMetadataStore) Close() error {
 
 	return s.closeErr
 }
+
+// BadgerOptions returns the badger.Options the underlying DB was opened with.
+// Exposed for diagnostics and tests (e.g. asserting the resolved block/index
+// cache sizes were threaded into the open — #1245 Bug D). The returned value is
+// a copy; mutating it does not affect the live DB.
+func (s *BadgerMetadataStore) BadgerOptions() badger.Options { return s.db.Opts() }
 
 // GetStoreID returns the Badger-persistent store identifier (stored at key
 // cfg:store_id). Stable across restarts — the ULID is written once on first

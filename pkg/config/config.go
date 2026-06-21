@@ -72,6 +72,10 @@ type Config struct {
 	// Blockstore configures local/remote blockstore tunables.
 	Blockstore BlockstoreConfig `mapstructure:"blockstore" yaml:"blockstore"`
 
+	// Metadata configures global, engine-specific metadata-store tunables
+	// (e.g. the BadgerDB block/index cache sizes). See MetadataConfig.
+	Metadata MetadataConfig `mapstructure:"metadata" yaml:"metadata"`
+
 	// GC configures the engine.CollectGarbage mark-sweep run.
 	// These knobs apply globally to every block-store GC invocation.
 	GC GCConfig `mapstructure:"gc" yaml:"gc"`

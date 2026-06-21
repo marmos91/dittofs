@@ -98,6 +98,32 @@ The lack of FUSE overhead and optimized Go implementation provides competitive p
 - Low latency for metadata operations
 - Scales well with concurrent connections
 
+### My BadgerDB logs "Block cache might be too small ... hit-ratio: 0.26 ... sets-rejected" — what do I do?
+
+That message means the BadgerDB metadata engine's in-memory **block cache** is
+undersized for your working set, so it is thrashing: most lookups miss the cache
+and hit disk. A low hit-ratio also widens the window for the dedup
+transaction-conflict race and the append-log "pressure wait timed out" stall, so
+it is worth fixing.
+
+By default the block and index caches **auto-size from the memory available to
+the process** (≈15 % / ≈7.5 %, with 512/256 MiB floors and 4 GiB/2 GiB
+ceilings), so a 4 GiB host already gets ~614 MiB / ~307 MiB without tuning. If
+you still see the warning, your hot metadata set is larger than the auto-sized
+cache — raise it explicitly:
+
+```yaml
+metadata:
+  badger:
+    block_cache_mb: 2048   # raise first; 0 = auto-size
+    index_cache_mb: 1024
+```
+
+or via env (`DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB=2048`). See
+[CONFIGURATION.md → BadgerDB cache sizing](CONFIGURATION.md#badgerdb-cache-sizing-config-file)
+for a sizing table keyed to object/metadata count. Aim for a hit-ratio above
+~0.8 with no `sets-rejected`.
+
 ### Does metadata persist across server restarts?
 
 It depends on the metadata store:

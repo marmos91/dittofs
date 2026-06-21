@@ -26,6 +26,7 @@ func ApplyDefaults(cfg *Config) {
 	cfg.GC.ApplyDefaults()
 	cfg.Snapshot.ApplyDefaults()
 	cfg.Blockstore.ApplyDefaults()
+	cfg.Metadata.ApplyDefaults()
 	cfg.Metrics.ApplyDefaults()
 	cfg.LDAP.ApplyDefaults()
 }
