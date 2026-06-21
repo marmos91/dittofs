@@ -847,6 +847,12 @@ func (r *Runtime) SetExportAuthPolicyForTesting(name string, allowAuthSys, requi
 	return r.sharesSvc.SetExportAuthPolicyForTesting(name, allowAuthSys, requireKerberos)
 }
 
+// SetMinKerberosLevelForTesting overrides a registered share's MinKerberosLevel
+// GSS protection floor ("", "krb5", "krb5i", "krb5p"). Test-only.
+func (r *Runtime) SetMinKerberosLevelForTesting(name, minLevel string) error {
+	return r.sharesSvc.SetMinKerberosLevelForTesting(name, minLevel)
+}
+
 // GetIdentityMappingStore returns the identity mapping store if supported.
 // Returns nil if the underlying store does not implement IdentityMappingStore.
 func (r *Runtime) GetIdentityMappingStore() store.IdentityMappingStore {

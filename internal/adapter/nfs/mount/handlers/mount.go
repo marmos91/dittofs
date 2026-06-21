@@ -7,6 +7,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc/gss"
 	internalxdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
@@ -129,6 +130,24 @@ func (h *Handler) Mount(
 		logger.Warn("Mount denied: Kerberos required but client uses non-GSS auth",
 			"path", req.DirPath, "client_ip", clientIP, "auth_flavor", ctx.AuthFlavor)
 		return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+	}
+	// Enforce the per-share GSS protection floor (min_kerberos_level): a krb5i /
+	// krb5p export must reject a Kerberos mount negotiated at a weaker service
+	// level. The negotiated RPCSEC_GSS service level rides in the request context
+	// from the GSS DATA dispatch, set for every processed RPCSEC_GSS request. We
+	// enforce only when that session info is present: a real GSS mount always
+	// carries it, so its absence means the request was not processed as GSS
+	// (e.g. Kerberos not configured), where applying the default "krb5" floor
+	// would spuriously deny. Non-GSS flavors are gated by the checks above.
+	if ctx.AuthFlavor == rpc.AuthRPCSECGSS {
+		if si := gss.SessionInfoFromContext(ctx.Context); si != nil {
+			if !auth.MeetsMinKerberosLevel(share.MinKerberosLevel, si.Service) {
+				logger.Warn("Mount denied: GSS protection level below share floor",
+					"path", req.DirPath, "client_ip", clientIP,
+					"min_kerberos_level", share.MinKerberosLevel, "negotiated_service", si.Service)
+				return &MountResponse{MountResponseBase: MountResponseBase{Status: MountErrAccess}}, nil
+			}
+		}
 	}
 
 	// Netgroup IP access check: reject mount if client IP is not in allowed netgroup.
