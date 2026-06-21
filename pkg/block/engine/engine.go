@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // Compile-time interface satisfaction check.
@@ -280,34 +282,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 				persistBlocks = block.MergeBlockRefsByOffset(existing, blocks)
 				persistObjID = block.ComputeObjectID(persistBlocks)
 			}
-			if err := bs.coordinator.PersistFileBlocks(ctx, payloadID, persistBlocks, persistObjID); err != nil {
-				// File-level dedup: another file already owns this
-				// Merkle-root ObjectID (byte-identical content). The
-				// object_id index enforces "one ObjectID -> one file", so
-				// this duplicate cannot claim the canonical pointer. It
-				// MUST still persist its own block list (so the file is
-				// restorable and its FileBlock manifest is complete) — it
-				// simply does so WITHOUT owning the object_id (left zero =
-				// "not the canonical dedup target"). Retrying with a zero
-				// ObjectID writes object_id NULL, which the partial unique
-				// index skips, so the per-file blocks land cleanly.
-				//
-				// Propagating the raw conflict instead would (a) fail an
-				// explicit DrainRollups, (b) wedge the background rollup
-				// worker into retrying the same conflict forever, and (c)
-				// leave the duplicate with an empty block list →
-				// unrestorable. The block hashes themselves are content-
-				// addressed and already durable in CAS from StoreChunk.
-				if isObjectIDConflict(err) {
-					logger.Debug("rollup persist: object_id already mapped to another file; persisting duplicate's blocks without claiming the dedup pointer",
-						"payloadID", payloadID,
-						"objectID", persistObjID.String())
-					var zeroObjectID block.ObjectID
-					if rerr := bs.coordinator.PersistFileBlocks(ctx, payloadID, persistBlocks, zeroObjectID); rerr != nil {
-						return fmt.Errorf("rollup persist: retry without object_id after dedup conflict: %w", rerr)
-					}
-					return bs.reapSupersededFileBlocks(ctx, payloadID, priorOffsets, blocks)
-				}
+			if err := bs.persistRollupBlocksConverging(ctx, payloadID, persistBlocks, persistObjID); err != nil {
 				return err
 			}
 			return bs.reapSupersededFileBlocks(ctx, payloadID, priorOffsets, blocks)
@@ -386,6 +361,137 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	// invalidation — mirrors the TestClose_ClosesCache pattern.
 	cfg.Syncer.bs = bs
 	return bs, nil
+}
+
+// rollupPersistMaxAttempts bounds the converging retry loop in
+// persistRollupBlocksConverging. Each attempt re-resolves the canonical
+// object_id owner and, on a recognized conflict, converges toward the
+// zero-objectID write. The cap guarantees termination so a genuinely
+// pathological metadata-store fault surfaces a clear error instead of looping
+// forever (#1245-B).
+const rollupPersistMaxAttempts = 8
+
+// isRollupPersistConflict reports whether err is a conflict the rollup
+// persister can converge past by falling back to the zero-objectID write. It
+// recognizes BOTH:
+//
+//   - isObjectIDConflict(err) — the deterministic first-committer-wins
+//     object_id conflict the coordinator maps to engine.ErrObjectIDConflict
+//     (Postgres 23505 on files_object_id_idx, the in-closure PutFile conflict
+//     on Memory/Badger); and
+//
+//   - mderrors.IsConflictError(err) — a raw store-level ErrConflict that
+//     bypasses the coordinator's in-closure mapObjectIDConflict because it is
+//     raised at COMMIT time, not by the PutFile call. Badger's SSI
+//     optimistic-concurrency abort under bulk same-content rollup is the
+//     canonical case (#1245-B): WithTransaction now returns a wrapped
+//     mderrors.StoreError{Code: ErrConflict} when its retry budget is
+//     exhausted, which surfaces here through the WithTransaction return value
+//     rather than through PutFile.
+//
+// Recognizing both keeps the converging fallback uniform across the
+// deterministic object_id conflict and the SSI hot-key conflict without
+// altering isObjectIDConflict (whose dedup-retry callers must keep their
+// narrower semantics).
+func isRollupPersistConflict(err error) bool {
+	return isObjectIDConflict(err) || mderrors.IsConflictError(err)
+}
+
+// persistRollupBlocksConverging persists a rollup pass's block list + ObjectID
+// for payloadID, guaranteeing convergence under the bulk same-content
+// (file-level dedup) race (#1245-B).
+//
+// Two cooperating mechanisms remove the livelock the naive single-fallback had:
+//
+//  1. Read-only pre-check. BEFORE attempting to claim the object_id, ask the
+//     coordinator whether a canonical owner already exists for this Merkle root
+//     (FindByObjectID). If so, this file is a duplicate-but-not-the-first; it
+//     persists its blocks with a ZERO object_id immediately and never enters
+//     the obj-key write/probe race at all. This eliminates the write-write
+//     contention for every identical file after the first, which is what
+//     turned a transient SSI abort into a sustained hot-key livelock.
+//
+//  2. Bounded converging backoff. The genuine first-committer race (two files
+//     reach PersistFileBlocks before either has committed, so FindByObjectID
+//     missed for both) is still possible. On a recognized conflict
+//     (isRollupPersistConflict — uniform across the deterministic object_id
+//     conflict and Badger's wrapped commit-time SSI abort) the loop backs off,
+//     re-resolves FindByObjectID (a peer may have just become canonical), and
+//     retries — converging to the zero-objectID write. The attempt count is
+//     capped so a real fault terminates with a clear error rather than spinning
+//     the rollup ticker on the same payloadID forever.
+//
+// A duplicate's blocks are content-addressed and already durable in CAS; the
+// only thing it forfeits is ownership of the canonical object_id pointer (left
+// zero = "not the dedup target"), which the partial unique index skips so the
+// per-file block list lands cleanly and the file stays restorable.
+func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID string, persistBlocks []block.BlockRef, persistObjID block.ObjectID) error {
+	var zeroObjectID block.ObjectID
+
+	// wantObjID is the object_id this file will TRY to claim. The pre-check and
+	// the conflict handler both narrow it to zero once a canonical owner is
+	// known to exist, after which the file persists its blocks as a benign
+	// duplicate.
+	wantObjID := persistObjID
+
+	// (1) Read-only pre-check: if a canonical owner already exists for this
+	// Merkle root, target the zero object_id from the start so this file never
+	// races on the obj-key write. Skip on a zero objectID (nothing to dedup
+	// against) and treat a lookup error as non-fatal — fall through to the
+	// write loop, which re-surfaces any real fault. The actual write still goes
+	// through the bounded backoff below so a concurrent SSI abort on the
+	// (still-hot) file row / content-hash rows converges instead of failing.
+	if !persistObjID.IsZero() {
+		if owner, ferr := bs.coordinator.FindByObjectID(ctx, persistObjID); ferr == nil && owner != nil {
+			logger.Debug("rollup persist: canonical object_id owner already exists; persisting duplicate's blocks with zero object_id (pre-check)",
+				"payloadID", payloadID, "objectID", persistObjID.String())
+			wantObjID = zeroObjectID
+		}
+	}
+
+	// (2) Bounded converging backoff around the claim. The first successful
+	// committer wins the object_id; every subsequent committer recognizes the
+	// conflict, re-resolves, and converges to the zero-objectID write. A
+	// zero-objectID write that itself aborts (SSI on a still-hot file row /
+	// content-hash row under bulk identical content) is retried until it
+	// commits.
+	backoff := time.Millisecond
+	var lastErr error
+	for attempt := 0; attempt < rollupPersistMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := bs.coordinator.PersistFileBlocks(ctx, payloadID, persistBlocks, wantObjID)
+		if err == nil {
+			return nil
+		}
+		if !isRollupPersistConflict(err) {
+			return err
+		}
+		lastErr = err
+
+		// Conflict recognized. If we were still trying to claim the canonical
+		// object_id, re-resolve: a peer may have just committed and become the
+		// canonical owner, in which case we converge to the zero-objectID write
+		// on the next attempt. If we already targeted zero, the conflict is on
+		// a still-hot non-object_id key (SSI abort on the file row / content-
+		// hash rows under bulk identical content) — back off and retry the
+		// same zero-objectID write until it commits.
+		if !wantObjID.IsZero() {
+			if owner, ferr := bs.coordinator.FindByObjectID(ctx, wantObjID); ferr == nil && owner != nil {
+				logger.Debug("rollup persist: object_id now owned by another file; converging to zero-objectID write",
+					"payloadID", payloadID, "objectID", wantObjID.String(), "attempt", attempt)
+				wantObjID = zeroObjectID
+			}
+		}
+
+		time.Sleep(backoff)
+		if backoff < 50*time.Millisecond {
+			backoff *= 2
+		}
+	}
+	return fmt.Errorf("rollup persist: did not converge after %d attempts (payloadID=%s): %w",
+		rollupPersistMaxAttempts, payloadID, lastErr)
 }
 
 // Start initializes the store and starts background goroutines.

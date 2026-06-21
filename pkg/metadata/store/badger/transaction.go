@@ -79,9 +79,11 @@ func (tx *badgerTransaction) addQuota2(k badgerQuotaKey, d metadata.UsageStat) {
 	tx.quotaDelta[k] = cur
 }
 
-// Maximum number of retries for conflict errors
-// Set high because concurrent writes to the same file can cause many conflicts
-const maxTransactionRetries = 20
+// Maximum number of retries for conflict errors.
+// Set high because concurrent writes to the same file can cause many
+// conflicts. A package var (not a const) so tests can lower it to
+// deterministically exercise the retry-exhausted path.
+var maxTransactionRetries = 20
 
 // WithTransaction executes fn within a BadgerDB transaction.
 //
@@ -135,7 +137,25 @@ func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 		return err
 	}
 
-	// All retries exhausted
+	// All retries exhausted. Wrap the raw badgerdb.ErrConflict sentinel into a
+	// recognizable mderrors.StoreError{Code: ErrConflict} (#1245-B). The raw
+	// badger sentinel is badger's SSI optimistic-concurrency abort
+	// ("Transaction Conflict. Please retry"); leaking it bare meant
+	// codebase-wide conflict detection (errors.As(*StoreError) /
+	// mderrors.IsConflictError, the runtime coordinator's mapObjectIDConflict,
+	// and the rollup persister's isObjectIDConflict) could not classify a
+	// hot-key SSI abort as a conflict — so a bulk same-content rollup never
+	// converged to the zero-objectID dedup write and the ticker re-ran the same
+	// payloadID forever. Wrapping (with the raw sentinel reachable via Unwrap
+	// for diagnostics) makes the exhausted SSI conflict recognizable uniformly
+	// with Postgres' 23505 and Memory's StoreError conflict.
+	if goerrors.Is(lastErr, badgerdb.ErrConflict) {
+		return &mderrors.StoreError{
+			Code:    mderrors.ErrConflict,
+			Message: "badger WithTransaction: transaction conflict (SSI) after exhausting retries",
+			Cause:   lastErr,
+		}
+	}
 	return lastErr
 }
 
