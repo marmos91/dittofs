@@ -392,6 +392,12 @@ func (h *Handler) executeCopyChunks(
 		logger.Warn("COPYCHUNK: failed to build auth context", "error", err)
 		return NewErrorResult(types.StatusAccessDenied), nil
 	}
+	// COPYCHUNK writes data into the destination handle. Like WRITE, it is
+	// handle-based: the destination open already authorized write against the
+	// DACL ceiling at CREATE (verified above via dstOpen.GrantedAccess), so the
+	// metadata layer must not re-deny on the destination's POSIX mode /
+	// DOS-READONLY attribute (#1240).
+	authCtx.WriteAuthorizedByHandle = hasWriteAccess(dstOpen.GrantedAccess)
 
 	srcPayloadID := string(srcFile.PayloadID)
 	srcSize := srcFile.Size
