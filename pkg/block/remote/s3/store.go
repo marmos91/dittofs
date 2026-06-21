@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -43,7 +44,10 @@ const casPrefix = "cas/"
 const s3HTTPRequestTimeout = 2 * time.Minute
 
 // Compile-time interface satisfaction check.
-var _ remote.RemoteStore = (*Store)(nil)
+var (
+	_ remote.RemoteStore       = (*Store)(nil)
+	_ block.DurabilityReporter = (*Store)(nil)
+)
 
 // Config holds configuration for the S3 block store.
 type Config struct {
@@ -80,15 +84,35 @@ type Store struct {
 	keyPrefix string
 	closed    bool
 	mu        sync.RWMutex
+
+	// durable reports whether accepted bytes survive a crash/restart
+	// (block.DurabilityReporter). S3 object storage is durable, so the type
+	// default is true; set via SetDurable from the controlplane config.
+	durable atomic.Bool
 }
 
 // New creates a new S3 remote block store with an existing client.
 func New(client *s3.Client, config Config) *Store {
-	return &Store{
+	s := &Store{
 		client:    client,
 		bucket:    config.Bucket,
 		keyPrefix: config.KeyPrefix,
 	}
+	s.durable.Store(true)
+	return s
+}
+
+// Durable reports whether accepted bytes survive a crash/restart
+// (block.DurabilityReporter). S3 is durable object storage, so the type
+// default is true.
+func (s *Store) Durable() bool {
+	return s.durable.Load()
+}
+
+// SetDurable overrides the type-default durability of this store, applied by
+// the controlplane when the per-store config carries an explicit "durable".
+func (s *Store) SetDurable(durable bool) {
+	s.durable.Store(durable)
 }
 
 // NewFromConfig creates a new S3 remote block store by creating an S3 client from config.

@@ -385,6 +385,63 @@ blockstore:
                                 # config max_log_bytes overrides this.
 ```
 
+#### Durability & the CLOSE/COMMIT contract (`durable`)
+
+Durability is a **per-store property**: whether bytes a store has accepted
+survive a daemon crash / restart. Each local and remote store resolves an
+effective `durable` flag at construction — a **type default** that an operator
+may override.
+
+| Store type | Kind | Default `durable` |
+|------------|------|-------------------|
+| `fs` | local | `true` — bytes are on disk; un-mirrored chunks are never evicted, survive restart, and re-mirror asynchronously |
+| `memory` | local | `false` — volatile, lost on restart |
+| `s3` | remote | `true` — durable object storage |
+| `memory` | remote | `false` — test/dev fixture, lost on restart |
+
+Override the default per store by adding a `durable` bool to the store's
+`config` JSON, e.g. for a local `fs` store on a volatile tmpfs mount:
+
+```sh
+dfsctl store block local edit <share> --config '{"durable": false}'
+```
+
+or to deliberately treat a memory store as durable in a test/dev setup:
+
+```sh
+dfsctl store block local edit <share> --config '{"durable": true}'
+```
+
+A non-bool `durable` value is ignored with a startup warning (the type default
+stands). The effective values are surfaced as `Local Durable` / `Remote
+Durable` in `dfsctl store block stats`.
+
+**CLOSE/COMMIT semantics.** SMB CLOSE and NFS COMMIT (and the NFSv3 stable-WRITE
+path) report success once data is on a **durable** store. The rule is:
+
+```
+committed := localDurable || (Finalized && remoteDurable)
+```
+
+- **Production (local `fs`):** `localDurable=true`, so CLOSE/COMMIT ack
+  immediately — there is **no wait** on the remote. The local→remote mirror
+  stays fully **asynchronous** (the syncer keeps draining in the background).
+  This is the fast path and is unchanged from prior releases.
+- **Volatile local (`memory`) + durable remote (`s3`):** the data is only safe
+  once it reaches the durable remote, so CLOSE/COMMIT succeeds only when the
+  flush is `Finalized`. While the remote is unhealthy or a mirror pass is
+  in-flight, CLOSE/COMMIT returns a transient I/O error (`NFS3ERR_IO` /
+  `NFS4ERR_IO` / SMB `STATUS_UNEXPECTED_IO_ERROR`) and the client re-drives —
+  the bytes remain in local CAS and the syncer keeps mirroring. (NFS *unstable*
+  WRITE is unaffected — it still returns `UNSTABLE` and defers durability to a
+  later COMMIT.)
+- **Volatile local with no remote (or a non-durable remote):** the data is never
+  durable, so CLOSE/COMMIT reports the same transient I/O error rather than
+  silently acknowledging a write that a crash would lose.
+
+`dfsctl store block stats` also shows `Pending Remote (bytes)` — the headline
+data-at-risk gauge (local CAS bytes not yet mirrored to the remote).
+
 #### GC knobs
 
 The CAS write path uses an async syncer and a fail-closed mark-sweep

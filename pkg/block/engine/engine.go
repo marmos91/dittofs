@@ -682,6 +682,35 @@ func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 // Do not use in production code.
 func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
 
+// LocalDurable reports whether the engine's local store survives a process
+// crash / restart (block.DurabilityReporter). It is the localDurable input to
+// the honest CLOSE/COMMIT commit rule (#1274). When the local store does not
+// implement DurabilityReporter the conservative default (false) is returned so
+// the server never over-promises durability — every production local backend
+// (fs) implements it, so this only affects bare test fixtures.
+func (bs *Store) LocalDurable() bool {
+	if r, ok := bs.local.(block.DurabilityReporter); ok {
+		return r.Durable()
+	}
+	return false
+}
+
+// RemoteDurable reports whether the engine's remote store survives a process
+// crash / restart. A nil remote (local-only share) is not durable by
+// definition. A remote that does not implement DurabilityReporter falls back to
+// the conservative default (false). The type assertion sees through the
+// encryption / compression decorators because they delegate Durable() to the
+// store they wrap.
+func (bs *Store) RemoteDurable() bool {
+	if bs.remote == nil {
+		return false
+	}
+	if r, ok := bs.remote.(block.DurabilityReporter); ok {
+		return r.Durable()
+	}
+	return false
+}
+
 // RemoteStore returns the per-share remote object store, or nil if the
 // share is local-only. Used by the snapshot sync-gate verify step
 // to drive VerifyRemoteDurability after DrainAllUploads, and by

@@ -198,3 +198,29 @@ func TestContentErrMap_PressureTimeout_SurfacedNonSuccess(t *testing.T) {
 		}
 	}
 }
+
+// TestContentErrMap_NotDurableYet verifies the #1274 ErrNotDurableYet sentinel
+// (data committed locally but not yet on a durable store) maps to I/O-class
+// codes in every protocol arm so the client re-drives COMMIT/CLOSE, both as the
+// bare sentinel and wrapped.
+func TestContentErrMap_NotDurableYet(t *testing.T) {
+	cases := []error{
+		ErrNotDurableYet,
+		fmt.Errorf("commit payload p1: %w", ErrNotDurableYet),
+	}
+	for _, err := range cases {
+		if got := MapContentToNFS3(err); got != nfs3types.NFS3ErrIO {
+			t.Errorf("MapContentToNFS3(%v) = %d, want NFS3ErrIO", err, got)
+		}
+		if got := MapContentToNFS4(err); got != nfs4types.NFS4ERR_IO {
+			t.Errorf("MapContentToNFS4(%v) = %d, want NFS4ERR_IO", err, got)
+		}
+		if got := MapContentToSMB(err); got != smbtypes.StatusUnexpectedIOError {
+			t.Errorf("MapContentToSMB(%v) = %v, want StatusUnexpectedIOError", err, got)
+		}
+		// Must never look successful.
+		if MapContentToSMB(err) == smbtypes.StatusSuccess {
+			t.Errorf("ErrNotDurableYet must not map to StatusSuccess")
+		}
+	}
+}

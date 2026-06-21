@@ -202,3 +202,38 @@ type BlockStoreAppend interface {
 	// GC.
 	DeleteAppendLog(ctx context.Context, payloadID string) error
 }
+
+// DurabilityReporter is an optional capability a block store (local or
+// remote) MAY implement to report whether data it has accepted survives a
+// process crash / restart.
+//
+// Durability is a per-store property and is the foundation of the honest
+// CLOSE/COMMIT contract (#1274). The commit rule used by the adapter flush
+// seam (internal/adapter/common.CommitBlockStore) is:
+//
+//	committed := localDurable || (Finalized && remoteDurable)
+//
+// where localDurable / remoteDurable are read from the local / remote store's
+// Durable() report and Finalized comes from the engine FlushResult.
+//
+// Type defaults (resolved at construction; an operator may override via the
+// per-store config["durable"] bool):
+//
+//   - local fs store        → true  (bytes are on disk, un-mirrored chunks are
+//     not evicted, survive restart, re-mirror async)
+//   - local memory store    → false (lost on crash/restart)
+//   - remote s3 store       → true  (durable object storage)
+//   - remote memory store   → false (test fixture, lost on restart)
+//
+// Stores that do NOT implement this interface are treated conservatively by
+// callers (assumed NOT durable) so a missing capability never lets the server
+// over-promise durability.
+//
+// Decorators (encryption, compression) MUST delegate Durable() to the wrapped
+// store: wrapping a durable backend does not change where the bytes ultimately
+// land.
+type DurabilityReporter interface {
+	// Durable reports whether data accepted by this store survives a
+	// process crash or restart of the daemon.
+	Durable() bool
+}

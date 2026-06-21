@@ -14,6 +14,20 @@ func (bc *FSStore) SetEvictionEnabled(enabled bool) {
 	bc.evictionEnabled.Store(enabled)
 }
 
+// Durable reports whether bytes accepted by this store survive a process crash
+// or restart (block.DurabilityReporter). The fs backend persists chunks to disk
+// and never evicts un-mirrored chunks, so the type default is true. An operator
+// may flip it off via SetDurable for a volatile-disk share (e.g. tmpfs).
+func (bc *FSStore) Durable() bool {
+	return bc.durable.Load()
+}
+
+// SetDurable overrides the type-default durability of this store. Called by the
+// controlplane when the per-store config carries an explicit "durable" bool.
+func (bc *FSStore) SetDurable(durable bool) {
+	bc.durable.Store(durable)
+}
+
 // GetStoredFileSize returns the total stored data size for a file by summing
 // the DataSize of all FileBlock records in the metadata store.
 // Returns 0 for unknown files (no error).

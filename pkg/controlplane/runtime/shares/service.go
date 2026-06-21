@@ -2121,14 +2121,51 @@ func CreateLocalStoreFromConfig(
 			_ = store.Close()
 			return nil, fmt.Errorf("fs local store: StartRollup: %w", err)
 		}
+		applyDurableOverride(store, config, "local "+storeType, shareName)
 		return store, nil
 
 	case "memory":
-		return localmemory.New(), nil
+		store := localmemory.New()
+		applyDurableOverride(store, config, "local "+storeType, shareName)
+		return store, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported local store type: %s", storeType)
 	}
+}
+
+// durableOverrideSetter is implemented by block stores (local and remote) that
+// expose a per-store durability override (block stores embed a
+// block.DurabilityReporter type-default; this lets an operator flip it).
+type durableOverrideSetter interface {
+	SetDurable(bool)
+}
+
+// applyDurableOverride reads an optional "durable" bool from the per-store
+// config and applies it to store when present, overriding the type-default
+// durability (#1274). A non-bool "durable" value is warned and ignored so the
+// type-default stands. label/shareName feed the diagnostic log line.
+func applyDurableOverride(store any, config map[string]any, label, shareName string) {
+	v, ok := config["durable"]
+	if !ok {
+		return
+	}
+	b, ok := v.(bool)
+	if !ok {
+		logger.Warn("block store config has durable but it is not a bool; ignoring",
+			"store", label, "share", shareName, "value", v)
+		return
+	}
+	setter, ok := store.(durableOverrideSetter)
+	if !ok {
+		// Every shipped store implements SetDurable; a store that does not is a
+		// programmer error, surface it instead of silently dropping the override.
+		logger.Warn("block store does not support a durable override; ignoring config[\"durable\"]",
+			"store", label, "share", shareName)
+		return
+	}
+	setter.SetDurable(b)
+	logger.Info("block store durability overridden by config", "store", label, "share", shareName, "durable", b)
 }
 
 // CreateRemoteStoreFromConfig creates a remote store from type and dynamic config.
@@ -2142,7 +2179,9 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 
 	switch storeType {
 	case "memory":
-		return remotememory.New(), nil
+		store := remotememory.New()
+		applyDurableOverride(store, config, "remote "+storeType, "")
+		return store, nil
 
 	case "filesystem":
 		return nil, errors.New("remote store type 'filesystem' removed in v4.0 -- use 'memory' or 's3'")
@@ -2174,7 +2213,7 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 			forcePathStyle = true
 		}
 
-		return remotes3.NewFromConfig(ctx, remotes3.Config{
+		store, err := remotes3.NewFromConfig(ctx, remotes3.Config{
 			Bucket:         bucket,
 			Region:         region,
 			Endpoint:       endpoint,
@@ -2183,6 +2222,11 @@ func CreateRemoteStoreFromConfig(ctx context.Context, storeType string, cfg inte
 			KeyPrefix:      prefix,
 			ForcePathStyle: forcePathStyle,
 		})
+		if err != nil {
+			return nil, err
+		}
+		applyDurableOverride(store, config, "remote "+storeType, "")
+		return store, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported remote store type: %s", storeType)

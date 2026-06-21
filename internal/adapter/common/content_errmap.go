@@ -56,6 +56,12 @@ func MapContentToNFS3(err error) uint32 {
 	if goerrors.Is(err, block.ErrRemoteUnavailable) {
 		return nfs3types.NFS3ErrIO
 	}
+	// Data committed locally but not yet durable (volatile local store, durable
+	// remote not reached) — transient I/O error so the client re-drives
+	// COMMIT/CLOSE (#1274). Never occurs on the fs-local production hot path.
+	if goerrors.Is(err, ErrNotDurableYet) {
+		return nfs3types.NFS3ErrIO
+	}
 	return nfs3types.NFS3ErrIO
 }
 
@@ -79,6 +85,11 @@ func MapContentToNFS4(err error) uint32 {
 		return nfs4types.NFS4ERR_IO
 	}
 	if goerrors.Is(err, block.ErrRemoteUnavailable) {
+		return nfs4types.NFS4ERR_IO
+	}
+	// Not yet durable (see MapContentToNFS3) — transient I/O so the client
+	// re-drives COMMIT/CLOSE (#1274).
+	if goerrors.Is(err, ErrNotDurableYet) {
 		return nfs4types.NFS4ERR_IO
 	}
 	return nfs4types.NFS4ERR_IO
@@ -112,6 +123,12 @@ func MapContentToSMB(err error) smbtypes.Status {
 		return smbtypes.StatusUnexpectedIOError
 	}
 	if goerrors.Is(err, block.ErrRemoteUnavailable) {
+		return smbtypes.StatusUnexpectedIOError
+	}
+	// Data committed locally but not yet durable (volatile local store, durable
+	// remote not reached) — STATUS_UNEXPECTED_IO_ERROR so the client re-drives
+	// CLOSE/flush (#1274). Never occurs on the fs-local production hot path.
+	if goerrors.Is(err, ErrNotDurableYet) {
 		return smbtypes.StatusUnexpectedIOError
 	}
 	return smbtypes.StatusUnexpectedIOError

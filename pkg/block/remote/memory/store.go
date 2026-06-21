@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"lukechampine.com/blake3"
@@ -16,7 +17,10 @@ import (
 )
 
 // Compile-time interface satisfaction check.
-var _ remote.RemoteStore = (*Store)(nil)
+var (
+	_ remote.RemoteStore       = (*Store)(nil)
+	_ block.DurabilityReporter = (*Store)(nil)
+)
 
 // memBlock holds the per-object body plus metadata captured at Put time.
 type memBlock struct {
@@ -35,6 +39,11 @@ type Store struct {
 	// this to manipulate LastModified deterministically.
 	nowFn  func() time.Time
 	closed bool
+
+	// durable reports whether accepted bytes survive a crash/restart
+	// (block.DurabilityReporter). This is a test/dev fixture whose contents are
+	// volatile, so the type default is false.
+	durable atomic.Bool
 }
 
 // New creates a new in-memory remote block store.
@@ -43,6 +52,19 @@ func New() *Store {
 		blocks: make(map[block.ContentHash]*memBlock),
 		nowFn:  time.Now,
 	}
+}
+
+// Durable reports whether accepted bytes survive a crash/restart
+// (block.DurabilityReporter). The in-memory remote fixture is volatile, so the
+// type default is false (the zero value of the atomic field).
+func (s *Store) Durable() bool {
+	return s.durable.Load()
+}
+
+// SetDurable overrides the type-default durability, applied by the controlplane
+// when the per-store config carries an explicit "durable".
+func (s *Store) SetDurable(durable bool) {
+	s.durable.Store(durable)
 }
 
 // SetNowFnForTest overrides the time source used by Put to stamp

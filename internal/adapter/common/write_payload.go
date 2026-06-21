@@ -2,10 +2,26 @@ package common
 
 import (
 	"context"
+	"errors"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// ErrNotDurableYet is returned by CommitBlockStore when a CLOSE / COMMIT cannot
+// honestly report success: the share's local store is NOT durable (e.g. an
+// in-memory local store) AND the data has not yet reached a durable remote
+// (the engine FlushResult is not Finalized, or the remote is itself not
+// durable). The bytes are still safe in local CAS and the background syncer
+// will keep re-driving the mirror, but a crash before that completes would lose
+// data the client was told CLOSE succeeded on — so the protocol adapter returns
+// a transient I/O error (NFS3ERR_IO / NFS4ERR_IO / SMB STATUS_UNEXPECTED_IO_ERROR)
+// and the client re-drives COMMIT/CLOSE.
+//
+// In the common production configuration (fs local store) this sentinel NEVER
+// occurs: CommitBlockStore returns nil on the fast local-durable path before it
+// is ever reached, and the remote mirror stays fully asynchronous. See #1274.
+var ErrNotDurableYet = errors.New("block: data not yet durable (local store is volatile and durable remote not reached)")
 
 // WriteToBlockStore is the structural twin of ReadFromBlockStore. It is a
 // direct passthrough to engine.WriteAt today — there is no FileAttr.Blocks
@@ -49,15 +65,48 @@ func WriteToBlockStore(
 // that call so a later refactor can add BlockRef-aware plumbing once,
 // keeping protocol-handler code unchanged.
 //
-// It is currently a direct passthrough; the *block.FlushResult from
-// the engine is dropped because every existing call site already ignores
-// it (only the error is acted on). If per-file flush telemetry becomes
-// needed, widen the signature then.
+// CommitBlockStore applies the honest per-store durability commit rule (#1274).
+// A payload is "committed" (CLOSE/COMMIT may report success) iff
+//
+//	localDurable || (Finalized && remoteDurable)
+//
+// where localDurable / remoteDurable come from the engine's per-store
+// DurabilityReporter and Finalized comes from the engine FlushResult:
+//
+//   - Production (fs local store): localDurable=true → ack immediately on the
+//     FAST path, with no remote wait. The remote mirror stays fully async (the
+//     syncer keeps draining in the background) and ErrNotDurableYet is never
+//     returned.
+//   - memory local + durable remote (s3): the bytes are only safe once they
+//     reach the durable remote, so success requires FlushResult.Finalized.
+//     A transient unhealthy-remote / uploader-gate-contention flush returns
+//     {Finalized:false} → ErrNotDurableYet so the client re-drives.
+//   - memory local with no remote / a non-durable remote: never durable →
+//     ErrNotDurableYet (honest failure rather than silent loss).
+//
+// A hard flush error (I/O fault, remote.Put rejection, metadata error) is
+// returned unchanged.
 func CommitBlockStore(
 	ctx context.Context,
 	blockStore *engine.Store,
 	payloadID metadata.PayloadID,
 ) error {
-	_, err := blockStore.Flush(ctx, string(payloadID))
-	return err
+	res, err := blockStore.Flush(ctx, string(payloadID))
+	if err != nil {
+		// Hard error: unchanged behavior (mapped via the content errmap).
+		return err
+	}
+	// FAST path: a durable local store means the bytes already survive a
+	// restart; ack without waiting for the async remote mirror.
+	if blockStore.LocalDurable() {
+		return nil
+	}
+	// Local store is volatile: success requires the data to have reached a
+	// durable remote (Finalized AND the remote is itself durable).
+	if res != nil && res.Finalized && blockStore.RemoteDurable() {
+		return nil
+	}
+	// Not yet durable anywhere that survives a crash — report so the client
+	// re-drives. The bytes remain in local CAS and the syncer keeps mirroring.
+	return ErrNotDurableYet
 }
