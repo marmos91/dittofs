@@ -189,6 +189,47 @@ func TestUserHandler_Create_WithGroups(t *testing.T) {
 	})
 }
 
+// TestUserHandler_Create_WithGID covers #1249: an explicit primary GID set at
+// create time round-trips through the response and is persisted on the user.
+func TestUserHandler_Create_WithGID(t *testing.T) {
+	cpStore, _, handler := setupUserTest(t)
+	ctx := context.Background()
+
+	uid := uint32(1500)
+	gid := uint32(1600)
+	body, _ := json.Marshal(CreateUserRequest{
+		Username: "giduser",
+		Password: "password123",
+		UID:      &uid,
+		GID:      &gid,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.Create(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("Create() status = %d, want %d, body = %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var resp UserResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal response: %v", err)
+	}
+	if resp.GID == nil || *resp.GID != gid {
+		t.Errorf("response GID = %v, want %d", resp.GID, gid)
+	}
+
+	stored, err := cpStore.GetUser(ctx, "giduser")
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if stored.GID == nil || *stored.GID != gid {
+		t.Errorf("persisted GID = %v, want %d", stored.GID, gid)
+	}
+}
+
 func TestUserHandler_Create_Duplicate(t *testing.T) {
 	cpStore, _, handler := setupUserTest(t)
 	ctx := context.Background()

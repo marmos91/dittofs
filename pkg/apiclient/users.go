@@ -13,6 +13,7 @@ type User struct {
 	Email              string            `json:"email,omitempty"`
 	Role               string            `json:"role"`
 	UID                *uint32           `json:"uid,omitempty"`
+	GID                *uint32           `json:"gid,omitempty"`
 	Groups             []string          `json:"groups,omitempty"`
 	Enabled            bool              `json:"enabled"`
 	MustChangePassword bool              `json:"must_change_password"`
@@ -29,6 +30,7 @@ type CreateUserRequest struct {
 	DisplayName      string            `json:"display_name,omitempty"`
 	Role             string            `json:"role,omitempty"`
 	UID              *uint32           `json:"uid,omitempty"`
+	GID              *uint32           `json:"gid,omitempty"`
 	Groups           []string          `json:"groups,omitempty"`
 	Enabled          *bool             `json:"enabled,omitempty"`
 	SharePermissions map[string]string `json:"share_permissions,omitempty"`
@@ -40,6 +42,7 @@ type UpdateUserRequest struct {
 	DisplayName      *string            `json:"display_name,omitempty"`
 	Role             *string            `json:"role,omitempty"`
 	UID              *uint32            `json:"uid,omitempty"`
+	GID              *uint32            `json:"gid,omitempty"`
 	Groups           *[]string          `json:"groups,omitempty"`
 	Enabled          *bool              `json:"enabled,omitempty"`
 	SharePermissions *map[string]string `json:"share_permissions,omitempty"`

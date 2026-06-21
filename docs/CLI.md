@@ -5740,11 +5740,11 @@ Examples:
   # Create user with email and groups
   dfsctl user create --username bob --password secret --email bob@example.com --groups editors,viewers
 
-  # Create user with specific UID
-  dfsctl user create --username bob --password secret --uid 1001
+  # Create user with specific UID and primary GID
+  dfsctl user create --username bob --password secret --uid 1001 --gid 1001
 
-  # Create user with your current host UID (for NFS access)
-  dfsctl user create --username bob --password secret --host-uid
+  # Create user with your current host UID and GID (for NFS access)
+  dfsctl user create --username bob --password secret --host-uid --host-gid
 
 ```
 dfsctl user create [flags]
@@ -5755,7 +5755,9 @@ Flags:
 ```
       --email string      Email address
       --enabled           Enable account (default true)
+      --gid uint32        Unix primary group ID (auto-assigned if not specified)
       --groups string     Comma-separated list of groups
+      --host-gid          Use current host user's GID (for NFS access)
       --host-uid          Use current host user's UID (for NFS access)
   -p, --password string   Password (prompts if not provided)
       --role string       Role (user|admin) (default "user")
@@ -5842,8 +5844,8 @@ Examples:
   # Update multiple fields
   dfsctl user edit alice --email alice@example.com --groups editors,admins
 
-  # Update UID
-  dfsctl user edit alice --uid 1001
+  # Update UID and primary GID
+  dfsctl user edit alice --uid 1001 --gid 1001
 
 ```
 dfsctl user edit <username> [flags]
@@ -5855,6 +5857,7 @@ Flags:
       --display-name string   Display name
       --email string          Email address
       --enabled string        Enable/disable account (true|false)
+      --gid uint32            Unix primary group ID
       --groups string         Comma-separated list of groups
       --role string           Role (user|admin)
       --uid uint32            Unix user ID
