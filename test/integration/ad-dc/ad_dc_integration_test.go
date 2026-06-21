@@ -162,8 +162,14 @@ func setupADDC(t *testing.T) (kdcHostPort int, keytabPath, krb5ConfPath string, 
 	// Run the container with the AD-DC entrypoint (it provisions the domain,
 	// creates users/groups, and exports the keytab to /keytabs on its own).
 	t.Log("Starting AD-DC container...")
+	// --privileged is required for `samba-tool domain provision`: setting the NT
+	// ACL on the sysvol share (smbd.set_nt_acl) is denied on an overlayfs-backed
+	// container filesystem (e.g. Docker Desktop on macOS), aborting provisioning.
+	// CI's overlay2-on-ext4 happens to allow it unprivileged, but requiring it
+	// keeps the fixture portable across developer machines (issue #1252).
 	runOut, err := exec.Command("docker", "run", "-d",
 		"--platform", "linux/amd64",
+		"--privileged",
 		"--name", adContainerName,
 		"-p", "0:88/tcp",
 		adImageName,
@@ -334,9 +340,23 @@ func getADAPREQ(t *testing.T, krb5ConfPath string) []byte {
 	}
 
 	// kinit equivalent. DisablePAFXFAST avoids an unnecessary preauth round.
+	// Retry on transient KDC errors: the entrypoint exports the keytab (which
+	// setupADDC waits for) and only THEN stops the provisioning samba and
+	// re-execs it in the foreground, so the KDC has a brief down window right
+	// when the test first reaches kinit ("connection reset by peer"). A short
+	// retry loop rides that restart gap out.
 	cl := client.NewWithPassword(adUserAlice, adRealm, adUserPass, cfg, client.DisablePAFXFAST(true))
-	if err := cl.Login(); err != nil {
-		t.Fatalf("kinit as alice failed: %v", err)
+	var loginErr error
+	for attempt := 1; attempt <= 15; attempt++ {
+		if loginErr = cl.Login(); loginErr == nil {
+			break
+		}
+		t.Logf("kinit attempt %d/15 not ready yet: %v", attempt, loginErr)
+		time.Sleep(2 * time.Second)
+	}
+	if loginErr != nil {
+		dumpADLogs(t)
+		t.Fatalf("kinit as alice failed after retries: %v", loginErr)
 	}
 	defer cl.Destroy()
 	t.Log("alice obtained a TGT from the AD-DC")

@@ -585,6 +585,69 @@ metadata:
     case_preserving: true
 ```
 
+#### BadgerDB cache sizing (config file)
+
+The BadgerDB metadata engine keeps two in-memory caches that dominate read
+performance under concurrent NFS/SMB load:
+
+- the **block cache** — decompressed LSM-tree data blocks, and
+- the **index cache** — the block-offset indices used to locate keys.
+
+Badger's own defaults are tiny (256 MiB block, index cache disabled), which
+thrashes on a busy server over a large directory tree. The symptom in the logs
+is `Block cache might be too small ... hit-ratio: 0.26 ... sets-rejected`; every
+cold lookup then walks the LSM tree from disk, which also widens the window for
+the dedup transaction-conflict race and the append-log "pressure wait timed out"
+stall.
+
+By default both sizes **auto-scale with the memory available to the process**,
+so no tuning is required:
+
+| Cache | Fraction of available RAM | Floor   | Ceiling |
+|-------|---------------------------|---------|---------|
+| block | 15 %                      | 512 MiB | 4 GiB   |
+| index | 7.5 %                     | 256 MiB | 2 GiB   |
+
+The fractions are deliberately conservative because the same process also holds
+the append-log, the metadata working set, and read buffers. The available-memory
+figure is the cgroup limit inside a container, or physical RAM otherwise (same
+detection used for block-store sizing). Examples:
+
+- **4 GiB host** → ~614 MiB block / ~307 MiB index (the floors don't bind).
+- **2 GiB host / 2 GiB cgroup** → 512 MiB block / 256 MiB index (floors bind).
+- **64 GiB host** → 4 GiB block / 2 GiB index (ceilings bind).
+
+To override the auto-sizing, set the sizes explicitly (in MiB) in the top-level
+`metadata.badger` block. Setting one dimension still auto-sizes the other:
+
+```yaml
+metadata:
+  badger:
+    block_cache_mb: 2048   # 0 (default) = auto-size from available RAM
+    index_cache_mb: 1024   # 0 (default) = auto-size from available RAM
+```
+
+Environment overrides: `DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB`,
+`DITTOFS_METADATA_BADGER_INDEX_CACHE_MB`.
+
+**Recommended sizing vs. object/metadata count.** As a rule of thumb the block
+cache should hold the hot directory/inode working set. Each cached file/inode is
+on the order of a few hundred bytes of decompressed LSM data, so:
+
+| Hot metadata objects | Suggested `block_cache_mb` | Suggested `index_cache_mb` |
+|----------------------|----------------------------|----------------------------|
+| up to ~1 M           | auto (≥512)                | auto (≥256)                |
+| ~1–10 M              | 1024–2048                  | 512–1024                   |
+| ~10–50 M             | 2048–4096                  | 1024–2048                  |
+| > 50 M               | 4096+ (raise host RAM)     | 2048+                      |
+
+If you still see `hit-ratio` below ~0.8 or `sets-rejected` in the Badger logs,
+the cache is undersized for the working set — raise `block_cache_mb` first.
+
+These global sizes apply to every BadgerDB metadata store on the node. A single
+store can be overridden via its config-map keys when it is created (see below):
+`--config '{"path":"...","block_cache_mb":2048,"index_cache_mb":1024}'`.
+
 #### Metadata Store Instances (CLI)
 
 Metadata stores are managed at runtime via `dfsctl` and persisted in the control plane database:
@@ -596,6 +659,11 @@ Metadata stores are managed at runtime via `dfsctl` and persisted in the control
 # BadgerDB for persistent metadata
 ./dfsctl store metadata add --name badger-main --type badger \
   --config '{"path":"/tmp/dittofs-metadata-main"}'
+
+# BadgerDB with explicit per-store cache sizes (MiB). Omit either key (or set 0)
+# to auto-size that cache from available RAM. See "BadgerDB cache sizing" above.
+./dfsctl store metadata add --name badger-big --type badger \
+  --config '{"path":"/tmp/dittofs-metadata-big","block_cache_mb":2048,"index_cache_mb":1024}'
 
 # Separate BadgerDB instance for isolated shares
 ./dfsctl store metadata add --name badger-isolated --type badger \

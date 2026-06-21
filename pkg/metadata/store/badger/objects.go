@@ -168,7 +168,7 @@ func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 // errors short-circuit.
 func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn func(*badger.Txn) error) error {
 	var lastErr error
-	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
+	for attempt := 0; attempt < int(maxTransactionRetries.Load()); attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

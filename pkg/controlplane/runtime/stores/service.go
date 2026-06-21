@@ -182,6 +182,12 @@ func (s *Service) OpenMetadataStoreAtPath(
 		if err != nil {
 			return nil, fmt.Errorf("expand badger pathOverride %q: %w", pathOverride, err)
 		}
+		// Temp/snapshot/probe stores inherit the process-wide cache default
+		// (SetGlobalBadgerCacheDefaults) and RAM-relative auto-sizing via
+		// buildBadgerOptions, so they are not subject to the #1245 Bug D
+		// thrashing. Per-store cache overrides (block_cache_mb/index_cache_mb)
+		// are intentionally NOT threaded here — these are short-lived stores
+		// where a bespoke cache size has no practical value.
 		store, err := badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
 		if err != nil {
 			return nil, fmt.Errorf("open badger engine at %q: %w", dbPath, err)

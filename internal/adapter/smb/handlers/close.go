@@ -644,12 +644,27 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	// Step 10: Remove the open file handle
 	// ========================================================================
 
-	// WaitAndDeleteOpenFile drains in-flight operations (e.g., a concurrent
-	// QueryDirectory on the same handle) before removing the handle from
-	// the map. This prevents a CLOSE goroutine from racing ahead of a FIND
-	// goroutine on the same connection and causing a spurious FILE_CLOSED
-	// (smbtorture compound_find.compound_find_close).
-	h.WaitAndDeleteOpenFile(req.FileID)
+	// Drain in-flight operations (e.g., a concurrent QueryDirectory on the
+	// same handle) BEFORE removing the handle from the map. This prevents a
+	// CLOSE goroutine from racing ahead of a FIND goroutine on the same
+	// connection and causing a spurious FILE_CLOSED
+	// (smbtorture compound_find.compound_find_close). The drain runs OUTSIDE
+	// renameScanMu because it can block on a slow in-flight op and the rename
+	// path must remain free to take the mutex for its own conflict scan.
+	h.DrainHandleOps(req.FileID)
+
+	// Steps 10 (map removal) + 11 (lease release/signal) run under
+	// renameScanMu so that a concurrent SET_INFO rename's post-break conflict
+	// re-scan cannot observe this handle half-removed: either the rename's
+	// authoritative scan runs entirely before we begin (sees a live holder →
+	// correct SHARING_VIOLATION) or entirely after we finish (sees the shrunk
+	// table + a drained break → correct STATUS_OK). No interleaving, hence no
+	// flake. The break-WAIT the rename performs to reach this point happens
+	// OUTSIDE the mutex (set_info.go), so this CLOSE is never blocked behind a
+	// rename that is itself waiting on this CLOSE — see the renameScanMu
+	// doc comment on Handler for the full deadlock-safety argument.
+	h.renameScanMu.Lock()
+	h.deleteOpenFileEntry(req.FileID)
 
 	// ========================================================================
 	// Step 11: Release oplock/lease if held
@@ -704,6 +719,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 	if openFile.IsDirectory && h.LeaseManager != nil && len(openFile.MetadataHandle) > 0 {
 		h.LeaseManager.SignalParkedCreates(lock.FileHandle(openFile.MetadataHandle), openFile.ShareName)
 	}
+	h.renameScanMu.Unlock()
 
 	logger.Debug("CLOSE successful",
 		"fileID", fmt.Sprintf("%x", req.FileID),

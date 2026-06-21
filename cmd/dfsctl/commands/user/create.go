@@ -17,6 +17,8 @@ var (
 	createRole     string
 	createUID      uint32
 	createHostUID  bool
+	createGID      uint32
+	createHostGID  bool
 	createGroups   string
 	createEnabled  bool
 )
@@ -42,11 +44,11 @@ Examples:
   # Create user with email and groups
   dfsctl user create --username bob --password secret --email bob@example.com --groups editors,viewers
 
-  # Create user with specific UID
-  dfsctl user create --username bob --password secret --uid 1001
+  # Create user with specific UID and primary GID
+  dfsctl user create --username bob --password secret --uid 1001 --gid 1001
 
-  # Create user with your current host UID (for NFS access)
-  dfsctl user create --username bob --password secret --host-uid`,
+  # Create user with your current host UID and GID (for NFS access)
+  dfsctl user create --username bob --password secret --host-uid --host-gid`,
 	RunE: runCreate,
 }
 
@@ -57,9 +59,12 @@ func init() {
 	createCmd.Flags().StringVar(&createRole, "role", "user", "Role (user|admin)")
 	createCmd.Flags().Uint32Var(&createUID, "uid", 0, "Unix user ID (auto-assigned if not specified)")
 	createCmd.Flags().BoolVar(&createHostUID, "host-uid", false, "Use current host user's UID (for NFS access)")
+	createCmd.Flags().Uint32Var(&createGID, "gid", 0, "Unix primary group ID (auto-assigned if not specified)")
+	createCmd.Flags().BoolVar(&createHostGID, "host-gid", false, "Use current host user's GID (for NFS access)")
 	createCmd.Flags().StringVar(&createGroups, "groups", "", "Comma-separated list of groups")
 	// MarkFlagsMutuallyExclusive panics if flag names don't exist (see Cobra source)
 	createCmd.MarkFlagsMutuallyExclusive("uid", "host-uid")
+	createCmd.MarkFlagsMutuallyExclusive("gid", "host-gid")
 	createCmd.Flags().BoolVar(&createEnabled, "enabled", true, "Enable account")
 }
 
@@ -140,12 +145,37 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// GID - use host-gid, explicit gid, or prompt if interactive (mirrors UID).
+	var gid *uint32
+	if createHostGID {
+		hostGID := os.Getgid()
+		if hostGID < 0 {
+			return fmt.Errorf("--host-gid is not supported on this platform")
+		}
+		hostGIDUint32 := uint32(hostGID)
+		gid = &hostGIDUint32
+	} else if cmd.Flags().Changed("gid") {
+		gid = &createGID
+	} else if interactive {
+		gidInput, err := prompt.InputOptional("GID (leave empty for auto-assign, or use --host-gid)")
+		if err != nil {
+			return cmdutil.HandleAbort(err)
+		}
+		if gidInput != "" {
+			var gidVal uint32
+			if _, err := fmt.Sscanf(gidInput, "%d", &gidVal); err == nil {
+				gid = &gidVal
+			}
+		}
+	}
+
 	req := &apiclient.CreateUserRequest{
 		Username: username,
 		Password: password,
 		Email:    email,
 		Role:     role,
 		UID:      uid,
+		GID:      gid,
 		Groups:   cmdutil.ParseCommaSeparatedList(groups),
 		Enabled:  &createEnabled,
 	}

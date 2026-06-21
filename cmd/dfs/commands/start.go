@@ -22,6 +22,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -148,6 +149,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 	if adaptersCreated {
 		logger.Info("Default adapters created", "adapters", "nfs, smb")
 	}
+
+	// Wire operator-configured Badger metadata-cache defaults into the badger
+	// engine BEFORE any metadata store is opened (InitializeFromStore opens
+	// them). Zero values leave that dimension to RAM-relative auto-sizing
+	// inside the engine (#1245 Bug D).
+	badgerstore.SetGlobalBadgerCacheDefaults(
+		cfg.Metadata.Badger.BlockCacheSizeMB,
+		cfg.Metadata.Badger.IndexCacheSizeMB,
+	)
 
 	// Initialize runtime from database (loads metadata stores and shares)
 	rt, err := runtime.InitializeFromStore(ctx, cpStore)

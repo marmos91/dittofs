@@ -475,6 +475,149 @@ func TestDedup_ConcurrentRace(t *testing.T) {
 	}
 }
 
+// TestApplyFileLevelDedupHit_PendingDonor_TreatedAsMiss encodes issue #1245
+// Bug A at the helper level: a target (donor) whose FileBlock rows are still
+// Pending (non-durable) makes the coordinator's Remote-gated GetByHash resolve
+// to no row, so IncrementRefCount returns block.ErrFileBlockNotFound. The helper
+// MUST treat this as a dedup MISS — return (false, nil), NOT an error — and roll
+// back any increments already made on prior target hashes so no RefCount leaks.
+// PersistFileBlocks MUST NOT be called (the caller falls through to the normal
+// per-block upload).
+func TestApplyFileLevelDedupHit_PendingDonor_TreatedAsMiss(t *testing.T) {
+	ctx := context.Background()
+	m, fc := dedupTestSetup(t)
+
+	speculative := makeSpeculativeBlocks(0xA1, 0xA2)
+	// Target has two distinct hashes; the FIRST increment succeeds, the
+	// SECOND returns ErrFileBlockNotFound (the Pending-donor signal).
+	target := makeSpeculativeBlocks(0xB1, 0xB2)
+	provisional := block.ComputeObjectID(speculative)
+	fc.objectIDHits[provisional] = target
+
+	fc.failOnNthIncrement = 2
+	fc.incErr = block.ErrFileBlockNotFound
+
+	hit, err := m.applyFileLevelDedupHit(ctx, "pid", speculative, target, provisional, false /*isRetry*/)
+	if err != nil {
+		t.Fatalf("err=%v; want nil (Pending donor must be a clean MISS, not an error)", err)
+	}
+	if hit {
+		t.Fatalf("hit=true; want false (Pending donor → MISS)")
+	}
+
+	// The first increment (on B1) must have been rolled back: exactly one
+	// DecrementRefCount, on the hash that was successfully incremented.
+	if got := len(fc.decHashes); got != 1 {
+		t.Fatalf("DecrementRefCount calls=%d; want 1 (roll back the one successful increment; no leak)", got)
+	}
+	if fc.decHashes[0][0] != 0xB1 {
+		t.Errorf("rolled-back hash=0x%02X; want 0xB1 (the only successfully-incremented target hash)", fc.decHashes[0][0])
+	}
+
+	// PersistFileBlocks MUST NOT fire on a miss.
+	if got := len(fc.persistCalls); got != 0 {
+		t.Errorf("PersistFileBlocks calls=%d on Pending-donor miss; want 0 (caller falls through to per-block path)", got)
+	}
+}
+
+// TestApplyFileLevelDedupHit_PendingDonor_FirstHash_NoLeak covers the
+// edge where the VERY FIRST target hash is the Pending one: no prior
+// increment was made, so there is nothing to roll back (zero
+// DecrementRefCount calls), and the helper still returns a clean miss.
+func TestApplyFileLevelDedupHit_PendingDonor_FirstHash_NoLeak(t *testing.T) {
+	ctx := context.Background()
+	m, fc := dedupTestSetup(t)
+
+	speculative := makeSpeculativeBlocks(0xA1)
+	target := makeSpeculativeBlocks(0xB1, 0xB2)
+	provisional := block.ComputeObjectID(speculative)
+	fc.objectIDHits[provisional] = target
+
+	fc.failOnNthIncrement = 1
+	fc.incErr = block.ErrFileBlockNotFound
+
+	hit, err := m.applyFileLevelDedupHit(ctx, "pid", speculative, target, provisional, false /*isRetry*/)
+	if err != nil {
+		t.Fatalf("err=%v; want nil (Pending donor MISS)", err)
+	}
+	if hit {
+		t.Fatalf("hit=true; want false")
+	}
+	if got := len(fc.decHashes); got != 0 {
+		t.Errorf("DecrementRefCount calls=%d; want 0 (first hash failed → nothing was incremented)", got)
+	}
+	if got := len(fc.persistCalls); got != 0 {
+		t.Errorf("PersistFileBlocks calls=%d; want 0", got)
+	}
+}
+
+// TestApplyFileLevelDedupHit_IncrementError_NonNotFound_RollsBack covers the
+// pre-existing refcount-leak fix: a NON-not-found IncrementRefCount error on a
+// later target hash must still roll back the earlier successful increment(s)
+// and then propagate the error (the call does NOT retry on this branch).
+func TestApplyFileLevelDedupHit_IncrementError_NonNotFound_RollsBack(t *testing.T) {
+	ctx := context.Background()
+	m, fc := dedupTestSetup(t)
+
+	speculative := makeSpeculativeBlocks(0xA1, 0xA2)
+	target := makeSpeculativeBlocks(0xB1, 0xB2)
+	provisional := block.ComputeObjectID(speculative)
+	fc.objectIDHits[provisional] = target
+
+	// Generic (non-not-found) failure on the second increment.
+	fc.failOnNthIncrement = 2
+	// incErr left nil → the generic induced-failure error is returned.
+
+	hit, err := m.applyFileLevelDedupHit(ctx, "pid", speculative, target, provisional, false /*isRetry*/)
+	if hit {
+		t.Fatalf("hit=true on increment error; want false")
+	}
+	if err == nil {
+		t.Fatalf("err=nil; want the increment failure propagated")
+	}
+	// Prior successful increment (B1) must be rolled back — no leak.
+	if got := len(fc.decHashes); got != 1 {
+		t.Fatalf("DecrementRefCount calls=%d; want 1 (roll back prior increment before propagating)", got)
+	}
+	if fc.decHashes[0][0] != 0xB1 {
+		t.Errorf("rolled-back hash=0x%02X; want 0xB1", fc.decHashes[0][0])
+	}
+	if got := len(fc.persistCalls); got != 0 {
+		t.Errorf("PersistFileBlocks calls=%d on increment error; want 0", got)
+	}
+}
+
+// TestTryEagerSmallFileDedup_PendingDonor_TreatedAsMiss verifies the eager
+// small-file path inherits the fix: a seeded ObjectID hit whose target is a
+// Pending donor (IncrementRefCount → ErrFileBlockNotFound) returns a clean
+// (false, nil) miss so engine.Flush falls through to the normal upload path.
+func TestTryEagerSmallFileDedup_PendingDonor_TreatedAsMiss(t *testing.T) {
+	ctx := context.Background()
+	m, fc := dedupTestSetup(t)
+
+	data := []byte("small file content for pending donor")
+	provisional := singleBlockObjectID(data)
+	contentHash := hashContent(data)
+	fc.objectIDHits[provisional] = []block.BlockRef{
+		{Hash: contentHash, Offset: 0, Size: uint32(len(data))},
+	}
+
+	// The single target hash is a Pending donor.
+	fc.failOnNthIncrement = 1
+	fc.incErr = block.ErrFileBlockNotFound
+
+	hit, err := m.tryEagerSmallFileDedup(ctx, "pid", data)
+	if err != nil {
+		t.Fatalf("err=%v; want nil (eager path must inherit the Pending-donor MISS)", err)
+	}
+	if hit {
+		t.Fatalf("hit=true; want false (Pending donor → MISS → fall through to normal Flush)")
+	}
+	if got := len(fc.persistCalls); got != 0 {
+		t.Errorf("PersistFileBlocks calls=%d on eager Pending-donor miss; want 0", got)
+	}
+}
+
 // Compile-time check: keep errors import live even if reshapes
 // the error-handling path. Tests that need errors.Is can adopt this.
 var _ = errors.Is

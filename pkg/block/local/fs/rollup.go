@@ -87,17 +87,24 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 		select {
 		case pid := <-bc.rollupCh:
 			if err := bc.rollupFile(ctx, pid, false); err != nil {
-				// Log at Error so misconfigured or corrupted state is
-				// observable; the dirty interval stays in the tree and
-				// a future pass (or restart + recovery) retries. A
-				// swallowed error here would hide FileBlock manifest
-				// persistence failures and logIndex/tree divergence
-				// reports from operator logs.
+				// rollupFile already demotes a benign shutdown-time
+				// context cancellation to nil (#1245 Bug C), so a non-nil
+				// error here is genuine. Log at Error so misconfigured or
+				// corrupted state is observable; the dirty interval stays
+				// in the tree and a future pass (or restart + recovery)
+				// retries. A swallowed error here would hide FileBlock
+				// manifest persistence failures and logIndex/tree
+				// divergence reports from operator logs.
 				slog.Error("rollupFile failed",
 					"payloadID", pid, "error", err)
 			}
 		case <-ticker.C:
 			bc.scanAllFiles(ctx)
+		case <-bc.stopRollup:
+			// #1245 Bug C: graceful-stop requested. Exit the cancellable-ctx
+			// worker loop so GracefulStopRollup can drain the remaining
+			// dirty payloads on a separate, non-cancelled context.
+			return
 		case <-bc.done:
 			return
 		case <-ctx.Done():
@@ -123,13 +130,50 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 			return
 		}
 		if err := bc.rollupFile(ctx, pid, false); err != nil {
+			// rollupFile demotes benign shutdown cancellation to nil
+			// (#1245 Bug C); a non-nil error here is genuine.
 			slog.Error("rollupFile failed",
 				"payloadID", pid, "error", err, "source", "ticker")
 		}
 	}
 }
 
-// rollupFile consumes the earliest stable interval for payloadID, emits
+// isShutdownCancel reports whether err is (or wraps) a context CANCELLATION —
+// the signal that the rollup ctx was torn down by shutdown mid-pass. #1245 Bug
+// C: such an interruption is benign. CAS chunks are content-addressed (re-store
+// is a no-op) and rollup_offset only advances after the FileBlock manifest
+// lands, so an interrupted rollup left durable, resumable state. Callers treat
+// this as "skip + resume on restart", NOT a fatal error that must reach os.Exit.
+// Genuine errors (CRC mismatch, persist failure, divergence) do NOT wrap
+// context.Canceled and are still surfaced.
+//
+// DeadlineExceeded is deliberately EXCLUDED: the only deadline in this package
+// is GracefulStopRollup's bounded grace window. Demoting it to nil here would
+// let a timed-out drain look like it succeeded; instead the deadline propagates
+// out of rollupFile → DrainRollups → GracefulStopRollup, which classifies it as
+// a non-fatal "drain incomplete, resumes on restart" (errors.Is DeadlineExceeded).
+func isShutdownCancel(err error) bool {
+	return errors.Is(err, context.Canceled)
+}
+
+// rollupFile consumes the earliest stable interval for payloadID and commits
+// atomically. It is a thin wrapper over rollupFileInner that demotes a
+// shutdown-time context cancellation to a benign nil (#1245 Bug C): when the
+// rollup ctx is cancelled out from under an in-flight pass, the partial work is
+// content-addressed + idempotent and resumes on the next (fresh-context) pass,
+// so the cancellation must NOT propagate as a fatal error that bubbles up to
+// os.Exit. All other errors pass through unchanged.
+func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool) error {
+	err := bc.rollupFileInner(ctx, payloadID, force)
+	if isShutdownCancel(err) {
+		slog.Debug("rollupFile interrupted by shutdown; will resume on restart",
+			"payloadID", payloadID)
+		return nil
+	}
+	return err
+}
+
+// rollupFileInner consumes the earliest stable interval for payloadID, emits
 // chunks, and commits atomically.
 //
 // Concurrency (C1): the pass runs in three phases under TWO per-payload locks.
@@ -175,7 +219,7 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 // bytes that have aged past the stabilization window. Steady-state rollup
 // (worker pool, ticker) always passes force=false to preserve the
 // stabilization invariant.
-func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool) error {
+func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force bool) error {
 	if bc.isClosed() {
 		return nil
 	}

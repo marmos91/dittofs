@@ -165,6 +165,17 @@ controlplane:
 # View current deduced values:
 #   dfs config show --deduced
 
+# Metadata engine tunables (optional)
+# BadgerDB block/index cache sizes (MiB). Both auto-size from available RAM
+# when unset (~15% / ~7.5%, floors 512/256 MiB, ceilings 4 GiB/2 GiB), so a
+# 4 GiB host gets ~614/~307 MiB automatically. Raise these if Badger logs
+# "Block cache might be too small ... hit-ratio ... sets-rejected".
+# See docs/CONFIGURATION.md -> "BadgerDB cache sizing".
+# metadata:
+#   badger:
+#     block_cache_mb: 2048
+#     index_cache_mb: 1024
+
 # Initial admin user configuration
 # This is used to bootstrap the first admin user
 admin:

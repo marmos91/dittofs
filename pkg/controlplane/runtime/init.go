@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -73,7 +74,20 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		if err != nil {
 			return nil, fmt.Errorf("failed to expand path %q: %w", dbPath, err)
 		}
-		return badger.NewBadgerMetadataStoreWithDefaults(ctx, dbPath)
+		// Optional per-store Badger cache overrides (#1245 Bug D). The docs
+		// define 0 = unset (fall through to global config then RAM-relative
+		// auto-sizing) and positive = explicit size in MiB. A negative value is
+		// a config error — reject it here rather than letting it silently fall
+		// through to auto-sizing as if it were unset.
+		blockCacheMB := configInt64(config, "block_cache_mb")
+		if blockCacheMB < 0 {
+			return nil, fmt.Errorf("badger metadata store block_cache_mb must be >= 0 (0 = auto), got %d", blockCacheMB)
+		}
+		indexCacheMB := configInt64(config, "index_cache_mb")
+		if indexCacheMB < 0 {
+			return nil, fmt.Errorf("badger metadata store index_cache_mb must be >= 0 (0 = auto), got %d", indexCacheMB)
+		}
+		return badger.NewBadgerMetadataStoreWithDefaultsAndCaches(ctx, dbPath, blockCacheMB, indexCacheMB)
 
 	case "postgres":
 		pgCfg := &postgres.PostgresMetadataStoreConfig{}
@@ -145,6 +159,29 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 
 	default:
 		return nil, fmt.Errorf("unsupported metadata store type: %s", storeType)
+	}
+}
+
+// configInt64 extracts an integer value from a type-specific config map under
+// key, returning 0 when the key is absent or not a number. Config maps are
+// typically produced by json.Unmarshal (numbers decode to float64), but a
+// directly-set map may carry int/int64, so all are accepted.
+func configInt64(config map[string]any, key string) int64 {
+	switch v := config[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0
+		}
+		return n
+	default:
+		return 0
 	}
 }
 

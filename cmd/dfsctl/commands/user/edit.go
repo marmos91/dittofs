@@ -16,6 +16,7 @@ var (
 	editDisplayName string
 	editRole        string
 	editUID         uint32
+	editGID         uint32
 	editGroups      string
 	editEnabled     string // "true", "false", or "" for unchanged
 )
@@ -44,8 +45,8 @@ Examples:
   # Update multiple fields
   dfsctl user edit alice --email alice@example.com --groups editors,admins
 
-  # Update UID
-  dfsctl user edit alice --uid 1001`,
+  # Update UID and primary GID
+  dfsctl user edit alice --uid 1001 --gid 1001`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }
@@ -55,6 +56,7 @@ func init() {
 	editCmd.Flags().StringVar(&editDisplayName, "display-name", "", "Display name")
 	editCmd.Flags().StringVar(&editRole, "role", "", "Role (user|admin)")
 	editCmd.Flags().Uint32Var(&editUID, "uid", 0, "Unix user ID")
+	editCmd.Flags().Uint32Var(&editGID, "gid", 0, "Unix primary group ID")
 	editCmd.Flags().StringVar(&editGroups, "groups", "", "Comma-separated list of groups")
 	editCmd.Flags().StringVar(&editEnabled, "enabled", "", "Enable/disable account (true|false)")
 }
@@ -70,6 +72,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	// Check if any flags were provided
 	hasFlags := cmd.Flags().Changed("email") || cmd.Flags().Changed("display-name") ||
 		cmd.Flags().Changed("role") || cmd.Flags().Changed("uid") ||
+		cmd.Flags().Changed("gid") ||
 		cmd.Flags().Changed("groups") || cmd.Flags().Changed("enabled")
 
 	// If no flags provided, run interactive mode
@@ -100,6 +103,11 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		hasUpdate = true
 	}
 
+	if cmd.Flags().Changed("gid") {
+		req.GID = &editGID
+		hasUpdate = true
+	}
+
 	if editGroups != "" {
 		groups := cmdutil.ParseCommaSeparatedList(editGroups)
 		req.Groups = &groups
@@ -113,7 +121,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no fields specified. Use --email, --role, --uid, --groups, or --enabled")
+		return fmt.Errorf("no fields specified. Use --email, --role, --uid, --gid, --groups, or --enabled")
 	}
 
 	user, err := client.UpdateUser(username, req)
@@ -177,6 +185,23 @@ func runEditInteractive(client *apiclient.Client, username string) error {
 		var newUID uint32
 		if _, err := fmt.Sscanf(newUIDStr, "%d", &newUID); err == nil {
 			req.UID = &newUID
+			hasUpdate = true
+		}
+	}
+
+	// GID
+	currentGIDStr := ""
+	if current.GID != nil {
+		currentGIDStr = fmt.Sprintf("%d", *current.GID)
+	}
+	newGIDStr, err := prompt.Input("GID (leave empty to keep current)", currentGIDStr)
+	if err != nil {
+		return cmdutil.HandleAbort(err)
+	}
+	if newGIDStr != currentGIDStr && newGIDStr != "" {
+		var newGID uint32
+		if _, err := fmt.Sscanf(newGIDStr, "%d", &newGID); err == nil {
+			req.GID = &newGID
 			hasUpdate = true
 		}
 	}
