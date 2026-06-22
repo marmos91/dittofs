@@ -50,6 +50,11 @@ func (h *Handler) handleSetXattr(ctx *types.CompoundContext, reader io.Reader) *
 	if err != nil {
 		return xattrErr(types.OP_SETXATTR, types.NFS4ERR_BADXDR)
 	}
+	// sxa_key is a component4: reject invalid UTF-8 / NUL / '/' before any
+	// canonicalization or backing-store write (matches LOOKUP/CREATE/REMOVE).
+	if status := types.ValidateUTF8Filename(name); status != types.NFS4_OK {
+		return xattrErr(types.OP_SETXATTR, status)
+	}
 	// DecodeOpaque enforces a generic 1 MiB XDR cap. A value over our 64 KiB
 	// inline ceiling but within that cap decodes here and the store returns
 	// ErrXattrTooLarge -> NFS4ERR_XATTR2BIG below. A value over 1 MiB is

@@ -36,6 +36,11 @@ func (h *Handler) handleGetXattr(ctx *types.CompoundContext, reader io.Reader) *
 	if err != nil {
 		return xattrErr(types.OP_GETXATTR, types.NFS4ERR_BADXDR)
 	}
+	// gxa_name is a component4: reject invalid UTF-8 / NUL / '/' before it
+	// reaches canonicalization and the backend (matches LOOKUP/CREATE/REMOVE).
+	if status := types.ValidateUTF8Filename(name); status != types.NFS4_OK {
+		return xattrErr(types.OP_GETXATTR, status)
+	}
 
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) {
 		return xattrErr(types.OP_GETXATTR, types.NFS4ERR_NOTSUPP)
