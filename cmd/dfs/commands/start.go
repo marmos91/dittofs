@@ -355,6 +355,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 		// before SIGKILL, so 3*shutdownTimeout + 5s self-exits just inside that
 		// window while still letting the common multi-stage drain finish.
 		shutdownDeadline := 3*cfg.ShutdownTimeout + 5*time.Second
+		timer := time.NewTimer(shutdownDeadline)
+		defer timer.Stop()
 		select {
 		case err := <-serverDone:
 			if err != nil {
@@ -362,7 +364,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 				return err
 			}
 			logger.Info("Server stopped gracefully")
-		case <-time.After(shutdownDeadline):
+		case <-timer.C:
 			logger.Error("Graceful shutdown exceeded deadline; forcing exit",
 				"deadline", shutdownDeadline)
 			return fmt.Errorf("graceful shutdown timed out after %s", shutdownDeadline)

@@ -90,7 +90,7 @@ func TestBaseAdapter_Stop_ClosesListener(t *testing.T) {
 // TestBaseAdapter_Stop_DrainsActiveConnection verifies the graceful happy path:
 // Stop waits for an in-flight connection to finish (within the timeout) and
 // returns nil rather than force-closing it. The complementary force-close path
-// (timeout exceeded) is covered by TestBaseAdapter_Stop_CtxDone_ForceClosesConnections.
+// (context cancelled) is covered by TestBaseAdapter_Stop_CtxDone_ForceClosesConnections.
 func TestBaseAdapter_Stop_DrainsActiveConnection(t *testing.T) {
 	b := NewBaseAdapter(BaseConfig{ShutdownTimeout: 5 * time.Second}, "TEST")
 
