@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -358,11 +359,12 @@ func runStart(cmd *cobra.Command, args []string) error {
 		defer timer.Stop()
 		select {
 		case err := <-serverDone:
-			if err != nil {
+			if isExpectedShutdownErr(err) {
+				logger.Info("Server stopped gracefully")
+			} else {
 				logger.Error("Server shutdown error", "error", err)
 				return err
 			}
-			logger.Info("Server stopped gracefully")
 		case <-timer.C:
 			logger.Error("Graceful shutdown exceeded deadline; forcing exit",
 				"deadline", shutdownDeadline)
@@ -379,6 +381,19 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// isExpectedShutdownErr reports whether err is the normal outcome of a
+// SIGTERM-initiated graceful shutdown rather than a real failure. We cancel the
+// root context on purpose, so context.Canceled — and the http.ErrServerClosed a
+// listener returns once Shutdown is called — are expected. Per the logging
+// convention (expected errors at Info/Debug, unexpected at Error), these must
+// not be logged at ERROR: a clean shutdown emitting ERROR on every restart
+// tripped alerting / log-based health checks (#1329).
+func isExpectedShutdownErr(err error) bool {
+	return err == nil ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, http.ErrServerClosed)
 }
 
 // getConfigSource returns a description of where the config was loaded from.
