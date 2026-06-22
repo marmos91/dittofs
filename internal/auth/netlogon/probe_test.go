@@ -3,10 +3,11 @@ package netlogon
 import (
 	"testing"
 
-	_ "github.com/oiweiwei/go-msrpc/ndr"
+	_ "github.com/oiweiwei/go-msrpc/dcerpc"
+	_ "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+	_ "github.com/oiweiwei/go-msrpc/ssp/credential"
+	_ "github.com/oiweiwei/go-msrpc/ssp/gssapi"
+	_ "github.com/oiweiwei/go-msrpc/ssp/ntlm"
 )
 
-// TestGoMsRpcImport verifies that the go-msrpc dependency imports correctly.
-func TestGoMsRpcImport(t *testing.T) {
-	t.Log("go-msrpc imported successfully")
-}
+func TestGoMsRpcImport(t *testing.T) {}
