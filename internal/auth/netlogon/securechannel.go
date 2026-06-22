@@ -110,13 +110,11 @@ func (sc *SecureChannel) samLogon(ctx context.Context, mc MachineCredential, req
 	}
 	info := v4.ValidationSAM4
 
-	// Domain SID string.
-	domainSID := domainSIDString(info.LogonDomainID)
+	var domainSID string
+	if info.LogonDomainID != nil {
+		domainSID = info.LogonDomainID.String()
+	}
 
-	// User RID.
-	userRID := info.UserID
-
-	// Group RIDs.
 	groupRIDs := make([]uint32, 0, len(info.GroupIDs))
 	for _, gm := range info.GroupIDs {
 		if gm != nil {
@@ -135,13 +133,5 @@ func (sc *SecureChannel) samLogon(ctx context.Context, mc MachineCredential, req
 		}
 	}
 
-	return samInfo4ToResult(domainSID, userRID, groupRIDs, sessionKey, req.Username, req.Domain)
-}
-
-// domainSIDString converts a *dtyp.SID to its "S-1-…" string representation.
-func domainSIDString(sid *dtyp.SID) string {
-	if sid == nil {
-		return ""
-	}
-	return sid.String()
+	return samInfo4ToResult(domainSID, info.UserID, groupRIDs, sessionKey, req.Username, req.Domain)
 }
