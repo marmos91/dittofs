@@ -18,3 +18,15 @@ func TestSIDFromRIDRejectsMalformed(t *testing.T) {
 		t.Fatal("expected error for malformed domain SID")
 	}
 }
+
+func TestSIDFromRIDRejectsNonNumeric(t *testing.T) {
+	if _, err := SIDFromRID("S-1-5-21-abc-def-ghi", 1103); err == nil {
+		t.Fatal("expected error for non-numeric sub-authority")
+	}
+}
+
+func TestSIDFromRIDRejectsEmptySubAuthority(t *testing.T) {
+	if _, err := SIDFromRID("S-1-5-21--b-c", 1103); err == nil {
+		t.Fatal("expected error for empty sub-authority")
+	}
+}
