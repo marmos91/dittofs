@@ -157,11 +157,13 @@ func (p *PipeState) Transact(inputData []byte, maxOutput int) ([]byte, error) {
 
 // PipeManager manages named pipe instances
 type PipeManager struct {
-	mu               sync.RWMutex
-	pipes            map[[16]byte]*PipeState // Keyed by SMB FileID
-	shares           []ShareInfo1            // Available shares for enumeration
-	sidMapper        *sid.SIDMapper          // For lsarpc SID resolution
-	identityResolver IdentityResolver        // For lsarpc real name resolution
+	mu                sync.RWMutex
+	pipes             map[[16]byte]*PipeState // Keyed by SMB FileID
+	shares            []ShareInfo1            // Available shares for enumeration
+	sidMapper         *sid.SIDMapper          // For lsarpc SID resolution
+	identityResolver  IdentityResolver        // For lsarpc real name resolution
+	foreignResolver   ForeignSIDResolver      // For lsarpc AD/LDAP SID resolution
+	machineDomainName string                  // NetBIOS name for machine-domain SIDs
 }
 
 // NewPipeManager creates a new pipe manager
@@ -193,6 +195,22 @@ func (pm *PipeManager) SetIdentityResolver(resolver IdentityResolver) {
 	pm.identityResolver = resolver
 }
 
+// SetForeignSIDResolver sets the directory-backed resolver used by lsarpc to
+// translate foreign (AD/LDAP) domain SIDs to account names. May be nil.
+func (pm *PipeManager) SetForeignSIDResolver(resolver ForeignSIDResolver) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.foreignResolver = resolver
+}
+
+// SetMachineDomainName sets the NetBIOS domain name reported by lsarpc for
+// machine-domain (local UID/GID) SIDs. An empty value uses the default.
+func (pm *PipeManager) SetMachineDomainName(name string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.machineDomainName = name
+}
+
 // CreatePipe creates a new named pipe instance.
 // The handler type is determined by the pipe name: "lsarpc" creates an
 // LSARPCHandler, all others create an SRVSVCHandler.
@@ -208,7 +226,10 @@ func (pm *PipeManager) CreatePipe(fileID [16]byte, pipeName string) *PipeState {
 		if mapper == nil {
 			mapper = sid.NewSIDMapper(0, 0, 0) // fallback
 		}
-		handler = NewLSARPCHandler(mapper, pm.identityResolver)
+		lsaHandler := NewLSARPCHandler(mapper, pm.identityResolver)
+		lsaHandler.SetForeignSIDResolver(pm.foreignResolver)
+		lsaHandler.SetMachineDomainName(pm.machineDomainName)
+		handler = lsaHandler
 	} else {
 		// Create SRVSVC handler for share enumeration
 		sharesCopy := make([]ShareInfo1, len(pm.shares))

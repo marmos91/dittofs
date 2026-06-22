@@ -77,6 +77,25 @@ type IdentityResolver interface {
 	LookupGroupNameByGID(gid uint32) (string, bool)
 }
 
+// ForeignSIDResolver resolves a FOREIGN (AD/LDAP) domain SID — one that is
+// neither well-known nor an algorithmic machine-domain SID — to its account
+// name, NetBIOS domain, and SID type. It backs the directory side of the
+// LSARPC SID-to-name path so Windows Explorer's Security tab shows real AD
+// account names (e.g. CONTOSO\alice) instead of raw SIDs.
+//
+// Implementations consult the configured identity directory (the LDAP/AD
+// provider via the centralized identity.Resolver) and SHOULD cache. A miss
+// (ok=false) is expected and never an error: the SID stays unmapped and the
+// batch returns STATUS_SOME_NOT_MAPPED. When nil, the handler skips the
+// directory lookup entirely and foreign SIDs render as raw strings.
+type ForeignSIDResolver interface {
+	// LookupSID resolves a canonical SID string ("S-1-5-21-...") to its
+	// account name and NetBIOS domain. sidType is one of the SidType*
+	// constants (SidTypeUser / SidTypeGroup). ok=false means no directory
+	// object matched the SID.
+	LookupSID(sidString string) (name, domain string, sidType uint16, ok bool)
+}
+
 // =============================================================================
 // LSA Handler
 // =============================================================================
@@ -85,12 +104,55 @@ type IdentityResolver interface {
 type LSARPCHandler struct {
 	sidMapper *sid.SIDMapper
 	resolver  IdentityResolver
+
+	// machineDomainName is the NetBIOS name advertised for algorithmic
+	// machine-domain SIDs (the local user/group RIDs). Defaults to "DITTOFS"
+	// when empty so existing standalone behavior is preserved.
+	machineDomainName string
+
+	// foreignResolver resolves AD/LDAP domain SIDs that are neither well-known
+	// nor machine-domain. Optional; nil leaves foreign SIDs unmapped (raw).
+	foreignResolver ForeignSIDResolver
 }
+
+// defaultMachineDomainName is the NetBIOS domain reported for machine-domain
+// (algorithmic local UID/GID) SIDs when no explicit name is configured.
+const defaultMachineDomainName = "DITTOFS"
 
 // NewLSARPCHandler creates a new LSA RPC handler with the given SID mapper
 // and optional identity resolver for real name resolution.
 func NewLSARPCHandler(sidMapper *sid.SIDMapper, resolver IdentityResolver) *LSARPCHandler {
-	return &LSARPCHandler{sidMapper: sidMapper, resolver: resolver}
+	return &LSARPCHandler{
+		sidMapper:         sidMapper,
+		resolver:          resolver,
+		machineDomainName: defaultMachineDomainName,
+	}
+}
+
+// SetMachineDomainName overrides the NetBIOS domain name reported for
+// machine-domain SIDs. An empty value resets it to the default ("DITTOFS").
+func (h *LSARPCHandler) SetMachineDomainName(name string) {
+	if name == "" {
+		h.machineDomainName = defaultMachineDomainName
+		return
+	}
+	h.machineDomainName = name
+}
+
+// SetForeignSIDResolver wires the directory-backed resolver used for AD/LDAP
+// domain SIDs. Safe to leave unset; foreign SIDs then render as raw strings.
+func (h *LSARPCHandler) SetForeignSIDResolver(r ForeignSIDResolver) {
+	h.foreignResolver = r
+}
+
+// machineDomainNameOrDefault returns the configured machine NetBIOS name,
+// falling back to the default for a zero-valued handler (e.g. struct literals
+// in tests that bypass NewLSARPCHandler).
+func (h *LSARPCHandler) machineDomainNameOrDefault() string {
+	if h.machineDomainName == "" {
+		return defaultMachineDomainName
+	}
+	return h.machineDomainName
 }
 
 // HandleBind processes a BIND request and returns a BIND_ACK for the LSA interface.
@@ -236,7 +298,7 @@ func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 		return resolvedSID{
 			name:       name,
 			sidType:    SidTypeUser,
-			domainName: "DITTOFS",
+			domainName: h.machineDomainNameOrDefault(),
 			domainSID:  h.machineDomainSID(),
 		}
 	}
@@ -251,8 +313,28 @@ func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 		return resolvedSID{
 			name:       name,
 			sidType:    SidTypeGroup,
-			domainName: "DITTOFS",
+			domainName: h.machineDomainNameOrDefault(),
 			domainSID:  h.machineDomainSID(),
+		}
+	}
+
+	// Foreign (AD/LDAP) domain SID: not well-known, not machine-domain. Consult
+	// the directory-backed resolver. A hit yields the real AD account name + its
+	// NetBIOS domain; a miss falls through to the unknown branch below so the SID
+	// stays unmapped (STATUS_SOME_NOT_MAPPED) — never a fault.
+	if h.foreignResolver != nil {
+		sidStr := sid.FormatSID(s)
+		if name, domain, sidType, ok := h.foreignResolver.LookupSID(sidStr); ok {
+			if sidType != SidTypeUser && sidType != SidTypeGroup && sidType != SidTypeDomain &&
+				sidType != SidTypeAlias && sidType != SidTypeWellKnownGroup {
+				sidType = SidTypeUser
+			}
+			return resolvedSID{
+				name:       name,
+				sidType:    sidType,
+				domainName: domain,
+				domainSID:  foreignDomainSID(s),
+			}
 		}
 	}
 
@@ -260,6 +342,24 @@ func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 	return resolvedSID{
 		name:    sid.FormatSID(s),
 		sidType: SidTypeUnknown,
+	}
+}
+
+// foreignDomainSID derives the domain SID (the account SID with its trailing
+// RID stripped) for a foreign account SID. For a standard 5-sub-authority
+// S-1-5-21-{a}-{b}-{c}-{RID} SID this yields S-1-5-21-{a}-{b}-{c}. SIDs without
+// a strippable RID are returned unchanged so the referenced-domain entry stays
+// well-formed.
+func foreignDomainSID(s *sid.SID) *sid.SID {
+	if s == nil || s.SubAuthorityCount < 1 {
+		return s
+	}
+	n := int(s.SubAuthorityCount) - 1
+	return &sid.SID{
+		Revision:            s.Revision,
+		SubAuthorityCount:   byte(n),
+		IdentifierAuthority: s.IdentifierAuthority,
+		SubAuthorities:      append([]uint32(nil), s.SubAuthorities[:n]...),
 	}
 }
 
