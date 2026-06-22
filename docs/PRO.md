@@ -42,3 +42,16 @@ identical; Pro adds the dashboard, licensing, and branding layer around them.
 
 New control-plane APIs introduced for Pro are additive and remain backward
 compatible with existing DittoFS deployments.
+
+## Roadmap
+
+DittoFS Pro is actively expanding toward enterprise deployments. Planned
+additions include:
+
+- **Monitoring dashboard** — live metrics, throughput, and health across stores,
+  shares, and adapters.
+- **Enterprise-grade features** — capabilities aimed at large, multi-tenant, and
+  regulated environments.
+- **Enterprise support** — SLAs and direct support for production deployments.
+
+See [dittofs.io](https://dittofs.io) for the latest.
