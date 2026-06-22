@@ -146,20 +146,31 @@ func streamManifest(path string, fn func(block.ContentHash) error) (int, error) 
 	return hs.Len(), nil
 }
 
-// openManifestWithRetry opens path, retrying briefly on a Windows sharing
-// violation. The GC mark phase RLocks out concurrent snapshot deletes, but a
-// concurrent create's atomic rename — or, on real Windows deployments, an
-// antivirus / search-indexer momentarily holding the file — can surface
-// ERROR_SHARING_VIOLATION on open. That is transient: a short bounded retry
-// lets it clear rather than aborting the whole GC pass (which would skip
-// every later share's holds and risk deleting a still-held block).
-// fs.ErrNotExist is returned immediately (a TOCTOU delete is the caller's to
-// interpret, and is not resolved by waiting).
+// openManifestWithRetry opens path via openManifestShared (which on Windows
+// grants FILE_SHARE_DELETE so this read handle never blocks a concurrent unlink
+// of the manifest — see snapshot_open_windows.go). The retry handles the
+// remaining Windows sharing-violation source the share mode cannot: an
+// on-access antivirus / search-indexer scan that momentarily opens the
+// freshly written manifest WITHOUT sharing, so this open trips
+// ERROR_SHARING_VIOLATION until the scan releases it. A bounded retry rides out
+// the scan rather than aborting the whole GC pass (which would skip every later
+// share's holds and risk deleting a still-held block). fs.ErrNotExist is
+// returned immediately (a TOCTOU delete is the caller's to interpret, and is
+// not resolved by waiting).
 func openManifestWithRetry(path string) (*os.File, error) {
-	const maxAttempts = 5
+	// ~1.3s total budget over 10 attempts (capped exponential backoff). An
+	// on-access AV/indexer scan of a freshly written manifest can hold the file
+	// for longer than the original 100ms budget under heavy snapshot churn,
+	// which red-failed the GC pass (#1332); this rides out the scan instead.
+	const (
+		maxAttempts = 10
+		baseBackoff = 10 * time.Millisecond
+		maxBackoff  = 200 * time.Millisecond
+	)
 	var lastErr error
+	backoff := baseBackoff
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		f, err := os.Open(path)
+		f, err := openManifestShared(path)
 		if err == nil {
 			return f, nil
 		}
@@ -167,7 +178,8 @@ func openManifestWithRetry(path string) (*os.File, error) {
 			return nil, err
 		}
 		lastErr = err
-		time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+		time.Sleep(backoff)
+		backoff = min(backoff*2, maxBackoff)
 	}
 	return nil, lastErr
 }
