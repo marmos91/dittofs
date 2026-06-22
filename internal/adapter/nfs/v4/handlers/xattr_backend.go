@@ -13,11 +13,12 @@ import (
 // methods landing in PR1 (#1285): *metadata.Service satisfies it structurally,
 // and PR1's unified resolver will swap in transparently.
 //
-// All names passed across this interface are canonical store names (the
-// "user."-prefixed form — see canonicalizeXattrName). This is the namespace
-// the unified resolver (pkg/metadata/xattr.go) reads and writes; end-to-end
-// cross-protocol name parity with SMB EAs/streams is exercised in PR3, not
-// asserted here.
+// All names passed across this interface are BARE store keys — the
+// user-namespace name with no "user." prefix (canonicalizeXattrName strips any
+// leading "user." before the handler calls this interface). This is the same
+// key SMB extended attributes and named streams use, which is what makes a
+// value set over one protocol visible over the other; the unified resolver
+// (pkg/metadata/xattr.go) reads and writes these bare keys.
 type XattrBackend interface {
 	// GetXattr returns the value of the named xattr and whether it is present.
 	GetXattr(ctx *metadata.AuthContext, h metadata.FileHandle, name string) ([]byte, bool, error)
@@ -26,8 +27,9 @@ type XattrBackend interface {
 	SetXattr(ctx *metadata.AuthContext, h metadata.FileHandle, name string, value []byte) error
 	// RemoveXattr deletes the named xattr.
 	RemoveXattr(ctx *metadata.AuthContext, h metadata.FileHandle, name string) error
-	// ListXattr returns the names of all xattrs on the file (store-canonical
-	// form, i.e. including the "user." prefix).
+	// ListXattr returns the names of all xattrs on the file in bare form (no
+	// "user." prefix); the LISTXATTRS handler sends them to the wire verbatim
+	// and the client re-adds "user.".
 	ListXattr(ctx *metadata.AuthContext, h metadata.FileHandle) ([]string, error)
 }
 

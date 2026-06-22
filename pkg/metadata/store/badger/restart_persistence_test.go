@@ -29,8 +29,8 @@ func TestRestartPersistence_EAsAndADSStream(t *testing.T) {
 		shareName  = "/restart"
 		baseName   = "doc.txt"
 		basePath   = "/doc.txt"
-		streamName = "doc.txt:user.test" // ADS sibling, colon-named like the SMB layer
-		streamPath = "/doc.txt:user.test"
+		streamName = "doc.txt:test" // ADS sibling, colon-named like the SMB layer
+		streamPath = "/doc.txt:test"
 		streamSize = uint64(7)
 	)
 	wantEAs := map[string][]byte{

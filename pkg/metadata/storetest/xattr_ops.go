@@ -76,10 +76,10 @@ func testXattrInlineSetGetDelete(t *testing.T, factory StoreFactory) {
 	root := createTestShare(t, store, "/xattr-inline")
 	handle := createTestFile(t, store, "/xattr-inline", root, "f.txt", 0o600)
 
-	if err := store.SetXattr(ctx, handle, "user.color", []byte("blue")); err != nil {
+	if err := store.SetXattr(ctx, handle, "color", []byte("blue")); err != nil {
 		t.Fatalf("SetXattr: %v", err)
 	}
-	val, found, err := store.GetXattr(ctx, handle, "user.color")
+	val, found, err := store.GetXattr(ctx, handle, "color")
 	if err != nil {
 		t.Fatalf("GetXattr: %v", err)
 	}
@@ -87,10 +87,10 @@ func testXattrInlineSetGetDelete(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetXattr = (%q, %v), want (blue, true)", val, found)
 	}
 
-	if err := store.RemoveXattr(ctx, handle, "user.color"); err != nil {
+	if err := store.RemoveXattr(ctx, handle, "color"); err != nil {
 		t.Fatalf("RemoveXattr: %v", err)
 	}
-	_, found, err = store.GetXattr(ctx, handle, "user.color")
+	_, found, err = store.GetXattr(ctx, handle, "color")
 	if err != nil {
 		t.Fatalf("GetXattr after remove: %v", err)
 	}
@@ -105,10 +105,10 @@ func testXattrZeroLength(t *testing.T, factory StoreFactory) {
 	root := createTestShare(t, store, "/xattr-zero")
 	handle := createTestFile(t, store, "/xattr-zero", root, "f.txt", 0o600)
 
-	if err := store.SetXattr(ctx, handle, "user.empty", []byte{}); err != nil {
+	if err := store.SetXattr(ctx, handle, "empty", []byte{}); err != nil {
 		t.Fatalf("SetXattr(zero): %v", err)
 	}
-	val, found, err := store.GetXattr(ctx, handle, "user.empty")
+	val, found, err := store.GetXattr(ctx, handle, "empty")
 	if err != nil {
 		t.Fatalf("GetXattr(zero): %v", err)
 	}
@@ -126,10 +126,10 @@ func testXattrCaseInsensitive(t *testing.T, factory StoreFactory) {
 	root := createTestShare(t, store, "/xattr-case")
 	handle := createTestFile(t, store, "/xattr-case", root, "f.txt", 0o600)
 
-	if err := store.SetXattr(ctx, handle, "User.MixedCase", []byte("v")); err != nil {
+	if err := store.SetXattr(ctx, handle, "MixedCase", []byte("v")); err != nil {
 		t.Fatalf("SetXattr: %v", err)
 	}
-	for _, probe := range []string{"User.MixedCase", "user.mixedcase", "USER.MIXEDCASE"} {
+	for _, probe := range []string{"MixedCase", "mixedcase", "MIXEDCASE"} {
 		val, found, err := store.GetXattr(ctx, handle, probe)
 		if err != nil {
 			t.Fatalf("GetXattr(%q): %v", probe, err)
@@ -140,7 +140,7 @@ func testXattrCaseInsensitive(t *testing.T, factory StoreFactory) {
 	}
 
 	// An upsert under a different casing must not create a duplicate.
-	if err := store.SetXattr(ctx, handle, "USER.MIXEDCASE", []byte("v2")); err != nil {
+	if err := store.SetXattr(ctx, handle, "MIXEDCASE", []byte("v2")); err != nil {
 		t.Fatalf("SetXattr(case-diff upsert): %v", err)
 	}
 	names, err := store.ListXattr(ctx, handle)
@@ -159,14 +159,14 @@ func testXattrTooLarge(t *testing.T, factory StoreFactory) {
 	handle := createTestFile(t, store, "/xattr-big", root, "f.txt", 0o600)
 
 	big := make([]byte, metadata.XattrInlineMaxBytes+1)
-	err := store.SetXattr(ctx, handle, "user.big", big)
+	err := store.SetXattr(ctx, handle, "big", big)
 	if !errors.Is(err, metadata.ErrXattrTooLarge) {
 		t.Fatalf("SetXattr(oversized) err = %v, want ErrXattrTooLarge", err)
 	}
 
 	// A value exactly at the limit must succeed (boundary).
 	atLimit := make([]byte, metadata.XattrInlineMaxBytes)
-	if err := store.SetXattr(ctx, handle, "user.atlimit", atLimit); err != nil {
+	if err := store.SetXattr(ctx, handle, "atlimit", atLimit); err != nil {
 		t.Fatalf("SetXattr(at-limit) err = %v, want nil", err)
 	}
 }
@@ -177,7 +177,7 @@ func testXattrRemoveMissing(t *testing.T, factory StoreFactory) {
 	root := createTestShare(t, store, "/xattr-rm")
 	handle := createTestFile(t, store, "/xattr-rm", root, "f.txt", 0o600)
 
-	err := store.RemoveXattr(ctx, handle, "user.absent")
+	err := store.RemoveXattr(ctx, handle, "absent")
 	if !metadata.IsNotFoundError(err) {
 		t.Fatalf("RemoveXattr(absent) err = %v, want ErrNotFound", err)
 	}
@@ -189,7 +189,7 @@ func testXattrInlineList(t *testing.T, factory StoreFactory) {
 	root := createTestShare(t, store, "/xattr-list")
 	handle := createTestFile(t, store, "/xattr-list", root, "f.txt", 0o600)
 
-	for _, n := range []string{"user.a", "user.b", "user.c"} {
+	for _, n := range []string{"a", "b", "c"} {
 		if err := store.SetXattr(ctx, handle, n, []byte("x")); err != nil {
 			t.Fatalf("SetXattr(%q): %v", n, err)
 		}
@@ -198,7 +198,7 @@ func testXattrInlineList(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("ListXattr: %v", err)
 	}
-	want := []string{"user.a", "user.b", "user.c"}
+	want := []string{"a", "b", "c"}
 	if !equalNames(names, want) {
 		t.Fatalf("ListXattr = %v, want %v", names, want)
 	}
@@ -211,7 +211,7 @@ func testXattrMergedList(t *testing.T, factory StoreFactory) {
 	handle := createTestFile(t, store, "/xattr-merge", root, "doc.txt", 0o600)
 
 	// Inline xattr on the file.
-	if err := store.SetXattr(ctx, handle, "user.inline", []byte("i")); err != nil {
+	if err := store.SetXattr(ctx, handle, "inline", []byte("i")); err != nil {
 		t.Fatalf("SetXattr: %v", err)
 	}
 	// Manually-created named stream sibling "doc.txt:streamx".
@@ -221,7 +221,7 @@ func testXattrMergedList(t *testing.T, factory StoreFactory) {
 	if err != nil {
 		t.Fatalf("ListXattr: %v", err)
 	}
-	want := []string{"streamx", "user.inline"}
+	want := []string{"streamx", "inline"}
 	if !equalNames(names, want) {
 		t.Fatalf("merged ListXattr = %v, want %v (inline + stream names merged)", names, want)
 	}

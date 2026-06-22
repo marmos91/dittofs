@@ -25,39 +25,39 @@ func TestServiceXattrRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// Missing xattr.
-	_, found, err := fx.service.GetXattr(ctx, handle, "user.foo")
+	_, found, err := fx.service.GetXattr(ctx, handle, "foo")
 	require.NoError(t, err)
 	require.False(t, found)
 
 	// Set + get.
-	require.NoError(t, fx.service.SetXattr(ctx, handle, "user.foo", []byte("bar")))
-	val, found, err := fx.service.GetXattr(ctx, handle, "user.foo")
+	require.NoError(t, fx.service.SetXattr(ctx, handle, "foo", []byte("bar")))
+	val, found, err := fx.service.GetXattr(ctx, handle, "foo")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, "bar", string(val))
 
 	// Returned value is a copy (mutating it must not corrupt the store).
 	val[0] = 'X'
-	val2, _, err := fx.service.GetXattr(ctx, handle, "user.foo")
+	val2, _, err := fx.service.GetXattr(ctx, handle, "foo")
 	require.NoError(t, err)
 	require.Equal(t, "bar", string(val2))
 
 	// Second name + list.
-	require.NoError(t, fx.service.SetXattr(ctx, handle, "user.baz", []byte("qux")))
+	require.NoError(t, fx.service.SetXattr(ctx, handle, "baz", []byte("qux")))
 	names, err := fx.service.ListXattr(ctx, handle)
 	require.NoError(t, err)
 	sort.Strings(names)
-	require.Equal(t, []string{"user.baz", "user.foo"}, names)
+	require.Equal(t, []string{"baz", "foo"}, names)
 
 	// Remove.
-	require.NoError(t, fx.service.RemoveXattr(ctx, handle, "user.foo"))
-	_, found, err = fx.service.GetXattr(ctx, handle, "user.foo")
+	require.NoError(t, fx.service.RemoveXattr(ctx, handle, "foo"))
+	_, found, err = fx.service.GetXattr(ctx, handle, "foo")
 	require.NoError(t, err)
 	require.False(t, found)
 
 	names, err = fx.service.ListXattr(ctx, handle)
 	require.NoError(t, err)
-	require.Equal(t, []string{"user.baz"}, names)
+	require.Equal(t, []string{"baz"}, names)
 }
 
 // TestServiceXattrCaseInsensitive verifies the EA-name case-insensitivity
@@ -74,8 +74,8 @@ func TestServiceXattrCaseInsensitive(t *testing.T) {
 	handle, err := metadata.EncodeFileHandle(file)
 	require.NoError(t, err)
 
-	require.NoError(t, fx.service.SetXattr(ctx, handle, "user.Foo", []byte("v")))
-	_, found, err := fx.service.GetXattr(ctx, handle, "user.foo")
+	require.NoError(t, fx.service.SetXattr(ctx, handle, "Foo", []byte("v")))
+	_, found, err := fx.service.GetXattr(ctx, handle, "foo")
 	require.NoError(t, err)
 	require.True(t, found, "GetXattr must resolve case-insensitively")
 }
