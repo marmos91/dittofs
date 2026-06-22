@@ -33,10 +33,12 @@ func NewOfflineProvider(cred MachineCredential) MachineCredentialProvider {
 
 // Credential returns the stored credential after validation.
 func (p *offlineProvider) Credential(ctx context.Context) (*MachineCredential, error) {
-	if p.cred.AccountName == "" || p.cred.Password == "" ||
-		p.cred.Workstation == "" || p.cred.DomainName == "" ||
-		p.cred.Realm == "" || len(p.cred.DCAddresses) == 0 {
-		return nil, fmt.Errorf("incomplete machine credential: all fields required")
+	if p.cred.AccountName == "" || p.cred.Password == "" || p.cred.DomainName == "" {
+		return nil, fmt.Errorf("netlogon: incomplete machine credential (account/password/domain required)")
 	}
-	return &p.cred, nil
+	if len(p.cred.DCAddresses) == 0 {
+		return nil, fmt.Errorf("netlogon: no DC address configured")
+	}
+	cp := p.cred
+	return &cp, nil
 }
