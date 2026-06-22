@@ -160,6 +160,16 @@ func TestBuildSD_NilACL_SynthesizesWindowsDefault(t *testing.T) {
 	if got, want := parsedACL.ACEs[1].Who, "sid:S-1-5-18"; got != want {
 		t.Errorf("ACE[1].Who = %q, want %q (SYSTEM SID round-trip)", got, want)
 	}
+
+	// The synthesized default is non-inherited, so SE_DACL_PROTECTED (0x1000)
+	// must be set — control 0x9004, matching standalone Samba (not 0x8004). The
+	// wire Control word is at offset 2; bit 0x1000 surfaces as parsedACL.Protected.
+	if control := binary.LittleEndian.Uint16(data[2:4]); control&seDACLProtected == 0 {
+		t.Errorf("SD control = 0x%04x, missing SE_DACL_PROTECTED (0x1000) on synthesized default (#1291)", control)
+	}
+	if !parsedACL.Protected {
+		t.Error("parsedACL.Protected = false, want true (synthesized default DACL is protected)")
+	}
 }
 
 // TestBuildSD_ZeroSecInfo_ReturnsEmptySD verifies that additionalSecInfo==0

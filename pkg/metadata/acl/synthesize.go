@@ -108,6 +108,14 @@ func SynthesizeFromMode(mode uint32, ownerUID, ownerGID uint32, isDirectory bool
 // Flags are 0 (no inheritance) because this default is itself non-inheritable:
 // it represents "what a file should show when nothing else applies."
 //
+// Protected is true: this default is only used when no inheritable ACEs
+// applied from the parent (see the doc above), so the resulting DACL is
+// non-inherited and therefore protected (SE_DACL_PROTECTED, 0x1000). Files
+// that DO inherit carry a stored ACL with Protected=false (see
+// ComputeInheritedACL) and never reach this path. This matches what a
+// standalone Samba file server reports for such a file (SD control 0x9004,
+// not 0x8004).
+//
 // This is the SMB read-side default. NFS callers should not use this — NFS
 // surfaces file.ACL as-is and synthesizes nothing.
 func SynthesizeWindowsDefault() *ACL {
@@ -126,7 +134,8 @@ func SynthesizeWindowsDefault() *ACL {
 				Who:        SpecialSystem,
 			},
 		},
-		Source: ACLSourceWindowsDefault,
+		Source:    ACLSourceWindowsDefault,
+		Protected: true,
 	}
 }
 

@@ -49,3 +49,18 @@ The harness surfaced two concrete divergences in the SD *values*:
 Both are tracked as a follow-up (see the issue referenced from #1237). Neither
 blocks the SD wire contract — they are fidelity gaps the corpus is designed to
 catch.
+
+## Update — both divergences fixed (#1291)
+
+1. **`SE_DACL_PROTECTED`** is now set on DittoFS's synthesized default DACL
+   (`acl.SynthesizeWindowsDefault`), so a file with no explicit/inherited ACL
+   reports control `0x9004` to match standalone Samba.
+2. **LSARPC SID→name** now works: the root cause was *not* a missing pipe (the
+   LSA interface and `LsarLookupSids2/3` were already implemented). `smbcacls`
+   calls the legacy `LsarOpenPolicy` (opnum 6) *before* the lookup, which
+   DittoFS did not handle — it returned a fault that the client read as
+   `DCERPC_NCA_S_UNKNOWN_IF` and gave up. Opnum 6 is now routed to the same
+   policy-handle handler as `LsarOpenPolicy2` (opnum 44).
+
+`dittofs-sample.pcap` above predates the fix; regenerate it on the next live
+capture against a patched DittoFS to refresh the corpus.
