@@ -2,6 +2,7 @@ package netlogon
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/oiweiwei/go-msrpc/ssp"
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/gssapi"
+	"github.com/oiweiwei/go-msrpc/ssp/netlogon"
 )
 
 // SecureChannel wraps a go-msrpc schannel client with a mutex-guarded cached
@@ -36,8 +38,14 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	}
 	server := mc.DCAddresses[0]
 
+	ncfg := netlogon.NewConfig()
+	ncfg.ClientChallenge = make([]byte, 8)
+	if _, err := rand.Read(ncfg.ClientChallenge); err != nil {
+		return fmt.Errorf("netlogon: generate client challenge: %w", err)
+	}
+
 	cred := credential.NewFromPassword(mc.AccountName, mc.Password, credential.Workstation(mc.Workstation))
-	gctx := gssapi.NewSecurityContext(ctx)
+	gctx := gssapi.NewSecurityContext(ctx, ssp.WithNetlogon(ncfg))
 	gssapi.AddCredential(cred)
 	gssapi.AddMechanism(ssp.Netlogon)
 
