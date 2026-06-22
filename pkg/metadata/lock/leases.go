@@ -892,24 +892,36 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 
 	if !lock.Lease.Breaking {
 		// Late ACK after server-side timeout: forceCompleteBreaks already
-		// auto-revoked the lease to None and tagged BrokenViaTimeout. If
-		// the client now ACKs that same None state, the wire-visible
-		// outcome matches the desired final state — return STATUS_OK
-		// silently. BrokenViaTimeout is left untouched so the downstream
-		// grant-coercion path (OnlyTimeoutTombstoneRecords) still treats
-		// the record as a tombstone for smbtorture batch22b semantics.
+		// auto-revoked the lease to None and tagged BrokenViaTimeout. The
+		// client's late ACK is then a benign acknowledgment of a break the
+		// server has already completed — return STATUS_OK silently,
+		// regardless of which (subset) state the client names. We do NOT
+		// resurrect any bits: LeaseState stays None. BrokenViaTimeout is
+		// left untouched so the downstream grant-coercion path
+		// (OnlyTimeoutTombstoneRecords) still treats the record as a
+		// tombstone for smbtorture batch22b semantics.
 		//
-		// Required by WPTS BVT_DirectoryLeasing_ReadWriteHandleCaching
-		// (#454) where the SUT controller's synchronous CreateFile holds
-		// the test client past the 5 s parent-break timeout, so the ACK
-		// can only be sent post-force-complete. smbtorture breaking2 /
-		// breaking5 ACK within the breaking window, so their post-ack
-		// duplicate has BrokenViaTimeout=false and still surfaces as
-		// STATUS_UNSUCCESSFUL via the fall-through below.
-		if lock.Lease.BrokenViaTimeout && acknowledgedState == LeaseStateNone &&
-			lock.Lease.LeaseState == LeaseStateNone {
-			logger.Debug("AcknowledgeLeaseBreak: late ACK matches post-timeout state, treating as success",
-				"leaseKey", fmt.Sprintf("%x", leaseKey))
+		// The acknowledgedState is intentionally NOT constrained to None:
+		// a parked share-violation CREATE that force-completes the holder's
+		// RWH lease (revoking to None) races the holder's deferred Handle-
+		// strip ACK (break-to RW). When the 5 s force-complete wins under CI
+		// jitter, the holder ACKs RW post-timeout and must still succeed —
+		// smbtorture dhv2-pending1n-vs-violation-lease-ack-sane (#1322).
+		// forceCompleteBreaks zeroes BreakToState, so there is no surviving
+		// break-to to validate the subset against; the tombstoned None is
+		// the authoritative outcome either way.
+		//
+		// Also required by WPTS BVT_DirectoryLeasing_ReadWriteHandleCaching
+		// (#454) where the SUT controller's synchronous CreateFile holds the
+		// test client past the 5 s parent-break timeout, so the ACK can only
+		// be sent post-force-complete. smbtorture breaking2 / breaking5 ACK
+		// within the breaking window, so their post-ack duplicate has
+		// BrokenViaTimeout=false and still surfaces as STATUS_UNSUCCESSFUL
+		// via the fall-through below.
+		if lock.Lease.BrokenViaTimeout && lock.Lease.LeaseState == LeaseStateNone {
+			logger.Debug("AcknowledgeLeaseBreak: late ACK after timeout force-complete, treating as success",
+				"leaseKey", fmt.Sprintf("%x", leaseKey),
+				"acknowledgedState", LeaseStateToString(acknowledgedState))
 			return nil
 		}
 		return ErrLeaseAckNotBreaking
