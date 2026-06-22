@@ -108,13 +108,12 @@ func TestConfigureMachineSecretWriteOnly(t *testing.T) {
 		}
 	})
 
-	t.Run("dc-address repeated → joined with comma in DCAddress", func(t *testing.T) {
+	t.Run("dc-address repeated → list in DCAddresses", func(t *testing.T) {
 		addrs := []string{"192.0.2.10", "192.0.2.11"}
-		joined := strings.Join(addrs, ",")
 
 		client := apiclient.New(srv.URL).WithToken("fake-token")
 		cfg, _ := client.GetKerberosConfig()
-		cfg.MachineAccount.DCAddress = joined
+		cfg.MachineAccount.DCAddresses = addrs
 		received = apiclient.KerberosProviderConfig{}
 
 		_, err := client.PutKerberosConfig(cfg)
@@ -122,8 +121,13 @@ func TestConfigureMachineSecretWriteOnly(t *testing.T) {
 			t.Fatalf("PutKerberosConfig: %v", err)
 		}
 
-		if received.MachineAccount.DCAddress != joined {
-			t.Errorf("dc_address: want %q, got %q", joined, received.MachineAccount.DCAddress)
+		if len(received.MachineAccount.DCAddresses) != len(addrs) {
+			t.Fatalf("dc_address: want %v, got %v", addrs, received.MachineAccount.DCAddresses)
+		}
+		for i, a := range addrs {
+			if received.MachineAccount.DCAddresses[i] != a {
+				t.Errorf("dc_address[%d]: want %q, got %q", i, a, received.MachineAccount.DCAddresses[i])
+			}
 		}
 	})
 }
@@ -136,7 +140,7 @@ func TestConfigureMachineAccountDTOFields(t *testing.T) {
 		AccountName: "HOST$",
 		Secret:      "pw",
 		KeytabPath:  "/etc/krb5.keytab",
-		DCAddress:   "dc1.example.com,dc2.example.com",
+		DCAddresses: []string{"dc1.example.com", "dc2.example.com"},
 	}
 	b, err := json.Marshal(src)
 	if err != nil {
@@ -148,7 +152,7 @@ func TestConfigureMachineAccountDTOFields(t *testing.T) {
 		`"account_name":"HOST$"`,
 		`"secret":"pw"`,
 		`"keytab_path":"/etc/krb5.keytab"`,
-		`"dc_address":"dc1.example.com,dc2.example.com"`,
+		`"dc_address":["dc1.example.com","dc2.example.com"]`,
 	} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("marshaled JSON missing %s; got: %s", want, raw)
@@ -159,7 +163,17 @@ func TestConfigureMachineAccountDTOFields(t *testing.T) {
 	if err := json.Unmarshal(b, &dst); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if dst != src {
-		t.Errorf("round-trip mismatch: want %+v, got %+v", src, dst)
+	if len(dst.DCAddresses) != len(src.DCAddresses) {
+		t.Fatalf("round-trip DCAddresses length: want %d, got %d", len(src.DCAddresses), len(dst.DCAddresses))
+	}
+	for i, a := range src.DCAddresses {
+		if dst.DCAddresses[i] != a {
+			t.Errorf("round-trip DCAddresses[%d]: want %q, got %q", i, a, dst.DCAddresses[i])
+		}
+	}
+	// Check non-slice fields round-trip exactly.
+	if dst.Enabled != src.Enabled || dst.AccountName != src.AccountName ||
+		dst.Secret != src.Secret || dst.KeytabPath != src.KeytabPath {
+		t.Errorf("round-trip mismatch (non-slice fields): want %+v, got %+v", src, dst)
 	}
 }

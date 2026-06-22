@@ -224,7 +224,7 @@ func TestIDP_PutKerberos_ValidatesAndPersists(t *testing.T) {
 const validKerberosBody = `{
 	"enabled": false,
 	"realm": "EXAMPLE.COM",
-	"machine_account": {"account_name": "DITTOFS$", "dc_address": "dc.example.com", "secret": "topsecret"}
+	"machine_account": {"account_name": "DITTOFS$", "dc_address": ["dc.example.com"], "secret": "topsecret"}
 }`
 
 func TestIDP_PutKerberos_PersistsAndRedactsSecret(t *testing.T) {
@@ -274,7 +274,7 @@ func TestIDP_PutKerberos_PreservesSecretOnRedactedResubmit(t *testing.T) {
 	doReq(t, h.PutConfig, http.MethodPut, validKerberosBody, models.IdentityProviderTypeKerberos)
 
 	// Re-submit with the redacted placeholder (as a GET-then-PUT round trip would).
-	body := `{"enabled":false,"realm":"EXAMPLE.COM","machine_account":{"account_name":"DITTOFS$","dc_address":"dc2.example.com","secret":"********"}}`
+	body := `{"enabled":false,"realm":"EXAMPLE.COM","machine_account":{"account_name":"DITTOFS$","dc_address":["dc2.example.com"],"secret":"********"}}`
 	w := doReq(t, h.PutConfig, http.MethodPut, body, models.IdentityProviderTypeKerberos)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
@@ -291,7 +291,7 @@ func TestIDP_PutKerberos_PreservesSecretOnEmptySecret(t *testing.T) {
 	doReq(t, h.PutConfig, http.MethodPut, validKerberosBody, models.IdentityProviderTypeKerberos)
 
 	// Re-submit with an absent/empty secret field — must also preserve.
-	body := `{"enabled":false,"realm":"EXAMPLE.COM","machine_account":{"account_name":"DITTOFS$","dc_address":"dc.example.com"}}`
+	body := `{"enabled":false,"realm":"EXAMPLE.COM","machine_account":{"account_name":"DITTOFS$","dc_address":["dc.example.com"]}}`
 	w := doReq(t, h.PutConfig, http.MethodPut, body, models.IdentityProviderTypeKerberos)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())

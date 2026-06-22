@@ -2351,7 +2351,7 @@ dfsctl identity-provider configure kerberos [flags]
 Flags:
 
 ```
-      --dc-address stringArray        Domain controller address (repeatable; multiple values joined with ',')
+      --dc-address stringArray        Domain controller address (repeatable; pass once per address)
       --machine-account-enabled       Enable machine-account authentication for NETLOGON
       --machine-account-name string   Machine account name (e.g. MYHOST$)
       --machine-keytab string         Path to the machine-account keytab file

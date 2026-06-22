@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
-
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
@@ -253,7 +251,7 @@ func init() {
 	configureCmd.Flags().StringVar(&configureMachineKeytab, "machine-keytab", "",
 		"Path to the machine-account keytab file")
 	configureCmd.Flags().StringArrayVar(&configureDCAddresses, "dc-address", nil,
-		"Domain controller address (repeatable; multiple values joined with ',')")
+		"Domain controller address (repeatable; pass once per address)")
 }
 
 func runConfigure(cmd *cobra.Command, args []string) error {
@@ -284,7 +282,7 @@ func runConfigure(cmd *cobra.Command, args []string) error {
 		cfg.MachineAccount.KeytabPath = configureMachineKeytab
 	}
 	if cmd.Flags().Changed("dc-address") {
-		cfg.MachineAccount.DCAddress = strings.Join(configureDCAddresses, ",")
+		cfg.MachineAccount.DCAddresses = configureDCAddresses
 	}
 	// --machine-secret: write-only. Only propagate when the flag was explicitly
 	// provided. An absent flag leaves the field empty so the API's

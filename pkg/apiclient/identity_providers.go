@@ -51,7 +51,7 @@ type KerberosMachineAccountConfig struct {
 	// produce the same result (API's preserve-on-empty rule).
 	Secret     string `json:"secret,omitempty"`
 	KeytabPath string `json:"keytab_path,omitempty"`
-	DCAddress  string `json:"dc_address,omitempty"`
+	DCAddresses []string `json:"dc_address,omitempty"`
 }
 
 // KerberosProviderConfig mirrors the server's Kerberos identity-provider config.
@@ -67,7 +67,7 @@ type KerberosProviderConfig struct {
 	MaxClockSkew     string                        `json:"max_clock_skew"`
 	ContextTTL       string                        `json:"context_ttl"`
 	MaxContexts      int                           `json:"max_contexts"`
-	MachineAccount   KerberosMachineAccountConfig  `json:"machine_account,omitempty"`
+	MachineAccount   KerberosMachineAccountConfig `json:"machine_account"`
 }
 
 // IdentityProviderTestResult is the result of a non-persisting provider test.
