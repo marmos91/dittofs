@@ -21,6 +21,8 @@
 #       of the colored terminal report. The header metadata is taken from these
 #       env vars (all optional): BASELINE_DATE, BASELINE_COMMIT, BASELINE_PROFILE,
 #       BASELINE_PLATFORM, BASELINE_SMBTORTURE, BASELINE_CONTEXT.
+#       This mode always exits 0 (it renders whatever was parsed, including an
+#       empty report); the exit codes above apply only to the report mode.
 
 set -euo pipefail
 
@@ -302,7 +304,7 @@ emit_baseline() {
     # pass | known | new | skip.
     local -a processed=()
     local -a suite_order=()
-    declare -A seen=() sp=() sf=() ssk=()
+    local -A seen=() sp=() sf=() ssk=()
     local entry name outcome suite cls
     for entry in "${ALL_RESULTS[@]+"${ALL_RESULTS[@]}"}"; do
         IFS='|' read -r name outcome <<< "$entry"
@@ -323,7 +325,9 @@ emit_baseline() {
     done
 
     local sorted_suites
-    sorted_suites="$(printf '%s\n' "${suite_order[@]+"${suite_order[@]}"}" | sort -u)"
+    # LC_ALL=C keeps suite ordering byte-stable across machines so the committed
+    # baseline doesn't churn between runners with different locales.
+    sorted_suites="$(printf '%s\n' "${suite_order[@]+"${suite_order[@]}"}" | LC_ALL=C sort -u)"
 
     local rate="N/A"
     [[ "$TOTAL" -gt 0 ]] && rate="$(awk "BEGIN{printf \"%.1f%%\", ($PASS_COUNT/$TOTAL)*100}")"
@@ -403,7 +407,7 @@ emit_baseline() {
             done
             [[ ${#names[@]} -eq 0 ]] && continue
             echo "### ${sg} (${#names[@]})"
-            printf -- '- %s\n' "${names[@]}" | sort
+            printf -- '- %s\n' "${names[@]}" | LC_ALL=C sort
             echo ""
         done <<< "$sorted_suites"
         echo "</details>"
