@@ -3,7 +3,6 @@ package adapter
 import (
 	"context"
 	"net"
-	"sync"
 	"testing"
 	"time"
 )
@@ -89,22 +88,16 @@ func TestBaseAdapter_Stop_DrainsActiveConnection(t *testing.T) {
 	b := NewBaseAdapter(BaseConfig{ShutdownTimeout: 5 * time.Second}, "TEST")
 
 	// Model one in-flight connection that completes shortly after Stop begins,
-	// mirroring a request handler finishing its work during shutdown.
+	// mirroring a request handler finishing its work during shutdown. Stop
+	// blocks on activeConns.Wait(), so it cannot return until this goroutine
+	// calls Done().
 	b.activeConns.Add(1)
 	b.ConnCount.Store(1)
 
-	var once sync.Once
-	finish := func() {
-		once.Do(func() {
-			b.ConnCount.Add(-1)
-			b.activeConns.Done()
-		})
-	}
-	defer finish() // safety net if the test fails before the goroutine runs
-
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		finish()
+		b.ConnCount.Add(-1)
+		b.activeConns.Done()
 	}()
 
 	start := time.Now()
