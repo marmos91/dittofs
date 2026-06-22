@@ -7,7 +7,7 @@
 //  2. DittoFS starts with kerberos.machine_account enabled and pointing at
 //     the fixture DC IP so it can open a NETLOGON secure channel.
 //  3. smbclient connects as the AD domain user alice forcing NTLM (no
-//     Kerberos) via --option='client use kerberos = disabled'. DittoFS
+//     Kerberos) via --option='client use kerberos = off'. DittoFS
 //     must validate the NTLMv2 response via NETLOGON passthrough and return
 //     a successful directory listing.
 //
@@ -68,6 +68,7 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 			dumpDFSLogs(t, filepath.Join(stateDir, "dfs.log"))
 		}
 		_ = dfsProcess.Kill()
+		_, _ = dfsProcess.Wait()
 	}()
 
 	// Step 3: configure a share via the REST API.
@@ -130,7 +131,7 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 	// Flags:
 	//   -U 'DITTOFS\alice%TestPassword01!' — domain user credential
 	//   -m SMB3                             — require SMB 3.x dialect
-	//   --option='client use kerberos = disabled' — NTLM only, no Kerberos
+	//   --option='client use kerberos = off' — NTLM only, no Kerberos
 	//   -c 'ls'                             — list directory (proves auth)
 	//
 	// The -p flag points smbclient at the DittoFS listener (not the well-known
@@ -143,7 +144,7 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 		"-U", domainUser,
 		"-p", fmt.Sprintf("%d", smbPort),
 		"-m", "SMB3",
-		"--option=client use kerberos = disabled",
+		"--option=client use kerberos = off",
 		"-c", "ls",
 	}
 
@@ -175,12 +176,15 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 		t.Errorf("smbclient: NT_STATUS_ACCESS_DENIED\nOutput:\n%s", out)
 	}
 
-	// A successful 'ls' on an empty share prints the directory size line.
-	// Both "blocks of size" (Samba) and "0 files" or "blocks available" (various
-	// smbclient versions) are accepted as success indicators.
-	if cmdErr != nil && !strings.Contains(out, "NT_STATUS_") {
-		// Non-NT_STATUS errors (e.g. empty directory, debug) are non-fatal.
-		t.Logf("smbclient returned non-zero exit (may be benign): %v", cmdErr)
+	// Fix 1: assert exit-0 success. A non-zero exit for any reason must fail the test.
+	if cmdErr != nil {
+		t.Errorf("smbclient exited non-zero: %v\nOutput:\n%s", cmdErr, out)
+	}
+
+	// Assert the listing actually happened: a successful 'ls' on any share
+	// prints at least the "blocks available" summary line.
+	if !strings.Contains(out, "blocks available") && !strings.Contains(out, "NT_STATUS_") {
+		t.Errorf("smbclient output does not contain expected 'ls' listing evidence\nOutput:\n%s", out)
 	}
 
 	t.Logf("NTLM NETLOGON passthrough smbclient test completed successfully")
@@ -238,7 +242,7 @@ func startDFSProcess(t *testing.T, stateDir, configPath string, apiPort int) *os
 	t.Helper()
 
 	projectRoot := findProjectRootFromADDC(t)
-	dfsBin := filepath.Join(projectRoot, "dfs")
+	dfsBin := filepath.Join(stateDir, "dfs")
 
 	t.Log("Building dfs binary...")
 	build := exec.Command("go", "build", "-o", dfsBin, "./cmd/dfs/")
