@@ -292,8 +292,13 @@ func resolveBlockStoreConfig(
 	// Fall back to name resolution for legacy rows that stored the name.
 	byName, nameErr := provider.GetBlockStore(ctx, ref, kind)
 	if nameErr != nil {
-		// Surface the original ID-lookup error so the message stays familiar.
-		return nil, err
+		// A real operational error (DB/context) on the name path must not be
+		// masked as "not found"; only collapse to the familiar ID-lookup error
+		// when the name is genuinely absent too.
+		if errors.Is(nameErr, models.ErrStoreNotFound) {
+			return nil, err
+		}
+		return nil, nameErr
 	}
 	return byName, nil
 }
@@ -953,7 +958,13 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	if sr, ok := s.remoteStores[configID]; ok {
 		sr.refCount++
 		s.mu.Unlock()
-		_ = newStore.Close()
+		// We lost the race; discard our now-redundant store. newStore is the
+		// fully-decorated (encryption/compression) stack, so a Close failure
+		// here could leak a key provider — surface it rather than swallow it.
+		if err := newStore.Close(); err != nil {
+			logger.Warn("acquireRemoteStore: failed to close duplicate remote store",
+				"config_id", configID, "error", err)
+		}
 		return sr.store, configID, nil
 	}
 

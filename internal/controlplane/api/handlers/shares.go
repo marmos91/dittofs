@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -61,6 +62,27 @@ type ShareHandler struct {
 // NewShareHandler creates a new ShareHandler.
 func NewShareHandler(s ShareHandlerStore, rt *runtime.Runtime) *ShareHandler {
 	return &ShareHandler{store: s, runtime: rt}
+}
+
+// resolveBlockStoreRef resolves a block-store reference — a name or a canonical
+// UUID — to its config, scoped to the expected kind. It tries the kind-scoped
+// name lookup first, then a UUID lookup, rejecting a UUID that resolves to the
+// wrong kind. This mirrors the runtime's resolveBlockStoreConfig so the API
+// never persists an id the share can't load at startup (#1312): a remote-store
+// UUID handed to local_block_store_id (or vice versa) is refused up front
+// instead of silently breaking the share on the next restart.
+func (h *ShareHandler) resolveBlockStoreRef(ctx context.Context, ref string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error) {
+	if cfg, err := h.store.GetBlockStore(ctx, ref, kind); err == nil {
+		return cfg, nil
+	}
+	cfg, err := h.store.GetBlockStoreByID(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Kind != kind {
+		return nil, fmt.Errorf("block store %q has kind %q, expected %q", ref, cfg.Kind, kind)
+	}
+	return cfg, nil
 }
 
 // CreateShareRequest is the request body for POST /api/v1/shares.
@@ -244,11 +266,8 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate that local block store exists (try by name first, then by ID)
-	localBlockStore, err := h.store.GetBlockStore(r.Context(), req.LocalBlockStore, models.BlockStoreKindLocal)
-	if err != nil {
-		localBlockStore, err = h.store.GetBlockStoreByID(r.Context(), req.LocalBlockStore)
-	}
+	// Validate that local block store exists (accepts a name or a UUID).
+	localBlockStore, err := h.resolveBlockStoreRef(r.Context(), req.LocalBlockStore, models.BlockStoreKindLocal)
 	if err != nil {
 		BadRequest(w, "Local block store not found: "+req.LocalBlockStore)
 		return
@@ -257,10 +276,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Validate optional remote block store
 	var remoteBlockStoreID *string
 	if req.RemoteBlockStore != nil && *req.RemoteBlockStore != "" {
-		remoteStore, remoteErr := h.store.GetBlockStore(r.Context(), *req.RemoteBlockStore, models.BlockStoreKindRemote)
-		if remoteErr != nil {
-			remoteStore, remoteErr = h.store.GetBlockStoreByID(r.Context(), *req.RemoteBlockStore)
-		}
+		remoteStore, remoteErr := h.resolveBlockStoreRef(r.Context(), *req.RemoteBlockStore, models.BlockStoreKindRemote)
 		if remoteErr != nil {
 			BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStore)
 			return
@@ -604,10 +620,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// (mirrors CreateShare). Persisting a raw name here was the root cause
 		// of #1312: on restart GetBlockStoreByID(name) failed and the share
 		// never loaded.
-		localBlockStore, err := h.store.GetBlockStore(r.Context(), *req.LocalBlockStoreID, models.BlockStoreKindLocal)
-		if err != nil {
-			localBlockStore, err = h.store.GetBlockStoreByID(r.Context(), *req.LocalBlockStoreID)
-		}
+		localBlockStore, err := h.resolveBlockStoreRef(r.Context(), *req.LocalBlockStoreID, models.BlockStoreKindLocal)
 		if err != nil {
 			BadRequest(w, "Local block store not found: "+*req.LocalBlockStoreID)
 			return
@@ -619,10 +632,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			// Explicit clear of the remote tier.
 			share.RemoteBlockStoreID = nil
 		} else {
-			remoteBlockStore, err := h.store.GetBlockStore(r.Context(), *req.RemoteBlockStoreID, models.BlockStoreKindRemote)
-			if err != nil {
-				remoteBlockStore, err = h.store.GetBlockStoreByID(r.Context(), *req.RemoteBlockStoreID)
-			}
+			remoteBlockStore, err := h.resolveBlockStoreRef(r.Context(), *req.RemoteBlockStoreID, models.BlockStoreKindRemote)
 			if err != nil {
 				BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStoreID)
 				return
