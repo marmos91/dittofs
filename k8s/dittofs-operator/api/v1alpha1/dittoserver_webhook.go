@@ -99,6 +99,24 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		}
 	}
 
+	// Validate Kerberos: when enabled it must have an SPN and a keytab to act as
+	// a service principal. A keytab Secret key reference also needs its key set.
+	if r.Spec.Identity != nil && r.Spec.Identity.Kerberos != nil && r.Spec.Identity.Kerberos.Enabled {
+		k := r.Spec.Identity.Kerberos
+		if k.ServicePrincipal == "" {
+			return warnings, fmt.Errorf("identity.kerberos.servicePrincipal is required when kerberos is enabled")
+		}
+		if k.KeytabSecretRef == nil || k.KeytabSecretRef.Name == "" {
+			return warnings, fmt.Errorf("identity.kerberos.keytabSecretRef is required when kerberos is enabled")
+		}
+		if k.KeytabSecretRef.Key == "" {
+			return warnings, fmt.Errorf("identity.kerberos.keytabSecretRef.key is required when keytabSecretRef.name is set")
+		}
+		if k.Krb5ConfSecretRef != nil && k.Krb5ConfSecretRef.Name != "" && k.Krb5ConfSecretRef.Key == "" {
+			return warnings, fmt.Errorf("identity.kerberos.krb5ConfSecretRef.key is required when krb5ConfSecretRef.name is set")
+		}
+	}
+
 	// Validate port uniqueness and warn about privileged ports
 	portWarnings, err := r.validatePorts()
 	if err != nil {

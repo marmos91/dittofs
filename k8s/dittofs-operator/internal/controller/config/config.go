@@ -38,16 +38,13 @@ const (
 func GenerateDittoFSConfig(dittoServer *dittoiov1alpha1.DittoServer) (string, error) {
 	// Build config without any secrets
 	cfg := DittoFSConfig{
-		Logging: LoggingConfig{
-			Level:  DefaultLoggingLevel,
-			Format: DefaultLoggingFormat,
-			Output: DefaultLoggingOutput,
-		},
+		Logging:         buildLoggingConfig(dittoServer),
 		ShutdownTimeout: DefaultShutdownTimeout,
 		Database:        buildDatabaseConfig(dittoServer),
 		ControlPlane:    buildControlPlaneConfig(dittoServer),
 		Metrics:         buildMetricsConfig(dittoServer),
 		LDAP:            buildLDAPConfig(dittoServer),
+		Kerberos:        buildKerberosConfig(dittoServer),
 	}
 
 	// Add admin config with username only (password hash injected via env var)
@@ -205,6 +202,68 @@ func buildLDAPConfig(ds *dittoiov1alpha1.DittoServer) *LDAPConfig {
 			CACertFile:         l.CACertFile,
 			InsecureSkipVerify: l.InsecureSkipVerify,
 		}
+	}
+
+	return cfg
+}
+
+// buildLoggingConfig renders the logging: block, applying operator defaults for
+// any field the CRD leaves unset. A change to spec.logging re-renders the
+// ConfigMap; the controller's config-hash annotation then rolls the pod so the
+// new level/format/output takes effect (dfs reads its log config at startup).
+func buildLoggingConfig(ds *dittoiov1alpha1.DittoServer) LoggingConfig {
+	cfg := LoggingConfig{
+		Level:  DefaultLoggingLevel,
+		Format: DefaultLoggingFormat,
+		Output: DefaultLoggingOutput,
+	}
+	if ds.Spec.Logging == nil {
+		return cfg
+	}
+	if ds.Spec.Logging.Level != "" {
+		cfg.Level = ds.Spec.Logging.Level
+	}
+	if ds.Spec.Logging.Format != "" {
+		cfg.Format = ds.Spec.Logging.Format
+	}
+	if ds.Spec.Logging.Output != "" {
+		cfg.Output = ds.Spec.Logging.Output
+	}
+	return cfg
+}
+
+// buildKerberosConfig renders the kerberos: block when the CRD enables the
+// Kerberos/AD provider. Returns nil (no kerberos: key) when disabled, preserving
+// the disabled-by-default server behavior. The keytab is never rendered here; it
+// is mounted as a file from a Secret and keytab_path points at the mount. When a
+// krb5.conf Secret is referenced, krb5_conf points at its mount; otherwise it
+// falls back to the explicit Krb5Conf path (the server defaults it when empty).
+func buildKerberosConfig(ds *dittoiov1alpha1.DittoServer) *KerberosConfig {
+	if !ds.KerberosEnabled() {
+		return nil
+	}
+	k := ds.Spec.Identity.Kerberos
+
+	cfg := &KerberosConfig{
+		Enabled:          true,
+		ServicePrincipal: k.ServicePrincipal,
+		Realm:            k.Realm,
+		NetBIOSDomain:    k.NetBIOSDomain,
+		DNSDomain:        k.DNSDomain,
+	}
+
+	// keytab_path points at the mounted keytab Secret when one is referenced.
+	if k.KeytabSecretRef != nil {
+		cfg.KeytabPath = dittoiov1alpha1.KerberosKeytabFilePath()
+	}
+
+	// A mounted krb5.conf Secret wins; otherwise use the explicit path (the
+	// server applies its own /etc/krb5.conf default when this stays empty).
+	switch {
+	case k.Krb5ConfSecretRef != nil:
+		cfg.Krb5Conf = dittoiov1alpha1.KerberosKrb5ConfFilePath()
+	case k.Krb5Conf != "":
+		cfg.Krb5Conf = k.Krb5Conf
 	}
 
 	return cfg
