@@ -233,6 +233,74 @@ func TestDittoServerValidation(t *testing.T) {
 			wantErr:     true,
 			errContains: "controlPlane.port must be between 1 and 65535",
 		},
+		{
+			name: "kerberos enabled without servicePrincipal",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{MetadataSize: "10Gi"},
+					Identity: &IdentityConfig{
+						Kerberos: &KerberosConfig{
+							Enabled: true,
+							KeytabSecretRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "kt"},
+								Key:                  "dittofs.keytab",
+							},
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "kerberos.servicePrincipal is required",
+		},
+		{
+			name: "kerberos enabled without keytab",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{MetadataSize: "10Gi"},
+					Identity: &IdentityConfig{
+						Kerberos: &KerberosConfig{
+							Enabled:          true,
+							ServicePrincipal: "nfs/server@EXAMPLE.COM",
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "kerberos.keytabSecretRef is required",
+		},
+		{
+			name: "kerberos enabled and complete",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{MetadataSize: "10Gi"},
+					Identity: &IdentityConfig{
+						Kerberos: &KerberosConfig{
+							Enabled:          true,
+							ServicePrincipal: "nfs/server@EXAMPLE.COM",
+							KeytabSecretRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "kt"},
+								Key:                  "dittofs.keytab",
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "kerberos disabled ignores missing fields",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: DittoServerSpec{
+					Storage:  StorageSpec{MetadataSize: "10Gi"},
+					Identity: &IdentityConfig{Kerberos: &KerberosConfig{Enabled: false}},
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

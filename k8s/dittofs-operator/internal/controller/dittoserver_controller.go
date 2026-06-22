@@ -59,6 +59,10 @@ const (
 	retryBackoffBase = 100 * time.Millisecond
 	// defaultAPIPort is the default control plane API port
 	defaultAPIPort = 8080
+	// kerberosKeytabVolumeName is the pod volume name for the mounted keytab Secret.
+	kerberosKeytabVolumeName = "kerberos-keytab"
+	// kerberosKrb5ConfVolumeName is the pod volume name for the mounted krb5.conf Secret.
+	kerberosKrb5ConfVolumeName = "kerberos-krb5"
 	// defaultFSGroup is the default fsGroup for pod security context (nonroot user)
 	defaultFSGroup = 65532
 	// capabilityAll is the special capability value that drops all Linux
@@ -983,6 +987,25 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 				})
 			}
 
+			// Kerberos: mount the keytab (and optional krb5.conf) Secret(s)
+			// read-only so the rendered kerberos.{keytab_path,krb5_conf} paths
+			// resolve. Gated on the keytab being referenced — a keytab is required
+			// for the server to act as a Kerberos service principal.
+			if dittoServer.KerberosKeytabSecret() != nil {
+				volumeMounts = append(volumeMounts, corev1.VolumeMount{
+					Name:      kerberosKeytabVolumeName,
+					MountPath: dittoiov1alpha1.KerberosKeytabMountPath,
+					ReadOnly:  true,
+				})
+			}
+			if dittoServer.KerberosKrb5ConfSecret() != nil {
+				volumeMounts = append(volumeMounts, corev1.VolumeMount{
+					Name:      kerberosKrb5ConfVolumeName,
+					MountPath: dittoiov1alpha1.KerberosKrb5ConfMountPath,
+					ReadOnly:  true,
+				})
+			}
+
 			metadataSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.MetadataSize)
 			if err != nil {
 				return fmt.Errorf("invalid metadata size: %w", err)
@@ -1118,6 +1141,39 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							SecretName: ref.Name,
 							Items: []corev1.KeyToPath{
 								{Key: ref.Key, Path: dittoiov1alpha1.MetricsTokenFileName},
+							},
+						},
+					},
+				})
+			}
+			// Kerberos: project the keytab (and optional krb5.conf) Secret key to a
+			// single file at the fixed mount path the rendered kerberos.{keytab_path,
+			// krb5_conf} points at.
+			if ref := dittoServer.KerberosKeytabSecret(); ref != nil {
+				podVolumes = append(podVolumes, corev1.Volume{
+					Name: kerberosKeytabVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: ref.Name,
+							Items: []corev1.KeyToPath{
+								{Key: ref.Key, Path: dittoiov1alpha1.KerberosKeytabFileName},
+							},
+							// The keytab is a high-value credential; project it
+							// owner/group read-only (0440) instead of the 0644
+							// default so it is not world-readable in the pod.
+							DefaultMode: ptr.To(int32(0o440)),
+						},
+					},
+				})
+			}
+			if ref := dittoServer.KerberosKrb5ConfSecret(); ref != nil {
+				podVolumes = append(podVolumes, corev1.Volume{
+					Name: kerberosKrb5ConfVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: ref.Name,
+							Items: []corev1.KeyToPath{
+								{Key: ref.Key, Path: dittoiov1alpha1.KerberosKrb5ConfFileName},
 							},
 						},
 					},
@@ -1625,6 +1681,37 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 			}
 		}
 		// Note: Don't error if secret doesn't exist yet - Percona operator creates it
+	}
+
+	// Kerberos keytab + krb5.conf: fold the referenced Secret keys into the hash
+	// so a keytab rotation (or krb5.conf edit) rolls the pod. The keytab hot-path
+	// is file-mounted, but krb5.conf and the rendered config are read once at
+	// startup, so the restart is what makes a rotation take effect server-wide.
+	if ref := dittoServer.KerberosKeytabSecret(); ref != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      ref.Name,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get kerberos keytab secret %q (key %q): %w", ref.Name, ref.Key, err)
+		}
+		if data, ok := secret.Data[ref.Key]; ok {
+			// Include the Secret name so the hash input is self-describing and
+			// cannot collide with another reference that happens to share a key.
+			secrets["kerberos-keytab:"+ref.Name+":"+ref.Key] = data
+		}
+	}
+	if ref := dittoServer.KerberosKrb5ConfSecret(); ref != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      ref.Name,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get kerberos krb5.conf secret %q (key %q): %w", ref.Name, ref.Key, err)
+		}
+		if data, ok := secret.Data[ref.Key]; ok {
+			secrets["kerberos-krb5:"+ref.Name+":"+ref.Key] = data
+		}
 	}
 
 	return secrets, nil

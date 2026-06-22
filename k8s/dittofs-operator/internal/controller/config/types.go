@@ -17,6 +17,24 @@ type DittoFSConfig struct {
 	// NOT rendered here — it is injected via the DITTOFS_LDAP_BIND_PASSWORD env
 	// var sourced from a Kubernetes Secret.
 	LDAP *LDAPConfig `yaml:"ldap,omitempty"`
+	// Kerberos renders the top-level kerberos: block for the Kerberos/AD auth
+	// provider. Omitted (nil pointer) unless the CRD enables Kerberos. The keytab
+	// is NOT rendered here — it is mounted as a file from a Kubernetes Secret and
+	// kerberos.keytab_path points at the mount.
+	Kerberos *KerberosConfig `yaml:"kerberos,omitempty"`
+}
+
+// KerberosConfig mirrors the dfs server kerberos: config keys (pkg/config).
+// The keytab is intentionally absent; it is mounted as a file from a Secret and
+// referenced via keytab_path, never written to the ConfigMap.
+type KerberosConfig struct {
+	Enabled          bool   `yaml:"enabled"`
+	KeytabPath       string `yaml:"keytab_path,omitempty"`
+	ServicePrincipal string `yaml:"service_principal,omitempty"`
+	Realm            string `yaml:"realm,omitempty"`
+	NetBIOSDomain    string `yaml:"netbios_domain,omitempty"`
+	DNSDomain        string `yaml:"dns_domain,omitempty"`
+	Krb5Conf         string `yaml:"krb5_conf,omitempty"`
 }
 
 // LDAPConfig mirrors the dfs server ldap: config keys (pkg/identity/ldap.Config).

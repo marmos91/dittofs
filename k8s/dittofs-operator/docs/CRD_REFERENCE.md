@@ -272,6 +272,21 @@ Configures JWT authentication and admin user.
 | `identity.admin.username` | string | `admin` | No | Admin username |
 | `identity.admin.passwordSecretRef` | SecretKeySelector | - | No | Reference to Secret containing admin password hash (bcrypt). If not set, a random password is generated and logged at startup. |
 
+**Kerberos Configuration (`spec.identity.kerberos`):**
+
+Configures the Kerberos/Active Directory authentication provider for NFSv4 (RPCSEC_GSS) and SMB. The keytab is mounted from a Secret (never written to the ConfigMap); rotating it rolls the pod.
+
+| Field | Type | Default | Required | Description |
+|-------|------|---------|----------|-------------|
+| `identity.kerberos.enabled` | bool | `false` | No | Turns the Kerberos provider on. When false the `kerberos:` block is omitted entirely. |
+| `identity.kerberos.servicePrincipal` | string | - | **Yes** (if enabled) | Service principal name (SPN), e.g. `nfs/server.example.com@EXAMPLE.COM`. |
+| `identity.kerberos.keytabSecretRef` | SecretKeySelector | - | **Yes** (if enabled) | Secret key holding the service keytab. Mounted read-only; `keytab_path` points at the mount. Updating it rolls the pod. |
+| `identity.kerberos.realm` | string | derived from SPN | No | Kerberos realm (e.g. `CONTOSO.COM`). |
+| `identity.kerberos.netbiosDomain` | string | `WORKGROUP` | No | Short NetBIOS domain advertised in SMB NTLM (e.g. `CONTOSO`). Cannot be derived from the realm; set explicitly for domain-aware SMB. |
+| `identity.kerberos.dnsDomain` | string | lowercased realm | No | DNS domain advertised in SMB NTLM (e.g. `contoso.com`). |
+| `identity.kerberos.krb5ConfSecretRef` | SecretKeySelector | - | No | Secret key holding a `krb5.conf`. When set it is mounted and `krb5_conf` points at the mount (wins over `krb5Conf`). |
+| `identity.kerberos.krb5Conf` | string | server default (`/etc/krb5.conf`) | No | In-pod path to `krb5.conf`. Ignored when `krb5ConfSecretRef` is set. |
+
 **Examples:**
 ```yaml
 identity:
@@ -287,6 +302,24 @@ identity:
     passwordSecretRef:
       name: dittofs-admin-secret
       key: password
+```
+
+### Logging Configuration (`spec.logging`)
+
+Configures the server log level, format, and output. A change here is config-only: the operator re-renders the ConfigMap and rolls the pod so the new value takes effect (dfs reads its log config once at startup). All fields are optional.
+
+| Field | Type | Default | Required | Description |
+|-------|------|---------|----------|-------------|
+| `logging.level` | string | `INFO` | No | Minimum log level: `DEBUG`, `INFO`, `WARN`, or `ERROR`. |
+| `logging.format` | string | `json` | No | Log output format: `text` or `json`. |
+| `logging.output` | string | `stdout` | No | Where logs are written: `stdout`, `stderr`, or a file path. |
+
+```yaml
+spec:
+  logging:
+    level: DEBUG
+    format: json
+    output: stdout
 ```
 
 ### S3 stores (provisioned via REST API)

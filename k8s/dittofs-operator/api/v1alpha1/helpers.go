@@ -178,3 +178,66 @@ func (ds *DittoServer) ServiceMonitorEnabled() bool {
 func MetricsTokenFilePath() string {
 	return MetricsTokenMountPath + "/" + MetricsTokenFileName
 }
+
+// Kerberos mount paths shared by the config generator and the controller so the
+// rendered kerberos.{keytab_path,krb5_conf} always point at where the operator
+// mounts the keytab / krb5.conf Secret keys.
+const (
+	// KerberosKeytabMountPath is where the keytab Secret is mounted (read-only).
+	KerberosKeytabMountPath = "/kerberos"
+	// KerberosKeytabFileName is the file the keytab Secret key is projected to.
+	KerberosKeytabFileName = "dittofs.keytab"
+	// KerberosKrb5ConfMountPath is where the optional krb5.conf Secret is mounted.
+	KerberosKrb5ConfMountPath = "/kerberos-krb5"
+	// KerberosKrb5ConfFileName is the file the krb5.conf Secret key is projected to.
+	KerberosKrb5ConfFileName = "krb5.conf"
+)
+
+// KerberosEnabled reports whether the operator should render the kerberos: block
+// and mount the keytab into the pod.
+func (ds *DittoServer) KerberosEnabled() bool {
+	return ds.Spec.Identity != nil && ds.Spec.Identity.Kerberos != nil &&
+		ds.Spec.Identity.Kerberos.Enabled
+}
+
+// KerberosKeytabSecret returns the keytab Secret selector when Kerberos is
+// enabled and a usable keytab is referenced, otherwise nil. A selector is usable
+// only when its Name is non-empty — an empty selector ({} or missing name) would
+// otherwise produce a volume with SecretName:"" (an invalid pod spec), so it is
+// treated as "not referenced" by every consumer (mount, render, hash).
+func (ds *DittoServer) KerberosKeytabSecret() *corev1.SecretKeySelector {
+	if !ds.KerberosEnabled() {
+		return nil
+	}
+	ref := ds.Spec.Identity.Kerberos.KeytabSecretRef
+	if ref == nil || ref.Name == "" {
+		return nil
+	}
+	return ref
+}
+
+// KerberosKrb5ConfSecret returns the krb5.conf Secret selector when Kerberos is
+// enabled and a usable one is referenced (non-empty Name), otherwise nil. See
+// KerberosKeytabSecret for why an empty selector is treated as absent.
+func (ds *DittoServer) KerberosKrb5ConfSecret() *corev1.SecretKeySelector {
+	if !ds.KerberosEnabled() {
+		return nil
+	}
+	ref := ds.Spec.Identity.Kerberos.Krb5ConfSecretRef
+	if ref == nil || ref.Name == "" {
+		return nil
+	}
+	return ref
+}
+
+// KerberosKeytabFilePath returns the in-container keytab path the rendered
+// kerberos.keytab_path points at, matching where the keytab Secret is mounted.
+func KerberosKeytabFilePath() string {
+	return KerberosKeytabMountPath + "/" + KerberosKeytabFileName
+}
+
+// KerberosKrb5ConfFilePath returns the in-container krb5.conf path the rendered
+// kerberos.krb5_conf points at when a krb5.conf Secret is mounted.
+func KerberosKrb5ConfFilePath() string {
+	return KerberosKrb5ConfMountPath + "/" + KerberosKrb5ConfFileName
+}

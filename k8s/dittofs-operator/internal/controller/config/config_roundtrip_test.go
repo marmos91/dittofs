@@ -68,6 +68,16 @@ var serverKnownKeys = map[string]bool{
 	"metrics.auth":       true,
 	"metrics.token_file": true,
 
+	// kerberos.* — the scalar subset the operator renders. The keytab itself is
+	// file-mounted (keytab_path), never inlined. These match pkg/config.KerberosConfig.
+	"kerberos.enabled":           true,
+	"kerberos.keytab_path":       true,
+	"kerberos.service_principal": true,
+	"kerberos.realm":             true,
+	"kerberos.netbios_domain":    true,
+	"kerberos.dns_domain":        true,
+	"kerberos.krb5_conf":         true,
+
 	// The server has no Cache field; the rendered cache.* block is a known
 	// dead key tracked separately (round-1 M-CFG-1). It is intentionally NOT
 	// listed here so that, were the cache block to grow new keys, this test
@@ -153,6 +163,24 @@ func TestGenerateDittoFSConfig_NoDeadKeys(t *testing.T) {
 				Metrics: &dittoiov1alpha1.MetricsSpec{
 					Enabled:           true,
 					BearerTokenSecret: &corev1.SecretKeySelector{},
+				},
+			},
+		},
+		"kerberos": {
+			Spec: dittoiov1alpha1.DittoServerSpec{
+				Identity: &dittoiov1alpha1.IdentityConfig{
+					Kerberos: &dittoiov1alpha1.KerberosConfig{
+						Enabled:          true,
+						ServicePrincipal: "nfs/server@EXAMPLE.COM",
+						Realm:            "EXAMPLE.COM",
+						NetBIOSDomain:    "EXAMPLE",
+						DNSDomain:        "example.com",
+						KeytabSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "kt"},
+							Key:                  "dittofs.keytab",
+						},
+						Krb5Conf: "/etc/krb5.conf",
+					},
 				},
 			},
 		},

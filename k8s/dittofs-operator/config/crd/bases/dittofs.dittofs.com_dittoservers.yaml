@@ -263,6 +263,103 @@ spec:
                     required:
                     - secretRef
                     type: object
+                  kerberos:
+                    description: |-
+                      Kerberos configures the Kerberos/Active Directory authentication provider
+                      for NFSv4 (RPCSEC_GSS) and SMB. When set and enabled, the operator renders
+                      the kerberos: config block and mounts the referenced keytab (and optional
+                      krb5.conf) Secret(s) into the pod. A keytab rotation (Secret update) rolls
+                      the pod so the new keys take effect.
+                    properties:
+                      dnsDomain:
+                        description: |-
+                          DNSDomain is the DNS domain name (e.g. contoso.com) advertised in the SMB
+                          NTLM Type-2 TargetInfo. When empty it defaults to the lowercased Realm.
+                        type: string
+                      enabled:
+                        description: |-
+                          Enabled turns the Kerberos provider on. When false the kerberos: block is
+                          omitted entirely and the server stays AUTH_UNIX/standalone-SMB only.
+                        type: boolean
+                      keytabSecretRef:
+                        description: |-
+                          KeytabSecretRef references a Secret key holding the service keytab. The
+                          operator mounts it read-only at a fixed in-pod path and points
+                          kerberos.keytab_path at that file. Updating the Secret rolls the pod.
+                          Required when Enabled.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      krb5Conf:
+                        description: |-
+                          Krb5Conf is the in-pod path to krb5.conf. Ignored when Krb5ConfSecretRef is
+                          set (the mount path wins). Defaults to the server's /etc/krb5.conf.
+                        type: string
+                      krb5ConfSecretRef:
+                        description: |-
+                          Krb5ConfSecretRef optionally references a Secret key holding a krb5.conf.
+                          When set the operator mounts it read-only and points kerberos.krb5_conf at
+                          that file. When unset, kerberos.krb5_conf falls back to Krb5Conf (or the
+                          server default /etc/krb5.conf, typically baked into the image).
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      netbiosDomain:
+                        description: |-
+                          NetBIOSDomain is the short NetBIOS domain name (e.g. CONTOSO) advertised in
+                          the SMB NTLM Type-2 TargetInfo. It cannot be derived from the realm and must
+                          be set explicitly to make the SMB server domain-aware; empty means WORKGROUP.
+                        type: string
+                      realm:
+                        description: |-
+                          Realm is the Kerberos realm the server is joined to (e.g. CONTOSO.COM).
+                          When empty it is derived from the @REALM suffix of ServicePrincipal.
+                        type: string
+                      servicePrincipal:
+                        description: |-
+                          ServicePrincipal is the service principal name (SPN) in the form
+                          service/hostname@REALM (e.g. nfs/server.example.com@EXAMPLE.COM).
+                          Required when Enabled.
+                        type: string
+                    type: object
                   ldap:
                     description: |-
                       LDAP configures the LDAP/Active Directory identity provider. When set and
@@ -364,6 +461,31 @@ spec:
                 default: marmos91c/dittofs:latest
                 description: Image is the container image for DittoFS server
                 type: string
+              logging:
+                description: |-
+                  Logging configures the server log level, format, and output. A change here
+                  is config-only: the operator re-renders the ConfigMap and rolls the pod so
+                  the new level takes effect (dfs reads its log config once at startup).
+                properties:
+                  format:
+                    description: Format is the log output format.
+                    enum:
+                    - text
+                    - json
+                    type: string
+                  level:
+                    description: Level is the minimum log level.
+                    enum:
+                    - DEBUG
+                    - INFO
+                    - WARN
+                    - ERROR
+                    type: string
+                  output:
+                    description: 'Output is where logs are written: "stdout", "stderr",
+                      or a file path.'
+                    type: string
+                type: object
               metrics:
                 description: |-
                   Metrics configures the Prometheus /metrics surface and its integration

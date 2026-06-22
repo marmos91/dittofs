@@ -51,6 +51,12 @@ type DittoServerSpec struct {
 	// +optional
 	Metrics *MetricsSpec `json:"metrics,omitempty"`
 
+	// Logging configures the server log level, format, and output. A change here
+	// is config-only: the operator re-renders the ConfigMap and rolls the pod so
+	// the new level takes effect (dfs reads its log config once at startup).
+	// +optional
+	Logging *LoggingSpec `json:"logging,omitempty"`
+
 	// Percona configures auto-creation of PerconaPGCluster for PostgreSQL metadata store
 	// When enabled, the operator creates a PerconaPGCluster owned by this DittoServer
 	// +optional
@@ -192,6 +198,24 @@ type ControlPlaneAPIConfig struct {
 	ClientCASecretName string `json:"clientCASecretName,omitempty"`
 }
 
+// LoggingSpec configures the server logging block. All fields are optional;
+// unset fields fall back to the operator defaults (INFO/json/stdout).
+type LoggingSpec struct {
+	// Level is the minimum log level.
+	// +kubebuilder:validation:Enum=DEBUG;INFO;WARN;ERROR
+	// +optional
+	Level string `json:"level,omitempty"`
+
+	// Format is the log output format.
+	// +kubebuilder:validation:Enum=text;json
+	// +optional
+	Format string `json:"format,omitempty"`
+
+	// Output is where logs are written: "stdout", "stderr", or a file path.
+	// +optional
+	Output string `json:"output,omitempty"`
+}
+
 // IdentityConfig defines identity store and JWT authentication configuration
 type IdentityConfig struct {
 	// Type of identity store
@@ -214,6 +238,14 @@ type IdentityConfig struct {
 	// StartTLS) unless plaintext is explicitly allowed.
 	// +optional
 	LDAP *LDAPConfig `json:"ldap,omitempty"`
+
+	// Kerberos configures the Kerberos/Active Directory authentication provider
+	// for NFSv4 (RPCSEC_GSS) and SMB. When set and enabled, the operator renders
+	// the kerberos: config block and mounts the referenced keytab (and optional
+	// krb5.conf) Secret(s) into the pod. A keytab rotation (Secret update) rolls
+	// the pod so the new keys take effect.
+	// +optional
+	Kerberos *KerberosConfig `json:"kerberos,omitempty"`
 }
 
 // LDAPConfig defines the LDAP/Active Directory identity provider settings.
@@ -279,6 +311,58 @@ type LDAPConfig struct {
 	// InsecureSkipVerify disables directory-certificate verification (lab only).
 	// +optional
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+}
+
+// KerberosConfig defines the Kerberos/Active Directory authentication provider.
+// The keytab is supplied out-of-band via KeytabSecretRef and mounted read-only
+// into the pod (it is never written to the config ConfigMap). krb5.conf may be
+// mounted from Krb5ConfSecretRef or pre-baked into the image.
+type KerberosConfig struct {
+	// Enabled turns the Kerberos provider on. When false the kerberos: block is
+	// omitted entirely and the server stays AUTH_UNIX/standalone-SMB only.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ServicePrincipal is the service principal name (SPN) in the form
+	// service/hostname@REALM (e.g. nfs/server.example.com@EXAMPLE.COM).
+	// Required when Enabled.
+	// +optional
+	ServicePrincipal string `json:"servicePrincipal,omitempty"`
+
+	// Realm is the Kerberos realm the server is joined to (e.g. CONTOSO.COM).
+	// When empty it is derived from the @REALM suffix of ServicePrincipal.
+	// +optional
+	Realm string `json:"realm,omitempty"`
+
+	// NetBIOSDomain is the short NetBIOS domain name (e.g. CONTOSO) advertised in
+	// the SMB NTLM Type-2 TargetInfo. It cannot be derived from the realm and must
+	// be set explicitly to make the SMB server domain-aware; empty means WORKGROUP.
+	// +optional
+	NetBIOSDomain string `json:"netbiosDomain,omitempty"`
+
+	// DNSDomain is the DNS domain name (e.g. contoso.com) advertised in the SMB
+	// NTLM Type-2 TargetInfo. When empty it defaults to the lowercased Realm.
+	// +optional
+	DNSDomain string `json:"dnsDomain,omitempty"`
+
+	// KeytabSecretRef references a Secret key holding the service keytab. The
+	// operator mounts it read-only at a fixed in-pod path and points
+	// kerberos.keytab_path at that file. Updating the Secret rolls the pod.
+	// Required when Enabled.
+	// +optional
+	KeytabSecretRef *corev1.SecretKeySelector `json:"keytabSecretRef,omitempty"`
+
+	// Krb5ConfSecretRef optionally references a Secret key holding a krb5.conf.
+	// When set the operator mounts it read-only and points kerberos.krb5_conf at
+	// that file. When unset, kerberos.krb5_conf falls back to Krb5Conf (or the
+	// server default /etc/krb5.conf, typically baked into the image).
+	// +optional
+	Krb5ConfSecretRef *corev1.SecretKeySelector `json:"krb5ConfSecretRef,omitempty"`
+
+	// Krb5Conf is the in-pod path to krb5.conf. Ignored when Krb5ConfSecretRef is
+	// set (the mount path wins). Defaults to the server's /etc/krb5.conf.
+	// +optional
+	Krb5Conf string `json:"krb5Conf,omitempty"`
 }
 
 // JWTConfig defines JWT authentication settings
