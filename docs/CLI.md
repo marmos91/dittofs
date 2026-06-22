@@ -582,6 +582,11 @@ dfsctl
     get            Get group details
     list           List all groups
     remove-user    Remove a user from a group
+  identity-provider Identity provider (LDAP/AD, Kerberos) management
+    get            Show an identity provider's configuration (secrets redacted)
+    list           List identity providers and their state
+    set            Create or replace an identity provider's configuration
+    test           Test an identity provider's configuration without persisting it
   idmap          Manage identity mappings
     add            Add an identity mapping
     list           List identity mappings
@@ -2279,6 +2284,140 @@ Examples:
 
 ```
 dfsctl group remove-user <group> <username>
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl identity-provider`
+
+Identity provider (LDAP/AD, Kerberos) management
+
+Manage DittoFS identity providers (LDAP/AD and Kerberos) over the API.
+
+LDAP changes hot-reload the live identity resolver; Kerberos changes take
+effect on the next server restart. Secret material (bind password) is
+write-only and never displayed.
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl identity-provider get`
+
+Show an identity provider's configuration (secrets redacted)
+
+```
+dfsctl identity-provider get <ldap|kerberos>
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl identity-provider list`
+
+List identity providers and their state
+
+```
+dfsctl identity-provider list
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl identity-provider set`
+
+Create or replace an identity provider's configuration
+
+Create or replace an identity provider's configuration from a JSON body.
+
+The JSON shape matches the API config schema. For LDAP, set "bind_password" to
+the real password (or "********" / omit to keep the stored one). LDAP changes
+apply live; Kerberos changes apply on the next server restart.
+
+Examples:
+  dfsctl identity-provider set ldap --config '{"enabled":true,"url":"ldaps://dc:636","base_dn":"DC=x,DC=y","bind_dn":"CN=svc,DC=x,DC=y","bind_password":"s3cret","idmap":"rfc2307"}'
+  dfsctl identity-provider set kerberos --config @/path/to/krb.json
+
+```
+dfsctl identity-provider set <ldap|kerberos> --config '<json>' [flags]
+```
+
+Flags:
+
+```
+      --config string   configuration as a JSON string, or @file to read from a file (required)
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl identity-provider test`
+
+Test an identity provider's configuration without persisting it
+
+```
+dfsctl identity-provider test <ldap|kerberos> --config '<json>' [flags]
+```
+
+Flags:
+
+```
+      --config string   configuration to test as a JSON string, or @file (required)
 ```
 
 Global flags:

@@ -116,6 +116,20 @@ type NFSAdapter struct {
 	// nil when Kerberos is not enabled.
 	kerberosConfig *config.KerberosConfig
 
+	// identityUnsub unsubscribes the OnIdentityMappingChange callback registered
+	// when the centralized resolver is wired. Re-set on each resolver rebuild so
+	// a hot-reload does not accumulate stale cache-invalidation callbacks.
+	identityUnsub func()
+
+	// identityProviderUnsub unsubscribes the OnIdentityProviderConfigChange
+	// callback. Registered once so an API-driven identity-provider config change
+	// rebuilds and re-injects the resolver without a restart.
+	identityProviderUnsub func()
+
+	// resolverMu serializes wireIdentityResolver so concurrent identity-provider
+	// config changes cannot race on identityUnsub/identityProviderUnsub.
+	resolverMu sync.Mutex
+
 	// portmapServer is the embedded portmapper server (RFC 1057).
 	// nil when portmapper is disabled.
 	portmapServer *portmap.Server

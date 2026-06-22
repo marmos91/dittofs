@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/sysinfo"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs"
@@ -22,6 +24,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
+	"github.com/marmos91/dittofs/pkg/identity/ldap"
 	badgerstore "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/marmos91/dittofs/pkg/metrics"
 	"github.com/spf13/cobra"
@@ -261,17 +264,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// machine SID is resolved before any adapter reads the SID mapper. Pinning
 	// the same SID on every node yields identical local UID->SID encoding.
 	rt.SetPinnedMachineSID(cfg.Identity.MachineSID)
-	rt.SetAdapterFactory(createAdapterFactory(&cfg.Kerberos))
 
-	// Thread the LDAP/AD identity provider config into the runtime so the
-	// adapters' BuildIdentityResolver can register the provider when enabled.
-	if cfg.LDAP.Enabled {
-		ldapCfg := cfg.LDAP
-		rt.SetLDAPConfig(&ldapCfg)
-		logger.Info("LDAP identity provider enabled",
-			"url", cfg.LDAP.URL, "base_dn", cfg.LDAP.BaseDN, "idmap", cfg.LDAP.Idmap,
-			"nested_groups", cfg.LDAP.NestedGroups)
-	}
+	// Resolve identity-provider config: a DB row (managed via the API) wins over
+	// the file/env config; on first boot the file/env config seeds the DB. This
+	// sets the runtime's LDAP config and returns the effective Kerberos config to
+	// hand to the adapter factory.
+	effectiveKerberos := resolveIdentityProviders(ctx, cpStore, rt, cfg)
+	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos))
 
 	// Create and set API server
 	apiServer, err := api.NewServer(cfg.ControlPlane, rt, cpStore, cfg.Snapshot.RestoreHTTPTimeout)
@@ -426,6 +425,121 @@ func buildMetricsListener(cfg *config.MetricsConfig, m *metrics.Metrics) (*metri
 		return nil, fmt.Errorf("create metrics server: %w", err)
 	}
 	return srv, nil
+}
+
+// resolveIdentityProviders reconciles identity-provider configuration between
+// the file/env config and the control-plane database. A persisted row (managed
+// over the API) takes precedence; when no row exists the file/env config seeds
+// the database on first boot. It sets the runtime's LDAP config directly and
+// returns the effective Kerberos config for the adapter factory.
+//
+// Note: the API does not manage Kerberos static IdentityMapping entries, so a
+// DB-sourced Kerberos config carries none — those are configured via the
+// separate /api/v1/identity-mappings routes.
+func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runtime.Runtime, cfg *config.Config) config.KerberosConfig {
+	// LDAP: DB row wins; else seed from file/env when enabled.
+	if row, err := cpStore.GetIdentityProviderConfig(ctx, models.IdentityProviderTypeLDAP); err == nil {
+		if lc, derr := ldap.UnmarshalStored([]byte(row.Config)); derr == nil {
+			rt.SetLDAPConfig(lc)
+			logger.Info("LDAP identity provider loaded from control-plane store",
+				"enabled", lc.Enabled, "url", lc.URL, "base_dn", lc.BaseDN)
+		} else {
+			logger.Warn("failed to decode stored LDAP config; ignoring", "error", derr)
+		}
+	} else if errors.Is(err, models.ErrIdentityProviderConfigNotFound) {
+		if cfg.LDAP.Enabled {
+			lc := cfg.LDAP
+			rt.SetLDAPConfig(&lc)
+			if blob, merr := ldap.MarshalStored(&lc); merr != nil {
+				logger.Warn("failed to marshal LDAP config for seeding", "error", merr)
+			} else if perr := cpStore.PutIdentityProviderConfig(ctx, &models.IdentityProviderConfig{
+				Type: models.IdentityProviderTypeLDAP, Enabled: lc.Enabled, Config: string(blob),
+			}); perr != nil {
+				logger.Warn("failed to seed LDAP config into store", "error", perr)
+			}
+			logger.Info("LDAP identity provider enabled (seeded from config file/env)",
+				"url", lc.URL, "base_dn", lc.BaseDN, "idmap", lc.Idmap)
+		}
+	} else {
+		logger.Warn("failed to read stored LDAP config; falling back to file/env", "error", err)
+		if cfg.LDAP.Enabled {
+			lc := cfg.LDAP
+			rt.SetLDAPConfig(&lc)
+		}
+	}
+
+	// Kerberos: DB row wins; else seed from file/env when enabled.
+	kerberos := cfg.Kerberos
+	if row, err := cpStore.GetIdentityProviderConfig(ctx, models.IdentityProviderTypeKerberos); err == nil {
+		var dto handlers.KerberosConfigDTO
+		if json.Unmarshal([]byte(row.Config), &dto) == nil {
+			kerberos = kerberosDTOToConfig(dto)
+			logger.Info("Kerberos identity provider loaded from control-plane store",
+				"enabled", kerberos.Enabled, "service_principal", kerberos.ServicePrincipal)
+		} else {
+			logger.Warn("failed to decode stored Kerberos config; falling back to file/env")
+		}
+	} else if errors.Is(err, models.ErrIdentityProviderConfigNotFound) && cfg.Kerberos.Enabled {
+		if blob, merr := json.Marshal(kerberosConfigToDTO(cfg.Kerberos)); merr == nil {
+			if perr := cpStore.PutIdentityProviderConfig(ctx, &models.IdentityProviderConfig{
+				Type: models.IdentityProviderTypeKerberos, Enabled: cfg.Kerberos.Enabled, Config: string(blob),
+			}); perr != nil {
+				logger.Warn("failed to seed Kerberos config into store", "error", perr)
+			}
+		}
+	}
+	return kerberos
+}
+
+func kerberosConfigToDTO(c config.KerberosConfig) handlers.KerberosConfigDTO {
+	dto := handlers.KerberosConfigDTO{
+		Enabled:          c.Enabled,
+		KeytabPath:       c.KeytabPath,
+		ServicePrincipal: c.ServicePrincipal,
+		Realm:            c.Realm,
+		NetBIOSDomain:    c.NetBIOSDomain,
+		DNSDomain:        c.DNSDomain,
+		Krb5Conf:         c.Krb5Conf,
+		MaxContexts:      c.MaxContexts,
+	}
+	if c.MaxClockSkew > 0 {
+		dto.MaxClockSkew = c.MaxClockSkew.String()
+	}
+	if c.ContextTTL > 0 {
+		dto.ContextTTL = c.ContextTTL.String()
+	}
+	return dto
+}
+
+func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
+	c := config.KerberosConfig{
+		Enabled:          dto.Enabled,
+		KeytabPath:       dto.KeytabPath,
+		ServicePrincipal: dto.ServicePrincipal,
+		Realm:            dto.Realm,
+		NetBIOSDomain:    dto.NetBIOSDomain,
+		DNSDomain:        dto.DNSDomain,
+		Krb5Conf:         dto.Krb5Conf,
+		MaxContexts:      dto.MaxContexts,
+	}
+	if d, err := time.ParseDuration(dto.MaxClockSkew); err == nil {
+		c.MaxClockSkew = d
+	}
+	if d, err := time.ParseDuration(dto.ContextTTL); err == nil {
+		c.ContextTTL = d
+	}
+	// Restore the defaults config.MustLoad would have applied, since a
+	// DB-sourced config bypasses ApplyDefaults.
+	if c.MaxClockSkew == 0 {
+		c.MaxClockSkew = 5 * time.Minute
+	}
+	if c.ContextTTL == 0 {
+		c.ContextTTL = 8 * time.Hour
+	}
+	if c.MaxContexts == 0 {
+		c.MaxContexts = 10000
+	}
+	return c
 }
 
 // createAdapterFactory returns a factory function that creates protocol adapters

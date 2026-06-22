@@ -1613,6 +1613,26 @@ default Samba AD-DC works out of the box. For production directories, prefer a
 properly-issued DC certificate (the Go toggle is slated for removal in a future
 release).
 
+**Managing identity providers over the API (no restart).** The `ldap.*` and
+`kerberos.*` keys above seed the configuration on first boot. After that, both
+providers can be read, updated, and tested over the control-plane API without
+editing files:
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/v1/identity-providers` | List providers + enabled state (no secrets). |
+| `GET /api/v1/identity-providers/{type}/config` | Read config (bind password redacted to `********`). |
+| `PUT /api/v1/identity-providers/{type}/config` | Create/replace config (validated). |
+| `POST /api/v1/identity-providers/{type}/test` | Dry-run dial+bind (LDAP) / keytab check (Kerberos); never persists. |
+
+`{type}` is `ldap` or `kerberos`; all routes are admin-only. A persisted config
+**takes precedence over the file/env config** on subsequent boots. **LDAP
+changes hot-reload the live resolver**; **Kerberos changes take effect on the
+next server restart** (the NFS/SMB adapters bind it at startup). The bind
+password is write-only — submit `********` (or omit it) on `PUT` to keep the
+stored secret. Equivalent CLI: `dfsctl identity-provider {list,get,set,test}`
+(see [CLI.md](CLI.md)).
+
 ## Migration
 
 ### Required when upgrading from v0.15.x or earlier

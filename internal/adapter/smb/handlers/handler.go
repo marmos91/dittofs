@@ -208,10 +208,15 @@ type Handler struct {
 	// Deprecated: use IdentityResolver for DB-backed resolution.
 	IdentityConfig *kerberos.IdentityConfig
 
-	// IdentityResolver resolves Kerberos principals to DittoFS users via
+	// identityResolver resolves Kerberos principals to DittoFS users via
 	// the centralized identity provider chain. When set, takes precedence
 	// over IdentityConfig. When nil, falls back to IdentityConfig.
-	IdentityResolver *pkgidentity.Resolver
+	//
+	// It is held in an atomic.Pointer because the identity-provider config can
+	// be hot-reloaded over the API (which rebuilds and re-injects a fresh
+	// resolver via SetIdentityResolver) while session-setup goroutines read it
+	// concurrently. Access only through SetIdentityResolver / IdentityResolver.
+	identityResolver atomic.Pointer[pkgidentity.Resolver]
 
 	// SMBServicePrincipal overrides the auto-derived CIFS service principal.
 	// When empty, derived from the NFS principal ("nfs/host@REALM" -> "cifs/host@REALM").
@@ -909,6 +914,19 @@ func (h *Handler) sessionDomain(fallback string) string {
 		return h.NetBIOSDomain
 	}
 	return fallback
+}
+
+// SetIdentityResolver atomically installs the centralized identity resolver.
+// Safe to call while session-setup goroutines read it (used for API-driven
+// identity-provider config hot-reload). Pass nil to clear.
+func (h *Handler) SetIdentityResolver(r *pkgidentity.Resolver) {
+	h.identityResolver.Store(r)
+}
+
+// IdentityResolver returns the current centralized identity resolver, or nil
+// when none is installed.
+func (h *Handler) IdentityResolver() *pkgidentity.Resolver {
+	return h.identityResolver.Load()
 }
 
 // GetSession retrieves a session by ID.

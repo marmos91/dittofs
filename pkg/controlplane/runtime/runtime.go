@@ -140,6 +140,12 @@ type Runtime struct {
 
 	identityChangeCallbacks []func()
 
+	// identityProviderChangeCallbacks fire when an identity provider's
+	// configuration (LDAP/Kerberos) is changed via the API. Adapters register a
+	// closure that rebuilds and re-injects their identity resolver so a new
+	// directory config takes effect without a restart. Guarded by mu.
+	identityProviderChangeCallbacks []func()
+
 	// ldapConfig is the optional LDAP/AD identity provider configuration set at
 	// startup from the server config. When present and Enabled, BuildIdentityResolver
 	// registers an LDAP provider in the identity resolution chain. Guarded by mu.
@@ -907,6 +913,38 @@ func (r *Runtime) NotifyIdentityMappingChange() {
 	r.mu.RLock()
 	cbs := make([]func(), len(r.identityChangeCallbacks))
 	copy(cbs, r.identityChangeCallbacks)
+	r.mu.RUnlock()
+	for _, fn := range cbs {
+		if fn != nil {
+			fn()
+		}
+	}
+}
+
+// OnIdentityProviderConfigChange registers a callback invoked when an identity
+// provider's configuration is changed via the API. Adapters use this to rebuild
+// and re-inject their identity resolver so a new LDAP directory config takes
+// effect without a restart. Returns an unsubscribe function.
+func (r *Runtime) OnIdentityProviderConfigChange(fn func()) func() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.identityProviderChangeCallbacks = append(r.identityProviderChangeCallbacks, fn)
+	idx := len(r.identityProviderChangeCallbacks) - 1
+	return func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if idx < len(r.identityProviderChangeCallbacks) {
+			r.identityProviderChangeCallbacks[idx] = nil
+		}
+	}
+}
+
+// NotifyIdentityProviderConfigChange fires all registered identity-provider
+// config change callbacks.
+func (r *Runtime) NotifyIdentityProviderConfigChange() {
+	r.mu.RLock()
+	cbs := make([]func(), len(r.identityProviderChangeCallbacks))
+	copy(cbs, r.identityProviderChangeCallbacks)
 	r.mu.RUnlock()
 	for _, fn := range cbs {
 		if fn != nil {
