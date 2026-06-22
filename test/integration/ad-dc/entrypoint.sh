@@ -136,6 +136,13 @@ samba-tool group addmembers devs "$USER_ALICE" >/dev/null 2>&1 || true
 create_user_if_absent "$USER_BOB"
 samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 
+# --- Machine account for NETLOGON passthrough tests (#1314) ---------------
+# Creates the DITTOFS$ computer account used by TestNetlogonPassthroughAlice.
+# samba-tool computer create yields a sAMAccountName of "dittofs$" (AD uppercases
+# it to DITTOFS$ on lookup). The || true prevents a re-run from aborting when the
+# account already exists.
+samba-tool computer create dittofs --computerpassword="MachinePass01!" >/dev/null 2>&1 || true
+
 # --- Combined service keytab ----------------------------------------------
 # Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on the
 # Administrator account and export their keys into ONE keytab. A single keytab
