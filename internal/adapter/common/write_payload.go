@@ -120,19 +120,24 @@ func CommitBlockStore(
 	// means the bytes already survive a restart regardless of Finalized. This
 	// single DEBUG line surfaces the exact (Finalized, local/remote durable)
 	// inputs so a saturated-CLOSE trace can confirm there is no silent window
-	// without adding a log line to the common (durable) hot path's behaviour.
+	// without adding a log line to the common (durable) hot path's behavior.
+	// The booleans below feed the decision logic regardless of log level, so
+	// only the DebugCtx call itself (the string conversion + variadic boxing)
+	// is guarded to keep the ack path allocation-free when DEBUG is disabled.
 	finalized := res != nil && res.Finalized
 	localDurable := blockStore.LocalDurable()
 	remoteDurable := blockStore.RemoteDurable()
 	requireDurable := blockStore.RequireDurableCommit()
-	logger.DebugCtx(ctx, "COMMIT/CLOSE flush decision",
-		"payloadID", string(payloadID),
-		"finalized", finalized,
-		"localDurable", localDurable,
-		"remoteDurable", remoteDurable,
-		"requireDurableCommit", requireDurable,
-		"durableAtAck", localDurable || (finalized && remoteDurable),
-	)
+	if logger.IsDebugEnabled() {
+		logger.DebugCtx(ctx, "COMMIT/CLOSE flush decision",
+			"payloadID", string(payloadID),
+			"finalized", finalized,
+			"localDurable", localDurable,
+			"remoteDurable", remoteDurable,
+			"requireDurableCommit", requireDurable,
+			"durableAtAck", localDurable || (finalized && remoteDurable),
+		)
+	}
 
 	// DEFAULT: strict durability enforcement is opt-in. A successful flush is
 	// enough to ack — the remote mirror stays async and observable.
