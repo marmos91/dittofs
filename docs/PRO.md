@@ -7,7 +7,7 @@ control — visually, without touching the CLI.
 
 Everything `dfsctl` does today is available through the dashboard, plus
 license management and white-label branding. It ships as a single Go binary
-with the UI embedded, and as a Docker image, and works fully air-gapped with an
+with the UI embedded — plus a Docker image — and runs fully air-gapped with an
 offline license.
 
 Learn more at [dittofs.io](https://dittofs.io).

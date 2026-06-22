@@ -265,15 +265,6 @@ an isolated local storage directory and its own caching tiers. See
 
 - [DittoFS Pro](docs/PRO.md) — the premium web dashboard built on top of this server
 
-## DittoFS Pro
-
-[**DittoFS Pro**](docs/PRO.md) is the premium edition: a modern web dashboard
-for managing stores, shares, adapters, and access control — everything
-`dfsctl` does, without the CLI. It builds on this open-source server and ships
-as a single binary with the UI embedded. Learn more at [dittofs.io](https://dittofs.io).
-
-[![DittoFS Pro dashboard](docs/assets/pro/dashboard.png)](docs/PRO.md)
-
 ## Testing
 
 ```bash
@@ -318,6 +309,16 @@ definitions, then dive into the authoritative specs below.
 - [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) — SID, ACL, ACE, and security descriptor formats
 - [MS-NLMP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/) — NTLM authentication
 - [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) — Kerberos V5 · [RFC 4178](https://www.rfc-editor.org/rfc/rfc4178) — SPNEGO · [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) — GSS-API
+
+## DittoFS Pro
+
+[**DittoFS Pro**](docs/PRO.md) is the premium edition: a modern web dashboard
+that brings the same capabilities as the `dfsctl` CLI — managing stores, shares,
+adapters, and access control — to a point-and-click web UI. It builds on this
+open-source server and ships as a single binary with the UI embedded. Learn more
+at [dittofs.io](https://dittofs.io).
+
+[![DittoFS Pro dashboard](docs/assets/pro/dashboard.png)](docs/PRO.md)
 
 ## License
 
