@@ -138,6 +138,72 @@ func TestPerShareBlockStoreLocalOnly(t *testing.T) {
 	}
 }
 
+// TestLoadSharesResolvesBlockStoreByName reproduces #1312: a share whose
+// local_block_store_id (and remote_block_store_id) column holds the block
+// store *name* rather than its UUID — the shape persisted by the
+// `dfsctl share edit --local/--remote <name>` REST UpdateShare path, which
+// (unlike CreateShare) wrote the raw name into the DB. On a fresh runtime
+// over that persisted DB the share must still load and its per-share
+// BlockStore (local + remote) must resolve. Before the fix, resolution went
+// strictly through GetBlockStoreByID(name) and failed with "store not found",
+// so AddShare warn-skipped the share and every mount was denied.
+func TestLoadSharesResolvesBlockStoreByName(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	// Block store configs created via the API carry a UUID id and a
+	// human-friendly name. We deliberately ignore the returned UUIDs and
+	// reference the stores by NAME from the share, mirroring the corrupted
+	// rows produced by `share edit`.
+	const localName = "local-fs"
+	const remoteName = "remote-s3"
+	_ = createLocalBlockStoreConfig(t, s, localName)
+	_ = createRemoteBlockStoreConfig(t, s, remoteName)
+
+	metaStores, _ := s.ListMetadataStores(ctx)
+	metaID := metaStores[0].ID
+
+	remoteRef := remoteName
+	share := &models.Share{
+		Name:               "/demo",
+		MetadataStoreID:    metaID,
+		LocalBlockStoreID:  localName,  // NAME, not UUID (#1312 repro)
+		RemoteBlockStoreID: &remoteRef, // NAME, not UUID (#1312 repro)
+	}
+	if _, err := s.CreateShare(ctx, share); err != nil {
+		t.Fatalf("failed to create share: %v", err)
+	}
+
+	// Simulate a fresh server startup over the persisted DB.
+	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+		t.Fatalf("LoadSharesFromStore failed: %v", err)
+	}
+
+	shareObj, err := rt.GetShare("/demo")
+	if err != nil {
+		t.Fatalf("share /demo did not load after restart (block store not resolved by name): %v", err)
+	}
+	if shareObj.BlockStore == nil {
+		t.Fatal("expected non-nil BlockStore for share referencing block stores by name")
+	}
+	if shareObj.BlockStore.RemoteStore() == nil {
+		t.Fatal("expected non-nil remote store for share referencing remote block store by name")
+	}
+
+	// Sanity: the resolved local store is usable.
+	data := []byte("by-name resolution works")
+	if _, err := shareObj.BlockStore.WriteAt(ctx, "payload", nil, data, 0); err != nil {
+		t.Fatalf("WriteAt on name-resolved block store failed: %v", err)
+	}
+	buf := make([]byte, len(data))
+	if _, err := shareObj.BlockStore.ReadAt(ctx, "payload", nil, buf, 0); err != nil {
+		t.Fatalf("ReadAt on name-resolved block store failed: %v", err)
+	}
+	if string(buf) != string(data) {
+		t.Errorf("expected %q, got %q", data, buf)
+	}
+}
+
 func TestPerShareBlockStoreIsolation(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()

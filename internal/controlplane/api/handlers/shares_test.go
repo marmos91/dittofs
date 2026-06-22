@@ -275,6 +275,71 @@ func TestShareHandler_Update_TrashRejectsNegative(t *testing.T) {
 	}
 }
 
+// TestShareHandler_Update_ResolvesBlockStoreNameToID verifies the root-cause
+// fix for #1312: PUT /shares with a local/remote block store *name* must
+// persist the canonical UUID, not the raw name. Previously the name was
+// stored verbatim, so on restart GetBlockStoreByID(name) failed and the share
+// never loaded.
+func TestShareHandler_Update_ResolvesBlockStoreNameToID(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-bsname")
+	ctx := context.Background()
+
+	// Create a new local + remote block store referenced by NAME below.
+	newLocal := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "fresh-local", Kind: models.BlockStoreKindLocal, Type: "memory", CreatedAt: time.Now(),
+	}
+	if _, err := cpStore.CreateBlockStore(ctx, newLocal); err != nil {
+		t.Fatalf("CreateBlockStore(local): %v", err)
+	}
+	newRemote := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "fresh-remote", Kind: models.BlockStoreKindRemote, Type: "memory", CreatedAt: time.Now(),
+	}
+	if _, err := cpStore.CreateBlockStore(ctx, newRemote); err != nil {
+		t.Fatalf("CreateBlockStore(remote): %v", err)
+	}
+
+	body := []byte(`{"local_block_store_id":"fresh-local","remote_block_store_id":"fresh-remote"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-bsname", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withShareName(req, "s-bsname")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Update = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	got, err := cpStore.GetShare(ctx, "/s-bsname")
+	if err != nil {
+		t.Fatalf("GetShare: %v", err)
+	}
+	if got.LocalBlockStoreID != newLocal.ID {
+		t.Errorf("LocalBlockStoreID = %q, want canonical UUID %q (not the name)", got.LocalBlockStoreID, newLocal.ID)
+	}
+	if got.RemoteBlockStoreID == nil || *got.RemoteBlockStoreID != newRemote.ID {
+		t.Errorf("RemoteBlockStoreID = %v, want canonical UUID %q (not the name)", got.RemoteBlockStoreID, newRemote.ID)
+	}
+}
+
+// TestShareHandler_Update_RejectsUnknownBlockStore verifies an unknown block
+// store name/UUID is rejected with 400 rather than silently persisted.
+func TestShareHandler_Update_RejectsUnknownBlockStore(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-bsunknown")
+
+	body := []byte(`{"local_block_store_id":"does-not-exist"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-bsunknown", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withShareName(req, "s-bsunknown")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("Update(unknown block store) = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+}
+
 // seedStores creates a metadata store + local block store (no share) and
 // returns their names, so a Create request can reference real stores and reach
 // the default_permission validation rather than failing the store-existence

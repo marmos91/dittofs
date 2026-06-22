@@ -600,10 +600,35 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		share.MetadataStoreID = *req.MetadataStoreID
 	}
 	if req.LocalBlockStoreID != nil {
-		share.LocalBlockStoreID = *req.LocalBlockStoreID
+		// Resolve to the canonical UUID, accepting either a name or a UUID
+		// (mirrors CreateShare). Persisting a raw name here was the root cause
+		// of #1312: on restart GetBlockStoreByID(name) failed and the share
+		// never loaded.
+		localBlockStore, err := h.store.GetBlockStore(r.Context(), *req.LocalBlockStoreID, models.BlockStoreKindLocal)
+		if err != nil {
+			localBlockStore, err = h.store.GetBlockStoreByID(r.Context(), *req.LocalBlockStoreID)
+		}
+		if err != nil {
+			BadRequest(w, "Local block store not found: "+*req.LocalBlockStoreID)
+			return
+		}
+		share.LocalBlockStoreID = localBlockStore.ID
 	}
 	if req.RemoteBlockStoreID != nil {
-		share.RemoteBlockStoreID = req.RemoteBlockStoreID
+		if *req.RemoteBlockStoreID == "" {
+			// Explicit clear of the remote tier.
+			share.RemoteBlockStoreID = nil
+		} else {
+			remoteBlockStore, err := h.store.GetBlockStore(r.Context(), *req.RemoteBlockStoreID, models.BlockStoreKindRemote)
+			if err != nil {
+				remoteBlockStore, err = h.store.GetBlockStoreByID(r.Context(), *req.RemoteBlockStoreID)
+			}
+			if err != nil {
+				BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStoreID)
+				return
+			}
+			share.RemoteBlockStoreID = &remoteBlockStore.ID
+		}
 	}
 	if req.ReadOnly != nil {
 		share.ReadOnly = *req.ReadOnly

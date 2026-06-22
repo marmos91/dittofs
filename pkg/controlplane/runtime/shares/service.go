@@ -260,8 +260,42 @@ type MetadataServiceDeregistrar interface {
 }
 
 // BlockStoreConfigProvider resolves block store configurations from the control plane DB.
+//
+// A share's LocalBlockStoreID/RemoteBlockStoreID normally hold the block store
+// row's UUID, but the REST UpdateShare path historically persisted the raw
+// *name* instead (#1312). Resolution therefore tries the UUID first and falls
+// back to a kind-scoped name lookup so shares whose rows hold a name still load
+// after a restart.
 type BlockStoreConfigProvider interface {
 	GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error)
+	GetBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error)
+}
+
+// resolveBlockStoreConfig resolves a block store reference that may be either a
+// UUID (the canonical form) or a name (#1312 legacy rows). It tries the UUID
+// lookup first; on not-found it falls back to a name lookup scoped to the
+// expected kind. The kind scope keeps a local name from accidentally resolving
+// to a same-named remote store and vice versa.
+func resolveBlockStoreConfig(
+	ctx context.Context,
+	provider BlockStoreConfigProvider,
+	ref string,
+	kind models.BlockStoreKind,
+) (*models.BlockStoreConfig, error) {
+	cfg, err := provider.GetBlockStoreByID(ctx, ref)
+	if err == nil {
+		return cfg, nil
+	}
+	if !errors.Is(err, models.ErrStoreNotFound) {
+		return nil, err
+	}
+	// Fall back to name resolution for legacy rows that stored the name.
+	byName, nameErr := provider.GetBlockStore(ctx, ref, kind)
+	if nameErr != nil {
+		// Surface the original ID-lookup error so the message stays familiar.
+		return nil, err
+	}
+	return byName, nil
 }
 
 // ShareStore is the narrow subset of pkg/controlplane/store.ShareStore that
@@ -702,8 +736,9 @@ func (s *Service) createBlockStoreForShare(
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
-	// Resolve local block store config from DB.
-	localCfg, err := blockStoreProvider.GetBlockStoreByID(ctx, config.LocalBlockStoreID)
+	// Resolve local block store config from DB (by UUID, or by name for #1312
+	// legacy rows).
+	localCfg, err := resolveBlockStoreConfig(ctx, blockStoreProvider, config.LocalBlockStoreID, models.BlockStoreKindLocal)
 	if err != nil {
 		return fmt.Errorf("failed to resolve local block store config %q: %w", config.LocalBlockStoreID, err)
 	}
@@ -865,7 +900,20 @@ func (s *Service) createBlockStoreForShare(
 // Uses double-checked locking to avoid holding s.mu during potentially slow
 // network/DB I/O (config resolution, S3 client initialization).
 // Returns the store, its config ID, and any error.
-func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provider BlockStoreConfigProvider) (remote.RemoteStore, string, error) {
+func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider BlockStoreConfigProvider) (remote.RemoteStore, string, error) {
+	// Resolve config first (by UUID, or by name for #1312 legacy rows) so the
+	// ref-count map is always keyed by the canonical store UUID. Two shares
+	// referencing the same remote — one by UUID, one by legacy name — must
+	// share the single ref-counted store.
+	remoteCfg, err := resolveBlockStoreConfig(ctx, provider, ref, models.BlockStoreKindRemote)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to resolve remote block store config %q: %w", ref, err)
+	}
+	if remoteCfg.Kind != models.BlockStoreKindRemote {
+		return nil, "", fmt.Errorf("block store config %q has kind %q, expected %q", ref, remoteCfg.Kind, models.BlockStoreKindRemote)
+	}
+	configID := remoteCfg.ID
+
 	s.mu.Lock()
 	if sr, ok := s.remoteStores[configID]; ok {
 		sr.refCount++
@@ -873,15 +921,6 @@ func (s *Service) acquireRemoteStore(ctx context.Context, configID string, provi
 		return sr.store, configID, nil
 	}
 	s.mu.Unlock()
-
-	// Resolve config and create store without holding the lock.
-	remoteCfg, err := provider.GetBlockStoreByID(ctx, configID)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to resolve remote block store config %q: %w", configID, err)
-	}
-	if remoteCfg.Kind != models.BlockStoreKindRemote {
-		return nil, "", fmt.Errorf("block store config %q has kind %q, expected %q", configID, remoteCfg.Kind, models.BlockStoreKindRemote)
-	}
 
 	newStore, err := CreateRemoteStoreFromConfig(ctx, remoteCfg.Type, remoteCfg)
 	if err != nil {
