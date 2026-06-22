@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -75,9 +76,9 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 	// smb2.session.encryption-aes-256-{ccm,gcm} under Kerberos (#686).
 	sessionKey := authResult.SessionKey.KeyValue
 
-	// Resolve principal to DittoFS username via centralized identity resolver
-	// (DB-backed mapping + convention fallback), or legacy IdentityConfig.
-	username := h.resolveKerberosPrincipal(ctx, authResult.Principal, authResult.Realm)
+	// Resolve principal to a DittoFS identity via the centralized resolver
+	// (DB-backed mapping + LDAP/AD directory + convention fallback).
+	resolved, username := h.resolveKerberosIdentity(ctx, authResult.Principal, authResult.Realm)
 
 	logger.Debug("Kerberos authentication succeeded",
 		"principal", authResult.Principal,
@@ -94,12 +95,19 @@ func (h *Handler) handleKerberosAuth(ctx *SMBHandlerContext, mechToken []byte, p
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
-	user, err := userStore.GetUser(ctx.Context, username)
-	if err != nil || user == nil || !user.Enabled {
+	localUser, err := userStore.GetUser(ctx.Context, username)
+	user, ok := resolveSessionUser(localUser, err, resolved)
+	if !ok {
 		logger.Info("Kerberos auth: user lookup failed",
 			"username", username, "principal", authResult.Principal,
-			"found", user != nil, "error", err)
+			"found", localUser != nil, "resolverFound", resolved != nil && resolved.Found, "error", err)
 		return NewErrorResult(types.StatusLogonFailure), nil
+	}
+	if localUser == nil {
+		// Directory-resolved AD/LDAP user with no local account (mirrors NFS GSS).
+		logger.Info("Kerberos auth: using directory-resolved identity (no local account)",
+			"username", user.Username, "uid", resolved.UID, "gid", resolved.GID,
+			"principal", authResult.Principal)
 	}
 
 	// Kerberos ticket end-time becomes the session expiry. prepareDispatch
@@ -359,17 +367,19 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 	// for the signing key, and a future AES-256 cipher derivation would use the
 	// full key. See handleKerberosAuth for the rationale (#686).
 	sessionKey := authResult.SessionKey.KeyValue
-	username := h.resolveKerberosPrincipal(ctx, authResult.Principal, authResult.Realm)
+	resolved, username := h.resolveKerberosIdentity(ctx, authResult.Principal, authResult.Realm)
 
 	userStore := h.Registry.GetUserStore()
 	if userStore == nil {
 		logger.Debug("Kerberos bind: no UserStore configured")
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
-	user, err := userStore.GetUser(ctx.Context, username)
-	if err != nil || user == nil || !user.Enabled {
+	localUser, err := userStore.GetUser(ctx.Context, username)
+	user, ok := resolveSessionUser(localUser, err, resolved)
+	if !ok {
 		logger.Info("Kerberos bind: user lookup failed",
-			"username", username, "principal", authResult.Principal, "found", user != nil, "error", err)
+			"username", username, "principal", authResult.Principal, "found", localUser != nil,
+			"resolverFound", resolved != nil && resolved.Found, "error", err)
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 
@@ -501,22 +511,68 @@ func clientKerberosOID(parsedToken *auth.ParsedToken) asn1.ObjectIdentifier {
 	return auth.OIDKerberosV5
 }
 
-// resolveKerberosPrincipal resolves a Kerberos principal to a DittoFS username.
-// Uses the centralized identity resolver when available, falling back to the
-// legacy IdentityConfig-based resolution for backward compatibility.
-func (h *Handler) resolveKerberosPrincipal(ctx *SMBHandlerContext, principal, realm string) string {
-	if h.IdentityResolver != nil {
+// resolveKerberosIdentity resolves a Kerberos principal via the centralized
+// identity resolver, returning the full resolved identity and the username.
+//
+// When the resolver (including the LDAP/AD provider) matches, the returned
+// *identity.ResolvedIdentity carries the directory UID/GID/SIDs and Found=true,
+// so the caller can build a session for an AD/LDAP user that has no local dfs
+// account — mirroring the NFS GSS path. When the resolver is absent or misses,
+// it falls back to legacy IdentityConfig name resolution and returns a nil
+// identity (the caller then requires a local account).
+func (h *Handler) resolveKerberosIdentity(ctx *SMBHandlerContext, principal, realm string) (*identity.ResolvedIdentity, string) {
+	if resolver := h.IdentityResolver(); resolver != nil {
 		cred := &identity.Credential{
 			Provider:   "kerberos",
 			ExternalID: principal + "@" + realm,
 			Attributes: map[string]string{"realm": realm},
 		}
-		resolved, err := h.IdentityResolver.Resolve(ctx.Context, cred)
+		resolved, err := resolver.Resolve(ctx.Context, cred)
 		if err == nil && resolved.Found {
-			return resolved.Username
+			return resolved, resolved.Username
 		}
 	}
-	return pkgkerberos.ResolvePrincipal(principal, realm, h.IdentityConfig)
+	return nil, pkgkerberos.ResolvePrincipal(principal, realm, h.IdentityConfig)
+}
+
+// synthUserFromResolved builds a transient, non-persisted *models.User from a
+// directory-resolved identity so an AD/LDAP user with no local control-plane
+// account can still establish an SMB session. getUserIdentity derives the
+// primary GID from the first group, so the resolved primary GID is exposed
+// that way; SID/GroupSIDs flow into the SMB authorization context.
+func synthUserFromResolved(r *identity.ResolvedIdentity) *models.User {
+	uid := r.UID
+	gid := r.GID
+	return &models.User{
+		Username:  r.Username,
+		UID:       &uid,
+		Groups:    []models.Group{{GID: &gid}},
+		SID:       r.SID,
+		GroupSIDs: r.GroupSIDs,
+		Enabled:   true,
+	}
+}
+
+// resolveSessionUser picks the user to back a Kerberos session after a ticket
+// has been validated. A local, enabled control-plane account wins. Otherwise,
+// when the principal was resolved by the directory (LDAP/AD), a transient user
+// is synthesized from that identity so an AD user with no local account can log
+// in. A disabled local account or an unresolved principal yields ok=false (the
+// caller returns STATUS_LOGON_FAILURE — a valid ticket from an unknown/blocked
+// principal is not a guest).
+//
+// The directory fallback fires ONLY on an explicit "user not found" — a
+// transient store error (DB down) must not let a session through, and a
+// disabled local account (returned with no error) must not be bypassed.
+func resolveSessionUser(localUser *models.User, localErr error, resolved *identity.ResolvedIdentity) (*models.User, bool) {
+	switch {
+	case localErr == nil && localUser != nil && localUser.Enabled:
+		return localUser, true
+	case errors.Is(localErr, models.ErrUserNotFound) && resolved != nil && resolved.Found:
+		return synthUserFromResolved(resolved), true
+	default:
+		return nil, false
+	}
 }
 
 func extractAPReqFromGSSToken(token []byte) ([]byte, error) {

@@ -86,6 +86,16 @@ type Adapter struct {
 	// invalidations.
 	identityUnsub func()
 
+	// identityProviderUnsub is the unsubscribe function for the
+	// OnIdentityProviderConfigChange subscription. Registered once (guarded by
+	// nil) by wireIdentityResolver so an API-driven identity-provider config
+	// change rebuilds and re-injects the resolver without a restart.
+	identityProviderUnsub func()
+
+	// resolverMu serializes wireIdentityResolver so concurrent identity-provider
+	// config changes cannot race on identityUnsub/identityProviderUnsub.
+	resolverMu sync.Mutex
+
 	// kerberosProvider is retained for lifecycle management. It owns a
 	// background keytab-reload goroutine that must be stopped in Stop().
 	kerberosProvider *kerberos.Provider
@@ -541,12 +551,19 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 // on initialization order. The method is a no-op when either the Kerberos
 // provider or the runtime is not yet available.
 func (s *Adapter) wireIdentityResolver(rt *runtime.Runtime) {
+	// Serialize: this is invoked from startup AND from the
+	// OnIdentityProviderConfigChange callback (HTTP handler goroutines), so
+	// concurrent PUTs would otherwise race on identityUnsub/identityProviderUnsub
+	// and leak OnIdentityMappingChange subscriptions.
+	s.resolverMu.Lock()
+	defer s.resolverMu.Unlock()
+
 	if s.handler.KerberosProvider == nil || rt == nil {
 		return
 	}
 	realm := adapter.ExtractRealm(s.handler.KerberosProvider.ServicePrincipal())
 	resolver := adapter.BuildIdentityResolver(rt, realm)
-	s.handler.IdentityResolver = resolver
+	s.handler.SetIdentityResolver(resolver)
 
 	// Cancel any prior subscription before registering a new one.
 	// wireIdentityResolver is called from both SetRuntime and SetKerberosProvider
@@ -556,6 +573,17 @@ func (s *Adapter) wireIdentityResolver(rt *runtime.Runtime) {
 		s.identityUnsub()
 	}
 	s.identityUnsub = rt.OnIdentityMappingChange(resolver.InvalidateCache)
+
+	// Rebuild and re-inject the resolver when an identity provider's config is
+	// changed over the API (e.g. LDAP directory settings) so it takes effect
+	// without a restart. Registered once — the rebuild re-runs this method,
+	// which picks up the new rt.LDAPConfig() and re-subscribes the mapping
+	// callback above.
+	if s.identityProviderUnsub == nil {
+		s.identityProviderUnsub = rt.OnIdentityProviderConfigChange(func() {
+			s.wireIdentityResolver(rt)
+		})
+	}
 }
 
 const (
@@ -621,6 +649,10 @@ func (s *Adapter) Stop(ctx context.Context) error {
 	if s.identityUnsub != nil {
 		s.identityUnsub()
 		s.identityUnsub = nil
+	}
+	if s.identityProviderUnsub != nil {
+		s.identityProviderUnsub()
+		s.identityProviderUnsub = nil
 	}
 
 	// Unsubscribe from share change notifications to prevent stale callbacks

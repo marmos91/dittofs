@@ -11,6 +11,7 @@ import (
 	ctxcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/context"
 	gracecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/grace"
 	groupcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/group"
+	idpcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/identityprovider"
 	idmapcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/idmap"
 	netgroupcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/netgroup"
 	quotacmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/quota"
@@ -98,6 +99,7 @@ func init() {
 	rootCmd.AddCommand(gracecmd.Cmd)
 	rootCmd.AddCommand(netgroupcmd.Cmd)
 	rootCmd.AddCommand(idmapcmd.Cmd)
+	rootCmd.AddCommand(idpcmd.Cmd)
 	rootCmd.AddCommand(settingscmd.Cmd)
 	rootCmd.AddCommand(switchUserCmd)
 	rootCmd.AddCommand(systemcmd.Cmd)

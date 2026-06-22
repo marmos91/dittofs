@@ -630,6 +630,19 @@ DittoFS implements NTLMv2 authentication with SPNEGO negotiation:
 3. Client sends SESSION_SETUP with NTLM response
 4. Server validates credentials and creates session
 
+> **NTLM authenticates local DittoFS users only.** The NTLMv2 response is
+> validated against the NT hash in the control-plane user store. An **AD domain
+> user** has no local account and no local NT hash, so NTLM logon for domain
+> users fails with `STATUS_LOGON_FAILURE`. Validating a domain user's NTLM
+> response would require a NETLOGON secure-channel passthrough to the DC
+> (`NetrLogonSamLogon`), which is **not implemented** (tracked in issue #1314,
+> tied to the deferred online-join work).
+>
+> **For AD domain users, use Kerberos** (below): the DC issues the ticket and
+> DittoFS validates it with its service keytab — no passthrough needed. The
+> LDAP/AD directory integration resolves *identity* (UID/GID, groups); it does
+> **not** authenticate NTLM.
+
 ### Kerberos Authentication
 
 DittoFS supports Kerberos authentication via SPNEGO alongside NTLM. When a client presents a Kerberos AP-REQ token in the SPNEGO negotiation, the server validates the ticket using the configured service keytab and maps the Kerberos principal to a control plane user.
@@ -638,7 +651,8 @@ Key details:
 
 - **Single round-trip**: Unlike NTLM's multi-step handshake, Kerberos authentication completes in one exchange (AP-REQ/AP-REP)
 - **Shared keytab**: The SMB adapter shares the Kerberos keytab with the NFS adapter; the server automatically derives the `cifs/` service principal from the configured `nfs/` principal
-- **Principal-to-user mapping**: The client principal name (without realm) is looked up in the control plane user store
+- **Principal-to-user mapping**: The client principal is resolved through the centralized identity resolver. A **local** DittoFS account matching the principal wins. When no local account exists but the **LDAP/AD directory** resolves the principal (RFC2307 UID/GID + groups), the session is built from that directory identity — an AD domain user does **not** need a pre-created local account (this mirrors the NFS `sec=krb5` path, so the same user maps to the same UID/GID across both protocols). A valid ticket whose principal resolves to neither a local account nor the directory is rejected (it is not treated as guest).
+  - **Authorization keys on group SIDs, not POSIX supplementary GIDs.** A directory-resolved SMB session carries the user's UID + primary GID + SID + the PAC's transitive group SIDs (Windows ACL checks use the SIDs). It does not carry the resolver's full nested/supplementary GID list — SMB authorization never used POSIX supplementary GIDs. Practical effect: a POSIX-mode file group-owned by one of the user's *nested* AD groups is granted over NFS (`sec=krb5`, via supplementary GIDs) but over SMB only when a matching group-SID ACE is present.
 - **SPNEGO negotiation**: The server advertises both NTLM and Kerberos OIDs; clients choose based on their configuration
 
 See `test/e2e/smb_kerberos_test.go` for end-to-end Kerberos authentication tests.

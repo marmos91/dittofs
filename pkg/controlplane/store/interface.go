@@ -749,6 +749,31 @@ type SIDMappingStore interface {
 	DeleteSIDMapping(ctx context.Context, sid string) error
 }
 
+// IdentityProviderConfigStore persists identity-provider (LDAP/AD, Kerberos)
+// configuration so it can be managed over the REST API instead of via config
+// files + restart. There is at most one row per provider type.
+//
+// The stored Config blob carries secret material (bind password / keytab path)
+// in plaintext; callers must never surface it over the API (the REST layer
+// returns a redacted DTO).
+type IdentityProviderConfigStore interface {
+	// GetIdentityProviderConfig returns the configuration row for a provider
+	// type ("ldap" | "kerberos"). Returns models.ErrIdentityProviderConfigNotFound
+	// when no row exists.
+	GetIdentityProviderConfig(ctx context.Context, providerType string) (*models.IdentityProviderConfig, error)
+
+	// ListIdentityProviderConfigs returns all configured provider rows.
+	ListIdentityProviderConfigs(ctx context.Context) ([]*models.IdentityProviderConfig, error)
+
+	// PutIdentityProviderConfig creates or replaces the configuration row for
+	// cfg.Type (upsert keyed on Type).
+	PutIdentityProviderConfig(ctx context.Context, cfg *models.IdentityProviderConfig) error
+
+	// DeleteIdentityProviderConfig removes the configuration row for a provider
+	// type. Returns models.ErrIdentityProviderConfigNotFound when no row exists.
+	DeleteIdentityProviderConfig(ctx context.Context, providerType string) error
+}
+
 // Store is the composite control plane persistence interface.
 //
 // It embeds all sub-interfaces to provide the full set of operations.
@@ -775,4 +800,5 @@ type Store interface {
 	RestoreMarkerStore
 	HealthStore
 	SIDMappingStore
+	IdentityProviderConfigStore
 }

@@ -30,6 +30,16 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 	}
 	s.shareUnsubscribers = nil
 
+	// Unsubscribe identity resolver callbacks registered by wireIdentityResolver.
+	if s.identityUnsub != nil {
+		s.identityUnsub()
+		s.identityUnsub = nil
+	}
+	if s.identityProviderUnsub != nil {
+		s.identityProviderUnsub()
+		s.identityProviderUnsub = nil
+	}
+
 	// Stop portmapper first (stops accepting new queries before NFS stops)
 	s.stopPortmapper()
 

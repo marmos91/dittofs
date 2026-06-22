@@ -677,10 +677,17 @@ func (s *NFSAdapter) initGSSProcessor(rt *runtime.Runtime) {
 	// Wire centralized identity resolver (DB-backed mapping + convention fallback).
 	// This takes precedence over the legacy StaticMapper when resolving principals.
 	if rt != nil {
-		realm := adapter.ExtractRealm(s.kerberosConfig.ServicePrincipal)
-		resolver := adapter.BuildIdentityResolver(rt, realm)
-		s.gssProcessor.SetResolver(resolver)
-		rt.OnIdentityMappingChange(resolver.InvalidateCache)
+		s.wireIdentityResolver(rt)
+
+		// Rebuild and re-inject the resolver when an identity provider's config
+		// is changed over the API (e.g. LDAP directory settings) so it takes
+		// effect without a restart. Registered once; the GSSProcessor guards the
+		// resolver with a lock, so the live swap is safe.
+		if s.identityProviderUnsub == nil {
+			s.identityProviderUnsub = rt.OnIdentityProviderConfigChange(func() {
+				s.wireIdentityResolver(rt)
+			})
+		}
 	}
 
 	logger.Info("RPCSEC_GSS (Kerberos) authentication enabled",
@@ -688,4 +695,27 @@ func (s *NFSAdapter) initGSSProcessor(rt *runtime.Runtime) {
 		"max_contexts", s.kerberosConfig.MaxContexts,
 		"context_ttl", s.kerberosConfig.ContextTTL,
 	)
+}
+
+// wireIdentityResolver builds the centralized identity resolver from the
+// current runtime config and injects it into the GSS processor. It is called
+// at GSS setup and again on every identity-provider config change so an
+// API-driven LDAP reconfiguration takes effect without a restart. The prior
+// OnIdentityMappingChange subscription is cancelled before re-subscribing so
+// reloads do not accumulate stale cache-invalidation callbacks.
+func (s *NFSAdapter) wireIdentityResolver(rt *runtime.Runtime) {
+	// Serialize: called from startup AND the OnIdentityProviderConfigChange
+	// callback (HTTP handler goroutines); concurrent config changes would
+	// otherwise race on identityUnsub and leak mapping-change subscriptions.
+	s.resolverMu.Lock()
+	defer s.resolverMu.Unlock()
+
+	realm := adapter.ExtractRealm(s.kerberosConfig.ServicePrincipal)
+	resolver := adapter.BuildIdentityResolver(rt, realm)
+	s.gssProcessor.SetResolver(resolver)
+
+	if s.identityUnsub != nil {
+		s.identityUnsub()
+	}
+	s.identityUnsub = rt.OnIdentityMappingChange(resolver.InvalidateCache)
 }

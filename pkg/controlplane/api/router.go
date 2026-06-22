@@ -480,6 +480,17 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{key}", settingsHandler.Delete)
 			})
 
+			// Identity provider configuration (LDAP/AD, Kerberos) — admin only.
+			r.Route("/identity-providers", func(r chi.Router) {
+				r.Use(apiMiddleware.RequireAdmin())
+
+				idpHandler := handlers.NewIdentityProviderHandler(cpStore, rt)
+				r.Get("/", idpHandler.List)
+				r.Get("/{type}/config", idpHandler.GetConfig)
+				r.Put("/{type}/config", idpHandler.PutConfig)
+				r.Post("/{type}/test", idpHandler.Test)
+			})
+
 			// Unified client listing and disconnect (admin only) - all protocols
 			if clientHandler := handlers.NewClientHandler(rt); clientHandler != nil {
 				r.Route("/clients", func(r chi.Router) {
