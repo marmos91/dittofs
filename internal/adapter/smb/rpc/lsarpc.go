@@ -596,10 +596,13 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 		// Fixed-size domain entries: name (NDR string header = 12 bytes) + SID pointer (4 bytes) = 16 bytes each
 		refID := uint32(0x00020008)
 		for _, d := range domains {
+			// RPC_UNICODE_STRING: Length and MaximumLength are both the byte
+			// count of the name with NO terminator (2*char_count). The referenced
+			// buffer (writeNDRUnicodeString) is likewise un-terminated, so its
+			// ActualCount == Length/2 and Samba's array-length check holds.
 			nameUTF16Len := uint16(len(encodeUTF16LE(d.name)))
-			byteLen := nameUTF16Len + 2                               // include null terminator
-			_ = binary.Write(&buf, binary.LittleEndian, nameUTF16Len) // Length (excluding null terminator)
-			_ = binary.Write(&buf, binary.LittleEndian, byteLen)      // MaximumLength (including null terminator)
+			_ = binary.Write(&buf, binary.LittleEndian, nameUTF16Len) // Length (bytes, no NUL)
+			_ = binary.Write(&buf, binary.LittleEndian, nameUTF16Len) // MaximumLength (bytes, no NUL)
 			appendUint32Buf(&buf, refID)                              // pointer to string data
 			refID += 4
 			appendUint32Buf(&buf, refID) // pointer to SID data
@@ -642,10 +645,11 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 		for _, r := range resolved {
 			_ = binary.Write(&buf, binary.LittleEndian, r.sidType)
 			_ = binary.Write(&buf, binary.LittleEndian, uint16(0))
+			// RPC_UNICODE_STRING: Length == MaximumLength == 2*char_count, no NUL
+			// (matches the un-terminated referenced buffer below).
 			nameUTF16Len := uint16(len(encodeUTF16LE(r.name)))
-			byteLen := nameUTF16Len + 2
-			_ = binary.Write(&buf, binary.LittleEndian, nameUTF16Len) // Length (excluding null terminator)
-			_ = binary.Write(&buf, binary.LittleEndian, byteLen)      // MaximumLength (including null terminator)
+			_ = binary.Write(&buf, binary.LittleEndian, nameUTF16Len) // Length (bytes, no NUL)
+			_ = binary.Write(&buf, binary.LittleEndian, nameUTF16Len) // MaximumLength (bytes, no NUL)
 			appendUint32Buf(&buf, nameRefID)                          // unique pointer
 			nameRefID += 4
 			// Domain index (int32)
@@ -687,10 +691,20 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 	return buf.Bytes()
 }
 
-// writeNDRUnicodeString writes an NDR-conformant+varying unicode string.
+// writeNDRUnicodeString writes the UTF-16 buffer referenced by an
+// RPC_UNICODE_STRING as an NDR conformant+varying array.
+//
+// Per [MS-LSAT], the LSAPR_TRANSLATED_NAME[_EX].Name (and the referenced-domain
+// Name) buffers returned by the server are NOT NUL-terminated: MaxCount, Offset,
+// and ActualCount are all in CHARACTERS and equal the exact code-unit count
+// (2*char_count == the RPC_UNICODE_STRING Length in bytes). Appending a NUL — or
+// setting MaxCount/ActualCount to char_count+1 — makes the conformant array one
+// element longer than Length implies, which Samba rejects in
+// ndr_check_steal_array_length ("Bad array length - got N expected N-1") and
+// rpcclient surfaces as NT_STATUS_ARRAY_BOUNDS_EXCEEDED.
 func writeNDRUnicodeString(buf *bytes.Buffer, s string) {
 	utf16 := encodeUTF16LE(s)
-	charCount := uint32(len(utf16)/2 + 1) // UTF-16 code units + null terminator
+	charCount := uint32(len(utf16) / 2) // UTF-16 code units, NO null terminator
 
 	// Conformant: MaxCount
 	appendUint32Buf(buf, charCount)
@@ -699,10 +713,8 @@ func writeNDRUnicodeString(buf *bytes.Buffer, s string) {
 	// Varying: ActualCount
 	appendUint32Buf(buf, charCount)
 
-	// UTF-16LE string data
+	// UTF-16LE string data (no trailing NUL — these are counted strings).
 	buf.Write(utf16)
-	// Null terminator (2 bytes)
-	buf.Write([]byte{0, 0})
 
 	// Pad to 4-byte boundary
 	for buf.Len()%4 != 0 {

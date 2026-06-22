@@ -889,7 +889,8 @@ func parseLookupSidsResponse(t *testing.T, response []byte, withFlags bool) look
 }
 
 // readNDRUnicodeString decodes a writeNDRUnicodeString-encoded string and
-// advances off past the 4-byte padding.
+// advances off past the 4-byte padding. The buffer is an un-terminated
+// conformant+varying array: MaxCount == ActualCount == char_count (no NUL).
 func readNDRUnicodeString(t *testing.T, b []byte, off *int) string {
 	t.Helper()
 	maxCount := binary.LittleEndian.Uint32(b[*off : *off+4])
@@ -897,8 +898,10 @@ func readNDRUnicodeString(t *testing.T, b []byte, off *int) string {
 	*off += 4 // offset
 	actual := binary.LittleEndian.Uint32(b[*off : *off+4])
 	*off += 4
-	_ = maxCount
-	// actual includes the null terminator (charCount).
+	// MaxCount and ActualCount must agree and carry NO null terminator.
+	if maxCount != actual {
+		t.Fatalf("NDR string MaxCount=%d != ActualCount=%d", maxCount, actual)
+	}
 	chars := int(actual)
 	byteLen := chars * 2
 	data := b[*off : *off+byteLen]
@@ -907,13 +910,10 @@ func readNDRUnicodeString(t *testing.T, b []byte, off *int) string {
 	for *off%4 != 0 {
 		*off++
 	}
-	// Drop the trailing null code unit and decode UTF-16LE.
+	// Decode UTF-16LE; there is no trailing NUL to drop.
 	var sb []rune
 	for i := 0; i+1 < len(data); i += 2 {
 		c := binary.LittleEndian.Uint16(data[i : i+2])
-		if c == 0 {
-			break
-		}
 		sb = append(sb, rune(c))
 	}
 	return string(sb)
@@ -1376,5 +1376,190 @@ func TestLSARPC_LookupSids_MixedBatch_PerOpnum(t *testing.T) {
 		if res.mappedCount != 2 {
 			t.Errorf("opnum %d: mappedCount = %d, want 2", c.opnum, res.mappedCount)
 		}
+	}
+}
+
+// =============================================================================
+// Golden byte-count assertions for RPC_UNICODE_STRING / NDR array length
+//
+// These lock the #1342 off-by-one: a resolved name of N characters must be
+// framed with RPC_UNICODE_STRING Length == MaximumLength == 2*N (bytes, NO
+// terminator) and a referenced conformant+varying UTF-16 array whose
+// MaxCount == Offset+ActualCount == N (chars, NO trailing NUL). Samba's
+// ndr_check_steal_array_length cross-checks ActualCount against Length/2; the
+// old "+1 / +NUL" encoding made got==expected+1 ("got 8 expected 7") and
+// rpcclient returned NT_STATUS_ARRAY_BOUNDS_EXCEEDED.
+// =============================================================================
+
+// ndrString captures the exact wire fields of one RPC_UNICODE_STRING plus the
+// conformant+varying UTF-16 array it references, as decoded from a real
+// buildLookupSidsResponse stub.
+type ndrString struct {
+	length    uint16 // RPC_UNICODE_STRING.Length (bytes)
+	maxLength uint16 // RPC_UNICODE_STRING.MaximumLength (bytes)
+	maxCount  uint32 // array MaxCount (chars)
+	offset    uint32 // array Offset (chars)
+	actual    uint32 // array ActualCount (chars)
+	value     string // decoded name
+	utf16Len  int    // raw UTF-16 byte count actually written (no padding)
+}
+
+// decodeLookupSidsStrings walks a buildLookupSidsResponse stub and returns the
+// referenced-domain name strings and the translated-name strings with their
+// exact RPC_UNICODE_STRING + array length fields. It is intentionally a precise,
+// hand-rolled reader (not the lenient parseLookupSidsResponse) so the byte
+// counts are asserted, not inferred. withFlags selects EX (57/76) vs non-EX (15).
+func decodeLookupSidsStrings(t *testing.T, stub []byte, withFlags bool) (domains, names []ndrString) {
+	t.Helper()
+	off := 0
+	u16 := func() uint16 { v := binary.LittleEndian.Uint16(stub[off : off+2]); off += 2; return v }
+	u32 := func() uint32 { v := binary.LittleEndian.Uint32(stub[off : off+4]); off += 4; return v }
+
+	// Read an un-terminated conformant+varying UTF-16 array, capturing fields.
+	readArray := func() (maxCount, offset, actual uint32, value string, rawLen int) {
+		maxCount = u32()
+		offset = u32()
+		actual = u32()
+		rawLen = int(actual) * 2
+		data := stub[off : off+rawLen]
+		off += rawLen
+		for off%4 != 0 {
+			off++
+		}
+		var sb []rune
+		for i := 0; i+1 < len(data); i += 2 {
+			sb = append(sb, rune(binary.LittleEndian.Uint16(data[i:i+2])))
+		}
+		return maxCount, offset, actual, string(sb), rawLen
+	}
+
+	// --- Referenced domain list ---
+	_ = u32() // list pointer
+	domCount := u32()
+	_ = u32() // array pointer
+	_ = u32() // max entries
+	type domFixed struct{ length, maxLength uint16 }
+	var domFixeds []domFixed
+	if domCount > 0 {
+		_ = u32() // conformant max count
+		for range domCount {
+			length := u16()
+			maxLength := u16()
+			_ = u32() // string pointer
+			_ = u32() // SID pointer
+			domFixeds = append(domFixeds, domFixed{length, maxLength})
+		}
+		for _, d := range domFixeds {
+			mc, o, a, v, raw := readArray()
+			domains = append(domains, ndrString{d.length, d.maxLength, mc, o, a, v, raw})
+		}
+		for range domCount {
+			skipNDRSID(t, stub, &off)
+		}
+	}
+
+	// --- Translated names ---
+	nameCount := u32()
+	_ = u32() // array pointer
+	type nameFixed struct{ length, maxLength uint16 }
+	var nameFixeds []nameFixed
+	if nameCount > 0 {
+		_ = u32() // conformant max count
+		for range nameCount {
+			_ = u16() // Use
+			_ = u16() // pad/reserved
+			length := u16()
+			maxLength := u16()
+			_ = u32() // name pointer
+			_ = u32() // domain index
+			if withFlags {
+				_ = u32() // flags (EX only)
+			}
+			nameFixeds = append(nameFixeds, nameFixed{length, maxLength})
+		}
+		for _, n := range nameFixeds {
+			mc, o, a, v, raw := readArray()
+			names = append(names, ndrString{n.length, n.maxLength, mc, o, a, v, raw})
+		}
+	}
+	return domains, names
+}
+
+// assertExactName checks one ndrString against an expected name: Length and
+// MaximumLength are 2*N bytes, the array MaxCount/Offset+ActualCount are N
+// chars, and no NUL terminator was written.
+func assertExactName(t *testing.T, label string, got ndrString, want string) {
+	t.Helper()
+	n := len(encodeUTF16LE(want)) / 2 // UTF-16 code units
+	if got.value != want {
+		t.Errorf("%s: name = %q, want %q", label, got.value, want)
+	}
+	if int(got.length) != 2*n {
+		t.Errorf("%s: RPC_UNICODE_STRING.Length = %d, want %d (2*%d, no NUL)", label, got.length, 2*n, n)
+	}
+	if int(got.maxLength) != 2*n {
+		t.Errorf("%s: RPC_UNICODE_STRING.MaximumLength = %d, want %d (== Length, no NUL)", label, got.maxLength, 2*n)
+	}
+	if int(got.maxCount) != n {
+		t.Errorf("%s: array MaxCount = %d, want %d (chars, no NUL)", label, got.maxCount, n)
+	}
+	if got.offset != 0 {
+		t.Errorf("%s: array Offset = %d, want 0", label, got.offset)
+	}
+	if int(got.actual) != n {
+		t.Errorf("%s: array ActualCount = %d, want %d (chars, no NUL) — the #1342 off-by-one", label, got.actual, n)
+	}
+	if got.utf16Len != 2*n {
+		t.Errorf("%s: wrote %d UTF-16 bytes, want %d (a trailing NUL would add 2)", label, got.utf16Len, 2*n)
+	}
+}
+
+// TestLSARPC_TranslatedName_ExactLengths_AllOpnums is the regression lock for
+// #1342. A 12-character username ("abcdefghijkl") under the 7-character machine
+// domain ("DITTOFS") is resolved and the response stub is decoded with exact
+// byte counts. For EACH of opnum 15 (non-EX), 57 and 76 (EX) it asserts the
+// translated name frames as Length=24/MaxCount=12 and the domain as
+// Length=14/MaxCount=7 — both with no NUL. These are precisely the "got N+1
+// expected N" cases the live Samba client rejected (12->13, 7->8).
+func TestLSARPC_TranslatedName_ExactLengths_AllOpnums(t *testing.T) {
+	const userName = "abcdefghijkl" // 12 chars
+	const domainName = "DITTOFS"    // 7 chars (machine domain default)
+
+	mapper := sid.NewSIDMapper(0, 0, 0)
+
+	cases := []struct {
+		name      string
+		opnum     uint16
+		withFlags bool
+	}{
+		{"opnum15_nonEX", OpLsarLookupSids, false},
+		{"opnum57_EX", OpLsarLookupSids2, true},
+		{"opnum76_EX", OpLsarLookupSids3, true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{1: userName}})
+			stub := buildLookupSidsStubData(c.opnum, []*sid.SID{mapper.UserSID(1)})
+			req := mustParse(t, buildTestRequest(1, c.opnum, stub))
+			response := h.HandleRequest(req)
+			if hdr, _ := ParseHeader(response); hdr.PacketType == PDUFault {
+				t.Fatalf("opnum %d faulted", c.opnum)
+			}
+			if len(response) <= 24 {
+				t.Fatalf("response too short: %d bytes", len(response))
+			}
+			domains, names := decodeLookupSidsStrings(t, response[24:], c.withFlags)
+
+			if len(names) != 1 {
+				t.Fatalf("translated names = %d, want 1", len(names))
+			}
+			assertExactName(t, "name[0]", names[0], userName)
+
+			if len(domains) != 1 {
+				t.Fatalf("referenced domains = %d, want 1", len(domains))
+			}
+			assertExactName(t, "domain[0]", domains[0], domainName)
+		})
 	}
 }
