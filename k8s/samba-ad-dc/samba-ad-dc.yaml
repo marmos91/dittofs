@@ -1,0 +1,121 @@
+# Samba Active Directory Domain Controller — DEV / TEST fixture.
+#
+# ROLE: this is the ACTIVE DIRECTORY (a stand-in for a Windows Server domain
+# controller), NOT a file server and NOT a DittoFS competitor. DittoFS serves
+# the SMB/NFS data; this only provides the IDENTITY/AUTH authority that any AD
+# would: Kerberos KDC (88), LDAP directory (389/636), AD DNS (53), kpasswd (464).
+# We use ONLY those directory roles. Port 445 (SMB) is intentionally NOT exposed
+# here — DittoFS owns 445. Samba's internal SMB (SYSVOL/NETLOGON) is an AD
+# implementation detail we never route to or use for data.
+#
+# NOT FOR PRODUCTION and NOT managed by the dittofs-operator. It exists so the
+# LDAP idmap and Kerberos (SPNEGO/PAC) paths can be exercised against a REAL AD
+# without a Windows Server license (an MIT KDC won't do — it issues no PAC group
+# SIDs). In production you install NO Samba: point spec.identity.ldap /
+# spec.identity.kerberos at your existing enterprise Windows AD instead (see
+# docs/AD_LDAP_KERBEROS.md).
+#
+# It provisions on first start (samba-tool domain provision) and creates:
+#   user alice  — RFC2307 uidNumber=10001 gidNumber=10000, member of devs→engineering
+#   user bob    — no RFC2307 attrs (RID-fallback case), member of engineering
+#   groups      — engineering, devs (devs nested under engineering)
+#   keytab      — combined cifs/ + nfs/ SPNs at /keytabs/dittofs.keytab
+#
+# The image is built from test/integration/ad-dc/ (see k8s/samba-ad-dc/README.md).
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: samba-ad-dc
+  namespace: dittofs
+  labels:
+    app: samba-ad-dc
+spec:
+  # Headless: gives the StatefulSet pod a stable DNS name
+  # (samba-ad-dc-0.samba-ad-dc.dittofs.svc.cluster.local) and a stable VIP via
+  # the named service below.
+  selector:
+    app: samba-ad-dc
+  ports:
+    - { name: kerberos-tcp, port: 88,  targetPort: 88,  protocol: TCP }
+    - { name: kerberos-udp, port: 88,  targetPort: 88,  protocol: UDP }
+    - { name: ldap,         port: 389, targetPort: 389, protocol: TCP }
+    - { name: ldaps,        port: 636, targetPort: 636, protocol: TCP }
+    - { name: kpasswd-tcp,  port: 464, targetPort: 464, protocol: TCP }
+    - { name: kpasswd-udp,  port: 464, targetPort: 464, protocol: UDP }
+    - { name: dns-tcp,      port: 53,  targetPort: 53,  protocol: TCP }
+    - { name: dns-udp,      port: 53,  targetPort: 53,  protocol: UDP }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: samba-ad-dc
+  namespace: dittofs
+  labels:
+    app: samba-ad-dc
+spec:
+  serviceName: samba-ad-dc
+  replicas: 1
+  selector:
+    matchLabels:
+      app: samba-ad-dc
+  template:
+    metadata:
+      labels:
+        app: samba-ad-dc
+    spec:
+      # Samba's own internal DNS is authoritative for the AD zone; the DC must
+      # resolve itself by its provisioned FQDN. Point the pod resolver at
+      # localhost (Samba DNS) with the realm as the search domain.
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: ["127.0.0.1"]
+        searches: ["dittofs.ad"]
+      hostname: dc1
+      subdomain: samba-ad-dc
+      containers:
+        - name: samba-ad-dc
+          image: docker.io/library/dittofs-ad-dc:dev
+          imagePullPolicy: Never   # locally imported via `k3s ctr images import`
+          securityContext:
+            # samba-tool domain provision sets NT ACLs (security.NTACL xattrs)
+            # and binds privileged ports; it needs a privileged container.
+            privileged: true
+          env:
+            - { name: AD_REALM,          value: "DITTOFS.AD" }
+            - { name: AD_DOMAIN,         value: "DITTOFS" }
+            - { name: AD_ADMIN_PASSWORD, value: "Passw0rd!2024" }
+            - { name: USER_PASSWORD,     value: "TestPassword01!" }
+            # dfs pod runs as 65532; keep keytab ownership consistent if shared.
+            - { name: DITTOFS_UID,       value: "65532" }
+            - { name: DITTOFS_GID,       value: "65532" }
+          ports:
+            - { containerPort: 88,  protocol: TCP }
+            - { containerPort: 88,  protocol: UDP }
+            - { containerPort: 389, protocol: TCP }
+            - { containerPort: 636, protocol: TCP }
+            - { containerPort: 464, protocol: TCP }
+            - { containerPort: 464, protocol: UDP }
+            - { containerPort: 53,  protocol: TCP }
+            - { containerPort: 53,  protocol: UDP }
+          readinessProbe:
+            tcpSocket: { port: 389 }
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 60
+          volumeMounts:
+            - { name: samba-state, mountPath: /var/lib/samba }
+            - { name: keytabs,     mountPath: /keytabs }
+  volumeClaimTemplates:
+    - metadata:
+        name: samba-state
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources: { requests: { storage: 2Gi } }
+    - metadata:
+        name: keytabs
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources: { requests: { storage: 64Mi } }
