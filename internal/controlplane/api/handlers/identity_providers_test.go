@@ -217,6 +217,91 @@ func TestIDP_PutKerberos_ValidatesAndPersists(t *testing.T) {
 	}
 }
 
+// --- Kerberos machine_account.secret redaction tests ---
+
+// validKerberosBody is a minimal valid kerberos config body with a
+// machine_account secret — mirrors validLDAPBody for the LDAP suite.
+const validKerberosBody = `{
+	"enabled": false,
+	"realm": "EXAMPLE.COM",
+	"machine_account": {"account_name": "DITTOFS$", "dc_address": "dc.example.com", "secret": "topsecret"}
+}`
+
+func TestIDP_PutKerberos_PersistsAndRedactsSecret(t *testing.T) {
+	st := newFakeIDPStore()
+	h := NewIdentityProviderHandler(st, nil)
+
+	w := doReq(t, h.PutConfig, http.MethodPut, validKerberosBody, models.IdentityProviderTypeKerberos)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp KerberosConfigDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// API response must carry the redacted sentinel, not the real secret.
+	if resp.MachineAccount.Secret != redactedSecret {
+		t.Fatalf("response secret = %q, want redacted sentinel", resp.MachineAccount.Secret)
+	}
+	// Stored blob must contain the real secret (usable after restart).
+	row := st.rows[models.IdentityProviderTypeKerberos]
+	if row == nil || !strings.Contains(row.Config, "topsecret") {
+		t.Fatalf("stored config must retain real secret, got %+v", row)
+	}
+}
+
+func TestIDP_GetKerberos_RedactsSecret(t *testing.T) {
+	st := newFakeIDPStore()
+	h := NewIdentityProviderHandler(st, nil)
+	doReq(t, h.PutConfig, http.MethodPut, validKerberosBody, models.IdentityProviderTypeKerberos)
+
+	w := doReq(t, h.GetConfig, http.MethodGet, "", models.IdentityProviderTypeKerberos)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status = %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "topsecret") {
+		t.Fatalf("GET leaked secret: %s", body)
+	}
+	if !strings.Contains(body, redactedSecret) {
+		t.Fatalf("GET should report redacted placeholder: %s", body)
+	}
+}
+
+func TestIDP_PutKerberos_PreservesSecretOnRedactedResubmit(t *testing.T) {
+	st := newFakeIDPStore()
+	h := NewIdentityProviderHandler(st, nil)
+	doReq(t, h.PutConfig, http.MethodPut, validKerberosBody, models.IdentityProviderTypeKerberos)
+
+	// Re-submit with the redacted placeholder (as a GET-then-PUT round trip would).
+	body := `{"enabled":false,"realm":"EXAMPLE.COM","machine_account":{"account_name":"DITTOFS$","dc_address":"dc2.example.com","secret":"********"}}`
+	w := doReq(t, h.PutConfig, http.MethodPut, body, models.IdentityProviderTypeKerberos)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+	}
+	row := st.rows[models.IdentityProviderTypeKerberos]
+	if !strings.Contains(row.Config, "topsecret") {
+		t.Fatalf("secret must be preserved on redacted resubmit, got %s", row.Config)
+	}
+}
+
+func TestIDP_PutKerberos_PreservesSecretOnEmptySecret(t *testing.T) {
+	st := newFakeIDPStore()
+	h := NewIdentityProviderHandler(st, nil)
+	doReq(t, h.PutConfig, http.MethodPut, validKerberosBody, models.IdentityProviderTypeKerberos)
+
+	// Re-submit with an absent/empty secret field — must also preserve.
+	body := `{"enabled":false,"realm":"EXAMPLE.COM","machine_account":{"account_name":"DITTOFS$","dc_address":"dc.example.com"}}`
+	w := doReq(t, h.PutConfig, http.MethodPut, body, models.IdentityProviderTypeKerberos)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", w.Code, w.Body.String())
+	}
+	row := st.rows[models.IdentityProviderTypeKerberos]
+	if !strings.Contains(row.Config, "topsecret") {
+		t.Fatalf("secret must be preserved on empty-secret PUT, got %s", row.Config)
+	}
+}
+
 func TestIDP_TestLDAP_DoesNotPersist(t *testing.T) {
 	st := newFakeIDPStore()
 	h := NewIdentityProviderHandler(st, nil)

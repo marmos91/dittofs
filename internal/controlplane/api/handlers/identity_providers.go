@@ -59,6 +59,17 @@ type ldapConfigDTO struct {
 	TLS             ldapTLSDTO `json:"tls"`
 }
 
+// KerberosMachineAccountDTO holds the machine-account credentials used for
+// NETLOGON / AD machine-account authentication. Secret is write-only: on GET
+// responses it is substituted with the redactedSecret sentinel.
+type KerberosMachineAccountDTO struct {
+	AccountName string `json:"account_name,omitempty"`
+	DCAddress   string `json:"dc_address,omitempty"`
+	// Secret is the machine-account password. Write-only — API responses
+	// always contain the redacted placeholder instead of the real value.
+	Secret string `json:"secret,omitempty"`
+}
+
 // KerberosConfigDTO is the wire/persistence shape for Kerberos identity
 // provider configuration. It is exported so cmd/dfs can decode the persisted
 // row at startup and map it onto config.KerberosConfig — the handler cannot
@@ -66,16 +77,17 @@ type ldapConfigDTO struct {
 // cycle), so the config mapping lives in cmd. Durations are strings
 // (Go time.Duration syntax, e.g. "5m", "8h").
 type KerberosConfigDTO struct {
-	Enabled          bool   `json:"enabled"`
-	KeytabPath       string `json:"keytab_path"`
-	ServicePrincipal string `json:"service_principal"`
-	Realm            string `json:"realm"`
-	NetBIOSDomain    string `json:"netbios_domain"`
-	DNSDomain        string `json:"dns_domain"`
-	Krb5Conf         string `json:"krb5_conf"`
-	MaxClockSkew     string `json:"max_clock_skew"`
-	ContextTTL       string `json:"context_ttl"`
-	MaxContexts      int    `json:"max_contexts"`
+	Enabled          bool                      `json:"enabled"`
+	KeytabPath       string                    `json:"keytab_path"`
+	ServicePrincipal string                    `json:"service_principal"`
+	Realm            string                    `json:"realm"`
+	NetBIOSDomain    string                    `json:"netbios_domain"`
+	DNSDomain        string                    `json:"dns_domain"`
+	Krb5Conf         string                    `json:"krb5_conf"`
+	MaxClockSkew     string                    `json:"max_clock_skew"`
+	ContextTTL       string                    `json:"context_ttl"`
+	MaxContexts      int                       `json:"max_contexts"`
+	MachineAccount   KerberosMachineAccountDTO `json:"machine_account,omitempty"`
 }
 
 type identityProviderSummary struct {
@@ -136,7 +148,7 @@ func (h *IdentityProviderHandler) GetConfig(w http.ResponseWriter, r *http.Reque
 			InternalServerError(w, "Failed to decode stored Kerberos config")
 			return
 		}
-		WriteJSONOK(w, dto) // Kerberos DTO carries no inline secret field
+		WriteJSONOK(w, redactKerberosDTO(dto))
 	}
 }
 
@@ -337,7 +349,13 @@ func (h *IdentityProviderHandler) putKerberos(w http.ResponseWriter, r *http.Req
 		BadRequest(w, err.Error())
 		return
 	}
-	blob, err := json.Marshal(dto)
+	// Write-only secret: an empty or redacted-placeholder secret means "keep
+	// the currently stored secret" so a read-modify-write round trip never
+	// wipes the credential — mirrors ldapConfigFromDTO's bind_password rule.
+	if dto.MachineAccount.Secret == "" || dto.MachineAccount.Secret == redactedSecret {
+		dto.MachineAccount.Secret = h.existingKerberosSecret(r)
+	}
+	blob, err := json.Marshal(dto) // marshals with real secret for storage
 	if err != nil {
 		InternalServerError(w, "Failed to encode Kerberos config")
 		return
@@ -353,7 +371,31 @@ func (h *IdentityProviderHandler) putKerberos(w http.ResponseWriter, r *http.Req
 	// No hot-reload: Kerberos is bound by the adapters at startup. Surface that
 	// the change takes effect on the next restart via a header note.
 	w.Header().Set("X-DittoFS-Apply", "restart-required")
-	WriteJSONOK(w, dto)
+	WriteJSONOK(w, redactKerberosDTO(dto))
+}
+
+// existingKerberosSecret returns the currently stored machine-account secret,
+// or "" if none/undecodable. Used to preserve the secret on read-modify-write.
+func (h *IdentityProviderHandler) existingKerberosSecret(r *http.Request) string {
+	row, err := h.store.GetIdentityProviderConfig(r.Context(), models.IdentityProviderTypeKerberos)
+	if err != nil {
+		return ""
+	}
+	var dto KerberosConfigDTO
+	if err := json.Unmarshal([]byte(row.Config), &dto); err != nil {
+		return ""
+	}
+	return dto.MachineAccount.Secret
+}
+
+// redactKerberosDTO returns a copy of dto with the machine-account secret
+// replaced by the redacted sentinel (or left empty when unset), mirroring
+// ldapConfigToDTO's treatment of BindPassword.
+func redactKerberosDTO(dto KerberosConfigDTO) KerberosConfigDTO {
+	if dto.MachineAccount.Secret != "" {
+		dto.MachineAccount.Secret = redactedSecret
+	}
+	return dto
 }
 
 func (h *IdentityProviderHandler) testKerberos(w http.ResponseWriter, r *http.Request) {
