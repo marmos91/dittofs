@@ -5,6 +5,7 @@ package ad_dc_test
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"os/exec"
 	"strings"
 	"testing"
@@ -78,6 +79,11 @@ func TestNetlogonPassthroughAlice(t *testing.T) {
 	dcIP := getContainerIP(t)
 	t.Logf("AD-DC container IP: %s", dcIP)
 
+	// Wait for the DC's DCE-RPC endpoint mapper (port 135) to accept connections.
+	// Samba's RPC stack comes up shortly after the KDC; dialing too early yields
+	// "connection refused" on the NETLOGON bind.
+	waitForTCPAddr(t, dcIP+":135", 90*time.Second)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -145,4 +151,21 @@ func TestNetlogonPassthroughAlice(t *testing.T) {
 	if len(res.GroupSIDs) == 0 {
 		t.Error("expected at least one GroupSID from DC, got none")
 	}
+}
+
+// waitForTCPAddr blocks until addr accepts a TCP connection or the timeout
+// elapses (fatal on timeout). Used to wait for the DC's DCE-RPC endpoint
+// mapper (port 135), which comes up shortly after the KDC.
+func waitForTCPAddr(t *testing.T, addr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Fatalf("timed out waiting for %s to accept connections (DC RPC endpoint-mapper not reachable)", addr)
 }
