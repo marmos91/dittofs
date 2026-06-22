@@ -1064,3 +1064,51 @@ func TestAdsBasePath(t *testing.T) {
 		})
 	}
 }
+
+// TestNewOpenIsShareRestrictive pins the holder-independent discriminator that
+// the #1331 break-reason reclassification keys on. It must distinguish a
+// share-restrictive open (denies a co-located data holder → sharing-violation
+// Handle-strip break, deferred park, NO force-complete) from a share-permissive
+// caching break (the genuine Default/Write-flush case that breaking3 / batch22
+// rely on force-complete for).
+func TestNewOpenIsShareRestrictive(t *testing.T) {
+	const (
+		fileReadData    = uint32(0x00000001)
+		fileWriteData   = uint32(0x00000002)
+		deleteAccess    = uint32(0x00010000)
+		readControlOnly = uint32(0x00020000) // stat-only (READ_CONTROL)
+		fileShareRead   = uint32(0x01)
+		fileShareWrite  = uint32(0x02)
+		fileShareDelete = uint32(0x04)
+		fileShareAll    = fileShareRead | fileShareWrite | fileShareDelete
+	)
+	cases := []struct {
+		name          string
+		desiredAccess uint32
+		shareAccess   uint32
+		want          bool
+	}{
+		// The #1322/#1331 replay open: read with FILE_SHARE_NONE → restrictive.
+		{"read_shareNone", fileReadData, 0x0, true},
+		// breaking3-style caching break: read with full sharing → permissive.
+		{"read_shareAll", fileReadData, fileShareAll, false},
+		{"read_shareRead", fileReadData, fileShareRead, false},
+		// Write not shared even though read is → restrictive (write half).
+		{"readwrite_shareReadOnly", fileReadData | fileWriteData, fileShareRead, true},
+		{"write_shareNone", fileWriteData, 0x0, true},
+		{"write_shareWrite", fileWriteData, fileShareWrite, false},
+		// Delete not shared → restrictive.
+		{"delete_shareReadWrite", deleteAccess, fileShareRead | fileShareWrite, true},
+		{"delete_shareAll", deleteAccess, fileShareAll, false},
+		// Stat-only opens impose no share constraint regardless of share mask.
+		{"statOnly_shareNone", readControlOnly, 0x0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := newOpenIsShareRestrictive(tc.desiredAccess, tc.shareAccess); got != tc.want {
+				t.Errorf("newOpenIsShareRestrictive(0x%x, 0x%x) = %v, want %v",
+					tc.desiredAccess, tc.shareAccess, got, tc.want)
+			}
+		})
+	}
+}
