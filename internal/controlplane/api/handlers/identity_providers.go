@@ -63,7 +63,9 @@ type ldapConfigDTO struct {
 // NETLOGON / AD machine-account authentication. Secret is write-only: on GET
 // responses it is substituted with the redactedSecret sentinel.
 type KerberosMachineAccountDTO struct {
+	Enabled     bool     `json:"enabled,omitempty"`
 	AccountName string   `json:"account_name,omitempty"`
+	KeytabPath  string   `json:"keytab_path,omitempty"`
 	DCAddresses []string `json:"dc_address,omitempty"`
 	// Secret is the machine-account password. Write-only — API responses
 	// always contain the redacted placeholder instead of the real value.

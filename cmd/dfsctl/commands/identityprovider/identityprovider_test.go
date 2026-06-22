@@ -10,9 +10,46 @@ import (
 	"github.com/marmos91/dittofs/pkg/apiclient"
 )
 
-// TestConfigureFlagsRegistered asserts that configureCmd has all expected
-// machine-account flags wired up.
+// newTestServer starts a fake API server that returns an empty KerberosProviderConfig
+// on GET and captures the PUT body into *received. The caller owns closing it.
+func newTestServer(t *testing.T, received *apiclient.KerberosProviderConfig) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/config"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(apiclient.KerberosProviderConfig{})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/config"):
+			_ = json.NewDecoder(r.Body).Decode(received)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(apiclient.KerberosProviderConfig{})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+// runConfigureCmd builds a fresh configureCmd with a fake client pointing at
+// srv, sets the given args (without the "kerberos" positional arg — that is
+// prepended automatically), and executes it. Returns the execution error.
+func runConfigureCmd(t *testing.T, srv *httptest.Server, extraArgs ...string) error {
+	t.Helper()
+	clientFn := func() (*apiclient.Client, error) {
+		return apiclient.New(srv.URL).WithToken("fake-token"), nil
+	}
+	cmd := newConfigureCmd(clientFn)
+	// Silence usage output on test errors.
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs(append([]string{"kerberos"}, extraArgs...))
+	return cmd.Execute()
+}
+
+// TestConfigureFlagsRegistered asserts that a freshly built configureCmd has
+// all expected machine-account flags wired up.
 func TestConfigureFlagsRegistered(t *testing.T) {
+	cmd := newConfigureCmd(nil)
 	expected := []string{
 		"machine-account-enabled",
 		"machine-account-name",
@@ -21,67 +58,45 @@ func TestConfigureFlagsRegistered(t *testing.T) {
 		"dc-address",
 	}
 	for _, name := range expected {
-		if f := configureCmd.Flags().Lookup(name); f == nil {
+		if f := cmd.Flags().Lookup(name); f == nil {
 			t.Errorf("flag --%s is not registered on configureCmd", name)
 		}
 	}
 }
 
-// TestConfigureMachineSecretWriteOnly verifies that omitting --machine-secret
-// sends an empty secret to the API (so the server's preserve-on-empty rule
-// retains the stored credential), whereas providing the flag sends the value.
+// TestConfigureMachineSecretWriteOnly verifies that:
+//
+//	(a) --machine-secret provided → secret sent in the request body;
+//	(b) --machine-secret absent   → secret is empty in the request body
+//	    (so the server's preserve-on-empty rule retains the stored credential);
+//	(c) --dc-address repeated     → DCAddresses list in the request body;
+//	(d) --machine-account-enabled → enabled=true in the request body;
+//	    omitting it              → enabled stays false / not forced to true.
 func TestConfigureMachineSecretWriteOnly(t *testing.T) {
-	// Track the request body the fake server receives.
-	var received apiclient.KerberosProviderConfig
+	t.Run("secret provided → sent in request body", func(t *testing.T) {
+		var received apiclient.KerberosProviderConfig
+		srv := newTestServer(t, &received)
+		defer srv.Close()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/config"):
-			// Return empty config so runConfigure starts from a blank slate.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(apiclient.KerberosProviderConfig{})
-		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/config"):
-			_ = json.NewDecoder(r.Body).Decode(&received)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(apiclient.KerberosProviderConfig{})
-		default:
-			http.NotFound(w, r)
+		if err := runConfigureCmd(t, srv, "--machine-account-name", "MYHOST$", "--machine-secret", "s3cret"); err != nil {
+			t.Fatalf("Execute: %v", err)
 		}
-	}))
-	defer srv.Close()
-
-	// Reset flag state between subtests.
-	resetConfigureFlags := func() {
-		configureMachineAccountEnabled = false
-		configureMachineAccountName = ""
-		configureMachineSecret = ""
-		configureMachineKeytab = ""
-		configureDCAddresses = nil
-		// Reset the "changed" tracking by re-parsing an empty args set.
-		_ = configureCmd.Flags().Set("machine-account-name", "")
-	}
+		if received.MachineAccount.Secret != "s3cret" {
+			t.Errorf("expected secret=s3cret in request, got %q", received.MachineAccount.Secret)
+		}
+		if received.MachineAccount.AccountName != "MYHOST$" {
+			t.Errorf("expected account_name=MYHOST$, got %q", received.MachineAccount.AccountName)
+		}
+	})
 
 	t.Run("secret omitted → empty in request body", func(t *testing.T) {
-		resetConfigureFlags()
-		received = apiclient.KerberosProviderConfig{}
+		var received apiclient.KerberosProviderConfig
+		srv := newTestServer(t, &received)
+		defer srv.Close()
 
-		// Simulate the client talking to our fake server.
-		client := apiclient.New(srv.URL).WithToken("fake-token")
-
-		// Build the config the same way runConfigure does when only
-		// --machine-account-name is changed.
-		cfg, _ := client.GetKerberosConfig()
-		cfg.MachineAccount.AccountName = "MYHOST$"
-		// Secret intentionally left empty (flag not set).
-
-		out, err := client.PutKerberosConfig(cfg)
-		if err != nil {
-			t.Fatalf("PutKerberosConfig: %v", err)
+		if err := runConfigureCmd(t, srv, "--machine-account-name", "MYHOST$"); err != nil {
+			t.Fatalf("Execute: %v", err)
 		}
-		_ = out
-
 		if received.MachineAccount.Secret != "" {
 			t.Errorf("expected empty secret in request (preserve-on-empty), got %q", received.MachineAccount.Secret)
 		}
@@ -90,44 +105,51 @@ func TestConfigureMachineSecretWriteOnly(t *testing.T) {
 		}
 	})
 
-	t.Run("secret provided → sent in request body", func(t *testing.T) {
-		resetConfigureFlags()
-		received = apiclient.KerberosProviderConfig{}
-
-		client := apiclient.New(srv.URL).WithToken("fake-token")
-		cfg, _ := client.GetKerberosConfig()
-		cfg.MachineAccount.Secret = "s3cret"
-
-		_, err := client.PutKerberosConfig(cfg)
-		if err != nil {
-			t.Fatalf("PutKerberosConfig: %v", err)
-		}
-
-		if received.MachineAccount.Secret != "s3cret" {
-			t.Errorf("expected secret=s3cret in request, got %q", received.MachineAccount.Secret)
-		}
-	})
-
 	t.Run("dc-address repeated → list in DCAddresses", func(t *testing.T) {
-		addrs := []string{"192.0.2.10", "192.0.2.11"}
+		var received apiclient.KerberosProviderConfig
+		srv := newTestServer(t, &received)
+		defer srv.Close()
 
-		client := apiclient.New(srv.URL).WithToken("fake-token")
-		cfg, _ := client.GetKerberosConfig()
-		cfg.MachineAccount.DCAddresses = addrs
-		received = apiclient.KerberosProviderConfig{}
-
-		_, err := client.PutKerberosConfig(cfg)
-		if err != nil {
-			t.Fatalf("PutKerberosConfig: %v", err)
+		if err := runConfigureCmd(t, srv, "--dc-address", "192.0.2.10", "--dc-address", "192.0.2.11"); err != nil {
+			t.Fatalf("Execute: %v", err)
 		}
-
-		if len(received.MachineAccount.DCAddresses) != len(addrs) {
-			t.Fatalf("dc_address: want %v, got %v", addrs, received.MachineAccount.DCAddresses)
+		want := []string{"192.0.2.10", "192.0.2.11"}
+		if len(received.MachineAccount.DCAddresses) != len(want) {
+			t.Fatalf("dc_address: want %v, got %v", want, received.MachineAccount.DCAddresses)
 		}
-		for i, a := range addrs {
+		for i, a := range want {
 			if received.MachineAccount.DCAddresses[i] != a {
 				t.Errorf("dc_address[%d]: want %q, got %q", i, a, received.MachineAccount.DCAddresses[i])
 			}
+		}
+	})
+
+	t.Run("machine-account-enabled provided → enabled=true", func(t *testing.T) {
+		var received apiclient.KerberosProviderConfig
+		srv := newTestServer(t, &received)
+		defer srv.Close()
+
+		if err := runConfigureCmd(t, srv, "--machine-account-enabled"); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if !received.MachineAccount.Enabled {
+			t.Errorf("expected machine_account.enabled=true when flag is set")
+		}
+	})
+
+	t.Run("machine-account-enabled omitted → enabled stays false", func(t *testing.T) {
+		var received apiclient.KerberosProviderConfig
+		srv := newTestServer(t, &received)
+		defer srv.Close()
+
+		// Only set the name; do NOT pass --machine-account-enabled.
+		if err := runConfigureCmd(t, srv, "--machine-account-name", "MYHOST$"); err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		// The server's initial GET returns enabled=false; our code must not force
+		// it to true when the flag was not passed.
+		if received.MachineAccount.Enabled {
+			t.Errorf("expected machine_account.enabled=false when flag is absent")
 		}
 	})
 }

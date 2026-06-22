@@ -212,18 +212,29 @@ func runTest(cmd *cobra.Command, args []string) error {
 
 // --- configure ---
 
-var (
-	configureMachineAccountEnabled bool
-	configureMachineAccountName    string
-	configureMachineSecret         string
-	configureMachineKeytab         string
-	configureDCAddresses           []string
-)
+// configureClientFactory is the client constructor used by configureCmd.
+// It is a package-level var so tests can substitute a fake client without
+// touching the global cobra.Command.
+type configureClientFactory func() (*apiclient.Client, error)
 
-var configureCmd = &cobra.Command{
-	Use:   "configure kerberos",
-	Short: "Configure Kerberos machine-account settings",
-	Long: `Set individual Kerberos machine-account flags without replacing the full configuration.
+var configureCmd = newConfigureCmd(nil) // nil → production default
+
+// newConfigureCmd constructs a fresh configure *cobra.Command. Pass nil for
+// clientFn to use the production cmdutil.GetAuthenticatedClient; pass a custom
+// function in tests to inject a fake client without reading config files.
+func newConfigureCmd(clientFn configureClientFactory) *cobra.Command {
+	var (
+		machineAccountEnabled bool
+		machineAccountName    string
+		machineSecret         string
+		machineKeytab         string
+		dcAddresses           []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "configure kerberos",
+		Short: "Configure Kerberos machine-account settings",
+		Long: `Set individual Kerberos machine-account flags without replacing the full configuration.
 
 The current configuration is read from the API, the specified flags are applied,
 and the result is written back. Fields not specified on the command line are
@@ -237,68 +248,71 @@ Changes take effect on the next server restart.
 
 Examples:
   dfsctl identity-provider configure kerberos --machine-account-enabled --machine-account-name MYHOST$ --machine-secret 'p@ss' --machine-keytab /etc/krb5.keytab --dc-address 192.0.2.10 --dc-address 192.0.2.11`,
-	Args: cobra.ExactArgs(1),
-	RunE: runConfigure,
-}
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if args[0] != "kerberos" {
+				return fmt.Errorf("configure only supports 'kerberos' (got %q)", args[0])
+			}
 
-func init() {
-	configureCmd.Flags().BoolVar(&configureMachineAccountEnabled, "machine-account-enabled", false,
+			factory := clientFn
+			if factory == nil {
+				factory = cmdutil.GetAuthenticatedClient
+			}
+			client, err := factory()
+			if err != nil {
+				return err
+			}
+
+			// Read the current config so we preserve all existing fields.
+			cfg, err := client.GetKerberosConfig()
+			if err != nil {
+				// If the provider is not yet configured, start from an empty config.
+				cfg = &apiclient.KerberosProviderConfig{}
+			}
+
+			// Apply only the flags that were explicitly set.
+			if cmd.Flags().Changed("machine-account-enabled") {
+				cfg.MachineAccount.Enabled = machineAccountEnabled
+			}
+			if cmd.Flags().Changed("machine-account-name") {
+				cfg.MachineAccount.AccountName = machineAccountName
+			}
+			if cmd.Flags().Changed("machine-keytab") {
+				cfg.MachineAccount.KeytabPath = machineKeytab
+			}
+			if cmd.Flags().Changed("dc-address") {
+				cfg.MachineAccount.DCAddresses = dcAddresses
+			}
+			// --machine-secret: write-only. Only propagate when the flag was
+			// explicitly provided. An absent flag leaves the field empty so the
+			// API's preserve-on-empty rule retains the stored credential.
+			if cmd.Flags().Changed("machine-secret") {
+				cfg.MachineAccount.Secret = machineSecret
+			}
+
+			out, err := client.PutKerberosConfig(cfg)
+			if err != nil {
+				return fmt.Errorf("failed to configure Kerberos: %w", err)
+			}
+			if _, perr := fmt.Fprintln(os.Stderr, "Kerberos configuration saved; it will take effect on the next server restart."); perr != nil {
+				return perr
+			}
+			return cmdutil.PrintResourceWithSuccess(os.Stdout, out, "Saved Kerberos identity provider configuration (applies on next server restart).")
+		},
+	}
+
+	cmd.Flags().BoolVar(&machineAccountEnabled, "machine-account-enabled", false,
 		"Enable machine-account authentication for NETLOGON")
-	configureCmd.Flags().StringVar(&configureMachineAccountName, "machine-account-name", "",
+	cmd.Flags().StringVar(&machineAccountName, "machine-account-name", "",
 		"Machine account name (e.g. MYHOST$)")
-	configureCmd.Flags().StringVar(&configureMachineSecret, "machine-secret", "",
+	cmd.Flags().StringVar(&machineSecret, "machine-secret", "",
 		"Machine account password (write-only; omit to keep the stored value)")
-	configureCmd.Flags().StringVar(&configureMachineKeytab, "machine-keytab", "",
+	cmd.Flags().StringVar(&machineKeytab, "machine-keytab", "",
 		"Path to the machine-account keytab file")
-	configureCmd.Flags().StringArrayVar(&configureDCAddresses, "dc-address", nil,
+	cmd.Flags().StringArrayVar(&dcAddresses, "dc-address", nil,
 		"Domain controller address (repeatable; pass once per address)")
-}
 
-func runConfigure(cmd *cobra.Command, args []string) error {
-	if args[0] != "kerberos" {
-		return fmt.Errorf("configure only supports 'kerberos' (got %q)", args[0])
-	}
-
-	client, err := cmdutil.GetAuthenticatedClient()
-	if err != nil {
-		return err
-	}
-
-	// Read the current config so we preserve all existing fields.
-	cfg, err := client.GetKerberosConfig()
-	if err != nil {
-		// If the provider is not yet configured, start from an empty config.
-		cfg = &apiclient.KerberosProviderConfig{}
-	}
-
-	// Apply only the flags that were explicitly set.
-	if cmd.Flags().Changed("machine-account-enabled") {
-		cfg.MachineAccount.Enabled = configureMachineAccountEnabled
-	}
-	if cmd.Flags().Changed("machine-account-name") {
-		cfg.MachineAccount.AccountName = configureMachineAccountName
-	}
-	if cmd.Flags().Changed("machine-keytab") {
-		cfg.MachineAccount.KeytabPath = configureMachineKeytab
-	}
-	if cmd.Flags().Changed("dc-address") {
-		cfg.MachineAccount.DCAddresses = configureDCAddresses
-	}
-	// --machine-secret: write-only. Only propagate when the flag was explicitly
-	// provided. An absent flag leaves the field empty so the API's
-	// preserve-on-empty rule retains the stored credential.
-	if cmd.Flags().Changed("machine-secret") {
-		cfg.MachineAccount.Secret = configureMachineSecret
-	}
-
-	out, err := client.PutKerberosConfig(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to configure Kerberos: %w", err)
-	}
-	if _, perr := fmt.Fprintln(os.Stderr, "Kerberos configuration saved; it will take effect on the next server restart."); perr != nil {
-		return perr
-	}
-	return cmdutil.PrintResourceWithSuccess(os.Stdout, out, "Saved Kerberos identity provider configuration (applies on next server restart).")
+	return cmd
 }
 
 // --- helpers ---

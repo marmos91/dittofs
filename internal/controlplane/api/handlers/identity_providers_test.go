@@ -321,3 +321,83 @@ func TestIDP_TestLDAP_DoesNotPersist(t *testing.T) {
 		t.Errorf("test must not persist (putCalls=%d)", st.putCalls)
 	}
 }
+
+// TestIDP_PutKerberos_MachineAccountEnabledAndKeytabRoundTrip verifies that
+// machine_account.enabled and machine_account.keytab_path are persisted in the
+// stored config blob and returned in the GET response. Neither field is secret,
+// so they must not be redacted.
+func TestIDP_PutKerberos_MachineAccountEnabledAndKeytabRoundTrip(t *testing.T) {
+	st := newFakeIDPStore()
+	h := NewIdentityProviderHandler(st, nil)
+
+	body := `{
+		"enabled": false,
+		"realm": "EXAMPLE.COM",
+		"machine_account": {
+			"enabled": true,
+			"account_name": "DITTOFS$",
+			"keytab_path": "/etc/krb5.keytab",
+			"dc_address": ["dc.example.com"],
+			"secret": "topsecret"
+		}
+	}`
+
+	// PUT → must persist both non-secret fields and redact only the secret.
+	w := doReq(t, h.PutConfig, http.MethodPut, body, models.IdentityProviderTypeKerberos)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var putResp KerberosConfigDTO
+	if err := json.Unmarshal(w.Body.Bytes(), &putResp); err != nil {
+		t.Fatalf("decode PUT response: %v", err)
+	}
+	if !putResp.MachineAccount.Enabled {
+		t.Errorf("PUT response: machine_account.enabled = false, want true")
+	}
+	if putResp.MachineAccount.KeytabPath != "/etc/krb5.keytab" {
+		t.Errorf("PUT response: machine_account.keytab_path = %q, want /etc/krb5.keytab", putResp.MachineAccount.KeytabPath)
+	}
+	// Secret must still be redacted in the response.
+	if putResp.MachineAccount.Secret != redactedSecret {
+		t.Errorf("PUT response: secret = %q, want redacted sentinel", putResp.MachineAccount.Secret)
+	}
+
+	// Stored blob must contain both non-secret fields.
+	row := st.rows[models.IdentityProviderTypeKerberos]
+	if row == nil {
+		t.Fatal("kerberos config not persisted")
+	}
+	var storedDTO KerberosConfigDTO
+	if err := json.Unmarshal([]byte(row.Config), &storedDTO); err != nil {
+		t.Fatalf("decode stored config: %v", err)
+	}
+	if !storedDTO.MachineAccount.Enabled {
+		t.Errorf("stored config: machine_account.enabled = false, want true")
+	}
+	if storedDTO.MachineAccount.KeytabPath != "/etc/krb5.keytab" {
+		t.Errorf("stored config: machine_account.keytab_path = %q, want /etc/krb5.keytab", storedDTO.MachineAccount.KeytabPath)
+	}
+
+	// GET → both non-secret fields must be returned unchanged; secret stays redacted.
+	w2 := doReq(t, h.GetConfig, http.MethodGet, "", models.IdentityProviderTypeKerberos)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("GET status = %d", w2.Code)
+	}
+	var getResp KerberosConfigDTO
+	if err := json.Unmarshal(w2.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("decode GET response: %v", err)
+	}
+	if !getResp.MachineAccount.Enabled {
+		t.Errorf("GET response: machine_account.enabled = false, want true")
+	}
+	if getResp.MachineAccount.KeytabPath != "/etc/krb5.keytab" {
+		t.Errorf("GET response: machine_account.keytab_path = %q, want /etc/krb5.keytab", getResp.MachineAccount.KeytabPath)
+	}
+	if getResp.MachineAccount.Secret != redactedSecret {
+		t.Errorf("GET response: secret = %q, want redacted sentinel", getResp.MachineAccount.Secret)
+	}
+	if strings.Contains(w2.Body.String(), "topsecret") {
+		t.Errorf("GET response leaked real secret: %s", w2.Body.String())
+	}
+}
