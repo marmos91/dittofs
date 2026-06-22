@@ -1,51 +1,49 @@
 package netlogon
 
-// NetworkLogonRequest encapsulates the parameters for a NETLOGON logon request.
+import "context"
+
+// NetworkLogonRequest carries the NTLM challenge/response the SMB handler
+// received on the wire, to be validated by a Domain Controller.
 type NetworkLogonRequest struct {
-	DomainSID        string
-	UserRID          uint32
-	GroupRIDs        []uint32
-	SessionBaseKey   [16]byte
-	SamAccountName   string
-	DnsDomainName    string
+	Username        string
+	Domain          string
+	ServerChallenge [8]byte // the challenge DittoFS sent in the NTLM Type-2
+	NTResponse      []byte  // client's NtChallengeResponse
+	LMResponse      []byte  // client's LmChallengeResponse (may be empty)
 }
 
-// LogonResult represents the outcome of NETLOGON authentication mapping.
+// LogonResult is the identity the DC returned for a validated network logon.
 type LogonResult struct {
+	SessionBaseKey [16]byte
 	UserSID        string
 	GroupSIDs      []string
-	SessionBaseKey [16]byte
+	Username       string
+	DomainName     string
 }
 
-// NetlogonAuthenticator defines the interface for NETLOGON passthrough authentication.
+// NetlogonAuthenticator validates a domain user's NTLM response against a DC.
 type NetlogonAuthenticator interface {
-	Logon(req NetworkLogonRequest) (LogonResult, error)
+	NetworkLogon(ctx context.Context, req NetworkLogonRequest) (*LogonResult, error)
 }
 
-// samInfo4ToResult maps NETLOGON parameters to a LogonResult.
-// domainSID is the domain SID (e.g., "S-1-5-21-1-2-3").
-// userRID is the user's RID (e.g., 1103).
-// groupRIDs are the group RIDs (e.g., []uint32{513, 1104}).
-// sessionBaseKey is the session key from the NETLOGON response.
-// Returns an error if SIDFromRID fails on any RID.
-func samInfo4ToResult(domainSID string, userRID uint32, groupRIDs []uint32, sessionBaseKey [16]byte, sAMAccountName, dnsDomainName string) (LogonResult, error) {
+func samInfo4ToResult(domainSID string, userRID uint32, groupRIDs []uint32, sessionKey [16]byte, user, domain string) (*LogonResult, error) {
 	userSID, err := SIDFromRID(domainSID, userRID)
 	if err != nil {
-		return LogonResult{}, err
+		return nil, err
 	}
-
-	groupSIDs := make([]string, len(groupRIDs))
-	for i, rid := range groupRIDs {
+	groups := make([]string, 0, len(groupRIDs))
+	for _, rid := range groupRIDs {
 		sid, err := SIDFromRID(domainSID, rid)
 		if err != nil {
-			return LogonResult{}, err
+			return nil, err
 		}
-		groupSIDs[i] = sid
+		groups = append(groups, sid)
 	}
-
-	return LogonResult{
+	return &LogonResult{
+		SessionBaseKey: sessionKey,
 		UserSID:        userSID,
-		GroupSIDs:      groupSIDs,
-		SessionBaseKey: sessionBaseKey,
+		GroupSIDs:      groups,
+		Username:       user,
+		DomainName:     domain,
 	}, nil
 }

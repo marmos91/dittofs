@@ -20,4 +20,10 @@ func TestSAMInfo4ToResult(t *testing.T) {
 	if res.SessionBaseKey != key {
 		t.Fatal("session key not propagated")
 	}
+	if res.Username != "alice" {
+		t.Fatalf("username: %q", res.Username)
+	}
+	if res.DomainName != "DITTOFS" {
+		t.Fatalf("domain name: %q", res.DomainName)
+	}
 }
