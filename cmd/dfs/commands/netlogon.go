@@ -23,17 +23,41 @@ func buildNetlogonAuthenticator(k config.KerberosConfig) netlogon.NetlogonAuthen
 		return nil
 	}
 
+	// Validate required fields before constructing a doomed authenticator.
+	ma := k.MachineAccount
+	if ma.AccountName == "" {
+		slog.Warn("NETLOGON machine account is enabled but AccountName is not set; NTLM passthrough disabled")
+		return nil
+	}
+	if ma.Secret == "" {
+		if ma.KeytabPath != "" {
+			slog.Warn("NETLOGON machine account: keytab-based credentials are not yet supported (tracked separately); NTLM passthrough disabled",
+				"keytab_path", ma.KeytabPath)
+		} else {
+			slog.Warn("NETLOGON machine account is enabled but Secret is not set; NTLM passthrough disabled")
+		}
+		return nil
+	}
+	if k.NetBIOSDomain == "" {
+		slog.Warn("NETLOGON machine account is enabled but kerberos.netbios_domain (DomainName) is not set; NTLM passthrough disabled")
+		return nil
+	}
+	if len(ma.DCAddresses) == 0 {
+		slog.Warn("NETLOGON machine account is enabled but no DCAddresses are configured; NTLM passthrough disabled")
+		return nil
+	}
+
 	// Derive the NetBIOS workstation name.  MS-NRPC §3.1.4.1 requires the
 	// short host name without the trailing '$' machine-account marker.
 	workstation := netbiosWorkstation(k)
 
 	cred := netlogon.MachineCredential{
-		AccountName: k.MachineAccount.AccountName,
-		Password:    k.MachineAccount.Secret,
+		AccountName: ma.AccountName,
+		Password:    ma.Secret,
 		Workstation: workstation,
 		DomainName:  k.NetBIOSDomain,
 		Realm:       k.Realm,
-		DCAddresses: k.MachineAccount.DCAddresses,
+		DCAddresses: ma.DCAddresses,
 	}
 	return netlogon.NewAuthenticator(netlogon.NewOfflineProvider(cred))
 }

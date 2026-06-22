@@ -646,10 +646,16 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 			return nil, fmt.Errorf("failed to initialize SMB Kerberos provider: %w", err)
 		}
 		smbAdapter.SetKerberosProvider(provider)
+	}
 
-		// Wire NETLOGON authenticator for domain-controller NTLM pass-through.
-		// When MachineAccount is not enabled this returns nil and the adapter
-		// falls back to local-only NTLM (no domain verification).
+	// Wire NETLOGON authenticator for domain-controller NTLM pass-through.
+	// This runs whenever kerberosConfig is present (machine_account lives on
+	// the kerberos config), regardless of kerberosConfig.Enabled.  An
+	// NTLM-only / legacy deployment sets kerberos.enabled=false but still
+	// needs NETLOGON passthrough when machine_account.enabled=true.
+	// buildNetlogonAuthenticator returns nil when MachineAccount.Enabled is
+	// false, so SetNetlogonAuthenticator no-ops in that case.
+	if kerberosConfig != nil {
 		nlAuth := buildNetlogonAuthenticator(*kerberosConfig)
 		smbAdapter.SetNetlogonAuthenticator(nlAuth)
 	}

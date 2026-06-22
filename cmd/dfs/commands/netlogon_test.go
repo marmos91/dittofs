@@ -33,6 +33,75 @@ func TestBuildNetlogonAuthenticator_Enabled(t *testing.T) {
 	}
 }
 
+func TestBuildNetlogonAuthenticator_EnabledMissingSecret(t *testing.T) {
+	k := config.KerberosConfig{
+		Realm:         "EXAMPLE.COM",
+		NetBIOSDomain: "EXAMPLE",
+		MachineAccount: config.MachineAccountConfig{
+			Enabled:     true,
+			AccountName: "DITTOFS$",
+			// Secret intentionally empty
+			DCAddresses: []string{"192.168.1.1"},
+		},
+	}
+	got := buildNetlogonAuthenticator(k)
+	if got != nil {
+		t.Fatal("expected nil when Secret is missing")
+	}
+}
+
+func TestBuildNetlogonAuthenticator_EnabledKeytabOnly(t *testing.T) {
+	k := config.KerberosConfig{
+		Realm:         "EXAMPLE.COM",
+		NetBIOSDomain: "EXAMPLE",
+		MachineAccount: config.MachineAccountConfig{
+			Enabled:     true,
+			AccountName: "DITTOFS$",
+			// Secret empty, KeytabPath set — not yet supported
+			KeytabPath:  "/etc/machine.keytab",
+			DCAddresses: []string{"192.168.1.1"},
+		},
+	}
+	got := buildNetlogonAuthenticator(k)
+	if got != nil {
+		t.Fatal("expected nil when only KeytabPath is set (not yet supported)")
+	}
+}
+
+func TestBuildNetlogonAuthenticator_EnabledMissingDomain(t *testing.T) {
+	k := config.KerberosConfig{
+		Realm: "EXAMPLE.COM",
+		// NetBIOSDomain intentionally empty
+		MachineAccount: config.MachineAccountConfig{
+			Enabled:     true,
+			AccountName: "DITTOFS$",
+			Secret:      "s3cr3t",
+			DCAddresses: []string{"192.168.1.1"},
+		},
+	}
+	got := buildNetlogonAuthenticator(k)
+	if got != nil {
+		t.Fatal("expected nil when NetBIOSDomain is missing")
+	}
+}
+
+func TestBuildNetlogonAuthenticator_EnabledMissingDCAddresses(t *testing.T) {
+	k := config.KerberosConfig{
+		Realm:         "EXAMPLE.COM",
+		NetBIOSDomain: "EXAMPLE",
+		MachineAccount: config.MachineAccountConfig{
+			Enabled:     true,
+			AccountName: "DITTOFS$",
+			Secret:      "s3cr3t",
+			// DCAddresses intentionally empty
+		},
+	}
+	got := buildNetlogonAuthenticator(k)
+	if got != nil {
+		t.Fatal("expected nil when DCAddresses is empty")
+	}
+}
+
 func TestKerberosRoundTrip_MachineAccount(t *testing.T) {
 	orig := config.KerberosConfig{
 		Enabled:       true,

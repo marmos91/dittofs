@@ -84,15 +84,19 @@ func (sc *SecureChannel) close(ctx context.Context) {
 }
 
 // samLogon performs a NetrLogonSamLogon RPC call using the established channel.
+// sc.mu is held for the full duration of the RPC so that concurrent NetworkLogon
+// calls are serialized and close/reset cannot race an in-flight SAMLogon.
+// Callers (ensureChannel/connect) must not hold sc.mu when calling samLogon.
 func (sc *SecureChannel) samLogon(ctx context.Context, mc MachineCredential, req NetworkLogonRequest) (*LogonResult, error) {
 	sc.mu.Lock()
-	cli := sc.cli
-	dcName := sc.dcName
-	sc.mu.Unlock()
+	defer sc.mu.Unlock()
 
-	if cli == nil {
+	if sc.cli == nil {
 		return nil, fmt.Errorf("netlogon: channel not connected")
 	}
+
+	cli := sc.cli
+	dcName := sc.dcName
 
 	// Use the DC's computer name as LogonServer per MS-NRPC.
 	// dcName is already UNC-prefixed (\\DC01) and set in connect(); fall back
