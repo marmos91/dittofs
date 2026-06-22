@@ -38,6 +38,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/keytab"
+
 	smbauth "github.com/marmos91/dittofs/internal/adapter/smb/auth"
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
 	kerbauth "github.com/marmos91/dittofs/internal/auth/kerberos"
@@ -83,6 +85,14 @@ func TestADCombinedKeytabAndDomainAwareSMB(t *testing.T) {
 		t.Errorf("combined keytab missing nfs/ principal component (file %d bytes)", len(ktBytes))
 	}
 	t.Logf("combined keytab (%d bytes) carries both cifs/ and nfs/ principals ✓", len(ktBytes))
+
+	// --- (1b) Each service principal carries AES256 + AES128 keys (#1318) ----
+	// Windows 11 refuses RC4 (arcfour-hmac, etype 23) service tickets, so the
+	// exported keytab MUST carry aes256-cts (etype 18) and aes128-cts (etype 17)
+	// keys for each SPN. Parse the keytab with gokrb5 and assert both enctypes
+	// are present per service-principal component — not merely that the file is
+	// non-empty or that some AES key exists somewhere.
+	assertKeytabHasAESPerSPN(t, ktBytes)
 
 	// --- (2) Provider surfaces the configured/derived AD domain identity ----
 	// Configure Realm + NetBIOSDomain explicitly (the short name is never
@@ -189,6 +199,56 @@ func keytabHasComponent(buf []byte, want string) bool {
 		}
 	}
 	return false
+}
+
+// Kerberos enctype numbers (RFC 3961 / RFC 8009).
+const (
+	etypeAES128CTS = 17 // aes128-cts-hmac-sha1-96
+	etypeAES256CTS = 18 // aes256-cts-hmac-sha1-96
+)
+
+// assertKeytabHasAESPerSPN parses the raw keytab with gokrb5 and asserts that
+// each service principal ("cifs/..." and "nfs/...") has BOTH an aes256-cts
+// (etype 18) and an aes128-cts (etype 17) key entry. This guards against the
+// #1318 regression where the AD-DC exported an RC4-only (arcfour-hmac, etype 23)
+// keytab that Windows 11 refuses for service tickets.
+func assertKeytabHasAESPerSPN(t *testing.T, ktBytes []byte) {
+	t.Helper()
+
+	var kt keytab.Keytab
+	if err := kt.Unmarshal(ktBytes); err != nil {
+		t.Fatalf("parse combined keytab with gokrb5: %v", err)
+	}
+
+	// service -> set of enctypes seen for that service's principal.
+	have := map[string]map[int32]bool{
+		"cifs": {},
+		"nfs":  {},
+	}
+	for _, e := range kt.Entries {
+		if len(e.Principal.Components) == 0 {
+			continue
+		}
+		svc := e.Principal.Components[0] // "cifs" or "nfs"
+		if seen, ok := have[svc]; ok {
+			seen[e.Key.KeyType] = true
+		}
+		t.Logf("keytab entry: principal=%s realm=%s etype=%d kvno=%d",
+			strings.Join(e.Principal.Components, "/"), e.Principal.Realm, e.Key.KeyType, e.KVNO)
+	}
+
+	for _, svc := range []string{"cifs", "nfs"} {
+		seen := have[svc]
+		if !seen[etypeAES256CTS] {
+			t.Errorf("keytab %s/ principal missing aes256-cts key (etype %d); Windows 11 rejects RC4-only service tickets", svc, etypeAES256CTS)
+		}
+		if !seen[etypeAES128CTS] {
+			t.Errorf("keytab %s/ principal missing aes128-cts key (etype %d); Windows 11 rejects RC4-only service tickets", svc, etypeAES128CTS)
+		}
+		if seen[etypeAES256CTS] && seen[etypeAES128CTS] {
+			t.Logf("keytab %s/ principal carries aes256-cts + aes128-cts keys ✓", svc)
+		}
+	}
 }
 
 // parseChallengeTargetInfo extracts the TargetInfo AV_PAIR blob from a Type-2

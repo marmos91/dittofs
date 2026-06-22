@@ -156,6 +156,47 @@ if [ ! -f "$keytab" ]; then
     samba-tool spn add "$SMB_SPN" "$DOMAIN\\Administrator" >/dev/null 2>&1 || true
     samba-tool spn add "$NFS_SPN" "$DOMAIN\\Administrator" >/dev/null 2>&1 || true
 
+    # Force AES kerberos keys on the SPN-holding account (issue #1318).
+    #
+    # By default the Administrator account that holds the cifs/ + nfs/ SPNs may
+    # carry only the arcfour-hmac (RC4) kerberos key, so `exportkeytab` emits an
+    # RC4-only keytab. Windows 11 refuses RC4 (arcfour-hmac) service tickets, so
+    # the exported keytab must carry AES256/AES128 keys for the SPNs.
+    #
+    # Two steps are required, in order:
+    #   1. Advertise AES support on the account by setting
+    #      msDS-SupportedEncryptionTypes. 0x1F (31) = DES-CBC-CRC + DES-CBC-MD5 +
+    #      RC4-HMAC + AES128-CTS + AES256-CTS; keeping the legacy bits set avoids
+    #      breaking any RC4/DES client while adding AES. (0x18 / 24 would be
+    #      AES-only.)
+    #   2. Regenerate the kerberos keys. AES keys are derived from the account
+    #      password + salt, so they only materialise on a password change. Reset
+    #      the Administrator password to itself to force key regeneration without
+    #      changing the credential the rest of the fixture relies on.
+    #
+    # exportkeytab (below) then emits the full key set the DC now holds — AES256,
+    # AES128, and RC4 — because we never restrict it to a single --enctype.
+    admin_dn="$(samba-tool user show Administrator --attributes=distinguishedName 2>/dev/null \
+        | sed -n 's/^distinguishedName: //p' | head -n1)"
+    if [ -n "$admin_dn" ]; then
+        log "Enabling AES enctypes on $admin_dn (msDS-SupportedEncryptionTypes=31)"
+        ldbmodify -H /var/lib/samba/private/sam.ldb <<EOF || \
+            log "WARN: failed to set msDS-SupportedEncryptionTypes (continuing)"
+dn: $admin_dn
+changetype: modify
+replace: msDS-SupportedEncryptionTypes
+msDS-SupportedEncryptionTypes: 31
+EOF
+    else
+        log "WARN: could not resolve Administrator DN; skipping enctype attribute set"
+    fi
+
+    # Reset the password to itself to regenerate kerberos keys (incl. AES) now
+    # that AES enctypes are advertised on the account.
+    log "Regenerating kerberos keys for Administrator (password reset to force AES)"
+    samba-tool user setpassword Administrator --newpassword="$ADMIN_PASSWORD" \
+        >/dev/null 2>&1 || log "WARN: setpassword failed (continuing)"
+
     # Export cifs/ then APPEND nfs/ into the same keytab file.
     samba-tool domain exportkeytab "$keytab" \
         --principal="$SMB_SPN@$REALM"
@@ -172,7 +213,22 @@ if [ ! -f "$keytab" ]; then
         if ! klist -k "$keytab" 2>/dev/null | grep -qi "nfs/"; then
             log "ERROR: combined keytab missing nfs/ principal"; klist -k "$keytab" || true; exit 1
         fi
-        log "Combined keytab verified: carries both cifs/ and nfs/ principals"
+        # Fast-fail if AES keys are missing (issue #1318). `klist -ke` prints the
+        # enctype per entry; require at least one aes256-cts and one aes128-cts so
+        # the Windows-11-incompatible RC4-only regression cannot slip through.
+        if klist -ke "$keytab" >/dev/null 2>&1; then
+            if ! klist -ke "$keytab" 2>/dev/null | grep -qi "aes256-cts"; then
+                log "ERROR: combined keytab missing aes256-cts key (Win11 rejects RC4-only)"
+                klist -ke "$keytab" || true; exit 1
+            fi
+            if ! klist -ke "$keytab" 2>/dev/null | grep -qi "aes128-cts"; then
+                log "ERROR: combined keytab missing aes128-cts key (Win11 rejects RC4-only)"
+                klist -ke "$keytab" || true; exit 1
+            fi
+            log "Combined keytab verified: carries cifs/ + nfs/ with aes256-cts and aes128-cts keys"
+        else
+            log "Combined keytab verified: carries both cifs/ and nfs/ principals (enctype check skipped)"
+        fi
     else
         log "klist unavailable; skipping in-container keytab verification (Go test re-checks)"
     fi
