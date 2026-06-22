@@ -1,14 +1,31 @@
 name: Close linked issues on main
 
-# Closes issues referenced with "Closes #N" / "Fixes #N" / "Resolves #N"
-# in any commit pushed to main. GitHub's built-in auto-close only fires
-# when a PR merges into the default branch; since we merge PRs into
-# develop and only rebase main at release time, this workflow handles
-# the close on release instead.
+# Closes issues linked to work that reaches main.
+#
+# Background: GitHub's built-in auto-close only fires when a PR merges into the
+# DEFAULT branch, and it only records closingIssuesReferences for PRs that
+# TARGET the default branch. We merge PRs into `develop` and only fast-forward
+# `main` at release time, so neither mechanism ever fires — issues linger open.
+#
+# This workflow closes them when the work lands on main, via two paths:
+#   1. Closing keywords ("Fixes #N") written directly in a commit message.
+#   2. The squash-merge convention `subject (#<issue>) (#<pr>)`: we take every
+#      "#N" in the commits, treat it as a PR, and grep that PR's DESCRIPTION
+#      for closing keywords. (We must grep the body ourselves —
+#      closingIssuesReferences is empty for develop-targeted PRs.)
+#
+# All PR bodies are fetched in batched GraphQL calls (one request per ~50 PRs)
+# to avoid the secondary rate limit a per-PR REST loop would hit.
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      range:
+        description: "git range to scan (e.g. v0.19.0..v0.20.0). Defaults to previous-tag..HEAD."
+        required: false
+        default: ""
 
 jobs:
   close:
@@ -16,48 +33,88 @@ jobs:
     permissions:
       issues: write
       contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Close referenced issues
+      - name: Resolve and close linked issues
         env:
           GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.event.after }}
+          INPUT_RANGE: ${{ github.event.inputs.range }}
+          SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
-          # Force-push (release rebase) leaves BEFORE as the old tip; the
-          # range BEFORE..AFTER still enumerates every newly-reachable commit.
-          # On first push to a branch BEFORE is all zeros; after a force-push
-          # rebase BEFORE may be unreachable (old tip GC'd or not fetched).
-          # Fall back to walking AFTER alone in either case.
-          if [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE" 2>/dev/null; then
+          KW='(close[ds]?|fix(e[ds])?|resolve[ds]?)[[:space:]]*:?[[:space:]]*#[0-9]+'
+
+          # --- Determine the commit range to scan -------------------------
+          if [ -n "${INPUT_RANGE:-}" ]; then
+            RANGE="$INPUT_RANGE"
+          elif [ -z "${AFTER:-}" ]; then
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+            if [ -n "$PREV_TAG" ]; then RANGE="$PREV_TAG..HEAD"; else RANGE="HEAD"; fi
+          elif [[ "$BEFORE" =~ ^0+$ ]] || ! git cat-file -e "$BEFORE" 2>/dev/null; then
             RANGE="$AFTER"
           else
             RANGE="$BEFORE..$AFTER"
           fi
+          echo "Scanning range: $RANGE"
 
-          # Capture into a variable so grep exiting 1 on "no matches" (the
-          # common case for releases with no closing keywords) does not
-          # abort the pipeline under `set -o pipefail`.
-          issues=$(git log --format=%B "$RANGE" \
-            | grep -oiE '(close[ds]?|fix(e[ds])?|resolve[ds]?)[[:space:]]+#[0-9]+' \
-            | grep -oE '[0-9]+' \
-            | sort -u || true)
+          MESSAGES=$(git log --format=%B "$RANGE")
+
+          # --- Path 1: closing keywords directly in commit messages -------
+          direct=$(printf '%s\n' "$MESSAGES" \
+            | grep -oiE "$KW" | grep -oE '[0-9]+' | sort -u || true)
+
+          # --- Path 2: PR descriptions of every referenced "#N" -----------
+          refs=$(printf '%s\n' "$MESSAGES" \
+            | grep -oE '#[0-9]+' | grep -oE '[0-9]+' | sort -un || true)
+
+          via_pr=""
+          chunk=""
+          i=0
+          flush_chunk() {
+            [ -z "$chunk" ] && return 0
+            local q="query{repository(owner:\"$OWNER\",name:\"$REPO\"){ $chunk }}"
+            # Non-PR aliases (issues) error to stderr but data still flows.
+            local bodies
+            bodies=$(gh api graphql -f query="$q" \
+              --jq '.data.repository | to_entries[] | select(.value != null) | .value.body' \
+              2>/dev/null || true)
+            local hits
+            hits=$(printf '%s\n' "$bodies" | grep -oiE "$KW" | grep -oE '[0-9]+' || true)
+            [ -n "$hits" ] && via_pr="$via_pr"$'\n'"$hits"
+            chunk=""
+          }
+          for n in $refs; do
+            chunk="$chunk p$n: pullRequest(number: $n){body}"
+            i=$((i + 1))
+            if [ $((i % 50)) -eq 0 ]; then flush_chunk; fi
+          done
+          flush_chunk
+
+          issues=$(printf '%s\n%s\n' "$direct" "$via_pr" \
+            | grep -oE '[0-9]+' | sort -un || true)
 
           if [ -z "$issues" ]; then
-            echo "No closing keywords in $RANGE"
+            echo "No linked issues found in $RANGE"
             exit 0
           fi
 
+          # --- Close the ones still open ----------------------------------
           while read -r num; do
+            [ -z "$num" ] && continue
             state=$(gh issue view "$num" --json state -q .state 2>/dev/null || echo "MISSING")
             if [[ "$state" == "OPEN" ]]; then
               echo "Closing #$num"
-              gh issue close "$num" --comment "Closed by release commit on \`main\` (${GITHUB_SHA:0:7})."
+              gh issue close "$num" \
+                --comment "Closed automatically: linked work reached \`main\` (${SHA:0:7})."
             else
               echo "Skipping #$num (state=$state)"
             fi
