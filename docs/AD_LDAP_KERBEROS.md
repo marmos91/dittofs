@@ -517,6 +517,58 @@ Confirm that files created over one protocol show the **same owner UID/GID**
 when read over the other — that is the cross-protocol identity unification goal.
 Expected: alice resolves to `uid 10001` on both.
 
+### NFS `sec=krb5` from a Linux client — verified procedure
+
+An NFSv4.0 `sec=krb5` mount has client-side prerequisites beyond `kinit` that are
+easy to miss. The following sequence is **verified end-to-end** against the demo
+(an external Linux host mounting the DittoFS NFS adapter as the AD user `alice`,
+files resolving to `uid 10001 / gid 10000`):
+
+1. **Kernel modules** (the client node, not a container): `rpcsec_gss_krb5` and
+   `auth_rpcgss` must load (`modprobe rpcsec_gss_krb5`). A pod whose node lacks
+   them — and which cannot `modprobe` — cannot do `sec=krb5` even though the
+   server is correct.
+2. **`krb5.conf`** mapping the realm to the KDC (use the AD-DC's generated
+   `krb5.conf`, or point `kdc =` straight at the DC):
+   ```ini
+   [libdefaults]
+     default_realm = DITTOFS.AD
+   [realms]
+   DITTOFS.AD = { kdc = <dc-host-or-ip> }
+   [domain_realm]
+     .dittofs.ad = DITTOFS.AD
+   ```
+3. **The server SPN must resolve to the NFS endpoint.** The client requests a
+   ticket for `nfs/<the-name-you-mount>@REALM`; that name must match the keytab
+   SPN (`nfs/dittofs.dittofs.ad`). Add a hosts entry if needed:
+   `echo "<nfs-endpoint-ip> dittofs.dittofs.ad" >> /etc/hosts`, then mount
+   `dittofs.dittofs.ad:/<share>`.
+4. **A machine credential at `/etc/krb5.keytab`.** NFSv4 establishes its client
+   lease with a *machine* principal, so `rpc.gssd` needs a host keytab — and the
+   stock `rpc-gssd.service` is **gated on `/etc/krb5.keytab` existing**
+   (`ConditionPathExists`), so without it the service silently never starts.
+   Create a machine account in AD and export its `host/` key:
+   ```bash
+   samba-tool computer create <client-shortname>
+   samba-tool domain exportkeytab /etc/krb5.keytab \
+       --principal=host/<client-shortname>@DITTOFS.AD
+   ```
+5. **A running `rpc.gssd`.** Start it cleanly (`systemctl restart rpc-gssd`, now
+   that the keytab exists). If `rpc.gssd` is not actually serving the upcall, the
+   client silently falls back to **AUTH_SYS `uid=0`**, which a root-squashing
+   export refuses — surfacing as the misleading `mount.nfs4: access denied by
+   server`. If you see that, check `pgrep -a rpc.gssd` and the daemon's `-vvv`
+   log for `do_downcall ... acceptor=nfs@<server>` (success).
+6. **`kinit` + mount:**
+   ```bash
+   kinit alice@DITTOFS.AD
+   mount -t nfs4 -o vers=4.0,sec=krb5,port=2049 dittofs.dittofs.ad:/<share> /mnt/nfs
+   ls -lan /mnt/nfs          # alice's files show uid 10001 / gid 10000
+   ```
+
+Server-side confirmation (`dfs` debug log): `NFSv4 using GSS identity uid=10001
+gid=10000 principal=alice realm=DITTOFS.AD`.
+
 ### NTLM fallback (SMB)
 
 When a client cannot use Kerberos, SMB falls back to NTLM. With
