@@ -340,10 +340,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 		cancel()
 
 		// Wait for the runtime to drain (snapshots -> StopAllAdapters -> flush
-		// -> close stores -> stop API). The drain runs these stages serially,
-		// each bounded by the configured shutdown timeout, but a wedged stage
-		// (e.g. a stuck store flush) could otherwise block the process
-		// indefinitely. Under Kubernetes that means the pod hangs until SIGKILL
+		// -> close stores -> stop API). The drain runs these stages serially
+		// and most are individually bounded by the configured shutdown timeout,
+		// but a wedged stage (e.g. a stuck store flush or an unbounded store
+		// close) could otherwise block the process indefinitely. Under
+		// Kubernetes that means the pod hangs until SIGKILL
 		// at the end of its terminationGracePeriod, dropping clients abruptly —
 		// exactly what #1313 is about. Cap the overall wait so the process
 		// always exits on its own first.

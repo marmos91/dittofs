@@ -70,7 +70,11 @@ func TestBaseAdapter_Stop_ClosesListener(t *testing.T) {
 	}
 	_ = c.Close()
 
-	if err := b.Stop(context.Background()); err != nil {
+	// Bound the call so a regression where Stop never returns fails fast at the
+	// deadline instead of hanging until the global test timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), b.Config.ShutdownTimeout)
+	defer cancel()
+	if err := b.Stop(ctx); err != nil {
 		t.Fatalf("Stop with no active connections should return nil, got %v", err)
 	}
 
@@ -103,8 +107,14 @@ func TestBaseAdapter_Stop_DrainsActiveConnection(t *testing.T) {
 		b.activeConns.Done()
 	}()
 
+	// Bound the call so a regression that never drains fails at the deadline
+	// rather than hanging until the global test timeout; the in-flight
+	// connection drains well within ShutdownTimeout, so the graceful path
+	// (done before ctx) still wins on the happy path.
+	ctx, cancel := context.WithTimeout(context.Background(), b.Config.ShutdownTimeout)
+	defer cancel()
 	start := time.Now()
-	if err := b.Stop(context.Background()); err != nil {
+	if err := b.Stop(ctx); err != nil {
 		t.Fatalf("graceful Stop should return nil once the connection drains, got %v", err)
 	}
 	elapsed := time.Since(start)
