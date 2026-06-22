@@ -37,6 +37,11 @@ func (h *Handler) handleRemoveXattr(ctx *types.CompoundContext, reader io.Reader
 	if err != nil {
 		return xattrErr(types.OP_REMOVEXATTR, types.NFS4ERR_BADXDR)
 	}
+	// rxa_name is a component4: reject invalid UTF-8 / NUL / '/' before
+	// canonicalization (matches LOOKUP/CREATE/REMOVE).
+	if status := types.ValidateUTF8Filename(name); status != types.NFS4_OK {
+		return xattrErr(types.OP_REMOVEXATTR, status)
+	}
 
 	if pseudofs.IsPseudoFSHandle(ctx.CurrentFH) {
 		return xattrErr(types.OP_REMOVEXATTR, types.NFS4ERR_ROFS)

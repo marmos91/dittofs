@@ -171,6 +171,14 @@ func TestHandleGetXattr(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid component4 name ('/') -> BADNAME", func(t *testing.T) {
+		h := xattrTestHandler(t, newFakeXattrBackend())
+		res := h.handleGetXattr(xattrCtx(realHandle), encGetXattrArgs("bad/name"))
+		if res.Status != types.NFS4ERR_BADNAME {
+			t.Fatalf("status = %d, want BADNAME", res.Status)
+		}
+	})
+
 	t.Run("pseudo-fs -> NOTSUPP", func(t *testing.T) {
 		h := xattrTestHandler(t, newFakeXattrBackend())
 		ctx := xattrCtx(h.PseudoFS.GetRootHandle())
@@ -465,7 +473,9 @@ func TestCanonicalizeXattrName(t *testing.T) {
 	}{
 		{"foo", "user.foo", true},
 		{"user.foo", "user.foo", true},
-		{"user.", "", false}, // bare prefix, no key -> invalid
+		{"user.", "", false},              // bare prefix, no key -> invalid
+		{"foo.bar", "user.foo.bar", true}, // dotted non-reserved name -> user.*
+		{"com.apple.x", "user.com.apple.x", true},
 		{"system.posix_acl_access", "", false},
 		{"trusted.x", "", false},
 		{"security.NTACL", "", false},

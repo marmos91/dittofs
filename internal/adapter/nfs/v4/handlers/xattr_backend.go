@@ -60,13 +60,15 @@ func xattrBackendForHandler(h *Handler) (XattrBackend, error) {
 const xattrUserPrefix = "user."
 
 // canonicalizeXattrName maps a wire xattr name to its store-canonical form
-// ("user.<name>"). It returns ok=false when the name is in an unsupported
-// namespace (a name containing a "." that is not "user."), which the caller
-// maps to NFS4ERR_NOXATTR.
+// ("user.<name>"). It returns ok=false (caller → NFS4ERR_NOXATTR) only for a
+// name in a reserved non-user namespace — one whose first dot-segment is
+// "system", "trusted", or "security". Any other bare name is placed in the
+// user namespace, INCLUDING dotted names like "foo.bar" (a valid user xattr,
+// e.g. "com.apple.metadata:…"), which become "user.foo.bar".
 //
 // The Linux client strips "user." so names usually arrive bare; a name that
-// already carries the "user." prefix (other clients, or a name literally
-// containing a dot) is accepted as-is.
+// already carries the "user." prefix is accepted as-is (the bare prefix
+// "user." with no key is rejected).
 func canonicalizeXattrName(name string) (canonical string, ok bool) {
 	if name == "" {
 		return "", false
