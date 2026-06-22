@@ -303,7 +303,7 @@ func TestHandleLock_Dispatched(t *testing.T) {
 	pfs.Rebuild([]string{"/export"})
 	h := NewHandler(nil, pfs)
 
-	if _, exists := h.opDispatchTable[types.OP_LOCK]; !exists {
+	if _, exists := h.v40DispatchTable[types.OP_LOCK]; !exists {
 		t.Fatal("OP_LOCK not registered in dispatch table")
 	}
 }
@@ -551,7 +551,7 @@ func TestHandleLockT_Dispatched(t *testing.T) {
 	pfs.Rebuild([]string{"/export"})
 	h := NewHandler(nil, pfs)
 
-	if _, exists := h.opDispatchTable[types.OP_LOCKT]; !exists {
+	if _, exists := h.v40DispatchTable[types.OP_LOCKT]; !exists {
 		t.Fatal("OP_LOCKT not registered in dispatch table")
 	}
 }
@@ -801,7 +801,7 @@ func TestHandleLockU_Dispatched(t *testing.T) {
 	pfs.Rebuild([]string{"/export"})
 	h := NewHandler(nil, pfs)
 
-	if _, exists := h.opDispatchTable[types.OP_LOCKU]; !exists {
+	if _, exists := h.v40DispatchTable[types.OP_LOCKU]; !exists {
 		t.Fatal("OP_LOCKU not registered in dispatch table")
 	}
 }

@@ -11,24 +11,31 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/state"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	v41handlers "github.com/marmos91/dittofs/internal/adapter/nfs/v4/v41/handlers"
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/nfs/identity"
 )
 
-// OpHandler is the type signature for individual NFSv4 operation handlers.
+// V40OpHandler is the type signature for individual NFSv4 operation handlers.
 // Each handler receives the mutable compound context and an io.Reader
 // positioned at the operation's arguments. It returns a CompoundResult
 // with the operation's status and XDR-encoded response data.
-type OpHandler func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult
+type V40OpHandler func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult
 
 // V41OpHandler is the type signature for NFSv4.1 operation handlers.
-// Unlike v4.0 OpHandler, it receives a V41RequestContext with session/slot info
+// Unlike v4.0 V40OpHandler, it receives a V41RequestContext with session/slot info
 // populated by SEQUENCE processing. For stub handlers, the context is nil.
 type V41OpHandler func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult
 
+// V42OpHandler is the type signature for NFSv4.2 operation handlers (RFC 8276
+// extended-attribute ops). v4.2 ops run inside the v4.1 session machinery
+// (SEQUENCE is processed by the COMPOUND loop before dispatch), but the xattr
+// ops themselves are session-state-agnostic, so — like V40OpHandler — the
+// signature omits the V41RequestContext. The distinct named type keeps the
+// v4.2 op set visibly separate from v4.0/v4.1.
+type V42OpHandler func(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult
+
 // Handler is the concrete implementation for NFSv4 protocol handlers.
 // It processes COMPOUND RPCs by dispatching operations through
-// the opDispatchTable (v4.0) and v41DispatchTable (v4.1).
+// the v40DispatchTable (v4.0) and v41DispatchTable (v4.1).
 type Handler struct {
 	// Registry provides access to all stores and shares.
 	Registry nfsRuntime
@@ -58,13 +65,20 @@ type Handler struct {
 	// If an operation is in this set, COMPOUND returns NFS4ERR_NOTSUPP for it.
 	blockedOps map[uint32]bool
 
-	// opDispatchTable maps v4.0 operation numbers to handler functions.
-	opDispatchTable map[uint32]OpHandler
+	// v40DispatchTable maps v4.0 operation numbers to handler functions.
+	v40DispatchTable map[uint32]V40OpHandler
 
 	// v41DispatchTable maps v4.1 operation numbers (40-58) to handler functions.
 	// v4.0 operations (3-39) are accessible from v4.1 compounds via fallback
-	// to opDispatchTable.
+	// to v40DispatchTable.
 	v41DispatchTable map[uint32]V41OpHandler
+
+	// v42DispatchTable maps v4.2 operation numbers (RFC 8276 xattr ops 72-75) to
+	// handler functions, kept SEPARATE from v41DispatchTable so the minor-version
+	// boundary is explicit: an op in this table is v4.2-only and is gated to
+	// minorversion 2 in dispatchOne. v4.0/v4.1 ops remain reachable from a v4.2
+	// COMPOUND via the v41/v40 tables (v4.2 is a superset).
+	v42DispatchTable map[uint32]V42OpHandler
 
 	// v41Deps holds shared dependencies for v4.1 operation handlers.
 	v41Deps *v41handlers.Deps
@@ -73,9 +87,16 @@ type Handler struct {
 	// Compounds with minorversion < minMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
 	minMinorVersion uint32
 
-	// maxMinorVersion is the maximum accepted NFSv4 minor version (default 1).
+	// maxMinorVersion is the maximum accepted NFSv4 minor version (default 2).
 	// Compounds with minorversion > maxMinorVersion get NFS4ERR_MINOR_VERS_MISMATCH.
+	// v4.2 support is limited to the RFC 8276 extended-attribute operations.
 	maxMinorVersion uint32
+
+	// xattrBackend resolves named (extended) attribute operations for the four
+	// RFC 8276 xattr handlers. It is satisfied structurally by *metadata.Service.
+	// Depending on this interface (rather than concrete Service methods) keeps
+	// PR2 decoupled from the unified xattr resolver landing in PR1 (#1285).
+	xattrBackend XattrBackend
 }
 
 // NewHandler creates a new NFSv4 handler with the given runtime, pseudo-fs,
@@ -96,9 +117,10 @@ func NewHandler(registry nfsRuntime, pfs *pseudofs.PseudoFS, stateManager ...*st
 		Registry:         registry,
 		PseudoFS:         pfs,
 		StateManager:     sm,
-		opDispatchTable:  make(map[uint32]OpHandler),
+		v40DispatchTable: make(map[uint32]V40OpHandler),
 		v41DispatchTable: make(map[uint32]V41OpHandler),
-		maxMinorVersion:  1, // default: accept v4.0 and v4.1
+		v42DispatchTable: make(map[uint32]V42OpHandler),
+		maxMinorVersion:  2, // default: accept v4.0, v4.1, and v4.2 (RFC 8276 xattr ops)
 	}
 
 	// Initialize v4.1 handler dependencies
@@ -107,198 +129,23 @@ func NewHandler(registry nfsRuntime, pfs *pseudofs.PseudoFS, stateManager ...*st
 	}
 	h.v41Deps = v41d
 
-	// Register all implemented operation handlers.
-	// Filehandle management
-	h.opDispatchTable[types.OP_PUTFH] = h.handlePutFH
-	h.opDispatchTable[types.OP_PUTROOTFH] = h.handlePutRootFH
-	h.opDispatchTable[types.OP_PUTPUBFH] = h.handlePutPubFH
-	h.opDispatchTable[types.OP_GETFH] = h.handleGetFH
-	h.opDispatchTable[types.OP_SAVEFH] = h.handleSaveFH
-	h.opDispatchTable[types.OP_RESTOREFH] = h.handleRestoreFH
-
-	// Pseudo-fs traversal and attributes
-	h.opDispatchTable[types.OP_LOOKUP] = h.handleLookup
-	h.opDispatchTable[types.OP_LOOKUPP] = h.handleLookupP
-	h.opDispatchTable[types.OP_GETATTR] = h.handleGetAttr
-	h.opDispatchTable[types.OP_READDIR] = h.handleReadDir
-	h.opDispatchTable[types.OP_ACCESS] = h.handleAccess
-
-	// Symlink operations
-	h.opDispatchTable[types.OP_READLINK] = h.handleReadLink
-
-	// Create/Remove operations
-	h.opDispatchTable[types.OP_CREATE] = h.handleCreate
-	h.opDispatchTable[types.OP_REMOVE] = h.handleRemove
-
-	// Link and rename operations
-	h.opDispatchTable[types.OP_LINK] = h.handleLink
-	h.opDispatchTable[types.OP_RENAME] = h.handleRename
-
-	// Attribute operations
-	h.opDispatchTable[types.OP_SETATTR] = h.handleSetAttr
-
-	// Protocol operations
-	h.opDispatchTable[types.OP_ILLEGAL] = h.handleIllegal
-
-	// Stateful I/O operations
-	h.opDispatchTable[types.OP_OPEN] = h.handleOpen
-	h.opDispatchTable[types.OP_OPEN_CONFIRM] = h.handleOpenConfirm
-	h.opDispatchTable[types.OP_CLOSE] = h.handleClose
-
-	// Data I/O operations
-	h.opDispatchTable[types.OP_READ] = h.handleRead
-	h.opDispatchTable[types.OP_WRITE] = h.handleWrite
-	h.opDispatchTable[types.OP_COMMIT] = h.handleCommit
-
-	// Conditional verification
-	h.opDispatchTable[types.OP_VERIFY] = h.handleVerify
-	h.opDispatchTable[types.OP_NVERIFY] = h.handleNVerify
-
-	// Security negotiation
-	h.opDispatchTable[types.OP_SECINFO] = h.handleSecInfo
-
-	// Client setup operations
-	h.opDispatchTable[types.OP_SETCLIENTID] = h.handleSetClientID
-	h.opDispatchTable[types.OP_SETCLIENTID_CONFIRM] = h.handleSetClientIDConfirm
-	h.opDispatchTable[types.OP_RENEW] = h.handleRenew
-
-	// Lock operations (, 10-02)
-	h.opDispatchTable[types.OP_LOCK] = h.handleLock
-	h.opDispatchTable[types.OP_LOCKT] = h.handleLockT
-	h.opDispatchTable[types.OP_LOCKU] = h.handleLockU
-
-	// Delegation operations (, 11-03)
-	h.opDispatchTable[types.OP_DELEGRETURN] = h.handleDelegReturn
-	h.opDispatchTable[types.OP_DELEGPURGE] = h.handleDelegPurge
-
-	// Stub operations (deferred to later phases)
-	h.opDispatchTable[types.OP_OPENATTR] = h.handleOpenAttr
-	h.opDispatchTable[types.OP_OPEN_DOWNGRADE] = h.handleOpenDowngrade
-	h.opDispatchTable[types.OP_RELEASE_LOCKOWNER] = h.handleReleaseLockOwner
-
-	// Grace period lifecycle :
-	// On server startup (if previous clients exist):
-	//   handler.StateManager.StartGracePeriod(previousClientIDs)
-	// On graceful shutdown:
-	//   snapshots := handler.StateManager.SaveClientState()
-	//   // serialize snapshots to disk
-	//   handler.StateManager.Shutdown()
-
-	// NFSv4.1 dispatch table (stub handlers for all 19 v4.1 operations)
-	//
-	// Each stub decodes its operation's XDR args (to prevent stream desync)
-	// and returns NFS4ERR_NOTSUPP.
-
-	// BACKCHANNEL_CTL: update callback program and security params (RFC 8881 Section 18.33)
-	h.v41DispatchTable[types.OP_BACKCHANNEL_CTL] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleBackchannelCtl(h.v41Deps, ctx, v41ctx, reader)
-	}
-	// BIND_CONN_TO_SESSION: connection binding (RFC 8881 Section 18.34)
-	h.v41DispatchTable[types.OP_BIND_CONN_TO_SESSION] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleBindConnToSession(h.v41Deps, ctx, v41ctx, reader)
-	}
-	// EXCHANGE_ID: client identity registration (RFC 8881 Section 18.35)
-	h.v41DispatchTable[types.OP_EXCHANGE_ID] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleExchangeID(h.v41Deps, ctx, v41ctx, reader)
-	}
-	// CREATE_SESSION: session lifecycle (RFC 8881 Section 18.36)
-	h.v41DispatchTable[types.OP_CREATE_SESSION] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleCreateSession(h.v41Deps, ctx, v41ctx, reader)
-	}
-	// DESTROY_SESSION: session teardown (RFC 8881 Section 18.37)
-	h.v41DispatchTable[types.OP_DESTROY_SESSION] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleDestroySession(h.v41Deps, ctx, v41ctx, reader)
-	}
-	h.v41DispatchTable[types.OP_FREE_STATEID] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleFreeStateid(h.v41Deps, ctx, v41ctx, reader)
-	}
-	h.v41DispatchTable[types.OP_GET_DIR_DELEGATION] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleGetDirDelegation(h.v41Deps, ctx, v41ctx, reader)
-	}
-	h.v41DispatchTable[types.OP_GETDEVICEINFO] = v41StubHandler(types.OP_GETDEVICEINFO, func(r io.Reader) error {
-		var args types.GetDeviceInfoArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_GETDEVICELIST] = v41StubHandler(types.OP_GETDEVICELIST, func(r io.Reader) error {
-		var args types.GetDeviceListArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_LAYOUTCOMMIT] = v41StubHandler(types.OP_LAYOUTCOMMIT, func(r io.Reader) error {
-		var args types.LayoutCommitArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_LAYOUTGET] = v41StubHandler(types.OP_LAYOUTGET, func(r io.Reader) error {
-		var args types.LayoutGetArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_LAYOUTRETURN] = v41StubHandler(types.OP_LAYOUTRETURN, func(r io.Reader) error {
-		var args types.LayoutReturnArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_SECINFO_NO_NAME] = v41StubHandler(types.OP_SECINFO_NO_NAME, func(r io.Reader) error {
-		var args types.SecinfoNoNameArgs
-		return args.Decode(r)
-	})
-	// SEQUENCE at position > 0 returns NFS4ERR_SEQUENCE_POS per RFC 8881.
-	// SEQUENCE at position 0 is handled specially in dispatchV41 before the op loop.
-	h.v41DispatchTable[types.OP_SEQUENCE] = func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		var args types.SequenceArgs
-		if err := args.Decode(reader); err != nil {
-			return &types.CompoundResult{
-				Status: types.NFS4ERR_BADXDR,
-				OpCode: types.OP_SEQUENCE,
-				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-			}
-		}
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_SEQUENCE_POS,
-			OpCode: types.OP_SEQUENCE,
-			Data:   encodeStatusOnly(types.NFS4ERR_SEQUENCE_POS),
-		}
-	}
-	h.v41DispatchTable[types.OP_SET_SSV] = v41StubHandler(types.OP_SET_SSV, func(r io.Reader) error {
-		var args types.SetSsvArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_TEST_STATEID] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleTestStateid(h.v41Deps, ctx, v41ctx, reader)
-	}
-	h.v41DispatchTable[types.OP_WANT_DELEGATION] = v41StubHandler(types.OP_WANT_DELEGATION, func(r io.Reader) error {
-		var args types.WantDelegationArgs
-		return args.Decode(r)
-	})
-	h.v41DispatchTable[types.OP_DESTROY_CLIENTID] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleDestroyClientID(h.v41Deps, ctx, v41ctx, reader)
-	}
-	h.v41DispatchTable[types.OP_RECLAIM_COMPLETE] = func(ctx *types.CompoundContext, v41ctx *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		return v41handlers.HandleReclaimComplete(h.v41Deps, ctx, v41ctx, reader)
-	}
+	// Register operation handlers grouped by NFS minor version. Each
+	// registerV4xOps method lives in its own register_v4x.go file so the
+	// version boundary is explicit: RFC 7530 (v4.0), RFC 8881 (v4.1),
+	// RFC 8276 xattr ops (v4.2).
+	h.registerV40Ops()
+	h.registerV41Ops()
+	h.registerV42Ops()
 
 	return h
 }
 
-// v41StubHandler creates a v4.1 stub handler that decodes args and returns NOTSUPP.
-// The decoder parameter consumes the operation's XDR args from the reader to
-// prevent stream desync (the CRITICAL invariant for COMPOUND processing).
-func v41StubHandler(opCode uint32, decoder func(io.Reader) error) V41OpHandler {
-	return func(ctx *types.CompoundContext, _ *types.V41RequestContext, reader io.Reader) *types.CompoundResult {
-		if err := decoder(reader); err != nil {
-			logger.Debug("NFSv4.1 stub decode error",
-				"op", types.OpName(opCode), "error", err, "client", ctx.ClientAddr)
-			return &types.CompoundResult{
-				Status: types.NFS4ERR_BADXDR,
-				OpCode: opCode,
-				Data:   encodeStatusOnly(types.NFS4ERR_BADXDR),
-			}
-		}
-		logger.Debug("NFSv4.1 operation not yet implemented",
-			"op", types.OpName(opCode), "client", ctx.ClientAddr)
-		return &types.CompoundResult{
-			Status: types.NFS4ERR_NOTSUPP,
-			OpCode: opCode,
-			Data:   encodeStatusOnly(types.NFS4ERR_NOTSUPP),
-		}
-	}
+// SetXattrBackend overrides the extended-attribute backend used by the RFC 8276
+// xattr handlers. When unset, the handlers resolve the backend from the
+// registry's metadata service (see xattrBackendForHandler). Primarily used by
+// tests to inject a fake backend.
+func (h *Handler) SetXattrBackend(b XattrBackend) {
+	h.xattrBackend = b
 }
 
 // handleIllegal handles the OP_ILLEGAL operation (RFC 7530 Section 16.14).
@@ -362,7 +209,7 @@ func (h *Handler) IsOperationBlocked(opNum uint32) bool {
 
 // SetMinorVersionRange sets the accepted minor version range for COMPOUND requests.
 // Compounds with minorversion outside [min, max] get NFS4ERR_MINOR_VERS_MISMATCH.
-// Default: min=0, max=1 (both v4.0 and v4.1 enabled).
+// Default: min=0, max=2 (v4.0, v4.1, and v4.2 xattr ops enabled).
 func (h *Handler) SetMinorVersionRange(min, max uint32) {
 	h.minMinorVersion = min
 	h.maxMinorVersion = max
