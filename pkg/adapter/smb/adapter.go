@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	authkerberos "github.com/marmos91/dittofs/internal/auth/kerberos"
+	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
@@ -138,7 +139,7 @@ func New(config Config) *Adapter {
 		"max_session_credits", creditConfig.MaxSessionCredits)
 
 	// Create handler with session manager
-	handler := handlers.NewHandlerWithSessionManager(sessionManager)
+	handler := handlers.NewHandlerWithSessionManager(sessionManager, nil)
 
 	// Apply signing configuration to handler
 	handler.SigningConfig = config.Signing.ToSigningConfig()
@@ -543,6 +544,18 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal(),
 		"stripRealm", s.handler.IdentityConfig.StripRealm)
+}
+
+// SetNetlogonAuthenticator injects the NETLOGON authenticator into the SMB handler.
+// When set, NTLM authentication is validated against the domain controller via the
+// NETLOGON secure channel rather than local credential verification. Must be called
+// before Serve(). A nil value is a no-op (local-only NTLM remains the fallback).
+func (s *Adapter) SetNetlogonAuthenticator(nlAuth netlogon.NetlogonAuthenticator) {
+	if nlAuth == nil {
+		return
+	}
+	s.handler.NetlogonAuth = nlAuth
+	logger.Debug("SMB adapter: NETLOGON authenticator configured")
 }
 
 // wireIdentityResolver creates and wires a centralized identity resolver for

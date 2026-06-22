@@ -501,6 +501,13 @@ func kerberosConfigToDTO(c config.KerberosConfig) handlers.KerberosConfigDTO {
 		DNSDomain:        c.DNSDomain,
 		Krb5Conf:         c.Krb5Conf,
 		MaxContexts:      c.MaxContexts,
+		MachineAccount: handlers.KerberosMachineAccountDTO{
+			Enabled:     c.MachineAccount.Enabled,
+			AccountName: c.MachineAccount.AccountName,
+			Secret:      c.MachineAccount.Secret,
+			KeytabPath:  c.MachineAccount.KeytabPath,
+			DCAddresses: c.MachineAccount.DCAddresses,
+		},
 	}
 	if c.MaxClockSkew > 0 {
 		dto.MaxClockSkew = c.MaxClockSkew.String()
@@ -521,6 +528,13 @@ func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
 		DNSDomain:        dto.DNSDomain,
 		Krb5Conf:         dto.Krb5Conf,
 		MaxContexts:      dto.MaxContexts,
+		MachineAccount: config.MachineAccountConfig{
+			Enabled:     dto.MachineAccount.Enabled,
+			AccountName: dto.MachineAccount.AccountName,
+			Secret:      dto.MachineAccount.Secret,
+			KeytabPath:  dto.MachineAccount.KeytabPath,
+			DCAddresses: dto.MachineAccount.DCAddresses,
+		},
 	}
 	if d, err := time.ParseDuration(dto.MaxClockSkew); err == nil {
 		c.MaxClockSkew = d
@@ -632,6 +646,12 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 			return nil, fmt.Errorf("failed to initialize SMB Kerberos provider: %w", err)
 		}
 		smbAdapter.SetKerberosProvider(provider)
+
+		// Wire NETLOGON authenticator for domain-controller NTLM pass-through.
+		// When MachineAccount is not enabled this returns nil and the adapter
+		// falls back to local-only NTLM (no domain verification).
+		nlAuth := buildNetlogonAuthenticator(*kerberosConfig)
+		smbAdapter.SetNetlogonAuthenticator(nlAuth)
 	}
 
 	return smbAdapter, nil
