@@ -1788,6 +1788,7 @@ metrics:
     cert_file: ""
     key_file: ""
     client_ca: ""          # set for mTLS
+    min_version: "1.2"     # minimum TLS version: "1.2" (default) or "1.3"
 ```
 
 | Option | Default | Description |
@@ -1800,6 +1801,7 @@ metrics:
 | `token_file` | | File whose trimmed contents are the expected Bearer token. Required when `auth: token`. |
 | `tls.cert_file` / `tls.key_file` | | Serve the endpoint over HTTPS. |
 | `tls.client_ca` | | Require + verify client certificates (mTLS). |
+| `tls.min_version` | `1.2` | Minimum negotiated TLS version: `1.2` or `1.3`. |
 
 > **Security**: the endpoint binds `127.0.0.1` by default so it is not reachable
 > off-host without an explicit `host` change. In production prefer one of:
@@ -1822,6 +1824,7 @@ Every key is overridable with the `DITTOFS_METRICS_*` prefix:
 | `DITTOFS_METRICS_TLS_CERT_FILE` | `metrics.tls.cert_file` |
 | `DITTOFS_METRICS_TLS_KEY_FILE` | `metrics.tls.key_file` |
 | `DITTOFS_METRICS_TLS_CLIENT_CA` | `metrics.tls.client_ca` |
+| `DITTOFS_METRICS_TLS_MIN_VERSION` | `metrics.tls.min_version` |
 
 ```bash
 export DITTOFS_METRICS_ENABLED=true
@@ -1838,6 +1841,11 @@ at the endpoint. For production, the standard path is the
 (prometheus-operator) with long-term storage via Thanos or Mimir. DittoFS ships
 **no** dashboards or compose artifacts — the guidance below is enough to wire it
 into any standard stack.
+
+> **DittoFS Pro** bundles a turnkey monitoring stack on top of this endpoint: a
+> `docker compose --profile monitoring` profile that stands up Prometheus +
+> Grafana with a pre-provisioned DittoFS dashboard, plus an in-dashboard Metrics
+> section. The endpoint and config documented here are the contract it builds on.
 
 ### Scraping (standalone Prometheus)
 
