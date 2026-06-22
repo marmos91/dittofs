@@ -252,15 +252,17 @@ func buildKerberosConfig(ds *dittoiov1alpha1.DittoServer) *KerberosConfig {
 		DNSDomain:        k.DNSDomain,
 	}
 
-	// keytab_path points at the mounted keytab Secret when one is referenced.
-	if k.KeytabSecretRef != nil {
+	// keytab_path points at the mounted keytab Secret when a usable one is
+	// referenced (the helper treats an empty selector as absent, matching the
+	// controller's mount gating so the rendered path never dangles).
+	if ds.KerberosKeytabSecret() != nil {
 		cfg.KeytabPath = dittoiov1alpha1.KerberosKeytabFilePath()
 	}
 
 	// A mounted krb5.conf Secret wins; otherwise use the explicit path (the
 	// server applies its own /etc/krb5.conf default when this stays empty).
 	switch {
-	case k.Krb5ConfSecretRef != nil:
+	case ds.KerberosKrb5ConfSecret() != nil:
 		cfg.Krb5Conf = dittoiov1alpha1.KerberosKrb5ConfFilePath()
 	case k.Krb5Conf != "":
 		cfg.Krb5Conf = k.Krb5Conf

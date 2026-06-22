@@ -129,6 +129,32 @@ func TestGenerateDittoFSConfig_Kerberos(t *testing.T) {
 		}
 	})
 
+	t.Run("empty keytab selector is treated as absent (no dangling keytab_path)", func(t *testing.T) {
+		ds := &dittoiov1alpha1.DittoServer{
+			Spec: dittoiov1alpha1.DittoServerSpec{
+				Identity: &dittoiov1alpha1.IdentityConfig{
+					Kerberos: &dittoiov1alpha1.KerberosConfig{
+						Enabled:          true,
+						ServicePrincipal: "nfs/s@E.COM",
+						// Empty selector ({}) — no Name. Must not set keytab_path.
+						KeytabSecretRef:   &corev1.SecretKeySelector{},
+						Krb5ConfSecretRef: &corev1.SecretKeySelector{},
+					},
+				},
+			},
+		}
+		k := buildKerberosConfig(ds)
+		if k == nil {
+			t.Fatal("expected kerberos block (enabled)")
+		}
+		if k.KeytabPath != "" {
+			t.Errorf("keytab_path = %q, want empty for selector without a Name", k.KeytabPath)
+		}
+		if k.Krb5Conf != "" {
+			t.Errorf("krb5_conf = %q, want empty for selector without a Name", k.Krb5Conf)
+		}
+	})
+
 	t.Run("krb5.conf secret ref wins over explicit path", func(t *testing.T) {
 		ds := &dittoiov1alpha1.DittoServer{
 			Spec: dittoiov1alpha1.DittoServerSpec{

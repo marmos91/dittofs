@@ -1158,6 +1158,10 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							Items: []corev1.KeyToPath{
 								{Key: ref.Key, Path: dittoiov1alpha1.KerberosKeytabFileName},
 							},
+							// The keytab is a high-value credential; project it
+							// owner/group read-only (0440) instead of the 0644
+							// default so it is not world-readable in the pod.
+							DefaultMode: ptr.To(int32(0o440)),
 						},
 					},
 				})
@@ -1689,10 +1693,12 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 			Namespace: dittoServer.Namespace,
 			Name:      ref.Name,
 		}, secret); err != nil {
-			return nil, fmt.Errorf("failed to get kerberos keytab secret: %w", err)
+			return nil, fmt.Errorf("failed to get kerberos keytab secret %q (key %q): %w", ref.Name, ref.Key, err)
 		}
 		if data, ok := secret.Data[ref.Key]; ok {
-			secrets["kerberos-keytab:"+ref.Key] = data
+			// Include the Secret name so the hash input is self-describing and
+			// cannot collide with another reference that happens to share a key.
+			secrets["kerberos-keytab:"+ref.Name+":"+ref.Key] = data
 		}
 	}
 	if ref := dittoServer.KerberosKrb5ConfSecret(); ref != nil {
@@ -1701,10 +1707,10 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 			Namespace: dittoServer.Namespace,
 			Name:      ref.Name,
 		}, secret); err != nil {
-			return nil, fmt.Errorf("failed to get kerberos krb5.conf secret: %w", err)
+			return nil, fmt.Errorf("failed to get kerberos krb5.conf secret %q (key %q): %w", ref.Name, ref.Key, err)
 		}
 		if data, ok := secret.Data[ref.Key]; ok {
-			secrets["kerberos-krb5:"+ref.Key] = data
+			secrets["kerberos-krb5:"+ref.Name+":"+ref.Key] = data
 		}
 	}
 

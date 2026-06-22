@@ -175,8 +175,11 @@ func TestGenerateDittoFSConfig_NoDeadKeys(t *testing.T) {
 						Realm:            "EXAMPLE.COM",
 						NetBIOSDomain:    "EXAMPLE",
 						DNSDomain:        "example.com",
-						KeytabSecretRef:  &corev1.SecretKeySelector{},
-						Krb5Conf:         "/etc/krb5.conf",
+						KeytabSecretRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "kt"},
+							Key:                  "dittofs.keytab",
+						},
+						Krb5Conf: "/etc/krb5.conf",
 					},
 				},
 			},

@@ -272,7 +272,7 @@ Configures JWT authentication and admin user.
 | `identity.admin.username` | string | `admin` | No | Admin username |
 | `identity.admin.passwordSecretRef` | SecretKeySelector | - | No | Reference to Secret containing admin password hash (bcrypt). If not set, a random password is generated and logged at startup. |
 
-**Kerberos Configuration (`identity.kerberos`):**
+**Kerberos Configuration (`spec.identity.kerberos`):**
 
 Configures the Kerberos/Active Directory authentication provider for NFSv4 (RPCSEC_GSS) and SMB. The keytab is mounted from a Secret (never written to the ConfigMap); rotating it rolls the pod.
 
@@ -304,7 +304,7 @@ identity:
       key: password
 ```
 
-### Logging Configuration (`logging`)
+### Logging Configuration (`spec.logging`)
 
 Configures the server log level, format, and output. A change here is config-only: the operator re-renders the ConfigMap and rolls the pod so the new value takes effect (dfs reads its log config once at startup). All fields are optional.
 

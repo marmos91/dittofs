@@ -201,21 +201,33 @@ func (ds *DittoServer) KerberosEnabled() bool {
 }
 
 // KerberosKeytabSecret returns the keytab Secret selector when Kerberos is
-// enabled and a keytab is referenced, otherwise nil.
+// enabled and a usable keytab is referenced, otherwise nil. A selector is usable
+// only when its Name is non-empty — an empty selector ({} or missing name) would
+// otherwise produce a volume with SecretName:"" (an invalid pod spec), so it is
+// treated as "not referenced" by every consumer (mount, render, hash).
 func (ds *DittoServer) KerberosKeytabSecret() *corev1.SecretKeySelector {
 	if !ds.KerberosEnabled() {
 		return nil
 	}
-	return ds.Spec.Identity.Kerberos.KeytabSecretRef
+	ref := ds.Spec.Identity.Kerberos.KeytabSecretRef
+	if ref == nil || ref.Name == "" {
+		return nil
+	}
+	return ref
 }
 
 // KerberosKrb5ConfSecret returns the krb5.conf Secret selector when Kerberos is
-// enabled and one is referenced, otherwise nil.
+// enabled and a usable one is referenced (non-empty Name), otherwise nil. See
+// KerberosKeytabSecret for why an empty selector is treated as absent.
 func (ds *DittoServer) KerberosKrb5ConfSecret() *corev1.SecretKeySelector {
 	if !ds.KerberosEnabled() {
 		return nil
 	}
-	return ds.Spec.Identity.Kerberos.Krb5ConfSecretRef
+	ref := ds.Spec.Identity.Kerberos.Krb5ConfSecretRef
+	if ref == nil || ref.Name == "" {
+		return nil
+	}
+	return ref
 }
 
 // KerberosKeytabFilePath returns the in-container keytab path the rendered
