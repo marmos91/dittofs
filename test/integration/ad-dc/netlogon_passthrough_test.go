@@ -27,7 +27,8 @@ const (
 // In CI (Linux) this IP is directly reachable from the host, which is required
 // for NETLOGON: the endpoint mapper (port 135) and dynamic RPC ports must all
 // be reachable without NAT. On macOS/Docker Desktop container IPs are not
-// host-reachable, so the test skips if the container IP is inaccessible.
+// host-reachable, so the NetworkLogon call times out and the test FAILS there
+// (it does not skip) — run this only in CI (Linux) or inside a Linux VM.
 func getContainerIP(t *testing.T) string {
 	t.Helper()
 	out, err := exec.Command("docker", "inspect",
