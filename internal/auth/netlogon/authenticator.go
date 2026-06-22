@@ -74,7 +74,9 @@ func (a *Authenticator) Close(ctx context.Context) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.chan_ != nil {
+		a.chan_.mu.Lock()
 		a.chan_.close(ctx)
+		a.chan_.mu.Unlock()
 		a.chan_ = nil
 	}
 }

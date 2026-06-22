@@ -3,6 +3,7 @@ package netlogon
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/oiweiwei/go-msrpc/dcerpc"
@@ -17,9 +18,10 @@ import (
 // SecureChannel wraps a go-msrpc schannel client with a mutex-guarded cached
 // connection.  It is created lazily on the first NetworkLogon call.
 type SecureChannel struct {
-	mu  sync.Mutex
-	cc  dcerpc.Conn
-	cli logon.LogonSecureChannelClient
+	mu     sync.Mutex
+	cc     dcerpc.Conn
+	cli    logon.LogonSecureChannelClient
+	dcName string // UNC DC computer name (e.g. \\DC01); populated by connect() via GetDCName
 }
 
 // connect establishes the NETLOGON schannel connection to the given DC.
@@ -52,6 +54,22 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 
 	sc.cc = cc
 	sc.cli = cli
+
+	// Discover the DC's computer name via GetDCName so samLogon can use the
+	// correct UNC LogonServer (MS-NRPC requires the DC name, not the domain name).
+	// Failure is non-fatal: we fall back to the domain-name form.
+	dcResp, err := cli.GetDCName(gctx, &logon.GetDCNameRequest{
+		ComputerName: mc.Workstation,
+		DomainName:   mc.DomainName,
+	})
+	if err != nil || dcResp == nil || dcResp.DomainControllerInfo == nil || dcResp.DomainControllerInfo.DomainControllerName == "" {
+		slog.Default().Debug("netlogon: GetDCName failed or returned empty name, falling back to domain name", "error", err)
+		sc.dcName = "\\\\" + mc.DomainName
+	} else {
+		// DomainControllerName is already UNC-prefixed (e.g. \\DC01) per MS-NRPC.
+		sc.dcName = dcResp.DomainControllerInfo.DomainControllerName
+	}
+
 	return nil
 }
 
@@ -62,19 +80,27 @@ func (sc *SecureChannel) close(ctx context.Context) {
 		sc.cc = nil
 	}
 	sc.cli = nil
+	sc.dcName = ""
 }
 
 // samLogon performs a NetrLogonSamLogon RPC call using the established channel.
 func (sc *SecureChannel) samLogon(ctx context.Context, mc MachineCredential, req NetworkLogonRequest) (*LogonResult, error) {
 	sc.mu.Lock()
 	cli := sc.cli
+	dcName := sc.dcName
 	sc.mu.Unlock()
 
 	if cli == nil {
 		return nil, fmt.Errorf("netlogon: channel not connected")
 	}
 
-	logonServer := "\\\\" + mc.DomainName
+	// Use the DC's computer name as LogonServer per MS-NRPC.
+	// dcName is already UNC-prefixed (\\DC01) and set in connect(); fall back
+	// to domain name if it was not discovered.
+	logonServer := dcName
+	if logonServer == "" {
+		logonServer = "\\\\" + mc.DomainName
+	}
 
 	out, err := cli.SAMLogon(ctx, &logon.SAMLogonRequest{
 		LogonServer:  logonServer,
