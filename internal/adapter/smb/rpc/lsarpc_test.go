@@ -156,6 +156,42 @@ func TestLSARPC_OpenPolicy2(t *testing.T) {
 	}
 }
 
+// TestLSARPC_OpenPolicy verifies the legacy LsarOpenPolicy (opnum 6) returns a
+// success policy handle, not a fault. smbcacls and older clients call opnum 6
+// before LookupSids; faulting it makes them fall back to raw SIDs (#1291).
+func TestLSARPC_OpenPolicy(t *testing.T) {
+	h := newTestLSAHandler()
+
+	// LsarOpenPolicy stub data (minimal - handler ignores it).
+	stubData := make([]byte, 48)
+	reqData := buildTestRequest(2, OpLsarOpenPolicy, stubData)
+
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+
+	response := h.HandleRequest(req)
+
+	hdr, err := ParseHeader(response)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if hdr.PacketType != PDUResponse {
+		t.Fatalf("LsarOpenPolicy (opnum 6) returned PDU type %d, want %d (Response) — clients fall back to raw SIDs on a fault", hdr.PacketType, PDUResponse)
+	}
+
+	// Status is at offset 20 within stub data (after 20-byte policy handle).
+	if len(response) < 24+24 {
+		t.Fatalf("Response stub data too short for OpenPolicy response")
+	}
+	stubStart := 24
+	status := binary.LittleEndian.Uint32(response[stubStart+20 : stubStart+24])
+	if status != statusSuccess {
+		t.Errorf("LsarOpenPolicy status = 0x%08x, want 0x%08x (success)", status, statusSuccess)
+	}
+}
+
 func TestLSARPC_Close(t *testing.T) {
 	h := newTestLSAHandler()
 

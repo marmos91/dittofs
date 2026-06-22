@@ -510,4 +510,11 @@ func TestSynthesizeWindowsDefault(t *testing.T) {
 			t.Errorf("ACE[%d].Flag = 0x%x carries inheritance bits; Windows default is flat", i, ace.Flag)
 		}
 	}
+
+	// The default is used only when no inheritable ACEs applied, so the DACL is
+	// non-inherited and must be marked protected — this drives SE_DACL_PROTECTED
+	// (0x1000) on the wire, matching standalone Samba (control 0x9004). See #1291.
+	if !acl.Protected {
+		t.Error("Protected = false, want true (synthesized default DACL is non-inherited)")
+	}
 }

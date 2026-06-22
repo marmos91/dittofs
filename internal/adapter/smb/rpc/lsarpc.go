@@ -35,9 +35,17 @@ var LSAInterfaceUUID = [16]byte{
 // LSA Operation Numbers [MS-LSAT/MS-LSAD]
 const (
 	OpLsarClose       uint16 = 0  // LsarClose
+	OpLsarOpenPolicy  uint16 = 6  // LsarOpenPolicy (legacy; smbcacls/older clients use this)
 	OpLsarOpenPolicy2 uint16 = 44 // LsarOpenPolicy2
 	OpLsarLookupSids2 uint16 = 57 // LsarLookupSids2
 	OpLsarLookupSids3 uint16 = 76 // LsarLookupSids3
+)
+
+// DCE/RPC reject status codes [C706 §14.6 / MS-RPCE]. Returned in a FAULT PDU.
+const (
+	// ncaSOpRngError is nca_s_op_rng_error — the requested operation number is
+	// outside the range supported by the interface (unimplemented opnum).
+	ncaSOpRngError uint32 = 0x1C010002
 )
 
 // SID Name Types [MS-LSAT Section 2.2.13]
@@ -118,14 +126,14 @@ func (h *LSARPCHandler) HandleRequest(req *Request) []byte {
 	switch req.OpNum {
 	case OpLsarClose:
 		return h.handleClose(req)
-	case OpLsarOpenPolicy2:
-		return h.handleOpenPolicy2(req)
+	case OpLsarOpenPolicy, OpLsarOpenPolicy2:
+		return h.handleOpenPolicy(req)
 	case OpLsarLookupSids2:
 		return h.handleLookupSids(req)
 	case OpLsarLookupSids3:
 		return h.handleLookupSids(req) // Same logic, no policy handle needed
 	default:
-		return h.buildFault(req.Header.CallID, 0x1C010003) // nca_op_rng_error
+		return h.buildFault(req.Header.CallID, ncaSOpRngError)
 	}
 }
 
@@ -148,9 +156,12 @@ func (h *LSARPCHandler) handleClose(req *Request) []byte {
 	return resp.Encode(req.Header.CallID)
 }
 
-// handleOpenPolicy2 handles LsarOpenPolicy2 (opnum 44).
-// Returns a stub policy handle (required before LookupSids2).
-func (h *LSARPCHandler) handleOpenPolicy2(req *Request) []byte {
+// handleOpenPolicy handles both LsarOpenPolicy (opnum 6) and LsarOpenPolicy2
+// (opnum 44). Both return a policy handle required before LookupSids; the
+// request stubs differ only in the system-name argument, which we ignore.
+// smbcacls and older clients call the legacy opnum 6 first — without this,
+// they receive a fault and fall back to displaying raw SIDs.
+func (h *LSARPCHandler) handleOpenPolicy(req *Request) []byte {
 	// Response: policy handle (20 bytes) + status (4 bytes)
 	stubData := make([]byte, 24)
 	// Set a non-zero policy handle (fixed value)

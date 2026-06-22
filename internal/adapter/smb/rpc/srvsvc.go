@@ -118,7 +118,7 @@ func (h *SRVSVCHandler) HandleRequest(req *Request) []byte {
 		return h.handleNetrShareEnum(req)
 	default:
 		// Return fault for unsupported operations
-		return h.buildFault(req.Header.CallID, 0x1C010003) // nca_op_rng_error
+		return h.buildFault(req.Header.CallID, ncaSOpRngError)
 	}
 }
 
