@@ -87,7 +87,7 @@ type KerberosConfigDTO struct {
 	MaxClockSkew     string                    `json:"max_clock_skew"`
 	ContextTTL       string                    `json:"context_ttl"`
 	MaxContexts      int                       `json:"max_contexts"`
-	MachineAccount   KerberosMachineAccountDTO `json:"machine_account,omitempty"`
+	MachineAccount   KerberosMachineAccountDTO `json:"machine_account"`
 }
 
 type identityProviderSummary struct {
