@@ -339,12 +339,28 @@ func runStart(cmd *cobra.Command, args []string) error {
 		logger.Info("Shutdown signal received, initiating graceful shutdown")
 		cancel()
 
-		// Wait for server to shut down gracefully
-		if err := <-serverDone; err != nil {
-			logger.Error("Server shutdown error", "error", err)
-			return err
+		// Wait for the runtime to drain (StopAllAdapters -> flush -> close
+		// stores -> stop API). The drain is itself bounded by the configured
+		// shutdown timeout at each stage, but a wedged stage (e.g. a stuck
+		// store flush) could otherwise block the process indefinitely. Under
+		// Kubernetes that means the pod hangs until SIGKILL at the end of its
+		// terminationGracePeriod, dropping clients abruptly — exactly what
+		// #1313 is about. Cap the overall wait so the process always exits on
+		// its own within the grace window; the extra margin over a single
+		// shutdownTimeout accommodates the sequential drain stages.
+		shutdownDeadline := 2*cfg.ShutdownTimeout + 10*time.Second
+		select {
+		case err := <-serverDone:
+			if err != nil {
+				logger.Error("Server shutdown error", "error", err)
+				return err
+			}
+			logger.Info("Server stopped gracefully")
+		case <-time.After(shutdownDeadline):
+			logger.Error("Graceful shutdown exceeded deadline; forcing exit",
+				"deadline", shutdownDeadline)
+			return fmt.Errorf("graceful shutdown timed out after %s", shutdownDeadline)
 		}
-		logger.Info("Server stopped gracefully")
 
 	case err := <-serverDone:
 		signal.Stop(sigChan)
