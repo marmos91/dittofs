@@ -74,8 +74,11 @@ func TestBaseAdapter_Stop_ClosesListener(t *testing.T) {
 		t.Fatalf("Stop with no active connections should return nil, got %v", err)
 	}
 
-	// After Stop the listener is closed: a fresh accept must fail.
-	if _, err := ln.Accept(); err == nil {
+	// After Stop the listener is closed: a fresh dial must fail. Probe with
+	// DialTimeout rather than ln.Accept() so a regression where Stop leaves the
+	// listener open surfaces as a fast failure instead of a hung Accept.
+	if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+		_ = c.Close()
 		t.Fatal("listener still accepting after Stop; Stop did not close it")
 	}
 }
