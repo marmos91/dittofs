@@ -182,6 +182,61 @@ jobs:
           path: test/smb-conformance/results/smbtorture-*/
           retention-days: 30
 
+  smbtorture-baseline-refresh:
+    name: smbtorture baseline refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Nightly only. Regenerates test/smb-conformance/smbtorture/baseline-results.md
+    # from a clean develop memory-profile run so the documentation snapshot can't
+    # drift (it went 54->489 passed before #1300). NOT a CI gate — grading is done
+    # against KNOWN_FAILURES.md by parse-results.sh; this is pure doc honesty.
+    # Operates on develop explicitly because scheduled runs fire on the default
+    # branch (main), not develop.
+    if: github.event_name == 'schedule'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run smbtorture (memory profile)
+        run: |
+          cd test/smb-conformance/smbtorture
+          # Generation must not hinge on the run's exit status (which is the
+          # known-failure count); we want the parsed output regardless.
+          ./run.sh --profile memory --verbose || true
+
+      - name: Regenerate baseline-results.md
+        run: |
+          cd test/smb-conformance/smbtorture
+          RESULTS_DIR=$(ls -td ../results/smbtorture-*/ 2>/dev/null | head -1 || true)
+          if [ -z "$RESULTS_DIR" ] || [ ! -f "$RESULTS_DIR/smbtorture-output.txt" ]; then
+            echo "No smbtorture output produced; skipping baseline refresh."
+            exit 0
+          fi
+          BASELINE_PROFILE=memory \
+          BASELINE_COMMIT="$(git rev-parse --short HEAD)" \
+          BASELINE_PLATFORM="$(uname -sm) (GitHub Actions runner)" \
+            ./parse-results.sh --emit-baseline \
+              "$RESULTS_DIR/smbtorture-output.txt" KNOWN_FAILURES.md > baseline-results.md
+
+      - name: Commit and push if changed
+        run: |
+          BASELINE=test/smb-conformance/smbtorture/baseline-results.md
+          if git diff --quiet -- "$BASELINE"; then
+            echo "baseline-results.md unchanged; nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$BASELINE"
+          git commit -m "docs(smb-conformance): refresh smbtorture baseline-results.md [skip ci]"
+          git push origin HEAD:develop
+
   smbtorture-kerberos:
     name: smbtorture Kerberos
     runs-on: ubuntu-latest

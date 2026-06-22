@@ -14,6 +14,13 @@
 #
 # Usage:
 #   ./parse-results.sh <smbtorture-output-file> [known-failures-file] [results-dir]
+#
+# Baseline generation:
+#   ./parse-results.sh --emit-baseline <smbtorture-output-file> [known-failures-file]
+#       Renders baseline-results.md (to stdout) from a run's output file instead
+#       of the colored terminal report. The header metadata is taken from these
+#       env vars (all optional): BASELINE_DATE, BASELINE_COMMIT, BASELINE_PROFILE,
+#       BASELINE_PLATFORM, BASELINE_SMBTORTURE, BASELINE_CONTEXT.
 
 set -euo pipefail
 
@@ -25,6 +32,18 @@ source "${SCRIPT_DIR}/../../common/known-failures.sh"
 # --------------------------------------------------------------------------
 # Arguments
 # --------------------------------------------------------------------------
+# Strip the --emit-baseline flag (position-independent) before reading the
+# positional output-file/known-failures/results-dir arguments.
+EMIT_BASELINE=false
+declare -a POSITIONAL=()
+for arg in "$@"; do
+    case "$arg" in
+        --emit-baseline) EMIT_BASELINE=true ;;
+        *) POSITIONAL+=("$arg") ;;
+    esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+
 OUTPUT_FILE="${1:-}"
 KNOWN_FAILURES_FILE="${2:-KNOWN_FAILURES.md}"
 RESULTS_DIR="${3:-}"
@@ -252,6 +271,154 @@ while IFS= read -r line; do
             ;;
     esac
 done < "$OUTPUT_FILE"
+
+# --------------------------------------------------------------------------
+# Baseline generation
+#
+# Renders the per-suite baseline markdown from the parsed results instead of the
+# colored terminal report. The sub-suite for a test is its first two dot
+# components (e.g. smb2.acls.CREATOR -> smb2.acls; smb2.connect -> smb2.connect),
+# matching how the hand-maintained baseline grouped them.
+# --------------------------------------------------------------------------
+suite_of() {
+    # $1 is already normalized to start with "smb2." by the parse loop.
+    local rest="${1#*.}"      # strip leading "smb2."
+    printf 'smb2.%s' "${rest%%.*}"
+}
+
+emit_baseline() {
+    local date_str="${BASELINE_DATE:-$(date -u +%Y-%m-%d)}"
+    local commit="${BASELINE_COMMIT:-$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+    local profile="${BASELINE_PROFILE:-memory}"
+    local platform="${BASELINE_PLATFORM:-$(uname -sm 2>/dev/null || echo unknown)}"
+    local context="${BASELINE_CONTEXT:-}"
+    local stversion="${BASELINE_SMBTORTURE:-}"
+    if [[ -z "$stversion" ]]; then
+        stversion="$(grep -m1 -E '^smbtorture ' "$OUTPUT_FILE" 2>/dev/null || true)"
+        [[ -z "$stversion" ]] && stversion="unknown"
+    fi
+
+    # Classify every result once: "suite|name|class" where class is
+    # pass | known | new | skip.
+    local -a processed=()
+    local -a suite_order=()
+    declare -A seen=() sp=() sf=() ssk=()
+    local entry name outcome suite cls
+    for entry in "${ALL_RESULTS[@]+"${ALL_RESULTS[@]}"}"; do
+        IFS='|' read -r name outcome <<< "$entry"
+        suite="$(suite_of "$name")"
+        cls="$outcome"
+        if [[ "$outcome" == "fail" ]]; then
+            if is_known_failure "$name"; then cls="known"; else cls="new"; fi
+        fi
+        processed+=("${suite}|${name}|${cls}")
+        if [[ -z "${seen[$suite]:-}" ]]; then
+            seen[$suite]=1; suite_order+=("$suite"); sp[$suite]=0; sf[$suite]=0; ssk[$suite]=0
+        fi
+        case "$outcome" in
+            pass) sp[$suite]=$(( sp[$suite] + 1 )) ;;
+            fail) sf[$suite]=$(( sf[$suite] + 1 )) ;;
+            skip) ssk[$suite]=$(( ssk[$suite] + 1 )) ;;
+        esac
+    done
+
+    local sorted_suites
+    sorted_suites="$(printf '%s\n' "${suite_order[@]+"${suite_order[@]}"}" | sort -u)"
+
+    local rate="N/A"
+    [[ "$TOTAL" -gt 0 ]] && rate="$(awk "BEGIN{printf \"%.1f%%\", ($PASS_COUNT/$TOTAL)*100}")"
+
+    # ---- Header ----
+    echo "# smbtorture Baseline Results"
+    echo ""
+    echo "> 🤖 **Auto-generated** by \`parse-results.sh --emit-baseline\`. Do not hand-edit —"
+    echo "> the nightly refresh job overwrites this file. Historical analysis lives in git"
+    echo "> history; the CI-gating failure list lives in \`KNOWN_FAILURES.md\`."
+    echo ""
+    echo "**Date:** ${date_str}"
+    echo "**DittoFS Commit:** ${commit}"
+    echo "**Profile:** ${profile}"
+    echo "**Platform:** ${platform}"
+    echo "**smbtorture:** ${stversion}"
+    [[ -n "$context" ]] && echo "**Context:** ${context}"
+    echo ""
+
+    # ---- Overall summary ----
+    echo "## Overall Summary"
+    echo ""
+    echo "| Metric | Count |"
+    echo "|--------|-------|"
+    echo "| Total Tests | ${TOTAL} |"
+    echo "| Passed | ${PASS_COUNT} |"
+    echo "| Failed | ${FAIL_COUNT} |"
+    echo "| — Known failures | ${KNOWN_HITS} |"
+    echo "| — New failures | ${NEW_FAILURES} |"
+    echo "| Skipped | ${SKIP_COUNT} |"
+    echo "| Pass Rate | ${rate} |"
+    echo ""
+
+    # ---- Per-sub-suite breakdown ----
+    echo "## Per-Sub-Suite Breakdown"
+    echo ""
+    echo "| Sub-Suite | Pass | Fail | Skip | Total | Pass Rate |"
+    echo "|-----------|------|------|------|-------|-----------|"
+    local s p f k tot srate
+    while IFS= read -r s; do
+        [[ -z "$s" ]] && continue
+        p=${sp[$s]:-0}; f=${sf[$s]:-0}; k=${ssk[$s]:-0}
+        tot=$(( p + f + k ))
+        if [[ $(( p + f )) -gt 0 ]]; then
+            srate="$(awk "BEGIN{printf \"%.0f%%\", ($p/($p+$f))*100}")"
+        else
+            srate="N/A"
+        fi
+        printf '| %s | %d | %d | %d | %d | %s |\n' "$s" "$p" "$f" "$k" "$tot" "$srate"
+    done <<< "$sorted_suites"
+    echo ""
+
+    # ---- Grouped per-test lists ----
+    emit_section() {
+        local title="$1" want="$2" total_for_section="$3"
+        echo "## ${title} (${total_for_section})"
+        echo ""
+        echo "<details><summary>Show ${total_for_section} test(s)</summary>"
+        echo ""
+        local sg p ps pn pc display
+        while IFS= read -r sg; do
+            [[ -z "$sg" ]] && continue
+            local -a names=()
+            for p in "${processed[@]+"${processed[@]}"}"; do
+                IFS='|' read -r ps pn pc <<< "$p"
+                [[ "$ps" == "$sg" ]] || continue
+                case "$want" in
+                    fail) [[ "$pc" == "known" || "$pc" == "new" ]] || continue ;;
+                    *)    [[ "$pc" == "$want" ]] || continue ;;
+                esac
+                case "$pc" in
+                    new)   display="${pn} **(NEW)**" ;;
+                    known) display="${pn} _(known)_" ;;
+                    *)     display="${pn}" ;;
+                esac
+                names+=("$display")
+            done
+            [[ ${#names[@]} -eq 0 ]] && continue
+            echo "### ${sg} (${#names[@]})"
+            printf -- '- %s\n' "${names[@]}" | sort
+            echo ""
+        done <<< "$sorted_suites"
+        echo "</details>"
+        echo ""
+    }
+
+    emit_section "Passing Tests" "pass" "$PASS_COUNT"
+    emit_section "Failing Tests" "fail" "$FAIL_COUNT"
+    emit_section "Skipped Tests" "skip" "$SKIP_COUNT"
+}
+
+if [[ "$EMIT_BASELINE" == "true" ]]; then
+    emit_baseline
+    exit 0
+fi
 
 # --------------------------------------------------------------------------
 # Print header
