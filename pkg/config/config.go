@@ -320,20 +320,20 @@ func (c AdminConfig) MarshalJSON() ([]byte, error) {
 type MachineAccountConfig struct {
 	// Enabled controls whether machine account support is active.
 	// Default: false
-	Enabled bool `yaml:"enabled" json:"enabled"`
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
 
 	// AccountName is the machine account name (e.g. "DITTOFS$").
 	// In Active Directory, machine accounts typically have a '$' suffix.
-	AccountName string `yaml:"account_name" json:"account_name"`
+	AccountName string `mapstructure:"account_name" yaml:"account_name"`
 
 	// Secret is the machine account password.
-	Secret string `yaml:"secret" json:"secret"`
+	Secret string `mapstructure:"secret" yaml:"secret"`
 
 	// KeytabPath is the path to the keytab file for the machine account.
-	KeytabPath string `yaml:"keytab_path" json:"keytab_path"`
+	KeytabPath string `mapstructure:"keytab_path" yaml:"keytab_path"`
 
 	// DCAddresses is a list of domain controller addresses.
-	DCAddresses []string `yaml:"dc_address" json:"dc_address"`
+	DCAddresses []string `mapstructure:"dc_address" yaml:"dc_address"`
 }
 
 // KerberosConfig contains Kerberos/RPCSEC_GSS authentication configuration.
