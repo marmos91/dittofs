@@ -906,7 +906,19 @@ func (s *Service) createBlockStoreForShare(
 // network/DB I/O (config resolution, S3 client initialization).
 // Returns the store, its config ID, and any error.
 func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider BlockStoreConfigProvider) (remote.RemoteStore, string, error) {
-	// Resolve config first (by UUID, or by name for #1312 legacy rows) so the
+	// Fast path: when the share already persists the canonical UUID (the common
+	// case) and the store is live, take it without a config-resolution DB read.
+	// Legacy name refs (#1312) miss here — the map is keyed by UUID — and fall
+	// through to full resolution below.
+	s.mu.Lock()
+	if sr, ok := s.remoteStores[ref]; ok {
+		sr.refCount++
+		s.mu.Unlock()
+		return sr.store, ref, nil
+	}
+	s.mu.Unlock()
+
+	// Resolve config (by UUID, or by name for #1312 legacy rows) so the
 	// ref-count map is always keyed by the canonical store UUID. Two shares
 	// referencing the same remote — one by UUID, one by legacy name — must
 	// share the single ref-counted store.

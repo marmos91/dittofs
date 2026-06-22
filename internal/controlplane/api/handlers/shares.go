@@ -64,6 +64,11 @@ func NewShareHandler(s ShareHandlerStore, rt *runtime.Runtime) *ShareHandler {
 	return &ShareHandler{store: s, runtime: rt}
 }
 
+// errWrongBlockStoreKind is returned by resolveBlockStoreRef when a reference
+// resolves to a store of an unexpected kind. It is a client error (a bad
+// reference), distinct from a missing store or an operational failure.
+var errWrongBlockStoreKind = errors.New("block store has unexpected kind")
+
 // resolveBlockStoreRef resolves a block-store reference — a name or a canonical
 // UUID — to its config, scoped to the expected kind. It tries the kind-scoped
 // name lookup first, then a UUID lookup, rejecting a UUID that resolves to the
@@ -71,18 +76,40 @@ func NewShareHandler(s ShareHandlerStore, rt *runtime.Runtime) *ShareHandler {
 // never persists an id the share can't load at startup (#1312): a remote-store
 // UUID handed to local_block_store_id (or vice versa) is refused up front
 // instead of silently breaking the share on the next restart.
+//
+// Only a genuine not-found on the name lookup falls through to the UUID lookup;
+// an operational error (DB/context) is returned as-is so callers can surface it
+// as a 500 rather than masking it as an unknown reference.
 func (h *ShareHandler) resolveBlockStoreRef(ctx context.Context, ref string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error) {
-	if cfg, err := h.store.GetBlockStore(ctx, ref, kind); err == nil {
+	cfg, err := h.store.GetBlockStore(ctx, ref, kind)
+	if err == nil {
 		return cfg, nil
 	}
-	cfg, err := h.store.GetBlockStoreByID(ctx, ref)
+	if !errors.Is(err, models.ErrStoreNotFound) {
+		return nil, err
+	}
+	cfg, err = h.store.GetBlockStoreByID(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
 	if cfg.Kind != kind {
-		return nil, fmt.Errorf("block store %q has kind %q, expected %q", ref, cfg.Kind, kind)
+		return nil, fmt.Errorf("%w: %q is %q, expected %q", errWrongBlockStoreKind, ref, cfg.Kind, kind)
 	}
 	return cfg, nil
+}
+
+// writeBlockStoreRefError maps a resolveBlockStoreRef failure to an HTTP
+// response: a missing or wrong-kind reference is the client's fault (400),
+// anything else is an operational failure (500). tier is "Local" or "Remote".
+func writeBlockStoreRefError(w http.ResponseWriter, tier, ref string, err error) {
+	switch {
+	case errors.Is(err, models.ErrStoreNotFound):
+		BadRequest(w, tier+" block store not found: "+ref)
+	case errors.Is(err, errWrongBlockStoreKind):
+		BadRequest(w, tier+" block store has the wrong kind: "+ref)
+	default:
+		InternalServerError(w, "Failed to resolve "+tier+" block store "+ref+": "+err.Error())
+	}
 }
 
 // CreateShareRequest is the request body for POST /api/v1/shares.
@@ -269,7 +296,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Validate that local block store exists (accepts a name or a UUID).
 	localBlockStore, err := h.resolveBlockStoreRef(r.Context(), req.LocalBlockStore, models.BlockStoreKindLocal)
 	if err != nil {
-		BadRequest(w, "Local block store not found: "+req.LocalBlockStore)
+		writeBlockStoreRefError(w, "Local", req.LocalBlockStore, err)
 		return
 	}
 
@@ -278,7 +305,7 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.RemoteBlockStore != nil && *req.RemoteBlockStore != "" {
 		remoteStore, remoteErr := h.resolveBlockStoreRef(r.Context(), *req.RemoteBlockStore, models.BlockStoreKindRemote)
 		if remoteErr != nil {
-			BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStore)
+			writeBlockStoreRefError(w, "Remote", *req.RemoteBlockStore, remoteErr)
 			return
 		}
 		remoteBlockStoreID = &remoteStore.ID
@@ -622,7 +649,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		// never loaded.
 		localBlockStore, err := h.resolveBlockStoreRef(r.Context(), *req.LocalBlockStoreID, models.BlockStoreKindLocal)
 		if err != nil {
-			BadRequest(w, "Local block store not found: "+*req.LocalBlockStoreID)
+			writeBlockStoreRefError(w, "Local", *req.LocalBlockStoreID, err)
 			return
 		}
 		share.LocalBlockStoreID = localBlockStore.ID
@@ -634,7 +661,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		} else {
 			remoteBlockStore, err := h.resolveBlockStoreRef(r.Context(), *req.RemoteBlockStoreID, models.BlockStoreKindRemote)
 			if err != nil {
-				BadRequest(w, "Remote block store not found: "+*req.RemoteBlockStoreID)
+				writeBlockStoreRefError(w, "Remote", *req.RemoteBlockStoreID, err)
 				return
 			}
 			share.RemoteBlockStoreID = &remoteBlockStore.ID
