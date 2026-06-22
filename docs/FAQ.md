@@ -49,7 +49,7 @@ DittoFS is released under the MIT License, which is permissive and allows commer
 
 ### Which NFS versions are supported?
 
-DittoFS supports **NFSv3 over TCP** (28 procedures fully implemented), **NFSv4.0**, and **NFSv4.1** with features including:
+DittoFS supports **NFSv3 over TCP** (28 procedures fully implemented), **NFSv4.0**, **NFSv4.1**, and **NFSv4.2** (extended attributes, RFC 8276) with features including:
 - Compound operations and sessions
 - File and directory delegations with CB_NOTIFY
 - ACLs (Access Control Lists)
@@ -574,9 +574,15 @@ NFSv3 relies on the NLM (Network Lock Manager) protocol for locking, which is no
 
 | Status | Reason |
 |--------|--------|
-| Not supported | Not in NFSv3 base specification |
+| NFSv3 / v4.0 / v4.1: Not supported | No xattr operations in those protocol versions |
+| NFSv4.2: Supported | RFC 8276 (`user.*` namespace, values up to 64 KiB) |
 
-Extended attributes (xattrs) are not part of NFSv3. They require NFS extensions (RFC 8276 for NFSv4.2).
+Extended attributes are not part of NFSv3, NFSv4.0, or NFSv4.1. Mount with `-o vers=4.2`
+to use them via the standard Linux tools (`setfattr` / `getfattr`). Only the `user.*`
+namespace is exposed, and values are stored inline up to 64 KiB (a larger value returns
+`NFS4ERR_XATTR2BIG`). The xattr namespace is shared with SMB extended attributes / named
+streams, so a value set over one protocol is readable over the other. See
+[NFS.md → NFSv4.2 Status](NFS.md#nfsv42-status) for details.
 
 #### fallocate/posix_fallocate
 

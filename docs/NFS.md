@@ -1,6 +1,6 @@
 # NFS Implementation
 
-This document covers the NFS protocol fundamentals, DittoFS's implementation of NFSv3, NFSv4.0, and NFSv4.1, and practical usage for clients and developers.
+This document covers the NFS protocol fundamentals, DittoFS's implementation of NFSv3, NFSv4.0, NFSv4.1, and NFSv4.2 (extended attributes, RFC 8276), and practical usage for clients and developers.
 
 ## Table of Contents
 
@@ -19,6 +19,7 @@ This document covers the NFS protocol fundamentals, DittoFS's implementation of 
   - [NFSv3 Status](#nfsv3-status)
   - [NFSv4.0 Status](#nfsv40-status)
   - [NFSv4.1 Status](#nfsv41-status)
+  - [NFSv4.2 Status](#nfsv42-status)
 - [Embedded Portmapper](#embedded-portmapper)
 - [Mounting](#mounting)
 - [Implementation Details](#implementation-details)
@@ -565,6 +566,61 @@ NFSv4.1 extends v4.0 with session-based operation, backchannel callbacks, and ad
 | RECLAIM_COMPLETE | Implemented | |
 | SEQUENCE | Implemented | |
 | TEST_STATEID | Implemented | |
+
+### NFSv4.2 Status
+
+NFSv4.2 (RFC 7862) is a collection of independent, individually-optional features. DittoFS
+implements the named **extended attributes** set (RFC 8276); the other v4.2 operations
+return `NFS4ERR_NOTSUPP`. A client negotiates v4.2 with `mount -o vers=4.2`.
+
+The features below are **planned** and tracked, ordered by fit with DittoFS's
+content-addressed/dedup block store. `CLONE` is the strongest fit — a reflink is a pure
+metadata ref over the same dedup blocks, reusing the SMB server-side-copy engine. `SEEK`,
+`READ_PLUS`, and `DEALLOCATE` form a sparse-files cluster that shares hole-tracking
+plumbing. They are **not yet implemented**.
+
+| Operation | Status | Notes |
+|-----------|--------|-------|
+| GETXATTR | Implemented | RFC 8276 |
+| SETXATTR | Implemented | RFC 8276; `CREATE` / `REPLACE` / `EITHER` options honored |
+| LISTXATTRS | Implemented | RFC 8276; cookie-based pagination |
+| REMOVEXATTR | Implemented | RFC 8276 |
+| CLONE | Planned | reflink over dedup block refs ([#1302](https://github.com/marmos91/dittofs/issues/1302)) |
+| SEEK | Planned | SEEK_HOLE / SEEK_DATA ([#1303](https://github.com/marmos91/dittofs/issues/1303)) |
+| READ_PLUS | Planned | hole-aware read ([#1304](https://github.com/marmos91/dittofs/issues/1304)) |
+| DEALLOCATE | Planned | punch-hole + storage reclaim ([#1305](https://github.com/marmos91/dittofs/issues/1305)) |
+| ALLOCATE | Planned | `fallocate` preallocation ([#1306](https://github.com/marmos91/dittofs/issues/1306)) |
+| COPY / OFFLOAD_* / COPY_NOTIFY | Not planned | async server-side copy; `CLONE` covers the intra-server case more cheaply |
+| IO_ADVISE | Not planned | cache/prefetch hints; low value for a userspace vFS |
+| Labeled NFS (`FATTR4_SEC_LABEL`) | Not planned | MAC/SELinux labels; niche |
+| Application Data Blocks (ADB) | Not planned | out of scope |
+
+**Behavior and limits:**
+
+- **Namespace.** Only the `user.*` namespace is exposed. The `user.` prefix is purely a
+  client-side convention — the Linux client strips it on the wire, so DittoFS stores the
+  **bare** name. That bare name is exactly the key SMB extended attributes and named
+  streams use, so the two protocols share one namespace: a value set over NFS is readable
+  over SMB and vice-versa. Requests in the `system.`, `trusted.`, or `security.` namespaces
+  are rejected with `NFS4ERR_NOXATTR`, and the reserved SMB `security.NTACL` attribute is
+  hidden from `LISTXATTRS`.
+- **Size.** Values up to **64 KiB** are stored inline; this equals the Linux
+  `XATTR_SIZE_MAX`, so a conformant client cannot exceed it. A larger value returns
+  `NFS4ERR_XATTR2BIG`.
+- **Cross-protocol parity.** xattrs resolve over a unified view of two backings — inline
+  key/value attributes and colon-named stream entities (the macOS xattr carrier over SMB).
+  Stream-backed names take precedence over inline names of the same key.
+- A missing xattr returns `NFS4ERR_NOXATTR`. The pseudo-fs root carries no xattrs
+  (`NFS4ERR_NOTSUPP` / `NFS4ERR_ROFS`). The `FATTR4_XATTR_SUPPORT` attribute advertises
+  support to v4.2 clients.
+
+```bash
+# Round-trip with the standard Linux tools over a vers=4.2 mount
+setfattr -n user.comment -v "hello" /mnt/dittofs/file
+getfattr -n user.comment /mnt/dittofs/file     # => user.comment="hello"
+getfattr -d /mnt/dittofs/file                   # dump all user.* xattrs
+setfattr -x user.comment /mnt/dittofs/file      # remove
+```
 
 ---
 

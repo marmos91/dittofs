@@ -164,9 +164,24 @@ func MountNFSExportWithVersion(t *testing.T, port int, exportPath string, versio
 			_ = os.RemoveAll(mountPath)
 			t.Fatalf("Unsupported platform for NFSv4.1: %s", runtime.GOOS)
 		}
+	case "4.2":
+		// NFSv4.2: stateful protocol like v4.1, adds xattr (RFC 8276). Requires a
+		// kernel with NFSv4.2 support (Linux >= 3.14; xattr ops since 5.9).
+		mountOptions = fmt.Sprintf("vers=4.2,port=%d,actimeo=0", port)
+		switch runtime.GOOS {
+		case "darwin":
+			// macOS does not support NFSv4.2 mounts
+			_ = os.RemoveAll(mountPath)
+			t.Skip("NFSv4.2 not supported on macOS")
+		case "linux":
+			// Linux kernel supports v4.2 since 3.14; no additional options needed
+		default:
+			_ = os.RemoveAll(mountPath)
+			t.Fatalf("Unsupported platform for NFSv4.2: %s", runtime.GOOS)
+		}
 	default:
 		_ = os.RemoveAll(mountPath)
-		t.Fatalf("Unsupported NFS version: %q (expected \"3\", \"4.0\", or \"4.1\")", version)
+		t.Fatalf("Unsupported NFS version: %q (expected \"3\", \"4.0\", \"4.1\", or \"4.2\")", version)
 	}
 
 	mountArgs = []string{"-t", "nfs", "-o", mountOptions, fmt.Sprintf("localhost:%s", exportPath), mountPath}

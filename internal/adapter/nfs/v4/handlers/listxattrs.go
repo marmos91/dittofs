@@ -29,10 +29,11 @@ import (
 //	 default:      void;
 //	};
 //
-// LISTXATTRS carries NO stateid. Names are returned in the wire ("user."-
-// stripped) form so they match what a setfattr/getfattr client expects. The
-// cookie is the count of names already returned by prior calls; paging is over
-// a stable (sorted) name order. Pseudo-fs handles return NFS4ERR_NOTSUPP.
+// LISTXATTRS carries NO stateid. Names are returned in the bare wire form (the
+// store key, which the user-namespace client re-prefixes with "user.") so they
+// match what a setfattr/getfattr client expects. The cookie is the count of
+// names already returned by prior calls; paging is over a stable (sorted) name
+// order. Pseudo-fs handles return NFS4ERR_NOTSUPP.
 func (h *Handler) handleListXattrs(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	if status := types.RequireCurrentFH(ctx); status != types.NFS4_OK {
 		return xattrErr(types.OP_LISTXATTRS, status)
@@ -66,8 +67,9 @@ func (h *Handler) handleListXattrs(ctx *types.CompoundContext, reader io.Reader)
 		return xattrErr(types.OP_LISTXATTRS, common.MapToNFS4(err))
 	}
 
-	// Strip the "user." prefix and keep only user-namespace names (the only
-	// namespace exposed over the wire), then sort for a stable cookie order.
+	// Keep only user-namespace names (the only namespace exposed over the wire);
+	// reserved SMB EAs sharing the inline backing are hidden. Then sort for a
+	// stable cookie order.
 	names := make([]string, 0, len(rawNames))
 	for _, n := range rawNames {
 		if wire, ok := wireXattrName(n); ok {
@@ -133,19 +135,17 @@ func (h *Handler) handleListXattrs(ctx *types.CompoundContext, reader io.Reader)
 	}
 }
 
-// wireXattrName converts a store-canonical xattr name to its wire form (drop the
-// "user." prefix). ok is false for names outside the user namespace, which are
-// hidden from LISTXATTRS (e.g. the reserved SMB security.NTACL name).
-func wireXattrName(canonical string) (string, bool) {
-	stripped := stripXattrPrefix(canonical)
-	if stripped == canonical {
-		// No "user." prefix: a non-user-namespace name; hide it from the wire.
+// wireXattrName converts a store key to its bare wire form. The store key for a
+// user xattr is already bare (canonicalizeXattrName strips any "user." prefix
+// before storing), so the wire name equals the store key. ok is false for an
+// empty key or a name in a reserved namespace (e.g. the SMB "security.NTACL"
+// EA), which are hidden from LISTXATTRS.
+func wireXattrName(storeKey string) (string, bool) {
+	if storeKey == "" {
 		return "", false
 	}
-	if stripped == "" {
-		// A bare "user." with no key (unexpected backend data): emitting it would
-		// put an empty, invalid name on the wire. Hide it defensively.
+	if isReservedXattrNamespace(storeKey) {
 		return "", false
 	}
-	return stripped, true
+	return storeKey, true
 }

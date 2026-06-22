@@ -13,11 +13,12 @@ import (
 // methods landing in PR1 (#1285): *metadata.Service satisfies it structurally,
 // and PR1's unified resolver will swap in transparently.
 //
-// All names passed across this interface are canonical store names (the
-// "user."-prefixed form — see canonicalizeXattrName). This is the namespace
-// the unified resolver (pkg/metadata/xattr.go) reads and writes; end-to-end
-// cross-protocol name parity with SMB EAs/streams is exercised in PR3, not
-// asserted here.
+// All names passed across this interface are BARE store keys — the
+// user-namespace name with no "user." prefix (canonicalizeXattrName strips any
+// leading "user." before the handler calls this interface). This is the same
+// key SMB extended attributes and named streams use, which is what makes a
+// value set over one protocol visible over the other; the unified resolver
+// (pkg/metadata/xattr.go) reads and writes these bare keys.
 type XattrBackend interface {
 	// GetXattr returns the value of the named xattr and whether it is present.
 	GetXattr(ctx *metadata.AuthContext, h metadata.FileHandle, name string) ([]byte, bool, error)
@@ -26,8 +27,9 @@ type XattrBackend interface {
 	SetXattr(ctx *metadata.AuthContext, h metadata.FileHandle, name string, value []byte) error
 	// RemoveXattr deletes the named xattr.
 	RemoveXattr(ctx *metadata.AuthContext, h metadata.FileHandle, name string) error
-	// ListXattr returns the names of all xattrs on the file (store-canonical
-	// form, i.e. including the "user." prefix).
+	// ListXattr returns the names of all xattrs on the file in bare form (no
+	// "user." prefix); the LISTXATTRS handler sends them to the wire verbatim
+	// and the client re-adds "user.".
 	ListXattr(ctx *metadata.AuthContext, h metadata.FileHandle) ([]string, error)
 }
 
@@ -48,54 +50,64 @@ func xattrBackendForHandler(h *Handler) (XattrBackend, error) {
 	return svc, nil
 }
 
-// xattrUserPrefix is the only xattr namespace DittoFS exposes over NFSv4.2.
-//
-// The Linux NFS client carries only the "user." namespace on the wire and
-// strips the prefix before sending the name (so a client setfattr -n user.foo
-// arrives as "foo"). To keep names aligned with the SMB EA namespace, NFS
-// canonicalizes incoming names to "user.<name>" before the backend and strips
-// the prefix on the way out. Requests for any other namespace (system., trusted.,
-// security., …) are rejected with NFS4ERR_NOXATTR (RFC 8276 §8.1: a server may
-// reject names it does not support).
+// xattrUserPrefix is the "user." namespace prefix as it appears on a Linux
+// client. The NFSv4.2 wire name is already bare ("user.foo" on the client
+// arrives as "foo"); the prefix is purely a client-side convention, never a
+// storage concept. We strip a single leading "user." defensively for clients
+// that send the namespaced form, but the canonical STORE key is the bare name.
 const xattrUserPrefix = "user."
 
-// canonicalizeXattrName maps a wire xattr name to its store-canonical form
-// ("user.<name>"). It returns ok=false (caller → NFS4ERR_NOXATTR) only for a
-// name in a reserved non-user namespace — one whose first dot-segment is
-// "system", "trusted", or "security". Any other bare name is placed in the
-// user namespace, INCLUDING dotted names like "foo.bar" (a valid user xattr,
-// e.g. "com.apple.metadata:…"), which become "user.foo.bar".
+// canonicalizeXattrName maps a wire xattr name to its canonical STORE key — the
+// bare user-namespace name, with no "user." prefix. This is the same key SMB
+// extended attributes and named streams use, so a value set over one protocol
+// is visible over the other (cross-protocol parity).
 //
-// The Linux client strips "user." so names usually arrive bare; a name that
-// already carries the "user." prefix is accepted as-is (the bare prefix
-// "user." with no key is rejected).
+// It returns ok=false (caller → NFS4ERR_NOXATTR) for an empty name or a name in
+// a reserved non-user namespace — one whose first dot-segment is "system",
+// "trusted", or "security" (RFC 8276 §8.1: a server may reject names it does
+// not support). Any other dotted name (e.g. "com.apple.metadata:…", "foo.bar")
+// is a valid user xattr and is kept verbatim.
+//
+// A single leading "user." prefix is stripped (a client that sends the
+// namespaced form converges on the same bare key as one that sends it bare);
+// the bare prefix "user." with no key is rejected.
+//
+// No migration path is needed for the prior "user.<name>" storage form: #1285
+// is unreleased, so no deployment has persisted NFS-written xattrs under the
+// old prefixed key. SMB stores bare keys (cifs strips "user." on the wire and
+// Windows EA names carry no "user." namespace), so a "user."-prefixed store key
+// cannot arise in practice — hence GET/LIST/REMOVE all key the bare name with
+// no dual-read fallback.
 func canonicalizeXattrName(name string) (canonical string, ok bool) {
 	if name == "" {
 		return "", false
 	}
-	// Already namespaced as user.*: accept verbatim, but reject the bare prefix
-	// with no key component ("user.") — that would be an empty on-wire name.
+	// Strip one leading "user." for clients that send the namespaced form.
 	if strings.HasPrefix(name, xattrUserPrefix) {
-		if name == xattrUserPrefix {
-			return "", false
-		}
-		return name, true
-	}
-	// A bare name in another namespace (system.*, trusted.*, security.*, …) is
-	// rejected. We treat any dotted name whose first segment is a known reserved
-	// namespace as unsupported; a bare name with no namespace defaults to user.
-	if i := strings.IndexByte(name, '.'); i >= 0 {
-		switch name[:i] {
-		case "system", "trusted", "security":
+		name = name[len(xattrUserPrefix):]
+		if name == "" {
 			return "", false
 		}
 	}
-	return xattrUserPrefix + name, true
+	if isReservedXattrNamespace(name) {
+		return "", false
+	}
+	return name, true
 }
 
-// stripXattrPrefix reverses canonicalizeXattrName for names returned to the
-// client: it drops the "user." prefix so the wire name matches what the Linux
-// client sent. Names without the prefix are returned unchanged.
-func stripXattrPrefix(name string) string {
-	return strings.TrimPrefix(name, xattrUserPrefix)
+// isReservedXattrNamespace reports whether a name belongs to a namespace DittoFS
+// does not expose over NFSv4.2 — one whose first dot-segment is "system",
+// "trusted", or "security". This both rejects such names on input and hides the
+// reserved SMB EAs that live in the same inline backing (e.g. "security.NTACL")
+// from LISTXATTRS, without relying on a storage-side prefix to mark membership.
+func isReservedXattrNamespace(name string) bool {
+	i := strings.IndexByte(name, '.')
+	if i < 0 {
+		return false
+	}
+	switch name[:i] {
+	case "system", "trusted", "security":
+		return true
+	}
+	return false
 }

@@ -18,7 +18,8 @@ import (
 var realHandle = []byte("/export:00000000-0000-0000-0000-000000000001")
 
 // fakeXattrBackend is an in-memory XattrBackend for the NFSv4.2 xattr handler
-// tests. It keys on the store-canonical (user.-prefixed) name.
+// tests. It keys on the canonical store name — the BARE user-namespace name,
+// the same key SMB EAs / named streams use (no "user." prefix).
 type fakeXattrBackend struct {
 	store map[string][]byte
 	// forceErr, when set, is returned by every method (to exercise error mapping).
@@ -131,9 +132,9 @@ func encRemoveXattrArgs(name string) io.Reader {
 // --- GETXATTR ---
 
 func TestHandleGetXattr(t *testing.T) {
-	t.Run("success strips and round-trips value", func(t *testing.T) {
+	t.Run("success round-trips value", func(t *testing.T) {
 		b := newFakeXattrBackend()
-		b.store["user.foo"] = []byte("bar")
+		b.store["foo"] = []byte("bar")
 		h := xattrTestHandler(t, b)
 
 		res := h.handleGetXattr(xattrCtx(realHandle), encGetXattrArgs("foo"))
@@ -201,15 +202,15 @@ func TestHandleGetXattr(t *testing.T) {
 // --- SETXATTR ---
 
 func TestHandleSetXattr(t *testing.T) {
-	t.Run("EITHER creates and canonicalizes to user.", func(t *testing.T) {
+	t.Run("EITHER creates with bare store key", func(t *testing.T) {
 		b := newFakeXattrBackend()
 		h := xattrTestHandler(t, b)
 		res := h.handleSetXattr(xattrCtx(realHandle), encSetXattrArgs(types.SETXATTR4_EITHER, "foo", []byte("v1")))
 		if res.Status != types.NFS4_OK {
 			t.Fatalf("status = %d, want NFS4_OK", res.Status)
 		}
-		if got := string(b.store["user.foo"]); got != "v1" {
-			t.Errorf("store[user.foo] = %q, want v1", got)
+		if got := string(b.store["foo"]); got != "v1" {
+			t.Errorf("store[foo] = %q, want v1", got)
 		}
 		// res.Data = status(4) + change_info4 (20 bytes)
 		if len(res.Data) != 4+20 {
@@ -219,7 +220,7 @@ func TestHandleSetXattr(t *testing.T) {
 
 	t.Run("CREATE on existing -> EXIST", func(t *testing.T) {
 		b := newFakeXattrBackend()
-		b.store["user.foo"] = []byte("x")
+		b.store["foo"] = []byte("x")
 		h := xattrTestHandler(t, b)
 		res := h.handleSetXattr(xattrCtx(realHandle), encSetXattrArgs(types.SETXATTR4_CREATE, "foo", []byte("y")))
 		if res.Status != types.NFS4ERR_EXIST {
@@ -246,14 +247,14 @@ func TestHandleSetXattr(t *testing.T) {
 
 	t.Run("REPLACE on existing succeeds", func(t *testing.T) {
 		b := newFakeXattrBackend()
-		b.store["user.foo"] = []byte("x")
+		b.store["foo"] = []byte("x")
 		h := xattrTestHandler(t, b)
 		res := h.handleSetXattr(xattrCtx(realHandle), encSetXattrArgs(types.SETXATTR4_REPLACE, "foo", []byte("y")))
 		if res.Status != types.NFS4_OK {
 			t.Fatalf("status = %d, want NFS4_OK", res.Status)
 		}
-		if got := string(b.store["user.foo"]); got != "y" {
-			t.Errorf("store[user.foo] = %q, want y", got)
+		if got := string(b.store["foo"]); got != "y" {
+			t.Errorf("store[foo] = %q, want y", got)
 		}
 	})
 
@@ -289,11 +290,11 @@ func TestHandleSetXattr(t *testing.T) {
 // --- LISTXATTRS ---
 
 func TestHandleListXattrs(t *testing.T) {
-	t.Run("lists user names stripped, sorted, eof", func(t *testing.T) {
+	t.Run("lists user names, sorted, hides reserved, eof", func(t *testing.T) {
 		b := newFakeXattrBackend()
-		b.store["user.bbb"] = []byte("1")
-		b.store["user.aaa"] = []byte("2")
-		b.store["security.NTACL"] = []byte("hidden") // non-user: must be hidden
+		b.store["bbb"] = []byte("1")
+		b.store["aaa"] = []byte("2")
+		b.store["security.NTACL"] = []byte("hidden") // reserved namespace: must be hidden
 		h := xattrTestHandler(t, b)
 
 		res := h.handleListXattrs(xattrCtx(realHandle), encListXattrsArgs(0, 1<<16))
@@ -342,9 +343,9 @@ func TestHandleListXattrs(t *testing.T) {
 
 	t.Run("paging via cookie", func(t *testing.T) {
 		b := newFakeXattrBackend()
-		b.store["user.a"] = []byte("1")
-		b.store["user.b"] = []byte("2")
-		b.store["user.c"] = []byte("3")
+		b.store["a"] = []byte("1")
+		b.store["b"] = []byte("2")
+		b.store["c"] = []byte("3")
 		h := xattrTestHandler(t, b)
 
 		// maxcount budget for exactly one short name per call:
@@ -385,7 +386,7 @@ func TestHandleListXattrs(t *testing.T) {
 
 	t.Run("maxcount too small -> TOOSMALL", func(t *testing.T) {
 		b := newFakeXattrBackend()
-		b.store["user.longname"] = []byte("1")
+		b.store["longname"] = []byte("1")
 		h := xattrTestHandler(t, b)
 		res := h.handleListXattrs(xattrCtx(realHandle), encListXattrsArgs(0, 16))
 		if res.Status != types.NFS4ERR_TOOSMALL {
@@ -408,14 +409,14 @@ func TestHandleListXattrs(t *testing.T) {
 func TestHandleRemoveXattr(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		b := newFakeXattrBackend()
-		b.store["user.foo"] = []byte("v")
+		b.store["foo"] = []byte("v")
 		h := xattrTestHandler(t, b)
 		res := h.handleRemoveXattr(xattrCtx(realHandle), encRemoveXattrArgs("foo"))
 		if res.Status != types.NFS4_OK {
 			t.Fatalf("status = %d, want NFS4_OK", res.Status)
 		}
-		if _, ok := b.store["user.foo"]; ok {
-			t.Error("user.foo still present after remove")
+		if _, ok := b.store["foo"]; ok {
+			t.Error("foo still present after remove")
 		}
 		if len(res.Data) != 4+20 {
 			t.Errorf("res.Data len = %d, want 24 (status + change_info4)", len(res.Data))
@@ -444,7 +445,7 @@ func TestHandleRemoveXattr(t *testing.T) {
 		// not delete stream entities. RFC 8276 §11.2: surface NOXATTR, not the
 		// generic NOENT the store error maps to.
 		b := newFakeXattrBackend()
-		b.store["user.foo"] = []byte("v") // pre-check sees it
+		b.store["foo"] = []byte("v") // pre-check sees it
 		b.removeErr = &metadata.StoreError{Code: metadata.ErrNotFound, Message: "xattr not found"}
 		h := xattrTestHandler(t, b)
 		res := h.handleRemoveXattr(xattrCtx(realHandle), encRemoveXattrArgs("foo"))
@@ -463,6 +464,36 @@ func TestHandleRemoveXattr(t *testing.T) {
 	})
 }
 
+// --- cross-protocol parity (the bare store key is shared with SMB) ---
+
+// TestXattrCrossProtocolKeyParity proves the NFS adapter reads and writes the
+// SAME bare store key SMB uses. An SMB-set inline EA (stored bare "tag") is
+// readable via NFS GETXATTR, and an NFS SETXATTR lands under the bare key an
+// SMB EA query would return — so a value set over one protocol is visible over
+// the other.
+func TestXattrCrossProtocolKeyParity(t *testing.T) {
+	b := newFakeXattrBackend()
+	h := xattrTestHandler(t, b)
+
+	// SMB writes the inline EA "tag" (cifs strips the user. prefix on the wire).
+	b.store["tag"] = []byte("from-smb")
+
+	// NFS GETXATTR user.tag (wire name "tag") finds it.
+	res := h.handleGetXattr(xattrCtx(realHandle), encGetXattrArgs("tag"))
+	if res.Status != types.NFS4_OK {
+		t.Fatalf("GET after SMB set: status = %d, want NFS4_OK", res.Status)
+	}
+
+	// NFS SETXATTR user.tag2 stores under the bare key an SMB EA query reads.
+	res = h.handleSetXattr(xattrCtx(realHandle), encSetXattrArgs(types.SETXATTR4_EITHER, "tag2", []byte("from-nfs")))
+	if res.Status != types.NFS4_OK {
+		t.Fatalf("SET via NFS: status = %d, want NFS4_OK", res.Status)
+	}
+	if got, ok := b.store["tag2"]; !ok || string(got) != "from-nfs" {
+		t.Errorf("store[tag2] = (%q,%v), want (from-nfs,true) — SMB would not see it under a prefixed key", got, ok)
+	}
+}
+
 // --- name canonicalization ---
 
 func TestCanonicalizeXattrName(t *testing.T) {
@@ -471,11 +502,11 @@ func TestCanonicalizeXattrName(t *testing.T) {
 		wantName string
 		wantOK   bool
 	}{
-		{"foo", "user.foo", true},
-		{"user.foo", "user.foo", true},
-		{"user.", "", false},              // bare prefix, no key -> invalid
-		{"foo.bar", "user.foo.bar", true}, // dotted non-reserved name -> user.*
-		{"com.apple.x", "user.com.apple.x", true},
+		{"foo", "foo", true},
+		{"user.foo", "foo", true}, // namespaced form converges on the bare key
+		{"user.", "", false},      // bare prefix, no key -> invalid
+		{"foo.bar", "foo.bar", true},
+		{"com.apple.x", "com.apple.x", true},
 		{"system.posix_acl_access", "", false},
 		{"trusted.x", "", false},
 		{"security.NTACL", "", false},
@@ -489,12 +520,38 @@ func TestCanonicalizeXattrName(t *testing.T) {
 	}
 }
 
-func TestStripXattrPrefix(t *testing.T) {
-	if got := stripXattrPrefix("user.foo"); got != "foo" {
-		t.Errorf("stripXattrPrefix(user.foo) = %q, want foo", got)
+func TestIsReservedXattrNamespace(t *testing.T) {
+	reserved := []string{"system.x", "trusted.y", "security.NTACL"}
+	for _, n := range reserved {
+		if !isReservedXattrNamespace(n) {
+			t.Errorf("isReservedXattrNamespace(%q) = false, want true", n)
+		}
 	}
-	if got := stripXattrPrefix("foo"); got != "foo" {
-		t.Errorf("stripXattrPrefix(foo) = %q, want foo", got)
+	user := []string{"foo", "foo.bar", "com.apple.x", "tag"}
+	for _, n := range user {
+		if isReservedXattrNamespace(n) {
+			t.Errorf("isReservedXattrNamespace(%q) = true, want false", n)
+		}
+	}
+}
+
+func TestWireXattrName(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantOK   bool
+	}{
+		{"foo", "foo", true},
+		{"com.apple.x", "com.apple.x", true},
+		{"security.NTACL", "", false}, // reserved SMB EA hidden from the wire
+		{"system.x", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, ok := wireXattrName(c.in)
+		if ok != c.wantOK || got != c.wantName {
+			t.Errorf("wireXattrName(%q) = (%q,%v), want (%q,%v)", c.in, got, ok, c.wantName, c.wantOK)
+		}
 	}
 }
 
@@ -504,7 +561,7 @@ func TestStripXattrPrefix(t *testing.T) {
 // only under v4.2 (isV42=true) and return NFS4ERR_NOTSUPP under v4.0/v4.1.
 func TestXattrOpsGatedToV42(t *testing.T) {
 	b := newFakeXattrBackend()
-	b.store["user.foo"] = []byte("bar")
+	b.store["foo"] = []byte("bar")
 	h := xattrTestHandler(t, b)
 
 	for _, op := range []uint32{types.OP_GETXATTR, types.OP_SETXATTR, types.OP_LISTXATTRS, types.OP_REMOVEXATTR} {
