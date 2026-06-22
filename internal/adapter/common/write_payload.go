@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -111,19 +112,46 @@ func CommitBlockStore(
 		// Hard error: unchanged behavior (mapped via the content errmap).
 		return err
 	}
+
+	// Observability (#1245): record the per-store durability decision at the
+	// ack point. engine.Flush returning nil only means the flush pump did not
+	// fault; in the DEFAULT (async) policy Finalized may still be false while
+	// the remote mirror catches up, and localDurable=true (fs local store)
+	// means the bytes already survive a restart regardless of Finalized. This
+	// single DEBUG line surfaces the exact (Finalized, local/remote durable)
+	// inputs so a saturated-CLOSE trace can confirm there is no silent window
+	// without adding a log line to the common (durable) hot path's behavior.
+	// The booleans below feed the decision logic regardless of log level, so
+	// only the DebugCtx call itself (the string conversion + variadic boxing)
+	// is guarded to keep the ack path allocation-free when DEBUG is disabled.
+	finalized := res != nil && res.Finalized
+	localDurable := blockStore.LocalDurable()
+	remoteDurable := blockStore.RemoteDurable()
+	requireDurable := blockStore.RequireDurableCommit()
+	if logger.IsDebugEnabled() {
+		logger.DebugCtx(ctx, "COMMIT/CLOSE flush decision",
+			"payloadID", string(payloadID),
+			"finalized", finalized,
+			"localDurable", localDurable,
+			"remoteDurable", remoteDurable,
+			"requireDurableCommit", requireDurable,
+			"durableAtAck", localDurable || (finalized && remoteDurable),
+		)
+	}
+
 	// DEFAULT: strict durability enforcement is opt-in. A successful flush is
 	// enough to ack — the remote mirror stays async and observable.
-	if !blockStore.RequireDurableCommit() {
+	if !requireDurable {
 		return nil
 	}
 	// FAST path: a durable local store means the bytes already survive a
 	// restart; ack without waiting for the async remote mirror.
-	if blockStore.LocalDurable() {
+	if localDurable {
 		return nil
 	}
 	// Local store is volatile: success requires the data to have reached a
 	// durable remote (Finalized AND the remote is itself durable).
-	if res != nil && res.Finalized && blockStore.RemoteDurable() {
+	if finalized && remoteDurable {
 		return nil
 	}
 	// Not yet durable anywhere that survives a crash — report so the client
