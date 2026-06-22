@@ -181,9 +181,10 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 		t.Errorf("smbclient exited non-zero: %v\nOutput:\n%s", cmdErr, out)
 	}
 
-	// Assert the listing actually happened: a successful 'ls' on any share
-	// prints at least the "blocks available" summary line.
-	if !strings.Contains(out, "blocks available") && !strings.Contains(out, "NT_STATUS_") {
+	// Assert the listing actually happened: a successful 'ls' prints the
+	// "blocks available" summary line. Require it unconditionally so an
+	// unexpected NT_STATUS_* (beyond the two checked above) cannot pass.
+	if !strings.Contains(out, "blocks available") {
 		t.Errorf("smbclient output does not contain expected 'ls' listing evidence\nOutput:\n%s", out)
 	}
 
