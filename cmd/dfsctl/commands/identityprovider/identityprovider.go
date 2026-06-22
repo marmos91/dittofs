@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
@@ -29,6 +30,7 @@ func init() {
 	Cmd.AddCommand(getCmd)
 	Cmd.AddCommand(setCmd)
 	Cmd.AddCommand(testCmd)
+	Cmd.AddCommand(configureCmd)
 }
 
 // --- list ---
@@ -208,6 +210,97 @@ func runTest(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("provider test failed at stage %q: %s", result.Stage, result.Message)
 	}
 	return nil
+}
+
+// --- configure ---
+
+var (
+	configureMachineAccountEnabled bool
+	configureMachineAccountName    string
+	configureMachineSecret         string
+	configureMachineKeytab         string
+	configureDCAddresses           []string
+)
+
+var configureCmd = &cobra.Command{
+	Use:   "configure kerberos",
+	Short: "Configure Kerberos machine-account settings",
+	Long: `Set individual Kerberos machine-account flags without replacing the full configuration.
+
+The current configuration is read from the API, the specified flags are applied,
+and the result is written back. Fields not specified on the command line are
+preserved unchanged.
+
+--machine-secret is write-only: omit it to keep the currently stored credential;
+provide a new value to rotate it. Submitting the redacted placeholder ("********")
+also preserves the stored secret.
+
+Changes take effect on the next server restart.
+
+Examples:
+  dfsctl identity-provider configure kerberos --machine-account-enabled --machine-account-name MYHOST$ --machine-secret 'p@ss' --machine-keytab /etc/krb5.keytab --dc-address 192.0.2.10 --dc-address 192.0.2.11`,
+	Args: cobra.ExactArgs(1),
+	RunE: runConfigure,
+}
+
+func init() {
+	configureCmd.Flags().BoolVar(&configureMachineAccountEnabled, "machine-account-enabled", false,
+		"Enable machine-account authentication for NETLOGON")
+	configureCmd.Flags().StringVar(&configureMachineAccountName, "machine-account-name", "",
+		"Machine account name (e.g. MYHOST$)")
+	configureCmd.Flags().StringVar(&configureMachineSecret, "machine-secret", "",
+		"Machine account password (write-only; omit to keep the stored value)")
+	configureCmd.Flags().StringVar(&configureMachineKeytab, "machine-keytab", "",
+		"Path to the machine-account keytab file")
+	configureCmd.Flags().StringArrayVar(&configureDCAddresses, "dc-address", nil,
+		"Domain controller address (repeatable; multiple values joined with ',')")
+}
+
+func runConfigure(cmd *cobra.Command, args []string) error {
+	if args[0] != "kerberos" {
+		return fmt.Errorf("configure only supports 'kerberos' (got %q)", args[0])
+	}
+
+	client, err := cmdutil.GetAuthenticatedClient()
+	if err != nil {
+		return err
+	}
+
+	// Read the current config so we preserve all existing fields.
+	cfg, err := client.GetKerberosConfig()
+	if err != nil {
+		// If the provider is not yet configured, start from an empty config.
+		cfg = &apiclient.KerberosProviderConfig{}
+	}
+
+	// Apply only the flags that were explicitly set.
+	if cmd.Flags().Changed("machine-account-enabled") {
+		cfg.MachineAccount.Enabled = configureMachineAccountEnabled
+	}
+	if cmd.Flags().Changed("machine-account-name") {
+		cfg.MachineAccount.AccountName = configureMachineAccountName
+	}
+	if cmd.Flags().Changed("machine-keytab") {
+		cfg.MachineAccount.KeytabPath = configureMachineKeytab
+	}
+	if cmd.Flags().Changed("dc-address") {
+		cfg.MachineAccount.DCAddress = strings.Join(configureDCAddresses, ",")
+	}
+	// --machine-secret: write-only. Only propagate when the flag was explicitly
+	// provided. An absent flag leaves the field empty so the API's
+	// preserve-on-empty rule retains the stored credential.
+	if cmd.Flags().Changed("machine-secret") {
+		cfg.MachineAccount.Secret = configureMachineSecret
+	}
+
+	out, err := client.PutKerberosConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to configure Kerberos: %w", err)
+	}
+	if _, perr := fmt.Fprintln(os.Stderr, "Kerberos configuration saved; it will take effect on the next server restart."); perr != nil {
+		return perr
+	}
+	return cmdutil.PrintResourceWithSuccess(os.Stdout, out, "Saved Kerberos identity provider configuration (applies on next server restart).")
 }
 
 // --- helpers ---

@@ -40,19 +40,34 @@ type LDAPProviderConfig struct {
 	TLS             LDAPTLSConfig `json:"tls"`
 }
 
+// KerberosMachineAccountConfig holds the machine-account credentials used for
+// NETLOGON / AD machine-account authentication. Secret is write-only: the API
+// always returns the redacted placeholder instead of the real value.
+type KerberosMachineAccountConfig struct {
+	Enabled     bool   `json:"enabled,omitempty"`
+	AccountName string `json:"account_name,omitempty"`
+	// Secret is the machine-account password. Write-only — omit to preserve the
+	// currently stored value; submit the redacted placeholder ("********") to
+	// produce the same result (API's preserve-on-empty rule).
+	Secret     string `json:"secret,omitempty"`
+	KeytabPath string `json:"keytab_path,omitempty"`
+	DCAddress  string `json:"dc_address,omitempty"`
+}
+
 // KerberosProviderConfig mirrors the server's Kerberos identity-provider config.
 // A change takes effect on the next server restart.
 type KerberosProviderConfig struct {
-	Enabled          bool   `json:"enabled"`
-	KeytabPath       string `json:"keytab_path"`
-	ServicePrincipal string `json:"service_principal"`
-	Realm            string `json:"realm"`
-	NetBIOSDomain    string `json:"netbios_domain"`
-	DNSDomain        string `json:"dns_domain"`
-	Krb5Conf         string `json:"krb5_conf"`
-	MaxClockSkew     string `json:"max_clock_skew"`
-	ContextTTL       string `json:"context_ttl"`
-	MaxContexts      int    `json:"max_contexts"`
+	Enabled          bool                          `json:"enabled"`
+	KeytabPath       string                        `json:"keytab_path"`
+	ServicePrincipal string                        `json:"service_principal"`
+	Realm            string                        `json:"realm"`
+	NetBIOSDomain    string                        `json:"netbios_domain"`
+	DNSDomain        string                        `json:"dns_domain"`
+	Krb5Conf         string                        `json:"krb5_conf"`
+	MaxClockSkew     string                        `json:"max_clock_skew"`
+	ContextTTL       string                        `json:"context_ttl"`
+	MaxContexts      int                           `json:"max_contexts"`
+	MachineAccount   KerberosMachineAccountConfig  `json:"machine_account,omitempty"`
 }
 
 // IdentityProviderTestResult is the result of a non-persisting provider test.

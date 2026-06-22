@@ -583,6 +583,7 @@ dfsctl
     list           List all groups
     remove-user    Remove a user from a group
   identity-provider Identity provider (LDAP/AD, Kerberos) management
+    configure      Configure Kerberos machine-account settings
     get            Show an identity provider's configuration (secrets redacted)
     list           List identity providers and their state
     set            Create or replace an identity provider's configuration
@@ -2309,6 +2310,53 @@ Manage DittoFS identity providers (LDAP/AD and Kerberos) over the API.
 LDAP changes hot-reload the live identity resolver; Kerberos changes take
 effect on the next server restart. Secret material (bind password) is
 write-only and never displayed.
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl identity-provider configure`
+
+Configure Kerberos machine-account settings
+
+Set individual Kerberos machine-account flags without replacing the full configuration.
+
+The current configuration is read from the API, the specified flags are applied,
+and the result is written back. Fields not specified on the command line are
+preserved unchanged.
+
+--machine-secret is write-only: omit it to keep the currently stored credential;
+provide a new value to rotate it. Submitting the redacted placeholder ("********")
+also preserves the stored secret.
+
+Changes take effect on the next server restart.
+
+Examples:
+  dfsctl identity-provider configure kerberos --machine-account-enabled --machine-account-name MYHOST$ --machine-secret 'p@ss' --machine-keytab /etc/krb5.keytab --dc-address 192.0.2.10 --dc-address 192.0.2.11
+
+```
+dfsctl identity-provider configure kerberos [flags]
+```
+
+Flags:
+
+```
+      --dc-address stringArray        Domain controller address (repeatable; multiple values joined with ',')
+      --machine-account-enabled       Enable machine-account authentication for NETLOGON
+      --machine-account-name string   Machine account name (e.g. MYHOST$)
+      --machine-keytab string         Path to the machine-account keytab file
+      --machine-secret string         Machine account password (write-only; omit to keep the stored value)
+```
 
 Global flags:
 
