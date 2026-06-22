@@ -285,3 +285,85 @@ func TestSIDToLDAPFilter_RoundTrips(t *testing.T) {
 		t.Errorf("unexpected filter prefix: %q", got)
 	}
 }
+
+// TestLookupUID_RFC2307 covers the reverse uid→name search that backs the
+// LSARPC owner-SID display path. The provider must issue a
+// (&(objectClass=user)(uidNumber=N)) filter and return the sAMAccountName +
+// realm. A miss returns ok=false.
+func TestLookupUID_RFC2307(t *testing.T) {
+	var sawFilter string
+	fc := &fakeConn{
+		search: func(req *ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
+			sawFilter = req.Filter
+			if strings.Contains(req.Filter, "uidNumber=10001") {
+				return []*ldapv3.Entry{entry("CN=alice,DC=dittofs,DC=ad",
+					map[string][]string{"sAMAccountName": {"alice"}}, nil)}, nil
+			}
+			return nil, nil
+		},
+	}
+	p := newTestProvider(t, baseCfg(), fc)
+
+	name, domain, ok := p.LookupUID(context.Background(), 10001)
+	if !ok {
+		t.Fatal("LookupUID(10001) ok=false, want true")
+	}
+	if name != "alice" {
+		t.Errorf("name = %q, want alice", name)
+	}
+	if domain != "DITTOFS.AD" {
+		t.Errorf("domain = %q, want DITTOFS.AD", domain)
+	}
+	if !strings.Contains(sawFilter, "objectClass=user") || !strings.Contains(sawFilter, "uidNumber=10001") {
+		t.Errorf("filter = %q, want objectClass=user + uidNumber=10001", sawFilter)
+	}
+
+	// Miss.
+	if _, _, ok := p.LookupUID(context.Background(), 99999); ok {
+		t.Error("LookupUID(99999) ok=true, want false (no match)")
+	}
+}
+
+// TestLookupGID_RFC2307 mirrors TestLookupUID_RFC2307 for the group path.
+func TestLookupGID_RFC2307(t *testing.T) {
+	var sawFilter string
+	fc := &fakeConn{
+		search: func(req *ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
+			sawFilter = req.Filter
+			if strings.Contains(req.Filter, "gidNumber=10000") {
+				return []*ldapv3.Entry{entry("CN=domain users,DC=dittofs,DC=ad",
+					map[string][]string{"sAMAccountName": {"domain users"}}, nil)}, nil
+			}
+			return nil, nil
+		},
+	}
+	p := newTestProvider(t, baseCfg(), fc)
+
+	name, domain, ok := p.LookupGID(context.Background(), 10000)
+	if !ok || name != "domain users" || domain != "DITTOFS.AD" {
+		t.Errorf("LookupGID(10000) = (%q, %q, %v), want (domain users, DITTOFS.AD, true)", name, domain, ok)
+	}
+	if !strings.Contains(sawFilter, "objectClass=group") || !strings.Contains(sawFilter, "gidNumber=10000") {
+		t.Errorf("filter = %q, want objectClass=group + gidNumber=10000", sawFilter)
+	}
+}
+
+// TestLookupUID_RIDMode confirms reverse lookup is a no-op (miss) in rid mode,
+// where the POSIX id is the RID and there is no uidNumber attribute to match.
+func TestLookupUID_RIDMode(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Idmap = IdmapRID
+	searched := false
+	fc := &fakeConn{search: func(*ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
+		searched = true
+		return nil, nil
+	}}
+	p := newTestProvider(t, cfg, fc)
+
+	if _, _, ok := p.LookupUID(context.Background(), 1234); ok {
+		t.Error("LookupUID in rid mode should miss")
+	}
+	if searched {
+		t.Error("rid mode must not issue a directory search for reverse uid lookup")
+	}
+}

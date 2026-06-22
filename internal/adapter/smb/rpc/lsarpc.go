@@ -37,8 +37,9 @@ const (
 	OpLsarClose       uint16 = 0  // LsarClose
 	OpLsarOpenPolicy  uint16 = 6  // LsarOpenPolicy (legacy; smbcacls/older clients use this)
 	OpLsarOpenPolicy2 uint16 = 44 // LsarOpenPolicy2
-	OpLsarLookupSids2 uint16 = 57 // LsarLookupSids2
-	OpLsarLookupSids3 uint16 = 76 // LsarLookupSids3
+	OpLsarLookupSids  uint16 = 15 // LsarLookupSids  (legacy; smbcacls/rpcclient lookupsids)
+	OpLsarLookupSids2 uint16 = 57 // LsarLookupSids2 (Windows Explorer)
+	OpLsarLookupSids3 uint16 = 76 // LsarLookupSids3 (rpcclient lookupsids3)
 )
 
 // DCE/RPC reject status codes [C706 §14.6 / MS-RPCE]. Returned in a FAULT PDU.
@@ -94,6 +95,17 @@ type ForeignSIDResolver interface {
 	// constants (SidTypeUser / SidTypeGroup). ok=false means no directory
 	// object matched the SID.
 	LookupSID(sidString string) (name, domain string, sidType uint16, ok bool)
+
+	// LookupUID resolves a POSIX UID to its directory account name and NetBIOS
+	// domain. It backs the OWNER-SID display path for an AD-only user: the
+	// machine-domain (algorithmic) SID on a file decodes to a UID that has no
+	// local DittoFS account, so the name is recovered from the directory by its
+	// uidNumber. ok=false means no directory object matched the UID.
+	LookupUID(uid uint32) (name, domain string, ok bool)
+
+	// LookupGID resolves a POSIX GID to its directory group name and NetBIOS
+	// domain. Mirrors LookupUID for the GROUP SID on a file.
+	LookupGID(gid uint32) (name, domain string, ok bool)
 }
 
 // =============================================================================
@@ -190,10 +202,8 @@ func (h *LSARPCHandler) HandleRequest(req *Request) []byte {
 		return h.handleClose(req)
 	case OpLsarOpenPolicy, OpLsarOpenPolicy2:
 		return h.handleOpenPolicy(req)
-	case OpLsarLookupSids2:
+	case OpLsarLookupSids, OpLsarLookupSids2, OpLsarLookupSids3:
 		return h.handleLookupSids(req)
-	case OpLsarLookupSids3:
-		return h.handleLookupSids(req) // Same logic, no policy handle needed
 	default:
 		return h.buildFault(req.Header.CallID, ncaSOpRngError)
 	}
@@ -250,18 +260,6 @@ type resolvedSID struct {
 	domainSID  *sid.SID
 }
 
-// resolveNameOrFallback attempts to resolve a name via the lookup function.
-// If the resolver is nil or the lookup misses, the fallback is returned.
-func resolveNameOrFallback(fallback string, resolver IdentityResolver, lookup func(IdentityResolver) (string, bool)) string {
-	if resolver == nil {
-		return fallback
-	}
-	if resolved, ok := lookup(resolver); ok {
-		return resolved
-	}
-	return fallback
-}
-
 // resolveSID resolves a single SID to a display name and type.
 func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 	// Check well-known SIDs
@@ -288,30 +286,67 @@ func (h *LSARPCHandler) resolveSID(s *sid.SID) resolvedSID {
 		return resolvedSID{name: name, sidType: sidType}
 	}
 
-	// Check machine domain SIDs (user)
+	// Check machine domain SIDs (user). The local control-plane store is tried
+	// first (LookupUsernameByUID). When it misses — the common AD case where the
+	// file owner is an AD-only user (e.g. alice, uid 10001) with no local DittoFS
+	// account — fall back to the directory by uidNumber so Explorer still shows
+	// "DOMAIN\alice" instead of a synthetic "unix_user:10001". The owner SID on
+	// the wire is the machine-domain algorithmic SID, NOT alice's real AD SID, so
+	// this reverse-UID path (not the foreign-SID path) is what names it.
 	if uid, ok := h.sidMapper.UIDFromSID(s); ok {
-		name := resolveNameOrFallback(
-			fmt.Sprintf("unix_user:%d", uid),
-			h.resolver,
-			func(r IdentityResolver) (string, bool) { return r.LookupUsernameByUID(uid) },
-		)
+		if h.resolver != nil {
+			if name, found := h.resolver.LookupUsernameByUID(uid); found {
+				return resolvedSID{
+					name:       name,
+					sidType:    SidTypeUser,
+					domainName: h.machineDomainNameOrDefault(),
+					domainSID:  h.machineDomainSID(),
+				}
+			}
+		}
+		if h.foreignResolver != nil {
+			if name, domain, found := h.foreignResolver.LookupUID(uid); found {
+				return resolvedSID{
+					name:       name,
+					sidType:    SidTypeUser,
+					domainName: domain,
+					domainSID:  h.machineDomainSID(),
+				}
+			}
+		}
 		return resolvedSID{
-			name:       name,
+			name:       fmt.Sprintf("unix_user:%d", uid),
 			sidType:    SidTypeUser,
 			domainName: h.machineDomainNameOrDefault(),
 			domainSID:  h.machineDomainSID(),
 		}
 	}
 
-	// Check machine domain SIDs (group)
+	// Check machine domain SIDs (group). Same local-then-directory fallback as
+	// the user branch above, by gidNumber.
 	if gid, ok := h.sidMapper.GIDFromSID(s); ok {
-		name := resolveNameOrFallback(
-			fmt.Sprintf("unix_group:%d", gid),
-			h.resolver,
-			func(r IdentityResolver) (string, bool) { return r.LookupGroupNameByGID(gid) },
-		)
+		if h.resolver != nil {
+			if name, found := h.resolver.LookupGroupNameByGID(gid); found {
+				return resolvedSID{
+					name:       name,
+					sidType:    SidTypeGroup,
+					domainName: h.machineDomainNameOrDefault(),
+					domainSID:  h.machineDomainSID(),
+				}
+			}
+		}
+		if h.foreignResolver != nil {
+			if name, domain, found := h.foreignResolver.LookupGID(gid); found {
+				return resolvedSID{
+					name:       name,
+					sidType:    SidTypeGroup,
+					domainName: domain,
+					domainSID:  h.machineDomainSID(),
+				}
+			}
+		}
 		return resolvedSID{
-			name:       name,
+			name:       fmt.Sprintf("unix_group:%d", gid),
 			sidType:    SidTypeGroup,
 			domainName: h.machineDomainNameOrDefault(),
 			domainSID:  h.machineDomainSID(),
@@ -378,13 +413,24 @@ func (h *LSARPCHandler) machineDomainSID() *sid.SID {
 	return fullSID
 }
 
-// handleLookupSids handles LsarLookupSids2 (opnum 57) and LsarLookupSids3 (opnum 76).
-// Parses the SID array, resolves each SID, and returns a response with
-// referenced domains and translated names.
+// handleLookupSids handles LsarLookupSids (opnum 15), LsarLookupSids2 (opnum
+// 57), and LsarLookupSids3 (opnum 76). It parses the SID array, resolves each
+// SID, and returns a response with referenced domains and translated names.
+//
+// Per MS-LSAT the response translated-names structure is per-opnum:
+//   - 15 (LsarLookupSids): LSAPR_TRANSLATED_NAMES — entries are
+//     LSAPR_TRANSLATED_NAME with NO Flags field.
+//   - 57/76 (LookupSids2/3): LSAPR_TRANSLATED_NAMES_EX — entries are
+//     LSAPR_TRANSLATED_NAME_EX with a trailing Flags (ULONG). The 57 and 76
+//     responses are byte-identical (they differ only in request-side params),
+//     so both share the EX builder.
+//
+// Emitting the EX layout for opnum 15 (or vice-versa) shifts every field after
+// the first entry by 4 bytes, which a real client parses as an out-of-bounds
+// array — the NT_STATUS_ARRAY_BOUNDS_EXCEEDED seen from rpcclient.
 func (h *LSARPCHandler) handleLookupSids(req *Request) []byte {
-	// Parse SIDs from the request stub data.
-	// The request format varies between opnum 57 (has policy handle) and 76 (no handle).
-	// For simplicity, we extract SIDs from the binary data.
+	// Parse SIDs from the request stub data. The leading bytes differ per opnum
+	// (policy handle for 15/57, none for 76) — parseSIDsFromRequest accounts for it.
 	sids := h.parseSIDsFromRequest(req.StubData, req.OpNum)
 
 	logger.Debug("LSA LookupSids", "numSids", len(sids))
@@ -414,8 +460,10 @@ func (h *LSARPCHandler) handleLookupSids(req *Request) []byte {
 		}
 	}
 
-	// Build response stub data
-	stubData := h.buildLookupSidsResponse(resolved, domains, domainMap, allMapped)
+	// Build response stub data. Opnum 15 uses the non-EX translated-name layout
+	// (no Flags); 57/76 use the EX layout.
+	withFlags := req.OpNum != OpLsarLookupSids
+	stubData := h.buildLookupSidsResponse(resolved, domains, domainMap, allMapped, withFlags)
 
 	resp := &Response{
 		AllocHint:   uint32(len(stubData)),
@@ -432,10 +480,12 @@ func (h *LSARPCHandler) handleLookupSids(req *Request) []byte {
 func (h *LSARPCHandler) parseSIDsFromRequest(data []byte, opnum uint16) []*sid.SID {
 	var sids []*sid.SID
 
-	// For opnum 57 (LookupSids2): skip policy handle (20 bytes) then SID array
-	// For opnum 76 (LookupSids3): SID array directly
+	// LsarLookupSids (15) and LsarLookupSids2 (57) both lead with a 20-byte
+	// LSAPR_HANDLE PolicyHandle before the SID_ENUM_BUFFER. LsarLookupSids3 (76)
+	// takes an RPC binding handle (handle_t) instead, which is never marshaled,
+	// so its SID_ENUM_BUFFER starts at offset 0.
 	offset := 0
-	if opnum == OpLsarLookupSids2 {
+	if opnum == OpLsarLookupSids || opnum == OpLsarLookupSids2 {
 		offset = 20 // Skip policy handle
 	}
 
@@ -506,12 +556,19 @@ type domainEntry struct {
 	sid  *sid.SID
 }
 
-// buildLookupSidsResponse builds the NDR-encoded response for LookupSids2.
+// buildLookupSidsResponse builds the NDR-encoded LookupSids response.
+//
+// The referenced-domain list, mapped count, and status are identical across
+// all three opnums. withFlags selects the translated-name entry layout: true
+// emits LSAPR_TRANSLATED_NAME_EX (Use + Name + DomainIndex + Flags) for
+// LookupSids2/3 (opnum 57/76); false emits LSAPR_TRANSLATED_NAME (no Flags)
+// for the legacy LookupSids (opnum 15).
 func (h *LSARPCHandler) buildLookupSidsResponse(
 	resolved []resolvedSID,
 	domains []domainEntry,
 	domainMap map[string]int,
 	allMapped bool,
+	withFlags bool,
 ) []byte {
 	var buf bytes.Buffer
 
@@ -599,8 +656,10 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 				}
 			}
 			_ = binary.Write(&buf, binary.LittleEndian, domIdx)
-			// Flags (uint32)
-			appendUint32Buf(&buf, 0)
+			// Flags (uint32) — present only in the _EX layout (opnum 57/76).
+			if withFlags {
+				appendUint32Buf(&buf, 0)
+			}
 		}
 
 		// Deferred string data for each name

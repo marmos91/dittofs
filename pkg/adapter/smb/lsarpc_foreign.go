@@ -62,14 +62,49 @@ func (r *identityForeignSIDResolver) LookupSID(sidString string) (name, domain s
 		return "", "", 0, false
 	}
 
-	dom := r.netbiosDomain
-	if dom == "" {
-		dom = netbiosFromRealm(resolved.Domain)
-	}
-
 	// The forward directory resolve matches objectClass=user, so a hit is an
 	// account (user) rather than a group.
-	return resolved.Username, dom, smbrpc.SidTypeUser, true
+	return resolved.Username, r.netbiosOrDerive(resolved.Domain), smbrpc.SidTypeUser, true
+}
+
+// LookupUID resolves a POSIX UID to its directory account name + NetBIOS
+// domain. It backs the OWNER-SID display path: a file owned by an AD-only user
+// carries the machine-domain (algorithmic) SID, which the LSARPC handler
+// decodes to a UID. When that UID has no local DittoFS account the handler
+// calls here, and the resolver's LDAP provider matches it by uidNumber to
+// recover the real account name (e.g. alice). A miss returns ok=false so the
+// SID stays unmapped — never a fault.
+func (r *identityForeignSIDResolver) LookupUID(uid uint32) (name, domain string, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	defer cancel()
+
+	n, dom, found := r.resolver.LookupUID(ctx, uid)
+	if !found || n == "" {
+		return "", "", false
+	}
+	return n, r.netbiosOrDerive(dom), true
+}
+
+// LookupGID resolves a POSIX GID to its directory group name + NetBIOS domain.
+// Mirrors LookupUID for the GROUP SID on a file (matched by gidNumber).
+func (r *identityForeignSIDResolver) LookupGID(gid uint32) (name, domain string, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	defer cancel()
+
+	n, dom, found := r.resolver.LookupGID(ctx, gid)
+	if !found || n == "" {
+		return "", "", false
+	}
+	return n, r.netbiosOrDerive(dom), true
+}
+
+// netbiosOrDerive returns the configured AD NetBIOS short name, or derives one
+// from the resolved realm when none was configured.
+func (r *identityForeignSIDResolver) netbiosOrDerive(realm string) string {
+	if r.netbiosDomain != "" {
+		return r.netbiosDomain
+	}
+	return netbiosFromRealm(realm)
 }
 
 // netbiosFromRealm derives a NetBIOS short domain from a Kerberos realm / DNS

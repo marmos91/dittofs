@@ -346,3 +346,86 @@ func TestResolver_ConcurrentAccess(t *testing.T) {
 		t.Fatalf("expected at most ~5 provider calls with caching, got %d", p.callCount())
 	}
 }
+
+// reverseMockProvider is a mockProvider that also implements ReverseResolver,
+// used to exercise the resolver's reverse uid/gid lookup chain.
+type reverseMockProvider struct {
+	mockProvider
+	uids     map[uint32]string
+	gids     map[uint32]string
+	domain   string
+	uidCalls atomic.Int32
+}
+
+func (m *reverseMockProvider) LookupUID(_ context.Context, uid uint32) (string, string, bool) {
+	m.uidCalls.Add(1)
+	if n, ok := m.uids[uid]; ok {
+		return n, m.domain, true
+	}
+	return "", "", false
+}
+
+func (m *reverseMockProvider) LookupGID(_ context.Context, gid uint32) (string, string, bool) {
+	if n, ok := m.gids[gid]; ok {
+		return n, m.domain, true
+	}
+	return "", "", false
+}
+
+// TestResolver_ReverseLookup_Chain verifies LookupUID/LookupGID consult only
+// providers that implement ReverseResolver, first hit wins, and that a
+// non-reverse provider in the chain is skipped without panicking.
+func TestResolver_ReverseLookup_Chain(t *testing.T) {
+	plain := &mockProvider{name: "kerberos"} // no ReverseResolver
+	dir := &reverseMockProvider{
+		mockProvider: mockProvider{name: "ldap"},
+		uids:         map[uint32]string{10001: "alice"},
+		gids:         map[uint32]string{10000: "domain users"},
+		domain:       "DITTOFS.AD",
+	}
+	r := NewResolver(WithProvider(plain), WithProvider(dir))
+
+	name, domain, ok := r.LookupUID(context.Background(), 10001)
+	if !ok || name != "alice" || domain != "DITTOFS.AD" {
+		t.Fatalf("LookupUID = (%q, %q, %v), want (alice, DITTOFS.AD, true)", name, domain, ok)
+	}
+
+	gname, _, ok := r.LookupGID(context.Background(), 10000)
+	if !ok || gname != "domain users" {
+		t.Fatalf("LookupGID = (%q, %v), want (domain users, true)", gname, ok)
+	}
+
+	if _, _, ok := r.LookupUID(context.Background(), 99999); ok {
+		t.Error("LookupUID(99999) should miss")
+	}
+}
+
+// TestResolver_ReverseLookup_Cached verifies a repeated reverse lookup is served
+// from cache (the provider is queried once for a hit and once for a miss).
+func TestResolver_ReverseLookup_Cached(t *testing.T) {
+	dir := &reverseMockProvider{
+		mockProvider: mockProvider{name: "ldap"},
+		uids:         map[uint32]string{42: "bob"},
+		domain:       "AD",
+	}
+	r := NewResolver(WithProvider(dir))
+
+	for i := 0; i < 3; i++ {
+		if name, _, ok := r.LookupUID(context.Background(), 42); !ok || name != "bob" {
+			t.Fatalf("iter %d: LookupUID(42) = (%q, %v)", i, name, ok)
+		}
+	}
+	if got := dir.uidCalls.Load(); got != 1 {
+		t.Errorf("provider LookupUID called %d times, want 1 (cached)", got)
+	}
+
+	// A miss is also cached.
+	for i := 0; i < 3; i++ {
+		if _, _, ok := r.LookupUID(context.Background(), 7); ok {
+			t.Fatalf("iter %d: LookupUID(7) should miss", i)
+		}
+	}
+	if got := dir.uidCalls.Load(); got != 2 {
+		t.Errorf("provider LookupUID called %d times total, want 2 (one hit + one miss, both cached)", got)
+	}
+}

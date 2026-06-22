@@ -674,9 +674,13 @@ func TestStoreIdentityResolver_NilFuncs(t *testing.T) {
 // Foreign (AD/LDAP) SID resolution
 // =============================================================================
 
-// mockForeignResolver is a test ForeignSIDResolver keyed by canonical SID string.
+// mockForeignResolver is a test ForeignSIDResolver. SID hits are keyed by
+// canonical SID string; reverse uid/gid hits (the AD-only owner path) are keyed
+// by numeric id.
 type mockForeignResolver struct {
-	hits map[string]foreignHit
+	hits    map[string]foreignHit
+	uidHits map[uint32]reverseHit
+	gidHits map[uint32]reverseHit
 }
 
 type foreignHit struct {
@@ -685,12 +689,33 @@ type foreignHit struct {
 	sidType uint16
 }
 
+type reverseHit struct {
+	name   string
+	domain string
+}
+
 func (m *mockForeignResolver) LookupSID(sidString string) (string, string, uint16, bool) {
 	h, ok := m.hits[sidString]
 	if !ok {
 		return "", "", 0, false
 	}
 	return h.name, h.domain, h.sidType, true
+}
+
+func (m *mockForeignResolver) LookupUID(uid uint32) (string, string, bool) {
+	h, ok := m.uidHits[uid]
+	if !ok {
+		return "", "", false
+	}
+	return h.name, h.domain, true
+}
+
+func (m *mockForeignResolver) LookupGID(gid uint32) (string, string, bool) {
+	h, ok := m.gidHits[gid]
+	if !ok {
+		return "", "", false
+	}
+	return h.name, h.domain, true
 }
 
 func TestResolveSID_ForeignAD_Hit(t *testing.T) {
@@ -784,8 +809,9 @@ type translatedName struct {
 
 // parseLookupSidsResponse decodes the stub data produced by
 // buildLookupSidsResponse. It mirrors that exact layout — it is a test-only
-// reader, not a general NDR parser.
-func parseLookupSidsResponse(t *testing.T, response []byte) lookupSidsResult {
+// reader, not a general NDR parser. withFlags selects the EX (opnum 57/76)
+// vs non-EX (opnum 15) translated-name entry layout.
+func parseLookupSidsResponse(t *testing.T, response []byte, withFlags bool) lookupSidsResult {
 	t.Helper()
 	if len(response) <= 24 {
 		t.Fatalf("response too short: %d bytes", len(response))
@@ -816,10 +842,10 @@ func parseLookupSidsResponse(t *testing.T, response []byte) lookupSidsResult {
 	if domCount > 0 {
 		_ = u32() // conformant max count
 		for range domCount {
-			length := u16()      // Length (excl null), in bytes
-			_ = u16()            // MaximumLength
-			_ = u32()            // string pointer
-			_ = u32()            // SID pointer
+			length := u16() // Length (excl null), in bytes
+			_ = u16()       // MaximumLength
+			_ = u32()       // string pointer
+			_ = u32()       // SID pointer
 			domFixeds = append(domFixeds, domFixed{nameUTF16Bytes: length})
 		}
 		// Deferred domain name strings.
@@ -846,7 +872,9 @@ func parseLookupSidsResponse(t *testing.T, response []byte) lookupSidsResult {
 			_ = u16() // MaximumLength
 			_ = u32() // name pointer
 			domIdx := int32(u32())
-			_ = u32() // flags
+			if withFlags {
+				_ = u32() // flags (EX layout only)
+			}
 			res.names = append(res.names, translatedName{sidType: st, domainIdx: domIdx})
 		}
 		// Deferred name strings.
@@ -949,7 +977,7 @@ func TestLookupSids_MixedBatch_MultiDomain(t *testing.T) {
 		t.Fatal("got fault for a partially-unmapped batch; must be a normal response")
 	}
 
-	res := parseLookupSidsResponse(t, response)
+	res := parseLookupSidsResponse(t, response, true) // opnum 57 → EX layout
 
 	if res.status != statusSomeNotMapped {
 		t.Errorf("status = 0x%08x, want STATUS_SOME_NOT_MAPPED (0x%08x)", res.status, statusSomeNotMapped)
@@ -1023,10 +1051,10 @@ func TestBuildLookupSidsResponse_TwoDomains(t *testing.T) {
 		}
 	}
 
-	stub := h.buildLookupSidsResponse(resolved, domains, domainMap, true)
+	stub := h.buildLookupSidsResponse(resolved, domains, domainMap, true, true)
 	// Prefix a fake 24-byte RPC header so the shared parser offset math holds.
 	response := append(make([]byte, 24), stub...)
-	res := parseLookupSidsResponse(t, response)
+	res := parseLookupSidsResponse(t, response, true)
 
 	if len(res.domains) != 2 {
 		t.Fatalf("domains = %v, want exactly 2 (deduped)", res.domains)
@@ -1043,5 +1071,310 @@ func TestBuildLookupSidsResponse_TwoDomains(t *testing.T) {
 	}
 	if res.status != statusSuccess {
 		t.Errorf("status = 0x%08x, want success", res.status)
+	}
+}
+
+// =============================================================================
+// Machine-domain SID → directory reverse uid/gid (GAP 1: AD-only owner)
+// =============================================================================
+
+// TestResolveSID_MachineDomainUser_DirectoryFallback covers the headline #1343
+// case: the file OWNER SID is the machine-domain (algorithmic) SID for an
+// AD-only user (alice, uid 10001), so it decodes via UIDFromSID. The local
+// control-plane resolver has no such user, so resolution must fall back to the
+// directory by uidNumber and present the real AD name + domain.
+func TestResolveSID_MachineDomainUser_DirectoryFallback(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	// Local resolver: deliberately empty for uid 10001 (no local account).
+	local := &mockResolver{users: map[uint32]string{}}
+	foreign := &mockForeignResolver{
+		uidHits: map[uint32]reverseHit{10001: {name: "alice", domain: "DITTOFS"}},
+	}
+	h := NewLSARPCHandler(mapper, local)
+	h.SetForeignSIDResolver(foreign)
+	h.SetMachineDomainName("FILER01")
+
+	ownerSID := mapper.UserSID(10001) // S-1-5-21-0-0-0-(10001*2+1000)
+	r := h.resolveSID(ownerSID)
+
+	if r.name != "alice" {
+		t.Errorf("name = %q, want alice (directory reverse-uid)", r.name)
+	}
+	if r.sidType != SidTypeUser {
+		t.Errorf("sidType = %d, want %d (User)", r.sidType, SidTypeUser)
+	}
+	// The directory-resolved domain (from the reverse lookup) takes precedence
+	// over the machine NetBIOS name for an AD-only account.
+	if r.domainName != "DITTOFS" {
+		t.Errorf("domainName = %q, want DITTOFS (from directory)", r.domainName)
+	}
+	if r.domainSID == nil {
+		t.Error("domainSID is nil; want the machine domain SID")
+	}
+}
+
+// TestResolveSID_MachineDomainUser_LocalWins ensures the local store still wins
+// when the user DOES have a local account — the directory fallback only fires
+// on a local miss, and the machine NetBIOS name is used for local accounts.
+func TestResolveSID_MachineDomainUser_LocalWins(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	local := &mockResolver{users: map[uint32]string{42: "localbob"}}
+	foreign := &mockForeignResolver{
+		uidHits: map[uint32]reverseHit{42: {name: "WRONG", domain: "WRONGDOM"}},
+	}
+	h := NewLSARPCHandler(mapper, local)
+	h.SetForeignSIDResolver(foreign)
+	h.SetMachineDomainName("FILER01")
+
+	r := h.resolveSID(mapper.UserSID(42))
+	if r.name != "localbob" {
+		t.Errorf("name = %q, want localbob (local store wins)", r.name)
+	}
+	if r.domainName != "FILER01" {
+		t.Errorf("domainName = %q, want FILER01 (machine domain for local account)", r.domainName)
+	}
+}
+
+// TestResolveSID_MachineDomainGroup_DirectoryFallback is the group analog: a
+// GROUP SID for an AD-only group falls back to the directory by gidNumber.
+func TestResolveSID_MachineDomainGroup_DirectoryFallback(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	local := &mockResolver{groups: map[uint32]string{}}
+	foreign := &mockForeignResolver{
+		gidHits: map[uint32]reverseHit{10000: {name: "domain users", domain: "DITTOFS"}},
+	}
+	h := NewLSARPCHandler(mapper, local)
+	h.SetForeignSIDResolver(foreign)
+
+	r := h.resolveSID(mapper.GroupSID(10000))
+	if r.name != "domain users" {
+		t.Errorf("name = %q, want \"domain users\"", r.name)
+	}
+	if r.sidType != SidTypeGroup {
+		t.Errorf("sidType = %d, want %d (Group)", r.sidType, SidTypeGroup)
+	}
+	if r.domainName != "DITTOFS" {
+		t.Errorf("domainName = %q, want DITTOFS", r.domainName)
+	}
+}
+
+// TestResolveSID_MachineDomainUser_BothMiss confirms that when neither the local
+// store nor the directory knows the uid, the SID still resolves (never faults) —
+// it shows the generic unix_user:N name under the machine domain.
+func TestResolveSID_MachineDomainUser_BothMiss(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{}})
+	h.SetForeignSIDResolver(&mockForeignResolver{uidHits: map[uint32]reverseHit{}})
+
+	r := h.resolveSID(mapper.UserSID(7))
+	if r.name != "unix_user:7" {
+		t.Errorf("name = %q, want unix_user:7", r.name)
+	}
+	if r.sidType != SidTypeUser {
+		t.Errorf("sidType = %d, want %d (User)", r.sidType, SidTypeUser)
+	}
+}
+
+// =============================================================================
+// Opnum 15 (LsarLookupSids) and opnum 76 (LsarLookupSids3) framing
+// =============================================================================
+
+// buildLookupSidsStubData builds a LookupSids request stub for the given opnum.
+// Opnum 15/57 lead with a 20-byte policy handle; opnum 76 does not.
+func buildLookupSidsStubData(opnum uint16, sids []*sid.SID) []byte {
+	var buf bytes.Buffer
+	if opnum == OpLsarLookupSids || opnum == OpLsarLookupSids2 {
+		policyHandle := make([]byte, 20)
+		policyHandle[0] = 0x01
+		buf.Write(policyHandle)
+	}
+	appendUint32Buf(&buf, uint32(len(sids))) // Count
+	appendUint32Buf(&buf, 0x00020000)        // pointer to array
+	appendUint32Buf(&buf, uint32(len(sids))) // conformant max count
+	for range sids {
+		appendUint32Buf(&buf, 0x00020004) // SID pointer
+	}
+	for _, s := range sids {
+		appendUint32Buf(&buf, uint32(s.SubAuthorityCount))
+		sid.EncodeSID(&buf, s)
+	}
+	return buf.Bytes()
+}
+
+// TestLSARPC_LookupSids_Opnum15_RoundTrip verifies opnum 15 dispatches (no
+// fault, no PROCNUM_OUT_OF_RANGE) and emits the NON-EX translated-name layout.
+// Decoding with withFlags=false must yield well-formed, in-range fields; the
+// well-known SID maps and the unknown SID does not.
+func TestLSARPC_LookupSids_Opnum15_RoundTrip(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{5: "alice"}})
+
+	sids := []*sid.SID{
+		sid.WellKnownAdministrators,   // BUILTIN\Administrators
+		mapper.UserSID(5),             // DITTOFS\alice
+		sid.ParseSIDMust("S-1-99-42"), // unknown
+	}
+	stub := buildLookupSidsStubData(OpLsarLookupSids, sids)
+	reqData := buildTestRequest(50, OpLsarLookupSids, stub)
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+
+	response := h.HandleRequest(req)
+	hdr, err := ParseHeader(response)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if hdr.PacketType == PDUFault {
+		t.Fatal("opnum 15 faulted; smbcacls/rpcclient lookupsids must get a response")
+	}
+
+	res := parseLookupSidsResponse(t, response, false) // opnum 15 → non-EX layout
+	if len(res.names) != 3 {
+		t.Fatalf("translated names = %d, want 3", len(res.names))
+	}
+	wantTypes := []uint16{SidTypeAlias, SidTypeUser, SidTypeUnknown}
+	for i, wt := range wantTypes {
+		if res.names[i].sidType != wt {
+			t.Errorf("name[%d].sidType = %d, want %d", i, res.names[i].sidType, wt)
+		}
+	}
+	if res.status != statusSomeNotMapped {
+		t.Errorf("status = 0x%08x, want STATUS_SOME_NOT_MAPPED", res.status)
+	}
+	if res.mappedCount != 2 {
+		t.Errorf("mappedCount = %d, want 2", res.mappedCount)
+	}
+	// Every mapped domain index must be in range — the proof the non-EX layout
+	// is internally consistent (a stray Flags word would shift these).
+	for i, n := range res.names {
+		if n.sidType == SidTypeUnknown {
+			if n.domainIdx != -1 {
+				t.Errorf("unmapped name[%d] domainIdx = %d, want -1", i, n.domainIdx)
+			}
+			continue
+		}
+		if n.domainIdx < 0 || int(n.domainIdx) >= len(res.domains) {
+			t.Errorf("name[%d] domainIdx %d out of range (%d domains)", i, n.domainIdx, len(res.domains))
+		}
+	}
+}
+
+// TestLSARPC_LookupSids3_Opnum76_RoundTrip exercises opnum 76 (no policy handle
+// on the wire). It must parse the SID array from offset 0 and emit the EX
+// layout. A wrong leading-offset or wrong entry layout is exactly what produced
+// NT_STATUS_ARRAY_BOUNDS_EXCEEDED (#1342).
+func TestLSARPC_LookupSids3_Opnum76_RoundTrip(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{9: "bob"}})
+
+	sids := []*sid.SID{
+		mapper.UserSID(9),
+		sid.WellKnownEveryone,
+	}
+	stub := buildLookupSidsStubData(OpLsarLookupSids3, sids)
+	reqData := buildTestRequest(76, OpLsarLookupSids3, stub)
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+
+	response := h.HandleRequest(req)
+	hdr, err := ParseHeader(response)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if hdr.PacketType == PDUFault {
+		t.Fatal("opnum 76 faulted")
+	}
+
+	res := parseLookupSidsResponse(t, response, true) // opnum 76 → EX layout
+	if len(res.names) != 2 {
+		t.Fatalf("translated names = %d, want 2 (offset-0 SID parse)", len(res.names))
+	}
+	if res.names[0].sidType != SidTypeUser {
+		t.Errorf("name[0].sidType = %d, want %d (User)", res.names[0].sidType, SidTypeUser)
+	}
+	if res.names[1].sidType != SidTypeWellKnownGroup {
+		t.Errorf("name[1].sidType = %d, want %d (WellKnownGroup)", res.names[1].sidType, SidTypeWellKnownGroup)
+	}
+	if res.status != statusSuccess {
+		t.Errorf("status = 0x%08x, want success (all mapped)", res.status)
+	}
+	if res.mappedCount != 2 {
+		t.Errorf("mappedCount = %d, want 2", res.mappedCount)
+	}
+}
+
+// TestLSARPC_LookupSids_PerOpnumLayout_ByteDiff proves the per-opnum layout
+// difference is real: for the SAME single mapped SID, the opnum-15 (non-EX)
+// stub is exactly 4 bytes shorter than the opnum-57 (EX) stub — the missing
+// Flags word. This is the framing fix for #1342.
+func TestLSARPC_LookupSids_PerOpnumLayout_ByteDiff(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{3: "carol"}})
+
+	resp15 := h.HandleRequest(mustParse(t, buildTestRequest(1, OpLsarLookupSids,
+		buildLookupSidsStubData(OpLsarLookupSids, []*sid.SID{mapper.UserSID(3)}))))
+	resp57 := h.HandleRequest(mustParse(t, buildTestRequest(2, OpLsarLookupSids2,
+		buildLookupSidsStubData(OpLsarLookupSids2, []*sid.SID{mapper.UserSID(3)}))))
+
+	if len(resp15) == 0 || len(resp57) == 0 {
+		t.Fatal("empty response")
+	}
+	diff := len(resp57) - len(resp15)
+	if diff != 4 {
+		t.Errorf("opnum57 stub - opnum15 stub = %d bytes, want 4 (one Flags ULONG per mapped name)", diff)
+	}
+}
+
+func mustParse(t *testing.T, reqData []byte) *Request {
+	t.Helper()
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	return req
+}
+
+// TestLSARPC_LookupSids_MixedBatch_PerOpnum runs the same mapped/unmapped batch
+// through all three opnums and asserts STATUS_SOME_NOT_MAPPED + the mapped count
+// hold regardless of layout.
+func TestLSARPC_LookupSids_MixedBatch_PerOpnum(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{2: "dave"}})
+
+	sids := []*sid.SID{
+		mapper.UserSID(2),            // mapped
+		sid.ParseSIDMust("S-1-99-7"), // unmapped
+		sid.WellKnownEveryone,        // mapped
+	}
+
+	cases := []struct {
+		opnum     uint16
+		withFlags bool
+	}{
+		{OpLsarLookupSids, false},
+		{OpLsarLookupSids2, true},
+		{OpLsarLookupSids3, true},
+	}
+	for _, c := range cases {
+		stub := buildLookupSidsStubData(c.opnum, sids)
+		req := mustParse(t, buildTestRequest(100, c.opnum, stub))
+		response := h.HandleRequest(req)
+		if hdr, _ := ParseHeader(response); hdr.PacketType == PDUFault {
+			t.Fatalf("opnum %d faulted on mixed batch", c.opnum)
+		}
+		res := parseLookupSidsResponse(t, response, c.withFlags)
+		if len(res.names) != 3 {
+			t.Errorf("opnum %d: names = %d, want 3", c.opnum, len(res.names))
+		}
+		if res.status != statusSomeNotMapped {
+			t.Errorf("opnum %d: status = 0x%08x, want STATUS_SOME_NOT_MAPPED", c.opnum, res.status)
+		}
+		if res.mappedCount != 2 {
+			t.Errorf("opnum %d: mappedCount = %d, want 2", c.opnum, res.mappedCount)
+		}
 	}
 }
