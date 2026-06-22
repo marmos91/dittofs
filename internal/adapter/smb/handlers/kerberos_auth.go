@@ -538,15 +538,26 @@ func (h *Handler) resolveKerberosIdentity(ctx *SMBHandlerContext, principal, rea
 // synthUserFromResolved builds a transient, non-persisted *models.User from a
 // directory-resolved identity so an AD/LDAP user with no local control-plane
 // account can still establish an SMB session. getUserIdentity derives the
-// primary GID from the first group, so the resolved primary GID is exposed
-// that way; SID/GroupSIDs flow into the SMB authorization context.
+// primary GID from the first group, so the resolved primary GID is listed
+// first; the full resolved supplementary set follows so the SMB auth context
+// carries nested AD group GIDs for POSIX-mode group checks, mirroring the NFS
+// GSS path (#1327). SID/GroupSIDs flow into the SMB authorization context.
 func synthUserFromResolved(r *identity.ResolvedIdentity) *models.User {
 	uid := r.UID
 	gid := r.GID
+	groups := make([]models.Group, 0, 1+len(r.GIDs))
+	groups = append(groups, models.Group{GID: &gid})
+	for _, g := range r.GIDs {
+		if g == r.GID {
+			continue // primary already listed first
+		}
+		sg := g
+		groups = append(groups, models.Group{GID: &sg})
+	}
 	return &models.User{
 		Username:  r.Username,
 		UID:       &uid,
-		Groups:    []models.Group{{GID: &gid}},
+		Groups:    groups,
 		SID:       r.SID,
 		GroupSIDs: r.GroupSIDs,
 		Enabled:   true,

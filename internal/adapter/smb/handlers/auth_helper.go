@@ -159,6 +159,22 @@ func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metada
 		authCtx.Identity.UID = &uid
 		authCtx.Identity.GID = &gid
 		authCtx.Identity.Username = user.Username
+		// Supplementary group IDs: populate Identity.GIDs from every group the
+		// user belongs to so POSIX-mode permission checks (Identity.HasGID)
+		// honor secondary / nested-AD-group membership, not just the primary
+		// GID. Without this an AD user resolved over Kerberos — or any local
+		// user in multiple groups — was granted group access over NFS (which
+		// carries the full set) but denied over SMB. Mirrors the NFS GSS path
+		// (#1327).
+		if len(user.Groups) > 0 {
+			gids := make([]uint32, 0, len(user.Groups))
+			for _, group := range user.Groups {
+				if group.GID != nil {
+					gids = append(gids, *group.GID)
+				}
+			}
+			authCtx.Identity.GIDs = gids
+		}
 		if user.SID != "" {
 			userSID := user.SID
 			authCtx.Identity.SID = &userSID
