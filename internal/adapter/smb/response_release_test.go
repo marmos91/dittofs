@@ -46,7 +46,7 @@ func newTestConnPair(t *testing.T) (net.Conn, func()) {
 func newTestConnInfo(t *testing.T, conn net.Conn) *ConnInfo {
 	t.Helper()
 	mgr := session.NewDefaultManager()
-	h := handlers.NewHandlerWithSessionManager(mgr, nil)
+	h := handlers.NewHandlerWithSessionManager(mgr)
 	return &ConnInfo{
 		Conn:           conn,
 		Handler:        h,
@@ -144,7 +144,7 @@ func TestReleaseData_FiresOnWriteError(t *testing.T) {
 
 	ci := &ConnInfo{
 		Conn:           serverConn,
-		Handler:        handlers.NewHandlerWithSessionManager(session.NewDefaultManager(), nil),
+		Handler:        handlers.NewHandlerWithSessionManager(session.NewDefaultManager()),
 		SessionManager: session.NewDefaultManager(),
 		WriteMu:        &LockedWriter{},
 		WriteTimeout:   100 * time.Millisecond,

@@ -33,7 +33,7 @@ func (fakeConn) Close() error                     { return nil }
 func newConnInfoForDispatch(t *testing.T, connID uint64, dialect types.Dialect) *ConnInfo {
 	t.Helper()
 	mgr := session.NewDefaultManager()
-	h := handlers.NewHandlerWithSessionManager(mgr, nil)
+	h := handlers.NewHandlerWithSessionManager(mgr)
 	cs := NewConnectionCryptoState()
 	cs.SetDialect(dialect)
 	return &ConnInfo{

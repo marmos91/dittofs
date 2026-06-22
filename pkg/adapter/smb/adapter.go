@@ -139,7 +139,7 @@ func New(config Config) *Adapter {
 		"max_session_credits", creditConfig.MaxSessionCredits)
 
 	// Create handler with session manager
-	handler := handlers.NewHandlerWithSessionManager(sessionManager, nil)
+	handler := handlers.NewHandlerWithSessionManager(sessionManager)
 
 	// Apply signing configuration to handler
 	handler.SigningConfig = config.Signing.ToSigningConfig()

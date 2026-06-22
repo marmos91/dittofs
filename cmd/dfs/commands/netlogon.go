@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"log/slog"
 	"os"
 	"strings"
 
@@ -52,5 +53,6 @@ func netbiosWorkstation(k config.KerberosConfig) string {
 		}
 		return h
 	}
+	slog.Warn("NETLOGON workstation name could not be derived; DC may reject the logon")
 	return ""
 }

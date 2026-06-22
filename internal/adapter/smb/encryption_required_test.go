@@ -16,7 +16,7 @@ import (
 // shouldRejectUnencryptedTreeConnect tests in the handlers package.
 func TestCheckEncryptionRequired_GlobalMode(t *testing.T) {
 	mgr := session.NewDefaultManager()
-	h := handlers.NewHandlerWithSessionManager(mgr, nil)
+	h := handlers.NewHandlerWithSessionManager(mgr)
 	connInfo := &ConnInfo{Handler: h, SessionManager: mgr}
 
 	const someSession = uint64(0x1234)

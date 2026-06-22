@@ -30,7 +30,7 @@ func newMetricsConnInfo(t *testing.T, conn net.Conn) (*ConnInfo, *metrics.Metric
 	mgr := session.NewDefaultManager()
 	return &ConnInfo{
 		Conn:           conn,
-		Handler:        handlers.NewHandlerWithSessionManager(mgr, nil),
+		Handler:        handlers.NewHandlerWithSessionManager(mgr),
 		SessionManager: mgr,
 		WriteMu:        &LockedWriter{},
 		WriteTimeout:   2 * time.Second,
@@ -110,7 +110,7 @@ func TestProcessSingleRequest_NilMetricsNoPanic(t *testing.T) {
 	mgr := session.NewDefaultManager()
 	ci := &ConnInfo{
 		Conn:           serverConn,
-		Handler:        handlers.NewHandlerWithSessionManager(mgr, nil),
+		Handler:        handlers.NewHandlerWithSessionManager(mgr),
 		SessionManager: mgr,
 		WriteMu:        &LockedWriter{},
 		WriteTimeout:   2 * time.Second,

@@ -859,7 +859,7 @@ func (f *OpenFile) CaptureNotifyCompletionFilter(filter uint32) (captured uint32
 // use NewHandlerWithSessionManager. LeaseManager is wired by the adapter
 // layer when the runtime is available.
 func NewHandler() *Handler {
-	return NewHandlerWithSessionManager(session.NewDefaultManager(), nil)
+	return NewHandlerWithSessionManager(session.NewDefaultManager())
 }
 
 // NewHandlerWithSessionManager creates a new SMB2 handler with an external session manager.
@@ -867,7 +867,9 @@ func NewHandler() *Handler {
 // for credit tracking). Initializes pipe manager, notify registry, generates a
 // random server GUID, and sets default max sizes. LeaseManager is wired by the
 // adapter layer when the runtime and LockManager are available.
-func NewHandlerWithSessionManager(sessionManager *session.Manager, nlAuth netlogon.NetlogonAuthenticator) *Handler {
+// The NETLOGON authenticator is injected separately via SetNetlogonAuthenticator
+// after construction (see pkg/adapter/smb/adapter.go createSMBAdapter).
+func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:               time.Now(),
 		SessionManager:          sessionManager,
@@ -889,7 +891,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager, nlAuth netlog
 		DirectoryLeasingEnabled: true,
 		NtlmEnabled:             true,
 		GuestEnabled:            true,
-		NetlogonAuth:            nlAuth,
+
 		// Default durable handle timeout: 300s (5 minutes). Matches Samba's
 		// `durable_default_timeout_msec` (source3/smbd/smb2_create.c).
 		// smbtorture asserts this value when the client requests
