@@ -1426,6 +1426,10 @@ func (h *Handler) resolveNetlogonIdentity(ctx *SMBHandlerContext, res *netlogon.
 	if resolver == nil {
 		return nil
 	}
+	// Provider is deliberately left unset (unlike the Kerberos path which stamps
+	// Provider: "kerberos"): SID-based resolution matches on ExternalID via the
+	// provider's CanResolve. Stamping a Provider here would narrow matching — do
+	// not "fix" this by adding one.
 	cred := &pkgidentity.Credential{
 		ExternalID: res.UserSID,
 		Attributes: map[string]string{
