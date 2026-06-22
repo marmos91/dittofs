@@ -315,6 +315,27 @@ func (c AdminConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// MachineAccountConfig configures the machine account (computer object) in
+// an Active Directory domain for NETLOGON support.
+type MachineAccountConfig struct {
+	// Enabled controls whether machine account support is active.
+	// Default: false
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// AccountName is the machine account name (e.g. "DITTOFS$").
+	// In Active Directory, machine accounts typically have a '$' suffix.
+	AccountName string `yaml:"account_name" json:"account_name"`
+
+	// Secret is the machine account password.
+	Secret string `yaml:"secret" json:"secret"`
+
+	// KeytabPath is the path to the keytab file for the machine account.
+	KeytabPath string `yaml:"keytab_path" json:"keytab_path"`
+
+	// DCAddresses is a list of domain controller addresses.
+	DCAddresses []string `yaml:"dc_address" json:"dc_address"`
+}
+
 // KerberosConfig contains Kerberos/RPCSEC_GSS authentication configuration.
 //
 // When Enabled is true, the NFS server supports Kerberos authentication
@@ -395,6 +416,9 @@ type KerberosConfig struct {
 
 	// IdentityMapping configures how Kerberos principals are mapped to Unix identities.
 	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" yaml:"identity_mapping"`
+
+	// MachineAccount configures the machine account (computer object) for NETLOGON support.
+	MachineAccount MachineAccountConfig `mapstructure:"machine_account" yaml:"machine_account"`
 }
 
 // Validate returns an error if the KerberosConfig has invalid values.

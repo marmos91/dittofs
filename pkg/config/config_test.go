@@ -302,3 +302,14 @@ controlplane:
 		t.Errorf("Expected port 9090 from env var, got %d", cfg.ControlPlane.Port)
 	}
 }
+
+func TestKerberosMachineAccountParses(t *testing.T) {
+	var k KerberosConfig
+	k.MachineAccount = MachineAccountConfig{
+		Enabled: true, AccountName: "DITTOFS$", Secret: "x",
+		DCAddresses: []string{"dc1"},
+	}
+	if !k.MachineAccount.Enabled || k.MachineAccount.AccountName != "DITTOFS$" {
+		t.Fatal("machine account fields not wired")
+	}
+}
