@@ -37,11 +37,13 @@ func setfattr(t *testing.T, path, name, value string) {
 func getfattr(t *testing.T, path, name string) (string, error) {
 	t.Helper()
 	// --only-values prints just the value; -e text keeps it as the literal string.
+	// Trim a single trailing newline defensively (the test values carry none, so
+	// this only guards against getfattr builds that append one).
 	out, err := exec.Command("getfattr", "--only-values", "-e", "text", "-n", name, path).Output()
 	if err != nil {
 		return "", err
 	}
-	return string(out), nil
+	return strings.TrimSuffix(string(out), "\n"), nil
 }
 
 // getfattrDump returns the full `getfattr -d` listing (all names and values).
@@ -129,6 +131,15 @@ func TestNFSv42XattrPersistAcrossRestart(t *testing.T) {
 
 	// ---- First lifetime: create stores/share/adapter, set the xattr ----
 	sp1 := helpers.StartServerProcessWithConfig(t, configFile)
+	// Guard cleanup so a t.Skip inside MountNFSWithVersion (unsupported platform)
+	// doesn't leak sp1, while the intentional pre-restart kill below isn't
+	// double-signalled to a possibly-reused PID.
+	sp1Killed := false
+	t.Cleanup(func() {
+		if !sp1Killed {
+			sp1.ForceKill()
+		}
+	})
 	cli := helpers.LoginAsAdmin(t, sp1.APIURL())
 
 	_, err := cli.CreateMetadataStore(metaName, "badger", helpers.WithMetaDBPath(badgerPath))
@@ -154,6 +165,7 @@ func TestNFSv42XattrPersistAcrossRestart(t *testing.T) {
 
 	mount1.Cleanup()
 	sp1.ForceKill()
+	sp1Killed = true
 
 	// ---- Second lifetime: same config/sqlite/badger -> config + xattr reload ----
 	sp2 := helpers.StartServerProcessWithConfig(t, configFile)

@@ -71,6 +71,13 @@ const xattrUserPrefix = "user."
 // A single leading "user." prefix is stripped (a client that sends the
 // namespaced form converges on the same bare key as one that sends it bare);
 // the bare prefix "user." with no key is rejected.
+//
+// No migration path is needed for the prior "user.<name>" storage form: #1285
+// is unreleased, so no deployment has persisted NFS-written xattrs under the
+// old prefixed key. SMB stores bare keys (cifs strips "user." on the wire and
+// Windows EA names carry no "user." namespace), so a "user."-prefixed store key
+// cannot arise in practice — hence GET/LIST/REMOVE all key the bare name with
+// no dual-read fallback.
 func canonicalizeXattrName(name string) (canonical string, ok bool) {
 	if name == "" {
 		return "", false
