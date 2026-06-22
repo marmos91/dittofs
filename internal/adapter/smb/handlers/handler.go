@@ -2498,6 +2498,33 @@ func hasDeleteAccess(access uint32) bool {
 		m&types.MaximumAllowed != 0
 }
 
+// newOpenIsShareRestrictive reports whether an open, by virtue of its OWN
+// access + share masks alone, would deny a co-located data-bearing holder —
+// i.e. it requests a given data access but does NOT share that mode with
+// others. FILE_SHARE_NONE + any data access is the maximally restrictive case.
+//
+// Unlike checkShareModeConflict this needs no second party: it is the
+// holder-independent half of the share-mode test (the "new opener's share mask
+// denies others" direction). It is stable across the brief window where a
+// holder's OpenFile has been torn down but its lease record lingers, which is
+// exactly why the #1331 break-reason reclassification keys on it rather than on
+// the racy live-open scan. Stat-only opens impose no share constraint.
+func newOpenIsShareRestrictive(desiredAccess, shareAccess uint32) bool {
+	if isStatOnlyOpen(desiredAccess) {
+		return false
+	}
+	if hasReadAccess(desiredAccess) && shareAccess&smbShareRead == 0 {
+		return true
+	}
+	if hasWriteAccess(desiredAccess) && shareAccess&smbShareWrite == 0 {
+		return true
+	}
+	if hasDeleteAccess(desiredAccess) && shareAccess&smbShareDelete == 0 {
+		return true
+	}
+	return false
+}
+
 // getCachedShares returns the cached share list, rebuilding if invalidated.
 // Thread-safe via RWMutex (concurrent reads allowed, exclusive write for rebuild).
 func (h *Handler) getCachedShares() []rpc.ShareInfo1 {

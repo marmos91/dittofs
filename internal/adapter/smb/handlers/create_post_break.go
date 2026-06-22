@@ -274,6 +274,11 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 	// initialConflict is consumed at most once by the wait closure; every
 	// subsequent poll must re-scan because a holder CLOSE/ACK can clear the
 	// conflict. conflictComputed records whether the scan actually ran.
+	var waitExceptKey [16]byte
+	if d.excludeOwner != nil {
+		waitExceptKey = d.excludeOwner.ExcludeLeaseKey
+	}
+
 	var initialConflict, conflictComputed bool
 	reason := lock.BreakReasonDefault
 	switch {
@@ -286,12 +291,47 @@ func (h *Handler) breakAndMaybeParkCreate(ctx *SMBHandlerContext, d *createDraft
 		conflictComputed = true
 		if initialConflict {
 			reason = lock.BreakReasonSharingViolation
+		} else if newOpenIsShareRestrictive(d.req.DesiredAccess, d.req.ShareAccess) &&
+			h.LeaseManager.AnyHolderHasLeaseBits(lockFileHandle, shareName, waitExceptKey, lock.LeaseStateHandle) {
+			// Decorrelation race (#1331): checkShareModeConflict scans only live
+			// h.files opens, but a Handle-caching lease record can outlive its
+			// OpenFile by a few microseconds during the holder's close /
+			// durable-reconnect teardown. When the live-open scan misses that
+			// holder, a share-restrictive new open (one whose own ShareAccess
+			// would deny a co-located data holder — e.g. FILE_SHARE_NONE) is
+			// still a sharing-violation Handle-strip break, NOT a Default
+			// Write-flush break. Classifying it as Default picks the wrong break
+			// target (RWH→RH instead of RWH→RW) AND routes through the 5 s
+			// force-complete path, which tombstones the holder's lease; the
+			// holder's subsequent (late) LEASE_BREAK_ACK then fails
+			// STATUS_UNSUCCESSFUL (the #1322 replay flake).
+			//
+			// Routing it as a sharing violation uses the deferred-open park
+			// (WaitForShareConflictClear), which never force-completes, so a late
+			// ACK still succeeds (the same mechanism #749 introduced for the
+			// live-holder share-violation park).
+			//
+			// Why this does not regress the force-complete-reliant break tests
+			// (breaking3 / batch22 / timeout-disconnect): this branch is only
+			// reachable when checkShareModeConflict already returned false. Any
+			// holder with a LIVE OpenFile and a conflicting share mode — lease OR
+			// traditional oplock — is caught by that scan first and takes the
+			// initialConflict path above, so it never reaches here. (Note
+			// AnyHolderHasLeaseBits also matches traditional oplocks, which are
+			// stored with their RWH caching bits set; the gate is not lease-only.)
+			// The only holder that slips past the live-open scan is one whose
+			// OpenFile is already gone — the decorrelation window — and there the
+			// post-break recheckExistingFileGates re-evaluates the true share-mode
+			// outcome, with WaitForShareConflictClear's conflictPresent() seeing
+			// no live conflict and exiting immediately. The share-restrictiveness
+			// gate additionally keeps a share-permissive caching break (the
+			// genuine Default/Write-flush case) on the Default path.
+			reason = lock.BreakReasonSharingViolation
+			logger.Debug("CREATE: reclassified Default→SharingViolation (decorrelated handle-caching holder, #1331)",
+				"file", d.filename,
+				"desiredAccess", fmt.Sprintf("0x%x", d.req.DesiredAccess),
+				"shareAccess", fmt.Sprintf("0x%x", d.req.ShareAccess))
 		}
-	}
-
-	var waitExceptKey [16]byte
-	if d.excludeOwner != nil {
-		waitExceptKey = d.excludeOwner.ExcludeLeaseKey
 	}
 
 	// Snapshot the per-reason delay-mask intersection BEFORE dispatching.
