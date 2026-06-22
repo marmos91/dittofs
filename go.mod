@@ -26,6 +26,7 @@ require (
 	github.com/jcmturner/gokrb5/v8 v8.4.4
 	github.com/manifoldco/promptui v0.9.0
 	github.com/mitchellh/mapstructure v1.5.0
+	github.com/oiweiwei/go-msrpc v1.4.3
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4/v4 v4.1.26
@@ -34,8 +35,8 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
-	golang.org/x/sync v0.19.0
-	golang.org/x/term v0.42.0
+	golang.org/x/sync v0.20.0
+	golang.org/x/term v0.43.0
 	golang.org/x/time v0.15.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/driver/postgres v1.6.0
@@ -99,6 +100,7 @@ require (
 	github.com/moby/term v0.5.0 // indirect
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
+	github.com/oiweiwei/go-math v1.0.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
@@ -170,10 +172,10 @@ require (
 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.48.0
-	golang.org/x/net v0.50.0 // indirect
-	golang.org/x/sys v0.43.0
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/crypto v0.52.0
+	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/sys v0.45.0
+	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 )
 
