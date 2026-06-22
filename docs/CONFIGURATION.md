@@ -1604,6 +1604,15 @@ Admin-configured identity links (`dfsctl idmap add`) take precedence over the
 directory query: a link for an `ldap` external ID resolves to the mapped local
 user before any LDAP search is issued.
 
+**Samba AD-DC self-signed certificates.** A default Samba AD-DC serves an
+auto-generated TLS certificate that commonly has a *negative serial number*.
+Go's `crypto/x509` rejects such certificates at parse time — before TLS
+verification runs — so `ldap.tls.insecure_skip_verify` does **not** bypass it.
+The `dfs` binary is built with `x509negativeserial=1` so `ldaps://` against a
+default Samba AD-DC works out of the box. For production directories, prefer a
+properly-issued DC certificate (the Go toggle is slated for removal in a future
+release).
+
 ## Migration
 
 ### Required when upgrading from v0.15.x or earlier
