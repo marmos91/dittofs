@@ -1097,6 +1097,60 @@ func TestAcknowledgeLeaseBreak_AckToNone_KeepsRecordAtNone(t *testing.T) {
 	assert.False(t, found, "lease should be gone after CLOSE")
 }
 
+// TestAcknowledgeLeaseBreak_LateAckNonNoneAfterTimeout_Succeeds pins the
+// smbtorture dhv2-pending1n-vs-violation-lease-ack-sane "sane" contract (#1322):
+// when a parked CREATE force-completes the holder's breaking lease on the
+// break-wait timeout (revoking RWH→None, BrokenViaTimeout), a holder that ACKs
+// LATE with its intended handle-strip state (RW, a non-None subset of the
+// original break-to) must still get STATUS_OK — not STATUS_UNSUCCESSFUL. The
+// pre-#1322 success branch forgave only a None==None late ACK, so an RW late
+// ACK fell through to ErrLeaseAckNotBreaking and flaked the test whenever CI
+// jitter let the 5 s force-complete win the race against the holder's ACK.
+//
+// The ACK must NOT resurrect any lease bits: the force-completed None stands.
+func TestAcknowledgeLeaseBreak_LateAckNonNoneAfterTimeout_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0}
+
+	// Holder takes an RWH lease, then is broken (Handle strip, break-to RW) by a
+	// conflicting open.
+	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	mgr.mu.Lock()
+	for _, locks := range mgr.unifiedLocks {
+		for _, lock := range locks {
+			if lock.Lease != nil && lock.Lease.LeaseKey == key1 {
+				lock.Lease.Breaking = true
+				lock.Lease.BreakToState = LeaseStateRead | LeaseStateWrite
+				lock.Lease.BreakingToRequired = LeaseStateRead | LeaseStateWrite
+				lock.Lease.BreakStarted = time.Now()
+			}
+		}
+	}
+	mgr.mu.Unlock()
+
+	// The parked CREATE's break-wait timer fires first (CI jitter): force-complete
+	// tombstones the lease to None and tags BrokenViaTimeout.
+	mgr.forceCompleteBreaks("file1")
+	state, _, found := mgr.GetLeaseState(ctx, key1)
+	require.True(t, found, "force-completed record persists at None")
+	require.Equal(t, LeaseStateNone, state, "force-complete revoked to None")
+
+	// Holder ACKs late with RW (its handle-strip break-to, a non-None state).
+	// Must succeed — the break the server already completed is benignly ack'd.
+	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateRead|LeaseStateWrite, 0)
+	require.NoError(t, err, "late non-None ACK after timeout force-complete must succeed (ack-sane)")
+
+	// The ACK must not resurrect bits: the forced None stands.
+	state, _, found = mgr.GetLeaseState(ctx, key1)
+	assert.True(t, found, "record still present after late ACK")
+	assert.Equal(t, LeaseStateNone, state, "late ACK must not resurrect lease bits")
+}
+
 // ============================================================================
 // ReleaseLease Tests
 // ============================================================================
