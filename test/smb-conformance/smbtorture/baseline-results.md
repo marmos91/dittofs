@@ -1,5 +1,15 @@
 # smbtorture Baseline Results
 
+> ⚠️ **STALE — the snapshot below predates ~hundreds of fixes and is not the current
+> state.** A full memory-profile run on develop (commit `38bb4c41`, 2026-06-22) reports
+> **489 passed / 30 known-failure / 39 skipped / 0 new failures — CI green**, vs the
+> 54-passed snapshot recorded here. In particular `smb2.streams.*` now pass 14/14 and
+> `smb2.ea.acl_xattr` passes 1/1 (extended-attribute / named-stream support, #1285), so
+> the former "EA storage out of scope" bucket #6 in `KNOWN_FAILURES.md` is retired. CI
+> gates on `KNOWN_FAILURES.md` (via `parse-results.sh`), not on this file. A full
+> regeneration of the per-suite tables below is tracked in #1300. Treat the numbers
+> below as historical until then.
+
 **Date:** 2026-03-02
 **DittoFS Commit:** 52f84ecd (feat/phase-40-smb3-conformance-testing)
 **Profile:** memory (metadata: memory, payload: memory)
