@@ -336,6 +336,29 @@ type MachineAccountConfig struct {
 	DCAddresses []string `mapstructure:"dc_address" yaml:"dc_address"`
 }
 
+// MarshalYAML redacts the machine account secret when the config is serialized
+// for display (e.g. `dfs config show`). An empty secret stays empty so "unset"
+// is distinguishable from a redacted value.
+func (c MachineAccountConfig) MarshalYAML() (interface{}, error) {
+	type alias MachineAccountConfig // avoid infinite recursion
+	out := alias(c)
+	if out.Secret != "" {
+		out.Secret = redactedSecret
+	}
+	return out, nil
+}
+
+// MarshalJSON redacts the machine account secret when the config is serialized
+// for display. See MarshalYAML.
+func (c MachineAccountConfig) MarshalJSON() ([]byte, error) {
+	type alias MachineAccountConfig // avoid infinite recursion
+	out := alias(c)
+	if out.Secret != "" {
+		out.Secret = redactedSecret
+	}
+	return json.Marshal(out)
+}
+
 // KerberosConfig contains Kerberos/RPCSEC_GSS authentication configuration.
 //
 // When Enabled is true, the NFS server supports Kerberos authentication

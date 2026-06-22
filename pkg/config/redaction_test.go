@@ -12,14 +12,15 @@ import (
 
 // TestConfigShow_RedactsSecrets asserts that serializing the live *Config for
 // display (the `dfs config show` path, json + yaml) never emits the JWT
-// signing secret, the postgres password, or the admin password hash —
-// round-2 §2.3 / round-1 §2.1.
+// signing secret, the postgres password, the admin password hash, or the
+// machine account secret — round-2 §2.3 / round-1 §2.1.
 func TestConfigShow_RedactsSecrets(t *testing.T) {
 	const (
-		jwtSecret   = "super-secret-jwt-signing-key-32-chars-long"
-		pgPass      = "p0stgr3s-pa55word"
-		adminHash   = "$2y$10$abcdefghijklmnopqrstuv"
-		ldapBindPwd = "ldap-b1nd-s3cret"
+		jwtSecret     = "super-secret-jwt-signing-key-32-chars-long"
+		pgPass        = "p0stgr3s-pa55word"
+		adminHash     = "$2y$10$abcdefghijklmnopqrstuv"
+		ldapBindPwd   = "ldap-b1nd-s3cret"
+		machineSecret = "m@ch1ne-s3cret-p@ss"
 	)
 
 	cfg := GetDefaultConfig()
@@ -33,8 +34,9 @@ func TestConfigShow_RedactsSecrets(t *testing.T) {
 	}
 	cfg.Admin.PasswordHash = adminHash
 	cfg.LDAP.BindPassword = ldapBindPwd
+	cfg.Kerberos.MachineAccount.Secret = machineSecret
 
-	secrets := []string{jwtSecret, pgPass, adminHash, ldapBindPwd}
+	secrets := []string{jwtSecret, pgPass, adminHash, ldapBindPwd, machineSecret}
 
 	t.Run("yaml", func(t *testing.T) {
 		out, err := yaml.Marshal(cfg)

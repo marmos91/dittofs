@@ -4,6 +4,7 @@ package identityprovider
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
@@ -266,7 +267,12 @@ Examples:
 			// Read the current config so we preserve all existing fields.
 			cfg, err := client.GetKerberosConfig()
 			if err != nil {
-				// If the provider is not yet configured, start from an empty config.
+				// Only treat 404 (not yet configured) as an empty starting point.
+				// Any other error (403, network, TLS) is a real failure.
+				var apiErr *apiclient.APIError
+				if !errors.As(err, &apiErr) || !apiErr.IsNotFound() {
+					return fmt.Errorf("failed to read current Kerberos config: %w", err)
+				}
 				cfg = &apiclient.KerberosProviderConfig{}
 			}
 
