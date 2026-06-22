@@ -569,17 +569,31 @@ NFSv4.1 extends v4.0 with session-based operation, backchannel callbacks, and ad
 
 ### NFSv4.2 Status
 
-NFSv4.2 (RFC 8276) adds named **extended attributes** (xattrs) to the protocol. DittoFS
-implements the four xattr operations; the remaining optional v4.2 features (READ_PLUS,
-ALLOCATE, DEALLOCATE, COPY, SEEK, IO_ADVISE, OFFLOAD_*, CLONE) are not implemented and
+NFSv4.2 (RFC 7862) is a collection of independent, individually-optional features. DittoFS
+implements the named **extended attributes** set (RFC 8276); the other v4.2 operations
 return `NFS4ERR_NOTSUPP`. A client negotiates v4.2 with `mount -o vers=4.2`.
+
+The features below are **planned** and tracked, ordered by fit with DittoFS's
+content-addressed/dedup block store. `CLONE` is the strongest fit — a reflink is a pure
+metadata ref over the same dedup blocks, reusing the SMB server-side-copy engine. `SEEK`,
+`READ_PLUS`, and `DEALLOCATE` form a sparse-files cluster that shares hole-tracking
+plumbing. They are **not yet implemented**.
 
 | Operation | Status | Notes |
 |-----------|--------|-------|
-| GETXATTR | Implemented | |
-| SETXATTR | Implemented | `CREATE` / `REPLACE` / `EITHER` options honored |
-| LISTXATTRS | Implemented | Cookie-based pagination |
-| REMOVEXATTR | Implemented | |
+| GETXATTR | Implemented | RFC 8276 |
+| SETXATTR | Implemented | RFC 8276; `CREATE` / `REPLACE` / `EITHER` options honored |
+| LISTXATTRS | Implemented | RFC 8276; cookie-based pagination |
+| REMOVEXATTR | Implemented | RFC 8276 |
+| CLONE | Planned | reflink over dedup block refs ([#1302](https://github.com/marmos91/dittofs/issues/1302)) |
+| SEEK | Planned | SEEK_HOLE / SEEK_DATA ([#1303](https://github.com/marmos91/dittofs/issues/1303)) |
+| READ_PLUS | Planned | hole-aware read ([#1304](https://github.com/marmos91/dittofs/issues/1304)) |
+| DEALLOCATE | Planned | punch-hole + storage reclaim ([#1305](https://github.com/marmos91/dittofs/issues/1305)) |
+| ALLOCATE | Planned | `fallocate` preallocation ([#1306](https://github.com/marmos91/dittofs/issues/1306)) |
+| COPY / OFFLOAD_* / COPY_NOTIFY | Not planned | async server-side copy; `CLONE` covers the intra-server case more cheaply |
+| IO_ADVISE | Not planned | cache/prefetch hints; low value for a userspace vFS |
+| Labeled NFS (`FATTR4_SEC_LABEL`) | Not planned | MAC/SELinux labels; niche |
+| Application Data Blocks (ADB) | Not planned | out of scope |
 
 **Behavior and limits:**
 
