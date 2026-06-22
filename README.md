@@ -261,6 +261,19 @@ an isolated local storage directory and its own caching tiers. See
 - [Benchmarks](docs/BENCHMARKS.md) — performance harness and results
 - [Releasing](docs/RELEASING.md) — release process and versioning
 
+**Product**
+
+- [DittoFS Pro](docs/PRO.md) — the premium web dashboard built on top of this server
+
+## DittoFS Pro
+
+[**DittoFS Pro**](docs/PRO.md) is the premium edition: a modern web dashboard
+for managing stores, shares, adapters, and access control — everything
+`dfsctl` does, without the CLI. It builds on this open-source server and ships
+as a single binary with the UI embedded. Learn more at [dittofs.io](https://dittofs.io).
+
+[![DittoFS Pro dashboard](docs/assets/pro/dashboard.png)](docs/PRO.md)
+
 ## Testing
 
 ```bash
