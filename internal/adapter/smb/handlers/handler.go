@@ -236,6 +236,25 @@ type Handler struct {
 	// ("local") is advertised. Set by the adapter from the Kerberos provider.
 	DNSDomain string
 
+	// NetBIOSName is the server's own NetBIOS computer name advertised in the
+	// NTLM Type-2 TargetInfo (MsvAvNbComputerName). When NETLOGON pass-through is
+	// active this MUST be the AD machine-account name (e.g. "DITTOFS"), because a
+	// domain client echoes it into its NTLMv2 response and Samba's NETLOGON
+	// SamLogon rejects a response whose computer name does not match the machine
+	// account the secure channel authenticated as (#1357). When empty the OS
+	// hostname is used (standalone / non-domain behavior). Set by the adapter
+	// from the NETLOGON machine-account workstation name.
+	NetBIOSName string
+
+	// NetlogonIdmapRID enables the idmap_rid fallback for NETLOGON pass-through:
+	// when a DC-validated domain user's SID is not mapped by any configured
+	// identity provider, derive a stable POSIX UID/GID algorithmically from the
+	// SID's RID (Samba idmap_rid model) so the user still gets a usable session
+	// without RFC2307 attributes or a directory lookup (#1357). Last resort —
+	// configured LDAP/local mappings always take precedence. Enabled by the
+	// adapter whenever a NETLOGON authenticator is injected.
+	NetlogonIdmapRID bool
+
 	// NtlmEnabled controls whether NTLM authentication is allowed.
 	// When false, NTLM tokens in SESSION_SETUP are rejected with STATUS_LOGON_FAILURE.
 	// Default: true.

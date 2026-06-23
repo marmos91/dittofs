@@ -138,7 +138,7 @@ func TestADCombinedKeytabAndDomainAwareSMB(t *testing.T) {
 		NetBIOSDomain: provider.NetBIOSDomain(),
 		DNSDomain:     provider.DNSDomain(),
 	}
-	challenge, _ := smbauth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain)
+	challenge, _ := smbauth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain, "")
 	pairs := parseChallengeTargetInfo(t, challenge)
 
 	if got := pairs[smbauth.AvNbDomainName]; got != adDomain {

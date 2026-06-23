@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -727,7 +728,7 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 	}
 
 	// Build TYPE_2 CHALLENGE
-	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain)
+	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain, h.NetBIOSName)
 
 	pending := &PendingAuth{
 		SessionID:        ctx.SessionID, // bound session's ID
@@ -963,7 +964,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 
 	// Build NTLM Type 2 (CHALLENGE) response
 	// This also returns the server challenge for later validation
-	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain)
+	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain, h.NetBIOSName)
 
 	// Store pending auth to track handshake state
 	// Include the server challenge for NTLMv2 validation in completeNTLMAuth
@@ -1422,26 +1423,76 @@ func (h *Handler) tryNetlogonFallback(ctx *SMBHandlerContext, pending *PendingAu
 // caller fails closed. Mirrors resolveKerberosIdentity, but the credential is a
 // validated Windows SID rather than a Kerberos principal.
 func (h *Handler) resolveNetlogonIdentity(ctx *SMBHandlerContext, res *netlogon.LogonResult) *pkgidentity.ResolvedIdentity {
-	resolver := h.IdentityResolver()
-	if resolver == nil {
+	if resolver := h.IdentityResolver(); resolver != nil {
+		// Provider is deliberately left unset (unlike the Kerberos path which
+		// stamps Provider: "kerberos"): SID-based resolution matches on ExternalID
+		// via the provider's CanResolve. Stamping a Provider here would narrow
+		// matching — do not "fix" this by adding one.
+		cred := &pkgidentity.Credential{
+			ExternalID: res.UserSID,
+			Attributes: map[string]string{
+				"username": res.Username,
+				"domain":   res.DomainName,
+			},
+		}
+		if resolved, err := resolver.Resolve(ctx.Context, cred); err == nil && resolved != nil && resolved.Found {
+			return resolved
+		}
+	}
+
+	// idmap_rid fallback: when no provider maps the DC-returned SID (e.g. no LDAP
+	// directory is configured), derive a stable POSIX identity algorithmically
+	// from the SID RIDs — Samba's idmap_rid model, where UID == the account's RID.
+	// This lets a NETLOGON-authenticated domain user obtain a usable session
+	// without RFC2307 attributes or a directory lookup. It is a last resort:
+	// any configured LDAP/local mapping above always takes precedence (#1357).
+	if h.NetlogonIdmapRID {
+		return synthesizeRIDIdentity(res)
+	}
+	return nil
+}
+
+// synthesizeRIDIdentity builds a ResolvedIdentity from an AD logon's SIDs using
+// the idmap_rid convention (UID/GID == RID). Returns nil if the user SID has no
+// parseable RID. Group SIDs with unparseable RIDs are skipped.
+func synthesizeRIDIdentity(res *netlogon.LogonResult) *pkgidentity.ResolvedIdentity {
+	uid, ok := ridFromSID(res.UserSID)
+	if !ok {
 		return nil
 	}
-	// Provider is deliberately left unset (unlike the Kerberos path which stamps
-	// Provider: "kerberos"): SID-based resolution matches on ExternalID via the
-	// provider's CanResolve. Stamping a Provider here would narrow matching — do
-	// not "fix" this by adding one.
-	cred := &pkgidentity.Credential{
-		ExternalID: res.UserSID,
-		Attributes: map[string]string{
-			"username": res.Username,
-			"domain":   res.DomainName,
-		},
+	gids := make([]uint32, 0, len(res.GroupSIDs))
+	for _, g := range res.GroupSIDs {
+		if gid, ok := ridFromSID(g); ok {
+			gids = append(gids, gid)
+		}
 	}
-	resolved, err := resolver.Resolve(ctx.Context, cred)
-	if err != nil || resolved == nil || !resolved.Found {
-		return nil
+	return &pkgidentity.ResolvedIdentity{
+		Username:  res.Username,
+		UID:       uid,
+		GID:       uid,
+		GIDs:      gids,
+		Domain:    res.DomainName,
+		Found:     true,
+		SID:       res.UserSID,
+		GroupSIDs: res.GroupSIDs,
 	}
-	return resolved
+}
+
+// ridFromSID returns the RID (last sub-authority) of a Windows SID string such
+// as "S-1-5-21-...-1105" → 1105. Returns false for a non-SID or unparseable RID.
+func ridFromSID(sid string) (uint32, bool) {
+	if !strings.HasPrefix(sid, "S-1-") {
+		return 0, false
+	}
+	i := strings.LastIndexByte(sid, '-')
+	if i < 0 || i+1 >= len(sid) {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(sid[i+1:], 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(v), true
 }
 
 // destroySessionOnReauthFailure tears down an existing session after its

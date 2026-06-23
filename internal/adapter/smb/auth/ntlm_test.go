@@ -128,7 +128,7 @@ func TestGetMessageType(t *testing.T) {
 // =============================================================================
 
 func TestBuildChallenge(t *testing.T) {
-	msg, serverChallenge := BuildChallenge("", "")
+	msg, serverChallenge := BuildChallenge("", "", "")
 
 	t.Run("HasCorrectSignature", func(t *testing.T) {
 		if !bytes.Equal(msg[0:8], Signature) {
@@ -176,7 +176,7 @@ func TestBuildChallenge(t *testing.T) {
 	})
 
 	t.Run("GeneratesUniqueChallenge", func(t *testing.T) {
-		msg2, serverChallenge2 := BuildChallenge("", "")
+		msg2, serverChallenge2 := BuildChallenge("", "", "")
 		challenge1 := msg[24:32]
 		challenge2 := msg2[24:32]
 
@@ -840,7 +840,7 @@ func TestBuildChallenge_TargetTypeFlag(t *testing.T) {
 	}
 
 	t.Run("standalone", func(t *testing.T) {
-		msg, _ := BuildChallenge("", "")
+		msg, _ := BuildChallenge("", "", "")
 		f := flagsOf(msg)
 		if f&FlagTargetTypeServer == 0 {
 			t.Error("standalone challenge must set FlagTargetTypeServer")
@@ -851,7 +851,7 @@ func TestBuildChallenge_TargetTypeFlag(t *testing.T) {
 	})
 
 	t.Run("domain-joined", func(t *testing.T) {
-		msg, _ := BuildChallenge("CONTOSO", "contoso.com")
+		msg, _ := BuildChallenge("CONTOSO", "contoso.com", "")
 		f := flagsOf(msg)
 		if f&FlagTargetTypeDomain == 0 {
 			t.Error("domain-joined challenge must set FlagTargetTypeDomain")
