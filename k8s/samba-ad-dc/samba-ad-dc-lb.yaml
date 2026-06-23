@@ -1,0 +1,42 @@
+# Samba AD-DC external LoadBalancer — DEV / TEST ONLY (#1350).
+#
+# Exposes the AD-DC directory roles (Kerberos 88, kpasswd 464, LDAP 389/636,
+# DNS 53) on a public IP so an EXTERNAL Windows VM can DOMAIN-JOIN DITTOFS.AD
+# and then authenticate to the DittoFS SMB server via Kerberos (Route A to the
+# #1297 Windows acceptance proof — no NETLOGON NTLM-passthrough dependency).
+#
+# SECURITY — this publishes a Kerberos KDC + LDAP directory. It is DEV-ONLY and
+# MUST stay locked to the test client:
+#   * loadBalancerSourceRanges below is a PLACEHOLDER (TEST-NET-1, 192.0.2.0/24).
+#     Replace it with the test client's PUBLIC /32 BEFORE applying, e.g.:
+#       kubectl -n dittofs patch svc samba-ad-lb --type=merge \
+#         -p '{"spec":{"loadBalancerSourceRanges":["<WINDOWS_VM_IP>/32"]}}'
+#   * Tear the LB down after the capture:  kubectl -n dittofs delete svc samba-ad-lb
+# Never apply this with an open/0.0.0.0 range. Port 445 (SMB) is deliberately
+# NOT exposed here — DittoFS owns 445; the AD-DC is identity-only.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: samba-ad-lb
+  namespace: dittofs
+  labels:
+    app: samba-ad-dc
+    role: domain-join-lb
+spec:
+  type: LoadBalancer
+  # LOCK THIS DOWN before apply — placeholder range routes to nobody.
+  loadBalancerSourceRanges:
+    - 192.0.2.0/24
+  selector:
+    app: samba-ad-dc
+  ports:
+    - { name: kerberos-tcp, port: 88,  targetPort: 88,  protocol: TCP }
+    - { name: kerberos-udp, port: 88,  targetPort: 88,  protocol: UDP }
+    - { name: ldap,         port: 389, targetPort: 389, protocol: TCP }
+    - { name: ldap-udp,     port: 389, targetPort: 389, protocol: UDP }
+    - { name: ldaps,        port: 636, targetPort: 636, protocol: TCP }
+    - { name: kpasswd-tcp,  port: 464, targetPort: 464, protocol: TCP }
+    - { name: kpasswd-udp,  port: 464, targetPort: 464, protocol: UDP }
+    - { name: dns-tcp,      port: 53,  targetPort: 53,  protocol: TCP }
+    - { name: dns-udp,      port: 53,  targetPort: 53,  protocol: UDP }
