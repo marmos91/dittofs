@@ -19,11 +19,12 @@ const (
 )
 
 var (
-	mountProtocol string
-	mountUsername string
-	mountPassword string
-	mountFileMode string
-	mountDirMode  string
+	mountProtocol   string
+	mountUsername   string
+	mountPassword   string
+	mountFileMode   string
+	mountDirMode    string
+	mountNFSVersion string
 )
 
 var mountCmd = &cobra.Command{
@@ -78,6 +79,7 @@ func init() {
 	mountCmd.Flags().StringVarP(&mountProtocol, "protocol", "p", "", "Protocol to use (nfs or smb) (required)")
 	mountCmd.Flags().StringVarP(&mountUsername, "username", "u", "", "Username for SMB mount (defaults to login username)")
 	mountCmd.Flags().StringVarP(&mountPassword, "password", "P", "", "Password for SMB mount (will prompt if not provided)")
+	mountCmd.Flags().StringVar(&mountNFSVersion, "nfs-version", "3", "NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper")
 	mountCmd.Flags().StringVar(&mountFileMode, "file-mode", defaultMode, modeHelp)
 	mountCmd.Flags().StringVar(&mountDirMode, "dir-mode", defaultMode, "Directory permissions for SMB mount (octal)")
 
@@ -120,7 +122,7 @@ func runMount(cmd *cobra.Command, args []string) error {
 
 	switch protocol {
 	case "nfs":
-		return mountNFS(sharePath, mountPoint, adapters, serverHost)
+		return mountNFS(sharePath, mountPoint, adapters, serverHost, mountNFSVersion)
 	default:
 		return mountSMB(sharePath, mountPoint, adapters, serverHost)
 	}

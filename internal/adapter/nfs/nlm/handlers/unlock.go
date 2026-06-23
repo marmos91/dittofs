@@ -29,9 +29,9 @@ type UnlockResponse struct {
 }
 
 // DecodeUnlockRequest decodes an NLM_UNLOCK request from XDR format.
-func DecodeUnlockRequest(data []byte) (*UnlockRequest, error) {
+func DecodeUnlockRequest(data []byte, version uint32) (*UnlockRequest, error) {
 	r := bytes.NewReader(data)
-	args, err := nlm_xdr.DecodeNLM4UnlockArgs(r)
+	args, err := nlm_xdr.DecodeNLM4UnlockArgs(r, types.IsWideVersion(version))
 	if err != nil {
 		return nil, fmt.Errorf("decode NLM4UnlockArgs: %w", err)
 	}

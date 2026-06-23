@@ -147,6 +147,7 @@ func (s *GORMStore) UpdateNFSAdapterSettings(ctx context.Context, settings *mode
 			"blocked_operations":        settings.BlockedOperations,
 			"portmapper_enabled":        settings.PortmapperEnabled,
 			"portmapper_port":           settings.PortmapperPort,
+			"udp_enabled":               settings.UDPEnabled,
 			"version":                   gorm.Expr("version + 1"),
 			"updated_at":                time.Now(),
 		})
@@ -187,6 +188,7 @@ func (s *GORMStore) ResetNFSAdapterSettings(ctx context.Context, adapterID strin
 			"blocked_operations":        "",
 			"portmapper_enabled":        defaults.PortmapperEnabled,
 			"portmapper_port":           defaults.PortmapperPort,
+			"udp_enabled":               defaults.UDPEnabled,
 			"version":                   gorm.Expr("version + 1"),
 			"updated_at":                time.Now(),
 		})

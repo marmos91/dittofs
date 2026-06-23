@@ -23,6 +23,12 @@ type NLMHandlerContext struct {
 	// Used for logging, metrics, and owner identification.
 	ClientAddr string
 
+	// Version is the negotiated NLM protocol version (1, 3, or 4). It selects
+	// the byte-range offset/length wire width when decoding requests and
+	// encoding responses: v4 uses 64-bit, v1/v3 use 32-bit. macOS NFSv3 lock
+	// clients negotiate v1/v3. See types.IsWideVersion.
+	Version uint32
+
 	// AuthFlavor is the RPC authentication flavor (AUTH_UNIX, AUTH_NULL).
 	// Most NLM clients use AUTH_UNIX.
 	AuthFlavor uint32

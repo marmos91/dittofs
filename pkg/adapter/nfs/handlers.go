@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"time"
 
 	nfs "github.com/marmos91/dittofs/internal/adapter/nfs"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/middleware"
 	nlm "github.com/marmos91/dittofs/internal/adapter/nfs/nlm"
+	nlm_callback "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/callback"
 	nlm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nlm/handlers"
 	nsm "github.com/marmos91/dittofs/internal/adapter/nfs/nsm"
 	nsm_handlers "github.com/marmos91/dittofs/internal/adapter/nfs/nsm/handlers"
@@ -225,6 +227,7 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 		Context:    ctx,
 		ClientAddr: clientAddr,
 		AuthFlavor: call.GetAuthFlavor(),
+		Version:    call.Version,
 	}
 
 	// Parse Unix credentials if AUTH_UNIX
@@ -268,7 +271,55 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 	if result == nil {
 		return nil, err
 	}
+
+	// Asynchronous (_MSG) procedures reply void inline and deliver the result as
+	// an NLM *_RES callback to the client (the macOS/BSD lockd path). The *_RES
+	// MUST leave the NLM listening socket: lockd talks to nlockmgr over a
+	// connected UDP socket and the kernel drops any datagram whose source is not
+	// that exact peer, so the callback is sent via the live listener, not a new
+	// socket. Async NLM is UDP-only.
+	if result.AsyncRes != nil {
+		c.sendNLMAsyncResult(ctx, call.Version, clientAddr, procedure.Name, result.AsyncRes)
+		// The inline reply to a _MSG call is ALWAYS SUCCESS + void; any decode
+		// error is already encoded in the *_RES body delivered above. Returning
+		// the error here would make the transport send RPCSystemErr, which lockd
+		// would misread as a transport failure rather than a protocol result.
+		return []byte{}, nil
+	}
+
 	return result.Data, err
+}
+
+// sendNLMAsyncResult delivers an NLM *_RES callback for an async (_MSG) request
+// from the NLM listening socket (so the source address matches the peer lockd
+// is connected to).
+func (c *NFSConnection) sendNLMAsyncResult(ctx context.Context, vers uint32, clientAddr, procName string, async *nlm.AsyncResult) {
+	udpConn := c.server.udpConn
+	if udpConn == nil {
+		logger.WarnCtx(ctx, "NLM async result: no UDP listener; cannot deliver *_RES",
+			"procedure", procName, "client", clientAddr)
+		return
+	}
+	dst, err := net.ResolveUDPAddr("udp", clientAddr)
+	if err != nil {
+		logger.WarnCtx(ctx, "NLM async result: bad client address",
+			"procedure", procName, "client", clientAddr, "error", err)
+		return
+	}
+	msg, err := nlm_callback.BuildNLMResultMessage(rpc.ProgramNLM, vers, async.Proc, async.Body)
+	if err != nil {
+		logger.WarnCtx(ctx, "NLM async result: build failed",
+			"procedure", procName, "client", clientAddr, "error", err)
+		return
+	}
+	if _, err := udpConn.WriteToUDP(msg, dst); err != nil {
+		logger.WarnCtx(ctx, "NLM async result: send failed",
+			"procedure", procName, "client", clientAddr, "res_proc", async.Proc, "error", err)
+		return
+	}
+	logger.DebugCtx(ctx, "NLM *_RES sent",
+		"procedure", procName, "client", clientAddr, "res_proc", async.Proc,
+		"src", udpConn.LocalAddr().String())
 }
 
 // handleNSMProcedure dispatches an NSM procedure call to the appropriate handler.

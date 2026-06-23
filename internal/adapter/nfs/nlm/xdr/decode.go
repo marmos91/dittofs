@@ -14,20 +14,41 @@ import (
 )
 
 // ============================================================================
-// NLM v4 Request Decoders
+// NLM Request Decoders
+//
+// The `wide` parameter selects the byte-range offset/length wire width:
+//   - wide == true  -> 64-bit (unsigned hyper), used by NLM v4.
+//   - wide == false -> 32-bit (unsigned int),   used by NLM v1/v3.
+//
+// macOS NFSv3 lock clients speak NLM v1/v3, so the narrow form must be honoured.
+// All callers pass a width derived from the negotiated NLM version
+// (see types.IsWideVersion).
 // ============================================================================
 
-// DecodeNLM4Lock decodes an NLM4Lock structure from XDR format.
+// decodeNLMOffset reads a byte-range offset or length using the version's wire
+// width and widens it to uint64 so handler logic stays version-agnostic.
+func decodeNLMOffset(r io.Reader, wide bool) (uint64, error) {
+	if wide {
+		return xdr.DecodeUint64(r)
+	}
+	v, err := xdr.DecodeUint32(r)
+	if err != nil {
+		return 0, err
+	}
+	return uint64(v), nil
+}
+
+// DecodeNLM4Lock decodes an nlm_lock / nlm4_lock structure from XDR format.
 //
-// Wire format:
+// Wire format (l_offset/l_len are 64-bit when wide, 32-bit otherwise):
 //
 //	caller_name: [length:uint32][data:bytes][padding]
 //	fh:          [length:uint32][data:bytes][padding]
 //	oh:          [length:uint32][data:bytes][padding]
 //	svid:        [int32]
-//	l_offset:    [uint64]
-//	l_len:       [uint64]
-func DecodeNLM4Lock(r io.Reader) (*types.NLM4Lock, error) {
+//	l_offset:    [uint64|uint32]
+//	l_len:       [uint64|uint32]
+func DecodeNLM4Lock(r io.Reader, wide bool) (*types.NLM4Lock, error) {
 	lock := &types.NLM4Lock{}
 
 	// Decode caller_name (string)
@@ -61,15 +82,15 @@ func DecodeNLM4Lock(r io.Reader) (*types.NLM4Lock, error) {
 	}
 	lock.Svid = svid
 
-	// Decode l_offset (uint64) - NLM v4 uses 64-bit
-	offset, err := xdr.DecodeUint64(r)
+	// Decode l_offset (64-bit for v4, 32-bit for v1/v3)
+	offset, err := decodeNLMOffset(r, wide)
 	if err != nil {
 		return nil, fmt.Errorf("decode l_offset: %w", err)
 	}
 	lock.Offset = offset
 
-	// Decode l_len (uint64) - NLM v4 uses 64-bit
-	length, err := xdr.DecodeUint64(r)
+	// Decode l_len (64-bit for v4, 32-bit for v1/v3)
+	length, err := decodeNLMOffset(r, wide)
 	if err != nil {
 		return nil, fmt.Errorf("decode l_len: %w", err)
 	}
@@ -88,7 +109,7 @@ func DecodeNLM4Lock(r io.Reader) (*types.NLM4Lock, error) {
 //	alock:     [nlm4_lock structure]
 //	reclaim:   [uint32] (0=false, 1=true)
 //	state:     [int32]
-func DecodeNLM4LockArgs(r io.Reader) (*types.NLM4LockArgs, error) {
+func DecodeNLM4LockArgs(r io.Reader, wide bool) (*types.NLM4LockArgs, error) {
 	args := &types.NLM4LockArgs{}
 
 	// Decode cookie (opaque)
@@ -113,7 +134,7 @@ func DecodeNLM4LockArgs(r io.Reader) (*types.NLM4LockArgs, error) {
 	args.Exclusive = exclusive
 
 	// Decode alock (nlm4_lock)
-	lock, err := DecodeNLM4Lock(r)
+	lock, err := DecodeNLM4Lock(r, wide)
 	if err != nil {
 		return nil, fmt.Errorf("decode alock: %w", err)
 	}
@@ -142,7 +163,7 @@ func DecodeNLM4LockArgs(r io.Reader) (*types.NLM4LockArgs, error) {
 //
 //	cookie: [length:uint32][data:bytes][padding]
 //	alock:  [nlm4_lock structure]
-func DecodeNLM4UnlockArgs(r io.Reader) (*types.NLM4UnlockArgs, error) {
+func DecodeNLM4UnlockArgs(r io.Reader, wide bool) (*types.NLM4UnlockArgs, error) {
 	args := &types.NLM4UnlockArgs{}
 
 	// Decode cookie (opaque)
@@ -153,7 +174,7 @@ func DecodeNLM4UnlockArgs(r io.Reader) (*types.NLM4UnlockArgs, error) {
 	args.Cookie = cookie
 
 	// Decode alock (nlm4_lock)
-	lock, err := DecodeNLM4Lock(r)
+	lock, err := DecodeNLM4Lock(r, wide)
 	if err != nil {
 		return nil, fmt.Errorf("decode alock: %w", err)
 	}
@@ -169,7 +190,7 @@ func DecodeNLM4UnlockArgs(r io.Reader) (*types.NLM4UnlockArgs, error) {
 //	cookie:    [length:uint32][data:bytes][padding]
 //	exclusive: [uint32] (0=false, 1=true)
 //	alock:     [nlm4_lock structure]
-func DecodeNLM4TestArgs(r io.Reader) (*types.NLM4TestArgs, error) {
+func DecodeNLM4TestArgs(r io.Reader, wide bool) (*types.NLM4TestArgs, error) {
 	args := &types.NLM4TestArgs{}
 
 	// Decode cookie (opaque)
@@ -187,7 +208,7 @@ func DecodeNLM4TestArgs(r io.Reader) (*types.NLM4TestArgs, error) {
 	args.Exclusive = exclusive
 
 	// Decode alock (nlm4_lock)
-	lock, err := DecodeNLM4Lock(r)
+	lock, err := DecodeNLM4Lock(r, wide)
 	if err != nil {
 		return nil, fmt.Errorf("decode alock: %w", err)
 	}
@@ -204,7 +225,7 @@ func DecodeNLM4TestArgs(r io.Reader) (*types.NLM4TestArgs, error) {
 //	block:     [uint32] (0=false, 1=true)
 //	exclusive: [uint32] (0=false, 1=true)
 //	alock:     [nlm4_lock structure]
-func DecodeNLM4CancelArgs(r io.Reader) (*types.NLM4CancelArgs, error) {
+func DecodeNLM4CancelArgs(r io.Reader, wide bool) (*types.NLM4CancelArgs, error) {
 	args := &types.NLM4CancelArgs{}
 
 	// Decode cookie (opaque)
@@ -229,7 +250,7 @@ func DecodeNLM4CancelArgs(r io.Reader) (*types.NLM4CancelArgs, error) {
 	args.Exclusive = exclusive
 
 	// Decode alock (nlm4_lock)
-	lock, err := DecodeNLM4Lock(r)
+	lock, err := DecodeNLM4Lock(r, wide)
 	if err != nil {
 		return nil, fmt.Errorf("decode alock: %w", err)
 	}
@@ -247,7 +268,7 @@ func DecodeNLM4CancelArgs(r io.Reader) (*types.NLM4CancelArgs, error) {
 //	alock:     [nlm4_lock structure]
 //
 // Note: GRANTED uses the same format as TEST args.
-func DecodeNLM4GrantedArgs(r io.Reader) (*types.NLM4GrantedArgs, error) {
+func DecodeNLM4GrantedArgs(r io.Reader, wide bool) (*types.NLM4GrantedArgs, error) {
 	args := &types.NLM4GrantedArgs{}
 
 	// Decode cookie (opaque)
@@ -265,7 +286,7 @@ func DecodeNLM4GrantedArgs(r io.Reader) (*types.NLM4GrantedArgs, error) {
 	args.Exclusive = exclusive
 
 	// Decode alock (nlm4_lock)
-	lock, err := DecodeNLM4Lock(r)
+	lock, err := DecodeNLM4Lock(r, wide)
 	if err != nil {
 		return nil, fmt.Errorf("decode alock: %w", err)
 	}

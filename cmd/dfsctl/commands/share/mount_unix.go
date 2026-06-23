@@ -89,17 +89,9 @@ func validateMountPoint(mountPoint string) error {
 	return nil
 }
 
-func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost string) error {
+func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost, nfsVersion string) error {
 	port := getAdapterPort(adapters, "nfs", defaultNFSPort)
-
-	// actimeo=0 disables attribute caching for immediate visibility of changes
-	mountOptions := fmt.Sprintf("nfsvers=3,tcp,port=%d,mountport=%d,actimeo=0", port, port)
-
-	if runtime.GOOS == "darwin" {
-		mountOptions += ",resvport"
-	} else {
-		mountOptions += ",nolock"
-	}
+	mountOptions := buildNFSMountOptions(nfsVersion, port)
 
 	source := fmt.Sprintf("%s:%s", serverHost, sharePath)
 	cmd := exec.Command("mount", "-t", "nfs", "-o", mountOptions, source, mountPoint)
@@ -109,8 +101,45 @@ func mountNFS(sharePath, mountPoint string, adapters []apiclient.Adapter, server
 		return formatMountError(err, string(output), "NFS", port)
 	}
 
-	fmt.Printf("Mounted %s at %s (NFS)\n", sharePath, mountPoint)
+	fmt.Printf("Mounted %s at %s (NFS%s)\n", sharePath, mountPoint, nfsVersionSuffix(nfsVersion))
 	return nil
+}
+
+// buildNFSMountOptions returns the `-o` option string for the requested NFS
+// version. actimeo=0 disables attribute caching for immediate visibility.
+//
+// NFSv3 needs an explicit mountport (the separate MOUNT protocol) and, on Linux,
+// nolock — NFSv3 file locking uses the NLM side protocol, which requires the
+// server's UDP transport and a portmapper reachable on port 111 (issue #1353).
+// NFSv4 carries locking in-protocol and has no MOUNT protocol, so it omits
+// mountport and never needs nolock.
+func buildNFSMountOptions(nfsVersion string, port int) string {
+	darwin := runtime.GOOS == "darwin"
+
+	if strings.HasPrefix(nfsVersion, "4") {
+		opts := fmt.Sprintf("nfsvers=%s,tcp,port=%d,actimeo=0", nfsVersion, port)
+		if darwin {
+			opts += ",resvport"
+		}
+		return opts
+	}
+
+	// NFSv3 (default).
+	opts := fmt.Sprintf("nfsvers=3,tcp,port=%d,mountport=%d,actimeo=0", port, port)
+	if darwin {
+		opts += ",resvport"
+	} else {
+		opts += ",nolock"
+	}
+	return opts
+}
+
+// nfsVersionSuffix renders the version for the success message, e.g. "v4.1".
+func nfsVersionSuffix(nfsVersion string) string {
+	if nfsVersion == "" {
+		return "v3"
+	}
+	return "v" + nfsVersion
 }
 
 func mountSMB(sharePath, mountPoint string, adapters []apiclient.Adapter, serverHost string) error {

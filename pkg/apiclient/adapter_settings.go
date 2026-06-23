@@ -29,6 +29,7 @@ type NFSAdapterSettingsResponse struct {
 	BlockedOperations          []string `json:"blocked_operations"`
 	PortmapperEnabled          bool     `json:"portmapper_enabled"`
 	PortmapperPort             int      `json:"portmapper_port"`
+	UDPEnabled                 bool     `json:"udp_enabled"`
 	Version                    int      `json:"version"`
 }
 
@@ -89,6 +90,7 @@ type PatchNFSSettingsRequest struct {
 	BlockedOperations          *[]string `json:"blocked_operations,omitempty"`
 	PortmapperEnabled          *bool     `json:"portmapper_enabled,omitempty"`
 	PortmapperPort             *int      `json:"portmapper_port,omitempty"`
+	UDPEnabled                 *bool     `json:"udp_enabled,omitempty"`
 }
 
 // PatchSMBSettingsRequest uses pointer fields for partial updates.

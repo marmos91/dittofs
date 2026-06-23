@@ -375,18 +375,20 @@ func TestNotify_DispatchesToAllMonitors(t *testing.T) {
 
 	privA := [16]byte{1, 2, 3}
 	privB := [16]byte{9, 9, 9}
-	// Callback hosts must be valid (non-loopback, non-link-local) IP literals
-	// per the SSRF guard.
+	// The SM_NOTIFY callback target is the SM_MON request's transport source, so
+	// each monitor's source IP is also its callback address. my_name is a label.
 	const clientA = "203.0.113.10"
 	const clientB = "203.0.113.11"
 	const clientC = "203.0.113.12"
-	// Two distinct local clients both monitor peer.example from the same host.
-	monitorWithCallback(t, h, "10.0.0.5:601", "peer.example", clientA, privA)
-	monitorWithCallback(t, h, "10.0.0.5:602", "peer.example", clientB, privB)
+	// Two clients (distinct sources) both monitor peer.example.
+	monitorWithCallback(t, h, clientA+":601", "peer.example", "localhost", privA)
+	monitorWithCallback(t, h, clientB+":602", "peer.example", "localhost", privB)
 	// A third client monitors a different host — must NOT be notified.
-	monitorWithCallback(t, h, "10.0.0.5:603", "other.example", clientC, [16]byte{7})
+	monitorWithCallback(t, h, clientC+":603", "other.example", "localhost", [16]byte{7})
 
-	notify(t, h, "10.0.0.5:55000", "peer.example", 5)
+	// NOTIFY from clientA (a peer.example monitor's source) passes the H16 gate
+	// and relays to every peer.example monitor (clientA + clientB).
+	notify(t, h, clientA+":55000", "peer.example", 5)
 
 	calls := fd.recorded()
 	if len(calls) != 2 {

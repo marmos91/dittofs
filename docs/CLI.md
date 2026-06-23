@@ -1085,6 +1085,7 @@ Flags:
       --portmapper-enabled                   Enable embedded portmapper
       --portmapper-port int                  Portmapper listen port
       --preferred-transfer-size int          Preferred transfer size in bytes
+      --udp-enabled                          Serve NLM/NSM/MOUNT over UDP (needed for NFSv3 locking from macOS/BSD; restart to apply)
       --v4-max-connections-per-session int   Maximum connections per NFSv4.1 session (0=unlimited)
       --v4-max-minor-version int             Maximum NFSv4 minor version (0=v4.0, 1=v4.1)
       --v4-min-minor-version int             Minimum NFSv4 minor version (0=v4.0, 1=v4.1)
@@ -3851,11 +3852,12 @@ dfsctl share mount [share] [mountpoint] [flags]
 Flags:
 
 ```
-      --dir-mode string    Directory permissions for SMB mount (octal) (default "0777")
-      --file-mode string   File permissions for SMB mount (octal, default 0777 on macOS since uid/gid not supported) (default "0777")
-  -P, --password string    Password for SMB mount (will prompt if not provided)
-  -p, --protocol string    Protocol to use (nfs or smb) (required)
-  -u, --username string    Username for SMB mount (defaults to login username)
+      --dir-mode string      Directory permissions for SMB mount (octal) (default "0777")
+      --file-mode string     File permissions for SMB mount (octal, default 0777 on macOS since uid/gid not supported) (default "0777")
+      --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
+  -P, --password string      Password for SMB mount (will prompt if not provided)
+  -p, --protocol string      Protocol to use (nfs or smb) (required)
+  -u, --username string      Username for SMB mount (defaults to login username)
 ```
 
 Global flags:

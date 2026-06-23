@@ -191,7 +191,7 @@ func TestNLMWaiter_GrantedWhenSMBHolderReleases(t *testing.T) {
 	// The callback port is resolved from the client's portmapper at grant time.
 	// Stand in a deterministic resolver that points at our fake listener so the
 	// GRANTED callback target is exactly cb.addr() without a portmap round-trip.
-	restore := callback.SetCallbackAddrResolver(func(_ context.Context, _ string) (string, error) {
+	restore := callback.SetCallbackAddrResolver(func(_ context.Context, _ string, _ uint32) (string, error) {
 		return cb.addr(), nil
 	})
 	t.Cleanup(restore)

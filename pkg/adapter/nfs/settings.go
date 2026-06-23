@@ -86,6 +86,13 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	}
 	logger.Debug("NFS adapter: applied portmapper settings from DB",
 		"enabled", settings.PortmapperEnabled, "port", s.config.Portmapper.Port)
+
+	// UDP transport (NLM/NSM/MOUNT over UDP) -> adapter config. Same pattern as
+	// portmapper: DB plain bool drives the adapter config *bool. Takes effect on
+	// the next (re)start, when Serve() decides whether to bind the UDP listener.
+	udpEnabled := settings.UDPEnabled
+	s.config.UDP.Enabled = &udpEnabled
+	logger.Debug("NFS adapter: applied UDP transport setting from DB", "enabled", settings.UDPEnabled)
 }
 
 // fsCapabilitiesProbeTimeout bounds the metadata read issued when refreshing

@@ -61,9 +61,18 @@ const (
 	// This version is required for NFSv3 mounts.
 	MountVersion3 = 3
 
+	// NLMVersion1 is the original Network Lock Manager protocol version.
+	// NLM v1/v3 use 32-bit offsets and lengths. BSD/macOS NFSv3 lock clients
+	// commonly negotiate v1/v3 (over UDP), so DittoFS accepts them (issue #1353).
+	NLMVersion1 = 1
+
+	// NLMVersion3 is NLM protocol version 3: 32-bit offsets like v1, plus the
+	// SHARE/UNSHARE/NM_LOCK/FREE_ALL procedures.
+	NLMVersion3 = 3
+
 	// NLMVersion4 is the Network Lock Manager protocol version 4.
 	// NLM v4 uses 64-bit offsets and lengths, required for large file support.
-	// This is the only NLM version supported by DittoFS.
+	// Linux NFSv3 clients negotiate v4.
 	NLMVersion4 = 4
 
 	// NSMVersion1 is the Network Status Monitor protocol version 1.

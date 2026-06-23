@@ -48,7 +48,7 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 
 	// Create registry and register all DittoFS services
 	registry := portmap.NewRegistry()
-	registry.RegisterDittoFSServices(s.config.Port)
+	registry.RegisterDittoFSServices(s.config.Port, s.isUDPEnabled())
 	registry.RegisterPortmapper(s.config.Portmapper.Port)
 
 	// Create portmapper server

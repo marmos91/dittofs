@@ -87,6 +87,11 @@ func buildAdapterIngressPorts(adapterType string, port int32) []networkingv1.Net
 				Protocol: &udp,
 				Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: portmapperContainerPort},
 			},
+			// NLM/NSM/MOUNT over UDP land on the NFS data port (issue #1353).
+			networkingv1.NetworkPolicyPort{
+				Protocol: &udp,
+				Port:     &intstr.IntOrString{Type: intstr.Int, IntVal: port},
+			},
 		)
 	}
 	return ports

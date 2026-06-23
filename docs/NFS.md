@@ -21,6 +21,7 @@ This document covers the NFS protocol fundamentals, DittoFS's implementation of 
   - [NFSv4.1 Status](#nfsv41-status)
   - [NFSv4.2 Status](#nfsv42-status)
 - [Embedded Portmapper](#embedded-portmapper)
+- [NFSv3 file locking (NLM/NSM)](#nfsv3-file-locking-nlmnsm)
 - [Mounting](#mounting)
 - [Implementation Details](#implementation-details)
   - [Code Structure](#code-structure)
@@ -626,7 +627,7 @@ setfattr -x user.comment /mnt/dittofs/file      # remove
 
 ## Embedded Portmapper
 
-DittoFS includes an embedded portmapper (RFC 1057) that enables standard NFS service discovery without requiring a system-level `rpcbind` daemon.
+DittoFS includes an embedded portmapper that enables standard NFS service discovery without requiring a system-level `rpcbind` daemon. It answers both legacy **PMAP v2** (RFC 1057, used by `rpcinfo -p` and Linux) and **RPCBIND v3/v4** (RFC 1833 universal addresses, used by macOS/BSD lock clients).
 
 ### Why an Embedded Portmapper?
 
@@ -685,6 +686,94 @@ The embedded portmapper follows standard security practices:
 ### Portmapper Failure is Non-Fatal
 
 If the portmapper fails to start (e.g., port already in use), NFS continues to operate normally. Clients just need to specify ports explicitly in mount options.
+
+---
+
+## NFSv3 file locking (NLM/NSM)
+
+NFSv3 has no in-protocol locking; byte-range locks travel over the separate
+**NLM** (Network Lock Manager) protocol, with crash recovery coordinated by
+**NSM** (Network Status Monitor). NFSv4 does not use NLM — its locking is
+in-protocol, so none of this section applies to `vers=4` mounts.
+
+> NFSv3 **mount and read/write need none of this.** Only byte-range locking
+> (`flock`/`fcntl`/`lockf`) uses NLM. If you don't need cross-client locks,
+> mount `-o nolock`, or use `-o vers=4` for in-protocol locking.
+
+### What DittoFS serves
+
+- **NLM** (program 100021) versions **1 and 3** (32-bit offsets) and **4**
+  (64-bit offsets), including the **asynchronous `*_MSG`/`*_RES` procedures**
+  (TEST/LOCK/CANCEL/UNLOCK_MSG → `*_RES` callbacks) that macOS/BSD `lockd` use,
+  alongside the synchronous procedures Linux uses.
+- **NSM** (program 100024) version 1, for crash-recovery monitoring (SM_MON /
+  SM_NOTIFY). The SM_NOTIFY callback target is the request's transport source,
+  not the client-supplied `my_name`.
+- **Portmapper** speaking both legacy **PMAP v2** (RFC 1057) and **RPCBIND
+  v3/v4** (RFC 1833, universal addresses) — macOS/BSD `lockd` discover NLM via
+  RPCBIND v3/v4 and do not fall back to v2.
+- All of the above over **TCP and UDP**. NFS data (program 100003) is
+  **TCP-only** — it is never served over UDP (READ/WRITE payloads exceed a UDP
+  datagram).
+
+> **Status:** the full protocol chain (RPCBIND v3/v4 discovery → NSM monitoring
+> → async NLM locking with reserved-port `*_RES` callbacks) is implemented and
+> unit-tested. End-to-end acceptance against a live macOS client is validated on
+> a same-LAN topology (a same-host loopback test is unreliable: the client and
+> server contend for port 111 and a shared `lockd`/`statd`).
+
+### Why macOS NFSv3 locking needs extra setup
+
+A macOS/BSD lock client (`rpc.lockd` / `rpc.statd`) reaches NLM/NSM over **UDP**
+and discovers them by querying the **server's portmapper on port 111** — there is
+no mount option to redirect that lookup. So two server-side pieces, both
+**disabled by default**, are required:
+
+1. **UDP transport** — serve NLM/NSM/MOUNT over UDP:
+   ```bash
+   dfsctl adapter settings nfs update --udp-enabled true
+   ```
+2. **Portmapper on port 111** — so the client's discovery query resolves:
+   ```bash
+   dfsctl adapter settings nfs update --portmapper-enabled true --portmapper-port 111
+   ```
+   Binding 111 needs root or `CAP_NET_BIND_SERVICE`, and may clash with a host
+   `rpcbind`. On Kubernetes the operator exposes port 111 via the adapter Service
+   (mapped to the unprivileged container port), so no privileged binding is needed
+   in the pod.
+
+Restart the adapter after changing these settings. Linux clients (NLM v4) work
+once the portmapper is reachable; they do not strictly require UDP, but enabling
+it is harmless.
+
+Equivalent config-file / env settings:
+
+```yaml
+adapters:
+  nfs:
+    udp:
+      enabled: true
+    portmapper:
+      enabled: true
+      port: 111
+```
+
+```bash
+DITTOFS_ADAPTERS_NFS_UDP_ENABLED=true
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111
+```
+
+### Recommended: just use NFSv4
+
+For locking without any of the above, mount with `vers=4` — locking is part of
+the protocol, and there is no NLM, NSM, MOUNT, or portmapper to configure:
+
+```bash
+dfsctl share mount /my-share /mnt/point --protocol nfs --nfs-version 4.1
+# or directly:
+mount -t nfs -o vers=4.1,port=12049 server:/my-share /mnt/point
+```
 
 ---
 

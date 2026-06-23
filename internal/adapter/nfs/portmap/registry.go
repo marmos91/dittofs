@@ -128,17 +128,26 @@ func (r *Registry) Dump() []*xdr.Mapping {
 }
 
 // RegisterDittoFSServices registers all DittoFS RPC services on the given port.
-// This populates the portmap registry with NFS, MOUNT, NLM, and NSM services
-// on TCP only (DittoFS NFS adapter is TCP-only, no UDP transport).
+// This populates the portmap registry with NFS, MOUNT, NLM, and NSM services.
 //
-// Registered services:
-//   - NFS (100003) v3 and v4 on TCP
-//   - MOUNT (100005) v1, v2, and v3 on TCP (v1/v2 for client compatibility)
-//   - NLM (100021) v4 on TCP
-//   - NSM (100024) v1 on TCP
+// NFS data operations are always TCP-only (large READ/WRITE payloads do not fit
+// a UDP datagram). The lock-manager auxiliary protocols (NLM, NSM) and MOUNT are
+// additionally advertised over UDP when udpEnabled is true, because BSD/macOS
+// NFSv3 lock clients (rpc.lockd / rpc.statd) discover and reach them over UDP
+// (issue #1353). NLM is advertised as v1, v3, and v4 so both BSD/macOS (v1/v3,
+// 32-bit offsets) and Linux (v4, 64-bit) clients find a usable version.
 //
-// This results in 7 mappings total (7 program/version pairs x TCP).
-func (r *Registry) RegisterDittoFSServices(nfsPort int) {
+// Always registered (TCP):
+//   - NFS (100003) v3 and v4
+//   - MOUNT (100005) v1, v2, v3 (v1/v2 for client compatibility)
+//   - NLM (100021) v1, v3, v4
+//   - NSM (100024) v1
+//
+// Additionally registered when udpEnabled (UDP):
+//   - MOUNT (100005) v1, v2, v3
+//   - NLM (100021) v1, v3, v4
+//   - NSM (100024) v1
+func (r *Registry) RegisterDittoFSServices(nfsPort int, udpEnabled bool) {
 	port := uint32(nfsPort)
 
 	type svc struct {
@@ -146,18 +155,39 @@ func (r *Registry) RegisterDittoFSServices(nfsPort int) {
 		vers uint32
 	}
 
-	services := []svc{
+	// TCP services. NFS is TCP-only; NLM/NSM/MOUNT are served over TCP too.
+	tcpServices := []svc{
 		{100003, 3}, // NFS v3
 		{100003, 4}, // NFS v4
 		{100005, 1}, // MOUNT v1 (client compatibility)
 		{100005, 2}, // MOUNT v2 (client compatibility)
 		{100005, 3}, // MOUNT v3
+		{100021, 1}, // NLM v1 (32-bit offsets; BSD/macOS)
+		{100021, 3}, // NLM v3 (32-bit offsets; BSD/macOS)
+		{100021, 4}, // NLM v4 (64-bit offsets; Linux)
+		{100024, 1}, // NSM v1
+	}
+	for _, s := range tcpServices {
+		r.Set(&xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoTCP, Port: port})
+	}
+
+	if !udpEnabled {
+		return
+	}
+
+	// UDP services: the lock-manager protocols and MOUNT only. NFS is never
+	// advertised over UDP since it is not served there.
+	udpServices := []svc{
+		{100005, 1}, // MOUNT v1
+		{100005, 2}, // MOUNT v2
+		{100005, 3}, // MOUNT v3
+		{100021, 1}, // NLM v1
+		{100021, 3}, // NLM v3
 		{100021, 4}, // NLM v4
 		{100024, 1}, // NSM v1
 	}
-
-	for _, s := range services {
-		r.Set(&xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoTCP, Port: port})
+	for _, s := range udpServices {
+		r.Set(&xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoUDP, Port: port})
 	}
 }
 

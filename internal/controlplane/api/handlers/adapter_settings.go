@@ -52,6 +52,7 @@ type PatchNFSSettingsRequest struct {
 	BlockedOperations          *[]string `json:"blocked_operations,omitempty"`
 	PortmapperEnabled          *bool     `json:"portmapper_enabled,omitempty"`
 	PortmapperPort             *int      `json:"portmapper_port,omitempty"`
+	UDPEnabled                 *bool     `json:"udp_enabled,omitempty"`
 }
 
 // PutNFSSettingsRequest requires all fields for full replacement.
@@ -78,6 +79,7 @@ type PutNFSSettingsRequest struct {
 	BlockedOperations          []string `json:"blocked_operations"`
 	PortmapperEnabled          bool     `json:"portmapper_enabled"`
 	PortmapperPort             int      `json:"portmapper_port"`
+	UDPEnabled                 bool     `json:"udp_enabled"`
 }
 
 // --- SMB request types ---
@@ -134,6 +136,7 @@ type NFSSettingsResponse struct {
 	BlockedOperations          []string `json:"blocked_operations"`
 	PortmapperEnabled          bool     `json:"portmapper_enabled"`
 	PortmapperPort             int      `json:"portmapper_port"`
+	UDPEnabled                 bool     `json:"udp_enabled"`
 	Version                    int      `json:"version"`
 }
 
@@ -353,6 +356,7 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.SetBlockedOperations(req.BlockedOperations)
 		settings.PortmapperEnabled = req.PortmapperEnabled
 		settings.PortmapperPort = req.PortmapperPort
+		settings.UDPEnabled = req.UDPEnabled
 
 		if !h.validateAndRespond(w, adapterType, settings, nil, force) {
 			return
@@ -524,6 +528,9 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		}
 		if req.PortmapperPort != nil {
 			settings.PortmapperPort = *req.PortmapperPort
+		}
+		if req.UDPEnabled != nil {
+			settings.UDPEnabled = *req.UDPEnabled
 		}
 
 		if !h.validateAndRespond(w, adapterType, settings, nil, force) {
@@ -1015,6 +1022,7 @@ func nfsSettingsToResponse(s *models.NFSAdapterSettings) NFSSettingsResponse {
 		BlockedOperations:          ops,
 		PortmapperEnabled:          s.PortmapperEnabled,
 		PortmapperPort:             s.PortmapperPort,
+		UDPEnabled:                 s.UDPEnabled,
 		Version:                    s.Version,
 	}
 }

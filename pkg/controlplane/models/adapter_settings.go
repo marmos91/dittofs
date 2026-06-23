@@ -81,6 +81,15 @@ type NFSAdapterSettings struct {
 	PortmapperEnabled bool `gorm:"default:false" json:"portmapper_enabled"`
 	PortmapperPort    int  `gorm:"default:10111" json:"portmapper_port"`
 
+	// UDPEnabled serves NLM/NSM/MOUNT over UDP (in addition to TCP). Required for
+	// NFSv3 file locking from BSD/macOS clients (issue #1353). NFS data is never
+	// served over UDP. Takes effect on adapter (re)start.
+	//
+	// Defaults to false (opt-in), like the portmapper. NFSv3 mount and I/O work
+	// without it; only NLM locking needs UDP plus a portmapper reachable on port
+	// 111. Enable both to allow macOS NFSv3 locking.
+	UDPEnabled bool `gorm:"default:false" json:"udp_enabled"`
+
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
 
@@ -230,6 +239,7 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		V4MaxConnectionsPerSession: 16,
 		PortmapperEnabled:          false,
 		PortmapperPort:             10111,
+		UDPEnabled:                 false,
 		Version:                    1,
 	}
 }

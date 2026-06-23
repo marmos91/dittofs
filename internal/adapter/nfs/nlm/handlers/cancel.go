@@ -34,9 +34,9 @@ type CancelResponse struct {
 }
 
 // DecodeCancelRequest decodes an NLM_CANCEL request from XDR format.
-func DecodeCancelRequest(data []byte) (*CancelRequest, error) {
+func DecodeCancelRequest(data []byte, version uint32) (*CancelRequest, error) {
 	r := bytes.NewReader(data)
-	args, err := nlm_xdr.DecodeNLM4CancelArgs(r)
+	args, err := nlm_xdr.DecodeNLM4CancelArgs(r, types.IsWideVersion(version))
 	if err != nil {
 		return nil, fmt.Errorf("decode NLM4CancelArgs: %w", err)
 	}

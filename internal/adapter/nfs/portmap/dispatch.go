@@ -58,3 +58,34 @@ var DispatchTable = map[uint32]*PmapProcedure{
 		},
 	},
 }
+
+// RpcbDispatchTable maps RPCBIND v3/v4 procedure numbers to their handlers
+// (RFC 1833). Only the read procedures needed for NLM/NSM discovery are
+// implemented; SET/UNSET/CALLIT are intentionally omitted for the same safety
+// reasons as the v2 table (registrations are internal; CALLIT is an amplifier).
+var RpcbDispatchTable = map[uint32]*PmapProcedure{
+	types.ProcNull: {
+		Name: "NULL",
+		Handler: func(handler *handlers.Handler, _ []byte, _ string) ([]byte, error) {
+			return handler.Null(), nil
+		},
+	},
+	types.RpcbProcGetaddr: {
+		Name: "GETADDR",
+		Handler: func(handler *handlers.Handler, data []byte, clientAddr string) ([]byte, error) {
+			return handler.Getaddr(data, clientAddr)
+		},
+	},
+	types.RpcbProcGetversaddr: {
+		Name: "GETVERSADDR",
+		Handler: func(handler *handlers.Handler, data []byte, clientAddr string) ([]byte, error) {
+			return handler.Getaddr(data, clientAddr)
+		},
+	},
+	types.RpcbProcDump: {
+		Name: "DUMP",
+		Handler: func(handler *handlers.Handler, _ []byte, clientAddr string) ([]byte, error) {
+			return handler.RpcbDump(clientAddr)
+		},
+	},
+}

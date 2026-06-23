@@ -14,11 +14,27 @@ import (
 
 // HandlerResult contains the XDR-encoded response and metadata about the operation.
 type HandlerResult struct {
-	// Data contains the XDR-encoded response to send to the client.
+	// Data contains the XDR-encoded response to send to the client as the inline
+	// RPC reply. For asynchronous (_MSG) procedures this is empty (the reply is
+	// void) and the result is delivered via AsyncRes instead.
 	Data []byte
 
 	// NLMStatus is the NLM protocol status code for this operation.
 	NLMStatus uint32
+
+	// AsyncRes, when non-nil, marks this as an asynchronous (_MSG) operation:
+	// the transport must reply to the call with a void body and instead send an
+	// NLM *_RES callback (AsyncRes.Proc) carrying AsyncRes.Body to the client.
+	// macOS/BSD lockd use the async procedures (TEST_MSG/LOCK_MSG/...).
+	AsyncRes *AsyncResult
+}
+
+// AsyncResult carries the NLM *_RES callback the transport must deliver for an
+// asynchronous (_MSG) request: the *_RES procedure number and its XDR body
+// (identical to the corresponding synchronous reply body).
+type AsyncResult struct {
+	Proc uint32
+	Body []byte
 }
 
 // ============================================================================
@@ -88,7 +104,61 @@ func initNLMDispatchTable() {
 			Name:    "FREE_ALL",
 			Handler: handleNLMFreeAll,
 		},
+		// Asynchronous (callback-style) procedures. macOS/BSD lockd use these:
+		// the client sends a *_MSG, the server replies void, and the result is
+		// delivered as a *_RES callback to the client's NLM address.
+		types.NLMProcTestMsg: {
+			Name:    "TEST_MSG",
+			Handler: handleNLMTestMsg,
+		},
+		types.NLMProcLockMsg: {
+			Name:    "LOCK_MSG",
+			Handler: handleNLMLockMsg,
+		},
+		types.NLMProcCancelMsg: {
+			Name:    "CANCEL_MSG",
+			Handler: handleNLMCancelMsg,
+		},
+		types.NLMProcUnlockMsg: {
+			Name:    "UNLOCK_MSG",
+			Handler: handleNLMUnlockMsg,
+		},
 	}
+}
+
+// asAsync converts a synchronous handler result into an asynchronous (_MSG)
+// result: the inline RPC reply becomes void and the encoded result is instead
+// delivered as the given NLM *_RES callback (TEST_RES/LOCK_RES/...). The _RES
+// body is byte-for-byte the synchronous reply, so the async procedures reuse
+// the sync decode, processing, and encoding unchanged.
+func asAsync(res *HandlerResult, err error, resProc uint32) (*HandlerResult, error) {
+	if res == nil {
+		return res, err
+	}
+	return &HandlerResult{
+		NLMStatus: res.NLMStatus,
+		AsyncRes:  &AsyncResult{Proc: resProc, Body: res.Data},
+	}, err
+}
+
+func handleNLMTestMsg(ctx *handlers.NLMHandlerContext, h *handlers.Handler, reg *runtime.Runtime, data []byte) (*HandlerResult, error) {
+	res, err := handleNLMTest(ctx, h, reg, data)
+	return asAsync(res, err, types.NLMProcTestRes)
+}
+
+func handleNLMLockMsg(ctx *handlers.NLMHandlerContext, h *handlers.Handler, reg *runtime.Runtime, data []byte) (*HandlerResult, error) {
+	res, err := handleNLMLock(ctx, h, reg, data)
+	return asAsync(res, err, types.NLMProcLockRes)
+}
+
+func handleNLMCancelMsg(ctx *handlers.NLMHandlerContext, h *handlers.Handler, reg *runtime.Runtime, data []byte) (*HandlerResult, error) {
+	res, err := handleNLMCancel(ctx, h, reg, data)
+	return asAsync(res, err, types.NLMProcCancelRes)
+}
+
+func handleNLMUnlockMsg(ctx *handlers.NLMHandlerContext, h *handlers.Handler, reg *runtime.Runtime, data []byte) (*HandlerResult, error) {
+	res, err := handleNLMUnlock(ctx, h, reg, data)
+	return asAsync(res, err, types.NLMProcUnlockRes)
 }
 
 // ============================================================================
@@ -131,21 +201,21 @@ func handleNLMTest(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	req, err := handlers.DecodeTestRequest(data)
+	req, err := handlers.DecodeTestRequest(data, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM TEST decode error", "error", err)
-		encoded, _ := handlers.EncodeTestResponse(&handlers.TestResponse{Status: types.NLM4Failed})
+		encoded, _ := handlers.EncodeTestResponse(&handlers.TestResponse{Status: types.NLM4Failed}, ctx.Version)
 		return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Failed}, err
 	}
 
 	resp, err := handler.Test(ctx, req)
 	if err != nil {
 		logger.Debug("NLM TEST handler error", "error", err)
-		encoded, _ := handlers.EncodeTestResponse(&handlers.TestResponse{Cookie: req.Cookie, Status: types.NLM4Failed})
+		encoded, _ := handlers.EncodeTestResponse(&handlers.TestResponse{Cookie: req.Cookie, Status: types.NLM4Failed}, ctx.Version)
 		return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Failed}, err
 	}
 
-	encoded, err := handlers.EncodeTestResponse(resp)
+	encoded, err := handlers.EncodeTestResponse(resp, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM TEST encode error", "error", err)
 		return &HandlerResult{Data: nil, NLMStatus: types.NLM4Failed}, err
@@ -160,7 +230,7 @@ func handleNLMLock(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	req, err := handlers.DecodeLockRequest(data)
+	req, err := handlers.DecodeLockRequest(data, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM LOCK decode error", "error", err)
 		encoded, _ := handlers.EncodeLockResponse(&handlers.LockResponse{Status: types.NLM4Failed})
@@ -189,7 +259,7 @@ func handleNLMCancel(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	req, err := handlers.DecodeCancelRequest(data)
+	req, err := handlers.DecodeCancelRequest(data, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM CANCEL decode error", "error", err)
 		encoded, _ := handlers.EncodeCancelResponse(&handlers.CancelResponse{Status: types.NLM4Failed})
@@ -218,7 +288,7 @@ func handleNLMUnlock(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	req, err := handlers.DecodeUnlockRequest(data)
+	req, err := handlers.DecodeUnlockRequest(data, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM UNLOCK decode error", "error", err)
 		encoded, _ := handlers.EncodeUnlockResponse(&handlers.UnlockResponse{Status: types.NLM4Failed})

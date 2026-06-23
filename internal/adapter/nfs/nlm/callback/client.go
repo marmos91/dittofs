@@ -89,9 +89,10 @@ func SendGrantedCallback(
 		}
 	}
 
-	// Encode NLM_GRANTED args
+	// Encode NLM_GRANTED args. The byte-range offset width must match the
+	// client's negotiated NLM version (32-bit for v1/v3, 64-bit for v4).
 	var argsBuf bytes.Buffer
-	if err := nlm_xdr.EncodeNLM4GrantedArgs(&argsBuf, args); err != nil {
+	if err := nlm_xdr.EncodeNLM4GrantedArgs(&argsBuf, args, types.IsWideVersion(vers)); err != nil {
 		return fmt.Errorf("encode granted args: %w", err)
 	}
 
@@ -117,6 +118,25 @@ func SendGrantedCallback(
 	}
 
 	return nil
+}
+
+// BuildNLMResultMessage builds the RPC CALL datagram for an asynchronous NLM
+// *_RES callback (TEST_RES, LOCK_RES, CANCEL_RES, UNLOCK_RES) that a client
+// issuing the async *_MSG procedures (macOS/BSD lockd) expects in return.
+//
+// The datagram has NO record mark (UDP framing: one datagram is one message)
+// and MUST be sent from the server's NLM listening socket — lockd talks to the
+// server's nlockmgr over a connected UDP socket and the kernel drops any reply
+// that does not originate from that exact peer address, so a freshly-dialled
+// socket (different source port) would be silently discarded. The transport
+// therefore sends this via its existing listener; this function only encodes.
+func BuildNLMResultMessage(prog, vers, proc uint32, body []byte) ([]byte, error) {
+	xid := uint32(time.Now().UnixNano() & 0xFFFFFFFF)
+	callMsg, err := buildRPCCallMessage(xid, prog, vers, proc, body)
+	if err != nil {
+		return nil, fmt.Errorf("build NLM result message: %w", err)
+	}
+	return callMsg, nil
 }
 
 // validateCallbackAddr rejects callback destinations that are unsafe to dial.

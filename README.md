@@ -52,7 +52,7 @@ Two binaries drive it:
 
 | Area | Status |
 |------|--------|
-| **NFSv3** | All 28 core procedures; embedded portmapper + mount protocol |
+| **NFSv3** | All 28 core procedures; embedded portmapper + mount protocol; NLM/NSM byte-range locking over TCP+UDP (opt-in) |
 | **NFSv4.0** | Compound ops, ACLs, delegations, built-in byte-range locking |
 | **NFSv4.1** | Sessions, sequence slots, backchannel |
 | **SMB 2.0.2 / 3.0 / 3.0.2 / 3.1.1** | Multi-dialect negotiation, preauth integrity, compound requests |

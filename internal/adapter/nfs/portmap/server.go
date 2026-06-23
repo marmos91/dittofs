@@ -327,14 +327,23 @@ func (s *Server) processRPCMessage(data []byte, clientAddr string) []byte {
 		return makeErrorReplyBody(call.XID, rpc.RPCProgUnavail)
 	}
 
-	// Validate version
-	if call.Version != types.PortmapVersion2 {
+	// Validate version and select the dispatch table. v2 is the legacy PMAP
+	// protocol (RFC 1057); v3/v4 are RPCBIND (RFC 1833), which macOS/BSD NFS
+	// lock clients require to discover the NLM/NSM ports (they query over the
+	// mount's address family and do not fall back to v2).
+	var dispatch map[uint32]*PmapProcedure
+	switch call.Version {
+	case types.PortmapVersion2:
+		dispatch = DispatchTable
+	case types.PortmapVersion3, types.PortmapVersion4:
+		dispatch = RpcbDispatchTable
+	default:
 		logger.Debug("Portmap: version mismatch", "version", call.Version, "client", clientAddr)
-		return makeProgMismatchReplyBody(call.XID, types.PortmapVersion2, types.PortmapVersion2)
+		return makeProgMismatchReplyBody(call.XID, types.PortmapVersion2, types.PortmapVersion4)
 	}
 
 	// Look up procedure in dispatch table
-	proc, ok := DispatchTable[call.Procedure]
+	proc, ok := dispatch[call.Procedure]
 	if !ok {
 		logger.Debug("Portmap: procedure unavailable", "procedure", call.Procedure, "client", clientAddr)
 		return makeErrorReplyBody(call.XID, rpc.RPCProcUnavail)
