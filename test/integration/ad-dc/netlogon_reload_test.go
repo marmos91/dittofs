@@ -64,6 +64,11 @@ func TestNetlogonHotReload(t *testing.T) {
 	t.Logf("AD-DC container IP: %s", dcIP)
 	waitForTCPAddr(t, dcIP+":135", 90*time.Second)
 	waitForTCPAddr(t, dcIP+":445", 90*time.Second)
+	// The secure channel resolves the DC's SPN via the DC's own DNS (SRV locator),
+	// so DNS (port 53) must be accepting queries before the first logon. Samba's
+	// DNS can come up a beat after the RPC/SMB ports; without this wait the first
+	// SRV lookup can hit "connection refused".
+	waitForTCPAddr(t, dcIP+":53", 90*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()

@@ -622,20 +622,31 @@ func (s *Adapter) wireNetlogonReload(rt *runtime.Runtime) {
 	}
 	auth := s.netlogonAuth
 	s.netlogonProviderUnsub = rt.OnIdentityProviderConfigChange(func() {
+		// Bound the teardown so a hung DC connection during close() cannot block
+		// the synchronous NotifyIdentityProviderConfigChange caller (the HTTP
+		// handler goroutine in putKerberos) indefinitely.
+		ctx, cancel := context.WithTimeout(context.Background(), netlogonReloadTimeout)
+		defer cancel()
+
 		cred := rt.NetlogonCredential()
 		if cred == nil {
-			// Passthrough disabled / no credential: drop the cached channel so a
-			// stale one is not reused. The next logon then fails credential
-			// validation, matching the disabled posture.
-			auth.Reload(context.Background())
-			logger.Info("SMB adapter: NETLOGON credential cleared; secure channel torn down")
+			// Passthrough disabled / no credential: install an empty credential so
+			// the next logon FAILS credential validation (a bare Reload would leave
+			// the MutableProvider holding the previous valid credential and keep
+			// authenticating against the DC — the disable would not take effect).
+			auth.ReloadCredential(ctx, netlogon.MachineCredential{})
+			logger.Info("SMB adapter: NETLOGON credential cleared; passthrough disabled and secure channel torn down")
 			return
 		}
-		auth.ReloadCredential(context.Background(), *cred)
+		auth.ReloadCredential(ctx, *cred)
 		logger.Info("SMB adapter: NETLOGON machine credential hot-reloaded; secure channel will rebuild on next logon",
 			"account", cred.AccountName, "domain", cred.DomainName, "realm", cred.Realm)
 	})
 }
+
+// netlogonReloadTimeout bounds a hot-reload secure-channel teardown so a hung DC
+// connection cannot block the API request that triggered the reload.
+const netlogonReloadTimeout = 10 * time.Second
 
 // SetADDomain makes the SMB handler domain-aware without requiring a Kerberos
 // SPNEGO provider. SetKerberosProvider already populates these names, but it is
@@ -832,14 +843,22 @@ func (s *Adapter) Stop(ctx context.Context) error {
 		s.foreignSIDProviderUnsub()
 		s.foreignSIDProviderUnsub = nil
 	}
-	if s.netlogonProviderUnsub != nil {
-		s.netlogonProviderUnsub()
-		s.netlogonProviderUnsub = nil
+	// The netlogon hot-reload subscription and authenticator are written by
+	// wireNetlogonReload under resolverMu (callable from SetRuntime /
+	// SetNetlogonAuthenticator on other goroutines), so snapshot + detach them
+	// under the same lock to avoid a data race, then close outside the lock.
+	s.resolverMu.Lock()
+	netlogonUnsub := s.netlogonProviderUnsub
+	s.netlogonProviderUnsub = nil
+	netlogonAuth := s.netlogonAuth
+	s.resolverMu.Unlock()
+	if netlogonUnsub != nil {
+		netlogonUnsub()
 	}
 	// Tear down the NETLOGON secure channel so its DC connection / goroutines do
 	// not outlive the adapter.
-	if s.netlogonAuth != nil {
-		s.netlogonAuth.Close(ctx)
+	if netlogonAuth != nil {
+		netlogonAuth.Close(ctx)
 	}
 
 	// Unsubscribe from share change notifications to prevent stale callbacks

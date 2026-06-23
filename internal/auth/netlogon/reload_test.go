@@ -162,6 +162,36 @@ func TestReloadCredential_SwapsCredentialAndChannel(t *testing.T) {
 	}
 }
 
+// TestReloadCredential_EmptyCredentialDisablesPassthrough proves that reloading
+// with an empty credential (the disable path) makes the next logon fail closed:
+// the MutableProvider rejects the incomplete credential, so no channel is built
+// and passthrough is genuinely off — not silently still authenticating with the
+// previous credential (#1325 review H1).
+func TestReloadCredential_EmptyCredentialDisablesPassthrough(t *testing.T) {
+	st := &fakeState{}
+	withFakeChannels(t, st)
+
+	prov := NewMutableProvider(validCred("DITTOFS$"))
+	a := NewAuthenticator(prov)
+	ctx := context.Background()
+
+	if _, err := a.NetworkLogon(ctx, NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"}); err != nil {
+		t.Fatalf("pre-disable logon should succeed: %v", err)
+	}
+
+	// Disable: install an empty credential (what the adapter does when the runtime
+	// credential is nil).
+	a.ReloadCredential(ctx, MachineCredential{})
+
+	if _, err := a.NetworkLogon(ctx, NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"}); err == nil {
+		t.Fatal("post-disable logon must fail closed (passthrough disabled), but it succeeded")
+	}
+	// No second channel must have been built for the disabled logon.
+	if got := completedLogons(st); got != 1 {
+		t.Fatalf("expected exactly 1 successful logon before disable, got %d", got)
+	}
+}
+
 // TestReloadCredential_ConcurrentLogons hammers NetworkLogon from many
 // goroutines while repeatedly reloading the credential. It must not error, never
 // overlap a close with an in-flight logon (the channel lock enforces this), and
