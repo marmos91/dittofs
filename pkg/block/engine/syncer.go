@@ -132,6 +132,48 @@ func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
 	m.pendingMu.Unlock()
 }
 
+// markFetchedSynced records a chunk that was just downloaded from the remote
+// store as already mirrored. The bytes are verbatim remote content, so the
+// chunk is provably durable on remote, and we must treat it differently from a
+// locally-written chunk:
+//
+//  1. Cancel the pending-upload entry that StoreChunk's onChunkComplete
+//     callback registered for it, so the mirror loop does not waste a redundant
+//     remote.Put re-uploading data that is already there. Without this, reading
+//     an N-byte archive over a remote tier re-uploads N bytes back to remote
+//     (read-amplification → write-amplification, #1362).
+//  2. Mark it synced so eviction's IsSynced gate can reclaim it immediately
+//     rather than waiting for a mirror pass; otherwise the first eviction on a
+//     read-only workload finds zero synced candidates and stalls.
+//
+// Nil-safe for test fixtures with no SyncedHashStore wired.
+func (m *Syncer) markFetchedSynced(ctx context.Context, h block.ContentHash) {
+	if h.IsZero() {
+		return
+	}
+	m.mu.RLock()
+	hashStore := m.syncedHashStore
+	m.mu.RUnlock()
+	if hashStore != nil {
+		if err := hashStore.MarkSynced(ctx, h); err != nil {
+			// Non-fatal: leave the chunk pending so the mirror loop re-uploads
+			// and marks it synced on the next tick (remote.Put is idempotent).
+			logger.Warn("markFetchedSynced: MarkSynced failed; chunk will be re-mirrored",
+				"hash", h.String(), "error", err)
+			return
+		}
+	}
+	// Drop the pending-upload entry StoreChunk's callback just registered so
+	// the mirror loop skips it. A concurrent mirrorOnce tick that already
+	// snapshotted this hash may still re-upload it once — harmless and rare.
+	m.pendingMu.Lock()
+	if size, ok := m.pendingHashes[h]; ok {
+		delete(m.pendingHashes, h)
+		m.unsyncedBytes.Add(-size)
+	}
+	m.pendingMu.Unlock()
+}
+
 // UnsyncedBytes returns the running total on-disk size of CAS chunks present
 // locally but not yet mirrored to remote. This is the backpressure signal
 // the local store consults: a non-zero value with a healthy remote means a

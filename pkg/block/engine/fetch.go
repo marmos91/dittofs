@@ -218,6 +218,9 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 	if err := m.local.Put(ctx, fb.Hash, data); err != nil {
 		return nil, fmt.Errorf("store downloaded block %s locally: %w", storeKey, err)
 	}
+	// The bytes came from remote, so the chunk is already durable there:
+	// cancel its redundant re-upload and make it immediately evictable (#1362).
+	m.markFetchedSynced(ctx, fb.Hash)
 
 	return data, nil
 }
@@ -406,6 +409,9 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 		completionErr = fmt.Errorf("inline fetch: persist locally %s: %w", key, writeErr)
 		return nil, false, completionErr
 	}
+	// The bytes came from remote, so the chunk is already durable there:
+	// cancel its redundant re-upload and make it immediately evictable (#1362).
+	m.markFetchedSynced(ctx, fb.Hash)
 	completed = true
 	m.completeInFlight(key, result, nil)
 
