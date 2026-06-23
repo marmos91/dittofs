@@ -11,7 +11,6 @@ import (
 
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
-	epm "github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
 	"github.com/oiweiwei/go-msrpc/smb2"
 	"github.com/oiweiwei/go-msrpc/ssp"
@@ -120,22 +119,22 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	}
 	gctx := gssapi.NewSecurityContext(ctx, ssp.WithKRB5(krb5Cfg))
 
-	cc, err := dcerpc.Dial(gctx, server, epm.EndpointMapper(gctx, server))
+	// Samba rejects the sealed-schannel AlterContext over ncacn_ip_tcp with
+	// RPC_S_UNKNOWN_AUTHN_SERVICE (0x721); the named-pipe transport (\PIPE\NETLOGON
+	// over SMB) is the binding Samba accepts. That SMB session must authenticate
+	// the machine account with Kerberos (Samba refuses machine-account NTLM over
+	// SMB), targeting the DC's cifs/ SPN. Bind the netlogon pipe directly
+	// (ncacn_np:[netlogon]) rather than via the endpoint mapper (#1345).
+	dialer := smb2.NewDialer(smb2.WithSecurity(gssapi.WithTargetName(spn)))
+	cc, err := dcerpc.Dial(gctx, server,
+		dcerpc.WithEndpoint("ncacn_np:[netlogon]"),
+		dcerpc.WithSMBDialer(dialer),
+	)
 	if err != nil {
 		return fmt.Errorf("netlogon: dial %s: %w", server, err)
 	}
 
-	// Samba rejects the sealed-schannel AlterContext over ncacn_ip_tcp with
-	// RPC_S_UNKNOWN_AUTHN_SERVICE (0x721); the named-pipe transport (\PIPE\netlogon
-	// over SMB) is the binding Samba accepts. That SMB session must authenticate
-	// the machine account with Kerberos (Samba refuses machine-account NTLM over
-	// SMB), targeting the DC's cifs/ SPN (#1345).
-	dialer := smb2.NewDialer(smb2.WithSecurity(gssapi.WithTargetName(spn)))
-	cli, err := logon.NewSecureChannelClient(gctx, cc,
-		dcerpc.WithSeal(),
-		dcerpc.WithEndpoint("ncacn_np:"),
-		dcerpc.WithSMBDialer(dialer),
-	)
+	cli, err := logon.NewSecureChannelClient(gctx, cc, dcerpc.WithSeal())
 	if err != nil {
 		_ = cc.Close(gctx)
 		return fmt.Errorf("netlogon: secure channel client: %w", err)

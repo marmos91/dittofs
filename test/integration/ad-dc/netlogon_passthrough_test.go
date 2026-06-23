@@ -83,10 +83,13 @@ func TestNetlogonPassthroughAlice(t *testing.T) {
 	dcIP := getContainerIP(t)
 	t.Logf("AD-DC container IP: %s", dcIP)
 
-	// Wait for the DC's DCE-RPC endpoint mapper (port 135) to accept connections.
-	// Samba's RPC stack comes up shortly after the KDC; dialing too early yields
-	// "connection refused" on the NETLOGON bind.
+	// Wait for the DC's DCE-RPC endpoint mapper (port 135) AND the SMB server
+	// (port 445) to accept connections. Samba's RPC stack comes up shortly after
+	// the KDC; dialing too early yields "connection refused" on the NETLOGON bind.
+	// The schannel rides a Kerberos SMB session over ncacn_np (\PIPE\netlogon), so
+	// 445 must be listening too — it can bind a beat after 135 (#1345).
 	waitForTCPAddr(t, dcIP+":135", 90*time.Second)
+	waitForTCPAddr(t, dcIP+":445", 90*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
