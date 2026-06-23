@@ -42,8 +42,12 @@ func buildNetlogonAuthenticator(k config.KerberosConfig) netlogon.NetlogonAuthen
 		slog.Warn("NETLOGON machine account is enabled but kerberos.netbios_domain (DomainName) is not set; NTLM passthrough disabled")
 		return nil
 	}
-	if len(ma.DCAddresses) == 0 {
-		slog.Warn("NETLOGON machine account is enabled but no DCAddresses are configured; NTLM passthrough disabled")
+	// A DC address is optional: with none configured the secure channel locates
+	// one from the realm via the AD DNS SRV record (_ldap._tcp.dc._msdcs.<realm>).
+	// That fallback needs the realm, so only disable passthrough when both are
+	// absent (#1324).
+	if len(ma.DCAddresses) == 0 && k.Realm == "" {
+		slog.Warn("NETLOGON machine account is enabled but neither dc_address nor kerberos.realm is set (no way to locate a DC); NTLM passthrough disabled")
 		return nil
 	}
 

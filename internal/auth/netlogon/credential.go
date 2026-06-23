@@ -36,8 +36,12 @@ func (p *offlineProvider) Credential(ctx context.Context) (*MachineCredential, e
 	if p.cred.AccountName == "" || p.cred.Password == "" || p.cred.DomainName == "" {
 		return nil, fmt.Errorf("netlogon: incomplete machine credential (account/password/domain required)")
 	}
-	if len(p.cred.DCAddresses) == 0 {
-		return nil, fmt.Errorf("netlogon: no DC address configured")
+	// A DC address is optional: when none is configured the secure channel
+	// locates one via the AD DNS SRV record (_ldap._tcp.dc._msdcs.<realm>),
+	// which requires the Kerberos realm. Require at least one of the two so we
+	// never build an authenticator that can neither dial nor discover a DC (#1324).
+	if len(p.cred.DCAddresses) == 0 && p.cred.Realm == "" {
+		return nil, fmt.Errorf("netlogon: no DC address configured and no realm for DNS SRV discovery")
 	}
 	cp := p.cred
 	return &cp, nil

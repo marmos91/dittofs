@@ -113,18 +113,32 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 		return nil
 	}
 
-	if len(mc.DCAddresses) == 0 {
-		return fmt.Errorf("netlogon: no DC address configured")
+	// Resolve which DC to connect to and its canonical FQDN (for the cifs/<fqdn>
+	// SMB service principal) via the AD DNS SRV locator. Two modes (#1324):
+	//
+	//   - DC address configured: connectivity uses that address, and we point the
+	//     SRV lookup at it (the DC is the domain's authoritative DNS server) purely
+	//     to learn the FQDN for the SPN. The IP stays the dial target.
+	//   - No DC address configured: locate a DC entirely from the realm using the
+	//     host resolver (a domain-joined host's resolv.conf points at a DC), then
+	//     dial the discovered FQDN directly.
+	var server string
+	var dcs []DCInfo
+	var err error
+	if len(mc.DCAddresses) > 0 {
+		server = mc.DCAddresses[0]
+		dcs, err = DiscoverDCs(ctx, mc.Realm, server)
+	} else {
+		dcs, err = DiscoverDCs(ctx, mc.Realm, "")
+		if err == nil && len(dcs) > 0 {
+			server = dcs[0].FQDN
+		}
 	}
-	server := mc.DCAddresses[0]
-
-	// Discover the DC's canonical FQDN via the AD DNS SRV locator so we can name
-	// the SMB Kerberos service principal (cifs/<fqdn>). The DC is the domain's
-	// DNS server, so we query it directly at the address we already hold (#1324).
-	// Connectivity still uses `server` (the IP) — only the SPN needs the name.
-	dcs, err := DiscoverDCs(ctx, mc.Realm, server)
 	if err != nil {
 		return fmt.Errorf("netlogon: discover DC: %w", err)
+	}
+	if len(dcs) == 0 || server == "" {
+		return fmt.Errorf("netlogon: no DC discovered for realm %q and none configured", mc.Realm)
 	}
 	spn := dcs[0].SPN()
 
