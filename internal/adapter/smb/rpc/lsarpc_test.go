@@ -192,6 +192,56 @@ func TestLSARPC_OpenPolicy(t *testing.T) {
 	}
 }
 
+// TestLSARPC_OpenPolicy3 verifies LsarOpenPolicy3 (opnum 130) returns a success
+// policy handle in the OpenPolicy3 layout, not a fault. Windows 10/11 Explorer's
+// Security tab (aclui.dll) calls opnum 130 FIRST; faulting it makes the ACL editor
+// show raw SIDs and can make the file Properties dialog fail to open for an
+// AD-owned file (#1343). Verified live: real Windows then resolves DITTOFS\alice.
+func TestLSARPC_OpenPolicy3(t *testing.T) {
+	h := newTestLSAHandler()
+
+	// LsarOpenPolicy3 request stub (handler ignores its contents).
+	reqData := buildTestRequest(2, OpLsarOpenPolicy3, make([]byte, 48))
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+
+	response := h.HandleRequest(req)
+	hdr, err := ParseHeader(response)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if hdr.PacketType != PDUResponse {
+		t.Fatalf("LsarOpenPolicy3 (opnum 130) returned PDU type %d, want %d (Response) — Windows shows raw SIDs / Properties fails on a fault", hdr.PacketType, PDUResponse)
+	}
+
+	// OpenPolicy3 layout: OutVersion(4) + RevisionInfo{disc(4),Revision(4),
+	// SupportedFeatures(4)} + PolicyHandle(20) + status(4) = 40-byte stub.
+	stub := response[24:]
+	if len(stub) < 40 {
+		t.Fatalf("OpenPolicy3 stub = %d bytes, want >= 40 (out-params precede the handle)", len(stub))
+	}
+	if v := binary.LittleEndian.Uint32(stub[0:4]); v != 1 {
+		t.Errorf("OutVersion = %d, want 1", v)
+	}
+	// Handle must be non-zero so the client can use it for the follow-up LookupSids.
+	handle := stub[16:36]
+	allZero := true
+	for _, b := range handle {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Error("OpenPolicy3 returned a zero policy handle")
+	}
+	if status := binary.LittleEndian.Uint32(stub[36:40]); status != statusSuccess {
+		t.Errorf("OpenPolicy3 status = 0x%08x, want 0x%08x (success)", status, statusSuccess)
+	}
+}
+
 func TestLSARPC_Close(t *testing.T) {
 	h := newTestLSAHandler()
 

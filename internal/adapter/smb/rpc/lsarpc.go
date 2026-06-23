@@ -34,12 +34,13 @@ var LSAInterfaceUUID = [16]byte{
 
 // LSA Operation Numbers [MS-LSAT/MS-LSAD]
 const (
-	OpLsarClose       uint16 = 0  // LsarClose
-	OpLsarOpenPolicy  uint16 = 6  // LsarOpenPolicy (legacy; smbcacls/older clients use this)
-	OpLsarOpenPolicy2 uint16 = 44 // LsarOpenPolicy2
-	OpLsarLookupSids  uint16 = 15 // LsarLookupSids  (legacy; smbcacls/rpcclient lookupsids)
-	OpLsarLookupSids2 uint16 = 57 // LsarLookupSids2 (Windows Explorer)
-	OpLsarLookupSids3 uint16 = 76 // LsarLookupSids3 (rpcclient lookupsids3)
+	OpLsarClose       uint16 = 0   // LsarClose
+	OpLsarOpenPolicy  uint16 = 6   // LsarOpenPolicy (legacy; smbcacls/older clients use this)
+	OpLsarOpenPolicy2 uint16 = 44  // LsarOpenPolicy2
+	OpLsarOpenPolicy3 uint16 = 130 // LsarOpenPolicy3 (Windows 10/11 Explorer Security tab calls this FIRST)
+	OpLsarLookupSids  uint16 = 15  // LsarLookupSids  (legacy; smbcacls/rpcclient lookupsids)
+	OpLsarLookupSids2 uint16 = 57  // LsarLookupSids2 (Windows Explorer)
+	OpLsarLookupSids3 uint16 = 76  // LsarLookupSids3 (rpcclient lookupsids3)
 )
 
 // DCE/RPC reject status codes [C706 §14.6 / MS-RPCE]. Returned in a FAULT PDU.
@@ -202,6 +203,8 @@ func (h *LSARPCHandler) HandleRequest(req *Request) []byte {
 		return h.handleClose(req)
 	case OpLsarOpenPolicy, OpLsarOpenPolicy2:
 		return h.handleOpenPolicy(req)
+	case OpLsarOpenPolicy3:
+		return h.handleOpenPolicy3(req)
 	case OpLsarLookupSids, OpLsarLookupSids2, OpLsarLookupSids3:
 		return h.handleLookupSids(req)
 	default:
@@ -249,6 +252,46 @@ func (h *LSARPCHandler) handleOpenPolicy(req *Request) []byte {
 		StubData:    stubData,
 	}
 
+	return resp.Encode(req.Header.CallID)
+}
+
+// handleOpenPolicy3 handles LsarOpenPolicy3 (opnum 130). Windows 10/11 Explorer's
+// Security tab (aclui.dll) calls this NEWER OpenPolicy variant FIRST; if it faults
+// the ACL editor fails to resolve ACE trustee SIDs (and the file's Properties
+// dialog can hang/fail outright for an AD-owned file) even though the legacy
+// owner-field path falls back to OpenPolicy2 — exactly the #1343 raw-SID symptom.
+//
+// Per MS-LSAD 3.1.4.4.1 the response adds two out-params BEFORE the policy handle:
+//
+//	OutVersion        ULONG                       (the negotiated revision)
+//	OutRevisionInfo   LSAPR_REVISION_INFO union   switch(OutVersion):
+//	                    case 1: { ULONG Revision; ULONG SupportedFeatures }
+//	PolicyHandle      20 bytes
+//	return            NTSTATUS
+//
+// Emitting only the OpenPolicy2 layout (handle+status) would misalign the handle
+// the client reads, so the extra out-params are required.
+func (h *LSARPCHandler) handleOpenPolicy3(req *Request) []byte {
+	var buf bytes.Buffer
+	appendUint32Buf(&buf, 1) // OutVersion = 1
+	// OutRevisionInfo union, switch(OutVersion=1) -> REVISION_INFO_V1
+	appendUint32Buf(&buf, 1) // union discriminant = 1
+	appendUint32Buf(&buf, 1) // V1.Revision
+	appendUint32Buf(&buf, 0) // V1.SupportedFeatures (none advertised)
+	// Policy handle (20 bytes), non-zero to mirror handleOpenPolicy.
+	handle := make([]byte, 20)
+	handle[0] = 0x01
+	handle[4] = 0x02
+	buf.Write(handle)
+	// Return status.
+	appendUint32Buf(&buf, statusSuccess)
+
+	resp := &Response{
+		AllocHint:   uint32(buf.Len()),
+		ContextID:   req.ContextID,
+		CancelCount: 0,
+		StubData:    buf.Bytes(),
+	}
 	return resp.Encode(req.Header.CallID)
 }
 
