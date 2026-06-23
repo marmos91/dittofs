@@ -575,6 +575,52 @@ When a client cannot use Kerberos, SMB falls back to NTLM. With
 `netbios_domain` set, the server advertises the AD domain in the NTLM challenge
 so domain users authenticate against the correct domain (see Part C / docs/SMB.md).
 
+## Part F: Windows client — domain-join (Kerberos) [dev]
+
+A real Windows client gets the cleanest experience by **joining the domain** and
+authenticating to DittoFS over **Kerberos** — the server side is fully proven
+(SMB SPNEGO/PAC + AES keytab, Part C). A non-domain-joined Windows box would need
+NTLM passthrough (NETLOGON), which is a separate track (see #1314 / #1345). For
+acceptance testing, domain-join is the path with no extra server dependency.
+
+The in-cluster AD-DC is not publicly reachable by default. To let an external
+test VM join, expose the directory roles via the **scoped** dev LoadBalancer
+`k8s/samba-ad-dc/samba-ad-dc-lb.yaml` (Kerberos 88, kpasswd 464, LDAP 389/636,
+DNS 53):
+
+```bash
+# 1. Lock the LB to the Windows VM's public IP, then apply.
+kubectl apply -f k8s/samba-ad-dc/samba-ad-dc-lb.yaml
+kubectl -n dittofs patch svc samba-ad-lb --type=merge \
+  -p '{"spec":{"loadBalancerSourceRanges":["<WINDOWS_VM_IP>/32"]}}'
+kubectl -n dittofs get svc samba-ad-lb -o wide      # note EXTERNAL-IP
+```
+
+On the Windows VM (PowerShell, Administrator):
+
+```powershell
+# Point DNS at the AD-DC LB so DITTOFS.AD SRV records resolve.
+$adlb = "<samba-ad-lb EXTERNAL-IP>"
+Set-DnsClientServerAddress -InterfaceAlias Ethernet -ServerAddresses $adlb
+
+# Join the realm and reboot.
+$cred = Get-Credential DITTOFS\Administrator        # Passw0rd!2024 in the dev fixture
+Add-Computer -DomainName dittofs.ad -Credential $cred -Restart
+```
+
+After reboot, log in as `DITTOFS\alice` (dev password `TestPassword01!`). Map the
+DittoFS share and open a file's **Properties > Security** tab — owner/ACE SIDs
+resolve to `DITTOFS\<name>` via LSARPC (LsarLookupSids2/3; #1291 + #1341):
+
+```powershell
+net use \\<dittofs-smb-ip>\<share>           # Kerberos SSO as the logged-in domain user
+icacls \\<dittofs-smb-ip>\<share>\<file>     # CLI equivalent of the Security tab
+```
+
+> **Tear down after capture:** `kubectl -n dittofs delete svc samba-ad-lb` — the
+> LB publishes a KDC + LDAP directory and must not be left exposed. The AD-DC is
+> dev-only (see Known limitations).
+
 ---
 
 ## Known limitations
@@ -587,9 +633,11 @@ so domain users authenticate against the correct domain (see Part C / docs/SMB.m
   with `sec=krb5` requires the node kernel modules `rpcsec_gss_krb5` /
   `auth_rpcgss`. An in-cluster k3s node that lacks these modules cannot complete
   an `sec=krb5` NFS mount even though the server side is correct.
-- **SID → name resolution is incomplete (#236 / #1291).** Windows clients may see
-  raw SIDs instead of friendly names in ACL editors; full LSA-pipe name lookup is
-  still open. See [docs/ACLS.md](ACLS.md).
+- **SID → name resolution** works via the LSARPC pipe: `LsarOpenPolicy`
+  (opnum 6/44), `LsarLookupSids` (15), and `LsarLookupSids2/3` (57/76, the EX
+  forms Windows Explorer/`rpcclient` use) resolve machine-domain and AD
+  foreign-domain SIDs to `DITTOFS\<name>` (#1291, #1341, #1342). See
+  [docs/ACLS.md](ACLS.md).
 - **RC4-only keytabs are rejected by Windows 11 (#1318).** Ensure the keytab
   carries AES256/AES128 keys for the SPNs (Part A).
 - Online `net ads join` + machine-password rotation is out of scope; supply the
