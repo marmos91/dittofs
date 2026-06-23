@@ -648,8 +648,8 @@ func TestServerTCPUnknownProcedure(t *testing.T) {
 func TestServerUDPDump(t *testing.T) {
 	srv, registry := startTestServer(t)
 
-	// Register services via registry directly
-	registry.RegisterDittoFSServices(12049)
+	// Register services via registry directly (UDP advertised for this test)
+	registry.RegisterDittoFSServices(12049, true)
 
 	msg := buildRPCCall(0x99999999, types.ProgramPortmap, types.PortmapVersion2, types.ProcDump, nil)
 	reply := sendUDPRequest(t, srv.UDPAddr(), msg)
@@ -681,9 +681,11 @@ func TestServerUDPDump(t *testing.T) {
 		count++
 	}
 
-	// RegisterDittoFSServices registers 7 entries (TCP-only, includes MOUNT v1+v2+v3)
-	if count != 7 {
-		t.Errorf("DUMP entry count: got %d, want 7", count)
+	// RegisterDittoFSServices(udp=true) registers 16 entries: 9 TCP
+	// (NFS v3/v4, MOUNT v1/v2/v3, NLM v1/v3/v4, NSM v1) + 7 UDP
+	// (MOUNT v1/v2/v3, NLM v1/v3/v4, NSM v1).
+	if count != 16 {
+		t.Errorf("DUMP entry count: got %d, want 16", count)
 	}
 }
 

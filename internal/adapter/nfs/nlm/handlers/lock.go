@@ -47,9 +47,9 @@ type LockResponse struct {
 }
 
 // DecodeLockRequest decodes an NLM_LOCK request from XDR format.
-func DecodeLockRequest(data []byte) (*LockRequest, error) {
+func DecodeLockRequest(data []byte, version uint32) (*LockRequest, error) {
 	r := bytes.NewReader(data)
-	args, err := nlm_xdr.DecodeNLM4LockArgs(r)
+	args, err := nlm_xdr.DecodeNLM4LockArgs(r, types.IsWideVersion(version))
 	if err != nil {
 		return nil, fmt.Errorf("decode NLM4LockArgs: %w", err)
 	}
@@ -171,7 +171,9 @@ func (h *Handler) Lock(ctx *NLMHandlerContext, req *LockRequest) (*LockResponse,
 			Exclusive:    req.Exclusive,
 			CallbackHost: hostOf(ctx.ClientAddr),
 			CallbackProg: types.ProgramNLM,
-			CallbackVers: types.NLMVersion4,
+			// Echo the client's negotiated NLM version so the GRANTED callback
+			// (and its 32/64-bit offset encoding) matches what the client expects.
+			CallbackVers: ctx.Version,
 			CallerName:   req.Lock.CallerName,
 			Svid:         req.Lock.Svid,
 			OH:           req.Lock.OH,

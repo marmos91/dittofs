@@ -225,6 +225,7 @@ func (c *NFSConnection) handleNLMProcedure(ctx context.Context, call *rpc.RPCCal
 		Context:    ctx,
 		ClientAddr: clientAddr,
 		AuthFlavor: call.GetAuthFlavor(),
+		Version:    call.Version,
 	}
 
 	// Parse Unix credentials if AUTH_UNIX

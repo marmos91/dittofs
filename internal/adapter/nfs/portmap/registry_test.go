@@ -184,15 +184,15 @@ func TestDumpReturnsSnapshotCopies(t *testing.T) {
 
 func TestRegisterDittoFSServices(t *testing.T) {
 	r := NewRegistry()
-	r.RegisterDittoFSServices(12049)
+	r.RegisterDittoFSServices(12049, false)
 
-	// Should have 7 mappings: 7 program/version pairs x TCP only
-	// (DittoFS NFS adapter is TCP-only, no UDP transport)
-	if r.Count() != 7 {
-		t.Fatalf("RegisterDittoFSServices created %d mappings, want 7", r.Count())
+	// With UDP disabled: 9 TCP mappings (NFS v3/v4, MOUNT v1/v2/v3,
+	// NLM v1/v3/v4, NSM v1) and nothing on UDP.
+	if r.Count() != 9 {
+		t.Fatalf("RegisterDittoFSServices(udp=false) created %d mappings, want 9", r.Count())
 	}
 
-	// Verify each expected registration
+	// Verify each expected TCP registration
 	expectations := []struct {
 		name string
 		prog uint32
@@ -203,6 +203,8 @@ func TestRegisterDittoFSServices(t *testing.T) {
 		{"MOUNT v1", 100005, 1},
 		{"MOUNT v2", 100005, 2},
 		{"MOUNT v3", 100005, 3},
+		{"NLM v1", 100021, 1},
+		{"NLM v3", 100021, 3},
 		{"NLM v4", 100021, 4},
 		{"NSM v1", 100024, 1},
 	}
@@ -213,17 +215,50 @@ func TestRegisterDittoFSServices(t *testing.T) {
 			t.Errorf("%s TCP: port = %d, want 12049", exp.name, tcpPort)
 		}
 
-		// UDP should NOT be registered (NFS adapter is TCP-only)
+		// UDP should NOT be registered when udpEnabled is false.
 		udpPort := r.Getport(exp.prog, exp.vers, 17)
 		if udpPort != 0 {
-			t.Errorf("%s UDP: port = %d, want 0 (should not be registered)", exp.name, udpPort)
+			t.Errorf("%s UDP: port = %d, want 0 (UDP disabled)", exp.name, udpPort)
 		}
+	}
+}
+
+func TestRegisterDittoFSServicesUDP(t *testing.T) {
+	r := NewRegistry()
+	r.RegisterDittoFSServices(12049, true)
+
+	// 9 TCP + 7 UDP (MOUNT v1/v2/v3, NLM v1/v3/v4, NSM v1). NFS stays TCP-only.
+	if r.Count() != 16 {
+		t.Fatalf("RegisterDittoFSServices(udp=true) created %d mappings, want 16", r.Count())
+	}
+
+	// The lock-manager protocols and MOUNT must be reachable over UDP.
+	udpExpect := []struct {
+		name       string
+		prog, vers uint32
+	}{
+		{"MOUNT v1", 100005, 1},
+		{"MOUNT v3", 100005, 3},
+		{"NLM v1", 100021, 1},
+		{"NLM v3", 100021, 3},
+		{"NLM v4", 100021, 4},
+		{"NSM v1", 100024, 1},
+	}
+	for _, exp := range udpExpect {
+		if port := r.Getport(exp.prog, exp.vers, 17); port != 12049 {
+			t.Errorf("%s UDP: port = %d, want 12049", exp.name, port)
+		}
+	}
+
+	// NFS must never be advertised over UDP.
+	if port := r.Getport(100003, 3, 17); port != 0 {
+		t.Errorf("NFS v3 UDP: port = %d, want 0 (NFS is TCP-only)", port)
 	}
 }
 
 func TestRegisterDittoFSServicesCustomPort(t *testing.T) {
 	r := NewRegistry()
-	r.RegisterDittoFSServices(2049)
+	r.RegisterDittoFSServices(2049, false)
 
 	port := r.Getport(100003, 3, 6)
 	if port != 2049 {
@@ -237,7 +272,7 @@ func TestRegisterDittoFSServicesCustomPort(t *testing.T) {
 
 func TestClear(t *testing.T) {
 	r := NewRegistry()
-	r.RegisterDittoFSServices(12049)
+	r.RegisterDittoFSServices(12049, true)
 
 	if r.Count() == 0 {
 		t.Fatal("Registry should not be empty before Clear")

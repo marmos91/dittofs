@@ -185,6 +185,7 @@ var (
 	settingsBlockedOperations          string
 	settingsPortmapperEnabled          bool
 	settingsPortmapperPort             int
+	settingsUDPEnabled                 bool
 	settingsV4MinMinorVersion          int
 	settingsV4MaxMinorVersion          int
 	settingsV4MaxConnectionsPerSession int
@@ -259,6 +260,7 @@ func registerNFSUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&settingsBlockedOperations, "blocked-operations", "", "Comma-separated list of blocked operations")
 	cmd.Flags().BoolVar(&settingsPortmapperEnabled, "portmapper-enabled", false, "Enable embedded portmapper")
 	cmd.Flags().IntVar(&settingsPortmapperPort, "portmapper-port", 0, "Portmapper listen port")
+	cmd.Flags().BoolVar(&settingsUDPEnabled, "udp-enabled", false, "Serve NLM/NSM/MOUNT over UDP (needed for NFSv3 locking from macOS/BSD; restart to apply)")
 	cmd.Flags().IntVar(&settingsV4MinMinorVersion, "v4-min-minor-version", 0, "Minimum NFSv4 minor version (0=v4.0, 1=v4.1)")
 	cmd.Flags().IntVar(&settingsV4MaxMinorVersion, "v4-max-minor-version", 0, "Maximum NFSv4 minor version (0=v4.0, 1=v4.1)")
 	cmd.Flags().IntVar(&settingsV4MaxConnectionsPerSession, "v4-max-connections-per-session", 0, "Maximum connections per NFSv4.1 session (0=unlimited)")
@@ -351,6 +353,7 @@ func showNFSSettings(client *apiclient.Client, format output.Format) error {
 	printSettingsGroup("Portmapper", []settingRow{
 		newSettingRowBool("portmapper_enabled", settings.PortmapperEnabled, d.PortmapperEnabled),
 		newSettingRowInt("portmapper_port", settings.PortmapperPort, d.PortmapperPort, ""),
+		newSettingRowBool("udp_enabled", settings.UDPEnabled, d.UDPEnabled),
 	})
 	printSettingsGroup("Operations", []settingRow{
 		newSettingRowStrSlice("blocked_operations", settings.BlockedOperations, d.BlockedOperations),
@@ -568,6 +571,10 @@ func updateNFSSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	}
 	if cmd.Flags().Changed("portmapper-port") {
 		req.PortmapperPort = &settingsPortmapperPort
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("udp-enabled") {
+		req.UDPEnabled = &settingsUDPEnabled
 		hasChanges = true
 	}
 	if cmd.Flags().Changed("v4-min-minor-version") {

@@ -35,9 +35,9 @@ type GrantedResponse struct {
 }
 
 // DecodeGrantedRequest decodes an NLM_GRANTED request from XDR format.
-func DecodeGrantedRequest(data []byte) (*GrantedRequest, error) {
+func DecodeGrantedRequest(data []byte, version uint32) (*GrantedRequest, error) {
 	r := bytes.NewReader(data)
-	args, err := nlm_xdr.DecodeNLM4GrantedArgs(r)
+	args, err := nlm_xdr.DecodeNLM4GrantedArgs(r, types.IsWideVersion(version))
 	if err != nil {
 		return nil, err
 	}

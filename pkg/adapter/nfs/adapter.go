@@ -138,6 +138,10 @@ type NFSAdapter struct {
 	// nil when portmapper is disabled.
 	portmapRegistry *portmap.Registry
 
+	// udpConn is the UDP listener serving NLM/NSM/MOUNT when the UDP transport
+	// is enabled (adapters.nfs.udp.enabled). nil when UDP is disabled.
+	udpConn *net.UDPConn
+
 	// nsmClientStore persists client registrations for crash recovery
 	nsmClientStore lock.ClientRegistrationStore
 
@@ -256,8 +260,15 @@ type NFSConfig struct {
 	// Portmapper configures the embedded portmapper (RFC 1057).
 	// The portmapper allows NFS clients to discover DittoFS services
 	// via rpcinfo/showmount without requiring a system-level rpcbind daemon.
-	// Default: enabled on port 10111.
+	// Default: disabled. When enabled, listens on port 10111.
 	Portmapper PortmapConfig `mapstructure:"portmapper"`
+
+	// UDP configures serving the lock-manager auxiliary protocols (NLM, NSM)
+	// and MOUNT over UDP, in addition to TCP. NFS itself is never served over
+	// UDP. Disabled by default. BSD/macOS NFSv3 lock clients reach rpc.lockd /
+	// rpc.statd over UDP, so NFSv3 file locking from macOS requires this
+	// enabled together with the portmapper (issue #1353).
+	UDP NFSUDPConfig `mapstructure:"udp"`
 
 	// TLS configures opportunistic NFS-over-TLS (RFC 9289). When the cert/key
 	// files are set, the server answers an AUTH_TLS STARTTLS probe and upgrades
@@ -348,6 +359,14 @@ type PortmapConfig struct {
 	// Port is the port to listen on for portmapper requests.
 	// Default: 10111 (unprivileged port; standard portmapper uses 111 but requires root).
 	Port int `mapstructure:"port" validate:"min=0,max=65535"`
+}
+
+// NFSUDPConfig configures the UDP transport for the lock-manager auxiliary
+// protocols (NLM, NSM) and MOUNT. NFS data operations are never served over UDP.
+type NFSUDPConfig struct {
+	// Enabled controls whether NLM/NSM/MOUNT are served over UDP.
+	// When nil (not specified in config), defaults to false.
+	Enabled *bool `mapstructure:"enabled"`
 }
 
 // applyDefaults fills in zero values with sensible defaults.
@@ -700,6 +719,15 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 	// (privileged ports like 111 may require root privileges).
 	if err := s.startPortmapper(ctx); err != nil {
 		logger.Warn("Portmapper failed to start (NFS will continue without it)", "error", err)
+	}
+
+	// Start the UDP transport for NLM/NSM/MOUNT when enabled. NFSv3 lock
+	// clients on BSD/macOS require the lock-manager protocols over UDP
+	// (issue #1353). Failure is non-fatal: TCP serving continues.
+	if s.isUDPEnabled() {
+		if err := s.startUDP(ctx); err != nil {
+			logger.Warn("NFS UDP transport failed to start (NLM/NSM/MOUNT over UDP unavailable)", "error", err)
+		}
 	}
 
 	// NSM startup: Load persisted registrations and notify all clients

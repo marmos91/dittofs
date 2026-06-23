@@ -233,8 +233,8 @@ func TestPortmapperIntegrationUDP(t *testing.T) {
 func TestPortmapperFullServiceRegistry(t *testing.T) {
 	srv, registry := startTestServer(t)
 
-	// Register all DittoFS services on port 12049
-	registry.RegisterDittoFSServices(12049)
+	// Register all DittoFS services on port 12049 (TCP-only for this test)
+	registry.RegisterDittoFSServices(12049, false)
 
 	tcpAddr := srv.Addr()
 
@@ -278,8 +278,8 @@ func TestPortmapperFullServiceRegistry(t *testing.T) {
 		})
 	}
 
-	// Verify DUMP returns exactly 5 entries (TCP-only)
-	t.Run("DUMP_5_entries", func(t *testing.T) {
+	// Verify DUMP returns exactly the 9 TCP-only entries
+	t.Run("DUMP_9_entries", func(t *testing.T) {
 		msg := buildRPCCall(0x30000001, types.ProgramPortmap, types.PortmapVersion2, types.ProcDump, nil)
 		reply := sendTCPRequest(t, tcpAddr, msg)
 
@@ -309,8 +309,9 @@ func TestPortmapperFullServiceRegistry(t *testing.T) {
 			count++
 		}
 
-		if count != 7 {
-			t.Errorf("DUMP count: got %d, want 7", count)
+		// 9 TCP mappings: NFS v3/v4, MOUNT v1/v2/v3, NLM v1/v3/v4, NSM v1.
+		if count != 9 {
+			t.Errorf("DUMP count: got %d, want 9", count)
 		}
 	})
 }

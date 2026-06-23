@@ -40,9 +40,9 @@ type TestResponse struct {
 }
 
 // DecodeTestRequest decodes an NLM_TEST request from XDR format.
-func DecodeTestRequest(data []byte) (*TestRequest, error) {
+func DecodeTestRequest(data []byte, version uint32) (*TestRequest, error) {
 	r := bytes.NewReader(data)
-	args, err := nlm_xdr.DecodeNLM4TestArgs(r)
+	args, err := nlm_xdr.DecodeNLM4TestArgs(r, types.IsWideVersion(version))
 	if err != nil {
 		return nil, fmt.Errorf("decode NLM4TestArgs: %w", err)
 	}
@@ -55,7 +55,7 @@ func DecodeTestRequest(data []byte) (*TestRequest, error) {
 }
 
 // EncodeTestResponse encodes an NLM_TEST response to XDR format.
-func EncodeTestResponse(resp *TestResponse) ([]byte, error) {
+func EncodeTestResponse(resp *TestResponse, version uint32) ([]byte, error) {
 	buf := new(bytes.Buffer)
 
 	res := &types.NLM4TestRes{
@@ -64,7 +64,7 @@ func EncodeTestResponse(resp *TestResponse) ([]byte, error) {
 		Holder: resp.Holder,
 	}
 
-	if err := nlm_xdr.EncodeNLM4TestRes(buf, res); err != nil {
+	if err := nlm_xdr.EncodeNLM4TestRes(buf, res, types.IsWideVersion(version)); err != nil {
 		return nil, err
 	}
 

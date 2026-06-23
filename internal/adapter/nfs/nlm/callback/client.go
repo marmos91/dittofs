@@ -89,9 +89,10 @@ func SendGrantedCallback(
 		}
 	}
 
-	// Encode NLM_GRANTED args
+	// Encode NLM_GRANTED args. The byte-range offset width must match the
+	// client's negotiated NLM version (32-bit for v1/v3, 64-bit for v4).
 	var argsBuf bytes.Buffer
-	if err := nlm_xdr.EncodeNLM4GrantedArgs(&argsBuf, args); err != nil {
+	if err := nlm_xdr.EncodeNLM4GrantedArgs(&argsBuf, args, types.IsWideVersion(vers)); err != nil {
 		return fmt.Errorf("encode granted args: %w", err)
 	}
 

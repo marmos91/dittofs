@@ -194,11 +194,15 @@ func (c *NFSConnection) handleRPCCall(ctx context.Context, call *rpc.RPCCallMess
 		replyData, err = c.handleMountProcedure(ctx, call, procedureData, clientAddr)
 
 	case rpc.ProgramNLM:
-		// NLM v4 only per CONTEXT.md decision
-		if call.Version != rpc.NLMVersion4 {
-			return c.handleUnsupportedVersion(call, rpc.NLMVersion4, rpc.NLMVersion4, "NLM", clientAddr)
+		// NLM v1/v3 (32-bit offsets) and v4 (64-bit offsets) are supported. BSD/
+		// macOS NFSv3 lock clients negotiate v1/v3; Linux uses v4. The offset
+		// wire width is selected per-version in the NLM handler (issue #1353).
+		switch call.Version {
+		case rpc.NLMVersion1, rpc.NLMVersion3, rpc.NLMVersion4:
+			replyData, err = c.handleNLMProcedure(ctx, call, procedureData, clientAddr)
+		default:
+			return c.handleUnsupportedVersion(call, rpc.NLMVersion1, rpc.NLMVersion4, "NLM", clientAddr)
 		}
-		replyData, err = c.handleNLMProcedure(ctx, call, procedureData, clientAddr)
 
 	case rpc.ProgramNSM:
 		// NSM v1 only

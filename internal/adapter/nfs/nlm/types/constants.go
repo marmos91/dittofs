@@ -27,10 +27,24 @@ const (
 	// Per Open Group specification, NLM uses program number 100021.
 	ProgramNLM uint32 = 100021
 
+	// NLMVersion1 is the original NLM protocol version (32-bit offsets).
+	// BSD/macOS NFSv3 lock clients commonly negotiate v1 over UDP.
+	NLMVersion1 uint32 = 1
+
+	// NLMVersion3 adds SHARE/UNSHARE/NM_LOCK/FREE_ALL but keeps 32-bit offsets.
+	NLMVersion3 uint32 = 3
+
 	// NLMVersion4 is the NLM protocol version implementing 64-bit offsets.
-	// Version 4 is required for NFS v3 compatibility.
+	// Version 4 is required for NFS v3 compatibility on Linux.
 	NLMVersion4 uint32 = 4
 )
+
+// IsWideVersion reports whether the given NLM version encodes byte-range
+// offsets and lengths as 64-bit values (NLM v4). NLM v1 and v3 use 32-bit
+// offsets. Unknown versions default to wide (v4) to preserve prior behaviour.
+func IsWideVersion(version uint32) bool {
+	return version != NLMVersion1 && version != NLMVersion3
+}
 
 // ============================================================================
 // NLM v4 Procedure Numbers

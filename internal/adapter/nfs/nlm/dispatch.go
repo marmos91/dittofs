@@ -131,21 +131,21 @@ func handleNLMTest(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	req, err := handlers.DecodeTestRequest(data)
+	req, err := handlers.DecodeTestRequest(data, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM TEST decode error", "error", err)
-		encoded, _ := handlers.EncodeTestResponse(&handlers.TestResponse{Status: types.NLM4Failed})
+		encoded, _ := handlers.EncodeTestResponse(&handlers.TestResponse{Status: types.NLM4Failed}, ctx.Version)
 		return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Failed}, err
 	}
 
 	resp, err := handler.Test(ctx, req)
 	if err != nil {
 		logger.Debug("NLM TEST handler error", "error", err)
-		encoded, _ := handlers.EncodeTestResponse(&handlers.TestResponse{Cookie: req.Cookie, Status: types.NLM4Failed})
+		encoded, _ := handlers.EncodeTestResponse(&handlers.TestResponse{Cookie: req.Cookie, Status: types.NLM4Failed}, ctx.Version)
 		return &HandlerResult{Data: encoded, NLMStatus: types.NLM4Failed}, err
 	}
 
-	encoded, err := handlers.EncodeTestResponse(resp)
+	encoded, err := handlers.EncodeTestResponse(resp, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM TEST encode error", "error", err)
 		return &HandlerResult{Data: nil, NLMStatus: types.NLM4Failed}, err
@@ -160,7 +160,7 @@ func handleNLMLock(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	req, err := handlers.DecodeLockRequest(data)
+	req, err := handlers.DecodeLockRequest(data, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM LOCK decode error", "error", err)
 		encoded, _ := handlers.EncodeLockResponse(&handlers.LockResponse{Status: types.NLM4Failed})
@@ -189,7 +189,7 @@ func handleNLMCancel(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	req, err := handlers.DecodeCancelRequest(data)
+	req, err := handlers.DecodeCancelRequest(data, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM CANCEL decode error", "error", err)
 		encoded, _ := handlers.EncodeCancelResponse(&handlers.CancelResponse{Status: types.NLM4Failed})
@@ -218,7 +218,7 @@ func handleNLMUnlock(
 	reg *runtime.Runtime,
 	data []byte,
 ) (*HandlerResult, error) {
-	req, err := handlers.DecodeUnlockRequest(data)
+	req, err := handlers.DecodeUnlockRequest(data, ctx.Version)
 	if err != nil {
 		logger.Debug("NLM UNLOCK decode error", "error", err)
 		encoded, _ := handlers.EncodeUnlockResponse(&handlers.UnlockResponse{Status: types.NLM4Failed})

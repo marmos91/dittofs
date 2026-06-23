@@ -3,14 +3,41 @@ package xdr
 import (
 	"bytes"
 	"fmt"
+	"math"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/nlm/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // ============================================================================
-// NLM v4 Response Encoders
+// NLM Response Encoders
+//
+// The `wide` parameter selects byte-range offset/length wire width:
+//   - wide == true  -> 64-bit (NLM v4).
+//   - wide == false -> 32-bit (NLM v1/v3, e.g. macOS NFSv3 clients).
 // ============================================================================
+
+// encodeNLMOffset writes a byte-range offset/length using the version's wire
+// width. Values are widened to uint64 internally.
+//
+// A v1/v3 client's own locks always fit in 32 bits, but the holder field of a
+// TEST response can reflect a conflicting v4 lock whose 64-bit range exceeds 32
+// bits. NLM v1/v3 cannot represent that, so the narrow form saturates to the
+// 32-bit max rather than wrap-truncating — wrapping could fold a large offset
+// down to a small, wrong one (e.g. 1<<32 -> 0) and misreport the conflict. The
+// nlm_stat (DENIED) the client acts on is unaffected; only the reported holder
+// bounds are clamped.
+func encodeNLMOffset(buf *bytes.Buffer, v uint64, wide bool) error {
+	if wide {
+		return xdr.WriteUint64(buf, v)
+	}
+	if v > math.MaxUint32 {
+		logger.Debug("NLM v1/v3: clamping 64-bit byte-range field to 32-bit max", "value", v)
+		v = math.MaxUint32
+	}
+	return xdr.WriteUint32(buf, uint32(v))
+}
 
 // EncodeNLM4Res encodes an NLM4Res response structure to XDR format.
 //
@@ -49,7 +76,7 @@ func EncodeNLM4Res(buf *bytes.Buffer, res *types.NLM4Res) error {
 //
 // If Status is NLM4Denied, Holder must be non-nil and will be encoded.
 // If Status is anything else, Holder is ignored (not encoded).
-func EncodeNLM4TestRes(buf *bytes.Buffer, res *types.NLM4TestRes) error {
+func EncodeNLM4TestRes(buf *bytes.Buffer, res *types.NLM4TestRes, wide bool) error {
 	if res == nil {
 		return fmt.Errorf("NLM4TestRes is nil")
 	}
@@ -69,7 +96,7 @@ func EncodeNLM4TestRes(buf *bytes.Buffer, res *types.NLM4TestRes) error {
 		if res.Holder == nil {
 			return fmt.Errorf("NLM4TestRes.Holder is nil but status is DENIED")
 		}
-		if err := EncodeNLM4Holder(buf, res.Holder); err != nil {
+		if err := EncodeNLM4Holder(buf, res.Holder, wide); err != nil {
 			return fmt.Errorf("encode holder: %w", err)
 		}
 	}
@@ -86,7 +113,7 @@ func EncodeNLM4TestRes(buf *bytes.Buffer, res *types.NLM4TestRes) error {
 //	oh:        [length:uint32][data:bytes][padding]
 //	l_offset:  [uint64]
 //	l_len:     [uint64]
-func EncodeNLM4Holder(buf *bytes.Buffer, holder *types.NLM4Holder) error {
+func EncodeNLM4Holder(buf *bytes.Buffer, holder *types.NLM4Holder, wide bool) error {
 	if holder == nil {
 		return fmt.Errorf("NLM4Holder is nil")
 	}
@@ -106,13 +133,13 @@ func EncodeNLM4Holder(buf *bytes.Buffer, holder *types.NLM4Holder) error {
 		return fmt.Errorf("encode oh: %w", err)
 	}
 
-	// Encode l_offset (uint64)
-	if err := xdr.WriteUint64(buf, holder.Offset); err != nil {
+	// Encode l_offset (64-bit for v4, 32-bit for v1/v3)
+	if err := encodeNLMOffset(buf, holder.Offset, wide); err != nil {
 		return fmt.Errorf("encode l_offset: %w", err)
 	}
 
-	// Encode l_len (uint64)
-	if err := xdr.WriteUint64(buf, holder.Length); err != nil {
+	// Encode l_len (64-bit for v4, 32-bit for v1/v3)
+	if err := encodeNLMOffset(buf, holder.Length, wide); err != nil {
 		return fmt.Errorf("encode l_len: %w", err)
 	}
 
@@ -129,7 +156,7 @@ func EncodeNLM4Holder(buf *bytes.Buffer, holder *types.NLM4Holder) error {
 //
 // Used when server calls back to client to notify that a blocked lock
 // has been granted.
-func EncodeNLM4GrantedArgs(buf *bytes.Buffer, args *types.NLM4GrantedArgs) error {
+func EncodeNLM4GrantedArgs(buf *bytes.Buffer, args *types.NLM4GrantedArgs, wide bool) error {
 	if args == nil {
 		return fmt.Errorf("NLM4GrantedArgs is nil")
 	}
@@ -145,7 +172,7 @@ func EncodeNLM4GrantedArgs(buf *bytes.Buffer, args *types.NLM4GrantedArgs) error
 	}
 
 	// Encode alock (nlm4_lock)
-	if err := EncodeNLM4Lock(buf, &args.Lock); err != nil {
+	if err := EncodeNLM4Lock(buf, &args.Lock, wide); err != nil {
 		return fmt.Errorf("encode alock: %w", err)
 	}
 
@@ -162,7 +189,7 @@ func EncodeNLM4GrantedArgs(buf *bytes.Buffer, args *types.NLM4GrantedArgs) error
 //	svid:        [int32]
 //	l_offset:    [uint64]
 //	l_len:       [uint64]
-func EncodeNLM4Lock(buf *bytes.Buffer, lock *types.NLM4Lock) error {
+func EncodeNLM4Lock(buf *bytes.Buffer, lock *types.NLM4Lock, wide bool) error {
 	if lock == nil {
 		return fmt.Errorf("NLM4Lock is nil")
 	}
@@ -187,13 +214,13 @@ func EncodeNLM4Lock(buf *bytes.Buffer, lock *types.NLM4Lock) error {
 		return fmt.Errorf("encode svid: %w", err)
 	}
 
-	// Encode l_offset (uint64)
-	if err := xdr.WriteUint64(buf, lock.Offset); err != nil {
+	// Encode l_offset (64-bit for v4, 32-bit for v1/v3)
+	if err := encodeNLMOffset(buf, lock.Offset, wide); err != nil {
 		return fmt.Errorf("encode l_offset: %w", err)
 	}
 
-	// Encode l_len (uint64)
-	if err := xdr.WriteUint64(buf, lock.Length); err != nil {
+	// Encode l_len (64-bit for v4, 32-bit for v1/v3)
+	if err := encodeNLMOffset(buf, lock.Length, wide); err != nil {
 		return fmt.Errorf("encode l_len: %w", err)
 	}
 

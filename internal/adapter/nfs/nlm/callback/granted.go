@@ -50,7 +50,7 @@ func ProcessGrantedCallback(
 	// than a stale or hardcoded port. If resolution fails the grant cannot be
 	// delivered: release the lock (same as a failed callback) so it is not
 	// orphaned, and re-drive remaining waiters via the normal release hook.
-	addr, err := callbackAddrResolver(ctx, waiter.CallbackHost)
+	addr, err := callbackAddrResolver(ctx, waiter.CallbackHost, waiter.CallbackVers)
 	if err != nil {
 		logger.Warn("NLM_GRANTED: cannot resolve client callback address, releasing lock",
 			"host", waiter.CallbackHost,
@@ -117,7 +117,7 @@ var callbackAddrResolver = resolveCallbackAddr
 // SetCallbackAddrResolver overrides how a client source host is resolved to a
 // dialable NLM callback address. It returns a restore func. Intended for tests
 // that need a deterministic callback target without a portmap round-trip.
-func SetCallbackAddrResolver(fn func(ctx context.Context, host string) (string, error)) (restore func()) {
+func SetCallbackAddrResolver(fn func(ctx context.Context, host string, vers uint32) (string, error)) (restore func()) {
 	prev := callbackAddrResolver
 	callbackAddrResolver = fn
 	return func() { callbackAddrResolver = prev }
@@ -127,9 +127,11 @@ func SetCallbackAddrResolver(fn func(ctx context.Context, host string) (string, 
 // "host:port" address by querying the client's portmapper for its registered
 // NLM (lockd) port. The host is always the request's transport source, never a
 // client-supplied wire field, so the callback can only ever target the host
-// that issued the lock.
-func resolveCallbackAddr(ctx context.Context, host string) (string, error) {
-	port, err := ResolveNLMCallbackPort(ctx, host, types.ProgramNLM, types.NLMVersion4)
+// that issued the lock. The portmap GETPORT must use the version the client
+// negotiated: a v1/v3 client registers lockd under (100021, v1/v3), not v4, so
+// querying the wrong version returns port 0 and the blocking-lock grant is lost.
+func resolveCallbackAddr(ctx context.Context, host string, vers uint32) (string, error) {
+	port, err := ResolveNLMCallbackPort(ctx, host, types.ProgramNLM, vers)
 	if err != nil {
 		return "", err
 	}
