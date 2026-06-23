@@ -2066,7 +2066,7 @@ func (s *Service) StartWarm(_ context.Context, shareName string) (*WarmJob, erro
 	share, exists := s.registry[shareName]
 	if !exists {
 		s.mu.RUnlock()
-		return nil, fmt.Errorf("share %q not found", shareName)
+		return nil, fmt.Errorf("%w: %q", ErrShareNotFound, shareName)
 	}
 	if share.BlockStore == nil {
 		s.mu.RUnlock()

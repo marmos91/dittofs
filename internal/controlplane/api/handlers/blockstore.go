@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -161,6 +162,10 @@ func (h *BlockStoreStatsHandler) Warm(w http.ResponseWriter, r *http.Request) {
 	job, err := h.runtime.StartWarmBlockStore(r.Context(), shareName)
 	if err != nil {
 		logger.Debug("block store warm start error", "share", shareName, "error", err)
+		if errors.Is(err, shares.ErrShareNotFound) {
+			NotFound(w, "share not found")
+			return
+		}
 		BadRequest(w, "warm failed")
 		return
 	}

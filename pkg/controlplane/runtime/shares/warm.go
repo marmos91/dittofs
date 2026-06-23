@@ -17,6 +17,12 @@ const (
 	WarmStateCanceled = "canceled"
 )
 
+// maxRetainedJobs bounds the number of terminal (done/failed/canceled) jobs the
+// registry keeps so clients can still poll a recently-finished job, without the
+// jobs map growing without bound on a long-running server that warms repeatedly.
+// Running jobs are never evicted.
+const maxRetainedJobs = 32
+
 // WarmJob is the process-local record of an async share-warm operation
 // (proactively materializing a share's blocks onto the local tier). It is
 // in-memory only: jobs do not survive a restart. All fields are read/written
@@ -44,11 +50,24 @@ func (j *WarmJob) clone() *WarmJob {
 // share. It is process-local and mutex-guarded; the cancel funcs let
 // RemoveShare tear down a running warm so it does not outlive its block store.
 type warmRegistry struct {
-	mu      sync.Mutex
-	jobs    map[string]*WarmJob           // jobID -> job
-	active  map[string]string             // shareName -> active jobID (running only)
-	cancels map[string]context.CancelFunc // jobID -> detached-context cancel
-	counter int64                         // monotonic, for deterministic job IDs
+	mu        sync.Mutex
+	jobs      map[string]*WarmJob           // jobID -> job
+	active    map[string]string             // shareName -> active jobID (running only)
+	cancels   map[string]context.CancelFunc // jobID -> detached-context cancel
+	counter   int64                         // monotonic, for deterministic job IDs
+	completed []string                      // FIFO of terminal jobIDs, bounded by maxRetainedJobs
+}
+
+// retire records a job that has reached a terminal state and evicts the oldest
+// retained terminal jobs once the window exceeds maxRetainedJobs, so the jobs
+// map cannot grow without bound. Caller must hold r.mu.
+func (r *warmRegistry) retire(jobID string) {
+	r.completed = append(r.completed, jobID)
+	for len(r.completed) > maxRetainedJobs {
+		oldest := r.completed[0]
+		r.completed = r.completed[1:]
+		delete(r.jobs, oldest)
+	}
 }
 
 func newWarmRegistry() *warmRegistry {
@@ -140,6 +159,8 @@ func (r *warmRegistry) start(shareName string, run func(ctx context.Context, pro
 			j.State = WarmStateFailed
 			j.Err = err.Error()
 		}
+		// Bound retained terminal jobs so the jobs map cannot grow without limit.
+		r.retire(jobID)
 		logger.Debug("warm job finished",
 			"job", jobID, "share", shareName, "state", j.State,
 			"blocks_done", j.BlocksDone, "bytes_done", j.BytesDone, "error", j.Err)
