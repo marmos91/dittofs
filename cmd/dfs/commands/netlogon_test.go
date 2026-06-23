@@ -85,7 +85,9 @@ func TestBuildNetlogonAuthenticator_EnabledMissingDomain(t *testing.T) {
 	}
 }
 
-func TestBuildNetlogonAuthenticator_EnabledMissingDCAddresses(t *testing.T) {
+func TestBuildNetlogonAuthenticator_EnabledMissingDCAddressesUsesDiscovery(t *testing.T) {
+	// No dc_address is valid: the realm drives DNS SRV discovery of the DC at
+	// connect time, so passthrough stays enabled (#1324).
 	k := config.KerberosConfig{
 		Realm:         "EXAMPLE.COM",
 		NetBIOSDomain: "EXAMPLE",
@@ -93,12 +95,31 @@ func TestBuildNetlogonAuthenticator_EnabledMissingDCAddresses(t *testing.T) {
 			Enabled:     true,
 			AccountName: "DITTOFS$",
 			Secret:      "s3cr3t",
-			// DCAddresses intentionally empty
+			// DCAddresses intentionally empty — located from the realm.
+		},
+	}
+	got := buildNetlogonAuthenticator(k)
+	if got == nil {
+		t.Fatal("expected non-nil authenticator when realm is set (DC located via DNS SRV)")
+	}
+}
+
+func TestBuildNetlogonAuthenticator_EnabledMissingRealm(t *testing.T) {
+	// Realm is mandatory: the Kerberos SMB session to the DC and DNS SRV
+	// discovery both require it. Without it, passthrough must be disabled (#1324).
+	k := config.KerberosConfig{
+		// Realm intentionally empty
+		NetBIOSDomain: "EXAMPLE",
+		MachineAccount: config.MachineAccountConfig{
+			Enabled:     true,
+			AccountName: "DITTOFS$",
+			Secret:      "s3cr3t",
+			DCAddresses: []string{"192.168.1.1"},
 		},
 	}
 	got := buildNetlogonAuthenticator(k)
 	if got != nil {
-		t.Fatal("expected nil when DCAddresses is empty")
+		t.Fatal("expected nil when realm is missing")
 	}
 }
 

@@ -113,34 +113,13 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 		return nil
 	}
 
-	// Resolve which DC to connect to and its canonical FQDN (for the cifs/<fqdn>
-	// SMB service principal) via the AD DNS SRV locator. Two modes (#1324):
-	//
-	//   - DC address configured: connectivity uses that address, and we point the
-	//     SRV lookup at it (the DC is the domain's authoritative DNS server) purely
-	//     to learn the FQDN for the SPN. The IP stays the dial target.
-	//   - No DC address configured: locate a DC entirely from the realm using the
-	//     host resolver (a domain-joined host's resolv.conf points at a DC), then
-	//     dial the discovered FQDN directly.
-	var server string
-	var dcs []DCInfo
-	var err error
-	if len(mc.DCAddresses) > 0 {
-		server = mc.DCAddresses[0]
-		dcs, err = DiscoverDCs(ctx, mc.Realm, server)
-	} else {
-		dcs, err = DiscoverDCs(ctx, mc.Realm, "")
-		if err == nil && len(dcs) > 0 {
-			server = dcs[0].FQDN
-		}
-	}
+	// Resolve the dial target and the Kerberos SMB service principal (cifs/<fqdn>)
+	// for the DC we will actually connect to. The SPN must name the dialed host —
+	// a cifs/<other-dc> ticket would not authenticate the SMB session (#1324).
+	server, spn, err := resolveDialTarget(ctx, mc)
 	if err != nil {
-		return fmt.Errorf("netlogon: discover DC: %w", err)
+		return fmt.Errorf("netlogon: %w", err)
 	}
-	if len(dcs) == 0 || server == "" {
-		return fmt.Errorf("netlogon: no DC discovered for realm %q and none configured", mc.Realm)
-	}
-	spn := dcs[0].SPN()
 
 	// Register the machine credential and the SPNEGO/NTLM/KRB5/Netlogon mechanisms
 	// (once, process-global) BEFORE creating the security context, which captures
