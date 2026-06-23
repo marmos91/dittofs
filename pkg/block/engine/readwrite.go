@@ -210,6 +210,87 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 	return kept, nil
 }
 
+// PunchHole implements the block-store side of NFSv4.2 DEALLOCATE (RFC 7862):
+// it makes [offset, offset+length) of payloadID read back as zeros and reclaims
+// the storage of any whole CAS block that falls entirely inside the range.
+//
+// currentBlocks is the file's pre-op block list. Blocks fully inside the
+// punched range are dropped and their dedup refcounts decremented (so the GC
+// sweep can reclaim the remote chunk, mirroring Truncate's by-ID reap); a block
+// only partially overlapping the range is KEPT, because its content hash still
+// addresses the surviving bytes — the partially-overlapped bytes are zeroed by
+// the overwrite below. The returned []BlockRef is the pruned list (whole-block
+// drops removed) for the caller to persist; an empty input returns nil
+// (dual-read shim semantics).
+//
+// To guarantee zeros on the read path regardless of rollup state, the range is
+// overwritten with zeros via the local append log (the same hot path WriteAt
+// uses). Zero chunks dedup to a single CAS object, so this does not defeat
+// space reclaim in aggregate. length == 0, or a payload with no blocks, is a
+// no-op success.
+func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks []block.BlockRef, offset, length uint64) ([]block.BlockRef, error) {
+	if err := bs.enter(); err != nil {
+		return currentBlocks, err
+	}
+	defer bs.closeMu.RUnlock()
+	if length == 0 {
+		return currentBlocks, nil
+	}
+	end := offset + length
+
+	// Reap blocks lying ENTIRELY within [offset, end). Partially-overlapping
+	// blocks are kept (their hash still addresses surviving bytes); the zero
+	// overwrite below masks the punched portion on read.
+	kept := currentBlocks
+	if len(currentBlocks) > 0 {
+		kept = make([]block.BlockRef, 0, len(currentBlocks))
+		var dropped []block.BlockRef
+		for _, b := range currentBlocks {
+			bEnd := b.Offset + uint64(b.Size)
+			if b.Offset >= offset && bEnd <= end {
+				dropped = append(dropped, b)
+				continue
+			}
+			kept = append(kept, b)
+		}
+		if bs.coordinator != nil {
+			reaped := make(map[uint64]struct{}, len(dropped))
+			for _, b := range dropped {
+				if _, done := reaped[b.Offset]; done {
+					continue
+				}
+				reaped[b.Offset] = struct{}{}
+				if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset); err != nil {
+					return currentBlocks, fmt.Errorf("reap block on punch %s/%d: %w", payloadID, b.Offset, err)
+				}
+			}
+		}
+	}
+
+	// Overwrite the range with zeros so both the pre-rollup append-log read path
+	// and the post-rollup CAS path return zeros. Chunked to bound the transient
+	// buffer for large deallocations.
+	const zeroChunk = 1 << 20 // 1 MiB
+	zeros := make([]byte, zeroChunk)
+	for pos := offset; pos < end; {
+		n := end - pos
+		if n > zeroChunk {
+			n = zeroChunk
+		}
+		if err := bs.local.AppendWrite(ctx, payloadID, zeros[:n], pos); err != nil {
+			return currentBlocks, fmt.Errorf("zero punched range %s [%d,%d): %w", payloadID, pos, pos+n, err)
+		}
+		pos += n
+	}
+
+	bs.loadCache().OnRead(payloadID, nil, 0)
+
+	if len(currentBlocks) == 0 {
+		return nil, nil
+	}
+	return kept, nil
+}
+
 // Delete removes all data for a payload from local store and remote store.
 // Invalidates all read buffer entries for the file and resets prefetcher state.
 //

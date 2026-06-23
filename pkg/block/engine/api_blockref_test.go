@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -169,6 +170,92 @@ func TestTruncate_DropsBlocksPastNewSize(t *testing.T) {
 	}
 	if len(fc.reapIDs) != 2 {
 		t.Errorf("DecrementRefCountAndReap calls = %d, want 2 (one per dropped block)", len(fc.reapIDs))
+	}
+}
+
+// TestPunchHole_ReapsBlocksFullyInsideRange asserts the DEALLOCATE contract:
+// blocks lying entirely within [offset, offset+length) are dropped from the
+// returned BlockRef list and reaped via DecrementRefCountAndReap, while blocks
+// outside (or only partially overlapping) the range are kept.
+func TestPunchHole_ReapsBlocksFullyInsideRange(t *testing.T) {
+	fc := &fakeCoordinator{}
+	bs := newTestEngineWithCoordinator(t, fc)
+	ctx := context.Background()
+
+	blocks := []block.BlockRef{
+		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},     // kept (outside)
+		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},  // dropped (inside [4096,12288))
+		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 4096},  // dropped (inside)
+		{Hash: block.ContentHash{0x04}, Offset: 12288, Size: 4096}, // kept (outside)
+	}
+
+	kept, err := bs.PunchHole(ctx, "punch-test", blocks, 4096, 8192) // range [4096,12288)
+	if err != nil {
+		t.Fatalf("PunchHole: %v", err)
+	}
+	if len(kept) != 2 {
+		t.Errorf("kept = %d blocks, want 2", len(kept))
+	}
+	if len(fc.reapIDs) != 2 {
+		t.Errorf("DecrementRefCountAndReap calls = %d, want 2 (one per fully-inside block)", len(fc.reapIDs))
+	}
+}
+
+// TestPunchHole_ReadsBackAsZeros asserts that after a punch the range reads back
+// as zeros via the engine read path (the zero-overwrite guarantees this even
+// pre-rollup), while surrounding bytes are untouched.
+func TestPunchHole_ReadsBackAsZeros(t *testing.T) {
+	bs := newTestEngine(t, 64*1024*1024, 0)
+	ctx := context.Background()
+	payloadID := "punch-zeros"
+
+	data := bytes.Repeat([]byte{0xAB}, 300)
+	if _, err := bs.WriteAt(ctx, payloadID, nil, data, 0); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
+
+	if _, err := bs.PunchHole(ctx, payloadID, nil, 100, 100); err != nil {
+		t.Fatalf("PunchHole: %v", err)
+	}
+
+	buf := make([]byte, 300)
+	if _, err := bs.ReadAt(ctx, payloadID, nil, buf, 0); err != nil {
+		t.Fatalf("ReadAt: %v", err)
+	}
+	for i := 0; i < 100; i++ {
+		if buf[i] != 0xAB {
+			t.Fatalf("byte %d = %#x, want 0xAB (head untouched)", i, buf[i])
+		}
+	}
+	for i := 100; i < 200; i++ {
+		if buf[i] != 0 {
+			t.Fatalf("byte %d = %#x, want 0 (punched)", i, buf[i])
+		}
+	}
+	for i := 200; i < 300; i++ {
+		if buf[i] != 0xAB {
+			t.Fatalf("byte %d = %#x, want 0xAB (tail untouched)", i, buf[i])
+		}
+	}
+}
+
+// TestPunchHole_ZeroLengthNoOp asserts that a zero-length punch returns the
+// input block list unchanged and performs no reap.
+func TestPunchHole_ZeroLengthNoOp(t *testing.T) {
+	fc := &fakeCoordinator{}
+	bs := newTestEngineWithCoordinator(t, fc)
+	ctx := context.Background()
+
+	blocks := []block.BlockRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
+	kept, err := bs.PunchHole(ctx, "punch-noop", blocks, 100, 0)
+	if err != nil {
+		t.Fatalf("PunchHole: %v", err)
+	}
+	if len(kept) != 1 {
+		t.Errorf("kept = %d, want 1 (unchanged)", len(kept))
+	}
+	if len(fc.reapIDs) != 0 {
+		t.Errorf("reap calls = %d, want 0", len(fc.reapIDs))
 	}
 }
 
