@@ -64,6 +64,12 @@ func getContainerIP(t *testing.T) string {
 //
 // This test requires the AD-DC fixture (ad_dc build tag) and Docker.
 func TestNetlogonPassthroughAlice(t *testing.T) {
+	// The NETLOGON secure channel negotiates (ReqChallenge + Authenticate3) but
+	// the sealed-schannel AlterContext is currently rejected by the Samba AD-DC
+	// with RPC_S_UNKNOWN_AUTHN_SERVICE (0x721) over ncacn_ip_tcp. Tracked in
+	// #1345 (go-msrpc<->Samba schannel interop). Un-skip once resolved.
+	t.Skip("NETLOGON schannel AlterContext interop with Samba AD-DC pending — see #1345")
+
 	if testing.Short() {
 		t.Skip("skipping NETLOGON passthrough integration test in short mode")
 	}

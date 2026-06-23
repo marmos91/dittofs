@@ -655,6 +655,11 @@ DittoFS implements NTLMv2 authentication with SPNEGO negotiation:
 > discovery (#1324, currently a static `dc_address` list), and hot-reload of
 > the machine credential without restart (#1325).
 >
+> **Status note**: end-to-end interoperability of the NETLOGON secure channel
+> against a Samba AD-DC is still being validated — the sealed-schannel
+> `AlterContext` is currently rejected by the test DC
+> (`RPC_S_UNKNOWN_AUTHN_SERVICE`); see #1345.
+>
 > **For AD domain users, Kerberos remains the recommended path** (single
 > round-trip, mutual authentication, no machine-account provisioning required).
 > The LDAP/AD directory integration resolves *identity* (UID/GID, groups) for
