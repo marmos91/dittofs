@@ -203,6 +203,68 @@ func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*ide
 	}, nil
 }
 
+// LookupUID resolves a POSIX UID to an AD account name + realm via an
+// RFC2307 reverse search (&(objectClass=user)(uidNumber=N)). It backs the
+// LSARPC owner-SID display path: the machine-domain SID decodes to a UID that
+// has no local DittoFS account (the owner is an AD-only user such as alice),
+// so the name is recovered from the directory instead.
+//
+// Returns ok=false (no error logged as fatal) when no object matches or the
+// directory is unreachable, so a miss degrades to a raw SID rather than a
+// fault. Only meaningful in the rfc2307 idmap mode; in rid mode the UID is the
+// RID and is matched on objectSid by the forward path instead, so this returns
+// ok=false.
+func (p *Provider) LookupUID(ctx context.Context, uid uint32) (name, domain string, ok bool) {
+	return p.reverseLookup(ctx, "user", "uidNumber", uid)
+}
+
+// LookupGID resolves a POSIX GID to an AD group name + realm via an RFC2307
+// reverse search (&(objectClass=group)(gidNumber=N)). Mirrors LookupUID for
+// the GROUP SID on a file. Returns ok=false on a miss or in rid mode.
+func (p *Provider) LookupGID(ctx context.Context, gid uint32) (name, domain string, ok bool) {
+	return p.reverseLookup(ctx, "group", "gidNumber", gid)
+}
+
+// reverseLookup performs a single RFC2307 reverse search for the given object
+// class and POSIX-number attribute, returning the object's sAMAccountName and
+// the configured realm. Infrastructure errors are logged at Debug and folded
+// into ok=false so a directory outage never faults the LSARPC pipe.
+func (p *Provider) reverseLookup(ctx context.Context, objectClass, numAttr string, id uint32) (string, string, bool) {
+	// Only RFC2307 stamps uidNumber/gidNumber. In rid mode the POSIX id is the
+	// object's RID; there is no number attribute to match on, so report a miss
+	// and let the caller fall back to the raw SID.
+	if p.cfg.Idmap != IdmapRFC2307 {
+		return "", "", false
+	}
+
+	c, err := p.connect(ctx, p.cfg)
+	if err != nil {
+		logger.Debug("ldap: reverse lookup connect/bind failed", "attr", numAttr, "id", id, "error", err)
+		return "", "", false
+	}
+	defer func() { _ = c.Close() }()
+
+	filter := fmt.Sprintf("(&(objectClass=%s)(%s=%d))", objectClass, numAttr, id)
+	req := ldapv3.NewSearchRequest(
+		p.cfg.BaseDN,
+		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, 2, int(p.cfg.Timeout.Seconds()), false,
+		filter, []string{"sAMAccountName"}, nil,
+	)
+	res, err := c.Search(req)
+	if err != nil {
+		logger.Debug("ldap: reverse lookup search failed", "filter", filter, "error", err)
+		return "", "", false
+	}
+	if len(res.Entries) == 0 {
+		return "", "", false
+	}
+	name := res.Entries[0].GetAttributeValue("sAMAccountName")
+	if name == "" {
+		return "", "", false
+	}
+	return name, p.cfg.Realm, true
+}
+
 // userFilter builds an LDAP filter matching the credential. SIDs are matched on
 // objectSid; principals on the configured user attribute (sAMAccountName).
 func (p *Provider) userFilter(cred *identity.Credential) (string, error) {

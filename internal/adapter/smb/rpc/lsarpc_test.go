@@ -669,3 +669,897 @@ func TestStoreIdentityResolver_NilFuncs(t *testing.T) {
 		t.Error("LookupGroupNameByGID should return false when LookupGroup is nil")
 	}
 }
+
+// =============================================================================
+// Foreign (AD/LDAP) SID resolution
+// =============================================================================
+
+// mockForeignResolver is a test ForeignSIDResolver. SID hits are keyed by
+// canonical SID string; reverse uid/gid hits (the AD-only owner path) are keyed
+// by numeric id.
+type mockForeignResolver struct {
+	hits    map[string]foreignHit
+	uidHits map[uint32]reverseHit
+	gidHits map[uint32]reverseHit
+}
+
+type foreignHit struct {
+	name    string
+	domain  string
+	sidType uint16
+}
+
+type reverseHit struct {
+	name   string
+	domain string
+}
+
+func (m *mockForeignResolver) LookupSID(sidString string) (string, string, uint16, bool) {
+	h, ok := m.hits[sidString]
+	if !ok {
+		return "", "", 0, false
+	}
+	return h.name, h.domain, h.sidType, true
+}
+
+func (m *mockForeignResolver) LookupUID(uid uint32) (string, string, bool) {
+	h, ok := m.uidHits[uid]
+	if !ok {
+		return "", "", false
+	}
+	return h.name, h.domain, true
+}
+
+func (m *mockForeignResolver) LookupGID(gid uint32) (string, string, bool) {
+	h, ok := m.gidHits[gid]
+	if !ok {
+		return "", "", false
+	}
+	return h.name, h.domain, true
+}
+
+func TestResolveSID_ForeignAD_Hit(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	adSID := sid.ParseSIDMust("S-1-5-21-1111111111-2222222222-3333333333-1107")
+	resolver := &mockForeignResolver{
+		hits: map[string]foreignHit{
+			sid.FormatSID(adSID): {name: "alice", domain: "CONTOSO", sidType: SidTypeUser},
+		},
+	}
+	h := NewLSARPCHandler(mapper, nil)
+	h.SetForeignSIDResolver(resolver)
+
+	r := h.resolveSID(adSID)
+	if r.name != "alice" {
+		t.Errorf("name = %q, want alice", r.name)
+	}
+	if r.domainName != "CONTOSO" {
+		t.Errorf("domainName = %q, want CONTOSO", r.domainName)
+	}
+	if r.sidType != SidTypeUser {
+		t.Errorf("sidType = %d, want %d (User)", r.sidType, SidTypeUser)
+	}
+	// The referenced domain SID must be the account SID with its RID stripped.
+	wantDomSID := sid.FormatSID(sid.ParseSIDMust("S-1-5-21-1111111111-2222222222-3333333333"))
+	if r.domainSID == nil || sid.FormatSID(r.domainSID) != wantDomSID {
+		t.Errorf("domainSID = %v, want %s", r.domainSID, wantDomSID)
+	}
+}
+
+func TestResolveSID_ForeignAD_Miss(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	adSID := sid.ParseSIDMust("S-1-5-21-1111111111-2222222222-3333333333-1107")
+	resolver := &mockForeignResolver{hits: map[string]foreignHit{}} // empty: always misses
+	h := NewLSARPCHandler(mapper, nil)
+	h.SetForeignSIDResolver(resolver)
+
+	r := h.resolveSID(adSID)
+	if r.sidType != SidTypeUnknown {
+		t.Errorf("miss sidType = %d, want %d (Unknown)", r.sidType, SidTypeUnknown)
+	}
+	if r.name != sid.FormatSID(adSID) {
+		t.Errorf("miss name = %q, want raw SID %q", r.name, sid.FormatSID(adSID))
+	}
+}
+
+func TestResolveSID_ForeignAD_NilResolver(t *testing.T) {
+	// With no foreign resolver wired, a foreign SID is unknown (raw), never a panic.
+	h := newTestLSAHandler()
+	adSID := sid.ParseSIDMust("S-1-5-21-1111111111-2222222222-3333333333-1107")
+	r := h.resolveSID(adSID)
+	if r.sidType != SidTypeUnknown {
+		t.Errorf("sidType = %d, want %d (Unknown)", r.sidType, SidTypeUnknown)
+	}
+}
+
+func TestResolveSID_MachineDomainName_Configurable(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{7: "bob"}})
+
+	// Default machine domain name.
+	if got := h.resolveSID(mapper.UserSID(7)).domainName; got != "DITTOFS" {
+		t.Errorf("default domainName = %q, want DITTOFS", got)
+	}
+
+	// Overridden machine domain name applies to machine-domain SIDs only.
+	h.SetMachineDomainName("FILER01")
+	if got := h.resolveSID(mapper.UserSID(7)).domainName; got != "FILER01" {
+		t.Errorf("overridden domainName = %q, want FILER01", got)
+	}
+
+	// Resetting with empty restores the default.
+	h.SetMachineDomainName("")
+	if got := h.resolveSID(mapper.UserSID(7)).domainName; got != "DITTOFS" {
+		t.Errorf("reset domainName = %q, want DITTOFS", got)
+	}
+}
+
+// lookupSidsResult is a decoded LsarLookupSids response (the parts under test).
+type lookupSidsResult struct {
+	domains     []string // referenced-domain names, in list order
+	names       []translatedName
+	mappedCount uint32
+	status      uint32
+}
+
+type translatedName struct {
+	sidType   uint16
+	domainIdx int32
+}
+
+// parseLookupSidsResponse decodes the stub data produced by
+// buildLookupSidsResponse. It mirrors that exact layout — it is a test-only
+// reader, not a general NDR parser. withFlags selects the EX (opnum 57/76)
+// vs non-EX (opnum 15) translated-name entry layout.
+func parseLookupSidsResponse(t *testing.T, response []byte, withFlags bool) lookupSidsResult {
+	t.Helper()
+	if len(response) <= 24 {
+		t.Fatalf("response too short: %d bytes", len(response))
+	}
+	stub := response[24:]
+	off := 0
+	u32 := func() uint32 {
+		v := binary.LittleEndian.Uint32(stub[off : off+4])
+		off += 4
+		return v
+	}
+	u16 := func() uint16 {
+		v := binary.LittleEndian.Uint16(stub[off : off+2])
+		off += 2
+		return v
+	}
+
+	var res lookupSidsResult
+
+	// --- Referenced domain list ---
+	_ = u32() // list pointer
+	domCount := u32()
+	_ = u32() // array pointer
+	_ = u32() // max entries
+
+	type domFixed struct{ nameUTF16Bytes uint16 }
+	var domFixeds []domFixed
+	if domCount > 0 {
+		_ = u32() // conformant max count
+		for range domCount {
+			length := u16() // Length (excl null), in bytes
+			_ = u16()       // MaximumLength
+			_ = u32()       // string pointer
+			_ = u32()       // SID pointer
+			domFixeds = append(domFixeds, domFixed{nameUTF16Bytes: length})
+		}
+		// Deferred domain name strings.
+		for _, d := range domFixeds {
+			name := readNDRUnicodeString(t, stub, &off)
+			_ = d
+			res.domains = append(res.domains, name)
+		}
+		// Deferred domain SIDs.
+		for range domCount {
+			skipNDRSID(t, stub, &off)
+		}
+	}
+
+	// --- Translated names ---
+	nameCount := u32()
+	_ = u32() // array pointer
+	if nameCount > 0 {
+		_ = u32() // conformant max count
+		for range nameCount {
+			st := u16()
+			_ = u16() // pad/reserved
+			_ = u16() // Length
+			_ = u16() // MaximumLength
+			_ = u32() // name pointer
+			domIdx := int32(u32())
+			if withFlags {
+				_ = u32() // flags (EX layout only)
+			}
+			res.names = append(res.names, translatedName{sidType: st, domainIdx: domIdx})
+		}
+		// Deferred name strings.
+		for range nameCount {
+			readNDRUnicodeString(t, stub, &off)
+		}
+	}
+
+	res.mappedCount = u32()
+	res.status = u32()
+	return res
+}
+
+// readNDRUnicodeString decodes a writeNDRUnicodeString-encoded string and
+// advances off past the 4-byte padding. The buffer is an un-terminated
+// conformant+varying array: MaxCount == ActualCount == char_count (no NUL).
+func readNDRUnicodeString(t *testing.T, b []byte, off *int) string {
+	t.Helper()
+	maxCount := binary.LittleEndian.Uint32(b[*off : *off+4])
+	*off += 4
+	*off += 4 // offset
+	actual := binary.LittleEndian.Uint32(b[*off : *off+4])
+	*off += 4
+	// MaxCount and ActualCount must agree and carry NO null terminator.
+	if maxCount != actual {
+		t.Fatalf("NDR string MaxCount=%d != ActualCount=%d", maxCount, actual)
+	}
+	chars := int(actual)
+	byteLen := chars * 2
+	data := b[*off : *off+byteLen]
+	*off += byteLen
+	// 4-byte align.
+	for *off%4 != 0 {
+		*off++
+	}
+	// Decode UTF-16LE; there is no trailing NUL to drop.
+	var sb []rune
+	for i := 0; i+1 < len(data); i += 2 {
+		c := binary.LittleEndian.Uint16(data[i : i+2])
+		sb = append(sb, rune(c))
+	}
+	return string(sb)
+}
+
+// skipNDRSID advances off past a writeNDRSID-encoded SID.
+func skipNDRSID(t *testing.T, b []byte, off *int) {
+	t.Helper()
+	_ = binary.LittleEndian.Uint32(b[*off : *off+4]) // conformant max count
+	*off += 4
+	// SID: revision(1) + subauthcount(1) + authority(6) + subauths(4*n)
+	subCount := int(b[*off+1])
+	*off += 8 + 4*subCount
+	for *off%4 != 0 {
+		*off++
+	}
+}
+
+// TestLookupSids_MixedBatch_MultiDomain exercises a batch containing a
+// well-known SID, a machine-domain user, a foreign AD hit, and a foreign AD
+// miss. It asserts STATUS_SOME_NOT_MAPPED, the correct MappedCount, per-SID
+// types, and that the referenced-domain list correctly carries BUILTIN/the
+// machine domain/the AD domain with the per-name domain index pointing at the
+// right entry.
+func TestLookupSids_MixedBatch_MultiDomain(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	localResolver := &mockResolver{users: map[uint32]string{5: "localuser"}}
+
+	adHit := sid.ParseSIDMust("S-1-5-21-1111111111-2222222222-3333333333-1107")
+	adMiss := sid.ParseSIDMust("S-1-5-21-999999999-888888888-777777777-1500")
+	foreign := &mockForeignResolver{
+		hits: map[string]foreignHit{
+			sid.FormatSID(adHit): {name: "alice", domain: "CONTOSO", sidType: SidTypeUser},
+		},
+	}
+
+	h := NewLSARPCHandler(mapper, localResolver)
+	h.SetForeignSIDResolver(foreign)
+	h.SetMachineDomainName("FILER01")
+
+	sids := []*sid.SID{
+		sid.WellKnownAdministrators, // BUILTIN\Administrators (alias)
+		mapper.UserSID(5),           // FILER01\localuser
+		adHit,                       // CONTOSO\alice
+		adMiss,                      // unmapped
+	}
+
+	stubData := buildLookupSids2StubData(sids)
+	reqData := buildTestRequest(42, OpLsarLookupSids2, stubData)
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	response := h.HandleRequest(req)
+
+	hdr, err := ParseHeader(response)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if hdr.PacketType == PDUFault {
+		t.Fatal("got fault for a partially-unmapped batch; must be a normal response")
+	}
+
+	res := parseLookupSidsResponse(t, response, true) // opnum 57 → EX layout
+
+	if res.status != statusSomeNotMapped {
+		t.Errorf("status = 0x%08x, want STATUS_SOME_NOT_MAPPED (0x%08x)", res.status, statusSomeNotMapped)
+	}
+	if res.mappedCount != 3 {
+		t.Errorf("mappedCount = %d, want 3", res.mappedCount)
+	}
+	if len(res.names) != 4 {
+		t.Fatalf("translated names = %d, want 4", len(res.names))
+	}
+
+	// Per-SID types.
+	wantTypes := []uint16{SidTypeAlias, SidTypeUser, SidTypeUser, SidTypeUnknown}
+	for i, wt := range wantTypes {
+		if res.names[i].sidType != wt {
+			t.Errorf("name[%d].sidType = %d, want %d", i, res.names[i].sidType, wt)
+		}
+	}
+
+	// The unmapped entry must carry domain index -1.
+	if res.names[3].domainIdx != -1 {
+		t.Errorf("unmapped name domainIdx = %d, want -1", res.names[3].domainIdx)
+	}
+
+	// Referenced domains: BUILTIN, FILER01, CONTOSO (in first-seen order).
+	wantDomains := []string{"BUILTIN", "FILER01", "CONTOSO"}
+	if len(res.domains) != len(wantDomains) {
+		t.Fatalf("referenced domains = %v, want %v", res.domains, wantDomains)
+	}
+	for i, wd := range wantDomains {
+		if res.domains[i] != wd {
+			t.Errorf("domain[%d] = %q, want %q", i, res.domains[i], wd)
+		}
+	}
+
+	// Each mapped name's domain index must point at the matching domain entry.
+	checkIdx := func(nameIdx int, wantDomain string) {
+		di := res.names[nameIdx].domainIdx
+		if di < 0 || int(di) >= len(res.domains) {
+			t.Errorf("name[%d] domainIdx %d out of range", nameIdx, di)
+			return
+		}
+		if res.domains[di] != wantDomain {
+			t.Errorf("name[%d] -> domain %q, want %q", nameIdx, res.domains[di], wantDomain)
+		}
+	}
+	checkIdx(0, "BUILTIN")
+	checkIdx(1, "FILER01")
+	checkIdx(2, "CONTOSO")
+}
+
+// TestBuildLookupSidsResponse_TwoDomains is a focused round-trip over the
+// referenced-domain list with exactly two distinct domains, verifying the
+// dedup/index bookkeeping in isolation from the request parser.
+func TestBuildLookupSidsResponse_TwoDomains(t *testing.T) {
+	h := newTestLSAHandler()
+
+	resolved := []resolvedSID{
+		{name: "alice", sidType: SidTypeUser, domainName: "CONTOSO", domainSID: sid.ParseSIDMust("S-1-5-21-1-2-3")},
+		{name: "bob", sidType: SidTypeUser, domainName: "FABRIKAM", domainSID: sid.ParseSIDMust("S-1-5-21-4-5-6")},
+		{name: "carol", sidType: SidTypeUser, domainName: "CONTOSO", domainSID: sid.ParseSIDMust("S-1-5-21-1-2-3")},
+	}
+
+	domainMap := make(map[string]int)
+	var domains []domainEntry
+	for i := range resolved {
+		r := &resolved[i]
+		if _, ok := domainMap[r.domainName]; !ok {
+			domainMap[r.domainName] = len(domains)
+			domains = append(domains, domainEntry{name: r.domainName, sid: r.domainSID})
+		}
+	}
+
+	stub := h.buildLookupSidsResponse(resolved, domains, domainMap, true, true)
+	// Prefix a fake 24-byte RPC header so the shared parser offset math holds.
+	response := append(make([]byte, 24), stub...)
+	res := parseLookupSidsResponse(t, response, true)
+
+	if len(res.domains) != 2 {
+		t.Fatalf("domains = %v, want exactly 2 (deduped)", res.domains)
+	}
+	if res.domains[0] != "CONTOSO" || res.domains[1] != "FABRIKAM" {
+		t.Errorf("domains = %v, want [CONTOSO FABRIKAM]", res.domains)
+	}
+	if res.names[0].domainIdx != 0 || res.names[1].domainIdx != 1 || res.names[2].domainIdx != 0 {
+		t.Errorf("domain indices = [%d %d %d], want [0 1 0]",
+			res.names[0].domainIdx, res.names[1].domainIdx, res.names[2].domainIdx)
+	}
+	if res.mappedCount != 3 {
+		t.Errorf("mappedCount = %d, want 3", res.mappedCount)
+	}
+	if res.status != statusSuccess {
+		t.Errorf("status = 0x%08x, want success", res.status)
+	}
+}
+
+// =============================================================================
+// Machine-domain SID → directory reverse uid/gid (GAP 1: AD-only owner)
+// =============================================================================
+
+// TestResolveSID_MachineDomainUser_DirectoryFallback covers the headline #1343
+// case: the file OWNER SID is the machine-domain (algorithmic) SID for an
+// AD-only user (alice, uid 10001), so it decodes via UIDFromSID. The local
+// control-plane resolver has no such user, so resolution must fall back to the
+// directory by uidNumber and present the real AD name + domain.
+func TestResolveSID_MachineDomainUser_DirectoryFallback(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	// Local resolver: deliberately empty for uid 10001 (no local account).
+	local := &mockResolver{users: map[uint32]string{}}
+	foreign := &mockForeignResolver{
+		uidHits: map[uint32]reverseHit{10001: {name: "alice", domain: "DITTOFS"}},
+	}
+	h := NewLSARPCHandler(mapper, local)
+	h.SetForeignSIDResolver(foreign)
+	h.SetMachineDomainName("FILER01")
+
+	ownerSID := mapper.UserSID(10001) // S-1-5-21-0-0-0-(10001*2+1000)
+	r := h.resolveSID(ownerSID)
+
+	if r.name != "alice" {
+		t.Errorf("name = %q, want alice (directory reverse-uid)", r.name)
+	}
+	if r.sidType != SidTypeUser {
+		t.Errorf("sidType = %d, want %d (User)", r.sidType, SidTypeUser)
+	}
+	// The directory-resolved domain (from the reverse lookup) takes precedence
+	// over the machine NetBIOS name for an AD-only account.
+	if r.domainName != "DITTOFS" {
+		t.Errorf("domainName = %q, want DITTOFS (from directory)", r.domainName)
+	}
+	if r.domainSID == nil {
+		t.Error("domainSID is nil; want the machine domain SID")
+	}
+}
+
+// TestResolveSID_MachineDomainUser_LocalWins ensures the local store still wins
+// when the user DOES have a local account — the directory fallback only fires
+// on a local miss, and the machine NetBIOS name is used for local accounts.
+func TestResolveSID_MachineDomainUser_LocalWins(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	local := &mockResolver{users: map[uint32]string{42: "localbob"}}
+	foreign := &mockForeignResolver{
+		uidHits: map[uint32]reverseHit{42: {name: "WRONG", domain: "WRONGDOM"}},
+	}
+	h := NewLSARPCHandler(mapper, local)
+	h.SetForeignSIDResolver(foreign)
+	h.SetMachineDomainName("FILER01")
+
+	r := h.resolveSID(mapper.UserSID(42))
+	if r.name != "localbob" {
+		t.Errorf("name = %q, want localbob (local store wins)", r.name)
+	}
+	if r.domainName != "FILER01" {
+		t.Errorf("domainName = %q, want FILER01 (machine domain for local account)", r.domainName)
+	}
+}
+
+// TestResolveSID_MachineDomainGroup_DirectoryFallback is the group analog: a
+// GROUP SID for an AD-only group falls back to the directory by gidNumber.
+func TestResolveSID_MachineDomainGroup_DirectoryFallback(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	local := &mockResolver{groups: map[uint32]string{}}
+	foreign := &mockForeignResolver{
+		gidHits: map[uint32]reverseHit{10000: {name: "domain users", domain: "DITTOFS"}},
+	}
+	h := NewLSARPCHandler(mapper, local)
+	h.SetForeignSIDResolver(foreign)
+
+	r := h.resolveSID(mapper.GroupSID(10000))
+	if r.name != "domain users" {
+		t.Errorf("name = %q, want \"domain users\"", r.name)
+	}
+	if r.sidType != SidTypeGroup {
+		t.Errorf("sidType = %d, want %d (Group)", r.sidType, SidTypeGroup)
+	}
+	if r.domainName != "DITTOFS" {
+		t.Errorf("domainName = %q, want DITTOFS", r.domainName)
+	}
+}
+
+// TestResolveSID_MachineDomainUser_BothMiss confirms that when neither the local
+// store nor the directory knows the uid, the SID still resolves (never faults) —
+// it shows the generic unix_user:N name under the machine domain.
+func TestResolveSID_MachineDomainUser_BothMiss(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{}})
+	h.SetForeignSIDResolver(&mockForeignResolver{uidHits: map[uint32]reverseHit{}})
+
+	r := h.resolveSID(mapper.UserSID(7))
+	if r.name != "unix_user:7" {
+		t.Errorf("name = %q, want unix_user:7", r.name)
+	}
+	if r.sidType != SidTypeUser {
+		t.Errorf("sidType = %d, want %d (User)", r.sidType, SidTypeUser)
+	}
+}
+
+// =============================================================================
+// Opnum 15 (LsarLookupSids) and opnum 76 (LsarLookupSids3) framing
+// =============================================================================
+
+// buildLookupSidsStubData builds a LookupSids request stub for the given opnum.
+// Opnum 15/57 lead with a 20-byte policy handle; opnum 76 does not.
+func buildLookupSidsStubData(opnum uint16, sids []*sid.SID) []byte {
+	var buf bytes.Buffer
+	if opnum == OpLsarLookupSids || opnum == OpLsarLookupSids2 {
+		policyHandle := make([]byte, 20)
+		policyHandle[0] = 0x01
+		buf.Write(policyHandle)
+	}
+	appendUint32Buf(&buf, uint32(len(sids))) // Count
+	appendUint32Buf(&buf, 0x00020000)        // pointer to array
+	appendUint32Buf(&buf, uint32(len(sids))) // conformant max count
+	for range sids {
+		appendUint32Buf(&buf, 0x00020004) // SID pointer
+	}
+	for _, s := range sids {
+		appendUint32Buf(&buf, uint32(s.SubAuthorityCount))
+		sid.EncodeSID(&buf, s)
+	}
+	return buf.Bytes()
+}
+
+// TestLSARPC_LookupSids_Opnum15_RoundTrip verifies opnum 15 dispatches (no
+// fault, no PROCNUM_OUT_OF_RANGE) and emits the NON-EX translated-name layout.
+// Decoding with withFlags=false must yield well-formed, in-range fields; the
+// well-known SID maps and the unknown SID does not.
+func TestLSARPC_LookupSids_Opnum15_RoundTrip(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{5: "alice"}})
+
+	sids := []*sid.SID{
+		sid.WellKnownAdministrators,   // BUILTIN\Administrators
+		mapper.UserSID(5),             // DITTOFS\alice
+		sid.ParseSIDMust("S-1-99-42"), // unknown
+	}
+	stub := buildLookupSidsStubData(OpLsarLookupSids, sids)
+	reqData := buildTestRequest(50, OpLsarLookupSids, stub)
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+
+	response := h.HandleRequest(req)
+	hdr, err := ParseHeader(response)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if hdr.PacketType == PDUFault {
+		t.Fatal("opnum 15 faulted; smbcacls/rpcclient lookupsids must get a response")
+	}
+
+	res := parseLookupSidsResponse(t, response, false) // opnum 15 → non-EX layout
+	if len(res.names) != 3 {
+		t.Fatalf("translated names = %d, want 3", len(res.names))
+	}
+	wantTypes := []uint16{SidTypeAlias, SidTypeUser, SidTypeUnknown}
+	for i, wt := range wantTypes {
+		if res.names[i].sidType != wt {
+			t.Errorf("name[%d].sidType = %d, want %d", i, res.names[i].sidType, wt)
+		}
+	}
+	if res.status != statusSomeNotMapped {
+		t.Errorf("status = 0x%08x, want STATUS_SOME_NOT_MAPPED", res.status)
+	}
+	if res.mappedCount != 2 {
+		t.Errorf("mappedCount = %d, want 2", res.mappedCount)
+	}
+	// Every mapped domain index must be in range — the proof the non-EX layout
+	// is internally consistent (a stray Flags word would shift these).
+	for i, n := range res.names {
+		if n.sidType == SidTypeUnknown {
+			if n.domainIdx != -1 {
+				t.Errorf("unmapped name[%d] domainIdx = %d, want -1", i, n.domainIdx)
+			}
+			continue
+		}
+		if n.domainIdx < 0 || int(n.domainIdx) >= len(res.domains) {
+			t.Errorf("name[%d] domainIdx %d out of range (%d domains)", i, n.domainIdx, len(res.domains))
+		}
+	}
+}
+
+// TestLSARPC_LookupSids3_Opnum76_RoundTrip exercises opnum 76 (no policy handle
+// on the wire). It must parse the SID array from offset 0 and emit the EX
+// layout. A wrong leading-offset or wrong entry layout is exactly what produced
+// NT_STATUS_ARRAY_BOUNDS_EXCEEDED (#1342).
+func TestLSARPC_LookupSids3_Opnum76_RoundTrip(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{9: "bob"}})
+
+	sids := []*sid.SID{
+		mapper.UserSID(9),
+		sid.WellKnownEveryone,
+	}
+	stub := buildLookupSidsStubData(OpLsarLookupSids3, sids)
+	reqData := buildTestRequest(76, OpLsarLookupSids3, stub)
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+
+	response := h.HandleRequest(req)
+	hdr, err := ParseHeader(response)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if hdr.PacketType == PDUFault {
+		t.Fatal("opnum 76 faulted")
+	}
+
+	res := parseLookupSidsResponse(t, response, true) // opnum 76 → EX layout
+	if len(res.names) != 2 {
+		t.Fatalf("translated names = %d, want 2 (offset-0 SID parse)", len(res.names))
+	}
+	if res.names[0].sidType != SidTypeUser {
+		t.Errorf("name[0].sidType = %d, want %d (User)", res.names[0].sidType, SidTypeUser)
+	}
+	if res.names[1].sidType != SidTypeWellKnownGroup {
+		t.Errorf("name[1].sidType = %d, want %d (WellKnownGroup)", res.names[1].sidType, SidTypeWellKnownGroup)
+	}
+	if res.status != statusSuccess {
+		t.Errorf("status = 0x%08x, want success (all mapped)", res.status)
+	}
+	if res.mappedCount != 2 {
+		t.Errorf("mappedCount = %d, want 2", res.mappedCount)
+	}
+}
+
+// TestLSARPC_LookupSids_PerOpnumLayout_ByteDiff proves the per-opnum layout
+// difference is real: for the SAME single mapped SID, the opnum-15 (non-EX)
+// stub is exactly 4 bytes shorter than the opnum-57 (EX) stub — the missing
+// Flags word. This is the framing fix for #1342.
+func TestLSARPC_LookupSids_PerOpnumLayout_ByteDiff(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{3: "carol"}})
+
+	resp15 := h.HandleRequest(mustParse(t, buildTestRequest(1, OpLsarLookupSids,
+		buildLookupSidsStubData(OpLsarLookupSids, []*sid.SID{mapper.UserSID(3)}))))
+	resp57 := h.HandleRequest(mustParse(t, buildTestRequest(2, OpLsarLookupSids2,
+		buildLookupSidsStubData(OpLsarLookupSids2, []*sid.SID{mapper.UserSID(3)}))))
+
+	if len(resp15) == 0 || len(resp57) == 0 {
+		t.Fatal("empty response")
+	}
+	diff := len(resp57) - len(resp15)
+	if diff != 4 {
+		t.Errorf("opnum57 stub - opnum15 stub = %d bytes, want 4 (one Flags ULONG per mapped name)", diff)
+	}
+}
+
+func mustParse(t *testing.T, reqData []byte) *Request {
+	t.Helper()
+	req, err := ParseRequest(reqData)
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	return req
+}
+
+// TestLSARPC_LookupSids_MixedBatch_PerOpnum runs the same mapped/unmapped batch
+// through all three opnums and asserts STATUS_SOME_NOT_MAPPED + the mapped count
+// hold regardless of layout.
+func TestLSARPC_LookupSids_MixedBatch_PerOpnum(t *testing.T) {
+	mapper := sid.NewSIDMapper(0, 0, 0)
+	h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{2: "dave"}})
+
+	sids := []*sid.SID{
+		mapper.UserSID(2),            // mapped
+		sid.ParseSIDMust("S-1-99-7"), // unmapped
+		sid.WellKnownEveryone,        // mapped
+	}
+
+	cases := []struct {
+		opnum     uint16
+		withFlags bool
+	}{
+		{OpLsarLookupSids, false},
+		{OpLsarLookupSids2, true},
+		{OpLsarLookupSids3, true},
+	}
+	for _, c := range cases {
+		stub := buildLookupSidsStubData(c.opnum, sids)
+		req := mustParse(t, buildTestRequest(100, c.opnum, stub))
+		response := h.HandleRequest(req)
+		if hdr, _ := ParseHeader(response); hdr.PacketType == PDUFault {
+			t.Fatalf("opnum %d faulted on mixed batch", c.opnum)
+		}
+		res := parseLookupSidsResponse(t, response, c.withFlags)
+		if len(res.names) != 3 {
+			t.Errorf("opnum %d: names = %d, want 3", c.opnum, len(res.names))
+		}
+		if res.status != statusSomeNotMapped {
+			t.Errorf("opnum %d: status = 0x%08x, want STATUS_SOME_NOT_MAPPED", c.opnum, res.status)
+		}
+		if res.mappedCount != 2 {
+			t.Errorf("opnum %d: mappedCount = %d, want 2", c.opnum, res.mappedCount)
+		}
+	}
+}
+
+// =============================================================================
+// Golden byte-count assertions for RPC_UNICODE_STRING / NDR array length
+//
+// These lock the #1342 off-by-one: a resolved name of N characters must be
+// framed with RPC_UNICODE_STRING Length == MaximumLength == 2*N (bytes, NO
+// terminator) and a referenced conformant+varying UTF-16 array whose
+// MaxCount == Offset+ActualCount == N (chars, NO trailing NUL). Samba's
+// ndr_check_steal_array_length cross-checks ActualCount against Length/2; the
+// old "+1 / +NUL" encoding made got==expected+1 ("got 8 expected 7") and
+// rpcclient returned NT_STATUS_ARRAY_BOUNDS_EXCEEDED.
+// =============================================================================
+
+// ndrString captures the exact wire fields of one RPC_UNICODE_STRING plus the
+// conformant+varying UTF-16 array it references, as decoded from a real
+// buildLookupSidsResponse stub.
+type ndrString struct {
+	length    uint16 // RPC_UNICODE_STRING.Length (bytes)
+	maxLength uint16 // RPC_UNICODE_STRING.MaximumLength (bytes)
+	maxCount  uint32 // array MaxCount (chars)
+	offset    uint32 // array Offset (chars)
+	actual    uint32 // array ActualCount (chars)
+	value     string // decoded name
+	utf16Len  int    // raw UTF-16 byte count actually written (no padding)
+}
+
+// decodeLookupSidsStrings walks a buildLookupSidsResponse stub and returns the
+// referenced-domain name strings and the translated-name strings with their
+// exact RPC_UNICODE_STRING + array length fields. It is intentionally a precise,
+// hand-rolled reader (not the lenient parseLookupSidsResponse) so the byte
+// counts are asserted, not inferred. withFlags selects EX (57/76) vs non-EX (15).
+func decodeLookupSidsStrings(t *testing.T, stub []byte, withFlags bool) (domains, names []ndrString) {
+	t.Helper()
+	off := 0
+	u16 := func() uint16 { v := binary.LittleEndian.Uint16(stub[off : off+2]); off += 2; return v }
+	u32 := func() uint32 { v := binary.LittleEndian.Uint32(stub[off : off+4]); off += 4; return v }
+
+	// Read an un-terminated conformant+varying UTF-16 array, capturing fields.
+	readArray := func() (maxCount, offset, actual uint32, value string, rawLen int) {
+		maxCount = u32()
+		offset = u32()
+		actual = u32()
+		rawLen = int(actual) * 2
+		data := stub[off : off+rawLen]
+		off += rawLen
+		for off%4 != 0 {
+			off++
+		}
+		var sb []rune
+		for i := 0; i+1 < len(data); i += 2 {
+			sb = append(sb, rune(binary.LittleEndian.Uint16(data[i:i+2])))
+		}
+		return maxCount, offset, actual, string(sb), rawLen
+	}
+
+	// --- Referenced domain list ---
+	_ = u32() // list pointer
+	domCount := u32()
+	_ = u32() // array pointer
+	_ = u32() // max entries
+	type domFixed struct{ length, maxLength uint16 }
+	var domFixeds []domFixed
+	if domCount > 0 {
+		_ = u32() // conformant max count
+		for range domCount {
+			length := u16()
+			maxLength := u16()
+			_ = u32() // string pointer
+			_ = u32() // SID pointer
+			domFixeds = append(domFixeds, domFixed{length, maxLength})
+		}
+		for _, d := range domFixeds {
+			mc, o, a, v, raw := readArray()
+			domains = append(domains, ndrString{d.length, d.maxLength, mc, o, a, v, raw})
+		}
+		for range domCount {
+			skipNDRSID(t, stub, &off)
+		}
+	}
+
+	// --- Translated names ---
+	nameCount := u32()
+	_ = u32() // array pointer
+	type nameFixed struct{ length, maxLength uint16 }
+	var nameFixeds []nameFixed
+	if nameCount > 0 {
+		_ = u32() // conformant max count
+		for range nameCount {
+			_ = u16() // Use
+			_ = u16() // pad/reserved
+			length := u16()
+			maxLength := u16()
+			_ = u32() // name pointer
+			_ = u32() // domain index
+			if withFlags {
+				_ = u32() // flags (EX only)
+			}
+			nameFixeds = append(nameFixeds, nameFixed{length, maxLength})
+		}
+		for _, n := range nameFixeds {
+			mc, o, a, v, raw := readArray()
+			names = append(names, ndrString{n.length, n.maxLength, mc, o, a, v, raw})
+		}
+	}
+	return domains, names
+}
+
+// assertExactName checks one ndrString against an expected name: Length and
+// MaximumLength are 2*N bytes, the array MaxCount/Offset+ActualCount are N
+// chars, and no NUL terminator was written.
+func assertExactName(t *testing.T, label string, got ndrString, want string) {
+	t.Helper()
+	n := len(encodeUTF16LE(want)) / 2 // UTF-16 code units
+	if got.value != want {
+		t.Errorf("%s: name = %q, want %q", label, got.value, want)
+	}
+	if int(got.length) != 2*n {
+		t.Errorf("%s: RPC_UNICODE_STRING.Length = %d, want %d (2*%d, no NUL)", label, got.length, 2*n, n)
+	}
+	if int(got.maxLength) != 2*n {
+		t.Errorf("%s: RPC_UNICODE_STRING.MaximumLength = %d, want %d (== Length, no NUL)", label, got.maxLength, 2*n)
+	}
+	if int(got.maxCount) != n {
+		t.Errorf("%s: array MaxCount = %d, want %d (chars, no NUL)", label, got.maxCount, n)
+	}
+	if got.offset != 0 {
+		t.Errorf("%s: array Offset = %d, want 0", label, got.offset)
+	}
+	if int(got.actual) != n {
+		t.Errorf("%s: array ActualCount = %d, want %d (chars, no NUL) — the #1342 off-by-one", label, got.actual, n)
+	}
+	if got.utf16Len != 2*n {
+		t.Errorf("%s: wrote %d UTF-16 bytes, want %d (a trailing NUL would add 2)", label, got.utf16Len, 2*n)
+	}
+}
+
+// TestLSARPC_TranslatedName_ExactLengths_AllOpnums is the regression lock for
+// #1342. A 12-character username ("abcdefghijkl") under the 7-character machine
+// domain ("DITTOFS") is resolved and the response stub is decoded with exact
+// byte counts. For EACH of opnum 15 (non-EX), 57 and 76 (EX) it asserts the
+// translated name frames as Length=24/MaxCount=12 and the domain as
+// Length=14/MaxCount=7 — both with no NUL. These are precisely the "got N+1
+// expected N" cases the live Samba client rejected (12->13, 7->8).
+func TestLSARPC_TranslatedName_ExactLengths_AllOpnums(t *testing.T) {
+	const userName = "abcdefghijkl" // 12 chars
+	const domainName = "DITTOFS"    // 7 chars (machine domain default)
+
+	mapper := sid.NewSIDMapper(0, 0, 0)
+
+	cases := []struct {
+		name      string
+		opnum     uint16
+		withFlags bool
+	}{
+		{"opnum15_nonEX", OpLsarLookupSids, false},
+		{"opnum57_EX", OpLsarLookupSids2, true},
+		{"opnum76_EX", OpLsarLookupSids3, true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := NewLSARPCHandler(mapper, &mockResolver{users: map[uint32]string{1: userName}})
+			stub := buildLookupSidsStubData(c.opnum, []*sid.SID{mapper.UserSID(1)})
+			req := mustParse(t, buildTestRequest(1, c.opnum, stub))
+			response := h.HandleRequest(req)
+			if hdr, _ := ParseHeader(response); hdr.PacketType == PDUFault {
+				t.Fatalf("opnum %d faulted", c.opnum)
+			}
+			if len(response) <= 24 {
+				t.Fatalf("response too short: %d bytes", len(response))
+			}
+			domains, names := decodeLookupSidsStrings(t, response[24:], c.withFlags)
+
+			if len(names) != 1 {
+				t.Fatalf("translated names = %d, want 1", len(names))
+			}
+			assertExactName(t, "name[0]", names[0], userName)
+
+			if len(domains) != 1 {
+				t.Fatalf("referenced domains = %d, want 1", len(domains))
+			}
+			assertExactName(t, "domain[0]", domains[0], domainName)
+		})
+	}
+}

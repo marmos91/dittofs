@@ -149,6 +149,71 @@ func (r *Resolver) resolveUncached(ctx context.Context, cred *Credential) (*Reso
 	return &ResolvedIdentity{Found: false}, nil
 }
 
+// ReverseResolver is an optional capability a Provider may implement to resolve
+// a POSIX UID/GID back to a directory account/group name. It backs the LSARPC
+// owner/group SID display path: a local algorithmic SID decodes to a UID/GID
+// that has no local DittoFS account (an AD-only user), so the name is recovered
+// from the directory instead.
+//
+// A miss returns ok=false and is never an error: the SID then stays unmapped
+// (raw) rather than faulting. Infrastructure failures are folded into ok=false
+// by the implementation.
+type ReverseResolver interface {
+	// LookupUID resolves a POSIX UID to an account name + domain/realm.
+	LookupUID(ctx context.Context, uid uint32) (name, domain string, ok bool)
+	// LookupGID resolves a POSIX GID to a group name + domain/realm.
+	LookupGID(ctx context.Context, gid uint32) (name, domain string, ok bool)
+}
+
+// reverseUIDKey / reverseGIDKey are synthetic cache keys for reverse lookups.
+// They share the Resolver's cache (positive + negative TTL) with forward
+// resolution but cannot collide with a forward key, which always embeds a
+// provider name and an ExternalID via cacheKey.
+func reverseUIDKey(uid uint32) string { return fmt.Sprintf("ruid:%d", uid) }
+func reverseGIDKey(gid uint32) string { return fmt.Sprintf("rgid:%d", gid) }
+
+// LookupUID resolves a POSIX UID to a directory account name + domain by
+// consulting every registered provider that implements ReverseResolver, in
+// registration order. The first hit wins. Results (hits and misses) are cached
+// with the same TTLs as forward resolution so a repeated Explorer Security-tab
+// lookup of the same owner does not re-query the directory each time.
+func (r *Resolver) LookupUID(ctx context.Context, uid uint32) (name, domain string, ok bool) {
+	return r.reverseLookup(ctx, reverseUIDKey(uid), func(rr ReverseResolver) (string, string, bool) {
+		return rr.LookupUID(ctx, uid)
+	})
+}
+
+// LookupGID resolves a POSIX GID to a directory group name + domain. Mirrors
+// LookupUID for the GROUP SID on a file.
+func (r *Resolver) LookupGID(ctx context.Context, gid uint32) (name, domain string, ok bool) {
+	return r.reverseLookup(ctx, reverseGIDKey(gid), func(rr ReverseResolver) (string, string, bool) {
+		return rr.LookupGID(ctx, gid)
+	})
+}
+
+// reverseLookup runs a cached reverse lookup against the provider chain. The
+// hit/miss is encoded into a ResolvedIdentity (Username/Domain/Found) so it can
+// ride the existing identity cache.
+func (r *Resolver) reverseLookup(ctx context.Context, key string, query func(ReverseResolver) (string, string, bool)) (string, string, bool) {
+	if cached, _, hit := r.cache.get(key); hit && cached != nil {
+		return cached.Username, cached.Domain, cached.Found
+	}
+
+	for _, p := range r.providers {
+		rr, capable := p.(ReverseResolver)
+		if !capable {
+			continue
+		}
+		if name, domain, ok := query(rr); ok {
+			r.cache.put(key, &ResolvedIdentity{Username: name, Domain: domain, Found: true}, nil)
+			return name, domain, true
+		}
+	}
+
+	r.cache.put(key, &ResolvedIdentity{Found: false}, nil)
+	return "", "", false
+}
+
 // InvalidateCache clears all cached entries.
 func (r *Resolver) InvalidateCache() {
 	r.cache.invalidateAll()

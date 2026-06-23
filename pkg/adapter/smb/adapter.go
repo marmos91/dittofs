@@ -96,6 +96,12 @@ type Adapter struct {
 	// config changes cannot race on identityUnsub/identityProviderUnsub.
 	resolverMu sync.Mutex
 
+	// foreignSIDProviderUnsub is the unsubscribe function for the
+	// OnIdentityProviderConfigChange subscription that rebuilds the LSARPC
+	// foreign-SID resolver. Registered once (guarded by nil) so an API-driven
+	// LDAP config change re-wires the resolver without a restart.
+	foreignSIDProviderUnsub func()
+
 	// kerberosProvider is retained for lifecycle management. It owns a
 	// background keytab-reload goroutine that must be stopped in Stop().
 	kerberosProvider *kerberos.Provider
@@ -299,6 +305,12 @@ func (s *Adapter) SetRuntime(rtAny any) {
 		})
 		logger.Debug("SMB adapter: identity resolver configured for LSARPC")
 	}
+
+	// Wire the directory-backed foreign-SID resolver for LSARPC so an AD/LDAP
+	// domain SID (neither well-known nor machine-domain) is translated to its
+	// real account name + NetBIOS domain in Explorer's Security tab. Independent
+	// of Kerberos: LDAP may be configured on its own.
+	s.wireForeignSIDResolver(rt)
 
 	// Wire centralized identity resolver for Kerberos principal → DittoFS user mapping.
 	// Uses DB-backed LinkStore + convention fallback, shared with the NFS adapter.
@@ -540,6 +552,11 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 	// methods outside the handler's narrow smbRuntime role interface.
 	s.wireIdentityResolver(s.Registry)
 
+	// Re-wire the LSARPC foreign-SID resolver now that the AD NetBIOS domain is
+	// known (SetKerberosProvider may run after SetRuntime). Safe to call twice;
+	// it rebuilds and re-injects the resolver and guards the subscription.
+	s.wireForeignSIDResolver(s.Registry)
+
 	logger.Debug("SMB adapter Kerberos provider configured",
 		"principal", provider.ServicePrincipal(),
 		"stripRealm", s.handler.IdentityConfig.StripRealm)
@@ -584,6 +601,53 @@ func (s *Adapter) wireIdentityResolver(rt *runtime.Runtime) {
 			s.wireIdentityResolver(rt)
 		})
 	}
+}
+
+// wireForeignSIDResolver builds a directory-backed resolver for foreign
+// (AD/LDAP) domain SIDs and injects it into the LSARPC PipeManager. Unlike
+// wireIdentityResolver this does not require a Kerberos provider — an
+// LDAP-only deployment still resolves AD SIDs to names in Explorer's Security
+// tab. A no-op when the runtime or pipe manager is unavailable.
+//
+// The resolver is rebuilt (and re-injected) on an identity-provider config
+// change so enabling/disabling LDAP over the API takes effect without a
+// restart. When LDAP is not enabled the underlying resolver simply never
+// matches a foreign SID, so it degrades to the prior raw-SID behavior.
+func (s *Adapter) wireForeignSIDResolver(rt *runtime.Runtime) {
+	s.resolverMu.Lock()
+	defer s.resolverMu.Unlock()
+
+	if rt == nil || s.handler == nil || s.handler.PipeManager == nil {
+		return
+	}
+
+	// Build a resolver chain (Kerberos + LDAP/AD when configured). The realm is
+	// taken from the Kerberos provider when present; BuildIdentityResolver still
+	// registers the LDAP provider whenever rt.LDAPConfig() is enabled.
+	var realm string
+	if s.handler.KerberosProvider != nil {
+		realm = adapter.ExtractRealm(s.handler.KerberosProvider.ServicePrincipal())
+	}
+	resolver := adapter.BuildIdentityResolver(rt, realm)
+
+	// Prefer the explicitly configured AD NetBIOS domain (set on the handler by
+	// SetKerberosProvider). Empty leaves the resolver to derive it from the
+	// resolved realm. This is the AD DOMAIN's NetBIOS name, used only for
+	// foreign (directory) accounts — NOT the local machine-domain name. Local
+	// algorithmic UID/GID SIDs keep the standalone machine name ("DITTOFS")
+	// since they are the server's own identities, not AD-domain principals.
+	s.handler.PipeManager.SetForeignSIDResolver(
+		newIdentityForeignSIDResolver(resolver, s.handler.NetBIOSDomain),
+	)
+
+	if s.foreignSIDProviderUnsub == nil {
+		s.foreignSIDProviderUnsub = rt.OnIdentityProviderConfigChange(func() {
+			s.wireForeignSIDResolver(rt)
+		})
+	}
+
+	logger.Debug("SMB adapter: LSARPC foreign-SID resolver configured",
+		"ad_netbios_domain", s.handler.NetBIOSDomain)
 }
 
 const (
@@ -653,6 +717,10 @@ func (s *Adapter) Stop(ctx context.Context) error {
 	if s.identityProviderUnsub != nil {
 		s.identityProviderUnsub()
 		s.identityProviderUnsub = nil
+	}
+	if s.foreignSIDProviderUnsub != nil {
+		s.foreignSIDProviderUnsub()
+		s.foreignSIDProviderUnsub = nil
 	}
 
 	// Unsubscribe from share change notifications to prevent stale callbacks
