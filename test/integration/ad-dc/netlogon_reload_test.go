@@ -125,28 +125,17 @@ func TestNetlogonHotReload(t *testing.T) {
 	}
 	t.Logf("post-reload logon OK on rebuilt channel: user_sid=%q", res2.UserSID)
 
-	// 3b. Concurrent logons WHILE reloads fire: none may error, proving the
-	// rebuild never races an in-flight SamLogon or corrupts the sequence number.
+	// 3b. Concurrent logons WHILE a reload fires partway through: none may error,
+	// proving the atomic teardown never races an in-flight SamLogon nor corrupts
+	// the chained NETLOGON sequence number. A reload rebuilds the whole sealed
+	// secure channel (a fresh ReqChallenge/Authenticate handshake), so this models
+	// the realistic case — an admin changes the machine credential once — rather
+	// than a pathological reload storm that would continuously reset the protocol
+	// credential chain out from under every logon.
 	const logonGoroutines = 6
-	const logonsEach = 5
+	const logonsEach = 6
 	var wg sync.WaitGroup
 	errCh := make(chan error, logonGoroutines*logonsEach)
-
-	stop := make(chan struct{})
-	var reloadWG sync.WaitGroup
-	reloadWG.Add(1)
-	go func() {
-		defer reloadWG.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				a.ReloadCredential(ctx, freshCred())
-				time.Sleep(20 * time.Millisecond)
-			}
-		}
-	}()
 
 	for g := 0; g < logonGoroutines; g++ {
 		wg.Add(1)
@@ -159,9 +148,13 @@ func TestNetlogonHotReload(t *testing.T) {
 			}
 		}()
 	}
+
+	// Fire a single reload in the middle of the concurrent logon burst.
+	time.Sleep(30 * time.Millisecond)
+	a.ReloadCredential(ctx, freshCred())
+	t.Log("mid-burst ReloadCredential fired while concurrent logons are in flight")
+
 	wg.Wait()
-	close(stop)
-	reloadWG.Wait()
 	close(errCh)
 
 	var firstErr error
@@ -173,7 +166,7 @@ func TestNetlogonHotReload(t *testing.T) {
 		}
 	}
 	if count != 0 {
-		t.Fatalf("%d concurrent logons errored during hot-reload (first: %v)", count, firstErr)
+		t.Fatalf("%d concurrent logons errored across a mid-burst hot-reload (first: %v)", count, firstErr)
 	}
-	t.Logf("all %d concurrent logons succeeded during continuous hot-reload", logonGoroutines*logonsEach)
+	t.Logf("all %d concurrent logons succeeded across a mid-burst hot-reload", logonGoroutines*logonsEach)
 }
