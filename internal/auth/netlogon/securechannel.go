@@ -15,6 +15,28 @@ import (
 	"github.com/oiweiwei/go-msrpc/ssp/gssapi"
 )
 
+// gssapiRegister guards the one-time, process-global registration of the
+// machine credential and SSP mechanisms in go-msrpc's gssapi stores.
+// go-msrpc's gssapi.AddMechanism PANICS ("mechanism ... already exist") if a
+// mechanism is registered twice, so this must run exactly once even across
+// reconnects/resets.
+var gssapiRegister sync.Once
+
+// registerGSSAPI registers the machine credential and the SPNEGO/NTLM/Netlogon
+// mechanisms with go-msrpc exactly once. The initial GetDCName/ReqChallenge
+// bind inside NewSecureChannelClient authenticates the machine account via
+// NTLM/SPNEGO (the netlogon schannel config does not exist yet at that point);
+// the Netlogon mechanism is used only for the sealed secure channel afterward.
+func registerGSSAPI(mc MachineCredential) {
+	gssapiRegister.Do(func() {
+		gssapi.AddCredential(credential.NewFromPassword(
+			mc.AccountName, mc.Password, credential.Workstation(mc.Workstation)))
+		gssapi.AddMechanism(ssp.SPNEGO)
+		gssapi.AddMechanism(ssp.NTLM)
+		gssapi.AddMechanism(ssp.Netlogon)
+	})
+}
+
 // SecureChannel wraps a go-msrpc schannel client with a mutex-guarded cached
 // connection.  It is created lazily on the first NetworkLogon call.
 type SecureChannel struct {
@@ -36,16 +58,13 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	}
 	server := mc.DCAddresses[0]
 
-	// Register the machine credential and the Netlogon mechanism BEFORE creating
-	// the security context: NewSecurityContext captures the registered credential
-	// and mechanism. NewSecureChannelClient then runs the full challenge handshake
-	// (NetrServerReqChallenge generates the client challenge + obtains the server
-	// challenge, then NetrServerAuthenticate3) internally and applies the sealed
-	// schannel security config via AlterContext — so we must NOT pre-seed a
-	// netlogon.Config with challenges; doing so fights the internal handshake.
-	cred := credential.NewFromPassword(mc.AccountName, mc.Password, credential.Workstation(mc.Workstation))
-	gssapi.AddCredential(cred)
-	gssapi.AddMechanism(ssp.Netlogon)
+	// Register the machine credential and the SPNEGO/NTLM/Netlogon mechanisms
+	// (once, process-global) BEFORE creating the security context, which captures
+	// the registered credential and mechanisms. NewSecureChannelClient then runs
+	// the full challenge handshake (the initial GetDCName/ReqChallenge bind uses
+	// NTLM/SPNEGO, then NetrServerAuthenticate3 + AlterContext apply the sealed
+	// schannel) internally — so we must NOT pre-seed a netlogon.Config.
+	registerGSSAPI(mc)
 	gctx := gssapi.NewSecurityContext(ctx)
 
 	cc, err := dcerpc.Dial(gctx, server, epm.EndpointMapper(gctx, server))
