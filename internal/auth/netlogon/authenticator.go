@@ -3,6 +3,7 @@ package netlogon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -12,6 +13,49 @@ import (
 // the channel lock. It is a benign local race, not an RPC failure: NetworkLogon
 // rebuilds and retries it (with no backoff).
 var errChannelNotConnected = errors.New("netlogon: channel not connected")
+
+// statusAccessDenied (NTSTATUS STATUS_ACCESS_DENIED) is the transient channel-level
+// rejection a freshly rebuilt secure channel can return while its new MS-NRPC
+// credential chain settles after a hot-reload. It is the ONLY DC-returned status
+// NetworkLogon retries — every other status (a domain USER's hard auth failure
+// such as LOGON_FAILURE / WRONG_PASSWORD / ACCOUNT_LOCKED_OUT) must fail fast so
+// retrying never amplifies failed logons toward AD account lockout.
+const statusAccessDenied uint32 = 0xC0000022
+
+// SamLogonStatusError carries the NTSTATUS a NetrLogonSamLogon RPC returned in
+// its Return field. It lets NetworkLogon distinguish a transient channel-level
+// rejection (worth a rebuild+retry) from a domain user's hard authentication
+// failure (must fail fast, not retry — retrying amplifies failed logons toward
+// AD account lockout).
+type SamLogonStatusError struct {
+	Status uint32
+}
+
+func (e *SamLogonStatusError) Error() string {
+	return fmt.Sprintf("netlogon: SAMLogon returned 0x%08x", e.Status)
+}
+
+// isTransientChannelError reports whether err is a transient secure-channel
+// condition that a rebuild+retry can clear, as opposed to a hard logon failure.
+// Only two cases qualify:
+//   - errChannelNotConnected: the local teardown race (a concurrent reload tore
+//     the channel down before the RPC acquired the channel lock), and
+//   - a SamLogonStatusError with STATUS_ACCESS_DENIED: the channel-level rejection
+//     a freshly rebuilt channel can return while its new credential chain settles.
+//
+// A domain user's authentication-failure NTSTATUS (LOGON_FAILURE, WRONG_PASSWORD,
+// ACCOUNT_LOCKED_OUT, …) is NOT transient and returns false, so NetworkLogon fails
+// fast instead of retrying a bad-password attempt toward account lockout.
+func isTransientChannelError(err error) bool {
+	if errors.Is(err, errChannelNotConnected) {
+		return true
+	}
+	var st *SamLogonStatusError
+	if errors.As(err, &st) {
+		return st.Status == statusAccessDenied
+	}
+	return false
+}
 
 // maxReloadRetries bounds how many times NetworkLogon rebuilds the channel and
 // retries after a transient secure-channel error (a concurrent reload tearing
@@ -101,14 +145,25 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 		return res, nil
 	}
 
-	// The logon failed. A concurrent Reload tears down and rebuilds the sealed
-	// secure channel — a fresh ReqChallenge/ServerAuthenticate handshake that
-	// resets the MS-NRPC credential chain. A logon caught in that window can see
-	// either the benign local errChannelNotConnected (channel torn down before the
-	// RPC) or a DC-side rejection (e.g. STATUS_ACCESS_DENIED while the new chain
-	// settles). Both are transient: rebuild against the latest credential and
-	// retry, bounded so we can never live-lock, with a short backoff to let the
-	// rebuilt channel's credential chain settle.
+	// The logon failed. Only retry when the failure is a TRANSIENT secure-channel
+	// condition that a rebuild can clear:
+	//   - errChannelNotConnected: a concurrent Reload tore the channel down before
+	//     this RPC acquired the channel lock (a benign local race), or
+	//   - a SamLogonStatusError with STATUS_ACCESS_DENIED: the channel-level
+	//     rejection a freshly rebuilt channel can return while its new MS-NRPC
+	//     credential chain settles after a hot-reload.
+	//
+	// Any other failure — most importantly a domain USER's hard authentication
+	// failure (LOGON_FAILURE / WRONG_PASSWORD / ACCOUNT_LOCKED_OUT, surfaced as a
+	// SamLogonStatusError) — must fail FAST. Retrying a bad-password attempt would
+	// amplify failed logons toward AD account lockout, so we return immediately.
+	if !isTransientChannelError(err) {
+		return nil, err
+	}
+
+	// Transient: rebuild against the latest credential and retry, bounded so we can
+	// never live-lock, with a short backoff to let the rebuilt channel's credential
+	// chain settle.
 	//
 	// A credential-provider error is NOT retried: when passthrough is disabled the
 	// provider returns a validation error, so the loop returns immediately and the
@@ -126,6 +181,11 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 		res, err = sc.samLogon(ctx, *mc, req)
 		if err == nil {
 			return res, nil
+		}
+		// A non-transient failure on the rebuilt channel (e.g. the user's password
+		// really is wrong) must fail fast too — stop retrying immediately.
+		if !isTransientChannelError(err) {
+			return nil, err
 		}
 		// Brief backoff before the next rebuild so a just-rebuilt channel is not
 		// immediately torn down again by a still-in-flight reload. Skipped for the

@@ -186,3 +186,142 @@ func TestNetlogonHotReload(t *testing.T) {
 	}
 	t.Logf("all %d concurrent logons succeeded across a mid-burst hot-reload", logonGoroutines*logonsEach)
 }
+
+// rotateMachinePassword changes the DITTOFS$ machine account password on the DC
+// via samba-tool, so the test can prove a hot-reload makes a rebuilt secure
+// channel authenticate with the NEW secret (and that the OLD secret stops
+// working). MS-NRPC machine-account passwords have no history/min-age policy
+// constraint here, so a direct setpassword is sufficient.
+func rotateMachinePassword(t *testing.T, newPassword string) {
+	t.Helper()
+	out, err := exec.Command("docker", "exec", adContainerName,
+		"samba-tool", "user", "setpassword", machineAccountName,
+		"--newpassword="+newPassword,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("samba-tool setpassword %s failed: %v\n%s", machineAccountName, err, out)
+	}
+	t.Logf("rotated %s machine password on the DC", machineAccountName)
+}
+
+// TestNetlogonHotReload_PasswordRotation is the regression test for #1369
+// Copilot finding #2: it proves a machine-password ROTATION reload makes the
+// rebuilt secure channel authenticate with the NEW password — not a stale one
+// frozen at process start.
+//
+// Earlier the machine credential was registered in go-msrpc under a process-wide
+// sync.Once, so a rebuilt channel kept using the FIRST password even after a
+// reload installed a new one. Supplying the credential per-connection via
+// gssapi.WithCredential fixes that; this test would fail against the old code
+// because the rebuilt channel would still present the original (now-wrong)
+// secret and the DC would reject the SamLogon.
+//
+//  1. Logon alice successfully with the original machine password.
+//  2. Rotate the DITTOFS$ password on the DC AND prove the OLD secret no longer
+//     works: a ReloadCredential with the original (now-stale) password must make
+//     the next logon FAIL (the rebuilt channel presents the wrong secret).
+//  3. ReloadCredential with the NEW password — the next logon must SUCCEED on the
+//     rebuilt channel, proving the new credential actually reached go-msrpc.
+//
+// Requires the AD-DC fixture (ad_dc build tag) and Docker.
+func TestNetlogonHotReload_PasswordRotation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping NETLOGON password-rotation integration test in short mode")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found, skipping NETLOGON password-rotation test")
+	}
+
+	_, _, _, cleanup := setupADDC(t)
+	defer cleanup()
+
+	dcIP := getContainerIP(t)
+	t.Logf("AD-DC container IP: %s", dcIP)
+	waitForTCPAddr(t, dcIP+":135", 90*time.Second)
+	waitForTCPAddr(t, dcIP+":445", 90*time.Second)
+	waitForTCPAddr(t, dcIP+":53", 90*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+
+	const newMachinePass = "RotatedMachinePass02!"
+
+	credWith := func(password string) netlogon.MachineCredential {
+		return netlogon.MachineCredential{
+			AccountName: machineAccountName,
+			Password:    password,
+			Workstation: adDomain,
+			DomainName:  adDomain,
+			Realm:       adRealm,
+			DCAddresses: []string{dcIP},
+		}
+	}
+
+	prov := netlogon.NewMutableProvider(credWith(machineAccountPass))
+	a := netlogon.NewAuthenticator(prov)
+	defer a.Close(ctx)
+
+	serverChallenge := [8]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
+	aliceNT, aliceLM := ntlmResponseFor(ctx, t, adUserAlice, adUserPass, serverChallenge)
+	logonAlice := func() (*netlogon.LogonResult, error) {
+		return a.NetworkLogon(ctx, netlogon.NetworkLogonRequest{
+			Username:        adUserAlice,
+			Domain:          adDomain,
+			ServerChallenge: serverChallenge,
+			NTResponse:      aliceNT,
+			LMResponse:      aliceLM,
+		})
+	}
+
+	// 1. Establish + first successful logon with the ORIGINAL machine password,
+	// retried through DC start-up readiness (not part of the rotation assertion).
+	var res *netlogon.LogonResult
+	var err error
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		res, err = logonAlice()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pre-rotation NETLOGON logon never succeeded within startup window: %v", err)
+		}
+		t.Logf("pre-rotation logon not ready yet, retrying: %v", err)
+		a.Reload(ctx)
+		time.Sleep(3 * time.Second)
+	}
+	if res.UserSID == "" || len(res.GroupSIDs) == 0 {
+		t.Fatalf("pre-rotation logon returned incomplete identity: %+v", res)
+	}
+	t.Logf("pre-rotation logon OK with original password: user_sid=%q", res.UserSID)
+
+	// 2. Rotate the machine password on the DC. The ORIGINAL password is now stale.
+	rotateMachinePassword(t, newMachinePass)
+
+	// Prove the OLD secret no longer authenticates: reload with the now-stale
+	// original password and confirm the next logon FAILS. This proves the rebuilt
+	// channel presents whatever credential the reload installed (if it were frozen
+	// at the first credential, both old and new would behave identically and this
+	// signal would be meaningless).
+	a.ReloadCredential(ctx, credWith(machineAccountPass))
+	if _, errStale := logonAlice(); errStale == nil {
+		t.Fatal("logon SUCCEEDED with the stale machine password after rotation — " +
+			"the secure channel is not presenting the reloaded credential to the DC")
+	} else {
+		t.Logf("stale-password logon correctly rejected after rotation: %v", errStale)
+	}
+
+	// 3. Reload with the NEW password — the rebuilt channel must authenticate with
+	// it and the logon must succeed. This is the core #1369 finding-#2 assertion:
+	// the new credential reached go-msrpc (it was NOT frozen at the first one).
+	a.ReloadCredential(ctx, credWith(newMachinePass))
+	res2, err := logonAlice()
+	if err != nil {
+		t.Fatalf("post-rotation logon with the NEW machine password failed "+
+			"(stale credential still in use?): %v", err)
+	}
+	if res2.UserSID != res.UserSID {
+		t.Fatalf("post-rotation UserSID changed: pre=%q post=%q", res.UserSID, res2.UserSID)
+	}
+	t.Logf("post-rotation logon OK with NEW password on rebuilt channel: user_sid=%q", res2.UserSID)
+}

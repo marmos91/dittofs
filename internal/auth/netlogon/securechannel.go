@@ -19,38 +19,32 @@ import (
 	"github.com/oiweiwei/go-msrpc/ssp/krb5"
 )
 
-// gssapiRegister guards the one-time, process-global registration of the
-// machine credential and SSP mechanisms in go-msrpc's gssapi stores.
-// go-msrpc's gssapi.AddMechanism PANICS ("mechanism ... already exist") if a
-// mechanism is registered twice, so this must run exactly once even across
-// reconnects/resets.
-var gssapiRegister sync.Once
+// gssapiMechRegister guards the one-time, process-global registration of the
+// SSP mechanisms in go-msrpc's gssapi mechanism store. go-msrpc's
+// gssapi.AddMechanism PANICS ("mechanism ... already exist") if a mechanism is
+// registered twice, so this must run exactly once even across reconnects/resets.
+//
+// The machine CREDENTIAL is deliberately NOT registered here: it is passed
+// per-connection via gssapi.WithCredential when building the security context in
+// connect (see below). Registering it in a sync.Once would freeze the FIRST
+// credential for the life of the process, so a machine-password rotation
+// (#1325) would never reach go-msrpc and rebuilt channels would keep
+// authenticating with the stale password.
+var gssapiMechRegister sync.Once
 
-// registerGSSAPI registers the machine credential and the SPNEGO/NTLM/Netlogon
-// mechanisms with go-msrpc exactly once. The initial GetDCName/ReqChallenge
+// registerGSSAPIMechanisms registers the SPNEGO/NTLM/KRB5/Netlogon mechanisms
+// with go-msrpc exactly once (process-global). The initial GetDCName/ReqChallenge
 // bind inside NewSecureChannelClient authenticates the machine account via
 // NTLM/SPNEGO (the netlogon schannel config does not exist yet at that point);
 // the Netlogon mechanism is used only for the sealed secure channel afterward.
-// registerGSSAPI is process-global and runs exactly once (sync.Once): it
-// captures the FIRST machine credential's account/password/workstation/realm.
-// DittoFS uses a single machine account (one realm) per process, so the locked
-// credential always matches the realm passed to buildKRB5Config on later calls;
-// a second, different realm in the same process is unsupported by design.
-func registerGSSAPI(mc MachineCredential) {
-	gssapiRegister.Do(func() {
-		// Domain must be set: the schannel NL_AUTH_MESSAGE carries it (Samba
-		// rejects a schannel bind "without domain"), and the Kerberos SMB session
-		// uses it as the machine principal's realm. The realm (DNS form) satisfies
-		// both — go-msrpc sends it as the NL_AUTH DNSDomainName (#1345).
-		gssapi.AddCredential(credential.NewFromPassword(
-			mc.AccountName, mc.Password,
-			credential.Workstation(mc.Workstation),
-			credential.Domain(mc.Realm)))
+// KRB5 authenticates the NETLOGON named-pipe SMB session: Samba rejects a
+// machine-account NTLM SMB logon, so the schannel must ride a Kerberos SMB
+// session over ncacn_np (#1345). It registers mechanisms ONLY — the machine
+// credential is supplied per-connection in connect so it can be hot-reloaded.
+func registerGSSAPIMechanisms() {
+	gssapiMechRegister.Do(func() {
 		gssapi.AddMechanism(ssp.SPNEGO)
 		gssapi.AddMechanism(ssp.NTLM)
-		// KRB5 authenticates the NETLOGON named-pipe SMB session: Samba rejects a
-		// machine-account NTLM SMB logon, so the schannel must ride a Kerberos
-		// SMB session over ncacn_np (#1345).
 		gssapi.AddMechanism(ssp.KRB5)
 		gssapi.AddMechanism(ssp.Netlogon)
 	})
@@ -126,12 +120,11 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 		return fmt.Errorf("netlogon: %w", err)
 	}
 
-	// Register the machine credential and the SPNEGO/NTLM/KRB5/Netlogon mechanisms
-	// (once, process-global) BEFORE creating the security context, which captures
-	// the registered credential and mechanisms. NewSecureChannelClient then runs
-	// the full challenge handshake internally — so we must NOT pre-seed a
+	// Register the SPNEGO/NTLM/KRB5/Netlogon mechanisms (once, process-global)
+	// BEFORE creating the security context. NewSecureChannelClient then runs the
+	// full challenge handshake internally — so we must NOT pre-seed a
 	// netlogon.Config.
-	registerGSSAPI(mc)
+	registerGSSAPIMechanisms()
 
 	// Inline krb5 config (realm -> KDC = the DC) so the machine account can get a
 	// TGT + cifs/ service ticket without depending on a host krb5.conf file.
@@ -139,7 +132,36 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	if err != nil {
 		return err
 	}
+
 	gctx := gssapi.NewSecurityContext(ctx, ssp.WithKRB5(krb5Cfg))
+
+	// Build the machine credential PER-CONNECTION and supply it via
+	// dcerpc.WithCredentials (NOT a process-global gssapi.AddCredential under a
+	// sync.Once). This is what makes machine-password rotation (#1325) take
+	// effect: a channel rebuilt after a ReloadCredential authenticates with the
+	// CURRENT mc, not a credential frozen at process start.
+	//
+	// The credential must reach BOTH security contexts of this connection:
+	//   - the Kerberos SMB session (the schannel rides \PIPE\netlogon over SMB,
+	//     and Samba refuses a machine-account NTLM SMB logon), via the explicit
+	//     SMB dialer's WithSecurity, and
+	//   - the NETLOGON sealed-schannel context that NewSecureChannelClient reads
+	//     from cli.Conn().Context() to run ServerAuthenticate, via
+	//     dcerpc.WithCredentials on the Dial (it lands in the connection's
+	//     security context, which cli.Conn().Context() returns).
+	// Supplying it on the dial gctx via gssapi.WithCredential is NOT sufficient:
+	// dcerpc rebuilds the connection's security context, dropping the dial ctx's
+	// context-local credential store, so the schannel falls back to the (empty)
+	// global store and ServerAuthenticate fails with "defective credential".
+	//
+	// Domain must be set: the schannel NL_AUTH_MESSAGE carries it (Samba rejects a
+	// schannel bind "without domain"), and the Kerberos SMB session uses it as the
+	// machine principal's realm. The realm (DNS form) satisfies both — go-msrpc
+	// sends it as the NL_AUTH DNSDomainName (#1345).
+	machineCred := credential.NewFromPassword(
+		mc.AccountName, mc.Password,
+		credential.Workstation(mc.Workstation),
+		credential.Domain(mc.Realm))
 
 	// Samba rejects the sealed-schannel AlterContext over ncacn_ip_tcp with
 	// RPC_S_UNKNOWN_AUTHN_SERVICE (0x721); the named-pipe transport (\PIPE\NETLOGON
@@ -147,16 +169,28 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	// the machine account with Kerberos (Samba refuses machine-account NTLM over
 	// SMB), targeting the DC's cifs/ SPN. Bind the netlogon pipe directly
 	// (ncacn_np:[netlogon]) rather than via the endpoint mapper (#1345).
-	dialer := smb2.NewDialer(smb2.WithSecurity(gssapi.WithTargetName(spn)))
+	dialer := smb2.NewDialer(smb2.WithSecurity(
+		gssapi.WithTargetName(spn),
+		gssapi.WithCredential(machineCred),
+	))
 	cc, err := dcerpc.Dial(gctx, server,
 		dcerpc.WithEndpoint("ncacn_np:[netlogon]"),
 		dcerpc.WithSMBDialer(dialer),
+		dcerpc.WithCredentials(machineCred),
 	)
 	if err != nil {
 		return fmt.Errorf("netlogon: dial %s: %w", server, err)
 	}
 
-	cli, err := logon.NewSecureChannelClient(gctx, cc, dcerpc.WithSeal())
+	// Pass the machine credential to NewSecureChannelClient too, not just Dial:
+	// it forwards these opts into the sealed-schannel AlterContext, whose NETLOGON
+	// mechanism resolves the credential from the AlterContext's own security
+	// context (a fresh one built from these opts). Without it, AlterContext falls
+	// back to the empty process-global store and fails with "defective credential".
+	cli, err := logon.NewSecureChannelClient(gctx, cc,
+		dcerpc.WithSeal(),
+		dcerpc.WithCredentials(machineCred),
+	)
 	if err != nil {
 		_ = cc.Close(gctx)
 		return fmt.Errorf("netlogon: secure channel client: %w", err)
@@ -243,11 +277,19 @@ func (sc *SecureChannel) samLogon(ctx context.Context, mc MachineCredential, req
 		ValidationLevel: logon.ValidationInfoClassSAMInfo4,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("netlogon: SAMLogon: %w", err)
+		// A transport-level RPC failure (not a DC-returned NTSTATUS) is a transient
+		// channel condition, not a logon failure: a concurrent Reload can tear the
+		// sealed SMB session down AFTER this call passed the sc.cli == nil guard but
+		// while cli.SAMLogon is on the wire, yielding a broken-pipe/EOF rather than
+		// the errChannelNotConnected sentinel. Wrap with errChannelNotConnected so
+		// NetworkLogon rebuilds + retries (errors.Is sees the sentinel) instead of
+		// failing the logon that a rebuild would have cleared. Unlike a credential
+		// validation failure this can never amplify toward AD account lockout.
+		return nil, fmt.Errorf("netlogon: SAMLogon: %w: %w", errChannelNotConnected, err)
 	}
 
 	if out.Return != 0 {
-		return nil, fmt.Errorf("netlogon: SAMLogon returned 0x%08x", uint32(out.Return))
+		return nil, &SamLogonStatusError{Status: uint32(out.Return)}
 	}
 
 	// Extract ValidationSAMInfo4 from the union.

@@ -2,6 +2,8 @@ package netlogon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,18 +49,39 @@ type fakeState struct {
 	// logons at once — i.e. the per-channel lock invariant was broken.
 	concurrencyViolation int32
 	// dcRejectsRemaining, when > 0, makes that many samLogon calls return a
-	// DC-side rejection before succeeding, to exercise the bounded retry path.
+	// transient DC-side rejection before succeeding, to exercise the bounded
+	// retry path.
 	dcRejectsRemaining int32
+	// hardFailsRemaining, when > 0, makes that many samLogon calls return a hard
+	// (non-transient) authentication-failure status, to exercise the fast-fail
+	// (no-retry) path.
+	hardFailsRemaining int32
+	// transportFailsRemaining, when > 0, makes that many samLogon calls return a
+	// wrapped transport-level RPC error (the kind a concurrent reload induces by
+	// dropping the SMB session mid-RPC), to exercise that it is retried, not
+	// failed fast.
+	transportFailsRemaining int32
+	// samLogonCalls counts every samLogon invocation (including failures), so a
+	// test can assert NetworkLogon made exactly one call on a fast-fail.
+	samLogonCalls int32
 }
 
-// errDCRejected stands in for a transient DC-side SamLogon rejection (e.g.
-// STATUS_ACCESS_DENIED) that is NOT the local errChannelNotConnected sentinel,
-// so it drives the backoff-retry branch in NetworkLogon.
-var errDCRejected = &dcError{"netlogon: SAMLogon returned 0xc0000022"}
+// errDCRejected stands in for a TRANSIENT DC-side SamLogon rejection
+// (STATUS_ACCESS_DENIED) that a freshly rebuilt channel can return while its
+// credential chain settles. It is a typed SamLogonStatusError so NetworkLogon's
+// isTransientChannelError recognizes it and drives the backoff-retry branch.
+var errDCRejected = &SamLogonStatusError{Status: statusAccessDenied}
 
-type dcError struct{ s string }
+// errLogonFailure stands in for a domain user's HARD authentication failure
+// (NTSTATUS LOGON_FAILURE). It is a typed SamLogonStatusError that is NOT
+// transient, so NetworkLogon must fail fast without rebuilding/retrying.
+var errLogonFailure = &SamLogonStatusError{Status: 0xC000006D}
 
-func (e *dcError) Error() string { return e.s }
+// errTransportDrop stands in for a transport-level RPC failure (e.g. a broken
+// SMB pipe) the real samLogon returns wrapped with errChannelNotConnected when a
+// concurrent reload tears the session down mid-RPC. NetworkLogon must treat it as
+// transient (rebuild + retry), not fail fast.
+var errTransportDrop = fmt.Errorf("netlogon: SAMLogon: %w: %w", errChannelNotConnected, errors.New("connection reset by peer"))
 
 func (c *fakeChannel) connect(ctx context.Context, mc MachineCredential) error {
 	c.mu.Lock()
@@ -76,6 +99,7 @@ func (c *fakeChannel) connect(ctx context.Context, mc MachineCredential) error {
 func (c *fakeChannel) samLogon(ctx context.Context, mc MachineCredential, req NetworkLogonRequest) (*LogonResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	atomic.AddInt32(&c.state.samLogonCalls, 1)
 	if !c.connected || c.closed {
 		// Mirror SecureChannel.samLogon's torn-down path so the Authenticator's
 		// reload-race retry/rebuild logic is exercised. Uses the same sentinel the
@@ -83,8 +107,23 @@ func (c *fakeChannel) samLogon(ctx context.Context, mc MachineCredential, req Ne
 		return nil, errChannelNotConnected
 	}
 
-	// Optionally simulate a DC-side rejection (e.g. STATUS_ACCESS_DENIED while a
-	// freshly rebuilt channel's credential chain settles) for the first
+	// Optionally simulate a HARD (non-transient) authentication failure for the
+	// first hardFailsRemaining logons, to exercise the fast-fail path. Checked
+	// before the transient-rejection branch so a hard failure is never masked.
+	if atomic.AddInt32(&c.state.hardFailsRemaining, -1) >= 0 {
+		return nil, errLogonFailure
+	}
+
+	// Optionally simulate a transport-level RPC drop (SMB session torn down
+	// mid-RPC by a concurrent reload), wrapped with errChannelNotConnected, for the
+	// first transportFailsRemaining logons — to prove it is retried, not failed
+	// fast.
+	if atomic.AddInt32(&c.state.transportFailsRemaining, -1) >= 0 {
+		return nil, errTransportDrop
+	}
+
+	// Optionally simulate a transient DC-side rejection (STATUS_ACCESS_DENIED while
+	// a freshly rebuilt channel's credential chain settles) for the first
 	// dcRejectsRemaining logons, to exercise the bounded backoff-retry path.
 	if atomic.AddInt32(&c.state.dcRejectsRemaining, -1) >= 0 {
 		return nil, errDCRejected
@@ -238,6 +277,55 @@ func TestNetworkLogon_GivesUpAfterBoundedRetries(t *testing.T) {
 	a := NewAuthenticator(NewMutableProvider(validCred("DITTOFS$")))
 	if _, err := a.NetworkLogon(context.Background(), NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"}); err == nil {
 		t.Fatal("expected a persistent DC rejection to surface as an error after bounded retries")
+	}
+}
+
+// TestNetworkLogon_HardAuthFailureFailsFast proves a domain user's HARD
+// authentication failure (NTSTATUS LOGON_FAILURE) is NOT retried: NetworkLogon
+// returns immediately after exactly ONE samLogon call, with no channel rebuild.
+// Retrying a bad-password attempt would amplify failed logons toward AD account
+// lockout (#1369 Copilot finding #1), so the fast-fail is load-bearing.
+func TestNetworkLogon_HardAuthFailureFailsFast(t *testing.T) {
+	st := &fakeState{hardFailsRemaining: 1 << 30} // every logon is a hard failure
+	withFakeChannels(t, st)
+
+	a := NewAuthenticator(NewMutableProvider(validCred("DITTOFS$")))
+	_, err := a.NetworkLogon(context.Background(), NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"})
+	if err == nil {
+		t.Fatal("expected a hard auth failure to surface as an error")
+	}
+	// It must surface the underlying typed status, unwrapped.
+	var st2 *SamLogonStatusError
+	if !errors.As(err, &st2) || st2.Status != 0xC000006D {
+		t.Fatalf("expected SamLogonStatusError(0xC000006D), got %T: %v", err, err)
+	}
+	// Exactly ONE samLogon call: no rebuild/retry. If the retry loop fired, this
+	// would be > 1 (and in production would push the user toward lockout).
+	if got := atomic.LoadInt32(&st.samLogonCalls); got != 1 {
+		t.Fatalf("expected exactly 1 samLogon call (no retry on hard auth failure), got %d", got)
+	}
+	// And no channel was ever rebuilt.
+	if got := builtCount(st); got != 1 {
+		t.Fatalf("expected exactly 1 channel build (no rebuild on hard auth failure), got %d", got)
+	}
+}
+
+// TestNetworkLogon_RetriesTransportDrop proves a transport-level RPC failure
+// (the SMB session dropped mid-RPC by a concurrent reload, surfaced wrapped with
+// errChannelNotConnected) is treated as transient and retried to success — NOT
+// failed fast like a credential rejection. This guards the regression where
+// narrowing the retry set to typed statuses inadvertently dropped transport
+// errors out of the transient set (#1369 review follow-up).
+func TestNetworkLogon_RetriesTransportDrop(t *testing.T) {
+	st := &fakeState{transportFailsRemaining: 2} // first 2 logons hit a transport drop, then succeed
+	withFakeChannels(t, st)
+
+	a := NewAuthenticator(NewMutableProvider(validCred("DITTOFS$")))
+	if _, err := a.NetworkLogon(context.Background(), NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"}); err != nil {
+		t.Fatalf("expected a transport drop to be retried to success, got: %v", err)
+	}
+	if got := completedLogons(st); got != 1 {
+		t.Fatalf("expected exactly 1 successful logon, got %d", got)
 	}
 }
 
