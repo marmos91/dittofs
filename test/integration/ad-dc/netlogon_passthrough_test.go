@@ -62,12 +62,6 @@ func getContainerIP(t *testing.T) string {
 //
 // This test requires the AD-DC fixture (ad_dc build tag) and Docker.
 func TestNetlogonPassthroughAlice(t *testing.T) {
-	// The NETLOGON secure channel negotiates (ReqChallenge + Authenticate3) but
-	// the sealed-schannel AlterContext is currently rejected by the Samba AD-DC
-	// with RPC_S_UNKNOWN_AUTHN_SERVICE (0x721) over ncacn_ip_tcp. Tracked in
-	// #1345 (go-msrpc<->Samba schannel interop). Un-skip once resolved.
-	t.Skip("NETLOGON schannel AlterContext interop with Samba AD-DC pending — see #1345")
-
 	if testing.Short() {
 		t.Skip("skipping NETLOGON passthrough integration test in short mode")
 	}
@@ -83,10 +77,13 @@ func TestNetlogonPassthroughAlice(t *testing.T) {
 	dcIP := getContainerIP(t)
 	t.Logf("AD-DC container IP: %s", dcIP)
 
-	// Wait for the DC's DCE-RPC endpoint mapper (port 135) to accept connections.
-	// Samba's RPC stack comes up shortly after the KDC; dialing too early yields
-	// "connection refused" on the NETLOGON bind.
+	// Wait for the DC's DCE-RPC endpoint mapper (port 135) AND the SMB server
+	// (port 445) to accept connections. Samba's RPC stack comes up shortly after
+	// the KDC; dialing too early yields "connection refused" on the NETLOGON bind.
+	// The schannel rides a Kerberos SMB session over ncacn_np (\PIPE\netlogon), so
+	// 445 must be listening too — it can bind a beat after 135 (#1345).
 	waitForTCPAddr(t, dcIP+":135", 90*time.Second)
+	waitForTCPAddr(t, dcIP+":445", 90*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
