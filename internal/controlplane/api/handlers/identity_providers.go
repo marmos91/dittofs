@@ -12,6 +12,7 @@ import (
 	krb5config "github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 
+	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -370,10 +371,36 @@ func (h *IdentityProviderHandler) putKerberos(w http.ResponseWriter, r *http.Req
 		InternalServerError(w, "Failed to persist Kerberos config")
 		return
 	}
-	// No hot-reload: Kerberos is bound by the adapters at startup. Surface that
-	// the change takes effect on the next restart via a header note.
+
+	// Hot-reload the NETLOGON machine credential / DC binding without a restart
+	// (#1325): update the runtime credential and notify, so the SMB adapter tears
+	// down and rebuilds its secure channel atomically on the next logon. The
+	// Kerberos SPNEGO bits (keytab/service principal) are still bound by the
+	// adapters at startup, so the change is only partially live.
+	if h.runtime != nil {
+		h.runtime.SetNetlogonCredential(netlogonCredentialFromKerberosDTO(&dto))
+		h.runtime.NotifyIdentityProviderConfigChange()
+	}
+
+	// The SPNEGO keytab/service-principal still require a restart; surface that.
 	w.Header().Set("X-DittoFS-Apply", "restart-required")
 	WriteJSONOK(w, redactKerberosDTO(dto))
+}
+
+// netlogonCredentialFromKerberosDTO derives the NETLOGON machine credential from
+// the Kerberos config DTO, or nil when the machine-account sub-block is disabled
+// or incomplete (so passthrough is disabled). Mirrors the startup validation in
+// cmd/dfs (netlogonCredentialFromConfig) without importing pkg/config, which
+// would create an import cycle.
+func netlogonCredentialFromKerberosDTO(dto *KerberosConfigDTO) *netlogon.MachineCredential {
+	ma := dto.MachineAccount
+	// Secret-only credential: a keytab-based machine account is not yet supported
+	// for NETLOGON, matching cmd/dfs.
+	if !ma.Enabled || ma.AccountName == "" || ma.Secret == "" || dto.NetBIOSDomain == "" || dto.Realm == "" {
+		return nil
+	}
+	cred := netlogon.BuildMachineCredential(ma.AccountName, ma.Secret, dto.NetBIOSDomain, dto.Realm, ma.DCAddresses)
+	return &cred
 }
 
 // existingKerberosSecret returns the currently stored machine-account secret,

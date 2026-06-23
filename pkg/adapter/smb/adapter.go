@@ -103,6 +103,18 @@ type Adapter struct {
 	// LDAP config change re-wires the resolver without a restart.
 	foreignSIDProviderUnsub func()
 
+	// netlogonAuth is the concrete NETLOGON authenticator (retained so the
+	// hot-reload callback can call ReloadCredential). nil when NETLOGON
+	// pass-through is not configured.
+	netlogonAuth *netlogon.Authenticator
+
+	// netlogonProviderUnsub is the unsubscribe function for the
+	// OnIdentityProviderConfigChange subscription that hot-reloads the NETLOGON
+	// machine credential / DC binding. Registered once (guarded by nil) so an
+	// API-driven machine-account config change rebuilds the secure channel
+	// without a restart (#1325).
+	netlogonProviderUnsub func()
+
 	// kerberosProvider is retained for lifecycle management. It owns a
 	// background keytab-reload goroutine that must be stopped in Stop().
 	kerberosProvider *kerberos.Provider
@@ -316,6 +328,11 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	// Wire centralized identity resolver for Kerberos principal → DittoFS user mapping.
 	// Uses DB-backed LinkStore + convention fallback, shared with the NFS adapter.
 	s.wireIdentityResolver(rt)
+
+	// Subscribe the NETLOGON machine-credential hot-reload so an API-driven
+	// machine-account config change rebuilds the secure channel without a
+	// restart (#1325). A no-op when NETLOGON pass-through is not configured.
+	s.wireNetlogonReload(rt)
 
 	logger.Debug("SMB adapter configured with runtime", "shares", rt.CountShares())
 
@@ -567,10 +584,14 @@ func (s *Adapter) SetKerberosProvider(provider *kerberos.Provider) {
 // When set, NTLM authentication is validated against the domain controller via the
 // NETLOGON secure channel rather than local credential verification. Must be called
 // before Serve(). A nil value is a no-op (local-only NTLM remains the fallback).
-func (s *Adapter) SetNetlogonAuthenticator(nlAuth netlogon.NetlogonAuthenticator) {
+//
+// The concrete authenticator is retained so an API-driven machine-account config
+// change can hot-reload its credential / DC binding without a restart (#1325).
+func (s *Adapter) SetNetlogonAuthenticator(nlAuth *netlogon.Authenticator) {
 	if nlAuth == nil {
 		return
 	}
+	s.netlogonAuth = nlAuth
 	s.handler.NetlogonAuth = nlAuth
 	// Enable the idmap_rid fallback so a DC-validated domain user with no LDAP/
 	// local mapping still resolves to a stable POSIX identity (UID == SID RID)
@@ -578,6 +599,42 @@ func (s *Adapter) SetNetlogonAuthenticator(nlAuth netlogon.NetlogonAuthenticator
 	// takes precedence; this only fires when nothing else resolves the SID.
 	s.handler.NetlogonIdmapRID = true
 	logger.Debug("SMB adapter: NETLOGON authenticator configured")
+
+	// If the runtime is already injected, subscribe the hot-reload now (SetRuntime
+	// may run before SetNetlogonAuthenticator depending on init order). Idempotent:
+	// wireNetlogonReload guards the subscription by nil.
+	s.wireNetlogonReload(s.Registry)
+}
+
+// wireNetlogonReload subscribes a one-shot OnIdentityProviderConfigChange
+// callback that hot-reloads the NETLOGON machine credential / DC binding (#1325).
+// On a config change it reads the latest credential from the runtime and calls
+// Authenticator.ReloadCredential, which swaps the credential and tears down the
+// cached secure channel atomically so the next logon rebuilds it. A no-op when
+// the runtime or the authenticator is not yet available; safe to call from both
+// SetRuntime and SetNetlogonAuthenticator (whichever runs second registers).
+func (s *Adapter) wireNetlogonReload(rt *runtime.Runtime) {
+	s.resolverMu.Lock()
+	defer s.resolverMu.Unlock()
+
+	if rt == nil || s.netlogonAuth == nil || s.netlogonProviderUnsub != nil {
+		return
+	}
+	auth := s.netlogonAuth
+	s.netlogonProviderUnsub = rt.OnIdentityProviderConfigChange(func() {
+		cred := rt.NetlogonCredential()
+		if cred == nil {
+			// Passthrough disabled / no credential: drop the cached channel so a
+			// stale one is not reused. The next logon then fails credential
+			// validation, matching the disabled posture.
+			auth.Reload(context.Background())
+			logger.Info("SMB adapter: NETLOGON credential cleared; secure channel torn down")
+			return
+		}
+		auth.ReloadCredential(context.Background(), *cred)
+		logger.Info("SMB adapter: NETLOGON machine credential hot-reloaded; secure channel will rebuild on next logon",
+			"account", cred.AccountName, "domain", cred.DomainName, "realm", cred.Realm)
+	})
 }
 
 // SetADDomain makes the SMB handler domain-aware without requiring a Kerberos
@@ -774,6 +831,15 @@ func (s *Adapter) Stop(ctx context.Context) error {
 	if s.foreignSIDProviderUnsub != nil {
 		s.foreignSIDProviderUnsub()
 		s.foreignSIDProviderUnsub = nil
+	}
+	if s.netlogonProviderUnsub != nil {
+		s.netlogonProviderUnsub()
+		s.netlogonProviderUnsub = nil
+	}
+	// Tear down the NETLOGON secure channel so its DC connection / goroutines do
+	// not outlive the adapter.
+	if s.netlogonAuth != nil {
+		s.netlogonAuth.Close(ctx)
 	}
 
 	// Unsubscribe from share change notifications to prevent stale callbacks

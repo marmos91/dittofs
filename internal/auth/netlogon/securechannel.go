@@ -106,9 +106,14 @@ type SecureChannel struct {
 	dcName string // UNC DC computer name (e.g. \\DC01); populated by connect() via GetDCName
 }
 
-// connect establishes the NETLOGON schannel connection to the given DC.
-// Must be called with sc.mu held.
+// connect establishes the NETLOGON schannel connection to the given DC. It is
+// self-locking (takes sc.mu) and idempotent: a no-op when already connected. The
+// lock is held for the full handshake so a concurrent close cannot tear the
+// connection down mid-build.
 func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) error {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
 	if sc.cli != nil {
 		return nil
 	}
@@ -178,8 +183,13 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	return nil
 }
 
-// close tears down the cached connection.  Must be called with sc.mu held.
+// close tears down the cached connection. It is self-locking (takes sc.mu) and
+// idempotent, so it blocks until any in-flight samLogon on this channel returns
+// before closing the connection — a teardown never races an in-flight RPC.
 func (sc *SecureChannel) close(ctx context.Context) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
 	if sc.cc != nil {
 		_ = sc.cc.Close(ctx)
 		sc.cc = nil
@@ -189,15 +199,17 @@ func (sc *SecureChannel) close(ctx context.Context) {
 }
 
 // samLogon performs a NetrLogonSamLogon RPC call using the established channel.
-// sc.mu is held for the full duration of the RPC so that concurrent NetworkLogon
-// calls are serialized and close/reset cannot race an in-flight SAMLogon.
-// Callers (ensureChannel/connect) must not hold sc.mu when calling samLogon.
+// It is self-locking: sc.mu is held for the full duration of the RPC so that
+// concurrent NetworkLogon calls are serialized (preserving the chained MS-NRPC
+// sequence number) and a close cannot race an in-flight SAMLogon. It returns a
+// "channel not connected" error if the channel was torn down (e.g. by a
+// concurrent Reload) before this call acquired the lock; the caller rebuilds.
 func (sc *SecureChannel) samLogon(ctx context.Context, mc MachineCredential, req NetworkLogonRequest) (*LogonResult, error) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
 	if sc.cli == nil {
-		return nil, fmt.Errorf("netlogon: channel not connected")
+		return nil, errChannelNotConnected
 	}
 
 	cli := sc.cli
