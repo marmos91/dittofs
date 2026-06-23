@@ -588,12 +588,17 @@ test VM join, expose the directory roles via the **scoped** dev LoadBalancer
 `k8s/samba-ad-dc/samba-ad-dc-lb.yaml` (Kerberos 88, kpasswd 464, LDAP 389/636,
 DNS 53):
 
+The manifest ships with a closed TEST-NET placeholder in
+`loadBalancerSourceRanges`, so applying it never exposes the AD-DC to the
+internet — the LB routes to nobody until you patch in the client `/32`:
+
 ```bash
-# 1. Lock the LB to the Windows VM's public IP, then apply.
+# 1. Apply (still closed — placeholder range routes nowhere), then open ONLY
+#    to the Windows VM's public IP.
 kubectl apply -f k8s/samba-ad-dc/samba-ad-dc-lb.yaml
 kubectl -n dittofs patch svc samba-ad-lb --type=merge \
   -p '{"spec":{"loadBalancerSourceRanges":["<WINDOWS_VM_IP>/32"]}}'
-kubectl -n dittofs get svc samba-ad-lb -o wide      # note EXTERNAL-IP
+kubectl -n dittofs get svc samba-ad-lb -o wide      # confirm range + note EXTERNAL-IP
 ```
 
 On the Windows VM (PowerShell, Administrator):
@@ -611,8 +616,12 @@ Add-Computer -DomainName dittofs.ad -Credential $cred -Restart
 ```
 
 After reboot, log in as `DITTOFS\alice` (dev password `TestPassword01!`). Map the
-DittoFS share and open a file's **Properties > Security** tab — owner/ACE SIDs
-resolve to `DITTOFS\<name>` via LSARPC (LsarLookupSids2/3; #1291 + #1341):
+DittoFS share and open a file's **Properties > Security** tab. **Prerequisite:**
+the LDAP/AD idmap resolver must be configured (Part B) — with it, owner/ACE SIDs
+resolve to `DITTOFS\<name>` via LSARPC (LsarLookupSids2/3; #1291 + #1341). If the
+directory resolver is unconfigured or unreachable, the server falls back to raw
+`S-1-5-21-…` SIDs (or `unix_user:*` / `unix_group:*`), so confirm the idmap is up
+before reading the GUI as an acceptance signal:
 
 ```powershell
 net use \\<dittofs-smb-ip>\<share>           # Kerberos SSO as the logged-in domain user
@@ -635,11 +644,13 @@ icacls \\<dittofs-smb-ip>\<share>\<file>     # CLI equivalent of the Security ta
   with `sec=krb5` requires the node kernel modules `rpcsec_gss_krb5` /
   `auth_rpcgss`. An in-cluster k3s node that lacks these modules cannot complete
   an `sec=krb5` NFS mount even though the server side is correct.
-- **SID → name resolution** works via the LSARPC pipe: `LsarOpenPolicy`
+- **SID → name resolution** is implemented over the LSARPC pipe: `LsarOpenPolicy`
   (opnum 6/44), `LsarLookupSids` (15), and `LsarLookupSids2/3` (57/76, the EX
-  forms Windows Explorer/`rpcclient` use) resolve machine-domain and AD
-  foreign-domain SIDs to `DITTOFS\<name>` (#1291, #1341, #1342). See
-  [docs/ACLS.md](ACLS.md).
+  forms Windows Explorer/`rpcclient` use) translate machine-domain and AD
+  foreign-domain SIDs to `DITTOFS\<name>` (#1291, #1341, #1342). This depends on
+  the directory-backed idmap resolver (Part B) being configured and reachable;
+  when it is not, the server falls back to raw `S-1-5-21-…` SIDs (or
+  `unix_user:*` / `unix_group:*`). See [docs/ACLS.md](ACLS.md).
 - **RC4-only keytabs are rejected by Windows 11 (#1318).** Ensure the keytab
   carries AES256/AES128 keys for the SPNs (Part A).
 - Online `net ads join` + machine-password rotation is out of scope; supply the
