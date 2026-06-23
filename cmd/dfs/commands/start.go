@@ -339,37 +339,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 		logger.Info("Shutdown signal received, initiating graceful shutdown")
 		cancel()
 
-		// Wait for the runtime to drain (snapshots -> StopAllAdapters -> flush
-		// -> close stores -> stop API). The drain runs these stages serially
-		// and most are individually bounded by the configured shutdown timeout,
-		// but a wedged stage (e.g. a stuck store flush or an unbounded store
-		// close) could otherwise block the process indefinitely. Under
-		// Kubernetes that means the pod hangs until SIGKILL
-		// at the end of its terminationGracePeriod, dropping clients abruptly —
-		// exactly what #1313 is about. Cap the overall wait so the process
-		// always exits on its own first.
-		//
-		// The factor mirrors the operator's shutdownStageMultiplier=3, which
-		// sizes terminationGracePeriodSeconds as preStop(5) + 3*shutdownTimeout
-		// + 10s. After SIGTERM the process therefore has 3*shutdownTimeout + 10s
-		// before SIGKILL, so 3*shutdownTimeout + 5s self-exits just inside that
-		// window while still letting the common multi-stage drain finish.
-		shutdownDeadline := 3*cfg.ShutdownTimeout + 5*time.Second
-		timer := time.NewTimer(shutdownDeadline)
-		defer timer.Stop()
-		select {
-		case err := <-serverDone:
-			if isExpectedShutdownErr(err) {
-				logger.Info("Server stopped gracefully")
-			} else {
-				logger.Error("Server shutdown error", "error", err)
-				return err
-			}
-		case <-timer.C:
-			logger.Error("Graceful shutdown exceeded deadline; forcing exit",
-				"deadline", shutdownDeadline)
-			return fmt.Errorf("graceful shutdown timed out after %s", shutdownDeadline)
+		// Wait for server to shut down gracefully. A cancelled root context (and
+		// a closed listener) is the expected result of the SIGINT/SIGTERM-
+		// initiated shutdown above — don't log it at Error or exit non-zero, so
+		// a clean shutdown does not trip log-based alerting (see #1329).
+		if err := <-serverDone; !isExpectedShutdownErr(err) {
+			logger.Error("Server shutdown error", "error", err)
+			return err
 		}
+		logger.Info("Server stopped gracefully")
 
 	case err := <-serverDone:
 		signal.Stop(sigChan)
@@ -383,13 +361,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// isExpectedShutdownErr reports whether err is the normal outcome of a
-// SIGTERM-initiated graceful shutdown rather than a real failure. We cancel the
-// root context on purpose, so context.Canceled — and the http.ErrServerClosed a
-// listener returns once Shutdown is called — are expected. Per the logging
-// convention (expected errors at Info/Debug, unexpected at Error), these must
-// not be logged at ERROR: a clean shutdown emitting ERROR on every restart
-// tripped alerting / log-based health checks (#1329).
+// isExpectedShutdownErr reports whether err is the normal result of a graceful
+// shutdown rather than a real failure. A SIGINT/SIGTERM cancels the root
+// context (context.Canceled) and closes listeners (http.ErrServerClosed); both
+// are expected and must log at Info / exit zero. A genuine drain failure (e.g.
+// a flush error) and context.DeadlineExceeded are not expected. See #1329.
 func isExpectedShutdownErr(err error) bool {
 	return err == nil ||
 		errors.Is(err, context.Canceled) ||
@@ -516,13 +492,6 @@ func kerberosConfigToDTO(c config.KerberosConfig) handlers.KerberosConfigDTO {
 		DNSDomain:        c.DNSDomain,
 		Krb5Conf:         c.Krb5Conf,
 		MaxContexts:      c.MaxContexts,
-		MachineAccount: handlers.KerberosMachineAccountDTO{
-			Enabled:     c.MachineAccount.Enabled,
-			AccountName: c.MachineAccount.AccountName,
-			Secret:      c.MachineAccount.Secret,
-			KeytabPath:  c.MachineAccount.KeytabPath,
-			DCAddresses: c.MachineAccount.DCAddresses,
-		},
 	}
 	if c.MaxClockSkew > 0 {
 		dto.MaxClockSkew = c.MaxClockSkew.String()
@@ -543,13 +512,6 @@ func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
 		DNSDomain:        dto.DNSDomain,
 		Krb5Conf:         dto.Krb5Conf,
 		MaxContexts:      dto.MaxContexts,
-		MachineAccount: config.MachineAccountConfig{
-			Enabled:     dto.MachineAccount.Enabled,
-			AccountName: dto.MachineAccount.AccountName,
-			Secret:      dto.MachineAccount.Secret,
-			KeytabPath:  dto.MachineAccount.KeytabPath,
-			DCAddresses: dto.MachineAccount.DCAddresses,
-		},
 	}
 	if d, err := time.ParseDuration(dto.MaxClockSkew); err == nil {
 		c.MaxClockSkew = d
@@ -661,18 +623,6 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 			return nil, fmt.Errorf("failed to initialize SMB Kerberos provider: %w", err)
 		}
 		smbAdapter.SetKerberosProvider(provider)
-	}
-
-	// Wire NETLOGON authenticator for domain-controller NTLM pass-through.
-	// This runs whenever kerberosConfig is present (machine_account lives on
-	// the kerberos config), regardless of kerberosConfig.Enabled.  An
-	// NTLM-only / legacy deployment sets kerberos.enabled=false but still
-	// needs NETLOGON passthrough when machine_account.enabled=true.
-	// buildNetlogonAuthenticator returns nil when MachineAccount.Enabled is
-	// false, so SetNetlogonAuthenticator no-ops in that case.
-	if kerberosConfig != nil {
-		nlAuth := buildNetlogonAuthenticator(*kerberosConfig)
-		smbAdapter.SetNetlogonAuthenticator(nlAuth)
 	}
 
 	return smbAdapter, nil
