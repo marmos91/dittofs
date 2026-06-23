@@ -2,32 +2,42 @@ package commands
 
 import (
 	"log/slog"
-	"os"
-	"strings"
 
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/pkg/config"
 )
 
-// buildNetlogonAuthenticator creates a NetlogonAuthenticator from the Kerberos
-// machine-account configuration. Returns nil (typed-nil-safe: an untyped nil
-// interface value) when MachineAccount.Enabled is false, so the SMB handler
-// falls back to local NTLM authentication without a domain controller.
+// buildNetlogonAuthenticator creates a *netlogon.Authenticator from the Kerberos
+// machine-account configuration. Returns nil when MachineAccount.Enabled is
+// false (or the config is incomplete), so the SMB handler falls back to local
+// NTLM authentication without a domain controller.
 //
-// Typed-nil-interface safety: the disabled path returns the bare nil literal so
-// callers can safely test `auth == nil` without hitting the typed-nil-interface
-// trap (a (*netlogon.Authenticator)(nil) wrapped in the interface would not
-// equal nil).
-func buildNetlogonAuthenticator(k config.KerberosConfig) netlogon.NetlogonAuthenticator {
-	if !k.MachineAccount.Enabled {
+// The authenticator is backed by a netlogon.MutableProvider so the machine
+// credential / DC binding can be hot-reloaded over the API without a restart
+// (#1325): an identity-provider config change updates the runtime credential and
+// the SMB adapter calls Authenticator.ReloadCredential.
+func buildNetlogonAuthenticator(k config.KerberosConfig) *netlogon.Authenticator {
+	cred, ok := netlogonCredentialFromConfig(k)
+	if !ok {
 		return nil
 	}
+	return netlogon.NewAuthenticator(netlogon.NewMutableProvider(cred))
+}
 
-	// Validate required fields before constructing a doomed authenticator.
+// netlogonCredentialFromConfig validates the machine-account sub-block and, when
+// it is enabled and complete, returns the derived MachineCredential. The bool is
+// false (and a warning is logged) when passthrough must stay disabled. Shared by
+// the startup build and the seed of the runtime's hot-reloadable credential.
+func netlogonCredentialFromConfig(k config.KerberosConfig) (netlogon.MachineCredential, bool) {
+	if !k.MachineAccount.Enabled {
+		return netlogon.MachineCredential{}, false
+	}
+
+	// Validate required fields before constructing a doomed credential.
 	ma := k.MachineAccount
 	if ma.AccountName == "" {
 		slog.Warn("NETLOGON machine account is enabled but AccountName is not set; NTLM passthrough disabled")
-		return nil
+		return netlogon.MachineCredential{}, false
 	}
 	if ma.Secret == "" {
 		if ma.KeytabPath != "" {
@@ -36,11 +46,11 @@ func buildNetlogonAuthenticator(k config.KerberosConfig) netlogon.NetlogonAuthen
 		} else {
 			slog.Warn("NETLOGON machine account is enabled but Secret is not set; NTLM passthrough disabled")
 		}
-		return nil
+		return netlogon.MachineCredential{}, false
 	}
 	if k.NetBIOSDomain == "" {
 		slog.Warn("NETLOGON machine account is enabled but kerberos.netbios_domain (DomainName) is not set; NTLM passthrough disabled")
-		return nil
+		return netlogon.MachineCredential{}, false
 	}
 	// The realm is mandatory: the secure channel authenticates to the DC over a
 	// Kerberos SMB session, and when no dc_address is set the realm also drives
@@ -48,39 +58,14 @@ func buildNetlogonAuthenticator(k config.KerberosConfig) netlogon.NetlogonAuthen
 	// from the realm via _ldap._tcp.dc._msdcs.<realm> (#1324).
 	if k.Realm == "" {
 		slog.Warn("NETLOGON machine account is enabled but kerberos.realm is not set (required for the Kerberos SMB session to the DC and for DNS SRV discovery); NTLM passthrough disabled")
-		return nil
+		return netlogon.MachineCredential{}, false
 	}
 
-	// Derive the NetBIOS workstation name.  MS-NRPC §3.1.4.1 requires the
-	// short host name without the trailing '$' machine-account marker.
-	workstation := netbiosWorkstation(k)
-
-	cred := netlogon.MachineCredential{
-		AccountName: ma.AccountName,
-		Password:    ma.Secret,
-		Workstation: workstation,
-		DomainName:  k.NetBIOSDomain,
-		Realm:       k.Realm,
-		DCAddresses: ma.DCAddresses,
-	}
-	return netlogon.NewAuthenticator(netlogon.NewOfflineProvider(cred))
+	return netlogon.BuildMachineCredential(ma.AccountName, ma.Secret, k.NetBIOSDomain, k.Realm, ma.DCAddresses), true
 }
 
 // netbiosWorkstation derives the short workstation name used in NETLOGON RPC
-// calls.  Priority:
-//  1. AccountName with a trailing '$' stripped (the AD machine-account
-//     convention, e.g. "DITTOFS$" → "DITTOFS").
-//  2. Short hostname from os.Hostname() (everything before the first '.').
+// calls from the machine-account name (falling back to the OS hostname).
 func netbiosWorkstation(k config.KerberosConfig) string {
-	if n := k.MachineAccount.AccountName; n != "" {
-		return strings.TrimSuffix(n, "$")
-	}
-	if h, err := os.Hostname(); err == nil {
-		if idx := strings.IndexByte(h, '.'); idx > 0 {
-			return h[:idx]
-		}
-		return h
-	}
-	slog.Warn("NETLOGON workstation name could not be derived; DC may reject the logon")
-	return ""
+	return netlogon.DeriveWorkstation(k.MachineAccount.AccountName)
 }

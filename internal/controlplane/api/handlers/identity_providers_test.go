@@ -302,6 +302,50 @@ func TestIDP_PutKerberos_PreservesSecretOnEmptySecret(t *testing.T) {
 	}
 }
 
+// TestNetlogonCredentialFromKerberosDTO verifies the DTO→MachineCredential
+// derivation that drives the NETLOGON hot-reload (#1325): a complete enabled
+// machine-account block yields a credential; any disabled/incomplete/keytab-only
+// block yields nil (passthrough disabled).
+func TestNetlogonCredentialFromKerberosDTO(t *testing.T) {
+	complete := func(mut func(*KerberosConfigDTO)) *KerberosConfigDTO {
+		dto := &KerberosConfigDTO{
+			Realm:         "EXAMPLE.COM",
+			NetBIOSDomain: "EXAMPLE",
+			MachineAccount: KerberosMachineAccountDTO{
+				Enabled:     true,
+				AccountName: "DITTOFS$",
+				Secret:      "topsecret",
+				DCAddresses: []string{"dc.example.com"},
+			},
+		}
+		if mut != nil {
+			mut(dto)
+		}
+		return dto
+	}
+
+	if got := netlogonCredentialFromKerberosDTO(complete(nil)); got == nil {
+		t.Fatal("complete enabled machine account should yield a credential")
+	} else if got.AccountName != "DITTOFS$" || got.Workstation != "DITTOFS" ||
+		got.DomainName != "EXAMPLE" || got.Realm != "EXAMPLE.COM" {
+		t.Fatalf("unexpected derived credential: %+v", got)
+	}
+
+	cases := map[string]func(*KerberosConfigDTO){
+		"disabled":       func(d *KerberosConfigDTO) { d.MachineAccount.Enabled = false },
+		"no account":     func(d *KerberosConfigDTO) { d.MachineAccount.AccountName = "" },
+		"no secret":      func(d *KerberosConfigDTO) { d.MachineAccount.Secret = "" },
+		"no realm":       func(d *KerberosConfigDTO) { d.Realm = "" },
+		"no netbios":     func(d *KerberosConfigDTO) { d.NetBIOSDomain = "" },
+		"keytab no pass": func(d *KerberosConfigDTO) { d.MachineAccount.Secret = ""; d.MachineAccount.KeytabPath = "/k" },
+	}
+	for name, mut := range cases {
+		if got := netlogonCredentialFromKerberosDTO(complete(mut)); got != nil {
+			t.Errorf("%s: expected nil credential, got %+v", name, got)
+		}
+	}
+}
+
 func TestIDP_TestLDAP_DoesNotPersist(t *testing.T) {
 	st := newFakeIDPStore()
 	h := NewIdentityProviderHandler(st, nil)

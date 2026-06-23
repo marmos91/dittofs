@@ -503,6 +503,17 @@ func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runt
 			}
 		}
 	}
+
+	// Seed the runtime's hot-reloadable NETLOGON machine credential from the
+	// effective Kerberos machine-account config (#1325). nil disables passthrough.
+	// The SMB adapter reads this on an identity-provider config change to rebuild
+	// its secure channel without a restart.
+	if cred, ok := netlogonCredentialFromConfig(kerberos); ok {
+		rt.SetNetlogonCredential(&cred)
+	} else {
+		rt.SetNetlogonCredential(nil)
+	}
+
 	return kerberos
 }
 

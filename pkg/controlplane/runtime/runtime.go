@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/block"
@@ -150,6 +151,14 @@ type Runtime struct {
 	// startup from the server config. When present and Enabled, BuildIdentityResolver
 	// registers an LDAP provider in the identity resolution chain. Guarded by mu.
 	ldapConfig *ldap.Config
+
+	// netlogonCredential is the optional NETLOGON machine credential / DC binding
+	// used for SMB NTLM pass-through. Set at startup from the Kerberos
+	// machine-account config and updated by the identity-provider API; nil when
+	// passthrough is disabled. The SMB adapter reads it from its
+	// OnIdentityProviderConfigChange callback to hot-reload the secure channel
+	// without a restart (#1325). Guarded by mu.
+	netlogonCredential *netlogon.MachineCredential
 
 	// statusCheckers is the lazy per-entity cached health-checker
 	// map backing [Runtime.BlockStoreChecker],
@@ -889,6 +898,26 @@ func (r *Runtime) LDAPConfig() *ldap.Config {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.ldapConfig
+}
+
+// SetNetlogonCredential sets the NETLOGON machine credential / DC binding used
+// for SMB NTLM pass-through. A nil value disables passthrough. It is set at
+// startup from the Kerberos machine-account config and updated by the
+// identity-provider API; the SMB adapter reads it on an
+// OnIdentityProviderConfigChange notification to hot-reload its secure channel.
+func (r *Runtime) SetNetlogonCredential(cred *netlogon.MachineCredential) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.netlogonCredential = cred
+}
+
+// NetlogonCredential returns the configured NETLOGON machine credential, or nil
+// when passthrough is disabled. The returned pointer is the live value; callers
+// must not mutate it.
+func (r *Runtime) NetlogonCredential() *netlogon.MachineCredential {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.netlogonCredential
 }
 
 // OnIdentityMappingChange registers a callback invoked when identity mappings
