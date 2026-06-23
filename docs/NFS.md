@@ -576,9 +576,15 @@ return `NFS4ERR_NOTSUPP`. A client negotiates v4.2 with `mount -o vers=4.2`.
 
 The features below are **planned** and tracked, ordered by fit with DittoFS's
 content-addressed/dedup block store. `CLONE` is the strongest fit — a reflink is a pure
-metadata ref over the same dedup blocks, reusing the SMB server-side-copy engine. `SEEK`,
-`READ_PLUS`, and `DEALLOCATE` form a sparse-files cluster that shares hole-tracking
-plumbing. They are **not yet implemented**.
+metadata ref over the same dedup blocks, reusing the SMB server-side-copy engine; it is
+**not yet implemented**. `SEEK`, `READ_PLUS`, `DEALLOCATE`, and `ALLOCATE` form a
+sparse-files cluster that shares one hole-tracking foundation and **are implemented**.
+
+The hole map is derived directly from the file's content-addressed block list (a byte
+range covered by no block ref is a hole that reads as zeros) — there is no separate hole
+bitmap. The same `pkg/block` hole-map query backs all four ops so SEEK / READ_PLUS /
+DEALLOCATE report consistent boundaries. A file whose blocks cover its whole extent
+yields a single data segment (the dense-file fallback).
 
 | Operation | Status | Notes |
 |-----------|--------|-------|
@@ -586,11 +592,11 @@ plumbing. They are **not yet implemented**.
 | SETXATTR | Implemented | RFC 8276; `CREATE` / `REPLACE` / `EITHER` options honored |
 | LISTXATTRS | Implemented | RFC 8276; cookie-based pagination |
 | REMOVEXATTR | Implemented | RFC 8276 |
+| SEEK | Implemented | SEEK_HOLE / SEEK_DATA over the block-list hole map ([#1303](https://github.com/marmos91/dittofs/issues/1303)) |
+| READ_PLUS | Implemented | hole-aware read; emits data + `NFS4_CONTENT_HOLE` runs ([#1304](https://github.com/marmos91/dittofs/issues/1304)) |
+| DEALLOCATE | Implemented | punch-hole; zeros the range + reclaims block storage ([#1305](https://github.com/marmos91/dittofs/issues/1305)) |
+| ALLOCATE | Implemented | best-effort/logical preallocation (no physical reservation under dedup/S3) ([#1306](https://github.com/marmos91/dittofs/issues/1306)) |
 | CLONE | Planned | reflink over dedup block refs ([#1302](https://github.com/marmos91/dittofs/issues/1302)) |
-| SEEK | Planned | SEEK_HOLE / SEEK_DATA ([#1303](https://github.com/marmos91/dittofs/issues/1303)) |
-| READ_PLUS | Planned | hole-aware read ([#1304](https://github.com/marmos91/dittofs/issues/1304)) |
-| DEALLOCATE | Planned | punch-hole + storage reclaim ([#1305](https://github.com/marmos91/dittofs/issues/1305)) |
-| ALLOCATE | Planned | `fallocate` preallocation ([#1306](https://github.com/marmos91/dittofs/issues/1306)) |
 | COPY / OFFLOAD_* / COPY_NOTIFY | Not planned | async server-side copy; `CLONE` covers the intra-server case more cheaply |
 | IO_ADVISE | Not planned | cache/prefetch hints; low value for a userspace vFS |
 | Labeled NFS (`FATTR4_SEC_LABEL`) | Not planned | MAC/SELinux labels; niche |

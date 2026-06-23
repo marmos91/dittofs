@@ -615,9 +615,29 @@ streams, so a value set over one protocol is readable over the other. See
 
 | Status | Reason |
 |--------|--------|
-| Not supported | No ALLOCATE procedure in NFSv3 |
+| NFSv3: not supported | No ALLOCATE procedure in NFSv3 |
+| NFSv4.2: supported (best-effort) | In-protocol ALLOCATE / DEALLOCATE (RFC 7862) |
 
-NFSv3 has no procedure for pre-allocating disk space. Space is allocated on actual write.
+NFSv3 has no procedure for pre-allocating disk space, so `fallocate` over a
+v3 mount is unsupported (space is allocated on actual write).
+
+Over a **NFSv4.2** mount DittoFS implements the RFC 7862 sparse-file cluster —
+`ALLOCATE`, `DEALLOCATE`, `SEEK` (SEEK_HOLE/SEEK_DATA) and `READ_PLUS`:
+
+- `fallocate <file>` (ALLOCATE) extends the file's logical size; the
+  newly-covered range reads back as zeros.
+- `fallocate -p <file>` (DEALLOCATE / punch hole) marks a byte range as a hole
+  that reads as zeros and reclaims the backing block storage.
+- `lseek(SEEK_HOLE)` / `lseek(SEEK_DATA)` report the next hole/data boundary.
+
+**ALLOCATE is best-effort, not a physical reservation.** DittoFS is
+thin-provisioned over a content-addressed/deduplicating block store (and
+optionally S3), so a true up-front physical reservation is neither possible nor
+meaningful. RFC 7862 permits a server to satisfy ALLOCATE without a physical
+reservation: DittoFS guarantees the requested range is readable (as a sparse
+hole until written) and grows the file size, but does **not** pre-reserve space
+— an out-of-space condition surfaces on the eventual write, exactly as for an
+ordinary sparse file.
 
 ### SMB Client Limitations
 
@@ -682,7 +702,7 @@ This pass rate applies to **all metadata backends** (Memory, BadgerDB, PostgreSQ
 | `fcntl/lock*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
 | `lockf/*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
 | `xattr/*`, `*xattr/*` | Not in NFSv3 |
-| `fallocate/*` | No ALLOCATE in NFSv3 |
+| `fallocate/*` | No ALLOCATE in NFSv3 (supported over NFSv4.2 — see above) |
 | `chflags/*` | BSD-specific |
 
 **Note**: Only `utimensat/09.t:test5` actually fails in current pjdfstest runs. Other patterns either don't have tests in the suite or the tests are skipped.
