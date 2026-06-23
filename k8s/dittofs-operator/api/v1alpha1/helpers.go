@@ -241,3 +241,63 @@ func KerberosKeytabFilePath() string {
 func KerberosKrb5ConfFilePath() string {
 	return KerberosKrb5ConfMountPath + "/" + KerberosKrb5ConfFileName
 }
+
+// Machine-account (NETLOGON passthrough) mount paths shared by the config
+// generator and the controller so the rendered
+// kerberos.machine_account.keytab_path always points at where the operator
+// mounts the machine-account keytab Secret key.
+const (
+	// KerberosMachineKeytabMountPath is where the machine-account keytab Secret is
+	// mounted (read-only).
+	KerberosMachineKeytabMountPath = "/kerberos-machine"
+	// KerberosMachineKeytabFileName is the file the machine-account keytab Secret
+	// key is projected to.
+	KerberosMachineKeytabFileName = "machine.keytab"
+)
+
+// MachineAccountEnabled reports whether the operator should render the
+// kerberos.machine_account block for NETLOGON NTLM passthrough. It is gated on
+// the parent Kerberos provider being enabled — machine_account is meaningless
+// without it.
+func (ds *DittoServer) MachineAccountEnabled() bool {
+	return ds.KerberosEnabled() &&
+		ds.Spec.Identity.Kerberos.MachineAccount != nil &&
+		ds.Spec.Identity.Kerberos.MachineAccount.Enabled
+}
+
+// MachineAccountSecret returns the machine-account password Secret selector when
+// machine-account passthrough is enabled and a usable one is referenced
+// (non-empty Name), otherwise nil. See KerberosKeytabSecret for why an empty
+// selector is treated as absent.
+func (ds *DittoServer) MachineAccountSecret() *corev1.SecretKeySelector {
+	if !ds.MachineAccountEnabled() {
+		return nil
+	}
+	ref := ds.Spec.Identity.Kerberos.MachineAccount.SecretRef
+	if ref == nil || ref.Name == "" {
+		return nil
+	}
+	return ref
+}
+
+// MachineAccountKeytabSecret returns the machine-account keytab Secret selector
+// when machine-account passthrough is enabled and a usable one is referenced
+// (non-empty Name), otherwise nil. See KerberosKeytabSecret for why an empty
+// selector is treated as absent.
+func (ds *DittoServer) MachineAccountKeytabSecret() *corev1.SecretKeySelector {
+	if !ds.MachineAccountEnabled() {
+		return nil
+	}
+	ref := ds.Spec.Identity.Kerberos.MachineAccount.KeytabSecretRef
+	if ref == nil || ref.Name == "" {
+		return nil
+	}
+	return ref
+}
+
+// KerberosMachineKeytabFilePath returns the in-container keytab path the rendered
+// kerberos.machine_account.keytab_path points at, matching where the
+// machine-account keytab Secret is mounted.
+func KerberosMachineKeytabFilePath() string {
+	return KerberosMachineKeytabMountPath + "/" + KerberosMachineKeytabFileName
+}

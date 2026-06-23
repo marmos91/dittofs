@@ -363,6 +363,50 @@ type KerberosConfig struct {
 	// set (the mount path wins). Defaults to the server's /etc/krb5.conf.
 	// +optional
 	Krb5Conf string `json:"krb5Conf,omitempty"`
+
+	// MachineAccount configures an Active Directory machine (computer) account so
+	// the SMB server can validate domain-user NTLM logons via a NETLOGON secure
+	// channel to a domain controller (SamLogon passthrough). This is what lets a
+	// non-domain-joined Windows client authenticate as DITTOFS\user. When unset or
+	// disabled the kerberos.machine_account block is omitted and NTLM passthrough
+	// stays off. Only honored when the parent Kerberos provider is enabled.
+	// +optional
+	MachineAccount *MachineAccountConfig `json:"machineAccount,omitempty"`
+}
+
+// MachineAccountConfig defines the AD machine (computer) account used for
+// NETLOGON NTLM passthrough. The account password is supplied out-of-band via
+// SecretRef and injected as the DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET env var
+// (never written to the config ConfigMap). An optional keytab is mounted
+// read-only from KeytabSecretRef and referenced by keytab_path.
+type MachineAccountConfig struct {
+	// Enabled turns NETLOGON machine-account passthrough on. When false the
+	// machine_account block is omitted entirely.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// AccountName is the machine account name, conventionally with a trailing '$'
+	// (e.g. "DITTOFS$"). Required when Enabled.
+	// +optional
+	AccountName string `json:"accountName,omitempty"`
+
+	// SecretRef references a Secret key holding the machine account password in
+	// cleartext. Injected as DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET; never stored
+	// in the ConfigMap. Supply either this or KeytabSecretRef.
+	// +optional
+	SecretRef *corev1.SecretKeySelector `json:"secretRef,omitempty"`
+
+	// KeytabSecretRef optionally references a Secret key holding the machine
+	// account keytab. When set the operator mounts it read-only and points
+	// kerberos.machine_account.keytab_path at that file. Updating the Secret rolls
+	// the pod.
+	// +optional
+	KeytabSecretRef *corev1.SecretKeySelector `json:"keytabSecretRef,omitempty"`
+
+	// DCAddress is a list of domain controller addresses (host or host:port) the
+	// NETLOGON secure channel is established against.
+	// +optional
+	DCAddress []string `json:"dcAddress,omitempty"`
 }
 
 // JWTConfig defines JWT authentication settings

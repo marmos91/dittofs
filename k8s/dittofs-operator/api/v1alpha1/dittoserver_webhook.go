@@ -115,6 +115,26 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		if k.Krb5ConfSecretRef != nil && k.Krb5ConfSecretRef.Name != "" && k.Krb5ConfSecretRef.Key == "" {
 			return warnings, fmt.Errorf("identity.kerberos.krb5ConfSecretRef.key is required when krb5ConfSecretRef.name is set")
 		}
+
+		// Validate the machine account (NETLOGON passthrough): when enabled it
+		// needs an account name and at least one credential source (a password
+		// Secret or a keytab Secret). Any referenced Secret key must set its key.
+		if m := k.MachineAccount; m != nil && m.Enabled {
+			if m.AccountName == "" {
+				return warnings, fmt.Errorf("identity.kerberos.machineAccount.accountName is required when machineAccount is enabled")
+			}
+			hasSecret := m.SecretRef != nil && m.SecretRef.Name != ""
+			hasKeytab := m.KeytabSecretRef != nil && m.KeytabSecretRef.Name != ""
+			if !hasSecret && !hasKeytab {
+				return warnings, fmt.Errorf("identity.kerberos.machineAccount requires a secretRef or keytabSecretRef when enabled")
+			}
+			if hasSecret && m.SecretRef.Key == "" {
+				return warnings, fmt.Errorf("identity.kerberos.machineAccount.secretRef.key is required when secretRef.name is set")
+			}
+			if hasKeytab && m.KeytabSecretRef.Key == "" {
+				return warnings, fmt.Errorf("identity.kerberos.machineAccount.keytabSecretRef.key is required when keytabSecretRef.name is set")
+			}
+		}
 	}
 
 	// Validate port uniqueness and warn about privileged ports

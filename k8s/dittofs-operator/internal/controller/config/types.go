@@ -35,6 +35,24 @@ type KerberosConfig struct {
 	NetBIOSDomain    string `yaml:"netbios_domain,omitempty"`
 	DNSDomain        string `yaml:"dns_domain,omitempty"`
 	Krb5Conf         string `yaml:"krb5_conf,omitempty"`
+	// MachineAccount renders the kerberos.machine_account block for NETLOGON NTLM
+	// passthrough. Omitted (nil pointer) unless the CRD enables it. The account
+	// password is intentionally absent; it is injected via the
+	// DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET env var from a Secret, never written
+	// to the ConfigMap.
+	MachineAccount *MachineAccountConfig `yaml:"machine_account,omitempty"`
+}
+
+// MachineAccountConfig mirrors the dfs server kerberos.machine_account: config
+// keys (pkg/config.MachineAccountConfig). The secret is intentionally absent; it
+// is injected via env var from a Secret, never written to the ConfigMap. An
+// optional keytab is mounted as a file from a Secret and referenced via
+// keytab_path.
+type MachineAccountConfig struct {
+	Enabled     bool     `yaml:"enabled"`
+	AccountName string   `yaml:"account_name,omitempty"`
+	KeytabPath  string   `yaml:"keytab_path,omitempty"`
+	DCAddress   []string `yaml:"dc_address,omitempty"`
 }
 
 // LDAPConfig mirrors the dfs server ldap: config keys (pkg/identity/ldap.Config).

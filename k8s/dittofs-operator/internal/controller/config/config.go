@@ -268,6 +268,34 @@ func buildKerberosConfig(ds *dittoiov1alpha1.DittoServer) *KerberosConfig {
 		cfg.Krb5Conf = k.Krb5Conf
 	}
 
+	cfg.MachineAccount = buildMachineAccountConfig(ds)
+
+	return cfg
+}
+
+// buildMachineAccountConfig renders the kerberos.machine_account block when the
+// CRD enables NETLOGON NTLM passthrough. Returns nil (no machine_account key)
+// when disabled, preserving the off-by-default server behavior. The account
+// password is never rendered here; it is injected as the
+// DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET env var from a Secret. When a keytab
+// Secret is referenced, keytab_path points at its mount; the helper treats an
+// empty selector as absent so the rendered path never dangles.
+func buildMachineAccountConfig(ds *dittoiov1alpha1.DittoServer) *MachineAccountConfig {
+	if !ds.MachineAccountEnabled() {
+		return nil
+	}
+	m := ds.Spec.Identity.Kerberos.MachineAccount
+
+	cfg := &MachineAccountConfig{
+		Enabled:     true,
+		AccountName: m.AccountName,
+		DCAddress:   m.DCAddress,
+	}
+
+	if ds.MachineAccountKeytabSecret() != nil {
+		cfg.KeytabPath = dittoiov1alpha1.KerberosMachineKeytabFilePath()
+	}
+
 	return cfg
 }
 

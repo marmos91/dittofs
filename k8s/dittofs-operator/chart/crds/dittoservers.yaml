@@ -342,6 +342,88 @@ spec:
                         - key
                         type: object
                         x-kubernetes-map-type: atomic
+                      machineAccount:
+                        description: |-
+                          MachineAccount configures an Active Directory machine (computer) account so
+                          the SMB server can validate domain-user NTLM logons via a NETLOGON secure
+                          channel to a domain controller (SamLogon passthrough). This is what lets a
+                          non-domain-joined Windows client authenticate as DITTOFS\user. When unset or
+                          disabled the kerberos.machine_account block is omitted and NTLM passthrough
+                          stays off. Only honored when the parent Kerberos provider is enabled.
+                        properties:
+                          accountName:
+                            description: |-
+                              AccountName is the machine account name, conventionally with a trailing '$'
+                              (e.g. "DITTOFS$"). Required when Enabled.
+                            type: string
+                          dcAddress:
+                            description: |-
+                              DCAddress is a list of domain controller addresses (host or host:port) the
+                              NETLOGON secure channel is established against.
+                            items:
+                              type: string
+                            type: array
+                          enabled:
+                            description: |-
+                              Enabled turns NETLOGON machine-account passthrough on. When false the
+                              machine_account block is omitted entirely.
+                            type: boolean
+                          keytabSecretRef:
+                            description: |-
+                              KeytabSecretRef optionally references a Secret key holding the machine
+                              account keytab. When set the operator mounts it read-only and points
+                              kerberos.machine_account.keytab_path at that file. Updating the Secret rolls
+                              the pod.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          secretRef:
+                            description: |-
+                              SecretRef references a Secret key holding the machine account password in
+                              cleartext. Injected as DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET; never stored
+                              in the ConfigMap. Supply either this or KeytabSecretRef.
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        type: object
                       netbiosDomain:
                         description: |-
                           NetBIOSDomain is the short NetBIOS domain name (e.g. CONTOSO) advertised in

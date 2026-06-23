@@ -287,6 +287,47 @@ Configures the Kerberos/Active Directory authentication provider for NFSv4 (RPCS
 | `identity.kerberos.krb5ConfSecretRef` | SecretKeySelector | - | No | Secret key holding a `krb5.conf`. When set it is mounted and `krb5_conf` points at the mount (wins over `krb5Conf`). |
 | `identity.kerberos.krb5Conf` | string | server default (`/etc/krb5.conf`) | No | In-pod path to `krb5.conf`. Ignored when `krb5ConfSecretRef` is set. |
 
+**Machine Account / NETLOGON passthrough (`spec.identity.kerberos.machineAccount`):**
+
+Configures an Active Directory machine (computer) account so the SMB server can validate a domain user's NTLM logon by establishing a NETLOGON secure channel to a domain controller (SamLogon passthrough). This is what lets a **non-domain-joined** Windows client authenticate to DittoFS SMB as `DITTOFS\user`. Only honored when `identity.kerberos.enabled` is true. The account password is injected as the `DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET` env var from a Secret (never written to the ConfigMap); rotating the Secret rolls the pod.
+
+| Field | Type | Default | Required | Description |
+|-------|------|---------|----------|-------------|
+| `identity.kerberos.machineAccount.enabled` | bool | `false` | No | Turns NETLOGON machine-account passthrough on. When false the `machine_account` block is omitted entirely. |
+| `identity.kerberos.machineAccount.accountName` | string | - | **Yes** (if enabled) | Machine account name, conventionally with a trailing `$` (e.g. `DITTOFS$`). |
+| `identity.kerberos.machineAccount.secretRef` | SecretKeySelector | - | One of secretRef/keytabSecretRef | Secret key holding the machine account password (cleartext). Injected as `DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET`. |
+| `identity.kerberos.machineAccount.keytabSecretRef` | SecretKeySelector | - | One of secretRef/keytabSecretRef | Secret key holding the machine account keytab. Mounted read-only; `machine_account.keytab_path` points at the mount. |
+| `identity.kerberos.machineAccount.dcAddress` | []string | - | No | Domain controller addresses (host or host:port) the NETLOGON secure channel targets. |
+
+Create the AD computer account and supply its password as a Secret, e.g.:
+
+```bash
+# On a domain-joined admin host (or via samba-tool / RSAT):
+#   samba-tool computer create DITTOFS
+#   samba-tool user setpassword DITTOFS\$ --newpassword='<machine-pw>'
+
+kubectl create secret generic dittofs-machine-account \
+  --from-literal=password='<machine-pw>'
+```
+
+```yaml
+identity:
+  kerberos:
+    enabled: true
+    servicePrincipal: "cifs/dittofs.example.com@EXAMPLE.COM"
+    keytabSecretRef:
+      name: dittofs-keytab
+      key: dittofs.keytab
+    machineAccount:
+      enabled: true
+      accountName: "DITTOFS$"
+      dcAddress:
+        - "dc1.example.com"
+      secretRef:
+        name: dittofs-machine-account
+        key: password
+```
+
 **Examples:**
 ```yaml
 identity:
