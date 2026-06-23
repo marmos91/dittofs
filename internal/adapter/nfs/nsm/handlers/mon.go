@@ -12,22 +12,33 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
 
-// validateCallbackName enforces that the SM_MON my_name callback address is a
-// safe IP literal. NSM callback addresses must be IP literals (no DNS names),
-// must not be loopback, and must not be link-local (which covers the cloud
-// instance metadata address 169.254.169.254). Violations return STAT_FAIL.
-func validateCallbackName(name string) error {
-	ip := net.ParseIP(name)
-	if ip == nil {
-		return fmt.Errorf("callback my_name %q is not an IP literal", name)
+// callbackHostFromSource derives the SM_NOTIFY callback host from the SM_MON
+// request's transport source address.
+//
+// NSM clients set my_name to their own hostname — Linux and macOS statd both
+// send a name like "localhost", not an IP literal — so dialling my_name
+// verbatim breaks every real client. It is also an SSRF vector: my_name is
+// fully client-controlled and could point the later callback at an internal
+// address such as the cloud metadata endpoint (169.254.169.254). The request's
+// transport source is the host that actually issued the MON, so it is both the
+// correct callback target and inherently safe (a client cannot forge it to an
+// arbitrary internal address). my_name is therefore kept only as a label.
+//
+// Link-local sources (169.254.0.0/16, fe80::/10) are still rejected; loopback
+// is allowed so same-host clients (and local testing) can lock.
+func callbackHostFromSource(clientAddr string) (string, error) {
+	host, _, err := net.SplitHostPort(clientAddr)
+	if err != nil {
+		host = clientAddr // already a bare host
 	}
-	if ip.IsLoopback() {
-		return fmt.Errorf("callback my_name %q is a loopback address", name)
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", fmt.Errorf("client source %q is not an IP address", clientAddr)
 	}
 	if ip.IsLinkLocalUnicast() {
-		return fmt.Errorf("callback my_name %q is a link-local address", name)
+		return "", fmt.Errorf("client source %q is a link-local address", host)
 	}
-	return nil
+	return host, nil
 }
 
 // Mon handles NSM MON (RFC 1813, SM procedure 2).
@@ -56,19 +67,21 @@ func (h *Handler) Mon(ctx *NSMHandlerContext, data []byte) (*HandlerResult, erro
 		"callback_vers", mon.MonID.MyID.MyVers,
 		"callback_proc", mon.MonID.MyID.MyProc)
 
-	// Reject unsafe callback addresses (SSRF guard): the my_name is fully
-	// client-controlled and is later dialled verbatim by the callback client.
-	if err := validateCallbackName(mon.MonID.MyID.MyName); err != nil {
-		logger.Warn("NSM MON rejected: unsafe callback address",
+	// Derive the SM_NOTIFY callback host from the request's transport source
+	// rather than the client-supplied my_name (which is a hostname like
+	// "localhost" and an SSRF vector). See callbackHostFromSource.
+	callbackHost, err := callbackHostFromSource(ctx.ClientAddr)
+	if err != nil {
+		logger.Warn("NSM MON rejected: unsafe source address",
 			"client", ctx.ClientAddr,
-			"callback_host", mon.MonID.MyID.MyName,
+			"my_name", mon.MonID.MyID.MyName,
 			"error", err)
 		return encodeStatFailure(state)
 	}
 
-	// Generate client ID from client address and callback info
-	// This ensures uniqueness per client/callback combination
-	clientID := generateClientID(ctx.ClientAddr, mon.MonID.MyID.MyName)
+	// Generate client ID from client address and the derived callback host.
+	// This ensures uniqueness per client/callback combination.
+	clientID := generateClientID(ctx.ClientAddr, callbackHost)
 
 	// Check if we're at the client limit
 	currentCount := h.tracker.GetClientCount("")
@@ -92,7 +105,7 @@ func (h *Handler) Mon(ctx *NSMHandlerContext, data []byte) (*HandlerResult, erro
 
 	// Update NSM-specific info in the registration
 	callback := &lock.NSMCallback{
-		Hostname: mon.MonID.MyID.MyName,
+		Hostname: callbackHost,
 		Program:  mon.MonID.MyID.MyProg,
 		Version:  mon.MonID.MyID.MyVers,
 		Proc:     mon.MonID.MyID.MyProc,
@@ -117,7 +130,8 @@ func (h *Handler) Mon(ctx *NSMHandlerContext, data []byte) (*HandlerResult, erro
 	logger.Info("NSM MON registered",
 		"client_id", clientID,
 		"mon_name", mon.MonID.MonName,
-		"callback_host", mon.MonID.MyID.MyName,
+		"callback_host", callbackHost,
+		"my_name", mon.MonID.MyID.MyName,
 		"state", state)
 
 	// Return success with current state
