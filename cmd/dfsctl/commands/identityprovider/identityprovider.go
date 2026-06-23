@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
 	"github.com/spf13/cobra"
+	"os"
 )
 
 // Cmd is the parent `identity-provider` command.

@@ -7,12 +7,12 @@ import (
 
 // MachineCredential holds the machine account credentials required for NETLOGON operations.
 type MachineCredential struct {
-	AccountName  string   // Machine account name (e.g., "DITTOFS$")
-	Password     string   // Machine account password
-	Workstation  string   // Workstation name
-	DomainName   string   // Domain name (NetBIOS)
-	Realm        string   // Realm (Kerberos)
-	DCAddresses  []string // Domain controller addresses
+	AccountName string   // Machine account name (e.g., "DITTOFS$")
+	Password    string   // Machine account password
+	Workstation string   // Workstation name
+	DomainName  string   // Domain name (NetBIOS)
+	Realm       string   // Realm (Kerberos)
+	DCAddresses []string // Domain controller addresses
 }
 
 // MachineCredentialProvider is an interface for retrieving machine credentials.
