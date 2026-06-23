@@ -673,6 +673,114 @@ The passphrase that unlocks a local key file is read from the
 `DITTOFS_ENCRYPTION_PASSPHRASE` environment variable — never the config
 file or command line.
 
+#### S3-compatible backend presets
+
+The `s3` remote store talks the AWS S3 API, so any S3-compatible object
+store works — set a custom `endpoint` (and credentials) and DittoFS connects
+to it instead of AWS. The store reads exactly these config keys (see
+`pkg/block/remote/s3/store.go` and the factory in
+`pkg/controlplane/runtime/shares/service.go`):
+
+| Key | Required | Default | Notes |
+| --- | --- | --- | --- |
+| `bucket` | yes | — | Bucket name. Must already exist; DittoFS does not create it. |
+| `access_key_id` | yes | — | S3 access key. For GCS use an **HMAC** key, not a service-account JSON. |
+| `secret_access_key` | yes | — | S3 secret key. |
+| `region` | no | `us-east-1` | Some providers ignore it but the SDK still requires a value; the default is sent when omitted. |
+| `endpoint` | no (AWS) / yes (others) | AWS | Service URL. Scheme optional — `https://` is prepended when absent. |
+| `force_path_style` | no | auto | **Auto-enabled whenever `endpoint` is set.** Set explicitly to `false` to opt back into virtual-hosted-style for providers that require it (e.g. GCS). |
+| `prefix` | no | — | Key prefix prepended to every block (e.g. `dittofs/`). End it with `/`. |
+
+> Path-style addressing (`endpoint.example.com/bucket/key`) is the safe
+> default for non-AWS providers because virtual-hosted style
+> (`bucket.endpoint.example.com/key`) needs wildcard DNS and TLS SANs that
+> most S3-compatible gateways do not provide. DittoFS therefore flips
+> `force_path_style` on automatically the moment you set a custom `endpoint`;
+> the only providers below that need it turned back **off** are those that
+> require virtual-hosted style (GCS).
+
+Credentials can be passed inline in `--config` (as below) or read from the
+environment via the standard `DITTOFS_*` precedence; inline values are shown
+here for clarity. Each recipe is a `dfsctl store block remote add` invocation;
+attach the resulting store to a share with `dfsctl share create … --remote <name>`.
+
+##### Verified providers
+
+These run against an emulator (or a documented public endpoint) and are
+exercised by the e2e suite where an emulator exists:
+
+| Provider | Verified by | Endpoint | Region | `force_path_style` | Notes |
+| --- | --- | --- | --- | --- | --- |
+| AWS S3 | unit + prod use | _(omit — SDK default)_ | your bucket region | unset (virtual-hosted) | The native case; no `endpoint`. |
+| MinIO | **e2e emulator** | `http://minio.example:9000` | `us-east-1` | auto-on | Self-hosted; HTTP fine on a trusted network. |
+| LocalStack | **e2e emulator** | `http://localstack:4566` | `us-east-1` | auto-on | Test/CI only; not a production target. |
+| Ceph RGW | documented | `https://rgw.example:7480` | `us-east-1` | auto-on | RGW ignores region; any non-empty value is accepted. |
+
+```bash
+# MinIO  (verified by e2e emulator)
+dfsctl store block remote add --name minio-store --type s3 \
+  --config '{"endpoint":"http://minio.example:9000","bucket":"dittofs","region":"us-east-1","access_key_id":"minioadmin","secret_access_key":"minioadmin"}'
+
+# Ceph RGW (RADOS Gateway)
+dfsctl store block remote add --name ceph-store --type s3 \
+  --config '{"endpoint":"https://rgw.example:7480","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
+```
+
+##### Documented-only providers
+
+These are configured exactly like the verified ones but have **not** been run
+against a live account in CI — they are documented from each provider's S3
+compatibility guide. The per-provider column flags the one gotcha that bites.
+
+| Provider | Endpoint | Region | `force_path_style` | Gotcha |
+| --- | --- | --- | --- | --- |
+| Google Cloud Storage (XML/HMAC) | `https://storage.googleapis.com` | `us-east-1` | **set `false`** | Use an **HMAC** key (`access_key_id`/`secret_access_key`), not a service-account JSON. GCS ignores `region` (any non-empty value works), so send the `us-east-1` default. GCS wants virtual-hosted style, so override the auto path-style default to `false`. |
+| Backblaze B2 | `https://s3.us-west-004.backblazeb2.com` | `us-west-004` | auto-on | Endpoint embeds the region (`s3.<region>.backblazeb2.com`); `region` must match it. Use an **application key**, not the master key. |
+| Wasabi | `https://s3.us-east-1.wasabisys.com` | `us-east-1` | auto-on | Region is in the hostname; mismatched `region` causes auth failures. |
+| DigitalOcean Spaces | `https://nyc3.digitaloceanspaces.com` | `us-east-1` | auto-on | Endpoint is the datacenter (`<region>.digitaloceanspaces.com`); send `region: us-east-1` (Spaces ignores it but the SDK requires a value). |
+| Alibaba Cloud OSS | `https://oss-us-west-1.aliyuncs.com` | `us-west-1` | auto-on | Region is encoded in the endpoint host; use the matching OSS region. |
+| Tencent Cloud COS | `https://cos.ap-guangzhou.myqcloud.com` | `ap-guangzhou` | auto-on | Bucket name must include the AppID suffix (`name-1250000000`); endpoint carries the region. |
+| Oracle Cloud (OCI) Object Storage | `https://<namespace>.compat.objectstorage.us-ashburn-1.oraclecloud.com` | `us-ashburn-1` | auto-on | Endpoint contains your tenancy **namespace**; generate a **Customer Secret Key** for S3 compat. |
+| Storj (S3 gateway) | `https://gateway.storjshare.io` | `us-east-1` | auto-on | Use S3-gateway access keys (`uplink share --register`), not the API access grant. |
+
+```bash
+# Google Cloud Storage — note force_path_style:false (GCS wants virtual-hosted)
+dfsctl store block remote add --name gcs-store --type s3 \
+  --config '{"endpoint":"https://storage.googleapis.com","bucket":"dittofs","region":"us-east-1","access_key_id":"GOOG_HMAC_KEY","secret_access_key":"GOOG_HMAC_SECRET","force_path_style":false}'
+
+# Backblaze B2 — region is baked into the endpoint host
+dfsctl store block remote add --name b2-store --type s3 \
+  --config '{"endpoint":"https://s3.us-west-004.backblazeb2.com","bucket":"dittofs","region":"us-west-004","access_key_id":"B2_KEY_ID","secret_access_key":"B2_APP_KEY"}'
+
+# Wasabi
+dfsctl store block remote add --name wasabi-store --type s3 \
+  --config '{"endpoint":"https://s3.us-east-1.wasabisys.com","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
+
+# DigitalOcean Spaces
+dfsctl store block remote add --name spaces-store --type s3 \
+  --config '{"endpoint":"https://nyc3.digitaloceanspaces.com","bucket":"dittofs","region":"us-east-1","access_key_id":"SPACES_KEY","secret_access_key":"SPACES_SECRET"}'
+
+# Alibaba Cloud OSS
+dfsctl store block remote add --name oss-store --type s3 \
+  --config '{"endpoint":"https://oss-us-west-1.aliyuncs.com","bucket":"dittofs","region":"us-west-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
+
+# Tencent Cloud COS — bucket name carries the AppID suffix
+dfsctl store block remote add --name cos-store --type s3 \
+  --config '{"endpoint":"https://cos.ap-guangzhou.myqcloud.com","bucket":"dittofs-1250000000","region":"ap-guangzhou","access_key_id":"SECRET_ID","secret_access_key":"SECRET_KEY"}'
+
+# Oracle Cloud (OCI) Object Storage — endpoint embeds your namespace
+dfsctl store block remote add --name oci-store --type s3 \
+  --config '{"endpoint":"https://my-namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com","bucket":"dittofs","region":"us-ashburn-1","access_key_id":"OCI_ACCESS","secret_access_key":"OCI_SECRET"}'
+
+# Storj (S3-compatible gateway)
+dfsctl store block remote add --name storj-store --type s3 \
+  --config '{"endpoint":"https://gateway.storjshare.io","bucket":"dittofs","region":"us-east-1","access_key_id":"STORJ_ACCESS","secret_access_key":"STORJ_SECRET"}'
+```
+
+All of the above accept the same optional knobs as AWS S3 —
+`prefix`, `compression`, `encryption`, and `durable` (see the preceding
+subsections) — because they share the single `s3` store implementation.
+
 ### 7. Metadata Configuration
 
 Metadata configuration has two parts: filesystem capabilities (server config file) and store instances (managed via CLI).

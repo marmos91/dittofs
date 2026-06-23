@@ -35,13 +35,21 @@ func (pc *PostgresConfig) ConnectionString() string {
 		pc.User, pc.Password, pc.Host, pc.Port, pc.Database)
 }
 
-// LocalstackHelper manages Localstack S3 integration for tests.
+// LocalstackHelper manages an S3-compatible emulator (Localstack or MinIO)
+// for tests. The bucket/list/cleanup helpers below are emulator-agnostic — they
+// only need Endpoint, Client, and the per-emulator credentials.
 type LocalstackHelper struct {
 	T         *testing.T
 	Container testcontainers.Container
 	Endpoint  string
 	Client    *s3.Client
 	Buckets   []string
+
+	// AccessKey/SecretKey are the static credentials the emulator accepts.
+	// They default to "test"/"test" (Localstack) when empty; MinIO overrides
+	// them. DittoFS shares are configured with these same values.
+	AccessKey string
+	SecretKey string
 }
 
 // Shared Localstack container for E2E tests (started once per test run)
@@ -130,10 +138,15 @@ func (lh *LocalstackHelper) createClient() {
 
 	ctx := context.Background()
 
+	accessKey, secretKey := lh.AccessKey, lh.SecretKey
+	if accessKey == "" || secretKey == "" {
+		accessKey, secretKey = "test", "test"
+	}
+
 	cfg, err := awsConfig.LoadDefaultConfig(ctx,
 		awsConfig.WithRegion("us-east-1"),
 		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			"test", "test", "",
+			accessKey, secretKey, "",
 		)),
 	)
 	if err != nil {
@@ -292,6 +305,115 @@ func CheckLocalstackAvailable(t *testing.T) bool {
 	}
 
 	// With testcontainers, we can always start the container on demand
+	return true
+}
+
+// MinIO credentials used by the emulator and the DittoFS share that targets it.
+const (
+	minioAccessKey = "minioadmin"
+	minioSecretKey = "minioadmin"
+)
+
+// sharedMinioHelper is the MinIO container reused across the test run, mirroring
+// sharedLocalstackHelper.
+var sharedMinioHelper *LocalstackHelper
+
+// NewMinioHelper creates or returns a shared MinIO emulator helper. MinIO is a
+// distinct S3-compatible backend (vs Localstack) used to exercise the
+// custom-endpoint + auto-path-style preset path documented in
+// docs/CONFIGURATION.md. The returned helper reuses every LocalstackHelper
+// bucket/list/cleanup method.
+func NewMinioHelper(t *testing.T) *LocalstackHelper {
+	t.Helper()
+
+	if sharedMinioHelper != nil {
+		return sharedMinioHelper
+	}
+
+	ctx := context.Background()
+
+	// Honor an external MinIO when configured, like the Localstack path.
+	if endpoint := os.Getenv("MINIO_ENDPOINT"); endpoint != "" {
+		helper := &LocalstackHelper{
+			T:         t,
+			Endpoint:  endpoint,
+			Buckets:   make([]string, 0),
+			AccessKey: minioAccessKey,
+			SecretKey: minioSecretKey,
+		}
+		helper.createClient()
+		sharedMinioHelper = helper
+		return helper
+	}
+
+	req := testcontainers.ContainerRequest{
+		Image:        "minio/minio:RELEASE.2024-09-13T20-26-02Z",
+		ExposedPorts: []string{"9000/tcp"},
+		Env: map[string]string{
+			"MINIO_ROOT_USER":     minioAccessKey,
+			"MINIO_ROOT_PASSWORD": minioSecretKey,
+		},
+		Cmd: []string{"server", "/data"},
+		WaitingFor: wait.ForAll(
+			wait.ForListeningPort("9000/tcp"),
+			wait.ForHTTP("/minio/health/live").WithPort("9000/tcp"),
+		).WithDeadline(3 * time.Minute),
+	}
+
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		t.Fatalf("failed to start minio container: %v", err)
+	}
+
+	host, err := container.Host(ctx)
+	if err != nil {
+		_ = container.Terminate(ctx)
+		t.Fatalf("failed to get minio host: %v", err)
+	}
+
+	port, err := container.MappedPort(ctx, "9000")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		t.Fatalf("failed to get minio port: %v", err)
+	}
+
+	helper := &LocalstackHelper{
+		T:         t,
+		Container: container,
+		Endpoint:  fmt.Sprintf("http://%s:%s", host, port.Port()),
+		Buckets:   make([]string, 0),
+		AccessKey: minioAccessKey,
+		SecretKey: minioSecretKey,
+	}
+	helper.createClient()
+	sharedMinioHelper = helper
+
+	return helper
+}
+
+// CheckMinioAvailable reports whether MinIO can be used (external instance
+// reachable, or testcontainers available to start one on demand).
+func CheckMinioAvailable(t *testing.T) bool {
+	t.Helper()
+
+	if endpoint := os.Getenv("MINIO_ENDPOINT"); endpoint != "" {
+		helper := &LocalstackHelper{
+			T:         t,
+			Endpoint:  endpoint,
+			Buckets:   make([]string, 0),
+			AccessKey: minioAccessKey,
+			SecretKey: minioSecretKey,
+		}
+		helper.createClient()
+
+		ctx := context.Background()
+		_, err := helper.Client.ListBuckets(ctx, &s3.ListBucketsInput{})
+		return err == nil
+	}
+
 	return true
 }
 
@@ -507,5 +629,11 @@ func CleanupSharedContainers() {
 	if sharedLocalstackHelper != nil && sharedLocalstackHelper.Container != nil {
 		_ = sharedLocalstackHelper.Container.Terminate(ctx)
 		sharedLocalstackHelper = nil
+	}
+
+	// Cleanup MinIO container
+	if sharedMinioHelper != nil && sharedMinioHelper.Container != nil {
+		_ = sharedMinioHelper.Container.Terminate(ctx)
+		sharedMinioHelper = nil
 	}
 }

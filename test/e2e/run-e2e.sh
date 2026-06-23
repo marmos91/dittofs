@@ -3,15 +3,18 @@
 # DittoFS E2E Test Runner
 # =============================================================================
 #
-# Runs E2E tests with optional features: S3 (Localstack), stress tests,
-# coverage profiling, NFS version selection, and specific test patterns.
+# Runs E2E tests with optional features: S3 (Localstack), MinIO
+# (S3-compatible presets), stress tests, coverage profiling, NFS version
+# selection, and specific test patterns.
 #
 # Usage:
 #   sudo ./run-e2e.sh [options]
 #
 # Options:
 #   --s3                 Start Localstack for S3 tests (stop after tests)
+#   --minio              Start MinIO for S3-compatible preset tests (stop after)
 #   --keep-localstack    Keep Localstack running after tests (for repeated runs)
+#   --keep-minio         Keep MinIO running after tests (for repeated runs)
 #   --test PATTERN       Run specific test pattern (-run PATTERN)
 #   --verbose            Enable verbose test output (-v)
 #   --coverage           Generate coverage profile (-coverprofile=coverage-e2e.out)
@@ -45,7 +48,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Default options
 # =============================================================================
 USE_S3=false
+USE_MINIO=false
 KEEP_LOCALSTACK=false
+KEEP_MINIO=false
 TEST_PATTERN=""
 VERBOSE=false
 COVERAGE=false
@@ -75,7 +80,9 @@ Usage: sudo ./run-e2e.sh [options]
 
 Options:
   --s3                 Start Localstack for S3 tests (stop after tests)
+  --minio              Start MinIO for S3-compatible preset tests (stop after)
   --keep-localstack    Keep Localstack running after tests (for repeated runs)
+  --keep-minio         Keep MinIO running after tests (for repeated runs)
   --test PATTERN       Run specific test pattern (-run PATTERN)
   --verbose            Enable verbose test output (-v)
   --coverage           Generate coverage profile (-coverprofile=coverage-e2e.out)
@@ -93,6 +100,7 @@ Examples:
   sudo ./run-e2e.sh --verbose                        # Run with verbose output
   sudo ./run-e2e.sh --test TestNFSv4BasicOperations  # Run specific test
   sudo ./run-e2e.sh --s3                             # Include S3 tests
+  sudo ./run-e2e.sh --minio                          # Include S3-compatible preset tests (MinIO)
   sudo ./run-e2e.sh --portmap                        # Run portmapper tests only
   sudo ./run-e2e.sh --nfs-version 4                  # Set NFS version for tests
   sudo ./run-e2e.sh --local-only                     # Skip remote store combos
@@ -108,8 +116,16 @@ while [[ $# -gt 0 ]]; do
             USE_S3=true
             shift
             ;;
+        --minio)
+            USE_MINIO=true
+            shift
+            ;;
         --keep-localstack)
             KEEP_LOCALSTACK=true
+            shift
+            ;;
+        --keep-minio)
+            KEEP_MINIO=true
             shift
             ;;
         --test)
@@ -295,6 +311,56 @@ stop_localstack() {
 }
 
 # =============================================================================
+# MinIO management (S3-compatible backend preset tests)
+# =============================================================================
+MINIO_CONTAINER=""
+
+start_minio() {
+    log_step "Starting MinIO for S3-compatible preset tests..."
+
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "dittofs-minio"; then
+        log_info "MinIO already running (dittofs-minio)"
+        MINIO_CONTAINER="dittofs-minio"
+        export MINIO_ENDPOINT="http://localhost:9000"
+        return
+    fi
+
+    docker run -d \
+        --name dittofs-minio \
+        -p 9000:9000 \
+        -e MINIO_ROOT_USER=minioadmin \
+        -e MINIO_ROOT_PASSWORD=minioadmin \
+        minio/minio:RELEASE.2024-09-13T20-26-02Z server /data
+
+    MINIO_CONTAINER="dittofs-minio"
+
+    log_info "Waiting for MinIO to be ready..."
+    local max_attempts=30
+    local attempt=1
+    while [[ $attempt -le $max_attempts ]]; do
+        if curl -sf http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+            log_info "MinIO is ready"
+            export MINIO_ENDPOINT="http://localhost:9000"
+            return
+        fi
+        sleep 1
+        ((attempt++))
+    done
+
+    log_error "MinIO failed to start within $max_attempts seconds"
+    exit 1
+}
+
+stop_minio() {
+    if [[ -n "$MINIO_CONTAINER" ]] && [[ "$KEEP_MINIO" == "false" ]]; then
+        log_step "Stopping MinIO..."
+        docker rm -f "$MINIO_CONTAINER" 2>/dev/null || true
+    elif [[ "$KEEP_MINIO" == "true" ]]; then
+        log_info "Keeping MinIO running (--keep-minio)"
+    fi
+}
+
+# =============================================================================
 # Run tests
 # =============================================================================
 log_info "DittoFS E2E Test Runner"
@@ -305,6 +371,7 @@ log_info "Verbose:       ${VERBOSE}"
 log_info "Coverage:      ${COVERAGE}"
 log_info "Stress:        ${STRESS}"
 log_info "S3:            ${USE_S3}"
+log_info "MinIO:         ${USE_MINIO}"
 log_info "Race:          ${RACE}"
 log_info "Portmap:       ${PORTMAP}"
 log_info "Local only:    ${LOCAL_ONLY}"
@@ -320,6 +387,11 @@ echo ""
 # Start Localstack if needed
 if [[ "$USE_S3" == "true" ]]; then
     start_localstack
+fi
+
+# Start MinIO if needed
+if [[ "$USE_MINIO" == "true" ]]; then
+    start_minio
 fi
 
 # Run the tests
@@ -354,6 +426,11 @@ fi
 # Stop Localstack if needed
 if [[ "$USE_S3" == "true" ]]; then
     stop_localstack
+fi
+
+# Stop MinIO if needed
+if [[ "$USE_MINIO" == "true" ]]; then
+    stop_minio
 fi
 
 exit $TEST_EXIT_CODE
