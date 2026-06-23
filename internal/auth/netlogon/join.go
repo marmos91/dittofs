@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"strings"
@@ -18,6 +19,15 @@ import (
 // set: the account always carries a strong password we generate.
 const (
 	uacWorkstationTrustAccount = 0x1000
+
+	// supportedEncTypes advertises the Kerberos enctypes the machine account
+	// supports via msDS-SupportedEncryptionTypes (MS-KILE 2.2.7). 0x1F =
+	// DES-CBC-CRC | DES-CBC-MD5 | RC4-HMAC | AES128-CTS | AES256-CTS. Setting it
+	// is what `net ads join` does so the NETLOGON secure channel negotiates AES
+	// (CapAES_SHA2); without it a Samba DC may negotiate a weaker channel and
+	// reject the SamLogon passthrough. AES is also required for the password
+	// rotation path (see password.go buildTrustPassword).
+	supportedEncTypes = 0x1F
 )
 
 // JoinConfig configures the online creation of the machine (computer) account
@@ -70,11 +80,11 @@ func (c *JoinConfig) Validate() error {
 	if strings.TrimSpace(c.LDAPURL) == "" {
 		return fmt.Errorf("netlogon join: ldap_url is required")
 	}
-	scheme := strings.ToLower(strings.TrimSpace(c.LDAPURL))
+	lower := strings.ToLower(strings.TrimSpace(c.LDAPURL))
 	switch {
-	case strings.HasPrefix(scheme, "ldaps://"):
+	case strings.HasPrefix(lower, "ldaps://"):
 		// Implicit TLS — confidential, AD will accept the unicodePwd write.
-	case strings.HasPrefix(scheme, "ldap://"):
+	case strings.HasPrefix(lower, "ldap://"):
 		// Plaintext: AD rejects a unicodePwd write unless the channel is
 		// encrypted, so StartTLS is mandatory here (there is no allow_plaintext
 		// escape hatch for a join — a cleartext password write is never valid).
@@ -129,6 +139,11 @@ func (c *JoinConfig) samAccountName() string {
 	return strings.ToUpper(c.MachineName) + "$"
 }
 
+// isLDAPS reports whether the configured URL uses implicit TLS (ldaps://).
+func (c *JoinConfig) isLDAPS() bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.LDAPURL)), "ldaps://")
+}
+
 // joinDirectory creates (or reconciles) the computer object and sets its
 // password to newPassword, returning nothing on success. It is idempotent: if
 // the object already exists, only the password (and any drifted SPNs) are reset,
@@ -169,12 +184,16 @@ func joinDirectory(ctx context.Context, dial ldapDialer, cfg *JoinConfig, newPas
 		return fmt.Errorf("netlogon join: set machine password on %q: %w", dn, err)
 	}
 
-	// Ensure the account is enabled with the workstation-trust UAC. A freshly
-	// created object created without the password may be disabled until the
-	// password is set; reasserting UAC here makes the join converge regardless of
-	// the create path.
-	if err := setUserAccountControl(conn, dn, uacWorkstationTrustAccount); err != nil {
-		return fmt.Errorf("netlogon join: enable computer %q: %w", dn, err)
+	// Ensure the account is enabled with the workstation-trust UAC and advertises
+	// AES enctypes. A freshly created object may be disabled until the password is
+	// set, and an existing object from a prior (pre-AES) join may lack the enctype
+	// attribute; reasserting both here makes the join converge regardless of the
+	// create path, so the NETLOGON channel negotiates AES.
+	mod := ldapv3.NewModifyRequest(dn, nil)
+	mod.Replace("userAccountControl", []string{fmt.Sprintf("%d", uacWorkstationTrustAccount)})
+	mod.Replace("msDS-SupportedEncryptionTypes", []string{fmt.Sprintf("%d", supportedEncTypes)})
+	if err := conn.Modify(mod); err != nil {
+		return fmt.Errorf("netlogon join: enable computer %q (uac + enctypes): %w", dn, err)
 	}
 	return nil
 }
@@ -202,6 +221,7 @@ func addComputerObject(conn ldapConn, cfg *JoinConfig, dn, sam string) error {
 	add.Attribute("objectClass", []string{"top", "person", "organizationalPerson", "user", "computer"})
 	add.Attribute("sAMAccountName", []string{sam})
 	add.Attribute("userAccountControl", []string{fmt.Sprintf("%d", uacWorkstationTrustAccount)})
+	add.Attribute("msDS-SupportedEncryptionTypes", []string{fmt.Sprintf("%d", supportedEncTypes)})
 	if cfg.DNSHostName != "" {
 		add.Attribute("dNSHostName", []string{cfg.DNSHostName})
 	}
@@ -217,13 +237,6 @@ func addComputerObject(conn ldapConn, cfg *JoinConfig, dn, sam string) error {
 func setUnicodePwd(conn ldapConn, dn, password string) error {
 	mod := ldapv3.NewModifyRequest(dn, nil)
 	mod.Replace("unicodePwd", []string{encodeADPassword(password)})
-	return conn.Modify(mod)
-}
-
-// setUserAccountControl replaces the userAccountControl attribute.
-func setUserAccountControl(conn ldapConn, dn string, uac int) error {
-	mod := ldapv3.NewModifyRequest(dn, nil)
-	mod.Replace("userAccountControl", []string{fmt.Sprintf("%d", uac)})
 	return conn.Modify(mod)
 }
 
@@ -249,7 +262,16 @@ func dialAndBindJoin(ctx context.Context, cfg *JoinConfig) (ldapConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	isLDAPS := strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.LDAPURL)), "ldaps://")
+	isLDAPS := cfg.isLDAPS()
+
+	if cfg.TLS.InsecureSkipVerify {
+		// The machine password is written as unicodePwd over this connection. With
+		// certificate verification disabled the channel is encrypted but the DC
+		// identity is unverified, so a MITM could capture the cleartext password.
+		// Acceptable only as a lab escape hatch — never in production.
+		slog.Default().Warn("netlogon join: TLS certificate verification is DISABLED (insecure_skip_verify); the machine password is written over an unauthenticated TLS channel and is exposed to a man-in-the-middle. Use a pinned CA (ca_cert_file) in production.",
+			"ldap_url", cfg.LDAPURL)
+	}
 
 	var opts []ldapv3.DialOpt
 	if isLDAPS {

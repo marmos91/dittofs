@@ -585,12 +585,12 @@ func (c *OnlineJoinConfig) Validate() error {
 	if !c.Enabled {
 		return nil
 	}
-	scheme := strings.ToLower(strings.TrimSpace(c.LDAPURL))
+	lower := strings.ToLower(strings.TrimSpace(c.LDAPURL))
 	switch {
-	case scheme == "":
+	case lower == "":
 		return fmt.Errorf("kerberos.machine_account.online_join.ldap_url is required when online_join is enabled")
-	case strings.HasPrefix(scheme, "ldaps://"):
-	case strings.HasPrefix(scheme, "ldap://"):
+	case strings.HasPrefix(lower, "ldaps://"):
+	case strings.HasPrefix(lower, "ldap://"):
 		if !c.StartTLS {
 			return fmt.Errorf("kerberos.machine_account.online_join.ldap_url uses plaintext ldap://; set start_tls=true (AD refuses to set a machine password over an unencrypted connection)")
 		}

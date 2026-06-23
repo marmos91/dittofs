@@ -281,10 +281,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// and is started below / stopped on shutdown.
 	nlAuth, nlRotation := buildNetlogonAuthenticator(effectiveKerberos, newMachineSecretStore(cpStore))
 	nlRotation.Start()
-	defer nlRotation.Stop()
-	if closer, ok := nlAuth.(interface{ Close(context.Context) }); ok && nlAuth != nil {
-		defer closer.Close(context.Background())
-	}
+	// Single defer with deterministic ordering: stop the rotation loop FIRST so
+	// no rotation can re-establish (and leak) the secure channel after Close, then
+	// close the authenticator's cached channel.
+	defer func() {
+		nlRotation.Stop()
+		if closer, ok := nlAuth.(interface{ Close(context.Context) }); ok && nlAuth != nil {
+			closer.Close(context.Background())
+		}
+	}()
 
 	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 
@@ -518,6 +523,13 @@ func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runt
 			}
 		}
 	}
+
+	// Online-join is a server-bootstrap concern carrying privileged LDAP join
+	// credentials, so it is intentionally NOT part of the API-managed Kerberos
+	// DTO (which would persist the bind password in the DB and expose it over
+	// REST). Always source it from the file/env config and overlay it onto the
+	// effective config, so a DB-sourced Kerberos row never silently drops it.
+	kerberos.MachineAccount.OnlineJoin = cfg.Kerberos.MachineAccount.OnlineJoin
 	return kerberos
 }
 

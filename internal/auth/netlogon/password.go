@@ -3,6 +3,7 @@ package netlogon
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"unicode/utf16"
@@ -87,18 +88,20 @@ func buildTrustPassword(ctx context.Context, enc encryptor, password string) (*l
 		clear[off+i*2+1] = byte(c >> 8)
 	}
 	// Trailing length (bytes) little-endian.
-	l := uint32(pwBytes)
-	clear[trustPasswordBufferRunes*2+0] = byte(l)
-	clear[trustPasswordBufferRunes*2+1] = byte(l >> 8)
-	clear[trustPasswordBufferRunes*2+2] = byte(l >> 16)
-	clear[trustPasswordBufferRunes*2+3] = byte(l >> 24)
+	binary.LittleEndian.PutUint32(clear[trustPasswordBufferRunes*2:], uint32(pwBytes))
 
 	cipher, err := enc.Encrypt(ctx, clear)
 	if err != nil {
 		return nil, fmt.Errorf("netlogon: encrypt trust password: %w", err)
 	}
 	if len(cipher) != len(clear) {
-		return nil, fmt.Errorf("netlogon: encrypted trust password length %d != %d", len(cipher), len(clear))
+		// The secure channel's Encrypt is length-preserving only for the AES-CFB
+		// path (CapAES_SHA2). On a legacy DES/RC4-negotiated channel go-msrpc's
+		// Encrypt returns a truncated block, which cannot carry the 512-byte
+		// password buffer — rotation is unsupported there. Modern AD/Samba always
+		// negotiate AES_SHA2, so fail fast with an actionable message rather than
+		// sending a malformed NL_TRUST_PASSWORD.
+		return nil, fmt.Errorf("netlogon: trust-password encryption is not length-preserving (%d != %d); the secure channel did not negotiate AES (CapAES_SHA2), so NetrServerPasswordSet2 rotation is unsupported on this channel", len(cipher), len(clear))
 	}
 
 	// Re-split the ciphertext into the Buffer ([]uint16) + Length (uint32) the
@@ -107,10 +110,7 @@ func buildTrustPassword(ctx context.Context, enc encryptor, password string) (*l
 	for i := 0; i < trustPasswordBufferRunes; i++ {
 		buf[i] = uint16(cipher[i*2]) | uint16(cipher[i*2+1])<<8
 	}
-	encLen := uint32(cipher[trustPasswordBufferRunes*2]) |
-		uint32(cipher[trustPasswordBufferRunes*2+1])<<8 |
-		uint32(cipher[trustPasswordBufferRunes*2+2])<<16 |
-		uint32(cipher[trustPasswordBufferRunes*2+3])<<24
+	encLen := binary.LittleEndian.Uint32(cipher[trustPasswordBufferRunes*2:])
 
 	return &logon.TrustPassword{Buffer: buf, Length: encLen}, nil
 }

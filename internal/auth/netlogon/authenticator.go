@@ -87,13 +87,23 @@ func (a *Authenticator) RotatePassword(ctx context.Context, newPassword string) 
 	if err != nil {
 		return err
 	}
-	if err := sc.setPassword(ctx, *mc, newPassword); err != nil {
-		// A failed set may have torn the channel; drop it so the next op reconnects.
+	err = sc.setPassword(ctx, *mc, newPassword)
+	if err != nil {
+		// ensureChannel released sc.mu before returning, so a concurrent
+		// NetworkLogon RPC failure could have reset the channel in the window
+		// before setPassword re-acquired it ("channel not connected"), or the set
+		// itself tore the channel. Either way, reconnect once and retry, mirroring
+		// NetworkLogon's single-retry policy.
 		a.reset(ctx)
-		return err
+		if sc, err = a.ensureChannel(ctx, mc); err != nil {
+			return err
+		}
+		err = sc.setPassword(ctx, *mc, newPassword)
 	}
+	// The session key was derived from the OLD password; drop the channel so the
+	// next call reconnects and negotiates a fresh key against the new credential.
 	a.reset(ctx)
-	return nil
+	return err
 }
 
 // Close shuts down the cached secure channel connection.

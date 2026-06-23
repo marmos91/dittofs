@@ -51,6 +51,34 @@ func (m *memSecret) SetMachineSecret(_ context.Context, s string) error {
 	return nil
 }
 
+// waitForDCStable blocks until the DC's NETLOGON/LDAP/KDC stack has been
+// continuously serving for a short streak, riding out the entrypoint's
+// provisioning-samba -> foreground-samba re-exec. It requires several
+// consecutive successful `samba-tool processes` calls AND a reachable DNS (53)
+// + SMB (445), since the secure channel and DC discovery use both.
+func waitForDCStable(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	const needStreak = 4
+	deadline := time.Now().Add(timeout)
+	streak := 0
+	for time.Now().Before(deadline) {
+		ok := exec.Command("docker", "exec", adContainerName, "samba-tool", "processes").Run() == nil
+		if ok {
+			streak++
+			if streak >= needStreak {
+				t.Logf("AD-DC stable (%d consecutive readiness checks)", streak)
+				time.Sleep(2 * time.Second) // small extra settle
+				return
+			}
+		} else {
+			streak = 0
+		}
+		time.Sleep(2 * time.Second)
+	}
+	dumpADLogs(t)
+	t.Fatalf("AD-DC did not stabilize within %s", timeout)
+}
+
 // TestOnlineJoinAndMemberLogon proves the full online-join lifecycle live:
 //  1. The online provider creates the DITTOJOIN$ computer object over LDAP
 //     (StartTLS) using the Administrator join credentials and sets its password.
@@ -76,6 +104,16 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	waitForTCPAddr(t, dcIP+":135", 90*time.Second)
 	waitForTCPAddr(t, dcIP+":445", 90*time.Second)
 	waitForTCPAddr(t, dcIP+":389", 90*time.Second)
+
+	// The fixture entrypoint provisions the domain, exports the keytab, then
+	// STOPS the provisioning samba and re-execs it in the foreground. setupADDC
+	// returns as soon as the keytab exists — i.e. right at that restart. Driving a
+	// NETLOGON SamLogon through the just-joined account during that window yields
+	// transient DNS/SMB failures (connection refused on :53, "logon is invalid"
+	// on the SMB bind). Gate on the DC being CONTINUOUSLY ready (samba-tool
+	// processes succeeds several times in a row) so join + logon run against a
+	// stable DC, not the restart window.
+	waitForDCStable(t, 4*time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -134,13 +172,21 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 		t.Fatal("persisted secret does not match the credential password")
 	}
 
-	// Confirm the computer object now exists in AD.
-	out, lerr := exec.Command("docker", "exec", adContainerName,
-		"samba-tool", "computer", "list").CombinedOutput()
-	if lerr != nil {
-		t.Fatalf("samba-tool computer list: %v\n%s", lerr, out)
+	// Confirm the computer object now exists in AD (best-effort: the entrypoint
+	// re-execs samba into the foreground shortly after provisioning, so a
+	// concurrent `docker exec` can be SIGTERM'd — that is informational only and
+	// must not fail the test, which proves the join via the live logon below).
+	if out, lerr := exec.Command("docker", "exec", adContainerName,
+		"samba-tool", "computer", "list").CombinedOutput(); lerr != nil {
+		t.Logf("samba-tool computer list (non-fatal): %v\n%s", lerr, out)
+	} else {
+		t.Logf("AD computer list after join:\n%s", out)
 	}
-	t.Logf("AD computer list after join:\n%s", out)
+
+	// Give the DC a moment to settle the freshly-set machine credential before
+	// driving a NETLOGON SamLogon through it (Samba caches credentials briefly
+	// after a password change).
+	time.Sleep(5 * time.Second)
 
 	// Now prove a member logon through the freshly-joined account: validate
 	// alice's NTLMv2 response over the NETLOGON secure channel authenticated with
@@ -148,12 +194,21 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	serverChallenge := [8]byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
 	clientNonce := []byte{0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB}
 
+	// MsvAvNbComputerName MUST equal the NETLOGON secure-channel's NetBIOS
+	// computer name (= the joined workstation, "DITTOJOIN"), NOT the domain name.
+	// Samba's CVE-2022-38023 mitigation (NTLMv2_RESPONSE_verify_netlogon_creds,
+	// MS-NRPC §3.5.4.5.1) parses this AV-pair out of the NTLMv2 NT-response blob
+	// and rejects the SamLogon with STATUS_LOGON_FAILURE *before* authenticating
+	// the user when it does not match the channel computer. In production DittoFS
+	// advertises exactly this name in its NTLM Type-2 (SetADDomain → the
+	// netbiosWorkstation name, the #1357 invariant), so a real domain client's
+	// response always carries the matching value; the test must mirror that.
 	v2 := &ntlm.V2{Config: &ntlm.Config{}}
 	cm := &ntlm.ChallengeMessage{
 		ServerChallenge: serverChallenge[:],
 		TargetInfo: ntlm.AttrValues{
 			ntlm.AttrNetBIOSDomainName:   &ntlm.Value{NetBIOSDomainName: adDomain},
-			ntlm.AttrNetBIOSComputerName: &ntlm.Value{NetBIOSComputerName: adDomain},
+			ntlm.AttrNetBIOSComputerName: &ntlm.Value{NetBIOSComputerName: onlineJoinMachineName},
 		},
 	}
 	aliceCred := credential.NewFromPassword(adDomain+"\\"+adUserAlice, adUserPass)
@@ -163,7 +218,7 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 	}
 
 	var res *netlogon.LogonResult
-	for attempt := 1; attempt <= 5; attempt++ {
+	for attempt := 1; attempt <= 10; attempt++ {
 		res, err = auth.NetworkLogon(ctx, netlogon.NetworkLogonRequest{
 			Username:        adUserAlice,
 			Domain:          adDomain,
@@ -174,8 +229,8 @@ func TestOnlineJoinAndMemberLogon(t *testing.T) {
 		if err == nil {
 			break
 		}
-		t.Logf("NetworkLogon attempt %d/5 via online-joined account: %v", attempt, err)
-		time.Sleep(2 * time.Second)
+		t.Logf("NetworkLogon attempt %d/10 via online-joined account: %v", attempt, err)
+		time.Sleep(3 * time.Second)
 	}
 	if err != nil {
 		dumpADLogs(t)

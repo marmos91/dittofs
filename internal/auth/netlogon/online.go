@@ -145,20 +145,28 @@ func (p *onlineProvider) rotate(ctx context.Context, auth *Authenticator) error 
 		return err
 	}
 
-	// DC now holds newPassword. Persist then switch the credential so the next
-	// channel reconnect authenticates with it.
-	if p.secret != nil {
-		if err := p.secret.SetMachineSecret(ctx, newPassword); err != nil {
-			// The DC already switched; surface loudly. On restart the persisted
-			// (old) secret would be stale, but the rotation loop retries and a
-			// re-join reconciles via setUnicodePwd over LDAP.
-			return fmt.Errorf("netlogon: persist rotated machine secret (DC already switched!): %w", err)
-		}
-	}
-
+	// The DC now holds newPassword. Update the in-memory credential FIRST so the
+	// running process keeps working regardless of the persistence outcome (the
+	// next channel reconnect must authenticate with the new password the DC now
+	// expects — keeping the old one would break all NTLM passthrough).
 	p.mu.Lock()
 	p.password = newPassword
 	p.mu.Unlock()
+
+	// Then persist so the new secret survives a restart.
+	if p.secret != nil {
+		if err := p.secret.SetMachineSecret(ctx, newPassword); err != nil {
+			// In-memory is already consistent with the DC, so the live process is
+			// fine. But the persisted secret is now stale: after a restart it would
+			// no longer match the DC. Surface loudly so an operator can intervene
+			// (a re-join with a fresh password reconciles the account). Online join
+			// itself remains the recovery path — see ensureJoinedLocked.
+			slog.Default().Error("netlogon: rotated machine password set on DC but FAILED to persist; a restart before the next successful rotation will require a re-join",
+				"account", p.cfg.AccountName, "error", err)
+			return fmt.Errorf("netlogon: persist rotated machine secret (DC already switched): %w", err)
+		}
+	}
+
 	slog.Default().Info("netlogon: machine-account password rotated", "account", p.cfg.AccountName)
 	return nil
 }

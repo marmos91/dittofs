@@ -208,8 +208,16 @@ func (sc *SecureChannel) setPassword(ctx context.Context, mc MachineCredential, 
 		return err
 	}
 
+	// PrimaryName is the DC's UNC name. Mirror samLogon's fallback so a failed
+	// GetDCName in connect() (which leaves sc.dcName empty) does not send an empty
+	// PrimaryName that the DC would reject.
+	primaryName := sc.dcName
+	if primaryName == "" {
+		primaryName = "\\\\" + mc.DomainName
+	}
+
 	req := &logon.PasswordSet2Request{
-		PrimaryName:       sc.dcName,
+		PrimaryName:       primaryName,
 		AccountName:       mc.AccountName,
 		SecureChannelType: logon.SecureChannelTypeWorkstationSecureChannel,
 		ComputerName:      mc.Workstation,
