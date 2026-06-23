@@ -3,16 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"time"
 )
-
-// poolConnectionAcquireTimeout bounds how long a single statement waits for a
-// connection from the underlying *sql.DB pool. SQLite is an embedded,
-// single-writer engine, so contention is resolved by the busy_timeout pragma
-// rather than a large connection pool; this timeout is a defense-in-depth
-// ceiling that keeps an operation from blocking forever if the (size-limited)
-// pool is momentarily saturated.
-const poolConnectionAcquireTimeout = 10 * time.Second
 
 // ============================================================================
 // database/sql executor shim
