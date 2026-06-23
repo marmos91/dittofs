@@ -202,7 +202,7 @@ func (s *SQLiteMetadataStore) seedUsageByColumn(ctx context.Context, col string)
 	if err != nil {
 		return nil, fmt.Errorf("failed to seed %s usage: %w", col, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make(map[uint32]*metadata.UsageStat)
 	for rows.Next() {
 		var id int64
