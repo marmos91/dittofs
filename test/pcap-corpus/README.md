@@ -59,7 +59,7 @@ server (or Windows) for SMB security descriptors. Capture with `tcpdump -i any
 | Feature | Reference endpoint | Capture recipe | tshark `--proto` |
 |---------|--------------------|----------------|------------------|
 | Kerberos / SPNEGO / PAC | `kinit` / SMB session-setup ↔ Samba AD-DC | `tcpdump port 88 or port 445` while `kinit alice` + an SMB mount | `kerberos`, `spnego` |
-| LDAP RFC2307 | `ldapsearch` ↔ AD-DC | `tcpdump port 389` while `ldapsearch -b … '(objectClass=posixAccount)'` | `ldap` |
+| LDAP RFC2307 | `ldapsearch` ↔ AD-DC | `tcpdump port 636` while `ldapsearch -H ldaps://… '(sAMAccountName=…)'` (decrypt with `SSLKEYLOGFILE` — the AD-DC refuses cleartext :389) | `ldap` |
 | NFSv4 `fattr4_acl` | Linux client ↔ `knfsd` | `tcpdump port 2049` while `nfs4_getfacl` / `nfs4_setfacl` on a krb5 mount | `nfs` |
 | SMB SECURITY_DESCRIPTOR | `smbcacls` / Windows `icacls` ↔ Samba member / Windows share | `tcpdump port 445` while `smbcacls //srv/share file` | `smb2` |
 
@@ -70,11 +70,11 @@ See each feature's `CAPTURE.md` for the exact commands used.
 | Feature | State | Notes |
 |---------|-------|-------|
 | Kerberos / PAC | ✅ reference captured | `kerberos/reference.pcap` — real Samba AD-DC AS/TGS/AP exchange (realm `DITTOFS.AD`) |
-| NFSv4 over krb5 | ◐ DittoFS sample | `nfsv4-acl/dittofs-krb5-sample.pcap` — candidate side; `knfsd` `fattr4_acl` reference is Phase 2 |
-| LDAP RFC2307 | ☐ pending | Samba AD-DC mandates an encrypted bind (`strongAuthRequired` on plaintext :389), so a cleartext-decodable RFC2307 search reference needs StartTLS key material or a non-AD RFC2307 server |
+| NFSv4 `fattr4_acl` | ✅ reference + DittoFS sample | `nfsv4-acl/reference.pcap` — real Linux `knfsd` `nfs4_getfacl`/`setfacl` exchange; `dittofs-krb5-sample.pcap` is the candidate side |
+| LDAP RFC2307 | ✅ reference captured | `ldap/reference.pcap` — real Samba AD-DC LDAPS search (`sAMAccountName=alice` → `uidNumber`/`gidNumber`/`objectSid`), TLS-decrypted via key log; see `ldap/CAPTURE.md` |
 | SMB SECURITY_DESCRIPTOR | ✅ reference + validated | `smb-sd/reference.pcap` (Samba 4.19) vs `dittofs-sample.pcap` — SD field structure **78/78 match**; two value divergences found (`SE_DACL_PROTECTED` omitted; no LSARPC SID→name) — see `smb-sd/CAPTURE.md` |
 
-The Kerberos and SMB SECURITY_DESCRIPTOR references were captured live against
-real Samba servers; the NFSv4 sample was captured from DittoFS during the AD
-domain-user `sec=krb5` validation. The remaining references (LDAP RFC2307,
-`knfsd` `fattr4_acl`) are gated on additional reference servers.
+All four references were captured live against real servers: Samba AD-DC for
+Kerberos/PAC and LDAP RFC2307, a Linux `knfsd` export for the NFSv4 `fattr4_acl`
+exchange, and Samba 4.19 for the SMB security descriptor. The NFSv4 candidate
+sample was captured from DittoFS during the AD domain-user `sec=krb5` validation.

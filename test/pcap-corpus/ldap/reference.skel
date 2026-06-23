@@ -1,0 +1,54 @@
+ldap/ldap.LDAPMessage_element
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindRequest (0)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindRequest (0)/ldap.bindRequest_element
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindRequest (0)/ldap.bindRequest_element/ldap.authentication
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindRequest (0)/ldap.bindRequest_element/ldap.authentication/ldap.simple
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindRequest (0)/ldap.bindRequest_element/ldap.name
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindRequest (0)/ldap.bindRequest_element/ldap.version
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindResponse (1)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindResponse (1)/ldap.bindResponse_element
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindResponse (1)/ldap.bindResponse_element/ldap.errorMessage
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindResponse (1)/ldap.bindResponse_element/ldap.matchedDN
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=bindResponse (1)/ldap.bindResponse_element/ldap.resultCode=success (0)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.attributes
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.attributes/ldap.AttributeDescription
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.baseObject
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.derefAliases
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.filter
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.filter/ldap.equalityMatch_element
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.filter/ldap.equalityMatch_element/ldap.assertionValue
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.filter/ldap.equalityMatch_element/ldap.attributeDesc
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.scope
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.sizeLimit
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.timeLimit
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchRequest (3)/ldap.searchRequest_element/ldap.typesOnly
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResDone (5)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResDone (5)/ldap.searchResDone_element
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResDone (5)/ldap.searchResDone_element/ldap.errorMessage
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResDone (5)/ldap.searchResDone_element/ldap.matchedDN
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResDone (5)/ldap.searchResDone_element/ldap.resultCode=success (0)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.type
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.AttributeValue
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.sid
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.sid/nt.sid.auth
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.sid/nt.sid.domain
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.sid/nt.sid.num_auth
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.sid/nt.sid.revision
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.sid/nt.sid.rid
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.sid/nt.sid.subauth
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.attributes/ldap.PartialAttributeList_item_element/ldap.vals/ldap.sid/nt.sid.wkwn
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResEntry (4)/ldap.searchResEntry_element/ldap.objectName
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResRef (19)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResRef (19)/ldap.searchResRef
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=searchResRef (19)/ldap.searchResRef/ldap.LDAPURL
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=unbindRequest (2)
+ldap/ldap.LDAPMessage_element/ldap.protocolOp=unbindRequest (2)/ldap.unbindRequest_element
+ldap/ldap.LDAPMessage_element/ldap.response_to
+ldap/ldap.LDAPMessage_element/ldap.time
