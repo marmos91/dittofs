@@ -64,3 +64,21 @@ catch.
 
 `dittofs-sample.pcap` above predates the fix; regenerate it on the next live
 capture against a patched DittoFS to refresh the corpus.
+
+## Windows GUI evidence (#1297)
+
+The `smbcacls`/`rpcclient` captures above prove SID→name on Linux. `#1297` asks
+for the same against a **real Windows client** — Explorer's Properties > Security
+tab (and `icacls`) resolving DittoFS SIDs to `DITTOFS\<name>` via
+`LsarLookupSids2/3` (opnum 57/76). Run `windows-gui-capture.ps1` inside an RDP
+session on the Windows test VM: it maps the share, captures the LSARPC exchange
+with built-in `pktmon`, and dumps the resolved owner/ACE names via `icacls` +
+`Get-Acl`. Open the same file's Security tab and screenshot it for the
+human-facing proof.
+
+**Dependency:** authenticating *as* the AD user `alice` over SMB from a
+non-domain-joined Windows box needs NTLM passthrough (#1314 / PR #1344) deployed
+on the server, or the VM domain-joined to `DITTOFS.AD`. The SID→name resolution
+under test is independent of who authenticates, but a session must first be
+established — so this capture is gated on #1344 landing on the demo (or a
+domain-join). Until then, the Linux `smbcacls`/`rpcclient` evidence stands.
