@@ -17,8 +17,8 @@ func TestRIDFromSID(t *testing.T) {
 		{"S-1-5-18", 18, true}, // well-known LocalSystem (last component is the RID/sub-authority)
 		{"", 0, false},
 		{"notasid", 0, false},
-		{"S-1-5-21-1-2-3-", 0, false},    // trailing dash, empty RID
-		{"S-1-5-21-1-2-3-abc", 0, false}, // non-numeric RID
+		{"S-1-5-21-1-2-3-", 0, false},                     // trailing dash, empty RID
+		{"S-1-5-21-1-2-3-abc", 0, false},                  // non-numeric RID
 		{"S-1-5-21-1-2-3-99999999999999999999", 0, false}, // overflows uint32
 	}
 	for _, c := range cases {
