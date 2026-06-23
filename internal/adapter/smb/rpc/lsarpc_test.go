@@ -1305,6 +1305,19 @@ func TestLSARPC_LookupSids3_Opnum76_RoundTrip(t *testing.T) {
 	if res.mappedCount != 2 {
 		t.Errorf("mappedCount = %d, want 2", res.mappedCount)
 	}
+
+	// The opnum-76 EX entry must link name[0] to its referenced domain via a
+	// valid DomainIndex (default machine domain "DITTOFS"). A wrong index here
+	// is what makes a client render a bare "bob" instead of "DITTOFS\bob" — the
+	// EX-path domain-linkage regression behind #1342/#1343. (57 and 76 share the
+	// builder, so this also covers the Windows Explorer opnum-57 path.)
+	di := res.names[0].domainIdx
+	if di < 0 || int(di) >= len(res.domains) {
+		t.Fatalf("name[0] domainIdx %d out of range (domains=%v)", di, res.domains)
+	}
+	if res.domains[di] != "DITTOFS" {
+		t.Errorf("name[0] -> domain %q, want DITTOFS", res.domains[di])
+	}
 }
 
 // TestLSARPC_LookupSids_PerOpnumLayout_ByteDiff proves the per-opnum layout
