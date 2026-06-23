@@ -573,6 +573,13 @@ func (c *KerberosConfig) Validate() error {
 			return fmt.Errorf("kerberos.dns_domain %q is invalid (must not contain '@', '/', or spaces; e.g. contoso.com)", c.DNSDomain)
 		}
 	}
+	// Fail fast on a misconfiguration that would otherwise be silently ignored:
+	// online-join lives under the machine_account block, so it has no effect
+	// unless the parent is enabled (buildNetlogonAuthenticator returns nil when
+	// machine_account.enabled=false).
+	if c.MachineAccount.OnlineJoin.Enabled && !c.MachineAccount.Enabled {
+		return fmt.Errorf("kerberos.machine_account.online_join.enabled=true requires kerberos.machine_account.enabled=true (online join has no effect while the machine account is disabled)")
+	}
 	if err := c.MachineAccount.OnlineJoin.Validate(); err != nil {
 		return err
 	}

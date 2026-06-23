@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -180,7 +181,10 @@ type RotationManager struct {
 
 	stop chan struct{}
 	done chan struct{}
-	once sync.Once
+
+	startOnce sync.Once
+	stopOnce  sync.Once
+	started   atomic.Bool
 }
 
 // NewRotationManager wires an online provider to its authenticator for periodic
@@ -201,12 +205,15 @@ func NewRotationManager(prov MachineCredentialProvider, auth *Authenticator, int
 }
 
 // Start launches the rotation loop in a goroutine. Safe to call on a nil
-// receiver (no-op), so callers need not branch.
+// receiver (no-op) and idempotent (a second call does not spawn a second loop).
 func (m *RotationManager) Start() {
 	if m == nil {
 		return
 	}
-	go m.run()
+	m.startOnce.Do(func() {
+		m.started.Store(true)
+		go m.run()
+	})
 }
 
 func (m *RotationManager) run() {
@@ -229,11 +236,16 @@ func (m *RotationManager) run() {
 }
 
 // Stop halts the rotation loop and waits for the goroutine to exit. Safe on a
-// nil receiver and idempotent.
+// nil receiver, idempotent, and non-blocking when Start was never called (no
+// goroutine to wait for) — so `m := NewRotationManager(...); defer m.Stop()`
+// with an early return before Start does not deadlock.
 func (m *RotationManager) Stop() {
 	if m == nil {
 		return
 	}
-	m.once.Do(func() { close(m.stop) })
+	m.stopOnce.Do(func() { close(m.stop) })
+	if !m.started.Load() {
+		return
+	}
 	<-m.done
 }

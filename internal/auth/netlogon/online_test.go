@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
 )
@@ -54,7 +55,7 @@ func onlineCfg() OnlineConfig {
 // the fake conn it returns.
 func countingDial(fake *fakeLDAP, count *int) ldapDialer {
 	return func(context.Context, *JoinConfig) (ldapConn, error) {
-		*count++
+		(*count)++
 		return fake, nil
 	}
 }
@@ -165,6 +166,44 @@ func TestRotationManager_NilSafe(t *testing.T) {
 	var m *RotationManager
 	m.Start() // must not panic
 	m.Stop()  // must not panic
+}
+
+// Stop must not block when Start was never called: the run goroutine never
+// launched, so there is no `done` close to wait for. Guards the
+// `m := NewRotationManager(...); defer m.Stop(); if err != nil { return }`
+// pattern where an early return skips Start.
+func TestRotationManager_StopWithoutStart(t *testing.T) {
+	m := &RotationManager{
+		interval: time.Hour,
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	done := make(chan struct{})
+	go func() { m.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() blocked when Start() was never called")
+	}
+}
+
+// Stop after Start halts the loop and returns promptly. Also exercises Stop
+// idempotency (a second call must not panic on the already-closed channel).
+func TestRotationManager_StartThenStop(t *testing.T) {
+	m := &RotationManager{
+		interval: time.Hour,
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	m.Start()
+	m.Start() // idempotent: must not spawn a second loop
+	done := make(chan struct{})
+	go func() { m.Stop(); m.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() blocked after Start()")
+	}
 }
 
 // ensure fakeLDAP search returns an empty (non-nil) result for the no-OU path.

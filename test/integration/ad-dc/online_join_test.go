@@ -18,6 +18,7 @@ package ad_dc_test
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"sync"
 	"testing"
 	"time"
@@ -25,8 +26,6 @@ import (
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/ntlm"
-
-	"os/exec"
 )
 
 // onlineJoinMachineName is a DISTINCT computer name from the fixture's
