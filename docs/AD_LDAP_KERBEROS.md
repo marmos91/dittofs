@@ -600,8 +600,10 @@ On the Windows VM (PowerShell, Administrator):
 
 ```powershell
 # Point DNS at the AD-DC LB so DITTOFS.AD SRV records resolve.
+# Discover your NIC first — the alias is not always "Ethernet".
 $adlb = "<samba-ad-lb EXTERNAL-IP>"
-Set-DnsClientServerAddress -InterfaceAlias Ethernet -ServerAddresses $adlb
+$nic  = (Get-NetAdapter -Physical | Where-Object Status -eq 'Up')[0].ifIndex
+Set-DnsClientServerAddress -InterfaceIndex $nic -ServerAddresses $adlb
 
 # Join the realm and reboot.
 $cred = Get-Credential DITTOFS\Administrator        # Passw0rd!2024 in the dev fixture
