@@ -80,3 +80,82 @@ func DiscoverDCs(ctx context.Context, realm, dnsServer string) ([]DCInfo, error)
 	}
 	return dcs, nil
 }
+
+// resolveDialTarget returns the address to dial for the NETLOGON SMB session and
+// the Kerberos service principal (cifs/<fqdn>) of that exact host. The SPN must
+// name the dialed host: a ticket for a different DC would not authenticate the
+// SMB session, so the SPN is always tied to the dial target rather than to an
+// arbitrary SRV result (#1324). Three cases:
+//
+//   - No dc_address configured: locate a DC from the realm via DNS SRV (the host
+//     resolver, since a domain-joined host's resolv.conf points at a DC) and dial
+//     it by name.
+//   - dc_address is a hostname: it already names the DC — dial it and derive the
+//     SPN directly, no SRV round-trip needed.
+//   - dc_address is an IP: query the SRV locator (the DC is its own DNS server)
+//     and pick the DC whose address matches the dialed IP. A single-DC domain is
+//     unambiguous; if no SRV target matches, fall back to the first SRV result.
+func resolveDialTarget(ctx context.Context, mc MachineCredential) (dialServer, spn string, err error) {
+	if len(mc.DCAddresses) == 0 {
+		dcs, derr := DiscoverDCs(ctx, mc.Realm, "")
+		if derr != nil {
+			return "", "", fmt.Errorf("discover DC: %w", derr)
+		}
+		if len(dcs) == 0 {
+			return "", "", fmt.Errorf("no DC discovered for realm %q and none configured", mc.Realm)
+		}
+		return dcs[0].FQDN, dcs[0].SPN(), nil
+	}
+
+	dial := mc.DCAddresses[0]
+	host := dial
+	if h, _, splitErr := net.SplitHostPort(dial); splitErr == nil {
+		host = h
+	}
+	if net.ParseIP(host) == nil {
+		// Hostname dial target already names the DC.
+		return dial, "cifs/" + host, nil
+	}
+
+	// IP dial target: resolve a name for the SPN via the DC's own DNS.
+	dcs, derr := DiscoverDCs(ctx, mc.Realm, host)
+	if derr != nil {
+		return "", "", fmt.Errorf("discover DC: %w", derr)
+	}
+	if len(dcs) == 0 {
+		return "", "", fmt.Errorf("no DC discovered for realm %q", mc.Realm)
+	}
+	chosen := dcs[0]
+	if len(dcs) > 1 {
+		if m := matchDCByIP(ctx, dcs, host); m != nil {
+			chosen = *m
+		}
+		// else: ambiguous multi-DC IP — fall back to the first SRV result.
+	}
+	return dial, chosen.SPN(), nil
+}
+
+// matchDCByIP returns the discovered DC whose FQDN resolves (via the DC's own
+// DNS server at dnsServer) to dnsServer, or nil if none match. Used to bind the
+// Kerberos SPN to the configured dial IP in a multi-DC domain.
+func matchDCByIP(ctx context.Context, dcs []DCInfo, dnsServer string) *DCInfo {
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, network, net.JoinHostPort(dnsServer, "53"))
+		},
+	}
+	for i := range dcs {
+		addrs, lerr := resolver.LookupHost(ctx, dcs[i].FQDN)
+		if lerr != nil {
+			continue
+		}
+		for _, a := range addrs {
+			if a == dnsServer {
+				return &dcs[i]
+			}
+		}
+	}
+	return nil
+}

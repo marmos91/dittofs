@@ -36,8 +36,13 @@ func (p *offlineProvider) Credential(ctx context.Context) (*MachineCredential, e
 	if p.cred.AccountName == "" || p.cred.Password == "" || p.cred.DomainName == "" {
 		return nil, fmt.Errorf("netlogon: incomplete machine credential (account/password/domain required)")
 	}
-	if len(p.cred.DCAddresses) == 0 {
-		return nil, fmt.Errorf("netlogon: no DC address configured")
+	// The realm is mandatory regardless of how the DC is located: the secure
+	// channel rides a Kerberos-authenticated SMB session (buildKRB5Config needs
+	// the realm) and, when no DC address is configured, the realm also drives
+	// DNS SRV discovery. A DC address itself is optional — absent one, the secure
+	// channel locates a DC from the realm via _ldap._tcp.dc._msdcs.<realm> (#1324).
+	if p.cred.Realm == "" {
+		return nil, fmt.Errorf("netlogon: realm is required (Kerberos SMB session to the DC and DNS SRV discovery both need it)")
 	}
 	cp := p.cred
 	return &cp, nil
