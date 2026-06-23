@@ -34,13 +34,13 @@ var LSAInterfaceUUID = [16]byte{
 
 // LSA Operation Numbers [MS-LSAT/MS-LSAD]
 const (
-	OpLsarClose       uint16 = 0  // LsarClose
-	OpLsarOpenPolicy  uint16 = 6  // LsarOpenPolicy (legacy; smbcacls/older clients use this)
-	OpLsarOpenPolicy2 uint16 = 44 // LsarOpenPolicy2
+	OpLsarClose       uint16 = 0   // LsarClose
+	OpLsarOpenPolicy  uint16 = 6   // LsarOpenPolicy (legacy; smbcacls/older clients use this)
+	OpLsarOpenPolicy2 uint16 = 44  // LsarOpenPolicy2
 	OpLsarOpenPolicy3 uint16 = 130 // LsarOpenPolicy3 (Windows 10/11 Explorer Security tab calls this FIRST)
-	OpLsarLookupSids  uint16 = 15 // LsarLookupSids  (legacy; smbcacls/rpcclient lookupsids)
-	OpLsarLookupSids2 uint16 = 57 // LsarLookupSids2 (Windows Explorer)
-	OpLsarLookupSids3 uint16 = 76 // LsarLookupSids3 (rpcclient lookupsids3)
+	OpLsarLookupSids  uint16 = 15  // LsarLookupSids  (legacy; smbcacls/rpcclient lookupsids)
+	OpLsarLookupSids2 uint16 = 57  // LsarLookupSids2 (Windows Explorer)
+	OpLsarLookupSids3 uint16 = 76  // LsarLookupSids3 (rpcclient lookupsids3)
 )
 
 // DCE/RPC reject status codes [C706 §14.6 / MS-RPCE]. Returned in a FAULT PDU.
