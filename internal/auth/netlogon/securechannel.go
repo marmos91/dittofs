@@ -4,15 +4,20 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+
+	krb5_config "github.com/oiweiwei/gokrb5.fork/v9/config"
 
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
 	epm "github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
+	"github.com/oiweiwei/go-msrpc/smb2"
 	"github.com/oiweiwei/go-msrpc/ssp"
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/gssapi"
+	"github.com/oiweiwei/go-msrpc/ssp/krb5"
 )
 
 // gssapiRegister guards the one-time, process-global registration of the
@@ -33,8 +38,40 @@ func registerGSSAPI(mc MachineCredential) {
 			mc.AccountName, mc.Password, credential.Workstation(mc.Workstation)))
 		gssapi.AddMechanism(ssp.SPNEGO)
 		gssapi.AddMechanism(ssp.NTLM)
+		// KRB5 authenticates the NETLOGON named-pipe SMB session: Samba rejects a
+		// machine-account NTLM SMB logon, so the schannel must ride a Kerberos
+		// SMB session over ncacn_np (#1345).
+		gssapi.AddMechanism(ssp.KRB5)
 		gssapi.AddMechanism(ssp.Netlogon)
 	})
+}
+
+// buildKRB5Config returns an in-memory krb5 config that maps realm to the given
+// KDC address, so the machine account can obtain its TGT and the cifs/ service
+// ticket for the NETLOGON SMB session without a krb5.conf file on disk. The KDC
+// is the DC we already connect to; DNS lookups are disabled since we point the
+// realm straight at it.
+func buildKRB5Config(realm, kdc string) (*krb5.Config, error) {
+	realm = strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(realm), "."))
+	if realm == "" {
+		return nil, fmt.Errorf("netlogon: krb5 config: empty realm")
+	}
+	conf := fmt.Sprintf(`[libdefaults]
+  default_realm = %[1]s
+  dns_lookup_kdc = false
+  dns_lookup_realm = false
+  rdns = false
+[realms]
+  %[1]s = {
+    kdc = %[2]s
+    admin_server = %[2]s
+  }
+`, realm, kdc)
+	parsed, err := krb5_config.NewFromString(conf)
+	if err != nil {
+		return nil, fmt.Errorf("netlogon: krb5 config: %w", err)
+	}
+	return &krb5.Config{KRB5Config: parsed}, nil
 }
 
 // SecureChannel wraps a go-msrpc schannel client with a mutex-guarded cached
@@ -58,21 +95,47 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	}
 	server := mc.DCAddresses[0]
 
-	// Register the machine credential and the SPNEGO/NTLM/Netlogon mechanisms
+	// Discover the DC's canonical FQDN via the AD DNS SRV locator so we can name
+	// the SMB Kerberos service principal (cifs/<fqdn>). The DC is the domain's
+	// DNS server, so we query it directly at the address we already hold (#1324).
+	// Connectivity still uses `server` (the IP) — only the SPN needs the name.
+	dcs, err := DiscoverDCs(ctx, mc.Realm, server)
+	if err != nil {
+		return fmt.Errorf("netlogon: discover DC: %w", err)
+	}
+	spn := dcs[0].SPN()
+
+	// Register the machine credential and the SPNEGO/NTLM/KRB5/Netlogon mechanisms
 	// (once, process-global) BEFORE creating the security context, which captures
 	// the registered credential and mechanisms. NewSecureChannelClient then runs
-	// the full challenge handshake (the initial GetDCName/ReqChallenge bind uses
-	// NTLM/SPNEGO, then NetrServerAuthenticate3 + AlterContext apply the sealed
-	// schannel) internally — so we must NOT pre-seed a netlogon.Config.
+	// the full challenge handshake internally — so we must NOT pre-seed a
+	// netlogon.Config.
 	registerGSSAPI(mc)
-	gctx := gssapi.NewSecurityContext(ctx)
+
+	// Inline krb5 config (realm -> KDC = the DC) so the machine account can get a
+	// TGT + cifs/ service ticket without depending on a host krb5.conf file.
+	krb5Cfg, err := buildKRB5Config(mc.Realm, server)
+	if err != nil {
+		return err
+	}
+	gctx := gssapi.NewSecurityContext(ctx, ssp.WithKRB5(krb5Cfg))
 
 	cc, err := dcerpc.Dial(gctx, server, epm.EndpointMapper(gctx, server))
 	if err != nil {
 		return fmt.Errorf("netlogon: dial %s: %w", server, err)
 	}
 
-	cli, err := logon.NewSecureChannelClient(gctx, cc, dcerpc.WithSeal(), dcerpc.WithEndpoint("ncacn_ip_tcp:"))
+	// Samba rejects the sealed-schannel AlterContext over ncacn_ip_tcp with
+	// RPC_S_UNKNOWN_AUTHN_SERVICE (0x721); the named-pipe transport (\PIPE\netlogon
+	// over SMB) is the binding Samba accepts. That SMB session must authenticate
+	// the machine account with Kerberos (Samba refuses machine-account NTLM over
+	// SMB), targeting the DC's cifs/ SPN (#1345).
+	dialer := smb2.NewDialer(smb2.WithSecurity(gssapi.WithTargetName(spn)))
+	cli, err := logon.NewSecureChannelClient(gctx, cc,
+		dcerpc.WithSeal(),
+		dcerpc.WithEndpoint("ncacn_np:"),
+		dcerpc.WithSMBDialer(dialer),
+	)
 	if err != nil {
 		_ = cc.Close(gctx)
 		return fmt.Errorf("netlogon: secure channel client: %w", err)

@@ -136,12 +136,23 @@ samba-tool group addmembers devs "$USER_ALICE" >/dev/null 2>&1 || true
 create_user_if_absent "$USER_BOB"
 samba-tool group addmembers engineering "$USER_BOB" >/dev/null 2>&1 || true
 
-# --- Machine account for NETLOGON passthrough tests (#1314) ---------------
+# --- Machine account for NETLOGON passthrough tests (#1314, #1345) --------
 # Creates the DITTOFS$ computer account used by TestNetlogonPassthroughAlice.
 # samba-tool computer create yields a sAMAccountName of "dittofs$" (AD uppercases
-# it to DITTOFS$ on lookup). The || true prevents a re-run from aborting when the
-# account already exists.
-samba-tool computer create dittofs --computerpassword="MachinePass01!" >/dev/null 2>&1 || true
+# it to DITTOFS$ on lookup).
+#
+# NOTE (#1345): `samba-tool computer create --computerpassword=...` is NOT a
+# valid option on this samba (4.17.x) — it errors with "no such option", and the
+# old `|| true` SILENTLY SWALLOWED that, so the machine account was NEVER created
+# and every NETLOGON test ran against a nonexistent account. Create the computer
+# first, then set its password via `user setpassword` (which derives proper
+# Kerberos keys, making the account usable for both NETLOGON and Kerberos-SMB).
+MACHINE_PASSWORD="${MACHINE_PASSWORD:-MachinePass01!}"
+if ! samba-tool computer list 2>/dev/null | grep -qix 'dittofs\$'; then
+    log "Creating machine account dittofs\$ (NETLOGON passthrough)"
+    samba-tool computer create dittofs
+    samba-tool user setpassword 'dittofs$' --newpassword="$MACHINE_PASSWORD"
+fi
 
 # --- Combined service keytab ----------------------------------------------
 # Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on the
