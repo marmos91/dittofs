@@ -153,10 +153,37 @@ const (
 // implements only the four RFC 8276 xattr operations from the v4.2 op range.
 
 const (
+	// Sparse-file / preallocation operations (RFC 7862). DittoFS implements the
+	// SEEK / READ_PLUS / DEALLOCATE / ALLOCATE cluster, which share one
+	// hole-tracking foundation derived from the file's content-addressed block
+	// list (a hole is any byte range covered by no block ref).
+	OP_ALLOCATE   = 59 // ALLOCATE (RFC 7862 Section 15.1)
+	OP_DEALLOCATE = 62 // DEALLOCATE (RFC 7862 Section 15.4)
+	OP_READ_PLUS  = 68 // READ_PLUS (RFC 7862 Section 15.10)
+	OP_SEEK       = 69 // SEEK (RFC 7862 Section 15.11)
+
 	OP_GETXATTR    = 72 // GETXATTR (RFC 8276 Section 8.6)
 	OP_SETXATTR    = 73 // SETXATTR (RFC 8276 Section 8.6)
 	OP_LISTXATTRS  = 74 // LISTXATTRS (RFC 8276 Section 8.6)
 	OP_REMOVEXATTR = 75 // REMOVEXATTR (RFC 8276 Section 8.6)
+)
+
+// ============================================================================
+// NFSv4.2 SEEK what (data_content4) and READ_PLUS content type (RFC 7862)
+// ============================================================================
+//
+// SEEK and READ_PLUS share the data_content4 enum to distinguish the data and
+// hole portions of a sparse file.
+
+const (
+	// NFS4_CONTENT_DATA marks a byte range backed by stored content; used as
+	// SEEK's sa_what (SEEK_DATA) and as a READ_PLUS data segment discriminator.
+	NFS4_CONTENT_DATA = 0
+
+	// NFS4_CONTENT_HOLE marks a byte range with no backing content (reads as
+	// zeros); used as SEEK's sa_what (SEEK_HOLE) and as a READ_PLUS hole segment
+	// discriminator.
+	NFS4_CONTENT_HOLE = 1
 )
 
 // ============================================================================
@@ -746,6 +773,15 @@ func OpName(op uint32) string {
 		return "DESTROY_CLIENTID"
 	case OP_RECLAIM_COMPLETE:
 		return "RECLAIM_COMPLETE"
+	// --- NFSv4.2 / RFC 7862 Sparse-file Operations ---
+	case OP_ALLOCATE:
+		return "ALLOCATE"
+	case OP_DEALLOCATE:
+		return "DEALLOCATE"
+	case OP_SEEK:
+		return "SEEK"
+	case OP_READ_PLUS:
+		return "READ_PLUS"
 	// --- NFSv4.2 / RFC 8276 Extended Attribute Operations ---
 	case OP_GETXATTR:
 		return "GETXATTR"
@@ -857,6 +893,12 @@ func init() {
 		"WANT_DELEGATION":      OP_WANT_DELEGATION,
 		"DESTROY_CLIENTID":     OP_DESTROY_CLIENTID,
 		"RECLAIM_COMPLETE":     OP_RECLAIM_COMPLETE,
+
+		// --- NFSv4.2 / RFC 7862 Sparse-file Operations ---
+		"ALLOCATE":   OP_ALLOCATE,
+		"DEALLOCATE": OP_DEALLOCATE,
+		"SEEK":       OP_SEEK,
+		"READ_PLUS":  OP_READ_PLUS,
 
 		// --- NFSv4.2 / RFC 8276 Extended Attribute Operations ---
 		"GETXATTR":    OP_GETXATTR,

@@ -717,15 +717,21 @@ func TestCompound_V41_DispatchTableComplete(t *testing.T) {
 		}
 	}
 
-	// The RFC 8276 xattr ops (v4.2) live in their OWN table, separate from v4.1.
+	// The v4.2 ops live in their OWN table, separate from v4.1: the four RFC 8276
+	// xattr ops plus the RFC 7862 sparse-file cluster (SEEK / READ_PLUS /
+	// DEALLOCATE / ALLOCATE).
 	expectedV42Ops := []uint32{
 		types.OP_GETXATTR,
 		types.OP_SETXATTR,
 		types.OP_LISTXATTRS,
 		types.OP_REMOVEXATTR,
+		types.OP_ALLOCATE,
+		types.OP_DEALLOCATE,
+		types.OP_SEEK,
+		types.OP_READ_PLUS,
 	}
-	if len(h.v42DispatchTable) != 4 {
-		t.Errorf("v42DispatchTable has %d entries, want 4", len(h.v42DispatchTable))
+	if len(h.v42DispatchTable) != len(expectedV42Ops) {
+		t.Errorf("v42DispatchTable has %d entries, want %d", len(h.v42DispatchTable), len(expectedV42Ops))
 	}
 	for _, opCode := range expectedV42Ops {
 		if _, ok := h.v42DispatchTable[opCode]; !ok {
