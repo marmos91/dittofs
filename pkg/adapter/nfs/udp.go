@@ -128,6 +128,10 @@ func (c *NFSConnection) handleUDPDatagram(ctx context.Context, conn *net.UDPConn
 
 	clientAddr := src.String()
 
+	logger.Debug("NFS UDP request",
+		"program", call.Program, "version", call.Version, "procedure", call.Procedure,
+		"client", clientAddr, "xid", fmt.Sprintf("0x%x", call.XID))
+
 	var body []byte
 	switch call.Program {
 	case rpc.ProgramNLM:
