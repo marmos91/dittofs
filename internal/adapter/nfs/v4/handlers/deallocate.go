@@ -69,18 +69,29 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 		return deallocErr(common.MapToNFS4(err))
 	}
 
-	// Reclaim block-store space and guarantee the punched range reads as zeros.
-	// Best-effort: the metadata mutation is authoritative and already committed,
-	// so a reclaim failure is logged but not surfaced (mirrors SETATTR-truncate).
-	// engine.PunchHole reaps CAS blocks fully inside the range and zero-writes
-	// the range so both the pre-rollup and CAS read paths return zeros.
-	if res.PayloadID != "" && length > 0 && offset < res.File.Size && h.Registry != nil {
-		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, handle); bsErr != nil {
-			logger.Warn("NFSv4.2 DEALLOCATE reclaim: cannot resolve block store",
+	// The engine punch is correctness-critical, not just reclaim: the read path
+	// resolves bytes with an empty BlockRef list (the dual-read shim), so pruning
+	// the metadata block list alone does NOT guarantee zero reads — only the
+	// block-store zero-overwrite does. Therefore a failure here must FAIL the op
+	// (rather than log-and-succeed), or stale bytes could remain readable in the
+	// punched range while the client is told NFS4_OK. engine.PunchHole reaps CAS
+	// blocks fully inside the range and zero-writes [offset, offset+length) so
+	// both the pre-rollup and CAS read paths return zeros.
+	if res.PayloadID != "" && length > 0 && offset < res.File.Size {
+		if h.Registry == nil {
+			logger.Error("NFSv4.2 DEALLOCATE: no registry configured", "handle", string(handle))
+			return deallocErr(types.NFS4ERR_SERVERFAULT)
+		}
+		blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, handle)
+		if bsErr != nil {
+			logger.Error("NFSv4.2 DEALLOCATE: cannot resolve block store",
 				"handle", string(handle), "error", bsErr)
-		} else if _, pErr := blockStore.PunchHole(ctx.Context, string(res.PayloadID), res.PreOpBlocks, offset, punchLen(offset, length, res.File.Size)); pErr != nil {
-			logger.Warn("NFSv4.2 DEALLOCATE reclaim: block store punch failed",
+			return deallocErr(types.NFS4ERR_SERVERFAULT)
+		}
+		if _, pErr := blockStore.PunchHole(ctx.Context, string(res.PayloadID), res.PreOpBlocks, offset, punchLen(offset, length, res.File.Size)); pErr != nil {
+			logger.Error("NFSv4.2 DEALLOCATE: block store punch failed",
 				"handle", string(handle), "error", pErr)
+			return deallocErr(types.NFS4ERR_IO)
 		}
 	}
 

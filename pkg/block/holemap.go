@@ -182,7 +182,14 @@ func PunchHole(refs []BlockRef, offset, length uint64) []BlockRef {
 	if length == 0 || len(refs) == 0 {
 		return refs
 	}
+	// Defensive overflow guard: if offset+length would wrap uint64, clamp end to
+	// the max so the containment check never uses a wrapped (smaller) end and
+	// silently drops the wrong refs. Current callers validate ranges up front;
+	// this keeps the function safe if new call sites appear.
 	end := offset + length
+	if end < offset {
+		end = ^uint64(0)
+	}
 	out := make([]BlockRef, 0, len(refs))
 	for _, r := range refs {
 		rEnd := r.Offset + uint64(r.Size)

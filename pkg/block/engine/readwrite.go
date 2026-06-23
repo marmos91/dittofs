@@ -236,6 +236,13 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 	if length == 0 {
 		return currentBlocks, nil
 	}
+	// Reject a range whose offset+length wraps uint64: a wrapped end would make
+	// the reap predicate and the zero-overwrite loop operate on an unintended
+	// (smaller) range, silently violating DEALLOCATE semantics. Adapters already
+	// validate this, but guard at the store boundary too.
+	if offset > ^uint64(0)-length {
+		return currentBlocks, fmt.Errorf("punch range overflow: offset=%d length=%d", offset, length)
+	}
 	end := offset + length
 
 	// Reap blocks lying ENTIRELY within [offset, end). Partially-overlapping

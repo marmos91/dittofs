@@ -259,6 +259,17 @@ func TestPunchHole_ZeroLengthNoOp(t *testing.T) {
 	}
 }
 
+// TestPunchHole_OverflowRejected asserts that a range whose offset+length wraps
+// uint64 is rejected rather than silently operating on a wrapped (smaller) range.
+func TestPunchHole_OverflowRejected(t *testing.T) {
+	bs := newTestEngine(t, 64*1024*1024, 0)
+	ctx := context.Background()
+	blocks := []block.BlockRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
+	if _, err := bs.PunchHole(ctx, "punch-overflow", blocks, ^uint64(0)-5, 100); err == nil {
+		t.Fatal("PunchHole with overflowing range should return an error")
+	}
+}
+
 // TestTruncate_EmptyBlocksLegacyPath asserts that nil currentBlocks
 // runs the legacy local+remote truncate without coordinator side effects.
 func TestTruncate_EmptyBlocksLegacyPath(t *testing.T) {
