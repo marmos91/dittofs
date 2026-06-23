@@ -35,6 +35,63 @@ func (c MatrixSetupConfig) HasRemote() bool {
 	return c.RemoteType != "none"
 }
 
+// s3HelperCreds returns the credentials an S3-emulator helper (Localstack or
+// MinIO) accepts, defaulting to Localstack's "test"/"test" when unset.
+func s3HelperCreds(h *framework.LocalstackHelper) (accessKey, secretKey string) {
+	if h.AccessKey != "" && h.SecretKey != "" {
+		return h.AccessKey, h.SecretKey
+	}
+	return "test", "test"
+}
+
+// SetupS3CompatibleShare provisions a badger-metadata + fs-local + s3-remote
+// share whose remote points at the given S3-compatible emulator (Localstack or
+// MinIO). It is the e2e fixture for the S3-compatible backend presets
+// documented in docs/CONFIGURATION.md: a custom endpoint that auto-enables
+// path-style addressing in the s3 store factory. All resources are registered
+// for cleanup via t.Cleanup. Returns the share name.
+func SetupS3CompatibleShare(
+	t *testing.T,
+	runner *CLIRunner,
+	shareName string,
+	s3Helper *framework.LocalstackHelper,
+) string {
+	t.Helper()
+
+	metaName := UniqueTestName("meta")
+	localName := UniqueTestName("local")
+	remoteName := UniqueTestName("remote")
+
+	_, err := runner.CreateMetadataStore(metaName, "badger",
+		WithMetaDBPath(filepath.Join(t.TempDir(), "badger")))
+	require.NoError(t, err, "Should create badger metadata store")
+	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaName) })
+
+	_, err = runner.CreateLocalBlockStore(localName, "fs",
+		WithBlockRawConfig(fmt.Sprintf(`{"path":"%s"}`,
+			filepath.Join(t.TempDir(), "local-blocks"))))
+	require.NoError(t, err, "Should create fs local block store")
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localName) })
+
+	bucketName := strings.ReplaceAll(
+		fmt.Sprintf("dittofs-s3c-%s", UniqueTestName("bkt")), "_", "-")
+	require.NoError(t, s3Helper.CreateBucket(context.Background(), bucketName),
+		"Should create S3 bucket on emulator")
+	t.Cleanup(func() { s3Helper.CleanupBucket(context.Background(), bucketName) })
+
+	accessKey, secretKey := s3HelperCreds(s3Helper)
+	_, err = runner.CreateRemoteBlockStore(remoteName, "s3",
+		WithBlockS3Config(bucketName, "us-east-1", s3Helper.Endpoint, accessKey, secretKey))
+	require.NoError(t, err, "Should create s3 remote block store")
+	t.Cleanup(func() { _ = runner.DeleteRemoteBlockStore(remoteName) })
+
+	_, err = runner.CreateShare(shareName, metaName, localName, WithShareRemote(remoteName))
+	require.NoError(t, err, "Should create share")
+	t.Cleanup(func() { _ = runner.DeleteShare(shareName) })
+
+	return shareName
+}
+
 // SetupStoreMatrix creates metadata, local block, and (optionally) remote block
 // stores for a 3D store matrix test, then creates a share referencing them.
 // All resources are registered for cleanup via t.Cleanup.
@@ -106,8 +163,9 @@ func SetupStoreMatrix(
 			require.NoError(t, err, "Should create S3 bucket")
 			t.Cleanup(func() { lsHelper.CleanupBucket(context.Background(), bucketName) })
 
+			accessKey, secretKey := s3HelperCreds(lsHelper)
 			remoteOpts = append(remoteOpts, WithBlockS3Config(
-				bucketName, "us-east-1", lsHelper.Endpoint, "test", "test"))
+				bucketName, "us-east-1", lsHelper.Endpoint, accessKey, secretKey))
 		}
 
 		_, err = runner.CreateRemoteBlockStore(setup.RemoteStoreName, sc.RemoteType, remoteOpts...)
