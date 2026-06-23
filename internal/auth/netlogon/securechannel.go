@@ -31,6 +31,11 @@ var gssapiRegister sync.Once
 // bind inside NewSecureChannelClient authenticates the machine account via
 // NTLM/SPNEGO (the netlogon schannel config does not exist yet at that point);
 // the Netlogon mechanism is used only for the sealed secure channel afterward.
+// registerGSSAPI is process-global and runs exactly once (sync.Once): it
+// captures the FIRST machine credential's account/password/workstation/realm.
+// DittoFS uses a single machine account (one realm) per process, so the locked
+// credential always matches the realm passed to buildKRB5Config on later calls;
+// a second, different realm in the same process is unsupported by design.
 func registerGSSAPI(mc MachineCredential) {
 	gssapiRegister.Do(func() {
 		// Domain must be set: the schannel NL_AUTH_MESSAGE carries it (Samba
@@ -60,6 +65,19 @@ func buildKRB5Config(realm, kdc string) (*krb5.Config, error) {
 	realm = strings.ToUpper(strings.TrimSuffix(strings.TrimSpace(realm), "."))
 	if realm == "" {
 		return nil, fmt.Errorf("netlogon: krb5 config: empty realm")
+	}
+	kdc = strings.TrimSpace(kdc)
+	if kdc == "" {
+		return nil, fmt.Errorf("netlogon: krb5 config: empty KDC address")
+	}
+	// realm and kdc are interpolated into the krb5 config text, so reject any
+	// whitespace/control characters that could inject additional config
+	// directives (e.g. a newline in a misconfigured dc_address).
+	if strings.ContainsAny(realm, " \t\r\n[]{}") {
+		return nil, fmt.Errorf("netlogon: krb5 config: invalid realm %q", realm)
+	}
+	if strings.ContainsAny(kdc, " \t\r\n[]{}") {
+		return nil, fmt.Errorf("netlogon: krb5 config: invalid KDC address %q", kdc)
 	}
 	conf := fmt.Sprintf(`[libdefaults]
   default_realm = %[1]s
