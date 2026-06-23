@@ -33,8 +33,14 @@ var gssapiRegister sync.Once
 // the Netlogon mechanism is used only for the sealed secure channel afterward.
 func registerGSSAPI(mc MachineCredential) {
 	gssapiRegister.Do(func() {
+		// Domain must be set: the schannel NL_AUTH_MESSAGE carries it (Samba
+		// rejects a schannel bind "without domain"), and the Kerberos SMB session
+		// uses it as the machine principal's realm. The realm (DNS form) satisfies
+		// both — go-msrpc sends it as the NL_AUTH DNSDomainName (#1345).
 		gssapi.AddCredential(credential.NewFromPassword(
-			mc.AccountName, mc.Password, credential.Workstation(mc.Workstation)))
+			mc.AccountName, mc.Password,
+			credential.Workstation(mc.Workstation),
+			credential.Domain(mc.Realm)))
 		gssapi.AddMechanism(ssp.SPNEGO)
 		gssapi.AddMechanism(ssp.NTLM)
 		// KRB5 authenticates the NETLOGON named-pipe SMB session: Samba rejects a

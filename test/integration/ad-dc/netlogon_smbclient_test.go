@@ -36,11 +36,6 @@ import (
 // configured, then confirms that smbclient can authenticate as the AD
 // domain user alice via NTLM (NETLOGON passthrough).
 func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
-	// Blocked on the same go-msrpc<->Samba schannel interop as the integration
-	// test: the sealed-schannel AlterContext is rejected by the DC
-	// (RPC_S_UNKNOWN_AUTHN_SERVICE 0x721). Tracked in #1345. Un-skip once resolved.
-	t.Skip("NETLOGON schannel AlterContext interop with Samba AD-DC pending — see #1345")
-
 	if testing.Short() {
 		t.Skip("skipping NETLOGON smbclient e2e test in short mode")
 	}
