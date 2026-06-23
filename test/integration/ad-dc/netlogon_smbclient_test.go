@@ -111,15 +111,21 @@ func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
 		t.Fatalf("create share: %v", err)
 	}
 
-	// Enable the SMB adapter on the pre-allocated port.
+	// Enable the SMB adapter on the pre-allocated port. The server seeds a
+	// default SMB adapter on first boot, so update that one to our port; fall
+	// back to creating it if no SMB adapter exists yet.
 	enabled := true
-	_, err = cli.CreateAdapter(&apiclient.CreateAdapterRequest{
-		Type:    "smb",
-		Port:    smbPort,
+	if _, err = cli.UpdateAdapter("smb", &apiclient.UpdateAdapterRequest{
+		Port:    &smbPort,
 		Enabled: &enabled,
-	})
-	if err != nil {
-		t.Fatalf("create SMB adapter: %v", err)
+	}); err != nil {
+		if _, cErr := cli.CreateAdapter(&apiclient.CreateAdapterRequest{
+			Type:    "smb",
+			Port:    smbPort,
+			Enabled: &enabled,
+		}); cErr != nil {
+			t.Fatalf("configure SMB adapter (update: %v) (create: %v)", err, cErr)
+		}
 	}
 
 	// Wait for the SMB adapter to start accepting connections.

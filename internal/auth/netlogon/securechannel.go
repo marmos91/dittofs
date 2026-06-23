@@ -2,19 +2,17 @@ package netlogon
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"log/slog"
 	"sync"
 
 	"github.com/oiweiwei/go-msrpc/dcerpc"
-	epm "github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
 	"github.com/oiweiwei/go-msrpc/msrpc/dtyp"
+	epm "github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
 	logon "github.com/oiweiwei/go-msrpc/msrpc/nrpc/logon/v1"
 	"github.com/oiweiwei/go-msrpc/ssp"
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/gssapi"
-	"github.com/oiweiwei/go-msrpc/ssp/netlogon"
 )
 
 // SecureChannel wraps a go-msrpc schannel client with a mutex-guarded cached
@@ -38,16 +36,17 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	}
 	server := mc.DCAddresses[0]
 
-	ncfg := netlogon.NewConfig()
-	ncfg.ClientChallenge = make([]byte, 8)
-	if _, err := rand.Read(ncfg.ClientChallenge); err != nil {
-		return fmt.Errorf("netlogon: generate client challenge: %w", err)
-	}
-
+	// Register the machine credential and the Netlogon mechanism BEFORE creating
+	// the security context: NewSecurityContext captures the registered credential
+	// and mechanism. NewSecureChannelClient then runs the full challenge handshake
+	// (NetrServerReqChallenge generates the client challenge + obtains the server
+	// challenge, then NetrServerAuthenticate3) internally and applies the sealed
+	// schannel security config via AlterContext — so we must NOT pre-seed a
+	// netlogon.Config with challenges; doing so fights the internal handshake.
 	cred := credential.NewFromPassword(mc.AccountName, mc.Password, credential.Workstation(mc.Workstation))
-	gctx := gssapi.NewSecurityContext(ctx, ssp.WithNetlogon(ncfg))
 	gssapi.AddCredential(cred)
 	gssapi.AddMechanism(ssp.Netlogon)
+	gctx := gssapi.NewSecurityContext(ctx)
 
 	cc, err := dcerpc.Dial(gctx, server, epm.EndpointMapper(gctx, server))
 	if err != nil {
