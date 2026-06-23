@@ -412,6 +412,11 @@ type Service struct {
 	// ForShare applies it to shares added later. Guarded by mu. Nil disables
 	// inline recording.
 	metricsRec local.MetricsRecorder
+
+	// warmJobs tracks in-flight/completed async share-warm jobs (one active per
+	// share). Self-guarded; runs warm runs on detached contexts cancelled on
+	// RemoveShare. See warm.go.
+	warmJobs *warmRegistry
 }
 
 func New() *Service {
@@ -420,6 +425,7 @@ func New() *Service {
 		reservations:    make(map[string]struct{}),
 		remoteStores:    make(map[string]*sharedRemote),
 		changeCallbacks: make(map[int]func(shares []string)),
+		warmJobs:        newWarmRegistry(),
 	}
 }
 
@@ -891,6 +897,16 @@ func (s *Service) createBlockStoreForShare(
 	// backends produce "" so the status handler can short-circuit.
 	share.localStoreDir = deriveLocalStoreDir(localCfg, config.Name)
 
+	// A pinned share never evicts, so a bounded local tier can fill and then
+	// fail reads with ErrDiskFull once the working set exceeds it. Warn the
+	// operator at startup (no behavior change) so the misconfiguration is
+	// visible before it bites a client.
+	if config.RetentionPolicy == block.RetentionPin && remoteStore != nil && bs.LocalStats().MaxDisk > 0 {
+		logger.Warn("pinned share with a bounded local tier: reads will fail with ErrDiskFull once the working set exceeds the local tier — raise local_store_size or drop the pin",
+			"share", config.Name,
+			"local_store_size", bs.LocalStats().MaxDisk)
+	}
+
 	logger.Info("Per-share BlockStore initialized",
 		"share", config.Name,
 		"mode", modeLabel(remoteStore != nil),
@@ -1101,6 +1117,10 @@ func (s *Service) RemoveShare(name string) error {
 	localStoreDir := share.localStoreDir
 	delete(s.registry, name)
 	s.mu.Unlock()
+
+	// Cancel any in-flight warm job for this share so it cannot keep fetching
+	// into a block store that is about to be closed.
+	s.warmJobs.cancelForShare(name)
 
 	var errs []error
 
@@ -2033,6 +2053,42 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 	}
 
 	return &result, nil
+}
+
+// StartWarm starts (or returns the already-running) async warm job for
+// shareName. The job proactively materializes every remote block of the share
+// onto the local tier (engine.Store.WarmAll) on a DETACHED context so it
+// outlives the request that triggered it; RemoveShare cancels it. Returns an
+// error if the share is unknown or has no block store. The returned WarmJob is
+// a snapshot taken under the registry lock.
+func (s *Service) StartWarm(_ context.Context, shareName string) (*WarmJob, error) {
+	s.mu.RLock()
+	share, exists := s.registry[shareName]
+	if !exists {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("share %q not found", shareName)
+	}
+	if share.BlockStore == nil {
+		s.mu.RUnlock()
+		return nil, fmt.Errorf("share %q has no block store configured", shareName)
+	}
+	bs := share.BlockStore
+	s.mu.RUnlock()
+
+	job := s.warmJobs.start(shareName, func(ctx context.Context, progress func(done, total int64)) (warmAllResult, error) {
+		res, err := bs.WarmAll(ctx, progress)
+		return warmAllResult{
+			BlocksFetched:      res.BlocksFetched,
+			BytesFetched:       res.BytesFetched,
+			BlocksAlreadyLocal: res.BlocksAlreadyLocal,
+		}, err
+	})
+	return job, nil
+}
+
+// GetWarm returns a snapshot of the warm job by ID, or (nil, false) if unknown.
+func (s *Service) GetWarm(jobID string) (*WarmJob, bool) {
+	return s.warmJobs.get(jobID)
 }
 
 // deriveGCStateRoot returns the per-share gc-state directory used by the

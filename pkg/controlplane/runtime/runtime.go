@@ -832,6 +832,18 @@ func (r *Runtime) EvictBlockStore(ctx context.Context, shareName string, opts sh
 	return r.sharesSvc.EvictBlockStore(ctx, shareName, opts)
 }
 
+// StartWarmBlockStore starts (or returns the already-running) async warm job
+// that materializes the named share's blocks onto its local tier.
+func (r *Runtime) StartWarmBlockStore(ctx context.Context, shareName string) (*shares.WarmJob, error) {
+	return r.sharesSvc.StartWarm(ctx, shareName)
+}
+
+// GetWarmStatus returns a snapshot of a warm job by ID, or (nil, false) if the
+// job is unknown.
+func (r *Runtime) GetWarmStatus(jobID string) (*shares.WarmJob, bool) {
+	return r.sharesSvc.GetWarm(jobID)
+}
+
 func (r *Runtime) GetUserStore() models.UserStore { return r.store }
 
 func (r *Runtime) GetIdentityStore() models.IdentityStore {

@@ -642,6 +642,7 @@ dfsctl
       set            Create or update a share's snapshot policy
       show           Show a share's snapshot policy
     unmount        Unmount a mounted share
+    warm           Warm a share's local block cache
   status         Show server status
   store          Store management
     block          Block store management
@@ -4602,6 +4603,50 @@ Flags:
 
 ```
   -f, --force   Force unmount even if busy
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl share warm`
+
+Warm a share's local block cache
+
+Proactively materialize a share's blocks onto the local disk tier.
+
+Starts an asynchronous job that downloads every remote block of the share into
+the local cache so subsequent reads are served locally. The command prints the
+job id and exits; use --watch to poll until the job completes.
+
+The share must have a remote tier configured. A pinned share with a bounded
+local tier may fail with a disk-full error if its working set exceeds the tier.
+
+Examples:
+  # Start a warm job and exit
+  dfsctl share warm /archive
+
+  # Start and follow progress until done
+  dfsctl share warm --watch /archive
+
+```
+dfsctl share warm <name> [flags]
+```
+
+Flags:
+
+```
+      --watch   Poll the job until it reaches a terminal state
 ```
 
 Global flags:

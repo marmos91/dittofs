@@ -755,6 +755,20 @@ func (bs *Store) EvictLocal(ctx context.Context, payloadID string) error {
 	return bs.local.DeleteAppendLog(ctx, payloadID)
 }
 
+// WarmAll proactively fetches every remote block of every payload in this
+// share onto the local CAS tier, delegating to the syncer's WarmAll under the
+// store's close-gate so a concurrent Close drains the run instead of racing
+// the local/syncer/remote teardown. See (*Syncer).WarmAll for semantics
+// (bounded by ParallelDownloads, errors on a missing remote, terminal on
+// ErrDiskFull, honors ctx cancellation). progress may be nil.
+func (bs *Store) WarmAll(ctx context.Context, progress func(done, total int64)) (WarmResult, error) {
+	if err := bs.enter(); err != nil {
+		return WarmResult{}, err
+	}
+	defer bs.closeMu.RUnlock()
+	return bs.syncer.WarmAll(ctx, progress)
+}
+
 // loadCache returns the current cache under cacheMu. Always non-nil (Null
 // Object pattern). Callers invoke the returned interface's methods OUTSIDE
 // the lock — cacheMu only guards the field read.

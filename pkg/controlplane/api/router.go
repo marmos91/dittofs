@@ -288,6 +288,10 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// Per-share block store management
 				r.Get("/{name}/blockstore/stats", blockStoreHandler.Stats)
 				r.Post("/{name}/blockstore/evict", blockStoreHandler.Evict)
+				// Per-share async warm: start a job that materializes the
+				// share's blocks onto the local tier, then poll its status.
+				r.Post("/{name}/blockstore/warm", blockStoreHandler.Warm)
+				r.Get("/{name}/blockstore/warm/{job_id}", blockStoreHandler.WarmStatus)
 				// Per-share GC trigger + last-run summary.
 				// Mounted under /shares/{name}/blockstore/... so the route
 				// pattern stays consistent with stats/evict and avoids the

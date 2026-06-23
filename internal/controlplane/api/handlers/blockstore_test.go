@@ -231,11 +231,15 @@ func TestBlockStoreHandler_Evict_SafetyError(t *testing.T) {
 // fakeBlockStoreRuntime implements BlockStoreRuntime for exercising the real
 // BlockStoreStatsHandler (as opposed to the testBlockStoreHandler shim above).
 type fakeBlockStoreRuntime struct {
-	stats     *shares.BlockStoreStatsResponse
-	statsErr  error
-	evict     *shares.EvictResult
-	evictErr  error
-	lastShare string
+	stats      *shares.BlockStoreStatsResponse
+	statsErr   error
+	evict      *shares.EvictResult
+	evictErr   error
+	lastShare  string
+	warmJob    *shares.WarmJob
+	warmErr    error
+	warmStatus *shares.WarmJob
+	warmFound  bool
 }
 
 func (f *fakeBlockStoreRuntime) GetBlockStoreStats(shareName string) (*shares.BlockStoreStatsResponse, error) {
@@ -246,6 +250,15 @@ func (f *fakeBlockStoreRuntime) GetBlockStoreStats(shareName string) (*shares.Bl
 func (f *fakeBlockStoreRuntime) EvictBlockStore(_ context.Context, shareName string, _ shares.EvictOptions) (*shares.EvictResult, error) {
 	f.lastShare = shareName
 	return f.evict, f.evictErr
+}
+
+func (f *fakeBlockStoreRuntime) StartWarmBlockStore(_ context.Context, shareName string) (*shares.WarmJob, error) {
+	f.lastShare = shareName
+	return f.warmJob, f.warmErr
+}
+
+func (f *fakeBlockStoreRuntime) GetWarmStatus(_ string) (*shares.WarmJob, bool) {
+	return f.warmStatus, f.warmFound
 }
 
 // TestBlockStoreStatsHandler_NormalizesShareName verifies the real handler
@@ -294,6 +307,87 @@ func TestBlockStoreStatsHandler_NormalizesShareName(t *testing.T) {
 		h.Evict(httptest.NewRecorder(), req)
 		if fake.lastShare != "" {
 			t.Fatalf("Evict (global): runtime got %q, want empty (all shares)", fake.lastShare)
+		}
+	})
+}
+
+// TestBlockStoreStatsHandler_Warm covers the async warm start (202 + job id)
+// and the status poll, including share-name normalization and the 404 for an
+// unknown job.
+func TestBlockStoreStatsHandler_Warm(t *testing.T) {
+	t.Run("start_returns_202_and_job_id", func(t *testing.T) {
+		fake := &fakeBlockStoreRuntime{warmJob: &shares.WarmJob{ID: "warm-/myshare-1", Share: "/myshare", State: shares.WarmStateRunning}}
+		h := NewBlockStoreStatsHandler(fake)
+		req := newChiRequestForBlockStore(http.MethodPost,
+			"/api/v1/shares/myshare/blockstore/warm", nil, "name", "myshare")
+		w := httptest.NewRecorder()
+		h.Warm(w, req)
+
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("Warm status = %d, want 202", w.Code)
+		}
+		if fake.lastShare != "/myshare" {
+			t.Fatalf("Warm: runtime got %q, want /myshare", fake.lastShare)
+		}
+		var body struct {
+			JobID string `json:"job_id"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if body.JobID != "warm-/myshare-1" {
+			t.Fatalf("job_id = %q, want warm-/myshare-1", body.JobID)
+		}
+	})
+
+	t.Run("start_error_not_leaked", func(t *testing.T) {
+		fake := &fakeBlockStoreRuntime{warmErr: errors.New(`share "/secret" has no remote tier`)}
+		h := NewBlockStoreStatsHandler(fake)
+		req := newChiRequestForBlockStore(http.MethodPost,
+			"/api/v1/shares/secret/blockstore/warm", nil, "name", "secret")
+		w := httptest.NewRecorder()
+		h.Warm(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("Warm error status = %d, want 400", w.Code)
+		}
+		var p Problem
+		_ = json.NewDecoder(w.Body).Decode(&p)
+		if strings.Contains(p.Detail, "secret") {
+			t.Errorf("Detail leaks share name: %q", p.Detail)
+		}
+	})
+
+	t.Run("status_found", func(t *testing.T) {
+		fake := &fakeBlockStoreRuntime{
+			warmStatus: &shares.WarmJob{ID: "warm-/myshare-1", Share: "/myshare", State: shares.WarmStateDone, BlocksTotal: 5, BlocksDone: 5, BytesDone: 100},
+			warmFound:  true,
+		}
+		h := NewBlockStoreStatsHandler(fake)
+		req := newChiRequestForBlockStore(http.MethodGet,
+			"/api/v1/shares/myshare/blockstore/warm/warm-/myshare-1", nil, "name", "myshare", "job_id", "warm-/myshare-1")
+		w := httptest.NewRecorder()
+		h.WarmStatus(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("WarmStatus = %d, want 200", w.Code)
+		}
+		var resp WarmJobStatusResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if resp.State != shares.WarmStateDone || resp.BlocksDone != 5 || resp.BytesDone != 100 {
+			t.Fatalf("unexpected status: %+v", resp)
+		}
+	})
+
+	t.Run("status_unknown_404", func(t *testing.T) {
+		fake := &fakeBlockStoreRuntime{warmFound: false}
+		h := NewBlockStoreStatsHandler(fake)
+		req := newChiRequestForBlockStore(http.MethodGet,
+			"/api/v1/shares/myshare/blockstore/warm/nope", nil, "name", "myshare", "job_id", "nope")
+		w := httptest.NewRecorder()
+		h.WarmStatus(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("WarmStatus unknown = %d, want 404", w.Code)
 		}
 	})
 }
