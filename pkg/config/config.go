@@ -334,6 +334,88 @@ type MachineAccountConfig struct {
 
 	// DCAddresses is a list of domain controller addresses.
 	DCAddresses []string `mapstructure:"dc_address" yaml:"dc_address"`
+
+	// OnlineJoin configures online creation + rotation of the machine account.
+	// Opt-in: when disabled (the default), the machine credential is supplied
+	// offline via AccountName+Secret as before.
+	OnlineJoin OnlineJoinConfig `mapstructure:"online_join" yaml:"online_join"`
+}
+
+// OnlineJoinConfig configures the online-join machine-credential provider, which
+// creates the computer object in Active Directory over LDAP, owns the
+// machine-password lifecycle (initial set + periodic rotation via
+// NetrServerPasswordSet2), and persists the rotated secret in the control-plane
+// DB so it survives restarts.
+//
+// Online join is OPT-IN. When Enabled is false the offline provider is used:
+// an admin pre-provisions the computer account and supplies Secret/KeytabPath.
+type OnlineJoinConfig struct {
+	// Enabled turns on the online-join provider. When false the offline provider
+	// (static AccountName+Secret) is used.
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// LDAPURL is the directory URL used to write the computer object, e.g.
+	// "ldaps://dc.dittofs.ad" (preferred) or "ldap://dc.dittofs.ad" with
+	// StartTLS. AD refuses the machine-password write over an unencrypted
+	// connection, so one of LDAPS or StartTLS is required.
+	LDAPURL string `mapstructure:"ldap_url" yaml:"ldap_url"`
+
+	// StartTLS upgrades a plaintext ldap:// join connection to TLS before
+	// binding. Ignored for ldaps://.
+	StartTLS bool `mapstructure:"start_tls" yaml:"start_tls"`
+
+	// BindDN / BindPassword are the privileged "join" credentials: an account
+	// permitted to create computer objects in the target OU (a Domain Admin, or
+	// a delegated account). Used only at join time, never persisted.
+	BindDN       string `mapstructure:"bind_dn" yaml:"bind_dn"`
+	BindPassword string `mapstructure:"bind_password" yaml:"bind_password"`
+
+	// BaseDN is the domain naming context, e.g. "DC=dittofs,DC=ad".
+	BaseDN string `mapstructure:"base_dn" yaml:"base_dn"`
+
+	// OU is the optional container DN for the computer object, e.g.
+	// "OU=Servers,DC=dittofs,DC=ad". When empty, CN=Computers,<BaseDN> is used.
+	OU string `mapstructure:"ou" yaml:"ou"`
+
+	// DNSHostName is the FQDN stamped on the computer object (e.g.
+	// "dittofs.dittofs.ad"). Optional.
+	DNSHostName string `mapstructure:"dns_host_name" yaml:"dns_host_name"`
+
+	// SPNs are optional servicePrincipalName values to register on the account
+	// (e.g. "cifs/dittofs.dittofs.ad").
+	SPNs []string `mapstructure:"spns" yaml:"spns"`
+
+	// RotationInterval is how often the machine password is rotated. Zero
+	// disables rotation. AD's default machine-password max age is 30 days.
+	RotationInterval time.Duration `mapstructure:"rotation_interval" yaml:"rotation_interval"`
+
+	// CACertFile is an optional PEM CA bundle used to verify the LDAP server
+	// certificate for the join connection.
+	CACertFile string `mapstructure:"ca_cert_file" yaml:"ca_cert_file"`
+
+	// InsecureSkipVerify disables LDAP server-certificate verification for the
+	// join connection. Lab use only.
+	InsecureSkipVerify bool `mapstructure:"insecure_skip_verify" yaml:"insecure_skip_verify"`
+}
+
+// MarshalYAML redacts the join bind password when serialized for display.
+func (c OnlineJoinConfig) MarshalYAML() (interface{}, error) {
+	type alias OnlineJoinConfig
+	out := alias(c)
+	if out.BindPassword != "" {
+		out.BindPassword = redactedSecret
+	}
+	return out, nil
+}
+
+// MarshalJSON redacts the join bind password when serialized for display.
+func (c OnlineJoinConfig) MarshalJSON() ([]byte, error) {
+	type alias OnlineJoinConfig
+	out := alias(c)
+	if out.BindPassword != "" {
+		out.BindPassword = redactedSecret
+	}
+	return json.Marshal(out)
 }
 
 // MarshalYAML redacts the machine account secret when the config is serialized
@@ -490,6 +572,42 @@ func (c *KerberosConfig) Validate() error {
 		if strings.ContainsAny(c.DNSDomain, "@/ ") {
 			return fmt.Errorf("kerberos.dns_domain %q is invalid (must not contain '@', '/', or spaces; e.g. contoso.com)", c.DNSDomain)
 		}
+	}
+	if err := c.MachineAccount.OnlineJoin.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Validate checks the online-join configuration for internal consistency
+// (fail-fast, no network I/O). Only enforced when Enabled.
+func (c *OnlineJoinConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	scheme := strings.ToLower(strings.TrimSpace(c.LDAPURL))
+	switch {
+	case scheme == "":
+		return fmt.Errorf("kerberos.machine_account.online_join.ldap_url is required when online_join is enabled")
+	case strings.HasPrefix(scheme, "ldaps://"):
+	case strings.HasPrefix(scheme, "ldap://"):
+		if !c.StartTLS {
+			return fmt.Errorf("kerberos.machine_account.online_join.ldap_url uses plaintext ldap://; set start_tls=true (AD refuses to set a machine password over an unencrypted connection)")
+		}
+	default:
+		return fmt.Errorf("kerberos.machine_account.online_join.ldap_url must use ldap:// or ldaps:// (got %q)", c.LDAPURL)
+	}
+	if strings.TrimSpace(c.BindDN) == "" {
+		return fmt.Errorf("kerberos.machine_account.online_join.bind_dn is required (a privileged account that can create computer objects)")
+	}
+	if c.BindPassword == "" {
+		return fmt.Errorf("kerberos.machine_account.online_join.bind_password is required")
+	}
+	if strings.TrimSpace(c.BaseDN) == "" {
+		return fmt.Errorf("kerberos.machine_account.online_join.base_dn is required")
+	}
+	if c.RotationInterval < 0 {
+		return fmt.Errorf("kerberos.machine_account.online_join.rotation_interval must be >= 0 (got %v; 0 disables rotation)", c.RotationInterval)
 	}
 	return nil
 }

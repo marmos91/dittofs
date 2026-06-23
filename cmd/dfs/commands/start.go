@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/controlplane/api/handlers"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/sysinfo"
@@ -271,7 +272,21 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// sets the runtime's LDAP config and returns the effective Kerberos config to
 	// hand to the adapter factory.
 	effectiveKerberos := resolveIdentityProviders(ctx, cpStore, rt, cfg)
-	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos))
+
+	// Build the single, process-wide NETLOGON authenticator before the adapter
+	// factory so every SMB adapter instance shares it (one machine account per
+	// process). The online-join provider persists its rotated secret in the
+	// control-plane settings store, so it survives restarts. nlAuth is nil when
+	// machine_account is disabled. nlRotation drives periodic password rotation
+	// and is started below / stopped on shutdown.
+	nlAuth, nlRotation := buildNetlogonAuthenticator(effectiveKerberos, newMachineSecretStore(cpStore))
+	nlRotation.Start()
+	defer nlRotation.Stop()
+	if closer, ok := nlAuth.(interface{ Close(context.Context) }); ok && nlAuth != nil {
+		defer closer.Close(context.Background())
+	}
+
+	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 
 	// Create and set API server
 	apiServer, err := api.NewServer(cfg.ControlPlane, rt, cpStore, cfg.Snapshot.RestoreHTTPTimeout)
@@ -574,13 +589,19 @@ func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
 // createAdapterFactory returns a factory function that creates protocol adapters
 // from configuration. This factory is used by Runtime to create adapters
 // dynamically when loading from store or when created via API.
-func createAdapterFactory(kerberosConfig *config.KerberosConfig) runtime.AdapterFactory {
+//
+// nlAuth is the shared, process-wide NETLOGON authenticator (one machine
+// account per process). It is built once by the caller — so the online-join
+// provider joins / loads the persisted secret exactly once regardless of how
+// many SMB adapter instances the runtime spins up — and injected here. It is
+// nil when machine_account is disabled.
+func createAdapterFactory(kerberosConfig *config.KerberosConfig, nlAuth netlogon.NetlogonAuthenticator) runtime.AdapterFactory {
 	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
 		switch cfg.Type {
 		case "nfs":
 			return createNFSAdapter(cfg, kerberosConfig)
 		case "smb":
-			return createSMBAdapter(cfg, kerberosConfig)
+			return createSMBAdapter(cfg, kerberosConfig, nlAuth)
 		default:
 			return nil, fmt.Errorf("unknown adapter type: %s", cfg.Type)
 		}
@@ -624,7 +645,7 @@ func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	return adapter, nil
 }
 
-func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig) (runtime.ProtocolAdapter, error) {
+func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig, nlAuth netlogon.NetlogonAuthenticator) (runtime.ProtocolAdapter, error) {
 	port := cfg.Port
 	if port == 0 {
 		port = 12445
@@ -663,15 +684,13 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 		smbAdapter.SetKerberosProvider(provider)
 	}
 
-	// Wire NETLOGON authenticator for domain-controller NTLM pass-through.
-	// This runs whenever kerberosConfig is present (machine_account lives on
-	// the kerberos config), regardless of kerberosConfig.Enabled.  An
-	// NTLM-only / legacy deployment sets kerberos.enabled=false but still
-	// needs NETLOGON passthrough when machine_account.enabled=true.
-	// buildNetlogonAuthenticator returns nil when MachineAccount.Enabled is
-	// false, so SetNetlogonAuthenticator no-ops in that case.
+	// Wire the shared NETLOGON authenticator for domain-controller NTLM
+	// pass-through. It is built once by the caller (one machine account per
+	// process) and injected, regardless of kerberosConfig.Enabled — an NTLM-only
+	// / legacy deployment sets kerberos.enabled=false but still needs NETLOGON
+	// passthrough when machine_account.enabled=true. nlAuth is nil when
+	// MachineAccount.Enabled is false, so SetNetlogonAuthenticator no-ops then.
 	if kerberosConfig != nil {
-		nlAuth := buildNetlogonAuthenticator(*kerberosConfig)
 		// When NTLM pass-through is active, the SMB handler must advertise, in its
 		// NTLM CHALLENGE TargetInfo, both the AD NetBIOS/DNS domain AND the AD
 		// machine-account computer name. Domain clients echo these into their
