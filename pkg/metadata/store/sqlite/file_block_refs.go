@@ -1,0 +1,164 @@
+package sqlite
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/google/uuid"
+	"github.com/marmos91/dittofs/pkg/block"
+)
+
+// ============================================================================
+// file_block_refs CRUD
+// ============================================================================
+//
+// Stores FileAttr.Blocks []block.BlockRef rows for files. Per
+// we use a separate table (not JSONB on files) to avoid TOAST write
+// amplification on the VM-primary workload.
+//
+// All helpers operate against a pgx.Tx so that PutFile's BlockRef replace
+// happens atomically with the files row UPDATE.
+//
+// Schema lives in migrations/000012_file_block_refs.up.sql.
+
+// putFileBlockRefs replaces all rows in file_block_refs for fileID with
+// the given blocks. Atomic when called inside a pgx.Tx (the caller's tx).
+//
+// Implementation: DELETE+INSERT. Engine-bug paths are defended by the
+// (file_id, "offset") PK — a duplicate offset would be rejected. The
+// DELETE first ensures stale offsets from a prior list are not left
+// behind when the new list is shorter.
+func putFileBlockRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.BlockRef) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = ?1`, fileID); err != nil {
+		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)
+	}
+	if len(blocks) == 0 {
+		return nil
+	}
+	// SQLite has no batch protocol; insert each ref with a prepared-statement
+	// reuse via the same tx connection. The (file_id, "offset") PK rejects a
+	// duplicate offset.
+	for _, b := range blocks {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO file_block_refs (file_id, "offset", size, hash) VALUES (?1, ?2, ?3, ?4)`,
+			fileID, int64(b.Offset), int32(b.Size), b.Hash[:],
+		); err != nil {
+			return fmt.Errorf("insert file_block_ref: %w", err)
+		}
+	}
+	return nil
+}
+
+// deleteFileBlockRefs removes all rows for fileID. The FK cascade
+// handles this automatically when the files row is deleted; this helper
+// is exposed for callers that pre-clear refs without dropping the row.
+//
+// the file-delete path today, but plan-defined future callers may need
+// pre-clear semantics.
+//
+//nolint:unused // exported as part of the API surface; FK cascade handles
+func deleteFileBlockRefs(ctx context.Context, tx execer, fileID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = ?1`, fileID); err != nil {
+		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)
+	}
+	return nil
+}
+
+// loadFileBlockRefs loads all rows for fileID via the pool (not a tx),
+// ordered by offset ASC; returns a nil slice when no rows exist.
+// Used by FindByObjectID. GetFile no longer calls this — it folds the same
+// rows into its metadata read via blockRefsAggExpr (#1176).
+func (s *SQLiteMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uuid.UUID) ([]block.BlockRef, error) {
+	rows, err := s.query(ctx,
+		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = ?1 ORDER BY "offset" ASC`,
+		fileID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query file_block_refs for %s: %w", fileID, err)
+	}
+	defer rows.Close()
+
+	var out []block.BlockRef
+	for rows.Next() {
+		var off int64
+		var sz int32
+		var raw []byte
+		if err := rows.Scan(&off, &sz, &raw); err != nil {
+			return nil, fmt.Errorf("scan file_block_ref: %w", err)
+		}
+		if len(raw) != block.HashSize {
+			return nil, fmt.Errorf(
+				"file_block_refs.hash for %s/%d has unexpected length %d (want %d)",
+				fileID, off, len(raw), block.HashSize,
+			)
+		}
+		var br block.BlockRef
+		copy(br.Hash[:], raw)
+		br.Offset = uint64(off)
+		br.Size = uint32(sz)
+		out = append(out, br)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate file_block_refs: %w", err)
+	}
+	return out, nil
+}
+
+// ============================================================================
+// Test capability: RawSQLAccessor
+// ============================================================================
+
+// RawSQLAccessor is an optional capability backends may implement to expose
+// a small set of test-only direct-SQL helpers. Used by
+// postgres_blockref_test.go to assert FK cascade behavior.
+type RawSQLAccessor interface {
+	// CountFileBlockRefs returns the number of file_block_refs rows for
+	// fileID. Test-only — never call this from production code.
+	CountFileBlockRefs(ctx context.Context, fileID uuid.UUID) (int, error)
+
+	// InsertNullHashFileBlock inserts a file_blocks row with a NULL hash
+	// column, simulating a legacy backup produced before the Put
+	// hash-gate fix. Test-only — never call this from production code.
+	InsertNullHashFileBlock(ctx context.Context, id string, dataSize uint32) error
+
+	// FileBlockHashHex returns the hex hash string stored on the
+	// file_blocks row for id, or "" when the hash column is NULL.
+	// Test-only — never call this from production code.
+	FileBlockHashHex(ctx context.Context, id string) (string, error)
+}
+
+// CountFileBlockRefs implements RawSQLAccessor for *SQLiteMetadataStore.
+func (s *SQLiteMetadataStore) CountFileBlockRefs(ctx context.Context, fileID uuid.UUID) (int, error) {
+	var n int
+	err := s.queryRow(ctx, `SELECT COUNT(*) FROM file_block_refs WHERE file_id = ?1`, fileID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count file_block_refs: %w", err)
+	}
+	return n, nil
+}
+
+// InsertNullHashFileBlock implements RawSQLAccessor for *SQLiteMetadataStore.
+func (s *SQLiteMetadataStore) InsertNullHashFileBlock(ctx context.Context, id string, dataSize uint32) error {
+	_, err := s.exec(ctx, `
+		INSERT INTO file_blocks (id, hash, data_size, ref_count, state)
+		VALUES (?1, NULL, ?2, 1, 0)
+		ON CONFLICT (id) DO UPDATE SET hash = NULL`,
+		id, int32(dataSize))
+	if err != nil {
+		return fmt.Errorf("insert null-hash file_block: %w", err)
+	}
+	return nil
+}
+
+// FileBlockHashHex implements RawSQLAccessor for *SQLiteMetadataStore.
+func (s *SQLiteMetadataStore) FileBlockHashHex(ctx context.Context, id string) (string, error) {
+	var hash *string
+	err := s.queryRow(ctx, `SELECT hash FROM file_blocks WHERE id = ?1`, id).Scan(&hash)
+	if err != nil {
+		return "", fmt.Errorf("read file_block hash: %w", err)
+	}
+	if hash == nil {
+		return "", nil
+	}
+	return *hash, nil
+}

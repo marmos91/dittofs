@@ -781,6 +781,12 @@ Metadata stores are managed at runtime via `dfsctl` and persisted in the control
 ./dfsctl store metadata add --name badger-isolated --type badger \
   --config '{"path":"/tmp/dittofs-metadata-isolated"}'
 
+# SQLite for a persistent single-binary / edge appliance (pure-Go, no cgo).
+# Reuses the PostgreSQL data model (parent_child_map hard links, nlink,
+# recursive-CTE path reconstruction, object_id dedup index).
+./dfsctl store metadata add --name sqlite-edge --type sqlite \
+  --config '{"path":"/var/lib/dittofs/metadata.db"}'
+
 # PostgreSQL for distributed, horizontally-scalable metadata
 # Set POSTGRES_PASSWORD in your environment
 ./dfsctl store metadata add --name postgres-production --type postgres \

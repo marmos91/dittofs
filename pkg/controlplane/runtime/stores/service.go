@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
 )
 
 // Service manages named metadata store instances.
@@ -204,6 +205,25 @@ func (s *Service) OpenMetadataStoreAtPath(
 		}
 		return store, nil
 
+	case "sqlite":
+		// SQLite is filesystem-backed like badger: pathOverride is the backing
+		// database-file path. AutoMigrate creates the schema on open.
+		if pathOverride == "" {
+			return nil, fmt.Errorf("sqlite engine requires non-empty pathOverride")
+		}
+		dbPath, err := pathutil.ExpandPath(pathOverride)
+		if err != nil {
+			return nil, fmt.Errorf("expand sqlite pathOverride %q: %w", pathOverride, err)
+		}
+		store, err := sqlite.NewSQLiteMetadataStore(ctx, &sqlite.SQLiteMetadataStoreConfig{
+			Path:        dbPath,
+			AutoMigrate: true,
+		}, sqliteRestoreCapabilities())
+		if err != nil {
+			return nil, fmt.Errorf("open sqlite engine at %q: %w", dbPath, err)
+		}
+		return store, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported metadata store type %q", cfg.Type)
 	}
@@ -333,4 +353,27 @@ func openPostgresAtSchema(
 	return nil, errors.New(
 		"postgres schema-scoped open is not supported: the postgres metadata " +
 			"engine does not yet accept a per-instance schema override")
+}
+
+// sqliteRestoreCapabilities returns the filesystem capabilities a SQLite store
+// is opened with for snapshot/restore-at-path. They mirror the primary SQLite
+// factory in runtime/init.go so a restored store advertises identical limits.
+func sqliteRestoreCapabilities() metadata.FilesystemCapabilities {
+	return metadata.FilesystemCapabilities{
+		MaxReadSize:           1024 * 1024,
+		PreferredReadSize:     64 * 1024,
+		MaxWriteSize:          1024 * 1024,
+		PreferredWriteSize:    64 * 1024,
+		MaxFileSize:           1024 * 1024 * 1024 * 100,
+		MaxFilenameLen:        255,
+		MaxPathLen:            4096,
+		MaxHardLinkCount:      32767,
+		SupportsHardLinks:     true,
+		SupportsSymlinks:      true,
+		CaseSensitive:         true,
+		CasePreserving:        true,
+		SupportsACLs:          false,
+		SupportsExtendedAttrs: true,
+		TimestampResolution:   time.Nanosecond,
+	}
 }

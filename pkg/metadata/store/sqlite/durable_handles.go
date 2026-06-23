@@ -1,0 +1,448 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"github.com/marmos91/dittofs/pkg/metadata/lock"
+)
+
+// sqliteDurableStore implements lock.DurableHandleStore using SQLite.
+type sqliteDurableStore struct {
+	pool execer
+}
+
+func newSQLiteDurableStore(pool execer) *sqliteDurableStore {
+	return &sqliteDurableStore{
+		pool: pool,
+	}
+}
+
+const durableHandleColumns = `
+	id, file_id, path, share_name, desired_access, granted_access, share_access,
+	create_options, metadata_handle, payload_id, oplock_level,
+	lease_key, lease_state, lease_epoch, create_guid, app_instance_id,
+	username, session_key_hash, is_v2, created_at, disconnected_at,
+	timeout_ms, server_start_time,
+	delete_pending, parent_handle, file_name, is_directory,
+	position_info, original_file_id, requested_alloc_size, is_persistent
+`
+
+func scanDurableHandle(row scanRow) (*lock.PersistedDurableHandle, error) {
+	var h lock.PersistedDurableHandle
+	var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
+	var positionInfoSigned, requestedAllocSizeSigned int64
+	var leaseEpochSigned int32
+
+	err := row.Scan(
+		&h.ID,
+		&fileIDBytes,
+		&h.Path,
+		&h.ShareName,
+		&h.DesiredAccess,
+		&h.GrantedAccess,
+		&h.ShareAccess,
+		&h.CreateOptions,
+		&h.MetadataHandle,
+		&h.PayloadID,
+		&h.OplockLevel,
+		&leaseKeyBytes,
+		&h.LeaseState,
+		&leaseEpochSigned,
+		&createGuidBytes,
+		&appInstanceIdBytes,
+		&h.Username,
+		&sessionKeyHashBytes,
+		&h.IsV2,
+		&h.CreatedAt,
+		&h.DisconnectedAt,
+		&h.TimeoutMs,
+		&h.ServerStartTime,
+		&h.DeletePending,
+		&h.ParentHandle,
+		&h.FileName,
+		&h.IsDirectory,
+		&positionInfoSigned,
+		&originalFileIDBytes,
+		&requestedAllocSizeSigned,
+		&h.IsPersistent,
+	)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	h.LeaseEpoch = uint16(leaseEpochSigned)
+	h.PositionInfo = uint64(positionInfoSigned)
+	h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
+	copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes,
+		appInstanceIdBytes, sessionKeyHashBytes)
+	if len(originalFileIDBytes) == 16 {
+		copy(h.OriginalFileID[:], originalFileIDBytes)
+	}
+	return &h, nil
+}
+
+func scanDurableHandleRows(rows scanRows) ([]*lock.PersistedDurableHandle, error) {
+	defer rows.Close()
+
+	var result []*lock.PersistedDurableHandle
+	for rows.Next() {
+		var h lock.PersistedDurableHandle
+		var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
+		var positionInfoSigned, requestedAllocSizeSigned int64
+		var leaseEpochSigned int32
+
+		err := rows.Scan(
+			&h.ID,
+			&fileIDBytes,
+			&h.Path,
+			&h.ShareName,
+			&h.DesiredAccess,
+			&h.GrantedAccess,
+			&h.ShareAccess,
+			&h.CreateOptions,
+			&h.MetadataHandle,
+			&h.PayloadID,
+			&h.OplockLevel,
+			&leaseKeyBytes,
+			&h.LeaseState,
+			&leaseEpochSigned,
+			&createGuidBytes,
+			&appInstanceIdBytes,
+			&h.Username,
+			&sessionKeyHashBytes,
+			&h.IsV2,
+			&h.CreatedAt,
+			&h.DisconnectedAt,
+			&h.TimeoutMs,
+			&h.ServerStartTime,
+			&h.DeletePending,
+			&h.ParentHandle,
+			&h.FileName,
+			&h.IsDirectory,
+			&positionInfoSigned,
+			&originalFileIDBytes,
+			&requestedAllocSizeSigned,
+			&h.IsPersistent,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		h.LeaseEpoch = uint16(leaseEpochSigned)
+		h.PositionInfo = uint64(positionInfoSigned)
+		h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
+		copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes)
+		if len(originalFileIDBytes) == 16 {
+			copy(h.OriginalFileID[:], originalFileIDBytes)
+		}
+		result = append(result, &h)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func copyFixedByteArrays(h *lock.PersistedDurableHandle, fileID, leaseKey, createGuid, appInstanceId, sessionKeyHash []byte) {
+	if len(fileID) == 16 {
+		copy(h.FileID[:], fileID)
+	}
+	if len(leaseKey) == 16 {
+		copy(h.LeaseKey[:], leaseKey)
+	}
+	if len(createGuid) == 16 {
+		copy(h.CreateGuid[:], createGuid)
+	}
+	if len(appInstanceId) == 16 {
+		copy(h.AppInstanceId[:], appInstanceId)
+	}
+	if len(sessionKeyHash) == 32 {
+		copy(h.SessionKeyHash[:], sessionKeyHash)
+	}
+}
+
+// nullableBytes16 returns nil for zero-value [16]byte arrays (stored as NULL).
+func nullableBytes16(b [16]byte) []byte {
+	var zero [16]byte
+	if b == zero {
+		return nil
+	}
+	return b[:]
+}
+
+func (s *sqliteDurableStore) PutDurableHandle(ctx context.Context, handle *lock.PersistedDurableHandle) error {
+	query := `
+		INSERT INTO durable_handles (
+			id, file_id, path, share_name, desired_access, granted_access, share_access,
+			create_options, metadata_handle, payload_id, oplock_level,
+			lease_key, lease_state, create_guid, app_instance_id,
+			username, session_key_hash, is_v2, created_at, disconnected_at,
+			timeout_ms, server_start_time,
+			delete_pending, parent_handle, file_name, is_directory,
+			position_info, original_file_id, requested_alloc_size,
+			lease_epoch, is_persistent
+		)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
+		ON CONFLICT (id) DO UPDATE SET
+			file_id = EXCLUDED.file_id,
+			path = EXCLUDED.path,
+			share_name = EXCLUDED.share_name,
+			desired_access = EXCLUDED.desired_access,
+			granted_access = EXCLUDED.granted_access,
+			share_access = EXCLUDED.share_access,
+			create_options = EXCLUDED.create_options,
+			metadata_handle = EXCLUDED.metadata_handle,
+			payload_id = EXCLUDED.payload_id,
+			oplock_level = EXCLUDED.oplock_level,
+			lease_key = EXCLUDED.lease_key,
+			lease_state = EXCLUDED.lease_state,
+			create_guid = EXCLUDED.create_guid,
+			app_instance_id = EXCLUDED.app_instance_id,
+			username = EXCLUDED.username,
+			session_key_hash = EXCLUDED.session_key_hash,
+			is_v2 = EXCLUDED.is_v2,
+			created_at = EXCLUDED.created_at,
+			disconnected_at = EXCLUDED.disconnected_at,
+			timeout_ms = EXCLUDED.timeout_ms,
+			server_start_time = EXCLUDED.server_start_time,
+			delete_pending = EXCLUDED.delete_pending,
+			parent_handle = EXCLUDED.parent_handle,
+			file_name = EXCLUDED.file_name,
+			is_directory = EXCLUDED.is_directory,
+			position_info = EXCLUDED.position_info,
+			original_file_id = EXCLUDED.original_file_id,
+			requested_alloc_size = EXCLUDED.requested_alloc_size,
+			lease_epoch = EXCLUDED.lease_epoch,
+			is_persistent = EXCLUDED.is_persistent
+	`
+
+	_, err := s.pool.Exec(ctx, query,
+		handle.ID,
+		handle.FileID[:],
+		handle.Path,
+		handle.ShareName,
+		handle.DesiredAccess,
+		handle.GrantedAccess,
+		handle.ShareAccess,
+		handle.CreateOptions,
+		handle.MetadataHandle,
+		handle.PayloadID,
+		handle.OplockLevel,
+		nullableBytes16(handle.LeaseKey),
+		handle.LeaseState,
+		nullableBytes16(handle.CreateGuid),
+		nullableBytes16(handle.AppInstanceId),
+		handle.Username,
+		handle.SessionKeyHash[:],
+		handle.IsV2,
+		handle.CreatedAt,
+		handle.DisconnectedAt,
+		handle.TimeoutMs,
+		handle.ServerStartTime,
+		handle.DeletePending,
+		handle.ParentHandle,
+		handle.FileName,
+		handle.IsDirectory,
+		// PositionInfo is a file offset (FILE_POSITION_INFORMATION.CurrentByteOffset,
+		// MS-FSCC 2.4.32) stored as BIGINT (signed int64). File offsets fit in
+		// int64 in practice; reinterpret the bit pattern to preserve any high-bit
+		// value. The scan path mirrors this with uint64(int64) on read.
+		int64(handle.PositionInfo),
+		handle.OriginalFileID[:],
+		// RequestedAllocSize is a client-requested allocation reservation
+		// ([MS-SMB2] 2.2.13.2.2) stored as BIGINT (signed int64), reinterpreting
+		// the bit pattern like PositionInfo. The scan path mirrors this with
+		// uint64(int64) on read.
+		int64(handle.RequestedAllocSize),
+		// LeaseEpoch is the SMB3 lease-V2 epoch (uint16) stored as INTEGER.
+		// The scan path mirrors this with uint16(int32) on read.
+		int32(handle.LeaseEpoch),
+		// IsPersistent marks a persistent durable handle granted on a CA share
+		// (#739) so a reconnect re-echoes the DH2Q PERSISTENT flag.
+		handle.IsPersistent,
+	)
+	return err
+}
+
+func (s *sqliteDurableStore) GetDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
+	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE id = ?1`
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, id))
+}
+
+func (s *sqliteDurableStore) GetDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE file_id = ?1 LIMIT 1`
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, fileID[:]))
+}
+
+func (s *sqliteDurableStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE create_guid = ?1 LIMIT 1`
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, createGuid[:]))
+}
+
+// ConsumeDurableHandleByFileID atomically fetches and deletes via
+// `DELETE ... RETURNING`, closing the V1 reconnect TOCTOU window.
+func (s *sqliteDurableStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	query := `DELETE FROM durable_handles WHERE file_id = ?1 RETURNING ` + durableHandleColumns
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, fileID[:]))
+}
+
+// ConsumeDurableHandleByCreateGuid is the V2 counterpart.
+func (s *sqliteDurableStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	query := `DELETE FROM durable_handles WHERE create_guid = ?1 RETURNING ` + durableHandleColumns
+	return scanDurableHandle(s.pool.QueryRow(ctx, query, createGuid[:]))
+}
+
+func (s *sqliteDurableStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
+	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE app_instance_id = ?1 ORDER BY created_at`
+	rows, err := s.pool.Query(ctx, query, appInstanceId[:])
+	if err != nil {
+		return nil, err
+	}
+	return scanDurableHandleRows(rows)
+}
+
+func (s *sqliteDurableStore) GetDurableHandlesByFileHandle(ctx context.Context, fileHandle []byte) ([]*lock.PersistedDurableHandle, error) {
+	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE metadata_handle = ?1 ORDER BY created_at`
+	rows, err := s.pool.Query(ctx, query, fileHandle)
+	if err != nil {
+		return nil, err
+	}
+	return scanDurableHandleRows(rows)
+}
+
+func (s *sqliteDurableStore) DeleteDurableHandle(ctx context.Context, id string) error {
+	query := `DELETE FROM durable_handles WHERE id = ?1`
+	_, err := s.pool.Exec(ctx, query, id)
+	return err
+}
+
+func (s *sqliteDurableStore) ListDurableHandles(ctx context.Context) ([]*lock.PersistedDurableHandle, error) {
+	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles ORDER BY created_at`
+	rows, err := s.pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return scanDurableHandleRows(rows)
+}
+
+func (s *sqliteDurableStore) ListDurableHandlesByShare(ctx context.Context, shareName string) ([]*lock.PersistedDurableHandle, error) {
+	query := `SELECT ` + durableHandleColumns + ` FROM durable_handles WHERE share_name = ?1 ORDER BY created_at`
+	rows, err := s.pool.Query(ctx, query, shareName)
+	if err != nil {
+		return nil, err
+	}
+	return scanDurableHandleRows(rows)
+}
+
+func (s *sqliteDurableStore) DeleteExpiredDurableHandles(ctx context.Context, now time.Time) (int, error) {
+	// SQLite has no interval arithmetic, and modernc stores time.Time in a
+	// textual layout SQLite's date functions cannot parse. So compute expiry in
+	// Go: a handle is expired when disconnected_at + timeout_ms <= now. Read the
+	// candidate (id, disconnected_at, timeout_ms) tuples, then delete the
+	// expired ids. The two statements run on the same single-writer connection,
+	// so no handle can change its expiry in between.
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, disconnected_at, timeout_ms FROM durable_handles`)
+	if err != nil {
+		return 0, err
+	}
+	var expired []string
+	for rows.Next() {
+		var id string
+		var disconnectedAt time.Time
+		var timeoutMS int64
+		if err := rows.Scan(&id, &disconnectedAt, &timeoutMS); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if !disconnectedAt.Add(time.Duration(timeoutMS) * time.Millisecond).After(now) {
+			expired = append(expired, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	for _, id := range expired {
+		if _, err := s.pool.Exec(ctx, `DELETE FROM durable_handles WHERE id = ?1`, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(expired), nil
+}
+
+// SQLiteMetadataStore DurableHandleStore delegation
+
+var _ lock.DurableHandleStore = (*SQLiteMetadataStore)(nil)
+
+func (s *SQLiteMetadataStore) getDurableStore() *sqliteDurableStore {
+	s.durableStoreMu.Lock()
+	defer s.durableStoreMu.Unlock()
+	if s.durableStore == nil {
+		s.durableStore = newSQLiteDurableStore(s.conn())
+	}
+	return s.durableStore
+}
+
+func (s *SQLiteMetadataStore) PutDurableHandle(ctx context.Context, handle *lock.PersistedDurableHandle) error {
+	return s.getDurableStore().PutDurableHandle(ctx, handle)
+}
+
+func (s *SQLiteMetadataStore) GetDurableHandle(ctx context.Context, id string) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().GetDurableHandle(ctx, id)
+}
+
+func (s *SQLiteMetadataStore) GetDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().GetDurableHandleByFileID(ctx, fileID)
+}
+
+func (s *SQLiteMetadataStore) GetDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().GetDurableHandleByCreateGuid(ctx, createGuid)
+}
+
+func (s *SQLiteMetadataStore) ConsumeDurableHandleByFileID(ctx context.Context, fileID [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandleByFileID(ctx, fileID)
+}
+
+func (s *SQLiteMetadataStore) ConsumeDurableHandleByCreateGuid(ctx context.Context, createGuid [16]byte) (*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ConsumeDurableHandleByCreateGuid(ctx, createGuid)
+}
+
+func (s *SQLiteMetadataStore) GetDurableHandlesByAppInstanceId(ctx context.Context, appInstanceId [16]byte) ([]*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().GetDurableHandlesByAppInstanceId(ctx, appInstanceId)
+}
+
+func (s *SQLiteMetadataStore) GetDurableHandlesByFileHandle(ctx context.Context, fileHandle []byte) ([]*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().GetDurableHandlesByFileHandle(ctx, fileHandle)
+}
+
+func (s *SQLiteMetadataStore) DeleteDurableHandle(ctx context.Context, id string) error {
+	return s.getDurableStore().DeleteDurableHandle(ctx, id)
+}
+
+func (s *SQLiteMetadataStore) ListDurableHandles(ctx context.Context) ([]*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ListDurableHandles(ctx)
+}
+
+func (s *SQLiteMetadataStore) ListDurableHandlesByShare(ctx context.Context, shareName string) ([]*lock.PersistedDurableHandle, error) {
+	return s.getDurableStore().ListDurableHandlesByShare(ctx, shareName)
+}
+
+func (s *SQLiteMetadataStore) DeleteExpiredDurableHandles(ctx context.Context, now time.Time) (int, error) {
+	return s.getDurableStore().DeleteExpiredDurableHandles(ctx, now)
+}
+
+// DurableHandleStore returns this store as a DurableHandleStore.
+func (s *SQLiteMetadataStore) DurableHandleStore() lock.DurableHandleStore {
+	return s
+}
