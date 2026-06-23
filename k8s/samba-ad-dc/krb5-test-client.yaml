@@ -1,0 +1,41 @@
+# In-cluster Kerberos test client — DEV / TEST only.
+#
+# A throwaway pod that can reach the in-cluster Samba AD-DC (ClusterIP, ports
+# 88/389/636/53) and the DittoFS adapters (demo-adapter-smb:445,
+# demo-adapter-nfs:2049). Used to prove cross-protocol AD identity unification
+# WITHOUT an external Windows client: kinit as a domain user, then touch the
+# share over SMB (smbclient -k) and NFSv4.1 (sec=krb5) and confirm the same
+# user resolves to the same UID/GID on both.
+#
+# It mounts the same krb5.conf the AD-DC generated (Secret demo-krb5-conf) so
+# realm/KDC resolution matches the server. smbclient runs in userspace; the NFS
+# mount needs CAP_SYS_ADMIN, hence privileged.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: krb5-test-client
+  namespace: dittofs
+  labels:
+    app: krb5-test-client
+spec:
+  restartPolicy: Never
+  dnsConfig:
+    # Resolve the AD realm via the in-cluster Samba DNS for SRV-record KDC
+    # discovery; fall back to cluster DNS for the *.svc names.
+    nameservers: ["10.43.0.10"]
+    searches: ["dittofs.svc.cluster.local", "svc.cluster.local", "dittofs.ad"]
+  containers:
+    - name: client
+      image: docker.io/library/dittofs-ad-dc:dev   # reuse: it already has krb5-user, ldb/ldap tools, smbclient deps
+      imagePullPolicy: Never
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true   # NFS mount needs CAP_SYS_ADMIN
+      env:
+        - { name: KRB5_CONFIG, value: /etc/krb5.conf }
+      volumeMounts:
+        - { name: krb5-conf, mountPath: /etc/krb5.conf, subPath: krb5.conf, readOnly: true }
+  volumes:
+    - name: krb5-conf
+      secret:
+        secretName: demo-krb5-conf
