@@ -1,0 +1,15 @@
+DROP TABLE IF EXISTS synced_hashes;
+DROP TABLE IF EXISTS rollup_offsets;
+DROP TABLE IF EXISTS v4_client_recovery;
+DROP TABLE IF EXISTS durable_handles;
+DROP TABLE IF EXISTS nsm_client_registrations;
+DROP TABLE IF EXISTS locks;
+DROP TABLE IF EXISTS file_block_refs;
+DROP TABLE IF EXISTS file_blocks;
+DROP TABLE IF EXISTS server_epoch;
+DROP TABLE IF EXISTS server_config;
+DROP TABLE IF EXISTS filesystem_capabilities;
+DROP TABLE IF EXISTS filesystem_meta;
+DROP TABLE IF EXISTS shares;
+DROP TABLE IF EXISTS parent_child_map;
+DROP TABLE IF EXISTS inodes;

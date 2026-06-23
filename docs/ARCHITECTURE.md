@@ -1294,7 +1294,8 @@ Backends maintain a secondary index:
 
 | Backend  | Index                                                                       |
 |----------|-----------------------------------------------------------------------------|
-| Postgres | Partial unique: `files_object_id_idx ON files(object_id) WHERE object_id IS NOT NULL` (migration `000013_object_id`) |
+| Postgres | Partial unique: `inodes_object_id_idx ON inodes(object_id) WHERE object_id IS NOT NULL` |
+| SQLite   | Partial unique: `inodes_object_id_idx ON inodes(object_id) WHERE object_id IS NOT NULL` (pure-Go `glebarez/go-sqlite`, mirrors the Postgres model) |
 | Badger   | Secondary key `obj:{hex} -> file_id`, maintained inside each `Put`/`Delete` write batch |
 | Memory   | `map[ContentHash]uuid`, guarded by the existing store mutex                 |
 

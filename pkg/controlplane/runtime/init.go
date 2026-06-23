@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/postgres"
+	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
 )
 
 // InitializeFromStore creates a runtime and loads metadata stores from the database.
@@ -157,6 +158,45 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		}
 
 		return postgres.NewPostgresMetadataStore(ctx, pgCfg, capabilities)
+
+	case "sqlite":
+		dbPath, ok := config["path"].(string)
+		if !ok || dbPath == "" {
+			dbPath, ok = config["db_path"].(string) // accept legacy key
+			if !ok || dbPath == "" {
+				return nil, errors.New("sqlite metadata store requires path as string")
+			}
+		}
+		dbPath, err = pathutil.ExpandPath(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to expand path %q: %w", dbPath, err)
+		}
+
+		sqliteCfg := &sqlite.SQLiteMetadataStoreConfig{
+			Path:        dbPath,
+			AutoMigrate: true,
+		}
+
+		capabilities := metadata.FilesystemCapabilities{
+			MaxReadSize:           1024 * 1024,
+			PreferredReadSize:     64 * 1024,
+			MaxWriteSize:          1024 * 1024,
+			PreferredWriteSize:    64 * 1024,
+			MaxFileSize:           1024 * 1024 * 1024 * 100, // 100 GB
+			MaxFilenameLen:        255,
+			MaxPathLen:            4096,
+			MaxHardLinkCount:      32767,
+			SupportsHardLinks:     true,
+			SupportsSymlinks:      true,
+			CaseSensitive:         true,
+			CasePreserving:        true,
+			SupportsACLs:          false,
+			SupportsExtendedAttrs: true, // EAs persist in the inodes.eas column.
+			// File timestamps are stored as INTEGER unix nanoseconds (lossless).
+			TimestampResolution: time.Nanosecond,
+		}
+
+		return sqlite.NewSQLiteMetadataStore(ctx, sqliteCfg, capabilities)
 
 	default:
 		return nil, fmt.Errorf("unsupported metadata store type: %s", storeType)

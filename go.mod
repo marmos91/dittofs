@@ -12,6 +12,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.5.2
 	github.com/docker/go-connections v0.6.0
 	github.com/gemalto/kmip-go v0.1.0
+	github.com/glebarez/go-sqlite v1.21.2
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/go-ldap/ldap/v3 v3.4.13
@@ -67,7 +68,6 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/gemalto/flume v1.0.0 // indirect
 	github.com/geoffgarside/ber v1.1.0 // indirect
-	github.com/glebarez/go-sqlite v1.21.2 // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
