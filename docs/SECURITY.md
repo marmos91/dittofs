@@ -222,13 +222,33 @@ SMB3 derives per-purpose cryptographic keys from the session key using NIST SP80
 - Client has no valid Kerberos TGT
 - DNS resolution prevents Kerberos service ticket acquisition
 
+NTLM authenticates two classes of user:
+
+- **Local DittoFS users**: the NTLMv2 response is validated directly against
+  the NT hash stored in the control-plane user store.
+- **AD domain users**: when a machine account is configured
+  (`kerberos.machine_account`), the challenge/response is forwarded to the
+  Domain Controller over a **sealed NETLOGON secure channel** (MS-NRPC
+  sign+seal AES, post-ZeroLogon). The DC performs the validation; no local NT
+  hash is stored or used. The DC-returned SID is resolved through the LDAP/idmap
+  pipeline, yielding the same UID/GID as Kerberos authentication.
+  **Without a machine account, domain-user NTLM fails with `STATUS_LOGON_FAILURE`.**
+
+> **Machine secret sensitivity**: the machine account shared secret is stored
+> at rest in plaintext (like the LDAP bind password and Kerberos keytab). It
+> is write-only and redacted from API responses. Protect it with filesystem
+> permissions equivalent to a keytab file (`chmod 600`).
+
 **NTLM security tradeoffs:**
 - No mutual authentication (client cannot verify server identity)
 - Vulnerable to relay attacks without channel binding
 - Session key derived from password hash (weaker than Kerberos session key)
 - Signing uses HMAC-SHA256 (weaker than AES-CMAC/GMAC)
+- NETLOGON passthrough requires a pre-provisioned machine account
+  (online join and rotation tracked in #1323)
 
-**Security recommendation:** Configure Kerberos for all production deployments. Use NTLM only as a transition mechanism.
+**Security recommendation:** Configure Kerberos for all production deployments.
+Use NTLM only as a transition mechanism or for clients that cannot use Kerberos.
 
 ### Transport Security Comparison
 

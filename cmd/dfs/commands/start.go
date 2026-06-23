@@ -516,6 +516,13 @@ func kerberosConfigToDTO(c config.KerberosConfig) handlers.KerberosConfigDTO {
 		DNSDomain:        c.DNSDomain,
 		Krb5Conf:         c.Krb5Conf,
 		MaxContexts:      c.MaxContexts,
+		MachineAccount: handlers.KerberosMachineAccountDTO{
+			Enabled:     c.MachineAccount.Enabled,
+			AccountName: c.MachineAccount.AccountName,
+			Secret:      c.MachineAccount.Secret,
+			KeytabPath:  c.MachineAccount.KeytabPath,
+			DCAddresses: c.MachineAccount.DCAddresses,
+		},
 	}
 	if c.MaxClockSkew > 0 {
 		dto.MaxClockSkew = c.MaxClockSkew.String()
@@ -536,6 +543,13 @@ func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
 		DNSDomain:        dto.DNSDomain,
 		Krb5Conf:         dto.Krb5Conf,
 		MaxContexts:      dto.MaxContexts,
+		MachineAccount: config.MachineAccountConfig{
+			Enabled:     dto.MachineAccount.Enabled,
+			AccountName: dto.MachineAccount.AccountName,
+			Secret:      dto.MachineAccount.Secret,
+			KeytabPath:  dto.MachineAccount.KeytabPath,
+			DCAddresses: dto.MachineAccount.DCAddresses,
+		},
 	}
 	if d, err := time.ParseDuration(dto.MaxClockSkew); err == nil {
 		c.MaxClockSkew = d
@@ -647,6 +661,18 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 			return nil, fmt.Errorf("failed to initialize SMB Kerberos provider: %w", err)
 		}
 		smbAdapter.SetKerberosProvider(provider)
+	}
+
+	// Wire NETLOGON authenticator for domain-controller NTLM pass-through.
+	// This runs whenever kerberosConfig is present (machine_account lives on
+	// the kerberos config), regardless of kerberosConfig.Enabled.  An
+	// NTLM-only / legacy deployment sets kerberos.enabled=false but still
+	// needs NETLOGON passthrough when machine_account.enabled=true.
+	// buildNetlogonAuthenticator returns nil when MachineAccount.Enabled is
+	// false, so SetNetlogonAuthenticator no-ops in that case.
+	if kerberosConfig != nil {
+		nlAuth := buildNetlogonAuthenticator(*kerberosConfig)
+		smbAdapter.SetNetlogonAuthenticator(nlAuth)
 	}
 
 	return smbAdapter, nil

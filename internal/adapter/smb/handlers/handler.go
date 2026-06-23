@@ -17,6 +17,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	authkerberos "github.com/marmos91/dittofs/internal/auth/kerberos"
+	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -239,6 +240,11 @@ type Handler struct {
 	// When false, NTLM tokens in SESSION_SETUP are rejected with STATUS_LOGON_FAILURE.
 	// Default: true.
 	NtlmEnabled bool
+
+	// NetlogonAuth performs NETLOGON-based NTLM pass-through authentication
+	// against a domain controller. When nil, NTLM falls back to local account
+	// verification only. Injected from cmd/dfs via buildNetlogonAuthenticator.
+	NetlogonAuth netlogon.NetlogonAuthenticator
 
 	// GuestEnabled controls whether guest/anonymous sessions are allowed.
 	// When false, guest session requests are rejected with STATUS_LOGON_FAILURE.
@@ -861,6 +867,8 @@ func NewHandler() *Handler {
 // for credit tracking). Initializes pipe manager, notify registry, generates a
 // random server GUID, and sets default max sizes. LeaseManager is wired by the
 // adapter layer when the runtime and LockManager are available.
+// The NETLOGON authenticator is injected separately via SetNetlogonAuthenticator
+// after construction (see pkg/adapter/smb/adapter.go createSMBAdapter).
 func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 	h := &Handler{
 		StartTime:               time.Now(),
@@ -883,6 +891,7 @@ func NewHandlerWithSessionManager(sessionManager *session.Manager) *Handler {
 		DirectoryLeasingEnabled: true,
 		NtlmEnabled:             true,
 		GuestEnabled:            true,
+
 		// Default durable handle timeout: 300s (5 minutes). Matches Samba's
 		// `durable_default_timeout_msec` (source3/smbd/smb2_create.c).
 		// smbtorture asserts this value when the client requests

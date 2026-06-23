@@ -15,8 +15,10 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
+	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	pkgidentity "github.com/marmos91/dittofs/pkg/identity"
 )
 
 // recordAuth emits one SMB authentication-attempt metric (and a failure when
@@ -1269,6 +1271,22 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		// User not found or disabled
 		if err != nil || user == nil {
 			logger.Debug("User not found in UserStore", "username", resolvedUsername, "error", err)
+			// NETLOGON domain-user fallback (#1314): a domain user with no local
+			// control-plane account may still be authenticated by forwarding the
+			// NTLM response to a Domain Controller over a NETLOGON secure channel.
+			// Mirrors the Kerberos directory-resolved-identity path (#1317): the DC
+			// returns the SIDs + session base key, the resolver maps the SID to a
+			// UID/GID, and a transient session is synthesized. Only attempted on a
+			// fresh, non-binding SESSION_SETUP — a bind must match the existing
+			// session's identity, and a re-auth must not resurrect a passed-through
+			// identity. Fails closed: on a missing authenticator or any DC error,
+			// execution falls through to the LOGON_FAILURE / reauth-destroy paths
+			// below (never guest, never partial session).
+			if !pending.IsBinding && !pending.IsReauth {
+				if res, handled := h.tryNetlogonFallback(ctx, pending, authMsg); handled {
+					return res, nil
+				}
+			}
 			h.destroySessionOnReauthFailure(ctx.Context, pending, authMsg.Username)
 			return NewErrorResult(types.StatusLogonFailure), nil
 		}
@@ -1298,6 +1316,132 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		return NewErrorResult(types.StatusLogonFailure), nil
 	}
 	return h.createGuestSessionWithID(ctx, pending)
+}
+
+// tryNetlogonFallback authenticates a domain user that has no local
+// control-plane account by forwarding the NTLM challenge/response to a Domain
+// Controller over a NETLOGON secure channel (#1314), then synthesizing a
+// session from the DC-returned identity. It mirrors the Kerberos
+// directory-resolved-identity path (#1317): where Kerberos obtains the SIDs
+// from the ticket's PAC, NETLOGON obtains them from the DC; from there the
+// session-building path is identical — resolve the SID to a UID/GID, create the
+// session, stamp the PAC identity, and configure signing from the session base
+// key.
+//
+// Returns (result, true) when this path produced a terminal verdict (a built
+// session on success). Returns (nil, false) when the fallback is unavailable or
+// could not complete (no authenticator, DC error, or unresolvable SID) so the
+// caller falls through to STATUS_LOGON_FAILURE. It NEVER returns a guest or
+// partial session: every non-success outcome is reported as not-handled and
+// fails closed in the caller.
+//
+// Only called on a fresh, non-binding, non-reauth SESSION_SETUP (enforced by
+// the caller): a bind must authenticate the same user already on the session,
+// and a re-auth must not resurrect a passed-through identity in place of the
+// original.
+func (h *Handler) tryNetlogonFallback(ctx *SMBHandlerContext, pending *PendingAuth, authMsg *auth.AuthenticateMessage) (*HandlerResult, bool) {
+	// Disabled (no authenticator injected): behave exactly as before — the
+	// caller returns STATUS_LOGON_FAILURE for the unknown domain user.
+	if h.NetlogonAuth == nil {
+		return nil, false
+	}
+
+	res, err := h.NetlogonAuth.NetworkLogon(ctx.Context, netlogon.NetworkLogonRequest{
+		Username:        authMsg.Username,
+		Domain:          authMsg.Domain,
+		ServerChallenge: pending.ServerChallenge,
+		NTResponse:      authMsg.NtChallengeResponse,
+		LMResponse:      authMsg.LmChallengeResponse,
+	})
+	if err != nil {
+		// Fail closed: the DC rejected the credential or the channel failed.
+		// Fall through to STATUS_LOGON_FAILURE in the caller — never guest.
+		logger.Debug("NETLOGON pass-through authentication failed",
+			"username", authMsg.Username, "domain", authMsg.Domain, "error", err)
+		return nil, false
+	}
+	if res == nil {
+		logger.Debug("NETLOGON returned a nil result without error", "username", authMsg.Username)
+		return nil, false
+	}
+
+	// Resolve the DC-returned SID to a DittoFS UID/GID via the centralized
+	// resolver and synthesize a transient user (same mechanism the Kerberos
+	// path uses on a local miss). Without a resolved identity we cannot build a
+	// usable session, so fail closed.
+	resolved := h.resolveNetlogonIdentity(ctx, res)
+	if resolved == nil || !resolved.Found {
+		logger.Info("NETLOGON pass-through succeeded but identity could not be resolved (fail closed)",
+			"username", authMsg.Username, "userSID", res.UserSID)
+		return nil, false
+	}
+	user := synthUserFromResolved(resolved)
+
+	logger.Info("NETLOGON pass-through: authenticated directory-resolved domain user (no local account)",
+		"username", user.Username, "uid", resolved.UID, "gid", resolved.GID,
+		"userSID", res.UserSID, "domain", res.DomainName)
+
+	// Derive the final signing key from the DC-provided session base key. The
+	// DC's SessionBaseKey replaces the locally-computed one, but KEY_EXCH and
+	// the client's EncryptedRandomSessionKey are honored exactly as the local
+	// NTLM path does (auth.DeriveSigningKey performs the RC4 unwrap when
+	// NTLMSSP_NEGOTIATE_KEY_EXCH is set).
+	signingKey := auth.DeriveSigningKey(
+		res.SessionBaseKey,
+		authMsg.NegotiateFlags,
+		authMsg.EncryptedRandomSessionKey,
+	)
+
+	ctx.IsGuest = false
+
+	sess := h.CreateSessionWithUser(pending.SessionID, pending.ClientAddr, user, h.sessionDomain(authMsg.Domain))
+	sess.OriginConnID = ctx.ConnID
+	recordSessionBindIdentity(sess, ctx)
+
+	// Stamp the DC-resolved group/user SIDs onto the session so every
+	// subsequent request merges them into AuthContext.Identity.GroupSIDs,
+	// exactly as the Kerberos PAC path does.
+	sess.SetPACIdentity(res.GroupSIDs, res.UserSID)
+	ctx.PACGroupSIDs = res.GroupSIDs
+	ctx.SessionID = sess.SessionID
+
+	if errResult := h.configureSessionSigningWithKey(sess, signingKey[:], ctx); errResult != nil {
+		return errResult, true
+	}
+
+	logger.Debug("NETLOGON pass-through session created",
+		"sessionID", sess.SessionID, "username", sess.Username, "domain", sess.Domain,
+		"isGuest", sess.IsGuest, "signingEnabled", sess.ShouldSign(), "encryptData", sess.ShouldEncrypt())
+
+	return h.buildAuthenticatedResponse(pending, signingKey[:], authMsg.NegotiateFlags, sess.ShouldEncrypt()), true
+}
+
+// resolveNetlogonIdentity maps a NETLOGON LogonResult to a DittoFS identity via
+// the centralized resolver, keyed on the DC-returned user SID. Returns nil when
+// no resolver is installed or the SID does not resolve (Found=false), so the
+// caller fails closed. Mirrors resolveKerberosIdentity, but the credential is a
+// validated Windows SID rather than a Kerberos principal.
+func (h *Handler) resolveNetlogonIdentity(ctx *SMBHandlerContext, res *netlogon.LogonResult) *pkgidentity.ResolvedIdentity {
+	resolver := h.IdentityResolver()
+	if resolver == nil {
+		return nil
+	}
+	// Provider is deliberately left unset (unlike the Kerberos path which stamps
+	// Provider: "kerberos"): SID-based resolution matches on ExternalID via the
+	// provider's CanResolve. Stamping a Provider here would narrow matching — do
+	// not "fix" this by adding one.
+	cred := &pkgidentity.Credential{
+		ExternalID: res.UserSID,
+		Attributes: map[string]string{
+			"username": res.Username,
+			"domain":   res.DomainName,
+		},
+	}
+	resolved, err := resolver.Resolve(ctx.Context, cred)
+	if err != nil || resolved == nil || !resolved.Found {
+		return nil
+	}
+	return resolved
 }
 
 // destroySessionOnReauthFailure tears down an existing session after its

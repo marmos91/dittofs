@@ -315,6 +315,50 @@ func (c AdminConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// MachineAccountConfig configures the machine account (computer object) in
+// an Active Directory domain for NETLOGON support.
+type MachineAccountConfig struct {
+	// Enabled controls whether machine account support is active.
+	// Default: false
+	Enabled bool `mapstructure:"enabled" yaml:"enabled"`
+
+	// AccountName is the machine account name (e.g. "DITTOFS$").
+	// In Active Directory, machine accounts typically have a '$' suffix.
+	AccountName string `mapstructure:"account_name" yaml:"account_name"`
+
+	// Secret is the machine account password.
+	Secret string `mapstructure:"secret" yaml:"secret"`
+
+	// KeytabPath is the path to the keytab file for the machine account.
+	KeytabPath string `mapstructure:"keytab_path" yaml:"keytab_path"`
+
+	// DCAddresses is a list of domain controller addresses.
+	DCAddresses []string `mapstructure:"dc_address" yaml:"dc_address"`
+}
+
+// MarshalYAML redacts the machine account secret when the config is serialized
+// for display (e.g. `dfs config show`). An empty secret stays empty so "unset"
+// is distinguishable from a redacted value.
+func (c MachineAccountConfig) MarshalYAML() (interface{}, error) {
+	type alias MachineAccountConfig // avoid infinite recursion
+	out := alias(c)
+	if out.Secret != "" {
+		out.Secret = redactedSecret
+	}
+	return out, nil
+}
+
+// MarshalJSON redacts the machine account secret when the config is serialized
+// for display. See MarshalYAML.
+func (c MachineAccountConfig) MarshalJSON() ([]byte, error) {
+	type alias MachineAccountConfig // avoid infinite recursion
+	out := alias(c)
+	if out.Secret != "" {
+		out.Secret = redactedSecret
+	}
+	return json.Marshal(out)
+}
+
 // KerberosConfig contains Kerberos/RPCSEC_GSS authentication configuration.
 //
 // When Enabled is true, the NFS server supports Kerberos authentication
@@ -395,6 +439,9 @@ type KerberosConfig struct {
 
 	// IdentityMapping configures how Kerberos principals are mapped to Unix identities.
 	IdentityMapping IdentityMappingConfig `mapstructure:"identity_mapping" yaml:"identity_mapping"`
+
+	// MachineAccount configures the machine account (computer object) for NETLOGON support.
+	MachineAccount MachineAccountConfig `mapstructure:"machine_account" yaml:"machine_account"`
 }
 
 // Validate returns an error if the KerberosConfig has invalid values.

@@ -630,18 +630,40 @@ DittoFS implements NTLMv2 authentication with SPNEGO negotiation:
 3. Client sends SESSION_SETUP with NTLM response
 4. Server validates credentials and creates session
 
-> **NTLM authenticates local DittoFS users only.** The NTLMv2 response is
-> validated against the NT hash in the control-plane user store. An **AD domain
-> user** has no local account and no local NT hash, so NTLM logon for domain
-> users fails with `STATUS_LOGON_FAILURE`. Validating a domain user's NTLM
-> response would require a NETLOGON secure-channel passthrough to the DC
-> (`NetrLogonSamLogon`), which is **not implemented** (tracked in issue #1314,
-> tied to the deferred online-join work).
+> **NTLM authenticates local DittoFS users and AD domain users.**
 >
-> **For AD domain users, use Kerberos** (below): the DC issues the ticket and
-> DittoFS validates it with its service keytab — no passthrough needed. The
-> LDAP/AD directory integration resolves *identity* (UID/GID, groups); it does
-> **not** authenticate NTLM.
+> - **Local users**: the NTLMv2 response is validated directly against the NT
+>   hash stored in the control-plane user store.
+> - **AD domain users**: when a machine account is configured
+>   (`kerberos.machine_account`), DittoFS validates the domain user's NTLM
+>   response by forwarding it to the Domain Controller over a **sealed
+>   NETLOGON secure channel** (MS-NRPC `NetrLogonSamLogon`, sign+seal AES).
+>   The DC-returned SID is resolved through the same LDAP/idmap pipeline used
+>   for Kerberos, so the user maps to the same UID/GID across NFS-krb5,
+>   SMB-krb5, and SMB-NTLM.
+>
+> **Machine account requirement**: NETLOGON passthrough requires an
+> offline-provisioned machine account (`DITTOFS$`) and its shared secret,
+> configured under the kerberos identity provider via
+> `dfsctl identity-provider configure kerberos --machine-account-enabled
+> --machine-account-name DITTOFS$ --machine-secret <secret> --dc-address <dc>`.
+> The secret is stored at-rest (like the LDAP bind password) and is
+> **write-only / redacted** in API responses. Without a configured machine
+> account, domain-user NTLM still fails with `STATUS_LOGON_FAILURE`.
+>
+> Deferred work: online machine-account join and rotation (#1323), DNS SRV DC
+> discovery (#1324, currently a static `dc_address` list), and hot-reload of
+> the machine credential without restart (#1325).
+>
+> **Status note**: end-to-end interoperability of the NETLOGON secure channel
+> against a Samba AD-DC is still being validated — the sealed-schannel
+> `AlterContext` is currently rejected by the test DC
+> (`RPC_S_UNKNOWN_AUTHN_SERVICE`); see #1345.
+>
+> **For AD domain users, Kerberos remains the recommended path** (single
+> round-trip, mutual authentication, no machine-account provisioning required).
+> The LDAP/AD directory integration resolves *identity* (UID/GID, groups) for
+> both Kerberos and NETLOGON-validated sessions.
 
 ### Kerberos Authentication
 
@@ -1170,7 +1192,10 @@ When Kerberos is not available (no keytab configured, client has no valid TGT, o
 1. Client sends NTLM Negotiate message
 2. Server responds with NTLM Challenge
 3. Client sends NTLM Authenticate with NTProofStr
-4. Server validates against stored password hash
+4. Server validates credentials: **local users** are checked against the stored
+   NT hash; **AD domain users** are validated by forwarding the challenge/response
+   to the Domain Controller over a sealed NETLOGON secure channel (requires a
+   configured machine account — see [NTLM Authentication](#ntlm-authentication))
 
 NTLM provides weaker security than Kerberos: no mutual authentication, vulnerable to relay attacks, and the session key is derived from the password hash rather than a fresh Kerberos session key.
 

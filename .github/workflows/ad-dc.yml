@@ -49,6 +49,9 @@ jobs:
           go-version: "1.25.x"
           cache: true
 
+      - name: Install smbclient (for NTLM e2e test)
+        run: sudo apt-get update && sudo apt-get install -y smbclient
+
       - name: Run AD-DC PAC integration test
         run: |
           cd test/integration/ad-dc
