@@ -101,10 +101,26 @@ func TestNetlogonHotReload(t *testing.T) {
 		})
 	}
 
-	// 1. Establish + first successful logon (builds the channel).
-	res, err := logonAlice()
-	if err != nil {
-		t.Fatalf("pre-reload NETLOGON logon failed: %v", err)
+	// 1. Establish + first successful logon (builds the channel). Samba's SMB/RPC
+	// stack can accept TCP on 135/445/53 a beat before it fully serves sessions
+	// (transient "connection reset by peer" / handshake errors during DC
+	// start-up), so retry the FIRST logon for a bounded window. This rides out DC
+	// readiness only — it is not part of the hot-reload assertion.
+	var res *netlogon.LogonResult
+	var err error
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		res, err = logonAlice()
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pre-reload NETLOGON logon never succeeded within startup window: %v", err)
+		}
+		t.Logf("pre-reload logon not ready yet, retrying: %v", err)
+		// Drop any half-open channel so the retry rebuilds cleanly.
+		a.Reload(ctx)
+		time.Sleep(3 * time.Second)
 	}
 	if res.UserSID == "" || len(res.GroupSIDs) == 0 {
 		t.Fatalf("pre-reload logon returned incomplete identity: %+v", res)
