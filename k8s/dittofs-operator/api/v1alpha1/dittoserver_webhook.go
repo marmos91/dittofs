@@ -99,41 +99,10 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 		}
 	}
 
-	// Validate Kerberos: when enabled it must have an SPN and a keytab to act as
-	// a service principal. A keytab Secret key reference also needs its key set.
-	if r.Spec.Identity != nil && r.Spec.Identity.Kerberos != nil && r.Spec.Identity.Kerberos.Enabled {
-		k := r.Spec.Identity.Kerberos
-		if k.ServicePrincipal == "" {
-			return warnings, fmt.Errorf("identity.kerberos.servicePrincipal is required when kerberos is enabled")
-		}
-		if k.KeytabSecretRef == nil || k.KeytabSecretRef.Name == "" {
-			return warnings, fmt.Errorf("identity.kerberos.keytabSecretRef is required when kerberos is enabled")
-		}
-		if k.KeytabSecretRef.Key == "" {
-			return warnings, fmt.Errorf("identity.kerberos.keytabSecretRef.key is required when keytabSecretRef.name is set")
-		}
-		if k.Krb5ConfSecretRef != nil && k.Krb5ConfSecretRef.Name != "" && k.Krb5ConfSecretRef.Key == "" {
-			return warnings, fmt.Errorf("identity.kerberos.krb5ConfSecretRef.key is required when krb5ConfSecretRef.name is set")
-		}
-
-		// Validate the machine account (NETLOGON passthrough): when enabled it
-		// needs an account name and at least one credential source (a password
-		// Secret or a keytab Secret). Any referenced Secret key must set its key.
-		if m := k.MachineAccount; m != nil && m.Enabled {
-			if m.AccountName == "" {
-				return warnings, fmt.Errorf("identity.kerberos.machineAccount.accountName is required when machineAccount is enabled")
-			}
-			hasSecret := m.SecretRef != nil && m.SecretRef.Name != ""
-			hasKeytab := m.KeytabSecretRef != nil && m.KeytabSecretRef.Name != ""
-			if !hasSecret && !hasKeytab {
-				return warnings, fmt.Errorf("identity.kerberos.machineAccount requires a secretRef or keytabSecretRef when enabled")
-			}
-			if hasSecret && m.SecretRef.Key == "" {
-				return warnings, fmt.Errorf("identity.kerberos.machineAccount.secretRef.key is required when secretRef.name is set")
-			}
-			if hasKeytab && m.KeytabSecretRef.Key == "" {
-				return warnings, fmt.Errorf("identity.kerberos.machineAccount.keytabSecretRef.key is required when keytabSecretRef.name is set")
-			}
+	// Validate Kerberos (and its nested machine account) when configured.
+	if r.Spec.Identity != nil {
+		if err := validateKerberos(r.Spec.Identity.Kerberos); err != nil {
+			return warnings, err
 		}
 	}
 
@@ -145,6 +114,55 @@ func (r *DittoServer) validateDittoServer() (admission.Warnings, error) {
 	warnings = append(warnings, portWarnings...)
 
 	return warnings, nil
+}
+
+// validateKerberos validates the Kerberos provider block (and its nested machine
+// account) when enabled: it must have an SPN and a keytab to act as a service
+// principal, and any referenced Secret must set its key. A nil or disabled
+// provider is valid. Extracted from validateDittoServer to keep that function's
+// cyclomatic complexity in check.
+func validateKerberos(k *KerberosConfig) error {
+	if k == nil || !k.Enabled {
+		return nil
+	}
+	if k.ServicePrincipal == "" {
+		return fmt.Errorf("identity.kerberos.servicePrincipal is required when kerberos is enabled")
+	}
+	if k.KeytabSecretRef == nil || k.KeytabSecretRef.Name == "" {
+		return fmt.Errorf("identity.kerberos.keytabSecretRef is required when kerberos is enabled")
+	}
+	if k.KeytabSecretRef.Key == "" {
+		return fmt.Errorf("identity.kerberos.keytabSecretRef.key is required when keytabSecretRef.name is set")
+	}
+	if k.Krb5ConfSecretRef != nil && k.Krb5ConfSecretRef.Name != "" && k.Krb5ConfSecretRef.Key == "" {
+		return fmt.Errorf("identity.kerberos.krb5ConfSecretRef.key is required when krb5ConfSecretRef.name is set")
+	}
+	return validateMachineAccount(k.MachineAccount)
+}
+
+// validateMachineAccount validates the NETLOGON machine-account block: when
+// enabled it needs an account name and at least one credential source (a
+// password Secret or a keytab Secret); any referenced Secret must set its key.
+// A nil or disabled machine account is valid.
+func validateMachineAccount(m *MachineAccountConfig) error {
+	if m == nil || !m.Enabled {
+		return nil
+	}
+	if m.AccountName == "" {
+		return fmt.Errorf("identity.kerberos.machineAccount.accountName is required when machineAccount is enabled")
+	}
+	hasSecret := m.SecretRef != nil && m.SecretRef.Name != ""
+	hasKeytab := m.KeytabSecretRef != nil && m.KeytabSecretRef.Name != ""
+	if !hasSecret && !hasKeytab {
+		return fmt.Errorf("identity.kerberos.machineAccount requires a secretRef or keytabSecretRef when enabled")
+	}
+	if hasSecret && m.SecretRef.Key == "" {
+		return fmt.Errorf("identity.kerberos.machineAccount.secretRef.key is required when secretRef.name is set")
+	}
+	if hasKeytab && m.KeytabSecretRef.Key == "" {
+		return fmt.Errorf("identity.kerberos.machineAccount.keytabSecretRef.key is required when keytabSecretRef.name is set")
+	}
+	return nil
 }
 
 // validatePorts checks port configuration for conflicts and warns about privileged ports.
