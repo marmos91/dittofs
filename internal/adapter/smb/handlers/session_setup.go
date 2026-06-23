@@ -1417,11 +1417,20 @@ func (h *Handler) tryNetlogonFallback(ctx *SMBHandlerContext, pending *PendingAu
 	return h.buildAuthenticatedResponse(pending, signingKey[:], authMsg.NegotiateFlags, sess.ShouldEncrypt()), true
 }
 
-// resolveNetlogonIdentity maps a NETLOGON LogonResult to a DittoFS identity via
-// the centralized resolver, keyed on the DC-returned user SID. Returns nil when
-// no resolver is installed or the SID does not resolve (Found=false), so the
-// caller fails closed. Mirrors resolveKerberosIdentity, but the credential is a
-// validated Windows SID rather than a Kerberos principal.
+// resolveNetlogonIdentity maps a NETLOGON LogonResult to a DittoFS identity,
+// keyed on the DC-returned user SID. Resolution order:
+//  1. The centralized resolver (e.g. LDAP/local link), if installed. A configured
+//     directory mapping always wins.
+//  2. idmap_rid fallback (when NetlogonIdmapRID is set): a stable POSIX identity
+//     derived algorithmically from the SID RIDs (Samba idmap_rid, UID == RID), so
+//     a NETLOGON-authenticated domain user gets a usable session without RFC2307
+//     attributes or a directory lookup.
+//
+// Fails closed (returns nil) when neither path produces a mapping. A resolver
+// *error* is treated as an infrastructure failure: we fail closed and do NOT use
+// the RID fallback, since silently switching to algorithmic UIDs could mask a
+// directory outage and hand a user a different UID/GID than the configured
+// mapping (#1357). Mirrors resolveKerberosIdentity, keyed on a validated SID.
 func (h *Handler) resolveNetlogonIdentity(ctx *SMBHandlerContext, res *netlogon.LogonResult) *pkgidentity.ResolvedIdentity {
 	if resolver := h.IdentityResolver(); resolver != nil {
 		// Provider is deliberately left unset (unlike the Kerberos path which
@@ -1435,17 +1444,23 @@ func (h *Handler) resolveNetlogonIdentity(ctx *SMBHandlerContext, res *netlogon.
 				"domain":   res.DomainName,
 			},
 		}
-		if resolved, err := resolver.Resolve(ctx.Context, cred); err == nil && resolved != nil && resolved.Found {
+		resolved, err := resolver.Resolve(ctx.Context, cred)
+		if err != nil {
+			// Infrastructure failure (per pkg/identity.IdentityProvider: errors
+			// signal infra problems, not "unmapped"). Fail closed — do not fall
+			// back to RID idmap, which would mask the outage and could change the
+			// UID/GID relative to the configured directory mapping.
+			logger.Debug("NETLOGON identity resolve failed (infra error); failing closed",
+				"username", res.Username, "userSID", res.UserSID, "error", err)
+			return nil
+		}
+		if resolved != nil && resolved.Found {
 			return resolved
 		}
+		// Resolver present but no mapping for this SID (Found=false): fall through
+		// to the idmap_rid fallback below.
 	}
 
-	// idmap_rid fallback: when no provider maps the DC-returned SID (e.g. no LDAP
-	// directory is configured), derive a stable POSIX identity algorithmically
-	// from the SID RIDs — Samba's idmap_rid model, where UID == the account's RID.
-	// This lets a NETLOGON-authenticated domain user obtain a usable session
-	// without RFC2307 attributes or a directory lookup. It is a last resort:
-	// any configured LDAP/local mapping above always takes precedence (#1357).
 	if h.NetlogonIdmapRID {
 		return synthesizeRIDIdentity(res)
 	}
