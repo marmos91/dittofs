@@ -149,12 +149,12 @@ func (h *Handler) dispatchOne(compCtx *types.CompoundContext, v41ctx *types.V41R
 		result = h.v42DispatchTable[opCode](compCtx, reader)
 
 	case h.v42DispatchTable[opCode] != nil:
-		// v4.2-only op (RFC 8276 xattr) seen under v4.0/v4.1: it is a valid op
-		// number but unsupported → NOTSUPP, which stops the COMPOUND (RFC 7530
-		// §16.2). Unlike rejectV40OnlyOp, the op's args are NOT consumed from
-		// the reader; that is safe because NOTSUPP stops the COMPOUND, so no
-		// later op parses the reader.
-		logger.Debug("NFSv4 COMPOUND xattr op requires minorversion 2",
+		// v4.2-only op (RFC 8276 xattr or RFC 7862 sparse-file op) seen under
+		// v4.0/v4.1: it is a valid op number but unsupported → NOTSUPP, which
+		// stops the COMPOUND (RFC 7530 §16.2). Unlike rejectV40OnlyOp, the op's
+		// args are NOT consumed from the reader; that is safe because NOTSUPP
+		// stops the COMPOUND, so no later op parses the reader.
+		logger.Debug("NFSv4 COMPOUND v4.2-only op requires minorversion 2",
 			"opcode", opCode, "op_name", types.OpName(opCode), "client", compCtx.ClientAddr)
 		result = notSuppHandler(opCode)
 
