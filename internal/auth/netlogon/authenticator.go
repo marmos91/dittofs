@@ -4,18 +4,25 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 // errChannelNotConnected is returned by a secureChannel.samLogon when the
 // channel was torn down (e.g. by a concurrent Reload) before the call acquired
-// the channel lock. It is a benign race, not an RPC failure: NetworkLogon
-// rebuilds and retries it without consuming the single RPC-error retry.
+// the channel lock. It is a benign local race, not an RPC failure: NetworkLogon
+// rebuilds and retries it (with no backoff).
 var errChannelNotConnected = errors.New("netlogon: channel not connected")
 
-// maxReloadRetries bounds how many times NetworkLogon rebuilds the channel after
-// hitting errChannelNotConnected, so a pathological reload storm cannot live-lock
-// a logon. In practice a reload is a rare admin action and one rebuild suffices.
+// maxReloadRetries bounds how many times NetworkLogon rebuilds the channel and
+// retries after a transient secure-channel error (a concurrent reload tearing
+// down / rebuilding the channel), so it can never live-lock. In practice a
+// reload is a rare admin action and the first rebuild succeeds.
 const maxReloadRetries = 8
+
+// reloadRetryBackoff is the pause between rebuild attempts after a DC-side
+// failure, giving a freshly rebuilt channel's MS-NRPC credential chain a moment
+// to settle before the next attempt.
+const reloadRetryBackoff = 100 * time.Millisecond
 
 // NetworkLogonRequest carries the NTLM challenge/response the SMB handler
 // received on the wire, to be validated by a Domain Controller.
@@ -94,12 +101,20 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 		return res, nil
 	}
 
-	// A concurrent Reload that tore sc down between ensureChannel and samLogon
-	// surfaces as errChannelNotConnected — a benign race, not an RPC failure.
-	// Rebuild against the latest credential and retry, bounded so a reload storm
-	// cannot live-lock. Any other error gets a single RPC-error rebuild+retry.
-	retries := maxReloadRetries
-	for {
+	// The logon failed. A concurrent Reload tears down and rebuilds the sealed
+	// secure channel — a fresh ReqChallenge/ServerAuthenticate handshake that
+	// resets the MS-NRPC credential chain. A logon caught in that window can see
+	// either the benign local errChannelNotConnected (channel torn down before the
+	// RPC) or a DC-side rejection (e.g. STATUS_ACCESS_DENIED while the new chain
+	// settles). Both are transient: rebuild against the latest credential and
+	// retry, bounded so we can never live-lock, with a short backoff to let the
+	// rebuilt channel's credential chain settle.
+	//
+	// A credential-provider error is NOT retried: when passthrough is disabled the
+	// provider returns a validation error, so the loop returns immediately and the
+	// logon fails closed (it never silently keeps authenticating with a stale
+	// credential).
+	for attempt := 0; attempt < maxReloadRetries; attempt++ {
 		a.reset(ctx)
 		mc, err = a.provider.Credential(ctx)
 		if err != nil {
@@ -112,16 +127,18 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 		if err == nil {
 			return res, nil
 		}
-		// Only the reload race is retried beyond the first attempt; a genuine RPC
-		// error is returned after one rebuild+retry.
+		// Brief backoff before the next rebuild so a just-rebuilt channel is not
+		// immediately torn down again by a still-in-flight reload. Skipped for the
+		// purely-local "channel not connected" race, which needs no settle time.
 		if !errors.Is(err, errChannelNotConnected) {
-			return nil, err
-		}
-		retries--
-		if retries <= 0 {
-			return nil, err
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(reloadRetryBackoff):
+			}
 		}
 	}
+	return nil, err
 }
 
 // Reload tears down the cached channel so the next NetworkLogon rebuilds it

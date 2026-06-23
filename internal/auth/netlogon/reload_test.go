@@ -46,7 +46,19 @@ type fakeState struct {
 	// concurrencyViolation is set to 1 if any single channel ever served two
 	// logons at once — i.e. the per-channel lock invariant was broken.
 	concurrencyViolation int32
+	// dcRejectsRemaining, when > 0, makes that many samLogon calls return a
+	// DC-side rejection before succeeding, to exercise the bounded retry path.
+	dcRejectsRemaining int32
 }
+
+// errDCRejected stands in for a transient DC-side SamLogon rejection (e.g.
+// STATUS_ACCESS_DENIED) that is NOT the local errChannelNotConnected sentinel,
+// so it drives the backoff-retry branch in NetworkLogon.
+var errDCRejected = &dcError{"netlogon: SAMLogon returned 0xc0000022"}
+
+type dcError struct{ s string }
+
+func (e *dcError) Error() string { return e.s }
 
 func (c *fakeChannel) connect(ctx context.Context, mc MachineCredential) error {
 	c.mu.Lock()
@@ -69,6 +81,13 @@ func (c *fakeChannel) samLogon(ctx context.Context, mc MachineCredential, req Ne
 		// reload-race retry/rebuild logic is exercised. Uses the same sentinel the
 		// real channel returns so NetworkLogon treats it as a benign reload race.
 		return nil, errChannelNotConnected
+	}
+
+	// Optionally simulate a DC-side rejection (e.g. STATUS_ACCESS_DENIED while a
+	// freshly rebuilt channel's credential chain settles) for the first
+	// dcRejectsRemaining logons, to exercise the bounded backoff-retry path.
+	if atomic.AddInt32(&c.state.dcRejectsRemaining, -1) >= 0 {
+		return nil, errDCRejected
 	}
 
 	// Per-channel concurrency must never exceed 1: the channel lock serializes
@@ -189,6 +208,36 @@ func TestReloadCredential_EmptyCredentialDisablesPassthrough(t *testing.T) {
 	// No second channel must have been built for the disabled logon.
 	if got := completedLogons(st); got != 1 {
 		t.Fatalf("expected exactly 1 successful logon before disable, got %d", got)
+	}
+}
+
+// TestNetworkLogon_RetriesTransientDCRejection proves a transient DC-side
+// rejection right after a channel rebuild (the kind a concurrent reload can
+// induce while the new MS-NRPC credential chain settles) is absorbed by the
+// bounded backoff-retry rather than surfaced to the caller (#1325 review).
+func TestNetworkLogon_RetriesTransientDCRejection(t *testing.T) {
+	st := &fakeState{dcRejectsRemaining: 2} // first 2 logons rejected, then succeed
+	withFakeChannels(t, st)
+
+	a := NewAuthenticator(NewMutableProvider(validCred("DITTOFS$")))
+	if _, err := a.NetworkLogon(context.Background(), NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"}); err != nil {
+		t.Fatalf("expected transient DC rejection to be retried to success, got: %v", err)
+	}
+	if got := completedLogons(st); got != 1 {
+		t.Fatalf("expected exactly 1 successful logon, got %d", got)
+	}
+}
+
+// TestNetworkLogon_GivesUpAfterBoundedRetries proves the retry is bounded: a
+// persistent DC rejection eventually returns the error instead of looping
+// forever.
+func TestNetworkLogon_GivesUpAfterBoundedRetries(t *testing.T) {
+	st := &fakeState{dcRejectsRemaining: 1 << 30} // always reject
+	withFakeChannels(t, st)
+
+	a := NewAuthenticator(NewMutableProvider(validCred("DITTOFS$")))
+	if _, err := a.NetworkLogon(context.Background(), NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"}); err == nil {
+		t.Fatal("expected a persistent DC rejection to surface as an error after bounded retries")
 	}
 }
 
