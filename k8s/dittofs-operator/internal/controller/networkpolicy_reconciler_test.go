@@ -171,12 +171,12 @@ func TestReconcileNetworkPolicies_CreatesForRunningAdapter(t *testing.T) {
 		t.Errorf("Expected PolicyTypes [Ingress], got %v", np.Spec.PolicyTypes)
 	}
 
-	// Verify Ingress rules (NFS gets 3 ports: NFS TCP + portmapper TCP + portmapper UDP).
+	// Verify Ingress rules (NFS gets 4 ports: NFS TCP + portmapper TCP + portmapper UDP + NFS data port UDP).
 	if len(np.Spec.Ingress) != 1 {
 		t.Fatalf("Expected 1 ingress rule, got %d", len(np.Spec.Ingress))
 	}
-	if len(np.Spec.Ingress[0].Ports) != 3 {
-		t.Fatalf("Expected 3 ingress ports (NFS + portmapper TCP/UDP), got %d", len(np.Spec.Ingress[0].Ports))
+	if len(np.Spec.Ingress[0].Ports) != 4 {
+		t.Fatalf("Expected 4 ingress ports (NFS + portmapper TCP/UDP + NFS UDP), got %d", len(np.Spec.Ingress[0].Ports))
 	}
 	ingressPort := np.Spec.Ingress[0].Ports[0]
 	if ingressPort.Port == nil || ingressPort.Port.IntVal != 12049 {
@@ -238,10 +238,10 @@ func TestReconcileNetworkPolicies_MultipleAdapters(t *testing.T) {
 	if nfsNP.Name != "test-server-adapter-nfs" {
 		t.Errorf("Expected NFS NetworkPolicy name 'test-server-adapter-nfs', got %s", nfsNP.Name)
 	}
-	// NFS should have 3 ingress ports (NFS + portmapper TCP/UDP).
+	// NFS should have 4 ingress ports (NFS + portmapper TCP/UDP + NFS data port UDP).
 	if len(nfsNP.Spec.Ingress) > 0 {
-		if len(nfsNP.Spec.Ingress[0].Ports) != 3 {
-			t.Errorf("Expected NFS NetworkPolicy to have 3 ingress ports, got %d", len(nfsNP.Spec.Ingress[0].Ports))
+		if len(nfsNP.Spec.Ingress[0].Ports) != 4 {
+			t.Errorf("Expected NFS NetworkPolicy to have 4 ingress ports, got %d", len(nfsNP.Spec.Ingress[0].Ports))
 		}
 		if nfsNP.Spec.Ingress[0].Ports[0].Port.IntVal != 12049 {
 			t.Errorf("Expected NFS port 12049, got %d", nfsNP.Spec.Ingress[0].Ports[0].Port.IntVal)
@@ -320,8 +320,8 @@ func TestReconcileNetworkPolicies_UpdatesWhenPortChanges(t *testing.T) {
 	if len(updated.Spec.Ingress) != 1 {
 		t.Fatalf("Expected 1 ingress rule, got %d", len(updated.Spec.Ingress))
 	}
-	if len(updated.Spec.Ingress[0].Ports) != 3 {
-		t.Fatalf("Expected 3 ingress ports (NFS + portmapper TCP/UDP), got %d", len(updated.Spec.Ingress[0].Ports))
+	if len(updated.Spec.Ingress[0].Ports) != 4 {
+		t.Fatalf("Expected 4 ingress ports (NFS + portmapper TCP/UDP), got %d", len(updated.Spec.Ingress[0].Ports))
 	}
 	if updated.Spec.Ingress[0].Ports[0].Port.IntVal != 2049 {
 		t.Errorf("Expected NFS port 2049, got %d", updated.Spec.Ingress[0].Ports[0].Port.IntVal)
@@ -516,8 +516,8 @@ func TestBuildAdapterNetworkPolicy_NFS_MultiPort(t *testing.T) {
 	if len(np.Spec.Ingress) != 1 {
 		t.Fatalf("Expected 1 ingress rule, got %d", len(np.Spec.Ingress))
 	}
-	if len(np.Spec.Ingress[0].Ports) != 3 {
-		t.Fatalf("Expected 3 ingress ports for NFS (NFS + portmapper TCP/UDP), got %d", len(np.Spec.Ingress[0].Ports))
+	if len(np.Spec.Ingress[0].Ports) != 4 {
+		t.Fatalf("Expected 4 ingress ports for NFS (NFS + portmapper TCP/UDP), got %d", len(np.Spec.Ingress[0].Ports))
 	}
 
 	// First port: NFS (TCP)
@@ -590,7 +590,7 @@ func TestUpdateNetworkPolicy_NFS_SinglePortToMultiPort(t *testing.T) {
 	if len(updated.Spec.Ingress) != 1 {
 		t.Fatalf("Expected 1 ingress rule, got %d", len(updated.Spec.Ingress))
 	}
-	if len(updated.Spec.Ingress[0].Ports) != 3 {
-		t.Fatalf("Expected 3 ingress ports after update (NFS + portmapper TCP/UDP), got %d", len(updated.Spec.Ingress[0].Ports))
+	if len(updated.Spec.Ingress[0].Ports) != 4 {
+		t.Fatalf("Expected 4 ingress ports after update (NFS + portmapper TCP/UDP), got %d", len(updated.Spec.Ingress[0].Ports))
 	}
 }

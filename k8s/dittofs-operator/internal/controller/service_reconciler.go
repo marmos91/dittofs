@@ -135,7 +135,8 @@ func isNFSAdapter(adapterType string) bool {
 }
 
 // buildAdapterServicePorts returns the Service ports for an adapter.
-// NFS adapters get 3 ports (NFS + portmapper TCP/UDP 111→10111), all others get 1.
+// NFS adapters get 4 ports (NFS TCP, portmapper TCP + UDP 111→10111, and the
+// NFS data port over UDP for NLM/NSM/MOUNT); all others get 1.
 func buildAdapterServicePorts(adapterType string, info AdapterInfo) []corev1.ServicePort {
 	portName := adapterPortName(adapterType)
 	ports := []corev1.ServicePort{
@@ -158,6 +159,15 @@ func buildAdapterServicePorts(adapterType string, info AdapterInfo) []corev1.Ser
 				Name:       portmapperUDPPortName,
 				Port:       portmapperServicePort,
 				TargetPort: intstr.FromInt32(portmapperContainerPort),
+				Protocol:   corev1.ProtocolUDP,
+			},
+			// NLM/NSM/MOUNT are served over UDP on the NFS data port when the
+			// UDP transport is enabled; expose that port over UDP so BSD/macOS
+			// NFSv3 lock clients can reach rpc.lockd/rpc.statd (issue #1353).
+			corev1.ServicePort{
+				Name:       portName + "-udp",
+				Port:       int32(info.Port),
+				TargetPort: intstr.FromInt32(int32(info.Port)),
 				Protocol:   corev1.ProtocolUDP,
 			},
 		)

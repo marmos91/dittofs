@@ -191,7 +191,8 @@ func TestReconcileAdapterServices_CreateServices(t *testing.T) {
 		svcByType[adapterType] = svc
 	}
 
-	// Check NFS Service (should have 3 ports: NFS + portmapper TCP + portmapper UDP).
+	// Check NFS Service (should have 4 ports: NFS TCP + portmapper TCP +
+	// portmapper UDP + NFS data port UDP for NLM/NSM/MOUNT).
 	nfsSvc, ok := svcByType["nfs"]
 	if !ok {
 		t.Fatal("NFS adapter Service not found")
@@ -199,8 +200,8 @@ func TestReconcileAdapterServices_CreateServices(t *testing.T) {
 	if nfsSvc.Name != "test-server-adapter-nfs" {
 		t.Errorf("Expected NFS service name 'test-server-adapter-nfs', got %s", nfsSvc.Name)
 	}
-	if len(nfsSvc.Spec.Ports) != 3 {
-		t.Fatalf("Expected NFS service to have 3 ports (NFS + portmapper TCP + portmapper UDP), got %d: %v", len(nfsSvc.Spec.Ports), nfsSvc.Spec.Ports)
+	if len(nfsSvc.Spec.Ports) != 4 {
+		t.Fatalf("Expected NFS service to have 4 ports (NFS TCP + portmapper TCP + portmapper UDP + NFS UDP), got %d: %v", len(nfsSvc.Spec.Ports), nfsSvc.Spec.Ports)
 	}
 	nfsSvcPortMap := make(map[string]corev1.ServicePort)
 	for _, p := range nfsSvc.Spec.Ports {
@@ -295,7 +296,7 @@ func TestReconcileAdapterServices_UpdatePortChange(t *testing.T) {
 		t.Fatalf("reconcileAdapterServices returned error: %v", err)
 	}
 
-	// Verify the Service was updated with new port (NFS has 3 ports: NFS + portmapper TCP + portmapper UDP).
+	// Verify the Service was updated with new port (NFS has 4 ports: NFS TCP + portmapper TCP + portmapper UDP + NFS data port UDP).
 	updated := &corev1.Service{}
 	err = r.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
@@ -305,8 +306,8 @@ func TestReconcileAdapterServices_UpdatePortChange(t *testing.T) {
 		t.Fatalf("Failed to get updated Service: %v", err)
 	}
 
-	if len(updated.Spec.Ports) != 3 {
-		t.Fatalf("Expected 3 ports (NFS + portmapper TCP + portmapper UDP), got %d", len(updated.Spec.Ports))
+	if len(updated.Spec.Ports) != 4 {
+		t.Fatalf("Expected 4 ports (NFS TCP + portmapper TCP + portmapper UDP + NFS UDP), got %d", len(updated.Spec.Ports))
 	}
 	updatedPortMap := make(map[string]corev1.ServicePort)
 	for _, p := range updated.Spec.Ports {
@@ -1012,8 +1013,8 @@ func TestSyncManagedAnnotations_ClearsAll(t *testing.T) {
 
 func TestBuildAdapterServicePorts_NFS(t *testing.T) {
 	ports := buildAdapterServicePorts("nfs", AdapterInfo{Port: 12049})
-	if len(ports) != 3 {
-		t.Fatalf("Expected 3 ports for NFS (NFS + portmapper TCP + portmapper UDP), got %d", len(ports))
+	if len(ports) != 4 {
+		t.Fatalf("Expected 4 ports for NFS (NFS TCP + portmapper TCP + portmapper UDP + NFS data port UDP), got %d", len(ports))
 	}
 
 	// First port: NFS
