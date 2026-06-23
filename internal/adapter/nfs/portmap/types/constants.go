@@ -23,6 +23,31 @@ const (
 	// PortmapVersion2 is the portmap protocol version 2.
 	// This is the version defined in RFC 1057 and used by rpcinfo/showmount.
 	PortmapVersion2 uint32 = 2
+
+	// PortmapVersion3 and PortmapVersion4 are the RPCBIND protocol versions
+	// (RFC 1833). They use string-based universal addresses instead of the v2
+	// (prog, vers, prot) -> port mapping. macOS/BSD NFS lock clients query NLM
+	// via RPCBIND v3/v4 (over the mount's address family) and do not fall back
+	// to v2, so the embedded portmapper must answer them to enable NFSv3 locking.
+	PortmapVersion3 uint32 = 3
+	PortmapVersion4 uint32 = 4
+)
+
+// ============================================================================
+// RPCBIND v3/v4 Procedure Numbers (RFC 1833)
+// ============================================================================
+
+const (
+	// RpcbProcGetaddr looks up the universal address for a (prog, vers, netid)
+	// tuple. Returns the uaddr string, or "" if not registered. (v3 and v4.)
+	RpcbProcGetaddr uint32 = 3
+
+	// RpcbProcDump returns all registrations as a list of rpcb entries. (v3/v4.)
+	RpcbProcDump uint32 = 4
+
+	// RpcbProcGetversaddr (v4) is like GETADDR but matches the exact version.
+	// Our lookup is already version-exact, so it shares the GETADDR handler.
+	RpcbProcGetversaddr uint32 = 9
 )
 
 // ============================================================================

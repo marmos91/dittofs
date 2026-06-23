@@ -375,8 +375,8 @@ func TestServerTCPVersionMismatch(t *testing.T) {
 	low := binary.BigEndian.Uint32(payload[0:4])
 	high := binary.BigEndian.Uint32(payload[4:8])
 
-	if low != 2 || high != 2 {
-		t.Errorf("version range: got [%d, %d], want [2, 2]", low, high)
+	if low != 2 || high != 4 {
+		t.Errorf("version range: got [%d, %d], want [2, 4]", low, high)
 	}
 }
 
@@ -731,8 +731,8 @@ func TestServerUDPVersionMismatch(t *testing.T) {
 	}
 	low := binary.BigEndian.Uint32(payload[0:4])
 	high := binary.BigEndian.Uint32(payload[4:8])
-	if low != 2 || high != 2 {
-		t.Errorf("version range: got [%d, %d], want [2, 2]", low, high)
+	if low != 2 || high != 4 {
+		t.Errorf("version range: got [%d, %d], want [2, 4]", low, high)
 	}
 }
 
