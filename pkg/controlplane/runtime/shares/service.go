@@ -1963,6 +1963,7 @@ func addBlockStoreStats(dst *engine.BlockStoreStats, src engine.BlockStoreStats)
 	dst.BlocksLocal += src.BlocksLocal
 	dst.BlocksRemote += src.BlocksRemote
 	dst.BlocksTotal += src.BlocksTotal
+	dst.BlocksCached += src.BlocksCached
 	dst.LocalDiskUsed += src.LocalDiskUsed
 	dst.LocalDiskMax += src.LocalDiskMax
 	dst.LocalMemUsed += src.LocalMemUsed
