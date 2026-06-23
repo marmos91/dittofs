@@ -30,8 +30,9 @@ type DCInfo struct {
 func (d DCInfo) SPN() string { return "cifs/" + d.FQDN }
 
 // DiscoverDCs resolves the domain controllers for realm using the AD DNS
-// locator SRV record (_ldap._tcp.dc._msdcs.<realm>), returning them in SRV
-// priority/weight order. This is the discovery half of #1324.
+// locator SRV record (_ldap._tcp.dc._msdcs.<realm>). net.LookupSRV already
+// returns the records sorted by priority and randomized by weight per RFC 2782,
+// and that order is preserved here. This is the discovery half of #1324.
 //
 // In an Active Directory domain the DC is itself the authoritative DNS server,
 // so dnsServer is normally a DC address (we already hold one for connectivity);

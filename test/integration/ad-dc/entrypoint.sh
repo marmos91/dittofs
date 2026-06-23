@@ -151,8 +151,11 @@ MACHINE_PASSWORD="${MACHINE_PASSWORD:-MachinePass01!}"
 if ! samba-tool computer list 2>/dev/null | grep -qix 'dittofs\$'; then
     log "Creating machine account dittofs\$ (NETLOGON passthrough)"
     samba-tool computer create dittofs
-    samba-tool user setpassword 'dittofs$' --newpassword="$MACHINE_PASSWORD"
 fi
+# Always (re)set the password so a reused domain DB (the .provisioned restart
+# path) or an account left by an earlier run reconciles to the expected
+# credential — and the AES/RC4 Kerberos keys regenerate from it each time.
+samba-tool user setpassword 'dittofs$' --newpassword="$MACHINE_PASSWORD"
 
 # --- Combined service keytab ----------------------------------------------
 # Register BOTH the DittoFS SMB (cifs/) AND NFS (nfs/) service principals on the
