@@ -348,7 +348,16 @@ func GetMessageType(buf []byte) MessageType {
 // the server's configured AD domain to make the challenge domain-aware; pass
 // empty strings for a standalone server (TargetInfo then advertises
 // WORKGROUP / "local" exactly as before AD-4).
-func BuildChallenge(netbiosDomain, dnsDomain string) (message []byte, serverChallenge [8]byte) {
+//
+// netbiosComputer is the server's own NetBIOS computer name, advertised as the
+// MsvAvNbComputerName AV_PAIR. When NETLOGON pass-through is active this MUST be
+// the AD machine-account name (e.g. "DITTOFS"), not the OS hostname: a domain
+// client echoes MsvAvNbComputerName into its NTLMv2 response, and Samba's
+// NETLOGON SamLogon rejects the response when that name does not match the
+// machine account the secure channel authenticated as — even though the proof
+// is otherwise valid (#1357). Pass "" to fall back to the OS hostname (the
+// standalone / non-domain behavior).
+func BuildChallenge(netbiosDomain, dnsDomain, netbiosComputer string) (message []byte, serverChallenge [8]byte) {
 	// Generate random 8-byte challenge.
 	// This challenge is used to validate the client's NTLMv2 response
 	// and derive the session key for message signing.
@@ -364,7 +373,10 @@ func BuildChallenge(netbiosDomain, dnsDomain string) (message []byte, serverChal
 	// to validate against the wrong store and fail / mis-derive the NTLMv2 hash.
 	// Windows clients also require a non-empty TargetName when FlagRequestTarget
 	// is set.
-	hostname, _ := os.Hostname()
+	hostname := netbiosComputer
+	if hostname == "" {
+		hostname, _ = os.Hostname()
+	}
 	if hostname == "" {
 		hostname = "DITTOFS"
 	}

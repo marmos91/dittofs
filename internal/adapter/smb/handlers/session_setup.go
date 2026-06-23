@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -727,7 +728,7 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 	}
 
 	// Build TYPE_2 CHALLENGE
-	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain)
+	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain, h.NetBIOSName)
 
 	pending := &PendingAuth{
 		SessionID:        ctx.SessionID, // bound session's ID
@@ -963,7 +964,7 @@ func (h *Handler) handleNTLMNegotiate(ctx *SMBHandlerContext, usedSPNEGO bool, m
 
 	// Build NTLM Type 2 (CHALLENGE) response
 	// This also returns the server challenge for later validation
-	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain)
+	challengeMsg, serverChallenge := auth.BuildChallenge(h.NetBIOSDomain, h.DNSDomain, h.NetBIOSName)
 
 	// Store pending auth to track handshake state
 	// Include the server challenge for NTLMv2 validation in completeNTLMAuth
@@ -1416,32 +1417,97 @@ func (h *Handler) tryNetlogonFallback(ctx *SMBHandlerContext, pending *PendingAu
 	return h.buildAuthenticatedResponse(pending, signingKey[:], authMsg.NegotiateFlags, sess.ShouldEncrypt()), true
 }
 
-// resolveNetlogonIdentity maps a NETLOGON LogonResult to a DittoFS identity via
-// the centralized resolver, keyed on the DC-returned user SID. Returns nil when
-// no resolver is installed or the SID does not resolve (Found=false), so the
-// caller fails closed. Mirrors resolveKerberosIdentity, but the credential is a
-// validated Windows SID rather than a Kerberos principal.
+// resolveNetlogonIdentity maps a NETLOGON LogonResult to a DittoFS identity,
+// keyed on the DC-returned user SID. Resolution order:
+//  1. The centralized resolver (e.g. LDAP/local link), if installed. A configured
+//     directory mapping always wins.
+//  2. idmap_rid fallback (when NetlogonIdmapRID is set): a stable POSIX identity
+//     derived algorithmically from the SID RIDs (Samba idmap_rid, UID == RID), so
+//     a NETLOGON-authenticated domain user gets a usable session without RFC2307
+//     attributes or a directory lookup.
+//
+// Fails closed (returns nil) when neither path produces a mapping. A resolver
+// *error* is treated as an infrastructure failure: we fail closed and do NOT use
+// the RID fallback, since silently switching to algorithmic UIDs could mask a
+// directory outage and hand a user a different UID/GID than the configured
+// mapping (#1357). Mirrors resolveKerberosIdentity, keyed on a validated SID.
 func (h *Handler) resolveNetlogonIdentity(ctx *SMBHandlerContext, res *netlogon.LogonResult) *pkgidentity.ResolvedIdentity {
-	resolver := h.IdentityResolver()
-	if resolver == nil {
+	if resolver := h.IdentityResolver(); resolver != nil {
+		// Provider is deliberately left unset (unlike the Kerberos path which
+		// stamps Provider: "kerberos"): SID-based resolution matches on ExternalID
+		// via the provider's CanResolve. Stamping a Provider here would narrow
+		// matching — do not "fix" this by adding one.
+		cred := &pkgidentity.Credential{
+			ExternalID: res.UserSID,
+			Attributes: map[string]string{
+				"username": res.Username,
+				"domain":   res.DomainName,
+			},
+		}
+		resolved, err := resolver.Resolve(ctx.Context, cred)
+		if err != nil {
+			// Infrastructure failure (per pkg/identity.IdentityProvider: errors
+			// signal infra problems, not "unmapped"). Fail closed — do not fall
+			// back to RID idmap, which would mask the outage and could change the
+			// UID/GID relative to the configured directory mapping.
+			logger.Debug("NETLOGON identity resolve failed (infra error); failing closed",
+				"username", res.Username, "userSID", res.UserSID, "error", err)
+			return nil
+		}
+		if resolved != nil && resolved.Found {
+			return resolved
+		}
+		// Resolver present but no mapping for this SID (Found=false): fall through
+		// to the idmap_rid fallback below.
+	}
+
+	if h.NetlogonIdmapRID {
+		return synthesizeRIDIdentity(res)
+	}
+	return nil
+}
+
+// synthesizeRIDIdentity builds a ResolvedIdentity from an AD logon's SIDs using
+// the idmap_rid convention (UID/GID == RID). Returns nil if the user SID has no
+// parseable RID. Group SIDs with unparseable RIDs are skipped.
+func synthesizeRIDIdentity(res *netlogon.LogonResult) *pkgidentity.ResolvedIdentity {
+	uid, ok := ridFromSID(res.UserSID)
+	if !ok {
 		return nil
 	}
-	// Provider is deliberately left unset (unlike the Kerberos path which stamps
-	// Provider: "kerberos"): SID-based resolution matches on ExternalID via the
-	// provider's CanResolve. Stamping a Provider here would narrow matching — do
-	// not "fix" this by adding one.
-	cred := &pkgidentity.Credential{
-		ExternalID: res.UserSID,
-		Attributes: map[string]string{
-			"username": res.Username,
-			"domain":   res.DomainName,
-		},
+	gids := make([]uint32, 0, len(res.GroupSIDs))
+	for _, g := range res.GroupSIDs {
+		if gid, ok := ridFromSID(g); ok {
+			gids = append(gids, gid)
+		}
 	}
-	resolved, err := resolver.Resolve(ctx.Context, cred)
-	if err != nil || resolved == nil || !resolved.Found {
-		return nil
+	return &pkgidentity.ResolvedIdentity{
+		Username:  res.Username,
+		UID:       uid,
+		GID:       uid,
+		GIDs:      gids,
+		Domain:    res.DomainName,
+		Found:     true,
+		SID:       res.UserSID,
+		GroupSIDs: res.GroupSIDs,
 	}
-	return resolved
+}
+
+// ridFromSID returns the RID (last sub-authority) of a Windows SID string such
+// as "S-1-5-21-...-1105" → 1105. Returns false for a non-SID or unparseable RID.
+func ridFromSID(sid string) (uint32, bool) {
+	if !strings.HasPrefix(sid, "S-1-") {
+		return 0, false
+	}
+	i := strings.LastIndexByte(sid, '-')
+	if i < 0 || i+1 >= len(sid) {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(sid[i+1:], 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(v), true
 }
 
 // destroySessionOnReauthFailure tears down an existing session after its

@@ -36,12 +36,6 @@ import (
 // configured, then confirms that smbclient can authenticate as the AD
 // domain user alice via NTLM (NETLOGON passthrough).
 func TestSMBNTLMNetlogonPassthrough(t *testing.T) {
-	// The NETLOGON schannel itself works (see TestNetlogonPassthroughAlice), but
-	// the full smbclient->DittoFS->SAMLogon path returns LOGON_FAILURE: a DittoFS
-	// SMB NTLM challenge-threading / SPNEGO NegTokenResp parse bug, not a schannel
-	// issue. Tracked in #1357. Un-skip once that is fixed.
-	t.Skip("SMB NTLM passthrough e2e blocked on DittoFS challenge threading — see #1357")
-
 	if testing.Short() {
 		t.Skip("skipping NETLOGON smbclient e2e test in short mode")
 	}

@@ -572,7 +572,47 @@ func (s *Adapter) SetNetlogonAuthenticator(nlAuth netlogon.NetlogonAuthenticator
 		return
 	}
 	s.handler.NetlogonAuth = nlAuth
+	// Enable the idmap_rid fallback so a DC-validated domain user with no LDAP/
+	// local mapping still resolves to a stable POSIX identity (UID == SID RID)
+	// and gets a usable session (#1357). A configured directory mapping always
+	// takes precedence; this only fires when nothing else resolves the SID.
+	s.handler.NetlogonIdmapRID = true
 	logger.Debug("SMB adapter: NETLOGON authenticator configured")
+}
+
+// SetADDomain makes the SMB handler domain-aware without requiring a Kerberos
+// SPNEGO provider. SetKerberosProvider already populates these names, but it is
+// only invoked when Kerberos (SPNEGO) is enabled. An NTLM-only domain member
+// (kerberos.enabled=false, machine_account.enabled=true) must still advertise
+// the AD NetBIOS/DNS domain — with FlagTargetTypeDomain — in the NTLM CHALLENGE
+// TargetInfo. Otherwise the server presents as standalone WORKGROUP, the domain
+// client embeds MsvAvNbDomainName="WORKGROUP" in its NTLMv2 response, and that
+// disagreement with the LogonDomainName DittoFS forwards makes the DC reject an
+// otherwise-valid response with STATUS_LOGON_FAILURE (#1357).
+//
+// netbiosComputer is the server's own NetBIOS computer name (MsvAvNbComputerName).
+// Under NETLOGON pass-through it MUST be the AD machine-account name (e.g.
+// "DITTOFS"), not the OS hostname: the DC rejects a forwarded NTLMv2 response
+// whose computer name does not match the machine account the secure channel
+// authenticated as (#1357).
+//
+// Idempotent and safe to call alongside SetKerberosProvider; the names come from
+// the same Kerberos config. Empty arguments are ignored so a later/earlier
+// SetKerberosProvider is never clobbered. Must be called before Serve().
+func (s *Adapter) SetADDomain(netbiosDomain, dnsDomain, netbiosComputer string) {
+	if netbiosDomain != "" {
+		s.handler.NetBIOSDomain = netbiosDomain
+	}
+	if dnsDomain != "" {
+		s.handler.DNSDomain = dnsDomain
+	}
+	if netbiosComputer != "" {
+		s.handler.NetBIOSName = netbiosComputer
+	}
+	if netbiosDomain != "" || dnsDomain != "" || netbiosComputer != "" {
+		logger.Info("SMB adapter: domain-aware NTLM CHALLENGE enabled",
+			"netbios_domain", netbiosDomain, "dns_domain", dnsDomain, "netbios_computer", netbiosComputer)
+	}
 }
 
 // wireIdentityResolver creates and wires a centralized identity resolver for

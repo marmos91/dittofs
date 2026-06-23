@@ -672,6 +672,18 @@ func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	// false, so SetNetlogonAuthenticator no-ops in that case.
 	if kerberosConfig != nil {
 		nlAuth := buildNetlogonAuthenticator(*kerberosConfig)
+		// When NTLM pass-through is active, the SMB handler must advertise, in its
+		// NTLM CHALLENGE TargetInfo, both the AD NetBIOS/DNS domain AND the AD
+		// machine-account computer name. Domain clients echo these into their
+		// NTLMv2 response; if the advertised domain is WORKGROUP or the computer
+		// name is the bare OS hostname (not the machine account), Samba's NETLOGON
+		// SamLogon rejects the otherwise-valid response (#1357). SetKerberosProvider
+		// covers the SPNEGO-enabled path, but NTLM-only members (kerberos.enabled
+		// =false) never reach it, so set it explicitly here. The computer name is
+		// the same workstation name the NETLOGON secure channel authenticates as.
+		if nlAuth != nil {
+			smbAdapter.SetADDomain(kerberosConfig.NetBIOSDomain, kerberosConfig.DNSDomain, netbiosWorkstation(*kerberosConfig))
+		}
 		smbAdapter.SetNetlogonAuthenticator(nlAuth)
 	}
 
