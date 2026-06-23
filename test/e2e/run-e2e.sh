@@ -271,6 +271,8 @@ start_localstack() {
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "dittofs-localstack"; then
         log_info "Localstack already running (dittofs-localstack)"
         LOCALSTACK_CONTAINER="dittofs-localstack"
+        # Mirror the fresh-start path so reused containers are still detected.
+        export LOCALSTACK_ENDPOINT="http://localhost:4566"
         return
     fi
 
@@ -291,6 +293,9 @@ start_localstack() {
     while [[ $attempt -le $max_attempts ]]; do
         if curl -s http://localhost:4566/_localstack/health 2>/dev/null | grep -q '"s3": "available"'; then
             log_info "Localstack is ready"
+            # Export the endpoint the Go helpers look for; without it the
+            # LocalStack-backed S3 tests silently skip (mirrors MINIO_ENDPOINT).
+            export LOCALSTACK_ENDPOINT="http://localhost:4566"
             return
         fi
         sleep 1

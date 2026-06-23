@@ -690,6 +690,7 @@ to it instead of AWS. The store reads exactly these config keys (see
 | `endpoint` | no (AWS) / yes (others) | AWS | Service URL. Scheme optional — `https://` is prepended when absent. |
 | `force_path_style` | no | auto | **Auto-enabled whenever `endpoint` is set.** Set explicitly to `false` to opt back into virtual-hosted-style for providers that require it (e.g. GCS). |
 | `prefix` | no | — | Key prefix prepended to every block (e.g. `dittofs/`). End it with `/`. |
+| `allow_private_endpoint` | no | `false` | Required to point `endpoint` at a loopback or private-network address (MinIO, LocalStack, self-hosted RGW). See the SSRF note below. |
 
 > Path-style addressing (`endpoint.example.com/bucket/key`) is the safe
 > default for non-AWS providers because virtual-hosted style
@@ -699,10 +700,19 @@ to it instead of AWS. The store reads exactly these config keys (see
 > the only providers below that need it turned back **off** are those that
 > require virtual-hosted style (GCS).
 
-Credentials can be passed inline in `--config` (as below) or read from the
-environment via the standard `DITTOFS_*` precedence; inline values are shown
-here for clarity. Each recipe is a `dfsctl store block remote add` invocation;
-attach the resulting store to a share with `dfsctl share create … --remote <name>`.
+> **Private endpoints (MinIO, LocalStack, self-hosted RGW).** DittoFS rejects
+> an `endpoint` that resolves to a loopback or private-network address
+> (`127.0.0.0/8`, `10/8`, `172.16/12`, `192.168/16`, link-local, ULA) as an
+> SSRF guard; the cloud metadata address (`169.254.169.254`) is always blocked.
+> Self-hosted gateways normally live on exactly those networks, so add
+> `"allow_private_endpoint": true` to their `--config` to permit them, as the
+> MinIO and Ceph recipes below do.
+
+Credentials live in the store's own config (the `--config` blob below, or the
+equivalent `--access-key` / `--secret-key` flags) — they are not read from the
+`DITTOFS_*` server-config environment. Each recipe is a
+`dfsctl store block remote add` invocation; attach the resulting store to a
+share with `dfsctl share create … --remote <name>`.
 
 ##### Verified providers
 
@@ -719,11 +729,15 @@ exercised by the e2e suite where an emulator exists:
 ```bash
 # MinIO  (verified by e2e emulator)
 dfsctl store block remote add --name minio-store --type s3 \
-  --config '{"endpoint":"http://minio.example:9000","bucket":"dittofs","region":"us-east-1","access_key_id":"minioadmin","secret_access_key":"minioadmin"}'
+  --config '{"endpoint":"http://minio.example:9000","bucket":"dittofs","region":"us-east-1","access_key_id":"minioadmin","secret_access_key":"minioadmin","allow_private_endpoint":true}'
+
+# LocalStack  (verified by e2e emulator)
+dfsctl store block remote add --name localstack-store --type s3 \
+  --config '{"endpoint":"http://localstack:4566","bucket":"dittofs","region":"us-east-1","access_key_id":"test","secret_access_key":"test","allow_private_endpoint":true}'
 
 # Ceph RGW (RADOS Gateway)
 dfsctl store block remote add --name ceph-store --type s3 \
-  --config '{"endpoint":"https://rgw.example:7480","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET"}'
+  --config '{"endpoint":"https://rgw.example:7480","bucket":"dittofs","region":"us-east-1","access_key_id":"ACCESS","secret_access_key":"SECRET","allow_private_endpoint":true}'
 ```
 
 ##### Documented-only providers

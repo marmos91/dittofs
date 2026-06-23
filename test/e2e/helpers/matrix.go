@@ -81,7 +81,8 @@ func SetupS3CompatibleShare(
 
 	accessKey, secretKey := s3HelperCreds(s3Helper)
 	_, err = runner.CreateRemoteBlockStore(remoteName, "s3",
-		WithBlockS3Config(bucketName, "us-east-1", s3Helper.Endpoint, accessKey, secretKey))
+		WithBlockS3Config(bucketName, "us-east-1", s3Helper.Endpoint, accessKey, secretKey),
+		WithBlockAllowPrivateEndpoint())
 	require.NoError(t, err, "Should create s3 remote block store")
 	t.Cleanup(func() { _ = runner.DeleteRemoteBlockStore(remoteName) })
 
@@ -165,7 +166,8 @@ func SetupStoreMatrix(
 
 			accessKey, secretKey := s3HelperCreds(lsHelper)
 			remoteOpts = append(remoteOpts, WithBlockS3Config(
-				bucketName, "us-east-1", lsHelper.Endpoint, accessKey, secretKey))
+				bucketName, "us-east-1", lsHelper.Endpoint, accessKey, secretKey),
+				WithBlockAllowPrivateEndpoint())
 		}
 
 		_, err = runner.CreateRemoteBlockStore(setup.RemoteStoreName, sc.RemoteType, remoteOpts...)

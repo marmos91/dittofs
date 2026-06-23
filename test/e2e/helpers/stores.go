@@ -174,6 +174,11 @@ type blockStoreOptions struct {
 	endpoint  string
 	accessKey string
 	secretKey string
+	// allowPrivate permits a loopback/private-network endpoint (MinIO,
+	// LocalStack). The s3 store rejects such endpoints as an SSRF guard
+	// unless allow_private_endpoint=true, which only the --config JSON path
+	// can express, so setting this switches the S3 flags to a config blob.
+	allowPrivate bool
 	// Generic JSON config
 	rawConfig string
 }
@@ -196,6 +201,16 @@ func WithBlockRawConfig(config string) BlockStoreOption {
 	}
 }
 
+// WithBlockAllowPrivateEndpoint permits an S3 endpoint that resolves to a
+// loopback or private-network address (MinIO, LocalStack). Pair it with
+// WithBlockS3Config; it sends the S3 settings as a --config JSON blob carrying
+// allow_private_endpoint=true, since the typed S3 flags cannot express it.
+func WithBlockAllowPrivateEndpoint() BlockStoreOption {
+	return func(o *blockStoreOptions) {
+		o.allowPrivate = true
+	}
+}
+
 // =============================================================================
 // Block Store CRUD Methods
 // =============================================================================
@@ -206,20 +221,48 @@ func appendBlockStoreConfigArgs(args []string, options *blockStoreOptions) []str
 	if options.rawConfig != "" {
 		return append(args, "--config", options.rawConfig)
 	}
-	if options.bucket != "" {
-		args = append(args, "--bucket", options.bucket)
-		if options.region != "" {
-			args = append(args, "--region", options.region)
+	if options.bucket == "" {
+		return args
+	}
+
+	// allow_private_endpoint is only expressible via the --config JSON path, so
+	// emit the S3 settings as a blob when a private endpoint is needed (the
+	// typed --bucket/--endpoint flags cannot carry it).
+	if options.allowPrivate {
+		cfg := map[string]any{
+			"bucket":                 options.bucket,
+			"allow_private_endpoint": true,
 		}
-		if options.endpoint != "" {
-			args = append(args, "--endpoint", options.endpoint)
+		setIfNotEmpty(cfg, "region", options.region)
+		setIfNotEmpty(cfg, "endpoint", options.endpoint)
+		setIfNotEmpty(cfg, "access_key_id", options.accessKey)
+		setIfNotEmpty(cfg, "secret_access_key", options.secretKey)
+		blob, err := json.Marshal(cfg)
+		if err != nil {
+			panic(fmt.Sprintf("marshal block store config: %v", err))
 		}
-		if options.accessKey != "" {
-			args = append(args, "--access-key", options.accessKey)
-		}
-		if options.secretKey != "" {
-			args = append(args, "--secret-key", options.secretKey)
-		}
+		return append(args, "--config", string(blob))
+	}
+
+	args = append(args, "--bucket", options.bucket)
+	args = appendIfNotEmpty(args, "--region", options.region)
+	args = appendIfNotEmpty(args, "--endpoint", options.endpoint)
+	args = appendIfNotEmpty(args, "--access-key", options.accessKey)
+	args = appendIfNotEmpty(args, "--secret-key", options.secretKey)
+	return args
+}
+
+// setIfNotEmpty assigns value to cfg[key] only when value is non-empty.
+func setIfNotEmpty(cfg map[string]any, key, value string) {
+	if value != "" {
+		cfg[key] = value
+	}
+}
+
+// appendIfNotEmpty appends "flag value" to args only when value is non-empty.
+func appendIfNotEmpty(args []string, flag, value string) []string {
+	if value != "" {
+		return append(args, flag, value)
 	}
 	return args
 }
