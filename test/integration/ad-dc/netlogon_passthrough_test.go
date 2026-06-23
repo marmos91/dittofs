@@ -4,7 +4,6 @@ package ad_dc_test
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"os/exec"
 	"strings"
@@ -32,29 +31,28 @@ const (
 // (it does not skip) — run this only in CI (Linux) or inside a Linux VM.
 func getContainerIP(t *testing.T) string {
 	t.Helper()
+	// Newer Docker engines drop the legacy top-level .NetworkSettings.IPAddress
+	// field, so a {{json .NetworkSettings.IPAddress}} template errors out; use the
+	// per-network Networks map, which is populated on the default bridge on both
+	// old and new engines. In CI (Linux) this bridge IP is host-reachable, which
+	// NETLOGON requires (EPM port 135 + the dynamic RPC port, no NAT).
+	// Emit one IP per line so multiple attached networks don't concatenate into
+	// a single invalid address; the AD-DC fixture uses only the default bridge,
+	// so the first non-empty line is the bridge IP we want.
 	out, err := exec.Command("docker", "inspect",
-		"--format", "{{json .NetworkSettings.IPAddress}}",
+		"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}\n{{end}}",
 		adContainerName,
 	).Output()
 	if err != nil {
-		t.Fatalf("docker inspect container IP: %v", err)
+		t.Fatalf("docker inspect network IP: %v", err)
 	}
-	var ip string
-	if err := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &ip); err != nil || ip == "" {
-		// Try Networks map (newer Docker / custom network).
-		out2, err := exec.Command("docker", "inspect",
-			"--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
-			adContainerName,
-		).Output()
-		if err != nil {
-			t.Fatalf("docker inspect network IP: %v", err)
+	for _, line := range strings.Split(string(out), "\n") {
+		if ip := strings.TrimSpace(line); ip != "" {
+			return ip
 		}
-		ip = strings.TrimSpace(string(out2))
 	}
-	if ip == "" {
-		t.Fatal("could not determine container IP address from docker inspect")
-	}
-	return ip
+	t.Fatal("could not determine container IP address from docker inspect")
+	return ""
 }
 
 // TestNetlogonPassthroughAlice validates the full NETLOGON passthrough path:
