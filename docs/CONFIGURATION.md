@@ -1115,6 +1115,20 @@ adapters:
 
     metrics_log_interval: 5m     # Metrics logging interval (0 = disabled)
 
+    # Embedded portmapper (RFC 1057) for service discovery. Disabled by default.
+    # macOS/BSD NFSv3 lock clients query the portmapper on port 111 — bind it
+    # there (requires root / CAP_NET_BIND_SERVICE) for NFSv3 locking to work.
+    portmapper:
+      enabled: false             # Default: false
+      port: 10111                # Default: 10111 (set to 111 for macOS locking)
+
+    # UDP transport for the lock-manager protocols. Serves NLM/NSM/MOUNT over
+    # UDP (in addition to TCP) on the NFS port. Required for NFSv3 file locking
+    # from BSD/macOS clients (see docs/NFS.md). Disabled by default. NFS data
+    # operations are never served over UDP.
+    udp:
+      enabled: false             # Default: false
+
     # Optional: override server-level rate limiting for this adapter
     # rate_limiting:
     #   enabled: true
@@ -2063,6 +2077,11 @@ export DITTOFS_METADATA_TYPE=badger
 export DITTOFS_ADAPTERS_NFS_ENABLED=true
 export DITTOFS_ADAPTERS_NFS_PORT=12049
 export DITTOFS_ADAPTERS_NFS_MAX_CONNECTIONS=1000
+
+# NFSv3 locking (NLM/NSM) — opt-in; see docs/NFS.md
+export DITTOFS_ADAPTERS_NFS_UDP_ENABLED=false        # serve NLM/NSM/MOUNT over UDP
+export DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=false # enable embedded portmapper
+export DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=10111    # set to 111 for macOS locking
 
 # NFS timeouts
 export DITTOFS_ADAPTERS_NFS_TIMEOUTS_READ=5m

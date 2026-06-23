@@ -57,7 +57,26 @@ DittoFS supports **NFSv3 over TCP** (28 procedures fully implemented), **NFSv4.0
 
 ### Does it support file locking?
 
-NFSv3 does not include locking (NLM not implemented). However, NFSv4 provides built-in file locking support. SMB2 supports byte-range locking (shared and exclusive).
+Yes. **NFSv4** provides built-in (in-protocol) file locking — nothing extra to
+enable, and the recommended path. **SMB2** supports byte-range locking (shared
+and exclusive).
+
+**NFSv3** locking uses the separate NLM (Network Lock Manager) side protocol.
+DittoFS implements NLM (v1/v3 with 32-bit offsets, v4 with 64-bit) and NSM, over
+both TCP and UDP. Because BSD/macOS lock clients (`rpc.lockd`/`rpc.statd`) reach
+NLM/NSM over **UDP** and discover it via the standard portmapper on **port 111**,
+NFSv3 locking from those clients requires two opt-in settings on the server:
+
+- enable the UDP transport: `dfsctl adapter settings nfs update --udp-enabled true`
+- enable the portmapper, reachable on **port 111**: `dfsctl adapter settings nfs
+  update --portmapper-enabled true --portmapper-port 111` (binding 111 needs root
+  / `NET_BIND_SERVICE`; on Kubernetes the operator exposes it via the Service)
+
+then restart the adapter. Both are **disabled by default**. Note that NFSv3
+**mount and read/write work without any of this** — only NLM locking needs it.
+If you don't need cross-client locking, mount with `-o nolock`, or prefer
+`-o vers=4` (`dfsctl share mount --nfs-version 4.1`) to get locking in-protocol
+with no NLM/portmapper setup. See [NFS.md](NFS.md#nfsv3-file-locking-nlmnsm).
 
 ### Does it support Kerberos authentication?
 
@@ -565,10 +584,18 @@ NFSv3's `nfstime3` structure uses a 32-bit unsigned integer for seconds since Un
 
 | Status | Reason |
 |--------|--------|
-| NFSv3: Not implemented | NLM protocol not implemented |
-| NFSv4: Supported | Built-in locking |
+| NFSv3: Supported (opt-in) | NLM/NSM over TCP+UDP; needs `--udp-enabled` and a portmapper on port 111 for BSD/macOS clients |
+| NFSv4: Supported | Built-in (in-protocol) locking, no setup |
 
-NFSv3 relies on the NLM (Network Lock Manager) protocol for locking, which is not implemented. NFSv4 has built-in locking support.
+NFSv3 mount and read/write work with no extra configuration. Only NLM byte-range
+locking needs the UDP transport plus a portmapper reachable on port 111 — see
+[Does it support file locking?](#does-it-support-file-locking) above. NFSv4 is
+the simplest path: locking is in-protocol.
+
+NFSv3 relies on the NLM (Network Lock Manager) side protocol for locking. DittoFS
+implements NLM (v1/v3/v4) and NSM over TCP and UDP, but they are opt-in: enable
+`--udp-enabled` and a portmapper on port 111 for BSD/macOS clients (see above).
+NFSv4 has built-in locking support with no setup.
 
 #### Extended Attributes
 
@@ -651,9 +678,9 @@ This pass rate applies to **all metadata backends** (Memory, BadgerDB, PostgreSQ
 |--------------|--------|
 | `utimensat/09.t:test5` | NFSv3 32-bit timestamp limit (max year 2106) |
 | `open::etxtbsy` | NFS protocol limitation (not testable) |
-| `flock/*` | NLM not implemented (NFSv3 only) |
-| `fcntl/lock*` | NLM not implemented (NFSv3 only) |
-| `lockf/*` | NLM not implemented (NFSv3 only) |
+| `flock/*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
+| `fcntl/lock*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
+| `lockf/*` | NFSv3 NLM locking is opt-in (`--udp-enabled` + portmapper on 111); use `vers=4` |
 | `xattr/*`, `*xattr/*` | Not in NFSv3 |
 | `fallocate/*` | No ALLOCATE in NFSv3 |
 | `chflags/*` | BSD-specific |
