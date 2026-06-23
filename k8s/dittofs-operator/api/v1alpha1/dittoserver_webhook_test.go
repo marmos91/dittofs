@@ -301,6 +301,88 @@ func TestDittoServerValidation(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "machine account enabled without accountName",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{MetadataSize: "10Gi"},
+					Identity: &IdentityConfig{
+						Kerberos: &KerberosConfig{
+							Enabled:          true,
+							ServicePrincipal: "nfs/server@EXAMPLE.COM",
+							KeytabSecretRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "kt"},
+								Key:                  "dittofs.keytab",
+							},
+							MachineAccount: &MachineAccountConfig{
+								Enabled: true,
+								SecretRef: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "ms"},
+									Key:                  "password",
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "machineAccount.accountName is required",
+		},
+		{
+			name: "machine account enabled without any credential source",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{MetadataSize: "10Gi"},
+					Identity: &IdentityConfig{
+						Kerberos: &KerberosConfig{
+							Enabled:          true,
+							ServicePrincipal: "nfs/server@EXAMPLE.COM",
+							KeytabSecretRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "kt"},
+								Key:                  "dittofs.keytab",
+							},
+							MachineAccount: &MachineAccountConfig{
+								Enabled:     true,
+								AccountName: "DITTOFS$",
+							},
+						},
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "requires a secretRef or keytabSecretRef",
+		},
+		{
+			name: "machine account enabled and complete",
+			dittoServer: &DittoServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+				Spec: DittoServerSpec{
+					Storage: StorageSpec{MetadataSize: "10Gi"},
+					Identity: &IdentityConfig{
+						Kerberos: &KerberosConfig{
+							Enabled:          true,
+							ServicePrincipal: "nfs/server@EXAMPLE.COM",
+							KeytabSecretRef: &corev1.SecretKeySelector{
+								LocalObjectReference: corev1.LocalObjectReference{Name: "kt"},
+								Key:                  "dittofs.keytab",
+							},
+							MachineAccount: &MachineAccountConfig{
+								Enabled:     true,
+								AccountName: "DITTOFS$",
+								DCAddress:   []string{"dc1.example.com"},
+								SecretRef: &corev1.SecretKeySelector{
+									LocalObjectReference: corev1.LocalObjectReference{Name: "ms"},
+									Key:                  "password",
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

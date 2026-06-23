@@ -63,6 +63,9 @@ const (
 	kerberosKeytabVolumeName = "kerberos-keytab"
 	// kerberosKrb5ConfVolumeName is the pod volume name for the mounted krb5.conf Secret.
 	kerberosKrb5ConfVolumeName = "kerberos-krb5"
+	// kerberosMachineKeytabVolumeName is the pod volume name for the mounted
+	// machine-account keytab Secret (NETLOGON passthrough).
+	kerberosMachineKeytabVolumeName = "kerberos-machine-keytab"
 	// defaultFSGroup is the default fsGroup for pod security context (nonroot user)
 	defaultFSGroup = 65532
 	// capabilityAll is the special capability value that drops all Linux
@@ -1005,6 +1008,16 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 					ReadOnly:  true,
 				})
 			}
+			// Machine-account keytab (NETLOGON passthrough): mount read-only so the
+			// rendered kerberos.machine_account.keytab_path resolves. The account
+			// password (when used instead of a keytab) arrives via env var, not a mount.
+			if dittoServer.MachineAccountKeytabSecret() != nil {
+				volumeMounts = append(volumeMounts, corev1.VolumeMount{
+					Name:      kerberosMachineKeytabVolumeName,
+					MountPath: dittoiov1alpha1.KerberosMachineKeytabMountPath,
+					ReadOnly:  true,
+				})
+			}
 
 			metadataSize, err := resource.ParseQuantity(dittoServer.Spec.Storage.MetadataSize)
 			if err != nil {
@@ -1175,6 +1188,23 @@ func (r *DittoServerReconciler) reconcileStatefulSet(ctx context.Context, dittoS
 							Items: []corev1.KeyToPath{
 								{Key: ref.Key, Path: dittoiov1alpha1.KerberosKrb5ConfFileName},
 							},
+						},
+					},
+				})
+			}
+			if ref := dittoServer.MachineAccountKeytabSecret(); ref != nil {
+				podVolumes = append(podVolumes, corev1.Volume{
+					Name: kerberosMachineKeytabVolumeName,
+					VolumeSource: corev1.VolumeSource{
+						Secret: &corev1.SecretVolumeSource{
+							SecretName: ref.Name,
+							Items: []corev1.KeyToPath{
+								{Key: ref.Key, Path: dittoiov1alpha1.KerberosMachineKeytabFileName},
+							},
+							// The machine-account keytab is a high-value credential;
+							// project it owner/group read-only (0440), matching the
+							// service keytab, instead of the world-readable 0644 default.
+							DefaultMode: ptr.To(int32(0o440)),
 						},
 					},
 				})
@@ -1435,6 +1465,19 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 		ref := dittoServer.Spec.Identity.LDAP.BindPasswordSecretRef
 		envVars = append(envVars, secretEnvVar(
 			"DITTOFS_LDAP_BIND_PASSWORD",
+			ref.Name,
+			ref.Key,
+			false,
+		))
+	}
+
+	// Kerberos machine-account password (optional - only if NETLOGON passthrough
+	// is enabled with a Secret ref). Injected as
+	// DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET so the cleartext machine-account
+	// password never lands in the config ConfigMap (mirrors the LDAP bind password).
+	if ref := dittoServer.MachineAccountSecret(); ref != nil {
+		envVars = append(envVars, secretEnvVar(
+			"DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET",
 			ref.Name,
 			ref.Key,
 			false,
@@ -1711,6 +1754,36 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		}
 		if data, ok := secret.Data[ref.Key]; ok {
 			secrets["kerberos-krb5:"+ref.Name+":"+ref.Key] = data
+		}
+	}
+
+	// Machine-account (NETLOGON passthrough) credentials: fold the referenced
+	// password and/or keytab Secret keys into the hash so a rotation rolls the
+	// pod. The password is injected as an env var and the keytab is file-mounted;
+	// both are read once at startup, so the restart is what makes a rotation take
+	// effect server-wide.
+	if ref := dittoServer.MachineAccountSecret(); ref != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      ref.Name,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get kerberos machine-account secret %q (key %q): %w", ref.Name, ref.Key, err)
+		}
+		if data, ok := secret.Data[ref.Key]; ok {
+			secrets["kerberos-machine-secret:"+ref.Name+":"+ref.Key] = data
+		}
+	}
+	if ref := dittoServer.MachineAccountKeytabSecret(); ref != nil {
+		secret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{
+			Namespace: dittoServer.Namespace,
+			Name:      ref.Name,
+		}, secret); err != nil {
+			return nil, fmt.Errorf("failed to get kerberos machine-account keytab secret %q (key %q): %w", ref.Name, ref.Key, err)
+		}
+		if data, ok := secret.Data[ref.Key]; ok {
+			secrets["kerberos-machine-keytab:"+ref.Name+":"+ref.Key] = data
 		}
 	}
 
