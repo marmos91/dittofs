@@ -18,20 +18,28 @@ var (
 var grantCmd = &cobra.Command{
 	Use:   "grant <share>",
 	Short: "Grant permission on a share",
-	Long: `Grant permission to a user or group on a share.
+	Long: `Grant a permission level to a user or group on a share.
 
-Permission levels:
-  - none: No access
-  - read: Read-only access
+Specify exactly one of --user or --group together with --level. Re-running
+the command on a principal that already has a permission replaces the existing
+level. Permission levels in order of increasing access:
+  - none:       No access (explicitly blocks the principal)
+  - read:       Read-only access
   - read-write: Read and write access
-  - admin: Full administrative access
+  - admin:      Full administrative access including ACL management
 
 Examples:
-  # Grant read-write to user
+  # Grant read-write access to a specific user
   dfsctl share permission grant /archive --user alice --level read-write
 
-  # Grant read to group
-  dfsctl share permission grant /archive --group editors --level read`,
+  # Grant read-only access to a group
+  dfsctl share permission grant /archive --group editors --level read
+
+  # Block a specific user despite a permissive share default
+  dfsctl share permission grant /archive --user bob --level none
+
+  # Grant admin access to a service account
+  dfsctl share permission grant /archive --user svc-backup --level admin`,
 	Args: cobra.ExactArgs(1),
 	RunE: runGrant,
 }

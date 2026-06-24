@@ -14,12 +14,19 @@ var listCmd = &cobra.Command{
 	Short: "List remote block stores",
 	Long: `List all remote block stores on the DittoFS server.
 
+Shows the name, type (s3 or memory), and configuration of each registered
+remote block store. Use this to confirm which stores exist before adding,
+editing, or running health checks against one.
+
 Examples:
   # List as table
   dfsctl store block remote list
 
   # List as JSON
-  dfsctl store block remote list -o json`,
+  dfsctl store block remote list -o json
+
+  # List as YAML
+  dfsctl store block remote list -o yaml`,
 	RunE: runList,
 }
 

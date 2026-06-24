@@ -18,8 +18,9 @@ var rmCmd = &cobra.Command{
 	Short: "Remove a per-identity quota",
 	Long: `Remove a per-identity quota from a share.
 
-This action is irreversible. You will be prompted for confirmation
-unless --force is specified.
+Once removed, the identity reverts to the default-user fallback quota (if
+one exists) or becomes unlimited. The operation is irreversible and requires
+confirmation unless --force is specified.
 
 Examples:
   # Remove a per-user quota (uid 1000)
@@ -28,7 +29,7 @@ Examples:
   # Remove the default-user fallback quota
   dfsctl quota rm /archive --scope default-user
 
-  # Remove without confirmation
+  # Remove a per-group quota (gid 2000) without prompting
   dfsctl quota rm /archive --scope group --id 2000 --force`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRm,

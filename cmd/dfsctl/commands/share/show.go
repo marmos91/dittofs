@@ -24,14 +24,23 @@ func shareEnabledString(enabled bool) string {
 var showCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show share details",
-	Long: `Show detailed information about a share including retention settings.
+	Long: `Show a detailed, field-by-field view of a single share.
+
+Unlike 'share list', which shows summary columns, 'share show' displays every
+attribute of the share: store IDs, read-only state, ACL settings, retention
+policy and TTL, cache size overrides, quota, trash (recycle bin) settings, and
+creation/update timestamps. Use this command when debugging a misconfigured
+share or before editing it.
 
 Examples:
-  # Show share details
-  dfsctl share show /edge-data
+  # Show all fields for a share
+  dfsctl share show /archive
 
-  # Show as JSON
-  dfsctl share show /edge-data -o json`,
+  # Emit the full share record as JSON (useful for scripting or diffing)
+  dfsctl share show /archive -o json
+
+  # Emit as YAML
+  dfsctl share show /archive -o yaml`,
 	Args: cobra.ExactArgs(1),
 	RunE: runShow,
 }

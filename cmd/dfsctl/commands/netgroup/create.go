@@ -13,14 +13,17 @@ var createName string
 var createCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new netgroup",
-	Long: `Create a new netgroup on the DittoFS server.
+	Long: `Create a new netgroup on the DittoFS server. Netgroups are named sets of
+IP addresses, CIDR ranges, or hostnames that can be referenced in share security
+policies to control which network endpoints are allowed access. After creating a
+netgroup, use "dfsctl netgroup add-member" to populate it.
 
 Examples:
-  # Create a netgroup
+  # Create a netgroup for the office subnet
   dfsctl netgroup create --name office-network
 
-  # Create and output as JSON
-  dfsctl netgroup create --name office-network -o json`,
+  # Create a netgroup and output the result as JSON
+  dfsctl netgroup create --name datacenter-hosts -o json`,
 	RunE: runCreate,
 }
 

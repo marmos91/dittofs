@@ -10,11 +10,16 @@ import (
 var renameCmd = &cobra.Command{
 	Use:   "rename <old-name> <new-name>",
 	Short: "Rename a context",
-	Long: `Rename an existing server context.
+	Long: `Rename an existing server context to a new name.
+
+All stored credentials and the active-context pointer are updated atomically; no re-authentication is needed. Use this after promoting a staging server to production, or simply to give a context a more descriptive name.
 
 Examples:
-  # Rename context from "default" to "production"
-  dfsctl context rename default production`,
+  # Rename the "default" context to "production"
+  dfsctl context rename default production
+
+  # Rename a development context to something more descriptive
+  dfsctl context rename dev local-dev`,
 	Args: cobra.ExactArgs(2),
 	RunE: runContextRename,
 }

@@ -13,14 +13,19 @@ import (
 var getCmd = &cobra.Command{
 	Use:   "get <name>",
 	Short: "Get group details",
-	Long: `Get detailed information about a group.
+	Long: `Get detailed information about a specific group on the DittoFS server.
+The output includes the group's GID, description, member list, and creation
+timestamp. Use -o json or -o yaml for machine-readable output.
 
 Examples:
-  # Get group details as table
-  dfsctl group get admins
+  # Show group details as a table
+  dfsctl group get editors
 
-  # Get as JSON
-  dfsctl group get admins -o json`,
+  # Output as JSON (useful for scripting)
+  dfsctl group get editors -o json
+
+  # Output as YAML
+  dfsctl group get editors -o yaml`,
 	Args: cobra.ExactArgs(1),
 	RunE: runGet,
 }

@@ -9,17 +9,22 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "context",
 	Short: "Manage server contexts",
-	Long: `Manage connection contexts for multiple DittoFS servers.
+	Long: `Manage named connection contexts for one or more DittoFS servers.
 
-Contexts allow you to save and switch between different server configurations,
-similar to kubectl contexts.
+Each context stores a server URL, authentication credentials, and a display name. Contexts work similarly to kubectl contexts: log in once per server, then switch between them with 'context use'. All subsequent dfsctl commands use the active context automatically.
 
-Subcommands:
-  list     List all configured contexts
-  use      Switch to a different context
-  current  Show current context
-  rename   Rename a context
-  delete   Delete a context`,
+Examples:
+  # List all saved contexts
+  dfsctl context list
+
+  # Switch to a context named "production"
+  dfsctl context use production
+
+  # Show which context is currently active
+  dfsctl context current
+
+  # Remove a context that is no longer needed
+  dfsctl context delete staging`,
 }
 
 func init() {

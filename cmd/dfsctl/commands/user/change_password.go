@@ -17,16 +17,17 @@ var (
 var changePasswordCmd = &cobra.Command{
 	Use:   "change-password",
 	Short: "Change your own password",
-	Long: `Change your own password.
-
-This is used when you need to change your password, especially
-when the server requires a password change after initial login.
+	Long: `Change your own password as the currently authenticated user. This is
+distinct from the admin-only "dfsctl user password" command: it verifies your
+current password before accepting the new one, and updates the stored session
+tokens automatically. You will be prompted for both passwords unless flags are
+provided (flags are less secure as passwords may appear in shell history).
 
 Examples:
-  # Change password interactively
+  # Change password interactively (recommended — passwords are not echoed)
   dfsctl user change-password
 
-  # Change password with flags (less secure)
+  # Change password non-interactively (use with caution)
   dfsctl user change-password --current oldpass --new newpass`,
 	RunE: runChangePassword,
 }

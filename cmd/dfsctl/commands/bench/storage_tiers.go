@@ -18,30 +18,24 @@ var (
 var storageTiersCmd = &cobra.Command{
 	Use:   "storage-tiers",
 	Short: "Benchmark storage tier performance (cold/warm/local-only)",
-	Long: `Run a 6-step storage tier benchmark that measures read performance at each
-storage level by selectively evicting layers between reads.
+	Long: `Benchmark DittoFS storage tier performance by measuring read throughput at each caching layer.
 
-This workload requires:
-  - An authenticated session (block store eviction requires admin access)
-  - A DittoFS server with a mounted share
-  - The share must be configured with a remote store for cold read testing
+The workload writes a file through the NFS/SMB mount, then reads it back three times — evicting a different cache layer before each read — to isolate cold (remote store), warm (local + read buffer), and local-only performance. Admin authentication is required to call the eviction API between reads. The share must have a remote block store configured for cold-read testing.
 
-The benchmark runs the following steps for each file size:
-  1. Write: Create test file via NFS/SMB mount
-  2. Evict all: Clear read buffer + local store via API
-  3. Cold read: Read file (data from remote store)
-  4. Warm read: Read file again (data in read buffer + local store)
-  5. Evict read buffer: Clear memory read buffer only via API
-  6. Local-only read: Read file (data from local FS store only)
-
-Results show throughput and read buffer hit rate per step.
+Steps executed per file size:
+  1. Write via mount
+  2. Evict all (read buffer + local store)
+  3. Cold read (data fetched from remote store)
+  4. Warm read (data in read buffer + local store)
+  5. Evict read buffer only
+  6. Local-only read (data served from local FS store)
 
 Examples:
-  # Run with default sizes (10MB, 100MB, 1GB)
-  dfsctl bench storage-tiers --share /export --mount /mnt/test
+  # Run with default file sizes (10MB, 100MB, 1GB)
+  dfsctl bench storage-tiers --share myshare --mount /mnt/test
 
-  # Custom file sizes
-  dfsctl bench storage-tiers --share /export --mount /mnt/test --sizes 1MB,10MB,50MB`,
+  # Run with custom file sizes
+  dfsctl bench storage-tiers --share myshare --mount /mnt/test --sizes 1MB,10MB,50MB`,
 	RunE: runStorageTiers,
 }
 

@@ -12,18 +12,19 @@ var sidDeleteForce bool
 var sidDeleteCmd = &cobra.Command{
 	Use:   "delete <sid>",
 	Short: "Delete a foreign-SID UID/GID allocation",
-	Long: `Delete a durable foreign-SID to Unix UID/GID allocation.
-
-This is an administrative escape hatch. Removing a mapping allows the foreign SID
-to be re-allocated to a different UID/GID on its next resolution, which can
-re-attribute files owned by the old UID. This action is irreversible. You will be
-prompted for confirmation unless --force is specified.
+	Long: `Delete a durable foreign-SID to Unix UID/GID allocation. This is an
+administrative escape hatch: once removed, the SID will be re-allocated to a
+potentially different UID/GID on its next resolution, which can re-attribute
+files owned by the old Unix ID to a different numeric owner. Use only when
+correcting a misallocated SID, and be aware that in-flight NFS/SMB sessions
+may cache the old mapping until they reconnect. You will be prompted for
+confirmation unless --force is specified.
 
 Examples:
-  # Delete with confirmation
+  # Delete a SID allocation (prompts for confirmation)
   dfsctl idmap sid delete S-1-5-21-111-222-333-1107
 
-  # Delete without confirmation
+  # Delete without confirmation (for automated cleanup scripts)
   dfsctl idmap sid delete S-1-5-21-111-222-333-1107 --force`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSidDelete,

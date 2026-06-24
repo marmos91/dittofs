@@ -14,11 +14,13 @@ var disableCmd = &cobra.Command{
 	Short: "Disable an adapter",
 	Long: `Disable a protocol adapter on the DittoFS server.
 
+Disabling an adapter stops accepting new connections on that protocol; existing sessions are closed gracefully. The adapter configuration is preserved so it can be re-enabled later with the same settings.
+
 Examples:
-  # Disable NFS adapter
+  # Disable the NFS adapter
   dfsctl adapter disable nfs
 
-  # Disable SMB adapter
+  # Disable the SMB adapter
   dfsctl adapter disable smb`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDisable,

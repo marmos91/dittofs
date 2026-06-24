@@ -22,18 +22,21 @@ var statusCmd = &cobra.Command{
 	Short: "Show server status",
 	Long: `Display the status of the connected DittoFS server.
 
-This command checks the server health endpoint and displays
-status, uptime, and control plane DB reachability.
-
-When authenticated, per-entity status is fetched from the list
-endpoints and displayed as a color-coded table.
+Calls the /health endpoint on the server configured in the current context and
+reports whether the server is running, how long it has been up, and whether the
+control-plane database is reachable. When a valid token is present, per-entity
+detail (shares, adapters, stores) is fetched from the API and rendered as a
+color-coded table. Use -o json or -o yaml for machine-readable output.
 
 Examples:
-  # Check status of connected server
+  # Show status of the currently active server
   dfsctl status
 
-  # Output as JSON
-  dfsctl status -o json`,
+  # Emit machine-readable JSON output
+  dfsctl status -o json
+
+  # Check a specific server without logging in (token fetched from stored context)
+  dfsctl status --server http://dfs.example.com:8080`,
 	RunE: runStatus,
 }
 

@@ -12,12 +12,17 @@ var logoutCmd = &cobra.Command{
 	Short: "Clear stored credentials",
 	Long: `Clear stored credentials for the current context.
 
-This removes the access and refresh tokens but keeps the server URL
-and context configuration for easy re-login.
+Removes the access and refresh tokens from the active context in
+~/.config/dfsctl/config.json but preserves the server URL and context name so
+you can re-authenticate quickly with dfsctl login. To switch between contexts
+or remove a context entirely, use the dfsctl context subcommand.
 
 Examples:
-  # Logout from current context
-  dfsctl logout`,
+  # Logout from the current context (clears tokens, keeps server URL)
+  dfsctl logout
+
+  # Logout then immediately log back in as a different user
+  dfsctl logout && dfsctl login --username operator`,
 	RunE: runLogout,
 }
 

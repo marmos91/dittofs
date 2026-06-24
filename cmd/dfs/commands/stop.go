@@ -23,17 +23,19 @@ var stopCmd = &cobra.Command{
 	Short: "Stop the DittoFS server",
 	Long: `Stop a running DittoFS server.
 
-By default, sends a graceful shutdown signal. Use --force for immediate
-termination.
+Sends SIGTERM to the server process identified by the PID file, which triggers
+a graceful shutdown: in-flight NFS/SMB requests are drained, snapshot jobs are
+flushed, and block stores are closed before the process exits. Use --force to
+send SIGKILL instead when a graceful stop is not responding.
 
 Examples:
-  # Stop server (uses default PID file)
+  # Graceful stop (reads default PID file)
   dfs stop
 
-  # Stop server using custom PID file
+  # Stop using a custom PID file location
   dfs stop --pid-file /var/run/dittofs.pid
 
-  # Force stop
+  # Immediately kill the server process
   dfs stop --force`,
 	RunE: runStop,
 }

@@ -52,28 +52,25 @@ var migrateToCASCmd = &cobra.Command{
 	Long: `Migrate a stopped DittoFS server's legacy .blk block layout to the
 content-addressed (CAS) layout required by v0.16+.
 
-The dfs server MUST be stopped before running this command — the
-migration rewrites the on-disk layout in place and a concurrent server
-would race the rename and corrupt the store.
+The dfs server MUST be stopped before running this command — the migration
+rewrites the on-disk layout in place and a concurrent server would race the
+rename and corrupt the store. The command is idempotent: a per-share journal
+lets you resume after a crash or Ctrl-C without re-processing already-migrated
+chunks. On success it writes a .cas-migrated-v1 sentinel per share; the boot
+guard refuses to start dfs until that sentinel exists (exit code 78).
 
-Required flag: --storage-dir <root>. The storage root is expected to
-contain a shares/<name>/blocks/ subtree per share (legacy v0.13 layout);
-the command refuses to start if the path is missing or empty.
+Examples:
+  # Preview what would be migrated without writing anything
+  dfs migrate-to-cas --storage-dir /data --metadata-dir /data/metadata --dry-run
 
-The command is idempotent: a per-share journal at
-<storage-dir>/shares/<name>/.dittofs-migrate-to-cas.state lets you
-resume after a crash or Ctrl-C without re-uploading already-migrated
-chunks. Successful completion writes
-<storage-dir>/shares/<name>/.cas-migrated-v1 via atomic rename;
-the boot guard refuses to start dfs until this sentinel exists (exit
-code 78).
+  # Migrate all shares
+  dfs migrate-to-cas --storage-dir /data --metadata-dir /data/metadata
 
-Use --dry-run for a non-destructive preview (file count, estimated
-dedup ratio, sampled bytes-per-second).
-Use --share to scope the run to one share.
-Use --json to emit one JSON object per second of progress on stdout.
+  # Migrate a single share with machine-readable progress
+  dfs migrate-to-cas --storage-dir /data --metadata-dir /data/metadata --share myshare --json
 
-See docs/CONFIGURATION.md §migration for the full operator runbook.`,
+  # Resume a partial migration after a crash (idempotent — already-done chunks are skipped)
+  dfs migrate-to-cas --storage-dir /data --metadata-dir /data/metadata`,
 	Args: cobra.NoArgs,
 	RunE: runMigrateToCAS,
 }

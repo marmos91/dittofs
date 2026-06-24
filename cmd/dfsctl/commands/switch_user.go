@@ -16,20 +16,22 @@ var switchUserPassword string
 var switchUserCmd = &cobra.Command{
 	Use:   "switch-user <username>",
 	Short: "Switch to a different user on the current server",
-	Long: `Switch to a different user on the current server.
+	Long: `Switch to a different user on the current server without changing the server URL.
 
-This command authenticates as the specified user against the same server
-configured in the current context, creating a new context if needed.
-
-If a context already exists for this user on the same server and has a valid
-(non-expired) token, it switches to that context without re-authenticating.
+Authenticates as the given username against the server in the active context and
+stores the resulting tokens under a new context named username@host. If a context
+for that user already exists with a non-expired token, it activates it immediately
+without re-authenticating. Use dfsctl context to inspect or remove stored contexts.
 
 Examples:
-  # Switch to user marmos91 (will prompt for password)
-  dfsctl switch-user marmos91
+  # Switch to a different user (prompts for password)
+  dfsctl switch-user operator
 
-  # Switch with password on command line
-  dfsctl switch-user marmos91 -p secret`,
+  # Switch to a user providing the password inline
+  dfsctl switch-user operator -p secret
+
+  # Switch back to admin on the same server
+  dfsctl switch-user admin`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSwitchUser,
 }

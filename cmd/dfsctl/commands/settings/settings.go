@@ -9,19 +9,18 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "settings",
 	Short: "Server settings management",
-	Long: `Manage server settings on the DittoFS server.
+	Long: `Manage live server settings on the DittoFS server.
 
-Settings commands allow you to get, set, and list server configuration settings.
-These operations require admin privileges.
+Server settings are key-value pairs that control runtime behaviour (logging level, feature flags, etc.) without requiring a restart. List all available keys with 'settings list', inspect a single value with 'settings get', and change it with 'settings set'. All operations require admin privileges.
 
 Examples:
-  # List all settings
+  # List every setting with its current value and description
   dfsctl settings list
 
-  # Get a specific setting
+  # Inspect the current logging level
   dfsctl settings get logging.level
 
-  # Set a setting value
+  # Switch to debug logging at runtime
   dfsctl settings set logging.level DEBUG`,
 }
 

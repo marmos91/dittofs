@@ -14,14 +14,20 @@ var removeCmd = &cobra.Command{
 	Short: "Remove a local block store",
 	Long: `Remove a local block store from the DittoFS server.
 
-Warning: This will fail if the store is in use by any shares.
+The server refuses removal if any share currently references the store.
+Detach the store from all shares first, then remove it. Data on disk is
+not deleted by this command. You will be prompted for confirmation unless
+--force is specified.
 
 Examples:
-  # Remove with confirmation
+  # Remove with confirmation prompt
   dfsctl store block local remove fs-cache
 
   # Remove without confirmation
-  dfsctl store block local remove fs-cache --force`,
+  dfsctl store block local remove fs-cache --force
+
+  # Verify the store is gone afterward
+  dfsctl store block local list`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRemove,
 }

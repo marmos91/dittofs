@@ -26,14 +26,21 @@ var gcStatusCmd = &cobra.Command{
 	Short: "Show the last block-store GC run summary for a share",
 	Long: `Print the most recent garbage collection run summary for the named share.
 
-Reads <gcStateRoot>/last-run.json, which is overwritten by every
-completed GC run. Returns exit 1 with a friendly message if no run has
-been recorded yet (the share has never been GC'd, or its local store
-has no persistent root).
+Reads last-run.json persisted by the most recent completed GC run. Use
+this to confirm that the last run swept objects cleanly (ErrorCount == 0),
+check how many bytes were freed, and review the duration without tailing
+logs. Returns a non-zero exit if no run has been recorded yet (the share
+has never been GC'd or its local store has no persistent root).
 
 Examples:
+  # Show the last GC summary as a table
   dfsctl store block gc-status myshare
-  dfsctl store block gc-status myshare -o json`,
+
+  # Show as JSON for scripting
+  dfsctl store block gc-status myshare -o json
+
+  # Show as YAML
+  dfsctl store block gc-status myshare -o yaml`,
 	Args: cobra.ExactArgs(1),
 	RunE: runBlockStoreGCStatus,
 }

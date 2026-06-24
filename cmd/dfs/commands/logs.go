@@ -26,27 +26,27 @@ var (
 var logsCmd = &cobra.Command{
 	Use:   "logs",
 	Short: "Tail server logs",
-	Long: `Display and optionally follow the DittoFS server logs.
+	Long: `Display and optionally follow the DittoFS server log file.
 
-This command reads the log file specified in the configuration and displays
-the most recent entries. If the server logs to stdout/stderr, this command
-will indicate that logs are not available in a file.
+Reads the log file path configured under logging.output in the active config
+and prints the most recent lines. Pass -f to stream new entries as they are
+written (similar to tail -f). The --since flag filters output to entries
+timestamped at or after a given RFC3339 instant. Note: this command requires
+logging.output to be a file path; it returns an error when the server is
+configured to log to stdout or stderr.
 
 Examples:
-  # Show last 100 lines (default)
+  # Show the last 100 log lines (default)
   dfs logs
 
-  # Show last 50 lines
+  # Show the last 50 lines
   dfs logs -n 50
 
-  # Follow logs in real-time
+  # Stream new log entries in real-time
   dfs logs -f
 
-  # Show logs since a specific time
-  dfs logs --since "2024-01-15T10:00:00Z"
-
-  # Combine options
-  dfs logs -f -n 20`,
+  # Show entries written since a specific time
+  dfs logs --since "2024-01-15T10:00:00Z"`,
 	RunE: runLogs,
 }
 

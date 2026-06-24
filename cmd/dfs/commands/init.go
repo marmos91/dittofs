@@ -13,19 +13,22 @@ var initForce bool
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a sample configuration file",
-	Long: `Initialize a sample DittoFS configuration file.
+	Long: `Initialize a sample DittoFS server configuration file.
 
-By default, the configuration file is created at $XDG_CONFIG_HOME/dittofs/config.yaml.
-Use --config to specify a custom path.
+Creates a commented YAML configuration template at
+$XDG_CONFIG_HOME/dittofs/config.yaml (typically ~/.config/dittofs/config.yaml).
+The generated file includes a randomly generated JWT secret suitable for
+development; replace it with a strong secret (or use DITTOFS_CONTROLPLANE_SECRET)
+before deploying to production. Use --config to write to a non-default path.
 
 Examples:
-  # Initialize with default location
+  # Create config at the default location
   dfs init
 
-  # Initialize with custom path
+  # Create config at a custom path
   dfs init --config /etc/dittofs/config.yaml
 
-  # Force overwrite existing config
+  # Overwrite an existing config file
   dfs init --force`,
 	RunE: runInit,
 }

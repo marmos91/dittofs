@@ -26,19 +26,22 @@ var (
 var runCmd = &cobra.Command{
 	Use:   "run PATH",
 	Short: "Run filesystem benchmarks",
-	Long: `Run I/O and metadata benchmarks against the given directory.
+	Long: `Run I/O and metadata benchmarks against the given directory path.
 
-No API authentication is required — this operates purely on the filesystem.
+The runner creates test files under the target directory and measures throughput, IOPS, and latency for each workload. When no --workload is specified every available workload runs. Results are printed as a table by default; use --save to persist the JSON for later comparison with 'bench compare'.
 
 Examples:
-  # Run all benchmarks with defaults
+  # Run all workloads with default parameters
   dfsctl bench run /mnt/bench
 
-  # Run specific workloads with custom parameters
+  # Run only sequential-read and sequential-write with 8 threads
   dfsctl bench run /mnt/bench --workload seq-write,seq-read --threads 8
 
-  # Save results for later comparison
-  dfsctl bench run /mnt/bench --system dittofs --save results/dittofs.json`,
+  # Run with larger files and a longer duration
+  dfsctl bench run /mnt/bench --file-size 4GiB --duration 120s
+
+  # Save results and label this system for comparison
+  dfsctl bench run /mnt/bench --system dittofs --save results/dittofs.json --clean`,
 	Args: cobra.ExactArgs(1),
 	RunE: runBench,
 }

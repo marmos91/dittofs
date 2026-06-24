@@ -9,23 +9,22 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "bench",
 	Short: "Run filesystem benchmarks",
-	Long: `Run I/O and metadata benchmarks against any mounted filesystem.
+	Long: `Run I/O and metadata benchmarks against any mounted filesystem path.
 
-Benchmarks operate directly on the filesystem — no API authentication required.
-Use this to measure DittoFS performance or compare against other NFS/SMB servers.
+The benchmark suite operates directly on the filesystem; no API authentication is needed for basic workloads. Use 'bench run' to collect results and save them as JSON, then 'bench compare' to render a side-by-side comparison across systems. The 'bench storage-tiers' subcommand requires admin authentication to evict cache layers between reads.
 
 Examples:
-  # Run all benchmarks on a mounted NFS share
+  # Run all benchmark workloads on a mounted NFS share
   dfsctl bench run /mnt/bench
 
-  # Run with custom parameters
+  # Run with 8 threads and 512 MiB files
   dfsctl bench run /mnt/bench --threads 8 --file-size 512MiB --duration 30s
 
-  # Run specific workloads and save results
-  dfsctl bench run /mnt/bench --workload seq-write,seq-read --system dittofs --save results.json
+  # Run and save results for later comparison
+  dfsctl bench run /mnt/bench --system dittofs --save results/dittofs.json
 
-  # Compare results from multiple systems
-  dfsctl bench compare dittofs.json kernel-nfs.json ganesha.json`,
+  # Compare saved results from two systems
+  dfsctl bench compare results/dittofs.json results/kernel-nfs.json`,
 }
 
 func init() {

@@ -14,13 +14,15 @@ var currentOutput string
 var currentCmd = &cobra.Command{
 	Use:   "current",
 	Short: "Show current context",
-	Long: `Display information about the current active context.
+	Long: `Display the name and connection details of the currently active context.
+
+The output shows the server URL, logged-in user, and authentication status. Use this command to confirm which server subsequent dfsctl commands will target before running destructive operations.
 
 Examples:
-  # Show current context
+  # Show the active context as a human-readable summary
   dfsctl context current
 
-  # Show as JSON
+  # Get the active context as JSON for scripting
   dfsctl context current --output json`,
 	RunE: runContextCurrent,
 }

@@ -42,15 +42,46 @@ Examples:
 var nfsConfigShowCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show a share's NFS adapter configuration",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runNFSConfigShow,
+	Long: `Show the NFS adapter configuration for a share.
+
+Displays the netgroup association, squash mode, and authentication settings
+(AUTH_SYS and Kerberos). Use this command to inspect the current NFS export
+settings before making changes with 'nfs-config set'.
+
+Examples:
+  # Show NFS config for a share
+  dfsctl share nfs-config show /export
+
+  # Emit as JSON
+  dfsctl share nfs-config show /export -o json`,
+	Args: cobra.ExactArgs(1),
+	RunE: runNFSConfigShow,
 }
 
 var nfsConfigSetCmd = &cobra.Command{
 	Use:   "set <name>",
 	Short: "Update a share's NFS adapter configuration",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runNFSConfigSet,
+	Long: `Update the NFS adapter configuration for a share.
+
+Only the flags you supply are changed; omitted flags leave the existing values
+intact. Netgroup changes take effect immediately. Changes to squash mode and
+authentication flavors (--allow-auth-sys, --require-kerberos) apply on the
+next NFS adapter restart.
+
+Examples:
+  # Restrict access to a specific netgroup
+  dfsctl share nfs-config set /export --netgroup office-network
+
+  # Remove the netgroup restriction (allow all NFS clients)
+  dfsctl share nfs-config set /export --netgroup ""
+
+  # Map root UID to guest on this export
+  dfsctl share nfs-config set /export --squash root_to_guest
+
+  # Require Kerberos authentication and disallow AUTH_SYS
+  dfsctl share nfs-config set /export --require-kerberos true --allow-auth-sys false`,
+	Args: cobra.ExactArgs(1),
+	RunE: runNFSConfigSet,
 }
 
 func init() {

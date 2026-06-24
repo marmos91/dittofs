@@ -33,20 +33,20 @@ var settingsCmd = &cobra.Command{
 	Short: "Manage adapter settings",
 	Long: `Manage protocol adapter settings on the DittoFS server.
 
-The adapter type (nfs or smb) must be specified as the first argument.
+Fine-grained adapter tuning lives here: NFS lease times, delegation settings, portmapper, SMB dialect range, encryption, and more. Settings are applied immediately (except where noted) without a server restart. Use the nfs or smb sub-group to target the right adapter.
 
 Examples:
-  # Show NFS adapter settings
+  # Show current NFS settings (non-default values are marked with *)
   dfsctl adapter settings nfs show
 
-  # Update NFS lease time
-  dfsctl adapter settings nfs update --lease-time 120
+  # Update the NFS lease time
+  dfsctl adapter settings nfs update --lease-time 90
 
-  # Reset all NFS settings to defaults
-  dfsctl adapter settings nfs reset
+  # Enable the embedded portmapper on port 10111
+  dfsctl adapter settings nfs update --portmapper-enabled --portmapper-port 10111
 
-  # Reset a specific NFS setting
-  dfsctl adapter settings nfs reset --setting lease_time`,
+  # Reset all SMB settings to defaults
+  dfsctl adapter settings smb reset --force`,
 	Args: cobra.NoArgs,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		syncGlobalFlags(cmd)
@@ -61,7 +61,19 @@ Examples:
 var settingsNFSCmd = &cobra.Command{
 	Use:   "nfs",
 	Short: "Manage NFS adapter settings",
-	Long:  `Manage NFS protocol adapter settings.`,
+	Long: `Manage NFS protocol adapter settings.
+
+Use show to inspect current values, update to change individual settings, and reset to restore defaults. NFS-specific knobs include lease times, delegation parameters, portmapper, NFSv4 minor version range, and transport limits.
+
+Examples:
+  # Inspect current NFS settings (modified values are marked with *)
+  dfsctl adapter settings nfs show
+
+  # Restrict the server to NFSv4.1 only
+  dfsctl adapter settings nfs update --v4-min-minor-version 1 --v4-max-minor-version 1
+
+  # Enable the embedded portmapper on port 10111
+  dfsctl adapter settings nfs update --portmapper-enabled --portmapper-port 10111`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		settingsAdapterType = "nfs"
 		syncGlobalFlags(cmd)
@@ -76,7 +88,19 @@ var settingsNFSCmd = &cobra.Command{
 var settingsSMBCmd = &cobra.Command{
 	Use:   "smb",
 	Short: "Manage SMB adapter settings",
-	Long:  `Manage SMB protocol adapter settings.`,
+	Long: `Manage SMB protocol adapter settings.
+
+Use show to inspect current values, update to change individual settings, and reset to restore defaults. SMB-specific knobs include dialect range (SMB 2.1 to 3.1.1), session and oplock timeouts, connection limits, and at-rest encryption.
+
+Examples:
+  # Inspect current SMB settings
+  dfsctl adapter settings smb show
+
+  # Require SMB 3.x and enable encryption
+  dfsctl adapter settings smb update --min-dialect SMB3.0 --enable-encryption
+
+  # Reset the SMB session timeout to its default
+  dfsctl adapter settings smb reset --setting session_timeout`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		settingsAdapterType = "smb"
 		syncGlobalFlags(cmd)
@@ -91,15 +115,15 @@ var settingsSMBCmd = &cobra.Command{
 var settingsShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Show current adapter settings",
-	Long: `Show current adapter settings with defaults comparison.
+	Long: `Show the current adapter settings grouped by category, compared against their defaults.
 
-Non-default values are marked with '*'.
+Values that differ from the default are marked with an asterisk (*) so you can quickly identify non-standard tuning. Use -o json to get the raw configuration object for scripting or backup.
 
 Examples:
-  # Show NFS settings
+  # Show NFS settings in human-readable grouped format
   dfsctl adapter settings nfs show
 
-  # Show SMB settings as JSON
+  # Export current SMB settings as JSON
   dfsctl adapter settings smb show -o json`,
 	RunE: runSettingsShow,
 }
@@ -108,19 +132,19 @@ Examples:
 var settingsUpdateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update adapter settings",
-	Long: `Update adapter settings with partial changes.
+	Long: `Update one or more adapter settings in a single API call.
 
-Only specified flags are included in the update. Unspecified settings are not changed.
+Only flags that are explicitly passed are sent to the server; all other settings remain unchanged. Use --dry-run to validate flag values without applying them, and --force to bypass server-side range validation.
 
 Examples:
-  # Update NFS lease time
-  dfsctl adapter settings nfs update --lease-time 120
+  # Increase the NFSv4 lease time to 90 seconds
+  dfsctl adapter settings nfs update --lease-time 90
 
-  # Validate without applying
-  dfsctl adapter settings nfs update --lease-time 120 --dry-run
+  # Enable delegations and set the portmapper port
+  dfsctl adapter settings nfs update --delegations-enabled --portmapper-enabled --portmapper-port 10111
 
-  # Bypass range validation
-  dfsctl adapter settings nfs update --lease-time 999 --force`,
+  # Validate a change without applying it
+  dfsctl adapter settings nfs update --lease-time 300 --dry-run`,
 	RunE: runSettingsUpdate,
 }
 
@@ -128,17 +152,19 @@ Examples:
 var settingsResetCmd = &cobra.Command{
 	Use:   "reset",
 	Short: "Reset adapter settings to defaults",
-	Long: `Reset adapter settings to their default values.
+	Long: `Reset adapter settings to their factory default values.
 
-If --setting is specified, only that setting is reset. Otherwise, all settings
-are reset to defaults.
+Without --setting, every NFS or SMB setting is restored to its default. Pass --setting with the snake_case setting name to reset only that one field. A confirmation prompt is shown unless --force is passed.
 
 Examples:
-  # Reset all NFS settings
+  # Reset all NFS settings to defaults (with confirmation prompt)
   dfsctl adapter settings nfs reset
 
-  # Reset only lease_time
-  dfsctl adapter settings nfs reset --setting lease_time`,
+  # Reset only the NFS lease time to its default, no prompt
+  dfsctl adapter settings nfs reset --setting lease_time --force
+
+  # Reset all SMB settings non-interactively
+  dfsctl adapter settings smb reset --force`,
 	RunE: runSettingsReset,
 }
 

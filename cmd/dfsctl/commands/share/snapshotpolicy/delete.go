@@ -12,8 +12,19 @@ var deleteYes bool
 var deleteCmd = &cobra.Command{
 	Use:   "delete <share>",
 	Short: "Delete a share's snapshot policy",
-	Long: `Delete a share's snapshot policy. Existing snapshots are not removed;
-only the schedule and automatic pruning stop.`,
+	Long: `Delete the snapshot policy for a share.
+
+Existing snapshots are not removed; only the schedule and automatic pruning
+stop. After deletion, no new scheduled snapshots will be created and old
+scheduled snapshots will no longer be pruned. Use 'snapshot-policy set' to
+recreate a policy at any time.
+
+Examples:
+  # Delete the policy, with a confirmation prompt
+  dfsctl share snapshot-policy delete /archive
+
+  # Delete without a confirmation prompt (useful in scripts)
+  dfsctl share snapshot-policy delete /archive --yes`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDelete,
 }

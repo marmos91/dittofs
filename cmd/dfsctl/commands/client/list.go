@@ -19,22 +19,21 @@ var (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List connected clients",
-	Long: `List all connected clients on the DittoFS server.
+	Long: `List all clients currently connected to the DittoFS server.
 
-Displays NFS and SMB clients with their protocol, address,
-user, shares, and connection duration.
+Each row shows the client ID, protocol (NFS or SMB), remote address, authenticated user, mounted shares, and how long the client has been connected. Use --protocol or --share to narrow the output.
 
 Examples:
-  # List as table
+  # List all connected clients
   dfsctl client list
 
-  # Filter by protocol
+  # Show only NFS clients
   dfsctl client list --protocol nfs
 
-  # Filter by share
-  dfsctl client list --share /export
+  # Show only clients connected to a specific share
+  dfsctl client list --share myshare
 
-  # List as JSON
+  # Get the client list as JSON
   dfsctl client list -o json`,
 	RunE: runList,
 }

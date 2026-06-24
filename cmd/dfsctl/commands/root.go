@@ -37,8 +37,11 @@ var rootCmd = &cobra.Command{
 	Short: "DittoFS Control - Remote management client",
 	Long: `dfsctl is the command-line client for managing DittoFS servers remotely.
 
-Use this tool to manage users, groups, shares, stores, and server settings
-through the DittoFS REST API.
+It communicates with the DittoFS control-plane REST API (default port 8080) and
+persists credentials in ~/.config/dfsctl/config.json. Run dfsctl login first to
+authenticate, then use the subcommands to manage users, groups, shares, stores,
+adapters, and server settings. Multiple server contexts are supported via the
+context subcommand.
 
 Use "dfsctl [command] --help" for more information about a command.`,
 	SilenceUsage:  true,

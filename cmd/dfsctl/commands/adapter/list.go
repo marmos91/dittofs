@@ -12,13 +12,15 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List protocol adapters",
-	Long: `List all protocol adapters on the DittoFS server.
+	Long: `List all protocol adapters configured on the DittoFS server.
+
+Each row shows the adapter type (nfs or smb), the port it listens on, and whether it is currently enabled. Use this command to quickly confirm which protocols are active before connecting clients.
 
 Examples:
-  # List as table
+  # List adapters as a table
   dfsctl adapter list
 
-  # List as JSON
+  # List adapters as JSON (useful for scripting)
   dfsctl adapter list -o json`,
 	RunE: runList,
 }

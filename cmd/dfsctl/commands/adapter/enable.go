@@ -16,17 +16,17 @@ var enableCmd = &cobra.Command{
 	Short: "Enable an adapter",
 	Long: `Enable a protocol adapter on the DittoFS server.
 
-If the adapter doesn't exist, it will be created.
+If the adapter record does not yet exist it is created automatically. Use --port to override the default listen port (NFS defaults to 12049, SMB to 12445). Changes take effect immediately without a server restart.
 
 Examples:
-  # Enable NFS adapter with default port
+  # Enable the NFS adapter on the default port (12049)
   dfsctl adapter enable nfs
 
-  # Enable NFS adapter on specific port
-  dfsctl adapter enable nfs --port 2049
+  # Enable the NFS adapter on a custom port
+  dfsctl adapter enable nfs --port 12049
 
-  # Enable SMB adapter
-  dfsctl adapter enable smb --port 445`,
+  # Enable the SMB adapter on the default port (12445)
+  dfsctl adapter enable smb --port 12445`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEnable,
 }

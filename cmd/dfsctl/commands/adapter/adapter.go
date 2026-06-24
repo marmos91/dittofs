@@ -9,26 +9,25 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "adapter",
 	Short: "Protocol adapter management",
-	Long: `Manage protocol adapters on the DittoFS server.
+	Long: `Manage protocol adapters (NFS and SMB) on the DittoFS server.
 
-Adapter commands allow you to list, enable, disable, and edit protocol adapters.
-These operations require admin privileges.
+Protocol adapters control which wire protocols the server accepts connections on and on which ports. Use these commands to enable, disable, or reconfigure adapters without restarting the server. All operations require admin privileges.
 
 Examples:
-  # List adapters
+  # List all adapters with their current status and ports
   dfsctl adapter list
 
-  # Enable NFS adapter on port 12049
-  dfsctl adapter enable nfs --port 12049
+  # Enable the NFS adapter on the default port
+  dfsctl adapter enable nfs
 
-  # Disable SMB adapter
-  dfsctl adapter disable smb
+  # Enable the SMB adapter on port 12445
+  dfsctl adapter enable smb --port 12445
 
-  # Edit adapter interactively
-  dfsctl adapter edit nfs
+  # Disable the NFS adapter
+  dfsctl adapter disable nfs
 
-  # Edit adapter settings with flags
-  dfsctl adapter edit nfs --port 3049`,
+  # Tune NFS adapter settings (portmapper, lease time, etc.)
+  dfsctl adapter settings nfs update --portmapper-enabled --portmapper-port 10111`,
 }
 
 func init() {

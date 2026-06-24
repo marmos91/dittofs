@@ -14,15 +14,16 @@ import (
 var restoreCmd = &cobra.Command{
 	Use:   "restore <share> <bin-path>",
 	Short: "Restore a recycled file or directory",
-	Long: `Restore the recycled root at <bin-path> back into the share.
+	Long: `Restore the recycled entry at <bin-path> back into the share.
 
-Without --to the entry is restored to the path it occupied before deletion.
-Use --to to restore it elsewhere — useful when the original location is now
-occupied.
+Without --to the entry is moved back to the path it occupied before deletion. If that location is now taken, use --to to restore it elsewhere. The bin-path argument is the value shown in the PATH column of 'trash list'.
 
 Examples:
+  # Restore a file to its original location
   dfsctl trash restore myshare "#recycle/2026-06-01/report.txt"
-  dfsctl trash restore myshare "#recycle/2026-06-01/report.txt" --to /restored/report.txt`,
+
+  # Restore to a different path when the original location is occupied
+  dfsctl trash restore myshare "#recycle/2026-06-01/report.txt" --to /archive/report.txt`,
 	Args: cobra.ExactArgs(2),
 	RunE: runTrashRestore,
 }

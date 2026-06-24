@@ -12,14 +12,19 @@ import (
 var getCmd = &cobra.Command{
 	Use:   "get <username>",
 	Short: "Get user details",
-	Long: `Get detailed information about a user.
+	Long: `Get detailed information about a specific user on the DittoFS server.
+The output includes the user's role, UID, group memberships, account status,
+and last-login timestamp. Use -o json or -o yaml for machine-readable output.
 
 Examples:
-  # Get user details as table
+  # Show user details as a table
   dfsctl user get alice
 
-  # Get as JSON
-  dfsctl user get alice -o json`,
+  # Output as JSON (useful for scripting)
+  dfsctl user get alice -o json
+
+  # Output as YAML
+  dfsctl user get alice -o yaml`,
 	Args: cobra.ExactArgs(1),
 	RunE: runGet,
 }

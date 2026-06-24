@@ -13,17 +13,16 @@ var forceDestroySession bool
 var sessionsDestroyCmd = &cobra.Command{
 	Use:   "destroy <client-id> <session-id>",
 	Short: "Force-destroy a session",
-	Long: `Force-destroy an NFSv4.1 session by client ID and session ID.
+	Long: `Force-destroy a specific NFSv4.1 session by client ID and session ID.
 
-This will forcefully tear down the session, bypassing in-flight request checks.
-Use with caution -- the NFS client may experience errors.
+This tears down the session immediately, bypassing any in-flight request checks. The NFS client will receive errors and may need to remount. Use 'client sessions list' to find the session ID. A confirmation prompt is shown unless --force is passed.
 
 Examples:
-  # Destroy a session (with confirmation prompt)
-  dfsctl client sessions destroy 0000000100000001 a1b2c3d4e5f6a7b8...
+  # Destroy a session with a confirmation prompt
+  dfsctl client sessions destroy 0000000100000001 a1b2c3d4e5f6a7b8
 
-  # Destroy without confirmation
-  dfsctl client sessions destroy 0000000100000001 a1b2c3d4e5f6a7b8... --force`,
+  # Destroy a session without the confirmation prompt
+  dfsctl client sessions destroy 0000000100000001 a1b2c3d4e5f6a7b8 --force`,
 	Args: cobra.ExactArgs(2),
 	RunE: runSessionsDestroy,
 }

@@ -13,16 +13,18 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all groups",
-	Long: `List all groups on the DittoFS server.
+	Long: `List all groups registered on the DittoFS server. The table view
+shows each group's name, GID, member count, and description. Use -o json or
+-o yaml to get machine-readable output suitable for piping into other tools.
 
 Examples:
-  # List groups as table
+  # List all groups as a table
   dfsctl group list
 
-  # List as JSON
+  # Output the full group list as JSON
   dfsctl group list -o json
 
-  # List as YAML
+  # Output as YAML
   dfsctl group list -o yaml`,
 	RunE: runList,
 }
