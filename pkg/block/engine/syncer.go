@@ -1057,9 +1057,9 @@ func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
 		case <-m.wake:
 			// A freshly rolled-up chunk signalled work (#1407). Drain now
 			// instead of idling up to UploadInterval, so the mirror pipelines
-			// with the rollup of later chunks. The wake is coalesced, so this
-			// fires at most once per in-flight batch; runDrainPass still skips
-			// when a pass is already running, so wake never multiplies passes.
+			// with the rollup of later chunks. The wake is buffered length 1, so
+			// a burst of chunk completions collapses into a single queued wake;
+			// the follow-up pass snapshots the whole pending set at once.
 			if !m.canProcess(ctx) {
 				logger.Info("Periodic syncer: canProcess=false, exiting")
 				return
@@ -1076,11 +1076,13 @@ func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
 }
 
 // runDrainPass runs one mirror pass under the uploading atomic gate. It is the
-// shared body of the periodic ticker and the wake signal (#1407): the gate
-// ensures a tick and a wake never run overlapping passes (which would multiply
-// memory and double-upload), and the circuit breaker skips uploads while the
-// remote is unhealthy. A skipped pass is a no-op — the pending set is retained
-// for the next tick/wake.
+// shared body of the periodic ticker and the wake signal (#1407). The ticker
+// and wake cases run in the same periodicUploader goroutine, so they already
+// cannot overlap each other; the gate's job is to serialize this pass against
+// the OTHER mirror entrypoints — Flush, SyncNow, and uploadBlock — which run
+// from caller goroutines and take the same gate. A pass that loses the gate is
+// a no-op: the pending set is retained for the next tick/wake. The circuit
+// breaker additionally skips uploads while the remote is unhealthy.
 func (m *Syncer) runDrainPass(ctx context.Context) {
 	if !m.uploading.CompareAndSwap(false, true) {
 		logger.Debug("Periodic syncer: previous pass still running, skipping")
