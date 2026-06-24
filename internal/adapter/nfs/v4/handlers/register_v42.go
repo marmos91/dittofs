@@ -17,6 +17,7 @@ func (h *Handler) registerV42Ops() {
 	h.v42DispatchTable[types.OP_DEALLOCATE] = h.handleDeallocate
 	h.v42DispatchTable[types.OP_SEEK] = h.handleSeek
 	h.v42DispatchTable[types.OP_READ_PLUS] = h.handleReadPlus
+	h.v42DispatchTable[types.OP_CLONE] = h.handleClone
 
 	// RFC 8276 extended-attribute operations.
 	h.v42DispatchTable[types.OP_GETXATTR] = h.handleGetXattr

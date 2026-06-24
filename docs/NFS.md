@@ -49,7 +49,7 @@ This document covers the NFS protocol fundamentals, DittoFS's implementation of 
 | NFSv3 | 1995 | 64-bit file sizes, TCP support, async writes, WCC |
 | NFSv4 | 2000 | Stateful, ACLs, compound operations, no mount protocol |
 | NFSv4.1 | 2010 | Parallel NFS (pNFS), sessions, backchannel |
-| NFSv4.2 | 2016 | Server-side copy, sparse files |
+| NFSv4.2 | 2016 | Server-side copy, sparse files, CLONE (reflink) |
 
 DittoFS implements **NFSv3**, **NFSv4.0**, and **NFSv4.1** -- covering the stateless simplicity of v3 through the stateful, session-based model of v4.1 with delegations, ACLs, CB_NOTIFY, and Kerberos via RPCSEC_GSS.
 
@@ -571,20 +571,33 @@ NFSv4.1 extends v4.0 with session-based operation, backchannel callbacks, and ad
 ### NFSv4.2 Status
 
 NFSv4.2 (RFC 7862) is a collection of independent, individually-optional features. DittoFS
-implements the named **extended attributes** set (RFC 8276); the other v4.2 operations
-return `NFS4ERR_NOTSUPP`. A client negotiates v4.2 with `mount -o vers=4.2`.
+implements the named **extended attributes** set (RFC 8276), the **sparse-files** cluster,
+and **CLONE**; the remaining v4.2 operations return `NFS4ERR_NOTSUPP`. A client negotiates
+v4.2 with `mount -o vers=4.2`.
 
-The features below are **planned** and tracked, ordered by fit with DittoFS's
-content-addressed/dedup block store. `CLONE` is the strongest fit — a reflink is a pure
-metadata ref over the same dedup blocks, reusing the SMB server-side-copy engine; it is
-**not yet implemented**. `SEEK`, `READ_PLUS`, `DEALLOCATE`, and `ALLOCATE` form a
-sparse-files cluster that shares one hole-tracking foundation and **are implemented**.
+`CLONE` (RFC 7862 Section 15.13, operation 71) is the strongest fit for DittoFS's
+content-addressed/dedup block store: a whole-file reflink is a pure metadata ref over the
+same dedup blocks, bumping the CAS RefCount per unique hash with no data movement — O(1)
+even on S3. It reuses the same `engine.CopyPayload` refcount primitive the SMB
+server-side-copy IOCTLs build on (`common.CloneWholeFile` — one clone path, both protocols).
+Copy-on-write is intrinsic: a later WRITE to either file produces new CAS blocks under a
+new hash, leaving the other side untouched. `CLONE` uses `SAVED_FH` as the source and
+`CURRENT_FH` as the destination (the client `SAVEFH`s the source first, like `COPY`).
+`FATTR4_CLONE_BLKSIZE` is reported as 1 (byte-granular alignment), so the client applies no
+offset/count alignment constraint. DittoFS serves **whole-file** clones (the request covers
+the entire source from offset 0 into the destination at offset 0 — `cl_count` of 0 or the
+source size, which is exactly what `cp --reflink` issues); offset/partial sub-range clones
+return `NFS4ERR_NOTSUPP` (RFC 7862 Section 15.13 permits a server to decline clone requests
+it cannot satisfy). Source and destination must live in the same share (per-share dedup); a
+cross-share clone returns `NFS4ERR_INVAL`.
 
-The hole map is derived directly from the file's content-addressed block list (a byte
-range covered by no block ref is a hole that reads as zeros) — there is no separate hole
-bitmap. The same `pkg/block` hole-map query backs all four ops so SEEK / READ_PLUS /
-DEALLOCATE report consistent boundaries. A file whose blocks cover its whole extent
-yields a single data segment (the dense-file fallback).
+`SEEK`, `READ_PLUS`, `DEALLOCATE`, and `ALLOCATE` form a sparse-files cluster that shares
+one hole-tracking foundation and **are implemented**. The hole map is derived directly from
+the file's content-addressed block list (a byte range covered by no block ref is a hole
+that reads as zeros) — there is no separate hole bitmap. The same `pkg/block` hole-map
+query backs all four ops so SEEK / READ_PLUS / DEALLOCATE report consistent boundaries. A
+file whose blocks cover its whole extent yields a single data segment (the dense-file
+fallback).
 
 | Operation | Status | Notes |
 |-----------|--------|-------|
@@ -596,7 +609,7 @@ yields a single data segment (the dense-file fallback).
 | READ_PLUS | Implemented | hole-aware read; emits data + `NFS4_CONTENT_HOLE` runs ([#1304](https://github.com/marmos91/dittofs/issues/1304)) |
 | DEALLOCATE | Implemented | punch-hole; zeros the range + reclaims block storage ([#1305](https://github.com/marmos91/dittofs/issues/1305)) |
 | ALLOCATE | Implemented | best-effort/logical preallocation (no physical reservation under dedup/S3) ([#1306](https://github.com/marmos91/dittofs/issues/1306)) |
-| CLONE | Planned | reflink over dedup block refs ([#1302](https://github.com/marmos91/dittofs/issues/1302)) |
+| CLONE | Implemented | O(1) whole-file reflink: shares the source BlockRef list and bumps CAS RefCount (no data movement). Sub-range clones return `NFS4ERR_NOTSUPP`; cross-share returns `NFS4ERR_INVAL`. `FATTR4_CLONE_BLKSIZE` = 1 ([#1302](https://github.com/marmos91/dittofs/issues/1302)) |
 | COPY / OFFLOAD_* / COPY_NOTIFY | Not planned | async server-side copy; `CLONE` covers the intra-server case more cheaply |
 | IO_ADVISE | Not planned | cache/prefetch hints; low value for a userspace vFS |
 | Labeled NFS (`FATTR4_SEC_LABEL`) | Not planned | MAC/SELinux labels; niche |

@@ -65,6 +65,7 @@ const (
 	FATTR4_SPACE_FREE         = 60 // uint64: free filesystem space in bytes (RFC 7530 Section 5.8.2.29)
 	FATTR4_SPACE_AVAIL        = 61 // uint64: available space for caller in bytes (RFC 7530 Section 5.8.2.30)
 	FATTR4_SUPPATTR_EXCLCREAT = 75 // bitmap4: attrs settable during EXCLUSIVE4_1 create (RFC 8881 Section 5.8.1.10)
+	FATTR4_CLONE_BLKSIZE      = 77 // uint32: preferred block size for CLONE (RFC 7862 Section 12.2.1; word 2, bit 13)
 	FATTR4_XATTR_SUPPORT      = 82 // bool: extended attributes supported (RFC 8276 Section 8.4; word 2, bit 18)
 )
 
@@ -114,6 +115,17 @@ func init() {
 	fsMaxReadSize.Store(1048576)   // 1MB
 	fsMaxWriteSize.Store(1048576)  // 1MB
 }
+
+// CloneBlockSize is the value reported by FATTR4_CLONE_BLKSIZE and the
+// alignment a CLONE source offset, destination offset, and count must satisfy
+// (RFC 7862 Section 15.13). DittoFS clones by splicing the content-addressed
+// BlockRef list of the source range into the destination — a pure metadata,
+// O(1), zero-copy operation. A value of 1 advertises byte-granular alignment:
+// the block engine splits/merges BlockRefs at arbitrary boundaries when the
+// requested range does not fall on existing chunk edges, so no client-visible
+// alignment constraint is required. Reporting 1 (rather than 0) keeps the
+// attribute meaningful — RFC 7862 reserves 0 for "CLONE not supported".
+const CloneBlockSize uint32 = 1
 
 // SetFilesystemCapabilities configures the filesystem capability values
 // returned by FATTR4_MAXFILESIZE, FATTR4_MAXREAD, and FATTR4_MAXWRITE.
@@ -234,6 +246,13 @@ func SupportedAttrs() []uint32 {
 
 	// NFSv4.1 exclusive create attributes (word 2)
 	SetBit(&bitmap, FATTR4_SUPPATTR_EXCLCREAT)
+
+	// NFSv4.2 / RFC 7862 CLONE block size (word 2, bit 13). Advertising this
+	// reports the preferred/required alignment for CLONE source/destination
+	// offsets and count. Like FATTR4_XATTR_SUPPORT it is advertised
+	// unconditionally; pre-4.2 clients never query bit 77 and dispatchOne gates
+	// the CLONE op itself to minorversion 2 (NFS4ERR_NOTSUPP otherwise).
+	SetBit(&bitmap, FATTR4_CLONE_BLKSIZE)
 
 	// NFSv4.2 / RFC 8276 extended attribute support (word 2, bit 18).
 	// Advertising this tells the Linux client that getfattr/setfattr over the
@@ -486,6 +505,12 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		// advertised in SUPPORTED_ATTRS, so report false rather than erroring.
 		return xdr.WriteUint32(buf, 0) // false
 
+	case FATTR4_CLONE_BLKSIZE:
+		// uint32: CLONE alignment block size (RFC 7862 15.13). Advertised in
+		// SUPPORTED_ATTRS; report the same value for the pseudo-fs even though
+		// CLONE itself is rejected there (ROFS).
+		return xdr.WriteUint32(buf, CloneBlockSize)
+
 	default:
 		// Unknown attribute -- should not reach here if Intersect is correct
 		return fmt.Errorf("unsupported attribute bit %d", bit)
@@ -716,6 +741,12 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 	case FATTR4_XATTR_SUPPORT:
 		// bool: real files support RFC 8276 extended attributes (user.* namespace).
 		return xdr.WriteUint32(buf, 1) // true
+
+	case FATTR4_CLONE_BLKSIZE:
+		// uint32: alignment for CLONE source/dest offsets and count (RFC 7862
+		// 15.13). DittoFS clones by content-addressed BlockRef splicing, so any
+		// byte offset is valid — report 1 (byte-granular).
+		return xdr.WriteUint32(buf, CloneBlockSize)
 
 	default:
 		return fmt.Errorf("unsupported attribute bit %d", bit)

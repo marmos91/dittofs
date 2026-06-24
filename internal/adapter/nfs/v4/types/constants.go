@@ -161,6 +161,7 @@ const (
 	OP_DEALLOCATE = 62 // DEALLOCATE (RFC 7862 Section 15.4)
 	OP_READ_PLUS  = 68 // READ_PLUS (RFC 7862 Section 15.10)
 	OP_SEEK       = 69 // SEEK (RFC 7862 Section 15.11)
+	OP_CLONE      = 71 // CLONE (RFC 7862 Section 15.13)
 
 	OP_GETXATTR    = 72 // GETXATTR (RFC 8276 Section 8.6)
 	OP_SETXATTR    = 73 // SETXATTR (RFC 8276 Section 8.6)
@@ -782,6 +783,8 @@ func OpName(op uint32) string {
 		return "SEEK"
 	case OP_READ_PLUS:
 		return "READ_PLUS"
+	case OP_CLONE:
+		return "CLONE"
 	// --- NFSv4.2 / RFC 8276 Extended Attribute Operations ---
 	case OP_GETXATTR:
 		return "GETXATTR"
@@ -899,6 +902,7 @@ func init() {
 		"DEALLOCATE": OP_DEALLOCATE,
 		"SEEK":       OP_SEEK,
 		"READ_PLUS":  OP_READ_PLUS,
+		"CLONE":      OP_CLONE,
 
 		// --- NFSv4.2 / RFC 8276 Extended Attribute Operations ---
 		"GETXATTR":    OP_GETXATTR,
