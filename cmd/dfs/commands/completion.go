@@ -11,37 +11,31 @@ var completionCmd = &cobra.Command{
 	Short: "Generate shell completion script",
 	Long: `Generate shell completion script for dfs.
 
-To load completions:
+The generated script enables tab-completion for dfs commands, subcommands, and
+flags in your shell. Pick the snippet for your shell and load it once.
 
-Bash:
-  # Linux:
-  $ dfs completion bash > /etc/bash_completion.d/dfs
-  # macOS:
-  $ dfs completion bash > $(brew --prefix)/etc/bash_completion.d/dfs
+Examples:
+  # Bash (Linux): install system-wide
+  dfs completion bash > /etc/bash_completion.d/dfs
 
-Zsh:
-  # If shell completion is not already enabled in your environment,
-  # you will need to enable it. You can execute the following once:
-  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
+  # Bash (macOS, requires the Homebrew bash-completion package)
+  dfs completion bash > $(brew --prefix)/etc/bash_completion.d/dfs
 
-  # To load completions for each session, execute once:
-  # Linux:
-  $ dfs completion zsh > "${fpath[1]}/_dfs"
-  # macOS:
-  $ dfs completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfs
+  # Zsh: enable completion once (if not already enabled), then install
+  echo "autoload -U compinit; compinit" >> ~/.zshrc
+  dfs completion zsh > "${fpath[1]}/_dfs"
 
-  # You will need to start a new shell for this setup to take effect.
+  # Zsh (macOS, Homebrew)
+  dfs completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfs
 
-Fish:
-  $ dfs completion fish > ~/.config/fish/completions/dfs.fish
+  # Fish
+  dfs completion fish > ~/.config/fish/completions/dfs.fish
 
-PowerShell:
-  PS> dfs completion powershell | Out-String | Invoke-Expression
+  # PowerShell: load for the current session
+  dfs completion powershell | Out-String | Invoke-Expression
 
-  # To load completions for every new session, run:
-  PS> dfs completion powershell > dfs.ps1
-  # and source this file from your PowerShell profile.
-`,
+  # PowerShell: persist across sessions by sourcing from your profile
+  dfs completion powershell > dfs.ps1`,
 	DisableFlagsInUseLine: true,
 	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
 	Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),

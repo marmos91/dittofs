@@ -11,37 +11,31 @@ var completionCmd = &cobra.Command{
 	Short: "Generate shell completion script",
 	Long: `Generate shell completion script for dfsctl.
 
-To load completions:
+The generated script enables tab-completion for dfsctl commands, subcommands,
+and flags in your shell. Pick the snippet for your shell and load it once.
 
-Bash:
-  # Linux:
-  $ dfsctl completion bash > /etc/bash_completion.d/dfsctl
-  # macOS:
-  $ dfsctl completion bash > $(brew --prefix)/etc/bash_completion.d/dfsctl
+Examples:
+  # Bash (Linux): install system-wide
+  dfsctl completion bash > /etc/bash_completion.d/dfsctl
 
-Zsh:
-  # If shell completion is not already enabled in your environment,
-  # you will need to enable it. You can execute the following once:
-  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
+  # Bash (macOS, requires the Homebrew bash-completion package)
+  dfsctl completion bash > $(brew --prefix)/etc/bash_completion.d/dfsctl
 
-  # To load completions for each session, execute once:
-  # Linux:
-  $ dfsctl completion zsh > "${fpath[1]}/_dfsctl"
-  # macOS:
-  $ dfsctl completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfsctl
+  # Zsh: enable completion once (if not already enabled), then install
+  echo "autoload -U compinit; compinit" >> ~/.zshrc
+  dfsctl completion zsh > "${fpath[1]}/_dfsctl"
 
-  # You will need to start a new shell for this setup to take effect.
+  # Zsh (macOS, Homebrew)
+  dfsctl completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfsctl
 
-Fish:
-  $ dfsctl completion fish > ~/.config/fish/completions/dfsctl.fish
+  # Fish
+  dfsctl completion fish > ~/.config/fish/completions/dfsctl.fish
 
-PowerShell:
-  PS> dfsctl completion powershell | Out-String | Invoke-Expression
+  # PowerShell: load for the current session
+  dfsctl completion powershell | Out-String | Invoke-Expression
 
-  # To load completions for every new session, run:
-  PS> dfsctl completion powershell > dfsctl.ps1
-  # and source this file from your PowerShell profile.
-`,
+  # PowerShell: persist across sessions by sourcing from your profile
+  dfsctl completion powershell > dfsctl.ps1`,
 	DisableFlagsInUseLine: true,
 	ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
 	Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),

@@ -33,10 +33,20 @@ var mountCmd = &cobra.Command{
 	Long: `Mount a DittoFS share at a local mount point using NFS or SMB protocol.
 
 For SMB mounts, credentials are resolved in order:
-  1. --username/--password flags
-  2. DITTOFS_PASSWORD environment variable (for password)
-  3. Current login context username
-  4. Interactive password prompt
+
+1. --username/--password flags
+2. DITTOFS_PASSWORD environment variable (for password)
+3. Current login context username
+4. Interactive password prompt
+
+Mount commands typically require sudo/root privileges on Unix systems.
+
+Platform differences for SMB with sudo:
+
+- Linux: mount owner set to your user via uid/gid options (default mode 0755)
+- macOS: mount owned by root (uid/gid removed in Catalina), default mode 0777
+- macOS alternative: mount to ~/mnt without sudo for a user-owned mount
+- Windows: uses 'net use' to map network drives (e.g. dfsctl share mount /export --protocol smb Z:)
 
 Examples:
   # Mount via NFS
@@ -52,15 +62,7 @@ Examples:
   DITTOFS_PASSWORD=secret dfsctl share mount /export --protocol smb /mnt/dittofs
 
   # Mount to user directory without sudo (macOS only, recommended)
-  mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittofs
-
-Note: Mount commands typically require sudo/root privileges on Unix systems.
-
-Platform differences for SMB with sudo:
-  - Linux: Mount owner set to your user via uid/gid options (default mode 0755)
-  - macOS: Mount owned by root (uid/gid removed in Catalina), default mode 0777
-  - macOS alternative: mount to ~/mnt without sudo for user-owned mount
-  - Windows: Uses 'net use' to map network drives (e.g., dfsctl share mount /export --protocol smb Z:)`,
+  mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittofs`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("requires share path and mount point\n\nUsage: dfsctl share mount [share] [mountpoint] --protocol <nfs|smb>\n\nExample: dfsctl share mount --protocol nfs /export /mnt/dittofs")
