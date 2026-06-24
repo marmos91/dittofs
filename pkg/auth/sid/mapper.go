@@ -191,9 +191,9 @@ func (m *SIDMapper) IsForeignDomainSID(s *SID) bool {
 		s.IdentifierAuthority == [6]byte{0, 0, 0, 0, 0, 5} &&
 		s.SubAuthorityCount == 5 &&
 		s.SubAuthorities[0] == 21 &&
-		!(s.SubAuthorities[1] == m.machineSID[0] &&
-			s.SubAuthorities[2] == m.machineSID[1] &&
-			s.SubAuthorities[3] == m.machineSID[2])
+		(s.SubAuthorities[1] != m.machineSID[0] ||
+			s.SubAuthorities[2] != m.machineSID[1] ||
+			s.SubAuthorities[3] != m.machineSID[2])
 }
 
 // PrincipalToSID converts an NFSv4 principal to a Windows SID.
