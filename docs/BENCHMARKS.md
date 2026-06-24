@@ -1,5 +1,10 @@
 # DittoFS Performance Benchmarks
 
+> ⚠️ **LEGACY / STALE — do not cite.** These numbers are from an earlier release and have
+> **not** been re-run against current DittoFS. They are kept for historical reference only and
+> are intentionally excluded from the published documentation. A fresh benchmark pass is pending;
+> until then, treat every figure here as out of date.
+
 Performance comparison of DittoFS with S3 backend against other S3-compatible network filesystems and kernel NFS, on identical Scaleway infrastructure.
 
 ## Key Results
