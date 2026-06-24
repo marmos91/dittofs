@@ -157,7 +157,7 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		}),
 		uploadsInflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "uploads_inflight",
-			Help: "CAS chunk uploads currently in flight to the remote store (mirror-loop concurrency; 1 today).",
+			Help: "CAS chunk uploads currently in flight to the remote store (the mirror loop's effective upload concurrency).",
 		}),
 		uploadQueueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "upload_queue_depth",
@@ -300,7 +300,7 @@ func (m *Metrics) RecordUpload(bytes int, result string, d time.Duration) {
 
 // UploadStarted and UploadFinished bracket one in-flight remote Put so that
 // datapath_uploads_inflight reflects the mirror loop's effective upload
-// concurrency (1 today; >1 once the upload loop is parallelized).
+// concurrency (the loop runs up to ParallelUploads Puts at once).
 func (m *Metrics) UploadStarted() {
 	if m == nil {
 		return

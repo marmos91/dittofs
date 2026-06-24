@@ -469,8 +469,8 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	}
 	m.pendingMu.Unlock()
 
-	if m.bs != nil && m.bs.metrics != nil {
-		m.bs.metrics.SetUploadQueueDepth(len(snapshot))
+	if mx := m.dataplaneMetrics(); mx != nil {
+		mx.SetUploadQueueDepth(len(snapshot))
 	}
 
 	// Tracks whether at least one pending hash was retained-but-not-mirrored
@@ -525,6 +525,16 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	return nil
 }
 
+// dataplaneMetrics returns the engine's data-plane metrics sink, or nil when
+// the syncer is detached from a Store or no recorder was injected. Call sites
+// must guard the result: it is a plain interface, not a nil-safe *Metrics.
+func (m *Syncer) dataplaneMetrics() DataplaneMetrics {
+	if m.bs == nil {
+		return nil
+	}
+	return m.bs.metrics
+}
+
 // mirrorChunk uploads one pending CAS chunk to the remote store and marks it
 // synced. It returns nil — recording lostBeforeMirror — when the local bytes
 // vanished before upload, so one missing chunk does not fail the whole pass.
@@ -551,10 +561,7 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 		return fmt.Errorf("local get %s: %w", hash, err)
 	}
 
-	var mx DataplaneMetrics
-	if m.bs != nil {
-		mx = m.bs.metrics
-	}
+	mx := m.dataplaneMetrics()
 
 	// Re-hash fetched bytes before upload. Local bitrot, torn writes, or
 	// hardware errors between rollup-time hashing and this read would
