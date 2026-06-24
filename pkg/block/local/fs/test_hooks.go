@@ -263,3 +263,6 @@ func (nopFBSForTest) GetFileBlock(_ context.Context, _ string) (*block.FileBlock
 func (nopFBSForTest) ListFileBlocks(_ context.Context, _ string) ([]*block.FileBlock, error) {
 	return nil, nil
 }
+func (nopFBSForTest) EnumeratePayloads(_ context.Context, _ func(payloadID string) error) error {
+	return nil
+}

@@ -160,6 +160,17 @@ type EngineFileBlockStore interface {
 	// "{payloadID}/", sorted by parsed numeric block index. Returns
 	// an empty (non-nil) slice when no blocks match.
 	ListFileBlocks(ctx context.Context, payloadID string) ([]*FileBlock, error)
+
+	// EnumeratePayloads streams every distinct payloadID that has at
+	// least one FileBlock row in this (share-scoped) store through fn,
+	// in no guaranteed order. It is the authoritative enumeration of a
+	// share's files: unlike the local block store's ListFiles (which
+	// tracks only payloads with a live append-log and goes empty once a
+	// payload rolls up), the FileBlock rows persist across rollup, so
+	// this also surfaces rolled-up and remote-only payloads. warm and
+	// stats drive off this rather than local.ListFiles. A non-nil error
+	// from fn aborts the enumeration and is returned.
+	EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error
 }
 
 // Reader defines read operations on the block store.

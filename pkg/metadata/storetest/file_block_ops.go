@@ -135,6 +135,19 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testEnumerateFileBlocks_CorruptHashFailsClosed(t, factory)
 	})
 
+	// `share warm` and block-store stats enumerate payloads from the
+	// authoritative metadata (EnumeratePayloads) rather than the local block
+	// store's ListFiles, which goes empty after rollup. Every backend MUST
+	// yield exactly the distinct payloadIDs derived from the FileBlock row IDs
+	// ({payloadID}/{blockIdx}), deduped and order-independent (#1374).
+	t.Run("EnumeratePayloads", func(t *testing.T) {
+		testEnumeratePayloads(t, factory)
+	})
+
+	t.Run("EnumeratePayloads_Empty", func(t *testing.T) {
+		testEnumeratePayloads_Empty(t, factory)
+	})
+
 	// IncrementRefCount / DecrementRefCount called via a
 	// metadata.Transaction MUST roll back when the wrapping WithTransaction
 	// returns an error. All backends — memory, badger, postgres — honor the
@@ -586,6 +599,100 @@ func testListFileBlocksEmptyStore(t *testing.T, factory StoreFactory) {
 	}
 	if len(result) != 0 {
 		t.Errorf("ListFileBlocks(empty) returned %d blocks, want 0", len(result))
+	}
+}
+
+// ============================================================================
+// EnumeratePayloads Tests
+//
+// EnumeratePayloads streams every DISTINCT payloadID that has at least one
+// FileBlock row. It is the rollup-durable enumeration surface used by
+// `share warm` and block-store stats: unlike the local block store's
+// ListFiles, the FileBlock metadata rows survive after an append log rolls up,
+// so this still reports payloads whose local payload tracking has gone empty
+// (#1374).
+// ============================================================================
+
+// testEnumeratePayloads seeds blocks for several distinct payloads (multiple
+// blocks each, including a multi-digit block index to exercise numeric suffix
+// handling, AND payloadIDs that themselves CONTAIN slashes — the production
+// shape, BuildPayloadID(shareName, filePath), where the trailing "/{offset}"
+// component is the chunk offset and the payloadID is everything before the
+// LAST slash) and asserts EnumeratePayloads yields exactly those distinct
+// payloadIDs, deduped and order-independent. A backend that split on the FIRST
+// slash would truncate "myshare/dir/sub/file.bin" to "myshare" and fail here.
+func testEnumeratePayloads(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	// payload -> number of blocks. The slash-containing payloadIDs are the
+	// normal case for any file in a subdirectory.
+	want := map[string]int{
+		"payload-alpha":            3,
+		"payload-beta":             1,
+		"payload-gamma":            12, // exercises a multi-digit block index suffix
+		"myshare/dir/sub/file.bin": 2,  // payloadID itself contains slashes
+		"export/docs/report.pdf":   1,  // single-block subdirectory file
+	}
+	for payloadID, n := range want {
+		for i := 0; i < n; i++ {
+			b := &block.FileBlock{
+				ID:         fmt.Sprintf("%s/%d", payloadID, i),
+				State:      block.BlockStatePending,
+				LocalPath:  fmt.Sprintf("/cache/%s-%d", payloadID, i),
+				DataSize:   128,
+				RefCount:   1,
+				LastAccess: time.Now(),
+				CreatedAt:  time.Now(),
+			}
+			if err := store.Put(ctx, b); err != nil {
+				t.Fatalf("Put(%s) failed: %v", b.ID, err)
+			}
+		}
+	}
+
+	got := make(map[string]int)
+	err := store.EnumeratePayloads(ctx, func(payloadID string) error {
+		got[payloadID]++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("EnumeratePayloads error: %v", err)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("EnumeratePayloads yielded %d distinct payloads %v, want %d %v",
+			len(got), got, len(want), want)
+	}
+	for payloadID := range want {
+		switch got[payloadID] {
+		case 0:
+			t.Errorf("EnumeratePayloads missing payload %q", payloadID)
+		case 1:
+			// exactly once — correct
+		default:
+			t.Errorf("EnumeratePayloads yielded payload %q %d times, want exactly 1 (must dedupe)",
+				payloadID, got[payloadID])
+		}
+	}
+}
+
+// testEnumeratePayloads_Empty asserts EnumeratePayloads invokes fn zero times
+// on an empty store.
+func testEnumeratePayloads_Empty(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	count := 0
+	err := store.EnumeratePayloads(ctx, func(_ string) error {
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("EnumeratePayloads(empty) error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("EnumeratePayloads(empty): fn invoked %d times, want 0", count)
 	}
 }
 

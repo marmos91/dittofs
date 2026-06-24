@@ -654,6 +654,9 @@ func (p *programmableFBS) GetFileBlock(ctx context.Context, id string) (*block.F
 func (p *programmableFBS) ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error) {
 	return p.inner.ListFileBlocks(ctx, payloadID)
 }
+func (p *programmableFBS) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	return p.inner.EnumeratePayloads(ctx, fn)
+}
 
 // newFSStoreForRollupLRUTest constructs an FSStore backed by a
 // programmableFBS wrapping a memory metadata store. The same store

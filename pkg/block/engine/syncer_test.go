@@ -9,6 +9,7 @@ import (
 	"iter"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -396,6 +397,25 @@ func (s *stubFBS) ListFileBlocks(_ context.Context, payloadID string) ([]*block.
 		}
 	}
 	return out, nil
+}
+func (s *stubFBS) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	s.mu.Lock()
+	seen := make(map[string]struct{})
+	for id := range s.blocks {
+		if i := strings.Index(id, "/"); i >= 0 {
+			seen[id[:i]] = struct{}{}
+		}
+	}
+	s.mu.Unlock()
+	for payloadID := range seen {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // integrationFixture bundles every component the four mirror-loop

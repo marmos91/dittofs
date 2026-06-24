@@ -243,3 +243,7 @@ func (c *countingFBSWrapper) ListFileBlocks(ctx context.Context, payloadID strin
 	c.counter++
 	return c.inner.ListFileBlocks(ctx, payloadID)
 }
+func (c *countingFBSWrapper) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	c.counter++
+	return c.inner.EnumeratePayloads(ctx, fn)
+}

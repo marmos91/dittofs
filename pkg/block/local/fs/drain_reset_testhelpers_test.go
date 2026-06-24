@@ -63,6 +63,24 @@ func (m *memFBS) ListFileBlocks(_ context.Context, payloadID string) ([]*block.F
 	return out, nil
 }
 
+func (m *memFBS) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	m.mu.Lock()
+	ids := make([]string, 0, len(m.rows))
+	for payloadID := range m.rows {
+		ids = append(ids, payloadID)
+	}
+	m.mu.Unlock()
+	for _, payloadID := range ids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *memFBS) GetFileBlock(_ context.Context, blockID string) (*block.FileBlock, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

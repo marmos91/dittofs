@@ -737,6 +737,10 @@ func (bs *Store) SetRequireDurableCommit(v bool) {
 func (bs *Store) RemoteStore() remote.RemoteStore { return bs.remote }
 
 // ListFiles returns the payloadIDs of all files tracked in the local store.
+// This reflects only locally-present payloads (those with a live append log);
+// it goes empty after rollup. Callers needing every payload (including
+// rolled-up ones) should enumerate the authoritative metadata via the
+// fileBlock store's EnumeratePayloads instead.
 func (bs *Store) ListFiles() []string { return bs.local.ListFiles() }
 
 // EvictLocal removes all local per-file state (memory tracking, files

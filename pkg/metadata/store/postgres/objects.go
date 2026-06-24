@@ -361,6 +361,68 @@ const enumerateHashesQuery = `SELECT hash FROM file_blocks
 UNION ALL
 SELECT encode(hash, 'hex') FROM file_block_refs`
 
+// EnumeratePayloads streams every distinct payloadID that has at least one
+// FileBlock row through fn. FileBlock row IDs have the form
+// {payloadID}/{chunkOffset}; the payloadID is everything BEFORE THE LAST '/'
+// (payloadIDs are BuildPayloadID(shareName, filePath) and themselves contain
+// slashes, so a split_part on the FIRST slash would truncate every
+// subdirectory file to its share name). We therefore parse the payloadID in
+// Go on the last slash rather than in SQL.
+//
+// The rows cursor is fully drained and CLOSED before any fn callback runs:
+// fn may issue further reads, so we collect first then call — matching the
+// sqlite/badger/memory backends. (The pgx pool is multi-connection, so this
+// is for correctness/consistency rather than deadlock avoidance.)
+func (s *PostgresMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	const query = `SELECT DISTINCT id FROM file_blocks`
+	ids, err := s.collectFileBlockIDs(ctx, query)
+	if err != nil {
+		return err
+	}
+
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("enumerate payloads: %w", err)
+		}
+		i := strings.LastIndex(id, "/")
+		if i < 0 {
+			continue
+		}
+		payloadID := id[:i]
+		if _, ok := seen[payloadID]; ok {
+			continue
+		}
+		seen[payloadID] = struct{}{}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectFileBlockIDs runs query (which must SELECT a single TEXT id column),
+// scans every id into a slice, and closes the rows cursor before returning.
+func (s *PostgresMetadataStore) collectFileBlockIDs(ctx context.Context, query string) ([]string, error) {
+	rows, err := s.query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("enumerate payloads: query: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("enumerate payloads: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("enumerate payloads: rows: %w", err)
+	}
+	return ids, nil
+}
+
 // EnumerateFileBlocks streams every live-set ContentHash through fn, unioning
 // the CAS index with the per-file manifest (see enumerateHashesQuery).
 func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {

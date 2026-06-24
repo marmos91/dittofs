@@ -21,17 +21,26 @@ type WarmResult struct {
 	BlocksAlreadyLocal int64 `json:"blocks_already_local"`
 }
 
-// warmTarget identifies one (payloadID, blockIdx) pair that must be fetched.
+// warmTarget identifies one FileBlock row that must be fetched. It carries the
+// resolved *block.FileBlock from enumeration so the worker fetches by the row
+// in hand rather than round-tripping through a blockIdx lookup — FastCDC chunks
+// start at arbitrary, non-BlockSize-aligned offsets, so a blockIdx lookup would
+// miss every non-aligned chunk and silently skip it (#1374).
 type warmTarget struct {
 	payloadID string
-	blockIdx  uint64
+	fb        *block.FileBlock
 }
 
 // WarmAll proactively materializes every block of every payload in this share
 // onto the local CAS tier by reusing the per-block fetch primitive
-// (fetchBlock). It enumerates payloads via the local store's ListFiles and the
-// per-payload FileBlock rows, skips any block already present locally, and
-// fetches the rest with bounded concurrency (SyncerConfig.ParallelDownloads).
+// (fetchResolvedBlock). It enumerates payloads from the authoritative metadata
+// (fileBlockStore.EnumeratePayloads) and the per-payload FileBlock rows, skips
+// any block already present locally, and fetches the rest with bounded
+// concurrency (SyncerConfig.ParallelDownloads). Enumerating the metadata rather
+// than the local store's ListFiles is what lets warm materialize payloads whose
+// append log was discarded after rollup — their FileBlock rows survive, but
+// local.ListFiles no longer reports them, so the old surface made warm a silent
+// no-op on rolled-up shares (#1374).
 //
 // progress (may be nil) is invoked after each block is processed with the
 // running (done, total) counts so callers can drive a poll/UI. total is the
@@ -49,16 +58,27 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		return WarmResult{}, errors.New("warm: share has no remote tier to warm from")
 	}
 
-	// Enumerate all (payloadID, blockIdx) pairs and split into already-local
-	// (counted, skipped) and to-fetch (the work list). The enumeration walks
-	// the same surface as populateBlockCounts: local.ListFiles -> per-payload
-	// ListFileBlocks. blockIdx is derived from the chunk's absolute offset the
-	// same way the read path does (resolveFileBlockFromRows / blockRange).
+	// Enumerate all FileBlock rows and split into already-local (counted,
+	// skipped) and to-fetch (the work list). The enumeration walks the same
+	// surface as populateBlockCounts: fileBlockStore.EnumeratePayloads ->
+	// per-payload ListFileBlocks (the authoritative metadata, which survives
+	// rollup). Each to-fetch target carries the resolved row so the worker
+	// fetches by the row in hand (fetchResolvedBlock) instead of round-tripping
+	// through a BlockSize-aligned blockIdx lookup, which would miss every
+	// non-aligned FastCDC chunk (#1374).
+	var payloadIDs []string
+	if err := m.fileBlockStore.EnumeratePayloads(ctx, func(payloadID string) error {
+		payloadIDs = append(payloadIDs, payloadID)
+		return nil
+	}); err != nil {
+		return WarmResult{}, fmt.Errorf("warm: enumerate payloads: %w", err)
+	}
+
 	var (
 		targets      []warmTarget
 		alreadyLocal int64
 	)
-	for _, payloadID := range m.local.ListFiles() {
+	for _, payloadID := range payloadIDs {
 		if err := ctx.Err(); err != nil {
 			return WarmResult{}, err
 		}
@@ -70,16 +90,14 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 			if fb == nil {
 				continue
 			}
-			abs, ok := block.ParseChunkOffset(fb.ID)
-			if !ok {
+			if _, ok := block.ParseChunkOffset(fb.ID); !ok {
 				continue
 			}
-			blockIdx := abs / uint64(BlockSize)
 			if m.blockIsLocalFromRow(ctx, fb) {
 				alreadyLocal++
 				continue
 			}
-			targets = append(targets, warmTarget{payloadID: payloadID, blockIdx: blockIdx})
+			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb})
 		}
 	}
 
@@ -118,13 +136,13 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		}
 		g.Go(func() error {
 			defer func() { <-sem }()
-			data, err := m.fetchBlock(gctx, t.payloadID, t.blockIdx)
+			data, err := m.fetchResolvedBlock(gctx, t.fb)
 			if err != nil {
 				if errors.Is(err, fs.ErrDiskFull) {
-					return fmt.Errorf("warm: local tier full while fetching %s/%d (raise local_store_size or evict): %w",
-						t.payloadID, t.blockIdx, err)
+					return fmt.Errorf("warm: local tier full while fetching %s (raise local_store_size or evict): %w",
+						t.fb.ID, err)
 				}
-				return fmt.Errorf("warm: fetch %s/%d: %w", t.payloadID, t.blockIdx, err)
+				return fmt.Errorf("warm: fetch %s: %w", t.fb.ID, err)
 			}
 			if data != nil {
 				blocksFetched.Add(1)

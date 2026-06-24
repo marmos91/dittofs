@@ -91,6 +91,9 @@ func (c *countingFileBlockStore) ListFileBlocks(ctx context.Context, payloadID s
 	c.listFileBlocks.Add(1)
 	return c.inner.ListFileBlocks(ctx, payloadID)
 }
+func (c *countingFileBlockStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	return c.inner.EnumeratePayloads(ctx, fn)
+}
 
 // snapshot captures the current call counts for comparison.
 type fbsCallSnapshot struct {

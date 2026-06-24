@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -103,6 +104,25 @@ func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string)
 		}
 	}
 	return out, nil
+}
+func (s *stubFileBlockStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	s.mu.Lock()
+	seen := make(map[string]struct{})
+	for id := range s.blocks {
+		if i := strings.Index(id, "/"); i >= 0 {
+			seen[id[:i]] = struct{}{}
+		}
+	}
+	s.mu.Unlock()
+	for payloadID := range seen {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // newTestEngine creates an engine.Store with memory local store, nil remote

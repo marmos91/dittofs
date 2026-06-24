@@ -403,3 +403,6 @@ func (nopFileBlockStore) GetFileBlock(_ context.Context, _ string) (*block.FileB
 func (nopFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*block.FileBlock, error) {
 	return nil, nil
 }
+func (nopFileBlockStore) EnumeratePayloads(_ context.Context, _ func(payloadID string) error) error {
+	return nil
+}

@@ -398,6 +398,15 @@ type Store interface {
 	// as GetFileBlock above.
 	ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error)
 
+	// EnumeratePayloads streams every distinct payloadID that has at least one
+	// FileBlock row through fn (deduped, order-independent). Unlike the local
+	// block store's ListFiles, this enumerates the authoritative metadata, so
+	// it still yields payloads whose append log was discarded after rollup.
+	// Used by `share warm` and block-store stats to enumerate the full payload
+	// set rather than only locally-present payloads. See
+	// block.EngineFileBlockStore.
+	EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error
+
 	// ========================================================================
 	// Usage Tracking
 	// ========================================================================
