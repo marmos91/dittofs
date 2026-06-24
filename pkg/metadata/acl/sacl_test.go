@@ -76,6 +76,39 @@ func TestAdjustACLForMode_PreservesSACL(t *testing.T) {
 	}
 }
 
+// TestAdjustACLForMode_SACLDeepCopy verifies the "returns a new ACL; the
+// original is not modified" contract extends to the SACL: mutating the returned
+// ACL's SACL must not corrupt the caller's original backing array.
+func TestAdjustACLForMode_SACLDeepCopy(t *testing.T) {
+	in := &ACL{
+		ACEs: []ACE{{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: rwxMaskBits, Who: SpecialOwner}},
+		SACL: []ACE{{Type: ACE4_SYSTEM_AUDIT_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: SpecialEveryone}},
+	}
+	out := AdjustACLForMode(in, 0o755)
+
+	// Mutate the returned SACL — the original must be untouched.
+	out.SACL[0].AccessMask = ACE4_READ_DATA
+	if in.SACL[0].AccessMask != ACE4_WRITE_DATA {
+		t.Errorf("AdjustACLForMode aliased SACL backing array: original mutated to 0x%x", in.SACL[0].AccessMask)
+	}
+}
+
+// TestValidateACL_SACLMaxSize verifies the 64KB serialized-size bound applies to
+// the SACL, not just the DACL — an oversized SACL (via an unbounded Who) must be
+// rejected.
+func TestValidateACL_SACLMaxSize(t *testing.T) {
+	huge := make([]byte, MaxDACLSize)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	a := &ACL{
+		SACL: []ACE{{Type: ACE4_SYSTEM_AUDIT_ACE_TYPE, AccessMask: ACE4_WRITE_DATA, Who: string(huge)}},
+	}
+	if err := ValidateACL(a); err == nil {
+		t.Error("oversized SACL must be rejected by the MaxDACLSize bound")
+	}
+}
+
 // TestValidateACL_SACLEntries verifies SACL entries are validated and a
 // malformed SACL ACE is rejected.
 func TestValidateACL_SACLEntries(t *testing.T) {

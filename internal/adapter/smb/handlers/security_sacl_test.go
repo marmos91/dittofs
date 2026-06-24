@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -195,5 +197,85 @@ func TestMergeSecurityACL_PreservesUnrequestedSection(t *testing.T) {
 	}
 	if len(out.SACL) != 1 || out.SACL[0].AccessMask != acl.ACE4_READ_DATA {
 		t.Errorf("SACL-only merge: SACL not taken from parsed: %+v", out.SACL)
+	}
+}
+
+// TestMergeSecurityACL_DACLInfoSet_SACLOnlySD verifies that a request setting
+// DACLSecurityInformation while the parsed SD carried ONLY a SACL section (a
+// non-nil carrier ACL with no DACL body) does NOT install an empty deny-all
+// DACL. ParseSecurityDescriptorWithOptions returns &acl.ACL{} (no Source, no
+// NullDACL) with only SACL populated in that case; treating "non-nil" as "has
+// DACL" would have stamped a 0-ACE deny-all DACL. The DACL must fall back to
+// null-DACL (everyone) behavior instead.
+func TestMergeSecurityACL_DACLInfoSet_SACLOnlySD(t *testing.T) {
+	// A SACL-only carrier: no Source, no NullDACL, no DACL ACEs — exactly what
+	// the parser returns for an SD that carried only a SACL section.
+	parsed := &acl.ACL{
+		SACL: []acl.ACE{{Type: acl.ACE4_SYSTEM_AUDIT_ACE_TYPE, AccessMask: acl.ACE4_WRITE_DATA, Who: acl.SpecialEveryone}},
+	}
+
+	// Defensive sanity: the discriminator must classify this as "no DACL body".
+	if parsedHasDACLBody(parsed) {
+		t.Fatal("SACL-only carrier wrongly classified as having a DACL body")
+	}
+
+	out := mergeSecurityACL(parsed, nil, true /*wantDACL*/, false /*wantSACL*/)
+	if len(out.ACEs) != 0 {
+		t.Errorf("DACL-info SET with SACL-only SD must not synthesize DACL ACEs, got %d", len(out.ACEs))
+	}
+	if !out.NullDACL {
+		t.Error("DACL-info SET with SACL-only SD must fall back to null DACL, not an empty deny-all DACL")
+	}
+	if out.Source == acl.ACLSourceSMBExplicit {
+		t.Error("SACL-only carrier must not be promoted to an explicit (deny-all) DACL")
+	}
+
+	// A genuine explicit-empty DACL (Source set, 0 ACEs) MUST still be honored
+	// as a deny-all DACL — not coerced to null. This guards against the gate
+	// over-correcting.
+	explicitEmpty := &acl.ACL{Source: acl.ACLSourceSMBExplicit}
+	if !parsedHasDACLBody(explicitEmpty) {
+		t.Fatal("explicit-empty DACL must be classified as having a DACL body")
+	}
+	out = mergeSecurityACL(explicitEmpty, nil, true, false)
+	if out.NullDACL {
+		t.Error("explicit-empty DACL must remain a deny-all DACL, not be coerced to null")
+	}
+	if out.Source != acl.ACLSourceSMBExplicit {
+		t.Errorf("explicit-empty DACL Source lost: %q", out.Source)
+	}
+}
+
+// TestMergeSecurityACL_ClearSACL_StoresNil verifies that clearing the SACL
+// (SACL requested, but the SD carried an empty/absent SACL) stores a nil slice
+// — not a non-nil empty slice. json:"sacl,omitempty" only omits nil, so an
+// empty slice would persist as "sacl":[], making "clear" differ in stored
+// shape from "never set".
+func TestMergeSecurityACL_ClearSACL_StoresNil(t *testing.T) {
+	current := &acl.ACL{
+		ACEs:   []acl.ACE{{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: acl.ACE4_READ_DATA, Who: acl.SpecialOwner}},
+		Source: acl.ACLSourceSMBExplicit,
+		SACL:   []acl.ACE{{Type: acl.ACE4_SYSTEM_AUDIT_ACE_TYPE, AccessMask: acl.ACE4_WRITE_DATA, Who: acl.SpecialEveryone}},
+	}
+
+	// Parsed SD requested SACL but carried no SACL ACEs (empty, non-nil slice).
+	parsed := &acl.ACL{
+		ACEs:   current.ACEs,
+		Source: acl.ACLSourceSMBExplicit,
+		SACL:   []acl.ACE{}, // empty, non-nil
+	}
+
+	out := mergeSecurityACL(parsed, current, true /*wantDACL*/, true /*wantSACL*/)
+	if out.SACL != nil {
+		t.Errorf("clear-SACL must store a nil SACL slice, got %#v", out.SACL)
+	}
+
+	// And the JSON form must omit the key entirely.
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if bytes.Contains(data, []byte("sacl")) {
+		t.Errorf("cleared SACL must be omitted from JSON, got %s", data)
 	}
 }

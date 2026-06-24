@@ -1869,14 +1869,29 @@ func (h *Handler) setSecurityInfo(
 	return setInfoStatus(types.StatusSuccess), nil
 }
 
+// parsedHasDACLBody reports whether a parsed SD carried an actual DACL section.
+//
+// ParseSecurityDescriptorWithOptions returns a non-nil carrier ACL whenever it
+// found EITHER a DACL or a SACL, so "non-nil" alone does not imply a DACL is
+// present: a SACL-only SD yields &acl.ACL{} (no Source, no NullDACL) with only
+// the SACL slice populated. parseDACL always stamps Source=ACLSourceSMBExplicit
+// (even for a 0-ACE explicit-empty DACL), and a wire null DACL sets NullDACL —
+// those two markers are the only ways the DACL portion gets populated, so they
+// are the reliable discriminator. Without this gate a DACL-info SET carrying a
+// SACL-only SD would install an empty deny-all DACL instead of preserving the
+// prior (or null-DACL) behavior.
+func parsedHasDACLBody(parsed *acl.ACL) bool {
+	return parsed != nil && (parsed.Source == acl.ACLSourceSMBExplicit || parsed.NullDACL)
+}
+
 // mergeSecurityACL builds the acl.ACL to install on a SET_INFO Security,
 // combining the freshly-parsed SD (parsed) with the file's current ACL
 // (current) according to which sections the request carried.
 //
 //   - DACL requested: take the DACL (ACEs + DACL-level flags + Source) from
-//     parsed; if parsed is nil the request carried no DACL body → null DACL.
+//     parsed; if parsed carried no DACL body → null DACL.
 //   - DACL not requested: preserve the current DACL unchanged.
-//   - SACL requested: take the SACL from parsed (nil parsed → clear SACL).
+//   - SACL requested: take the SACL from parsed (no/empty SACL → clear it).
 //   - SACL not requested: preserve the current SACL unchanged.
 //
 // The result is a single carrier so the metadata store's whole-ACL replace
@@ -1886,7 +1901,7 @@ func mergeSecurityACL(parsed, current *acl.ACL, wantDACL, wantSACL bool) *acl.AC
 
 	// DACL portion (ACEs + DACL-scoped control flags + Source).
 	if wantDACL {
-		if parsed != nil {
+		if parsedHasDACLBody(parsed) {
 			out.ACEs = parsed.ACEs
 			out.Source = parsed.Source
 			out.Protected = parsed.Protected
@@ -1904,9 +1919,11 @@ func mergeSecurityACL(parsed, current *acl.ACL, wantDACL, wantSACL bool) *acl.AC
 		out.NullDACL = current.NullDACL
 	}
 
-	// SACL portion.
+	// SACL portion. Normalize an empty (non-nil) slice to nil so "clear SACL"
+	// stores the same shape as "no SACL" — json:"sacl,omitempty" only drops a
+	// nil slice, so an empty slice would otherwise persist as "sacl":[].
 	if wantSACL {
-		if parsed != nil {
+		if parsed != nil && len(parsed.SACL) > 0 {
 			out.SACL = parsed.SACL
 		}
 		// parsed nil or empty SACL → leave out.SACL nil (cleared).
