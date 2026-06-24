@@ -49,7 +49,7 @@ This document covers the NFS protocol fundamentals, DittoFS's implementation of 
 | NFSv3 | 1995 | 64-bit file sizes, TCP support, async writes, WCC |
 | NFSv4 | 2000 | Stateful, ACLs, compound operations, no mount protocol |
 | NFSv4.1 | 2010 | Parallel NFS (pNFS), sessions, backchannel |
-| NFSv4.2 | 2016 | Server-side copy, sparse files |
+| NFSv4.2 | 2016 | Server-side copy, sparse files, CLONE (reflink) |
 
 DittoFS implements **NFSv3**, **NFSv4.0**, and **NFSv4.1** -- covering the stateless simplicity of v3 through the stateful, session-based model of v4.1 with delegations, ACLs, CB_NOTIFY, and Kerberos via RPCSEC_GSS.
 

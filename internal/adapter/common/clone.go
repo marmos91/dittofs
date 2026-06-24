@@ -105,7 +105,7 @@ func CloneRange(
 			newBlocks, newSize, err := cloneCopyBytes(
 				txCtx, blockStore, srcFile.Blocks, dstFile.Blocks,
 				string(srcPayloadID), string(dstPayloadID),
-				srcOffset, dstOffset, effCount, dstFile.Size,
+				srcOffset, dstOffset, effCount,
 			)
 			if err != nil {
 				return err
@@ -149,7 +149,7 @@ func cloneCopyBytes(
 	blockStore *engine.Store,
 	srcBlocks, dstBlocks []block.BlockRef,
 	srcPayloadID, dstPayloadID string,
-	srcOffset, dstOffset, count, dstSize uint64,
+	srcOffset, dstOffset, count uint64,
 ) ([]block.BlockRef, uint64, error) {
 	buf := make([]byte, cloneCopyChunk)
 	blocks := dstBlocks
@@ -176,6 +176,5 @@ func cloneCopyBytes(
 		blocks = newBlocks
 		written += chunk
 	}
-	end := dstOffset + count
-	return blocks, end, nil
+	return blocks, dstOffset + count, nil
 }
