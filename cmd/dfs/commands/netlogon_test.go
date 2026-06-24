@@ -278,3 +278,56 @@ func TestMergeMachineAccountFromFile_OnlineJoinAlwaysFromFile(t *testing.T) {
 		t.Fatalf("DB offline account clobbered: %+v", got.MachineAccount)
 	}
 }
+
+// TestOverlayDeploymentPaths_FileWinsWhenSet verifies a file/env keytab,
+// krb5.conf, or machine-account keytab path overrides the stale value carried
+// in a DB-sourced Kerberos row. This is the deployment-relocation case: an
+// operator moves the mount and the DB row must not pin the old absolute path.
+func TestOverlayDeploymentPaths_FileWinsWhenSet(t *testing.T) {
+	db := config.KerberosConfig{
+		KeytabPath: "/etc/dittofs/krb5.keytab",
+		Krb5Conf:   "/etc/krb5.conf",
+		MachineAccount: config.MachineAccountConfig{
+			KeytabPath: "/etc/dittofs/machine.keytab",
+		},
+	}
+	file := config.KerberosConfig{
+		KeytabPath: "/kerberos/dittofs.keytab",
+		Krb5Conf:   "/kerberos-krb5/krb5.conf",
+		MachineAccount: config.MachineAccountConfig{
+			KeytabPath: "/kerberos/machine.keytab",
+		},
+	}
+	got := overlayDeploymentPaths(db, file)
+	if got.KeytabPath != "/kerberos/dittofs.keytab" {
+		t.Fatalf("KeytabPath not overlaid: %q", got.KeytabPath)
+	}
+	if got.Krb5Conf != "/kerberos-krb5/krb5.conf" {
+		t.Fatalf("Krb5Conf not overlaid: %q", got.Krb5Conf)
+	}
+	if got.MachineAccount.KeytabPath != "/kerberos/machine.keytab" {
+		t.Fatalf("MachineAccount.KeytabPath not overlaid: %q", got.MachineAccount.KeytabPath)
+	}
+}
+
+// TestOverlayDeploymentPaths_EmptyFileKeepsDB verifies a pure-API deployment
+// (no path in file/env) is unaffected: the DB row's paths are preserved.
+func TestOverlayDeploymentPaths_EmptyFileKeepsDB(t *testing.T) {
+	db := config.KerberosConfig{
+		KeytabPath: "/etc/dittofs/krb5.keytab",
+		Krb5Conf:   "/etc/krb5.conf",
+		MachineAccount: config.MachineAccountConfig{
+			KeytabPath: "/etc/dittofs/machine.keytab",
+		},
+	}
+	got := overlayDeploymentPaths(db, config.KerberosConfig{})
+	if got.KeytabPath != "/etc/dittofs/krb5.keytab" {
+		t.Fatalf("KeytabPath clobbered by empty file: %q", got.KeytabPath)
+	}
+	if got.Krb5Conf != "/etc/krb5.conf" {
+		t.Fatalf("Krb5Conf clobbered by empty file: %q", got.Krb5Conf)
+	}
+	if got.MachineAccount.KeytabPath != "/etc/dittofs/machine.keytab" {
+		t.Fatalf("MachineAccount.KeytabPath clobbered by empty file: %q", got.MachineAccount.KeytabPath)
+	}
+}
