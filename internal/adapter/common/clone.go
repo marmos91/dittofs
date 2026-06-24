@@ -2,21 +2,13 @@ package common
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
-
-// ErrCloneCrossShare is returned when a CLONE/reflink is requested between two
-// files that live in different shares (different per-share block stores).
-// Content-addressed dedup is per-share, so the destination store could not
-// reference the source's CAS blocks. Protocol adapters map this to the
-// "cross-device" status of their wire protocol (NFSv4 has no NFS4ERR_XDEV, so
-// NFS maps it to NFS4ERR_INVAL; SMB would map it to STATUS_NOT_SAME_DEVICE).
-var ErrCloneCrossShare = errors.New("clone: source and destination are in different shares")
 
 // CloneWholeFile performs a whole-file NFSv4.2 CLONE / SMB duplicate-extents
 // reflink: the destination inherits the source's entire content by referencing
@@ -37,24 +29,24 @@ var ErrCloneCrossShare = errors.New("clone: source and destination are in differ
 //     dstFileAttr, no leaked RefCount bumps.
 //   - cache.InvalidateFile (if cache != nil) runs POST-txn, after the commit.
 //
-// blockStore and metadataStore MUST be the per-share stores resolved for the
-// destination handle; the caller verifies src and dst share them and surfaces
-// ErrCloneCrossShare otherwise. The caller is also responsible for
-// stateid/permission checks and for rejecting non-regular files.
+// The caller supplies the source's BlockRef list and size (already fetched for
+// its own validation) rather than having this helper re-read them — that avoids
+// a redundant GetFile and, more importantly, a TOCTOU window where a concurrent
+// writer resizes the source between the caller's whole-file decision and the
+// clone. blockStore and metadataStore MUST be the per-share stores resolved for
+// the destination handle; the caller is responsible for confirming src and dst
+// live in the same share and for stateid/permission/type checks.
 func CloneWholeFile(
 	ctx context.Context,
 	blockStore *engine.Store,
 	metadataStore metadata.Store,
 	cache CacheInvalidator,
-	srcHandle, dstHandle metadata.FileHandle,
+	dstHandle metadata.FileHandle,
 	srcPayloadID, dstPayloadID metadata.PayloadID,
+	srcBlocks []block.BlockRef,
+	srcSize uint64,
 ) error {
-	srcFile, err := metadataStore.GetFile(ctx, srcHandle)
-	if err != nil {
-		return fmt.Errorf("CloneWholeFile: fetch src file: %w", err)
-	}
-
-	err = metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
+	err := metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		// Bind the active txn into the context so the per-share coordinator's
 		// RefCount UPDATEs (driven by engine.CopyPayload) join the same txn as
 		// the destination PutFile and commit/roll back together.
@@ -65,12 +57,12 @@ func CloneWholeFile(
 			return fmt.Errorf("fetch dst file: %w", err)
 		}
 
-		newBlocks, err := blockStore.CopyPayload(txCtx, string(srcPayloadID), string(dstPayloadID), srcFile.Blocks)
+		newBlocks, err := blockStore.CopyPayload(txCtx, string(srcPayloadID), string(dstPayloadID), srcBlocks)
 		if err != nil {
 			return fmt.Errorf("engine copy payload: %w", err)
 		}
 		dstFile.Blocks = newBlocks
-		dstFile.Size = srcFile.Size
+		dstFile.Size = srcSize
 		dstFile.Mtime = time.Now()
 		dstFile.Ctime = dstFile.Mtime // content change is also a metadata change
 		if err := tx.PutFile(ctx, dstFile); err != nil {

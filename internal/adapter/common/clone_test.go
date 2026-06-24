@@ -26,11 +26,11 @@ func TestCloneWholeFile_O1(t *testing.T) {
 		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 2048},
 	}
 	const srcSize = 4096 + 4096 + 2048
-	srcHandle := putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, srcSize)
+	putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, srcSize)
 	dstHandle := putTestFile(t, ms, "/dst.bin", "dst-pid", nil, 0)
 	cache := &recordingInvalidator{}
 
-	if err := CloneWholeFile(ctx, bs, ms, cache, srcHandle, dstHandle, "src-pid", "dst-pid"); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, cache, dstHandle, "src-pid", "dst-pid", srcBlocks, srcSize); err != nil {
 		t.Fatalf("CloneWholeFile failed: %v", err)
 	}
 
@@ -80,11 +80,11 @@ func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
 		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},
 	}
-	srcHandle := putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, 8192)
+	putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, 8192)
 	dstHandle := putTestFile(t, ms, "/dst.bin", "dst-pid", nil, 0)
 	cache := &recordingInvalidator{}
 
-	if err := CloneWholeFile(ctx, bs, ms, cache, srcHandle, dstHandle, "src-pid", "dst-pid"); err == nil {
+	if err := CloneWholeFile(ctx, bs, ms, cache, dstHandle, "src-pid", "dst-pid", srcBlocks, 8192); err == nil {
 		t.Fatal("expected CloneWholeFile to fail on IncrementRefCount error")
 	}
 

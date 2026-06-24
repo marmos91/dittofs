@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"errors"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -172,14 +171,15 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		return cloneErr(types.NFS4ERR_SERVERFAULT)
 	}
 
+	// Pass the source blocks and size already fetched above rather than letting
+	// CloneWholeFile re-read them — one fewer metadata round-trip and no TOCTOU
+	// window on the source size between the whole-file decision and the clone.
 	if err := common.CloneWholeFile(
 		ctx.Context, blockStore, store, nil,
-		srcHandle, dstHandle,
+		dstHandle,
 		srcFile.PayloadID, dstFile.PayloadID,
+		srcFile.Blocks, srcFile.Size,
 	); err != nil {
-		if errors.Is(err, common.ErrCloneCrossShare) {
-			return cloneErr(types.NFS4ERR_INVAL)
-		}
 		logger.Debug("NFSv4.2 CLONE failed", "error", err, "client", ctx.ClientAddr)
 		return cloneErr(common.MapToNFS4(err))
 	}
