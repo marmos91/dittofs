@@ -48,39 +48,37 @@ Generate shell completion script
 
 Generate shell completion script for dfs.
 
-To load completions:
-
-Bash:
-  # Linux:
-  $ dfs completion bash > /etc/bash_completion.d/dfs
-  # macOS:
-  $ dfs completion bash > $(brew --prefix)/etc/bash_completion.d/dfs
-
-Zsh:
-  # If shell completion is not already enabled in your environment,
-  # you will need to enable it. You can execute the following once:
-  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
-
-  # To load completions for each session, execute once:
-  # Linux:
-  $ dfs completion zsh > "${fpath[1]}/_dfs"
-  # macOS:
-  $ dfs completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfs
-
-  # You will need to start a new shell for this setup to take effect.
-
-Fish:
-  $ dfs completion fish > ~/.config/fish/completions/dfs.fish
-
-PowerShell:
-  PS> dfs completion powershell | Out-String | Invoke-Expression
-
-  # To load completions for every new session, run:
-  PS> dfs completion powershell > dfs.ps1
-  # and source this file from your PowerShell profile.
+The generated script enables tab-completion for dfs commands, subcommands, and
+flags in your shell. Pick the snippet for your shell and load it once.
 
 ```
 dfs completion [bash|zsh|fish|powershell]
+```
+
+**Examples:**
+
+```bash
+# Bash (Linux): install system-wide
+dfs completion bash > /etc/bash_completion.d/dfs
+
+# Bash (macOS, requires the Homebrew bash-completion package)
+dfs completion bash > $(brew --prefix)/etc/bash_completion.d/dfs
+
+# Zsh: enable completion once (if not already enabled), then install
+echo "autoload -U compinit; compinit" >> ~/.zshrc
+dfs completion zsh > "${fpath[1]}/_dfs"
+
+# Zsh (macOS, Homebrew)
+dfs completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfs
+
+# Fish
+dfs completion fish > ~/.config/fish/completions/dfs.fish
+
+# PowerShell: load for the current session
+dfs completion powershell | Out-String | Invoke-Expression
+
+# PowerShell: persist across sessions by sourcing from your profile
+dfs completion powershell > dfs.ps1
 ```
 
 Global flags:
@@ -1802,39 +1800,37 @@ Generate shell completion script
 
 Generate shell completion script for dfsctl.
 
-To load completions:
-
-Bash:
-  # Linux:
-  $ dfsctl completion bash > /etc/bash_completion.d/dfsctl
-  # macOS:
-  $ dfsctl completion bash > $(brew --prefix)/etc/bash_completion.d/dfsctl
-
-Zsh:
-  # If shell completion is not already enabled in your environment,
-  # you will need to enable it. You can execute the following once:
-  $ echo "autoload -U compinit; compinit" >> ~/.zshrc
-
-  # To load completions for each session, execute once:
-  # Linux:
-  $ dfsctl completion zsh > "${fpath[1]}/_dfsctl"
-  # macOS:
-  $ dfsctl completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfsctl
-
-  # You will need to start a new shell for this setup to take effect.
-
-Fish:
-  $ dfsctl completion fish > ~/.config/fish/completions/dfsctl.fish
-
-PowerShell:
-  PS> dfsctl completion powershell | Out-String | Invoke-Expression
-
-  # To load completions for every new session, run:
-  PS> dfsctl completion powershell > dfsctl.ps1
-  # and source this file from your PowerShell profile.
+The generated script enables tab-completion for dfsctl commands, subcommands,
+and flags in your shell. Pick the snippet for your shell and load it once.
 
 ```
 dfsctl completion [bash|zsh|fish|powershell]
+```
+
+**Examples:**
+
+```bash
+# Bash (Linux): install system-wide
+dfsctl completion bash > /etc/bash_completion.d/dfsctl
+
+# Bash (macOS, requires the Homebrew bash-completion package)
+dfsctl completion bash > $(brew --prefix)/etc/bash_completion.d/dfsctl
+
+# Zsh: enable completion once (if not already enabled), then install
+echo "autoload -U compinit; compinit" >> ~/.zshrc
+dfsctl completion zsh > "${fpath[1]}/_dfsctl"
+
+# Zsh (macOS, Homebrew)
+dfsctl completion zsh > $(brew --prefix)/share/zsh/site-functions/_dfsctl
+
+# Fish
+dfsctl completion fish > ~/.config/fish/completions/dfsctl.fish
+
+# PowerShell: load for the current session
+dfsctl completion powershell | Out-String | Invoke-Expression
+
+# PowerShell: persist across sessions by sourcing from your profile
+dfsctl completion powershell > dfsctl.ps1
 ```
 
 Global flags:
