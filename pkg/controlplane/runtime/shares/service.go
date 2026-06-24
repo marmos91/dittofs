@@ -2322,7 +2322,16 @@ func CreateLocalStoreFromConfig(
 		if err != nil {
 			return nil, err
 		}
-		if err := store.StartRollup(ctx); err != nil {
+		// The rollup worker pool is a persistent, store-lifetime background
+		// goroutine — it must NOT be tied to the caller's context. When a share
+		// is created live via the REST API, ctx is the HTTP request context and
+		// is cancelled the instant the response is sent; binding the rollup
+		// ticker to it kills the pool immediately, so append-log data is never
+		// chunked into CAS (and therefore never mirrored to the remote). Detach
+		// cancellation (keeping ctx values for tracing); shutdown is driven by
+		// store.Close()/GracefulStopRollup, mirroring engine.Start's use of a
+		// background context for the syncer and local-store loops.
+		if err := store.StartRollup(context.WithoutCancel(ctx)); err != nil {
 			_ = store.Close()
 			return nil, fmt.Errorf("fs local store: StartRollup: %w", err)
 		}

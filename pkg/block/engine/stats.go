@@ -126,8 +126,21 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 
 	cacheStats := bs.loadCache().Stats()
 
-	pending, completed, failed := bs.syncer.Queue().Stats()
-	_, uploads, _ := bs.syncer.Queue().PendingByType()
+	// Source sync stats from the live mirror path (pendingHashes set +
+	// completed/failed counters), NOT the vestigial SyncQueue, whose Stats()
+	// always read zero because it has no production callers (#1266). The
+	// dead-queue numbers made operators believe nothing synced even when
+	// uploads provably succeeded (#1405 diagnosis).
+	//
+	// In local-only mode (no remote) these counters are meaningless: addPendingHash
+	// still records rolled-up chunks but nothing ever mirrors them, so a nonzero
+	// PendingUploads would falsely imply an upload backlog. Report zeros when there
+	// is no remote — there is nothing to sync.
+	var pendingUploads, completed, failed int
+	if bs.remote != nil {
+		pendingUploads = bs.syncer.PendingCount()
+		completed, failed = bs.syncer.SyncCounts()
+	}
 
 	remoteHealthy := bs.syncer.IsRemoteHealthy()
 	outageDuration := bs.syncer.RemoteOutageDuration()
@@ -147,8 +160,8 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		ReadBufferUsed:      cacheStats.CurBytes,
 		ReadBufferMax:       cacheStats.MaxBytes,
 		HasRemote:           bs.remote != nil,
-		PendingSyncs:        pending,
-		PendingUploads:      uploads,
+		PendingSyncs:        pendingUploads,
+		PendingUploads:      pendingUploads,
 		CompletedSyncs:      completed,
 		FailedSyncs:         failed,
 		RemoteHealthy:       remoteHealthy,
