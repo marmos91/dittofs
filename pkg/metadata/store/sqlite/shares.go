@@ -148,19 +148,22 @@ func (s *SQLiteMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 		Type: metadata.FileTypeDirectory,
 		Mode: 0o755,
 	}
-	if _, err := s.CreateRootDirectory(ctx, share.Name, rootAttr); err != nil {
-		return fmt.Errorf("create share %q root directory: %w", share.Name, err)
-	}
 
-	// Persist the requested options + block layout on the freshly-inserted
-	// row (CreateRootDirectory seeds only share_name + root_file_id, leaving
-	// options/block_layout at their column defaults). UpdateShareOptions
-	// applies the same ParseBlockLayout normalization the old INSERT did.
-	if err := s.UpdateShareOptions(ctx, share.Name, &share.Options); err != nil {
-		return fmt.Errorf("create share %q options: %w", share.Name, err)
-	}
-
-	return nil
+	// Root-inode insert and options write run in ONE transaction so the share
+	// can never be left half-created (root materialized but options stuck at
+	// their column defaults) if the second step fails or the process crashes
+	// between them. UpdateShareOptions applies the same ParseBlockLayout
+	// normalization the old INSERT did; CreateRootDirectory seeds only
+	// share_name + root_file_id, so the options UPDATE finishes the row.
+	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		if _, err := tx.CreateRootDirectory(ctx, share.Name, rootAttr); err != nil {
+			return fmt.Errorf("create share %q root directory: %w", share.Name, err)
+		}
+		if err := tx.UpdateShareOptions(ctx, share.Name, &share.Options); err != nil {
+			return fmt.Errorf("create share %q options: %w", share.Name, err)
+		}
+		return nil
+	})
 }
 
 // UpdateShareOptions updates the share configuration options.
