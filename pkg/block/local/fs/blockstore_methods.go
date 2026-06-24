@@ -29,6 +29,25 @@ func (bc *FSStore) Put(ctx context.Context, hash block.ContentHash, data []byte)
 	if hash.IsZero() {
 		return fmt.Errorf("blockstore.fs: Put with zero hash")
 	}
+	// Put is the read-through cache's write entry: its production engine
+	// callers are the syncer's inline fetch + prefetch in engine/fetch.go (the
+	// offline CAS-migration tool and the conformance suite also call it, both
+	// with maxDisk == 0, where ensureSpace is a no-op). Unlike the
+	// append/rollup write path it does not flow through ensureSpace, so
+	// without this a read-only workload over a remote tier grows the local
+	// CAS store without bound, past maxDisk, because eviction is never
+	// triggered (#1362). Reserve capacity for genuinely new chunks only:
+	// StoreChunk is idempotent, and reserving for an already-present chunk
+	// would over-evict to make room for bytes that are never written.
+	exists, err := bc.Has(ctx, hash)
+	if err != nil {
+		return fmt.Errorf("blockstore.fs: Put: %w", err)
+	}
+	if !exists {
+		if err := bc.ensureSpace(ctx, int64(len(data))); err != nil {
+			return fmt.Errorf("blockstore.fs: Put: %w", err)
+		}
+	}
 	return bc.StoreChunk(ctx, hash, data)
 }
 
