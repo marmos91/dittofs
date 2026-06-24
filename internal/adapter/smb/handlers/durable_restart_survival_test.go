@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -38,12 +39,9 @@ func fileIDPersistentHalf(id [16]byte) [8]byte {
 //     mints reuses the persisted handle's persistent half. This is the bug a
 //     startup reseed of nextFileID (from the max persisted FileID) prevents.
 //
-// NOTE: the post-reseed assertion — that a freshly minted FileID does NOT
-// collide with any persisted handle's persistent half — depends on Fix A's
-// Handler.SeedFileIDFromDurableHandles, which is NOT yet on origin/develop
-// (tracked by PR #1376). That assertion lives in the guarded sub-test below and
-// is skipped until #1376 lands. We intentionally do NOT reimplement the seed
-// here.
+// The closed-loop counterpart — that after Handler.SeedFileIDFromDurableHandles
+// (Fix A, #1376) a freshly minted FileID does NOT collide — lives in
+// TestDurableHandleNoCollisionAfterReseed below.
 func TestDurableHandleSurvivesSimulatedRestart(t *testing.T) {
 	ctx := context.Background()
 
@@ -118,34 +116,79 @@ func TestDurableHandleSurvivesSimulatedRestart(t *testing.T) {
 
 // TestDurableHandleNoCollisionAfterReseed is the post-Fix-A assertion: after a
 // fresh Handler runs the startup reseed of nextFileID from the persisted
-// durable handles, a freshly minted FileID's persistent half must NOT collide
-// with any persisted handle's persistent half — while the persisted handle
-// stays reconnect-resolvable.
+// durable handles (Handler.SeedFileIDFromDurableHandles, #1376), a freshly
+// minted FileID's persistent half must NOT collide with the persisted handle's
+// persistent half — while the persisted handle stays reconnect-resolvable by
+// FileID.
 //
-// This depends on Handler.SeedFileIDFromDurableHandles (Fix A, PR #1376), which
-// is NOT on origin/develop at the time of writing. Enable this test once #1376
-// merges by removing the skip and the build-tag guard below.
+// This is the closed-loop counterpart to TestDurableHandleSurvivesSimulatedRestart,
+// which demonstrates the un-seeded collision hazard: SeedFileIDFromDurableHandles
+// is exactly what removes it.
 func TestDurableHandleNoCollisionAfterReseed(t *testing.T) {
-	t.Skip("blocked on Fix A / PR #1376: Handler.SeedFileIDFromDurableHandles " +
-		"not yet on origin/develop — see durable_restart_survival_test.go header")
+	ctx := context.Background()
 
-	// Intended assertions once #1376 lands (kept as documentation; the symbol
-	// SeedFileIDFromDurableHandles does not exist yet so this body must stay
-	// behind the t.Skip above and uncompiled references avoided):
-	//
-	//   ctx := context.Background()
-	//   store := newMockDurableStore()
-	//   _ = store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
-	//       ID: "seed-survivor", FileID: persistedFileID, ...})
-	//
-	//   h := NewHandler()
-	//   h.DurableStore = store
-	//   if err := h.SeedFileIDFromDurableHandles(ctx); err != nil { t.Fatal(err) }
-	//
-	//   minted := h.GenerateFileID()
-	//   if fileIDPersistentHalf(minted) == fileIDPersistentHalf(persistedFileID) {
-	//       t.Fatal("freshly minted FileID collides with persisted handle after reseed")
-	//   }
-	//   resolved, _ := store.GetDurableHandleByFileID(ctx, persistedFileID)
-	//   if resolved == nil { t.Fatal("persisted handle not resolvable after reseed") }
+	// A durable handle persisted with a deliberately HIGH persistent half
+	// (counter value 5000, little-endian in bytes 0-7, matching GenerateFileID's
+	// packing). A fresh Handler's counter starts at 1, so without the reseed its
+	// minted FileIDs would walk 2,3,4,… and eventually collide with 5000.
+	const persistedCounter uint64 = 5000
+	var persistedFileID [16]byte
+	binary.LittleEndian.PutUint64(persistedFileID[:8], persistedCounter)
+	copy(persistedFileID[8:], []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x01, 0x02, 0x03})
+
+	now := time.Now()
+	store := newMockDurableStore()
+	if err := store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
+		ID:              "seed-survivor",
+		FileID:          persistedFileID,
+		OriginalFileID:  persistedFileID,
+		Path:            "/reseed/file.txt",
+		ShareName:       "share1",
+		DisconnectedAt:  now,
+		TimeoutMs:       300000,
+		ServerStartTime: now,
+	}); err != nil {
+		t.Fatalf("PutDurableHandle: %v", err)
+	}
+
+	// --- Simulate restart + run the startup reseed (Fix A). ---
+	h := NewHandler()
+	h.DurableStore = store
+	if got := h.nextFileID.Load(); got != 1 {
+		t.Fatalf("fresh Handler nextFileID = %d, want 1 (restart counter reset)", got)
+	}
+
+	h.SeedFileIDFromDurableHandles(ctx, store)
+
+	// The reseed stores the max persisted persistent half (5000) as the
+	// last-issued value; GenerateFileID pre-increments, so the next minted
+	// persistent half is 5001 — strictly above every persisted handle.
+	if got := h.nextFileID.Load(); got != persistedCounter {
+		t.Fatalf("after reseed nextFileID = %d, want %d (max persisted persistent half)",
+			got, persistedCounter)
+	}
+
+	// --- A freshly minted FileID must NOT collide with the persisted handle. ---
+	minted := h.GenerateFileID()
+	if fileIDPersistentHalf(minted) == fileIDPersistentHalf(persistedFileID) {
+		t.Fatalf("freshly minted FileID collides with persisted handle after reseed: "+
+			"minted=%x persisted=%x",
+			fileIDPersistentHalf(minted), fileIDPersistentHalf(persistedFileID))
+	}
+	if mintedCounter := binary.LittleEndian.Uint64(minted[:8]); mintedCounter != persistedCounter+1 {
+		t.Fatalf("first post-reseed FileID persistent half = %d, want %d (max+1)",
+			mintedCounter, persistedCounter+1)
+	}
+
+	// --- The persisted handle is still reconnect-resolvable by FileID. ---
+	resolved, err := store.GetDurableHandleByFileID(ctx, persistedFileID)
+	if err != nil {
+		t.Fatalf("GetDurableHandleByFileID: %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("persisted durable handle not resolvable by FileID after reseed")
+	}
+	if resolved.ID != "seed-survivor" {
+		t.Fatalf("resolved wrong handle: ID=%q, want %q", resolved.ID, "seed-survivor")
+	}
 }
