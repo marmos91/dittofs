@@ -246,6 +246,7 @@ an isolated local storage directory and its own caching tiers. See
 - [NFS](docs/NFS.md) — NFSv3/v4.0/v4.1 status, mounting, internals
 - [SMB](docs/SMB.md) — SMB2/3 status, encryption, signing, leases, durable handles
 - [ACLs](docs/ACLS.md) — the cross-protocol ACL model shared by NFS and SMB
+- [SMB ACL Fidelity](docs/SMB_ACL_FIDELITY.md) — what the SMB Security Descriptor path round-trips (Works/Partial/Unsupported)
 - [Encryption](docs/ENCRYPTION.md) — client-side per-remote envelope encryption
 - [Snapshots](docs/SNAPSHOTS.md) — reference-based share snapshots and restore
 - [Windows Testing](docs/WINDOWS_TESTING.md) — SMB conformance against Windows

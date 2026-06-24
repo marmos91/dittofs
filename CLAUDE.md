@@ -18,6 +18,7 @@ Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/
 - `docs/CONFIGURATION.md` — config file + env vars (`DITTOFS_*`)
 - `docs/CLI.md` — full `dfs` / `dfsctl` reference (**generated** — see below)
 - `docs/NFS.md`, `docs/SMB.md` — protocol details
+- `docs/SMB_ACL_FIDELITY.md` — SMB Windows-ACL/SD interop matrix (Works/Partial/Unsupported)
 - `docs/IMPLEMENTING_STORES.md` — metadata/block store contracts
 - `docs/DEBUGGING.md` — SMB/NFS pcap-diff interop playbook
 - `docs/FAQ.md` — known limitations (ETXTBSY, POSIX gaps, single-node)
