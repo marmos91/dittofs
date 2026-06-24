@@ -74,6 +74,11 @@ type Store struct {
 	remote remote.RemoteStore
 	syncer *Syncer
 
+	// metrics is the engine-side data-plane metrics sink (mirror/upload
+	// path). Retained from SetMetrics when the injected recorder also
+	// satisfies DataplaneMetrics. May be nil in tests; call sites guard.
+	metrics DataplaneMetrics
+
 	// widened to EngineFileBlockStore so populateBlockCounts
 	// can call ListFileBlocks (engine-internal method not on the public
 	// FileBlockStore surface).
@@ -683,6 +688,11 @@ func (bs *Store) Close() error {
 func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 	if aware, ok := bs.local.(local.MetricsAware); ok {
 		aware.SetMetrics(rec)
+	}
+	// The injected recorder (*metrics.Metrics in production) also carries the
+	// data-plane upload instruments; retain it for the mirror/upload path.
+	if dm, ok := rec.(DataplaneMetrics); ok {
+		bs.metrics = dm
 	}
 }
 

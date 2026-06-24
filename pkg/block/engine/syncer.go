@@ -468,6 +468,10 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	}
 	m.pendingMu.Unlock()
 
+	if m.bs != nil && m.bs.metrics != nil {
+		m.bs.metrics.SetUploadQueueDepth(len(snapshot))
+	}
+
 	// Tracks whether at least one pending hash was retained-but-not-mirrored
 	// because its local bytes were gone. The loop continues draining the
 	// other hashes (one bad hash must not stall the rest), and reports this
@@ -506,7 +510,16 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 		// ReadBlockVerified is post-facto and useless once the local
 		// copy is evicted, so refuse the upload here and surface an
 		// error to the syncer loop.
+		var mx DataplaneMetrics
+		if m.bs != nil {
+			mx = m.bs.metrics
+		}
+
+		rehashStart := time.Now()
 		computed := block.ContentHash(blake3.Sum256(data))
+		if mx != nil {
+			mx.RecordRehash(time.Since(rehashStart))
+		}
 		if computed != hash {
 			logger.Error("local corruption detected before mirror upload — refusing to upload",
 				"hash", hash.String(),
@@ -514,7 +527,21 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 				"bytes", len(data))
 			return fmt.Errorf("%w on hash %s: computed %s (refusing upload)", block.ErrCASContentMismatch, hash.String(), computed.String())
 		}
-		if err := m.remoteStore.Put(ctx, hash, data); err != nil {
+
+		uploadStart := time.Now()
+		if mx != nil {
+			mx.UploadStarted()
+		}
+		err = m.remoteStore.Put(ctx, hash, data)
+		if mx != nil {
+			mx.UploadFinished()
+			result := "ok"
+			if err != nil {
+				result = "error"
+			}
+			mx.RecordUpload(len(data), result, time.Since(uploadStart))
+		}
+		if err != nil {
 			return fmt.Errorf("remote put %s: %w", hash, err)
 		}
 		if err := hashStore.MarkSynced(ctx, hash); err != nil {
