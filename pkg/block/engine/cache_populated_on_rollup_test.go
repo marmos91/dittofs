@@ -4,8 +4,8 @@
 // post-rollup FileBlock hash must be reachable via bs.cache.Get
 // without consulting disk.
 //
-// Mechanism: cache hits are observed via the recordingPutCache (from
-// eager_dedup_test.go) installed in place of the realCache. Every
+// Mechanism: cache hits are observed via the recordingPutCache
+// (defined below) installed in place of the realCache. Every
 // successful chunkstore.StoreChunk fires bc.onChunkComplete, which
 // engine.New wired to bs.cache.Put. Reading via rec.Get is RAM-only
 // (recordingPutCache holds a map[hash]bytes) — no disk fetch is
@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -247,3 +248,39 @@ func TestCache_PopulatedOnRollupComplete_LargeChunkRespectsCacheCap(t *testing.T
 		t.Fatalf("expected >= 1 chunk; got %d", len(blocks))
 	}
 }
+
+// recordingPutCache is a cacheInterface that records every Put so the
+// rollup-cache-warming tests can assert cache warming (the existing
+// recordingCache has a no-op Put, which can't observe the warming).
+type recordingPutCache struct {
+	mu        sync.Mutex
+	putCalls  int
+	putHashes []block.ContentHash
+	putData   map[block.ContentHash][]byte
+}
+
+func newRecordingPutCache() *recordingPutCache {
+	return &recordingPutCache{putData: make(map[block.ContentHash][]byte)}
+}
+
+func (r *recordingPutCache) Get(h block.ContentHash) ([]byte, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	d, ok := r.putData[h]
+	if !ok {
+		return nil, false
+	}
+	cp := append([]byte(nil), d...)
+	return cp, true
+}
+func (r *recordingPutCache) Put(h block.ContentHash, data []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.putCalls++
+	r.putHashes = append(r.putHashes, h)
+	r.putData[h] = append([]byte(nil), data...)
+}
+func (r *recordingPutCache) OnRead(string, []block.ContentHash, uint64) {}
+func (r *recordingPutCache) InvalidateFile(string, []block.ContentHash) {}
+func (r *recordingPutCache) Stats() CacheStats                          { return CacheStats{} }
+func (r *recordingPutCache) Close() error                               { return nil }

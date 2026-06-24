@@ -403,10 +403,9 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 			recs = append(recs, rec{
 				off:     off,
 				payload: payload,
-				// endPos preserved for downstream consumers that still rely
-				// on it; with the logIndex-driven path it is no longer used
-				// to advance targetPos, but reconstructStream / dedup code
-				// reads it via the rec struct.
+				// endPos is currently retained but unused: with the
+				// logIndex-driven path it no longer advances targetPos, and
+				// no production code reads it via the rec struct.
 				endPos: e.logPos + uint64(recordFrameOverhead) + uint64(e.payloadLen),
 			})
 			consumedExtents = append(consumedExtents, consumedExt{fileOff: e.fileOff, payloadLen: e.payloadLen})
@@ -561,41 +560,12 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 			Size:   uint32(b),
 		}
 
-		// Consult the per-FSStore dedup LRU between FastCDC.Next() and
-		// StoreChunk. The LRU is keyed by (hash, payloadID): on hit we
-		// know THIS payload's prior rollup pass stored hash h and the
-		// FileBlock row is committed, so AddRef bumps RefCount on the
-		// correct row. Cross-payload LRU short-circuit is intentionally
-		// not supported (#669 — the "wrong-row-owner" subcase);
-		// cross-payload dedup still happens via the regular CAS path.
-		// BlockRef append below still happens — manifest invariant:
-		// ComputeObjectID later in this function sees the same BlockRef
-		// list with or without the LRU. State preservation: AddRef
-		// leaves BlockState unchanged; this hit path neither creates a
-		// row nor transitions one.
-		skipStoreChunk := false
-		if bc.dedupLRU != nil && bc.dedupLRU.Hit(h, payloadID) {
-			addRefErr := bc.blockStore.AddRef(ctx, h, payloadID, blockRef)
-			switch {
-			case addRefErr == nil:
-				skipStoreChunk = true
-				slog.Debug("rollup: LRU dedup hit",
-					"hash", h, "payloadID", payloadID, "size", b)
-			case errors.Is(addRefErr, metadata.ErrUnknownHash):
-				// TOCTOU: hash was in LRU but the row got swept by a
-				// concurrent engine.Delete cascade. Fall through to
-				// StoreChunk + LRU re-populate below.
-				slog.Debug("rollup: LRU stale (ErrUnknownHash); falling back to StoreChunk",
-					"hash", h, "payloadID", payloadID)
-			default:
-				return fmt.Errorf("rollup: AddRef: %w", addRefErr)
-			}
-		}
-
-		if !skipStoreChunk {
-			if err := bc.StoreChunk(ctx, h, chunkBytes); err != nil {
-				return fmt.Errorf("rollup: StoreChunk: %w", err)
-			}
+		// StoreChunk is content-addressed and idempotent, so it
+		// physically dedups by content hash on every pass. The BlockRef
+		// append below preserves the manifest invariant: ComputeObjectID
+		// later in this function sees the full BlockRef list.
+		if err := bc.StoreChunk(ctx, h, chunkBytes); err != nil {
+			return fmt.Errorf("rollup: StoreChunk: %w", err)
 		}
 
 		blocks = append(blocks, blockRef)
@@ -637,20 +607,6 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 		if perr := persister(ctx, payloadID, blocks, objectID); perr != nil {
 			return fmt.Errorf("rollup: ObjectIDPersister: %w", perr)
 		}
-	}
-
-	// #669: populate the dedup LRU only AFTER persister confirms
-	// the FileBlock rows are durable. A concurrent rollup on the same
-	// payload that observes a hash here is guaranteed to find a
-	// committed row when it calls AddRef. rmu serializes same-payload
-	// rollups, and PutMany is keyed by (hash, payloadID) so a cross-payload
-	// short-circuit cannot occur.
-	if bc.dedupLRU != nil && len(blocks) > 0 {
-		hashes := make([]block.ContentHash, len(blocks))
-		for i, b := range blocks {
-			hashes[i] = b.Hash
-		}
-		bc.dedupLRU.PutMany(hashes, payloadID)
 	}
 
 	// ---- Phase C: commit log-side state under the re-acquired append mutex ----

@@ -213,7 +213,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		MaxSize:                deduced.LocalStoreSize,
 		ReadBufferBytes:        deduced.ReadBufferSize,
 		MaxLogBytes:            block.ClampToInt64(effectiveMaxLogBytes),
-		DedupLRUSize:           cfg.Blockstore.Local.DedupLRUSize,
 		DefaultRemoteCacheSize: cfg.Blockstore.Local.DefaultRemoteCacheSize,
 		BackpressureMaxWait:    cfg.Blockstore.Local.BackpressureMaxWait,
 	})

@@ -42,15 +42,6 @@ type Syncer struct {
 	// FileAttr.Blocks and lets us drop the wider interface.
 	fileBlockStore block.EngineFileBlockStore // Required: enables content-addressed deduplication
 
-	// coordinator is the metadata-side seam the file-level dedup short-
-	// circuit and (post-rollup) PersistFileBlocks hook consult. The
-	// rollup-time persist call now fires from the local store's
-	// ObjectIDPersister callback (engine.New installs a closure that
-	// delegates here); the Syncer's mirror-loop Flush no longer drives
-	// PersistFileBlocks directly. May be nil in unit tests; production
-	// callers wire a real coordinator via SetCoordinator.
-	coordinator MetadataCoordinator
-
 	// syncedHashStore persists per-CAS-hash local→remote mirror state.
 	// The mirror loop in Flush consumes ListUnsynced (which itself
 	// filters via SyncedHashStore.IsSynced) and calls MarkSynced after
@@ -257,16 +248,6 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 
 // Queue returns the transfer queue for stats inspection.
 func (m *Syncer) Queue() *SyncQueue { return m.queue }
-
-// SetCoordinator wires the MetadataCoordinator the file-level dedup
-// short-circuit reaches into (FindByObjectID, GetFileObjectID
-// IncrementRefCount). engine.New plumbs the Store's coordinator
-// into the syncer at construction. Idempotent.
-func (m *Syncer) SetCoordinator(c MetadataCoordinator) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.coordinator = c
-}
 
 // SetSyncedHashStore wires the per-hash mirror-state store the mirror
 // loop in Flush consults via local.ListUnsynced and updates via
@@ -610,62 +591,6 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 	}
 	m.pendingMu.Unlock()
 	return nil
-}
-
-// snapshotPendingBlockRefs returns the speculativeBlocks list +
-// parallel blockStates slice for the trigger
-// evaluation. Projection: ListFileBlocks(payloadID) yields the FastCDC
-// chunker output already produced by the local-store rollup
-// (pkg/block/local/fs/rollup.go:rollupFile populates Pending
-// FileBlocks at chunk boundaries with the BLAKE3-256 chunk hash as
-// FileBlock.Hash). expects the trigger to fire only when
-// every projected block is Pending; this helper returns the FULL
-// projection (every block, regardless of state) so the trigger
-// guard inside trySpeculativeFileLevelDedup can veto on any non-Pending
-// row without an extra read.
-//
-// The returned slice is in block-index ascending order (= Offset
-// ascending given Offset = blockIdx * BlockSize), so
-// ComputeObjectID(refs) over the result matches the canonical Merkle
-// root the post-Flush hook would compute over the same blocks once
-// they reach Remote.
-//
-// Skips rows whose ID does not parse as a {payloadID}/{idx} pair —
-// such rows are foreign to this payload (defense-in-depth; the
-// per-payload index returned by ListFileBlocks should never include
-// them but the parse check guarantees correctness if a future change
-// widens the scan).
-func (m *Syncer) snapshotPendingBlockRefs(ctx context.Context, payloadID string) ([]block.BlockRef, []block.BlockState, error) {
-	blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
-	if err != nil {
-		return nil, nil, err
-	}
-	refs := make([]block.BlockRef, 0, len(blocks))
-	states := make([]block.BlockState, 0, len(blocks))
-	prefix := payloadID + "/"
-	for _, fb := range blocks {
-		// Defense-in-depth: skip rows that don't belong to this payload.
-		// ListFileBlocks(payloadID) is per-payload, but the prefix check
-		// guarantees correctness if a future change widens the scan.
-		if len(fb.ID) <= len(prefix) || fb.ID[:len(prefix)] != prefix {
-			continue
-		}
-		// writers encode the chunk's absolute byte Offset
-		// directly in the trailing ID component (FastCDC chunk
-		// boundaries do not align to BlockSize). Use the parsed value
-		// as-is — do NOT multiply by BlockSize.
-		chunkOffset, ok := block.ParseChunkOffset(fb.ID)
-		if !ok {
-			continue
-		}
-		refs = append(refs, block.BlockRef{
-			Hash:   fb.Hash,
-			Offset: chunkOffset,
-			Size:   fb.DataSize,
-		})
-		states = append(states, fb.State)
-	}
-	return refs, states, nil
 }
 
 // DrainAllUploads performs an immediate synchronous upload of every local

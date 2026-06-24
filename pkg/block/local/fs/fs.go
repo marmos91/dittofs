@@ -411,13 +411,7 @@ type FSStore struct {
 	lruIndex map[block.ContentHash]*list.Element // *lruEntry
 	lruList  *list.List                          // most-recent at front
 
-	// ---: hash dedup LRU + chunk-complete hook. ---
-	//
-	// dedupLRU is the per-FSStore hash dedup LRU (Opt 1).
-	// Consulted by rollup.go between FastCDC.Next() and
-	// StoreChunk to skip a metadata round-trip on hot hashes. RAM-only
-	// instantiated unconditionally in newFSStore.
-	dedupLRU *dedupLRU
+	// ---: chunk-complete hook. ---
 
 	// onChunkComplete fires once per successful chunkstore.StoreChunk
 	// (immediately after that path's lruTouch). The ReadChunk path also
@@ -603,13 +597,6 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 		}
 	}
 
-	// per-FSStore hash dedup LRU + chunk-complete hook. Default-on-zero
-	// idiom matches existing FSStoreOptions tunables.
-	size := opts.DedupLRUSize
-	if size <= 0 {
-		size = 4096
-	}
-	bc.dedupLRU = newDedupLRU(size)
 	// Install a non-nil holder so the hot-path Load never observes nil;
 	// opts.OnChunkComplete may itself be nil, which is checked at the
 	// firing site.
@@ -932,11 +919,6 @@ type FSStoreOptions struct {
 	// pre-callback path if absent. Callback MUST be non-blocking on
 	// hot paths.
 	OnChunkComplete func(hash block.ContentHash, data []byte, path string)
-
-	// DedupLRUSize is the slot count for the in-memory hash dedup LRU.
-	// Default 4096 when zero. Per-FSStore scope, RAM-only. Surfaced
-	// via pkg/config as blockstore.local.dedup_lru_size.
-	DedupLRUSize int
 
 	// PressureMaxWait bounds how long AppendWrite blocks in its pressure
 	// loop (logBytesTotal > maxLogBytes) before returning

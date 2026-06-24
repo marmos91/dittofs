@@ -523,7 +523,6 @@ blockstore:
                                              # Defaults to 10 GiB if unset.
     backpressure_max_wait: 60s               # Max time a write stalls for the
                                              # syncer to drain before disk-full.
-    dedup_lru_size: 4096                      # In-memory dedup LRU slot count.
     max_log_bytes: 2147483648                # Global append-log pressure budget
                                              # (see above). 0/unset = deduced.
 ```

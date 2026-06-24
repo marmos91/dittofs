@@ -329,38 +329,11 @@ func TestNewFSStoreForMigration_BypassesSentinel(t *testing.T) {
 	t.Cleanup(func() { _ = bc.Close() })
 }
 
-// ---: FSStoreOptions OnChunkComplete + DedupLRUSize. ---
+// ---: FSStoreOptions OnChunkComplete. ---
 //
-// These tests assert the additive Wave-1 surfaces land correctly: the
-// per-FSStore dedupLRU is instantiated with the default-on-zero idiom
-// the explicit size is honored, and the OnChunkComplete callback is
-// stored on the FSStore struct without altering pre-Phase-19 lruTouch
-// behavior (nil-safety contract — see 19-CONTEXT.md).
-
-// TestFSStore_DefaultDedupLRUSize_AppliedWhenZero asserts the
-// default-on-zero idiom: when FSStoreOptions.DedupLRUSize is unset, the
-// constructor populates bc.dedupLRU with maxSize == 4096.
-func TestFSStore_DefaultDedupLRUSize_AppliedWhenZero(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{})
-	if bc.dedupLRU == nil {
-		t.Fatal("bc.dedupLRU is nil; constructor must instantiate it")
-	}
-	if got := bc.dedupLRU.maxSize; got != 4096 {
-		t.Fatalf("dedupLRU.maxSize = %d; want 4096 default", got)
-	}
-}
-
-// TestFSStore_ExplicitDedupLRUSize_Honored asserts a non-zero option
-// value overrides the default.
-func TestFSStore_ExplicitDedupLRUSize_Honored(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{DedupLRUSize: 8192})
-	if bc.dedupLRU == nil {
-		t.Fatal("bc.dedupLRU is nil; constructor must instantiate it")
-	}
-	if got := bc.dedupLRU.maxSize; got != 8192 {
-		t.Fatalf("dedupLRU.maxSize = %d; want 8192 (explicit override)", got)
-	}
-}
+// These tests assert the OnChunkComplete callback is stored on the
+// FSStore struct without altering pre-Phase-19 lruTouch behavior
+// (nil-safety contract — see 19-CONTEXT.md).
 
 // TestFSStore_NilOnChunkComplete_LruTouchUnchanged is the
 // nil-safety gate: with no OnChunkComplete configured, StoreChunk must
@@ -405,19 +378,6 @@ func TestFSStore_OnChunkComplete_StoredOnConstruction(t *testing.T) {
 	holder.fn(block.ContentHash{}, nil, "")
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("stored callback fired %d times; want 1", got)
-	}
-}
-
-// TestFSStore_DedupLRU_FieldExists is a regression guard: future
-// refactors must keep bc.dedupLRU populated. + 07 depend on it.
-func TestFSStore_DedupLRU_FieldExists(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{})
-	if bc.dedupLRU == nil {
-		t.Fatal("bc.dedupLRU must be non-nil after construction")
-	}
-	// Sanity: the LRU is functional. Probe an unset (hash, payloadID).
-	if bc.dedupLRU.Hit(block.ContentHash{}, "any") {
-		t.Fatal("freshly-constructed dedupLRU must miss on Hit(zero hash)")
 	}
 }
 
