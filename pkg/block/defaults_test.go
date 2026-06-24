@@ -30,66 +30,66 @@ func TestDeduceDefaults(t *testing.T) {
 			name:           "normal machine 8GiB/8CPU",
 			memory:         8 * gib,
 			cpus:           8,
-			wantLocalStore: 2 * gib, // 25% of 8GiB
-			wantReadBuffer: 1 * gib, // 12.5% of 8GiB
-			wantLogBytes:   2 * gib, // 25% of 8GiB
-			wantSyncs:      8,       // max(4, 8)
-			wantFetches:    16,      // max(8, 8*2)
+			wantLocalStore: 2 * gib,                // 25% of 8GiB
+			wantReadBuffer: 1 * gib,                // 12.5% of 8GiB
+			wantLogBytes:   2 * gib,                // 25% of 8GiB
+			wantSyncs:      DefaultParallelUploads, // upload concurrency now fixed (network-bound, not CPU) — #1407
+			wantFetches:    16,                     // max(8, 8*2)
 			wantPrefetch:   DefaultPrefetchWorkers,
 		},
 		{
 			name:           "small machine 512MiB/1CPU",
 			memory:         512 * mib,
 			cpus:           1,
-			wantLocalStore: 256 * mib, // 25% of 512MiB = 128MiB, floor 256MiB
-			wantReadBuffer: 64 * mib,  // 12.5% of 512MiB = 64MiB, exactly at floor
-			wantLogBytes:   1 * gib,   // 25% of 512MiB = 128MiB, floor 1 GiB
-			wantSyncs:      4,         // max(4, 1) = floor
-			wantFetches:    8,         // max(8, 2) = floor
+			wantLocalStore: 256 * mib,              // 25% of 512MiB = 128MiB, floor 256MiB
+			wantReadBuffer: 64 * mib,               // 12.5% of 512MiB = 64MiB, exactly at floor
+			wantLogBytes:   1 * gib,                // 25% of 512MiB = 128MiB, floor 1 GiB
+			wantSyncs:      DefaultParallelUploads, // upload concurrency now fixed (network-bound, not CPU) — #1407
+			wantFetches:    8,                      // max(8, 2) = floor
 			wantPrefetch:   DefaultPrefetchWorkers,
 		},
 		{
 			name:           "very small machine 256MiB/1CPU",
 			memory:         256 * mib,
 			cpus:           1,
-			wantLocalStore: 256 * mib, // 25% of 256MiB = 64MiB, floor 256MiB
-			wantReadBuffer: 64 * mib,  // 12.5% of 256MiB = 32MiB, floor 64MiB
-			wantLogBytes:   1 * gib,   // 25% of 256MiB = 64MiB, floor 1 GiB
-			wantSyncs:      4,         // floor
-			wantFetches:    8,         // floor
+			wantLocalStore: 256 * mib,              // 25% of 256MiB = 64MiB, floor 256MiB
+			wantReadBuffer: 64 * mib,               // 12.5% of 256MiB = 32MiB, floor 64MiB
+			wantLogBytes:   1 * gib,                // 25% of 256MiB = 64MiB, floor 1 GiB
+			wantSyncs:      DefaultParallelUploads, // upload concurrency now fixed (network-bound, not CPU) — #1407
+			wantFetches:    8,                      // floor
 			wantPrefetch:   DefaultPrefetchWorkers,
 		},
 		{
 			name:           "large machine 256GiB/64CPU",
 			memory:         256 * gib,
 			cpus:           64,
-			wantLocalStore: 64 * gib, // 25% of 256GiB
-			wantReadBuffer: 32 * gib, // 12.5% of 256GiB
-			wantLogBytes:   64 * gib, // 25% of 256GiB
-			wantSyncs:      64,       // max(4, 64)
-			wantFetches:    128,      // max(8, 128)
+			wantLocalStore: 64 * gib,               // 25% of 256GiB
+			wantReadBuffer: 32 * gib,               // 12.5% of 256GiB
+			wantLogBytes:   64 * gib,               // 25% of 256GiB
+			wantSyncs:      DefaultParallelUploads, // upload concurrency now fixed (network-bound, not CPU) — #1407
+			wantFetches:    128,                    // max(8, 128)
 			wantPrefetch:   DefaultPrefetchWorkers,
 		},
 		{
 			name:           "medium machine 4GiB/4CPU",
 			memory:         4 * gib,
 			cpus:           4,
-			wantLocalStore: 1 * gib,   // 25% of 4GiB
-			wantReadBuffer: 512 * mib, // 12.5% of 4GiB
-			wantLogBytes:   1 * gib,   // 25% of 4GiB = 1 GiB, exactly at floor
-			wantSyncs:      4,         // max(4, 4)
-			wantFetches:    8,         // max(8, 8)
+			wantLocalStore: 1 * gib,                // 25% of 4GiB
+			wantReadBuffer: 512 * mib,              // 12.5% of 4GiB
+			wantLogBytes:   1 * gib,                // 25% of 4GiB = 1 GiB, exactly at floor
+			wantSyncs:      DefaultParallelUploads, // upload concurrency now fixed (network-bound, not CPU) — #1407
+			wantFetches:    8,                      // max(8, 8)
 			wantPrefetch:   DefaultPrefetchWorkers,
 		},
 		{
 			name:           "many CPUs low memory",
 			memory:         2 * gib,
 			cpus:           32,
-			wantLocalStore: 512 * mib, // 25% of 2GiB
-			wantReadBuffer: 256 * mib, // 12.5% of 2GiB
-			wantLogBytes:   1 * gib,   // 25% of 2GiB = 512MiB, floor 1 GiB
-			wantSyncs:      32,        // max(4, 32)
-			wantFetches:    64,        // max(8, 64)
+			wantLocalStore: 512 * mib,              // 25% of 2GiB
+			wantReadBuffer: 256 * mib,              // 12.5% of 2GiB
+			wantLogBytes:   1 * gib,                // 25% of 2GiB = 512MiB, floor 1 GiB
+			wantSyncs:      DefaultParallelUploads, // upload concurrency now fixed (network-bound, not CPU) — #1407
+			wantFetches:    64,                     // max(8, 64)
 			wantPrefetch:   DefaultPrefetchWorkers,
 		},
 	}
@@ -159,13 +159,16 @@ func TestHitFloors_OnlyReportsClamped(t *testing.T) {
 		t.Errorf("expected no floors on 4GiB/4CPU, got %v", floors)
 	}
 
-	// 256MiB/1CPU: everything is clamped (local_store, read_buffer,
-	// max_log_bytes, parallel_syncs, parallel_fetches).
+	// 256MiB/1CPU: the memory-derived sizes and parallel_fetches clamp
+	// (local_store, read_buffer, max_log_bytes, parallel_fetches).
+	// parallel_syncs is no longer reported: upload concurrency is a fixed
+	// network-bound default (DefaultParallelUploads), not a CPU function, so it
+	// never hits a floor (#1407).
 	d2 := &mockDetector{memory: 256 * mib, cpus: 1}
 	got2 := DeduceDefaults(d2)
 	floors2 := got2.HitFloors()
-	if len(floors2) != 5 {
-		t.Errorf("expected 5 floors on 256MiB/1CPU, got %d: %v", len(floors2), floors2)
+	if len(floors2) != 4 {
+		t.Errorf("expected 4 floors on 256MiB/1CPU, got %d: %v", len(floors2), floors2)
 	}
 }
 

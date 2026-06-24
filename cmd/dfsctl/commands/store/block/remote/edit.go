@@ -52,7 +52,7 @@ func init() {
 	editCmd.Flags().StringVar(&editEndpoint, "endpoint", "", "Custom S3 endpoint")
 	editCmd.Flags().StringVar(&editAccessKey, "access-key", "", "AWS access key ID (for s3)")
 	editCmd.Flags().StringVar(&editSecretKey, "secret-key", "", "AWS secret access key (for s3)")
-	editCmd.Flags().IntVar(&editParallelUploads, "parallel-uploads", 0, "Max parallel chunk uploads to this remote (0 = auto, scales with CPU count)")
+	editCmd.Flags().IntVar(&editParallelUploads, "parallel-uploads", 0, "Max parallel chunk uploads to this remote (0 = use server default of 32)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
