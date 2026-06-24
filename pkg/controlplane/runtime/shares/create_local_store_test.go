@@ -150,7 +150,10 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	// while the store lives on. The rollup pool must NOT die with it.
 	cancel()
 
-	fsStore := store.(*fs.FSStore)
+	fsStore, ok := store.(*fs.FSStore)
+	if !ok {
+		t.Fatalf("CreateLocalStoreFromConfig returned %T, want *fs.FSStore", store)
+	}
 	const payloadID = "cancel-payload"
 	// 256 KiB of dedup-resistant content — comfortably past the chunker's
 	// minimum so the rollup produces at least one CAS block.

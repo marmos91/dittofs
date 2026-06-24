@@ -131,8 +131,16 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	// always read zero because it has no production callers (#1266). The
 	// dead-queue numbers made operators believe nothing synced even when
 	// uploads provably succeeded (#1405 diagnosis).
-	pendingUploads := bs.syncer.PendingCount()
-	completed, failed := bs.syncer.SyncCounts()
+	//
+	// In local-only mode (no remote) these counters are meaningless: addPendingHash
+	// still records rolled-up chunks but nothing ever mirrors them, so a nonzero
+	// PendingUploads would falsely imply an upload backlog. Report zeros when there
+	// is no remote — there is nothing to sync.
+	var pendingUploads, completed, failed int
+	if bs.remote != nil {
+		pendingUploads = bs.syncer.PendingCount()
+		completed, failed = bs.syncer.SyncCounts()
+	}
 
 	remoteHealthy := bs.syncer.IsRemoteHealthy()
 	outageDuration := bs.syncer.RemoteOutageDuration()
