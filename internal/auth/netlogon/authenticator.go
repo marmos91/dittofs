@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 )
@@ -58,10 +59,27 @@ func isTransientChannelError(err error) bool {
 }
 
 // maxReloadRetries bounds how many times NetworkLogon rebuilds the channel and
-// retries after a transient secure-channel error (a concurrent reload tearing
-// down / rebuilding the channel), so it can never live-lock. In practice a
-// reload is a rare admin action and the first rebuild succeeds.
+// retries after a DC-side transient rejection (STATUS_ACCESS_DENIED while a
+// freshly rebuilt credential chain settles), so it can never live-lock. In
+// practice a reload is a rare admin action and the first rebuild succeeds.
+//
+// It does NOT bound the purely-local teardown race (errChannelNotConnected): see
+// maxTeardownRetries.
 const maxReloadRetries = 8
+
+// maxTeardownRetries bounds retries of the purely-local teardown race
+// (errChannelNotConnected): a concurrent reload closed the cached channel after
+// this logon read the pointer but before/while its RPC ran. Unlike a DC-side
+// rejection this never touches the DC (so it can never amplify toward account
+// lockout) and clears as soon as the logon grabs the freshly rebuilt channel.
+//
+// It therefore must NOT consume the small maxReloadRetries budget: under a burst
+// of admin reloads a single logon can legitimately lose this race many times in
+// a row, and failing the user's logon for an internal teardown race is wrong (it
+// was the flake behind #1383). The bound here exists only as a live-lock guard
+// and is generous; each losing attempt yields the P so a reload can make
+// progress instead of being starved by a tight retry spin.
+const maxTeardownRetries = 1024
 
 // reloadRetryBackoff is the pause between rebuild attempts after a DC-side
 // failure, giving a freshly rebuilt channel's MS-NRPC credential chain a moment
@@ -162,15 +180,50 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 		return nil, err
 	}
 
-	// Transient: rebuild against the latest credential and retry, bounded so we can
-	// never live-lock, with a short backoff to let the rebuilt channel's credential
-	// chain settle.
+	// Transient: rebuild against the latest credential and retry. Two transient
+	// cases are bounded SEPARATELY:
+	//
+	//   - The purely-local teardown race (errChannelNotConnected): a concurrent
+	//     reload closed the cached channel out from under this logon. It never
+	//     reached the DC, so retrying it can never amplify toward account lockout,
+	//     and it clears the instant the logon grabs the freshly rebuilt channel.
+	//     It must NOT consume the small DC-retry budget — under a burst of admin
+	//     reloads one logon can lose this race many times in a row, and failing the
+	//     user's logon for an internal race is wrong (#1383). It is bounded only by
+	//     the generous maxTeardownRetries live-lock guard, with a Gosched yield so a
+	//     reload can make progress instead of being starved by a tight spin.
+	//
+	//   - A DC-side transient rejection (STATUS_ACCESS_DENIED while a freshly
+	//     rebuilt credential chain settles): bounded by the small maxReloadRetries,
+	//     with a short backoff between attempts.
 	//
 	// A credential-provider error is NOT retried: when passthrough is disabled the
 	// provider returns a validation error, so the loop returns immediately and the
 	// logon fails closed (it never silently keeps authenticating with a stale
 	// credential).
-	for attempt := 0; attempt < maxReloadRetries; attempt++ {
+	dcAttempts, teardownAttempts := 0, 0
+	for {
+		if errors.Is(err, errChannelNotConnected) {
+			if teardownAttempts++; teardownAttempts > maxTeardownRetries {
+				return nil, err
+			}
+			// Purely local: no backoff (no DC involved), just yield so an in-flight
+			// reload can finish swapping the channel before we grab it again.
+			runtime.Gosched()
+		} else {
+			// DC-side transient rejection: consume the bounded budget and back off so
+			// a just-rebuilt channel is not torn down again before its credential
+			// chain settles.
+			if dcAttempts++; dcAttempts > maxReloadRetries {
+				return nil, err
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(reloadRetryBackoff):
+			}
+		}
+
 		a.reset(ctx)
 		mc, err = a.provider.Credential(ctx)
 		if err != nil {
@@ -184,22 +237,11 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 			return res, nil
 		}
 		// A non-transient failure on the rebuilt channel (e.g. the user's password
-		// really is wrong) must fail fast too — stop retrying immediately.
+		// really is wrong) must fail fast — stop retrying immediately.
 		if !isTransientChannelError(err) {
 			return nil, err
 		}
-		// Brief backoff before the next rebuild so a just-rebuilt channel is not
-		// immediately torn down again by a still-in-flight reload. Skipped for the
-		// purely-local "channel not connected" race, which needs no settle time.
-		if !errors.Is(err, errChannelNotConnected) {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(reloadRetryBackoff):
-			}
-		}
 	}
-	return nil, err
 }
 
 // Reload tears down the cached channel so the next NetworkLogon rebuilds it
