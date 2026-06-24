@@ -96,7 +96,7 @@ are distinct and only meaningful as inheritable placeholders (see Inheritance).
 | Aspect | State | Notes |
 |--------|-------|-------|
 | SACL read | Works | When `SACLSecurityInformation` is requested and the file carries stored SACL ACEs, `buildSACL` serializes them into the SD's SACL section (same MS-DTYP §2.4.5 + §2.4.4.2 wire layout as a DACL). Windows Explorer's "Auditing" tab shows the stored audit ACEs. `buildEmptySACL` is the fallback only when no SACL is stored (valid 0-ACE SACL). |
-| SACL write | Works | `ParseSecurityDescriptorWithOptions` parses the SACL body via the shared `parseACEs` and persists audit ACEs into `ACL.SACL`; `setSecurityInfo` installs it via `mergeSecurityACL`, preserving the unrequested DACL/SACL section. Access-gated (`AccessSystemSecurity` required). |
+| SACL write | Works | `ParseSecurityDescriptorWithOptions` parses the SACL body via the shared `parseACEs` and persists audit ACEs into `ACL.SACL`; `setSecurityInfo` installs it via `mergeSecurityACL`, preserving the unrequested DACL/SACL section. Access-gated (`ACCESS_SYSTEM_SECURITY` required). |
 | AUDIT / ALARM ACE round-trip | Works | `ACE4_SYSTEM_AUDIT_ACE_TYPE` ↔ `systemAuditACEType` and `ACE4_SYSTEM_ALARM_ACE_TYPE` ↔ `systemAlarmACEType` map both directions (`nfsToWindowsACEType` / `windowsToNFSACEType`); the SUCCESSFUL/FAILED audit flags round-trip through `NFSv4FlagsToWindowsFlags`. Audit ACEs ride the SACL section, not the DACL. |
 
 The SACL is stored on the same `acl.ACL` carrier as the DACL (`ACL.SACL`
