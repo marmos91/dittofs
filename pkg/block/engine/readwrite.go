@@ -511,26 +511,40 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// rows and the FileAttr.Blocks manifest stay consistent. With no bound txn
 	// (e.g. unit tests wiring the engine directly) fall back to the store-level
 	// Put, matching the rollup ObjectIDPersister which runs outside any txn.
-	putRow := func(ctx context.Context, fb *block.FileBlock) error {
-		if tx := metadata.TxFromContext(ctx); tx != nil {
-			return tx.Put(ctx, fb)
-		}
-		return bs.fileBlockStore.Put(ctx, fb)
+	// Persist dst rows through the txn bound in ctx when present, else the
+	// store directly. The bound txn writes under the lock WithTransaction
+	// already holds — a separate store-level Put would re-enter the memory
+	// backend's non-reentrant mutex and self-deadlock. The store fallback
+	// covers the no-txn path (unit tests wiring the engine directly), matching
+	// the rollup ObjectIDPersister. The row write does NOT depend on
+	// bs.fileBlockStore being non-nil when a txn is bound.
+	tx := metadata.TxFromContext(ctx)
+	var putRow func(context.Context, *block.FileBlock) error
+	switch {
+	case tx != nil:
+		putRow = tx.Put
+	case bs.fileBlockStore != nil:
+		putRow = bs.fileBlockStore.Put
 	}
-	if bs.fileBlockStore != nil {
-		for _, b := range srcBlocks {
-			if b.Hash.IsZero() {
-				continue
-			}
-			fb := &block.FileBlock{
-				ID:       fmt.Sprintf("%s/%d", dstPayloadID, b.Offset),
-				Hash:     b.Hash,
-				DataSize: b.Size,
-				State:    block.BlockStatePending,
-			}
-			if err := putRow(ctx, fb); err != nil {
-				return nil, fmt.Errorf("CopyPayload: FileBlock.Put(%s): %w", fb.ID, err)
-			}
+	for _, b := range srcBlocks {
+		if b.Hash.IsZero() {
+			continue
+		}
+		// Refuse to produce an unreadable clone: if there are blocks to
+		// materialize but no way to persist the dst rows, fail loudly rather
+		// than copy only the manifest (whose blocks the cold-read path can't
+		// resolve without rows → zero-fill, #1384).
+		if putRow == nil {
+			return nil, fmt.Errorf("CopyPayload: no transaction or file-block store to persist dst rows for %s", dstPayloadID)
+		}
+		fb := &block.FileBlock{
+			ID:       fmt.Sprintf("%s/%d", dstPayloadID, b.Offset),
+			Hash:     b.Hash,
+			DataSize: b.Size,
+			State:    block.BlockStatePending,
+		}
+		if err := putRow(ctx, fb); err != nil {
+			return nil, fmt.Errorf("CopyPayload: FileBlock.Put(%s): %w", fb.ID, err)
 		}
 	}
 
