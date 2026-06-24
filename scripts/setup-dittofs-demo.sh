@@ -7,7 +7,10 @@
 #   - Local SSD attached at /dev/sda1
 #
 # Usage:
-#   sudo ./setup-dittofs-demo.sh [tarball-path]
+#   sudo S3_ACCESS_KEY=... S3_SECRET_KEY=... ./setup-dittofs-demo.sh [tarball-path]
+#
+#   (Pass the S3 vars through sudo as shown — a plain `export` in your shell
+#   is stripped by sudo, and the script will then refuse to start.)
 
 set -euo pipefail
 
@@ -24,11 +27,13 @@ CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 GO_VERSION="1.25.0"
 ADMIN_PASSWORD="$(openssl rand -base64 16)"
 
-# Cubbit DS3 S3 credentials
-S3_ENDPOINT="https://s3.cubbit.eu"
-S3_BUCKET="dittofs-demo"
-S3_ACCESS_KEY="dxp2eUyJ+fK307J+aqreAoy63rh4w4+B"
-S3_SECRET_KEY="6XxMNrcAXk/vvMzM11PTsZqfZ5jG3e8gkUVBnhi6g/k="
+# Cubbit DS3 S3 credentials — supplied via environment, never hardcoded.
+# Export these before running:
+#   export S3_ACCESS_KEY=... S3_SECRET_KEY=...
+S3_ENDPOINT="${S3_ENDPOINT:-https://s3.cubbit.eu}"
+S3_BUCKET="${S3_BUCKET:-dittofs-demo}"
+S3_ACCESS_KEY="${S3_ACCESS_KEY:?Set S3_ACCESS_KEY in the environment}"
+S3_SECRET_KEY="${S3_SECRET_KEY:?Set S3_SECRET_KEY in the environment}"
 
 # ---------------------------------------------------------------------------
 # Helpers
