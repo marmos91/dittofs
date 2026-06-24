@@ -579,7 +579,7 @@ v4.2 with `mount -o vers=4.2`.
 content-addressed/dedup block store: a whole-file reflink is a pure metadata ref over the
 same dedup blocks, bumping the CAS RefCount per unique hash with no data movement — O(1)
 even on S3. It reuses the same `engine.CopyPayload` refcount primitive the SMB
-server-side-copy IOCTLs build on (`common.CloneRange` — one clone path, both protocols).
+server-side-copy IOCTLs build on (`common.CloneWholeFile` — one clone path, both protocols).
 Copy-on-write is intrinsic: a later WRITE to either file produces new CAS blocks under a
 new hash, leaving the other side untouched. `CLONE` uses `SAVED_FH` as the source and
 `CURRENT_FH` as the destination (the client `SAVEFH`s the source first, like `COPY`).
