@@ -1809,21 +1809,46 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
-	// ParseSecurityDescriptorWithOptions returns a nil ownerUID/ownerGID both
-	// when the SD omits that SID section and when the section is present but
-	// its SID could not be mapped to a local UID/GID. For a requested
-	// OWNER/GROUP change the latter must NOT silently no-op (Windows would
-	// believe the owner changed) — reject it with an explicit status. Decode
-	// the SD header once to tell the two cases apart. Refs #1228.
-	hasOwnerSID, hasGroupSID := securityDescriptorHasOwnerGroup(buffer)
+	metaSvc := h.Registry.GetMetadataService()
 
-	if (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil {
-		logger.Debug("SET_INFO Security: owner change requested with unmappable SID", "path", openFile.Path)
-		return setInfoStatus(types.StatusInvalidOwner), nil
-	}
-	if (additionalInfo&GroupSecurityInformation) != 0 && hasGroupSID && ownerGID == nil {
-		logger.Debug("SET_INFO Security: group change requested with unmappable SID", "path", openFile.Path)
-		return setInfoStatus(types.StatusNoneMapped), nil
+	// ParseSecurityDescriptorWithOptions returns a nil ownerUID/ownerGID both
+	// when the SD omits that SID section and when the section is present but its
+	// SID could not be mapped to a local UID/GID. For a requested OWNER/GROUP
+	// change the unmappable case must NOT silently no-op (Windows would believe
+	// the owner changed) — reject it with an explicit status. Refs #1228.
+	//
+	// Exception: re-setting the owner/group to the SAME SID the server emits
+	// today for the file's current owner/group is a legitimate no-op success,
+	// even when that SID does not reverse to a UID/GID. UserSID(0) →
+	// BUILTIN\Administrators (S-1-5-32-544) is the canonical case: a client that
+	// QUERYs the SD of a root-owned file and re-SETs the identical owner SID
+	// (smbtorture smb2.acls.SDFLAGSVSCHOWN) must get NT_STATUS_OK, not
+	// STATUS_INVALID_OWNER. We therefore only reject a present-but-unmappable
+	// SID that DIFFERS from the current owner/group's minted SID — i.e. a
+	// genuinely foreign/unresolvable domain SID (foreign AD mapping is #1231).
+	if additionalInfo&(OwnerSecurityInformation|GroupSecurityInformation) != 0 {
+		reqOwnerSID, reqGroupSID, hasOwnerSID, hasGroupSID := securityDescriptorOwnerGroupSIDs(buffer)
+		mapper := GetSIDMapper()
+
+		var curUID, curGID uint32
+		if curFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil {
+			curUID, curGID = curFile.UID, curFile.GID
+		}
+
+		if (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil {
+			if reqOwnerSID == nil || !reqOwnerSID.Equal(mapper.UserSID(curUID)) {
+				logger.Debug("SET_INFO Security: owner change requested with unmappable SID", "path", openFile.Path)
+				return setInfoStatus(types.StatusInvalidOwner), nil
+			}
+			// Same SID as the current owner — no-op re-set, accept.
+		}
+		if (additionalInfo&GroupSecurityInformation) != 0 && hasGroupSID && ownerGID == nil {
+			if reqGroupSID == nil || !reqGroupSID.Equal(mapper.GroupSID(curGID)) {
+				logger.Debug("SET_INFO Security: group change requested with unmappable SID", "path", openFile.Path)
+				return setInfoStatus(types.StatusNoneMapped), nil
+			}
+			// Same SID as the current group — no-op re-set, accept.
+		}
 	}
 
 	// Build SetAttrs from parsed SD
@@ -1859,7 +1884,6 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusSuccess), nil
 	}
 
-	metaSvc := h.Registry.GetMetadataService()
 	_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Path, "error", err)

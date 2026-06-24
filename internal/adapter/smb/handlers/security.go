@@ -515,29 +515,28 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 	return ownerUID, ownerGID, fileACL, nil
 }
 
-// securityDescriptorHasOwnerGroup reports whether a self-relative Security
-// Descriptor carries an Owner SID section (OffsetOwner != 0) and, separately,
-// a Group SID section (OffsetGroup != 0).
+// securityDescriptorOwnerGroupSIDs decodes the raw Owner and Group SIDs carried
+// by a self-relative Security Descriptor. A nil return for either means the SD
+// did not carry that SID section (OffsetOwner / OffsetGroup == 0).
 //
-// ParseSecurityDescriptorWithOptions returns a nil ownerUID/ownerGID for two
-// distinct cases that the SET_INFO Security path must tell apart: (1) the SD
-// did not carry that SID section at all, and (2) the section was present but
-// its SID could not be mapped to a local UID/GID. Callers use these flags
-// together with the parsed UID/GID to reject an unmappable owner/group change
-// instead of silently succeeding (refs #1228).
+// ParseSecurityDescriptorWithOptions collapses two cases into a nil
+// ownerUID/ownerGID that the SET_INFO Security path must tell apart: (1) the SD
+// omitted the SID section entirely, and (2) the section was present but its SID
+// could not be mapped to a local UID/GID. The caller pairs the raw SIDs from
+// here with the parsed UID/GID to reject a genuinely unmappable owner/group
+// change instead of silently succeeding (refs #1228), while still treating a
+// re-set of the file's existing owner/group SID as a no-op success.
 //
-// Presence is decided purely on "offset != 0" — it is NOT bounds-gated against
-// len(data). A non-zero offset that points out of range is still "present": it
-// is malformed input that ParseSecurityDescriptorWithOptions (which ignores an
-// out-of-range offset) leaves unmapped, so the caller's unmappable-SID gate
-// must still fire rather than mistaking it for an absent section and silently
-// succeeding (the very bug #1228 fixes). Header decode errors (this helper
-// parses only the fixed 20-byte SD header, never the Owner/Group SID bytes
-// themselves) yield "not present" so the existing StatusInvalidParameter
-// parse-error path continues to govern a truncated/garbled header.
-func securityDescriptorHasOwnerGroup(data []byte) (hasOwner, hasGroup bool) {
+// Presence is decided purely on "offset != 0"; it is NOT bounds-gated against
+// len(data). A non-zero offset is reported as present even when the SID bytes
+// fail to decode (returning a nil SID for that section) — that is malformed
+// input the unmappable-SID gate must still reject rather than mistaking for an
+// absent section. The fixed 20-byte SD header is the only part parsed here; a
+// truncated/garbled header yields (nil, nil) so the caller's existing
+// StatusInvalidParameter parse-error path continues to govern it.
+func securityDescriptorOwnerGroupSIDs(data []byte) (ownerSID, groupSID *sid.SID, hasOwner, hasGroup bool) {
 	if len(data) < sdHeaderSize {
-		return false, false
+		return nil, nil, false, false
 	}
 	r := smbenc.NewReader(data)
 	r.Skip(2) // Revision(1) + Sbz1(1)
@@ -545,9 +544,23 @@ func securityDescriptorHasOwnerGroup(data []byte) (hasOwner, hasGroup bool) {
 	offsetOwner := r.ReadUint32()
 	offsetGroup := r.ReadUint32()
 	if r.Err() != nil {
-		return false, false
+		return nil, nil, false, false
 	}
-	return offsetOwner > 0, offsetGroup > 0
+
+	hasOwner = offsetOwner > 0
+	hasGroup = offsetGroup > 0
+
+	if hasOwner && int(offsetOwner) < len(data) {
+		if s, _, err := sid.DecodeSID(data[offsetOwner:]); err == nil {
+			ownerSID = s
+		}
+	}
+	if hasGroup && int(offsetGroup) < len(data) {
+		if s, _, err := sid.DecodeSID(data[offsetGroup:]); err == nil {
+			groupSID = s
+		}
+	}
+	return ownerSID, groupSID, hasOwner, hasGroup
 }
 
 // parseDACL parses a DACL and returns an NFSv4 ACL.

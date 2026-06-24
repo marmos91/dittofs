@@ -92,6 +92,27 @@ func TestSetInfo_Security_UnmappableOwnerGroup(t *testing.T) {
 			ownerSIDStr:    "", // absent
 			wantStatus:     types.StatusSuccess,
 		},
+		{
+			// smbtorture smb2.acls.SDFLAGSVSCHOWN: the file is owned by root
+			// (UID 0), whose minted owner SID is BUILTIN\Administrators
+			// (S-1-5-32-544) — a SID that does NOT reverse to a UID. Re-setting
+			// the IDENTICAL owner SID the server already reports is a no-op and
+			// must succeed (NT_STATUS_OK), not STATUS_INVALID_OWNER.
+			name:           "owner_reset_to_current_owner_sid_succeeds",
+			additionalInfo: OwnerSecurityInformation,
+			ownerSIDStr:    "S-1-5-32-544", // == UserSID(0) for the root-owned file
+			wantStatus:     types.StatusSuccess,
+		},
+		{
+			// Group counterpart: re-setting the file's current group SID
+			// (GroupSID(0) = S-1-5-21-0-0-0-1001 under the test mapper) is a
+			// no-op success. This SID does reverse here, but the case documents
+			// the symmetric no-op-re-set boundary.
+			name:           "group_reset_to_current_group_sid_succeeds",
+			additionalInfo: GroupSecurityInformation,
+			groupSIDStr:    "S-1-5-21-0-0-0-1001", // == GroupSID(0)
+			wantStatus:     types.StatusSuccess,
+		},
 	}
 
 	for _, tc := range cases {
