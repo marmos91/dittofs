@@ -1815,7 +1815,7 @@ func (h *Handler) setSecurityInfo(
 	// OWNER/GROUP change the latter must NOT silently no-op (Windows would
 	// believe the owner changed) — reject it with an explicit status. Decode
 	// the SD header once to tell the two cases apart. Refs #1228.
-	hasOwnerSID, hasGroupSID := securityDescriptorHasOwner(buffer)
+	hasOwnerSID, hasGroupSID := securityDescriptorHasOwnerGroup(buffer)
 
 	if (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil {
 		logger.Debug("SET_INFO Security: owner change requested with unmappable SID", "path", openFile.Path)

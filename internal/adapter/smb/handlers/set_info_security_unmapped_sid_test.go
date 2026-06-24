@@ -15,6 +15,7 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
@@ -112,5 +113,33 @@ func TestSetInfo_Security_UnmappableOwnerGroup(t *testing.T) {
 					resp.Status, uint32(resp.Status), tc.wantStatus, uint32(tc.wantStatus))
 			}
 		})
+	}
+}
+
+// TestSetInfo_Security_OwnerOffsetOutOfRange covers the regression that
+// presence detection must NOT bounds-gate the owner/group offset: a SD with a
+// non-zero OffsetOwner that points past the buffer is malformed but still
+// "present". ParseSecurityDescriptorWithOptions ignores the out-of-range offset
+// and leaves the owner unmapped, so a requested OWNER change must be rejected
+// (STATUS_INVALID_OWNER) rather than treated as an absent section and silently
+// succeeding — the very silent-no-op bug #1228 fixes.
+func TestSetInfo_Security_OwnerOffsetOutOfRange(t *testing.T) {
+	h, openFile, authCtx := setupSecurityAuthzTest(t)
+	openFile.GrantedAccess = uint32(types.WriteDac | types.WriteOwner)
+	h.StoreOpenFile(openFile)
+
+	// Start from a well-formed DACL-only SD (no owner section), then corrupt the
+	// OffsetOwner field (header bytes 4..7, little-endian) to point past the end.
+	sd := buildSDWithOwnerGroup(t, "", "")
+	binary.LittleEndian.PutUint32(sd[4:8], uint32(len(sd))+0x100)
+
+	resp, err := h.setSecurityInfo(authCtx, openFile, OwnerSecurityInformation, sd)
+	if err != nil {
+		t.Fatalf("setSecurityInfo: %v", err)
+	}
+	if resp.Status != types.StatusInvalidOwner {
+		t.Fatalf("status = %s (0x%08x), want STATUS_INVALID_OWNER (0x%08x) — "+
+			"out-of-range owner offset must NOT be a silent success",
+			resp.Status, uint32(resp.Status), uint32(types.StatusInvalidOwner))
 	}
 }

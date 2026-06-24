@@ -515,7 +515,7 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 	return ownerUID, ownerGID, fileACL, nil
 }
 
-// securityDescriptorHasOwner reports whether a self-relative Security
+// securityDescriptorHasOwnerGroup reports whether a self-relative Security
 // Descriptor carries an Owner SID section (OffsetOwner != 0) and, separately,
 // a Group SID section (OffsetGroup != 0).
 //
@@ -524,10 +524,18 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 // did not carry that SID section at all, and (2) the section was present but
 // its SID could not be mapped to a local UID/GID. Callers use these flags
 // together with the parsed UID/GID to reject an unmappable owner/group change
-// instead of silently succeeding (refs #1228). Decode failures are treated as
-// "not present" so the existing parse-error path (StatusInvalidParameter) still
-// governs malformed input.
-func securityDescriptorHasOwner(data []byte) (hasOwner, hasGroup bool) {
+// instead of silently succeeding (refs #1228).
+//
+// Presence is decided purely on "offset != 0" — it is NOT bounds-gated against
+// len(data). A non-zero offset that points out of range is still "present": it
+// is malformed input that ParseSecurityDescriptorWithOptions (which ignores an
+// out-of-range offset) leaves unmapped, so the caller's unmappable-SID gate
+// must still fire rather than mistaking it for an absent section and silently
+// succeeding (the very bug #1228 fixes). Header decode errors (this helper
+// parses only the fixed 20-byte SD header, never the Owner/Group SID bytes
+// themselves) yield "not present" so the existing StatusInvalidParameter
+// parse-error path continues to govern a truncated/garbled header.
+func securityDescriptorHasOwnerGroup(data []byte) (hasOwner, hasGroup bool) {
 	if len(data) < sdHeaderSize {
 		return false, false
 	}
@@ -539,8 +547,7 @@ func securityDescriptorHasOwner(data []byte) (hasOwner, hasGroup bool) {
 	if r.Err() != nil {
 		return false, false
 	}
-	return offsetOwner > 0 && int(offsetOwner) < len(data),
-		offsetGroup > 0 && int(offsetGroup) < len(data)
+	return offsetOwner > 0, offsetGroup > 0
 }
 
 // parseDACL parses a DACL and returns an NFSv4 ACL.
