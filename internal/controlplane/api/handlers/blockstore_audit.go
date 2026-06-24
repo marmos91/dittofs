@@ -46,10 +46,11 @@ type BlockStoreAuditResponse struct {
 // RunAudit handles POST /api/v1/shares/{name}/audit/refcounts.
 //
 // Behavior: invokes Runtime.AuditRefcounts with the URL share name.
-// The audit walks the share's metadata store, computing
-// ∑ FileBlock.RefCount and ∑ len(FileAttr.Blocks); a non-zero delta
-// indicates refcount drift. Last-run summary is persisted under
-// <localStoreRoot>/audit-state/last-inv02.json.
+// The audit walks the share's metadata store and verifies that every
+// manifest reference (FileAttr.Blocks) has a backing FileBlock row; a
+// non-zero delta (DanglingRefs) indicates a file references a chunk the
+// store has no record of (silent-data-loss class). Last-run summary is
+// persisted under <localStoreRoot>/audit-state/last-inv02.json.
 //
 // Status codes:
 //   - 200 OK with BlockStoreAuditResponse on success
@@ -84,12 +85,13 @@ func (h *BlockStoreAuditHandler) RunAudit(w http.ResponseWriter, r *http.Request
 	}
 
 	// Structured slog INFO for the audit result so operators can grep
-	// refcount violations without scraping HTTP logs.
+	// dangling-reference violations without scraping HTTP logs.
 	logger.Info("Block store INV-02 audit complete",
 		"share", name,
 		"total_files", res.TotalFiles,
 		"total_refs", res.TotalRefs,
-		"total_refcount", res.TotalRefCount,
+		"backed_refs", res.BackedRefs,
+		"dangling_refs", res.DanglingRefs,
 		"delta", res.Delta,
 		"duration_ms", res.DurationMS,
 	)

@@ -646,7 +646,7 @@ dfsctl
   status         Show server status
   store          Store management
     block          Block store management
-      audit-refcounts Verify FileBlock.RefCount matches FileAttr.Blocks references
+      audit-refcounts Verify every manifest block reference has a backing FileBlock row
       evict          Evict block store data
       gc             Run garbage collection for a block store share
       gc-status      Show the last block-store GC run summary for a share
@@ -4781,18 +4781,26 @@ Global flags:
 
 ### `dfsctl store block audit-refcounts`
 
-Verify FileBlock.RefCount matches FileAttr.Blocks references
+Verify every manifest block reference has a backing FileBlock row
 
-Run the INV-02 reconciliation audit for the named share.
+Run the CAS manifest-consistency audit for the named share.
 
-Computes ∑ FileBlock.RefCount and compares against ∑ len(FileAttr.Blocks)
-across all files in the share. A non-zero delta indicates a refcount drift
-that may block GC reclamation (a leaked block survives the grace window)
-or signal a bug in the dedup short-circuit.
+Walks every file in the share and checks that each block referenced by the
+file's manifest (FileAttr.Blocks) has a backing FileBlock row in the
+metadata store. A manifest reference with no backing row is a genuine
+DANGLING reference — the file claims a chunk the store has no record of, so
+a read would return zeros or fail (the silent-data-loss class). The
+invariant is "dangling refs == 0"; a non-zero count is real corruption
+worth alerting on, so the command exits non-zero (use it as
+`audit-refcounts <share> || alert`).
+
+The legacy per-hash RefCount metric (∑ FileBlock.RefCount) was removed:
+RefCount is not maintained in the content-addressed-store model (CAS blocks
+are written Pending and never transition to Remote), so that sum was
+structurally always 0 and produced false-positive "delta" alarms.
 
 Persists last-run summary at <localStore>/audit-state/last-inv02.json
-analogously to GC's last-run.json. Operator-invokable; no periodic
-schedule in v0.15.0.
+analogously to GC's last-run.json. Operator-invokable; no periodic schedule.
 
 Examples:
   dfsctl store block audit-refcounts myshare

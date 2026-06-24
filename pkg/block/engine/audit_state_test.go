@@ -14,16 +14,20 @@ import (
 )
 
 // seedAuditTestStore creates a memory metadata store with one share named
-// "audit-test" and three regular files. The first file has 5 BlockRefs
-// the second has 3, the third has 2. Each FileBlock is seeded with a
-// matching RefCount=1 so the pre-leak invariant ∑RefCount == ∑len(Blocks)
-// holds (3+5+2 = 10 refs, 10 blocks × RefCount=1). Used by all three
-// audit tests below.
-func seedAuditTestStore(t *testing.T) (*metadatamemory.MemoryMetadataStore, string, [][]string) {
+// "audit-test" and three regular files. The first file has 5 BlockRefs,
+// the second has 3, the third has 2 (10 manifest refs total). Each
+// manifest ref is backed by a FileBlock row whose ID is
+// "{payloadID}/{offset}" with a matching non-zero hash, so the
+// manifest↔FileBlock-row invariant holds (DanglingRefs == 0) pre-mutation.
+//
+// Returns the store, the share name, and per-file (payloadID, []offset)
+// so a test can delete a specific backing row to manufacture a dangling
+// manifest reference.
+func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore, shareName string, payloadIDs []string, offsets [][]uint64) {
 	t.Helper()
-	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	store = metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
-	const shareName = "audit-test"
+	shareName = "audit-test"
 
 	// Create share + root.
 	if err := store.CreateShare(ctx, &metadata.Share{Name: shareName}); err != nil {
@@ -44,7 +48,8 @@ func seedAuditTestStore(t *testing.T) (*metadatamemory.MemoryMetadataStore, stri
 	// Three files with 5, 3, 2 BlockRefs respectively.
 	perFile := []int{5, 3, 2}
 	now := time.Now().UTC()
-	allBlockIDs := make([][]string, len(perFile))
+	payloadIDs = make([]string, len(perFile))
+	offsets = make([][]uint64, len(perFile))
 
 	for fi, n := range perFile {
 		name := fileNameFor(fi)
@@ -57,41 +62,46 @@ func seedAuditTestStore(t *testing.T) (*metadatamemory.MemoryMetadataStore, stri
 			t.Fatalf("DecodeFileHandle: %v", err)
 		}
 
-		blockIDs := make([]string, n)
+		// payloadID is the FileBlock-ID prefix; the engine keys blocks as
+		// "{payloadID}/{offset}". Use a stable per-file payload id.
+		payloadID := "payload-" + jstr(fi)
+		payloadIDs[fi] = payloadID
+		fileOffsets := make([]uint64, n)
 		refs := make([]block.BlockRef, n)
 		for bi := 0; bi < n; bi++ {
 			h := hashForFileBlock(fi, bi)
-			blockID := fileNameFor(fi) + "/" + jstr(bi)
+			off := uint64(bi) * 4096
+			blockID := payloadID + "/" + jstr(int(off))
 			fb := &block.FileBlock{
 				ID:            blockID,
 				Hash:          h,
-				State:         block.BlockStateRemote,
+				State:         block.BlockStatePending,
 				LocalPath:     "/cache/" + blockID,
 				BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
 				DataSize:      4096,
-				RefCount:      1,
 				LastAccess:    now,
 				CreatedAt:     now,
 			}
 			if err := store.Put(ctx, fb); err != nil {
 				t.Fatalf("Put block %s: %v", blockID, err)
 			}
-			blockIDs[bi] = blockID
-			refs[bi] = block.BlockRef{Hash: h, Offset: uint64(bi) * 4096, Size: 4096}
+			fileOffsets[bi] = off
+			refs[bi] = block.BlockRef{Hash: h, Offset: off, Size: 4096}
 		}
 
 		file := &metadata.File{
 			ID:        fileID,
 			ShareName: shareName,
 			FileAttr: metadata.FileAttr{
-				Type:   metadata.FileTypeRegular,
-				Mode:   0o644,
-				UID:    1000,
-				GID:    1000,
-				Mtime:  now,
-				Ctime:  now,
-				Atime:  now,
-				Blocks: refs,
+				Type:      metadata.FileTypeRegular,
+				Mode:      0o644,
+				UID:       1000,
+				GID:       1000,
+				Mtime:     now,
+				Ctime:     now,
+				Atime:     now,
+				PayloadID: metadata.PayloadID(payloadID),
+				Blocks:    refs,
 			},
 		}
 		if err := store.PutFile(ctx, file); err != nil {
@@ -106,9 +116,9 @@ func seedAuditTestStore(t *testing.T) (*metadatamemory.MemoryMetadataStore, stri
 		if err := store.SetLinkCount(ctx, handle, 1); err != nil {
 			t.Fatalf("SetLinkCount: %v", err)
 		}
-		allBlockIDs[fi] = blockIDs
+		offsets[fi] = fileOffsets
 	}
-	return store, shareName, allBlockIDs
+	return store, shareName, payloadIDs, offsets
 }
 
 func fileNameFor(i int) string {
@@ -145,9 +155,10 @@ func hashForFileBlock(fileIdx, blockIdx int) block.ContentHash {
 
 // TestAuditRefcounts_Computes asserts AuditRefcounts returns the expected
 // aggregate counts when the invariant holds. 3 files with 5+3+2=10
-// BlockRefs each carrying RefCount=1 yields delta=0.
+// manifest refs, each backed by a FileBlock row, yields DanglingRefs=0
+// (Delta=0).
 func TestAuditRefcounts_Computes(t *testing.T) {
-	store, shareName, _ := seedAuditTestStore(t)
+	store, shareName, _, _ := seedAuditTestStore(t)
 	tmpDir := t.TempDir()
 
 	res, err := AuditRefcounts(context.Background(), shareName, store, tmpDir)
@@ -163,11 +174,14 @@ func TestAuditRefcounts_Computes(t *testing.T) {
 	if res.TotalRefs != 10 {
 		t.Errorf("TotalRefs = %d, want 10", res.TotalRefs)
 	}
-	if res.TotalRefCount != 10 {
-		t.Errorf("TotalRefCount = %d, want 10", res.TotalRefCount)
+	if res.BackedRefs != 10 {
+		t.Errorf("BackedRefs = %d, want 10 (every manifest ref backed)", res.BackedRefs)
+	}
+	if res.DanglingRefs != 0 {
+		t.Errorf("DanglingRefs = %d, want 0 (invariant must hold)", res.DanglingRefs)
 	}
 	if res.Delta != 0 {
-		t.Errorf("Delta = %d, want 0 (invariant must hold pre-leak)", res.Delta)
+		t.Errorf("Delta = %d, want 0 (invariant must hold)", res.Delta)
 	}
 	if res.StartedAt.IsZero() || res.CompletedAt.IsZero() {
 		t.Errorf("timestamps not populated: %+v", res)
@@ -177,18 +191,21 @@ func TestAuditRefcounts_Computes(t *testing.T) {
 	}
 }
 
-// TestAuditRefcounts_DetectsDelta asserts that a known refcount leak
-// surfaces in the audit's Delta field. Bumping one block's RefCount by
-// 5 (without touching FileAttr.Blocks anywhere) yields TotalRefCount=15
-// vs TotalRefs=10 → Delta = -5.
+// TestAuditRefcounts_DetectsDelta asserts that a genuine dangling
+// reference surfaces in the audit's DanglingRefs/Delta fields. Deleting
+// one FileBlock row (without touching FileAttr.Blocks) leaves the manifest
+// entry pointing at a chunk the store no longer records — the
+// silent-data-loss class. TotalRefs stays 10 (manifest unchanged), but
+// BackedRefs drops to 9 and DanglingRefs == Delta == 1.
 func TestAuditRefcounts_DetectsDelta(t *testing.T) {
-	store, shareName, allBlockIDs := seedAuditTestStore(t)
+	store, shareName, payloadIDs, offsets := seedAuditTestStore(t)
 	tmpDir := t.TempDir()
 
-	// Bump RefCount by 5 on the first block of file 0.
-	const leak uint32 = 5
-	if err := store.InjectRefCountLeak(context.Background(), allBlockIDs[0][0], leak); err != nil {
-		t.Fatalf("InjectRefCountLeak: %v", err)
+	// Delete the FileBlock row backing file 0's first manifest ref, leaving
+	// the manifest entry in place → that ref becomes dangling.
+	danglingID := payloadIDs[0] + "/" + jstr(int(offsets[0][0]))
+	if err := store.Delete(context.Background(), danglingID); err != nil {
+		t.Fatalf("Delete backing row %q: %v", danglingID, err)
 	}
 
 	res, err := AuditRefcounts(context.Background(), shareName, store, tmpDir)
@@ -196,14 +213,69 @@ func TestAuditRefcounts_DetectsDelta(t *testing.T) {
 		t.Fatalf("AuditRefcounts: %v", err)
 	}
 	if res.TotalRefs != 10 {
-		t.Errorf("TotalRefs = %d, want 10 (leak does not change FileAttr.Blocks)", res.TotalRefs)
+		t.Errorf("TotalRefs = %d, want 10 (deleting a row does not change FileAttr.Blocks)", res.TotalRefs)
 	}
-	if res.TotalRefCount != 10+uint64(leak) {
-		t.Errorf("TotalRefCount = %d, want %d (leak adds to RefCount)", res.TotalRefCount, 10+leak)
+	if res.BackedRefs != 9 {
+		t.Errorf("BackedRefs = %d, want 9 (one backing row deleted)", res.BackedRefs)
 	}
-	wantDelta := -int64(leak)
-	if res.Delta != wantDelta {
-		t.Errorf("Delta = %d, want %d (refs - refcount)", res.Delta, wantDelta)
+	if res.DanglingRefs != 1 {
+		t.Errorf("DanglingRefs = %d, want 1 (the manifest ref with no backing row)", res.DanglingRefs)
+	}
+	if res.Delta != 1 {
+		t.Errorf("Delta = %d, want 1 (Delta == DanglingRefs)", res.Delta)
+	}
+}
+
+// TestAuditRefcounts_DetectsHashMismatch asserts that a backing row present
+// at the right offset but carrying a DIFFERENT (non-zero) hash than the
+// manifest ref is counted as DANGLING, not backed. This is genuine
+// corruption: the store records a different chunk than the file claims at
+// that offset, and crediting it as backed would silently hide the mismatch.
+// The manifest is unchanged (TotalRefs stays 10), but the tampered ref drops
+// BackedRefs to 9 and DanglingRefs == Delta == 1.
+func TestAuditRefcounts_DetectsHashMismatch(t *testing.T) {
+	store, shareName, payloadIDs, offsets := seedAuditTestStore(t)
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	// Overwrite the FileBlock row backing file 0's first manifest ref with a
+	// row at the SAME id/offset but a different non-zero hash, leaving the
+	// manifest entry untouched → hash mismatch → that ref is dangling.
+	mismatchID := payloadIDs[0] + "/" + jstr(int(offsets[0][0]))
+	now := time.Now().UTC()
+	wrongHash := hashForFileBlock(99, 99) // distinct from any seeded ref hash
+	if wrongHash.IsZero() {
+		t.Fatal("wrongHash must be non-zero to exercise the mismatch path")
+	}
+	wrongRow := &block.FileBlock{
+		ID:            mismatchID,
+		Hash:          wrongHash,
+		State:         block.BlockStatePending,
+		LocalPath:     "/cache/" + mismatchID,
+		BlockStoreKey: "cas/" + wrongHash.String()[0:2] + "/" + wrongHash.String()[2:4] + "/" + wrongHash.String(),
+		DataSize:      4096,
+		LastAccess:    now,
+		CreatedAt:     now,
+	}
+	if err := store.Put(ctx, wrongRow); err != nil {
+		t.Fatalf("Put mismatched row %q: %v", mismatchID, err)
+	}
+
+	res, err := AuditRefcounts(ctx, shareName, store, tmpDir)
+	if err != nil {
+		t.Fatalf("AuditRefcounts: %v", err)
+	}
+	if res.TotalRefs != 10 {
+		t.Errorf("TotalRefs = %d, want 10 (overwriting a row does not change FileAttr.Blocks)", res.TotalRefs)
+	}
+	if res.BackedRefs != 9 {
+		t.Errorf("BackedRefs = %d, want 9 (the hash-mismatched ref is not backed)", res.BackedRefs)
+	}
+	if res.DanglingRefs != 1 {
+		t.Errorf("DanglingRefs = %d, want 1 (hash mismatch must be detected as dangling)", res.DanglingRefs)
+	}
+	if res.Delta != 1 {
+		t.Errorf("Delta = %d, want 1 (Delta == DanglingRefs)", res.Delta)
 	}
 }
 
@@ -211,7 +283,7 @@ func TestAuditRefcounts_DetectsDelta(t *testing.T) {
 // <localStoreRoot>/audit-state/last-inv02.json containing the
 // timestamps and counts. Subsequent runs OVERWRITE atomically.
 func TestAuditRefcounts_PersistsLastRun(t *testing.T) {
-	store, shareName, _ := seedAuditTestStore(t)
+	store, shareName, _, _ := seedAuditTestStore(t)
 	tmpDir := t.TempDir()
 
 	res, err := AuditRefcounts(context.Background(), shareName, store, tmpDir)
@@ -234,7 +306,7 @@ func TestAuditRefcounts_PersistsLastRun(t *testing.T) {
 	if got.Share != res.Share {
 		t.Errorf("persisted Share = %q, want %q", got.Share, res.Share)
 	}
-	if got.TotalFiles != res.TotalFiles || got.TotalRefs != res.TotalRefs || got.TotalRefCount != res.TotalRefCount || got.Delta != res.Delta {
+	if got.TotalFiles != res.TotalFiles || got.TotalRefs != res.TotalRefs || got.BackedRefs != res.BackedRefs || got.DanglingRefs != res.DanglingRefs || got.Delta != res.Delta {
 		t.Errorf("persisted counts mismatch: got %+v, want %+v", got, res)
 	}
 	if got.StartedAt.IsZero() || got.CompletedAt.IsZero() {
@@ -268,13 +340,13 @@ func TestAuditRefcounts_PersistsLastRun(t *testing.T) {
 // TestAuditRefcounts_EmptyLocalRoot asserts an empty localStoreRoot
 // (in-memory backend) skips persistence cleanly without error.
 func TestAuditRefcounts_EmptyLocalRoot(t *testing.T) {
-	store, shareName, _ := seedAuditTestStore(t)
+	store, shareName, _, _ := seedAuditTestStore(t)
 
 	res, err := AuditRefcounts(context.Background(), shareName, store, "")
 	if err != nil {
 		t.Fatalf("AuditRefcounts (empty root): %v", err)
 	}
-	if res.TotalRefs != 10 || res.TotalRefCount != 10 || res.Delta != 0 {
+	if res.TotalRefs != 10 || res.BackedRefs != 10 || res.DanglingRefs != 0 || res.Delta != 0 {
 		t.Errorf("counts mismatch on empty root: %+v", res)
 	}
 	if AuditLastRunPath("") != "" {

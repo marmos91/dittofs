@@ -1,15 +1,23 @@
 // Package engine — audit
 //
-// AuditRefcounts walks a share's metadata store and reconciles the global
-// invariant
+// AuditRefcounts walks a share's metadata store and verifies the CAS
+// manifest-consistency invariant:
 //
-//	∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)
+//	every block referenced by a file's manifest (FileAttr.Blocks) must
+//	have a backing FileBlock row in the metadata store.
 //
-// A non-zero delta indicates a refcount drift that may block GC reclamation
-// (a leaked block's CAS object survives the grace window) or signal a bug
-// in the dedup short-circuit (donor leak). The audit is operator-invoked
-// via `dfsctl blockstore audit-refcounts <share>`; there is no periodic
-// schedule.
+// A manifest reference with no backing FileBlock row is a genuine
+// DANGLING reference — the silent-data-loss class (cf. #583/#789): the
+// file claims a chunk that the store has no record of, so a read would
+// return zeros or fail. DanglingRefs > 0 is the real signal worth
+// alerting on; the invariant is DanglingRefs == 0.
+//
+// This replaces the legacy "∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)"
+// reconciliation. RefCount is not maintained in the CAS model (CAS blocks
+// are written State=Pending and never transition to Remote, GetByHash is
+// remote-gated, and reclamation is mark-sweep GC over the live set), so
+// the old metric was structurally always 0 and produced false-positive
+// "corruption" alarms. The audit no longer touches RefCount or GetByHash.
 //
 // Persistence: the last-run summary is written atomically (.tmp + rename)
 // to <localStoreRoot>/audit-state/last-inv02.json, mirroring GC's
@@ -25,14 +33,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	// justification: AuditRefcounts is the cross-file metadata-walk
 	// entrypoint for reconciliation. It MUST bind
 	// metadata.Store to enumerate FileAttr.Blocks across the share's
-	// directory tree (GetRootHandle, GetFile, ListChildren). Lifting these
-	// helpers into pkg/block would create a circular import.
+	// directory tree (GetRootHandle, GetFile, ListChildren) and to read
+	// the backing FileBlock rows (ListFileBlocks). Lifting these helpers
+	// into pkg/block would create a circular import.
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -61,24 +71,31 @@ type AuditRefcountsResult struct {
 	// TotalFiles is the number of regular files scanned.
 	TotalFiles uint64 `json:"total_files"`
 
-	// TotalRefs is ∑ len(FileAttr.Blocks) across every regular file in the share.
+	// TotalRefs is ∑ len(FileAttr.Blocks) across every regular file in the
+	// share — the manifest reference count.
 	TotalRefs uint64 `json:"total_refs"`
 
-	// TotalRefCount is ∑ FileBlock.RefCount summed across distinct hashes
-	// (the post- single-row-per-hash world; legacy multi-row data is
-	// dedup'd via GetByHash so cross-row hash duplicates don't double-count).
-	TotalRefCount uint64 `json:"total_refcount"`
+	// BackedRefs is the number of manifest references that have a matching
+	// FileBlock row in the metadata store (a row at the ref's offset with a
+	// non-zero hash).
+	BackedRefs uint64 `json:"backed_refs"`
 
-	// Delta is TotalRefs - TotalRefCount. Zero means holds; non-zero
-	// indicates drift (positive: file refs exceed RefCount; negative: leaked
-	// RefCount with no owning file).
+	// DanglingRefs is the number of manifest references with NO backing
+	// FileBlock row (== TotalRefs - BackedRefs). Each dangling ref is a
+	// silent-data-loss hazard: the file claims a chunk the store has no
+	// record of.
+	DanglingRefs uint64 `json:"dangling_refs"`
+
+	// Delta is the violation count, defined as DanglingRefs. Zero means the
+	// invariant holds (every manifest ref is backed); non-zero means at
+	// least one file references a chunk with no FileBlock row.
 	Delta int64 `json:"delta"`
 }
 
-// AuditRefcounts walks the metadata store and computes the
-// invariant for the named share. Persists last-run summary at
-// <localStoreRoot>/audit-state/last-inv02.json. Pass an empty
-// localStoreRoot to skip persistence (in-memory backend).
+// AuditRefcounts walks the metadata store and verifies the manifest↔
+// FileBlock-row consistency invariant for the named share. Persists
+// last-run summary at <localStoreRoot>/audit-state/last-inv02.json. Pass an
+// empty localStoreRoot to skip persistence (in-memory backend).
 //
 // per-share audit, slog-only observability
 // no Prometheus surface in this phase.
@@ -96,37 +113,24 @@ func AuditRefcounts(ctx context.Context, share string, store metadata.Store, loc
 		StartedAt: start,
 	}
 
-	// 1) ∑ FileBlock.RefCount across distinct ContentHashes via the
-	// cursor-bounded EnumerateFileBlocks (memory bound). Dedup
-	// by hash mirrors the post- single-row-per-hash world; legacy
-	//    multi-row data is collapsed because every row sharing a hash
-	//    carries the same RefCount semantics (GetByHash returns ANY one).
-	seen := make(map[block.ContentHash]struct{})
-	if err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
-		if _, ok := seen[h]; ok {
-			return nil
-		}
-		seen[h] = struct{}{}
-		fb, err := store.GetByHash(ctx, h)
-		if err != nil {
-			return fmt.Errorf("get by hash %x: %w", h[:8], err)
-		}
-		if fb != nil {
-			result.TotalRefCount += uint64(fb.RefCount)
-		}
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("audit-refcounts: enumerate file blocks: %w", err)
-	}
-
-	// 2) ∑ len(FileAttr.Blocks) across every regular file in the share.
+	// Walk every regular file in the share. For each file, read its
+	// manifest (FileAttr.Blocks) and the backing FileBlock rows
+	// (ListFileBlocks by payloadID). A manifest ref is BACKED iff a row
+	// exists at the ref's offset with a matching non-zero hash; otherwise
+	// it is DANGLING.
 	rootHandle, err := store.GetRootHandle(ctx, share)
 	if err != nil {
 		return nil, fmt.Errorf("audit-refcounts: get root handle for %q: %w", share, err)
 	}
 	if err := walkAuditShareFiles(ctx, store, rootHandle, func(f *metadata.File) error {
 		result.TotalFiles++
+		backed, dangling, err := auditFileManifest(ctx, store, f)
+		if err != nil {
+			return err
+		}
 		result.TotalRefs += uint64(len(f.Blocks))
+		result.BackedRefs += backed
+		result.DanglingRefs += dangling
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("audit-refcounts: walk share %q: %w", share, err)
@@ -134,12 +138,68 @@ func AuditRefcounts(ctx context.Context, share string, store metadata.Store, loc
 
 	result.CompletedAt = time.Now().UTC()
 	result.DurationMS = result.CompletedAt.Sub(result.StartedAt).Milliseconds()
-	result.Delta = int64(result.TotalRefs) - int64(result.TotalRefCount)
+	result.Delta = int64(result.DanglingRefs)
 
 	if err := persistAuditLastRun(localStoreRoot, result); err != nil {
 		return nil, fmt.Errorf("audit-refcounts: persist last-run: %w", err)
 	}
 	return result, nil
+}
+
+// auditFileManifest reconciles one file's manifest (FileAttr.Blocks)
+// against its backing FileBlock rows. Returns the count of backed vs
+// dangling manifest refs for the file.
+//
+// FileBlock IDs are "{payloadID}/{offset}" (the engine writes
+// fmt.Sprintf("%s/%d", payloadID, blockRef.Offset)); the manifest BlockRef
+// carries the same Offset and the expected content Hash. A ref is backed
+// iff a row exists at its offset AND that row's hash equals the manifest
+// ref's hash (and is non-zero). Matching by offset alone is not enough:
+// a row present at the right offset but carrying a DIFFERENT hash is
+// genuine corruption (the store holds a record of a different chunk than
+// the file claims), and crediting it as backed would silently hide that
+// mismatch. Such refs are counted as dangling.
+func auditFileManifest(ctx context.Context, store metadata.Store, f *metadata.File) (backed, dangling uint64, err error) {
+	if len(f.Blocks) == 0 {
+		return 0, 0, nil
+	}
+
+	payloadID := string(f.PayloadID)
+	rows, err := store.ListFileBlocks(ctx, payloadID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("list file blocks for payload %q: %w", payloadID, err)
+	}
+
+	// Map of present rows keyed by parsed offset (the suffix of the
+	// FileBlock ID after "{payloadID}/") to the row's content hash. A row
+	// with a zero hash does not back a manifest ref — treat it as absent.
+	byOffset := make(map[uint64]metadata.ContentHash, len(rows))
+	prefix := payloadID + "/"
+	for _, row := range rows {
+		if row == nil || row.Hash.IsZero() {
+			continue
+		}
+		suffix := strings.TrimPrefix(row.ID, prefix)
+		off, convErr := strconv.ParseUint(suffix, 10, 64)
+		if convErr != nil {
+			// Non-numeric suffix: not an offset-keyed CAS row. Skip it
+			// rather than crediting it to an offset.
+			continue
+		}
+		byOffset[off] = row.Hash
+	}
+
+	for _, ref := range f.Blocks {
+		// Backed iff a row exists at the ref's offset whose hash matches the
+		// ref's hash (and is non-zero). A present-but-mismatched hash is
+		// corruption and counts as dangling — never silently backed.
+		if presentHash, ok := byOffset[ref.Offset]; ok && presentHash == ref.Hash && !presentHash.IsZero() {
+			backed++
+		} else {
+			dangling++
+		}
+	}
+	return backed, dangling, nil
 }
 
 // walkAuditShareFiles recursively walks the share rooted at dirHandle

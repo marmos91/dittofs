@@ -90,14 +90,15 @@ func TestAuditCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 	defer s.Close()
 	now := time.Now().UTC().Truncate(time.Second)
 	s.result = &engine.AuditRefcountsResult{
-		Share:         "myshare",
-		StartedAt:     now,
-		CompletedAt:   now.Add(time.Second),
-		DurationMS:    1000,
-		TotalFiles:    3,
-		TotalRefs:     10,
-		TotalRefCount: 10,
-		Delta:         0,
+		Share:        "myshare",
+		StartedAt:    now,
+		CompletedAt:  now.Add(time.Second),
+		DurationMS:   1000,
+		TotalFiles:   3,
+		TotalRefs:    10,
+		BackedRefs:   10,
+		DanglingRefs: 0,
+		Delta:        0,
 	}
 	withAuditTestServer(t, s.URL)
 
@@ -113,13 +114,13 @@ func TestAuditCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 	if s.lastPath != "/api/v1/shares/myshare/audit/refcounts" {
 		t.Errorf("path = %q, want /api/v1/shares/myshare/audit/refcounts", s.lastPath)
 	}
-	for _, frag := range []string{"Share", "myshare", "Total Files", "3", "Total Refs", "10", "Delta", "0"} {
+	for _, frag := range []string{"Share", "myshare", "Total Files", "3", "Manifest Refs", "10", "Backed by FileBlock row", "Dangling refs", "0"} {
 		if !strings.Contains(out, frag) {
 			t.Errorf("stdout missing %q, got %q", frag, out)
 		}
 	}
-	if strings.Contains(out, "INV-02 violation") {
-		t.Errorf("delta=0 must not surface INV-02 violation banner; got %q", out)
+	if strings.Contains(out, "manifest-consistency violation") {
+		t.Errorf("dangling=0 must not surface violation banner; got %q", out)
 	}
 }
 
@@ -131,13 +132,14 @@ func TestAuditCmd_DriftSurfacesViolation(t *testing.T) {
 	defer s.Close()
 	now := time.Now().UTC().Truncate(time.Second)
 	s.result = &engine.AuditRefcountsResult{
-		Share:         "myshare",
-		StartedAt:     now,
-		CompletedAt:   now.Add(time.Second),
-		TotalFiles:    3,
-		TotalRefs:     10,
-		TotalRefCount: 15,
-		Delta:         -5,
+		Share:        "myshare",
+		StartedAt:    now,
+		CompletedAt:  now.Add(time.Second),
+		TotalFiles:   3,
+		TotalRefs:    10,
+		BackedRefs:   5,
+		DanglingRefs: 5,
+		Delta:        5,
 	}
 	withAuditTestServer(t, s.URL)
 
@@ -149,14 +151,14 @@ func TestAuditCmd_DriftSurfacesViolation(t *testing.T) {
 	if runErr == nil {
 		t.Fatal("non-zero delta must return a non-nil error (non-zero exit)")
 	}
-	if !strings.Contains(runErr.Error(), "delta=-5") {
+	if !strings.Contains(runErr.Error(), "delta=5") {
 		t.Errorf("error must include the delta value; got %v", runErr)
 	}
-	if !strings.Contains(out, "INV-02 violation") {
-		t.Errorf("non-zero delta must surface INV-02 violation banner; got %q", out)
+	if !strings.Contains(out, "manifest-consistency violation") {
+		t.Errorf("non-zero delta must surface violation banner; got %q", out)
 	}
-	if !strings.Contains(out, "delta=-5") {
-		t.Errorf("violation banner must include delta value; got %q", out)
+	if !strings.Contains(out, "5 dangling reference") {
+		t.Errorf("violation banner must include the dangling count; got %q", out)
 	}
 }
 
@@ -170,10 +172,11 @@ func TestAuditCmd_DriftExitsNonZeroAcrossFormats(t *testing.T) {
 			s := newAuditServer(t)
 			defer s.Close()
 			s.result = &engine.AuditRefcountsResult{
-				Share:         "myshare",
-				TotalRefs:     10,
-				TotalRefCount: 7,
-				Delta:         3,
+				Share:        "myshare",
+				TotalRefs:    10,
+				BackedRefs:   7,
+				DanglingRefs: 3,
+				Delta:        3,
 			}
 			withAuditTestServer(t, s.URL)
 			cmdutil.Flags.Output = format
