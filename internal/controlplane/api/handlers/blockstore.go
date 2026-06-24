@@ -122,6 +122,7 @@ type WarmJobStatusResponse struct {
 	StartedAt   string `json:"started_at,omitempty"`
 	FinishedAt  string `json:"finished_at,omitempty"`
 	Error       string `json:"error,omitempty"`
+	Warning     string `json:"warning,omitempty"`
 }
 
 func warmJobToResponse(j *shares.WarmJob) WarmJobStatusResponse {
@@ -133,6 +134,7 @@ func warmJobToResponse(j *shares.WarmJob) WarmJobStatusResponse {
 		BlocksDone:  j.BlocksDone,
 		BytesDone:   j.BytesDone,
 		Error:       j.Err,
+		Warning:     j.Warning,
 	}
 	if !j.StartedAt.IsZero() {
 		resp.StartedAt = j.StartedAt.UTC().Format(time.RFC3339)

@@ -3,6 +3,7 @@ package shares
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,9 +32,12 @@ func TestWarmRegistry_DeterministicIDsAndSuccess(t *testing.T) {
 		return warmAllResult{BlocksFetched: 2, BytesFetched: 42}, nil
 	}
 
-	job := r.start("/share", run)
-	if job.ID != "warm-/share-1" {
-		t.Fatalf("job ID = %q, want warm-/share-1", job.ID)
+	job := r.start("/share", 0, run)
+	if job.ID != "warm-1" {
+		t.Fatalf("job ID = %q, want warm-1", job.ID)
+	}
+	if strings.Contains(job.ID, "/") {
+		t.Fatalf("job ID %q must not contain a slash (breaks poll route)", job.ID)
 	}
 	if job.State != WarmStateRunning {
 		t.Fatalf("initial state = %q, want running", job.State)
@@ -56,11 +60,77 @@ func TestWarmRegistry_DeterministicIDsAndSuccess(t *testing.T) {
 	}
 
 	// A second start for the same share gets a fresh, monotonic ID.
-	job2 := r.start("/share", func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
+	job2 := r.start("/share", 0, func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
 		return warmAllResult{}, nil
 	})
-	if job2.ID != "warm-/share-2" {
-		t.Fatalf("second job ID = %q, want warm-/share-2", job2.ID)
+	if job2.ID != "warm-2" {
+		t.Fatalf("second job ID = %q, want warm-2", job2.ID)
+	}
+
+	// The job is resolvable via the status lookup by id alone (the round-trip
+	// that the 404 bug broke for slash-bearing shares).
+	if _, ok := r.get(job2.ID); !ok {
+		t.Fatalf("started job %q not resolvable by id", job2.ID)
+	}
+}
+
+func TestWarmRegistry_SlashShareYieldsSlashFreeID(t *testing.T) {
+	r := newWarmRegistry()
+	job := r.start("/export", 0, func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
+		return warmAllResult{}, nil
+	})
+	if strings.Contains(job.ID, "/") {
+		t.Fatalf("job ID %q for share /export must not contain a slash", job.ID)
+	}
+	if _, ok := r.get(job.ID); !ok {
+		t.Fatalf("job %q not resolvable by id", job.ID)
+	}
+}
+
+func TestWarmRegistry_WarnsOnEmptyEnumerationNonEmptyShare(t *testing.T) {
+	r := newWarmRegistry()
+
+	// Zero enumerable blocks (nothing fetched, nothing already-local) on a
+	// share that reports nonzero stored bytes must set the Warning (#1374).
+	job := r.start("/export", 4096, func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
+		return warmAllResult{}, nil
+	})
+	waitFor(t, func() bool {
+		j, _ := r.get(job.ID)
+		return j.State == WarmStateDone
+	})
+	j, _ := r.get(job.ID)
+	if j.Warning == "" {
+		t.Fatalf("expected warning on 0-block warm of non-empty share, got none: %+v", j)
+	}
+	if !strings.Contains(j.Warning, "local disk tier") {
+		t.Fatalf("warning should reference the local disk tier, got %q", j.Warning)
+	}
+
+	// A share that genuinely has no stored bytes must NOT warn.
+	jobEmpty := r.start("/empty", 0, func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
+		return warmAllResult{}, nil
+	})
+	waitFor(t, func() bool {
+		j, _ := r.get(jobEmpty.ID)
+		return j.State == WarmStateDone
+	})
+	je, _ := r.get(jobEmpty.ID)
+	if je.Warning != "" {
+		t.Fatalf("empty share should not warn, got %q", je.Warning)
+	}
+
+	// A run that DID enumerate blocks must not warn even if used bytes > 0.
+	jobOK := r.start("/full", 4096, func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
+		return warmAllResult{BlocksAlreadyLocal: 3}, nil
+	})
+	waitFor(t, func() bool {
+		j, _ := r.get(jobOK.ID)
+		return j.State == WarmStateDone
+	})
+	jo, _ := r.get(jobOK.ID)
+	if jo.Warning != "" {
+		t.Fatalf("share with enumerable blocks should not warn, got %q", jo.Warning)
 	}
 }
 
@@ -78,8 +148,8 @@ func TestWarmRegistry_OneActivePerShare(t *testing.T) {
 		return warmAllResult{}, nil
 	}
 
-	job1 := r.start("/share", run)
-	job2 := r.start("/share", run) // should return the running job, not start a new one
+	job1 := r.start("/share", 0, run)
+	job2 := r.start("/share", 0, run) // should return the running job, not start a new one
 	if job1.ID != job2.ID {
 		t.Fatalf("second start got a different job: %q vs %q", job1.ID, job2.ID)
 	}
@@ -107,7 +177,7 @@ func TestWarmRegistry_CancelForShare(t *testing.T) {
 		return warmAllResult{}, ctx.Err()
 	}
 
-	job := r.start("/share", run)
+	job := r.start("/share", 0, run)
 	<-started
 	r.cancelForShare("/share")
 
@@ -125,7 +195,7 @@ func TestWarmRegistry_CancelForShare(t *testing.T) {
 func TestWarmRegistry_Failure(t *testing.T) {
 	r := newWarmRegistry()
 	boom := errors.New("boom")
-	job := r.start("/share", func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
+	job := r.start("/share", 0, func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
 		return warmAllResult{}, boom
 	})
 	waitFor(t, func() bool {

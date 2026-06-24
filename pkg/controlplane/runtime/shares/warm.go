@@ -38,6 +38,11 @@ type WarmJob struct {
 	StartedAt   time.Time `json:"started_at"`
 	FinishedAt  time.Time `json:"finished_at"`
 	Err         string    `json:"error,omitempty"`
+	// Warning carries a non-fatal advisory surfaced to the operator on an
+	// otherwise-successful run. It is set when a warm run enumerated zero
+	// blocks to materialize for a share that nonetheless reports nonzero
+	// stored bytes — a strong hint that block metadata is missing (#1374).
+	Warning string `json:"warning,omitempty"`
 }
 
 // clone returns a copy safe to hand outside the registry lock.
@@ -90,7 +95,13 @@ type warmAllResult struct {
 // (derived from context.Background(), not the request ctx) so the job outlives
 // the HTTP request that triggered it. If a job is already running for the
 // share, the existing job is returned and run is not invoked.
-func (r *warmRegistry) start(shareName string, run func(ctx context.Context, progress func(done, total int64)) (warmAllResult, error)) *WarmJob {
+//
+// usedBytes is the share's currently-stored byte count (captured by the
+// caller before launching). When the run completes with zero enumerable
+// blocks (nothing fetched AND nothing already-local) but usedBytes > 0, the
+// job's Warning field is set: a non-empty share with no warmable blocks is a
+// strong hint that block metadata is missing (#1374).
+func (r *warmRegistry) start(shareName string, usedBytes int64, run func(ctx context.Context, progress func(done, total int64)) (warmAllResult, error)) *WarmJob {
 	r.mu.Lock()
 	if existingID, ok := r.active[shareName]; ok {
 		job := r.jobs[existingID].clone()
@@ -99,7 +110,11 @@ func (r *warmRegistry) start(shareName string, run func(ctx context.Context, pro
 	}
 
 	r.counter++
-	jobID := fmt.Sprintf("warm-%s-%d", shareName, r.counter)
+	// Opaque, slash-free id. The counter is global+monotonic so the id is
+	// unique across shares without embedding the (slash-bearing) share name,
+	// which previously broke the {job_id} poll route for shares like "/export"
+	// (#1374). Per-share dedup is still handled by the active map above.
+	jobID := fmt.Sprintf("warm-%d", r.counter)
 	job := &WarmJob{
 		ID:        jobID,
 		Share:     shareName,
@@ -152,6 +167,17 @@ func (r *warmRegistry) start(shareName string, run func(ctx context.Context, pro
 		case err == nil:
 			j.State = WarmStateDone
 			j.BlocksDone = j.BlocksTotal
+			// Total enumerable blocks for the run = fetched + already-local.
+			// If that is zero yet the share reports stored bytes, the warm
+			// found nothing to do on a non-empty share — surface a warning
+			// (#1374) rather than a silent no-op success.
+			if res.BlocksFetched+res.BlocksAlreadyLocal == 0 && usedBytes > 0 {
+				j.Warning = fmt.Sprintf(
+					"warm found 0 enumerable blocks for share %s but it has %d bytes on the local disk tier — block metadata may be missing",
+					shareName, usedBytes)
+				logger.Warn("warm found no enumerable blocks on non-empty share",
+					"share", shareName, "local_disk_used_bytes", usedBytes)
+			}
 		case canceled:
 			j.State = WarmStateCanceled
 			j.Err = err.Error()

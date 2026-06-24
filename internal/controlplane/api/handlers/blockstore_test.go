@@ -316,7 +316,7 @@ func TestBlockStoreStatsHandler_NormalizesShareName(t *testing.T) {
 // unknown job.
 func TestBlockStoreStatsHandler_Warm(t *testing.T) {
 	t.Run("start_returns_202_and_job_id", func(t *testing.T) {
-		fake := &fakeBlockStoreRuntime{warmJob: &shares.WarmJob{ID: "warm-/myshare-1", Share: "/myshare", State: shares.WarmStateRunning}}
+		fake := &fakeBlockStoreRuntime{warmJob: &shares.WarmJob{ID: "warm-1", Share: "/myshare", State: shares.WarmStateRunning}}
 		h := NewBlockStoreStatsHandler(fake)
 		req := newChiRequestForBlockStore(http.MethodPost,
 			"/api/v1/shares/myshare/blockstore/warm", nil, "name", "myshare")
@@ -335,8 +335,8 @@ func TestBlockStoreStatsHandler_Warm(t *testing.T) {
 		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		if body.JobID != "warm-/myshare-1" {
-			t.Fatalf("job_id = %q, want warm-/myshare-1", body.JobID)
+		if body.JobID != "warm-1" {
+			t.Fatalf("job_id = %q, want warm-1", body.JobID)
 		}
 	})
 
@@ -359,12 +359,12 @@ func TestBlockStoreStatsHandler_Warm(t *testing.T) {
 
 	t.Run("status_found", func(t *testing.T) {
 		fake := &fakeBlockStoreRuntime{
-			warmStatus: &shares.WarmJob{ID: "warm-/myshare-1", Share: "/myshare", State: shares.WarmStateDone, BlocksTotal: 5, BlocksDone: 5, BytesDone: 100},
+			warmStatus: &shares.WarmJob{ID: "warm-1", Share: "/myshare", State: shares.WarmStateDone, BlocksTotal: 5, BlocksDone: 5, BytesDone: 100, Warning: "block metadata may be missing"},
 			warmFound:  true,
 		}
 		h := NewBlockStoreStatsHandler(fake)
 		req := newChiRequestForBlockStore(http.MethodGet,
-			"/api/v1/shares/myshare/blockstore/warm/warm-/myshare-1", nil, "name", "myshare", "job_id", "warm-/myshare-1")
+			"/api/v1/shares/myshare/blockstore/warm/warm-1", nil, "name", "myshare", "job_id", "warm-1")
 		w := httptest.NewRecorder()
 		h.WarmStatus(w, req)
 		if w.Code != http.StatusOK {
@@ -373,6 +373,9 @@ func TestBlockStoreStatsHandler_Warm(t *testing.T) {
 		var resp WarmJobStatusResponse
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 			t.Fatalf("decode: %v", err)
+		}
+		if resp.Warning != "block metadata may be missing" {
+			t.Fatalf("WarmStatus warning = %q, want passthrough", resp.Warning)
 		}
 		if resp.State != shares.WarmStateDone || resp.BlocksDone != 5 || resp.BytesDone != 100 {
 			t.Fatalf("unexpected status: %+v", resp)
