@@ -361,6 +361,37 @@ const enumerateHashesQuery = `SELECT hash FROM file_blocks
 UNION ALL
 SELECT encode(hash, 'hex') FROM file_block_refs`
 
+// EnumeratePayloads streams every distinct payloadID that has at least one
+// FileBlock row through fn. FileBlock row IDs have the form
+// {payloadID}/{blockIdx}; the query recovers the payloadID with
+// split_part(id, '/', 1) and DISTINCT dedupes. Unlike the local store's
+// ListFiles, this enumerates the authoritative metadata, so it still yields
+// rolled-up payloads.
+func (s *PostgresMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	const query = `SELECT DISTINCT split_part(id, '/', 1) FROM file_blocks WHERE position('/' in id) > 0`
+	rows, err := s.query(ctx, query)
+	if err != nil {
+		return fmt.Errorf("enumerate payloads: query: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("enumerate payloads: %w", err)
+		}
+		var payloadID string
+		if err := rows.Scan(&payloadID); err != nil {
+			return fmt.Errorf("enumerate payloads: scan: %w", err)
+		}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("enumerate payloads: rows: %w", err)
+	}
+	return nil
+}
+
 // EnumerateFileBlocks streams every live-set ContentHash through fn, unioning
 // the CAS index with the per-file manifest (see enumerateHashesQuery).
 func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {

@@ -51,6 +51,9 @@ func (nopFBS) GetFileBlock(_ context.Context, _ string) (*block.FileBlock, error
 func (nopFBS) ListFileBlocks(_ context.Context, _ string) ([]*block.FileBlock, error) {
 	return nil, nil
 }
+func (nopFBS) EnumeratePayloads(_ context.Context, _ func(payloadID string) error) error {
+	return nil
+}
 
 // newFSStoreForTest constructs an FSStore in t.TempDir with the given
 // options and a nopFBS backing store. Registers t.Cleanup to Close the

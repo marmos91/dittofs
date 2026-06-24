@@ -123,7 +123,6 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	}
 
 	localStats := bs.local.Stats()
-	files := bs.local.ListFiles()
 
 	cacheStats := bs.loadCache().Stats()
 
@@ -134,7 +133,10 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	outageDuration := bs.syncer.RemoteOutageDuration()
 
 	stats := BlockStoreStats{
-		FileCount:           len(files),
+		// FileCount is the cheap local-only count here; the full-stats path
+		// (withBlockCounts) overwrites it with the authoritative distinct-payload
+		// count from the metadata so it reflects rolled-up files too (#1374).
+		FileCount:           len(bs.local.ListFiles()),
 		LocalDiskUsed:       localStats.DiskUsed,
 		LocalDiskMax:        localStats.MaxDisk,
 		LocalMemUsed:        localStats.MemUsed,
@@ -159,14 +161,18 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 	}
 
 	if withBlockCounts {
-		bs.populateBlockCounts(&stats, files)
+		bs.populateBlockCounts(&stats)
 	}
 
 	return stats
 }
 
-// populateBlockCounts fills block count fields from the metadata store.
-func (bs *Store) populateBlockCounts(stats *BlockStoreStats, files []string) {
+// populateBlockCounts fills block count fields and FileCount from the
+// authoritative metadata. It enumerates payloads via
+// fileBlockStore.EnumeratePayloads (which survives rollup) rather than the
+// local store's ListFiles, so a rolled-up share whose append logs are gone
+// still reports its blocks and files instead of zero (#1374).
+func (bs *Store) populateBlockCounts(stats *BlockStoreStats) {
 	if bs.fileBlockStore == nil {
 		return
 	}
@@ -174,45 +180,59 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats, files []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	for _, payloadID := range files {
+	var payloadCount int
+	if err := bs.fileBlockStore.EnumeratePayloads(ctx, func(payloadID string) error {
+		payloadCount++
 		blocks, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
 		if err != nil {
-			continue
+			return nil // skip this payload, keep going
 		}
-		for _, b := range blocks {
-			stats.BlocksTotal++
-			// Classify by PHYSICAL presence in the local CAS store, not by sync
-			// state. A block fetched from remote keeps a BlockStateRemote row
-			// even though its CAS chunk now sits on local disk; classifying by
-			// state alone reported it as remote, so a fully read-cached share
-			// showed "Blocks Local: 0" while du showed the cache was full
-			// (#1362). A zero hash means the block is genuinely dirty/in-flight
-			// (rollup not yet complete) and cannot be present.
-			if !b.Hash.IsZero() {
-				if present, herr := bs.local.Has(ctx, b.Hash); herr == nil && present {
-					stats.BlocksLocal++
-					if b.State == block.BlockStateRemote {
-						// On disk yet the row says remote: read-through-cached.
-						stats.BlocksCached++
-					}
-					continue
+		bs.classifyBlocks(ctx, stats, blocks)
+		return nil
+	}); err != nil {
+		return
+	}
+	// Authoritative distinct-payload count (reflects rolled-up files too).
+	stats.FileCount = payloadCount
+}
+
+// classifyBlocks tallies a payload's FileBlock rows into the per-state stats
+// counters. Split out of populateBlockCounts so the EnumeratePayloads callback
+// stays readable; the classification logic is unchanged.
+func (bs *Store) classifyBlocks(ctx context.Context, stats *BlockStoreStats, blocks []*block.FileBlock) {
+	for _, b := range blocks {
+		stats.BlocksTotal++
+		// Classify by PHYSICAL presence in the local CAS store, not by sync
+		// state. A block fetched from remote keeps a BlockStateRemote row
+		// even though its CAS chunk now sits on local disk; classifying by
+		// state alone reported it as remote, so a fully read-cached share
+		// showed "Blocks Local: 0" while du showed the cache was full
+		// (#1362). A zero hash means the block is genuinely dirty/in-flight
+		// (rollup not yet complete) and cannot be present.
+		if !b.Hash.IsZero() {
+			if present, herr := bs.local.Has(ctx, b.Hash); herr == nil && present {
+				stats.BlocksLocal++
+				if b.State == block.BlockStateRemote {
+					// On disk yet the row says remote: read-through-cached.
+					stats.BlocksCached++
 				}
+				continue
 			}
-			// Not physically present (or zero hash): fall back to sync state.
-			switch b.State {
-			case block.BlockStatePending:
-				if b.Hash.IsZero() {
-					stats.BlocksDirty++
-				} else {
-					// Rollup-committed but absent from disk (evicted): the
-					// remote copy is authoritative; a read will refetch it.
-					stats.BlocksRemote++
-				}
-			case block.BlockStateSyncing:
-				stats.BlocksRemote++
-			case block.BlockStateRemote:
+		}
+		// Not physically present (or zero hash): fall back to sync state.
+		switch b.State {
+		case block.BlockStatePending:
+			if b.Hash.IsZero() {
+				stats.BlocksDirty++
+			} else {
+				// Rollup-committed but absent from disk (evicted): the
+				// remote copy is authoritative; a read will refetch it.
 				stats.BlocksRemote++
 			}
+		case block.BlockStateSyncing:
+			stats.BlocksRemote++
+		case block.BlockStateRemote:
+			stats.BlocksRemote++
 		}
 	}
 }

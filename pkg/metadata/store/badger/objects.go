@@ -439,6 +439,56 @@ func (s *BadgerMetadataStore) ListFileBlocks(_ context.Context, payloadID string
 	return result, nil
 }
 
+// EnumeratePayloads streams every distinct payloadID that has at least one
+// FileBlock row through fn. It iterates the fb-file:{payloadID}:{blockIdx}
+// secondary index, extracts the payloadID (the substring before the LAST ':')
+// from each key, dedupes via a set, and calls fn once per distinct payloadID.
+// Unlike the local store's ListFiles, this enumerates the authoritative
+// metadata, so it still yields rolled-up payloads whose append log is gone.
+func (s *BadgerMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	seen := make(map[string]struct{})
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileBlockFilePrefix)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = false // Keys only — payloadID lives in the key
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// Key form: fb-file:{payloadID}:{blockIdx}. payloadIDs do not
+			// contain ':', but split on the LAST ':' to be safe since blockIdx
+			// is the trailing numeric segment.
+			key := string(it.Item().Key()[len(prefix):])
+			i := strings.LastIndex(key, ":")
+			if i < 0 {
+				continue
+			}
+			payloadID := key[:i]
+			if _, ok := seen[payloadID]; ok {
+				continue
+			}
+			seen[payloadID] = struct{}{}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for payloadID := range seen {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // EnumerateFileBlocks streams every FileBlock's ContentHash through fn using
 // a Badger prefix iterator over fb:. The iterator yields one row per block
 // (no allocation of a full slice in application memory)..

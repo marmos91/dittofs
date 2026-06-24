@@ -41,7 +41,7 @@ func TestPopulateBlockCounts_ClassifiesByPhysicalPresence(t *testing.T) {
 	mustPutFB(t, fbs, &block.FileBlock{ID: payloadID + "/2", Hash: block.ContentHash{}, DataSize: 4, State: block.BlockStatePending})
 
 	var stats BlockStoreStats
-	bs.populateBlockCounts(&stats, []string{payloadID})
+	bs.populateBlockCounts(&stats)
 
 	if stats.BlocksTotal != 3 {
 		t.Errorf("BlocksTotal=%d, want 3", stats.BlocksTotal)

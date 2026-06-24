@@ -152,6 +152,36 @@ func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 	return s.listFileBlocksLocked(ctx, payloadID)
 }
 
+// EnumeratePayloads streams every distinct payloadID that has at least one
+// FileBlock row through fn. It collects distinct payloadIDs under the read
+// lock (splitting each block.ID on the FIRST '/' to recover the payloadID),
+// releases the lock, then calls fn per payloadID so callers can issue further
+// metadata operations. Unlike the local store's ListFiles, this enumerates the
+// authoritative metadata, so it still yields rolled-up payloads.
+func (s *MemoryMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+	seen := make(map[string]struct{})
+	s.mu.RLock()
+	if s.fileBlockData != nil {
+		for id := range s.fileBlockData.blocks {
+			i := strings.Index(id, "/")
+			if i < 0 {
+				continue
+			}
+			seen[id[:i]] = struct{}{}
+		}
+	}
+	s.mu.RUnlock()
+	for payloadID := range seen {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // EnumerateFileBlocks streams every FileBlock's ContentHash through fn.
 // The memory backend snapshots hashes under the read lock then releases
 // the lock before invoking fn so callers can issue further metadata
