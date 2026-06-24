@@ -42,12 +42,13 @@ func newAuditRequest(method, path, share string) *http.Request {
 func TestBlockStoreAuditHandler_RunAudit_Success(t *testing.T) {
 	fake := &fakeAuditRuntime{
 		res: &engine.AuditRefcountsResult{
-			Share:         "myshare",
-			TotalFiles:    3,
-			TotalRefs:     10,
-			TotalRefCount: 10,
-			Delta:         0,
-			DurationMS:    42,
+			Share:        "myshare",
+			TotalFiles:   3,
+			TotalRefs:    10,
+			BackedRefs:   10,
+			DanglingRefs: 0,
+			Delta:        0,
+			DurationMS:   42,
 		},
 	}
 	h := NewBlockStoreAuditHandler(fake)
@@ -72,7 +73,7 @@ func TestBlockStoreAuditHandler_RunAudit_Success(t *testing.T) {
 	if resp.Result == nil {
 		t.Fatal("RunAudit: nil Result in response")
 	}
-	if resp.Result.TotalFiles != 3 || resp.Result.TotalRefs != 10 || resp.Result.TotalRefCount != 10 || resp.Result.Delta != 0 {
+	if resp.Result.TotalFiles != 3 || resp.Result.TotalRefs != 10 || resp.Result.BackedRefs != 10 || resp.Result.DanglingRefs != 0 || resp.Result.Delta != 0 {
 		t.Fatalf("RunAudit: unexpected result: %+v", resp.Result)
 	}
 }
@@ -82,11 +83,12 @@ func TestBlockStoreAuditHandler_RunAudit_Success(t *testing.T) {
 func TestBlockStoreAuditHandler_RunAudit_Drift(t *testing.T) {
 	fake := &fakeAuditRuntime{
 		res: &engine.AuditRefcountsResult{
-			Share:         "myshare",
-			TotalFiles:    3,
-			TotalRefs:     10,
-			TotalRefCount: 15,
-			Delta:         -5,
+			Share:        "myshare",
+			TotalFiles:   3,
+			TotalRefs:    10,
+			BackedRefs:   5,
+			DanglingRefs: 5,
+			Delta:        5,
 		},
 	}
 	h := NewBlockStoreAuditHandler(fake)
@@ -102,8 +104,8 @@ func TestBlockStoreAuditHandler_RunAudit_Drift(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Result.Delta != -5 {
-		t.Fatalf("Delta = %d, want -5", resp.Result.Delta)
+	if resp.Result.Delta != 5 || resp.Result.DanglingRefs != 5 {
+		t.Fatalf("Delta/DanglingRefs = %d/%d, want 5/5", resp.Result.Delta, resp.Result.DanglingRefs)
 	}
 }
 

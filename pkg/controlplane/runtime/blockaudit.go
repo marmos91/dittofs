@@ -8,14 +8,14 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/engine"
 )
 
-// AuditRefcounts runs the refcount reconciliation audit for the named
+// AuditRefcounts runs the CAS manifest-consistency audit for the named
 // share. Resolves the share's metadata store and audit-state root, then
-// delegates to engine.AuditRefcounts which walks the metadata and
-// computes:
+// delegates to engine.AuditRefcounts which walks the metadata and verifies
+// that every manifest reference (FileAttr.Blocks) has a backing FileBlock
+// row in the store.
 //
-//	∑ FileBlock.RefCount   vs   ∑ len(FileAttr.Blocks)
-//
-// A non-zero delta indicates refcount drift (leak or missed decrement).
+// A non-zero delta (DanglingRefs) indicates at least one file references a
+// chunk the store has no record of — the silent-data-loss class.
 // Last-run summary is persisted under
 // <localStoreRoot>/audit-state/last-inv02.json — analogous to GC's
 // last-run.json under <gcStateRoot>/.
@@ -58,7 +58,8 @@ func (r *Runtime) AuditRefcounts(ctx context.Context, shareName string) (*engine
 		"share", shareName,
 		"totalFiles", res.TotalFiles,
 		"totalRefs", res.TotalRefs,
-		"totalRefCount", res.TotalRefCount,
+		"backedRefs", res.BackedRefs,
+		"danglingRefs", res.DanglingRefs,
 		"delta", res.Delta,
 		"durationMs", res.DurationMS,
 	)
