@@ -82,6 +82,14 @@ type SyncerConfig struct {
 	// constructed without depending on pkg/config (avoids an import cycle
 	// from local/fs and other low-level callers).
 	ClaimTimeout time.Duration // Max age of a Syncing row before the janitor requeues it (default: 10m)
+
+	// UploadLimiter bounds concurrent CAS uploads to the remote. When non-nil
+	// (production: injected per-remote by the runtime so shares to one uplink
+	// cooperate on a single window), the mirror loop uses it instead of a
+	// per-pass fixed semaphore. When nil, NewSyncer builds a fixed limiter
+	// pinned at ParallelUploads — preserving the static behaviour for unit
+	// tests and local-only fixtures.
+	UploadLimiter *UploadLimiter
 }
 
 // DefaultConfig returns the default Syncer configuration tuned for S3 performance.

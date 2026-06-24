@@ -71,6 +71,11 @@ type Syncer struct {
 
 	config SyncerConfig
 
+	// limiter bounds concurrent CAS uploads in mirrorOnce. Injected per-remote
+	// (shared across shares on one uplink) or, absent injection, a fixed
+	// limiter pinned at config.ParallelUploads. Never nil after NewSyncer.
+	limiter *UploadLimiter
+
 	queue *SyncQueue // Transfer queue for non-blocking operations
 
 	inFlight   map[string]*fetchResult // In-flight download dedup (store key -> broadcast)
@@ -245,6 +250,15 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
 		pendingHashes:  make(map[block.ContentHash]int64),
+	}
+
+	// Use the injected per-remote limiter, or fall back to a fixed limiter
+	// pinned at the resolved ParallelUploads (preserving #1397's static
+	// behaviour for unit tests and local-only fixtures).
+	if config.UploadLimiter != nil {
+		m.limiter = config.UploadLimiter
+	} else {
+		m.limiter = NewUploadLimiter(config.ParallelUploads)
 	}
 
 	queueConfig := DefaultSyncQueueConfig()
@@ -452,6 +466,13 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 		return nil
 	}
 
+	// Hand-built Syncers (tests, fixtures) may skip NewSyncer; ensure a limiter
+	// exists. Safe to assign here because mirrorOnce is single-flight under the
+	// uploading gate, so the goroutines it spawns observe a non-nil m.limiter.
+	if m.limiter == nil {
+		m.limiter = NewUploadLimiter(m.config.ParallelUploads)
+	}
+
 	// Snapshot the pending set, then upload outside the lock. Hashes
 	// added mid-pass surface on the NEXT pass (same snapshot-at-start
 	// semantics the walk-based ListUnsynced had). A hash is removed from
@@ -481,39 +502,34 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	// non-fatal retry-next-tick condition.
 	var lostBeforeMirror atomic.Bool
 
-	// Upload the snapshot concurrently, bounded by ParallelUploads. Each
+	// Upload the snapshot concurrently, bounded by the upload limiter. Each
 	// chunk is independent — a distinct CAS hash, an idempotent remote Put,
 	// and a per-hash MarkSynced — and the path is network-latency-bound, so
 	// a serial loop leaves the link idle (one in-flight S3 Put gave only
-	// ~2.7 MiB/s VM→fr-par; #1266). The first fatal error cancels the group
-	// via gctx; in-flight Puts observe the cancellation. Mirrors the bounded
-	// errgroup pattern used by warm().
-	parallel := m.config.ParallelUploads
-	if parallel < 1 {
-		parallel = 1
-	}
+	// ~2.7 MiB/s VM→fr-par; #1266). The limiter's window is either a static
+	// operator cap or an adaptively-ramped one (#1398); mirrorChunk feeds each
+	// Put's latency/result back via limiter.Observe. The first fatal error
+	// cancels the group via gctx; in-flight Puts observe the cancellation.
 	g, gctx := errgroup.WithContext(ctx)
-	sem := make(chan struct{}, parallel)
 
 	for _, hash := range snapshot {
 		hash := hash
 		// Block for a slot, but stop dispatching the moment the group is
-		// failing/cancelled.
-		select {
-		case <-gctx.Done():
-		case sem <- struct{}{}:
-		}
-		if gctx.Err() != nil {
+		// failing/cancelled (Acquire returns gctx.Err()).
+		if err := m.limiter.Acquire(gctx); err != nil {
 			break
 		}
 		g.Go(func() error {
-			defer func() { <-sem }()
+			defer m.limiter.ReleaseSlot()
 			return m.mirrorChunk(gctx, hashStore, hash, &lostBeforeMirror)
 		})
 	}
 
 	if err := g.Wait(); err != nil {
 		return err
+	}
+	if mx := m.dataplaneMetrics(); mx != nil {
+		mx.SetUploadWindow(m.limiter.Limit())
 	}
 	if lostBeforeMirror.Load() {
 		// At least one pending hash was retained-but-not-mirrored: the
@@ -589,13 +605,17 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 		mx.UploadStarted()
 	}
 	err = m.remoteStore.Put(ctx, hash, data)
+	putLatency := time.Since(uploadStart)
+	// Feed the per-PUT latency and result back into the adaptive limiter so it
+	// can track the bandwidth knee (no-op when the window is a static cap).
+	m.limiter.Observe(len(data), putLatency, err)
 	if mx != nil {
 		mx.UploadFinished()
 		result := "ok"
 		if err != nil {
 			result = "error"
 		}
-		mx.RecordUpload(len(data), result, time.Since(uploadStart))
+		mx.RecordUpload(len(data), result, putLatency)
 	}
 	if err != nil {
 		return fmt.Errorf("remote put %s: %w", hash, err)

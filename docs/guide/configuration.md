@@ -427,14 +427,69 @@ the added latency.
 data-at-risk gauge (local CAS bytes not yet mirrored to the remote) — which is
 the way to observe the async mirror backlog under the default policy.
 
+#### Upload concurrency (`--parallel-uploads`)
+
+The syncer mirrors CAS chunks to the remote store concurrently. The number of
+uploads in flight is the single knob that governs large-file write throughput
+on a high-latency link: a single S3 PUT to a far region takes hundreds of
+milliseconds, so one upload at a time leaves the uplink almost idle (a
+VM→`fr-par` benchmark measured ~2.7 MiB/s serial vs ~40 MiB/s at 16 in
+flight). Uploads are **network-bound, not CPU-bound** (~5% CPU at saturation),
+so a CPU-count default is the wrong shape.
+
+Concurrency is set **per remote**, on the remote block store config:
+
+```bash
+# Pin a static ceiling of 16 uploads in flight to this remote.
+dfsctl store block remote add s3-main --type s3 --bucket … --parallel-uploads 16
+
+# Raise the static ceiling later …
+dfsctl store block remote edit s3-main --parallel-uploads 32
+
+# … or pass 0 to drop the cap and re-enable the adaptive window.
+dfsctl store block remote edit s3-main --parallel-uploads 0
+```
+
+The limiter for a remote is built when a share first attaches to it, so a
+change to `--parallel-uploads` takes effect the next time a share using that
+remote is (re)attached — it does not hot-reload a running share.
+
+| `--parallel-uploads` | Behaviour |
+| --- | --- |
+| **unset / `0`** (default) | **Adaptive.** The window ramps at runtime toward the uplink's bandwidth knee and settles there, bounded only by a 256-in-flight safety rail. No tuning required. |
+| **`N` > 0** | **Static cap.** Exactly `N` uploads in flight — no ramp. Use when you want a hard, predictable ceiling (e.g. to leave headroom for other traffic on a shared link). Validated to `[0, 256]` at config admission. |
+
+**How the adaptive window works.** It is a congestion controller, not a fixed
+pool. A latency gradient drives it: the limiter tracks the fastest per-PUT
+latency it has seen (the propagation floor) and grows the window while latency
+stays near that floor; when more in-flight uploads only inflate latency without
+adding throughput, the link is saturated and the window stops growing. An
+aggregate-goodput check guards the top end — once total delivered MB/s
+plateaus, the window will not grow past the point that achieved peak
+throughput, even if latency looks calm. Upload errors (e.g. S3 `503
+SlowDown`, timeouts) trigger a multiplicative back-off as a rare safety valve;
+they do not drive the steady state, because the bottleneck is uplink bandwidth,
+which saturates well below S3's request-rate limit.
+
+One limiter is **shared by every share targeting the same remote**, so shares
+on one uplink cooperate on a single window instead of each ramping
+independently. The current window is exported as the
+`dittofs_datapath_upload_window` gauge (alongside `dittofs_datapath_uploads_inflight`
+and `dittofs_datapath_upload_bytes`); watch it on `/metrics` to see the
+controller converge.
+
+> A static `--parallel-uploads N` is also the natural emergency brake: if a
+> shared uplink is being starved, pin a low ceiling rather than fighting the
+> ramp.
+
 #### GC knobs
 
 The CAS write path uses an async syncer and a fail-closed mark-sweep
-garbage collector. The syncer's sizing (upload concurrency, claim timeout,
-etc.) is **not** an operator-facing config section — it is auto-deduced from
-system resources at startup and constructed in code; there is no `syncer:`
-config block (a stale `syncer:` section in a config file is tolerated but
-ignored, logged as an unknown key).
+garbage collector. Apart from upload concurrency (above), the syncer's sizing
+(claim timeout, etc.) is **not** an operator-facing config section — it is
+auto-deduced from system resources at startup and constructed in code; there is
+no `syncer:` config block (a stale `syncer:` section in a config file is
+tolerated but ignored, logged as an unknown key).
 
 The mark-sweep GC is the one tunable surface, configured via the top-level
 `gc:` server-config section:

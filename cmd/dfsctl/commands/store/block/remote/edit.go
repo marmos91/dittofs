@@ -52,7 +52,7 @@ func init() {
 	editCmd.Flags().StringVar(&editEndpoint, "endpoint", "", "Custom S3 endpoint")
 	editCmd.Flags().StringVar(&editAccessKey, "access-key", "", "AWS access key ID (for s3)")
 	editCmd.Flags().StringVar(&editSecretKey, "secret-key", "", "AWS secret access key (for s3)")
-	editCmd.Flags().IntVar(&editParallelUploads, "parallel-uploads", 0, "Max parallel chunk uploads to this remote (0 = auto, scales with CPU count)")
+	editCmd.Flags().IntVar(&editParallelUploads, "parallel-uploads", 0, "Max parallel chunk uploads to this remote (0 = adaptive: auto-ramp to the link's bandwidth knee)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -111,9 +111,10 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if editSecretKey != "" {
 			currentConfig["secret_access_key"] = editSecretKey
 		}
-		// parallel-uploads is an int where 0 is meaningful ("reset to auto"),
-		// so key off Changed rather than a zero-value check: set clears to
-		// auto-deduce, a positive value pins the per-remote cap.
+		// parallel-uploads is an int where 0 is meaningful ("reset to
+		// adaptive"), so key off Changed rather than a zero-value check:
+		// clearing it re-enables the adaptive window, a positive value pins
+		// the per-remote cap.
 		if cmd.Flags().Changed("parallel-uploads") {
 			if editParallelUploads > 0 {
 				currentConfig["parallel_uploads"] = editParallelUploads

@@ -55,6 +55,7 @@ type instruments struct {
 	uploadBytes      prometheus.Histogram
 	uploadsInflight  prometheus.Gauge
 	uploadQueueDepth prometheus.Gauge
+	uploadWindow     prometheus.Gauge
 	rehashDuration   prometheus.Histogram
 }
 
@@ -163,6 +164,10 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 			Namespace: Namespace, Subsystem: "datapath", Name: "upload_queue_depth",
 			Help: "CAS chunks pending upload, sampled at the start of each mirror pass.",
 		}),
+		uploadWindow: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "upload_window",
+			Help: "Upload limiter's current in-flight ceiling: the adaptive congestion window, or the static --parallel-uploads cap.",
+		}),
 		rehashDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "rehash_duration_seconds",
 			Help:    "BLAKE3 re-hash (pre-upload bitrot verify) latency per CAS chunk, in seconds.",
@@ -175,7 +180,7 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		in.gcRuns, in.gcRunning, in.gcLastRunTime, in.gcSweptObjects, in.gcFreedBytes, in.gcDurationSecs,
 		in.snapOps, in.snapDuration,
 		in.uploadsTotal, in.uploadDuration, in.uploadBytes, in.uploadsInflight,
-		in.uploadQueueDepth, in.rehashDuration,
+		in.uploadQueueDepth, in.uploadWindow, in.rehashDuration,
 	)
 	return in
 }
@@ -322,6 +327,15 @@ func (m *Metrics) SetUploadQueueDepth(n int) {
 		return
 	}
 	m.in.uploadQueueDepth.Set(float64(n))
+}
+
+// SetUploadWindow publishes the upload limiter's current in-flight ceiling
+// (adaptive congestion window or static --parallel-uploads cap).
+func (m *Metrics) SetUploadWindow(n int) {
+	if m == nil {
+		return
+	}
+	m.in.uploadWindow.Set(float64(n))
 }
 
 // RecordRehash records the BLAKE3 re-hash (pre-upload bitrot verify) latency

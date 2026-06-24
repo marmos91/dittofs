@@ -368,6 +368,27 @@ type sharedRemote struct {
 	store    remote.RemoteStore
 	refCount int
 	configID string
+	// limiter bounds concurrent CAS uploads to this remote. One instance is
+	// shared by every share targeting the same remote so they cooperate on a
+	// single upload window (static cap or adaptive ramp) rather than each
+	// ramping independently against one uplink (#1398).
+	limiter *engine.UploadLimiter
+}
+
+// newRemoteUploadLimiter builds the per-remote upload limiter from the
+// remote's parallel_uploads config: a positive value pins a static window;
+// unset/0 enables adaptive ramping toward the measured bandwidth knee (#1398).
+// Validated to [0,256] at config admission (validateParallelUploads).
+func newRemoteUploadLimiter(cfg *models.BlockStoreConfig) *engine.UploadLimiter {
+	n := 0
+	if cfg != nil {
+		if parsed, err := cfg.GetConfig(); err == nil {
+			if v, ok := parsed["parallel_uploads"].(float64); ok && v > 0 {
+				n = int(v)
+			}
+		}
+	}
+	return engine.NewUploadLimiter(n)
 }
 
 // nonClosingRemote wraps a remote.RemoteStore and makes Close() a no-op.
@@ -770,8 +791,9 @@ func (s *Service) createBlockStoreForShare(
 
 	var remoteStore remote.RemoteStore
 	var remoteConfigID string
+	var uploadLimiter *engine.UploadLimiter
 	if config.RemoteBlockStoreID != "" {
-		remoteStore, remoteConfigID, err = s.acquireRemoteStore(ctx, config.RemoteBlockStoreID, blockStoreProvider)
+		remoteStore, remoteConfigID, uploadLimiter, err = s.acquireRemoteStore(ctx, config.RemoteBlockStoreID, blockStoreProvider)
 		if err != nil {
 			_ = localStore.Close()
 			return fmt.Errorf("failed to create remote store: %w", err)
@@ -787,24 +809,11 @@ func (s *Service) createBlockStoreForShare(
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
 
-	// Apply the optional per-remote upload-concurrency override. Unset or 0
-	// keeps the server default (CPU-deduced); a positive value pins this
-	// remote's upload parallelism. Validated to [0,256] at config admission.
-	// acquireRemoteStore caches only the instantiated store, not its config,
-	// so this re-resolves the BlockStoreConfig (a DB read). A failure here is
-	// non-fatal — fall back to the default and warn rather than fail attach.
-	if config.RemoteBlockStoreID != "" {
-		if remoteCfg, cfgErr := resolveBlockStoreConfig(ctx, blockStoreProvider, config.RemoteBlockStoreID, models.BlockStoreKindRemote); cfgErr == nil {
-			if parsed, pErr := remoteCfg.GetConfig(); pErr == nil {
-				if v, ok := parsed["parallel_uploads"].(float64); ok && v > 0 {
-					syncerCfg.ParallelUploads = int(v)
-				}
-			}
-		} else {
-			logger.Warn("failed to resolve remote config for parallel_uploads override; using server default",
-				"share", config.Name, "error", cfgErr)
-		}
-	}
+	// Attach the shared per-remote upload limiter (built once in
+	// acquireRemoteStore from this remote's parallel_uploads config — a static
+	// cap when set, an adaptive window when unset; #1398). Shares targeting the
+	// same remote get the same limiter and cooperate on one upload window.
+	syncerCfg.UploadLimiter = uploadLimiter
 
 	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it;
 	// releaseRemoteStore handles actual closing via ref counting.
@@ -939,8 +948,8 @@ func (s *Service) createBlockStoreForShare(
 // acquireRemoteStore returns a shared remote store, creating it if needed.
 // Uses double-checked locking to avoid holding s.mu during potentially slow
 // network/DB I/O (config resolution, S3 client initialization).
-// Returns the store, its config ID, and any error.
-func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider BlockStoreConfigProvider) (remote.RemoteStore, string, error) {
+// Returns the store, its config ID, the shared upload limiter, and any error.
+func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider BlockStoreConfigProvider) (remote.RemoteStore, string, *engine.UploadLimiter, error) {
 	// Fast path: when the share already persists the canonical UUID (the common
 	// case) and the store is live, take it without a config-resolution DB read.
 	// Legacy name refs (#1312) miss here — the map is keyed by UUID — and fall
@@ -949,7 +958,7 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	if sr, ok := s.remoteStores[ref]; ok {
 		sr.refCount++
 		s.mu.Unlock()
-		return sr.store, ref, nil
+		return sr.store, ref, sr.limiter, nil
 	}
 	s.mu.Unlock()
 
@@ -959,10 +968,10 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	// share the single ref-counted store.
 	remoteCfg, err := resolveBlockStoreConfig(ctx, provider, ref, models.BlockStoreKindRemote)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to resolve remote block store config %q: %w", ref, err)
+		return nil, "", nil, fmt.Errorf("failed to resolve remote block store config %q: %w", ref, err)
 	}
 	if remoteCfg.Kind != models.BlockStoreKindRemote {
-		return nil, "", fmt.Errorf("block store config %q has kind %q, expected %q", ref, remoteCfg.Kind, models.BlockStoreKindRemote)
+		return nil, "", nil, fmt.Errorf("block store config %q has kind %q, expected %q", ref, remoteCfg.Kind, models.BlockStoreKindRemote)
 	}
 	configID := remoteCfg.ID
 
@@ -970,13 +979,13 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	if sr, ok := s.remoteStores[configID]; ok {
 		sr.refCount++
 		s.mu.Unlock()
-		return sr.store, configID, nil
+		return sr.store, configID, sr.limiter, nil
 	}
 	s.mu.Unlock()
 
 	newStore, err := CreateRemoteStoreFromConfig(ctx, remoteCfg.Type, remoteCfg)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create remote store: %w", err)
+		return nil, "", nil, fmt.Errorf("failed to create remote store: %w", err)
 	}
 
 	// Decorator order matters: encryption sits BELOW compression on the
@@ -989,14 +998,14 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 	encWrapped, err := maybeWrapEncryption(ctx, newStore, remoteCfg)
 	if err != nil {
 		_ = newStore.Close()
-		return nil, "", fmt.Errorf("failed to apply encryption policy: %w", err)
+		return nil, "", nil, fmt.Errorf("failed to apply encryption policy: %w", err)
 	}
 	newStore = encWrapped
 
 	wrapped, err := maybeWrapCompression(newStore, remoteCfg)
 	if err != nil {
 		_ = newStore.Close()
-		return nil, "", fmt.Errorf("failed to apply compression policy: %w", err)
+		return nil, "", nil, fmt.Errorf("failed to apply compression policy: %w", err)
 	}
 	newStore = wrapped
 
@@ -1012,18 +1021,23 @@ func (s *Service) acquireRemoteStore(ctx context.Context, ref string, provider B
 			logger.Warn("acquireRemoteStore: failed to close duplicate remote store",
 				"config_id", configID, "error", err)
 		}
-		return sr.store, configID, nil
+		return sr.store, configID, sr.limiter, nil
 	}
 
+	// Build the shared upload limiter from this remote's parallel_uploads
+	// config — once, here, since we already hold the parsed remoteCfg (no
+	// extra DB read at attach time).
+	limiter := newRemoteUploadLimiter(remoteCfg)
 	s.remoteStores[configID] = &sharedRemote{
 		store:    newStore,
 		refCount: 1,
 		configID: configID,
+		limiter:  limiter,
 	}
 	s.mu.Unlock()
 
 	logger.Info("Created shared remote store", "config_id", configID, "type", remoteCfg.Type)
-	return newStore, configID, nil
+	return newStore, configID, limiter, nil
 }
 
 // maybeWrapEncryption inspects the remote config's "encryption" key and,

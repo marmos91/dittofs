@@ -17,6 +17,9 @@ type DataplaneMetrics interface {
 	UploadFinished()
 	// SetUploadQueueDepth publishes pending-upload backlog at mirror-pass start.
 	SetUploadQueueDepth(n int)
+	// SetUploadWindow publishes the upload limiter's current in-flight ceiling
+	// (the adaptive congestion window, or the static --parallel-uploads cap).
+	SetUploadWindow(n int)
 	// RecordRehash records pre-upload BLAKE3 re-hash latency for one chunk.
 	RecordRehash(d time.Duration)
 }

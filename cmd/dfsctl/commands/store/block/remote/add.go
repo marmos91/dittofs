@@ -83,7 +83,7 @@ func init() {
 	addCmd.Flags().StringVar(&addAccessKey, "access-key", "", "AWS access key ID (for s3)")
 	addCmd.Flags().StringVar(&addSecretKey, "secret-key", "", "AWS secret access key (for s3)")
 	addCmd.Flags().StringVar(&addCompression, "compression", "", "Enable per-block compression: zstd, lz4 (default: off)")
-	addCmd.Flags().IntVar(&addParallelUploads, "parallel-uploads", 0, "Max parallel chunk uploads to this remote (0 = auto, scales with CPU count)")
+	addCmd.Flags().IntVar(&addParallelUploads, "parallel-uploads", 0, "Max parallel chunk uploads to this remote (0 = adaptive: auto-ramp to the link's bandwidth knee)")
 	// Encryption flags
 	addCmd.Flags().StringVar(&addEncryptionAEAD, "encryption-aead", "", "Enable client-side encryption with the given AEAD: aes-256-gcm, chacha20-poly1305, xchacha20-poly1305")
 	addCmd.Flags().StringVar(&addEncryptionKeyKind, "encryption-key-kind", "", "Key provider: local | kmip (required when --encryption-aead is set)")

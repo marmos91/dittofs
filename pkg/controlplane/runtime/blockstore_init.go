@@ -140,9 +140,10 @@ func validateCompressionSubconfig(config map[string]any) error {
 const maxParallelUploads = 256
 
 // validateParallelUploads checks the optional per-remote parallel_uploads
-// override. 0 / absent means "use the server default" (CPU-deduced); a
-// positive value pins the per-remote upload concurrency. JSON numbers decode
-// as float64.
+// override. 0 / absent enables the adaptive upload window (ramps toward the
+// link's bandwidth knee, bounded by an in-process safety rail of 256 in
+// flight); a positive value pins a static per-remote upload-concurrency
+// ceiling. JSON numbers decode as float64.
 func validateParallelUploads(config map[string]any) error {
 	raw, ok := config["parallel_uploads"]
 	if !ok {
