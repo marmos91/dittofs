@@ -16,13 +16,14 @@ var (
 	addType   string
 	addConfig string
 	// S3 specific
-	addBucket      string
-	addRegion      string
-	addEndpoint    string
-	addPrefix      string
-	addAccessKey   string
-	addSecretKey   string
-	addCompression string
+	addBucket          string
+	addRegion          string
+	addEndpoint        string
+	addPrefix          string
+	addAccessKey       string
+	addSecretKey       string
+	addCompression     string
+	addParallelUploads int
 	// Encryption (client-side, optional)
 	addEncryptionAEAD       string
 	addEncryptionKeyKind    string
@@ -82,6 +83,7 @@ func init() {
 	addCmd.Flags().StringVar(&addAccessKey, "access-key", "", "AWS access key ID (for s3)")
 	addCmd.Flags().StringVar(&addSecretKey, "secret-key", "", "AWS secret access key (for s3)")
 	addCmd.Flags().StringVar(&addCompression, "compression", "", "Enable per-block compression: zstd, lz4 (default: off)")
+	addCmd.Flags().IntVar(&addParallelUploads, "parallel-uploads", 0, "Max parallel chunk uploads to this remote (0 = auto, scales with CPU count)")
 	// Encryption flags
 	addCmd.Flags().StringVar(&addEncryptionAEAD, "encryption-aead", "", "Enable client-side encryption with the given AEAD: aes-256-gcm, chacha20-poly1305, xchacha20-poly1305")
 	addCmd.Flags().StringVar(&addEncryptionKeyKind, "encryption-key-kind", "", "Key provider: local | kmip (required when --encryption-aead is set)")
@@ -100,7 +102,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	config, err := buildRemoteConfig(addType, addConfig, addBucket, addRegion, addEndpoint, addPrefix, addAccessKey, addSecretKey, addCompression, encryptionFlags{
+	config, err := buildRemoteConfig(addType, addConfig, addBucket, addRegion, addEndpoint, addPrefix, addAccessKey, addSecretKey, addCompression, addParallelUploads, encryptionFlags{
 		AEAD:       addEncryptionAEAD,
 		KeyKind:    addEncryptionKeyKind,
 		KeyFile:    addEncryptionKeyFile,
@@ -139,7 +141,7 @@ type encryptionFlags struct {
 	KMIPKeyUID string
 }
 
-func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, accessKey, secretKey, compression string, enc encryptionFlags) (any, error) {
+func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, accessKey, secretKey, compression string, parallelUploads int, enc encryptionFlags) (any, error) {
 	if jsonConfig != "" {
 		var config any
 		if err := json.Unmarshal([]byte(jsonConfig), &config); err != nil {
@@ -224,6 +226,9 @@ func buildRemoteConfig(storeType, jsonConfig, bucket, region, endpoint, prefix, 
 		}
 		if encryptionBlock != nil {
 			config["encryption"] = encryptionBlock
+		}
+		if parallelUploads > 0 {
+			config["parallel_uploads"] = parallelUploads
 		}
 		return config, nil
 

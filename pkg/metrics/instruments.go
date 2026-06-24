@@ -45,6 +45,17 @@ type instruments struct {
 	// the same fqName would also fail registration).
 	snapOps      *prometheus.CounterVec   // {op,result}
 	snapDuration *prometheus.HistogramVec // {op}
+
+	// Data-plane upload pipeline (subsystem "datapath"). Instruments the
+	// engine mirror loop that copies CAS chunks local→remote, to attribute
+	// large-file write throughput across re-hash vs remote-Put and to expose
+	// the loop's effective upload concurrency and backlog.
+	uploadsTotal     *prometheus.CounterVec // {result}
+	uploadDuration   prometheus.Histogram
+	uploadBytes      prometheus.Histogram
+	uploadsInflight  prometheus.Gauge
+	uploadQueueDepth prometheus.Gauge
+	rehashDuration   prometheus.Histogram
 }
 
 func newInstruments(reg *prometheus.Registry) *instruments {
@@ -129,12 +140,42 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 			Help:    "Snapshot operation duration in seconds, by op (create|delete|restore).",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"op"}),
+
+		uploadsTotal: factory(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "uploads_total",
+			Help: "CAS chunk uploads to the remote store, by result (ok|error).",
+		}, []string{"result"}),
+		uploadDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "upload_duration_seconds",
+			Help:    "Remote-store Put latency per CAS chunk, in seconds.",
+			Buckets: prometheus.DefBuckets,
+		}),
+		uploadBytes: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "upload_bytes",
+			Help:    "Size of each CAS chunk uploaded to the remote store, in bytes.",
+			Buckets: prometheus.ExponentialBuckets(4096, 2, 12),
+		}),
+		uploadsInflight: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "uploads_inflight",
+			Help: "CAS chunk uploads currently in flight to the remote store (the mirror loop's effective upload concurrency).",
+		}),
+		uploadQueueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "upload_queue_depth",
+			Help: "CAS chunks pending upload, sampled at the start of each mirror pass.",
+		}),
+		rehashDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "rehash_duration_seconds",
+			Help:    "BLAKE3 re-hash (pre-upload bitrot verify) latency per CAS chunk, in seconds.",
+			Buckets: prometheus.DefBuckets,
+		}),
 	}
 	reg.MustRegister(
 		in.requests, in.reqDuration, in.connsTotal, in.connsClosed, in.authAttempts, in.authFailures,
 		in.backpressureTotal, in.backpressureWaitSeconds, in.evictionsTotal, in.evictedBytesTotal,
 		in.gcRuns, in.gcRunning, in.gcLastRunTime, in.gcSweptObjects, in.gcFreedBytes, in.gcDurationSecs,
 		in.snapOps, in.snapDuration,
+		in.uploadsTotal, in.uploadDuration, in.uploadBytes, in.uploadsInflight,
+		in.uploadQueueDepth, in.rehashDuration,
 	)
 	return in
 }
@@ -242,4 +283,52 @@ func (m *Metrics) RecordSnapshotOp(op, result string, d time.Duration) {
 	}
 	m.in.snapOps.WithLabelValues(op, result).Inc()
 	m.in.snapDuration.WithLabelValues(op).Observe(d.Seconds())
+}
+
+// RecordUpload records one CAS chunk upload to the remote store: its count (by
+// result "ok"|"error"), the bytes transferred, and the remote Put latency.
+func (m *Metrics) RecordUpload(bytes int, result string, d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.in.uploadsTotal.WithLabelValues(result).Inc()
+	m.in.uploadDuration.Observe(d.Seconds())
+	if bytes > 0 {
+		m.in.uploadBytes.Observe(float64(bytes))
+	}
+}
+
+// UploadStarted and UploadFinished bracket one in-flight remote Put so that
+// datapath_uploads_inflight reflects the mirror loop's effective upload
+// concurrency (the loop runs up to ParallelUploads Puts at once).
+func (m *Metrics) UploadStarted() {
+	if m == nil {
+		return
+	}
+	m.in.uploadsInflight.Inc()
+}
+
+func (m *Metrics) UploadFinished() {
+	if m == nil {
+		return
+	}
+	m.in.uploadsInflight.Dec()
+}
+
+// SetUploadQueueDepth publishes the number of CAS chunks pending upload,
+// sampled at the start of a mirror pass.
+func (m *Metrics) SetUploadQueueDepth(n int) {
+	if m == nil {
+		return
+	}
+	m.in.uploadQueueDepth.Set(float64(n))
+}
+
+// RecordRehash records the BLAKE3 re-hash (pre-upload bitrot verify) latency
+// for one CAS chunk.
+func (m *Metrics) RecordRehash(d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.in.rehashDuration.Observe(d.Seconds())
 }

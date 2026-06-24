@@ -83,3 +83,37 @@ func TestValidateCompressionSubconfig(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateParallelUploads(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     map[string]any
+		wantErr string // substring; "" means accept
+	}{
+		{"absent", map[string]any{}, ""},
+		{"zero_means_auto", map[string]any{"parallel_uploads": float64(0)}, ""},
+		{"valid", map[string]any{"parallel_uploads": float64(16)}, ""},
+		{"max_boundary", map[string]any{"parallel_uploads": float64(256)}, ""},
+		{"negative", map[string]any{"parallel_uploads": float64(-1)}, "between 0 and 256"},
+		{"over_max", map[string]any{"parallel_uploads": float64(257)}, "between 0 and 256"},
+		{"non_integer", map[string]any{"parallel_uploads": float64(2.5)}, "expected integer"},
+		{"wrong_type", map[string]any{"parallel_uploads": "8"}, "expected number"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateParallelUploads(tc.cfg)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error %q does not contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}

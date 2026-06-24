@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -73,6 +74,14 @@ type Store struct {
 	local  local.LocalStore
 	remote remote.RemoteStore
 	syncer *Syncer
+
+	// metrics is the engine-side data-plane metrics sink (mirror/upload
+	// path). Retained from SetMetrics when the injected recorder also
+	// satisfies DataplaneMetrics. Held as an atomic.Pointer because
+	// SetMetrics back-fills it on already-serving shares (the registry is
+	// built after shares load), racing the concurrent mirror goroutines that
+	// read it. Nil pointer (the zero value) until set; call sites guard.
+	metrics atomic.Pointer[DataplaneMetrics]
 
 	// widened to EngineFileBlockStore so populateBlockCounts
 	// can call ListFileBlocks (engine-internal method not on the public
@@ -683,6 +692,11 @@ func (bs *Store) Close() error {
 func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 	if aware, ok := bs.local.(local.MetricsAware); ok {
 		aware.SetMetrics(rec)
+	}
+	// The injected recorder (*metrics.Metrics in production) also carries the
+	// data-plane upload instruments; retain it for the mirror/upload path.
+	if dm, ok := rec.(DataplaneMetrics); ok {
+		bs.metrics.Store(&dm)
 	}
 }
 

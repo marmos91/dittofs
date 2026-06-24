@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"golang.org/x/sync/errgroup"
 	"lukechampine.com/blake3"
 )
 
@@ -468,72 +469,146 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	}
 	m.pendingMu.Unlock()
 
+	if mx := m.dataplaneMetrics(); mx != nil {
+		mx.SetUploadQueueDepth(len(snapshot))
+	}
+
 	// Tracks whether at least one pending hash was retained-but-not-mirrored
-	// because its local bytes were gone. The loop continues draining the
+	// because its local bytes were gone. The pass continues draining the
 	// other hashes (one bad hash must not stall the rest), and reports this
-	// via ErrChunkLostBeforeMirror AFTER the loop so Flush/SyncNow do not
+	// via ErrChunkLostBeforeMirror AFTER the pass so Flush/SyncNow do not
 	// claim durability while the periodic uploader can treat it as a
 	// non-fatal retry-next-tick condition.
-	var lostBeforeMirror bool
+	var lostBeforeMirror atomic.Bool
+
+	// Upload the snapshot concurrently, bounded by ParallelUploads. Each
+	// chunk is independent — a distinct CAS hash, an idempotent remote Put,
+	// and a per-hash MarkSynced — and the path is network-latency-bound, so
+	// a serial loop leaves the link idle (one in-flight S3 Put gave only
+	// ~2.7 MiB/s VM→fr-par; #1266). The first fatal error cancels the group
+	// via gctx; in-flight Puts observe the cancellation. Mirrors the bounded
+	// errgroup pattern used by warm().
+	parallel := m.config.ParallelUploads
+	if parallel < 1 {
+		parallel = 1
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	sem := make(chan struct{}, parallel)
 
 	for _, hash := range snapshot {
-		data, err := m.local.Get(ctx, hash)
-		if errors.Is(err, block.ErrChunkNotFound) {
-			// The local chunk is gone before we could mirror it. Retain the
-			// hash for the next tick rather than dropping it — dropping
-			// silently destroyed the only copy of never-mirrored data. If
-			// the chunk is truly gone (e.g. an external delete), the next
-			// seedPendingFromDisk / ListUnsynced drift reconcile walks disk,
-			// finds the chunk absent, and stops re-seeding it, so the retry
-			// loop terminates naturally instead of spinning forever.
-			//
-			// Record the failure: this pass did NOT make the payload durable
-			// on remote, so an explicit Flush/SyncNow must not report
-			// success. The periodic uploader continues draining the rest of
-			// the snapshot and may swallow the resulting sentinel.
-			logger.Error("mirrorOnce: chunk lost locally before mirror — retained for retry",
-				"hash", hash.String())
-			lostBeforeMirror = true
-			continue
+		hash := hash
+		// Block for a slot, but stop dispatching the moment the group is
+		// failing/cancelled.
+		select {
+		case <-gctx.Done():
+		case sem <- struct{}{}:
 		}
-		if err != nil {
-			return fmt.Errorf("local get %s: %w", hash, err)
+		if gctx.Err() != nil {
+			break
 		}
-		// Re-hash fetched bytes before upload. Local bitrot, torn
-		// writes, or hardware errors between rollup-time hashing and
-		// this read would otherwise silently propagate corrupt bytes
-		// to remote and MarkSynced them. Downstream verification via
-		// ReadBlockVerified is post-facto and useless once the local
-		// copy is evicted, so refuse the upload here and surface an
-		// error to the syncer loop.
-		computed := block.ContentHash(blake3.Sum256(data))
-		if computed != hash {
-			logger.Error("local corruption detected before mirror upload — refusing to upload",
-				"hash", hash.String(),
-				"computed", computed.String(),
-				"bytes", len(data))
-			return fmt.Errorf("%w on hash %s: computed %s (refusing upload)", block.ErrCASContentMismatch, hash.String(), computed.String())
-		}
-		if err := m.remoteStore.Put(ctx, hash, data); err != nil {
-			return fmt.Errorf("remote put %s: %w", hash, err)
-		}
-		if err := hashStore.MarkSynced(ctx, hash); err != nil {
-			return fmt.Errorf("mark synced %s: %w", hash, err)
-		}
-		m.pendingMu.Lock()
-		if size, ok := m.pendingHashes[hash]; ok {
-			delete(m.pendingHashes, hash)
-			m.unsyncedBytes.Add(-size)
-		}
-		m.pendingMu.Unlock()
+		g.Go(func() error {
+			defer func() { <-sem }()
+			return m.mirrorChunk(gctx, hashStore, hash, &lostBeforeMirror)
+		})
 	}
-	if lostBeforeMirror {
+
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	if lostBeforeMirror.Load() {
 		// At least one pending hash was retained-but-not-mirrored: the
 		// payload is not durable on remote. Flush/SyncNow propagate this;
 		// the periodic uploader logs+swallows it (non-fatal, retry next
 		// tick — the good hashes were still drained above).
 		return block.ErrChunkLostBeforeMirror
 	}
+	return nil
+}
+
+// dataplaneMetrics returns the engine's data-plane metrics sink, or nil when
+// the syncer is detached from a Store or no recorder was injected. Call sites
+// must guard the result: it is a plain interface, not a nil-safe *Metrics.
+func (m *Syncer) dataplaneMetrics() DataplaneMetrics {
+	if m.bs == nil {
+		return nil
+	}
+	if p := m.bs.metrics.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// mirrorChunk uploads one pending CAS chunk to the remote store and marks it
+// synced. It returns nil — recording lostBeforeMirror — when the local bytes
+// vanished before upload, so one missing chunk does not fail the whole pass.
+// It returns an error on local read failure, local bitrot (hash mismatch),
+// remote Put failure, or MarkSynced failure. Safe for concurrent use:
+// pendingHashes mutation is guarded by pendingMu, the metrics sink and remote
+// store are concurrency-safe, and each call owns a distinct hash.
+func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashStore, hash block.ContentHash, lostBeforeMirror *atomic.Bool) error {
+	data, err := m.local.Get(ctx, hash)
+	if errors.Is(err, block.ErrChunkNotFound) {
+		// The local chunk is gone before we could mirror it. Retain the hash
+		// for the next tick rather than dropping it — dropping silently
+		// destroyed the only copy of never-mirrored data. If the chunk is
+		// truly gone (e.g. an external delete), the next seedPendingFromDisk
+		// / ListUnsynced drift reconcile walks disk, finds the chunk absent,
+		// and stops re-seeding it, so the retry loop terminates naturally
+		// instead of spinning forever.
+		logger.Error("mirrorOnce: chunk lost locally before mirror — retained for retry",
+			"hash", hash.String())
+		lostBeforeMirror.Store(true)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("local get %s: %w", hash, err)
+	}
+
+	mx := m.dataplaneMetrics()
+
+	// Re-hash fetched bytes before upload. Local bitrot, torn writes, or
+	// hardware errors between rollup-time hashing and this read would
+	// otherwise silently propagate corrupt bytes to remote and MarkSynced
+	// them. Downstream verification via ReadBlockVerified is post-facto and
+	// useless once the local copy is evicted, so refuse the upload here.
+	rehashStart := time.Now()
+	computed := block.ContentHash(blake3.Sum256(data))
+	if mx != nil {
+		mx.RecordRehash(time.Since(rehashStart))
+	}
+	if computed != hash {
+		logger.Error("local corruption detected before mirror upload — refusing to upload",
+			"hash", hash.String(),
+			"computed", computed.String(),
+			"bytes", len(data))
+		return fmt.Errorf("%w on hash %s: computed %s (refusing upload)", block.ErrCASContentMismatch, hash.String(), computed.String())
+	}
+
+	uploadStart := time.Now()
+	if mx != nil {
+		mx.UploadStarted()
+	}
+	err = m.remoteStore.Put(ctx, hash, data)
+	if mx != nil {
+		mx.UploadFinished()
+		result := "ok"
+		if err != nil {
+			result = "error"
+		}
+		mx.RecordUpload(len(data), result, time.Since(uploadStart))
+	}
+	if err != nil {
+		return fmt.Errorf("remote put %s: %w", hash, err)
+	}
+	if err := hashStore.MarkSynced(ctx, hash); err != nil {
+		return fmt.Errorf("mark synced %s: %w", hash, err)
+	}
+	m.pendingMu.Lock()
+	if size, ok := m.pendingHashes[hash]; ok {
+		delete(m.pendingHashes, hash)
+		m.unsyncedBytes.Add(-size)
+	}
+	m.pendingMu.Unlock()
 	return nil
 }
 
