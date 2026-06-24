@@ -102,6 +102,14 @@ type Syncer struct {
 	// distinct hash (CAS dedup): re-adding a hash already pending does not
 	// double-count, and a drained hash subtracts exactly what it added.
 	unsyncedBytes atomic.Int64
+
+	// completedSyncs / failedSyncs are lifetime counters of CAS chunks that
+	// reached remote (Put + MarkSynced succeeded) and that failed a mirror
+	// attempt (Put or MarkSynced errored). They source the truthful
+	// CompletedSyncs / FailedSyncs fields in block stats; the legacy SyncQueue
+	// has no production callers, so its counters always read zero (#1266).
+	completedSyncs atomic.Int64
+	failedSyncs    atomic.Int64
 }
 
 // addPendingHash registers a newly-stored CAS hash (of the given on-disk
@@ -542,6 +550,7 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 		return nil
 	}
 	if err != nil {
+		m.failedSyncs.Add(1)
 		return fmt.Errorf("local get %s: %w", hash, err)
 	}
 
@@ -558,6 +567,7 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 		mx.RecordRehash(time.Since(rehashStart))
 	}
 	if computed != hash {
+		m.failedSyncs.Add(1)
 		logger.Error("local corruption detected before mirror upload — refusing to upload",
 			"hash", hash.String(),
 			"computed", computed.String(),
@@ -579,9 +589,11 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 		mx.RecordUpload(len(data), result, time.Since(uploadStart))
 	}
 	if err != nil {
+		m.failedSyncs.Add(1)
 		return fmt.Errorf("remote put %s: %w", hash, err)
 	}
 	if err := hashStore.MarkSynced(ctx, hash); err != nil {
+		m.failedSyncs.Add(1)
 		return fmt.Errorf("mark synced %s: %w", hash, err)
 	}
 	m.pendingMu.Lock()
@@ -590,7 +602,24 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 		m.unsyncedBytes.Add(-size)
 	}
 	m.pendingMu.Unlock()
+	m.completedSyncs.Add(1)
 	return nil
+}
+
+// PendingCount returns the number of CAS chunks present locally but not yet
+// mirrored to remote — the live pending-upload backlog. Sourced from the
+// addPendingHash/mirrorChunk set, which is the actual upload path (unlike the
+// vestigial SyncQueue).
+func (m *Syncer) PendingCount() int {
+	m.pendingMu.Lock()
+	defer m.pendingMu.Unlock()
+	return len(m.pendingHashes)
+}
+
+// SyncCounts returns lifetime (completed, failed) mirror counts: chunks that
+// reached remote and chunks that failed a mirror attempt.
+func (m *Syncer) SyncCounts() (completed, failed int) {
+	return int(m.completedSyncs.Load()), int(m.failedSyncs.Load())
 }
 
 // DrainAllUploads performs an immediate synchronous upload of every local
