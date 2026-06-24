@@ -430,11 +430,42 @@ the way to observe the async mirror backlog under the default policy.
 #### GC knobs
 
 The CAS write path uses an async syncer and a fail-closed mark-sweep
-garbage collector. The syncer's sizing (upload concurrency, claim timeout,
-etc.) is **not** an operator-facing config section — it is auto-deduced from
-system resources at startup and constructed in code; there is no `syncer:`
-config block (a stale `syncer:` section in a config file is tolerated but
-ignored, logged as an unknown key).
+garbage collector. The syncer's sizing (claim timeout, etc.) is **not** an
+operator-facing config section — it is auto-deduced from system resources at
+startup and constructed in code; there is no `syncer:` config block (a stale
+`syncer:` section in a config file is tolerated but ignored, logged as an
+unknown key). Upload concurrency is **adaptive by default** — see below.
+
+#### Adaptive upload concurrency
+
+When you mirror a share to a remote (S3 or filesystem remote), DittoFS uploads
+CAS chunks concurrently. Uploads are **network-latency bound**, not CPU bound:
+a single PUT to a remote region sustains only a few MiB/s, so throughput scales
+with the number of concurrent uploads until the uplink saturates. The right
+number depends on the link, not the host — a CPU-derived default throttled fast
+links and over-subscribed slow ones.
+
+By default DittoFS **discovers the right concurrency itself**. It starts
+conservative and ramps the number of in-flight uploads up while delivered
+throughput (goodput) keeps rising, settling at the point where opening more
+connections stops helping. It backs off only on upload errors or a real
+throughput collapse — never on the latency rise that healthy concurrency itself
+causes. No configuration is required to saturate the uplink.
+
+To **pin** a fixed concurrency instead (disabling auto-tuning), set
+`--parallel-uploads N` on the remote:
+
+```bash
+dfsctl store block remote add --name r1 --type s3 \
+  --bucket … --region … --endpoint … \
+  --parallel-uploads 32          # fixed window of 32; 0 (default) = adaptive
+```
+
+`dfsctl store block remote edit --name r1 --parallel-uploads 0` returns a remote
+to adaptive mode. Observe the live window via the Prometheus gauge
+`dittofs_datapath_upload_window` (target concurrency) alongside
+`dittofs_datapath_uploads_inflight` (actual in-flight uploads); see
+[Metrics](#metrics-prometheus).
 
 The mark-sweep GC is the one tunable surface, configured via the top-level
 `gc:` server-config section:

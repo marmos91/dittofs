@@ -3,8 +3,6 @@ package engine
 import (
 	"errors"
 	"time"
-
-	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // ErrClosed is returned when an operation is attempted on a closed Syncer.
@@ -60,9 +58,22 @@ type TransferRequest struct {
 	Done       chan error   // Completion channel; nil for async (fire-and-forget)
 }
 
+// Adaptive upload-concurrency bounds (#1407). When ParallelUploads is unset
+// (<= 0), the syncer auto-tunes the number of concurrent CAS-chunk uploads to
+// saturate the uplink: it starts at AdaptiveUploadFloor and ramps toward
+// AdaptiveUploadCeiling, settling at the goodput knee. A pinned
+// ParallelUploads > 0 overrides this with a fixed window.
+const (
+	AdaptiveUploadFloor   = 16 // starting window in adaptive mode (greedy start)
+	AdaptiveUploadCeiling = 64 // max window adaptive mode ramps to
+)
+
 // Config holds configuration for the Syncer.
 type SyncerConfig struct {
-	ParallelUploads    int           // Concurrent block uploads (default: block.DefaultParallelUploads)
+	// ParallelUploads is the concurrent CAS-chunk upload count. > 0 pins a fixed
+	// window; <= 0 (the default) enables adaptive auto-tuning between
+	// AdaptiveUploadFloor and AdaptiveUploadCeiling (#1407).
+	ParallelUploads    int
 	ParallelDownloads  int           // Concurrent block downloads per file (default: 32)
 	PrefetchBlocks     int           // Blocks to prefetch ahead of reads; 0 = disabled (default: 64)
 	SmallFileThreshold int64         // Files below this are flushed synchronously; 0 = disabled
@@ -85,7 +96,9 @@ type SyncerConfig struct {
 // DefaultConfig returns the default Syncer configuration tuned for S3 performance.
 func DefaultConfig() SyncerConfig {
 	return SyncerConfig{
-		ParallelUploads:             block.DefaultParallelUploads,
+		// 0 = adaptive: the syncer auto-tunes upload concurrency to saturate the
+		// uplink (#1407). A pinned --parallel-uploads overrides this.
+		ParallelUploads:             0,
 		ParallelDownloads:           DefaultParallelDownloads,
 		PrefetchBlocks:              DefaultPrefetchBlocks,
 		SmallFileThreshold:          0,

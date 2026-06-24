@@ -43,6 +43,12 @@ const casPrefix = "cas/"
 // their drain deadlines.
 const s3HTTPRequestTimeout = 2 * time.Minute
 
+// maxS3ConnsPerHost sizes the HTTP connection pool. It must stay >=
+// engine.AdaptiveUploadCeiling (64) plus room for concurrent downloads so the
+// pool never caps the syncer's adaptive upload window (#1407). Defined locally
+// rather than imported from engine to avoid a dependency cycle.
+const maxS3ConnsPerHost = 128
+
 // Compile-time interface satisfaction check.
 var (
 	_ remote.RemoteStore       = (*Store)(nil)
@@ -135,12 +141,16 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 		credentials.NewStaticCredentialsProvider(config.AccessKey, config.SecretKey, ""),
 	))
 
-	// Configure HTTP client for parallel uploads. Pool size kept moderate
-	// to limit memory overhead (~50 conns x 512KB buffers = ~25MB).
+	// Configure HTTP client for parallel uploads. The pool must not cap the
+	// syncer's upload window below its ceiling, or it becomes the hidden
+	// bottleneck: the adaptive controller ramps to engine.AdaptiveUploadCeiling
+	// (64) and downloads run concurrently on the same host, so size for both
+	// (128 conns x ~512KB buffers ≈ 64MB worst case, created on demand). A
+	// pinned --parallel-uploads above this still caps here (#1407 follow-up).
 	httpTransport := &http.Transport{
-		MaxIdleConns:        50,
-		MaxIdleConnsPerHost: 50,
-		MaxConnsPerHost:     50,
+		MaxIdleConns:        maxS3ConnsPerHost,
+		MaxIdleConnsPerHost: maxS3ConnsPerHost,
+		MaxConnsPerHost:     maxS3ConnsPerHost,
 		IdleConnTimeout:     90 * time.Second,
 		ForceAttemptHTTP2:   false,
 		TLSNextProto:        make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),

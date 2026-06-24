@@ -119,6 +119,24 @@ type Syncer struct {
 	// has no production callers, so its counters always read zero (#1266).
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
+
+	// uploadLimiter bounds concurrent CAS-chunk uploads in mirrorOnce. When
+	// --parallel-uploads is pinned (config.ParallelUploads > 0) its limit is
+	// fixed at that value. When unset (adaptive mode), the uploadController
+	// resizes it every control interval to track the goodput knee (#1407).
+	uploadLimiter *dynamicSemaphore
+
+	// uploadController is non-nil only in adaptive mode. It consumes one
+	// (goodput, sawError) sample per control interval and returns the next
+	// target window, which the controller goroutine applies to uploadLimiter.
+	uploadController *goodputController
+
+	// uploadedBytesWindow accumulates bytes successfully Put to remote since
+	// the last control tick; uploadErrWindow counts upload errors in the same
+	// span. The adaptive controller goroutine swaps both to zero each tick to
+	// compute goodput and the error flag. Plain atomics — no lock needed.
+	uploadedBytesWindow atomic.Int64
+	uploadErrWindow     atomic.Int64
 }
 
 // addPendingHash registers a newly-stored CAS hash (of the given on-disk
@@ -147,6 +165,25 @@ func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
 	if m.remoteStore != nil {
 		m.signalWake()
 	}
+}
+
+// ensureUploadLimiter lazily creates the shared upload limiter for Syncers
+// built directly (test fixtures) rather than via NewSyncer, which always wires
+// it. A fixture has no adaptive controller goroutine, so the limiter stays at a
+// fixed window: the pinned ParallelUploads if set, else the adaptive ceiling so
+// fixtures get full concurrency. Matches the existing nil-fixture guards
+// (syncedHashStore, bs, metrics). Cheap and idempotent under m.mu.
+func (m *Syncer) ensureUploadLimiter() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.uploadLimiter != nil {
+		return
+	}
+	start := m.config.ParallelUploads
+	if start <= 0 {
+		start = AdaptiveUploadCeiling
+	}
+	m.uploadLimiter = newDynamicSemaphore(start)
 }
 
 // signalWake performs a non-blocking, coalescing send on the wake channel,
@@ -251,8 +288,22 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 	if fileBlockStore == nil {
 		panic("fileBlockStore is required for Syncer")
 	}
-	if config.ParallelUploads <= 0 {
-		config.ParallelUploads = block.DefaultParallelUploads
+	// Upload concurrency: a pinned ParallelUploads > 0 fixes the window;
+	// otherwise (the default) the syncer auto-tunes between the adaptive floor
+	// and ceiling (#1407). The limiter starts at the floor in adaptive mode and
+	// at the pinned value otherwise; the controller goroutine (adaptive only)
+	// resizes it at runtime.
+	adaptive := config.ParallelUploads <= 0
+	uploadCeiling := AdaptiveUploadCeiling
+	var uploadController *goodputController
+	startWindow := config.ParallelUploads
+	if adaptive {
+		startWindow = AdaptiveUploadFloor
+		uploadController = newGoodputController(AdaptiveUploadFloor, AdaptiveUploadCeiling)
+	} else if config.ParallelUploads > uploadCeiling {
+		// A pinned window above the adaptive ceiling is honored; the queue
+		// worker pool must cover it.
+		uploadCeiling = config.ParallelUploads
 	}
 	if config.ParallelDownloads <= 0 {
 		config.ParallelDownloads = DefaultParallelDownloads
@@ -266,18 +317,22 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 	}
 
 	m := &Syncer{
-		local:          local,
-		remoteStore:    remoteStore,
-		fileBlockStore: fileBlockStore,
-		config:         config,
-		inFlight:       make(map[string]*fetchResult),
-		stopCh:         make(chan struct{}),
-		wake:           make(chan struct{}, 1),
-		pendingHashes:  make(map[block.ContentHash]int64),
+		local:            local,
+		remoteStore:      remoteStore,
+		fileBlockStore:   fileBlockStore,
+		config:           config,
+		inFlight:         make(map[string]*fetchResult),
+		stopCh:           make(chan struct{}),
+		wake:             make(chan struct{}, 1),
+		pendingHashes:    make(map[block.ContentHash]int64),
+		uploadLimiter:    newDynamicSemaphore(startWindow),
+		uploadController: uploadController,
 	}
 
 	queueConfig := DefaultSyncQueueConfig()
-	queueConfig.Workers = config.ParallelUploads
+	// In adaptive mode the queue pool must cover the ceiling the controller can
+	// ramp to; pinned mode sizes it at the fixed window.
+	queueConfig.Workers = uploadCeiling
 	queueConfig.DownloadWorkers = config.ParallelDownloads
 	m.queue = NewSyncQueue(m, queueConfig)
 
@@ -470,6 +525,7 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	if hashStore == nil {
 		return nil
 	}
+	m.ensureUploadLimiter()
 
 	// Snapshot the pending set, then upload outside the lock. Hashes
 	// added mid-pass surface on the NEXT pass (same snapshot-at-start
@@ -500,33 +556,26 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 	// non-fatal retry-next-tick condition.
 	var lostBeforeMirror atomic.Bool
 
-	// Upload the snapshot concurrently, bounded by ParallelUploads. Each
-	// chunk is independent — a distinct CAS hash, an idempotent remote Put,
-	// and a per-hash MarkSynced — and the path is network-latency-bound, so
-	// a serial loop leaves the link idle (one in-flight S3 Put gave only
-	// ~2.7 MiB/s VM→fr-par; #1266). The first fatal error cancels the group
-	// via gctx; in-flight Puts observe the cancellation. Mirrors the bounded
-	// errgroup pattern used by warm().
-	parallel := m.config.ParallelUploads
-	if parallel < 1 {
-		parallel = 1
-	}
+	// Upload the snapshot concurrently, bounded by the shared uploadLimiter.
+	// Each chunk is independent — a distinct CAS hash, an idempotent remote Put,
+	// and a per-hash MarkSynced — and the path is network-latency-bound, so a
+	// serial loop leaves the link idle (one in-flight S3 Put gave only ~2.7
+	// MiB/s VM→fr-par; #1266). The limiter's window is fixed when
+	// --parallel-uploads is pinned and resized by the adaptive controller
+	// otherwise (#1407), so a long pass picks up window changes mid-flight. The
+	// first fatal error cancels the group via gctx; in-flight Puts observe the
+	// cancellation. Mirrors the bounded errgroup pattern used by warm().
 	g, gctx := errgroup.WithContext(ctx)
-	sem := make(chan struct{}, parallel)
 
 	for _, hash := range snapshot {
 		hash := hash
 		// Block for a slot, but stop dispatching the moment the group is
-		// failing/cancelled.
-		select {
-		case <-gctx.Done():
-		case sem <- struct{}{}:
-		}
-		if gctx.Err() != nil {
+		// failing/cancelled (Acquire returns gctx.Err() then).
+		if err := m.uploadLimiter.Acquire(gctx); err != nil {
 			break
 		}
 		g.Go(func() error {
-			defer func() { <-sem }()
+			defer m.uploadLimiter.Release()
 			return m.mirrorChunk(gctx, hashStore, hash, &lostBeforeMirror)
 		})
 	}
@@ -620,8 +669,14 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 	}
 	if err != nil {
 		m.failedSyncs.Add(1)
+		// Feed the adaptive controller: an upload error in this interval signals
+		// server pushback, so the controller backs the window off next tick.
+		m.uploadErrWindow.Add(1)
 		return fmt.Errorf("remote put %s: %w", hash, err)
 	}
+	// Count delivered bytes for the adaptive controller's goodput sample. The
+	// bytes are on the wire regardless of MarkSynced, so charge them here.
+	m.uploadedBytesWindow.Add(int64(len(data)))
 	if err := hashStore.MarkSynced(ctx, hash); err != nil {
 		m.failedSyncs.Add(1)
 		return fmt.Errorf("mark synced %s: %w", hash, err)
@@ -917,6 +972,93 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 		interval = 2 * time.Second
 	}
 	go m.periodicUploader(ctx, interval)
+
+	// Adaptive mode only: launch the goodput controller that resizes the
+	// upload window to saturate the uplink (#1407). Pinned --parallel-uploads
+	// leaves uploadController nil and keeps the fixed window — publish that
+	// fixed window once so the gauge reflects it instead of reading 0.
+	if m.uploadController != nil {
+		go m.runUploadController(ctx, uploadControlInterval)
+	} else if mx := m.dataplaneMetrics(); mx != nil {
+		mx.SetUploadWindow(m.uploadLimiter.Limit())
+	}
+}
+
+// uploadControlInterval is how often the adaptive controller samples goodput
+// and resizes the upload window. One second is long enough for several S3 Puts
+// to complete (so the goodput sample is stable) yet short enough to ramp from
+// the floor to the ceiling within a few seconds.
+const uploadControlInterval = time.Second
+
+// runUploadController is the adaptive upload-concurrency loop (#1407). Every
+// interval it converts the bytes successfully uploaded since the last tick into
+// a goodput sample, feeds it (with the interval's error flag) to the goodput
+// controller, and applies the returned window to the shared uploadLimiter.
+//
+// Idle intervals (no bytes, nothing in flight, no error) are skipped entirely:
+// feeding a zero-goodput sample during a write pause would otherwise be read as
+// a collapse and shrink the window for no reason. Runs only when
+// uploadController is non-nil (adaptive mode).
+func (m *Syncer) runUploadController(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Publish the starting window so the metric is populated before the first
+	// adjustment.
+	if mx := m.dataplaneMetrics(); mx != nil {
+		mx.SetUploadWindow(m.uploadLimiter.Limit())
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+		}
+
+		window, goodput, inflight, sawErr, acted := m.adaptiveUploadTick(interval)
+		if !acted {
+			continue
+		}
+		logger.Debug("adaptive upload window",
+			"window", window,
+			"inflight", inflight,
+			"goodput_mibps", goodput/(1024*1024),
+			"saw_error", sawErr)
+	}
+}
+
+// adaptiveUploadTick performs one control step: it converts the bytes uploaded
+// since the last tick into a goodput sample, feeds it (with the interval's
+// error flag) to the goodput controller, and applies the resulting window to
+// the upload limiter. It returns the new window, the measured goodput (bytes/s),
+// the current in-flight count, the error flag, and acted=false for a skipped
+// idle interval (no bytes, nothing in flight, no error) where there is no
+// signal to act on. Extracted from the goroutine loop so the bytes→goodput→
+// window glue is unit-testable without a clock.
+func (m *Syncer) adaptiveUploadTick(interval time.Duration) (window int, goodput float64, inflight int, sawErr, acted bool) {
+	bytes := m.uploadedBytesWindow.Swap(0)
+	sawErr = m.uploadErrWindow.Swap(0) > 0
+	// Peak in-flight over the interval tells window-limited from app-limited:
+	// if uploads filled the window the goodput reflects the window, otherwise
+	// the upstream pipeline was the constraint (see goodputController.observe).
+	inflight = m.uploadLimiter.TakePeak()
+	curWindow := m.uploadLimiter.Limit()
+
+	if bytes == 0 && inflight == 0 && !sawErr {
+		return curWindow, 0, inflight, false, false
+	}
+
+	windowLimited := inflight >= curWindow
+	goodput = float64(bytes) / interval.Seconds()
+	window = m.uploadController.observe(goodput, windowLimited, sawErr)
+	m.uploadLimiter.SetLimit(window)
+	if mx := m.dataplaneMetrics(); mx != nil {
+		mx.SetUploadWindow(window)
+	}
+	return window, goodput, inflight, sawErr, true
 }
 
 // SyncNow triggers an immediate mirror-loop pass for every locally
