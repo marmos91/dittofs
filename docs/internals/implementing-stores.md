@@ -189,10 +189,6 @@ type FileBlockStore interface {
     // AddRef atomically increments RefCount on the row indexed by hash
     // (the dedup LRU hit path). Returns ErrUnknownHash if no row exists.
     AddRef(ctx context.Context, hash ContentHash, payloadID string, blockRef BlockRef) error
-
-    // ListPending returns up to `limit` Pending FileBlocks older than
-    // `olderThan`, for the syncer claim path.
-    ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
 }
 ```
 

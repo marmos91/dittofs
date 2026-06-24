@@ -251,9 +251,6 @@ func (nopFBSForTest) AddRef(_ context.Context, _ block.ContentHash, _ string, _ 
 	// that don't exercise AddRef at all.
 	return block.ErrUnknownHash
 }
-func (nopFBSForTest) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
-	return nil, nil
-}
 
 // Legacy engine-internal surface (kept off the
 // public FileBlockStore interface but required by EngineFileBlockStore).

@@ -109,9 +109,6 @@ func (m *memFBS) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, 
 func (m *memFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.BlockRef) error {
 	return block.ErrUnknownHash
 }
-func (m *memFBS) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
-	return nil, nil
-}
 
 // newFSStoreForTestWithFBS is newFSStoreForTest with a caller-supplied
 // FileBlockStore so the CAS-manifest read path can resolve rolled-up bytes.

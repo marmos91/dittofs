@@ -6,7 +6,6 @@ import (
 	"os"
 	"sync"
 	"testing"
-	"time"
 
 	"lukechampine.com/blake3"
 
@@ -234,10 +233,6 @@ func (c *countingFBSWrapper) AddRef(ctx context.Context, h block.ContentHash, pa
 func (c *countingFBSWrapper) GetByHash(ctx context.Context, h block.ContentHash) (*block.FileBlock, error) {
 	c.counter++
 	return c.inner.GetByHash(ctx, h)
-}
-func (c *countingFBSWrapper) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*block.FileBlock, error) {
-	c.counter++
-	return c.inner.ListPending(ctx, olderThan, limit)
 }
 func (c *countingFBSWrapper) ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error) {
 	c.counter++

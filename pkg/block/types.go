@@ -305,19 +305,6 @@ func (b *FileBlock) IsFinalized() bool {
 	return b.State == BlockStateRemote
 }
 
-// IsDirty returns true if the block is Pending and has never been uploaded
-// (no BlockStoreKey) — distinguishing a freshly-written block from a
-// Pending block that already exists remotely (legacy path).
-func (b *FileBlock) IsDirty() bool {
-	return b.State == BlockStatePending && b.BlockStoreKey == ""
-}
-
-// IsLocal returns true if the block is Pending with data on the local
-// filesystem — i.e. eligible for the syncer to claim and upload.
-func (b *FileBlock) IsLocal() bool {
-	return b.State == BlockStatePending && b.LocalPath != ""
-}
-
 // FormatCASKey returns the flat S3 object key for a content-addressed block.
 // Format: "cas/{hex[0:2]}/{hex[2:4]}/{hex}". Two-level fanout caps the
 // top-level prefix count at 256 and bounds per-prefix file count predictably.

@@ -279,40 +279,6 @@ func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 	return block, nil
 }
 
-// ListPending returns blocks in Pending state (RefCount>=1, not yet
-// uploaded) older than the given duration. Renamed from
-// ListLocalBlocks; the underlying semantics already match ("Local"
-// was renamed Pending). If limit > 0, at most limit blocks are
-// returned.
-//
-// The legacy four-state machine collapsed to three; "Pending"
-// replaces both "Dirty" and "Local". The state literal here is 0,
-// matching block.BlockStatePending.
-func (s *SQLiteMetadataStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	// olderThan <= 0 means "no age filter" — return every local block. The
-	// age predicate is omitted entirely in that case to avoid the corner
-	// where created_at ties or beats time.Now() under tight scheduling.
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks
-		WHERE state = 0 /* Pending */ AND cache_path IS NOT NULL`
-	args := make([]any, 0, 2)
-	if olderThan > 0 {
-		args = append(args, time.Now().Add(-olderThan))
-		query += fmt.Sprintf(" AND created_at < ?%d", len(args))
-	}
-	query += " ORDER BY created_at ASC"
-	if limit > 0 {
-		args = append(args, limit)
-		query += fmt.Sprintf(" LIMIT ?%d", len(args))
-	}
-	rows, err := s.query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list pending blocks: %w", err)
-	}
-	defer rows.Close()
-	return scanFileBlockRows(rows)
-}
-
 // ListFileBlocks returns all blocks belonging to a file, ordered by block index.
 // Uses LIKE query on block ID prefix, then sorts in Go for correct numeric ordering.
 // Not on the narrowed FileBlockStore interface;
@@ -542,8 +508,7 @@ var _ block.FileBlockStore = (*sqliteTransaction)(nil)
 // rollback for any caller that bumped RefCount inside WithTransaction
 // then encountered a downstream PutFile failure (silent
 // leak). All proxies below are now tx-bound; non-mutating
-// helpers that don't support tx-binding here (ListPending, etc.) keep
-// the pool path because no caller mutates state through them.
+// helpers keep the pool path because no caller mutates state through them.
 
 func (tx *sqliteTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
 	if err := ctx.Err(); err != nil {
@@ -709,33 +674,12 @@ func (tx *sqliteTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 	return block, nil
 }
 
-// ListPending / ListFileBlocks / EnumerateFileBlocks run on the active
+// ListFileBlocks / EnumerateFileBlocks run on the active
 // transaction (tx.tx), NOT the pool. Delegating to the pool opens a separate
 // connection that cannot see this transaction's uncommitted writes, so a Put
 // followed by a List in the same WithTransaction would miss the pending row
 // (read-after-write violation; the SQL is otherwise identical to the
 // store-level methods).
-func (tx *sqliteTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
-		FROM file_blocks
-		WHERE state = 0 /* Pending */ AND cache_path IS NOT NULL`
-	args := make([]any, 0, 2)
-	if olderThan > 0 {
-		args = append(args, time.Now().Add(-olderThan))
-		query += fmt.Sprintf(" AND created_at < ?%d", len(args))
-	}
-	query += " ORDER BY created_at ASC"
-	if limit > 0 {
-		args = append(args, limit)
-		query += fmt.Sprintf(" LIMIT ?%d", len(args))
-	}
-	rows, err := tx.tx.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("list pending blocks: %w", err)
-	}
-	defer rows.Close()
-	return scanFileBlockRows(rows)
-}
 
 func (tx *sqliteTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
