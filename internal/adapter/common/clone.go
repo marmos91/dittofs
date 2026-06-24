@@ -46,6 +46,15 @@ func CloneWholeFile(
 	srcBlocks []block.BlockRef,
 	srcSize uint64,
 ) error {
+	// Self-clone (source and destination share a payload) is a no-op: cloning a
+	// payload onto itself would IncrementRefCount on hashes the same payload
+	// already owns, inflating the count with no offsetting reference. The caller
+	// should reject this earlier, but guard here too — this helper is the shared
+	// cross-protocol primitive and must stay safe on its own.
+	if srcPayloadID == dstPayloadID {
+		return nil
+	}
+
 	err := metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		// Bind the active txn into the context so the per-share coordinator's
 		// RefCount UPDATEs (driven by engine.CopyPayload) join the same txn as

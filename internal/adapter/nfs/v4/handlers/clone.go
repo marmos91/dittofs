@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"io"
 
 	"github.com/marmos91/dittofs/internal/adapter/common"
@@ -96,14 +97,13 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		return cloneErr(types.NFS4ERR_OPENMODE)
 	}
 
-	// Build auth for the destination (the write side) and resolve the metadata
-	// store + share for both handles. The destination AuthContext is the one
-	// that gates the content mutation.
+	// Build auth contexts for both sides: the destination gates the content
+	// mutation (write), the source gates the read.
 	dstAuth, dstShare, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
 	if err != nil {
 		return cloneErr(nfs4StatusForAuthError(err))
 	}
-	_, srcShare, err := h.buildV4AuthContext(ctx, ctx.SavedFH)
+	srcAuth, srcShare, err := h.buildV4AuthContext(ctx, ctx.SavedFH)
 	if err != nil {
 		return cloneErr(nfs4StatusForAuthError(err))
 	}
@@ -118,7 +118,7 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 
 	// Resolve and type-check both files: CLONE is only defined for regular
 	// files (NFS4ERR_ISDIR for directories, NFS4ERR_WRONG_TYPE otherwise).
-	srcFile, err := metaSvc.GetFile(dstAuth.Context, srcHandle)
+	srcFile, err := metaSvc.GetFile(srcAuth.Context, srcHandle)
 	if err != nil {
 		return cloneErr(common.MapToNFS4(err))
 	}
@@ -139,6 +139,28 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 	if srcShare != dstShare {
 		logger.Debug("NFSv4.2 CLONE across shares rejected", "src", srcShare, "dst", dstShare, "client", ctx.ClientAddr)
 		return cloneErr(types.NFS4ERR_INVAL)
+	}
+
+	// Enforce permissions: READ on the source, WRITE on the destination. The
+	// stateid validation above accepts special stateids without an OPEN, so it
+	// does NOT cover POSIX/ACL or read-only-share enforcement on its own —
+	// CheckPermissions does (this mirrors how ALLOCATE/DEALLOCATE re-check via
+	// the Service even after stateid validation). CheckPermissions also rejects
+	// a write to a read-only export.
+	if _, err := metaSvc.CheckPermissions(srcAuth, srcHandle, metadata.PermissionRead); err != nil {
+		return cloneErr(common.MapToNFS4(err))
+	}
+	if _, err := metaSvc.CheckPermissions(dstAuth, dstHandle, metadata.PermissionWrite); err != nil {
+		return cloneErr(common.MapToNFS4(err))
+	}
+
+	// Self-clone (source and destination are the same file) is a no-op: the
+	// content is already identical. Short-circuit BEFORE touching the block
+	// store so we never feed CopyPayload srcPayloadID == dstPayloadID, which
+	// would inflate the shared payload's RefCount with no offsetting reference.
+	if bytes.Equal(srcHandle, dstHandle) {
+		logger.Debug("NFSv4.2 CLONE self-clone no-op", "client", ctx.ClientAddr)
+		return &types.CompoundResult{Status: types.NFS4_OK, OpCode: types.OP_CLONE, Data: encodeStatusOnly(types.NFS4_OK)}
 	}
 
 	// DittoFS clones whole files as a pure-metadata O(1) reflink (share the

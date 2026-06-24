@@ -64,6 +64,30 @@ func TestCloneWholeFile_O1(t *testing.T) {
 	}
 }
 
+// TestCloneWholeFile_SelfCloneNoOp asserts that cloning a payload onto itself is
+// a no-op: no RefCount bumps (which would inflate the count) and no cache
+// invalidation. This is the defense-in-depth guard for the shared primitive.
+func TestCloneWholeFile_SelfCloneNoOp(t *testing.T) {
+	ctx := context.Background()
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	coord := &fakeCoordinator{}
+	bs := newCopyTestEngineWithMS(t, coord, ms)
+
+	srcBlocks := []block.BlockRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
+	dstHandle := putTestFile(t, ms, "/self.bin", "same-pid", srcBlocks, 4096)
+	cache := &recordingInvalidator{}
+
+	if err := CloneWholeFile(ctx, bs, ms, cache, dstHandle, "same-pid", "same-pid", srcBlocks, 4096); err != nil {
+		t.Fatalf("CloneWholeFile self-clone failed: %v", err)
+	}
+	if len(coord.incrementCalls) != 0 {
+		t.Errorf("self-clone made %d IncrementRefCount calls, want 0", len(coord.incrementCalls))
+	}
+	if len(cache.calls) != 0 {
+		t.Errorf("self-clone fired %d InvalidateFile calls, want 0", len(cache.calls))
+	}
+}
+
 // TestCloneWholeFile_RollsBackOnIncrementError pins the atomicity contract: a
 // mid-loop IncrementRefCount failure rolls back the destination PutFile and all
 // RefCount bumps, and skips the POST-txn cache invalidation.
