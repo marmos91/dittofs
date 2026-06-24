@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // ReadAt reads data from storage at the given offset into dest.
@@ -409,11 +410,27 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 	return coordErr
 }
 
-// CopyPayload duplicates a file's BlockRef list with O(1) cost.
-// Increments the RefCount of each unique source-hash via the
-// coordinator (no per-block data copy); returns a deep copy of
-// srcBlocks as the destination's BlockRef list. The caller's metadata
-// txn rolls back all increments on any error.
+// CopyPayload duplicates a file's content by referencing the source's
+// content-addressed blocks — no data movement, O(blocks) metadata puts.
+// It does two things for the destination:
+//
+//  1. Creates one per-(dstPayloadID/offset) FileBlock row for every source
+//     block, keyed by the SAME offset + hash + DataSize, in BlockStatePending.
+//     This is the load-bearing step for read correctness: the cold-read path
+//     resolves a payload's bytes via ListFileBlocks(dstPayloadID) (the per-file
+//     FileBlock rows), NOT via FileAttr.Blocks. Without dst rows a read of the
+//     clone hits the sparse-block branch and zero-fills — silent corruption
+//     (#1384). Because every row carries the source hash and the chunks are
+//     content-addressed, the dst rows resolve to the SAME shared CAS chunks and
+//     the clone reads back byte-identical to the source.
+//  2. Bumps each unique source-hash RefCount via the coordinator. This is now
+//     belt-and-suspenders: block keep-alive (and GC safety) is by-hash over the
+//     manifest live set in the GC mark phase, which enumerates the dst rows too.
+//
+// It returns a deep copy of srcBlocks as the destination's BlockRef list, which
+// the caller persists as dst's FileAttr.Blocks in the same metadata txn — so the
+// per-file rows and the FileAttr.Blocks manifest reference the same hashes and
+// offsets.
 //
 // Empty srcBlocks => nil-safe legacy path: copies nothing (legacy
 // CopyPayload data-copy semantics are removed in; the legacy
@@ -421,15 +438,17 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 // directly during the dual-read window). Production callers always
 // supply a snapshot of the source file's FileAttr.Blocks.
 //
-// Failure semantics: on any IncrementRefCount error, returns the error
-// immediately without further increments. Already-bumped counts are
-// the caller's metadata txn's responsibility to roll back (the engine
-// owns no txn).
+// Failure semantics: a genuine IncrementRefCount backend fault is surfaced
+// immediately without further increments (the caller's metadata txn rolls back).
+// A missing-row increment (ErrFileBlockNotFound) is tolerated — see the loop.
 //
 // Dedup: a single hash present multiple times in srcBlocks bumps the
 // RefCount only once per CopyPayload call (per-call seen-hash set).
 // The destination's []BlockRef preserves the original sequence so
-// subsequent reads still resolve every offset correctly.
+// subsequent reads still resolve every offset correctly. Dst rows are
+// created per source block (one row per offset) — two BlockRefs sharing a
+// hash are two distinct dst rows, mirroring the per-offset row model used by
+// the rollup ObjectIDPersister and the Delete/Truncate by-ID reap contract.
 func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []block.BlockRef) ([]block.BlockRef, error) {
 	if err := bs.enter(); err != nil {
 		return nil, err
@@ -454,20 +473,90 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 		}
 		seen[b.Hash] = struct{}{}
 		if err := bs.coordinator.IncrementRefCount(ctx, b.Hash); err != nil {
+			// A CAS block is content-addressed and lives in BlockStatePending
+			// for the life of the payload (it never transitions to Remote), so
+			// the Remote-gated GetByHash that IncrementRefCount relies on
+			// resolves it to "no FileBlock row" and returns ErrFileBlockNotFound.
+			// That is NOT a clone failure: the destination's BlockRef manifest
+			// (dst, below) references the same hashes, and block keep-alive is
+			// by-hash over the manifest live set in the GC mark phase
+			// (EnumerateFileBlocks / reapSupersededFileBlocks), not via RefCount.
+			// So a missing-row increment is a no-op to be skipped, mirroring how
+			// DecrementRefCount already tolerates the same miss. Without this,
+			// NFSv4.2 CLONE and SMB server-side-copy fail with EREMOTEIO on any
+			// rolled-up source (#1384). A genuine backend fault still aborts.
+			if errors.Is(err, block.ErrFileBlockNotFound) {
+				continue
+			}
 			return nil, fmt.Errorf("CopyPayload: increment refcount on %s: %w", b.Hash.String(), err)
 		}
 	}
 
+	// Create the destination's per-file FileBlock rows. The cold-read path
+	// resolves bytes via ListFileBlocks(dstPayloadID), not FileAttr.Blocks, so
+	// without these rows reads of the clone zero-fill (silent corruption,
+	// #1384). One row per source block keyed by dstPayloadID + the SAME offset,
+	// hash and DataSize, in BlockStatePending — mirroring the rollup
+	// ObjectIDPersister (engine.go) so the dst rows resolve to the shared CAS
+	// chunks (content-addressed by hash). Skip zero-hash blocks (sparse holes
+	// carry no chunk). No data is moved; this is O(blocks) metadata puts.
+	//
+	// Route the Put through the txn bound in ctx when present. The clone
+	// callers (common.CopyPayload / common.CloneWholeFile) invoke us inside
+	// metadataStore.WithTransaction, which on the memory backend holds the
+	// store mutex for the life of fn; the store-level fileBlockStore.Put would
+	// re-acquire that same (non-reentrant) mutex and self-deadlock. The
+	// tx-bound Put writes under the already-held lock and commits/rolls back
+	// atomically with the caller's dst FileAttr.Blocks PutFile — so the per-file
+	// rows and the FileAttr.Blocks manifest stay consistent. With no bound txn
+	// (e.g. unit tests wiring the engine directly) fall back to the store-level
+	// Put, matching the rollup ObjectIDPersister which runs outside any txn.
+	// Persist dst rows through the txn bound in ctx when present, else the
+	// store directly. The bound txn writes under the lock WithTransaction
+	// already holds — a separate store-level Put would re-enter the memory
+	// backend's non-reentrant mutex and self-deadlock. The store fallback
+	// covers the no-txn path (unit tests wiring the engine directly), matching
+	// the rollup ObjectIDPersister. The row write does NOT depend on
+	// bs.fileBlockStore being non-nil when a txn is bound.
+	tx := metadata.TxFromContext(ctx)
+	var putRow func(context.Context, *block.FileBlock) error
+	switch {
+	case tx != nil:
+		putRow = tx.Put
+	case bs.fileBlockStore != nil:
+		putRow = bs.fileBlockStore.Put
+	}
+	for _, b := range srcBlocks {
+		if b.Hash.IsZero() {
+			continue
+		}
+		// Refuse to produce an unreadable clone: if there are blocks to
+		// materialize but no way to persist the dst rows, fail loudly rather
+		// than copy only the manifest (whose blocks the cold-read path can't
+		// resolve without rows → zero-fill, #1384).
+		if putRow == nil {
+			return nil, fmt.Errorf("CopyPayload: no transaction or file-block store to persist dst rows for %s", dstPayloadID)
+		}
+		fb := &block.FileBlock{
+			ID:       fmt.Sprintf("%s/%d", dstPayloadID, b.Offset),
+			Hash:     b.Hash,
+			DataSize: b.Size,
+			State:    block.BlockStatePending,
+		}
+		if err := putRow(ctx, fb); err != nil {
+			return nil, fmt.Errorf("CopyPayload: FileBlock.Put(%s): %w", fb.ID, err)
+		}
+	}
+
 	// Deep-copy the slice (BlockRef is a value type — append over nil
-	// produces a fresh backing array independent of srcBlocks).
+	// produces a fresh backing array independent of srcBlocks). The caller
+	// persists this as dst's FileAttr.Blocks in the same metadata txn, so the
+	// rows above and this manifest stay consistent (same hashes + offsets).
 	dst := append([]block.BlockRef(nil), srcBlocks...)
 
-	// Note: src/dst payloadIDs are kept in the signature for future use
-	// (cache prefetch hints, identity-based dedup) and to match the
-	// public Writer interface; the O(1) implementation does not need
-	// them for the refcount-only fast path.
+	// srcPayloadID is retained in the signature for future use (cache prefetch
+	// hints, identity-based dedup) and to match the public Writer interface.
 	_ = srcPayloadID
-	_ = dstPayloadID
 
 	return dst, nil
 }
