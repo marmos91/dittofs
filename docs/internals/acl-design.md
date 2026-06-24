@@ -289,9 +289,9 @@ Add a mapping table linking NFS principals, Windows SIDs, and control-plane user
 
 Extend `IdentityMapper` to query this table for SID → principal resolution (and vice versa).
 
-### SACL container
+### SACL container (shipped)
 
-Add an optional SACL field on `FileAttr` for audit/alarm ACEs separate from the DACL. This enables SMB clients to set and query system ACLs independently.
+Implemented: `acl.ACL` carries an optional `SACL []ACE` slice for audit/alarm ACEs separate from the DACL, and SMB clients set and query system ACLs independently (store round-trip under #1228, SMB wire parse/serialize under #1381). SACL ACEs are descriptive metadata only — they round-trip but do not drive audit-event generation. See [SMB ACL fidelity § SACL](../guide/smb-acl-fidelity.md#sacl-audit).
 
 ### AD/LDAP integration
 

@@ -20,9 +20,9 @@ Code paths referenced:
 
 | Path | Function(s) | File |
 |------|-------------|------|
-| SD read (build) | `BuildSecurityDescriptor`, `buildDACL`, `buildEmptySACL` | `internal/adapter/smb/handlers/security.go` |
+| SD read (build) | `BuildSecurityDescriptor`, `buildDACL`, `buildSACL`, `buildEmptySACL` | `internal/adapter/smb/handlers/security.go` |
 | Read-side DACL synthesis | `SynthesizeWindowsDefault`, `SynthesizeFromMode` | `pkg/metadata/acl/synthesize.go` |
-| SD write (parse) | `ParseSecurityDescriptorWithOptions`, `parseDACL` | `internal/adapter/smb/handlers/security.go` |
+| SD write (parse) | `ParseSecurityDescriptorWithOptions`, `parseDACL`, `parseACEs` (shared DACL/SACL) | `internal/adapter/smb/handlers/security.go` |
 | SET_INFO Security | `setSecurityInfo`, `checkSetInfoSecurityAccess` | `internal/adapter/smb/handlers/set_info.go` |
 | SID derivation | `UserSID`, `GroupSID`, `UIDFromSID`, `GIDFromSID`, `PrincipalToSID`, `SIDToPrincipal` | `pkg/auth/sid/mapper.go` |
 | Generic-mask expansion | `ExpandGenericMask` | `pkg/metadata/acl/generic.go` |
@@ -82,7 +82,7 @@ are distinct and only meaningful as inheritable placeholders (see Inheritance).
 | SE_DACL_PROTECTED (0x1000) | Works | Read from `ACL.Protected`; written from inbound Control. Blocks inheritance from ancestors; never itself inherited onto children. |
 | SE_DACL_AUTO_INHERITED (0x0400) | Works (canonicalized) | Round-trips via `ACL.AutoInherited`. Default canonicalization (MS-DTYP §2.5.3.4.2, mirrors Samba `canonicalize_inheritance_bits`): persisted only when SET_INFO carries BOTH `AUTO_INHERITED` and `AUTO_INHERIT_REQ` (0x0100). Per-share opt-out (`acl flag inherited canonicalization = no`) preserves it verbatim. |
 | SE_DACL_AUTO_INHERIT_REQ (0x0100) | Works (request-only) | Processed as a request flag; never echoed back on read. |
-| SE_SACL_PRESENT (0x0010) | Partial | Set when `SACLSecurityInformation` requested, but the SACL body is an empty stub — see SACL below. |
+| SE_SACL_PRESENT (0x0010) | Works | Set when `SACLSecurityInformation` requested; the SACL body carries stored audit ACEs (or a valid 0-ACE SACL when none are stored) — see SACL below. |
 
 ## Null DACL
 
@@ -95,12 +95,15 @@ are distinct and only meaningful as inheritable placeholders (see Inheritance).
 
 | Aspect | State | Notes |
 |--------|-------|-------|
-| SACL read | Unsupported (empty stub) | `buildEmptySACL` emits a valid but zero-ACE SACL (revision 2, count 0, size 8) when `SACLSecurityInformation` is requested. No audit ACEs are ever surfaced. |
-| SACL write | Unsupported (dropped) | `ParseSecurityDescriptorWithOptions` skips the SACL offset entirely (`r.Skip(4)` with a "SACL parsing not implemented" comment). The write is access-gated (`AccessSystemSecurity` required) but the SACL content is discarded. |
-| AUDIT ACE storage | Partial | `ACE4_SYSTEM_AUDIT_ACE_TYPE` can be stored in the model and translated (`systemAuditACEType`), but is never placed in a DACL on read and never parsed from a SACL on write. ALARM ACEs have no Windows mapping (`nfsToWindowsACEType` returns false → dropped). |
+| SACL read | Works | When `SACLSecurityInformation` is requested and the file carries stored SACL ACEs, `buildSACL` serializes them into the SD's SACL section (same MS-DTYP §2.4.5 + §2.4.4.2 wire layout as a DACL). Windows Explorer's "Auditing" tab shows the stored audit ACEs. `buildEmptySACL` is the fallback only when no SACL is stored (valid 0-ACE SACL). |
+| SACL write | Works | `ParseSecurityDescriptorWithOptions` parses the SACL body via the shared `parseACEs` and persists audit ACEs into `ACL.SACL`; `setSecurityInfo` installs it via `mergeSecurityACL`, preserving the unrequested DACL/SACL section. Access-gated (`AccessSystemSecurity` required). |
+| AUDIT / ALARM ACE round-trip | Works | `ACE4_SYSTEM_AUDIT_ACE_TYPE` ↔ `systemAuditACEType` and `ACE4_SYSTEM_ALARM_ACE_TYPE` ↔ `systemAlarmACEType` map both directions (`nfsToWindowsACEType` / `windowsToNFSACEType`); the SUCCESSFUL/FAILED audit flags round-trip through `NFSv4FlagsToWindowsFlags`. Audit ACEs ride the SACL section, not the DACL. |
 
-Tracked alongside the broader cross-protocol SACL gap in
-[Access Control › Known Limitations](access-control.md#known-limitations).
+The SACL is stored on the same `acl.ACL` carrier as the DACL (`ACL.SACL`
+slice) and never participates in access checks. The store-layer round-trip
+shipped under [#1228](https://github.com/marmos91/dittofs/issues/1228); the SMB
+wire parse/serialize under
+[#1381](https://github.com/marmos91/dittofs/pull/1381).
 
 ## GENERIC_* mask expansion
 
@@ -162,15 +165,22 @@ project memory):
   (INHERITANCE/INHERITFLAGS), GENERIC expansion, and AUTO_INHERITED
   canonicalization paths are exercised by the SMB conformance suite (see
   inline references in `security.go`, `inherit.go`, `generic.go`).
+- **SACL round-trip.** Audit-ACE build → parse → re-build is covered by
+  `security_sacl_test.go` (`TestBuildSD_SACL_RoundTrip`): SE_SACL_PRESENT, the
+  serialized ACE count, and the audit ACE's type/flags/mask all survive a
+  full SD round-trip.
 - **macOS Finder.** Not separately validated for the ACL Security path; treat
   as untested for ACL fidelity.
 
 ## Known limitations
 
-1. **SACL is a stub.** Audit ACEs are never read out and are dropped on write
-   (empty SACL on QUERY_INFO; SACL offset skipped on SET_INFO). AUDIT ACEs can
-   be stored in the model but never reach a SMB client; ALARM ACEs have no
-   Windows mapping and are dropped.
+1. **SACL round-trips but does not drive audit-event generation.** Audit/alarm
+   ACEs are parsed, stored, and surfaced to the Windows "Auditing" tab
+   (read/write/round-trip via `ACL.SACL`), and the `ACCESS_SYSTEM_SECURITY` gate
+   is enforced. What is *not* implemented is acting on them: the server emits no
+   audit log when an operation matches a SUCCESSFUL/FAILED audit ACE, and ALARM
+   ACEs raise no alarm. The SACL is descriptive metadata only — it never
+   participates in access checks or event emission.
 2. **Foreign AD/LDAP SIDs are not mapped to local UID/GID.** They round-trip
    as opaque `sid:<canonical>` principals (so the ACE survives) but resolve to
    no local UID/GID. AD interop shipped under [#1231](https://github.com/marmos91/dittofs/issues/1231)

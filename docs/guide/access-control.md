@@ -162,7 +162,7 @@ The identity mapping package (`pkg/identity/`) resolves NFS principals to Unix c
 
 2. **Hash-based SID generation**: Named principals without numeric UIDs (e.g., `alice@EXAMPLE.COM`) produce a hash-based RID when converted to SID. This is deterministic but could theoretically collide.
 
-3. **No SACL support**: System ACLs for Windows auditing are always NULL in Security Descriptors. AUDIT/ALARM ACE types can be stored but are not exposed to SMB clients as a SACL.
+3. **SACL round-trips but audit events are not generated**: System ACLs (audit/alarm ACEs) are parsed, stored, and surfaced to SMB clients in the Security Descriptor's SACL section — Windows Explorer's "Auditing" tab reads back what was set, and the `ACCESS_SYSTEM_SECURITY` gate is enforced. What is not implemented is *acting* on them: the server emits no audit log when an operation matches a SUCCESSFUL/FAILED audit ACE, and ALARM ACEs raise no alarm. See [SMB ACL fidelity § SACL](smb-acl-fidelity.md#sacl-audit).
 
 4. **Owner/Group not in ACL**: Windows Security Descriptors bundle owner, group, and DACL together. DittoFS stores owner (UID) and group (GID) separately in file attributes. This is transparent to clients but means owner/group changes don't trigger ACL-related events.
 
