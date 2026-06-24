@@ -15,11 +15,12 @@ var (
 	editType   string
 	editConfig string
 	// S3 specific
-	editBucket    string
-	editRegion    string
-	editEndpoint  string
-	editAccessKey string
-	editSecretKey string
+	editBucket          string
+	editRegion          string
+	editEndpoint        string
+	editAccessKey       string
+	editSecretKey       string
+	editParallelUploads int
 )
 
 var editCmd = &cobra.Command{
@@ -51,6 +52,7 @@ func init() {
 	editCmd.Flags().StringVar(&editEndpoint, "endpoint", "", "Custom S3 endpoint")
 	editCmd.Flags().StringVar(&editAccessKey, "access-key", "", "AWS access key ID (for s3)")
 	editCmd.Flags().StringVar(&editSecretKey, "secret-key", "", "AWS secret access key (for s3)")
+	editCmd.Flags().IntVar(&editParallelUploads, "parallel-uploads", 0, "Max parallel chunk uploads to this remote (0 = auto, scales with CPU count)")
 }
 
 func runEdit(cmd *cobra.Command, args []string) error {
@@ -68,7 +70,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 
 	hasFlags := cmd.Flags().Changed("type") || cmd.Flags().Changed("config") ||
 		cmd.Flags().Changed("bucket") || cmd.Flags().Changed("region") || cmd.Flags().Changed("endpoint") ||
-		cmd.Flags().Changed("access-key") || cmd.Flags().Changed("secret-key")
+		cmd.Flags().Changed("access-key") || cmd.Flags().Changed("secret-key") ||
+		cmd.Flags().Changed("parallel-uploads")
 
 	if !hasFlags {
 		return runEditInteractive(client, name, current)
@@ -84,7 +87,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		}
 		req.Config = config
 		hasUpdate = true
-	} else if editBucket != "" || editRegion != "" || editEndpoint != "" || editAccessKey != "" || editSecretKey != "" {
+	} else if editBucket != "" || editRegion != "" || editEndpoint != "" || editAccessKey != "" || editSecretKey != "" || cmd.Flags().Changed("parallel-uploads") {
 		var currentConfig map[string]any
 		if len(current.Config) > 0 {
 			_ = json.Unmarshal(current.Config, &currentConfig)
@@ -108,6 +111,16 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		if editSecretKey != "" {
 			currentConfig["secret_access_key"] = editSecretKey
 		}
+		// parallel-uploads is an int where 0 is meaningful ("reset to auto"),
+		// so key off Changed rather than a zero-value check: set clears to
+		// auto-deduce, a positive value pins the per-remote cap.
+		if cmd.Flags().Changed("parallel-uploads") {
+			if editParallelUploads > 0 {
+				currentConfig["parallel_uploads"] = editParallelUploads
+			} else {
+				delete(currentConfig, "parallel_uploads")
+			}
+		}
 		req.Config = currentConfig
 		hasUpdate = true
 	}
@@ -118,7 +131,7 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	}
 
 	if !hasUpdate {
-		return fmt.Errorf("no update fields specified. Use --type, --config, --bucket, --region, --endpoint, --access-key, or --secret-key")
+		return fmt.Errorf("no update fields specified. Use --type, --config, --bucket, --region, --endpoint, --access-key, --secret-key, or --parallel-uploads")
 	}
 
 	store, err := client.UpdateBlockStore("remote", name, req)
@@ -194,6 +207,11 @@ func runEditInteractive(client *apiclient.Client, name string, current *apiclien
 		}
 		if newSecretKey != "" {
 			newConfig["secret_access_key"] = newSecretKey
+		}
+		// Carry forward server-side tuning the interactive prompts don't
+		// cover, so an interactive edit doesn't silently reset it.
+		if v, ok := currentConfig["parallel_uploads"]; ok {
+			newConfig["parallel_uploads"] = v
 		}
 
 		req.Config = newConfig

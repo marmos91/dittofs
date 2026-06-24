@@ -787,6 +787,21 @@ func (s *Service) createBlockStoreForShare(
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
 
+	// Apply the optional per-remote upload-concurrency override. Unset or 0
+	// keeps the server default (CPU-deduced); a positive value pins this
+	// remote's upload parallelism. Validated to [0,256] at config admission.
+	// The resolve hits the in-memory config cache (the remote was just
+	// acquired), so this is a cheap lookup, not a fresh DB round-trip.
+	if config.RemoteBlockStoreID != "" {
+		if remoteCfg, cfgErr := resolveBlockStoreConfig(ctx, blockStoreProvider, config.RemoteBlockStoreID, models.BlockStoreKindRemote); cfgErr == nil {
+			if parsed, pErr := remoteCfg.GetConfig(); pErr == nil {
+				if v, ok := parsed["parallel_uploads"].(float64); ok && v > 0 {
+					syncerCfg.ParallelUploads = int(v)
+				}
+			}
+		}
+	}
+
 	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it;
 	// releaseRemoteStore handles actual closing via ref counting.
 	var engineRemote remote.RemoteStore

@@ -44,7 +44,7 @@ func TestBuildCompressionBlock(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_CompressionMergesIn(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "zstd", encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "zstd", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestBuildRemoteConfig_S3_CompressionMergesIn(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_NoCompressionByDefault(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}
@@ -73,9 +73,34 @@ func TestBuildRemoteConfig_S3_NoCompressionByDefault(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_RejectsInvalidAlgo(t *testing.T) {
-	_, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "gzip", encryptionFlags{})
+	_, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "gzip", 0, encryptionFlags{})
 	if err == nil || !strings.Contains(err.Error(), "invalid --compression") {
 		t.Fatalf("err=%v, want invalid --compression error", err)
+	}
+}
+
+func TestBuildRemoteConfig_S3_ParallelUploadsMergesIn(t *testing.T) {
+	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", 8, encryptionFlags{})
+	if err != nil {
+		t.Fatalf("buildRemoteConfig: %v", err)
+	}
+	m, ok := cfg.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got %T", cfg)
+	}
+	if m["parallel_uploads"] != 8 {
+		t.Fatalf("parallel_uploads=%v, want 8", m["parallel_uploads"])
+	}
+}
+
+func TestBuildRemoteConfig_S3_NoParallelUploadsByDefault(t *testing.T) {
+	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", 0, encryptionFlags{})
+	if err != nil {
+		t.Fatalf("buildRemoteConfig: %v", err)
+	}
+	m, _ := cfg.(map[string]any)
+	if _, present := m["parallel_uploads"]; present {
+		t.Fatalf("parallel_uploads key should be absent when flag is 0: %#v", m)
 	}
 }
 
@@ -153,7 +178,7 @@ func TestBuildEncryptionBlock_Rejects(t *testing.T) {
 }
 
 func TestBuildRemoteConfig_S3_EncryptionMergesIn(t *testing.T) {
-	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", encryptionFlags{
+	cfg, err := buildRemoteConfig("s3", "", "bucket", "us-east-1", "", "", "AK", "SK", "", 0, encryptionFlags{
 		AEAD:    "aes-256-gcm",
 		KeyKind: "local",
 		KeyFile: "/etc/dittofs/share.key",
@@ -174,7 +199,7 @@ func TestBuildRemoteConfig_S3_EncryptionMergesIn(t *testing.T) {
 func TestBuildRemoteConfig_JSONConfigShortCircuitsFlag(t *testing.T) {
 	// --config takes the parsed JSON verbatim; --compression flag is
 	// ignored when --config is set (matches existing flag interaction).
-	cfg, err := buildRemoteConfig("s3", `{"bucket":"x"}`, "", "", "", "", "", "", "lz4", encryptionFlags{})
+	cfg, err := buildRemoteConfig("s3", `{"bucket":"x"}`, "", "", "", "", "", "", "lz4", 0, encryptionFlags{})
 	if err != nil {
 		t.Fatalf("buildRemoteConfig: %v", err)
 	}

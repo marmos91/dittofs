@@ -93,6 +93,9 @@ func ValidateBlockStoreConfig(kind models.BlockStoreKind, storeType string, cfg 
 			if err := validateCompressionSubconfig(config); err != nil {
 				return err
 			}
+			if err := validateParallelUploads(config); err != nil {
+				return err
+			}
 			return nil
 		default:
 			return fmt.Errorf("unsupported remote block store type: %s", storeType)
@@ -130,4 +133,30 @@ func validateCompressionSubconfig(config map[string]any) error {
 	default:
 		return fmt.Errorf("compression.algo: unsupported value %q (want zstd or lz4)", algoStr)
 	}
+}
+
+// maxParallelUploads bounds the per-remote parallel_uploads override. It is a
+// safety rail against FD/goroutine exhaustion, not a tuning target.
+const maxParallelUploads = 256
+
+// validateParallelUploads checks the optional per-remote parallel_uploads
+// override. 0 / absent means "use the server default" (CPU-deduced); a
+// positive value pins the per-remote upload concurrency. JSON numbers decode
+// as float64.
+func validateParallelUploads(config map[string]any) error {
+	raw, ok := config["parallel_uploads"]
+	if !ok {
+		return nil
+	}
+	n, ok := raw.(float64)
+	if !ok {
+		return fmt.Errorf("parallel_uploads: expected number, got %T", raw)
+	}
+	if n != float64(int(n)) {
+		return fmt.Errorf("parallel_uploads: expected integer, got %v", n)
+	}
+	if n < 0 || n > maxParallelUploads {
+		return fmt.Errorf("parallel_uploads: must be between 0 and %d (got %d)", maxParallelUploads, int(n))
+	}
+	return nil
 }
