@@ -524,12 +524,17 @@ func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runt
 		}
 	}
 
-	// Online-join is a server-bootstrap concern carrying privileged LDAP join
-	// credentials, so it is intentionally NOT part of the API-managed Kerberos
-	// DTO (which would persist the bind password in the DB and expose it over
-	// REST). Always source it from the file/env config and overlay it onto the
-	// effective config, so a DB-sourced Kerberos row never silently drops it.
-	kerberos.MachineAccount.OnlineJoin = cfg.Kerberos.MachineAccount.OnlineJoin
+	// Overlay the operator/env-injected machine-account config onto the
+	// effective (DB-sourced) Kerberos config. See mergeMachineAccountFromFile
+	// for the precedence rules (#1392).
+	kerberos = mergeMachineAccountFromFile(kerberos, cfg.Kerberos)
+
+	// Overlay deployment-path fields (keytab / krb5.conf mount paths) from
+	// file/env. These are filesystem-mount concerns the operator controls, not
+	// API-managed identity policy: when a volume mount moves (e.g. an operator
+	// upgrade relocating the keytab), the stale DB-row path must not win and
+	// crash the server on a missing file. See overlayDeploymentPaths.
+	kerberos = overlayDeploymentPaths(kerberos, cfg.Kerberos)
 
 	// Seed the runtime's hot-reloadable NETLOGON machine credential from the
 	// effective Kerberos machine-account config (#1325). nil disables passthrough.
@@ -544,6 +549,60 @@ func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runt
 	}
 
 	return kerberos
+}
+
+// mergeMachineAccountFromFile overlays the operator/env-injected machine-account
+// configuration onto the effective Kerberos config (which is DB-sourced when a
+// control-plane row exists, else the file/env config itself).
+//
+// Two precedence rules, both rooted in the fact that machine-account credentials
+// arrive out-of-band (the online-join bind password and the offline machine
+// secret are injected via the config file / DITTOFS_KERBEROS_MACHINE_ACCOUNT_*
+// env), NOT through the API-managed Kerberos DTO that backs the DB row:
+//
+//   - Online-join carries a privileged LDAP bind password and is intentionally
+//     never persisted in the DB DTO, so it is ALWAYS sourced from file/env.
+//   - The offline machine account (account name + secret) is overlaid from
+//     file/env only when the effective config does not already enable one. This
+//     fixes #1392: a DB Kerberos row seeded before NTLM passthrough was
+//     configured carries no machine_account and would otherwise overwrite (drop)
+//     the file/env credential the operator injected, silently disabling
+//     passthrough. A machine account configured explicitly via the API (present
+//     and enabled in the DB row) still wins.
+func mergeMachineAccountFromFile(effective, file config.KerberosConfig) config.KerberosConfig {
+	effective.MachineAccount.OnlineJoin = file.MachineAccount.OnlineJoin
+
+	if !effective.MachineAccount.Enabled && file.MachineAccount.Enabled {
+		onlineJoin := effective.MachineAccount.OnlineJoin
+		effective.MachineAccount = file.MachineAccount
+		effective.MachineAccount.OnlineJoin = onlineJoin
+	}
+	return effective
+}
+
+// overlayDeploymentPaths lets the file/env config override the keytab and
+// krb5.conf paths carried in a DB-sourced Kerberos config.
+//
+// Unlike realm / service principal / NetBIOS domain (API-managed identity
+// policy, where the DB row is authoritative), these are filesystem-mount
+// concerns owned by the deployment: where the orchestrator mounts the keytab
+// and krb5.conf volumes. Persisting them as policy means a DB row seeded under
+// one layout pins a stale absolute path; when an operator upgrade relocates the
+// mount (e.g. /etc/dittofs/krb5.keytab -> /kerberos/dittofs.keytab) the server
+// would crashloop on "open ...: no such file". So a non-empty file/env path
+// always wins; an empty one leaves the DB value intact (pure-API deployments
+// that never set a path are unaffected).
+func overlayDeploymentPaths(effective, file config.KerberosConfig) config.KerberosConfig {
+	if file.KeytabPath != "" {
+		effective.KeytabPath = file.KeytabPath
+	}
+	if file.Krb5Conf != "" {
+		effective.Krb5Conf = file.Krb5Conf
+	}
+	if file.MachineAccount.KeytabPath != "" {
+		effective.MachineAccount.KeytabPath = file.MachineAccount.KeytabPath
+	}
+	return effective
 }
 
 func kerberosConfigToDTO(c config.KerberosConfig) handlers.KerberosConfigDTO {
