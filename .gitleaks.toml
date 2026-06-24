@@ -1,0 +1,14 @@
+# gitleaks config — extends the built-in ruleset.
+# https://github.com/gitleaks/gitleaks
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe placeholders and example values"
+regexes = [
+  # AWS's official documentation example key — not a real credential.
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+  # Localstack / test fixtures use literal "test" credentials.
+  '''(?i)(access|secret)[_-]?key["'\s:=]+test["']''',
+]
