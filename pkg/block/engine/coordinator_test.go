@@ -33,6 +33,12 @@ type fakeCoordinator struct {
 	// whose Remote-gated GetByHash resolves to no FileBlock row (#1245 Bug A).
 	incErr error
 
+	// Optional: incAllNotFound makes EVERY IncrementRefCount return
+	// block.ErrFileBlockNotFound, modelling the real coordinator on a CAS
+	// share where all source blocks are Pending and the Remote-gated
+	// GetByHash never resolves them (#1384 CLONE / SMB server-side-copy).
+	incAllNotFound bool
+
 	// Optional: failOnNthDecrement returns an error on the Nth (1-based)
 	// DecrementRefCount call. Zero disables.
 	failOnNthDecrement int
@@ -98,6 +104,9 @@ func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash block.Conten
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.incCallCount++
+	if f.incAllNotFound {
+		return block.ErrFileBlockNotFound
+	}
 	if f.failOnNthIncrement > 0 && f.incCallCount == f.failOnNthIncrement {
 		if f.incErr != nil {
 			return f.incErr
