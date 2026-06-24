@@ -467,6 +467,11 @@ func (s *Adapter) Serve(ctx context.Context) error {
 	if durableStore := s.findDurableHandleStore(); durableStore != nil {
 		s.handler.DurableStore = durableStore
 
+		// Seed the FileID counter past any persisted durable handles so a
+		// post-restart CREATE cannot re-mint a FileID still owned by a
+		// reclaimable durable open (MS-SMB2 §3.3.5.9.7).
+		s.handler.SeedFileIDFromDurableHandles(ctx, durableStore)
+
 		durableTimeout := uint32(DefaultDurableHandleTimeout)
 		if s.handler.DurableTimeoutMs != 0 {
 			durableTimeout = s.handler.DurableTimeoutMs

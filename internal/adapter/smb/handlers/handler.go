@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"strings"
 	"sync"
@@ -1962,6 +1963,61 @@ func (h *Handler) baseFileUUID(authCtx *metadata.AuthContext, parentHandle metad
 		}
 	}
 	return fallback
+}
+
+// SeedFileIDFromDurableHandles bumps the persistent-half FileID counter past
+// the highest value already recorded in persisted durable handles, so that
+// after a server restart freshly minted FileIDs cannot collide with the
+// FileID of a still-reclaimable durable open.
+//
+// Without this, the counter restarts at 1 every process start (see NewHandler),
+// while durable-handle records in the metadata store retain persistent halves
+// 1,2,3,…. A post-restart CREATE would re-mint a persistent half equal to a
+// persisted handle's, and a V1 reconnect (DHnC) — which matches on the
+// persistent half alone, with no CreateGuid to disambiguate — could then
+// reconnect or consume the wrong file (MS-SMB2 §3.3.5.9.7).
+//
+// Called once during adapter startup after the DurableStore is wired in.
+// The persistent half is the little-endian uint64 in bytes 0..7 of FileID,
+// matching the encoding GenerateFileID writes; the volatile half (bytes 8..15)
+// is zeroed in persisted records and ignored here.
+func (h *Handler) SeedFileIDFromDurableHandles(ctx context.Context, store lock.DurableHandleStore) {
+	if store == nil {
+		return
+	}
+	handles, err := store.ListDurableHandles(ctx)
+	if err != nil {
+		logger.Warn("SMB: could not seed FileID counter from durable handles; "+
+			"using default start (FileID collision possible across restart)",
+			"error", err)
+		return
+	}
+	var maxID uint64
+	for _, dh := range handles {
+		id := binary.LittleEndian.Uint64(dh.FileID[:8])
+		if id > maxID {
+			maxID = id
+		}
+	}
+	if maxID == 0 {
+		return
+	}
+	// The counter holds the *last issued* persistent half — GenerateFileID
+	// pre-increments via Add(1) — so storing maxID makes the next issued
+	// FileID maxID+1, strictly above every persisted handle. Bump only
+	// upward: a concurrent CREATE may already have advanced the counter at or
+	// past maxID, so never lower it.
+	for {
+		cur := h.nextFileID.Load()
+		if cur >= maxID {
+			return
+		}
+		if h.nextFileID.CompareAndSwap(cur, maxID) {
+			logger.Info("SMB: seeded FileID counter past persisted durable handles",
+				"next_file_id", maxID+1, "durable_handles", len(handles))
+			return
+		}
+	}
 }
 
 // GenerateFileID generates a new unique file ID
