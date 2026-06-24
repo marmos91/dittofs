@@ -583,10 +583,13 @@ server-side-copy IOCTLs build on (`common.CloneRange` — one clone path, both p
 Copy-on-write is intrinsic: a later WRITE to either file produces new CAS blocks under a
 new hash, leaving the other side untouched. `CLONE` uses `SAVED_FH` as the source and
 `CURRENT_FH` as the destination (the client `SAVEFH`s the source first, like `COPY`).
-`FATTR4_CLONE_BLKSIZE` is reported as 1 (byte-granular alignment): DittoFS clones by
-splicing the content-addressed block list, so no offset/count alignment constraint applies.
-Source and destination must live in the same share (per-share dedup); a cross-share clone
-returns `NFS4ERR_INVAL`.
+`FATTR4_CLONE_BLKSIZE` is reported as 1 (byte-granular alignment), so the client applies no
+offset/count alignment constraint. DittoFS serves **whole-file** clones (the request covers
+the entire source from offset 0 into the destination at offset 0 — `cl_count` of 0 or the
+source size, which is exactly what `cp --reflink` issues); offset/partial sub-range clones
+return `NFS4ERR_NOTSUPP` (RFC 7862 Section 15.13 permits a server to decline clone requests
+it cannot satisfy). Source and destination must live in the same share (per-share dedup); a
+cross-share clone returns `NFS4ERR_INVAL`.
 
 `SEEK`, `READ_PLUS`, `DEALLOCATE`, and `ALLOCATE` form a sparse-files cluster that shares
 one hole-tracking foundation and **are implemented**. The hole map is derived directly from
@@ -606,7 +609,7 @@ fallback).
 | READ_PLUS | Implemented | hole-aware read; emits data + `NFS4_CONTENT_HOLE` runs ([#1304](https://github.com/marmos91/dittofs/issues/1304)) |
 | DEALLOCATE | Implemented | punch-hole; zeros the range + reclaims block storage ([#1305](https://github.com/marmos91/dittofs/issues/1305)) |
 | ALLOCATE | Implemented | best-effort/logical preallocation (no physical reservation under dedup/S3) ([#1306](https://github.com/marmos91/dittofs/issues/1306)) |
-| CLONE | Implemented | O(1) reflink over dedup block refs; whole-file shares the source BlockRef list and bumps CAS RefCount (no data movement). `FATTR4_CLONE_BLKSIZE` = 1. Source/dest must share a share ([#1302](https://github.com/marmos91/dittofs/issues/1302)) |
+| CLONE | Implemented | O(1) whole-file reflink: shares the source BlockRef list and bumps CAS RefCount (no data movement). Sub-range clones return `NFS4ERR_NOTSUPP`; cross-share returns `NFS4ERR_INVAL`. `FATTR4_CLONE_BLKSIZE` = 1 ([#1302](https://github.com/marmos91/dittofs/issues/1302)) |
 | COPY / OFFLOAD_* / COPY_NOTIFY | Not planned | async server-side copy; `CLONE` covers the intra-server case more cheaply |
 | IO_ADVISE | Not planned | cache/prefetch hints; low value for a userspace vFS |
 | Labeled NFS (`FATTR4_SEC_LABEL`) | Not planned | MAC/SELinux labels; niche |

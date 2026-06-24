@@ -36,7 +36,7 @@ import (
 // Copy-on-write is intrinsic: a later WRITE to either file produces new CAS
 // blocks under a new hash, leaving the other file's content untouched. This is
 // the same engine.CopyPayload refcount path the SMB server-side-copy IOCTLs
-// build on (CLAUDE.md: one clone primitive, both protocols — common.CloneRange).
+// build on (CLAUDE.md: one clone primitive, both protocols — common.CloneWholeFile).
 //
 // SAVED_FH is the source and CURRENT_FH is the destination, exactly like COPY
 // (RFC 7862 Section 15.2): the client issues SAVEFH on the source before PUTFH
@@ -44,6 +44,12 @@ import (
 // (advertised as 1 — byte-granular — so no alignment constraint applies; the
 // guard remains for future non-1 block sizes). cl_count == 0 means "from
 // cl_src_offset to the end of the source file".
+//
+// DittoFS serves whole-file clones (src_offset==0, dst_offset==0, count of 0 or
+// the source size) — the dominant `cp --reflink` path. Offset/partial sub-range
+// clones return NFS4ERR_NOTSUPP (RFC 7862 15.13 permits declining unsupported
+// clones); a true range reflink would need block-boundary splicing that the
+// content-defined FastCDC chunking does not give for free.
 func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *types.CompoundResult {
 	// CURRENT_FH is the destination, SAVED_FH is the source. Both must be set
 	// (the client PUTFHs the source, SAVEFHs it, then PUTFHs the destination).
@@ -136,6 +142,25 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		return cloneErr(types.NFS4ERR_INVAL)
 	}
 
+	// DittoFS clones whole files as a pure-metadata O(1) reflink (share the
+	// source BlockRef list, bump CAS RefCount per unique hash). A request is
+	// "whole file" when it covers the entire source from offset 0 into the
+	// destination at offset 0: src_offset==0, dst_offset==0, and count is 0
+	// ("to EOF") or exactly the source size. RFC 7862 Section 15.13 permits a
+	// server to return NFS4ERR_NOTSUPP for clone requests it cannot satisfy;
+	// partial/offset sub-range clones fall in that bucket here (the dominant
+	// `cp --reflink` path is always whole-file). Validate offsets/count fit
+	// before deciding so a malformed sub-request still gets NFS4ERR_INVAL.
+	if srcOffset > srcFile.Size || (count != 0 && srcOffset+count > srcFile.Size) {
+		return cloneErr(types.NFS4ERR_INVAL)
+	}
+	wholeFile := srcOffset == 0 && dstOffset == 0 && (count == 0 || count == srcFile.Size)
+	if !wholeFile {
+		logger.Debug("NFSv4.2 CLONE sub-range not supported",
+			"srcOffset", srcOffset, "dstOffset", dstOffset, "count", count, "client", ctx.ClientAddr)
+		return cloneErr(types.NFS4ERR_NOTSUPP)
+	}
+
 	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, dstHandle)
 	if err != nil {
 		logger.Error("NFSv4.2 CLONE: cannot resolve block store", "share", dstShare, "error", err)
@@ -147,11 +172,10 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		return cloneErr(types.NFS4ERR_SERVERFAULT)
 	}
 
-	if err := common.CloneRange(
+	if err := common.CloneWholeFile(
 		ctx.Context, blockStore, store, nil,
 		srcHandle, dstHandle,
 		srcFile.PayloadID, dstFile.PayloadID,
-		srcOffset, dstOffset, count,
 	); err != nil {
 		if errors.Is(err, common.ErrCloneCrossShare) {
 			return cloneErr(types.NFS4ERR_INVAL)
