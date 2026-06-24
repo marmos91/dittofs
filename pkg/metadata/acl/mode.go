@@ -107,6 +107,10 @@ func AdjustACLForMode(a *ACL, newMode uint32) *ACL {
 		Protected:     a.Protected,
 		AutoInherited: a.AutoInherited,
 		NullDACL:      a.NullDACL,
+		// SACL (audit/alarm) is unaffected by chmod — RFC 7530 §6.4.1 only
+		// rewrites DACL special-identifier rwx bits. Carry it through so a
+		// chmod after a SET_INFO SACL does not silently drop the audit ACEs.
+		SACL: a.SACL,
 	}
 }
 

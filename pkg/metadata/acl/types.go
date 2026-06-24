@@ -155,12 +155,23 @@ const (
 )
 
 // ACL represents an NFSv4 Access Control List.
+//
+// The ACEs/Source/Protected/AutoInherited/NullDACL fields describe the
+// DACL (discretionary ACL) — the access-control portion that drives
+// permission evaluation. SACL holds the system ACL (audit/alarm ACEs)
+// which is never consulted for access decisions; it is preserved purely
+// for round-trip fidelity with Windows clients that SET and QUERY the
+// SACL_SECURITY_INFORMATION section (MS-DTYP §2.4.6). A nil SACL means
+// "no SACL stored" and is backward compatible with existing data — the
+// SMB read side emits an empty SACL stub in that case, matching prior
+// behavior exactly.
 type ACL struct {
 	ACEs          []ACE     `json:"aces"`
 	Source        ACLSource `json:"source,omitempty"`         // How this ACL was created
 	Protected     bool      `json:"protected,omitempty"`      // SE_DACL_PROTECTED - blocks inheritance
 	AutoInherited bool      `json:"auto_inherited,omitempty"` // SE_DACL_AUTO_INHERITED — DACL was auto-inherited from parent
 	NullDACL      bool      `json:"null_dacl,omitempty"`      // Windows null DACL — no DACL present (everyone full access)
+	SACL          []ACE     `json:"sacl,omitempty"`           // System ACL (audit/alarm ACEs); preserved for round-trip, not used for access checks
 }
 
 // isSpecialWho reports whether who is one of the special identifiers:

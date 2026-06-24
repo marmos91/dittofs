@@ -27,10 +27,11 @@ func cloneBlocks(in []block.BlockRef) []block.BlockRef {
 	return out
 }
 
-// cloneACL returns a deep copy of a *acl.ACL, including a fresh copy of its
-// ACEs slice. acl.ACL holds a single reference-bearing field (the ACEs slice);
-// acl.ACE is a flat value type (uint32 fields + a string Who), so an
-// element-wise slice copy fully detaches the clone — no nested pointers remain.
+// cloneACL returns a deep copy of a *acl.ACL, including fresh copies of its
+// ACEs (DACL) and SACL slices. acl.ACL holds two reference-bearing fields (the
+// ACEs and SACL slices); acl.ACE is a flat value type (uint32 fields + a string
+// Who), so an element-wise slice copy fully detaches the clone — no nested
+// pointers remain.
 //
 // Used by PutFile/GetFile/ListChildren in the Memory backend to prevent ACL
 // aliasing between the caller's view and the stored view. Without this, an
@@ -48,6 +49,10 @@ func cloneACL(in *acl.ACL) *acl.ACL {
 	if in.ACEs != nil {
 		out.ACEs = make([]acl.ACE, len(in.ACEs))
 		copy(out.ACEs, in.ACEs)
+	}
+	if in.SACL != nil {
+		out.SACL = make([]acl.ACE, len(in.SACL))
+		copy(out.SACL, in.SACL)
 	}
 	return &out
 }

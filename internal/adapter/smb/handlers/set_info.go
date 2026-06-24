@@ -1824,15 +1824,28 @@ func (h *Handler) setSecurityInfo(
 		changed = true
 	}
 
-	if (additionalInfo & DACLSecurityInformation) != 0 {
-		if fileACL != nil {
-			setAttrs.ACL = fileACL
-			changed = true
-		} else {
-			// DACL section requested but no DACL in SD → null DACL
-			setAttrs.ACL = &acl.ACL{NullDACL: true}
-			changed = true
+	// DACL and SACL are stored on the same acl.ACL carrier (DACL in ACEs/flags,
+	// SACL in the SACL slice). A SET_INFO may request either or both sections,
+	// so build the installed ACL honoring exactly the requested sections while
+	// preserving the unrequested portion from the file's current ACL. Without
+	// this preserve step, a SACL-only SET would wipe the DACL (and vice versa).
+	wantDACL := (additionalInfo & DACLSecurityInformation) != 0
+	wantSACL := (additionalInfo & SACLSecurityInformation) != 0
+	if wantDACL || wantSACL {
+		// Fetch the current ACL so the unrequested section survives. A miss
+		// (or nil ACL) leaves the section empty, matching today's full-replace
+		// behavior for the requested section.
+		var current *acl.ACL
+		if !wantDACL || !wantSACL {
+			metaSvc := h.Registry.GetMetadataService()
+			if cur, gerr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); gerr == nil && cur != nil {
+				current = cur.ACL
+			}
 		}
+
+		merged := mergeSecurityACL(fileACL, current, wantDACL, wantSACL)
+		setAttrs.ACL = merged
+		changed = true
 	}
 
 	if !changed {
@@ -1854,6 +1867,54 @@ func (h *Handler) setSecurityInfo(
 	}
 
 	return setInfoStatus(types.StatusSuccess), nil
+}
+
+// mergeSecurityACL builds the acl.ACL to install on a SET_INFO Security,
+// combining the freshly-parsed SD (parsed) with the file's current ACL
+// (current) according to which sections the request carried.
+//
+//   - DACL requested: take the DACL (ACEs + DACL-level flags + Source) from
+//     parsed; if parsed is nil the request carried no DACL body → null DACL.
+//   - DACL not requested: preserve the current DACL unchanged.
+//   - SACL requested: take the SACL from parsed (nil parsed → clear SACL).
+//   - SACL not requested: preserve the current SACL unchanged.
+//
+// The result is a single carrier so the metadata store's whole-ACL replace
+// installs both sections atomically without dropping the unrequested one.
+func mergeSecurityACL(parsed, current *acl.ACL, wantDACL, wantSACL bool) *acl.ACL {
+	out := &acl.ACL{}
+
+	// DACL portion (ACEs + DACL-scoped control flags + Source).
+	if wantDACL {
+		if parsed != nil {
+			out.ACEs = parsed.ACEs
+			out.Source = parsed.Source
+			out.Protected = parsed.Protected
+			out.AutoInherited = parsed.AutoInherited
+			out.NullDACL = parsed.NullDACL
+		} else {
+			// DACL section requested but no DACL body in the SD → null DACL.
+			out.NullDACL = true
+		}
+	} else if current != nil {
+		out.ACEs = current.ACEs
+		out.Source = current.Source
+		out.Protected = current.Protected
+		out.AutoInherited = current.AutoInherited
+		out.NullDACL = current.NullDACL
+	}
+
+	// SACL portion.
+	if wantSACL {
+		if parsed != nil {
+			out.SACL = parsed.SACL
+		}
+		// parsed nil or empty SACL → leave out.SACL nil (cleared).
+	} else if current != nil {
+		out.SACL = current.SACL
+	}
+
+	return out
 }
 
 // checkSetInfoSecurityAccess maps requested SECURITY_INFORMATION sections to

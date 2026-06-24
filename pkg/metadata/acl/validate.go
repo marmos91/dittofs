@@ -80,6 +80,18 @@ func ValidateACL(a *ACL) error {
 		}
 	}
 
+	// Validate SACL (audit/alarm) entries with the same per-ACE and count
+	// limits. The SACL is stored for round-trip fidelity only and never drives
+	// access evaluation, but malformed entries must still be rejected.
+	if len(a.SACL) > MaxACECount {
+		return fmt.Errorf("%w: %d SACL ACEs (maximum %d)", ErrACETooMany, len(a.SACL), MaxACECount)
+	}
+	for i := range a.SACL {
+		if err := ValidateACE(&a.SACL[i]); err != nil {
+			return fmt.Errorf("SACL ACE %d: %w", i, err)
+		}
+	}
+
 	return nil
 }
 
