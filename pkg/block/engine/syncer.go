@@ -532,7 +532,10 @@ func (m *Syncer) dataplaneMetrics() DataplaneMetrics {
 	if m.bs == nil {
 		return nil
 	}
-	return m.bs.metrics
+	if p := m.bs.metrics.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // mirrorChunk uploads one pending CAS chunk to the remote store and marks it
