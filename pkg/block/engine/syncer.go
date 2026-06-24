@@ -71,6 +71,15 @@ type Syncer struct {
 	closed bool
 	mu     gosync.RWMutex
 
+	// wake nudges the periodic uploader to run a mirror pass immediately
+	// instead of waiting up to UploadInterval for the next tick. It is
+	// signalled (non-blocking, coalescing) from addPendingHash on every
+	// freshly rolled-up chunk, so upload overlaps the rollup of later chunks
+	// rather than starting a full tick-interval after rollup finishes (#1407).
+	// Buffered length 1: a burst of chunk completions collapses to a single
+	// follow-up pass, which snapshots the whole pending set at once.
+	wake chan struct{}
+
 	periodicStarted bool        // true once periodicUploader goroutine is launched
 	uploading       atomic.Bool // Guards against overlapping periodic upload ticks
 
@@ -130,6 +139,26 @@ func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
 	m.pendingHashes[h] = size
 	m.unsyncedBytes.Add(size - prev)
 	m.pendingMu.Unlock()
+
+	// Nudge the periodic uploader to mirror this chunk now instead of waiting
+	// for the next tick, so upload pipelines with the rollup of later chunks
+	// (#1407). Only meaningful when a remote exists (the periodic uploader does
+	// not run otherwise). Non-blocking + coalescing — see signalWake.
+	if m.remoteStore != nil {
+		m.signalWake()
+	}
+}
+
+// signalWake performs a non-blocking, coalescing send on the wake channel,
+// nudging the periodic uploader to run a mirror pass immediately. Because wake
+// is buffered length 1, a burst of chunk completions collapses into a single
+// follow-up pass that snapshots the whole pending set — bounding wake-driven
+// passes regardless of chunk arrival rate (#1407).
+func (m *Syncer) signalWake() {
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
 }
 
 // markFetchedSynced records a chunk that was just downloaded from the remote
@@ -243,6 +272,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		config:         config,
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
+		wake:           make(chan struct{}, 1),
 		pendingHashes:  make(map[block.ContentHash]int64),
 	}
 
@@ -1023,23 +1053,18 @@ func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
 					logger.Warn("Periodic syncer: drift reconcile failed", "error", err)
 				}
 			}
-			// Skip this tick if the previous upload batch is still running.
-			// This prevents overlapping ticks from multiplying memory usage.
-			if !m.uploading.CompareAndSwap(false, true) {
-				logger.Debug("Periodic syncer: previous tick still running, skipping")
-				continue
+			m.runDrainPass(ctx)
+		case <-m.wake:
+			// A freshly rolled-up chunk signalled work (#1407). Drain now
+			// instead of idling up to UploadInterval, so the mirror pipelines
+			// with the rollup of later chunks. The wake is coalesced, so this
+			// fires at most once per in-flight batch; runDrainPass still skips
+			// when a pass is already running, so wake never multiplies passes.
+			if !m.canProcess(ctx) {
+				logger.Info("Periodic syncer: canProcess=false, exiting")
+				return
 			}
-			func() {
-				defer m.uploading.Store(false)
-				// Circuit breaker: skip uploads when remote store is unhealthy
-				if !m.IsRemoteHealthy() {
-					logger.Warn("Periodic syncer: remote unhealthy, skipping upload cycle",
-						"outage_duration", m.RemoteOutageDuration(),
-						"hint", "check S3 credentials, endpoint, and bucket configuration")
-					return
-				}
-				m.syncLocalBlocks(ctx)
-			}()
+			m.runDrainPass(ctx)
 		case <-m.stopCh:
 			logger.Info("Periodic syncer: stopCh received, exiting")
 			return
@@ -1048,6 +1073,28 @@ func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
 			return
 		}
 	}
+}
+
+// runDrainPass runs one mirror pass under the uploading atomic gate. It is the
+// shared body of the periodic ticker and the wake signal (#1407): the gate
+// ensures a tick and a wake never run overlapping passes (which would multiply
+// memory and double-upload), and the circuit breaker skips uploads while the
+// remote is unhealthy. A skipped pass is a no-op — the pending set is retained
+// for the next tick/wake.
+func (m *Syncer) runDrainPass(ctx context.Context) {
+	if !m.uploading.CompareAndSwap(false, true) {
+		logger.Debug("Periodic syncer: previous pass still running, skipping")
+		return
+	}
+	defer m.uploading.Store(false)
+	// Circuit breaker: skip uploads when remote store is unhealthy.
+	if !m.IsRemoteHealthy() {
+		logger.Warn("Periodic syncer: remote unhealthy, skipping upload cycle",
+			"outage_duration", m.RemoteOutageDuration(),
+			"hint", "check S3 credentials, endpoint, and bucket configuration")
+		return
+	}
+	m.syncLocalBlocks(ctx)
 }
 
 // Close shuts down the syncer and waits for pending uploads.
