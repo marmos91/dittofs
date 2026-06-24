@@ -87,21 +87,27 @@ const (
 	errorBackoff = 0.8
 )
 
-// NewUploadLimiter builds a per-remote upload limiter. fixedN > 0 pins the
-// window at fixedN (operator --parallel-uploads: a static cap, no ramp).
-// fixedN <= 0 enables adaptive mode (ramp toward the measured knee, bounded
-// by UploadSafetyRail).
-func NewUploadLimiter(fixedN int) *UploadLimiter {
-	l := &UploadLimiter{now: time.Now}
-	if fixedN > 0 {
-		l.adaptive = false
-		l.cap = fixedN
-		l.window = float64(fixedN)
+// NewUploadLimiter builds a per-remote upload limiter. The adaptive controller
+// always runs; ceiling is the upper bound it may never exceed:
+//
+//   - ceiling > 0  (operator --parallel-uploads N): adapt within [1, N]. The
+//     flag is a CEILING, not a static pin — BBR still ramps toward the link's
+//     knee but is clamped at the operator's limit, so the two compose instead
+//     of one overriding the other. If the link supports N the window settles at
+//     ~N; if it cannot, BBR backs off below N rather than overshooting.
+//   - ceiling <= 0 (unset): adapt within [1, UploadSafetyRail].
+//
+// The effective in-flight count is additionally bounded by the remote's HTTP
+// connection pool (MaxConnsPerHost); callers size that pool from the same
+// ceiling so the window cannot outrun available connections (see s3.New).
+func NewUploadLimiter(ceiling int) *UploadLimiter {
+	l := &UploadLimiter{now: time.Now, adaptive: true}
+	if ceiling > 0 {
+		l.cap = ceiling
 	} else {
-		l.adaptive = true
 		l.cap = UploadSafetyRail
-		l.window = adaptiveInitialWindow
 	}
+	l.window = math.Min(adaptiveInitialWindow, float64(l.cap))
 	l.cond = sync.NewCond(&l.mu)
 	return l
 }
