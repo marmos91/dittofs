@@ -34,7 +34,6 @@ type countingFileBlockStore struct {
 	decrementRefCount atomic.Int64
 	addRef            atomic.Int64 // LRU hit path
 	getByHash         atomic.Int64 // GetByHash (was FindFileBlockByHash)
-	listPending       atomic.Int64 // ListPending (was ListLocalBlocks)
 	listFileBlocks    atomic.Int64 // engine-internal
 }
 
@@ -82,11 +81,6 @@ func (c *countingFileBlockStore) GetByHash(ctx context.Context, hash block.Conte
 	return c.inner.GetByHash(ctx, hash)
 }
 
-func (c *countingFileBlockStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*block.FileBlock, error) {
-	c.listPending.Add(1)
-	return c.inner.ListPending(ctx, olderThan, limit)
-}
-
 func (c *countingFileBlockStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error) {
 	c.listFileBlocks.Add(1)
 	return c.inner.ListFileBlocks(ctx, payloadID)
@@ -97,34 +91,32 @@ func (c *countingFileBlockStore) EnumeratePayloads(ctx context.Context, fn func(
 
 // snapshot captures the current call counts for comparison.
 type fbsCallSnapshot struct {
-	get, put, del, inc, dec, addref, find, listPending, listFile int64
+	get, put, del, inc, dec, addref, find, listFile int64
 }
 
 func (c *countingFileBlockStore) snapshot() fbsCallSnapshot {
 	return fbsCallSnapshot{
-		get:         c.get.Load(),
-		put:         c.put.Load(),
-		del:         c.del.Load(),
-		inc:         c.incrementRefCount.Load(),
-		dec:         c.decrementRefCount.Load(),
-		addref:      c.addRef.Load(),
-		find:        c.getByHash.Load(),
-		listPending: c.listPending.Load(),
-		listFile:    c.listFileBlocks.Load(),
+		get:      c.get.Load(),
+		put:      c.put.Load(),
+		del:      c.del.Load(),
+		inc:      c.incrementRefCount.Load(),
+		dec:      c.decrementRefCount.Load(),
+		addref:   c.addRef.Load(),
+		find:     c.getByHash.Load(),
+		listFile: c.listFileBlocks.Load(),
 	}
 }
 
 func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
 	return fbsCallSnapshot{
-		get:         after.get - before.get,
-		put:         after.put - before.put,
-		del:         after.del - before.del,
-		inc:         after.inc - before.inc,
-		dec:         after.dec - before.dec,
-		addref:      after.addref - before.addref,
-		find:        after.find - before.find,
-		listPending: after.listPending - before.listPending,
-		listFile:    after.listFile - before.listFile,
+		get:      after.get - before.get,
+		put:      after.put - before.put,
+		del:      after.del - before.del,
+		inc:      after.inc - before.inc,
+		dec:      after.dec - before.dec,
+		addref:   after.addref - before.addref,
+		find:     after.find - before.find,
+		listFile: after.listFile - before.listFile,
 	}
 }
 
@@ -139,7 +131,6 @@ func (c *countingFileBlockStore) ResetCount() {
 	c.decrementRefCount.Store(0)
 	c.addRef.Store(0)
 	c.getByHash.Store(0)
-	c.listPending.Store(0)
 	c.listFileBlocks.Store(0)
 }
 
@@ -151,7 +142,6 @@ func (c *countingFileBlockStore) TotalCount() int {
 		c.decrementRefCount.Load() +
 		c.addRef.Load() +
 		c.getByHash.Load() +
-		c.listPending.Load() +
 		c.listFileBlocks.Load())
 }
 

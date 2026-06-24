@@ -372,10 +372,6 @@ func (s *stubFBS) AddRef(_ context.Context, h block.ContentHash, _ string, _ blo
 	return block.ErrUnknownHash
 }
 
-func (s *stubFBS) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
-	return nil, nil
-}
-
 func (s *stubFBS) GetFileBlock(_ context.Context, id string) (*block.FileBlock, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

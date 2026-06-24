@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
@@ -18,8 +17,8 @@ import (
 // the syncer's resolveFileBlock) and Put (populated by the memory
 // local store's chunk emitter via engine.New's wiring). Mutating
 // methods (Delete, IncrementRefCount, DecrementRefCount) maintain
-// just enough state for the cascade tests; ListPending /
-// ListFileBlocks return empty / per-payload subsets.
+// just enough state for the cascade tests;
+// ListFileBlocks returns per-payload subsets.
 type stubFileBlockStore struct {
 	mu     sync.Mutex
 	blocks map[string]*block.FileBlock
@@ -78,9 +77,6 @@ func (s *stubFileBlockStore) AddRef(_ context.Context, h block.ContentHash, _ st
 		}
 	}
 	return block.ErrUnknownHash
-}
-func (s *stubFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
-	return nil, nil
 }
 
 // Engine-internal surface (kept off the public FileBlockStore).

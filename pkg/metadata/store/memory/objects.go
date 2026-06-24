@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -130,17 +129,6 @@ func (s *MemoryMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.findFileBlockByHashLocked(ctx, hash)
-}
-
-// ListPending returns blocks in Pending state (complete, on disk, not yet
-// synced to remote) older than the given duration. Renamed from
-// ListLocalBlocks; the underlying semantics already match ("Local" was
-// renamed Pending).
-// If limit > 0, at most limit blocks are returned.
-func (s *MemoryMetadataStore) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.listLocalBlocksLocked(ctx, olderThan, limit)
 }
 
 // ListFileBlocks returns all blocks belonging to a file, ordered by block index.
@@ -311,10 +299,6 @@ func (tx *memoryTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 	return tx.store.findFileBlockByHashLocked(ctx, hash)
 }
 
-func (tx *memoryTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	return tx.store.listLocalBlocksLocked(ctx, olderThan, limit)
-}
-
 func (tx *memoryTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	return tx.store.listFileBlocksLocked(ctx, payloadID)
 }
@@ -471,36 +455,6 @@ func (s *MemoryMetadataStore) findFileBlockByHashLocked(_ context.Context, hash 
 	}
 	result := *block
 	return &result, nil
-}
-
-func (s *MemoryMetadataStore) listLocalBlocksLocked(_ context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	if s.fileBlockData == nil {
-		return nil, nil
-	}
-	// olderThan <= 0 means "no age filter" — return every local block.
-	// Using LastAccess.Before(time.Now()) is unreliable under tight scheduling
-	// (freshly-flushed blocks may tie or beat the cutoff), which flaked
-	// TestSyncer_ConcurrentOperations_Memory.
-	var cutoff time.Time
-	filterByAge := olderThan > 0
-	if filterByAge {
-		cutoff = time.Now().Add(-olderThan)
-	}
-	var result []*metadata.FileBlock
-	for _, block := range s.fileBlockData.blocks {
-		if block.State != metadata.BlockStatePending || !block.HasLocalFile() {
-			continue
-		}
-		if filterByAge && !block.LastAccess.Before(cutoff) {
-			continue
-		}
-		b := *block
-		result = append(result, &b)
-		if limit > 0 && len(result) >= limit {
-			break
-		}
-	}
-	return result, nil
 }
 
 func (s *MemoryMetadataStore) listFileBlocksLocked(_ context.Context, payloadID string) ([]*metadata.FileBlock, error) {

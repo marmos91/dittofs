@@ -28,7 +28,6 @@ import (
 // Key Prefixes:
 //   - fb:{id}          - FileBlock data (keyed by UUID)
 //   - fb-hash:{hash}   - Hash index: content hash -> block ID
-//   - fb-local:{id}    - Local-state secondary index for ListPending
 //   - fb-file:{pid}:{n}- Per-file secondary index for ListFileBlocks
 //
 // Thread Safety: All operations use BadgerDB transactions for ACID guarantees.
@@ -36,24 +35,22 @@ import (
 // ============================================================================
 
 const (
-	fileBlockPrefix      = "fb:"
-	fileBlockHashPrefix  = "fb-hash:"
-	fileBlockLocalPrefix = "fb-local:"
-	fileBlockFilePrefix  = "fb-file:"
+	fileBlockPrefix     = "fb:"
+	fileBlockHashPrefix = "fb-hash:"
+	fileBlockFilePrefix = "fb-file:"
 )
 
 // Ensure BadgerMetadataStore implements FileBlockStore
 var _ blockpkg.FileBlockStore = (*BadgerMetadataStore)(nil)
 
 // reapBlockTxn deletes a FileBlock's primary key plus every secondary index
-// (local, file, hash) inside the supplied transaction. Shared by Delete and
+// (file, hash) inside the supplied transaction. Shared by Delete and
 // the decrement-and-reap paths so the teardown stays in one place. The caller
 // has already loaded `block` (its Hash drives the hash-index cleanup).
 func reapBlockTxn(txn *badger.Txn, id string, block *metadata.FileBlock) error {
 	if err := txn.Delete([]byte(fileBlockPrefix + id)); err != nil {
 		return err
 	}
-	_ = txn.Delete([]byte(fileBlockLocalPrefix + id))
 	if pid, idx, ok := splitBlockID(id); ok {
 		_ = txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
 	}
@@ -102,17 +99,6 @@ func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileBlock
 		}
 		if err := txn.Set(key, val); err != nil {
 			return err
-		}
-
-		// Maintain local index: add when Pending, remove otherwise.
-		// This allows ListPending to iterate O(local) instead of O(all).
-		localKey := []byte(fileBlockLocalPrefix + block.ID)
-		if block.State == metadata.BlockStatePending {
-			if err := txn.Set(localKey, nil); err != nil {
-				return err
-			}
-		} else {
-			_ = txn.Delete(localKey) // Ignore ErrKeyNotFound
 		}
 
 		// Maintain file index: fb-file:{payloadID}:{blockIdx} -> block.ID
@@ -249,7 +235,7 @@ func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 
 // DecrementRefCountAndReap atomically decrements a block's RefCount and, when
 // the new count is 0, deletes the fb:{id} row plus its secondary indexes
-// (local, file, hash) inside the SAME db.Update transaction as the decrement —
+// (file, hash) inside the SAME db.Update transaction as the decrement —
 // TOCTOU-free against a concurrent AddRef (same retry-on-conflict idiom as
 // DecrementRefCount). Returns (0, nil) when the row is already absent.
 func (s *BadgerMetadataStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
@@ -405,24 +391,6 @@ func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 	return &block, nil
 }
 
-// ListPending returns blocks in Pending state (complete, on disk, not yet
-// synced to remote) older than the given duration. Renamed from
-// ListLocalBlocks; the underlying semantics already match ("Local" was
-// renamed Pending).
-// If limit > 0, at most limit blocks are returned.
-//
-// Uses the fb-local: secondary index for O(local) iteration instead of
-// scanning all fb: entries. This eliminates the BadgerDB full-table scan
-// that was the root cause of sequential write throughput degradation.
-func (s *BadgerMetadataStore) ListPending(_ context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	var result []*metadata.FileBlock
-	err := s.db.View(func(txn *badger.Txn) error {
-		result = listPendingTxn(txn, olderThan, limit)
-		return nil
-	})
-	return result, err
-}
-
 // ListFileBlocks returns all blocks belonging to a file, ordered by block index.
 // Uses the fb-file:{payloadID}: secondary index for efficient O(file_blocks) queries.
 // Not on the narrowed FileBlockStore interface;
@@ -500,52 +468,11 @@ func (s *BadgerMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(b
 	})
 }
 
-// listPendingTxn / listFileBlocksTxn / enumerateFileBlocksTxn iterate a given
+// listFileBlocksTxn / enumerateFileBlocksTxn iterate a given
 // *badger.Txn so the store-level methods (over a db.View snapshot) and the
 // transaction-level methods (over the active write txn, for read-after-write)
 // share one implementation. Binding to the caller's txn is what lets a
 // tx.Put be observed by a later tx.ListFileBlocks in the same WithTransaction.
-func listPendingTxn(txn *badger.Txn, olderThan time.Duration, limit int) []*metadata.FileBlock {
-	// olderThan <= 0 means "no age filter" — return every local block.
-	var cutoff time.Time
-	filterByAge := olderThan > 0
-	if filterByAge {
-		cutoff = time.Now().Add(-olderThan)
-	}
-	var result []*metadata.FileBlock
-	prefix := []byte(fileBlockLocalPrefix)
-	opts := badger.DefaultIteratorOptions
-	opts.Prefix = prefix
-	opts.PrefetchValues = false // Keys only — values are empty
-	it := txn.NewIterator(opts)
-	defer it.Close()
-
-	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-		id := string(it.Item().Key()[len(prefix):])
-		fbItem, err := txn.Get([]byte(fileBlockPrefix + id))
-		if err != nil {
-			continue // Index stale, block deleted
-		}
-		var block metadata.FileBlock
-		if err := fbItem.Value(func(val []byte) error {
-			return json.Unmarshal(val, &block)
-		}); err != nil {
-			continue
-		}
-		if !block.HasLocalFile() {
-			continue
-		}
-		if filterByAge && !block.LastAccess.Before(cutoff) {
-			continue
-		}
-		result = append(result, &block)
-		if limit > 0 && len(result) >= limit {
-			break
-		}
-	}
-	return result
-}
-
 func listFileBlocksTxn(txn *badger.Txn, payloadID string) []*metadata.FileBlock {
 	var result []*metadata.FileBlock
 	prefix := []byte(fileBlockFilePrefix + payloadID + ":")
@@ -753,14 +680,6 @@ func (tx *badgerTransaction) Put(ctx context.Context, block *metadata.FileBlock)
 	}
 	if err := tx.txn.Set(key, val); err != nil {
 		return err
-	}
-	localKey := []byte(fileBlockLocalPrefix + block.ID)
-	if block.State == metadata.BlockStatePending {
-		if err := tx.txn.Set(localKey, nil); err != nil {
-			return err
-		}
-	} else {
-		_ = tx.txn.Delete(localKey)
 	}
 	if pid, idx, ok := splitBlockID(block.ID); ok {
 		fileKey := []byte(fileBlockFilePrefix + pid + ":" + idx)
@@ -987,20 +906,13 @@ func (tx *badgerTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 	return &block, nil
 }
 
-// ListPending, ListFileBlocks, EnumerateFileBlocks iterate the active txn
+// ListFileBlocks, EnumerateFileBlocks iterate the active txn
 // (tx.txn) rather than opening a fresh db.View snapshot. Delegating to the
 // store path took a snapshot at call time, so a tx.Put followed by
 // tx.ListFileBlocks in the same WithTransaction missed the uncommitted write —
 // a cross-backend divergence vs memory, whose list helpers read live maps
 // under the held lock. Binding to tx.txn gives read-after-write within the tx
 // (BadgerDB transactions see their own pending writes).
-func (tx *badgerTransaction) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*metadata.FileBlock, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return listPendingTxn(tx.txn, olderThan, limit), nil
-}
-
 func (tx *badgerTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

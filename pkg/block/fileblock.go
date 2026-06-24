@@ -2,13 +2,12 @@ package block
 
 import (
 	"context"
-	"time"
 )
 
 // FileBlockStore defines content-addressed block CRUD for the engine.
 //
-// 7 methods: GetByHash, Put, Delete, IncrementRefCount,
-// DecrementRefCount, ListPending, AddRef. Block identity is hash-keyed
+// methods: GetByHash, Put, Delete, IncrementRefCount,
+// DecrementRefCount, DecrementRefCountAndReap, AddRef. Block identity is hash-keyed
 // at the contract level; backends still use `id VARCHAR PRIMARY KEY +
 // hash non-unique index` internally to preserve the
 // multi-row-per-hash tolerance for legacy data.
@@ -130,12 +129,6 @@ type FileBlockStore interface {
 	// multi-row-per-hash backends to choose which row to bump; they
 	// are NOT part of the persisted state.
 	AddRef(ctx context.Context, hash ContentHash, payloadID string, blockRef BlockRef) error
-
-	// ListPending returns up-to-limit Pending FileBlocks older than
-	// olderThan, for the syncer claim path. Replaces the legacy
-	// ListLocalBlocks (narrowed local→pending semantics already; this
-	// is just the rename).
-	ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*FileBlock, error)
 }
 
 // EngineFileBlockStore is the engine-internal extension of

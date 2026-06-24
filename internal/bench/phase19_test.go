@@ -247,9 +247,6 @@ func (s *aggregateStubFileBlockStore) AddRef(_ context.Context, h block.ContentH
 	}
 	return block.ErrUnknownHash
 }
-func (s *aggregateStubFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
-	return nil, nil
-}
 func (s *aggregateStubFileBlockStore) GetFileBlock(_ context.Context, id string) (*block.FileBlock, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

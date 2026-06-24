@@ -391,9 +391,6 @@ func (nopFileBlockStore) AddRef(_ context.Context, _ block.ContentHash, _ string
 	// the full Put path on this sentinel.
 	return block.ErrUnknownHash
 }
-func (nopFileBlockStore) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
-	return nil, nil
-}
 func (nopFileBlockStore) GetFileBlock(_ context.Context, _ string) (*block.FileBlock, error) {
 	return nil, block.ErrFileBlockNotFound
 }

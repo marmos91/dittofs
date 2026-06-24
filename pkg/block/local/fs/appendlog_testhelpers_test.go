@@ -40,9 +40,6 @@ func (nopFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.B
 	// callers fall back to the full Put path.
 	return block.ErrUnknownHash
 }
-func (nopFBS) ListPending(_ context.Context, _ time.Duration, _ int) ([]*block.FileBlock, error) {
-	return nil, nil
-}
 
 // Engine-internal surface (kept off the public FileBlockStore per
 func (nopFBS) GetFileBlock(_ context.Context, _ string) (*block.FileBlock, error) {

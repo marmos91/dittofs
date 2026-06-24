@@ -645,9 +645,6 @@ func (p *programmableFBS) AddRef(ctx context.Context, h block.ContentHash, paylo
 	}
 	return p.inner.AddRef(ctx, h, payloadID, ref)
 }
-func (p *programmableFBS) ListPending(ctx context.Context, olderThan time.Duration, limit int) ([]*block.FileBlock, error) {
-	return p.inner.ListPending(ctx, olderThan, limit)
-}
 func (p *programmableFBS) GetFileBlock(ctx context.Context, id string) (*block.FileBlock, error) {
 	return p.inner.GetFileBlock(ctx, id)
 }
