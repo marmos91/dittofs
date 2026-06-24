@@ -515,6 +515,34 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 	return ownerUID, ownerGID, fileACL, nil
 }
 
+// securityDescriptorHasOwner reports whether a self-relative Security
+// Descriptor carries an Owner SID section (OffsetOwner != 0) and, separately,
+// a Group SID section (OffsetGroup != 0).
+//
+// ParseSecurityDescriptorWithOptions returns a nil ownerUID/ownerGID for two
+// distinct cases that the SET_INFO Security path must tell apart: (1) the SD
+// did not carry that SID section at all, and (2) the section was present but
+// its SID could not be mapped to a local UID/GID. Callers use these flags
+// together with the parsed UID/GID to reject an unmappable owner/group change
+// instead of silently succeeding (refs #1228). Decode failures are treated as
+// "not present" so the existing parse-error path (StatusInvalidParameter) still
+// governs malformed input.
+func securityDescriptorHasOwner(data []byte) (hasOwner, hasGroup bool) {
+	if len(data) < sdHeaderSize {
+		return false, false
+	}
+	r := smbenc.NewReader(data)
+	r.Skip(2) // Revision(1) + Sbz1(1)
+	r.Skip(2) // Control(2)
+	offsetOwner := r.ReadUint32()
+	offsetGroup := r.ReadUint32()
+	if r.Err() != nil {
+		return false, false
+	}
+	return offsetOwner > 0 && int(offsetOwner) < len(data),
+		offsetGroup > 0 && int(offsetGroup) < len(data)
+}
+
 // parseDACL parses a DACL and returns an NFSv4 ACL.
 // ACLs parsed from SET_INFO are marked with Source: ACLSourceSMBExplicit.
 func parseDACL(data []byte) (*acl.ACL, error) {

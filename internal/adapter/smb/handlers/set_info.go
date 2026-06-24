@@ -1809,6 +1809,23 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
+	// ParseSecurityDescriptorWithOptions returns a nil ownerUID/ownerGID both
+	// when the SD omits that SID section and when the section is present but
+	// its SID could not be mapped to a local UID/GID. For a requested
+	// OWNER/GROUP change the latter must NOT silently no-op (Windows would
+	// believe the owner changed) — reject it with an explicit status. Decode
+	// the SD header once to tell the two cases apart. Refs #1228.
+	hasOwnerSID, hasGroupSID := securityDescriptorHasOwner(buffer)
+
+	if (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil {
+		logger.Debug("SET_INFO Security: owner change requested with unmappable SID", "path", openFile.Path)
+		return setInfoStatus(types.StatusInvalidOwner), nil
+	}
+	if (additionalInfo&GroupSecurityInformation) != 0 && hasGroupSID && ownerGID == nil {
+		logger.Debug("SET_INFO Security: group change requested with unmappable SID", "path", openFile.Path)
+		return setInfoStatus(types.StatusNoneMapped), nil
+	}
+
 	// Build SetAttrs from parsed SD
 	setAttrs := &metadata.SetAttrs{}
 	changed := false

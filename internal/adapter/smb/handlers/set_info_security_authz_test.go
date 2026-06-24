@@ -89,7 +89,11 @@ func setupSecurityAuthzTest(t *testing.T) (*Handler, *OpenFile, *metadata.AuthCo
 // the SD smb2.acls.OWNER (acls.c::test_owner_bits) installs at line 763.
 func minimalDACLSDForOwner(t *testing.T) []byte {
 	t.Helper()
-	owner := buildSID(t, "S-1-5-21-1000-1000-1000-500")
+	// Owner RID 1000 maps to UID 0 under the test SID mapper (S-1-5-21-0-0-0,
+	// see TestMain). A mappable owner is required so SET_INFO no longer rejects
+	// the change as STATUS_INVALID_OWNER (refs #1228) — these tests assert the
+	// access gate, not SID mapping.
+	owner := buildSID(t, "S-1-5-21-0-0-0-1000")
 	const writeData uint32 = 0x00000002
 	ace := buildACE(accessAllowedACEType, 0x00, writeData, owner)
 	dacl := buildRawDACL(1, ace)
