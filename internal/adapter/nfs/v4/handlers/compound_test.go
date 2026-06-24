@@ -719,7 +719,7 @@ func TestCompound_V41_DispatchTableComplete(t *testing.T) {
 
 	// The v4.2 ops live in their OWN table, separate from v4.1: the four RFC 8276
 	// xattr ops plus the RFC 7862 sparse-file cluster (SEEK / READ_PLUS /
-	// DEALLOCATE / ALLOCATE).
+	// DEALLOCATE / ALLOCATE) and CLONE.
 	expectedV42Ops := []uint32{
 		types.OP_GETXATTR,
 		types.OP_SETXATTR,
@@ -729,6 +729,7 @@ func TestCompound_V41_DispatchTableComplete(t *testing.T) {
 		types.OP_DEALLOCATE,
 		types.OP_SEEK,
 		types.OP_READ_PLUS,
+		types.OP_CLONE,
 	}
 	if len(h.v42DispatchTable) != len(expectedV42Ops) {
 		t.Errorf("v42DispatchTable has %d entries, want %d", len(h.v42DispatchTable), len(expectedV42Ops))
