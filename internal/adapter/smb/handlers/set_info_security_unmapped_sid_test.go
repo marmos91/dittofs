@@ -5,13 +5,21 @@
 // ownerUID/ownerGID both when the SD omitted the SID section AND when the
 // section was present but unmappable. setSecurityInfo then silently skipped the
 // owner/group change and returned STATUS_SUCCESS — Windows believed the owner
-// changed when nothing did. The fix rejects a requested OWNER/GROUP change
-// whose SID is present-but-unmappable with STATUS_INVALID_OWNER /
-// STATUS_NONE_MAPPED, while leaving DACL-only sets and mappable SIDs untouched.
+// changed when nothing did.
+//
+// The corrected boundary (after smbtorture smb2.acls.SDFLAGSVSCHOWN): only a
+// requested OWNER/GROUP change to a genuinely FOREIGN domain account (an
+// S-1-5-21 SID from a different domain — resolvable only via AD/LDAP, #1231) is
+// rejected (STATUS_INVALID_OWNER / STATUS_NONE_MAPPED). Well-known SIDs (World,
+// BUILTIN\*, NT AUTHORITY\*), our own machine-domain SIDs, and DACL-only sets
+// are accepted, matching real servers — Samba resolves well-known SIDs through
+// idmap rather than failing.
 //
 // The test SID mapper (TestMain in security_test.go) is S-1-5-21-0-0-0, so:
-//   - S-1-5-21-0-0-0-1000  → UID 0 (mappable owner)
-//   - S-1-5-21-9-9-9-500    → unmappable (foreign domain, #1231 scope)
+//   - S-1-5-21-0-0-0-1000  → UID 0 (mappable owner, our domain)
+//   - S-1-5-32-544          → BUILTIN\Administrators (well-known, unmappable, accepted)
+//   - S-1-1-0               → World/Everyone (well-known, unmappable, accepted)
+//   - S-1-5-21-9-9-9-500    → FOREIGN domain account (unmappable, rejected)
 package handlers
 
 import (
@@ -44,8 +52,10 @@ func buildSDWithOwnerGroup(t *testing.T, ownerSIDStr, groupSIDStr string) []byte
 
 func TestSetInfo_Security_UnmappableOwnerGroup(t *testing.T) {
 	const (
-		mappableSID   = "S-1-5-21-0-0-0-1000" // UID 0 under the test mapper
-		unmappableSID = "S-1-5-21-9-9-9-500"  // foreign domain → no local mapping
+		mappableSID   = "S-1-5-21-0-0-0-1000" // UID 0 under the test mapper (our domain)
+		foreignSID    = "S-1-5-21-9-9-9-500"  // foreign domain account → rejected
+		worldSID      = "S-1-1-0"             // well-known World/Everyone → accepted
+		builtinAdmins = "S-1-5-32-544"        // well-known BUILTIN\Administrators → accepted
 	)
 
 	cases := []struct {
@@ -56,11 +66,11 @@ func TestSetInfo_Security_UnmappableOwnerGroup(t *testing.T) {
 		wantStatus     types.Status
 	}{
 		{
-			// (a) owner requested + unmappable SID present → explicit failure,
-			// not silent success.
-			name:           "owner_requested_unmappable_sid_rejected",
+			// (a) owner requested + FOREIGN-domain unmappable SID present →
+			// explicit failure, not silent success. The genuine #1228 fix.
+			name:           "owner_requested_foreign_domain_sid_rejected",
 			additionalInfo: OwnerSecurityInformation,
-			ownerSIDStr:    unmappableSID,
+			ownerSIDStr:    foreignSID,
 			wantStatus:     types.StatusInvalidOwner,
 		},
 		{
@@ -71,17 +81,18 @@ func TestSetInfo_Security_UnmappableOwnerGroup(t *testing.T) {
 			wantStatus:     types.StatusSuccess,
 		},
 		{
-			// (c) DACL-only set with no owner info → unaffected by the new gate.
+			// (c) DACL-only set with no owner info → unaffected by the gate, even
+			// when a foreign owner SID is present in the SD but not requested.
 			name:           "dacl_only_no_owner_info_unaffected",
 			additionalInfo: DACLSecurityInformation,
-			ownerSIDStr:    unmappableSID, // present in SD but not requested
+			ownerSIDStr:    foreignSID, // present in SD but not requested
 			wantStatus:     types.StatusSuccess,
 		},
 		{
-			// group requested + unmappable SID present → STATUS_NONE_MAPPED.
-			name:           "group_requested_unmappable_sid_rejected",
+			// group requested + FOREIGN-domain unmappable SID → STATUS_NONE_MAPPED.
+			name:           "group_requested_foreign_domain_sid_rejected",
 			additionalInfo: GroupSecurityInformation,
-			groupSIDStr:    unmappableSID,
+			groupSIDStr:    foreignSID,
 			wantStatus:     types.StatusNoneMapped,
 		},
 		{
@@ -93,24 +104,31 @@ func TestSetInfo_Security_UnmappableOwnerGroup(t *testing.T) {
 			wantStatus:     types.StatusSuccess,
 		},
 		{
-			// smbtorture smb2.acls.SDFLAGSVSCHOWN: the file is owned by root
-			// (UID 0), whose minted owner SID is BUILTIN\Administrators
-			// (S-1-5-32-544) — a SID that does NOT reverse to a UID. Re-setting
-			// the IDENTICAL owner SID the server already reports is a no-op and
-			// must succeed (NT_STATUS_OK), not STATUS_INVALID_OWNER.
-			name:           "owner_reset_to_current_owner_sid_succeeds",
+			// EXACT smbtorture smb2.acls.SDFLAGSVSCHOWN trigger: the test chowns
+			// the owner to the World SID (S-1-1-0) via SECINFO_OWNER and expects
+			// NT_STATUS_OK. World does not reverse to a local UID but is a
+			// well-known principal, not a foreign domain account, so it must be
+			// accepted as a no-op success — NOT STATUS_INVALID_OWNER.
+			name:           "owner_set_to_world_sid_succeeds",
 			additionalInfo: OwnerSecurityInformation,
-			ownerSIDStr:    "S-1-5-32-544", // == UserSID(0) for the root-owned file
+			ownerSIDStr:    worldSID,
 			wantStatus:     types.StatusSuccess,
 		},
 		{
-			// Group counterpart: re-setting the file's current group SID
-			// (GroupSID(0) = S-1-5-21-0-0-0-1001 under the test mapper) is a
-			// no-op success. This SID does reverse here, but the case documents
-			// the symmetric no-op-re-set boundary.
-			name:           "group_reset_to_current_group_sid_succeeds",
+			// SDFLAGSVSCHOWN also re-sets the original owner. For a root-owned
+			// file that is BUILTIN\Administrators (UserSID(0)) — well-known,
+			// unmappable, must succeed.
+			name:           "owner_set_to_builtin_administrators_succeeds",
+			additionalInfo: OwnerSecurityInformation,
+			ownerSIDStr:    builtinAdmins,
+			wantStatus:     types.StatusSuccess,
+		},
+		{
+			// Group counterpart: setting the group to the World SID is a
+			// well-known, unmappable no-op success.
+			name:           "group_set_to_world_sid_succeeds",
 			additionalInfo: GroupSecurityInformation,
-			groupSIDStr:    "S-1-5-21-0-0-0-1001", // == GroupSID(0)
+			groupSIDStr:    worldSID,
 			wantStatus:     types.StatusSuccess,
 		},
 	}
@@ -137,13 +155,48 @@ func TestSetInfo_Security_UnmappableOwnerGroup(t *testing.T) {
 	}
 }
 
-// TestSetInfo_Security_OwnerOffsetOutOfRange covers the regression that
-// presence detection must NOT bounds-gate the owner/group offset: a SD with a
-// non-zero OffsetOwner that points past the buffer is malformed but still
-// "present". ParseSecurityDescriptorWithOptions ignores the out-of-range offset
-// and leaves the owner unmapped, so a requested OWNER change must be rejected
-// (STATUS_INVALID_OWNER) rather than treated as an absent section and silently
-// succeeding — the very silent-no-op bug #1228 fixes.
+// TestSetInfo_Security_SDFLAGSVSCHOWN_ChownRoundTrip mirrors the exact
+// owner-chown round-trip smbtorture smb2.acls.SDFLAGSVSCHOWN performs: set the
+// owner to the World SID, then back to the file's original owner SID, asserting
+// NT_STATUS_OK on both SETs (acls.c lines ~1760-1774). Both legs target
+// SECINFO_OWNER with a well-known / current-owner SID that has no reverse UID,
+// so neither may be rejected.
+func TestSetInfo_Security_SDFLAGSVSCHOWN_ChownRoundTrip(t *testing.T) {
+	h, openFile, authCtx := setupSecurityAuthzTest(t)
+	openFile.GrantedAccess = uint32(types.WriteOwner)
+	h.StoreOpenFile(openFile)
+
+	// Leg 1: chown owner -> World (S-1-1-0).
+	sdWorld := buildSDWithOwnerGroup(t, "S-1-1-0", "")
+	resp, err := h.setSecurityInfo(authCtx, openFile, OwnerSecurityInformation, sdWorld)
+	if err != nil {
+		t.Fatalf("setSecurityInfo(world): %v", err)
+	}
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("chown to World: status = %s (0x%08x), want StatusSuccess",
+			resp.Status, uint32(resp.Status))
+	}
+
+	// Leg 2: chown owner -> original owner. The root-owned test file's owner SID
+	// is UserSID(0) = BUILTIN\Administrators (S-1-5-32-544).
+	sdOrig := buildSDWithOwnerGroup(t, "S-1-5-32-544", "")
+	resp, err = h.setSecurityInfo(authCtx, openFile, OwnerSecurityInformation, sdOrig)
+	if err != nil {
+		t.Fatalf("setSecurityInfo(orig): %v", err)
+	}
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("chown back to original owner: status = %s (0x%08x), want StatusSuccess",
+			resp.Status, uint32(resp.Status))
+	}
+}
+
+// TestSetInfo_Security_OwnerOffsetOutOfRange documents that presence detection
+// is NOT bounds-gated: a SD with a non-zero OffsetOwner that points past the
+// buffer is malformed-but-present. ParseSecurityDescriptorWithOptions ignores
+// the out-of-range offset (ownerUID stays nil) and the raw owner SID fails to
+// decode, so it is not a foreign domain SID. Under the corrected boundary that
+// is accepted as a no-op success (only foreign domain SIDs error) — matching
+// the lenient real-server semantics SDFLAGSVSCHOWN proved.
 func TestSetInfo_Security_OwnerOffsetOutOfRange(t *testing.T) {
 	h, openFile, authCtx := setupSecurityAuthzTest(t)
 	openFile.GrantedAccess = uint32(types.WriteDac | types.WriteOwner)
@@ -158,9 +211,9 @@ func TestSetInfo_Security_OwnerOffsetOutOfRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setSecurityInfo: %v", err)
 	}
-	if resp.Status != types.StatusInvalidOwner {
-		t.Fatalf("status = %s (0x%08x), want STATUS_INVALID_OWNER (0x%08x) — "+
-			"out-of-range owner offset must NOT be a silent success",
-			resp.Status, uint32(resp.Status), uint32(types.StatusInvalidOwner))
+	if resp.Status != types.StatusSuccess {
+		t.Fatalf("status = %s (0x%08x), want StatusSuccess (out-of-range owner "+
+			"offset is not a foreign domain SID, so accepted as no-op)",
+			resp.Status, uint32(resp.Status))
 	}
 }

@@ -1809,47 +1809,40 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
-	metaSvc := h.Registry.GetMetadataService()
-
 	// ParseSecurityDescriptorWithOptions returns a nil ownerUID/ownerGID both
 	// when the SD omits that SID section and when the section is present but its
-	// SID could not be mapped to a local UID/GID. For a requested OWNER/GROUP
-	// change the unmappable case must NOT silently no-op (Windows would believe
-	// the owner changed) — reject it with an explicit status. Refs #1228.
+	// SID could not be mapped to a local UID/GID. A requested OWNER/GROUP change
+	// to a genuinely FOREIGN domain account (an S-1-5-21 SID from another
+	// domain, resolvable only via AD/LDAP — #1231) must NOT silently no-op:
+	// Windows would believe the owner changed when nothing did, so we reject it
+	// with an explicit status. Refs #1228.
 	//
-	// Exception: re-setting the owner/group to the SAME SID the server emits
-	// today for the file's current owner/group is a legitimate no-op success,
-	// even when that SID does not reverse to a UID/GID. UserSID(0) →
-	// BUILTIN\Administrators (S-1-5-32-544) is the canonical case: a client that
-	// QUERYs the SD of a root-owned file and re-SETs the identical owner SID
-	// (smbtorture smb2.acls.SDFLAGSVSCHOWN) must get NT_STATUS_OK, not
-	// STATUS_INVALID_OWNER. We therefore only reject a present-but-unmappable
-	// SID that DIFFERS from the current owner/group's minted SID — i.e. a
-	// genuinely foreign/unresolvable domain SID (foreign AD mapping is #1231).
+	// Any other unmappable SID is accepted as a no-op success, matching real
+	// servers. smbtorture smb2.acls.SDFLAGSVSCHOWN chowns the owner to the World
+	// SID (S-1-1-0) and back, expecting NT_STATUS_OK each time; Samba resolves
+	// well-known SIDs through idmap rather than failing. Well-known SIDs (World,
+	// BUILTIN\*, NT AUTHORITY\*, CREATOR\*) and SIDs in our own machine domain
+	// are therefore NOT rejected here even when they have no reverse UID/GID
+	// mapping — only IsForeignDomainSID SIDs are. (A foreign SID set is a
+	// no-op against local POSIX ownership too; we surface the error purely so a
+	// client is not misled into thinking a foreign-principal chown succeeded.)
 	if additionalInfo&(OwnerSecurityInformation|GroupSecurityInformation) != 0 {
 		reqOwnerSID, reqGroupSID, hasOwnerSID, hasGroupSID := securityDescriptorOwnerGroupSIDs(buffer)
 		mapper := GetSIDMapper()
 
-		var curUID, curGID uint32
-		if curFile, getErr := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle); getErr == nil {
-			curUID, curGID = curFile.UID, curFile.GID
+		if (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil &&
+			mapper.IsForeignDomainSID(reqOwnerSID) {
+			logger.Debug("SET_INFO Security: owner change requested with foreign-domain SID", "path", openFile.Path)
+			return setInfoStatus(types.StatusInvalidOwner), nil
 		}
-
-		if (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil {
-			if reqOwnerSID == nil || !reqOwnerSID.Equal(mapper.UserSID(curUID)) {
-				logger.Debug("SET_INFO Security: owner change requested with unmappable SID", "path", openFile.Path)
-				return setInfoStatus(types.StatusInvalidOwner), nil
-			}
-			// Same SID as the current owner — no-op re-set, accept.
-		}
-		if (additionalInfo&GroupSecurityInformation) != 0 && hasGroupSID && ownerGID == nil {
-			if reqGroupSID == nil || !reqGroupSID.Equal(mapper.GroupSID(curGID)) {
-				logger.Debug("SET_INFO Security: group change requested with unmappable SID", "path", openFile.Path)
-				return setInfoStatus(types.StatusNoneMapped), nil
-			}
-			// Same SID as the current group — no-op re-set, accept.
+		if (additionalInfo&GroupSecurityInformation) != 0 && hasGroupSID && ownerGID == nil &&
+			mapper.IsForeignDomainSID(reqGroupSID) {
+			logger.Debug("SET_INFO Security: group change requested with foreign-domain SID", "path", openFile.Path)
+			return setInfoStatus(types.StatusNoneMapped), nil
 		}
 	}
+
+	metaSvc := h.Registry.GetMetadataService()
 
 	// Build SetAttrs from parsed SD
 	setAttrs := &metadata.SetAttrs{}

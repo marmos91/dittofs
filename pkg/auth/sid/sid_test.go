@@ -344,6 +344,39 @@ func TestIsDomainSID(t *testing.T) {
 	}
 }
 
+func TestIsForeignDomainSID(t *testing.T) {
+	m := NewSIDMapper(100, 200, 300)
+
+	cases := []struct {
+		name string
+		sid  *SID
+		want bool
+	}{
+		// An S-1-5-21 account SID from a DIFFERENT domain is foreign.
+		{"other_domain_user", NewSIDMapper(999, 888, 777).UserSID(1000), true},
+		{"other_domain_literal", ParseSIDMust("S-1-5-21-9-9-9-500"), true},
+		// Our own machine-domain SIDs are NOT foreign.
+		{"own_domain_user", m.UserSID(1000), false},
+		{"own_domain_group", m.GroupSID(1000), false},
+		// Well-known / builtin SIDs are NOT domain accounts, so not foreign.
+		{"world", WellKnownEveryone, false},
+		{"administrators", WellKnownAdministrators, false},
+		{"authenticated_users", WellKnownAuthenticatedUsers, false},
+		{"system", WellKnownSystem, false},
+		{"creator_owner", WellKnownCreatorOwner, false},
+		// Nil is not foreign.
+		{"nil", nil, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.IsForeignDomainSID(tc.sid); got != tc.want {
+				t.Errorf("IsForeignDomainSID(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
 // ============================================================================
 // PrincipalToSID / SIDToPrincipal Tests (ported from security_test.go)
 // ============================================================================
