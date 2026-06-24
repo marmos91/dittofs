@@ -173,10 +173,10 @@ func (r *warmRegistry) start(shareName string, usedBytes int64, run func(ctx con
 			// (#1374) rather than a silent no-op success.
 			if res.BlocksFetched+res.BlocksAlreadyLocal == 0 && usedBytes > 0 {
 				j.Warning = fmt.Sprintf(
-					"warm found 0 enumerable blocks for share %s but it reports %d used bytes — block metadata may be missing",
+					"warm found 0 enumerable blocks for share %s but it has %d bytes on the local disk tier — block metadata may be missing",
 					shareName, usedBytes)
 				logger.Warn("warm found no enumerable blocks on non-empty share",
-					"share", shareName, "used_bytes", usedBytes)
+					"share", shareName, "local_disk_used_bytes", usedBytes)
 			}
 		case canceled:
 			j.State = WarmStateCanceled

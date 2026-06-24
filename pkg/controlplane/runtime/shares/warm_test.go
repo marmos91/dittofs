@@ -103,6 +103,9 @@ func TestWarmRegistry_WarnsOnEmptyEnumerationNonEmptyShare(t *testing.T) {
 	if j.Warning == "" {
 		t.Fatalf("expected warning on 0-block warm of non-empty share, got none: %+v", j)
 	}
+	if !strings.Contains(j.Warning, "local disk tier") {
+		t.Fatalf("warning should reference the local disk tier, got %q", j.Warning)
+	}
 
 	// A share that genuinely has no stored bytes must NOT warn.
 	jobEmpty := r.start("/empty", 0, func(_ context.Context, _ func(done, total int64)) (warmAllResult, error) {
