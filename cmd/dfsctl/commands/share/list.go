@@ -13,16 +13,24 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all shares",
-	Long: `List all shares on the DittoFS server.
+	Long: `List all shares configured on the DittoFS server.
+
+Each row shows the share's name, the metadata and block stores it uses, its
+storage quota and current usage, the default permission level, the block
+retention policy, and whether the share is currently enabled. Use this command
+to get a quick overview of all shares before running share-specific commands.
 
 Examples:
-  # List shares as table
+  # List all shares as a table
   dfsctl share list
 
-  # List as JSON
+  # List shares and pipe to grep to find disabled ones
+  dfsctl share list | grep " -$"
+
+  # Output the full share list as JSON for scripting
   dfsctl share list -o json
 
-  # List as YAML
+  # Output as YAML
   dfsctl share list -o yaml`,
 	RunE: runList,
 }

@@ -15,16 +15,16 @@ var migrateCmd = &cobra.Command{
 	Short: "Run database migrations",
 	Long: `Run database migrations for the control plane database.
 
-This command applies pending database migrations to the configured control plane
-database (SQLite or PostgreSQL). It is required after upgrading DittoFS when
-schema changes have been made.
+This command applies pending schema migrations to the configured control-plane
+database (SQLite by default, or PostgreSQL). Run it once after upgrading DittoFS
+to a new version that includes schema changes; it is safe to run multiple times.
 
 Examples:
   # Run migrations with default config
-  dittofs migrate
+  dfs migrate
 
-  # Run migrations with custom config
-  dittofs migrate --config /etc/dittofs/config.yaml`,
+  # Run migrations with a custom config file
+  dfs migrate --config /etc/dittofs/config.yaml`,
 	RunE: runMigrate,
 }
 

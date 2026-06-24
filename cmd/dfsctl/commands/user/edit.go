@@ -24,29 +24,26 @@ var (
 var editCmd = &cobra.Command{
 	Use:   "edit <username>",
 	Short: "Edit a user",
-	Long: `Edit an existing user on the DittoFS server.
-
-When run without flags, opens an interactive editor to modify user properties.
-When flags are provided, only the specified fields are updated.
+	Long: `Edit an existing user on the DittoFS server. When run without flags, an
+interactive prompt walks you through each editable field, showing the current
+value so you can press Enter to keep it unchanged. When flags are provided,
+only the specified fields are updated and no prompt appears.
 
 Examples:
-  # Edit user interactively
+  # Edit all fields interactively (shows current values)
   dfsctl user edit alice
 
-  # Update email directly
-  dfsctl user edit alice --email alice@newdomain.com
-
-  # Update role to admin
+  # Move alice to the admin role
   dfsctl user edit alice --role admin
 
-  # Disable user
-  dfsctl user edit alice --enabled false
+  # Update alice's primary GID to match a new group
+  dfsctl user edit alice --gid 1002
 
-  # Update multiple fields
-  dfsctl user edit alice --email alice@example.com --groups editors,admins
+  # Disable an account and change its group membership in one command
+  dfsctl user edit alice --enabled false --groups viewers
 
-  # Update UID and primary GID
-  dfsctl user edit alice --uid 1001 --gid 1001`,
+  # Update display name and email
+  dfsctl user edit alice --display-name "Alice Smith" --email alice@newdomain.com`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }

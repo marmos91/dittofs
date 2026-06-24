@@ -17,13 +17,18 @@ var (
 var revokeCmd = &cobra.Command{
 	Use:   "revoke <share>",
 	Short: "Revoke permission from a share",
-	Long: `Revoke permission from a user or group on a share.
+	Long: `Remove a per-principal permission entry from a share.
+
+After revoking, the user or group falls back to the share's default permission
+level (see 'dfsctl share show'). To explicitly block a principal rather than
+fall back to the default, use 'dfsctl share permission grant ... --level none'
+instead. Specify exactly one of --user or --group.
 
 Examples:
-  # Revoke permission from user
+  # Revoke a user's explicit permission (they fall back to the share default)
   dfsctl share permission revoke /archive --user alice
 
-  # Revoke permission from group
+  # Revoke a group's explicit permission
   dfsctl share permission revoke /archive --group editors`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRevoke,

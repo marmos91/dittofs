@@ -76,6 +76,46 @@ func writeTree(buf *bytes.Buffer, root *cobra.Command) {
 	buf.WriteString("\n")
 }
 
+// splitExamples separates a leading description from a trailing "Examples:" block
+// embedded in a Cobra Long string, so each can be rendered appropriately.
+func splitExamples(long string) (desc, examples string) {
+	lines := strings.Split(long, "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "Examples:" {
+			// Trim only surrounding blank lines, preserving each example line's
+			// indentation so dedent can strip the common indent uniformly.
+			return strings.TrimRight(strings.Join(lines[:i], "\n"), "\n"),
+				strings.Trim(strings.Join(lines[i+1:], "\n"), "\n")
+		}
+	}
+	return long, ""
+}
+
+// dedent strips the common leading-space indent from a block (Cobra example
+// blocks are conventionally indented two spaces).
+func dedent(s string) string {
+	lines := strings.Split(s, "\n")
+	min := -1
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		n := len(ln) - len(strings.TrimLeft(ln, " "))
+		if min == -1 || n < min {
+			min = n
+		}
+	}
+	if min <= 0 {
+		return s
+	}
+	for i, ln := range lines {
+		if len(ln) >= min {
+			lines[i] = ln[min:]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // anchor slugifies a command path the way GitHub-flavored Markdown anchors
 // section headers: lowercase, backticks dropped, spaces to hyphens.
 func anchor(path string) string {
@@ -96,16 +136,24 @@ func writeCommand(buf *bytes.Buffer, c *cobra.Command) {
 	if c.Short != "" {
 		fmt.Fprintf(buf, "%s\n\n", c.Short)
 	}
-	if c.Long != "" && strings.TrimSpace(c.Long) != strings.TrimSpace(c.Short) {
-		fmt.Fprintf(buf, "%s\n\n", c.Long)
+	// Many commands embed an "Examples:" block inside Long as plain text. Split
+	// it out so the prose renders as prose and the commands render as a fenced,
+	// highlighted code block (instead of headings + smart-quoted dashes).
+	desc, embeddedExamples := splitExamples(c.Long)
+	if desc != "" && strings.TrimSpace(desc) != strings.TrimSpace(c.Short) {
+		fmt.Fprintf(buf, "%s\n\n", strings.TrimSpace(desc))
 	}
 
 	if c.Runnable() {
 		fmt.Fprintf(buf, "```\n%s\n```\n\n", c.UseLine())
 	}
 
-	if c.HasExample() {
-		fmt.Fprintf(buf, "Examples:\n\n```\n%s\n```\n\n", strings.TrimSpace(c.Example))
+	examples := strings.TrimSpace(c.Example)
+	if examples == "" {
+		examples = embeddedExamples
+	}
+	if examples != "" {
+		fmt.Fprintf(buf, "**Examples:**\n\n```bash\n%s\n```\n\n", dedent(examples))
 	}
 
 	writeFlags(buf, "Flags", c.NonInheritedFlags())

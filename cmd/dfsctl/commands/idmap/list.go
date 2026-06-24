@@ -14,17 +14,23 @@ var listProvider string
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List identity mappings",
-	Long: `List identity mappings on the DittoFS server.
+	Long: `List identity mappings registered on the DittoFS server. Each row shows the
+provider name, the external principal, and the local DittoFS username it maps to.
+Use --provider to filter the list to a single identity provider, and -o json or
+-o yaml for machine-readable output.
 
 Examples:
-  # List all mappings
+  # List all identity mappings
   dfsctl idmap list
 
-  # List only Kerberos mappings
+  # Show only Kerberos mappings
   dfsctl idmap list --provider kerberos
 
-  # List as JSON
-  dfsctl idmap list -o json`,
+  # Show only AD mappings as JSON
+  dfsctl idmap list --provider ad -o json
+
+  # Output all mappings as YAML
+  dfsctl idmap list -o yaml`,
 	RunE: runList,
 }
 

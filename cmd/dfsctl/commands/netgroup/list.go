@@ -12,14 +12,19 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all netgroups",
-	Long: `List all netgroups on the DittoFS server.
+	Long: `List all netgroups registered on the DittoFS server. The table view shows
+each netgroup's name, total member count, and creation time. Use "dfsctl
+netgroup show <name>" to see the individual members of a specific netgroup.
 
 Examples:
-  # List netgroups as table
+  # List all netgroups as a table
   dfsctl netgroup list
 
-  # List as JSON
-  dfsctl netgroup list -o json`,
+  # Output the full netgroup list as JSON
+  dfsctl netgroup list -o json
+
+  # Output as YAML
+  dfsctl netgroup list -o yaml`,
 	RunE: runList,
 }
 

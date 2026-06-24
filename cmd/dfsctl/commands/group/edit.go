@@ -18,20 +18,23 @@ var (
 var editCmd = &cobra.Command{
 	Use:   "edit <name>",
 	Short: "Edit a group",
-	Long: `Edit an existing group on the DittoFS server.
-
-When run without flags, opens an interactive editor to modify group properties.
-When flags are provided, only the specified fields are updated.
+	Long: `Edit an existing group on the DittoFS server. When run without flags, an
+interactive prompt walks you through each editable field (GID and description),
+showing the current value so you can press Enter to keep it. When flags are
+provided, only those fields are updated and no prompt appears.
 
 Examples:
-  # Edit group interactively
+  # Edit the group interactively (shows current values)
   dfsctl group edit editors
 
-  # Update GID directly
+  # Change the group's GID to a specific value
   dfsctl group edit editors --gid 1002
 
-  # Update description
-  dfsctl group edit editors --description "New description"`,
+  # Update only the description
+  dfsctl group edit editors --description "Senior content editors"
+
+  # Update both GID and description in one command
+  dfsctl group edit editors --gid 1002 --description "Senior content editors"`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }

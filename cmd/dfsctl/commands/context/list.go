@@ -12,16 +12,15 @@ import (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configured contexts",
-	Long: `List all configured server contexts.
+	Long: `List all configured server contexts stored in the local credential file.
 
-Shows the context name, server URL, and username for each saved context.
-The current context is marked with an asterisk (*).
+Each row shows the context name, server URL, username, and login status. The active context is marked with an asterisk (*). Use this to identify which servers you have credentials for and which context is currently selected.
 
 Examples:
-  # List contexts as table
+  # List all contexts as a table
   dfsctl context list
 
-  # List as JSON
+  # List contexts as JSON for scripting
   dfsctl context list -o json`,
 	RunE: runContextList,
 }

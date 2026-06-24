@@ -9,21 +9,20 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "group",
 	Short: "Group management",
-	Long: `Manage groups on the DittoFS server.
-
-Group commands allow you to create, list, get, edit, and delete groups,
-as well as manage group membership.
-These operations require admin privileges.
+	Long: `Manage Unix groups on the DittoFS server. Groups bundle users together so
+that share permissions can be granted to multiple users at once using a single
+group reference. Each group carries a Unix GID used for NFS uid/gid resolution.
+All subcommands require admin privileges.
 
 Examples:
   # List all groups
   dfsctl group list
 
-  # Get group details
-  dfsctl group get admins
+  # Get group details including current members
+  dfsctl group get editors
 
-  # Create a new group
-  dfsctl group create --name editors
+  # Create a group with an explicit GID
+  dfsctl group create --name editors --gid 1001
 
   # Edit a group interactively
   dfsctl group edit editors
@@ -34,7 +33,7 @@ Examples:
   # Remove a user from a group
   dfsctl group remove-user editors alice
 
-  # Delete a group
+  # Delete a group (prompts for confirmation)
   dfsctl group delete editors`,
 }
 

@@ -13,14 +13,20 @@ import (
 var showCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Show netgroup details",
-	Long: `Show detailed information about a netgroup including all members.
+	Long: `Show detailed information about a netgroup, including all of its
+members with their IDs, types, and values. Member IDs shown here are needed
+when removing a member with "dfsctl netgroup remove-member". Use -o json or
+-o yaml for machine-readable output.
 
 Examples:
-  # Show netgroup details
+  # Show all details and members of a netgroup
   dfsctl netgroup show office-network
 
-  # Show as JSON
-  dfsctl netgroup show office-network -o json`,
+  # Output the full netgroup structure as JSON (includes member IDs)
+  dfsctl netgroup show office-network -o json
+
+  # Output as YAML
+  dfsctl netgroup show office-network -o yaml`,
 	Args: cobra.ExactArgs(1),
 	RunE: runShow,
 }

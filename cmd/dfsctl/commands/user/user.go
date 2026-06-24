@@ -9,25 +9,29 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "user",
 	Short: "User management",
-	Long: `Manage users on the DittoFS server.
-
-User commands allow you to create, list, edit, and delete users.
-These operations require admin privileges.
+	Long: `Manage local user accounts on the DittoFS server. Local users are
+distinct from identities resolved via Kerberos or LDAP — they are accounts
+stored in the DittoFS control plane and used for direct authentication.
+Most subcommands require admin privileges; "change-password" operates on the
+currently authenticated account and is available to all users.
 
 Examples:
-  # List all users
+  # List all registered users
   dfsctl user list
 
   # Create a new user interactively
   dfsctl user create
 
-  # Create a user with flags
-  dfsctl user create --username alice --password secret --role user
+  # Create a user with an explicit UID for NFS access
+  dfsctl user create --username alice --password secret --uid 1000 --role user
 
-  # Edit a user interactively
-  dfsctl user edit alice
+  # Edit a user's group membership
+  dfsctl user edit alice --groups editors,viewers
 
-  # Delete a user
+  # Reset a user's password as an admin
+  dfsctl user password alice
+
+  # Delete a user (prompts for confirmation)
   dfsctl user delete alice`,
 }
 

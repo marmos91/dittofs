@@ -12,13 +12,15 @@ import (
 var sessionsListCmd = &cobra.Command{
 	Use:   "list <client-id>",
 	Short: "List sessions for a client",
-	Long: `List all NFSv4.1 sessions for a given client by its hex-encoded client ID.
+	Long: `List all NFSv4.1 sessions for a given client, identified by its hex client ID.
+
+Each session entry shows the session ID, fore/back channel slot counts, back channel status, total connection count, and creation time. The session ID returned here is used with 'sessions destroy' to tear down a specific session.
 
 Examples:
-  # List sessions as table
+  # List sessions for a client (hex client ID from 'client list')
   dfsctl client sessions list 0000000100000001
 
-  # List sessions as JSON
+  # Get sessions as JSON for scripting
   dfsctl client sessions list 0000000100000001 -o json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runSessionsList,

@@ -13,13 +13,15 @@ import (
 var compareCmd = &cobra.Command{
 	Use:   "compare FILE [FILE...]",
 	Short: "Compare benchmark results from multiple systems",
-	Long: `Load two or more JSON result files and render a side-by-side comparison table.
+	Long: `Load two or more JSON result files produced by 'bench run' and render a side-by-side comparison table.
+
+Each column in the output represents one system. Workloads and metrics are aligned across rows so you can directly compare throughput and IOPS between implementations. Pass -o json to get the raw comparison data for scripting.
 
 Examples:
-  # Compare DittoFS vs kernel NFS
+  # Compare DittoFS against kernel NFS
   dfsctl bench compare results/dittofs.json results/kernel-nfs.json
 
-  # Compare all results
+  # Compare all result files in a directory
   dfsctl bench compare results/*.json`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runCompare,

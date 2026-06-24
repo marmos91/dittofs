@@ -17,17 +17,24 @@ var (
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add an identity mapping",
-	Long: `Add a new identity mapping from an external identity to a DittoFS user.
+	Long: `Add a new identity mapping that links an external authentication principal
+to a local DittoFS user account. This is how Kerberos, OIDC, and Active Directory
+identities are mapped to the local user that owns their files and holds their
+permissions. The --provider flag selects the identity provider and defaults to
+"kerberos".
 
 Examples:
-  # Map a Kerberos principal to a local user
+  # Map a Kerberos principal to a local user (default provider)
   dfsctl idmap add --principal alice@EXAMPLE.COM --username alice
 
-  # Map with explicit provider
-  dfsctl idmap add --provider kerberos --principal admin@CORP.COM --username alice
+  # Map an NTLM domain user with the AD provider
+  dfsctl idmap add --provider ad --principal CORP\\alice --username alice
 
-  # Map a numeric UID principal
-  dfsctl idmap add --principal 1000@localdomain --username bob`,
+  # Map an OIDC subject claim to a local user
+  dfsctl idmap add --provider oidc --principal sub:abc123 --username bob
+
+  # Map a Kerberos admin principal to the local admin account
+  dfsctl idmap add --principal admin@CORP.COM --username admin`,
 	RunE: runAdd,
 }
 

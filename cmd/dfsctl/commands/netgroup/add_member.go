@@ -18,17 +18,23 @@ var (
 var addMemberCmd = &cobra.Command{
 	Use:   "add-member <name>",
 	Short: "Add a member to a netgroup",
-	Long: `Add an IP address, CIDR range, or hostname to a netgroup.
+	Long: `Add a network endpoint to a netgroup. The endpoint can be a single IP
+address, a CIDR range, or a hostname. Valid types are "ip", "cidr", and
+"hostname". Each entry receives a unique ID that you use when removing it
+with "dfsctl netgroup remove-member".
 
 Examples:
-  # Add a single IP
+  # Add a single IP address to the netgroup
   dfsctl netgroup add-member office-network --type ip --value 192.168.1.100
 
-  # Add a CIDR range
+  # Add an entire subnet via CIDR
   dfsctl netgroup add-member office-network --type cidr --value 10.0.0.0/8
 
-  # Add a hostname
-  dfsctl netgroup add-member office-network --type hostname --value server1.example.com`,
+  # Add a specific hostname
+  dfsctl netgroup add-member office-network --type hostname --value server1.example.com
+
+  # Add a /24 subnet for a datacenter hosts group
+  dfsctl netgroup add-member datacenter-hosts --type cidr --value 172.16.0.0/24`,
 	Args: cobra.ExactArgs(1),
 	RunE: runAddMember,
 }

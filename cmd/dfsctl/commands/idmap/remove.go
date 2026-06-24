@@ -16,19 +16,20 @@ var (
 var removeCmd = &cobra.Command{
 	Use:   "remove",
 	Short: "Remove an identity mapping",
-	Long: `Remove an identity mapping by provider and principal.
-
-This action is irreversible. You will be prompted for confirmation
-unless --force is specified.
+	Long: `Remove an identity mapping by provider and principal. Once removed, the
+external principal will no longer be automatically resolved to the local user,
+and connections authenticated with that principal will be rejected or treated
+as anonymous. This action is irreversible. You will be prompted for
+confirmation unless --force is specified.
 
 Examples:
-  # Remove with confirmation
+  # Remove a Kerberos mapping (prompts for confirmation)
   dfsctl idmap remove --principal alice@EXAMPLE.COM
 
-  # Remove with explicit provider
-  dfsctl idmap remove --provider kerberos --principal alice@EXAMPLE.COM
+  # Remove an AD mapping with explicit provider
+  dfsctl idmap remove --provider ad --principal CORP\\alice
 
-  # Remove without confirmation
+  # Remove a mapping non-interactively (for scripts)
   dfsctl idmap remove --principal alice@EXAMPLE.COM --force`,
 	RunE: runRemove,
 }

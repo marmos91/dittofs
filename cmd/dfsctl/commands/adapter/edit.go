@@ -23,21 +23,20 @@ var editCmd = &cobra.Command{
 	Short: "Edit an adapter",
 	Long: `Edit an existing protocol adapter on the DittoFS server.
 
-When run without flags, opens an interactive editor to modify adapter properties.
-When flags are provided, only the specified fields are updated.
+Without flags the command opens an interactive prompt to update the adapter's port and enabled state. When flags are provided only the specified fields are changed; all other adapter settings remain untouched.
 
 Examples:
-  # Edit adapter interactively
+  # Interactively edit the NFS adapter
   dfsctl adapter edit nfs
 
-  # Update port directly
-  dfsctl adapter edit nfs --port 3049
+  # Move the NFS adapter to port 12049
+  dfsctl adapter edit nfs --port 12049
 
-  # Enable/disable adapter
+  # Temporarily disable the SMB adapter non-interactively
   dfsctl adapter edit smb --enabled false
 
-  # Update configuration
-  dfsctl adapter edit nfs --config '{"read_size":65536}'`,
+  # Pass a JSON config blob directly
+  dfsctl adapter edit nfs --config '{"max_read_size":131072}'`,
 	Args: cobra.ExactArgs(1),
 	RunE: runEdit,
 }

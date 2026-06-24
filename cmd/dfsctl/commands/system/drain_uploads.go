@@ -12,17 +12,15 @@ import (
 var drainUploadsCmd = &cobra.Command{
 	Use:   "drain-uploads",
 	Short: "Wait for all pending uploads to complete",
-	Long: `Wait for all in-flight block store uploads to complete across all files.
+	Long: `Wait for all in-flight block store uploads to complete across every share.
 
-This is useful for benchmarking and testing to ensure clean boundaries
-between workloads. The command blocks until all uploads are drained or
-the server-side timeout (5 minutes) is reached.
+The command blocks until the server confirms that no blocks are queued for remote upload, or until the server-side timeout (5 minutes) is reached. Use this before running benchmarks or taking snapshots to ensure a clean data boundary.
 
 Examples:
-  # Drain all pending uploads
+  # Block until all pending uploads are flushed
   dfsctl system drain-uploads
 
-  # Output as JSON
+  # Get drain result as JSON (includes duration)
   dfsctl system drain-uploads -o json`,
 	RunE: runDrainUploads,
 }

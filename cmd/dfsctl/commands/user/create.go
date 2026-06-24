@@ -26,29 +26,26 @@ var (
 var createCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a new user",
-	Long: `Create a new user on the DittoFS server.
-
-If username or password are not provided via flags, you will be prompted
-to enter them interactively.
+	Long: `Create a new local user on the DittoFS server. The user can be assigned
+a Unix UID and primary GID for NFS uid/gid resolution; omitting these causes
+the server to auto-assign them from its allocation range. If --username or
+--password are not provided as flags, you will be prompted interactively.
 
 Examples:
-  # Create user interactively
+  # Create a user interactively (prompted for username, password, role, groups)
   dfsctl user create
 
-  # Create user with flags
+  # Create a regular user with username and password
   dfsctl user create --username alice --password secret
 
-  # Create admin user
-  dfsctl user create --username admin2 --password secret --role admin
+  # Create an admin user belonging to the editors group
+  dfsctl user create --username admin2 --password secret --role admin --groups editors
 
-  # Create user with email and groups
-  dfsctl user create --username bob --password secret --email bob@example.com --groups editors,viewers
+  # Create a user whose UID/GID match the current host user (useful for NFS mounts)
+  dfsctl user create --username alice --password secret --host-uid --host-gid
 
-  # Create user with specific UID and primary GID
-  dfsctl user create --username bob --password secret --uid 1001 --gid 1001
-
-  # Create user with your current host UID and GID (for NFS access)
-  dfsctl user create --username bob --password secret --host-uid --host-gid`,
+  # Create a user with an explicit UID, GID, and email
+  dfsctl user create --username bob --password secret --uid 1000 --gid 1001 --email bob@example.com`,
 	RunE: runCreate,
 }
 

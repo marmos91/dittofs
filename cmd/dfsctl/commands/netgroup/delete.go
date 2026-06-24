@@ -14,19 +14,16 @@ var deleteForce bool
 var deleteCmd = &cobra.Command{
 	Use:   "delete <name>",
 	Short: "Delete a netgroup",
-	Long: `Delete a netgroup from the DittoFS server.
-
-This action is irreversible. You will be prompted for confirmation
-unless --force is specified.
-
-If the netgroup is referenced by any shares, the deletion will fail
-with a conflict error listing the affected shares.
+	Long: `Delete a netgroup from the DittoFS server. This action is irreversible.
+If the netgroup is still referenced by one or more shares, the deletion fails
+with a conflict error that lists the affected shares — remove those references
+first. You will be prompted for confirmation unless --force is specified.
 
 Examples:
-  # Delete netgroup with confirmation
+  # Delete a netgroup (prompts for confirmation)
   dfsctl netgroup delete office-network
 
-  # Delete without confirmation
+  # Delete a netgroup non-interactively (for scripts and automation)
   dfsctl netgroup delete office-network --force`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDelete,

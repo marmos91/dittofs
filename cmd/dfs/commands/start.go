@@ -65,24 +65,24 @@ var startCmd = &cobra.Command{
 	Short: "Start the DittoFS server",
 	Long: `Start the DittoFS server with the specified configuration.
 
-By default, the server runs in the background (daemon mode). Use --foreground
-to run in the foreground for debugging or when managed by a process supervisor.
-
-Use --config to specify a custom configuration file, or it will use the
-default location at $XDG_CONFIG_HOME/dittofs/config.yaml.
+By default, the server daemonizes into the background and writes its PID to
+$XDG_STATE_HOME/dittofs/dittofs.pid. Use --foreground when running under a
+process supervisor (systemd, Docker) or for interactive debugging. The NFS
+adapter listens on port 12049 and the SMB adapter on port 12445 by default;
+the control-plane REST API is available at http://localhost:8080.
 
 Examples:
-  # Start in background (default)
+  # Start in background (daemon mode)
   dfs start
 
-  # Start in foreground
-  dfs start --foreground
+  # Start in foreground with debug logging
+  DITTOFS_LOGGING_LEVEL=DEBUG dfs start --foreground
 
-  # Start with custom config file
-  dfs start --config /etc/dittofs/config.yaml
+  # Start with a custom config file and explicit PID file path
+  dfs start --config /etc/dittofs/config.yaml --pid-file /var/run/dittofs.pid
 
-  # Start with environment variable overrides
-  DITTOFS_LOGGING_LEVEL=DEBUG dfs start --foreground`,
+  # Set admin password via environment on first boot instead of the generated one
+  DITTOFS_ADMIN_INITIAL_PASSWORD=changeme dfs start --foreground`,
 	RunE: runStart,
 }
 

@@ -19,9 +19,17 @@ var Cmd = &cobra.Command{
 	Short:   "Identity provider (LDAP/AD, Kerberos) management",
 	Long: `Manage DittoFS identity providers (LDAP/AD and Kerberos) over the API.
 
-LDAP changes hot-reload the live identity resolver; Kerberos changes take
-effect on the next server restart. Secret material (bind password) is
-write-only and never displayed.`,
+LDAP changes are hot-reloaded by the live identity resolver without a server restart. Kerberos machine-account changes are saved immediately but take effect only on the next server restart. Secret material (bind password, machine secret) is write-only and is never returned by the API.
+
+Examples:
+  # List all identity providers and their status
+  dfsctl identity-provider list
+
+  # Show the current LDAP configuration (secrets redacted)
+  dfsctl identity-provider get ldap
+
+  # Test an LDAP configuration without saving it
+  dfsctl identity-provider test ldap --config '{"enabled":true,"url":"ldap://dc.corp.example:389","base_dn":"DC=corp,DC=example","bind_dn":"CN=svc,DC=corp,DC=example","bind_password":"s3cret","idmap":"rfc2307"}'`,
 }
 
 func init() {
@@ -37,7 +45,17 @@ func init() {
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List identity providers and their state",
-	RunE:  runList,
+	Long: `List all identity providers configured on the DittoFS server and their current state.
+
+Each row shows the provider type (ldap or kerberos), whether it has been configured, and whether it is enabled. Use 'identity-provider get <type>' to inspect the full configuration for a specific provider.
+
+Examples:
+  # Show all identity providers as a table
+  dfsctl identity-provider list
+
+  # Get identity provider status as JSON
+  dfsctl identity-provider list -o json`,
+	RunE: runList,
 }
 
 // ProviderList renders identity-provider summaries as a table.
@@ -72,8 +90,18 @@ func runList(cmd *cobra.Command, args []string) error {
 var getCmd = &cobra.Command{
 	Use:   "get <ldap|kerberos>",
 	Short: "Show an identity provider's configuration (secrets redacted)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runGet,
+	Long: `Show the current configuration of an identity provider with all secret fields redacted.
+
+Use this to verify LDAP or Kerberos settings without exposing sensitive credentials. The output uses the same JSON schema accepted by 'identity-provider set', making it easy to copy-edit and resubmit.
+
+Examples:
+  # Show the current LDAP configuration
+  dfsctl identity-provider get ldap
+
+  # Show the current Kerberos configuration as JSON
+  dfsctl identity-provider get kerberos -o json`,
+	Args: cobra.ExactArgs(1),
+	RunE: runGet,
 }
 
 func runGet(cmd *cobra.Command, args []string) error {
@@ -169,8 +197,18 @@ var testConfigJSON string
 var testCmd = &cobra.Command{
 	Use:   "test <ldap|kerberos> --config '<json>'",
 	Short: "Test an identity provider's configuration without persisting it",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTest,
+	Long: `Validate and test an identity provider configuration against the live server without saving it.
+
+The server attempts to connect to the LDAP or Kerberos endpoint and runs basic reachability checks. On success the command exits 0; on failure it exits non-zero with a description of which stage failed. Use this before 'identity-provider set' to avoid applying a broken configuration.
+
+Examples:
+  # Test an LDAP configuration inline
+  dfsctl identity-provider test ldap --config '{"enabled":true,"url":"ldap://dc.corp.example:389","base_dn":"DC=corp,DC=example","bind_dn":"CN=svc,DC=corp,DC=example","bind_password":"s3cret","idmap":"rfc2307"}'
+
+  # Test a Kerberos configuration loaded from a file
+  dfsctl identity-provider test kerberos --config @/etc/dittofs/krb5-config.json`,
+	Args: cobra.ExactArgs(1),
+	RunE: runTest,
 }
 
 func runTest(cmd *cobra.Command, args []string) error {

@@ -16,15 +16,13 @@ var disconnectCmd = &cobra.Command{
 	Short:   "Disconnect a client",
 	Long: `Disconnect a connected client by its ID.
 
-This performs protocol-specific teardown: for NFS clients it closes the TCP
-connection and triggers state revocation; for SMB clients it triggers session
-cleanup. Use with caution.
+For NFS clients this closes the TCP connection and triggers NFSv4 state revocation; for SMB clients it tears down all sessions and cleans up associated state. Use the client ID from 'client list'. This action may cause in-progress I/O to fail on the client side.
 
 Examples:
-  # Disconnect a client (with confirmation prompt)
+  # Disconnect a client with a confirmation prompt
   dfsctl client disconnect nfs-42
 
-  # Disconnect without confirmation
+  # Disconnect without a confirmation prompt (e.g. in a script)
   dfsctl client disconnect nfs-42 --force`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDisconnect,

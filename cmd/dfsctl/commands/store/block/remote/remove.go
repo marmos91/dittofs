@@ -14,14 +14,20 @@ var removeCmd = &cobra.Command{
 	Short: "Remove a remote block store",
 	Long: `Remove a remote block store from the DittoFS server.
 
-Warning: This will fail if the store is in use by any shares.
+The server refuses removal if any share currently references the store.
+Detach the store from all shares first, then remove it. No objects are
+deleted from the remote bucket by this command. You will be prompted for
+confirmation unless --force is specified.
 
 Examples:
-  # Remove with confirmation
+  # Remove with confirmation prompt
   dfsctl store block remote remove s3-store
 
   # Remove without confirmation
-  dfsctl store block remote remove s3-store --force`,
+  dfsctl store block remote remove s3-store --force
+
+  # Verify the store is gone afterward
+  dfsctl store block remote list`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRemove,
 }

@@ -8,26 +8,24 @@ import (
 var sidCmd = &cobra.Command{
 	Use:   "sid",
 	Short: "Manage foreign-SID UID/GID allocations",
-	Long: `Manage durable foreign-SID to Unix UID/GID allocations.
+	Long: `Manage durable foreign-SID to Unix UID/GID allocations. When DittoFS
+resolves Active Directory or LDAP principals, foreign domain SIDs (of the form
+` + "`S-1-5-21-<domain>-<rid>`" + `) are bound to stable Unix UIDs and GIDs exactly
+once and never remapped, ensuring a foreign SID always resolves to the same
+numeric identity across restarts.
 
-When DittoFS resolves Active Directory / LDAP principals, foreign domain SIDs
-(of the form ` + "`S-1-5-21-<domain>-<rid>`" + `) are durably bound to stable Unix
-UIDs and GIDs. These bindings are allocated exactly once and never remapped, so a
-foreign SID always resolves to the same identity.
-
-This command surfaces that allocation table for administrative inspection and
+This subcommand surfaces that allocation table for administrative inspection and
 cleanup. It is distinct from "dfsctl idmap add/list/remove", which manages the
-authentication-principal to DittoFS-user mappings.
-
-Deletion is an administrative escape hatch: removing a mapping allows a foreign
-SID to be re-allocated to a different UID/GID on its next resolution, which can
-re-attribute files owned by the old UID. Use with care.
+authentication-principal to local-user mappings used during login.
 
 Examples:
   # List all foreign-SID allocations
   dfsctl idmap sid list
 
-  # Delete a foreign-SID allocation
+  # Output the allocation table as JSON
+  dfsctl idmap sid list -o json
+
+  # Delete a misallocated SID entry (use with care)
   dfsctl idmap sid delete S-1-5-21-111-222-333-1107`,
 }
 

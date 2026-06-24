@@ -28,23 +28,22 @@ var statusCmd = &cobra.Command{
 	Short: "Show server status",
 	Long: `Display the current status of the DittoFS server.
 
-This command checks the server health by calling the health endpoint
-and displays status, uptime, and control plane DB reachability.
-
-When an API token is provided (--api-token or DFS_API_TOKEN), per-entity
-status is fetched from the list endpoints and displayed as a color-coded table.
+Checks the health endpoint at http://localhost:8080/health and reports whether
+the server is running, how long it has been up, and whether the control-plane
+database is reachable. When an API token is provided, per-entity status (shares,
+adapters, stores) is also fetched and rendered as a color-coded table.
 
 Examples:
-  # Check status (uses default settings)
+  # Check status using default settings
   dfs status
 
-  # Check status with custom API port
+  # Check status when the control-plane API runs on a non-default port
   dfs status --api-port 9080
 
-  # Check status with per-entity details
+  # Include per-entity (share, adapter, store) detail
   dfs status --api-token <token>
 
-  # Output as JSON
+  # Emit machine-readable JSON output
   dfs status --output json`,
 	RunE: runStatus,
 }

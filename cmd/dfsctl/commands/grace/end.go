@@ -12,13 +12,18 @@ var endCmd = &cobra.Command{
 	Short: "Force-end the grace period",
 	Long: `Force-end the NFSv4 grace period immediately.
 
-This is an admin-only operation that immediately ends the grace period,
-allowing new state-creating operations to proceed. Use this for fast
-recovery in development and testing environments.
+This admin-only command terminates the grace period before it expires
+naturally, allowing clients to create new state (open files, locks)
+without waiting. Use it to accelerate recovery after a confirmed server
+restart in development environments, or when all expected clients have
+already reclaimed their state.
 
 Examples:
   # Force-end the grace period
-  dfsctl grace end`,
+  dfsctl grace end
+
+  # Verify the period has ended after forcing it
+  dfsctl grace status`,
 	RunE: runGraceEnd,
 }
 

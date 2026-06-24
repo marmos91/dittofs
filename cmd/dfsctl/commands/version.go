@@ -12,7 +12,17 @@ var versionShort bool
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version information",
-	Long:  `Display the dfsctl version, build information, and system details.`,
+	Long: `Display the dfsctl build version and system information.
+
+Shows the full semantic version, git commit, build date, Go toolchain version,
+and OS/architecture. Use --short to emit only the version string for scripting.
+
+Examples:
+  # Show full version information
+  dfsctl version
+
+  # Print only the version number (useful in scripts)
+  dfsctl version --short`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if versionShort {
 			fmt.Println(Version)

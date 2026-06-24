@@ -9,17 +9,17 @@ import (
 var Cmd = &cobra.Command{
 	Use:   "idmap",
 	Short: "Manage identity mappings",
-	Long: `Manage identity mappings (authentication principal to control plane user).
-
-Identity mappings allow you to associate authentication principals with
-local DittoFS user accounts. This works across protocols:
+	Long: `Manage identity mappings that link external authentication principals to
+local DittoFS user accounts. Mappings are shared across NFS and SMB, ensuring
+consistent uid/gid resolution in mixed-protocol deployments. Supported principal
+formats include:
 
   NFS/Kerberos:  alice@EXAMPLE.COM
   SMB/NTLM:      CORP\alice
   SMB/Kerberos:  alice@CORP.COM
 
-Mappings are shared across NFS and SMB, ensuring consistent uid/gid
-resolution in mixed-protocol deployments.
+Use "dfsctl idmap sid" to inspect the separate table of foreign-SID to
+Unix UID/GID allocations managed automatically by Active Directory resolution.
 
 Examples:
   # List all identity mappings
@@ -28,10 +28,10 @@ Examples:
   # Map a Kerberos principal (works for both NFS and SMB)
   dfsctl idmap add --principal alice@EXAMPLE.COM --username alice
 
-  # Map an NTLM domain user
-  dfsctl idmap add --principal 'CORP\alice' --username alice
+  # Map an NTLM domain user to the same local account
+  dfsctl idmap add --provider ad --principal 'CORP\alice' --username alice
 
-  # Remove a mapping
+  # Remove a mapping (prompts for confirmation)
   dfsctl idmap remove --principal alice@EXAMPLE.COM`,
 }
 

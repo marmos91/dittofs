@@ -12,16 +12,16 @@ var deleteForce bool
 var deleteCmd = &cobra.Command{
 	Use:   "delete <username>",
 	Short: "Delete a user",
-	Long: `Delete a user from the DittoFS server.
-
-This action is irreversible. You will be prompted for confirmation
+	Long: `Delete a user from the DittoFS server. This action is irreversible:
+the account and its authentication tokens are permanently removed, though
+files the user owns are not deleted. You will be prompted for confirmation
 unless --force is specified.
 
 Examples:
-  # Delete user with confirmation
+  # Delete a user (prompts for confirmation)
   dfsctl user delete alice
 
-  # Delete user without confirmation
+  # Delete a user non-interactively (for scripts and automation)
   dfsctl user delete alice --force`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDelete,

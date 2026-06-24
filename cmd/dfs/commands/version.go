@@ -11,7 +11,17 @@ var versionShort bool
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version information",
-	Long:  `Display the DittoFS version, build information, and system details.`,
+	Long: `Display the DittoFS server build version and system information.
+
+Shows the full semantic version, git commit, build date, Go toolchain version,
+and OS/architecture. Use --short to emit only the version string for scripting.
+
+Examples:
+  # Show full version information
+  dfs version
+
+  # Print only the version number (useful in scripts)
+  dfs version --short`,
 	Run: func(cmd *cobra.Command, args []string) {
 		if versionShort {
 			cmd.Println(Version)

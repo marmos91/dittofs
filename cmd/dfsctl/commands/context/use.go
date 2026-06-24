@@ -10,13 +10,16 @@ import (
 var useCmd = &cobra.Command{
 	Use:   "use <name>",
 	Short: "Switch to a different context",
-	Long: `Switch to a different server context.
+	Long: `Switch the active context so that subsequent dfsctl commands target a different server.
 
-This changes the active context used for subsequent commands.
+The new active context is saved to the local credential file. Run 'context current' afterwards to confirm the switch, or 'context list' to see all available context names.
 
 Examples:
-  # Switch to context named "production"
-  dfsctl context use production`,
+  # Switch to the "production" context
+  dfsctl context use production
+
+  # Switch to a local development server context
+  dfsctl context use local-dev`,
 	Args: cobra.ExactArgs(1),
 	RunE: runContextUse,
 }

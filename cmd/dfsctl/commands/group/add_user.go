@@ -12,11 +12,19 @@ import (
 var addUserCmd = &cobra.Command{
 	Use:   "add-user <group> <username>",
 	Short: "Add a user to a group",
-	Long: `Add a user to a group on the DittoFS server.
+	Long: `Add a user to a group on the DittoFS server. The user will immediately
+gain any permissions associated with that group on shares and other resources.
+Both the group name and the username are required positional arguments.
 
 Examples:
-  # Add user alice to group editors
-  dfsctl group add-user editors alice`,
+  # Add alice to the editors group
+  dfsctl group add-user editors alice
+
+  # Add a user to the admins group
+  dfsctl group add-user admins bob
+
+  # Verify membership after adding
+  dfsctl group get editors`,
 	Args: cobra.ExactArgs(2),
 	RunE: runAddUser,
 }
