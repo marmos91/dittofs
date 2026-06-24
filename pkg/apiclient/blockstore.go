@@ -59,6 +59,51 @@ func (c *Client) BlockStoreEvictForShare(shareName string, req *BlockStoreEvictO
 	return createResource[BlockStoreEvictResult](c, fmt.Sprintf("/api/v1/shares/%s/blockstore/evict", url.PathEscape(normalizeShareNameForAPI(shareName))), req)
 }
 
+// WarmJobStatus is the wire-shape for an async share-warm job, returned by
+// GetShareWarm and embedded in StartShareWarm's response.
+type WarmJobStatus struct {
+	ID          string `json:"id"`
+	Share       string `json:"share"`
+	State       string `json:"state"`
+	BlocksTotal int64  `json:"blocks_total"`
+	BlocksDone  int64  `json:"blocks_done"`
+	BytesDone   int64  `json:"bytes_done"`
+	StartedAt   string `json:"started_at,omitempty"`
+	FinishedAt  string `json:"finished_at,omitempty"`
+	Error       string `json:"error,omitempty"`
+}
+
+// warmStartResponse is the 202 body from POST .../blockstore/warm.
+type warmStartResponse struct {
+	JobID  string        `json:"job_id"`
+	Status WarmJobStatus `json:"status"`
+}
+
+// StartShareWarm starts (or returns the already-running) async warm job that
+// materializes the named share's blocks onto its local tier. Returns the job
+// id to poll via GetShareWarm.
+func (c *Client) StartShareWarm(name string) (string, error) {
+	resp, err := createResource[warmStartResponse](
+		c,
+		fmt.Sprintf("/api/v1/shares/%s/blockstore/warm", url.PathEscape(normalizeShareNameForAPI(name))),
+		struct{}{},
+	)
+	if err != nil {
+		return "", err
+	}
+	return resp.JobID, nil
+}
+
+// GetShareWarm returns the current status of warm job jobID for the named
+// share.
+func (c *Client) GetShareWarm(name, jobID string) (*WarmJobStatus, error) {
+	return getResource[WarmJobStatus](
+		c,
+		fmt.Sprintf("/api/v1/shares/%s/blockstore/warm/%s",
+			url.PathEscape(normalizeShareNameForAPI(name)), url.PathEscape(jobID)),
+	)
+}
+
 // BlockStoreGCOptions is the request body for
 // POST /api/v1/shares/{name}/blockstore/gc. DryRun maps to
 // engine.Options.DryRun: mark + sweep enumeration runs but no DELETEs
