@@ -53,10 +53,12 @@ const (
 	accessAllowedACEType = 0x00
 	accessDeniedACEType  = 0x01
 	systemAuditACEType   = 0x02
+	systemAlarmACEType   = 0x03
 )
 
 // nfsToWindowsACEType maps an NFSv4 ACE type to a Windows ACE type.
-// Returns false for unrecognized types (e.g., ALARM).
+// Returns false for unrecognized types. Allow/Deny appear in DACLs;
+// Audit/Alarm appear in SACLs and round-trip via the SACL path.
 func nfsToWindowsACEType(nfsType uint32) (uint8, bool) {
 	switch nfsType {
 	case acl.ACE4_ACCESS_ALLOWED_ACE_TYPE:
@@ -65,6 +67,8 @@ func nfsToWindowsACEType(nfsType uint32) (uint8, bool) {
 		return accessDeniedACEType, true
 	case acl.ACE4_SYSTEM_AUDIT_ACE_TYPE:
 		return systemAuditACEType, true
+	case acl.ACE4_SYSTEM_ALARM_ACE_TYPE:
+		return systemAlarmACEType, true
 	default:
 		return 0, false
 	}
@@ -80,6 +84,8 @@ func windowsToNFSACEType(winType uint8) (uint32, bool) {
 		return acl.ACE4_ACCESS_DENIED_ACE_TYPE, true
 	case systemAuditACEType:
 		return acl.ACE4_SYSTEM_AUDIT_ACE_TYPE, true
+	case systemAlarmACEType:
+		return acl.ACE4_SYSTEM_ALARM_ACE_TYPE, true
 	default:
 		return 0, false
 	}
@@ -176,10 +182,15 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 		fileACL = buildDACL(daclBuf, file)
 	}
 
-	// Build SACL (empty stub if requested)
+	// Build SACL. When the file has stored SACL ACEs, serialize them;
+	// otherwise emit a valid empty SACL stub (matching prior behavior).
 	saclBuf := smbenc.NewWriter(aclHeaderSize)
 	if includeSACL {
-		buildEmptySACL(saclBuf)
+		if file.ACL != nil && len(file.ACL.SACL) > 0 {
+			buildSACL(saclBuf, file, file.ACL.SACL)
+		} else {
+			buildEmptySACL(saclBuf)
+		}
 	}
 
 	// Compute SD control flags dynamically
@@ -380,6 +391,49 @@ func buildDACL(buf *smbenc.Writer, file *metadata.File) *acl.ACL {
 	return fileACL
 }
 
+// buildSACL constructs a SACL (System Access Control List) from the file's
+// stored SACL ACEs. The wire layout is identical to a DACL (MS-DTYP §2.4.5 +
+// §2.4.4.2) — only the audit/alarm ACE types and the SUCCESSFUL/FAILED audit
+// flags differ. ACEs whose type does not map to a Windows ACE type are skipped
+// (defensive — the parse side only stores mappable types).
+func buildSACL(buf *smbenc.Writer, file *metadata.File, saclACEs []acl.ACE) {
+	aces := make([]windowsACE, 0, len(saclACEs))
+	for _, ace := range saclACEs {
+		aceType, ok := nfsToWindowsACEType(ace.Type)
+		if !ok {
+			continue
+		}
+		aces = append(aces, windowsACE{
+			aceType:    aceType,
+			aceFlags:   acl.NFSv4FlagsToWindowsFlags(ace.Flag),
+			accessMask: ace.AccessMask,
+			sid:        principalToSID(ace.Who, file.UID, file.GID),
+		})
+	}
+
+	totalACLSize := aclHeaderSize
+	for i := range aces {
+		totalACLSize += aceHeaderSize + sid.SIDSize(aces[i].sid)
+	}
+
+	// ACL header (8 bytes) per MS-DTYP §2.4.5
+	buf.WriteUint8(2) // AclRevision (2 = standard)
+	buf.WriteUint8(0) // Sbz1
+	buf.WriteUint16(uint16(totalACLSize))
+	buf.WriteUint16(uint16(len(aces)))
+	buf.WriteUint16(0) // Sbz2
+
+	for i := range aces {
+		ace := &aces[i]
+		aceSize := uint16(aceHeaderSize + sid.SIDSize(ace.sid))
+		buf.WriteUint8(ace.aceType)
+		buf.WriteUint8(ace.aceFlags)
+		buf.WriteUint16(aceSize)
+		buf.WriteUint32(ace.accessMask)
+		encodeSID(buf, ace.sid)
+	}
+}
+
 // buildEmptySACL writes a valid empty SACL to buf.
 // The SACL has revision=2, count=0, and total size=8 bytes.
 func buildEmptySACL(buf *smbenc.Writer) {
@@ -439,7 +493,7 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 	control := r.ReadUint16()
 	offsetOwner := r.ReadUint32()
 	offsetGroup := r.ReadUint32()
-	r.Skip(4) // offsetSACL (SACL parsing not implemented; preserve-on-write is future work)
+	offsetSACL := r.ReadUint32()
 	offsetDACL := r.ReadUint32()
 	if r.Err() != nil {
 		return nil, nil, nil, fmt.Errorf("failed to parse SD header: %w", r.Err())
@@ -512,14 +566,49 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 		}
 	}
 
+	// Parse SACL (audit/alarm) when SE_SACL_PRESENT is set and a SACL body is
+	// present. The SACL is stored on the same ACL carrier (fileACL.SACL) so the
+	// SET_INFO handler can install it; on read it round-trips through
+	// BuildSecurityDescriptor. The SACL never participates in access checks.
+	if offsetSACL > 0 && int(offsetSACL)+aclHeaderSize <= len(data) && control&seSACLPresent != 0 {
+		saclACEs, serr := parseACEs(data[offsetSACL:])
+		if serr != nil {
+			return ownerUID, ownerGID, nil, fmt.Errorf("failed to parse SACL: %w", serr)
+		}
+		if fileACL == nil {
+			// Only the SACL section was present (no DACL). Use a carrier ACL
+			// with no DACL ACEs and Source unset — the SET_INFO handler gates
+			// DACL application on the DACL section flag, so this never installs
+			// an empty DACL on its own.
+			fileACL = &acl.ACL{}
+		}
+		fileACL.SACL = saclACEs
+	}
+
 	return ownerUID, ownerGID, fileACL, nil
 }
 
 // parseDACL parses a DACL and returns an NFSv4 ACL.
 // ACLs parsed from SET_INFO are marked with Source: ACLSourceSMBExplicit.
 func parseDACL(data []byte) (*acl.ACL, error) {
+	aces, err := parseACEs(data)
+	if err != nil {
+		return nil, err
+	}
+	return &acl.ACL{
+		ACEs:   aces,
+		Source: acl.ACLSourceSMBExplicit,
+	}, nil
+}
+
+// parseACEs decodes the ACE array from a binary ACL body (DACL or SACL),
+// returning the ACEs as NFSv4 ACEs. The DACL and SACL share an identical
+// on-wire layout (MS-DTYP §2.4.5 + §2.4.4.2); the only difference is the ACE
+// types they carry (allow/deny for DACL, audit/alarm for SACL), both handled
+// by windowsToNFSACEType. ACEs of unrecognized type are skipped.
+func parseACEs(data []byte) ([]acl.ACE, error) {
 	if len(data) < aclHeaderSize {
-		return nil, fmt.Errorf("DACL too short: %d bytes", len(data))
+		return nil, fmt.Errorf("ACL too short: %d bytes", len(data))
 	}
 
 	// Snapshot the atomic mapper pointer once for SID→principal resolution.
@@ -533,7 +622,7 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 	// Sbz2 not needed
 
 	if aceCount > acl.MaxACECount {
-		return nil, fmt.Errorf("DACL has %d ACEs, exceeds maximum %d", aceCount, acl.MaxACECount)
+		return nil, fmt.Errorf("ACL has %d ACEs, exceeds maximum %d", aceCount, acl.MaxACECount)
 	}
 
 	aces := make([]acl.ACE, 0, aceCount)
@@ -541,7 +630,7 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 
 	for i := 0; i < int(aceCount); i++ {
 		if offset+aceHeaderSize > len(data) {
-			return nil, fmt.Errorf("ACE %d extends beyond DACL data", i)
+			return nil, fmt.Errorf("ACE %d extends beyond ACL data", i)
 		}
 
 		aceR := smbenc.NewReader(data[offset:])
@@ -554,7 +643,7 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 		}
 
 		if offset+int(aceSize) > len(data) {
-			return nil, fmt.Errorf("ACE %d size %d extends beyond DACL data", i, aceSize)
+			return nil, fmt.Errorf("ACE %d size %d extends beyond ACL data", i, aceSize)
 		}
 
 		// Parse SID from remaining ACE data
@@ -587,10 +676,7 @@ func parseDACL(data []byte) (*acl.ACL, error) {
 		offset += int(aceSize)
 	}
 
-	return &acl.ACL{
-		ACEs:   aces,
-		Source: acl.ACLSourceSMBExplicit,
-	}, nil
+	return aces, nil
 }
 
 // ============================================================================

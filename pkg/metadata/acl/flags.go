@@ -12,7 +12,12 @@ package acl
 //	NFSv4 0x02 (DIRECTORY_INHERIT_ACE)    -> Windows 0x02 (CI)
 //	NFSv4 0x04 (NO_PROPAGATE_INHERIT_ACE) -> Windows 0x04 (NP)
 //	NFSv4 0x08 (INHERIT_ONLY_ACE)         -> Windows 0x08 (IO)
+//	NFSv4 0x10 (SUCCESSFUL_ACCESS_ACE_FLAG)-> Windows 0x40 (SUCCESSFUL_ACCESS)
+//	NFSv4 0x20 (FAILED_ACCESS_ACE_FLAG)    -> Windows 0x80 (FAILED_ACCESS)
 //	NFSv4 0x80 (INHERITED_ACE)            -> Windows 0x10 (INHERITED)
+//
+// The SUCCESSFUL/FAILED audit flags are only meaningful on SACL audit/alarm
+// ACEs; DACL allow/deny ACEs never carry them, so DACL output is unchanged.
 func NFSv4FlagsToWindowsFlags(nfsFlags uint32) uint8 {
 	var winFlags uint8
 	if nfsFlags&ACE4_FILE_INHERIT_ACE != 0 {
@@ -26,6 +31,12 @@ func NFSv4FlagsToWindowsFlags(nfsFlags uint32) uint8 {
 	}
 	if nfsFlags&ACE4_INHERIT_ONLY_ACE != 0 {
 		winFlags |= 0x08 // INHERIT_ONLY_ACE
+	}
+	if nfsFlags&ACE4_SUCCESSFUL_ACCESS_ACE_FLAG != 0 {
+		winFlags |= 0x40 // SUCCESSFUL_ACCESS_ACE_FLAG (0x10 -> 0x40)
+	}
+	if nfsFlags&ACE4_FAILED_ACCESS_ACE_FLAG != 0 {
+		winFlags |= 0x80 // FAILED_ACCESS_ACE_FLAG (0x20 -> 0x80)
 	}
 	if nfsFlags&ACE4_INHERITED_ACE != 0 {
 		winFlags |= 0x10 // INHERITED_ACE (0x80 -> 0x10)
@@ -42,6 +53,8 @@ func NFSv4FlagsToWindowsFlags(nfsFlags uint32) uint8 {
 //	Windows 0x02 (CI)        -> NFSv4 0x02 (DIRECTORY_INHERIT_ACE)
 //	Windows 0x04 (NP)        -> NFSv4 0x04 (NO_PROPAGATE_INHERIT_ACE)
 //	Windows 0x08 (IO)        -> NFSv4 0x08 (INHERIT_ONLY_ACE)
+//	Windows 0x40 (SUCCESSFUL_ACCESS) -> NFSv4 0x10 (SUCCESSFUL_ACCESS_ACE_FLAG)
+//	Windows 0x80 (FAILED_ACCESS)     -> NFSv4 0x20 (FAILED_ACCESS_ACE_FLAG)
 //	Windows 0x10 (INHERITED) -> NFSv4 0x80 (INHERITED_ACE)
 func WindowsFlagsToNFSv4Flags(winFlags uint8) uint32 {
 	var nfsFlags uint32
@@ -56,6 +69,12 @@ func WindowsFlagsToNFSv4Flags(winFlags uint8) uint32 {
 	}
 	if winFlags&0x08 != 0 {
 		nfsFlags |= ACE4_INHERIT_ONLY_ACE
+	}
+	if winFlags&0x40 != 0 {
+		nfsFlags |= ACE4_SUCCESSFUL_ACCESS_ACE_FLAG // 0x40 -> 0x10
+	}
+	if winFlags&0x80 != 0 {
+		nfsFlags |= ACE4_FAILED_ACCESS_ACE_FLAG // 0x80 -> 0x20
 	}
 	if winFlags&0x10 != 0 {
 		nfsFlags |= ACE4_INHERITED_ACE // 0x10 -> 0x80

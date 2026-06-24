@@ -80,6 +80,27 @@ func ValidateACL(a *ACL) error {
 		}
 	}
 
+	// Validate SACL (audit/alarm) entries with the same per-ACE, count, AND
+	// serialized-size limits applied to the DACL. The SACL is stored for
+	// round-trip fidelity only and never drives access evaluation, but its
+	// ACE.Who strings are equally unbounded, so the 64KB cap must apply here
+	// too — otherwise an oversized SACL bypasses the MaxDACLSize bound.
+	if len(a.SACL) > MaxACECount {
+		return fmt.Errorf("%w: %d SACL ACEs (maximum %d)", ErrACETooMany, len(a.SACL), MaxACECount)
+	}
+	saclSize := 4
+	for i := range a.SACL {
+		saclSize += aceWireOverhead + xdrPad(len(a.SACL[i].Who))
+		if saclSize > MaxDACLSize {
+			return fmt.Errorf("%w: SACL exceeds %d bytes", ErrACLTooLarge, MaxDACLSize)
+		}
+	}
+	for i := range a.SACL {
+		if err := ValidateACE(&a.SACL[i]); err != nil {
+			return fmt.Errorf("SACL ACE %d: %w", i, err)
+		}
+	}
+
 	return nil
 }
 

@@ -68,6 +68,16 @@ func AdjustACLForMode(a *ACL, newMode uint32) *ACL {
 	newACEs := make([]ACE, len(a.ACEs))
 	copy(newACEs, a.ACEs)
 
+	// Deep-copy the SACL too. chmod never touches audit/alarm ACEs, but the
+	// "returns a new ACL; the original is not modified" contract requires a
+	// fresh backing array — aliasing a.SACL would let a later mutation of the
+	// returned ACL corrupt the caller's original.
+	var newSACL []ACE
+	if a.SACL != nil {
+		newSACL = make([]ACE, len(a.SACL))
+		copy(newSACL, a.SACL)
+	}
+
 	for i := range newACEs {
 		ace := &newACEs[i]
 
@@ -107,6 +117,11 @@ func AdjustACLForMode(a *ACL, newMode uint32) *ACL {
 		Protected:     a.Protected,
 		AutoInherited: a.AutoInherited,
 		NullDACL:      a.NullDACL,
+		// SACL (audit/alarm) is unaffected by chmod — RFC 7530 §6.4.1 only
+		// rewrites DACL special-identifier rwx bits. Carry the deep copy
+		// through so a chmod after a SET_INFO SACL does not silently drop the
+		// audit ACEs, without aliasing the caller's original backing array.
+		SACL: newSACL,
 	}
 }
 
