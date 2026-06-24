@@ -116,6 +116,43 @@ func dedent(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// renderDesc emits a command description, fencing any indented, pre-formatted
+// run (aligned subcommand tables, option lists, numbered steps) that Cobra Long
+// strings conventionally use. Without fencing, Markdown/MDX collapses the
+// leading whitespace and runs every line together. Non-indented prose is left
+// as prose so it wraps and renders normally.
+func renderDesc(buf *bytes.Buffer, desc string) {
+	indented := func(s string) bool {
+		return strings.HasPrefix(s, "  ") || strings.HasPrefix(s, "\t")
+	}
+	lines := strings.Split(desc, "\n")
+	for i := 0; i < len(lines); {
+		if indented(lines[i]) {
+			// Extend the run over indented lines and any interior blank lines,
+			// trimming trailing blanks so they don't pad the fence.
+			j, last := i, i
+			for j < len(lines) && (indented(lines[j]) || strings.TrimSpace(lines[j]) == "") {
+				if indented(lines[j]) {
+					last = j
+				}
+				j++
+			}
+			fmt.Fprintf(buf, "```\n%s\n```\n\n", dedent(strings.Join(lines[i:last+1], "\n")))
+			i = last + 1
+			continue
+		}
+		// Gather a prose run up to the next indented line.
+		j := i
+		for j < len(lines) && !indented(lines[j]) {
+			j++
+		}
+		if prose := strings.TrimSpace(strings.Join(lines[i:j], "\n")); prose != "" {
+			fmt.Fprintf(buf, "%s\n\n", prose)
+		}
+		i = j
+	}
+}
+
 // anchor slugifies a command path the way GitHub-flavored Markdown anchors
 // section headers: lowercase, backticks dropped, spaces to hyphens.
 func anchor(path string) string {
@@ -140,8 +177,8 @@ func writeCommand(buf *bytes.Buffer, c *cobra.Command) {
 	// it out so the prose renders as prose and the commands render as a fenced,
 	// highlighted code block (instead of headings + smart-quoted dashes).
 	desc, embeddedExamples := splitExamples(c.Long)
-	if desc != "" && strings.TrimSpace(desc) != strings.TrimSpace(c.Short) {
-		fmt.Fprintf(buf, "%s\n\n", strings.TrimSpace(desc))
+	if d := strings.TrimSpace(desc); d != "" && d != strings.TrimSpace(c.Short) {
+		renderDesc(buf, desc)
 	}
 
 	if c.Runnable() {
