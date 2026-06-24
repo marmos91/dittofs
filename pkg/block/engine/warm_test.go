@@ -133,6 +133,41 @@ func TestWarmAll_FetchesMissingSkipsLocal(t *testing.T) {
 	}
 }
 
+// TestWarmAll_FetchesNonAlignedChunk guards #1374: FastCDC chunks start at
+// arbitrary byte offsets that do NOT align to BlockSize. The old WarmAll
+// fetched via fetchBlock(payloadID, blockIdx), and fetchBlock resolves the row
+// covering byte blockIdx*BlockSize — so a chunk whose offset is not a multiple
+// of BlockSize was never resolved and was silently skipped (WarmAll reported
+// success but fetched nothing). WarmAll now fetches the enumerated row directly
+// (fetchResolvedBlock), so the non-aligned chunk must land locally.
+func TestWarmAll_FetchesNonAlignedChunk(t *testing.T) {
+	ctx := context.Background()
+	m, _, rs, fbs := warmHarness([]string{"payA"})
+
+	// A remote-only chunk at a deliberately non-BlockSize-aligned offset.
+	offset := uint64(BlockSize) + 12345
+	hash := seedFileBlockAt(t, fbs, rs, "payA", offset, []byte("non-aligned-fastcdc-chunk-bytes"))
+
+	res, err := m.WarmAll(ctx, nil)
+	if err != nil {
+		t.Fatalf("WarmAll: %v", err)
+	}
+	if res.BlocksFetched != 1 {
+		t.Errorf("BlocksFetched = %d; want 1 (non-aligned chunk must be fetched)", res.BlocksFetched)
+	}
+	if res.BytesFetched <= 0 {
+		t.Errorf("BytesFetched = %d; want > 0", res.BytesFetched)
+	}
+
+	has, err := m.local.Has(ctx, hash)
+	if err != nil {
+		t.Fatalf("local Has: %v", err)
+	}
+	if !has {
+		t.Errorf("non-aligned chunk %s not present locally after WarmAll", hash.String())
+	}
+}
+
 func TestWarmAll_NoRemote(t *testing.T) {
 	m, _, _, _ := warmHarness([]string{"payA"})
 	m.remoteStore = nil

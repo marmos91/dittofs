@@ -184,6 +184,22 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, nil
 	}
 
+	return m.fetchResolvedBlock(ctx, fb)
+}
+
+// fetchResolvedBlock downloads the already-resolved FileBlock row from the
+// remote store, persists it to the local CAS tier, and marks it
+// fetched-synced. It is the post-resolve body shared by fetchBlock (which
+// resolves by blockIdx round-trip) and WarmAll (which already holds the row
+// from enumeration, so it must NOT re-resolve by blockIdx — FastCDC chunks
+// start at arbitrary, non-BlockSize-aligned offsets, and a blockIdx lookup
+// would miss every non-aligned chunk and silently skip it). Returns nil data
+// when the row has no actionable remote key (sparse / never-uploaded).
+func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileBlock) ([]byte, error) {
+	if fb == nil {
+		return nil, nil
+	}
+
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
 		if errors.Is(err, block.ErrChunkNotFound) {

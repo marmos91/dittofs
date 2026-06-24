@@ -613,19 +613,26 @@ func testListFileBlocksEmptyStore(t *testing.T, factory StoreFactory) {
 // (#1374).
 // ============================================================================
 
-// testEnumeratePayloads seeds blocks for three distinct payloads (multiple
-// blocks each, including a multi-digit block index to exercise the last-colon /
-// first-slash split) and asserts EnumeratePayloads yields exactly the three
-// distinct payloadIDs, deduped and order-independent.
+// testEnumeratePayloads seeds blocks for several distinct payloads (multiple
+// blocks each, including a multi-digit block index to exercise numeric suffix
+// handling, AND payloadIDs that themselves CONTAIN slashes — the production
+// shape, BuildPayloadID(shareName, filePath), where the trailing "/{offset}"
+// component is the chunk offset and the payloadID is everything before the
+// LAST slash) and asserts EnumeratePayloads yields exactly those distinct
+// payloadIDs, deduped and order-independent. A backend that split on the FIRST
+// slash would truncate "myshare/dir/sub/file.bin" to "myshare" and fail here.
 func testEnumeratePayloads(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
-	// payload -> number of blocks.
+	// payload -> number of blocks. The slash-containing payloadIDs are the
+	// normal case for any file in a subdirectory.
 	want := map[string]int{
-		"payload-alpha": 3,
-		"payload-beta":  1,
-		"payload-gamma": 12, // exercises a multi-digit block index suffix
+		"payload-alpha":            3,
+		"payload-beta":             1,
+		"payload-gamma":            12, // exercises a multi-digit block index suffix
+		"myshare/dir/sub/file.bin": 2,  // payloadID itself contains slashes
+		"export/docs/report.pdf":   1,  // single-block subdirectory file
 	}
 	for payloadID, n := range want {
 		for i := 0; i < n; i++ {
