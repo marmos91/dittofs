@@ -7,7 +7,10 @@
 #   - Local SSD attached at /dev/sda1
 #
 # Usage:
-#   sudo ./setup-dittofs-demo.sh [tarball-path]
+#   sudo S3_ACCESS_KEY=... S3_SECRET_KEY=... ./setup-dittofs-demo.sh [tarball-path]
+#
+#   (Pass the S3 vars through sudo as shown — a plain `export` in your shell
+#   is stripped by sudo, and the script will then refuse to start.)
 
 set -euo pipefail
 
