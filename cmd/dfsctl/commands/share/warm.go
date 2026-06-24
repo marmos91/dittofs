@@ -97,6 +97,9 @@ func watchWarm(client *apiclient.Client, shareName, jobID string) error {
 			fmt.Printf("\rfetched %d/%d blocks (%s) — done\n",
 				status.BlocksDone, status.BlocksTotal,
 				bytesize.ByteSize(status.BytesDone).String())
+			if status.Warning != "" {
+				fmt.Fprintf(os.Stderr, "warning: %s\n", status.Warning)
+			}
 			return nil
 		case warmStateFailed:
 			fmt.Println()

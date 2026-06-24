@@ -71,6 +71,7 @@ type WarmJobStatus struct {
 	StartedAt   string `json:"started_at,omitempty"`
 	FinishedAt  string `json:"finished_at,omitempty"`
 	Error       string `json:"error,omitempty"`
+	Warning     string `json:"warning,omitempty"`
 }
 
 // warmStartResponse is the 202 body from POST .../blockstore/warm.

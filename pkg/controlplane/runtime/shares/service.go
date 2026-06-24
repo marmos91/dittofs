@@ -2076,7 +2076,12 @@ func (s *Service) StartWarm(_ context.Context, shareName string) (*WarmJob, erro
 	bs := share.BlockStore
 	s.mu.RUnlock()
 
-	job := s.warmJobs.start(shareName, func(ctx context.Context, progress func(done, total int64)) (warmAllResult, error) {
+	// Capture the share's currently-stored byte count up front (O(1) lite
+	// stats, no per-file DB walk). The registry uses it to warn when a warm
+	// run enumerates zero blocks on a non-empty share (#1374).
+	usedBytes := bs.GetStatsLite().LocalDiskUsed
+
+	job := s.warmJobs.start(shareName, usedBytes, func(ctx context.Context, progress func(done, total int64)) (warmAllResult, error) {
 		res, err := bs.WarmAll(ctx, progress)
 		return warmAllResult{
 			BlocksFetched:      res.BlocksFetched,
