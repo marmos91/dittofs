@@ -790,8 +790,9 @@ func (s *Service) createBlockStoreForShare(
 	// Apply the optional per-remote upload-concurrency override. Unset or 0
 	// keeps the server default (CPU-deduced); a positive value pins this
 	// remote's upload parallelism. Validated to [0,256] at config admission.
-	// The resolve hits the in-memory config cache (the remote was just
-	// acquired), so this is a cheap lookup, not a fresh DB round-trip.
+	// acquireRemoteStore caches only the instantiated store, not its config,
+	// so this re-resolves the BlockStoreConfig (a DB read). A failure here is
+	// non-fatal — fall back to the default and warn rather than fail attach.
 	if config.RemoteBlockStoreID != "" {
 		if remoteCfg, cfgErr := resolveBlockStoreConfig(ctx, blockStoreProvider, config.RemoteBlockStoreID, models.BlockStoreKindRemote); cfgErr == nil {
 			if parsed, pErr := remoteCfg.GetConfig(); pErr == nil {
@@ -799,6 +800,9 @@ func (s *Service) createBlockStoreForShare(
 					syncerCfg.ParallelUploads = int(v)
 				}
 			}
+		} else {
+			logger.Warn("failed to resolve remote config for parallel_uploads override; using server default",
+				"share", config.Name, "error", cfgErr)
 		}
 	}
 
