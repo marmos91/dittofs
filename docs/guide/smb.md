@@ -103,7 +103,7 @@ AES-NI-capable hardware.
 | Persistent Handles | Cluster-aware handles (requires shared state) |
 | RDMA | Remote Direct Memory Access transport |
 | QUIC | UDP-based transport (SMB over QUIC) |
-| SACL / auditing | Audit ACEs are not enforced (owner/group/DACL **are** supported — see [Access Control](access-control.md)) |
+| SACL / auditing | Audit ACEs round-trip (read/write/Auditing tab) but are not *enforced* — no audit events are emitted (owner/group/DACL **are** supported — see [Access Control](access-control.md)) |
 | DFS | Distributed File System referrals |
 
 ---
@@ -629,7 +629,7 @@ See [Troubleshooting › Cross-Protocol Issues](troubleshooting.md#cross-protoco
 4. **No persistent handles**: Cluster-aware handles require shared state infrastructure
 5. **No RDMA transport**: Remote Direct Memory Access not supported
 6. **No QUIC transport**: SMB over QUIC (UDP) not supported
-7. **No SACL / audit ACEs**: Owner, group, and DACL security descriptors **are** supported (see [Access Control](access-control.md)); only audit ACEs (SACL) are not enforced
+7. **SACL audit events not generated**: Owner, group, and DACL security descriptors **are** supported (see [Access Control](access-control.md)); audit ACEs (SACL) round-trip through read/write and the Windows Auditing tab but are not *enforced* — no audit log is emitted on a matching access
 8. **No DFS referrals**: Distributed File System not supported
 
 ### Operational Limitations

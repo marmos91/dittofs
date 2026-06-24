@@ -146,7 +146,8 @@ func GetSIDMapper() *sid.SIDMapper {
 //   - Owner SID from file UID (if OwnerSecurityInformation requested)
 //   - Group SID from file GID (if GroupSecurityInformation requested)
 //   - DACL translated from file ACL (if DACLSecurityInformation requested)
-//   - SACL empty stub (if SACLSecurityInformation requested)
+//   - SACL from stored audit/alarm ACEs, or an empty SACL when none are
+//     stored (if SACLSecurityInformation requested)
 //
 // If additionalSecInfo is 0, no sections are included and a minimal empty SD
 // is returned (header only). Callers should pass explicit flags for the

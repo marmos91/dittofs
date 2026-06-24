@@ -205,8 +205,10 @@ func TestSetInfo_SECINFO_SACL_AuthzAgainstHandleGrantedAccess(t *testing.T) {
 		if err != nil {
 			t.Fatalf("setSecurityInfo: %v", err)
 		}
-		// SACL changes are no-ops in DittoFS (no SACL persistence yet), so the
-		// handler returns SUCCESS once the gate passes.
+		// This SD carries no SACL body (DACL-only), so once the
+		// ACCESS_SYSTEM_SECURITY gate passes the handler returns SUCCESS with
+		// nothing to install. SACL persistence itself is covered by
+		// security_sacl_test.go's build/parse round-trip.
 		if resp.Status != types.StatusSuccess {
 			t.Fatalf("status = 0x%08x, want StatusSuccess (handle has ACCESS_SYSTEM_SECURITY)", resp.Status)
 		}
