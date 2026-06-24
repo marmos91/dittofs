@@ -102,10 +102,10 @@ The portmapper is disabled by default. Enable it via `dfsctl`:
 dfsctl adapter settings nfs
 
 # Change the portmapper port
-dfsctl adapter settings nfs --set portmapper_port=10111
+dfsctl adapter settings nfs update --portmapper-port 10111
 
 # Disable the portmapper entirely
-dfsctl adapter settings nfs --set portmapper_enabled=false
+dfsctl adapter settings nfs update --portmapper-enabled=false
 ```
 
 Or via environment variables:
@@ -226,7 +226,7 @@ When the portmapper runs on the standard port 111 (requires root or `CAP_NET_BIN
 
 ```bash
 # Configure portmapper on standard port (requires root)
-dfsctl adapter settings nfs --set portmapper_port=111
+dfsctl adapter settings nfs update --portmapper-port 111
 
 # Linux - no port options needed, client queries portmapper automatically
 sudo mkdir -p /mnt/nfs

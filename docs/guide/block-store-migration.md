@@ -19,7 +19,7 @@ see [ARCHITECTURE.md](../internals/architecture.md#migration--block-layout-routi
 - **CAS layout:** immutable, hash-keyed, dedup-safe across files and across
   VMs that share a remote — typically 40–80% cross-VM dedup.
 - **Simpler GC:** a single mark-sweep over one hash-keyed namespace.
-- **Atomic per-share snapshots** (reference holds; see [SNAPSHOTS.md](SNAPSHOTS.md)).
+- **Atomic per-share snapshots** (reference holds; see [SNAPSHOTS.md](snapshots.md)).
 - **Cost:** one offline maintenance window. Each share carries a
   `block_layout` flag (`legacy` or `cas-only`); the migration flips it to
   `cas-only` in the same step that deletes the last legacy keys, so the

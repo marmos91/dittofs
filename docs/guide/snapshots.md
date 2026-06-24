@@ -964,7 +964,7 @@ spec:
 For background on these decisions, see
 [ARCHITECTURE.md — Share Snapshots](../internals/architecture.md#share-snapshots).
 For the CLI surface, see
-[CLI.md — Share Snapshots](CLI.md#share-snapshots).
+[CLI.md — Share Snapshots](cli.md#share-snapshots).
 
 ## 14. REST API reference
 

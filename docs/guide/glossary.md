@@ -3,7 +3,7 @@
 Plain-language definitions of the protocol, security, and storage terms used
 throughout the DittoFS documentation. Each entry links to the authoritative
 specification for readers who want the full detail. Protocol-specific glossaries
-also live in [NFS.md](NFS.md#glossary) and [SMB.md](SMB.md#glossary).
+also live in [NFS.md](nfs.md#glossary) and [SMB.md](smb.md#glossary).
 
 ## Filesystem protocols
 
@@ -88,7 +88,7 @@ own documentation for readers who want to go deeper.
 
 ## See also
 
-- [NFS.md](NFS.md#glossary) — NFS-specific terms (XID, verifier, COMPOUND, FSID, …)
-- [SMB.md](SMB.md#glossary) — SMB-specific terms (dialect, credit, transform header, KDF, …)
+- [NFS.md](nfs.md#glossary) — NFS-specific terms (XID, verifier, COMPOUND, FSID, …)
+- [SMB.md](smb.md#glossary) — SMB-specific terms (dialect, credit, transform header, KDF, …)
 - [ACLS.md](access-control.md) — the cross-protocol ACL model in depth
-- [ENCRYPTION.md](ENCRYPTION.md) — at-rest encryption (master key / block key)
+- [ENCRYPTION.md](encryption.md) — at-rest encryption (master key / block key)

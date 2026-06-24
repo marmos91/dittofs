@@ -275,10 +275,6 @@ Full docs live in [`docs/`](docs/), split by audience.
 
 - [DittoFS Pro](docs/product/pro.md) — the managed dashboard built on open-source DittoFS
 
-**Product**
-
-- [DittoFS Pro](docs/product/pro.md) — the premium web dashboard built on top of this server
-
 ## Testing
 
 ```bash
@@ -297,8 +293,9 @@ DittoFS is experimental and has not been professionally audited.
 
 - **Authentication:** AUTH_UNIX and Kerberos (RPCSEC_GSS) for NFS; NTLM and Kerberos
   (SPNEGO) for SMB.
-- **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS has no transport
-  encryption — run it over a VPN or a trusted network.
+- **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS supports
+  NFS-over-TLS (RFC 9289) and Kerberos privacy (`krb5p`); without either, run NFS over a VPN
+  or a trusted network.
 - **At-rest:** optional client-side per-remote envelope encryption protects block content in
   the remote store. See [docs/guide/encryption.md](docs/guide/encryption.md).
 

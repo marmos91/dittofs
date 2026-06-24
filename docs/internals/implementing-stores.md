@@ -375,7 +375,7 @@ The suite asserts:
 
 Cross-references:
 
-- [ARCHITECTURE.md — Migration & Block-Layout Routing](ARCHITECTURE.md#migration--block-layout-routing)
+- [ARCHITECTURE.md — Migration & Block-Layout Routing](architecture.md#migration--block-layout-routing)
   for how the engine consumes the flag.
 - [BLOCKSTORE_MIGRATION.md](../guide/block-store-migration.md)
   for the operator-facing migration story.

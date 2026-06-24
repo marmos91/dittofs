@@ -2,7 +2,7 @@
 
 This guide covers running DittoFS beyond a local source build: package managers, Docker,
 and the Kubernetes operator. For the quick local path (Nix / Homebrew / source build), see
-the [README](../../README.md). For configuration details, see [CONFIGURATION.md](CONFIGURATION.md).
+the [README](../../README.md). For configuration details, see [CONFIGURATION.md](configuration.md).
 
 DittoFS ships two binaries — `dfs` (the server daemon) and `dfsctl` (the REST client).
 Most package managers install both.

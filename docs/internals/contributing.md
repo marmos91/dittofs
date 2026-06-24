@@ -622,7 +622,7 @@ Key guidelines:
 
 - Open an issue on GitHub for bugs or feature requests
 - Check existing issues for similar problems
-- Review the [Architecture](ARCHITECTURE.md) and [FAQ](../guide/faq.md) documentation
+- Review the [Architecture](architecture.md) and [FAQ](../guide/faq.md) documentation
 
 ## License
 

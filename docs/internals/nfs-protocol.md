@@ -707,13 +707,13 @@ Directory delegation settings are managed via `dfsctl adapter settings nfs`:
 
 ```bash
 # Enable delegations
-dfsctl adapter settings nfs --set delegations_enabled=true
+dfsctl adapter settings nfs update --delegations-enabled=true
 
 # Set maximum delegations
-dfsctl adapter settings nfs --set max_delegations=1000
+dfsctl adapter settings nfs update --max-delegations 1000
 
 # Adjust batch window (lower = more responsive, higher = less backchannel traffic)
-dfsctl adapter settings nfs --set dir_deleg_batch_window_ms=100
+dfsctl adapter settings nfs update --dir-deleg-batch-window-ms 100
 ```
 
 ### Prometheus Metrics

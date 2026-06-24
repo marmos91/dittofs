@@ -55,8 +55,8 @@ func main() {
 }
 
 // writeTree renders the command hierarchy as a nested, clickable index. Each
-// entry links to that command's own section (anchored on its `### `path“ header),
-// so readers can jump straight to any command in this long page.
+// entry links to that command's own section, whose header is the command path
+// in a level-3 heading, so readers can jump straight to any command on the page.
 func writeTree(buf *bytes.Buffer, root *cobra.Command) {
 	var walk func(c *cobra.Command, depth int)
 	walk = func(c *cobra.Command, depth int) {

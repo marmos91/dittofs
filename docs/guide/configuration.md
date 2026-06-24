@@ -3,7 +3,7 @@
 DittoFS uses a flexible configuration system with support for YAML/TOML files and environment variable overrides.
 
 > Unfamiliar with terms like CAS, AUTH_UNIX, NTLM, or root-squash? See the
-> [Glossary](GLOSSARY.md) for plain-language definitions.
+> [Glossary](glossary.md) for plain-language definitions.
 
 ## Table of Contents
 
@@ -264,9 +264,9 @@ controlplane:
 
 When `cert_file`/`key_file` are unset, the server serves plain HTTP exactly as before (back-compatible). When set, it serves HTTPS; the files are read and parsed at startup, so a missing or malformed certificate fails fast with a clear error.
 
-**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](SECURITY.md) and [docs/DEPLOYMENT.md](install.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](install.md).
+**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](security.md) and [docs/DEPLOYMENT.md](install.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](install.md).
 
-Related glossary terms: [TLS / mTLS](GLOSSARY.md#authentication).
+Related glossary terms: [TLS / mTLS](glossary.md#authentication).
 
 **API Endpoints:**
 
@@ -471,7 +471,7 @@ directly):
 `DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
 
 See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
-for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
+for the full mark-sweep design and [CLI.md](cli.md) for the on-demand
 `dfsctl store block gc` command.
 
 #### Local cache size limit & write backpressure
@@ -569,7 +569,7 @@ file's content is not recycled (only unlink and replace-overwrite are).
   --trash-exclude '*.tmp' --trash-exclude '*.cache'
 ```
 
-See [CLI.md](CLI.md#recycle-bin-trash) for the `dfsctl trash`
+See [CLI.md](cli.md#recycle-bin-trash) for the `dfsctl trash`
 management commands and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 
@@ -613,7 +613,7 @@ Notes:
 A remote block store may also encrypt block payloads before upload using
 client-side envelope encryption. Compression (when enabled) runs
 **before** encryption — encrypted bytes are incompressible by design.
-See [ENCRYPTION.md](ENCRYPTION.md) for the full threat model and design.
+See [ENCRYPTION.md](encryption.md) for the full threat model and design.
 
 Add an `encryption` block to the remote store's `config` JSON:
 
@@ -1132,7 +1132,7 @@ In this example, `special-viewer` gets `read-write` on `/archive` (user explicit
 #### CLI Management Commands
 
 Users and groups live in the control-plane database, not the config file. Manage them with
-`dfsctl` against a running server (run `dfsctl login` first). See [CLI.md](CLI.md) for the
+`dfsctl` against a running server (run `dfsctl login` first). See [CLI.md](cli.md) for the
 complete, generated reference.
 
 **User Commands:**
@@ -1339,7 +1339,7 @@ dfsctl share create --name /secure --metadata default --encrypt-data
 > deployments (this rejects SMB 2.x clients, which cannot encrypt). If SMB is bound to
 > a non-loopback address with `encryption_mode: disabled`, `dfs` logs a startup WARN
 > because file data then traverses the network in cleartext. See
-> [docs/SECURITY.md](SECURITY.md#smb3-security-model) for the hardened template.
+> [docs/SECURITY.md](security.md#smb3-security-model) for the hardened template.
 
 **Enforcement Rules:**
 
@@ -1627,7 +1627,7 @@ identity:
 Controls the background scheduler that drives per-share snapshot policies
 (schedule + retention). Policies themselves are configured per share via
 `dfsctl share snapshot-policy` or the REST API — see
-[SNAPSHOTS.md §12](SNAPSHOTS.md#12-scheduled-snapshots-policies). These
+[SNAPSHOTS.md §12](snapshots.md#12-scheduled-snapshots-policies). These
 knobs only tune the daemon-wide scheduler loop.
 
 ```yaml
@@ -1737,7 +1737,7 @@ changes hot-reload the live resolver**; **Kerberos changes take effect on the
 next server restart** (the NFS/SMB adapters bind it at startup). The bind
 password is write-only — submit `********` (or omit it) on `PUT` to keep the
 stored secret. Equivalent CLI: `dfsctl identity-provider {list,get,set,test}`
-(see [CLI.md](CLI.md)).
+(see [CLI.md](cli.md)).
 
 ## Migration
 
@@ -1869,7 +1869,7 @@ boot guard exits 78 on any share whose sentinel is missing.
 
 ### See also
 
-- [docs/CLI.md — `dfs migrate-to-cas`](CLI.md#dfs-migrate-to-cas) for the
+- [docs/CLI.md — `dfs migrate-to-cas`](cli.md#dfs-migrate-to-cas) for the
   full command-line reference (synopsis, flag table, exit codes, examples).
 
 ## Metrics (Prometheus)

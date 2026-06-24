@@ -142,7 +142,6 @@ mount -o anon,nolock \\<host-ip>\<export-path> Z:
 
 | Limitation | Impact | Workaround |
 |-----------|--------|------------|
-| **No Alternate Data Streams (ADS)** | NTFS named streams (`:Zone.Identifier`, etc.) not available | None — files from the Internet may lack the "Unblock" option | 
 | **No multi-channel SMB** | Single TCP connection per session | Performance is limited to single-connection throughput |
 | **NFS from Windows is best-effort** | Windows NFS client has limited functionality | Use SMB for primary Windows file access |
 | **No NTFS object IDs** | `FSCTL_CREATE_OR_GET_OBJECT_ID` not supported | No impact for typical workflows |

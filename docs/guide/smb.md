@@ -1,6 +1,6 @@
 # SMB
 
-DittoFS speaks SMB 2.1 through SMB 3.1.1 over TCP. This page covers everything an operator or
+DittoFS speaks SMB 2.0.2 through SMB 3.1.1 over TCP. This page covers everything an operator or
 end-user needs: supported dialects, how to mount, authentication, encryption and signing
 configuration, and lease/durable-handle behaviour as seen from clients.
 
@@ -63,7 +63,7 @@ AES-NI-capable hardware.
 | SET_INFO | Implemented | Attributes, timestamps, rename, delete |
 | QUERY_DIRECTORY | Implemented | With pagination |
 | CHANGE_NOTIFY | Partial | Accepts watches, async delivery via notification queue |
-| IOCTL | Implemented | VALIDATE_NEGOTIATE_INFO, FSCTL_PIPE_WAIT |
+| IOCTL | Implemented | VALIDATE_NEGOTIATE_INFO, FSCTL_PIPE_WAIT, server-side copy (SRV_REQUEST_RESUME_KEY + SRV_COPYCHUNK) |
 | LOCK | Implemented | Shared and exclusive byte-range locks |
 
 **SMB3 advanced features:**
@@ -103,7 +103,7 @@ AES-NI-capable hardware.
 | Persistent Handles | Cluster-aware handles (requires shared state) |
 | RDMA | Remote Direct Memory Access transport |
 | QUIC | UDP-based transport (SMB over QUIC) |
-| Security Descriptors | Windows ACLs not supported |
+| SACL / auditing | Audit ACEs are not enforced (owner/group/DACL **are** supported — see [Access Control](access-control.md)) |
 | DFS | Distributed File System referrals |
 
 ---
@@ -611,7 +611,7 @@ lsmod | grep cifs
 
 ### Cross-Protocol Issues
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for cross-protocol troubleshooting, including:
+See [Troubleshooting › Cross-Protocol Issues](troubleshooting.md#cross-protocol-issues) for cross-protocol troubleshooting, including:
 - File locked by another protocol
 - Delegation recall timeouts
 - Lease break storms
@@ -629,7 +629,7 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for cross-protocol troubleshooting,
 4. **No persistent handles**: Cluster-aware handles require shared state infrastructure
 5. **No RDMA transport**: Remote Direct Memory Access not supported
 6. **No QUIC transport**: SMB over QUIC (UDP) not supported
-7. **No security descriptors**: Windows ACLs not supported (uses POSIX permissions)
+7. **No SACL / audit ACEs**: Owner, group, and DACL security descriptors **are** supported (see [Access Control](access-control.md)); only audit ACEs (SACL) are not enforced
 8. **No DFS referrals**: Distributed File System not supported
 
 ### Operational Limitations
@@ -643,9 +643,7 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for cross-protocol troubleshooting,
 
 ### SMB3 Feature Gaps
 
-13. **No extended attributes (xattrs)**: EA support not implemented
-14. **No server-side copy offload**: FSCTL_SRV_COPYCHUNK not implemented
-15. **No per-file encryption**: Encryption is per-session or per-share only
+13. **No per-file encryption**: Encryption is per-session or per-share only
 
 ---
 
@@ -710,7 +708,7 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for cross-protocol troubleshooting,
 - [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) - GSS-API
 - [NIST SP800-108](https://csrc.nist.gov/publications/detail/sp/800-108/final) - Key Derivation Using Pseudorandom Functions
 
-For plain-language definitions of these terms, see the project-wide [Glossary](GLOSSARY.md).
+For plain-language definitions of these terms, see the project-wide [Glossary](glossary.md).
 
 ### Related Projects
 
