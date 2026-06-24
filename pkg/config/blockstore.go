@@ -30,12 +30,6 @@ type BlockstoreConfig struct {
 
 // BlockstoreLocalConfig holds local-tier blockstore tunables.
 type BlockstoreLocalConfig struct {
-	// DedupLRUSize is the slot count for the in-memory hash dedup LRU.
-	// Default 4096 when zero. Surface for the RAM-only per-share hash
-	// LRU consulted between FastCDC.Next() and Put(hash, data) in
-	// pkg/block/local/fs/rollup.go.
-	DedupLRUSize int `mapstructure:"dedup_lru_size" yaml:"dedup_lru_size"`
-
 	// DefaultRemoteCacheSize is the on-disk ceiling (bytes) applied to a
 	// share's local tier when a remote block store is configured but no
 	// explicit per-share size is set. Bounds the write-through cache so a
@@ -64,9 +58,6 @@ type BlockstoreLocalConfig struct {
 
 // ApplyDefaults fills any zero-valued field with the defaults.
 func (c *BlockstoreLocalConfig) ApplyDefaults() {
-	if c.DedupLRUSize <= 0 {
-		c.DedupLRUSize = 4096
-	}
 	if c.DefaultRemoteCacheSize == 0 {
 		c.DefaultRemoteCacheSize = defaultRemoteCacheSize
 	}
@@ -79,9 +70,6 @@ func (c *BlockstoreLocalConfig) ApplyDefaults() {
 // values. The error message includes the canonical dotted config path so
 // operators can pinpoint the offending key in their config file.
 func (c *BlockstoreLocalConfig) Validate() error {
-	if c.DedupLRUSize <= 0 {
-		return fmt.Errorf("blockstore.local.dedup_lru_size must be > 0 (got %d)", c.DedupLRUSize)
-	}
 	// DefaultRemoteCacheSize, MaxLogBytes, and BackpressureMaxWait treat zero
 	// as "apply the built-in (or system-deduced) default", so Validate only
 	// rejects an explicitly negative backpressure wait — the one nonsensical

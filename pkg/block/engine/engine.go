@@ -177,13 +177,6 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	// so engine code can call bs.cache.* without nil-checks even before
 	// Start runs.
 	bs.cache = nullCache{}
-	// Thread the coordinator into the syncer so the file-level dedup
-	// short-circuit (engine.Flush's pre-rollup hook) can call into
-	// trySpeculativeFileLevelDedup with a real coordinator. cfg.Syncer
-	// is guaranteed non-nil by the required-field check above.
-	if cfg.Coordinator != nil {
-		cfg.Syncer.SetCoordinator(cfg.Coordinator)
-	}
 	// Thread the SyncedHashStore into the Syncer so the mirror loop in
 	// Flush can call MarkSynced after each remote.Put. Nil is accepted
 	// (local-only / no-remote fixtures); the mirror loop early-exits in
@@ -374,13 +367,13 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			})
 		}
 	}
-	// wire the Store back-reference onto the Syncer so
-	// the file-level dedup short-circuit can reach Store.cache for
-	// surgical invalidation of orphaned speculative chunks. Reading
-	// through the back-reference (instead of caching a cacheInterface
-	// field on the Syncer at construction time) lets test code swap
-	// `bs.cache = rec` post-construction and still observe the
-	// invalidation — mirrors the TestClose_ClosesCache pattern.
+	// wire the Store back-reference onto the Syncer so it can reach the
+	// owning Store for dataplane metrics (Syncer.dataplaneMetrics) and
+	// cache access (InvalidateFile on delete). Reading through the
+	// back-reference (instead of caching a cacheInterface field on the
+	// Syncer at construction time) lets test code swap `bs.cache = rec`
+	// post-construction and still observe the invalidation — mirrors the
+	// TestClose_ClosesCache pattern.
 	cfg.Syncer.bs = bs
 	return bs, nil
 }
@@ -392,6 +385,34 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 // pathological metadata-store fault surfaces a clear error instead of looping
 // forever (#1245-B).
 const rollupPersistMaxAttempts = 8
+
+// isObjectIDConflict reports whether err signals a
+// first-committer-wins concurrent-quiesce race. Recognises two shapes
+//
+//  1. errors.Is(err, ErrObjectIDConflict) — the runtime coordinator
+//     wraps backend conflict errors (Postgres 23505 on
+//     files_object_id_idx, mderrors.ErrConflict from Memory/Badger)
+//     into this sentinel via errors.Join.
+//  2. duck-typed `interface{ IsConflict() bool }` — accepted as a
+//     compatibility hook so test fakes (and any future low-level
+//     driver type that surfaces the same boolean) can flow through
+//     without coupling test code to the engine sentinel.
+func isObjectIDConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrObjectIDConflict) {
+		return true
+	}
+	type conflictSignal interface {
+		IsConflict() bool
+	}
+	var sig conflictSignal
+	if errors.As(err, &sig) && sig.IsConflict() {
+		return true
+	}
+	return false
+}
 
 // isRollupPersistConflict reports whether err is a conflict the rollup
 // persister can converge past by falling back to the zero-objectID write. It

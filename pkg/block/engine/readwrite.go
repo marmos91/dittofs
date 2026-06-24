@@ -107,8 +107,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	// (pkg/block/local/fs/rollup.go:rollupFile) and lands as
 	// Pending FileBlocks with chunk-hash populated. The canonical
 	// []BlockRef projection is built at Flush time from
-	// ListFileBlocks(payloadID) — see Syncer.snapshotPendingBlockRefs
-	// (file-level dedup short-circuit input) and Syncer.snapshotBlockRefs
+	// ListFileBlocks(payloadID) — see Syncer.snapshotBlockRefs
 	// (post-drain canonical list for the post-Flush hook). WriteAt
 	// itself remains a per-write append into the local store and does
 	// NOT need to return a merged []BlockRef; the dual-read shim's

@@ -82,18 +82,6 @@ type fakeCoordinator struct {
 	getFileObjectIDCalls int
 }
 
-// newFakeCoordinator returns a *fakeCoordinator with all maps initialized
-// so tests can seed objectIDHits without a separate make() call. Tests
-// that don't need short-circuit support may continue to use
-// `&fakeCoordinator{}` directly — the FindByObjectID code paths handle a
-// nil map.
-func newFakeCoordinator() *fakeCoordinator {
-	return &fakeCoordinator{
-		objectIDHits:  make(map[block.ObjectID][]block.BlockRef),
-		fileObjectIDs: make(map[string]block.ObjectID),
-	}
-}
-
 type persistRecord struct {
 	payloadID string
 	blocks    []block.BlockRef
