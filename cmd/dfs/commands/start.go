@@ -286,8 +286,8 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// close the authenticator's cached channel.
 	defer func() {
 		nlRotation.Stop()
-		if closer, ok := nlAuth.(interface{ Close(context.Context) }); ok && nlAuth != nil {
-			closer.Close(context.Background())
+		if nlAuth != nil {
+			nlAuth.Close(context.Background())
 		}
 	}()
 
@@ -530,6 +530,19 @@ func resolveIdentityProviders(ctx context.Context, cpStore store.Store, rt *runt
 	// REST). Always source it from the file/env config and overlay it onto the
 	// effective config, so a DB-sourced Kerberos row never silently drops it.
 	kerberos.MachineAccount.OnlineJoin = cfg.Kerberos.MachineAccount.OnlineJoin
+
+	// Seed the runtime's hot-reloadable NETLOGON machine credential from the
+	// effective Kerberos machine-account config (#1325). nil disables passthrough.
+	// The SMB adapter reads this on an identity-provider config change to rebuild
+	// its secure channel without a restart. (Online-join supplies its own
+	// credential via the RotationManager, so the seeded credential is the
+	// offline/static one.)
+	if cred, ok := netlogonCredentialFromConfig(kerberos); ok {
+		rt.SetNetlogonCredential(&cred)
+	} else {
+		rt.SetNetlogonCredential(nil)
+	}
+
 	return kerberos
 }
 
@@ -607,7 +620,7 @@ func kerberosDTOToConfig(dto handlers.KerberosConfigDTO) config.KerberosConfig {
 // provider joins / loads the persisted secret exactly once regardless of how
 // many SMB adapter instances the runtime spins up — and injected here. It is
 // nil when machine_account is disabled.
-func createAdapterFactory(kerberosConfig *config.KerberosConfig, nlAuth netlogon.NetlogonAuthenticator) runtime.AdapterFactory {
+func createAdapterFactory(kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) runtime.AdapterFactory {
 	return func(cfg *models.AdapterConfig) (runtime.ProtocolAdapter, error) {
 		switch cfg.Type {
 		case "nfs":
@@ -657,7 +670,7 @@ func createNFSAdapter(cfg *models.AdapterConfig, kerberosConfig *config.Kerberos
 	return adapter, nil
 }
 
-func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig, nlAuth netlogon.NetlogonAuthenticator) (runtime.ProtocolAdapter, error) {
+func createSMBAdapter(cfg *models.AdapterConfig, kerberosConfig *config.KerberosConfig, nlAuth *netlogon.Authenticator) (runtime.ProtocolAdapter, error) {
 	port := cfg.Port
 	if port == 0 {
 		port = 12445
