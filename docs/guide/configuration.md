@@ -712,6 +712,7 @@ compatibility guide. The per-provider column flags the one gotcha that bites.
 
 | Provider | Endpoint | Region | `force_path_style` | Gotcha |
 | --- | --- | --- | --- | --- |
+| **Cubbit DS3** ⭐ _(DittoFS sponsor)_ | `https://s3.cubbit.eu` | `eu-west-1` | auto-on | Geo-distributed, S3-compatible object storage from [Cubbit](https://www.cubbit.io/). Create an S3 access key/secret in the DS3 console; the bucket lives in your assigned region. |
 | Google Cloud Storage (XML/HMAC) | `https://storage.googleapis.com` | `us-east-1` | **set `false`** | Use an **HMAC** key (`access_key_id`/`secret_access_key`), not a service-account JSON. GCS ignores `region` (any non-empty value works), so send the `us-east-1` default. GCS wants virtual-hosted style, so override the auto path-style default to `false`. |
 | Backblaze B2 | `https://s3.us-west-004.backblazeb2.com` | `us-west-004` | auto-on | Endpoint embeds the region (`s3.<region>.backblazeb2.com`); `region` must match it. Use an **application key**, not the master key. |
 | Wasabi | `https://s3.us-east-1.wasabisys.com` | `us-east-1` | auto-on | Region is in the hostname; mismatched `region` causes auth failures. |
@@ -722,6 +723,10 @@ compatibility guide. The per-provider column flags the one gotcha that bites.
 | Storj (S3 gateway) | `https://gateway.storjshare.io` | `us-east-1` | auto-on | Use S3-gateway access keys (`uplink share --register`), not the API access grant. |
 
 ```bash
+# Cubbit DS3 (DittoFS sponsor) — geo-distributed, S3-compatible object storage
+dfsctl store block remote add --name ds3-store --type s3 \
+  --config '{"endpoint":"https://s3.cubbit.eu","bucket":"dittofs","region":"eu-west-1","access_key_id":"DS3_ACCESS_KEY","secret_access_key":"DS3_SECRET_KEY"}'
+
 # Google Cloud Storage — note force_path_style:false (GCS wants virtual-hosted)
 dfsctl store block remote add --name gcs-store --type s3 \
   --config '{"endpoint":"https://storage.googleapis.com","bucket":"dittofs","region":"us-east-1","access_key_id":"GOOG_HMAC_KEY","secret_access_key":"GOOG_HMAC_SECRET","force_path_style":false}'

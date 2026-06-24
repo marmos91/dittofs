@@ -56,8 +56,9 @@ cache** in front of the remote — it is not the source of truth once a remote i
   S3 in the background; reads are served from cache and fetched on miss.
 - Size the local cache to your hot set. The remote write-through cache defaults to ~10 GiB
   (`blockstore.local.default_remote_cache_size`); raise it if your working set is larger.
-- DittoFS speaks the **S3 API**, so MinIO, Ceph RGW, GCS (set `force_path_style: false`),
-  Backblaze B2, Wasabi, DigitalOcean Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —
+- DittoFS speaks the **S3 API**, so [Cubbit DS3](https://www.cubbit.io/) (a DittoFS sponsor),
+  MinIO, Ceph RGW, GCS (set `force_path_style: false`), Backblaze B2, Wasabi, DigitalOcean
+  Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —
   see the verified endpoint snippets in [Configuration § Block Store](configuration.md#6-block-store-configuration).
 - Dedup happens automatically across files in a share; identical content is stored once.
 - Tune append-log pressure (`max_log_bytes`, default ~25% of capacity) and durability
