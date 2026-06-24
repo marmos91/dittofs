@@ -15,6 +15,9 @@ import (
 // and GenerateFileID packs the monotonic nextFileID counter into exactly these
 // eight bytes — so a counter that resets on restart can re-mint a persistent
 // half that already belongs to a disconnected durable handle.
+//
+// The slice→array conversion `[8]byte(id[:8])` is valid Go (≥ 1.20; this repo
+// is on Go 1.25); it copies the first eight bytes into a comparable array.
 func fileIDPersistentHalf(id [16]byte) [8]byte {
 	return [8]byte(id[:8])
 }
@@ -45,15 +48,25 @@ func fileIDPersistentHalf(id [16]byte) [8]byte {
 func TestDurableHandleSurvivesSimulatedRestart(t *testing.T) {
 	ctx := context.Background()
 
-	// FileID with persistent half == counter value 2 (little-endian in bytes
-	// 0-7, matching GenerateFileID's packing), volatile half arbitrary.
-	// A fresh Handler stores nextFileID=1, and GenerateFileID does Add(1)
-	// BEFORE packing, so the first FileID it mints carries persistent half 2 —
-	// the value chosen here so the collision hazard below is exact.
-	persistedFileID := [16]byte{
-		0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // persistent half = 2
-		0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, // volatile half
-	}
+	// Persistent half == counter value 2 (little-endian in bytes 0-7, matching
+	// GenerateFileID's packing). A fresh Handler stores nextFileID=1, and
+	// GenerateFileID does Add(1) BEFORE packing, so the first FileID it mints
+	// carries persistent half 2 — chosen here so the collision hazard below is
+	// exact.
+	//
+	// Production storage shape: the persisted FileID has its VOLATILE half
+	// (bytes 8-15) ZEROED — buildPersistedDurableHandle stores only the
+	// persistent half in FileID, and keeps the full original 16-byte value in
+	// OriginalFileID (see pkg/metadata/lock/durable_store.go). Mirror that here
+	// so the seed key matches what the store would actually hold.
+	const persistedCounter uint64 = 2
+	var persistedFileID [16]byte // volatile half stays zeroed (production shape)
+	binary.LittleEndian.PutUint64(persistedFileID[:8], persistedCounter)
+
+	// originalFileID is the full 16-byte value (persistent + volatile) as seen
+	// at the original CREATE — only OriginalFileID retains the volatile half.
+	originalFileID := persistedFileID
+	copy(originalFileID[8:], []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33})
 
 	now := time.Now()
 	store := newMockDurableStore()
@@ -61,8 +74,8 @@ func TestDurableHandleSurvivesSimulatedRestart(t *testing.T) {
 	// --- Pre-restart: persist the durable handle. ---
 	if err := store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
 		ID:              "restart-survivor",
-		FileID:          persistedFileID,
-		OriginalFileID:  persistedFileID,
+		FileID:          persistedFileID, // volatile half zeroed, as in production
+		OriginalFileID:  originalFileID,  // full original value retained
 		Path:            "/restart/file.txt",
 		ShareName:       "share1",
 		DisconnectedAt:  now,
@@ -131,17 +144,25 @@ func TestDurableHandleNoCollisionAfterReseed(t *testing.T) {
 	// (counter value 5000, little-endian in bytes 0-7, matching GenerateFileID's
 	// packing). A fresh Handler's counter starts at 1, so without the reseed its
 	// minted FileIDs would walk 2,3,4,… and eventually collide with 5000.
+	//
+	// Production storage shape (pkg/metadata/lock/durable_store.go): the
+	// persisted FileID keeps only the persistent half — the volatile half
+	// (bytes 8-15) is zeroed, and the full original value lives in
+	// OriginalFileID. Mirror that here; the reseed reads bytes 0-7 only, so the
+	// zeroed volatile half does not affect the seed math.
 	const persistedCounter uint64 = 5000
-	var persistedFileID [16]byte
+	var persistedFileID [16]byte // volatile half stays zeroed (production shape)
 	binary.LittleEndian.PutUint64(persistedFileID[:8], persistedCounter)
-	copy(persistedFileID[8:], []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x01, 0x02, 0x03})
+
+	originalFileID := persistedFileID
+	copy(originalFileID[8:], []byte{0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x01, 0x02, 0x03})
 
 	now := time.Now()
 	store := newMockDurableStore()
 	if err := store.PutDurableHandle(ctx, &lock.PersistedDurableHandle{
 		ID:              "seed-survivor",
-		FileID:          persistedFileID,
-		OriginalFileID:  persistedFileID,
+		FileID:          persistedFileID, // volatile half zeroed, as in production
+		OriginalFileID:  originalFileID,  // full original value retained
 		Path:            "/reseed/file.txt",
 		ShareName:       "share1",
 		DisconnectedAt:  now,
