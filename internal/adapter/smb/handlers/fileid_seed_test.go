@@ -66,6 +66,26 @@ func TestSeedFileIDFromDurableHandles_NeverLowers(t *testing.T) {
 	}
 }
 
+// TestSeedFileIDFromDurableHandles_MaxUint64 verifies the overflow guard: a
+// persisted FileID holding the maximum uint64 must NOT seed the counter to it,
+// which would make the next GenerateFileID wrap to 0.
+func TestSeedFileIDFromDurableHandles_MaxUint64(t *testing.T) {
+	store := newMockDurableStore()
+	_ = store.PutDurableHandle(context.Background(), durableWithFileID("max", ^uint64(0)))
+
+	h := NewHandler()
+	start := h.nextFileID.Load()
+	h.SeedFileIDFromDurableHandles(context.Background(), store)
+
+	if got := h.nextFileID.Load(); got != start {
+		t.Fatalf("counter seeded to %d on max-uint64 handle; want left at %d (no wrap)", got, start)
+	}
+	// And the next minted FileID must not be 0 (wrap sentinel).
+	if id := persistentHalf(h.GenerateFileID()); id == 0 {
+		t.Fatalf("GenerateFileID wrapped to 0 after max-uint64 seed")
+	}
+}
+
 // TestSeedFileIDFromDurableHandles_EmptyAndNil verifies the no-op paths: an
 // empty store and a nil store both leave the default start intact and never
 // panic.

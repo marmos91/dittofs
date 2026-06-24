@@ -1970,12 +1970,14 @@ func (h *Handler) baseFileUUID(authCtx *metadata.AuthContext, parentHandle metad
 // after a server restart freshly minted FileIDs cannot collide with the
 // FileID of a still-reclaimable durable open.
 //
-// Without this, the counter restarts at 1 every process start (see NewHandler),
-// while durable-handle records in the metadata store retain persistent halves
-// 1,2,3,…. A post-restart CREATE would re-mint a persistent half equal to a
-// persisted handle's, and a V1 reconnect (DHnC) — which matches on the
-// persistent half alone, with no CreateGuid to disambiguate — could then
-// reconnect or consume the wrong file (MS-SMB2 §3.3.5.9.7).
+// Without this, the counter restarts at 1 every process start (see NewHandler;
+// the first issued persistent half is 2, since GenerateFileID pre-increments),
+// while durable-handle records in the metadata store retain the persistent
+// halves issued before the restart. A post-restart CREATE would re-mint a
+// persistent half equal to a persisted handle's, and a V1 reconnect (DHnC) —
+// which matches on the persistent half alone, with no CreateGuid to
+// disambiguate — could then reconnect or consume the wrong file
+// (MS-SMB2 §3.3.5.9.7).
 //
 // Called once during adapter startup after the DurableStore is wired in.
 // The persistent half is the little-endian uint64 in bytes 0..7 of FileID,
@@ -2000,6 +2002,15 @@ func (h *Handler) SeedFileIDFromDurableHandles(ctx context.Context, store lock.D
 		}
 	}
 	if maxID == 0 {
+		return
+	}
+	// Guard the overflow edge: if a persisted FileID already holds the maximum
+	// uint64, seeding to it would make the next GenerateFileID's Add(1) wrap to
+	// 0 (and the log line below wrap too), reintroducing collisions. Such a
+	// value can't be exceeded anyway, so skip seeding and surface it.
+	if maxID == ^uint64(0) {
+		logger.Warn("SMB: persisted durable handle holds max FileID; cannot seed counter safely",
+			"durable_handles", len(handles))
 		return
 	}
 	// The counter holds the *last issued* persistent half — GenerateFileID
