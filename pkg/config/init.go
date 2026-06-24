@@ -159,7 +159,7 @@ controlplane:
 # derives optimal block store settings per share:
 #   - LocalStoreSize: 25% of available memory (per share)
 #   - ReadBufferSize: 12.5% of available memory (per share)
-#   - ParallelSyncs: max(4, CPU count)
+#   - ParallelSyncs: 32 (upload concurrency — network-bound, not CPU-derived)
 #   - ParallelFetches: max(8, CPU count * 2)
 #
 # View current deduced values:

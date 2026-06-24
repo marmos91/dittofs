@@ -19,9 +19,21 @@ const (
 	MinLocalStoreSize      uint64 = 256 << 20 // 256 MiB
 	MinReadBufferSize      int64  = 64 << 20  // 64 MiB
 	MinMaxLogBytes         uint64 = 1 << 30   // 1 GiB
-	MinParallelSyncs              = 4
 	MinParallelFetches            = 8
 	DefaultPrefetchWorkers        = 4
+
+	// DefaultParallelUploads is the default number of concurrent CAS-chunk
+	// uploads to a remote (the mirror semaphore in mirrorOnce). Uploads are
+	// network-latency bound, NOT CPU bound — a single PUT to a remote region
+	// sustains only ~2-3 MiB/s, so throughput scales with concurrency until the
+	// uplink saturates, and ~5.5% CPU is used even at saturation (#1266/#1398).
+	// Deriving this from CPU count (the old behaviour) throttled write→remote
+	// bandwidth to roughly cores × per-conn — e.g. an 8-core host mirrored at
+	// ~14 MiB/s while raw parallel PUTs of the same bytes hit ~55 MiB/s; at
+	// concurrency 32 the same host matched/beat raw (#1407). 32 saturates a
+	// typical uplink without an unreasonable connection/FD footprint; operators
+	// tune per-remote via the parallel_uploads config (--parallel-uploads).
+	DefaultParallelUploads = 32
 )
 
 // DeducedDefaults holds block store sizing values derived from system resources.
@@ -29,7 +41,7 @@ type DeducedDefaults struct {
 	LocalStoreSize  uint64 // 25% of memory, floor 256 MiB
 	ReadBufferSize  int64  // 12.5% of memory, floor 64 MiB
 	MaxLogBytes     uint64 // 25% of memory, floor 1 GiB (append-log pressure budget)
-	ParallelSyncs   int    // max(4, cpus)
+	ParallelSyncs   int    // upload concurrency: fixed DefaultParallelUploads (network-bound, not CPU) — #1407
 	ParallelFetches int    // max(8, cpus*2)
 	PrefetchWorkers int    // fixed at DefaultPrefetchWorkers
 
@@ -37,7 +49,6 @@ type DeducedDefaults struct {
 	localStoreClamped      bool
 	readBufferClamped      bool
 	maxLogBytesClamped     bool
-	parallelSyncsClamped   bool
 	parallelFetchesClamped bool
 }
 
@@ -78,11 +89,12 @@ func DeduceDefaults(d SystemDetector) *DeducedDefaults {
 		maxLogBytes = MinMaxLogBytes
 	}
 
-	parallelSyncs := cpus
-	parallelSyncsClamped := parallelSyncs < MinParallelSyncs
-	if parallelSyncsClamped {
-		parallelSyncs = MinParallelSyncs
-	}
+	// Upload concurrency is network-bound, not CPU-bound, so it is a fixed
+	// default rather than a function of cpus (#1407 — see DefaultParallelUploads).
+	// Kept on DeducedDefaults.ParallelSyncs so the existing config/log plumbing
+	// reports the effective value; it has no floor (it is a constant, not a
+	// memory/CPU-derived size that could be clamped on small hosts).
+	parallelSyncs := DefaultParallelUploads
 
 	parallelFetches := cpus * 2
 	parallelFetchesClamped := parallelFetches < MinParallelFetches
@@ -100,7 +112,6 @@ func DeduceDefaults(d SystemDetector) *DeducedDefaults {
 		localStoreClamped:      localStoreClamped,
 		readBufferClamped:      readBufferClamped,
 		maxLogBytesClamped:     maxLogBytesClamped,
-		parallelSyncsClamped:   parallelSyncsClamped,
 		parallelFetchesClamped: parallelFetchesClamped,
 	}
 }
@@ -119,9 +130,6 @@ func (d *DeducedDefaults) HitFloors() []string {
 	}
 	if d.maxLogBytesClamped {
 		floors = append(floors, fmt.Sprintf("max_log_bytes floored at %s", FormatBytes(MinMaxLogBytes)))
-	}
-	if d.parallelSyncsClamped {
-		floors = append(floors, fmt.Sprintf("parallel_syncs floored at %d", MinParallelSyncs))
 	}
 	if d.parallelFetchesClamped {
 		floors = append(floors, fmt.Sprintf("parallel_fetches floored at %d", MinParallelFetches))

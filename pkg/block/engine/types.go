@@ -3,6 +3,8 @@ package engine
 import (
 	"errors"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block"
 )
 
 // ErrClosed is returned when an operation is attempted on a closed Syncer.
@@ -15,10 +17,6 @@ var ErrClosed = errors.New("syncer is closed")
 // status (NFS NFS3ERR_STALE / NFS4ERR_STALE, SMB STATUS_FILE_CLOSED) so the
 // client observes the share going away rather than a torn op or a panic.
 var ErrStoreClosed = errors.New("engine: block store is closed")
-
-// DefaultParallelUploads is the default number of concurrent uploads.
-// At ~8 MB/s per S3 connection, 16 connections yields ~128 MB/s upload bandwidth.
-const DefaultParallelUploads = 16
 
 // DefaultParallelDownloads is the default number of concurrent downloads per file.
 // With 200-connection S3 pool and 8MB blocks, 32 workers can saturate the pool.
@@ -64,7 +62,7 @@ type TransferRequest struct {
 
 // Config holds configuration for the Syncer.
 type SyncerConfig struct {
-	ParallelUploads    int           // Concurrent block uploads (default: 16)
+	ParallelUploads    int           // Concurrent block uploads (default: block.DefaultParallelUploads)
 	ParallelDownloads  int           // Concurrent block downloads per file (default: 32)
 	PrefetchBlocks     int           // Blocks to prefetch ahead of reads; 0 = disabled (default: 64)
 	SmallFileThreshold int64         // Files below this are flushed synchronously; 0 = disabled
@@ -87,7 +85,7 @@ type SyncerConfig struct {
 // DefaultConfig returns the default Syncer configuration tuned for S3 performance.
 func DefaultConfig() SyncerConfig {
 	return SyncerConfig{
-		ParallelUploads:             DefaultParallelUploads,
+		ParallelUploads:             block.DefaultParallelUploads,
 		ParallelDownloads:           DefaultParallelDownloads,
 		PrefetchBlocks:              DefaultPrefetchBlocks,
 		SmallFileThreshold:          0,

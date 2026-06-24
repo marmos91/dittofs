@@ -252,7 +252,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		panic("fileBlockStore is required for Syncer")
 	}
 	if config.ParallelUploads <= 0 {
-		config.ParallelUploads = DefaultParallelUploads
+		config.ParallelUploads = block.DefaultParallelUploads
 	}
 	if config.ParallelDownloads <= 0 {
 		config.ParallelDownloads = DefaultParallelDownloads
