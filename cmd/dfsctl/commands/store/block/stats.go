@@ -74,6 +74,7 @@ func printBlockStoreStatsTable(resp *apiclient.BlockStoreStatsResponse) error {
 		{"Blocks Total", fmt.Sprintf("%d", t.BlocksTotal)},
 		{"Blocks Dirty", fmt.Sprintf("%d", t.BlocksDirty)},
 		{"Blocks Local", fmt.Sprintf("%d", t.BlocksLocal)},
+		{"Blocks Cached", fmt.Sprintf("%d", t.BlocksCached)},
 		{"Blocks Remote", fmt.Sprintf("%d", t.BlocksRemote)},
 		{"Local Disk Used", formatBytes(t.LocalDiskUsed)},
 		{"Local Disk Max", formatBytes(t.LocalDiskMax)},

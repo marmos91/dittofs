@@ -15,6 +15,12 @@ type BlockStoreStats struct {
 	BlocksLocal  int `json:"blocks_local"`
 	BlocksRemote int `json:"blocks_remote"`
 	BlocksTotal  int `json:"blocks_total"`
+	// BlocksCached is the subset of BlocksLocal that is physically present on
+	// local disk but whose metadata row still reads BlockStateRemote — i.e.
+	// blocks populated by the read-through cache after a remote fetch. It lets
+	// operators see how much of the local tier is read-cached vs write-side
+	// (#1362).
+	BlocksCached int `json:"blocks_cached"`
 
 	LocalDiskUsed int64 `json:"local_disk_used"`
 	LocalDiskMax  int64 `json:"local_disk_max"`
@@ -175,19 +181,35 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats, files []string) {
 		}
 		for _, b := range blocks {
 			stats.BlocksTotal++
+			// Classify by PHYSICAL presence in the local CAS store, not by sync
+			// state. A block fetched from remote keeps a BlockStateRemote row
+			// even though its CAS chunk now sits on local disk; classifying by
+			// state alone reported it as remote, so a fully read-cached share
+			// showed "Blocks Local: 0" while du showed the cache was full
+			// (#1362). A zero hash means the block is genuinely dirty/in-flight
+			// (rollup not yet complete) and cannot be present.
+			if !b.Hash.IsZero() {
+				if present, herr := bs.local.Has(ctx, b.Hash); herr == nil && present {
+					stats.BlocksLocal++
+					if b.State == block.BlockStateRemote {
+						// On disk yet the row says remote: read-through-cached.
+						stats.BlocksCached++
+					}
+					continue
+				}
+			}
+			// Not physically present (or zero hash): fall back to sync state.
 			switch b.State {
 			case block.BlockStatePending:
-				// A CAS-pending block with a non-zero hash is locally present in the
-				// CAS store; a zero hash means the block is truly dirty/in-flight
-				// (rollup not yet complete). LocalPath and BlockStoreKey are legacy
-				// signals irrelevant on the CAS path.
-				if !b.Hash.IsZero() {
-					stats.BlocksLocal++
-				} else {
+				if b.Hash.IsZero() {
 					stats.BlocksDirty++
+				} else {
+					// Rollup-committed but absent from disk (evicted): the
+					// remote copy is authoritative; a read will refetch it.
+					stats.BlocksRemote++
 				}
 			case block.BlockStateSyncing:
-				stats.BlocksLocal++
+				stats.BlocksRemote++
 			case block.BlockStateRemote:
 				stats.BlocksRemote++
 			}
