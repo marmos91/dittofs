@@ -123,6 +123,8 @@ func buildNetlogonAuthenticator(k config.KerberosConfig, secret netlogon.SecretS
 	if !ok {
 		return nil, nil
 	}
+	slog.Info("NETLOGON machine account: offline provider active",
+		"account", ma.AccountName, "dc_addresses", ma.DCAddresses)
 	return netlogon.NewAuthenticator(netlogon.NewMutableProvider(cred)), nil
 }
 
