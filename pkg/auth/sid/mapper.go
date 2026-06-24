@@ -172,6 +172,30 @@ func (m *SIDMapper) IsDomainSID(s *SID) bool {
 		s.SubAuthorities[3] == m.machineSID[2]
 }
 
+// IsForeignDomainSID reports whether the SID has the S-1-5-21-{a}-{b}-{c}-{RID}
+// domain-account shape but belongs to a DIFFERENT domain than this machine.
+//
+// It is the complement, within the domain-account SID space, of IsDomainSID:
+// a SID that "looks like an account from some NT domain" yet is not from ours.
+// Well-known SIDs (World S-1-1-0, BUILTIN S-1-5-32-*, NT AUTHORITY S-1-5-{7,11,18},
+// CREATOR S-1-3-*, etc.) are NOT domain-account SIDs and therefore return false —
+// they are universally recognized principals, not foreign accounts.
+//
+// SMB SET_INFO owner/group handling uses this to decide when a SID that cannot
+// be mapped to a local UID/GID should hard-fail: only a genuinely foreign domain
+// account (resolvable only via AD/LDAP, tracked under #1231) errors; well-known
+// SIDs are accepted as a no-op the way Samba's idmap resolves them. Refs #1228.
+func (m *SIDMapper) IsForeignDomainSID(s *SID) bool {
+	return s != nil &&
+		s.Revision == 1 &&
+		s.IdentifierAuthority == [6]byte{0, 0, 0, 0, 0, 5} &&
+		s.SubAuthorityCount == 5 &&
+		s.SubAuthorities[0] == 21 &&
+		(s.SubAuthorities[1] != m.machineSID[0] ||
+			s.SubAuthorities[2] != m.machineSID[1] ||
+			s.SubAuthorities[3] != m.machineSID[2])
+}
+
 // PrincipalToSID converts an NFSv4 principal to a Windows SID.
 //
 // Mapping rules:

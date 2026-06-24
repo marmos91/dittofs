@@ -229,6 +229,19 @@ const (
 	// the maximum 64-bit value. Per MS-SMB2 3.3.5.14.
 	StatusInvalidLockRange Status = 0xC00001A1
 
+	// StatusInvalidOwner indicates a SET_INFO Security request asked to change
+	// the object owner (OWNER_SECURITY_INFORMATION) to a SID that cannot be
+	// mapped to a local principal. Returned instead of silently no-op'ing the
+	// owner change. Per MS-ERREF 2.3.1. Refs #1228.
+	StatusInvalidOwner Status = 0xC000005A
+
+	// StatusNoneMapped indicates none of the SIDs in a translation request
+	// could be resolved to a local account. DittoFS returns it when a SET_INFO
+	// Security request asks to change the primary group
+	// (GROUP_SECURITY_INFORMATION) to an unmappable SID. Per MS-ERREF 2.3.1.
+	// Refs #1228.
+	StatusNoneMapped Status = 0xC0000073
+
 	// StatusRequestOutOfSequence indicates a request was made in the wrong
 	// protocol state. Per MS-ERREF (Samba libcli/util/ntstatus_err_table.txt
 	// section "MS-ERREF 2.3.1") the value is 0xC000042A — NOT the
@@ -366,6 +379,10 @@ func (s Status) String() string {
 		return "STATUS_RANGE_NOT_LOCKED"
 	case StatusCannotDelete:
 		return "STATUS_CANNOT_DELETE"
+	case StatusInvalidOwner:
+		return "STATUS_INVALID_OWNER"
+	case StatusNoneMapped:
+		return "STATUS_NONE_MAPPED"
 	case StatusInvalidLockRange:
 		return "STATUS_INVALID_LOCK_RANGE"
 	case StatusRequestOutOfSequence:

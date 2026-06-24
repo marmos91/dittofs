@@ -1809,6 +1809,41 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusInvalidParameter), nil
 	}
 
+	// ParseSecurityDescriptorWithOptions returns a nil ownerUID/ownerGID both
+	// when the SD omits that SID section and when the section is present but its
+	// SID could not be mapped to a local UID/GID. A requested OWNER/GROUP change
+	// to a genuinely FOREIGN domain account (an S-1-5-21 SID from another
+	// domain, resolvable only via AD/LDAP — #1231) must NOT silently no-op:
+	// Windows would believe the owner changed when nothing did, so we reject it
+	// with an explicit status. Refs #1228.
+	//
+	// Any other unmappable SID is accepted as a no-op success, matching real
+	// servers. smbtorture smb2.acls.SDFLAGSVSCHOWN chowns the owner to the World
+	// SID (S-1-1-0) and back, expecting NT_STATUS_OK each time; Samba resolves
+	// well-known SIDs through idmap rather than failing. Well-known SIDs (World,
+	// BUILTIN\*, NT AUTHORITY\*, CREATOR\*) and SIDs in our own machine domain
+	// are therefore NOT rejected here even when they have no reverse UID/GID
+	// mapping — only IsForeignDomainSID SIDs are. (A foreign SID set is a
+	// no-op against local POSIX ownership too; we surface the error purely so a
+	// client is not misled into thinking a foreign-principal chown succeeded.)
+	if additionalInfo&(OwnerSecurityInformation|GroupSecurityInformation) != 0 {
+		reqOwnerSID, reqGroupSID, hasOwnerSID, hasGroupSID := securityDescriptorOwnerGroupSIDs(buffer)
+		mapper := GetSIDMapper()
+
+		if (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil &&
+			mapper.IsForeignDomainSID(reqOwnerSID) {
+			logger.Debug("SET_INFO Security: owner change requested with foreign-domain SID", "path", openFile.Path)
+			return setInfoStatus(types.StatusInvalidOwner), nil
+		}
+		if (additionalInfo&GroupSecurityInformation) != 0 && hasGroupSID && ownerGID == nil &&
+			mapper.IsForeignDomainSID(reqGroupSID) {
+			logger.Debug("SET_INFO Security: group change requested with foreign-domain SID", "path", openFile.Path)
+			return setInfoStatus(types.StatusNoneMapped), nil
+		}
+	}
+
+	metaSvc := h.Registry.GetMetadataService()
+
 	// Build SetAttrs from parsed SD
 	setAttrs := &metadata.SetAttrs{}
 	changed := false
@@ -1855,7 +1890,6 @@ func (h *Handler) setSecurityInfo(
 		return setInfoStatus(types.StatusSuccess), nil
 	}
 
-	metaSvc := h.Registry.GetMetadataService()
 	_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 	if err != nil {
 		logger.Debug("SET_INFO: failed to set security info", "path", openFile.Path, "error", err)

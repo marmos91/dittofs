@@ -588,6 +588,54 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 	return ownerUID, ownerGID, fileACL, nil
 }
 
+// securityDescriptorOwnerGroupSIDs decodes the raw Owner and Group SIDs carried
+// by a self-relative Security Descriptor. A nil return for either means the SD
+// did not carry that SID section (OffsetOwner / OffsetGroup == 0).
+//
+// ParseSecurityDescriptorWithOptions collapses two cases into a nil
+// ownerUID/ownerGID that the SET_INFO Security path must tell apart: (1) the SD
+// omitted the SID section entirely, and (2) the section was present but its SID
+// could not be mapped to a local UID/GID. The caller pairs the raw SIDs from
+// here with the parsed UID/GID to reject a genuinely unmappable owner/group
+// change instead of silently succeeding (refs #1228), while still treating a
+// re-set of the file's existing owner/group SID as a no-op success.
+//
+// Presence is decided purely on "offset != 0"; it is NOT bounds-gated against
+// len(data). A non-zero offset is reported as present even when the SID bytes
+// fail to decode (returning a nil SID for that section) — that is malformed
+// input the unmappable-SID gate must still reject rather than mistaking for an
+// absent section. The fixed 20-byte SD header is the only part parsed here; a
+// truncated/garbled header yields (nil, nil) so the caller's existing
+// StatusInvalidParameter parse-error path continues to govern it.
+func securityDescriptorOwnerGroupSIDs(data []byte) (ownerSID, groupSID *sid.SID, hasOwner, hasGroup bool) {
+	if len(data) < sdHeaderSize {
+		return nil, nil, false, false
+	}
+	r := smbenc.NewReader(data)
+	r.Skip(2) // Revision(1) + Sbz1(1)
+	r.Skip(2) // Control(2)
+	offsetOwner := r.ReadUint32()
+	offsetGroup := r.ReadUint32()
+	if r.Err() != nil {
+		return nil, nil, false, false
+	}
+
+	hasOwner = offsetOwner > 0
+	hasGroup = offsetGroup > 0
+
+	if hasOwner && int(offsetOwner) < len(data) {
+		if s, _, err := sid.DecodeSID(data[offsetOwner:]); err == nil {
+			ownerSID = s
+		}
+	}
+	if hasGroup && int(offsetGroup) < len(data) {
+		if s, _, err := sid.DecodeSID(data[offsetGroup:]); err == nil {
+			groupSID = s
+		}
+	}
+	return ownerSID, groupSID, hasOwner, hasGroup
+}
+
 // parseDACL parses a DACL and returns an NFSv4 ACL.
 // ACLs parsed from SET_INFO are marked with Source: ACLSourceSMBExplicit.
 func parseDACL(data []byte) (*acl.ACL, error) {
