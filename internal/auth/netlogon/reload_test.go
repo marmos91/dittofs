@@ -157,6 +157,15 @@ func (c *fakeChannel) recordHighWater(n int32) {
 	c.state.mu.Unlock()
 }
 
+func (c *fakeChannel) setPassword(ctx context.Context, mc MachineCredential, newPassword string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.connected || c.closed {
+		return errChannelNotConnected
+	}
+	return nil
+}
+
 func (c *fakeChannel) close(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

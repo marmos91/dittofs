@@ -102,6 +102,7 @@ type NetlogonAuthenticator interface {
 type secureChannel interface {
 	connect(ctx context.Context, mc MachineCredential) error
 	samLogon(ctx context.Context, mc MachineCredential, req NetworkLogonRequest) (*LogonResult, error)
+	setPassword(ctx context.Context, mc MachineCredential, newPassword string) error
 	close(ctx context.Context)
 }
 
@@ -223,6 +224,43 @@ func (a *Authenticator) ReloadCredential(ctx context.Context, cred MachineCreden
 		mp.Set(cred)
 	}
 	a.reset(ctx)
+}
+
+// RotatePassword changes the machine account's password on the DC to
+// newPassword via NetrServerPasswordSet2 over the established secure channel,
+// using the CURRENT credential to authenticate the channel. On success the DC
+// holds newPassword; the caller is responsible for persisting it and switching
+// the provider's credential so the NEXT channel (re)connects with it.
+//
+// The channel is reset afterward unconditionally: the session key was derived
+// from the old password, and the next call must reconnect so a fresh key is
+// negotiated against whatever credential the provider now returns.
+func (a *Authenticator) RotatePassword(ctx context.Context, newPassword string) error {
+	mc, err := a.provider.Credential(ctx)
+	if err != nil {
+		return err
+	}
+	sc, err := a.ensureChannel(ctx, mc)
+	if err != nil {
+		return err
+	}
+	err = sc.setPassword(ctx, *mc, newPassword)
+	if err != nil {
+		// ensureChannel released sc.mu before returning, so a concurrent
+		// NetworkLogon RPC failure could have reset the channel in the window
+		// before setPassword re-acquired it ("channel not connected"), or the set
+		// itself tore the channel. Either way, reconnect once and retry, mirroring
+		// NetworkLogon's single-retry policy.
+		a.reset(ctx)
+		if sc, err = a.ensureChannel(ctx, mc); err != nil {
+			return err
+		}
+		err = sc.setPassword(ctx, *mc, newPassword)
+	}
+	// The session key was derived from the OLD password; drop the channel so the
+	// next call reconnects and negotiates a fresh key against the new credential.
+	a.reset(ctx)
+	return err
 }
 
 // Close shuts down the cached secure channel connection.

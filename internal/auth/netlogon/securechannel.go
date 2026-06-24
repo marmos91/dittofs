@@ -217,6 +217,75 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	return nil
 }
 
+// setPassword changes the machine account's password on the DC via
+// NetrServerPasswordSet2 (MS-NRPC §3.5.4.4.6), reusing the already-established
+// sealed secure channel. sc.mu is held for the full RPC so it serializes with
+// samLogon and close/reset, exactly like samLogon.
+//
+// PasswordSet2 is NOT one of the methods the go-msrpc secure-channel client
+// auto-wraps with the per-call NETLOGON authenticator dance, so we drive it
+// manually: type-assert the client to the exported Encrypt/SetAuthenticators/
+// VerifyAuthenticator method set, build the encrypted NL_TRUST_PASSWORD, fill
+// the request authenticator, call, and verify the return authenticator.
+func (sc *SecureChannel) setPassword(ctx context.Context, mc MachineCredential, newPassword string) error {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	if sc.cli == nil {
+		return fmt.Errorf("netlogon: channel not connected")
+	}
+
+	enc, ok := sc.cli.(encryptor)
+	if !ok {
+		// Defensive: the concrete go-msrpc secure-channel client always exposes
+		// these methods; a future refactor that hides them would land here.
+		return fmt.Errorf("netlogon: secure channel client does not expose authenticator/encrypt methods required for PasswordSet2")
+	}
+
+	trustPwd, err := buildTrustPassword(ctx, enc, newPassword)
+	if err != nil {
+		return err
+	}
+
+	// PrimaryName is the DC's UNC name. Mirror samLogon's fallback so a failed
+	// GetDCName in connect() (which leaves sc.dcName empty) does not send an empty
+	// PrimaryName that the DC would reject.
+	primaryName := sc.dcName
+	if primaryName == "" {
+		primaryName = "\\\\" + mc.DomainName
+	}
+
+	req := &logon.PasswordSet2Request{
+		PrimaryName:       primaryName,
+		AccountName:       mc.AccountName,
+		SecureChannelType: logon.SecureChannelTypeWorkstationSecureChannel,
+		ComputerName:      mc.Workstation,
+		ClearNewPassword:  trustPwd,
+	}
+	// Fill req.Authenticator (and allocate the holder for the return authenticator).
+	var ret *logon.Authenticator
+	if err := enc.SetAuthenticators(ctx, &req.Authenticator, &ret); err != nil {
+		return fmt.Errorf("netlogon: PasswordSet2 authenticator: %w", err)
+	}
+
+	out, err := sc.cli.PasswordSet2(ctx, req)
+	if err != nil {
+		return fmt.Errorf("netlogon: PasswordSet2: %w", err)
+	}
+	if out.Return != 0 {
+		return fmt.Errorf("netlogon: PasswordSet2 returned 0x%08x", uint32(out.Return))
+	}
+	// Verify the server's return authenticator to confirm the DC, not a MITM,
+	// processed the call with our session key.
+	if out.ReturnAuthenticator == nil || out.ReturnAuthenticator.Credential == nil {
+		return fmt.Errorf("netlogon: PasswordSet2 missing return authenticator")
+	}
+	if err := enc.VerifyAuthenticator(ctx, out.ReturnAuthenticator); err != nil {
+		return fmt.Errorf("netlogon: PasswordSet2 return authenticator verify: %w", err)
+	}
+	return nil
+}
+
 // close tears down the cached connection. It is self-locking (takes sc.mu) and
 // idempotent, so it blocks until any in-flight samLogon on this channel returns
 // before closing the connection — a teardown never races an in-flight RPC.
