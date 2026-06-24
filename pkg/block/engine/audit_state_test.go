@@ -226,6 +226,59 @@ func TestAuditRefcounts_DetectsDelta(t *testing.T) {
 	}
 }
 
+// TestAuditRefcounts_DetectsHashMismatch asserts that a backing row present
+// at the right offset but carrying a DIFFERENT (non-zero) hash than the
+// manifest ref is counted as DANGLING, not backed. This is genuine
+// corruption: the store records a different chunk than the file claims at
+// that offset, and crediting it as backed would silently hide the mismatch.
+// The manifest is unchanged (TotalRefs stays 10), but the tampered ref drops
+// BackedRefs to 9 and DanglingRefs == Delta == 1.
+func TestAuditRefcounts_DetectsHashMismatch(t *testing.T) {
+	store, shareName, payloadIDs, offsets := seedAuditTestStore(t)
+	tmpDir := t.TempDir()
+	ctx := context.Background()
+
+	// Overwrite the FileBlock row backing file 0's first manifest ref with a
+	// row at the SAME id/offset but a different non-zero hash, leaving the
+	// manifest entry untouched → hash mismatch → that ref is dangling.
+	mismatchID := payloadIDs[0] + "/" + jstr(int(offsets[0][0]))
+	now := time.Now().UTC()
+	wrongHash := hashForFileBlock(99, 99) // distinct from any seeded ref hash
+	if wrongHash.IsZero() {
+		t.Fatal("wrongHash must be non-zero to exercise the mismatch path")
+	}
+	wrongRow := &block.FileBlock{
+		ID:            mismatchID,
+		Hash:          wrongHash,
+		State:         block.BlockStatePending,
+		LocalPath:     "/cache/" + mismatchID,
+		BlockStoreKey: "cas/" + wrongHash.String()[0:2] + "/" + wrongHash.String()[2:4] + "/" + wrongHash.String(),
+		DataSize:      4096,
+		LastAccess:    now,
+		CreatedAt:     now,
+	}
+	if err := store.Put(ctx, wrongRow); err != nil {
+		t.Fatalf("Put mismatched row %q: %v", mismatchID, err)
+	}
+
+	res, err := AuditRefcounts(ctx, shareName, store, tmpDir)
+	if err != nil {
+		t.Fatalf("AuditRefcounts: %v", err)
+	}
+	if res.TotalRefs != 10 {
+		t.Errorf("TotalRefs = %d, want 10 (overwriting a row does not change FileAttr.Blocks)", res.TotalRefs)
+	}
+	if res.BackedRefs != 9 {
+		t.Errorf("BackedRefs = %d, want 9 (the hash-mismatched ref is not backed)", res.BackedRefs)
+	}
+	if res.DanglingRefs != 1 {
+		t.Errorf("DanglingRefs = %d, want 1 (hash mismatch must be detected as dangling)", res.DanglingRefs)
+	}
+	if res.Delta != 1 {
+		t.Errorf("Delta = %d, want 1 (Delta == DanglingRefs)", res.Delta)
+	}
+}
+
 // TestAuditRefcounts_PersistsLastRun asserts the audit writes
 // <localStoreRoot>/audit-state/last-inv02.json containing the
 // timestamps and counts. Subsequent runs OVERWRITE atomically.

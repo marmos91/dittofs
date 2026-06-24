@@ -152,11 +152,13 @@ func AuditRefcounts(ctx context.Context, share string, store metadata.Store, loc
 //
 // FileBlock IDs are "{payloadID}/{offset}" (the engine writes
 // fmt.Sprintf("%s/%d", payloadID, blockRef.Offset)); the manifest BlockRef
-// carries the same Offset. A ref is backed iff a row exists at its offset
-// with a non-zero hash. Matching by offset (not by hash equality) is the
-// right key: the manifest is the authority for which chunk lives at each
-// offset, and a present row with a non-zero hash means the store has a
-// record of that chunk.
+// carries the same Offset and the expected content Hash. A ref is backed
+// iff a row exists at its offset AND that row's hash equals the manifest
+// ref's hash (and is non-zero). Matching by offset alone is not enough:
+// a row present at the right offset but carrying a DIFFERENT hash is
+// genuine corruption (the store holds a record of a different chunk than
+// the file claims), and crediting it as backed would silently hide that
+// mismatch. Such refs are counted as dangling.
 func auditFileManifest(ctx context.Context, store metadata.Store, f *metadata.File) (backed, dangling uint64, err error) {
 	if len(f.Blocks) == 0 {
 		return 0, 0, nil
@@ -168,10 +170,10 @@ func auditFileManifest(ctx context.Context, store metadata.Store, f *metadata.Fi
 		return 0, 0, fmt.Errorf("list file blocks for payload %q: %w", payloadID, err)
 	}
 
-	// Set of present rows keyed by parsed offset (the suffix of the
-	// FileBlock ID after "{payloadID}/"). A row with a zero hash does not
-	// back a manifest ref — treat it as absent.
-	present := make(map[uint64]struct{}, len(rows))
+	// Map of present rows keyed by parsed offset (the suffix of the
+	// FileBlock ID after "{payloadID}/") to the row's content hash. A row
+	// with a zero hash does not back a manifest ref — treat it as absent.
+	byOffset := make(map[uint64]metadata.ContentHash, len(rows))
 	prefix := payloadID + "/"
 	for _, row := range rows {
 		if row == nil || row.Hash.IsZero() {
@@ -184,11 +186,14 @@ func auditFileManifest(ctx context.Context, store metadata.Store, f *metadata.Fi
 			// rather than crediting it to an offset.
 			continue
 		}
-		present[off] = struct{}{}
+		byOffset[off] = row.Hash
 	}
 
 	for _, ref := range f.Blocks {
-		if _, ok := present[ref.Offset]; ok {
+		// Backed iff a row exists at the ref's offset whose hash matches the
+		// ref's hash (and is non-zero). A present-but-mismatched hash is
+		// corruption and counts as dangling — never silently backed.
+		if presentHash, ok := byOffset[ref.Offset]; ok && presentHash == ref.Hash && !presentHash.IsZero() {
 			backed++
 		} else {
 			dangling++
