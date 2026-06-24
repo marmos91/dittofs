@@ -64,6 +64,10 @@ type fakeState struct {
 	// samLogonCalls counts every samLogon invocation (including failures), so a
 	// test can assert NetworkLogon made exactly one call on a fast-fail.
 	samLogonCalls int32
+	// alwaysTornDown, when 1, makes every samLogon return the BARE
+	// errChannelNotConnected sentinel (the purely-local teardown race), so a test
+	// can drive NetworkLogon's high-budget teardown-retry path deterministically.
+	alwaysTornDown int32
 }
 
 // errDCRejected stands in for a TRANSIENT DC-side SamLogon rejection
@@ -100,6 +104,11 @@ func (c *fakeChannel) samLogon(ctx context.Context, mc MachineCredential, req Ne
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	atomic.AddInt32(&c.state.samLogonCalls, 1)
+	if atomic.LoadInt32(&c.state.alwaysTornDown) == 1 {
+		// Always surface the BARE local-teardown sentinel (not the wrapped transport
+		// variant), exercising NetworkLogon's high-budget teardown-retry path.
+		return nil, errChannelNotConnected
+	}
 	if !c.connected || c.closed {
 		// Mirror SecureChannel.samLogon's torn-down path so the Authenticator's
 		// reload-race retry/rebuild logic is exercised. Uses the same sentinel the
@@ -335,6 +344,34 @@ func TestNetworkLogon_RetriesTransportDrop(t *testing.T) {
 	}
 	if got := completedLogons(st); got != 1 {
 		t.Fatalf("expected exactly 1 successful logon, got %d", got)
+	}
+}
+
+// TestNetworkLogon_CanceledContextStopsTeardownRetry proves a canceled context
+// short-circuits the high-budget local-teardown retry loop: NetworkLogon returns
+// ctx.Err() promptly instead of spinning up to maxTeardownRetries (1024). The
+// teardown path is purely local (no DC backoff), so without an explicit ctx check
+// a canceled caller could otherwise burn the entire budget before returning
+// (#1383 Copilot follow-up).
+func TestNetworkLogon_CanceledContextStopsTeardownRetry(t *testing.T) {
+	st := &fakeState{alwaysTornDown: 1} // every samLogon returns the BARE teardown sentinel
+	withFakeChannels(t, st)
+
+	a := NewAuthenticator(NewMutableProvider(validCred("DITTOFS$")))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled before the call
+
+	_, err := a.NetworkLogon(ctx, NetworkLogonRequest{Username: "alice", Domain: "DITTOFS"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled from a canceled-context logon, got: %v", err)
+	}
+	// The first samLogon runs (the ctx check guards the RETRY loop, not the initial
+	// attempt), then the teardown branch's ctx check returns immediately — so the
+	// total call count must be far below the 1024 teardown budget. A handful proves
+	// the loop did not spin the budget away.
+	if got := atomic.LoadInt32(&st.samLogonCalls); got > 4 {
+		t.Fatalf("expected the canceled context to stop the teardown retry promptly "+
+			"(<=4 samLogon calls), got %d — the loop spun the teardown budget", got)
 	}
 }
 

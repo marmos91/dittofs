@@ -181,9 +181,12 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 	}
 
 	// Transient: rebuild against the latest credential and retry. Two transient
-	// cases are bounded SEPARATELY:
+	// cases are bounded SEPARATELY, discriminated by whether the error is the BARE
+	// errChannelNotConnected sentinel or merely WRAPS it:
 	//
-	//   - The purely-local teardown race (errChannelNotConnected): a concurrent
+	//   - The purely-local teardown race: samLogon found the channel already torn
+	//     down (cli == nil) before it acquired the lock and returned the BARE
+	//     sentinel (errChannelNotConnected, identity-compared with ==). A concurrent
 	//     reload closed the cached channel out from under this logon. It never
 	//     reached the DC, so retrying it can never amplify toward account lockout,
 	//     and it clears the instant the logon grabs the freshly rebuilt channel.
@@ -191,11 +194,18 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 	//     reloads one logon can lose this race many times in a row, and failing the
 	//     user's logon for an internal race is wrong (#1383). It is bounded only by
 	//     the generous maxTeardownRetries live-lock guard, with a Gosched yield so a
-	//     reload can make progress instead of being starved by a tight spin.
+	//     reload can make progress instead of being starved by a tight spin, and an
+	//     explicit ctx check so a canceled/deadline-exceeded caller returns promptly
+	//     instead of spinning under that large budget.
 	//
-	//   - A DC-side transient rejection (STATUS_ACCESS_DENIED while a freshly
-	//     rebuilt credential chain settles): bounded by the small maxReloadRetries,
-	//     with a short backoff between attempts.
+	//   - Every OTHER transient case takes the bounded DC budget (maxReloadRetries)
+	//     with a backoff: a DC-side STATUS_ACCESS_DENIED (a freshly rebuilt
+	//     credential chain settling) AND a transport-level RPC failure, which
+	//     samLogon returns WRAPPING the sentinel (fmt.Errorf("...%w...", err)). The
+	//     wrapped case includes a real cli.SAMLogon failure such as a broken pipe or
+	//     a context.Canceled/DeadlineExceeded; it touched (or tried to touch) the DC
+	//     and so must be retried under a small, backed-off budget, NOT the local
+	//     teardown budget. The select on ctx.Done() below makes cancellation prompt.
 	//
 	// A credential-provider error is NOT retried: when passthrough is disabled the
 	// provider returns a validation error, so the loop returns immediately and the
@@ -203,7 +213,15 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 	// credential).
 	dcAttempts, teardownAttempts := 0, 0
 	for {
-		if errors.Is(err, errChannelNotConnected) {
+		// Bare-sentinel identity comparison (NOT errors.Is): only the purely-local
+		// teardown race returns the unwrapped sentinel; wrapped transport errors fall
+		// through to the bounded DC branch.
+		if err == errChannelNotConnected {
+			// Honor cancellation even on the local-race path so a canceled or
+			// deadline-exceeded caller never spins under the large teardown budget.
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			if teardownAttempts++; teardownAttempts > maxTeardownRetries {
 				return nil, err
 			}
@@ -211,9 +229,9 @@ func (a *Authenticator) NetworkLogon(ctx context.Context, req NetworkLogonReques
 			// reload can finish swapping the channel before we grab it again.
 			runtime.Gosched()
 		} else {
-			// DC-side transient rejection: consume the bounded budget and back off so
-			// a just-rebuilt channel is not torn down again before its credential
-			// chain settles.
+			// DC-side transient rejection or wrapped transport failure: consume the
+			// bounded budget and back off so a just-rebuilt channel is not torn down
+			// again before its credential chain settles.
 			if dcAttempts++; dcAttempts > maxReloadRetries {
 				return nil, err
 			}
