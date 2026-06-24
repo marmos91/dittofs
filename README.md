@@ -16,10 +16,10 @@
 
 **A modular virtual filesystem written entirely in Go**
 
-NFSv3/v4.0/v4.1 and SMB2/3 servers in userspace — no FUSE, no kernel modules — with
+NFSv3/v4.0/v4.1/v4.2 and SMB2/3 servers in userspace — no FUSE, no kernel modules — with
 pluggable metadata and block stores you can mix and match per share.
 
-[Website](https://dittofs.io) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Contributing](docs/CONTRIBUTING.md)
+[Website](https://dittofs.io) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Features](#features) • [Contributing](docs/internals/contributing.md)
 
 </div>
 
@@ -27,14 +27,14 @@ pluggable metadata and block stores you can mix and match per share.
 
 > ⚠️ **Experimental software, pre-1.0.** Not production ready. No security audit has
 > been performed. APIs and on-disk formats may change without notice. Do not use for
-> data you cannot afford to lose. See [Security](#security) and [FAQ](docs/FAQ.md).
+> data you cannot afford to lose. See [Security](#security) and [FAQ](docs/guide/faq.md).
 
 ## What is DittoFS?
 
 Traditional file servers are welded to one storage layer and one access protocol.
 DittoFS separates the two. A single server process can:
 
-- Speak **NFSv3, NFSv4.0, NFSv4.1, and SMB2/3** at the same time, over the same data.
+- Speak **NFSv3, NFSv4.0, NFSv4.1, NFSv4.2, and SMB2/3** at the same time, over the same data.
 - Store metadata in **memory, [BadgerDB](https://github.com/dgraph-io/badger), or [PostgreSQL](https://www.postgresql.org/docs/)** — chosen per share.
 - Store file content in a two-tier **block store**: a fast local tier (filesystem or
   memory) backed by a durable remote tier ([S3](https://docs.aws.amazon.com/AmazonS3/latest/API/Welcome.html) or memory), with an async syncer between them.
@@ -55,6 +55,7 @@ Two binaries drive it:
 | **NFSv3** | All 28 core procedures; embedded portmapper + mount protocol; NLM/NSM byte-range locking over TCP+UDP (opt-in) |
 | **NFSv4.0** | Compound ops, ACLs, delegations, built-in byte-range locking |
 | **NFSv4.1** | Sessions, sequence slots, backchannel |
+| **NFSv4.2** | Extended attributes (RFC 8276); sparse files — ALLOCATE/DEALLOCATE/SEEK/READ_PLUS; CLONE/reflink (RFC 7862) |
 | **SMB 2.0.2 / 3.0 / 3.0.2 / 3.1.1** | Multi-dialect negotiation, preauth integrity, compound requests |
 | **SMB3 encryption** | AES-128/256-GCM and AES-128/256-CCM |
 | **SMB3 signing** | AES-128-CMAC / AES-128-GMAC (HMAC-SHA256 for 2.x) |
@@ -63,17 +64,17 @@ Two binaries drive it:
 | **SMB security descriptors** | Windows ACL mapping via a shared cross-protocol ACL model |
 | **Authentication** | AUTH_UNIX + Kerberos (RPCSEC_GSS) for NFS; NTLM + Kerberos (SPNEGO) for SMB |
 | **Cross-protocol coordination** | Bidirectional lease/delegation breaks between SMB and NFS |
-| **Metadata stores** | Memory, BadgerDB, PostgreSQL — pluggable per share |
+| **Metadata stores** | Memory, BadgerDB, SQLite, PostgreSQL — pluggable per share |
 | **Block stores** | Local: filesystem, memory. Remote: S3, memory. Per-share isolation, async sync |
 | **Client-side encryption** | Per-remote envelope encryption (AES-256-GCM / ChaCha20-Poly1305 / XChaCha20-Poly1305) |
 | **Share snapshots** | Point-in-time reference holds (no data copy) with restore |
 | **Control plane** | Unified users/groups, share permissions, REST API with JWT auth |
-| **Observability** | Prometheus metrics, OpenTelemetry tracing, structured JSON logging |
+| **Observability** | Prometheus metrics endpoint, structured JSON logging |
 | **Deployment** | Single static binary; Docker images; Kubernetes operator |
 
 DittoFS passes the pjdfstest POSIX suite at 99.99% (8,788/8,789) across all three
 metadata backends; the single expected failure is the NFSv3 32-bit timestamp limit
-(year 2106). See the [FAQ](docs/FAQ.md) for known limitations.
+(year 2106). See the [FAQ](docs/guide/faq.md) for known limitations.
 
 On the SMB side, DittoFS passes the Samba **smbtorture** and Microsoft **Windows
 Protocol Test Suite (WPTS)** conformance batteries on the implementable surface —
@@ -81,7 +82,7 @@ every test that a single-node userspace VFS can satisfy. The remaining known-fai
 are genuinely out-of-scope features (RSVD shared-VHD, Service Witness clustering,
 Storage QoS, DFS namespaces, kernel oplocks, NTFS-internal pseudo-files) plus a
 handful of upstream-Samba known-fails; none are fixable protocol gaps. See
-[docs/SMB.md](docs/SMB.md) and [docs/WINDOWS_TESTING.md](docs/WINDOWS_TESTING.md).
+[docs/guide/smb.md](docs/guide/smb.md) and [docs/guide/windows.md](docs/guide/windows.md).
 
 ## Quick Start
 
@@ -101,7 +102,7 @@ curl -fsSL https://github.com/marmos91/dittofs/releases/latest/download/install.
 ```
 
 Docker, the Kubernetes operator, APT/YUM/Arch packages, and Scoop (Windows) are
-covered in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+covered in **[docs/guide/install.md](docs/guide/install.md)**.
 
 ### Build from source
 
@@ -143,7 +144,7 @@ DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
 #   run 'dfsctl user change-password' (as "admin") to set one
 # This forced change is skipped automatically when you set your own
 # DITTOFS_ADMIN_INITIAL_PASSWORD at first start, and can be disabled entirely
-# via controlplane.require_initial_password_change: false (see docs/CONFIGURATION.md).
+# via controlplane.require_initial_password_change: false (see docs/guide/configuration.md).
 ./dfsctl user change-password
 
 # 2. Create a user mapped to your host UID (needed for NFS write access)
@@ -191,7 +192,7 @@ sudo mount -t cifs //localhost/export /mnt/smb \
 mount -t smbfs //alice@localhost:12445/export /tmp/smb
 ```
 
-See [docs/SMB.md](docs/SMB.md) for dialect, encryption, and client details.
+See [docs/guide/smb.md](docs/guide/smb.md) for dialect, encryption, and client details.
 
 ### Default ports
 
@@ -207,7 +208,7 @@ See [docs/SMB.md](docs/SMB.md) for dialect, encryption, and client details.
 DittoFS configuration has **two layers**:
 
 1. **Server config file** (`~/.config/dittofs/config.yaml`) — process-level infrastructure:
-   logging, telemetry, control-plane API, and the control-plane database. Environment
+   logging, metrics, control-plane API, and the control-plane database. Environment
    variables with the `DITTOFS_` prefix override any field (e.g. `DITTOFS_LOGGING_LEVEL=DEBUG`).
 2. **Runtime resources** (`dfsctl` / REST API) — stores, shares, adapters, users, groups,
    and permissions. These live in the control-plane database (SQLite by default, PostgreSQL
@@ -228,43 +229,51 @@ controlplane:
 
 Block storage and caching are configured per share through the store CLI — each share owns
 an isolated local storage directory and its own caching tiers. See
-[docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
+[docs/guide/configuration.md](docs/guide/configuration.md) for the full reference.
 
 ## Documentation
 
-**Getting started & operations**
+Full docs live in [`docs/`](docs/), split by audience.
 
-- [Configuration](docs/CONFIGURATION.md) — config file, environment variables, stores, shares, adapters
-- [CLI Reference](docs/CLI.md) — every `dfs` and `dfsctl` command (generated)
-- [Deployment](docs/DEPLOYMENT.md) — Docker, Kubernetes operator, package managers
-- [Troubleshooting](docs/TROUBLESHOOTING.md) — common issues and fixes
-- [Security](docs/SECURITY.md) — threat model, authentication, recommendations
-- [FAQ](docs/FAQ.md) — known limitations and design questions
+### For users & operators — [`docs/guide/`](docs/guide/)
 
-**Protocols & features**
+**Start here**
 
-- [NFS](docs/NFS.md) — NFSv3/v4.0/v4.1 status, mounting, internals
-- [SMB](docs/SMB.md) — SMB2/3 status, encryption, signing, leases, durable handles
-- [ACLs](docs/ACLS.md) — the cross-protocol ACL model shared by NFS and SMB
-- [SMB ACL Fidelity](docs/SMB_ACL_FIDELITY.md) — what the SMB Security Descriptor path round-trips (Works/Partial/Unsupported)
-- [Encryption](docs/ENCRYPTION.md) — client-side per-remote envelope encryption
-- [Snapshots](docs/SNAPSHOTS.md) — reference-based share snapshots and restore
-- [Windows Testing](docs/WINDOWS_TESTING.md) — SMB conformance against Windows
-- [Glossary](docs/GLOSSARY.md) — plain-language definitions of protocol, ACL, and storage terms
+- [Getting Started](docs/guide/getting-started.md) — install, start the server, mount your first share
+- [Installation](docs/guide/install.md) — packages, Docker, Compose, Kubernetes operator
+- [Configuration](docs/guide/configuration.md) — every config key and environment variable, with defaults
+- [CLI Reference](docs/guide/cli.md) — every `dfs` and `dfsctl` command (generated)
+- [Choosing Stores](docs/guide/choosing-stores.md) — picking metadata and block stores
 
-**Architecture & development**
+**Connect clients**
 
-- [Architecture](docs/ARCHITECTURE.md) — design, components, directory map
-- [Contributing](docs/CONTRIBUTING.md) — dev setup, workflow, testing
-- [Debugging](docs/DEBUGGING.md) — protocol interop and pcap-diff playbook
-- [Implementing Stores](docs/IMPLEMENTING_STORES.md) — metadata/block store contracts
-- [Block Store Migration](docs/BLOCKSTORE_MIGRATION.md) — migrating legacy block layouts to CAS
-- [Benchmarks](docs/BENCHMARKS.md) — performance harness and results
-- [Releasing](docs/RELEASING.md) — release process and versioning
+- [NFS](docs/guide/nfs.md) — mounting on Linux/macOS, options, Kerberos, NFS-over-TLS
+- [SMB](docs/guide/smb.md) — mounting, dialects, encryption, signing
+- [Windows clients](docs/guide/windows.md) — connecting from Windows
+- [Identity: AD / LDAP / Kerberos](docs/guide/identity.md) — join a directory service
+- [Access Control](docs/guide/access-control.md) — the cross-protocol ACL model
+- [SMB ACL Fidelity](docs/guide/smb-acl-fidelity.md) — what the SMB Security Descriptor path round-trips (Works/Partial/Unsupported)
 
-**Product**
+**Features & operations**
 
-- [DittoFS Pro](docs/PRO.md) — the premium web dashboard built on top of this server
+- [Snapshots](docs/guide/snapshots.md) · [Quotas](docs/guide/quotas.md) · [Encryption](docs/guide/encryption.md)
+- [Security](docs/guide/security.md) — hardening checklist and secure configuration
+- [Block Store Migration](docs/guide/block-store-migration.md) — migrating legacy block layouts to CAS
+- [Troubleshooting](docs/guide/troubleshooting.md) · [FAQ](docs/guide/faq.md) · [Glossary](docs/guide/glossary.md)
+
+### For contributors — [`docs/internals/`](docs/internals/)
+
+- [Architecture](docs/internals/architecture.md) — design, components, directory map
+- [NFS protocol](docs/internals/nfs-protocol.md) · [SMB protocol](docs/internals/smb-protocol.md) — wire format, dispatch, internals
+- [ACL design](docs/internals/acl-design.md) · [Security model](docs/internals/security-model.md) · [Encryption design](docs/internals/encryption-design.md)
+- [Implementing Stores](docs/internals/implementing-stores.md) — metadata/block store contracts
+- [Testing](docs/internals/testing.md) — Windows VM setup, WPTS & smbtorture conformance
+- [Debugging](docs/internals/debugging.md) — protocol interop and pcap-diff playbook
+- [Contributing](docs/internals/contributing.md) · [Releasing](docs/internals/releasing.md)
+
+### Product
+
+- [DittoFS Pro](docs/product/pro.md) — the managed dashboard built on open-source DittoFS
 
 ## Testing
 
@@ -276,7 +285,7 @@ go test -race ./...              # with the race detector
 cd test/e2e && sudo ./run-e2e.sh
 ```
 
-See [test/e2e/](test/e2e/) (and [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)) and [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
+See [test/e2e/](test/e2e/) (and [test/e2e/BENCHMARKS.md](test/e2e/BENCHMARKS.md)) and [docs/internals/contributing.md](docs/internals/contributing.md).
 
 ## Security
 
@@ -284,21 +293,22 @@ DittoFS is experimental and has not been professionally audited.
 
 - **Authentication:** AUTH_UNIX and Kerberos (RPCSEC_GSS) for NFS; NTLM and Kerberos
   (SPNEGO) for SMB.
-- **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS has no transport
-  encryption — run it over a VPN or a trusted network.
+- **Transport encryption:** SMB3 encrypts its transport (AES-GCM/CCM). NFS supports
+  NFS-over-TLS (RFC 9289) and Kerberos privacy (`krb5p`); without either, run NFS over a VPN
+  or a trusted network.
 - **At-rest:** optional client-side per-remote envelope encryption protects block content in
-  the remote store. See [docs/ENCRYPTION.md](docs/ENCRYPTION.md).
+  the remote store. See [docs/guide/encryption.md](docs/guide/encryption.md).
 
-See [docs/SECURITY.md](docs/SECURITY.md) for the full picture and recommendations.
+See [docs/guide/security.md](docs/guide/security.md) for the full picture and recommendations.
 
 ## Contributing
 
-Contributions are welcome — see [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for development
+Contributions are welcome — see [docs/internals/contributing.md](docs/internals/contributing.md) for development
 setup, code structure, and testing guidelines.
 
 ## References
 
-New to these protocols? Start with the [Glossary](docs/GLOSSARY.md) for plain-language
+New to these protocols? Start with the [Glossary](docs/guide/glossary.md) for plain-language
 definitions, then dive into the authoritative specs below.
 
 - [RFC 1813](https://www.rfc-editor.org/rfc/rfc1813) — NFS Version 3
@@ -313,13 +323,13 @@ definitions, then dive into the authoritative specs below.
 
 ## DittoFS Pro
 
-[**DittoFS Pro**](docs/PRO.md) is the premium edition: a modern web dashboard
+[**DittoFS Pro**](docs/product/pro.md) is the premium edition: a modern web dashboard
 that brings the same capabilities as the `dfsctl` CLI — managing stores, shares,
 adapters, and access control — to a point-and-click web UI. It builds on this
 open-source server and ships as a single binary with the UI embedded. Learn more
 at [dittofs.io](https://dittofs.io).
 
-[![DittoFS Pro dashboard](docs/assets/pro/dashboard.png)](docs/PRO.md)
+[![DittoFS Pro dashboard](docs/assets/pro/dashboard.png)](docs/product/pro.md)
 
 ## License
 

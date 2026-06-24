@@ -3,7 +3,7 @@
 Plain-language definitions of the protocol, security, and storage terms used
 throughout the DittoFS documentation. Each entry links to the authoritative
 specification for readers who want the full detail. Protocol-specific glossaries
-also live in [NFS.md](NFS.md#glossary) and [SMB.md](SMB.md#glossary).
+also live in [NFS.md](nfs.md#glossary) and [SMB.md](smb.md#glossary).
 
 ## Filesystem protocols
 
@@ -36,7 +36,7 @@ also live in [NFS.md](NFS.md#glossary) and [SMB.md](SMB.md#glossary).
 
 | Term | Definition |
 |------|------------|
-| **ACL** (Access Control List) | The ordered list of rules that decides who may do what to a file. DittoFS uses one cross-protocol ACL model for both NFS and SMB. See [ACLS.md](ACLS.md). |
+| **ACL** (Access Control List) | The ordered list of rules that decides who may do what to a file. DittoFS uses one cross-protocol ACL model for both NFS and SMB. See [ACLS.md](access-control.md). |
 | **ACE** (Access Control Entry) | A single rule inside an ACL — e.g. "allow user X to read and write". [MS-DTYP §2.4.4](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) |
 | **DACL** (Discretionary ACL) | The part of a security descriptor that grants or denies access. "Discretionary" because the object's owner controls it. [MS-DTYP §2.4.5](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) |
 | **SACL** (System ACL) | The part of a security descriptor that defines auditing (which accesses get logged), set by an administrator rather than the owner. [MS-DTYP §2.4.5](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) |
@@ -88,7 +88,7 @@ own documentation for readers who want to go deeper.
 
 ## See also
 
-- [NFS.md](NFS.md#glossary) — NFS-specific terms (XID, verifier, COMPOUND, FSID, …)
-- [SMB.md](SMB.md#glossary) — SMB-specific terms (dialect, credit, transform header, KDF, …)
-- [ACLS.md](ACLS.md) — the cross-protocol ACL model in depth
-- [ENCRYPTION.md](ENCRYPTION.md) — at-rest encryption (master key / block key)
+- [NFS.md](nfs.md#glossary) — NFS-specific terms (XID, verifier, COMPOUND, FSID, …)
+- [SMB.md](smb.md#glossary) — SMB-specific terms (dialect, credit, transform header, KDF, …)
+- [ACLS.md](access-control.md) — the cross-protocol ACL model in depth
+- [ENCRYPTION.md](encryption.md) — at-rest encryption (master key / block key)

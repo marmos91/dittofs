@@ -1,0 +1,466 @@
+# NFS Guide
+
+> Implementing or debugging the protocol? See [NFS protocol internals](../internals/nfs-protocol.md).
+
+This guide covers everything an operator or end user needs to mount and use DittoFS over NFS: supported versions, mount commands, portmapper configuration, Kerberos, NFS-over-TLS, and troubleshooting pointers.
+
+## Table of Contents
+
+- [Protocol Overview](#protocol-overview)
+- [Supported Versions](#supported-versions)
+- [Embedded Portmapper](#embedded-portmapper)
+- [Mounting](#mounting)
+  - [With Portmapper on Port 111](#with-portmapper-on-port-111)
+  - [With Explicit Ports](#with-explicit-ports)
+- [NFSv3 File Locking (NLM/NSM)](#nfsv3-file-locking-nlmnsm)
+- [Kerberos Exports (sec=krb5)](#kerberos-exports-seckrb5)
+- [NFS-over-TLS (RFC 9289)](#nfs-over-tls-rfc-9289)
+- [Testing Your Mount](#testing-your-mount)
+- [Troubleshooting](#troubleshooting)
+- [Glossary](#glossary)
+- [References](#references)
+
+---
+
+## Protocol Overview
+
+**NFS (Network File System)** is a distributed file system protocol that lets a client access files over a network as if they were on local storage. NFS uses **ONC RPC** for message framing and **XDR** for binary encoding. Each operation carries authentication credentials (UID/GID or Kerberos ticket) and a file handle — an opaque identifier for the file or directory being operated on.
+
+The request/response flow:
+
+```
+Client                                Server
+  |  1. TCP Connection (port 12049)     |
+  | ----------------------------------> |
+  |  2. MOUNT /export                   |
+  | ----------------------------------> |
+  |  <---- Root file handle ----------- |
+  |  3. LOOKUP "file.txt"               |
+  | ----------------------------------> |
+  |  <---- File handle + attributes --- |
+  |  4. READ (offset=0, count=4096)     |
+  | ----------------------------------> |
+  |  <---- Data + EOF flag ------------ |
+  |  5. UMOUNT /export                  |
+  | ----------------------------------> |
+```
+
+For the wire format, procedure tables, XDR encoding, and error-code mapping, see [NFS protocol internals](../internals/nfs-protocol.md).
+
+---
+
+## Supported Versions
+
+DittoFS implements **NFSv3**, **NFSv4.0**, **NFSv4.1**, and **NFSv4.2**.
+
+| Version | Key Features |
+|---------|--------------|
+| NFSv3 | Stateless, 64-bit file sizes, TCP, async writes, WCC |
+| NFSv4.0 | Stateful, ACLs, compound operations, RPCSEC_GSS (Kerberos) |
+| NFSv4.1 | Sessions, backchannel, directory delegations with CB_NOTIFY |
+| NFSv4.2 | Sparse files (ALLOCATE, DEALLOCATE, SEEK, READ_PLUS), server-side CLONE/reflink (RFC 7862) + extended attributes (RFC 8276) |
+
+All versions listen on port **12049** by default (not the standard 2049). The embedded portmapper listens on **10111** by default.
+
+CLONE (reflink), ALLOCATE, DEALLOCATE, SEEK, and READ_PLUS are implemented for NFSv4.2; inter-server COPY (OP_COPY) is not.
+
+---
+
+## Embedded Portmapper
+
+DittoFS includes an embedded portmapper that enables standard NFS service discovery without requiring a system-level `rpcbind` daemon. It answers both legacy **PMAP v2** (RFC 1057, used by `rpcinfo -p` and Linux) and **RPCBIND v3/v4** (RFC 1833 universal addresses, used by macOS/BSD lock clients).
+
+### Why an Embedded Portmapper?
+
+NFS clients traditionally rely on a portmapper (port 111) to discover which port an NFS server is listening on. Without a portmapper, clients require explicit port options (`-o port=12049,mountport=12049`), and standard tools like `rpcinfo` and `showmount` do not work.
+
+The embedded portmapper solves this by:
+
+- Registering all DittoFS services (NFS, MOUNT, NLM, NSM) automatically on startup
+- Responding to standard portmap queries via TCP and UDP
+- Running on an unprivileged port (default 10111) to avoid requiring root
+- Enabling `rpcinfo` and `showmount` to discover DittoFS services
+
+### Service Discovery
+
+With the portmapper running, standard NFS tools work:
+
+```bash
+# Query registered services
+rpcinfo -p localhost -n 10111
+
+# Show available exports
+showmount -e localhost
+```
+
+### Configuration
+
+The portmapper is disabled by default. Enable it via `dfsctl`:
+
+```bash
+# Check current settings
+dfsctl adapter settings nfs
+
+# Change the portmapper port
+dfsctl adapter settings nfs update --portmapper-port 10111
+
+# Disable the portmapper entirely
+dfsctl adapter settings nfs update --portmapper-enabled=false
+```
+
+Or via environment variables:
+
+```bash
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=10111
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=false
+```
+
+### Security
+
+The embedded portmapper follows standard security practices:
+
+- **SET/UNSET restricted to localhost**: Only local clients can register or unregister services
+- **CALLIT (procedure 5) omitted**: Prevents DDoS amplification attacks
+- **Connection limits**: TCP connections are capped at 64 concurrent
+- **Non-privileged port**: Default port 10111 avoids requiring root privileges
+
+### Portmapper Failure is Non-Fatal
+
+If the portmapper fails to start (e.g., port already in use), NFS continues to operate normally. Clients just need to specify ports explicitly in mount options.
+
+---
+
+## NFSv3 File Locking (NLM/NSM)
+
+NFSv3 has no in-protocol locking; byte-range locks travel over the separate
+**NLM** (Network Lock Manager) protocol, with crash recovery coordinated by
+**NSM** (Network Status Monitor). NFSv4 does not use NLM — its locking is
+in-protocol, so none of this section applies to `vers=4` mounts.
+
+> NFSv3 **mount and read/write need none of this.** Only byte-range locking
+> (`flock`/`fcntl`/`lockf`) uses NLM. If you don't need cross-client locks,
+> mount `-o nolock`, or use `-o vers=4` for in-protocol locking.
+
+### What DittoFS serves
+
+- **NLM** (program 100021) versions **1 and 3** (32-bit offsets) and **4**
+  (64-bit offsets), including the **asynchronous `*_MSG`/`*_RES` procedures**
+  (TEST/LOCK/CANCEL/UNLOCK_MSG → `*_RES` callbacks) that macOS/BSD `lockd` use,
+  alongside the synchronous procedures Linux uses.
+- **NSM** (program 100024) version 1, for crash-recovery monitoring (SM_MON /
+  SM_NOTIFY). The SM_NOTIFY callback target is the request's transport source,
+  not the client-supplied `my_name`.
+- **Portmapper** speaking both legacy **PMAP v2** (RFC 1057) and **RPCBIND
+  v3/v4** (RFC 1833, universal addresses) — macOS/BSD `lockd` discover NLM via
+  RPCBIND v3/v4 and do not fall back to v2.
+- All of the above over **TCP and UDP**. NFS data (program 100003) is
+  **TCP-only** — it is never served over UDP (READ/WRITE payloads exceed a UDP
+  datagram).
+
+> **Status:** the full protocol chain (RPCBIND v3/v4 discovery → NSM monitoring
+> → async NLM locking with reserved-port `*_RES` callbacks) is implemented and
+> unit-tested. End-to-end acceptance against a live macOS client is validated on
+> a same-LAN topology (a same-host loopback test is unreliable: the client and
+> server contend for port 111 and a shared `lockd`/`statd`).
+
+### Why macOS NFSv3 locking needs extra setup
+
+A macOS/BSD lock client (`rpc.lockd` / `rpc.statd`) reaches NLM/NSM over **UDP**
+and discovers them by querying the **server's portmapper on port 111** — there is
+no mount option to redirect that lookup. So two server-side pieces, both
+**disabled by default**, are required:
+
+1. **UDP transport** — serve NLM/NSM/MOUNT over UDP:
+   ```bash
+   dfsctl adapter settings nfs update --udp-enabled true
+   ```
+2. **Portmapper on port 111** — so the client's discovery query resolves:
+   ```bash
+   dfsctl adapter settings nfs update --portmapper-enabled true --portmapper-port 111
+   ```
+   Binding 111 needs root or `CAP_NET_BIND_SERVICE`, and may clash with a host
+   `rpcbind`. On Kubernetes the operator exposes port 111 via the adapter Service
+   (mapped to the unprivileged container port), so no privileged binding is needed
+   in the pod.
+
+Restart the adapter after changing these settings. Linux clients (NLM v4) work
+once the portmapper is reachable; they do not strictly require UDP, but enabling
+it is harmless.
+
+Equivalent config-file / env settings:
+
+```yaml
+adapters:
+  nfs:
+    udp:
+      enabled: true
+    portmapper:
+      enabled: true
+      port: 111
+```
+
+```bash
+DITTOFS_ADAPTERS_NFS_UDP_ENABLED=true
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111
+```
+
+### Recommended: just use NFSv4
+
+For locking without any of the above, mount with `vers=4` — locking is part of
+the protocol, and there is no NLM, NSM, MOUNT, or portmapper to configure:
+
+```bash
+dfsctl share mount /my-share /mnt/point --protocol nfs --nfs-version 4.1
+# or directly:
+mount -t nfs -o vers=4.1,port=12049 server:/my-share /mnt/point
+```
+
+---
+
+## Mounting
+
+### With Portmapper on Port 111
+
+When the portmapper runs on the standard port 111 (requires root or `CAP_NET_BIND_SERVICE`), NFS clients can auto-discover ports and mount commands are simplified:
+
+```bash
+# Configure portmapper on standard port (requires root)
+dfsctl adapter settings nfs update --portmapper-port 111
+
+# Linux - no port options needed, client queries portmapper automatically
+sudo mkdir -p /mnt/nfs
+sudo mount -t nfs -o tcp localhost:/export /mnt/nfs
+
+# macOS
+mkdir -p /tmp/nfs
+mount -t nfs -o tcp localhost:/export /tmp/nfs
+```
+
+### With Explicit Ports
+
+When the portmapper is disabled or running on a non-standard port, specify the NFS port explicitly:
+
+```bash
+# Linux
+sudo mkdir -p /mnt/nfs
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/nfs
+
+# macOS (sudo not required)
+mkdir -p /tmp/nfs
+mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /tmp/nfs
+
+# macOS may require resvport on some configurations
+mount -t nfs -o tcp,port=12049,mountport=12049,resvport localhost:/export /tmp/nfs
+
+# Unmount
+sudo umount /mnt/nfs   # Linux
+umount /tmp/nfs        # macOS
+```
+
+---
+
+## Kerberos Exports (sec=krb5)
+
+NFSv4.0 and NFSv4.1 can authenticate with Kerberos via RPCSEC_GSS. The server
+verifies the client's Kerberos ticket against a keytab and maps the
+authenticated principal to a DittoFS identity for permission checks.
+
+**Mounting (Linux):**
+
+```bash
+# DittoFS listens on 12049, not the default 2049 — pass it explicitly.
+sudo mount -t nfs4 -o vers=4.1,sec=krb5,port=12049 server:/export /mnt/dittofs
+```
+
+The non-default port also applies to the auth handshake; without `port=12049`
+the client connects to 2049 and the mount fails with `Connection refused`
+before Kerberos is ever attempted. (Run the embedded portmapper on 111 to drop
+the explicit port — see [Embedded Portmapper](#embedded-portmapper).)
+
+**Per-export policy.** Three NFS export options gate which auth flavors a share
+accepts (set via `dfsctl adapter edit nfs` / the share's `NFSExportOptions`):
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `allow_auth_sys` | `true` | When `false`, AUTH_SYS (AUTH_UNIX) mounts/operations are refused. (Set `require_kerberos` to also refuse AUTH_NULL and mandate RPCSEC_GSS — `allow_auth_sys=false` alone only gates AUTH_SYS.) |
+| `require_kerberos` | `false` | When `true`, every mount/operation must use RPCSEC_GSS; AUTH_SYS and AUTH_NULL are refused. |
+| `min_kerberos_level` | `krb5` | Minimum GSS protection level a Kerberos session must negotiate (`krb5` = authentication, `krb5i` = + integrity, `krb5p` = + privacy). A session below the floor is refused. |
+
+`allow_auth_sys`, `require_kerberos`, and `min_kerberos_level` are enforced
+identically on **NFSv3** (at MOUNT) and on **NFSv4.0/v4.1** (at the first
+operation that resolves the export handle — v4 has no MOUNT call). A refusal
+surfaces as `NFS4ERR_WRONGSEC` (v4) / `MNT3ERR_ACCES` (v3), prompting the client
+to retry with the correct flavor.
+
+`min_kerberos_level` only constrains RPCSEC_GSS sessions: it rejects a Kerberos
+session whose negotiated service level is below the floor (e.g. a plain `krb5`
+authentication-only session on a `krb5p` privacy share). Non-GSS flavors are
+governed by `allow_auth_sys` / `require_kerberos`; pair `min_kerberos_level`
+with `require_kerberos=true` to mandate a protection floor for *all* access.
+
+**Principal → identity mapping (the "access denied after EXCHANGE_ID" case).**
+A successful `sec=krb5` mount has two stages, and they fail differently:
+
+1. **GSS context establishment** (the client's `EXCHANGE_ID` / context init).
+   This succeeds as soon as the ticket verifies against the server keytab.
+2. **Authorization** of the mapped principal on the export. The authenticated
+   principal is resolved to a DittoFS user (and UID/GID) through the identity
+   store / idmap. A principal with **no mapping** resolves to **nobody**
+   (UID 65534), and nobody is then subject to the export's
+   `default_permission`: if that is `none`, the export denies the operation and
+   the mount fails with `access denied` **even though the Kerberos handshake
+   succeeded**.
+
+This is by design — a host that mounts with its **machine** credential (no user
+`kinit`, e.g. `nfs/host.realm@REALM` from `/etc/krb5.keytab`) authenticates as
+the machine principal, which has no user identity. To grant such a mount:
+
+- add an idmap entry (or a DittoFS user) for the principal so it resolves to a
+  real UID/GID, **or**
+- set the export's `default_permission` to `read` / `read-write` so unmapped
+  (nobody) principals are admitted with that ceiling, **and** ensure the export
+  root's POSIX mode permits the resulting identity to traverse it.
+
+User principals (`alice@REALM`, obtained via `kinit`) that are present in the
+idmap mount and access files as that user with no extra configuration.
+
+---
+
+## NFS-over-TLS (RFC 9289)
+
+DittoFS can encrypt NFS wire traffic with TLS 1.3, using the opportunistic `AUTH_TLS` STARTTLS mechanism from RFC 9289. A client opens TCP and sends a `NULL` RPC with `auth_flavor = AUTH_TLS (7)`; the server replies with the 8-octet `"STARTTLS"` verifier, then both perform a TLS 1.3 handshake on the **same** connection. All subsequent RPC traffic is encrypted. Because Go performs the handshake and crypto in userspace, no kernel TLS (`kTLS`) or `tlshd` daemon is needed on the server.
+
+DittoFS only loads cert files — issuance/renewal/rotation is the platform's job; rotated files are hot-reloaded with no restart (shared with the control-plane TLS path via `internal/tlsconfig`).
+
+```yaml
+adapters:
+  nfs:
+    tls:
+      cert_file: /etc/dittofs/tls/tls.crt
+      key_file:  /etc/dittofs/tls/tls.key
+      client_ca: /etc/dittofs/tls/ca.crt   # optional → mutual TLS (client-cert auth)
+      min_version: "1.3"                    # RFC 9289 floor is TLS 1.3
+      mode: opportunistic                   # "opportunistic" (default) | "require"
+```
+
+- **`opportunistic`** (default): clients that send the `AUTH_TLS` probe are upgraded; clients that do not are still served in plaintext. Lets a TLS rollout proceed without breaking existing mounts.
+- **`require`**: a connection must upgrade via `AUTH_TLS` before any other RPC; plaintext requests are rejected (connection dropped).
+
+**Client interop:**
+
+- **Linux:** `mount -o vers=4.1,xprtsec=tls …` — requires `tlshd` (ktls-utils) and `CONFIG_NET_HANDSHAKE` (RHEL 9.x / upstream kernel 6.7+).
+- **macOS:** no NFS-over-TLS client — use Kerberos or a network-level tunnel instead.
+
+---
+
+## Testing Your Mount
+
+```bash
+# Start server
+./dfs start -log-level DEBUG
+
+# Mount (Linux)
+sudo mount -t nfs -o tcp,port=12049,mountport=12049 localhost:/export /mnt/test
+cd /mnt/test
+
+# Exercise common operations
+ls -la              # READDIR / READDIRPLUS
+cat readme.txt      # READ
+echo "test" > new   # CREATE + WRITE
+mkdir foo           # MKDIR
+rm new              # REMOVE
+rmdir foo           # RMDIR
+mv file1 file2      # RENAME
+ln -s target link   # SYMLINK
+ln file1 file2      # LINK (hard link)
+
+# Run unit tests
+go test ./...
+
+# Run E2E tests (requires NFS client installed)
+go test -v -timeout 30m ./test/e2e/...
+
+# Run specific E2E suite
+go test -v ./test/e2e -run TestE2E/memory/BasicOperations
+```
+
+---
+
+## Troubleshooting
+
+See [Troubleshooting](./troubleshooting.md) for common issues. Quick reference:
+
+- **`Connection refused` on mount**: DittoFS listens on **12049**, not 2049. Always pass `-o port=12049,mountport=12049` unless the portmapper is running on 111.
+- **`access denied` after Kerberos succeeds**: The principal has no idmap entry; it resolved to nobody and the export's `default_permission` is `none`. See [Kerberos Exports](#kerberos-exports-seckrb5) above.
+- **`NFS4ERR_WRONGSEC`**: The client used AUTH_SYS on a Kerberos-only export (or vice versa). Check `allow_auth_sys` / `require_kerberos` on the share.
+- **NFSv3 locks not working on macOS**: Requires UDP transport + portmapper on 111. See [NFSv3 File Locking](#nfsv3-file-locking-nlmnsm).
+- **Configuration reference**: See [Configuration](./configuration.md) for the full `adapters.nfs` config block.
+- **Security hardening**: See [Security](./security.md) for TLS, Kerberos, and export policy guidance.
+
+---
+
+## Glossary
+
+| Term | Definition |
+|------|------------|
+| **AUTH_NULL** | No authentication flavor (flavor 0) |
+| **AUTH_UNIX** | Unix-style authentication with UID/GID (flavor 1) |
+| **Backchannel** | Server-to-client connection used for callbacks (NFSv4.1) |
+| **CB_NOTIFY** | Callback operation for directory change notifications |
+| **COMPOUND** | NFSv4 request containing multiple operations |
+| **Cookie** | Opaque value used for directory iteration (READDIR) |
+| **Delegation** | Server grants client exclusive or shared caching rights |
+| **EOF** | End of file indicator in READ responses |
+| **Export** | A directory shared via NFS (like an SMB share) |
+| **File Handle** | Opaque identifier for a file/directory (max 64 bytes) |
+| **ftype3** | File type enum (regular, directory, symlink, etc.) |
+| **FSID** | File system identifier |
+| **nfstime3** | NFS time format (seconds + nanoseconds) |
+| **NLM** | Network Lock Manager -- sideband protocol NFSv3 uses for file locking |
+| **NSM / statd** | Network Status Monitor -- tracks reboots so NLM locks can be reclaimed/released after a crash |
+| **RPCSEC_GSS** | Kerberos-based RPC security flavor (NFSv4) |
+| **RPC** | Remote Procedure Call -- foundation protocol |
+| **sattr3** | Set attributes structure (for SETATTR, CREATE) |
+| **Session** | NFSv4.1 construct tracking client connection state |
+| **Stale Handle** | A handle that is no longer valid |
+| **Stateid** | NFSv4 identifier naming a specific open/lock state on the server |
+| **Verifier** | Server-unique value that changes on restart |
+| **WCC** | Weak Cache Consistency -- pre/post attributes that let a client cheaply validate its cache |
+| **XDR** | External Data Representation (encoding format) |
+| **XID** | Transaction ID for matching requests/replies |
+
+For protocol-independent terms (CAS, BLAKE3, SID, ACL, ...) see the project-wide [Glossary](./glossary.md).
+
+---
+
+## References
+
+### Specifications
+
+- [RFC 1057](https://www.rfc-editor.org/rfc/rfc1057) - RPC: Remote Procedure Call Protocol (Portmapper)
+- [RFC 1094](https://www.rfc-editor.org/rfc/rfc1094) - NFS: Network File System Protocol (Version 2)
+- [RFC 1813](https://www.rfc-editor.org/rfc/rfc1813) - NFS Version 3 Protocol Specification
+- [RFC 4506](https://www.rfc-editor.org/rfc/rfc4506) - XDR: External Data Representation Standard
+- [RFC 5531](https://www.rfc-editor.org/rfc/rfc5531) - ONC RPC: Remote Procedure Call Protocol Specification Version 2
+- [RFC 7530](https://www.rfc-editor.org/rfc/rfc7530) - NFS Version 4.0 Protocol
+- [RFC 7862](https://www.rfc-editor.org/rfc/rfc7862) - NFS Version 4.2 Protocol (sparse files)
+- [RFC 8276](https://www.rfc-editor.org/rfc/rfc8276) - File System Extended Attributes in NFSv4
+- [RFC 8881](https://www.rfc-editor.org/rfc/rfc8881) - NFS Version 4.1 Protocol
+- [RFC 9289](https://www.rfc-editor.org/rfc/rfc9289) - Towards Remote Procedure Call Encryption by Default (NFS-over-TLS)
+- [Open Group XNFS](https://pubs.opengroup.org/onlinepubs/9629799/) - Network Lock Manager (NLM, chap. 10) and Network Status Monitor (NSM, chap. 11)
+- [RFC 2203](https://www.rfc-editor.org/rfc/rfc2203) - RPCSEC_GSS Protocol · [RFC 4120](https://www.rfc-editor.org/rfc/rfc4120) - Kerberos V5 · [RFC 2743](https://www.rfc-editor.org/rfc/rfc2743) - GSS-API
+
+### Related Projects
+
+- [go-nfs](https://github.com/willscott/go-nfs) - Another NFS implementation in Go
+- [FUSE](https://github.com/libfuse/libfuse) - Filesystem in Userspace
+
+### DittoFS Documentation
+
+- [Architecture](../internals/architecture.md) - Deep dive into design patterns and implementation
+- [Configuration](./configuration.md) - Complete configuration guide
+- [Glossary](./glossary.md) - Plain-language definitions of protocol, ACL, and storage terms
+- [Troubleshooting](./troubleshooting.md) - Common issues and solutions
+- [Security](./security.md) - Security hardening guide
+- [NFS Protocol Internals](../internals/nfs-protocol.md) - Wire format, procedure tables, error mapping

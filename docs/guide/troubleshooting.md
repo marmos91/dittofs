@@ -196,7 +196,7 @@ sudo -u $USER mount_smbfs //user:pass@localhost:12445/export /mnt/share
 **Note:** This is a macOS-specific issue. On Linux, `dfsctl share mount` uses uid/gid
 options which work correctly.
 
-See [Known Limitations](KNOWN_LIMITATIONS.md#macos-mount-owner-only-access) for details.
+See [Known Limitations](faq.md#macos-mount-owner-only-access) for details.
 
 ## Permission Issues
 

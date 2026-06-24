@@ -3,14 +3,14 @@
 DittoFS uses a flexible configuration system with support for YAML/TOML files and environment variable overrides.
 
 > Unfamiliar with terms like CAS, AUTH_UNIX, NTLM, or root-squash? See the
-> [Glossary](GLOSSARY.md) for plain-language definitions.
+> [Glossary](glossary.md) for plain-language definitions.
 
 ## Table of Contents
 
 - [Configuration Files](#configuration-files)
 - [Configuration Structure](#configuration-structure)
   - [Logging](#1-logging)
-  - [Telemetry](#2-telemetry-opentelemetry)
+  - [Observability](#2-observability)
   - [Server Settings](#3-server-settings)
   - [Database (Control Plane)](#4-database-control-plane)
   - [API Server](#5-api-server)
@@ -92,47 +92,11 @@ logging:
   {"time":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"Starting DittoFS server","component":"server","version":"1.0.0"}
   ```
 
-### 2. Telemetry (OpenTelemetry)
+### 2. Observability
 
-Controls distributed tracing for observability:
-
-```yaml
-telemetry:
-  enabled: false          # Enable/disable tracing (default: false)
-  endpoint: "localhost:4317"  # OTLP collector endpoint (gRPC)
-  insecure: false         # Use insecure connection (no TLS)
-  sample_rate: 1.0        # Trace sampling rate (0.0 to 1.0)
-```
-
-When enabled, DittoFS exports traces to any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, etc.).
-
-**Configuration Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `false` | Enable/disable distributed tracing |
-| `endpoint` | `localhost:4317` | OTLP gRPC collector endpoint |
-| `insecure` | `false` | Skip TLS verification (for local development) |
-| `sample_rate` | `1.0` | Sampling rate: 1.0 = all traces, 0.5 = 50%, 0.0 = none |
-
-**Example with Jaeger:**
-
-```yaml
-telemetry:
-  enabled: true
-  endpoint: "jaeger:4317"
-  insecure: true  # For local Docker setup
-  sample_rate: 1.0
-```
-
-**Trace Propagation:**
-
-Traces include:
-- NFS operation spans (READ, WRITE, LOOKUP, etc.)
-- Storage backend operations (S3, BadgerDB, filesystem)
-- Cache operations (hits, misses, flushes)
-- Request context (client IP, file handles, paths)
-
+DittoFS has **no OpenTelemetry / distributed-tracing subsystem**. Observability is
+provided by an opt-in Prometheus `/metrics` endpoint on a dedicated listener. See
+[Metrics (Prometheus)](#metrics-prometheus) below for the full configuration.
 ### 3. Server Settings
 
 Application-wide server configuration:
@@ -300,9 +264,9 @@ controlplane:
 
 When `cert_file`/`key_file` are unset, the server serves plain HTTP exactly as before (back-compatible). When set, it serves HTTPS; the files are read and parsed at startup, so a missing or malformed certificate fails fast with a clear error.
 
-**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](SECURITY.md) and [docs/DEPLOYMENT.md](DEPLOYMENT.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](DEPLOYMENT.md).
+**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](security.md) and [docs/DEPLOYMENT.md](install.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](install.md).
 
-Related glossary terms: [TLS / mTLS](GLOSSARY.md#authentication).
+Related glossary terms: [TLS / mTLS](glossary.md#authentication).
 
 **API Endpoints:**
 
@@ -506,8 +470,8 @@ directly):
 `DITTOFS_GC_GRACE_PERIOD`,
 `DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep)
-for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
+See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
+for the full mark-sweep design and [CLI.md](cli.md) for the on-demand
 `dfsctl store block gc` command.
 
 #### Local cache size limit & write backpressure
@@ -605,8 +569,8 @@ file's content is not recycled (only unlink and replace-overwrite are).
   --trash-exclude '*.tmp' --trash-exclude '*.cache'
 ```
 
-See [CLI.md](CLI.md#recycle-bin-trash) for the `dfsctl trash`
-management commands and [ARCHITECTURE.md](ARCHITECTURE.md#metadataservice)
+See [CLI.md](cli.md#recycle-bin-trash) for the `dfsctl trash`
+management commands and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 
 #### Remote block-level compression (opt-in)
@@ -649,7 +613,7 @@ Notes:
 A remote block store may also encrypt block payloads before upload using
 client-side envelope encryption. Compression (when enabled) runs
 **before** encryption — encrypted bytes are incompressible by design.
-See [ENCRYPTION.md](ENCRYPTION.md) for the full threat model and design.
+See [ENCRYPTION.md](encryption.md) for the full threat model and design.
 
 Add an `encryption` block to the remote store's `config` JSON:
 
@@ -748,6 +712,7 @@ compatibility guide. The per-provider column flags the one gotcha that bites.
 
 | Provider | Endpoint | Region | `force_path_style` | Gotcha |
 | --- | --- | --- | --- | --- |
+| **Cubbit DS3** ⭐ _(DittoFS sponsor)_ | `https://s3.cubbit.eu` | `eu-west-1` | auto-on | Geo-distributed, S3-compatible object storage from [Cubbit](https://www.cubbit.io/). Create an S3 access key/secret in the DS3 console; the bucket lives in your assigned region. |
 | Google Cloud Storage (XML/HMAC) | `https://storage.googleapis.com` | `us-east-1` | **set `false`** | Use an **HMAC** key (`access_key_id`/`secret_access_key`), not a service-account JSON. GCS ignores `region` (any non-empty value works), so send the `us-east-1` default. GCS wants virtual-hosted style, so override the auto path-style default to `false`. |
 | Backblaze B2 | `https://s3.us-west-004.backblazeb2.com` | `us-west-004` | auto-on | Endpoint embeds the region (`s3.<region>.backblazeb2.com`); `region` must match it. Use an **application key**, not the master key. |
 | Wasabi | `https://s3.us-east-1.wasabisys.com` | `us-east-1` | auto-on | Region is in the hostname; mismatched `region` causes auth failures. |
@@ -758,6 +723,10 @@ compatibility guide. The per-provider column flags the one gotcha that bites.
 | Storj (S3 gateway) | `https://gateway.storjshare.io` | `us-east-1` | auto-on | Use S3-gateway access keys (`uplink share --register`), not the API access grant. |
 
 ```bash
+# Cubbit DS3 (DittoFS sponsor) — geo-distributed, S3-compatible object storage
+dfsctl store block remote add --name ds3-store --type s3 \
+  --config '{"endpoint":"https://s3.cubbit.eu","bucket":"dittofs","region":"eu-west-1","access_key_id":"DS3_ACCESS_KEY","secret_access_key":"DS3_SECRET_KEY"}'
+
 # Google Cloud Storage — note force_path_style:false (GCS wants virtual-hosted)
 dfsctl store block remote add --name gcs-store --type s3 \
   --config '{"endpoint":"https://storage.googleapis.com","bucket":"dittofs","region":"us-east-1","access_key_id":"GOOG_HMAC_KEY","secret_access_key":"GOOG_HMAC_SECRET","force_path_style":false}'
@@ -1168,7 +1137,7 @@ In this example, `special-viewer` gets `read-write` on `/archive` (user explicit
 #### CLI Management Commands
 
 Users and groups live in the control-plane database, not the config file. Manage them with
-`dfsctl` against a running server (run `dfsctl login` first). See [CLI.md](CLI.md) for the
+`dfsctl` against a running server (run `dfsctl login` first). See [CLI.md](cli.md) for the
 complete, generated reference.
 
 **User Commands:**
@@ -1231,7 +1200,7 @@ server:
 adapters:
   nfs:
     enabled: true
-    port: 2049
+    port: 12049
     max_connections: 0           # 0 falls back to 1024 (default cap)
 
     # Grouped timeout configuration
@@ -1375,7 +1344,7 @@ dfsctl share create --name /secure --metadata default --encrypt-data
 > deployments (this rejects SMB 2.x clients, which cannot encrypt). If SMB is bound to
 > a non-loopback address with `encryption_mode: disabled`, `dfs` logs a startup WARN
 > because file data then traverses the network in cleartext. See
-> [docs/SECURITY.md](SECURITY.md#smb3-security-model) for the hardened template.
+> [docs/SECURITY.md](security.md#smb3-security-model) for the hardened template.
 
 **Enforcement Rules:**
 
@@ -1663,7 +1632,7 @@ identity:
 Controls the background scheduler that drives per-share snapshot policies
 (schedule + retention). Policies themselves are configured per share via
 `dfsctl share snapshot-policy` or the REST API — see
-[SNAPSHOTS.md §12](SNAPSHOTS.md#12-scheduled-snapshots-policies). These
+[SNAPSHOTS.md §12](snapshots.md#12-scheduled-snapshots-policies). These
 knobs only tune the daemon-wide scheduler loop.
 
 ```yaml
@@ -1773,7 +1742,7 @@ changes hot-reload the live resolver**; **Kerberos changes take effect on the
 next server restart** (the NFS/SMB adapters bind it at startup). The bind
 password is write-only — submit `********` (or omit it) on `PUT` to keep the
 stored secret. Equivalent CLI: `dfsctl identity-provider {list,get,set,test}`
-(see [CLI.md](CLI.md)).
+(see [CLI.md](cli.md)).
 
 ## Migration
 
@@ -1905,7 +1874,7 @@ boot guard exits 78 on any share whose sentinel is missing.
 
 ### See also
 
-- [docs/CLI.md — `dfs migrate-to-cas`](CLI.md#dfs-migrate-to-cas) for the
+- [docs/CLI.md — `dfs migrate-to-cas`](cli.md#dfs-migrate-to-cas) for the
   full command-line reference (synopsis, flag table, exit codes, examples).
 
 ## Metrics (Prometheus)
@@ -2163,12 +2132,6 @@ admin:
 export DITTOFS_LOGGING_LEVEL=DEBUG
 export DITTOFS_LOGGING_FORMAT=json
 
-# Telemetry (OpenTelemetry)
-export DITTOFS_TELEMETRY_ENABLED=true
-export DITTOFS_TELEMETRY_ENDPOINT=jaeger:4317
-export DITTOFS_TELEMETRY_INSECURE=true
-export DITTOFS_TELEMETRY_SAMPLE_RATE=0.5
-
 # Server
 export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 
@@ -2243,9 +2206,9 @@ Settings are applied in the following order (highest to lowest priority):
 Example:
 
 ```bash
-# config.yaml has port: 2049
-# This overrides it to 12049
-DITTOFS_ADAPTERS_NFS_PORT=12049 ./dfs start
+# config.yaml has port: 12049 (the DittoFS default)
+# Override it to the standard NFS port 2049 (binding <1024 requires root)
+DITTOFS_ADAPTERS_NFS_PORT=2049 ./dfs start
 ```
 
 ## Configuration Examples
@@ -2288,19 +2251,13 @@ logging:
 
 ### Production Setup
 
-Persistent storage with access control, structured logging, and telemetry:
+Persistent storage with access control, structured logging, and metrics:
 
 ```yaml
 logging:
   level: WARN
   format: json
   output: /var/log/dittofs/server.log
-
-telemetry:
-  enabled: true
-  endpoint: "tempo:4317"     # Or your OTLP collector
-  insecure: false            # Use TLS in production
-  sample_rate: 0.1           # Sample 10% of traces
 
 server:
   shutdown_timeout: 30s
@@ -2331,7 +2288,7 @@ Then create stores, shares, and enable adapters via CLI:
 ./dfsctl share permission grant /export --user alice --level read-write
 
 # Enable NFS adapter
-./dfsctl adapter enable nfs --port 2049
+./dfsctl adapter enable nfs --port 12049
 ```
 
 ### Multi-Share with Different Backends

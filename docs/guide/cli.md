@@ -9,23 +9,22 @@ This page is generated from the command definitions (`go run ./cmd/gendocs`). Do
 
 ## `dfs`
 
-```
-dfs
-  completion     Generate shell completion script
-  config         Configuration management
-    edit           Open configuration in editor
-    schema         Generate JSON schema for configuration
-    show           Display current configuration
-    validate       Validate configuration file
-  init           Initialize a sample configuration file
-  logs           Tail server logs
-  migrate        Run database migrations
-  migrate-to-cas Migrate legacy .blk block layout to CAS (offline; required for v0.16+ servers)
-  start          Start the DittoFS server
-  status         Show server status
-  stop           Stop the DittoFS server
-  version        Show version information
-```
+- [`dfs`](#dfs) — DittoFS - Modular virtual filesystem
+  - [`dfs completion`](#dfs-completion) — Generate shell completion script
+  - [`dfs config`](#dfs-config) — Configuration management
+    - [`dfs config edit`](#dfs-config-edit) — Open configuration in editor
+    - [`dfs config schema`](#dfs-config-schema) — Generate JSON schema for configuration
+    - [`dfs config show`](#dfs-config-show) — Display current configuration
+    - [`dfs config validate`](#dfs-config-validate) — Validate configuration file
+  - [`dfs init`](#dfs-init) — Initialize a sample configuration file
+  - [`dfs logs`](#dfs-logs) — Tail server logs
+  - [`dfs migrate`](#dfs-migrate) — Run database migrations
+  - [`dfs migrate-to-cas`](#dfs-migrate-to-cas) — Migrate legacy .blk block layout to CAS (offline; required for v0.16+ servers)
+  - [`dfs start`](#dfs-start) — Start the DittoFS server
+  - [`dfs status`](#dfs-status) — Show server status
+  - [`dfs stop`](#dfs-stop) — Stop the DittoFS server
+  - [`dfs version`](#dfs-version) — Show version information
+
 
 ### `dfs`
 
@@ -538,154 +537,153 @@ Global flags:
 
 ## `dfsctl`
 
-```
-dfsctl
-  adapter        Protocol adapter management
-    disable        Disable an adapter
-    edit           Edit an adapter
-    enable         Enable an adapter
-    list           List protocol adapters
-    settings       Manage adapter settings
-      nfs            Manage NFS adapter settings
-        reset          Reset adapter settings to defaults
-        show           Show current adapter settings
-        update         Update adapter settings
-      smb            Manage SMB adapter settings
-        reset          Reset adapter settings to defaults
-        show           Show current adapter settings
-        update         Update adapter settings
-  bench          Run filesystem benchmarks
-    compare        Compare benchmark results from multiple systems
-    run            Run filesystem benchmarks
-    storage-tiers  Benchmark storage tier performance (cold/warm/local-only)
-  client         Manage connected clients
-    disconnect     Disconnect a client
-    list           List connected clients
-    sessions       Manage NFS client sessions
-      destroy        Force-destroy a session
-      list           List sessions for a client
-  completion     Generate shell completion script
-  context        Manage server contexts
-    current        Show current context
-    delete         Delete a context
-    list           List all configured contexts
-    rename         Rename a context
-    use            Switch to a different context
-  grace          Manage NFSv4 grace period
-    end            Force-end the grace period
-    status         Show grace period status
-  group          Group management
-    add-user       Add a user to a group
-    create         Create a new group
-    delete         Delete a group
-    edit           Edit a group
-    get            Get group details
-    list           List all groups
-    remove-user    Remove a user from a group
-  identity-provider Identity provider (LDAP/AD, Kerberos) management
-    configure      Configure Kerberos machine-account settings
-    get            Show an identity provider's configuration (secrets redacted)
-    list           List identity providers and their state
-    set            Create or replace an identity provider's configuration
-    test           Test an identity provider's configuration without persisting it
-  idmap          Manage identity mappings
-    add            Add an identity mapping
-    list           List identity mappings
-    remove         Remove an identity mapping
-    sid            Manage foreign-SID UID/GID allocations
-      delete         Delete a foreign-SID UID/GID allocation
-      list           List foreign-SID UID/GID allocations
-  login          Authenticate with DittoFS server
-  logout         Clear stored credentials
-  netgroup       Manage netgroups (IP access control)
-    add-member     Add a member to a netgroup
-    create         Create a new netgroup
-    delete         Delete a netgroup
-    list           List all netgroups
-    remove-member  Remove a member from a netgroup
-    show           Show netgroup details
-  quota          Per-identity quota management
-    list           List all quotas on a share
-    rm             Remove a per-identity quota
-    set            Create or update a per-identity quota
-  settings       Server settings management
-    get            Get a setting value
-    list           List all settings
-    set            Set a setting value
-  share          Share management
-    create         Create a new share
-    delete         Delete a share
-    disable        Disable a share (drain clients, block new connections)
-    edit           Edit a share
-    enable         Enable a share (accept new connections)
-    list           List all shares
-    list-mounts    List mounted DittoFS shares
-    mount          Mount a share via NFS or SMB
-    nfs-config     Manage per-share NFS adapter configuration
-      set            Update a share's NFS adapter configuration
-      show           Show a share's NFS adapter configuration
-    permission     Manage share permissions
-      grant          Grant permission on a share
-      list           List permissions on a share
-      revoke         Revoke permission from a share
-    show           Show share details
-    snapshot       Manage share snapshots (create, list, show, delete, restore)
-      create         Create a snapshot of a share
-      delete         Delete a snapshot
-      list           List snapshots for a share
-      restore        Restore a snapshot into a (disabled) share
-      show           Show details of a snapshot
-    snapshot-policy Manage scheduled snapshot policies (schedule + retention)
-      delete         Delete a share's snapshot policy
-      list           List all snapshot policies
-      run            Trigger a share's snapshot policy now (manual override)
-      set            Create or update a share's snapshot policy
-      show           Show a share's snapshot policy
-    unmount        Unmount a mounted share
-    warm           Warm a share's local block cache
-  status         Show server status
-  store          Store management
-    block          Block store management
-      audit-refcounts Verify every manifest block reference has a backing FileBlock row
-      evict          Evict block store data
-      gc             Run garbage collection for a block store share
-      gc-status      Show the last block-store GC run summary for a share
-      health         Check block store health
-      local          Local block store management
-        add            Add a local block store
-        edit           Edit a local block store
-        list           List local block stores
-        remove         Remove a local block store
-      remote         Remote block store management
-        add            Add a remote block store
-        edit           Edit a remote block store
-        list           List remote block stores
-        remove         Remove a remote block store
-      stats          Show block store statistics
-    metadata       Manage metadata stores
-      add            Add a metadata store
-      edit           Edit a metadata store
-      health         Check metadata store health
-      list           List metadata stores
-      remove         Remove a metadata store
-  switch-user    Switch to a different user on the current server
-  system         System operations
-    drain-uploads  Wait for all pending uploads to complete
-  trash          Recycle-bin management
-    empty          Empty a share's recycle bin
-    list           List recycle-bin entries for a share
-    restore        Restore a recycled file or directory
-    status         Show recycle-bin status for a share
-  user           User management
-    change-password Change your own password
-    create         Create a new user
-    delete         Delete a user
-    edit           Edit a user
-    get            Get user details
-    list           List all users
-    password       Reset a user's password
-  version        Show version information
-```
+- [`dfsctl`](#dfsctl) — DittoFS Control - Remote management client
+  - [`dfsctl adapter`](#dfsctl-adapter) — Protocol adapter management
+    - [`dfsctl adapter disable`](#dfsctl-adapter-disable) — Disable an adapter
+    - [`dfsctl adapter edit`](#dfsctl-adapter-edit) — Edit an adapter
+    - [`dfsctl adapter enable`](#dfsctl-adapter-enable) — Enable an adapter
+    - [`dfsctl adapter list`](#dfsctl-adapter-list) — List protocol adapters
+    - [`dfsctl adapter settings`](#dfsctl-adapter-settings) — Manage adapter settings
+      - [`dfsctl adapter settings nfs`](#dfsctl-adapter-settings-nfs) — Manage NFS adapter settings
+        - [`dfsctl adapter settings nfs reset`](#dfsctl-adapter-settings-nfs-reset) — Reset adapter settings to defaults
+        - [`dfsctl adapter settings nfs show`](#dfsctl-adapter-settings-nfs-show) — Show current adapter settings
+        - [`dfsctl adapter settings nfs update`](#dfsctl-adapter-settings-nfs-update) — Update adapter settings
+      - [`dfsctl adapter settings smb`](#dfsctl-adapter-settings-smb) — Manage SMB adapter settings
+        - [`dfsctl adapter settings smb reset`](#dfsctl-adapter-settings-smb-reset) — Reset adapter settings to defaults
+        - [`dfsctl adapter settings smb show`](#dfsctl-adapter-settings-smb-show) — Show current adapter settings
+        - [`dfsctl adapter settings smb update`](#dfsctl-adapter-settings-smb-update) — Update adapter settings
+  - [`dfsctl bench`](#dfsctl-bench) — Run filesystem benchmarks
+    - [`dfsctl bench compare`](#dfsctl-bench-compare) — Compare benchmark results from multiple systems
+    - [`dfsctl bench run`](#dfsctl-bench-run) — Run filesystem benchmarks
+    - [`dfsctl bench storage-tiers`](#dfsctl-bench-storage-tiers) — Benchmark storage tier performance (cold/warm/local-only)
+  - [`dfsctl client`](#dfsctl-client) — Manage connected clients
+    - [`dfsctl client disconnect`](#dfsctl-client-disconnect) — Disconnect a client
+    - [`dfsctl client list`](#dfsctl-client-list) — List connected clients
+    - [`dfsctl client sessions`](#dfsctl-client-sessions) — Manage NFS client sessions
+      - [`dfsctl client sessions destroy`](#dfsctl-client-sessions-destroy) — Force-destroy a session
+      - [`dfsctl client sessions list`](#dfsctl-client-sessions-list) — List sessions for a client
+  - [`dfsctl completion`](#dfsctl-completion) — Generate shell completion script
+  - [`dfsctl context`](#dfsctl-context) — Manage server contexts
+    - [`dfsctl context current`](#dfsctl-context-current) — Show current context
+    - [`dfsctl context delete`](#dfsctl-context-delete) — Delete a context
+    - [`dfsctl context list`](#dfsctl-context-list) — List all configured contexts
+    - [`dfsctl context rename`](#dfsctl-context-rename) — Rename a context
+    - [`dfsctl context use`](#dfsctl-context-use) — Switch to a different context
+  - [`dfsctl grace`](#dfsctl-grace) — Manage NFSv4 grace period
+    - [`dfsctl grace end`](#dfsctl-grace-end) — Force-end the grace period
+    - [`dfsctl grace status`](#dfsctl-grace-status) — Show grace period status
+  - [`dfsctl group`](#dfsctl-group) — Group management
+    - [`dfsctl group add-user`](#dfsctl-group-add-user) — Add a user to a group
+    - [`dfsctl group create`](#dfsctl-group-create) — Create a new group
+    - [`dfsctl group delete`](#dfsctl-group-delete) — Delete a group
+    - [`dfsctl group edit`](#dfsctl-group-edit) — Edit a group
+    - [`dfsctl group get`](#dfsctl-group-get) — Get group details
+    - [`dfsctl group list`](#dfsctl-group-list) — List all groups
+    - [`dfsctl group remove-user`](#dfsctl-group-remove-user) — Remove a user from a group
+  - [`dfsctl identity-provider`](#dfsctl-identity-provider) — Identity provider (LDAP/AD, Kerberos) management
+    - [`dfsctl identity-provider configure`](#dfsctl-identity-provider-configure) — Configure Kerberos machine-account settings
+    - [`dfsctl identity-provider get`](#dfsctl-identity-provider-get) — Show an identity provider's configuration (secrets redacted)
+    - [`dfsctl identity-provider list`](#dfsctl-identity-provider-list) — List identity providers and their state
+    - [`dfsctl identity-provider set`](#dfsctl-identity-provider-set) — Create or replace an identity provider's configuration
+    - [`dfsctl identity-provider test`](#dfsctl-identity-provider-test) — Test an identity provider's configuration without persisting it
+  - [`dfsctl idmap`](#dfsctl-idmap) — Manage identity mappings
+    - [`dfsctl idmap add`](#dfsctl-idmap-add) — Add an identity mapping
+    - [`dfsctl idmap list`](#dfsctl-idmap-list) — List identity mappings
+    - [`dfsctl idmap remove`](#dfsctl-idmap-remove) — Remove an identity mapping
+    - [`dfsctl idmap sid`](#dfsctl-idmap-sid) — Manage foreign-SID UID/GID allocations
+      - [`dfsctl idmap sid delete`](#dfsctl-idmap-sid-delete) — Delete a foreign-SID UID/GID allocation
+      - [`dfsctl idmap sid list`](#dfsctl-idmap-sid-list) — List foreign-SID UID/GID allocations
+  - [`dfsctl login`](#dfsctl-login) — Authenticate with DittoFS server
+  - [`dfsctl logout`](#dfsctl-logout) — Clear stored credentials
+  - [`dfsctl netgroup`](#dfsctl-netgroup) — Manage netgroups (IP access control)
+    - [`dfsctl netgroup add-member`](#dfsctl-netgroup-add-member) — Add a member to a netgroup
+    - [`dfsctl netgroup create`](#dfsctl-netgroup-create) — Create a new netgroup
+    - [`dfsctl netgroup delete`](#dfsctl-netgroup-delete) — Delete a netgroup
+    - [`dfsctl netgroup list`](#dfsctl-netgroup-list) — List all netgroups
+    - [`dfsctl netgroup remove-member`](#dfsctl-netgroup-remove-member) — Remove a member from a netgroup
+    - [`dfsctl netgroup show`](#dfsctl-netgroup-show) — Show netgroup details
+  - [`dfsctl quota`](#dfsctl-quota) — Per-identity quota management
+    - [`dfsctl quota list`](#dfsctl-quota-list) — List all quotas on a share
+    - [`dfsctl quota rm`](#dfsctl-quota-rm) — Remove a per-identity quota
+    - [`dfsctl quota set`](#dfsctl-quota-set) — Create or update a per-identity quota
+  - [`dfsctl settings`](#dfsctl-settings) — Server settings management
+    - [`dfsctl settings get`](#dfsctl-settings-get) — Get a setting value
+    - [`dfsctl settings list`](#dfsctl-settings-list) — List all settings
+    - [`dfsctl settings set`](#dfsctl-settings-set) — Set a setting value
+  - [`dfsctl share`](#dfsctl-share) — Share management
+    - [`dfsctl share create`](#dfsctl-share-create) — Create a new share
+    - [`dfsctl share delete`](#dfsctl-share-delete) — Delete a share
+    - [`dfsctl share disable`](#dfsctl-share-disable) — Disable a share (drain clients, block new connections)
+    - [`dfsctl share edit`](#dfsctl-share-edit) — Edit a share
+    - [`dfsctl share enable`](#dfsctl-share-enable) — Enable a share (accept new connections)
+    - [`dfsctl share list`](#dfsctl-share-list) — List all shares
+    - [`dfsctl share list-mounts`](#dfsctl-share-list-mounts) — List mounted DittoFS shares
+    - [`dfsctl share mount`](#dfsctl-share-mount) — Mount a share via NFS or SMB
+    - [`dfsctl share nfs-config`](#dfsctl-share-nfs-config) — Manage per-share NFS adapter configuration
+      - [`dfsctl share nfs-config set`](#dfsctl-share-nfs-config-set) — Update a share's NFS adapter configuration
+      - [`dfsctl share nfs-config show`](#dfsctl-share-nfs-config-show) — Show a share's NFS adapter configuration
+    - [`dfsctl share permission`](#dfsctl-share-permission) — Manage share permissions
+      - [`dfsctl share permission grant`](#dfsctl-share-permission-grant) — Grant permission on a share
+      - [`dfsctl share permission list`](#dfsctl-share-permission-list) — List permissions on a share
+      - [`dfsctl share permission revoke`](#dfsctl-share-permission-revoke) — Revoke permission from a share
+    - [`dfsctl share show`](#dfsctl-share-show) — Show share details
+    - [`dfsctl share snapshot`](#dfsctl-share-snapshot) — Manage share snapshots (create, list, show, delete, restore)
+      - [`dfsctl share snapshot create`](#dfsctl-share-snapshot-create) — Create a snapshot of a share
+      - [`dfsctl share snapshot delete`](#dfsctl-share-snapshot-delete) — Delete a snapshot
+      - [`dfsctl share snapshot list`](#dfsctl-share-snapshot-list) — List snapshots for a share
+      - [`dfsctl share snapshot restore`](#dfsctl-share-snapshot-restore) — Restore a snapshot into a (disabled) share
+      - [`dfsctl share snapshot show`](#dfsctl-share-snapshot-show) — Show details of a snapshot
+    - [`dfsctl share snapshot-policy`](#dfsctl-share-snapshot-policy) — Manage scheduled snapshot policies (schedule + retention)
+      - [`dfsctl share snapshot-policy delete`](#dfsctl-share-snapshot-policy-delete) — Delete a share's snapshot policy
+      - [`dfsctl share snapshot-policy list`](#dfsctl-share-snapshot-policy-list) — List all snapshot policies
+      - [`dfsctl share snapshot-policy run`](#dfsctl-share-snapshot-policy-run) — Trigger a share's snapshot policy now (manual override)
+      - [`dfsctl share snapshot-policy set`](#dfsctl-share-snapshot-policy-set) — Create or update a share's snapshot policy
+      - [`dfsctl share snapshot-policy show`](#dfsctl-share-snapshot-policy-show) — Show a share's snapshot policy
+    - [`dfsctl share unmount`](#dfsctl-share-unmount) — Unmount a mounted share
+    - [`dfsctl share warm`](#dfsctl-share-warm) — Warm a share's local block cache
+  - [`dfsctl status`](#dfsctl-status) — Show server status
+  - [`dfsctl store`](#dfsctl-store) — Store management
+    - [`dfsctl store block`](#dfsctl-store-block) — Block store management
+      - [`dfsctl store block audit-refcounts`](#dfsctl-store-block-audit-refcounts) — Verify every manifest block reference has a backing FileBlock row
+      - [`dfsctl store block evict`](#dfsctl-store-block-evict) — Evict block store data
+      - [`dfsctl store block gc`](#dfsctl-store-block-gc) — Run garbage collection for a block store share
+      - [`dfsctl store block gc-status`](#dfsctl-store-block-gc-status) — Show the last block-store GC run summary for a share
+      - [`dfsctl store block health`](#dfsctl-store-block-health) — Check block store health
+      - [`dfsctl store block local`](#dfsctl-store-block-local) — Local block store management
+        - [`dfsctl store block local add`](#dfsctl-store-block-local-add) — Add a local block store
+        - [`dfsctl store block local edit`](#dfsctl-store-block-local-edit) — Edit a local block store
+        - [`dfsctl store block local list`](#dfsctl-store-block-local-list) — List local block stores
+        - [`dfsctl store block local remove`](#dfsctl-store-block-local-remove) — Remove a local block store
+      - [`dfsctl store block remote`](#dfsctl-store-block-remote) — Remote block store management
+        - [`dfsctl store block remote add`](#dfsctl-store-block-remote-add) — Add a remote block store
+        - [`dfsctl store block remote edit`](#dfsctl-store-block-remote-edit) — Edit a remote block store
+        - [`dfsctl store block remote list`](#dfsctl-store-block-remote-list) — List remote block stores
+        - [`dfsctl store block remote remove`](#dfsctl-store-block-remote-remove) — Remove a remote block store
+      - [`dfsctl store block stats`](#dfsctl-store-block-stats) — Show block store statistics
+    - [`dfsctl store metadata`](#dfsctl-store-metadata) — Manage metadata stores
+      - [`dfsctl store metadata add`](#dfsctl-store-metadata-add) — Add a metadata store
+      - [`dfsctl store metadata edit`](#dfsctl-store-metadata-edit) — Edit a metadata store
+      - [`dfsctl store metadata health`](#dfsctl-store-metadata-health) — Check metadata store health
+      - [`dfsctl store metadata list`](#dfsctl-store-metadata-list) — List metadata stores
+      - [`dfsctl store metadata remove`](#dfsctl-store-metadata-remove) — Remove a metadata store
+  - [`dfsctl switch-user`](#dfsctl-switch-user) — Switch to a different user on the current server
+  - [`dfsctl system`](#dfsctl-system) — System operations
+    - [`dfsctl system drain-uploads`](#dfsctl-system-drain-uploads) — Wait for all pending uploads to complete
+  - [`dfsctl trash`](#dfsctl-trash) — Recycle-bin management
+    - [`dfsctl trash empty`](#dfsctl-trash-empty) — Empty a share's recycle bin
+    - [`dfsctl trash list`](#dfsctl-trash-list) — List recycle-bin entries for a share
+    - [`dfsctl trash restore`](#dfsctl-trash-restore) — Restore a recycled file or directory
+    - [`dfsctl trash status`](#dfsctl-trash-status) — Show recycle-bin status for a share
+  - [`dfsctl user`](#dfsctl-user) — User management
+    - [`dfsctl user change-password`](#dfsctl-user-change-password) — Change your own password
+    - [`dfsctl user create`](#dfsctl-user-create) — Create a new user
+    - [`dfsctl user delete`](#dfsctl-user-delete) — Delete a user
+    - [`dfsctl user edit`](#dfsctl-user-edit) — Edit a user
+    - [`dfsctl user get`](#dfsctl-user-get) — Get user details
+    - [`dfsctl user list`](#dfsctl-user-list) — List all users
+    - [`dfsctl user password`](#dfsctl-user-password) — Reset a user's password
+  - [`dfsctl version`](#dfsctl-version) — Show version information
+
 
 ### `dfsctl`
 

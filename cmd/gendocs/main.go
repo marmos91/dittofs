@@ -1,9 +1,9 @@
-// Command gendocs regenerates docs/CLI.md from the dfs and dfsctl Cobra
+// Command gendocs regenerates docs/guide/cli.md from the dfs and dfsctl Cobra
 // command trees, so the CLI reference never drifts from the actual commands.
 //
 // Usage:
 //
-//	go run ./cmd/gendocs            # writes docs/CLI.md
+//	go run ./cmd/gendocs            # writes docs/guide/cli.md
 //	go run ./cmd/gendocs -out FILE  # writes to FILE
 package main
 
@@ -22,7 +22,7 @@ import (
 )
 
 func main() {
-	out := flag.String("out", "docs/CLI.md", "output file path")
+	out := flag.String("out", "docs/guide/cli.md", "output file path")
 	flag.Parse()
 
 	var buf bytes.Buffer
@@ -54,15 +54,17 @@ func main() {
 	fmt.Printf("wrote %s\n", *out)
 }
 
-// writeTree renders the command hierarchy as an indented code block.
+// writeTree renders the command hierarchy as a nested, clickable index. Each
+// entry links to that command's own section, whose header is the command path
+// in a level-3 heading, so readers can jump straight to any command on the page.
 func writeTree(buf *bytes.Buffer, root *cobra.Command) {
-	buf.WriteString("```\n")
 	var walk func(c *cobra.Command, depth int)
 	walk = func(c *cobra.Command, depth int) {
-		if depth == 0 {
-			fmt.Fprintf(buf, "%s\n", c.Name())
+		indent := strings.Repeat("  ", depth)
+		if c.Short != "" {
+			fmt.Fprintf(buf, "%s- [`%s`](#%s) — %s\n", indent, c.CommandPath(), anchor(c.CommandPath()), c.Short)
 		} else {
-			fmt.Fprintf(buf, "%s%-14s %s\n", strings.Repeat("  ", depth), c.Name(), c.Short)
+			fmt.Fprintf(buf, "%s- [`%s`](#%s)\n", indent, c.CommandPath(), anchor(c.CommandPath()))
 		}
 		kids := visibleSubcommands(c)
 		sort.Slice(kids, func(i, j int) bool { return kids[i].Name() < kids[j].Name() })
@@ -71,7 +73,16 @@ func writeTree(buf *bytes.Buffer, root *cobra.Command) {
 		}
 	}
 	walk(root, 0)
-	buf.WriteString("```\n")
+	buf.WriteString("\n")
+}
+
+// anchor slugifies a command path the way GitHub-flavored Markdown anchors
+// section headers: lowercase, backticks dropped, spaces to hyphens.
+func anchor(path string) string {
+	s := strings.ToLower(path)
+	s = strings.ReplaceAll(s, "`", "")
+	s = strings.ReplaceAll(s, " ", "-")
+	return s
 }
 
 // writeCommand emits a section per command with usage, description, and flags,

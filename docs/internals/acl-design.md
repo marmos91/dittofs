@@ -1,47 +1,8 @@
-# Cross-Protocol ACL Architecture
+# ACL Design Internals
 
-DittoFS implements a unified ACL model that works seamlessly across both NFSv4 and SMB protocols. A single ACL set on a file via one protocol is immediately visible and enforceable from the other.
+> This document is for contributors. For user/operator guidance on setting ACLs and cross-protocol scenarios, see [../guide/access-control.md](../guide/access-control.md).
 
-**Terms used in this document** (see the [Glossary](GLOSSARY.md) for the full list):
-
-- **ACL** (Access Control List) — the ordered list of rules that decides who may do what to a file.
-- **ACE** (Access Control Entry) — a single rule inside an ACL, e.g. "allow user X to read and write".
-- **Security descriptor** — the Windows/SMB structure bundling a file's owner, group, DACL, and SACL together.
-- **DACL** (Discretionary ACL) — the part of a security descriptor that grants or denies access.
-- **SACL** (System ACL) — the auditing part of a security descriptor (which accesses get logged).
-- **SID** (Security Identifier) — the Windows-style unique ID for a user or group, e.g. `S-1-5-21-…`.
-
-Full definitions of these Windows structures live in [MS-DTYP](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/); the NFSv4 ACL model is [RFC 7530 §6](https://www.rfc-editor.org/rfc/rfc7530#section-6).
-
-## Architecture
-
-```mermaid
-graph TB
-    NFS["NFSv4 Client<br/><i>FATTR4_ACL (XDR)</i><br/><i>GETATTR / SETATTR</i>"]
-    SMB["SMB Client<br/><i>Security Descriptor (MS-DTYP)</i><br/><i>QUERY_INFO / SET_INFO</i>"]
-
-    NFS --> NFSWIRE
-    SMB --> SMBWIRE
-
-    subgraph "Protocol Translation"
-        NFSWIRE["<b>NFS ACL Wire Format</b><br/><code>internal/adapter/nfs/v4/attrs/acl.go</code><br/><br/>EncodeACLAttr()<br/>DecodeACLAttr()<br/>EncodeACLSupportAttr()"]
-        SMBWIRE["<b>SMB Security Descriptor</b><br/><code>internal/adapter/smb/handlers/security.go</code><br/><br/>BuildSecurityDescriptor()<br/>ParseSecurityDescriptor()<br/>PrincipalToSID() / SIDToPrincipal()"]
-    end
-
-    NFSWIRE --> ACL
-    SMBWIRE --> ACL
-
-    subgraph "Common Model"
-        ACL["<b>ACL Engine</b><br/><code>pkg/metadata/acl/</code><br/><br/>ACE/ACL types<br/>Evaluate() — process-first-match<br/>ComputeInheritedACL()<br/>ValidateACL() — canonical ordering<br/>DeriveMode() / AdjustACLForMode()"]
-        IDENTITY["<b>Identity Mapping</b><br/><code>pkg/identity/</code><br/><br/>ConventionMapper<br/>TableMapper<br/>StaticMapper<br/>CachedMapper"]
-    end
-
-    ACL --> IDENTITY
-
-    IDENTITY --> STORAGE["<b>Metadata Storage</b><br/>Memory / BadgerDB / PostgreSQL<br/><br/>FileAttr.ACL → JSON"]
-```
-
-## Why NFSv4 ACLs as the Common Model?
+## Why NFSv4 ACLs as the common model
 
 RFC 7530 (NFSv4) deliberately designed its ACL model to be interoperable with Windows ACLs. This was not an accident — it was a primary design goal. The result is that the core semantics are identical:
 
@@ -58,11 +19,11 @@ Because the bit values are identical by design, no translation is needed for per
 1. **Wire format**: NFS uses XDR encoding, SMB uses binary Security Descriptors
 2. **Identity format**: NFS uses `user@domain` strings, SMB uses Security Identifiers (SIDs)
 
-## The Common ACL Model
+## The common ACL model
 
 The protocol-agnostic ACL implementation lives in `pkg/metadata/acl/` with zero dependencies on NFS or SMB wire formats.
 
-### ACE Structure
+### ACE structure
 
 ```go
 type ACE struct {
@@ -77,7 +38,7 @@ type ACL struct {
 }
 ```
 
-### Special Identifiers
+### Special identifiers
 
 Three special identifiers are resolved dynamically at evaluation time against the file's current owner/group:
 
@@ -87,7 +48,7 @@ Three special identifiers are resolved dynamically at evaluation time against th
 | `GROUP@` | File owning group | Direct | Maps to CREATOR GROUP SID (`S-1-3-1`) |
 | `EVERYONE@` | All principals | Direct | Maps to Everyone SID (`S-1-1-0`) |
 
-### Access Mask Bits
+### Access mask bits
 
 All 16 permission bits are protocol-universal:
 
@@ -108,7 +69,7 @@ Bit 0x00080000  WRITE_OWNER
 Bit 0x00100000  SYNCHRONIZE
 ```
 
-### Evaluation Algorithm
+## Evaluation algorithm
 
 Process-first-match per RFC 7530 Section 6.2.1:
 
@@ -122,7 +83,7 @@ Process-first-match per RFC 7530 Section 6.2.1:
 5. Early termination when all requested bits are decided
 6. Access granted only if ALL requested bits are in the allowed set
 
-### Canonical Ordering
+## Canonical ordering
 
 ACLs are validated to follow Windows canonical ordering:
 
@@ -132,7 +93,7 @@ ACLs are validated to follow Windows canonical ordering:
 4. Inherited ALLOW ACEs (`INHERITED_ACE` flag set)
 5. AUDIT/ALARM ACEs may appear anywhere
 
-### Inheritance
+## Inheritance
 
 When a file or directory is created, ACEs are inherited from the parent:
 
@@ -140,19 +101,19 @@ When a file or directory is created, ACEs are inherited from the parent:
 - **Directories**: Include parent ACEs with `DIRECTORY_INHERIT` flag, preserve inheritance flags (can propagate to grandchildren), set `INHERITED_ACE`
 - If `NO_PROPAGATE_INHERIT` is set, inheritance stops at the first child
 
-### Mode Synchronization
+## Mode synchronization
 
 Unix mode bits (rwx) and ACLs are kept in sync:
 
 - **`DeriveMode()`**: Scans OWNER@/GROUP@/EVERYONE@ ALLOW ACEs to compute mode bits for display
 - **`AdjustACLForMode()`**: When `chmod` changes mode bits, only OWNER@/GROUP@/EVERYONE@ ACEs are updated. All explicit user/group ACEs are preserved unchanged.
 
-### nil vs Empty ACL
+### nil vs empty ACL
 
 - **`nil` ACL**: No ACL set — fall back to classic Unix permission checking (mode bits)
 - **`&ACL{ACEs: []}`**: Explicit empty ACL — denies ALL access
 
-## NFS Integration
+## NFS integration
 
 **File**: `internal/adapter/nfs/v4/attrs/acl.go`
 
@@ -164,11 +125,11 @@ NFSv4 ACLs are the native format, so translation is zero-cost:
 
 Identity strings (`user@domain`) are used as-is in the `Who` field.
 
-## SMB Integration
+## SMB integration
 
 **File**: `internal/adapter/smb/handlers/security.go`
 
-SMB uses Windows Security Descriptors, which require translation:
+SMB uses Windows Security Descriptors, which require translation.
 
 ### Building a Security Descriptor (QUERY_INFO)
 
@@ -191,7 +152,7 @@ When an SMB client sets file security:
 4. DACL parsed: each binary ACE decoded, SID converted to principal via `SIDToPrincipal()`
 5. Result stored as internal ACL via `SetFileAttributes()`
 
-### SID Mapping
+### SID mapping
 
 | NFS Principal | Windows SID | Direction |
 |---------------|-------------|-----------|
@@ -201,77 +162,11 @@ When an SMB client sets file security:
 | `{uid}@localdomain` | `S-1-5-21-0-0-0-{uid}` | Bidirectional |
 | `alice@EXAMPLE.COM` | `S-1-5-21-0-0-0-{hash}` | NFS → SMB only (lossy) |
 
-## Identity Mapping
-
-**Package**: `pkg/identity/`
-
-The identity mapping system resolves NFS `user@domain` principals to Unix credentials (UID/GID):
-
-| Mapper | Strategy | Use Case |
-|--------|----------|----------|
-| `ConventionMapper` | If domain matches configured realm, resolve username | Default for Kerberos environments |
-| `TableMapper` | Explicit mapping table (principal → username) | AD environments with custom mappings |
-| `StaticMapper` | Static configuration map | Small deployments with known users |
-| `CachedMapper` | TTL-based cache wrapping any mapper | Performance (default 5-minute TTL) |
-
-During ACL evaluation, the mapper resolves the requesting user's principal to a `ResolvedIdentity` containing UID, GID, and supplementary GIDs. This is used to match against ACE `Who` fields and special identifiers.
-
-## Cross-Protocol Scenarios
-
-### Scenario 1: NFS Client Sets ACL, SMB Client Reads It
-
-```
-1. NFS client: SETATTR with FATTR4_ACL
-   ACEs: [ALLOW OWNER@ 0x1F01FF, DENY EVERYONE@ 0x02]
-
-2. Stored internally as:
-   ACL.ACEs = [{Type:ALLOW, Who:"OWNER@", Mask:0x1F01FF},
-               {Type:DENY, Who:"EVERYONE@", Mask:0x02}]
-
-3. SMB client: QUERY_INFO (Security)
-   → BuildSecurityDescriptor()
-   → ACE 1: ALLOW, SID=S-1-5-21-0-0-0-{ownerUID}, Mask=0x1F01FF
-   → ACE 2: DENY,  SID=S-1-1-0 (Everyone), Mask=0x02
-   → Windows Explorer shows correct permissions
-```
-
-### Scenario 2: SMB Client Sets ACL, NFS Client Reads It
-
-```
-1. SMB client: SET_INFO (Security Descriptor)
-   DACL: [ALLOW S-1-1-0 0x1F01FF]  (Everyone, Full Control)
-
-2. ParseSecurityDescriptor()
-   → SIDToPrincipal(S-1-1-0) → "EVERYONE@"
-   → Stored as: ACL.ACEs = [{Type:ALLOW, Who:"EVERYONE@", Mask:0x1F01FF}]
-
-3. NFS client: GETATTR with FATTR4_ACL
-   → EncodeACLAttr()
-   → ACE: ALLOW "EVERYONE@" 0x1F01FF
-   → nfs4_getfacl shows correct ACL
-```
-
-### Scenario 3: Mixed Protocol Access Control
-
-```
-1. SMB client creates file with ACL:
-   [ALLOW S-1-5-21-0-0-0-1000 READ_DATA, DENY S-1-1-0 WRITE_DATA]
-
-2. NFS client (UID 1000) tries to read → evaluateACLPermissions()
-   → ACE 1: "1000@localdomain" matches UID 1000 → READ allowed
-   → Access granted
-
-3. NFS client (UID 1000) tries to write → evaluateACLPermissions()
-   → ACE 1: matches but no WRITE bit → undecided
-   → ACE 2: "EVERYONE@" matches → WRITE denied
-   → Access denied
-```
-
-## Tradeoff Analysis: ACL Abstraction Approaches
+## Tradeoff analysis: ACL abstraction approaches
 
 A key design question is whether DittoFS should use a **proprietary ACL abstraction** instead of NFSv4 ACLs as the canonical model. We evaluated three approaches.
 
-### Approach A: NFSv4 ACLs as Canonical (Current)
+### Approach A: NFSv4 ACLs as canonical (current)
 
 This is what DittoFS implements today. The internal ACL model uses NFSv4-style ACEs (RFC 7530 Section 6), stored as `acl.ACL` in `pkg/metadata/acl/`.
 
@@ -287,7 +182,7 @@ This is what DittoFS implements today. The internal ACL model uses NFSv4-style A
 - No SACL container separate from DACL
 - Owner/Group live in `FileAttr`, not bundled with the ACL
 
-### Approach B: Proprietary DittoFS ACL Abstraction
+### Approach B: Proprietary DittoFS ACL abstraction
 
 A fully custom ACL model with first-class support for both identity systems:
 
@@ -328,7 +223,7 @@ type SecurityDescriptor struct {
 - The permission bits and evaluation algorithm would be **identical anyway** — only the identity model actually changes
 - NFSv4 ACLs were *designed by the IETF* to be this common model; rebuilding it reinvents the wheel
 
-### Approach C: Enhanced NFSv4 Model (Recommended)
+### Approach C: Enhanced NFSv4 model (recommended)
 
 **Key insight:** The only real gap between Approach A and B is the **identity model**. The ACE types, access mask bits, inheritance flags, evaluation algorithm, and canonical ordering are all protocol-universal. Rebuilding the entire ACL model is overkill when only the `Who` field needs enrichment.
 
@@ -372,19 +267,7 @@ Plus a control plane SID mapping table:
 4. Approach C is backward compatible — no migration of existing ACLs needed.
 5. If we ever need full Approach B, Approach C is a stepping stone (the SID field is already there).
 
----
-
-## Known Limitations
-
-1. **Non-DittoFS SIDs are lossy**: Real Active Directory SIDs (e.g., `S-1-5-32-544` for Administrators) are stored as string representations but mapped to UID 65534 (nobody) when parsed back. Round-trip fidelity is lost for AD domain SIDs.
-
-2. **Hash-based SID generation**: Named principals without numeric UIDs (e.g., `alice@EXAMPLE.COM`) produce a hash-based RID when converted to SID. This is deterministic but could theoretically collide.
-
-3. **No SACL support**: System ACLs for Windows auditing are always NULL in Security Descriptors. AUDIT/ALARM ACE types can be stored but are not exposed to SMB clients as a SACL.
-
-4. **Owner/Group not in ACL**: Windows Security Descriptors bundle owner, group, and DACL together. DittoFS stores owner (UID) and group (GID) separately in file attributes. This is transparent to clients but means owner/group changes don't trigger ACL-related events.
-
-## Future Improvements
+## Future improvements
 
 The [tradeoff analysis](#tradeoff-analysis-acl-abstraction-approaches) recommends Approach C (Enhanced NFSv4 Model). The improvements below are incremental and backward compatible; the first alone closes the primary gap.
 

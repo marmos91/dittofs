@@ -76,7 +76,7 @@ then restart the adapter. Both are **disabled by default**. Note that NFSv3
 **mount and read/write work without any of this** — only NLM locking needs it.
 If you don't need cross-client locking, mount with `-o nolock`, or prefer
 `-o vers=4` (`dfsctl share mount --nfs-version 4.1`) to get locking in-protocol
-with no NLM/portmapper setup. See [NFS.md](NFS.md#nfsv3-file-locking-nlmnsm).
+with no NLM/portmapper setup. See [NFS.md](nfs.md#nfsv3-file-locking-nlmnsm).
 
 ### Does it support Kerberos authentication?
 
@@ -96,7 +96,7 @@ type Adapter interface {
 }
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
+See [ARCHITECTURE.md](../internals/architecture.md) for details.
 
 ### Can I implement my own storage backend?
 
@@ -106,7 +106,7 @@ Absolutely! Implement either or both of these interfaces:
 - **Local Block Store**: `pkg/block/local.LocalStore` interface
 - **Remote Block Store**: `pkg/block/remote.RemoteStore` interface
 
-See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for implementation guidelines.
+See [IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for implementation guidelines.
 
 ### How does performance compare to kernel NFS?
 
@@ -139,7 +139,7 @@ metadata:
 ```
 
 or via env (`DITTOFS_METADATA_BADGER_BLOCK_CACHE_MB=2048`). See
-[CONFIGURATION.md → BadgerDB cache sizing](CONFIGURATION.md#badgerdb-cache-sizing-config-file)
+[CONFIGURATION.md → BadgerDB cache sizing](configuration.md#badgerdb-cache-sizing-config-file)
 for a sizing table keyed to object/metadata count. Aim for a hit-ratio above
 ~0.8 with no `sets-rejected`.
 
@@ -205,7 +205,7 @@ state. Empty files dedup to one canonical constant
 keep the all-zero sentinel until `dfs migrate-to-cas` backfills them.
 
 See
-[ARCHITECTURE.md — File-Level Dedup](ARCHITECTURE.md#file-level-dedup-objectid--merkle-root)
+[ARCHITECTURE.md — File-Level Dedup](../internals/architecture.md#file-level-dedup-objectid--merkle-root)
 for the full design.
 
 ### Why doesn't my file dedup until I close it?
@@ -256,8 +256,8 @@ Triggers:
   mark-sweep is global across every share that targets the same remote, so
   `<share>` selects which remote(s) to scan.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep)
-and [CONFIGURATION.md](CONFIGURATION.md) for the full design and every
+See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
+and [CONFIGURATION.md](configuration.md) for the full design and every
 `gc.*` knob.
 
 ### Why is the cache cold after a write?
@@ -310,7 +310,7 @@ For belt-and-braces protection, the property-based fuzzer at
 built-in backends in CI on every PR, asserting the refcount invariant at
 every quiescent point under concurrent create/delete/copy load.
 
-See [CLI.md](CLI.md) for the full reference.
+See [CLI.md](cli.md) for the full reference.
 
 ### What's a BlockRef?
 
@@ -334,9 +334,9 @@ referencing the same chunk via dedup share one `Hash`, which is what
 makes cross-file dedup work both for storage (CAS) and in the cache (a
 shared hash hits the same entry).
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#engine-api--blockref--cache)
+See [ARCHITECTURE.md](../internals/architecture.md#engine-api--blockref--cache)
 for the full design and
-[IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for storage-encoding
+[IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for storage-encoding
 requirements.
 
 ### How do I migrate an older `.blk` store to the CAS layout?
@@ -361,7 +361,7 @@ resume after a crash without re-uploading already-migrated chunks) and
 has a non-destructive preview (`--dry-run` reports file count, estimated
 dedup ratio, and bytes-per-second without writing anything). On success
 it writes the `.cas-migrated-v1` sentinel per share. See
-[BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md) for the full runbook.
+[BLOCKSTORE_MIGRATION.md](block-store-migration.md) for the full runbook.
 
 ## Usage Questions
 
@@ -386,7 +386,7 @@ sudo mount -t nfs -o nfsvers=3,tcp,port=12049,mountport=12049,resvport localhost
 net use Z: \\localhost\export /user:username password
 ```
 
-See [NFS.md](NFS.md) and [SMB.md](SMB.md) for more details.
+See [NFS.md](nfs.md) and [SMB.md](smb.md) for more details.
 
 ### Can I have multiple shares with different backends?
 
@@ -410,7 +410,7 @@ Yes! This is a core feature. Create stores and shares via CLI:
   --local local-disk --remote cloud-s3
 ```
 
-See [CONFIGURATION.md](CONFIGURATION.md) for more examples.
+See [CONFIGURATION.md](configuration.md) for more examples.
 
 ### Can multiple shares share the same metadata store?
 
@@ -475,9 +475,9 @@ Caveats:
 - Exclude globs (`--trash-exclude GLOB`, repeatable) cause matching
   deletions to bypass the bin entirely.
 
-See [CLI.md](CLI.md#recycle-bin-trash) for the full command reference,
-[CONFIGURATION.md](CONFIGURATION.md#recycle-bin-trash) for the
-per-share settings, and [ARCHITECTURE.md](ARCHITECTURE.md#metadataservice)
+See [CLI.md](cli.md#recycle-bin-trash) for the full command reference,
+[CONFIGURATION.md](configuration.md#recycle-bin-trash) for the
+per-share settings, and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 
 ### How do I enable debug logging?
@@ -503,7 +503,7 @@ Common causes:
 3. **Client UID mismatch**: Check your UID with `id` command
 4. **Export restrictions**: Check `allowed_clients` in configuration
 
-See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for solutions.
+See [TROUBLESHOOTING.md](troubleshooting.md) for solutions.
 
 ## Comparison Questions
 
@@ -609,7 +609,7 @@ to use them via the standard Linux tools (`setfattr` / `getfattr`). Only the `us
 namespace is exposed, and values are stored inline up to 64 KiB (a larger value returns
 `NFS4ERR_XATTR2BIG`). The xattr namespace is shared with SMB extended attributes / named
 streams, so a value set over one protocol is readable over the other. See
-[NFS.md → NFSv4.2 Status](NFS.md#nfsv42-status) for details.
+[NFS.md → NFSv4.2 Status](nfs.md#nfsv42-status) for details.
 
 #### fallocate/posix_fallocate
 
@@ -647,7 +647,7 @@ ordinary sparse file.
 |--------|--------|
 | Handled by dfsctl | Apple security restriction - only mount owner can access |
 
-macOS restricts SMB mount access to the mount owner regardless of Unix permissions. When using `sudo dfsctl share mount`, it automatically uses `sudo -u $SUDO_USER` to mount as your user. See [SMB.md](SMB.md) for workarounds.
+macOS restricts SMB mount access to the mount owner regardless of Unix permissions. When using `sudo dfsctl share mount`, it automatically uses `sudo -u $SUDO_USER` to mount as your user. See [SMB.md](smb.md) for workarounds.
 
 ### Storage Backend Limitations
 
@@ -677,7 +677,7 @@ DittoFS currently runs as a single server instance:
 
 #### Security
 
-DittoFS is experimental and has not been security audited. See [SECURITY.md](SECURITY.md) for detailed recommendations.
+DittoFS is experimental and has not been security audited. See [SECURITY.md](security.md) for detailed recommendations.
 
 ### POSIX Compliance Summary
 
@@ -714,4 +714,4 @@ See `test/posix/KNOWN_FAILURES.md` for the complete list with detailed explanati
 - Check the other documentation in [docs/](.)
 - Search [existing GitHub issues](https://github.com/marmos91/dittofs/issues)
 - Open a [new issue](https://github.com/marmos91/dittofs/issues/new) for bugs or feature requests
-- Review [CLAUDE.md](../CLAUDE.md) for detailed development guidance
+- Review [CLAUDE.md](../../CLAUDE.md) for detailed development guidance

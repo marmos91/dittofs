@@ -13,10 +13,10 @@ and NFS**. This covers the two halves of AD integration:
   available as a fallback for SMB.
 
 > **Status.** AD/LDAP/Kerberos support is functional but the project is **not
-> production ready**. Read [docs/FAQ.md](FAQ.md) for known limitations.
+> production ready**. Read [docs/FAQ.md](faq.md) for known limitations.
 
-See also: [docs/CONFIGURATION.md](CONFIGURATION.md) (every config key + env var),
-[docs/SMB.md](SMB.md), [docs/NFS.md](NFS.md), and [docs/ACLS.md](ACLS.md) (the
+See also: [docs/CONFIGURATION.md](configuration.md) (every config key + env var),
+[docs/SMB.md](smb.md), [docs/NFS.md](nfs.md), and [docs/ACLS.md](access-control.md) (the
 cross-protocol ACL/SID model).
 
 ---
@@ -265,7 +265,7 @@ dfsctl identity-provider list
 > negative serial number, which Go's `crypto/x509` rejects at parse time. The
 > `dfs` binary is built with `x509negativeserial=1` so `ldaps://` against a
 > default Samba AD-DC works out of the box. For production, use a properly
-> issued DC certificate. (See [docs/CONFIGURATION.md §15](CONFIGURATION.md).)
+> issued DC certificate. (See [docs/CONFIGURATION.md §15](configuration.md).)
 
 ### Config-file / environment equivalents (first-boot seed)
 
@@ -297,7 +297,7 @@ Each key has a `DITTOFS_LDAP_*` env equivalent (e.g. `DITTOFS_LDAP_ENABLED`,
 `DITTOFS_LDAP_URL`, `DITTOFS_LDAP_BASE_DN`, `DITTOFS_LDAP_BIND_DN`,
 `DITTOFS_LDAP_BIND_PASSWORD`, `DITTOFS_LDAP_IDMAP`, `DITTOFS_LDAP_NESTED_GROUPS`,
 `DITTOFS_LDAP_TLS_CA_CERT_FILE`, …). The full table is in
-[docs/CONFIGURATION.md §15](CONFIGURATION.md).
+[docs/CONFIGURATION.md §15](configuration.md).
 
 ### Precedence and secret handling
 
@@ -375,7 +375,7 @@ kerberos:
 ```
 
 Env equivalents include `DITTOFS_KERBEROS_REALM`, `DITTOFS_KERBEROS_NETBIOS_DOMAIN`,
-and `DITTOFS_KERBEROS_DNS_DOMAIN` (see [docs/CONFIGURATION.md §12](CONFIGURATION.md)).
+and `DITTOFS_KERBEROS_DNS_DOMAIN` (see [docs/CONFIGURATION.md §12](configuration.md)).
 
 ### One keytab, both protocols
 
@@ -397,7 +397,7 @@ Point `kerberos.keytab_path` at the combined keytab. The SMB handler selects the
 When `netbios_domain` is set, the SMB server advertises the AD domain in the NTLM
 challenge (`MsvAvNbDomainName` / `MsvAvDnsDomainName`) so domain users
 authenticate against the correct domain. Unset → it advertises `WORKGROUP` /
-`local` (standalone behavior). See [docs/SMB.md](SMB.md).
+`local` (standalone behavior). See [docs/SMB.md](smb.md).
 
 ### Precedence (same model as LDAP)
 
@@ -499,7 +499,7 @@ kinit alice@DITTOFS.AD
 klist                       # should show a TGT for DITTOFS.AD
 
 # 2. Mount over SMB with Kerberos
-mount -t cifs //server/share /mnt/smb -o sec=krb5,port=445,vers=2.1,cache=none
+mount -t cifs //server/share /mnt/smb -o sec=krb5,port=12445,vers=2.1,cache=none
 
 # 3. Mount over NFSv4 with Kerberos.
 #    Use vers=4.0 explicitly (the e2e suite mounts with vers=4.0, NOT vers=4):
@@ -562,7 +562,7 @@ files resolving to `uid 10001 / gid 10000`):
 6. **`kinit` + mount:**
    ```bash
    kinit alice@DITTOFS.AD
-   mount -t nfs4 -o vers=4.0,sec=krb5,port=2049 dittofs.dittofs.ad:/<share> /mnt/nfs
+   mount -t nfs4 -o vers=4.0,sec=krb5,port=12049 dittofs.dittofs.ad:/<share> /mnt/nfs
    ls -lan /mnt/nfs          # alice's files show uid 10001 / gid 10000
    ```
 
@@ -650,7 +650,7 @@ icacls \\<dittofs-smb-ip>\<share>\<file>     # CLI equivalent of the Security ta
   foreign-domain SIDs to `DITTOFS\<name>` (#1291, #1341, #1342). This depends on
   the directory-backed idmap resolver (Part B) being configured and reachable;
   when it is not, the server falls back to raw `S-1-5-21-…` SIDs (or
-  `unix_user:*` / `unix_group:*`). See [docs/ACLS.md](ACLS.md).
+  `unix_user:*` / `unix_group:*`). See [docs/ACLS.md](access-control.md).
 - **RC4-only keytabs are rejected by Windows 11 (#1318).** Ensure the keytab
   carries AES256/AES128 keys for the SPNs (Part A).
 - Online `net ads join` + machine-password rotation is out of scope; supply the

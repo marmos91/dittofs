@@ -2,7 +2,7 @@
 
 This guide covers running DittoFS beyond a local source build: package managers, Docker,
 and the Kubernetes operator. For the quick local path (Nix / Homebrew / source build), see
-the [README](../README.md). For configuration details, see [CONFIGURATION.md](CONFIGURATION.md).
+the [README](../../README.md). For configuration details, see [CONFIGURATION.md](configuration.md).
 
 DittoFS ships two binaries — `dfs` (the server daemon) and `dfsctl` (the REST client).
 Most package managers install both.
@@ -56,7 +56,7 @@ scoop install dfsctl    # client CLI
 When installed via the system package managers, the server runs under systemd as the `dfs`
 service. Set the admin password before the first start with the
 `DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable (see the
-[README](../README.md#first-run--admin-password)); otherwise an auto-generated password is
+[README](../../README.md#first-run--admin-password)); otherwise an auto-generated password is
 written to the service log.
 
 ## Docker
@@ -116,7 +116,7 @@ docker compose logs -f dittofs
 | `postgres-backend` | PostgreSQL | local filesystem |
 
 Make sure your `config.yaml` matches the profile you start. For a Prometheus + Grafana
-monitoring stack, see [`monitoring/README.md`](../monitoring/README.md).
+monitoring stack, enable the `monitoring` profile in the repository's `docker-compose.yml`.
 
 ## Kubernetes operator
 
