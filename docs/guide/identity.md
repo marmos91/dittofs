@@ -16,7 +16,7 @@ and NFS**. This covers the two halves of AD integration:
 > production ready**. Read [docs/FAQ.md](FAQ.md) for known limitations.
 
 See also: [docs/CONFIGURATION.md](CONFIGURATION.md) (every config key + env var),
-[docs/SMB.md](SMB.md), [docs/NFS.md](NFS.md), and [docs/ACLS.md](ACLS.md) (the
+[docs/SMB.md](SMB.md), [docs/NFS.md](NFS.md), and [docs/ACLS.md](access-control.md) (the
 cross-protocol ACL/SID model).
 
 ---
@@ -499,7 +499,7 @@ kinit alice@DITTOFS.AD
 klist                       # should show a TGT for DITTOFS.AD
 
 # 2. Mount over SMB with Kerberos
-mount -t cifs //server/share /mnt/smb -o sec=krb5,port=445,vers=2.1,cache=none
+mount -t cifs //server/share /mnt/smb -o sec=krb5,port=12445,vers=2.1,cache=none
 
 # 3. Mount over NFSv4 with Kerberos.
 #    Use vers=4.0 explicitly (the e2e suite mounts with vers=4.0, NOT vers=4):
@@ -562,7 +562,7 @@ files resolving to `uid 10001 / gid 10000`):
 6. **`kinit` + mount:**
    ```bash
    kinit alice@DITTOFS.AD
-   mount -t nfs4 -o vers=4.0,sec=krb5,port=2049 dittofs.dittofs.ad:/<share> /mnt/nfs
+   mount -t nfs4 -o vers=4.0,sec=krb5,port=12049 dittofs.dittofs.ad:/<share> /mnt/nfs
    ls -lan /mnt/nfs          # alice's files show uid 10001 / gid 10000
    ```
 
@@ -650,7 +650,7 @@ icacls \\<dittofs-smb-ip>\<share>\<file>     # CLI equivalent of the Security ta
   foreign-domain SIDs to `DITTOFS\<name>` (#1291, #1341, #1342). This depends on
   the directory-backed idmap resolver (Part B) being configured and reachable;
   when it is not, the server falls back to raw `S-1-5-21-…` SIDs (or
-  `unix_user:*` / `unix_group:*`). See [docs/ACLS.md](ACLS.md).
+  `unix_user:*` / `unix_group:*`). See [docs/ACLS.md](access-control.md).
 - **RC4-only keytabs are rejected by Windows 11 (#1318).** Ensure the keytab
   carries AES256/AES128 keys for the SPNs (Part A).
 - Online `net ads join` + machine-password rotation is out of scope; supply the

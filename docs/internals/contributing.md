@@ -180,7 +180,7 @@ go test -v ./test/e2e -run TestE2E/filesystem/
 
 NFSv4/v4.1 tests are in `internal/adapter/nfs/v4/handlers/` and cover sessions, delegations, ACLs, and Kerberos.
 
-See [test/e2e/README.md](../test/e2e/README.md) for detailed documentation.
+See `test/e2e/` for detailed documentation.
 
 ### NFS Client Testing
 
@@ -282,7 +282,7 @@ DittoFS uses a Service-oriented architecture where **stores are simple CRUD inte
 3. Implement root directory creation (`CreateRootDirectory`)
 4. Ensure thread safety (concurrent access across shares)
 5. Consider persistence strategy for handles
-6. Implement `EnumerateFileBlocks(ctx, authCtx, fn)` using a backend-native cursor (no full-set load, honors `ctx.Done()`); pass the v0.15.0 conformance scenarios in `pkg/metadata/storetest/`. See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md#metadatastoreenumeratefileblocks-v0150-phase-11).
+6. Implement `EnumerateFileBlocks(ctx, authCtx, fn)` using a backend-native cursor (no full-set load, honors `ctx.Done()`); pass the v0.15.0 conformance scenarios in `pkg/metadata/storetest/`. See [IMPLEMENTING_STORES.md](implementing-stores.md#metadatastoreenumeratefileblocks-v0150-phase-11).
 7. **Note**: Permission checking is handled by `MetadataService`, not stores
 
 **Block Store (Local):**
@@ -324,7 +324,7 @@ func (s *MyLocalStore) Get(ctx context.Context, hash block.ContentHash) ([]byte,
 }
 ```
 
-See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guide.
+See [IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guide.
 
 ### Adding a new metadata.ErrorCode
 
@@ -622,7 +622,7 @@ Key guidelines:
 
 - Open an issue on GitHub for bugs or feature requests
 - Check existing issues for similar problems
-- Review the [Architecture](ARCHITECTURE.md) and [FAQ](FAQ.md) documentation
+- Review the [Architecture](ARCHITECTURE.md) and [FAQ](../guide/faq.md) documentation
 
 ## License
 

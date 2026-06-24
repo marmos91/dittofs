@@ -14,15 +14,15 @@ Two binaries: `dfs` (server, `cmd/dfs/`) and `dfsctl` (REST client, `cmd/dfsctl/
 ## Where to look
 
 - `README.md` — install, quick start, feature matrix
-- `docs/ARCHITECTURE.md` — full design, diagrams, directory map
-- `docs/CONFIGURATION.md` — config file + env vars (`DITTOFS_*`)
-- `docs/CLI.md` — full `dfs` / `dfsctl` reference (**generated** — see below)
-- `docs/NFS.md`, `docs/SMB.md` — protocol details
-- `docs/SMB_ACL_FIDELITY.md` — SMB Windows-ACL/SD interop matrix (Works/Partial/Unsupported)
-- `docs/IMPLEMENTING_STORES.md` — metadata/block store contracts
-- `docs/DEBUGGING.md` — SMB/NFS pcap-diff interop playbook
-- `docs/FAQ.md` — known limitations (ETXTBSY, POSIX gaps, single-node)
-- `docs/CONTRIBUTING.md` — dev workflow
+- `docs/internals/architecture.md` — full design, diagrams, directory map
+- `docs/guide/configuration.md` — config file + env vars (`DITTOFS_*`)
+- `docs/guide/cli.md` — full `dfs` / `dfsctl` reference (**generated** — see below)
+- `docs/guide/nfs.md`, `docs/guide/smb.md` — user mounting guides (protocol internals in `docs/internals/`)
+- `docs/guide/smb-acl-fidelity.md` — SMB Windows-ACL/SD interop matrix (Works/Partial/Unsupported)
+- `docs/internals/implementing-stores.md` — metadata/block store contracts
+- `docs/internals/debugging.md` — SMB/NFS pcap-diff interop playbook
+- `docs/guide/faq.md` — known limitations (ETXTBSY, POSIX gaps, single-node)
+- `docs/internals/contributing.md` — dev workflow
 
 ## Frequent commands
 
@@ -44,7 +44,7 @@ sudo ./run-e2e.sh --test TestCreateFile_1MB
 go fmt ./...
 go vet ./...
 
-# Regenerate docs/CLI.md after changing any command/flag
+# Regenerate docs/guide/cli.md after changing any command/flag
 go run ./cmd/gendocs
 
 # Run server with debug logging
@@ -54,7 +54,7 @@ DITTOFS_LOGGING_LEVEL=DEBUG ./dfs start
 Default NFS port is `12049` (not 2049). Server config lives at `~/.config/dittofs/config.yaml`
 (`dfsctl` credentials at `~/.config/dfsctl/config.json`).
 
-`docs/CLI.md` is generated from the Cobra command trees by `cmd/gendocs`. Never hand-edit it —
+`docs/guide/cli.md` is generated from the Cobra command trees by `cmd/gendocs`. Never hand-edit it —
 change the command definitions and rerun `go run ./cmd/gendocs`.
 
 ## Architecture invariants

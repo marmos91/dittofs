@@ -5,7 +5,7 @@ path actually round-trips, derived from the code — not from the spec. It is th
 "documented interop matrix" required by [#1228](https://github.com/marmos91/dittofs/issues/1228).
 
 For the cross-protocol ACL *model* (why NFSv4 ACEs are the canonical form, the
-evaluation algorithm, mode sync), see [ACLS.md](ACLS.md). This document is
+evaluation algorithm, mode sync), see [Access Control](access-control.md). This document is
 narrower: it states, aspect by aspect, whether the SMB SD wire path is
 **Works**, **Partial**, or **Unsupported**, with the source of truth for each.
 
@@ -100,7 +100,7 @@ are distinct and only meaningful as inheritable placeholders (see Inheritance).
 | AUDIT ACE storage | Partial | `ACE4_SYSTEM_AUDIT_ACE_TYPE` can be stored in the model and translated (`systemAuditACEType`), but is never placed in a DACL on read and never parsed from a SACL on write. ALARM ACEs have no Windows mapping (`nfsToWindowsACEType` returns false → dropped). |
 
 Tracked alongside the broader cross-protocol SACL gap in
-[ACLS.md "Known Limitations"](ACLS.md#known-limitations).
+[Access Control › Known Limitations](access-control.md#known-limitations).
 
 ## GENERIC_* mask expansion
 
@@ -183,13 +183,13 @@ project memory):
    display-only; server-side access checks fall back to Unix mode bits, which
    stay authoritative.
 6. **Owner/Group live in `FileAttr`, not in the ACL.** Changing owner/group
-   does not emit ACL-change events (see [ACLS.md](ACLS.md#known-limitations)).
+   does not emit ACL-change events (see [Access Control](access-control.md#known-limitations)).
 
 ## References
 
 - [#1228](https://github.com/marmos91/dittofs/issues/1228) — Windows-ACL / stable-handle fidelity (this matrix).
 - [#1231](https://github.com/marmos91/dittofs/issues/1231) — foreign AD/LDAP SID mapping.
 - [#236](https://github.com/marmos91/dittofs/issues/236) — SID-to-name (LSA) resolution.
-- [ACLS.md](ACLS.md) — cross-protocol ACL model and tradeoff analysis.
+- [Access Control](access-control.md) — cross-protocol ACL model and tradeoff analysis.
 - [MS-DTYP §2.4.4–2.4.6](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/) — SID / ACE / ACL / Security Descriptor formats.
 - [RFC 7530 §6](https://www.rfc-editor.org/rfc/rfc7530#section-6) — NFSv4 ACL model.

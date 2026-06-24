@@ -10,7 +10,7 @@ DittoFS uses a flexible configuration system with support for YAML/TOML files an
 - [Configuration Files](#configuration-files)
 - [Configuration Structure](#configuration-structure)
   - [Logging](#1-logging)
-  - [Telemetry](#2-telemetry-opentelemetry)
+  - [Observability](#2-observability)
   - [Server Settings](#3-server-settings)
   - [Database (Control Plane)](#4-database-control-plane)
   - [API Server](#5-api-server)
@@ -92,47 +92,11 @@ logging:
   {"time":"2024-01-15T10:30:45.123Z","level":"INFO","msg":"Starting DittoFS server","component":"server","version":"1.0.0"}
   ```
 
-### 2. Telemetry (OpenTelemetry)
+### 2. Observability
 
-Controls distributed tracing for observability:
-
-```yaml
-telemetry:
-  enabled: false          # Enable/disable tracing (default: false)
-  endpoint: "localhost:4317"  # OTLP collector endpoint (gRPC)
-  insecure: false         # Use insecure connection (no TLS)
-  sample_rate: 1.0        # Trace sampling rate (0.0 to 1.0)
-```
-
-When enabled, DittoFS exports traces to any OTLP-compatible collector (Jaeger, Tempo, Honeycomb, etc.).
-
-**Configuration Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `enabled` | `false` | Enable/disable distributed tracing |
-| `endpoint` | `localhost:4317` | OTLP gRPC collector endpoint |
-| `insecure` | `false` | Skip TLS verification (for local development) |
-| `sample_rate` | `1.0` | Sampling rate: 1.0 = all traces, 0.5 = 50%, 0.0 = none |
-
-**Example with Jaeger:**
-
-```yaml
-telemetry:
-  enabled: true
-  endpoint: "jaeger:4317"
-  insecure: true  # For local Docker setup
-  sample_rate: 1.0
-```
-
-**Trace Propagation:**
-
-Traces include:
-- NFS operation spans (READ, WRITE, LOOKUP, etc.)
-- Storage backend operations (S3, BadgerDB, filesystem)
-- Cache operations (hits, misses, flushes)
-- Request context (client IP, file handles, paths)
-
+DittoFS has **no OpenTelemetry / distributed-tracing subsystem**. Observability is
+provided by an opt-in Prometheus `/metrics` endpoint on a dedicated listener. See
+[Metrics (Prometheus)](#metrics-prometheus) below for the full configuration.
 ### 3. Server Settings
 
 Application-wide server configuration:
@@ -300,7 +264,7 @@ controlplane:
 
 When `cert_file`/`key_file` are unset, the server serves plain HTTP exactly as before (back-compatible). When set, it serves HTTPS; the files are read and parsed at startup, so a missing or malformed certificate fails fast with a clear error.
 
-**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](SECURITY.md) and [docs/DEPLOYMENT.md](DEPLOYMENT.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](DEPLOYMENT.md).
+**Recommended deployment model:** terminate TLS for the edge at an ingress / service mesh / reverse proxy (NGINX), and use DittoFS native TLS (or mTLS via `client_ca`) as the secure floor for non-Kubernetes hosts and direct `dfsctl` access. See [docs/SECURITY.md](SECURITY.md) and [docs/DEPLOYMENT.md](install.md). For Kubernetes, the operator renders `host: 0.0.0.0` automatically so the API `Service` can reach the pod; see [docs/DEPLOYMENT.md](install.md).
 
 Related glossary terms: [TLS / mTLS](GLOSSARY.md#authentication).
 
@@ -506,7 +470,7 @@ directly):
 `DITTOFS_GC_GRACE_PERIOD`,
 `DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep)
+See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
 for the full mark-sweep design and [CLI.md](CLI.md) for the on-demand
 `dfsctl store block gc` command.
 
@@ -606,7 +570,7 @@ file's content is not recycled (only unlink and replace-overwrite are).
 ```
 
 See [CLI.md](CLI.md#recycle-bin-trash) for the `dfsctl trash`
-management commands and [ARCHITECTURE.md](ARCHITECTURE.md#metadataservice)
+management commands and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 
 #### Remote block-level compression (opt-in)
@@ -1231,7 +1195,7 @@ server:
 adapters:
   nfs:
     enabled: true
-    port: 2049
+    port: 12049
     max_connections: 0           # 0 falls back to 1024 (default cap)
 
     # Grouped timeout configuration
@@ -2163,12 +2127,6 @@ admin:
 export DITTOFS_LOGGING_LEVEL=DEBUG
 export DITTOFS_LOGGING_FORMAT=json
 
-# Telemetry (OpenTelemetry)
-export DITTOFS_TELEMETRY_ENABLED=true
-export DITTOFS_TELEMETRY_ENDPOINT=jaeger:4317
-export DITTOFS_TELEMETRY_INSECURE=true
-export DITTOFS_TELEMETRY_SAMPLE_RATE=0.5
-
 # Server
 export DITTOFS_SERVER_SHUTDOWN_TIMEOUT=60s
 
@@ -2243,9 +2201,9 @@ Settings are applied in the following order (highest to lowest priority):
 Example:
 
 ```bash
-# config.yaml has port: 2049
-# This overrides it to 12049
-DITTOFS_ADAPTERS_NFS_PORT=12049 ./dfs start
+# config.yaml has port: 12049 (the DittoFS default)
+# Override it to the standard NFS port 2049 (binding <1024 requires root)
+DITTOFS_ADAPTERS_NFS_PORT=2049 ./dfs start
 ```
 
 ## Configuration Examples
@@ -2288,19 +2246,13 @@ logging:
 
 ### Production Setup
 
-Persistent storage with access control, structured logging, and telemetry:
+Persistent storage with access control, structured logging, and metrics:
 
 ```yaml
 logging:
   level: WARN
   format: json
   output: /var/log/dittofs/server.log
-
-telemetry:
-  enabled: true
-  endpoint: "tempo:4317"     # Or your OTLP collector
-  insecure: false            # Use TLS in production
-  sample_rate: 0.1           # Sample 10% of traces
 
 server:
   shutdown_timeout: 30s
@@ -2331,7 +2283,7 @@ Then create stores, shares, and enable adapters via CLI:
 ./dfsctl share permission grant /export --user alice --level read-write
 
 # Enable NFS adapter
-./dfsctl adapter enable nfs --port 2049
+./dfsctl adapter enable nfs --port 12049
 ```
 
 ### Multi-Share with Different Backends

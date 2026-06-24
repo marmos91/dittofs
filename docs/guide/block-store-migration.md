@@ -12,7 +12,7 @@ layout — its boot guard exits with a clear directive to run
 offline migration.
 
 For the underlying design (BlockRef, ObjectID dedup, the CAS-only gate),
-see [ARCHITECTURE.md](ARCHITECTURE.md#migration--block-layout-routing).
+see [ARCHITECTURE.md](../internals/architecture.md#migration--block-layout-routing).
 
 ## Why migrate
 

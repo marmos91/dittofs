@@ -2,7 +2,7 @@
 
 This document provides a deep dive into DittoFS's architecture, design patterns, and internal implementation.
 
-**Storage terms used throughout** (see the [Glossary](GLOSSARY.md) for protocol and security terms):
+**Storage terms used throughout** (see the [Glossary](../guide/glossary.md) for protocol and security terms):
 
 - **CAS** (Content-Addressed Storage) — blocks are named by the hash of their contents rather than by location, so identical data is stored once and deduplicated automatically.
 - **FastCDC** — a content-defined chunking algorithm that splits file data at content-based boundaries, so small edits only re-chunk the affected region ([FastCDC paper](https://www.usenix.org/conference/atc16/technical-sessions/presentation/xia)).
@@ -437,7 +437,7 @@ survives the sweep. The provider that exposes this hold to the GC
 layer is `SnapshotHoldProvider`. No hold flag lives in any database
 table — the disk is the source of truth.
 
-See [SNAPSHOTS.md](SNAPSHOTS.md#10-gc-hold-semantics) for the
+See [SNAPSHOTS.md](../guide/snapshots.md#10-gc-hold-semantics) for the
 operator-facing description of the hold semantics, including the
 delete-vs-GC race window.
 
@@ -449,7 +449,7 @@ See `docs/CONFIGURATION.md` for every `gc.*` and `syncer.*` knob, and
 Share snapshots are point-in-time, reference-based protection for a
 share's content. The subsystem produces three artifacts per snapshot
 on local disk and one row in the control-plane database; it does not
-copy any block data. See [SNAPSHOTS.md](SNAPSHOTS.md) for the
+copy any block data. See [SNAPSHOTS.md](../guide/snapshots.md) for the
 operator-facing runbook; this section describes the architectural
 layout and the orchestration flows.
 
@@ -572,7 +572,7 @@ mirrors the timeout on the client's `http.Client` for the restore
 call only (`WithRestoreTimeout`).
 
 For the full operator runbook see
-[SNAPSHOTS.md](SNAPSHOTS.md).
+[SNAPSHOTS.md](../guide/snapshots.md).
 
 ## Block Reads (content-addressable)
 
@@ -777,7 +777,7 @@ No custom code required - configure via CLI:
 
 ### Implementing Custom Store Backends
 
-See [docs/IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for detailed implementation guides for:
+See [docs/IMPLEMENTING_STORES.md](implementing-stores.md) for detailed implementation guides for:
 - **Local Store**: Implement `pkg/block/local.LocalStore` interface
 - **Remote Store**: Implement `pkg/block/remote.RemoteStore` interface
 - **Metadata Store**: Implement `pkg/metadata/Store` interface
@@ -1427,7 +1427,7 @@ stopped server's storage root:
   atomic rename; the server's boot guard refuses to start until that
   sentinel exists.
 
-See [BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md) for the full
+See [BLOCKSTORE_MIGRATION.md](../guide/block-store-migration.md) for the full
 operator runbook.
 
 ## Performance Characteristics

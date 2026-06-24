@@ -16,20 +16,20 @@ Learn more at [dittofs.io](https://dittofs.io).
 
 Manage your entire DittoFS deployment from the browser.
 
-![DittoFS Pro dashboard](assets/pro/dashboard.png)
+![DittoFS Pro dashboard](../assets/pro/dashboard.png)
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/pro/shares.png" alt="Shares" /><br /><sub><b>Shares</b> — connect a block store and a metadata store into a virtual filesystem.</sub></td>
-    <td width="50%"><img src="assets/pro/block-stores.png" alt="Block stores" /><br /><sub><b>Block stores</b> — local (filesystem/memory) and remote (S3) backends.</sub></td>
+    <td width="50%"><img src="../assets/pro/shares.png" alt="Shares" /><br /><sub><b>Shares</b> — connect a block store and a metadata store into a virtual filesystem.</sub></td>
+    <td width="50%"><img src="../assets/pro/block-stores.png" alt="Block stores" /><br /><sub><b>Block stores</b> — local (filesystem/memory) and remote (S3) backends.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/pro/metadata-stores.png" alt="Metadata stores" /><br /><sub><b>Metadata stores</b> — Badger, PostgreSQL, or Memory.</sub></td>
-    <td width="50%"><img src="assets/pro/share-mount.png" alt="Mount instructions" /><br /><sub><b>Mount instructions</b> — per-share CLI and native NFS/SMB commands.</sub></td>
+    <td width="50%"><img src="../assets/pro/metadata-stores.png" alt="Metadata stores" /><br /><sub><b>Metadata stores</b> — Badger, SQLite, PostgreSQL, or Memory.</sub></td>
+    <td width="50%"><img src="../assets/pro/share-mount.png" alt="Mount instructions" /><br /><sub><b>Mount instructions</b> — per-share CLI and native NFS/SMB commands.</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/pro/nfs-adapter.png" alt="NFS adapter settings" /><br /><sub><b>Adapters</b> — tune NFS/SMB protocol and performance knobs.</sub></td>
-    <td width="50%"><img src="assets/pro/users.png" alt="Users" /><br /><sub><b>Access control</b> — users, roles, and groups.</sub></td>
+    <td width="50%"><img src="../assets/pro/nfs-adapter.png" alt="NFS adapter settings" /><br /><sub><b>Adapters</b> — tune NFS/SMB protocol and performance knobs.</sub></td>
+    <td width="50%"><img src="../assets/pro/users.png" alt="Users" /><br /><sub><b>Access control</b> — users, roles, and groups.</sub></td>
   </tr>
 </table>
 

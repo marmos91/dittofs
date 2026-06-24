@@ -96,7 +96,7 @@ type Adapter interface {
 }
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
+See [ARCHITECTURE.md](../internals/architecture.md) for details.
 
 ### Can I implement my own storage backend?
 
@@ -106,7 +106,7 @@ Absolutely! Implement either or both of these interfaces:
 - **Local Block Store**: `pkg/block/local.LocalStore` interface
 - **Remote Block Store**: `pkg/block/remote.RemoteStore` interface
 
-See [IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for implementation guidelines.
+See [IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for implementation guidelines.
 
 ### How does performance compare to kernel NFS?
 
@@ -205,7 +205,7 @@ state. Empty files dedup to one canonical constant
 keep the all-zero sentinel until `dfs migrate-to-cas` backfills them.
 
 See
-[ARCHITECTURE.md — File-Level Dedup](ARCHITECTURE.md#file-level-dedup-objectid--merkle-root)
+[ARCHITECTURE.md — File-Level Dedup](../internals/architecture.md#file-level-dedup-objectid--merkle-root)
 for the full design.
 
 ### Why doesn't my file dedup until I close it?
@@ -256,7 +256,7 @@ Triggers:
   mark-sweep is global across every share that targets the same remote, so
   `<share>` selects which remote(s) to scan.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#garbage-collection-mark-sweep)
+See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
 and [CONFIGURATION.md](CONFIGURATION.md) for the full design and every
 `gc.*` knob.
 
@@ -334,9 +334,9 @@ referencing the same chunk via dedup share one `Hash`, which is what
 makes cross-file dedup work both for storage (CAS) and in the cache (a
 shared hash hits the same entry).
 
-See [ARCHITECTURE.md](ARCHITECTURE.md#engine-api--blockref--cache)
+See [ARCHITECTURE.md](../internals/architecture.md#engine-api--blockref--cache)
 for the full design and
-[IMPLEMENTING_STORES.md](IMPLEMENTING_STORES.md) for storage-encoding
+[IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for storage-encoding
 requirements.
 
 ### How do I migrate an older `.blk` store to the CAS layout?
@@ -361,7 +361,7 @@ resume after a crash without re-uploading already-migrated chunks) and
 has a non-destructive preview (`--dry-run` reports file count, estimated
 dedup ratio, and bytes-per-second without writing anything). On success
 it writes the `.cas-migrated-v1` sentinel per share. See
-[BLOCKSTORE_MIGRATION.md](BLOCKSTORE_MIGRATION.md) for the full runbook.
+[BLOCKSTORE_MIGRATION.md](block-store-migration.md) for the full runbook.
 
 ## Usage Questions
 
@@ -477,7 +477,7 @@ Caveats:
 
 See [CLI.md](CLI.md#recycle-bin-trash) for the full command reference,
 [CONFIGURATION.md](CONFIGURATION.md#recycle-bin-trash) for the
-per-share settings, and [ARCHITECTURE.md](ARCHITECTURE.md#metadataservice)
+per-share settings, and [ARCHITECTURE.md](../internals/architecture.md#metadataservice)
 for the recycle-trap design.
 
 ### How do I enable debug logging?
@@ -714,4 +714,4 @@ See `test/posix/KNOWN_FAILURES.md` for the complete list with detailed explanati
 - Check the other documentation in [docs/](.)
 - Search [existing GitHub issues](https://github.com/marmos91/dittofs/issues)
 - Open a [new issue](https://github.com/marmos91/dittofs/issues/new) for bugs or feature requests
-- Review [CLAUDE.md](../CLAUDE.md) for detailed development guidance
+- Review [CLAUDE.md](../../CLAUDE.md) for detailed development guidance
