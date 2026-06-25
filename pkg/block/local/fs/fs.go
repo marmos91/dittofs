@@ -352,6 +352,13 @@ type FSStore struct {
 	rollupStarted atomic.Bool
 	rollupWg      sync.WaitGroup
 
+	// scanning elects a single ticker-driven backlog scan at a time. Every
+	// rollup worker tickers at the same stabilization interval; without this
+	// guard all of them would fan out over the same dirty set and collide on
+	// per-file rmu (correct, but pure waste). The elected scanner fans the
+	// backlog out across the worker budget itself (#1411 scanAllFiles).
+	scanning atomic.Bool
+
 	// stopRollup signals the rollup worker pool to stop accepting NEW
 	// rollups and exit, WITHOUT marking the whole store closed. Closed
 	// exactly once by GracefulStopRollup (guarded by stopRollupOnce) so
