@@ -35,19 +35,37 @@ func newDynamicSemaphore(limit int) *dynamicSemaphore {
 // Acquire blocks until a slot is available or ctx is done. On ctx cancellation
 // it returns ctx.Err() without consuming a slot.
 func (s *dynamicSemaphore) Acquire(ctx context.Context) error {
-	// Fast path / context check before waiting.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	// Wake this waiter if the context is cancelled while it is parked on the
-	// cond. The watcher goroutine lives only for the duration of the wait.
+	s.mu.Lock()
+	// Fast path: a slot is free now — take it without parking or spawning a
+	// cancellation watcher. This is the common case in the mirror loop (one
+	// Acquire per chunk), so it must not allocate a goroutine per call.
+	if s.inflight < s.limit {
+		s.inflight++
+		if s.inflight > s.peak {
+			s.peak = s.inflight
+		}
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	// Slow path: park on the cond. A watcher wakes us if ctx is cancelled while
+	// parked. It broadcasts UNDER s.mu so the wakeup cannot fire in the gap
+	// between our ctx re-check and cond.Wait — Wait atomically releases s.mu, so
+	// holding the lock around Broadcast serializes it against that window and
+	// prevents a lost wakeup. The watcher lives only for this wait.
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
 		select {
 		case <-ctx.Done():
+			s.mu.Lock()
 			s.cond.Broadcast()
+			s.mu.Unlock()
 		case <-done:
 		}
 	}()
@@ -82,14 +100,18 @@ func (s *dynamicSemaphore) TakePeak() int {
 	return p
 }
 
-// Release returns a slot and wakes one waiter.
+// Release returns a slot and wakes waiters. Broadcast (not Signal) under the
+// lock: a woken waiter may bail on a cancelled context without consuming the
+// freed slot, so waking exactly one risks stranding it — Broadcast lets the
+// next live waiter take the slot. Signalling under s.mu serializes it against a
+// waiter's ctx-check/Wait window (no lost wakeup).
 func (s *dynamicSemaphore) Release() {
 	s.mu.Lock()
 	if s.inflight > 0 {
 		s.inflight--
 	}
-	s.mu.Unlock()
 	s.cond.Broadcast()
+	s.mu.Unlock()
 }
 
 // SetLimit changes the maximum concurrency. Growing wakes blocked waiters;
@@ -101,8 +123,8 @@ func (s *dynamicSemaphore) SetLimit(n int) {
 	}
 	s.mu.Lock()
 	s.limit = n
-	s.mu.Unlock()
 	s.cond.Broadcast()
+	s.mu.Unlock()
 }
 
 // Limit returns the current maximum concurrency.

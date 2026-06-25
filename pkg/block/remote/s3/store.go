@@ -43,11 +43,13 @@ const casPrefix = "cas/"
 // their drain deadlines.
 const s3HTTPRequestTimeout = 2 * time.Minute
 
-// maxS3ConnsPerHost sizes the HTTP connection pool. It must stay >=
-// engine.AdaptiveUploadCeiling (64) plus room for concurrent downloads so the
-// pool never caps the syncer's adaptive upload window (#1407). Defined locally
+// maxS3ConnsPerHost sizes the HTTP connection pool so it never caps the
+// syncer's upload concurrency (#1407): it matches the maximum a user can pin
+// via --parallel-uploads (validateParallelUploads allows up to 256) and so also
+// covers the adaptive ceiling (engine.AdaptiveUploadCeiling, 64) plus concurrent
+// downloads. 256 conns are created on demand, not preallocated. Defined locally
 // rather than imported from engine to avoid a dependency cycle.
-const maxS3ConnsPerHost = 128
+const maxS3ConnsPerHost = 256
 
 // Compile-time interface satisfaction check.
 var (
