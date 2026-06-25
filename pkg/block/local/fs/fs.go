@@ -359,6 +359,14 @@ type FSStore struct {
 	// backlog out across the worker budget itself (#1411 scanAllFiles).
 	scanning atomic.Bool
 
+	// rollupSlots is the shared rollup concurrency budget. BOTH the rollupCh
+	// worker pool (nudge path) and the scanAllFiles backlog fan-out acquire a
+	// slot before calling rollupFile, so rollup_workers caps the TOTAL number
+	// of concurrent rollups rather than each path independently (which would
+	// let write+tick overlap reach ~2x the configured budget). Buffered to
+	// rollup_workers; send = acquire, receive = release.
+	rollupSlots chan struct{}
+
 	// stopRollup signals the rollup worker pool to stop accepting NEW
 	// rollups and exit, WITHOUT marking the whole store closed. Closed
 	// exactly once by GracefulStopRollup (guarded by stopRollupOnce) so
@@ -540,6 +548,15 @@ func newFSStore(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBl
 	bc.seedLRUFromDisk()
 
 	applyFSStoreOptions(bc, opts)
+
+	// Shared rollup concurrency budget, sized to the final worker count so
+	// the nudge path and the scanAllFiles fan-out share it (#1411). Floor of
+	// 1 guards the degenerate rollupWorkers<=0 path.
+	slots := bc.rollupWorkers
+	if slots <= 0 {
+		slots = 2
+	}
+	bc.rollupSlots = make(chan struct{}, slots)
 	return bc, nil
 }
 

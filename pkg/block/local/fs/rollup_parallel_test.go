@@ -75,7 +75,12 @@ func TestScanAllFiles_DispatchesConcurrently(t *testing.T) {
 		select {
 		case <-arrived:
 		case <-timeout:
+			// Release the barrier and wait for scanAllFiles (and the rollups
+			// it dispatched) to fully return BEFORE failing — otherwise the
+			// t.Cleanup below would nil the package-global hook while those
+			// goroutines still read it (a race under -race).
 			once.Do(func() { close(release) })
+			<-done
 			t.Fatalf("only %d/%d rollups ran concurrently; scanAllFiles dispatch is serial", i, n)
 		}
 	}

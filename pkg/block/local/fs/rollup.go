@@ -88,7 +88,17 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 	for {
 		select {
 		case pid := <-bc.rollupCh:
-			if err := bc.rollupFile(ctx, pid, false); err != nil {
+			// Gate on the shared rollup budget so the nudge path and the
+			// scanAllFiles fan-out together never exceed rollup_workers
+			// concurrent rollups (#1411). A slot-acquire failure means
+			// shutdown/cancellation; the payload stays dirty and is drained
+			// by GracefulStopRollup / recovery.
+			if err := bc.acquireRollupSlot(ctx); err != nil {
+				return
+			}
+			err := bc.rollupFile(ctx, pid, false)
+			bc.releaseRollupSlot()
+			if err != nil {
 				// rollupFile already demotes a benign shutdown-time
 				// context cancellation to nil (#1245 Bug C), so a non-nil
 				// error here is genuine. Log at Error so misconfigured or
@@ -160,6 +170,12 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 			break
 		}
 		g.Go(func() error {
+			// Share the rollup budget with the nudge-path workers so total
+			// concurrent rollups never exceed rollup_workers (#1411).
+			if err := bc.acquireRollupSlot(gctx); err != nil {
+				return nil
+			}
+			defer bc.releaseRollupSlot()
 			if err := bc.rollupFile(gctx, pid, false); err != nil {
 				// rollupFile demotes benign shutdown cancellation to nil
 				// (#1245 Bug C); a non-nil error here is genuine.
@@ -171,6 +187,26 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 	}
 	_ = g.Wait()
 }
+
+// acquireRollupSlot blocks for a slot in the shared rollup concurrency budget
+// (rollup_workers), honoring ctx cancellation and rollup shutdown. Both the
+// rollupCh worker pool and the scanAllFiles fan-out gate every rollupFile call
+// on a slot, so rollup_workers caps TOTAL concurrent rollups, not per-path.
+func (bc *FSStore) acquireRollupSlot(ctx context.Context) error {
+	select {
+	case bc.rollupSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-bc.stopRollup:
+		return context.Canceled
+	case <-bc.done:
+		return context.Canceled
+	}
+}
+
+// releaseRollupSlot returns a slot acquired by acquireRollupSlot.
+func (bc *FSStore) releaseRollupSlot() { <-bc.rollupSlots }
 
 // isShutdownCancel reports whether err is (or wraps) a context CANCELLATION —
 // the signal that the rollup ctx was torn down by shutdown mid-pass. #1245 Bug
