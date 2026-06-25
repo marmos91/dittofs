@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -86,7 +88,17 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 	for {
 		select {
 		case pid := <-bc.rollupCh:
-			if err := bc.rollupFile(ctx, pid, false); err != nil {
+			// Gate on the shared rollup budget so the nudge path and the
+			// scanAllFiles fan-out together never exceed rollup_workers
+			// concurrent rollups (#1411). A slot-acquire failure means
+			// shutdown/cancellation; the payload stays dirty and is drained
+			// by GracefulStopRollup / recovery.
+			if err := bc.acquireRollupSlot(ctx); err != nil {
+				return
+			}
+			err := bc.rollupFile(ctx, pid, false)
+			bc.releaseRollupSlot()
+			if err != nil {
 				// rollupFile already demotes a benign shutdown-time
 				// context cancellation to nil (#1245 Bug C), so a non-nil
 				// error here is genuine. Log at Error so misconfigured or
@@ -117,6 +129,14 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 // dispatches rollupFile on each. Used by the ticker arm so payloads that
 // missed a rollupCh signal (buffer full) still get rolled up.
 func (bc *FSStore) scanAllFiles(ctx context.Context) {
+	// Elect a single scanner: all rollup workers tick at the same interval, so
+	// without this guard every worker would fan out over the same dirty set and
+	// collide on per-file rmu. The winner fans the backlog out below.
+	if !bc.scanning.CompareAndSwap(false, true) {
+		return
+	}
+	defer bc.scanning.Store(false)
+
 	var ids []string
 	for _, sh := range bc.logShards {
 		sh.mu.RLock()
@@ -125,18 +145,68 @@ func (bc *FSStore) scanAllFiles(ctx context.Context) {
 		}
 		sh.mu.RUnlock()
 	}
+	if len(ids) == 0 {
+		return
+	}
+
+	// Roll up independent payloads CONCURRENTLY (#1411). rollupFileInner is
+	// per-payload safe — rmu serializes same-payload passes and cross-payload
+	// state is sharded / atomic / content-addressed — so the old serial loop
+	// needlessly throttled the rollup→upload pipeline: with the per-file
+	// rollupCh nudges spent after a write burst, this ticker path is the sole
+	// drainer of the backlog, and emitting one chunk at a time pinned the S3
+	// uploader's pending snapshot (and thus upload inflight) to 1 for
+	// many-small-file workloads. Bound the fan-out to the worker budget; one
+	// payload's failure is logged, not propagated, so it never cancels the rest.
+	limit := bc.rollupWorkers
+	if limit <= 0 {
+		limit = 2
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(limit)
 	for _, pid := range ids {
-		if err := ctx.Err(); err != nil {
-			return
+		pid := pid
+		if gctx.Err() != nil {
+			break
 		}
-		if err := bc.rollupFile(ctx, pid, false); err != nil {
-			// rollupFile demotes benign shutdown cancellation to nil
-			// (#1245 Bug C); a non-nil error here is genuine.
-			slog.Error("rollupFile failed",
-				"payloadID", pid, "error", err, "source", "ticker")
-		}
+		g.Go(func() error {
+			// Share the rollup budget with the nudge-path workers so total
+			// concurrent rollups never exceed rollup_workers (#1411).
+			if err := bc.acquireRollupSlot(gctx); err != nil {
+				return nil
+			}
+			defer bc.releaseRollupSlot()
+			if err := bc.rollupFile(gctx, pid, false); err != nil {
+				// rollupFile demotes benign shutdown cancellation to nil
+				// (#1245 Bug C); a non-nil error here is genuine.
+				slog.Error("rollupFile failed",
+					"payloadID", pid, "error", err, "source", "ticker")
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
+}
+
+// acquireRollupSlot blocks for a slot in the shared rollup concurrency budget
+// (rollup_workers), honoring ctx cancellation and rollup shutdown. Both the
+// rollupCh worker pool and the scanAllFiles fan-out gate every rollupFile call
+// on a slot, so rollup_workers caps TOTAL concurrent rollups, not per-path.
+func (bc *FSStore) acquireRollupSlot(ctx context.Context) error {
+	select {
+	case bc.rollupSlots <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-bc.stopRollup:
+		return context.Canceled
+	case <-bc.done:
+		return context.Canceled
 	}
 }
+
+// releaseRollupSlot returns a slot acquired by acquireRollupSlot.
+func (bc *FSStore) releaseRollupSlot() { <-bc.rollupSlots }
 
 // isShutdownCancel reports whether err is (or wraps) a context CANCELLATION —
 // the signal that the rollup ctx was torn down by shutdown mid-pass. #1245 Bug

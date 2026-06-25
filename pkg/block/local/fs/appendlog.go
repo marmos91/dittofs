@@ -227,22 +227,28 @@ func readRecordAt(rf io.ReaderAt, logPos uint64, payloadLen uint32) (uint64, []b
 	return fileOffset, payload, nil
 }
 
-// advanceRollupOffset atomically updates the log header's rollup_offset
-// field and fsyncs. FIX-6: split into a two-phase pwrite+fsync sequence
-// so the on-disk state is always either fully old-valid, fully new-valid
-// or "new-offset present but CRC stale" (which recovery treats as a hard
-// header corruption → re-init, the same posture as any other bad-CRC
-// header). The previous single 32-byte WriteAt could yield a torn
-// rollup_offset whose lower bytes were updated but upper bytes weren't
-// while the CRC happened to land on disk first and validate against the
-// torn value — silently corrupting recovery's view of the rollup point.
+// advanceRollupOffset updates the log header's rollup_offset field and
+// fsyncs. The new rollup_offset [8..16) and the recomputed CRC [28..32) are
+// written together in a SINGLE WriteAt(hdr[8:32]) followed by ONE fsync
+// (#1411 Lever 2), collapsing the prior two-phase write-offset-fsync /
+// write-crc-fsync sequence that cost two fsyncs per rolled-up file —
+// a per-file tax that dominated the small-file rollup pipeline.
 //
-// pwrite new rollup_offset bytes [8..16), fsync.
-// recompute CRC over [0..28), pwrite CRC bytes [28..32), fsync.
+// Crash-safety relies on first-sector atomicity: the offset and CRC fields
+// both live within the first 512-byte sector, which storage devices persist
+// atomically, so the combined write lands either fully or not at all and the
+// header moves old-consistent → new-consistent as a unit. Any torn outcome
+// (offset and CRC disagreeing) fails CRC validation on next boot
+// (ErrLogBadHeaderCRC) and routes to the existing header re-init path —
+// identical recovery posture to the old two-phase protocol. The difference
+// from FIX-6: that protocol made no sector-atomicity assumption (it ordered
+// the offset fsync strictly before the CRC fsync); this one does. A 24-byte
+// write wholly inside the first sector is the standard atomic-sector case,
+// so the assumption holds on conventional block devices.
 //
 // Idempotent: calling with the same newOffset twice is a no-op on disk
-// state (step 4; monotone rollup_offset is enforced by the
-// caller — this helper does not reject backward moves).
+// state; monotone rollup_offset is enforced by the caller — this helper does
+// not reject backward moves.
 func advanceRollupOffset(f *os.File, newOffset uint64) error {
 	// Read the existing header (need bytes [0..28) to recompute CRC).
 	var hdr [logHeaderSize]byte
@@ -250,30 +256,27 @@ func advanceRollupOffset(f *os.File, newOffset uint64) error {
 		return fmt.Errorf("append log: read header for advance: %w", err)
 	}
 
-	// write the new rollup_offset bytes, fsync. After this point
-	// a crash leaves either the OLD rollup_offset on disk (write didn't
-	// reach the platter) or the NEW rollup_offset with the OLD CRC. The
-	// latter fails CRC validation on next boot — recovery treats it as
-	// header corruption and re-inits the log (existing path).
+	// Write the new rollup_offset AND its recomputed CRC together, then fsync
+	// ONCE (#1411 Lever 2). The offset field [8..16) and the CRC field
+	// [28..32) both live within the first 512-byte sector, which storage
+	// devices persist atomically, so a single fsync moves the header from the
+	// old consistent state to the new consistent state as a unit. A crash
+	// mid-fsync leaves either the OLD header (neither field reached the
+	// platter) or the NEW header (both did); the only torn outcome — offset
+	// and CRC disagreeing — fails CRC validation on next boot
+	// (ErrLogBadHeaderCRC) and routes to the existing header re-init path.
+	// The previous two-fsync write-offset-fsync-then-write-crc-fsync protocol
+	// gave the IDENTICAL crash semantics (its intermediate new-offset/old-CRC
+	// window also failed CRC) at twice the fsync cost — a per-rolled-up-file
+	// tax that dominated the small-file rollup→S3 pipeline.
 	binary.LittleEndian.PutUint64(hdr[8:16], newOffset)
-	if _, err := f.WriteAt(hdr[8:16], 8); err != nil {
-		return fmt.Errorf("append log: write header rollup_offset: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("append log: fsync header phase 1: %w", err)
-	}
-
-	// recompute the CRC over [0..28) using the in-memory bytes
-	// we just wrote, pwrite [28..32), fsync. After this completes the
-	// header is fully valid. A crash between is the
-	// "stale CRC" case described above — safe.
 	crc := crc32.Checksum(hdr[0:28], crcTable)
 	binary.LittleEndian.PutUint32(hdr[28:32], crc)
-	if _, err := f.WriteAt(hdr[28:32], 28); err != nil {
-		return fmt.Errorf("append log: write header crc: %w", err)
+	if _, err := f.WriteAt(hdr[8:32], 8); err != nil {
+		return fmt.Errorf("append log: write header offset+crc: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		return fmt.Errorf("append log: fsync header phase 2: %w", err)
+		return fmt.Errorf("append log: fsync header: %w", err)
 	}
 	return nil
 }
