@@ -3,6 +3,7 @@ package block
 import (
 	"fmt"
 	"math"
+	"strconv"
 )
 
 // SystemDetector provides system resource information for deduction.
@@ -22,18 +23,18 @@ const (
 	MinParallelFetches            = 8
 	DefaultPrefetchWorkers        = 4
 
-	// DefaultParallelUploads is the default number of concurrent CAS-chunk
-	// uploads to a remote (the mirror semaphore in mirrorOnce). Uploads are
-	// network-latency bound, NOT CPU bound — a single PUT to a remote region
-	// sustains only ~2-3 MiB/s, so throughput scales with concurrency until the
-	// uplink saturates, and ~5.5% CPU is used even at saturation (#1266/#1398).
-	// Deriving this from CPU count (the old behaviour) throttled write→remote
-	// bandwidth to roughly cores × per-conn — e.g. an 8-core host mirrored at
-	// ~14 MiB/s while raw parallel PUTs of the same bytes hit ~55 MiB/s; at
-	// concurrency 32 the same host matched/beat raw (#1407). 32 saturates a
-	// typical uplink without an unreasonable connection/FD footprint; operators
-	// tune per-remote via the parallel_uploads config (--parallel-uploads).
-	DefaultParallelUploads = 32
+	// AdaptiveUploadDefault is the sentinel for the default upload-concurrency
+	// setting: 0 means "auto-tune" — the syncer's adaptive controller ramps the
+	// mirror window to saturate the uplink (#1407). Uploads are network-latency
+	// bound, NOT CPU bound — a single PUT to a remote region sustains only ~2-3
+	// MiB/s, so throughput scales with concurrency until the uplink saturates,
+	// and ~5.5% CPU is used even at saturation (#1266/#1398). Deriving
+	// concurrency from CPU count (the original behaviour) throttled write→remote
+	// bandwidth to roughly cores × per-conn — an 8-core host mirrored at ~14
+	// MiB/s while raw parallel PUTs hit ~55 MiB/s. Rather than guess a fixed
+	// default, the syncer discovers the right window per remote; operators can
+	// still pin it via the parallel_uploads config (--parallel-uploads).
+	AdaptiveUploadDefault = 0
 )
 
 // DeducedDefaults holds block store sizing values derived from system resources.
@@ -41,7 +42,7 @@ type DeducedDefaults struct {
 	LocalStoreSize  uint64 // 25% of memory, floor 256 MiB
 	ReadBufferSize  int64  // 12.5% of memory, floor 64 MiB
 	MaxLogBytes     uint64 // 25% of memory, floor 1 GiB (append-log pressure budget)
-	ParallelSyncs   int    // upload concurrency: fixed DefaultParallelUploads (network-bound, not CPU) — #1407
+	ParallelSyncs   int    // upload concurrency: 0 = adaptive auto-tune (default), >0 = pinned — #1407
 	ParallelFetches int    // max(8, cpus*2)
 	PrefetchWorkers int    // fixed at DefaultPrefetchWorkers
 
@@ -89,12 +90,12 @@ func DeduceDefaults(d SystemDetector) *DeducedDefaults {
 		maxLogBytes = MinMaxLogBytes
 	}
 
-	// Upload concurrency is network-bound, not CPU-bound, so it is a fixed
-	// default rather than a function of cpus (#1407 — see DefaultParallelUploads).
-	// Kept on DeducedDefaults.ParallelSyncs so the existing config/log plumbing
-	// reports the effective value; it has no floor (it is a constant, not a
-	// memory/CPU-derived size that could be clamped on small hosts).
-	parallelSyncs := DefaultParallelUploads
+	// Upload concurrency is network-bound, not CPU-bound, so the default is
+	// adaptive auto-tuning rather than a function of cpus (#1407 — see
+	// AdaptiveUploadDefault). 0 flows through SyncerDefaults → cfg.ParallelUploads
+	// unchanged, which the syncer reads as "auto-tune". An explicit
+	// per-remote parallel_uploads pins a fixed window instead.
+	parallelSyncs := AdaptiveUploadDefault
 
 	parallelFetches := cpus * 2
 	parallelFetchesClamped := parallelFetches < MinParallelFetches
@@ -139,11 +140,16 @@ func (d *DeducedDefaults) HitFloors() []string {
 
 // String returns a human-readable summary of deduced defaults.
 func (d *DeducedDefaults) String() string {
+	// ParallelSyncs <= 0 is the adaptive sentinel (auto-tune upload concurrency).
+	parallelSyncs := strconv.Itoa(d.ParallelSyncs)
+	if d.ParallelSyncs <= 0 {
+		parallelSyncs = "adaptive"
+	}
 	return fmt.Sprintf(
-		"LocalStoreSize=%s, ReadBufferSize=%s, ParallelSyncs=%d, ParallelFetches=%d, MaxLogBytes=%s, PrefetchWorkers=%d",
+		"LocalStoreSize=%s, ReadBufferSize=%s, ParallelSyncs=%s, ParallelFetches=%d, MaxLogBytes=%s, PrefetchWorkers=%d",
 		FormatBytes(d.LocalStoreSize),
 		FormatBytes(uint64(d.ReadBufferSize)),
-		d.ParallelSyncs,
+		parallelSyncs,
 		d.ParallelFetches,
 		FormatBytes(d.MaxLogBytes),
 		d.PrefetchWorkers,
