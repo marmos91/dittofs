@@ -80,6 +80,13 @@ type SyncerConfig struct {
 	UploadInterval     time.Duration // Periodic uploader scan interval (default: 2s)
 	UploadDelay        time.Duration // Min block age before periodic upload; Flush ignores this (default: 10s)
 
+	// ManualSync, when true, suppresses the background periodic uploader (and
+	// its adaptive controller). Durability is then driven solely by explicit
+	// Flush, making Flush the single deterministic mirror driver. Off by
+	// default; used where a concurrent uploader would race observable
+	// mirror-loop semantics (snapshot bounds, crash-replay).
+	ManualSync bool
+
 	// Health check configuration for remote store monitoring.
 	HealthCheckInterval         time.Duration // Probe interval when healthy (default: 30s)
 	HealthCheckFailureThreshold int           // Consecutive failures to mark unhealthy (default: 3)

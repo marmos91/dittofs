@@ -965,6 +965,15 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	if m.periodicStarted {
 		return
 	}
+	// Manual-sync mode: durability is driven solely by explicit Flush, so the
+	// background uploader (and its adaptive controller) must not run. This makes
+	// Flush the single, deterministic mirror driver — required to observe
+	// snapshot-bounded / crash-replay mirror semantics that a concurrent
+	// uploader would otherwise race.
+	if m.config.ManualSync {
+		m.periodicStarted = true
+		return
+	}
 	m.periodicStarted = true
 
 	interval := m.config.UploadInterval

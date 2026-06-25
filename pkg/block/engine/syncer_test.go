@@ -428,13 +428,18 @@ type integrationFixture struct {
 }
 
 func newIntegrationFixture(t *testing.T, rs remote.RemoteStore, synced metadata.SyncedHashStore) *integrationFixture {
-	return newIntegrationFixtureWithConfig(t, rs, synced, engine.DefaultConfig())
+	// These mirror-loop scenarios drive durability via explicit Flush and
+	// assert on the exact mirror set (snapshot bounds, crash-replay window).
+	// Run in manual-sync mode so the background periodic uploader — which #1408
+	// wakes the instant a chunk rolls up, regardless of UploadInterval — does
+	// not race the Flush calls and mirror chunks out from under the assertions.
+	cfg := engine.DefaultConfig()
+	cfg.ManualSync = true
+	return newIntegrationFixtureWithConfig(t, rs, synced, cfg)
 }
 
-// newIntegrationFixtureWithConfig is newIntegrationFixture with an
-// explicit SyncerConfig. The snapshot-semantics scenario uses it to set
-// a long UploadInterval so the periodic uploader cannot drain the
-// pending set between the two explicit Flush passes the test drives.
+// newIntegrationFixtureWithConfig is newIntegrationFixture with an explicit
+// SyncerConfig.
 func newIntegrationFixtureWithConfig(t *testing.T, rs remote.RemoteStore, synced metadata.SyncedHashStore, cfg engine.SyncerConfig) *integrationFixture {
 	t.Helper()
 	if synced == nil {
