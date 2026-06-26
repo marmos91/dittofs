@@ -128,7 +128,7 @@ func TestWaitForSnapshot_CtxCancelDuringWait(t *testing.T) {
 
 	// Plant a registry entry by reusing registerSnapInFlight. The child
 	// ctx + cancel are discarded; we only care that the done chan exists.
-	_, _, _ = rt.registerSnapInFlight(shareName, snapID)
+	_, _, _, _ = rt.registerSnapInFlight(shareName, snapID)
 
 	ctx, cancel := context.WithCancel(bg)
 	cancel() // pre-cancel — guarantees Wait returns ctx.Err() without racing.
@@ -428,7 +428,7 @@ func TestRuntimeDeleteSnapshot_RefusesInFlight(t *testing.T) {
 	}
 
 	// Plant an in-flight registry entry (mimics a running orchestration).
-	_, _, entry := rt.registerSnapInFlight(shareName, snapID)
+	_, snapCancel, doneCh, entry := rt.registerSnapInFlight(shareName, snapID)
 
 	if derr := rt.DeleteSnapshot(ctx, shareName, snapID); !errors.Is(derr, models.ErrSnapshotInFlight) {
 		t.Fatalf("DeleteSnapshot err = %v, want errors.Is(ErrSnapshotInFlight)", derr)
@@ -440,7 +440,7 @@ func TestRuntimeDeleteSnapshot_RefusesInFlight(t *testing.T) {
 	}
 
 	// Drain the planted entry, then delete succeeds.
-	rt.unregisterSnap(shareName, snapID, entry)
+	rt.unregisterSnap(shareName, snapID, entry, snapCancel, doneCh)
 	entry.wg.Done()
 	if derr := rt.DeleteSnapshot(ctx, shareName, snapID); derr != nil {
 		t.Fatalf("DeleteSnapshot after drain: %v", derr)

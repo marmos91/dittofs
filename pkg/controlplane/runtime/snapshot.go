@@ -177,7 +177,7 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	// abortSnapInFlight to release the wg.Add(1) the registration took
 	// and close+drain the doneCh, otherwise cancelAndWaitInFlightSnaps
 	// would block forever waiting for the never-launched goroutine.
-	childCtx, doneCh, entry := r.registerSnapInFlight(shareName, snapID)
+	childCtx, cancel, doneCh, entry := r.registerSnapInFlight(shareName, snapID)
 
 	// (5) Create on-disk dir. Failure here is synchronous — flip the row
 	// to failed so the index slot is released for the next attempt, AND
@@ -185,7 +185,7 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 	// decrements.
 	dir := snap.SnapshotDir(localStoreDir)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		r.abortSnapInFlight(shareName, snapID, entry, doneCh)
+		r.abortSnapInFlight(shareName, snapID, entry, cancel, doneCh)
 		_ = r.store.UpdateSnapshotState(ctx, shareName, snapID, models.StateFailed)
 		return "", fmt.Errorf("snapshot create %q: mkdir %q: %w", snapID, dir, err)
 	}
@@ -200,6 +200,7 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 		localStoreDir,
 		opts,
 		backupable,
+		cancel,
 		doneCh,
 		entry,
 	)
@@ -314,7 +315,7 @@ func (r *Runtime) WaitForSnapshot(ctx context.Context, shareName, snapID string)
 // entry.mu while snapshotting cancels — so there is no inversion. We
 // don't block under r.snapInFlightMu either: every operation inside it
 // is in-process and bounded.
-func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Context, chan snapResult, *snapInFlight) {
+func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Context, context.CancelFunc, chan snapResult, *snapInFlight) {
 	childCtx, cancel := context.WithCancel(r.runtimeCtx)
 	doneCh := make(chan snapResult, 1)
 
@@ -349,28 +350,42 @@ func (r *Runtime) registerSnapInFlight(shareName, snapID string) (context.Contex
 	entry.wg.Add(1)
 	entry.mu.Unlock()
 
-	return childCtx, doneCh, entry
+	return childCtx, cancel, doneCh, entry
 }
 
 // unregisterSnap removes the per-snap done channel and cancel func from
-// the share entry. The cancel func is invoked here (cheap on an
-// already-completed ctx) and deleted so the derived ctx is released from
+// the share entry. The caller's own cancel func is always invoked (cheap
+// on an already-completed ctx) so the derived ctx is released from
 // runtimeCtx's child list — otherwise completed snapshot contexts would
-// pile up on runtimeCtx and entry.cancels would grow for the lifetime
-// of the share.
+// pile up on runtimeCtx.
+//
+// Registry deletion is identity-guarded on doneCh: the map slots are only
+// removed if entry.done[snapID] still points at THIS attempt's channel. A
+// retry reuses the original snapID (RetryOf), and the per-snap chan send
+// in runSnapshotOrchestration's cleanup happens before this call — so a
+// WaitForSnapshot can unblock and the retry's registerSnapInFlight can
+// re-register a fresh doneCh+cancel under the same snapID BEFORE this
+// cleanup runs. Deleting unconditionally would then wipe the retry's live
+// registration, making the next WaitForSnapshot miss the channel and read
+// a still-creating row (issue #1423). done and cancels are registered and
+// replaced together under entry.mu, so a doneCh identity match implies
+// cancels[snapID] is also ours.
 //
 // The share entry itself is intentionally left in place even when empty
 // — RemoveShare and Shutdown enumerate it and rely on wg.Wait. Leaving
 // stale empty maps around is acceptable bookkeeping cost vs. the
 // synchronization needed to delete on every snap completion.
-func (r *Runtime) unregisterSnap(shareName, snapID string, entry *snapInFlight) {
+func (r *Runtime) unregisterSnap(shareName, snapID string, entry *snapInFlight, cancel context.CancelFunc, doneCh chan snapResult) {
+	cancel()
 	entry.mu.Lock()
-	if cancel, ok := entry.cancels[snapID]; ok {
-		cancel()
-		delete(entry.cancels, snapID)
+	defer entry.mu.Unlock()
+	if cur, ok := entry.done[snapID]; !ok || cur != doneCh {
+		// A newer attempt (retry) owns this snapID now; leave its slots
+		// intact — it will clean up after itself.
+		return
 	}
+	delete(entry.cancels, snapID)
 	delete(entry.done, snapID)
-	entry.mu.Unlock()
 }
 
 // deriveWaitCtx returns a ctx rooted at r.runtimeCtx (so it is cancelled on
@@ -419,8 +434,8 @@ func (r *Runtime) isSnapInFlight(shareName, snapID string) bool {
 // Idempotent under the snapInFlight scheme — only invoked once per
 // failure path between registerSnapInFlight and the goroutine launch in
 // CreateSnapshot.
-func (r *Runtime) abortSnapInFlight(shareName, snapID string, entry *snapInFlight, doneCh chan snapResult) {
-	r.unregisterSnap(shareName, snapID, entry)
+func (r *Runtime) abortSnapInFlight(shareName, snapID string, entry *snapInFlight, cancel context.CancelFunc, doneCh chan snapResult) {
+	r.unregisterSnap(shareName, snapID, entry, cancel, doneCh)
 	close(doneCh)
 	entry.wg.Done()
 }
@@ -435,6 +450,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	localStoreDir string,
 	opts CreateSnapshotOpts,
 	backupable metadata.Backupable,
+	cancel context.CancelFunc,
 	doneCh chan snapResult,
 	entry *snapInFlight,
 ) {
@@ -457,7 +473,7 @@ func (r *Runtime) runSnapshotOrchestration(
 		// receive.
 		doneCh <- snapResult{err: terminalErr}
 		close(doneCh)
-		r.unregisterSnap(shareName, snapID, entry)
+		r.unregisterSnap(shareName, snapID, entry, cancel, doneCh)
 		entry.wg.Done()
 	}()
 
