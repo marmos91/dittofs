@@ -272,3 +272,21 @@ func TestResolveSharePermission_ShareReadOnlyForcesReadOnly(t *testing.T) {
 		t.Errorf("ReadOnly = false, want true (share.ReadOnly forces it)")
 	}
 }
+
+// Issue #1419: a share created by uid=501 with the new default_permission=none
+// must deny a different uid (2001) that has no identity mapping. Previously the
+// CLI defaulted to "read-write", allowing any uid to mount.
+func TestResolveSharePermission_DefaultNoneDeniesUnmappedUID(t *testing.T) {
+	store := newPermMockStore() // uid 2001 has no mapping
+
+	share := &runtime.Share{
+		Name:              "/export",
+		DefaultPermission: "none",
+		Squash:            models.SquashNone,
+	}
+
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(2001))
+	if !errors.Is(err, ErrShareAccessDenied) {
+		t.Fatalf("uid=2001 on default_permission=none: expected ErrShareAccessDenied, got %v", err)
+	}
+}

@@ -82,7 +82,7 @@ func init() {
 	createCmd.Flags().StringVar(&createRemote, "remote", "", "Remote block store name (optional)")
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
 	createCmd.Flags().BoolVar(&createEncryptData, "encrypt-data", false, "Require SMB3 encryption for this share")
-	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "read-write", "Default permission (none|read|read-write|admin)")
+	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "none", "Default permission for unmapped UIDs (none|read|read-write|admin)")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
 	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")
 	createCmd.Flags().StringVar(&createRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h, 24h)")

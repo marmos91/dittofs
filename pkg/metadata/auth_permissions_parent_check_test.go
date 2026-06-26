@@ -202,3 +202,30 @@ func TestCheckParentCreateAccess_NoACLFallsBackToWriteCheck(t *testing.T) {
 		t.Fatalf("CheckParentCreateAccess(dir, no-ACL) err = %v, want nil", err)
 	}
 }
+
+// TestCheckOtherPermissions_RootDir0755DeniesNonOwnerWrite verifies that the
+// root directory default mode 0755 (changed from 0777 in issue #1419) prevents
+// non-owner UIDs from writing to the share root even if share-level access was
+// granted (e.g. read-write default permission).
+func TestCheckOtherPermissions_RootDir0755DeniesNonOwnerWrite(t *testing.T) {
+	const mode0755 = uint32(0755)
+	const mode0777 = uint32(0777)
+
+	// 0755: other bits = 5 (r-x) — no write.
+	got := metadata.CheckOtherPermissions(mode0755, metadata.PermissionWrite)
+	if got != 0 {
+		t.Errorf("CheckOtherPermissions(0755, Write) = %v, want 0 (no write for non-owner)", got)
+	}
+
+	// 0755: other bits allow read.
+	got = metadata.CheckOtherPermissions(mode0755, metadata.PermissionRead)
+	if got == 0 {
+		t.Errorf("CheckOtherPermissions(0755, Read) = 0, want non-zero (read still allowed)")
+	}
+
+	// 0777: other bits = 7 (rwx) — write allowed (explicit opt-in via --root-mode).
+	got = metadata.CheckOtherPermissions(mode0777, metadata.PermissionWrite)
+	if got == 0 {
+		t.Errorf("CheckOtherPermissions(0777, Write) = 0, want non-zero (world-writable share)")
+	}
+}

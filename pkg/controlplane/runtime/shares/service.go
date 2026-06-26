@@ -637,7 +637,7 @@ func (s *Service) prepareShare(
 		rootAttr.Type = metadata.FileTypeDirectory
 	}
 	if rootAttr.Mode == 0 {
-		rootAttr.Mode = 0777
+		rootAttr.Mode = 0755
 	}
 	if rootAttr.Atime.IsZero() {
 		now := time.Now()
