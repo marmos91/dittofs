@@ -46,7 +46,10 @@ func TestOpen_CreateGuarded_AfterCloseSameOwner(t *testing.T) {
 	run := func(t *testing.T, file2Seq uint32) uint32 {
 		t.Helper()
 		fx := newIOTestFixture(t, "/export")
-		ctx := newRealFSContext(65534, 65534)
+		// Operate as the export-root owner (UID/GID 1000) so the GUARDED
+		// creates succeed; this test exercises open-owner seqid semantics,
+		// not permission enforcement, so the specific UID is immaterial.
+		ctx := newRealFSContext(1000, 1000)
 
 		openCreateGuarded := func(seqid uint32, filename string) *types.CompoundResult {
 			ctx.CurrentFH = make([]byte, len(fx.rootHandle))

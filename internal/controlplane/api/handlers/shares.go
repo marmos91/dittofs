@@ -114,11 +114,16 @@ func writeBlockStoreRefError(w http.ResponseWriter, tier, ref string, err error)
 
 // CreateShareRequest is the request body for POST /api/v1/shares.
 type CreateShareRequest struct {
-	Name              string    `json:"name"`
-	MetadataStoreID   string    `json:"metadata_store_id"`
-	LocalBlockStore   string    `json:"local_block_store"`
-	RemoteBlockStore  *string   `json:"remote_block_store,omitempty"`
-	ReadOnly          bool      `json:"read_only,omitempty"`
+	Name             string  `json:"name"`
+	MetadataStoreID  string  `json:"metadata_store_id"`
+	LocalBlockStore  string  `json:"local_block_store"`
+	RemoteBlockStore *string `json:"remote_block_store,omitempty"`
+	ReadOnly         bool    `json:"read_only,omitempty"`
+	// Owner is the username whose UID/GID owns the share's root directory.
+	// Empty leaves the root owned by root (UID/GID 0). Share permission grants
+	// gate access to the export; the owner governs who can write at the root
+	// via POSIX. These are independent layers.
+	Owner             string    `json:"owner,omitempty"`
 	EncryptData       bool      `json:"encrypt_data,omitempty"`
 	DefaultPermission string    `json:"default_permission,omitempty"`
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
@@ -311,13 +316,14 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		remoteBlockStoreID = &remoteStore.ID
 	}
 
-	// Set default permission if not provided
-	// Use "read-write" for NFS compatibility (same as traditional NFS servers)
-	// This allows anonymous/unknown UIDs to access the share, with file-level
-	// permissions enforcing access control (Unix DAC model).
+	// Set default permission if not provided.
+	// Default to "none" (deny) so an API-created share is not world-accessible
+	// unless the caller opts into a broader policy. This mirrors the dfsctl
+	// flag default; an omitted default_permission must not silently grant
+	// anonymous/unknown UIDs access.
 	defaultPerm := req.DefaultPermission
 	if defaultPerm == "" {
-		defaultPerm = "read-write"
+		defaultPerm = "none"
 	} else if !models.SharePermission(defaultPerm).IsValid() {
 		// Validate the raw string, not ParseSharePermission's result: Parse maps
 		// anything unrecognized to PermissionNone (which is itself valid), so an
@@ -514,11 +520,40 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Resolve the share owner (if any) to the UID/GID that will own the root
+	// directory. The root's owner governs who can write at the share root via
+	// POSIX; share permission grants are a separate, gate-only layer.
+	var rootAttr *metadata.FileAttr
+	if req.Owner != "" {
+		owner, err := h.store.GetUser(r.Context(), req.Owner)
+		if err != nil {
+			if errors.Is(err, models.ErrUserNotFound) {
+				BadRequest(w, fmt.Sprintf("Owner user %q not found", req.Owner))
+				return
+			}
+			InternalServerError(w, "Failed to resolve owner")
+			return
+		}
+		if owner.UID == nil {
+			BadRequest(w, fmt.Sprintf("Owner user %q has no UID", req.Owner))
+			return
+		}
+		// Default the group to the owner's own UID rather than GID 0 (root):
+		// an --owner share with no explicit GID must not grant root-group
+		// ownership of the share root.
+		gid := *owner.UID
+		if owner.GID != nil {
+			gid = *owner.GID
+		}
+		rootAttr = &metadata.FileAttr{UID: *owner.UID, GID: gid}
+	}
+
 	// Add share to runtime if runtime is available
 	if h.runtime != nil {
 		shareConfig := &runtime.ShareConfig{
 			Name:                             req.Name,
 			MetadataStore:                    metaStore.Name,
+			RootAttr:                         rootAttr,
 			ReadOnly:                         req.ReadOnly,
 			Enabled:                          share.Enabled,
 			EncryptData:                      req.EncryptData,

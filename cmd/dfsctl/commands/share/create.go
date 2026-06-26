@@ -18,6 +18,7 @@ var (
 	createReadOnly          bool
 	createEncryptData       bool
 	createDefaultPermission string
+	createOwner             string
 	createDescription       string
 	createRetention         string
 	createRetentionTTL      string
@@ -83,6 +84,7 @@ func init() {
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
 	createCmd.Flags().BoolVar(&createEncryptData, "encrypt-data", false, "Require SMB3 encryption for this share")
 	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "none", "Default permission for unmapped UIDs (none|read|read-write|admin)")
+	createCmd.Flags().StringVar(&createOwner, "owner", "", "Username that owns the share's root directory (defaults to root). The owner can write at the share root; other principals are governed by POSIX mode plus their share permission grant.")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
 	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")
 	createCmd.Flags().StringVar(&createRetentionTTL, "retention-ttl", "", "Retention TTL duration (e.g., 72h, 24h)")
@@ -160,6 +162,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		ReadOnly:          createReadOnly,
 		EncryptData:       createEncryptData,
 		DefaultPermission: defaultPerm,
+		Owner:             createOwner,
 		Description:       createDescription,
 	}
 	if remote != "" {

@@ -273,6 +273,25 @@ configure_via_api() {
         "$DITTOFSCTL_BIN" share create --name /export --metadata default --local default
     fi
 
+    # Create and gate-grant the principals pjdfstest operates as.
+    #
+    # pjdfstest runs prove(1) as root (uid 0 superuser-bypasses POSIX, so it sets
+    # up the working tree) and then seteuid()s to a fixed set of unprivileged
+    # test UIDs to verify POSIX permission semantics. With the secure share
+    # default (default-permission=none) those UIDs are unknown to the export and
+    # are denied at the gate before POSIX is ever consulted, so each must be a
+    # known user with a read-write grant. The grant only opens the export gate;
+    # it does not touch any filesystem ACL, so the per-file POSIX mode bits —
+    # exactly what pjdfstest asserts — still govern. UIDs mirror
+    # test/posix/Dockerfile.pjdfstest. No --owner is needed: root owns the
+    # export root and creates the per-test working dirs, which pjdfstest then
+    # chmod/chowns for the unprivileged UIDs.
+    log_info "Creating pjdfstest test users..."
+    for uid in 65532 65533 65534; do
+        "$DITTOFSCTL_BIN" user create --username "pjdfstest-${uid}" --password pjdfstest --uid "$uid" --gid "$uid"
+        "$DITTOFSCTL_BIN" share permission grant /export --user "pjdfstest-${uid}" --level read-write
+    done
+
     # Enable NFS adapter
     log_info "Enabling NFS adapter..."
     "$DITTOFSCTL_BIN" adapter enable nfs --port $NFS_PORT

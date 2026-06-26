@@ -188,11 +188,30 @@ share_create_args() {
 # common_share_flags — the --metadata/--local[/--remote] flags shared by every
 # share, derived from the active profile.
 common_share_flags() {
-    local flags="--metadata default --local default"
+    # --owner wpts-admin makes the share root owned by the test principal, so it
+    # can write at the root via POSIX (the secure default root is 0755). The
+    # wpts-admin user must already exist when the share is created.
+    local flags="--metadata default --local default --owner wpts-admin"
     if [[ "$PROFILE" == *-s3 ]]; then
         flags="$flags --remote default"
     fi
     echo "$flags"
+}
+
+# grant_admin_on_share NAME / grant_admin_on_shares — open the export gate for
+# wpts-admin (admin level) on a share / all shares. Separate from ownership:
+# ownership governs POSIX write at the root, the grant governs export access
+# (default-permission=none denies ungranted principals). admin is required for
+# smb2.acls take-ownership tests (WRITE_OWNER is admin-gated).
+grant_admin_on_share() {
+    $DFSCTL share permission grant "$1" --user wpts-admin --level admin
+}
+
+grant_admin_on_shares() {
+    log_info "Granting wpts-admin admin on WPTS shares..."
+    for name in $SHARE_NAMES; do
+        grant_admin_on_share "$name"
+    done
 }
 
 # create_one_share NAME — create a single share from the canonical map,
@@ -232,6 +251,10 @@ reset_share() {
     log_info "Resetting share ${name} (delete + recreate)..."
     $DFSCTL share delete "$name" --force
     create_one_share "$name"
+    # Recreating the share makes a fresh root (owned by wpts-admin via
+    # common_share_flags) and drops the old permission grants, so re-open the
+    # export gate for wpts-admin.
+    grant_admin_on_share "$name"
     log_info "Share ${name} reset to clean state"
 }
 
@@ -257,11 +280,6 @@ main() {
     create_metadata_store
     create_block_stores
 
-    # Create WPTS-required shares from the canonical share map (single source
-    # of truth in share_create_args, reused by reset-share). FileShare is the
-    # default share name WPTS tests use for TREE_CONNECT.
-    create_shares
-
     # Create test users with DISTINCT UIDs. Without --uid each user falls back
     # to defaultUID=1000 in internal/adapter/smb/handlers/auth_helper.go,
     # which collapses both identities onto the same POSIX UID. That collision
@@ -269,9 +287,27 @@ main() {
     # acl.Evaluate's UID == FileOwnerUID arm, leaking access to a "non-owner"
     # that is actually the same UID at the POSIX layer. smbtorture
     # smb2.acls.ACCESSBASED depends on these two principals being distinct.
+    #
+    # Created before the shares because each share is owned by wpts-admin (see
+    # common_share_flags), and the owner must exist when the share is created.
     log_info "Creating test users..."
     $DFSCTL user create --username wpts-admin --password "$TEST_PASSWORD" --uid 1000
     $DFSCTL user create --username nonadmin   --password "$TEST_PASSWORD" --uid 1001
+
+    # Create WPTS-required shares from the canonical share map (single source
+    # of truth in share_create_args, reused by reset-share). FileShare is the
+    # default share name WPTS tests use for TREE_CONNECT. Each share's root is
+    # owned by wpts-admin (common_share_flags), so smbtorture — connecting as
+    # wpts-admin — can create at the share root despite the secure root mode.
+    create_shares
+
+    # Grant wpts-admin admin on every share. Ownership lets wpts-admin write at
+    # the root via POSIX; the grant is the separate export-gate layer that lets
+    # it past default-permission=none. admin (not read-write) is required because
+    # smb2.acls exercises take-ownership (WRITE_OWNER), which is admin-gated.
+    # nonadmin is intentionally left ungranted: ACCESSBASED uses it as the
+    # restricted principal and relies on it having no access.
+    grant_admin_on_shares
 
     # Identity mapping for Kerberos: the principal "wpts-admin@${KERBEROS_REALM}"
     # must resolve to the "wpts-admin" control plane user. Strip-realm would

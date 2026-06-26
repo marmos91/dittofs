@@ -74,7 +74,10 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 	shareConfig := &runtime.ShareConfig{
 		Name:          shareName,
 		MetadataStore: "test-meta",
-		RootAttr:      &metadata.FileAttr{},
+		// Export root owned by the principal these fixtures operate as
+		// (UID/GID 1000). The secure default root mode (0755) grants the
+		// owner write access without making the export world-writable.
+		RootAttr: &metadata.FileAttr{UID: 1000, GID: 1000},
 	}
 	if err := rt.AddShare(context.Background(), shareConfig); err != nil {
 		t.Fatalf("add share: %v", err)
