@@ -615,8 +615,8 @@ Global flags:
   - [`dfsctl completion`](#dfsctl-completion) — Generate shell completion script
   - [`dfsctl context`](#dfsctl-context) — Manage server contexts
     - [`dfsctl context current`](#dfsctl-context-current) — Show current context
-    - [`dfsctl context delete`](#dfsctl-context-delete) — Delete a context
     - [`dfsctl context list`](#dfsctl-context-list) — List all configured contexts
+    - [`dfsctl context remove`](#dfsctl-context-remove) — Remove a context
     - [`dfsctl context rename`](#dfsctl-context-rename) — Rename a context
     - [`dfsctl context use`](#dfsctl-context-use) — Switch to a different context
   - [`dfsctl grace`](#dfsctl-grace) — Manage NFSv4 grace period
@@ -625,10 +625,10 @@ Global flags:
   - [`dfsctl group`](#dfsctl-group) — Group management
     - [`dfsctl group add-user`](#dfsctl-group-add-user) — Add a user to a group
     - [`dfsctl group create`](#dfsctl-group-create) — Create a new group
-    - [`dfsctl group delete`](#dfsctl-group-delete) — Delete a group
     - [`dfsctl group edit`](#dfsctl-group-edit) — Edit a group
     - [`dfsctl group get`](#dfsctl-group-get) — Get group details
     - [`dfsctl group list`](#dfsctl-group-list) — List all groups
+    - [`dfsctl group remove`](#dfsctl-group-remove) — Remove a group
     - [`dfsctl group remove-user`](#dfsctl-group-remove-user) — Remove a user from a group
   - [`dfsctl identity-provider`](#dfsctl-identity-provider) — Identity provider (LDAP/AD, Kerberos) management
     - [`dfsctl identity-provider configure`](#dfsctl-identity-provider-configure) — Configure Kerberos machine-account settings
@@ -641,20 +641,20 @@ Global flags:
     - [`dfsctl idmap list`](#dfsctl-idmap-list) — List identity mappings
     - [`dfsctl idmap remove`](#dfsctl-idmap-remove) — Remove an identity mapping
     - [`dfsctl idmap sid`](#dfsctl-idmap-sid) — Manage foreign-SID UID/GID allocations
-      - [`dfsctl idmap sid delete`](#dfsctl-idmap-sid-delete) — Delete a foreign-SID UID/GID allocation
       - [`dfsctl idmap sid list`](#dfsctl-idmap-sid-list) — List foreign-SID UID/GID allocations
+      - [`dfsctl idmap sid remove`](#dfsctl-idmap-sid-remove) — Remove a foreign-SID UID/GID allocation
   - [`dfsctl login`](#dfsctl-login) — Authenticate with DittoFS server
   - [`dfsctl logout`](#dfsctl-logout) — Clear stored credentials
   - [`dfsctl netgroup`](#dfsctl-netgroup) — Manage netgroups (IP access control)
     - [`dfsctl netgroup add-member`](#dfsctl-netgroup-add-member) — Add a member to a netgroup
     - [`dfsctl netgroup create`](#dfsctl-netgroup-create) — Create a new netgroup
-    - [`dfsctl netgroup delete`](#dfsctl-netgroup-delete) — Delete a netgroup
     - [`dfsctl netgroup list`](#dfsctl-netgroup-list) — List all netgroups
+    - [`dfsctl netgroup remove`](#dfsctl-netgroup-remove) — Remove a netgroup
     - [`dfsctl netgroup remove-member`](#dfsctl-netgroup-remove-member) — Remove a member from a netgroup
     - [`dfsctl netgroup show`](#dfsctl-netgroup-show) — Show netgroup details
   - [`dfsctl quota`](#dfsctl-quota) — Per-identity quota management
     - [`dfsctl quota list`](#dfsctl-quota-list) — List all quotas on a share
-    - [`dfsctl quota rm`](#dfsctl-quota-rm) — Remove a per-identity quota
+    - [`dfsctl quota remove`](#dfsctl-quota-remove) — Remove a per-identity quota
     - [`dfsctl quota set`](#dfsctl-quota-set) — Create or update a per-identity quota
   - [`dfsctl settings`](#dfsctl-settings) — Server settings management
     - [`dfsctl settings get`](#dfsctl-settings-get) — Get a setting value
@@ -662,7 +662,6 @@ Global flags:
     - [`dfsctl settings set`](#dfsctl-settings-set) — Set a setting value
   - [`dfsctl share`](#dfsctl-share) — Share management
     - [`dfsctl share create`](#dfsctl-share-create) — Create a new share
-    - [`dfsctl share delete`](#dfsctl-share-delete) — Delete a share
     - [`dfsctl share disable`](#dfsctl-share-disable) — Disable a share (drain clients, block new connections)
     - [`dfsctl share edit`](#dfsctl-share-edit) — Edit a share
     - [`dfsctl share enable`](#dfsctl-share-enable) — Enable a share (accept new connections)
@@ -676,16 +675,17 @@ Global flags:
       - [`dfsctl share permission grant`](#dfsctl-share-permission-grant) — Grant permission on a share
       - [`dfsctl share permission list`](#dfsctl-share-permission-list) — List permissions on a share
       - [`dfsctl share permission revoke`](#dfsctl-share-permission-revoke) — Revoke permission from a share
+    - [`dfsctl share remove`](#dfsctl-share-remove) — Remove a share
     - [`dfsctl share show`](#dfsctl-share-show) — Show share details
     - [`dfsctl share snapshot`](#dfsctl-share-snapshot) — Manage share snapshots (create, list, show, delete, restore)
       - [`dfsctl share snapshot create`](#dfsctl-share-snapshot-create) — Create a snapshot of a share
-      - [`dfsctl share snapshot delete`](#dfsctl-share-snapshot-delete) — Delete a snapshot
       - [`dfsctl share snapshot list`](#dfsctl-share-snapshot-list) — List snapshots for a share
+      - [`dfsctl share snapshot remove`](#dfsctl-share-snapshot-remove) — Remove a snapshot
       - [`dfsctl share snapshot restore`](#dfsctl-share-snapshot-restore) — Restore a snapshot into a (disabled) share
       - [`dfsctl share snapshot show`](#dfsctl-share-snapshot-show) — Show details of a snapshot
     - [`dfsctl share snapshot-policy`](#dfsctl-share-snapshot-policy) — Manage scheduled snapshot policies (schedule + retention)
-      - [`dfsctl share snapshot-policy delete`](#dfsctl-share-snapshot-policy-delete) — Delete a share's snapshot policy
       - [`dfsctl share snapshot-policy list`](#dfsctl-share-snapshot-policy-list) — List all snapshot policies
+      - [`dfsctl share snapshot-policy remove`](#dfsctl-share-snapshot-policy-remove) — Remove a share's snapshot policy
       - [`dfsctl share snapshot-policy run`](#dfsctl-share-snapshot-policy-run) — Trigger a share's snapshot policy now (manual override)
       - [`dfsctl share snapshot-policy set`](#dfsctl-share-snapshot-policy-set) — Create or update a share's snapshot policy
       - [`dfsctl share snapshot-policy show`](#dfsctl-share-snapshot-policy-show) — Show a share's snapshot policy
@@ -727,11 +727,11 @@ Global flags:
   - [`dfsctl user`](#dfsctl-user) — User management
     - [`dfsctl user change-password`](#dfsctl-user-change-password) — Change your own password
     - [`dfsctl user create`](#dfsctl-user-create) — Create a new user
-    - [`dfsctl user delete`](#dfsctl-user-delete) — Delete a user
     - [`dfsctl user edit`](#dfsctl-user-edit) — Edit a user
     - [`dfsctl user get`](#dfsctl-user-get) — Get user details
     - [`dfsctl user list`](#dfsctl-user-list) — List all users
     - [`dfsctl user password`](#dfsctl-user-password) — Reset a user's password
+    - [`dfsctl user remove`](#dfsctl-user-remove) — Remove a user
   - [`dfsctl version`](#dfsctl-version) — Show version information
 
 
@@ -1877,7 +1877,7 @@ dfsctl context use production
 dfsctl context current
 
 # Remove a context that is no longer needed
-dfsctl context delete staging
+dfsctl context remove staging
 ```
 
 Global flags:
@@ -1935,48 +1935,6 @@ Global flags:
   -v, --verbose              Enable verbose output
 ```
 
-### `dfsctl context delete`
-
-Delete a context
-
-Delete a saved server context and its stored credentials.
-
-The context's configuration and access token are removed from the local credential store. Use this to clean up after decommissioning a server or when a context was created by mistake.
-
-```
-dfsctl context delete <name> [flags]
-```
-
-**Examples:**
-
-```bash
-# Delete the "staging" context with a confirmation prompt
-dfsctl context delete staging
-
-# Delete without the confirmation prompt (e.g. in a script)
-dfsctl context delete staging --force
-```
-
-Flags:
-
-```
-  -f, --force   Skip confirmation
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
 ### `dfsctl context list`
 
 List all configured contexts
@@ -1997,6 +1955,48 @@ dfsctl context list
 
 # List contexts as JSON for scripting
 dfsctl context list -o json
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl context remove`
+
+Remove a context
+
+Remove a saved server context and its stored credentials.
+
+The context's configuration and access token are removed from the local credential store. Use this to clean up after decommissioning a server or when a context was created by mistake.
+
+```
+dfsctl context remove <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove the "staging" context with a confirmation prompt
+dfsctl context remove staging
+
+# Remove without the confirmation prompt (e.g. in a script)
+dfsctl context remove staging --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation
 ```
 
 Global flags:
@@ -2233,8 +2233,8 @@ dfsctl group add-user editors alice
 # Remove a user from a group
 dfsctl group remove-user editors alice
 
-# Delete a group (prompts for confirmation)
-dfsctl group delete editors
+# Remove a group (prompts for confirmation)
+dfsctl group remove editors
 ```
 
 Global flags:
@@ -2322,49 +2322,6 @@ Flags:
       --description string   Group description
       --gid uint32           Group ID (auto-generated if not set)
       --name string          Group name (required)
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl group delete`
-
-Delete a group
-
-Delete a group from the DittoFS server. This action is irreversible:
-the group record is permanently removed and any users that had it as their
-primary group will lose that association. You will be prompted for
-confirmation unless --force is specified.
-
-```
-dfsctl group delete <name> [flags]
-```
-
-**Examples:**
-
-```bash
-# Delete a group (prompts for confirmation)
-dfsctl group delete editors
-
-# Delete a group non-interactively (for scripts and automation)
-dfsctl group delete editors --force
-```
-
-Flags:
-
-```
-  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:
@@ -2493,6 +2450,49 @@ dfsctl group list -o json
 
 # Output as YAML
 dfsctl group list -o yaml
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl group remove`
+
+Remove a group
+
+Remove a group from the DittoFS server. This action is irreversible:
+the group record is permanently removed and any users that had it as their
+primary group will lose that association. You will be prompted for
+confirmation unless --force is specified.
+
+```
+dfsctl group remove <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a group (prompts for confirmation)
+dfsctl group remove editors
+
+# Remove a group non-interactively (for scripts and automation)
+dfsctl group remove editors --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:
@@ -3009,54 +3009,8 @@ dfsctl idmap sid list
 # Output the allocation table as JSON
 dfsctl idmap sid list -o json
 
-# Delete a misallocated SID entry (use with care)
-dfsctl idmap sid delete S-1-5-21-111-222-333-1107
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl idmap sid delete`
-
-Delete a foreign-SID UID/GID allocation
-
-Delete a durable foreign-SID to Unix UID/GID allocation. This is an
-administrative escape hatch: once removed, the SID will be re-allocated to a
-potentially different UID/GID on its next resolution, which can re-attribute
-files owned by the old Unix ID to a different numeric owner. Use only when
-correcting a misallocated SID, and be aware that in-flight NFS/SMB sessions
-may cache the old mapping until they reconnect. You will be prompted for
-confirmation unless --force is specified.
-
-```
-dfsctl idmap sid delete <sid> [flags]
-```
-
-**Examples:**
-
-```bash
-# Delete a SID allocation (prompts for confirmation)
-dfsctl idmap sid delete S-1-5-21-111-222-333-1107
-
-# Delete without confirmation (for automated cleanup scripts)
-dfsctl idmap sid delete S-1-5-21-111-222-333-1107 --force
-```
-
-Flags:
-
-```
-  -f, --force   Skip confirmation prompt
+# Remove a misallocated SID entry (use with care)
+dfsctl idmap sid remove S-1-5-21-111-222-333-1107
 ```
 
 Global flags:
@@ -3098,6 +3052,52 @@ dfsctl idmap sid list -o json
 
 # Output as YAML
 dfsctl idmap sid list -o yaml
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl idmap sid remove`
+
+Remove a foreign-SID UID/GID allocation
+
+Remove a durable foreign-SID to Unix UID/GID allocation. This is an
+administrative escape hatch: once removed, the SID will be re-allocated to a
+potentially different UID/GID on its next resolution, which can re-attribute
+files owned by the old Unix ID to a different numeric owner. Use only when
+correcting a misallocated SID, and be aware that in-flight NFS/SMB sessions
+may cache the old mapping until they reconnect. You will be prompted for
+confirmation unless --force is specified.
+
+```
+dfsctl idmap sid remove <sid> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a SID allocation (prompts for confirmation)
+dfsctl idmap sid remove S-1-5-21-111-222-333-1107
+
+# Remove without confirmation (for automated cleanup scripts)
+dfsctl idmap sid remove S-1-5-21-111-222-333-1107 --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:
@@ -3233,8 +3233,8 @@ dfsctl netgroup show office-network
 # Remove a specific member by UUID
 dfsctl netgroup remove-member office-network --member-id <uuid>
 
-# Delete a netgroup (fails if still in use by shares)
-dfsctl netgroup delete office-network
+# Remove a netgroup (fails if still in use by shares)
+dfsctl netgroup remove office-network
 ```
 
 Global flags:
@@ -3344,49 +3344,6 @@ Global flags:
   -v, --verbose              Enable verbose output
 ```
 
-### `dfsctl netgroup delete`
-
-Delete a netgroup
-
-Delete a netgroup from the DittoFS server. This action is irreversible.
-If the netgroup is still referenced by one or more shares, the deletion fails
-with a conflict error that lists the affected shares — remove those references
-first. You will be prompted for confirmation unless --force is specified.
-
-```
-dfsctl netgroup delete <name> [flags]
-```
-
-**Examples:**
-
-```bash
-# Delete a netgroup (prompts for confirmation)
-dfsctl netgroup delete office-network
-
-# Delete a netgroup non-interactively (for scripts and automation)
-dfsctl netgroup delete office-network --force
-```
-
-Flags:
-
-```
-  -f, --force   Skip confirmation prompt
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
 ### `dfsctl netgroup list`
 
 List all netgroups
@@ -3410,6 +3367,49 @@ dfsctl netgroup list -o json
 
 # Output as YAML
 dfsctl netgroup list -o yaml
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl netgroup remove`
+
+Remove a netgroup
+
+Remove a netgroup from the DittoFS server. This action is irreversible.
+If the netgroup is still referenced by one or more shares, the deletion fails
+with a conflict error that lists the affected shares — remove those references
+first. You will be prompted for confirmation unless --force is specified.
+
+```
+dfsctl netgroup remove <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a netgroup (prompts for confirmation)
+dfsctl netgroup remove office-network
+
+# Remove a netgroup non-interactively (for scripts and automation)
+dfsctl netgroup remove office-network --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:
@@ -3538,7 +3538,7 @@ dfsctl quota set /archive --scope default-user --limit-bytes 1GiB
 dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-bytes 45GiB --grace-seconds 604800
 
 # Remove a per-user quota
-dfsctl quota rm /archive --scope user --id 1000
+dfsctl quota remove /archive --scope user --id 1000
 ```
 
 Global flags:
@@ -3597,7 +3597,7 @@ Global flags:
   -v, --verbose              Enable verbose output
 ```
 
-### `dfsctl quota rm`
+### `dfsctl quota remove`
 
 Remove a per-identity quota
 
@@ -3608,20 +3608,20 @@ one exists) or becomes unlimited. The operation is irreversible and requires
 confirmation unless --force is specified.
 
 ```
-dfsctl quota rm <share> [flags]
+dfsctl quota remove <share> [flags]
 ```
 
 **Examples:**
 
 ```bash
 # Remove a per-user quota (uid 1000)
-dfsctl quota rm /archive --scope user --id 1000
+dfsctl quota remove /archive --scope user --id 1000
 
 # Remove the default-user fallback quota
-dfsctl quota rm /archive --scope default-user
+dfsctl quota remove /archive --scope default-user
 
 # Remove a per-group quota (gid 2000) without prompting
-dfsctl quota rm /archive --scope group --id 2000 --force
+dfsctl quota remove /archive --scope group --id 2000 --force
 ```
 
 Flags:
@@ -3878,8 +3878,8 @@ dfsctl share disable /archive
 # Re-enable a share
 dfsctl share enable /archive
 
-# Delete a share
-dfsctl share delete /archive
+# Remove a share
+dfsctl share remove /archive
 
 # Grant permission
 dfsctl share permission grant /archive --user alice --level read-write
@@ -3971,55 +3971,6 @@ Flags:
       --trash-max-size int              Max bytes the recycle bin may hold before the reaper evicts oldest items (0 = unbounded).
       --trash-restrict-empty-to-admin   Restrict emptying the recycle bin to admins.
       --trash-retention-days int        Days to retain recycled items before the reaper purges them (0 = keep forever).
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl share delete`
-
-Delete a share
-
-Permanently delete a share from the DittoFS server.
-
-Deleting a share removes its configuration from the control plane. The
-underlying block and metadata stores are NOT deleted — only the share record
-that ties them together. This operation is irreversible: you will be prompted
-for confirmation unless --force is specified. Disable the share first
-('dfsctl share disable') if you want to drain active clients before deleting.
-
-```
-dfsctl share delete <name> [flags]
-```
-
-**Examples:**
-
-```bash
-# Delete a share, prompted for confirmation
-dfsctl share delete /archive
-
-# Delete without a confirmation prompt (useful in scripts)
-dfsctl share delete /archive --force
-
-# Drain clients first, then delete without prompting
-dfsctl share disable /archive && dfsctl share delete /archive --force
-```
-
-Flags:
-
-```
-  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:
@@ -4681,6 +4632,55 @@ Global flags:
   -v, --verbose              Enable verbose output
 ```
 
+### `dfsctl share remove`
+
+Remove a share
+
+Permanently remove a share from the DittoFS server.
+
+Removing a share removes its configuration from the control plane. The
+underlying block and metadata stores are NOT deleted — only the share record
+that ties them together. This operation is irreversible: you will be prompted
+for confirmation unless --force is specified. Disable the share first
+('dfsctl share disable') if you want to drain active clients before removing.
+
+```
+dfsctl share remove <name> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a share, prompted for confirmation
+dfsctl share remove /archive
+
+# Remove without a confirmation prompt (useful in scripts)
+dfsctl share remove /archive --force
+
+# Drain clients first, then remove without prompting
+dfsctl share disable /archive && dfsctl share remove /archive --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
 ### `dfsctl share show`
 
 Show share details
@@ -4745,8 +4745,8 @@ dfsctl share snapshot list /archive
 # Show details of a single snapshot
 dfsctl share snapshot show /archive snap-abc123
 
-# Delete a snapshot (prompts for confirmation)
-dfsctl share snapshot delete /archive snap-abc123
+# Remove a snapshot (prompts for confirmation)
+dfsctl share snapshot remove /archive snap-abc123
 
 # Restore a snapshot onto a disabled share
 dfsctl share disable /archive
@@ -4820,46 +4820,6 @@ Global flags:
   -v, --verbose              Enable verbose output
 ```
 
-### `dfsctl share snapshot delete`
-
-Delete a snapshot
-
-Delete a snapshot. This is irreversible.
-
-```
-dfsctl share snapshot delete <share> <id> [flags]
-```
-
-**Examples:**
-
-```bash
-# Delete with prompt
-dfsctl share snapshot delete /archive snap-abc123
-
-# Delete without prompt
-dfsctl share snapshot delete /archive snap-abc123 --yes
-```
-
-Flags:
-
-```
-      --yes   Skip confirmation prompt
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
 ### `dfsctl share snapshot list`
 
 List snapshots for a share
@@ -4892,6 +4852,46 @@ Flags:
       --name-prefix string   Filter by name prefix
       --no-relative          Print absolute timestamps instead of relative
       --state string         Filter by state (creating|ready|failed)
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl share snapshot remove`
+
+Remove a snapshot
+
+Remove a snapshot. This is irreversible.
+
+```
+dfsctl share snapshot remove <share> <id> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove with prompt
+dfsctl share snapshot remove /archive snap-abc123
+
+# Remove without prompt
+dfsctl share snapshot remove /archive snap-abc123 --yes
+```
+
+Flags:
+
+```
+      --yes   Skip confirmation prompt
 ```
 
 Global flags:
@@ -5027,52 +5027,7 @@ dfsctl share snapshot-policy list
 dfsctl share snapshot-policy run /archive
 
 # Remove a share's policy
-dfsctl share snapshot-policy delete /archive
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl share snapshot-policy delete`
-
-Delete a share's snapshot policy
-
-Delete the snapshot policy for a share.
-
-Existing snapshots are not removed; only the schedule and automatic pruning
-stop. After deletion, no new scheduled snapshots will be created and old
-scheduled snapshots will no longer be pruned. Use 'snapshot-policy set' to
-recreate a policy at any time.
-
-```
-dfsctl share snapshot-policy delete <share> [flags]
-```
-
-**Examples:**
-
-```bash
-# Delete the policy, with a confirmation prompt
-dfsctl share snapshot-policy delete /archive
-
-# Delete without a confirmation prompt (useful in scripts)
-dfsctl share snapshot-policy delete /archive --yes
-```
-
-Flags:
-
-```
-      --yes   Skip confirmation prompt
+dfsctl share snapshot-policy remove /archive
 ```
 
 Global flags:
@@ -5115,6 +5070,51 @@ dfsctl share snapshot-policy list -o json
 
 # Emit as YAML
 dfsctl share snapshot-policy list -o yaml
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl share snapshot-policy remove`
+
+Remove a share's snapshot policy
+
+Remove the snapshot policy for a share.
+
+Existing snapshots are not removed; only the schedule and automatic pruning
+stop. After removal, no new scheduled snapshots will be created and old
+scheduled snapshots will no longer be pruned. Use 'snapshot-policy set' to
+recreate a policy at any time.
+
+```
+dfsctl share snapshot-policy remove <share> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove the policy, with a confirmation prompt
+dfsctl share snapshot-policy remove /archive
+
+# Remove without a confirmation prompt (useful in scripts)
+dfsctl share snapshot-policy remove /archive --yes
+```
+
+Flags:
+
+```
+      --yes   Skip confirmation prompt
 ```
 
 Global flags:
@@ -6902,8 +6902,8 @@ dfsctl user edit alice --groups editors,viewers
 # Reset a user's password as an admin
 dfsctl user password alice
 
-# Delete a user (prompts for confirmation)
-dfsctl user delete alice
+# Remove a user (prompts for confirmation)
+dfsctl user remove alice
 ```
 
 Global flags:
@@ -7010,49 +7010,6 @@ Flags:
       --role string       Role (user|admin) (default "user")
       --uid uint32        Unix user ID (auto-assigned if not specified)
   -u, --username string   Username (required)
-```
-
-Global flags:
-
-```
-      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
-      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
-      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
-      --no-color             Disable colored output
-  -o, --output string        Output format (table|json|yaml) (default "table")
-      --server string        Server URL (overrides stored credential)
-      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
-      --token string         Bearer token (overrides stored credential)
-  -v, --verbose              Enable verbose output
-```
-
-### `dfsctl user delete`
-
-Delete a user
-
-Delete a user from the DittoFS server. This action is irreversible:
-the account and its authentication tokens are permanently removed, though
-files the user owns are not deleted. You will be prompted for confirmation
-unless --force is specified.
-
-```
-dfsctl user delete <username> [flags]
-```
-
-**Examples:**
-
-```bash
-# Delete a user (prompts for confirmation)
-dfsctl user delete alice
-
-# Delete a user non-interactively (for scripts and automation)
-dfsctl user delete alice --force
-```
-
-Flags:
-
-```
-  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:
@@ -7234,6 +7191,49 @@ Flags:
 
 ```
   -p, --password string   New password (prompts if not provided)
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl user remove`
+
+Remove a user
+
+Remove a user from the DittoFS server. This action is irreversible:
+the account and its authentication tokens are permanently removed, though
+files the user owns are not deleted. You will be prompted for confirmation
+unless --force is specified.
+
+```
+dfsctl user remove <username> [flags]
+```
+
+**Examples:**
+
+```bash
+# Remove a user (prompts for confirmation)
+dfsctl user remove alice
+
+# Remove a user non-interactively (for scripts and automation)
+dfsctl user remove alice --force
+```
+
+Flags:
+
+```
+  -f, --force   Skip confirmation prompt
 ```
 
 Global flags:

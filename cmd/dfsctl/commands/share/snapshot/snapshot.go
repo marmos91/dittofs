@@ -24,8 +24,8 @@ Examples:
   # Show details of a single snapshot
   dfsctl share snapshot show /archive snap-abc123
 
-  # Delete a snapshot (prompts for confirmation)
-  dfsctl share snapshot delete /archive snap-abc123
+  # Remove a snapshot (prompts for confirmation)
+  dfsctl share snapshot remove /archive snap-abc123
 
   # Restore a snapshot onto a disabled share
   dfsctl share disable /archive
@@ -36,6 +36,6 @@ func init() {
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(showCmd)
-	Cmd.AddCommand(deleteCmd)
+	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(restoreCmd)
 }

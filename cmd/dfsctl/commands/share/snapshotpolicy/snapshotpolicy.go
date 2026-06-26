@@ -30,13 +30,13 @@ Examples:
   dfsctl share snapshot-policy run /archive
 
   # Remove a share's policy
-  dfsctl share snapshot-policy delete /archive`,
+  dfsctl share snapshot-policy remove /archive`,
 }
 
 func init() {
 	Cmd.AddCommand(setCmd)
 	Cmd.AddCommand(showCmd)
 	Cmd.AddCommand(listCmd)
-	Cmd.AddCommand(deleteCmd)
+	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(runCmd)
 }

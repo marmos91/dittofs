@@ -33,8 +33,8 @@ Examples:
   # Remove a user from a group
   dfsctl group remove-user editors alice
 
-  # Delete a group (prompts for confirmation)
-  dfsctl group delete editors`,
+  # Remove a group (prompts for confirmation)
+  dfsctl group remove editors`,
 }
 
 func init() {
@@ -42,7 +42,7 @@ func init() {
 	Cmd.AddCommand(getCmd)
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(editCmd)
-	Cmd.AddCommand(deleteCmd)
+	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(addUserCmd)
 	Cmd.AddCommand(removeUserCmd)
 }

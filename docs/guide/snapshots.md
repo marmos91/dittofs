@@ -123,7 +123,7 @@ leaf commands are:
 dfsctl share snapshot create <share>          # create a new snapshot
 dfsctl share snapshot list <share>            # list snapshots for a share
 dfsctl share snapshot show <share> <id>       # detail view for one snapshot
-dfsctl share snapshot delete <share> <id>     # delete a snapshot (Y/N prompt)
+dfsctl share snapshot remove <share> <id>     # remove a snapshot (Y/N prompt)
 dfsctl share snapshot restore <share> <id>    # restore a share from a snapshot
 ```
 
@@ -199,10 +199,10 @@ prefix shown in `list` (see §5). It reports the manifest hash count
 (`MANIFEST COUNT`) and the human-readable dump size (`DUMP BYTES`);
 `list` omits them to keep the row count cheap.
 
-### Worked transcript: delete
+### Worked transcript: remove
 
 ```text
-$ dfsctl share snapshot delete /photos 9f2dab17
+$ dfsctl share snapshot remove /photos 9f2dab17
 Delete snapshot 9f2dab17 from share /photos?
 Type 'y' to confirm: y
 Snapshot 9f2dab17 deleted.
@@ -212,7 +212,7 @@ $
 Use `--yes` to skip the confirmation:
 
 ```text
-$ dfsctl share snapshot delete /photos 9f2dab17 --yes
+$ dfsctl share snapshot remove /photos 9f2dab17 --yes
 Snapshot 9f2dab17 deleted.
 ```
 
@@ -339,7 +339,7 @@ flag; the list is always newest-first.
 | `SIZE` | Dump size, but always `-` in list mode — the list handler does not stat artifacts. Use `show` to see it. |
 
 > **The `ID` column is truncated to 8 characters for readability, but
-> `show`, `delete`, `restore`, and `create --retry` all require the
+> `show`, `remove`, `restore`, and `create --retry` all require the
 > *full* snapshot UUID.** Passing the 8-character prefix returns
 > `404 ErrSnapshotNotFound` — the server matches snapshot IDs exactly
 > and does not resolve prefixes. Get the full UUID from `list -o json`
@@ -384,17 +384,17 @@ updated_at: 2026-05-27T18:14:25Z
 ## 6. Deleting a snapshot
 
 ```
-dfsctl share snapshot delete <share> <id> [--yes]
+dfsctl share snapshot remove <share> <id> [--yes]
 ```
 
-`delete` removes the snapshot row, wipes the on-disk directory
+`remove` removes the snapshot row, wipes the on-disk directory
 (`<localStoreDir>/snapshots/<share>/<id>/`), and releases the GC
 hold for any block referenced only by this snapshot.
 
 By default the command prompts `Y/N`:
 
 ```text
-$ dfsctl share snapshot delete /photos 9f2dab17
+$ dfsctl share snapshot remove /photos 9f2dab17
 Delete snapshot 9f2dab17 from share /photos?
 Type 'y' to confirm: n
 Aborted.
@@ -406,12 +406,12 @@ Aborted.
 
 Every successful restore creates a `pre-restore-*` safety snapshot
 (§7) that captures the share's state immediately before the restore
-overwrote it. These are normal snapshots — the `delete` command does
+overwrote it. These are normal snapshots — the `remove` command does
 not refuse them, treat them specially, or warn. Operators are
 expected to delete them explicitly after the restore is validated.
 The reason for this design is uniformity: there is no separate
 "safety" namespace, no `--really-yes` escape hatch, no second
-confirmation. The `delete` command behaves the same way for every
+confirmation. The `remove` command behaves the same way for every
 snapshot.
 
 ### GC reclamation timing
@@ -419,9 +419,9 @@ snapshot.
 Block-store GC runs on its own schedule (`dfsctl store block gc
 <share>`). Deleting a snapshot releases the hold immediately, but
 the underlying blocks remain in the block store until the next GC
-sweep enumerates them as unreferenced. The window between `delete`
+sweep enumerates them as unreferenced. The window between `remove`
 and reclamation is bounded only by your GC cadence; if you need to
-reclaim space immediately, follow `delete` with an on-demand
+reclaim space immediately, follow `remove` with an on-demand
 `dfsctl store block gc <share>`.
 
 If a block is referenced by another snapshot or by a live file in
@@ -448,7 +448,7 @@ creates a `pre-restore-*` safety snapshot first.
 5. dfsctl share enable /<share>
 6. Verify the safety snap exists, then delete it after the
    grace period you set internally:
-      dfsctl share snapshot delete /<share> <safety-snap-id>
+      dfsctl share snapshot remove /<share> <safety-snap-id>
 ```
 
 ### Why the share must be disabled first
@@ -479,7 +479,7 @@ A safety snapshot of the current share state will be created first.
 Type 'y' to confirm: y
 Restored snapshot 7a3ec1b2 into share /photos.
 Safety snap: c12e8d4f (delete with
-'dfsctl share snapshot delete /photos c12e8d4f' after verifying).
+'dfsctl share snapshot remove /photos c12e8d4f' after verifying).
 
 $ # Sample some files to confirm the restore brought back what you expect.
 $ ls /mnt/photos/2024/      # (after a temp mount or via another client)
@@ -489,7 +489,7 @@ $ dfsctl share enable /photos
 Share /photos enabled.
 
 $ # After validation, delete the safety snap:
-$ dfsctl share snapshot delete /photos c12e8d4f --yes
+$ dfsctl share snapshot remove /photos c12e8d4f --yes
 Snapshot c12e8d4f deleted.
 ```
 
@@ -696,12 +696,12 @@ Concretely:
 A `failed` snapshot whose orchestration crashed partway through may
 have a partial manifest file. GC still respects it as a hold — better
 to retain an extra block than to delete one a recovery might need.
-Run `dfsctl share snapshot delete` to release the hold once the
+Run `dfsctl share snapshot remove` to release the hold once the
 failed snapshot is no longer useful.
 
 ### Delete-vs-GC race window
 
-`delete` performs three steps:
+`remove` performs three steps:
 
 1. Acquire a per-share delete lock.
 2. Remove the snapshot row from the database.
@@ -774,7 +774,7 @@ cleanup, disk failure, lost share data directory). The snapshot row
 still exists in the database but its replay artifact does not.
 
 **Recovery.** The snapshot is unrestorable. Delete it
-(`dfsctl share snapshot delete`) and restore from another snapshot
+(`dfsctl share snapshot remove`) and restore from another snapshot
 if available. If no other usable snapshot exists, this is a real
 data-loss event — restore from off-cluster backups (out of scope
 for this subsystem).
@@ -904,7 +904,7 @@ dfsctl share snapshot-policy list
 dfsctl share snapshot-policy run /archive
 
 # Stop scheduling (existing snapshots are kept)
-dfsctl share snapshot-policy delete /archive
+dfsctl share snapshot-policy remove /archive
 ```
 
 The scheduler feeds the same snapshot pool as on-demand creation, so

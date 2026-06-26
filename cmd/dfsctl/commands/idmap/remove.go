@@ -49,7 +49,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 
 	return cmdutil.RunDeleteWithConfirmation("Identity mapping", removePrincipal, removeForce, func() error {
 		if err := client.DeleteIdentityMapping(removeProvider, removePrincipal); err != nil {
-			return fmt.Errorf("failed to delete identity mapping: %w", err)
+			return fmt.Errorf("failed to remove identity mapping: %w", err)
 		}
 		return nil
 	})

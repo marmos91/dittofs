@@ -24,7 +24,7 @@ Examples:
   dfsctl context current
 
   # Remove a context that is no longer needed
-  dfsctl context delete staging`,
+  dfsctl context remove staging`,
 }
 
 func init() {
@@ -32,5 +32,5 @@ func init() {
 	Cmd.AddCommand(useCmd)
 	Cmd.AddCommand(currentCmd)
 	Cmd.AddCommand(renameCmd)
-	Cmd.AddCommand(deleteCmd)
+	Cmd.AddCommand(removeCmd)
 }

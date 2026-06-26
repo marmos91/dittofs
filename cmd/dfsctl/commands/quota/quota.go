@@ -68,11 +68,11 @@ Examples:
   dfsctl quota set /archive --scope group --id 2000 --limit-bytes 50GiB --soft-bytes 45GiB --grace-seconds 604800
 
   # Remove a per-user quota
-  dfsctl quota rm /archive --scope user --id 1000`,
+  dfsctl quota remove /archive --scope user --id 1000`,
 }
 
 func init() {
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(setCmd)
-	Cmd.AddCommand(rmCmd)
+	Cmd.AddCommand(removeCmd)
 }

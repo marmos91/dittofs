@@ -25,12 +25,12 @@ Examples:
   # Output the allocation table as JSON
   dfsctl idmap sid list -o json
 
-  # Delete a misallocated SID entry (use with care)
-  dfsctl idmap sid delete S-1-5-21-111-222-333-1107`,
+  # Remove a misallocated SID entry (use with care)
+  dfsctl idmap sid remove S-1-5-21-111-222-333-1107`,
 }
 
 func init() {
 	sidCmd.AddCommand(sidListCmd)
-	sidCmd.AddCommand(sidDeleteCmd)
+	sidCmd.AddCommand(sidRemoveCmd)
 	Cmd.AddCommand(sidCmd)
 }

@@ -945,7 +945,7 @@ Shares are managed at runtime via `dfsctl` and persisted in the control plane da
 ./dfsctl share permission list /cloud
 
 # Delete a share
-./dfsctl share delete /fast
+./dfsctl share remove /fast
 ```
 
 **Configuration Patterns:**
@@ -989,7 +989,7 @@ DittoFS supports two complementary quota layers, both enforced by NFS *and* SMB:
 
 # Inspect and remove.
 ./dfsctl quota list /cloud
-./dfsctl quota rm /cloud --scope user --id 1000
+./dfsctl quota remove /cloud --scope user --id 1000
 ```
 
 Per-identity quota usage is tracked incrementally by every metadata backend
@@ -1182,7 +1182,7 @@ dfsctl user create --username bob --email bob@example.com --groups editors,viewe
 dfsctl user list
 dfsctl user get alice
 dfsctl user update alice --email alice@example.com
-dfsctl user delete alice
+dfsctl user remove alice
 
 # Passwords
 dfsctl user change-password           # change your own
@@ -1197,7 +1197,7 @@ dfsctl group list
 dfsctl group get editors
 dfsctl group add-user editors alice
 dfsctl group remove-user editors alice
-dfsctl group delete editors
+dfsctl group remove editors
 ```
 
 **Share Permissions:**
