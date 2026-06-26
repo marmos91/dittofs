@@ -77,7 +77,7 @@ type Share struct {
 	// TrashExcludePatterns are globs that bypass the bin (immediate delete),
 	// stored as a JSON array string (same encoding as BlockedOperations).
 	TrashExcludePatterns string    `gorm:"type:text" json:"-"`
-	DefaultPermission    string    `gorm:"default:read-write;size:50" json:"default_permission"`      // none, read, read-write, admin
+	DefaultPermission    string    `gorm:"default:none;size:50" json:"default_permission"`            // none, read, read-write, admin
 	Config               string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
 	BlockedOperations    string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
 	RetentionPolicy      string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)

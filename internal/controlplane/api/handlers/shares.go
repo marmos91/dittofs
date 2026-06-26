@@ -316,13 +316,14 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		remoteBlockStoreID = &remoteStore.ID
 	}
 
-	// Set default permission if not provided
-	// Use "read-write" for NFS compatibility (same as traditional NFS servers)
-	// This allows anonymous/unknown UIDs to access the share, with file-level
-	// permissions enforcing access control (Unix DAC model).
+	// Set default permission if not provided.
+	// Default to "none" (deny) so an API-created share is not world-accessible
+	// unless the caller opts into a broader policy. This mirrors the dfsctl
+	// flag default; an omitted default_permission must not silently grant
+	// anonymous/unknown UIDs access.
 	defaultPerm := req.DefaultPermission
 	if defaultPerm == "" {
-		defaultPerm = "read-write"
+		defaultPerm = "none"
 	} else if !models.SharePermission(defaultPerm).IsValid() {
 		// Validate the raw string, not ParseSharePermission's result: Parse maps
 		// anything unrecognized to PermissionNone (which is itself valid), so an
@@ -537,7 +538,10 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			BadRequest(w, fmt.Sprintf("Owner user %q has no UID", req.Owner))
 			return
 		}
-		gid := uint32(0)
+		// Default the group to the owner's own UID rather than GID 0 (root):
+		// an --owner share with no explicit GID must not grant root-group
+		// ownership of the share root.
+		gid := *owner.UID
 		if owner.GID != nil {
 			gid = *owner.GID
 		}
