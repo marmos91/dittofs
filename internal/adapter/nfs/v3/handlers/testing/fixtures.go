@@ -139,7 +139,11 @@ func NewHandlerFixtureWithStore(
 	shareConfig := &runtime.ShareConfig{
 		Name:          DefaultShareName,
 		MetadataStore: "test-metaSvc",
-		RootAttr:      &metadata.FileAttr{}, // Empty attr, AddShare will apply defaults
+		// Export root owned by the default test principal (UID/GID 1000), so
+		// requests issued via Context() operate as the root's owner. The secure
+		// default mode (0755) then grants the owner write access without making
+		// the root world-writable.
+		RootAttr: &metadata.FileAttr{UID: DefaultUID, GID: DefaultGID},
 	}
 	if err := reg.AddShare(ctx, shareConfig); err != nil {
 		t.Fatalf("Failed to add share: %v", err)
