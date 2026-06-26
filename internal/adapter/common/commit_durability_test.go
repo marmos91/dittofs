@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	localmemory "github.com/marmos91/dittofs/pkg/block/local/memory"
@@ -52,6 +53,32 @@ func writePayload(t *testing.T, bs *engine.Store, payloadID string) {
 	data := []byte("durability-matrix-payload-bytes")
 	if err := WriteToBlockStore(context.Background(), bs, metadata.PayloadID(payloadID), data, 0); err != nil {
 		t.Fatalf("WriteToBlockStore: %v", err)
+	}
+}
+
+// commitUntilDurable drives CommitBlockStore the way a real protocol client
+// does: it re-issues the commit on the soft ErrNotDurableYet condition until
+// the async mirror finalizes (or a deadline elapses). A single explicit Flush
+// can lose the engine's `uploading` gate to the wake-driven periodic uploader
+// (a WriteToBlockStore nudges it via signalWake, #1407), in which case Flush
+// returns Finalized=false WITHOUT waiting (#670). The engine contract requires
+// callers to re-drive on that soft condition, so a one-shot commit assertion is
+// racy by design — poll instead of assuming the first Flush wins the gate.
+func commitUntilDurable(t *testing.T, bs *engine.Store, payloadID string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := CommitBlockStore(context.Background(), bs, metadata.PayloadID(payloadID))
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, ErrNotDurableYet) {
+			t.Fatalf("CommitBlockStore: unexpected error: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("CommitBlockStore never reached durable within deadline; last err %v", err)
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -133,9 +160,10 @@ func TestCommitBlockStore_Strict_MemoryLocal_HealthyDurableRemote_ReturnsNil(t *
 	if !bs.RemoteDurable() {
 		t.Fatal("remote should report durable after SetDurable(true)")
 	}
-	if err := CommitBlockStore(context.Background(), bs, metadata.PayloadID(payloadID)); err != nil {
-		t.Fatalf("strict memory-local + durable remote (Finalized) should commit; got %v", err)
-	}
+	// Re-drive per the engine contract: the explicit Flush may lose the
+	// `uploading` gate to the wake-triggered periodic uploader and return
+	// Finalized=false; the mirror finalizes on a subsequent pass.
+	commitUntilDurable(t, bs, payloadID)
 }
 
 // TestCommitBlockStore_Strict_MemoryLocal_NonDurableRemote_NotDurableYet
