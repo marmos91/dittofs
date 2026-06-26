@@ -202,8 +202,12 @@ jobs:
           TESTS_DIR="$PJDFSTEST_DIR/share/pjdfstest/tests"
           LOG_FILE=~/posix-nfs-v${{ matrix.nfs_version }}-${{ matrix.profile }}.log
 
-          cd $DITTOFS_MOUNT
-          sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" prove -rv --timer "$TESTS_DIR" \
+          # Run as root with CWD inside the mount. root (uid 0) superuser-
+          # bypasses POSIX and traverses the secure root-owned export root;
+          # pjdfstest then drops to its own unprivileged test UIDs. The earlier
+          # bare `cd $DITTOFS_MOUNT` ran as the unprivileged runner user, which
+          # default-permission=none denies — EIO before the tests ever start.
+          sudo env PATH="$PJDFSTEST_DIR/bin:$PATH" bash -c "cd '$DITTOFS_MOUNT' && prove -rv --timer '$TESTS_DIR'" \
             2>&1 | tee "$LOG_FILE" || true
 
           echo "## NFS v${{ matrix.nfs_version }} / ${{ matrix.profile }} Results" >> $GITHUB_STEP_SUMMARY

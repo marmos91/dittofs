@@ -70,13 +70,15 @@ type Share struct {
 
 // CreateShareRequest is the request to create a share.
 type CreateShareRequest struct {
-	Name              string    `json:"name"`
-	MetadataStoreID   string    `json:"metadata_store_id"`
-	LocalBlockStore   string    `json:"local_block_store"`
-	RemoteBlockStore  *string   `json:"remote_block_store,omitempty"`
-	ReadOnly          bool      `json:"read_only,omitempty"`
-	EncryptData       bool      `json:"encrypt_data,omitempty"`
-	DefaultPermission string    `json:"default_permission,omitempty"`
+	Name              string  `json:"name"`
+	MetadataStoreID   string  `json:"metadata_store_id"`
+	LocalBlockStore   string  `json:"local_block_store"`
+	RemoteBlockStore  *string `json:"remote_block_store,omitempty"`
+	ReadOnly          bool    `json:"read_only,omitempty"`
+	EncryptData       bool    `json:"encrypt_data,omitempty"`
+	DefaultPermission string  `json:"default_permission,omitempty"`
+	// Owner is the username whose UID/GID owns the share's root directory.
+	Owner             string    `json:"owner,omitempty"`
 	Description       string    `json:"description,omitempty"`
 	BlockedOperations *[]string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string    `json:"retention_policy,omitempty"`
