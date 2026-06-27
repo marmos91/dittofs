@@ -742,16 +742,24 @@ func bestGrantableState(locks []*UnifiedLock, leaseKey [16]byte, requestedState 
 	// `disallow_write_lease`), and a trad-oplock requestor additionally
 	// drops H so a BATCH/EXCLUSIVE request collapses to LEVEL_II — per the
 	// `map_lease_type_to_oplock` round-trip which Samba applies for non-
-	// LEASE_OPLOCK requests. Timeout tombstones (BrokenViaTimeout=true)
-	// are excluded so smb2.oplock.batch22b can grant a fresh BATCH after
-	// the abandoned holder times out. Required by smbtorture
+	// LEASE_OPLOCK requests. Required by smbtorture
 	// smb2.oplock.batch9a / batch13 / batch14 / batch16.
+	//
+	// Traditional-oplock timeout tombstones (BrokenViaTimeout=true) are
+	// excluded so smb2.oplock.batch22b can grant a fresh BATCH after the
+	// abandoned holder times out. Lease tombstones are NOT excluded: a lease
+	// record lives only while its handle is open (forceCompleteBreaks settles
+	// a timed-out lease to LeaseState=None rather than deleting it), so a
+	// still-open timed-out lease is a real second handle that must keep W off
+	// a new grant (smb2.lease.timeout: the parked conflicting opener gets RH,
+	// not RWH). The record is removed, and the cap lifts, when that handle
+	// closes.
 	var hasOtherActiveHolder bool
 	for _, lock := range locks {
 		if lock.Lease == nil || lock.Lease.LeaseKey == leaseKey {
 			continue
 		}
-		if lock.Lease.BrokenViaTimeout {
+		if lock.Lease.BrokenViaTimeout && lock.Lease.IsTraditionalOplock {
 			continue
 		}
 		hasOtherActiveHolder = true
