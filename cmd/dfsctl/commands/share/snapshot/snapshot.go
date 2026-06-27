@@ -8,11 +8,11 @@ import (
 // Cmd is the parent command for share snapshot management.
 var Cmd = &cobra.Command{
 	Use:   "snapshot",
-	Short: "Manage share snapshots (create, list, show, delete, restore)",
+	Short: "Manage share snapshots (create, list, show, remove, restore)",
 	Long: `Manage share snapshots.
 
 A snapshot captures the full state of a share at a point in time. It can
-be inspected, listed, deleted, or restored back onto a (disabled) share.
+be inspected, listed, removed, or restored back onto a (disabled) share.
 
 Examples:
   # Create a snapshot and wait for it to be ready

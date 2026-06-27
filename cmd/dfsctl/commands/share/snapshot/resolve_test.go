@@ -58,9 +58,9 @@ func TestResolveSnapshotID_NotFound(t *testing.T) {
 	}
 }
 
-// TestDelete_ResolvesPartialID asserts delete resolves an 8-char prefix to
-// the full UUID before calling DeleteSnapshot.
-func TestDelete_ResolvesPartialID(t *testing.T) {
+// TestRemove_ResolvesPartialID asserts remove resolves an 8-char prefix to
+// the full UUID before calling RemoveSnapshot.
+func TestRemove_ResolvesPartialID(t *testing.T) {
 	resetRemoveFlags()
 	removeYes = true
 	fc := &fakeClient{snapshots: map[string]*apiclient.Snapshot{
@@ -78,6 +78,6 @@ func TestDelete_ResolvesPartialID(t *testing.T) {
 	_ = w.Close()
 
 	if len(fc.deleteCalls) != 1 || fc.deleteCalls[0] != "abc12345-full-uuid" {
-		t.Fatalf("DeleteSnapshot called with %v, want [abc12345-full-uuid]", fc.deleteCalls)
+		t.Fatalf("RemoveSnapshot called with %v, want [abc12345-full-uuid]", fc.deleteCalls)
 	}
 }

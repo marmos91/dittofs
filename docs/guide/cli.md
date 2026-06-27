@@ -677,7 +677,7 @@ Global flags:
       - [`dfsctl share permission revoke`](#dfsctl-share-permission-revoke) — Revoke permission from a share
     - [`dfsctl share remove`](#dfsctl-share-remove) — Remove a share
     - [`dfsctl share show`](#dfsctl-share-show) — Show share details
-    - [`dfsctl share snapshot`](#dfsctl-share-snapshot) — Manage share snapshots (create, list, show, delete, restore)
+    - [`dfsctl share snapshot`](#dfsctl-share-snapshot) — Manage share snapshots (create, list, show, remove, restore)
       - [`dfsctl share snapshot create`](#dfsctl-share-snapshot-create) — Create a snapshot of a share
       - [`dfsctl share snapshot list`](#dfsctl-share-snapshot-list) — List snapshots for a share
       - [`dfsctl share snapshot remove`](#dfsctl-share-snapshot-remove) — Remove a snapshot
@@ -4726,12 +4726,12 @@ Global flags:
 
 ### `dfsctl share snapshot`
 
-Manage share snapshots (create, list, show, delete, restore)
+Manage share snapshots (create, list, show, remove, restore)
 
 Manage share snapshots.
 
 A snapshot captures the full state of a share at a point in time. It can
-be inspected, listed, deleted, or restored back onto a (disabled) share.
+be inspected, listed, removed, or restored back onto a (disabled) share.
 
 **Examples:**
 

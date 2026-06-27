@@ -203,9 +203,9 @@ prefix shown in `list` (see §5). It reports the manifest hash count
 
 ```text
 $ dfsctl share snapshot remove /photos 9f2dab17
-Delete snapshot 9f2dab17 from share /photos?
+Remove snapshot 9f2dab17 from share /photos?
 Type 'y' to confirm: y
-Snapshot 9f2dab17 deleted.
+Snapshot 9f2dab17 removed.
 $
 ```
 
@@ -213,7 +213,7 @@ Use `--yes` to skip the confirmation:
 
 ```text
 $ dfsctl share snapshot remove /photos 9f2dab17 --yes
-Snapshot 9f2dab17 deleted.
+Snapshot 9f2dab17 removed.
 ```
 
 ## 4. Creating a snapshot
@@ -395,7 +395,7 @@ By default the command prompts `Y/N`:
 
 ```text
 $ dfsctl share snapshot remove /photos 9f2dab17
-Delete snapshot 9f2dab17 from share /photos?
+Remove snapshot 9f2dab17 from share /photos?
 Type 'y' to confirm: n
 Aborted.
 ```
@@ -478,7 +478,7 @@ Restore snapshot 7a3ec1b2 into share /photos?
 A safety snapshot of the current share state will be created first.
 Type 'y' to confirm: y
 Restored snapshot 7a3ec1b2 into share /photos.
-Safety snap: c12e8d4f (delete with
+Safety snap: c12e8d4f (remove with
 'dfsctl share snapshot remove /photos c12e8d4f' after verifying).
 
 $ # Sample some files to confirm the restore brought back what you expect.
@@ -488,9 +488,9 @@ $ ls /mnt/photos/2024/      # (after a temp mount or via another client)
 $ dfsctl share enable /photos
 Share /photos enabled.
 
-$ # After validation, delete the safety snap:
+$ # After validation, remove the safety snap:
 $ dfsctl share snapshot remove /photos c12e8d4f --yes
-Snapshot c12e8d4f deleted.
+Snapshot c12e8d4f removed.
 ```
 
 ### Restore steps (what the server actually does)
@@ -528,7 +528,7 @@ $ echo $?
 
 $ dfsctl share snapshot restore /photos 9f2dab17 --force --yes
 Restored snapshot 9f2dab17 into share /photos.
-Safety snap: e0a2b15c (delete with ...).
+Safety snap: e0a2b15c (remove with ...).
 ```
 
 `--force` maps to `RestoreSnapshotOpts.AllowNonDurable=true` and
@@ -562,7 +562,7 @@ Restore snapshot c12e8d4f into share /photos?
 A safety snapshot of the current share state will be created first.
 Type 'y' to confirm: y
 Restored snapshot c12e8d4f into share /photos.
-Safety snap: 88d40a73 (delete with ...).
+Safety snap: 88d40a73 (remove with ...).
 $ dfsctl share enable /photos
 ```
 
