@@ -913,9 +913,9 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, h.shareToResponseWithUsage(ctx, share))
 }
 
-// Delete handles DELETE /api/v1/shares/{name}.
+// Remove handles DELETE /api/v1/shares/{name}.
 // Deletes a share (admin only).
-func (h *ShareHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *ShareHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	name := normalizeShareName(chi.URLParam(r, "name"))
 	if name == "/" {
 		BadRequest(w, "Share name is required")
@@ -1081,9 +1081,9 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 	WriteNoContent(w)
 }
 
-// DeleteUserPermission handles DELETE /api/v1/shares/{name}/permissions/users/{username}.
+// RemoveUserPermission handles DELETE /api/v1/shares/{name}/permissions/users/{username}.
 // Removes a user's permission for a share (admin only).
-func (h *ShareHandler) DeleteUserPermission(w http.ResponseWriter, r *http.Request) {
+func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Request) {
 	shareName := normalizeShareName(chi.URLParam(r, "name"))
 	username := chi.URLParam(r, "username")
 
@@ -1167,9 +1167,9 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 	WriteNoContent(w)
 }
 
-// DeleteGroupPermission handles DELETE /api/v1/shares/{name}/permissions/groups/{groupname}.
+// RemoveGroupPermission handles DELETE /api/v1/shares/{name}/permissions/groups/{groupname}.
 // Removes a group's permission for a share (admin only).
-func (h *ShareHandler) DeleteGroupPermission(w http.ResponseWriter, r *http.Request) {
+func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Request) {
 	shareName := normalizeShareName(chi.URLParam(r, "name"))
 	groupName := chi.URLParam(r, "groupname")
 

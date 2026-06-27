@@ -301,9 +301,9 @@ func (h *UserHandler) applySharePerms(r *http.Request, userID string, perms map[
 	}
 }
 
-// Delete handles DELETE /api/v1/users/{username}.
+// Remove handles DELETE /api/v1/users/{username}.
 // Deletes a user (admin only).
-func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *UserHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 	if username == "" {
 		BadRequest(w, "Username is required")

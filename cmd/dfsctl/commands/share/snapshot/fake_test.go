@@ -56,7 +56,7 @@ func (f *fakeClient) GetSnapshot(share, id string) (*apiclient.Snapshot, error) 
 	return nil, &apiclient.APIError{Title: "Not Found", Detail: "snapshot not found", StatusCode: 404}
 }
 
-func (f *fakeClient) DeleteSnapshot(share, id string) error {
+func (f *fakeClient) RemoveSnapshot(share, id string) error {
 	f.deleteCalls = append(f.deleteCalls, id)
 	delete(f.snapshots, id)
 	return nil

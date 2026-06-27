@@ -417,7 +417,7 @@ func TestBlockStoreHandler_Delete_InUse(t *testing.T) {
 	req = withBlockStoreKindAndName(req, "local", "in-use-store")
 	w := httptest.NewRecorder()
 
-	handler.Delete(w, req)
+	handler.Remove(w, req)
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("Delete(in-use) status = %d, want %d, body = %s", w.Code, http.StatusConflict, w.Body.String())
@@ -431,7 +431,7 @@ func TestBlockStoreHandler_Delete_NotFound(t *testing.T) {
 	req = withBlockStoreKindAndName(req, "local", "nonexistent")
 	w := httptest.NewRecorder()
 
-	handler.Delete(w, req)
+	handler.Remove(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("Delete(nonexistent) status = %d, want %d, body = %s", w.Code, http.StatusNotFound, w.Body.String())

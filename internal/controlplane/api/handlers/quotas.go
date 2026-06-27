@@ -254,8 +254,8 @@ func (h *QuotaHandler) Set(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, h.quotaToResponse(quota))
 }
 
-// Delete handles DELETE /api/v1/shares/{name}/quotas/{scope}[/{id}].
-func (h *QuotaHandler) Delete(w http.ResponseWriter, r *http.Request) {
+// Remove handles DELETE /api/v1/shares/{name}/quotas/{scope}[/{id}].
+func (h *QuotaHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	shareName, scope, identityID, ok := parseQuotaTarget(w, r)
 	if !ok {
 		return

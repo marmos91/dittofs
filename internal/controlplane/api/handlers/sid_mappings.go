@@ -44,8 +44,8 @@ func (h *SIDMappingHandler) List(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, sidMappingsToResponse(mappings))
 }
 
-// Delete handles DELETE /api/v1/sid-mappings/{sid}.
-func (h *SIDMappingHandler) Delete(w http.ResponseWriter, r *http.Request) {
+// Remove handles DELETE /api/v1/sid-mappings/{sid}.
+func (h *SIDMappingHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	sid := chi.URLParam(r, "sid")
 	if sid == "" {
 		BadRequest(w, "SID is required")

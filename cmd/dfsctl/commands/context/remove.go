@@ -8,30 +8,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var deleteForce bool
+var removeForce bool
 
-var deleteCmd = &cobra.Command{
-	Use:   "delete <name>",
-	Short: "Delete a context",
-	Long: `Delete a saved server context and its stored credentials.
+var removeCmd = &cobra.Command{
+	Use:   "remove <name>",
+	Short: "Remove a context",
+	Long: `Remove a saved server context and its stored credentials.
 
 The context's configuration and access token are removed from the local credential store. Use this to clean up after decommissioning a server or when a context was created by mistake.
 
 Examples:
-  # Delete the "staging" context with a confirmation prompt
-  dfsctl context delete staging
+  # Remove the "staging" context with a confirmation prompt
+  dfsctl context remove staging
 
-  # Delete without the confirmation prompt (e.g. in a script)
-  dfsctl context delete staging --force`,
+  # Remove without the confirmation prompt (e.g. in a script)
+  dfsctl context remove staging --force`,
 	Args: cobra.ExactArgs(1),
-	RunE: runContextDelete,
+	RunE: runContextRemove,
 }
 
 func init() {
-	deleteCmd.Flags().BoolVarP(&deleteForce, "force", "f", false, "Skip confirmation")
+	removeCmd.Flags().BoolVarP(&removeForce, "force", "f", false, "Skip confirmation")
 }
 
-func runContextDelete(cmd *cobra.Command, args []string) error {
+func runContextRemove(cmd *cobra.Command, args []string) error {
 	contextName := args[0]
 
 	store, err := credentials.NewStore()
@@ -46,7 +46,7 @@ func runContextDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get context: %w", err)
 	}
 
-	return cmdutil.RunDeleteWithConfirmation("Context", contextName, deleteForce, func() error {
+	return cmdutil.RunDeleteWithConfirmation("Context", contextName, removeForce, func() error {
 		return store.DeleteContext(contextName)
 	})
 }

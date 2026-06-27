@@ -45,7 +45,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("Local block store", name, removeForce, func() error {
-		if err := client.DeleteBlockStore("local", name); err != nil {
+		if err := client.RemoveBlockStore("local", name); err != nil {
 			return fmt.Errorf("failed to remove local block store: %w", err)
 		}
 		return nil

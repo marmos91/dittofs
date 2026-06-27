@@ -8,11 +8,11 @@ import (
 // Cmd is the parent command for share snapshot management.
 var Cmd = &cobra.Command{
 	Use:   "snapshot",
-	Short: "Manage share snapshots (create, list, show, delete, restore)",
+	Short: "Manage share snapshots (create, list, show, remove, restore)",
 	Long: `Manage share snapshots.
 
 A snapshot captures the full state of a share at a point in time. It can
-be inspected, listed, deleted, or restored back onto a (disabled) share.
+be inspected, listed, removed, or restored back onto a (disabled) share.
 
 Examples:
   # Create a snapshot and wait for it to be ready
@@ -24,8 +24,8 @@ Examples:
   # Show details of a single snapshot
   dfsctl share snapshot show /archive snap-abc123
 
-  # Delete a snapshot (prompts for confirmation)
-  dfsctl share snapshot delete /archive snap-abc123
+  # Remove a snapshot (prompts for confirmation)
+  dfsctl share snapshot remove /archive snap-abc123
 
   # Restore a snapshot onto a disabled share
   dfsctl share disable /archive
@@ -36,6 +36,6 @@ func init() {
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(showCmd)
-	Cmd.AddCommand(deleteCmd)
+	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(restoreCmd)
 }

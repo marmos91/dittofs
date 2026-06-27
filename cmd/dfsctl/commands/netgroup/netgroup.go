@@ -28,15 +28,15 @@ Examples:
   # Remove a specific member by UUID
   dfsctl netgroup remove-member office-network --member-id <uuid>
 
-  # Delete a netgroup (fails if still in use by shares)
-  dfsctl netgroup delete office-network`,
+  # Remove a netgroup (fails if still in use by shares)
+  dfsctl netgroup remove office-network`,
 }
 
 func init() {
 	Cmd.AddCommand(createCmd)
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(showCmd)
-	Cmd.AddCommand(deleteCmd)
+	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(addMemberCmd)
 	Cmd.AddCommand(removeMemberCmd)
 }

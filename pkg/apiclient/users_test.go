@@ -180,7 +180,7 @@ func TestUpdateUser(t *testing.T) {
 	assert.Equal(t, "Updated Name", user.DisplayName)
 }
 
-func TestDeleteUser(t *testing.T) {
+func TestRemoveUser(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodDelete, r.Method)
 		assert.Equal(t, "/api/v1/users/deleteuser", r.URL.Path)
@@ -189,7 +189,7 @@ func TestDeleteUser(t *testing.T) {
 	defer server.Close()
 
 	client := New(server.URL).WithToken("test-token")
-	err := client.DeleteUser("deleteuser")
+	err := client.RemoveUser("deleteuser")
 
 	require.NoError(t, err)
 }

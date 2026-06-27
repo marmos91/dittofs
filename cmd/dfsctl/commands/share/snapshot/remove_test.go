@@ -9,13 +9,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/apiclient"
 )
 
-func resetDeleteFlags() {
-	deleteYes = false
+func resetRemoveFlags() {
+	removeYes = false
 }
 
-func TestDelete_YesFlagSkipsPromptAndDeletes(t *testing.T) {
-	resetDeleteFlags()
-	deleteYes = true
+func TestRemove_YesFlagSkipsPromptAndDeletes(t *testing.T) {
+	resetRemoveFlags()
+	removeYes = true
 	fc := &fakeClient{snapshots: map[string]*apiclient.Snapshot{
 		"snap-1": {ID: "snap-1"},
 	}}
@@ -26,8 +26,8 @@ func TestDelete_YesFlagSkipsPromptAndDeletes(t *testing.T) {
 	_, w := setStdout()
 	defer restoreStdout(prev)
 
-	if err := runDelete(deleteCmd, []string{"/a", "snap-1"}); err != nil {
-		t.Fatalf("runDelete: %v", err)
+	if err := runRemove(removeCmd, []string{"/a", "snap-1"}); err != nil {
+		t.Fatalf("runRemove: %v", err)
 	}
 	_ = w.Close()
 
@@ -36,8 +36,8 @@ func TestDelete_YesFlagSkipsPromptAndDeletes(t *testing.T) {
 	}
 }
 
-func TestDelete_NoAnswerAborts(t *testing.T) {
-	resetDeleteFlags()
+func TestRemove_NoAnswerAborts(t *testing.T) {
+	resetRemoveFlags()
 	// Set ConfirmInput to "n\n".
 	var outBuf bytes.Buffer
 	origIn, origOut := cmdutil.ConfirmInput, cmdutil.ConfirmOutput
@@ -53,8 +53,8 @@ func TestDelete_NoAnswerAborts(t *testing.T) {
 	_, w := setStdout()
 	defer restoreStdout(prev)
 
-	if err := runDelete(deleteCmd, []string{"/a", "snap-1"}); err != nil {
-		t.Fatalf("runDelete: %v", err)
+	if err := runRemove(removeCmd, []string{"/a", "snap-1"}); err != nil {
+		t.Fatalf("runRemove: %v", err)
 	}
 	_ = w.Close()
 
@@ -63,8 +63,8 @@ func TestDelete_NoAnswerAborts(t *testing.T) {
 	}
 }
 
-func TestDelete_YAnswerConfirms(t *testing.T) {
-	resetDeleteFlags()
+func TestRemove_YAnswerConfirms(t *testing.T) {
+	resetRemoveFlags()
 	var outBuf bytes.Buffer
 	origIn, origOut := cmdutil.ConfirmInput, cmdutil.ConfirmOutput
 	cmdutil.ConfirmInput, cmdutil.ConfirmOutput = strings.NewReader("y\n"), &outBuf
@@ -79,8 +79,8 @@ func TestDelete_YAnswerConfirms(t *testing.T) {
 	_, w := setStdout()
 	defer restoreStdout(prev)
 
-	if err := runDelete(deleteCmd, []string{"/a", "snap-1"}); err != nil {
-		t.Fatalf("runDelete: %v", err)
+	if err := runRemove(removeCmd, []string{"/a", "snap-1"}); err != nil {
+		t.Fatalf("runRemove: %v", err)
 	}
 	_ = w.Close()
 

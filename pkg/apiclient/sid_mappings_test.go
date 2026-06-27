@@ -43,14 +43,14 @@ func TestListSIDMappings_RoundTrip(t *testing.T) {
 
 // TestDeleteSIDMapping_RoundTrip verifies DeleteSIDMapping issues a DELETE to the
 // path-escaped SID endpoint and treats success as no error.
-func TestDeleteSIDMapping_RoundTrip(t *testing.T) {
+func TestRemoveSIDMapping_RoundTrip(t *testing.T) {
 	s := newStubServer(t)
 	defer s.Close()
 	s.reset()
 	s.status = http.StatusNoContent
 
 	client := newTestClient(s).WithToken("test-token")
-	err := client.DeleteSIDMapping("S-1-5-21-1-2-3-1107")
+	err := client.RemoveSIDMapping("S-1-5-21-1-2-3-1107")
 	require.NoError(t, err)
 
 	calls := s.observedCalls()
@@ -60,7 +60,7 @@ func TestDeleteSIDMapping_RoundTrip(t *testing.T) {
 }
 
 // TestDeleteSIDMapping_NotFound maps a 404 to a not-found APIError.
-func TestDeleteSIDMapping_NotFound(t *testing.T) {
+func TestRemoveSIDMapping_NotFound(t *testing.T) {
 	s := newStubServer(t)
 	defer s.Close()
 	s.reset()
@@ -69,7 +69,7 @@ func TestDeleteSIDMapping_NotFound(t *testing.T) {
 	s.body = []byte(`{"type":"about:blank","title":"Not Found","status":404,"detail":"SID mapping not found"}`)
 
 	client := newTestClient(s).WithToken("test-token")
-	err := client.DeleteSIDMapping("S-1-5-21-9-9-9-9999")
+	err := client.RemoveSIDMapping("S-1-5-21-9-9-9-9999")
 	require.Error(t, err)
 
 	apiErr, ok := err.(*APIError)

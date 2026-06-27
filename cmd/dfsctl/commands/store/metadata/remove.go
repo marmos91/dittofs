@@ -44,7 +44,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("Metadata store", name, removeForce, func() error {
-		if err := client.DeleteMetadataStore(name); err != nil {
+		if err := client.RemoveMetadataStore(name); err != nil {
 			return fmt.Errorf("failed to remove metadata store: %w", err)
 		}
 		return nil

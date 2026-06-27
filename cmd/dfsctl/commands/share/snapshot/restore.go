@@ -91,7 +91,7 @@ func runRestore(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Restored snapshot %s into share %s.\n", id, share)
 	if resp.SafetySnapshotID != "" {
-		fmt.Printf("Safety snap: %s (delete with 'dfsctl share snapshot delete %s %s' after verifying).\n",
+		fmt.Printf("Safety snap: %s (remove with 'dfsctl share snapshot remove %s %s' after verifying).\n",
 			resp.SafetySnapshotID, share, resp.SafetySnapshotID)
 	}
 	return nil

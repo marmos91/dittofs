@@ -85,7 +85,7 @@ func TestShareJSONMarshal_IncludesEnabled(t *testing.T) {
 func TestShareTree_AllVerbsDiscoverable(t *testing.T) {
 	verbs := []string{
 		"list", "create",
-		"show", "edit", "delete",
+		"show", "edit", "remove",
 		"mount", "unmount",
 		"disable", "enable",
 		"permission",

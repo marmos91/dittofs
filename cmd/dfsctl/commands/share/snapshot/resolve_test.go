@@ -58,11 +58,11 @@ func TestResolveSnapshotID_NotFound(t *testing.T) {
 	}
 }
 
-// TestDelete_ResolvesPartialID asserts delete resolves an 8-char prefix to
-// the full UUID before calling DeleteSnapshot.
-func TestDelete_ResolvesPartialID(t *testing.T) {
-	resetDeleteFlags()
-	deleteYes = true
+// TestRemove_ResolvesPartialID asserts remove resolves an 8-char prefix to
+// the full UUID before calling RemoveSnapshot.
+func TestRemove_ResolvesPartialID(t *testing.T) {
+	resetRemoveFlags()
+	removeYes = true
 	fc := &fakeClient{snapshots: map[string]*apiclient.Snapshot{
 		"abc12345-full-uuid": {ID: "abc12345-full-uuid"},
 	}}
@@ -72,12 +72,12 @@ func TestDelete_ResolvesPartialID(t *testing.T) {
 	_, w := setStdout()
 	defer restoreStdout(prev)
 
-	if err := runDelete(deleteCmd, []string{"/a", "abc12345"}); err != nil {
-		t.Fatalf("runDelete: %v", err)
+	if err := runRemove(removeCmd, []string{"/a", "abc12345"}); err != nil {
+		t.Fatalf("runRemove: %v", err)
 	}
 	_ = w.Close()
 
 	if len(fc.deleteCalls) != 1 || fc.deleteCalls[0] != "abc12345-full-uuid" {
-		t.Fatalf("DeleteSnapshot called with %v, want [abc12345-full-uuid]", fc.deleteCalls)
+		t.Fatalf("RemoveSnapshot called with %v, want [abc12345-full-uuid]", fc.deleteCalls)
 	}
 }

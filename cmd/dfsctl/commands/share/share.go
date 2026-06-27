@@ -40,8 +40,8 @@ Examples:
   # Re-enable a share
   dfsctl share enable /archive
 
-  # Delete a share
-  dfsctl share delete /archive
+  # Remove a share
+  dfsctl share remove /archive
 
   # Grant permission
   dfsctl share permission grant /archive --user alice --level read-write`,
@@ -59,7 +59,7 @@ func init() {
 	// Per-share verbs — each leaf uses cobra.ExactArgs(1) with args[0] = <name>
 	Cmd.AddCommand(showCmd)
 	Cmd.AddCommand(editCmd)
-	Cmd.AddCommand(deleteCmd)
+	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(mountCmd)
 	Cmd.AddCommand(unmountCmd)
 

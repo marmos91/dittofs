@@ -44,8 +44,8 @@ func (c *Client) CreateIdentityMapping(provider, principal, username string) (*I
 	return createResource[IdentityMapping](c, "/api/v1/identity-mappings", req)
 }
 
-// DeleteIdentityMapping deletes an identity mapping by provider and principal.
-func (c *Client) DeleteIdentityMapping(provider, principal string) error {
+// RemoveIdentityMapping deletes an identity mapping by provider and principal.
+func (c *Client) RemoveIdentityMapping(provider, principal string) error {
 	if provider == "" {
 		provider = "kerberos"
 	}

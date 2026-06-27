@@ -73,8 +73,8 @@ func (c *Client) SetQuota(share, scope string, id *uint32, req *UpsertQuotaReque
 	return &q, nil
 }
 
-// DeleteQuota removes a quota by (share, scope, identity). id is nil for the
+// RemoveQuota removes a quota by (share, scope, identity). id is nil for the
 // default-user scope.
-func (c *Client) DeleteQuota(share, scope string, id *uint32) error {
+func (c *Client) RemoveQuota(share, scope string, id *uint32) error {
 	return c.delete(quotaPath(share, scope, id), nil)
 }

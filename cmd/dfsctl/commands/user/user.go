@@ -31,14 +31,14 @@ Examples:
   # Reset a user's password as an admin
   dfsctl user password alice
 
-  # Delete a user (prompts for confirmation)
-  dfsctl user delete alice`,
+  # Remove a user (prompts for confirmation)
+  dfsctl user remove alice`,
 }
 
 func init() {
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(createCmd)
-	Cmd.AddCommand(deleteCmd)
+	Cmd.AddCommand(removeCmd)
 	Cmd.AddCommand(getCmd)
 	Cmd.AddCommand(editCmd)
 	Cmd.AddCommand(passwordCmd)

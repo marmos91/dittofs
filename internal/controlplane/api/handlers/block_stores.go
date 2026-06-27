@@ -280,9 +280,9 @@ func (h *BlockStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, resp)
 }
 
-// Delete handles DELETE /api/v1/store/block/{kind}/{name}.
+// Remove handles DELETE /api/v1/store/block/{kind}/{name}.
 // Deletes a block store configuration (admin only).
-func (h *BlockStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *BlockStoreHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	kind, ok := extractKind(r)
 	if !ok {
 		BadRequest(w, "Invalid block store kind: must be 'local' or 'remote'")

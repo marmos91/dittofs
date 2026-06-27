@@ -145,7 +145,7 @@ func TestGetSnapshot_NotFound(t *testing.T) {
 	assert.True(t, apiErr.IsNotFound())
 }
 
-func TestDeleteSnapshot(t *testing.T) {
+func TestRemoveSnapshot(t *testing.T) {
 	s := newStubServer(t)
 	defer s.Close()
 
@@ -153,7 +153,7 @@ func TestDeleteSnapshot(t *testing.T) {
 	s.status = http.StatusNoContent
 
 	c := newTestClient(s)
-	err := c.DeleteSnapshot("/archive", "snap-1")
+	err := c.RemoveSnapshot("/archive", "snap-1")
 	require.NoError(t, err)
 
 	calls := s.observedCalls()
@@ -162,7 +162,7 @@ func TestDeleteSnapshot(t *testing.T) {
 	assert.Equal(t, "/api/v1/shares/archive/snapshots/snap-1", calls[0].Path)
 }
 
-func TestDeleteSnapshot_NotFound(t *testing.T) {
+func TestRemoveSnapshot_NotFound(t *testing.T) {
 	s := newStubServer(t)
 	defer s.Close()
 
@@ -176,7 +176,7 @@ func TestDeleteSnapshot_NotFound(t *testing.T) {
 	})
 
 	c := newTestClient(s)
-	err := c.DeleteSnapshot("/archive", "missing")
+	err := c.RemoveSnapshot("/archive", "missing")
 	require.Error(t, err)
 }
 

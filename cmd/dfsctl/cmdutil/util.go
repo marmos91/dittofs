@@ -282,7 +282,7 @@ func PrintResource(w io.Writer, data any, tableRenderer output.TableRenderer) er
 
 // RunDeleteWithConfirmation prompts for confirmation (unless force is true) and runs deleteFn.
 func RunDeleteWithConfirmation(resourceType, name string, force bool, deleteFn func() error) error {
-	confirmed, err := prompt.ConfirmWithForce(fmt.Sprintf("Delete %s '%s'?", resourceType, name), force)
+	confirmed, err := prompt.ConfirmWithForce(fmt.Sprintf("Remove %s '%s'?", resourceType, name), force)
 	if err != nil {
 		if prompt.IsAborted(err) {
 			fmt.Println("\nAborted.")
@@ -299,7 +299,7 @@ func RunDeleteWithConfirmation(resourceType, name string, force bool, deleteFn f
 		return err
 	}
 
-	PrintSuccess(fmt.Sprintf("%s '%s' deleted successfully", resourceType, name))
+	PrintSuccess(fmt.Sprintf("%s '%s' removed successfully", resourceType, name))
 	return nil
 }
 

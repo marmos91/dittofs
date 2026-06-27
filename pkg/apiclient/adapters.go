@@ -49,7 +49,7 @@ func (c *Client) UpdateAdapter(adapterType string, req *UpdateAdapterRequest) (*
 	return updateResource[Adapter](c, resourcePath("/api/v1/adapters/%s", adapterType), req)
 }
 
-// DeleteAdapter deletes an adapter.
-func (c *Client) DeleteAdapter(adapterType string) error {
+// RemoveAdapter deletes an adapter.
+func (c *Client) RemoveAdapter(adapterType string) error {
 	return deleteResource(c, resourcePath("/api/v1/adapters/%s", adapterType))
 }

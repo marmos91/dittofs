@@ -14,7 +14,7 @@ import (
 type policyClient interface {
 	UpsertSnapshotPolicy(share string, req apiclient.UpsertSnapshotPolicyRequest) (*apiclient.SnapshotPolicy, error)
 	GetSnapshotPolicy(share string) (*apiclient.SnapshotPolicy, error)
-	DeleteSnapshotPolicy(share string) error
+	RemoveSnapshotPolicy(share string) error
 	ListSnapshotPolicies() ([]apiclient.SnapshotPolicy, error)
 	RunSnapshotPolicy(share string) (*apiclient.CreateSnapshotResponse, error)
 }

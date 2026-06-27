@@ -250,9 +250,9 @@ func (h *AdapterHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, resp)
 }
 
-// Delete handles DELETE /api/v1/adapters/{type}.
+// Remove handles DELETE /api/v1/adapters/{type}.
 // Stops the adapter AND deletes configuration (admin only).
-func (h *AdapterHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *AdapterHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	adapterType := chi.URLParam(r, "type")
 	if adapterType == "" {
 		BadRequest(w, "Adapter type is required")

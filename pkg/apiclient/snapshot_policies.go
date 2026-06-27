@@ -28,8 +28,8 @@ func (c *Client) GetSnapshotPolicy(share string) (*SnapshotPolicy, error) {
 	return getResource[SnapshotPolicy](c, snapshotPolicyPath(share))
 }
 
-// DeleteSnapshotPolicy removes a share's snapshot policy.
-func (c *Client) DeleteSnapshotPolicy(share string) error {
+// RemoveSnapshotPolicy removes a share's snapshot policy.
+func (c *Client) RemoveSnapshotPolicy(share string) error {
 	return deleteResource(c, snapshotPolicyPath(share))
 }
 
