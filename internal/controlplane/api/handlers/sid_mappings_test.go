@@ -99,7 +99,7 @@ func deleteSIDRequest(t *testing.T, handler *SIDMappingHandler, sid string) *htt
 	rctx.URLParams.Add("sid", sid)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	w := httptest.NewRecorder()
-	handler.Delete(w, req)
+	handler.Remove(w, req)
 	return w
 }
 

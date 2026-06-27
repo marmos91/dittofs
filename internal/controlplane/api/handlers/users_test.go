@@ -526,7 +526,7 @@ func TestUserHandler_Delete(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	w := httptest.NewRecorder()
-	handler.Delete(w, req)
+	handler.Remove(w, req)
 
 	if w.Code != http.StatusNoContent {
 		t.Errorf("Delete() status = %d, want %d", w.Code, http.StatusNoContent)
@@ -565,7 +565,7 @@ func TestUserHandler_Delete_Admin(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	w := httptest.NewRecorder()
-	handler.Delete(w, req)
+	handler.Remove(w, req)
 
 	if w.Code != http.StatusForbidden {
 		t.Errorf("Delete() admin status = %d, want %d", w.Code, http.StatusForbidden)
