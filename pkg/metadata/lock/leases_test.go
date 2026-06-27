@@ -1151,6 +1151,68 @@ func TestAcknowledgeLeaseBreak_LateAckNonNoneAfterTimeout_Succeeds(t *testing.T)
 	assert.Equal(t, LeaseStateNone, state, "late ACK must not resurrect lease bits")
 }
 
+// TestAcknowledgeLeaseBreak_LateAckAfterLeaseConflictTimeout_Unsuccessful pins
+// smb2.lease.timeout: a holder that ignores an open-time lease-conflict break
+// (BreakReasonDefault) straight through the force-complete is a deadbeat, so its
+// late ACK must return STATUS_UNSUCCESSFUL (ErrLeaseAckNotBreaking) — unlike the
+// sharing-violation / parent-dir late ACKs (#1322 / #454) which still succeed.
+// Driving the break through BreakLeasesOnOpenConflict (not a manual field poke)
+// also guards against a future forceCompleteBreaks that clears BreakReason.
+func TestAcknowledgeLeaseBreak_LateAckAfterLeaseConflictTimeout_Unsuccessful(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0}
+
+	// Holder takes an RWH lease.
+	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+
+	// A conflicting open breaks the holder's lease via the open-conflict path,
+	// recording BreakReasonDefault on the live record.
+	err = mgr.BreakLeasesOnOpenConflict("file1", nil, BreakReasonDefault)
+	require.NoError(t, err)
+
+	// Holder ignores the break; the parked CREATE's wait fires force-complete,
+	// which must preserve BreakReason on the tombstone.
+	mgr.forceCompleteBreaks("file1")
+	state, _, found := mgr.GetLeaseState(ctx, key1)
+	require.True(t, found, "force-completed record persists at None")
+	require.Equal(t, LeaseStateNone, state, "force-complete revoked to None")
+
+	// The deadbeat holder's late ACK must fail with STATUS_UNSUCCESSFUL.
+	err = mgr.AcknowledgeLeaseBreak(ctx, key1, LeaseStateRead|LeaseStateHandle, 0)
+	require.ErrorIs(t, err, ErrLeaseAckNotBreaking,
+		"late ACK after open-conflict force-complete must be UNSUCCESSFUL (smb2.lease.timeout)")
+}
+
+// TestIsLeaseBrokenViaTimeout covers the discriminator the SMB CREATE W-strip
+// uses to keep WRITE off a new grant for a deadbeat same-client lease holder
+// (smb2.lease.timeout) while leaving an active self-upgrade bypassed.
+func TestIsLeaseBrokenViaTimeout(t *testing.T) {
+	t.Parallel()
+
+	mgr := NewManager()
+	ctx := context.Background()
+	key1 := [16]byte{1, 0, 0, 0}
+
+	// Absent lease → false.
+	require.False(t, mgr.IsLeaseBrokenViaTimeout(key1))
+
+	// Active lease → false (not a timeout tombstone).
+	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, [16]byte{}, "owner1", "client1", "/share",
+		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
+	require.NoError(t, err)
+	require.False(t, mgr.IsLeaseBrokenViaTimeout(key1), "active lease is not a timeout tombstone")
+
+	// Unacked open-conflict break that force-completes → timeout tombstone.
+	require.NoError(t, mgr.BreakLeasesOnOpenConflict("file1", nil, BreakReasonDefault))
+	mgr.forceCompleteBreaks("file1")
+	require.True(t, mgr.IsLeaseBrokenViaTimeout(key1), "force-completed lease is a timeout tombstone")
+}
+
 // ============================================================================
 // ReleaseLease Tests
 // ============================================================================

@@ -52,10 +52,17 @@ const (
 type BreakReason uint8
 
 const (
+	// BreakReasonUnspecified is the zero value: no break has been recorded on
+	// the record, or the break was initiated by a path that does not classify
+	// its reason. The late-break-ack path treats this as "not a deadbeat
+	// lease-conflict break" and returns success, preserving prior behavior for
+	// any uninstrumented break path.
+	BreakReasonUnspecified BreakReason = iota
+
 	// BreakReasonDefault: a non-conflicting open that just needs the existing
 	// holder to flush dirty data. Strip Write, keep Read + Handle.
 	// (RWH→RH, RW→R, RH/R→unchanged)
-	BreakReasonDefault BreakReason = iota
+	BreakReasonDefault
 
 	// BreakReasonSharingViolation: the new open conflicts on share mode, so
 	// the existing holder must release its cached handles. Strip Handle, keep
@@ -233,6 +240,16 @@ type OpLock struct {
 	// expected) and exclusive9 SUPERSEDE iteration (ack → tree2 LEVEL_II
 	// expected) despite identical post-break LeaseState=None records.
 	BrokenViaTimeout bool
+
+	// BreakReason records why the in-flight break was initiated. It is set
+	// when a break is applied and survives force-completion (it is NOT reset
+	// by forceCompleteBreaks), so the late-break-ack path can tell a genuine
+	// open-time lease-conflict deadbeat (BreakReasonDefault on a file lease —
+	// smb2.lease.timeout) from a force-complete the holder is merely late to
+	// ack (sharing-violation #1322, parent-dir #454). The former must return
+	// STATUS_UNSUCCESSFUL; the latter STATUS_OK. Zero value (Unspecified)
+	// means "not a classified conflict break" → treated as the latter.
+	BreakReason BreakReason
 }
 
 // HasRead returns true if the lease includes Read caching permission.
@@ -318,6 +335,7 @@ func (l *OpLock) Clone() *OpLock {
 		IsDirectory:         l.IsDirectory,
 		IsTraditionalOplock: l.IsTraditionalOplock,
 		BrokenViaTimeout:    l.BrokenViaTimeout,
+		BreakReason:         l.BreakReason,
 	}
 }
 

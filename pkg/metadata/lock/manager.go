@@ -2034,7 +2034,7 @@ func (lm *Manager) CheckAndBreakOpLocksForDelete(handleKey string, excludeOwner 
 // CheckAndBreakCachingForWrite breaks all leases AND all delegations.
 // Used for cross-protocol writes (e.g., NFS write breaking SMB leases).
 func (lm *Manager) CheckAndBreakCachingForWrite(handleKey string, excludeOwner *LockOwner) error {
-	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, BreakReasonUnspecified, func(lease *OpLock) bool {
 		return lease.HasRead() || lease.HasWrite()
 	}); err != nil {
 		return err
@@ -2049,7 +2049,7 @@ func (lm *Manager) CheckAndBreakCachingForWrite(handleKey string, excludeOwner *
 // CheckAndBreakCachingForRead breaks write leases (to Read) and write delegations.
 // Read delegations and read leases coexist with reads.
 func (lm *Manager) CheckAndBreakCachingForRead(handleKey string, excludeOwner *LockOwner) error {
-	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateRead, func(lease *OpLock) bool {
+	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateRead, BreakReasonUnspecified, func(lease *OpLock) bool {
 		return lease.HasWrite()
 	}); err != nil {
 		return err
@@ -2074,7 +2074,7 @@ func (lm *Manager) CheckAndBreakCachingForRead(handleKey string, excludeOwner *L
 //   - R   -> not broken (no Write to strip)
 //   - RH  -> not broken (no Write to strip)
 func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripWrite, func(lease *OpLock) bool {
+	return lm.breakOpLocks(handleKey, excludeOwner, BreakToStripWrite, BreakReasonUnspecified, func(lease *OpLock) bool {
 		return lease.HasWrite()
 	})
 }
@@ -2098,7 +2098,7 @@ func (lm *Manager) CheckAndBreakLeasesForSMBOpen(handleKey string, excludeOwner 
 // disallows in practice) are skipped: there is no read cache to flush.
 // The break target is None — full revocation — not "strip W" or "strip H".
 func (lm *Manager) BreakLeasesForByteRangeLock(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, BreakReasonUnspecified, func(lease *OpLock) bool {
 		return lease.HasRead()
 	})
 }
@@ -2109,7 +2109,7 @@ func (lm *Manager) BreakLeasesForByteRangeLock(handleKey string, excludeOwner *L
 // computed via ComputeLeaseBreakTo(state, reason); a lease is broken only
 // when the computed target differs from its current state.
 func (lm *Manager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *LockOwner, reason BreakReason) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, breakSentinelForReason(reason), func(lease *OpLock) bool {
+	return lm.breakOpLocks(handleKey, excludeOwner, breakSentinelForReason(reason), reason, func(lease *OpLock) bool {
 		return ComputeLeaseBreakTo(lease.LeaseState, reason) != lease.LeaseState
 	})
 }
@@ -2123,14 +2123,14 @@ func (lm *Manager) BreakLeasesOnOpenConflict(handleKey string, excludeOwner *Loc
 //   - R  -> None
 //   - RW -> None
 func (lm *Manager) BreakReadLeasesForParentDir(handleKey string, excludeOwner *LockOwner) error {
-	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+	return lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, BreakReasonUnspecified, func(lease *OpLock) bool {
 		return lease.IsDirectory && lease.HasRead()
 	})
 }
 
 // CheckAndBreakCachingForDelete breaks all leases AND all delegations.
 func (lm *Manager) CheckAndBreakCachingForDelete(handleKey string, excludeOwner *LockOwner) error {
-	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, func(lease *OpLock) bool {
+	if err := lm.breakOpLocks(handleKey, excludeOwner, LeaseStateNone, BreakReasonUnspecified, func(lease *OpLock) bool {
 		return lease.LeaseState != LeaseStateNone
 	}); err != nil {
 		return err
@@ -2234,6 +2234,19 @@ func (lm *Manager) HasActiveLeaseRecord(handleKey string, excludeKey [16]byte) b
 		return true
 	}
 	return false
+}
+
+// IsLeaseBrokenViaTimeout reports whether the lease identified by leaseKey is a
+// timeout tombstone — its break was force-completed because the holder never
+// acknowledged it. The handle may still be open; the lease itself is dead.
+// The SMB CREATE W-strip uses this to tell a deadbeat same-client lease
+// (smb2.lease.timeout: keep WRITE off the new grant) from an active same-client
+// lease being upgraded (upgrade2/upgrade3: bypass the strip).
+func (lm *Manager) IsLeaseBrokenViaTimeout(leaseKey [16]byte) bool {
+	lm.mu.RLock()
+	defer lm.mu.RUnlock()
+	_, lock, _ := lm.findLeaseByKey(leaseKey)
+	return lock != nil && lock.Lease != nil && lock.Lease.BrokenViaTimeout
 }
 
 // AnyHolderIsTraditionalOplock reports whether any record on handleKey is a
@@ -2543,6 +2556,7 @@ func (lm *Manager) breakOpLocks(
 	handleKey string,
 	excludeOwner *LockOwner,
 	breakToState uint32,
+	reason BreakReason,
 	shouldBreak func(lease *OpLock) bool,
 ) error {
 	lm.mu.Lock()
@@ -2639,6 +2653,12 @@ func (lm *Manager) breakOpLocks(
 			// (Samba intentionally skips the bump per its inline comment).
 			// The next progressive stage will be dispatched on ACK.
 			lock.Lease.BreakingToRequired &= targetState
+			// Upgrade the recorded reason if this opener classifies the break
+			// (e.g. an open-conflict lease downgrade merging into an in-flight
+			// fire-and-forget break); never clobber a real reason with Unspecified.
+			if reason != BreakReasonUnspecified {
+				lock.Lease.BreakReason = reason
+			}
 			lm.persistUnifiedLockLocked(lock)
 			// This key's break is already in flight; record it so a sibling
 			// record sharing the key is not freshly dispatched below and so
@@ -2654,6 +2674,7 @@ func (lm *Manager) breakOpLocks(
 		// pre-bumped (per MS-SMB2 2.2.23.2). Post-ACK progressive stages do
 		// NOT advance — the multi-stage progression is one logical break.
 		lock.Lease.BreakingToRequired = targetState
+		lock.Lease.BreakReason = reason
 		advanceEpoch(lock.Lease)
 		snapshot := lm.applyBreakStageLocked(lock, targetState)
 		// Persist the in-flight Breaking state so a crash/restart preserves
