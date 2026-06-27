@@ -114,9 +114,9 @@ func (h *NetgroupHandler) Get(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, netgroupToResponse(netgroup))
 }
 
-// Delete handles DELETE /api/v1/netgroups/{name}.
+// Remove handles DELETE /api/v1/netgroups/{name}.
 // Returns 409 Conflict if the netgroup is referenced by any shares.
-func (h *NetgroupHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *NetgroupHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Netgroup name is required")

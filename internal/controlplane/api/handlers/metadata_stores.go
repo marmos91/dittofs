@@ -254,9 +254,9 @@ func (h *MetadataStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, resp)
 }
 
-// Delete handles DELETE /api/v1/store/metadata/{name}.
+// Remove handles DELETE /api/v1/store/metadata/{name}.
 // Deletes a metadata store configuration (admin only).
-func (h *MetadataStoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *MetadataStoreHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Store name is required")

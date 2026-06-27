@@ -75,7 +75,7 @@ func TestBlockStore_Delete(t *testing.T) {
 	defer server.Close()
 
 	client := New(server.URL).WithToken("test-token")
-	err := client.DeleteBlockStore("local", "my-store")
+	err := client.RemoveBlockStore("local", "my-store")
 
 	require.NoError(t, err)
 }

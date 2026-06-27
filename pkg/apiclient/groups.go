@@ -45,8 +45,8 @@ func (c *Client) UpdateGroup(name string, req *UpdateGroupRequest) (*Group, erro
 	return updateResource[Group](c, resourcePath("/api/v1/groups/%s", name), req)
 }
 
-// DeleteGroup deletes a group.
-func (c *Client) DeleteGroup(name string) error {
+// RemoveGroup deletes a group.
+func (c *Client) RemoveGroup(name string) error {
 	return deleteResource(c, resourcePath("/api/v1/groups/%s", name))
 }
 

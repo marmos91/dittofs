@@ -46,7 +46,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("Share", name, removeForce, func() error {
-		if err := client.DeleteShare(name); err != nil {
+		if err := client.RemoveShare(name); err != nil {
 			return fmt.Errorf("failed to remove share: %w", err)
 		}
 		return nil

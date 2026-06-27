@@ -40,7 +40,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("User", username, removeForce, func() error {
-		if err := client.DeleteUser(username); err != nil {
+		if err := client.RemoveUser(username); err != nil {
 			return fmt.Errorf("failed to remove user: %w", err)
 		}
 		return nil

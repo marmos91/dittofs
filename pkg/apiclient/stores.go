@@ -104,8 +104,8 @@ func (c *Client) UpdateMetadataStore(name string, req *UpdateStoreRequest) (*Met
 	return &store, nil
 }
 
-// DeleteMetadataStore deletes a metadata store.
-func (c *Client) DeleteMetadataStore(name string) error {
+// RemoveMetadataStore deletes a metadata store.
+func (c *Client) RemoveMetadataStore(name string) error {
 	return deleteResource(c, fmt.Sprintf("/api/v1/store/metadata/%s", name))
 }
 
@@ -163,8 +163,8 @@ func (c *Client) UpdateBlockStore(kind, name string, req *UpdateStoreRequest) (*
 	return &store, nil
 }
 
-// DeleteBlockStore deletes a block store.
-func (c *Client) DeleteBlockStore(kind, name string) error {
+// RemoveBlockStore deletes a block store.
+func (c *Client) RemoveBlockStore(kind, name string) error {
 	return deleteResource(c, fmt.Sprintf("/api/v1/store/block/%s/%s", kind, name))
 }
 

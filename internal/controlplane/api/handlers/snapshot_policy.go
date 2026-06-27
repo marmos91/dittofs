@@ -124,8 +124,8 @@ func (h *SnapshotPolicyHandler) Get(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, policyToWire(policy))
 }
 
-// Delete handles DELETE /api/v1/shares/{name}/snapshot-policy.
-func (h *SnapshotPolicyHandler) Delete(w http.ResponseWriter, r *http.Request) {
+// Remove handles DELETE /api/v1/shares/{name}/snapshot-policy.
+func (h *SnapshotPolicyHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	name := h.resolveShare(w, r)
 	if name == "" {
 		return

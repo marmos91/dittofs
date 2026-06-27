@@ -43,7 +43,7 @@ func runSidRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("SID mapping", sid, sidRemoveForce, func() error {
-		if err := client.DeleteSIDMapping(sid); err != nil {
+		if err := client.RemoveSIDMapping(sid); err != nil {
 			return fmt.Errorf("failed to remove SID mapping: %w", err)
 		}
 		return nil

@@ -65,7 +65,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("Quota", label, removeForce, func() error {
-		if err := client.DeleteQuota(share, removeScope, id); err != nil {
+		if err := client.RemoveQuota(share, removeScope, id); err != nil {
 			return fmt.Errorf("failed to remove quota: %w", err)
 		}
 		return nil

@@ -221,8 +221,8 @@ func (c *Client) UpdateShare(name string, req *UpdateShareRequest) (*Share, erro
 	return &share, nil
 }
 
-// DeleteShare deletes a share.
-func (c *Client) DeleteShare(name string) error {
+// RemoveShare deletes a share.
+func (c *Client) RemoveShare(name string) error {
 	return deleteResource(c, fmt.Sprintf("/api/v1/shares/%s", url.PathEscape(normalizeShareNameForAPI(name))))
 }
 

@@ -147,10 +147,10 @@ func (h *GroupHandler) Update(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, groupToResponse(group))
 }
 
-// Delete handles DELETE /api/v1/groups/{name}.
+// Remove handles DELETE /api/v1/groups/{name}.
 // Deletes a group (admin only).
 // System groups (admins, operators, users) cannot be deleted.
-func (h *GroupHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *GroupHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	if name == "" {
 		BadRequest(w, "Group name is required")

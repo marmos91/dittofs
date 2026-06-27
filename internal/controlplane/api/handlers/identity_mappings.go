@@ -91,8 +91,8 @@ func (h *IdentityMappingHandler) Create(w http.ResponseWriter, r *http.Request) 
 	WriteJSONCreated(w, mappingToResponse(mapping))
 }
 
-// Delete handles DELETE /api/v1/identity-mappings/by-provider/{provider}/{principal}.
-func (h *IdentityMappingHandler) Delete(w http.ResponseWriter, r *http.Request) {
+// Remove handles DELETE /api/v1/identity-mappings/by-provider/{provider}/{principal}.
+func (h *IdentityMappingHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	provider := chi.URLParam(r, "provider")
 	if provider == "" {
 		BadRequest(w, "Provider is required")
@@ -131,9 +131,9 @@ func (h *IdentityMappingHandler) ListForUser(w http.ResponseWriter, r *http.Requ
 	WriteJSONOK(w, mappingsToResponse(mappings))
 }
 
-// DeleteLegacy handles DELETE /api/v1/adapters/{type}/identity-mappings/{principal}.
+// RemoveLegacy handles DELETE /api/v1/adapters/{type}/identity-mappings/{principal}.
 // Backward-compatible endpoint that defaults provider to "kerberos".
-func (h *IdentityMappingHandler) DeleteLegacy(w http.ResponseWriter, r *http.Request) {
+func (h *IdentityMappingHandler) RemoveLegacy(w http.ResponseWriter, r *http.Request) {
 	h.deleteMapping(w, r, "kerberos")
 }
 

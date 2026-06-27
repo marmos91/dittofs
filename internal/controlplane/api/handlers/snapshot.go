@@ -179,9 +179,9 @@ func (h *SnapshotHandler) Get(w http.ResponseWriter, r *http.Request) {
 	WriteJSONOK(w, h.toWire(snap, true))
 }
 
-// Delete handles DELETE /api/v1/shares/{name}/snapshots/{id}. Returns
+// Remove handles DELETE /api/v1/shares/{name}/snapshots/{id}. Returns
 // 204 No Content on success.
-func (h *SnapshotHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *SnapshotHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	name, snapID := h.resolveShareAndSnap(w, r)
 	if name == "" {
 		return

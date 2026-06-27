@@ -51,7 +51,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if err := client.DeleteSnapshotPolicy(share); err != nil {
+	if err := client.RemoveSnapshotPolicy(share); err != nil {
 		return fmt.Errorf("failed to remove snapshot policy: %w", err)
 	}
 	fmt.Printf("Snapshot policy for share %s removed.\n", share)

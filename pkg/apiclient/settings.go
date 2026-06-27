@@ -24,7 +24,7 @@ func (c *Client) SetSetting(key, value string) (*Setting, error) {
 	return updateResource[Setting](c, resourcePath("/api/v1/settings/%s", key), req)
 }
 
-// DeleteSetting deletes a setting (resets to default).
-func (c *Client) DeleteSetting(key string) error {
+// RemoveSetting deletes a setting (resets to default).
+func (c *Client) RemoveSetting(key string) error {
 	return deleteResource(c, resourcePath("/api/v1/settings/%s", key))
 }

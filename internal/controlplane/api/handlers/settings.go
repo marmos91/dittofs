@@ -96,9 +96,9 @@ func (h *SettingsHandler) Set(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Delete handles DELETE /api/v1/settings/{key}.
+// Remove handles DELETE /api/v1/settings/{key}.
 // Deletes a setting (admin only).
-func (h *SettingsHandler) Delete(w http.ResponseWriter, r *http.Request) {
+func (h *SettingsHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
 	if key == "" {
 		BadRequest(w, "Setting key is required")

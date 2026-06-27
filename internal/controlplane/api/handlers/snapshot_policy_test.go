@@ -63,7 +63,7 @@ func newPolicyRouter(h *SnapshotPolicyHandler) http.Handler {
 		r.Route("/shares/{name}/snapshot-policy", func(r chi.Router) {
 			r.Put("/", h.Upsert)
 			r.Get("/", h.Get)
-			r.Delete("/", h.Delete)
+			r.Delete("/", h.Remove)
 			r.Post("/run", h.Run)
 		})
 		r.Get("/snapshot-policies", h.List)

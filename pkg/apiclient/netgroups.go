@@ -40,8 +40,8 @@ func (c *Client) CreateNetgroup(name string) (*Netgroup, error) {
 	return createResource[Netgroup](c, "/api/v1/adapters/nfs/netgroups", req)
 }
 
-// DeleteNetgroup deletes a netgroup by name.
-func (c *Client) DeleteNetgroup(name string) error {
+// RemoveNetgroup deletes a netgroup by name.
+func (c *Client) RemoveNetgroup(name string) error {
 	return deleteResource(c, resourcePath("/api/v1/adapters/nfs/netgroups/%s", name))
 }
 

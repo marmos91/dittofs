@@ -42,7 +42,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("Netgroup", name, removeForce, func() error {
-		if err := client.DeleteNetgroup(name); err != nil {
+		if err := client.RemoveNetgroup(name); err != nil {
 			// Check for conflict (in-use by shares)
 			if apiErr, ok := err.(*apiclient.APIError); ok && apiErr.IsConflict() {
 				msg := fmt.Sprintf("failed to remove netgroup: %s", apiErr.Error())

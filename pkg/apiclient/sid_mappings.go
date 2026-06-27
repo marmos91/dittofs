@@ -16,7 +16,7 @@ func (c *Client) ListSIDMappings() ([]SIDMapping, error) {
 	return listResources[SIDMapping](c, "/api/v1/sid-mappings")
 }
 
-// DeleteSIDMapping removes a foreign-SID mapping by SID.
-func (c *Client) DeleteSIDMapping(sid string) error {
+// RemoveSIDMapping removes a foreign-SID mapping by SID.
+func (c *Client) RemoveSIDMapping(sid string) error {
 	return deleteResource(c, resourcePath("/api/v1/sid-mappings/%s", url.PathEscape(sid)))
 }

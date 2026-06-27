@@ -74,8 +74,8 @@ func (c *Client) UpdateUser(username string, req *UpdateUserRequest) (*User, err
 	return updateResource[User](c, resourcePath("/api/v1/users/%s", username), req)
 }
 
-// DeleteUser deletes a user.
-func (c *Client) DeleteUser(username string) error {
+// RemoveUser deletes a user.
+func (c *Client) RemoveUser(username string) error {
 	return deleteResource(c, resourcePath("/api/v1/users/%s", username))
 }
 

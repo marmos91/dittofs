@@ -77,9 +77,9 @@ func (c *Client) getSnapshotCtx(ctx context.Context, share, id string) (*Snapsho
 	return &snap, nil
 }
 
-// DeleteSnapshot deletes a snapshot. Server-side: row delete + on-disk
+// RemoveSnapshot deletes a snapshot. Server-side: row delete + on-disk
 // dir wipe + lock release. 204 → nil; non-2xx → APIError.
-func (c *Client) DeleteSnapshot(share, id string) error {
+func (c *Client) RemoveSnapshot(share, id string) error {
 	return deleteResource(c, snapshotPath(share, id))
 }
 

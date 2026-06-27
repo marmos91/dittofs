@@ -40,7 +40,7 @@ func runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	return cmdutil.RunDeleteWithConfirmation("Group", name, removeForce, func() error {
-		if err := client.DeleteGroup(name); err != nil {
+		if err := client.RemoveGroup(name); err != nil {
 			return fmt.Errorf("failed to remove group: %w", err)
 		}
 		return nil

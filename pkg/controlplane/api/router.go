@@ -173,7 +173,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Post("/", userHandler.Create)
 					r.Get("/", userHandler.List)
 					r.Put("/{username}", userHandler.Update)
-					r.Delete("/{username}", userHandler.Delete)
+					r.Delete("/{username}", userHandler.Remove)
 					r.Post("/{username}/password", userHandler.ResetPassword)
 				})
 			})
@@ -187,7 +187,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Get("/", groupHandler.List)
 				r.Get("/{name}", groupHandler.Get)
 				r.Put("/{name}", groupHandler.Update)
-				r.Delete("/{name}", groupHandler.Delete)
+				r.Delete("/{name}", groupHandler.Remove)
 
 				// Group members
 				r.Get("/{name}/members", groupHandler.ListMembers)
@@ -210,7 +210,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Get("/", shareHandler.List)
 				r.Get("/{name}", shareHandler.Get)
 				r.Put("/{name}", shareHandler.Update)
-				r.Delete("/{name}", shareHandler.Delete)
+				r.Delete("/{name}", shareHandler.Remove)
 				r.Get("/{name}/status", shareHandler.Status)
 
 				// Enable/disable lifecycle (admin-only, inherited).
@@ -224,7 +224,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Post("/", snapshotHandler.Create)
 					r.Get("/", snapshotHandler.List)
 					r.Get("/{id}", snapshotHandler.Get)
-					r.Delete("/{id}", snapshotHandler.Delete)
+					r.Delete("/{id}", snapshotHandler.Remove)
 					r.Post("/{id}/restore", snapshotHandler.Restore)
 				})
 
@@ -235,7 +235,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Route("/{name}/snapshot-policy", func(r chi.Router) {
 					r.Put("/", snapshotPolicyHandler.Upsert)
 					r.Get("/", snapshotPolicyHandler.Get)
-					r.Delete("/", snapshotPolicyHandler.Delete)
+					r.Delete("/", snapshotPolicyHandler.Remove)
 					r.Post("/run", snapshotPolicyHandler.Run)
 				})
 
@@ -273,17 +273,17 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Get("/{name}/quotas", quotaHandler.List)
 				r.Get("/{name}/quotas/default-user", quotaHandler.Get)
 				r.Put("/{name}/quotas/default-user", quotaHandler.Set)
-				r.Delete("/{name}/quotas/default-user", quotaHandler.Delete)
+				r.Delete("/{name}/quotas/default-user", quotaHandler.Remove)
 				r.Get("/{name}/quotas/{scope}/{id}", quotaHandler.Get)
 				r.Put("/{name}/quotas/{scope}/{id}", quotaHandler.Set)
-				r.Delete("/{name}/quotas/{scope}/{id}", quotaHandler.Delete)
+				r.Delete("/{name}/quotas/{scope}/{id}", quotaHandler.Remove)
 
 				// Share permissions
 				r.Get("/{name}/permissions", shareHandler.ListPermissions)
 				r.Put("/{name}/permissions/users/{username}", shareHandler.SetUserPermission)
-				r.Delete("/{name}/permissions/users/{username}", shareHandler.DeleteUserPermission)
+				r.Delete("/{name}/permissions/users/{username}", shareHandler.RemoveUserPermission)
 				r.Put("/{name}/permissions/groups/{groupname}", shareHandler.SetGroupPermission)
-				r.Delete("/{name}/permissions/groups/{groupname}", shareHandler.DeleteGroupPermission)
+				r.Delete("/{name}/permissions/groups/{groupname}", shareHandler.RemoveGroupPermission)
 
 				// Per-share block store management
 				r.Get("/{name}/blockstore/stats", blockStoreHandler.Stats)
@@ -340,7 +340,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Get("/", blockStoreHandler.List)
 					r.Get("/{name}", blockStoreHandler.Get)
 					r.Put("/{name}", blockStoreHandler.Update)
-					r.Delete("/{name}", blockStoreHandler.Delete)
+					r.Delete("/{name}", blockStoreHandler.Remove)
 					r.Get("/{name}/health", blockStoreHandler.HealthCheck)
 					r.Get("/{name}/status", blockStoreHandler.Status)
 				})
@@ -352,7 +352,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					r.Get("/", metadataStoreHandler.List)
 					r.Get("/{name}", metadataStoreHandler.Get)
 					r.Put("/{name}", metadataStoreHandler.Update)
-					r.Delete("/{name}", metadataStoreHandler.Delete)
+					r.Delete("/{name}", metadataStoreHandler.Remove)
 					r.Get("/{name}/health", metadataStoreHandler.HealthCheck)
 					r.Get("/{name}/status", metadataStoreHandler.Status)
 				})
@@ -384,7 +384,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 						// Adapter CRUD
 						r.Get("/", adapterHandler.Get)
 						r.Put("/", adapterHandler.Update)
-						r.Delete("/", adapterHandler.Delete)
+						r.Delete("/", adapterHandler.Remove)
 						r.Get("/status", adapterHandler.Status)
 
 						// Adapter settings
@@ -424,7 +424,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 								r.Post("/", netgroupHandler.Create)
 								r.Get("/", netgroupHandler.List)
 								r.Get("/{name}", netgroupHandler.Get)
-								r.Delete("/{name}", netgroupHandler.Delete)
+								r.Delete("/{name}", netgroupHandler.Remove)
 								r.Post("/{name}/members", netgroupHandler.AddMember)
 								r.Delete("/{name}/members/{id}", netgroupHandler.RemoveMember)
 							})
@@ -436,7 +436,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 								legacyHandler := handlers.NewIdentityMappingHandler(ims, rt.NotifyIdentityMappingChange)
 								r.Get("/", legacyHandler.List)
 								r.Post("/", legacyHandler.Create)
-								r.Delete("/{principal}", legacyHandler.DeleteLegacy)
+								r.Delete("/{principal}", legacyHandler.RemoveLegacy)
 							})
 						}
 					})
@@ -450,7 +450,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 					idmapHandler := handlers.NewIdentityMappingHandler(ims, rt.NotifyIdentityMappingChange)
 					r.Get("/", idmapHandler.List)
 					r.Post("/", idmapHandler.Create)
-					r.Delete("/by-provider/{provider}/{principal}", idmapHandler.Delete)
+					r.Delete("/by-provider/{provider}/{principal}", idmapHandler.Remove)
 					r.Get("/users/{username}", idmapHandler.ListForUser)
 				})
 			}
@@ -463,7 +463,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Use(apiMiddleware.RequireAdmin())
 				sidmapHandler := handlers.NewSIDMappingHandler(cpStore)
 				r.Get("/", sidmapHandler.List)
-				r.Delete("/{sid}", sidmapHandler.Delete)
+				r.Delete("/{sid}", sidmapHandler.Remove)
 			})
 
 			// System operations (admin only)
@@ -481,7 +481,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Get("/", settingsHandler.List)
 				r.Get("/{key}", settingsHandler.Get)
 				r.Put("/{key}", settingsHandler.Set)
-				r.Delete("/{key}", settingsHandler.Delete)
+				r.Delete("/{key}", settingsHandler.Remove)
 			})
 
 			// Identity provider configuration (LDAP/AD, Kerberos) — admin only.

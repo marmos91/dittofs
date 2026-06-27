@@ -79,7 +79,7 @@ func newSnapshotRouter(h *SnapshotHandler) http.Handler {
 			r.Post("/", h.Create)
 			r.Get("/", h.List)
 			r.Get("/{id}", h.Get)
-			r.Delete("/{id}", h.Delete)
+			r.Delete("/{id}", h.Remove)
 			r.Post("/{id}/restore", h.Restore)
 		})
 	})
