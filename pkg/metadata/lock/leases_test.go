@@ -1199,18 +1199,18 @@ func TestIsLeaseBrokenViaTimeout(t *testing.T) {
 	key1 := [16]byte{1, 0, 0, 0}
 
 	// Absent lease → false.
-	require.False(t, mgr.IsLeaseBrokenViaTimeout(key1))
+	require.False(t, mgr.IsLeaseBrokenViaTimeout("file1", key1))
 
 	// Active lease → false (not a timeout tombstone).
 	_, _, err := mgr.RequestLease(ctx, FileHandle("file1"), key1, [16]byte{}, "owner1", "client1", "/share",
 		LeaseStateRead|LeaseStateWrite|LeaseStateHandle, false)
 	require.NoError(t, err)
-	require.False(t, mgr.IsLeaseBrokenViaTimeout(key1), "active lease is not a timeout tombstone")
+	require.False(t, mgr.IsLeaseBrokenViaTimeout("file1", key1), "active lease is not a timeout tombstone")
 
 	// Unacked open-conflict break that force-completes → timeout tombstone.
 	require.NoError(t, mgr.BreakLeasesOnOpenConflict("file1", nil, BreakReasonDefault))
 	mgr.forceCompleteBreaks("file1")
-	require.True(t, mgr.IsLeaseBrokenViaTimeout(key1), "force-completed lease is a timeout tombstone")
+	require.True(t, mgr.IsLeaseBrokenViaTimeout("file1", key1), "force-completed lease is a timeout tombstone")
 }
 
 // ============================================================================

@@ -2236,17 +2236,24 @@ func (lm *Manager) HasActiveLeaseRecord(handleKey string, excludeKey [16]byte) b
 	return false
 }
 
-// IsLeaseBrokenViaTimeout reports whether the lease identified by leaseKey is a
-// timeout tombstone — its break was force-completed because the holder never
-// acknowledged it. The handle may still be open; the lease itself is dead.
-// The SMB CREATE W-strip uses this to tell a deadbeat same-client lease
-// (smb2.lease.timeout: keep WRITE off the new grant) from an active same-client
-// lease being upgraded (upgrade2/upgrade3: bypass the strip).
-func (lm *Manager) IsLeaseBrokenViaTimeout(leaseKey [16]byte) bool {
+// IsLeaseBrokenViaTimeout reports whether the lease identified by (handleKey,
+// leaseKey) is a timeout tombstone — its break was force-completed because the
+// holder never acknowledged it. The handle may still be open; the lease itself
+// is dead. The SMB CREATE W-strip uses this to tell a deadbeat same-client
+// lease (smb2.lease.timeout: keep WRITE off the new grant) from an active
+// same-client lease being upgraded (upgrade2/upgrade3: bypass the strip).
+//
+// Scoped to handleKey so a lease key bound on more than one file resolves to
+// the record on the file being granted, not an arbitrary same-key match.
+func (lm *Manager) IsLeaseBrokenViaTimeout(handleKey string, leaseKey [16]byte) bool {
 	lm.mu.RLock()
 	defer lm.mu.RUnlock()
-	_, lock, _ := lm.findLeaseByKey(leaseKey)
-	return lock != nil && lock.Lease != nil && lock.Lease.BrokenViaTimeout
+	for _, l := range lm.unifiedLocks[handleKey] {
+		if l.Lease != nil && l.Lease.LeaseKey == leaseKey {
+			return l.Lease.BrokenViaTimeout
+		}
+	}
+	return false
 }
 
 // AnyHolderIsTraditionalOplock reports whether any record on handleKey is a
