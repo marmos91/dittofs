@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
@@ -117,8 +118,30 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 	var (
 		blocksFetched atomic.Int64
 		bytesFetched  atomic.Int64
-		done          atomic.Int64
 	)
+
+	// progress reporting is serialized: the counter increment and the callback
+	// emission happen under one lock so callbacks fire in monotonic `done`
+	// order. Snapshotting an atomic counter and emitting outside the lock lets a
+	// goroutine that incremented to N-1 call back after the one that reached N,
+	// leaving the final observed progress below total even though every fetch
+	// finished.
+	var (
+		progressMu sync.Mutex
+		done       int64
+	)
+	emitProgress := func() {
+		if progress == nil {
+			return
+		}
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		done++
+		// Hold the lock across the user callback so emissions stay ordered;
+		// defer the unlock so a panicking callback can't leave it held and
+		// deadlock every later emit.
+		progress(done, total)
+	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	sem := make(chan struct{}, parallel)
@@ -148,10 +171,7 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 				blocksFetched.Add(1)
 				bytesFetched.Add(int64(len(data)))
 			}
-			cur := done.Add(1)
-			if progress != nil {
-				progress(cur, total)
-			}
+			emitProgress()
 			return nil
 		})
 	}
