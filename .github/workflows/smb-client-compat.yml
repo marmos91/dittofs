@@ -50,6 +50,12 @@ jobs:
           go build -o dfsctl cmd/dfsctl/main.go
 
       - name: Start DittoFS and bootstrap SMB
+        env:
+          # Set a known admin password out-of-band. This also clears the
+          # forced first-login change (store/users.go: passwordFromEnv →
+          # MustChangePassword=false), so no fragile log-scrape / change-password
+          # dance is needed (the old scrape broke when the log format changed).
+          DITTOFS_ADMIN_INITIAL_PASSWORD: adminpass123
         run: |
           # Initialize and start server in background
           ./dfs init --force
@@ -66,17 +72,8 @@ jobs:
             sleep 1
           done
 
-          # Extract admin password from logs (format: "password=<pass>" / "password: <pass>")
-          ADMIN_PASS=$(./dfs logs 2>&1 | grep -oP 'password[=:] *\K[^ *]+' | head -1)
-
-          # Login as admin (initial credentials)
-          ./dfsctl login --server http://localhost:8080 --username admin --password "$ADMIN_PASS"
-
-          # The server requires a password change before any privileged operation.
-          # change-password invalidates the session token, so re-login afterwards.
-          NEW_ADMIN_PASS='adminpass123'
-          ./dfsctl user change-password --current "$ADMIN_PASS" --new "$NEW_ADMIN_PASS"
-          ./dfsctl login --server http://localhost:8080 --username admin --password "$NEW_ADMIN_PASS"
+          # Login as admin with the env-configured password (no forced change).
+          ./dfsctl login --server http://localhost:8080 --username admin --password adminpass123
 
           # Create stores
           ./dfsctl store metadata add --name mem-meta --type memory
@@ -369,6 +366,12 @@ jobs:
           # Initialize config
           .\dfs.exe init --force
 
+          # Set a known admin password out-of-band. This also clears the forced
+          # first-login change (store/users.go: passwordFromEnv →
+          # MustChangePassword=false), so no fragile log-scrape / change-password
+          # dance is needed (the old scrape broke when the log format changed).
+          $env:DITTOFS_ADMIN_INITIAL_PASSWORD = 'adminpass123'
+
           # Start server in background with DEBUG logging so the SMB/NTLM
           # session-setup trace is captured for #879 diagnosis.
           $env:DITTOFS_LOGGING_LEVEL = "DEBUG"
@@ -376,21 +379,8 @@ jobs:
           echo "DFS_PID=$($proc.Id)" >> $env:GITHUB_ENV
           Start-Sleep -Seconds 10
 
-          # Extract admin password. `dfs start` daemonizes and writes to its state
-          # log; fall back to the redirected stdout/stderr if needed.
-          $logContent = (& .\dfs.exe logs 2>&1 | Out-String)
-          $logContent += (Get-Content dfs-stdout.log, dfs-stderr.log -ErrorAction SilentlyContinue | Out-String)
-          $match = [regex]::Match($logContent, 'password[=:]\s*(\S+)')
-          $adminPass = $match.Groups[1].Value.TrimEnd('*')
-
-          # Login as admin (initial credentials)
-          .\dfsctl.exe login --server http://localhost:8080 --username admin --password $adminPass
-
-          # The server requires a password change before any privileged operation.
-          # change-password invalidates the session token, so re-login afterwards.
-          $newAdminPass = 'adminpass123'
-          .\dfsctl.exe user change-password --current $adminPass --new $newAdminPass
-          .\dfsctl.exe login --server http://localhost:8080 --username admin --password $newAdminPass
+          # Login as admin with the env-configured password (no forced change).
+          .\dfsctl.exe login --server http://localhost:8080 --username admin --password adminpass123
 
           .\dfsctl.exe store metadata add --name mem-meta --type memory
           .\dfsctl.exe store block local add --name mem-payload --type memory
