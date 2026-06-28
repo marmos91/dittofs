@@ -39,13 +39,19 @@ jobs:
       # localhost:5432, database dittofs_test, postgres/postgres.
       - name: Start PostgreSQL (with pull retry)
         run: |
+          pulled=false
           for attempt in 1 2 3 4 5; do
             if docker pull postgres:16; then
+              pulled=true
               break
             fi
             echo "docker pull postgres:16 failed (attempt $attempt), retrying..."
             sleep $((attempt * 5))
           done
+          if [ "$pulled" != "true" ]; then
+            echo "docker pull postgres:16 failed after 5 attempts"
+            exit 1
+          fi
           docker run -d --name dittofs-postgres \
             -e POSTGRES_USER=postgres \
             -e POSTGRES_PASSWORD=postgres \
