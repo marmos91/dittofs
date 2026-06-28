@@ -908,6 +908,12 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A default-permission change moves the EVERYONE@ ACE projected onto the
+	// root, so reproject; other field updates leave the root ACL untouched.
+	if req.DefaultPermission != nil {
+		h.reconcileRootACL(r.Context(), share.Name)
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
 	defer cancel()
 	WriteJSONOK(w, h.shareToResponseWithUsage(ctx, share))
@@ -1078,7 +1084,22 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
+}
+
+// reconcileRootACL projects the share's current permission grants onto its root
+// directory ACL so the filesystem permission layer agrees with the share-level
+// grants. Best-effort: a failure is logged, not surfaced, because the
+// control-plane permission record is authoritative and a later reconcile
+// self-heals the projection.
+func (h *ShareHandler) reconcileRootACL(ctx context.Context, shareName string) {
+	if h.runtime == nil {
+		return
+	}
+	if err := h.runtime.ReconcileShareRootACL(ctx, shareName); err != nil {
+		logger.Warn("Failed to reconcile share root ACL", "share", shareName, "error", err)
+	}
 }
 
 // RemoveUserPermission handles DELETE /api/v1/shares/{name}/permissions/users/{username}.
@@ -1101,6 +1122,7 @@ func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1164,6 +1186,7 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
@@ -1187,6 +1210,7 @@ func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
 }
 

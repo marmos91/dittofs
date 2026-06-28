@@ -152,6 +152,12 @@ const (
 	// ACEs were available at creation time. Mirrors Samba's sd_def1
 	// (source4/torture/smb2/acls.c).
 	ACLSourceWindowsDefault ACLSource = "windows-default"
+
+	// ACLSourceShareGrant indicates the ACL was synthesized from control-plane
+	// share-permission grants and projected onto the share root directory, so
+	// the filesystem layer agrees with the share-level access a user was
+	// granted. See BuildShareRootACL.
+	ACLSourceShareGrant ACLSource = "share-grant"
 )
 
 // ACL represents an NFSv4 Access Control List.

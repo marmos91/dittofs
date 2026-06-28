@@ -280,12 +280,13 @@ configure_via_api() {
     # test UIDs to verify POSIX permission semantics. With the secure share
     # default (default-permission=none) those UIDs are unknown to the export and
     # are denied at the gate before POSIX is ever consulted, so each must be a
-    # known user with a read-write grant. The grant only opens the export gate;
-    # it does not touch any filesystem ACL, so the per-file POSIX mode bits —
-    # exactly what pjdfstest asserts — still govern. UIDs mirror
-    # test/posix/Dockerfile.pjdfstest. No --owner is needed: root owns the
-    # export root and creates the per-test working dirs, which pjdfstest then
-    # chmod/chowns for the unprivileged UIDs.
+    # known user with a read-write grant. The grant opens the export gate and
+    # projects a NON-inheriting ACL onto the share ROOT directory only (so a
+    # grantee can write the root); it does not propagate onto the per-test
+    # working dirs and files, so the per-file POSIX mode bits — exactly what
+    # pjdfstest asserts — still govern. UIDs mirror test/posix/Dockerfile.pjdfstest.
+    # No --owner is needed: root owns the export root and creates the per-test
+    # working dirs, which pjdfstest then chmod/chowns for the unprivileged UIDs.
     log_info "Creating pjdfstest test users..."
     for uid in 65532 65533 65534; do
         "$DITTOFSCTL_BIN" user create --username "pjdfstest-${uid}" --password pjdfstest --uid "$uid" --gid "$uid"

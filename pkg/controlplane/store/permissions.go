@@ -150,6 +150,36 @@ func (s *GORMStore) GetGroupSharePermissions(ctx context.Context, groupName stri
 	return perms, nil
 }
 
+func (s *GORMStore) GetShareUserPermissions(ctx context.Context, shareName string) ([]*models.UserSharePermission, error) {
+	share, err := s.GetShare(ctx, shareName)
+	if err != nil {
+		return nil, err
+	}
+
+	var perms []*models.UserSharePermission
+	if err := s.db.WithContext(ctx).
+		Where("share_id = ?", share.ID).
+		Find(&perms).Error; err != nil {
+		return nil, err
+	}
+	return perms, nil
+}
+
+func (s *GORMStore) GetShareGroupPermissions(ctx context.Context, shareName string) ([]*models.GroupSharePermission, error) {
+	share, err := s.GetShare(ctx, shareName)
+	if err != nil {
+		return nil, err
+	}
+
+	var perms []*models.GroupSharePermission
+	if err := s.db.WithContext(ctx).
+		Where("share_id = ?", share.ID).
+		Find(&perms).Error; err != nil {
+		return nil, err
+	}
+	return perms, nil
+}
+
 func (s *GORMStore) ResolveSharePermission(ctx context.Context, user *models.User, shareName string) (models.SharePermission, error) {
 	share, err := s.GetShare(ctx, shareName)
 	if err != nil {

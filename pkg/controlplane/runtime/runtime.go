@@ -455,6 +455,13 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.LoadDefaultUserGraceForShare(ctx, config.Name); err != nil {
 		logger.Warn("failed to load default-user grace timers for share", "share", config.Name, "error", err)
 	}
+	// Project the share's permission grants onto the root directory ACL so the
+	// filesystem layer agrees with share-level access. Best-effort and
+	// idempotent: it rebuilds from persisted grants, so it also re-establishes
+	// the projection on every restart and self-heals any drift.
+	if err := r.ReconcileShareRootACL(ctx, config.Name); err != nil {
+		logger.Warn("failed to reconcile share root ACL", "share", config.Name, "error", err)
+	}
 	return nil
 }
 
