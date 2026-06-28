@@ -844,6 +844,26 @@ func (lm *LeaseManager) HasActiveLeaseRecord(fileHandle lock.FileHandle, shareNa
 	return false
 }
 
+// IsLeaseBrokenViaTimeout reports whether the lease identified by (handleKey,
+// leaseKey) on shareName is a timeout tombstone (its break was force-completed
+// because the holder never acknowledged it). Used by the CREATE W-strip to keep
+// WRITE off a new grant when a same-client lease holder timed out but its handle
+// is still open (smb2.lease.timeout). handleKey scopes the lookup to the file
+// being granted.
+func (lm *LeaseManager) IsLeaseBrokenViaTimeout(shareName, handleKey string, leaseKey [16]byte) bool {
+	if lm == nil {
+		return false
+	}
+	lockMgr := lm.resolveLockManager(shareName)
+	if lockMgr == nil {
+		return false
+	}
+	if mgr, ok := lockMgr.(*lock.Manager); ok {
+		return mgr.IsLeaseBrokenViaTimeout(handleKey, leaseKey)
+	}
+	return false
+}
+
 // WaitForOtherKeyBreaks waits on ctx for all breaks on fileHandle other than
 // excludeKey to drain. The caller controls the cancellation context — the
 // SMB CREATE async-park path passes a context whose lifetime is bound to

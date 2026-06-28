@@ -490,7 +490,12 @@ func (h *Handler) disallowWriteLeaseForFile(
 		isSameClientLease := excludeClientGUID != ([16]byte{}) &&
 			existing.ClientGUID == excludeClientGUID &&
 			existing.OplockLevel == OplockLevelLease
-		if isSameClientLease {
+		// A same-client lease whose break was force-completed on timeout is a
+		// dead lease on a still-open handle (smb2.lease.timeout): it must keep W
+		// off the new grant (h2 → RH, not RWH). An active self-upgrade
+		// (upgrade2/upgrade3) is not a timeout tombstone, so it stays bypassed.
+		if isSameClientLease &&
+			!h.LeaseManager.IsLeaseBrokenViaTimeout(existing.ShareName, string(metaHandle), existing.LeaseKey) {
 			return true
 		}
 		// e contributes when it holds an oplock/lease OR is a non-stat open.

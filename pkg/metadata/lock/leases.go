@@ -593,11 +593,16 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 				"requestedState", LeaseStateToString(requestedState),
 				"breakToState", LeaseStateToString(breakTo))
 
-			// Mark lease as breaking before dispatching callbacks
+			// Mark lease as breaking before dispatching callbacks. This is the
+			// open-time lease-conflict downgrade (breakTo computed with
+			// BreakReasonDefault above), so record the reason for symmetry with
+			// breakOpLocks — a deadbeat holder that times out here must also
+			// surface STATUS_UNSUCCESSFUL on a late ack.
 			lock.Lease.Breaking = true
 			lock.Lease.BreakToState = breakTo
 			lock.Lease.BreakingToRequired = breakTo
 			lock.Lease.BreakStarted = time.Now()
+			lock.Lease.BreakReason = BreakReasonDefault
 			advanceEpoch(lock.Lease)
 
 			// Persist the breaking state
@@ -919,9 +924,26 @@ func (lm *Manager) acknowledgeLeaseBreakImpl(ctx context.Context, leaseKey [16]b
 		// BrokenViaTimeout=false and still surfaces as STATUS_UNSUCCESSFUL
 		// via the fall-through below.
 		if lock.Lease.BrokenViaTimeout && lock.Lease.LeaseState == LeaseStateNone {
+			// A plain open-time lease-conflict downgrade (BreakReasonDefault on
+			// a file lease) that the holder ignored straight through the force-
+			// complete is a genuine deadbeat: MS-SMB2 §3.3.5.22.2 requires the
+			// late ACK to fail with STATUS_UNSUCCESSFUL (smb2.lease.timeout).
+			// Other force-completes — sharing-violation handle-strips (#1322)
+			// and parent-directory breaks (#454/WPTS) — fire under CI jitter
+			// while the holder's ACK is merely in flight, and must still
+			// succeed. The break reason, recorded at break time and preserved
+			// across force-complete, is the only signal that distinguishes
+			// them (post-force-complete state is otherwise identical).
+			if lock.Lease.BreakReason == BreakReasonDefault && !lock.Lease.IsDirectory {
+				logger.Debug("AcknowledgeLeaseBreak: late ACK after lease-conflict force-complete → UNSUCCESSFUL",
+					"leaseKey", fmt.Sprintf("%x", leaseKey),
+					"acknowledgedState", LeaseStateToString(acknowledgedState))
+				return ErrLeaseAckNotBreaking
+			}
 			logger.Debug("AcknowledgeLeaseBreak: late ACK after timeout force-complete, treating as success",
 				"leaseKey", fmt.Sprintf("%x", leaseKey),
-				"acknowledgedState", LeaseStateToString(acknowledgedState))
+				"acknowledgedState", LeaseStateToString(acknowledgedState),
+				"breakReason", lock.Lease.BreakReason)
 			return nil
 		}
 		return ErrLeaseAckNotBreaking
