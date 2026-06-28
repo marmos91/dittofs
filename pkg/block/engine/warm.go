@@ -135,9 +135,12 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 			return
 		}
 		progressMu.Lock()
+		defer progressMu.Unlock()
 		done++
+		// Hold the lock across the user callback so emissions stay ordered;
+		// defer the unlock so a panicking callback can't leave it held and
+		// deadlock every later emit.
 		progress(done, total)
-		progressMu.Unlock()
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
