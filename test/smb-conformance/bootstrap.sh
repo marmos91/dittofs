@@ -248,8 +248,8 @@ reset_share() {
     log_info "Logging in as admin..."
     $DFSCTL login --server "$API_URL" --username admin --password "$TEST_PASSWORD"
 
-    log_info "Resetting share ${name} (delete + recreate)..."
-    $DFSCTL share delete "$name" --force
+    log_info "Resetting share ${name} (remove + recreate)..."
+    $DFSCTL share remove "$name" --force
     create_one_share "$name"
     # Recreating the share makes a fresh root (owned by wpts-admin via
     # common_share_flags) and drops the old permission grants, so re-open the

@@ -27,27 +27,55 @@ jobs:
       matrix:
         go-version: ["1.25.x"]
 
-    # PostgreSQL service so the metadata-store integration + conformance
-    # suites actually run in CI. The postgres test factory connects to
-    # localhost:5432, database dittofs_test, postgres/postgres.
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: dittofs_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # PostgreSQL for the metadata-store integration + conformance suites.
+      # Started as a step-managed container (not a `services:` block) so the
+      # image pull can be retried — GitHub Actions cannot retry a service
+      # container's pull, and a transient Docker Hub hiccup there fails the
+      # whole job before any step runs. The test factory connects to
+      # localhost:5432, database dittofs_test, postgres/postgres.
+      - name: Start PostgreSQL (with pull retry)
+        run: |
+          pulled=false
+          for attempt in 1 2 3 4 5; do
+            if docker pull postgres:16; then
+              pulled=true
+              break
+            fi
+            echo "docker pull postgres:16 failed (attempt $attempt), retrying..."
+            sleep $((attempt * 5))
+          done
+          if [ "$pulled" != "true" ]; then
+            echo "docker pull postgres:16 failed after 5 attempts"
+            exit 1
+          fi
+          docker run -d --name dittofs-postgres \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=dittofs_test \
+            -p 5432:5432 \
+            --health-cmd "pg_isready -U postgres" \
+            --health-interval 5s \
+            --health-timeout 5s \
+            --health-retries 10 \
+            postgres:16
+          # Wait for the container to report healthy before running tests.
+          for i in $(seq 1 30); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' dittofs-postgres 2>/dev/null || echo starting)
+            if [ "$status" = "healthy" ]; then
+              echo "PostgreSQL is healthy"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "PostgreSQL did not become healthy in time"
+              docker logs dittofs-postgres
+              exit 1
+            fi
+            sleep 2
+          done
 
       - name: Set up Go
         uses: actions/setup-go@v5
