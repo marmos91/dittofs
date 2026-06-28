@@ -36,8 +36,11 @@ func TestBuildShareRootACL_BaselineACEs(t *testing.T) {
 		if ace.Type != ACE4_ACCESS_ALLOWED_ACE_TYPE {
 			t.Errorf("%s is not an ALLOW ACE", who)
 		}
-		if ace.Flag&(ACE4_FILE_INHERIT_ACE|ACE4_DIRECTORY_INHERIT_ACE) == 0 {
-			t.Errorf("%s ACE missing inheritance flags", who)
+		if ace.Flag&ACE4_FILE_INHERIT_ACE == 0 {
+			t.Errorf("%s ACE missing FILE_INHERIT flag", who)
+		}
+		if ace.Flag&ACE4_DIRECTORY_INHERIT_ACE == 0 {
+			t.Errorf("%s ACE missing DIRECTORY_INHERIT flag", who)
 		}
 	}
 	// No grants, default none → no EVERYONE@ ACE (secure default preserved).
@@ -193,6 +196,48 @@ func TestBuildShareRootACL_EvaluatesEndToEnd(t *testing.T) {
 			t.Error("file owner was denied WRITE_DATA via OWNER@")
 		}
 	})
+}
+
+// TestBuildShareRootACL_MergesDuplicatePrincipals proves that grants projecting
+// to the same principal (e.g. several users without an explicit UID collapsing
+// to smbDefaultUID) emit a single ACE at the highest level, keeping the ACL
+// stable and minimal.
+func TestBuildShareRootACL_MergesDuplicatePrincipals(t *testing.T) {
+	a := BuildShareRootACL(GrantNone, []RootGrant{
+		{ID: 1000, Level: GrantRead},
+		{ID: 1000, Level: GrantReadWrite}, // higher level wins
+		{ID: 1000, Level: GrantRead},
+	})
+
+	who := LocalDomainPrincipal(1000)
+	count := 0
+	for _, ace := range a.ACEs {
+		if ace.Who == who {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 ACE for %q, got %d", who, count)
+	}
+	ace := allowACE(a, who)
+	if ace.AccessMask&ACE4_WRITE_DATA == 0 {
+		t.Error("merged ACE should carry the highest level (read-write), missing WRITE_DATA")
+	}
+
+	// A user id and a group id with the same numeric value stay distinct.
+	a2 := BuildShareRootACL(GrantNone, []RootGrant{
+		{ID: 1000, Level: GrantRead},
+		{ID: 1000, IsGroup: true, Level: GrantReadWrite},
+	})
+	n := 0
+	for _, ace := range a2.ACEs {
+		if ace.Who == LocalDomainPrincipal(1000) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("user and group with same numeric id both project to %q; merge collapsed them (got %d ACEs)", LocalDomainPrincipal(1000), n)
+	}
 }
 
 func TestBuildShareRootACL_ValidACL(t *testing.T) {

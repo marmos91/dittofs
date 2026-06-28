@@ -908,6 +908,12 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A default-permission change moves the EVERYONE@ ACE projected onto the
+	// root, so reproject; other field updates leave the root ACL untouched.
+	if req.DefaultPermission != nil {
+		h.reconcileRootACL(r.Context(), share.Name)
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
 	defer cancel()
 	WriteJSONOK(w, h.shareToResponseWithUsage(ctx, share))

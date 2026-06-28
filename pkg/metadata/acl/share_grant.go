@@ -90,9 +90,36 @@ func BuildShareRootACL(defaultLevel GrantLevel, grants []RootGrant) *ACL {
 		allow(SpecialAdministrators, FullAccessMask),
 	}
 
+	// Merge grants that project to the same ACE, keeping the highest level.
+	// The merge key is the numeric id, not (id, isGroup): LocalDomainPrincipal
+	// encodes only the id, so a user UID and a group GID with the same value
+	// collapse to one Who (the known local-domain uid/gid collision) and must
+	// not emit duplicate ACEs. Distinct users without an explicit UID also
+	// collapse here (all to the same fallback id). A user grant takes
+	// precedence over a group grant for ordering when ids collide, so the order
+	// stays deterministic.
+	merged := make(map[uint32]RootGrant, len(grants))
+	for _, g := range grants {
+		cur, ok := merged[g.ID]
+		if !ok {
+			merged[g.ID] = g
+			continue
+		}
+		if g.Level > cur.Level {
+			cur.Level = g.Level
+		}
+		if !g.IsGroup { // a user grant wins the IsGroup flag for ordering
+			cur.IsGroup = false
+		}
+		merged[g.ID] = cur
+	}
+	sorted := make([]RootGrant, 0, len(merged))
+	for _, g := range merged {
+		sorted = append(sorted, g)
+	}
+
 	// Deterministic ACE order so the projected ACL is stable across
 	// reconciliations (users before groups, each ascending by id).
-	sorted := append([]RootGrant(nil), grants...)
 	sort.Slice(sorted, func(i, j int) bool {
 		if sorted[i].IsGroup != sorted[j].IsGroup {
 			return !sorted[i].IsGroup

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -73,9 +74,15 @@ func (r *Runtime) ReconcileShareRootACL(ctx context.Context, shareName string) e
 		}
 		user, err := r.store.GetUserByID(ctx, p.UserID)
 		if err != nil {
-			// Dangling grant (user removed out from under it): skip rather
-			// than abort the whole reconcile.
-			continue
+			if errors.Is(err, models.ErrUserNotFound) {
+				// Dangling grant (user removed out from under it): skip
+				// rather than abort the whole reconcile.
+				continue
+			}
+			// Transient error (DB hiccup, context deadline): abort before
+			// writing a partial ACL that would drop valid grantees and
+			// reintroduce filesystem-layer denials until the next reconcile.
+			return fmt.Errorf("reconcile root ACL for %q: get user %q: %w", shareName, p.UserID, err)
 		}
 		uid := smbDefaultUID
 		if user.UID != nil {
@@ -90,7 +97,13 @@ func (r *Runtime) ReconcileShareRootACL(ctx context.Context, shareName string) e
 		}
 		group, err := r.store.GetGroupByID(ctx, p.GroupID)
 		if err != nil {
-			continue
+			if errors.Is(err, models.ErrGroupNotFound) {
+				// Dangling grant: skip rather than abort.
+				continue
+			}
+			// Transient error: abort before writing a partial ACL (see the
+			// user-grant path above for the rationale).
+			return fmt.Errorf("reconcile root ACL for %q: get group %q: %w", shareName, p.GroupID, err)
 		}
 		if group.GID == nil {
 			// A group without an assigned GID cannot be projected onto a
