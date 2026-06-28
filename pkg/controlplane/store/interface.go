@@ -310,6 +310,13 @@ type PermissionStore interface {
 	// GetGroupSharePermissions returns all share permissions for a group.
 	GetGroupSharePermissions(ctx context.Context, groupName string) ([]*models.GroupSharePermission, error)
 
+	// GetShareUserPermissions returns every user permission granted on a share.
+	// Used to project the full grant set onto the share root directory's ACL.
+	GetShareUserPermissions(ctx context.Context, shareName string) ([]*models.UserSharePermission, error)
+
+	// GetShareGroupPermissions returns every group permission granted on a share.
+	GetShareGroupPermissions(ctx context.Context, shareName string) ([]*models.GroupSharePermission, error)
+
 	// ResolveSharePermission returns the effective permission for a user on a share.
 	// Resolution order: user explicit > group permissions (highest wins) > share default
 	// Fetches the share's default permission internally.
