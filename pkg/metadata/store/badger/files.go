@@ -51,7 +51,9 @@ func (s *BadgerMetadataStore) DeleteFile(ctx context.Context, handle metadata.Fi
 }
 
 // GetFileByPayloadID retrieves file metadata by its content identifier.
-// Note: This is O(n) and may be slow for large filesystems.
+// Steady-state this is an O(1) point lookup via the pl:<payloadID> secondary
+// index (#1435); it degrades to an O(n) keyspace scan only for legacy rows
+// written before the index existed (those are indexed on their next write).
 func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

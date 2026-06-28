@@ -1504,20 +1504,28 @@ func (tx *badgerTransaction) loadEnrichedFileByID(fileID uuid.UUID) (*metadata.F
 	}
 
 	linkItem, linkErr := tx.txn.Get(keyLinkCount(fileID))
-	switch linkErr {
-	case nil:
-		_ = linkItem.Value(func(linkVal []byte) error {
-			if count, cErr := decodeUint32(linkVal); cErr == nil {
-				file.Nlink = count
+	switch {
+	case linkErr == nil:
+		if err := linkItem.Value(func(linkVal []byte) error {
+			count, cErr := decodeUint32(linkVal)
+			if cErr != nil {
+				return cErr
 			}
+			file.Nlink = count
 			return nil
-		})
-	case badgerdb.ErrKeyNotFound:
+		}); err != nil {
+			return nil, err
+		}
+	case goerrors.Is(linkErr, badgerdb.ErrKeyNotFound):
 		if file.Type == metadata.FileTypeDirectory {
 			file.Nlink = 2
 		} else {
 			file.Nlink = 1
 		}
+	default:
+		// Unexpected Badger/IO error: surface it rather than returning a file
+		// with Nlink silently left at 0.
+		return nil, linkErr
 	}
 
 	file.Path = tx.derivePath(fileID)
@@ -1528,7 +1536,9 @@ func (tx *badgerTransaction) loadEnrichedFileByID(fileID uuid.UUID) (*metadata.F
 // index (#1435) with an O(1) point lookup. found is true only on a confirmed
 // hit; it is false (with a nil error) whenever the caller should fall back to
 // the legacy full scan: an empty PayloadID, an index miss (legacy row written
-// before the index), or a stale/corrupt index entry.
+// before the index), or a stale entry. Unexpected Badger/IO errors are
+// propagated rather than masked as a fallback, so a transient fault does not
+// silently re-trigger the expensive scan this index exists to avoid.
 func (tx *badgerTransaction) lookupFileByPayloadIndex(payloadID metadata.PayloadID) (file *metadata.File, found bool, err error) {
 	if payloadID == "" {
 		return nil, false, nil
@@ -1539,11 +1549,11 @@ func (tx *badgerTransaction) lookupFileByPayloadIndex(payloadID metadata.Payload
 	case err == nil:
 		raw, cErr := item.ValueCopy(nil)
 		if cErr != nil {
-			return nil, false, nil // corrupt index entry: fall back to scan
+			return nil, false, cErr // transactional/IO error: propagate
 		}
 		var fileID uuid.UUID
 		if uErr := fileID.UnmarshalBinary(raw); uErr != nil {
-			return nil, false, nil // corrupt index entry: fall back to scan
+			return nil, false, nil // corrupt index value: fall back to scan
 		}
 		f, lErr := tx.loadEnrichedFileByID(fileID)
 		if lErr != nil {
