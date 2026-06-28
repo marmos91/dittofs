@@ -396,7 +396,11 @@ func TestSnapshotConcurrency_DeleteVsInFlightCreate(t *testing.T) {
 		waitGroupGuard(t, 20*time.Second, "delete goroutine", wg.Wait)
 
 		// Drain the create so its registry slot is gone before next iter.
-		if _, werr := fx.rt.WaitForSnapshot(ctx, shareName, snapID); werr != nil {
+		// When the racing delete won, the snapshot is legitimately gone, so
+		// WaitForSnapshot returns ErrSnapshotNotFound — tolerate it, exactly
+		// as the delete branch above does; any other error is a real failure.
+		if _, werr := fx.rt.WaitForSnapshot(ctx, shareName, snapID); werr != nil &&
+			!errors.Is(werr, models.ErrSnapshotNotFound) {
 			t.Fatalf("iter %d: WaitForSnapshot: %v", i, werr)
 		}
 		cancel()
