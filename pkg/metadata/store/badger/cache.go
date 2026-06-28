@@ -177,6 +177,15 @@ var detectAvailableMemory = func() uint64 {
 	return sysinfo.NewDetector().AvailableMemory()
 }
 
+// constrainedHostMemThreshold is the process-available-memory figure (bytes)
+// below which buildBadgerOptions trims Badger's LSM in-memory footprint. A
+// SIGSEGV was observed faulting on an mmap'd SST block under memory pressure on
+// an 8 GB host (#1435); shrinking the memtable footprint and compactor
+// concurrency leaves more RAM for the OS page cache that backs those mmaps,
+// narrowing the fault window. The sysinfo detector's failure fallback sits at
+// this boundary, so a failed detection does not trip the constrained path.
+const constrainedHostMemThreshold = 4 << 30 // 4 GiB
+
 // buildBadgerOptions constructs the badger.Options used to open a metadata
 // store. It is a pure function of its inputs (the store config and the
 // process-available memory figure), which makes the option construction — in
@@ -214,6 +223,19 @@ func buildBadgerOptions(config BadgerMetadataStoreConfig, availMem uint64) badge
 
 	opts = opts.WithBlockCacheSize(blockCacheMB << 20) // MiB -> bytes
 	opts = opts.WithIndexCacheSize(indexCacheMB << 20) // MiB -> bytes
+
+	// On memory-constrained hosts, trim the LSM in-memory footprint and
+	// compaction concurrency (#1435) so the OS keeps more SST pages resident,
+	// narrowing the mmap-fault window seen under upload pressure. Values stay
+	// well above Badger's minimums and only apply to the auto-tuned path —
+	// operator-supplied BadgerOptions returned verbatim above are untouched.
+	if availMem > 0 && availMem < constrainedHostMemThreshold {
+		opts = opts.WithMemTableSize(32 << 20)     // default 64 MiB
+		opts = opts.WithNumMemtables(2)            // default 5
+		opts = opts.WithNumLevelZeroTables(2)      // default 5
+		opts = opts.WithNumLevelZeroTablesStall(4) // default 15
+		opts = opts.WithNumCompactors(2)           // default 4 (Badger min 2)
+	}
 
 	return opts
 }

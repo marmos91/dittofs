@@ -326,6 +326,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	var oldUID, oldGID uint32
 	var hadOldRegular bool
 	var oldObjectID metadata.ContentHash
+	var oldPayloadID metadata.PayloadID
 	if item, err := tx.txn.Get(keyFile(file.ID)); err == nil {
 		_ = item.Value(func(val []byte) error {
 			existing, decErr := decodeFile(val)
@@ -337,6 +338,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 					hadOldRegular = true
 				}
 				oldObjectID = existing.ObjectID
+				oldPayloadID = existing.PayloadID
 			}
 			return nil
 		})
@@ -404,6 +406,25 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		}
 	}
 
+	// maintain PayloadID -> file UUID secondary index (#1435) in the same Txn.
+	// PayloadID is unique per inode and stable across rename, so unlike the
+	// ObjectID index this needs no conflict probe -- drop the stale entry if it
+	// changed, then point the (possibly new) PayloadID at this file.
+	if oldPayloadID != "" && oldPayloadID != file.PayloadID {
+		if err := tx.txn.Delete(keyPayloadID(oldPayloadID)); err != nil && !goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+			return fmt.Errorf("badger PutFile: delete stale payload index: %w", err)
+		}
+	}
+	if file.PayloadID != "" {
+		idBin, merr := file.ID.MarshalBinary()
+		if merr != nil {
+			return fmt.Errorf("badger PutFile: marshal file ID: %w", merr)
+		}
+		if err := tx.txn.Set(keyPayloadID(file.PayloadID), idBin); err != nil {
+			return fmt.Errorf("badger PutFile: set payload index: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -433,9 +454,10 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 		return err
 	}
 
-	// Subtract size from counter for regular files; capture ObjectID for
-	// secondary-index cleanup.
+	// Subtract size from counter for regular files; capture ObjectID and
+	// PayloadID for secondary-index cleanup.
 	var existingObjectID metadata.ContentHash
+	var existingPayloadID metadata.PayloadID
 	_ = item.Value(func(val []byte) error {
 		file, decErr := decodeFile(val)
 		if decErr == nil {
@@ -446,13 +468,14 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 				tx.addQuota(file.UID, file.GID, -int64(file.Size), -1)
 			}
 			existingObjectID = file.ObjectID
+			existingPayloadID = file.PayloadID
 		}
 		return nil
 	})
 
-	// Delete the primary file row plus parent/link-count/ObjectID keys via
-	// the shared per-file teardown (also used by DeleteShare).
-	if err := deleteFileKeys(tx.txn, fileID, existingObjectID); err != nil {
+	// Delete the primary file row plus parent/link-count/ObjectID/PayloadID
+	// keys via the shared per-file teardown (also used by DeleteShare).
+	if err := deleteFileKeys(tx.txn, fileID, existingObjectID, existingPayloadID); err != nil {
 		return err
 	}
 
@@ -1454,9 +1477,100 @@ func (tx *badgerTransaction) GetFilesystemStatistics(ctx context.Context, handle
 // Transaction Files Operations (additional)
 // ============================================================================
 
+// loadEnrichedFileByID loads a file row by UUID and populates Nlink (from the
+// link-count key, defaulted by type when absent) and the derived Path (#1166),
+// matching what the GetFileByPayloadID scan returns. Returns (nil, nil) when no
+// row exists for the ID -- a stale secondary-index entry, which the caller
+// treats as an index miss and falls back to the full scan.
+func (tx *badgerTransaction) loadEnrichedFileByID(fileID uuid.UUID) (*metadata.File, error) {
+	item, err := tx.txn.Get(keyFile(fileID))
+	if goerrors.Is(err, badgerdb.ErrKeyNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var file *metadata.File
+	if err := item.Value(func(val []byte) error {
+		f, decErr := decodeFile(val)
+		if decErr != nil {
+			return decErr
+		}
+		file = f
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	linkItem, linkErr := tx.txn.Get(keyLinkCount(fileID))
+	switch linkErr {
+	case nil:
+		_ = linkItem.Value(func(linkVal []byte) error {
+			if count, cErr := decodeUint32(linkVal); cErr == nil {
+				file.Nlink = count
+			}
+			return nil
+		})
+	case badgerdb.ErrKeyNotFound:
+		if file.Type == metadata.FileTypeDirectory {
+			file.Nlink = 2
+		} else {
+			file.Nlink = 1
+		}
+	}
+
+	file.Path = tx.derivePath(fileID)
+	return file, nil
+}
+
+// lookupFileByPayloadIndex resolves a file through the pl:<payloadID> secondary
+// index (#1435) with an O(1) point lookup. found is true only on a confirmed
+// hit; it is false (with a nil error) whenever the caller should fall back to
+// the legacy full scan: an empty PayloadID, an index miss (legacy row written
+// before the index), or a stale/corrupt index entry.
+func (tx *badgerTransaction) lookupFileByPayloadIndex(payloadID metadata.PayloadID) (file *metadata.File, found bool, err error) {
+	if payloadID == "" {
+		return nil, false, nil
+	}
+
+	item, err := tx.txn.Get(keyPayloadID(payloadID))
+	switch {
+	case err == nil:
+		raw, cErr := item.ValueCopy(nil)
+		if cErr != nil {
+			return nil, false, nil // corrupt index entry: fall back to scan
+		}
+		var fileID uuid.UUID
+		if uErr := fileID.UnmarshalBinary(raw); uErr != nil {
+			return nil, false, nil // corrupt index entry: fall back to scan
+		}
+		f, lErr := tx.loadEnrichedFileByID(fileID)
+		if lErr != nil {
+			return nil, false, lErr
+		}
+		if f != nil && f.PayloadID == payloadID {
+			return f, true, nil
+		}
+		return nil, false, nil // stale index entry: fall back to scan
+	case goerrors.Is(err, badgerdb.ErrKeyNotFound):
+		return nil, false, nil // not indexed (legacy row): fall back to scan
+	default:
+		return nil, false, err
+	}
+}
+
 func (tx *badgerTransaction) GetFileByPayloadID(ctx context.Context, payloadID metadata.PayloadID) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+
+	// Fast path: resolve via the pl:<payloadID> secondary index (#1435); an
+	// index miss or stale entry falls through to the legacy full scan below.
+	if file, found, err := tx.lookupFileByPayloadIndex(payloadID); err != nil {
+		return nil, err
+	} else if found {
+		return file, nil
 	}
 
 	opts := badgerdb.DefaultIteratorOptions

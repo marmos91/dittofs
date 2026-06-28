@@ -52,6 +52,7 @@ const (
 	prefixConfig       = "cfg:"
 	prefixCapabilities = "cap:"
 	prefixObjectID     = "obj:" // ObjectID -> file UUID
+	prefixPayloadID    = "pl:"  // PayloadID (content ID) -> file UUID
 )
 
 // ============================================================================
@@ -119,6 +120,17 @@ func keyFilesystemCapabilities() []byte {
 // helper -- caller checks IsZero() first.
 func keyObjectID(h metadata.ContentHash) []byte {
 	return []byte(prefixObjectID + h.String())
+}
+
+// keyPayloadID generates a key for the PayloadID secondary index:
+// "pl:<payloadID>". Empty PayloadIDs MUST NOT be written through this helper --
+// caller checks for "" first. PayloadID is the inode's stable content
+// identifier (share/<inode-uuid>, see buildPayloadID), so one key maps to
+// exactly one file and stays valid across rename/relink (#1166). The index lets
+// GetFileByPayloadID resolve a file with an O(1) point lookup instead of a
+// full-keyspace scan on the hot rollup persist path (#1435).
+func keyPayloadID(p metadata.PayloadID) []byte {
+	return []byte(prefixPayloadID + string(p))
 }
 
 // ============================================================================

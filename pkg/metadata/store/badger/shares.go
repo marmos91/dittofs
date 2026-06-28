@@ -285,13 +285,14 @@ func (s *BadgerMetadataStore) applyQuotaDelta(delta map[badgerQuotaKey]metadata.
 // double-counts. The counter is statfs-only, not quota-enforcing.
 func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName string) (freedBytes int64, quota map[badgerQuotaKey]metadata.UsageStat, err error) {
 	type doomed struct {
-		id       uuid.UUID
-		objectID metadata.ContentHash
-		isDir    bool
-		size     uint64
-		isReg    bool
-		uid      uint32
-		gid      uint32
+		id        uuid.UUID
+		objectID  metadata.ContentHash
+		payloadID metadata.PayloadID
+		isDir     bool
+		size      uint64
+		isReg     bool
+		uid       uint32
+		gid       uint32
 	}
 	var victims []doomed
 
@@ -316,20 +317,21 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 			continue
 		}
 		victims = append(victims, doomed{
-			id:       file.ID,
-			objectID: file.ObjectID,
-			isDir:    file.Type == metadata.FileTypeDirectory,
-			size:     file.Size,
-			isReg:    file.Type == metadata.FileTypeRegular,
-			uid:      file.UID,
-			gid:      file.GID,
+			id:        file.ID,
+			objectID:  file.ObjectID,
+			payloadID: file.PayloadID,
+			isDir:     file.Type == metadata.FileTypeDirectory,
+			size:      file.Size,
+			isReg:     file.Type == metadata.FileTypeRegular,
+			uid:       file.UID,
+			gid:       file.GID,
 		})
 	}
 	it.Close()
 
 	quota = make(map[badgerQuotaKey]metadata.UsageStat)
 	for _, v := range victims {
-		if delErr := deleteFileKeys(txn, v.id, v.objectID); delErr != nil {
+		if delErr := deleteFileKeys(txn, v.id, v.objectID, v.payloadID); delErr != nil {
 			return 0, nil, delErr
 		}
 		// Directories own c:<uuid>:<name> child entries; prefix-scan and
@@ -360,10 +362,10 @@ func (s *BadgerMetadataStore) deleteShareFiles(txn *badgerdb.Txn, shareName stri
 }
 
 // deleteFileKeys removes the primary file row plus its parent, link-count, and
-// (when present) ObjectID secondary-index keys. Shared by DeleteFile and
-// DeleteShare so the per-file teardown lives in one place. Missing keys are
-// tolerated; the caller owns child-entry and usedBytes cleanup.
-func deleteFileKeys(txn *badgerdb.Txn, id uuid.UUID, objectID metadata.ContentHash) error {
+// (when present) ObjectID and PayloadID secondary-index keys. Shared by
+// DeleteFile and DeleteShare so the per-file teardown lives in one place.
+// Missing keys are tolerated; the caller owns child-entry and usedBytes cleanup.
+func deleteFileKeys(txn *badgerdb.Txn, id uuid.UUID, objectID metadata.ContentHash, payloadID metadata.PayloadID) error {
 	keys := [][]byte{
 		keyFile(id),
 		keyParent(id),
@@ -377,6 +379,11 @@ func deleteFileKeys(txn *badgerdb.Txn, id uuid.UUID, objectID metadata.ContentHa
 	if !objectID.IsZero() {
 		if err := txn.Delete(keyObjectID(objectID)); err != nil && err != badgerdb.ErrKeyNotFound {
 			return fmt.Errorf("badger: delete obj index: %w", err)
+		}
+	}
+	if payloadID != "" {
+		if err := txn.Delete(keyPayloadID(payloadID)); err != nil && err != badgerdb.ErrKeyNotFound {
+			return fmt.Errorf("badger: delete payload index: %w", err)
 		}
 	}
 	return nil
