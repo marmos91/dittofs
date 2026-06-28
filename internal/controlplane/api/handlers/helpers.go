@@ -47,6 +47,26 @@ func redactSecretJSON(blob string) string {
 	return string(out)
 }
 
+// redactedConfigRaw returns a store-config blob, secrets redacted, as a
+// json.RawMessage for embedding directly in a response body. Emitting the
+// config as a JSON object (rather than a JSON-encoded string) is the contract
+// apiclient expects: its BlockStore.Config is a json.RawMessage, so a
+// stringified blob decodes to a quoted literal that silently fails to unmarshal
+// into a config map — which dropped every field on a partial `store block
+// remote edit` and forced re-passing the whole S3 config. A blank or
+// whitespace-only blob yields a nil RawMessage so the `omitempty` field is
+// omitted instead of serializing as invalid JSON. A non-empty blob that is not
+// valid JSON is also dropped rather than embedded: a json.RawMessage of invalid
+// bytes makes the streaming encoder fail and silently truncate the whole
+// response, so omitting the field is the safer degradation.
+func redactedConfigRaw(blob string) json.RawMessage {
+	redacted := redactSecretJSON(blob)
+	if strings.TrimSpace(redacted) == "" || !json.Valid([]byte(redacted)) {
+		return nil
+	}
+	return json.RawMessage(redacted)
+}
+
 // redactSecretValue walks an arbitrary JSON value, redacting secret-bearing
 // keys in any object it encounters.
 func redactSecretValue(v any) any {

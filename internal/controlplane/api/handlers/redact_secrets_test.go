@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -109,11 +110,23 @@ func TestBlockStoreToResponse_RedactsConfig(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 	resp := blockStoreToResponse(m)
-	if strings.Contains(resp.Config, "LEAKED-S3-SECRET") {
+	if strings.Contains(string(resp.Config), "LEAKED-S3-SECRET") {
 		t.Fatalf("block store response leaked secret: %s", resp.Config)
 	}
-	if !strings.Contains(resp.Config, "b") {
+	if !strings.Contains(string(resp.Config), "b") {
 		t.Fatalf("non-secret bucket dropped: %s", resp.Config)
+	}
+
+	// The config must serialize as a JSON object, not a JSON-encoded string:
+	// apiclient decodes it into a json.RawMessage and unmarshals that into a
+	// config map, which fails on a quoted blob and silently drops fields on a
+	// partial `store block remote edit`.
+	var asMap map[string]any
+	if err := json.Unmarshal(resp.Config, &asMap); err != nil {
+		t.Fatalf("response config is not a JSON object (got %s): %v", resp.Config, err)
+	}
+	if asMap["bucket"] != "b" {
+		t.Fatalf("bucket not preserved as an object field: %v", asMap)
 	}
 }
 
@@ -211,10 +224,20 @@ func TestMetadataStoreToResponse_RedactsConfig(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 	resp := metadataStoreToResponse(m)
-	if strings.Contains(resp.Config, "LEAKED-PG-PASSWORD") {
+	if strings.Contains(string(resp.Config), "LEAKED-PG-PASSWORD") {
 		t.Fatalf("metadata store response leaked secret: %s", resp.Config)
 	}
-	if !strings.Contains(resp.Config, "db") {
+	if !strings.Contains(string(resp.Config), "db") {
 		t.Fatalf("non-secret host dropped: %s", resp.Config)
+	}
+
+	// Must serialize as a JSON object (not a JSON-encoded string) so apiclient's
+	// json.RawMessage decode and the `store metadata edit` merge preserve fields.
+	var asMap map[string]any
+	if err := json.Unmarshal(resp.Config, &asMap); err != nil {
+		t.Fatalf("response config is not a JSON object (got %s): %v", resp.Config, err)
+	}
+	if asMap["host"] != "db" {
+		t.Fatalf("host not preserved as an object field: %v", asMap)
 	}
 }
