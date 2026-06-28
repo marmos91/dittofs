@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -52,7 +53,7 @@ type BlockStoreResponse struct {
 	Name      string                `json:"name"`
 	Kind      models.BlockStoreKind `json:"kind"`
 	Type      string                `json:"type"`
-	Config    string                `json:"config,omitempty"`
+	Config    json.RawMessage       `json:"config,omitempty"`
 	CreatedAt time.Time             `json:"created_at"`
 	Status    health.Report         `json:"status"`
 }
@@ -324,7 +325,7 @@ func blockStoreToResponse(s *models.BlockStoreConfig) BlockStoreResponse {
 		Name:      s.Name,
 		Kind:      s.Kind,
 		Type:      s.Type,
-		Config:    redactSecretJSON(s.Config),
+		Config:    redactedConfigRaw(s.Config),
 		CreatedAt: s.CreatedAt,
 	}
 }
