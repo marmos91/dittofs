@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -44,12 +45,12 @@ type UpdateMetadataStoreRequest struct {
 // Status is non-omitempty so clients can render "unknown" explicitly
 // rather than guessing from a missing field.
 type MetadataStoreResponse struct {
-	ID        string        `json:"id"`
-	Name      string        `json:"name"`
-	Type      string        `json:"type"`
-	Config    string        `json:"config,omitempty"`
-	CreatedAt time.Time     `json:"created_at"`
-	Status    health.Report `json:"status"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Type      string          `json:"type"`
+	Config    json.RawMessage `json:"config,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	Status    health.Report   `json:"status"`
 }
 
 // Create handles POST /api/v1/store/metadata.
@@ -292,7 +293,7 @@ func metadataStoreToResponse(s *models.MetadataStoreConfig) MetadataStoreRespons
 		ID:        s.ID,
 		Name:      s.Name,
 		Type:      s.Type,
-		Config:    redactSecretJSON(s.Config),
+		Config:    redactedConfigRaw(s.Config),
 		CreatedAt: s.CreatedAt,
 	}
 }
