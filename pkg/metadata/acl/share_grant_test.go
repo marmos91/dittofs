@@ -36,11 +36,11 @@ func TestBuildShareRootACL_BaselineACEs(t *testing.T) {
 		if ace.Type != ACE4_ACCESS_ALLOWED_ACE_TYPE {
 			t.Errorf("%s is not an ALLOW ACE", who)
 		}
-		if ace.Flag&ACE4_FILE_INHERIT_ACE == 0 {
-			t.Errorf("%s ACE missing FILE_INHERIT flag", who)
-		}
-		if ace.Flag&ACE4_DIRECTORY_INHERIT_ACE == 0 {
-			t.Errorf("%s ACE missing DIRECTORY_INHERIT flag", who)
+		// The projected ACL governs the root directory only; ACEs must NOT
+		// inherit, so per-file POSIX bits govern descendants (see
+		// BuildShareRootACL).
+		if ace.Flag&(ACE4_FILE_INHERIT_ACE|ACE4_DIRECTORY_INHERIT_ACE) != 0 {
+			t.Errorf("%s ACE unexpectedly carries inheritance flags %#x", who, ace.Flag)
 		}
 	}
 	// No grants, default none → no EVERYONE@ ACE (secure default preserved).

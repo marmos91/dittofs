@@ -68,15 +68,19 @@ func maskForLevel(level GrantLevel) uint32 {
 // the share level is still denied by the root directory's POSIX mode bits
 // (owner uid 0, mode 0755) because they are neither the owner nor in its group.
 //
-// The result is allow-only and carries FILE_INHERIT|DIRECTORY_INHERIT flags so
-// entries created under the root inherit consistent access. The share root
-// owner always retains full control via the dynamic OWNER@ principal.
-// defaultLevel projects the share's default-permission onto EVERYONE@ (omitted
-// when none). Per-principal grants project onto "{id}@localdomain" ACEs.
+// The result is allow-only and applies to the root directory ONLY — the ACEs
+// carry no inheritance flags. Share grants are the outer gate (the per-request
+// ResolveSharePermission check already enforces read vs read-write); the inner,
+// per-file access is governed by each entry's own POSIX mode / ACL. Projecting
+// inheritable grant ACEs onto every descendant would make a grantee bypass
+// those per-file bits (and breaks POSIX-conformance suites that assert mode-bit
+// enforcement). The share root owner always retains full control via the
+// dynamic OWNER@ principal. defaultLevel projects the share's default-permission
+// onto EVERYONE@ (omitted when none). Per-principal grants project onto
+// "{id}@localdomain" ACEs.
 func BuildShareRootACL(defaultLevel GrantLevel, grants []RootGrant) *ACL {
-	const inheritFlags = ACE4_FILE_INHERIT_ACE | ACE4_DIRECTORY_INHERIT_ACE
 	allow := func(who string, mask uint32) ACE {
-		return ACE{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, Flag: inheritFlags, AccessMask: mask, Who: who}
+		return ACE{Type: ACE4_ACCESS_ALLOWED_ACE_TYPE, AccessMask: mask, Who: who}
 	}
 
 	aces := []ACE{
