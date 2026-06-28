@@ -1503,29 +1503,23 @@ func (tx *badgerTransaction) loadEnrichedFileByID(fileID uuid.UUID) (*metadata.F
 		return nil, err
 	}
 
-	linkItem, linkErr := tx.txn.Get(keyLinkCount(fileID))
-	switch {
-	case linkErr == nil:
-		if err := linkItem.Value(func(linkVal []byte) error {
-			count, cErr := decodeUint32(linkVal)
-			if cErr != nil {
-				return cErr
+	// The link count is secondary data stored under a separate key. Mirror
+	// GetFile and the legacy scan path: a missing or unreadable link-count key
+	// never fails the lookup. Seed the type default first so any such case
+	// returns a sensible Nlink rather than 0 (#1435 review), then override it
+	// with the stored count when the key reads and decodes cleanly.
+	if file.Type == metadata.FileTypeDirectory {
+		file.Nlink = 2
+	} else {
+		file.Nlink = 1
+	}
+	if linkItem, linkErr := tx.txn.Get(keyLinkCount(fileID)); linkErr == nil {
+		_ = linkItem.Value(func(linkVal []byte) error {
+			if count, cErr := decodeUint32(linkVal); cErr == nil {
+				file.Nlink = count
 			}
-			file.Nlink = count
 			return nil
-		}); err != nil {
-			return nil, err
-		}
-	case goerrors.Is(linkErr, badgerdb.ErrKeyNotFound):
-		if file.Type == metadata.FileTypeDirectory {
-			file.Nlink = 2
-		} else {
-			file.Nlink = 1
-		}
-	default:
-		// Unexpected Badger/IO error: surface it rather than returning a file
-		// with Nlink silently left at 0.
-		return nil, linkErr
+		})
 	}
 
 	file.Path = tx.derivePath(fileID)
