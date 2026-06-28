@@ -172,6 +172,35 @@ func TestBuildBadgerOptions_ThreadsAutoSizes(t *testing.T) {
 	}
 }
 
+// TestBuildBadgerOptions_ConstrainedHostTrimsLSM asserts that below the
+// memory threshold the LSM footprint and compactor concurrency are trimmed
+// (#1435), and that at/above the threshold the Badger defaults are retained.
+func TestBuildBadgerOptions_ConstrainedHostTrimsLSM(t *testing.T) {
+	SetGlobalBadgerCacheDefaults(0, 0)
+
+	constrained := buildBadgerOptions(BadgerMetadataStoreConfig{DBPath: t.TempDir()}, constrainedHostMemThreshold-1)
+	if got, want := constrained.MemTableSize, int64(32<<20); got != want {
+		t.Errorf("constrained MemTableSize: got %d, want %d", got, want)
+	}
+	if got, want := constrained.NumMemtables, 2; got != want {
+		t.Errorf("constrained NumMemtables: got %d, want %d", got, want)
+	}
+	if got, want := constrained.NumCompactors, 2; got != want {
+		t.Errorf("constrained NumCompactors: got %d, want %d", got, want)
+	}
+
+	// At the threshold (and on detection failure, which falls back here) the
+	// defaults are preserved — no trimming.
+	defaults := badger.DefaultOptions(t.TempDir())
+	roomy := buildBadgerOptions(BadgerMetadataStoreConfig{DBPath: t.TempDir()}, constrainedHostMemThreshold)
+	if roomy.MemTableSize != defaults.MemTableSize {
+		t.Errorf("roomy MemTableSize trimmed: got %d, want default %d", roomy.MemTableSize, defaults.MemTableSize)
+	}
+	if roomy.NumMemtables != defaults.NumMemtables {
+		t.Errorf("roomy NumMemtables trimmed: got %d, want default %d", roomy.NumMemtables, defaults.NumMemtables)
+	}
+}
+
 // TestBuildBadgerOptions_CustomOptionsPassthrough asserts that an operator who
 // supplies BadgerOptions takes full control: the helper returns them verbatim
 // and does not override the caches.
