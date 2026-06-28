@@ -133,6 +133,55 @@ func TestWarmAll_FetchesMissingSkipsLocal(t *testing.T) {
 	}
 }
 
+// TestWarmAll_ProgressMonotonic guards against the progress callback reporting
+// a stale, lower `done` last under concurrency: with the counter snapshot taken
+// outside the emit, a goroutine that incremented to N-1 could call back after
+// the one that reached N, leaving the final progress below total. With many
+// fetch targets and parallel downloads, the reported `done` sequence must be
+// non-decreasing and end exactly at total.
+func TestWarmAll_ProgressMonotonic(t *testing.T) {
+	ctx := context.Background()
+
+	const n = 12
+	payloads := make([]string, n)
+	for i := range payloads {
+		payloads[i] = "pay" + itoa(uint64(i))
+	}
+	m, _, rs, fbs := warmHarness(payloads)
+	for _, p := range payloads {
+		seedFileBlockAt(t, fbs, rs, p, 0, []byte(p+"-block-zero"))
+	}
+
+	var (
+		mu  sync.Mutex
+		seq []int64
+	)
+	res, err := m.WarmAll(ctx, func(done, total int64) {
+		mu.Lock()
+		seq = append(seq, done)
+		mu.Unlock()
+		if total != n {
+			t.Errorf("progress total = %d; want %d", total, n)
+		}
+	})
+	if err != nil {
+		t.Fatalf("WarmAll: %v", err)
+	}
+	if res.BlocksFetched != n {
+		t.Errorf("BlocksFetched = %d; want %d", res.BlocksFetched, n)
+	}
+
+	// Initial progress(0, total) plus one tick per fetch: 0,1,2,...,n.
+	if len(seq) != n+1 {
+		t.Fatalf("progress emitted %d times; want %d (got %v)", len(seq), n+1, seq)
+	}
+	for i, done := range seq {
+		if done != int64(i) {
+			t.Fatalf("progress not monotonic: seq[%d] = %d, want %d (full %v)", i, done, i, seq)
+		}
+	}
+}
+
 // TestWarmAll_FetchesNonAlignedChunk guards #1374: FastCDC chunks start at
 // arbitrary byte offsets that do NOT align to BlockSize. The old WarmAll
 // fetched via fetchBlock(payloadID, blockIdx), and fetchBlock resolves the row
