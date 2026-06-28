@@ -55,10 +55,13 @@ func redactSecretJSON(blob string) string {
 // into a config map — which dropped every field on a partial `store block
 // remote edit` and forced re-passing the whole S3 config. A blank or
 // whitespace-only blob yields a nil RawMessage so the `omitempty` field is
-// omitted instead of serializing as invalid JSON.
+// omitted instead of serializing as invalid JSON. A non-empty blob that is not
+// valid JSON is also dropped rather than embedded: a json.RawMessage of invalid
+// bytes makes the streaming encoder fail and silently truncate the whole
+// response, so omitting the field is the safer degradation.
 func redactedConfigRaw(blob string) json.RawMessage {
 	redacted := redactSecretJSON(blob)
-	if strings.TrimSpace(redacted) == "" {
+	if strings.TrimSpace(redacted) == "" || !json.Valid([]byte(redacted)) {
 		return nil
 	}
 	return json.RawMessage(redacted)
