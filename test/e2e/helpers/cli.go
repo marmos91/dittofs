@@ -153,6 +153,11 @@ func (r *CLIRunner) getBinary() string {
 		return r.binary
 	}
 
+	// The build result lives in package-level state guarded by sync.Once, so it
+	// is safe to read concurrently from parallel subtests. Deliberately do NOT
+	// cache into r.binary here: getBinary is called from parallel goroutines and
+	// writing the shared field would be a data race (and buys nothing — the path
+	// is computed exactly once anyway).
 	dfsctlBuildOnce.Do(func() {
 		projectRoot := findProjectRootForCLI()
 		out := filepath.Join(projectRoot, "dfsctl")
@@ -167,12 +172,10 @@ func (r *CLIRunner) getBinary() string {
 
 	if dfsctlBuildErr != nil {
 		// Surface the build failure rather than silently using a stale binary.
-		r.binary = "dfsctl-build-failed"
-		return r.binary
+		return "dfsctl-build-failed"
 	}
 
-	r.binary = dfsctlBuildPath
-	return r.binary
+	return dfsctlBuildPath
 }
 
 // findProjectRootForCLI locates the project root by looking for go.mod.
