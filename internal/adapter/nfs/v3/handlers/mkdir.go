@@ -131,10 +131,10 @@ func (h *Handler) Mkdir(
 	// Capture pre-operation attributes for WCC data
 	wccBefore := xdr.CaptureWccAttr(&parentFile.FileAttr)
 
-	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "MKDIR", req.Name, req.DirHandle)
+	authCtx, wccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "MKDIR", req.Name, req.DirHandle)
 	if authCtx == nil {
 		return &MkdirResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authStatus},
 			WccBefore:       wccBefore,
 			WccAfter:        wccAfter,
 		}, err

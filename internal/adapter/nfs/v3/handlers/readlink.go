@@ -101,8 +101,8 @@ func (h *Handler) ReadLink(
 			return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logError(ctx.Context, err, "READLINK failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
-		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		logAuthCtxError(ctx.Context, err, "READLINK", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
+		return &ReadLinkResponse{NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)}}, nil
 	}
 
 	// The store is responsible for:

@@ -119,10 +119,10 @@ func (h *Handler) Remove(
 		}, ctx.Context.Err()
 	}
 
-	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "REMOVE", req.Filename, req.DirHandle)
+	authCtx, wccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "REMOVE", req.Filename, req.DirHandle)
 	if authCtx == nil {
 		return &RemoveResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authStatus},
 			DirWccBefore:    wccBefore,
 			DirWccAfter:     wccAfter,
 		}, err

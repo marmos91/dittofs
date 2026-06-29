@@ -145,10 +145,10 @@ func (h *Handler) Access(
 			return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logError(ctx.Context, err, "ACCESS failed: failed to build auth context",
+		logAuthCtxError(ctx.Context, err, "ACCESS",
 			"handle", fmt.Sprintf("%x", req.Handle),
 			"client", clientIP)
-		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		return &AccessResponse{NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)}}, nil
 	}
 
 	requestedPerms := nfsAccessToPermissions(req.Access, file.Type)

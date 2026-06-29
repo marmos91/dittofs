@@ -212,12 +212,12 @@ func (h *Handler) Rename(
 		}, ctx.Context.Err()
 	}
 
-	authCtx, fromDirWccAfter, err := h.buildAuthContextWithWCCError(ctx, fromDirHandle, &fromDirFile.FileAttr, "RENAME", req.FromName, req.FromDirHandle)
+	authCtx, fromDirWccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, fromDirHandle, &fromDirFile.FileAttr, "RENAME", req.FromName, req.FromDirHandle)
 	if authCtx == nil {
 		toDirWccAfter := h.convertFileAttrToNFS(toDirHandle, &toDirFile.FileAttr)
 
 		return &RenameResponse{
-			NFSResponseBase:  NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase:  NFSResponseBase{Status: authStatus},
 			FromDirWccBefore: fromDirWccBefore,
 			FromDirWccAfter:  fromDirWccAfter,
 			ToDirWccBefore:   toDirWccBefore,

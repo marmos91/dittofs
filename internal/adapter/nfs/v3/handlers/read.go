@@ -170,10 +170,10 @@ func (h *Handler) Read(
 		if ctx.Context.Err() != nil {
 			return nil, ctx.Context.Err()
 		}
-		logError(ctx.Context, err, "READ failed: failed to build auth context",
+		logAuthCtxError(ctx.Context, err, "READ",
 			"handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 		return &ReadResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)},
 			Attr:            h.convertFileAttrToNFS(fileHandle, &file.FileAttr),
 		}, nil
 	}

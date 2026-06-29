@@ -160,7 +160,7 @@ func (h *Handler) Lookup(
 			return &LookupResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
 		}
 
-		logError(ctx.Context, err, "LOOKUP failed: failed to build auth context",
+		logAuthCtxError(ctx.Context, err, "LOOKUP",
 			"name", req.Filename,
 			"handle", fmt.Sprintf("%x", req.DirHandle),
 			"client", clientIP)
@@ -168,7 +168,7 @@ func (h *Handler) Lookup(
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &LookupResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)},
 			DirAttr:         nfsDirAttr,
 		}, nil
 	}

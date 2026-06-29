@@ -259,12 +259,12 @@ func (h *Handler) ReadDirPlus(
 			}, nil
 		}
 
-		logError(ctx.Context, err, "READDIRPLUS failed: failed to build auth context", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+		logAuthCtxError(ctx.Context, err, "READDIRPLUS", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 		nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
 		return &ReadDirPlusResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)},
 			DirAttr:         nfsDirAttr,
 		}, nil
 	}

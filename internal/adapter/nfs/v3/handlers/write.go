@@ -203,11 +203,11 @@ func (h *Handler) Write(
 			return &WriteResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logError(ctx.Context, err, "WRITE failed: failed to build auth context", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
+		logAuthCtxError(ctx.Context, err, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "client", clientIP)
 
 		// No WCC data available - we haven't called PrepareWrite yet
 		return &WriteResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)},
 		}, nil
 	}
 

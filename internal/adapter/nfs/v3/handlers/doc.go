@@ -195,13 +195,15 @@ func (h *Handler) getFileOrError(
 // Returns:
 //   - authCtx: Non-nil auth context on success, nil on error
 //   - wccAfter: Nil on success, populated NFS attributes on error (for WCC response)
+//   - authStatus: NFS3OK on success; NFS3ErrAccess for a share-permission denial;
+//     NFS3ErrIO for a genuine fault (cancellation, share-not-found, identity-mapping failure)
 //   - err: Context cancellation error if cancelled, nil otherwise
 //
 // Usage pattern:
 //
-//	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, handle, &file.FileAttr, "CREATE", req.Filename, req.DirHandle)
+//	authCtx, wccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, handle, &file.FileAttr, "CREATE", req.Filename, req.DirHandle)
 //	if authCtx == nil {
-//	    return &CreateResponse{Status: types.NFS3ErrIO, DirBefore: wccBefore, DirAfter: wccAfter}, err
+//	    return &CreateResponse{NFSResponseBase: NFSResponseBase{Status: authStatus}, DirBefore: wccBefore, DirAfter: wccAfter}, err
 //	}
 func (h *Handler) buildAuthContextWithWCCError(
 	ctx *NFSHandlerContext,
@@ -210,7 +212,7 @@ func (h *Handler) buildAuthContextWithWCCError(
 	operation string,
 	filename string,
 	dirHandleBytes []byte,
-) (*metadata.AuthContext, *types.NFSFileAttr, error) {
+) (*metadata.AuthContext, *types.NFSFileAttr, uint32, error) {
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 
 	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
@@ -220,16 +222,16 @@ func (h *Handler) buildAuthContextWithWCCError(
 			logger.DebugCtx(ctx.Context, operation+" cancelled during auth context building", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP, "error", ctx.Context.Err())
 
 			wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
-			return nil, wccAfter, ctx.Context.Err()
+			return nil, wccAfter, types.NFS3ErrIO, ctx.Context.Err()
 		}
 
-		logError(ctx.Context, err, operation+" failed: failed to build auth context", "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP)
+		logAuthCtxError(ctx.Context, err, operation, "name", filename, "handle", fmt.Sprintf("%x", dirHandleBytes), "client", clientIP)
 
 		wccAfter := h.convertFileAttrToNFS(handle, fileAttr)
-		return nil, wccAfter, nil
+		return nil, wccAfter, authDenialStatus(err), nil
 	}
 
-	return authCtx, nil, nil
+	return authCtx, nil, types.NFS3OK, nil
 }
 
 // getOplockBreaker retrieves the cross-protocol OplockBreaker from the Runtime.

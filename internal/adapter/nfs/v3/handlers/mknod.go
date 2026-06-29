@@ -181,10 +181,10 @@ func (h *Handler) Mknod(
 		}, nil
 	}
 
-	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "MKNOD", req.Name, req.DirHandle)
+	authCtx, wccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "MKNOD", req.Name, req.DirHandle)
 	if authCtx == nil {
 		return &MknodResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authStatus},
 			DirAttrBefore:   wccBefore,
 			DirAttrAfter:    wccAfter,
 		}, err

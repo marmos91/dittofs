@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/auth"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -13,6 +16,31 @@ import (
 // access a share. It aliases the shared auth sentinel so existing v3 callers
 // (and errors.Is checks) keep working.
 var ErrShareAccessDenied = auth.ErrShareAccessDenied
+
+// authDenialStatus maps a BuildAuthContextWithMapping / GetCachedAuthContext
+// error to an NFS3 status. A share-permission denial (ErrShareAccessDenied) is an
+// authorization decision → NFS3ErrAccess (EACCES "permission denied"), not a
+// server fault → NFS3ErrIO. Mirrors the NFSv4 path (v4/handlers/helpers.go),
+// which maps ErrShareAccessDenied to NFS4ERR_ACCESS.
+func authDenialStatus(err error) uint32 {
+	if errors.Is(err, ErrShareAccessDenied) {
+		return types.NFS3ErrAccess
+	}
+	return types.NFS3ErrIO
+}
+
+// logAuthCtxError logs a failure to build the per-request auth context at the
+// level appropriate to its cause: a share-permission denial (ErrShareAccessDenied)
+// is an expected authorization outcome → Warn; anything else (share-not-found,
+// identity-mapping failure) is a genuine fault → Error. Pairs with
+// authDenialStatus so the log level matches the NFS status returned.
+func logAuthCtxError(ctx context.Context, err error, operation string, args ...any) {
+	if errors.Is(err, ErrShareAccessDenied) {
+		logWarn(ctx, err, operation+": share access denied", args...)
+		return
+	}
+	logError(ctx, err, operation+": failed to build auth context", args...)
+}
 
 // formatUID formats an optional UID for logging.
 // Returns "nil" if the pointer is nil, otherwise the numeric value as string.
