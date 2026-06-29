@@ -569,29 +569,7 @@ func sweepByWalk(
 	options *Options,
 ) {
 	var statsMu sync.Mutex
-
-	// keep FirstErrors heterogeneous. Without
-	// diversification a burst of identical "list cas/aa: 503 SlowDown"
-	// errors fills the 16-slot cap and silently hides any 17th distinct
-	// error (e.g. an AccessDenied on DeleteBlock). We capture the FIRST
-	// occurrence of up to 16 distinct error classes so multi-mode
-	// failures are visible at a glance.
-	seenClasses := make(map[string]struct{}, 16)
-
-	addError := func(msg string) {
-		statsMu.Lock()
-		defer statsMu.Unlock()
-		stats.ErrorCount++
-		cls := classifyGCError(msg)
-		if _, ok := seenClasses[cls]; ok {
-			return
-		}
-		if len(seenClasses) >= 16 {
-			return
-		}
-		seenClasses[cls] = struct{}{}
-		stats.FirstErrors = append(stats.FirstErrors, msg)
-	}
+	addError := newSweepErrorRecorder(stats, &statsMu)
 
 	// Post-Phase-17: the renamed RemoteStore.Walk replaces the per-XX
 	// ListByPrefixWithMeta scan. Walk enumerates every CAS object in the
@@ -633,12 +611,7 @@ func sweepByWalk(
 				return nil // live — keep
 			}
 			if options.DryRun {
-				statsMu.Lock()
-				if int64(len(stats.DryRunCandidates)) < int64(dryRunSample) {
-					stats.DryRunCandidates = append(stats.DryRunCandidates, casKey)
-				}
-				stats.ObjectsSwept++ // count what would be deleted
-				statsMu.Unlock()
+				recordDryRunCandidate(stats, &statsMu, casKey, dryRunSample)
 				return nil
 			}
 			if err := store.Delete(ctx, h); err != nil {
@@ -694,12 +667,49 @@ func finalizeStats(stats *GCStats, started time.Time) {
 // recordGCError appends an error message to stats with the standard cap.
 // Used by the engine-level pre-sweep paths (gcstate temp root, gcstate
 // open, mark phase) where errors are bounded to a handful per run; the
-// diversity-aware capture lives in sweepByWalk.addError.
+// diversity-aware capture lives in newSweepErrorRecorder.
 func recordGCError(stats *GCStats, msg string) {
 	stats.ErrorCount++
 	if len(stats.FirstErrors) < 16 {
 		stats.FirstErrors = append(stats.FirstErrors, msg)
 	}
+}
+
+// newSweepErrorRecorder returns the addError closure both sweep kernels
+// (sweepByWalk, sweepFromSyncedIndex) use to record per-object errors under mu.
+// It keeps FirstErrors heterogeneous: without diversification a burst of
+// identical "list cas/aa: 503 SlowDown" errors fills the 16-slot cap and
+// silently hides any 17th distinct error (e.g. an AccessDenied on Delete). We
+// capture the FIRST occurrence of up to 16 distinct error classes so multi-mode
+// failures are visible at a glance. ErrorCount still counts every error.
+func newSweepErrorRecorder(stats *GCStats, mu *sync.Mutex) func(msg string) {
+	seenClasses := make(map[string]struct{}, 16)
+	return func(msg string) {
+		mu.Lock()
+		defer mu.Unlock()
+		stats.ErrorCount++
+		cls := classifyGCError(msg)
+		if _, ok := seenClasses[cls]; ok {
+			return
+		}
+		if len(seenClasses) >= 16 {
+			return
+		}
+		seenClasses[cls] = struct{}{}
+		stats.FirstErrors = append(stats.FirstErrors, msg)
+	}
+}
+
+// recordDryRunCandidate captures up to dryRunSample would-be-deleted CAS keys
+// and counts the would-be deletion in ObjectsSwept, under mu. Shared by both
+// sweep kernels so a DryRun pass reports identically regardless of sweep path.
+func recordDryRunCandidate(stats *GCStats, mu *sync.Mutex, casKey string, dryRunSample int) {
+	mu.Lock()
+	defer mu.Unlock()
+	if int64(len(stats.DryRunCandidates)) < int64(dryRunSample) {
+		stats.DryRunCandidates = append(stats.DryRunCandidates, casKey)
+	}
+	stats.ObjectsSwept++
 }
 
 // classifyGCError extracts a short class key from a sweep-phase error

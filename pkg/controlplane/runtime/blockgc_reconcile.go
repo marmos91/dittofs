@@ -58,7 +58,7 @@ func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine
 	// Stranded rows are gone, so their hashes have left the live set. The sweep
 	// reclaims the now-orphaned chunks on the remote tier and (since #1433) the
 	// local tier too, under the usual grace + snapshot-hold guards. Reconcile
-	// forces the FULL RemoteStore.Walk (listFree=false): it is the drift-catcher
+	// forces the FULL RemoteStore.Walk (fullScan=true): it is the drift-catcher
 	// that must scan the real remote to find objects the synced-hash index does
 	// not know about (e.g. a Put-then-Mark crash), which the steady-state
 	// LIST-free sweep cannot see.

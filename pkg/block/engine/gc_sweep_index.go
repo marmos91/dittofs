@@ -37,22 +37,7 @@ func sweepFromSyncedIndex(
 	options *Options,
 ) {
 	var statsMu sync.Mutex
-
-	seenClasses := make(map[string]struct{}, 16)
-	addError := func(msg string) {
-		statsMu.Lock()
-		defer statsMu.Unlock()
-		stats.ErrorCount++
-		cls := classifyGCError(msg)
-		if _, ok := seenClasses[cls]; ok {
-			return
-		}
-		if len(seenClasses) >= 16 {
-			return
-		}
-		seenClasses[cls] = struct{}{}
-		stats.FirstErrors = append(stats.FirstErrors, msg)
-	}
+	addError := newSweepErrorRecorder(stats, &statsMu)
 
 	graceCutoff := snapshotTime.Add(-gracePeriod)
 	var scanned int64
@@ -88,12 +73,7 @@ func sweepFromSyncedIndex(
 		}
 
 		if options.DryRun {
-			statsMu.Lock()
-			if int64(len(stats.DryRunCandidates)) < int64(dryRunSample) {
-				stats.DryRunCandidates = append(stats.DryRunCandidates, casKey)
-			}
-			stats.ObjectsSwept++ // count what would be deleted
-			statsMu.Unlock()
+			recordDryRunCandidate(stats, &statsMu, casKey, dryRunSample)
 			return nil
 		}
 
