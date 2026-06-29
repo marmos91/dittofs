@@ -200,7 +200,7 @@ func (r *CLIRunner) EditShare(name string, opts ...ShareOption) (*Share, error) 
 // DeleteShare deletes a share via the CLI.
 // Uses --force to skip confirmation prompt.
 func (r *CLIRunner) DeleteShare(name string) error {
-	_, err := r.Run("share", "delete", name, "--force")
+	_, err := r.Run("share", "remove", name, "--force")
 	return err
 }
 

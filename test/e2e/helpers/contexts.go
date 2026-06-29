@@ -74,7 +74,7 @@ func (r *CLIRunner) UseContext(name string) error {
 // DeleteContext removes a saved context.
 // Uses --force to skip confirmation prompt.
 func (r *CLIRunner) DeleteContext(name string) error {
-	_, err := r.RunRaw("context", "delete", name, "--force")
+	_, err := r.RunRaw("context", "remove", name, "--force")
 	return err
 }
 

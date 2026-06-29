@@ -214,7 +214,7 @@ func (r *CLIRunner) EditUser(username string, opts ...UserOption) (*User, error)
 // DeleteUser deletes a user by username.
 // Uses --force to skip confirmation prompt.
 func (r *CLIRunner) DeleteUser(username string) error {
-	output, err := r.Run("user", "delete", username, "--force")
+	output, err := r.Run("user", "remove", username, "--force")
 	if err != nil {
 		return fmt.Errorf("delete user failed: %w\noutput: %s", err, string(output))
 	}
