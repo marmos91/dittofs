@@ -14,6 +14,27 @@ import (
 	"time"
 )
 
+// makeTraversableMountPoint creates a mount-point directory that unprivileged
+// UIDs can traverse. Several e2e tests mount a share and then run filesystem
+// operations as non-root users (e.g. uid 2000 via SysProcAttr.Credential) to
+// exercise real permission enforcement. Go's os.MkdirTemp("")/t.TempDir() place
+// directories under $TMPDIR with mode 0700, and `nix develop` points $TMPDIR at
+// its own 0700 private dir — so an unprivileged child cannot even reach the
+// mount and every op fails with EACCES *before* an NFS RPC is sent. Anchoring
+// under /tmp (mode 1777) with a 0755 leaf keeps the whole path traversable; once
+// mounted, the leaf's bits are masked by the exported root's permissions.
+func makeTraversableMountPoint(prefix string) (string, error) {
+	p, err := os.MkdirTemp("/tmp", prefix)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(p, 0o755); err != nil {
+		_ = os.RemoveAll(p)
+		return "", err
+	}
+	return p, nil
+}
+
 // cifsMountOptions builds the mount options string for Linux CIFS mounts.
 // cache=none disables CIFS client caching to ensure tests see fresh data.
 func cifsMountOptions(port int, creds SMBCredentials) string {
@@ -39,7 +60,7 @@ func MountNFS(t *testing.T, port int) *Mount {
 	time.Sleep(500 * time.Millisecond)
 
 	// Create mount directory
-	mountPath, err := os.MkdirTemp("", "dittofs-e2e-nfs-*")
+	mountPath, err := makeTraversableMountPoint("dittofs-e2e-nfs-")
 	if err != nil {
 		t.Fatalf("Failed to create NFS mount directory: %v", err)
 	}
@@ -116,7 +137,7 @@ func MountNFSExportWithVersion(t *testing.T, port int, exportPath string, versio
 	time.Sleep(500 * time.Millisecond)
 
 	// Create mount directory
-	mountPath, err := os.MkdirTemp("", "dittofs-e2e-nfs-*")
+	mountPath, err := makeTraversableMountPoint("dittofs-e2e-nfs-")
 	if err != nil {
 		t.Fatalf("Failed to create NFS mount directory: %v", err)
 	}
@@ -244,7 +265,7 @@ func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
 	time.Sleep(500 * time.Millisecond)
 
 	// Create mount directory
-	mountPath, err := os.MkdirTemp("", "dittofs-e2e-smb-*")
+	mountPath, err := makeTraversableMountPoint("dittofs-e2e-smb-")
 	if err != nil {
 		t.Fatalf("Failed to create SMB mount directory: %v", err)
 	}
@@ -323,7 +344,7 @@ func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 	time.Sleep(500 * time.Millisecond)
 
 	// Create mount directory
-	mountPath, err := os.MkdirTemp("", "dittofs-e2e-smb-*")
+	mountPath, err := makeTraversableMountPoint("dittofs-e2e-smb-")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SMB mount directory: %w", err)
 	}

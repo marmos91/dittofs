@@ -14,20 +14,27 @@ import (
 )
 
 // TestNFSRootSquash is the regression test for the colleague-reported NFS
-// permission bug and the squash-default alignment that followed:
+// permission bug (#1449) and the squash-default alignment that followed (#1452).
+// It asserts the post-change behaviour for a world-readable, granted-writable
+// share (default_permission=read) under the conventional root_to_guest squash:
 //
-//   - Default squash is root_to_guest (conventional root_squash), so an NFS
-//     client mounting as root is NOT auto-privileged. Because the built-in
-//     admin user occupies uid 0 but has no grant on a freshly created share
-//     (default_permission=none), root is denied.
-//   - An unknown uid (not a registered DittoFS user) is likewise denied.
-//   - A user that has been granted read-write CAN write — the grant is
-//     projected into the share root ACL, so least-privilege access works.
-//   - Denials over NFSv3 must surface as EACCES ("permission denied"), not the
-//     EIO ("input/output error") the colleague originally hit (#1449).
+//   - root_to_guest means an NFS client mounting as root is NOT auto-privileged.
+//     The built-in admin occupies uid 0 but has no grant on a fresh share, so
+//     root is squashed to guest and cannot write.
+//   - An unknown uid (no registered DittoFS user, no grant) cannot write.
+//   - A user granted read-write CAN write — the grant projects into the share
+//     root ACL.
+//   - Denials must surface as EACCES ("permission denied"), never the EIO
+//     ("input/output error") the colleague hit on NFSv3 (#1449).
 //
-// The whole flow runs over NFSv3 (framework.MountNFS), the exact path the
-// colleague used.
+// Protocol split is deliberate and reflects what each NFS version can express:
+//   - The write-denial cases run over NFSv3 — the exact path the colleague used,
+//     and where the #1449 EACCES-vs-EIO mapping matters. Over NFSv3 access is
+//     decided by POSIX mode bits: default_permission=read → root mode 0755, so a
+//     root-squashed-to-guest or unknown uid (both "other") may read but not write.
+//   - The granted-user positive control runs over NFSv4. A *per-user* grant is
+//     an ACL entry; NFSv3 has no ACL transport (mode bits cannot express
+//     "uid 2000 yes, uid 4000 no"), so only NFSv4 honours it.
 func TestNFSRootSquash(t *testing.T) {
 	sp := helpers.StartServerProcess(t, "")
 	t.Cleanup(sp.ForceKill)
@@ -46,8 +53,16 @@ func TestNFSRootSquash(t *testing.T) {
 	require.NoError(t, err, "Should create block store")
 	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStoreName) })
 
-	// Fresh share: default_permission=none and default root_to_guest squash.
-	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName)
+	// default_permission=read models the common "world-readable, granted-writable"
+	// share: everyone may read/traverse (so an NFSv4 client mounting as the
+	// squashed-guest root can complete the mount), but WRITE is least-privilege —
+	// only an explicit grant opens it. A fully-locked "none" share is intentionally
+	// not used here: over NFSv4 the mount runs as root→guest and "none" denies even
+	// the traversal needed to mount, so "none" is reachable only over NFSv3's
+	// separate mount protocol. All assertions below are about write access, which
+	// "read" leaves least-privilege.
+	_, err = runner.CreateShare(shareName, metaStoreName, localStoreName,
+		helpers.WithShareDefaultPermission("read"))
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() { _ = runner.DeleteShare(shareName) })
 
@@ -68,12 +83,33 @@ func TestNFSRootSquash(t *testing.T) {
 		"NFS adapter should become enabled")
 	framework.WaitForServer(t, nfsPort, 10*time.Second)
 
-	mount := framework.MountNFS(t, nfsPort)
-	t.Cleanup(mount.Cleanup)
+	// Denials over NFSv3 — the colleague's exact path.
+	mountV3 := framework.MountNFS(t, nfsPort)
+	t.Cleanup(mountV3.Cleanup)
 
-	// Positive control: the granted user can write.
-	t.Run("granted user can write", func(t *testing.T) {
-		path := mount.FilePath("granted.txt")
+	// Root (uid 0) is squashed to guest under root_to_guest and has no grant. It
+	// is the case that reaches the server (root skips client-side mode checks), so
+	// it exercises the #1449 EACCES-not-EIO server mapping directly.
+	t.Run("root is denied (EACCES not EIO)", func(t *testing.T) {
+		err := framework.WriteFileAsUID(t, 0, 0, mountV3.FilePath("root.txt"), []byte("nope"))
+		requireAccessDenied(t, err, "root write")
+	})
+
+	// An unknown uid (no DittoFS user, no grant) gets only the read default, so
+	// its write is denied.
+	t.Run("unknown uid is denied", func(t *testing.T) {
+		const unknownUID, unknownGID = uint32(4000), uint32(4000)
+		err := framework.WriteFileAsUID(t, unknownUID, unknownGID, mountV3.FilePath("stranger.txt"), []byte("nope"))
+		requireAccessDenied(t, err, "unknown-uid write")
+	})
+
+	// Positive control over NFSv4: the per-user grant is an ACL entry, which only
+	// NFSv4 carries. The granted user can write and read back.
+	t.Run("granted user can write (NFSv4)", func(t *testing.T) {
+		mountV4 := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+		t.Cleanup(mountV4.Cleanup)
+
+		path := mountV4.FilePath("granted.txt")
 		err := framework.WriteFileAsUID(t, nfsLeastPrivUID, nfsLeastPrivGID, path, []byte("ok"))
 		require.NoError(t, err, "Granted read-write user should be able to write")
 		t.Cleanup(func() {
@@ -85,17 +121,15 @@ func TestNFSRootSquash(t *testing.T) {
 		assert.Equal(t, []byte("ok"), got)
 	})
 
-	// Root (uid 0) is squashed under root_to_guest and has no grant -> denied.
-	t.Run("root is denied", func(t *testing.T) {
-		err := framework.WriteFileAsUID(t, 0, 0, mount.FilePath("root.txt"), []byte("nope"))
-		requireAccessDenied(t, err, "root write")
-	})
+	// Counter-control over NFSv4: an unknown uid is still denied even where ACLs
+	// are honoured — the grant, not the protocol, is what opens access.
+	t.Run("unknown uid is denied (NFSv4)", func(t *testing.T) {
+		mountV4 := framework.MountNFSWithVersion(t, nfsPort, "4.1")
+		t.Cleanup(mountV4.Cleanup)
 
-	// An unknown uid (no DittoFS user) is denied by default_permission=none.
-	t.Run("unknown uid is denied", func(t *testing.T) {
-		const unknownUID, unknownGID = uint32(4000), uint32(4000)
-		err := framework.WriteFileAsUID(t, unknownUID, unknownGID, mount.FilePath("stranger.txt"), []byte("nope"))
-		requireAccessDenied(t, err, "unknown-uid write")
+		const unknownUID, unknownGID = uint32(4001), uint32(4001)
+		err := framework.WriteFileAsUID(t, unknownUID, unknownGID, mountV4.FilePath("stranger4.txt"), []byte("nope"))
+		requireAccessDenied(t, err, "unknown-uid write over NFSv4")
 	})
 }
 
