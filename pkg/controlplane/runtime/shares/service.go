@@ -610,6 +610,26 @@ func (s *Service) releaseShareName(name string) {
 	s.mu.Unlock()
 }
 
+// rootModeForDefaultPermission projects a share's default_permission onto the
+// share root directory's POSIX permission bits. NFSv3 has no ACL transport, so
+// for its clients the mode bits are the only access signal — and the Linux
+// client enforces them *client-side*, before any RPC. The bits can therefore
+// only restrict, never grant (the server's export gate + ACL remain the real
+// authority); but a too-narrow root silently blocked legitimate access. The
+// only case that needed opening is read-write: a non-root user on a read-write
+// share was denied at the 0755 root before reaching the server. So read-write
+// (and admin) widen "other" to rwx; read and the secure none/unset default keep
+// the historical 0755 (the export gate still denies ungranted access server-
+// side). Per-user grants remain NFSv4/SMB-only — mode bits cannot express them.
+func rootModeForDefaultPermission(perm string) uint32 {
+	switch models.SharePermission(perm) {
+	case models.PermissionReadWrite, models.PermissionAdmin:
+		return 0o777
+	default: // none / unset / read: preserve the historical 0755 root
+		return 0o755
+	}
+}
+
 // prepareShare validates config, resolves the metadata store, and creates the
 // root directory. Returns the built Share (not yet in the registry) and the
 // metadata store. The caller (AddShare) is responsible for inserting the share
@@ -644,7 +664,7 @@ func (s *Service) prepareShare(
 		rootAttr.Type = metadata.FileTypeDirectory
 	}
 	if rootAttr.Mode == 0 {
-		rootAttr.Mode = 0755
+		rootAttr.Mode = rootModeForDefaultPermission(config.DefaultPermission)
 	}
 	if rootAttr.Atime.IsZero() {
 		now := time.Now()
