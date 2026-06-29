@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// envOr returns the value of env var key, or fallback when unset/empty.
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 // TestMetadataStoresCRUD tests comprehensive metadata store management via CLI.
 // Uses a shared server process for all subtests.
@@ -76,10 +86,19 @@ func TestMetadataStoresCRUD(t *testing.T) {
 			_ = cli.DeleteMetadataStore(storeName)
 		})
 
-		// Create postgres store with raw JSON config
-		// Without a real postgres instance, this will fail with a connection error.
-		// We verify the config is parsed correctly (connection error, not config error).
-		pgConfig := `{"host":"localhost","port":5432,"dbname":"dittofs_test","user":"postgres","password":"test","sslmode":"disable"}`
+		// Create postgres store with raw JSON config. In CI the postgres service
+		// container is reachable with these env-provided credentials, so the store
+		// is created; locally (no postgres) it fails with a connection error. The
+		// hardcoded postgres/test creds previously used neither matched the CI
+		// container (dittofs/dittofs/dittofs_test) nor any local default.
+		pgConfig := fmt.Sprintf(
+			`{"host":"%s","port":%s,"dbname":"%s","user":"%s","password":"%s","sslmode":"disable"}`,
+			envOr("POSTGRES_HOST", "localhost"),
+			envOr("POSTGRES_PORT", "5432"),
+			envOr("POSTGRES_DATABASE", "dittofs_test"),
+			envOr("POSTGRES_USER", "dittofs"),
+			envOr("POSTGRES_PASSWORD", "dittofs"),
+		)
 		_, err := cli.CreateMetadataStore(storeName, "postgres",
 			helpers.WithMetaRawConfig(pgConfig),
 		)

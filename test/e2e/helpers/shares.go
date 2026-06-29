@@ -93,9 +93,16 @@ func (r *CLIRunner) CreateShare(name, metadataStore, localBlockStore string, opt
 	if options.readOnly != nil {
 		args = append(args, "--read-only", fmt.Sprintf("%t", *options.readOnly))
 	}
-	if options.defaultPermission != "" {
-		args = append(args, "--default-permission", options.defaultPermission)
+	// e2e shares default to read-write so the root-mounted kernel NFS client can
+	// exercise file ops. #1419 made the server default "none" (deny until
+	// granted), so without this every functional e2e test that mounts and writes
+	// is denied at the export gate. Permission-denial behaviour is covered by
+	// dedicated tests that opt out via WithShareDefaultPermission("none").
+	defaultPermission := options.defaultPermission
+	if defaultPermission == "" {
+		defaultPermission = "read-write"
 	}
+	args = append(args, "--default-permission", defaultPermission)
 	if options.description != "" {
 		args = append(args, "--description", options.description)
 	}
