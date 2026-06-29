@@ -130,8 +130,8 @@ func (c *IdentityConfig) Validate() error {
 }
 
 // GCConfig configures the engine.CollectGarbage mark-sweep run. Knobs
-// cover the grace TTL and the dry-run sample bound; GC is on-demand only
-// (dfsctl/REST) with no periodic scheduler.
+// cover the grace TTL, the dry-run sample bound, and the background
+// auto-GC schedule. GC is also runnable on demand (dfsctl/REST).
 type GCConfig struct {
 	// GracePeriod is the TTL applied during sweep: an object whose
 	// LastModified is within snapshot - GracePeriod is preserved.
@@ -142,6 +142,16 @@ type GCConfig struct {
 	// DryRunSampleSize bounds the number of candidate keys captured by a
 	// dry-run report. Defaults to 1000.
 	DryRunSampleSize int `mapstructure:"dry_run_sample_size" yaml:"dry_run_sample_size"`
+
+	// AutoEnabled turns on the background GC scheduler, which periodically
+	// reclaims orphaned blocks on both tiers without operator action.
+	// Defaults to true. Set false to require manual `dfsctl store block gc`.
+	AutoEnabled *bool `mapstructure:"auto_enabled" yaml:"auto_enabled"`
+
+	// AutoInterval is the period between background GC runs. Defaults to
+	// 15m. Values in (0, 1m) are rejected at config load. Ignored when
+	// AutoEnabled is false.
+	AutoInterval time.Duration `mapstructure:"auto_interval" yaml:"auto_interval"`
 }
 
 // ApplyDefaults fills any zero-valued field with the defaults.
@@ -152,6 +162,20 @@ func (c *GCConfig) ApplyDefaults() {
 	if c.DryRunSampleSize <= 0 {
 		c.DryRunSampleSize = 1000
 	}
+	if c.AutoEnabled == nil {
+		on := true
+		c.AutoEnabled = &on
+	}
+	// Only fill the unset (zero) case. A negative value is a user mistake and
+	// must survive to Validate, not be silently rewritten to the default.
+	if c.AutoInterval == 0 {
+		c.AutoInterval = 15 * time.Minute
+	}
+}
+
+// AutoGCEnabled reports whether background GC is on (default true when unset).
+func (c *GCConfig) AutoGCEnabled() bool {
+	return c.AutoEnabled == nil || *c.AutoEnabled
 }
 
 // Validate returns an error if the GCConfig has invalid values.
@@ -176,6 +200,12 @@ func (c *GCConfig) Validate() error {
 	}
 	if c.DryRunSampleSize < 0 {
 		return fmt.Errorf("gc.dry_run_sample_size must be >= 0 (got %d)", c.DryRunSampleSize)
+	}
+	if c.AutoInterval < 0 {
+		return fmt.Errorf("gc.auto_interval must be >= 0 (got %v)", c.AutoInterval)
+	}
+	if c.AutoInterval > 0 && c.AutoInterval < time.Minute {
+		return fmt.Errorf("gc.auto_interval must be >= 1m to avoid hammering the stores (got %v); set 0 to use the 15m default", c.AutoInterval)
 	}
 	return nil
 }
