@@ -408,15 +408,25 @@ type Store interface {
 	EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error
 
 	// EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a
-	// live inode through fn (deduped, order-independent). "Live" includes
-	// nlink=0 inodes (open-but-unlinked files whose blocks are still in use),
-	// since their inode rows still exist. Unlike EnumeratePayloads — which
-	// reads file_blocks and therefore also yields payloads whose owning file is
-	// already gone (stranded rows) — this reads the namespace, so the set
-	// difference (EnumeratePayloads − EnumerateLivePayloadIDs) is exactly the
-	// stranded payloads the GC reconcile must reap (#1433). Implementations
-	// MUST drain the result set before invoking fn (collect-then-call) and
-	// honor ctx.Done() throughout.
+	// live inode through fn (deduped, order-independent). "Live" means nlink>0:
+	// nlink=0 (unlinked) inodes are EXCLUDED (#1433) — the file is dead, so its
+	// payload must be reclaimable, not pinned forever. Unlike EnumeratePayloads
+	// — which reads file_blocks and therefore also yields payloads whose owning
+	// file is already gone (stranded rows) — this reads the namespace, so the
+	// set difference (EnumeratePayloads − EnumerateLivePayloadIDs) is exactly the
+	// stranded payloads the GC reconcile must reap. Use the authoritative link
+	// count (SQL inodes.nlink, badger l: key, memory linkCounts), not the
+	// embedded File.Nlink.
+	//
+	// Open-but-unlinked caveat: DittoFS does not retain a file's data while it is
+	// held open after unlink (NFSv4 REMOVE drops the link immediately; SMB
+	// unlinks at last close), so excluding nlink=0 here does not break an
+	// existing guarantee. The GC grace period is the safety window for any
+	// in-flight reader; a proper open-handle GC hold (to support long-lived
+	// open-unlinked reads beyond grace) is future work.
+	//
+	// Implementations MUST drain the result set before invoking fn
+	// (collect-then-call) and honor ctx.Done() throughout.
 	EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error
 
 	// ========================================================================

@@ -69,6 +69,10 @@ func RunBackupConformanceSuite(t *testing.T, factory BackupableStoreFactory) {
 		testBackup_LiveSetUnionsManifestNegativeControl(t, factory)
 	})
 
+	t.Run("ExcludesUnlinkedFileBlocks", func(t *testing.T) {
+		testBackup_ExcludesUnlinkedFileBlocks(t, factory)
+	})
+
 	t.Run("UsedBytesAfterRestore", func(t *testing.T) {
 		testBackup_UsedBytesAfterRestore(t, factory)
 	})
@@ -194,6 +198,55 @@ func testBackup_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Backu
 	}
 	if !found {
 		t.Errorf("manifest-only hash %s absent from EnumerateFileBlocks; the live set must UNION File.Blocks with the CAS index, else GC reaps the chunk", manifestOnly)
+	}
+}
+
+// testBackup_ExcludesUnlinkedFileBlocks proves the snapshot manifest HashSet
+// excludes blocks of unlinked (nlink=0) files. Since GC now reclaims a deleted
+// file's blocks from remote (#1433), a manifest that still listed them would
+// reference hashes absent from remote and fail the snapshot durability verify.
+func testBackup_ExcludesUnlinkedFileBlocks(t *testing.T, factory BackupableStoreFactory) {
+	store := factory(t)
+	b := asBackupable(t, store)
+	ctx := t.Context()
+
+	shareName := "unlinked-bkp"
+	root := createTestShare(t, store, shareName)
+	h := createTestFile(t, store, shareName, root, "dead.bin", 0o644)
+
+	dead := hashOfSeed("backup-unlinked-hash")
+	f, err := store.GetFile(ctx, h)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	f.Blocks = []block.BlockRef{{Hash: dead, Offset: 0, Size: 4 << 20}}
+	f.Size = 4 << 20
+	if err := store.PutFile(ctx, f); err != nil {
+		t.Fatalf("PutFile: %v", err)
+	}
+
+	// Baseline: a live file's block IS in the manifest.
+	hs, err := b.Backup(ctx, io.Discard)
+	if err != nil {
+		t.Fatalf("Backup (linked): %v", err)
+	}
+	if !hs.Contains(dead) {
+		t.Fatalf("baseline: hash %s absent from backup manifest while nlink>0", dead)
+	}
+
+	// Unlink -> nlink=0; its block must leave the manifest.
+	if err := store.DeleteChild(ctx, root, "dead.bin"); err != nil {
+		t.Fatalf("DeleteChild: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, h, 0); err != nil {
+		t.Fatalf("SetLinkCount(0): %v", err)
+	}
+	hs, err = b.Backup(ctx, io.Discard)
+	if err != nil {
+		t.Fatalf("Backup (unlinked): %v", err)
+	}
+	if hs.Contains(dead) {
+		t.Errorf("hash %s still in backup manifest after unlink (nlink=0); GC may have reclaimed it from remote, so the snapshot durability verify would fail (#1433)", dead)
 	}
 }
 

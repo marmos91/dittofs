@@ -411,8 +411,8 @@ func (s *BadgerMetadataStore) ListFileBlocks(_ context.Context, payloadID string
 // inode. It scans the f: inode keyspace, decodes each file record, and collects
 // distinct non-empty PayloadIDs. Corrupt inode records are skipped so a single
 // bad row cannot block the reconcile. Hardlinks share one f: key, so DISTINCT
-// yields one payloadID per content; nlink=0 inodes still have their key and are
-// reported live.
+// yields one payloadID per content. nlink=0 (unlinked) inodes are excluded
+// (#1433): their payload is dead, so the reconcile treats it as stranded.
 func (s *BadgerMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
 	seen := make(map[string]struct{})
 	err := s.db.View(func(txn *badger.Txn) error {
@@ -433,6 +433,9 @@ func (s *BadgerMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn fu
 					// Skip corrupt inode rows rather than fail-closed: a single
 					// bad row must not block reclaiming everything else.
 					return nil
+				}
+				if fileLinkCountTxn(txn, file) == 0 {
+					return nil // unlinked: payload is dead, not live (#1433)
 				}
 				if pid := string(file.PayloadID); pid != "" {
 					seen[pid] = struct{}{}
@@ -653,6 +656,17 @@ func enumeratePrefixFileBlocks(ctx context.Context, txn *badger.Txn, fn func(blo
 		}); err != nil {
 			return fmt.Errorf("enumerate file blocks: decode file: %w", err)
 		}
+		// nlink=0 (unlinked) inodes keep their f: record but the file is dead.
+		// Excluding their manifest blocks from the GC live set is what lets the
+		// sweep reclaim orphaned chunks (#1433). Snapshot-held blocks are
+		// protected independently by the GC HoldProvider, not by this manifest.
+		// The authoritative link count lives in the l: key (#1166), not the
+		// embedded File.Nlink (which SetLinkCount does not rewrite); read it the
+		// same way GetFile overlays it, falling back to the embedded value when
+		// the l: key is absent.
+		if fileLinkCountTxn(txn, file) == 0 {
+			continue
+		}
 		for _, br := range file.Blocks {
 			if err := fn(br.Hash); err != nil {
 				return err
@@ -660,6 +674,31 @@ func enumeratePrefixFileBlocks(ctx context.Context, txn *badger.Txn, fn func(blo
 		}
 	}
 	return nil
+}
+
+// fileLinkCountTxn returns the authoritative link count for a file, reading the
+// l: key (#1166) the same way GetFile overlays it. SetLinkCount writes the l:
+// key, not the embedded File.Nlink, so the embedded value alone is unreliable;
+// fall back to it only when the l: key is absent.
+func fileLinkCountTxn(txn *badger.Txn, file *metadata.File) uint32 {
+	item, err := txn.Get(keyLinkCount(file.ID))
+	if err != nil {
+		// No l: key yet: mirror GetFile's default-by-type so a freshly created
+		// file (link count not persisted yet) is never treated as dead. The
+		// embedded File.Nlink may be zero/stale and must NOT be trusted here.
+		if file.Type == metadata.FileTypeDirectory {
+			return 2
+		}
+		return 1
+	}
+	nlink := file.Nlink
+	_ = item.Value(func(val []byte) error {
+		if c, derr := decodeUint32(val); derr == nil {
+			nlink = c
+		}
+		return nil
+	})
+	return nlink
 }
 
 // splitBlockID splits a block ID into (payloadID, blockIdx) on the LAST

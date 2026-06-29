@@ -125,6 +125,16 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 						"key", string(key), "error", err)
 					continue
 				}
+				// Skip unlinked (nlink=0) files: they are dead and GC may have
+				// already reclaimed their blocks, so adding them would make the
+				// snapshot manifest reference hashes absent from remote and fail
+				// the durability verify (#1433). Use the authoritative link count
+				// (l: key), not the embedded File.Nlink which SetLinkCount does
+				// not rewrite. The raw f: record is still dumped verbatim above so
+				// a restore stays consistent (the file remains nlink=0, invisible).
+				if fileLinkCountTxn(txn, &file) == 0 {
+					continue
+				}
 				for _, br := range file.Blocks {
 					hs.Add(br.Hash)
 				}
