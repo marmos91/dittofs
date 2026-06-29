@@ -144,6 +144,12 @@ type GCStats struct {
 	DryRun           bool
 	DryRunCandidates []string
 
+	// IsLocalTier is true when these stats come from a local-store pass
+	// (CollectGarbageLocal), false for the default remote pass. Per-invocation
+	// metadata only — accumulateGCStats does not fold it into a total; the
+	// runtime uses it to tag metrics/logs with the tier.
+	IsLocalTier bool
+
 	// Legacy aggregator fields (compat aliases — see finalizeStats).
 
 	// Deprecated: SharesScanned is retained on the REST/dfsctl wire for
@@ -254,18 +260,47 @@ type HoldProvider interface {
 // MetadataReconciler is treated as "no shares" — the live set is empty
 // and every CAS object is a sweep candidate. Callers in production
 // (Runtime.RunBlockGC) supply a MultiShareReconciler.
+// CollectGarbage reclaims orphaned objects on a remote (S3) store via the
+// shared mark-sweep kernel (collectGarbage).
 func CollectGarbage(
 	ctx context.Context,
 	remoteStore remote.RemoteStore,
 	reconciler MetadataReconciler,
 	options *Options,
 ) *GCStats {
+	return collectGarbage(ctx, remoteStore, reconciler, options, false)
+}
+
+// CollectGarbageLocal reclaims orphaned chunks on a per-share LOCAL block
+// store. Local stores are isolated per share (architecture invariant #4), so
+// the caller scopes the reconciler and snapshot holds to that single share.
+// The grace period protects freshly-written chunks whose FileBlock rows have
+// not yet committed (#1433).
+func CollectGarbageLocal(
+	ctx context.Context,
+	localStore block.Store,
+	reconciler MetadataReconciler,
+	options *Options,
+) *GCStats {
+	return collectGarbage(ctx, localStore, reconciler, options, true)
+}
+
+// collectGarbage is the shared mark-sweep kernel for both tiers. isLocal only
+// tags the resulting stats; the live-set, grace, and fail-closed semantics are
+// identical regardless of tier.
+func collectGarbage(
+	ctx context.Context,
+	store sweepable,
+	reconciler MetadataReconciler,
+	options *Options,
+	isLocal bool,
+) *GCStats {
 	if options == nil {
 		options = &Options{}
 	}
 	started := time.Now()
 	runID := started.UTC().Format("20060102T150405Z") + "-" + randSuffix(6)
-	stats := &GCStats{RunID: runID, DryRun: options.DryRun}
+	stats := &GCStats{RunID: runID, DryRun: options.DryRun, IsLocalTier: isLocal}
 
 	// serialize concurrent CollectGarbage calls that
 	// share a GCStateRoot. Without this, two parallel runs race in
@@ -341,8 +376,9 @@ func CollectGarbage(
 		return stats
 	}
 
-	// SWEEP: single Walk over the unified CAS namespace.
-	sweepPhase(ctx, remoteStore, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
+	// SWEEP: single Walk over the CAS namespace (remote union, or one share's
+	// local store).
+	sweepPhase(ctx, store, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
 
 	// Mark complete + persist summary.
 	if err := gcs.MarkComplete(); err != nil {
@@ -449,9 +485,18 @@ func sharesForReconciler(r MetadataReconciler) []string {
 // fan-out) is expected to re-wire concurrency at the backend, not
 // here. Callers wanting per-prefix parallelism should file against
 // the backend.
+// sweepable is the minimal store surface the sweep phase needs: enumerate the
+// CAS namespace and delete one object by hash. Both remote.RemoteStore and the
+// local block.Store satisfy it, so the same sweep kernel reclaims orphans on
+// either tier (#1433).
+type sweepable interface {
+	Walk(ctx context.Context, fn func(block.ContentHash, block.Meta) error) error
+	Delete(ctx context.Context, hash block.ContentHash) error
+}
+
 func sweepPhase(
 	ctx context.Context,
-	remoteStore remote.RemoteStore,
+	store sweepable,
 	gcs *GCState,
 	stats *GCStats,
 	snapshotTime time.Time,
@@ -496,7 +541,7 @@ func sweepPhase(
 		// invokes the callback sequentially, so a local counter folded into
 		// stats once after the walk avoids a mutex round-trip per object.
 		var scanned int64
-		walkErr := remoteStore.Walk(ctx, func(h block.ContentHash, meta block.Meta) error {
+		walkErr := store.Walk(ctx, func(h block.ContentHash, meta block.Meta) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -532,7 +577,7 @@ func sweepPhase(
 				statsMu.Unlock()
 				return nil
 			}
-			if err := remoteStore.Delete(ctx, h); err != nil {
+			if err := store.Delete(ctx, h); err != nil {
 				// continue + capture
 				addError("delete " + casKey + ": " + err.Error())
 				return nil

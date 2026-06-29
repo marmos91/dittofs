@@ -66,6 +66,44 @@ func installCollectGarbageSpy(t *testing.T) *[]*engine.Options {
 	return &captured
 }
 
+// installCollectGarbageLocalSpy replaces collectGarbageLocalFn with a spy that
+// records each invocation's *engine.Options (one per swept share).
+func installCollectGarbageLocalSpy(t *testing.T) *[]*engine.Options {
+	t.Helper()
+	captured := make([]*engine.Options, 0, 4)
+	orig := collectGarbageLocalFn
+	collectGarbageLocalFn = func(_ context.Context, _ block.Store, _ engine.MetadataReconciler, opts *engine.Options) *engine.GCStats {
+		captured = append(captured, opts)
+		return &engine.GCStats{IsLocalTier: true}
+	}
+	t.Cleanup(func() { collectGarbageLocalFn = orig })
+	return &captured
+}
+
+// TestRunBlockGCLocal_SkipsInMemoryShares asserts RunBlockGCLocal does not
+// invoke the local sweep for shares with no persistent gc-state root
+// (in-memory backends): their chunks evaporate on restart.
+func TestRunBlockGCLocal_SkipsInMemoryShares(t *testing.T) {
+	captured := installCollectGarbageLocalSpy(t)
+	rt := newRuntimeForGC(t, map[string]remote.RemoteStore{"/share-a": &fakeRemoteStore{name: "s3"}})
+
+	stats, err := rt.RunBlockGCLocal(context.Background(), false)
+	if err != nil {
+		t.Fatalf("RunBlockGCLocal: %v", err)
+	}
+	if stats == nil {
+		t.Fatal("expected non-nil stats")
+	}
+	for _, opts := range *captured {
+		if opts.GCStateRoot == "" {
+			t.Error("local sweep invoked for a share with empty GCStateRoot")
+		}
+		if len(opts.Shares) != 1 {
+			t.Errorf("local sweep Options.Shares = %v, want exactly one share", opts.Shares)
+		}
+	}
+}
+
 // ---- Helpers ----
 
 // newRuntimeForGC builds a Runtime fixture for RunBlockGC tests. Each entry
