@@ -36,6 +36,7 @@ type instruments struct {
 	gcSweptObjects prometheus.Counter
 	gcFreedBytes   prometheus.Counter
 	gcDurationSecs prometheus.Histogram
+	gcStrandedRows prometheus.Counter
 
 	// Snapshot / restore (subsystem "snapshot"). Only the event-driven
 	// operation count + duration live here; the held-snapshot count
@@ -131,6 +132,10 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 			Help:    "Block-store GC pass duration, in seconds.",
 			Buckets: prometheus.DefBuckets,
 		}),
+		gcStrandedRows: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "gc", Name: "stranded_rows_reaped_total",
+			Help: "FileBlock rows reaped by GC reconcile/migration runs (rows whose owning file was already gone).",
+		}),
 
 		snapOps: factory(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "snapshot", Name: "operations_total",
@@ -177,7 +182,7 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 	reg.MustRegister(
 		in.requests, in.reqDuration, in.connsTotal, in.connsClosed, in.authAttempts, in.authFailures,
 		in.backpressureTotal, in.backpressureWaitSeconds, in.evictionsTotal, in.evictedBytesTotal,
-		in.gcRuns, in.gcRunning, in.gcLastRunTime, in.gcSweptObjects, in.gcFreedBytes, in.gcDurationSecs,
+		in.gcRuns, in.gcRunning, in.gcLastRunTime, in.gcSweptObjects, in.gcFreedBytes, in.gcDurationSecs, in.gcStrandedRows,
 		in.snapOps, in.snapDuration,
 		in.uploadsTotal, in.uploadDuration, in.uploadBytes, in.uploadsInflight,
 		in.uploadQueueDepth, in.uploadWindow, in.rehashDuration,
@@ -278,6 +283,15 @@ func (m *Metrics) GCFinished(result string, sweptObjects, freedBytes int64, d ti
 	}
 	m.in.gcDurationSecs.Observe(d.Seconds())
 	m.in.gcLastRunTime.Set(float64(time.Now().Unix()))
+}
+
+// RecordGCStrandedRows adds to the count of FileBlock rows reaped by a GC
+// reconcile/migration pass. No-op for n <= 0.
+func (m *Metrics) RecordGCStrandedRows(n int64) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.in.gcStrandedRows.Add(float64(n))
 }
 
 // RecordSnapshotOp records one snapshot operation: its count (by op and result)

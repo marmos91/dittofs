@@ -11,6 +11,10 @@ var Cmd = &cobra.Command{
 
 These commands expose low-level server controls that are not tied to a specific share or protocol. Currently available: drain-uploads, which blocks until all queued block-store uploads have completed.
 
+Note: garbage collection (reclaiming space from deleted files) is NOT here — it
+runs automatically in the background and is also available on demand via
+"dfsctl store block gc <share>" (see the Garbage Collection guide).
+
 Examples:
   # Wait for all in-flight uploads to finish (useful before benchmarking)
   dfsctl system drain-uploads`,

@@ -56,6 +56,13 @@ func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine
 	// sweeps the remote tier and (since #1433) the local tier too, reclaiming
 	// the now-orphaned chunks under the usual grace + snapshot-hold guards.
 	sweep, err := r.RunBlockGC(ctx, "", dryRun)
+	// Record reaped rows regardless of the sweep result: the rows are already
+	// deleted from the metadata store, so the counter must reflect that even if
+	// the downstream sweep (e.g. S3 unreachable) then fails. Skip on dry-run —
+	// there the count is rows that *would* be reaped, nothing was deleted.
+	if !dryRun {
+		r.metrics.RecordGCStrandedRows(total.StrandedRowsReaped)
+	}
 	if err != nil {
 		return total, err
 	}
