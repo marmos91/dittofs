@@ -407,6 +407,18 @@ type Store interface {
 	// block.EngineFileBlockStore.
 	EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error
 
+	// EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a
+	// live inode through fn (deduped, order-independent). "Live" includes
+	// nlink=0 inodes (open-but-unlinked files whose blocks are still in use),
+	// since their inode rows still exist. Unlike EnumeratePayloads — which
+	// reads file_blocks and therefore also yields payloads whose owning file is
+	// already gone (stranded rows) — this reads the namespace, so the set
+	// difference (EnumeratePayloads − EnumerateLivePayloadIDs) is exactly the
+	// stranded payloads the GC reconcile must reap (#1433). Implementations
+	// MUST drain the result set before invoking fn (collect-then-call) and
+	// honor ctx.Done() throughout.
+	EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error
+
 	// ========================================================================
 	// Usage Tracking
 	// ========================================================================
