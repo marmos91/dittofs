@@ -31,6 +31,10 @@ const (
 // least-privilege granted user (not root).
 // This covers requirements NFS-01 through NFS-06:
 func TestNFSFileOperations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping NFS file operations tests in short mode")
+	}
+
 	// Start server process
 	sp := helpers.StartServerProcess(t, "")
 	t.Cleanup(sp.ForceKill)

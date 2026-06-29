@@ -76,9 +76,13 @@ func ChmodAsUID(t *testing.T, uid, gid uint32, mode os.FileMode, path string) er
 	return errUIDOpsUnsupported
 }
 
-// FileExistsAsUID is unsupported off Linux.
+// FileExistsAsUID is unsupported off Linux. Unlike the error-returning stubs,
+// this one has no channel to signal "unsupported", so it fails the test
+// immediately rather than returning false (which a caller would misread as
+// "file absent").
 func FileExistsAsUID(t *testing.T, uid, gid uint32, path string) bool {
 	t.Helper()
+	t.Fatal(errUIDOpsUnsupported)
 	return false
 }
 
