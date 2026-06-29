@@ -259,6 +259,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 		"shares", rt.CountShares())
 	logger.Info("Per-share BlockStores created during share loading")
 
+	// One-time stranded-row reconcile migration (#1433): reaps file_blocks
+	// rows leaked by the pre-fix delete path and sweeps the now-orphaned
+	// chunks. Launched AFTER LoadSharesFromStore so ListShares() sees the
+	// registered shares (otherwise it no-ops and never sets its marker).
+	// Guarded by a per-store marker so it runs once per store. Detached from
+	// ctx (WithoutCancel) so a shutdown signal mid-scan doesn't abort it;
+	// errors are logged, never fatal.
+	go rt.RunBlockGCReconcileOnce(context.WithoutCancel(ctx))
+
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
 	// Seed an operator-pinned machine SID (if configured) BEFORE Serve so the

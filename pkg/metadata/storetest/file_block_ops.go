@@ -132,6 +132,13 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testEnumeratePayloads_Empty(t, factory)
 	})
 
+	// EnumerateLivePayloadIDs reads the namespace (inodes), so the difference
+	// against EnumeratePayloads (which reads file_blocks) is exactly the
+	// stranded-payload set the GC reconcile reaps (#1433).
+	t.Run("EnumerateLivePayloadIDs", func(t *testing.T) {
+		testEnumerateLivePayloadIDs(t, factory)
+	})
+
 	// IncrementRefCount / DecrementRefCount called via a
 	// metadata.Transaction MUST roll back when the wrapping WithTransaction
 	// returns an error. All backends — memory, badger, postgres — honor the
@@ -1446,5 +1453,85 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 	}
 	if got.RefCount != 10 {
 		t.Errorf("RefCount post-cascade = %d; want 10 (8 AddRef + 8 Decrement on RefCount=10 seed; TOCTOU-free)", got.RefCount)
+	}
+}
+
+// testEnumerateLivePayloadIDs verifies the namespace-derived live set used by
+// the GC reconcile (#1433). A "stranded" payload — file_blocks rows whose
+// owning inode is gone (the historical leak) — must appear in EnumeratePayloads
+// but NOT in EnumerateLivePayloadIDs, so the reconcile can reap it. A live
+// file's payload must appear in both.
+func testEnumerateLivePayloadIDs(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	root := createTestShare(t, store, "myshare")
+
+	// A live file carrying a PayloadID, plus its file_blocks rows.
+	const livePID = "myshare/live.bin"
+	h := createTestFile(t, store, "myshare", root, "live.bin", 0o644)
+	f, err := store.GetFile(ctx, h)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	f.PayloadID = metadata.PayloadID(livePID)
+	if err := store.PutFile(ctx, f); err != nil {
+		t.Fatalf("PutFile (set payload): %v", err)
+	}
+	seedStrandedBlocks(t, ctx, store, livePID, 2)
+
+	// A STRANDED payload: file_blocks rows exist with no inode referencing them
+	// (owning file deleted without reaping — the pre-fix leak).
+	const strandedPID = "myshare/ghost.bin"
+	seedStrandedBlocks(t, ctx, store, strandedPID, 3)
+
+	// EnumerateLivePayloadIDs reads the namespace: live present, stranded absent.
+	live := make(map[string]int)
+	if err := store.EnumerateLivePayloadIDs(ctx, func(p string) error {
+		live[p]++
+		return nil
+	}); err != nil {
+		t.Fatalf("EnumerateLivePayloadIDs: %v", err)
+	}
+	if live[livePID] != 1 {
+		t.Errorf("live payload %q yielded %d times, want exactly 1", livePID, live[livePID])
+	}
+	if live[strandedPID] != 0 {
+		t.Errorf("stranded payload %q reported live — reconcile would never reap it", strandedPID)
+	}
+
+	// EnumeratePayloads reads file_blocks: BOTH present (stranded-inclusive).
+	all := make(map[string]int)
+	if err := store.EnumeratePayloads(ctx, func(p string) error {
+		all[p]++
+		return nil
+	}); err != nil {
+		t.Fatalf("EnumeratePayloads: %v", err)
+	}
+	if all[livePID] == 0 {
+		t.Errorf("EnumeratePayloads missing live payload %q", livePID)
+	}
+	if all[strandedPID] == 0 {
+		t.Errorf("EnumeratePayloads missing stranded payload %q (test setup invalid)", strandedPID)
+	}
+}
+
+// seedStrandedBlocks puts n file_blocks rows for payloadID without requiring an
+// inode — the exact shape of a leaked/stranded manifest.
+func seedStrandedBlocks(t *testing.T, ctx context.Context, store metadata.Store, payloadID string, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		b := &block.FileBlock{
+			ID:         fmt.Sprintf("%s/%d", payloadID, i),
+			State:      block.BlockStatePending,
+			LocalPath:  fmt.Sprintf("/cache/%s-%d", payloadID, i),
+			DataSize:   128,
+			RefCount:   1,
+			LastAccess: time.Now(),
+			CreatedAt:  time.Now(),
+		}
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s): %v", b.ID, err)
+		}
 	}
 }

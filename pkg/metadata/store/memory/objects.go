@@ -140,6 +140,34 @@ func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 	return s.listFileBlocksLocked(ctx, payloadID)
 }
 
+// EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a
+// live inode. It snapshots the distinct PayloadIDs under the read lock, then
+// calls fn per payloadID. Hardlinks share one fileData entry, so DISTINCT
+// yields one payloadID per content; nlink=0 inodes still have their entry and
+// are reported live.
+func (s *MemoryMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
+	seen := make(map[string]struct{})
+	s.mu.RLock()
+	for _, fd := range s.files {
+		if fd == nil || fd.Attr == nil {
+			continue
+		}
+		if pid := string(fd.Attr.PayloadID); pid != "" {
+			seen[pid] = struct{}{}
+		}
+	}
+	s.mu.RUnlock()
+	for payloadID := range seen {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // EnumeratePayloads streams every distinct payloadID that has at least one
 // FileBlock row through fn. It collects distinct payloadIDs under the read
 // lock (splitting each block.ID on the LAST '/' to recover the payloadID —

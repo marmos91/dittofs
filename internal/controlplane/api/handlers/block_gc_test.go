@@ -45,6 +45,14 @@ func (f *fakeGCRuntime) RunBlockGCForShare(_ context.Context, shareName string, 
 	return f.runStats, nil
 }
 
+func (f *fakeGCRuntime) RunBlockGCReconcile(_ context.Context, dryRun bool) (*engine.GCStats, error) {
+	f.runCalls = append(f.runCalls, runCall{share: "<reconcile>", dryRun: dryRun})
+	if f.runErr != nil {
+		return nil, f.runErr
+	}
+	return f.runStats, nil
+}
+
 func (f *fakeGCRuntime) GCStateDirForShare(_ string) (string, error) {
 	if f.gcStateRootEr != nil {
 		return "", f.gcStateRootEr

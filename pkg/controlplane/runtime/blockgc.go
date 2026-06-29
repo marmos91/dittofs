@@ -324,6 +324,7 @@ func accumulateGCStats(total, stats *engine.GCStats, includeDryRunMeta bool) eng
 	total.ObjectsSwept += s.ObjectsSwept
 	total.BytesFreed += s.BytesFreed
 	total.ErrorCount += s.ErrorCount
+	total.StrandedRowsReaped += s.StrandedRowsReaped
 	// SharesScanned / BlocksScanned are deprecated REST wire fields that
 	// are never populated by the mark-sweep engine — accumulation would
 	// always be zero, so it is skipped here. See engine.GCStats godoc.
