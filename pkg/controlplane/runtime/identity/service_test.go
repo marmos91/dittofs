@@ -86,6 +86,9 @@ func TestApplyIdentityMapping_SquashModes(t *testing.T) {
 		// root_to_guest only squashes UID 0.
 		{"root_to_guest/root", models.SquashRootToGuest, 0, anonUID, "anonymous(65534)"},
 		{"root_to_guest/nonroot", models.SquashRootToGuest, 1000, 1000, "user"},
+		// Empty squash defaults to root_to_guest, so root (UID 0) is squashed
+		// to anonymous (the new default).
+		{"empty/root", "", 0, anonUID, "anonymous(65534)"},
 		// all_to_admin maps every UID to root.
 		{"all_to_admin/nonroot", models.SquashAllToAdmin, 1000, 0, "root"},
 		{"all_to_admin/root", models.SquashAllToAdmin, 0, 0, "root"},

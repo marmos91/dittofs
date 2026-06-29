@@ -97,8 +97,8 @@ func ParseSharePermission(s string) SharePermission {
 //
 // Options:
 //   - none: No mapping, UIDs pass through unchanged
-//   - root_to_admin: Root (UID 0) retains admin/root privileges (default)
-//   - root_to_guest: Root (UID 0) is mapped to anonymous (root_squash)
+//   - root_to_admin: Root (UID 0) retains admin/root privileges (no_root_squash)
+//   - root_to_guest: Root (UID 0) is mapped to anonymous (root_squash) (default)
 //   - all_to_admin: All users are mapped to root/admin
 //   - all_to_guest: All users are mapped to anonymous (all_squash)
 type SquashMode string
@@ -109,11 +109,13 @@ const (
 	SquashNone SquashMode = "none"
 
 	// SquashRootToAdmin means root (UID 0) retains admin/root privileges.
-	// This is the default behavior - root has full access.
+	// Equivalent to NFS "no_root_squash"; opt in per-share when a client's
+	// root must act as the server's root.
 	SquashRootToAdmin SquashMode = "root_to_admin"
 
 	// SquashRootToGuest means root (UID 0) is mapped to anonymous UID/GID.
-	// This is equivalent to traditional NFS "root_squash".
+	// This is equivalent to traditional NFS "root_squash" and is the default
+	// for new shares.
 	SquashRootToGuest SquashMode = "root_to_guest"
 
 	// SquashAllToAdmin means all users are mapped to root (UID 0).
@@ -125,9 +127,10 @@ const (
 	SquashAllToGuest SquashMode = "all_to_guest"
 )
 
-// DefaultSquashMode is the default squash mode for new shares.
-// Root retains admin privileges by default.
-const DefaultSquashMode = SquashRootToAdmin
+// DefaultSquashMode is the default squash mode for new shares. Root (UID 0) is
+// squashed to the anonymous identity (conventional NFS root_squash) unless a
+// share explicitly opts into root_to_admin / none / all_to_admin.
+const DefaultSquashMode = SquashRootToGuest
 
 // IsValid returns true if this is a valid squash mode.
 func (s SquashMode) IsValid() bool {
@@ -147,9 +150,14 @@ func (s SquashMode) String() string {
 // ParseSquashMode converts a string to a SquashMode.
 // Returns DefaultSquashMode if the string is not a valid mode.
 func ParseSquashMode(s string) SquashMode {
-	m := SquashMode(s)
-	if m.IsValid() {
-		return m
+	return SquashMode(s).OrDefault()
+}
+
+// OrDefault normalizes an empty or invalid squash mode to DefaultSquashMode
+// (root_to_guest), leaving any explicitly set valid mode unchanged.
+func (s SquashMode) OrDefault() SquashMode {
+	if s.IsValid() {
+		return s
 	}
 	return DefaultSquashMode
 }
