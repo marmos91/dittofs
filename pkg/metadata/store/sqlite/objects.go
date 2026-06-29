@@ -311,11 +311,13 @@ func (s *SQLiteMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 // enumerateHashesQuery is the GC mark live-set query. It UNIONs the CAS index
 // (file_blocks.hash, VARCHAR hex) with the per-file manifest
 // (file_block_refs.hash, BYTEA → encode hex) so the live set is a strict
-// SUPERSET of both structures. The snapshot Backup HashSet is built from
-// file_block_refs alone (File.Blocks); without the union a hash present only in
-// file_block_refs (e.g. a manifest row whose CAS index row was never written or
-// already reaped) would be absent from the live set and the GC sweep would reap
-// the still-live remote chunk once a snapshot hold lapsed (data loss). NULL
+// SUPERSET of both structures, so a hash present in only one (e.g. a manifest
+// row whose CAS index row was never written or already reaped) still keeps its
+// chunk live. The manifest arm is filtered to nlink>0 inodes (#1433): once a
+// file is unlinked its manifest rows linger but the payload is dead, so
+// including them would pin orphaned chunks live forever and the sweep could
+// never reclaim them. Snapshot-held blocks are protected independently by the
+// GC HoldProvider (on-disk snapshot manifests), not by this union. NULL
 // hashes (legacy pre-CAS file_blocks rows) are emitted as the zero ContentHash
 // and skipped by the mark phase; file_block_refs.hash is NOT NULL.
 //
@@ -324,7 +326,9 @@ func (s *SQLiteMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 // expensive sort/hash-aggregate to dedupe at the query layer for no benefit.
 const enumerateHashesQuery = `SELECT hash FROM file_blocks
 UNION ALL
-SELECT lower(hex(hash)) FROM file_block_refs`
+SELECT lower(hex(fbr.hash)) FROM file_block_refs fbr
+JOIN inodes i ON fbr.file_id = i.id
+WHERE i.nlink > 0`
 
 // EnumeratePayloads streams every distinct payloadID that has at least one
 // FileBlock row through fn. FileBlock row IDs have the form
@@ -370,10 +374,10 @@ func (s *SQLiteMetadataStore) EnumeratePayloads(ctx context.Context, fn func(pay
 // EnumerateLivePayloadIDs streams every distinct content_id referenced by a
 // live inode. content_id IS the payloadID, so no id-splitting is needed.
 // Hardlinks share one inode row, so DISTINCT yields one payloadID regardless of
-// link count; nlink=0 (open-but-unlinked) inodes still have their row and are
-// correctly reported live.
+// link count. nlink=0 (unlinked) inodes are excluded (#1433): their payload is
+// dead, so the reconcile must treat it as stranded, not live.
 func (s *SQLiteMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
-	const query = `SELECT DISTINCT content_id FROM inodes WHERE content_id IS NOT NULL AND content_id != ''`
+	const query = `SELECT DISTINCT content_id FROM inodes WHERE content_id IS NOT NULL AND content_id != '' AND nlink > 0`
 	ids, err := s.collectFileBlockIDs(ctx, query)
 	if err != nil {
 		return err

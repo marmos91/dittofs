@@ -143,14 +143,17 @@ func (s *MemoryMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 // EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a
 // live inode. It snapshots the distinct PayloadIDs under the read lock, then
 // calls fn per payloadID. Hardlinks share one fileData entry, so DISTINCT
-// yields one payloadID per content; nlink=0 inodes still have their entry and
-// are reported live.
+// yields one payloadID per content. nlink=0 (unlinked) inodes are excluded
+// (#1433): their payload is dead, so the reconcile treats it as stranded.
 func (s *MemoryMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
 	seen := make(map[string]struct{})
 	s.mu.RLock()
-	for _, fd := range s.files {
+	for key, fd := range s.files {
 		if fd == nil || fd.Attr == nil {
 			continue
+		}
+		if n, ok := s.linkCounts[key]; ok && n == 0 {
+			continue // unlinked: payload is dead, not live (#1433)
 		}
 		if pid := string(fd.Attr.PayloadID); pid != "" {
 			seen[pid] = struct{}{}
@@ -228,9 +231,18 @@ func (s *MemoryMetadataStore) snapshotBlockHashesLocked() []block.ContentHash {
 		}
 	}
 	// Union the per-file manifest (File.Blocks). Duplicates across the two
-	// structures are harmless — GCState.Add deduplicates the live set.
-	for _, fd := range s.files {
+	// structures are harmless — GCState.Add deduplicates the live set. nlink=0
+	// (unlinked) inodes keep their entry but the file is dead, so their manifest
+	// blocks are excluded (#1433): including them would pin orphaned chunks live
+	// forever. Snapshot-held blocks are protected separately by the GC
+	// HoldProvider, not by this manifest. The authoritative link count is the
+	// linkCounts map (#1166), not the embedded fd.Attr.Nlink (which SetLinkCount
+	// does not rewrite); a missing entry is treated as live (fail-closed).
+	for key, fd := range s.files {
 		if fd == nil || fd.Attr == nil {
+			continue
+		}
+		if n, ok := s.linkCounts[key]; ok && n == 0 {
 			continue
 		}
 		for _, br := range fd.Attr.Blocks {

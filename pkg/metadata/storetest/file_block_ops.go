@@ -139,6 +139,19 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testEnumerateLivePayloadIDs(t, factory)
 	})
 
+	// The GC mark live set unions the CAS index with the per-file manifest, but
+	// a manifest on an nlink=0 (unlinked) inode is dead and must NOT keep its
+	// chunks live — else GC can never reclaim deleted files (#1433).
+	t.Run("EnumerateFileBlocks_UnlinkedFileExcludesManifest", func(t *testing.T) {
+		testEnumerateFileBlocks_UnlinkedFileExcludesManifest(t, factory)
+	})
+	t.Run("EnumerateFileBlocks_HardLinkSurvivesOneRemoval", func(t *testing.T) {
+		testEnumerateFileBlocks_HardLinkSurvivesOneRemoval(t, factory)
+	})
+	t.Run("EnumerateLivePayloadIDs_ExcludesNlinkZero", func(t *testing.T) {
+		testEnumerateLivePayloadIDs_ExcludesNlinkZero(t, factory)
+	})
+
 	// IncrementRefCount / DecrementRefCount called via a
 	// metadata.Transaction MUST roll back when the wrapping WithTransaction
 	// returns an error. All backends — memory, badger, postgres — honor the
@@ -1534,4 +1547,151 @@ func seedStrandedBlocks(t *testing.T, ctx context.Context, store metadata.Store,
 			t.Fatalf("Put(%s): %v", b.ID, err)
 		}
 	}
+}
+
+// testEnumerateFileBlocks_UnlinkedFileExcludesManifest proves that once a file
+// is unlinked (nlink=0) its manifest blocks leave the GC mark live set, so the
+// sweep can reclaim the orphaned chunks. This is the core of the #1433 fix: the
+// manifest (file_block_refs / f: File.Blocks) lingers on the nlink=0 inode, but
+// the file is dead and must not pin its chunks live.
+func testEnumerateFileBlocks_UnlinkedFileExcludesManifest(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	shareName := "nlink0-exclude"
+	root := createTestShare(t, store, shareName)
+	h := createTestFile(t, store, shareName, root, "dead.bin", 0o644)
+
+	want := hashOfSeed("nlink0-manifest-hash")
+	f, err := store.GetFile(ctx, h)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	f.Blocks = []block.BlockRef{{Hash: want, Offset: 0, Size: 4 << 20}}
+	f.Size = 4 << 20
+	if err := store.PutFile(ctx, f); err != nil {
+		t.Fatalf("PutFile (linked): %v", err)
+	}
+	if !enumerateContains(t, store, want) {
+		t.Fatalf("baseline: hash %s absent from live set while nlink>0", want)
+	}
+
+	// Unlink: drop the dir edge and set nlink=0 (what RemoveFile does on the last
+	// link). nlink is the link-count source of truth across all backends, so
+	// SetLinkCount is the faithful simulation — mutating File.Nlink + PutFile is
+	// ignored by the SQL backends, which recompute nlink from the structure.
+	if err := store.DeleteChild(ctx, root, "dead.bin"); err != nil {
+		t.Fatalf("DeleteChild: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, h, 0); err != nil {
+		t.Fatalf("SetLinkCount(0): %v", err)
+	}
+	if enumerateContains(t, store, want) {
+		t.Errorf("hash %s still in GC live set after unlink (nlink=0); its manifest must be excluded so the sweep can reclaim it (#1433)", want)
+	}
+}
+
+// testEnumerateFileBlocks_HardLinkSurvivesOneRemoval guards against an
+// over-eager exclusion: a file with two hard links that loses one (nlink 2→1)
+// is still alive, so its blocks MUST remain in the live set.
+func testEnumerateFileBlocks_HardLinkSurvivesOneRemoval(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	shareName := "hardlink-survive"
+	root := createTestShare(t, store, shareName)
+	h := createTestFile(t, store, shareName, root, "shared.bin", 0o644)
+
+	want := hashOfSeed("hardlink-hash")
+	f, err := store.GetFile(ctx, h)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	f.Blocks = []block.BlockRef{{Hash: want, Offset: 0, Size: 4 << 20}}
+	f.Size = 4 << 20
+	if err := store.PutFile(ctx, f); err != nil {
+		t.Fatalf("PutFile: %v", err)
+	}
+	// Two hard links.
+	if err := store.SetLinkCount(ctx, h, 2); err != nil {
+		t.Fatalf("SetLinkCount(2): %v", err)
+	}
+	if !enumerateContains(t, store, want) {
+		t.Fatalf("baseline: hash %s absent from live set while nlink=2", want)
+	}
+
+	// Remove one link: nlink 2→1, still alive.
+	if err := store.SetLinkCount(ctx, h, 1); err != nil {
+		t.Fatalf("SetLinkCount(1): %v", err)
+	}
+	if !enumerateContains(t, store, want) {
+		t.Errorf("hash %s dropped from live set at nlink=1; a still-linked file's blocks must stay live", want)
+	}
+}
+
+// testEnumerateLivePayloadIDs_ExcludesNlinkZero proves the reconcile live-set
+// query also excludes nlink=0 inodes, so their payload is classified stranded
+// (and its pre-fix file_blocks rows get reaped on upgrade).
+func testEnumerateLivePayloadIDs_ExcludesNlinkZero(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	shareName := "livepayload-nlink0"
+	root := createTestShare(t, store, shareName)
+	h := createTestFile(t, store, shareName, root, "payload.bin", 0o644)
+
+	const payloadID = "pl-nlink0-dead"
+	f, err := store.GetFile(ctx, h)
+	if err != nil {
+		t.Fatalf("GetFile: %v", err)
+	}
+	f.PayloadID = payloadID
+	if err := store.PutFile(ctx, f); err != nil {
+		t.Fatalf("PutFile (linked): %v", err)
+	}
+	if !livePayloadContains(t, store, payloadID) {
+		t.Fatalf("baseline: payload %s absent from live payloads while nlink>0", payloadID)
+	}
+
+	// Unlink → nlink=0; the payload is now dead and must not be reported live.
+	if err := store.DeleteChild(ctx, root, "payload.bin"); err != nil {
+		t.Fatalf("DeleteChild: %v", err)
+	}
+	if err := store.SetLinkCount(ctx, h, 0); err != nil {
+		t.Fatalf("SetLinkCount(0): %v", err)
+	}
+	if livePayloadContains(t, store, payloadID) {
+		t.Errorf("payload %s still reported live after unlink (nlink=0); reconcile must treat it as stranded (#1433)", payloadID)
+	}
+}
+
+// enumerateContains reports whether hash h appears in the store's GC mark live
+// set (EnumerateFileBlocks).
+func enumerateContains(t *testing.T, store metadata.Store, h block.ContentHash) bool {
+	t.Helper()
+	found := false
+	if err := store.EnumerateFileBlocks(t.Context(), func(got block.ContentHash) error {
+		if got == h {
+			found = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("EnumerateFileBlocks: %v", err)
+	}
+	return found
+}
+
+// livePayloadContains reports whether payloadID appears in EnumerateLivePayloadIDs.
+func livePayloadContains(t *testing.T, store metadata.Store, payloadID string) bool {
+	t.Helper()
+	found := false
+	if err := store.EnumerateLivePayloadIDs(t.Context(), func(got string) error {
+		if got == payloadID {
+			found = true
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("EnumerateLivePayloadIDs: %v", err)
+	}
+	return found
 }

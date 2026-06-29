@@ -15,7 +15,10 @@ import (
 // re-run on upgrade if a future fix needs another pass.
 const (
 	reconcileMarkerKey = "gc.stranded_rows_reconciled_version"
-	reconcileVersion   = 1
+	// v2 (#1433): EnumerateLivePayloadIDs now excludes nlink=0 inodes, so the
+	// reconcile reaps stranded file_blocks rows left by pre-fix unlinks. Bumping
+	// the version forces one more startup pass on stores last reconciled at v1.
+	reconcileVersion = 2
 )
 
 // RunBlockGCReconcile reaps stranded file_blocks rows — rows whose owning inode
