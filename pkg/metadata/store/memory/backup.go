@@ -179,10 +179,18 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 		}
 	}
 
-	// Extract every unique block hash into a HashSet.
+	// Extract every unique block hash into a HashSet. Skip unlinked (nlink=0)
+	// files: they are dead and GC may have already reclaimed their blocks, so
+	// adding them would make the snapshot manifest reference hashes absent from
+	// remote and fail the durability verify (#1433). The authoritative link
+	// count is the linkCounts map, not the embedded fd.Attr.Nlink which
+	// SetLinkCount does not rewrite; a missing entry is treated as live.
 	hs := block.NewHashSet(len(s.files))
-	for _, fd := range s.files {
+	for key, fd := range s.files {
 		if fd.Attr == nil {
+			continue
+		}
+		if n, ok := s.linkCounts[key]; ok && n == 0 {
 			continue
 		}
 		for _, br := range fd.Attr.Blocks {

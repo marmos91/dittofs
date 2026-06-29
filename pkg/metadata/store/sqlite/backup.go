@@ -180,7 +180,12 @@ func backupTable(ctx context.Context, tx *sql.Tx, w io.Writer, table string) err
 // extractHashes collects the distinct content hashes referenced by
 // file_block_refs so the caller can pin the corresponding blocks.
 func extractHashes(ctx context.Context, tx *sql.Tx) (*block.HashSet, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT hash FROM file_block_refs`)
+	// Exclude unlinked (nlink=0) files: they are dead and GC may have already
+	// reclaimed their blocks, so a manifest listing them would reference hashes
+	// absent from remote and fail the snapshot durability verify (#1433).
+	rows, err := tx.QueryContext(ctx, `SELECT DISTINCT fbr.hash FROM file_block_refs fbr
+JOIN inodes i ON fbr.file_id = i.id
+WHERE i.nlink > 0`)
 	if err != nil {
 		return nil, fmt.Errorf("query hashes: %w", err)
 	}

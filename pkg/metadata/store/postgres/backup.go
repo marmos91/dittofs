@@ -193,7 +193,10 @@ func backupTable(ctx context.Context, raw *pgconn.PgConn, envW io.Writer, table 
 // by hex digits. Each line is one hash value.
 func extractHashes(ctx context.Context, raw *pgconn.PgConn) (*block.HashSet, error) {
 	var hashBuf bytes.Buffer
-	sql := `COPY (SELECT DISTINCT hash FROM file_block_refs) TO STDOUT WITH (FORMAT csv)`
+	// Exclude unlinked (nlink=0) files: they are dead and GC may have already
+	// reclaimed their blocks, so a manifest listing them would reference hashes
+	// absent from remote and fail the snapshot durability verify (#1433).
+	sql := `COPY (SELECT DISTINCT fbr.hash FROM file_block_refs fbr JOIN inodes i ON fbr.file_id = i.id WHERE i.nlink > 0) TO STDOUT WITH (FORMAT csv)`
 	if _, err := raw.CopyTo(ctx, &hashBuf, sql); err != nil {
 		return nil, fmt.Errorf("COPY hash query: %w", err)
 	}
