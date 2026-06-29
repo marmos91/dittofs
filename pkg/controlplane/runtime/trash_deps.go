@@ -78,10 +78,10 @@ func (d *trashDeps) EnabledTrashShares() []string {
 // no-op. The per-share block store is resolved from the share root handle, and
 // Delete is invoked WITH the file's BlockRef list so the engine decrements each
 // block's CAS RefCount and lets the GC reclaim chunks no other file references.
-// Passing nil here would skip the per-block decrement and leak the refcounts
-// (#832); unlike the NFS v3 / SMB close path (which deletes a still-live file
-// whose blocks it does not have on hand), the reaper holds the removed file's
-// blocks and must thread them through.
+// The reaper holds the removed file's blocks, so it threads them through
+// directly rather than making the engine re-enumerate them. (The NFS v3 / SMB
+// unlink path does not have the manifest on hand and passes nil; Delete then
+// resolves it from the payload's FileBlock rows — see #1433/#832.)
 func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.BlockRef) error {
 	if payloadID == "" {
 		return nil

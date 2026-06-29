@@ -1538,8 +1538,9 @@ func (h *Handler) purgeBlockStorePayload(ctx context.Context, handle metadata.Fi
 	if err != nil {
 		return
 	}
-	// Nil []BlockRef triggers the legacy delete path (purges the append log
-	// + tracked size).
+	// Pass nil blocks: the block store resolves this payload's manifest and
+	// reaps each row's refcount so the chunks become GC-eligible (#1433), in
+	// addition to purging the append log + tracked size.
 	if delErr := blockStore.Delete(ctx, string(payloadID), nil); delErr != nil {
 		logger.Debug(caller+": block-store payload delete failed (non-fatal)",
 			"path", path, "payloadID", payloadID, "error", delErr)

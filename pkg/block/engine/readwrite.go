@@ -327,6 +327,17 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 	if err := bs.local.DeleteAppendLog(ctx, payloadID); err != nil {
 		return fmt.Errorf("local delete append log failed: %w", err)
 	}
+	// Resolve the manifest to reap. The file-removal path (NFS REMOVE, SMB
+	// delete) unlinks a file without carrying its block list, passing nil.
+	// Historically nil short-circuited the coordinator, so refcounts were
+	// never decremented: the FileBlock rows survived, the hashes stayed in
+	// the GC live set, and the chunks leaked on BOTH tiers (#1433). When no
+	// blocks are supplied, enumerate the payload's own FileBlock rows so the
+	// reap below operates on the file's real manifest.
+	if len(blocks) == 0 {
+		blocks = bs.payloadBlockRefs(ctx, payloadID)
+	}
+
 	// Surgical invalidation: drop ALL hashes belonging to this file
 	// (even though dedup-shared hashes might survive elsewhere — Delete
 	// is the strongest signal). nullCache is a no-op; for the real
@@ -334,15 +345,14 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 	if len(blocks) > 0 {
 		bs.loadCache().InvalidateFile(payloadID, blockRefHashes(blocks))
 	} else {
-		// Legacy/dual-read empty-blocks path: at least reset the
-		// per-payload tracker so prefetch doesn't chase stale hashes.
+		// No manifest rows (already reaped, or no FileBlockStore wired):
+		// reset the per-payload tracker so prefetch doesn't chase stale hashes.
 		bs.loadCache().OnRead(payloadID, nil, 0)
 	}
 
 	// Decrement RefCount for every BlockRef hash before remote cleanup
 	// so the coordinator's bookkeeping is consistent even if the remote
-	// sweep fails (Truncate / janitor will reconcile orphans). Empty
-	// blocks (legacy / dual-read shim) skips the coordinator entirely.
+	// sweep fails (Truncate / janitor will reconcile orphans).
 	//
 	// continue past coordinator errors so the syncer.Delete
 	// remote sweep ALWAYS runs. Returning early left the local data
@@ -407,6 +417,40 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 		return delErr
 	}
 	return coordErr
+}
+
+// payloadBlockRefs enumerates a payload's FileBlock rows and returns them as
+// BlockRefs so the Delete reap path can decrement refcounts. It is the bridge
+// for callers that unlink a file without carrying its manifest (NFS REMOVE /
+// SMB delete pass nil): without it those deletes never decrement refcounts and
+// their chunks leak on both tiers (#1433).
+//
+// Returns nil when no FileBlockStore is wired or enumeration fails — Delete
+// still proceeds to the remote sweep, and the full GC reconcile reclaims any
+// rows this pass missed. Best-effort matches the rest of Delete's posture:
+// reclaiming disk must never wedge an unlink.
+func (bs *Store) payloadBlockRefs(ctx context.Context, payloadID string) []block.BlockRef {
+	if bs.fileBlockStore == nil {
+		return nil
+	}
+	rows, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	if err != nil {
+		logger.Warn("delete: list file blocks for reap (proceeding; reconcile will catch orphans)",
+			"payloadID", payloadID, "err", err)
+		return nil
+	}
+	refs := make([]block.BlockRef, 0, len(rows))
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		off, ok := block.ParseChunkOffset(r.ID)
+		if !ok {
+			continue
+		}
+		refs = append(refs, block.BlockRef{Hash: r.Hash, Offset: off, Size: r.DataSize})
+	}
+	return refs
 }
 
 // CopyPayload duplicates a file's content by referencing the source's

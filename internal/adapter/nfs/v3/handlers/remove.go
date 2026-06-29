@@ -196,9 +196,9 @@ func (h *Handler) Remove(
 	// Any unflushed cache data will be cleaned up by cache eviction.
 
 	if removedFileAttr.PayloadID != "" {
-		// Nil []BlockRef triggers the dual-read / legacy delete path.
-		// A later refactor will thread the file's FileAttr.Blocks
-		// snapshot here.
+		// Pass nil blocks: the block store resolves this payload's manifest
+		// and reaps each row's refcount, so the chunks become GC-eligible
+		// (#1433). Passing nil here is the supported file-removal contract.
 		if err := blockStore.Delete(ctx.Context, string(removedFileAttr.PayloadID), nil); err != nil {
 			// Log but don't fail the operation - metadata is already removed
 			logger.WarnCtx(ctx.Context, "REMOVE: failed to delete content", "name", req.Filename, "payload_id", removedFileAttr.PayloadID, "error", err)
