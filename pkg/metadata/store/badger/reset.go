@@ -11,7 +11,7 @@ var _ metadata.Resetable = (*BadgerMetadataStore)(nil)
 
 // Reset truncates every key in the BadgerDB metadata store via db.DropAll.
 // The same *badger.DB handle stays valid; callers can immediately follow
-// up with Backupable.Restore. The cfg:store_id key is dropped along with
+// up with Snapshotable.RestoreSnapshot. The cfg:store_id key is dropped along with
 // everything else and gets repopulated by the next operation that needs
 // it (typically the restore dump that follows).
 func (s *BadgerMetadataStore) Reset(ctx context.Context) error {

@@ -143,17 +143,17 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 		// live hash (hLive1) AND hSnap. hSnap diverges from live metadata
 		// to model the canonical "snapshot taken at T0, file deleted at
 		// T1" use case — without it the test would not distinguish
-		// "live FileBlock hash" from "snapshot-held hash". The Backup
-		// call below proves the Backupable wiring is reachable; the
+		// "live FileBlock hash" from "snapshot-held hash". The WriteSnapshot
+		// call below proves the Snapshotable wiring is reachable; the
 		// manifest itself is constructed explicitly so hSnap appears
-		// regardless of what live metadata Backup happens to extract.
+		// regardless of what live metadata WriteSnapshot happens to extract.
 		//
-		// Real callers persist Backup's bytes into metadata.dump; this
+		// Real callers persist WriteSnapshot's bytes into metadata.dump; this
 		// test discards them — only the GC mark phase consumes the
 		// manifest, and the manifest is written via WriteManifestAtomic
 		// below.
-		if _, err := backupAndDiscard(ctx, fx.metaStore); err != nil {
-			t.Fatalf("metadata Backup: %v", err)
+		if _, err := snapshotAndDiscard(ctx, fx.metaStore); err != nil {
+			t.Fatalf("metadata WriteSnapshot: %v", err)
 		}
 
 		manifestHS := block.NewHashSet(2)
@@ -336,14 +336,14 @@ func mustNotHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h bl
 	}
 }
 
-// backupAndDiscard runs the memory backend's Backupable.Backup, discards the
-// bytes (real callers persist them to metadata.dump), and returns just the
-// HashSet for assertion. Surfaces the same call path the production snapshot
-// creator uses without coupling the test to manifest contents derived from
-// live metadata.
-func backupAndDiscard(ctx context.Context, st *metadatamemory.MemoryMetadataStore) (*block.HashSet, error) {
+// snapshotAndDiscard runs the memory backend's Snapshotable.WriteSnapshot,
+// discards the bytes (real callers persist them to metadata.dump), and returns
+// just the HashSet for assertion. Surfaces the same call path the production
+// snapshot creator uses without coupling the test to manifest contents derived
+// from live metadata.
+func snapshotAndDiscard(ctx context.Context, st *metadatamemory.MemoryMetadataStore) (*block.HashSet, error) {
 	var buf bytes.Buffer
-	return st.Backup(ctx, &buf)
+	return st.WriteSnapshot(ctx, &buf)
 }
 
 // TestSnapshotHoldProvider_DeleteVsHeldHashes_Race exercises the D-23-04

@@ -63,16 +63,16 @@ var backupTables = []string{
 	"synced_hashes",
 }
 
-// Compile-time assertion: PostgresMetadataStore implements Backupable.
-var _ metadata.Backupable = (*PostgresMetadataStore)(nil)
+// Compile-time assertion: PostgresMetadataStore implements Snapshotable.
+var _ metadata.Snapshotable = (*PostgresMetadataStore)(nil)
 
-// Backup serializes all Postgres metadata tables into w using COPY TO
+// WriteSnapshot serializes all Postgres metadata tables into w using COPY TO
 // STDOUT inside a single REPEATABLE READ transaction for snapshot
 // isolation. Returns the set of unique block hashes referenced by the
 // snapshot (extracted from file_block_refs via a dedicated COPY query).
-func (s *PostgresMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
+func (s *PostgresMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	// Acquire a dedicated connection for raw protocol-level COPY operations.
@@ -118,7 +118,7 @@ func (s *PostgresMetadataStore) Backup(ctx context.Context, w io.Writer) (*block
 	// COPY each table to the envelope.
 	for _, table := range backupTables {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
+			return nil, fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
 		}
 
 		if err := backupTable(ctx, raw, envW, table); err != nil {
@@ -232,10 +232,10 @@ func extractHashes(ctx context.Context, raw *pgconn.PgConn) (*block.HashSet, err
 	return hs, nil
 }
 
-// Restore reads a Postgres backup stream from r and rebuilds metadata
+// RestoreSnapshot reads a Postgres backup stream from r and rebuilds metadata
 // by COPY FROM STDIN into each table. The destination store must be
 // empty (no shares); returns ErrRestoreDestinationNotEmpty otherwise.
-func (s *PostgresMetadataStore) Restore(ctx context.Context, r io.Reader) error {
+func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("restore cancelled: %w", err)
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 // asResetable is a helper that type-asserts a MetadataStore to Resetable,
-// calling t.Fatal if the assertion fails. Mirrors asBackupable.
+// calling t.Fatal if the assertion fails. Mirrors asSnapshotable.
 func asResetable(t *testing.T, store metadata.Store) metadata.Resetable {
 	t.Helper()
 	r, ok := store.(metadata.Resetable)
@@ -19,33 +19,33 @@ func asResetable(t *testing.T, store metadata.Store) metadata.Resetable {
 }
 
 // ResetThenRestoreConformance verifies that a store implementing both
-// Backupable and Resetable satisfies the restore-flow contract: a
+// Snapshotable and Resetable satisfies the restore-flow contract: a
 // populated store can be backed up, Reset to empty, then restored from
 // the same backup to its original content. Reset must leave the store
 // empty enough for Restore to proceed past its
 // ErrRestoreDestinationNotEmpty precondition, and the restored state
 // must equal the pre-Reset state.
-func ResetThenRestoreConformance(t *testing.T, factory BackupableStoreFactory) {
+func ResetThenRestoreConformance(t *testing.T, factory SnapshotableStoreFactory) {
 	t.Helper()
 
 	store := factory(t)
-	b := asBackupable(t, store)
+	b := asSnapshotable(t, store)
 	r := asResetable(t, store)
 
 	ctx := t.Context()
 
 	// Populate: unique prefix "rst" to avoid name collisions if a factory
-	// reuses the same backing DB across the Backup suite and this suite.
+	// reuses the same backing DB across the Snapshot suite and this suite.
 	shareName, uniqueHashes := populateTestData(t, store, "rst")
 
 	// 1. Back up the populated store into a buffer.
 	var dumpBuf bytes.Buffer
-	hs, err := b.Backup(ctx, &dumpBuf)
+	hs, err := b.WriteSnapshot(ctx, &dumpBuf)
 	if err != nil {
-		t.Fatalf("Backup: %v", err)
+		t.Fatalf("WriteSnapshot: %v", err)
 	}
 	if hs.Len() != len(uniqueHashes) {
-		t.Fatalf("Backup HashSet.Len() = %d, want %d", hs.Len(), len(uniqueHashes))
+		t.Fatalf("WriteSnapshot HashSet.Len() = %d, want %d", hs.Len(), len(uniqueHashes))
 	}
 
 	// 2. Reset the SAME store in place — no close/reopen.
@@ -65,7 +65,7 @@ func ResetThenRestoreConformance(t *testing.T, factory BackupableStoreFactory) {
 	// 4. Restore from the same dump into the (now-empty) same store
 	//    instance. The Reset above satisfied the
 	//    ErrRestoreDestinationNotEmpty precondition so Restore must succeed.
-	if err := b.Restore(ctx, &dumpBuf); err != nil {
+	if err := b.RestoreSnapshot(ctx, &dumpBuf); err != nil {
 		t.Fatalf("Restore post-Reset: %v", err)
 	}
 

@@ -143,7 +143,7 @@ func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.
 	// Restore the dump into a brand-new store. This reconstructs exactly
 	// the point-in-time metadata image the snapshot captured.
 	restored := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	if err := restored.Restore(context.Background(), dumpFile); err != nil {
+	if err := restored.RestoreSnapshot(context.Background(), dumpFile); err != nil {
 		t.Fatalf("snapshot %d: restore dump into fresh store: %v", n, err)
 	}
 
@@ -151,7 +151,7 @@ func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.
 	// restored store (to a discard sink) and take the HashSet it derives
 	// from the restored files' BlockRefs. This is backend-agnostic and
 	// uses the same extraction path the manifest was built from.
-	dumpHashes, err := restored.Backup(context.Background(), io.Discard)
+	dumpHashes, err := restored.WriteSnapshot(context.Background(), io.Discard)
 	if err != nil {
 		t.Fatalf("snapshot %d: re-backup restored store: %v", n, err)
 	}

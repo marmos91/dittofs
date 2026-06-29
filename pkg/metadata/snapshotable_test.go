@@ -8,7 +8,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-func TestBackupSentinels_DetectThroughWrap(t *testing.T) {
+func TestSnapshotSentinels_DetectThroughWrap(t *testing.T) {
 	sentinels := []struct {
 		name string
 		err  error
@@ -16,7 +16,7 @@ func TestBackupSentinels_DetectThroughWrap(t *testing.T) {
 		{"ErrRestoreDestinationNotEmpty", metadata.ErrRestoreDestinationNotEmpty},
 		{"ErrRestoreCorrupt", metadata.ErrRestoreCorrupt},
 		{"ErrSchemaVersionMismatch", metadata.ErrSchemaVersionMismatch},
-		{"ErrBackupAborted", metadata.ErrBackupAborted},
+		{"ErrSnapshotAborted", metadata.ErrSnapshotAborted},
 	}
 	for _, tc := range sentinels {
 		t.Run(tc.name, func(t *testing.T) {
@@ -28,12 +28,12 @@ func TestBackupSentinels_DetectThroughWrap(t *testing.T) {
 	}
 }
 
-func TestBackupSentinels_NoCrossMatch(t *testing.T) {
+func TestSnapshotSentinels_NoCrossMatch(t *testing.T) {
 	sentinels := []error{
 		metadata.ErrRestoreDestinationNotEmpty,
 		metadata.ErrRestoreCorrupt,
 		metadata.ErrSchemaVersionMismatch,
-		metadata.ErrBackupAborted,
+		metadata.ErrSnapshotAborted,
 	}
 	for i, a := range sentinels {
 		for j, b := range sentinels {

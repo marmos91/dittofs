@@ -906,7 +906,7 @@ var _ remote.RemoteStore = (*restoreRemote)(nil)
 // ----- failableResetable: Reset-injection wrapper for InterruptedRestore -----
 
 // failableResetable embeds a MemoryMetadataStore and forwards every
-// MetadataStore + Backupable method via method promotion. The Reset method
+// MetadataStore + Snapshotable method via method promotion. The Reset method
 // is overridden: when failNextReset is set the call returns a synthetic
 // error and the flag is consumed (one-shot). All other methods delegate
 // unchanged.
@@ -944,7 +944,7 @@ func (f *failableResetable) setFailNextReset(v bool) {
 
 // Compile-time guards: failableResetable satisfies both capabilities.
 var _ metadata.Resetable = (*failableResetable)(nil)
-var _ metadata.Backupable = (*failableResetable)(nil)
+var _ metadata.Snapshotable = (*failableResetable)(nil)
 
 // ----- shared helpers (subset duplicated from snapshot_integration_test.go) -----
 

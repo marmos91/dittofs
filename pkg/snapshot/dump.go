@@ -24,7 +24,7 @@ import (
 // outcome when the supplied callback writes nothing.
 //
 // The runtime snapshot orchestration uses this to
-// invoke Backupable.Backup against the temp file, capturing the returned
+// invoke Snapshotable.WriteSnapshot against the temp file, capturing the returned
 // HashSet for the subsequent WriteManifestAtomic step.
 func WriteMetadataDumpAtomic(
 	path string,

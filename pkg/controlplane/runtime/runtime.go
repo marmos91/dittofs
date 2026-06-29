@@ -239,7 +239,7 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 // ORDER IS LOAD-BEARING:
 //
 //  1. shutdownSnapshots — cancel in-flight snapshot goroutines and wait.
-//     These goroutines call into Backupable.Backup (on metadata stores)
+//     These goroutines call into Snapshotable.WriteSnapshot (on metadata stores)
 //     and r.store (control-plane DB). If metadata stores or the control
 //     plane were torn down first, snap goroutines would panic on
 //     use-after-close.

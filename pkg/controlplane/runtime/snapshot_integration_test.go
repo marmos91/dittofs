@@ -274,7 +274,7 @@ func testRemoveShareCancelsInFlight(t *testing.T) {
 	// Block Backup until either the context cancels or the test releases
 	// it explicitly. Per the plan body: prefer ctx-cancel-driven unblock
 	// (cancelAndWaitInFlightSnaps cancels the orchestration child ctx,
-	// which propagates to backupable.Backup's select).
+	// which propagates to snapshotable.WriteSnapshot's select).
 	started := make(chan struct{})
 	release := make(chan struct{})
 	fx.backup.setHook(func(ctx context.Context) error {
@@ -293,11 +293,11 @@ func testRemoveShareCancelsInFlight(t *testing.T) {
 		t.Fatalf("CreateSnapshot: %v", err)
 	}
 
-	// Wait for the orchestration goroutine to enter slowBackupable.Backup.
+	// Wait for the orchestration goroutine to enter slowSnapshotable.WriteSnapshot.
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
-		t.Fatal("slowBackupable.Backup never reached: orchestration did not start backup")
+		t.Fatal("slowSnapshotable.WriteSnapshot never reached: orchestration did not start backup")
 	}
 
 	// Capture pre-RemoveShare on-disk paths so we can assert they
@@ -428,13 +428,13 @@ func testStartupRecovery(t *testing.T) {
 
 // orchestrationFixture composes every moving part the seven sub-tests
 // need: cpstore, runtime, memory metadata store wrapped in a controlled
-// Backupable, memory remote, real engine.Store wiring the local +
+// Snapshotable, memory remote, real engine.Store wiring the local +
 // remote, and an injected Share that ties them together.
 type orchestrationFixture struct {
 	t             *testing.T
 	rt            *Runtime
 	store         cpstore.Store
-	backup        *controlledBackupable
+	backup        *controlledSnapshotable
 	remote        *interceptingRemote
 	bs            *engine.Store
 	localStoreDir string
@@ -456,7 +456,7 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	rt := New(cp)
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	backup := &controlledBackupable{MemoryMetadataStore: mem}
+	backup := &controlledSnapshotable{MemoryMetadataStore: mem}
 	if err := rt.RegisterMetadataStore("memory", backup); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -563,9 +563,9 @@ func (f *orchestrationFixture) seedRemoteSubset(hashes []block.ContentHash) {
 	}
 }
 
-// ----- controlledBackupable -----
+// ----- controlledSnapshotable -----
 
-// controlledBackupable wraps a real MemoryMetadataStore so it still
+// controlledSnapshotable wraps a real MemoryMetadataStore so it still
 // satisfies the full metadata.Store interface (via embedded
 // pointer method promotion) but overrides Backup so the test can:
 //   - return a deterministic HashSet without seeding files through the
@@ -575,7 +575,7 @@ func (f *orchestrationFixture) seedRemoteSubset(hashes []block.ContentHash) {
 //
 // The wrapper writes a few bytes to w so the resulting metadata.dump
 // file is non-empty (a SC-2 assertion).
-type controlledBackupable struct {
+type controlledSnapshotable struct {
 	*metadatamemory.MemoryMetadataStore
 
 	mu     sync.Mutex
@@ -583,19 +583,19 @@ type controlledBackupable struct {
 	hook   func(ctx context.Context) error
 }
 
-func (c *controlledBackupable) setHashes(h []block.ContentHash) {
+func (c *controlledSnapshotable) setHashes(h []block.ContentHash) {
 	c.mu.Lock()
 	c.hashes = append([]block.ContentHash(nil), h...)
 	c.mu.Unlock()
 }
 
-func (c *controlledBackupable) setHook(fn func(ctx context.Context) error) {
+func (c *controlledSnapshotable) setHook(fn func(ctx context.Context) error) {
 	c.mu.Lock()
 	c.hook = fn
 	c.mu.Unlock()
 }
 
-func (c *controlledBackupable) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
+func (c *controlledSnapshotable) WriteSnapshot(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	c.mu.Lock()
 	hook := c.hook
 	hashes := append([]block.ContentHash(nil), c.hashes...)

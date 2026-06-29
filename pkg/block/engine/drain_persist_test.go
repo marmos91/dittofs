@@ -292,17 +292,17 @@ func distinctContent(seed byte, n int) []byte {
 }
 
 // manifestHashes returns the set of DISTINCT content hashes the metadata
-// Backup manifest exposes, plus the serialized manifest size.
+// snapshot manifest exposes, plus the serialized manifest size.
 func manifestHashes(t *testing.T, ms metadata.Store) (*block.HashSet, int) {
 	t.Helper()
-	backupable, ok := ms.(metadata.Backupable)
+	snapshotable, ok := ms.(metadata.Snapshotable)
 	if !ok {
-		t.Fatal("store must implement metadata.Backupable")
+		t.Fatal("store must implement metadata.Snapshotable")
 	}
 	var buf bytes.Buffer
-	got, err := backupable.Backup(context.Background(), &buf)
+	got, err := snapshotable.WriteSnapshot(context.Background(), &buf)
 	if err != nil {
-		t.Fatalf("Backup: %v", err)
+		t.Fatalf("WriteSnapshot: %v", err)
 	}
 	return got, buf.Len()
 }
@@ -365,7 +365,7 @@ func runIdenticalContentDrain(t *testing.T, ms metadata.Store, sharePrefix strin
 		}
 	}
 	if missing > 0 {
-		t.Fatalf("Backup manifest missing %d/%d referenced hashes (manifest len=%d, buf=%d bytes)",
+		t.Fatalf("snapshot manifest missing %d/%d referenced hashes (manifest len=%d, buf=%d bytes)",
 			missing, want.Len(), got.Len(), bufLen)
 	}
 }

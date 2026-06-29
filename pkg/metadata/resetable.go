@@ -10,11 +10,11 @@ import "context"
 //
 // Reset is a destructive primitive intended to be invoked only by
 // Runtime.RestoreSnapshot after the operator has disabled the share.
-// It bypasses Backupable.Restore's ErrRestoreDestinationNotEmpty guard;
+// It bypasses Snapshotable.RestoreSnapshot's ErrRestoreDestinationNotEmpty guard;
 // callers must ensure no concurrent serving traffic is in flight.
 //
 // Implementations must preserve the live store handle so callers can
-// immediately follow up with Backupable.Restore. Engine-persistent
+// immediately follow up with Snapshotable.RestoreSnapshot. Engine-persistent
 // configuration that is not data (capabilities, storage/file limits,
 // GetStoreID) must also be preserved — resetting those would change
 // engine identity at the API surface.

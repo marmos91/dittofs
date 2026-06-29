@@ -408,13 +408,13 @@ func TestPostgres_Restore_ReconcilesNullHashFileBlocks(t *testing.T) {
 		t.Fatalf("pre-backup file_blocks.hash = %q, want NULL", got)
 	}
 
-	backupable, ok := store.(metadata.Backupable)
+	snapshotable, ok := store.(metadata.Snapshotable)
 	if !ok {
-		t.Fatalf("store does not implement Backupable")
+		t.Fatalf("store does not implement Snapshotable")
 	}
 
 	var buf bytes.Buffer
-	if _, err := backupable.Backup(ctx, &buf); err != nil {
+	if _, err := snapshotable.WriteSnapshot(ctx, &buf); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 
@@ -428,7 +428,7 @@ func TestPostgres_Restore_ReconcilesNullHashFileBlocks(t *testing.T) {
 		t.Fatalf("Reset: %v", err)
 	}
 
-	if err := backupable.Restore(ctx, &buf); err != nil {
+	if err := snapshotable.RestoreSnapshot(ctx, &buf); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
