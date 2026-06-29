@@ -273,6 +273,17 @@ configure_via_api() {
         "$DITTOFSCTL_BIN" share create --name /export --metadata default --local default
     fi
 
+    # pjdfstest's prove(1) harness runs as root and relies on uid 0 retaining
+    # POSIX superuser privileges to build/tear down the test tree (chown to
+    # arbitrary uids, mknod, setuid bits) before it seteuid()s to the unprivileged
+    # test UIDs. The server default is now root_to_guest (root squashed to the
+    # anonymous identity), which strips that bypass and breaks the harness setup.
+    # POSIX conformance inherently requires a privileged root, so this export
+    # explicitly opts into no_root_squash — the legitimate root_to_admin use case,
+    # not a workaround for the new default.
+    log_info "Setting export squash to root_to_admin (pjdfstest requires a privileged root)..."
+    "$DITTOFSCTL_BIN" share nfs-config set /export --squash root_to_admin
+
     # Create and gate-grant the principals pjdfstest operates as.
     #
     # pjdfstest runs prove(1) as root (uid 0 superuser-bypasses POSIX, so it sets
