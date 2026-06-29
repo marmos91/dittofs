@@ -67,4 +67,5 @@ func TestPostgresSyncedHashStore_Suite(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	metadata.RunSyncedHashStoreSuite(t, store)
+	metadata.RunSyncedHashEnumeratorSuite(t, store)
 }

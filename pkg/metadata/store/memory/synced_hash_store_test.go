@@ -14,3 +14,10 @@ func TestMemorySyncedHashStore_Suite(t *testing.T) {
 	s := NewMemoryMetadataStoreWithDefaults()
 	metadata.RunSyncedHashStoreSuite(t, s)
 }
+
+// TestMemorySyncedHashEnumerator_Suite exercises the LIST-free GC sweep's
+// EnumerateSynced contract against the memory backend.
+func TestMemorySyncedHashEnumerator_Suite(t *testing.T) {
+	s := NewMemoryMetadataStoreWithDefaults()
+	metadata.RunSyncedHashEnumeratorSuite(t, s)
+}

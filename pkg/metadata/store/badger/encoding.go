@@ -236,3 +236,19 @@ func decodeUint32(bytes []byte) (uint32, error) {
 	}
 	return binary.BigEndian.Uint32(bytes), nil
 }
+
+// encodeInt64 encodes a signed 64-bit value (e.g. a Unix-nanos timestamp) as
+// 8 big-endian bytes. decodeInt64 reverses it; a value shorter than 8 bytes
+// (a legacy marker written before timestamps existed) decodes to 0.
+func encodeInt64(value int64) []byte {
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, uint64(value))
+	return bytes
+}
+
+func decodeInt64(bytes []byte) int64 {
+	if len(bytes) < 8 {
+		return 0
+	}
+	return int64(binary.BigEndian.Uint64(bytes))
+}

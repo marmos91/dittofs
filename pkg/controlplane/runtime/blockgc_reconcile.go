@@ -55,10 +55,14 @@ func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine
 		total.StrandedRowsReaped += int64(reaped)
 	}
 
-	// Stranded rows are gone, so their hashes have left the live set. RunBlockGC
-	// sweeps the remote tier and (since #1433) the local tier too, reclaiming
-	// the now-orphaned chunks under the usual grace + snapshot-hold guards.
-	sweep, err := r.RunBlockGC(ctx, "", dryRun)
+	// Stranded rows are gone, so their hashes have left the live set. The sweep
+	// reclaims the now-orphaned chunks on the remote tier and (since #1433) the
+	// local tier too, under the usual grace + snapshot-hold guards. Reconcile
+	// forces the FULL RemoteStore.Walk (fullScan=true): it is the drift-catcher
+	// that must scan the real remote to find objects the synced-hash index does
+	// not know about (e.g. a Put-then-Mark crash), which the steady-state
+	// LIST-free sweep cannot see.
+	sweep, err := r.runBlockGCSweep(ctx, "", dryRun, true)
 	// Record reaped rows regardless of the sweep result: the rows are already
 	// deleted from the metadata store, so the counter must reflect that even if
 	// the downstream sweep (e.g. S3 unreachable) then fails. Skip on dry-run —

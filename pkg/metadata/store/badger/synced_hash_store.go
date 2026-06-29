@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/dgraph-io/badger/v4"
 
@@ -27,7 +28,8 @@ import (
 // coordination is required between callers.
 //
 // Key Namespace:
-//   - synced:{32-byte-hash}  empty value (presence == synced)
+//   - synced:{32-byte-hash}  value = 8 big-endian nanos of first-mirror time
+//     (presence == synced; legacy markers carry an empty value)
 //
 // The 32-byte hash bytes are appended raw (matching rollup_offset's compact
 // binary key encoding) rather than hex-encoded — Badger does not require
@@ -69,19 +71,88 @@ func (s *BadgerMetadataStore) IsSynced(ctx context.Context, hash block.ContentHa
 	return present, nil
 }
 
-// MarkSynced records that hash has been mirrored to remote. Idempotent:
-// re-applying the same hash is a no-op and returns nil (Badger Set
-// overwrites the existing empty value).
+// MarkSynced records that hash has been mirrored to remote, stamping the
+// marker value with the current time as 8 big-endian nanos. Idempotent and
+// first-write-wins: re-applying an already-marked hash is a no-op that
+// preserves the original timestamp (matching the SQL backends' ON CONFLICT DO
+// NOTHING), so EnumerateSynced reports when the hash was FIRST mirrored — the
+// grace anchor for the LIST-free sweep. Markers written before timestamps
+// existed carry an empty value and decode to a zero time (fail-closed: the
+// sweep leaves them for the periodic reconcile).
 func (s *BadgerMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	err := s.db.Update(func(txn *badger.Txn) error {
-		return txn.Set(keySyncedHash(hash), nil)
+		key := keySyncedHash(hash)
+		if _, gerr := txn.Get(key); gerr == nil {
+			return nil // already marked — preserve first-write timestamp
+		} else if !errors.Is(gerr, badger.ErrKeyNotFound) {
+			return gerr
+		}
+		return txn.Set(key, encodeInt64(time.Now().UnixNano()))
 	})
 	if err != nil {
 		return fmt.Errorf("badger synced mark: %w", err)
+	}
+	return nil
+}
+
+// EnumerateSynced streams every synced marker with its first-mirror time via a
+// prefix scan over synced:. Collects under a read txn then calls fn outside
+// iteration so the callback never runs with the iterator open. Used by the
+// LIST-free GC sweep to compute remote-orphan candidates without an S3 LIST.
+func (s *BadgerMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	prefix := []byte(syncedHashPrefix)
+
+	type entry struct {
+		hash     block.ContentHash
+		syncedAt time.Time
+	}
+	var entries []entry
+
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			key := item.KeyCopy(nil)
+			raw := key[len(prefix):]
+			if len(raw) != len(block.ContentHash{}) {
+				continue
+			}
+			var h block.ContentHash
+			copy(h[:], raw)
+			var syncedAt time.Time
+			if verr := item.Value(func(val []byte) error {
+				if nanos := decodeInt64(val); nanos != 0 {
+					syncedAt = time.Unix(0, nanos)
+				}
+				return nil
+			}); verr != nil {
+				return verr
+			}
+			entries = append(entries, entry{hash: h, syncedAt: syncedAt})
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("badger synced enumerate: %w", err)
+	}
+
+	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(e.hash, e.syncedAt); err != nil {
+			return err
+		}
 	}
 	return nil
 }

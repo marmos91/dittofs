@@ -11,6 +11,43 @@ import (
 // Compile-time assertion: the memory engine implements SyncedHashStore.
 var _ metadata.SyncedHashStore = (*MemoryMetadataStore)(nil)
 
+// MarkSyncedAtForTest stamps a synced marker with an explicit first-mirror
+// time. Test-only: it lets GC grace-window tests backdate when a hash was
+// synced, mirroring remotememory.Store.SetNowFnForTest for the remote object
+// clock. Production code uses MarkSynced, which stamps the current time.
+func (s *MemoryMetadataStore) MarkSyncedAtForTest(hash block.ContentHash, when time.Time) {
+	s.syncedMu.Lock()
+	defer s.syncedMu.Unlock()
+	if s.synced == nil {
+		s.synced = make(map[block.ContentHash]time.Time)
+	}
+	s.synced[hash] = when
+}
+
+// EnumerateSynced streams every synced marker with its first-mirror time.
+// It snapshots the map under the read lock so fn runs without holding it.
+func (s *MemoryMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.syncedMu.RLock()
+	snapshot := make(map[block.ContentHash]time.Time, len(s.synced))
+	for h, t := range s.synced {
+		snapshot[h] = t
+	}
+	s.syncedMu.RUnlock()
+
+	for h, t := range snapshot {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(h, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // IsSynced reports whether hash has been mirrored to remote. Returns
 // (false, nil) when no entry exists for hash.
 func (s *MemoryMetadataStore) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {

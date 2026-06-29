@@ -16,6 +16,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"lukechampine.com/blake3"
 
@@ -179,6 +180,79 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 
 		if _, err := s.IsSynced(ctx, h); err != nil {
 			t.Fatalf("IsSynced after concurrent Mark/Delete: %v", err)
+		}
+	})
+}
+
+// syncedHashEnumerating is the backend capability exercised by
+// RunSyncedHashEnumeratorSuite: the SyncedHashStore CRUD plus the concrete
+// EnumerateSynced the LIST-free GC sweep depends on. It is intentionally
+// UNEXPORTED — EnumerateSynced is not part of the SyncedHashStore contract
+// (only the GC consumer needs it; see the note in synced_hash_store.go), so
+// this type exists solely to share the enumerator conformance across backends
+// without widening the package's exported interface surface. Backend tests
+// pass their concrete store; Go checks satisfaction structurally at the call.
+type syncedHashEnumerating interface {
+	SyncedHashStore
+	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error
+}
+
+// RunSyncedHashEnumeratorSuite exercises a backend's EnumerateSynced against
+// the LIST-free GC sweep's expectations: marked hashes appear (with a
+// non-regressing first-mirror timestamp), deleted hashes do not, and a
+// cancelled ctx is honored. Call alongside RunSyncedHashStoreSuite from a
+// backend-local _test.go, passing a freshly-created store.
+func RunSyncedHashEnumeratorSuite(t *testing.T, e syncedHashEnumerating) {
+	t.Helper()
+
+	t.Run("EnumerateSynced", func(t *testing.T) {
+		ctx := context.Background()
+		before := time.Now()
+		hA := mustHash("enum-suite-a")
+		hB := mustHash("enum-suite-b")
+		hGone := mustHash("enum-suite-gone")
+
+		for _, h := range []block.ContentHash{hA, hB, hGone} {
+			if err := e.MarkSynced(ctx, h); err != nil {
+				t.Fatalf("MarkSynced %x: %v", h[:4], err)
+			}
+		}
+		// Deleting a marker must remove it from enumeration.
+		if err := e.DeleteSynced(ctx, hGone); err != nil {
+			t.Fatalf("DeleteSynced: %v", err)
+		}
+
+		seen := make(map[block.ContentHash]time.Time)
+		if err := e.EnumerateSynced(ctx, func(h block.ContentHash, syncedAt time.Time) error {
+			seen[h] = syncedAt
+			return nil
+		}); err != nil {
+			t.Fatalf("EnumerateSynced: %v", err)
+		}
+
+		if _, ok := seen[hA]; !ok {
+			t.Errorf("EnumerateSynced missing marked hash hA")
+		}
+		if _, ok := seen[hB]; !ok {
+			t.Errorf("EnumerateSynced missing marked hash hB")
+		}
+		if _, ok := seen[hGone]; ok {
+			t.Errorf("EnumerateSynced yielded deleted hash hGone")
+		}
+		// A backend that records timestamps must report one no earlier than
+		// the mark. A zero timestamp is the documented fail-closed signal for
+		// backends without recorded times — accept it too.
+		if ts := seen[hA]; !ts.IsZero() && ts.Before(before.Add(-time.Minute)) {
+			t.Errorf("EnumerateSynced syncedAt %v precedes mark time %v", ts, before)
+		}
+	})
+
+	t.Run("EnumerateSyncedCtxCancel", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		err := e.EnumerateSynced(ctx, func(block.ContentHash, time.Time) error { return nil })
+		if err == nil {
+			t.Fatalf("EnumerateSynced with cancelled ctx: want error, got nil")
 		}
 	})
 }

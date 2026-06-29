@@ -1501,7 +1501,12 @@ func TestGCMarkSweep_ClearsSyncedMarkerForSweptHash(t *testing.T) {
 	stats := CollectGarbage(ctx, rs, rec, &Options{
 		GCStateRoot:     t.TempDir(),
 		GracePeriod:     time.Minute,
-		SyncedHashStore: synced,
+		SyncedHashIndex: synced,
+		// FullScan: this case exercises the namespace-Walk sweep's marker-clear
+		// (the remote object is backdated past grace; the synced markers are
+		// fresh). The index sweep's marker-clear is covered by
+		// TestGCIndexSweep_DeletesOrphansWithoutWalk.
+		FullScan: true,
 	})
 	if stats.ObjectsSwept != 1 {
 		t.Fatalf("ObjectsSwept = %d, want 1", stats.ObjectsSwept)
