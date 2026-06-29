@@ -113,6 +113,10 @@ func (c *Client) GetShareWarm(name, jobID string) (*WarmJobStatus, error) {
 // dry-run sample size, default 1000).
 type BlockStoreGCOptions struct {
 	DryRun bool `json:"dry_run,omitempty"`
+	// Reconcile runs the migration pass: reap stranded file_blocks rows
+	// (leaked by the pre-fix delete path) across all shares, then sweep both
+	// tiers — reclaiming historical leaks a plain GC cannot (#1433).
+	Reconcile bool `json:"reconcile,omitempty"`
 }
 
 // BlockStoreGCResult is the response body for

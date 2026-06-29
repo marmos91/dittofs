@@ -5609,6 +5609,12 @@ Use --dry-run to skip deletes and print up to dry_run_sample_size
 candidate keys (default 1000). Recommended for first-time deployment
 confidence and for debugging suspected mark-phase bugs.
 
+Use --reconcile to additionally reap stranded file_blocks rows — rows
+whose owning file was deleted before the unlink-refcount fix, which a
+plain GC cannot reclaim because they keep their hashes in the live set.
+Reconcile is server-wide (all shares) and the recommended way to recover
+space leaked by older versions. Combine with --dry-run to preview.
+
 ```
 dfsctl store block gc <share> [flags]
 ```
@@ -5618,13 +5624,15 @@ dfsctl store block gc <share> [flags]
 ```bash
 dfsctl store block gc myshare
 dfsctl store block gc myshare --dry-run
+dfsctl store block gc myshare --reconcile
 dfsctl store block gc myshare -o json
 ```
 
 Flags:
 
 ```
-      --dry-run   Run mark + sweep enumeration but skip deletes; print candidate keys
+      --dry-run     Run mark + sweep enumeration but skip deletes; print candidate keys
+      --reconcile   Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers
 ```
 
 Global flags:
