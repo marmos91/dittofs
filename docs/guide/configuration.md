@@ -482,16 +482,26 @@ gc:
                               # the snapshot.
   dry_run_sample_size: 1000   # Maximum candidate keys reported in
                               # --dry-run mode. Default 1000.
+  auto_enabled: true          # Run background GC automatically so you
+                              # don't have to invoke the CLI. Default
+                              # true. Set false to require manual
+                              # `dfsctl store block gc`.
+  auto_interval: 15m          # Period between background GC runs.
+                              # Default 15m. Values in (0, 1m) are
+                              # REJECTED. Ignored when auto_enabled is
+                              # false.
 ```
 
 **Tuning guidance:**
 
-- v0.15.0 ships only on-demand GC. Run via
-  `dfsctl store block gc <share> --dry-run` (capped by
-  `gc.dry_run_sample_size`) until you have measured the
-  hashes_marked / objects_swept ratio for your workload, then schedule
-  the real run via cron at the cadence that matches your delete rate.
-  No periodic-GC scheduler ships today; trigger GC on demand or via cron.
+- Background GC is **on by default** (`auto_enabled: true`, every
+  `auto_interval`) and reclaims orphaned blocks on **both** the local
+  and remote tiers. Disable it (`auto_enabled: false`) only if you want
+  to drive GC entirely on demand or via external scheduling.
+- You can still run GC on demand at any time:
+  `dfsctl store block gc <share>` (add `--dry-run` to preview, capped by
+  `gc.dry_run_sample_size`; add `--reconcile` to also reap rows leaked by
+  older versions).
 - `gc.grace_period` MUST be longer than your worst-case
   metadata-commit latency after a successful PUT. The default 1h is
   comfortable for any commit path that completes in seconds.
@@ -499,7 +509,9 @@ gc:
 Env-var mapping (dot-path convention; the top-level `gc` block binds
 directly):
 `DITTOFS_GC_GRACE_PERIOD`,
-`DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`.
+`DITTOFS_GC_DRY_RUN_SAMPLE_SIZE`,
+`DITTOFS_GC_AUTO_ENABLED`,
+`DITTOFS_GC_AUTO_INTERVAL`.
 
 See [ARCHITECTURE.md](../internals/architecture.md#garbage-collection-mark-sweep)
 for the full mark-sweep design and [CLI.md](cli.md) for the on-demand

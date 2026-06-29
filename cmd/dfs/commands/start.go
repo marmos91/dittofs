@@ -268,6 +268,15 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// errors are logged, never fatal.
 	go rt.RunBlockGCReconcileOnce(context.WithoutCancel(ctx))
 
+	// Background auto-GC (#1433): periodically reclaims orphaned blocks on both
+	// tiers so operators don't have to run `dfsctl store block gc` by hand.
+	// Enabled by default; bound to ctx so it stops on shutdown.
+	if cfg.GC.AutoGCEnabled() {
+		rt.StartScheduledGC(ctx, cfg.GC.AutoInterval)
+	} else {
+		logger.Info("auto-GC disabled by config (gc.auto_enabled=false)")
+	}
+
 	// Configure runtime
 	rt.SetShutdownTimeout(cfg.ShutdownTimeout)
 	// Seed an operator-pinned machine SID (if configured) BEFORE Serve so the

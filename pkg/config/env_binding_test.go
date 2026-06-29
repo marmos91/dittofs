@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 )
@@ -23,6 +24,32 @@ func writeConfigFile(t *testing.T, content string) string {
 // key that is NOT present in the config file — the round-1 §2.2 / round-2 §2.4
 // env-precedence-drop class. The documented precedence is env > file >
 // defaults, which only holds if every key is bound for AutomaticEnv.
+func TestLoad_GCAutoEnv_RoundTrip(t *testing.T) {
+	// Proves the *bool and Duration auto-GC knobs decode from env through Load.
+	content := `
+database:
+  type: sqlite
+controlplane:
+  jwt:
+    secret: "test-secret-key-for-testing-minimum-32-chars"
+`
+	path := writeConfigFile(t, content)
+
+	t.Setenv("DITTOFS_GC_AUTO_ENABLED", "false")
+	t.Setenv("DITTOFS_GC_AUTO_INTERVAL", "30m")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.GC.AutoGCEnabled() {
+		t.Errorf("gc.auto_enabled: env override dropped, got true want false")
+	}
+	if cfg.GC.AutoInterval != 30*time.Minute {
+		t.Errorf("gc.auto_interval: env override dropped, got %v want 30m", cfg.GC.AutoInterval)
+	}
+}
+
 func TestLoad_EnvOverride_KeyAbsentFromFile(t *testing.T) {
 	// File omits controlplane.port and logging.level entirely.
 	content := `
