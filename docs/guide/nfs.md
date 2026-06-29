@@ -18,6 +18,7 @@ This guide covers everything an operator or end user needs to mount and use Ditt
   - [With Portmapper on Port 111](#with-portmapper-on-port-111)
   - [With Explicit Ports](#with-explicit-ports)
 - [Identity Squashing (root_squash and friends)](#identity-squashing-root_squash-and-friends)
+- [Permissions: share grants over NFS](#permissions-share-grants-over-nfs)
 - [Kerberos Exports (sec=krb5)](#kerberos-exports-seckrb5)
 - [NFS-over-TLS (RFC 9289)](#nfs-over-tls-rfc-9289)
 - [Testing Your Mount](#testing-your-mount)
@@ -489,6 +490,62 @@ Assume a file owned by UID 1000, mode `0644`, and a share-gate
 > [export gate](access-control.md) must still admit them. Use squashing to
 > *constrain* identity, and the [export gate + POSIX/ACL](access-control.md) to
 > *grant* access.
+
+---
+
+## Permissions: share grants over NFS
+
+Access is decided in two layers, and which layer a client can *see* depends on
+the NFS version. Understanding this avoids the most common surprise:
+**"I granted a user read-write but they get Permission denied over NFSv3."**
+
+### The two layers
+
+1. **Export gate** — the share's `default_permission` (access for principals
+   without an explicit grant) plus per-user / per-group grants. Enforced
+   server-side on every request.
+2. **Filesystem layer** — the file/directory's POSIX mode bits and, where the
+   protocol carries it, its ACL.
+
+The share root directory's mode bits track `default_permission` so that
+mode-only clients honour the share's access level:
+
+| `default_permission` | Share root mode | A non-root client can… |
+|----------------------|-----------------|------------------------|
+| `none` / unset       | `0755`          | traverse/read only if the export gate admits it; never write |
+| `read`               | `0755`          | read; not write |
+| `read-write` / `admin` | `0777`        | read and write |
+
+### NFSv3 vs NFSv4: where per-user grants apply
+
+- **NFSv3 carries only mode bits — no ACL.** The Linux client enforces those
+  bits *client-side*, before sending an RPC. So a **per-user grant is invisible
+  over NFSv3**: mode bits cannot express "uid 2000 may write, uid 4000 may not."
+  Over NFSv3 a non-root user can write the share root only when
+  `default_permission` is `read-write` (root mode `0777`). This is normal Unix
+  behaviour, not a DittoFS limitation — and it is also POSIX-ACL consistent
+  (a named-user ACL entry simply has no NFSv3 transport).
+- **NFSv4 (and SMB) carry the ACL.** Per-user and per-group grants *are*
+  honoured: grant a user read-write and they can write over NFSv4 even on a
+  share whose default is read-only.
+
+**Rule of thumb:** for per-user least-privilege access, use **NFSv4**. Reserve
+NFSv3 for share-wide access levels set via `default_permission`.
+
+### Other behaviours worth knowing
+
+- **Denials are `EACCES` ("Permission denied"), never `EIO`.** A permission
+  failure — including a squashed-root or ungranted-user write — surfaces as
+  `Permission denied`, not the misleading `Input/output error` older builds
+  returned on NFSv3.
+- **A fully-locked (`none`) share is not mountable over NFSv4 by a root client.**
+  The mount runs as root, which `root_to_guest` squashes to the guest identity;
+  with `default_permission=none` the guest cannot traverse the export to
+  complete the NFSv4 mount. Such a share is reachable only over NFSv3 (whose
+  separate mount protocol does not gate on the export root). For the common
+  "world-readable, granted-writable" pattern, use `default_permission=read` and
+  grant write to the specific users — they then write over NFSv4 while everyone
+  else is read-only.
 
 ---
 
