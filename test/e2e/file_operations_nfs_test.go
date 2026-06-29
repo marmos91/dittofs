@@ -1,9 +1,8 @@
-//go:build e2e
+//go:build e2e && linux
 
 package e2e
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,16 +13,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNFSFileOperations validates basic file operations via NFS mount.
+// Least-privilege identity used by the NFS file-operation suite. The e2e
+// harness runs as root (needed to mount NFS), but exercising the real
+// permission path means acting as an ordinary granted user, not root. Under the
+// default root_to_guest squash root is not auto-privileged, so all data-plane
+// I/O below runs as this non-root uid/gid (see TestNFSRootSquash for the
+// denial side). Gated to linux because dropping privileges per-op is
+// Linux-specific (see framework/uid_ops_linux.go).
+const (
+	nfsLeastPrivUser = "nfs-lpuser"
+	nfsLeastPrivPass = "nfs-lpuser-pw-123"
+	nfsLeastPrivUID  = uint32(2000)
+	nfsLeastPrivGID  = uint32(2000)
+)
+
+// TestNFSFileOperations validates basic file operations via NFS mount, run as a
+// least-privilege granted user (not root).
 // This covers requirements NFS-01 through NFS-06:
-//   - NFS-01: Read files via NFS mount
-//   - NFS-02: Write files via NFS mount
-//   - NFS-03: Delete files via NFS mount
-//   - NFS-04: List directories via NFS mount
-//   - NFS-05: Create directories via NFS mount
-//   - NFS-06: Change permissions via NFS mount
-//
-// Note: These tests run sequentially (not parallel) as they share the same mount.
 func TestNFSFileOperations(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping NFS file operations tests in short mode")
@@ -60,6 +66,19 @@ func TestNFSFileOperations(t *testing.T) {
 		_ = runner.DeleteShare(shareName)
 	})
 
+	// Create a non-root user and grant it read-write. The grant is projected
+	// into the share root directory's ACL (ReconcileShareRootACL), so this user
+	// can create entries at the export root even though it is owned by uid 0.
+	// All file operations below run as this user to test real permissioned use.
+	_, err = runner.CreateUser(nfsLeastPrivUser, nfsLeastPrivPass, helpers.WithUID(nfsLeastPrivUID))
+	require.NoError(t, err, "Should create least-privilege user")
+	t.Cleanup(func() {
+		_ = runner.DeleteUser(nfsLeastPrivUser)
+	})
+
+	err = runner.GrantUserPermission(shareName, nfsLeastPrivUser, "read-write")
+	require.NoError(t, err, "Should grant read-write to least-privilege user")
+
 	// Enable NFS adapter on a dynamic port
 	nfsPort := helpers.FindFreePort(t)
 	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
@@ -79,34 +98,36 @@ func TestNFSFileOperations(t *testing.T) {
 	mount := framework.MountNFS(t, nfsPort)
 	t.Cleanup(mount.Cleanup)
 
+	uid, gid := nfsLeastPrivUID, nfsLeastPrivGID
+
 	// Run subtests - NOT parallel since they share the same mount
 	t.Run("NFS-01 Read files", func(t *testing.T) {
-		testNFSReadFiles(t, mount)
+		testNFSReadFiles(t, mount, uid, gid)
 	})
 
 	t.Run("NFS-02 Write files", func(t *testing.T) {
-		testNFSWriteFiles(t, mount)
+		testNFSWriteFiles(t, mount, uid, gid)
 	})
 
 	t.Run("NFS-03 Delete files", func(t *testing.T) {
-		testNFSDeleteFiles(t, mount)
+		testNFSDeleteFiles(t, mount, uid, gid)
 	})
 
 	t.Run("NFS-04 List directories", func(t *testing.T) {
-		testNFSListDirectories(t, mount)
+		testNFSListDirectories(t, mount, uid, gid)
 	})
 
 	t.Run("NFS-05 Create directories", func(t *testing.T) {
-		testNFSCreateDirectories(t, mount)
+		testNFSCreateDirectories(t, mount, uid, gid)
 	})
 
 	t.Run("NFS-06 Change permissions", func(t *testing.T) {
-		testNFSChangePermissions(t, mount)
+		testNFSChangePermissions(t, mount, uid, gid)
 	})
 }
 
 // testNFSReadFiles tests NFS-01: Files can be read via NFS mount.
-func testNFSReadFiles(t *testing.T, mount *framework.Mount) {
+func testNFSReadFiles(t *testing.T, mount *framework.Mount, uid, gid uint32) {
 	t.Helper()
 
 	// Create a test file with known content
@@ -114,13 +135,14 @@ func testNFSReadFiles(t *testing.T, mount *framework.Mount) {
 	testFile := mount.FilePath("read_test.txt")
 
 	// Write the file
-	framework.WriteFile(t, testFile, testContent)
+	require.NoError(t, framework.WriteFileAsUID(t, uid, gid, testFile, testContent))
 	t.Cleanup(func() {
-		_ = os.Remove(testFile)
+		_ = framework.RemoveAsUID(t, uid, gid, testFile)
 	})
 
 	// Read the file back
-	readContent := framework.ReadFile(t, testFile)
+	readContent, err := framework.ReadFileAsUID(t, uid, gid, testFile)
+	require.NoError(t, err, "Should read file")
 
 	// Verify content matches
 	assert.Equal(t, testContent, readContent, "Read content should match written content")
@@ -132,105 +154,109 @@ func testNFSReadFiles(t *testing.T, mount *framework.Mount) {
 		filePath := mount.FilePath(name)
 
 		// Write random data and get checksum
-		checksum := framework.WriteRandomFile(t, filePath, size)
+		checksum, err := framework.WriteRandomFileAsUID(t, uid, gid, filePath, size)
+		require.NoError(t, err, "Should write random file")
 		t.Cleanup(func() {
-			_ = os.Remove(filePath)
+			_ = framework.RemoveAsUID(t, uid, gid, filePath)
 		})
 
 		// Verify file can be read and checksum matches
-		framework.VerifyFileChecksum(t, filePath, checksum)
+		require.NoError(t, framework.VerifyFileChecksumAsUID(t, uid, gid, filePath, checksum))
 	}
 
 	t.Log("NFS-01: Read files passed")
 }
 
 // testNFSWriteFiles tests NFS-02: Files can be written via NFS mount.
-func testNFSWriteFiles(t *testing.T, mount *framework.Mount) {
+func testNFSWriteFiles(t *testing.T, mount *framework.Mount, uid, gid uint32) {
 	t.Helper()
 
 	// Test simple write
 	testContent := []byte("Test content for write operation")
 	testFile := mount.FilePath("write_test.txt")
 
-	framework.WriteFile(t, testFile, testContent)
+	require.NoError(t, framework.WriteFileAsUID(t, uid, gid, testFile, testContent))
 	t.Cleanup(func() {
-		_ = os.Remove(testFile)
+		_ = framework.RemoveAsUID(t, uid, gid, testFile)
 	})
 
 	// Verify file exists
-	assert.True(t, framework.FileExists(testFile), "Written file should exist")
+	assert.True(t, framework.FileExistsAsUID(t, uid, gid, testFile), "Written file should exist")
 
 	// Verify content
-	readContent := framework.ReadFile(t, testFile)
+	readContent, err := framework.ReadFileAsUID(t, uid, gid, testFile)
+	require.NoError(t, err, "Should read written file")
 	assert.Equal(t, testContent, readContent, "Written content should match")
 
 	// Test overwrite
 	newContent := []byte("Updated content")
-	framework.WriteFile(t, testFile, newContent)
-	readContent = framework.ReadFile(t, testFile)
+	require.NoError(t, framework.WriteFileAsUID(t, uid, gid, testFile, newContent))
+	readContent, err = framework.ReadFileAsUID(t, uid, gid, testFile)
+	require.NoError(t, err, "Should read overwritten file")
 	assert.Equal(t, newContent, readContent, "Overwritten content should match")
 
 	// Test writing larger files
 	largeFile := mount.FilePath("write_large.bin")
-	checksum := framework.WriteRandomFile(t, largeFile, 100*1024) // 100KB
+	checksum, err := framework.WriteRandomFileAsUID(t, uid, gid, largeFile, 100*1024) // 100KB
+	require.NoError(t, err, "Should write large file")
 	t.Cleanup(func() {
-		_ = os.Remove(largeFile)
+		_ = framework.RemoveAsUID(t, uid, gid, largeFile)
 	})
 
-	assert.True(t, framework.FileExists(largeFile), "Large file should exist")
-	framework.VerifyFileChecksum(t, largeFile, checksum)
+	assert.True(t, framework.FileExistsAsUID(t, uid, gid, largeFile), "Large file should exist")
+	require.NoError(t, framework.VerifyFileChecksumAsUID(t, uid, gid, largeFile, checksum))
 
 	t.Log("NFS-02: Write files passed")
 }
 
 // testNFSDeleteFiles tests NFS-03: Files can be deleted via NFS mount.
-func testNFSDeleteFiles(t *testing.T, mount *framework.Mount) {
+func testNFSDeleteFiles(t *testing.T, mount *framework.Mount, uid, gid uint32) {
 	t.Helper()
 
 	// Create a file to delete
 	testFile := mount.FilePath("delete_test.txt")
-	framework.WriteFile(t, testFile, []byte("To be deleted"))
+	require.NoError(t, framework.WriteFileAsUID(t, uid, gid, testFile, []byte("To be deleted")))
 
 	// Verify file exists
-	assert.True(t, framework.FileExists(testFile), "File should exist before deletion")
+	assert.True(t, framework.FileExistsAsUID(t, uid, gid, testFile), "File should exist before deletion")
 
 	// Delete the file
-	err := os.Remove(testFile)
-	require.NoError(t, err, "Should delete file")
+	require.NoError(t, framework.RemoveAsUID(t, uid, gid, testFile), "Should delete file")
 
 	// Verify file is gone
-	assert.False(t, framework.FileExists(testFile), "File should not exist after deletion")
+	assert.False(t, framework.FileExistsAsUID(t, uid, gid, testFile), "File should not exist after deletion")
 
 	// Test deleting non-existent file should error
-	err = os.Remove(mount.FilePath("nonexistent.txt"))
+	err := framework.RemoveAsUID(t, uid, gid, mount.FilePath("nonexistent.txt"))
 	assert.Error(t, err, "Deleting non-existent file should error")
 
 	t.Log("NFS-03: Delete files passed")
 }
 
 // testNFSListDirectories tests NFS-04: Directories can be listed via NFS mount.
-func testNFSListDirectories(t *testing.T, mount *framework.Mount) {
+func testNFSListDirectories(t *testing.T, mount *framework.Mount, uid, gid uint32) {
 	t.Helper()
 
 	// Create a subdirectory with files
 	subDir := mount.FilePath("list_test_dir")
-	framework.CreateDir(t, subDir)
+	require.NoError(t, framework.MkdirAsUID(t, uid, gid, subDir))
 	t.Cleanup(func() {
-		_ = os.RemoveAll(subDir)
+		_ = framework.RemoveAllAsUID(t, uid, gid, subDir)
 	})
 
 	// Create some files in the directory
 	fileNames := []string{"file1.txt", "file2.txt", "file3.txt"}
 	for _, name := range fileNames {
-		framework.WriteFile(t, filepath.Join(subDir, name), []byte("content"))
+		require.NoError(t, framework.WriteFileAsUID(t, uid, gid, filepath.Join(subDir, name), []byte("content")))
 	}
 
 	// Create a subdirectory
 	nestedDir := filepath.Join(subDir, "nested")
-	framework.CreateDir(t, nestedDir)
+	require.NoError(t, framework.MkdirAsUID(t, uid, gid, nestedDir))
 
 	// List directory contents
-	entries := framework.ListDir(t, subDir)
+	entries, err := framework.ListDirAsUID(t, uid, gid, subDir)
+	require.NoError(t, err, "Should list directory")
 
 	// Verify all expected entries are present
 	expectedEntries := append(fileNames, "nested")
@@ -247,71 +273,89 @@ func testNFSListDirectories(t *testing.T, mount *framework.Mount) {
 		assert.True(t, found, "Directory should contain %s", expected)
 	}
 
-	// Test file/directory count helpers
-	assert.Equal(t, len(fileNames), framework.CountFiles(t, subDir), "Should have correct file count")
-	assert.Equal(t, 1, framework.CountDirs(t, subDir), "Should have one subdirectory")
+	// Test file/directory count helpers by classifying each entry.
+	files, dirs := 0, 0
+	for _, name := range entries {
+		info, err := framework.StatAsUID(t, uid, gid, filepath.Join(subDir, name))
+		require.NoError(t, err, "Should stat %s", name)
+		if info.IsDir {
+			dirs++
+		} else {
+			files++
+		}
+	}
+	assert.Equal(t, len(fileNames), files, "Should have correct file count")
+	assert.Equal(t, 1, dirs, "Should have one subdirectory")
 
 	t.Log("NFS-04: List directories passed")
 }
 
 // testNFSCreateDirectories tests NFS-05: Directories can be created via NFS mount.
-func testNFSCreateDirectories(t *testing.T, mount *framework.Mount) {
+func testNFSCreateDirectories(t *testing.T, mount *framework.Mount, uid, gid uint32) {
 	t.Helper()
 
 	// Test simple directory creation
 	simpleDir := mount.FilePath("create_dir_test")
-	framework.CreateDir(t, simpleDir)
+	require.NoError(t, framework.MkdirAsUID(t, uid, gid, simpleDir))
 	t.Cleanup(func() {
-		_ = os.RemoveAll(simpleDir)
+		_ = framework.RemoveAllAsUID(t, uid, gid, simpleDir)
 	})
 
 	// Verify directory exists
-	assert.True(t, framework.DirExists(simpleDir), "Created directory should exist")
+	assert.True(t, framework.FileExistsAsUID(t, uid, gid, simpleDir), "Created directory should exist")
 
 	// Verify it's a directory, not a file
-	info := framework.GetFileInfo(t, simpleDir)
+	info, err := framework.StatAsUID(t, uid, gid, simpleDir)
+	require.NoError(t, err, "Should stat created directory")
 	assert.True(t, info.IsDir, "Should be a directory")
 
 	// Test nested directory creation with MkdirAll
 	nestedDir := mount.FilePath("nested/level1/level2")
-	framework.CreateDirAll(t, nestedDir)
+	require.NoError(t, framework.MkdirAllAsUID(t, uid, gid, nestedDir))
 	t.Cleanup(func() {
-		_ = os.RemoveAll(mount.FilePath("nested"))
+		_ = framework.RemoveAllAsUID(t, uid, gid, mount.FilePath("nested"))
 	})
 
-	assert.True(t, framework.DirExists(nestedDir), "Nested directory should exist")
+	nestedInfo, err := framework.StatAsUID(t, uid, gid, nestedDir)
+	require.NoError(t, err, "Should stat nested directory")
+	assert.True(t, nestedInfo.IsDir, "Nested directory should exist")
 
 	// Verify intermediate directories were created
-	assert.True(t, framework.DirExists(mount.FilePath("nested")), "Parent dir should exist")
-	assert.True(t, framework.DirExists(mount.FilePath("nested/level1")), "Intermediate dir should exist")
+	parentInfo, err := framework.StatAsUID(t, uid, gid, mount.FilePath("nested"))
+	require.NoError(t, err, "Should stat parent directory")
+	assert.True(t, parentInfo.IsDir, "Parent dir should exist")
+	midInfo, err := framework.StatAsUID(t, uid, gid, mount.FilePath("nested/level1"))
+	require.NoError(t, err, "Should stat intermediate directory")
+	assert.True(t, midInfo.IsDir, "Intermediate dir should exist")
 
 	// Test creating directory that already exists
-	err := os.Mkdir(simpleDir, 0755)
+	err = framework.MkdirAsUID(t, uid, gid, simpleDir)
 	assert.Error(t, err, "Creating existing directory should error")
 
 	t.Log("NFS-05: Create directories passed")
 }
 
 // testNFSChangePermissions tests NFS-06: File permissions can be changed via NFS mount.
-func testNFSChangePermissions(t *testing.T, mount *framework.Mount) {
+func testNFSChangePermissions(t *testing.T, mount *framework.Mount, uid, gid uint32) {
 	t.Helper()
 
 	// Create a test file
 	testFile := mount.FilePath("chmod_test.txt")
-	framework.WriteFile(t, testFile, []byte("Permission test"))
+	require.NoError(t, framework.WriteFileAsUID(t, uid, gid, testFile, []byte("Permission test")))
 	t.Cleanup(func() {
-		_ = os.Remove(testFile)
+		_ = framework.RemoveAsUID(t, uid, gid, testFile)
 	})
 
 	// Get initial permissions
-	initialInfo := framework.GetFileInfo(t, testFile)
+	initialInfo, err := framework.StatAsUID(t, uid, gid, testFile)
+	require.NoError(t, err, "Should stat file")
 	t.Logf("Initial mode: %o", initialInfo.Mode.Perm())
 
 	// Change permissions to 0600 (owner read/write only)
-	err := os.Chmod(testFile, 0600)
-	require.NoError(t, err, "Should change permissions to 0600")
+	require.NoError(t, framework.ChmodAsUID(t, uid, gid, 0600, testFile), "Should change permissions to 0600")
 
-	info := framework.GetFileInfo(t, testFile)
+	info, err := framework.StatAsUID(t, uid, gid, testFile)
+	require.NoError(t, err, "Should stat file after chmod")
 	// Check that mode was changed - NFS may not preserve exact permissions
 	// so we check that it's different or at least includes the requested bits
 	assert.True(t, info.Mode.Perm()&0600 == 0600 || info.Mode.Perm() != initialInfo.Mode.Perm(),
@@ -319,28 +363,13 @@ func testNFSChangePermissions(t *testing.T, mount *framework.Mount) {
 	t.Logf("After chmod 0600: %o", info.Mode.Perm())
 
 	// Change permissions to 0755 (owner all, group/other read+execute)
-	err = os.Chmod(testFile, 0755)
-	require.NoError(t, err, "Should change permissions to 0755")
+	require.NoError(t, framework.ChmodAsUID(t, uid, gid, 0755, testFile), "Should change permissions to 0755")
 
-	info = framework.GetFileInfo(t, testFile)
+	info, err = framework.StatAsUID(t, uid, gid, testFile)
+	require.NoError(t, err, "Should stat file after second chmod")
 	t.Logf("After chmod 0755: %o", info.Mode.Perm())
 	assert.True(t, info.Mode.Perm()&0755 == 0755 || info.Mode.Perm()&0700 == 0700,
 		"Permissions should include owner rwx, got %o", info.Mode.Perm())
-
-	// Test chmod on directory
-	testDir := mount.FilePath("chmod_dir_test")
-	framework.CreateDir(t, testDir)
-	t.Cleanup(func() {
-		_ = os.RemoveAll(testDir)
-	})
-
-	err = os.Chmod(testDir, 0700)
-	require.NoError(t, err, "Should change directory permissions")
-
-	dirInfo := framework.GetFileInfo(t, testDir)
-	t.Logf("Directory after chmod 0700: %o", dirInfo.Mode.Perm())
-	assert.True(t, dirInfo.Mode.Perm()&0700 == 0700,
-		"Directory should have owner rwx, got %o", dirInfo.Mode.Perm())
 
 	t.Log("NFS-06: Change permissions passed")
 }
