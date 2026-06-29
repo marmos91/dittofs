@@ -444,10 +444,19 @@ func (r *Runtime) syncedHashStoreForShares(shares []string) engine.SyncedHashInd
 	for _, shareName := range shares {
 		mds, err := r.GetMetadataStoreForShare(shareName)
 		if err != nil {
+			// A share whose metadata store cannot be resolved drops out of the
+			// index union: its hashes will not be sweep candidates and its
+			// markers will not be cleared. Surface it so operators can explain a
+			// degraded sweep rather than seeing a silent fall-through to Walk.
+			logger.Warn("GC: synced index unavailable for share — excluded from sweep candidate set",
+				"share", shareName, "err", err)
 			continue
 		}
 		if shs, ok := mds.(engine.SyncedHashIndex); ok {
 			stores = append(stores, shs)
+		} else {
+			logger.Warn("GC: metadata store does not implement EnumerateSynced — share excluded from index sweep, marker-clear disabled",
+				"share", shareName)
 		}
 	}
 	if len(stores) == 0 {

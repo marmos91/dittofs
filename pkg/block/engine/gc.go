@@ -261,6 +261,11 @@ type SyncedHashIndex interface {
 	// EnumerateSynced calls fn once per synced marker with its content hash
 	// and first-mirror timestamp. A zero syncedAt means the backend has no
 	// recorded time (legacy marker) — the sweep treats it as fail-closed.
+	//
+	// fn is invoked SEQUENTIALLY (never concurrently), so the sweep mutates its
+	// unsynchronized per-run counters from inside fn without a lock. A non-nil
+	// error from fn aborts enumeration and is returned; implementations must
+	// honor ctx cancellation.
 	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error
 
 	// DeleteSynced removes the synced marker for a swept hash. Idempotent.
