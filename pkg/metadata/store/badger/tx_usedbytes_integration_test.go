@@ -149,7 +149,7 @@ func TestBadger_Restore_ReinitsUsedBytes(t *testing.T) {
 
 	// --- BACKUP ---
 	var buf bytes.Buffer
-	if _, err := src.Backup(ctx, &buf); err != nil {
+	if _, err := src.WriteSnapshot(ctx, &buf); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestBadger_Restore_ReinitsUsedBytes(t *testing.T) {
 	}
 
 	// --- RESTORE ---
-	if err := dst.Restore(ctx, &buf); err != nil {
+	if err := dst.RestoreSnapshot(ctx, &buf); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 

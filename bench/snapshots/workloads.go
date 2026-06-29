@@ -43,7 +43,7 @@ func (c *countingDiscard) Write(p []byte) (int, error) {
 
 // RunBackup runs a metadata Backup against a counting discard writer and
 // returns the dump size + the returned HashSet. The metadata engine must
-// implement Backupable (memory + badger both do). The harness itself does
+// implement Snapshotable (memory + badger both do). The harness itself does
 // not buffer the dump — the writer discards. Whether the dump is resident
 // depends on the engine: badger streams KV-by-KV (only the returned
 // HashSet is resident, the quantity the create-path ceiling is built
@@ -51,12 +51,12 @@ func (c *countingDiscard) Write(p []byte) (int, error) {
 // one internal buffer before writing (so its B/op reflects that buffer,
 // not a stream).
 func RunBackup(ctx context.Context, store metadata.Store) (BackupResult, error) {
-	backupable, ok := store.(metadata.Backupable)
+	snapshotable, ok := store.(metadata.Snapshotable)
 	if !ok {
-		return BackupResult{}, fmt.Errorf("snapshots bench: store is not Backupable")
+		return BackupResult{}, fmt.Errorf("snapshots bench: store is not Snapshotable")
 	}
 	cd := &countingDiscard{}
-	hs, err := backupable.Backup(ctx, cd)
+	hs, err := snapshotable.WriteSnapshot(ctx, cd)
 	if err != nil {
 		return BackupResult{}, fmt.Errorf("snapshots bench: backup: %w", err)
 	}

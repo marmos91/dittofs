@@ -81,7 +81,7 @@ func newEncryptedFixture(t *testing.T) *encryptedFixture {
 	rt := New(cp)
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	backup := &controlledBackupable{MemoryMetadataStore: mem}
+	backup := &controlledSnapshotable{MemoryMetadataStore: mem}
 	if err := rt.RegisterMetadataStore("memory", backup); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}

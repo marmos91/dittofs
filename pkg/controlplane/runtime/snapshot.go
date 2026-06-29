@@ -56,14 +56,14 @@ type CreateSnapshotOpts struct {
 // Synchronous failures returned to the caller:
 //   - shares.ErrShareNotFound — unknown share
 //   - ErrSnapshotBackupFailed wrap — share is memory-only (no local
-//     store dir) OR metadata engine doesn't implement metadata.Backupable
+//     store dir) OR metadata engine doesn't implement metadata.Snapshotable
 //   - models.ErrSnapshotRetryTargetNotFound / models.ErrSnapshotRetryTargetNotFailed
 //   - models.ErrSnapshotStateConflict — another in-flight snapshot
 //     already exists for this share (partial unique index)
 //   - wrapped fs error — snapshot directory could not be created
 //
 // Goroutine-only failures (observable via WaitForSnapshot):
-//   - models.ErrSnapshotBackupFailed — Backupable.Backup, dump write, or
+//   - models.ErrSnapshotBackupFailed — Snapshotable.WriteSnapshot, dump write, or
 //     manifest write failed
 //   - models.ErrSnapshotDrainTimeout — DrainAllUploads returned a ctx error
 //   - models.ErrSnapshotVerifyFailed — sync gate found missing hashes
@@ -88,14 +88,14 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 			shareName, models.ErrSnapshotLocalStoreUnsupported)
 	}
 
-	// (2) Resolve metadata store + type-assert to Backupable.
+	// (2) Resolve metadata store + type-assert to Snapshotable.
 	metaStore, err := r.GetMetadataStoreForShare(shareName)
 	if err != nil {
 		return "", err
 	}
-	backupable, ok := metaStore.(metadata.Backupable)
+	snapshotable, ok := metaStore.(metadata.Snapshotable)
 	if !ok {
-		return "", fmt.Errorf("snapshot create %q: metadata engine does not implement Backupable: %w",
+		return "", fmt.Errorf("snapshot create %q: metadata engine does not implement Snapshotable: %w",
 			shareName, models.ErrSnapshotBackupFailed)
 	}
 
@@ -199,7 +199,7 @@ func (r *Runtime) CreateSnapshot(ctx context.Context, shareName string, opts Cre
 		snapID,
 		localStoreDir,
 		opts,
-		backupable,
+		snapshotable,
 		cancel,
 		doneCh,
 		entry,
@@ -449,7 +449,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	snapID string,
 	localStoreDir string,
 	opts CreateSnapshotOpts,
-	backupable metadata.Backupable,
+	snapshotable metadata.Snapshotable,
 	cancel context.CancelFunc,
 	doneCh chan snapResult,
 	entry *snapInFlight,
@@ -488,9 +488,9 @@ func (r *Runtime) runSnapshotOrchestration(
 	// CRUD methods only need (shareName, id) so we don't need to refetch.
 	snap := &models.Snapshot{ID: snapID, ShareName: shareName}
 
-	// --- Step 0: Drain rollups BEFORE Backup ---
+	// --- Step 0: Drain rollups BEFORE WriteSnapshot ---
 	// Force every dirty append-log payload through rollup into CAS + the
-	// FileBlock manifest so the Backup() below sees a fully-populated
+	// FileBlock manifest so the WriteSnapshot() below sees a fully-populated
 	// FileAttr.Blocks. Without this, a snapshot taken before the async
 	// rollup catches up captures an empty/partial manifest.
 	// Resolve the block store once here; the verify gate (Step 4) reuses
@@ -515,15 +515,15 @@ func (r *Runtime) runSnapshotOrchestration(
 	}
 	logger.Debug("snapshot create: drain rollups complete", "snapshot_id", snapID, "share", shareName)
 
-	// --- Step 1: Backup -> metadata.dump (atomic temp+rename) ---
+	// --- Step 1: WriteSnapshot -> metadata.dump (atomic temp+rename) ---
 	dumpPath := snap.MetadataDumpPath(localStoreDir)
-	logger.Debug("snapshot create: backup start",
+	logger.Debug("snapshot create: write start",
 		"snapshot_id", snapID,
 		"share", shareName,
 		"dump_path", dumpPath,
 	)
 	hashSet, err := snapshot.WriteMetadataDumpAtomic(dumpPath, func(w io.Writer) (*block.HashSet, error) {
-		return backupable.Backup(ctx, w)
+		return snapshotable.WriteSnapshot(ctx, w)
 	})
 	if err != nil {
 		terminalErr = fmt.Errorf("snapshot create %s: backup: %w: %v",
@@ -839,7 +839,7 @@ func (r *Runtime) cancelAndWaitInFlightSnaps(shareName string) {
 //
 // Step 1 cancels runtimeCtx, which propagates to every child ctx derived in
 // registerSnapInFlight — every orchestration goroutine then notices the
-// cancellation at its next ctx-aware call (Backup, DrainAllUploads,
+// cancellation at its next ctx-aware call (WriteSnapshot, DrainAllUploads,
 // VerifyRemoteDurability, UpdateSnapshotState). The failSnap helper uses
 // context.Background, so the state=failed flip still completes even with
 // runtimeCtx cancelled.
@@ -1404,9 +1404,9 @@ func (r *Runtime) restoreSnapshot(
 		return safetySnapshotID, fmt.Errorf("restore snapshot %q: %w",
 			snapID, models.ErrMetadataStoreNotResetable)
 	}
-	backupable, ok := metaStore.(metadata.Backupable)
+	snapshotable, ok := metaStore.(metadata.Snapshotable)
 	if !ok {
-		return safetySnapshotID, fmt.Errorf("restore snapshot %q: metadata engine missing Backupable: %w",
+		return safetySnapshotID, fmt.Errorf("restore snapshot %q: metadata engine missing Snapshotable: %w",
 			snapID, models.ErrRestoreAborted)
 	}
 
@@ -1438,7 +1438,7 @@ func (r *Runtime) restoreSnapshot(
 	// corruption). Dropping the append-log overlay makes the restored CAS
 	// manifest the sole source of truth.
 	//
-	// This MUST run BEFORE resetable.Reset + backupable.Restore (not after):
+	// This MUST run BEFORE resetable.Reset + snapshotable.RestoreSnapshot (not after):
 	// background rollup workers run throughout the restore. If we cleared
 	// the overlay only after Restore repopulated the metadata, a rollup
 	// worker could call PersistFileBlocks against the freshly-restored
@@ -1485,7 +1485,7 @@ func (r *Runtime) restoreSnapshot(
 		"safety_snap_id", safetySnapshotID,
 		"dump_path", dumpPath,
 	)
-	if err := backupable.Restore(ctx, dumpFile); err != nil {
+	if err := snapshotable.RestoreSnapshot(ctx, dumpFile); err != nil {
 		return safetySnapshotID, fmt.Errorf("restore snapshot %q: restore (safety-snap=%s): %w: %v",
 			snapID, safetySnapshotID, models.ErrRestoreAborted, err)
 	}

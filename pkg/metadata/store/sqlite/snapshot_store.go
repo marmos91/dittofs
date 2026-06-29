@@ -13,15 +13,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/backup"
 )
 
-// sqliteEngineTag identifies SQLite-produced backup streams; Restore refuses a
+// sqliteEngineTag identifies SQLite-produced backup streams; RestoreSnapshot refuses a
 // stream tagged for a different engine.
 const sqliteEngineTag = "sqlite"
 
 // sqliteSchemaVersion is bumped whenever the on-disk schema changes in a way
-// that makes an older backup unrestorable. Restore rejects a mismatch.
+// that makes an older backup unrestorable. RestoreSnapshot rejects a mismatch.
 const sqliteSchemaVersion uint32 = 1
 
-// backupTables lists every table dumped by Backup and reloaded by Restore, in a
+// backupTables lists every table dumped by WriteSnapshot and reloaded by RestoreSnapshot, in a
 // FK-safe order for restore (parents before children). inodes must precede
 // parent_child_map / file_block_refs / locks / durable_handles (all reference
 // inodes), and shares references inodes(root_file_id).
@@ -62,14 +62,17 @@ const (
 	cellBlob  byte = 4
 )
 
-// Backup serializes the entire metadata database into a CRC-protected envelope
+// Compile-time assertion: SQLiteMetadataStore implements Snapshotable.
+var _ metadata.Snapshotable = (*SQLiteMetadataStore)(nil)
+
+// WriteSnapshot serializes the entire metadata database into a CRC-protected envelope
 // and returns the set of distinct content hashes referenced by file_block_refs
 // (so the caller can pin the corresponding blocks). It is a logical, row-based
 // export — portable across SQLite file formats and independent of the on-disk
 // page layout.
-func (s *SQLiteMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
+func (s *SQLiteMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	// A single read transaction gives a consistent snapshot across all tables.
@@ -98,7 +101,7 @@ func (s *SQLiteMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 
 	for _, table := range backupTables {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
+			return nil, fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
 		}
 		if err := backupTable(ctx, tx, envW, table); err != nil {
 			return nil, fmt.Errorf("backup: table %s: %w", table, err)
@@ -210,10 +213,10 @@ WHERE i.nlink > 0`)
 	return hs, nil
 }
 
-// Restore replaces the (must-be-empty) database contents from a backup stream
-// produced by Backup. It verifies the envelope CRC before committing so a
+// RestoreSnapshot replaces the (must-be-empty) database contents from a snapshot
+// stream produced by WriteSnapshot. It verifies the envelope CRC before committing so a
 // truncated or corrupt stream never leaves a partial state.
-func (s *SQLiteMetadataStore) Restore(ctx context.Context, r io.Reader) error {
+func (s *SQLiteMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("restore cancelled: %w", err)
 	}

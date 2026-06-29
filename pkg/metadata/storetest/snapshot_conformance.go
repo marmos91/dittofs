@@ -12,13 +12,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/backup"
 )
 
-// BackupableStoreFactory creates a fresh MetadataStore instance for each
-// backup conformance test. The returned store does NOT need to implement
-// metadata.Backupable at this type level -- the suite performs the type
+// SnapshotableStoreFactory creates a fresh MetadataStore instance for each
+// snapshot conformance test. The returned store does NOT need to implement
+// metadata.Snapshotable at this type level -- the suite performs the type
 // assertion internally and fails if the capability is absent.
-type BackupableStoreFactory func(t *testing.T) metadata.Store
+type SnapshotableStoreFactory func(t *testing.T) metadata.Store
 
-// RunBackupConformanceSuite runs the backup/restore conformance tests against
+// RunSnapshotConformanceSuite runs the snapshot/restore conformance tests against
 // the provided factory. Each subtest gets a fresh store instance to ensure
 // isolation.
 //
@@ -29,65 +29,65 @@ type BackupableStoreFactory func(t *testing.T) metadata.Store
 //   - NonEmptyDest: ErrRestoreDestinationNotEmpty on populated destination
 //   - HashSetCorrectness: exact hash match and dedup verification
 //
-// The factory MUST return a store that implements metadata.Backupable.
+// The factory MUST return a store that implements metadata.Snapshotable.
 // Unlike the optional-capability pattern used in BlockRefOps (which skips),
-// backup conformance uses t.Fatal because the factory explicitly opts in.
-func RunBackupConformanceSuite(t *testing.T, factory BackupableStoreFactory) {
+// snapshot conformance uses t.Fatal because the factory explicitly opts in.
+func RunSnapshotConformanceSuite(t *testing.T, factory SnapshotableStoreFactory) {
 	t.Helper()
 
-	// Verify the factory produces a Backupable store before dispatching.
+	// Verify the factory produces a Snapshotable store before dispatching.
 	probe := factory(t)
-	if _, ok := probe.(metadata.Backupable); !ok {
-		t.Fatal("factory must return a store implementing metadata.Backupable")
+	if _, ok := probe.(metadata.Snapshotable); !ok {
+		t.Fatal("factory must return a store implementing metadata.Snapshotable")
 	}
 
 	t.Run("RoundTrip", func(t *testing.T) {
-		testBackup_RoundTrip(t, factory)
+		testSnapshot_RoundTrip(t, factory)
 	})
 
 	t.Run("ConcurrentWriter", func(t *testing.T) {
-		testBackup_ConcurrentWriter(t, factory)
+		testSnapshot_ConcurrentWriter(t, factory)
 	})
 
 	t.Run("Corruption", func(t *testing.T) {
-		testBackup_Corruption(t, factory)
+		testSnapshot_Corruption(t, factory)
 	})
 
 	t.Run("NonEmptyDest", func(t *testing.T) {
-		testBackup_NonEmptyDest(t, factory)
+		testSnapshot_NonEmptyDest(t, factory)
 	})
 
 	t.Run("HashSetCorrectness", func(t *testing.T) {
-		testBackup_HashSetCorrectness(t, factory)
+		testSnapshot_HashSetCorrectness(t, factory)
 	})
 
-	t.Run("LiveSetSupersetOfBackup", func(t *testing.T) {
-		testBackup_LiveSetSupersetOfBackup(t, factory)
+	t.Run("LiveSetSupersetOfSnapshot", func(t *testing.T) {
+		testSnapshot_LiveSetSupersetOfSnapshot(t, factory)
 	})
 
 	t.Run("LiveSetUnionsManifestNegativeControl", func(t *testing.T) {
-		testBackup_LiveSetUnionsManifestNegativeControl(t, factory)
+		testSnapshot_LiveSetUnionsManifestNegativeControl(t, factory)
 	})
 
 	t.Run("ExcludesUnlinkedFileBlocks", func(t *testing.T) {
-		testBackup_ExcludesUnlinkedFileBlocks(t, factory)
+		testSnapshot_ExcludesUnlinkedFileBlocks(t, factory)
 	})
 
 	t.Run("UsedBytesAfterRestore", func(t *testing.T) {
-		testBackup_UsedBytesAfterRestore(t, factory)
+		testSnapshot_UsedBytesAfterRestore(t, factory)
 	})
 }
 
-// testBackup_UsedBytesAfterRestore pins the quota-counter invariant: after
+// testSnapshot_UsedBytesAfterRestore pins the quota-counter invariant: after
 // Restore the in-memory usedBytes counter MUST reflect the restored regular-file
 // bytes, not the destination's pre-restore value. GetUsedBytes feeds the quota
 // guard in metadata/io.go; a stale 0 (the value a freshly-opened store holds on
 // an empty DB) silently disables quota enforcement until the process restarts.
 // The postgres restore path failed to recompute the counter; memory and badger
 // recompute it. This conformance test catches the divergence for every backend.
-func testBackup_UsedBytesAfterRestore(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_UsedBytesAfterRestore(t *testing.T, factory SnapshotableStoreFactory) {
 	srcStore := factory(t)
-	srcB := asBackupable(t, srcStore)
+	srcB := asSnapshotable(t, srcStore)
 	ctx := t.Context()
 
 	// populateTestData writes two regular files of 8 MiB and 6 MiB.
@@ -99,14 +99,14 @@ func testBackup_UsedBytesAfterRestore(t *testing.T, factory BackupableStoreFacto
 	}
 
 	var buf bytes.Buffer
-	if _, err := srcB.Backup(ctx, &buf); err != nil {
-		t.Fatalf("Backup: %v", err)
+	if _, err := srcB.WriteSnapshot(ctx, &buf); err != nil {
+		t.Fatalf("Snapshot: %v", err)
 	}
 
 	// Restore into a fresh store, whose usedBytes counter starts at 0.
 	dstStore := factory(t)
-	dstB := asBackupable(t, dstStore)
-	if err := dstB.Restore(ctx, &buf); err != nil {
+	dstB := asSnapshotable(t, dstStore)
+	if err := dstB.RestoreSnapshot(ctx, &buf); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
@@ -115,26 +115,26 @@ func testBackup_UsedBytesAfterRestore(t *testing.T, factory BackupableStoreFacto
 	}
 }
 
-// testBackup_LiveSetSupersetOfBackup pins the GC-vs-snapshot invariant fixed in
+// testSnapshot_LiveSetSupersetOfSnapshot pins the GC-vs-snapshot invariant fixed in
 // this change: the GC mark live set (EnumerateFileBlocks) MUST be a SUPERSET of
-// the snapshot Backup HashSet (built from File.Blocks / file_block_refs). Before
+// the snapshot Snapshot HashSet (built from File.Blocks / file_block_refs). Before
 // EnumerateFileBlocks unioned the manifest, a hash present only in the manifest
 // (the common case — populateTestData writes hashes via PutFile, never to the
 // CAS index) was MISSED by the mark phase and the sweep would reap the still-
 // live remote chunk once a snapshot hold lapsed (data loss). After the union the
 // two sets are equal here; the assertion is the weaker superset to stay robust
 // against CAS rows the engine adds independently of File.Blocks.
-func testBackup_LiveSetSupersetOfBackup(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_LiveSetSupersetOfSnapshot(t *testing.T, factory SnapshotableStoreFactory) {
 	store := factory(t)
-	b := asBackupable(t, store)
+	b := asSnapshotable(t, store)
 	ctx := t.Context()
 
 	populateTestData(t, store, "superset")
 
 	var buf bytes.Buffer
-	backupHashes, err := b.Backup(ctx, &buf)
+	backupHashes, err := b.WriteSnapshot(ctx, &buf)
 	if err != nil {
-		t.Fatalf("Backup: %v", err)
+		t.Fatalf("Snapshot: %v", err)
 	}
 
 	liveSet := make(map[block.ContentHash]struct{})
@@ -149,24 +149,24 @@ func testBackup_LiveSetSupersetOfBackup(t *testing.T, factory BackupableStoreFac
 	if err := backupHashes.ForEach(func(h block.ContentHash) error {
 		if _, ok := liveSet[h]; !ok {
 			missing++
-			t.Errorf("hash %s in Backup HashSet but ABSENT from EnumerateFileBlocks (GC mark live set) — GC would reap a live chunk (data loss)", h)
+			t.Errorf("hash %s in Snapshot HashSet but ABSENT from EnumerateFileBlocks (GC mark live set) — GC would reap a live chunk (data loss)", h)
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("HashSet.ForEach: %v", err)
 	}
 	if missing == 0 && backupHashes.Len() == 0 {
-		t.Fatal("Backup HashSet empty — fixture wrote no block hashes; the superset assertion is vacuous")
+		t.Fatal("Snapshot HashSet empty — fixture wrote no block hashes; the superset assertion is vacuous")
 	}
 }
 
-// testBackup_LiveSetUnionsManifestNegativeControl is the demonstrable negative
+// testSnapshot_LiveSetUnionsManifestNegativeControl is the demonstrable negative
 // control mandated by the plan: write a hash to File.Blocks (the manifest) WITHOUT
 // a corresponding CAS index (file_blocks) row, then prove the union picks it up.
 // Before the union the hash would be absent from EnumerateFileBlocks (the CAS
 // index has no row for it); after, it is present. This is exactly the gap that
 // let GC reap a live block.
-func testBackup_LiveSetUnionsManifestNegativeControl(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_LiveSetUnionsManifestNegativeControl(t *testing.T, factory SnapshotableStoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -201,13 +201,13 @@ func testBackup_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Backu
 	}
 }
 
-// testBackup_ExcludesUnlinkedFileBlocks proves the snapshot manifest HashSet
+// testSnapshot_ExcludesUnlinkedFileBlocks proves the snapshot manifest HashSet
 // excludes blocks of unlinked (nlink=0) files. Since GC now reclaims a deleted
 // file's blocks from remote (#1433), a manifest that still listed them would
 // reference hashes absent from remote and fail the snapshot durability verify.
-func testBackup_ExcludesUnlinkedFileBlocks(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_ExcludesUnlinkedFileBlocks(t *testing.T, factory SnapshotableStoreFactory) {
 	store := factory(t)
-	b := asBackupable(t, store)
+	b := asSnapshotable(t, store)
 	ctx := t.Context()
 
 	shareName := "unlinked-bkp"
@@ -226,9 +226,9 @@ func testBackup_ExcludesUnlinkedFileBlocks(t *testing.T, factory BackupableStore
 	}
 
 	// Baseline: a live file's block IS in the manifest.
-	hs, err := b.Backup(ctx, io.Discard)
+	hs, err := b.WriteSnapshot(ctx, io.Discard)
 	if err != nil {
-		t.Fatalf("Backup (linked): %v", err)
+		t.Fatalf("Snapshot (linked): %v", err)
 	}
 	if !hs.Contains(dead) {
 		t.Fatalf("baseline: hash %s absent from backup manifest while nlink>0", dead)
@@ -241,22 +241,22 @@ func testBackup_ExcludesUnlinkedFileBlocks(t *testing.T, factory BackupableStore
 	if err := store.SetLinkCount(ctx, h, 0); err != nil {
 		t.Fatalf("SetLinkCount(0): %v", err)
 	}
-	hs, err = b.Backup(ctx, io.Discard)
+	hs, err = b.WriteSnapshot(ctx, io.Discard)
 	if err != nil {
-		t.Fatalf("Backup (unlinked): %v", err)
+		t.Fatalf("Snapshot (unlinked): %v", err)
 	}
 	if hs.Contains(dead) {
 		t.Errorf("hash %s still in backup manifest after unlink (nlink=0); GC may have reclaimed it from remote, so the snapshot durability verify would fail (#1433)", dead)
 	}
 }
 
-// asBackupable is a helper that type-asserts a MetadataStore to Backupable,
+// asSnapshotable is a helper that type-asserts a MetadataStore to Snapshotable,
 // calling t.Fatal if the assertion fails.
-func asBackupable(t *testing.T, store metadata.Store) metadata.Backupable {
+func asSnapshotable(t *testing.T, store metadata.Store) metadata.Snapshotable {
 	t.Helper()
-	b, ok := store.(metadata.Backupable)
+	b, ok := store.(metadata.Snapshotable)
 	if !ok {
-		t.Fatal("store does not implement metadata.Backupable")
+		t.Fatal("store does not implement metadata.Snapshotable")
 	}
 	return b
 }
@@ -312,21 +312,21 @@ func populateTestData(t *testing.T, store metadata.Store, sharePrefix string) (s
 // Subtest 1: RoundTrip
 // --------------------------------------------------------------------------
 
-// testBackup_RoundTrip verifies that Backup-then-Restore produces identical
+// testSnapshot_RoundTrip verifies that Snapshot-then-Restore produces identical
 // shares and files in the destination store.
-func testBackup_RoundTrip(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_RoundTrip(t *testing.T, factory SnapshotableStoreFactory) {
 	srcStore := factory(t)
-	srcB := asBackupable(t, srcStore)
+	srcB := asSnapshotable(t, srcStore)
 
 	shareName, uniqueHashes := populateTestData(t, srcStore, "rt")
 
 	ctx := t.Context()
 
-	// Backup to buffer.
+	// Snapshot to buffer.
 	var buf bytes.Buffer
-	hashes, err := srcB.Backup(ctx, &buf)
+	hashes, err := srcB.WriteSnapshot(ctx, &buf)
 	if err != nil {
-		t.Fatalf("Backup: %v", err)
+		t.Fatalf("Snapshot: %v", err)
 	}
 
 	// Verify HashSet length matches expected unique hashes.
@@ -336,8 +336,8 @@ func testBackup_RoundTrip(t *testing.T, factory BackupableStoreFactory) {
 
 	// Restore into fresh destination.
 	dstStore := factory(t)
-	dstB := asBackupable(t, dstStore)
-	if err := dstB.Restore(ctx, &buf); err != nil {
+	dstB := asSnapshotable(t, dstStore)
+	if err := dstB.RestoreSnapshot(ctx, &buf); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
@@ -403,7 +403,7 @@ func testBackup_RoundTrip(t *testing.T, factory BackupableStoreFactory) {
 // Subtest 2: ConcurrentWriter
 // --------------------------------------------------------------------------
 
-// testBackup_ConcurrentWriter verifies that a backup snapshot is isolated
+// testSnapshot_ConcurrentWriter verifies that a backup snapshot is isolated
 // from concurrent writes: files created after the backup begins must NOT
 // appear in the restored state.
 // signalWriter wraps an io.Writer and closes a channel on the first
@@ -420,9 +420,9 @@ func (sw *signalWriter) Write(p []byte) (int, error) {
 	return sw.w.Write(p)
 }
 
-func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_ConcurrentWriter(t *testing.T, factory SnapshotableStoreFactory) {
 	store := factory(t)
-	b := asBackupable(t, store)
+	b := asSnapshotable(t, store)
 
 	shareName, _ := populateTestData(t, store, "cw")
 
@@ -445,7 +445,7 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		hashes, backupErr = b.Backup(ctx, sw)
+		hashes, backupErr = b.WriteSnapshot(ctx, sw)
 	}()
 
 	// Wait until backup has started writing (lock acquired) before the
@@ -504,7 +504,7 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 	wg.Wait()
 
 	if backupErr != nil {
-		t.Fatalf("Backup: %v", backupErr)
+		t.Fatalf("Snapshot: %v", backupErr)
 	}
 	if concurrentErr != nil {
 		t.Logf("concurrent writer error (non-fatal): %v", concurrentErr)
@@ -512,8 +512,8 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 
 	// Restore into fresh store.
 	dstStore := factory(t)
-	dstB := asBackupable(t, dstStore)
-	if err := dstB.Restore(ctx, &buf); err != nil {
+	dstB := asSnapshotable(t, dstStore)
+	if err := dstB.RestoreSnapshot(ctx, &buf); err != nil {
 		t.Fatalf("Restore: %v", err)
 	}
 
@@ -537,7 +537,7 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 
 	// Hash set must contain only initial hashes, not the concurrent one.
 	if hashes == nil {
-		t.Fatal("Backup returned nil HashSet")
+		t.Fatal("Snapshot returned nil HashSet")
 	}
 	if hashes.Contains(concurrentHash) {
 		t.Error("HashSet contains concurrent hash — snapshot isolation violated")
@@ -551,19 +551,19 @@ func testBackup_ConcurrentWriter(t *testing.T, factory BackupableStoreFactory) {
 // Subtest 3: Corruption
 // --------------------------------------------------------------------------
 
-// testBackup_Corruption verifies that Restore detects corrupted backup
+// testSnapshot_Corruption verifies that Restore detects corrupted backup
 // streams. Three scenarios: truncated, bit-flip, and wrong engine tag.
-func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_Corruption(t *testing.T, factory SnapshotableStoreFactory) {
 	// Create a valid backup first.
 	srcStore := factory(t)
-	srcB := asBackupable(t, srcStore)
+	srcB := asSnapshotable(t, srcStore)
 	populateTestData(t, srcStore, "corr")
 
 	ctx := t.Context()
 
 	var validBuf bytes.Buffer
-	if _, err := srcB.Backup(ctx, &validBuf); err != nil {
-		t.Fatalf("Backup: %v", err)
+	if _, err := srcB.WriteSnapshot(ctx, &validBuf); err != nil {
+		t.Fatalf("Snapshot: %v", err)
 	}
 	validData := validBuf.Bytes()
 
@@ -572,8 +572,8 @@ func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
 		truncated := validData[:len(validData)/2]
 
 		dstStore := factory(t)
-		dstB := asBackupable(t, dstStore)
-		err := dstB.Restore(ctx, bytes.NewReader(truncated))
+		dstB := asSnapshotable(t, dstStore)
+		err := dstB.RestoreSnapshot(ctx, bytes.NewReader(truncated))
 		if err == nil {
 			t.Fatal("Restore on truncated stream should have returned an error")
 		}
@@ -587,7 +587,7 @@ func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
 		// subsequent VALID restore into the SAME store must succeed — if the
 		// corrupt attempt left rows behind, Restore's empty-destination guard
 		// would reject this with ErrRestoreDestinationNotEmpty (#831).
-		if err := dstB.Restore(ctx, bytes.NewReader(validData)); err != nil {
+		if err := dstB.RestoreSnapshot(ctx, bytes.NewReader(validData)); err != nil {
 			t.Fatalf("valid restore after corrupt(truncated) restore must succeed (store left empty/retryable), got: %v", err)
 		}
 	})
@@ -604,8 +604,8 @@ func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
 		corrupted[midpoint] ^= 0xFF
 
 		dstStore := factory(t)
-		dstB := asBackupable(t, dstStore)
-		err := dstB.Restore(ctx, bytes.NewReader(corrupted))
+		dstB := asSnapshotable(t, dstStore)
+		err := dstB.RestoreSnapshot(ctx, bytes.NewReader(corrupted))
 		if err == nil {
 			t.Fatal("Restore on bit-flipped stream should have returned an error")
 		}
@@ -615,7 +615,7 @@ func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
 
 		// Same retryability contract as Truncated: a corrupt payload must
 		// leave the destination empty so a valid restore still succeeds (#831).
-		if err := dstB.Restore(ctx, bytes.NewReader(validData)); err != nil {
+		if err := dstB.RestoreSnapshot(ctx, bytes.NewReader(validData)); err != nil {
 			t.Fatalf("valid restore after corrupt(bit-flip) restore must succeed (store left empty/retryable), got: %v", err)
 		}
 	})
@@ -657,8 +657,8 @@ func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
 		}
 
 		dstStore := factory(t)
-		dstB := asBackupable(t, dstStore)
-		err = dstB.Restore(ctx, &fakeEnvelopeBuf)
+		dstB := asSnapshotable(t, dstStore)
+		err = dstB.RestoreSnapshot(ctx, &fakeEnvelopeBuf)
 		if err == nil {
 			t.Fatal("Restore with wrong engine tag should have returned an error")
 		}
@@ -674,27 +674,27 @@ func testBackup_Corruption(t *testing.T, factory BackupableStoreFactory) {
 // Subtest 4: NonEmptyDest
 // --------------------------------------------------------------------------
 
-// testBackup_NonEmptyDest verifies that Restore rejects a destination store
+// testSnapshot_NonEmptyDest verifies that Restore rejects a destination store
 // that already contains data.
-func testBackup_NonEmptyDest(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_NonEmptyDest(t *testing.T, factory SnapshotableStoreFactory) {
 	// Create a valid backup.
 	srcStore := factory(t)
-	srcB := asBackupable(t, srcStore)
+	srcB := asSnapshotable(t, srcStore)
 	populateTestData(t, srcStore, "ned-src")
 
 	ctx := t.Context()
 
 	var buf bytes.Buffer
-	if _, err := srcB.Backup(ctx, &buf); err != nil {
-		t.Fatalf("Backup: %v", err)
+	if _, err := srcB.WriteSnapshot(ctx, &buf); err != nil {
+		t.Fatalf("Snapshot: %v", err)
 	}
 
 	// Create a destination store that is NOT empty.
 	dstStore := factory(t)
 	populateTestData(t, dstStore, "ned-dst")
-	dstB := asBackupable(t, dstStore)
+	dstB := asSnapshotable(t, dstStore)
 
-	err := dstB.Restore(ctx, &buf)
+	err := dstB.RestoreSnapshot(ctx, &buf)
 	if err == nil {
 		t.Fatal("Restore into non-empty store should have returned an error")
 	}
@@ -707,23 +707,23 @@ func testBackup_NonEmptyDest(t *testing.T, factory BackupableStoreFactory) {
 // Subtest 5: HashSetCorrectness
 // --------------------------------------------------------------------------
 
-// testBackup_HashSetCorrectness verifies that the HashSet returned by Backup
+// testSnapshot_HashSetCorrectness verifies that the HashSet returned by Snapshot
 // contains exactly the unique block hashes referenced by all files.
-func testBackup_HashSetCorrectness(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_HashSetCorrectness(t *testing.T, factory SnapshotableStoreFactory) {
 	t.Run("ExactMatch", func(t *testing.T) {
-		testBackup_HashSet_ExactMatch(t, factory)
+		testSnapshot_HashSet_ExactMatch(t, factory)
 	})
 
 	t.Run("Dedup", func(t *testing.T) {
-		testBackup_HashSet_Dedup(t, factory)
+		testSnapshot_HashSet_Dedup(t, factory)
 	})
 }
 
-// testBackup_HashSet_ExactMatch creates files with K unique hashes across N
+// testSnapshot_HashSet_ExactMatch creates files with K unique hashes across N
 // files and verifies the HashSet matches a manually-collected reference set.
-func testBackup_HashSet_ExactMatch(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_HashSet_ExactMatch(t *testing.T, factory SnapshotableStoreFactory) {
 	store := factory(t)
-	b := asBackupable(t, store)
+	b := asSnapshotable(t, store)
 	ctx := t.Context()
 
 	shareName := "hsem-bkp"
@@ -779,11 +779,11 @@ func testBackup_HashSet_ExactMatch(t *testing.T, factory BackupableStoreFactory)
 		t.Fatalf("PutFile f3: %v", err)
 	}
 
-	// Backup and collect HashSet.
+	// Snapshot and collect HashSet.
 	var buf bytes.Buffer
-	gotHS, err := b.Backup(ctx, &buf)
+	gotHS, err := b.WriteSnapshot(ctx, &buf)
 	if err != nil {
-		t.Fatalf("Backup: %v", err)
+		t.Fatalf("Snapshot: %v", err)
 	}
 
 	// Verify length.
@@ -799,11 +799,11 @@ func testBackup_HashSet_ExactMatch(t *testing.T, factory BackupableStoreFactory)
 	}
 }
 
-// testBackup_HashSet_Dedup creates two files that share the same BlockRef
+// testSnapshot_HashSet_Dedup creates two files that share the same BlockRef
 // hash and verifies the HashSet correctly deduplicates.
-func testBackup_HashSet_Dedup(t *testing.T, factory BackupableStoreFactory) {
+func testSnapshot_HashSet_Dedup(t *testing.T, factory SnapshotableStoreFactory) {
 	store := factory(t)
-	b := asBackupable(t, store)
+	b := asSnapshotable(t, store)
 	ctx := t.Context()
 
 	shareName := "hsdd-bkp"
@@ -837,11 +837,11 @@ func testBackup_HashSet_Dedup(t *testing.T, factory BackupableStoreFactory) {
 		t.Fatalf("PutFile dup-b: %v", err)
 	}
 
-	// Backup and collect HashSet.
+	// Snapshot and collect HashSet.
 	var buf bytes.Buffer
-	gotHS, err := b.Backup(ctx, &buf)
+	gotHS, err := b.WriteSnapshot(ctx, &buf)
 	if err != nil {
-		t.Fatalf("Backup: %v", err)
+		t.Fatalf("Snapshot: %v", err)
 	}
 
 	// Must be 1 unique hash, not 2.

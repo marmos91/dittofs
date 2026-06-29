@@ -61,7 +61,7 @@ func runBlockRefOpsTests(t *testing.T, factory StoreFactory) {
 // testBlockRef_MultiPassMerge guards the store-layer contract that a file's
 // complete block list survives successive PutFile calls — both an append
 // (A then A+B) and an in-place overlay of an existing offset (A'). GetFile
-// and Backup must return the full, correct set after each pass; no earlier
+// and WriteSnapshot must return the full, correct set after each pass; no earlier
 // offset may be dropped.
 //
 // This mirrors the engine's multi-pass rollup, which persists a file's blocks
@@ -69,7 +69,7 @@ func runBlockRefOpsTests(t *testing.T, factory StoreFactory) {
 // refs (REPLACE-by-partial-list) instead of the complete merged list would
 // silently drop earlier offsets — exactly the data-loss class this asserts
 // against. The contract is: whatever complete list the caller hands PutFile,
-// GetFile/Backup return it intact and ordered by offset.
+// GetFile/WriteSnapshot return it intact and ordered by offset.
 func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 
@@ -84,7 +84,7 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	}
 	putBlocks(t, store, fileHandle, listA)
 	assertBlocks(t, store, fileHandle, listA)
-	assertBackupContains(t, store, listA)
+	assertSnapshotContains(t, store, listA)
 
 	// Pass 2 — append block list B onto A. The caller computes the complete
 	// merged list (A+B); the store must persist all of it. A REPLACE-only
@@ -96,7 +96,7 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	merged := append(append([]block.BlockRef(nil), listA...), listB...)
 	putBlocks(t, store, fileHandle, merged)
 	assertBlocks(t, store, fileHandle, merged)
-	assertBackupContains(t, store, merged)
+	assertSnapshotContains(t, store, merged)
 
 	// Pass 3 — in-place overlay: rewrite the block at offset 1 MiB (A1 -> A1')
 	// while keeping every other offset. The overlay must replace only that
@@ -105,12 +105,12 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	overlay[1].Hash = hashOfSeed("mp-a1-overlay")
 	putBlocks(t, store, fileHandle, overlay)
 	assertBlocks(t, store, fileHandle, overlay)
-	assertBackupContains(t, store, overlay)
+	assertSnapshotContains(t, store, overlay)
 
 	// The superseded hash must no longer be referenced after the overlay.
-	bk := backupHashes(t, store)
+	bk := snapshotHashes(t, store)
 	if bk.Contains(hashOfSeed("mp-a1")) {
-		t.Errorf("Backup still references superseded hash mp-a1 after overlay")
+		t.Errorf("WriteSnapshot still references superseded hash mp-a1 after overlay")
 	}
 }
 
@@ -150,33 +150,33 @@ func assertBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHa
 	}
 }
 
-// backupHashes runs Backup and returns the referenced-hash set, discarding
+// snapshotHashes runs WriteSnapshot and returns the referenced-hash set, discarding
 // the serialized stream.
-func backupHashes(t *testing.T, store metadata.Store) *block.HashSet {
+func snapshotHashes(t *testing.T, store metadata.Store) *block.HashSet {
 	t.Helper()
 	ctx := t.Context()
 
-	bk, ok := store.(metadata.Backupable)
+	bk, ok := store.(metadata.Snapshotable)
 	if !ok {
-		t.Fatalf("backend does not implement metadata.Backupable")
+		t.Fatalf("backend does not implement metadata.Snapshotable")
 	}
-	hs, err := bk.Backup(ctx, io.Discard)
+	hs, err := bk.WriteSnapshot(ctx, io.Discard)
 	if err != nil {
-		t.Fatalf("Backup: %v", err)
+		t.Fatalf("WriteSnapshot: %v", err)
 	}
 	return hs
 }
 
-// assertBackupContains asserts Backup's referenced-hash set includes every
+// assertSnapshotContains asserts WriteSnapshot's referenced-hash set includes every
 // block hash in want — the snapshot's block manifest must cover the complete
 // list, not just the latest persisted segment.
-func assertBackupContains(t *testing.T, store metadata.Store, want []block.BlockRef) {
+func assertSnapshotContains(t *testing.T, store metadata.Store, want []block.BlockRef) {
 	t.Helper()
 
-	hs := backupHashes(t, store)
+	hs := snapshotHashes(t, store)
 	for _, b := range want {
 		if !hs.Contains(b.Hash) {
-			t.Errorf("Backup hash set missing block at offset %d (hash %x)", b.Offset, b.Hash[:8])
+			t.Errorf("WriteSnapshot hash set missing block at offset %d (hash %x)", b.Offset, b.Hash[:8])
 		}
 	}
 }

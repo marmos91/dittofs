@@ -34,10 +34,10 @@ const (
 	maxRestoreAllocSize = 256 << 20
 )
 
-// Compile-time assertion: BadgerMetadataStore implements Backupable.
-var _ metadata.Backupable = (*BadgerMetadataStore)(nil)
+// Compile-time assertion: BadgerMetadataStore implements Snapshotable.
+var _ metadata.Snapshotable = (*BadgerMetadataStore)(nil)
 
-// Backup serializes all metadata into w using a custom length-prefixed KV
+// WriteSnapshot serializes all metadata into w using a custom length-prefixed KV
 // stream inside a single db.View() MVCC snapshot. It returns the set of
 // content-addressed block hashes referenced by file entries (f: prefix).
 //
@@ -48,9 +48,9 @@ var _ metadata.Backupable = (*BadgerMetadataStore)(nil)
 //   - value     [value_len]byte
 //
 // Stream terminated by sentinel key_len = 0 (4 zero bytes).
-func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
+func (s *BadgerMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	hs := block.NewHashSet(0)
@@ -68,14 +68,14 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 		var writeErr error
 		envW, writeErr = backup.NewWriter(w, badgerEngineTag)
 		if writeErr != nil {
-			return fmt.Errorf("%w: envelope: %v", metadata.ErrBackupAborted, writeErr)
+			return fmt.Errorf("%w: envelope: %v", metadata.ErrSnapshotAborted, writeErr)
 		}
 
 		// Write schema version (uint32 LE).
 		var verBuf [4]byte
 		binary.LittleEndian.PutUint32(verBuf[:], badgerSchemaVersion)
 		if _, writeErr = envW.Write(verBuf[:]); writeErr != nil {
-			return fmt.Errorf("%w: schema version: %v", metadata.ErrBackupAborted, writeErr)
+			return fmt.Errorf("%w: schema version: %v", metadata.ErrSnapshotAborted, writeErr)
 		}
 
 		opts := badgerdb.DefaultIteratorOptions
@@ -89,32 +89,32 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 
 		for it.Rewind(); it.Valid(); it.Next() {
 			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
+				return fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
 			}
 
 			item := it.Item()
 			key := item.KeyCopy(nil)
 			val, err := item.ValueCopy(nil)
 			if err != nil {
-				return fmt.Errorf("%w: value copy: %v", metadata.ErrBackupAborted, err)
+				return fmt.Errorf("%w: value copy: %v", metadata.ErrSnapshotAborted, err)
 			}
 
 			// Write key_len + key.
 			binary.LittleEndian.PutUint32(buf[:], uint32(len(key)))
 			if _, err := envW.Write(buf[:]); err != nil {
-				return fmt.Errorf("%w: write key_len: %v", metadata.ErrBackupAborted, err)
+				return fmt.Errorf("%w: write key_len: %v", metadata.ErrSnapshotAborted, err)
 			}
 			if _, err := envW.Write(key); err != nil {
-				return fmt.Errorf("%w: write key: %v", metadata.ErrBackupAborted, err)
+				return fmt.Errorf("%w: write key: %v", metadata.ErrSnapshotAborted, err)
 			}
 
 			// Write value_len + value.
 			binary.LittleEndian.PutUint32(buf[:], uint32(len(val)))
 			if _, err := envW.Write(buf[:]); err != nil {
-				return fmt.Errorf("%w: write value_len: %v", metadata.ErrBackupAborted, err)
+				return fmt.Errorf("%w: write value_len: %v", metadata.ErrSnapshotAborted, err)
 			}
 			if _, err := envW.Write(val); err != nil {
-				return fmt.Errorf("%w: write value: %v", metadata.ErrBackupAborted, err)
+				return fmt.Errorf("%w: write value: %v", metadata.ErrSnapshotAborted, err)
 			}
 
 			// Hash extraction: decode f: prefix entries for block hashes.
@@ -144,7 +144,7 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 		// Write sentinel: key_len = 0.
 		binary.LittleEndian.PutUint32(buf[:], 0)
 		if _, err := envW.Write(buf[:]); err != nil {
-			return fmt.Errorf("%w: write sentinel: %v", metadata.ErrBackupAborted, err)
+			return fmt.Errorf("%w: write sentinel: %v", metadata.ErrSnapshotAborted, err)
 		}
 
 		return nil
@@ -155,13 +155,13 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 
 	// Write trailing CRC.
 	if err := envW.Finish(); err != nil {
-		return nil, fmt.Errorf("%w: finish envelope: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: finish envelope: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	return hs, nil
 }
 
-// Restore reads a backup stream from r and rebuilds metadata state in the
+// RestoreSnapshot reads a backup stream from r and rebuilds metadata state in the
 // Badger store. The store must be empty (no existing share data); otherwise
 // ErrRestoreDestinationNotEmpty is returned.
 //
@@ -170,7 +170,7 @@ func (s *BadgerMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 // CRC is verified last, and any failure triggers a DropAll. Because the
 // destination was empty before restore began, a corrupt stream is wiped back
 // to empty and the restore stays retryable.
-func (s *BadgerMetadataStore) Restore(ctx context.Context, r io.Reader) error {
+func (s *BadgerMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) error {
 	// Check destination is empty by looking for any s: prefix key.
 	isEmpty, err := s.isStoreEmpty()
 	if err != nil {

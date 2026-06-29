@@ -86,16 +86,16 @@ type durableSnapshotData struct {
 	Handles map[string]*lock.PersistedDurableHandle
 }
 
-// Compile-time assertion: MemoryMetadataStore implements Backupable.
-var _ metadata.Backupable = (*MemoryMetadataStore)(nil)
+// Compile-time assertion: MemoryMetadataStore implements Snapshotable.
+var _ metadata.Snapshotable = (*MemoryMetadataStore)(nil)
 
-// Backup serializes the entire in-memory state under a read lock and
+// WriteSnapshot serializes the entire in-memory state under a read lock and
 // writes it into w using the shared envelope format. The returned
 // HashSet contains every unique content-addressed block hash referenced
 // by the snapshot (extracted inline during serialization).
-func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.HashSet, error) {
+func (s *MemoryMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*block.HashSet, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	s.mu.RLock()
@@ -147,7 +147,7 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 	if len(s.serverConfig.CustomSettings) > 0 {
 		csJSON, err := json.Marshal(s.serverConfig.CustomSettings)
 		if err != nil {
-			return nil, fmt.Errorf("%w: encode custom settings: %v", metadata.ErrBackupAborted, err)
+			return nil, fmt.Errorf("%w: encode custom settings: %v", metadata.ErrSnapshotAborted, err)
 		}
 		snap.ServerConfigCustomSettingsJSON = csJSON
 		// Nil out the unserializable field in the snapshot copy so gob
@@ -201,14 +201,14 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 	// Write the envelope: header (magic + version + engine tag).
 	envW, err := backup.NewWriter(w, memoryEngineTag)
 	if err != nil {
-		return nil, fmt.Errorf("%w: envelope header: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: envelope header: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	// Write schema version (4-byte LE uint32).
 	var vBuf [4]byte
 	binary.LittleEndian.PutUint32(vBuf[:], memorySchemaVersion)
 	if _, err := envW.Write(vBuf[:]); err != nil {
-		return nil, fmt.Errorf("%w: schema version: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: schema version: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	// Gob-encode the snapshot into a temporary buffer so we can write
@@ -218,33 +218,33 @@ func (s *MemoryMetadataStore) Backup(ctx context.Context, w io.Writer) (*block.H
 	var gobBuf bytes.Buffer
 	enc := gob.NewEncoder(&gobBuf)
 	if err := enc.Encode(&snap); err != nil {
-		return nil, fmt.Errorf("%w: gob encode: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: gob encode: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	// Write gob payload length (8-byte LE uint64).
 	var lenBuf [8]byte
 	binary.LittleEndian.PutUint64(lenBuf[:], uint64(gobBuf.Len()))
 	if _, err := envW.Write(lenBuf[:]); err != nil {
-		return nil, fmt.Errorf("%w: payload length: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: payload length: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	// Write the gob payload.
 	if _, err := envW.Write(gobBuf.Bytes()); err != nil {
-		return nil, fmt.Errorf("%w: payload write: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: payload write: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	// Trailing CRC.
 	if err := envW.Finish(); err != nil {
-		return nil, fmt.Errorf("%w: envelope finish: %v", metadata.ErrBackupAborted, err)
+		return nil, fmt.Errorf("%w: envelope finish: %v", metadata.ErrSnapshotAborted, err)
 	}
 
 	return hs, nil
 }
 
-// Restore reads a backup stream from r and rebuilds the store state.
+// RestoreSnapshot reads a backup stream from r and rebuilds the store state.
 // The destination store must be empty (no shares); otherwise
 // ErrRestoreDestinationNotEmpty is returned.
-func (s *MemoryMetadataStore) Restore(ctx context.Context, r io.Reader) error {
+func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("restore cancelled: %w", err)
 	}

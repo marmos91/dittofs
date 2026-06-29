@@ -43,21 +43,21 @@ func stressIters() int {
 }
 
 // concFixture is a minimal runtime + one share wired with a real engine.Store
-// over memory local + memory remote + a controlledBackupable. Unlike
+// over memory local + memory remote + a controlledSnapshotable. Unlike
 // orchestrationFixture (one share for the whole test) this builds a fresh
 // share per call so each iteration gets a clean idx_share_creating slot. The
 // cpstore + remote are shared across iterations via t.Cleanup on the parent.
 type concFixture struct {
 	rt        *Runtime
-	backup    *controlledBackupable
+	backup    *controlledSnapshotable
 	shareName string
 }
 
 // newConcRuntime builds a Runtime with a shared cpstore + a single memory
 // metadata engine. Shares are added per scenario via addConcShare so the
 // idx_share_creating unique slot resets between iterations. Returns the shared
-// controlledBackupable so scenarios can install a per-test Backup hook.
-func newConcRuntime(t *testing.T) (*Runtime, *controlledBackupable) {
+// controlledSnapshotable so scenarios can install a per-test Backup hook.
+func newConcRuntime(t *testing.T) (*Runtime, *controlledSnapshotable) {
 	t.Helper()
 	// Use a real on-disk SQLite file rather than `:memory:` so the
 	// connection pool shares schema state across the orchestration
@@ -78,7 +78,7 @@ func newConcRuntime(t *testing.T) (*Runtime, *controlledBackupable) {
 	rt := New(cp)
 
 	mem := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	backup := &controlledBackupable{MemoryMetadataStore: mem}
+	backup := &controlledSnapshotable{MemoryMetadataStore: mem}
 	if err := rt.RegisterMetadataStore("memory", backup); err != nil {
 		t.Fatalf("RegisterMetadataStore: %v", err)
 	}
@@ -93,7 +93,7 @@ func newConcRuntime(t *testing.T) (*Runtime, *controlledBackupable) {
 
 // addConcShare registers a fresh share backed by a new engine.Store over the
 // shared memory metadata engine. Returns a concFixture pinned to that share.
-func addConcShare(t *testing.T, rt *Runtime, backup *controlledBackupable, shareName string) *concFixture {
+func addConcShare(t *testing.T, rt *Runtime, backup *controlledSnapshotable, shareName string) *concFixture {
 	t.Helper()
 
 	localStore := bsmemory.New()

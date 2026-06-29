@@ -59,8 +59,8 @@ func TestConformance(t *testing.T) {
 	storetest.RunConformanceSuite(t, newSQLiteStoreFactory())
 }
 
-func TestBackupConformance(t *testing.T) {
-	storetest.RunBackupConformanceSuite(t, newSQLiteStoreFactory())
+func TestSnapshotConformance(t *testing.T) {
+	storetest.RunSnapshotConformanceSuite(t, newSQLiteStoreFactory())
 }
 
 func TestResetThenRestoreConformance(t *testing.T) {
