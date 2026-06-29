@@ -1863,7 +1863,8 @@ func (s *Service) DistinctRemoteStores() []RemoteStoreEntry {
 type LocalStoreEntry struct {
 	// ShareName is the single share that owns this local store.
 	ShareName string
-	// Store is the narrow Walk+Delete surface of the share's local block store.
+	// Store is the share's local block store. The local GC pass uses only its
+	// Walk + Delete methods.
 	Store block.Store
 	// GCStateRoot is the persistent gc-state directory for this share. Empty
 	// for in-memory backends (no on-disk chunks worth sweeping).

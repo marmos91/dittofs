@@ -489,6 +489,12 @@ func sharesForReconciler(r MetadataReconciler) []string {
 // CAS namespace and delete one object by hash. Both remote.RemoteStore and the
 // local block.Store satisfy it, so the same sweep kernel reclaims orphans on
 // either tier (#1433).
+//
+// Walk MUST invoke its callback sequentially: sweepPhase mutates unsynchronized
+// per-run counters (scanned/swept/bytes) from inside the callback. Every
+// current backend (local filepath.WalkDir, remote paginated list) honors this;
+// a backend that parallelizes Walk must serialize the callback before
+// satisfying this interface.
 type sweepable interface {
 	Walk(ctx context.Context, fn func(block.ContentHash, block.Meta) error) error
 	Delete(ctx context.Context, hash block.ContentHash) error
