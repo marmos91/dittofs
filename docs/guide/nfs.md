@@ -8,11 +8,16 @@ This guide covers everything an operator or end user needs to mount and use Ditt
 
 - [Protocol Overview](#protocol-overview)
 - [Supported Versions](#supported-versions)
+  - [Which version should I use?](#which-version-should-i-use)
+  - [How a version is negotiated](#how-a-version-is-negotiated)
 - [Embedded Portmapper](#embedded-portmapper)
+- [NFSv3 File Locking (NLM/NSM)](#nfsv3-file-locking-nlmnsm)
 - [Mounting](#mounting)
+  - [The easy way: `dfsctl share mount`](#the-easy-way-dfsctl-share-mount)
+  - [By NFS version (raw `mount`)](#by-nfs-version-raw-mount)
   - [With Portmapper on Port 111](#with-portmapper-on-port-111)
   - [With Explicit Ports](#with-explicit-ports)
-- [NFSv3 File Locking (NLM/NSM)](#nfsv3-file-locking-nlmnsm)
+- [Identity Squashing (root_squash and friends)](#identity-squashing-root_squash-and-friends)
 - [Kerberos Exports (sec=krb5)](#kerberos-exports-seckrb5)
 - [NFS-over-TLS (RFC 9289)](#nfs-over-tls-rfc-9289)
 - [Testing Your Mount](#testing-your-mount)
@@ -63,6 +68,47 @@ DittoFS implements **NFSv3**, **NFSv4.0**, **NFSv4.1**, and **NFSv4.2**.
 All versions listen on port **12049** by default (not the standard 2049). The embedded portmapper listens on **10111** by default.
 
 CLONE (reflink), ALLOCATE, DEALLOCATE, SEEK, and READ_PLUS are implemented for NFSv4.2; inter-server COPY (OP_COPY) is not.
+
+### Which version should I use?
+
+The version is chosen entirely by the **client** at mount time (via the
+`vers=` / `nfsvers=` option). The server speaks all four; nothing on the server
+side restricts which one a client may pick. Pick based on what you need:
+
+| You want… | Use | Why |
+|-----------|-----|-----|
+| The simplest setup, no extra config | **NFSv4.1** | One TCP port, in-protocol locking, no MOUNT/NLM/NSM/portmapper to wire up. The recommended default for new mounts. |
+| ACLs, Kerberos (`sec=krb5`), or NFS-over-TLS | **NFSv4.0+** | These features are NFSv4-only. NFSv3 has none of them. |
+| Sparse files (ALLOCATE/DEALLOCATE/SEEK/READ_PLUS) or reflink/CLONE | **NFSv4.2** | Those operations were added in 4.2. (Inter-server `OP_COPY` is *not* implemented.) |
+| Maximum client compatibility / legacy clients | **NFSv3** | Works everywhere, but byte-range locking needs the NLM/NSM side-channel (UDP + portmapper on 111 — see [NFSv3 File Locking](#nfsv3-file-locking-nlmnsm)). |
+
+> **Rule of thumb:** reach for **NFSv4.1** unless a specific client or workload
+> forces NFSv3. v4.1 avoids every portmapper/NLM headache documented below, and
+> locking just works.
+
+**Client compatibility notes**
+
+- **Linux** supports all versions. The kernel default is usually `vers=4.2`
+  with automatic fall-back, but DittoFS runs on a non-standard port, so you
+  always pass the version (and port) explicitly anyway.
+- **macOS** has a mature NFSv3 client and a more limited NFSv4 client. NFSv3 is
+  the best-trodden path on macOS; some macOS releases negotiate only up to
+  `vers=4.0`. macOS has **no** NFS-over-TLS client — use Kerberos or a network
+  tunnel for confidentiality.
+
+### How a version is negotiated
+
+There is no server-side "default version" — the client states the version it
+wants:
+
+- **Linux:** `-o vers=4.1` (or `nfsvers=4.1`). Omitting it lets the kernel
+  negotiate the highest version it and the server share, but with DittoFS on a
+  non-standard port you specify it explicitly.
+- **macOS:** `-o vers=3` or `-o vers=4`. macOS accepts a major version; it does
+  not take a `4.2` minor on older releases.
+- **`dfsctl share mount --nfs-version`** wraps both: pass `3`, `4`, `4.0`,
+  `4.1`, or `4.2` and it builds the right `mount` command for your platform
+  (see [The easy way](#the-easy-way-dfsctl-share-mount)).
 
 ---
 
@@ -220,6 +266,104 @@ mount -t nfs -o vers=4.1,port=12049 server:/my-share /mnt/point
 
 ## Mounting
 
+DittoFS listens on **port 12049**, not the standard 2049. Unless you run the
+[embedded portmapper on 111](#with-portmapper-on-port-111), every mount command
+must name the port (and, for NFSv3, the `mountport`). The sections below show
+the convenience wrapper first, then the raw `mount` command for each version.
+
+> Mounting over **SMB** instead? See [Mounting SMB Shares](smb.md#mounting-smb-shares)
+> — the same `dfsctl share mount` wrapper handles it with `--protocol smb`.
+>
+> Want mounts with **no `port=` option**? Run DittoFS on the standard port 2049
+> — see [Running on standard ports (production)](install.md#running-on-standard-ports-production).
+
+### The easy way: `dfsctl share mount`
+
+`dfsctl share mount` resolves the server's NFS port, picks the right options for
+your platform, and runs `mount` for you. The `--nfs-version` flag selects the
+protocol version (default **3**):
+
+```bash
+# NFSv4.1 (recommended) — locking just works, no portmapper needed
+sudo dfsctl share mount /my-share /mnt/point --protocol nfs --nfs-version 4.1
+
+# NFSv3 (the default if --nfs-version is omitted)
+sudo dfsctl share mount /my-share /mnt/point --protocol nfs
+
+# NFSv4.2 — for sparse files / reflink
+sudo dfsctl share mount /my-share /mnt/point --protocol nfs --nfs-version 4.2
+```
+
+Accepted `--nfs-version` values are `3`, `4`, `4.0`, `4.1`, and `4.2`. The
+mount point must exist and be empty. On macOS, mounting under your home
+directory does not require `sudo`.
+
+Under the hood it builds these option strings (so you can reproduce them with a
+plain `mount` — see the next section):
+
+| Version | Generated `-o` options (Linux) | macOS additions |
+|---------|--------------------------------|-----------------|
+| `4.x` | `nfsvers=<x>,tcp,port=12049,actimeo=0` | `,resvport` |
+| `3` | `nfsvers=3,tcp,port=12049,mountport=12049,actimeo=0,nolock` | `,resvport` (and **no** `nolock`) |
+
+What the options mean:
+
+- **`nfsvers=` / `vers=`** — the protocol version the client requests.
+- **`port=`** — the NFS (program 100003) port; always 12049 by default.
+- **`mountport=`** *(NFSv3 only)* — NFSv3 uses a separate MOUNT protocol;
+  DittoFS serves it on the same port, so set `mountport=port`. NFSv4 has no
+  MOUNT protocol and omits this.
+- **`nolock`** *(NFSv3 on Linux)* — skips the NLM lock side-channel so the mount
+  doesn't need UDP + a portmapper on 111. Drop it (and configure NLM/NSM) only
+  if you need cross-client byte-range locking — see
+  [NFSv3 File Locking](#nfsv3-file-locking-nlmnsm).
+- **`actimeo=0`** — disables attribute caching for immediate cross-client
+  visibility. Raise it (e.g. `actimeo=3`) for better performance once you don't
+  need instant consistency.
+- **`resvport`** *(macOS)* — source from a reserved (<1024) port, which some
+  NFS setups require.
+
+### By NFS version (raw `mount`)
+
+If you prefer to run `mount` yourself, these are the per-version equivalents.
+
+**NFSv4.1 / 4.2 / 4.0** — one port, in-protocol locking, nothing else to wire up:
+
+```bash
+# Linux
+sudo mount -t nfs -o vers=4.1,tcp,port=12049 server:/my-share /mnt/point
+
+# macOS (vers=4; older releases don't accept a 4.x minor)
+mount -t nfs -o vers=4,tcp,port=12049,resvport server:/my-share /mnt/point
+
+# macOS — equivalent via the native mount_nfs(8) helper
+mount_nfs -o vers=4,tcp,port=12049,resvport server:/my-share /mnt/point
+
+# NFSv4.2 (Linux) — for sparse files / reflink
+sudo mount -t nfs -o vers=4.2,tcp,port=12049 server:/my-share /mnt/point
+```
+
+**NFSv3** — needs `mountport` (separate MOUNT protocol); add `nolock` on Linux
+unless you've set up NLM/NSM:
+
+```bash
+# Linux
+sudo mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,nolock server:/my-share /mnt/point
+
+# macOS
+mount -t nfs -o vers=3,tcp,port=12049,mountport=12049,resvport server:/my-share /mnt/point
+
+# macOS — equivalent via mount_nfs(8)
+mount_nfs -o vers=3,tcp,port=12049,mountport=12049,resvport server:/my-share /mnt/point
+```
+
+> On macOS, `mount -t nfs -o … server:/share /mnt` and
+> `mount_nfs -o … server:/share /mnt` are interchangeable — `mount` simply
+> dispatches to the `mount_nfs(8)` helper. Use whichever you prefer.
+
+> NFSv3 data is **TCP-only** in DittoFS; only the NLM/NSM lock side-channel ever
+> uses UDP. Don't add `udp` to a v3 data mount.
+
 ### With Portmapper on Port 111
 
 When the portmapper runs on the standard port 111 (requires root or `CAP_NET_BIND_SERVICE`), NFS clients can auto-discover ports and mount commands are simplified:
@@ -257,6 +401,94 @@ mount -t nfs -o tcp,port=12049,mountport=12049,resvport localhost:/export /tmp/n
 sudo umount /mnt/nfs   # Linux
 umount /tmp/nfs        # macOS
 ```
+
+---
+
+## Identity Squashing (root_squash and friends)
+
+**Squashing** remaps the UID/GID a client *claims* to a different identity
+before DittoFS checks permissions. Its classic use is to stop a remote `root`
+from acting as `root` on your files — a remote machine's superuser should not
+automatically be the superuser of your export.
+
+This is a **per-share, NFS-only** policy. It does not apply to SMB (which has its
+own [guest mapping](smb.md)). Crucially, squashing happens at the *identity*
+layer — **after** the client authenticates but **before** the
+[export gate and POSIX/ACL checks](access-control.md). It rewrites *who you are*;
+it never grants access on its own.
+
+### How NFS sends an identity
+
+- **AUTH_SYS (AUTH_UNIX)** — the default for non-Kerberos mounts. The client
+  simply *asserts* a UID/GID in every request. There is no verification: a
+  client that says it is UID 0 **is** UID 0 to the server. This is exactly why
+  squashing exists.
+- **AUTH_NULL** — no credentials at all. DittoFS **always** maps AUTH_NULL to
+  the anonymous identity, regardless of the squash mode.
+- **Kerberos (RPCSEC_GSS)** — the principal is cryptographically verified and
+  resolved to a UID/GID via the idmap. Squashing still applies on top of the
+  resolved identity (e.g. `root_to_guest` squashes a resolved UID 0).
+
+### The five modes
+
+DittoFS models squashing as five modes (matching the familiar Synology NAS
+options) rather than separate `root_squash` / `all_squash` toggles:
+
+| Mode | Effect | Traditional NFS equivalent |
+|------|--------|----------------------------|
+| `none` | No remapping. UIDs pass through unchanged. | `no_root_squash` |
+| `root_to_admin` **(default)** | Root (UID 0) keeps root. Other UIDs unchanged. | `no_root_squash` |
+| `root_to_guest` | Root (UID 0) → anonymous. Other UIDs unchanged. | `root_squash` |
+| `all_to_admin` | **Every** client UID → root (UID 0). | `all_squash` to root |
+| `all_to_guest` | **Every** client UID → anonymous. | `all_squash` |
+
+> **Heads-up — the default is permissive.** DittoFS defaults to
+> `root_to_admin`, which means a remote root **keeps root privileges** on the
+> export (the opposite of many traditional NFS servers, which default to
+> `root_squash`). If untrusted hosts can reach the export over AUTH_SYS, set
+> `root_to_guest` (or stronger) explicitly. `none` and `root_to_admin` behave
+> identically for UID remapping.
+
+The **anonymous** identity is UID/GID **65534** (`nobody`/`nogroup`) by default.
+
+### Configuring it
+
+```bash
+# Squash remote root to the anonymous user (the usual hardening choice)
+dfsctl share nfs-config set /export --squash root_to_guest
+
+# Force every client to the anonymous user (e.g. a public read-only export)
+dfsctl share nfs-config set /export --squash all_to_guest
+
+# Inspect the current squash mode (and other NFS export options)
+dfsctl share nfs-config show /export
+```
+
+Valid values: `none`, `root_to_admin`, `root_to_guest`, `all_to_admin`,
+`all_to_guest`. A squash change takes effect on the **next NFS adapter restart**
+(unlike netgroup changes, which apply immediately). The anonymous UID/GID is
+configurable via the REST API (`anonymous_uid` / `anonymous_gid` on the share's
+NFS config); it is not exposed as a `dfsctl` flag and defaults to 65534.
+
+### Worked examples
+
+Assume a file owned by UID 1000, mode `0644`, and a share-gate
+`default_permission` of `read-write`:
+
+| Client mounts and acts as… | Squash mode | Effective identity | Result |
+|----------------------------|-------------|--------------------|--------|
+| `root` (UID 0) | `root_to_admin` (default) | UID 0 (root) | Full access — root bypasses POSIX. |
+| `root` (UID 0) | `root_to_guest` | UID 65534 (nobody) | Treated as `EVERYONE@`; can read the `0644` file, **cannot** write it. |
+| UID 1000 | `root_to_guest` | UID 1000 (unchanged) | Owner access — read/write its own file. |
+| UID 1000 | `all_to_guest` | UID 65534 (nobody) | Squashed to nobody; read-only on the `0644` file even though it "owns" it. |
+| any UID | `all_to_admin` | UID 0 (root) | Everyone gets root — only for fully-trusted, single-tenant exports. |
+
+> **Squash is not access control.** Even `all_to_admin` (everyone → root) is
+> still gated by the share's `default_permission` and the file's mode/ACL after
+> remapping. Mapping a caller to root grants root's POSIX power, but the
+> [export gate](access-control.md) must still admit them. Use squashing to
+> *constrain* identity, and the [export gate + POSIX/ACL](access-control.md) to
+> *grant* access.
 
 ---
 
