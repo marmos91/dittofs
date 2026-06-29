@@ -118,9 +118,16 @@ jobs:
 
       - name: Run E2E tests
         run: |
-          # Full mode: all configurations including Docker-based stores
-          # Pass environment variables through sudo for external service detection
-          sudo -E nix develop .#ci --command go test -tags=e2e -v -timeout 30m ./test/e2e/... \
+          set -o pipefail
+          # Full mode: all configurations including Docker-based stores.
+          # sudo resolves commands via secure_path (which omits the Nix profile),
+          # so `nix` was "command not found" under sudo and go test never ran.
+          # Pass the caller's PATH through so `nix` resolves; keep -E for the
+          # external-service env vars the suite reads. pipefail is required so the
+          # go-test exit code propagates through `tee` — without it the job was a
+          # false-green no-op regardless of whether the tests ran or passed.
+          sudo -E env "PATH=$PATH" nix develop .#ci --command \
+            go test -tags=e2e -v -timeout 30m ./test/e2e/... \
             2>&1 | tee "$GITHUB_WORKSPACE/e2e.log"
 
       - name: Generate summary
