@@ -193,24 +193,14 @@ func TestControlPlaneV2_PatchVsPut(t *testing.T) {
 		// Reset first
 		helpers.ResetNFSSettings(t, client)
 
-		// PUT with all fields explicitly set
-		putReq := &apiclient.NFSAdapterSettingsResponse{
-			MinVersion:              defaults.MinVersion,
-			MaxVersion:              defaults.MaxVersion,
-			LeaseTime:               200,
-			GracePeriod:             defaults.GracePeriod,
-			DelegationRecallTimeout: defaults.DelegationRecallTimeout,
-			CallbackTimeout:         defaults.CallbackTimeout,
-			LeaseBreakTimeout:       defaults.LeaseBreakTimeout,
-			MaxConnections:          defaults.MaxConnections,
-			MaxClients:              defaults.MaxClients,
-			MaxCompoundOps:          defaults.MaxCompoundOps,
-			MaxReadSize:             defaults.MaxReadSize,
-			MaxWriteSize:            defaults.MaxWriteSize,
-			PreferredTransferSize:   defaults.PreferredTransferSize,
-			DelegationsEnabled:      false,
-			BlockedOperations:       defaults.BlockedOperations,
-		}
+		// PUT replaces every field, so start from the current (valid) settings
+		// and change only what this case asserts on. Hand-listing fields risks
+		// leaving a newly-added field at its zero value, which PUT validation
+		// then rejects as out of range.
+		putReqVal := *defaults
+		putReqVal.LeaseTime = 200
+		putReqVal.DelegationsEnabled = false
+		putReq := &putReqVal
 
 		result, err := client.UpdateNFSSettings(putReq)
 		require.NoError(t, err, "PUT should succeed")

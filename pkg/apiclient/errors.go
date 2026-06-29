@@ -2,6 +2,8 @@ package apiclient
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 )
 
 // APIError represents an RFC 7807 problem+json error response from the API.
@@ -16,19 +18,42 @@ type APIError struct {
 	Code   string `json:"code,omitempty"`
 	Hint   string `json:"hint,omitempty"`
 
+	// Errors carries per-field validation messages (field -> reason) for 422
+	// responses. Without it, callers only see the generic Detail ("One or more
+	// settings are outside valid range") and lose which field/value was wrong.
+	Errors map[string]string `json:"errors,omitempty"`
+
 	// StatusCode is the HTTP status code, authoritative for classification.
 	StatusCode int `json:"-"`
 }
 
 // Error implements the error interface.
 func (e *APIError) Error() string {
-	if e.Detail != "" {
-		return e.Detail
+	base := e.Detail
+	if base == "" {
+		base = e.Title
 	}
-	if e.Title != "" {
-		return e.Title
+	if base == "" {
+		base = fmt.Sprintf("request failed with status %d", e.StatusCode)
 	}
-	return fmt.Sprintf("request failed with status %d", e.StatusCode)
+	if len(e.Errors) > 0 {
+		return base + " (" + e.fieldErrors() + ")"
+	}
+	return base
+}
+
+// fieldErrors renders the per-field validation messages in a stable order.
+func (e *APIError) fieldErrors() string {
+	keys := make([]string, 0, len(e.Errors))
+	for k := range e.Errors {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+": "+e.Errors[k])
+	}
+	return strings.Join(parts, "; ")
 }
 
 // IsAuthError returns true if this is an authentication/authorization error.

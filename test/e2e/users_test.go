@@ -40,12 +40,19 @@ func TestUserCRUD(t *testing.T) {
 			_ = cli.DeleteUser(username)
 		})
 
+		// Groups must exist before a user can be assigned to them. "users" is
+		// seeded by default; "testers" is not, so create it first.
+		testersGroup := helpers.UniqueTestName("testers")
+		_, err := cli.CreateGroup(testersGroup)
+		require.NoError(t, err, "Should create testers group")
+		t.Cleanup(func() { _ = cli.DeleteGroup(testersGroup) })
+
 		// Create user with all fields
 		user, err := cli.CreateUser(username, password,
 			helpers.WithEmail(email),
 			helpers.WithRole("user"),
 			helpers.WithUID(uid),
-			helpers.WithGroups("users", "testers"),
+			helpers.WithGroups("users", testersGroup),
 			helpers.WithEnabled(true),
 		)
 		require.NoError(t, err, "Should create user successfully")
