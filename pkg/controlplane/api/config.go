@@ -51,6 +51,13 @@ type APIConfig struct {
 	// Default: 60s
 	IdleTimeout time.Duration `mapstructure:"idle_timeout" yaml:"idle_timeout"`
 
+	// DrainStallTimeout bounds the POST /system/drain-uploads handler. The drain
+	// has no total time budget — a multi-GiB flush legitimately runs for as long
+	// as it keeps making progress — so this is an *inactivity* timeout, not a
+	// wall-clock cap: the drain is aborted only if no upload completes within
+	// this window (the remote stalled). Mirrors rclone's --timeout. Default: 5m.
+	DrainStallTimeout time.Duration `mapstructure:"drain_stall_timeout" yaml:"drain_stall_timeout"`
+
 	// JWT configures JWT authentication for API endpoints.
 	JWT JWTConfig `mapstructure:"jwt" yaml:"jwt"`
 
@@ -214,6 +221,9 @@ func (c *APIConfig) ApplyDefaults() {
 	}
 	if c.IdleTimeout == 0 {
 		c.IdleTimeout = 60 * time.Second
+	}
+	if c.DrainStallTimeout == 0 {
+		c.DrainStallTimeout = 5 * time.Minute
 	}
 	// When pprof is on but the sampling rates are left unset, fall back to
 	// sensible defaults so /debug/pprof/{mutex,block} return non-empty profiles

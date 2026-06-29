@@ -24,6 +24,21 @@ import (
 // timeout. The dfs binary sources this from config.SnapshotConfig.
 const DefaultRestoreHTTPTimeout = 30 * time.Minute
 
+// Timeouts bundles the per-handler budgets for long-running control-plane
+// operations that must outlive the global HTTP request timeout
+// (middleware.Timeout / write_timeout, ~30s). They are assembled by the caller
+// from the config sections that own each one (see cmd/dfs start), keeping the
+// constructor signatures stable as more such operations are added.
+type Timeouts struct {
+	// Restore is the total wall-clock budget for a snapshot restore. Zero
+	// falls back to the snapshot handler's default.
+	Restore time.Duration
+	// DrainStall is the inactivity budget for POST /system/drain-uploads — an
+	// idle timeout, not a wall-clock cap. Zero falls back to the system
+	// handler's DefaultDrainStallTimeout.
+	DrainStall time.Duration
+}
+
 // Server provides an HTTP server for the REST API.
 //
 // The server exposes health check endpoints and authentication APIs.
@@ -61,7 +76,7 @@ type Server struct {
 //   - cpStore: Control plane store for user/group management
 //
 // Returns a configured but not yet started Server, or an error if JWT configuration is invalid.
-func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, restoreHTTPTimeout time.Duration) (*Server, error) {
+func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, timeouts Timeouts) (*Server, error) {
 	config.ApplyDefaults()
 
 	// Fail fast on internally inconsistent TLS settings (cert without key, etc.).
@@ -127,7 +142,7 @@ func NewServer(config APIConfig, rt *runtime.Runtime, cpStore store.Store, resto
 	}
 
 	// cpStore implements both IdentityStore and Store
-	router := NewRouter(rt, jwtService, cpStore, config.Pprof, restoreHTTPTimeout)
+	router := NewRouter(rt, jwtService, cpStore, config.Pprof, timeouts)
 
 	writeTimeout := config.WriteTimeout
 	if config.Pprof && writeTimeout < 120*time.Second {

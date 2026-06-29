@@ -137,7 +137,7 @@ func TestNewServer_TLSCertFilesMissing_FailsFast(t *testing.T) {
 	cpStore, cfg := testSetup(t, 0)
 	cfg.TLS = TLSConfig{CertFile: "/nonexistent/tls.crt", KeyFile: "/nonexistent/tls.key"}
 
-	_, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	_, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err == nil {
 		t.Fatal("expected NewServer to fail when cert files are missing")
 	}
@@ -147,7 +147,7 @@ func TestNewServer_TLSCertFilesMissing_FailsFast(t *testing.T) {
 
 func TestNewServer_HTTPByDefault(t *testing.T) {
 	cpStore, cfg := testSetup(t, 0)
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestAPIServer_HTTPS_Serves_And_RejectsPlainHTTP(t *testing.T) {
 	cfg.Host = "127.0.0.1"
 	cfg.TLS = TLSConfig{CertFile: certPath, KeyFile: keyPath}
 
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestAPIServer_MTLS_RejectsNoClientCert_AcceptsValid(t *testing.T) {
 	cfg.Host = "127.0.0.1"
 	cfg.TLS = TLSConfig{CertFile: certPath, KeyFile: keyPath, ClientCA: caPath}
 
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestAPIServer_BindAddressHonored(t *testing.T) {
 	cpStore, cfg := testSetup(t, port)
 	cfg.Host = "127.0.0.1"
 
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

@@ -33,7 +33,7 @@ func newTestRouter(t *testing.T, pprofEnabled bool) (http.Handler, *auth.JWTServ
 		t.Fatalf("create jwt service: %v", err)
 	}
 
-	router := NewRouter(nil, jwtService, cpStore, pprofEnabled, 30*time.Minute)
+	router := NewRouter(nil, jwtService, cpStore, pprofEnabled, Timeouts{Restore: 30 * time.Minute, DrainStall: 5 * time.Minute})
 	return router, jwtService
 }
 

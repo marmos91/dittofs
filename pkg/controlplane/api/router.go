@@ -56,7 +56,7 @@ const passwordChangePath = "/api/v1/users/me/password"
 //   - /api/v1/mounts - Unified mount listing (admin only)
 //   - GET /api/v1/durable-handles - List active durable handles (admin only)
 //   - DELETE /api/v1/durable-handles/{id} - Force-close a durable handle (admin only)
-func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store, pprofEnabled bool, restoreHTTPTimeout time.Duration) http.Handler {
+func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.Store, pprofEnabled bool, timeouts Timeouts) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware stack - order matters
@@ -219,7 +219,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 				// Per-share snapshot lifecycle. RequireAdmin is inherited
 				// from the parent /shares group.
-				snapshotHandler := handlers.NewSnapshotHandler(rt, restoreHTTPTimeout, rt.LocalStoreDir)
+				snapshotHandler := handlers.NewSnapshotHandler(rt, timeouts.Restore, rt.LocalStoreDir)
 				r.Route("/{name}/snapshots", func(r chi.Router) {
 					r.Post("/", snapshotHandler.Create)
 					r.Get("/", snapshotHandler.List)
@@ -469,7 +469,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 			// System operations (admin only)
 			r.Route("/system", func(r chi.Router) {
 				r.Use(apiMiddleware.RequireAdmin())
-				systemHandler := handlers.NewSystemHandler(rt)
+				systemHandler := handlers.NewSystemHandler(rt, timeouts.DrainStall)
 				r.Post("/drain-uploads", systemHandler.DrainUploads)
 			})
 

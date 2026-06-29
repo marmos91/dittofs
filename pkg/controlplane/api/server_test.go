@@ -78,7 +78,7 @@ func testSetup(t *testing.T, port int) (store.Store, APIConfig) {
 func TestAPIServer_Lifecycle(t *testing.T) {
 	cpStore, cfg := testSetup(t, 18080)
 
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestAPIServer_Lifecycle(t *testing.T) {
 func TestAPIServer_Port(t *testing.T) {
 	cpStore, cfg := testSetup(t, 9999)
 
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestAPIServer_DefaultConfig(t *testing.T) {
 		},
 	}
 
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestAPIServer_DefaultConfig(t *testing.T) {
 func TestAPIServer_HealthEndpoint_NoRuntime(t *testing.T) {
 	cpStore, cfg := testSetup(t, 18081)
 
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestAPIServer_HealthEndpoint_NoRuntime(t *testing.T) {
 func TestAPIServer_RootRedirectsToHealth(t *testing.T) {
 	cpStore, cfg := testSetup(t, 18082)
 
-	server, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	server, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestAPIServer_InvalidJWTSecret(t *testing.T) {
 		},
 	}
 
-	_, err := NewServer(cfg, nil, cpStore, 30*time.Minute)
+	_, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute})
 	if err == nil {
 		t.Fatal("Expected error for invalid JWT secret, got nil")
 	}
@@ -319,7 +319,7 @@ func TestNewServer_PprofSamplingWired(t *testing.T) {
 	cfg.Pprof = true
 	cfg.PprofMutexRate = 137 // distinctive, non-default value
 
-	if _, err := NewServer(cfg, nil, cpStore, 30*time.Minute); err != nil {
+	if _, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute}); err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 
@@ -345,7 +345,7 @@ func TestNewServer_PprofOffResetsSampling(t *testing.T) {
 	cpStore, cfg := testSetup(t, 18100)
 	cfg.Pprof = false
 
-	if _, err := NewServer(cfg, nil, cpStore, 30*time.Minute); err != nil {
+	if _, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute}); err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 
