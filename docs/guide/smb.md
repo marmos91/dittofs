@@ -33,7 +33,7 @@ DittoFS negotiates the highest mutually-supported dialect with each client.
 | SMB 2.0.2 | 0x0202 | Basic file operations, credits, HMAC-SHA256 signing |
 | SMB 3.0   | 0x0300 | AES-128-CCM encryption, AES-128-CMAC signing, secure dialect negotiation |
 | SMB 3.0.2 | 0x0302 | VALIDATE_NEGOTIATE_INFO downgrade protection |
-| SMB 3.1.1 | 0x0311 | Preauth integrity (SHA-512), AES-128-GCM encryption, GMAC signing, negotiate contexts |
+| SMB 3.1.1 | 0x0311 | Preauth integrity (SHA-512), AES-256/128-GCM & -CCM encryption (AES-256-GCM preferred), GMAC signing, negotiate contexts |
 
 SMB 3.1.1 is preferred; it provides the strongest security and best cipher performance on
 AES-NI-capable hardware.
@@ -55,7 +55,9 @@ You only pin a dialect when troubleshooting or forcing weaker/stronger crypto:
 | **`dfsctl share mount --protocol smb`** | No flag; requests `vers=2.1` on Linux, lets macOS negotiate. | Wrapper picks safe defaults — see [Mounting](#mounting-smb-shares). |
 
 `seal` (on Linux `mount.cifs`) forces SMB3 encryption and therefore a 3.x
-dialect; pair it with `vers=3.1.1` for the strongest cipher (AES-128-GCM).
+dialect; pair it with `vers=3.1.1` to negotiate the strongest AEAD cipher the
+client offers — DittoFS prefers AES-256-GCM, then AES-256-CCM, then the AES-128
+variants.
 The matching `dfsctl` convenience wrapper is shown under
 [Mounting SMB Shares](#mounting-smb-shares).
 

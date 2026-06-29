@@ -79,7 +79,7 @@ side restricts which one a client may pick. Pick based on what you need:
 |-----------|-----|-----|
 | The simplest setup, no extra config | **NFSv4.1** | One TCP port, in-protocol locking, no MOUNT/NLM/NSM/portmapper to wire up. The recommended default for new mounts. |
 | ACLs, Kerberos (`sec=krb5`), or NFS-over-TLS | **NFSv4.0+** | These features are NFSv4-only. NFSv3 has none of them. |
-| Sparse files, reflink/CLONE, server-side copy | **NFSv4.2** | Those operations were added in 4.2. |
+| Sparse files (ALLOCATE/DEALLOCATE/SEEK/READ_PLUS) or reflink/CLONE | **NFSv4.2** | Those operations were added in 4.2. (Inter-server `OP_COPY` is *not* implemented.) |
 | Maximum client compatibility / legacy clients | **NFSv3** | Works everywhere, but byte-range locking needs the NLM/NSM side-channel (UDP + portmapper on 111 — see [NFSv3 File Locking](#nfsv3-file-locking-nlmnsm)). |
 
 > **Rule of thumb:** reach for **NFSv4.1** unless a specific client or workload
