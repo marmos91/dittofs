@@ -230,6 +230,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 		DryRunSampleSize: cfg.GC.DryRunSampleSize,
 	})
 
+	// One-time stranded-row reconcile migration (#1433): reaps file_blocks
+	// rows leaked by the pre-fix delete path and sweeps the now-orphaned
+	// chunks. Guarded by a per-store marker so it runs once per store. Detached
+	// from ctx (WithoutCancel) so a shutdown signal mid-scan doesn't abort it;
+	// errors are logged, never fatal.
+	go rt.RunBlockGCReconcileOnce(context.WithoutCancel(ctx))
+
 	// Thread the operator-configured lock-manager grace period into the
 	// MetadataService BEFORE loading shares: AddShare registers each share's
 	// lock manager and enters the post-restart grace window, so the duration

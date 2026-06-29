@@ -31,9 +31,16 @@ Use --dry-run to skip deletes and print up to dry_run_sample_size
 candidate keys (default 1000). Recommended for first-time deployment
 confidence and for debugging suspected mark-phase bugs.
 
+Use --reconcile to additionally reap stranded file_blocks rows — rows
+whose owning file was deleted before the unlink-refcount fix, which a
+plain GC cannot reclaim because they keep their hashes in the live set.
+Reconcile is server-wide (all shares) and the recommended way to recover
+space leaked by older versions. Combine with --dry-run to preview.
+
 Examples:
   dfsctl store block gc myshare
   dfsctl store block gc myshare --dry-run
+  dfsctl store block gc myshare --reconcile
   dfsctl store block gc myshare -o json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runBlockStoreGC,
@@ -41,18 +48,20 @@ Examples:
 
 func init() {
 	gcCmd.Flags().Bool("dry-run", false, "Run mark + sweep enumeration but skip deletes; print candidate keys")
+	gcCmd.Flags().Bool("reconcile", false, "Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers")
 }
 
 func runBlockStoreGC(cmd *cobra.Command, args []string) error {
 	share := args[0]
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	reconcile, _ := cmd.Flags().GetBool("reconcile")
 
 	client, err := cmdutil.GetAuthenticatedClient()
 	if err != nil {
 		return err
 	}
 
-	res, err := client.BlockStoreGC(share, &apiclient.BlockStoreGCOptions{DryRun: dryRun})
+	res, err := client.BlockStoreGC(share, &apiclient.BlockStoreGCOptions{DryRun: dryRun, Reconcile: reconcile})
 	if err != nil {
 		return fmt.Errorf("failed to run block store GC: %w", err)
 	}

@@ -144,6 +144,11 @@ type GCStats struct {
 	DryRun           bool
 	DryRunCandidates []string
 
+	// StrandedRowsReaped counts file_blocks rows reaped by the reconcile pass
+	// (rows whose owning inode was already gone — the pre-fix leak). Zero for a
+	// plain GC run; only the reconcile sets it (#1433).
+	StrandedRowsReaped int64 `json:"stranded_rows_reaped,omitempty"`
+
 	// IsLocalTier is true when these stats come from a local-store pass
 	// (CollectGarbageLocal), false for the default remote pass. Per-invocation
 	// metadata only — accumulateGCStats does not fold it into a total; the

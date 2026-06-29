@@ -26,6 +26,10 @@ type BlockGCRuntime interface {
 	// gc-state directory for last-run.json persistence.
 	RunBlockGCForShare(ctx context.Context, shareName string, dryRun bool) (*engine.GCStats, error)
 
+	// RunBlockGCReconcile reaps stranded file_blocks rows (leaked by the
+	// pre-fix delete path) across all shares, then runs the two-tier sweep.
+	RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine.GCStats, error)
+
 	// GCStateDirForShare returns the per-share gc-state directory the GC
 	// engine writes `last-run.json` into. Empty when the share's local
 	// store has no persistent root (in-memory backend).
@@ -51,6 +55,10 @@ func NewBlockStoreGCHandler(rt BlockGCRuntime) *BlockStoreGCHandler {
 // default 1000).
 type BlockStoreGCRequest struct {
 	DryRun bool `json:"dry_run,omitempty"`
+	// Reconcile runs the migration pass first: reap stranded file_blocks rows
+	// (leaked by the pre-fix delete path) across all shares, then sweep both
+	// tiers. Reclaims historical leaks a plain GC cannot (#1433).
+	Reconcile bool `json:"reconcile,omitempty"`
 }
 
 // BlockStoreGCResponse wraps the *engine.GCStats result for JSON output.
@@ -93,7 +101,15 @@ func (h *BlockStoreGCHandler) RunGC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	stats, err := h.runtime.RunBlockGCForShare(r.Context(), name, req.DryRun)
+	// Reconcile is server-wide (reaps stranded rows across all shares), so it
+	// ignores the per-share scoping that RunBlockGCForShare applies.
+	var stats *engine.GCStats
+	var err error
+	if req.Reconcile {
+		stats, err = h.runtime.RunBlockGCReconcile(r.Context(), req.DryRun)
+	} else {
+		stats, err = h.runtime.RunBlockGCForShare(r.Context(), name, req.DryRun)
+	}
 	if err != nil {
 		if errors.Is(err, shares.ErrShareNotFound) {
 			NotFound(w, "share not found: "+name)
