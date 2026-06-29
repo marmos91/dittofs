@@ -46,6 +46,17 @@ func gcResult(total *engine.GCStats) string {
 // Returns the summed *engine.GCStats across all per-remote invocations and any
 // fatal error.
 func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun bool) (*engine.GCStats, error) {
+	// Steady-state GC: index-based remote sweep (synced − live), no S3 LIST.
+	return r.runBlockGCSweep(ctx, sharePrefix, dryRun, false)
+}
+
+// runBlockGCSweep is the shared remote+local GC pass. fullScan selects the
+// full RemoteStore.Walk sweep (the reconcile drift + upgrade-migration
+// backstop, which scans the real remote to catch objects the synced-hash index
+// does not know about) instead of the steady-state index sweep (synced − live,
+// no S3 LIST). Both paths clear synced markers on delete, preserving the
+// synced ⊆ remote invariant (#1433).
+func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRun, fullScan bool) (*engine.GCStats, error) {
 	if sharePrefix != "" {
 		logger.Warn("RunBlockGC: sharePrefix is no longer honored — mark-sweep uses a global live set across every cas/XX prefix",
 			"ignored_sharePrefix", sharePrefix)
@@ -83,10 +94,15 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 		applyGCDefaults(opts, gcDefaults)
 		// Inject held hashes from ready snapshots into the GC mark phase.
 		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
-		// Clear synced markers for hashes swept off this remote so they re-upload
-		// if they reappear in the live set (#1433). Remote sweep only.
-		opts.SyncedHashStore = r.syncedHashStoreForShares(entry.Shares)
+		// The per-remote synced-hash index: the index-sweep candidate source AND
+		// the marker-clear for swept hashes (so they re-upload if they reappear
+		// in the live set) (#1433). Remote sweep only. A steady-state run sweeps
+		// from it; the reconcile path (fullScan) keeps it only for the
+		// marker-clear and Walks the namespace instead.
+		opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
+		opts.FullScan = fullScan
 		logger.Info("RunBlockGC: starting",
+			"fullScan", opts.FullScan,
 			"configID", entry.ConfigID,
 			"shares", entry.Shares,
 			"dryRun", dryRun,
@@ -254,9 +270,13 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 		applyGCDefaults(opts, gcDefaults)
 		// Inject held hashes from ready snapshots into the GC mark phase.
 		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
-		// Clear synced markers for hashes swept off this remote so they re-upload
-		// if they reappear in the live set (#1433). Remote sweep only.
-		opts.SyncedHashStore = r.syncedHashStoreForShares(entry.Shares)
+		// Per-remote synced-hash index: LIST-free candidate source + marker-clear
+		// for swept hashes (#1433). The live set unions every share on this
+		// remote (perRemoteReconciler below), so a single-share invocation never
+		// treats a sibling share's live block as an orphan.
+		opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
+		// Per-share GC is steady-state (index sweep, no S3 LIST); FullScan stays
+		// false (its zero value).
 		logger.Info("RunBlockGCForShare: starting",
 			"share", name,
 			"configID", entry.ConfigID,
@@ -356,35 +376,41 @@ func (r *Runtime) setShareRemoteForTest(shareName string, rs remote.RemoteStore)
 	r.sharesSvc.SetShareRemoteForTest(shareName, rs)
 }
 
-// multiSyncedHashStore fans DeleteSynced out to every share's synced-hash index
-// on a shared remote, so a hash swept off that remote is un-synced everywhere it
-// was recorded. DeleteSynced is idempotent, so clearing a hash a share never had
-// is a no-op. GC only ever calls DeleteSynced; the other methods exist for
-// interface completeness.
-type multiSyncedHashStore []metadata.SyncedHashStore
+// multiSyncedHashStore unions the per-share synced-hash indexes on a shared
+// remote into the single engine.SyncedHashIndex the GC sweep consumes:
+// EnumerateSynced for the LIST-free candidate set and DeleteSynced to clear a
+// swept hash everywhere it was recorded. It implements ONLY what GC needs — the
+// per-hash IsSynced/MarkSynced live on the underlying metadata stores for the
+// syncer and eviction paths and are deliberately not re-exposed here.
+type multiSyncedHashStore []engine.SyncedHashIndex
 
-func (m multiSyncedHashStore) IsSynced(ctx context.Context, h block.ContentHash) (bool, error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	for _, s := range m {
-		ok, err := s.IsSynced(ctx, h)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			return true, nil
-		}
-	}
-	return false, nil
-}
+var _ engine.SyncedHashIndex = multiSyncedHashStore(nil)
 
-func (m multiSyncedHashStore) MarkSynced(ctx context.Context, h block.ContentHash) error {
+// EnumerateSynced fans enumeration across every share's index and unions the
+// results. The same hash can be synced in several shares (CAS dedup) at
+// different first-mirror times; it keeps the LATEST so the grace window covers
+// the most recent upload — the most conservative choice (never delete a hash
+// still within any share's grace). A real timestamp supersedes a legacy zero.
+func (m multiSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	latest := make(map[block.ContentHash]time.Time)
 	for _, s := range m {
-		if err := s.MarkSynced(ctx, h); err != nil {
+		if err := s.EnumerateSynced(ctx, func(h block.ContentHash, syncedAt time.Time) error {
+			if prev, ok := latest[h]; !ok || syncedAt.After(prev) {
+				latest[h] = syncedAt
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	for h, t := range latest {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(h, t); err != nil {
 			return err
 		}
 	}
@@ -407,18 +433,20 @@ func (m multiSyncedHashStore) DeleteSynced(ctx context.Context, h block.ContentH
 	return errors.Join(errs...)
 }
 
-// syncedHashStoreForShares unions the synced-hash indexes of the given shares so
-// a remote-tier GC sweep can clear the marker for every hash it deletes (#1433).
-// Each share's metadata store implements SyncedHashStore. Returns nil when none
-// are available, leaving the sweep's marker-clear a no-op.
-func (r *Runtime) syncedHashStoreForShares(shares []string) metadata.SyncedHashStore {
+// syncedHashStoreForShares unions the synced-hash indexes of the given shares
+// into the engine.SyncedHashIndex a remote-tier GC sweep consumes: the LIST-free
+// candidate source (EnumerateSynced) and the marker-clear for every hash it
+// deletes (DeleteSynced) (#1433). Each share's metadata store provides both via
+// its concrete EnumerateSynced/DeleteSynced. Returns nil when none are
+// available, which forces the sweep onto the full-Walk path.
+func (r *Runtime) syncedHashStoreForShares(shares []string) engine.SyncedHashIndex {
 	var stores multiSyncedHashStore
 	for _, shareName := range shares {
 		mds, err := r.GetMetadataStoreForShare(shareName)
 		if err != nil {
 			continue
 		}
-		if shs, ok := mds.(metadata.SyncedHashStore); ok {
+		if shs, ok := mds.(engine.SyncedHashIndex); ok {
 			stores = append(stores, shs)
 		}
 	}

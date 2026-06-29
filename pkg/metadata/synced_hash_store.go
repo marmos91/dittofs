@@ -47,3 +47,14 @@ type SyncedHashStore interface {
 	// stays a strict subset of local CAS contents.
 	DeleteSynced(ctx context.Context, hash block.ContentHash) error
 }
+
+// NOTE: backends additionally expose a concrete
+//
+//	EnumerateSynced(ctx, func(hash block.ContentHash, syncedAt time.Time) error) error
+//
+// method used by the LIST-free GC sweep (#1433). It is deliberately NOT part of
+// the SyncedHashStore contract: only the GC consumer needs it, so the engine
+// declares the narrow interface it depends on (see engine.SyncedHashIndex)
+// rather than widening this surface, which is consumed by the syncer and
+// eviction paths that need only the per-hash CRUD above. The enumerator
+// conformance is shared via RunSyncedHashEnumeratorSuite.

@@ -19,3 +19,12 @@ func TestBadgerSyncedHashStore_Suite(t *testing.T) {
 	s := newRollupTestStore(t)
 	metadata.RunSyncedHashStoreSuite(t, s)
 }
+
+// TestBadgerSyncedHashEnumerator_Suite exercises the LIST-free GC sweep's
+// EnumerateSynced contract against the Badger backend, including its
+// timestamped marker value (first-write-wins nanos) and prefix-scan
+// enumeration.
+func TestBadgerSyncedHashEnumerator_Suite(t *testing.T) {
+	s := newRollupTestStore(t)
+	metadata.RunSyncedHashEnumeratorSuite(t, s)
+}

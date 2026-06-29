@@ -226,14 +226,45 @@ type Options struct {
 	// the mark fail-closed invariant).
 	HoldProvider HoldProvider
 
-	// SyncedHashStore, when non-nil, has DeleteSynced called for every hash
-	// successfully deleted from the swept store. This keeps the synced-hash
-	// index a strict subset of remote contents: a hash swept off the remote is
-	// no longer synced and must be re-uploaded if it reappears in the live set;
-	// without this, ListUnsynced skips it forever and a later snapshot's
-	// durability verify fails (#1433). Set ONLY for remote-tier sweeps — local
-	// eviction does not change remote synced state, so local sweeps leave it nil.
-	SyncedHashStore metadata.SyncedHashStore
+	// SyncedHashIndex, when non-nil, is the per-hash "is-on-remote" marker
+	// index for the swept remote store. The sweep has DeleteSynced called for
+	// every hash it deletes, keeping the index a strict subset of remote
+	// contents: a hash swept off the remote is no longer synced and must be
+	// re-uploaded if it reappears in the live set; without this, ListUnsynced
+	// skips it forever and a later snapshot's durability verify fails (#1433).
+	// Set ONLY for remote-tier sweeps — local eviction does not change remote
+	// synced state, so local sweeps leave it nil.
+	//
+	// For a remote steady-state run (FullScan false) it is ALSO the candidate
+	// source: the sweep enumerates (synced − live) from this index instead of
+	// LISTing the remote (see sweepFromSyncedIndex).
+	SyncedHashIndex SyncedHashIndex
+
+	// FullScan forces the namespace Walk sweep (sweepByWalk) over the remote
+	// store instead of the index-based sweep. It is the drift + upgrade-
+	// migration backstop: only a full Walk finds remote objects the synced
+	// index does not know about (markers written before timestamps existed, or
+	// a Put-then-Mark crash-gap). Reconcile sets it; steady-state remote GC
+	// leaves it false and sweeps from the index (no S3 LIST). Local-tier sweeps
+	// always Walk their own (local-disk) namespace regardless of this flag.
+	FullScan bool
+}
+
+// SyncedHashIndex is the narrow slice of the synced-hash marker store the GC
+// sweep depends on: enumerate the synced set (the LIST-free orphan-candidate
+// source) and clear a marker once its object is swept (preserving the
+// synced ⊆ remote invariant). The full marker store (metadata.SyncedHashStore)
+// and the runtime's per-remote union both satisfy it structurally; GC declares
+// only what it uses so the broader IsSynced/MarkSynced surface stays out of
+// this dependency.
+type SyncedHashIndex interface {
+	// EnumerateSynced calls fn once per synced marker with its content hash
+	// and first-mirror timestamp. A zero syncedAt means the backend has no
+	// recorded time (legacy marker) — the sweep treats it as fail-closed.
+	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error
+
+	// DeleteSynced removes the synced marker for a swept hash. Idempotent.
+	DeleteSynced(ctx context.Context, hash block.ContentHash) error
 }
 
 // MetadataReconciler resolves per-share metadata stores. The mark phase
@@ -390,9 +421,17 @@ func collectGarbage(
 		return stats
 	}
 
-	// SWEEP: single Walk over the CAS namespace (remote union, or one share's
-	// local store).
-	sweepPhase(ctx, store, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
+	// SWEEP: a remote steady-state run derives orphan candidates from the
+	// synced-hash index (synced − live), avoiding a full S3 LIST. Local-tier
+	// sweeps and reconcile (FullScan) Walk the CAS namespace instead — for the
+	// local tier that is a cheap local-disk walk; for reconcile it is the
+	// drift + upgrade-migration backstop that finds remote objects the index
+	// cannot (pre-timestamp markers, Put-then-Mark crash-gap).
+	if !isLocal && !options.FullScan && options.SyncedHashIndex != nil {
+		sweepFromSyncedIndex(ctx, store, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
+	} else {
+		sweepByWalk(ctx, store, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
+	}
 
 	// Mark complete + persist summary.
 	if err := gcs.MarkComplete(); err != nil {
@@ -487,7 +526,7 @@ func sharesForReconciler(r MetadataReconciler) []string {
 	return nil
 }
 
-// sweepPhase walks the unified CAS namespace via a single
+// sweepByWalk walks the unified CAS namespace via a single
 // remoteStore.Walk call. Per-object errors are captured in stats but
 // do not abort the sweep. Foreign keys (non-CAS) are silently
 // skipped (T-11-C-07). Objects within snapshot - GracePeriod are
@@ -504,7 +543,7 @@ func sharesForReconciler(r MetadataReconciler) []string {
 // local block.Store satisfy it, so the same sweep kernel reclaims orphans on
 // either tier (#1433).
 //
-// Walk MUST invoke its callback sequentially: sweepPhase mutates unsynchronized
+// Walk MUST invoke its callback sequentially: sweepByWalk mutates unsynchronized
 // per-run counters (scanned/swept/bytes) from inside the callback. Every
 // current backend (local filepath.WalkDir, remote paginated list) honors this;
 // a backend that parallelizes Walk must serialize the callback before
@@ -514,7 +553,12 @@ type sweepable interface {
 	Delete(ctx context.Context, hash block.ContentHash) error
 }
 
-func sweepPhase(
+// sweepByWalk reclaims orphans by enumerating the ENTIRE store namespace via
+// store.Walk and deleting objects absent from the live set (past grace). For
+// the remote tier this is an S3 LIST — used only by local-tier GC (a cheap
+// local-disk walk) and by reconcile (FullScan), which needs it as the drift +
+// upgrade-migration backstop. Steady-state remote GC uses sweepFromSyncedIndex.
+func sweepByWalk(
 	ctx context.Context,
 	store sweepable,
 	gcs *GCState,
@@ -608,8 +652,8 @@ func sweepPhase(
 			// durability verify fails on a block that will never re-upload
 			// (#1433). Idempotent + non-fatal: a stale marker only costs a missed
 			// re-upload, recoverable on the next pass. Set only for remote sweeps.
-			if options.SyncedHashStore != nil {
-				if serr := options.SyncedHashStore.DeleteSynced(ctx, h); serr != nil {
+			if options.SyncedHashIndex != nil {
+				if serr := options.SyncedHashIndex.DeleteSynced(ctx, h); serr != nil {
 					addError("delete-synced " + casKey + ": " + serr.Error())
 				}
 			}
@@ -650,7 +694,7 @@ func finalizeStats(stats *GCStats, started time.Time) {
 // recordGCError appends an error message to stats with the standard cap.
 // Used by the engine-level pre-sweep paths (gcstate temp root, gcstate
 // open, mark phase) where errors are bounded to a handful per run; the
-// diversity-aware capture lives in sweepPhase.addError.
+// diversity-aware capture lives in sweepByWalk.addError.
 func recordGCError(stats *GCStats, msg string) {
 	stats.ErrorCount++
 	if len(stats.FirstErrors) < 16 {
@@ -705,7 +749,7 @@ func classifyGCError(msg string) string {
 // for last-run.json persistence.
 //
 // DryRunCandidates is forced to nil when DryRun=false.
-// The current sweepPhase only populates the slice on DryRun runs, but
+// The current sweepByWalk only populates the slice on DryRun runs, but
 // pinning the contract here means a future change that populates the
 // slice on real runs (e.g. for "blocks deleted" tracing) cannot leak
 // across the API boundary without an explicit decision.

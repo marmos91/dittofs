@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
@@ -137,19 +138,25 @@ var _ MetadataCoordinator = (*refcountCoordinator)(nil)
 // call once (single-shot) to exercise the benign-orphan logging path.
 type recordingSyncedHashStore struct {
 	mu        sync.Mutex
-	synced    map[block.ContentHash]struct{}
+	synced    map[block.ContentHash]time.Time
 	deleted   []block.ContentHash
 	deleteErr error
 }
 
 func newRecordingSyncedHashStore() *recordingSyncedHashStore {
-	return &recordingSyncedHashStore{synced: make(map[block.ContentHash]struct{})}
+	return &recordingSyncedHashStore{synced: make(map[block.ContentHash]time.Time)}
 }
 
 func (s *recordingSyncedHashStore) markSyncedForTest(hash block.ContentHash) {
+	s.markSyncedAtForTest(hash, time.Now())
+}
+
+// markSyncedAtForTest stamps a marker with an explicit first-mirror time so
+// LIST-free sweep tests can exercise the grace window deterministically.
+func (s *recordingSyncedHashStore) markSyncedAtForTest(hash block.ContentHash, when time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.synced[hash] = struct{}{}
+	s.synced[hash] = when
 }
 
 func (s *recordingSyncedHashStore) IsSynced(_ context.Context, hash block.ContentHash) (bool, error) {
@@ -162,7 +169,29 @@ func (s *recordingSyncedHashStore) IsSynced(_ context.Context, hash block.Conten
 func (s *recordingSyncedHashStore) MarkSynced(_ context.Context, hash block.ContentHash) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.synced[hash] = struct{}{}
+	if _, ok := s.synced[hash]; !ok {
+		s.synced[hash] = time.Now() // first-write-wins
+	}
+	return nil
+}
+
+// EnumerateSynced satisfies engine.SyncedHashIndex, yielding each marker with
+// its recorded first-mirror time (the LIST-free sweep's grace anchor).
+func (s *recordingSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(block.ContentHash, time.Time) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	snapshot := make(map[block.ContentHash]time.Time, len(s.synced))
+	for h, t := range s.synced {
+		snapshot[h] = t
+	}
+	s.mu.Unlock()
+	for h, t := range snapshot {
+		if err := fn(h, t); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -187,7 +216,10 @@ func (s *recordingSyncedHashStore) deletedHashes() []block.ContentHash {
 	return out
 }
 
-var _ metadata.SyncedHashStore = (*recordingSyncedHashStore)(nil)
+var (
+	_ metadata.SyncedHashStore = (*recordingSyncedHashStore)(nil)
+	_ SyncedHashIndex          = (*recordingSyncedHashStore)(nil)
+)
 
 // buildCascadeFixture wires a Store with the supplied coordinator
 // and (optional) SyncedHashStore. Local store is in-memory so the test

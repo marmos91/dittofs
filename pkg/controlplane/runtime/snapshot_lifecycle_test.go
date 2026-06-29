@@ -119,6 +119,15 @@ func setupSnapshotLifecycle(t *testing.T) *lifecycleFixture {
 	mustPutRemote(t, rs, fx.hSnap, []byte("snap-only-payload"))
 	mustPutRemote(t, rs, fx.hOrphan, []byte("orphan-payload"))
 
+	// Every object on the remote got there via the mirror (Put-then-Mark), so
+	// it carries a synced marker — that is the steady-state index sweep's
+	// candidate source. Backdate the markers past the grace window (matching the
+	// remote object clock above) so GC reclaims the unheld ones immediately.
+	synced := time.Now().Add(-2 * time.Hour)
+	for _, h := range []block.ContentHash{fx.hLive1, fx.hLive2, fx.hSnap, fx.hOrphan} {
+		metaStore.MarkSyncedAtForTest(h, synced)
+	}
+
 	return fx
 }
 
