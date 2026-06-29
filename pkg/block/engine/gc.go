@@ -225,6 +225,15 @@ type Options struct {
 	// (orphan-not-deleted is always preferred over live-data-deleted, per
 	// the mark fail-closed invariant).
 	HoldProvider HoldProvider
+
+	// SyncedHashStore, when non-nil, has DeleteSynced called for every hash
+	// successfully deleted from the swept store. This keeps the synced-hash
+	// index a strict subset of remote contents: a hash swept off the remote is
+	// no longer synced and must be re-uploaded if it reappears in the live set;
+	// without this, ListUnsynced skips it forever and a later snapshot's
+	// durability verify fails (#1433). Set ONLY for remote-tier sweeps — local
+	// eviction does not change remote synced state, so local sweeps leave it nil.
+	SyncedHashStore metadata.SyncedHashStore
 }
 
 // MetadataReconciler resolves per-share metadata stores. The mark phase
@@ -592,6 +601,17 @@ func sweepPhase(
 				// continue + capture
 				addError("delete " + casKey + ": " + err.Error())
 				return nil
+			}
+			// Keep the synced-hash index a strict subset of remote contents: the
+			// hash is gone from this store, so it is no longer synced. Without
+			// this, ListUnsynced skips it forever and a later snapshot's
+			// durability verify fails on a block that will never re-upload
+			// (#1433). Idempotent + non-fatal: a stale marker only costs a missed
+			// re-upload, recoverable on the next pass. Set only for remote sweeps.
+			if options.SyncedHashStore != nil {
+				if serr := options.SyncedHashStore.DeleteSynced(ctx, h); serr != nil {
+					addError("delete-synced " + casKey + ": " + serr.Error())
+				}
 			}
 			statsMu.Lock()
 			stats.ObjectsSwept++
