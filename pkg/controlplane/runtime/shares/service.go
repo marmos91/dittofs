@@ -399,6 +399,12 @@ type Service struct {
 	nextCallbackID  int
 	changeCallbacks map[int]func(shares []string)
 
+	// authInvalidateCallbacks fire when a share's permission state changes
+	// (grant/revoke, default-permission, squash). They are kept separate from
+	// changeCallbacks so a permission edit does not trigger the heavier
+	// share-set listeners (pseudo-fs rebuild, NFSv4 delegation recall).
+	authInvalidateCallbacks map[int]func()
+
 	// metricsRec is the inline metrics recorder threaded into every per-share
 	// block store's eviction/backpressure path. Shares are constructed before
 	// the metrics registry exists, so the runtime installs it post-startup via
@@ -415,11 +421,12 @@ type Service struct {
 
 func New() *Service {
 	return &Service{
-		registry:        make(map[string]*Share),
-		reservations:    make(map[string]struct{}),
-		remoteStores:    make(map[string]*sharedRemote),
-		changeCallbacks: make(map[int]func(shares []string)),
-		warmJobs:        newWarmRegistry(),
+		registry:                make(map[string]*Share),
+		reservations:            make(map[string]struct{}),
+		remoteStores:            make(map[string]*sharedRemote),
+		changeCallbacks:         make(map[int]func(shares []string)),
+		authInvalidateCallbacks: make(map[int]func()),
+		warmJobs:                newWarmRegistry(),
 	}
 }
 
@@ -1710,6 +1717,39 @@ func (s *Service) notifyShareChange() {
 
 	for _, cb := range callbacks {
 		cb(shareNames)
+	}
+}
+
+// OnAuthCacheInvalidate registers a callback fired when a share's permission
+// state changes (grant/revoke, default-permission, squash) so adapters can drop
+// any cached per-identity authorization. It returns an unsubscribe function that
+// removes the callback; callers should invoke it (e.g. in their Stop method) to
+// prevent stale callbacks from accumulating across adapter restarts.
+func (s *Service) OnAuthCacheInvalidate(callback func()) func() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.nextCallbackID
+	s.nextCallbackID++
+	s.authInvalidateCallbacks[id] = callback
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.authInvalidateCallbacks, id)
+	}
+}
+
+// InvalidateAuthCache fires the registered auth-cache-invalidate callbacks. It
+// must NOT be called while holding s.mu.
+func (s *Service) InvalidateAuthCache() {
+	s.mu.RLock()
+	callbacks := make([]func(), 0, len(s.authInvalidateCallbacks))
+	for _, cb := range s.authInvalidateCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	s.mu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb()
 	}
 }
 
