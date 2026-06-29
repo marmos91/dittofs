@@ -1577,9 +1577,10 @@ func testEnumerateFileBlocks_UnlinkedFileExcludesManifest(t *testing.T, factory 
 	}
 
 	// Unlink: drop the dir edge and set nlink=0 (what RemoveFile does on the last
-	// link). nlink is the link-count source of truth across all backends, so
-	// SetLinkCount is the faithful simulation — mutating File.Nlink + PutFile is
-	// ignored by the SQL backends, which recompute nlink from the structure.
+	// link). The embedded File.Nlink is not the authoritative link count (#1166):
+	// SetLinkCount is the only API that updates the source of truth (SQL
+	// inodes.nlink, badger l: key, memory linkCounts), so it is the faithful
+	// simulation — mutating File.Nlink + PutFile would not move it.
 	if err := store.DeleteChild(ctx, root, "dead.bin"); err != nil {
 		t.Fatalf("DeleteChild: %v", err)
 	}

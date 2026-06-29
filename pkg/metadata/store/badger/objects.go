@@ -681,15 +681,23 @@ func enumeratePrefixFileBlocks(ctx context.Context, txn *badger.Txn, fn func(blo
 // key, not the embedded File.Nlink, so the embedded value alone is unreliable;
 // fall back to it only when the l: key is absent.
 func fileLinkCountTxn(txn *badger.Txn, file *metadata.File) uint32 {
-	nlink := file.Nlink
-	if item, err := txn.Get(keyLinkCount(file.ID)); err == nil {
-		_ = item.Value(func(val []byte) error {
-			if c, derr := decodeUint32(val); derr == nil {
-				nlink = c
-			}
-			return nil
-		})
+	item, err := txn.Get(keyLinkCount(file.ID))
+	if err != nil {
+		// No l: key yet: mirror GetFile's default-by-type so a freshly created
+		// file (link count not persisted yet) is never treated as dead. The
+		// embedded File.Nlink may be zero/stale and must NOT be trusted here.
+		if file.Type == metadata.FileTypeDirectory {
+			return 2
+		}
+		return 1
 	}
+	nlink := file.Nlink
+	_ = item.Value(func(val []byte) error {
+		if c, derr := decodeUint32(val); derr == nil {
+			nlink = c
+		}
+		return nil
+	})
 	return nlink
 }
 
