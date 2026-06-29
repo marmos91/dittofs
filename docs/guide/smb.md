@@ -38,6 +38,27 @@ DittoFS negotiates the highest mutually-supported dialect with each client.
 SMB 3.1.1 is preferred; it provides the strongest security and best cipher performance on
 AES-NI-capable hardware.
 
+### Selecting a dialect (the SMB "version")
+
+Unlike NFS — where the client states an exact version with `vers=` — SMB
+**auto-negotiates**: the client and server agree on the highest dialect both
+support, and DittoFS always offers up to 3.1.1. So most clients need no version
+flag at all.
+
+You only pin a dialect when troubleshooting or forcing weaker/stronger crypto:
+
+| Client | How to pin a dialect | Default behaviour |
+|--------|----------------------|-------------------|
+| **Linux** (`mount.cifs`) | `-o vers=3.1.1` (also `2.0`, `2.1`, `3.0`) | Modern `cifs-utils` negotiates ≥ 2.1 automatically. |
+| **macOS** (`mount_smbfs`) | No per-mount dialect flag — always negotiates the best. | Negotiates up to 3.1.1. |
+| **Windows** (`net use` / Explorer) | No per-mount flag (tune via the SMB client service). | Negotiates up to 3.1.1. |
+| **`dfsctl share mount --protocol smb`** | No flag; requests `vers=2.1` on Linux, lets macOS negotiate. | Wrapper picks safe defaults — see [Mounting](#mounting-smb-shares). |
+
+`seal` (on Linux `mount.cifs`) forces SMB3 encryption and therefore a 3.x
+dialect; pair it with `vers=3.1.1` for the strongest cipher (AES-128-GCM).
+The matching `dfsctl` convenience wrapper is shown under
+[Mounting SMB Shares](#mounting-smb-shares).
+
 ### Protocol Implementation Status
 
 **Session and negotiation:**

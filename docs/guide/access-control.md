@@ -26,6 +26,12 @@ Access to a file is decided by **two independent layers**, both of which must al
 
 **Effective access = share gate AND filesystem permission.** Both must allow.
 
+> **Before either layer runs, NFS may *remap the caller's identity*** via
+> per-share squashing (`root_squash` and friends). Squashing decides *who you
+> are* — e.g. mapping a remote `root` to an anonymous user — and the two layers
+> above then apply to that effective identity. See
+> [NFS § Identity Squashing](nfs.md#identity-squashing-root_squash-and-friends).
+
 ### Share owner
 
 A new share's **root directory** is created with a secure mode (`0755`) owned by `root`. Because the two layers are independent, granting a user `read-write` does **not**, by itself, let them create files *at the share root* — POSIX still applies, and only the owner (or root) can write a `0755` directory.
