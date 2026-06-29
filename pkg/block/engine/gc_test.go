@@ -1472,3 +1472,50 @@ func mustHashWithPrefix(t *testing.T, hexPrefix string) block.ContentHash {
 	t.Fatalf("could not find hash with prefix %q", hexPrefix)
 	return block.ContentHash{}
 }
+
+// TestGCMarkSweep_ClearsSyncedMarkerForSweptHash proves the remote sweep clears
+// the synced marker for every hash it deletes, keeping the synced set a strict
+// subset of remote contents. Without it, ListUnsynced skips a swept hash forever
+// and a later snapshot's durability verify fails on a block that never re-uploads
+// (#1433). A surviving live block keeps its marker.
+func TestGCMarkSweep_ClearsSyncedMarkerForSweptHash(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+	old := time.Now().Add(-2 * time.Hour)
+	rs.SetNowFnForTest(func() time.Time { return old })
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+
+	live := hashFromString("live-keep")
+	orphan := hashFromString("orphan-sweep")
+	putBlock(t, st, "file-live/0", live)
+	writeCASObject(t, ctx, rs, live, []byte("live-data"))
+	writeCASObject(t, ctx, rs, orphan, []byte("orphan-data"))
+
+	synced := newRecordingSyncedHashStore()
+	synced.markSyncedForTest(live)
+	synced.markSyncedForTest(orphan)
+
+	stats := CollectGarbage(ctx, rs, rec, &Options{
+		GCStateRoot:     t.TempDir(),
+		GracePeriod:     time.Minute,
+		SyncedHashStore: synced,
+	})
+	if stats.ObjectsSwept != 1 {
+		t.Fatalf("ObjectsSwept = %d, want 1", stats.ObjectsSwept)
+	}
+
+	// Swept orphan: marker cleared so it can re-upload if it reappears live.
+	if ok, _ := synced.IsSynced(ctx, orphan); ok {
+		t.Errorf("swept orphan still marked synced; ListUnsynced would skip it forever (#1433)")
+	}
+	// Live block: still on remote AND still synced (marker untouched).
+	if ok, _ := synced.IsSynced(ctx, live); !ok {
+		t.Errorf("live block's synced marker wrongly cleared")
+	}
+	if _, err := rs.Get(ctx, live); err != nil {
+		t.Errorf("live block deleted: %v", err)
+	}
+}

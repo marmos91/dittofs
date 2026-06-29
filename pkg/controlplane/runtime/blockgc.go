@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -81,6 +83,9 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 		applyGCDefaults(opts, gcDefaults)
 		// Inject held hashes from ready snapshots into the GC mark phase.
 		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
+		// Clear synced markers for hashes swept off this remote so they re-upload
+		// if they reappear in the live set (#1433). Remote sweep only.
+		opts.SyncedHashStore = r.syncedHashStoreForShares(entry.Shares)
 		logger.Info("RunBlockGC: starting",
 			"configID", entry.ConfigID,
 			"shares", entry.Shares,
@@ -249,6 +254,9 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 		applyGCDefaults(opts, gcDefaults)
 		// Inject held hashes from ready snapshots into the GC mark phase.
 		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
+		// Clear synced markers for hashes swept off this remote so they re-upload
+		// if they reappear in the live set (#1433). Remote sweep only.
+		opts.SyncedHashStore = r.syncedHashStoreForShares(entry.Shares)
 		logger.Info("RunBlockGCForShare: starting",
 			"share", name,
 			"configID", entry.ConfigID,
@@ -346,4 +354,76 @@ func accumulateGCStats(total, stats *engine.GCStats, includeDryRunMeta bool) eng
 // share. Delegates to shares.Service.SetShareRemoteForTest. Test-only.
 func (r *Runtime) setShareRemoteForTest(shareName string, rs remote.RemoteStore) {
 	r.sharesSvc.SetShareRemoteForTest(shareName, rs)
+}
+
+// multiSyncedHashStore fans DeleteSynced out to every share's synced-hash index
+// on a shared remote, so a hash swept off that remote is un-synced everywhere it
+// was recorded. DeleteSynced is idempotent, so clearing a hash a share never had
+// is a no-op. GC only ever calls DeleteSynced; the other methods exist for
+// interface completeness.
+type multiSyncedHashStore []metadata.SyncedHashStore
+
+func (m multiSyncedHashStore) IsSynced(ctx context.Context, h block.ContentHash) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	for _, s := range m {
+		ok, err := s.IsSynced(ctx, h)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m multiSyncedHashStore) MarkSynced(ctx context.Context, h block.ContentHash) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, s := range m {
+		if err := s.MarkSynced(ctx, h); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m multiSyncedHashStore) DeleteSynced(ctx context.Context, h block.ContentHash) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Attempt every store even if one fails, so a hash is un-synced everywhere it
+	// can be, then surface the failures: the GC sweep records them as non-fatal
+	// errors (a stale marker only costs a missed re-upload, recovered next pass).
+	var errs []error
+	for _, s := range m {
+		if err := s.DeleteSynced(ctx, h); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// syncedHashStoreForShares unions the synced-hash indexes of the given shares so
+// a remote-tier GC sweep can clear the marker for every hash it deletes (#1433).
+// Each share's metadata store implements SyncedHashStore. Returns nil when none
+// are available, leaving the sweep's marker-clear a no-op.
+func (r *Runtime) syncedHashStoreForShares(shares []string) metadata.SyncedHashStore {
+	var stores multiSyncedHashStore
+	for _, shareName := range shares {
+		mds, err := r.GetMetadataStoreForShare(shareName)
+		if err != nil {
+			continue
+		}
+		if shs, ok := mds.(metadata.SyncedHashStore); ok {
+			stores = append(stores, shs)
+		}
+	}
+	if len(stores) == 0 {
+		return nil
+	}
+	return stores
 }
