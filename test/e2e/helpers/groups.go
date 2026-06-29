@@ -152,7 +152,7 @@ func (r *CLIRunner) EditGroup(name string, opts ...GroupOption) (*Group, error) 
 // DeleteGroup deletes a group via the CLI.
 // Uses --force to skip confirmation prompt.
 func (r *CLIRunner) DeleteGroup(name string) error {
-	_, err := r.Run("group", "delete", name, "--force")
+	_, err := r.Run("group", "remove", name, "--force")
 	return err
 }
 

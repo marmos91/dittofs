@@ -99,7 +99,7 @@ func AddNetgroupMember(t *testing.T, client *apiclient.Client, netgroupName, mem
 func DeleteNetgroup(t *testing.T, client *apiclient.Client, name string) {
 	t.Helper()
 
-	err := client.DeleteNetgroup(name)
+	err := client.RemoveNetgroup(name)
 	require.NoError(t, err, "Failed to delete netgroup %s", name)
 }
 
@@ -107,7 +107,7 @@ func DeleteNetgroup(t *testing.T, client *apiclient.Client, name string) {
 func DeleteNetgroupExpectError(t *testing.T, client *apiclient.Client, name string) error {
 	t.Helper()
 
-	err := client.DeleteNetgroup(name)
+	err := client.RemoveNetgroup(name)
 	require.Error(t, err, "Expected delete netgroup to fail")
 
 	return err
@@ -115,7 +115,7 @@ func DeleteNetgroupExpectError(t *testing.T, client *apiclient.Client, name stri
 
 // CleanupNetgroup deletes a netgroup if it exists (best-effort, for t.Cleanup).
 func CleanupNetgroup(client *apiclient.Client, name string) {
-	_ = client.DeleteNetgroup(name)
+	_ = client.RemoveNetgroup(name)
 }
 
 // =============================================================================
@@ -152,7 +152,7 @@ func CreateShareWithPolicy(t *testing.T, client *apiclient.Client, name, metadat
 
 // CleanupShare deletes a share if it exists (best-effort, for t.Cleanup).
 func CleanupShare(client *apiclient.Client, name string) {
-	_ = client.DeleteShare(name)
+	_ = client.RemoveShare(name)
 }
 
 // AssociateNetgroup associates a netgroup with a share's NFS adapter config via

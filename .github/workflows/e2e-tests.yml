@@ -12,22 +12,14 @@
 
 name: E2E Tests
 
-# Tiered by EVENT, not by path: E2E runs a single representative full-matrix
-# config on every non-docs change (path filters skip docs only), plus a
-# nightly cron. There is no heavy per-store matrix to tier here.
+# The full suite takes ~45-75m, so it is NOT run per-PR (that would make every
+# PR slow). It runs only on push to develop/main and nightly — develop is the
+# gate. A red develop run fires the ci-health email + P0 develop-red issue, and
+# warn-on-pr flags open PRs, forcing a fix-forward. Run manually on a PR with
+# workflow_dispatch when needed.
 
 on:
   push:
-    branches: [develop, main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
-      - '**.png'
-      - '**.jpg'
-      - '**.svg'
-  pull_request:
     branches: [develop, main]
     paths-ignore:
       - '**.md'
@@ -50,7 +42,11 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite runs `go test -timeout 30m`, plus a cold fetch+compile of the
+    # e2e-only test deps under sudo. 20m was only ever enough because the job
+    # was a no-op (go test never ran); a real run needs headroom past the 30m
+    # test timeout itself.
+    timeout-minutes: 75
 
     services:
       postgres:
@@ -118,9 +114,16 @@ jobs:
 
       - name: Run E2E tests
         run: |
-          # Full mode: all configurations including Docker-based stores
-          # Pass environment variables through sudo for external service detection
-          sudo -E nix develop .#ci --command go test -tags=e2e -v -timeout 30m ./test/e2e/... \
+          set -o pipefail
+          # Full mode: all configurations including Docker-based stores.
+          # sudo resolves commands via secure_path (which omits the Nix profile),
+          # so `nix` was "command not found" under sudo and go test never ran.
+          # Pass the caller's PATH through so `nix` resolves; keep -E for the
+          # external-service env vars the suite reads. pipefail is required so the
+          # go-test exit code propagates through `tee` — without it the job was a
+          # false-green no-op regardless of whether the tests ran or passed.
+          sudo -E env "PATH=$PATH" nix develop .#ci --command \
+            go test -tags=e2e -v -timeout 30m ./test/e2e/... \
             2>&1 | tee "$GITHUB_WORKSPACE/e2e.log"
 
       - name: Generate summary

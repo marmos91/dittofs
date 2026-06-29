@@ -377,7 +377,7 @@ func TestMultiShareIsolation(t *testing.T) {
 
 		// Create a test user for SMB
 		_, _ = runner.Run("user", "create", "--username", "testuser", "--password", "testpass123")
-		t.Cleanup(func() { _, _ = runner.Run("user", "delete", "testuser", "--force") })
+		t.Cleanup(func() { _, _ = runner.Run("user", "remove", "testuser", "--force") })
 
 		// Grant permission to the share
 		_ = runner.GrantUserPermission("/share-iso-a", "testuser", "read-write")

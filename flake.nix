@@ -280,6 +280,8 @@
             nfs-utils
             # ACL support for POSIX compliance testing
             acl
+            # Extended-attribute tools (setfattr/getfattr) for xattr e2e tests
+            attr
             # Perl for pjdfstest (prove is included in base perl)
             perl
             # POSIX filesystem compliance testing (C version - authoritative)

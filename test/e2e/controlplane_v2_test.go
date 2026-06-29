@@ -59,14 +59,14 @@ func TestControlPlaneV2_FullLifecycle(t *testing.T) {
 		Type: "memory",
 	})
 	require.NoError(t, err, "Should create metadata store")
-	t.Cleanup(func() { _ = client.DeleteMetadataStore(metaStore) })
+	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })
 
 	_, err = client.CreateBlockStore("local", &apiclient.CreateStoreRequest{
 		Name: localBlockStore,
 		Type: "memory",
 	})
 	require.NoError(t, err, "Should create local block store")
-	t.Cleanup(func() { _ = client.DeleteBlockStore("local", localBlockStore) })
+	t.Cleanup(func() { _ = client.RemoveBlockStore("local", localBlockStore) })
 
 	// 4. Create a share (security policy now managed via adapter config API)
 	share := helpers.CreateShareWithPolicy(t, client, "/lifecycle-test", metaStore, localBlockStore, nil)
@@ -319,14 +319,14 @@ func TestControlPlaneV2_NetgroupInUse(t *testing.T) {
 		Type: "memory",
 	})
 	require.NoError(t, err, "Should create metadata store")
-	t.Cleanup(func() { _ = client.DeleteMetadataStore(metaStore) })
+	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })
 
 	_, err = client.CreateBlockStore("local", &apiclient.CreateStoreRequest{
 		Name: localBlockStore,
 		Type: "memory",
 	})
 	require.NoError(t, err, "Should create local block store")
-	t.Cleanup(func() { _ = client.DeleteBlockStore("local", localBlockStore) })
+	t.Cleanup(func() { _ = client.RemoveBlockStore("local", localBlockStore) })
 
 	// 1. Create netgroup
 	ng := helpers.CreateNetgroup(t, client, ngName)
@@ -352,7 +352,7 @@ func TestControlPlaneV2_NetgroupInUse(t *testing.T) {
 	t.Log("Step 3: Netgroup deletion correctly blocked (in-use)")
 
 	// 4. Delete share
-	err = client.DeleteShare(shareName)
+	err = client.RemoveShare(shareName)
 	require.NoError(t, err, "Should delete share")
 	t.Log("Step 4: Share deleted")
 
@@ -384,14 +384,14 @@ func TestControlPlaneV2_ShareSecurityPolicy(t *testing.T) {
 		Type: "memory",
 	})
 	require.NoError(t, err, "Should create metadata store")
-	t.Cleanup(func() { _ = client.DeleteMetadataStore(metaStore) })
+	t.Cleanup(func() { _ = client.RemoveMetadataStore(metaStore) })
 
 	_, err = client.CreateBlockStore("local", &apiclient.CreateStoreRequest{
 		Name: localBlockStore,
 		Type: "memory",
 	})
 	require.NoError(t, err, "Should create local block store")
-	t.Cleanup(func() { _ = client.DeleteBlockStore("local", localBlockStore) })
+	t.Cleanup(func() { _ = client.RemoveBlockStore("local", localBlockStore) })
 
 	// Protocol-specific security fields (AllowAuthSys, RequireKerberos, NetgroupID)
 	// are now managed via per-adapter config API, not the share creation/response API.
