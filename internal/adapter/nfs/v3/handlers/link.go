@@ -124,8 +124,8 @@ func (h *Handler) Link(
 			return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, ctx.Context.Err()
 		}
 
-		logError(ctx.Context, err, "LINK failed: failed to build auth context", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP)
-		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO}}, nil
+		logAuthCtxError(ctx.Context, err, "LINK", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "client", clientIP)
+		return &LinkResponse{NFSResponseBase: NFSResponseBase{Status: authDenialStatus(err)}}, nil
 	}
 
 	if ctx.isContextCancelled() {

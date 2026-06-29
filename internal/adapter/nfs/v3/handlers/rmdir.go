@@ -125,10 +125,10 @@ func (h *Handler) Rmdir(
 		}, nil
 	}
 
-	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "RMDIR", req.Name, req.DirHandle)
+	authCtx, wccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "RMDIR", req.Name, req.DirHandle)
 	if authCtx == nil {
 		return &RmdirResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authStatus},
 			DirWccBefore:    wccBefore,
 			DirWccAfter:     wccAfter,
 		}, err

@@ -155,10 +155,10 @@ func (h *Handler) Symlink(
 		}, ctx.Context.Err()
 	}
 
-	authCtx, nfsDirAttr, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "SYMLINK", req.Name, req.DirHandle)
+	authCtx, nfsDirAttr, authStatus, err := h.buildAuthContextWithWCCError(ctx, dirHandle, &dirFile.FileAttr, "SYMLINK", req.Name, req.DirHandle)
 	if authCtx == nil {
 		return &SymlinkResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authStatus},
 			DirAttrBefore:   wccBefore,
 			DirAttrAfter:    nfsDirAttr,
 		}, err

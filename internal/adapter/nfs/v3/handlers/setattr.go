@@ -196,10 +196,10 @@ func (h *Handler) SetAttr(
 			"ctime", fmt.Sprintf("%d.%d", currentCtime.Seconds, currentCtime.Nseconds))
 	}
 
-	authCtx, wccAfter, err := h.buildAuthContextWithWCCError(ctx, fileHandle, &currentFile.FileAttr, "SETATTR", "", req.Handle)
+	authCtx, wccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, fileHandle, &currentFile.FileAttr, "SETATTR", "", req.Handle)
 	if authCtx == nil {
 		return &SetAttrResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authStatus},
 			AttrBefore:      wccBefore,
 			AttrAfter:       wccAfter,
 		}, err

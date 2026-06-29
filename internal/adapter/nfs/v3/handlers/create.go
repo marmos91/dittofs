@@ -130,10 +130,10 @@ func (h *Handler) Create(
 		}, nil
 	}
 
-	authCtx, dirWccAfter, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "CREATE", req.Filename, req.DirHandle)
+	authCtx, dirWccAfter, authStatus, err := h.buildAuthContextWithWCCError(ctx, parentHandle, &parentFile.FileAttr, "CREATE", req.Filename, req.DirHandle)
 	if authCtx == nil {
 		return &CreateResponse{
-			NFSResponseBase: NFSResponseBase{Status: types.NFS3ErrIO},
+			NFSResponseBase: NFSResponseBase{Status: authStatus},
 			DirBefore:       dirWccBefore,
 			DirAfter:        dirWccAfter,
 		}, err
