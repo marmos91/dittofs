@@ -12,22 +12,14 @@
 
 name: E2E Tests
 
-# Tiered by EVENT, not by path: E2E runs a single representative full-matrix
-# config on every non-docs change (path filters skip docs only), plus a
-# nightly cron. There is no heavy per-store matrix to tier here.
+# The full suite takes ~45-75m, so it is NOT run per-PR (that would make every
+# PR slow). It runs only on push to develop/main and nightly — develop is the
+# gate. A red develop run fires the ci-health email + P0 develop-red issue, and
+# warn-on-pr flags open PRs, forcing a fix-forward. Run manually on a PR with
+# workflow_dispatch when needed.
 
 on:
   push:
-    branches: [develop, main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
-      - '**.png'
-      - '**.jpg'
-      - '**.svg'
-  pull_request:
     branches: [develop, main]
     paths-ignore:
       - '**.md'
