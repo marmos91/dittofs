@@ -526,6 +526,14 @@ func (r *Runtime) SetShareNetgroup(name, netgroupName string) error {
 	return r.sharesSvc.SetShareNetgroup(name, netgroupName)
 }
 
+// SetShareSquash updates the live in-memory squash policy (and optionally the
+// anonymous UID/GID) for a share so an NFS squash-config change applies to
+// active clients without an adapter restart. nil anon pointers leave those
+// fields unchanged.
+func (r *Runtime) SetShareSquash(name string, squash models.SquashMode, anonUID, anonGID *uint32) error {
+	return r.sharesSvc.SetShareSquash(name, squash, anonUID, anonGID)
+}
+
 // DisableShare sets enabled=false on the share's DB row and runtime
 // registry, then notifies adapters so active sessions drop.
 // Idempotent on already-disabled shares (returns shares.ErrShareAlreadyDisabled

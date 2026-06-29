@@ -169,10 +169,18 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A squash-mode change alters how client UIDs map to identities, but does not
-	// flow through ReconcileShareRootACL. Drop cached per-identity authorization
-	// so the new squash policy takes effect on active clients without a restart.
+	// Squash / anonymous-UID changes alter how client UIDs map to identities but
+	// do not flow through ReconcileShareRootACL. Push them into the running share
+	// so ResolveSharePermission / ApplyIdentityMapping read the new policy, then
+	// drop cached per-identity authorization so it takes effect on active clients
+	// without an adapter restart.
 	if h.runtime != nil {
+		if req.Squash != nil || req.AnonymousUID != nil || req.AnonymousGID != nil {
+			if err := h.runtime.SetShareSquash(share.Name, opts.GetSquashMode(), opts.AnonymousUID, opts.AnonymousGID); err != nil {
+				logger.Warn("NFS config persisted but failed to update runtime squash policy",
+					"share", share.Name, "squash", opts.Squash, "error", err)
+			}
+		}
 		h.runtime.InvalidateAuthCache()
 	}
 

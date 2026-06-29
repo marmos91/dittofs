@@ -1214,6 +1214,34 @@ func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *st
 	return nil
 }
 
+// SetShareSquash updates the live in-memory squash policy (and optionally the
+// anonymous UID/GID) for a share, so an NFS squash-config change applies to
+// active clients without an adapter restart. The on-disk config is persisted
+// separately by the API handler; this only refreshes the runtime Share that
+// ResolveSharePermission / ApplyIdentityMapping read from. anonUID/anonGID are
+// pointers so an unspecified field is left unchanged. Mirrors UpdateShare's
+// lock+mutate pattern; GetShare hands callers a snapshot copy, so mutating the
+// registry entry under the lock is race-free.
+func (s *Service) SetShareSquash(name string, squash models.SquashMode, anonUID, anonGID *uint32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	share, exists := s.registry[name]
+	if !exists {
+		return fmt.Errorf("share %q not found", name)
+	}
+
+	share.Squash = squash
+	if anonUID != nil {
+		share.AnonymousUID = *anonUID
+	}
+	if anonGID != nil {
+		share.AnonymousGID = *anonGID
+	}
+
+	return nil
+}
+
 // TrashSettings is a per-share recycle-bin policy snapshot, returned by value
 // under the service lock so callers never read a mutating shared pointer.
 type TrashSettings struct {
