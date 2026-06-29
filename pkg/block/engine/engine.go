@@ -730,6 +730,13 @@ func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 // Do not use in production code.
 func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
 
+// LocalStore exposes the engine's local block store as a block.Store. The GC
+// uses only its Walk + Delete methods to sweep orphaned chunks off disk via
+// per-share local GC (CollectGarbageLocal); returning block.Store rather than
+// the concrete local.LocalStore keeps GC callers off the admin/rollup surface
+// (#1433).
+func (bs *Store) LocalStore() block.Store { return bs.local }
+
 // LocalDurable reports whether the engine's local store survives a process
 // crash / restart (block.DurabilityReporter). It is the localDurable input to
 // the honest CLOSE/COMMIT commit rule (#1274). When the local store does not
