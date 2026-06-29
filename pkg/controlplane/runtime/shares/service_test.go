@@ -502,3 +502,27 @@ func TestEnabledTrashShares_FiltersByFlag(t *testing.T) {
 		t.Errorf("expected [/on], got %v", got)
 	}
 }
+
+// TestRootModeForDefaultPermission pins the share-root POSIX mode projected from
+// a share's default_permission. This is security-sensitive: only read-write and
+// admin may widen the root to world-writable (0777) so NFSv3 clients honour the
+// share-level access; read and the secure none/unset default must stay 0755
+// (the export gate remains the server-side authority).
+func TestRootModeForDefaultPermission(t *testing.T) {
+	cases := []struct {
+		perm string
+		want uint32
+	}{
+		{string(models.PermissionReadWrite), 0o777},
+		{string(models.PermissionAdmin), 0o777},
+		{string(models.PermissionRead), 0o755},
+		{string(models.PermissionNone), 0o755},
+		{"", 0o755},      // unset → secure default
+		{"bogus", 0o755}, // unknown → secure default, never world-writable
+	}
+	for _, tc := range cases {
+		if got := rootModeForDefaultPermission(tc.perm); got != tc.want {
+			t.Errorf("rootModeForDefaultPermission(%q) = %#o, want %#o", tc.perm, got, tc.want)
+		}
+	}
+}
