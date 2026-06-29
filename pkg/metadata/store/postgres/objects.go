@@ -367,6 +367,27 @@ func (s *PostgresMetadataStore) EnumeratePayloads(ctx context.Context, fn func(p
 	return nil
 }
 
+// EnumerateLivePayloadIDs streams every distinct content_id referenced by a
+// live inode. content_id IS the payloadID. Hardlinks share one inode row, so
+// DISTINCT yields one payloadID per content regardless of link count; nlink=0
+// (open-but-unlinked) inodes still have their row and are reported live.
+func (s *PostgresMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
+	const query = `SELECT DISTINCT content_id FROM inodes WHERE content_id IS NOT NULL AND content_id != ''`
+	ids, err := s.collectFileBlockIDs(ctx, query)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("enumerate live payloads: %w", err)
+		}
+		if err := fn(id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // collectFileBlockIDs runs query (which must SELECT a single TEXT id column),
 // scans every id into a slice, and closes the rows cursor before returning.
 func (s *PostgresMetadataStore) collectFileBlockIDs(ctx context.Context, query string) ([]string, error) {

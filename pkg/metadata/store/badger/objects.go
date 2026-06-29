@@ -407,6 +407,58 @@ func (s *BadgerMetadataStore) ListFileBlocks(_ context.Context, payloadID string
 	return result, nil
 }
 
+// EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a live
+// inode. It scans the f: inode keyspace, decodes each file record, and collects
+// distinct non-empty PayloadIDs. Corrupt inode records are skipped so a single
+// bad row cannot block the reconcile. Hardlinks share one f: key, so DISTINCT
+// yields one payloadID per content; nlink=0 inodes still have their key and are
+// reported live.
+func (s *BadgerMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
+	seen := make(map[string]struct{})
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(prefixFile)
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = true // PayloadID lives in the value, not the key
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			verr := it.Item().Value(func(val []byte) error {
+				file, derr := decodeFile(val)
+				if derr != nil {
+					// Skip corrupt inode rows rather than fail-closed: a single
+					// bad row must not block reclaiming everything else.
+					return nil
+				}
+				if pid := string(file.PayloadID); pid != "" {
+					seen[pid] = struct{}{}
+				}
+				return nil
+			})
+			if verr != nil {
+				return verr
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for payloadID := range seen {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(payloadID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // EnumeratePayloads streams every distinct payloadID that has at least one
 // FileBlock row through fn. It iterates the fb-file:{payloadID}:{blockIdx}
 // secondary index, extracts the payloadID (the substring before the LAST ':')
