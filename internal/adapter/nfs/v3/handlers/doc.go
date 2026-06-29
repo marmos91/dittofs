@@ -101,6 +101,18 @@ func (h *Handler) GetCachedAuthContext(
 	return authCtx, nil
 }
 
+// ClearAuthCache drops all cached auth contexts. Called when share permission
+// state changes (grants, default-permission, squash) so active clients pick up
+// the new policy without a server restart. Config changes are rare admin
+// operations, so clearing the whole (small) cache is preferred over fragile
+// per-share key-prefix matching; entries repopulate on the next op.
+func (h *Handler) ClearAuthCache() {
+	h.authCache.Range(func(key, _ any) bool {
+		h.authCache.Delete(key)
+		return true
+	})
+}
+
 // convertFileAttrToNFS converts metadata file attributes to NFS wire format.
 // Extracts the file ID from the handle and converts the attributes.
 func (h *Handler) convertFileAttrToNFS(fileHandle metadata.FileHandle, fileAttr *metadata.FileAttr) *types.NFSFileAttr {

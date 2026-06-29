@@ -551,9 +551,21 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// loop and subscription is missed.
 	unsubPseudoFS := rt.OnShareChange(func(shares []string) {
 		s.pseudoFS.Rebuild(shares)
+		// A share add/remove/enable/disable can change which identities resolve;
+		// drop cached v3 auth contexts so removed/disabled shares stop serving
+		// stale authorization.
+		s.nfsHandler.ClearAuthCache()
 		logger.Info("NFSv4 pseudo-fs rebuilt", "shares", len(shares))
 	})
 	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubPseudoFS)
+
+	// Drop cached v3 auth contexts when a share's permission state changes
+	// (grant/revoke, default-permission, squash) so active clients pick up the
+	// new policy without a server restart.
+	unsubAuthInvalidate := rt.OnAuthCacheInvalidate(func() {
+		s.nfsHandler.ClearAuthCache()
+	})
+	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubAuthInvalidate)
 
 	// Create blocking queue for NLM lock operations
 	s.blockingQueue = blocking.NewBlockingQueue(nlm_handlers.DefaultBlockingQueueSize)

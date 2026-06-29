@@ -121,5 +121,10 @@ func (r *Runtime) ReconcileShareRootACL(ctx context.Context, shareName string) e
 	if _, err := r.metadataService.SetFileAttributes(sysCtx, share.RootHandle, &metadata.SetAttrs{ACL: dacl}); err != nil {
 		return fmt.Errorf("reconcile root ACL for %q: set attributes: %w", shareName, err)
 	}
+
+	// A grant/revoke or default-permission change just altered who may access
+	// the share. Drop any cached per-identity authorization so active clients
+	// pick up the new policy without a server restart.
+	r.InvalidateAuthCache()
 	return nil
 }

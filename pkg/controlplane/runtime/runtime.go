@@ -576,6 +576,20 @@ func (r *Runtime) OnShareChange(callback func(shares []string)) func() {
 	return r.sharesSvc.OnShareChange(callback)
 }
 
+// OnAuthCacheInvalidate registers a callback fired when a share's permission
+// state changes (grant/revoke, default-permission, squash), so protocol adapters
+// can drop cached per-identity authorization. Returns an unsubscribe function.
+func (r *Runtime) OnAuthCacheInvalidate(callback func()) func() {
+	return r.sharesSvc.OnAuthCacheInvalidate(callback)
+}
+
+// InvalidateAuthCache notifies registered adapters to drop cached authorization
+// after a permission-relevant share change that does not flow through
+// ReconcileShareRootACL (e.g. a squash-mode change).
+func (r *Runtime) InvalidateAuthCache() {
+	r.sharesSvc.InvalidateAuthCache()
+}
+
 func (r *Runtime) GetShareNameForHandle(ctx context.Context, handle metadata.FileHandle) (string, error) {
 	return r.sharesSvc.GetShareNameForHandle(ctx, handle)
 }

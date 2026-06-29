@@ -169,6 +169,13 @@ func (h *ShareNFSConfigHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A squash-mode change alters how client UIDs map to identities, but does not
+	// flow through ReconcileShareRootACL. Drop cached per-identity authorization
+	// so the new squash policy takes effect on active clients without a restart.
+	if h.runtime != nil {
+		h.runtime.InvalidateAuthCache()
+	}
+
 	resp, ok := h.optionsToResponse(w, r, opts)
 	if !ok {
 		return
