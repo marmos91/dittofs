@@ -11,7 +11,9 @@ import (
 func TestClearAuthCache(t *testing.T) {
 	h := &Handler{}
 
-	// Seed a few entries directly (the cache is keyed "share:uid:gid").
+	// Seed a few entries directly. ClearAuthCache drops every entry regardless of
+	// key shape; the real key (see authCacheKey) is share:authflavor:uid:gid[:gid...],
+	// but the exact format is irrelevant here — these stand-ins just need to exist.
 	h.authCache.Store("/export:1000:1000", &metadata.AuthContext{})
 	h.authCache.Store("/export:0:0", &metadata.AuthContext{})
 	h.authCache.Store("/other:2000:2000", &metadata.AuthContext{})
