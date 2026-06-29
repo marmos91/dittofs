@@ -50,7 +50,11 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The suite runs `go test -timeout 30m`, plus a cold fetch+compile of the
+    # e2e-only test deps under sudo. 20m was only ever enough because the job
+    # was a no-op (go test never ran); a real run needs headroom past the 30m
+    # test timeout itself.
+    timeout-minutes: 75
 
     services:
       postgres:
