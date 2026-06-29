@@ -132,7 +132,8 @@ The matching `dfsctl` convenience wrapper is shown under
 ## Mounting SMB Shares
 
 DittoFS listens on **port 12445** by default (port 445 requires root). All examples below use
-that port.
+that port. To serve the standard SMB port 445 in production (so clients connect with no port
+suffix), see [Running on standard ports (production)](install.md#running-on-standard-ports-production).
 
 ### Using dfsctl (Recommended)
 

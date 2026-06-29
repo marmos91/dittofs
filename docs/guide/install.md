@@ -16,6 +16,141 @@ Most package managers install both.
 | `8080`  | Control-plane REST API (health checks, management) |
 | `9090`  | Prometheus metrics |
 
+DittoFS defaults to these **non-privileged** ports (>1024) so it starts without
+root. The portmapper, when enabled, defaults to `10111`.
+
+## Running on standard ports (production)
+
+In production we recommend running on the **standard, well-known ports** so
+clients connect with no special options:
+
+| Service | Default (unprivileged) | Standard (production) |
+|---------|------------------------|-----------------------|
+| NFS | `12049` | `2049` |
+| SMB | `12445` | `445` |
+| Portmapper (rpcbind) | `10111` | `111` |
+
+On standard ports, mount commands drop the `port=` / `mountport=` options and
+NFSv3 clients can auto-discover via the portmapper:
+
+```bash
+# Non-standard (default)
+sudo mount -t nfs -o vers=4.1,tcp,port=12049 server:/export /mnt/point
+# Standard ports — no port option needed
+sudo mount -t nfs -o vers=4.1 server:/export /mnt/point
+```
+
+Two things are required: **(1)** free the standard ports on the host, and
+**(2)** let DittoFS bind a port below 1024.
+
+### 1. Free the standard ports on the host
+
+Ports 2049 / 445 / 111 are usually claimed by the OS's own NFS, SMB, and
+RPC-bind services. Stop and disable them, or DittoFS cannot bind:
+
+```bash
+# Linux (systemd) — disable the kernel NFS server, Samba, and rpcbind
+sudo systemctl disable --now nfs-server rpcbind rpcbind.socket smbd nmbd
+
+# Confirm nothing else holds the ports
+sudo ss -tulpn | grep -E ':(2049|445|111)\b'
+```
+
+```bash
+# macOS — turn off built-in File Sharing (SMB) and nfsd
+sudo nfsd stop && sudo nfsd disable
+# Disable SMB file sharing in System Settings → General → Sharing, or:
+sudo launchctl disable system/com.apple.smbd
+```
+
+### 2. Bind the privileged ports — by deployment mode
+
+#### Single binary
+
+Set the ports in `config.yaml` (or via `DITTOFS_*` env vars), then grant the
+binary permission to bind low ports.
+
+```yaml
+adapters:
+  nfs:
+    port: 2049
+    portmapper:
+      enabled: true
+      port: 111        # enables NFSv3 client auto-discovery
+  smb:
+    port: 445
+```
+
+```bash
+# Equivalent env vars
+export DITTOFS_ADAPTERS_NFS_PORT=2049
+export DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true
+export DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111
+export DITTOFS_ADAPTERS_SMB_PORT=445
+```
+
+Binding a port below 1024 needs privilege. Either run as root, or — preferred —
+grant just the bind capability so the process stays unprivileged:
+
+```bash
+# Grant the capability to the binary (no root at runtime)
+sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/dfs
+
+# Or, under systemd, add to the [Service] section:
+#   AmbientCapabilities=CAP_NET_BIND_SERVICE
+```
+
+#### Docker
+
+The process is root **inside** the container, so it can bind low ports there
+directly. Set the adapter ports to the standard values and publish them 1:1:
+
+```bash
+docker run -d \
+  -e DITTOFS_ADAPTERS_NFS_PORT=2049 \
+  -e DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=true \
+  -e DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=111 \
+  -e DITTOFS_ADAPTERS_SMB_PORT=445 \
+  -p 2049:2049 -p 445:445 -p 111:111/tcp -p 111:111/udp \
+  -p 8080:8080 \
+  marmos91c/dittofs:latest
+```
+
+> **Publish the same number on both sides.** NFSv3's portmapper advertises the
+> port the server *listens* on, so a mismatched mapping like `-p 2049:12049`
+> breaks v3 auto-discovery (it works for v4, which has no portmapper). Set the
+> container to listen on the standard port and map `2049:2049`.
+
+The Docker **host** must still not run its own `nfsd` / `smbd` / `rpcbind` on
+those ports — see [step 1](#1-free-the-standard-ports-on-the-host).
+
+#### Kubernetes (operator)
+
+In-cluster there is no host service to disable, and the pod never needs to bind
+a privileged port: set the adapter ports in the `DittoServer` CR and let the
+operator's **Service** publish them. With a `LoadBalancer` (or `NodePort`)
+service, external clients reach the standard ports through the load balancer.
+
+```yaml
+apiVersion: dittofs.dittofs.com/v1alpha1
+kind: DittoServer
+metadata:
+  name: dittofs
+spec:
+  nfs:
+    port: 2049
+  smb:
+    enabled: true
+    port: 445
+  service:
+    type: LoadBalancer   # publishes the adapter ports externally
+```
+
+The operator wires each adapter port into the Service. For NFSv3 portmapper
+exposure (port 111) and the complete CR schema, see the
+[Kubernetes operator](#kubernetes-operator) section and the chart under
+`k8s/dittofs-operator/`.
+
 ## Package managers
 
 ### Debian / Ubuntu (APT)

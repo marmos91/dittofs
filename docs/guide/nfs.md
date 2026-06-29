@@ -273,6 +273,9 @@ the convenience wrapper first, then the raw `mount` command for each version.
 
 > Mounting over **SMB** instead? See [Mounting SMB Shares](smb.md#mounting-smb-shares)
 > — the same `dfsctl share mount` wrapper handles it with `--protocol smb`.
+>
+> Want mounts with **no `port=` option**? Run DittoFS on the standard port 2049
+> — see [Running on standard ports (production)](install.md#running-on-standard-ports-production).
 
 ### The easy way: `dfsctl share mount`
 
