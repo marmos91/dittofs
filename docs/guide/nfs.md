@@ -437,17 +437,17 @@ options) rather than separate `root_squash` / `all_squash` toggles:
 | Mode | Effect | Traditional NFS equivalent |
 |------|--------|----------------------------|
 | `none` | No remapping. UIDs pass through unchanged. | `no_root_squash` |
-| `root_to_admin` **(default)** | Root (UID 0) keeps root. Other UIDs unchanged. | `no_root_squash` |
-| `root_to_guest` | Root (UID 0) → anonymous. Other UIDs unchanged. | `root_squash` |
+| `root_to_admin` | Root (UID 0) keeps root. Other UIDs unchanged. | `no_root_squash` |
+| `root_to_guest` **(default)** | Root (UID 0) → anonymous. Other UIDs unchanged. | `root_squash` |
 | `all_to_admin` | **Every** client UID → root (UID 0). | `all_squash` to root |
 | `all_to_guest` | **Every** client UID → anonymous. | `all_squash` |
 
-> **Heads-up — the default is permissive.** DittoFS defaults to
-> `root_to_admin`, which means a remote root **keeps root privileges** on the
-> export (the opposite of many traditional NFS servers, which default to
-> `root_squash`). If untrusted hosts can reach the export over AUTH_SYS, set
-> `root_to_guest` (or stronger) explicitly. `none` and `root_to_admin` behave
-> identically for UID remapping.
+> **Default — root is squashed.** DittoFS defaults to `root_to_guest`, matching
+> the conventional NFS `root_squash`: a remote root is mapped to the anonymous
+> identity and does **not** keep root privileges on the export. If a trusted
+> client's root must act as the server's root (e.g. single-tenant admin
+> automation), opt into `root_to_admin` (`no_root_squash`) per share. `none` and
+> `root_to_admin` behave identically for UID remapping.
 
 The **anonymous** identity is UID/GID **65534** (`nobody`/`nogroup`) by default.
 
@@ -465,8 +465,8 @@ dfsctl share nfs-config show /export
 ```
 
 Valid values: `none`, `root_to_admin`, `root_to_guest`, `all_to_admin`,
-`all_to_guest`. A squash change takes effect on the **next NFS adapter restart**
-(unlike netgroup changes, which apply immediately). The anonymous UID/GID is
+`all_to_guest`. A squash change applies to active clients immediately — no NFS
+adapter restart is required. The anonymous UID/GID is
 configurable via the REST API (`anonymous_uid` / `anonymous_gid` on the share's
 NFS config); it is not exposed as a `dfsctl` flag and defaults to 65534.
 
@@ -477,8 +477,8 @@ Assume a file owned by UID 1000, mode `0644`, and a share-gate
 
 | Client mounts and acts as… | Squash mode | Effective identity | Result |
 |----------------------------|-------------|--------------------|--------|
-| `root` (UID 0) | `root_to_admin` (default) | UID 0 (root) | Full access — root bypasses POSIX. |
-| `root` (UID 0) | `root_to_guest` | UID 65534 (nobody) | Treated as `EVERYONE@`; can read the `0644` file, **cannot** write it. |
+| `root` (UID 0) | `root_to_admin` | UID 0 (root) | Full access — root bypasses POSIX. |
+| `root` (UID 0) | `root_to_guest` (default) | UID 65534 (nobody) | Treated as `EVERYONE@`; can read the `0644` file, **cannot** write it. |
 | UID 1000 | `root_to_guest` | UID 1000 (unchanged) | Owner access — read/write its own file. |
 | UID 1000 | `all_to_guest` | UID 65534 (nobody) | Squashed to nobody; read-only on the `0644` file even though it "owns" it. |
 | any UID | `all_to_admin` | UID 0 (root) | Everyone gets root — only for fully-trusted, single-tenant exports. |

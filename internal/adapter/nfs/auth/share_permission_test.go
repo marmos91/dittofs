@@ -90,10 +90,11 @@ func TestResolveSharePermission_DefaultPermissionReadWriteAllowsUnknownUID(t *te
 	}
 }
 
-// Behavior 2: SquashRootToAdmin (and the default empty squash) promote root
-// (UID 0) to admin with username "root".
+// Behavior 2: SquashRootToAdmin (and none / all_to_admin) promote root (UID 0)
+// to admin with username "root". Empty squash is NOT in this set — it defaults
+// to root_to_guest (see TestResolveSharePermission_EmptySquashDoesNotPromoteRoot).
 func TestResolveSharePermission_RootPromotedToAdmin(t *testing.T) {
-	for _, sq := range []models.SquashMode{"", models.SquashNone, models.SquashRootToAdmin, models.SquashAllToAdmin} {
+	for _, sq := range []models.SquashMode{models.SquashNone, models.SquashRootToAdmin, models.SquashAllToAdmin} {
 		store := newPermMockStore() // no user mapping; root path must not need one
 		share := &runtime.Share{
 			Name:              "/export",
@@ -111,6 +112,24 @@ func TestResolveSharePermission_RootPromotedToAdmin(t *testing.T) {
 		if res.ReadOnly {
 			t.Errorf("squash=%q: ReadOnly = true, want false (admin)", sq)
 		}
+	}
+}
+
+// Behavior 2b: an empty/unset squash defaults to root_to_guest, so root (UID 0)
+// is NOT promoted to admin — it is gated by default_permission like any guest.
+// With default_permission=none this denies root, matching conventional NFS
+// root_squash (the new default).
+func TestResolveSharePermission_EmptySquashDoesNotPromoteRoot(t *testing.T) {
+	store := newPermMockStore() // no UID 0 mapping → root falls through to guest
+	share := &runtime.Share{
+		Name:              "/export",
+		DefaultPermission: "none",
+		Squash:            "", // unset → DefaultSquashMode (root_to_guest)
+	}
+
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(0))
+	if !errors.Is(err, ErrShareAccessDenied) {
+		t.Fatalf("empty squash + default none: err = %v, want ErrShareAccessDenied (root not promoted)", err)
 	}
 }
 

@@ -36,7 +36,8 @@ type SharePermissionResult struct {
 //     bypassed: denied when default_permission is "none", otherwise granted with
 //     read-only coerced when the default permission is "read".
 //   - Root (UID 0) under a squash mode that keeps root privileged (none,
-//     root_to_admin, all_to_admin, or empty/default) → admin, username "root".
+//     root_to_admin, or all_to_admin) → admin, username "root". An empty/unset
+//     squash normalizes to root_to_guest (the default) and does NOT promote root.
 //   - Unknown UID → guest: denied when default_permission is "none", otherwise
 //     granted with read-only coerced when the default permission is "read".
 //   - Known user → their resolved share permission (falling back to the share
@@ -85,13 +86,14 @@ func ResolveSharePermission(
 	}
 
 	// Check if caller is root (UID 0) and squash mode doesn't map root away.
-	// Root has full admin access when squash mode is: none, root_to_admin,
-	// all_to_admin, or empty string (default behavior = root_to_admin).
+	// Root has full admin access only when squash mode is: none, root_to_admin,
+	// or all_to_admin. An empty/unset squash normalizes to DefaultSquashMode
+	// (root_to_guest), which does NOT promote root.
 	isCallerRoot := *uid == 0
-	rootHasAdmin := share.Squash == "" || // Empty string = default (root_to_admin)
-		share.Squash == models.SquashNone ||
-		share.Squash == models.SquashRootToAdmin ||
-		share.Squash == models.SquashAllToAdmin
+	effSquash := share.Squash.OrDefault()
+	rootHasAdmin := effSquash == models.SquashNone ||
+		effSquash == models.SquashRootToAdmin ||
+		effSquash == models.SquashAllToAdmin
 	if isCallerRoot && rootHasAdmin {
 		result.ReadOnly = share.ReadOnly
 		result.Username = "root"

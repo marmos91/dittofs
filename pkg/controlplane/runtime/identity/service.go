@@ -44,8 +44,11 @@ func (s *Service) ApplyIdentityMapping(shareName string, identity *metadata.Iden
 		return effective, nil
 	}
 
-	switch info.Squash {
-	case "", models.SquashNone, models.SquashRootToAdmin:
+	// Normalize empty/unset squash to DefaultSquashMode (root_to_guest) so an
+	// unconfigured share squashes root to anonymous instead of leaving it
+	// unmapped.
+	switch info.Squash.OrDefault() {
+	case models.SquashNone, models.SquashRootToAdmin:
 		// No mapping
 
 	case models.SquashRootToGuest:
