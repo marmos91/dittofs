@@ -256,11 +256,13 @@ type FileChunkStore = block.FileChunkStore
 // This interface combines Files, Shares, ServerConfig, FileChunkStore, and LockStore
 // interfaces to enable atomic operations across all metadata domains.
 type Transaction interface {
-	Files          // File CRUD operations
-	Shares         // Share management
-	ServerConfig   // Server configuration
-	FileChunkStore // Content-addressed block management
-	lock.LockStore // Lock persistence for NLM/SMB
+	Files            // File CRUD operations
+	Shares           // Share management
+	ServerConfig     // Server configuration
+	FileChunkStore   // Content-addressed block management
+	lock.LockStore   // Lock persistence for NLM/SMB
+	BlockRecordStore // Log-blob block record lifecycle
+	LocalChunkIndex  // Content-hash → local log-blob position
 }
 
 // ============================================================================
@@ -342,11 +344,14 @@ type FilesystemMeta struct {
 // Thread Safety:
 // Implementations must be safe for concurrent use by multiple goroutines.
 type Store interface {
-	Files          // File CRUD operations (non-transactional calls)
-	Shares         // Share lifecycle and handle management
-	ServerConfig   // Server configuration and capabilities
-	Transactor     // Transaction support for atomic operations
-	FileChunkStore // Content-addressed block management
+	Files            // File CRUD operations (non-transactional calls)
+	Shares           // Share lifecycle and handle management
+	ServerConfig     // Server configuration and capabilities
+	Transactor       // Transaction support for atomic operations
+	FileChunkStore   // Content-addressed block management
+	SyncedHashStore  // Per-hash remote-mirror state
+	BlockRecordStore // Log-blob block record lifecycle
+	LocalChunkIndex  // Content-hash → local log-blob position
 
 	// EnumerateFileChunks streams every FileChunk's ContentHash through fn
 	// in implementation-defined order. Returns the first non-nil error
@@ -428,6 +433,15 @@ type Store interface {
 	// Implementations MUST drain the result set before invoking fn
 	// (collect-then-call) and honor ctx.Done() throughout.
 	EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error
+
+	// ========================================================================
+	// Block Packing
+	// ========================================================================
+
+	// CommitBlock atomically writes rec and the local location for each chunk,
+	// then marks every chunk synced with its remote locator. Idempotent on
+	// BlockID: if the block record already exists the call is a no-op.
+	CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error
 
 	// ========================================================================
 	// Usage Tracking
