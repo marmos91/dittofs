@@ -275,6 +275,38 @@ func TestGroupHandler_Delete(t *testing.T) {
 	}
 }
 
+// TestGroupHandler_Delete_SystemGroupByID guards the name-or-ID bypass: the
+// system-group protection must hold when the group is addressed by its UUID.
+func TestGroupHandler_Delete_SystemGroupByID(t *testing.T) {
+	cpStore, handler := setupGroupTest(t)
+	ctx := context.Background()
+
+	// "admins" is a system group; ensure it exists and grab its ID.
+	admins, err := cpStore.GetGroup(ctx, "admins")
+	if err != nil {
+		gid := uint32(0)
+		admins = &models.Group{ID: uuid.New().String(), Name: "admins", GID: &gid, CreatedAt: time.Now()}
+		if _, err := cpStore.CreateGroup(ctx, admins); err != nil {
+			t.Fatalf("Failed to create admins group: %v", err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/groups/"+admins.ID, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", admins.ID) // address by ID, not name
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	handler.Remove(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Delete() system-group-by-id status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+	if _, err := cpStore.GetGroup(ctx, "admins"); err != nil {
+		t.Errorf("admins group must still exist after blocked delete-by-id: %v", err)
+	}
+}
+
 func TestGroupHandler_AddRemoveMember(t *testing.T) {
 	cpStore, handler := setupGroupTest(t)
 	ctx := context.Background()

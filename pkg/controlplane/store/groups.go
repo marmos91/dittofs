@@ -56,6 +56,12 @@ func (s *GORMStore) DeleteGroup(ctx context.Context, name string) error {
 			return err
 		}
 
+		// Protect system groups. Resolved here (not at the call site) so the guard
+		// holds regardless of whether the caller addressed the group by name or ID.
+		if models.IsSystemGroup(group.Name) {
+			return models.ErrCannotDeleteSysGroup
+		}
+
 		// Delete share permissions
 		if err := tx.Where("group_id = ?", group.ID).Delete(&models.GroupSharePermission{}).Error; err != nil {
 			return err

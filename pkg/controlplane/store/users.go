@@ -131,6 +131,13 @@ func (s *GORMStore) DeleteUser(ctx context.Context, username string) error {
 			return err
 		}
 
+		// Protect the admin account. Resolved here (not at the call site) so the
+		// guard holds regardless of whether the caller addressed the user by name
+		// or by ID.
+		if models.IsAdminUsername(user.Username) {
+			return models.ErrCannotDeleteAdmin
+		}
+
 		// Delete share permissions
 		if err := tx.Where("user_id = ?", user.ID).Delete(&models.UserSharePermission{}).Error; err != nil {
 			return err
