@@ -105,19 +105,6 @@ func setupNFSv42FSServer(t *testing.T) (*helpers.CLIRunner, int) {
 	return runner, nfsPort
 }
 
-// waitForFullRollup blocks until the entire dense file [0,size) is backed by
-// CAS blocks — i.e. SEEK_HOLE from 0 reports only the hole at EOF. Block-list-
-// dependent ops (CLONE) must run after the source has rolled up; until then the
-// source looks block-less and the op sees no data to copy. Requires a vers=4.2
-// mount so the kernel issues SEEK.
-func waitForFullRollup(t *testing.T, path string, size int64) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		h, err := seekTo(t, path, 0, seekHole)
-		return err == nil && h == size
-	}, 20*time.Second, 250*time.Millisecond, "file should roll up into CAS blocks")
-}
-
 // TestNFSv42Sparse exercises the SEEK / READ_PLUS / DEALLOCATE / ALLOCATE
 // cluster over a vers=4.2 mount (SPARSE-01..04).
 func TestNFSv42Sparse(t *testing.T) {

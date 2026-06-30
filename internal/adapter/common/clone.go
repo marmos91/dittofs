@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -29,49 +28,73 @@ import (
 //     dstFileAttr, no leaked RefCount bumps.
 //   - cache.InvalidateFile (if cache != nil) runs POST-txn, after the commit.
 //
-// The caller supplies the source's BlockRef list and size (already fetched for
-// its own validation) rather than having this helper re-read them — that avoids
-// a redundant GetFile and, more importantly, a TOCTOU window where a concurrent
-// writer resizes the source between the caller's whole-file decision and the
-// clone. blockStore and metadataStore MUST be the per-share stores resolved for
-// the destination handle; the caller is responsible for confirming src and dst
-// live in the same share and for stateid/permission/type checks.
+// CLONE copies the source's CAS block manifest (FileAttr.Blocks). A freshly
+// written source whose bytes are still in the append log / in-memory buffer has
+// an empty or partial manifest — the rollup into CAS is asynchronous — so this
+// helper first calls blockStore.DrainRollups to force every dirty payload into
+// CAS and persist its FileAttr.Blocks, then re-reads the source's manifest
+// INSIDE the txn. Without the drain the clone would reference no blocks and read
+// back as zeros: silent data loss when cloning un-rolled-up data (the CLONE twin
+// of #1481). Re-reading the source post-drain (rather than trusting a manifest
+// the caller fetched before the drain) closes the TOCTOU where the copy would
+// otherwise capture the stale, pre-rollup empty manifest.
+//
+// blockStore and metadataStore MUST be the per-share stores resolved for the
+// destination handle; the caller is responsible for confirming src and dst live
+// in the same share and for stateid/permission/type checks.
 func CloneWholeFile(
 	ctx context.Context,
 	blockStore *engine.Store,
 	metadataStore metadata.Store,
 	cache CacheInvalidator,
-	dstHandle metadata.FileHandle,
-	srcPayloadID, dstPayloadID metadata.PayloadID,
-	srcBlocks []block.BlockRef,
-	srcSize uint64,
+	srcHandle, dstHandle metadata.FileHandle,
+	dstPayloadID metadata.PayloadID,
 ) error {
-	// Self-clone (source and destination share a payload) is a no-op: cloning a
-	// payload onto itself would IncrementRefCount on hashes the same payload
-	// already owns, inflating the count with no offsetting reference. The caller
-	// should reject this earlier, but guard here too — this helper is the shared
-	// cross-protocol primitive and must stay safe on its own.
-	if srcPayloadID == dstPayloadID {
-		return nil
+	// Force the source's pending writes into CAS + the FileChunk manifest before
+	// we copy it. DrainRollups bypasses the stabilization window and persists
+	// FileAttr.Blocks, so the post-drain GetFile below observes the complete
+	// manifest rather than an empty/partial one.
+	if err := blockStore.DrainRollups(ctx); err != nil {
+		return fmt.Errorf("drain source rollups: %w", err)
 	}
 
+	selfClone := false
 	err := metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		// Bind the active txn into the context so the per-share coordinator's
 		// RefCount UPDATEs (driven by engine.CopyPayload) join the same txn as
 		// the destination PutFile and commit/roll back together.
 		txCtx := metadata.WithTx(ctx, tx)
 
+		// Re-read the source INSIDE the txn, AFTER the drain, so the copy uses the
+		// freshly populated manifest — never a stale pre-rollup one.
+		srcFile, err := tx.GetFile(ctx, srcHandle)
+		if err != nil {
+			return fmt.Errorf("fetch src file: %w", err)
+		}
+
+		// Self-clone (source and destination share a payload) is a no-op: cloning
+		// a payload onto itself would IncrementRefCount on hashes the same payload
+		// already owns, inflating the count with no offsetting reference. The
+		// caller should reject this earlier, but guard here too — this helper is
+		// the shared cross-protocol primitive and must stay safe on its own. The
+		// destination content is unchanged, so the post-txn cache invalidation is
+		// skipped too.
+		if srcFile.PayloadID == dstPayloadID {
+			selfClone = true
+			return nil
+		}
+
 		dstFile, err := tx.GetFile(ctx, dstHandle)
 		if err != nil {
 			return fmt.Errorf("fetch dst file: %w", err)
 		}
 
-		newBlocks, err := blockStore.CopyPayload(txCtx, string(srcPayloadID), string(dstPayloadID), srcBlocks)
+		newBlocks, err := blockStore.CopyPayload(txCtx, string(srcFile.PayloadID), string(dstPayloadID), srcFile.Blocks)
 		if err != nil {
 			return fmt.Errorf("engine copy payload: %w", err)
 		}
 		dstFile.Blocks = newBlocks
-		dstFile.Size = srcSize
+		dstFile.Size = srcFile.Size
 		dstFile.Mtime = time.Now()
 		dstFile.Ctime = dstFile.Mtime // content change is also a metadata change
 		if err := tx.PutFile(ctx, dstFile); err != nil {
@@ -86,7 +109,7 @@ func CloneWholeFile(
 	// POST-txn: the destination content changed wholesale; drop its cache
 	// entries. Files that still reference the shared CAS hashes via dedup keep
 	// their entries warm (nil removedHashes => key off dstPayloadID only).
-	if cache != nil {
+	if cache != nil && !selfClone {
 		cache.InvalidateFile(dstPayloadID, nil)
 	}
 	return nil
