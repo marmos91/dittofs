@@ -132,23 +132,31 @@ func (tx *badgerTransaction) WalkBlockRecords(_ context.Context, fn func(block.B
 	opts := badgerdb.DefaultIteratorOptions
 	opts.Prefix = prefix
 
-	it := tx.txn.NewIterator(opts)
-
-	var recs []block.BlockRecord
-	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-		item := it.Item()
-		var rec block.BlockRecord
-		if verr := item.Value(func(val []byte) error {
-			var decErr error
-			rec, decErr = decodeBlockRecord(val)
-			return decErr
-		}); verr != nil {
-			it.Close()
-			return verr
+	// Collect inside an inner closure so the iterator is closed by defer
+	// (panic-safe) yet still closed before fn runs — fn must never execute with
+	// the iterator open.
+	collect := func() ([]block.BlockRecord, error) {
+		it := tx.txn.NewIterator(opts)
+		defer it.Close()
+		var recs []block.BlockRecord
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			item := it.Item()
+			var rec block.BlockRecord
+			if verr := item.Value(func(val []byte) error {
+				var decErr error
+				rec, decErr = decodeBlockRecord(val)
+				return decErr
+			}); verr != nil {
+				return nil, verr
+			}
+			recs = append(recs, rec)
 		}
-		recs = append(recs, rec)
+		return recs, nil
 	}
-	it.Close()
+	recs, err := collect()
+	if err != nil {
+		return err
+	}
 
 	for _, rec := range recs {
 		if err := fn(rec); err != nil {
@@ -342,13 +350,15 @@ func (s *BadgerMetadataStore) WalkBlockRecords(ctx context.Context, fn func(bloc
 
 // DecrLiveChunkCount atomically decrements LiveChunkCount for the named block,
 // flooring at 0. Returns the remaining count. Returns an error if blockID does
-// not exist. Uses a Badger Update transaction for atomicity (read-modify-write).
+// not exist. The read-modify-write runs under updateWithConflictRetry so a
+// Badger SSI ErrConflict from a concurrent decrement is retried internally
+// rather than surfaced to the GC caller (which has no retry of its own).
 func (s *BadgerMetadataStore) DecrLiveChunkCount(ctx context.Context, blockID string, delta uint32) (uint32, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
 	var remaining uint32
-	err := s.db.Update(func(txn *badgerdb.Txn) error {
+	err := s.updateWithConflictRetry(ctx, func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyBlockRecord(blockID))
 		if errors.Is(err, badgerdb.ErrKeyNotFound) {
 			return fmt.Errorf("badger DecrLiveChunkCount: block %q not found", blockID)
@@ -458,3 +468,13 @@ func (s *BadgerMetadataStore) DeleteLocalLocation(ctx context.Context, hash bloc
 func (s *BadgerMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
 	return metadata.DefaultCommitBlock(ctx, s, rec, chunks)
 }
+
+// Compile-time guards: both the store and its transaction implement the new
+// block-record and local-index contracts (store-level is not otherwise checked
+// via the Transaction interface).
+var (
+	_ metadata.BlockRecordStore = (*BadgerMetadataStore)(nil)
+	_ metadata.BlockRecordStore = (*badgerTransaction)(nil)
+	_ metadata.LocalChunkIndex  = (*BadgerMetadataStore)(nil)
+	_ metadata.LocalChunkIndex  = (*badgerTransaction)(nil)
+)
