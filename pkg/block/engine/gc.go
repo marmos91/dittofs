@@ -248,7 +248,23 @@ type Options struct {
 	// leaves it false and sweeps from the index (no S3 LIST). Local-tier sweeps
 	// always Walk their own (local-disk) namespace regardless of this flag.
 	FullScan bool
+
+	// MarkProgress, when non-nil, is invoked during the mark phase with the
+	// running count of hashes marked so far — at each share boundary and every
+	// gcMarkProgressInterval hashes within a share. It gives long-running mark
+	// phases (millions of hashes on snapshot-heavy deployments) a liveness
+	// signal so an async caller can surface progress instead of a silent stall
+	// (#1433). Invoked synchronously from the (sequential) mark loop, so it must
+	// not block; implementations just record the latest count.
+	MarkProgress func(hashesMarked int64)
 }
+
+// gcMarkProgressInterval bounds how often the mark phase emits a progress
+// callback + INFO log line: once per this many hashes within a share. Large
+// enough that the logging/callback overhead is negligible against the Badger
+// live-set writes, small enough that a multi-minute mark phase still shows
+// movement.
+const gcMarkProgressInterval = 100_000
 
 // SyncedHashIndex is the narrow slice of the synced-hash marker store the GC
 // sweep depends on: enumerate the synced set (the LIST-free orphan-candidate
@@ -415,7 +431,7 @@ func collectGarbage(
 
 	// MARK: stream every FileChunk's ContentHash into gcs across every share
 	// the reconciler reports. Mark fail-closed.
-	if err := markPhase(ctx, reconciler, gcs, stats, options.HoldProvider, options.RemoteEndpointID, options.Shares); err != nil {
+	if err := markPhase(ctx, reconciler, gcs, stats, options.HoldProvider, options.RemoteEndpointID, options.Shares, options.MarkProgress); err != nil {
 		recordGCError(stats, "mark: "+err.Error())
 		slog.Error("GC: mark failed — aborting sweep (fail-closed)",
 			"run_id", runID, "err", err,
@@ -471,10 +487,20 @@ func collectGarbage(
 // live-data-deleted. Callers that genuinely have no shares must
 // short-circuit at a higher level (Runtime.RunBlockGC already does so
 // when DistinctRemoteStores returns an empty slice).
-func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState, stats *GCStats, hold HoldProvider, remoteEndpointID string, shares []string) error {
+func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState, stats *GCStats, hold HoldProvider, remoteEndpointID string, shares []string, markProgress func(int64)) error {
 	reconcilerShares := sharesForReconciler(reconciler)
 	if len(reconcilerShares) == 0 {
 		return fmt.Errorf("mark phase: reconciler reports zero shares — refusing to sweep CAS objects without a live set (fail-closed)")
+	}
+
+	// nextProgressAt is the HashesMarked threshold for the next progress
+	// callback + log line. Emitting every gcMarkProgressInterval hashes keeps a
+	// multi-minute mark phase visibly alive without per-hash overhead.
+	nextProgressAt := int64(gcMarkProgressInterval)
+	emitProgress := func() {
+		if markProgress != nil {
+			markProgress(stats.HashesMarked)
+		}
 	}
 
 	addHash := func(h block.ContentHash) error {
@@ -486,6 +512,11 @@ func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState,
 			return fmt.Errorf("gcstate add: %w", err)
 		}
 		stats.HashesMarked++
+		if stats.HashesMarked >= nextProgressAt {
+			nextProgressAt += gcMarkProgressInterval
+			emitProgress()
+			slog.Info("GC: mark progress", "hashes_marked", stats.HashesMarked, "remote_endpoint_id", remoteEndpointID)
+		}
 		return nil
 	}
 
@@ -497,15 +528,23 @@ func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState,
 		if err != nil {
 			return fmt.Errorf("get metadata store for share %q: %w", shareName, err)
 		}
+		before := stats.HashesMarked
 		if err := store.EnumerateFileChunks(ctx, addHash); err != nil {
 			return fmt.Errorf("enumerate share %q: %w", shareName, err)
 		}
+		slog.Info("GC: mark phase share enumerated",
+			"share", shareName,
+			"hashes_this_share", stats.HashesMarked-before,
+			"hashes_marked", stats.HashesMarked,
+			"remote_endpoint_id", remoteEndpointID)
+		emitProgress()
 	}
 
 	if hold != nil {
 		if err := hold.HeldHashes(ctx, remoteEndpointID, shares, addHash); err != nil {
 			return fmt.Errorf("hold provider: %w", err)
 		}
+		emitProgress()
 	}
 
 	// flush the batched Add()s so the sweep's Has() queries observe every

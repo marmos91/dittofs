@@ -108,9 +108,9 @@ func (c *Client) GetShareWarm(name, jobID string) (*WarmJobStatus, error) {
 // BlockStoreGCOptions is the request body for
 // POST /api/v1/shares/{name}/blockstore/gc. DryRun maps to
 // engine.Options.DryRun: mark + sweep enumeration runs but no DELETEs
-// are issued; candidate keys are returned in
-// BlockStoreGCResult.Stats.DryRunCandidates (capped at the engine
-// dry-run sample size, default 1000).
+// are issued; candidate keys are returned in the job's
+// GCJobStatus.Stats.DryRunCandidates (capped at the engine dry-run
+// sample size, default 1000).
 type BlockStoreGCOptions struct {
 	DryRun bool `json:"dry_run,omitempty"`
 	// Reconcile runs the migration pass: reap stranded file_blocks rows
@@ -119,35 +119,67 @@ type BlockStoreGCOptions struct {
 	Reconcile bool `json:"reconcile,omitempty"`
 }
 
-// BlockStoreGCResult is the response body for
-// POST /api/v1/shares/{name}/blockstore/gc. Stats wraps the *engine.GCStats
-// summed across every distinct remote scanned during the run
-// (cross-share aggregation). Mirrors the server-side
-// handlers.BlockStoreGCResponse shape.
-type BlockStoreGCResult struct {
-	Stats *engine.GCStats `json:"stats"`
+// GCJobStatus is the wire-shape for an async block-store GC job, returned by
+// GetBlockStoreGCJob and embedded in StartBlockStoreGC's response. Stats is
+// populated once State is terminal ("done"/"failed"); the live counters track
+// the in-flight run.
+type GCJobStatus struct {
+	ID             string          `json:"id"`
+	State          string          `json:"state"`
+	Share          string          `json:"share"`
+	Reconcile      bool            `json:"reconcile"`
+	DryRun         bool            `json:"dry_run"`
+	HashesMarked   int64           `json:"hashes_marked"`
+	ObjectsScanned int64           `json:"objects_scanned"`
+	ObjectsSwept   int64           `json:"objects_swept"`
+	BytesFreed     int64           `json:"bytes_freed"`
+	StartedAt      string          `json:"started_at,omitempty"`
+	FinishedAt     string          `json:"finished_at,omitempty"`
+	Stats          *engine.GCStats `json:"stats,omitempty"`
+	Error          string          `json:"error,omitempty"`
 }
 
-// BlockStoreGC triggers an on-demand GC run for the named share. The
-// run scans every share whose remote-store config matches the named
-// share's remote, but `last-run.json` is persisted under the
-// named share's gc-state directory. opts may be nil (treated as a
-// non-dry-run request).
+// gcStartResponse is the 202 body from POST .../blockstore/gc.
+type gcStartResponse struct {
+	JobID  string      `json:"job_id"`
+	Status GCJobStatus `json:"status"`
+}
+
+// StartBlockStoreGC kicks off (or returns the already-running) async GC run for
+// the named share and returns the job id to poll via GetBlockStoreGCJob. The
+// run scans every share whose remote-store config matches the named share's
+// remote, but `last-run.json` is persisted under the named share's gc-state
+// directory. The server runs it on a detached context, so this call returns
+// immediately rather than blocking for the (possibly multi-minute) run (#1433).
+// opts may be nil (treated as a non-dry-run request).
 //
-// Note: the route is mounted at /api/v1/shares/{name}/blockstore/gc
-// (not /api/v1/store/block/{name}/gc as initially scoped) because the
-// /store/block/{kind} sub-router would shadow a {name} segment at the
-// same level — chi v5 cannot disambiguate two differently-named wildcards
-// on the same path segment. The per-share /shares/{name}/blockstore/...
-// pattern matches the existing stats and evict endpoints.
-func (c *Client) BlockStoreGC(shareName string, opts *BlockStoreGCOptions) (*BlockStoreGCResult, error) {
+// Note: the route is mounted at /api/v1/shares/{name}/blockstore/gc because the
+// /store/block/{kind} sub-router would shadow a {name} segment at the same
+// level — chi v5 cannot disambiguate two differently-named wildcards on one path
+// segment. The per-share /shares/{name}/blockstore/... pattern matches the
+// existing stats and evict endpoints.
+func (c *Client) StartBlockStoreGC(shareName string, opts *BlockStoreGCOptions) (string, error) {
 	if opts == nil {
 		opts = &BlockStoreGCOptions{}
 	}
-	return createResource[BlockStoreGCResult](
+	resp, err := createResource[gcStartResponse](
 		c,
 		fmt.Sprintf("/api/v1/shares/%s/blockstore/gc", url.PathEscape(normalizeShareNameForAPI(shareName))),
 		opts,
+	)
+	if err != nil {
+		return "", err
+	}
+	return resp.JobID, nil
+}
+
+// GetBlockStoreGCJob returns the current status of GC job jobID for the named
+// share.
+func (c *Client) GetBlockStoreGCJob(shareName, jobID string) (*GCJobStatus, error) {
+	return getResource[GCJobStatus](
+		c,
+		fmt.Sprintf("/api/v1/shares/%s/blockstore/gc/%s",
+			url.PathEscape(normalizeShareNameForAPI(shareName)), url.PathEscape(jobID)),
 	)
 }
 

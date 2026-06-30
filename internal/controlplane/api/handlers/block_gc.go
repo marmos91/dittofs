@@ -1,18 +1,19 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
 
@@ -22,13 +23,17 @@ import (
 // records calls and returns canned responses, mirroring the
 // testBlockStoreHandler pattern in blockstore_test.go.
 type BlockGCRuntime interface {
-	// RunBlockGCForShare dispatches a GC run scoped to the named share's
-	// gc-state directory for last-run.json persistence.
-	RunBlockGCForShare(ctx context.Context, shareName string, dryRun bool) (*engine.GCStats, error)
+	// StartBlockGC launches (or returns the already-running) async GC job. When
+	// reconcile is true the run reaps stranded file_blocks rows across all
+	// shares before sweeping both tiers; otherwise it runs the share-scoped
+	// sweep. The run executes on a context detached from the request, so a
+	// request/client timeout cannot abort the (potentially multi-minute) mark
+	// phase (#1433).
+	StartBlockGC(shareName string, dryRun, reconcile bool) (*runtime.GCJob, error)
 
-	// RunBlockGCReconcile reaps stranded file_blocks rows (leaked by the
-	// pre-fix delete path) across all shares, then runs the two-tier sweep.
-	RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine.GCStats, error)
+	// GetGCJobStatus returns a GC job by ID, or false if unknown (never started
+	// or evicted from the retained-terminal window).
+	GetGCJobStatus(jobID string) (*runtime.GCJob, bool)
 
 	// GCStateDirForShare returns the per-share gc-state directory the GC
 	// engine writes `last-run.json` into. Empty when the share's local
@@ -61,10 +66,46 @@ type BlockStoreGCRequest struct {
 	Reconcile bool `json:"reconcile,omitempty"`
 }
 
-// BlockStoreGCResponse wraps the *engine.GCStats result for JSON output.
-// Returned by POST /api/v1/shares/{name}/blockstore/gc.
-type BlockStoreGCResponse struct {
-	Stats *engine.GCStats `json:"stats"`
+// GCJobStatusResponse is the JSON status body for an async GC job, returned by
+// both RunGC (202) and GCJobStatus (200). Mirrors runtime.GCJob's wire shape;
+// Stats is populated once the job reaches a terminal state.
+type GCJobStatusResponse struct {
+	ID             string          `json:"id"`
+	State          string          `json:"state"`
+	Share          string          `json:"share"`
+	Reconcile      bool            `json:"reconcile"`
+	DryRun         bool            `json:"dry_run"`
+	HashesMarked   int64           `json:"hashes_marked"`
+	ObjectsScanned int64           `json:"objects_scanned"`
+	ObjectsSwept   int64           `json:"objects_swept"`
+	BytesFreed     int64           `json:"bytes_freed"`
+	StartedAt      string          `json:"started_at,omitempty"`
+	FinishedAt     string          `json:"finished_at,omitempty"`
+	Stats          *engine.GCStats `json:"stats,omitempty"`
+	Error          string          `json:"error,omitempty"`
+}
+
+func gcJobToResponse(j *runtime.GCJob) GCJobStatusResponse {
+	resp := GCJobStatusResponse{
+		ID:             j.ID,
+		State:          j.State,
+		Share:          j.Share,
+		Reconcile:      j.Reconcile,
+		DryRun:         j.DryRun,
+		HashesMarked:   j.HashesMarked,
+		ObjectsScanned: j.ObjectsScanned,
+		ObjectsSwept:   j.ObjectsSwept,
+		BytesFreed:     j.BytesFreed,
+		Stats:          j.Stats,
+		Error:          j.Err,
+	}
+	if !j.StartedAt.IsZero() {
+		resp.StartedAt = j.StartedAt.UTC().Format(time.RFC3339)
+	}
+	if !j.FinishedAt.IsZero() {
+		resp.FinishedAt = j.FinishedAt.UTC().Format(time.RFC3339)
+	}
+	return resp
 }
 
 // RunGC handles POST /api/v1/shares/{name}/blockstore/gc.
@@ -101,29 +142,53 @@ func (h *BlockStoreGCHandler) RunGC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Reconcile is server-wide (reaps stranded rows across all shares), so it
-	// ignores the per-share scoping that RunBlockGCForShare applies.
-	var stats *engine.GCStats
-	var err error
-	if req.Reconcile {
-		stats, err = h.runtime.RunBlockGCReconcile(r.Context(), req.DryRun)
-	} else {
-		stats, err = h.runtime.RunBlockGCForShare(r.Context(), name, req.DryRun)
-	}
+	// Kick off the run asynchronously and return immediately: the mark phase can
+	// take minutes on a large or snapshot-heavy deployment, far longer than the
+	// request-middleware/client timeout, so a synchronous run was aborted
+	// mid-mark with "context deadline exceeded" and never reclaimed anything
+	// (#1433). The job runs on a detached context; clients poll
+	// GET .../blockstore/gc/{job_id}. Reconcile is server-wide (reaps stranded
+	// rows across all shares) and ignores the per-share scoping internally.
+	job, err := h.runtime.StartBlockGC(name, req.DryRun, req.Reconcile)
 	if err != nil {
 		if errors.Is(err, shares.ErrShareNotFound) {
 			NotFound(w, "share not found: "+name)
 			return
 		}
-		logger.Debug("Block store GC error", "share", name, "error", err)
-		// Strip the underlying err string from the response body — it
-		// can leak filesystem paths or other internal details. Details
-		// are logged at Debug above for operator postmortems.
-		InternalServerError(w, "GC failed")
+		logger.Debug("Block store GC start error", "share", name, "error", err)
+		InternalServerError(w, "GC failed to start")
 		return
 	}
 
-	WriteJSONOK(w, BlockStoreGCResponse{Stats: stats})
+	WriteJSON(w, http.StatusAccepted, map[string]any{
+		"job_id": job.ID,
+		"status": gcJobToResponse(job),
+	})
+}
+
+// GCJobStatus handles GET /api/v1/shares/{name}/blockstore/gc/{job_id}. It
+// returns the current status of an async GC job. The {name} segment is accepted
+// for route symmetry with the start endpoint; the job id alone identifies the
+// job.
+func (h *BlockStoreGCHandler) GCJobStatus(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		InternalServerError(w, "runtime not initialized")
+		return
+	}
+
+	jobID := chi.URLParam(r, "job_id")
+	if jobID == "" {
+		BadRequest(w, "job id required")
+		return
+	}
+
+	job, ok := h.runtime.GetGCJobStatus(jobID)
+	if !ok {
+		NotFound(w, "GC job not found")
+		return
+	}
+
+	WriteJSONOK(w, gcJobToResponse(job))
 }
 
 // GCStatus handles GET /api/v1/shares/{name}/blockstore/gc-status.

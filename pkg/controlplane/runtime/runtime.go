@@ -98,6 +98,7 @@ type Runtime struct {
 	localStoreDefaults *shares.LocalStoreDefaults
 	syncerDefaults     *shares.SyncerDefaults
 	gcDefaults         *GCDefaults
+	gcReg              *gcRegistry
 	settingsWatcher    *SettingsWatcher
 
 	adapterProviders   map[string]any
@@ -182,6 +183,7 @@ func New(s store.Store) *Runtime {
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
 		identitySvc:      identity.New(),
 		statusCheckers:   newCheckerCache(StatusCacheTTL),
+		gcReg:            newGCRegistry(),
 	}
 
 	// Long-lived ctx for snapshot orchestration goroutines.
@@ -273,6 +275,12 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	}
 	if ss != nil {
 		ss.Stop()
+	}
+
+	// Cancel any in-flight async GC so a long mark/sweep does not outlive the
+	// stores it operates on.
+	if r.gcReg != nil {
+		r.gcReg.cancelActive()
 	}
 
 	r.shutdownSnapshots(ctx)

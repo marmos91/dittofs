@@ -33,6 +33,13 @@ const (
 // references, then lets the grace- and snapshot-hold-aware sweep delete the
 // chunks.
 func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine.GCStats, error) {
+	return r.runBlockGCReconcile(ctx, dryRun, nil)
+}
+
+// runBlockGCReconcile is RunBlockGCReconcile with an optional progress sink
+// wired into the sweep for async callers (StartBlockGC). progress is nil for
+// the synchronous public entrypoint and the startup reconcile-once.
+func (r *Runtime) runBlockGCReconcile(ctx context.Context, dryRun bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
 	graceCutoff := time.Now().Add(-r.reconcileGracePeriod())
 
 	total := &engine.GCStats{DryRun: dryRun}
@@ -62,7 +69,7 @@ func (r *Runtime) RunBlockGCReconcile(ctx context.Context, dryRun bool) (*engine
 	// that must scan the real remote to find objects the synced-hash index does
 	// not know about (e.g. a Put-then-Mark crash), which the steady-state
 	// LIST-free sweep cannot see.
-	sweep, err := r.runBlockGCSweep(ctx, "", dryRun, true)
+	sweep, err := r.runBlockGCSweep(ctx, "", dryRun, true, progress)
 	// Record reaped rows regardless of the sweep result: the rows are already
 	// deleted from the metadata store, so the counter must reflect that even if
 	// the downstream sweep (e.g. S3 unreachable) then fails. Skip on dry-run —
