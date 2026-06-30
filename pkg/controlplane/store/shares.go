@@ -14,7 +14,7 @@ import (
 )
 
 func (s *GORMStore) GetShare(ctx context.Context, name string) (*models.Share, error) {
-	return getByNameOrID[models.Share](s.db, ctx, name, models.ErrShareNotFound,
+	return getByNameOrID[models.Share](s.db, ctx, "name", name, models.ErrShareNotFound,
 		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions")
 }
 
@@ -127,7 +127,7 @@ func (s *GORMStore) UpdateShare(ctx context.Context, share *models.Share) error 
 
 func (s *GORMStore) DeleteShare(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		share, err := getByNameOrID[models.Share](tx, ctx, name, models.ErrShareNotFound)
+		share, err := getByNameOrID[models.Share](tx, ctx, "name", name, models.ErrShareNotFound)
 		if err != nil {
 			return err
 		}
@@ -233,7 +233,7 @@ func (s *GORMStore) GetShareAccessRules(ctx context.Context, shareName string) (
 
 func (s *GORMStore) SetShareAccessRules(ctx context.Context, shareName string, rules []*models.ShareAccessRule) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		share, err := getByNameOrID[models.Share](tx, ctx, shareName, models.ErrShareNotFound)
+		share, err := getByNameOrID[models.Share](tx, ctx, "name", shareName, models.ErrShareNotFound)
 		if err != nil {
 			return err
 		}
@@ -260,7 +260,7 @@ func (s *GORMStore) SetShareAccessRules(ctx context.Context, shareName string, r
 
 func (s *GORMStore) AddShareAccessRule(ctx context.Context, shareName string, rule *models.ShareAccessRule) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		share, err := getByNameOrID[models.Share](tx, ctx, shareName, models.ErrShareNotFound)
+		share, err := getByNameOrID[models.Share](tx, ctx, "name", shareName, models.ErrShareNotFound)
 		if err != nil {
 			return err
 		}
@@ -276,7 +276,7 @@ func (s *GORMStore) AddShareAccessRule(ctx context.Context, shareName string, ru
 
 func (s *GORMStore) RemoveShareAccessRule(ctx context.Context, shareName, ruleID string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		share, err := getByNameOrID[models.Share](tx, ctx, shareName, models.ErrShareNotFound)
+		share, err := getByNameOrID[models.Share](tx, ctx, "name", shareName, models.ErrShareNotFound)
 		if err != nil {
 			return err
 		}

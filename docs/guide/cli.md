@@ -2393,11 +2393,12 @@ Global flags:
 Get group details
 
 Get detailed information about a specific group on the DittoFS server.
+Accepts either the group name or the group's full ID (see 'dfsctl group list').
 The output includes the group's GID, description, member list, and creation
 timestamp. Use -o json or -o yaml for machine-readable output.
 
 ```
-dfsctl group get <name>
+dfsctl group get <name|id>
 ```
 
 **Examples:**
@@ -2405,6 +2406,9 @@ dfsctl group get <name>
 ```bash
 # Show group details as a table
 dfsctl group get editors
+
+# By ID
+dfsctl group get 7a1e9f02-...
 
 # Output as JSON (useful for scripting)
 dfsctl group get editors -o json
@@ -2470,13 +2474,14 @@ Global flags:
 
 Remove a group
 
-Remove a group from the DittoFS server. This action is irreversible:
+Remove a group from the DittoFS server. Accepts either the group name
+or the group's full ID (see 'dfsctl group list'). This action is irreversible:
 the group record is permanently removed and any users that had it as their
 primary group will lose that association. You will be prompted for
 confirmation unless --force is specified.
 
 ```
-dfsctl group remove <name> [flags]
+dfsctl group remove <name|id> [flags]
 ```
 
 **Examples:**
@@ -7109,11 +7114,12 @@ Global flags:
 Get user details
 
 Get detailed information about a specific user on the DittoFS server.
+Accepts either the username or the user's full ID (see 'dfsctl user list').
 The output includes the user's role, UID, group memberships, account status,
 and last-login timestamp. Use -o json or -o yaml for machine-readable output.
 
 ```
-dfsctl user get <username>
+dfsctl user get <username|id>
 ```
 
 **Examples:**
@@ -7121,6 +7127,9 @@ dfsctl user get <username>
 ```bash
 # Show user details as a table
 dfsctl user get alice
+
+# By ID
+dfsctl user get 3f2b1c4d-...
 
 # Output as JSON (useful for scripting)
 dfsctl user get alice -o json
@@ -7231,13 +7240,14 @@ Global flags:
 
 Remove a user
 
-Remove a user from the DittoFS server. This action is irreversible:
+Remove a user from the DittoFS server. Accepts either the username or
+the user's full ID (see 'dfsctl user list'). This action is irreversible:
 the account and its authentication tokens are permanently removed, though
 files the user owns are not deleted. You will be prompted for confirmation
 unless --force is specified.
 
 ```
-dfsctl user remove <username> [flags]
+dfsctl user remove <username|id> [flags]
 ```
 
 **Examples:**

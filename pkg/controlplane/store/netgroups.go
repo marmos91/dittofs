@@ -24,7 +24,7 @@ func netgroupIDExpr(dbType DatabaseType) string {
 }
 
 func (s *GORMStore) GetNetgroup(ctx context.Context, name string) (*models.Netgroup, error) {
-	return getByField[models.Netgroup](s.db, ctx, "name", name, models.ErrNetgroupNotFound, "Members")
+	return getByNameOrID[models.Netgroup](s.db, ctx, "name", name, models.ErrNetgroupNotFound, "Members")
 }
 
 func (s *GORMStore) GetNetgroupByID(ctx context.Context, id string) (*models.Netgroup, error) {
@@ -59,9 +59,9 @@ func (s *GORMStore) CreateNetgroup(ctx context.Context, netgroup *models.Netgrou
 
 func (s *GORMStore) DeleteNetgroup(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var netgroup models.Netgroup
-		if err := tx.Where("name = ?", name).First(&netgroup).Error; err != nil {
-			return convertNotFoundError(err, models.ErrNetgroupNotFound)
+		netgroup, err := getByNameOrID[models.Netgroup](tx, ctx, "name", name, models.ErrNetgroupNotFound)
+		if err != nil {
+			return err
 		}
 
 		// Check if any NFS adapter configs reference this netgroup ID in their JSON config.
@@ -82,7 +82,7 @@ func (s *GORMStore) DeleteNetgroup(ctx context.Context, name string) error {
 		}
 
 		// Delete the netgroup
-		return tx.Delete(&netgroup).Error
+		return tx.Delete(netgroup).Error
 	})
 }
 

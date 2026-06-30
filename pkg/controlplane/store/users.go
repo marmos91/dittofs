@@ -16,7 +16,7 @@ import (
 )
 
 func (s *GORMStore) GetUser(ctx context.Context, username string) (*models.User, error) {
-	return getByField[models.User](s.db, ctx, "username", username, models.ErrUserNotFound, "Groups", "SharePermissions")
+	return getByNameOrID[models.User](s.db, ctx, "username", username, models.ErrUserNotFound, "Groups", "SharePermissions")
 }
 
 func (s *GORMStore) GetUserByID(ctx context.Context, id string) (*models.User, error) {
@@ -126,9 +126,9 @@ func (s *GORMStore) UpdateUserSIDInfo(ctx context.Context, username, sid string,
 
 func (s *GORMStore) DeleteUser(ctx context.Context, username string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var user models.User
-		if err := tx.Where("username = ?", username).First(&user).Error; err != nil {
-			return convertNotFoundError(err, models.ErrUserNotFound)
+		user, err := getByNameOrID[models.User](tx, ctx, "username", username, models.ErrUserNotFound)
+		if err != nil {
+			return err
 		}
 
 		// Delete share permissions
@@ -137,12 +137,12 @@ func (s *GORMStore) DeleteUser(ctx context.Context, username string) error {
 		}
 
 		// Remove from groups (GORM handles the join table)
-		if err := tx.Model(&user).Association("Groups").Clear(); err != nil {
+		if err := tx.Model(user).Association("Groups").Clear(); err != nil {
 			return err
 		}
 
 		// Delete user
-		if err := tx.Delete(&user).Error; err != nil {
+		if err := tx.Delete(user).Error; err != nil {
 			return err
 		}
 

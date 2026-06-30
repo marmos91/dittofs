@@ -11,7 +11,7 @@ import (
 )
 
 func (s *GORMStore) GetGroup(ctx context.Context, name string) (*models.Group, error) {
-	return getByField[models.Group](s.db, ctx, "name", name, models.ErrGroupNotFound, "Users", "SharePermissions")
+	return getByNameOrID[models.Group](s.db, ctx, "name", name, models.ErrGroupNotFound, "Users", "SharePermissions")
 }
 
 func (s *GORMStore) GetGroupByID(ctx context.Context, id string) (*models.Group, error) {
@@ -51,9 +51,9 @@ func (s *GORMStore) UpdateGroup(ctx context.Context, group *models.Group) error 
 
 func (s *GORMStore) DeleteGroup(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var group models.Group
-		if err := tx.Where("name = ?", name).First(&group).Error; err != nil {
-			return convertNotFoundError(err, models.ErrGroupNotFound)
+		group, err := getByNameOrID[models.Group](tx, ctx, "name", name, models.ErrGroupNotFound)
+		if err != nil {
+			return err
 		}
 
 		// Delete share permissions
@@ -62,12 +62,12 @@ func (s *GORMStore) DeleteGroup(ctx context.Context, name string) error {
 		}
 
 		// Remove users from group (GORM handles the join table)
-		if err := tx.Model(&group).Association("Users").Clear(); err != nil {
+		if err := tx.Model(group).Association("Users").Clear(); err != nil {
 			return err
 		}
 
 		// Delete group
-		if err := tx.Delete(&group).Error; err != nil {
+		if err := tx.Delete(group).Error; err != nil {
 			return err
 		}
 
