@@ -733,9 +733,10 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 	// bytes are on the wire regardless of MarkSynced, so charge them here.
 	m.uploadedBytesWindow.Add(int64(len(data)))
 	// PR3a: every chunk is still a standalone CAS object, so record a standalone
-	// locator (PackID=="" → persisted in the legacy form). PR3b's packer will
+	// locator (PackID=="" → persisted in the legacy form; Offset/Length are
+	// unused for standalone per the ChunkLocator contract). PR3b's packer will
 	// record pack locators here instead.
-	if err := hashStore.MarkSynced(ctx, hash, block.ChunkLocator{Length: int64(len(data))}); err != nil {
+	if err := hashStore.MarkSynced(ctx, hash, block.ChunkLocator{}); err != nil {
 		m.failedSyncs.Add(1)
 		return fmt.Errorf("mark synced %s: %w", hash, err)
 	}

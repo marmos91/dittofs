@@ -50,6 +50,7 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 
 	s.syncedMu.Lock()
 	s.synced = make(map[block.ContentHash]time.Time)
+	s.syncedLocators = nil // clear pack locators together with synced markers
 	s.syncedMu.Unlock()
 
 	return nil
