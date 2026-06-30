@@ -34,7 +34,7 @@ type GroupList []apiclient.Group
 
 // Headers implements TableRenderer.
 func (gl GroupList) Headers() []string {
-	return []string{"NAME", "GID", "MEMBERS", "DESCRIPTION"}
+	return []string{"NAME", "ID", "GID", "MEMBERS", "DESCRIPTION"}
 }
 
 // Rows implements TableRenderer.
@@ -47,7 +47,7 @@ func (gl GroupList) Rows() [][]string {
 		if g.GID != nil {
 			gidStr = fmt.Sprintf("%d", *g.GID)
 		}
-		rows = append(rows, []string{g.Name, gidStr, members, description})
+		rows = append(rows, []string{g.Name, g.ID, gidStr, members, description})
 	}
 	return rows
 }

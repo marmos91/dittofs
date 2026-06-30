@@ -572,6 +572,43 @@ func TestUserHandler_Delete_Admin(t *testing.T) {
 	}
 }
 
+// TestUserHandler_Delete_AdminByID guards the name-or-ID bypass: the admin-user
+// protection must hold when the admin is addressed by its UUID, not just by name.
+func TestUserHandler_Delete_AdminByID(t *testing.T) {
+	cpStore, _, handler := setupUserTest(t)
+	ctx := context.Background()
+
+	adminID := uuid.New().String()
+	passwordHash, ntHash, _ := models.HashPasswordWithNT("password")
+	user := &models.User{
+		ID:           adminID,
+		Username:     models.AdminUsername,
+		PasswordHash: passwordHash,
+		NTHash:       ntHash,
+		Enabled:      true,
+		Role:         "admin",
+		CreatedAt:    time.Now(),
+	}
+	if _, err := cpStore.CreateUser(ctx, user); err != nil {
+		t.Fatalf("Failed to create admin user: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/users/"+adminID, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("username", adminID) // address by ID, not name
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	handler.Remove(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("Delete() admin-by-id status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+	if _, err := cpStore.GetUser(ctx, models.AdminUsername); err != nil {
+		t.Errorf("admin user must still exist after blocked delete-by-id: %v", err)
+	}
+}
+
 func TestUserHandler_ResetPassword(t *testing.T) {
 	cpStore, _, handler := setupUserTest(t)
 	ctx := context.Background()

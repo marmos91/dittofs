@@ -304,28 +304,25 @@ func (h *UserHandler) applySharePerms(r *http.Request, userID string, perms map[
 // Remove handles DELETE /api/v1/users/{username}.
 // Deletes a user (admin only).
 func (h *UserHandler) Remove(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
-	if username == "" {
+	token := chi.URLParam(r, "username")
+	if token == "" {
 		BadRequest(w, "Username is required")
 		return
 	}
 
-	// Prevent deleting admin user
-	if models.IsAdminUsername(username) {
+	// The token may be a username or an ID. DeleteUser resolves it and refuses to
+	// delete the admin account by its canonical username, so the guard can't be
+	// bypassed by addressing the admin via its ID.
+	switch err := h.store.DeleteUser(r.Context(), token); {
+	case err == nil:
+		WriteNoContent(w)
+	case errors.Is(err, models.ErrCannotDeleteAdmin):
 		Forbidden(w, "Cannot delete admin user")
-		return
-	}
-
-	if err := h.store.DeleteUser(r.Context(), username); err != nil {
-		if errors.Is(err, models.ErrUserNotFound) {
-			NotFound(w, "User not found")
-			return
-		}
+	case errors.Is(err, models.ErrUserNotFound):
+		NotFound(w, "User not found")
+	default:
 		InternalServerError(w, "Failed to delete user")
-		return
 	}
-
-	WriteNoContent(w)
 }
 
 // ResetPassword handles POST /api/v1/users/{username}/password.

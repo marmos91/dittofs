@@ -10,9 +10,10 @@ import (
 var removeForce bool
 
 var removeCmd = &cobra.Command{
-	Use:   "remove <name>",
+	Use:   "remove <name|id>",
 	Short: "Remove a group",
-	Long: `Remove a group from the DittoFS server. This action is irreversible:
+	Long: `Remove a group from the DittoFS server. Accepts either the group name
+or the group's full ID (see 'dfsctl group list'). This action is irreversible:
 the group record is permanently removed and any users that had it as their
 primary group will lose that association. You will be prompted for
 confirmation unless --force is specified.

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -12,17 +11,9 @@ import (
 )
 
 func (s *GORMStore) GetBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) (*models.BlockStoreConfig, error) {
-	var store models.BlockStoreConfig
-	// Resolve by name first, then by ID, scoped to the requested kind so an ID
-	// only matches a store of that kind (docker-style name-or-ID addressing).
-	err := s.db.WithContext(ctx).Where("name = ? AND kind = ?", name, kind).First(&store).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		err = s.db.WithContext(ctx).Where("id = ? AND kind = ?", name, kind).First(&store).Error
-	}
-	if err != nil {
-		return nil, convertNotFoundError(err, models.ErrStoreNotFound)
-	}
-	return &store, nil
+	// Resolve by name then by ID, scoped to the requested kind so an ID only
+	// matches a store of that kind (docker-style name-or-ID addressing).
+	return getByNameOrIDWithin[models.BlockStoreConfig](s.db, ctx, "name", name, models.ErrStoreNotFound, []fieldEq{{"kind", kind}})
 }
 
 func (s *GORMStore) GetBlockStoreByID(ctx context.Context, id string) (*models.BlockStoreConfig, error) {
@@ -69,13 +60,9 @@ func (s *GORMStore) UpdateBlockStore(ctx context.Context, store *models.BlockSto
 
 func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string, kind models.BlockStoreKind) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var store models.BlockStoreConfig
-		err := tx.Where("name = ? AND kind = ?", name, kind).First(&store).Error
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = tx.Where("id = ? AND kind = ?", name, kind).First(&store).Error
-		}
+		store, err := getByNameOrIDWithin[models.BlockStoreConfig](tx, ctx, "name", name, models.ErrStoreNotFound, []fieldEq{{"kind", kind}})
 		if err != nil {
-			return convertNotFoundError(err, models.ErrStoreNotFound)
+			return err
 		}
 
 		// Check if any shares reference this store (via local or remote block store ID)
@@ -89,7 +76,7 @@ func (s *GORMStore) DeleteBlockStore(ctx context.Context, name string, kind mode
 			return models.ErrStoreInUse
 		}
 
-		return tx.Delete(&store).Error
+		return tx.Delete(store).Error
 	})
 }
 

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -151,24 +152,23 @@ func (h *GroupHandler) Update(w http.ResponseWriter, r *http.Request) {
 // Deletes a group (admin only).
 // System groups (admins, operators, users) cannot be deleted.
 func (h *GroupHandler) Remove(w http.ResponseWriter, r *http.Request) {
-	name := chi.URLParam(r, "name")
-	if name == "" {
+	token := chi.URLParam(r, "name")
+	if token == "" {
 		BadRequest(w, "Group name is required")
 		return
 	}
 
-	// Protect system groups from deletion
-	if models.IsSystemGroup(name) {
+	// The token may be a name or an ID. DeleteGroup resolves it and refuses to
+	// delete a system group by its canonical name, so the guard can't be bypassed
+	// by addressing the group via its ID.
+	switch err := h.store.DeleteGroup(r.Context(), token); {
+	case err == nil:
+		WriteNoContent(w)
+	case errors.Is(err, models.ErrCannotDeleteSysGroup):
 		Forbidden(w, "Cannot delete system group")
-		return
-	}
-
-	if err := h.store.DeleteGroup(r.Context(), name); err != nil {
+	default:
 		HandleStoreError(w, err)
-		return
 	}
-
-	WriteNoContent(w)
 }
 
 // AddMember handles POST /api/v1/groups/{name}/members.

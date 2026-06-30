@@ -5,13 +5,15 @@ import "errors"
 // Common errors for identity and control plane operations.
 var (
 	// User errors
-	ErrUserNotFound  = errors.New("user not found")
-	ErrDuplicateUser = errors.New("user already exists")
-	ErrUserDisabled  = errors.New("user account is disabled")
+	ErrUserNotFound      = errors.New("user not found")
+	ErrDuplicateUser     = errors.New("user already exists")
+	ErrUserDisabled      = errors.New("user account is disabled")
+	ErrCannotDeleteAdmin = errors.New("cannot delete the admin user")
 
 	// Group errors
-	ErrGroupNotFound  = errors.New("group not found")
-	ErrDuplicateGroup = errors.New("group already exists")
+	ErrGroupNotFound        = errors.New("group not found")
+	ErrDuplicateGroup       = errors.New("group already exists")
+	ErrCannotDeleteSysGroup = errors.New("cannot delete a system group")
 
 	// Share errors
 	ErrShareNotFound  = errors.New("share not found")

@@ -21,10 +21,27 @@ import (
 //
 //	user, err := getByField[models.User](db, ctx, "username", "alice", models.ErrUserNotFound, "Groups", "SharePermissions")
 func getByField[T any](db *gorm.DB, ctx context.Context, field string, value any, notFoundErr error, preloads ...string) (*T, error) {
+	return getByFieldScoped[T](db, ctx, field, value, nil, notFoundErr, preloads...)
+}
+
+// fieldEq is an extra column=value equality constraint ANDed into a lookup. It
+// lets partitioned tables (e.g. block stores, which are scoped by kind) resolve
+// only within their partition.
+type fieldEq struct {
+	column string
+	value  any
+}
+
+// getByFieldScoped is getByField with additional equality constraints ANDed into
+// the query. Pass a nil scope for an unscoped lookup.
+func getByFieldScoped[T any](db *gorm.DB, ctx context.Context, field string, value any, scope []fieldEq, notFoundErr error, preloads ...string) (*T, error) {
 	var result T
 	q := db.WithContext(ctx)
 	for _, p := range preloads {
 		q = q.Preload(p)
+	}
+	for _, c := range scope {
+		q = q.Where(c.column+" = ?", c.value)
 	}
 	if err := q.Where(field+" = ?", value).First(&result).Error; err != nil {
 		return nil, convertNotFoundError(err, notFoundErr)
@@ -32,17 +49,23 @@ func getByField[T any](db *gorm.DB, ctx context.Context, field string, value any
 	return &result, nil
 }
 
-// getByNameOrID retrieves a single record of type T by its unique "name",
-// falling back to its "id" when no name matches. This lets API consumers address
-// a record by either its human-readable name or its opaque ID (docker-style).
-// Names are matched first and the ID lookup only runs on a name miss, so the two
-// can never resolve ambiguously.
+// getByNameOrIDWithin retrieves a single record of type T by its natural-key
+// column (name, username, type, ...), falling back to its opaque UUID "id" when
+// no natural-key match exists. This lets API consumers address a record by
+// either its human-readable name or its ID (docker-style). The natural key is
+// matched first and the ID lookup only runs on a genuine not-found, so a name
+// that happens to look like a UUID still resolves to the named record.
+//
+// scope confines resolution to one partition (e.g. block stores within a kind):
+// its constraints are ANDed into every attempt. Pass a nil scope for an
+// unpartitioned lookup, or use getByNameOrID.
 //
 // Share names are stored with a leading "/" (the API layer prepends it), so a
 // raw ID arrives here as "/<id>"; the final attempt strips that prefix. IDs
-// never contain a slash, so this is a no-op for every other caller.
-func getByNameOrID[T any](db *gorm.DB, ctx context.Context, token string, notFoundErr error, preloads ...string) (*T, error) {
-	result, err := getByField[T](db, ctx, "name", token, notFoundErr, preloads...)
+// never contain a slash, so this is a no-op for every other caller. Each
+// fallback is gated on notFoundErr so a genuine DB error is never masked.
+func getByNameOrIDWithin[T any](db *gorm.DB, ctx context.Context, naturalKey, token string, notFoundErr error, scope []fieldEq, preloads ...string) (*T, error) {
+	result, err := getByFieldScoped[T](db, ctx, naturalKey, token, scope, notFoundErr, preloads...)
 	if err == nil {
 		return result, nil
 	}
@@ -50,7 +73,7 @@ func getByNameOrID[T any](db *gorm.DB, ctx context.Context, token string, notFou
 		return nil, err
 	}
 
-	result, err = getByField[T](db, ctx, "id", token, notFoundErr, preloads...)
+	result, err = getByFieldScoped[T](db, ctx, "id", token, scope, notFoundErr, preloads...)
 	if err == nil {
 		return result, nil
 	}
@@ -58,9 +81,14 @@ func getByNameOrID[T any](db *gorm.DB, ctx context.Context, token string, notFou
 		return nil, err
 	}
 	if trimmed := strings.TrimPrefix(token, "/"); trimmed != token {
-		return getByField[T](db, ctx, "id", trimmed, notFoundErr, preloads...)
+		return getByFieldScoped[T](db, ctx, "id", trimmed, scope, notFoundErr, preloads...)
 	}
 	return nil, err
+}
+
+// getByNameOrID is getByNameOrIDWithin for unpartitioned entities (nil scope).
+func getByNameOrID[T any](db *gorm.DB, ctx context.Context, naturalKey, token string, notFoundErr error, preloads ...string) (*T, error) {
+	return getByNameOrIDWithin[T](db, ctx, naturalKey, token, notFoundErr, nil, preloads...)
 }
 
 // listAll retrieves all records of type T, applying optional GORM Preload clauses.
