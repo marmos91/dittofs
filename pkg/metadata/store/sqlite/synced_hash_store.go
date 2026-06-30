@@ -139,6 +139,9 @@ func scanLocatorRow(row scanRow) (block.ChunkLocator, error) {
 	if !blockID.Valid || blockID.String == "" {
 		return block.ChunkLocator{}, nil
 	}
+	if !off.Valid || !length.Valid {
+		return block.ChunkLocator{}, fmt.Errorf("corrupt locator row: block_id %q with NULL offset/length", blockID.String)
+	}
 	return block.ChunkLocator{BlockID: blockID.String, Offset: off.Int64, Length: length.Int64}, nil
 }
 

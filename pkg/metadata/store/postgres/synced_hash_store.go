@@ -122,6 +122,9 @@ func (s *PostgresMetadataStore) GetLocator(ctx context.Context, hash block.Conte
 	if !blockID.Valid || blockID.String == "" {
 		return block.ChunkLocator{}, true, nil
 	}
+	if !off.Valid || !length.Valid {
+		return block.ChunkLocator{}, false, fmt.Errorf("corrupt locator row: block_id %q with NULL offset/length", blockID.String)
+	}
 	return block.ChunkLocator{BlockID: blockID.String, Offset: off.Int64, Length: length.Int64}, true, nil
 }
 
