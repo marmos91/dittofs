@@ -237,8 +237,11 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// a permissive DACL on it). Mirrors the write/delete strip in
 	// checkFilePermissions for the data path.
 	if ctx.ShareReadOnly {
+		// Read-only denial → ErrReadOnly so NFSv3 SETATTR returns
+		// NFS3ERR_ROFS (EROFS) per RFC 1813 §3.3.7, matching the WRITE and
+		// xattr paths. SMB renders ErrReadOnly as STATUS_ACCESS_DENIED.
 		return nil, &StoreError{
-			Code:    ErrAccessDenied,
+			Code:    ErrReadOnly,
 			Message: "read-only share: attribute change denied",
 			Path:    file.Path,
 		}

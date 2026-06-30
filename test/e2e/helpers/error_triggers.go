@@ -195,35 +195,24 @@ func TriggerErrInvalidArgument(t *testing.T, mountRoot string) TriggerResult {
 // errno, so the cross-protocol assertion holds.
 func TriggerErrInvalidHandle(t *testing.T, mountRoot string) TriggerResult {
 	t.Helper()
-	path := filepath.Join(mountRoot, UniqueTestName("stale")+".txt")
-	if err := os.WriteFile(path, []byte("seed"), 0644); err != nil {
-		t.Fatalf("TriggerErrInvalidHandle: seed create failed: %v", err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("TriggerErrInvalidHandle: open failed: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = f.Close()
-		_ = os.Remove(path)
-	})
-
-	// Unlink the file; the server-side metadata handle becomes stale.
-	if err := os.Remove(path); err != nil {
-		t.Fatalf("TriggerErrInvalidHandle: remove failed: %v", err)
-	}
-
-	// Reading through the now-stale handle should surface ESTALE on NFS /
-	// STATUS_FILE_CLOSED on SMB.
-	buf := make([]byte, 16)
-	_, readErr := f.ReadAt(buf, 0)
-	return newResult(readErr)
+	// A stale/invalid file handle is not reproducible from a single client at
+	// the e2e tier. The intuitive scenario — unlink a file, then read through
+	// an fd you still hold — does NOT produce ESTALE: keeping your own open fd
+	// after unlink is valid POSIX (the inode lives until last close), and over
+	// NFS the client silly-renames the file so the read simply succeeds (or
+	// returns EOF), never ESTALE. A genuinely stale handle requires a *foreign*
+	// deleter or a server restart that drops the handle — neither of which this
+	// single-client fixture sets up. Coverage for the error→errno mapping lives
+	// in the unit tier (common/errmap_test.go); the e2e row is retained for
+	// shape and skipped with a documented reason.
+	t.Skip("ErrInvalidHandle/ErrStaleHandle not e2e-triggerable from one client (own-fd read after unlink is valid POSIX; NFS silly-renames) — covered by unit tier in common/errmap_test.go")
+	return TriggerResult{}
 }
 
-// TriggerErrStaleHandle is an alias for TriggerErrInvalidHandle — the same
-// kernel-level scenario reproduces either code depending on server-side
-// routing. The common/ errmap maps both to protocol codes that surface as
-// ESTALE client-side.
+// TriggerErrStaleHandle is an alias for TriggerErrInvalidHandle — both name the
+// same un-triggerable single-client scenario and skip with the same reason.
+// The common/ errmap maps both to protocol codes that surface as ESTALE
+// client-side; that mapping is asserted in the unit tier.
 func TriggerErrStaleHandle(t *testing.T, mountRoot string) TriggerResult {
 	return TriggerErrInvalidHandle(t, mountRoot)
 }

@@ -711,7 +711,9 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
-		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+		// Read-only denial → ErrReadOnly (NFS3ERR_ROFS / EROFS) per RFC 1813.
+		// SMB still renders it as STATUS_ACCESS_DENIED.
+		assert.Equal(t, metadata.ErrReadOnly, storeErr.Code)
 	})
 
 	// Sticky bit: caller has WRITE on parent but is neither the file owner
@@ -838,7 +840,9 @@ func TestMetadataService_RemoveDirectory_DeletePermission(t *testing.T) {
 		require.Error(t, err)
 		var storeErr *metadata.StoreError
 		require.ErrorAs(t, err, &storeErr)
-		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
+		// Read-only denial → ErrReadOnly (NFS3ERR_ROFS / EROFS) per RFC 1813.
+		// SMB still renders it as STATUS_ACCESS_DENIED.
+		assert.Equal(t, metadata.ErrReadOnly, storeErr.Code)
 	})
 }
 

@@ -135,13 +135,15 @@ func TestCheckParentCreateAccess_PerUserReadOnlyDenies(t *testing.T) {
 	ro := f.authContext(uid, gid)
 	ro.ShareReadOnly = true
 
+	// Read-only denial → ErrReadOnly (NFS3ERR_ROFS / EROFS) per RFC 1813; SMB
+	// renders it as STATUS_ACCESS_DENIED, identical to the prior code.
 	err = f.service.CheckParentCreateAccess(ro, dirHandle, false)
 	if err == nil {
-		t.Fatal("CheckParentCreateAccess returned nil for read-only user, want ErrAccessDenied")
+		t.Fatal("CheckParentCreateAccess returned nil for read-only user, want ErrReadOnly")
 	}
 	var storeErr *metadata.StoreError
-	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrAccessDenied {
-		t.Fatalf("CheckParentCreateAccess err = %v, want StoreError{Code: ErrAccessDenied}", err)
+	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrReadOnly {
+		t.Fatalf("CheckParentCreateAccess err = %v, want StoreError{Code: ErrReadOnly}", err)
 	}
 
 	// And the POSIX-only parent-write path (no ACL) must deny too.
@@ -187,8 +189,8 @@ func TestSetFileAttributes_PerUserReadOnlyDeniesOwnerMutation(t *testing.T) {
 			continue
 		}
 		var storeErr *metadata.StoreError
-		if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrAccessDenied {
-			t.Errorf("%s: err = %v, want StoreError{Code: ErrAccessDenied}", name, err)
+		if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrReadOnly {
+			t.Errorf("%s: err = %v, want StoreError{Code: ErrReadOnly}", name, err)
 		}
 	}
 
