@@ -241,6 +241,12 @@ type LockManager interface {
 	// otherwise clear, while other-key breaks still need to drain first.
 	WaitForBreakCompletionExceptKey(ctx context.Context, handleKey string, exceptKey [16]byte) error
 
+	// WaitForByteRangeLeaseBreak blocks until every breaking SMB lease on
+	// handleKey resolves, ignoring in-flight NFSv4 delegation breaks. Used by the
+	// byte-range-lock acquisition path, which holds the NFSv4 StateManager mutex
+	// and must not wait on delegation breaks (DELEGRETURN needs that same mutex).
+	WaitForByteRangeLeaseBreak(ctx context.Context, handleKey string) error
+
 	// HasOtherBreakingLeases reports whether any lease on handleKey (excluding
 	// exceptKey) or any delegation is currently Breaking. Non-blocking peek
 	// used by the SMB CREATE async-park path: if BreakLeasesOnOpenConflict
@@ -2183,6 +2189,95 @@ func (lm *Manager) WaitForBreakCompletionExceptKey(ctx context.Context, handleKe
 			continue
 		}
 	}
+}
+
+// WaitForByteRangeLeaseBreak blocks until every breaking SMB lease on handleKey
+// resolves, IGNORING in-flight NFSv4 delegation breaks. It is the wait used by
+// the byte-range-lock acquisition path (NFSv4 LOCK / NLM), which runs while the
+// caller holds the NFSv4 StateManager mutex.
+//
+// It deliberately does NOT wait for delegation breaks, unlike
+// WaitForBreakCompletionExceptKey. A delegation break is resolved by
+// DELEGRETURN, whose handler must take the StateManager mutex; waiting for it
+// here while that same mutex is held would be a circular wait (only force-
+// broken after the bounded timeout, then re-stalled on the next LOCK, since
+// forceCompleteBreaksExceptKey only force-completes leases). Skipping
+// delegations is also correct: BreakLeasesForByteRangeLock never marks a
+// delegation Breaking, and a byte-range lock never conflicts with a delegation
+// (UnifiedLock.ConflictsWith ignores delegations), so there is nothing to wait
+// for. On timeout the breaking leases are force-downgraded to None (Samba
+// lease_timeout parity) and ctx.Err() is returned.
+func (lm *Manager) WaitForByteRangeLeaseBreak(ctx context.Context, handleKey string) error {
+	for {
+		lm.mu.Lock()
+		hasBreakingLease := false
+		for _, l := range lm.unifiedLocks[handleKey] {
+			if l.Lease != nil && l.Lease.Breaking {
+				hasBreakingLease = true
+				break
+			}
+		}
+		if !hasBreakingLease {
+			lm.mu.Unlock()
+			return nil
+		}
+
+		ch, ok := lm.breakWaitChans[handleKey]
+		if !ok {
+			ch = make(chan struct{})
+			lm.breakWaitChans[handleKey] = ch
+		}
+		lm.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			lm.forceCompleteBreaksExceptKey(handleKey, [16]byte{})
+			return ctx.Err()
+		case <-ch:
+			continue
+		}
+	}
+}
+
+// byteRangeLockBreakWaitTimeout bounds how long a byte-range LOCK (NFSv4 or NLM)
+// waits for a conflicting SMB write-lease to finish breaking before it inserts
+// the lock. It mirrors the SMB lease-break ack-wait timeout: a holder that has
+// not ACKed within this window is treated as non-responsive, its lease is
+// force-downgraded to None (Samba lease_timeout parity), and the lock is granted.
+const byteRangeLockBreakWaitTimeout = 5 * time.Second
+
+// WaitForByteRangeLockBreak drains an in-flight lease break before a byte-range
+// LOCK inserts its lock. Callers must invoke it between
+// BreakLeasesForByteRangeLock and AddUnifiedLock.
+//
+// BreakLeasesForByteRangeLock is fire-and-forget: it marks the conflicting lease
+// Breaking and dispatches the break asynchronously, but the lease keeps its state
+// until the holder ACKs. The byte-lock conflict check gates on the lease's Write
+// bit, not on the Breaking flag, so inserting the lock before the break drains
+// returns a spurious DENIED (surfaced to the client as EIO) — the #1501
+// regression.
+//
+// Deadlock safety: WaitForBreakCompletionExceptKey releases the manager mutex
+// before blocking, so it cannot deadlock against the break dispatch or the SMB
+// LEASE_BREAK_ACK path. The wait is bounded by byteRangeLockBreakWaitTimeout so a
+// stuck holder cannot stall the lock indefinitely; on expiry the breaking lease
+// is force-downgraded to None and the lock is granted. The empty exclude key
+// means "no exclusion": NFS/NLM owners hold no SMB lease of their own.
+//
+// It returns a non-nil error only when the originating ctx itself was cancelled
+// (e.g. the client disconnected) — the caller must then abort rather than insert
+// a lock nobody is waiting for. A derived deadline expiry returns nil: the lease
+// was force-downgraded above, so granting the lock is correct.
+func WaitForByteRangeLockBreak(ctx context.Context, lm LockManager, handleKey string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, byteRangeLockBreakWaitTimeout)
+	defer cancel()
+	if err := lm.WaitForByteRangeLeaseBreak(waitCtx, handleKey); err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
 }
 
 // AnyHolderHasLeaseBits reports whether any lease on handleKey (other than

@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -148,7 +149,7 @@ func TestReplay_Lock_ReturnsCachedReply(t *testing.T) {
 	clientID, fh, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
 	// LOCK (new lock-owner) at lock seqid 1.
-	res, err := sm.LockNew(clientID, []byte("lock-replay-owner"), 1,
+	res, err := sm.LockNew(context.Background(), clientID, []byte("lock-replay-owner"), 1,
 		openStateid, openSeqid+1, fh, types.WRITE_LT, 0, 100, false)
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
@@ -162,7 +163,7 @@ func TestReplay_Lock_ReturnsCachedReply(t *testing.T) {
 	// Retransmit the LOCK at the SAME lock seqid via the existing-lock-owner
 	// path. The old code returned NFS4ERR_BAD_SEQID here (fatal to the Linux
 	// client -> dropped lock-owner / silent lock loss); it must replay instead.
-	_, err = sm.LockExisting(&res.Stateid, 1, fh, types.WRITE_LT, 0, 100, false)
+	_, err = sm.LockExisting(context.Background(), &res.Stateid, 1, fh, types.WRITE_LT, 0, 100, false)
 	mustReplay(t, err, types.NFS4_OK, cachedReply)
 }
 
@@ -174,7 +175,7 @@ func TestReplay_LockU_ReturnsCachedReply(t *testing.T) {
 
 	clientID, fh, openStateid, openSeqid := setupClientAndOpenState(t, sm)
 
-	res, err := sm.LockNew(clientID, []byte("locku-replay-owner"), 1,
+	res, err := sm.LockNew(context.Background(), clientID, []byte("locku-replay-owner"), 1,
 		openStateid, openSeqid+1, fh, types.WRITE_LT, 0, 100, false)
 	if err != nil {
 		t.Fatalf("LockNew: %v", err)
@@ -208,13 +209,13 @@ func TestReplay_Lock_Denied_CachesAndReplays(t *testing.T) {
 
 	// Client 1 holds an exclusive lock on [0,100).
 	c1, _, open1, seq1 := setupClientAndOpenStateNamed(t, sm, "denied-c1", "owner-1", fh)
-	if _, err := sm.LockNew(c1, []byte("lock-owner-1"), 1, open1, seq1+1, fh, types.WRITE_LT, 0, 100, false); err != nil {
+	if _, err := sm.LockNew(context.Background(), c1, []byte("lock-owner-1"), 1, open1, seq1+1, fh, types.WRITE_LT, 0, 100, false); err != nil {
 		t.Fatalf("LockNew c1: %v", err)
 	}
 
 	// Client 2's overlapping LOCK is DENIED.
 	c2, _, open2, seq2 := setupClientAndOpenStateNamed(t, sm, "denied-c2", "owner-2", fh)
-	res, err := sm.LockNew(c2, []byte("lock-owner-2"), 1, open2, seq2+1, fh, types.WRITE_LT, 50, 100, false)
+	res, err := sm.LockNew(context.Background(), c2, []byte("lock-owner-2"), 1, open2, seq2+1, fh, types.WRITE_LT, 50, 100, false)
 	if err != nil {
 		t.Fatalf("LockNew c2: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestReplay_Lock_Denied_CachesAndReplays(t *testing.T) {
 
 	// Retransmit client 2's LOCK at the SAME open+lock seqids -> replay the
 	// cached DENIED reply (both seqids were advanced by the DENIED original).
-	_, err = sm.LockNew(c2, []byte("lock-owner-2"), 1, open2, seq2+1, fh, types.WRITE_LT, 50, 100, false)
+	_, err = sm.LockNew(context.Background(), c2, []byte("lock-owner-2"), 1, open2, seq2+1, fh, types.WRITE_LT, 50, 100, false)
 	mustReplay(t, err, types.NFS4ERR_DENIED, cachedReply)
 }
 

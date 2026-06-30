@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ func newLockedFile(t *testing.T, sm *StateManager, clientID uint64, fh []byte) t
 	if err != nil {
 		t.Fatalf("ConfirmOpen: %v", err)
 	}
-	lockResult, err := sm.LockNew(
+	lockResult, err := sm.LockNew(context.Background(),
 		clientID, []byte("lock-owner"), 1,
 		&confirmed.Stateid, 3,
 		fh, types.WRITE_LT, 0, 100, false,
@@ -215,7 +216,7 @@ func TestLockExisting_V41Seqid0(t *testing.T) {
 	// protection). Extend the lock with a second byte range via LockExisting.
 	v41Stateid := lockStateid
 	v41Stateid.Seqid = 0
-	result, err := sm.LockExisting(&v41Stateid, 0, fh, types.WRITE_LT, 200, 100, false)
+	result, err := sm.LockExisting(context.Background(), &v41Stateid, 0, fh, types.WRITE_LT, 200, 100, false)
 	if err != nil {
 		t.Fatalf("LockExisting with v4.1 stateid seqid=0: %v", err)
 	}
@@ -241,7 +242,7 @@ func TestUnlockFile_V41Seqid0(t *testing.T) {
 	// the LOCKU below is unambiguously after a seqid increment.
 	v41Lock := lockStateid
 	v41Lock.Seqid = 0
-	if _, err := sm.LockExisting(&v41Lock, 0, fh, types.WRITE_LT, 200, 100, false); err != nil {
+	if _, err := sm.LockExisting(context.Background(), &v41Lock, 0, fh, types.WRITE_LT, 200, 100, false); err != nil {
 		t.Fatalf("LockExisting setup: %v", err)
 	}
 
