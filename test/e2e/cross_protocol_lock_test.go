@@ -120,17 +120,12 @@ func TestCrossProtocolLocking(t *testing.T) {
 	})
 
 	t.Run("XPRO-02 SMB Write lease breaks for NFS lock", func(t *testing.T) {
-		// Skipped: this requires an NFS *blocking* byte-range lock (F_SETLKW) to be
-		// granted after the server breaks a conflicting SMB write-lease, which is
-		// not observable through real kernel clients against the userspace server.
-		// NFSv3/NLM locking hangs (no reachable lockd — see MountNFS's nolock), and
-		// the NFSv4.1 LOCK path returns NFS4ERR_DENIED on a lease conflict without a
-		// blocking grant + CB_NOTIFY_LOCK retry, so F_SETLKW blocks indefinitely.
-		// The server-side lease break on cross-protocol access this intends to cover
-		// is exercised by TestCrossProtocol_LeaseBreaks (SMBLeaseBreakOnNFSWrite,
-		// DataConsistencyAfterBreak) and the BreakLeasesForByteRangeLock unit tests.
-		// The NFSv4 LOCK-path lease-break + blocking-grant gap is tracked in #1495.
-		t.Skip("cross-protocol blocking-lock lease break not observable via real kernel clients on a single host (NFSv4 LOCK gap: #1495)")
+		// A blocking NFS byte-range lock (F_SETLKW) acquired while SMB holds a
+		// read/write lease must succeed: the NFSv4 LOCK path now breaks the
+		// conflicting lease before acquiring (see acquireLock in
+		// internal/adapter/nfs/v4/state/manager.go), mirroring the SMB LOCK
+		// handler, so the lock is granted on the first attempt instead of
+		// blocking indefinitely on a lease conflict (#1495).
 		testSMBLeaseBreaksForNFSLock(t, nfsMount, smbMount)
 	})
 

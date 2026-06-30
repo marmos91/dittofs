@@ -2106,8 +2106,20 @@ func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offse
 	enhLock := lock.NewUnifiedLock(owner, lock.FileHandle(lockState.FileHandle), offset, length, mappedType)
 	enhLock.Reclaim = reclaim
 
-	// Try to add the lock
 	handleKey := string(lockState.FileHandle)
+
+	// Break any conflicting cross-protocol read leases (e.g. an SMB read/write
+	// oplock) before acquiring the byte-range lock. A held lease lets another
+	// protocol cache the bytes this lock is about to protect, so it must be
+	// revoked first — exactly as the SMB LOCK handler does before its own
+	// acquire (see internal/adapter/smb/handlers/lock.go). Without this the
+	// lease is recorded as a conflict and the NFS lock is denied even though no
+	// real byte-range lock is held. We pass this lock's owner as excludeOwner for
+	// symmetry with the SMB path; NFS owners never hold SMB leases, so in practice
+	// nothing is excluded.
+	_ = lm.BreakLeasesForByteRangeLock(handleKey, &owner)
+
+	// Try to add the lock
 	err := lm.AddUnifiedLock(handleKey, enhLock)
 	if err != nil {
 		// Lock conflict: query existing locks to find the conflicting one
