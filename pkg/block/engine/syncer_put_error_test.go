@@ -35,8 +35,11 @@ type noopSyncedHashStore struct{}
 func (noopSyncedHashStore) IsSynced(_ context.Context, _ block.ContentHash) (bool, error) {
 	return false, nil
 }
-func (noopSyncedHashStore) MarkSynced(_ context.Context, _ block.ContentHash) error {
+func (noopSyncedHashStore) MarkSynced(_ context.Context, _ block.ContentHash, _ block.ChunkLocator) error {
 	return nil
+}
+func (noopSyncedHashStore) GetLocator(_ context.Context, _ block.ContentHash) (block.ChunkLocator, bool, error) {
+	return block.ChunkLocator{}, false, nil
 }
 func (noopSyncedHashStore) DeleteSynced(_ context.Context, _ block.ContentHash) error {
 	return nil

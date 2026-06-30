@@ -11,10 +11,17 @@ package remote
 
 import (
 	"context"
+	"errors"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/health"
 )
+
+// ErrChunkReadUnsupported is returned by a decorator's ReadChunk when the
+// wrapped store does not implement ChunkReader, so a block read cannot be
+// composed through the transform stack. It cannot occur on the live PR3a path
+// (which never produces block locators); it guards the capability boundary.
+var ErrChunkReadUnsupported = errors.New("remote: wrapped store does not support block reads")
 
 // RemoteStore is the unified content-addressed remote block storage
 // interface. Implemented by
@@ -74,4 +81,27 @@ type RemoteStore interface {
 	// [health.Checker]. Implementations typically delegate to HealthCheck
 	// and wrap the result via [health.ReportFromError].
 	Healthcheck(ctx context.Context) health.Report
+}
+
+// ChunkReader is an OPTIONAL RemoteStore capability for reading a chunk that
+// lives inside a block object (#1414 object packing). It is deliberately kept OFF
+// the RemoteStore contract — only the locator read path needs it, so the many
+// RemoteStore test fakes need not implement it (mirroring how EnumerateSynced is
+// kept off metadata.SyncedHashStore). The engine type-asserts m.remoteStore to
+// this interface when a block.ChunkLocator resolves to a block (BlockID != "");
+// the s3 + memory backends and the encryption/compression decorators implement
+// it.
+//
+// ReadChunk reads the chunk whose stored wire bytes occupy
+// [offset, offset+length) within block object blocks/<blockID> (see
+// block.FormatBlockKey) and returns the chunk PLAINTEXT, inverting the store's
+// transform chain on the way up — each decorator decompresses/decrypts its own
+// layer, threading hash as the AEAD AAD. It does NOT verify the BLAKE3 (no
+// single layer holds both the wire bytes and the plaintext hash domain); the
+// engine read path verifies blake3(result) == hash after the top-level call,
+// exactly as ReadBlockVerified guarantees for standalone objects. hash is
+// consulted only by the encryption layer (AAD) and ignored by the base stores
+// and the compression layer.
+type ChunkReader interface {
+	ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error)
 }

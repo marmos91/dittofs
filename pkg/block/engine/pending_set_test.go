@@ -156,7 +156,7 @@ func TestSyncer_SeedPendingFromDisk_RecoversUnsynced(t *testing.T) {
 	if err := localStore.StoreChunk(ctx, sh, syncedData); err != nil {
 		t.Fatalf("StoreChunk synced: %v", err)
 	}
-	if err := ms.MarkSynced(ctx, sh); err != nil {
+	if err := ms.MarkSynced(ctx, sh, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 

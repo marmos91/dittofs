@@ -20,11 +20,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// SyncedHashStore persists a single bit of per-hash state: "has this CAS
-// chunk been successfully mirrored to the remote store at least once?"
-// The marker is logically a set keyed by content hash; backends MAY
-// record auxiliary metadata (e.g. a timestamp) but the contract surface
-// is boolean.
+// SyncedHashStore persists per-hash remote-mirror state: "has this CAS chunk
+// been mirrored to the remote store at least once, and where do its bytes live?"
+// The marker is logically a set keyed by content hash; each member also carries
+// a block.ChunkLocator recording whether the chunk is a standalone CAS object
+// (today) or lives inside a block object (#1414, PR3b). Backends MAY record
+// auxiliary metadata (e.g. a first-mirror timestamp).
 //
 // Implementations MUST be safe for concurrent use by multiple goroutines.
 // Methods MUST respect ctx cancellation and return the ctx error early
@@ -36,10 +37,27 @@ type SyncedHashStore interface {
 	// synced", not as an error.
 	IsSynced(ctx context.Context, hash block.ContentHash) (bool, error)
 
-	// MarkSynced records that hash has been mirrored to remote.
-	// Idempotent: re-applying the same hash is a no-op and returns
-	// nil. Callers do not need to check IsSynced before MarkSynced.
-	MarkSynced(ctx context.Context, hash block.ContentHash) error
+	// MarkSynced records that hash has been mirrored to remote, persisting
+	// loc as the chunk's remote location ATOMICALLY with the synced mark
+	// (so a crash never leaves a synced hash without a resolvable location).
+	// Idempotent: re-applying an already-marked hash is a no-op and returns
+	// nil — the first recorded locator wins. Callers do not need to check
+	// IsSynced before MarkSynced.
+	//
+	// A standalone locator (loc.BlockID == "") is the common case today and
+	// is persisted in the legacy on-disk form — i.e. byte-for-byte identical
+	// to pre-locator markers — because a standalone chunk's location is fully
+	// implied by its hash (the CAS key, whole object). Only a block locator
+	// (loc.BlockID != "") records the extra BlockID/Offset/Length, so existing
+	// synced rows need no migration and resolve as standalone.
+	MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error
+
+	// GetLocator returns the recorded remote locator for hash. The second
+	// return is true iff hash is synced. A synced hash with no recorded block
+	// locator (a standalone or pre-locator marker) yields the zero
+	// block.ChunkLocator (BlockID == ""), which the read path resolves to the
+	// standalone CAS object. An unsynced hash returns (zero, false, nil).
+	GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error)
 
 	// DeleteSynced removes the synced marker for hash. Idempotent:
 	// deleting an absent hash returns nil. Used by the refcount cascade

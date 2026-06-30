@@ -193,6 +193,25 @@ func (d *EncryptedRemote) ReadBlockVerified(ctx context.Context, hash block.Cont
 	return plain, nil
 }
 
+// ReadChunk reads the chunk's encrypted wire bytes from the inner store's
+// block object and decrypts them against hash as the AEAD AAD, returning the
+// plaintext (for the next layer up / the engine). A block stores each chunk's
+// full self-framed encryption blob (header||nonce||ciphertext||tag) verbatim, so
+// decrypting the chunk's [offset, length) slice is identical to decrypting its
+// standalone object. No verification here — the engine verifies the BLAKE3 after
+// the full stack. Implements remote.ChunkReader (#1414).
+func (d *EncryptedRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
+	pcr, ok := d.inner.(remote.ChunkReader)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	raw, err := pcr.ReadChunk(ctx, blockID, offset, length, hash)
+	if err != nil {
+		return nil, err
+	}
+	return d.decrypt(ctx, hash, raw)
+}
+
 // Close releases inner resources and the provider.
 func (d *EncryptedRemote) Close() error {
 	innerErr := d.inner.Close()
@@ -286,5 +305,6 @@ func newAEAD(algo AEAD, key []byte) (cipher.AEAD, error) {
 var (
 	_ block.Store              = (*EncryptedRemote)(nil)
 	_ remote.RemoteStore       = (*EncryptedRemote)(nil)
+	_ remote.ChunkReader       = (*EncryptedRemote)(nil)
 	_ block.DurabilityReporter = (*EncryptedRemote)(nil)
 )

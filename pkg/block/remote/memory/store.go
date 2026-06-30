@@ -19,6 +19,7 @@ import (
 // Compile-time interface satisfaction check.
 var (
 	_ remote.RemoteStore       = (*Store)(nil)
+	_ remote.ChunkReader       = (*Store)(nil)
 	_ block.DurabilityReporter = (*Store)(nil)
 )
 
@@ -35,6 +36,11 @@ type memBlock struct {
 type Store struct {
 	mu     sync.RWMutex
 	blocks map[block.ContentHash]*memBlock
+	// blocksByID holds block objects keyed by BlockID (#1414). Populated via PutBlock
+	// (used by tests and the future packer); read by ReadChunk. Separate
+	// from blocks because block objects are keyed by an opaque BlockID string,
+	// not a content hash.
+	blocksByID map[string][]byte
 	// nowFn returns the current time for the store. Tests can override
 	// this to manipulate LastModified deterministically.
 	nowFn  func() time.Time
@@ -49,9 +55,58 @@ type Store struct {
 // New creates a new in-memory remote block store.
 func New() *Store {
 	return &Store{
-		blocks: make(map[block.ContentHash]*memBlock),
-		nowFn:  time.Now,
+		blocks:     make(map[block.ContentHash]*memBlock),
+		blocksByID: make(map[string][]byte),
+		nowFn:      time.Now,
 	}
+}
+
+// PutBlock stores a block object under blockID. It is the in-memory analogue of an
+// S3 PutObject(blocks/<blockID>); used by tests (and the future PR3b packer) to
+// stage blocksByID that ReadChunk then ranges into. A defensive copy is taken.
+func (s *Store) PutBlock(blockID string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return block.ErrStoreClosed
+	}
+	if s.blocksByID == nil {
+		s.blocksByID = make(map[string][]byte)
+	}
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	s.blocksByID[blockID] = copied
+	return nil
+}
+
+// ReadChunk returns the wire bytes [offset, offset+length) from the block
+// object blockID. As a base store there is no transform to invert and no
+// verification here. Implements remote.ChunkReader; hash is unused at this
+// layer. Bounds semantics mirror GetRange.
+func (s *Store) ReadChunk(_ context.Context, blockID string, offset, length int64, _ block.ContentHash) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, block.ErrStoreClosed
+	}
+	data, ok := s.blocksByID[blockID]
+	if !ok {
+		return nil, block.ErrChunkNotFound
+	}
+	if offset < 0 || offset >= int64(len(data)) {
+		return nil, block.ErrInvalidOffset
+	}
+	if length <= 0 {
+		return nil, block.ErrInvalidSize
+	}
+	size := int64(len(data))
+	end := size
+	if length <= size-offset {
+		end = offset + length
+	}
+	result := make([]byte, end-offset)
+	copy(result, data[offset:end])
+	return result, nil
 }
 
 // Durable reports whether accepted bytes survive a crash/restart

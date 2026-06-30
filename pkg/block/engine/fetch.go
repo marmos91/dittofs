@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	"lukechampine.com/blake3"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
 // inFlightKey returns the deterministic per-block dedup key used by
@@ -147,13 +150,74 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileBlock) (
 			"store_key", fb.BlockStoreKey)
 		return "", nil, fmt.Errorf("blockstore: legacy zero-hash FileBlock encountered post-migration: block_id=%s", fb.ID)
 	}
-	// CAS path: verified read via BLAKE3 recompute. Canonical key is
-	// derived from the hash; both arguments to ReadBlockVerified are
-	// the same hash per the signature (canonical-key hash +
-	// expected-body hash collapse onto one value when hash IS the key).
-	key := block.FormatCASKey(fb.Hash)
-	data, err := m.remoteStore.ReadBlockVerified(ctx, fb.Hash, fb.Hash)
-	return key, data, err
+	// Resolve where the chunk's bytes live (#1414). A standalone locator
+	// (BlockID=="") — the only kind written on the live path today, and the
+	// default for any not-yet-recorded hash — reads the chunk's own CAS
+	// object exactly as before. A block locator routes a ranged read into the
+	// enclosing block object (produced by PR3b; exercised here only by tests).
+	loc, err := m.resolveLocator(ctx, fb.Hash)
+	if err != nil {
+		return "", nil, err
+	}
+	if loc.IsStandalone() {
+		// CAS path: verified read via BLAKE3 recompute. Canonical key is
+		// derived from the hash; both arguments to ReadBlockVerified are
+		// the same hash per the signature (canonical-key hash +
+		// expected-body hash collapse onto one value when hash IS the key).
+		key := block.FormatCASKey(fb.Hash)
+		data, rerr := m.remoteStore.ReadBlockVerified(ctx, fb.Hash, fb.Hash)
+		return key, data, rerr
+	}
+	key := block.FormatBlockKey(loc.BlockID)
+	data, perr := m.readChunkVerified(ctx, loc, fb.Hash)
+	return key, data, perr
+}
+
+// resolveLocator returns the recorded remote locator for hash, defaulting to a
+// standalone locator (BlockID=="") when no SyncedHashStore is wired (test
+// fixtures) or when the hash has no recorded marker. The standalone default
+// preserves the exact pre-#1414 behavior — a direct CAS GET by hash — for every
+// existing path, since the live mirror path only ever records standalone
+// locators in PR3a.
+func (m *Syncer) resolveLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, error) {
+	m.mu.RLock()
+	hs := m.syncedHashStore
+	m.mu.RUnlock()
+	if hs == nil {
+		return block.ChunkLocator{}, nil
+	}
+	loc, ok, err := hs.GetLocator(ctx, hash)
+	if err != nil {
+		return block.ChunkLocator{}, fmt.Errorf("resolve locator %s: %w", hash, err)
+	}
+	if !ok {
+		return block.ChunkLocator{}, nil
+	}
+	return loc, nil
+}
+
+// readChunkVerified fetches a block-resident chunk through the remote store's
+// ChunkReader capability and verifies its BLAKE3 matches hash. Verification
+// happens here (not in the store stack) because no single decorator layer holds
+// both the chunk's wire bytes and its plaintext-hash domain — ReadChunk
+// returns decrypted/decompressed plaintext, and we recompute over it, mirroring
+// ReadBlockVerified's guarantee for standalone objects.
+func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, hash block.ContentHash) ([]byte, error) {
+	pcr, ok := m.remoteStore.(remote.ChunkReader)
+	if !ok {
+		return nil, fmt.Errorf("chunk %s has block locator %q but remote store lacks block-read support: %w",
+			hash, loc.BlockID, remote.ErrChunkReadUnsupported)
+	}
+	data, err := pcr.ReadChunk(ctx, loc.BlockID, loc.Offset, loc.Length, hash)
+	if err != nil {
+		return nil, err
+	}
+	computed := block.ContentHash(blake3.Sum256(data))
+	if computed != hash {
+		return nil, fmt.Errorf("%w: block %s chunk %s computed %s",
+			block.ErrCASContentMismatch, loc.BlockID, hash, computed)
+	}
+	return data, nil
 }
 
 // fetchBlock downloads a single block from the remote store and writes it to the local store.
