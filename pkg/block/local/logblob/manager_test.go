@@ -3,12 +3,16 @@ package logblob_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/blockstoretest"
 	"github.com/marmos91/dittofs/pkg/block/local/logblob"
 )
 
@@ -762,4 +766,418 @@ func blobIDSet(blobs []logblob.BlobInfo) map[string]bool {
 		s[b.LogBlobID] = true
 	}
 	return s
+}
+
+// TestEvictSealedBlob rotates to produce a sealed blob, evicts it, and
+// verifies the .blob file is gone from disk.
+func TestEvictSealedBlob(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 64})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+
+	// First append → blob 0 (active).
+	loc0, err := m.Append(ctx, bytes.Repeat([]byte("A"), 70))
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	blob0 := loc0.LogBlobID
+
+	// Second append → triggers rotation, blob 0 becomes sealed.
+	if _, err := m.Append(ctx, []byte("second")); err != nil {
+		t.Fatalf("Append(second): %v", err)
+	}
+
+	// Evict blob 0 (sealed).
+	if err := m.EvictBlob(ctx, blob0, func(string) bool { return true }); err != nil {
+		t.Fatalf("EvictBlob: %v", err)
+	}
+
+	// File must be gone.
+	blobPath := filepath.Join(dir, blob0+".blob")
+	if _, statErr := os.Stat(blobPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("expected blob file to be gone, got stat err: %v", statErr)
+	}
+}
+
+// TestReadAtEvictedReturnsErrEvicted evicts a sealed blob then expects
+// ReadAt to return ErrEvicted.
+func TestReadAtEvictedReturnsErrEvicted(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 64})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	loc0, err := m.Append(ctx, bytes.Repeat([]byte("B"), 70))
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	blob0 := loc0.LogBlobID
+	if _, err := m.Append(ctx, []byte("seal-trigger")); err != nil {
+		t.Fatalf("Append(trigger): %v", err)
+	}
+
+	if err := m.EvictBlob(ctx, blob0, func(string) bool { return true }); err != nil {
+		t.Fatalf("EvictBlob: %v", err)
+	}
+
+	dst := make([]byte, loc0.RawLength)
+	_, readErr := m.ReadAt(ctx, loc0, dst)
+	if !errors.Is(readErr, logblob.ErrEvicted) {
+		t.Errorf("ReadAt after eviction: got %v, want ErrEvicted", readErr)
+	}
+}
+
+// TestEvictActiveBlobRefused verifies that EvictBlob returns ErrActiveBlob
+// when called on the currently active blob.
+func TestEvictActiveBlobRefused(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	loc, err := m.Append(ctx, []byte("active-data"))
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	evictErr := m.EvictBlob(ctx, loc.LogBlobID, func(string) bool { return true })
+	if !errors.Is(evictErr, logblob.ErrActiveBlob) {
+		t.Errorf("EvictBlob(active): got %v, want ErrActiveBlob", evictErr)
+	}
+}
+
+// TestEvictUnsyncedBytesRefused verifies that a synced function returning
+// false causes EvictBlob to return ErrUnsyncedBytes.
+func TestEvictUnsyncedBytesRefused(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 64})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	loc0, err := m.Append(ctx, bytes.Repeat([]byte("C"), 70))
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	blob0 := loc0.LogBlobID
+	if _, err := m.Append(ctx, []byte("seal")); err != nil {
+		t.Fatalf("Append(seal): %v", err)
+	}
+
+	evictErr := m.EvictBlob(ctx, blob0, func(string) bool { return false })
+	if !errors.Is(evictErr, logblob.ErrUnsyncedBytes) {
+		t.Errorf("EvictBlob(unsynced): got %v, want ErrUnsyncedBytes", evictErr)
+	}
+}
+
+// TestEvictIdempotent verifies that calling EvictBlob twice on the same
+// sealed blob returns nil on the second call.
+func TestEvictIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 64})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	loc0, err := m.Append(ctx, bytes.Repeat([]byte("D"), 70))
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	blob0 := loc0.LogBlobID
+	if _, err := m.Append(ctx, []byte("seal")); err != nil {
+		t.Fatalf("Append(seal): %v", err)
+	}
+
+	if err := m.EvictBlob(ctx, blob0, func(string) bool { return true }); err != nil {
+		t.Fatalf("EvictBlob(first): %v", err)
+	}
+	if err := m.EvictBlob(ctx, blob0, func(string) bool { return true }); err != nil {
+		t.Errorf("EvictBlob(second, idempotent): got %v, want nil", err)
+	}
+}
+
+// TestEvictRaceDuringReadAt exercises concurrent ReadAt goroutines against an
+// EvictBlob call on the same sealed blob. A nil error from ReadAt must be
+// paired with correct bytes; the race detector validates locking.
+func TestEvictRaceDuringReadAt(t *testing.T) {
+	dir := t.TempDir()
+	payload := bytes.Repeat([]byte("E"), 70)
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 64})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	loc0, err := m.Append(ctx, payload)
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := m.Append(ctx, []byte("seal")); err != nil {
+		t.Fatalf("Append(seal): %v", err)
+	}
+
+	var wg sync.WaitGroup
+	const readers = 8
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dst := make([]byte, loc0.RawLength)
+			n, err := m.ReadAt(ctx, loc0, dst)
+			if err != nil {
+				// Eviction may have raced: any error is acceptable.
+				return
+			}
+			if n != len(payload) || !bytes.Equal(dst[:n], payload) {
+				t.Errorf("ReadAt during evict race: nil err but wrong bytes: got %q, want %q", dst[:n], payload)
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = m.EvictBlob(ctx, loc0.LogBlobID, func(string) bool { return true })
+	}()
+
+	wg.Wait()
+}
+
+// TestRecoverActiveBlobTornTail writes 3 payloads, injects garbage beyond
+// them, calls Recover to the valid offset, then verifies that subsequent
+// Append lands at that offset and earlier reads are intact.
+func TestRecoverActiveBlobTornTail(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	payloads := [][]byte{
+		[]byte("payload-one"),
+		[]byte("payload-two"),
+		[]byte("payload-three"),
+	}
+	locs := make([]block.LocalChunkLocation, 3)
+	for i, p := range payloads {
+		locs[i], err = m.Append(ctx, p)
+		if err != nil {
+			t.Fatalf("Append[%d]: %v", i, err)
+		}
+	}
+
+	// mark is the valid data boundary.
+	mark := locs[2].RawOffset + locs[2].RawLength
+
+	// Inject garbage after the mark directly into the blob file.
+	blobPath := filepath.Join(dir, locs[0].LogBlobID+".blob")
+	f, openErr := os.OpenFile(blobPath, os.O_WRONLY, 0)
+	if openErr != nil {
+		t.Fatalf("OpenFile: %v", openErr)
+	}
+	if _, werr := f.WriteAt([]byte("GARBAGE!!"), mark); werr != nil {
+		_ = f.Close()
+		t.Fatalf("WriteAt garbage: %v", werr)
+	}
+	_ = f.Close()
+
+	// Recover to mark.
+	if err := m.Recover(ctx, locs[0].LogBlobID, mark); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Next Append must land at mark.
+	afterLoc, err := m.Append(ctx, []byte("after"))
+	if err != nil {
+		t.Fatalf("Append(after): %v", err)
+	}
+	if afterLoc.RawOffset != mark {
+		t.Errorf("Append after Recover: RawOffset = %d, want %d", afterLoc.RawOffset, mark)
+	}
+
+	// Original payloads still readable.
+	for i, loc := range locs {
+		dst := make([]byte, loc.RawLength)
+		if _, err := m.ReadAt(ctx, loc, dst); err != nil {
+			t.Fatalf("ReadAt[%d]: %v", i, err)
+		}
+		if !bytes.Equal(dst, payloads[i]) {
+			t.Errorf("ReadAt[%d] = %q, want %q", i, dst, payloads[i])
+		}
+	}
+
+	// Reading at mark+5 (inside the former garbage) should fail (file truncated).
+	garbageLoc := block.LocalChunkLocation{
+		LogBlobID: locs[0].LogBlobID,
+		RawOffset: mark + 5,
+		RawLength: 5,
+	}
+	dst := make([]byte, 5)
+	_, readErr := m.ReadAt(ctx, garbageLoc, dst)
+	if readErr == nil {
+		t.Errorf("ReadAt beyond Recover boundary: expected error (EOF/short), got nil")
+	}
+}
+
+// TestRecoverSealedBlobTornTail appends 2 payloads, seals the blob, injects
+// garbage after the payloads, calls Recover, then verifies reads before the
+// offset succeed and the file size matches the offset.
+func TestRecoverSealedBlobTornTail(t *testing.T) {
+	dir := t.TempDir()
+	payload1 := bytes.Repeat([]byte("F"), 50)
+	payload2 := bytes.Repeat([]byte("G"), 50)
+
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 200})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	loc1, err := m.Append(ctx, payload1)
+	if err != nil {
+		t.Fatalf("Append(1): %v", err)
+	}
+	loc2, err := m.Append(ctx, payload2)
+	if err != nil {
+		t.Fatalf("Append(2): %v", err)
+	}
+	blob0 := loc1.LogBlobID
+	validOffset := loc2.RawOffset + loc2.RawLength // = 100
+
+	// Seal blob0 by rotating.
+	if err := m.Rotate(); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+
+	// Inject garbage directly past validOffset.
+	blobPath := filepath.Join(dir, blob0+".blob")
+	f, openErr := os.OpenFile(blobPath, os.O_WRONLY, 0)
+	if openErr != nil {
+		t.Fatalf("OpenFile: %v", openErr)
+	}
+	garbage := bytes.Repeat([]byte("X"), 30)
+	if _, werr := f.WriteAt(garbage, validOffset); werr != nil {
+		_ = f.Close()
+		t.Fatalf("WriteAt garbage: %v", werr)
+	}
+	_ = f.Close()
+
+	// Recover sealed blob.
+	if err := m.Recover(ctx, blob0, validOffset); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Reads before offset must succeed.
+	dst1 := make([]byte, loc1.RawLength)
+	if _, err := m.ReadAt(ctx, loc1, dst1); err != nil {
+		t.Fatalf("ReadAt(loc1): %v", err)
+	}
+	if !bytes.Equal(dst1, payload1) {
+		t.Errorf("ReadAt(loc1) = %q, want %q", dst1, payload1)
+	}
+	dst2 := make([]byte, loc2.RawLength)
+	if _, err := m.ReadAt(ctx, loc2, dst2); err != nil {
+		t.Fatalf("ReadAt(loc2): %v", err)
+	}
+	if !bytes.Equal(dst2, payload2) {
+		t.Errorf("ReadAt(loc2) = %q, want %q", dst2, payload2)
+	}
+
+	// File size must equal validOffset.
+	fi, statErr := os.Stat(blobPath)
+	if statErr != nil {
+		t.Fatalf("Stat: %v", statErr)
+	}
+	if fi.Size() != validOffset {
+		t.Errorf("blob file size = %d, want %d", fi.Size(), validOffset)
+	}
+}
+
+// TestRecoverAckedBoundary verifies the acked/unacked boundary: data written
+// before the mark survives Recover, data written after is gone.
+func TestRecoverAckedBoundary(t *testing.T) {
+	dir := t.TempDir()
+	acked := bytes.Repeat([]byte("H"), 50)
+	unacked := bytes.Repeat([]byte("I"), 50)
+
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 256})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	locAcked, err := m.Append(ctx, acked)
+	if err != nil {
+		t.Fatalf("Append(acked): %v", err)
+	}
+	mark := locAcked.RawOffset + locAcked.RawLength // = 50
+
+	locUnacked, err := m.Append(ctx, unacked)
+	if err != nil {
+		t.Fatalf("Append(unacked): %v", err)
+	}
+
+	// Recover to mark; discards the "unacked" portion.
+	blobID := locAcked.LogBlobID
+	if err := m.Recover(ctx, blobID, mark); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Acked data must still be readable.
+	dst := make([]byte, locAcked.RawLength)
+	if _, err := m.ReadAt(ctx, locAcked, dst); err != nil {
+		t.Fatalf("ReadAt(acked): %v", err)
+	}
+	if !bytes.Equal(dst, acked) {
+		t.Errorf("ReadAt(acked) = %q, want %q", dst, acked)
+	}
+
+	// Unacked loc is now beyond the truncation point: reading must fail.
+	dstU := make([]byte, locUnacked.RawLength)
+	n, readErr := m.ReadAt(ctx, locUnacked, dstU)
+	if readErr == nil && n == len(unacked) {
+		t.Error("ReadAt(unacked) after Recover: expected error or short read, got full success")
+	}
+
+	// Next Append must resume at mark.
+	postLoc, err := m.Append(ctx, []byte("post"))
+	if err != nil {
+		t.Fatalf("Append(post): %v", err)
+	}
+	if postLoc.RawOffset != mark {
+		t.Errorf("Append after Recover: RawOffset = %d, want %d", postLoc.RawOffset, mark)
+	}
+}
+
+// TestLogBlobConformance runs the logblob conformance suite.
+func TestLogBlobConformance(t *testing.T) {
+	blockstoretest.LogBlobConformance(t, func(t *testing.T) (*logblob.Manager, string, func()) {
+		t.Helper()
+		dir := t.TempDir()
+		m, err := logblob.Open(dir, logblob.Options{SizeCap: 128})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		return m, dir, func() { _ = m.Close() }
+	})
 }

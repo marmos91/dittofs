@@ -36,6 +36,16 @@ var (
 	// ErrBlobNotFound is returned when ReadAt references a blob ID that does
 	// not exist in the Manager's directory.
 	ErrBlobNotFound = errors.New("logblob: blob not found")
+
+	// ErrEvicted is returned when an operation targets a blob that has been evicted.
+	ErrEvicted = errors.New("logblob: blob evicted")
+
+	// ErrActiveBlob is returned when EvictBlob is called on the active (unsealed) blob.
+	ErrActiveBlob = errors.New("logblob: cannot evict the active blob")
+
+	// ErrUnsyncedBytes is returned when EvictBlob is called on a blob that has
+	// not been fully synced to durable storage according to the caller's synced function.
+	ErrUnsyncedBytes = errors.New("logblob: blob has unsynced bytes")
 )
 
 // Options configures a Manager.
@@ -93,6 +103,10 @@ type Manager struct {
 	// Never acquire mu while holding sealedMu.
 	sealedMu  sync.Mutex
 	sealedFDs map[string]*os.File // blobID → open O_RDONLY fd (lazy)
+
+	// evictedBlobs records the IDs of blobs that have been evicted.
+	// Protected by sealedMu (same mutex that guards sealedFDs).
+	evictedBlobs map[string]struct{}
 }
 
 // Open opens (or creates) a Manager rooted at dir with the given options.
@@ -116,9 +130,10 @@ func Open(dir string, opts Options) (*Manager, error) {
 	}
 
 	m := &Manager{
-		dir:       dir,
-		sizeCap:   sizeCap,
-		sealedFDs: make(map[string]*os.File),
+		dir:          dir,
+		sizeCap:      sizeCap,
+		sealedFDs:    make(map[string]*os.File),
+		evictedBlobs: make(map[string]struct{}),
 	}
 
 	if len(ids) == 0 {
@@ -312,6 +327,115 @@ func (m *Manager) ListBlobs() ([]BlobInfo, error) {
 	return infos, nil
 }
 
+// EvictBlob removes a sealed blob from disk and the in-memory fd cache.
+// The caller provides a synced function that reports whether logBlobID's
+// bytes have been durably stored elsewhere; if it returns false the eviction
+// is refused with ErrUnsyncedBytes.
+//
+// EvictBlob is idempotent: if the blob has already been evicted the call
+// returns nil.
+//
+// ErrActiveBlob is returned if logBlobID is the current active blob.
+func (m *Manager) EvictBlob(ctx context.Context, logBlobID string, synced func(string) bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return ErrClosed
+	}
+	if logBlobID == m.activeID {
+		m.mu.Unlock()
+		return ErrActiveBlob
+	}
+	m.mu.Unlock()
+
+	if !synced(logBlobID) {
+		return ErrUnsyncedBytes
+	}
+
+	// Mark evicted (idempotent) and grab the cached fd if any.
+	m.sealedMu.Lock()
+	if _, already := m.evictedBlobs[logBlobID]; already {
+		m.sealedMu.Unlock()
+		return nil
+	}
+	m.evictedBlobs[logBlobID] = struct{}{}
+	fd := m.sealedFDs[logBlobID]
+	delete(m.sealedFDs, logBlobID)
+	m.sealedMu.Unlock()
+
+	// Close the cached fd if one was open.
+	if fd != nil {
+		_ = fd.Close()
+	}
+
+	// Remove the file; ignore ErrNotExist so repeated calls are safe.
+	path := filepath.Join(m.dir, logBlobID+blobSuffix)
+	if err := os.Remove(path); err != nil && !errors.Is(err, iofs.ErrNotExist) {
+		return fmt.Errorf("logblob: remove blob %q: %w", path, err)
+	}
+	return nil
+}
+
+// Recover truncates a blob to validUpToOffset, discarding any bytes beyond
+// that offset. It is intended for crash-recovery scenarios where a torn
+// write left the tail of a blob in an indeterminate state.
+//
+// For the active blob the in-memory activeTail is also updated.
+// For sealed blobs the cached fd (if any) is closed and removed from the
+// cache before truncation so the next read re-opens the file at the new size.
+//
+// validUpToOffset must be ≥ 0.
+func (m *Manager) Recover(ctx context.Context, logBlobID string, validUpToOffset int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if validUpToOffset < 0 {
+		return fmt.Errorf("logblob: Recover: negative offset %d", validUpToOffset)
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return ErrClosed
+	}
+
+	if logBlobID == m.activeID {
+		// Truncate active blob while holding mu (acceptable for a startup op).
+		if err := m.activeFD.Truncate(validUpToOffset); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("logblob: truncate active blob %q: %w", logBlobID, err)
+		}
+		m.activeTail = validUpToOffset
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+
+	// Sealed blob: evict from fd cache before truncating.
+	m.sealedMu.Lock()
+	if _, evicted := m.evictedBlobs[logBlobID]; evicted {
+		m.sealedMu.Unlock()
+		return fmt.Errorf("logblob: Recover: %w: %s", ErrEvicted, logBlobID)
+	}
+	fd := m.sealedFDs[logBlobID]
+	delete(m.sealedFDs, logBlobID)
+	m.sealedMu.Unlock()
+
+	if fd != nil {
+		_ = fd.Close()
+	}
+
+	path := filepath.Join(m.dir, logBlobID+blobSuffix)
+	if err := os.Truncate(path, validUpToOffset); err != nil {
+		return fmt.Errorf("logblob: truncate sealed blob %q: %w", logBlobID, err)
+	}
+	return nil
+}
+
 // Close closes the Manager and all open file descriptors.
 //
 // Close is idempotent. After Close, all operations return ErrClosed.
@@ -412,6 +536,10 @@ func (m *Manager) fdForBlob(blobID string) (*os.File, error) {
 	// Sealed blob: check / populate the read-only fd cache.
 	m.sealedMu.Lock()
 	defer m.sealedMu.Unlock()
+
+	if _, evicted := m.evictedBlobs[blobID]; evicted {
+		return nil, ErrEvicted
+	}
 
 	if fd, ok := m.sealedFDs[blobID]; ok {
 		return fd, nil
