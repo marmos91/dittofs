@@ -578,13 +578,30 @@ func readResponseBody(body io.ReadCloser, contentLength *int64, fallbackSize int
 		return data, nil
 	}
 
-	buf := bytes.NewBuffer(make([]byte, 0, fallbackSize))
+	// Content-Length absent or zero: grow the buffer as we read. Cap the eager
+	// preallocation so a missing/lying header can't drive an oversized up-front
+	// allocation from an attacker- or caller-supplied range length; ReadFrom
+	// still grows the buffer to whatever the body actually contains.
+	prealloc := fallbackSize
+	if prealloc < 0 {
+		prealloc = 0
+	}
+	if prealloc > maxFallbackPrealloc {
+		prealloc = maxFallbackPrealloc
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, prealloc))
 	_, err := buf.ReadFrom(body)
 	if err != nil {
 		return nil, fmt.Errorf("read s3 object body: %w", err)
 	}
 	return buf.Bytes(), nil
 }
+
+// maxFallbackPrealloc bounds the up-front buffer reserved when an S3 response
+// omits Content-Length. 1 MiB is large enough to absorb most single-chunk
+// reads without reallocation, small enough that a bogus header cannot force a
+// large speculative allocation.
+const maxFallbackPrealloc = 1 << 20
 
 // Has reports whether the CAS object addressed by hash exists in the
 // bucket. Implements the block.BlockStore contract.

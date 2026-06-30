@@ -72,7 +72,8 @@ func NewBuilder(w io.Writer, blockID string, sealer Sealer) (*Builder, error) {
 }
 
 // Add frames one record (header + body) and returns a ChunkLocator whose
-// Offset and Length address the wire body within the block object being built.
+// WireOffset and WireLength address the wire body within the block object being
+// built.
 func (b *Builder) Add(hash block.ContentHash, wire []byte) (block.ChunkLocator, error) {
 	if b.sealer != nil {
 		return b.addSealed(hash, wire)
@@ -276,6 +277,12 @@ func (b *Builder) writeByte(v byte) error {
 func (b *Builder) writeRaw(p []byte) error {
 	n, err := b.w.Write(p)
 	b.written += int64(n)
+	// A conforming io.Writer must return a non-nil error on a short write, but
+	// guard defensively: a truncated record body would desync every later
+	// locator (WireOffset/WireLength address bytes that never reached the wire).
+	if err == nil && n < len(p) {
+		return io.ErrShortWrite
+	}
 	return err
 }
 

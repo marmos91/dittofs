@@ -4,11 +4,25 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/blockcodec"
 )
+
+// shortWriter simulates a non-conforming io.Writer that returns n < len(p) with
+// a nil error on writes larger than threshold. A conforming writer must report
+// an error on a short write; the codec must not trust that and silently emit a
+// truncated record body.
+type shortWriter struct{ threshold int }
+
+func (s shortWriter) Write(p []byte) (int, error) {
+	if len(p) > s.threshold {
+		return len(p) - 1, nil
+	}
+	return len(p), nil
+}
 
 // fakeSealer is a test Sealer that:
 //   - embeds the AAD in the sealed output so Open rejects AAD mismatches
@@ -403,4 +417,20 @@ func TestMagicMismatch(t *testing.T) {
 			t.Error("expected error for sealed block without Sealer, got nil")
 		}
 	})
+}
+
+// TestBuilderAddRejectsShortWrite proves Add fails closed when the underlying
+// writer drops bytes without erroring — a truncated body would desync every
+// later locator (WireOffset/WireLength would address bytes never written).
+func TestBuilderAddRejectsShortWrite(t *testing.T) {
+	// Preamble writes are small (<= threshold) and succeed; the 64-byte body
+	// exceeds the threshold and is short-written.
+	b, err := blockcodec.NewBuilder(shortWriter{threshold: 32}, "blk-short", nil)
+	if err != nil {
+		t.Fatalf("NewBuilder: %v", err)
+	}
+	var h block.ContentHash
+	if _, err := b.Add(h, bytes.Repeat([]byte{0x07}, 64)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Add short write: got %v, want io.ErrShortWrite", err)
+	}
 }
