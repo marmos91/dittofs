@@ -457,6 +457,40 @@ func (s *MemoryStore) ReadPayloadAt(_ context.Context, payloadID string, dest []
 	return len(dest), nil
 }
 
+// DataExtents reports the data ranges the in-memory tier knows for payloadID
+// within [0, fileSize). The memory append log is a single sparse, zero-filled
+// buffer (AppendWrite grows it and zero-fills gaps), so it cannot distinguish
+// an interior hole from genuinely-written zeros. We therefore conservatively
+// report the whole buffered span [0, min(len(buf), fileSize)) as one data
+// extent. Over-reporting data is always RFC-7862-safe — SEEK/READ_PLUS never
+// claim a hole where data exists; the only cost is that an interior hole inside
+// the buffered span reads back as zeros rather than being SEEK-skippable. An
+// unknown or empty payload yields no extents.
+//
+// Implements local.LocalStore.
+func (s *MemoryStore) DataExtents(_ context.Context, payloadID string, fileSize uint64) ([][2]uint64, error) {
+	if fileSize == 0 {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+	log, ok := s.appendLogs[payloadID]
+	if !ok || log == nil || len(log.buf) == 0 {
+		return nil, nil
+	}
+	end := uint64(len(log.buf))
+	if end > fileSize {
+		end = fileSize
+	}
+	if end == 0 {
+		return nil, nil
+	}
+	return [][2]uint64{{0, end}}, nil
+}
+
 // DeleteAppendLog removes the per-payload append-log buffer and clears
 // the tracked file-size entry. Already-rolled-up CAS chunks remain in
 // the store — orphan-chunk cleanup is GC's responsibility per the

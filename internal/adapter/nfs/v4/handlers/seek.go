@@ -92,13 +92,33 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 		return seekErr(types.NFS4ERR_NXIO)
 	}
 
+	// Derive the data/hole map from the block-store engine, which sees ALL
+	// tiers — pre-rollup append-log + in-memory bytes AND the persisted CAS
+	// manifest — the same view READ reconstructs. Deriving it from file.Blocks
+	// (the CAS block list) alone reports a hole where written-but-not-yet-
+	// rolled-up data exists, which RFC 7862 forbids and risks sparse-copy data
+	// loss (#1481). Fall back to the CAS-block-list path if the engine can't be
+	// resolved or errors, so SEEK never regresses below its prior behaviour.
 	var (
 		nextOffset uint64
 		found      bool
 	)
-	if what == types.NFS4_CONTENT_DATA {
+	useExtents := false
+	var extents [][2]uint64
+	if bs, rerr := common.ResolveForRead(authCtx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH)); rerr == nil {
+		if ex, derr := bs.DataExtents(authCtx.Context, string(file.PayloadID), file.Size); derr == nil {
+			extents = ex
+			useExtents = true
+		}
+	}
+	switch {
+	case useExtents && what == types.NFS4_CONTENT_DATA:
+		nextOffset, found = block.NextDataOffsetExtents(extents, file.Size, offset)
+	case useExtents:
+		nextOffset, found = block.NextHoleOffsetExtents(extents, file.Size, offset)
+	case what == types.NFS4_CONTENT_DATA:
 		nextOffset, found = block.NextDataOffset(file.Blocks, file.Size, offset)
-	} else {
+	default:
 		nextOffset, found = block.NextHoleOffset(file.Blocks, file.Size, offset)
 	}
 	if !found {
