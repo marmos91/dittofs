@@ -514,6 +514,23 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	shares := rt.ListShares()
 	s.pseudoFS.Rebuild(shares)
 	v4StateManager := v4state.NewStateManager(v4state.DefaultLeaseDuration)
+
+	// Wire NFSv4 byte-range locks to the per-share unified lock managers so they
+	// use the same manager instance as SMB and NLM — this is what enables
+	// cross-protocol lock conflict detection (and fixes NFSv4 LOCK returning
+	// SERVERFAULT, surfaced to clients as EIO, when no manager was configured).
+	// Lock managers are per-share but the StateManager is global, so resolve the
+	// correct manager from each operation's file handle.
+	if metaSvc := rt.GetMetadataService(); metaSvc != nil {
+		v4StateManager.SetLockManagerResolver(func(handle []byte) lock.LockManager {
+			lm, err := metaSvc.GetLockManagerForHandle(metadata.FileHandle(handle))
+			if err != nil || lm == nil {
+				return nil
+			}
+			return lm
+		})
+	}
+
 	s.v4Handler = v4handlers.NewHandler(rt, s.pseudoFS, v4StateManager)
 	s.v4Handler.KerberosEnabled = s.kerberosConfig != nil
 

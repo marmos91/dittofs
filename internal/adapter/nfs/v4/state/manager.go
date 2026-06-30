@@ -117,9 +117,13 @@ type StateManager struct {
 	// for directory delegations. Defaults to 50ms.
 	dirDelegBatchWindow time.Duration
 
-	// lockManager is the unified lock manager for actual byte-range conflict
-	// detection and cross-protocol locking. Set via SetLockManager() or constructor.
+	// lockManager is a static unified lock manager used as a fallback when no
+	// resolver is set (primarily by tests). See SetLockManagerResolver.
 	lockManager lock.LockManager
+
+	// lockManagerResolver resolves the per-share unified lock manager for a file
+	// handle, taking precedence over lockManager. See SetLockManagerResolver.
+	lockManagerResolver func(handle []byte) lock.LockManager
 
 	// bootEpoch is the server boot epoch, used as the high 32 bits of
 	// client IDs to ensure uniqueness across server restarts.
@@ -756,13 +760,13 @@ func (sm *StateManager) onLeaseExpired(clientID uint64) {
 				delete(sm.lockStateByOther, lockState.Stateid.Other)
 
 				// Remove actual locks from unified lock manager
-				if sm.lockManager != nil {
+				if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
 					ownerID := lockState.LockOwner.LockManagerOwnerID()
 					handleKey := string(lockState.FileHandle)
-					locks := sm.lockManager.ListUnifiedLocks(handleKey)
+					locks := lm.ListUnifiedLocks(handleKey)
 					for _, l := range locks {
 						if l.Owner.OwnerID == ownerID {
-							_ = sm.lockManager.RemoveUnifiedLock(
+							_ = lm.RemoveUnifiedLock(
 								handleKey,
 								l.Owner, l.Offset, l.Length,
 							)
@@ -847,7 +851,7 @@ func (sm *StateManager) RevokeDelegation(delegOther [types.NFS4_OTHER_SIZE]byte)
 	}
 
 	// Capture lockManager reference before releasing mu
-	lockMgr := sm.lockManager
+	lockMgr := sm.lockManagerFor(deleg.FileHandle)
 
 	// Keep in delegByOther for stale stateid detection.
 
@@ -1728,6 +1732,33 @@ func (sm *StateManager) SetLockManager(lm lock.LockManager) {
 	sm.lockManager = lm
 }
 
+// SetLockManagerResolver injects a function that resolves the per-share unified
+// lock manager for a file handle. Called by the NFS adapter after construction.
+//
+// Lock managers are per-share, but the NFSv4 StateManager is global. The
+// resolver lets each lock operation reach the same manager instance that SMB
+// and NLM use for the same file, which is what enables cross-protocol byte-range
+// lock conflict detection.
+func (sm *StateManager) SetLockManagerResolver(resolver func(handle []byte) lock.LockManager) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.lockManagerResolver = resolver
+}
+
+// lockManagerFor resolves the unified lock manager for a file handle. The
+// per-handle resolver (production: per-share managers) takes precedence; the
+// statically-set lockManager is the fallback (used by tests). May return nil.
+//
+// Lock-free by design: the resolver and lockManager are set once during adapter
+// startup (before any request is served), so reads need no synchronization. This
+// also lets callers that already hold sm.mu use it without deadlocking.
+func (sm *StateManager) lockManagerFor(handle []byte) lock.LockManager {
+	if sm.lockManagerResolver != nil {
+		return sm.lockManagerResolver(handle)
+	}
+	return sm.lockManager
+}
+
 // SetDelegationsEnabled controls whether delegations can be granted.
 // When false, ShouldGrantDelegation always returns OPEN_DELEGATE_NONE.
 // This is updated from live NFS adapter settings.
@@ -2044,7 +2075,8 @@ func (sm *StateManager) LockExisting(
 //
 // Caller must hold sm.mu.
 func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offset, length uint64, reclaim bool) (*LOCK4denied, error) {
-	if sm.lockManager == nil {
+	lm := sm.lockManagerFor(lockState.FileHandle)
+	if lm == nil {
 		return nil, fmt.Errorf("no lock manager configured")
 	}
 
@@ -2072,11 +2104,11 @@ func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offse
 
 	// Try to add the lock
 	handleKey := string(lockState.FileHandle)
-	err := sm.lockManager.AddUnifiedLock(handleKey, enhLock)
+	err := lm.AddUnifiedLock(handleKey, enhLock)
 	if err != nil {
 		// Lock conflict: query existing locks to find the conflicting one
 		// for the LOCK4denied response
-		existingLocks := sm.lockManager.ListUnifiedLocks(handleKey)
+		existingLocks := lm.ListUnifiedLocks(handleKey)
 		for _, el := range existingLocks {
 			if lock.IsUnifiedLockConflicting(el, enhLock) {
 				// Map the conflicting lock type back to NFS4
@@ -2136,7 +2168,8 @@ func (sm *StateManager) TestLock(
 	clientID uint64, ownerData []byte,
 	fileHandle []byte, lockType uint32, offset, length uint64,
 ) (*LOCK4denied, error) {
-	if sm.lockManager == nil {
+	lm := sm.lockManagerFor(fileHandle)
+	if lm == nil {
 		// No lock manager = no locks possible = no conflicts
 		return nil, nil
 	}
@@ -2167,7 +2200,7 @@ func (sm *StateManager) TestLock(
 	// NFSv4 LOCKT reports the same conflict an actual LOCK would be denied by
 	// when an overlapping SMB byte-range lock exists (xproto H1).
 	handleKey := string(fileHandle)
-	conflict := sm.lockManager.TestUnifiedLock(handleKey, testLock)
+	conflict := lm.TestUnifiedLock(handleKey, testLock)
 	if conflict != nil {
 		el := conflict.Lock
 		// Build LOCK4denied from the conflicting lock
@@ -2274,7 +2307,7 @@ func (sm *StateManager) UnlockFile(
 	}
 
 	// 4. Release the lock via unified lock manager
-	if sm.lockManager != nil {
+	if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil {
 		owner := lock.LockOwner{
 			OwnerID:   lockOwner.LockManagerOwnerID(),
 			ClientID:  fmt.Sprintf("nfs4:%d", lockOwner.ClientID),
@@ -2282,7 +2315,7 @@ func (sm *StateManager) UnlockFile(
 		}
 
 		handleKey := string(lockState.FileHandle)
-		err := sm.lockManager.RemoveUnifiedLock(handleKey, owner, offset, length)
+		err := lm.RemoveUnifiedLock(handleKey, owner, offset, length)
 		if err != nil {
 			// Lock-not-found is OK for LOCKU (idempotent).
 			// Only fail on unexpected errors.
@@ -2332,24 +2365,27 @@ func (sm *StateManager) ReleaseLockOwner(clientID uint64, ownerData []byte) erro
 		return nil
 	}
 
-	// Check if this lock-owner has any active locks in the lock manager
-	if sm.lockManager != nil {
-		ownerID := lockOwner.LockManagerOwnerID()
+	// Check if this lock-owner has any active locks in the lock manager.
+	// Lock managers are per-share, so resolve one per file handle.
+	ownerID := lockOwner.LockManagerOwnerID()
 
-		// Find all lock states for this lock-owner by scanning lockStateByOther
-		for _, ls := range sm.lockStateByOther {
-			if ls.LockOwner != lockOwner {
-				continue
-			}
-			// Check if any locks are held for this owner on this file
-			handleKey := string(ls.FileHandle)
-			locks := sm.lockManager.ListUnifiedLocks(handleKey)
-			for _, l := range locks {
-				if l.Owner.OwnerID == ownerID {
-					return &NFS4StateError{
-						Status:  types.NFS4ERR_LOCKS_HELD,
-						Message: "cannot release lock-owner: locks still held",
-					}
+	// Find all lock states for this lock-owner by scanning lockStateByOther
+	for _, ls := range sm.lockStateByOther {
+		if ls.LockOwner != lockOwner {
+			continue
+		}
+		lm := sm.lockManagerFor(ls.FileHandle)
+		if lm == nil {
+			continue
+		}
+		// Check if any locks are held for this owner on this file
+		handleKey := string(ls.FileHandle)
+		locks := lm.ListUnifiedLocks(handleKey)
+		for _, l := range locks {
+			if l.Owner.OwnerID == ownerID {
+				return &NFS4StateError{
+					Status:  types.NFS4ERR_LOCKS_HELD,
+					Message: "cannot release lock-owner: locks still held",
 				}
 			}
 		}
