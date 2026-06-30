@@ -5610,6 +5610,11 @@ directory and can be inspected with:
 dfsctl store block gc-status <share>
 ```
 
+The run executes asynchronously on the server (the mark phase can take
+minutes on a large or snapshot-heavy deployment). By default this command
+polls until the job finishes, rendering progress; pass --no-wait to print
+the job id and return immediately.
+
 Use --dry-run to skip deletes and print up to dry_run_sample_size
 candidate keys (default 1000). Recommended for first-time deployment
 confidence and for debugging suspected mark-phase bugs.
@@ -5630,6 +5635,7 @@ dfsctl store block gc <share> [flags]
 dfsctl store block gc myshare
 dfsctl store block gc myshare --dry-run
 dfsctl store block gc myshare --reconcile
+dfsctl store block gc myshare --no-wait
 dfsctl store block gc myshare -o json
 ```
 
@@ -5637,6 +5643,7 @@ Flags:
 
 ```
       --dry-run     Run mark + sweep enumeration but skip deletes; print candidate keys
+      --no-wait     Start the job and print its id without waiting for completion
       --reconcile   Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers
 ```
 

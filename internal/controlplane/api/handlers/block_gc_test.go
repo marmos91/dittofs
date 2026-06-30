@@ -16,41 +16,46 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 )
 
 // fakeGCRuntime is a recording stand-in for handlers.BlockGCRuntime.
 // Tests assert on captured arguments and feed canned responses.
 type fakeGCRuntime struct {
-	// RunBlockGCForShare hooks
-	runStats *engine.GCStats
-	runErr   error
-	runCalls []runCall
+	// StartBlockGC hooks
+	startJob   *runtime.GCJob
+	startErr   error
+	startCalls []startCall
+
+	// GetGCJobStatus hooks
+	statusJob *runtime.GCJob
+	statusOK  bool
 
 	// GCStateDirForShare hooks
 	gcStateRoot   string
 	gcStateRootEr error
 }
 
-type runCall struct {
-	share  string
-	dryRun bool
+type startCall struct {
+	share     string
+	dryRun    bool
+	reconcile bool
 }
 
-func (f *fakeGCRuntime) RunBlockGCForShare(_ context.Context, shareName string, dryRun bool) (*engine.GCStats, error) {
-	f.runCalls = append(f.runCalls, runCall{share: shareName, dryRun: dryRun})
-	if f.runErr != nil {
-		return nil, f.runErr
+func (f *fakeGCRuntime) StartBlockGC(shareName string, dryRun, reconcile bool) (*runtime.GCJob, error) {
+	f.startCalls = append(f.startCalls, startCall{share: shareName, dryRun: dryRun, reconcile: reconcile})
+	if f.startErr != nil {
+		return nil, f.startErr
 	}
-	return f.runStats, nil
+	if f.startJob != nil {
+		return f.startJob, nil
+	}
+	return &runtime.GCJob{ID: "gc-1", State: runtime.GCStateRunning, Share: shareName, DryRun: dryRun, Reconcile: reconcile}, nil
 }
 
-func (f *fakeGCRuntime) RunBlockGCReconcile(_ context.Context, dryRun bool) (*engine.GCStats, error) {
-	f.runCalls = append(f.runCalls, runCall{share: "<reconcile>", dryRun: dryRun})
-	if f.runErr != nil {
-		return nil, f.runErr
-	}
-	return f.runStats, nil
+func (f *fakeGCRuntime) GetGCJobStatus(string) (*runtime.GCJob, bool) {
+	return f.statusJob, f.statusOK
 }
 
 func (f *fakeGCRuntime) GCStateDirForShare(_ string) (string, error) {
@@ -60,9 +65,14 @@ func (f *fakeGCRuntime) GCStateDirForShare(_ string) (string, error) {
 	return f.gcStateRoot, nil
 }
 
-// newGCRequest builds a chi-aware httptest request with the {name} URL
-// param pre-populated. Mirrors newChiRequestForBlockStore but fixed to
-// the {name} key the GC handler reads.
+// gcStartBody mirrors the 202 response shape from RunGC.
+type gcStartBody struct {
+	JobID  string              `json:"job_id"`
+	Status GCJobStatusResponse `json:"status"`
+}
+
+// newGCRequest builds a chi-aware httptest request with the {name} URL param
+// pre-populated.
 func newGCRequest(method, path, share string, body io.Reader) *http.Request {
 	req := httptest.NewRequest(method, path, body)
 	rctx := chi.NewRouteContext()
@@ -70,17 +80,20 @@ func newGCRequest(method, path, share string, body io.Reader) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
-// TestBlockStoreHandler_RunGC_Success_NotDryRun asserts a non-dry-run
-// POST invokes RunBlockGCForShare with dryRun=false and returns the
-// captured stats as JSON.
-func TestBlockStoreHandler_RunGC_Success_NotDryRun(t *testing.T) {
-	fake := &fakeGCRuntime{
-		runStats: &engine.GCStats{
-			HashesMarked: 42,
-			ObjectsSwept: 7,
-			BytesFreed:   1024,
-		},
-	}
+// newGCJobRequest additionally pre-populates the {job_id} param.
+func newGCJobRequest(method, path, share, jobID string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, path, body)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", share)
+	rctx.URLParams.Add("job_id", jobID)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
+// TestBlockStoreHandler_RunGC_KicksOffJob asserts a non-dry-run POST starts an
+// async job via StartBlockGC (dryRun=false, reconcile=false) and returns 202
+// with the job id + initial status.
+func TestBlockStoreHandler_RunGC_KicksOffJob(t *testing.T) {
+	fake := &fakeGCRuntime{}
 	h := NewBlockStoreGCHandler(fake)
 
 	body, _ := json.Marshal(BlockStoreGCRequest{DryRun: false})
@@ -89,72 +102,54 @@ func TestBlockStoreHandler_RunGC_Success_NotDryRun(t *testing.T) {
 
 	h.RunGC(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("RunGC: expected 200, got %d (body=%q)", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("RunGC: expected 202, got %d (body=%q)", w.Code, w.Body.String())
 	}
-	if len(fake.runCalls) != 1 {
-		t.Fatalf("RunGC: expected 1 RunBlockGCForShare call, got %d", len(fake.runCalls))
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("RunGC: expected 1 StartBlockGC call, got %d", len(fake.startCalls))
 	}
 	// The handler must normalize the bare URL param ("myshare") to the
-	// registry's leading-slash key ("/myshare") before calling the runtime;
-	// otherwise the lookup always fails with ErrShareNotFound.
-	if fake.runCalls[0].share != "/myshare" {
-		t.Fatalf("RunGC: expected normalized share=/myshare, got %q", fake.runCalls[0].share)
+	// registry key ("/myshare") before calling the runtime.
+	if fake.startCalls[0].share != "/myshare" {
+		t.Fatalf("RunGC: expected normalized share=/myshare, got %q", fake.startCalls[0].share)
 	}
-	if fake.runCalls[0].dryRun {
-		t.Fatal("RunGC: expected dryRun=false")
+	if fake.startCalls[0].dryRun || fake.startCalls[0].reconcile {
+		t.Fatalf("RunGC: expected dryRun=false reconcile=false, got %+v", fake.startCalls[0])
 	}
 
-	var resp BlockStoreGCResponse
+	var resp gcStartBody
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("RunGC: decode response: %v", err)
 	}
-	if resp.Stats == nil || resp.Stats.HashesMarked != 42 || resp.Stats.ObjectsSwept != 7 || resp.Stats.BytesFreed != 1024 {
-		t.Fatalf("RunGC: unexpected stats: %+v", resp.Stats)
+	if resp.JobID == "" || resp.Status.State != runtime.GCStateRunning {
+		t.Fatalf("RunGC: unexpected start body: %+v", resp)
 	}
 }
 
-// TestBlockStoreHandler_RunGC_DryRunPropagates asserts dry_run=true
-// reaches the runtime and DryRunCandidates round-trip in the response.
-func TestBlockStoreHandler_RunGC_DryRunPropagates(t *testing.T) {
-	fake := &fakeGCRuntime{
-		runStats: &engine.GCStats{
-			DryRun:           true,
-			HashesMarked:     100,
-			DryRunCandidates: []string{"cas/aa/bb/abcdef", "cas/aa/cc/123456"},
-		},
-	}
+// TestBlockStoreHandler_RunGC_DryRunReconcilePropagate asserts both flags reach
+// the runtime.
+func TestBlockStoreHandler_RunGC_DryRunReconcilePropagate(t *testing.T) {
+	fake := &fakeGCRuntime{}
 	h := NewBlockStoreGCHandler(fake)
 
-	body, _ := json.Marshal(BlockStoreGCRequest{DryRun: true})
+	body, _ := json.Marshal(BlockStoreGCRequest{DryRun: true, Reconcile: true})
 	req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", "myshare", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
 	h.RunGC(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("RunGC: expected 200, got %d", w.Code)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("RunGC: expected 202, got %d", w.Code)
 	}
-	if len(fake.runCalls) != 1 || !fake.runCalls[0].dryRun {
-		t.Fatalf("RunGC: expected single call with dryRun=true; got %+v", fake.runCalls)
-	}
-
-	var resp BlockStoreGCResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("RunGC: decode response: %v", err)
-	}
-	if !resp.Stats.DryRun {
-		t.Fatal("RunGC: expected DryRun=true in response")
-	}
-	if len(resp.Stats.DryRunCandidates) != 2 {
-		t.Fatalf("RunGC: expected 2 DryRunCandidates, got %d", len(resp.Stats.DryRunCandidates))
+	if len(fake.startCalls) != 1 || !fake.startCalls[0].dryRun || !fake.startCalls[0].reconcile {
+		t.Fatalf("RunGC: expected dryRun+reconcile propagated; got %+v", fake.startCalls)
 	}
 }
 
-// TestBlockStoreHandler_RunGC_EmptyBody treats a missing body as the
-// zero value (DryRun=false). Operators commonly POST without a body.
+// TestBlockStoreHandler_RunGC_EmptyBody treats a missing body as the zero value
+// (DryRun=false).
 func TestBlockStoreHandler_RunGC_EmptyBody(t *testing.T) {
-	fake := &fakeGCRuntime{runStats: &engine.GCStats{}}
+	fake := &fakeGCRuntime{}
 	h := NewBlockStoreGCHandler(fake)
 
 	req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", "myshare", nil)
@@ -162,18 +157,18 @@ func TestBlockStoreHandler_RunGC_EmptyBody(t *testing.T) {
 
 	h.RunGC(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("RunGC: expected 200, got %d", w.Code)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("RunGC: expected 202, got %d", w.Code)
 	}
-	if len(fake.runCalls) != 1 || fake.runCalls[0].dryRun {
-		t.Fatalf("RunGC: expected single call with dryRun=false; got %+v", fake.runCalls)
+	if len(fake.startCalls) != 1 || fake.startCalls[0].dryRun {
+		t.Fatalf("RunGC: expected single call with dryRun=false; got %+v", fake.startCalls)
 	}
 }
 
-// TestBlockStoreHandler_RunGC_MalformedBody returns 400 on bad JSON,
-// matching evict's behavior — the request never reaches RunBlockGCForShare.
+// TestBlockStoreHandler_RunGC_MalformedBody returns 400 on bad JSON — the
+// request never reaches StartBlockGC.
 func TestBlockStoreHandler_RunGC_MalformedBody(t *testing.T) {
-	fake := &fakeGCRuntime{runStats: &engine.GCStats{}}
+	fake := &fakeGCRuntime{}
 	h := NewBlockStoreGCHandler(fake)
 
 	req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", "myshare", bytes.NewReader([]byte("{not-json")))
@@ -184,18 +179,15 @@ func TestBlockStoreHandler_RunGC_MalformedBody(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("RunGC: expected 400 on malformed body, got %d (body=%q)", w.Code, w.Body.String())
 	}
-	if len(fake.runCalls) != 0 {
-		t.Fatalf("RunGC: runtime must not be invoked on bad input; got %d calls", len(fake.runCalls))
+	if len(fake.startCalls) != 0 {
+		t.Fatalf("RunGC: runtime must not be invoked on bad input; got %d calls", len(fake.startCalls))
 	}
 }
 
-// TestBlockStoreHandler_RunGC_ShareNotFound returns 404 when the share
-// is unknown. Mirrors models.ErrShareNotFound mapping in MapStoreError
-// but goes through shares.ErrShareNotFound for runtime-layer errors.
+// TestBlockStoreHandler_RunGC_ShareNotFound returns 404 when StartBlockGC
+// rejects an unknown share.
 func TestBlockStoreHandler_RunGC_ShareNotFound(t *testing.T) {
-	fake := &fakeGCRuntime{
-		runErr: fmt.Errorf("%w: %q", shares.ErrShareNotFound, "ghost"),
-	}
+	fake := &fakeGCRuntime{startErr: fmt.Errorf("%w: %q", shares.ErrShareNotFound, "ghost")}
 	h := NewBlockStoreGCHandler(fake)
 
 	body, _ := json.Marshal(BlockStoreGCRequest{})
@@ -209,11 +201,9 @@ func TestBlockStoreHandler_RunGC_ShareNotFound(t *testing.T) {
 	}
 }
 
-// TestBlockStoreHandler_RunGC_EmptyShareName returns 400 when {name}
-// is empty. The chi router would normally not match the empty value,
-// but the handler defends against direct invocation in tests/probes.
+// TestBlockStoreHandler_RunGC_EmptyShareName returns 400 when {name} is empty.
 func TestBlockStoreHandler_RunGC_EmptyShareName(t *testing.T) {
-	fake := &fakeGCRuntime{runStats: &engine.GCStats{}}
+	fake := &fakeGCRuntime{}
 	h := NewBlockStoreGCHandler(fake)
 
 	req := newGCRequest(http.MethodPost, "/api/v1/shares//blockstore/gc", "", nil)
@@ -226,8 +216,8 @@ func TestBlockStoreHandler_RunGC_EmptyShareName(t *testing.T) {
 	}
 }
 
-// TestBlockStoreHandler_RunGC_NilRuntime fails closed when wired with
-// a nil runtime. Defends against a misconfigured server boot path.
+// TestBlockStoreHandler_RunGC_NilRuntime fails closed when wired with a nil
+// runtime.
 func TestBlockStoreHandler_RunGC_NilRuntime(t *testing.T) {
 	h := NewBlockStoreGCHandler(nil)
 
@@ -241,12 +231,74 @@ func TestBlockStoreHandler_RunGC_NilRuntime(t *testing.T) {
 	}
 }
 
-// TestBlockStoreHandler_GCStatus_Success reads a valid last-run.json
-// from the share's gc-state directory and round-trips the parsed
-// GCRunSummary as JSON.
+// TestBlockStoreHandler_RunGC_NormalizesShareName guards that the bare chi URL
+// param is normalized to the registry key before reaching the runtime.
+func TestBlockStoreHandler_RunGC_NormalizesShareName(t *testing.T) {
+	for _, urlParam := range []string{"myshare", "/myshare"} {
+		fake := &fakeGCRuntime{}
+		h := NewBlockStoreGCHandler(fake)
+
+		req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", urlParam, nil)
+		w := httptest.NewRecorder()
+		h.RunGC(w, req)
+
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("RunGC(%q): expected 202, got %d", urlParam, w.Code)
+		}
+		if len(fake.startCalls) != 1 || fake.startCalls[0].share != "/myshare" {
+			t.Fatalf("RunGC(%q): expected runtime called with /myshare, got %+v", urlParam, fake.startCalls)
+		}
+	}
+}
+
+// TestBlockStoreHandler_GCJobStatus_Success returns the job for a known id.
+func TestBlockStoreHandler_GCJobStatus_Success(t *testing.T) {
+	fake := &fakeGCRuntime{
+		statusOK: true,
+		statusJob: &runtime.GCJob{
+			ID: "gc-7", State: runtime.GCStateDone, Share: "/myshare",
+			ObjectsSwept: 3, BytesFreed: 2048,
+			Stats: &engine.GCStats{RunID: "r-7", ObjectsSwept: 3, BytesFreed: 2048},
+		},
+	}
+	h := NewBlockStoreGCHandler(fake)
+
+	req := newGCJobRequest(http.MethodGet, "/api/v1/shares/myshare/blockstore/gc/gc-7", "myshare", "gc-7", nil)
+	w := httptest.NewRecorder()
+
+	h.GCJobStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GCJobStatus: expected 200, got %d (body=%q)", w.Code, w.Body.String())
+	}
+	var got GCJobStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("GCJobStatus: decode: %v", err)
+	}
+	if got.ID != "gc-7" || got.State != runtime.GCStateDone || got.ObjectsSwept != 3 || got.Stats == nil {
+		t.Fatalf("GCJobStatus: unexpected body: %+v", got)
+	}
+}
+
+// TestBlockStoreHandler_GCJobStatus_NotFound returns 404 for an unknown id.
+func TestBlockStoreHandler_GCJobStatus_NotFound(t *testing.T) {
+	fake := &fakeGCRuntime{statusOK: false}
+	h := NewBlockStoreGCHandler(fake)
+
+	req := newGCJobRequest(http.MethodGet, "/api/v1/shares/myshare/blockstore/gc/nope", "myshare", "nope", nil)
+	w := httptest.NewRecorder()
+
+	h.GCJobStatus(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("GCJobStatus: expected 404, got %d", w.Code)
+	}
+}
+
+// TestBlockStoreHandler_GCStatus_Success reads a valid last-run.json from the
+// share's gc-state directory and round-trips the parsed GCRunSummary as JSON.
 func TestBlockStoreHandler_GCStatus_Success(t *testing.T) {
 	root := t.TempDir()
-	// Pre-seed last-run.json so the handler can read it.
 	summary := engine.GCRunSummary{
 		RunID:        "test-run-1",
 		StartedAt:    time.Now().UTC().Truncate(time.Second),
@@ -281,8 +333,8 @@ func TestBlockStoreHandler_GCStatus_Success(t *testing.T) {
 	}
 }
 
-// TestBlockStoreHandler_GCStatus_NoRunYet returns 404 when the
-// last-run.json file does not exist (the share has never run GC).
+// TestBlockStoreHandler_GCStatus_NoRunYet returns 404 when last-run.json does
+// not exist (the share has never run GC).
 func TestBlockStoreHandler_GCStatus_NoRunYet(t *testing.T) {
 	root := t.TempDir() // empty: no last-run.json
 
@@ -299,8 +351,8 @@ func TestBlockStoreHandler_GCStatus_NoRunYet(t *testing.T) {
 	}
 }
 
-// TestBlockStoreHandler_GCStatus_EmptyRoot returns 404 when the share's
-// local store has no persistent root (in-memory backend).
+// TestBlockStoreHandler_GCStatus_EmptyRoot returns 404 when the share's local
+// store has no persistent root (in-memory backend).
 func TestBlockStoreHandler_GCStatus_EmptyRoot(t *testing.T) {
 	fake := &fakeGCRuntime{gcStateRoot: ""}
 	h := NewBlockStoreGCHandler(fake)
@@ -315,8 +367,8 @@ func TestBlockStoreHandler_GCStatus_EmptyRoot(t *testing.T) {
 	}
 }
 
-// TestBlockStoreHandler_GCStatus_ShareNotFound returns 404 when the
-// share is unknown (GCStateDirForShare wraps shares.ErrShareNotFound).
+// TestBlockStoreHandler_GCStatus_ShareNotFound returns 404 when the share is
+// unknown (GCStateDirForShare wraps shares.ErrShareNotFound).
 func TestBlockStoreHandler_GCStatus_ShareNotFound(t *testing.T) {
 	fake := &fakeGCRuntime{
 		gcStateRootEr: fmt.Errorf("%w: %q", shares.ErrShareNotFound, "ghost"),
@@ -333,8 +385,8 @@ func TestBlockStoreHandler_GCStatus_ShareNotFound(t *testing.T) {
 	}
 }
 
-// TestBlockStoreHandler_GCStatus_MalformedFile returns 500 when
-// last-run.json exists but cannot be parsed (corrupt or truncated).
+// TestBlockStoreHandler_GCStatus_MalformedFile returns 500 when last-run.json
+// exists but cannot be parsed.
 func TestBlockStoreHandler_GCStatus_MalformedFile(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "last-run.json"), []byte("{not-json"), 0o644); err != nil {
@@ -354,8 +406,8 @@ func TestBlockStoreHandler_GCStatus_MalformedFile(t *testing.T) {
 	}
 }
 
-// TestBlockStoreHandler_GCStatus_NilRuntime fails closed when wired
-// with a nil runtime.
+// TestBlockStoreHandler_GCStatus_NilRuntime fails closed when wired with a nil
+// runtime.
 func TestBlockStoreHandler_GCStatus_NilRuntime(t *testing.T) {
 	h := NewBlockStoreGCHandler(nil)
 
@@ -366,28 +418,5 @@ func TestBlockStoreHandler_GCStatus_NilRuntime(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("GCStatus: expected 500 on nil runtime, got %d", w.Code)
-	}
-}
-
-// TestBlockStoreHandler_RunGC_NormalizesShareName is the regression guard for
-// the missing-normalizeShareName bug: the bare chi URL param ("myshare") must
-// be normalized to the registry key ("/myshare") before reaching the runtime,
-// otherwise every real share resolves to ErrShareNotFound. Verifies for both a
-// bare name and an already-slashed name.
-func TestBlockStoreHandler_RunGC_NormalizesShareName(t *testing.T) {
-	for _, urlParam := range []string{"myshare", "/myshare"} {
-		fake := &fakeGCRuntime{runStats: &engine.GCStats{}}
-		h := NewBlockStoreGCHandler(fake)
-
-		req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", urlParam, nil)
-		w := httptest.NewRecorder()
-		h.RunGC(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("RunGC(%q): expected 200, got %d", urlParam, w.Code)
-		}
-		if len(fake.runCalls) != 1 || fake.runCalls[0].share != "/myshare" {
-			t.Fatalf("RunGC(%q): expected runtime called with /myshare, got %+v", urlParam, fake.runCalls)
-		}
 	}
 }

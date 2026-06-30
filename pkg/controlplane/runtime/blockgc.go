@@ -47,7 +47,23 @@ func gcResult(total *engine.GCStats) string {
 // fatal error.
 func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun bool) (*engine.GCStats, error) {
 	// Steady-state GC: index-based remote sweep (synced − live), no S3 LIST.
-	return r.runBlockGCSweep(ctx, sharePrefix, dryRun, false)
+	return r.runBlockGCSweep(ctx, sharePrefix, dryRun, false, nil)
+}
+
+// applyGCProgress wires an optional progress sink into engine.Options so a
+// long-running run (mark phase on a snapshot-heavy deployment) reports liveness
+// to an async caller. The mark phase reports the running hash count;
+// ProgressCallback reports post-sweep totals. Both are best-effort liveness —
+// the authoritative result is the returned (accumulated) GCStats. No-op when
+// progress is nil (the scheduler / synchronous callers).
+func applyGCProgress(opts *engine.Options, progress func(engine.GCStats)) {
+	if progress == nil {
+		return
+	}
+	opts.MarkProgress = func(hashesMarked int64) {
+		progress(engine.GCStats{HashesMarked: hashesMarked})
+	}
+	opts.ProgressCallback = progress
 }
 
 // runBlockGCSweep is the shared remote+local GC pass. fullScan selects the
@@ -56,7 +72,7 @@ func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun boo
 // does not know about) instead of the steady-state index sweep (synced − live,
 // no S3 LIST). Both paths clear synced markers on delete, preserving the
 // synced ⊆ remote invariant (#1433).
-func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRun, fullScan bool) (*engine.GCStats, error) {
+func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRun, fullScan bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
 	if sharePrefix != "" {
 		logger.Warn("RunBlockGC: sharePrefix is no longer honored — mark-sweep uses a global live set across every cas/XX prefix",
 			"ignored_sharePrefix", sharePrefix)
@@ -92,6 +108,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 			Shares:           append([]string(nil), entry.Shares...),
 		}
 		applyGCDefaults(opts, gcDefaults)
+		applyGCProgress(opts, progress)
 		// Inject held hashes from ready snapshots into the GC mark phase.
 		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
 		// The per-remote synced-hash index: the index-sweep candidate source AND
@@ -127,7 +144,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 	}
 	// Sweep the local tier too, so one `gc` invocation reclaims orphaned
 	// chunks on both remote and local stores (#1433).
-	r.runLocalGC(ctx, "", dryRun, total)
+	r.runLocalGC(ctx, "", dryRun, total, progress)
 	return total, nil
 }
 
@@ -148,7 +165,7 @@ var collectGarbageLocalFn = engine.CollectGarbageLocal
 // (#1433).
 func (r *Runtime) RunBlockGCLocal(ctx context.Context, dryRun bool) (*engine.GCStats, error) {
 	total := &engine.GCStats{}
-	r.runLocalGC(ctx, "", dryRun, total)
+	r.runLocalGC(ctx, "", dryRun, total, nil)
 	return total, nil
 }
 
@@ -158,7 +175,7 @@ func (r *Runtime) RunBlockGCLocal(ctx context.Context, dryRun bool) (*engine.GCS
 // backend (empty gc-state root) are skipped. Shared by RunBlockGC,
 // RunBlockGCForShare, and RunBlockGCLocal so a single `gc` invocation reclaims
 // orphans on BOTH tiers (#1433).
-func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun bool, total *engine.GCStats) {
+func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun bool, total *engine.GCStats, progress func(engine.GCStats)) {
 	gcDefaults := r.gcDefaultsSnapshot()
 	for _, entry := range r.sharesSvc.ShareLocalStores() {
 		if shareFilter != "" && entry.ShareName != shareFilter {
@@ -175,6 +192,7 @@ func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun boo
 			Shares:      []string{entry.ShareName},
 		}
 		applyGCDefaults(opts, gcDefaults)
+		applyGCProgress(opts, progress)
 		opts.HoldProvider = r.snapshotHoldForShare(entry.ShareName)
 		logger.Info("local GC: starting",
 			"tier", "local",
@@ -239,6 +257,13 @@ func (p *perRemoteReconciler) GetMetadataStoreForShare(shareName string) (metada
 //
 // Returns an ErrShareNotFound-wrapped error if name is unknown.
 func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bool) (*engine.GCStats, error) {
+	return r.runBlockGCForShare(ctx, name, dryRun, nil)
+}
+
+// runBlockGCForShare is RunBlockGCForShare with an optional progress sink wired
+// into the engine for async callers (StartBlockGC). progress is nil for the
+// synchronous public entrypoint.
+func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
 	gcRoot, err := r.sharesSvc.GetGCStateDirForShare(name)
 	if err != nil {
 		return nil, err
@@ -268,6 +293,7 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 			Shares:           append([]string(nil), entry.Shares...),
 		}
 		applyGCDefaults(opts, gcDefaults)
+		applyGCProgress(opts, progress)
 		// Inject held hashes from ready snapshots into the GC mark phase.
 		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
 		// Per-remote synced-hash index: LIST-free candidate source + marker-clear
@@ -300,7 +326,7 @@ func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bo
 		)
 	}
 	// Sweep this share's local tier too (#1433).
-	r.runLocalGC(ctx, name, dryRun, total)
+	r.runLocalGC(ctx, name, dryRun, total, progress)
 	return total, nil
 }
 

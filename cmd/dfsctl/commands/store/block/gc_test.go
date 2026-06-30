@@ -21,12 +21,14 @@ import (
 // dry_run flag for assertions.
 type gcServer struct {
 	*httptest.Server
-	lastMethod string
-	lastPath   string
-	lastDryRun bool
-	gcStats    *engine.GCStats
-	summary    engine.GCRunSummary
-	status     int
+	lastMethod    string
+	lastPath      string
+	lastPostPath  string
+	lastDryRun    bool
+	lastReconcile bool
+	gcStats       *engine.GCStats
+	summary       engine.GCRunSummary
+	status        int
 }
 
 func newGCServer(t *testing.T) *gcServer {
@@ -51,8 +53,25 @@ func newGCServer(t *testing.T) *gcServer {
 			var opts apiclient.BlockStoreGCOptions
 			_ = json.Unmarshal(body, &opts)
 			s.lastDryRun = opts.DryRun
+			s.lastReconcile = opts.Reconcile
+			s.lastPostPath = r.URL.Path
+			// Async kick-off: 202 + job id; the command then polls the job.
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"job_id": "gc-1",
+				"status": apiclient.GCJobStatus{ID: "gc-1", State: "running"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/gc/"):
+			// Poll: report a terminal (done) job carrying the canned stats.
+			job := apiclient.GCJobStatus{ID: "gc-1", State: "done", Stats: s.gcStats}
+			if s.gcStats != nil {
+				job.HashesMarked = s.gcStats.HashesMarked
+				job.ObjectsScanned = s.gcStats.ObjectsScanned
+				job.ObjectsSwept = s.gcStats.ObjectsSwept
+				job.BytesFreed = s.gcStats.BytesFreed
+			}
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(apiclient.BlockStoreGCResult{Stats: s.gcStats})
+			_ = json.NewEncoder(w).Encode(job)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/gc-status"):
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(s.summary)
@@ -121,11 +140,8 @@ func TestGCCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 		}
 	})
 
-	if s.lastMethod != http.MethodPost {
-		t.Errorf("method = %q, want POST", s.lastMethod)
-	}
-	if s.lastPath != "/api/v1/shares/myshare/blockstore/gc" {
-		t.Errorf("path = %q, want /api/v1/shares/myshare/blockstore/gc", s.lastPath)
+	if s.lastPostPath != "/api/v1/shares/myshare/blockstore/gc" {
+		t.Errorf("POST path = %q, want /api/v1/shares/myshare/blockstore/gc", s.lastPostPath)
 	}
 	if s.lastDryRun {
 		t.Error("dry_run flag should be false by default")

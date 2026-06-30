@@ -3,12 +3,19 @@ package block
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/output"
 	"github.com/marmos91/dittofs/pkg/apiclient"
+)
+
+// Terminal GC-job states (mirror runtime.GCState*).
+const (
+	gcStateDone   = "done"
+	gcStateFailed = "failed"
 )
 
 // gcCmd triggers an on-demand block-store GC run for the named share and
@@ -27,6 +34,11 @@ directory and can be inspected with:
 
   dfsctl store block gc-status <share>
 
+The run executes asynchronously on the server (the mark phase can take
+minutes on a large or snapshot-heavy deployment). By default this command
+polls until the job finishes, rendering progress; pass --no-wait to print
+the job id and return immediately.
+
 Use --dry-run to skip deletes and print up to dry_run_sample_size
 candidate keys (default 1000). Recommended for first-time deployment
 confidence and for debugging suspected mark-phase bugs.
@@ -41,6 +53,7 @@ Examples:
   dfsctl store block gc myshare
   dfsctl store block gc myshare --dry-run
   dfsctl store block gc myshare --reconcile
+  dfsctl store block gc myshare --no-wait
   dfsctl store block gc myshare -o json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runBlockStoreGC,
@@ -49,61 +62,124 @@ Examples:
 func init() {
 	gcCmd.Flags().Bool("dry-run", false, "Run mark + sweep enumeration but skip deletes; print candidate keys")
 	gcCmd.Flags().Bool("reconcile", false, "Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers")
+	gcCmd.Flags().Bool("no-wait", false, "Start the job and print its id without waiting for completion")
 }
 
 func runBlockStoreGC(cmd *cobra.Command, args []string) error {
 	share := args[0]
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	reconcile, _ := cmd.Flags().GetBool("reconcile")
+	noWait, _ := cmd.Flags().GetBool("no-wait")
 
 	client, err := cmdutil.GetAuthenticatedClient()
 	if err != nil {
 		return err
 	}
 
-	res, err := client.BlockStoreGC(share, &apiclient.BlockStoreGCOptions{DryRun: dryRun, Reconcile: reconcile})
+	jobID, err := client.StartBlockStoreGC(share, &apiclient.BlockStoreGCOptions{DryRun: dryRun, Reconcile: reconcile})
 	if err != nil {
-		return fmt.Errorf("failed to run block store GC: %w", err)
-	}
-	if res == nil || res.Stats == nil {
-		return fmt.Errorf("block store GC: server returned empty response")
+		return fmt.Errorf("failed to start block store GC: %w", err)
 	}
 
-	format, err := cmdutil.GetOutputFormatParsed()
-	if err != nil {
-		return err
+	format, ferr := cmdutil.GetOutputFormatParsed()
+	if ferr != nil {
+		return ferr
 	}
 
-	// Emit the stats body first so observability is identical across
-	// formats, then surface sweep errors as a non-zero exit independently
-	// of the output format. A GC run that hit Delete/list errors left
-	// orphan objects unreclaimed (storage/cost leak) — scripts gating on
-	// the exit code must see that in -o json/-o yaml too, not only table.
+	if noWait {
+		switch format {
+		case output.FormatJSON:
+			return output.PrintJSON(os.Stdout, map[string]string{"job_id": jobID})
+		case output.FormatYAML:
+			return output.PrintYAML(os.Stdout, map[string]string{"job_id": jobID})
+		default:
+			fmt.Printf("GC job started: %s\n", jobID)
+		}
+		return nil
+	}
+
+	return watchGC(client, share, jobID, dryRun, format)
+}
+
+// watchGC polls the GC job until it reaches a terminal state. In table mode it
+// renders a live progress status line; in JSON/YAML mode it stays silent until
+// the terminal status so the machine-readable output is not polluted. On
+// completion it emits the full stats body and returns a non-zero error if the
+// run hit sweep errors, preserving the prior synchronous command's exit
+// semantics.
+func watchGC(client *apiclient.Client, share, jobID string, dryRun bool, format output.Format) error {
+	renderProgress := format == output.FormatTable
+	for {
+		status, err := client.GetBlockStoreGCJob(share, jobID)
+		if err != nil {
+			return fmt.Errorf("failed to poll GC job: %w", err)
+		}
+
+		switch status.State {
+		case gcStateDone:
+			if renderProgress {
+				fmt.Printf("\rmarked %d hashes, swept %d objects (%s) — done                \n",
+					status.HashesMarked, status.ObjectsSwept, formatBytes(status.BytesFreed))
+			}
+			return emitGCResult(status, format, dryRun)
+		case gcStateFailed:
+			if renderProgress {
+				fmt.Println()
+			}
+			return fmt.Errorf("GC job failed: %s", status.Error)
+		default:
+			if renderProgress {
+				fmt.Printf("\rmarked %d hashes, scanned %d, swept %d objects (%s)        ",
+					status.HashesMarked, status.ObjectsScanned, status.ObjectsSwept,
+					formatBytes(status.BytesFreed))
+			}
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// emitGCResult renders the terminal job's stats in the requested output format
+// and returns an error when the run reported sweep errors (so scripts gating on
+// the exit code see it in every format, not only the table).
+func emitGCResult(status *apiclient.GCJobStatus, format output.Format, dryRun bool) error {
 	switch format {
 	case output.FormatJSON:
-		if err := output.PrintJSON(os.Stdout, res); err != nil {
+		if err := output.PrintJSON(os.Stdout, status); err != nil {
 			return err
 		}
 	case output.FormatYAML:
-		if err := output.PrintYAML(os.Stdout, res); err != nil {
+		if err := output.PrintYAML(os.Stdout, status); err != nil {
 			return err
 		}
 	default:
-		if err := printGCStatsTable(res, dryRun); err != nil {
+		if err := printGCStatsTable(status, dryRun); err != nil {
 			return err
 		}
 	}
 
-	if res.Stats.ErrorCount > 0 {
-		return fmt.Errorf("GC completed with %d sweep error(s)", res.Stats.ErrorCount)
+	if status.Stats != nil && status.Stats.ErrorCount > 0 {
+		return fmt.Errorf("GC completed with %d sweep error(s)", status.Stats.ErrorCount)
 	}
 	return nil
 }
 
 // printGCStatsTable renders the GC summary as a key/value table plus an
 // optional dry-run candidate listing. Mirrors stats.go's output style.
-func printGCStatsTable(res *apiclient.BlockStoreGCResult, dryRun bool) error {
-	s := res.Stats
+func printGCStatsTable(status *apiclient.GCJobStatus, dryRun bool) error {
+	s := status.Stats
+	if s == nil {
+		// Terminal job without a persisted stats body (should not happen for a
+		// done run): fall back to the live counters.
+		pairs := [][2]string{
+			{"Hashes Marked", fmt.Sprintf("%d", status.HashesMarked)},
+			{"Objects Found", fmt.Sprintf("%d", status.ObjectsScanned)},
+			{"Objects Swept", fmt.Sprintf("%d", status.ObjectsSwept)},
+			{"Bytes Freed", formatBytes(status.BytesFreed)},
+		}
+		return output.SimpleTable(os.Stdout, pairs)
+	}
+
 	pairs := [][2]string{
 		{"Run ID", s.RunID},
 		{"Hashes Marked", fmt.Sprintf("%d", s.HashesMarked)},

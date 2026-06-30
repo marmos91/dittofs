@@ -298,6 +298,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// /store/block/{kind} wildcard collision (chi cannot disambiguate
 				// {kind} vs {name} at the same segment).
 				r.Post("/{name}/blockstore/gc", blockGCHandler.RunGC)
+				r.Get("/{name}/blockstore/gc/{job_id}", blockGCHandler.GCJobStatus)
 				r.Get("/{name}/blockstore/gc-status", blockGCHandler.GCStatus)
 				// Per-share refcount reconciliation audit. Mirrors GC
 				// endpoint shape (per-share path, JWT auth via the
