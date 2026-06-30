@@ -98,7 +98,7 @@ func runBlockStoreGC(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return watchGC(client, share, jobID, dryRun, format)
+	return watchGC(client, share, jobID, format)
 }
 
 // watchGC polls the GC job until it reaches a terminal state. In table mode it
@@ -107,7 +107,7 @@ func runBlockStoreGC(cmd *cobra.Command, args []string) error {
 // completion it emits the full stats body and returns a non-zero error if the
 // run hit sweep errors, preserving the prior synchronous command's exit
 // semantics.
-func watchGC(client *apiclient.Client, share, jobID string, dryRun bool, format output.Format) error {
+func watchGC(client *apiclient.Client, share, jobID string, format output.Format) error {
 	renderProgress := format == output.FormatTable
 	for {
 		status, err := client.GetBlockStoreGCJob(share, jobID)
@@ -121,7 +121,7 @@ func watchGC(client *apiclient.Client, share, jobID string, dryRun bool, format 
 				fmt.Printf("\rmarked %d hashes, swept %d objects (%s) — done                \n",
 					status.HashesMarked, status.ObjectsSwept, formatBytes(status.BytesFreed))
 			}
-			return emitGCResult(status, format, dryRun)
+			return emitGCResult(status, format)
 		case gcStateFailed:
 			if renderProgress {
 				fmt.Println()
@@ -142,7 +142,7 @@ func watchGC(client *apiclient.Client, share, jobID string, dryRun bool, format 
 // emitGCResult renders the terminal job's stats in the requested output format
 // and returns an error when the run reported sweep errors (so scripts gating on
 // the exit code see it in every format, not only the table).
-func emitGCResult(status *apiclient.GCJobStatus, format output.Format, dryRun bool) error {
+func emitGCResult(status *apiclient.GCJobStatus, format output.Format) error {
 	switch format {
 	case output.FormatJSON:
 		if err := output.PrintJSON(os.Stdout, status); err != nil {
@@ -153,7 +153,7 @@ func emitGCResult(status *apiclient.GCJobStatus, format output.Format, dryRun bo
 			return err
 		}
 	default:
-		if err := printGCStatsTable(status, dryRun); err != nil {
+		if err := printGCStatsTable(status); err != nil {
 			return err
 		}
 	}
@@ -166,7 +166,7 @@ func emitGCResult(status *apiclient.GCJobStatus, format output.Format, dryRun bo
 
 // printGCStatsTable renders the GC summary as a key/value table plus an
 // optional dry-run candidate listing. Mirrors stats.go's output style.
-func printGCStatsTable(status *apiclient.GCJobStatus, dryRun bool) error {
+func printGCStatsTable(status *apiclient.GCJobStatus) error {
 	s := status.Stats
 	if s == nil {
 		// Terminal job without a persisted stats body (should not happen for a
@@ -202,7 +202,10 @@ func printGCStatsTable(status *apiclient.GCJobStatus, dryRun bool) error {
 		}
 	}
 
-	if dryRun || len(s.DryRunCandidates) > 0 {
+	// Use the JOB's actual dry-run flag, not the CLI request: StartBlockStoreGC
+	// may return an already-running job started with different flags, so the
+	// rendering must reflect what the job did, not what this invocation asked.
+	if status.DryRun || len(s.DryRunCandidates) > 0 {
 		fmt.Println()
 		fmt.Printf("Dry-run candidates (%d):\n", len(s.DryRunCandidates))
 		for _, c := range s.DryRunCandidates {
