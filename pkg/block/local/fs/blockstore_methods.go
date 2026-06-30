@@ -176,6 +176,19 @@ func (bc *FSStore) Head(ctx context.Context, hash block.ContentHash) (block.Meta
 	}, nil
 }
 
+// ReadLocalAt reads loc.RawLength bytes from the local log-blob substrate at the
+// given location into dst, delegating to the log-blob Manager. It is the read
+// half of the engine's block carver (#1414): the carver resolves a chunk's
+// LocalChunkLocation, reads its raw plaintext here, seals it, and frames it into
+// a block. Returns an error when no log-blob substrate is wired (a CAS-only
+// store), which the carver treats as "not log-blob-resident".
+func (bc *FSStore) ReadLocalAt(ctx context.Context, loc block.LocalChunkLocation, dst []byte) (int, error) {
+	if bc.logBlob == nil {
+		return 0, fmt.Errorf("blockstore.fs: ReadLocalAt: no log-blob substrate")
+	}
+	return bc.logBlob.ReadAt(ctx, loc, dst)
+}
+
 // localChunkWalker is the narrow, consumer-defined capability the local store
 // uses to enumerate logblob-resident chunks (for Walk / GC). A LocalChunkIndex
 // implementation may optionally provide it; absence simply means logblob

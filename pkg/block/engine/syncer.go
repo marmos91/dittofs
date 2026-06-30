@@ -156,6 +156,69 @@ type Syncer struct {
 	// compute goodput and the error flag. Plain atomics — no lock needed.
 	uploadedBytesWindow atomic.Int64
 	uploadErrWindow     atomic.Int64
+
+	// --- block carve path (#1414 object packing) ---
+
+	// remoteBlockStore is the block-keyed remote (PutBlock) the carver uploads
+	// packed blocks to. nil disables carve and the legacy per-hash mirror stays
+	// in effect. Wired via SetRemoteBlockStore; guarded by m.mu.
+	remoteBlockStore remote.RemoteBlockStore
+	// chunkSealer applies the per-chunk compression/encryption transform before
+	// a chunk is framed into a block. Derived from remoteBlockStore (the same
+	// decorated remote); nil means identity (raw) sealing. Guarded by m.mu.
+	chunkSealer remote.ChunkSealer
+	// blockCommitter atomically persists the block record + local locations +
+	// synced markers (DefaultCommitBlock) and resolves a chunk's log-blob
+	// location (GetLocalLocation). It is the per-share metadata store; nil
+	// disables carve. Guarded by m.mu.
+	blockCommitter blockCommitter
+	// localBlobReader reads a chunk's raw bytes from the local log-blob
+	// substrate (FSStore). nil disables carve. Asserted from m.local at
+	// construction; guarded by m.mu only for read symmetry with the others.
+	localBlobReader localBlobReader
+
+	// carveActive mirrors "all carve deps wired AND a remote exists" as an
+	// atomic so addPendingHash (under pendingMu) can decide carve-vs-legacy
+	// routing without taking m.mu — the same pendingMu→m.mu avoidance the
+	// hasRemote atomic provides for the dispatcher. Recomputed by the setters.
+	carveActive atomic.Bool
+
+	// pendingCarveHashes holds log-blob-resident chunks awaiting carve into a
+	// block, keyed by hash → raw byte size. DISJOINT from pendingHashes (legacy
+	// CAS mirror): a freshly-completed hash routes to exactly one set based on
+	// carveActive at addPendingHash time, so a log-blob hash never reaches the
+	// legacy mirrorChunk path (which would standalone-Put it). carveQ is the
+	// FIFO insertion order the carver drains. Both guarded by pendingMu.
+	pendingCarveHashes map[block.ContentHash]int64
+	carveQ             []block.ContentHash
+
+	// carveWake nudges the carve dispatcher that a chunk is ready (non-blocking,
+	// coalescing, buffered len 1) so packing overlaps later writes.
+	carveWake chan struct{}
+	// carveMu serializes carve flushes so the background dispatcher and an
+	// explicit Flush/SyncNow never build a block from the same chunk twice.
+	carveMu gosync.Mutex
+}
+
+// blockCommitter is the narrow consumer-side slice of metadata.Store the carver
+// needs: transactional block-record commit (DefaultCommitBlock takes a
+// Transactor+SyncedHashStore), the synced-marker writes it performs, and the
+// local-chunk-index lookup that resolves a hash to its log-blob position. The
+// production per-share metadata store satisfies all three; defining it here
+// keeps the engine off the wider metadata.Store surface.
+type blockCommitter interface {
+	metadata.Transactor
+	metadata.SyncedHashStore
+	metadata.LocalChunkIndex
+}
+
+// localBlobReader is the narrow consumer-side capability the carver needs from
+// the local store: read a chunk's raw bytes from the log-blob substrate at a
+// known location. *fs.FSStore satisfies it via a thin delegation to its
+// log-blob Manager. Kept off local.LocalStore so non-log-blob backends compile
+// unchanged (the carver is simply disabled for them).
+type localBlobReader interface {
+	ReadLocalAt(ctx context.Context, loc block.LocalChunkLocation, dst []byte) (int, error)
 }
 
 // addPendingHash registers a newly-stored CAS hash (of the given on-disk
@@ -164,6 +227,16 @@ type Syncer struct {
 // use; O(1). Charges unsyncedBytes once per distinct hash — re-adding a hash
 // already pending updates the recorded size but does not double-count.
 func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
+	// Carve routing (#1414): when the block-carve substrate is fully wired the
+	// chunk is log-blob-resident, so it routes to the DISJOINT pendingCarveHashes
+	// set (packed into a block) instead of pendingHashes (legacy standalone CAS
+	// mirror). The two sets never overlap, so a log-blob hash never reaches
+	// mirrorChunk's CAS Get. carveActive is an atomic read — no m.mu under
+	// pendingMu — mirroring dispatcherEnabled's hasRemote read.
+	if m.carveActive.Load() {
+		m.addPendingCarveHash(h, size)
+		return
+	}
 	m.pendingMu.Lock()
 	// prev is the zero value (0) when the hash is new, so size-prev charges
 	// the full size on first insert and only the delta on re-add — never
@@ -305,6 +378,16 @@ func (m *Syncer) UnsyncedBytes() int64 {
 // pending set is volatile, so chunks written-but-not-synced before a crash
 // must be rediscovered) and periodically as a slow drift reconciler, NOT
 // on every mirror tick. Returns the number of hashes seeded.
+//
+// Restart-seed coverage of unsynced LOG-BLOB chunks is not yet guaranteed:
+// ListUnsynced enumerates log-blob chunks only on index backends that implement
+// local-location walking, so on the production backends an unsynced log-blob
+// chunk written just before a crash is not re-queued for carve here. The chunk
+// is durable locally (its blob is fsynced before the rollup fence advances), so
+// no data is lost; full cross-backend restart-seed via blob-index enumeration
+// is handled by the block GC/enumeration work. addPendingHash still routes any
+// seeded hash to the carve set when the carve substrate is active, so a
+// log-blob hash never lands in the legacy CAS mirror set.
 func (m *Syncer) seedPendingFromDisk(ctx context.Context) (int, error) {
 	n := 0
 	for hash, err := range m.local.ListUnsynced(ctx) {
@@ -372,8 +455,17 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 		gate:             newUploadGate(),
 		uploadLimiter:    newDynamicSemaphore(startWindow),
 		uploadController: uploadController,
+
+		pendingCarveHashes: make(map[block.ContentHash]int64),
+		carveWake:          make(chan struct{}, 1),
 	}
 	m.hasRemote.Store(remoteStore != nil)
+	// The local store provides the carve read path only if it exposes the
+	// log-blob substrate; non-log-blob backends leave the carver disabled.
+	if r, ok := local.(localBlobReader); ok {
+		m.localBlobReader = r
+	}
+	m.recomputeCarveActive()
 
 	queueConfig := DefaultSyncQueueConfig()
 	// In adaptive mode the queue pool must cover the ceiling the controller can
@@ -397,6 +489,48 @@ func (m *Syncer) SetSyncedHashStore(s metadata.SyncedHashStore) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.syncedHashStore = s
+	// The same per-share metadata store backs the block carver's atomic commit
+	// (DefaultCommitBlock) and log-blob location lookup. Derive blockCommitter
+	// here so the carve wiring rides the existing SetSyncedHashStore call; a
+	// store that is only a bare SyncedHashStore (test fixture) leaves carve
+	// disabled.
+	if bc, ok := s.(blockCommitter); ok {
+		m.blockCommitter = bc
+	} else {
+		m.blockCommitter = nil
+	}
+	m.recomputeCarveActive()
+}
+
+// SetRemoteBlockStore wires the block-keyed remote (PutBlock) the carver
+// uploads packed blocks to, and derives the per-chunk ChunkSealer from the same
+// (possibly decorated) remote. Placed beside SetSyncedHashStore in the wiring
+// sequence. A nil rbs — or a remote that does not implement RemoteBlockStore —
+// leaves carve disabled, so the legacy per-hash mirror path stays in effect for
+// non-block remotes. Idempotent; safe to call before Start.
+func (m *Syncer) SetRemoteBlockStore(rbs remote.RemoteBlockStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.remoteBlockStore = rbs
+	if cs, ok := rbs.(remote.ChunkSealer); ok {
+		m.chunkSealer = cs
+	} else {
+		m.chunkSealer = nil
+	}
+	m.recomputeCarveActive()
+}
+
+// recomputeCarveActive refreshes the carveActive routing flag from the carve
+// dependencies. Caller must hold m.mu (or be the single-threaded constructor).
+// Carve routing does NOT gate on ManualSync: in manual mode the background
+// carver is suppressed but explicit Flush/SyncNow still drains the carve set,
+// so log-blob chunks must still route to it.
+func (m *Syncer) recomputeCarveActive() {
+	active := m.remoteBlockStore != nil &&
+		m.blockCommitter != nil &&
+		m.localBlobReader != nil &&
+		m.hasRemote.Load()
+	m.carveActive.Store(active)
 }
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
@@ -534,6 +668,16 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 	if m.remoteStore == nil || !m.IsRemoteHealthy() {
 		return &block.FlushResult{Finalized: false}, nil
 	}
+
+	// Drain the block-carve set (#1414): pack every pending log-blob chunk into
+	// block objects and commit them. Independent of the legacy upload gate —
+	// carve and the standalone CAS mirror operate on disjoint hash sets — so it
+	// runs on every Flush regardless of dispatcher contention. A non-empty carve
+	// backlog with a wired substrate makes Flush the explicit durability driver.
+	if err := m.carveFlush(ctx, true); err != nil {
+		return nil, err
+	}
+
 	// Serialize the explicit mirror against any other explicit drain and against
 	// the continuous upload dispatcher. The gate is taken non-blocking: if
 	// another explicit drain holds it, or dispatcher uploads are in flight, this
@@ -1047,6 +1191,10 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	// drift reconcile, failed-upload requeue) the dispatcher does not.
 	go m.uploadDispatcher(ctx)
 	go m.maintenanceLoop(ctx, interval)
+	// The carve dispatcher packs log-blob chunks into block objects (#1414). It
+	// idles harmlessly when the carve substrate is not wired (carveWake never
+	// fires) so it is always safe to launch alongside the legacy dispatcher.
+	go m.carveDispatcher(ctx)
 
 	// Adaptive mode only: launch the goodput controller that resizes the
 	// upload window to saturate the uplink (#1407). Pinned --parallel-uploads
@@ -1162,6 +1310,13 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 	// Flush queued FileChunk metadata to the store so the mirror loop
 	// picks up recently rolled-up chunks.
 	m.local.SyncFileChunks(ctx)
+
+	// Drain the block-carve set first (#1414): pack all pending log-blob chunks
+	// into block objects. Disjoint from the legacy CAS mirror, so both run; for
+	// a carve-enabled share mirrorOnce below is a no-op over an empty set.
+	if err := m.carveFlush(ctx, true); err != nil {
+		return err
+	}
 
 	return m.mirrorOnce(ctx)
 }
@@ -1304,6 +1459,7 @@ func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteSt
 
 	m.remoteStore = remoteStore
 	m.hasRemote.Store(true)
+	m.recomputeCarveActive()
 	m.local.SetEvictionEnabled(true)
 
 	m.startHealthMonitor(ctx)
