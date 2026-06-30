@@ -54,9 +54,14 @@ const maxS3ConnsPerHost = 256
 // Compile-time interface satisfaction check.
 var (
 	_ remote.RemoteStore       = (*Store)(nil)
+	_ remote.RemoteBlockStore  = (*Store)(nil)
 	_ remote.ChunkReader       = (*Store)(nil)
 	_ block.DurabilityReporter = (*Store)(nil)
 )
+
+// blockObjectPrefix is the S3 object-key prefix walked by WalkBlocks.
+// Mirrors casPrefix ("cas/") for block objects.
+const blockObjectPrefix = "blocks/"
 
 // Config holds configuration for the S3 block store.
 type Config struct {
@@ -718,6 +723,162 @@ func (s *Store) Walk(ctx context.Context, fn func(hash block.ContentHash, meta b
 		}
 	}
 
+	return nil
+}
+
+// PutBlock writes the content of r under blocks/<blockID> via S3 PutObject.
+// Implements remote.RemoteBlockStore. Idempotent: a second call overwrites
+// silently. r is streamed directly to S3; the SDK uses chunked transfer
+// encoding when ContentLength is not set.
+func (s *Store) PutBlock(ctx context.Context, blockID string, r io.Reader) error {
+	if err := s.checkClosed(); err != nil {
+		return err
+	}
+	key := s.blockKey(blockID)
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Body:   r,
+	})
+	if err != nil {
+		return fmt.Errorf("s3 put block %s: %w", blockID, err)
+	}
+	return nil
+}
+
+// GetBlock returns the full bytes of the block object identified by blockID.
+// Returns block.ErrChunkNotFound when the block is absent.
+func (s *Store) GetBlock(ctx context.Context, blockID string) ([]byte, error) {
+	if err := s.checkClosed(); err != nil {
+		return nil, err
+	}
+	key := s.blockKey(blockID)
+	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, block.ErrChunkNotFound
+		}
+		return nil, fmt.Errorf("s3 get block %s: %w", blockID, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return readResponseBody(resp.Body, resp.ContentLength, maxBlockReadSize)
+}
+
+// GetBlockRange returns [offset, offset+length) bytes of the block object
+// identified by blockID via an S3 ranged GET. Bounds semantics mirror
+// GetRange: ErrInvalidOffset for negative/past-EOF offset, ErrInvalidSize for
+// non-positive length; past-EOF length is clamped by S3 (partial content).
+func (s *Store) GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error) {
+	if err := s.checkClosed(); err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		return nil, block.ErrInvalidOffset
+	}
+	if length <= 0 {
+		return nil, block.ErrInvalidSize
+	}
+	if length > math.MaxInt64-offset {
+		return nil, block.ErrInvalidSize
+	}
+	key := s.blockKey(blockID)
+	rangeHeader := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
+	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Range:  aws.String(rangeHeader),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, block.ErrChunkNotFound
+		}
+		return nil, fmt.Errorf("s3 get block range %s: %w", blockID, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return readResponseBody(resp.Body, resp.ContentLength, length)
+}
+
+// DeleteBlock removes the block object keyed by blockID. Idempotent: S3's
+// DeleteObject succeeds with 204 even when the key is absent.
+func (s *Store) DeleteBlock(ctx context.Context, blockID string) error {
+	if err := s.checkClosed(); err != nil {
+		return err
+	}
+	key := s.blockKey(blockID)
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 delete block %s: %w", blockID, err)
+	}
+	return nil
+}
+
+// WalkBlocks enumerates every block object in the store. Iterates S3 listing
+// pages under the blocks/ prefix, strips the prefix to recover the blockID,
+// and dispatches the callback with the blockID and block.Meta. Honors
+// block.ErrStopWalk for clean early exit; any other callback error halts and
+// is wrapped as "walk halted at <blockID>: %w". Context cancellation aborts.
+func (s *Store) WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error {
+	if err := s.checkClosed(); err != nil {
+		return err
+	}
+
+	fullPrefix := s.fullKey(blockObjectPrefix)
+
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(fullPrefix),
+	})
+
+	for paginator.HasMorePages() {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("s3 walk blocks: %w", err)
+		}
+		for _, obj := range page.Contents {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			rawKey := ""
+			if obj.Key != nil {
+				rawKey = *obj.Key
+			}
+			// Strip keyPrefix so we see the canonical "blocks/<blockID>" shape,
+			// then strip the "blocks/" prefix to recover the bare blockID.
+			parseKey := rawKey
+			if s.keyPrefix != "" && strings.HasPrefix(parseKey, s.keyPrefix) {
+				parseKey = parseKey[len(s.keyPrefix):]
+			}
+			if !strings.HasPrefix(parseKey, blockObjectPrefix) {
+				continue // skip non-block keys that share the prefix
+			}
+			blockID := parseKey[len(blockObjectPrefix):]
+			if blockID == "" {
+				continue // skip the prefix key itself if it were ever stored
+			}
+			meta := block.Meta{}
+			if obj.Size != nil {
+				meta.Size = *obj.Size
+			}
+			if obj.LastModified != nil {
+				meta.LastModified = *obj.LastModified
+			}
+			if cberr := fn(blockID, meta); cberr != nil {
+				if errors.Is(cberr, block.ErrStopWalk) {
+					return nil
+				}
+				return fmt.Errorf("walk halted at %s: %w", blockID, cberr)
+			}
+		}
+	}
 	return nil
 }
 
