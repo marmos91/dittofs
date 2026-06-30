@@ -27,6 +27,23 @@ func (bs *Store) DrainAllUploads(ctx context.Context) error {
 	return bs.syncer.DrainAllUploads(ctx)
 }
 
+// SyncCounts returns the lifetime (completed, failed) mirror counts for this
+// store: chunks that reached the remote and chunks whose mirror attempt
+// failed. Both are monotonic. The drain-uploads idle watchdog reads them as a
+// progress signal. Returns (0, 0) when the store is closing or has no remote
+// (local-only stores never mirror, so the counters are meaningless — matching
+// stats.go, which also reports zeros in that mode).
+func (bs *Store) SyncCounts() (completed, failed int) {
+	if err := bs.enter(); err != nil {
+		return 0, 0
+	}
+	defer bs.closeMu.RUnlock()
+	if bs.remote == nil {
+		return 0, 0
+	}
+	return bs.syncer.SyncCounts()
+}
+
 // DrainRollups forces the local store to roll up every currently-dirty
 // payload into CAS + the FileBlock manifest, bypassing the
 // stabilization-window gate. The snapshot-create orchestration calls this

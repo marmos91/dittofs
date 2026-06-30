@@ -311,7 +311,10 @@ func runStart(cmd *cobra.Command, args []string) error {
 	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 
 	// Create and set API server
-	apiServer, err := api.NewServer(cfg.ControlPlane, rt, cpStore, cfg.Snapshot.RestoreHTTPTimeout)
+	apiServer, err := api.NewServer(cfg.ControlPlane, rt, cpStore, api.Timeouts{
+		Restore:    cfg.Snapshot.RestoreHTTPTimeout,
+		DrainStall: cfg.ControlPlane.DrainStallTimeout,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to create API server: %w", err)
 	}

@@ -225,18 +225,8 @@ func (h *SnapshotHandler) Restore(w http.ResponseWriter, r *http.Request) {
 	// 200/4xx/5xx response before returning — so the middleware's later 504
 	// WriteHeader is a no-op (first write wins), the client gets the genuine
 	// result. (Covered by TestSnapshotHandler_Restore_DecoupledFromGlobalTimeout.)
-	base := context.WithoutCancel(r.Context())
-	ctx, cancel := context.WithTimeout(base, h.restoreHTTPTimeout)
+	ctx, cancel := detachFromRequest(r, h.restoreHTTPTimeout)
 	defer cancel()
-
-	// Propagate a real client disconnect (not the middleware timeout) so the
-	// restore is cancelled if the caller goes away.
-	stop := context.AfterFunc(r.Context(), func() {
-		if r.Context().Err() == context.Canceled {
-			cancel()
-		}
-	})
-	defer stop()
 
 	safetyID, err := h.runtime.RestoreSnapshot(ctx, name, snapID,
 		runtime.RestoreSnapshotOpts{AllowNonDurable: body.AllowNonDurable})

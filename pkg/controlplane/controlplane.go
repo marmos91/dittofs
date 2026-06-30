@@ -93,7 +93,10 @@ func New(ctx context.Context, opts *Options) (*ControlPlane, error) {
 		if timeout == 0 {
 			timeout = api.DefaultRestoreHTTPTimeout
 		}
-		apiServer, err := api.NewServer(*opts.API, rt, cpStore, timeout)
+		apiServer, err := api.NewServer(*opts.API, rt, cpStore, api.Timeouts{
+			Restore:    timeout,
+			DrainStall: opts.API.DrainStallTimeout,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create API server: %w", err)
 		}

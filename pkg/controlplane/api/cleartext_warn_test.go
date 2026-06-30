@@ -39,7 +39,7 @@ func TestNewServer_CleartextWarnOnNonLoopbackNoTLS(t *testing.T) {
 		cpStore, cfg := testSetup(t, 0)
 		t.Cleanup(func() { _ = cpStore.Close() })
 		cfg.Host = "0.0.0.0"
-		if _, err := NewServer(cfg, nil, cpStore, 30*time.Minute); err != nil {
+		if _, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute}); err != nil {
 			t.Fatalf("NewServer: %v", err)
 		}
 		if !strings.Contains(buf.String(), warnNeedle) {
@@ -52,7 +52,7 @@ func TestNewServer_CleartextWarnOnNonLoopbackNoTLS(t *testing.T) {
 		cpStore, cfg := testSetup(t, 0)
 		t.Cleanup(func() { _ = cpStore.Close() })
 		cfg.Host = "127.0.0.1"
-		if _, err := NewServer(cfg, nil, cpStore, 30*time.Minute); err != nil {
+		if _, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute}); err != nil {
 			t.Fatalf("NewServer: %v", err)
 		}
 		if strings.Contains(buf.String(), warnNeedle) {
@@ -68,7 +68,7 @@ func TestNewServer_CleartextWarnOnNonLoopbackNoTLS(t *testing.T) {
 		serverCert := generateCert(t, "localhost", []string{"localhost"}, false, nil)
 		certPath, keyPath := writeCertFiles(t, t.TempDir(), serverCert)
 		cfg.TLS = TLSConfig{CertFile: certPath, KeyFile: keyPath}
-		if _, err := NewServer(cfg, nil, cpStore, 30*time.Minute); err != nil {
+		if _, err := NewServer(cfg, nil, cpStore, Timeouts{Restore: 30 * time.Minute}); err != nil {
 			t.Fatalf("NewServer: %v", err)
 		}
 		if strings.Contains(buf.String(), warnNeedle) {

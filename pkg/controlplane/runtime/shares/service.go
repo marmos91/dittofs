@@ -2036,6 +2036,33 @@ func (s *Service) DrainAllBlockStores(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// UploadProgress returns a monotonic count of mirror attempts that have
+// concluded (completed + failed) summed across every share's block store.
+//
+// It is a liveness signal for the drain-uploads idle watchdog: while a drain
+// is genuinely making progress this value keeps rising; a value that stays
+// flat across an idle window means the drain has stalled (e.g. the remote went
+// unreachable). Counting failed attempts as well as completed ones means a
+// retrying upload still registers as activity, so transient errors don't trip
+// the watchdog.
+func (s *Service) UploadProgress() int64 {
+	s.mu.RLock()
+	blockStores := make([]*engine.Store, 0, len(s.registry))
+	for _, share := range s.registry {
+		if share.BlockStore != nil {
+			blockStores = append(blockStores, share.BlockStore)
+		}
+	}
+	s.mu.RUnlock()
+
+	var total int64
+	for _, bs := range blockStores {
+		completed, failed := bs.SyncCounts()
+		total += int64(completed) + int64(failed)
+	}
+	return total
+}
+
 // ShareBlockStoreStats holds block store statistics for a single share.
 type ShareBlockStoreStats struct {
 	ShareName string                 `json:"share_name"`

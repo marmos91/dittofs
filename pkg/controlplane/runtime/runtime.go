@@ -860,6 +860,14 @@ func (r *Runtime) DrainAllUploads(ctx context.Context) error {
 	return r.sharesSvc.DrainAllBlockStores(ctx)
 }
 
+// UploadProgress returns a monotonic count of concluded mirror attempts
+// (completed + failed) across all per-share BlockStores. The drain-uploads
+// handler polls it as an idle/liveness signal: a flat value across the idle
+// window means the drain has stalled.
+func (r *Runtime) UploadProgress() int64 {
+	return r.sharesSvc.UploadProgress()
+}
+
 // GetBlockStoreStats returns block store statistics, optionally filtered by share name.
 func (r *Runtime) GetBlockStoreStats(shareName string) (*shares.BlockStoreStatsResponse, error) {
 	return r.sharesSvc.GetBlockStoreStats(shareName)

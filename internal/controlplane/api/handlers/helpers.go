@@ -1,13 +1,56 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
+
+// detachFromRequest builds a context for a long-running handler that must
+// outlive the control plane's short global request deadline (chi
+// middleware.Timeout / write_timeout, ~30s) while still stopping if the client
+// genuinely disconnects.
+//
+// The returned context is detached from the request deadline via
+// context.WithoutCancel, so middleware.Timeout cannot abort the work. When
+// total > 0 it carries that wall-clock budget; when total <= 0 it has no
+// deadline of its own and the caller is expected to supply its own bound (e.g.
+// an inactivity watchdog). Either way a real client disconnect — the request
+// context reporting Canceled, as opposed to the DeadlineExceeded fired by
+// middleware.Timeout — cancels it.
+//
+// The returned CancelFunc both unregisters the disconnect watcher and cancels
+// the context; it is idempotent, must be deferred, and may also be called early
+// (e.g. by a watchdog) to abort the work.
+func detachFromRequest(r *http.Request, total time.Duration) (context.Context, context.CancelFunc) {
+	base := context.WithoutCancel(r.Context())
+
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+	if total > 0 {
+		ctx, cancel = context.WithTimeout(base, total)
+	} else {
+		ctx, cancel = context.WithCancel(base)
+	}
+
+	stop := context.AfterFunc(r.Context(), func() {
+		if r.Context().Err() == context.Canceled {
+			cancel()
+		}
+	})
+
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
 
 // redactedSecret is the sentinel substituted for secret values in store
 // config blobs returned on read paths.
