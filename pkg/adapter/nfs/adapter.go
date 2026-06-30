@@ -647,6 +647,22 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	// Register for existing shares at startup.
 	registerBreakCallbacks(rt.ListShares())
 
+	// Force a synchronous settings re-read on this lifecycle path (startup /
+	// enable / restart) so the adapter sees updates made within the 10s poll
+	// window — e.g. `--portmapper-enabled true` immediately followed by a
+	// restart would otherwise read the stale cached value and leave the
+	// portmapper down. Bounded so an unhealthy store degrades to cached values
+	// rather than hanging the enable path. Deliberately NOT done in the
+	// per-connection applyNFSSettings call (preAcceptCheck), which stays
+	// cache-only to avoid a synchronous DB read per inbound connection.
+	if sw := rt.GetSettingsWatcher(); sw != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := sw.RefreshNFSSettings(ctx); err != nil {
+			logger.Debug("NFS adapter: settings refresh failed, using cached values", "error", err)
+		}
+		cancel()
+	}
+
 	// Apply live NFS adapter settings from SettingsWatcher.
 	// The SettingsWatcher polls DB every 10s and provides atomic pointer swap
 	// for thread-safe reads. Settings are consumed here at startup and on
