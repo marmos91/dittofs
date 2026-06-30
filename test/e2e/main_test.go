@@ -25,7 +25,7 @@ func TestMain(m *testing.M) {
 	// A re-exec'd byte-range lock holder (see holdSMBByteRangeLock) runs only the
 	// TestSMBLockHolderHelper test to hold a lock in a distinct process. It must
 	// not touch shared mounts or containers, so skip all global setup/teardown.
-	if os.Getenv("DITTOFS_E2E_LOCK_HOLDER") == "1" {
+	if os.Getenv(holderEnvVar) == "1" {
 		os.Exit(m.Run())
 	}
 

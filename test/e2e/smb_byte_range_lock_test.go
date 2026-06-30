@@ -111,9 +111,15 @@ func TestSMBLockHolderHelper(t *testing.T) {
 	}
 
 	path := os.Getenv("DITTOFS_HOLDER_PATH")
-	offset, _ := strconv.ParseInt(os.Getenv("DITTOFS_HOLDER_OFFSET"), 10, 64)
-	length, _ := strconv.ParseInt(os.Getenv("DITTOFS_HOLDER_LENGTH"), 10, 64)
+	offset, offErr := strconv.ParseInt(os.Getenv("DITTOFS_HOLDER_OFFSET"), 10, 64)
+	length, lenErr := strconv.ParseInt(os.Getenv("DITTOFS_HOLDER_LENGTH"), 10, 64)
 	exclusive := os.Getenv("DITTOFS_HOLDER_EXCLUSIVE") == "1"
+	if path == "" || offErr != nil || lenErr != nil {
+		// Bad invocation: fail loudly rather than silently locking a wrong range
+		// (e.g. Len=0 would mean "to EOF").
+		fmt.Printf("HOLDER_ERR bad args: path=%q offset=%v length=%v\n", path, offErr, lenErr)
+		return
+	}
 
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
