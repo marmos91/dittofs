@@ -176,8 +176,9 @@ func TestNFSv42Sparse(t *testing.T) {
 		// than punch a hole (DEALLOCATE granularity is chunk-bounded and rollup
 		// re-chunks nondeterministically), build a naturally sparse file: two
 		// written data regions separated by an unwritten gap that is never backed
-		// by a block. Both regions are small and low-offset so drain-uploads rolls
-		// them up fully; the gap between them is a real, deterministic hole.
+		// by a block. Both regions are small and low-offset so the background
+		// rollup ticker chunks them fully; the gap between them is a real,
+		// deterministic hole.
 		const (
 			region   = 2 << 20 // 2 MiB written data regions
 			gapStart = region  // first hole begins at the end of region 1 (2 MiB)
