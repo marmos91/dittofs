@@ -161,7 +161,15 @@ func (idx *logIndex) Append(logPos uint64, fileOff uint64, payloadLen uint32) {
 	// benign divergence — silently losing the overwrite's bytes (data
 	// corruption surfacing only under the concurrent ticker-driven rollup path,
 	// which is why a serial DrainRollups never hit it).
-	idx.consumedCoverage.remove(fileOff, fileOff+uint64(payloadLen))
+	//
+	// Overflow saturation, consistent with EntriesForInterval / MarkConsumed:
+	// a region that would wrap past MaxUint64 clamps so the subtraction still
+	// covers the intended tail.
+	end := fileOff + uint64(payloadLen)
+	if end < fileOff {
+		end = ^uint64(0)
+	}
+	idx.consumedCoverage.remove(fileOff, end)
 }
 
 // EntriesForInterval returns every entry whose file-offset extent
@@ -506,6 +514,19 @@ func (cs *coverageSet) add(start, end uint64) {
 // Empty / inverted ranges (end <= start) are silently ignored.
 func (cs *coverageSet) remove(start, end uint64) {
 	if end <= start {
+		return
+	}
+	// Fast path: nothing overlaps, so the set is unchanged and no allocation is
+	// needed. This is the common case on a fresh or fully-rolled-up file, where
+	// every write hits this method but rarely lands on a still-consumed region.
+	overlaps := false
+	for _, iv := range cs.intervals {
+		if iv.end > start && iv.start < end {
+			overlaps = true
+			break
+		}
+	}
+	if !overlaps {
 		return
 	}
 	var out []coverageInterval
