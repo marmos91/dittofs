@@ -22,6 +22,13 @@ var testEnv *helpers.TestEnvironment
 // It sets up signal handlers for graceful shutdown and coordinates
 // cleanup of Docker containers via the helpers package.
 func TestMain(m *testing.M) {
+	// A re-exec'd byte-range lock holder (see holdSMBByteRangeLock) runs only the
+	// TestSMBLockHolderHelper test to hold a lock in a distinct process. It must
+	// not touch shared mounts or containers, so skip all global setup/teardown.
+	if os.Getenv("DITTOFS_E2E_LOCK_HOLDER") == "1" {
+		os.Exit(m.Run())
+	}
+
 	// Setup signal handler for graceful shutdown on CTRL+C
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
