@@ -384,28 +384,25 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 			// Reap at RefCount 0 so the row leaves EnumerateFileBlocks once no
 			// sibling references the hash, letting the GC sweep reclaim the
 			// remote chunk (#832).
-			newCount, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset)
-			if err != nil {
+			//
+			// Deliberately do NOT clear the synced marker here. The marker means
+			// "these bytes are on the remote", which stays TRUE after the last
+			// reference is reaped — the remote object lives until the GC sweep
+			// physically deletes it. Since #1458 the steady-state remote sweep
+			// derives orphan candidates from (synced − live); clearing the marker
+			// at unlink removes the just-orphaned hash from that candidate set, so
+			// the remote object becomes invisible to GC and leaks forever (only a
+			// full-Walk reconcile could ever find it again). The sweep clears the
+			// marker itself, immediately after it deletes the remote object
+			// (sweepFromSyncedIndex / sweepByWalk → DeleteSynced), which keeps
+			// `synced` a faithful subset of remote contents. A re-Put before GC
+			// correctly skips re-upload (bytes still remote-resident); a re-Put
+			// after GC re-uploads (GC already cleared the marker) (#1433).
+			if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset); err != nil {
 				if coordErr == nil {
 					coordErr = fmt.Errorf("reap block on delete %s/%d: %w", payloadID, b.Offset, err)
 				}
 				continue
-			}
-			// Row reaped (count hit zero): the local CAS chunk for this hash
-			// may be reclaimed, so drop the synced marker too. Without this
-			// cascade the synced set would drift out of strict-subset
-			// relationship with local CAS contents — a future re-Put of the
-			// same hash would skip remote upload because the marker is stale.
-			// Failure here is benign (the marker becomes an orphan, but a stale
-			// marker only causes a single skipped upload on a re-Put; the bytes
-			// are already remote-resident from the original Mark). A sibling
-			// file still referencing this hash would likewise re-upload on its
-			// next flush — also benign. Logged at Warn for operator visibility.
-			if newCount == 0 && bs.syncedHashStore != nil {
-				if derr := bs.syncedHashStore.DeleteSynced(ctx, b.Hash); derr != nil {
-					logger.Warn("delete synced marker (orphan; benign)",
-						"hash", b.Hash.String(), "err", derr)
-				}
 			}
 		}
 	}

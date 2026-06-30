@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -263,22 +262,26 @@ func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore me
 	return bs
 }
 
-// TestEngine_Delete_CascadesDeleteSynced asserts that engine.Delete
-// fires syncedHashStore.DeleteSynced exactly when the coordinator's
-// DecrementRefCount returns newCount == 0, and never otherwise. The
-// cascade keeps the synced set a strict subset of local CAS contents
-// a stale marker would cause the next mirror pass on a re-Put of the
-// same hash to skip the upload, leaving the remote out of sync with
-// local.
-func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
+// TestEngine_Delete_PreservesSyncedMarker asserts that engine.Delete NEVER
+// clears a hash's synced marker on reap — not even when the coordinator reaps
+// the last reference (newCount == 0).
+//
+// The synced marker means "these bytes are on the remote", which remains true
+// after the last reference is reaped: the remote object survives until the GC
+// sweep physically deletes it. Since #1458 the steady-state remote sweep finds
+// orphan candidates from (synced − live), so the marker MUST outlive unlink —
+// otherwise the just-orphaned remote object drops out of the candidate set and
+// leaks forever (only a full-Walk reconcile could find it). The sweep clears
+// the marker itself, right after it deletes the remote object (#1433).
+func TestEngine_Delete_PreservesSyncedMarker(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("RefcountZero_CascadesDeleteSynced", func(t *testing.T) {
+	t.Run("RefcountZero_KeepsSyncedMarker", func(t *testing.T) {
 		var hash block.ContentHash
 		hash[0] = 0xC0
 
 		coord := newRefcountCoordinator()
-		coord.seedBlock("pid-cascade-zero", 0, hash, 1) // last reference → Delete reaps to 0
+		coord.seedBlock("pid-keep-zero", 0, hash, 1) // last reference → Delete reaps to 0
 
 		syncedStore := newRecordingSyncedHashStore()
 		syncedStore.markSyncedForTest(hash)
@@ -286,28 +289,38 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		bs := buildCascadeFixture(t, coord, syncedStore)
 
 		blocks := []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}}
-		if err := bs.Delete(ctx, "pid-cascade-zero", blocks); err != nil {
+		if err := bs.Delete(ctx, "pid-keep-zero", blocks); err != nil {
 			t.Fatalf("Delete returned error: %v", err)
 		}
 
+		// The remote object still exists, so the marker MUST survive so the
+		// steady-state GC sweep can still find it as an orphan candidate.
 		got, err := syncedStore.IsSynced(ctx, hash)
 		if err != nil {
 			t.Fatalf("IsSynced: %v", err)
 		}
-		if got {
-			t.Errorf("IsSynced=true after refcount→0 Delete; want false (cascade should have fired)")
+		if !got {
+			t.Errorf("IsSynced=false after refcount→0 Delete; want true (marker must outlive unlink so GC can reclaim the remote orphan)")
 		}
-		if dels := syncedStore.deletedHashes(); len(dels) != 1 || dels[0] != hash {
-			t.Errorf("DeleteSynced invocations=%v; want [%x] exactly once", dels, hash[:4])
+		if dels := syncedStore.deletedHashes(); len(dels) != 0 {
+			t.Errorf("DeleteSynced invocations=%v; want none (unlink must not clear the marker)", dels)
+		}
+
+		// The block row itself is still reaped.
+		coord.mu.Lock()
+		count := coord.counts[hash]
+		coord.mu.Unlock()
+		if count != 0 {
+			t.Errorf("coordinator refcount=%d after Delete; want 0 (row still reaped)", count)
 		}
 	})
 
-	t.Run("RefcountNonZero_DoesNotCascade", func(t *testing.T) {
+	t.Run("RefcountNonZero_KeepsSyncedMarker", func(t *testing.T) {
 		var hash block.ContentHash
 		hash[0] = 0xC1
 
 		coord := newRefcountCoordinator()
-		coord.seedBlock("pid-cascade-nonzero", 0, hash, 2) // two refs; Delete drops one → newCount == 1
+		coord.seedBlock("pid-keep-nonzero", 0, hash, 2) // two refs; Delete drops one → newCount == 1
 
 		syncedStore := newRecordingSyncedHashStore()
 		syncedStore.markSyncedForTest(hash)
@@ -315,7 +328,7 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		bs := buildCascadeFixture(t, coord, syncedStore)
 
 		blocks := []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}}
-		if err := bs.Delete(ctx, "pid-cascade-nonzero", blocks); err != nil {
+		if err := bs.Delete(ctx, "pid-keep-nonzero", blocks); err != nil {
 			t.Fatalf("Delete returned error: %v", err)
 		}
 
@@ -324,10 +337,10 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 			t.Fatalf("IsSynced: %v", err)
 		}
 		if !got {
-			t.Errorf("IsSynced=false after refcount→1 Delete; want true (cascade must NOT fire)")
+			t.Errorf("IsSynced=false after refcount→1 Delete; want true")
 		}
 		if dels := syncedStore.deletedHashes(); len(dels) != 0 {
-			t.Errorf("DeleteSynced invocations=%v; want none (newCount != 0)", dels)
+			t.Errorf("DeleteSynced invocations=%v; want none", dels)
 		}
 	})
 
@@ -336,48 +349,22 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		hash[0] = 0xC2
 
 		coord := newRefcountCoordinator()
-		coord.seedBlock("pid-cascade-nil", 0, hash, 1)
+		coord.seedBlock("pid-keep-nil", 0, hash, 1)
 
-		// SyncedHashStore intentionally nil — exercises the bs.syncedHashStore
-		// nil-guard. Delete must not panic and must still drive the
-		// coordinator decrement.
+		// SyncedHashStore intentionally nil — Delete must not panic and must
+		// still drive the coordinator decrement.
 		bs := buildCascadeFixture(t, coord, nil)
 
 		blocks := []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}}
-		if err := bs.Delete(ctx, "pid-cascade-nil", blocks); err != nil {
+		if err := bs.Delete(ctx, "pid-keep-nil", blocks); err != nil {
 			t.Fatalf("Delete returned error: %v", err)
 		}
 
-		// DecrementRefCount fired — the seeded count is now zero.
 		coord.mu.Lock()
 		got := coord.counts[hash]
 		coord.mu.Unlock()
 		if got != 0 {
 			t.Errorf("coordinator refcount=%d after Delete with nil syncedStore; want 0", got)
-		}
-	})
-
-	t.Run("DeleteSyncedFailure_IsBenign", func(t *testing.T) {
-		var hash block.ContentHash
-		hash[0] = 0xC3
-
-		coord := newRefcountCoordinator()
-		coord.seedBlock("pid-cascade-benign", 0, hash, 1)
-
-		syncedStore := newRecordingSyncedHashStore()
-		syncedStore.markSyncedForTest(hash)
-		syncedStore.deleteErr = errors.New("induced DeleteSynced failure")
-
-		bs := buildCascadeFixture(t, coord, syncedStore)
-
-		blocks := []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}}
-		// Delete must NOT propagate the DeleteSynced failure — orphan
-		// marker is benign per the plan's threat-register disposition.
-		if err := bs.Delete(ctx, "pid-cascade-benign", blocks); err != nil {
-			t.Fatalf("Delete returned error on DeleteSynced failure (want nil — orphan is benign): %v", err)
-		}
-		if dels := syncedStore.deletedHashes(); len(dels) != 1 {
-			t.Errorf("DeleteSynced invocation count=%d; want 1 (cascade attempted)", len(dels))
 		}
 	})
 }
