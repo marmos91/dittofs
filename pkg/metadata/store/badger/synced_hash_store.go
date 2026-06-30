@@ -30,17 +30,17 @@ import (
 //
 // Key Namespace:
 //   - synced:{32-byte-hash}  value = 8 big-endian nanos of first-mirror time,
-//     OPTIONALLY followed by a pack-locator suffix (presence == synced; legacy
+//     OPTIONALLY followed by a block-locator suffix (presence == synced; legacy
 //     markers carry an empty value, decoded as a zero time + standalone locator)
 //
 // The 32-byte hash bytes are appended raw (matching rollup_offset's compact
 // binary key encoding) rather than hex-encoded — Badger does not require
 // printable keys, and raw bytes keep the key half the size on disk.
 //
-// Locator encoding (#1414): a standalone chunk (ChunkLocator.PackID == "")
+// Locator encoding (#1414): a standalone chunk (ChunkLocator.BlockID == "")
 // writes ONLY the 8-byte timestamp — byte-for-byte identical to a pre-locator
-// marker — because its location is fully implied by its hash. A pack-resident
-// chunk appends, after the timestamp: a uint16 PackID length, the PackID bytes,
+// marker — because its location is fully implied by its hash. A block-resident
+// chunk appends, after the timestamp: a uint16 BlockID length, the BlockID bytes,
 // then int64 Offset and int64 Length (all big-endian). A value of <= 8 bytes
 // therefore decodes to a standalone locator with no migration of existing rows.
 // ============================================================================
@@ -48,22 +48,22 @@ import (
 const syncedHashPrefix = "synced:"
 
 // encodeSyncedValue builds the marker value: an 8-byte first-mirror timestamp
-// followed, only for a pack-resident chunk, by the locator suffix described
+// followed, only for a block-resident chunk, by the locator suffix described
 // above. Standalone chunks produce the legacy 8-byte form.
 func encodeSyncedValue(nanos int64, loc block.ChunkLocator) []byte {
 	val := encodeInt64(nanos)
 	if loc.IsStandalone() {
 		return val
 	}
-	suffix := make([]byte, 2+len(loc.PackID)+16)
-	binary.BigEndian.PutUint16(suffix[0:2], uint16(len(loc.PackID)))
-	n := 2 + copy(suffix[2:], loc.PackID)
+	suffix := make([]byte, 2+len(loc.BlockID)+16)
+	binary.BigEndian.PutUint16(suffix[0:2], uint16(len(loc.BlockID)))
+	n := 2 + copy(suffix[2:], loc.BlockID)
 	binary.BigEndian.PutUint64(suffix[n:n+8], uint64(loc.Offset))
 	binary.BigEndian.PutUint64(suffix[n+8:n+16], uint64(loc.Length))
 	return append(val, suffix...)
 }
 
-// decodeSyncedLocator extracts the pack locator from a marker value. A value of
+// decodeSyncedLocator extracts the block locator from a marker value. A value of
 // 8 bytes or fewer (legacy/standalone) yields the zero (standalone) locator. A
 // malformed suffix also falls back to standalone — fail-safe, since standalone
 // is always a valid resolution.
@@ -79,10 +79,10 @@ func decodeSyncedLocator(val []byte) block.ChunkLocator {
 	if len(suffix) < 2+idLen+16 {
 		return block.ChunkLocator{}
 	}
-	packID := string(suffix[2 : 2+idLen])
+	blockID := string(suffix[2 : 2+idLen])
 	off := int64(binary.BigEndian.Uint64(suffix[2+idLen : 2+idLen+8]))
 	length := int64(binary.BigEndian.Uint64(suffix[2+idLen+8 : 2+idLen+16]))
-	return block.ChunkLocator{PackID: packID, Offset: off, Length: length}
+	return block.ChunkLocator{BlockID: blockID, Offset: off, Length: length}
 }
 
 // Compile-time assertion: the Badger engine implements SyncedHashStore.
@@ -147,7 +147,7 @@ func (s *BadgerMetadataStore) MarkSynced(ctx context.Context, hash block.Content
 }
 
 // GetLocator returns the recorded remote locator for hash. (zero, false, nil)
-// when unsynced; a synced hash with no pack-locator suffix (standalone/legacy)
+// when unsynced; a synced hash with no block-locator suffix (standalone/legacy)
 // yields the zero (standalone) locator with found == true.
 func (s *BadgerMetadataStore) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
 	if err := ctx.Err(); err != nil {

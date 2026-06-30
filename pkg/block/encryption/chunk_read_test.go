@@ -11,11 +11,11 @@ import (
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
-// TestEncryptedRemote_GetPackChunk de-risks PR3b's per-chunk crypto boundary: a
-// pack concatenates each chunk's self-framed encryption blob verbatim, so
-// reading one chunk's slice out of the pack and decrypting it must yield the
+// TestEncryptedRemote_ReadChunk de-risks PR3b's per-chunk crypto boundary: a
+// block concatenates each chunk's self-framed encryption blob verbatim, so
+// reading one chunk's slice out of the block and decrypting it must yield the
 // original plaintext — identical to decrypting that chunk's standalone object.
-func TestEncryptedRemote_GetPackChunk(t *testing.T) {
+func TestEncryptedRemote_ReadChunk(t *testing.T) {
 	ctx := context.Background()
 	inner := remotememory.New()
 	d, err := NewRemote(inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
@@ -35,28 +35,28 @@ func TestEncryptedRemote_GetPackChunk(t *testing.T) {
 		t.Fatalf("inner Get wire: %v", err)
 	}
 
-	// Build a pack: [filler][target wire blob] and stage it in the base store.
+	// Build a block: [filler][target wire blob] and stage it in the base store.
 	filler := bytes.Repeat([]byte{0x01}, 37)
-	pack := append(append([]byte{}, filler...), wire...)
-	const packID = "enc-pack-1"
-	if err := inner.PutPack(packID, pack); err != nil {
-		t.Fatalf("PutPack: %v", err)
+	blockData := append(append([]byte{}, filler...), wire...)
+	const blockID = "enc-block-1"
+	if err := inner.PutBlock(blockID, blockData); err != nil {
+		t.Fatalf("PutBlock: %v", err)
 	}
 
-	got, err := d.GetPackChunk(ctx, packID, int64(len(filler)), int64(len(wire)), hash)
+	got, err := d.ReadChunk(ctx, blockID, int64(len(filler)), int64(len(wire)), hash)
 	if err != nil {
-		t.Fatalf("GetPackChunk: %v", err)
+		t.Fatalf("ReadChunk: %v", err)
 	}
 	if !bytes.Equal(got, target) {
-		t.Fatalf("decrypted pack chunk != plaintext (got %d bytes)", len(got))
+		t.Fatalf("decrypted block chunk != plaintext (got %d bytes)", len(got))
 	}
 	if block.ContentHash(blake3.Sum256(got)) != hash {
-		t.Fatalf("decrypted pack chunk hash mismatch")
+		t.Fatalf("decrypted block chunk hash mismatch")
 	}
 
 	// Wrong hash → AEAD AAD mismatch → decrypt fails (no silent corruption).
 	wrong := block.ContentHash(blake3.Sum256([]byte("different")))
-	if _, err := d.GetPackChunk(ctx, packID, int64(len(filler)), int64(len(wire)), wrong); err == nil {
-		t.Fatalf("GetPackChunk with wrong AAD hash: want error, got nil")
+	if _, err := d.ReadChunk(ctx, blockID, int64(len(filler)), int64(len(wire)), wrong); err == nil {
+		t.Fatalf("ReadChunk with wrong AAD hash: want error, got nil")
 	}
 }

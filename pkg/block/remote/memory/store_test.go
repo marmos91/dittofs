@@ -322,40 +322,40 @@ func TestStore_Walk_CallbackErrorWrapped(t *testing.T) {
 
 // TestStore_ReadBlockVerified covers the happy path and the
 // body-mismatch failure mode.
-// TestStore_GetPackChunk covers the base-store pack range read used by the
-// #1414 locator read path: a chunk staged inside a pack object is returned
+// TestStore_ReadChunk covers the base-store block range read used by the
+// #1414 locator read path: a chunk staged inside a block object is returned
 // verbatim for its [offset, length) slice, with GetRange-style bounds checks.
-func TestStore_GetPackChunk(t *testing.T) {
+func TestStore_ReadChunk(t *testing.T) {
 	ctx := context.Background()
 	s := New()
 
 	a := bytes.Repeat([]byte{0xA1}, 64)
 	b := bytes.Repeat([]byte{0xB2}, 128)
-	pack := append(append([]byte{}, a...), b...)
-	const packID = "pack-mem-1"
-	if err := s.PutPack(packID, pack); err != nil {
-		t.Fatalf("PutPack: %v", err)
+	blockData := append(append([]byte{}, a...), b...)
+	const blockID = "block-mem-1"
+	if err := s.PutBlock(blockID, blockData); err != nil {
+		t.Fatalf("PutBlock: %v", err)
 	}
 
-	got, err := s.GetPackChunk(ctx, packID, int64(len(a)), int64(len(b)), block.ContentHash{})
+	got, err := s.ReadChunk(ctx, blockID, int64(len(a)), int64(len(b)), block.ContentHash{})
 	if err != nil {
-		t.Fatalf("GetPackChunk: %v", err)
+		t.Fatalf("ReadChunk: %v", err)
 	}
 	if !bytes.Equal(got, b) {
-		t.Fatalf("GetPackChunk returned wrong slice")
+		t.Fatalf("ReadChunk returned wrong slice")
 	}
 
-	if _, err := s.GetPackChunk(ctx, "missing", 0, 1, block.ContentHash{}); !errors.Is(err, block.ErrChunkNotFound) {
-		t.Fatalf("missing pack: got %v, want ErrChunkNotFound", err)
+	if _, err := s.ReadChunk(ctx, "missing", 0, 1, block.ContentHash{}); !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("missing block: got %v, want ErrChunkNotFound", err)
 	}
-	if _, err := s.GetPackChunk(ctx, packID, -1, 1, block.ContentHash{}); !errors.Is(err, block.ErrInvalidOffset) {
+	if _, err := s.ReadChunk(ctx, blockID, -1, 1, block.ContentHash{}); !errors.Is(err, block.ErrInvalidOffset) {
 		t.Fatalf("negative offset: got %v, want ErrInvalidOffset", err)
 	}
-	if _, err := s.GetPackChunk(ctx, packID, 0, 0, block.ContentHash{}); !errors.Is(err, block.ErrInvalidSize) {
+	if _, err := s.ReadChunk(ctx, blockID, 0, 0, block.ContentHash{}); !errors.Is(err, block.ErrInvalidSize) {
 		t.Fatalf("zero length: got %v, want ErrInvalidSize", err)
 	}
 	// Past-EOF length clamps to remaining bytes (no error), mirroring GetRange.
-	clamped, err := s.GetPackChunk(ctx, packID, int64(len(a)), 1<<20, block.ContentHash{})
+	clamped, err := s.ReadChunk(ctx, blockID, int64(len(a)), 1<<20, block.ContentHash{})
 	if err != nil {
 		t.Fatalf("clamped read: %v", err)
 	}

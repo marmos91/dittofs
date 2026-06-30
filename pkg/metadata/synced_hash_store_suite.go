@@ -146,9 +146,9 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 	t.Run("StandaloneLocatorResolvesStandalone", func(t *testing.T) {
 		// A chunk marked synced with a standalone locator (the PR3a path, and
 		// the only on-disk form pre-PR3b) must resolve back as standalone —
-		// PackID=="" — so the read path falls back to the direct CAS GET. This
+		// BlockID=="" — so the read path falls back to the direct CAS GET. This
 		// also covers backward compatibility: a pre-locator row carries the
-		// same (no-pack) state.
+		// same (no-block) state.
 		ctx := context.Background()
 		h := mustHash("suite-standalone-locator")
 		if err := s.MarkSynced(ctx, h, block.ChunkLocator{Length: 1234}); err != nil {
@@ -162,27 +162,27 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 			t.Fatalf("standalone synced hash reports ok=false")
 		}
 		if !loc.IsStandalone() {
-			t.Fatalf("standalone hash resolved to a pack: %+v", loc)
+			t.Fatalf("standalone hash resolved to a block: %+v", loc)
 		}
 	})
 
-	t.Run("PackLocatorRoundTrip", func(t *testing.T) {
-		// A pack locator must round-trip exactly through MarkSynced/GetLocator.
+	t.Run("BlockLocatorRoundTrip", func(t *testing.T) {
+		// A block locator must round-trip exactly through MarkSynced/GetLocator.
 		ctx := context.Background()
-		h := mustHash("suite-pack-locator")
-		want := block.ChunkLocator{PackID: "pack-abc123", Offset: 4096, Length: 65536}
+		h := mustHash("suite-block-locator")
+		want := block.ChunkLocator{BlockID: "block-abc123", Offset: 4096, Length: 65536}
 		if err := s.MarkSynced(ctx, h, want); err != nil {
-			t.Fatalf("MarkSynced pack: %v", err)
+			t.Fatalf("MarkSynced block: %v", err)
 		}
 		got, ok, err := s.GetLocator(ctx, h)
 		if err != nil {
-			t.Fatalf("GetLocator pack: %v", err)
+			t.Fatalf("GetLocator block: %v", err)
 		}
 		if !ok {
-			t.Fatalf("pack-resident synced hash reports ok=false")
+			t.Fatalf("block-resident synced hash reports ok=false")
 		}
 		if got != want {
-			t.Fatalf("pack locator round-trip: got %+v want %+v", got, want)
+			t.Fatalf("block locator round-trip: got %+v want %+v", got, want)
 		}
 	})
 

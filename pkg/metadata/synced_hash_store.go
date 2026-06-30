@@ -24,7 +24,7 @@ import (
 // been mirrored to the remote store at least once, and where do its bytes live?"
 // The marker is logically a set keyed by content hash; each member also carries
 // a block.ChunkLocator recording whether the chunk is a standalone CAS object
-// (today) or lives inside a pack object (#1414, PR3b). Backends MAY record
+// (today) or lives inside a block object (#1414, PR3b). Backends MAY record
 // auxiliary metadata (e.g. a first-mirror timestamp).
 //
 // Implementations MUST be safe for concurrent use by multiple goroutines.
@@ -44,18 +44,18 @@ type SyncedHashStore interface {
 	// nil — the first recorded locator wins. Callers do not need to check
 	// IsSynced before MarkSynced.
 	//
-	// A standalone locator (loc.PackID == "") is the common case today and
+	// A standalone locator (loc.BlockID == "") is the common case today and
 	// is persisted in the legacy on-disk form — i.e. byte-for-byte identical
 	// to pre-locator markers — because a standalone chunk's location is fully
-	// implied by its hash (the CAS key, whole object). Only a pack locator
-	// (loc.PackID != "") records the extra PackID/Offset/Length, so existing
+	// implied by its hash (the CAS key, whole object). Only a block locator
+	// (loc.BlockID != "") records the extra BlockID/Offset/Length, so existing
 	// synced rows need no migration and resolve as standalone.
 	MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error
 
 	// GetLocator returns the recorded remote locator for hash. The second
-	// return is true iff hash is synced. A synced hash with no recorded pack
+	// return is true iff hash is synced. A synced hash with no recorded block
 	// locator (a standalone or pre-locator marker) yields the zero
-	// block.ChunkLocator (PackID == ""), which the read path resolves to the
+	// block.ChunkLocator (BlockID == ""), which the read path resolves to the
 	// standalone CAS object. An unsynced hash returns (zero, false, nil).
 	GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error)
 

@@ -62,7 +62,7 @@ func TestDispatchRemoteFetch_StandaloneRoundTrip(t *testing.T) {
 		t.Fatalf("GetLocator: ok=%v err=%v", ok, err)
 	}
 	if !loc.IsStandalone() {
-		t.Fatalf("standalone write resolved to pack: %+v", loc)
+		t.Fatalf("standalone write resolved to block: %+v", loc)
 	}
 
 	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileBlock{Hash: hash})
@@ -103,63 +103,63 @@ func TestDispatchRemoteFetch_LegacyNoLocator(t *testing.T) {
 	}
 }
 
-// TestDispatchRemoteFetch_PackLocator covers the indirection PR3b will exploit: a
-// synthetic pack locator routes a ranged read into the enclosing pack object and
+// TestDispatchRemoteFetch_BlockLocator covers the indirection PR3b will exploit: a
+// synthetic block locator routes a ranged read into the enclosing block object and
 // verifies the chunk's BLAKE3. This branch is never taken on the live PR3a path.
-func TestDispatchRemoteFetch_PackLocator(t *testing.T) {
+func TestDispatchRemoteFetch_BlockLocator(t *testing.T) {
 	ctx := context.Background()
 	syncer, rem, ms := newLocatorFetchSyncer(t)
 
-	// A pack with a leading filler chunk so the target sits at a non-zero
+	// A block with a leading filler chunk so the target sits at a non-zero
 	// offset, exercising the range request.
 	filler := bytes.Repeat([]byte{0x11}, 100)
 	target := bytes.Repeat([]byte{0x22}, 4096)
-	pack := append(append([]byte{}, filler...), target...)
-	const packID = "pack-test-0001"
-	if err := rem.PutPack(packID, pack); err != nil {
-		t.Fatalf("PutPack: %v", err)
+	blockData := append(append([]byte{}, filler...), target...)
+	const blockID = "block-test-0001"
+	if err := rem.PutBlock(blockID, blockData); err != nil {
+		t.Fatalf("PutBlock: %v", err)
 	}
 
 	hash := block.ContentHash(blake3.Sum256(target))
-	loc := block.ChunkLocator{PackID: packID, Offset: int64(len(filler)), Length: int64(len(target))}
+	loc := block.ChunkLocator{BlockID: blockID, Offset: int64(len(filler)), Length: int64(len(target))}
 	if err := ms.MarkSynced(ctx, hash, loc); err != nil {
-		t.Fatalf("MarkSynced pack: %v", err)
+		t.Fatalf("MarkSynced block: %v", err)
 	}
 
 	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileBlock{Hash: hash})
 	if err != nil {
-		t.Fatalf("dispatchRemoteFetch (pack): %v", err)
+		t.Fatalf("dispatchRemoteFetch (block): %v", err)
 	}
-	if key != block.FormatPackKey(packID) {
-		t.Fatalf("pack key = %q, want %q", key, block.FormatPackKey(packID))
+	if key != block.FormatBlockKey(blockID) {
+		t.Fatalf("block key = %q, want %q", key, block.FormatBlockKey(blockID))
 	}
 	if !bytes.Equal(got, target) {
-		t.Fatalf("pack chunk data mismatch")
+		t.Fatalf("block chunk data mismatch")
 	}
 }
 
-// TestDispatchRemoteFetch_PackLocatorVerifyMismatch proves the pack read path
+// TestDispatchRemoteFetch_BlockLocatorVerifyMismatch proves the block read path
 // fails closed when the bytes at the located range do not hash to the expected
 // chunk (corruption / wrong offset).
-func TestDispatchRemoteFetch_PackLocatorVerifyMismatch(t *testing.T) {
+func TestDispatchRemoteFetch_BlockLocatorVerifyMismatch(t *testing.T) {
 	ctx := context.Background()
 	syncer, rem, ms := newLocatorFetchSyncer(t)
 
 	target := bytes.Repeat([]byte{0x33}, 4096)
 	hash := block.ContentHash(blake3.Sum256(target))
-	// Store a pack whose bytes do NOT match the claimed hash.
+	// Store a block whose bytes do NOT match the claimed hash.
 	corrupt := bytes.Repeat([]byte{0x34}, 4096)
-	const packID = "pack-corrupt"
-	if err := rem.PutPack(packID, corrupt); err != nil {
-		t.Fatalf("PutPack: %v", err)
+	const blockID = "block-corrupt"
+	if err := rem.PutBlock(blockID, corrupt); err != nil {
+		t.Fatalf("PutBlock: %v", err)
 	}
-	loc := block.ChunkLocator{PackID: packID, Offset: 0, Length: int64(len(target))}
+	loc := block.ChunkLocator{BlockID: blockID, Offset: 0, Length: int64(len(target))}
 	if err := ms.MarkSynced(ctx, hash, loc); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
 	_, _, err := syncer.dispatchRemoteFetch(ctx, &block.FileBlock{Hash: hash})
 	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("pack verify mismatch: got %v, want ErrCASContentMismatch", err)
+		t.Fatalf("block verify mismatch: got %v, want ErrCASContentMismatch", err)
 	}
 }

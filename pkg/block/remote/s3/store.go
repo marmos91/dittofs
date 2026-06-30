@@ -54,7 +54,7 @@ const maxS3ConnsPerHost = 256
 // Compile-time interface satisfaction check.
 var (
 	_ remote.RemoteStore       = (*Store)(nil)
-	_ remote.PackChunkReader   = (*Store)(nil)
+	_ remote.ChunkReader       = (*Store)(nil)
 	_ block.DurabilityReporter = (*Store)(nil)
 )
 
@@ -518,18 +518,18 @@ func (s *Store) GetRange(ctx context.Context, hash block.ContentHash, offset, le
 	return readResponseBody(resp.Body, resp.ContentLength, length)
 }
 
-// packKey returns the full S3 key for a pack object identified by packID.
-func (s *Store) packKey(packID string) string {
-	return s.fullKey(block.FormatPackKey(packID))
+// blockKey returns the full S3 key for a block object identified by blockID.
+func (s *Store) blockKey(blockID string) string {
+	return s.fullKey(block.FormatBlockKey(blockID))
 }
 
-// GetPackChunk reads the wire bytes [offset, offset+length) from the pack object
-// packs/<packID> via an S3 range request and returns them verbatim. As a base
+// ReadChunk reads the wire bytes [offset, offset+length) from the block object
+// blocks/<blockID> via an S3 range request and returns them verbatim. As a base
 // store there is no transform to invert and no verification here (the engine
 // verifies the BLAKE3 after the decorator stack). Implements
-// remote.PackChunkReader; hash is unused at this layer. See GetRange for the
+// remote.ChunkReader; hash is unused at this layer. See GetRange for the
 // bounds-validation rationale.
-func (s *Store) GetPackChunk(ctx context.Context, packID string, offset, length int64, _ block.ContentHash) ([]byte, error) {
+func (s *Store) ReadChunk(ctx context.Context, blockID string, offset, length int64, _ block.ContentHash) ([]byte, error) {
 	if err := s.checkClosed(); err != nil {
 		return nil, err
 	}
@@ -543,7 +543,7 @@ func (s *Store) GetPackChunk(ctx context.Context, packID string, offset, length 
 		return nil, block.ErrInvalidSize
 	}
 
-	key := s.packKey(packID)
+	key := s.blockKey(blockID)
 	rangeHeader := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
@@ -554,7 +554,7 @@ func (s *Store) GetPackChunk(ctx context.Context, packID string, offset, length 
 		if isNotFoundError(err) {
 			return nil, block.ErrChunkNotFound
 		}
-		return nil, fmt.Errorf("s3 get pack chunk: %w", err)
+		return nil, fmt.Errorf("s3 get block chunk: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

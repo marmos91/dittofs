@@ -267,10 +267,10 @@ type MemoryMetadataStore struct {
 	// time. Lazily initialized on first Mark; reads treat absence as
 	// not-synced.
 	synced map[block.ContentHash]time.Time
-	// syncedLocators records the remote pack locator for synced hashes that
-	// live inside a pack (#1414). Standalone chunks (ChunkLocator.PackID == "")
+	// syncedLocators records the remote block locator for synced hashes that
+	// live inside a block (#1414). Standalone chunks (ChunkLocator.BlockID == "")
 	// are NOT stored here — their absence resolves to the zero (standalone)
-	// locator, mirroring the SQL backends' NULL pack columns and badger's
+	// locator, mirroring the SQL backends' NULL block columns and badger's
 	// no-suffix marker, so the common case stays free. Guarded by syncedMu.
 	syncedLocators map[block.ContentHash]block.ChunkLocator
 

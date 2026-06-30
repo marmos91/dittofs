@@ -17,11 +17,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
-// ErrPackReadUnsupported is returned by a decorator's GetPackChunk when the
-// wrapped store does not implement PackChunkReader, so a pack read cannot be
+// ErrChunkReadUnsupported is returned by a decorator's ReadChunk when the
+// wrapped store does not implement ChunkReader, so a block read cannot be
 // composed through the transform stack. It cannot occur on the live PR3a path
-// (which never produces pack locators); it guards the capability boundary.
-var ErrPackReadUnsupported = errors.New("remote: wrapped store does not support pack reads")
+// (which never produces block locators); it guards the capability boundary.
+var ErrChunkReadUnsupported = errors.New("remote: wrapped store does not support block reads")
 
 // RemoteStore is the unified content-addressed remote block storage
 // interface. Implemented by
@@ -83,18 +83,18 @@ type RemoteStore interface {
 	Healthcheck(ctx context.Context) health.Report
 }
 
-// PackChunkReader is an OPTIONAL RemoteStore capability for reading a chunk that
-// lives inside a pack object (#1414 object packing). It is deliberately kept OFF
+// ChunkReader is an OPTIONAL RemoteStore capability for reading a chunk that
+// lives inside a block object (#1414 object packing). It is deliberately kept OFF
 // the RemoteStore contract — only the locator read path needs it, so the many
 // RemoteStore test fakes need not implement it (mirroring how EnumerateSynced is
 // kept off metadata.SyncedHashStore). The engine type-asserts m.remoteStore to
-// this interface when a block.ChunkLocator resolves to a pack (PackID != "");
+// this interface when a block.ChunkLocator resolves to a block (BlockID != "");
 // the s3 + memory backends and the encryption/compression decorators implement
 // it.
 //
-// GetPackChunk reads the chunk whose stored wire bytes occupy
-// [offset, offset+length) within pack object packs/<packID> (see
-// block.FormatPackKey) and returns the chunk PLAINTEXT, inverting the store's
+// ReadChunk reads the chunk whose stored wire bytes occupy
+// [offset, offset+length) within block object blocks/<blockID> (see
+// block.FormatBlockKey) and returns the chunk PLAINTEXT, inverting the store's
 // transform chain on the way up — each decorator decompresses/decrypts its own
 // layer, threading hash as the AEAD AAD. It does NOT verify the BLAKE3 (no
 // single layer holds both the wire bytes and the plaintext hash domain); the
@@ -102,6 +102,6 @@ type RemoteStore interface {
 // exactly as ReadBlockVerified guarantees for standalone objects. hash is
 // consulted only by the encryption layer (AAD) and ignored by the base stores
 // and the compression layer.
-type PackChunkReader interface {
-	GetPackChunk(ctx context.Context, packID string, offset, length int64, hash block.ContentHash) ([]byte, error)
+type ChunkReader interface {
+	ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error)
 }

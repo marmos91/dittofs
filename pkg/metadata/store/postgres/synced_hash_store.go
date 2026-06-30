@@ -79,28 +79,28 @@ func (s *PostgresMetadataStore) IsSynced(ctx context.Context, hash block.Content
 }
 
 // MarkSynced records that hash has been mirrored to remote, persisting loc's
-// pack columns atomically. Idempotent via ON CONFLICT (hash) DO NOTHING —
+// block columns atomically. Idempotent via ON CONFLICT (hash) DO NOTHING —
 // re-applying the same hash is a no-op that preserves the first locator. A
-// standalone locator (PackID == "") leaves the pack columns NULL, identical to
+// standalone locator (BlockID == "") leaves the block columns NULL, identical to
 // a pre-locator row, so existing data needs no migration.
 func (s *PostgresMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	packID, off, length := locatorArgs(loc)
+	blockID, off, length := locatorArgs(loc)
 	if _, err := s.exec(ctx,
-		`INSERT INTO synced_hashes (hash, synced_at, pack_id, pack_offset, pack_length)
+		`INSERT INTO synced_hashes (hash, synced_at, block_id, block_offset, block_length)
 			VALUES ($1, NOW(), $2, $3, $4)
 			ON CONFLICT (hash) DO NOTHING`,
-		hash[:], packID, off, length); err != nil {
+		hash[:], blockID, off, length); err != nil {
 		return fmt.Errorf("postgres synced mark: %w", err)
 	}
 	return nil
 }
 
 // GetLocator returns the recorded remote locator for hash. (zero, false, nil)
-// when no row exists; a synced row with NULL/empty pack columns yields the zero
+// when no row exists; a synced row with NULL/empty block columns yields the zero
 // (standalone) locator with found == true.
 func (s *PostgresMetadataStore) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
 	if err := ctx.Err(); err != nil {
@@ -108,31 +108,31 @@ func (s *PostgresMetadataStore) GetLocator(ctx context.Context, hash block.Conte
 	}
 
 	row := s.queryRow(ctx,
-		`SELECT pack_id, pack_offset, pack_length FROM synced_hashes WHERE hash = $1`,
+		`SELECT block_id, block_offset, block_length FROM synced_hashes WHERE hash = $1`,
 		hash[:])
-	var packID sql.NullString
+	var blockID sql.NullString
 	var off, length sql.NullInt64
-	err := row.Scan(&packID, &off, &length)
+	err := row.Scan(&blockID, &off, &length)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return block.ChunkLocator{}, false, nil
 	}
 	if err != nil {
 		return block.ChunkLocator{}, false, fmt.Errorf("postgres synced get locator: %w", err)
 	}
-	if !packID.Valid || packID.String == "" {
+	if !blockID.Valid || blockID.String == "" {
 		return block.ChunkLocator{}, true, nil
 	}
-	return block.ChunkLocator{PackID: packID.String, Offset: off.Int64, Length: length.Int64}, true, nil
+	return block.ChunkLocator{BlockID: blockID.String, Offset: off.Int64, Length: length.Int64}, true, nil
 }
 
-// locatorArgs maps a ChunkLocator onto the (pack_id, pack_offset, pack_length)
+// locatorArgs maps a ChunkLocator onto the (block_id, block_offset, block_length)
 // INSERT args: NULL for a standalone chunk (so its row is identical to a
-// pre-locator row), the recorded values for a pack-resident chunk.
-func locatorArgs(loc block.ChunkLocator) (packID, off, length any) {
+// pre-locator row), the recorded values for a block-resident chunk.
+func locatorArgs(loc block.ChunkLocator) (blockID, off, length any) {
 	if loc.IsStandalone() {
 		return nil, nil, nil
 	}
-	return loc.PackID, loc.Offset, loc.Length
+	return loc.BlockID, loc.Offset, loc.Length
 }
 
 // DeleteSynced removes the synced marker for hash. Idempotent: DELETE

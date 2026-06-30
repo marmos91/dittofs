@@ -1,3 +1,3 @@
-ALTER TABLE synced_hashes DROP COLUMN IF EXISTS pack_length;
-ALTER TABLE synced_hashes DROP COLUMN IF EXISTS pack_offset;
-ALTER TABLE synced_hashes DROP COLUMN IF EXISTS pack_id;
+ALTER TABLE synced_hashes DROP COLUMN IF EXISTS block_length;
+ALTER TABLE synced_hashes DROP COLUMN IF EXISTS block_offset;
+ALTER TABLE synced_hashes DROP COLUMN IF EXISTS block_id;

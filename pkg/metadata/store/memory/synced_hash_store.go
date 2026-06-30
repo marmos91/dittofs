@@ -84,7 +84,7 @@ func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash block.Content
 		return nil
 	}
 	s.synced[hash] = time.Now()
-	// Record only pack locators; standalone chunks resolve from absence.
+	// Record only block locators; standalone chunks resolve from absence.
 	if !loc.IsStandalone() {
 		if s.syncedLocators == nil {
 			s.syncedLocators = make(map[block.ContentHash]block.ChunkLocator)

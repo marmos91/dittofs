@@ -235,19 +235,19 @@ func (d *Decorator) ReadBlockVerified(ctx context.Context, hash block.ContentHas
 	return plain, nil
 }
 
-// GetPackChunk reads the chunk's compressed wire bytes from the inner store's
-// pack object and decompresses them, returning the next layer's input (or the
-// engine's plaintext). A pack stores each chunk's full self-framed compression
+// ReadChunk reads the chunk's compressed wire bytes from the inner store's
+// block object and decompresses them, returning the next layer's input (or the
+// engine's plaintext). A block stores each chunk's full self-framed compression
 // blob (or raw passthrough) verbatim, so decoding the chunk's [offset, length)
 // slice is identical to decoding its standalone object. No verification here —
 // the engine verifies the BLAKE3 after the full stack. hash is unused at this
-// layer. Implements remote.PackChunkReader (#1414).
-func (d *Decorator) GetPackChunk(ctx context.Context, packID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
-	pcr, ok := d.inner.(remote.PackChunkReader)
+// layer. Implements remote.ChunkReader (#1414).
+func (d *Decorator) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
+	pcr, ok := d.inner.(remote.ChunkReader)
 	if !ok {
-		return nil, remote.ErrPackReadUnsupported
+		return nil, remote.ErrChunkReadUnsupported
 	}
-	raw, err := pcr.GetPackChunk(ctx, packID, offset, length, hash)
+	raw, err := pcr.ReadChunk(ctx, blockID, offset, length, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -277,6 +277,6 @@ func (d *Decorator) Durable() bool {
 var (
 	_ block.Store              = (*Decorator)(nil)
 	_ remote.RemoteStore       = (*Decorator)(nil)
-	_ remote.PackChunkReader   = (*Decorator)(nil)
+	_ remote.ChunkReader       = (*Decorator)(nil)
 	_ block.DurabilityReporter = (*Decorator)(nil)
 )
