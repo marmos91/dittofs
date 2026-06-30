@@ -60,16 +60,21 @@ func TestCrossProtocol_LeaseBreaks(t *testing.T) {
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "Should create share")
 
-	// Create SMB test user with authentication credentials
-	smbUsername := helpers.UniqueTestName("leaseuser")
-	smbPassword := "testpass123" // Must be 8+ chars for SMB
+	// Map NFS root to UID 0 (no_root_squash) so NFS and the admin SMB session
+	// below share one privileged identity. Cross-protocol *writes* require it: a
+	// file created over one protocol must be writable over the other, but default
+	// 0644 file modes only grant write to the owner. The squash default
+	// (root_to_guest) maps NFS root to an unprivileged anonymous user distinct
+	// from the SMB user, so neither could write the other's files.
+	_, err = cli.Run("share", "nfs-config", "set", shareName, "--squash", "root_to_admin")
+	require.NoError(t, err, "Should set no_root_squash on the share")
 
-	_, err = cli.CreateUser(smbUsername, smbPassword)
-	require.NoError(t, err, "Should create SMB test user")
-
-	// Grant SMB user read-write permission on the share
-	err = cli.GrantUserPermission(shareName, smbUsername, "read-write")
-	require.NoError(t, err, "Should grant SMB user permission")
+	// Authenticate the SMB side as the built-in admin user, which is UID 0 — the
+	// same identity NFS root maps to under no_root_squash (set above). A distinct
+	// SMB user would own its files separately and, with 0644 modes, could read but
+	// not write files created over NFS (and vice-versa).
+	smbUsername := "admin"
+	smbPassword := helpers.GetAdminPassword()
 
 	// Enable NFS adapter on a dynamic port
 	nfsPort := helpers.FindFreePort(t)
