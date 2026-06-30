@@ -48,14 +48,14 @@ type LocalChunkIndex interface {
 	DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error
 }
 
-// CommitBlockImpl atomically writes a block record and all associated local
+// DefaultCommitBlock atomically writes a block record and all associated local
 // chunk locations within a single transaction, then (outside the tx) marks
 // each chunk synced via MarkSynced. Idempotent: if the block record already
 // exists the function is a no-op (LiveChunkCount is not double-counted).
 //
 // Exported so Store implementations in sub-packages can delegate CommitBlock
 // to this shared logic.
-func CommitBlockImpl(
+func DefaultCommitBlock(
 	ctx context.Context,
 	s interface {
 		Transactor
