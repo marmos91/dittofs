@@ -8,17 +8,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// BlockRecordStoreProvider is implemented by stores with full BlockRecordStore
-// support. The conformance suite type-asserts to this and skips if unimplemented.
-type BlockRecordStoreProvider interface {
-	BlockRecordStoreEnabled() bool
-}
-
 func runBlockRecordOps(t *testing.T, store metadata.Store) {
 	t.Helper()
-	if p, ok := store.(BlockRecordStoreProvider); !ok || !p.BlockRecordStoreEnabled() {
-		t.Skip("BlockRecordStore not implemented by this backend")
-	}
 
 	ctx := context.Background()
 

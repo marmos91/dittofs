@@ -73,19 +73,6 @@ func decodeLocalChunkLocation(b []byte) (block.LocalChunkLocation, error) {
 }
 
 // ============================================================================
-// Capability probe
-// ============================================================================
-
-// BlockRecordStoreEnabled implements storetest.BlockRecordStoreProvider.
-func (s *BadgerMetadataStore) BlockRecordStoreEnabled() bool { return true }
-
-// LocalChunkIndexEnabled implements storetest.LocalChunkIndexProvider.
-func (s *BadgerMetadataStore) LocalChunkIndexEnabled() bool { return true }
-
-// CommitBlockEnabled implements storetest.CommitBlockProvider.
-func (s *BadgerMetadataStore) CommitBlockEnabled() bool { return true }
-
-// ============================================================================
 // BlockRecordStore — transaction level
 // ============================================================================
 

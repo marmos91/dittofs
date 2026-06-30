@@ -76,17 +76,8 @@ func (f *faultyMarkSyncedStore) CommitBlock(ctx context.Context, rec block.Block
 	return metadata.DefaultCommitBlock(ctx, f, rec, chunks)
 }
 
-// CommitBlockProvider is implemented by stores with full CommitBlock support.
-// The conformance suite type-asserts to this and skips if unimplemented.
-type CommitBlockProvider interface {
-	CommitBlockEnabled() bool
-}
-
 func runCommitBlockOps(t *testing.T, store metadata.Store) {
 	t.Helper()
-	if p, ok := store.(CommitBlockProvider); !ok || !p.CommitBlockEnabled() {
-		t.Skip("CommitBlock not implemented by this backend")
-	}
 
 	ctx := context.Background()
 

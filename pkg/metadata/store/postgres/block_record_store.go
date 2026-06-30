@@ -16,27 +16,11 @@ import (
 )
 
 // Compile-time assertions: the store and its transaction both satisfy the
-// two capability interfaces. The type-assertion probe in the conformance
-// suite verifies them at runtime once the capability flags return true.
+// interfaces.
 var _ metadata.BlockRecordStore = (*PostgresMetadataStore)(nil)
 var _ metadata.LocalChunkIndex = (*PostgresMetadataStore)(nil)
 var _ metadata.BlockRecordStore = (*postgresTransaction)(nil)
 var _ metadata.LocalChunkIndex = (*postgresTransaction)(nil)
-
-// ============================================================================
-// Capability probes
-// ============================================================================
-
-// BlockRecordStoreEnabled signals that the postgres backend implements
-// metadata.BlockRecordStore (picked up by the conformance type-assertion probe).
-func (s *PostgresMetadataStore) BlockRecordStoreEnabled() bool { return true }
-
-// LocalChunkIndexEnabled signals that the postgres backend implements
-// metadata.LocalChunkIndex.
-func (s *PostgresMetadataStore) LocalChunkIndexEnabled() bool { return true }
-
-// CommitBlockEnabled signals that the postgres backend implements CommitBlock.
-func (s *PostgresMetadataStore) CommitBlockEnabled() bool { return true }
 
 // ============================================================================
 // Transaction-level BlockRecordStore

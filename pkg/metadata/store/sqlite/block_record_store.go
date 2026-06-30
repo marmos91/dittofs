@@ -31,22 +31,6 @@ var _ metadata.BlockRecordStore = (*sqliteTransaction)(nil)
 var _ metadata.LocalChunkIndex = (*sqliteTransaction)(nil)
 
 // ============================================================================
-// Capability probes (type-asserted by storetest to decide skip vs run)
-// ============================================================================
-
-// BlockRecordStoreEnabled signals to the conformance suite that this backend
-// fully implements metadata.BlockRecordStore.
-func (s *SQLiteMetadataStore) BlockRecordStoreEnabled() bool { return true }
-
-// LocalChunkIndexEnabled signals to the conformance suite that this backend
-// fully implements metadata.LocalChunkIndex.
-func (s *SQLiteMetadataStore) LocalChunkIndexEnabled() bool { return true }
-
-// CommitBlockEnabled signals to the conformance suite that CommitBlock is
-// implemented (it delegates to metadata.DefaultCommitBlock).
-func (s *SQLiteMetadataStore) CommitBlockEnabled() bool { return true }
-
-// ============================================================================
 // Store-level BlockRecordStore (pool path)
 // ============================================================================
 

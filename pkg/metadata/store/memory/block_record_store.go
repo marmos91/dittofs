@@ -8,15 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// BlockRecordStoreEnabled implements storetest.BlockRecordStoreProvider.
-func (s *MemoryMetadataStore) BlockRecordStoreEnabled() bool { return true }
-
-// LocalChunkIndexEnabled implements storetest.LocalChunkIndexProvider.
-func (s *MemoryMetadataStore) LocalChunkIndexEnabled() bool { return true }
-
-// CommitBlockEnabled implements storetest.CommitBlockProvider.
-func (s *MemoryMetadataStore) CommitBlockEnabled() bool { return true }
-
 // ============================================================================
 // Transaction-level BlockRecordStore (runs under store.mu write lock)
 // ============================================================================

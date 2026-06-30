@@ -171,21 +171,18 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 
 	// BlockRecordOps covers BlockRecordStore: put/get round-trip, delete,
 	// walk, missing-ID miss, DecrLiveChunkCount (normal + floor + missing).
-	// Stores lacking BlockRecordStoreEnabled() skip cleanly.
 	t.Run("BlockRecordOps", func(t *testing.T) {
 		runBlockRecordOps(t, factory(t))
 	})
 
 	// LocalIndexOps covers LocalChunkIndex: put/get round-trip, upsert
-	// overwrites, delete, missing-hash miss. Skips unless
-	// LocalChunkIndexEnabled().
+	// overwrites, delete, missing-hash miss.
 	t.Run("LocalIndexOps", func(t *testing.T) {
 		runLocalIndexOps(t, factory(t))
 	})
 
 	// CommitBlockOps covers CommitBlock: full commit (record + local locations
-	// + synced markers), idempotency (second call is no-op). Skips unless
-	// CommitBlockEnabled().
+	// + synced markers), idempotency (second call is no-op).
 	t.Run("CommitBlockOps", func(t *testing.T) {
 		runCommitBlockOps(t, factory(t))
 	})

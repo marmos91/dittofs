@@ -8,17 +8,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// LocalChunkIndexProvider is implemented by stores with full LocalChunkIndex
-// support. The conformance suite type-asserts to this and skips if unimplemented.
-type LocalChunkIndexProvider interface {
-	LocalChunkIndexEnabled() bool
-}
-
 func runLocalIndexOps(t *testing.T, store metadata.Store) {
 	t.Helper()
-	if p, ok := store.(LocalChunkIndexProvider); !ok || !p.LocalChunkIndexEnabled() {
-		t.Skip("LocalChunkIndex not implemented by this backend")
-	}
 
 	ctx := context.Background()
 
