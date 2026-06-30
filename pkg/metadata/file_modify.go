@@ -236,11 +236,15 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	// perform them. This guard sits BEFORE the owner/root bypass below: without
 	// it, the isOwner short-circuit would let an owner mutate their own file on
 	// a read-only share (most dangerously, install a permissive DACL on it).
-	// shareForbidsWrites checks both ceilings, mirroring the data path.
+	// shareForbidsWrites checks both ceilings (per-user and store-level).
 	if s.shareForbidsWrites(ctx, handle) {
-		// Read-only denial → ErrReadOnly so NFSv3 SETATTR returns
-		// NFS3ERR_ROFS (EROFS) per RFC 1813 §3.3.7, matching the WRITE and
-		// xattr paths. SMB renders ErrReadOnly as STATUS_ACCESS_DENIED.
+		// A read-only denial returns ErrReadOnly so NFSv3 SETATTR yields
+		// NFS3ERR_ROFS (EROFS) per RFC 1813 §3.3.7. NOTE: unlike the data
+		// WRITE/CREATE/DELETE path — which distinguishes a per-user read-only
+		// permission level (→ ErrAccessDenied/EACCES) from a genuinely
+		// read-only share (→ ErrReadOnly/EROFS) via shareIsReadOnly — SETATTR
+		// still maps the per-user ceiling to EROFS. Aligning it is a deferred
+		// follow-up; SMB renders ErrReadOnly as STATUS_ACCESS_DENIED regardless.
 		return nil, &StoreError{
 			Code:    ErrReadOnly,
 			Message: "read-only share: attribute change denied",

@@ -116,7 +116,11 @@ func TestCheckPermissions_PerUserReadOnlyStripsWriteWithACL(t *testing.T) {
 
 // TestCheckParentCreateAccess_PerUserReadOnlyDenies asserts the create-path
 // ceiling: a read-only user cannot create an entry under an ALLOW-granting
-// parent DACL on an otherwise read-write share.
+// parent DACL on an otherwise read-write share. The denial is an ordinary
+// permission denial — the share itself is writable — so it must surface as
+// ErrAccessDenied (NFS3ERR_ACCES / EACCES), NOT ErrReadOnly. A squashed/unknown
+// uid given the share's default "read" permission lands here; the kernel client
+// reports "permission denied", not "read-only file system".
 func TestCheckParentCreateAccess_PerUserReadOnlyDenies(t *testing.T) {
 	f := newTestFixture(t)
 
@@ -135,15 +139,14 @@ func TestCheckParentCreateAccess_PerUserReadOnlyDenies(t *testing.T) {
 	ro := f.authContext(uid, gid)
 	ro.ShareReadOnly = true
 
-	// Read-only denial → ErrReadOnly (NFS3ERR_ROFS / EROFS) per RFC 1813; SMB
-	// renders it as STATUS_ACCESS_DENIED, identical to the prior code.
+	// Per-user read-only on a writable share → ErrAccessDenied (EACCES).
 	err = f.service.CheckParentCreateAccess(ro, dirHandle, false)
 	if err == nil {
-		t.Fatal("CheckParentCreateAccess returned nil for read-only user, want ErrReadOnly")
+		t.Fatal("CheckParentCreateAccess returned nil for read-only user, want ErrAccessDenied")
 	}
 	var storeErr *metadata.StoreError
-	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrReadOnly {
-		t.Fatalf("CheckParentCreateAccess err = %v, want StoreError{Code: ErrReadOnly}", err)
+	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrAccessDenied {
+		t.Fatalf("CheckParentCreateAccess err = %v, want StoreError{Code: ErrAccessDenied}", err)
 	}
 
 	// And the POSIX-only parent-write path (no ACL) must deny too.
@@ -152,11 +155,99 @@ func TestCheckParentCreateAccess_PerUserReadOnlyDenies(t *testing.T) {
 	}
 }
 
+// TestCheckParentCreateAccess_StoreReadOnlyShareReturnsErrReadOnly asserts the
+// other direction of the same discriminator: when the SHARE itself is read-only
+// (ShareOptions.ReadOnly), a create denial surfaces as ErrReadOnly so NFSv3
+// returns NFS3ERR_ROFS (EROFS) per RFC 1813 — preserving #1508's intent. This
+// guards against a regression that would collapse both cases back to one code.
+func TestCheckParentCreateAccess_StoreReadOnlyShareReturnsErrReadOnly(t *testing.T) {
+	f := newTestFixture(t)
+
+	uid, gid := uint32(1003), uint32(1003)
+	dir, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "rodir2",
+		&metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777, UID: uid, GID: gid})
+	require.NoError(t, err)
+	dirHandle, err := metadata.EncodeShareHandle(f.shareName, dir.ID)
+	require.NoError(t, err)
+
+	// Toggle the share read-only at the STORE level; per-user ShareReadOnly stays
+	// false so only the store-level flag is in play.
+	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
+	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
+		&metadata.ShareOptions{ReadOnly: true}))
+
+	rw := f.authContext(uid, gid)
+	rw.ShareReadOnly = false
+
+	err = f.service.CheckParentCreateAccess(rw, dirHandle, false)
+	if err == nil {
+		t.Fatal("CheckParentCreateAccess returned nil on read-only share, want ErrReadOnly")
+	}
+	var storeErr *metadata.StoreError
+	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrReadOnly {
+		t.Fatalf("CheckParentCreateAccess err = %v, want StoreError{Code: ErrReadOnly}", err)
+	}
+}
+
+// TestCheckParentWriteAccess_ReadOnlyDiscriminator exercises the data-write
+// permission path (checkPermission via CheckParentWriteAccess) and asserts the
+// EROFS-vs-EACCES discriminator directly:
+//   - store-level read-only share → ErrReadOnly (EROFS), preserving #1508;
+//   - per-user read-only on a writable share → ErrAccessDenied (EACCES);
+//   - an ordinary POSIX permission denial (no read-only ceiling) → ErrAccessDenied.
+func TestCheckParentWriteAccess_ReadOnlyDiscriminator(t *testing.T) {
+	asStoreErr := func(t *testing.T, err error) *metadata.StoreError {
+		t.Helper()
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.True(t, errors.As(err, &storeErr), "err %v is not a *StoreError", err)
+		return storeErr
+	}
+
+	t.Run("per-user read-only on writable share is EACCES", func(t *testing.T) {
+		f := newTestFixture(t)
+		ro := f.authContext(1100, 1100)
+		ro.ShareReadOnly = true
+		got := asStoreErr(t, f.service.CheckParentWriteAccess(ro, f.rootHandle))
+		require.Equal(t, metadata.ErrAccessDenied, got.Code)
+	})
+
+	t.Run("store-level read-only share is EROFS", func(t *testing.T) {
+		f := newTestFixture(t)
+		_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
+		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
+			&metadata.ShareOptions{ReadOnly: true}))
+		owner := f.authContext(1101, 1101)
+		owner.ShareReadOnly = false
+		got := asStoreErr(t, f.service.CheckParentWriteAccess(owner, f.rootHandle))
+		require.Equal(t, metadata.ErrReadOnly, got.Code)
+	})
+
+	t.Run("ordinary POSIX denial on writable share is EACCES", func(t *testing.T) {
+		f := newTestFixture(t)
+		// Directory owned by uid 2000, mode 0o755: "other" users get no write.
+		dir, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "owned-dir",
+			&metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o755, UID: 2000, GID: 2000})
+		require.NoError(t, err)
+		dirHandle, err := metadata.EncodeShareHandle(f.shareName, dir.ID)
+		require.NoError(t, err)
+		other := f.authContext(3000, 3000) // not owner, not in group
+		got := asStoreErr(t, f.service.CheckParentWriteAccess(other, dirHandle))
+		require.Equal(t, metadata.ErrAccessDenied, got.Code)
+	})
+}
+
 // TestSetFileAttributes_PerUserReadOnlyDeniesOwnerMutation asserts the SETATTR
 // ceiling: a read-only user may not mutate even a file they OWN — chmod, chown,
 // and (most importantly) installing a permissive ACL must all be denied. Without
 // the ceiling the owner-bypass in SetFileAttributes would let a read-only owner
 // escalate access on their own file.
+//
+// The denial code here is ErrReadOnly (EROFS) even for the per-user ceiling.
+// This is a KNOWN, DELIBERATE deferral: unlike the data WRITE/CREATE/DELETE path
+// (which now distinguishes a per-user read-only level → EACCES from a genuinely
+// read-only share → EROFS), SETATTR has not yet been aligned. The security
+// property asserted here — that the mutation is DENIED — is unaffected.
 func TestSetFileAttributes_PerUserReadOnlyDeniesOwnerMutation(t *testing.T) {
 	f := newTestFixture(t)
 

@@ -490,12 +490,15 @@ func (s *Service) checkPermission(ctx *AuthContext, handle FileHandle, perm Perm
 		return err
 	}
 	if granted&perm == 0 {
-		// A write or delete denied solely because the share is read-only must
-		// surface as ErrReadOnly so NFSv3 returns NFS3ERR_ROFS (EROFS) per
-		// RFC 1813, rather than NFS3ERR_ACCES. SMB is unaffected: the error
-		// map renders ErrReadOnly and ErrAccessDenied alike as
-		// STATUS_ACCESS_DENIED.
-		if perm&(PermissionWrite|PermissionDelete) != 0 && s.shareForbidsWrites(ctx, handle) {
+		// A write or delete denied because the share/export itself is
+		// read-only must surface as ErrReadOnly so NFSv3 returns
+		// NFS3ERR_ROFS (EROFS) per RFC 1813, rather than NFS3ERR_ACCES. A
+		// denial from a per-user read-only permission level (ctx.ShareReadOnly
+		// on a writable share, e.g. a squashed/unknown uid given the share's
+		// default "read" permission) is an ordinary permission denial →
+		// ErrAccessDenied. SMB is unaffected: the error map renders
+		// ErrReadOnly and ErrAccessDenied alike as STATUS_ACCESS_DENIED.
+		if perm&(PermissionWrite|PermissionDelete) != 0 && s.shareIsReadOnly(ctx, handle) {
 			return &StoreError{
 				Code:    ErrReadOnly,
 				Message: msg,
@@ -511,12 +514,24 @@ func (s *Service) checkPermission(ctx *AuthContext, handle FileHandle, perm Perm
 
 // shareForbidsWrites reports whether a read-only ceiling — per-user
 // (ctx.ShareReadOnly) or store-level (share options) — forbids modification of
-// the given file's share. It is consulted only on the permission-denied path,
-// so the extra share-options lookup is off the hot path.
+// the given file's share. It governs the deny decision (e.g. the SETATTR
+// owner-bypass ceiling), so it consults BOTH ceilings. It is consulted only on
+// the permission-denied path, so the extra share-options lookup is off the hot
+// path.
 func (s *Service) shareForbidsWrites(ctx *AuthContext, handle FileHandle) bool {
-	if ctx.ShareReadOnly {
-		return true
-	}
+	return ctx.ShareReadOnly || s.shareIsReadOnly(ctx, handle)
+}
+
+// shareIsReadOnly reports whether the share/export itself is read-only at the
+// store level (ShareOptions.ReadOnly), independent of the requesting user's
+// permission level. Only a genuinely read-only share maps a write/delete denial
+// to ErrReadOnly (NFSv3 NFS3ERR_ROFS / EROFS per RFC 1813). The per-user ceiling
+// ctx.ShareReadOnly is deliberately excluded: it also goes true for a per-user
+// "read" permission level on a writable share (e.g. a squashed/unknown uid given
+// the share's default "read" permission — see the NFS share-permission
+// resolver), and such a denial is an ordinary permission denial (EACCES), not a
+// read-only filesystem.
+func (s *Service) shareIsReadOnly(ctx *AuthContext, handle FileHandle) bool {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return false
@@ -586,16 +601,22 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 	}
 
 	shareOpts, _ := store.GetShareOptions(ctx.Context, file.ShareName)
+	storeReadOnly := shareOpts != nil && shareOpts.ReadOnly
 
-	// Read-only beats any ACL grant — both the per-user share permission
+	// Read-only beats any ALLOW DACL — both the per-user share permission
 	// (ctx.ShareReadOnly) and the store-level share option. Without the
 	// ctx.ShareReadOnly arm a read-only user could create entries under an
-	// ALLOW-granting parent DACL on an otherwise read-write share. #1276.
-	if ctx.ShareReadOnly || (shareOpts != nil && shareOpts.ReadOnly) {
-		// Read-only denial → ErrReadOnly so NFSv3 returns NFS3ERR_ROFS
-		// (EROFS) per RFC 1813. SMB renders it as STATUS_ACCESS_DENIED,
-		// identical to the prior ErrAccessDenied.
-		return &StoreError{Code: ErrReadOnly, Message: "read-only share"}
+	// ALLOW-granting parent DACL on an otherwise read-write share (#1276).
+	// A genuinely read-only share/export → ErrReadOnly so NFSv3 returns
+	// NFS3ERR_ROFS (EROFS) per RFC 1813; a per-user read-only permission level
+	// on a writable share (e.g. a squashed/unknown uid given the share's
+	// default "read" permission) is an ordinary permission denial →
+	// ErrAccessDenied (NFS3ERR_ACCES). SMB renders both as STATUS_ACCESS_DENIED.
+	if ctx.ShareReadOnly || storeReadOnly {
+		if storeReadOnly {
+			return &StoreError{Code: ErrReadOnly, Message: "read-only share"}
+		}
+		return &StoreError{Code: ErrAccessDenied, Message: "write permission denied"}
 	}
 
 	// CREATE has no open handle yet, so the handle-based write authorization
