@@ -111,11 +111,13 @@ type RemoteBlockStore interface {
 
 	// GetBlockRange returns [offset, offset+length) bytes of the block
 	// object identified by blockID. Bounds semantics mirror
-	// block.Store.GetRange: ErrInvalidOffset for a negative or past-EOF
-	// offset, ErrInvalidSize for a non-positive length; past-EOF length
-	// is clamped to the object's remaining bytes on backends that support
-	// it (S3 partial-content). Returns block.ErrChunkNotFound when the
-	// block is absent.
+	// block.Store.GetRange: ErrInvalidOffset for a negative offset; a
+	// past-EOF offset cannot be detected here without a HEAD, so
+	// backends surface a native error (S3: 416) instead — the contract
+	// only guarantees some error for offset >= EOF. ErrInvalidSize for a
+	// non-positive length; past-EOF length is clamped to the object's
+	// remaining bytes on backends that support it (S3 partial-content).
+	// Returns block.ErrChunkNotFound when the block is absent.
 	GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error)
 
 	// DeleteBlock removes the block object keyed by blockID. Idempotent:

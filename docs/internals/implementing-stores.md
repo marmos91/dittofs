@@ -10,10 +10,11 @@ This guide provides comprehensive instructions for implementing custom metadata 
 4. [Implementing Metadata Stores](#implementing-metadata-stores)
 5. [Implementing a Local Store](#implementing-a-local-store)
 6. [Implementing a Remote Store](#implementing-a-remote-store)
-7. [Best Practices](#best-practices)
-8. [Testing Your Implementation](#testing-your-implementation)
-9. [Common Pitfalls](#common-pitfalls)
-10. [Integration with DittoFS](#integration-with-dittofs)
+7. [Implementing a Remote Block Store (block-keyed)](#implementing-a-remote-block-store-block-keyed)
+8. [Best Practices](#best-practices)
+9. [Testing Your Implementation](#testing-your-implementation)
+10. [Common Pitfalls](#common-pitfalls)
+11. [Integration with DittoFS](#integration-with-dittofs)
 
 ## Overview
 
@@ -695,6 +696,111 @@ The dedicated `ReadBlockVerified` path on `RemoteStore` (round-trip succeeds;
 body-mismatch returns `block.ErrCASContentMismatch`; corrupt bytes never
 surface upstream) is exercised separately — see `pkg/block/remote/s3` for the
 verification tests.
+
+## Implementing a Remote Block Store (block-keyed)
+
+The `pkg/block/remote.RemoteBlockStore` interface is the **block-keyed** (non-CAS) remote store surface introduced by the blocks-only storage redesign (epic [#1493](https://github.com/marmos91/dittofs/issues/1493)). Block objects live under the `blocks/` prefix, separate from the legacy CAS `cas/` namespace — the two namespaces never collide.
+
+> **Legacy path (being retired):** The per-chunk CAS object path (`cas/<hash>`, hash-keyed `Put`/`Get`/`GetRange` on `RemoteStore`) is being retired in favour of blocks-only storage as part of epic #1493. New remote backends should implement `RemoteBlockStore`. The legacy `RemoteStore` CAS surface will be removed in a later PR of the same epic.
+
+### The RemoteBlockStore Interface
+
+```go
+type RemoteBlockStore interface {
+    PutBlock(ctx context.Context, blockID string, r io.Reader) error
+    GetBlock(ctx context.Context, blockID string) ([]byte, error)
+    GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error)
+    DeleteBlock(ctx context.Context, blockID string) error
+    WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error
+}
+```
+
+See `pkg/block/remote/remote.go` for the authoritative definition and per-method docstrings. Current implementations: `pkg/block/remote/s3/` and `pkg/block/remote/memory/`.
+
+#### Key shape
+
+Objects are keyed by an opaque `blockID` string. The on-disk/on-wire key is `block.FormatBlockKey(blockID)` = `"blocks/<blockID>"`. Backends derive this key internally; callers and the engine never construct raw S3/object-store keys.
+
+#### PutBlock
+
+Writes the content of `r` under `blocks/<blockID>`. Implementations **must** stream `r` without buffering the full body — callers may supply an unbounded reader (e.g., an in-progress packing file). The call is idempotent: a second `PutBlock` for the same `blockID` overwrites silently.
+
+#### GetBlock
+
+Returns the full bytes of the named block object. Returns `block.ErrChunkNotFound` when the block is absent. The returned slice must be freshly allocated and must not alias internal storage.
+
+#### GetBlockRange
+
+Returns `[offset, offset+length)` bytes of the block object. Bounds validation:
+
+- **Negative offset** — must return `block.ErrInvalidOffset` (client-validated before any network call).
+- **Past-EOF offset** — a past-EOF offset cannot be detected here without a `HEAD`, so backends surface a native error (S3: HTTP 416) rather than `ErrInvalidOffset`. The contract only requires _some_ error for `offset >= EOF`.
+- **Non-positive length** — must return `block.ErrInvalidSize`.
+- **Past-EOF length** — clamped to the object's remaining bytes on backends that support partial-content (S3 `Range` header); no error.
+- **Absent blockID** — must return `block.ErrChunkNotFound`.
+
+#### DeleteBlock
+
+Removes the block object. Idempotent: deleting an absent `blockID` must return `nil`.
+
+#### WalkBlocks
+
+Enumerates every block object under the `blocks/` prefix. The callback receives the `blockID` (with the `blocks/` prefix stripped) and a `block.Meta` (size, last-modified timestamp). Ordering is unspecified.
+
+- Returning `block.ErrStopWalk` from the callback is a clean early exit — `WalkBlocks` returns `nil`.
+- Any other callback error halts enumeration and is returned wrapped as `"walk halted at <blockID>: %w"`.
+- Context cancellation aborts immediately.
+
+### Block codec wire format
+
+Block objects are written by `pkg/block/blockcodec`. A single block packs one or more chunk records into a continuous byte stream:
+
+```
+Block = [ preamble ][ record_0 ][ record_1 ] … [ record_{N-1} ]
+
+preamble:
+  magic      [4]byte = {'D','F','B','1'}   // "DFB1" — identifies a DittoFS block object
+  flags      uint8                          // bit0 = 1 → record headers are AEAD-sealed
+  blockID    uvarint(len) + len bytes (UTF-8)
+
+record (plaintext, flags bit0 = 0):
+  hash       [32]byte                       // chunk BLAKE3 content hash
+  wireLen    uvarint
+  wire       [wireLen]byte                  // enc(comp(chunk)) — already-transformed body
+
+record (sealed, flags bit0 = 1):
+  sealedHdrLen  uvarint
+  sealedHdr     [sealedHdrLen]byte          // AEAD seal of {hash[32], wireLen uvarint}
+                                            // AAD = blockID || recordIndex(uvarint)
+  wire          [wireLen]byte               // wireLen recovered by opening sealedHdr
+```
+
+**Sealed-header framing** is used on encrypted shares. The AEAD tag covers `hash + wireLen` with `blockID||recordIndex` as additional authenticated data, while the `wire` body is already the encrypted chunk body (the encryption decorator applies its transform before `Builder.Add` is called). The chunk metadata is therefore authenticated even though the wire body is opaque.
+
+**Locators.** Each call to `Builder.Add(hash, wire)` returns a `block.ChunkLocator{BlockID, WireOffset, WireLength}` — the byte range of the wire body within the block object. `WireOffset` and `WireLength` are over wire bytes (after the per-record header), not plaintext bytes. The engine stores these locators in the metadata store and recovers an individual chunk via `GetBlockRange(blockID, WireOffset, WireLength)` (surfaced through the optional `ChunkReader.ReadChunk` extension on the same backend).
+
+### Conformance suite
+
+Every new `RemoteBlockStore` backend must pass `blockstoretest.RemoteBlockStoreConformance`:
+
+```go
+package myremote_test
+
+import (
+    "testing"
+    "github.com/marmos91/dittofs/pkg/block/blockstoretest"
+)
+
+func TestMyRemoteBlockStore(t *testing.T) {
+    factory := func(t *testing.T) (blockstoretest.RemoteBlockStore, func()) {
+        store, cleanup := createTestStore(t)
+        return store, cleanup
+    }
+    blockstoretest.RemoteBlockStoreConformance(t, factory)
+}
+```
+
+The suite covers: `PutBlock`/`GetBlock` round-trip, no-aliasing, `GetBlockRange` mid-range/past-EOF-clamped/invalid-offset/invalid-size/absent, `DeleteBlock` durability and idempotency, `WalkBlocks` enumeration and `ErrStopWalk`, idempotent `PutBlock`, zero-byte blocks, and concurrent same-ID `PutBlock`.
 
 ## Best Practices
 
