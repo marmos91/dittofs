@@ -769,8 +769,10 @@ func (s *Store) GetBlock(ctx context.Context, blockID string) ([]byte, error) {
 
 // GetBlockRange returns [offset, offset+length) bytes of the block object
 // identified by blockID via an S3 ranged GET. Bounds semantics mirror
-// GetRange: ErrInvalidOffset for negative/past-EOF offset, ErrInvalidSize for
-// non-positive length; past-EOF length is clamped by S3 (partial content).
+// GetRange: ErrInvalidOffset for a negative offset and ErrInvalidSize for
+// non-positive length. A past-EOF offset cannot be detected here without a
+// HEAD, so S3 surfaces a native error (416) instead; past-EOF length is
+// clamped by S3 (partial content).
 func (s *Store) GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error) {
 	if err := s.checkClosed(); err != nil {
 		return nil, err

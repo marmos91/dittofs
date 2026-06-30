@@ -35,7 +35,8 @@ type RemoteBlockStoreFactory func(t *testing.T) (RemoteBlockStore, func())
 //   - GetBlock_NotFound — absent blockID returns ErrChunkNotFound.
 //   - GetBlockRange_Mid — range read from the middle of a stored block.
 //   - GetBlockRange_PastEOFClamped — length past EOF is clamped without error.
-//   - GetBlockRange_InvalidOffset — negative / past-EOF offset returns ErrInvalidOffset.
+//   - GetBlockRange_InvalidOffset — negative offset returns ErrInvalidOffset (a past-EOF
+//     offset cannot be detected without a HEAD, so backends may surface a native error).
 //   - GetBlockRange_InvalidSize — zero / negative length returns ErrInvalidSize.
 //   - GetBlockRange_ZeroLength — explicit zero-length returns ErrInvalidSize.
 //   - GetBlockRange_NotFound — absent blockID returns ErrChunkNotFound.
@@ -43,7 +44,6 @@ type RemoteBlockStoreFactory func(t *testing.T) (RemoteBlockStore, func())
 //   - DeleteBlock_Idempotent — deleting an absent blockID returns nil.
 //   - WalkBlocks_EnumeratesAll — every PutBlock'd object is visited exactly once.
 //   - WalkBlocks_ErrStopWalk — ErrStopWalk halts enumeration cleanly (returns nil).
-//   - WalkBlocks_SkipsCASObjects — WalkBlocks does NOT surface blocks written by PutBlock only; see note.
 //   - PutBlock_Idempotent — second PutBlock for same ID overwrites content.
 //   - PutBlock_ZeroBody — zero-byte block is accepted; GetBlock returns empty slice.
 //   - PutBlock_Concurrent_SameID — concurrent same-ID PutBlocks produce a coherent result.

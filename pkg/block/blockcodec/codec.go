@@ -80,8 +80,9 @@ func (b *Builder) Add(hash block.ContentHash, wire []byte) (block.ChunkLocator, 
 	return b.addPlaintext(hash, wire)
 }
 
-// Finish validates the block state and returns the total number of bytes
-// written to the underlying writer.
+// Finish returns the total number of bytes written to the underlying writer.
+// Records are framed as they are added, so there is no deferred validation or
+// footer to flush here.
 func (b *Builder) Finish() (int64, error) {
 	return b.written, nil
 }
