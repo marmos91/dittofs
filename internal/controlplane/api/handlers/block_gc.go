@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -156,6 +157,14 @@ func (h *BlockStoreGCHandler) RunGC(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Reconcile {
 			BadRequest(w, "grace_period_seconds cannot be combined with reconcile")
+			return
+		}
+		// Guard the seconds→Duration multiply: without this an absurdly large
+		// value overflows int64 nanoseconds and wraps negative, which the engine
+		// then clamps to 0 (GracePeriodSet) — silently turning a "very long
+		// grace" request into the most aggressive possible reap.
+		if *req.GracePeriodSeconds > int64(math.MaxInt64/int64(time.Second)) {
+			BadRequest(w, "grace_period_seconds is too large")
 			return
 		}
 		d := time.Duration(*req.GracePeriodSeconds) * time.Second

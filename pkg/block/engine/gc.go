@@ -359,6 +359,24 @@ func CollectGarbageLocal(
 	return collectGarbage(ctx, localStore, reconciler, options, true)
 }
 
+// resolveGracePeriod returns the effective sweep grace period. An explicit
+// override (GracePeriodSet) is authoritative — including a zero grace, which a
+// negative value is clamped to. Without an override, a non-positive grace falls
+// back to the 1h default so an unconfigured sweep never reaps freshly-written
+// chunks.
+func resolveGracePeriod(options *Options) time.Duration {
+	if options.GracePeriodSet {
+		if options.GracePeriod < 0 {
+			return 0
+		}
+		return options.GracePeriod
+	}
+	if options.GracePeriod <= 0 {
+		return time.Hour
+	}
+	return options.GracePeriod
+}
+
 // collectGarbage is the shared mark-sweep kernel for both tiers. isLocal only
 // tags the resulting stats; the live-set, grace, and fail-closed semantics are
 // identical regardless of tier.
@@ -385,18 +403,8 @@ func collectGarbage(
 	rootLock := acquireGCRootLock(options.GCStateRoot)
 	defer releaseGCRootLock(options.GCStateRoot, rootLock)
 
-	// Apply defaults that the caller did not specify. An explicit override
-	// (GracePeriodSet) is authoritative — including a zero grace, which a
-	// negative value is clamped to.
-	gracePeriod := options.GracePeriod
-	switch {
-	case options.GracePeriodSet:
-		if gracePeriod < 0 {
-			gracePeriod = 0
-		}
-	case gracePeriod <= 0:
-		gracePeriod = time.Hour
-	}
+	// Apply defaults that the caller did not specify.
+	gracePeriod := resolveGracePeriod(options)
 	dryRunSample := options.DryRunSampleSize
 	if dryRunSample <= 0 {
 		dryRunSample = 1000

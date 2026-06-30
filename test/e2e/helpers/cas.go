@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -178,7 +179,7 @@ func TriggerBlockGC(t *testing.T, runner *CLIRunner, shareName string, extraArgs
 	args := append([]string{"store", "block", "gc", shareName}, extraArgs...)
 	_, err := runner.Run(args...)
 	if err != nil {
-		return fmt.Errorf("dfsctl store block gc %s: %w", shareName, err)
+		return fmt.Errorf("dfsctl %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
 }
