@@ -60,7 +60,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		ctx := context.Background()
 		h := mustHash("suite-mark-then-is-synced")
 
-		if err := s.MarkSynced(ctx, h); err != nil {
+		if err := s.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			t.Fatalf("first MarkSynced: %v", err)
 		}
 		got, err := s.IsSynced(ctx, h)
@@ -72,7 +72,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		}
 
 		// Re-applying MarkSynced is a no-op.
-		if err := s.MarkSynced(ctx, h); err != nil {
+		if err := s.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			t.Fatalf("second MarkSynced (idempotent): %v", err)
 		}
 		got, err = s.IsSynced(ctx, h)
@@ -89,7 +89,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		hA := mustHash("suite-iso-a")
 		hB := mustHash("suite-iso-b")
 
-		if err := s.MarkSynced(ctx, hA); err != nil {
+		if err := s.MarkSynced(ctx, hA, block.ChunkLocator{}); err != nil {
 			t.Fatalf("MarkSynced hA: %v", err)
 		}
 
@@ -113,10 +113,10 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		ctx := context.Background()
 		h := mustHash("suite-mark-idempotent")
 
-		if err := s.MarkSynced(ctx, h); err != nil {
+		if err := s.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			t.Fatalf("first MarkSynced: %v", err)
 		}
-		if err := s.MarkSynced(ctx, h); err != nil {
+		if err := s.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			t.Fatalf("second MarkSynced (idempotent): %v", err)
 		}
 		got, err := s.IsSynced(ctx, h)
@@ -128,11 +128,69 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		}
 	})
 
+	t.Run("GetLocatorUnsynced", func(t *testing.T) {
+		ctx := context.Background()
+		h := mustHash("suite-get-locator-unsynced")
+		loc, ok, err := s.GetLocator(ctx, h)
+		if err != nil {
+			t.Fatalf("GetLocator unsynced: %v", err)
+		}
+		if ok {
+			t.Fatalf("unsynced hash reports a locator: ok=true")
+		}
+		if loc != (block.ChunkLocator{}) {
+			t.Fatalf("unsynced hash returned non-zero locator: %+v", loc)
+		}
+	})
+
+	t.Run("StandaloneLocatorResolvesStandalone", func(t *testing.T) {
+		// A chunk marked synced with a standalone locator (the PR3a path, and
+		// the only on-disk form pre-PR3b) must resolve back as standalone —
+		// PackID=="" — so the read path falls back to the direct CAS GET. This
+		// also covers backward compatibility: a pre-locator row carries the
+		// same (no-pack) state.
+		ctx := context.Background()
+		h := mustHash("suite-standalone-locator")
+		if err := s.MarkSynced(ctx, h, block.ChunkLocator{Length: 1234}); err != nil {
+			t.Fatalf("MarkSynced standalone: %v", err)
+		}
+		loc, ok, err := s.GetLocator(ctx, h)
+		if err != nil {
+			t.Fatalf("GetLocator standalone: %v", err)
+		}
+		if !ok {
+			t.Fatalf("standalone synced hash reports ok=false")
+		}
+		if !loc.IsStandalone() {
+			t.Fatalf("standalone hash resolved to a pack: %+v", loc)
+		}
+	})
+
+	t.Run("PackLocatorRoundTrip", func(t *testing.T) {
+		// A pack locator must round-trip exactly through MarkSynced/GetLocator.
+		ctx := context.Background()
+		h := mustHash("suite-pack-locator")
+		want := block.ChunkLocator{PackID: "pack-abc123", Offset: 4096, Length: 65536}
+		if err := s.MarkSynced(ctx, h, want); err != nil {
+			t.Fatalf("MarkSynced pack: %v", err)
+		}
+		got, ok, err := s.GetLocator(ctx, h)
+		if err != nil {
+			t.Fatalf("GetLocator pack: %v", err)
+		}
+		if !ok {
+			t.Fatalf("pack-resident synced hash reports ok=false")
+		}
+		if got != want {
+			t.Fatalf("pack locator round-trip: got %+v want %+v", got, want)
+		}
+	})
+
 	t.Run("DeleteSyncedAfterMark", func(t *testing.T) {
 		ctx := context.Background()
 		h := mustHash("suite-delete-after-mark")
 
-		if err := s.MarkSynced(ctx, h); err != nil {
+		if err := s.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			t.Fatalf("MarkSynced: %v", err)
 		}
 		if err := s.DeleteSynced(ctx, h); err != nil {
@@ -170,7 +228,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 			go func() {
 				defer wg.Done()
 				if i%2 == 0 {
-					_ = s.MarkSynced(ctx, h)
+					_ = s.MarkSynced(ctx, h, block.ChunkLocator{})
 				} else {
 					_ = s.DeleteSynced(ctx, h)
 				}
@@ -213,7 +271,7 @@ func RunSyncedHashEnumeratorSuite(t *testing.T, e syncedHashEnumerating) {
 		hGone := mustHash("enum-suite-gone")
 
 		for _, h := range []block.ContentHash{hA, hB, hGone} {
-			if err := e.MarkSynced(ctx, h); err != nil {
+			if err := e.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 				t.Fatalf("MarkSynced %x: %v", h[:4], err)
 			}
 		}

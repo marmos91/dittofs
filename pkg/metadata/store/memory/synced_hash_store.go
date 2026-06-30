@@ -71,7 +71,7 @@ func (s *MemoryMetadataStore) IsSynced(ctx context.Context, hash block.ContentHa
 // would surface the most-recent re-Put time instead, which is
 // misleading when a periodic mirror loop re-checks already-synced
 // hashes.
-func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash) error {
+func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -84,7 +84,32 @@ func (s *MemoryMetadataStore) MarkSynced(ctx context.Context, hash block.Content
 		return nil
 	}
 	s.synced[hash] = time.Now()
+	// Record only pack locators; standalone chunks resolve from absence.
+	if !loc.IsStandalone() {
+		if s.syncedLocators == nil {
+			s.syncedLocators = make(map[block.ContentHash]block.ChunkLocator)
+		}
+		s.syncedLocators[hash] = loc
+	}
 	return nil
+}
+
+// GetLocator returns the recorded remote locator for hash. (zero, false, nil)
+// when unsynced; a synced standalone/legacy hash yields the zero (standalone)
+// locator with found == true.
+func (s *MemoryMetadataStore) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return block.ChunkLocator{}, false, err
+	}
+	s.syncedMu.RLock()
+	defer s.syncedMu.RUnlock()
+	if s.synced == nil {
+		return block.ChunkLocator{}, false, nil
+	}
+	if _, ok := s.synced[hash]; !ok {
+		return block.ChunkLocator{}, false, nil
+	}
+	return s.syncedLocators[hash], true, nil
 }
 
 // DeleteSynced removes the synced marker for hash. Idempotent: deleting
@@ -99,5 +124,6 @@ func (s *MemoryMetadataStore) DeleteSynced(ctx context.Context, hash block.Conte
 		return nil
 	}
 	delete(s.synced, hash)
+	delete(s.syncedLocators, hash)
 	return nil
 }

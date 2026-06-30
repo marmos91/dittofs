@@ -263,10 +263,16 @@ type MemoryMetadataStore struct {
 	// here (write-lock for Mark/Delete, read-lock for IsSynced).
 	syncedMu sync.RWMutex
 	// synced records "has this CAS hash been mirrored to remote?".
-	// Presence-of-key == synced; the time.Time value reserves capacity
-	// for future observability without a schema change. Lazily
-	// initialized on first Mark; reads treat absence as not-synced.
+	// Presence-of-key == synced; the time.Time value is the first-mirror
+	// time. Lazily initialized on first Mark; reads treat absence as
+	// not-synced.
 	synced map[block.ContentHash]time.Time
+	// syncedLocators records the remote pack locator for synced hashes that
+	// live inside a pack (#1414). Standalone chunks (ChunkLocator.PackID == "")
+	// are NOT stored here — their absence resolves to the zero (standalone)
+	// locator, mirroring the SQL backends' NULL pack columns and badger's
+	// no-suffix marker, so the common case stays free. Guarded by syncedMu.
+	syncedLocators map[block.ContentHash]block.ChunkLocator
 
 	// objectIndex maps FileAttr.ObjectID -> handle key (the same string
 	// used as the key in `files`) for the dedup short-circuit

@@ -258,7 +258,11 @@ func (m *Syncer) markFetchedSynced(ctx context.Context, h block.ContentHash) {
 	hashStore := m.syncedHashStore
 	m.mu.RUnlock()
 	if hashStore != nil {
-		if err := hashStore.MarkSynced(ctx, h); err != nil {
+		// Fetched bytes came verbatim from the chunk's own standalone CAS
+		// object, so record a standalone locator (PackID==""). PR3b note: a
+		// chunk fetched out of a pack is re-stored locally and, when later
+		// re-mirrored, re-packed — markFetchedSynced still records standalone.
+		if err := hashStore.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 			// Non-fatal: leave the chunk pending so the mirror loop re-uploads
 			// and marks it synced on the next tick (remote.Put is idempotent).
 			logger.Warn("markFetchedSynced: MarkSynced failed; chunk will be re-mirrored",
@@ -728,7 +732,10 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 	// Count delivered bytes for the adaptive controller's goodput sample. The
 	// bytes are on the wire regardless of MarkSynced, so charge them here.
 	m.uploadedBytesWindow.Add(int64(len(data)))
-	if err := hashStore.MarkSynced(ctx, hash); err != nil {
+	// PR3a: every chunk is still a standalone CAS object, so record a standalone
+	// locator (PackID=="" → persisted in the legacy form). PR3b's packer will
+	// record pack locators here instead.
+	if err := hashStore.MarkSynced(ctx, hash, block.ChunkLocator{Length: int64(len(data))}); err != nil {
 		m.failedSyncs.Add(1)
 		return fmt.Errorf("mark synced %s: %w", hash, err)
 	}
