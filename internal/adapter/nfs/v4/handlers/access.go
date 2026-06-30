@@ -13,7 +13,8 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// NFSv4 ACCESS bit constants per RFC 7530 Section 6.
+// NFSv4 ACCESS bit constants per RFC 7530 Section 6, plus the RFC 8276
+// extended-attribute bits added in NFSv4.2.
 const (
 	ACCESS4_READ    = 0x01
 	ACCESS4_LOOKUP  = 0x02
@@ -21,6 +22,16 @@ const (
 	ACCESS4_EXTEND  = 0x08
 	ACCESS4_DELETE  = 0x10
 	ACCESS4_EXECUTE = 0x20
+
+	// Extended-attribute access bits (RFC 8276 Section 5.3). The Linux NFSv4.2
+	// client probes these with an ACCESS call before issuing SETXATTR / GETXATTR
+	// / LISTXATTR; if the server does not report the relevant bit as both
+	// supported and granted, the client denies the op client-side with EACCES and
+	// never sends it on the wire. XAREAD/XALIST map to read permission, XAWRITE to
+	// write permission.
+	ACCESS4_XAREAD  = 0x40  // read a named (extended) attribute
+	ACCESS4_XAWRITE = 0x80  // create, modify, or remove a named attribute
+	ACCESS4_XALIST  = 0x100 // list named attributes
 )
 
 // handleAccess implements the ACCESS operation (RFC 7530 Section 16.1).
@@ -53,8 +64,8 @@ func (h *Handler) handleAccess(ctx *types.CompoundContext, reader io.Reader) *ty
 		// Pseudo-fs directories are always accessible: grant all requested bits
 		var buf bytes.Buffer
 		_ = xdr.WriteUint32(&buf, types.NFS4_OK)
-		_ = xdr.WriteUint32(&buf, ACCESS4_READ|ACCESS4_LOOKUP|ACCESS4_MODIFY|ACCESS4_EXTEND|ACCESS4_DELETE|ACCESS4_EXECUTE) // supported
-		_ = xdr.WriteUint32(&buf, accessReq)                                                                                // access granted
+		_ = xdr.WriteUint32(&buf, ACCESS4_READ|ACCESS4_LOOKUP|ACCESS4_MODIFY|ACCESS4_EXTEND|ACCESS4_DELETE|ACCESS4_EXECUTE|ACCESS4_XAREAD|ACCESS4_XAWRITE|ACCESS4_XALIST) // supported
+		_ = xdr.WriteUint32(&buf, accessReq)                                                                                                                              // access granted
 
 		return &types.CompoundResult{
 			Status: types.NFS4_OK,
@@ -130,9 +141,11 @@ func (h *Handler) accessRealFS(ctx *types.CompoundContext, accessReq uint32) *ty
 	// the requested ACCESS4 bits.
 	granted := permissionsToNFSAccess(grantedPerms, file.Type) & accessReq
 
-	// Report all ACCESS4 bits the server can evaluate
+	// Report all ACCESS4 bits the server can evaluate, including the RFC 8276
+	// extended-attribute bits so the NFSv4.2 client will issue xattr operations.
 	supported := uint32(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY |
-		ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE)
+		ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE |
+		ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST)
 
 	// Debug log the access check result
 	var uid, gid uint32
@@ -193,6 +206,10 @@ func nfsAccessToPermissions(accessReq uint32, fileType metadata.FileType) metada
 		if accessReq&(ACCESS4_MODIFY|ACCESS4_EXTEND) != 0 {
 			perms |= metadata.PermissionWrite
 		}
+		// Reading or listing named attributes needs list access on the directory.
+		if accessReq&(ACCESS4_XAREAD|ACCESS4_XALIST) != 0 {
+			perms |= metadata.PermissionListDirectory
+		}
 	} else {
 		if accessReq&ACCESS4_READ != 0 {
 			perms |= metadata.PermissionRead
@@ -203,6 +220,16 @@ func nfsAccessToPermissions(accessReq uint32, fileType metadata.FileType) metada
 		if accessReq&ACCESS4_EXECUTE != 0 {
 			perms |= metadata.PermissionExecute
 		}
+		// Reading or listing named attributes needs read access on the file.
+		if accessReq&(ACCESS4_XAREAD|ACCESS4_XALIST) != 0 {
+			perms |= metadata.PermissionRead
+		}
+	}
+
+	// Writing (creating/modifying/removing) a named attribute needs write access
+	// on the object, for both files and directories.
+	if accessReq&ACCESS4_XAWRITE != 0 {
+		perms |= metadata.PermissionWrite
 	}
 
 	if accessReq&ACCESS4_DELETE != 0 {
@@ -227,9 +254,13 @@ func permissionsToNFSAccess(perms metadata.Permission, fileType metadata.FileTyp
 		if perms&metadata.PermissionWrite != 0 {
 			accessRes |= ACCESS4_MODIFY | ACCESS4_EXTEND
 		}
+		// List access on a directory grants reading/listing its named attributes.
+		if perms&metadata.PermissionListDirectory != 0 {
+			accessRes |= ACCESS4_XAREAD | ACCESS4_XALIST
+		}
 	} else {
 		if perms&metadata.PermissionRead != 0 {
-			accessRes |= ACCESS4_READ
+			accessRes |= ACCESS4_READ | ACCESS4_XAREAD | ACCESS4_XALIST
 		}
 		if perms&metadata.PermissionWrite != 0 {
 			accessRes |= ACCESS4_MODIFY | ACCESS4_EXTEND
@@ -237,6 +268,11 @@ func permissionsToNFSAccess(perms metadata.Permission, fileType metadata.FileTyp
 		if perms&metadata.PermissionExecute != 0 {
 			accessRes |= ACCESS4_EXECUTE
 		}
+	}
+
+	// Write access grants creating/modifying/removing named attributes.
+	if perms&metadata.PermissionWrite != 0 {
+		accessRes |= ACCESS4_XAWRITE
 	}
 
 	if perms&metadata.PermissionDelete != 0 {

@@ -42,13 +42,16 @@ func TestCrossProtocolXattrParity(t *testing.T) {
 		helpers.WithShareDefaultPermission("read-write"))
 	require.NoError(t, err, "create share")
 
-	// SMB needs an authenticated user; NFS uses AUTH_UNIX.
-	smbUser := helpers.UniqueTestName("xpxuser")
-	const smbPass = "testpass123"
-	_, err = cli.CreateUser(smbUser, smbPass)
-	require.NoError(t, err, "create SMB user")
-	require.NoError(t, cli.GrantUserPermission(shareName, smbUser, "read-write"),
-		"grant SMB user permission")
+	// Map NFS root to UID 0 (no_root_squash) and authenticate SMB as the built-in
+	// admin (also UID 0) so both protocols act under one privileged identity.
+	// Cross-protocol *updates* require it: a file created over one protocol must be
+	// writable over the other, but default 0644 modes only grant write to the
+	// owner. Under the squash default (root_to_guest) an NFS-created file is owned
+	// by an anonymous user a distinct SMB user could not write — and vice versa.
+	_, err = cli.Run("share", "nfs-config", "set", shareName, "--squash", "root_to_admin")
+	require.NoError(t, err, "set no_root_squash on the share")
+	smbUser := "admin"
+	smbPass := helpers.GetAdminPassword()
 
 	nfsPort := helpers.FindFreePort(t)
 	smbPort := helpers.FindFreePort(t)

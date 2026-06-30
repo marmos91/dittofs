@@ -654,7 +654,8 @@ func TestAccess_RealFS_RootGetsAll(t *testing.T) {
 	copy(ctx.CurrentFH, fileHandle)
 
 	allBits := uint32(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY |
-		ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE)
+		ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE |
+		ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST)
 
 	result := fx.handler.accessRealFS(ctx, allBits)
 
