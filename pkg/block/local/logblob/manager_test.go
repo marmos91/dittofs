@@ -1279,6 +1279,77 @@ func TestRecoverSealedOverrunRejected(t *testing.T) {
 	}
 }
 
+// TestReadAtZeroLengthAfterClose verifies that a zero-length ReadAt on a
+// closed Manager returns ErrClosed rather than silently succeeding.
+func TestReadAtZeroLengthAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := m.Append(ctx, []byte("data")); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	loc := block.LocalChunkLocation{LogBlobID: "0000000000000000", RawOffset: 0, RawLength: 0}
+	_, readErr := m.ReadAt(ctx, loc, nil)
+	if !errors.Is(readErr, logblob.ErrClosed) {
+		t.Errorf("ReadAt(zero-length) on closed Manager: got %v, want ErrClosed", readErr)
+	}
+}
+
+// TestEvictBlobRemoveFailure verifies that EvictBlob correctly handles a
+// failed os.Remove: the blob is permanently marked evicted (ReadAt → ErrEvicted)
+// and the error is returned to the caller so it knows the file is an orphan.
+func TestEvictBlobRemoveFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: cannot revoke directory write permission")
+	}
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 64})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	ctx := context.Background()
+	loc0, err := m.Append(ctx, bytes.Repeat([]byte("F"), 70))
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	blob0 := loc0.LogBlobID
+	if _, err := m.Append(ctx, []byte("seal")); err != nil {
+		t.Fatalf("Append(seal): %v", err)
+	}
+
+	// Make the directory read-only so os.Remove cannot delete the blob file.
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	defer func() {
+		// Restore permissions so t.TempDir() cleanup succeeds.
+		_ = os.Chmod(dir, 0o755)
+		_ = m.Close()
+	}()
+
+	// EvictBlob must return an error because the unlink fails.
+	evictErr := m.EvictBlob(ctx, blob0, func(string) bool { return true })
+	if evictErr == nil {
+		t.Fatal("EvictBlob: expected error when os.Remove fails, got nil")
+	}
+
+	// Despite the unlink failure, the blob must be permanently evicted so
+	// ReadAt returns ErrEvicted — not stale bytes from the still-present file.
+	dst := make([]byte, loc0.RawLength)
+	_, readErr := m.ReadAt(ctx, loc0, dst)
+	if !errors.Is(readErr, logblob.ErrEvicted) {
+		t.Errorf("ReadAt after failed eviction: got %v, want ErrEvicted", readErr)
+	}
+}
+
 // TestLogBlobConformance runs the logblob conformance suite.
 func TestLogBlobConformance(t *testing.T) {
 	blockstoretest.LogBlobConformance(t, func(t *testing.T) (*logblob.Manager, string, func()) {

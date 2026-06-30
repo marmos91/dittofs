@@ -224,6 +224,14 @@ func (m *Manager) ReadAt(ctx context.Context, loc block.LocalChunkLocation, dst 
 		return 0, ctx.Err()
 	}
 	if loc.RawLength == 0 {
+		// Check closed even for zero-length reads: after Close all operations
+		// must return ErrClosed, not silently succeed.
+		m.mu.Lock()
+		closed := m.closed
+		m.mu.Unlock()
+		if closed {
+			return 0, ErrClosed
+		}
 		return 0, nil
 	}
 	if int64(len(dst)) < loc.RawLength {
@@ -384,7 +392,14 @@ func (m *Manager) EvictBlob(ctx context.Context, logBlobID string, synced func(s
 		_ = fd.Close()
 	}
 
-	// Remove the file; ignore ErrNotExist so repeated calls are safe.
+	// Remove the file from disk.  ErrNotExist is silenced for idempotency.
+	//
+	// If os.Remove fails for any other reason the blob is still permanently
+	// evicted: m.evictedBlobs was updated above and the cached fd is already
+	// closed, so subsequent ReadAt calls correctly return ErrEvicted.  We
+	// return the error so the caller knows the on-disk file was not reclaimed;
+	// it becomes an orphan that a startup scan can clean up.  Eviction is a
+	// one-way transition — we never reverse it even when the unlink fails.
 	path := filepath.Join(m.dir, logBlobID+blobSuffix)
 	if err := os.Remove(path); err != nil && !errors.Is(err, iofs.ErrNotExist) {
 		return fmt.Errorf("logblob: remove blob %q: %w", path, err)
