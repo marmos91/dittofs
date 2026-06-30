@@ -679,12 +679,21 @@ func (tx *memoryTransaction) CreateShare(ctx context.Context, share *metadata.Sh
 		return err
 	}
 
-	if _, exists := tx.store.shares[share.Name]; exists {
-		return &metadata.StoreError{
-			Code:    metadata.ErrAlreadyExists,
-			Message: "share already exists",
-			Path:    share.Name,
+	if existing, exists := tx.store.shares[share.Name]; exists {
+		// Finish a seeded entry (from CreateRootDirectory) rather than rejecting
+		// it; a non-seeded entry is a genuine duplicate. See store-level CreateShare.
+		if !existing.seeded {
+			return &metadata.StoreError{
+				Code:    metadata.ErrAlreadyExists,
+				Message: "share already exists",
+				Path:    share.Name,
+			}
 		}
+		tx.store.shares[share.Name] = &shareData{
+			Share:      *share,
+			RootHandle: existing.RootHandle,
+		}
+		return nil
 	}
 
 	rootHandle := tx.store.generateFileHandle(share.Name, "/")
@@ -783,9 +792,25 @@ func (tx *memoryTransaction) CreateRootDirectory(ctx context.Context, shareName 
 		}
 	}
 
-	// Generate deterministic handle for root directory based on share name
-	rootHandle := tx.store.generateFileHandle(shareName, "/")
+	// Reuse the share's pre-assigned RootHandle if present (see the store-level
+	// CreateRootDirectory), otherwise generate a fresh one.
+	var rootHandle metadata.FileHandle
+	if sd, ok := tx.store.shares[shareName]; ok && len(sd.RootHandle) > 0 {
+		rootHandle = sd.RootHandle
+	} else {
+		rootHandle = tx.store.generateFileHandle(shareName, "/")
+	}
 	key := handleToKey(rootHandle)
+
+	// Seed the share registry so the share resolves by name (see store-level
+	// CreateRootDirectory). Idempotent.
+	if _, ok := tx.store.shares[shareName]; !ok {
+		tx.store.shares[shareName] = &shareData{
+			Share:      metadata.Share{Name: shareName},
+			RootHandle: rootHandle,
+			seeded:     true,
+		}
+	}
 
 	// Check if root already exists - if so, just return success (idempotent)
 	if existingData, exists := tx.store.files[key]; exists {

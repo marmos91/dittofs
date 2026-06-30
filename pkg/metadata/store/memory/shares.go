@@ -89,12 +89,23 @@ func (store *MemoryMetadataStore) CreateShare(ctx context.Context, share *metada
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	if _, exists := store.shares[share.Name]; exists {
-		return &metadata.StoreError{
-			Code:    metadata.ErrAlreadyExists,
-			Message: "share already exists",
-			Path:    share.Name,
+	if existing, exists := store.shares[share.Name]; exists {
+		// A seeded entry (from CreateRootDirectory) is not a "real" share yet —
+		// finish it by recording the caller's options while keeping the root
+		// handle that the already-materialized root inode is keyed under. A
+		// non-seeded entry is a genuine duplicate.
+		if !existing.seeded {
+			return &metadata.StoreError{
+				Code:    metadata.ErrAlreadyExists,
+				Message: "share already exists",
+				Path:    share.Name,
+			}
 		}
+		store.shares[share.Name] = &shareData{
+			Share:      *share,
+			RootHandle: existing.RootHandle,
+		}
+		return nil
 	}
 
 	// Generate root handle
@@ -216,6 +227,19 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 		rootHandle = store.generateFileHandle(shareName, "/")
 	}
 	key := handleToKey(rootHandle)
+
+	// Seed the share registry so the share can be resolved by name. The runtime
+	// initialises a share's metadata via CreateRootDirectory (not CreateShare),
+	// so without this GetRootHandle/GetShareOptions return "share not found" for
+	// runtime shares. Idempotent: an existing entry (seeded or from CreateShare)
+	// is left untouched.
+	if _, ok := store.shares[shareName]; !ok {
+		store.shares[shareName] = &shareData{
+			Share:      metadata.Share{Name: shareName},
+			RootHandle: rootHandle,
+			seeded:     true,
+		}
+	}
 
 	// Check if root already exists - if so, just return success (idempotent)
 	if existingData, exists := store.files[key]; exists {
