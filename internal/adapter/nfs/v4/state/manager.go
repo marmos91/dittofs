@@ -1724,24 +1724,27 @@ func (sm *StateManager) RenewLease(clientID uint64) error {
 // Lock Manager Integration
 // ============================================================================
 
-// SetLockManager sets the unified lock manager for byte-range conflict detection.
-// Called by the NFS adapter after construction to inject the lock manager.
+// SetLockManager sets the static unified lock manager for byte-range conflict
+// detection. Init-only: must be called during construction, before any goroutine
+// serves requests, so lock-free reads in lockManagerFor are safe. Primarily used
+// by tests; production uses SetLockManagerResolver.
 func (sm *StateManager) SetLockManager(lm lock.LockManager) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	sm.lockManager = lm
 }
 
 // SetLockManagerResolver injects a function that resolves the per-share unified
-// lock manager for a file handle. Called by the NFS adapter after construction.
+// lock manager for a file handle. Called by the NFS adapter during construction.
 //
 // Lock managers are per-share, but the NFSv4 StateManager is global. The
 // resolver lets each lock operation reach the same manager instance that SMB
 // and NLM use for the same file, which is what enables cross-protocol byte-range
 // lock conflict detection.
+//
+// Init-only: must be called before any goroutine serves requests. It is set once
+// at startup and never reassigned, so lockManagerFor reads it without a lock. Do
+// not call this after the adapter begins serving — there is no synchronization
+// against concurrent readers.
 func (sm *StateManager) SetLockManagerResolver(resolver func(handle []byte) lock.LockManager) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
 	sm.lockManagerResolver = resolver
 }
 
@@ -1749,9 +1752,10 @@ func (sm *StateManager) SetLockManagerResolver(resolver func(handle []byte) lock
 // per-handle resolver (production: per-share managers) takes precedence; the
 // statically-set lockManager is the fallback (used by tests). May return nil.
 //
-// Lock-free by design: the resolver and lockManager are set once during adapter
-// startup (before any request is served), so reads need no synchronization. This
-// also lets callers that already hold sm.mu use it without deadlocking.
+// Lock-free by design: the resolver and lockManager are init-only (set once
+// before any request is served — see SetLockManagerResolver), so reads need no
+// synchronization. This also lets callers that already hold sm.mu use it without
+// deadlocking.
 func (sm *StateManager) lockManagerFor(handle []byte) lock.LockManager {
 	if sm.lockManagerResolver != nil {
 		return sm.lockManagerResolver(handle)

@@ -524,7 +524,13 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	if metaSvc := rt.GetMetadataService(); metaSvc != nil {
 		v4StateManager.SetLockManagerResolver(func(handle []byte) lock.LockManager {
 			lm, err := metaSvc.GetLockManagerForHandle(metadata.FileHandle(handle))
-			if err != nil || lm == nil {
+			if err != nil {
+				// Stale/malformed handle, removed share, etc. Locking degrades to
+				// "no manager" for this op; log so operators can correlate.
+				logger.Debug("NFSv4 lock-manager resolution failed", "error", err)
+				return nil
+			}
+			if lm == nil {
 				return nil
 			}
 			return lm
