@@ -521,6 +521,15 @@ func (m *Manager) rotateLocked() error {
 	oldID := m.activeID
 	oldFD := m.activeFD
 
+	// Fsync the blob before sealing it: once rotated it is immutable and never
+	// becomes the active blob again, while Sync only fsyncs the active blob. A
+	// caller that flushes at commit boundaries must not silently lose bytes that
+	// a size-cap rotation sealed between commits, so make rotation a durability
+	// boundary here.
+	if err := oldFD.Sync(); err != nil {
+		return fmt.Errorf("fsync blob %q before seal: %w", oldID, err)
+	}
+
 	m.sealedMu.Lock()
 	m.sealedFDs[oldID] = oldFD
 	m.sealedMu.Unlock()

@@ -420,7 +420,13 @@ LocalChunkLocation{LogBlobID, RawOffset, RawLength}
     │
     ├─▶ metadata.LocalChunkIndex.PutLocalLocation  ─┐
     └─▶ metadata.BlockRecordStore.PutBlockRecord   ─┴─ single transaction
-            via metadata.DefaultCommitBlock            (one fsync per block)
+            via metadata.DefaultCommitBlock            (one fsync per block —
+                                                        the local durable commit)
+            then, after that transaction commits:
+    └─▶ metadata.SyncedHashStore.MarkSynced (per chunk, remote locator)
+            runs as a separate idempotent post-commit phase — SyncedHashStore is
+            on Store but not Transaction, so remote locators are written outside
+            the block transaction and re-driven safely on retry.
 
 Read path:
     ContentHash
