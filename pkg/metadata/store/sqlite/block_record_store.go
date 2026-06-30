@@ -265,29 +265,25 @@ func (tx *sqliteTransaction) DecrLiveChunkCount(ctx context.Context, blockID str
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	// Verify the record exists first so we can return a meaningful error on miss.
-	var current int64
+	// Single atomic statement: MAX(0, ...) floors the count at zero in SQL,
+	// avoiding a separate client-side SELECT and preventing lost updates when
+	// multiple deferred transactions decrement the same row concurrently.
+	// RETURNING live_chunk_count gives the post-update value without a second
+	// round-trip.  ErrNoRows means the block does not exist.
+	var remaining int64
 	err := tx.tx.QueryRow(ctx,
-		`SELECT live_chunk_count FROM block_records WHERE block_id = ?1`,
-		blockID).Scan(&current)
+		`UPDATE block_records
+		 SET live_chunk_count = MAX(0, live_chunk_count - ?1)
+		 WHERE block_id = ?2
+		 RETURNING live_chunk_count`,
+		int64(delta), blockID).Scan(&remaining)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("sqlite block_records decr: block %q not found", blockID)
 	}
 	if err != nil {
-		return 0, fmt.Errorf("sqlite block_records decr read: %w", err)
+		return 0, fmt.Errorf("sqlite block_records decr: %w", err)
 	}
-
-	d := int64(delta)
-	newCount := current - d
-	if newCount < 0 {
-		newCount = 0
-	}
-	if _, err := tx.tx.Exec(ctx,
-		`UPDATE block_records SET live_chunk_count = ?1 WHERE block_id = ?2`,
-		newCount, blockID); err != nil {
-		return 0, fmt.Errorf("sqlite block_records decr update: %w", err)
-	}
-	return uint32(newCount), nil
+	return uint32(remaining), nil
 }
 
 // ============================================================================
@@ -362,6 +358,9 @@ func scanBlockRecord(row scanRow) (block.BlockRecord, bool, error) {
 	if err != nil {
 		return block.BlockRecord{}, false, err
 	}
+	if len(hashRaw) != len(block.ContentHash{}) {
+		return block.BlockRecord{}, false, fmt.Errorf("sqlite scanBlockRecord: malformed block_hash length %d", len(hashRaw))
+	}
 	var h block.ContentHash
 	copy(h[:], hashRaw)
 	return block.BlockRecord{
@@ -386,6 +385,9 @@ func scanBlockRecordRow(rows scanRows) (block.BlockRecord, bool, error) {
 	)
 	if err := rows.Scan(&blockID, &hashRaw, &length, &liveCount, &syncState); err != nil {
 		return block.BlockRecord{}, false, err
+	}
+	if len(hashRaw) != len(block.ContentHash{}) {
+		return block.BlockRecord{}, false, fmt.Errorf("sqlite scanBlockRecordRow: malformed block_hash length %d", len(hashRaw))
 	}
 	var h block.ContentHash
 	copy(h[:], hashRaw)
