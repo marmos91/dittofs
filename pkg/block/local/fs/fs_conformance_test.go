@@ -24,6 +24,7 @@ func newFSStoreForConformance(t *testing.T) *fs.FSStore {
 		RollupWorkers:   2,
 		StabilizationMS: 50,
 		RollupStore:     rs,
+		LocalChunkIndex: rs,
 	})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)

@@ -53,6 +53,14 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h block.ContentHash, data []b
 		return nil
 	}
 
+	// Log-blob path: when an index is wired, append the chunk bytes to the
+	// log-blob substrate and record the location in the index instead of
+	// writing a per-chunk cas/<hash> file. Legacy CAS writer below is the
+	// fallback for index-less fixtures (quarantined, not deleted).
+	if bc.logBlob != nil && bc.localChunkIndex != nil {
+		return bc.storeChunkLogBlob(ctx, h, data)
+	}
+
 	path := bc.chunkPath(h)
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("chunkstore: mkdir: %w", err)
@@ -127,14 +135,65 @@ func (bc *FSStore) StoreChunk(ctx context.Context, h block.ContentHash, data []b
 	return nil
 }
 
+// storeChunkLogBlob appends data to the log-blob substrate and records the
+// resulting location in the local chunk index. The idempotency / existence
+// check already ran in StoreChunk, so this only handles a fresh chunk.
+//
+// A zero-length chunk is NOT appended (the substrate rejects empty payloads);
+// instead a zero-RawLength location is recorded, which ReadChunk reconstructs
+// as an empty slice. Per-chunk eviction does not apply on this path — the LRU
+// tracks only cas/<hash> files; blob-level eviction is handled separately.
+func (bc *FSStore) storeChunkLogBlob(ctx context.Context, h block.ContentHash, data []byte) error {
+	var loc block.LocalChunkLocation
+	if len(data) > 0 {
+		var err error
+		loc, err = bc.logBlob.Append(ctx, data)
+		if err != nil {
+			return fmt.Errorf("chunkstore: logblob append: %w", err)
+		}
+		bc.logBlobDiskUsed.Add(int64(len(data)))
+	}
+	if err := bc.localChunkIndex.PutLocalLocation(ctx, h, loc); err != nil {
+		return fmt.Errorf("chunkstore: put local location: %w", err)
+	}
+	// Fire the chunk-completion callback (engine Cache.Put). The path argument
+	// is empty: logblob chunks have no per-chunk on-disk path, and the engine
+	// discards it.
+	if cb := bc.onChunkComplete.Load(); cb != nil && cb.fn != nil {
+		cb.fn(h, data, "")
+	}
+	return nil
+}
+
 // ReadChunk returns the bytes of the chunk addressed by h.
 // Returns block.ErrChunkNotFound if the chunk is absent.
+//
+// Dual-mode: a wired local chunk index is consulted first (logblob-resident
+// chunks); on a miss it falls back to the legacy cas/<hash> file so
+// pre-existing CAS data stays readable (back-compat until PR4 migrates it).
 func (bc *FSStore) ReadChunk(ctx context.Context, h block.ContentHash) ([]byte, error) {
 	if bc.isClosed() {
 		return nil, ErrStoreClosed
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if bc.localChunkIndex != nil {
+		loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, h)
+		if err != nil {
+			return nil, fmt.Errorf("chunkstore: get local location: %w", err)
+		}
+		if ok {
+			if loc.RawLength == 0 {
+				return []byte{}, nil
+			}
+			dst := make([]byte, loc.RawLength)
+			n, rerr := bc.logBlob.ReadAt(ctx, loc, dst)
+			if rerr != nil {
+				return nil, fmt.Errorf("chunkstore: logblob read: %w", rerr)
+			}
+			return dst[:n], nil
+		}
 	}
 	path := bc.chunkPath(h)
 	f, err := os.Open(path)
@@ -202,6 +261,18 @@ func (bc *FSStore) HasChunk(ctx context.Context, h block.ContentHash) (bool, err
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	// Index-resident (logblob) chunks have no cas/<hash> file, so the index
+	// must be consulted first — otherwise a second rollup pass would re-Append
+	// the same bytes. Falls back to the legacy CAS stat for back-compat data.
+	if bc.localChunkIndex != nil {
+		_, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, h)
+		if err != nil {
+			return false, fmt.Errorf("chunkstore: get local location: %w", err)
+		}
+		if ok {
+			return true, nil
+		}
+	}
 	_, err := os.Stat(bc.chunkPath(h))
 	if err == nil {
 		return true, nil
@@ -224,6 +295,15 @@ func (bc *FSStore) DeleteChunk(ctx context.Context, h block.ContentHash) error {
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	// Remove the index entry first so a logblob-resident chunk reads as a miss
+	// afterwards. Idempotent. The blob bytes themselves are reclaimed by
+	// blob-level eviction, handled separately — DeleteChunk does not rewrite
+	// the blob or adjust logBlobDiskUsed here.
+	if bc.localChunkIndex != nil {
+		if err := bc.localChunkIndex.DeleteLocalLocation(ctx, h); err != nil {
+			return fmt.Errorf("chunkstore: delete local location: %w", err)
+		}
 	}
 	path := bc.chunkPath(h)
 	st, statErr := os.Stat(path)
