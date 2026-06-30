@@ -24,6 +24,15 @@ import (
 type shareData struct {
 	Share      metadata.Share
 	RootHandle metadata.FileHandle
+	// seeded is true when this entry was created by CreateRootDirectory (which
+	// records only the share name + root handle) rather than by a full
+	// CreateShare. A seeded entry lets GetRootHandle/GetShareOptions resolve a
+	// runtime-created share by name (the runtime calls CreateRootDirectory, not
+	// CreateShare), and is later "finished" by CreateShare/UpdateShareOptions.
+	// This mirrors the SQLite backend, where a share exists once its root inode
+	// does. Without it, by-name lookups (e.g. the #recycle trash path) fail with
+	// "share not found" for every runtime-created share.
+	seeded bool
 }
 
 type fileData struct {
