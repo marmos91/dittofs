@@ -14,9 +14,11 @@ var listCmd = &cobra.Command{
 	Short: "List metadata stores",
 	Long: `List all metadata stores on the DittoFS server.
 
-Displays the name and type of every registered metadata store. Use this to
-confirm which stores are configured before adding or removing one, or to
-identify the store name needed by other sub-commands such as health.
+Displays the name, ID, and type of every registered metadata store. Other
+sub-commands accept either form, so this is where you find both. Use it to
+confirm which stores are configured before adding or removing one, or to map the
+store IDs emitted by 'share show -o json' back to a store name ('share show'
+table output already resolves them to names).
 
 Examples:
   # List as table
@@ -35,14 +37,14 @@ type StoreList []apiclient.MetadataStore
 
 // Headers implements TableRenderer.
 func (sl StoreList) Headers() []string {
-	return []string{"NAME", "TYPE"}
+	return []string{"NAME", "ID", "TYPE"}
 }
 
 // Rows implements TableRenderer.
 func (sl StoreList) Rows() [][]string {
 	rows := make([][]string, 0, len(sl))
 	for _, s := range sl {
-		rows = append(rows, []string{s.Name, s.Type})
+		rows = append(rows, []string{s.Name, s.ID, s.Type})
 	}
 	return rows
 }

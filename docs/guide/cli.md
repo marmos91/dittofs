@@ -5894,9 +5894,12 @@ List local block stores
 
 List all local block stores on the DittoFS server.
 
-Shows the name, type (fs or memory), and configuration of each registered
-local block store. Use this to confirm which stores exist before adding,
-editing, or running health checks against one.
+Shows the name, ID, type (fs or memory), and configuration of each registered
+local block store. Other sub-commands accept either form, so this is where you
+find both. Use it to confirm which stores exist before adding, editing, or
+running health checks against one, or to map the store IDs emitted by
+'share show -o json' back to a store name ('share show' table output already
+resolves them to names).
 
 ```
 dfsctl store block local list
@@ -6158,9 +6161,12 @@ List remote block stores
 
 List all remote block stores on the DittoFS server.
 
-Shows the name, type (s3 or memory), and configuration of each registered
-remote block store. Use this to confirm which stores exist before adding,
-editing, or running health checks against one.
+Shows the name, ID, type (s3 or memory), and configuration of each registered
+remote block store. Other sub-commands accept either form, so this is where you
+find both. Use it to confirm which stores exist before adding, editing, or
+running health checks against one, or to map the store IDs emitted by
+'share show -o json' back to a store name ('share show' table output already
+resolves them to names).
 
 ```
 dfsctl store block remote list
@@ -6493,9 +6499,11 @@ List metadata stores
 
 List all metadata stores on the DittoFS server.
 
-Displays the name and type of every registered metadata store. Use this to
-confirm which stores are configured before adding or removing one, or to
-identify the store name needed by other sub-commands such as health.
+Displays the name, ID, and type of every registered metadata store. Other
+sub-commands accept either form, so this is where you find both. Use it to
+confirm which stores are configured before adding or removing one, or to map the
+store IDs emitted by 'share show -o json' back to a store name ('share show'
+table output already resolves them to names).
 
 ```
 dfsctl store metadata list

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -10,7 +11,7 @@ import (
 )
 
 func (s *GORMStore) GetMetadataStore(ctx context.Context, name string) (*models.MetadataStoreConfig, error) {
-	return getByField[models.MetadataStoreConfig](s.db, ctx, "name", name, models.ErrStoreNotFound)
+	return getByNameOrID[models.MetadataStoreConfig](s.db, ctx, name, models.ErrStoreNotFound)
 }
 
 func (s *GORMStore) GetMetadataStoreByID(ctx context.Context, id string) (*models.MetadataStoreConfig, error) {
@@ -48,7 +49,11 @@ func (s *GORMStore) UpdateMetadataStore(ctx context.Context, store *models.Metad
 func (s *GORMStore) DeleteMetadataStore(ctx context.Context, name string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var store models.MetadataStoreConfig
-		if err := tx.Where("name = ?", name).First(&store).Error; err != nil {
+		err := tx.Where("name = ?", name).First(&store).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			err = tx.Where("id = ?", name).First(&store).Error
+		}
+		if err != nil {
 			return convertNotFoundError(err, models.ErrStoreNotFound)
 		}
 
