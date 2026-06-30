@@ -18,12 +18,24 @@ func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 	return bs.syncer.Flush(ctx, payloadID)
 }
 
-// DrainAllUploads waits for all pending uploads to complete.
+// DrainAllUploads forces every dirty payload through rollup and then waits for
+// all pending remote uploads to complete.
+//
+// Rollup must run first: it is what turns still-dirty append-log data into CAS
+// chunks, which is the only thing the syncer mirrors to the remote. Draining
+// the syncer alone leaves any data still inside the rollup stabilization window
+// un-chunked, so it never reaches the remote and the caller's durability
+// guarantee silently does not hold (see DrainRollups). The snapshot path rolls
+// up explicitly before calling this; the standalone `system drain-uploads` path
+// relies on the rollup here.
 func (bs *Store) DrainAllUploads(ctx context.Context) error {
 	if err := bs.enter(); err != nil {
 		return err
 	}
 	defer bs.closeMu.RUnlock()
+	if err := bs.local.DrainRollups(ctx); err != nil {
+		return err
+	}
 	return bs.syncer.DrainAllUploads(ctx)
 }
 
