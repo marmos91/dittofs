@@ -149,6 +149,9 @@ func Parse(data []byte, sealer Sealer) (blockID string, records []Record, err er
 				return "", nil, fmt.Errorf("blockcodec: record %d: read wireLen: %w", idx, err)
 			}
 
+			if wireLen > uint64(r.remaining()) {
+				return "", nil, fmt.Errorf("blockcodec: record %d: wireLen %d exceeds remaining %d bytes", idx, wireLen, r.remaining())
+			}
 			rec.WireOffset = int64(r.pos)
 			if _, err := r.readN(int(wireLen)); err != nil {
 				return "", nil, fmt.Errorf("blockcodec: record %d: read wire body: %w", idx, err)
@@ -176,6 +179,9 @@ func Parse(data []byte, sealer Sealer) (blockID string, records []Record, err er
 				return "", nil, fmt.Errorf("blockcodec: record %d: decode wireLen from sealed header (n=%d)", idx, n)
 			}
 
+			if wireLen > uint64(r.remaining()) {
+				return "", nil, fmt.Errorf("blockcodec: record %d: sealed wireLen %d exceeds remaining %d bytes", idx, wireLen, r.remaining())
+			}
 			rec.WireOffset = int64(r.pos)
 			if _, err := r.readN(int(wireLen)); err != nil {
 				return "", nil, fmt.Errorf("blockcodec: record %d: read wire body: %w", idx, err)
@@ -339,6 +345,9 @@ func (c *cursor) readVarBytes() ([]byte, error) {
 	l, err := c.readUvarint()
 	if err != nil {
 		return nil, err
+	}
+	if l > uint64(c.remaining()) {
+		return nil, fmt.Errorf("blockcodec: varint length %d exceeds available bytes %d", l, c.remaining())
 	}
 	return c.readN(int(l))
 }

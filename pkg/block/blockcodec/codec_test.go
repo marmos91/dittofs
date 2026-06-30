@@ -10,26 +10,48 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/blockcodec"
 )
 
-// fakeSealer is a test Sealer that prepends a fixed nonce byte (0xFE) and XORs
-// the plaintext with 0x42. Round-trips correctly through Seal/Open and ensures
-// the sealed bytes differ from plaintext (opacity test in TestSealedRoundTrip).
-type fakeSealer struct{}
+// fakeSealer is a test Sealer that:
+//   - embeds the AAD in the sealed output so Open rejects AAD mismatches
+//   - captures each AAD passed to Seal for post-round-trip assertions
+//   - XORs the plaintext with 0x42 for opacity
+//
+// Wire format: [0xFE marker] [aadLen uint8] [aad bytes] [XOR(plaintext, 0x42)]
+type fakeSealer struct {
+	capturedAADs [][]byte
+}
 
-func (fakeSealer) Seal(plaintext, _ []byte) ([]byte, error) {
-	out := make([]byte, len(plaintext)+1)
-	out[0] = 0xFE // fixed nonce marker
+func (s *fakeSealer) Seal(plaintext, aad []byte) ([]byte, error) {
+	if len(aad) > 255 {
+		return nil, fmt.Errorf("fakeSealer: aad length %d exceeds 255", len(aad))
+	}
+	aadCopy := make([]byte, len(aad))
+	copy(aadCopy, aad)
+	s.capturedAADs = append(s.capturedAADs, aadCopy)
+
+	out := make([]byte, 2+len(aad)+len(plaintext))
+	out[0] = 0xFE // nonce marker
+	out[1] = byte(len(aad))
+	copy(out[2:], aad)
 	for i, b := range plaintext {
-		out[i+1] = b ^ 0x42
+		out[2+len(aad)+i] = b ^ 0x42
 	}
 	return out, nil
 }
 
-func (fakeSealer) Open(sealed, _ []byte) ([]byte, error) {
-	if len(sealed) < 1 || sealed[0] != 0xFE {
+func (s *fakeSealer) Open(sealed, aad []byte) ([]byte, error) {
+	if len(sealed) < 2 || sealed[0] != 0xFE {
 		return nil, errors.New("fakeSealer: invalid nonce marker")
 	}
-	out := make([]byte, len(sealed)-1)
-	for i, b := range sealed[1:] {
+	aadLen := int(sealed[1])
+	if len(sealed) < 2+aadLen {
+		return nil, errors.New("fakeSealer: sealed data truncated")
+	}
+	if !bytes.Equal(sealed[2:2+aadLen], aad) {
+		return nil, fmt.Errorf("fakeSealer: AAD mismatch: sealed %x, open %x", sealed[2:2+aadLen], aad)
+	}
+	ciphertext := sealed[2+aadLen:]
+	out := make([]byte, len(ciphertext))
+	for i, b := range ciphertext {
 		out[i] = b ^ 0x42
 	}
 	return out, nil
@@ -228,8 +250,11 @@ func firstDiff(a, b []byte) int {
 // Sealer fails (headers are opaque), then parses with the Sealer and verifies
 // hashes and locators recover correctly. Bodies are always plaintext-visible at
 // WireOffset/WireLength.
+//
+// It also asserts that buildAAD produces blockID_bytes || uvarint(recordIndex)
+// by inspecting the AAD captured by fakeSealer for record 0.
 func TestSealedRoundTrip(t *testing.T) {
-	sealer := fakeSealer{}
+	sealer := &fakeSealer{}
 
 	var hash1 block.ContentHash
 	hash1[0] = 0xAA
@@ -284,6 +309,16 @@ func TestSealedRoundTrip(t *testing.T) {
 	if !bytes.Equal(got, wire1) {
 		t.Errorf("body=%q want %q", got, wire1)
 	}
+
+	// Assert buildAAD("enc-block", 0) == []byte("enc-block") || uvarint(0).
+	// uvarint(0) encodes as a single 0x00 byte.
+	if len(sealer.capturedAADs) < 1 {
+		t.Fatal("fakeSealer captured no AADs during Build")
+	}
+	wantAAD := append([]byte("enc-block"), 0x00) // blockID bytes || uvarint(0)
+	if !bytes.Equal(sealer.capturedAADs[0], wantAAD) {
+		t.Errorf("record 0 AAD = %x, want %x", sealer.capturedAADs[0], wantAAD)
+	}
 }
 
 // TestTruncated verifies that truncating a valid block at various offsets
@@ -315,6 +350,33 @@ func TestTruncated(t *testing.T) {
 	}
 }
 
+// TestParseRejectsOverlongLength verifies that a crafted block whose wireLen
+// uvarint encodes math.MaxUint64 is rejected with an error and does not panic.
+// Before the bounds guard, int(wireLen) wraps to -1 on amd64, bypasses the
+// readN guard (remaining >= 0 is never < -1), and the slice expression
+// buf[pos : pos+(-1)] panics. This test must fail (panic) before the fix.
+func TestParseRejectsOverlongLength(t *testing.T) {
+	// Construct a syntactically plausible plaintext block:
+	//   magic(4) | flags=0x00 | blockID "test" (uvarint(4) + 4 bytes) |
+	//   hash(32 zero bytes) | wireLen = MaxUint64 (10-byte uvarint) | (no body)
+	var buf []byte
+	buf = append(buf, 'D', 'F', 'B', '1') // magic
+	buf = append(buf, 0x00)               // flags = plaintext
+	// blockID = "test" — length 4 as uvarint(4) = 0x04
+	buf = append(buf, 0x04, 't', 'e', 's', 't')
+	// hash: 32 zero bytes
+	buf = append(buf, make([]byte, 32)...)
+	// wireLen = math.MaxUint64 = 0xFFFFFFFFFFFFFFFF encoded as uvarint:
+	//   9 bytes of 0xFF (7-bit groups with continuation) + 0x01 (final bit)
+	buf = append(buf, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01)
+	// No body follows — Parse must return a structural error, never panic.
+
+	_, _, err := blockcodec.Parse(buf, nil)
+	if err == nil {
+		t.Fatal("Parse with wireLen=math.MaxUint64 must return an error, got nil")
+	}
+}
+
 // TestMagicMismatch verifies that wrong magic bytes and wrong flags produce errors.
 func TestMagicMismatch(t *testing.T) {
 	t.Run("wrong_magic", func(t *testing.T) {
@@ -328,12 +390,15 @@ func TestMagicMismatch(t *testing.T) {
 	t.Run("sealed_flag_no_sealer", func(t *testing.T) {
 		// Build a valid plaintext block then flip the sealed flag bit.
 		var buf bytes.Buffer
-		b, _ := blockcodec.NewBuilder(&buf, "b", nil)
+		b, err := blockcodec.NewBuilder(&buf, "b", nil)
+		if err != nil {
+			t.Fatalf("NewBuilder: %v", err)
+		}
 		b.Finish() //nolint:errcheck
 		raw := make([]byte, buf.Len())
 		copy(raw, buf.Bytes())
 		raw[4] |= 0x01 // set bit0 = sealed
-		_, _, err := blockcodec.Parse(raw, nil)
+		_, _, err = blockcodec.Parse(raw, nil)
 		if err == nil {
 			t.Error("expected error for sealed block without Sealer, got nil")
 		}
