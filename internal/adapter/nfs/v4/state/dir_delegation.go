@@ -106,11 +106,11 @@ func (sm *StateManager) GrantDirDelegation(clientID uint64, dirFH []byte, notifM
 	sm.delegByOther[other] = deleg
 	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
 
-	if sm.lockManager != nil {
+	if lm := sm.lockManagerFor(fhCopy); lm != nil {
 		// See GrantDelegation comment: NFS delegations lack share context at this layer.
 		lockDeleg := lock.NewDelegation(lock.DelegTypeRead, fmt.Sprintf("%d", clientID), "", true)
 		lockDeleg.NotificationMask = notifMask
-		if err := sm.lockManager.GrantDelegation(fhKey, lockDeleg); err != nil {
+		if err := lm.GrantDelegation(fhKey, lockDeleg); err != nil {
 			logger.Debug("LockManager directory delegation grant failed, continuing with local state",
 				"error", err)
 		} else {

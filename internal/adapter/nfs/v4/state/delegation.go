@@ -266,7 +266,7 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 	fhKey := string(fileHandle)
 	sm.delegByFile[fhKey] = append(sm.delegByFile[fhKey], deleg)
 
-	if sm.lockManager != nil {
+	if lm := sm.lockManagerFor(fileHandle); lm != nil {
 		lmDelegType := lock.DelegTypeRead
 		if deleg.DelegType == types.OPEN_DELEGATE_WRITE {
 			lmDelegType = lock.DelegTypeWrite
@@ -277,7 +277,7 @@ func (sm *StateManager) GrantDelegation(clientID uint64, fileHandle []byte, dele
 		// correctness. To add share context, GrantDelegation would need to
 		// accept a shareName parameter threaded from the OPEN handler.
 		lockDeleg := lock.NewDelegation(lmDelegType, fmt.Sprintf("%d", clientID), "", false)
-		if err := sm.lockManager.GrantDelegation(fhKey, lockDeleg); err != nil {
+		if err := lm.GrantDelegation(fhKey, lockDeleg); err != nil {
 			logger.Debug("LockManager delegation grant failed, continuing with local state",
 				"error", err)
 		} else {
@@ -360,7 +360,7 @@ func (sm *StateManager) ReturnDelegation(stateid *types.Stateid4) error {
 		delegKind = "directory"
 	}
 
-	lockMgr := sm.lockManager
+	lockMgr := sm.lockManagerFor(deleg.FileHandle)
 
 	if deleg.Revoked {
 		logger.Info("Revoked delegation returned by client",

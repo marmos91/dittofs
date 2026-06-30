@@ -471,12 +471,12 @@ func (sm *StateManager) EvictV40Client(clientID uint64) error {
 				delete(sm.lockStateByOther, lockState.Stateid.Other)
 
 				// Remove actual locks from unified lock manager (matches onLeaseExpired)
-				if sm.lockManager != nil && lockState.LockOwner != nil {
+				if lm := sm.lockManagerFor(lockState.FileHandle); lm != nil && lockState.LockOwner != nil {
 					ownerID := lockState.LockOwner.LockManagerOwnerID()
 					handleKey := string(lockState.FileHandle)
-					for _, l := range sm.lockManager.ListUnifiedLocks(handleKey) {
+					for _, l := range lm.ListUnifiedLocks(handleKey) {
 						if l.Owner.OwnerID == ownerID {
-							_ = sm.lockManager.RemoveUnifiedLock(handleKey, l.Owner, l.Offset, l.Length)
+							_ = lm.RemoveUnifiedLock(handleKey, l.Owner, l.Offset, l.Length)
 						}
 					}
 				}
