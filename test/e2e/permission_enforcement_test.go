@@ -55,23 +55,15 @@ func TestPermissionEnforcement(t *testing.T) {
 		helpers.WithShareDefaultPermission("none"))
 	require.NoError(t, err, "Should create share with default permission none")
 
-	// Enable NFS adapter for admin setup (creating test files)
-	nfsPort := helpers.FindFreePort(t)
-	_, err = cli.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
-	require.NoError(t, err, "Should enable NFS adapter")
-
-	// Enable SMB adapter for permission-enforced testing
+	// This test exercises SMB only — fixtures are created over the admin SMB
+	// mount and the permission checks run over per-user SMB mounts. No NFS.
 	smbPort := helpers.FindFreePort(t)
 	_, err = cli.EnableAdapter("smb", helpers.WithAdapterPort(smbPort))
 	require.NoError(t, err, "Should enable SMB adapter")
 
-	// Wait for adapters to be ready
-	err = helpers.WaitForAdapterStatus(t, cli, "nfs", true, 5*time.Second)
-	require.NoError(t, err, "NFS adapter should become enabled")
 	err = helpers.WaitForAdapterStatus(t, cli, "smb", true, 5*time.Second)
 	require.NoError(t, err, "SMB adapter should become enabled")
 
-	framework.WaitForServer(t, nfsPort, 10*time.Second)
 	framework.WaitForServer(t, smbPort, 10*time.Second)
 
 	t.Cleanup(func() {
