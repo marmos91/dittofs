@@ -113,6 +113,41 @@ record_i = { hash, length }  +  chunk wire bytes
   Full file-namespace recovery (which file is composed of which chunks) is **out of
   scope** here and will be addressed later via remote **manifest files** (deferred issue).
 
+## Read path
+
+A read is **local-first, remote on miss, then read-ahead** — cheap when data is resident,
+low-latency-first-byte when it isn't, and self-warming for the common sequential case.
+
+1. **Local-first.** When NFS/SMB asks to read bytes, DittoFS maps the file offset to the
+   chunk(s) it needs and reads them **from the local append log at the right offset** (via
+   the local index `hash → {logBlobID, rawOffset, rawLength}`). If resident → serve raw
+   plaintext directly (`pread`, **zero decode, no network**) — the hot path, and the common
+   case for recently-written or already-cached data.
+2. **Remote on miss.** If a chunk is not resident (evicted, or never local), fetch it from
+   the remote block store: `GetBlockRange(BlockID, wireOffset, wireLength)` for just the
+   bytes needed to satisfy the request, decode (decrypt/decompress), verify
+   `blake3(plaintext) == hash` (fail-closed), serve. Fetching the exact range gives a **fast
+   first byte** without waiting on a whole block.
+3. **Read-ahead (a miss predicts more reads).** A miss strongly implies the client will keep
+   reading, so after serving the immediate range DittoFS speculatively downloads the **whole
+   enclosing block** — and, under sustained sequential access, **several subsequent blocks**
+   — in the background, re-staging them into a local log blob so following reads become local
+   hits. Prefetch depth **adapts** to the access pattern: it ramps up on sequential streams
+   and stays minimal on random access (where whole-block prefetch is wasteful — the
+   random-read lever is chunk-range-only refetch, #1488).
+
+**Efficiency properties:**
+- **Write-order contiguity → coalesced reads.** Chunks are appended in write order and
+  carved into blocks in that order, so a file's chunks (written contiguously between
+  commit/close) usually sit **contiguous within one block**. A sequential read then maps to
+  a contiguous wire range served by a **single `GetBlockRange`** spanning many chunks — not
+  one GET per chunk. Adjacent same-block locators are coalesced; dedup / concurrent-writer
+  interleaving can scatter chunks, and the path falls back to per-locator fetches.
+- **Indirection cost** is one metadata locator lookup per non-resident chunk (cached,
+  batchable); resident reads never touch metadata or the network.
+- **Verification cost** is one BLAKE3 over each chunk's plaintext on cold reads; resident
+  reads skip it (verified when the bytes entered the local tier).
+
 ## Components
 
 1. **Remote block store interface (slimmed).**
@@ -130,8 +165,17 @@ record_i = { hash, length }  +  chunk wire bytes
    (RocksDB-style: append at the tail, read earlier offsets concurrently). No block files,
    no per-chunk CAS files. The local store keeps its own index `hash → {logBlobID,
    rawOffset, rawLength}` and serves local reads straight from the blob (zero decode).
-   Eviction drops **whole synced log blobs** to reclaim disk; on a later read of an evicted
-   chunk, GET its (whole) remote block, decode, verify, and re-stage into a fresh log blob.
+   The local tier is a **hot cache**, not a permanent home — it serves two roles at once:
+   **write-staging** (durability for not-yet-synced data) and **read acceleration** (hot
+   data served locally). A configurable **`MaxLocalStoreSize`** high-water mark triggers
+   eviction: when local usage crosses it, evict **cold, fully-synced** data (LRU) down to a
+   low-water mark, keeping hot data resident to speed reads; **unsynced data is never
+   evicted** (it is the only copy). v1 evicts whole fully-synced blobs; because a ~1 GB blob
+   can mix synced/cold (evictable) with unsynced/hot (must-keep) chunks, fine-grained reclaim
+   needs **local blob compaction** — rewrite a blob's survivors (unsynced + hot) into a fresh
+   blob and free the rest — tracked as #1497. On a later read of an evicted chunk, GET its
+   (whole) remote block, decode, verify, and re-stage locally — read-ahead warms the cache
+   for sequential follow-on reads.
 
 4. **Metadata.** Per-chunk surface unchanged: `chunk hash → {BlockID, Offset, Length}`;
    dedup short-circuit before a chunk is stored (known hash → refcount bump only); refcount
@@ -170,8 +214,21 @@ record_i = { hash, length }  +  chunk wire bytes
 - **Block-carve idle timeout:** 5s. Carve+upload a sub-`BlockSize` block when no new
   chunks arrive. Gates only **upload latency**, not durability — a chunk is durable in the
   (fsynced) log blob the instant it's written, well before carve.
-- **LogBlobSizeCap:** ~1 GB (rotate to a new blob at the cap, or on long idle). Bounds
-  file size and corruption blast radius.
+- **`MaxBlobSize`** (config): max **local** log-blob size before rotating to a new blob;
+  **default 1 GB**. Bounds file size + corruption blast radius. (RocksDB defaults are smaller
+  — SST `target_file_size_base` 64 MB, BlobDB `blob_file_size` 256 MB; a larger blob means
+  fewer files + better sequential append but coarser eviction, hence local compaction #1497.)
+- **`MaxLocalStoreSize`** (config): high-water mark for the local hot cache; crossing it
+  triggers synced-only LRU eviction (+ compaction #1497) down to a low-water mark. Unsynced
+  data is never evictable.
+- **Size hierarchy (do not conflate):** local **blob** ~1 GB (`MaxBlobSize`) is a large
+  on-disk append file; remote **block** ~16 MiB default (`TargetBlockSize`) is carved from it.
+  At the default a remote object is a single S3 PUT. **`TargetBlockSize` is configurable**, so
+  the S3 store uses **multipart upload** for large blocks — beneficial above a part-size
+  threshold and **mandatory above S3's 5 GB single-PUT limit** (e.g. a 256 MB or larger block
+  size). `GetBlockRange` is unaffected — a ranged GET works regardless of how the object was
+  PUT. Multipart also improves resilience: a failed upload **retries only the failed part**
+  (not the whole block), and parts upload in parallel.
 
 ## Performance & footprint requirements (now)
 
@@ -257,6 +314,32 @@ existing data). Leftover standalone-path code is a bug, not acceptable dead code
   `MarkSyncedBatch`) — re-implement against this design on the new branch.
 - Grep for and delete now-dead helpers, tests, and config knobs tied to the standalone
   path; leave no vestigial interfaces (per the minimize-interface-surface rule).
+
+## Performance & efficiency levers (state of the art, future)
+
+Candidate techniques beyond v1, ordered by leverage. Adopt behind clean seams; do not add to
+the hot path without a measured win (keep v1 simple).
+
+- **Smarter cache policy than LRU** (eviction / #1497 area): **W-TinyLFU** or **ARC** beat
+  plain LRU hit-rate, directly speeding reads. Keep the eviction policy behind an interface so
+  it can be swapped.
+- **Bloom / ribbon filter on the chunk-hash index** (P3 area): a fast "definitely-new chunk"
+  test skips a metadata lookup for unique chunks on the write path (classic LSM technique).
+- **Trained zstd dictionaries for small chunks** (codec / P1 area): a shared per-share/per-
+  block dictionary greatly improves compression ratio for many small similar files — directly
+  the #1414 motivation. Per-chunk framing stays; the dictionary is a codec parameter.
+- **Adaptive / strided prefetch:** detect access stride and tune read-ahead depth instead of a
+  fixed depth.
+- **Async local I/O (io_uring / vectored):** higher-throughput, lower-overhead local blob I/O
+  on Linux; platform-gated.
+- **S3 read hedging:** duplicate a lagging GET to cut tail latency.
+- **Merkle tree over block hashes — #1498:** interior nodes up to a per-share root enable
+  cheap local↔remote anti-entropy (scrubber #1490), tamper-evident manifests (#1489), and
+  future replication (compare roots, descend only on divergence). Off the hot path.
+
+Explicitly **skipped** (complexity not justified pre-1.0 / single-node): learned indexes,
+similarity/delta dedup, sparse dedup indexing (until the index outgrows RAM), client-side
+erasure coding (the object store already provides redundancy).
 
 ## Deferred — future work (tracked as issues)
 
