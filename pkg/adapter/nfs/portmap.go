@@ -106,8 +106,12 @@ func systemPortmapAddr() string {
 // startSystemPortmapRegistration registers DittoFS's services with the host's
 // system rpcbind (port 111) when adapters.nfs.portmapper.register_with_system is
 // enabled. Best effort: a missing/unreachable rpcbind is logged and skipped —
-// NFS still serves, only kernel NFSv3 (NLM) locking without `nolock` stays
-// unavailable. On success it sets sysregActive so shutdown unregisters.
+// systemRegTimeout bounds the whole startup registration (Ping + all SET/UNSET
+// round-trips) so a slow or hung system rpcbind can never delay NFS
+// availability by more than this. The normal local-rpcbind case completes in
+// well under a millisecond.
+const systemRegTimeout = 10 * time.Second
+
 // systemRegMappings returns the service mappings to register with the system
 // rpcbind. It deliberately EXCLUDES NSM (prog 100024): on a host that runs
 // rpc.statd, NSM is already owned by the host's status monitor, which is shared
@@ -130,6 +134,10 @@ func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
 	if !s.registerWithSystemEnabled() {
 		return
 	}
+
+	// Bound the whole registration so a slow/hung rpcbind cannot stall Serve.
+	ctx, cancel := context.WithTimeout(ctx, systemRegTimeout)
+	defer cancel()
 
 	addr := systemPortmapAddr()
 	if err := sysreg.Ping(ctx, addr); err != nil {
