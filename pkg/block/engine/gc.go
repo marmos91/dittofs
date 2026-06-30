@@ -265,6 +265,18 @@ type Options struct {
 	// (#1433). Invoked synchronously from the (sequential) mark loop, so it must
 	// not block; implementations just record the latest count.
 	MarkProgress func(hashesMarked int64)
+
+	// BlockReclaimer reclaims block-resident chunks (#1414 object packing) during
+	// the remote steady-state sweep. A swept hash may be packed into a
+	// blocks/<id> object rather than a standalone cas/<hash> object; for those the
+	// sweep consults BlockReclaimer instead of deleting a CAS object that does not
+	// exist. It is reached only after the sweep has proven the hash globally dead
+	// (past grace, absent from the live set), so freeing a block here can never
+	// race a live dedup sibling. Nil means the deployment packs no blocks and the
+	// sweep deletes cas/<hash> objects exactly as before — non-block deployments
+	// are unaffected. Set ONLY for the remote tier (the index sweep); the local
+	// tier and reconcile leave it nil.
+	BlockReclaimer BlockReclaimer
 }
 
 // gcMarkProgressInterval bounds how often the mark phase emits a progress

@@ -77,6 +77,38 @@ func sweepFromSyncedIndex(
 			return nil
 		}
 
+		// Block-aware reclaim (#1414 object packing): a synced hash may be packed
+		// into a blocks/<id> object rather than a standalone cas/<hash> object. For
+		// those the CAS Delete below would target a key that does not exist; the
+		// reclaimer instead decrements the enclosing block and frees the block
+		// object + record when its last live chunk is gone. The sweep reaches h
+		// only here, where it has already proven h globally dead (past grace,
+		// absent from the live set), so decrementing can never race a live dedup
+		// sibling. nil BlockReclaimer (non-block deployments) falls straight
+		// through to the standalone CAS delete.
+		if options.BlockReclaimer != nil {
+			handled, freed, rerr := options.BlockReclaimer.ReclaimDeadChunk(ctx, h)
+			if rerr != nil {
+				addError("block-reclaim " + casKey + ": " + rerr.Error())
+				return nil
+			}
+			if handled {
+				// Block-resident: no CAS object to delete. Clear the synced marker
+				// (its locator was already consumed by the reclaim) so the synced
+				// set stays a strict subset of remote contents (#1433), and count
+				// the reclamation.
+				if serr := options.SyncedHashIndex.DeleteSynced(ctx, h); serr != nil {
+					addError("delete-synced " + casKey + ": " + serr.Error())
+				}
+				statsMu.Lock()
+				stats.ObjectsSwept++
+				stats.BytesFreed += freed
+				statsMu.Unlock()
+				return nil
+			}
+			// Not handled → standalone CAS object: fall through to Delete.
+		}
+
 		if derr := store.Delete(ctx, h); derr != nil {
 			// Continue + capture; the marker stays so the next pass retries.
 			addError("delete " + casKey + ": " + derr.Error())

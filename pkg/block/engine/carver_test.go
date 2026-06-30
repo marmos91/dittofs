@@ -537,10 +537,7 @@ func TestCarve_DispatcherIdleFlush(t *testing.T) {
 	// Poll until the idle flush fires. Allow 5× the idle window for scheduler
 	// jitter; fail if no block appears within that budget.
 	deadline := time.Now().Add(5 * uploadDelay)
-	for {
-		if countRemoteBlocks(t, ctx, mem) == 1 {
-			break
-		}
+	for countRemoteBlocks(t, ctx, mem) != 1 {
 		if time.Now().After(deadline) {
 			t.Fatalf("no block after %v; idle flush did not fire", 5*uploadDelay)
 		}
