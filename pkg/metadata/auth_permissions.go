@@ -490,12 +490,43 @@ func (s *Service) checkPermission(ctx *AuthContext, handle FileHandle, perm Perm
 		return err
 	}
 	if granted&perm == 0 {
+		// A write or delete denied solely because the share is read-only must
+		// surface as ErrReadOnly so NFSv3 returns NFS3ERR_ROFS (EROFS) per
+		// RFC 1813, rather than NFS3ERR_ACCES. SMB is unaffected: the error
+		// map renders ErrReadOnly and ErrAccessDenied alike as
+		// STATUS_ACCESS_DENIED.
+		if perm&(PermissionWrite|PermissionDelete) != 0 && s.shareForbidsWrites(ctx, handle) {
+			return &StoreError{
+				Code:    ErrReadOnly,
+				Message: msg,
+			}
+		}
 		return &StoreError{
 			Code:    ErrAccessDenied,
 			Message: msg,
 		}
 	}
 	return nil
+}
+
+// shareForbidsWrites reports whether a read-only ceiling — per-user
+// (ctx.ShareReadOnly) or store-level (share options) — forbids modification of
+// the given file's share. It is consulted only on the permission-denied path,
+// so the extra share-options lookup is off the hot path.
+func (s *Service) shareForbidsWrites(ctx *AuthContext, handle FileHandle) bool {
+	if ctx.ShareReadOnly {
+		return true
+	}
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return false
+	}
+	file, err := store.GetFile(ctx.Context, handle)
+	if err != nil {
+		return false
+	}
+	shareOpts, err := store.GetShareOptions(ctx.Context, file.ShareName)
+	return err == nil && shareOpts != nil && shareOpts.ReadOnly
 }
 
 // checkWritePermission checks write permission on a file.
@@ -561,7 +592,10 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 	// ctx.ShareReadOnly arm a read-only user could create entries under an
 	// ALLOW-granting parent DACL on an otherwise read-write share. #1276.
 	if ctx.ShareReadOnly || (shareOpts != nil && shareOpts.ReadOnly) {
-		return &StoreError{Code: ErrAccessDenied, Message: "write permission denied"}
+		// Read-only denial → ErrReadOnly so NFSv3 returns NFS3ERR_ROFS
+		// (EROFS) per RFC 1813. SMB renders it as STATUS_ACCESS_DENIED,
+		// identical to the prior ErrAccessDenied.
+		return &StoreError{Code: ErrReadOnly, Message: "read-only share"}
 	}
 
 	// CREATE has no open handle yet, so the handle-based write authorization

@@ -135,13 +135,15 @@ func TestCheckParentCreateAccess_PerUserReadOnlyDenies(t *testing.T) {
 	ro := f.authContext(uid, gid)
 	ro.ShareReadOnly = true
 
+	// Read-only denial → ErrReadOnly (NFS3ERR_ROFS / EROFS) per RFC 1813; SMB
+	// renders it as STATUS_ACCESS_DENIED, identical to the prior code.
 	err = f.service.CheckParentCreateAccess(ro, dirHandle, false)
 	if err == nil {
-		t.Fatal("CheckParentCreateAccess returned nil for read-only user, want ErrAccessDenied")
+		t.Fatal("CheckParentCreateAccess returned nil for read-only user, want ErrReadOnly")
 	}
 	var storeErr *metadata.StoreError
-	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrAccessDenied {
-		t.Fatalf("CheckParentCreateAccess err = %v, want StoreError{Code: ErrAccessDenied}", err)
+	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrReadOnly {
+		t.Fatalf("CheckParentCreateAccess err = %v, want StoreError{Code: ErrReadOnly}", err)
 	}
 
 	// And the POSIX-only parent-write path (no ACL) must deny too.
@@ -187,8 +189,8 @@ func TestSetFileAttributes_PerUserReadOnlyDeniesOwnerMutation(t *testing.T) {
 			continue
 		}
 		var storeErr *metadata.StoreError
-		if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrAccessDenied {
-			t.Errorf("%s: err = %v, want StoreError{Code: ErrAccessDenied}", name, err)
+		if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrReadOnly {
+			t.Errorf("%s: err = %v, want StoreError{Code: ErrReadOnly}", name, err)
 		}
 	}
 
@@ -196,6 +198,44 @@ func TestSetFileAttributes_PerUserReadOnlyDeniesOwnerMutation(t *testing.T) {
 	rw := f.authContext(uid, gid)
 	if _, err := f.service.SetFileAttributes(rw, handle, &metadata.SetAttrs{Mode: &newMode}); err != nil {
 		t.Fatalf("precondition: owner chmod on read-write share should succeed, got %v", err)
+	}
+}
+
+// TestSetFileAttributes_StoreReadOnlyDeniesOwnerMutation asserts the SETATTR
+// ceiling also fires for the STORE-level read-only flag (ShareOptions.ReadOnly),
+// not just the per-user ctx.ShareReadOnly: an owner may not chmod their own file
+// on a share configured read-only. The owner-bypass path skips
+// checkWritePermission, so without consulting both ceilings the store-level flag
+// would be silently ignored for SETATTR.
+func TestSetFileAttributes_StoreReadOnlyDeniesOwnerMutation(t *testing.T) {
+	f := newTestFixture(t)
+
+	uid, gid := uint32(1600), uint32(1600)
+	// Create the file BEFORE toggling the share read-only (creation is denied
+	// on a read-only share).
+	created, _, err := f.service.CreateFile(f.rootContext(), f.rootHandle, "store-ro.txt",
+		&metadata.FileAttr{Type: metadata.FileTypeRegular, Mode: 0o644, UID: uid, GID: gid})
+	require.NoError(t, err)
+	handle, err := metadata.EncodeShareHandle(f.shareName, created.ID)
+	require.NoError(t, err)
+
+	_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
+	require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
+		&metadata.ShareOptions{ReadOnly: true}))
+
+	// The OWNER, with per-user ShareReadOnly explicitly false — only the
+	// store-level flag is in play.
+	owner := f.authContext(uid, gid)
+	owner.ShareReadOnly = false
+
+	newMode := uint32(0o777)
+	_, err = f.service.SetFileAttributes(owner, handle, &metadata.SetAttrs{Mode: &newMode})
+	if err == nil {
+		t.Fatal("SetFileAttributes returned nil for owner on store-level read-only share, want ErrReadOnly")
+	}
+	var storeErr *metadata.StoreError
+	if !errors.As(err, &storeErr) || storeErr.Code != metadata.ErrReadOnly {
+		t.Fatalf("SetFileAttributes err = %v, want StoreError{Code: ErrReadOnly}", err)
 	}
 }
 

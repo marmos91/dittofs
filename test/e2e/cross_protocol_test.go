@@ -710,11 +710,14 @@ func smbStatusToErrno(code smbtypes.Status) syscall.Errno {
 		// (TriggerErrNameTooLong uses a 300-char name).
 		return syscall.ENAMETOOLONG
 	case smbtypes.StatusFileLockConflict:
-		// SMB general-context lock-conflict → EAGAIN (same family as NFS's
-		// EAGAIN for NFS3ERR_JUKEBOX on lock contention).
-		return syscall.EAGAIN
+		// Real Linux cifs maps the SMB lock-conflict NT statuses to -EACCES,
+		// NOT -EAGAIN (fs/smb/client/smb2maperror.c). A non-blocking flock()
+		// conflict over cifs therefore surfaces EACCES to userspace even
+		// though POSIX flock() would otherwise report EWOULDBLOCK. (NFS keeps
+		// EAGAIN: its NFS3ERR_JUKEBOX → EAGAIN mapping is unaffected.)
+		return syscall.EACCES
 	case smbtypes.StatusLockNotGranted:
-		return syscall.EAGAIN
+		return syscall.EACCES
 	case smbtypes.StatusRangeNotLocked:
 		return syscall.EINVAL
 	case smbtypes.StatusUnexpectedIOError:
