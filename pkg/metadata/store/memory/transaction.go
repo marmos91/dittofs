@@ -88,6 +88,9 @@ type txSnapshot struct {
 	hashIndex        map[metadata.ContentHash]string
 	serverConfig     metadata.MetadataServerConfig
 	capabilities     metadata.FilesystemCapabilities
+	// Block packing snapshots.
+	blockRecords map[string]*block.BlockRecord
+	localChunks  map[block.ContentHash]block.LocalChunkLocation
 }
 
 // snapshotLocked captures the store's mutable maps. Caller MUST hold the
@@ -109,6 +112,8 @@ func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 		objectIndex:   maps.Clone(store.objectIndex),
 		serverConfig:  store.serverConfig,
 		capabilities:  store.capabilities,
+		blockRecords:  make(map[string]*block.BlockRecord, len(store.blockRecords)),
+		localChunks:   maps.Clone(store.localChunks),
 	}
 	for k, v := range store.shares {
 		sc := *v
@@ -128,6 +133,10 @@ func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 			snap.blocks[k] = &bc
 		}
 	}
+	for k, v := range store.blockRecords {
+		rc := *v
+		snap.blockRecords[k] = &rc
+	}
 	return snap
 }
 
@@ -143,6 +152,8 @@ func (store *MemoryMetadataStore) restoreLocked(snap *txSnapshot) {
 	store.objectIndex = snap.objectIndex
 	store.serverConfig = snap.serverConfig
 	store.capabilities = snap.capabilities
+	store.blockRecords = snap.blockRecords
+	store.localChunks = snap.localChunks
 	switch {
 	case snap.hadFileChunkData:
 		// fileChunkData existed at snapshot time — restore its maps to the
