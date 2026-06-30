@@ -2,9 +2,13 @@ package nfs
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/sysreg"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/portmap/xdr"
+	"github.com/marmos91/dittofs/internal/adapter/nfs/rpc"
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
@@ -82,6 +86,94 @@ func (s *NFSAdapter) startPortmapper(ctx context.Context) error {
 	case <-time.After(2 * time.Second):
 		return nil // Timeout waiting for ready, but non-fatal
 	}
+}
+
+// registerWithSystemEnabled reports whether DittoFS should register its
+// services with the host's system rpcbind on port 111. Defaults to false when
+// unset (same *bool convention as isPortmapperEnabled).
+func (s *NFSAdapter) registerWithSystemEnabled() bool {
+	if s.config.Portmapper.RegisterWithSystem == nil {
+		return false
+	}
+	return *s.config.Portmapper.RegisterWithSystem
+}
+
+// systemPortmapAddr is the dial address of the host's system rpcbind.
+func systemPortmapAddr() string {
+	return fmt.Sprintf("127.0.0.1:%d", sysreg.SystemPortmapPort)
+}
+
+// startSystemPortmapRegistration registers DittoFS's services with the host's
+// system rpcbind (port 111) when adapters.nfs.portmapper.register_with_system is
+// enabled. Best effort: a missing/unreachable rpcbind is logged and skipped —
+// NFS still serves, only kernel NFSv3 (NLM) locking without `nolock` stays
+// unavailable. On success it sets sysregActive so shutdown unregisters.
+// systemRegMappings returns the service mappings to register with the system
+// rpcbind. It deliberately EXCLUDES NSM (prog 100024): on a host that runs
+// rpc.statd, NSM is already owned by the host's status monitor, which is shared
+// infrastructure — claiming it would redirect every host SM_NOTIFY to DittoFS.
+// The kernel only needs NLM (and MOUNT/NFS) discovery to take v3 byte-range
+// locks; status monitoring continues via the host statd.
+func (s *NFSAdapter) systemRegMappings() []*xdr.Mapping {
+	all := portmap.DittoFSServiceMappings(s.config.Port, s.isUDPEnabled())
+	out := all[:0:0]
+	for _, m := range all {
+		if m.Prog == rpc.ProgramNSM {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func (s *NFSAdapter) startSystemPortmapRegistration(ctx context.Context) {
+	if !s.registerWithSystemEnabled() {
+		return
+	}
+
+	addr := systemPortmapAddr()
+	if err := sysreg.Ping(ctx, addr); err != nil {
+		logger.Warn("No system portmapper reachable; NFSv3 locking needs `nolock`",
+			"addr", addr, "error", err)
+		return
+	}
+
+	// Best effort: Register claims each tuple (UNSET+SET) and continues past
+	// conflicts, so a tuple the host already owns (e.g. MOUNT/NFS on a host that
+	// also runs kernel NFS) does not stop the critical NLM registration. We mark
+	// the registration active and unregister on shutdown regardless of partial
+	// failures, since whatever landed must be cleaned up.
+	mappings := s.systemRegMappings()
+	s.sysregActive.Store(true)
+	if err := sysreg.Register(ctx, addr, mappings); err != nil {
+		logger.Warn("Some services failed to register with system portmapper",
+			"addr", addr, "error", err)
+		return
+	}
+	logger.Info("Registered NFS services with system portmapper",
+		"addr", addr, "services", len(mappings))
+}
+
+// stopSystemPortmapRegistration unregisters DittoFS's services from the system
+// rpcbind. No-op when system registration was never active.
+func (s *NFSAdapter) stopSystemPortmapRegistration() {
+	if !s.sysregActive.Load() {
+		return
+	}
+	s.sysregActive.Store(false)
+
+	// Use a fresh bounded context: the adapter's lifecycle ctx is already
+	// cancelled during shutdown, but unregistering stale NLM/NSM mappings is
+	// important enough to spend a few seconds on.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	mappings := s.systemRegMappings()
+	if err := sysreg.Unregister(ctx, systemPortmapAddr(), mappings); err != nil {
+		logger.Warn("Failed to unregister services from system portmapper", "error", err)
+		return
+	}
+	logger.Info("Unregistered NFS services from system portmapper")
 }
 
 // stopPortmapper gracefully shuts down the embedded portmapper server.

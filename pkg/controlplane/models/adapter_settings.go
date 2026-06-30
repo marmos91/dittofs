@@ -81,6 +81,14 @@ type NFSAdapterSettings struct {
 	PortmapperEnabled bool `gorm:"default:false" json:"portmapper_enabled"`
 	PortmapperPort    int  `gorm:"default:10111" json:"portmapper_port"`
 
+	// PortmapperRegisterWithSystem registers DittoFS's services (NFS, MOUNT,
+	// NLM, NSM) with the host's system rpcbind on port 111 at startup, so a
+	// kernel NFSv3 client can discover the NLM port and take byte-range locks
+	// without the `nolock` mount option (issue #1503). Needs UDPEnabled too for
+	// NSM/SM_NOTIFY. Defaults to false (opt-in). Takes effect on adapter
+	// (re)start.
+	PortmapperRegisterWithSystem bool `gorm:"default:false" json:"portmapper_register_with_system"`
+
 	// UDPEnabled serves NLM/NSM/MOUNT over UDP (in addition to TCP). Required for
 	// NFSv3 file locking from BSD/macOS clients (issue #1353). NFS data is never
 	// served over UDP. Takes effect on adapter (re)start.
@@ -214,33 +222,34 @@ func (s *SMBAdapterSettings) SetSigningAlgorithmPreference(prefs []string) {
 // NewDefaultNFSSettings creates an NFSAdapterSettings with all default values.
 func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 	return &NFSAdapterSettings{
-		ID:                         uuid.New().String(),
-		AdapterID:                  adapterID,
-		MinVersion:                 "3",
-		MaxVersion:                 "4.1",
-		LeaseTime:                  90,
-		GracePeriod:                90,
-		DelegationRecallTimeout:    90,
-		CallbackTimeout:            5,
-		LeaseBreakTimeout:          35,
-		MaxConnections:             0,
-		MaxClients:                 10000,
-		MaxCompoundOps:             50,
-		MaxReadSize:                1048576,
-		MaxWriteSize:               1048576,
-		PreferredTransferSize:      1048576,
-		DelegationsEnabled:         true,
-		MaxDelegations:             10000,
-		DirDelegBatchWindowMs:      50,
-		V4MinMinorVersion:          0,
-		V4MaxMinorVersion:          2,
-		V4MaxSessionSlots:          64,
-		V4MaxSessionsPerClient:     16,
-		V4MaxConnectionsPerSession: 16,
-		PortmapperEnabled:          false,
-		PortmapperPort:             10111,
-		UDPEnabled:                 false,
-		Version:                    1,
+		ID:                           uuid.New().String(),
+		AdapterID:                    adapterID,
+		MinVersion:                   "3",
+		MaxVersion:                   "4.1",
+		LeaseTime:                    90,
+		GracePeriod:                  90,
+		DelegationRecallTimeout:      90,
+		CallbackTimeout:              5,
+		LeaseBreakTimeout:            35,
+		MaxConnections:               0,
+		MaxClients:                   10000,
+		MaxCompoundOps:               50,
+		MaxReadSize:                  1048576,
+		MaxWriteSize:                 1048576,
+		PreferredTransferSize:        1048576,
+		DelegationsEnabled:           true,
+		MaxDelegations:               10000,
+		DirDelegBatchWindowMs:        50,
+		V4MinMinorVersion:            0,
+		V4MaxMinorVersion:            2,
+		V4MaxSessionSlots:            64,
+		V4MaxSessionsPerClient:       16,
+		V4MaxConnectionsPerSession:   16,
+		PortmapperEnabled:            false,
+		PortmapperPort:               10111,
+		PortmapperRegisterWithSystem: false,
+		UDPEnabled:                   false,
+		Version:                      1,
 	}
 }
 

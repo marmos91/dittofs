@@ -162,6 +162,29 @@ DITTOFS_ADAPTERS_NFS_PORTMAPPER_PORT=10111
 DITTOFS_ADAPTERS_NFS_PORTMAPPER_ENABLED=false
 ```
 
+#### Registering with the system rpcbind (port 111)
+
+A kernel NFSv3 client discovers the NLM (lock manager) port by querying
+`rpcbind` on **port 111** — a location fixed by the RPC standard with no
+client-side override. On a host that already runs a system `rpcbind`, DittoFS
+cannot bind 111 with its embedded portmapper, so a client mounted **without**
+`nolock` finds no NLM registration and lock calls hang.
+
+Set `register_with_system` to make DittoFS register its services (NFS, MOUNT,
+NLM, NSM) with the host's existing `rpcbind` at startup — the same mechanism
+`rpc.nfsd` and `rpc.statd` use — so NFSv3 byte-range locking works without
+`nolock`:
+
+```bash
+DITTOFS_ADAPTERS_NFS_PORTMAPPER_REGISTER_WITH_SYSTEM=true
+# NLM/NSM use UDP for status notifications — enable the UDP transport too:
+DITTOFS_ADAPTERS_NFS_UDP_ENABLED=true
+```
+
+Best effort: if no `rpcbind` answers on 111 the registration is skipped with a
+warning (NFS still serves; only `nolock`-free v3 locking is unavailable). The
+mappings are unregistered cleanly on shutdown.
+
 ### Security
 
 The embedded portmapper follows standard security practices:
