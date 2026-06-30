@@ -49,7 +49,7 @@ func TestCrossProtocolXattrParity(t *testing.T) {
 	// owner. Under the squash default (root_to_guest) an NFS-created file is owned
 	// by an anonymous user a distinct SMB user could not write — and vice versa.
 	_, err = cli.Run("share", "nfs-config", "set", shareName, "--squash", "root_to_admin")
-	require.NoError(t, err, "set no_root_squash on the share")
+	require.NoError(t, err, "map NFS root to admin (UID 0) on the share")
 	smbUser := "admin"
 	smbPass := helpers.GetAdminPassword()
 
