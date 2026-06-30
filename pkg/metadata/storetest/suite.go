@@ -168,6 +168,24 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	t.Run("Trash", func(t *testing.T) {
 		runTrashConformanceTests(t, factory)
 	})
+
+	// BlockRecordOps covers BlockRecordStore: put/get round-trip, delete,
+	// walk, missing-ID miss, DecrLiveChunkCount (normal + floor + missing).
+	t.Run("BlockRecordOps", func(t *testing.T) {
+		runBlockRecordOps(t, factory(t))
+	})
+
+	// LocalIndexOps covers LocalChunkIndex: put/get round-trip, upsert
+	// overwrites, delete, missing-hash miss.
+	t.Run("LocalIndexOps", func(t *testing.T) {
+		runLocalIndexOps(t, factory(t))
+	})
+
+	// CommitBlockOps covers CommitBlock: full commit (record + local locations
+	// + synced markers), idempotency (second call is no-op).
+	t.Run("CommitBlockOps", func(t *testing.T) {
+		runCommitBlockOps(t, factory(t))
+	})
 }
 
 // createTestShare is a helper that creates a share and root directory for testing.

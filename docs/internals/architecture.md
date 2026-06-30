@@ -325,6 +325,123 @@ shares.
 See `docs/CONFIGURATION.md` (`max_log_bytes`, `rollup_workers`,
 `stabilization_ms`, `orphan_log_min_age_seconds`) for the tunables.
 
+## Log-Blob Local Tier
+
+`pkg/block/local/logblob` is a raw append-only file manager designed to
+replace the per-file append-log described above. **This substrate is built
+but not yet active.** The live local write path is still the `FSStore`
+append-log → FastCDC → `cas/<hash>` rollup described in
+[Block Store — Local Append-Log Tier](#block-store----local-append-log-tier).
+A later PR wires `logblob.Manager` into the block engine; a further PR
+retires the per-file log.
+
+### Layout
+
+A `Manager` owns a directory of flat binary files called log-blobs (`*.blob`):
+
+```
+<dir>/0000000000000000.blob    ← active blob (accepts appends)
+<dir>/0000000000000001.blob    ← sealed (read-only, eligible for eviction)
+...
+```
+
+Blob IDs are zero-padded 16-digit decimals, giving lexicographic sort order
+matching creation order. Chunks are stored raw — no per-record framing, no
+checksum inside the blob — so the single read primitive is a positioned
+`pread(2)` against a `LocalChunkLocation{LogBlobID, RawOffset, RawLength}`.
+Durability is caller-controlled: call `Sync` at commit boundaries.
+
+### API
+
+```go
+// Open opens (or creates) a Manager rooted at dir.
+// On a fresh directory it creates the first blob. On reopen the
+// highest-numbered blob becomes active and appends resume at its tail.
+func Open(dir string, opts Options) (*Manager, error)
+
+// Append writes p to the tail of the active blob and returns the chunk's
+// position. Rotates automatically when the active blob would exceed SizeCap
+// (default 1 GiB). Empty payloads are rejected.
+func (m *Manager) Append(ctx context.Context, p []byte) (block.LocalChunkLocation, error)
+
+// ReadAt reads loc.RawLength bytes from blob loc.LogBlobID at loc.RawOffset
+// into dst (len(dst) >= loc.RawLength). Safe to call concurrently with Append.
+func (m *Manager) ReadAt(ctx context.Context, loc block.LocalChunkLocation, dst []byte) (int, error)
+
+// Rotate seals the active blob and opens a fresh one. Callers can rotate
+// at application-defined boundaries without waiting for SizeCap.
+func (m *Manager) Rotate() error
+
+// Sync fsyncs the active blob to durable storage.
+func (m *Manager) Sync() error
+
+// ListBlobs returns metadata for every blob, sorted by creation order.
+// Includes the active blob.
+func (m *Manager) ListBlobs() ([]BlobInfo, error)
+
+// EvictBlob removes a sealed blob from disk and the in-memory fd cache.
+// The caller supplies a synced func that reports whether the blob's bytes
+// are durable elsewhere; eviction is refused with ErrUnsyncedBytes if not.
+// Idempotent: a second call on an already-evicted blob returns nil.
+// After eviction, ReadAt on that blob returns ErrEvicted.
+func (m *Manager) EvictBlob(ctx context.Context, logBlobID string, synced func(string) bool) error
+
+// Recover truncates logBlobID to validUpToOffset, discarding torn tail bytes.
+// For the active blob it also updates the in-memory tail pointer.
+// Rejects offset > current blob size to prevent POSIX ftruncate from
+// zero-filling. Callers must quiesce concurrent I/O before calling Recover.
+func (m *Manager) Recover(ctx context.Context, logBlobID string, validUpToOffset int64) error
+```
+
+### Concurrency
+
+`Append` and `Rotate` are mutex-serialized. `ReadAt` acquires the mutex
+briefly to snapshot the active blob's identity and file descriptor, then
+releases it before the `pread(2)` call. Reads and appends on non-overlapping
+byte ranges therefore proceed concurrently. The race detector is clean.
+
+### Sentinel errors
+
+| Error | Condition |
+|---|---|
+| `logblob.ErrClosed` | Operation attempted after `Close` |
+| `logblob.ErrBlobNotFound` | `ReadAt` targets a non-existent blob ID |
+| `logblob.ErrEvicted` | `ReadAt` or `Recover` targets an evicted blob |
+| `logblob.ErrActiveBlob` | `EvictBlob` called on the current active blob |
+| `logblob.ErrUnsyncedBytes` | `EvictBlob` refused because the caller's `synced` func returned false |
+
+### Data flow (once wired in)
+
+```
+Chunk bytes
+    │
+    ▼ logblob.Manager.Append
+LocalChunkLocation{LogBlobID, RawOffset, RawLength}
+    │
+    ├─▶ metadata.LocalChunkIndex.PutLocalLocation  ─┐
+    └─▶ metadata.BlockRecordStore.PutBlockRecord   ─┴─ single transaction
+            via metadata.DefaultCommitBlock            (one fsync per block —
+                                                        the local durable commit)
+            then, after that transaction commits:
+    └─▶ metadata.SyncedHashStore.MarkSynced (per chunk, remote locator)
+            runs as a separate idempotent post-commit phase — SyncedHashStore is
+            on Store but not Transaction, so remote locators are written outside
+            the block transaction and re-driven safely on retry.
+
+Read path:
+    ContentHash
+    │
+    ▼ metadata.LocalChunkIndex.GetLocalLocation
+    LocalChunkLocation
+    │
+    ▼ logblob.Manager.ReadAt
+    chunk bytes
+```
+
+The `metadata.LocalChunkIndex` and `metadata.BlockRecordStore` contracts
+that feed this flow are described in
+[Block Record and Local Chunk Index](implementing-stores.md#block-record-and-local-chunk-index).
+
 ## Block Lifecycle (three-state)
 
 The block lifecycle has three persisted states held on `FileChunk.State`

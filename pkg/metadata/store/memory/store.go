@@ -288,6 +288,11 @@ type MemoryMetadataStore struct {
 	// output). FindByObjectID resolves through this map -> files lookup
 	// chain (added in).
 	objectIndex map[block.ContentHash]string
+
+	// blockRecords maps BlockID → BlockRecord. Protected by mu.
+	blockRecords map[string]*block.BlockRecord
+	// localChunks maps ContentHash → LocalChunkLocation. Protected by mu.
+	localChunks map[block.ContentHash]block.LocalChunkLocation
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -360,6 +365,9 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		// per-identity quota usage counters.
 		userUsage:  make(map[uint32]*metadata.UsageStat),
 		groupUsage: make(map[uint32]*metadata.UsageStat),
+		// Block packing record store.
+		blockRecords: make(map[string]*block.BlockRecord),
+		localChunks:  make(map[block.ContentHash]block.LocalChunkLocation),
 	}
 
 	return store

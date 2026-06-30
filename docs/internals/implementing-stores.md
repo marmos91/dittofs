@@ -377,6 +377,149 @@ Cross-references:
 - [BLOCKSTORE_MIGRATION.md](../guide/block-store-migration.md)
   for the operator-facing migration story.
 
+### Block Record and Local Chunk Index
+
+Two additional metadata interfaces persist the bookkeeping needed by the
+blocks-only storage path. All four backends (memory, badger, sqlite, postgres)
+implement both and pass the corresponding conformance groups.
+
+#### BlockRecordStore
+
+Tracks each log-blob block object: its content hash, byte length, live chunk
+count, and sync state. The syncer uses this to decide which blocks are safe to
+upload; the GC uses it to decide which may be deleted.
+
+```go
+// pkg/block/block_record.go
+type BlockRecord struct {
+    BlockID        string
+    BlockHash      block.ContentHash
+    Length         int64
+    LiveChunkCount uint32
+    SyncState      block.BlockState // block.BlockStatePending = 0 while uploading
+}
+```
+
+```go
+// pkg/metadata/block_record_store.go
+type BlockRecordStore interface {
+    // PutBlockRecord writes or overwrites the record for rec.BlockID.
+    PutBlockRecord(ctx context.Context, rec block.BlockRecord) error
+
+    // GetBlockRecord retrieves the record for blockID.
+    // Returns (_, false, nil) when no record exists — absence is not an error.
+    GetBlockRecord(ctx context.Context, blockID string) (block.BlockRecord, bool, error)
+
+    // DeleteBlockRecord removes the record for blockID. Idempotent.
+    DeleteBlockRecord(ctx context.Context, blockID string) error
+
+    // WalkBlockRecords calls fn for every stored block record.
+    // Returns the first non-nil error from fn or from the store iterator.
+    WalkBlockRecords(ctx context.Context, fn func(block.BlockRecord) error) error
+
+    // DecrLiveChunkCount atomically decrements LiveChunkCount for blockID
+    // by delta, flooring at 0. Returns the remaining count.
+    // Returns an error if blockID does not exist.
+    DecrLiveChunkCount(ctx context.Context, blockID string, delta uint32) (remaining uint32, err error)
+}
+```
+
+Conformance: `storetest` group **BlockRecordOps** covers put/get round-trip,
+missing-key (returns `false`, not an error), delete idempotency, walk, and
+`DecrLiveChunkCount` with floor clamping.
+
+#### LocalChunkIndex
+
+Maps a chunk's content hash to its position in a local log-blob file. It is
+the local-tier analog of `SyncedHashStore`: both are keyed by `ContentHash`,
+both carry a physical locator, and both follow the same idempotent-put /
+safe-miss-on-get / idempotent-delete contract.
+
+| Interface         | Key           | Value                        | Tier   |
+|-------------------|---------------|------------------------------|--------|
+| `SyncedHashStore` | `ContentHash` | `block.ChunkLocator`         | Remote |
+| `LocalChunkIndex` | `ContentHash` | `block.LocalChunkLocation`   | Local  |
+
+```go
+// pkg/block/block_record.go
+type LocalChunkLocation struct {
+    LogBlobID string // blob filename stem, e.g. "0000000000000001"
+    RawOffset int64  // byte offset within that blob
+    RawLength int64  // byte length of the raw chunk
+}
+```
+
+```go
+// pkg/metadata/block_record_store.go
+type LocalChunkIndex interface {
+    // PutLocalLocation records or overwrites the local position for hash.
+    PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error
+
+    // GetLocalLocation returns the local position for hash.
+    // Returns (_, false, nil) when no entry exists.
+    GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error)
+
+    // DeleteLocalLocation removes the local position for hash. Idempotent.
+    DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error
+}
+```
+
+Conformance: group **LocalIndexOps** covers put/get round-trip, upsert
+overwrites (second write wins), missing-key, and delete idempotency.
+
+#### DefaultCommitBlock — one fsync per block
+
+`metadata.DefaultCommitBlock` atomically commits an entire block's metadata
+in a single transaction — one fsync per block, not one per chunk:
+
+```go
+// pkg/metadata/block_record_store.go
+func DefaultCommitBlock(
+    ctx context.Context,
+    s interface {
+        Transactor
+        SyncedHashStore
+    },
+    rec block.BlockRecord,
+    chunks []block.BlockChunkCommit,
+) error
+```
+
+`BlockChunkCommit` bundles the per-chunk commit data:
+
+```go
+// pkg/block/block_record.go
+type BlockChunkCommit struct {
+    Hash   block.ContentHash
+    Remote block.ChunkLocator      // remote locator passed to MarkSynced
+    Local  block.LocalChunkLocation // local locator stored in LocalChunkIndex
+}
+```
+
+Inside `WithTransaction`, `DefaultCommitBlock`:
+
+1. Calls `GetBlockRecord` — if the block record already exists the whole
+   function is a no-op (idempotent restart path; no double-counting).
+2. Calls `PutBlockRecord` with `rec`.
+3. Calls `PutLocalLocation` for every chunk in `chunks`.
+
+After the transaction commits, it calls `MarkSynced` on `SyncedHashStore`
+for every chunk, recording the remote locator. `MarkSynced` runs outside
+the transaction and is itself idempotent, so a crash between the committed
+transaction and the last `MarkSynced` call is safe: the next retry skips the
+transaction (block record already exists) and re-runs only the `MarkSynced`
+loop.
+
+Backends expose `CommitBlock` on the `Store` interface and SHOULD delegate to
+`DefaultCommitBlock`:
+
+```go
+CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error
+```
+
+Conformance: group **CommitBlockOps** covers full commit with multiple chunks,
+idempotent re-commit, and `MarkSynced` retry after a simulated mid-commit crash.
+
 ### Engine API surface
 
 Custom block-store implementations that compose into `*engine.BlockStore`
