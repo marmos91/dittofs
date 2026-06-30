@@ -35,7 +35,9 @@ const (
 	// pre-v4 streams with ErrSchemaVersionMismatch — consistent with the prior
 	// bumps, which added/removed tables with no cross-version restore shim.
 	// Pre-1.0 backups are not forward-portable across schema versions.
-	postgresSchemaVersion = uint32(4)
+	// v5 adds the block_records and local_chunk_index table sections (#1493 PR2),
+	// raising the backup table count from 15 to 17.
+	postgresSchemaVersion = uint32(5)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order
