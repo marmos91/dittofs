@@ -704,6 +704,13 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 
 		parentHandle, name := prepareDeletePermTest(t, fx, 0755, 1000, 2000)
 
+		// A genuine read-only share manifests as BOTH the per-user ceiling
+		// (ctx.ShareReadOnly, set by the resolver) and the store-level flag.
+		// The store-level flag is what maps the denial to ErrReadOnly (EROFS);
+		// the per-user ceiling alone is an ordinary permission denial (EACCES).
+		require.NoError(t, fx.store.UpdateShareOptions(t.Context(), fx.shareName,
+			&metadata.ShareOptions{ReadOnly: true}))
+
 		ctx := fx.smbDeleteContext(2000, 2000)
 		ctx.ShareReadOnly = true
 
@@ -714,6 +721,25 @@ func TestMetadataService_RemoveFile_DeletePermission(t *testing.T) {
 		// Read-only denial → ErrReadOnly (NFS3ERR_ROFS / EROFS) per RFC 1813.
 		// SMB still renders it as STATUS_ACCESS_DENIED.
 		assert.Equal(t, metadata.ErrReadOnly, storeErr.Code)
+	})
+
+	// Per-user read-only on a WRITABLE share (e.g. a squashed/unknown uid given
+	// the share's default "read" permission): the delete is still denied, but as
+	// an ordinary permission denial → ErrAccessDenied (EACCES), NOT EROFS.
+	t.Run("per-user-read-only SMB-delete is EACCES", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermTest(t, fx, 0755, 1000, 2000)
+
+		ctx := fx.smbDeleteContext(2000, 2000)
+		ctx.ShareReadOnly = true // per-user ceiling only; share stays writable
+
+		_, _, err := fx.service.RemoveFile(ctx, parentHandle, name)
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.ErrorAs(t, err, &storeErr)
+		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
 	})
 
 	// Sticky bit: caller has WRITE on parent but is neither the file owner
@@ -833,6 +859,13 @@ func TestMetadataService_RemoveDirectory_DeletePermission(t *testing.T) {
 
 		parentHandle, name := prepareDeletePermDirTest(t, fx, 0755, 1000, 2000)
 
+		// A genuine read-only share manifests as BOTH the per-user ceiling
+		// (ctx.ShareReadOnly, set by the resolver) and the store-level flag.
+		// The store-level flag is what maps the denial to ErrReadOnly (EROFS);
+		// the per-user ceiling alone is an ordinary permission denial (EACCES).
+		require.NoError(t, fx.store.UpdateShareOptions(t.Context(), fx.shareName,
+			&metadata.ShareOptions{ReadOnly: true}))
+
 		ctx := fx.smbDeleteContext(2000, 2000)
 		ctx.ShareReadOnly = true
 
@@ -843,6 +876,24 @@ func TestMetadataService_RemoveDirectory_DeletePermission(t *testing.T) {
 		// Read-only denial → ErrReadOnly (NFS3ERR_ROFS / EROFS) per RFC 1813.
 		// SMB still renders it as STATUS_ACCESS_DENIED.
 		assert.Equal(t, metadata.ErrReadOnly, storeErr.Code)
+	})
+
+	// Per-user read-only on a WRITABLE share: the delete is still denied, but as
+	// an ordinary permission denial → ErrAccessDenied (EACCES), NOT EROFS.
+	t.Run("per-user-read-only SMB-delete is EACCES", func(t *testing.T) {
+		t.Parallel()
+		fx := newTestFixture(t)
+
+		parentHandle, name := prepareDeletePermDirTest(t, fx, 0755, 1000, 2000)
+
+		ctx := fx.smbDeleteContext(2000, 2000)
+		ctx.ShareReadOnly = true // per-user ceiling only; share stays writable
+
+		_, err := fx.service.RemoveDirectory(ctx, parentHandle, name)
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.ErrorAs(t, err, &storeErr)
+		assert.Equal(t, metadata.ErrAccessDenied, storeErr.Code)
 	})
 }
 
