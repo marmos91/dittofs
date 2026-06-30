@@ -42,7 +42,7 @@ func TestGCRegistry_SingleActiveJob(t *testing.T) {
 	close(release)
 
 	// Wait for completion by polling the registry.
-	waitFor(t, func() bool {
+	waitForGCJob(t, func() bool {
 		j, ok := reg.get(first.ID)
 		return ok && j.State == GCStateDone
 	})
@@ -60,7 +60,7 @@ func TestGCRegistry_FailedJob(t *testing.T) {
 	job := reg.start("/s", false, false, func(context.Context, func(engine.GCStats)) (*engine.GCStats, error) {
 		return nil, context.DeadlineExceeded
 	})
-	waitFor(t, func() bool {
+	waitForGCJob(t, func() bool {
 		j, ok := reg.get(job.ID)
 		return ok && j.State == GCStateFailed
 	})
@@ -87,7 +87,7 @@ func TestGCRegistry_RetireBound(t *testing.T) {
 			return &engine.GCStats{}, nil
 		})
 		ids = append(ids, job.ID)
-		waitFor(t, func() bool {
+		waitForGCJob(t, func() bool {
 			j, ok := reg.get(job.ID)
 			return ok && j.State == GCStateDone
 		})
@@ -106,7 +106,7 @@ func TestGCRegistry_RetireBound(t *testing.T) {
 
 // waitFor polls cond until it holds or a short deadline elapses, failing the
 // test on timeout. Polling (rather than a fixed sleep) keeps the test fast.
-func waitFor(t *testing.T, cond func() bool) {
+func waitForGCJob(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
