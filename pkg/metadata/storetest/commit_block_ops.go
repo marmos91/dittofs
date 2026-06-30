@@ -2,11 +2,79 @@ package storetest
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// ===========================================================================
+// Fault-injecting helpers for atomicity subtests
+// ===========================================================================
+
+// errPutLocalInjected is the sentinel returned by faultyLocalLocationStore.
+var errPutLocalInjected = errors.New("injected PutLocalLocation failure")
+
+// faultyLocalLocationStore wraps a Store and makes PutLocalLocation fail
+// inside WithTransaction. CommitBlock delegates to metadata.DefaultCommitBlock
+// with itself as the receiver so the injected WithTransaction is exercised.
+type faultyLocalLocationStore struct {
+	metadata.Store
+	errPut error
+}
+
+func (f *faultyLocalLocationStore) WithTransaction(ctx context.Context, fn func(metadata.Transaction) error) error {
+	return f.Store.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return fn(&faultyLocalLocationTx{Transaction: tx, errPut: f.errPut})
+	})
+}
+
+func (f *faultyLocalLocationStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
+	return metadata.DefaultCommitBlock(ctx, f, rec, chunks)
+}
+
+type faultyLocalLocationTx struct {
+	metadata.Transaction
+	errPut error
+}
+
+func (tx *faultyLocalLocationTx) PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
+	if tx.errPut != nil {
+		return tx.errPut
+	}
+	return tx.Transaction.PutLocalLocation(ctx, hash, loc)
+}
+
+// errMarkSyncedInjected is the sentinel returned by faultyMarkSyncedStore.
+var errMarkSyncedInjected = errors.New("injected MarkSynced failure")
+
+// faultyMarkSyncedStore wraps a Store and makes MarkSynced fail the first time
+// it is called, then delegates subsequent calls. CommitBlock delegates to
+// metadata.DefaultCommitBlock with itself as the receiver so the injected
+// MarkSynced is actually exercised.
+type faultyMarkSyncedStore struct {
+	metadata.Store
+	mu        sync.Mutex
+	hasFailed bool
+}
+
+func (f *faultyMarkSyncedStore) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.hasFailed {
+		f.hasFailed = true
+		return errMarkSyncedInjected
+	}
+	return f.Store.MarkSynced(ctx, hash, loc)
+}
+
+func (f *faultyMarkSyncedStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
+	return metadata.DefaultCommitBlock(ctx, f, rec, chunks)
+}
 
 // CommitBlockProvider is implemented by stores with full CommitBlock support.
 // The conformance suite type-asserts to this and skips if unimplemented.
@@ -191,5 +259,97 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 		if loc != local {
 			t.Errorf("GetLocalLocation() = %+v, want %+v", loc, local)
 		}
+	})
+
+	t.Run("Atomicity", func(t *testing.T) {
+		t.Run("InTxRollback", func(t *testing.T) {
+			t.Parallel()
+
+			rec := block.BlockRecord{
+				BlockID:        "atomicity-rollback",
+				BlockHash:      makeHash(0xA0),
+				Length:         1024,
+				LiveChunkCount: 1,
+				SyncState:      block.BlockStatePending,
+			}
+			chunks := []block.BlockChunkCommit{
+				{
+					Hash:   makeHash(0xA1),
+					Remote: block.ChunkLocator{BlockID: "atomicity-rollback", WireOffset: 0, WireLength: 1024},
+					Local:  block.LocalChunkLocation{LogBlobID: "log-atm-01", RawOffset: 0, RawLength: 1024},
+				},
+			}
+
+			faulty := &faultyLocalLocationStore{Store: store, errPut: errPutLocalInjected}
+			err := faulty.CommitBlock(ctx, rec, chunks)
+			require.Error(t, err, "CommitBlock must fail on injected PutLocalLocation error")
+			require.ErrorIs(t, err, errPutLocalInjected)
+
+			// Neither block record nor local location must have persisted: tx rolled back.
+			_, found, err := store.GetBlockRecord(ctx, rec.BlockID)
+			require.NoError(t, err)
+			assert.False(t, found, "block record must not persist after in-tx rollback")
+
+			_, found, err = store.GetLocalLocation(ctx, chunks[0].Hash)
+			require.NoError(t, err)
+			assert.False(t, found, "local location must not persist after in-tx rollback")
+		})
+
+		t.Run("CrossPhaseRetry", func(t *testing.T) {
+			t.Parallel()
+
+			rec := block.BlockRecord{
+				BlockID:        "atomicity-retry",
+				BlockHash:      makeHash(0xB0),
+				Length:         512,
+				LiveChunkCount: 1,
+				SyncState:      block.BlockStatePending,
+			}
+			chunks := []block.BlockChunkCommit{
+				{
+					Hash:   makeHash(0xB1),
+					Remote: block.ChunkLocator{BlockID: "atomicity-retry", WireOffset: 0, WireLength: 512},
+					Local:  block.LocalChunkLocation{LogBlobID: "log-atm-02", RawOffset: 0, RawLength: 512},
+				},
+			}
+
+			faulty := &faultyMarkSyncedStore{Store: store}
+
+			// First call: transaction commits (block record + local location written)
+			// but MarkSynced fails → error returned. This mimics a crash between the
+			// commit phase and the MarkSynced phase.
+			err := faulty.CommitBlock(ctx, rec, chunks)
+			require.Error(t, err, "first CommitBlock must fail on injected MarkSynced failure")
+			require.ErrorIs(t, err, errMarkSyncedInjected)
+
+			// Retry with no more MarkSynced faults. The idempotency guard must NOT
+			// short-circuit before the MarkSynced loop — all remote locators must be
+			// written even though the block record already exists from the first call.
+			err = faulty.CommitBlock(ctx, rec, chunks)
+			require.NoError(t, err, "retry CommitBlock must succeed")
+
+			// Block record must be present with the original LiveChunkCount (not doubled).
+			got, found, err := store.GetBlockRecord(ctx, rec.BlockID)
+			require.NoError(t, err)
+			require.True(t, found, "block record must be present after retry")
+			assert.Equal(t, rec.LiveChunkCount, got.LiveChunkCount,
+				"LiveChunkCount must not be doubled by the retry")
+
+			// Local location must be present.
+			lloc, found, err := store.GetLocalLocation(ctx, chunks[0].Hash)
+			require.NoError(t, err)
+			require.True(t, found, "local location must be present after retry")
+			assert.Equal(t, chunks[0].Local, lloc)
+
+			// Remote locator must now be marked synced.
+			synced, err := store.IsSynced(ctx, chunks[0].Hash)
+			require.NoError(t, err)
+			assert.True(t, synced, "chunk must be marked synced after retry CommitBlock")
+
+			locator, found, err := store.GetLocator(ctx, chunks[0].Hash)
+			require.NoError(t, err)
+			assert.True(t, found, "GetLocator must find chunk after retry")
+			assert.Equal(t, chunks[0].Remote, locator)
+		})
 	})
 }
