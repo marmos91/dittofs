@@ -35,6 +35,11 @@ type fetchResult struct {
 type Syncer struct {
 	local       local.LocalStore
 	remoteStore remote.RemoteStore
+	// hasRemote mirrors "remoteStore != nil" as an atomic so the dispatcher's
+	// hot-path gating (dispatcherEnabled, called from addPendingHash under
+	// pendingMu) can read it without taking m.mu — avoiding both a data race
+	// with SetRemoteStore and a pendingMu→m.mu lock-ordering edge.
+	hasRemote atomic.Bool
 	// the syncer is one of the engine-internal
 	// callers that still reaches into the wider EngineFileBlockStore
 	// surface (GetFileBlock for dual-read resolve, ListFileBlocks for
@@ -71,17 +76,21 @@ type Syncer struct {
 	closed bool
 	mu     gosync.RWMutex
 
-	// wake nudges the periodic uploader to run a mirror pass immediately
-	// instead of waiting up to UploadInterval for the next tick. It is
-	// signalled (non-blocking, coalescing) from addPendingHash on every
-	// freshly rolled-up chunk, so upload overlaps the rollup of later chunks
-	// rather than starting a full tick-interval after rollup finishes (#1407).
-	// Buffered length 1: a burst of chunk completions collapses to a single
-	// follow-up pass, which snapshots the whole pending set at once.
+	// wake nudges the upload dispatcher that work is ready, so it picks up a
+	// freshly rolled-up chunk immediately instead of idling. Signalled
+	// (non-blocking, coalescing) from addPendingHash on every freshly rolled-up
+	// chunk, so upload overlaps the rollup of later chunks rather than starting
+	// a full tick-interval after rollup finishes (#1407). Buffered length 1: a
+	// burst of completions collapses to a single wakeup, after which the
+	// dispatcher drains the whole ready queue continuously (#1432).
 	wake chan struct{}
 
-	periodicStarted bool        // true once periodicUploader goroutine is launched
-	uploading       atomic.Bool // Guards against overlapping periodic upload ticks
+	periodicStarted bool // true once the dispatcher + maintenance goroutines are launched
+
+	// gate serializes the explicit drain path (Flush / SyncNow / uploadBlock)
+	// against the continuous upload dispatcher so the two never upload the same
+	// CAS chunk concurrently (#1432). See uploadGate.
+	gate *uploadGate
 
 	healthMonitor   *HealthMonitor           // Monitors remote store health (nil when no remote)
 	onHealthChanged healthTransitionCallback // Callback invoked on health state transitions
@@ -103,6 +112,16 @@ type Syncer struct {
 	// local store consults to decide whether to keep stalling a writer.
 	pendingMu     gosync.Mutex
 	pendingHashes map[block.ContentHash]int64
+
+	// readyQ is the FIFO of pending hashes ready for the dispatcher to upload,
+	// and inflight is the set currently being uploaded. Both are guarded by
+	// pendingMu and used only by the continuous dispatcher (#1432); the explicit
+	// mirrorOnce path reads pendingHashes directly. Every pending hash is in
+	// exactly one of {readyQ, inflight, failed-awaiting-requeue}; the
+	// maintenance loop's requeueOrphans moves failed hashes back into readyQ.
+	// claimReady validates on pop, so a stale/duplicate readyQ entry is skipped.
+	readyQ   []block.ContentHash
+	inflight map[block.ContentHash]struct{}
 
 	// unsyncedBytes is the running total on-disk size of pendingHashes:
 	// the number of cache bytes that cannot be evicted until they reach
@@ -153,16 +172,33 @@ func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
 	// (which deletes from the map and subtracts under the same lock): an
 	// add that interleaved a concurrent drain otherwise leaked a phantom
 	// positive byte count that no future drain would ever subtract.
-	prev := m.pendingHashes[h]
+	prev, alreadyPending := m.pendingHashes[h]
 	m.pendingHashes[h] = size
 	m.unsyncedBytes.Add(size - prev)
+	// Queue a freshly-pending hash for the dispatcher. An already-pending hash
+	// is left where it is (in readyQ, in flight, or awaiting requeue) — only its
+	// recorded size is refreshed above. readyQ/dispatch state is meaningful only
+	// when the dispatcher runs (a remote exists and not manual-sync); otherwise
+	// the explicit mirrorOnce path drains pendingHashes directly, so skipping
+	// the append avoids unbounded readyQ growth with no consumer.
+	queued := false
+	if !alreadyPending && m.dispatcherEnabled() {
+		m.readyQ = append(m.readyQ, h)
+		queued = true
+	}
 	m.pendingMu.Unlock()
 
-	// Nudge the periodic uploader to mirror this chunk now instead of waiting
-	// for the next tick, so upload pipelines with the rollup of later chunks
-	// (#1407). Only meaningful when a remote exists (the periodic uploader does
-	// not run otherwise). Non-blocking + coalescing — see signalWake.
-	if m.remoteStore != nil {
+	// Only a newly-inserted hash changes the queue depth; re-adding an
+	// already-pending hash (size refresh) leaves the gauge unchanged, so skip
+	// the extra lock/metric churn on that hot path (incl. seedPendingFromDisk).
+	if !alreadyPending {
+		m.publishQueueDepth()
+	}
+
+	// Nudge the dispatcher to mirror this chunk now instead of idling, so upload
+	// pipelines with the rollup of later chunks (#1407). Non-blocking +
+	// coalescing — see signalWake.
+	if queued {
 		m.signalWake()
 	}
 }
@@ -187,10 +223,11 @@ func (m *Syncer) ensureUploadLimiter() {
 }
 
 // signalWake performs a non-blocking, coalescing send on the wake channel,
-// nudging the periodic uploader to run a mirror pass immediately. Because wake
-// is buffered length 1, a burst of chunk completions collapses into a single
-// follow-up pass that snapshots the whole pending set — bounding wake-driven
-// passes regardless of chunk arrival rate (#1407).
+// nudging the upload dispatcher to pick up freshly-ready work immediately
+// instead of idling. Because wake is buffered length 1, a burst of chunk
+// completions collapses into a single wakeup, after which the dispatcher drains
+// the whole ready queue continuously — bounding wakeups regardless of chunk
+// arrival rate (#1407).
 func (m *Syncer) signalWake() {
 	select {
 	case m.wake <- struct{}{}:
@@ -238,6 +275,7 @@ func (m *Syncer) markFetchedSynced(ctx context.Context, h block.ContentHash) {
 		m.unsyncedBytes.Add(-size)
 	}
 	m.pendingMu.Unlock()
+	m.publishQueueDepth()
 }
 
 // UnsyncedBytes returns the running total on-disk size of CAS chunks present
@@ -325,9 +363,12 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 		stopCh:           make(chan struct{}),
 		wake:             make(chan struct{}, 1),
 		pendingHashes:    make(map[block.ContentHash]int64),
+		inflight:         make(map[block.ContentHash]struct{}),
+		gate:             newUploadGate(),
 		uploadLimiter:    newDynamicSemaphore(startWindow),
 		uploadController: uploadController,
 	}
+	m.hasRemote.Store(remoteStore != nil)
 
 	queueConfig := DefaultSyncQueueConfig()
 	// In adaptive mode the queue pool must cover the ceiling the controller can
@@ -444,22 +485,30 @@ func (m *Syncer) canProcess(ctx context.Context) bool {
 // machine and caller-retry guidance. In brief:
 //   - Finalized=true, err=nil: durable on the configured remote.
 //   - Finalized=false, err=nil: SOFT condition (no remote configured,
-//     remote unhealthy, OR another in-flight mirror pass holds the
-//     `uploading` CAS gate). Callers MUST NOT tight-loop retry — see
-//     #670 below.
+//     remote unhealthy, OR the upload gate is held by another explicit
+//     drain or in-flight dispatcher uploads). Callers MUST NOT tight-loop
+//     retry — see #670 below.
 //   - err != nil: hard failure, do not retry until addressed.
 //
 // #670: callers driving NFS COMMIT or SMB Flush loops over this method
-// must rate-limit retries on Finalized=false. The `uploading`
-// CompareAndSwap gate below makes the EXPLICIT Flush caller lose every
-// attempt that races the periodic uploader's tick, so a tight
-// in-handler retry loop pegs the CPU without ever making progress and
-// starves the uploading goroutine. Recommended pattern: surface the
+// must rate-limit retries on Finalized=false. The non-blocking gate
+// acquisition below makes the EXPLICIT Flush caller soft-fail any
+// attempt that races the continuous dispatcher, so a tight in-handler
+// retry loop pegs the CPU without ever making progress and starves the
+// dispatcher. Recommended pattern: surface the
 // soft-fail to the protocol adapter and let the client drive the next
 // attempt on its own schedule (e.g. NFSv3 reports the WRITE's
 // "committed" enum as UNSTABLE rather than DATASYNC/FILESYNC so the
 // client reissues COMMIT later; SMB Flush returns success after a
 // bounded attempt) instead of spinning in-handler.
+//
+// #1432: the continuous dispatcher keeps the gate active for as long as
+// uploads are in flight, so under a sustained streaming workload Flush may
+// soft-fail (Finalized=false) until the pipeline momentarily idles. This is
+// expected and does not affect crash-safety: chunks are already durable in the
+// local log before Flush is ever called, and the dispatcher mirrors them to the
+// remote in the background. Callers needing a definitive remote-durable barrier
+// (ManualSync mode) use SyncNow, which blocks on the exclusive gate.
 func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResult, error) {
 	if err := m.checkReady(ctx); err != nil {
 		return nil, err
@@ -480,20 +529,25 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 	if m.remoteStore == nil || !m.IsRemoteHealthy() {
 		return &block.FlushResult{Finalized: false}, nil
 	}
-	// Serialize the explicit mirror against the periodic uploader's
-	// tick body. Both paths take the uploading atomic gate; whichever
-	// holds it runs and the other observes Finalized=false.
+	// Serialize the explicit mirror against any other explicit drain and against
+	// the continuous upload dispatcher. The gate is taken non-blocking: if
+	// another explicit drain holds it, or dispatcher uploads are in flight, this
+	// returns Finalized=false rather than waiting.
 	//
-	// #670: the contention branch returns Finalized=false WITHOUT
-	// waiting for the in-flight pass to complete. This is intentional —
-	// blocking the explicit caller until the periodic uploader's tick
-	// finishes could span minutes of remote I/O and translate into
-	// protocol-client D-state. Callers MUST NOT spin-retry: see godoc
-	// above and the Flusher.Flush contract in pkg/block.
-	if !m.uploading.CompareAndSwap(false, true) {
+	// #670: the contention branch returns Finalized=false WITHOUT waiting. This
+	// is intentional — blocking the explicit caller until concurrent uploads
+	// finish could span seconds of remote I/O and translate into protocol-client
+	// D-state. Callers MUST NOT spin-retry: see godoc above and the
+	// Flusher.Flush contract in pkg/block.
+	m.ensureGate()
+	ok, err := m.gate.acquireExclusive(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return &block.FlushResult{Finalized: false}, nil
 	}
-	defer m.uploading.Store(false)
+	defer m.gate.releaseExclusive()
 
 	if err := m.mirrorOnce(ctx); err != nil {
 		return nil, err
@@ -504,7 +558,8 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 // mirrorOnce performs a single mirror-loop pass: every CAS hash
 // present locally but not yet marked synced is read out of the local
 // store, written to remote, then MarkSynced'd. Caller MUST hold the
-// uploading atomic gate.
+// upload gate's exclusive lock (acquireExclusive) so the pass does not
+// race the continuous dispatcher.
 //
 // Ordering is Put-then-Mark. A crash between remote.Put and MarkSynced
 // is safe because remote.Put is idempotent on (hash, identical bytes)
@@ -543,10 +598,6 @@ func (m *Syncer) mirrorOnce(ctx context.Context) error {
 		snapshot = append(snapshot, h)
 	}
 	m.pendingMu.Unlock()
-
-	if mx := m.dataplaneMetrics(); mx != nil {
-		mx.SetUploadQueueDepth(len(snapshot))
-	}
 
 	// Tracks whether at least one pending hash was retained-but-not-mirrored
 	// because its local bytes were gone. The pass continues draining the
@@ -687,6 +738,7 @@ func (m *Syncer) mirrorChunk(ctx context.Context, hashStore metadata.SyncedHashS
 		m.unsyncedBytes.Add(-size)
 	}
 	m.pendingMu.Unlock()
+	m.publishQueueDepth()
 	m.completedSyncs.Add(1)
 	return nil
 }
@@ -959,8 +1011,9 @@ func (m *Syncer) startHealthMonitor(ctx context.Context) {
 	m.healthMonitor.Start(ctx)
 }
 
-// startPeriodicUploader launches the periodic uploader goroutine if not already running.
-// Must be called with m.mu held.
+// startPeriodicUploader launches the continuous upload dispatcher, the
+// maintenance loop, and (in adaptive mode) the goodput controller, if not
+// already running. Must be called with m.mu held.
 func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	if m.periodicStarted {
 		return
@@ -980,7 +1033,11 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
-	go m.periodicUploader(ctx, interval)
+	// The dispatcher sustains upload concurrency in steady state (#1432); the
+	// maintenance loop handles the slow housekeeping (FileBlock metadata flush,
+	// drift reconcile, failed-upload requeue) the dispatcher does not.
+	go m.uploadDispatcher(ctx)
+	go m.maintenanceLoop(ctx, interval)
 
 	// Adaptive mode only: launch the goodput controller that resizes the
 	// upload window to saturate the uplink (#1407). Pinned --parallel-uploads
@@ -1077,25 +1134,21 @@ func (m *Syncer) adaptiveUploadTick(interval time.Duration) (window int, goodput
 // mirror loop. Callers such as the REST /drain-uploads endpoint and
 // Close() rely on this signal.
 //
-// Serializes against the periodic uploader via the m.uploading atomic
-// gate so the explicit drain and the periodic tick never both run the
-// mirror loop concurrently.
+// Serializes against the continuous upload dispatcher (and any other explicit
+// drain) via the upload gate, so the explicit mirror pass runs alone over a
+// clean pending set.
 func (m *Syncer) SyncNow(ctx context.Context) error {
 	if m.remoteStore == nil {
 		return nil
 	}
-	if !m.uploading.CompareAndSwap(false, true) {
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for !m.uploading.CompareAndSwap(false, true) {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-ticker.C:
-			}
-		}
+	// Take the explicit-drain lock, blocking (ctx-aware) for any other explicit
+	// drain to finish and for the continuous dispatcher's in-flight uploads to
+	// quiesce, so mirrorOnce runs alone over a clean pending set.
+	m.ensureGate()
+	if _, err := m.gate.acquireExclusive(ctx, true); err != nil {
+		return err
 	}
-	defer m.uploading.Store(false)
+	defer m.gate.releaseExclusive()
 
 	// Flush queued FileBlock metadata to the store so the mirror loop
 	// picks up recently rolled-up chunks.
@@ -1170,86 +1223,6 @@ type syncingEnumerator interface {
 	EnumerateSyncingBlocks(ctx context.Context) ([]*block.FileBlock, error)
 }
 
-// periodicUploader runs every interval, scanning for blocks to upload.
-// Uses an atomic guard to prevent overlapping ticks: if the previous upload
-// batch is still running when the ticker fires, the tick is skipped. This
-// prevents unbounded memory growth when uploads take longer than the interval
-// (e.g., 8 blocks x 2-3s S3 upload = 16-24s, but interval is only 2s).
-func (m *Syncer) periodicUploader(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	logger.Info("Periodic syncer started", "interval", interval, "upload_delay", m.config.UploadDelay)
-
-	// Drift reconcile: every ~10 minutes re-seed the pending set from disk
-	// to catch any chunk that bypassed the onChunkComplete chokepoint
-	// (defense-in-depth — the steady-state path keeps the set current via
-	// addPendingHash, so this is a safety net, not the primary mechanism).
-	reconcileEvery := int(((10 * time.Minute) / interval))
-	if reconcileEvery < 1 {
-		reconcileEvery = 1
-	}
-	tick := 0
-
-	for {
-		select {
-		case <-ticker.C:
-			if !m.canProcess(ctx) {
-				logger.Info("Periodic syncer: canProcess=false, exiting")
-				return
-			}
-			tick++
-			if tick%reconcileEvery == 0 {
-				if _, err := m.seedPendingFromDisk(ctx); err != nil {
-					logger.Warn("Periodic syncer: drift reconcile failed", "error", err)
-				}
-			}
-			m.runDrainPass(ctx)
-		case <-m.wake:
-			// A freshly rolled-up chunk signalled work (#1407). Drain now
-			// instead of idling up to UploadInterval, so the mirror pipelines
-			// with the rollup of later chunks. The wake is buffered length 1, so
-			// a burst of chunk completions collapses into a single queued wake;
-			// the follow-up pass snapshots the whole pending set at once.
-			if !m.canProcess(ctx) {
-				logger.Info("Periodic syncer: canProcess=false, exiting")
-				return
-			}
-			m.runDrainPass(ctx)
-		case <-m.stopCh:
-			logger.Info("Periodic syncer: stopCh received, exiting")
-			return
-		case <-ctx.Done():
-			logger.Info("Periodic syncer: context cancelled, exiting")
-			return
-		}
-	}
-}
-
-// runDrainPass runs one mirror pass under the uploading atomic gate. It is the
-// shared body of the periodic ticker and the wake signal (#1407). The ticker
-// and wake cases run in the same periodicUploader goroutine, so they already
-// cannot overlap each other; the gate's job is to serialize this pass against
-// the OTHER mirror entrypoints — Flush, SyncNow, and uploadBlock — which run
-// from caller goroutines and take the same gate. A pass that loses the gate is
-// a no-op: the pending set is retained for the next tick/wake. The circuit
-// breaker additionally skips uploads while the remote is unhealthy.
-func (m *Syncer) runDrainPass(ctx context.Context) {
-	if !m.uploading.CompareAndSwap(false, true) {
-		logger.Debug("Periodic syncer: previous pass still running, skipping")
-		return
-	}
-	defer m.uploading.Store(false)
-	// Circuit breaker: skip uploads when remote store is unhealthy.
-	if !m.IsRemoteHealthy() {
-		logger.Warn("Periodic syncer: remote unhealthy, skipping upload cycle",
-			"outage_duration", m.RemoteOutageDuration(),
-			"hint", "check S3 credentials, endpoint, and bucket configuration")
-		return
-	}
-	m.syncLocalBlocks(ctx)
-}
-
 // Close shuts down the syncer and waits for pending uploads.
 func (m *Syncer) Close() error {
 	m.mu.Lock()
@@ -1321,6 +1294,7 @@ func (m *Syncer) SetRemoteStore(ctx context.Context, remoteStore remote.RemoteSt
 	}
 
 	m.remoteStore = remoteStore
+	m.hasRemote.Store(true)
 	m.local.SetEvictionEnabled(true)
 
 	m.startHealthMonitor(ctx)

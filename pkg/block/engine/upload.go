@@ -5,44 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 )
-
-// syncLocalBlocks runs one mirror-loop pass for the periodic uploader
-// tick body. The mirror-loop helper is shared with explicit Flush
-// every CAS hash present locally but not yet marked synced is Put to
-// remote and MarkSynced, with Put-then-Mark ordering for crash safety.
-//
-// Caller (periodicUploader) MUST hold the uploading atomic gate.
-func (m *Syncer) syncLocalBlocks(ctx context.Context) {
-	if m.remoteStore == nil {
-		return
-	}
-	// Flush queued FileBlock metadata so subsequent passes see any
-	// recently rolled-up chunks.
-	m.local.SyncFileBlocks(ctx)
-
-	if err := m.mirrorOnce(ctx); err != nil {
-		switch {
-		case ctx.Err() != nil || errors.Is(err, ErrClosed):
-			// Shutdown paths (context cancelled, syncer closed) are
-			// expected during graceful Close and stay at Debug.
-			logger.Debug("Periodic mirror pass aborted during shutdown", "error", err)
-		case errors.Is(err, block.ErrChunkLostBeforeMirror):
-			// One or more pending hashes had no local bytes and were
-			// retained for the next tick. mirrorOnce already drained every
-			// healthy hash this pass, so this is non-fatal — swallow it as
-			// an expected retry condition rather than a failure.
-			logger.Info("Periodic mirror pass retained chunk(s) with missing local bytes for retry", "error", err)
-		default:
-			// A genuine remote upload failure (network, auth, quota, S3
-			// 5xx, local bitrot) is unexpected: log at Warn so it is
-			// visible before the next health-check interval.
-			logger.Warn("Periodic mirror pass failed", "error", err)
-		}
-	}
-}
 
 // uploadBlock uploads a single block from the local store to the
 // remote store. Wired into the SyncQueue's per-block upload worker
@@ -61,10 +25,15 @@ func (m *Syncer) uploadBlock(ctx context.Context, payloadID string, blockIdx uin
 	// Drive the mirror loop opportunistically — any locally present
 	// chunk for this payloadID that has not been marked synced will be
 	// caught up. The blockIdx hint is ignored under hash-keyed CAS.
-	if !m.uploading.CompareAndSwap(false, true) {
+	m.ensureGate()
+	ok, err := m.gate.acquireExclusive(ctx, false)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return nil
 	}
-	defer m.uploading.Store(false)
+	defer m.gate.releaseExclusive()
 	if err := m.mirrorOnce(ctx); err != nil {
 		if errors.Is(err, block.ErrChunkLostBeforeMirror) {
 			// Opportunistic drive-by drain: a retained-for-retry hash is

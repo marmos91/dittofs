@@ -206,14 +206,16 @@ func TestSetRemoteStoreNilArg(t *testing.T) {
 	}
 }
 
-func TestNilRemoteStoreSyncLocalBlocks(t *testing.T) {
+func TestNilRemoteStoreSyncNow(t *testing.T) {
 	m, _, cleanup := newNilRemoteStoreEnv(t)
 	defer cleanup()
 	ctx := context.Background()
 
-	// syncLocalBlocks should be a no-op with nil remoteStore
-	m.syncLocalBlocks(ctx)
-	// If we reach here without panic, test passes
+	// The explicit drain path should be a no-op (and not error) with nil
+	// remoteStore.
+	if err := m.SyncNow(ctx); err != nil {
+		t.Fatalf("SyncNow with nil remoteStore should not error, got: %v", err)
+	}
 }
 
 func TestNilRemoteStoreFetchBlock(t *testing.T) {
