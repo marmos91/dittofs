@@ -48,6 +48,11 @@ Examples:
 // ShareDetail wraps a share for detailed table rendering.
 type ShareDetail struct {
 	share *apiclient.Share
+	// metaStoreNames and blockStoreNames are best-effort store ID -> name
+	// lookups (built via buildStoreNameMaps). A missing entry falls back to the
+	// raw ID. Populated in runShow.
+	metaStoreNames  map[string]string
+	blockStoreNames map[string]string
 }
 
 // Headers implements TableRenderer.
@@ -66,14 +71,14 @@ func (sd ShareDetail) Rows() [][]string {
 
 	remoteStore := "-"
 	if s.RemoteBlockStoreID != nil && *s.RemoteBlockStoreID != "" {
-		remoteStore = *s.RemoteBlockStoreID
+		remoteStore = resolveStoreName(sd.blockStoreNames, *s.RemoteBlockStoreID)
 	}
 
 	rows := [][]string{
 		{"Name", s.Name},
 		{"ID", s.ID},
-		{"Metadata Store", s.MetadataStoreID},
-		{"Local Block Store", s.LocalBlockStoreID},
+		{"Metadata Store", resolveStoreName(sd.metaStoreNames, s.MetadataStoreID)},
+		{"Local Block Store", resolveStoreName(sd.blockStoreNames, s.LocalBlockStoreID)},
 		{"Remote Block Store", remoteStore},
 		{"Read Only", fmt.Sprintf("%v", s.ReadOnly)},
 		{"Enabled", shareEnabledString(s.Enabled)},
@@ -155,5 +160,14 @@ func runShow(cmd *cobra.Command, args []string) error {
 		return cmdutil.PrintResource(os.Stdout, share, nil)
 	}
 
-	return output.PrintTable(os.Stdout, ShareDetail{share: share})
+	// Resolve store IDs to names so the table shows the store name instead of
+	// an opaque ID, matching 'share list'. Best-effort: a lookup failure falls
+	// back to the raw ID.
+	metaNames, blockNames := buildStoreNameMaps(client)
+
+	return output.PrintTable(os.Stdout, ShareDetail{
+		share:           share,
+		metaStoreNames:  metaNames,
+		blockStoreNames: blockNames,
+	})
 }

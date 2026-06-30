@@ -14,9 +14,10 @@ var listCmd = &cobra.Command{
 	Short: "List remote block stores",
 	Long: `List all remote block stores on the DittoFS server.
 
-Shows the name, type (s3 or memory), and configuration of each registered
+Shows the name, ID, type (s3 or memory), and configuration of each registered
 remote block store. Use this to confirm which stores exist before adding,
-editing, or running health checks against one.
+editing, or running health checks against one, or to match the store IDs shown
+by 'share show' back to a store name.
 
 Examples:
   # List as table
@@ -35,7 +36,7 @@ type StoreList []apiclient.BlockStore
 
 // Headers implements TableRenderer.
 func (sl StoreList) Headers() []string {
-	return []string{"NAME", "TYPE", "CONFIG"}
+	return []string{"NAME", "ID", "TYPE", "CONFIG"}
 }
 
 // Rows implements TableRenderer.
@@ -46,7 +47,7 @@ func (sl StoreList) Rows() [][]string {
 		if len(s.Config) > 0 && string(s.Config) != "null" {
 			configStr = string(s.Config)
 		}
-		rows = append(rows, []string{s.Name, s.Type, configStr})
+		rows = append(rows, []string{s.Name, s.ID, s.Type, configStr})
 	}
 	return rows
 }

@@ -5894,9 +5894,10 @@ List local block stores
 
 List all local block stores on the DittoFS server.
 
-Shows the name, type (fs or memory), and configuration of each registered
+Shows the name, ID, type (fs or memory), and configuration of each registered
 local block store. Use this to confirm which stores exist before adding,
-editing, or running health checks against one.
+editing, or running health checks against one, or to match the store IDs shown
+by 'share show' back to a store name.
 
 ```
 dfsctl store block local list
@@ -6158,9 +6159,10 @@ List remote block stores
 
 List all remote block stores on the DittoFS server.
 
-Shows the name, type (s3 or memory), and configuration of each registered
+Shows the name, ID, type (s3 or memory), and configuration of each registered
 remote block store. Use this to confirm which stores exist before adding,
-editing, or running health checks against one.
+editing, or running health checks against one, or to match the store IDs shown
+by 'share show' back to a store name.
 
 ```
 dfsctl store block remote list
@@ -6493,9 +6495,10 @@ List metadata stores
 
 List all metadata stores on the DittoFS server.
 
-Displays the name and type of every registered metadata store. Use this to
-confirm which stores are configured before adding or removing one, or to
-identify the store name needed by other sub-commands such as health.
+Displays the name, ID, and type of every registered metadata store. Use this to
+confirm which stores are configured before adding or removing one, to identify
+the store name needed by other sub-commands such as health, or to match the
+store IDs shown by 'share show' back to a store name.
 
 ```
 dfsctl store metadata list
