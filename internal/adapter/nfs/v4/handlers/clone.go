@@ -193,14 +193,13 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 		return cloneErr(types.NFS4ERR_SERVERFAULT)
 	}
 
-	// Pass the source blocks and size already fetched above rather than letting
-	// CloneWholeFile re-read them — one fewer metadata round-trip and no TOCTOU
-	// window on the source size between the whole-file decision and the clone.
+	// CloneWholeFile drains the source's pending rollups and re-reads its CAS
+	// manifest before copying, so a freshly-written (not-yet-rolled-up) source
+	// clones its real content instead of zeros.
 	if err := common.CloneWholeFile(
 		ctx.Context, blockStore, store, nil,
-		dstHandle,
-		srcFile.PayloadID, dstFile.PayloadID,
-		srcFile.Blocks, srcFile.Size,
+		srcHandle, dstHandle,
+		dstFile.PayloadID,
 	); err != nil {
 		logger.Debug("NFSv4.2 CLONE failed", "error", err, "client", ctx.ClientAddr)
 		return cloneErr(common.MapToNFS4(err))

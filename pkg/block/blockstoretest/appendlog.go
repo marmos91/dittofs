@@ -48,6 +48,89 @@ func BlockStoreAppendConformance(t *testing.T, factory AppendFactory) {
 	t.Run("TornWriteRecovery_LSL06", func(t *testing.T) { testTornWriteRecoveryLSL06(t, factory) })
 	t.Run("ConcurrentStorm", func(t *testing.T) { testConcurrentStorm(t, factory) })
 	t.Run("RollupOffsetMonotone_INV03", func(t *testing.T) { testRollupOffsetMonotoneINV03(t, factory) })
+	t.Run("DataExtents", func(t *testing.T) { testDataExtents(t, factory) })
+}
+
+// dataExtenter is the local-tier DataExtents surface (local.LocalStore). It is
+// declared inline here rather than imported to keep blockstoretest free of a
+// dependency on pkg/block/local.
+type dataExtenter interface {
+	DataExtents(ctx context.Context, payloadID string, fileSize uint64) ([][2]uint64, error)
+}
+
+// testDataExtents asserts the coverage invariant that backs NFSv4.2 SEEK /
+// READ_PLUS (#1481): DataExtents must report a data extent over every
+// written-but-not-yet-rolled-up byte (never a false hole, which RFC 7862
+// forbids), and must never report data outside [0, fileSize). It does NOT
+// assert exact extents — the precise fs backend returns one extent per written
+// region while the conservative memory backend collapses the whole written span
+// into a single extent; both satisfy coverage.
+//
+// DataExtents is queried IMMEDIATELY after the writes, before the rollup's
+// stabilization window can elapse: on the fs backend a rolled-up region leaves
+// the append-log logIndex (the engine re-adds it from the CAS manifest, but the
+// bare local store under test does not), so querying pre-rollup keeps the
+// local-tier coverage assertion deterministic.
+func testDataExtents(t *testing.T, factory AppendFactory) {
+	bs, cleanup := factory(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	de, ok := bs.(dataExtenter)
+	if !ok {
+		t.Skip("backend does not implement DataExtents")
+	}
+
+	const payloadID = "data-extents"
+	// Two disjoint writes separated by a large gap (a hole).
+	type wr struct {
+		off uint64
+		n   uint64
+	}
+	writes := []wr{{0, 4096}, {1 << 20, 4096}}
+	for _, w := range writes {
+		if err := bs.AppendWrite(ctx, payloadID, bytes.Repeat([]byte{0xCD}, int(w.n)), w.off); err != nil {
+			t.Fatalf("AppendWrite(off=%d): %v", w.off, err)
+		}
+	}
+	fileSize := writes[len(writes)-1].off + writes[len(writes)-1].n
+
+	ext, err := de.DataExtents(ctx, payloadID, fileSize)
+	if err != nil {
+		t.Fatalf("DataExtents: %v", err)
+	}
+
+	// Bounds + ordering invariant: sorted, non-overlapping, within [0,fileSize).
+	var prevEnd uint64
+	for i, e := range ext {
+		if e[0] >= e[1] {
+			t.Errorf("extent %d = [%d,%d): empty/inverted", i, e[0], e[1])
+		}
+		if e[1] > fileSize {
+			t.Errorf("extent %d = [%d,%d): exceeds fileSize %d", i, e[0], e[1], fileSize)
+		}
+		if e[0] < prevEnd {
+			t.Errorf("extent %d = [%d,%d): overlaps/precedes previous end %d", i, e[0], e[1], prevEnd)
+		}
+		prevEnd = e[1]
+	}
+
+	// Coverage invariant: every written byte falls inside some returned extent.
+	covered := func(off uint64) bool {
+		for _, e := range ext {
+			if off >= e[0] && off < e[1] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, w := range writes {
+		for _, b := range []uint64{w.off, w.off + w.n - 1} {
+			if !covered(b) {
+				t.Errorf("written byte %d not covered by any DataExtents range %v", b, ext)
+			}
+		}
+	}
 }
 
 // testAppendLogRoundTrip asserts the end-to-end behavior on the

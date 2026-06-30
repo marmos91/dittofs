@@ -145,9 +145,25 @@ func (h *Handler) buildReadPlusContents(ctx *types.CompoundContext, file *metada
 		return []readPlusContent{{Hole: true, Offset: offset, Length: readEnd - offset}}, nil
 	}
 
-	segs := block.Segments(file.Blocks, file.Size)
-	var contents []readPlusContent
+	// Derive the data/hole segmentation from the block-store engine's full
+	// multi-tier data view (append-log + in-memory + persisted CAS) — the same
+	// view READ reconstructs — so READ_PLUS never reports a hole where written-
+	// but-not-yet-rolled-up data exists (RFC 7862, #1481). Resolving the engine
+	// here also reuses it for the data-run reads below. Fall back to the CAS
+	// block list if the engine can't be resolved or DataExtents errors, so
+	// READ_PLUS never regresses (including the all-hole/no-registry path, which
+	// must stay lazy — see the data-run guard below).
 	var blockStore *engine.Store
+	segs := block.Segments(file.Blocks, file.Size)
+	if h.Registry != nil {
+		if bs, err := common.ResolveForRead(ctx.Context, h.Registry, metadata.FileHandle(ctx.CurrentFH)); err == nil {
+			blockStore = bs
+			if ext, derr := bs.DataExtents(ctx.Context, string(file.PayloadID), file.Size); derr == nil {
+				segs = block.SegmentsExtents(ext, file.Size)
+			}
+		}
+	}
+	var contents []readPlusContent
 
 	for _, seg := range segs {
 		// Intersect the segment with the requested window.

@@ -156,6 +156,56 @@ func TestNextHoleOffset(t *testing.T) {
 	}
 }
 
+// TestNextOffsetExtents exercises the extent-based SEEK primitives directly on a
+// pre-computed data view (the form engine.DataExtents returns) — the path SEEK
+// takes for the un-rolled-up data that the CAS block list omits (#1481).
+func TestNextOffsetExtents(t *testing.T) {
+	// Sparse layout: data [0,20), hole [20,60), data [60,100). Same shape as
+	// the BlockRef-based tests so the extent variants are verified to agree.
+	extents := [][2]uint64{{0, 20}, {60, 100}}
+	size := uint64(100)
+
+	// SEEK_DATA from inside the gap finds the second data region.
+	if off, found := NextDataOffsetExtents(extents, size, 40); !found || off != 60 {
+		t.Errorf("NextDataOffsetExtents(from=40) = (%d,%v), want (60,true)", off, found)
+	}
+	// SEEK_DATA inside the first data region stays put.
+	if off, found := NextDataOffsetExtents(extents, size, 10); !found || off != 10 {
+		t.Errorf("NextDataOffsetExtents(from=10) = (%d,%v), want (10,true)", off, found)
+	}
+	// SEEK_HOLE from inside the first data region finds the interior hole.
+	if off, found := NextHoleOffsetExtents(extents, size, 10); !found || off != 20 {
+		t.Errorf("NextHoleOffsetExtents(from=10) = (%d,%v), want (20,true)", off, found)
+	}
+	// SEEK_HOLE from inside the trailing data region finds the EOF hole.
+	if off, found := NextHoleOffsetExtents(extents, size, 80); !found || off != 100 {
+		t.Errorf("NextHoleOffsetExtents(from=80) = (%d,%v), want (100,true)", off, found)
+	}
+	// At/after EOF: NXIO for both.
+	if _, found := NextDataOffsetExtents(extents, size, 100); found {
+		t.Error("NextDataOffsetExtents at EOF = found, want not found")
+	}
+	if _, found := NextHoleOffsetExtents(extents, size, 100); found {
+		t.Error("NextHoleOffsetExtents at EOF = found, want not found")
+	}
+
+	// The extent variants must agree with the BlockRef wrappers that delegate
+	// to them (regression guard for the refactor).
+	refs := []BlockRef{ref(0, 20), ref(60, 40)}
+	for from := uint64(0); from <= size; from++ {
+		dOff, dFound := NextDataOffset(refs, size, from)
+		eOff, eFound := NextDataOffsetExtents(extents, size, from)
+		if dOff != eOff || dFound != eFound {
+			t.Errorf("data disagree at from=%d: refs=(%d,%v) extents=(%d,%v)", from, dOff, dFound, eOff, eFound)
+		}
+		hOff, hFound := NextHoleOffset(refs, size, from)
+		xOff, xFound := NextHoleOffsetExtents(extents, size, from)
+		if hOff != xOff || hFound != xFound {
+			t.Errorf("hole disagree at from=%d: refs=(%d,%v) extents=(%d,%v)", from, hOff, hFound, xOff, xFound)
+		}
+	}
+}
+
 func TestPunchHole(t *testing.T) {
 	tests := []struct {
 		name           string

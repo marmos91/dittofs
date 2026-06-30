@@ -45,7 +45,7 @@ func TestNFSv42Clone(t *testing.T) {
 			full[i] = byte(i*131 + 7)
 		}
 		framework.WriteFile(t, src, full)
-		waitForFullRollup(t, src, int64(len(full))) // CLONE copies CAS blocks
+		// No rollup wait needed: CLONE drains the source into CAS itself (#1481).
 
 		// cp --reflink=always FAILS rather than falling back to a plain copy if
 		// the server does not support CLONE, so a clean exit proves OP_CLONE ran.
@@ -63,7 +63,7 @@ func TestNFSv42Clone(t *testing.T) {
 
 		original := bytes.Repeat([]byte{0xCC}, 1<<20)
 		framework.WriteFile(t, src, original)
-		waitForFullRollup(t, src, int64(len(original))) // CLONE copies CAS blocks
+		// No rollup wait needed: CLONE drains the source into CAS itself (#1481).
 
 		out, err := exec.Command("cp", "--reflink=always", src, dst).CombinedOutput()
 		require.NoErrorf(t, err, "cp --reflink=always: %s", out)

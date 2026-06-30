@@ -90,10 +90,19 @@ func normalizedExtents(refs []BlockRef, fileSize uint64) [][2]uint64 {
 // single hole segment; a file fully covered by blocks returns a single data
 // segment. Used by READ_PLUS to emit data and NFS4_CONTENT_HOLE runs.
 func Segments(refs []BlockRef, fileSize uint64) []Segment {
+	return SegmentsExtents(normalizedExtents(refs, fileSize), fileSize)
+}
+
+// SegmentsExtents is Segments operating on a pre-computed, sorted, non-
+// overlapping, fileSize-clamped data extent list (the form engine.DataExtents
+// returns). It is the data-source-agnostic core that Segments delegates to:
+// callers that already know the true data coverage — including pre-rollup
+// append-log + in-memory bytes the CAS block list (refs) omits — pass it here
+// so READ_PLUS never reports a hole where data exists (RFC 7862).
+func SegmentsExtents(extents [][2]uint64, fileSize uint64) []Segment {
 	if fileSize == 0 {
 		return nil
 	}
-	extents := normalizedExtents(refs, fileSize)
 	if len(extents) == 0 {
 		return []Segment{{Kind: SegmentHole, Start: 0, End: fileSize}}
 	}
@@ -119,10 +128,19 @@ func Segments(refs []BlockRef, fileSize uint64) []Segment {
 // fileSize), it returns (0, false) — the caller maps this to NFS4ERR_NXIO per
 // RFC 7862 Section 15.11.
 func NextDataOffset(refs []BlockRef, fileSize, from uint64) (uint64, bool) {
+	return NextDataOffsetExtents(normalizedExtents(refs, fileSize), fileSize, from)
+}
+
+// NextDataOffsetExtents is NextDataOffset operating on a pre-computed, sorted,
+// non-overlapping, fileSize-clamped data extent list (the form
+// engine.DataExtents returns). SEEK passes the engine's full data view here so
+// it never reports a hole where un-rolled-up (append-log / in-memory) data
+// exists — the data-loss bug the CAS-block-list-only path had (RFC 7862).
+func NextDataOffsetExtents(extents [][2]uint64, fileSize, from uint64) (uint64, bool) {
 	if from >= fileSize {
 		return 0, false
 	}
-	for _, e := range normalizedExtents(refs, fileSize) {
+	for _, e := range extents {
 		if e[1] <= from { // extent entirely before `from`
 			continue
 		}
@@ -141,10 +159,18 @@ func NextDataOffset(refs []BlockRef, fileSize, from uint64) (uint64, bool) {
 // returned offset is fileSize itself (RFC 7862 Section 15.11). For `from >=
 // fileSize` it returns (0, false) so the caller can map it to NFS4ERR_NXIO.
 func NextHoleOffset(refs []BlockRef, fileSize, from uint64) (uint64, bool) {
+	return NextHoleOffsetExtents(normalizedExtents(refs, fileSize), fileSize, from)
+}
+
+// NextHoleOffsetExtents is NextHoleOffset operating on a pre-computed, sorted,
+// non-overlapping, fileSize-clamped data extent list (the form
+// engine.DataExtents returns). SEEK passes the engine's full data view here so
+// SEEK_HOLE does not treat un-rolled-up (append-log / in-memory) data as a hole.
+func NextHoleOffsetExtents(extents [][2]uint64, fileSize, from uint64) (uint64, bool) {
 	if from >= fileSize {
 		return 0, false
 	}
-	for _, e := range normalizedExtents(refs, fileSize) {
+	for _, e := range extents {
 		if e[1] <= from { // extent entirely before `from`
 			continue
 		}

@@ -26,11 +26,11 @@ func TestCloneWholeFile_O1(t *testing.T) {
 		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 2048},
 	}
 	const srcSize = 4096 + 4096 + 2048
-	putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, srcSize)
+	srcHandle := putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, srcSize)
 	dstHandle := putTestFile(t, ms, "/dst.bin", "dst-pid", nil, 0)
 	cache := &recordingInvalidator{}
 
-	if err := CloneWholeFile(ctx, bs, ms, cache, dstHandle, "src-pid", "dst-pid", srcBlocks, srcSize); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, cache, srcHandle, dstHandle, "dst-pid"); err != nil {
 		t.Fatalf("CloneWholeFile failed: %v", err)
 	}
 
@@ -74,10 +74,10 @@ func TestCloneWholeFile_SelfCloneNoOp(t *testing.T) {
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
 	srcBlocks := []block.BlockRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
-	dstHandle := putTestFile(t, ms, "/self.bin", "same-pid", srcBlocks, 4096)
+	selfHandle := putTestFile(t, ms, "/self.bin", "same-pid", srcBlocks, 4096)
 	cache := &recordingInvalidator{}
 
-	if err := CloneWholeFile(ctx, bs, ms, cache, dstHandle, "same-pid", "same-pid", srcBlocks, 4096); err != nil {
+	if err := CloneWholeFile(ctx, bs, ms, cache, selfHandle, selfHandle, "same-pid"); err != nil {
 		t.Fatalf("CloneWholeFile self-clone failed: %v", err)
 	}
 	if len(coord.incrementCalls) != 0 {
@@ -104,11 +104,11 @@ func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
 		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},
 	}
-	putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, 8192)
+	srcHandle := putTestFile(t, ms, "/src.bin", "src-pid", srcBlocks, 8192)
 	dstHandle := putTestFile(t, ms, "/dst.bin", "dst-pid", nil, 0)
 	cache := &recordingInvalidator{}
 
-	if err := CloneWholeFile(ctx, bs, ms, cache, dstHandle, "src-pid", "dst-pid", srcBlocks, 8192); err == nil {
+	if err := CloneWholeFile(ctx, bs, ms, cache, srcHandle, dstHandle, "dst-pid"); err == nil {
 		t.Fatal("expected CloneWholeFile to fail on IncrementRefCount error")
 	}
 

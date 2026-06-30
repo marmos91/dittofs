@@ -72,6 +72,24 @@ type LocalStore interface {
 	// zeros until the async rollup commits FileChunk rows.
 	ReadPayloadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error)
 
+	// DataExtents returns the sorted, non-overlapping byte ranges
+	// [start, end) within [0, fileSize) that the LOCAL tier knows hold
+	// data — the in-flight append log plus any in-memory write buffer,
+	// i.e. the pre-rollup bytes that are NOT yet in the persisted CAS
+	// FileChunk manifest. It deliberately does NOT include the CAS
+	// blocks: the engine unions those (via ListFileChunks) on top of
+	// this result so SEEK / READ_PLUS see the SAME data/hole map READ
+	// reconstructs across all tiers.
+	//
+	// This closes the NFSv4.2 SEEK data-loss gap (#1481): deriving the
+	// hole map from the persisted CAS block list alone reports a hole
+	// where written-but-not-yet-rolled-up data exists, which RFC 7862
+	// forbids (a sparse-copy client would skip real data). Backends may
+	// be conservative — reporting a written span as one data extent even
+	// if it has interior gaps — because over-reporting data is always
+	// RFC-safe; under-reporting (a false hole) is the bug.
+	DataExtents(ctx context.Context, payloadID string, fileSize uint64) ([][2]uint64, error)
+
 	// --- Snapshot drain / reset ---
 
 	// DrainRollups forces rollup of ALL currently-dirty payloads to
