@@ -10,9 +10,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
+)
+
+// dfsctlBuild ensures the dfsctl binary is built exactly once from the source
+// in this checkout, regardless of how many CLIRunners (including parallel
+// subtests) ask for it.
+var (
+	dfsctlBuildOnce sync.Once
+	dfsctlBuildPath string
+	dfsctlBuildErr  error
 )
 
 // CLIRunner executes dfsctl commands with JSON output for reliable parsing.
@@ -130,37 +140,42 @@ func (r *CLIRunner) configHomeDir() (string, error) {
 	return filepath.Join(home, ".config"), nil
 }
 
-// getBinary returns the path to the dfsctl binary.
+// getBinary returns the path to the dfsctl binary, always built from the
+// source in this checkout.
+//
+// It deliberately does NOT honour a dfsctl found in PATH or a stale binary
+// left in the project root: a version-skewed dfsctl talking to the freshly
+// built server produces confusing failures (e.g. "unknown flag: --force"
+// after a CLI rename, or sparse API responses), which masquerade as product
+// bugs. Building from source guarantees the client matches the code under test.
 func (r *CLIRunner) getBinary() string {
 	if r.binary != "" {
 		return r.binary
 	}
 
-	// Check for dfsctl in PATH
-	if path, err := exec.LookPath("dfsctl"); err == nil {
-		r.binary = path
-		return r.binary
+	// The build result lives in package-level state guarded by sync.Once, so it
+	// is safe to read concurrently from parallel subtests. Deliberately do NOT
+	// cache into r.binary here: getBinary is called from parallel goroutines and
+	// writing the shared field would be a data race (and buys nothing — the path
+	// is computed exactly once anyway).
+	dfsctlBuildOnce.Do(func() {
+		projectRoot := findProjectRootForCLI()
+		out := filepath.Join(projectRoot, "dfsctl")
+		cmd := exec.Command("go", "build", "-o", out, "./cmd/dfsctl/")
+		cmd.Dir = projectRoot
+		if combined, err := cmd.CombinedOutput(); err != nil {
+			dfsctlBuildErr = fmt.Errorf("building dfsctl from source: %w\n%s", err, combined)
+			return
+		}
+		dfsctlBuildPath = out
+	})
+
+	if dfsctlBuildErr != nil {
+		// Surface the build failure rather than silently using a stale binary.
+		return "dfsctl-build-failed"
 	}
 
-	// Look in project root
-	projectRoot := findProjectRootForCLI()
-	localBinary := filepath.Join(projectRoot, "dfsctl")
-	if _, err := os.Stat(localBinary); err == nil {
-		r.binary = localBinary
-		return r.binary
-	}
-
-	// Build it
-	cmd := exec.Command("go", "build", "-o", localBinary, "./cmd/dfsctl/")
-	cmd.Dir = projectRoot
-	if _, err := cmd.CombinedOutput(); err != nil {
-		// Fall back to just "dfsctl" and let it fail later with better error
-		r.binary = "dfsctl"
-		return r.binary
-	}
-
-	r.binary = localBinary
-	return r.binary
+	return dfsctlBuildPath
 }
 
 // findProjectRootForCLI locates the project root by looking for go.mod.

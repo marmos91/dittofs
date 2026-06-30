@@ -245,7 +245,9 @@ func TestBlockStoresCRUD(t *testing.T) {
 			_ = cli.DeleteRemoteBlockStore(storeName)
 		})
 
-		s3Config := `{"bucket":"test-bucket","region":"us-east-1"}`
+		// An S3 remote store requires bucket + credentials; supply dummy keys so
+		// config validation passes (no real S3 connection is made here).
+		s3Config := `{"bucket":"test-bucket","region":"us-east-1","access_key_id":"test","secret_access_key":"test"}`
 		store, err := cli.CreateRemoteBlockStore(storeName, "s3",
 			helpers.WithBlockRawConfig(s3Config))
 		require.NoError(t, err, "Should create S3 remote block store")

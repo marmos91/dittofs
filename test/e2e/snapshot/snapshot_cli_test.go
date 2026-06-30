@@ -394,7 +394,7 @@ func TestCLI_Delete_RefusesWithoutYes(t *testing.T) {
 	seedReadyDurable(f, "/data", "snap-del-1")
 	srv := mountCLIServer(t, f)
 
-	res := runCLI(t, srv, "n\n", "share", "snapshot", "delete", "/data", "snap-del-1")
+	res := runCLI(t, srv, "n\n", "share", "snapshot", "remove", "/data", "snap-del-1")
 	if res.exitCode != 0 {
 		t.Fatalf("exit = %d, want 0\nstdout=%s\nstderr=%s", res.exitCode, res.stdout, res.stderr)
 	}
@@ -412,12 +412,12 @@ func TestCLI_Delete_YesFlag(t *testing.T) {
 	seedReadyDurable(f, "/data", "snap-del-2")
 	srv := mountCLIServer(t, f)
 
-	res := runCLI(t, srv, "", "share", "snapshot", "delete", "/data", "snap-del-2", "--yes")
+	res := runCLI(t, srv, "", "share", "snapshot", "remove", "/data", "snap-del-2", "--yes")
 	if res.exitCode != 0 {
 		t.Fatalf("exit = %d, want 0\nstdout=%s\nstderr=%s", res.exitCode, res.stdout, res.stderr)
 	}
-	if !strings.Contains(res.stdout, "deleted") {
-		t.Fatalf("stdout missing 'deleted' confirmation: %q", res.stdout)
+	if !strings.Contains(res.stdout, "removed") {
+		t.Fatalf("stdout missing 'removed' confirmation: %q", res.stdout)
 	}
 	// Subsequent list must not surface the snapshot.
 	listRes := runCLI(t, srv, "", "share", "snapshot", "list", "/data", "-o", "json")

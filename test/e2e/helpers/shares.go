@@ -139,21 +139,23 @@ func (r *CLIRunner) ListShares() ([]*Share, error) {
 }
 
 // GetShare retrieves a share by name.
-// Since there's no dedicated 'share get' command in the CLI, this lists all
-// shares and filters by name.
+//
+// It uses `share show`, which returns the full per-share detail (store IDs,
+// read-only, default permission). `share list` only renders resolved store
+// *names* for table display, so it cannot satisfy callers that assert on
+// store IDs or read-only state.
 func (r *CLIRunner) GetShare(name string) (*Share, error) {
-	shares, err := r.ListShares()
+	output, err := r.Run("share", "show", name)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, s := range shares {
-		if s.Name == name {
-			return s, nil
-		}
+	var share Share
+	if err := ParseJSONResponse(output, &share); err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("share not found: %s", name)
+	return &share, nil
 }
 
 // EditShare edits an existing share via the CLI.
