@@ -121,10 +121,27 @@ func TestSMBLockHolderHelper(t *testing.T) {
 		return
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
-	if err != nil {
-		fmt.Printf("HOLDER_ERR open %s: %v\n", path, err)
-		return
+	// Under full-suite load the parent's create — issued on a *different* SMB
+	// session — can lag this fresh session's view, so the open races the
+	// server-side commit and transiently returns ENOENT, and the first
+	// (uncontended) F_SETLK can momentarily hit a server-busy conflict. Retry
+	// both within a bounded deadline (shorter than the parent's 20s wait) so a
+	// load-induced race doesn't fail the holder and surface as the misleading
+	// "did not acquire the lock within 20s".
+	deadline := time.Now().Add(10 * time.Second)
+
+	var f *os.File
+	for {
+		var openErr error
+		f, openErr = os.OpenFile(path, os.O_RDWR, 0o644)
+		if openErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			fmt.Printf("HOLDER_ERR open %s: %v\n", path, openErr)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -138,9 +155,16 @@ func TestSMBLockHolderHelper(t *testing.T) {
 		Start:  offset,
 		Len:    length,
 	}
-	if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, flock); err != nil {
-		fmt.Printf("HOLDER_ERR lock: %v\n", err)
-		return
+	for {
+		lockErr := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, flock)
+		if lockErr == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			fmt.Printf("HOLDER_ERR lock: %v\n", lockErr)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	fmt.Println("HOLDER_LOCKED")
 	_ = os.Stdout.Sync()
