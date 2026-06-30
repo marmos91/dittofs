@@ -95,10 +95,13 @@ func sweepFromSyncedIndex(
 			if handled {
 				// Block-resident: no CAS object to delete. Clear the synced marker
 				// (its locator was already consumed by the reclaim) so the synced
-				// set stays a strict subset of remote contents (#1433), and count
-				// the reclamation.
+				// set stays a strict subset of remote contents (#1433). Only count
+				// the reclamation when the marker is actually cleared — a surviving
+				// marker means the hash will be re-visited next pass, so counting
+				// it now would double-count both ObjectsSwept and BytesFreed.
 				if serr := options.SyncedHashIndex.DeleteSynced(ctx, h); serr != nil {
 					addError("delete-synced " + casKey + ": " + serr.Error())
+					return nil // marker survives; retry next pass, don't count yet
 				}
 				statsMu.Lock()
 				stats.ObjectsSwept++

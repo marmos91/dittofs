@@ -348,10 +348,85 @@ func TestGCBlockSweep_StandaloneStillDeletesCAS(t *testing.T) {
 	}
 }
 
+// TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement is the critical
+// data-loss regression test for the partial-reclaim re-entry bug. If the GC
+// is killed or DeleteSynced fails between ReclaimDeadChunk and its caller
+// clearing the synced marker, the next sweep re-visits the same hash (the
+// synced marker is still present). Without the fix, a second call to
+// ReclaimDeadChunk decrements live_chunk_count a second time — driving it to
+// 0 for a block that still has a live sibling → DeleteBlock fires → the
+// sibling chunk's reads break permanently (silent data loss).
+//
+// The fix: DeleteLocalLocation runs FIRST as an idempotency token; the decrement
+// is skipped on re-entry (the local location is already gone).
+func TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement(t *testing.T) {
+	ctx := t.Context()
+	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	rbs := remotememory.New()
+	defer func() { _ = rbs.Close() }()
+
+	h1 := hashFromString("crash-chunk-dead")
+	h2 := hashFromString("crash-chunk-live")
+	// 2-chunk block: h1 will be reclaimed, h2 is the live sibling that must survive.
+	seedPackedBlock(t, st, rbs, "blk-crash", []block.ContentHash{h1, h2})
+
+	reclaimer := newBlockGCReclaimer(st, rbs)
+
+	// First reclaim of h1: normal path — decrements count, deletes local location.
+	// DeleteSynced is NOT called (simulating crash between ReclaimDeadChunk and
+	// its caller clearing the synced marker).
+	handled, freed, err := reclaimer.ReclaimDeadChunk(ctx, h1)
+	if err != nil {
+		t.Fatalf("first ReclaimDeadChunk: %v", err)
+	}
+	if !handled {
+		t.Fatalf("first ReclaimDeadChunk: handled=false, want true")
+	}
+	if freed != 0 {
+		t.Errorf("first pass bytesFreed=%d, want 0 (block still alive, one chunk remains)", freed)
+	}
+
+	// Verify intermediate state: count decremented to 1, h1 local gone, h2 intact.
+	rec, ok, _ := st.GetBlockRecord(ctx, "blk-crash")
+	if !ok || rec.LiveChunkCount != 1 {
+		t.Fatalf("after first pass: ok=%v LiveChunkCount=%d, want 1", ok, rec.LiveChunkCount)
+	}
+
+	// Simulate crash: DeleteSynced was skipped, so h1's synced marker remains.
+	// The next sweep re-visits h1 (it's still absent from the live FileChunk set).
+	// This is the crash-recovery re-entry — must NOT decrement again.
+	handled, freed, err = reclaimer.ReclaimDeadChunk(ctx, h1)
+	if err != nil {
+		t.Fatalf("second ReclaimDeadChunk (crash recovery): %v", err)
+	}
+	if !handled {
+		t.Fatalf("second ReclaimDeadChunk: handled=false, want true")
+	}
+
+	// CRITICAL: the block must NOT have been freed. Without the fix, the second
+	// decrement drives live_chunk_count to 0 → DeleteBlock → data loss for h2.
+	if _, err := rbs.GetBlock(ctx, "blk-crash"); err != nil {
+		t.Errorf("block prematurely freed on crash-recovery reclaim (DATA LOSS): GetBlock: %v", err)
+	}
+	rec, ok, _ = st.GetBlockRecord(ctx, "blk-crash")
+	if !ok {
+		t.Errorf("block record deleted on crash-recovery reclaim (DATA LOSS)")
+	} else if rec.LiveChunkCount != 1 {
+		t.Errorf("LiveChunkCount=%d after crash-recovery reclaim, want 1 (double-decrement = data loss)", rec.LiveChunkCount)
+	}
+	if freed != 0 {
+		t.Errorf("crash-recovery bytesFreed=%d, want 0 (block must not be freed)", freed)
+	}
+	// h2's local location must remain intact — it is still live.
+	if _, ok, _ := st.GetLocalLocation(ctx, h2); !ok {
+		t.Errorf("h2 local location wrongly deleted during crash-recovery reclaim")
+	}
+}
+
 // compile-time: the memory metadata store satisfies the reclaimer surfaces.
 var (
 	_ blockLocatorResolver = (*metadatamemory.MemoryMetadataStore)(nil)
 	_ blockRecordGC        = (*metadatamemory.MemoryMetadataStore)(nil)
-	_ localChunkDeleter    = (*metadatamemory.MemoryMetadataStore)(nil)
+	_ localChunkIndexGC    = (*metadatamemory.MemoryMetadataStore)(nil)
 	_ context.Context      = nil
 )

@@ -51,9 +51,11 @@ type blockRecordGC interface {
 	DeleteBlockRecord(ctx context.Context, blockID string) error
 }
 
-// localChunkDeleter drops a chunk's local-index entry. Satisfied by the
-// per-share metadata store (metadata.LocalChunkIndex.DeleteLocalLocation).
-type localChunkDeleter interface {
+// localChunkIndexGC is the narrow LocalChunkIndex surface the block reclaimer
+// needs: read-then-delete under the idempotency protocol. Satisfied by the
+// per-share metadata store (metadata.LocalChunkIndex).
+type localChunkIndexGC interface {
+	GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error)
 	DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error
 }
 
@@ -65,19 +67,24 @@ type localChunkDeleter interface {
 type BlockGCReclaimer struct {
 	Locators     blockLocatorResolver
 	Records      blockRecordGC
-	LocalIndex   localChunkDeleter
+	LocalIndex   localChunkIndexGC
 	RemoteBlocks remote.RemoteBlockStore
 }
 
 // ReclaimDeadChunk implements BlockReclaimer. See the interface contract.
 //
-// Ordering is chosen for crash-safety. DecrLiveChunkCount runs BEFORE
-// DeleteLocalLocation so a crash between them leaves an orphan local-index entry
-// (harmless; a local reconcile reclaims it) rather than an over-counted block
-// that never floors to zero (a permanent remote leak). The remote DeleteBlock
-// precedes DeleteBlockRecord so a crash between them leaves a record-less orphan
-// object (reclaimed by the deferred orphan-object sweep) rather than a record
-// pointing at deleted bytes.
+// Ordering is chosen for crash-safety and exactly-once decrement semantics.
+// DeleteLocalLocation runs BEFORE DecrLiveChunkCount so the local-index entry
+// serves as a per-hash idempotency token for the decrement: if the process is
+// killed after DeleteLocalLocation commits but before DecrLiveChunkCount, the
+// next sweep re-visits the hash (its synced marker was not cleared), finds the
+// local entry already gone, and skips the decrement. This fails toward over-count
+// (a remote leak, reclaimed by the deferred orphan-object sweep) rather than
+// under-count (premature block free = data loss for live siblings).
+//
+// The remote DeleteBlock precedes DeleteBlockRecord so a crash between them
+// leaves a record-less orphan object (reclaimed by the deferred orphan-object
+// sweep) rather than a record pointing at deleted bytes.
 func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (bool, int64, error) {
 	loc, synced, err := r.Locators.GetLocator(ctx, hash)
 	if err != nil {
@@ -104,12 +111,32 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 		return true, 0, nil
 	}
 
+	// Check the local-index entry BEFORE deleting it: the entry serves as an
+	// idempotency token for DecrLiveChunkCount. If it is already gone a previous
+	// run already applied the decrement and we must not decrement again.
+	_, localExisted, err := r.LocalIndex.GetLocalLocation(ctx, hash)
+	if err != nil {
+		return false, 0, fmt.Errorf("block reclaim: get local location %s: %w", hash, err)
+	}
+
+	// Delete the local-index entry first (idempotent). A crash here leaves an
+	// orphan entry reclaimed by the periodic local reconcile — safe direction.
+	if derr := r.LocalIndex.DeleteLocalLocation(ctx, hash); derr != nil {
+		return false, 0, fmt.Errorf("block reclaim: delete local location %s: %w", hash, derr)
+	}
+
+	if !localExisted {
+		// Crash-recovery re-entry: DeleteLocalLocation already ran in a prior
+		// pass, so DecrLiveChunkCount was either already applied or will be
+		// skipped here. Either way, the count is at least as high as the true
+		// live count — no premature free possible. Return handled so the caller
+		// skips the (nonexistent) standalone CAS delete.
+		return true, 0, nil
+	}
+
 	remaining, err := r.Records.DecrLiveChunkCount(ctx, blockID, 1)
 	if err != nil {
 		return false, 0, fmt.Errorf("block reclaim: decr live chunk count %s: %w", blockID, err)
-	}
-	if derr := r.LocalIndex.DeleteLocalLocation(ctx, hash); derr != nil {
-		return false, 0, fmt.Errorf("block reclaim: delete local location %s: %w", hash, derr)
 	}
 	if remaining > 0 {
 		return true, 0, nil // block still has live chunks — keep it
