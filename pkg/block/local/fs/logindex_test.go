@@ -571,6 +571,106 @@ func TestLogIndex_AdvanceFence_CoverageMerge(t *testing.T) {
 	}
 }
 
+// TestLogIndex_AppendAfterConsume_RerollsOverwrite is the #1493 regression:
+// an in-place overwrite at a file region a PRIOR rollup generation already
+// consumed must be rolled up again, not silently dropped. Pre-fix, the
+// generation-A MarkConsumed left consumedCoverage permanently covering the
+// region; the generation-B AppendWrite added a fresh entry but did NOT clear
+// that coverage, so AdvanceFence retired the new entry without rolling it up
+// (its bytes never reached CAS). The rollup pass then saw zero logIndex
+// entries for the dirty interval and dropped it as a benign divergence —
+// losing the overwrite's bytes. Under the concurrent ticker-driven rollup
+// this surfaced as silent data corruption after GC reaped the stale prior
+// generation's chunk.
+func TestLogIndex_AppendAfterConsume_RerollsOverwrite(t *testing.T) {
+	idx := newLogIndex()
+	const payload = uint32(4096)
+	step := uint64(recordFrameOverhead) + uint64(payload)
+	pos := uint64(logHeaderSize)
+
+	// Generation A: write [0, 4096), roll it up (MarkConsumed), advance the
+	// fence so the entry is retired/trimmed — exactly the steady state after
+	// the first version of a file has been rolled up to CAS.
+	idx.Append(pos, 0, payload)
+	idx.MarkConsumed(0, payload)
+	idx.AdvanceFence()
+	pos += step
+	if idx.Len() != 0 {
+		t.Fatalf("gen A not trimmed after consume+fence: Len=%d want 0", idx.Len())
+	}
+
+	// Generation B: overwrite the SAME region [0, 4096). These bytes have NOT
+	// been rolled up — they must remain a live, unconsumed entry.
+	genBPos := pos
+	idx.Append(genBPos, 0, payload)
+
+	// The fence must NOT retire generation B's entry. Pre-fix the stale
+	// consumedCoverage from generation A made AdvanceFence walk straight past
+	// it, leaving zero entries for the overwrite's dirty interval.
+	idx.AdvanceFence()
+	if idx.Len() != 1 {
+		t.Fatalf("overwrite entry prematurely fenced: Len=%d want 1 (gen B bytes would be lost)", idx.Len())
+	}
+	hits := idx.EntriesForInterval(0, uint64(payload), nil)
+	if len(hits) != 1 || hits[0].logPos != genBPos {
+		t.Fatalf("overwrite entry not found for rollup: got %+v want one entry at logPos %d", hits, genBPos)
+	}
+
+	// And once generation B is itself rolled up, the fence advances past it.
+	idx.MarkConsumed(0, payload)
+	wantFence := genBPos + step
+	if got := idx.AdvanceFence(); got != wantFence {
+		t.Fatalf("fence after gen B consume: got %d want %d", got, wantFence)
+	}
+}
+
+// TestCoverageSet_Remove exercises the remove primitive (#1493): subtracting
+// a range trims and splits overlapping intervals so a re-written region reads
+// as no-longer-covered.
+func TestCoverageSet_Remove(t *testing.T) {
+	t.Run("split-middle", func(t *testing.T) {
+		var cs coverageSet
+		cs.add(0, 100)
+		cs.remove(40, 60)
+		if cs.covers(40, 60) {
+			t.Fatal("removed middle still covered")
+		}
+		if !cs.covers(0, 40) || !cs.covers(60, 100) {
+			t.Fatalf("remainders not covered: intervals=%+v", cs.intervals)
+		}
+	})
+	t.Run("trim-left-edge", func(t *testing.T) {
+		var cs coverageSet
+		cs.add(10, 20)
+		cs.remove(5, 12)
+		if cs.covers(10, 12) {
+			t.Fatal("trimmed prefix still covered")
+		}
+		if !cs.covers(12, 20) {
+			t.Fatalf("tail not covered: %+v", cs.intervals)
+		}
+	})
+	t.Run("remove-whole", func(t *testing.T) {
+		var cs coverageSet
+		cs.add(10, 20)
+		cs.add(30, 40)
+		cs.remove(0, 100)
+		if cs.covers(10, 11) || cs.covers(30, 31) {
+			t.Fatalf("fully removed intervals still covered: %+v", cs.intervals)
+		}
+	})
+	t.Run("noop-cases", func(t *testing.T) {
+		var cs coverageSet
+		cs.add(10, 20)
+		cs.remove(20, 30) // adjacent, no overlap
+		cs.remove(0, 10)  // adjacent, no overlap
+		cs.remove(15, 15) // empty range
+		if !cs.covers(10, 20) {
+			t.Fatalf("non-overlapping/empty remove altered set: %+v", cs.intervals)
+		}
+	})
+}
+
 // TestCoverageSet exercises the coverage-set primitive in isolation —
 // add merges adjacent and overlapping intervals; covers returns the
 // strict containment predicate.

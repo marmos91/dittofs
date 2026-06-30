@@ -152,6 +152,16 @@ func (idx *logIndex) Append(logPos uint64, fileOff uint64, payloadLen uint32) {
 		fileOff:    fileOff,
 		payloadLen: payloadLen,
 	})
+	// #1493: a new write supersedes whatever bytes a prior generation's rollup
+	// stored at this file region, so the region's latest bytes are once again
+	// un-rolled-up. Un-mark it as consumed; otherwise advanceFenceUpTo sees the
+	// region still covered (from the earlier MarkConsumed, which is never
+	// trimmed) and retires this fresh entry WITHOUT rolling it up. The stable
+	// interval then has zero logIndex entries and the rollup drops it as a
+	// benign divergence — silently losing the overwrite's bytes (data
+	// corruption surfacing only under the concurrent ticker-driven rollup path,
+	// which is why a serial DrainRollups never hit it).
+	idx.consumedCoverage.remove(fileOff, fileOff+uint64(payloadLen))
 }
 
 // EntriesForInterval returns every entry whose file-offset extent
@@ -484,6 +494,37 @@ func (cs *coverageSet) add(start, end uint64) {
 	// subsumption (j > insertAt+1) uniformly.
 	cs.intervals = slices.Replace(cs.intervals, insertAt, j,
 		coverageInterval{start: mergeStart, end: mergeEnd})
+}
+
+// remove subtracts [start, end) from the set, trimming and splitting any
+// stored intervals that overlap it. Used when a new write lands at a file
+// region: the region's latest bytes are no longer the ones rolled into CAS,
+// so the region must be un-marked as consumed or the fence would retire the
+// new (still-unconsumed) entry without ever rolling it up — silent data loss
+// on in-place overwrite (#1493).
+//
+// Empty / inverted ranges (end <= start) are silently ignored.
+func (cs *coverageSet) remove(start, end uint64) {
+	if end <= start {
+		return
+	}
+	var out []coverageInterval
+	for _, iv := range cs.intervals {
+		// No overlap: keep as-is.
+		if iv.end <= start || iv.start >= end {
+			out = append(out, iv)
+			continue
+		}
+		// Left remainder survives [iv.start, start).
+		if iv.start < start {
+			out = append(out, coverageInterval{start: iv.start, end: start})
+		}
+		// Right remainder survives [end, iv.end).
+		if iv.end > end {
+			out = append(out, coverageInterval{start: end, end: iv.end})
+		}
+	}
+	cs.intervals = out
 }
 
 // covers reports whether [start, end) is fully covered by the union of
