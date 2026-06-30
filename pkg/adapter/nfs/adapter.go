@@ -791,8 +791,9 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 
 	// Register services with the host's system rpcbind (port 111) when enabled,
 	// so a kernel NFSv3 client can discover the NLM port and lock without
-	// `nolock`. Non-fatal: if no rpcbind answers, NFS serves but v3 locking
-	// stays unavailable.
+	// `nolock`. Non-fatal and time-bounded: if no rpcbind answers (or it hangs)
+	// NFS still serves; registration cannot delay NFS availability for more than
+	// systemRegTimeout.
 	s.startSystemPortmapRegistration(ctx)
 
 	// Start the UDP transport for NLM/NSM/MOUNT when enabled. NFSv3 lock
