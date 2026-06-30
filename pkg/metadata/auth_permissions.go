@@ -515,9 +515,9 @@ func (s *Service) checkPermission(ctx *AuthContext, handle FileHandle, perm Perm
 // shareForbidsWrites reports whether a read-only ceiling — per-user
 // (ctx.ShareReadOnly) or store-level (share options) — forbids modification of
 // the given file's share. It governs the deny decision (e.g. the SETATTR
-// owner-bypass ceiling), so it consults BOTH ceilings. It is consulted only on
-// the permission-denied path, so the extra share-options lookup is off the hot
-// path.
+// owner-bypass ceiling in SetFileAttributes), so it consults BOTH ceilings.
+// The store-options lookup runs only when ctx.ShareReadOnly is false, so the
+// common cases short-circuit before touching the store.
 func (s *Service) shareForbidsWrites(ctx *AuthContext, handle FileHandle) bool {
 	return ctx.ShareReadOnly || s.shareIsReadOnly(ctx, handle)
 }

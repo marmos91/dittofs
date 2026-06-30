@@ -164,8 +164,16 @@ func TestCheckParentCreateAccess_StoreReadOnlyShareReturnsErrReadOnly(t *testing
 	f := newTestFixture(t)
 
 	uid, gid := uint32(1003), uint32(1003)
+	// ALLOW-everyone DACL so the read-only-share ceiling is the ONLY thing that
+	// can deny: the test would not distinguish a regression (read-only check
+	// removed) from a missing grant without an explicit ALLOW to override.
+	allowAll := &acl.ACL{
+		ACEs: []acl.ACE{
+			{Type: acl.ACE4_ACCESS_ALLOWED_ACE_TYPE, Who: acl.SpecialEveryone, AccessMask: 0xFFFFFFFF},
+		},
+	}
 	dir, _, err := f.service.CreateDirectory(f.rootContext(), f.rootHandle, "rodir2",
-		&metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777, UID: uid, GID: gid})
+		&metadata.FileAttr{Type: metadata.FileTypeDirectory, Mode: 0o777, UID: uid, GID: gid, ACL: allowAll})
 	require.NoError(t, err)
 	dirHandle, err := metadata.EncodeShareHandle(f.shareName, dir.ID)
 	require.NoError(t, err)
