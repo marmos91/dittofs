@@ -138,6 +138,12 @@ func CreateShareWithPolicy(t *testing.T, client *apiclient.Client, name, metadat
 		Name:            name,
 		MetadataStoreID: metadataStore,
 		LocalBlockStore: localBlockStore,
+		// Default to a writable share, matching the CLI CreateShare helper. These
+		// are functional tests (e.g. netgroup IP access control); the share knob
+		// under test is the policy, not least-privilege user permissions. Without
+		// this the server default ("none") makes the share unwritable — and even
+		// unmountable over NFSv4 by a squashed root client.
+		DefaultPermission: "read-write",
 	}
 
 	if policy != nil {
