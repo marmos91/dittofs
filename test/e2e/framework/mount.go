@@ -359,29 +359,18 @@ func (m *Mount) Unmount() {
 		return
 	}
 
-	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		// On macOS, use diskutil for cleaner unmount
-		cmd = exec.Command("diskutil", "unmount", m.Path)
+		// On macOS, use diskutil for cleaner unmount.
+		if out, err := exec.Command("diskutil", "unmount", m.Path).CombinedOutput(); err != nil {
+			m.T.Logf("Failed to unmount %s share: %v\nOutput: %s", m.Protocol, err, string(out))
+			_ = exec.Command("diskutil", "unmount", "force", m.Path).Run()
+		}
 	case "linux":
-		cmd = exec.Command("umount", m.Path)
+		robustUnmountLinux(m.Path, m.T.Logf)
 	default:
 		m.T.Logf("Unsupported platform for unmount: %s", runtime.GOOS)
 		return
-	}
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		m.T.Logf("Failed to unmount %s share: %v\nOutput: %s", m.Protocol, err, string(output))
-		// Try force unmount
-		switch runtime.GOOS {
-		case "darwin":
-			cmd = exec.Command("diskutil", "unmount", "force", m.Path)
-		default:
-			cmd = exec.Command("umount", "-f", m.Path)
-		}
-		_ = cmd.Run()
 	}
 
 	// Wait for the mount to be fully removed from the kernel.
@@ -390,6 +379,57 @@ func (m *Mount) Unmount() {
 	waitForUnmount(m.Path, 5*time.Second)
 
 	m.mounted = false
+}
+
+// robustUnmountLinux unmounts a Linux path without ever blocking the caller.
+//
+// When the NFS server behind a hard mount is gone — e.g. a server-restart test
+// whose v4.1 client never recovers — a umount blocks forever in uninterruptible
+// (D) state. This is true even of `umount -f -l`: the lazy flag (MNT_DETACH)
+// removes the mount from the namespace immediately, but the umount *process*
+// can still wedge in the kernel trying to reach the dead server. A D-state
+// process can't be killed, so the only safe move is to never *wait* on a
+// umount: time-box it and, on expiry, abandon the process (it is reaped in the
+// background once the kernel finally finalizes it). The lazy detach having
+// taken effect, the mount is already gone from the namespace, so callers and
+// subsequent runs make progress regardless.
+//
+// logf may be nil (e.g. package-level stale-mount cleanup with no *testing.T).
+func robustUnmountLinux(path string, logf func(format string, args ...any)) {
+	// A normal umount first (flushes cleanly when the server is alive).
+	if umountTimeboxed(15*time.Second, path) {
+		return
+	}
+	if logf != nil {
+		logf("Unmount of %s timed out (dead server?); forcing lazy detach", path)
+	}
+	// Forced lazy detach. MNT_DETACH unhooks the mount immediately even if the
+	// process then blocks; time-box this one too so a wedged umount never wedges
+	// us.
+	umountTimeboxed(10*time.Second, path, "-f", "-l")
+}
+
+// umountTimeboxed runs `umount <flags> <path>` and waits at most timeout for it
+// to finish. It returns true if the umount completed in time. On timeout it
+// returns false and leaves the (D-state) process running; a background
+// goroutine reaps it when the kernel eventually releases it, so it neither
+// zombies nor blocks the caller. flags precede the path (e.g. "-f", "-l").
+func umountTimeboxed(timeout time.Duration, path string, flags ...string) bool {
+	cmd := exec.Command("umount", append(append([]string{}, flags...), path)...)
+	if err := cmd.Start(); err != nil {
+		return false
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait() // single Wait; reaps the child whenever it finally exits
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // waitForUnmount polls until the path is no longer mounted or timeout expires.
@@ -507,27 +547,19 @@ func CleanupStaleMounts() {
 	}
 }
 
-// unmountStale attempts to unmount a stale mount point.
+// unmountStale attempts to unmount a stale mount point. Called from TestMain's
+// stale-mount cleanup, so it must never block: a leftover dead-server hard NFS
+// mount from a previously-killed run would otherwise hang every subsequent run
+// before any test starts (see robustUnmountLinux).
 func unmountStale(mountPath string) {
-	var cmd *exec.Cmd
-
 	switch runtime.GOOS {
 	case "darwin":
-		// On macOS, use diskutil for cleaner unmount
-		cmd = exec.Command("diskutil", "unmount", mountPath)
-	default:
-		cmd = exec.Command("umount", mountPath)
-	}
-
-	if err := cmd.Run(); err != nil {
-		// Force unmount if normal unmount fails
-		switch runtime.GOOS {
-		case "darwin":
-			cmd = exec.Command("diskutil", "unmount", "force", mountPath)
-		default:
-			cmd = exec.Command("umount", "-f", mountPath)
+		// On macOS, use diskutil for cleaner unmount.
+		if err := exec.Command("diskutil", "unmount", mountPath).Run(); err != nil {
+			_ = exec.Command("diskutil", "unmount", "force", mountPath).Run()
 		}
-		_ = cmd.Run()
+	default:
+		robustUnmountLinux(mountPath, nil)
 	}
 
 	// Wait for the mount to be fully removed
