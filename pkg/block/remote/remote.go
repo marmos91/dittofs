@@ -158,3 +158,25 @@ type RemoteBlockStore interface {
 type ChunkReader interface {
 	ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error)
 }
+
+// ChunkSealer is the write-side counterpart to ChunkReader (#1414 object
+// packing). The block carver calls SealChunk on the (possibly decorated) remote
+// store to transform one chunk's raw plaintext bytes into the wire bytes that
+// land inside a packed block object — applying exactly the same per-chunk
+// compression/encryption transforms the standalone CAS Put path applies, in the
+// same order. The carver then frames the returned wire bytes into the block via
+// blockcodec and uploads the assembled block with RemoteBlockStore.PutBlock.
+//
+// SealChunk MUST be byte-for-byte symmetric with ChunkReader.ReadChunk:
+// ReadChunk(GetBlockRange(SealChunk(hash, plaintext))) == plaintext. The base
+// stores (s3, memory) implement it as the identity transform; the compression
+// and encryption decorators seal their own layer and delegate inward, so a
+// decorated chain produces encrypt(compress(plaintext)) — never plaintext at
+// rest on an encrypted share.
+//
+// hash is threaded through so the encryption layer can bind it as AEAD AAD,
+// matching the per-chunk scheme of the standalone Put path. Base stores and the
+// compression layer ignore it.
+type ChunkSealer interface {
+	SealChunk(ctx context.Context, hash block.ContentHash, plaintext []byte) ([]byte, error)
+}
