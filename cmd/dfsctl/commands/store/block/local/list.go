@@ -15,9 +15,11 @@ var listCmd = &cobra.Command{
 	Long: `List all local block stores on the DittoFS server.
 
 Shows the name, ID, type (fs or memory), and configuration of each registered
-local block store. Use this to confirm which stores exist before adding,
-editing, or running health checks against one, or to match the store IDs shown
-by 'share show' back to a store name.
+local block store. Other sub-commands accept either form, so this is where you
+find both. Use it to confirm which stores exist before adding, editing, or
+running health checks against one, or to map the store IDs emitted by
+'share show -o json' back to a store name ('share show' table output already
+resolves them to names).
 
 Examples:
   # List as table

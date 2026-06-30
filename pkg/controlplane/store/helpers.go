@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -28,6 +30,37 @@ func getByField[T any](db *gorm.DB, ctx context.Context, field string, value any
 		return nil, convertNotFoundError(err, notFoundErr)
 	}
 	return &result, nil
+}
+
+// getByNameOrID retrieves a single record of type T by its unique "name",
+// falling back to its "id" when no name matches. This lets API consumers address
+// a record by either its human-readable name or its opaque ID (docker-style).
+// Names are matched first and the ID lookup only runs on a name miss, so the two
+// can never resolve ambiguously.
+//
+// Share names are stored with a leading "/" (the API layer prepends it), so a
+// raw ID arrives here as "/<id>"; the final attempt strips that prefix. IDs
+// never contain a slash, so this is a no-op for every other caller.
+func getByNameOrID[T any](db *gorm.DB, ctx context.Context, token string, notFoundErr error, preloads ...string) (*T, error) {
+	result, err := getByField[T](db, ctx, "name", token, notFoundErr, preloads...)
+	if err == nil {
+		return result, nil
+	}
+	if !errors.Is(err, notFoundErr) {
+		return nil, err
+	}
+
+	result, err = getByField[T](db, ctx, "id", token, notFoundErr, preloads...)
+	if err == nil {
+		return result, nil
+	}
+	if !errors.Is(err, notFoundErr) {
+		return nil, err
+	}
+	if trimmed := strings.TrimPrefix(token, "/"); trimmed != token {
+		return getByField[T](db, ctx, "id", trimmed, notFoundErr, preloads...)
+	}
+	return nil, err
 }
 
 // listAll retrieves all records of type T, applying optional GORM Preload clauses.

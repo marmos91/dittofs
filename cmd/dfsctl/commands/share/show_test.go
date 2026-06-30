@@ -79,6 +79,44 @@ func TestShareJSONMarshal_IncludesEnabled(t *testing.T) {
 	}
 }
 
+// TestShareDetail_Rows_ResolvesStoreNames asserts that the detail table renders
+// store names (not opaque IDs) when the lookup maps have an entry, and falls
+// back to the raw ID when they do not.
+func TestShareDetail_Rows_ResolvesStoreNames(t *testing.T) {
+	remoteID := "remote-id"
+	sd := ShareDetail{
+		share: &apiclient.Share{
+			Name:               "/archive",
+			MetadataStoreID:    "meta-id",
+			LocalBlockStoreID:  "local-id",
+			RemoteBlockStoreID: &remoteID,
+		},
+		metaStoreNames:  map[string]string{"meta-id": "meta-name"},
+		blockStoreNames: map[string]string{"local-id": "local-name"},
+	}
+
+	want := map[string]string{
+		"Metadata Store":     "meta-name",  // resolved
+		"Local Block Store":  "local-name", // resolved
+		"Remote Block Store": "remote-id",  // no entry -> raw ID fallback
+	}
+
+	got := make(map[string]string)
+	for _, r := range sd.Rows() {
+		if len(r) >= 2 {
+			if _, ok := want[r[0]]; ok {
+				got[r[0]] = r[1]
+			}
+		}
+	}
+
+	for field, expected := range want {
+		if got[field] != expected {
+			t.Errorf("%s row = %q, want %q", field, got[field], expected)
+		}
+	}
+}
+
 // TestShareTree_AllVerbsDiscoverable asserts every canonical verb is
 // registered as a child of the share parent, including the
 // disable/enable verbs and the inherited permission sub-tree.
