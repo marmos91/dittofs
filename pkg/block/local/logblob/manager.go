@@ -352,11 +352,23 @@ func (m *Manager) EvictBlob(ctx context.Context, logBlobID string, synced func(s
 	}
 	m.mu.Unlock()
 
+	// Idempotency check: if already evicted, return nil without invoking synced.
+	// This must come before synced() so a second call with synced=false still
+	// returns nil, matching the documented idempotency contract.
+	m.sealedMu.Lock()
+	if _, already := m.evictedBlobs[logBlobID]; already {
+		m.sealedMu.Unlock()
+		return nil
+	}
+	m.sealedMu.Unlock()
+
 	if !synced(logBlobID) {
 		return ErrUnsyncedBytes
 	}
 
-	// Mark evicted (idempotent) and grab the cached fd if any.
+	// Mark evicted and grab the cached fd if any.
+	// Double-check under sealedMu in case a concurrent EvictBlob won the race
+	// between our early check above and now.
 	m.sealedMu.Lock()
 	if _, already := m.evictedBlobs[logBlobID]; already {
 		m.sealedMu.Unlock()
@@ -388,7 +400,14 @@ func (m *Manager) EvictBlob(ctx context.Context, logBlobID string, synced func(s
 // For sealed blobs the cached fd (if any) is closed and removed from the
 // cache before truncation so the next read re-opens the file at the new size.
 //
-// validUpToOffset must be ≥ 0.
+// validUpToOffset must be ≥ 0 and ≤ the blob's current size. Passing an
+// offset beyond the current size is rejected with an error to prevent POSIX
+// ftruncate from zero-filling the file.
+//
+// Concurrency precondition: callers must quiesce concurrent [ReadAt] and
+// [Append] calls that target logBlobID before calling Recover — the same
+// contract as [Close]. Recover is designed for startup-time recovery where no
+// concurrent I/O is in flight on the target blob.
 func (m *Manager) Recover(ctx context.Context, logBlobID string, validUpToOffset int64) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -404,6 +423,13 @@ func (m *Manager) Recover(ctx context.Context, logBlobID string, validUpToOffset
 	}
 
 	if logBlobID == m.activeID {
+		// Guard against extending the file: POSIX ftruncate zero-fills when the
+		// target length exceeds the current file size, which would silently corrupt
+		// a crash-recovery operation.
+		if validUpToOffset > m.activeTail {
+			m.mu.Unlock()
+			return fmt.Errorf("logblob: Recover: offset %d exceeds active blob size %d", validUpToOffset, m.activeTail)
+		}
 		// Truncate active blob while holding mu (acceptable for a startup op).
 		if err := m.activeFD.Truncate(validUpToOffset); err != nil {
 			m.mu.Unlock()
@@ -430,6 +456,17 @@ func (m *Manager) Recover(ctx context.Context, logBlobID string, validUpToOffset
 	}
 
 	path := filepath.Join(m.dir, logBlobID+blobSuffix)
+
+	// Guard against extending the file: POSIX truncate zero-fills when the
+	// target length exceeds the current file size.
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("logblob: stat sealed blob %q: %w", logBlobID, err)
+	}
+	if validUpToOffset > fi.Size() {
+		return fmt.Errorf("logblob: Recover: offset %d exceeds sealed blob size %d", validUpToOffset, fi.Size())
+	}
+
 	if err := os.Truncate(path, validUpToOffset); err != nil {
 		return fmt.Errorf("logblob: truncate sealed blob %q: %w", logBlobID, err)
 	}

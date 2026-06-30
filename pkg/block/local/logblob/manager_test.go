@@ -1169,6 +1169,116 @@ func TestRecoverAckedBoundary(t *testing.T) {
 	}
 }
 
+// TestEvictIdempotentUnsyncedSecondCall verifies that EvictBlob is idempotent
+// even when the synced function returns false on the second call. Once a blob
+// has been evicted the synced check must not be re-evaluated — the eviction
+// record is authoritative.
+func TestEvictIdempotentUnsyncedSecondCall(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 64})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	loc0, err := m.Append(ctx, bytes.Repeat([]byte("D"), 70))
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	blob0 := loc0.LogBlobID
+	if _, err := m.Append(ctx, []byte("seal")); err != nil {
+		t.Fatalf("Append(seal): %v", err)
+	}
+
+	// First eviction: synced=true, must succeed.
+	if err := m.EvictBlob(ctx, blob0, func(string) bool { return true }); err != nil {
+		t.Fatalf("EvictBlob(first): %v", err)
+	}
+	// Second eviction with synced=false: blob is already evicted, must return nil.
+	if err := m.EvictBlob(ctx, blob0, func(string) bool { return false }); err != nil {
+		t.Errorf("EvictBlob(second, unsynced but already evicted): got %v, want nil", err)
+	}
+}
+
+// TestRecoverActiveOverrunRejected verifies that Recover returns an error and
+// does NOT extend the active blob when validUpToOffset exceeds the blob's
+// current size (POSIX ftruncate would zero-fill if we let it through).
+func TestRecoverActiveOverrunRejected(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	data := []byte("hello")
+	loc, err := m.Append(ctx, data)
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	currentSize := loc.RawOffset + loc.RawLength // = 5
+	overrunOffset := currentSize + 100
+
+	// Recover with offset > size must return an error.
+	if recoverErr := m.Recover(ctx, loc.LogBlobID, overrunOffset); recoverErr == nil {
+		t.Fatal("Recover(active) with offset > blob size: expected error, got nil")
+	}
+
+	// File must not have been extended.
+	blobPath := filepath.Join(dir, loc.LogBlobID+".blob")
+	fi, statErr := os.Stat(blobPath)
+	if statErr != nil {
+		t.Fatalf("Stat: %v", statErr)
+	}
+	if fi.Size() != currentSize {
+		t.Errorf("Recover(active) extended file: size = %d, want %d", fi.Size(), currentSize)
+	}
+}
+
+// TestRecoverSealedOverrunRejected verifies that Recover returns an error and
+// does NOT extend a sealed blob when validUpToOffset exceeds the file size.
+func TestRecoverSealedOverrunRejected(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 200})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("Z"), 50)
+	loc, err := m.Append(ctx, data)
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	blob0 := loc.LogBlobID
+	currentSize := loc.RawOffset + loc.RawLength // = 50
+
+	// Seal blob0.
+	if err := m.Rotate(); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+
+	overrunOffset := currentSize + 100
+
+	// Recover with offset > size must return an error.
+	if recoverErr := m.Recover(ctx, blob0, overrunOffset); recoverErr == nil {
+		t.Fatal("Recover(sealed) with offset > blob size: expected error, got nil")
+	}
+
+	// File must not have been extended.
+	blobPath := filepath.Join(dir, blob0+".blob")
+	fi, statErr := os.Stat(blobPath)
+	if statErr != nil {
+		t.Fatalf("Stat: %v", statErr)
+	}
+	if fi.Size() != currentSize {
+		t.Errorf("Recover(sealed) extended file: size = %d, want %d", fi.Size(), currentSize)
+	}
+}
+
 // TestLogBlobConformance runs the logblob conformance suite.
 func TestLogBlobConformance(t *testing.T) {
 	blockstoretest.LogBlobConformance(t, func(t *testing.T) (*logblob.Manager, string, func()) {
