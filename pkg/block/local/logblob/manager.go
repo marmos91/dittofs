@@ -88,9 +88,9 @@ type Manager struct {
 
 	closed bool
 
-	// sealedMu guards sealedFDs. It is acquired ONLY after mu is released,
-	// preserving the lock-order invariant (mu before sealedMu where both are
-	// needed — and in practice they are never held simultaneously).
+	// sealedMu guards sealedFDs. Lock order: mu must always be acquired before
+	// sealedMu when both are needed (rotateLocked holds mu and acquires sealedMu).
+	// Never acquire mu while holding sealedMu.
 	sealedMu  sync.Mutex
 	sealedFDs map[string]*os.File // blobID → open O_RDONLY fd (lazy)
 }
