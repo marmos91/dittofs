@@ -116,7 +116,7 @@ func TestDispatchRemoteFetch_BlockLocator(t *testing.T) {
 	target := bytes.Repeat([]byte{0x22}, 4096)
 	blockData := append(append([]byte{}, filler...), target...)
 	const blockID = "block-test-0001"
-	if err := rem.PutBlock(blockID, blockData); err != nil {
+	if err := rem.PutBlock(ctx, blockID, bytes.NewReader(blockData)); err != nil {
 		t.Fatalf("PutBlock: %v", err)
 	}
 
@@ -150,7 +150,7 @@ func TestDispatchRemoteFetch_BlockLocatorVerifyMismatch(t *testing.T) {
 	// Store a block whose bytes do NOT match the claimed hash.
 	corrupt := bytes.Repeat([]byte{0x34}, 4096)
 	const blockID = "block-corrupt"
-	if err := rem.PutBlock(blockID, corrupt); err != nil {
+	if err := rem.PutBlock(ctx, blockID, bytes.NewReader(corrupt)); err != nil {
 		t.Fatalf("PutBlock: %v", err)
 	}
 	loc := block.ChunkLocator{BlockID: blockID, WireOffset: 0, WireLength: int64(len(target))}
