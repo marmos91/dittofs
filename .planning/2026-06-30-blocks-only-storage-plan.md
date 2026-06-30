@@ -31,9 +31,14 @@ P4 local ─┘────────┘
 ### P2 — Remote block store interface (+ cleanup)
 - Slim interface: `PutBlock` / `GetBlock` / `GetBlockRange` / `DeleteBlock` / `Walk`.
   Implement on s3 + memory; decorators pass `PutBlock` through and expose the codec transform.
+- **Large blocks:** `PutBlock` streams; the S3 store uses **multipart upload** above a
+  configurable part-size threshold (mandatory above the 5 GB single-PUT limit) so large
+  `TargetBlockSize` values (e.g. 256 MB) work; small blocks use a single PUT. Multipart also
+  enables **per-part retry** (re-upload only the failed part) and parallel parts.
 - **Cleanup:** remove `Put/Get/GetRange`-by-hash, `FormatCASKey`/`ParseCASKey`, the `cas/`
   walk + keying, and standalone `ReadBlockVerified`.
-- **DoD/tests:** conformance suite for the new interface (s3 + memory); range correctness.
+- **DoD/tests:** conformance suite for the new interface (s3 + memory); range correctness;
+  multipart PUT of a large block + ranged GET over a multipart-PUT object.
 
 ### P3 — Metadata: block records + locators + batched commit (#1416)
 - Per-block record `BlockID → {blockHash, length, liveChunkCount, syncState}`; per-chunk
@@ -48,16 +53,25 @@ P4 local ─┘────────┘
 
 ### P4 — Local tier: log blobs (+ cleanup)
 - RocksDB-style log-blob store: append at tail (`pwrite`), read earlier offsets (`pread`),
-  per-blob local index (`hash → {logBlobID, rawOffset, rawLength}`), rotation at size cap,
-  block-granular eviction, WAL-style torn-tail recovery (truncate to last validated chunk).
+  per-blob local index (`hash → {logBlobID, rawOffset, rawLength}`), rotation at
+  **`MaxBlobSize`** (config, default 1 GB), WAL-style torn-tail recovery (truncate to last
+  validated chunk).
+- **Hot-cache eviction:** **`MaxLocalStoreSize`** (config) high-water → evict cold,
+  **fully-synced** whole blobs (LRU) down to a low-water mark; never evict unsynced. Sub-blob
+  reclaim (a blob pinned by a few unsynced/hot chunks) needs **local blob compaction** —
+  tracked as #1497 (fast-follow).
 - **Cleanup:** remove per-chunk local CAS file storage in `pkg/block/local/fs`.
-- **DoD/tests:** crash/torn-tail recovery; eviction; concurrent tail-append + carve `pread`.
+- **DoD/tests:** crash/torn-tail recovery; threshold eviction reclaims to low-water and keeps
+  unsynced resident; concurrent tail-append + carve `pread`.
 
 ### P5 — Sync engine: block carving + read path (+ cleanup)
 - Real-time carve (block-size or idle) from the log blob, stream transformed+framed bytes
   into `PutBlock`, write locators + block record atomically, mark synced.
-- Read path: resolve locator → local log blob (raw, zero-decode) or remote `GetBlockRange`
-  → decode → `blake3` verify. Block-granular refetch re-stages an evicted block.
+- Read path (**local-first → remote on miss → read-ahead**): file offset → chunk → local log
+  blob `pread` (hot, zero decode); on miss `GetBlockRange` for the needed bytes (fast first
+  byte) → decode → `blake3` verify; then background-prefetch the whole block (and more,
+  adaptively) to warm the cache. Coalesce contiguous same-block locators into one ranged GET.
+  (See the design's Read path section.)
 - **Cleanup:** retire `mirrorChunk` standalone `Put` + standalone `MarkSynced` and the
   standalone-vs-block read branch.
 - **DoD/tests:** small files → one block, N locators, correct reads; dedup across files;
