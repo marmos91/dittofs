@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -627,6 +628,131 @@ func TestMultipleReopenCycles(t *testing.T) {
 			t.Fatalf("cycle %d Close: %v", cycle, err)
 		}
 	}
+}
+
+// TestReadAtDuringRotate exercises the race window where fdForBlob snapshots
+// the active fd under mu, releases mu, Rotate moves that fd to sealedFDs, and
+// then ReadAt runs on the former-active fd. Every ReadAt must return the exact
+// original bytes.
+func TestReadAtDuringRotate(t *testing.T) {
+	dir := t.TempDir()
+	// Small SizeCap keeps the active blob small; we drive rotations manually too.
+	m, err := logblob.Open(dir, logblob.Options{SizeCap: 4096})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = m.Close() }()
+
+	ctx := context.Background()
+	payload := []byte("readat-during-rotate-payload-data")
+	loc, err := m.Append(ctx, payload)
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	const (
+		readers  = 8
+		rotators = 4
+		iters    = 50
+	)
+
+	var wg sync.WaitGroup
+
+	// Readers: repeatedly read the same location and verify bytes.
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dst := make([]byte, loc.RawLength)
+			for i := 0; i < iters; i++ {
+				n, err := m.ReadAt(ctx, loc, dst)
+				if err != nil {
+					t.Errorf("ReadAt during rotate: %v", err)
+					return
+				}
+				if n != len(payload) {
+					t.Errorf("ReadAt short: got %d, want %d", n, len(payload))
+					return
+				}
+				if !bytes.Equal(dst[:n], payload) {
+					t.Errorf("ReadAt corrupt: got %q, want %q", dst[:n], payload)
+					return
+				}
+			}
+		}()
+	}
+
+	// Rotators: keep sealing the active blob and opening a fresh one.
+	for r := 0; r < rotators; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				if err := m.Rotate(); err != nil {
+					t.Errorf("Rotate: %v", err)
+					return
+				}
+				// Write something so the new active blob isn't empty.
+				if _, err := m.Append(ctx, []byte("filler")); err != nil {
+					t.Errorf("Append filler: %v", err)
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestReadAtDuringClose fires many concurrent ReadAt goroutines while another
+// goroutine calls Close. Each ReadAt must return either correct bytes or an
+// error (ErrClosed / os.ErrClosed / a wrapped variant). A nil error paired with
+// wrong or garbage bytes is a bug.
+func TestReadAtDuringClose(t *testing.T) {
+	dir := t.TempDir()
+	m, err := logblob.Open(dir, logblob.Options{})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	ctx := context.Background()
+	payload := []byte("readat-during-close-payload-data")
+	loc, err := m.Append(ctx, payload)
+	if err != nil {
+		_ = m.Close()
+		t.Fatalf("Append: %v", err)
+	}
+
+	const readers = 16
+
+	var wg sync.WaitGroup
+	// Closer: let all readers start, then close.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Brief yield so readers are in flight.
+		runtime.Gosched()
+		_ = m.Close()
+	}()
+
+	for r := 0; r < readers; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dst := make([]byte, loc.RawLength)
+			n, err := m.ReadAt(ctx, loc, dst)
+			if err != nil {
+				// Any error is acceptable — closed sentinel or OS error on closed fd.
+				return
+			}
+			// Success: bytes must be exactly right.
+			if n != len(payload) || !bytes.Equal(dst[:n], payload) {
+				t.Errorf("ReadAt during Close: nil err but wrong bytes: got %q (%d bytes), want %q", dst[:n], n, payload)
+			}
+		}()
+	}
+
+	wg.Wait()
 }
 
 // blobIDSet converts a BlobInfo slice to a set of IDs.
