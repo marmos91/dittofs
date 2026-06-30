@@ -14,6 +14,19 @@ import (
 // attrs package. Called during SetRuntime (startup) and can be called
 // periodically or on new connections to pick up changed settings.
 func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
+	// Force a synchronous settings re-read before reading the cache so the
+	// adapter enable/restart path sees updates made within the poll window
+	// (e.g. `--portmapper-enabled true` immediately followed by a restart
+	// reads the stale cached value otherwise, leaving the portmapper down).
+	// Bounded so an unhealthy store degrades to cached values, not a hang.
+	if sw := rt.GetSettingsWatcher(); sw != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := sw.RefreshNFSSettings(ctx); err != nil {
+			logger.Debug("NFS adapter: settings refresh failed, using cached values", "error", err)
+		}
+		cancel()
+	}
+
 	settings := rt.GetNFSSettings()
 	if settings == nil {
 		logger.Debug("NFS adapter: no live settings available, using defaults")
