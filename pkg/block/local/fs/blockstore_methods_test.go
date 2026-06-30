@@ -120,7 +120,7 @@ func TestFSStore_ListUnsynced(t *testing.T) {
 		hashes := seedChunks(t, bc, 4)
 		ctx := context.Background()
 		for _, h := range hashes {
-			if err := shs.MarkSynced(ctx, h); err != nil {
+			if err := shs.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 				t.Fatalf("MarkSynced: %v", err)
 			}
 		}
@@ -161,7 +161,7 @@ func TestFSStore_ListUnsynced(t *testing.T) {
 		// Mark two as synced; remaining three must be the yielded set.
 		synced := []block.ContentHash{hashes[1], hashes[3]}
 		for _, h := range synced {
-			if err := shs.MarkSynced(ctx, h); err != nil {
+			if err := shs.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 				t.Fatalf("MarkSynced: %v", err)
 			}
 		}

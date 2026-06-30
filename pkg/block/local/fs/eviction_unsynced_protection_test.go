@@ -107,7 +107,7 @@ func TestLRU_SyncedChunk_EvictedBeforeUnsynced(t *testing.T) {
 	hSynced := storeChunk(t, bc, bytes.Repeat([]byte{0x10}, 200))
 	hUnsynced := storeChunk(t, bc, bytes.Repeat([]byte{0x11}, 200))
 
-	if err := mds.MarkSynced(ctx, hSynced); err != nil {
+	if err := mds.MarkSynced(ctx, hSynced, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
@@ -143,8 +143,11 @@ func (s *slowSyncedHashStore) IsSynced(ctx context.Context, h block.ContentHash)
 	return s.inner.IsSynced(ctx, h)
 }
 
-func (s *slowSyncedHashStore) MarkSynced(ctx context.Context, h block.ContentHash) error {
-	return s.inner.MarkSynced(ctx, h)
+func (s *slowSyncedHashStore) MarkSynced(ctx context.Context, h block.ContentHash, loc block.ChunkLocator) error {
+	return s.inner.MarkSynced(ctx, h, loc)
+}
+func (s *slowSyncedHashStore) GetLocator(ctx context.Context, h block.ContentHash) (block.ChunkLocator, bool, error) {
+	return s.inner.GetLocator(ctx, h)
 }
 
 func (s *slowSyncedHashStore) DeleteSynced(ctx context.Context, h block.ContentHash) error {
@@ -183,7 +186,7 @@ func TestLRU_EvictTouchRace(t *testing.T) {
 		// Mark half synced so eviction actually removes some entries while
 		// the rest are moved-to-front — exercising both recheck branches.
 		if i%2 == 0 {
-			if err := mds.MarkSynced(ctx, h); err != nil {
+			if err := mds.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 				t.Fatalf("MarkSynced: %v", err)
 			}
 		}

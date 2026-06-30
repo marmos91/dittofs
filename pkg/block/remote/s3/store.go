@@ -54,6 +54,7 @@ const maxS3ConnsPerHost = 256
 // Compile-time interface satisfaction check.
 var (
 	_ remote.RemoteStore       = (*Store)(nil)
+	_ remote.PackChunkReader   = (*Store)(nil)
 	_ block.DurabilityReporter = (*Store)(nil)
 )
 
@@ -511,6 +512,49 @@ func (s *Store) GetRange(ctx context.Context, hash block.ContentHash, offset, le
 			return nil, block.ErrChunkNotFound
 		}
 		return nil, fmt.Errorf("s3 get range: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return readResponseBody(resp.Body, resp.ContentLength, length)
+}
+
+// packKey returns the full S3 key for a pack object identified by packID.
+func (s *Store) packKey(packID string) string {
+	return s.fullKey(block.FormatPackKey(packID))
+}
+
+// GetPackChunk reads the wire bytes [offset, offset+length) from the pack object
+// packs/<packID> via an S3 range request and returns them verbatim. As a base
+// store there is no transform to invert and no verification here (the engine
+// verifies the BLAKE3 after the decorator stack). Implements
+// remote.PackChunkReader; hash is unused at this layer. See GetRange for the
+// bounds-validation rationale.
+func (s *Store) GetPackChunk(ctx context.Context, packID string, offset, length int64, _ block.ContentHash) ([]byte, error) {
+	if err := s.checkClosed(); err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		return nil, block.ErrInvalidOffset
+	}
+	if length <= 0 {
+		return nil, block.ErrInvalidSize
+	}
+	if length > math.MaxInt64-offset {
+		return nil, block.ErrInvalidSize
+	}
+
+	key := s.packKey(packID)
+	rangeHeader := fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)
+	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		Range:  aws.String(rangeHeader),
+	})
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, block.ErrChunkNotFound
+		}
+		return nil, fmt.Errorf("s3 get pack chunk: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

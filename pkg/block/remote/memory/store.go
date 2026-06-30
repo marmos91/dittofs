@@ -19,6 +19,7 @@ import (
 // Compile-time interface satisfaction check.
 var (
 	_ remote.RemoteStore       = (*Store)(nil)
+	_ remote.PackChunkReader   = (*Store)(nil)
 	_ block.DurabilityReporter = (*Store)(nil)
 )
 
@@ -35,6 +36,11 @@ type memBlock struct {
 type Store struct {
 	mu     sync.RWMutex
 	blocks map[block.ContentHash]*memBlock
+	// packs holds pack objects keyed by PackID (#1414). Populated via PutPack
+	// (used by tests and the future packer); read by GetPackChunk. Separate
+	// from blocks because pack objects are keyed by an opaque PackID string,
+	// not a content hash.
+	packs map[string][]byte
 	// nowFn returns the current time for the store. Tests can override
 	// this to manipulate LastModified deterministically.
 	nowFn  func() time.Time
@@ -50,8 +56,57 @@ type Store struct {
 func New() *Store {
 	return &Store{
 		blocks: make(map[block.ContentHash]*memBlock),
+		packs:  make(map[string][]byte),
 		nowFn:  time.Now,
 	}
+}
+
+// PutPack stores a pack object under packID. It is the in-memory analogue of an
+// S3 PutObject(packs/<packID>); used by tests (and the future PR3b packer) to
+// stage packs that GetPackChunk then ranges into. A defensive copy is taken.
+func (s *Store) PutPack(packID string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return block.ErrStoreClosed
+	}
+	if s.packs == nil {
+		s.packs = make(map[string][]byte)
+	}
+	copied := make([]byte, len(data))
+	copy(copied, data)
+	s.packs[packID] = copied
+	return nil
+}
+
+// GetPackChunk returns the wire bytes [offset, offset+length) from the pack
+// object packID. As a base store there is no transform to invert and no
+// verification here. Implements remote.PackChunkReader; hash is unused at this
+// layer. Bounds semantics mirror GetRange.
+func (s *Store) GetPackChunk(_ context.Context, packID string, offset, length int64, _ block.ContentHash) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, block.ErrStoreClosed
+	}
+	data, ok := s.packs[packID]
+	if !ok {
+		return nil, block.ErrChunkNotFound
+	}
+	if offset < 0 || offset >= int64(len(data)) {
+		return nil, block.ErrInvalidOffset
+	}
+	if length <= 0 {
+		return nil, block.ErrInvalidSize
+	}
+	size := int64(len(data))
+	end := size
+	if length <= size-offset {
+		end = offset + length
+	}
+	result := make([]byte, end-offset)
+	copy(result, data[offset:end])
+	return result, nil
 }
 
 // Durable reports whether accepted bytes survive a crash/restart

@@ -166,7 +166,7 @@ func (s *recordingSyncedHashStore) IsSynced(_ context.Context, hash block.Conten
 	return ok, nil
 }
 
-func (s *recordingSyncedHashStore) MarkSynced(_ context.Context, hash block.ContentHash) error {
+func (s *recordingSyncedHashStore) MarkSynced(_ context.Context, hash block.ContentHash, _ block.ChunkLocator) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.synced[hash]; !ok {
@@ -193,6 +193,13 @@ func (s *recordingSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(
 		}
 	}
 	return nil
+}
+
+func (s *recordingSyncedHashStore) GetLocator(_ context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.synced[hash]
+	return block.ChunkLocator{}, ok, nil
 }
 
 func (s *recordingSyncedHashStore) DeleteSynced(_ context.Context, hash block.ContentHash) error {

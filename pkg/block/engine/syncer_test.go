@@ -289,7 +289,7 @@ func (m *markFailingSyncedHashStore) IsSynced(ctx context.Context, hash block.Co
 	return m.inner.IsSynced(ctx, hash)
 }
 
-func (m *markFailingSyncedHashStore) MarkSynced(ctx context.Context, hash block.ContentHash) error {
+func (m *markFailingSyncedHashStore) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
 	m.mu.Lock()
 	if !m.failOnceUsed && m.failOnceErr != nil {
 		m.failOnceUsed = true
@@ -297,11 +297,15 @@ func (m *markFailingSyncedHashStore) MarkSynced(ctx context.Context, hash block.
 		return m.failOnceErr
 	}
 	m.mu.Unlock()
-	if err := m.inner.MarkSynced(ctx, hash); err != nil {
+	if err := m.inner.MarkSynced(ctx, hash, loc); err != nil {
 		return err
 	}
 	m.marks.Add(1)
 	return nil
+}
+
+func (m *markFailingSyncedHashStore) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	return m.inner.GetLocator(ctx, hash)
 }
 
 func (m *markFailingSyncedHashStore) DeleteSynced(ctx context.Context, hash block.ContentHash) error {

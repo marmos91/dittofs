@@ -98,7 +98,7 @@ func TestBackpressure_HealthyRemote_ReleasesWhenDrained(t *testing.T) {
 	// mark hA synced so it becomes evictable, freeing 200 bytes.
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		_ = mds.MarkSynced(ctx, hA)
+		_ = mds.MarkSynced(ctx, hA, block.ChunkLocator{})
 		src.unsynced.Add(-200)
 	}()
 
