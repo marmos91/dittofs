@@ -39,8 +39,9 @@ import (
 //     no-op contract per the unified Store surface.
 //  3. ListUnsynced snapshot semantics — chunks rolled up mid-Flush land
 //     in the NEXT pass, not the current one.
-//  4. Refcount cascade — engine.Delete on a fully-synced file drops the
-//     synced marker so the synced set stays a strict subset of local CAS.
+//  4. Unlink preserves synced — engine.Delete on a fully-synced file reaps
+//     the refcount but KEEPS the synced marker, so the steady-state GC sweep
+//     can still reclaim the now-orphaned remote object (#1433).
 //
 // Two backend fixtures
 //
@@ -825,21 +826,21 @@ func diff(candidates []block.ContentHash, seen map[block.ContentHash]struct{}) [
 }
 
 // ----------------------------------------------------------------------
-// Scenario 4: Refcount cascade DeleteSynced end-to-end.
+// Scenario 4: unlink PRESERVES the synced marker, end-to-end.
 //
 // Write a file, Flush so its chunks land in remote + synced set, then
 // engine.Delete with the produced BlockRef list (refcount → 0 because
-// the coordinator is the test refcount fake). Assert: IsSynced flips
-// to false for every hash; the synced set is again a strict subset of
-// local CAS.
+// the coordinator is the test refcount fake). Assert: IsSynced stays
+// TRUE for every hash — the remote objects still exist, so the markers
+// must survive unlink or the steady-state GC sweep (which finds remote
+// orphans via synced − live) could never reclaim them (#1433).
 //
-// Distinct from the unit cascade test in engine_delete_test.go in that
-// it exercises the cascade end-to-end against a real remote backend —
-// 's unit suite proves the wiring; this proves the path under
-// real Put/MarkSynced state.
+// Distinct from the unit test in engine_delete_test.go in that it
+// exercises the path end-to-end against a real remote backend under real
+// Put/MarkSynced state.
 // ----------------------------------------------------------------------
 
-func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
+func TestEngine_Delete_PreservesSyncedMarker(t *testing.T) {
 	runIntegrationMatrix(t, func(t *testing.T, backend remoteBackendFactory) {
 		ctx := context.Background()
 		rs := backend.new(t)
@@ -881,9 +882,9 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 		}
 
 		// Seed coord with refcount=1 per block ID so the by-ID reap on
-		// Delete drops each to 0 and triggers the cascade. The reap is
-		// keyed by EXACT ID "{payloadID}/{offset}"; the offsets here match
-		// the blockRefs the Delete below passes (i*4096).
+		// Delete drops each to 0. The reap is keyed by EXACT ID
+		// "{payloadID}/{offset}"; the offsets here match the blockRefs the
+		// Delete below passes (i*4096).
 		for i, h := range hashes {
 			coord.seedBlock(payloadID, uint64(i)*4096, h, 1)
 		}
@@ -900,14 +901,14 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 				t.Fatalf("IsSynced pre-Delete: %v", err)
 			}
 			if !ok {
-				t.Fatalf("hash %s not synced after Flush; cannot test cascade", h)
+				t.Fatalf("hash %s not synced after Flush; cannot test marker preservation", h)
 			}
 		}
 
 		// Build BlockRef list matching the produced hashes. Offset IS
 		// material: engine.Delete reaps by EXACT ID "{payloadID}/{offset}",
 		// and these offsets (i*4096) match the seedBlock bindings above so
-		// the by-ID reap resolves each hash and fires the cascade.
+		// the by-ID reap resolves and reaps each hash's row.
 		blockRefs := make([]block.BlockRef, 0, len(hashes))
 		for i, h := range hashes {
 			blockRefs = append(blockRefs, block.BlockRef{
@@ -921,14 +922,17 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 			t.Fatalf("Delete: %v", err)
 		}
 
-		// Cascade fired: synced is the empty set for these hashes.
+		// Marker preserved: the remote object still exists, so IsSynced must
+		// stay true — the steady-state GC sweep relies on (synced − live) to
+		// find this orphan and will clear the marker itself once it deletes the
+		// remote object (#1433).
 		for _, h := range hashes {
 			ok, err := synced.IsSynced(ctx, h)
 			if err != nil {
 				t.Fatalf("IsSynced post-Delete: %v", err)
 			}
-			if ok {
-				t.Errorf("hash %s still synced after Delete; cascade did not fire", h)
+			if !ok {
+				t.Errorf("hash %s no longer synced after Delete; marker must outlive unlink so GC can reclaim the remote orphan", h)
 			}
 		}
 	})

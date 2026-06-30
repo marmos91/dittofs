@@ -418,5 +418,5 @@ func TestCopyPayload_EmptySource(t *testing.T) {
 // store under blocks/<hh>/ is the only on-disk layout), so there is
 // nothing to observe at this seam. End-to-end coverage of the
 // engine.Delete refcount → GC path is provided by
-// TestEngine_Delete_CascadesDeleteSynced in engine_delete_test.go and
+// TestEngine_Delete_PreservesSyncedMarker in engine_delete_test.go and
 // by the integration tests in syncer_test.go.
