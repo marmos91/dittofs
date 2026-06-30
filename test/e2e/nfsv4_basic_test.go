@@ -45,6 +45,14 @@ func setupNFSv4TestServer(t *testing.T) (*helpers.ServerProcess, *helpers.CLIRun
 	require.NoError(t, err, "Should create share")
 	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
 
+	// These exercise privileged POSIX filesystem semantics (chown to an
+	// arbitrary uid, etc.) which require real root. The default squash is
+	// root_to_guest, mapping an NFS root client to an unprivileged anonymous
+	// identity that may not chown — so model a trusted-admin export with
+	// no_root_squash (root_to_admin) where root retains its privileges.
+	_, err = runner.Run("share", "nfs-config", "set", "/export", "--squash", "root_to_admin")
+	require.NoError(t, err, "Should set no_root_squash on the share")
+
 	nfsPort := helpers.FindFreePort(t)
 	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
 	require.NoError(t, err, "Should enable NFS adapter")
