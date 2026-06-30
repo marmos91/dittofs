@@ -55,28 +55,16 @@ func TestPermissionEnforcement(t *testing.T) {
 		helpers.WithShareDefaultPermission("none"))
 	require.NoError(t, err, "Should create share with default permission none")
 
-	// Enable NFS adapter for admin setup (creating test files)
-	nfsPort := helpers.FindFreePort(t)
-	_, err = cli.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
-	require.NoError(t, err, "Should enable NFS adapter")
-
-	// Enable SMB adapter for permission-enforced testing
+	// This test exercises SMB only — fixtures are created over the admin SMB
+	// mount and the permission checks run over per-user SMB mounts. No NFS.
 	smbPort := helpers.FindFreePort(t)
 	_, err = cli.EnableAdapter("smb", helpers.WithAdapterPort(smbPort))
 	require.NoError(t, err, "Should enable SMB adapter")
 
-	// Wait for adapters to be ready
-	err = helpers.WaitForAdapterStatus(t, cli, "nfs", true, 5*time.Second)
-	require.NoError(t, err, "NFS adapter should become enabled")
 	err = helpers.WaitForAdapterStatus(t, cli, "smb", true, 5*time.Second)
 	require.NoError(t, err, "SMB adapter should become enabled")
 
-	framework.WaitForServer(t, nfsPort, 10*time.Second)
 	framework.WaitForServer(t, smbPort, 10*time.Second)
-
-	// Mount NFS as admin for test file setup (no auth required for NFS)
-	adminMount := framework.MountNFS(t, nfsPort)
-	t.Cleanup(adminMount.Cleanup)
 
 	t.Cleanup(func() {
 		_ = cli.DeleteShare(shareName)
@@ -84,7 +72,7 @@ func TestPermissionEnforcement(t *testing.T) {
 		_ = cli.DeleteLocalBlockStore(localStoreName)
 	})
 
-	// Create an admin user for SMB testing
+	// Create an admin user for SMB testing.
 	adminUser := helpers.UniqueTestName("smbadmin")
 	adminPass := "testpassword123"
 	_, err = cli.CreateUser(adminUser, adminPass)
@@ -96,14 +84,18 @@ func TestPermissionEnforcement(t *testing.T) {
 	require.NoError(t, err, "Should grant admin permission")
 	t.Cleanup(func() { _ = cli.RevokeUserPermission(shareName, adminUser) })
 
-	// Verify SMB connectivity works before running permission tests
-	// Use MountSMBWithError to gracefully handle mount failures
-	testCreds := framework.SMBCredentials{Username: adminUser, Password: adminPass}
-	testMount, mountErr := framework.MountSMBWithError(t, smbPort, testCreds)
+	// Set up test files through an authenticated admin SMB mount, not NFS.
+	// The share's default permission is "none", so an NFS client (squashed to an
+	// unprivileged identity with no grant) cannot write the fixtures — that is
+	// the correct least-privilege behaviour. The admin user holds an explicit
+	// admin grant, so its authenticated SMB session can. This also keeps the
+	// whole test on the protocol it actually exercises (SMB).
+	adminMount, mountErr := framework.MountSMBWithError(t, smbPort,
+		framework.SMBCredentials{Username: adminUser, Password: adminPass})
 	if mountErr != nil {
 		t.Skipf("Skipping: SMB mount not working on this system: %v", mountErr)
 	}
-	testMount.Unmount()
+	t.Cleanup(adminMount.Cleanup)
 
 	// Run subtests for each requirement
 	t.Run("ENF-01 read-only user cannot write", func(t *testing.T) {

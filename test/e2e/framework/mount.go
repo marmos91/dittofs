@@ -257,117 +257,70 @@ func DefaultSMBCredentials() SMBCredentials {
 	}
 }
 
-// MountSMB mounts an SMB share and returns the mount info.
-func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
-	t.Helper()
-
-	// Give the SMB server a moment to fully initialize
-	time.Sleep(500 * time.Millisecond)
-
-	// Create mount directory
-	mountPath, err := makeTraversableMountPoint("dittofs-e2e-smb-")
-	if err != nil {
-		t.Fatalf("Failed to create SMB mount directory: %v", err)
-	}
-
-	// Build mount command based on platform
-	var cmd *exec.Cmd
+// buildSMBMountCmd builds the platform-specific mount command for an SMB share.
+// shareName is the DittoFS share name (with or without a leading slash); the SMB
+// tree name is the same path without the leading slash.
+func buildSMBMountCmd(port int, shareName, mountPath string, creds SMBCredentials) *exec.Cmd {
+	tree := strings.TrimPrefix(shareName, "/")
 	switch runtime.GOOS {
 	case "darwin":
 		// macOS: mount_smbfs
-		smbURL := fmt.Sprintf("//%s:%s@localhost:%d/export", creds.Username, creds.Password, port)
-		cmd = exec.Command("mount_smbfs", smbURL, mountPath)
+		smbURL := fmt.Sprintf("//%s:%s@localhost:%d/%s", creds.Username, creds.Password, port, tree)
+		return exec.Command("mount_smbfs", smbURL, mountPath)
 	case "linux":
 		// Linux: mount -t cifs
-		cmd = exec.Command("mount", "-t", "cifs",
-			"//localhost/export",
+		return exec.Command("mount", "-t", "cifs",
+			fmt.Sprintf("//localhost/%s", tree),
 			mountPath,
 			"-o", cifsMountOptions(port, creds))
 	default:
-		_ = os.RemoveAll(mountPath)
-		t.Fatalf("Unsupported platform for SMB: %s", runtime.GOOS)
-	}
-
-	// Execute mount command with retries
-	var output []byte
-	var lastErr error
-	maxRetries := 3
-
-	for i := range maxRetries {
-		output, lastErr = cmd.CombinedOutput()
-
-		if lastErr == nil {
-			t.Logf("SMB share mounted successfully at %s", mountPath)
-			break
-		}
-
-		if i < maxRetries-1 {
-			t.Logf("SMB mount attempt %d failed (error: %v), retrying in 1 second...", i+1, lastErr)
-			time.Sleep(time.Second)
-
-			// Rebuild command for next attempt (cmd can only be run once)
-			switch runtime.GOOS {
-			case "darwin":
-				smbURL := fmt.Sprintf("//%s:%s@localhost:%d/export", creds.Username, creds.Password, port)
-				cmd = exec.Command("mount_smbfs", smbURL, mountPath)
-			case "linux":
-				cmd = exec.Command("mount", "-t", "cifs",
-					"//localhost/export",
-					mountPath,
-					"-o", cifsMountOptions(port, creds))
-			}
-		}
-	}
-
-	if lastErr != nil {
-		_ = os.RemoveAll(mountPath)
-		t.Fatalf("Failed to mount SMB share after %d attempts: %v\nOutput: %s",
-			maxRetries, lastErr, string(output))
-	}
-
-	return &Mount{
-		T:        t,
-		Path:     mountPath,
-		Protocol: "smb",
-		Port:     port,
-		mounted:  true,
+		return nil
 	}
 }
 
-// MountSMBWithError mounts an SMB share and returns the mount info or an error.
-// Unlike MountSMB, it does NOT call t.Fatal on mount failure.
-// Use this for testing scenarios where mount is expected to fail (e.g., permission denied).
+// MountSMB mounts the default "/export" SMB share and returns the mount info.
+func MountSMB(t *testing.T, port int, creds SMBCredentials) *Mount {
+	t.Helper()
+	return MountSMBExport(t, port, "/export", creds)
+}
+
+// MountSMBExport mounts a named SMB share and returns the mount info.
+func MountSMBExport(t *testing.T, port int, shareName string, creds SMBCredentials) *Mount {
+	t.Helper()
+	mount, err := MountSMBExportWithError(t, port, shareName, creds)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return mount
+}
+
+// MountSMBWithError mounts the default "/export" SMB share and returns the mount
+// info or an error. Unlike MountSMB it does NOT call t.Fatal on mount failure;
+// use it where a mount is expected to fail (e.g. permission denied).
 func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, error) {
+	t.Helper()
+	return MountSMBExportWithError(t, port, "/export", creds)
+}
+
+// MountSMBExportWithError mounts a named SMB share and returns the mount info or
+// an error, without calling t.Fatal.
+func MountSMBExportWithError(t *testing.T, port int, shareName string, creds SMBCredentials) (*Mount, error) {
 	t.Helper()
 
 	// Give the SMB server a moment to fully initialize
 	time.Sleep(500 * time.Millisecond)
 
-	// Create mount directory
 	mountPath, err := makeTraversableMountPoint("dittofs-e2e-smb-")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SMB mount directory: %w", err)
 	}
 
-	// Build mount command based on platform
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		// macOS: mount_smbfs
-		smbURL := fmt.Sprintf("//%s:%s@localhost:%d/export", creds.Username, creds.Password, port)
-		cmd = exec.Command("mount_smbfs", smbURL, mountPath)
-	case "linux":
-		// Linux: mount -t cifs
-		cmd = exec.Command("mount", "-t", "cifs",
-			"//localhost/export",
-			mountPath,
-			"-o", cifsMountOptions(port, creds))
-	default:
+	cmd := buildSMBMountCmd(port, shareName, mountPath, creds)
+	if cmd == nil {
 		_ = os.RemoveAll(mountPath)
 		return nil, fmt.Errorf("unsupported platform for SMB: %s", runtime.GOOS)
 	}
 
-	// Execute mount command with retries
 	var output []byte
 	var lastErr error
 	maxRetries := 3
@@ -376,7 +329,7 @@ func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 		output, lastErr = cmd.CombinedOutput()
 
 		if lastErr == nil {
-			t.Logf("SMB share mounted successfully at %s", mountPath)
+			t.Logf("SMB share %s mounted successfully at %s", shareName, mountPath)
 			return &Mount{
 				T:        t,
 				Path:     mountPath,
@@ -389,22 +342,10 @@ func MountSMBWithError(t *testing.T, port int, creds SMBCredentials) (*Mount, er
 		if i < maxRetries-1 {
 			t.Logf("SMB mount attempt %d failed (error: %v), retrying in 1 second...", i+1, lastErr)
 			time.Sleep(time.Second)
-
-			// Rebuild command for next attempt (cmd can only be run once)
-			switch runtime.GOOS {
-			case "darwin":
-				smbURL := fmt.Sprintf("//%s:%s@localhost:%d/export", creds.Username, creds.Password, port)
-				cmd = exec.Command("mount_smbfs", smbURL, mountPath)
-			case "linux":
-				cmd = exec.Command("mount", "-t", "cifs",
-					"//localhost/export",
-					mountPath,
-					"-o", cifsMountOptions(port, creds))
-			}
+			cmd = buildSMBMountCmd(port, shareName, mountPath, creds) // cmd can only run once
 		}
 	}
 
-	// Clean up mount directory on failure
 	_ = os.RemoveAll(mountPath)
 	return nil, fmt.Errorf("failed to mount SMB share after %d attempts: %v\nOutput: %s",
 		maxRetries, lastErr, string(output))

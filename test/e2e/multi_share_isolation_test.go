@@ -382,7 +382,7 @@ func TestMultiShareIsolation(t *testing.T) {
 		// Grant permission to the share
 		_ = runner.GrantUserPermission("/share-iso-a", "testuser", "read-write")
 
-		mountSMB := framework.MountSMB(t, smbPort, framework.SMBCredentials{
+		mountSMB := framework.MountSMBExport(t, smbPort, "/share-iso-a", framework.SMBCredentials{
 			Username: "testuser",
 			Password: "testpass123",
 		})
