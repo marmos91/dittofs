@@ -808,6 +808,264 @@ func TestStore_Get_NoContentLength(t *testing.T) {
 	}
 }
 
+// ---- RemoteBlockStore method tests ----
+
+// TestStore_PutBlock_GetBlock_RoundTrip drives the PutBlock→GetBlock wire
+// path using the mock S3 server.
+func TestStore_PutBlock_GetBlock_RoundTrip(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	data := []byte("block round-trip payload — s3 wire path")
+	if err := store.PutBlock(ctx, "blk-1", strings.NewReader(string(data))); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+	got, err := store.GetBlock(ctx, "blk-1")
+	if err != nil {
+		t.Fatalf("GetBlock: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("GetBlock = %q, want %q", got, data)
+	}
+}
+
+// TestStore_GetBlock_NotFound pins the NoSuchKey → ErrChunkNotFound mapping.
+func TestStore_GetBlock_NotFound(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := store.GetBlock(ctx, "absent"); !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("GetBlock absent: want ErrChunkNotFound, got %v", err)
+	}
+}
+
+// TestStore_GetBlockRange_Bounds exercises mid-block, past-EOF clamping, and
+// the argument-validation sentinels.
+func TestStore_GetBlockRange_Bounds(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	data := []byte("0123456789abcdef") // 16 bytes
+	const id = "blk-range"
+	if err := store.PutBlock(ctx, id, strings.NewReader(string(data))); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+
+	// Mid-block.
+	got, err := store.GetBlockRange(ctx, id, 4, 8)
+	if err != nil {
+		t.Fatalf("GetBlockRange mid: %v", err)
+	}
+	if string(got) != "456789ab" {
+		t.Fatalf("GetBlockRange mid = %q, want %q", got, "456789ab")
+	}
+
+	// Past-EOF length: mock returns available tail.
+	got, err = store.GetBlockRange(ctx, id, 8, 100)
+	if err != nil {
+		t.Fatalf("GetBlockRange past-EOF length: %v", err)
+	}
+	if string(got) != "89abcdef" {
+		t.Fatalf("GetBlockRange clamped = %q, want %q", got, "89abcdef")
+	}
+
+	// Offset strictly past EOF: mock returns 416.
+	if _, err := store.GetBlockRange(ctx, id, 100, 4); err == nil {
+		t.Fatal("GetBlockRange offset past EOF: want error, got nil")
+	}
+
+	// Argument validation sentinels (before any wire call).
+	if _, err := store.GetBlockRange(ctx, id, -1, 4); !errors.Is(err, block.ErrInvalidOffset) {
+		t.Fatalf("negative offset: want ErrInvalidOffset, got %v", err)
+	}
+	if _, err := store.GetBlockRange(ctx, id, 0, 0); !errors.Is(err, block.ErrInvalidSize) {
+		t.Fatalf("zero length: want ErrInvalidSize, got %v", err)
+	}
+	if _, err := store.GetBlockRange(ctx, id, 0, -1); !errors.Is(err, block.ErrInvalidSize) {
+		t.Fatalf("negative length: want ErrInvalidSize, got %v", err)
+	}
+
+	// Missing block.
+	if _, err := store.GetBlockRange(ctx, "missing", 0, 4); !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("missing block: want ErrChunkNotFound, got %v", err)
+	}
+}
+
+// TestStore_DeleteBlock_Idempotent confirms DeleteBlock succeeds whether or
+// not the block exists and that a subsequent GetBlock misses.
+func TestStore_DeleteBlock_Idempotent(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	data := []byte("delete-me block")
+	if err := store.PutBlock(ctx, "blk-del", strings.NewReader(string(data))); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+	if err := store.DeleteBlock(ctx, "blk-del"); err != nil {
+		t.Fatalf("DeleteBlock: %v", err)
+	}
+	if _, err := store.GetBlock(ctx, "blk-del"); !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("GetBlock after delete: want ErrChunkNotFound, got %v", err)
+	}
+	// Idempotent.
+	if err := store.DeleteBlock(ctx, "blk-del"); err != nil {
+		t.Fatalf("DeleteBlock idempotent: %v", err)
+	}
+}
+
+// TestStore_WalkBlocks_EnumeratesAll verifies WalkBlocks visits every block
+// object exactly once with correct size and non-zero LastModified, skips CAS
+// keys, and spans multiple paginator pages.
+func TestStore_WalkBlocks_EnumeratesAll(t *testing.T) {
+	store, mock := newTestStore(t)
+	mock.mu.Lock()
+	mock.listPageSize = 2 // force multi-page pagination
+	mock.mu.Unlock()
+	ctx := context.Background()
+
+	want := make(map[string]int64)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("blk-%d", i)
+		data := []byte(fmt.Sprintf("walk-block-%d-payload", i))
+		want[id] = int64(len(data))
+		if err := store.PutBlock(ctx, id, strings.NewReader(string(data))); err != nil {
+			t.Fatalf("PutBlock %s: %v", id, err)
+		}
+	}
+
+	// Also put a CAS object; WalkBlocks must not surface it.
+	casData := []byte("cas-only")
+	if err := store.Put(ctx, mustHash(casData), casData); err != nil {
+		t.Fatalf("Put CAS: %v", err)
+	}
+
+	seen := make(map[string]int)
+	err := store.WalkBlocks(ctx, func(blockID string, m block.Meta) error {
+		seen[blockID]++
+		if m.LastModified.IsZero() {
+			t.Errorf("WalkBlocks: LastModified zero for %s", blockID)
+		}
+		if w, ok := want[blockID]; ok && m.Size != w {
+			t.Errorf("WalkBlocks size for %s = %d, want %d", blockID, m.Size, w)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkBlocks: %v", err)
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("WalkBlocks visited %d blocks, want %d", len(seen), len(want))
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Errorf("WalkBlocks visited %s %d times, want 1", id, n)
+		}
+	}
+}
+
+// TestStore_WalkBlocks_StopSentinel pins the ErrStopWalk clean-exit contract.
+func TestStore_WalkBlocks_StopSentinel(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 4; i++ {
+		id := fmt.Sprintf("blk-stop-%d", i)
+		if err := store.PutBlock(ctx, id, strings.NewReader(id)); err != nil {
+			t.Fatalf("PutBlock: %v", err)
+		}
+	}
+	seen := 0
+	err := store.WalkBlocks(ctx, func(string, block.Meta) error {
+		seen++
+		return block.ErrStopWalk
+	})
+	if err != nil {
+		t.Fatalf("WalkBlocks ErrStopWalk: want nil, got %v", err)
+	}
+	if seen != 1 {
+		t.Fatalf("WalkBlocks should stop after first ErrStopWalk; saw %d", seen)
+	}
+}
+
+// TestStore_PutBlock_Idempotent verifies a second PutBlock for the same ID
+// overwrites the stored content.
+func TestStore_PutBlock_Idempotent(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	original := []byte("original-block-content")
+	updated := []byte("updated-block-content-v2")
+	if err := store.PutBlock(ctx, "blk-idem", strings.NewReader(string(original))); err != nil {
+		t.Fatalf("PutBlock original: %v", err)
+	}
+	if err := store.PutBlock(ctx, "blk-idem", strings.NewReader(string(updated))); err != nil {
+		t.Fatalf("PutBlock updated: %v", err)
+	}
+	got, err := store.GetBlock(ctx, "blk-idem")
+	if err != nil {
+		t.Fatalf("GetBlock: %v", err)
+	}
+	if string(got) != string(updated) {
+		t.Fatalf("PutBlock idempotent: got %q, want %q", got, updated)
+	}
+}
+
+// TestStore_PutBlock_ZeroBody verifies a zero-byte PutBlock is accepted and
+// GetBlock returns an empty slice.
+func TestStore_PutBlock_ZeroBody(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	if err := store.PutBlock(ctx, "blk-zero", strings.NewReader("")); err != nil {
+		t.Fatalf("PutBlock zero-byte: %v", err)
+	}
+	got, err := store.GetBlock(ctx, "blk-zero")
+	if err != nil {
+		t.Fatalf("GetBlock zero-byte: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("GetBlock zero-byte: want 0 bytes, got %d", len(got))
+	}
+}
+
+// TestStore_PutBlock_Concurrent_SameID verifies concurrent PutBlock calls for
+// the same blockID don't corrupt the mock; the last writer wins on the store.
+func TestStore_PutBlock_Concurrent_SameID(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	const id = "blk-concurrent"
+	payloadA := strings.Repeat("A", 512)
+	payloadB := strings.Repeat("B", 512)
+
+	done := make(chan error, 2)
+	go func() { done <- store.PutBlock(ctx, id, strings.NewReader(payloadA)) }()
+	go func() { done <- store.PutBlock(ctx, id, strings.NewReader(payloadB)) }()
+	for i := 0; i < 2; i++ {
+		if err := <-done; err != nil {
+			t.Errorf("concurrent PutBlock: %v", err)
+		}
+	}
+
+	got, err := store.GetBlock(ctx, id)
+	if err != nil {
+		t.Fatalf("GetBlock after concurrent put: %v", err)
+	}
+	// Must be entirely A or entirely B — no interleaving.
+	if len(got) != 512 {
+		t.Fatalf("GetBlock length = %d, want 512", len(got))
+	}
+	first := got[0]
+	if first != 'A' && first != 'B' {
+		t.Fatalf("unexpected first byte 0x%02X", first)
+	}
+	for i, b := range got {
+		if b != first {
+			t.Fatalf("GetBlock[%d] = %q, want all %q (concurrent blend)", i, b, first)
+		}
+	}
+}
+
 // TestNewFromConfig_Validation pins the required-field validation and a
 // successful construction (which does not perform any network I/O).
 func TestNewFromConfig_Validation(t *testing.T) {

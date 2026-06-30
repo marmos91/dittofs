@@ -2,7 +2,7 @@
 // BlockStore and BlockStoreAppend contracts declared in
 // pkg/block/blockstore.go.
 //
-// Two top-level entrypoints are exposed:
+// Three top-level entrypoints are exposed:
 //
 //   - BlockStoreConformance(t, factory) — runs the CAS-keyed contract
 //     suite against any BlockStore implementation. The fs, s3, and
@@ -11,6 +11,10 @@
 //     absorber suite against any BlockStoreAppend implementation. Only
 //     the fs backend implements BlockStoreAppend and therefore calls
 //     this entrypoint.
+//   - RemoteBlockStoreConformance(t, factory) — runs the block-keyed
+//     (non-CAS) contract suite against any RemoteBlockStore
+//     implementation. The memory and s3 backends both call this
+//     entrypoint.
 //
 // This package replaces pkg/block/local/localtest and
 // pkg/block/remote/remotetest. The three fs-internal scenarios

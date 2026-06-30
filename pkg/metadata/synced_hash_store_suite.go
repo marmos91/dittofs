@@ -151,7 +151,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		// same (no-block) state.
 		ctx := context.Background()
 		h := mustHash("suite-standalone-locator")
-		if err := s.MarkSynced(ctx, h, block.ChunkLocator{Length: 1234}); err != nil {
+		if err := s.MarkSynced(ctx, h, block.ChunkLocator{WireLength: 1234}); err != nil {
 			t.Fatalf("MarkSynced standalone: %v", err)
 		}
 		loc, ok, err := s.GetLocator(ctx, h)
@@ -170,7 +170,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 		// A block locator must round-trip exactly through MarkSynced/GetLocator.
 		ctx := context.Background()
 		h := mustHash("suite-block-locator")
-		want := block.ChunkLocator{BlockID: "block-abc123", Offset: 4096, Length: 65536}
+		want := block.ChunkLocator{BlockID: "block-abc123", WireOffset: 4096, WireLength: 65536}
 		if err := s.MarkSynced(ctx, h, want); err != nil {
 			t.Fatalf("MarkSynced block: %v", err)
 		}

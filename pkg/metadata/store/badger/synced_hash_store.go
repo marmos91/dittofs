@@ -58,8 +58,8 @@ func encodeSyncedValue(nanos int64, loc block.ChunkLocator) []byte {
 	suffix := make([]byte, 2+len(loc.BlockID)+16)
 	binary.BigEndian.PutUint16(suffix[0:2], uint16(len(loc.BlockID)))
 	n := 2 + copy(suffix[2:], loc.BlockID)
-	binary.BigEndian.PutUint64(suffix[n:n+8], uint64(loc.Offset))
-	binary.BigEndian.PutUint64(suffix[n+8:n+16], uint64(loc.Length))
+	binary.BigEndian.PutUint64(suffix[n:n+8], uint64(loc.WireOffset))
+	binary.BigEndian.PutUint64(suffix[n+8:n+16], uint64(loc.WireLength))
 	return append(val, suffix...)
 }
 
@@ -82,7 +82,7 @@ func decodeSyncedLocator(val []byte) block.ChunkLocator {
 	blockID := string(suffix[2 : 2+idLen])
 	off := int64(binary.BigEndian.Uint64(suffix[2+idLen : 2+idLen+8]))
 	length := int64(binary.BigEndian.Uint64(suffix[2+idLen+8 : 2+idLen+16]))
-	return block.ChunkLocator{BlockID: blockID, Offset: off, Length: length}
+	return block.ChunkLocator{BlockID: blockID, WireOffset: off, WireLength: length}
 }
 
 // Compile-time assertion: the Badger engine implements SyncedHashStore.

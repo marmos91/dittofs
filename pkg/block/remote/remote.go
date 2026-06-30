@@ -7,11 +7,16 @@
 // not expose. The interface embeds block.BlockStore and adds
 // backend-specific extras (ReadBlockVerified for production CAS reads,
 // Close + HealthCheck + Healthcheck for backend lifecycle / health).
+//
+// RemoteBlockStore is the block-keyed (non-CAS) surface for objects stored
+// under the "blocks/" prefix (#1414 object packing). Operations are keyed by
+// an opaque blockID string; the on-wire key is block.FormatBlockKey(blockID).
 package remote
 
 import (
 	"context"
 	"errors"
+	"io"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -81,6 +86,54 @@ type RemoteStore interface {
 	// [health.Checker]. Implementations typically delegate to HealthCheck
 	// and wrap the result via [health.ReportFromError].
 	Healthcheck(ctx context.Context) health.Report
+}
+
+// RemoteBlockStore is the block-keyed (non-CAS) remote store contract for
+// objects stored under the "blocks/" prefix (#1414 object packing). Implemented
+// by pkg/block/remote/s3.Store and pkg/block/remote/memory.Store.
+//
+// Objects are keyed by an opaque blockID string; the on-disk/on-wire key shape
+// is block.FormatBlockKey(blockID) = "blocks/<blockID>". This surface is
+// intentionally separate from RemoteStore (CAS-keyed) — the two namespaces
+// never collide because CAS keys live under "cas/" and block objects under
+// "blocks/".
+type RemoteBlockStore interface {
+	// PutBlock writes the content of r under blocks/<blockID>. Idempotent:
+	// a second call with the same blockID overwrites silently. Implementations
+	// MUST stream r without buffering the whole body; callers may provide an
+	// unbounded reader (e.g., a packing file).
+	PutBlock(ctx context.Context, blockID string, r io.Reader) error
+
+	// GetBlock returns the full bytes of the block object identified by
+	// blockID. Returns block.ErrChunkNotFound when the block is absent.
+	// The returned slice is freshly allocated and owned by the caller.
+	GetBlock(ctx context.Context, blockID string) ([]byte, error)
+
+	// GetBlockRange returns [offset, offset+length) bytes of the block
+	// object identified by blockID. Bounds semantics mirror
+	// block.Store.GetRange: ErrInvalidOffset for a negative offset; a
+	// past-EOF offset cannot be detected here without a HEAD, so
+	// backends surface a native error (S3: 416) instead — the contract
+	// only guarantees some error for offset >= EOF. ErrInvalidSize for a
+	// non-positive length; past-EOF length is clamped to the object's
+	// remaining bytes on backends that support it (S3 partial-content).
+	// Returns block.ErrChunkNotFound when the block is absent.
+	GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error)
+
+	// DeleteBlock removes the block object keyed by blockID. Idempotent:
+	// deleting an absent blockID returns nil.
+	DeleteBlock(ctx context.Context, blockID string) error
+
+	// WalkBlocks enumerates every block object in the store. The callback
+	// receives the blockID (the key with the "blocks/" prefix stripped) and
+	// block.Meta. Ordering is unspecified. Honors block.ErrStopWalk for
+	// clean early exit (WalkBlocks returns nil); any other callback error
+	// halts enumeration and is returned wrapped as
+	//
+	//   fmt.Errorf("walk halted at %s: %w", blockID, err)
+	//
+	// Context cancellation aborts immediately.
+	WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error
 }
 
 // ChunkReader is an OPTIONAL RemoteStore capability for reading a chunk that

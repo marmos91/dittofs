@@ -208,7 +208,7 @@ func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, 
 		return nil, fmt.Errorf("chunk %s has block locator %q but remote store lacks block-read support: %w",
 			hash, loc.BlockID, remote.ErrChunkReadUnsupported)
 	}
-	data, err := pcr.ReadChunk(ctx, loc.BlockID, loc.Offset, loc.Length, hash)
+	data, err := pcr.ReadChunk(ctx, loc.BlockID, loc.WireOffset, loc.WireLength, hash)
 	if err != nil {
 		return nil, err
 	}

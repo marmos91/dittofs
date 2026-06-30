@@ -39,7 +39,7 @@ func TestEncryptedRemote_ReadChunk(t *testing.T) {
 	filler := bytes.Repeat([]byte{0x01}, 37)
 	blockData := append(append([]byte{}, filler...), wire...)
 	const blockID = "enc-block-1"
-	if err := inner.PutBlock(blockID, blockData); err != nil {
+	if err := inner.PutBlock(ctx, blockID, bytes.NewReader(blockData)); err != nil {
 		t.Fatalf("PutBlock: %v", err)
 	}
 

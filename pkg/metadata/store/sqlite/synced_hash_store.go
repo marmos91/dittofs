@@ -125,7 +125,7 @@ func locatorArgs(loc block.ChunkLocator) (blockID, off, length any) {
 	if loc.IsStandalone() {
 		return nil, nil, nil
 	}
-	return loc.BlockID, loc.Offset, loc.Length
+	return loc.BlockID, loc.WireOffset, loc.WireLength
 }
 
 // scanLocatorRow scans a (block_id, block_offset, block_length) row into a
@@ -142,7 +142,7 @@ func scanLocatorRow(row scanRow) (block.ChunkLocator, error) {
 	if !off.Valid || !length.Valid {
 		return block.ChunkLocator{}, fmt.Errorf("corrupt locator row: block_id %q with NULL offset/length", blockID.String)
 	}
-	return block.ChunkLocator{BlockID: blockID.String, Offset: off.Int64, Length: length.Int64}, nil
+	return block.ChunkLocator{BlockID: blockID.String, WireOffset: off.Int64, WireLength: length.Int64}, nil
 }
 
 // DeleteSynced removes the synced marker for hash. Idempotent: DELETE

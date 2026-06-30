@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,7 @@ import (
 // Compile-time interface satisfaction check.
 var (
 	_ remote.RemoteStore       = (*Store)(nil)
+	_ remote.RemoteBlockStore  = (*Store)(nil)
 	_ remote.ChunkReader       = (*Store)(nil)
 	_ block.DurabilityReporter = (*Store)(nil)
 )
@@ -37,10 +39,10 @@ type Store struct {
 	mu     sync.RWMutex
 	blocks map[block.ContentHash]*memBlock
 	// blocksByID holds block objects keyed by BlockID (#1414). Populated via PutBlock
-	// (used by tests and the future packer); read by ReadChunk. Separate
-	// from blocks because block objects are keyed by an opaque BlockID string,
-	// not a content hash.
-	blocksByID map[string][]byte
+	// (used by tests and the future packer); read by ReadChunk and the new
+	// block-keyed methods. Separate from blocks because block objects are keyed
+	// by an opaque BlockID string, not a content hash.
+	blocksByID map[string]*memBlock
 	// nowFn returns the current time for the store. Tests can override
 	// this to manipulate LastModified deterministically.
 	nowFn  func() time.Time
@@ -56,26 +58,130 @@ type Store struct {
 func New() *Store {
 	return &Store{
 		blocks:     make(map[block.ContentHash]*memBlock),
-		blocksByID: make(map[string][]byte),
+		blocksByID: make(map[string]*memBlock),
 		nowFn:      time.Now,
 	}
 }
 
-// PutBlock stores a block object under blockID. It is the in-memory analogue of an
-// S3 PutObject(blocks/<blockID>); used by tests (and the future PR3b packer) to
-// stage blocksByID that ReadChunk then ranges into. A defensive copy is taken.
-func (s *Store) PutBlock(blockID string, data []byte) error {
+// PutBlock writes the content of r under blocks/<blockID>. Implements
+// remote.RemoteBlockStore. Idempotent: a second call overwrites silently.
+// A defensive copy is taken via io.ReadAll; callers may reuse r after return.
+func (s *Store) PutBlock(_ context.Context, blockID string, r io.Reader) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("memory put block %s: %w", blockID, err)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return block.ErrStoreClosed
 	}
 	if s.blocksByID == nil {
-		s.blocksByID = make(map[string][]byte)
+		s.blocksByID = make(map[string]*memBlock)
 	}
 	copied := make([]byte, len(data))
 	copy(copied, data)
-	s.blocksByID[blockID] = copied
+	s.blocksByID[blockID] = &memBlock{data: copied, lastModified: s.nowFn()}
+	return nil
+}
+
+// GetBlock returns the full bytes of the block object identified by blockID.
+// Returns block.ErrChunkNotFound when the block is absent.
+func (s *Store) GetBlock(_ context.Context, blockID string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, block.ErrStoreClosed
+	}
+	mb, ok := s.blocksByID[blockID]
+	if !ok {
+		return nil, block.ErrChunkNotFound
+	}
+	copied := make([]byte, len(mb.data))
+	copy(copied, mb.data)
+	return copied, nil
+}
+
+// GetBlockRange returns [offset, offset+length) bytes of the block object
+// identified by blockID. Bounds semantics mirror GetRange.
+func (s *Store) GetBlockRange(_ context.Context, blockID string, offset, length int64) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, block.ErrStoreClosed
+	}
+	mb, ok := s.blocksByID[blockID]
+	if !ok {
+		return nil, block.ErrChunkNotFound
+	}
+	if offset < 0 || offset >= int64(len(mb.data)) {
+		return nil, block.ErrInvalidOffset
+	}
+	if length <= 0 {
+		return nil, block.ErrInvalidSize
+	}
+	size := int64(len(mb.data))
+	end := size
+	if length <= size-offset {
+		end = offset + length
+	}
+	result := make([]byte, end-offset)
+	copy(result, mb.data[offset:end])
+	return result, nil
+}
+
+// DeleteBlock removes the block object keyed by blockID. Idempotent:
+// deleting an absent blockID returns nil.
+func (s *Store) DeleteBlock(_ context.Context, blockID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return block.ErrStoreClosed
+	}
+	delete(s.blocksByID, blockID)
+	return nil
+}
+
+// WalkBlocks enumerates every block object in the store. The callback receives
+// the blockID and block.Meta. Honors block.ErrStopWalk; any other callback
+// error halts the walk and is wrapped as "walk halted at <blockID>: %w".
+// Context cancellation aborts immediately.
+func (s *Store) WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return block.ErrStoreClosed
+	}
+	type entry struct {
+		id   string
+		meta block.Meta
+	}
+	snap := make([]entry, 0, len(s.blocksByID))
+	for id, mb := range s.blocksByID {
+		snap = append(snap, entry{
+			id: id,
+			meta: block.Meta{
+				Size:         int64(len(mb.data)),
+				LastModified: mb.lastModified,
+			},
+		})
+	}
+	s.mu.RUnlock()
+
+	for _, e := range snap {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if cberr := fn(e.id, e.meta); cberr != nil {
+			if errors.Is(cberr, block.ErrStopWalk) {
+				return nil
+			}
+			return fmt.Errorf("walk halted at %s: %w", e.id, cberr)
+		}
+	}
 	return nil
 }
 
@@ -89,10 +195,11 @@ func (s *Store) ReadChunk(_ context.Context, blockID string, offset, length int6
 	if s.closed {
 		return nil, block.ErrStoreClosed
 	}
-	data, ok := s.blocksByID[blockID]
+	mb, ok := s.blocksByID[blockID]
 	if !ok {
 		return nil, block.ErrChunkNotFound
 	}
+	data := mb.data
 	if offset < 0 || offset >= int64(len(data)) {
 		return nil, block.ErrInvalidOffset
 	}
@@ -353,6 +460,7 @@ func (s *Store) Close() error {
 
 	s.closed = true
 	s.blocks = nil
+	s.blocksByID = nil
 	return nil
 }
 
