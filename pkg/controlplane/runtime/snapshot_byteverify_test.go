@@ -283,7 +283,7 @@ func (f *byteVerifyFixture) writeFile(ctx context.Context, payloadID metadata.Pa
 		f.t.Fatalf("CommitBlockStore %q: %v", payloadID, err)
 	}
 	// Force the async rollup worker to roll the just-flushed payload into CAS
-	// + the FileBlock manifest NOW, bypassing the stabilization window. This
+	// + the FileChunk manifest NOW, bypassing the stabilization window. This
 	// is what the post-rollup coordinator hook uses to persist
 	// FileAttr.Blocks + ObjectID — the snapshot-create orchestration drains
 	// the same way before Backup(). Without it the bytes live only in the

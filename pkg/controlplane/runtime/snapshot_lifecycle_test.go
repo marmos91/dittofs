@@ -39,8 +39,8 @@ type lifecycleFixture struct {
 
 	// Distinct first byte per hash → distinct cas/XX prefixes; aids
 	// readability when the sweep walks the namespace.
-	hLive1  block.ContentHash // referenced by live FileBlocks
-	hLive2  block.ContentHash // referenced by live FileBlocks
+	hLive1  block.ContentHash // referenced by live FileChunks
+	hLive2  block.ContentHash // referenced by live FileChunks
 	hSnap   block.ContentHash // referenced ONLY by the snapshot manifest
 	hOrphan block.ContentHash // referenced by nothing
 }
@@ -108,7 +108,7 @@ func setupSnapshotLifecycle(t *testing.T) *lifecycleFixture {
 		hOrphan:       hashAll(0x44),
 	}
 
-	// Live metadata: one FileBlock per live hash. EnumerateFileBlocks will
+	// Live metadata: one FileChunk per live hash. EnumerateFileChunks will
 	// stream exactly these two into the GC live set on every mark phase.
 	mustPutBlock(t, metaStore, "live/1", fx.hLive1)
 	mustPutBlock(t, metaStore, "live/2", fx.hLive2)
@@ -152,7 +152,7 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 		// live hash (hLive1) AND hSnap. hSnap diverges from live metadata
 		// to model the canonical "snapshot taken at T0, file deleted at
 		// T1" use case — without it the test would not distinguish
-		// "live FileBlock hash" from "snapshot-held hash". The WriteSnapshot
+		// "live FileChunk hash" from "snapshot-held hash". The WriteSnapshot
 		// call below proves the Snapshotable wiring is reachable; the
 		// manifest itself is constructed explicitly so hSnap appears
 		// regardless of what live metadata WriteSnapshot happens to extract.
@@ -203,8 +203,8 @@ func TestSnapshotLifecycleVsGC(t *testing.T) {
 		}
 
 		// Live blocks must survive.
-		mustHave(t, ctx, fx.remote, fx.hLive1, "hLive1 (live FileBlock) after GC pass 1")
-		mustHave(t, ctx, fx.remote, fx.hLive2, "hLive2 (live FileBlock) after GC pass 1")
+		mustHave(t, ctx, fx.remote, fx.hLive1, "hLive1 (live FileChunk) after GC pass 1")
+		mustHave(t, ctx, fx.remote, fx.hLive2, "hLive2 (live FileChunk) after GC pass 1")
 		// Snapshot-only block must survive: held by the ready manifest.
 		mustHave(t, ctx, fx.remote, fx.hSnap, "hSnap (snapshot-held) after GC pass 1")
 		// Genuine orphan must be gone.
@@ -302,11 +302,11 @@ func hashAll(seed byte) block.ContentHash {
 	return h
 }
 
-// mustPutBlock seeds a finalized FileBlock keyed by hash on the metadata
+// mustPutBlock seeds a finalized FileChunk keyed by hash on the metadata
 // store. State=Remote so the engine treats it as live during mark.
 func mustPutBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
-	if err := st.Put(context.Background(), &block.FileBlock{
+	if err := st.Put(context.Background(), &block.FileChunk{
 		ID:            id,
 		Hash:          h,
 		State:         block.BlockStateRemote,
@@ -317,7 +317,7 @@ func mustPutBlock(t *testing.T, st metadata.Store, id string, h block.ContentHas
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}); err != nil {
-		t.Fatalf("Put FileBlock(%s): %v", id, err)
+		t.Fatalf("Put FileChunk(%s): %v", id, err)
 	}
 }
 

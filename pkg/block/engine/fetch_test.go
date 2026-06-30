@@ -57,7 +57,7 @@ func (f *failingPutLocal) Put(_ context.Context, _ block.ContentHash, _ []byte) 
 // exercises: local, remoteStore, fileBlockStore, inFlight map, and a
 // nil HealthMonitor (so IsRemoteHealthy returns true). Coordinator and
 // SyncedHashStore are unused on this path.
-func newFetchSyncer(localStore local.LocalStore, rs *remotememory.Store, fbs block.EngineFileBlockStore) *Syncer {
+func newFetchSyncer(localStore local.LocalStore, rs *remotememory.Store, fbs block.EngineFileChunkStore) *Syncer {
 	return &Syncer{
 		local:          localStore,
 		remoteStore:    rs,
@@ -69,25 +69,25 @@ func newFetchSyncer(localStore local.LocalStore, rs *remotememory.Store, fbs blo
 	}
 }
 
-// seedFileBlock installs a single FileBlock row covering byte window
+// seedFileChunk installs a single FileChunk row covering byte window
 // [0, len(data)) under payloadID and seeds the remote store's CAS map
 // with the matching bytes. inlineFetchOrWait will then resolve the row,
 // pass the verified-read through dispatchRemoteFetch, and reach the
 // local.Put step under test.
-func seedFileBlock(t *testing.T, fbs *stubFileBlockStore, rs *remotememory.Store, payloadID string, data []byte) (block.ContentHash, *block.FileBlock) {
+func seedFileChunk(t *testing.T, fbs *stubFileChunkStore, rs *remotememory.Store, payloadID string, data []byte) (block.ContentHash, *block.FileChunk) {
 	t.Helper()
 	hash := block.ContentHash(blake3.Sum256(data))
 	if err := rs.Put(context.Background(), hash, data); err != nil {
 		t.Fatalf("seed remote Put: %v", err)
 	}
-	fb := &block.FileBlock{
+	fb := &block.FileChunk{
 		ID:       fmt.Sprintf("%s/%d", payloadID, 0),
 		Hash:     hash,
 		DataSize: uint32(len(data)),
 		State:    block.BlockStateRemote,
 	}
 	if err := fbs.Put(context.Background(), fb); err != nil {
-		t.Fatalf("seed FileBlock Put: %v", err)
+		t.Fatalf("seed FileChunk Put: %v", err)
 	}
 	return hash, fb
 }
@@ -107,14 +107,14 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToCaller(t *testing.T) {
 	loc := newFailingPutLocal()
 	close(loc.release) // no waiter — let Put fail immediately
 	rs := remotememory.New()
-	fbs := newStubFileBlockStore()
-	_, _ = seedFileBlock(t, fbs, rs, payloadID, data)
+	fbs := newStubFileChunkStore()
+	_, _ = seedFileChunk(t, fbs, rs, payloadID, data)
 
 	m := newFetchSyncer(loc, rs, fbs)
 
-	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 	if err != nil {
-		t.Fatalf("listFileBlocksSnapshot: %v", err)
+		t.Fatalf("listFileChunksSnapshot: %v", err)
 	}
 
 	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
@@ -154,14 +154,14 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 
 	loc := newFailingPutLocal()
 	rs := remotememory.New()
-	fbs := newStubFileBlockStore()
-	_, _ = seedFileBlock(t, fbs, rs, payloadID, data)
+	fbs := newStubFileChunkStore()
+	_, _ = seedFileChunk(t, fbs, rs, payloadID, data)
 
 	m := newFetchSyncer(loc, rs, fbs)
 
-	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 	if err != nil {
-		t.Fatalf("listFileBlocksSnapshot: %v", err)
+		t.Fatalf("listFileChunksSnapshot: %v", err)
 	}
 
 	// Goroutine A: enters inlineFetchOrWait first, registers the in-flight

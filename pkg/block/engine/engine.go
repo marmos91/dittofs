@@ -30,12 +30,12 @@ type BlockStoreConfig struct {
 	// Syncer handles async local-to-remote transfers (required).
 	Syncer *Syncer
 
-	// FileBlockStore provides block metadata for block store statistics
-	// AND the engine-internal lookups (GetFileBlock, ListFileBlocks) the
+	// FileChunkStore provides block metadata for block store statistics
+	// AND the engine-internal lookups (GetFileChunk, ListFileChunks) the
 	// dual-read resolver and populateBlockCounts still consume —
-	// block.EngineFileBlockStore. When set, GetStats() populates
+	// block.EngineFileChunkStore. When set, GetStats() populates
 	// BlocksLocal/BlocksRemote/BlocksTotal.
-	FileBlockStore block.EngineFileBlockStore
+	FileChunkStore block.EngineFileChunkStore
 
 	// Coordinator handles all metadata-store operations the engine
 	// needs (RefCount mutations, BlockRef-list persistence).
@@ -83,10 +83,10 @@ type Store struct {
 	// read it. Nil pointer (the zero value) until set; call sites guard.
 	metrics atomic.Pointer[DataplaneMetrics]
 
-	// widened to EngineFileBlockStore so populateBlockCounts
-	// can call ListFileBlocks (engine-internal method not on the public
-	// FileBlockStore surface).
-	fileBlockStore block.EngineFileBlockStore // optional: for block count stats
+	// widened to EngineFileChunkStore so populateBlockCounts
+	// can call ListFileChunks (engine-internal method not on the public
+	// FileChunkStore surface).
+	fileBlockStore block.EngineFileChunkStore // optional: for block count stats
 
 	// coordinator handles all metadata-store operations the engine
 	// needs (RefCount mutations, BlockRef-list persistence). May be nil
@@ -166,7 +166,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		local:           cfg.Local,
 		remote:          cfg.Remote,
 		syncer:          cfg.Syncer,
-		fileBlockStore:  cfg.FileBlockStore,
+		fileBlockStore:  cfg.FileChunkStore,
 		coordinator:     cfg.Coordinator,
 		syncedHashStore: cfg.SyncedHashStore,
 		readBufferBytes: cfg.ReadBufferBytes,
@@ -186,7 +186,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	}
 	// Wire the per-store chunk-lifecycle callbacks via the named
 	// [local.ChunkLifecycleHooks] capability surface. Three setters
-	// install closures that downstream FileBlock metadata and the read
+	// install closures that downstream FileChunk metadata and the read
 	// cache depend on; each implementation may treat any setter as a
 	// no-op when its data path doesn't reach that hook (FSStore's
 	// rollup-completion path covers ObjectIDPersister + OnChunkComplete;
@@ -195,25 +195,25 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	hooks, hasHooks := cfg.Local.(local.ChunkLifecycleHooks)
 	if hasHooks {
 		// (1) Install the rollup-completion ObjectIDPersister callback.
-		// The callback writes per-block FileBlock rows so the engine's
-		// CAS read path (readLocalByHash → resolveFileBlock) can
+		// The callback writes per-block FileChunk rows so the engine's
+		// CAS read path (readLocalByHash → resolveFileChunk) can
 		// resolve (payloadID, blockIdx) → hash and delegates to the
-		// coordinator's PersistFileBlocks so FileAttr.Blocks and
+		// coordinator's PersistFileChunks so FileAttr.Blocks and
 		// FileAttr.ObjectID land in a single metadata txn at rollup
 		// time. Stores that don't drive a rollup-completion path
 		// (in-memory / fixtures use the parallel ChunkEmitter hook
 		// below) install a no-op setter — ObjectID compute still runs
 		// inside rollup but the persist step is no-op.
-		fbs := cfg.FileBlockStore
+		fbs := cfg.FileChunkStore
 		hooks.SetObjectIDPersister(func(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
-			// (1) Per-chunk FileBlock rows. The row ID encodes the
+			// (1) Per-chunk FileChunk rows. The row ID encodes the
 			//     chunk's absolute byte Offset directly (rather than
 			//     a synthetic blockIdx = Offset / BlockSize); the
 			//     engine's CAS read path uses the parsed Offset to
 			//     locate which chunk covers a given byte range under
 			//     FastCDC's variable chunk geometry. The trailing
 			//     numeric component is the chunk Offset in bytes.
-			// #953: snapshot the per-file FileBlock row offsets that exist
+			// #953: snapshot the per-file FileChunk row offsets that exist
 			// BEFORE this pass writes its new rows. After the new rows are
 			// durable we reap any prior row that this pass's re-chunk
 			// SUPERSEDED — a row whose offset falls inside the byte region
@@ -223,10 +223,10 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			// read path (fillFromCASManifest / readLocalByHash) then mixes
 			// generations and a stale row clobbers freshly-written bytes
 			// (silent corruption after log compaction / local-state
-			// eviction). Snapshot now, reap after PersistFileBlocks below.
+			// eviction). Snapshot now, reap after PersistFileChunks below.
 			var priorOffsets []uint64
 			if bs.fileBlockStore != nil {
-				priorRows, lerr := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+				priorRows, lerr := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
 				if lerr != nil {
 					return fmt.Errorf("ObjectIDPersister: list prior blocks for %s: %w", payloadID, lerr)
 				}
@@ -246,22 +246,22 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 					if b.Hash.IsZero() {
 						continue
 					}
-					fb := &block.FileBlock{
+					fb := &block.FileChunk{
 						ID:       fmt.Sprintf("%s/%d", payloadID, b.Offset),
 						Hash:     b.Hash,
 						DataSize: b.Size,
 						State:    block.BlockStatePending,
 					}
 					// Crash-consistency (#583): surface the put error so
-					// a failed FileBlock row write fails the rollup pass
+					// a failed FileChunk row write fails the rollup pass
 					// rather than silently losing the manifest entry.
 					// Without this surfacing the engine continues into
-					// PersistFileBlocks below, the rollup_offset advances
+					// PersistFileChunks below, the rollup_offset advances
 					// past records whose manifest row never landed, and
 					// subsequent reads hit the sparse-block zero-fill
 					// branch — silent data loss.
 					if err := fbs.Put(ctx, fb); err != nil {
-						return fmt.Errorf("ObjectIDPersister: FileBlock.Put(%s): %w", fb.ID, err)
+						return fmt.Errorf("ObjectIDPersister: FileChunk.Put(%s): %w", fb.ID, err)
 					}
 				}
 			}
@@ -282,7 +282,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			// Merge this pass's blocks into the already-persisted list
 			// (read back via the coordinator — file_block_refs / encoded
 			// FileAttr.Blocks, both of which store the content hash, unlike
-			// the per-file FileBlock index whose Pending rows carry a NULL
+			// the per-file FileChunk index whose Pending rows carry a NULL
 			// hash on Postgres). The merge is offset-keyed: this pass's
 			// blocks overlay any overlapping byte ranges (in-place rewrite)
 			// and extend the rest (append). Recompute the Merkle-root
@@ -300,7 +300,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			if err := bs.persistRollupBlocksConverging(ctx, payloadID, persistBlocks, persistObjID); err != nil {
 				return err
 			}
-			return bs.reapSupersededFileBlocks(ctx, payloadID, priorOffsets, blocks)
+			return bs.reapSupersededFileChunks(ctx, payloadID, priorOffsets, blocks)
 		})
 
 		// (2) Install the chunk-completion callback (production
@@ -334,15 +334,15 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		// uses this; *fs.FSStore no-ops since it drives the equivalent
 		// rollup-side path through the ObjectIDPersister callback
 		// above). The emitter mirrors each freshly-emitted CAS chunk
-		// into a FileBlock row keyed by {payloadID}/{chunkStart} so the
+		// into a FileChunk row keyed by {payloadID}/{chunkStart} so the
 		// engine's CAS read path (readLocalByHash) can resolve
 		// (payloadID, offset) → hash without a separate manifest.
-		// Requires a FileBlockStore — fixtures running without one
+		// Requires a FileChunkStore — fixtures running without one
 		// rely on the no-op default.
-		if cfg.FileBlockStore != nil {
-			fbs := cfg.FileBlockStore
+		if cfg.FileChunkStore != nil {
+			fbs := cfg.FileChunkStore
 			hooks.SetChunkEmitter(func(payloadID string, chunkStart uint64, size uint32, hash block.ContentHash) {
-				fb := &block.FileBlock{
+				fb := &block.FileChunk{
 					ID:       fmt.Sprintf("%s/%d", payloadID, chunkStart),
 					Hash:     hash,
 					DataSize: size,
@@ -356,7 +356,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 				// promote emitter to return an error so the caller
 				// can fail the rollup pass.
 				if err := fbs.Put(context.Background(), fb); err != nil {
-					logger.Error("ChunkEmitter: FileBlock.Put failed", "id", fb.ID, "error", err)
+					logger.Error("ChunkEmitter: FileChunk.Put failed", "id", fb.ID, "error", err)
 				}
 				// Register for upload (B1). The in-memory backend creates
 				// chunks via this emitter rather than onChunkComplete, so
@@ -455,7 +455,7 @@ func isRollupPersistConflict(err error) bool {
 //     turned a transient SSI abort into a sustained hot-key livelock.
 //
 //  2. Bounded converging backoff. The genuine first-committer race (two files
-//     reach PersistFileBlocks before either has committed, so FindByObjectID
+//     reach PersistFileChunks before either has committed, so FindByObjectID
 //     missed for both) is still possible. On a recognized conflict
 //     (isRollupPersistConflict — uniform across the deterministic object_id
 //     conflict and Badger's wrapped commit-time SSI abort) the loop backs off,
@@ -502,7 +502,7 @@ func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID st
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := bs.coordinator.PersistFileBlocks(ctx, payloadID, persistBlocks, wantObjID)
+		err := bs.coordinator.PersistFileChunks(ctx, payloadID, persistBlocks, wantObjID)
 		if err == nil {
 			return nil
 		}
@@ -566,7 +566,7 @@ func (bs *Store) Start(ctx context.Context) error {
 		}
 	}
 
-	// Start local store background goroutines (e.g., periodic FileBlock metadata persistence).
+	// Start local store background goroutines (e.g., periodic FileChunk metadata persistence).
 	// Use background context so these outlive the calling request context.
 	bs.local.Start(context.Background())
 
@@ -618,7 +618,7 @@ func (bs *Store) Start(ctx context.Context) error {
 // loadByHash is the loadByHashFn the Cache's prefetch workers call to
 // pull a block by ContentHash. It performs a single content-addressed
 // local read; local.Get is the only primitive (no mmap fast-path, no
-// legacy FileBlock → GetBlockData fallback).
+// legacy FileChunk → GetBlockData fallback).
 //
 // Buffer ownership: local.Get returns a freshly allocated []byte; the
 // Cache copies those bytes into its LRU slot on miss. The net

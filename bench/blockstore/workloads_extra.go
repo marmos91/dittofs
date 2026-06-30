@@ -123,7 +123,7 @@ func (g *gcReconciler) GetMetadataStoreForShare(name string) (metadata.Store, er
 func (g *gcReconciler) SharesForGC() []string { return []string{g.share} }
 
 // RunGC seeds opts.Ops CAS objects on remoteStore, references
-// ceil(ops * (1-garbageRatio)) of them via FileBlock rows on a
+// ceil(ops * (1-garbageRatio)) of them via FileChunk rows on a
 // memory metadata store, then times opts.Ops CollectGarbage passes.
 func RunGC(ctx context.Context, remoteStore remote.RemoteStore, opts Opts, garbageRatio float64) (Result, error) {
 	if garbageRatio < 0 || garbageRatio > 1 {
@@ -147,7 +147,7 @@ func RunGC(ctx context.Context, remoteStore remote.RemoteStore, opts Opts, garba
 			return Result{}, fmt.Errorf("seed remote %d: %w", i, err)
 		}
 		if i < totalRefs {
-			if err := ms.Put(ctx, &block.FileBlock{
+			if err := ms.Put(ctx, &block.FileChunk{
 				ID:            fmt.Sprintf("perf-gc/%d", i),
 				Hash:          h,
 				State:         block.BlockStateRemote,

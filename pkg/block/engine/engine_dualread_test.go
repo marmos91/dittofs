@@ -88,7 +88,7 @@ func dualReadHash(data []byte) block.ContentHash {
 	return h
 }
 
-// TestDualRead_CASRowRoutesToVerified asserts a FileBlock with a non-zero
+// TestDualRead_CASRowRoutesToVerified asserts a FileChunk with a non-zero
 // Hash routes through ReadBlockVerified using the renamed (hash, expected)
 // argument signature.
 func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
@@ -106,9 +106,9 @@ func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
 		t.Fatalf("seed remote: %v", err)
 	}
 
-	// Register the FileBlock metadata: Hash set, BlockStoreKey = casKey
+	// Register the FileChunk metadata: Hash set, BlockStoreKey = casKey
 	// State = Remote (post-Phase-11 row).
-	fb := &block.FileBlock{
+	fb := &block.FileChunk{
 		ID:            fmt.Sprintf("%s/0", payloadID),
 		Hash:          hash,
 		DataSize:      uint32(len(data)),
@@ -119,7 +119,7 @@ func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
 		CreatedAt:     time.Now(),
 	}
 	if err := env.ms.Put(ctx, fb); err != nil {
-		t.Fatalf("PutFileBlock: %v", err)
+		t.Fatalf("PutFileChunk: %v", err)
 	}
 
 	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
@@ -138,9 +138,9 @@ func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
 	}
 }
 
-// TestDualRead_NoFileBlockReturnsNil asserts that a missing metadata row
+// TestDualRead_NoFileChunkReturnsNil asserts that a missing metadata row
 // (sparse / never uploaded) yields no remote call and a nil result.
-func TestDualRead_NoFileBlockReturnsNil(t *testing.T) {
+func TestDualRead_NoFileChunkReturnsNil(t *testing.T) {
 	env := newDualReadEnv(t)
 	ctx := context.Background()
 
@@ -179,7 +179,7 @@ func TestDualRead_CASRowMismatchSurfacesError(t *testing.T) {
 		t.Fatalf("seed corrupted remote: %v", err)
 	}
 
-	fb := &block.FileBlock{
+	fb := &block.FileChunk{
 		ID:            fmt.Sprintf("%s/0", payloadID),
 		Hash:          hash,
 		DataSize:      uint32(len(expected)),
@@ -190,7 +190,7 @@ func TestDualRead_CASRowMismatchSurfacesError(t *testing.T) {
 		CreatedAt:     time.Now(),
 	}
 	if err := env.ms.Put(ctx, fb); err != nil {
-		t.Fatalf("PutFileBlock: %v", err)
+		t.Fatalf("PutFileChunk: %v", err)
 	}
 
 	_, err := env.syncer.fetchBlock(ctx, payloadID, 0)
@@ -221,8 +221,8 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 	hash := dualReadHash([]byte("expected payload"))
 	casKey := block.FormatCASKey(hash)
 
-	// Register a CAS-shaped FileBlock but DO NOT seed the remote object.
-	fb := &block.FileBlock{
+	// Register a CAS-shaped FileChunk but DO NOT seed the remote object.
+	fb := &block.FileChunk{
 		ID:            fmt.Sprintf("%s/0", payloadID),
 		Hash:          hash,
 		DataSize:      32,
@@ -233,7 +233,7 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 		CreatedAt:     time.Now(),
 	}
 	if err := env.ms.Put(ctx, fb); err != nil {
-		t.Fatalf("PutFileBlock: %v", err)
+		t.Fatalf("PutFileChunk: %v", err)
 	}
 
 	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
@@ -248,7 +248,7 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 	}
 }
 
-// TestDualRead_LegacyRowRefusedPostMigration: a FileBlock
+// TestDualRead_LegacyRowRefusedPostMigration: a FileChunk
 // with a zero ContentHash that reaches dispatchRemoteFetch is migration
 // drift. 's boot guard refuses to start against an un-migrated
 // store, but if the sentinel is lost or hand-removed and a stray legacy-
@@ -265,8 +265,8 @@ func TestDualRead_LegacyRowRefusedPostMigration(t *testing.T) {
 	// path-keyed surface.
 	legacyKey := payloadID + "/block-0"
 
-	// Legacy-shaped FileBlock: Hash zero, BlockStoreKey set.
-	fb := &block.FileBlock{
+	// Legacy-shaped FileChunk: Hash zero, BlockStoreKey set.
+	fb := &block.FileChunk{
 		ID:            fmt.Sprintf("%s/0", payloadID),
 		DataSize:      32,
 		BlockStoreKey: legacyKey,
@@ -276,7 +276,7 @@ func TestDualRead_LegacyRowRefusedPostMigration(t *testing.T) {
 		CreatedAt:     time.Now(),
 	}
 	if err := env.ms.Put(ctx, fb); err != nil {
-		t.Fatalf("PutFileBlock: %v", err)
+		t.Fatalf("PutFileChunk: %v", err)
 	}
 
 	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
@@ -285,7 +285,7 @@ func TestDualRead_LegacyRowRefusedPostMigration(t *testing.T) {
 	}
 	// The error message carries the block_id so operators can triage
 	// which row the migration tool missed.
-	if got := err.Error(); !contains(got, "legacy zero-hash FileBlock") || !contains(got, payloadID) {
+	if got := err.Error(); !contains(got, "legacy zero-hash FileChunk") || !contains(got, payloadID) {
 		t.Errorf("fetchBlock err = %v, want one mentioning legacy zero-hash + payloadID", err)
 	}
 	if got != nil {

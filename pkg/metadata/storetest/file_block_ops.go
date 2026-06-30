@@ -12,15 +12,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// fileBlockStoreLegacy captures the legacy GetFileBlock + ListFileBlocks
+// fileBlockStoreLegacy captures the legacy GetFileChunk + ListFileChunks
 // methods that removed from the public
-// FileBlockStore interface but kept on each backend struct for engine-
+// FileChunkStore interface but kept on each backend struct for engine-
 // internal callers. The conformance suite type-asserts the factory's
 // MetadataStore to this interface so the existing tests can still drive
 // the methods without depending on a concrete backend type.
 type fileBlockStoreLegacy interface {
-	GetFileBlock(ctx context.Context, id string) (*block.FileBlock, error)
-	ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error)
+	GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error)
+	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
 }
 
 // asLegacy returns the legacy backend interface for a MetadataStore, or
@@ -30,30 +30,30 @@ func asLegacy(t *testing.T, store metadata.Store) fileBlockStoreLegacy {
 	t.Helper()
 	legacy, ok := store.(fileBlockStoreLegacy)
 	if !ok {
-		t.Skipf("backend %T does not implement fileBlockStoreLegacy (GetFileBlock/ListFileBlocks); engine-internal methods unavailable on this backend", store)
+		t.Skipf("backend %T does not implement fileBlockStoreLegacy (GetFileChunk/ListFileChunks); engine-internal methods unavailable on this backend", store)
 	}
 	return legacy
 }
 
-// runFileBlockOpsTests runs the FileBlockStore conformance suite.
-// MetadataStore embeds FileBlockStore, so the StoreFactory works directly.
-func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
+// runFileChunkOpsTests runs the FileChunkStore conformance suite.
+// MetadataStore embeds FileChunkStore, so the StoreFactory works directly.
+func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 	t.Helper()
 
-	t.Run("ListFileBlocks", func(t *testing.T) {
-		testListFileBlocks(t, factory)
+	t.Run("ListFileChunks", func(t *testing.T) {
+		testListFileChunks(t, factory)
 	})
 
-	t.Run("ListFileBlocks_Ordering", func(t *testing.T) {
-		testListFileBlocksOrdering(t, factory)
+	t.Run("ListFileChunks_Ordering", func(t *testing.T) {
+		testListFileChunksOrdering(t, factory)
 	})
 
-	t.Run("ListFileBlocks_MixedStates", func(t *testing.T) {
-		testListFileBlocksMixedStates(t, factory)
+	t.Run("ListFileChunks_MixedStates", func(t *testing.T) {
+		testListFileChunksMixedStates(t, factory)
 	})
 
-	t.Run("ListFileBlocks_EmptyStore", func(t *testing.T) {
-		testListFileBlocksEmptyStore(t, factory)
+	t.Run("ListFileChunks_EmptyStore", func(t *testing.T) {
+		testListFileChunksEmptyStore(t, factory)
 	})
 
 	// the syncer claim cycle stamps
@@ -70,42 +70,42 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	})
 
 	// the dedup short-circuit (engine.uploadOne) writes a
-	// second FileBlock with a fresh ID but the same ContentHash whenever two
+	// second FileChunk with a fresh ID but the same ContentHash whenever two
 	// file regions hash-match. Hash is NOT a uniqueness key at the contract
-	// level (see FileBlockStore.Put godoc). Backends that enforce
+	// level (see FileChunkStore.Put godoc). Backends that enforce
 	// hash uniqueness reject the second writer, leak the donor's RefCount,
-	// and leave the FileBlock in Syncing forever. This regression test pins
+	// and leave the FileChunk in Syncing forever. This regression test pins
 	// the contract across all three backends.
 	t.Run("Put_TwoIDsSameHash", func(t *testing.T) {
 		testPut_TwoIDsSameHash(t, factory)
 	})
 
 	// the GC mark phase calls
-	// EnumerateFileBlocks on the metadata store to stream every live
+	// EnumerateFileChunks on the metadata store to stream every live
 	// ContentHash into the disk-backed live set. Every backend MUST yield
 	// every block — under-yield risks the sweep deleting referenced data.
-	t.Run("EnumerateFileBlocks_Empty", func(t *testing.T) {
-		testEnumerateFileBlocks_Empty(t, factory)
+	t.Run("EnumerateFileChunks_Empty", func(t *testing.T) {
+		testEnumerateFileChunks_Empty(t, factory)
 	})
 
-	t.Run("EnumerateFileBlocks_SingleFile", func(t *testing.T) {
-		testEnumerateFileBlocks_SingleFile(t, factory)
+	t.Run("EnumerateFileChunks_SingleFile", func(t *testing.T) {
+		testEnumerateFileChunks_SingleFile(t, factory)
 	})
 
-	t.Run("EnumerateFileBlocks_LargeFanout", func(t *testing.T) {
-		testEnumerateFileBlocks_LargeFanout(t, factory)
+	t.Run("EnumerateFileChunks_LargeFanout", func(t *testing.T) {
+		testEnumerateFileChunks_LargeFanout(t, factory)
 	})
 
-	t.Run("EnumerateFileBlocks_FnErrorAborts", func(t *testing.T) {
-		testEnumerateFileBlocks_FnErrorAborts(t, factory)
+	t.Run("EnumerateFileChunks_FnErrorAborts", func(t *testing.T) {
+		testEnumerateFileChunks_FnErrorAborts(t, factory)
 	})
 
-	t.Run("EnumerateFileBlocks_ContextCancellation", func(t *testing.T) {
-		testEnumerateFileBlocks_ContextCancellation(t, factory)
+	t.Run("EnumerateFileChunks_ContextCancellation", func(t *testing.T) {
+		testEnumerateFileChunks_ContextCancellation(t, factory)
 	})
 
-	t.Run("EnumerateFileBlocks_ZeroHashEmitted", func(t *testing.T) {
-		testEnumerateFileBlocks_ZeroHashEmitted(t, factory)
+	t.Run("EnumerateFileChunks_ZeroHashEmitted", func(t *testing.T) {
+		testEnumerateFileChunks_ZeroHashEmitted(t, factory)
 	})
 
 	// (mark fail-closed): backends that store the
@@ -115,14 +115,14 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	// TTL lapses. Backends that physically cannot represent a malformed
 	// hash (memory/badger store [32]byte directly) skip via the optional
 	// CorruptHashInjector capability.
-	t.Run("EnumerateFileBlocks_CorruptHashFailsClosed", func(t *testing.T) {
-		testEnumerateFileBlocks_CorruptHashFailsClosed(t, factory)
+	t.Run("EnumerateFileChunks_CorruptHashFailsClosed", func(t *testing.T) {
+		testEnumerateFileChunks_CorruptHashFailsClosed(t, factory)
 	})
 
 	// `share warm` and block-store stats enumerate payloads from the
 	// authoritative metadata (EnumeratePayloads) rather than the local block
 	// store's ListFiles, which goes empty after rollup. Every backend MUST
-	// yield exactly the distinct payloadIDs derived from the FileBlock row IDs
+	// yield exactly the distinct payloadIDs derived from the FileChunk row IDs
 	// ({payloadID}/{blockIdx}), deduped and order-independent (#1374).
 	t.Run("EnumeratePayloads", func(t *testing.T) {
 		testEnumeratePayloads(t, factory)
@@ -142,11 +142,11 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	// The GC mark live set unions the CAS index with the per-file manifest, but
 	// a manifest on an nlink=0 (unlinked) inode is dead and must NOT keep its
 	// chunks live — else GC can never reclaim deleted files (#1433).
-	t.Run("EnumerateFileBlocks_UnlinkedFileExcludesManifest", func(t *testing.T) {
-		testEnumerateFileBlocks_UnlinkedFileExcludesManifest(t, factory)
+	t.Run("EnumerateFileChunks_UnlinkedFileExcludesManifest", func(t *testing.T) {
+		testEnumerateFileChunks_UnlinkedFileExcludesManifest(t, factory)
 	})
-	t.Run("EnumerateFileBlocks_HardLinkSurvivesOneRemoval", func(t *testing.T) {
-		testEnumerateFileBlocks_HardLinkSurvivesOneRemoval(t, factory)
+	t.Run("EnumerateFileChunks_HardLinkSurvivesOneRemoval", func(t *testing.T) {
+		testEnumerateFileChunks_HardLinkSurvivesOneRemoval(t, factory)
 	})
 	t.Run("EnumerateLivePayloadIDs_ExcludesNlinkZero", func(t *testing.T) {
 		testEnumerateLivePayloadIDs_ExcludesNlinkZero(t, factory)
@@ -161,7 +161,7 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testTx_IncrementRefCount_RollsBack(t, factory)
 	})
 
-	// A tx.Put followed by tx.ListFileBlocks / tx.EnumerateFileBlocks in the
+	// A tx.Put followed by tx.ListFileChunks / tx.EnumerateFileChunks in the
 	// SAME WithTransaction MUST observe the uncommitted write (read-after-write
 	// within the tx). Badger previously delegated these list methods to a fresh
 	// db.View snapshot taken at call time, so the pending Put was invisible.
@@ -187,10 +187,10 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 		testAddRef_Concurrent_With_DecrementRefCountCascade(t, factory)
 	})
 
-	// A FileBlock's content hash is valid the moment the chunk is hashed
+	// A FileChunk's content hash is valid the moment the chunk is hashed
 	// at rollup time, long before it reaches the remote (BlockStateRemote).
 	// The engine's CAS read path resolves (payloadID, offset) -> Hash via
-	// ListFileBlocks / GetFileBlock, so a Pending row MUST round-trip its
+	// ListFileChunks / GetFileChunk, so a Pending row MUST round-trip its
 	// hash. A backend that only persists the hash for finalized rows leaves
 	// the per-file read index hash-less; once the local cache is cold
 	// (restart + eviction, or a snapshot restore that resets local state)
@@ -200,9 +200,9 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 	})
 
 	// DecrementRefCountAndReap is the engine Delete/Truncate reclaim path
-	// (#832): once a hash has no live references its FileBlock index row is
+	// (#832): once a hash has no live references its FileChunk index row is
 	// deleted in the same critical section as the decrement, so the hash
-	// leaves EnumerateFileBlocks and the GC sweep can collect the remote
+	// leaves EnumerateFileChunks and the GC sweep can collect the remote
 	// chunk. Three cases pin the contract across all backends: reap-at-zero
 	// (row + hash index gone), survive-when-still-referenced, and
 	// tolerate-missing-row.
@@ -213,7 +213,7 @@ func runFileBlockOpsTests(t *testing.T, factory StoreFactory) {
 
 // testDecrementRefCountAndReap pins the DecrementRefCountAndReap contract:
 //
-//	(a) refcount 1 → reap: returns 0, GetByHash==nil, GetFileBlock→NotFound.
+//	(a) refcount 1 → reap: returns 0, GetByHash==nil, GetFileChunk→NotFound.
 //	(b) refcount 2 → no reap: returns 1, row + hash index still present.
 //	(c) non-existent id → returns 0, nil (a swept row is not a caller error).
 func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
@@ -226,7 +226,7 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 		legacy := asLegacy(t, store)
 
 		hash := hashOfSeed("reap-at-zero")
-		fb := &block.FileBlock{
+		fb := &block.FileChunk{
 			ID:            "file-reap/0",
 			Hash:          hash,
 			State:         block.BlockStateRemote,
@@ -255,12 +255,12 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 			t.Fatalf("GetByHash post-reap: %v", err)
 		}
 		if byHash != nil {
-			t.Errorf("GetByHash returned %+v after reap; want nil (hash index entry must be gone so the hash leaves EnumerateFileBlocks)", byHash)
+			t.Errorf("GetByHash returned %+v after reap; want nil (hash index entry must be gone so the hash leaves EnumerateFileChunks)", byHash)
 		}
 
-		// The row itself must be gone: GetFileBlock → ErrFileBlockNotFound.
-		if _, err := legacy.GetFileBlock(ctx, fb.ID); !errors.Is(err, metadata.ErrFileBlockNotFound) {
-			t.Errorf("GetFileBlock post-reap err = %v; want ErrFileBlockNotFound (row reaped)", err)
+		// The row itself must be gone: GetFileChunk → ErrFileChunkNotFound.
+		if _, err := legacy.GetFileChunk(ctx, fb.ID); !errors.Is(err, metadata.ErrFileChunkNotFound) {
+			t.Errorf("GetFileChunk post-reap err = %v; want ErrFileChunkNotFound (row reaped)", err)
 		}
 	})
 
@@ -271,7 +271,7 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 		legacy := asLegacy(t, store)
 
 		hash := hashOfSeed("reap-survives")
-		fb := &block.FileBlock{
+		fb := &block.FileChunk{
 			ID:            "file-survive/0",
 			Hash:          hash,
 			State:         block.BlockStateRemote,
@@ -299,8 +299,8 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 		}
 
 		// Row + hash index must survive.
-		if _, err := legacy.GetFileBlock(ctx, fb.ID); err != nil {
-			t.Errorf("GetFileBlock after non-reap decrement: %v; want row still present", err)
+		if _, err := legacy.GetFileChunk(ctx, fb.ID); err != nil {
+			t.Errorf("GetFileChunk after non-reap decrement: %v; want row still present", err)
 		}
 		byHash, err := store.GetByHash(ctx, hash)
 		if err != nil {
@@ -327,21 +327,21 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 }
 
 // ============================================================================
-// ListFileBlocks Tests
+// ListFileChunks Tests
 //
-// ListFileBlocks is no longer on the public
-// FileBlockStore interface but is retained as a backend method for engine-
-// internal callers. Tests use the legacyFileBlockStore type assertion to
+// ListFileChunks is no longer on the public
+// FileChunkStore interface but is retained as a backend method for engine-
+// internal callers. Tests use the legacyFileChunkStore type assertion to
 // reach the method on each backend; backends that don't implement it
 // (none today) skip cleanly.
 // ============================================================================
 
-func testListFileBlocks(t *testing.T, factory StoreFactory) {
+func testListFileChunks(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
 	// Create blocks for 2 different files
-	blocks := []*block.FileBlock{
+	blocks := []*block.FileChunk{
 		{ID: "file-A/0", State: block.BlockStatePending, LocalPath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 		{ID: "file-A/1", State: block.BlockStatePending, LocalPath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 		{ID: "file-A/2", State: block.BlockStateRemote, LocalPath: "/cache/a2", BlockStoreKey: "s3://a2", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
@@ -355,57 +355,57 @@ func testListFileBlocks(t *testing.T, factory StoreFactory) {
 	}
 
 	// Query file-A
-	resultA, err := asLegacy(t, store).ListFileBlocks(ctx, "file-A")
+	resultA, err := asLegacy(t, store).ListFileChunks(ctx, "file-A")
 	if err != nil {
-		t.Fatalf("ListFileBlocks(file-A) error: %v", err)
+		t.Fatalf("ListFileChunks(file-A) error: %v", err)
 	}
 	if len(resultA) != 3 {
-		t.Fatalf("ListFileBlocks(file-A) returned %d blocks, want 3", len(resultA))
+		t.Fatalf("ListFileChunks(file-A) returned %d blocks, want 3", len(resultA))
 	}
 
 	// Verify ordering by block index
 	for i, b := range resultA {
 		expectedID := fmt.Sprintf("file-A/%d", i)
 		if b.ID != expectedID {
-			t.Errorf("ListFileBlocks(file-A)[%d].ID = %s, want %s", i, b.ID, expectedID)
+			t.Errorf("ListFileChunks(file-A)[%d].ID = %s, want %s", i, b.ID, expectedID)
 		}
 	}
 
 	// Query file-B
-	resultB, err := asLegacy(t, store).ListFileBlocks(ctx, "file-B")
+	resultB, err := asLegacy(t, store).ListFileChunks(ctx, "file-B")
 	if err != nil {
-		t.Fatalf("ListFileBlocks(file-B) error: %v", err)
+		t.Fatalf("ListFileChunks(file-B) error: %v", err)
 	}
 	if len(resultB) != 2 {
-		t.Fatalf("ListFileBlocks(file-B) returned %d blocks, want 2", len(resultB))
+		t.Fatalf("ListFileChunks(file-B) returned %d blocks, want 2", len(resultB))
 	}
 
 	// Query nonexistent
-	resultN, err := asLegacy(t, store).ListFileBlocks(ctx, "nonexistent")
+	resultN, err := asLegacy(t, store).ListFileChunks(ctx, "nonexistent")
 	if err != nil {
-		t.Fatalf("ListFileBlocks(nonexistent) error: %v", err)
+		t.Fatalf("ListFileChunks(nonexistent) error: %v", err)
 	}
 	if len(resultN) != 0 {
-		t.Errorf("ListFileBlocks(nonexistent) returned %d blocks, want 0", len(resultN))
+		t.Errorf("ListFileChunks(nonexistent) returned %d blocks, want 0", len(resultN))
 	}
 
 	// Verify data integrity
 	if resultA[0].DataSize != 100 {
-		t.Errorf("ListFileBlocks(file-A)[0].DataSize = %d, want 100", resultA[0].DataSize)
+		t.Errorf("ListFileChunks(file-A)[0].DataSize = %d, want 100", resultA[0].DataSize)
 	}
 	if resultA[2].State != block.BlockStateRemote {
-		t.Errorf("ListFileBlocks(file-A)[2].State = %v, want Remote", resultA[2].State)
+		t.Errorf("ListFileChunks(file-A)[2].State = %v, want Remote", resultA[2].State)
 	}
 }
 
-func testListFileBlocksOrdering(t *testing.T, factory StoreFactory) {
+func testListFileChunksOrdering(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
 	// Create blocks for one file with out-of-order indices
 	indices := []int{0, 5, 10, 2, 7}
 	for _, idx := range indices {
-		b := &block.FileBlock{
+		b := &block.FileChunk{
 			ID: fmt.Sprintf("file-sort/%d", idx), State: block.BlockStatePending,
 			LocalPath: fmt.Sprintf("/cache/s%d", idx), DataSize: uint32(idx * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
@@ -415,12 +415,12 @@ func testListFileBlocksOrdering(t *testing.T, factory StoreFactory) {
 		}
 	}
 
-	result, err := asLegacy(t, store).ListFileBlocks(ctx, "file-sort")
+	result, err := asLegacy(t, store).ListFileChunks(ctx, "file-sort")
 	if err != nil {
-		t.Fatalf("ListFileBlocks(file-sort) error: %v", err)
+		t.Fatalf("ListFileChunks(file-sort) error: %v", err)
 	}
 	if len(result) != 5 {
-		t.Fatalf("ListFileBlocks(file-sort) returned %d blocks, want 5", len(result))
+		t.Fatalf("ListFileChunks(file-sort) returned %d blocks, want 5", len(result))
 	}
 
 	// Expected order: 0, 2, 5, 7, 10
@@ -428,12 +428,12 @@ func testListFileBlocksOrdering(t *testing.T, factory StoreFactory) {
 	for i, expected := range expectedOrder {
 		expectedID := fmt.Sprintf("file-sort/%d", expected)
 		if result[i].ID != expectedID {
-			t.Errorf("ListFileBlocks(file-sort)[%d].ID = %s, want %s", i, result[i].ID, expectedID)
+			t.Errorf("ListFileChunks(file-sort)[%d].ID = %s, want %s", i, result[i].ID, expectedID)
 		}
 	}
 }
 
-func testListFileBlocksMixedStates(t *testing.T, factory StoreFactory) {
+func testListFileChunksMixedStates(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -445,7 +445,7 @@ func testListFileBlocksMixedStates(t *testing.T, factory StoreFactory) {
 		block.BlockStateRemote,
 	}
 	for i, state := range states {
-		b := &block.FileBlock{
+		b := &block.FileChunk{
 			ID: fmt.Sprintf("file-mix/%d", i), State: state,
 			LocalPath: fmt.Sprintf("/cache/m%d", i), DataSize: uint32((i + 1) * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
@@ -458,13 +458,13 @@ func testListFileBlocksMixedStates(t *testing.T, factory StoreFactory) {
 		}
 	}
 
-	// ListFileBlocks should return ALL blocks regardless of state
-	result, err := asLegacy(t, store).ListFileBlocks(ctx, "file-mix")
+	// ListFileChunks should return ALL blocks regardless of state
+	result, err := asLegacy(t, store).ListFileChunks(ctx, "file-mix")
 	if err != nil {
-		t.Fatalf("ListFileBlocks(file-mix) error: %v", err)
+		t.Fatalf("ListFileChunks(file-mix) error: %v", err)
 	}
 	if len(result) != 4 {
-		t.Fatalf("ListFileBlocks(file-mix) returned %d blocks, want 4", len(result))
+		t.Fatalf("ListFileChunks(file-mix) returned %d blocks, want 4", len(result))
 	}
 
 	// Verify each state is present
@@ -474,21 +474,21 @@ func testListFileBlocksMixedStates(t *testing.T, factory StoreFactory) {
 	}
 	for _, state := range states {
 		if !statesSeen[state] {
-			t.Errorf("ListFileBlocks(file-mix) missing state %v", state)
+			t.Errorf("ListFileChunks(file-mix) missing state %v", state)
 		}
 	}
 }
 
-func testListFileBlocksEmptyStore(t *testing.T, factory StoreFactory) {
+func testListFileChunksEmptyStore(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
-	result, err := asLegacy(t, store).ListFileBlocks(ctx, "any")
+	result, err := asLegacy(t, store).ListFileChunks(ctx, "any")
 	if err != nil {
-		t.Fatalf("ListFileBlocks(empty) error: %v", err)
+		t.Fatalf("ListFileChunks(empty) error: %v", err)
 	}
 	if len(result) != 0 {
-		t.Errorf("ListFileBlocks(empty) returned %d blocks, want 0", len(result))
+		t.Errorf("ListFileChunks(empty) returned %d blocks, want 0", len(result))
 	}
 }
 
@@ -496,9 +496,9 @@ func testListFileBlocksEmptyStore(t *testing.T, factory StoreFactory) {
 // EnumeratePayloads Tests
 //
 // EnumeratePayloads streams every DISTINCT payloadID that has at least one
-// FileBlock row. It is the rollup-durable enumeration surface used by
+// FileChunk row. It is the rollup-durable enumeration surface used by
 // `share warm` and block-store stats: unlike the local block store's
-// ListFiles, the FileBlock metadata rows survive after an append log rolls up,
+// ListFiles, the FileChunk metadata rows survive after an append log rolls up,
 // so this still reports payloads whose local payload tracking has gone empty
 // (#1374).
 // ============================================================================
@@ -526,7 +526,7 @@ func testEnumeratePayloads(t *testing.T, factory StoreFactory) {
 	}
 	for payloadID, n := range want {
 		for i := 0; i < n; i++ {
-			b := &block.FileBlock{
+			b := &block.FileChunk{
 				ID:         fmt.Sprintf("%s/%d", payloadID, i),
 				State:      block.BlockStatePending,
 				LocalPath:  fmt.Sprintf("/cache/%s-%d", payloadID, i),
@@ -600,7 +600,7 @@ func testPutGet_LastSyncAttemptAt(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	stamp := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
-	in := &block.FileBlock{
+	in := &block.FileChunk{
 		ID:                "file-sync-attempt/0",
 		State:             block.BlockStateSyncing,
 		LocalPath:         "/cache/sa0",
@@ -612,12 +612,12 @@ func testPutGet_LastSyncAttemptAt(t *testing.T, factory StoreFactory) {
 	}
 
 	if err := store.Put(ctx, in); err != nil {
-		t.Fatalf("PutFileBlock failed: %v", err)
+		t.Fatalf("PutFileChunk failed: %v", err)
 	}
 
-	out, err := asLegacy(t, store).GetFileBlock(ctx, in.ID)
+	out, err := asLegacy(t, store).GetFileChunk(ctx, in.ID)
 	if err != nil {
-		t.Fatalf("GetFileBlock failed: %v", err)
+		t.Fatalf("GetFileChunk failed: %v", err)
 	}
 
 	if !out.LastSyncAttemptAt.Equal(stamp) {
@@ -635,7 +635,7 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
-	in := &block.FileBlock{
+	in := &block.FileChunk{
 		ID:         "file-sync-zero/0",
 		State:      block.BlockStatePending,
 		LocalPath:  "/cache/sz0",
@@ -647,12 +647,12 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 	}
 
 	if err := store.Put(ctx, in); err != nil {
-		t.Fatalf("PutFileBlock failed: %v", err)
+		t.Fatalf("PutFileChunk failed: %v", err)
 	}
 
-	out, err := asLegacy(t, store).GetFileBlock(ctx, in.ID)
+	out, err := asLegacy(t, store).GetFileChunk(ctx, in.ID)
 	if err != nil {
-		t.Fatalf("GetFileBlock failed: %v", err)
+		t.Fatalf("GetFileChunk failed: %v", err)
 	}
 
 	if !out.LastSyncAttemptAt.IsZero() {
@@ -661,19 +661,19 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testPut_TwoIDsSameHash asserts that two distinct FileBlock IDs
-// sharing the same ContentHash both round-trip through PutFileBlock without
+// testPut_TwoIDsSameHash asserts that two distinct FileChunk IDs
+// sharing the same ContentHash both round-trip through PutFileChunk without
 // error. the dedup short-circuit (engine.uploadOne) emits
 // such pairs whenever two file regions hash-match (e.g. all-zero blocks
 // across distinct VM image files). A backend that rejects the second
-// writer breaks the dedup path, leaves the FileBlock stuck in Syncing,
+// writer breaks the dedup path, leaves the FileChunk stuck in Syncing,
 // and leaks the donor block's RefCount.
 //
-// The contract permits FindFileBlockByHash to return either of the
+// The contract permits FindFileChunkByHash to return either of the
 // colliding rows (memory + badger overwrite the hash→id map; postgres
 // returns one of the two rows non-deterministically). The assertion
-// scope is therefore: both PutFileBlock calls return nil AND
-// FindFileBlockByHash returns one of the two IDs (no error, no nil).
+// scope is therefore: both PutFileChunk calls return nil AND
+// FindFileChunkByHash returns one of the two IDs (no error, no nil).
 func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
@@ -682,7 +682,7 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	keyA := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
 	keyB := keyA // CAS keys are identical for the same hash; that's the point
 
-	a := &block.FileBlock{
+	a := &block.FileChunk{
 		ID:            "file-A/0",
 		Hash:          hash,
 		State:         block.BlockStateRemote,
@@ -693,7 +693,7 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}
-	b := &block.FileBlock{
+	b := &block.FileChunk{
 		ID:            "file-B/0",
 		Hash:          hash, // SAME content hash, different ID
 		State:         block.BlockStateRemote,
@@ -716,40 +716,40 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	}
 
 	// Both rows must be retrievable by their IDs.
-	gotA, err := asLegacy(t, store).GetFileBlock(ctx, a.ID)
+	gotA, err := asLegacy(t, store).GetFileChunk(ctx, a.ID)
 	if err != nil {
-		t.Fatalf("GetFileBlock(A) failed: %v", err)
+		t.Fatalf("GetFileChunk(A) failed: %v", err)
 	}
 	if gotA.Hash != hash {
-		t.Errorf("GetFileBlock(A).Hash = %x, want %x", gotA.Hash[:8], hash[:8])
+		t.Errorf("GetFileChunk(A).Hash = %x, want %x", gotA.Hash[:8], hash[:8])
 	}
-	gotB, err := asLegacy(t, store).GetFileBlock(ctx, b.ID)
+	gotB, err := asLegacy(t, store).GetFileChunk(ctx, b.ID)
 	if err != nil {
-		t.Fatalf("GetFileBlock(B) failed: %v", err)
+		t.Fatalf("GetFileChunk(B) failed: %v", err)
 	}
 	if gotB.Hash != hash {
-		t.Errorf("GetFileBlock(B).Hash = %x, want %x", gotB.Hash[:8], hash[:8])
+		t.Errorf("GetFileChunk(B).Hash = %x, want %x", gotB.Hash[:8], hash[:8])
 	}
 
-	// FindFileBlockByHash must return one of the two — exact identity is
+	// FindFileChunkByHash must return one of the two — exact identity is
 	// implementation-defined (memory + badger return whichever wrote the
 	// hash→id map last; postgres returns whichever row the planner picks).
 	found, err := store.GetByHash(ctx, hash)
 	if err != nil {
-		t.Fatalf("FindFileBlockByHash failed: %v", err)
+		t.Fatalf("FindFileChunkByHash failed: %v", err)
 	}
 	if found == nil {
-		t.Fatal("FindFileBlockByHash returned nil; expected one of the two colliding rows")
+		t.Fatal("FindFileChunkByHash returned nil; expected one of the two colliding rows")
 	}
 	if found.ID != a.ID && found.ID != b.ID {
-		t.Errorf("FindFileBlockByHash returned ID %q; want one of [%q, %q]",
+		t.Errorf("FindFileChunkByHash returned ID %q; want one of [%q, %q]",
 			found.ID, a.ID, b.ID)
 	}
 }
 
-// testPutGet_PendingHashRoundTrips pins the contract that a FileBlock's
+// testPutGet_PendingHashRoundTrips pins the contract that a FileChunk's
 // content hash survives a Put/Get round-trip regardless of block state.
-// Both per-file read accessors (ListFileBlocks and GetFileBlock) must
+// Both per-file read accessors (ListFileChunks and GetFileChunk) must
 // surface the hash for a Pending row, because the engine CAS read path
 // resolves chunks through that index, not just through finalized rows.
 func testPutGet_PendingHashRoundTrips(t *testing.T, factory StoreFactory) {
@@ -757,7 +757,7 @@ func testPutGet_PendingHashRoundTrips(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	hash := hashOfSeed("pending-hash-roundtrip")
-	fb := &block.FileBlock{
+	fb := &block.FileChunk{
 		ID:         "file-pending/0",
 		Hash:       hash,
 		State:      block.BlockStatePending,
@@ -772,32 +772,32 @@ func testPutGet_PendingHashRoundTrips(t *testing.T, factory StoreFactory) {
 
 	legacy := asLegacy(t, store)
 
-	got, err := legacy.GetFileBlock(ctx, fb.ID)
+	got, err := legacy.GetFileChunk(ctx, fb.ID)
 	if err != nil {
-		t.Fatalf("GetFileBlock failed: %v", err)
+		t.Fatalf("GetFileChunk failed: %v", err)
 	}
 	if got.Hash != hash {
-		t.Errorf("GetFileBlock: Pending row Hash = %x, want %x "+
+		t.Errorf("GetFileChunk: Pending row Hash = %x, want %x "+
 			"(the content hash must persist for Pending blocks — the CAS "+
 			"read path resolves chunks via this hash even before the block "+
 			"reaches the remote)", got.Hash[:8], hash[:8])
 	}
 
-	rows, err := legacy.ListFileBlocks(ctx, "file-pending")
+	rows, err := legacy.ListFileChunks(ctx, "file-pending")
 	if err != nil {
-		t.Fatalf("ListFileBlocks failed: %v", err)
+		t.Fatalf("ListFileChunks failed: %v", err)
 	}
 	if len(rows) != 1 {
-		t.Fatalf("ListFileBlocks returned %d rows, want 1", len(rows))
+		t.Fatalf("ListFileChunks returned %d rows, want 1", len(rows))
 	}
 	if rows[0].Hash != hash {
-		t.Errorf("ListFileBlocks: Pending row Hash = %x, want %x",
+		t.Errorf("ListFileChunks: Pending row Hash = %x, want %x",
 			rows[0].Hash[:8], hash[:8])
 	}
 }
 
 // ============================================================================
-// EnumerateFileBlocks Tests ()
+// EnumerateFileChunks Tests ()
 // ============================================================================
 
 // hashOf returns a deterministic non-zero ContentHash from a seed string.
@@ -812,27 +812,27 @@ func hashOfSeed(seed string) block.ContentHash {
 	return h
 }
 
-// testEnumerateFileBlocks_Empty: invokes fn 0 times on an empty store.
-func testEnumerateFileBlocks_Empty(t *testing.T, factory StoreFactory) {
+// testEnumerateFileChunks_Empty: invokes fn 0 times on an empty store.
+func testEnumerateFileChunks_Empty(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
 	count := 0
-	err := store.EnumerateFileBlocks(ctx, func(_ block.ContentHash) error {
+	err := store.EnumerateFileChunks(ctx, func(_ block.ContentHash) error {
 		count++
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("EnumerateFileBlocks(empty) error: %v", err)
+		t.Fatalf("EnumerateFileChunks(empty) error: %v", err)
 	}
 	if count != 0 {
-		t.Errorf("EnumerateFileBlocks(empty): fn invoked %d times, want 0", count)
+		t.Errorf("EnumerateFileChunks(empty): fn invoked %d times, want 0", count)
 	}
 }
 
-// testEnumerateFileBlocks_SingleFile: fn invoked exactly N times for a file
+// testEnumerateFileChunks_SingleFile: fn invoked exactly N times for a file
 // with N blocks; the yielded hash set equals the stored hash set.
-func testEnumerateFileBlocks_SingleFile(t *testing.T, factory StoreFactory) {
+func testEnumerateFileChunks_SingleFile(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -841,7 +841,7 @@ func testEnumerateFileBlocks_SingleFile(t *testing.T, factory StoreFactory) {
 	for i := 0; i < n; i++ {
 		h := hashOfSeed(fmt.Sprintf("single-%d", i))
 		want[h] = true
-		b := &block.FileBlock{
+		b := &block.FileChunk{
 			ID:            fmt.Sprintf("file-single/%d", i),
 			Hash:          h,
 			State:         block.BlockStateRemote,
@@ -858,27 +858,27 @@ func testEnumerateFileBlocks_SingleFile(t *testing.T, factory StoreFactory) {
 	}
 
 	got := make(map[block.ContentHash]bool, n)
-	err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
+	err := store.EnumerateFileChunks(ctx, func(h block.ContentHash) error {
 		got[h] = true
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("EnumerateFileBlocks error: %v", err)
+		t.Fatalf("EnumerateFileChunks error: %v", err)
 	}
 	if len(got) != n {
-		t.Fatalf("EnumerateFileBlocks: got %d distinct hashes, want %d", len(got), n)
+		t.Fatalf("EnumerateFileChunks: got %d distinct hashes, want %d", len(got), n)
 	}
 	for h := range want {
 		if !got[h] {
-			t.Errorf("EnumerateFileBlocks: missing hash %x", h[:8])
+			t.Errorf("EnumerateFileChunks: missing hash %x", h[:8])
 		}
 	}
 }
 
-// testEnumerateFileBlocks_LargeFanout: 50 files * 20 blocks = 1000 blocks; fn
+// testEnumerateFileChunks_LargeFanout: 50 files * 20 blocks = 1000 blocks; fn
 // invoked exactly 1000 times; no duplicates, no omissions; iteration completes
 // within 5s on the memory backend (sanity bound).
-func testEnumerateFileBlocks_LargeFanout(t *testing.T, factory StoreFactory) {
+func testEnumerateFileChunks_LargeFanout(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -889,7 +889,7 @@ func testEnumerateFileBlocks_LargeFanout(t *testing.T, factory StoreFactory) {
 		for i := 0; i < perFile; i++ {
 			h := hashOfSeed(fmt.Sprintf("fanout-%d-%d", f, i))
 			want[h]++
-			b := &block.FileBlock{
+			b := &block.FileChunk{
 				ID:            fmt.Sprintf("file-fan-%d/%d", f, i),
 				Hash:          h,
 				State:         block.BlockStateRemote,
@@ -909,42 +909,42 @@ func testEnumerateFileBlocks_LargeFanout(t *testing.T, factory StoreFactory) {
 	deadline := time.Now().Add(5 * time.Second)
 	got := 0
 	seen := make(map[block.ContentHash]int, files*perFile)
-	err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
+	err := store.EnumerateFileChunks(ctx, func(h block.ContentHash) error {
 		got++
 		seen[h]++
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("EnumerateFileBlocks error: %v", err)
+		t.Fatalf("EnumerateFileChunks error: %v", err)
 	}
 	if time.Now().After(deadline) {
-		t.Errorf("EnumerateFileBlocks took longer than 5s sanity bound")
+		t.Errorf("EnumerateFileChunks took longer than 5s sanity bound")
 	}
 	if got != files*perFile {
-		t.Errorf("EnumerateFileBlocks: fn invoked %d times, want %d", got, files*perFile)
+		t.Errorf("EnumerateFileChunks: fn invoked %d times, want %d", got, files*perFile)
 	}
 	if len(seen) != len(want) {
-		t.Errorf("EnumerateFileBlocks: %d distinct hashes seen, want %d", len(seen), len(want))
+		t.Errorf("EnumerateFileChunks: %d distinct hashes seen, want %d", len(seen), len(want))
 	}
 	for h, want := range want {
 		if seen[h] != want {
-			t.Errorf("EnumerateFileBlocks: hash %x seen %d times, want %d", h[:8], seen[h], want)
+			t.Errorf("EnumerateFileChunks: hash %x seen %d times, want %d", h[:8], seen[h], want)
 		}
 	}
 }
 
-// testEnumerateFileBlocks_FnErrorAborts: fn returns a sentinel error on the
-// 7th invocation; EnumerateFileBlocks returns that error (possibly wrapped).
+// testEnumerateFileChunks_FnErrorAborts: fn returns a sentinel error on the
+// 7th invocation; EnumerateFileChunks returns that error (possibly wrapped).
 // fn is invoked at most a small batch beyond the sentinel — tolerant of
 // PrefetchSize batching but never iterates the full set.
-func testEnumerateFileBlocks_FnErrorAborts(t *testing.T, factory StoreFactory) {
+func testEnumerateFileChunks_FnErrorAborts(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
 	const n = 50
 	for i := 0; i < n; i++ {
 		h := hashOfSeed(fmt.Sprintf("fn-err-%d", i))
-		b := &block.FileBlock{
+		b := &block.FileChunk{
 			ID:         fmt.Sprintf("file-fnerr/%d", i),
 			Hash:       h,
 			State:      block.BlockStateRemote,
@@ -955,13 +955,13 @@ func testEnumerateFileBlocks_FnErrorAborts(t *testing.T, factory StoreFactory) {
 			CreatedAt:  time.Now(),
 		}
 		if err := store.Put(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock failed: %v", err)
+			t.Fatalf("PutFileChunk failed: %v", err)
 		}
 	}
 
 	sentinel := errors.New("sentinel error from fn")
 	calls := 0
-	err := store.EnumerateFileBlocks(ctx, func(_ block.ContentHash) error {
+	err := store.EnumerateFileChunks(ctx, func(_ block.ContentHash) error {
 		calls++
 		if calls == 7 {
 			return sentinel
@@ -969,25 +969,25 @@ func testEnumerateFileBlocks_FnErrorAborts(t *testing.T, factory StoreFactory) {
 		return nil
 	})
 	if err == nil {
-		t.Fatalf("EnumerateFileBlocks returned nil, want sentinel error")
+		t.Fatalf("EnumerateFileChunks returned nil, want sentinel error")
 	}
 	if !errors.Is(err, sentinel) {
 		// Some impls may wrap; accept exact equality OR errors.Is.
 		if err.Error() != sentinel.Error() && err != sentinel {
-			t.Errorf("EnumerateFileBlocks returned %v, want sentinel %v", err, sentinel)
+			t.Errorf("EnumerateFileChunks returned %v, want sentinel %v", err, sentinel)
 		}
 	}
 	if calls < 7 {
-		t.Errorf("EnumerateFileBlocks: fn invoked %d times, want >= 7", calls)
+		t.Errorf("EnumerateFileChunks: fn invoked %d times, want >= 7", calls)
 	}
 	if calls >= n {
-		t.Errorf("EnumerateFileBlocks: fn invoked %d times — iteration did not abort", calls)
+		t.Errorf("EnumerateFileChunks: fn invoked %d times — iteration did not abort", calls)
 	}
 }
 
-// testEnumerateFileBlocks_ContextCancellation: cancel mid-iteration; method
+// testEnumerateFileChunks_ContextCancellation: cancel mid-iteration; method
 // returns ctx.Err (possibly wrapped) and stops invoking fn.
-func testEnumerateFileBlocks_ContextCancellation(t *testing.T, factory StoreFactory) {
+func testEnumerateFileChunks_ContextCancellation(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	parent := t.Context()
 	ctx, cancel := context.WithCancel(parent)
@@ -996,7 +996,7 @@ func testEnumerateFileBlocks_ContextCancellation(t *testing.T, factory StoreFact
 	const n = 50
 	for i := 0; i < n; i++ {
 		h := hashOfSeed(fmt.Sprintf("ctx-cancel-%d", i))
-		b := &block.FileBlock{
+		b := &block.FileChunk{
 			ID:         fmt.Sprintf("file-ctx/%d", i),
 			Hash:       h,
 			State:      block.BlockStateRemote,
@@ -1007,12 +1007,12 @@ func testEnumerateFileBlocks_ContextCancellation(t *testing.T, factory StoreFact
 			CreatedAt:  time.Now(),
 		}
 		if err := store.Put(ctx, b); err != nil {
-			t.Fatalf("PutFileBlock failed: %v", err)
+			t.Fatalf("PutFileChunk failed: %v", err)
 		}
 	}
 
 	calls := 0
-	err := store.EnumerateFileBlocks(ctx, func(_ block.ContentHash) error {
+	err := store.EnumerateFileChunks(ctx, func(_ block.ContentHash) error {
 		calls++
 		if calls == 3 {
 			cancel()
@@ -1020,24 +1020,24 @@ func testEnumerateFileBlocks_ContextCancellation(t *testing.T, factory StoreFact
 		return nil
 	})
 	if err == nil {
-		t.Fatalf("EnumerateFileBlocks: expected non-nil error after cancellation")
+		t.Fatalf("EnumerateFileChunks: expected non-nil error after cancellation")
 	}
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("EnumerateFileBlocks: error %v does not wrap context.Canceled", err)
+		t.Errorf("EnumerateFileChunks: error %v does not wrap context.Canceled", err)
 	}
 	if calls >= n {
-		t.Errorf("EnumerateFileBlocks: fn invoked %d times — cancellation ignored", calls)
+		t.Errorf("EnumerateFileChunks: fn invoked %d times — cancellation ignored", calls)
 	}
 }
 
-// testEnumerateFileBlocks_ZeroHashEmitted: blocks with zero hash (legacy rows)
+// testEnumerateFileChunks_ZeroHashEmitted: blocks with zero hash (legacy rows)
 // are still enumerated. The GC mark phase decides whether to skip them.
-func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory) {
+func testEnumerateFileChunks_ZeroHashEmitted(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
 	// Seed one zero-hash legacy block + one finalized block.
-	legacy := &block.FileBlock{
+	legacy := &block.FileChunk{
 		ID:         "file-zero/0",
 		State:      block.BlockStatePending,
 		LocalPath:  "/cache/zero",
@@ -1050,7 +1050,7 @@ func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 	if err := store.Put(ctx, legacy); err != nil {
 		t.Fatalf("Put(zero) failed: %v", err)
 	}
-	finalized := &block.FileBlock{
+	finalized := &block.FileChunk{
 		ID:            "file-zero/1",
 		Hash:          hashOfSeed("non-zero"),
 		State:         block.BlockStateRemote,
@@ -1066,7 +1066,7 @@ func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 	}
 
 	zeroSeen, finalizedSeen := false, false
-	err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
+	err := store.EnumerateFileChunks(ctx, func(h block.ContentHash) error {
 		if h.IsZero() {
 			zeroSeen = true
 		} else {
@@ -1075,13 +1075,13 @@ func testEnumerateFileBlocks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("EnumerateFileBlocks error: %v", err)
+		t.Fatalf("EnumerateFileChunks error: %v", err)
 	}
 	if !zeroSeen {
-		t.Errorf("EnumerateFileBlocks did not emit zero-hash block (legacy row missed)")
+		t.Errorf("EnumerateFileChunks did not emit zero-hash block (legacy row missed)")
 	}
 	if !finalizedSeen {
-		t.Errorf("EnumerateFileBlocks did not emit non-zero hash block")
+		t.Errorf("EnumerateFileChunks did not emit non-zero hash block")
 	}
 }
 
@@ -1096,12 +1096,12 @@ type CorruptHashInjector interface {
 	InjectCorruptHashRow(ctx context.Context, blockID string, badHash string) error
 }
 
-// testEnumerateFileBlocks_CorruptHashFailsClosed asserts that a malformed CAS
-// hash on disk surfaces as an error from EnumerateFileBlocks rather than being
+// testEnumerateFileChunks_CorruptHashFailsClosed asserts that a malformed CAS
+// hash on disk surfaces as an error from EnumerateFileChunks rather than being
 // silently coerced to the zero ContentHash. mark fail-closed: the GC
 // mark phase MUST abort on enumeration error so the sweep cannot reap a live
 // CAS object whose live-set hash was lost in transit.
-func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreFactory) {
+func testEnumerateFileChunks_CorruptHashFailsClosed(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -1112,7 +1112,7 @@ func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 
 	// Seed one well-formed Remote block so enumeration has something to walk
 	// past before reaching the corrupt row.
-	good := &block.FileBlock{
+	good := &block.FileChunk{
 		ID:            "file-corrupt/0",
 		Hash:          hashOfSeed("good"),
 		State:         block.BlockStateRemote,
@@ -1134,12 +1134,12 @@ func testEnumerateFileBlocks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 	}
 
 	calls := 0
-	err := store.EnumerateFileBlocks(ctx, func(_ block.ContentHash) error {
+	err := store.EnumerateFileChunks(ctx, func(_ block.ContentHash) error {
 		calls++
 		return nil
 	})
 	if err == nil {
-		t.Fatalf("EnumerateFileBlocks returned nil; expected parse error from corrupt-hash row (INV-04 fail-closed)")
+		t.Fatalf("EnumerateFileChunks returned nil; expected parse error from corrupt-hash row (INV-04 fail-closed)")
 	}
 	// We do not constrain how many rows are emitted before the failure —
 	// only that an error is returned so the GC mark phase aborts.
@@ -1163,7 +1163,7 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
-	// Seed three FileBlocks with RefCount=1 each.
+	// Seed three FileChunks with RefCount=1 each.
 	type seed struct {
 		id   string
 		hash block.ContentHash
@@ -1174,7 +1174,7 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 		{id: "tx-rollback/2", hash: block.ContentHash{0x30, 0x31, 0x32}},
 	}
 	for _, s := range seeds {
-		fb := &block.FileBlock{
+		fb := &block.FileChunk{
 			ID:         s.id,
 			Hash:       s.hash,
 			DataSize:   4096,
@@ -1219,8 +1219,8 @@ func testTx_IncrementRefCount_RollsBack(t *testing.T, factory StoreFactory) {
 }
 
 // testTx_ListReadAfterWrite pins read-after-write within a transaction: a
-// FileBlock Put through the tx MUST be visible to ListFileBlocks and
-// EnumerateFileBlocks issued later in the same WithTransaction. Backends that
+// FileChunk Put through the tx MUST be visible to ListFileChunks and
+// EnumerateFileChunks issued later in the same WithTransaction. Backends that
 // open a fresh snapshot per list call (the original badger behavior) miss the
 // pending write and fail here.
 func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
@@ -1231,19 +1231,19 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 	hash := block.ContentHash{0xa1, 0xb2, 0xc3, 0xd4}
 
 	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		// ListFileBlocks / EnumerateFileBlocks live on each backend's tx
+		// ListFileChunks / EnumerateFileChunks live on each backend's tx
 		// struct but not on the narrowed metadata.Transaction interface; the
 		// engine-internal callers reach them via the concrete type. Assert to
 		// a local interface so the conformance test can drive them.
 		lister, ok := tx.(interface {
-			ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error)
-			EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error
+			ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
+			EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error
 		})
 		if !ok {
 			return errTxListUnsupported
 		}
 
-		fb := &block.FileBlock{
+		fb := &block.FileChunk{
 			ID:            payloadID + "/0",
 			Hash:          hash,
 			State:         block.BlockStateRemote,
@@ -1258,33 +1258,33 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 			return fmt.Errorf("tx.Put: %w", putErr)
 		}
 
-		// ListFileBlocks must see the just-Put block.
-		listed, listErr := lister.ListFileBlocks(ctx, payloadID)
+		// ListFileChunks must see the just-Put block.
+		listed, listErr := lister.ListFileChunks(ctx, payloadID)
 		if listErr != nil {
-			return fmt.Errorf("tx.ListFileBlocks: %w", listErr)
+			return fmt.Errorf("tx.ListFileChunks: %w", listErr)
 		}
 		if len(listed) != 1 {
-			return fmt.Errorf("tx.ListFileBlocks returned %d blocks; want 1 (uncommitted write invisible)", len(listed))
+			return fmt.Errorf("tx.ListFileChunks returned %d blocks; want 1 (uncommitted write invisible)", len(listed))
 		}
 
-		// EnumerateFileBlocks must also see it.
+		// EnumerateFileChunks must also see it.
 		var seen bool
-		enumErr := lister.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
+		enumErr := lister.EnumerateFileChunks(ctx, func(h block.ContentHash) error {
 			if h == hash {
 				seen = true
 			}
 			return nil
 		})
 		if enumErr != nil {
-			return fmt.Errorf("tx.EnumerateFileBlocks: %w", enumErr)
+			return fmt.Errorf("tx.EnumerateFileChunks: %w", enumErr)
 		}
 		if !seen {
-			return fmt.Errorf("tx.EnumerateFileBlocks did not yield the uncommitted block hash")
+			return fmt.Errorf("tx.EnumerateFileChunks did not yield the uncommitted block hash")
 		}
 		return nil
 	})
 	if errors.Is(err, errTxListUnsupported) {
-		t.Skip("backend tx does not expose ListFileBlocks/EnumerateFileBlocks")
+		t.Skip("backend tx does not expose ListFileChunks/EnumerateFileChunks")
 	}
 	if err != nil {
 		t.Fatalf("read-after-write within tx failed: %v", err)
@@ -1292,22 +1292,22 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 }
 
 // errTxListUnsupported signals testTx_ListReadAfterWrite that the backend's
-// transaction does not expose the engine-internal ListFileBlocks /
-// EnumerateFileBlocks methods, so the scenario is skipped rather than failed.
-var errTxListUnsupported = errors.New("backend tx does not expose ListFileBlocks/EnumerateFileBlocks")
+// transaction does not expose the engine-internal ListFileChunks /
+// EnumerateFileChunks methods, so the scenario is skipped rather than failed.
+var errTxListUnsupported = errors.New("backend tx does not expose ListFileChunks/EnumerateFileChunks")
 
 // ============================================================================
 // AddRef Tests
 //
 // AddRef is the LRU-hit refcount path for the in-memory hash dedup
-// LRU. It atomically bumps RefCount on the FileBlock row indexed by
+// LRU. It atomically bumps RefCount on the FileChunk row indexed by
 // hash; BlockState is left unchanged. The LRU never creates blocks —
 // it only references already-stored ones — so AddRef returns
 // ErrUnknownHash when the hash is not yet in the store (caller falls
 // back to the full Put path).
 // ============================================================================
 
-// testAddRef_ExistingHash_BumpsRefCount: seed a single FileBlock with a
+// testAddRef_ExistingHash_BumpsRefCount: seed a single FileChunk with a
 // known hash at RefCount=1 and BlockState=Remote, AddRef once, assert
 // RefCount becomes 2 AND BlockState stays Remote (state
 // preservation is the load-bearing contract).
@@ -1318,7 +1318,7 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 
 	hash := hashOfSeed("addref-existing-hash")
 	casKey := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
-	seed := &block.FileBlock{
+	seed := &block.FileChunk{
 		ID:            "file-addref/0",
 		Hash:          hash,
 		State:         block.BlockStateRemote,
@@ -1389,7 +1389,7 @@ func testAddRef_MissingHash_ReturnsErrUnknownHash(t *testing.T, factory StoreFac
 }
 
 // testAddRef_Concurrent_With_DecrementRefCountCascade: seed a single
-// FileBlock at RefCount=10 (high enough that 8 concurrent decrements
+// FileChunk at RefCount=10 (high enough that 8 concurrent decrements
 // cannot underflow), spawn 8 AddRef goroutines + 8 DecrementRefCount
 // goroutines all targeting the same row, assert final RefCount is
 // exactly 10 (TOCTOU-free serialization invariant from AddRef
@@ -1402,7 +1402,7 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 
 	hash := hashOfSeed("addref-concurrent-cascade")
 	casKey := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
-	seed := &block.FileBlock{
+	seed := &block.FileChunk{
 		ID:            "file-addref-conc/0",
 		Hash:          hash,
 		State:         block.BlockStateRemote,
@@ -1534,7 +1534,7 @@ func testEnumerateLivePayloadIDs(t *testing.T, factory StoreFactory) {
 func seedStrandedBlocks(t *testing.T, ctx context.Context, store metadata.Store, payloadID string, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
-		b := &block.FileBlock{
+		b := &block.FileChunk{
 			ID:         fmt.Sprintf("%s/%d", payloadID, i),
 			State:      block.BlockStatePending,
 			LocalPath:  fmt.Sprintf("/cache/%s-%d", payloadID, i),
@@ -1549,12 +1549,12 @@ func seedStrandedBlocks(t *testing.T, ctx context.Context, store metadata.Store,
 	}
 }
 
-// testEnumerateFileBlocks_UnlinkedFileExcludesManifest proves that once a file
+// testEnumerateFileChunks_UnlinkedFileExcludesManifest proves that once a file
 // is unlinked (nlink=0) its manifest blocks leave the GC mark live set, so the
 // sweep can reclaim the orphaned chunks. This is the core of the #1433 fix: the
 // manifest (file_block_refs / f: File.Blocks) lingers on the nlink=0 inode, but
 // the file is dead and must not pin its chunks live.
-func testEnumerateFileBlocks_UnlinkedFileExcludesManifest(t *testing.T, factory StoreFactory) {
+func testEnumerateFileChunks_UnlinkedFileExcludesManifest(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -1592,10 +1592,10 @@ func testEnumerateFileBlocks_UnlinkedFileExcludesManifest(t *testing.T, factory 
 	}
 }
 
-// testEnumerateFileBlocks_HardLinkSurvivesOneRemoval guards against an
+// testEnumerateFileChunks_HardLinkSurvivesOneRemoval guards against an
 // over-eager exclusion: a file with two hard links that loses one (nlink 2→1)
 // is still alive, so its blocks MUST remain in the live set.
-func testEnumerateFileBlocks_HardLinkSurvivesOneRemoval(t *testing.T, factory StoreFactory) {
+func testEnumerateFileChunks_HardLinkSurvivesOneRemoval(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -1667,17 +1667,17 @@ func testEnumerateLivePayloadIDs_ExcludesNlinkZero(t *testing.T, factory StoreFa
 }
 
 // enumerateContains reports whether hash h appears in the store's GC mark live
-// set (EnumerateFileBlocks).
+// set (EnumerateFileChunks).
 func enumerateContains(t *testing.T, store metadata.Store, h block.ContentHash) bool {
 	t.Helper()
 	found := false
-	if err := store.EnumerateFileBlocks(t.Context(), func(got block.ContentHash) error {
+	if err := store.EnumerateFileChunks(t.Context(), func(got block.ContentHash) error {
 		if got == h {
 			found = true
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("EnumerateFileBlocks: %v", err)
+		t.Fatalf("EnumerateFileChunks: %v", err)
 	}
 	return found
 }

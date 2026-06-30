@@ -168,7 +168,7 @@ func runMigrateToCAS(cmd *cobra.Command, args []string) error {
 		// sub-path). FSStore internally creates `blocks/` (CAS) + `logs/`
 		// (append log) as siblings under baseDir.
 		bs, openErr := fs.NewFSStoreForMigration(shareDir,
-			migrateMaxDisk, nopFileBlockStore{},
+			migrateMaxDisk, nopFileChunkStore{},
 			fs.FSStoreOptions{})
 		if openErr != nil {
 			return fmt.Errorf("open destination store for share %q: %w", name, openErr)
@@ -267,7 +267,7 @@ func makeProgressFn(shareName string) func(migrate.MigrationStats) {
 // cliMetadataAdapter bridges the migration library to a live badger
 // metadata store opened directly by the CLI (offline — server must be
 // stopped). ListLegacyFiles walks the share tree and returns every
-// regular file with Size > 0 and empty Blocks (unmigrated). UpdateFileBlocks
+// regular file with Size > 0 and empty Blocks (unmigrated). UpdateFileChunks
 // commits the new CAS BlockRef manifest transactionally via PutFile.
 type cliMetadataAdapter struct {
 	shareName string
@@ -337,7 +337,7 @@ func (a *cliMetadataAdapter) walkDir(ctx context.Context, dirHandle metadata.Fil
 	return nil
 }
 
-func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metadata.FileHandle, blocks []block.BlockRef) error {
+func (a *cliMetadataAdapter) UpdateFileChunks(ctx context.Context, handle metadata.FileHandle, blocks []block.BlockRef) error {
 	file, err := a.store.GetFile(ctx, handle)
 	if err != nil {
 		return fmt.Errorf("get file for update: %w", err)
@@ -349,7 +349,7 @@ func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metada
 			return err
 		}
 		for _, br := range blocks {
-			fb := &block.FileBlock{
+			fb := &block.FileChunk{
 				ID:       fmt.Sprintf("%s/%d", pid, br.Offset),
 				Hash:     br.Hash,
 				DataSize: br.Size,
@@ -357,46 +357,46 @@ func (a *cliMetadataAdapter) UpdateFileBlocks(ctx context.Context, handle metada
 				RefCount: 1,
 			}
 			if err := tx.Put(ctx, fb); err != nil {
-				return fmt.Errorf("create FileBlock row %s: %w", fb.ID, err)
+				return fmt.Errorf("create FileChunk row %s: %w", fb.ID, err)
 			}
 		}
 		return nil
 	})
 }
 
-// nopFileBlockStore satisfies block.EngineFileBlockStore without
+// nopFileChunkStore satisfies block.EngineFileChunkStore without
 // touching any persistent store. The migration path only writes CAS
 // chunks (which fs.FSStore handles through its own chunk store on
-// blocks/{hh}/{hh}/{hex}), so the FileBlock metadata surface is unused
+// blocks/{hh}/{hh}/{hex}), so the FileChunk metadata surface is unused
 // during migration.
-type nopFileBlockStore struct{}
+type nopFileChunkStore struct{}
 
-func (nopFileBlockStore) GetByHash(_ context.Context, _ block.ContentHash) (*block.FileBlock, error) {
+func (nopFileChunkStore) GetByHash(_ context.Context, _ block.ContentHash) (*block.FileChunk, error) {
 	return nil, nil
 }
-func (nopFileBlockStore) Put(_ context.Context, _ *block.FileBlock) error { return nil }
-func (nopFileBlockStore) Delete(_ context.Context, _ string) error {
-	return block.ErrFileBlockNotFound
+func (nopFileChunkStore) Put(_ context.Context, _ *block.FileChunk) error { return nil }
+func (nopFileChunkStore) Delete(_ context.Context, _ string) error {
+	return block.ErrFileChunkNotFound
 }
-func (nopFileBlockStore) IncrementRefCount(_ context.Context, _ string) error { return nil }
-func (nopFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
+func (nopFileChunkStore) IncrementRefCount(_ context.Context, _ string) error { return nil }
+func (nopFileChunkStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (nopFileBlockStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+func (nopFileChunkStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (nopFileBlockStore) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.BlockRef) error {
+func (nopFileChunkStore) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.BlockRef) error {
 	// Migration path doesn't exercise the LRU hit path, so always
 	// returning ErrUnknownHash is safe — production callers fall back to
 	// the full Put path on this sentinel.
 	return block.ErrUnknownHash
 }
-func (nopFileBlockStore) GetFileBlock(_ context.Context, _ string) (*block.FileBlock, error) {
-	return nil, block.ErrFileBlockNotFound
+func (nopFileChunkStore) GetFileChunk(_ context.Context, _ string) (*block.FileChunk, error) {
+	return nil, block.ErrFileChunkNotFound
 }
-func (nopFileBlockStore) ListFileBlocks(_ context.Context, _ string) ([]*block.FileBlock, error) {
+func (nopFileChunkStore) ListFileChunks(_ context.Context, _ string) ([]*block.FileChunk, error) {
 	return nil, nil
 }
-func (nopFileBlockStore) EnumeratePayloads(_ context.Context, _ func(payloadID string) error) error {
+func (nopFileChunkStore) EnumeratePayloads(_ context.Context, _ func(payloadID string) error) error {
 	return nil
 }

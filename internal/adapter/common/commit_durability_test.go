@@ -15,7 +15,7 @@ import (
 
 // newMemoryEngine builds an engine with an in-memory local store (NOT durable)
 // and the given remote (may be nil). The metadata memory store provides both
-// the FileBlockStore and SyncedHashStore so the syncer's mirror loop can run
+// the FileChunkStore and SyncedHashStore so the syncer's mirror loop can run
 // and report Finalized=true after a write+flush.
 func newMemoryEngine(t *testing.T, remote *remotememory.Store, durableLocalOverride *bool) *engine.Store {
 	t.Helper()
@@ -27,7 +27,7 @@ func newMemoryEngine(t *testing.T, remote *remotememory.Store, durableLocalOverr
 
 	cfg := engine.BlockStoreConfig{
 		Local:           localStore,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 	}
 	if remote != nil {

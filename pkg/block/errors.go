@@ -137,16 +137,16 @@ var (
 	// ErrInvalidHash is returned when a hash string is malformed.
 	ErrInvalidHash = errors.New("invalid content hash format")
 
-	// ErrFileBlockNotFound is returned when a file block is not found.
-	ErrFileBlockNotFound = errors.New("file block not found")
+	// ErrFileChunkNotFound is returned when a file block is not found.
+	ErrFileChunkNotFound = errors.New("file block not found")
 
-	// ErrUnknownHash is returned by FileBlockStore.AddRef when no
-	// FileBlock row exists for the given hash. The LRU hit path
+	// ErrUnknownHash is returned by FileChunkStore.AddRef when no
+	// FileChunk row exists for the given hash. The LRU hit path
 	// (Opt 1 — see pkg/block/local/fs/rollup.go) MUST
 	// fall back to the full Put path on this sentinel; the LRU may
 	// be ahead of the metadata store after a crash (RAM-only LRU
 	// see), or the hash may not be present yet.
-	ErrUnknownHash = errors.New("metadata: hash not yet present in FileBlockStore (AddRef called before Put)")
+	ErrUnknownHash = errors.New("metadata: hash not yet present in FileChunkStore (AddRef called before Put)")
 
 	// ErrRemoteUnavailable is returned when a remote store operation is needed
 	// but the remote store is currently unreachable. Protocol handlers should
@@ -174,7 +174,7 @@ var (
 	ErrCASKeyMalformed = errors.New("blockstore: malformed CAS key")
 
 	// ErrBlockRefMissing is returned by engine.ReadAt when a BlockRef.Hash
-	// refers to a FileBlock that has been GC'd or never existed. The
+	// refers to a FileChunk that has been GC'd or never existed. The
 	// adapter layer (internal/adapter/common/errmap.go) maps this to
 	// NFS3ERR_IO / STATUS_DATA_ERROR consistently across protocols.
 	ErrBlockRefMissing = errors.New("blockstore: block ref hash missing in store")

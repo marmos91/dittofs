@@ -14,7 +14,7 @@ import (
 )
 
 // newTestCacheWithDiskLimit creates an FSStore with a specified max disk size
-// for eviction testing. Uses in-memory FileBlockStore.
+// for eviction testing. Uses in-memory FileChunkStore.
 func newTestCacheWithDiskLimit(t *testing.T, maxDisk int64) *FSStore {
 	t.Helper()
 	dir := t.TempDir()
@@ -136,13 +136,13 @@ func TestLSL08_LRU_OldestEvictedFirst(t *testing.T) {
 	}
 }
 
-// TestLSL08_NoFileBlockStoreCallsDuringEviction is the load-bearing assertion
-// for: ensureSpace MUST NOT consult FileBlockStore. Wraps the metadata
+// TestLSL08_NoFileChunkStoreCallsDuringEviction is the load-bearing assertion
+// for: ensureSpace MUST NOT consult FileChunkStore. Wraps the metadata
 // store in a strict spy that fails the test on any call.
-func TestLSL08_NoFileBlockStoreCallsDuringEviction(t *testing.T) {
+func TestLSL08_NoFileChunkStoreCallsDuringEviction(t *testing.T) {
 	dir := t.TempDir()
 	inner := memory.NewMemoryMetadataStoreWithDefaults()
-	spy := newCountingFileBlockStore(inner)
+	spy := newCountingFileChunkStore(inner)
 	bc, err := NewWithOptions(dir, 1500, spy, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -162,7 +162,7 @@ func TestLSL08_NoFileBlockStoreCallsDuringEviction(t *testing.T) {
 	after := spy.snapshot()
 	delta := diffSnapshot(before, after)
 	if delta != (fbsCallSnapshot{}) {
-		t.Errorf("ensureSpace called FileBlockStore: %+v (LSL-08 invariant violated)", delta)
+		t.Errorf("ensureSpace called FileChunkStore: %+v (LSL-08 invariant violated)", delta)
 	}
 }
 

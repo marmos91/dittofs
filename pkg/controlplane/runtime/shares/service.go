@@ -764,7 +764,7 @@ func (s *Service) createBlockStoreForShare(
 	share *Share,
 	config *ShareConfig,
 	blockStoreProvider BlockStoreConfigProvider,
-	fileBlockStore block.EngineFileBlockStore,
+	fileBlockStore block.EngineFileChunkStore,
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
@@ -841,7 +841,7 @@ func (s *Service) createBlockStoreForShare(
 	// while the syncer drains, instead of failing with ErrDiskFull) when a
 	// remote is configured. Local-only shares (engineRemote == nil) keep the
 	// nil source — eviction stays on its evictMaxWait fallback. FSStore takes
-	// a narrow read-only interface, never the FileBlockStore (LSL-08).
+	// a narrow read-only interface, never the FileChunkStore (LSL-08).
 	if engineRemote != nil {
 		if fsStore, ok := localStore.(*fs.FSStore); ok {
 			fsStore.SetBackpressureSource(syncer)
@@ -859,7 +859,7 @@ func (s *Service) createBlockStoreForShare(
 	// Wire the metadata coordinator so the engine can invoke RefCount
 	// mutations + FileAttr.Blocks persistence without importing
 	// pkg/metadata on its hot paths. The fileBlockStore on the engine
-	// seam is the per-share metadata store cast to EngineFileBlockStore;
+	// seam is the per-share metadata store cast to EngineFileChunkStore;
 	// the coordinator wraps the same store as a metadata.Store
 	// for the typed operations.
 	var coordinator engine.MetadataCoordinator
@@ -871,7 +871,7 @@ func (s *Service) createBlockStoreForShare(
 		Local:          localStore,
 		Remote:         engineRemote,
 		Syncer:         syncer,
-		FileBlockStore: fileBlockStore,
+		FileChunkStore: fileBlockStore,
 		Coordinator:    coordinator,
 	}
 	// Thread the SyncedHashStore from the same per-share metadata
@@ -2340,7 +2340,7 @@ func CreateLocalStoreFromConfig(
 	},
 	shareName string,
 	defaults *LocalStoreDefaults,
-	fileBlockStore block.EngineFileBlockStore,
+	fileBlockStore block.EngineFileChunkStore,
 ) (local.LocalStore, error) {
 	config, err := cfg.GetConfig()
 	if err != nil {
@@ -2458,7 +2458,7 @@ func CreateLocalStoreFromConfig(
 		// backend and start the rollup worker pool. The type assertion
 		// couples the block-store factory to a metadata-layer interface
 		// via runtime type check — accepted because memory / badger /
-		// postgres all implement both FileBlockStore and RollupStore on
+		// postgres all implement both FileChunkStore and RollupStore on
 		// the same Store type.
 		rs, ok := fileBlockStore.(metadata.RollupStore)
 		if !ok {

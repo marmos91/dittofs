@@ -621,7 +621,7 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 		Local:          localStore,
 		Remote:         engineRemote,
 		Syncer:         syncer,
-		FileBlockStore: mem,
+		FileChunkStore: mem,
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
@@ -728,15 +728,15 @@ func (f *restoreFixture) populateFiles(ctx context.Context, names []string) []fi
 		if err := f.meta.SetLinkCount(ctx, handle, 1); err != nil {
 			f.t.Fatalf("SetLinkCount %q: %v", name, err)
 		}
-		// Also seed the FileBlock side so EnumerateFileBlocks (post-verify
+		// Also seed the FileChunk side so EnumerateFileChunks (post-verify
 		// helper HashSetFromMetadataStore) returns the same hash union.
-		fb := &metadata.FileBlock{
+		fb := &metadata.FileChunk{
 			ID:    fileID.String() + "-blk-0",
 			Hash:  hash,
 			State: block.BlockStateRemote,
 		}
 		if err := f.meta.Put(ctx, fb); err != nil {
-			f.t.Fatalf("Put FileBlock %q: %v", name, err)
+			f.t.Fatalf("Put FileChunk %q: %v", name, err)
 		}
 
 		f.mu.Lock()
@@ -753,11 +753,11 @@ func (f *restoreFixture) populateFiles(ctx context.Context, names []string) []fi
 	return out
 }
 
-// deleteFileCascade deletes the file AND the standalone FileBlock row the
+// deleteFileCascade deletes the file AND the standalone FileChunk row the
 // fixture seeded alongside it (ID "<fileID>-blk-0"). Production deletes
-// cascade FileBlock rows via the engine's refcount→GC path, so the test
-// must mirror that — otherwise an orphaned FileBlock row makes the
-// post-delete snapshot's empty manifest disagree with EnumerateFileBlocks
+// cascade FileChunk rows via the engine's refcount→GC path, so the test
+// must mirror that — otherwise an orphaned FileChunk row makes the
+// post-delete snapshot's empty manifest disagree with EnumerateFileChunks
 // and trips the C3 "empty-manifest-on-non-empty-share" guard in
 // CreateSnapshot.
 func (f *restoreFixture) deleteFileCascade(ctx context.Context, ff fileFixture) {
@@ -770,8 +770,8 @@ func (f *restoreFixture) deleteFileCascade(ctx context.Context, ff fileFixture) 
 		f.t.Fatalf("deleteFileCascade DecodeFileHandle: %v", err)
 	}
 	if derr := f.meta.Delete(ctx, fileID.String()+"-blk-0"); derr != nil &&
-		!errors.Is(derr, block.ErrFileBlockNotFound) {
-		f.t.Fatalf("deleteFileCascade Delete FileBlock: %v", derr)
+		!errors.Is(derr, block.ErrFileChunkNotFound) {
+		f.t.Fatalf("deleteFileCascade Delete FileChunk: %v", derr)
 	}
 }
 
@@ -794,10 +794,10 @@ func (f *restoreFixture) seedRemoteAll(hashes []block.ContentHash) {
 
 func (f *restoreFixture) countFiles(ctx context.Context) int {
 	f.t.Helper()
-	// Walk via EnumerateFileBlocks as a cheap "is the store still populated"
+	// Walk via EnumerateFileChunks as a cheap "is the store still populated"
 	// proxy; the integration tests just need a before/after delta witness.
 	n := 0
-	_ = f.meta.EnumerateFileBlocks(ctx, func(block.ContentHash) error {
+	_ = f.meta.EnumerateFileChunks(ctx, func(block.ContentHash) error {
 		n++
 		return nil
 	})

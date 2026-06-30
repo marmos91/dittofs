@@ -74,13 +74,13 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 // WriteAt remains a per-write append into the local store — it does
 // NOT chunk or assemble BlockRefs. The FastCDC chunker runs at the
 // local-store rollup layer (pkg/block/local/fs/rollup.go
-// rollupFile), which produces Pending FileBlocks carrying chunk
-// hashes. Syncer.Flush projects ListFileBlocks(payloadID) into the
+// rollupFile), which produces Pending FileChunks carrying chunk
+// hashes. Syncer.Flush projects ListFileChunks(payloadID) into the
 // canonical sorted []BlockRef list at quiesce time and invokes either
 // the file-level dedup short-circuit or the per-block
 // upload pump + post-Flush hook. FileAttr.Blocks
 // AND FileAttr.ObjectID are written in the same metadata transaction
-// by the runtime coordinator's PersistFileBlocks.
+// by the runtime coordinator's PersistFileChunks.
 //
 // Returns currentBlocks unchanged — the canonical projection happens
 // at Flush time, not WriteAt time.
@@ -105,9 +105,9 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	// the FastCDC chunker output is
 	// produced by the local-store rollup pump
 	// (pkg/block/local/fs/rollup.go:rollupFile) and lands as
-	// Pending FileBlocks with chunk-hash populated. The canonical
+	// Pending FileChunks with chunk-hash populated. The canonical
 	// []BlockRef projection is built at Flush time from
-	// ListFileBlocks(payloadID) — see Syncer.snapshotBlockRefs
+	// ListFileChunks(payloadID) — see Syncer.snapshotBlockRefs
 	// (post-drain canonical list for the post-Flush hook). WriteAt
 	// itself remains a per-write append into the local store and does
 	// NOT need to return a merged []BlockRef; the dual-read shim's
@@ -158,7 +158,7 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 		}
 
 		// Reap each dropped tail block's OWN row (by exact ID
-		// "{payloadID}/{offset}") so its hash leaves EnumerateFileBlocks once
+		// "{payloadID}/{offset}") so its hash leaves EnumerateFileChunks once
 		// no row anywhere references it and the GC sweep can reclaim the remote
 		// chunk (otherwise truncated tail chunks leak on the remote forever —
 		// #832).
@@ -302,7 +302,7 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 // Invalidates all read buffer entries for the file and resets prefetcher state.
 //
 // Local cleanup runs in this order under the unified CAS surface
-//  1. SyncFileBlocksForFile persists any in-flight FileBlock metadata so
+//  1. SyncFileChunksForFile persists any in-flight FileChunk metadata so
 //     the refcount decrements below operate on the authoritative manifest
 //     for the file (see "blocks" arg).
 //  2. EvictMemory drops the per-file in-memory tracking (memBlocks, files
@@ -320,7 +320,7 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	bs.local.SyncFileBlocksForFile(ctx, payloadID)
+	bs.local.SyncFileChunksForFile(ctx, payloadID)
 	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
 		return fmt.Errorf("local evict memory failed: %w", err)
 	}
@@ -330,9 +330,9 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 	// Resolve the manifest to reap. The file-removal path (NFS REMOVE, SMB
 	// delete) unlinks a file without carrying its block list, passing nil.
 	// Historically nil short-circuited the coordinator, so refcounts were
-	// never decremented: the FileBlock rows survived, the hashes stayed in
+	// never decremented: the FileChunk rows survived, the hashes stayed in
 	// the GC live set, and the chunks leaked on BOTH tiers (#1433). When no
-	// blocks are supplied, enumerate the payload's own FileBlock rows so the
+	// blocks are supplied, enumerate the payload's own FileChunk rows so the
 	// reap below operates on the file's real manifest.
 	if len(blocks) == 0 {
 		blocks = bs.payloadBlockRefs(ctx, payloadID)
@@ -345,7 +345,7 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 	if len(blocks) > 0 {
 		bs.loadCache().InvalidateFile(payloadID, blockRefHashes(blocks))
 	} else {
-		// No manifest rows (already reaped, or no FileBlockStore wired):
+		// No manifest rows (already reaped, or no FileChunkStore wired):
 		// reset the per-payload tracker so prefetch doesn't chase stale hashes.
 		bs.loadCache().OnRead(payloadID, nil, 0)
 	}
@@ -371,7 +371,7 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 		// offsets in this file is TWO rows and BOTH must be reaped.
 		//
 		// By-ID, not by-hash: cross-file dedup keep-alive is provided by
-		// SIBLING rows in other files keeping the hash in EnumerateFileBlocks
+		// SIBLING rows in other files keeping the hash in EnumerateFileChunks
 		// (the GC live set). GC sweeps the chunk only when no row anywhere
 		// references the hash, so removing this file's own rows by ID strands
 		// nothing another file still references.
@@ -381,7 +381,7 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 				continue
 			}
 			reaped[b.Offset] = struct{}{}
-			// Reap at RefCount 0 so the row leaves EnumerateFileBlocks once no
+			// Reap at RefCount 0 so the row leaves EnumerateFileChunks once no
 			// sibling references the hash, letting the GC sweep reclaim the
 			// remote chunk (#832).
 			newCount, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, b.Offset)
@@ -419,13 +419,13 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 	return coordErr
 }
 
-// payloadBlockRefs enumerates a payload's FileBlock rows and returns them as
+// payloadBlockRefs enumerates a payload's FileChunk rows and returns them as
 // BlockRefs so the Delete reap path can decrement refcounts. It is the bridge
 // for callers that unlink a file without carrying its manifest (NFS REMOVE /
 // SMB delete pass nil): without it those deletes never decrement refcounts and
 // their chunks leak on both tiers (#1433).
 //
-// Returns nil when no FileBlockStore is wired or enumeration fails — Delete
+// Returns nil when no FileChunkStore is wired or enumeration fails — Delete
 // still proceeds to the remote sweep, and the full GC reconcile reclaims any
 // rows this pass missed. Best-effort matches the rest of Delete's posture:
 // reclaiming disk must never wedge an unlink.
@@ -433,7 +433,7 @@ func (bs *Store) payloadBlockRefs(ctx context.Context, payloadID string) []block
 	if bs.fileBlockStore == nil {
 		return nil
 	}
-	rows, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	rows, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		logger.Warn("delete: list file blocks for reap (proceeding; reconcile will catch orphans)",
 			"payloadID", payloadID, "err", err)
@@ -457,11 +457,11 @@ func (bs *Store) payloadBlockRefs(ctx context.Context, payloadID string) []block
 // content-addressed blocks — no data movement, O(blocks) metadata puts.
 // It does two things for the destination:
 //
-//  1. Creates one per-(dstPayloadID/offset) FileBlock row for every source
+//  1. Creates one per-(dstPayloadID/offset) FileChunk row for every source
 //     block, keyed by the SAME offset + hash + DataSize, in BlockStatePending.
 //     This is the load-bearing step for read correctness: the cold-read path
-//     resolves a payload's bytes via ListFileBlocks(dstPayloadID) (the per-file
-//     FileBlock rows), NOT via FileAttr.Blocks. Without dst rows a read of the
+//     resolves a payload's bytes via ListFileChunks(dstPayloadID) (the per-file
+//     FileChunk rows), NOT via FileAttr.Blocks. Without dst rows a read of the
 //     clone hits the sparse-block branch and zero-fills — silent corruption
 //     (#1384). Because every row carries the source hash and the chunks are
 //     content-addressed, the dst rows resolve to the SAME shared CAS chunks and
@@ -483,7 +483,7 @@ func (bs *Store) payloadBlockRefs(ctx context.Context, payloadID string) []block
 //
 // Failure semantics: a genuine IncrementRefCount backend fault is surfaced
 // immediately without further increments (the caller's metadata txn rolls back).
-// A missing-row increment (ErrFileBlockNotFound) is tolerated — see the loop.
+// A missing-row increment (ErrFileChunkNotFound) is tolerated — see the loop.
 //
 // Dedup: a single hash present multiple times in srcBlocks bumps the
 // RefCount only once per CopyPayload call (per-call seen-hash set).
@@ -519,24 +519,24 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 			// A CAS block is content-addressed and lives in BlockStatePending
 			// for the life of the payload (it never transitions to Remote), so
 			// the Remote-gated GetByHash that IncrementRefCount relies on
-			// resolves it to "no FileBlock row" and returns ErrFileBlockNotFound.
+			// resolves it to "no FileChunk row" and returns ErrFileChunkNotFound.
 			// That is NOT a clone failure: the destination's BlockRef manifest
 			// (dst, below) references the same hashes, and block keep-alive is
 			// by-hash over the manifest live set in the GC mark phase
-			// (EnumerateFileBlocks / reapSupersededFileBlocks), not via RefCount.
+			// (EnumerateFileChunks / reapSupersededFileChunks), not via RefCount.
 			// So a missing-row increment is a no-op to be skipped, mirroring how
 			// DecrementRefCount already tolerates the same miss. Without this,
 			// NFSv4.2 CLONE and SMB server-side-copy fail with EREMOTEIO on any
 			// rolled-up source (#1384). A genuine backend fault still aborts.
-			if errors.Is(err, block.ErrFileBlockNotFound) {
+			if errors.Is(err, block.ErrFileChunkNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("CopyPayload: increment refcount on %s: %w", b.Hash.String(), err)
 		}
 	}
 
-	// Create the destination's per-file FileBlock rows. The cold-read path
-	// resolves bytes via ListFileBlocks(dstPayloadID), not FileAttr.Blocks, so
+	// Create the destination's per-file FileChunk rows. The cold-read path
+	// resolves bytes via ListFileChunks(dstPayloadID), not FileAttr.Blocks, so
 	// without these rows reads of the clone zero-fill (silent corruption,
 	// #1384). One row per source block keyed by dstPayloadID + the SAME offset,
 	// hash and DataSize, in BlockStatePending — mirroring the rollup
@@ -562,7 +562,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// the rollup ObjectIDPersister. The row write does NOT depend on
 	// bs.fileBlockStore being non-nil when a txn is bound.
 	tx := metadata.TxFromContext(ctx)
-	var putRow func(context.Context, *block.FileBlock) error
+	var putRow func(context.Context, *block.FileChunk) error
 	switch {
 	case tx != nil:
 		putRow = tx.Put
@@ -580,14 +580,14 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 		if putRow == nil {
 			return nil, fmt.Errorf("CopyPayload: no transaction or file-block store to persist dst rows for %s", dstPayloadID)
 		}
-		fb := &block.FileBlock{
+		fb := &block.FileChunk{
 			ID:       fmt.Sprintf("%s/%d", dstPayloadID, b.Offset),
 			Hash:     b.Hash,
 			DataSize: b.Size,
 			State:    block.BlockStatePending,
 		}
 		if err := putRow(ctx, fb); err != nil {
-			return nil, fmt.Errorf("CopyPayload: FileBlock.Put(%s): %w", fb.ID, err)
+			return nil, fmt.Errorf("CopyPayload: FileChunk.Put(%s): %w", fb.ID, err)
 		}
 	}
 
@@ -604,13 +604,13 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	return dst, nil
 }
 
-// reapSupersededFileBlocks deletes the per-file FileBlock rows that a
+// reapSupersededFileChunks deletes the per-file FileChunk rows that a
 // rollup pass's re-chunk superseded (#953). A row is superseded when its
 // chunk offset falls inside the byte region this pass rewrote
 // (newBlocks span) but is NOT one of the new chunk offsets — i.e. an
 // old-generation chunk that an in-place overwrite re-chunked onto
 // different FastCDC boundaries. Left behind, such rows accumulate in the
-// CAS manifest (ListFileBlocks) and the cold read path mixes generations,
+// CAS manifest (ListFileChunks) and the cold read path mixes generations,
 // returning stale bytes after log compaction or local-state eviction.
 //
 // Region-scoped + by-exact-ID, mirroring the engine Delete/Truncate reap
@@ -620,18 +620,18 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 //     rollup could not boundary-align because its chunk was not locally
 //     readable) is KEPT so its non-overwritten head still serves bytes.
 //   - Rows whose offset is reused by a new chunk (overwritten in place by
-//     FileBlock.Put above) are skipped — they are the current generation.
+//     FileChunk.Put above) are skipped — they are the current generation.
 //   - Reap by EXACT ID "{payloadID}/{offset}" via DecrementRefCountAndReap.
 //     Each {payloadID}/offset row is independent; reaping this file's own
 //     row never touches another file's row. Cross-file dedup keep-alive is
-//     by-hash in the GC live set (EnumerateFileBlocks): the chunk is
+//     by-hash in the GC live set (EnumerateFileChunks): the chunk is
 //     reclaimed only when no row anywhere references the hash, so a hash a
 //     sibling file still uses stays alive even after this row is reaped.
 //
 // No-ops when the coordinator is unwired or when priorOffsets is empty
 // (first write). When newBlocks is empty all prior rows are reaped
 // unconditionally (file truncated to zero bytes this pass).
-func (bs *Store) reapSupersededFileBlocks(ctx context.Context, payloadID string, priorOffsets []uint64, newBlocks []block.BlockRef) error {
+func (bs *Store) reapSupersededFileChunks(ctx context.Context, payloadID string, priorOffsets []uint64, newBlocks []block.BlockRef) error {
 	if bs.coordinator == nil || len(priorOffsets) == 0 {
 		return nil
 	}
@@ -643,7 +643,7 @@ func (bs *Store) reapSupersededFileBlocks(ctx context.Context, payloadID string,
 	// truncation fence): every prior row is unconditionally superseded.
 	// Otherwise a prior offset is superseded only when it falls inside the
 	// rewritten region [regionStart, regionEnd) and is not itself a reused
-	// offset (those rows were overwritten in place by FileBlock.Put and are
+	// offset (those rows were overwritten in place by FileChunk.Put and are
 	// the current generation).
 	var superseded func(off uint64) bool
 	if len(newBlocks) == 0 {

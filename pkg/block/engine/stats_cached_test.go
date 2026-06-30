@@ -10,7 +10,7 @@ import (
 )
 
 // TestPopulateBlockCounts_ClassifiesByPhysicalPresence pins the #1362 stats
-// fix: a block whose FileBlock row still reads BlockStateRemote but whose CAS
+// fix: a block whose FileChunk row still reads BlockStateRemote but whose CAS
 // chunk is physically on local disk (the read-through-cache case) must count as
 // local — and additionally as cached — rather than remote. Before the fix,
 // classification went purely by sync state, so a fully read-cached share
@@ -18,7 +18,7 @@ import (
 func TestPopulateBlockCounts_ClassifiesByPhysicalPresence(t *testing.T) {
 	ctx := context.Background()
 	loc := memorylocal.New()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	bs := &Store{local: loc, fileBlockStore: fbs}
 
 	const payloadID = "p1"
@@ -30,15 +30,15 @@ func TestPopulateBlockCounts_ClassifiesByPhysicalPresence(t *testing.T) {
 	if err := loc.Put(ctx, hA, dataA); err != nil {
 		t.Fatalf("local Put A: %v", err)
 	}
-	mustPutFB(t, fbs, &block.FileBlock{ID: payloadID + "/0", Hash: hA, DataSize: uint32(len(dataA)), State: block.BlockStateRemote})
+	mustPutFB(t, fbs, &block.FileChunk{ID: payloadID + "/0", Hash: hA, DataSize: uint32(len(dataA)), State: block.BlockStateRemote})
 
 	// Block B: row says remote and the chunk is absent locally. Expect remote.
 	dataB := []byte("bbbb-remote-only-not-on-disk")
 	hB := block.ContentHash(blake3.Sum256(dataB))
-	mustPutFB(t, fbs, &block.FileBlock{ID: payloadID + "/1", Hash: hB, DataSize: uint32(len(dataB)), State: block.BlockStateRemote})
+	mustPutFB(t, fbs, &block.FileChunk{ID: payloadID + "/1", Hash: hB, DataSize: uint32(len(dataB)), State: block.BlockStateRemote})
 
 	// Block C: dirty/in-flight (zero hash, rollup incomplete). Expect dirty.
-	mustPutFB(t, fbs, &block.FileBlock{ID: payloadID + "/2", Hash: block.ContentHash{}, DataSize: 4, State: block.BlockStatePending})
+	mustPutFB(t, fbs, &block.FileChunk{ID: payloadID + "/2", Hash: block.ContentHash{}, DataSize: 4, State: block.BlockStatePending})
 
 	var stats BlockStoreStats
 	bs.populateBlockCounts(&stats)
@@ -60,9 +60,9 @@ func TestPopulateBlockCounts_ClassifiesByPhysicalPresence(t *testing.T) {
 	}
 }
 
-func mustPutFB(t *testing.T, fbs *stubFileBlockStore, fb *block.FileBlock) {
+func mustPutFB(t *testing.T, fbs *stubFileChunkStore, fb *block.FileChunk) {
 	t.Helper()
 	if err := fbs.Put(context.Background(), fb); err != nil {
-		t.Fatalf("stub FileBlock Put: %v", err)
+		t.Fatalf("stub FileChunk Put: %v", err)
 	}
 }

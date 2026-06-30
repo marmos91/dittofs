@@ -58,7 +58,7 @@ func ParseContentHash(s string) (ContentHash, error) {
 	return h, nil
 }
 
-// BlockState is the lifecycle state of a FileBlock: Pending -> Syncing -> Remote.
+// BlockState is the lifecycle state of a FileChunk: Pending -> Syncing -> Remote.
 //
 //   - Pending (0): RefCount >= 1, not yet uploaded. Safe zero value for legacy
 //     rows deserialized without this field.
@@ -106,7 +106,7 @@ func (h ContentHash) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON accepts the canonical "blake3:{hex}" form, the bare
 // "{hex}" form, and the pre-Phase-12 default base64 form (encoding/json's
 // default for [32]byte arrays without a custom MarshalJSON). The base64
-// fallback preserves backward compatibility for FileBlock rows persisted
+// fallback preserves backward compatibility for FileChunk rows persisted
 // by Badger before this MarshalJSON existed.
 func (h *ContentHash) UnmarshalJSON(data []byte) error {
 	// v0.14.x and earlier had no custom MarshalJSON — encoding/json
@@ -152,7 +152,7 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 // Offset is the byte offset within the file (uint64 to support files
 // >4 GiB; VM workload requirement).
 // Size is the chunk length in bytes (FastCDC min 1 MiB, max 16 MiB
-// uint32 chosen to match FileBlock.DataSize column type).
+// uint32 chosen to match FileChunk.DataSize column type).
 //
 // See, decisions.
 type BlockRef struct {
@@ -228,22 +228,23 @@ func PruneBlockRefsToSize(refs []BlockRef, size uint64) []BlockRef {
 	return out
 }
 
-// FileBlock is the single block entity in DittoFS. Content-addressed
-// blocks with the same hash are shared across files for dedup.
+// FileChunk is the single chunk entity in DittoFS — the metadata manifest
+// entry for one content-defined (FastCDC+BLAKE3) chunk. Content-addressed
+// chunks with the same hash are shared across files for dedup.
 //
 // Lifecycle
 // 1. Pending — created on write (LocalPath set, BlockStoreKey empty).
 // 2. Syncing — claim batch flipped State and stamped LastSyncAttemptAt.
 // 3. Remote — PUT + metadata-txn confirmed (BlockStoreKey set).
 // 4. Evicted — LocalPath cleared; data lives only in the remote store.
-type FileBlock struct {
-	// ID is a stable UUID for this block.
+type FileChunk struct {
+	// ID is a stable UUID for this chunk.
 	ID string
 
-	// Hash is the BLAKE3-256 of block data. Zero value means pending/incomplete.
+	// Hash is the BLAKE3-256 of the chunk data. Zero value means pending/incomplete.
 	Hash ContentHash
 
-	// DataSize is the actual bytes written in this block.
+	// DataSize is the actual bytes written in this chunk.
 	DataSize uint32
 
 	// LocalPath is the local file path. Empty means not stored locally.
@@ -253,29 +254,29 @@ type FileBlock struct {
 	// Empty means not synced to remote.
 	BlockStoreKey string
 
-	// RefCount is the number of files referencing this block.
+	// RefCount is the number of files referencing this chunk.
 	RefCount uint32
 
 	// LastAccess is used for LRU eviction.
 	LastAccess time.Time
 
-	// LastSyncAttemptAt is the time the syncer last claimed this block.
+	// LastSyncAttemptAt is the time the syncer last claimed this chunk.
 	// The restart-recovery janitor requeues Syncing rows whose attempt
 	// exceeds syncer.claim_timeout. Zero value means never attempted.
 	LastSyncAttemptAt time.Time `json:"last_sync_attempt_at,omitempty"`
 
-	// CreatedAt is when the block was created.
+	// CreatedAt is when the chunk was created.
 	CreatedAt time.Time
 
-	// State is the block lifecycle state. Zero value (Pending) is the safe
-	// default for legacy blocks.
+	// State is the chunk lifecycle state. Zero value (Pending) is the safe
+	// default for legacy chunks.
 	State BlockState `json:"state"`
 }
 
-// NewFileBlock creates a new pending FileBlock with the given ID and local path.
-func NewFileBlock(id string, localPath string) *FileBlock {
+// NewFileChunk creates a new pending FileChunk with the given ID and local path.
+func NewFileChunk(id string, localPath string) *FileChunk {
 	now := time.Now()
-	return &FileBlock{
+	return &FileChunk{
 		ID:         id,
 		LocalPath:  localPath,
 		RefCount:   1,
@@ -284,24 +285,19 @@ func NewFileBlock(id string, localPath string) *FileBlock {
 	}
 }
 
-// IsRemote returns true if the block has been synced to the remote block store.
+// IsRemote returns true if the chunk has been synced to the remote block store.
 // Dual-read fallback: legacy zero-valued rows (State==Pending) that
 // already carry a BlockStoreKey were uploaded under the legacy non-CAS path
 // and must still be treated as Remote during the dual-read window.
-func (b *FileBlock) IsRemote() bool {
+func (b *FileChunk) IsRemote() bool {
 	if b.State == BlockStateRemote {
 		return true
 	}
 	return b.State == BlockStatePending && b.BlockStoreKey != ""
 }
 
-// HasLocalFile returns true if the block exists in the local store.
-func (b *FileBlock) HasLocalFile() bool {
-	return b.LocalPath != ""
-}
-
-// IsFinalized returns true if the block's upload is complete (State==Remote).
-func (b *FileBlock) IsFinalized() bool {
+// IsFinalized returns true if the chunk's upload is complete (State==Remote).
+func (b *FileChunk) IsFinalized() bool {
 	return b.State == BlockStateRemote
 }
 

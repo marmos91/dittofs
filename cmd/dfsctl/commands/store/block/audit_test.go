@@ -114,7 +114,7 @@ func TestAuditCmd_CallsClient_AndPrintsSummary(t *testing.T) {
 	if s.lastPath != "/api/v1/shares/myshare/audit/refcounts" {
 		t.Errorf("path = %q, want /api/v1/shares/myshare/audit/refcounts", s.lastPath)
 	}
-	for _, frag := range []string{"Share", "myshare", "Total Files", "3", "Manifest Refs", "10", "Backed by FileBlock row", "Dangling refs", "0"} {
+	for _, frag := range []string{"Share", "myshare", "Total Files", "3", "Manifest Refs", "10", "Backed by FileChunk row", "Dangling refs", "0"} {
 		if !strings.Contains(out, frag) {
 			t.Errorf("stdout missing %q, got %q", frag, out)
 		}

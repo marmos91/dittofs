@@ -88,7 +88,7 @@ func newBlockingUploadEngine(t *testing.T, window int) (*Store, *fs.FSStore, *bl
 		Local:           localStore,
 		Remote:          rs,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 		ReadBufferBytes: 64 * 1024 * 1024,
 	})

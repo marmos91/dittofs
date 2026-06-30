@@ -25,7 +25,7 @@ import (
 // Transaction ownership rule (BLOCKER-1/2/3 resolution): the engine
 // NEVER opens a metadata txn. The CALLER (per-share runtime wrapper for
 // CopyPayload/WriteAt; common.WriteToBlockStore for the adapter path;
-// syncer post-Flush wrapper for PersistFileBlocks) opens the txn around
+// syncer post-Flush wrapper for PersistFileChunks) opens the txn around
 // the engine call. This implementation calls into metadataStore at the
 // public surface; callers that need atomicity across multiple
 // IncrementRefCount calls (e.g. CopyPayload) MUST drive this from inside
@@ -52,25 +52,25 @@ func newMetadataCoordinator(metadataStore metadata.Store) engine.MetadataCoordin
 // the caller used metadata.WithTx, e.g. common.CopyPayload) and the
 // public metadata.Store surface (Truncate/Delete which do not
 // run inside a metadata txn). The Transaction interface embeds the
-// FileBlockStore, so GetByHash / IncrementRefCount / DecrementRefCount
+// FileChunkStore, so GetByHash / IncrementRefCount / DecrementRefCount
 // are available on both surfaces with identical signatures.
 //
 // Without this, every coordinator mutation routes through the Postgres
 // connection pool and commits immediately on its own connection —
 // defeating the BLOCKER-2 atomic rollback contract documented in
 // copy_payload.go and engine.go. The returned
-// block.FileBlockStore-shaped surface is the narrow set of methods
+// block.FileChunkStore-shaped surface is the narrow set of methods
 // the coordinator needs.
-func (c *metadataCoordinator) resolveStore(ctx context.Context) block.FileBlockStore {
+func (c *metadataCoordinator) resolveStore(ctx context.Context) block.FileChunkStore {
 	if tx := metadata.TxFromContext(ctx); tx != nil {
 		return tx
 	}
 	return c.metadataStore
 }
 
-// IncrementRefCount looks up the FileBlock by hash and bumps its
-// RefCount. If no FileBlock with the hash exists, returns
-// ErrFileBlockNotFound (the caller — typically CopyPayload — surfaces
+// IncrementRefCount looks up the FileChunk by hash and bumps its
+// RefCount. If no FileChunk with the hash exists, returns
+// ErrFileChunkNotFound (the caller — typically CopyPayload — surfaces
 // this so the metadata txn can roll back).
 //
 // When the caller has bound an active metadata.Transaction into ctx
@@ -85,7 +85,7 @@ func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash block.
 		return fmt.Errorf("coordinator: GetByHash(%s): %w", hash.String(), err)
 	}
 	if fb == nil {
-		return fmt.Errorf("coordinator: no FileBlock with hash %s: %w", hash.String(), metadata.ErrFileBlockNotFound)
+		return fmt.Errorf("coordinator: no FileChunk with hash %s: %w", hash.String(), metadata.ErrFileChunkNotFound)
 	}
 	if err := store.IncrementRefCount(ctx, fb.ID); err != nil {
 		return fmt.Errorf("coordinator: IncrementRefCount(%s): %w", fb.ID, err)
@@ -93,8 +93,8 @@ func (c *metadataCoordinator) IncrementRefCount(ctx context.Context, hash block.
 	return nil
 }
 
-// DecrementRefCount looks up the FileBlock by hash and decrements its
-// RefCount, returning the new count. ErrFileBlockNotFound on a hash
+// DecrementRefCount looks up the FileChunk by hash and decrements its
+// RefCount, returning the new count. ErrFileChunkNotFound on a hash
 // that has no row is tolerated (returns count=0, nil) — a Truncate or
 // Delete on a hash that has already been swept by GC is not a caller
 // error.
@@ -119,7 +119,7 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash block.
 	}
 	count, err := store.DecrementRefCount(ctx, fb.ID)
 	if err != nil {
-		if errors.Is(err, metadata.ErrFileBlockNotFound) {
+		if errors.Is(err, metadata.ErrFileChunkNotFound) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("coordinator: DecrementRefCount(%s): %w", fb.ID, err)
@@ -127,11 +127,11 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash block.
 	return count, nil
 }
 
-// DecrementRefCountAndReap decrements the FileBlock row identified by the EXACT
+// DecrementRefCountAndReap decrements the FileChunk row identified by the EXACT
 // ID "{payloadID}/{offset}" and reaps it (row + hash index entry) atomically
-// when the new count reaches 0. The hash then leaves EnumerateFileBlocks once no
+// when the new count reaches 0. The hash then leaves EnumerateFileChunks once no
 // row anywhere references it, so the GC sweep can reclaim the remote chunk.
-// ErrFileBlockNotFound on a missing row is tolerated (returns count=0, nil) — a
+// ErrFileChunkNotFound on a missing row is tolerated (returns count=0, nil) — a
 // Truncate/Delete on an already-reaped row, or a row a dedup-miss fallback never
 // created, is not a caller error.
 //
@@ -141,7 +141,7 @@ func (c *metadataCoordinator) DecrementRefCount(ctx context.Context, hash block.
 // the row by hash would pick an INDETERMINATE row when two files share the same
 // content hash and could reap the wrong file's row (leak or over-reap → data
 // loss). Removing THIS file's own row by ID is unambiguous; cross-file dedup
-// keep-alive is provided by SIBLING rows keeping the hash in EnumerateFileBlocks
+// keep-alive is provided by SIBLING rows keeping the hash in EnumerateFileChunks
 // (the GC live set), not by RefCount.
 //
 // Same txn-binding rule as DecrementRefCount: when ctx carries an active
@@ -152,7 +152,7 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 	id := fmt.Sprintf("%s/%d", payloadID, offset)
 	count, err := store.DecrementRefCountAndReap(ctx, id)
 	if err != nil {
-		if errors.Is(err, metadata.ErrFileBlockNotFound) {
+		if errors.Is(err, metadata.ErrFileChunkNotFound) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("coordinator: DecrementRefCountAndReap(%s): %w", id, err)
@@ -160,7 +160,7 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 	return count, nil
 }
 
-// PersistFileBlocks atomically updates FileAttr.Blocks AND
+// PersistFileChunks atomically updates FileAttr.Blocks AND
 // FileAttr.ObjectID for the file identified by payloadID in a single
 // metadata transaction. The runtime wrapper resolves
 // payloadID → fileHandle → file via tx.GetFileByPayloadID and persists
@@ -181,7 +181,7 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 // mapObjectIDConflict so the file-level dedup short-circuit retry path
 // in Syncer.applyFileLevelDedupHit detects the race uniformly across
 // backends.
-func (c *metadataCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
 	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 		if err != nil {
@@ -213,7 +213,7 @@ func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID 
 	if err != nil {
 		// File deleted between WriteAt and rollup commit: no blocks to
 		// merge. Mirror GetFileObjectID — treat not-found as benign so the
-		// rollup persister falls through to PersistFileBlocks (which then
+		// rollup persister falls through to PersistFileChunks (which then
 		// surfaces the missing row) rather than wedging on a wrapped error.
 		if metadata.IsNotFoundError(err) {
 			return nil, nil

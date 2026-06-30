@@ -39,7 +39,7 @@ func newPendingSetFixture(t *testing.T, startUploader bool) (*Store, *fs.FSStore
 		Local:           localStore,
 		Remote:          remote,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 		ReadBufferBytes: 64 * 1024 * 1024,
 	})

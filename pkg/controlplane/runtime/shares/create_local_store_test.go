@@ -121,7 +121,7 @@ func TestCreateLocalStoreFromConfig_InvalidTypesIgnored(t *testing.T) {
 // This test reproduces that lifecycle: it cancels the context right after
 // CreateLocalStoreFromConfig returns, then writes through the append log and
 // asserts the rollup ticker still converts it to CAS. With the bug
-// (StartRollup(ctx)) the cancellation kills the pool and no FileBlock rows
+// (StartRollup(ctx)) the cancellation kills the pool and no FileChunk rows
 // ever appear; the fix (StartRollup(context.WithoutCancel(ctx))) keeps the
 // pool alive — shutdown is driven by store.Close instead.
 func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
@@ -169,7 +169,7 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	// into CAS chunks on disk. A live pool converts within a few ticks; a
 	// pool killed by the cancelled caller context never does. We assert on
 	// physical CAS chunk files (the bare FSStore, with no engine wired, still
-	// writes chunks and advances the rollup offset — the FileBlock manifest is
+	// writes chunks and advances the rollup offset — the FileChunk manifest is
 	// the engine's job, not the store's).
 	casDir := filepath.Join(tmp, "shares", "cancel-share", "blocks")
 	deadline := time.Now().Add(5 * time.Second)

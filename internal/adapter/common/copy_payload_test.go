@@ -15,7 +15,7 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// fakeCoordinator records IncrementRefCount/DecrementRefCount/PersistFileBlocks
+// fakeCoordinator records IncrementRefCount/DecrementRefCount/PersistFileChunks
 // invocations and lets tests inject failure on the Nth IncrementRefCount call
 // for the rollback contract.
 type fakeCoordinator struct {
@@ -54,7 +54,7 @@ func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID 
 	return 0, nil
 }
 
-func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
 	f.persistCalls = append(f.persistCalls, persistCall{payloadID: payloadID, blocks: blocks, objectID: objectID})
 	return nil
 }
@@ -372,7 +372,7 @@ func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatam
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		Coordinator:     coord,
 		ReadBufferBytes: 0,
 		PrefetchWorkers: 0,

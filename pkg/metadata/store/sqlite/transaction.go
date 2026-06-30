@@ -157,7 +157,7 @@ func (tx *sqliteTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 	}
 
 	// Fold FileAttr.Blocks into the metadata read (#1176): one round-trip
-	// instead of the SELECT plus a separate getFileBlockRefs. See GetFile
+	// instead of the SELECT plus a separate getFileChunkRefs. See GetFile
 	// (pool path) and blockRefsAggExpr for the equivalence rationale.
 	query := `
 		SELECT
@@ -402,7 +402,7 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	// files carry BlockRef payloads. Empty/nil Blocks performs a DELETE-only
 	// pass, ensuring no stale rows survive a write that drops Blocks.
 	if file.Type == metadata.FileTypeRegular {
-		if err := putFileBlockRefs(ctx, tx.tx, file.ID, file.Blocks); err != nil {
+		if err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks); err != nil {
 			return mapDBError(err, "PutFile", "blocks")
 		}
 	}

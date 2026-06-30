@@ -51,14 +51,14 @@ func runMultiPassAppend(t *testing.T, ms metadata.Store, sharePrefix string) {
 	p2 := fileBlocks(t, ms, h)
 	t.Logf("after pass2: fileBlocks=%d", len(p2))
 
-	// Probe the per-file FileBlock index (the read-path source) to see if
+	// Probe the per-file FileChunk index (the read-path source) to see if
 	// IT accumulates across passes even though FileAttr.Blocks does not.
 	if fbl, ok := ms.(interface {
-		ListFileBlocks(context.Context, string) ([]*metadata.FileBlock, error)
+		ListFileChunks(context.Context, string) ([]*metadata.FileChunk, error)
 	}); ok {
-		rows, err := fbl.ListFileBlocks(ctx, pid)
+		rows, err := fbl.ListFileChunks(ctx, pid)
 		if err != nil {
-			t.Logf("ListFileBlocks err: %v", err)
+			t.Logf("ListFileChunks err: %v", err)
 		} else {
 			roffs := make([]uint64, 0, len(rows))
 			for _, r := range rows {
@@ -66,7 +66,7 @@ func runMultiPassAppend(t *testing.T, ms metadata.Store, sharePrefix string) {
 					roffs = append(roffs, off)
 				}
 			}
-			t.Logf("after pass2: FileBlock-index rows=%d offsets=%v", len(rows), roffs)
+			t.Logf("after pass2: FileChunk-index rows=%d offsets=%v", len(rows), roffs)
 		}
 	}
 

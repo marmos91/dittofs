@@ -11,14 +11,14 @@ import (
 )
 
 // TestReconcileINV02_DuplicateHashRowsVisible pins finding I-1: reconcileINV02
-// must sum FileBlock.RefCount per FileBlock-ID, not per distinct content hash.
+// must sum FileChunk.RefCount per FileChunk-ID, not per distinct content hash.
 //
-// It seeds one file referencing two distinct FileBlock rows that carry the
+// It seeds one file referencing two distinct FileChunk rows that carry the
 // SAME content hash but DISTINCT IDs (the legal post-dedup-copy shape), each
 // with RefCount=3. The file's FileAttr.Blocks lists both as independent refs.
 //
 // Before the I-1 fix, reconcileINV02 walked distinct hashes via
-// EnumerateFileBlocks + GetByHash, which returns ANY one row for the shared
+// EnumerateFileChunks + GetByHash, which returns ANY one row for the shared
 // hash — so totalRefCount counted a single row (3) instead of both (6),
 // silently hiding an inflated/leaked RefCount on the sibling row.
 //
@@ -30,8 +30,8 @@ func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
 	const shareName = "inv02-dup-hash"
 	rootHandle := createTestShare(t, store, shareName)
 
-	// Two FileBlock rows sharing one hash but with distinct IDs under a single
-	// payloadID prefix, so ListFileBlocks(payloadID) recovers BOTH.
+	// Two FileChunk rows sharing one hash but with distinct IDs under a single
+	// payloadID prefix, so ListFileChunks(payloadID) recovers BOTH.
 	const payloadID = "dup-block"
 	sharedHash := hashOfSeed("inv02-dup-shared-hash")
 	now := time.Now()
@@ -39,7 +39,7 @@ func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
 	refs := make([]block.BlockRef, 0, 2)
 	for i := 0; i < 2; i++ {
 		blockID := payloadID + "/" + string(rune('0'+i))
-		fb := &block.FileBlock{
+		fb := &block.FileChunk{
 			ID:            blockID,
 			Hash:          sharedHash,
 			State:         block.BlockStateRemote,

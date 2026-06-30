@@ -12,7 +12,7 @@ import (
 
 // forceRollupOnEngineLocal drives a synchronous rollup pass on the
 // engine's underlying FSStore so AppendWrite-staged bytes are chunked
-// into CAS objects + FileBlock rows before the test reads them back.
+// into CAS objects + FileChunk rows before the test reads them back.
 // No-op if the local store is not an *fs.FSStore (memory backend
 // already rolls up inline). The helper exists because the post-Phase-18
 // engine.Flush deliberately does not synchronously drive rollup — the
@@ -37,9 +37,9 @@ func forceRollupOnEngineLocal(t *testing.T, bs *Store, payloadID string) {
 				break
 			}
 		}
-		// Flush queued FileBlock metadata so the engine read path sees
+		// Flush queued FileChunk metadata so the engine read path sees
 		// the just-published rows immediately.
-		fsLocal.SyncFileBlocksForFile(context.Background(), payloadID)
+		fsLocal.SyncFileChunksForFile(context.Background(), payloadID)
 	}
 }
 
@@ -193,7 +193,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 		Local:           localStore,
 		Remote:          fakeRemote,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 	})
 	if err != nil {

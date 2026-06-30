@@ -31,7 +31,7 @@ func gcResult(total *engine.GCStats) string {
 //
 // Cross-share aggregation: each per-remote invocation receives a
 // MultiShareReconciler scoped to the shares pointing at that remote,
-// so the mark phase enumerates the union of every share's FileBlocks.
+// so the mark phase enumerates the union of every share's FileChunks.
 // Without this, two shares sharing one remote would each delete the
 // other's CAS objects.
 //
@@ -110,7 +110,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 			"dryRunSampleSize", opts.DryRunSampleSize)
 
 		// Per-remote MultiShareReconciler: the mark phase enumerates
-		// EnumerateFileBlocks across every share pointing at this
+		// EnumerateFileChunks across every share pointing at this
 		// remote so the live set is the union. Without this, each
 		// share's GC would treat the other's CAS objects as orphans.
 		rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
@@ -139,7 +139,7 @@ var collectGarbageLocalFn = engine.CollectGarbageLocal
 // RunBlockGCLocal sweeps orphaned chunks off every registered share's LOCAL
 // block store. Local stores are isolated per share (architecture invariant
 // #4), so each share is swept against its OWN live set: that share's
-// EnumerateFileBlocks plus its snapshot holds. Shares with an in-memory
+// EnumerateFileChunks plus its snapshot holds. Shares with an in-memory
 // backend (no persistent gc-state root) are skipped — their chunks evaporate
 // on restart, so on-disk reclamation is moot.
 //

@@ -236,7 +236,7 @@ func TestRecovery_BadHeaderMagic_Reinit(t *testing.T) {
 
 // TestRecovery_FreshLogNotSwept asserts Warning 3 fix: a log whose mtime is
 // within orphanLogMinAge (default 3600s) is NOT swept even if metadata is
-// absent and FileBlockStore has no block-0. Fresh logs that have not yet
+// absent and FileChunkStore has no block-0. Fresh logs that have not yet
 // been rolled up must survive boot.
 func TestRecovery_FreshLogNotSwept(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()

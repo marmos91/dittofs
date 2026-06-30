@@ -60,8 +60,8 @@ func TestCopyPayload_O1_IncrementsRefCountPerUniqueHash(t *testing.T) {
 
 // TestCopyPayload_ToleratesPendingBlocks pins the #1384 fix: on a CAS share
 // every source block is Pending, so the Remote-gated GetByHash behind
-// IncrementRefCount resolves to "no FileBlock row" and returns
-// ErrFileBlockNotFound. That must NOT fail the copy — NFSv4.2 CLONE and SMB
+// IncrementRefCount resolves to "no FileChunk row" and returns
+// ErrFileChunkNotFound. That must NOT fail the copy — NFSv4.2 CLONE and SMB
 // server-side-copy route through CopyPayload, and the cloned blocks are kept
 // alive by the destination's manifest via the GC mark phase, not by RefCount.
 // (The pre-fix code returned the error and CLONE failed with EREMOTEIO on any
@@ -79,7 +79,7 @@ func TestCopyPayload_ToleratesPendingBlocks(t *testing.T) {
 
 	dst, err := bs.CopyPayload(ctx, "src", "dst", src)
 	if err != nil {
-		t.Fatalf("CopyPayload must tolerate ErrFileBlockNotFound (pending CAS blocks), got: %v", err)
+		t.Fatalf("CopyPayload must tolerate ErrFileChunkNotFound (pending CAS blocks), got: %v", err)
 	}
 	if len(dst) != len(src) {
 		t.Fatalf("dst len = %d, want %d (manifest must be copied even when refcount bump is a no-op)", len(dst), len(src))
@@ -91,14 +91,14 @@ func TestCopyPayload_ToleratesPendingBlocks(t *testing.T) {
 	}
 }
 
-// TestCopyPayload_CreatesDstFileBlockRows is the #1384 corruption regression:
-// CopyPayload MUST create one per-(dstPayloadID/offset) FileBlock row for every
+// TestCopyPayload_CreatesDstFileChunkRows is the #1384 corruption regression:
+// CopyPayload MUST create one per-(dstPayloadID/offset) FileChunk row for every
 // source block. The cold-read path resolves a payload's bytes via
-// ListFileBlocks(dstPayloadID), NOT via FileAttr.Blocks — so without dst rows a
+// ListFileChunks(dstPayloadID), NOT via FileAttr.Blocks — so without dst rows a
 // read of the clone hits the sparse-block branch and zero-fills (silent
 // corruption). This test fails before the row-creation fix (no dst rows) and
 // passes after (one row per source block, same offset + hash + DataSize).
-func TestCopyPayload_CreatesDstFileBlockRows(t *testing.T) {
+func TestCopyPayload_CreatesDstFileChunkRows(t *testing.T) {
 	fc := &fakeCoordinator{incAllNotFound: true} // CAS share: every source block Pending.
 	bs := newTestEngineWithCoordinator(t, fc)
 	ctx := context.Background()
@@ -114,16 +114,16 @@ func TestCopyPayload_CreatesDstFileBlockRows(t *testing.T) {
 		t.Fatalf("CopyPayload: %v", err)
 	}
 
-	rows, err := bs.fileBlockStore.ListFileBlocks(ctx, dst)
+	rows, err := bs.fileBlockStore.ListFileChunks(ctx, dst)
 	if err != nil {
-		t.Fatalf("ListFileBlocks(%s): %v", dst, err)
+		t.Fatalf("ListFileChunks(%s): %v", dst, err)
 	}
 	if len(rows) != len(src) {
-		t.Fatalf("dst FileBlock rows = %d, want %d (one per source block) — clone would zero-fill without rows (#1384)", len(rows), len(src))
+		t.Fatalf("dst FileChunk rows = %d, want %d (one per source block) — clone would zero-fill without rows (#1384)", len(rows), len(src))
 	}
 
 	// Index the created rows by offset and assert each mirrors its source block.
-	byOffset := make(map[uint64]*block.FileBlock, len(rows))
+	byOffset := make(map[uint64]*block.FileChunk, len(rows))
 	for _, fb := range rows {
 		off, ok := block.ParseChunkOffset(fb.ID)
 		if !ok {
@@ -134,7 +134,7 @@ func TestCopyPayload_CreatesDstFileBlockRows(t *testing.T) {
 	for _, b := range src {
 		fb, ok := byOffset[b.Offset]
 		if !ok {
-			t.Fatalf("no dst FileBlock row at offset %d", b.Offset)
+			t.Fatalf("no dst FileChunk row at offset %d", b.Offset)
 		}
 		if fb.Hash != b.Hash {
 			t.Errorf("dst row offset %d hash = %s, want %s (must point at the shared CAS chunk)", b.Offset, fb.Hash.String(), b.Hash.String())

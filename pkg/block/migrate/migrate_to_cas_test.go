@@ -149,7 +149,7 @@ func (c *corruptingBlockStore) Get(_ context.Context, hash block.ContentHash) ([
 
 // stubMetadataAdapter is the in-memory MetadataAdapter the unit tests
 // drive. Returns a pre-loaded list of legacy files and records each
-// UpdateFileBlocks call for assertion.
+// UpdateFileChunks call for assertion.
 type stubMetadataAdapter struct {
 	files       []LegacyFileInfo
 	mu          sync.Mutex
@@ -167,7 +167,7 @@ func (s *stubMetadataAdapter) ListLegacyFiles(_ context.Context) ([]LegacyFileIn
 	return out, nil
 }
 
-func (s *stubMetadataAdapter) UpdateFileBlocks(_ context.Context, handle metadata.FileHandle, blocks []block.BlockRef) error {
+func (s *stubMetadataAdapter) UpdateFileChunks(_ context.Context, handle metadata.FileHandle, blocks []block.BlockRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.updateCalls = append(s.updateCalls, updateCall{handle: handle, blocks: blocks})
@@ -358,7 +358,7 @@ func TestMigrateShareToCAS_JournalResume(t *testing.T) {
 		t.Fatalf("sentinel missing post-resume: %v", err)
 	}
 
-	// All files in the metadata adapter received an UpdateFileBlocks call
+	// All files in the metadata adapter received an UpdateFileChunks call
 	// across the combined runs (cancel + resume).
 	if len(adapter.updateCalls) < len(files) {
 		t.Errorf("updateCalls=%d after resume, expected >= %d", len(adapter.updateCalls), len(files))

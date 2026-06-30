@@ -22,14 +22,14 @@ import (
 //
 // Schema lives in migrations/000012_file_block_refs.up.sql.
 
-// putFileBlockRefs replaces all rows in file_block_refs for fileID with
+// putFileChunkRefs replaces all rows in file_block_refs for fileID with
 // the given blocks. Atomic when called inside a pgx.Tx (the caller's tx).
 //
 // Implementation: DELETE+INSERT. Engine-bug paths are defended by the
 // (file_id, "offset") PK — a duplicate offset would be rejected. The
 // DELETE first ensures stale offsets from a prior list are not left
 // behind when the new list is shorter.
-func putFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks []block.BlockRef) error {
+func putFileChunkRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks []block.BlockRef) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = $1`, fileID); err != nil {
 		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)
 	}
@@ -53,7 +53,7 @@ func putFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks [
 	return nil
 }
 
-// deleteFileBlockRefs removes all rows for fileID. The FK cascade
+// deleteFileChunkRefs removes all rows for fileID. The FK cascade
 // handles this automatically when the files row is deleted; this helper
 // is exposed for callers that pre-clear refs without dropping the row.
 //
@@ -61,18 +61,18 @@ func putFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks [
 // pre-clear semantics.
 //
 //nolint:unused // exported as part of the API surface; FK cascade handles
-func deleteFileBlockRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) error {
+func deleteFileChunkRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = $1`, fileID); err != nil {
 		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)
 	}
 	return nil
 }
 
-// loadFileBlockRefs loads all rows for fileID via the pool (not a tx),
+// loadFileChunkRefs loads all rows for fileID via the pool (not a tx),
 // ordered by offset ASC; returns a nil slice when no rows exist.
 // Used by FindByObjectID. GetFile no longer calls this — it folds the same
 // rows into its metadata read via blockRefsAggExpr (#1176).
-func (s *PostgresMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uuid.UUID) ([]block.BlockRef, error) {
+func (s *PostgresMetadataStore) loadFileChunkRefs(ctx context.Context, fileID uuid.UUID) ([]block.BlockRef, error) {
 	rows, err := s.query(ctx,
 		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = $1 ORDER BY "offset" ASC`,
 		fileID,
@@ -116,23 +116,23 @@ func (s *PostgresMetadataStore) loadFileBlockRefs(ctx context.Context, fileID uu
 // a small set of test-only direct-SQL helpers. Used by
 // postgres_blockref_test.go to assert FK cascade behavior.
 type RawSQLAccessor interface {
-	// CountFileBlockRefs returns the number of file_block_refs rows for
+	// CountFileChunkRefs returns the number of file_block_refs rows for
 	// fileID. Test-only — never call this from production code.
-	CountFileBlockRefs(ctx context.Context, fileID uuid.UUID) (int, error)
+	CountFileChunkRefs(ctx context.Context, fileID uuid.UUID) (int, error)
 
-	// InsertNullHashFileBlock inserts a file_blocks row with a NULL hash
+	// InsertNullHashFileChunk inserts a file_blocks row with a NULL hash
 	// column, simulating a legacy backup produced before the Put
 	// hash-gate fix. Test-only — never call this from production code.
-	InsertNullHashFileBlock(ctx context.Context, id string, dataSize uint32) error
+	InsertNullHashFileChunk(ctx context.Context, id string, dataSize uint32) error
 
-	// FileBlockHashHex returns the hex hash string stored on the
+	// FileChunkHashHex returns the hex hash string stored on the
 	// file_blocks row for id, or "" when the hash column is NULL.
 	// Test-only — never call this from production code.
-	FileBlockHashHex(ctx context.Context, id string) (string, error)
+	FileChunkHashHex(ctx context.Context, id string) (string, error)
 }
 
-// CountFileBlockRefs implements RawSQLAccessor for *PostgresMetadataStore.
-func (s *PostgresMetadataStore) CountFileBlockRefs(ctx context.Context, fileID uuid.UUID) (int, error) {
+// CountFileChunkRefs implements RawSQLAccessor for *PostgresMetadataStore.
+func (s *PostgresMetadataStore) CountFileChunkRefs(ctx context.Context, fileID uuid.UUID) (int, error) {
 	var n int
 	err := s.queryRow(ctx, `SELECT COUNT(*) FROM file_block_refs WHERE file_id = $1`, fileID).Scan(&n)
 	if err != nil {
@@ -141,8 +141,8 @@ func (s *PostgresMetadataStore) CountFileBlockRefs(ctx context.Context, fileID u
 	return n, nil
 }
 
-// InsertNullHashFileBlock implements RawSQLAccessor for *PostgresMetadataStore.
-func (s *PostgresMetadataStore) InsertNullHashFileBlock(ctx context.Context, id string, dataSize uint32) error {
+// InsertNullHashFileChunk implements RawSQLAccessor for *PostgresMetadataStore.
+func (s *PostgresMetadataStore) InsertNullHashFileChunk(ctx context.Context, id string, dataSize uint32) error {
 	_, err := s.exec(ctx, `
 		INSERT INTO file_blocks (id, hash, data_size, ref_count, state)
 		VALUES ($1, NULL, $2, 1, 0)
@@ -154,8 +154,8 @@ func (s *PostgresMetadataStore) InsertNullHashFileBlock(ctx context.Context, id 
 	return nil
 }
 
-// FileBlockHashHex implements RawSQLAccessor for *PostgresMetadataStore.
-func (s *PostgresMetadataStore) FileBlockHashHex(ctx context.Context, id string) (string, error) {
+// FileChunkHashHex implements RawSQLAccessor for *PostgresMetadataStore.
+func (s *PostgresMetadataStore) FileChunkHashHex(ctx context.Context, id string) (string, error) {
 	var hash *string
 	err := s.queryRow(ctx, `SELECT hash FROM file_blocks WHERE id = $1`, id).Scan(&hash)
 	if err != nil {

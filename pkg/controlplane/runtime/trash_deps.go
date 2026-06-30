@@ -81,7 +81,7 @@ func (d *trashDeps) EnabledTrashShares() []string {
 // The reaper holds the removed file's blocks, so it threads them through
 // directly rather than making the engine re-enumerate them. (The NFS v3 / SMB
 // unlink path does not have the manifest on hand and passes nil; Delete then
-// resolves it from the payload's FileBlock rows — see #1433/#832.)
+// resolves it from the payload's FileChunk rows — see #1433/#832.)
 func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.BlockRef) error {
 	if payloadID == "" {
 		return nil

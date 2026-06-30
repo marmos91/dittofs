@@ -124,10 +124,10 @@ func createShareAndFile(t *testing.T, store metadata.Store, shareName, fileName 
 	return handle
 }
 
-// TestPostgres_FileBlockRefs_BlocksRoundTrip asserts that PutFile with a
+// TestPostgres_FileChunkRefs_BlocksRoundTrip asserts that PutFile with a
 // non-empty Blocks list, followed by GetFile, returns identical Blocks
 // (sorted by Offset, byte-equal Hash, equal Offset, equal Size).
-func TestPostgres_FileBlockRefs_BlocksRoundTrip(t *testing.T) {
+func TestPostgres_FileChunkRefs_BlocksRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 
@@ -169,9 +169,9 @@ func TestPostgres_FileBlockRefs_BlocksRoundTrip(t *testing.T) {
 	}
 }
 
-// TestPostgres_FileBlockRefs_ReplaceFully asserts that a second PutFile
+// TestPostgres_FileChunkRefs_ReplaceFully asserts that a second PutFile
 // with a different Blocks list fully replaces the first (no leftover rows).
-func TestPostgres_FileBlockRefs_ReplaceFully(t *testing.T) {
+func TestPostgres_FileChunkRefs_ReplaceFully(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 
@@ -221,9 +221,9 @@ func TestPostgres_FileBlockRefs_ReplaceFully(t *testing.T) {
 	}
 }
 
-// TestPostgres_FileBlockRefs_CascadeDelete asserts that deleting a file row
+// TestPostgres_FileChunkRefs_CascadeDelete asserts that deleting a file row
 // cascades to file_block_refs (FK ON DELETE CASCADE).
-func TestPostgres_FileBlockRefs_CascadeDelete(t *testing.T) {
+func TestPostgres_FileChunkRefs_CascadeDelete(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 
@@ -254,9 +254,9 @@ func TestPostgres_FileBlockRefs_CascadeDelete(t *testing.T) {
 	if !ok {
 		t.Fatalf("store does not implement RawSQLAccessor — cannot count file_block_refs rows")
 	}
-	pre, err := rawSQL.CountFileBlockRefs(ctx, fileID)
+	pre, err := rawSQL.CountFileChunkRefs(ctx, fileID)
 	if err != nil {
-		t.Fatalf("CountFileBlockRefs (pre): %v", err)
+		t.Fatalf("CountFileChunkRefs (pre): %v", err)
 	}
 	if pre != 2 {
 		t.Fatalf("pre-delete row count = %d, want 2", pre)
@@ -271,9 +271,9 @@ func TestPostgres_FileBlockRefs_CascadeDelete(t *testing.T) {
 	}
 
 	// Post-delete: 0 rows expected (FK cascade).
-	post, err := rawSQL.CountFileBlockRefs(ctx, fileID)
+	post, err := rawSQL.CountFileChunkRefs(ctx, fileID)
 	if err != nil {
-		t.Fatalf("CountFileBlockRefs (post): %v", err)
+		t.Fatalf("CountFileChunkRefs (post): %v", err)
 	}
 	if post != 0 {
 		t.Fatalf("post-delete row count = %d, want 0 (cascade should have cleaned up)", post)
@@ -289,11 +289,11 @@ func mustParentHandle(t *testing.T, store metadata.Store, handle metadata.FileHa
 	return parent
 }
 
-// TestPostgres_FileBlockRefs_ConcurrentPutFile asserts that two concurrent
+// TestPostgres_FileChunkRefs_ConcurrentPutFile asserts that two concurrent
 // PutFile calls on the same file_id do not produce duplicate or interleaved
 // rows. The PK (file_id, offset) means duplicates would error; the test
 // asserts no error AND a final state matching one of the two writers.
-func TestPostgres_FileBlockRefs_ConcurrentPutFile(t *testing.T) {
+func TestPostgres_FileChunkRefs_ConcurrentPutFile(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 
@@ -360,13 +360,13 @@ func blockRefsEqual(x, y []block.BlockRef) bool {
 	return true
 }
 
-// TestPostgres_Restore_ReconcilesNullHashFileBlocks pins the data-loss fix:
+// TestPostgres_Restore_ReconcilesNullHashFileChunks pins the data-loss fix:
 // a backup that carries NULL-hash file_blocks rows (the shape every backup
 // had before the Put hash-gate fix) must, after restore, have those hashes
 // backfilled from file_block_refs. Otherwise the engine's CAS read path
 // resolves the per-file read index to a NULL hash and the restored file
 // reads as zeros once local cache state is cold.
-func TestPostgres_Restore_ReconcilesNullHashFileBlocks(t *testing.T) {
+func TestPostgres_Restore_ReconcilesNullHashFileChunks(t *testing.T) {
 	store := newTestStore(t)
 	ctx := t.Context()
 
@@ -399,11 +399,11 @@ func TestPostgres_Restore_ReconcilesNullHashFileBlocks(t *testing.T) {
 	}
 
 	// Simulate a legacy backup: a NULL-hash file_blocks row.
-	if err := rawSQL.InsertNullHashFileBlock(ctx, blockID, 4<<20); err != nil {
-		t.Fatalf("InsertNullHashFileBlock: %v", err)
+	if err := rawSQL.InsertNullHashFileChunk(ctx, blockID, 4<<20); err != nil {
+		t.Fatalf("InsertNullHashFileChunk: %v", err)
 	}
-	if got, herr := rawSQL.FileBlockHashHex(ctx, blockID); herr != nil {
-		t.Fatalf("FileBlockHashHex (pre-backup): %v", herr)
+	if got, herr := rawSQL.FileChunkHashHex(ctx, blockID); herr != nil {
+		t.Fatalf("FileChunkHashHex (pre-backup): %v", herr)
 	} else if got != "" {
 		t.Fatalf("pre-backup file_blocks.hash = %q, want NULL", got)
 	}
@@ -433,9 +433,9 @@ func TestPostgres_Restore_ReconcilesNullHashFileBlocks(t *testing.T) {
 	}
 
 	// After restore, the NULL hash must be reconciled from file_block_refs.
-	got, err := rawSQL.FileBlockHashHex(ctx, blockID)
+	got, err := rawSQL.FileChunkHashHex(ctx, blockID)
 	if err != nil {
-		t.Fatalf("FileBlockHashHex (post-restore): %v", err)
+		t.Fatalf("FileChunkHashHex (post-restore): %v", err)
 	}
 	if got != want.String() {
 		t.Errorf("post-restore file_blocks.hash = %q, want %q "+

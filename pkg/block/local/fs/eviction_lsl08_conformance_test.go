@@ -17,7 +17,7 @@ import (
 // TestFSStore_EvictionLSL08Conformance runs the eviction
 // conformance scenarios against *fs.FSStore. The factory wires a small
 // disk limit (so eviction is easy to trigger) and a counting
-// FileBlockStore (so the no-FBS-call assertion can probe).
+// FileChunkStore (so the no-FBS-call assertion can probe).
 //
 // -06 inlined the scenarios here from
 // pkg/block/local/localtest/eviction_lsl08_suite.go (deleted in
@@ -92,7 +92,7 @@ func testLSL08LRUOrder(t *testing.T, factory func(t *testing.T) *fs.FSStore) {
 
 func testLSL08NoFBSCalls(t *testing.T, factory func(t *testing.T) *fs.FSStore) {
 	bc := factory(t)
-	// The factory wires a counting FileBlockStore so NoFBSCallsForTest
+	// The factory wires a counting FileChunkStore so NoFBSCallsForTest
 	// can read and reset the counter.
 	ctx := context.Background()
 	data := bytes.Repeat([]byte{0x10}, 200)
@@ -104,7 +104,7 @@ func testLSL08NoFBSCalls(t *testing.T, factory func(t *testing.T) *fs.FSStore) {
 		t.Fatalf("EnsureSpaceForTest: %v", err)
 	}
 	if n := bc.FBSCallCountForTest(); n != 0 {
-		t.Errorf("ensureSpace consulted FileBlockStore %d times — LSL-08 violation", n)
+		t.Errorf("ensureSpace consulted FileChunkStore %d times — LSL-08 violation", n)
 	}
 }
 
@@ -186,27 +186,27 @@ func testLSL08LRUSeedOnStartup(t *testing.T, factory func(t *testing.T) *fs.FSSt
 }
 
 // countingFBSWrapper is a thin call-counting wrapper around a
-// block.EngineFileBlockStore. Mirrors the package-internal
-// countingFileBlockStore but lives here so it can be wired into the
+// block.EngineFileChunkStore. Mirrors the package-internal
+// countingFileChunkStore but lives here so it can be wired into the
 // conformance factory. Satisfies fs.FBSCounter via the exported
 // ResetCount/TotalCount methods.
 //
 // wraps the wider engine-internal interface
-// (the 6 narrowed FileBlockStore methods plus the engine-internal
-// GetFileBlock + ListFileBlocks).
+// (the 6 narrowed FileChunkStore methods plus the engine-internal
+// GetFileChunk + ListFileChunks).
 type countingFBSWrapper struct {
-	inner   block.EngineFileBlockStore
+	inner   block.EngineFileChunkStore
 	counter int
 }
 
 func (c *countingFBSWrapper) ResetCount()     { c.counter = 0 }
 func (c *countingFBSWrapper) TotalCount() int { return c.counter }
 
-func (c *countingFBSWrapper) GetFileBlock(ctx context.Context, id string) (*block.FileBlock, error) {
+func (c *countingFBSWrapper) GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error) {
 	c.counter++
-	return c.inner.GetFileBlock(ctx, id)
+	return c.inner.GetFileChunk(ctx, id)
 }
-func (c *countingFBSWrapper) Put(ctx context.Context, b *block.FileBlock) error {
+func (c *countingFBSWrapper) Put(ctx context.Context, b *block.FileChunk) error {
 	c.counter++
 	return c.inner.Put(ctx, b)
 }
@@ -230,13 +230,13 @@ func (c *countingFBSWrapper) AddRef(ctx context.Context, h block.ContentHash, pa
 	c.counter++
 	return c.inner.AddRef(ctx, h, payloadID, ref)
 }
-func (c *countingFBSWrapper) GetByHash(ctx context.Context, h block.ContentHash) (*block.FileBlock, error) {
+func (c *countingFBSWrapper) GetByHash(ctx context.Context, h block.ContentHash) (*block.FileChunk, error) {
 	c.counter++
 	return c.inner.GetByHash(ctx, h)
 }
-func (c *countingFBSWrapper) ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error) {
+func (c *countingFBSWrapper) ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error) {
 	c.counter++
-	return c.inner.ListFileBlocks(ctx, payloadID)
+	return c.inner.ListFileChunks(ctx, payloadID)
 }
 func (c *countingFBSWrapper) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	c.counter++

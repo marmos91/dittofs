@@ -294,7 +294,7 @@ func newRealBackupFixture(t *testing.T) *realBackupFixture {
 		Local:          localStore,
 		Remote:         innerRemote,
 		Syncer:         syncer,
-		FileBlockStore: mem,
+		FileChunkStore: mem,
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)

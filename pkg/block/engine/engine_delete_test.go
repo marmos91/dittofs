@@ -83,7 +83,7 @@ func (c *refcountCoordinator) DecrementRefCount(_ context.Context, hash block.Co
 // then mirrors DecrementRefCount (including the single-shot error injection) and
 // reaps the map entry when the count hits 0, matching the backend reap semantics
 // the engine reclaim path relies on. An ID with no seeded row is a tolerated
-// no-op (count 0) — the production coordinator maps ErrFileBlockNotFound the
+// no-op (count 0) — the production coordinator maps ErrFileChunkNotFound the
 // same way.
 func (c *refcountCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID string, offset uint64) (uint32, error) {
 	c.mu.Lock()
@@ -114,7 +114,7 @@ func (c *refcountCoordinator) DecrementRefCountAndReap(_ context.Context, payloa
 	return cur, nil
 }
 
-func (c *refcountCoordinator) PersistFileBlocks(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
+func (c *refcountCoordinator) PersistFileChunks(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
 	return nil
 }
 
@@ -243,7 +243,7 @@ var (
 func buildCascadeFixture(t *testing.T, coord MetadataCoordinator, syncedStore metadata.SyncedHashStore) *Store {
 	t.Helper()
 	localStore := memory.New()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{

@@ -33,16 +33,16 @@ func newMemStore(t *testing.T) metadata.Store {
 	return memorystore.NewMemoryMetadataStoreWithDefaults()
 }
 
-// putBlock inserts a single FileBlock with the given id and hash into
-// store via the FileBlockStore.Put interface, which is the same surface
+// putBlock inserts a single FileChunk with the given id and hash into
+// store via the FileChunkStore.Put interface, which is the same surface
 // the engine uses on the write path. Test data goes in via the same door
-// as production data so the EnumerateFileBlocks invariants apply.
+// as production data so the EnumerateFileChunks invariants apply.
 func putBlock(t *testing.T, store metadata.Store, id string, hash block.ContentHash) {
 	t.Helper()
-	block := &metadata.FileBlock{
+	block := &metadata.FileChunk{
 		ID:    id,
 		Hash:  hash,
-		State: block.BlockStateRemote, // finalized so EnumerateFileBlocks emits it
+		State: block.BlockStateRemote, // finalized so EnumerateFileChunks emits it
 	}
 	if err := store.Put(context.Background(), block); err != nil {
 		t.Fatalf("Put block %s: %v", id, err)
@@ -70,7 +70,7 @@ func TestHashSetFromMetadataStore_Empty(t *testing.T) {
 }
 
 // TestHashSetFromMetadataStore_ThreeUniqueHashes: three distinct hashes
-// across three FileBlock rows yield Len()==3. Each hash appears once in
+// across three FileChunk rows yield Len()==3. Each hash appears once in
 // the result — the basic enumeration invariant.
 func TestHashSetFromMetadataStore_ThreeUniqueHashes(t *testing.T) {
 	store := newMemStore(t)
@@ -96,7 +96,7 @@ func TestHashSetFromMetadataStore_ThreeUniqueHashes(t *testing.T) {
 	}
 }
 
-// TestHashSetFromMetadataStore_Deduplication: two FileBlock rows that
+// TestHashSetFromMetadataStore_Deduplication: two FileChunk rows that
 // share a ContentHash collapse to one entry. Combined with two other
 // unique hashes that gives Len()==3 from 4 input rows.
 func TestHashSetFromMetadataStore_Deduplication(t *testing.T) {
@@ -125,7 +125,7 @@ func TestHashSetFromMetadataStore_Deduplication(t *testing.T) {
 }
 
 // TestHashSetFromMetadataStore_CtxCancellation: a pre-cancelled ctx is
-// surfaced through the EnumerateFileBlocks ctx.Done() check; the helper
+// surfaced through the EnumerateFileChunks ctx.Done() check; the helper
 // returns a wrapped ctx.Canceled. Verifies the cancellation contract the
 // post-verify walker requires for ctx-bound Runtime shutdown paths.
 func TestHashSetFromMetadataStore_CtxCancellation(t *testing.T) {
@@ -148,7 +148,7 @@ func TestHashSetFromMetadataStore_CtxCancellation(t *testing.T) {
 	}
 }
 
-// TestHashSetFromMetadataStore_SkipsZeroHash: legacy pre-CAS FileBlock
+// TestHashSetFromMetadataStore_SkipsZeroHash: legacy pre-CAS FileChunk
 // rows emit the zero ContentHash by interface contract. The helper must
 // skip them so VerifyRemoteDurability does not get a phantom hash that
 // can never resolve on the remote.
@@ -162,14 +162,14 @@ func TestHashSetFromMetadataStore_SkipsZeroHash(t *testing.T) {
 
 	// Insert a pre-CAS row with zero hash. State must NOT be a finalized
 	// state — Put allows the zero hash but the memory backend's hash
-	// index only tracks finalized rows. EnumerateFileBlocks emits every
+	// index only tracks finalized rows. EnumerateFileChunks emits every
 	// row regardless of state per the interface contract.
 	var zero block.ContentHash
-	zeroBlock := &metadata.FileBlock{
+	zeroBlock := &metadata.FileChunk{
 		ID:   "blk-legacy-zero",
 		Hash: zero,
 		// Leave State at zero-value (Pending) so the hash-index keeps
-		// real1/real2 unambiguous; EnumerateFileBlocks emits zero anyway.
+		// real1/real2 unambiguous; EnumerateFileChunks emits zero anyway.
 	}
 	if err := store.Put(context.Background(), zeroBlock); err != nil {
 		t.Fatalf("Put zero-hash block: %v", err)

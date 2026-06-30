@@ -44,7 +44,7 @@ func TestGCIndexSweep_DeletesOrphansWithoutWalk(t *testing.T) {
 	fresh := hashFromString("lf-fresh-keep")    // not in manifest, within grace → kept
 	legacy := hashFromString("lf-legacy-keep")  // not in manifest, zero ts → fail-closed keep
 
-	// Only the live block has a manifest row (FileBlock).
+	// Only the live block has a manifest row (FileChunk).
 	putBlock(t, st, "file-live/0", live)
 	for _, h := range []block.ContentHash{live, orphan, fresh, legacy} {
 		writeCASObject(t, ctx, rs, h, []byte("data-"+h.String()[:8]))

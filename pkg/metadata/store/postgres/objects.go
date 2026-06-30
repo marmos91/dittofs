@@ -15,14 +15,14 @@ import (
 )
 
 // ============================================================================
-// FileBlockStore Implementation for PostgreSQL Store
+// FileChunkStore Implementation for PostgreSQL Store
 // ============================================================================
 //
-// This file implements the FileBlockStore interface for the PostgreSQL metadata store.
+// This file implements the FileChunkStore interface for the PostgreSQL metadata store.
 // It provides content-addressed file block tracking for deduplication and caching.
 //
-// The FileBlockStore interface is narrowed to 6 methods. The backend
-// retains the legacy GetFileBlock + ListFileBlocks helpers as
+// The FileChunkStore interface is narrowed to 6 methods. The backend
+// retains the legacy GetFileChunk + ListFileChunks helpers as
 // concrete methods on the struct (not on the public interface) for
 // engine-internal callers.
 //
@@ -33,24 +33,24 @@ import (
 //
 // ============================================================================
 
-// Ensure PostgresMetadataStore implements FileBlockStore
-var _ block.FileBlockStore = (*PostgresMetadataStore)(nil)
+// Ensure PostgresMetadataStore implements FileChunkStore
+var _ block.FileChunkStore = (*PostgresMetadataStore)(nil)
 
 // ============================================================================
-// FileBlock Operations
+// FileChunk Operations
 // ============================================================================
 
-// GetFileBlock retrieves a file block by its ID. Not on the narrowed
-// FileBlockStore interface; kept as a backend
+// GetFileChunk retrieves a file block by its ID. Not on the narrowed
+// FileChunkStore interface; kept as a backend
 // method for engine-internal callers.
-func (s *PostgresMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
+func (s *PostgresMetadataStore) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE id = $1`
 	row := s.queryRow(ctx, query, id)
 
-	block, err := scanFileBlock(row)
+	block, err := scanFileChunk(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, metadata.ErrFileBlockNotFound
+		return nil, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get file block: %w", err)
@@ -70,7 +70,7 @@ func (s *PostgresMetadataStore) GetFileBlock(ctx context.Context, id string) (*m
 // cache eviction, or a snapshot restore's ResetLocalState). The memory
 // and badger backends always store the hash inline on the row, so this
 // matches their behavior.
-func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlock) error {
+func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileChunk) error {
 	var hashStr *string
 	if !block.Hash.IsZero() {
 		h := block.Hash.String()
@@ -97,7 +97,7 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlo
 	// IncrementRefCount / DecrementRefCount (which run as atomic SQL `+1` /
 	// `-1` UPDATEs) cannot be silently overwritten by a stale
 	// Put-with-in-memory-RefCount. RefCount on the INSERT path is still set
-	// verbatim from the caller's *FileBlock (matches the contract for new
+	// verbatim from the caller's *FileChunk (matches the contract for new
 	// rows). For existing rows, RefCount mutates exclusively through
 	// Increment/Decrement. hash uses COALESCE so a zero-hash Put never NULLs
 	// a previously-persisted good hash.
@@ -121,7 +121,7 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileBlo
 	return nil
 }
 
-// Delete removes a file block by its ID. Renamed from DeleteFileBlock in
+// Delete removes a file block by its ID. Renamed from DeleteFileChunk in
 func (s *PostgresMetadataStore) Delete(ctx context.Context, id string) error {
 	result, err := s.exec(ctx, `DELETE FROM file_blocks WHERE id = $1`, id)
 	if err != nil {
@@ -129,7 +129,7 @@ func (s *PostgresMetadataStore) Delete(ctx context.Context, id string) error {
 	}
 	rows := result.RowsAffected()
 	if rows == 0 {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
@@ -143,7 +143,7 @@ func (s *PostgresMetadataStore) IncrementRefCount(ctx context.Context, id string
 	}
 	rows := result.RowsAffected()
 	if rows == 0 {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
@@ -154,7 +154,7 @@ func (s *PostgresMetadataStore) DecrementRefCount(ctx context.Context, id string
 	var newCount uint32
 	err := s.queryRow(ctx, query, id).Scan(&newCount)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, metadata.ErrFileBlockNotFound
+		return 0, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
 		return 0, fmt.Errorf("decrement ref count: %w", err)
@@ -189,7 +189,7 @@ func (s *PostgresMetadataStore) DecrementRefCountAndReap(ctx context.Context, id
 
 // decrementAndReapTx runs the -1 UPDATE then a conditional DELETE on the given
 // pgx.Tx. Shared by the pool-backed store method and the postgresTransaction
-// method so both surfaces behave identically. Returns ErrFileBlockNotFound
+// method so both surfaces behave identically. Returns ErrFileChunkNotFound
 // mapped to (0, nil) — i.e. a missing row is tolerated.
 func decrementAndReapTx(ctx context.Context, tx pgx.Tx, id string) (uint32, error) {
 	var newCount uint32
@@ -211,8 +211,8 @@ func decrementAndReapTx(ctx context.Context, tx pgx.Tx, id string) (uint32, erro
 	return newCount, nil
 }
 
-// AddRef atomically bumps RefCount on the FileBlock row(s) indexed by
-// the given content hash. Implements the FileBlockStore.AddRef contract
+// AddRef atomically bumps RefCount on the FileChunk row(s) indexed by
+// the given content hash. Implements the FileChunkStore.AddRef contract
 // used by the in-memory hash dedup LRU hit path to
 // reference an already-stored block without creating a new row.
 //
@@ -262,15 +262,15 @@ func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash block.ContentHa
 
 // GetByHash looks up a finalized block by its content hash.
 // Returns nil without error if not found. Renamed from
-// FindFileBlockByHash. Dedup matches only Remote (state=2) blocks —
+// FindFileChunkByHash. Dedup matches only Remote (state=2) blocks —
 // Pending or Syncing rows have not been confirmed on the remote and
 // are unsafe dedup targets.
-func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`
 	row := s.queryRow(ctx, query, hash.String())
 
-	block, err := scanFileBlock(row)
+	block, err := scanFileChunk(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -280,11 +280,11 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 	return block, nil
 }
 
-// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
+// ListFileChunks returns all blocks belonging to a file, ordered by block index.
 // Uses LIKE query on block ID prefix, then sorts in Go for correct numeric ordering.
-// Not on the narrowed FileBlockStore interface;
+// Not on the narrowed FileChunkStore interface;
 // kept as a backend method for engine-internal callers.
-func (s *PostgresMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+func (s *PostgresMetadataStore) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks
 		WHERE id LIKE $1
@@ -294,7 +294,7 @@ func (s *PostgresMetadataStore) ListFileBlocks(ctx context.Context, payloadID st
 		return nil, fmt.Errorf("list file blocks: %w", err)
 	}
 	defer rows.Close()
-	result, err := scanFileBlockRows(rows)
+	result, err := scanFileChunkRows(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +304,7 @@ func (s *PostgresMetadataStore) ListFileBlocks(ctx context.Context, payloadID st
 		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
 	})
 	if result == nil {
-		return []*metadata.FileBlock{}, nil
+		return []*metadata.FileChunk{}, nil
 	}
 	return result, nil
 }
@@ -332,7 +332,7 @@ JOIN inodes i ON fbr.file_id = i.id
 WHERE i.nlink > 0`
 
 // EnumeratePayloads streams every distinct payloadID that has at least one
-// FileBlock row through fn. FileBlock row IDs have the form
+// FileChunk row through fn. FileChunk row IDs have the form
 // {payloadID}/{chunkOffset}; the payloadID is everything BEFORE THE LAST '/'
 // (payloadIDs are BuildPayloadID(shareName, filePath) and themselves contain
 // slashes, so a split_part on the FIRST slash would truncate every
@@ -345,7 +345,7 @@ WHERE i.nlink > 0`
 // is for correctness/consistency rather than deadlock avoidance.)
 func (s *PostgresMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	const query = `SELECT DISTINCT id FROM file_blocks`
-	ids, err := s.collectFileBlockIDs(ctx, query)
+	ids, err := s.collectFileChunkIDs(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -378,7 +378,7 @@ func (s *PostgresMetadataStore) EnumeratePayloads(ctx context.Context, fn func(p
 // reconcile must treat it as stranded, not live.
 func (s *PostgresMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
 	const query = `SELECT DISTINCT content_id FROM inodes WHERE content_id IS NOT NULL AND content_id != '' AND nlink > 0`
-	ids, err := s.collectFileBlockIDs(ctx, query)
+	ids, err := s.collectFileChunkIDs(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -393,9 +393,9 @@ func (s *PostgresMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn 
 	return nil
 }
 
-// collectFileBlockIDs runs query (which must SELECT a single TEXT id column),
+// collectFileChunkIDs runs query (which must SELECT a single TEXT id column),
 // scans every id into a slice, and closes the rows cursor before returning.
-func (s *PostgresMetadataStore) collectFileBlockIDs(ctx context.Context, query string) ([]string, error) {
+func (s *PostgresMetadataStore) collectFileChunkIDs(ctx context.Context, query string) ([]string, error) {
 	rows, err := s.query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate payloads: query: %w", err)
@@ -415,9 +415,9 @@ func (s *PostgresMetadataStore) collectFileBlockIDs(ctx context.Context, query s
 	return ids, nil
 }
 
-// EnumerateFileBlocks streams every live-set ContentHash through fn, unioning
+// EnumerateFileChunks streams every live-set ContentHash through fn, unioning
 // the CAS index with the per-file manifest (see enumerateHashesQuery).
-func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {
+func (s *PostgresMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error {
 	rows, err := s.query(ctx, enumerateHashesQuery)
 	if err != nil {
 		return fmt.Errorf("enumerate file blocks: query: %w", err)
@@ -440,7 +440,7 @@ func (s *PostgresMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func
 				// invite the GC mark phase to treat the row as a legacy
 				// pre-CAS entry and the sweep would reap a still-live CAS
 				// object once the grace TTL lapses. Surface the parse error
-				// so EnumerateFileBlocks aborts and the sweep is skipped.
+				// so EnumerateFileChunks aborts and the sweep is skipped.
 				return fmt.Errorf("enumerate file blocks: parse hash %q: %w",
 					hashStr.String, perr)
 			}
@@ -471,10 +471,10 @@ func pgParseBlockIdx(id string) int {
 // Scan Helpers
 // ============================================================================
 
-// scanFileBlock scans a single row into a FileBlock.
-func scanFileBlock(row pgx.Row) (*metadata.FileBlock, error) {
+// scanFileChunk scans a single row into a FileChunk.
+func scanFileChunk(row pgx.Row) (*metadata.FileChunk, error) {
 	var (
-		block             metadata.FileBlock
+		block             metadata.FileChunk
 		hashStr           sql.NullString
 		cachePath         sql.NullString
 		blockStoreKey     sql.NullString
@@ -486,7 +486,7 @@ func scanFileBlock(row pgx.Row) (*metadata.FileBlock, error) {
 	}
 	if hashStr.Valid {
 		// do not silently coerce malformed CAS hashes to the
-		// zero hash — see EnumerateFileBlocks for the data-loss scenario.
+		// zero hash — see EnumerateFileChunks for the data-loss scenario.
 		h, perr := metadata.ParseContentHash(hashStr.String)
 		if perr != nil {
 			return nil, fmt.Errorf("scan file block %s: parse hash %q: %w",
@@ -506,11 +506,11 @@ func scanFileBlock(row pgx.Row) (*metadata.FileBlock, error) {
 	return &block, nil
 }
 
-// scanFileBlockRows scans multiple rows into FileBlock slices.
-func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
-	var result []*metadata.FileBlock
+// scanFileChunkRows scans multiple rows into FileChunk slices.
+func scanFileChunkRows(rows pgx.Rows) ([]*metadata.FileChunk, error) {
+	var result []*metadata.FileChunk
 	for rows.Next() {
-		block, err := scanFileBlock(rows)
+		block, err := scanFileChunk(rows)
 		if err != nil {
 			return nil, fmt.Errorf("scan file block: %w", err)
 		}
@@ -523,10 +523,10 @@ func scanFileBlockRows(rows pgx.Rows) ([]*metadata.FileBlock, error) {
 // Transaction Support
 // ============================================================================
 
-// Ensure postgresTransaction implements FileBlockStore
-var _ block.FileBlockStore = (*postgresTransaction)(nil)
+// Ensure postgresTransaction implements FileChunkStore
+var _ block.FileChunkStore = (*postgresTransaction)(nil)
 
-// The FileBlockStore methods on
+// The FileChunkStore methods on
 // postgresTransaction MUST execute against the txn's own pgx.Tx, not the
 // public store's connection-pool helpers. Previously every method just
 // called `tx.store.X(...)` which routed through the pool — defeating
@@ -535,16 +535,16 @@ var _ block.FileBlockStore = (*postgresTransaction)(nil)
 // leak). All proxies below are now tx-bound; non-mutating
 // helpers keep the pool path because no caller mutates state through them.
 
-func (tx *postgresTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
+func (tx *postgresTransaction) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE id = $1`
 	row := tx.tx.QueryRow(ctx, query, id)
-	block, err := scanFileBlock(row)
+	block, err := scanFileChunk(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, metadata.ErrFileBlockNotFound
+		return nil, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get file block: %w", err)
@@ -552,7 +552,7 @@ func (tx *postgresTransaction) GetFileBlock(ctx context.Context, id string) (*me
 	return block, nil
 }
 
-func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileBlock) error {
+func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileChunk) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -606,7 +606,7 @@ func (tx *postgresTransaction) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("delete file block: %w", err)
 	}
 	if result.RowsAffected() == 0 {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
@@ -625,7 +625,7 @@ func (tx *postgresTransaction) IncrementRefCount(ctx context.Context, id string)
 		return fmt.Errorf("increment ref count: %w", err)
 	}
 	if result.RowsAffected() == 0 {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
@@ -640,7 +640,7 @@ func (tx *postgresTransaction) DecrementRefCount(ctx context.Context, id string)
 	var newCount uint32
 	err := tx.tx.QueryRow(ctx, query, id).Scan(&newCount)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, metadata.ErrFileBlockNotFound
+		return 0, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
 		return 0, fmt.Errorf("decrement ref count: %w", err)
@@ -682,14 +682,14 @@ func (tx *postgresTransaction) AddRef(ctx context.Context, hash block.ContentHas
 	return nil
 }
 
-func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`
 	row := tx.tx.QueryRow(ctx, query, hash.String())
-	block, err := scanFileBlock(row)
+	block, err := scanFileChunk(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -699,13 +699,13 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 	return block, nil
 }
 
-// ListFileBlocks / EnumerateFileBlocks run on the active
+// ListFileChunks / EnumerateFileChunks run on the active
 // transaction (tx.tx), NOT the pool. Delegating to the pool opens a separate
 // connection that cannot see this transaction's uncommitted writes, so a Put
 // followed by a List in the same WithTransaction would miss the pending row
 // (read-after-write violation; the SQL is otherwise identical to the
 // store-level methods).
-func (tx *postgresTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+func (tx *postgresTransaction) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks
 		WHERE id LIKE $1
@@ -715,7 +715,7 @@ func (tx *postgresTransaction) ListFileBlocks(ctx context.Context, payloadID str
 		return nil, fmt.Errorf("list file blocks: %w", err)
 	}
 	defer rows.Close()
-	result, err := scanFileBlockRows(rows)
+	result, err := scanFileChunkRows(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -725,12 +725,12 @@ func (tx *postgresTransaction) ListFileBlocks(ctx context.Context, payloadID str
 		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
 	})
 	if result == nil {
-		return []*metadata.FileBlock{}, nil
+		return []*metadata.FileChunk{}, nil
 	}
 	return result, nil
 }
 
-func (tx *postgresTransaction) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {
+func (tx *postgresTransaction) EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error {
 	rows, err := tx.tx.Query(ctx, enumerateHashesQuery)
 	if err != nil {
 		return fmt.Errorf("enumerate file blocks: query: %w", err)

@@ -13,15 +13,15 @@ import (
 
 // auditRefcountsCmd verifies the CAS manifest-consistency invariant for
 // the named share: every block referenced by a file's manifest
-// (FileAttr.Blocks) must have a backing FileBlock row in the metadata
+// (FileAttr.Blocks) must have a backing FileChunk row in the metadata
 // store. Persists last-run summary at <localStore>/audit-state/last-inv02.json.
 var auditRefcountsCmd = &cobra.Command{
 	Use:   "audit-refcounts <share>",
-	Short: "Verify every manifest block reference has a backing FileBlock row",
+	Short: "Verify every manifest block reference has a backing FileChunk row",
 	Long: `Run the CAS manifest-consistency audit for the named share.
 
 Walks every file in the share and checks that each block referenced by the
-file's manifest (FileAttr.Blocks) has a backing FileBlock row in the
+file's manifest (FileAttr.Blocks) has a backing FileChunk row in the
 metadata store. A manifest reference with no backing row is a genuine
 DANGLING reference — the file claims a chunk the store has no record of, so
 a read would return zeros or fail (the silent-data-loss class). The
@@ -29,7 +29,7 @@ invariant is "dangling refs == 0"; a non-zero count is real corruption
 worth alerting on, so the command exits non-zero (use it as
 ` + "`audit-refcounts <share> || alert`" + `).
 
-The legacy per-hash RefCount metric (∑ FileBlock.RefCount) was removed:
+The legacy per-hash RefCount metric (∑ FileChunk.RefCount) was removed:
 RefCount is not maintained in the content-addressed-store model (CAS blocks
 are written Pending and never transition to Remote), so that sum was
 structurally always 0 and produced false-positive "delta" alarms.
@@ -66,7 +66,7 @@ func runAuditRefcounts(_ *cobra.Command, args []string) error {
 	// Emit the audit body first so observability is identical across
 	// formats, then surface a detected dangling reference as a non-zero exit
 	// independently of the output format. A non-zero Delta is a real
-	// violation (a manifest ref with no backing FileBlock row — silent data
+	// violation (a manifest ref with no backing FileChunk row — silent data
 	// loss) — `audit-refcounts || alert` must fire in -o json/-o yaml too,
 	// not only the table branch.
 	switch format {
@@ -102,7 +102,7 @@ func printAuditTable(res *apiclient.BlockStoreAuditResult) error {
 		{"Duration", fmt.Sprintf("%dms", r.DurationMS)},
 		{"Total Files", fmt.Sprintf("%d", r.TotalFiles)},
 		{"Manifest Refs (Σ len(Blocks))", fmt.Sprintf("%d", r.TotalRefs)},
-		{"Backed by FileBlock row", fmt.Sprintf("%d", r.BackedRefs)},
+		{"Backed by FileChunk row", fmt.Sprintf("%d", r.BackedRefs)},
 		{"Dangling refs (missing row)", fmt.Sprintf("%d", r.DanglingRefs)},
 	}
 	if err := output.SimpleTable(os.Stdout, pairs); err != nil {
@@ -110,7 +110,7 @@ func printAuditTable(res *apiclient.BlockStoreAuditResult) error {
 	}
 	if r.Delta != 0 {
 		fmt.Println()
-		fmt.Printf("manifest-consistency violation: %d dangling reference(s) — manifest blocks with no backing FileBlock row\n", r.DanglingRefs)
+		fmt.Printf("manifest-consistency violation: %d dangling reference(s) — manifest blocks with no backing FileChunk row\n", r.DanglingRefs)
 	}
 	return nil
 }

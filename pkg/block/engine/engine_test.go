@@ -11,24 +11,24 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
 )
 
-// stubFileBlockStore is an in-memory block.EngineFileBlockStore
+// stubFileChunkStore is an in-memory block.EngineFileChunkStore
 // for the engine test harness. It carries the minimum read-path
-// surface the post-Phase-18 CAS engine consumes: GetFileBlock (used by
-// the syncer's resolveFileBlock) and Put (populated by the memory
+// surface the post-Phase-18 CAS engine consumes: GetFileChunk (used by
+// the syncer's resolveFileChunk) and Put (populated by the memory
 // local store's chunk emitter via engine.New's wiring). Mutating
 // methods (Delete, IncrementRefCount, DecrementRefCount) maintain
 // just enough state for the cascade tests;
-// ListFileBlocks returns per-payload subsets.
-type stubFileBlockStore struct {
+// ListFileChunks returns per-payload subsets.
+type stubFileChunkStore struct {
 	mu     sync.Mutex
-	blocks map[string]*block.FileBlock
+	blocks map[string]*block.FileChunk
 }
 
-func newStubFileBlockStore() *stubFileBlockStore {
-	return &stubFileBlockStore{blocks: make(map[string]*block.FileBlock)}
+func newStubFileChunkStore() *stubFileChunkStore {
+	return &stubFileChunkStore{blocks: make(map[string]*block.FileChunk)}
 }
 
-func (s *stubFileBlockStore) GetByHash(_ context.Context, h block.ContentHash) (*block.FileBlock, error) {
+func (s *stubFileChunkStore) GetByHash(_ context.Context, h block.ContentHash) (*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, fb := range s.blocks {
@@ -38,33 +38,33 @@ func (s *stubFileBlockStore) GetByHash(_ context.Context, h block.ContentHash) (
 	}
 	return nil, nil
 }
-func (s *stubFileBlockStore) Put(_ context.Context, fb *block.FileBlock) error {
+func (s *stubFileChunkStore) Put(_ context.Context, fb *block.FileChunk) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.blocks == nil {
-		s.blocks = make(map[string]*block.FileBlock)
+		s.blocks = make(map[string]*block.FileChunk)
 	}
 	// Defensive copy to avoid aliasing into caller state.
 	cp := *fb
 	s.blocks[fb.ID] = &cp
 	return nil
 }
-func (s *stubFileBlockStore) Delete(_ context.Context, id string) error {
+func (s *stubFileChunkStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.blocks, id)
 	return nil
 }
-func (s *stubFileBlockStore) IncrementRefCount(_ context.Context, _ string) error {
+func (s *stubFileChunkStore) IncrementRefCount(_ context.Context, _ string) error {
 	return nil
 }
-func (s *stubFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
+func (s *stubFileChunkStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (s *stubFileBlockStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+func (s *stubFileChunkStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (s *stubFileBlockStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.BlockRef) error {
+func (s *stubFileChunkStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.BlockRef) error {
 	// bump RefCount on any row indexed by hash. The stub
 	// holds blocks keyed by id but each row carries a Hash field, so
 	// resolve linearly. ErrUnknownHash when no row matches.
@@ -79,21 +79,21 @@ func (s *stubFileBlockStore) AddRef(_ context.Context, h block.ContentHash, _ st
 	return block.ErrUnknownHash
 }
 
-// Engine-internal surface (kept off the public FileBlockStore).
-func (s *stubFileBlockStore) GetFileBlock(_ context.Context, id string) (*block.FileBlock, error) {
+// Engine-internal surface (kept off the public FileChunkStore).
+func (s *stubFileChunkStore) GetFileChunk(_ context.Context, id string) (*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fb, ok := s.blocks[id]
 	if !ok {
-		return nil, block.ErrFileBlockNotFound
+		return nil, block.ErrFileChunkNotFound
 	}
 	return fb, nil
 }
-func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string) ([]*block.FileBlock, error) {
+func (s *stubFileChunkStore) ListFileChunks(_ context.Context, payloadID string) ([]*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prefix := payloadID + "/"
-	var out []*block.FileBlock
+	var out []*block.FileChunk
 	for id, fb := range s.blocks {
 		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
 			out = append(out, fb)
@@ -101,7 +101,7 @@ func (s *stubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string)
 	}
 	return out, nil
 }
-func (s *stubFileBlockStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+func (s *stubFileChunkStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	s.mu.Lock()
 	seen := make(map[string]struct{})
 	for id := range s.blocks {
@@ -128,14 +128,14 @@ func (s *stubFileBlockStore) EnumeratePayloads(ctx context.Context, fn func(payl
 func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Store {
 	t.Helper()
 	localStore := memory.New()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,
-		FileBlockStore:  fbs,
+		FileChunkStore:  fbs,
 		ReadBufferBytes: readBufferBytes,
 		PrefetchWorkers: prefetchWorkers,
 	})
@@ -156,14 +156,14 @@ func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *St
 func newTestEngineWithCoordinator(t *testing.T, c MetadataCoordinator) *Store {
 	t.Helper()
 	localStore := memory.New()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
 		Syncer:         syncer,
-		FileBlockStore: fbs,
+		FileChunkStore: fbs,
 		Coordinator:    c,
 	})
 	if err != nil {
@@ -371,7 +371,7 @@ func (r *recordingCache) Close() error      { r.closed.Store(true); return nil }
 // Close. Uses a recording fake so we can observe it.
 func TestClose_ClosesCache(t *testing.T) {
 	localStore := memory.New()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{

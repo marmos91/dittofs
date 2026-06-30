@@ -45,7 +45,7 @@ func MapContentToNFS3(err error) uint32 {
 	if goerrors.Is(err, block.ErrCASContentMismatch) {
 		return nfs3types.NFS3ErrIO
 	}
-	// BlockRef.Hash refers to a FileBlock that's been GC'd or never
+	// BlockRef.Hash refers to a FileChunk that's been GC'd or never
 	// existed. Operators triage via log inspection (vs.
 	// ErrCASContentMismatch which means bytes don't match the hash).
 	// Both surface as EIO at the wire — a data-integrity failure the

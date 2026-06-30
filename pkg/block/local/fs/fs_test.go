@@ -16,76 +16,76 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// countingFileBlockStore wraps a block.EngineFileBlockStore and
+// countingFileChunkStore wraps a block.EngineFileChunkStore and
 // counts calls per method. Used by the conformance suite (and
 // neighboring eviction tests) to assert that the local store's
-// synchronous hot-path / eviction paths make zero FileBlockStore calls
+// synchronous hot-path / eviction paths make zero FileChunkStore calls
 // (d /).
 //
 // Counters are atomic so tests may observe them without racing the
-// background SyncFileBlocks goroutine that Start() launches.
-type countingFileBlockStore struct {
-	inner block.EngineFileBlockStore
+// background SyncFileChunks goroutine that Start() launches.
+type countingFileChunkStore struct {
+	inner block.EngineFileChunkStore
 
-	get               atomic.Int64 // GetFileBlock (engine-internal)
-	put               atomic.Int64 // Put (was PutFileBlock)
-	del               atomic.Int64 // Delete (was DeleteFileBlock)
+	get               atomic.Int64 // GetFileChunk (engine-internal)
+	put               atomic.Int64 // Put (was PutFileChunk)
+	del               atomic.Int64 // Delete (was DeleteFileChunk)
 	incrementRefCount atomic.Int64
 	decrementRefCount atomic.Int64
 	addRef            atomic.Int64 // LRU hit path
-	getByHash         atomic.Int64 // GetByHash (was FindFileBlockByHash)
-	listFileBlocks    atomic.Int64 // engine-internal
+	getByHash         atomic.Int64 // GetByHash (was FindFileChunkByHash)
+	listFileChunks    atomic.Int64 // engine-internal
 }
 
-func newCountingFileBlockStore(inner block.EngineFileBlockStore) *countingFileBlockStore {
-	return &countingFileBlockStore{inner: inner}
+func newCountingFileChunkStore(inner block.EngineFileChunkStore) *countingFileChunkStore {
+	return &countingFileChunkStore{inner: inner}
 }
 
-func (c *countingFileBlockStore) GetFileBlock(ctx context.Context, id string) (*block.FileBlock, error) {
+func (c *countingFileChunkStore) GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error) {
 	c.get.Add(1)
-	return c.inner.GetFileBlock(ctx, id)
+	return c.inner.GetFileChunk(ctx, id)
 }
 
-func (c *countingFileBlockStore) Put(ctx context.Context, block *block.FileBlock) error {
+func (c *countingFileChunkStore) Put(ctx context.Context, block *block.FileChunk) error {
 	c.put.Add(1)
 	return c.inner.Put(ctx, block)
 }
 
-func (c *countingFileBlockStore) Delete(ctx context.Context, id string) error {
+func (c *countingFileChunkStore) Delete(ctx context.Context, id string) error {
 	c.del.Add(1)
 	return c.inner.Delete(ctx, id)
 }
 
-func (c *countingFileBlockStore) IncrementRefCount(ctx context.Context, id string) error {
+func (c *countingFileChunkStore) IncrementRefCount(ctx context.Context, id string) error {
 	c.incrementRefCount.Add(1)
 	return c.inner.IncrementRefCount(ctx, id)
 }
 
-func (c *countingFileBlockStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
+func (c *countingFileChunkStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
 	c.decrementRefCount.Add(1)
 	return c.inner.DecrementRefCount(ctx, id)
 }
 
-func (c *countingFileBlockStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
+func (c *countingFileChunkStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
 	c.decrementRefCount.Add(1)
 	return c.inner.DecrementRefCountAndReap(ctx, id)
 }
 
-func (c *countingFileBlockStore) AddRef(ctx context.Context, hash block.ContentHash, payloadID string, blockRef block.BlockRef) error {
+func (c *countingFileChunkStore) AddRef(ctx context.Context, hash block.ContentHash, payloadID string, blockRef block.BlockRef) error {
 	c.addRef.Add(1)
 	return c.inner.AddRef(ctx, hash, payloadID, blockRef)
 }
 
-func (c *countingFileBlockStore) GetByHash(ctx context.Context, hash block.ContentHash) (*block.FileBlock, error) {
+func (c *countingFileChunkStore) GetByHash(ctx context.Context, hash block.ContentHash) (*block.FileChunk, error) {
 	c.getByHash.Add(1)
 	return c.inner.GetByHash(ctx, hash)
 }
 
-func (c *countingFileBlockStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error) {
-	c.listFileBlocks.Add(1)
-	return c.inner.ListFileBlocks(ctx, payloadID)
+func (c *countingFileChunkStore) ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error) {
+	c.listFileChunks.Add(1)
+	return c.inner.ListFileChunks(ctx, payloadID)
 }
-func (c *countingFileBlockStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+func (c *countingFileChunkStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	return c.inner.EnumeratePayloads(ctx, fn)
 }
 
@@ -94,7 +94,7 @@ type fbsCallSnapshot struct {
 	get, put, del, inc, dec, addref, find, listFile int64
 }
 
-func (c *countingFileBlockStore) snapshot() fbsCallSnapshot {
+func (c *countingFileChunkStore) snapshot() fbsCallSnapshot {
 	return fbsCallSnapshot{
 		get:      c.get.Load(),
 		put:      c.put.Load(),
@@ -103,7 +103,7 @@ func (c *countingFileBlockStore) snapshot() fbsCallSnapshot {
 		dec:      c.decrementRefCount.Load(),
 		addref:   c.addRef.Load(),
 		find:     c.getByHash.Load(),
-		listFile: c.listFileBlocks.Load(),
+		listFile: c.listFileChunks.Load(),
 	}
 }
 
@@ -122,8 +122,8 @@ func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
 
 // ResetCount and TotalCount satisfy the FBSCounter interface declared in
 // test_hooks.go so the conformance suite can assert no
-// FileBlockStore calls happen during ensureSpace.
-func (c *countingFileBlockStore) ResetCount() {
+// FileChunkStore calls happen during ensureSpace.
+func (c *countingFileChunkStore) ResetCount() {
 	c.get.Store(0)
 	c.put.Store(0)
 	c.del.Store(0)
@@ -131,10 +131,10 @@ func (c *countingFileBlockStore) ResetCount() {
 	c.decrementRefCount.Store(0)
 	c.addRef.Store(0)
 	c.getByHash.Store(0)
-	c.listFileBlocks.Store(0)
+	c.listFileChunks.Store(0)
 }
 
-func (c *countingFileBlockStore) TotalCount() int {
+func (c *countingFileChunkStore) TotalCount() int {
 	return int(c.get.Load() +
 		c.put.Load() +
 		c.del.Load() +
@@ -142,7 +142,7 @@ func (c *countingFileBlockStore) TotalCount() int {
 		c.decrementRefCount.Load() +
 		c.addRef.Load() +
 		c.getByHash.Load() +
-		c.listFileBlocks.Load())
+		c.listFileChunks.Load())
 }
 
 // writeSentinelForTest writes a minimal valid `.cas-migrated-v1` marker

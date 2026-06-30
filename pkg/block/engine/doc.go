@@ -56,7 +56,7 @@
 //   - Non-blocking: Most operations return immediately; I/O happens in background
 //
 // The Syncer struct is created via NewSyncer() and requires a LocalStore
-// RemoteStore, and FileBlockStore.
+// RemoteStore, and FileChunkStore.
 //
 // # Block garbage collection (formerly pkg/block/gc)
 //

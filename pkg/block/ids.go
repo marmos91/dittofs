@@ -1,6 +1,6 @@
 package block
 
-// ParseChunkOffset extracts the trailing numeric component of a FileBlock
+// ParseChunkOffset extracts the trailing numeric component of a FileChunk
 // ID of the form "<payloadID>/<chunkOffset>" and returns
 // (chunkOffset, true) on success. Returns (0, false) for malformed IDs
 // (no slash, trailing slash, or non-digit characters after the slash).

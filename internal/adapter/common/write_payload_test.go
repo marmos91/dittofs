@@ -19,7 +19,7 @@ import (
 // The FSStore is constructed with an inline RollupStore +
 // SyncedHashStore + a tight stabilization window, and StartRollup is
 // invoked so AppendWrite-staged bytes flow through the
-// rollup → CAS chunk → FileBlock-row pipeline that the engine's CAS
+// rollup → CAS chunk → FileChunk-row pipeline that the engine's CAS
 // read path consumes.
 func newTestEngine(t *testing.T) *engine.Store {
 	t.Helper()
@@ -46,7 +46,7 @@ func newTestEngine(t *testing.T) *engine.Store {
 		Local:           localStore,
 		Remote:          nil,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		ReadBufferBytes: 0,
 		PrefetchWorkers: 0,
 	})
@@ -63,7 +63,7 @@ func newTestEngine(t *testing.T) *engine.Store {
 
 // forceRollup drives a synchronous rollup pass on the FSStore inside
 // the engine so AppendWrite-staged bytes land in the CAS chunk store +
-// FileBlock rows before the test reads them back. Mirrors the helper
+// FileChunk rows before the test reads them back. Mirrors the helper
 // used by the engine-package offline tests.
 func forceRollup(t *testing.T, bs *engine.Store, payloadID string) {
 	t.Helper()
@@ -80,7 +80,7 @@ func forceRollup(t *testing.T, bs *engine.Store, payloadID string) {
 			break
 		}
 	}
-	fsLocal.SyncFileBlocksForFile(context.Background(), payloadID)
+	fsLocal.SyncFileChunksForFile(context.Background(), payloadID)
 }
 
 // TestWriteToBlockStore_Passthrough asserts the Phase-09 passthrough contract:

@@ -104,7 +104,7 @@ func (bc *FSStore) chunkRollupWorker(ctx context.Context, _ int) {
 				// error here is genuine. Log at Error so misconfigured or
 				// corrupted state is observable; the dirty interval stays
 				// in the tree and a future pass (or restart + recovery)
-				// retries. A swallowed error here would hide FileBlock
+				// retries. A swallowed error here would hide FileChunk
 				// manifest persistence failures and logIndex/tree
 				// divergence reports from operator logs.
 				slog.Error("rollupFile failed",
@@ -211,7 +211,7 @@ func (bc *FSStore) releaseRollupSlot() { <-bc.rollupSlots }
 // isShutdownCancel reports whether err is (or wraps) a context CANCELLATION —
 // the signal that the rollup ctx was torn down by shutdown mid-pass. #1245 Bug
 // C: such an interruption is benign. CAS chunks are content-addressed (re-store
-// is a no-op) and rollup_offset only advances after the FileBlock manifest
+// is a no-op) and rollup_offset only advances after the FileChunk manifest
 // lands, so an interrupted rollup left durable, resumable state. Callers treat
 // this as "skip + resume on restart", NOT a fatal error that must reach os.Exit.
 // Genuine errors (CRC mismatch, persist failure, divergence) do NOT wrap
@@ -266,7 +266,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 // Phase C (mu re-held): re-validate lf/tombstone, then the CommitChunks
 // sequence on log-side state:
 //  1. (done in Phase B) StoreChunk — idempotent, fsynced.
-//  2. (done in Phase B) ObjectIDPersister — writes the FileBlock manifest +
+//  2. (done in Phase B) ObjectIDPersister — writes the FileChunk manifest +
 //     FileAttr.Blocks. MUST land before SetRollupOffset so a manifest-persist
 //     failure leaves rollup_offset UNCHANGED and the next pass retries.
 //  3. rollupStore.SetRollupOffset(payloadID, targetPos) — atomic-monotone;
@@ -285,7 +285,7 @@ func (bc *FSStore) rollupFile(ctx context.Context, payloadID string, force bool)
 // force=true bypasses the stabilization-window gate: the earliest dirty
 // interval is consumed regardless of how recently it was touched. This is
 // the snapshot-drain path (DrainRollups) — at snapshot time we want every
-// written byte flushed to CAS + the FileBlock manifest NOW, not just the
+// written byte flushed to CAS + the FileChunk manifest NOW, not just the
 // bytes that have aged past the stabilization window. Steady-state rollup
 // (worker pool, ticker) always passes force=false to preserve the
 // stabilization invariant.
@@ -546,7 +546,7 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	// #953: align the reconstruction window to existing CAS chunk
 	// boundaries. An in-place overwrite whose dirty interval starts/ends
 	// INSIDE a previously-rolled-up chunk would otherwise re-chunk only
-	// [baseOff, maxEnd) and emit new FileBlock rows that OVERLAP the old
+	// [baseOff, maxEnd) and emit new FileChunk rows that OVERLAP the old
 	// straddling chunks. The CAS read path (fillFromCASManifest /
 	// readLocalByHash) then mixes generations: a stale row sorted after a
 	// new row clobbers the freshly-written bytes (silent corruption on the
@@ -607,7 +607,7 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	// matches the canonical FileAttr.Blocks invariant the downstream
 	// ObjectID compute relies on.
 	// #669: the LRU is populated AFTER the ObjectIDPersister callback
-	// below confirms the FileBlock rows are durable. Populating before
+	// below confirms the FileChunk rows are durable. Populating before
 	// persister success let a concurrent rollup on the same payload
 	// observe the hash via the LRU and call AddRef before the row
 	// existed → ErrUnknownHash storm under load (and a silent retry
@@ -645,7 +645,7 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	// Tombstone re-check IMMEDIATELY before the metadata commit — and before
 	// the persister, matching the pre-C1 ordering. A delete that raced Phase B
 	// set the tombstone in DeleteAppendLog step 1 (before its drain barrier);
-	// we must not write FileBlock manifest rows or advance rollup_offset for a
+	// we must not write FileChunk manifest rows or advance rollup_offset for a
 	// deleted payload. Content-addressed chunks already in blocks/ are swept
 	// by GC, and the DeleteAppendLog drain on rmu waits for this pass to
 	// finish before clearing the metadata row.
@@ -656,10 +656,10 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	// CommitChunks atomic sequence. The on-disk CAS chunks are already durable
 	// from StoreChunk above. The remaining steps must land in this order so a
 	// partial failure never advances rollup_offset past records whose
-	// FileBlock manifest rows haven't been persisted:
+	// FileChunk manifest rows haven't been persisted:
 	//
 	//  1. ObjectIDPersister(payloadID, blocks, objectID) — writes the per-chunk
-	//     FileBlock rows AND the FileAttr.Blocks manifest + ObjectID. Runs here
+	//     FileChunk rows AND the FileAttr.Blocks manifest + ObjectID. Runs here
 	//     in Phase B (still WITHOUT the append mutex) because it touches only
 	//     metadata. If it fails, rollup_offset stays UNCHANGED (Phase C never
 	//     runs) and the next pass retries — chunks are content-addressed and
@@ -885,7 +885,7 @@ func reconstructStream(recs []rec) ([]byte, uint64, error) {
 
 // alignRecsToChunkBoundaries expands the record set so the reconstructed
 // window covers WHOLE existing CAS chunks at its edges (#953). It finds
-// the existing FileBlock rows that straddle the dirty window's start or
+// the existing FileChunk rows that straddle the dirty window's start or
 // end — i.e. a chunk [off, off+size) with off < windowStart < off+size or
 // off < windowEnd < off+size — reads those chunks from the local CAS, and
 // prepends them as synthetic records at their original offset. Prepending
@@ -894,7 +894,7 @@ func reconstructStream(recs []rec) ([]byte, uint64, error) {
 // overlay the bytes the client actually rewrote, while the straddling
 // chunk supplies its non-overwritten head/tail.
 //
-// Returns recs unchanged when there is no FileBlock store, no rows, or no
+// Returns recs unchanged when there is no FileChunk store, no rows, or no
 // straddling chunk is locally readable. The function never returns an
 // error: an unreadable straddling chunk is a benign best-effort miss (the
 // caller's reap stays conservative on that edge).
@@ -914,7 +914,7 @@ func (bc *FSStore) alignRecsToChunkBoundaries(ctx context.Context, payloadID str
 		}
 	}
 
-	rows, err := bc.blockStore.ListFileBlocks(ctx, payloadID)
+	rows, err := bc.blockStore.ListFileChunks(ctx, payloadID)
 	if err != nil || len(rows) == 0 {
 		return recs
 	}

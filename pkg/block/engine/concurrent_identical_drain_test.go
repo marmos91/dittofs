@@ -15,7 +15,7 @@ import (
 // of BYTE-IDENTICAL content through the real engine over the badger metadata
 // backend and asserts ALL converge: a concurrent Flush of every file's
 // identical content provokes badger SSI optimistic-concurrency aborts on the
-// hot dedup keys (the obj:<hash> object_id index + the content-hash FileBlock
+// hot dedup keys (the obj:<hash> object_id index + the content-hash FileChunk
 // rows), exactly the bulk-same-content (zero/padding tar block) pattern from
 // #1245-B.
 //
@@ -72,7 +72,7 @@ func TestBadgerConcurrentIdenticalContent_Converges(t *testing.T) {
 	// rollupFile serializes same-file passes but lets DIFFERENT identical-
 	// content files roll up in parallel, so their ObjectIDPersister calls
 	// concurrently contend on the same hot badger dedup keys (the obj:<hash>
-	// object_id index + the content-hash FileBlock rows) → SSI conflicts.
+	// object_id index + the content-hash FileChunk rows) → SSI conflicts.
 	const drainers = 8
 	errs := make([]error, drainers)
 	var wg sync.WaitGroup

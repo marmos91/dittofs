@@ -55,10 +55,10 @@ func isValidPayloadID(s string) bool {
 }
 
 // Recover scans the block store directory for .blk files and reconciles them with
-// the FileBlockStore (BadgerDB). Called on startup to restore local store state
+// the FileChunkStore (BadgerDB). Called on startup to restore local store state
 //
 //   - Rebuilds the in-memory files map (payloadID -> fileSize) from disk
-//   - Deletes orphan .blk files that have no FileBlock metadata
+//   - Deletes orphan .blk files that have no FileChunk metadata
 //   - Fixes stale LocalPaths (e.g., block store directory was moved)
 //   - Reverts interrupted syncs (Syncing -> Local) for retry
 //   - When useAppendLog=true: scans logs/*.log, reconciles header vs metadata
@@ -94,9 +94,9 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 			blockID = rel
 		}
 
-		fb, err := bc.blockStore.GetFileBlock(ctx, blockID)
+		fb, err := bc.blockStore.GetFileChunk(ctx, blockID)
 		if err != nil {
-			if errors.Is(err, block.ErrFileBlockNotFound) {
+			if errors.Is(err, block.ErrFileChunkNotFound) {
 				if rmErr := os.Remove(path); rmErr != nil {
 					logger.Warn("local store: recovery failed to remove orphan", "path", path, "error", rmErr)
 				}
@@ -136,7 +136,7 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 		}
 
 		// Seed the in-process diskIndex so the post-Recover write hot path
-		// and eviction can see this block without a FileBlockStore query
+		// and eviction can see this block without a FileChunkStore query
 		// (d /).
 		bc.diskIndexStore(fb)
 
@@ -197,7 +197,7 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 // tree so the rollup picks up where the previous run left off.
 //
 // / Warning 3 (orphan sweep): a log is swept only when ALL of
-// (a) metadata rollup_offset == 0, (b) no block-0 FileBlock exists for
+// (a) metadata rollup_offset == 0, (b) no block-0 FileChunk exists for
 // the payload, AND (c) the log's on-disk mtime is older than
 // orphanLogMinAgeSeconds. The age gate prevents a false positive on a
 // freshly-created log whose writes have not yet been rolled up.
@@ -414,7 +414,7 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 
 		// / Warning 3 orphan sweep: a log is swept only when
 		//   (a) metaOff == 0
-		//   (b) no block-0 live FileBlock for the payloadID
+		//   (b) no block-0 live FileChunk for the payloadID
 		//   (c) log mtime >= effectiveMinAgeSec (computed once at entry, FIX-16)
 		// The mtime gate guarantees fresh logs are never swept.
 		isOrphan := false
@@ -486,13 +486,13 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 	return scanned, recovered, truncated, rebuilt, orphaned, reconciled
 }
 
-// payloadHasLiveMetadata reports whether the FileBlockStore has any live
-// block prefixed by payloadID. A single GetFileBlock probe for block-0 is
+// payloadHasLiveMetadata reports whether the FileChunkStore has any live
+// block prefixed by payloadID. A single GetFileChunk probe for block-0 is
 // a cheap heuristic suitable for orphan-log sweep classification.
 func (bc *FSStore) payloadHasLiveMetadata(ctx context.Context, payloadID string) bool {
 	if bc.blockStore == nil {
 		return false
 	}
-	_, err := bc.blockStore.GetFileBlock(ctx, payloadID+"/block-0")
+	_, err := bc.blockStore.GetFileChunk(ctx, payloadID+"/block-0")
 	return err == nil
 }

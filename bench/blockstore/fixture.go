@@ -46,7 +46,7 @@ func NewEngine(baseDir string, remoteStore remote.RemoteStore) (*engine.Store, f
 		Local:           local,
 		Remote:          remoteStore,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 	})
 	if err != nil {

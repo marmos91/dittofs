@@ -62,7 +62,7 @@ func TestWriteAt_SparseDest_ReadsLeadingGapAsZeros(t *testing.T) {
 
 // TestMemoryStore_ReadPayloadAt_SparseLeadingGap isolates the local-store
 // contract: ReadPayloadAt over a window whose leading bytes were never
-// written must serve those bytes as zeros, not return ErrFileBlockNotFound.
+// written must serve those bytes as zeros, not return ErrFileChunkNotFound.
 func TestMemoryStore_ReadPayloadAt_SparseLeadingGap(t *testing.T) {
 	store := memory.New()
 	ctx := context.Background()

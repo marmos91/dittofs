@@ -135,7 +135,7 @@ func setupPerfFixture(tb testing.TB) *phase12Fixture {
 func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int) *Store {
 	tb.Helper()
 	localStore := memory.New()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 
 	bs, err := New(BlockStoreConfig{

@@ -7,12 +7,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// TestReapSupersededFileBlocks_ZeroNewBlocks_ReapsAllPrior asserts that when a
+// TestReapSupersededFileChunks_ZeroNewBlocks_ReapsAllPrior asserts that when a
 // rollup pass produces zero chunks (file truncated to zero bytes), every prior
-// FileBlock row is unconditionally reaped. Before the fix the outer guard
+// FileChunk row is unconditionally reaped. Before the fix the outer guard
 // short-circuited on len(newBlocks) == 0, leaving the prior rows (and their
 // CAS chunks) orphaned forever.
-func TestReapSupersededFileBlocks_ZeroNewBlocks_ReapsAllPrior(t *testing.T) {
+func TestReapSupersededFileChunks_ZeroNewBlocks_ReapsAllPrior(t *testing.T) {
 	ctx := context.Background()
 	coord := newRefcountCoordinator()
 	var h0, h1 block.ContentHash
@@ -26,8 +26,8 @@ func TestReapSupersededFileBlocks_ZeroNewBlocks_ReapsAllPrior(t *testing.T) {
 	priorOffsets := []uint64{0, 4096}
 	var newBlocks []block.BlockRef // empty — truncated to zero
 
-	if err := bs.reapSupersededFileBlocks(ctx, "pid-trunc", priorOffsets, newBlocks); err != nil {
-		t.Fatalf("reapSupersededFileBlocks: %v", err)
+	if err := bs.reapSupersededFileChunks(ctx, "pid-trunc", priorOffsets, newBlocks); err != nil {
+		t.Fatalf("reapSupersededFileChunks: %v", err)
 	}
 
 	coord.mu.Lock()
@@ -39,11 +39,11 @@ func TestReapSupersededFileBlocks_ZeroNewBlocks_ReapsAllPrior(t *testing.T) {
 	}
 }
 
-// TestReapSupersededFileBlocks_EmptyPrior_IsNoOp guards that removing the
+// TestReapSupersededFileChunks_EmptyPrior_IsNoOp guards that removing the
 // len(newBlocks) == 0 short-circuit from the outer guard did not break the
 // len(priorOffsets) == 0 no-op path. With no prior rows there is nothing to
 // reap regardless of newBlocks.
-func TestReapSupersededFileBlocks_EmptyPrior_IsNoOp(t *testing.T) {
+func TestReapSupersededFileChunks_EmptyPrior_IsNoOp(t *testing.T) {
 	ctx := context.Background()
 	coord := newRefcountCoordinator()
 	var h0 block.ContentHash
@@ -54,8 +54,8 @@ func TestReapSupersededFileBlocks_EmptyPrior_IsNoOp(t *testing.T) {
 
 	newBlocks := []block.BlockRef{{Hash: h0, Offset: 0, Size: 4096}}
 
-	if err := bs.reapSupersededFileBlocks(ctx, "pid-empty-prior", nil, newBlocks); err != nil {
-		t.Fatalf("reapSupersededFileBlocks: %v", err)
+	if err := bs.reapSupersededFileChunks(ctx, "pid-empty-prior", nil, newBlocks); err != nil {
+		t.Fatalf("reapSupersededFileChunks: %v", err)
 	}
 
 	coord.mu.Lock()
@@ -65,29 +65,29 @@ func TestReapSupersededFileBlocks_EmptyPrior_IsNoOp(t *testing.T) {
 	}
 }
 
-// TestReapSupersededFileBlocks_NilCoordinator_IsNoOp asserts the unwired
+// TestReapSupersededFileChunks_NilCoordinator_IsNoOp asserts the unwired
 // coordinator guard still short-circuits even on the zero-blocks path (no
 // panic, nil error).
-func TestReapSupersededFileBlocks_NilCoordinator_IsNoOp(t *testing.T) {
+func TestReapSupersededFileChunks_NilCoordinator_IsNoOp(t *testing.T) {
 	ctx := context.Background()
 	bs := buildCascadeFixture(t, nil, nil)
 
 	priorOffsets := []uint64{0, 4096}
 	var newBlocks []block.BlockRef // empty — truncated to zero
 
-	if err := bs.reapSupersededFileBlocks(ctx, "pid-nil-coord", priorOffsets, newBlocks); err != nil {
-		t.Fatalf("reapSupersededFileBlocks with nil coordinator: %v", err)
+	if err := bs.reapSupersededFileChunks(ctx, "pid-nil-coord", priorOffsets, newBlocks); err != nil {
+		t.Fatalf("reapSupersededFileChunks with nil coordinator: %v", err)
 	}
 }
 
-// TestReapSupersededFileBlocks_RegionFilter exercises the general (non-empty
+// TestReapSupersededFileChunks_RegionFilter exercises the general (non-empty
 // newBlocks) reap path: only prior offsets that fall inside the rewritten
 // region [regionStart, regionEnd) and are NOT reused by a new chunk are
 // reaped. Prior offsets outside the region are kept, and reused offsets are
 // kept (overwritten in place — current generation). It also covers a
 // duplicate prior offset to confirm the dedup guard fires DecrementRefCount
 // at most once per offset.
-func TestReapSupersededFileBlocks_RegionFilter(t *testing.T) {
+func TestReapSupersededFileChunks_RegionFilter(t *testing.T) {
 	ctx := context.Background()
 	coord := newRefcountCoordinator()
 
@@ -122,8 +122,8 @@ func TestReapSupersededFileBlocks_RegionFilter(t *testing.T) {
 	// Duplicate the reaped offset in priorOffsets to exercise the dedup guard.
 	priorOffsets := []uint64{0, 8192, 8192, 16384}
 
-	if err := bs.reapSupersededFileBlocks(ctx, payloadID, priorOffsets, newBlocks); err != nil {
-		t.Fatalf("reapSupersededFileBlocks: %v", err)
+	if err := bs.reapSupersededFileChunks(ctx, payloadID, priorOffsets, newBlocks); err != nil {
+		t.Fatalf("reapSupersededFileChunks: %v", err)
 	}
 
 	coord.mu.Lock()

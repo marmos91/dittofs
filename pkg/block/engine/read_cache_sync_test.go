@@ -25,9 +25,9 @@ func TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload(t *testing.T) {
 
 	loc := memorylocal.New()
 	rs := remotememory.New()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
-	hash, _ := seedFileBlock(t, fbs, rs, payloadID, data)
+	hash, _ := seedFileChunk(t, fbs, rs, payloadID, data)
 
 	m := &Syncer{
 		local:           loc,
@@ -49,9 +49,9 @@ func TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload(t *testing.T) {
 		t.Fatalf("precondition unsyncedBytes=%d, want %d", got, len(data))
 	}
 
-	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 	if err != nil {
-		t.Fatalf("listFileBlocksSnapshot: %v", err)
+		t.Fatalf("listFileChunksSnapshot: %v", err)
 	}
 	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
 	if err != nil {

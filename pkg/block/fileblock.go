@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-// FileBlockStore defines content-addressed block CRUD for the engine.
+// FileChunkStore defines content-addressed block CRUD for the engine.
 //
 // methods: GetByHash, Put, Delete, IncrementRefCount,
 // DecrementRefCount, DecrementRefCountAndReap, AddRef. Block identity is hash-keyed
@@ -18,28 +18,28 @@ import (
 // storetest.testPut_TwoIDsSameHash pins this contract for legacy
 // tolerance.
 //
-// Enumeration of all FileBlocks across the store has moved up to
-// MetadataStore.EnumerateFileBlocks.
+// Enumeration of all FileChunks across the store has moved up to
+// MetadataStore.EnumerateFileChunks.
 //
 // Backends MAY (and currently do) implement additional methods
-// (GetFileBlock, ListFileBlocks, ListRemoteBlocks, ListUnreferenced)
+// (GetFileChunk, ListFileChunks, ListRemoteBlocks, ListUnreferenced)
 // for engine-internal use; those are accessed via a wider engine-
 // internal interface, NOT via this public surface.
-type FileBlockStore interface {
-	// GetByHash returns any FileBlock with the given content hash, or
+type FileChunkStore interface {
+	// GetByHash returns any FileChunk with the given content hash, or
 	// (nil, nil) when absent. The "any" wording matters: legacy data
 	// may have multiple rows per hash; callers (the engine dedup
 	// short-circuit) treat the result as best-effort and proceed with
-	// any one row's BlockStoreKey. Renamed from FindFileBlockByHash.
-	GetByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
+	// any one row's BlockStoreKey. Renamed from FindFileChunkByHash.
+	GetByHash(ctx context.Context, hash ContentHash) (*FileChunk, error)
 
-	// Put creates or replaces a FileBlock by ID.
+	// Put creates or replaces a FileChunk by ID.
 	//
 	// Upsert semantics are by ID: an INSERT for a new ID, or an UPDATE
 	// when the ID already exists. The Hash column is NOT a uniqueness
 	// constraint at the contract level — engines like the dedup
 	// short-circuit (engine.uploadOne) WILL produce two distinct
-	// FileBlock IDs sharing the same ContentHash when two file regions
+	// FileChunk IDs sharing the same ContentHash when two file regions
 	// hash-match. Backends MUST tolerate this without erroring.
 	//
 	// backend implementations
@@ -61,11 +61,11 @@ type FileBlockStore interface {
 	//
 	// The conformance test storetest.testPut_TwoIDsSameHash
 	// pins this contract across all three backends. Renamed from
-	// PutFileBlock.
-	Put(ctx context.Context, block *FileBlock) error
+	// PutFileChunk.
+	Put(ctx context.Context, block *FileChunk) error
 
-	// Delete removes a FileBlock by ID. Returns ErrFileBlockNotFound
-	// if not found. Renamed from DeleteFileBlock.
+	// Delete removes a FileChunk by ID. Returns ErrFileChunkNotFound
+	// if not found. Renamed from DeleteFileChunk.
 	//
 	// Collision check (2026-04-26): no backend struct has a
 	// pre-existing method named exactly `Delete()`; the rename is
@@ -73,25 +73,25 @@ type FileBlockStore interface {
 	Delete(ctx context.Context, id string) error
 
 	// IncrementRefCount atomically bumps RefCount for the given
-	// FileBlock id.
+	// FileChunk id.
 	IncrementRefCount(ctx context.Context, id string) error
 
 	// DecrementRefCount atomically decrements; returns the new
 	// count. RefCount=0 marks the block as a GC candidate.
 	DecrementRefCount(ctx context.Context, id string) (uint32, error)
 
-	// DecrementRefCountAndReap atomically decrements RefCount for the FileBlock
+	// DecrementRefCountAndReap atomically decrements RefCount for the FileChunk
 	// id and, IF the new count is 0, deletes the row (and its hash index entry)
 	// in the SAME critical section as the decrement — TOCTOU-free against a
 	// concurrent AddRef the same way IncrementRefCount/AddRef are. Returns the
 	// new count (0 when reaped or when the row was already absent).
-	// ErrFileBlockNotFound is tolerated and reported as count 0 (a row already
+	// ErrFileChunkNotFound is tolerated and reported as count 0 (a row already
 	// swept is not a caller error). Used by the engine Delete/Truncate reclaim
 	// path so that, once a hash has no live references, it leaves
-	// EnumerateFileBlocks and the GC sweep can collect the remote chunk.
+	// EnumerateFileChunks and the GC sweep can collect the remote chunk.
 	DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error)
 
-	// AddRef atomically increments RefCount on the FileBlock row
+	// AddRef atomically increments RefCount on the FileChunk row
 	// indexed by hash. Used by the in-memory hash dedup LRU hit path.
 	//
 	// On success, RefCount is incremented; BlockState is UNCHANGED
@@ -99,7 +99,7 @@ type FileBlockStore interface {
 	// This is the load-bearing contract: the LRU hit path references
 	// an existing block — it never creates one.
 	//
-	// Returns ErrUnknownHash if no FileBlock row exists for the given
+	// Returns ErrUnknownHash if no FileChunk row exists for the given
 	// hash. Callers (see pkg/block/local/fs/rollup.go LRU hit
 	// path) MUST fall back to the full Put path on this sentinel —
 	// the LRU may be ahead of the metadata store after a crash, or
@@ -131,35 +131,35 @@ type FileBlockStore interface {
 	AddRef(ctx context.Context, hash ContentHash, payloadID string, blockRef BlockRef) error
 }
 
-// EngineFileBlockStore is the engine-internal extension of
-// FileBlockStore. The engine + local/fs packages still need by-ID
+// EngineFileChunkStore is the engine-internal extension of
+// FileChunkStore. The engine + local/fs packages still need by-ID
 // and per-file lookups for the dual-read read path, recovery,
 // dedup-delete and stats fan-out (callers under
 // pkg/block/{engine,local/fs}/).
 //
 // All three metadata backends (memory/badger/postgres) satisfy this
 // interface — the methods are concrete on the backend struct, just
-// not on the public FileBlockStore surface. Future work will
+// not on the public FileChunkStore surface. Future work will
 // eliminate the remaining call sites by routing reads through
 // FileAttr.Blocks, and this interface will go away with them.
-type EngineFileBlockStore interface {
-	FileBlockStore
+type EngineFileChunkStore interface {
+	FileChunkStore
 
-	// GetFileBlock retrieves a FileBlock by ID. Returns
-	// ErrFileBlockNotFound if absent.
-	GetFileBlock(ctx context.Context, id string) (*FileBlock, error)
+	// GetFileChunk retrieves a FileChunk by ID. Returns
+	// ErrFileChunkNotFound if absent.
+	GetFileChunk(ctx context.Context, id string) (*FileChunk, error)
 
-	// ListFileBlocks returns every FileBlock whose ID begins with
+	// ListFileChunks returns every FileChunk whose ID begins with
 	// "{payloadID}/", sorted by parsed numeric block index. Returns
 	// an empty (non-nil) slice when no blocks match.
-	ListFileBlocks(ctx context.Context, payloadID string) ([]*FileBlock, error)
+	ListFileChunks(ctx context.Context, payloadID string) ([]*FileChunk, error)
 
 	// EnumeratePayloads streams every distinct payloadID that has at
-	// least one FileBlock row in this (share-scoped) store through fn,
+	// least one FileChunk row in this (share-scoped) store through fn,
 	// in no guaranteed order. It is the authoritative enumeration of a
 	// share's files: unlike the local block store's ListFiles (which
 	// tracks only payloads with a live append-log and goes empty once a
-	// payload rolls up), the FileBlock rows persist across rollup, so
+	// payload rolls up), the FileChunk rows persist across rollup, so
 	// this also surfaces rolled-up and remote-only payloads. warm and
 	// stats drive off this rather than local.ListFiles. A non-nil error
 	// from fn aborts the enumeration and is returned.

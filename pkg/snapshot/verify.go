@@ -32,7 +32,7 @@ import (
 // spuriously-empty manifest: detecting "empty manifest on a non-empty
 // share" (the hollow-durability case) is the caller's responsibility.
 // Runtime.runSnapshotOrchestration cross-checks an empty manifest against
-// the live FileBlock enumeration before this call and fails the snapshot
+// the live FileChunk enumeration before this call and fails the snapshot
 // if the share still references hashes — see the empty-manifest guard there.
 //
 // Caller wraps the returned error with models.ErrSnapshotVerifyFailed

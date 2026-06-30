@@ -12,7 +12,7 @@ import (
 // newDrainResetFixture builds a full engine.Store over an fs local
 // store + memory metadata, with a LARGE stabilization window and the
 // rollup worker pool DELIBERATELY NOT started, so the only way dirty
-// append-log bytes reach CAS + the FileBlock manifest is via an explicit
+// append-log bytes reach CAS + the FileChunk manifest is via an explicit
 // DrainRollups. This reproduces the snapshot race where a snapshot is
 // taken before the async rollup catches up.
 func newDrainResetFixture(t *testing.T) (*Store, *fs.FSStore) {
@@ -34,7 +34,7 @@ func newDrainResetFixture(t *testing.T) (*Store, *fs.FSStore) {
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		ReadBufferBytes: 64 * 1024 * 1024,
 	})
 	if err != nil {
@@ -49,7 +49,7 @@ func newDrainResetFixture(t *testing.T) (*Store, *fs.FSStore) {
 
 // TestEngine_DrainRollups_PopulatesManifest reproduces C1 at the engine
 // layer through the REAL write path (bs.WriteAt — NOT pre-populated
-// metadata). Before DrainRollups the FileBlock manifest is empty (the
+// metadata). Before DrainRollups the FileChunk manifest is empty (the
 // async rollup never ran), so a metadata Backup taken now would yield an
 // empty snapshot manifest. After DrainRollups the manifest is non-empty.
 func TestEngine_DrainRollups_PopulatesManifest(t *testing.T) {
@@ -64,9 +64,9 @@ func TestEngine_DrainRollups_PopulatesManifest(t *testing.T) {
 
 	// Pre-drain: manifest must be empty — proves the snapshot race would
 	// capture an empty manifest.
-	pre, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	pre, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
-		t.Fatalf("ListFileBlocks (pre): %v", err)
+		t.Fatalf("ListFileChunks (pre): %v", err)
 	}
 	if len(pre) != 0 {
 		t.Fatalf("manifest already populated before DrainRollups (%d rows); cannot prove C1", len(pre))
@@ -76,12 +76,12 @@ func TestEngine_DrainRollups_PopulatesManifest(t *testing.T) {
 		t.Fatalf("DrainRollups: %v", err)
 	}
 
-	post, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	post, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
-		t.Fatalf("ListFileBlocks (post): %v", err)
+		t.Fatalf("ListFileChunks (post): %v", err)
 	}
 	if len(post) == 0 {
-		t.Fatal("DrainRollups did not populate the FileBlock manifest (C1: empty snapshot manifest)")
+		t.Fatal("DrainRollups did not populate the FileChunk manifest (C1: empty snapshot manifest)")
 	}
 }
 

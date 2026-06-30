@@ -58,7 +58,7 @@ type memoryBackupSnapshot struct {
 	ServerConfigCustomSettingsJSON []byte
 
 	// Lazy sub-store snapshots (nil when sub-store was never initialized).
-	FileBlockData  *fileBlockSnapshotData
+	FileChunkData  *fileBlockSnapshotData
 	Locks          *lockSnapshotData
 	Clients        *clientSnapshotData
 	DurableHandles *durableSnapshotData
@@ -66,7 +66,7 @@ type memoryBackupSnapshot struct {
 
 // fileBlockSnapshotData is a gob-friendly copy of fileBlockStoreData.
 type fileBlockSnapshotData struct {
-	Blocks    map[string]*metadata.FileBlock
+	Blocks    map[string]*metadata.FileChunk
 	HashIndex map[metadata.ContentHash]string
 }
 
@@ -157,7 +157,7 @@ func (s *MemoryMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 
 	// Snapshot lazy sub-stores (nil if never initialized).
 	if s.fileBlockData != nil {
-		snap.FileBlockData = &fileBlockSnapshotData{
+		snap.FileChunkData = &fileBlockSnapshotData{
 			Blocks:    s.fileBlockData.blocks,
 			HashIndex: s.fileBlockData.hashIndex,
 		}
@@ -375,10 +375,10 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	// Restore lazy sub-stores (nil snapshot = never initialized).
 	// Explicit nil assignment in the else branch is required because the
 	// destination store may have non-nil sub-stores from prior state.
-	if snap.FileBlockData != nil {
+	if snap.FileChunkData != nil {
 		s.fileBlockData = &fileBlockStoreData{
-			blocks:    snap.FileBlockData.Blocks,
-			hashIndex: snap.FileBlockData.HashIndex,
+			blocks:    snap.FileChunkData.Blocks,
+			hashIndex: snap.FileChunkData.HashIndex,
 		}
 	} else {
 		s.fileBlockData = nil

@@ -45,7 +45,7 @@ func (bs *Store) SyncCounts() (completed, failed int) {
 }
 
 // DrainRollups forces the local store to roll up every currently-dirty
-// payload into CAS + the FileBlock manifest, bypassing the
+// payload into CAS + the FileChunk manifest, bypassing the
 // stabilization-window gate. The snapshot-create orchestration calls this
 // BEFORE the metadata Backup() so the dump observes a fully-populated
 // FileAttr.Blocks (and therefore a non-empty snapshot manifest). It must

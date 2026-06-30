@@ -19,8 +19,8 @@ import (
 //  2. Overwrite a middle sub-range in place with DIFFERENT content so the
 //     re-chunked region lands on DIFFERENT FastCDC boundaries than the
 //     original write.
-//  3. Drain the rollup again. The per-file FileBlock manifest
-//     (ListFileBlocks) accumulates overlapping rows from BOTH generations
+//  3. Drain the rollup again. The per-file FileChunk manifest
+//     (ListFileChunks) accumulates overlapping rows from BOTH generations
 //     if the persister never deletes the superseded rows.
 //  4. Force the COLD read path via ResetLocalState — the append log is
 //     gone, so reads MUST resolve through the CAS manifest
@@ -100,19 +100,19 @@ func runColdReadInPlaceOverwrite(t *testing.T, ms metadata.Store, sharePrefix st
 	_ = h
 }
 
-// logManifest dumps the per-file FileBlock manifest rows and returns the
+// logManifest dumps the per-file FileChunk manifest rows and returns the
 // count of overlapping (stale-superseded) row pairs.
 func logManifest(t *testing.T, ms metadata.Store, pid, label string) int {
 	t.Helper()
 	fbl, ok := ms.(interface {
-		ListFileBlocks(context.Context, string) ([]*metadata.FileBlock, error)
+		ListFileChunks(context.Context, string) ([]*metadata.FileChunk, error)
 	})
 	if !ok {
 		return 0
 	}
-	rows, err := fbl.ListFileBlocks(context.Background(), pid)
+	rows, err := fbl.ListFileChunks(context.Background(), pid)
 	if err != nil {
-		t.Fatalf("ListFileBlocks: %v", err)
+		t.Fatalf("ListFileChunks: %v", err)
 	}
 	type rng struct{ start, end uint64 }
 	ranges := make([]rng, 0, len(rows))
@@ -139,7 +139,7 @@ func logManifest(t *testing.T, ms metadata.Store, pid, label string) int {
 // runCrossFileDedupKeepAlive is the #953 over-reap negative control. Two
 // files A and B are written with BYTE-IDENTICAL content, so FastCDC
 // produces identical chunk hashes and the CAS index dedups them (both
-// files' FileBlock rows point at the same hashes). File A is then
+// files' FileChunk rows point at the same hashes). File A is then
 // overwritten in place with different content, which reaps A's superseded
 // rows. The superseded chunk hashes are still referenced by file B's rows,
 // so they MUST NOT be reclaimed: a cold read of file B must still return

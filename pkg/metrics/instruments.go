@@ -134,7 +134,7 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		}),
 		gcStrandedRows: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "gc", Name: "stranded_rows_reaped_total",
-			Help: "FileBlock rows reaped by GC reconcile/migration runs (rows whose owning file was already gone).",
+			Help: "FileChunk rows reaped by GC reconcile/migration runs (rows whose owning file was already gone).",
 		}),
 
 		snapOps: factory(prometheus.CounterOpts{
@@ -285,7 +285,7 @@ func (m *Metrics) GCFinished(result string, sweptObjects, freedBytes int64, d ti
 	m.in.gcLastRunTime.Set(float64(time.Now().Unix()))
 }
 
-// RecordGCStrandedRows adds to the count of FileBlock rows reaped by a GC
+// RecordGCStrandedRows adds to the count of FileChunk rows reaped by a GC
 // reconcile/migration pass. No-op for n <= 0.
 func (m *Metrics) RecordGCStrandedRows(n int64) {
 	if m == nil || n <= 0 {

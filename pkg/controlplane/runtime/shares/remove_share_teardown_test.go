@@ -19,7 +19,7 @@ import (
 func newLocalEngineStore(t *testing.T) *engine.Store {
 	t.Helper()
 	local := memory.New()
-	// The in-memory metadata store satisfies EngineFileBlockStore (NewSyncer
+	// The in-memory metadata store satisfies EngineFileChunkStore (NewSyncer
 	// requires a non-nil one); the teardown path never exercises it.
 	fbs := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = fbs.Close() })
@@ -27,7 +27,7 @@ func newLocalEngineStore(t *testing.T) *engine.Store {
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          local,
 		Syncer:         syncer,
-		FileBlockStore: fbs,
+		FileChunkStore: fbs,
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
