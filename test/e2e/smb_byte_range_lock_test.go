@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -121,10 +122,30 @@ func TestSMBLockHolderHelper(t *testing.T) {
 		return
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
-	if err != nil {
-		fmt.Printf("HOLDER_ERR open %s: %v\n", path, err)
-		return
+	// Under full-suite load the parent's create — issued on a *different* SMB
+	// session — can lag this fresh session's view, so the open races the
+	// server-side commit and transiently returns ENOENT, and the first
+	// (uncontended) F_SETLK can momentarily hit a server-busy conflict. Retry
+	// both within a bounded deadline (shorter than the parent's 20s wait) so a
+	// load-induced race doesn't fail the holder and surface as the misleading
+	// "did not acquire the lock within 20s".
+	deadline := time.Now().Add(10 * time.Second)
+
+	var f *os.File
+	for {
+		var openErr error
+		f, openErr = os.OpenFile(path, os.O_RDWR, 0o644)
+		if openErr == nil {
+			break
+		}
+		// Only the cross-session visibility lag is expected to be transient
+		// (ENOENT); any other open error (EACCES, bad path) is a real failure —
+		// fail fast rather than spin the full deadline on a hopeless retry.
+		if !errors.Is(openErr, syscall.ENOENT) || time.Now().After(deadline) {
+			fmt.Printf("HOLDER_ERR open %s: %v\n", path, openErr)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -138,9 +159,20 @@ func TestSMBLockHolderHelper(t *testing.T) {
 		Start:  offset,
 		Len:    length,
 	}
-	if err := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, flock); err != nil {
-		fmt.Printf("HOLDER_ERR lock: %v\n", err)
-		return
+	for {
+		lockErr := syscall.FcntlFlock(f.Fd(), syscall.F_SETLK, flock)
+		if lockErr == nil {
+			break
+		}
+		// The first (uncontended) acquire can transiently lose a server-busy
+		// race surfacing as EAGAIN/EACCES/EBUSY; retry only those. Anything else
+		// (e.g. EBADF) is a genuine failure — report it immediately.
+		if !(errors.Is(lockErr, syscall.EAGAIN) || errors.Is(lockErr, syscall.EACCES) ||
+			errors.Is(lockErr, syscall.EBUSY)) || time.Now().After(deadline) {
+			fmt.Printf("HOLDER_ERR lock: %v\n", lockErr)
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	fmt.Println("HOLDER_LOCKED")
 	_ = os.Stdout.Sync()
