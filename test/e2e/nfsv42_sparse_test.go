@@ -4,12 +4,15 @@ package e2e
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/test/e2e/framework"
+	"github.com/marmos91/dittofs/test/e2e/helpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -51,6 +54,70 @@ func blocks512(t *testing.T, path string) int64 {
 	return st.Blocks
 }
 
+// setupNFSv42FSServer starts a server backed by an fs (not memory) local block
+// store and returns the CLI runner and NFS port.
+//
+// Block-list-dependent NFSv4.2 operations (SEEK/READ_PLUS hole map, CLONE
+// payload copy) read the file's CAS block list (file.Blocks). Only the fs store
+// runs the append-log rollup that chunks written data and persists BlockRefs to
+// metadata; the memory store serves reads directly and never populates
+// file.Blocks. With a memory store a freshly written file therefore looks
+// block-less — SEEK reports it as all-hole and CLONE copies an empty manifest
+// (a zero-filled destination). These tests must run against the fs store and
+// wait for the background rollup to populate file.Blocks before the op.
+func setupNFSv42FSServer(t *testing.T) (*helpers.CLIRunner, int) {
+	t.Helper()
+
+	sp := helpers.StartServerProcess(t, "")
+	t.Cleanup(sp.ForceKill)
+
+	runner := helpers.LoginAsAdmin(t, sp.APIURL())
+
+	metaStore := helpers.UniqueTestName("sparse-meta")
+	localStore := helpers.UniqueTestName("sparse-local")
+
+	_, err := runner.CreateMetadataStore(metaStore, "memory")
+	require.NoError(t, err, "create metadata store")
+	t.Cleanup(func() { _ = runner.DeleteMetadataStore(metaStore) })
+
+	_, err = runner.CreateLocalBlockStore(localStore, "fs",
+		helpers.WithBlockRawConfig(fmt.Sprintf(`{"path":%q}`, t.TempDir())))
+	require.NoError(t, err, "create fs block store")
+	t.Cleanup(func() { _ = runner.DeleteLocalBlockStore(localStore) })
+
+	_, err = runner.CreateShare("/export", metaStore, localStore)
+	require.NoError(t, err, "create share")
+	t.Cleanup(func() { _ = runner.DeleteShare("/export") })
+
+	// Mount as root must not be squashed, so root can write the test files.
+	_, err = runner.Run("share", "nfs-config", "set", "/export", "--squash", "root_to_admin")
+	require.NoError(t, err, "set share squash policy")
+
+	nfsPort := helpers.FindFreePort(t)
+	_, err = runner.EnableAdapter("nfs", helpers.WithAdapterPort(nfsPort))
+	require.NoError(t, err, "enable NFS adapter")
+	t.Cleanup(func() { _, _ = runner.DisableAdapter("nfs") })
+
+	require.NoError(t, helpers.WaitForAdapterStatus(t, runner, "nfs", true, 10*time.Second),
+		"NFS adapter should become enabled")
+	framework.WaitForServer(t, nfsPort, 10*time.Second)
+
+	return runner, nfsPort
+}
+
+// waitForFullRollup blocks until the entire dense file [0,size) is backed by
+// CAS blocks — i.e. SEEK_HOLE from 0 reports only the hole at EOF. Block-list-
+// dependent ops (CLONE) must run after the source has rolled up; until then the
+// source looks block-less and the op sees no data to copy. Requires a vers=4.2
+// mount so the kernel issues SEEK.
+func waitForFullRollup(t *testing.T, path string, size int64) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		h, err := seekTo(t, path, 0, seekHole)
+		return err == nil && h == size
+	}, 20*time.Second, 250*time.Millisecond, "file should roll up into CAS blocks")
+}
+
 // TestNFSv42Sparse exercises the SEEK / READ_PLUS / DEALLOCATE / ALLOCATE
 // cluster over a vers=4.2 mount (SPARSE-01..04).
 func TestNFSv42Sparse(t *testing.T) {
@@ -58,7 +125,7 @@ func TestNFSv42Sparse(t *testing.T) {
 		t.Skip("Skipping NFSv4.2 sparse tests in short mode")
 	}
 
-	_, _, nfsPort := setupNFSv4TestServer(t)
+	_, nfsPort := setupNFSv42FSServer(t)
 	mount := framework.MountNFSWithVersion(t, nfsPort, "4.2")
 	t.Cleanup(mount.Cleanup)
 
@@ -104,31 +171,67 @@ func TestNFSv42Sparse(t *testing.T) {
 		assert.LessOrEqual(t, after, before, "DEALLOCATE should not increase storage")
 	})
 
-	t.Run("SPARSE-01 SEEK_HOLE / SEEK_DATA report punched boundaries", func(t *testing.T) {
+	t.Run("SPARSE-01 SEEK_HOLE / SEEK_DATA report sparse boundaries", func(t *testing.T) {
+		// SEEK derives its data/hole view from the file's CAS block list. Rather
+		// than punch a hole (DEALLOCATE granularity is chunk-bounded and rollup
+		// re-chunks nondeterministically), build a naturally sparse file: two
+		// written data regions separated by an unwritten gap that is never backed
+		// by a block. Both regions are small and low-offset so the background
+		// rollup ticker chunks them fully; the gap between them is a real,
+		// deterministic hole.
+		const (
+			region   = 2 << 20 // 2 MiB written data regions
+			gapStart = region  // first hole begins at the end of region 1 (2 MiB)
+			dataAt   = 6 << 20 // second region starts at 6 MiB (gap = [2 MiB, 6 MiB))
+		)
+		size := int64(dataAt + region)
 		path := mount.FilePath("seek.bin")
-		full := bytes.Repeat([]byte{0xCD}, 1<<20)
-		framework.WriteFile(t, path, full)
 
-		// Punch [256KiB, 768KiB).
-		out, err := exec.Command("fallocate", "-p", "-o", "262144", "-l", "524288", path).CombinedOutput()
-		require.NoErrorf(t, err, "fallocate -p: %s", out)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
+		require.NoError(t, err)
+		blk := bytes.Repeat([]byte{0xCD}, region)
+		_, err = f.WriteAt(blk, 0)
+		require.NoError(t, err)
+		_, err = f.WriteAt(blk, dataAt)
+		require.NoError(t, err)
+		require.NoError(t, f.Sync(), "flush writes to server (critical for NFSv4)")
+		require.NoError(t, f.Close())
 
-		// SEEK_HOLE from 0 -> the start of the punched hole. The exact boundary
-		// depends on FastCDC chunk alignment (only whole chunks fully inside the
-		// punch become a hole in the block-list hole map), so assert the hole
-		// begins within the punched region rather than pinning the byte. It must
-		// be a real boundary before EOF, not the file size ("no hole found").
+		// Wait for the background rollup to chunk both regions into CAS blocks and
+		// persist them to metadata. SEEK derives its hole map from file.Blocks, so
+		// it only reflects rolled-up data; until rollup runs the file looks
+		// block-less. Readiness: from the start of the second region the only
+		// remaining hole is the one at EOF, i.e. the whole region is data.
+		require.Eventually(t, func() bool {
+			h, e := seekTo(t, path, dataAt, seekHole)
+			return e == nil && h == size
+		}, 20*time.Second, 250*time.Millisecond, "both regions should roll up into CAS blocks")
+
+		// Data is present at the start of the file.
+		dataStart, err := seekTo(t, path, 0, seekData)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), dataStart, "SEEK_DATA from 0 should find data at offset 0")
+
+		// SEEK_HOLE from 0 -> the gap between the two regions: a real interior
+		// hole beginning after the first region and before the second.
 		holeOff, err := seekTo(t, path, 0, seekHole)
 		require.NoError(t, err)
-		assert.GreaterOrEqual(t, holeOff, int64(262144), "hole should not start before the punch")
-		assert.Less(t, holeOff, int64(262144+524288), "hole should start within the punched region")
+		assert.Greater(t, holeOff, int64(0), "hole must begin after the first region's data")
+		assert.Less(t, holeOff, int64(dataAt), "hole must begin before the second region")
 
-		// SEEK_DATA from the middle of the punched region -> data resumes by the
-		// end of the punch, and never goes backwards.
-		dataOff, err := seekTo(t, path, 262144+262144, seekData)
+		// SEEK_DATA from inside the gap -> the second region; it skips the gap and
+		// never goes backwards.
+		fromGap := int64(gapStart + region) // 4 MiB: inside the gap [2 MiB, 6 MiB)
+		dataOff, err := seekTo(t, path, fromGap, seekData)
 		require.NoError(t, err)
-		assert.GreaterOrEqual(t, dataOff, int64(262144+262144), "SEEK_DATA must not go backwards")
-		assert.LessOrEqual(t, dataOff, int64(262144+524288), "data should resume by the end of the punched region")
+		assert.GreaterOrEqual(t, dataOff, fromGap, "SEEK_DATA must not go backwards")
+		assert.Greater(t, dataOff, holeOff, "data must resume after the hole")
+		assert.LessOrEqual(t, dataOff, int64(dataAt), "data should resume by the second region")
+
+		// SEEK_HOLE from inside the final region -> EOF (the trailing hole).
+		holeAtEOF, err := seekTo(t, path, int64(dataAt)+region/2, seekHole)
+		require.NoError(t, err)
+		assert.Equal(t, size, holeAtEOF, "SEEK_HOLE in the last region should report the hole at EOF")
 	})
 
 	t.Run("SPARSE-02 READ_PLUS over a sparse file returns correct bytes", func(t *testing.T) {
