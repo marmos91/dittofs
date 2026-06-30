@@ -104,6 +104,14 @@ func (s *nlmService) LockFileNLM(
 	}
 
 	handleKey := string(handle)
+
+	// Break conflicting cross-protocol read leases (e.g. an SMB oplock) before
+	// acquiring, so another protocol's cached view of the range is revoked first.
+	// Mirrors the SMB and NFSv4 LOCK paths. We pass this lock's owner as
+	// excludeOwner for symmetry; NLM owners never hold SMB leases, so in practice
+	// nothing is excluded (#1495).
+	_ = s.lockMgr.BreakLeasesForByteRangeLock(handleKey, &owner)
+
 	err := s.lockMgr.AddUnifiedLock(handleKey, unifiedLock)
 	if err == nil {
 		// A successful reclaim records the client so grace can exit early once
