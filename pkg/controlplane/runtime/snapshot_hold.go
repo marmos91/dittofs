@@ -89,6 +89,15 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 			return fmt.Errorf("snapshot hold: list snapshots for share %q: %w", shareName, err)
 		}
 
+		// Union every snapshot's manifest into one set BEFORE emitting, so a
+		// hash referenced by N snapshots is forwarded to fn once, not N times.
+		// Hourly snapshots of a slowly-changing tree all re-reference the same
+		// hashes; without this dedup the mark phase issues O(snapshots × tree)
+		// live-set writes — on a real deployment ~70 snapshots inflated
+		// hashes_marked to 4.8M and blew the GC deadline (#1433). Peak memory is
+		// the per-share distinct-hash count, which — given the heavy overlap —
+		// is of the same order as a single manifest, not the sum.
+		union := block.NewHashSet(0)
 		for _, snap := range snaps {
 			manifestPath := snap.ManifestPath(localStoreDir)
 			if _, err := os.Stat(manifestPath); err != nil {
@@ -100,7 +109,10 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 				}
 				return fmt.Errorf("snapshot hold: stat manifest %q: %w", manifestPath, err)
 			}
-			count, err := streamManifest(manifestPath, fn)
+			count, err := streamManifest(manifestPath, func(h block.ContentHash) error {
+				union.Add(h)
+				return nil
+			})
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					// TOCTOU: the manifest passed the Stat above but was
@@ -119,6 +131,17 @@ func (p *SnapshotHoldProvider) HeldHashes(ctx context.Context, remoteEndpointID 
 				"remote_endpoint_id", remoteEndpointID,
 			)
 		}
+
+		// Emit the deduplicated union once for this share.
+		if err := union.ForEach(fn); err != nil {
+			return fmt.Errorf("snapshot hold: emit union for share %q: %w", shareName, err)
+		}
+		logger.Debug("snapshot hold: emitted deduplicated union",
+			"share", shareName,
+			"distinct_hashes", union.Len(),
+			"snapshots", len(snaps),
+			"remote_endpoint_id", remoteEndpointID,
+		)
 	}
 	return nil
 }

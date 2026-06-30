@@ -292,6 +292,52 @@ func TestSnapshotHoldProvider_MultipleSharesUnion(t *testing.T) {
 	assert.Equal(t, want, got, "union of held hashes across both shares")
 }
 
+// TestSnapshotHoldProvider_DedupAcrossSnapshots asserts that when many
+// snapshots of one share re-reference the same hashes (the common case: hourly
+// snapshots of a slowly-changing tree), HeldHashes emits each distinct hash
+// EXACTLY ONCE rather than once per snapshot. Without per-share dedup the mark
+// phase issues O(snapshots × tree) live-set writes — on a real deployment ~70
+// snapshots inflated hashes_marked to 4.8M and blew the GC deadline (#1433).
+func TestSnapshotHoldProvider_DedupAcrossSnapshots(t *testing.T) {
+	rt := newSnapshotHoldRuntime(t)
+	localStoreDir := t.TempDir()
+
+	shareName := "alpha"
+	rt.sharesSvc.InjectShareForTesting(&shares.Share{Name: shareName, MetadataStore: "memory"})
+	require.NoError(t, rt.sharesSvc.SetLocalStoreDirForTesting(shareName, localStoreDir))
+
+	// Same two hashes in every snapshot manifest — the overlap GC must collapse.
+	shared := []block.ContentHash{hashAll(0xC1), hashAll(0xC2)}
+	const numSnapshots = 5
+	for i := 0; i < numSnapshots; i++ {
+		// Each snapshot needs its own row: the partial unique index forbids two
+		// concurrent "creating" rows, so drive each to ready before the next.
+		id := snapshotHoldCreateReady(t, rt, shareName)
+		snapshotHoldWriteManifest(t, (&models.Snapshot{ID: id}).ManifestPath(localStoreDir), shared)
+	}
+
+	provider := rt.snapshotHoldForRemote([]string{shareName})
+
+	var got []block.ContentHash
+	seen := map[block.ContentHash]int{}
+	err := provider.HeldHashes(context.Background(), "remote-1", []string{shareName},
+		func(h block.ContentHash) error {
+			got = append(got, h)
+			seen[h]++
+			return nil
+		})
+	require.NoError(t, err)
+
+	require.Len(t, got, len(shared), "each distinct hash must be emitted once, not once per snapshot")
+	for h, n := range seen {
+		assert.Equalf(t, 1, n, "hash %x emitted %d times; expected exactly once", h, n)
+	}
+	want := append([]block.ContentHash{}, shared...)
+	sortHashes(got)
+	sortHashes(want)
+	assert.Equal(t, want, got)
+}
+
 // sortHashes sorts a ContentHash slice in lexicographic byte order so
 // per-share ordering does not destabilize assertions.
 func sortHashes(hs []block.ContentHash) {
