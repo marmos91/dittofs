@@ -49,10 +49,18 @@ plain GC cannot reclaim because they keep their hashes in the live set.
 Reconcile is server-wide (all shares) and the recommended way to recover
 space leaked by older versions. Combine with --dry-run to preview.
 
+Use --grace-period to override the configured sweep grace for this run
+only. A zero grace (--grace-period 0) reaps every eligible orphan with no
+age guard, bypassing the server's 5-minute floor — useful to reclaim
+just-orphaned chunks immediately in tests or one-off cleanups. Cannot be
+combined with --reconcile.
+
 Examples:
   dfsctl store block gc myshare
   dfsctl store block gc myshare --dry-run
   dfsctl store block gc myshare --reconcile
+  dfsctl store block gc myshare --grace-period 0
+  dfsctl store block gc myshare --grace-period 30m
   dfsctl store block gc myshare --no-wait
   dfsctl store block gc myshare -o json`,
 	Args: cobra.ExactArgs(1),
@@ -63,6 +71,7 @@ func init() {
 	gcCmd.Flags().Bool("dry-run", false, "Run mark + sweep enumeration but skip deletes; print candidate keys")
 	gcCmd.Flags().Bool("reconcile", false, "Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers")
 	gcCmd.Flags().Bool("no-wait", false, "Start the job and print its id without waiting for completion")
+	gcCmd.Flags().Duration("grace-period", 0, "Override the sweep grace for this run (e.g. 30m, 0 to reap immediately); bypasses the server's 5m floor. Unset = server default")
 }
 
 func runBlockStoreGC(cmd *cobra.Command, args []string) error {
@@ -71,12 +80,25 @@ func runBlockStoreGC(cmd *cobra.Command, args []string) error {
 	reconcile, _ := cmd.Flags().GetBool("reconcile")
 	noWait, _ := cmd.Flags().GetBool("no-wait")
 
+	opts := &apiclient.BlockStoreGCOptions{DryRun: dryRun, Reconcile: reconcile}
+	if cmd.Flags().Changed("grace-period") {
+		grace, _ := cmd.Flags().GetDuration("grace-period")
+		if grace < 0 {
+			return fmt.Errorf("--grace-period must not be negative")
+		}
+		if reconcile {
+			return fmt.Errorf("--grace-period cannot be combined with --reconcile")
+		}
+		secs := int64(grace / time.Second)
+		opts.GracePeriodSeconds = &secs
+	}
+
 	client, err := cmdutil.GetAuthenticatedClient()
 	if err != nil {
 		return err
 	}
 
-	jobID, err := client.StartBlockStoreGC(share, &apiclient.BlockStoreGCOptions{DryRun: dryRun, Reconcile: reconcile})
+	jobID, err := client.StartBlockStoreGC(share, opts)
 	if err != nil {
 		return fmt.Errorf("failed to start block store GC: %w", err)
 	}

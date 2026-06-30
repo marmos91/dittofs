@@ -38,13 +38,14 @@ type fakeGCRuntime struct {
 }
 
 type startCall struct {
-	share     string
-	dryRun    bool
-	reconcile bool
+	share       string
+	dryRun      bool
+	reconcile   bool
+	gracePeriod *time.Duration
 }
 
-func (f *fakeGCRuntime) StartBlockGC(shareName string, dryRun, reconcile bool) (*runtime.GCJob, error) {
-	f.startCalls = append(f.startCalls, startCall{share: shareName, dryRun: dryRun, reconcile: reconcile})
+func (f *fakeGCRuntime) StartBlockGC(shareName string, dryRun, reconcile bool, gracePeriod *time.Duration) (*runtime.GCJob, error) {
+	f.startCalls = append(f.startCalls, startCall{share: shareName, dryRun: dryRun, reconcile: reconcile, gracePeriod: gracePeriod})
 	if f.startErr != nil {
 		return nil, f.startErr
 	}
@@ -143,6 +144,74 @@ func TestBlockStoreHandler_RunGC_DryRunReconcilePropagate(t *testing.T) {
 	}
 	if len(fake.startCalls) != 1 || !fake.startCalls[0].dryRun || !fake.startCalls[0].reconcile {
 		t.Fatalf("RunGC: expected dryRun+reconcile propagated; got %+v", fake.startCalls)
+	}
+}
+
+// TestBlockStoreHandler_RunGC_GracePeriodOverride asserts a zero grace override
+// reaches the runtime as an explicit 0 duration (not nil).
+func TestBlockStoreHandler_RunGC_GracePeriodOverride(t *testing.T) {
+	fake := &fakeGCRuntime{}
+	h := NewBlockStoreGCHandler(fake)
+
+	zero := int64(0)
+	body, _ := json.Marshal(BlockStoreGCRequest{GracePeriodSeconds: &zero})
+	req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", "myshare", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.RunGC(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("RunGC: expected 202, got %d (body=%q)", w.Code, w.Body.String())
+	}
+	if len(fake.startCalls) != 1 {
+		t.Fatalf("RunGC: expected 1 StartBlockGC call, got %d", len(fake.startCalls))
+	}
+	gp := fake.startCalls[0].gracePeriod
+	if gp == nil || *gp != 0 {
+		t.Fatalf("RunGC: expected gracePeriod==0 override, got %v", gp)
+	}
+}
+
+// TestBlockStoreHandler_RunGC_GracePeriodRejectsReconcile returns 400 when the
+// grace override is combined with reconcile (the override is share-scoped only),
+// and never starts a job.
+func TestBlockStoreHandler_RunGC_GracePeriodRejectsReconcile(t *testing.T) {
+	fake := &fakeGCRuntime{}
+	h := NewBlockStoreGCHandler(fake)
+
+	secs := int64(30)
+	body, _ := json.Marshal(BlockStoreGCRequest{Reconcile: true, GracePeriodSeconds: &secs})
+	req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", "myshare", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.RunGC(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("RunGC: expected 400 for grace+reconcile, got %d", w.Code)
+	}
+	if len(fake.startCalls) != 0 {
+		t.Fatalf("RunGC: expected no StartBlockGC call on rejected request, got %d", len(fake.startCalls))
+	}
+}
+
+// TestBlockStoreHandler_RunGC_GracePeriodRejectsNegative returns 400 for a
+// negative grace override.
+func TestBlockStoreHandler_RunGC_GracePeriodRejectsNegative(t *testing.T) {
+	fake := &fakeGCRuntime{}
+	h := NewBlockStoreGCHandler(fake)
+
+	neg := int64(-1)
+	body, _ := json.Marshal(BlockStoreGCRequest{GracePeriodSeconds: &neg})
+	req := newGCRequest(http.MethodPost, "/api/v1/shares/myshare/blockstore/gc", "myshare", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.RunGC(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("RunGC: expected 400 for negative grace, got %d", w.Code)
+	}
+	if len(fake.startCalls) != 0 {
+		t.Fatalf("RunGC: expected no StartBlockGC call, got %d", len(fake.startCalls))
 	}
 }
 

@@ -191,8 +191,16 @@ type Options struct {
 
 	// GracePeriod is the TTL applied during sweep: an object whose
 	// LastModified is within snapshot - GracePeriod is preserved.
-	// Zero defaults to one hour.
+	// Zero defaults to one hour unless GracePeriodSet is true.
 	GracePeriod time.Duration
+
+	// GracePeriodSet, when true, makes GracePeriod authoritative — it is used
+	// verbatim, including a value of zero (reap every eligible orphan with no
+	// age guard). When false, a non-positive GracePeriod falls back to the
+	// one-hour default. This lets an explicit operator override (dfsctl store
+	// block gc --grace-period 0) bypass the floor without changing the
+	// default-substitution behaviour for every other caller.
+	GracePeriodSet bool
 
 	// DryRunSampleSize bounds the count of candidate keys captured in
 	// GCStats.DryRunCandidates. Zero defaults to 1000.
@@ -351,6 +359,24 @@ func CollectGarbageLocal(
 	return collectGarbage(ctx, localStore, reconciler, options, true)
 }
 
+// resolveGracePeriod returns the effective sweep grace period. An explicit
+// override (GracePeriodSet) is authoritative — including a zero grace, which a
+// negative value is clamped to. Without an override, a non-positive grace falls
+// back to the 1h default so an unconfigured sweep never reaps freshly-written
+// chunks.
+func resolveGracePeriod(options *Options) time.Duration {
+	if options.GracePeriodSet {
+		if options.GracePeriod < 0 {
+			return 0
+		}
+		return options.GracePeriod
+	}
+	if options.GracePeriod <= 0 {
+		return time.Hour
+	}
+	return options.GracePeriod
+}
+
 // collectGarbage is the shared mark-sweep kernel for both tiers. isLocal only
 // tags the resulting stats; the live-set, grace, and fail-closed semantics are
 // identical regardless of tier.
@@ -378,10 +404,7 @@ func collectGarbage(
 	defer releaseGCRootLock(options.GCStateRoot, rootLock)
 
 	// Apply defaults that the caller did not specify.
-	gracePeriod := options.GracePeriod
-	if gracePeriod <= 0 {
-		gracePeriod = time.Hour
-	}
+	gracePeriod := resolveGracePeriod(options)
 	dryRunSample := options.DryRunSampleSize
 	if dryRunSample <= 0 {
 		dryRunSample = 1000

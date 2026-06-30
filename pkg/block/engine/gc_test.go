@@ -1524,3 +1524,27 @@ func TestGCMarkSweep_ClearsSyncedMarkerForSweptHash(t *testing.T) {
 		t.Errorf("live block deleted: %v", err)
 	}
 }
+
+func TestResolveGracePeriod(t *testing.T) {
+	const hour = time.Hour
+	tests := []struct {
+		name string
+		opts Options
+		want time.Duration
+	}{
+		{"unset positive uses caller value", Options{GracePeriod: 30 * time.Minute}, 30 * time.Minute},
+		{"unset zero falls back to 1h", Options{GracePeriod: 0}, hour},
+		{"unset negative falls back to 1h", Options{GracePeriod: -5 * time.Second}, hour},
+		{"set zero is authoritative", Options{GracePeriod: 0, GracePeriodSet: true}, 0},
+		{"set positive is authoritative", Options{GracePeriod: 2 * hour, GracePeriodSet: true}, 2 * hour},
+		{"set negative clamps to zero", Options{GracePeriod: -1, GracePeriodSet: true}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := tt.opts
+			if got := resolveGracePeriod(&opts); got != tt.want {
+				t.Fatalf("resolveGracePeriod(%+v) = %v, want %v", tt.opts, got, tt.want)
+			}
+		})
+	}
+}

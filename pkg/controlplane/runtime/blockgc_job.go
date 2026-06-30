@@ -218,7 +218,11 @@ func (r *gcRegistry) cancelActive() {
 // an unknown share fails fast with an ErrShareNotFound-wrapped error rather than
 // surfacing only later as a failed job. Reconcile is server-wide and skips the
 // per-share check.
-func (r *Runtime) StartBlockGC(shareName string, dryRun, reconcile bool) (*GCJob, error) {
+// gracePeriod, when non-nil, overrides the server-configured sweep grace for
+// this run only (including zero, which reaps every eligible orphan with no age
+// guard). It is honoured only on the share-scoped path; reconcile runs ignore
+// it (the caller rejects the combination up front).
+func (r *Runtime) StartBlockGC(shareName string, dryRun, reconcile bool, gracePeriod *time.Duration) (*GCJob, error) {
 	if !reconcile {
 		if _, err := r.sharesSvc.GetGCStateDirForShare(shareName); err != nil {
 			return nil, err
@@ -228,7 +232,7 @@ func (r *Runtime) StartBlockGC(shareName string, dryRun, reconcile bool) (*GCJob
 		if reconcile {
 			return r.runBlockGCReconcile(ctx, dryRun, progress)
 		}
-		return r.runBlockGCForShare(ctx, shareName, dryRun, progress)
+		return r.runBlockGCForShare(ctx, shareName, dryRun, progress, gracePeriod)
 	}), nil
 }
 

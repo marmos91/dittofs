@@ -144,7 +144,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 	}
 	// Sweep the local tier too, so one `gc` invocation reclaims orphaned
 	// chunks on both remote and local stores (#1433).
-	r.runLocalGC(ctx, "", dryRun, total, progress)
+	r.runLocalGC(ctx, "", dryRun, total, progress, nil)
 	return total, nil
 }
 
@@ -165,7 +165,7 @@ var collectGarbageLocalFn = engine.CollectGarbageLocal
 // (#1433).
 func (r *Runtime) RunBlockGCLocal(ctx context.Context, dryRun bool) (*engine.GCStats, error) {
 	total := &engine.GCStats{}
-	r.runLocalGC(ctx, "", dryRun, total, nil)
+	r.runLocalGC(ctx, "", dryRun, total, nil, nil)
 	return total, nil
 }
 
@@ -175,7 +175,10 @@ func (r *Runtime) RunBlockGCLocal(ctx context.Context, dryRun bool) (*engine.GCS
 // backend (empty gc-state root) are skipped. Shared by RunBlockGC,
 // RunBlockGCForShare, and RunBlockGCLocal so a single `gc` invocation reclaims
 // orphans on BOTH tiers (#1433).
-func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun bool, total *engine.GCStats, progress func(engine.GCStats)) {
+// gracePeriod, when non-nil, overrides the configured local-tier sweep grace
+// for this run (including zero). nil leaves the configured/default grace, used
+// by the server-wide and reconcile sweeps.
+func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun bool, total *engine.GCStats, progress func(engine.GCStats), gracePeriod *time.Duration) {
 	gcDefaults := r.gcDefaultsSnapshot()
 	for _, entry := range r.sharesSvc.ShareLocalStores() {
 		if shareFilter != "" && entry.ShareName != shareFilter {
@@ -192,6 +195,12 @@ func (r *Runtime) runLocalGC(ctx context.Context, shareFilter string, dryRun boo
 			Shares:      []string{entry.ShareName},
 		}
 		applyGCDefaults(opts, gcDefaults)
+		if gracePeriod != nil {
+			// Operator override for this run only: authoritative grace,
+			// including zero (no age guard).
+			opts.GracePeriod = *gracePeriod
+			opts.GracePeriodSet = true
+		}
 		applyGCProgress(opts, progress)
 		opts.HoldProvider = r.snapshotHoldForShare(entry.ShareName)
 		logger.Info("local GC: starting",
@@ -257,13 +266,16 @@ func (p *perRemoteReconciler) GetMetadataStoreForShare(shareName string) (metada
 //
 // Returns an ErrShareNotFound-wrapped error if name is unknown.
 func (r *Runtime) RunBlockGCForShare(ctx context.Context, name string, dryRun bool) (*engine.GCStats, error) {
-	return r.runBlockGCForShare(ctx, name, dryRun, nil)
+	return r.runBlockGCForShare(ctx, name, dryRun, nil, nil)
 }
 
 // runBlockGCForShare is RunBlockGCForShare with an optional progress sink wired
 // into the engine for async callers (StartBlockGC). progress is nil for the
-// synchronous public entrypoint.
-func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
+// synchronous public entrypoint. gracePeriod, when non-nil, overrides the
+// server-configured sweep grace for this run only — including zero, which reaps
+// every eligible orphan with no age guard (dfsctl store block gc
+// --grace-period).
+func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bool, progress func(engine.GCStats), gracePeriod *time.Duration) (*engine.GCStats, error) {
 	gcRoot, err := r.sharesSvc.GetGCStateDirForShare(name)
 	if err != nil {
 		return nil, err
@@ -293,6 +305,12 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 			Shares:           append([]string(nil), entry.Shares...),
 		}
 		applyGCDefaults(opts, gcDefaults)
+		if gracePeriod != nil {
+			// Operator override for this run only: authoritative grace,
+			// including zero (no age guard).
+			opts.GracePeriod = *gracePeriod
+			opts.GracePeriodSet = true
+		}
 		applyGCProgress(opts, progress)
 		// Inject held hashes from ready snapshots into the GC mark phase.
 		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
@@ -326,7 +344,7 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 		)
 	}
 	// Sweep this share's local tier too (#1433).
-	r.runLocalGC(ctx, name, dryRun, total, progress)
+	r.runLocalGC(ctx, name, dryRun, total, progress, gracePeriod)
 	return total, nil
 }
 

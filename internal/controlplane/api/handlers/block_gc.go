@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,7 +30,7 @@ type BlockGCRuntime interface {
 	// sweep. The run executes on a context detached from the request, so a
 	// request/client timeout cannot abort the (potentially multi-minute) mark
 	// phase (#1433).
-	StartBlockGC(shareName string, dryRun, reconcile bool) (*runtime.GCJob, error)
+	StartBlockGC(shareName string, dryRun, reconcile bool, gracePeriod *time.Duration) (*runtime.GCJob, error)
 
 	// GetGCJobStatus returns a GC job by ID, or false if unknown (never started
 	// or evicted from the retained-terminal window).
@@ -64,6 +65,12 @@ type BlockStoreGCRequest struct {
 	// (leaked by the pre-fix delete path) across all shares, then sweep both
 	// tiers. Reclaims historical leaks a plain GC cannot (#1433).
 	Reconcile bool `json:"reconcile,omitempty"`
+	// GracePeriodSeconds, when non-nil, overrides the server-configured sweep
+	// grace for this run only. Zero is valid and meaningful: reap every
+	// eligible orphan with no age guard (bypassing the config's 5-minute
+	// floor). Honoured only on the share-scoped path — combining it with
+	// reconcile is rejected with 400.
+	GracePeriodSeconds *int64 `json:"grace_period_seconds,omitempty"`
 }
 
 // GCJobStatusResponse is the JSON status body for an async GC job, returned by
@@ -142,6 +149,28 @@ func (h *BlockStoreGCHandler) RunGC(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var gracePeriod *time.Duration
+	if req.GracePeriodSeconds != nil {
+		if *req.GracePeriodSeconds < 0 {
+			BadRequest(w, "grace_period_seconds must not be negative")
+			return
+		}
+		if req.Reconcile {
+			BadRequest(w, "grace_period_seconds cannot be combined with reconcile")
+			return
+		}
+		// Guard the seconds→Duration multiply: without this an absurdly large
+		// value overflows int64 nanoseconds and wraps negative, which the engine
+		// then clamps to 0 (GracePeriodSet) — silently turning a "very long
+		// grace" request into the most aggressive possible reap.
+		if *req.GracePeriodSeconds > int64(math.MaxInt64/int64(time.Second)) {
+			BadRequest(w, "grace_period_seconds is too large")
+			return
+		}
+		d := time.Duration(*req.GracePeriodSeconds) * time.Second
+		gracePeriod = &d
+	}
+
 	// Kick off the run asynchronously and return immediately: the mark phase can
 	// take minutes on a large or snapshot-heavy deployment, far longer than the
 	// request-middleware/client timeout, so a synchronous run was aborted
@@ -149,7 +178,7 @@ func (h *BlockStoreGCHandler) RunGC(w http.ResponseWriter, r *http.Request) {
 	// (#1433). The job runs on a detached context; clients poll
 	// GET .../blockstore/gc/{job_id}. Reconcile is server-wide (reaps stranded
 	// rows across all shares) and ignores the per-share scoping internally.
-	job, err := h.runtime.StartBlockGC(name, req.DryRun, req.Reconcile)
+	job, err := h.runtime.StartBlockGC(name, req.DryRun, req.Reconcile, gracePeriod)
 	if err != nil {
 		if errors.Is(err, shares.ErrShareNotFound) {
 			NotFound(w, "share not found: "+name)
