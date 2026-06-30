@@ -26,7 +26,7 @@ import (
 
 // backpressureSource is the narrow, read-only window the eviction path
 // consults during a remote-cache backpressure stall. It exposes ONLY the
-// syncer's drain progress — never the FileBlockStore — preserving invariant
+// syncer's drain progress — never the FileChunkStore — preserving invariant
 // LSL-08 (eviction must not reach into engine-level metadata). The engine's
 // *Syncer satisfies it.
 type backpressureSource interface {
@@ -56,7 +56,7 @@ var _ local.MetricsAware = (*FSStore)(nil)
 // path consults during a remote-cache stall. Called once during share wiring
 // after the syncer is constructed. Passing nil (local-only stores, fixtures)
 // leaves ensureSpace on its evictMaxWait fallback. The argument is a narrow
-// interface — never the FileBlockStore — per invariant LSL-08.
+// interface — never the FileChunkStore — per invariant LSL-08.
 func (bc *FSStore) SetBackpressureSource(src backpressureSource) {
 	bc.bpSource = src
 }
@@ -124,7 +124,7 @@ var (
 // ObjectIDPersister is invoked after a rollup quiesces successfully.
 // It receives the payloadID, the BlockRef manifest collected during
 // chunking, and the computed ObjectID. Implementations typically
-// delegate to a metadata coordinator's PersistFileBlocks. The
+// delegate to a metadata coordinator's PersistFileChunks. The
 // callback is optional; when nil, ObjectID compute still runs but
 // the persist step is skipped (local-only / no-engine fixtures).
 type ObjectIDPersister func(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error
@@ -136,7 +136,7 @@ type ObjectIDPersister func(ctx context.Context, payloadID string, blocks []bloc
 // to a .blk file on disk. This design avoids per-4KB disk I/O and prevents OS
 // page cache bloat that caused OOM on earlier versions.
 //
-// Block metadata (local path, upload state, etc.) is tracked via FileBlockStore
+// Block metadata (local path, upload state, etc.) is tracked via FileChunkStore
 // (BadgerDB) with async batching -- writes are queued in pendingFBs and flushed
 // every 200ms by the background goroutine started via Start().
 //
@@ -151,19 +151,19 @@ type FSStore struct {
 	baseDir string
 	maxDisk int64
 	// the local store is one of the engine-
-	// internal callers that still uses the wider EngineFileBlockStore
-	// surface (GetFileBlock, ListFileBlocks) on top of the narrowed
-	// FileBlockStore. routes reads through FileAttr.Blocks
+	// internal callers that still uses the wider EngineFileChunkStore
+	// surface (GetFileChunk, ListFileChunks) on top of the narrowed
+	// FileChunkStore. routes reads through FileAttr.Blocks
 	// and lets us drop the wider interface entirely.
-	blockStore block.EngineFileBlockStore
+	blockStore block.EngineFileChunkStore
 
-	// blocksMu guards the memBlocks and fileBlocks maps. Uses RWMutex for
+	// blocksMu guards the memBlocks and fileChunks maps. Uses RWMutex for
 	// concurrent reads (the common case: checking if a block is already buffered).
 	// RWMutex outperforms sync.Map for write-heavy workloads with high key
 	// churn (random writes that create/flush/recreate blocks frequently).
 	blocksMu   sync.RWMutex
 	memBlocks  map[blockKey]*memBlock
-	fileBlocks map[string]map[uint64]*memBlock // payloadID -> blockIdx -> mb
+	fileChunks map[string]map[uint64]*memBlock // payloadID -> blockIdx -> mb
 
 	// filesMu guards the files map separately from block operations.
 	filesMu sync.RWMutex
@@ -180,25 +180,25 @@ type FSStore struct {
 	// block-fill paths flush without fsync and do not bump this counter.
 	flushFsyncCount atomic.Int64
 
-	// pendingFBs queues FileBlock metadata updates for async persistence.
-	// Keyed by blockID (string) -> *block.FileBlock.
-	// Drained every 200ms by SyncFileBlocks, and on Close/Flush.
+	// pendingFBs queues FileChunk metadata updates for async persistence.
+	// Keyed by blockID (string) -> *block.FileChunk.
+	// Drained every 200ms by SyncFileChunks, and on Close/Flush.
 	pendingFBs sync.Map
 
-	// diskIndex is the authoritative in-process cache of FileBlock metadata
+	// diskIndex is the authoritative in-process cache of FileChunk metadata
 	// for blocks currently stored on the local filesystem. It is populated
 	// whenever a block lands on disk (flushBlock, tryDirectDiskWrite eager-
 	// create, WriteFromRemote, Recover) and pruned on delete/evict. The
 	// write hot path and eviction consult diskIndex INSTEAD of the
-	// FileBlockStore, decoupling those paths from the underlying metadata
+	// FileChunkStore, decoupling those paths from the underlying metadata
 	// backend.
 	//
 	// Entries survive pendingFBs drain so subsequent hot-path operations
 	// (e.g., a second pwrite into the same block after BadgerDB persistence)
 	// can still observe the block's existing State / BlockStoreKey without
-	// a FileBlockStore round-trip.
+	// a FileChunkStore round-trip.
 	//
-	// Keyed by blockID (string) -> *block.FileBlock. The stored pointer
+	// Keyed by blockID (string) -> *block.FileChunk. The stored pointer
 	// is SHARED with pendingFBs so queued updates mutate a single instance.
 	diskIndex sync.Map
 
@@ -287,8 +287,8 @@ type FSStore struct {
 	// unsynced (whether a stall can make progress). Injected post-
 	// construction via SetBackpressureSource — nil on local-only stores and
 	// in fixtures, in which case ensureSpace falls back to evictMaxWait
-	// semantics. NEVER hand the FileBlockStore here: this is a narrow,
-	// non-FileBlockStore interface, preserving invariant LSL-08.
+	// semantics. NEVER hand the FileChunkStore here: this is a narrow,
+	// non-FileChunkStore interface, preserving invariant LSL-08.
 	bpSource backpressureSource
 
 	// Backpressure observability counters (internal; not yet exposed via
@@ -410,7 +410,7 @@ type FSStore struct {
 	//
 	// Eviction is driven entirely from on-disk presence under
 	// blocks/{hh}/{hh}/{hex}, indexed by ContentHash in lruIndex/lruList.
-	// Eviction = unlink the file directly; no FileBlockStore lookup happens
+	// Eviction = unlink the file directly; no FileChunkStore lookup happens
 	// on the write hot path.
 	//
 	// Population
@@ -461,7 +461,7 @@ type FSStore struct {
 
 	// orphanLogMinAgeSeconds gates the append-log orphan sweep during
 	// recovery. A log is considered orphan only when
-	// (a) its rollup_offset in metadata is 0, (b) no FileBlock exists for
+	// (a) its rollup_offset in metadata is 0, (b) no FileChunk exists for
 	// block-0 of the payloadID, AND (c) the log file's mtime is older
 	// than this threshold. The mtime gate guarantees freshly-created logs
 	// with no rolled-up metadata yet are never swept at boot.
@@ -484,7 +484,7 @@ type FSStore struct {
 //   - sentinel PRESENT, .blk files PRESENT  → success (sentinel is ground truth)
 //   - sentinel MISSING, no .blk files       → success (fresh install)
 //   - sentinel MISSING, .blk files PRESENT  → block.ErrLegacyLayoutDetected
-func newFSStore(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
+func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
 	if !skipSentinelCheck {
 		if err := checkLegacyLayoutSentinel(baseDir); err != nil {
 			return nil, err
@@ -498,9 +498,9 @@ func newFSStore(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBl
 	bc := &FSStore{
 		baseDir:       baseDir,
 		maxDisk:       maxDisk,
-		blockStore:    fileBlockStore,
+		blockStore:    fileChunkStore,
 		memBlocks:     make(map[blockKey]*memBlock),
-		fileBlocks:    make(map[string]map[uint64]*memBlock),
+		fileChunks:    make(map[string]map[uint64]*memBlock),
 		files:         make(map[string]*fileInfo),
 		fdPool:        newFDPool(defaultFDPoolSize),
 		readFDPool:    newFDPool(defaultFDPoolSize),
@@ -924,7 +924,7 @@ type FSStoreOptions struct {
 	SyncedHashStore metadata.SyncedHashStore
 	// ObjectIDPersister is the rollup-completion hook that receives the
 	// BlockRef manifest + computed ObjectID after SetRollupOffset
-	// succeeds. Wire this to the engine coordinator's PersistFileBlocks
+	// succeeds. Wire this to the engine coordinator's PersistFileChunks
 	// so local-only and remote-backed shares both materialize ObjectIDs
 	// at rollup time. Nil is accepted: ObjectID is still computed, but
 	// the persist call is skipped (local-only fixtures / no-engine
@@ -986,7 +986,7 @@ type FSStoreOptions struct {
 // Parameters:
 //   - baseDir: directory for .blk block files, created if absent.
 //   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
-//   - fileBlockStore: persistent store for FileBlock metadata
+//   - fileChunkStore: persistent store for FileChunk metadata
 //     (local path, upload state, etc.).
 //   - opts: tunables for append-log sizing, rollup pool, dedup LRU,
 //     chunk-complete hook, etc. Zero-valued fields fall back to the
@@ -995,8 +995,8 @@ type FSStoreOptions struct {
 // Runs the legacy-layout sentinel gate; returns
 // block.ErrLegacyLayoutDetected when the share holds the pre-CAS
 // `.blk` layout without a `.cas-migrated-v1` marker.
-func NewWithOptions(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
-	return newFSStore(baseDir, maxDisk, fileBlockStore, opts, false)
+func NewWithOptions(baseDir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore, opts FSStoreOptions) (*FSStore, error) {
+	return newFSStore(baseDir, maxDisk, fileChunkStore, opts, false)
 }
 
 // NewFSStoreForMigration constructs an FSStore that skips the legacy-
@@ -1011,8 +1011,8 @@ func NewWithOptions(baseDir string, maxDisk int64, fileBlockStore block.EngineFi
 // the gate would otherwise refuse the open.
 //
 // Behavior is otherwise identical to NewWithOptions.
-func NewFSStoreForMigration(baseDir string, maxDisk int64, fileBlockStore block.EngineFileBlockStore, opts FSStoreOptions) (*FSStore, error) {
-	return newFSStore(baseDir, maxDisk, fileBlockStore, opts, true)
+func NewFSStoreForMigration(baseDir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore, opts FSStoreOptions) (*FSStore, error) {
+	return newFSStore(baseDir, maxDisk, fileChunkStore, opts, true)
 }
 
 // SetObjectIDPersister installs the rollup-completion callback. Safe to
@@ -1024,7 +1024,7 @@ func NewFSStoreForMigration(baseDir string, maxDisk int64, fileBlockStore block.
 //
 // The typical caller is the engine's BlockStore constructor, which
 // wires a closure that delegates to the metadata coordinator's
-// PersistFileBlocks. Local-only fixtures may leave the persister at its
+// PersistFileChunks. Local-only fixtures may leave the persister at its
 // constructor-supplied value (or nil) without invoking the setter.
 // The parameter type is spelled out as a raw func value (rather than
 // the local ObjectIDPersister named type) so callers that reach the
@@ -1057,7 +1057,7 @@ func (bc *FSStore) SetOnChunkComplete(fn func(hash block.ContentHash, data []byt
 	bc.onChunkComplete.Store(&chunkCompleteCallback{fn: fn})
 }
 
-// SetChunkEmitter is a no-op on FSStore. FSStore drives FileBlock row
+// SetChunkEmitter is a no-op on FSStore. FSStore drives FileChunk row
 // writes through the rollup-completion persister installed via
 // SetObjectIDPersister; the per-chunk emitter is only used by the
 // in-memory backend whose writes don't materialize through the CAS
@@ -1083,7 +1083,7 @@ func (bc *FSStore) getRetention() retentionConfig {
 	return *(*retentionConfig)(atomic.LoadPointer(&bc.retention))
 }
 
-// Close flushes pending FileBlock metadata and marks the store as closed.
+// Close flushes pending FileChunk metadata and marks the store as closed.
 // After Close, all read/write operations return ErrStoreClosed.
 //
 // Close is idempotent: multiple calls signal the background goroutine launched
@@ -1126,7 +1126,7 @@ func (bc *FSStore) Close() error {
 	// Wait() is a no-op when the flag is off. Must run before we close log
 	// fds below so no rollup goroutine touches an already-closed fd.
 	bc.rollupWg.Wait()
-	bc.SyncFileBlocks(context.Background())
+	bc.SyncFileChunks(context.Background())
 	bc.fdPool.CloseAll()
 	bc.readFDPool.CloseAll()
 
@@ -1151,7 +1151,7 @@ func (bc *FSStore) isClosed() bool {
 }
 
 // Start launches the background goroutine that periodically persists queued
-// FileBlock metadata updates to BadgerDB. This batches many small PutFileBlock
+// FileChunk metadata updates to BadgerDB. This batches many small PutFileChunk
 // calls (one per 4KB NFS write) into fewer store writes (every 200ms).
 //
 // Must be called after New and before any writes.
@@ -1167,24 +1167,24 @@ func (bc *FSStore) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ctx.Done():
-				bc.SyncFileBlocks(context.Background())
+				bc.SyncFileChunks(context.Background())
 				return
 			case <-bc.done:
-				bc.SyncFileBlocks(context.Background())
+				bc.SyncFileChunks(context.Background())
 				return
 			case <-ticker.C:
-				bc.SyncFileBlocks(ctx)
+				bc.SyncFileChunks(ctx)
 			}
 		}
 	}()
 }
 
-// SyncFileBlocks persists all queued FileBlock metadata updates to the store.
+// SyncFileChunks persists all queued FileChunk metadata updates to the store.
 // Called periodically by Start(), on Close(), and before GetDirtyBlocks()
-// to ensure the FileBlockStore is up-to-date for ListLocalBlocks queries.
-func (bc *FSStore) SyncFileBlocks(ctx context.Context) {
+// to ensure the FileChunkStore is up-to-date for ListLocalBlocks queries.
+func (bc *FSStore) SyncFileChunks(ctx context.Context) {
 	bc.pendingFBs.Range(func(key, value any) bool {
-		fb := value.(*block.FileBlock)
+		fb := value.(*block.FileChunk)
 		if err := bc.blockStore.Put(ctx, fb); err == nil {
 			bc.pendingFBs.Delete(key)
 		}
@@ -1192,16 +1192,16 @@ func (bc *FSStore) SyncFileBlocks(ctx context.Context) {
 	})
 }
 
-// SyncFileBlocksForFile persists queued FileBlock metadata only for blocks
-// belonging to the given payloadID. Much cheaper than SyncFileBlocks during
+// SyncFileChunksForFile persists queued FileChunk metadata only for blocks
+// belonging to the given payloadID. Much cheaper than SyncFileChunks during
 // random writes to many files, since it skips unrelated blocks.
-func (bc *FSStore) SyncFileBlocksForFile(ctx context.Context, payloadID string) {
+func (bc *FSStore) SyncFileChunksForFile(ctx context.Context, payloadID string) {
 	bc.pendingFBs.Range(func(key, value any) bool {
 		blockID := key.(string)
 		if !belongsToFile(blockID, payloadID) {
 			return true
 		}
-		fb := value.(*block.FileBlock)
+		fb := value.(*block.FileChunk)
 		if err := bc.blockStore.Put(ctx, fb); err == nil {
 			bc.pendingFBs.Delete(key)
 		}
@@ -1209,10 +1209,10 @@ func (bc *FSStore) SyncFileBlocksForFile(ctx context.Context, payloadID string) 
 	})
 }
 
-// diskIndexStore registers a FileBlock in the in-process diskIndex without
+// diskIndexStore registers a FileChunk in the in-process diskIndex without
 // queuing an async persistence. Used by Recover to seed the index from disk
-// state without triggering redundant PutFileBlock writes.
-func (bc *FSStore) diskIndexStore(fb *block.FileBlock) {
+// state without triggering redundant PutFileChunk writes.
+func (bc *FSStore) diskIndexStore(fb *block.FileChunk) {
 	bc.diskIndex.Store(fb.ID, fb)
 }
 
@@ -1296,7 +1296,7 @@ func (bc *FSStore) GetFileSize(_ context.Context, payloadID string) (uint64, boo
 // Releases the 8MB buffer and decrements memUsed for each removed block.
 func (bc *FSStore) purgeMemBlocks(payloadID string, shouldRemove func(blockIdx uint64) bool) {
 	bc.blocksMu.Lock()
-	fm := bc.fileBlocks[payloadID]
+	fm := bc.fileChunks[payloadID]
 	if fm != nil {
 		for blockIdx, mb := range fm {
 			if !shouldRemove(blockIdx) {
@@ -1314,7 +1314,7 @@ func (bc *FSStore) purgeMemBlocks(payloadID string, shouldRemove func(blockIdx u
 			delete(fm, blockIdx)
 		}
 		if len(fm) == 0 {
-			delete(bc.fileBlocks, payloadID)
+			delete(bc.fileChunks, payloadID)
 		}
 	}
 	bc.blocksMu.Unlock()

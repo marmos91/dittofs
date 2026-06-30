@@ -19,15 +19,15 @@ import (
 // MetadataStore surface (which routes per-call to the connection pool).
 //
 // We exercise the contract via a fake Transaction wrapper that records
-// every FileBlockStore method invocation and verifies the public-store
+// every FileChunkStore method invocation and verifies the public-store
 // path is NOT used inside WithTx.
 func TestMetadataCoordinator_RoutesThroughContextTx(t *testing.T) {
 	ctx := context.Background()
 	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	// Seed a finalized FileBlock so GetByHash returns a real row.
+	// Seed a finalized FileChunk so GetByHash returns a real row.
 	hash := block.ContentHash{0xAB}
-	fb := &block.FileBlock{
+	fb := &block.FileChunk{
 		ID:         "share/0",
 		Hash:       hash,
 		DataSize:   4096,
@@ -83,7 +83,7 @@ func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
 	hash := block.ContentHash{0xCD}
-	fb := &block.FileBlock{
+	fb := &block.FileChunk{
 		ID:         "share/1",
 		Hash:       hash,
 		DataSize:   4096,
@@ -132,17 +132,17 @@ func TestMetadataCoordinator_FallsBackToPublicStoreWithoutTx(t *testing.T) {
 //
 // To make the bug fail-loudly under memory we wrap the public store in
 // a thin shim that records the call site (tx vs pool) for every
-// FileBlockStore method. The assertion: with metadata.WithTx in ctx,
+// FileChunkStore method. The assertion: with metadata.WithTx in ctx,
 // EVERY IncrementRefCount goes through the tx. The actual rollback
 // behavior on Postgres is a transitive consequence.
 func TestMetadataCoordinator_RollsBackOnDownstreamPutFileFailure(t *testing.T) {
 	ctx := context.Background()
 	store := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	// Seed three finalized FileBlocks with RefCount=1 each.
+	// Seed three finalized FileChunks with RefCount=1 each.
 	hashes := []block.ContentHash{{0x10}, {0x20}, {0x30}}
 	for i, h := range hashes {
-		fb := &block.FileBlock{
+		fb := &block.FileChunk{
 			ID:         "share/" + string(rune('0'+i)),
 			Hash:       h,
 			DataSize:   4096,
@@ -206,7 +206,7 @@ func TestMetadataCoordinator_RollsBackOnDownstreamPutFileFailure(t *testing.T) {
 }
 
 // recordingTx wraps a metadata.Transaction and records the count of
-// FileBlockStore method invocations the coordinator makes through it.
+// FileChunkStore method invocations the coordinator makes through it.
 // All other Transaction methods delegate transparently.
 type recordingTx struct {
 	metadata.Transaction
@@ -215,7 +215,7 @@ type recordingTx struct {
 	decrementCalls int
 }
 
-func (r *recordingTx) GetByHash(ctx context.Context, hash block.ContentHash) (*block.FileBlock, error) {
+func (r *recordingTx) GetByHash(ctx context.Context, hash block.ContentHash) (*block.FileChunk, error) {
 	r.getByHashCalls++
 	return r.Transaction.GetByHash(ctx, hash)
 }

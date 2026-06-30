@@ -106,14 +106,14 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runXattrOpsTests(t, factory)
 	})
 
-	t.Run("FileBlockOps", func(t *testing.T) {
-		runFileBlockOpsTests(t, factory)
+	t.Run("FileChunkOps", func(t *testing.T) {
+		runFileChunkOpsTests(t, factory)
 	})
 
 	// BlockRefOps conformance for FileAttr.Blocks []BlockRef
 	// round-trip across PutFile/GetFile, replace semantics, and the
 	// Postgres-only FK-cascade behavior. Memory and Badger skip the
-	// cascade scenario via FileBlockRefsAccessor type-assertion
+	// cascade scenario via FileChunkRefsAccessor type-assertion
 	// failure.
 	t.Run("BlockRefOps", func(t *testing.T) {
 		runBlockRefOpsTests(t, factory)
@@ -145,7 +145,7 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	})
 
 	// INV02Fuzz property-based fuzzer for the global
-	// invariant ∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks). Runs
+	// invariant ∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks). Runs
 	// 10 concurrent goroutines × 10 ops each (create/delete/copy mix)
 	// against every backend. The leak-injection scenario uses an
 	// optional RefCountLeakInjector capability — backends that don't

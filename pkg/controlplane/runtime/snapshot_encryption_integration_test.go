@@ -109,7 +109,7 @@ func newEncryptedFixture(t *testing.T) *encryptedFixture {
 		Local:          localStore,
 		Remote:         enc,
 		Syncer:         syncer,
-		FileBlockStore: mem,
+		FileChunkStore: mem,
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)

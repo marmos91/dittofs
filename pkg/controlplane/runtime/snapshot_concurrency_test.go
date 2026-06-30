@@ -108,7 +108,7 @@ func addConcShare(t *testing.T, rt *Runtime, backup *controlledSnapshotable, sha
 		Local:          localStore,
 		Remote:         innerRemote,
 		Syncer:         syncer,
-		FileBlockStore: mem,
+		FileChunkStore: mem,
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)

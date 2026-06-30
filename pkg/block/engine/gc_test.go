@@ -52,7 +52,7 @@ func (r *gcMSReconciler) GetMetadataStoreForShare(name string) (metadata.Store, 
 
 func (r *gcMSReconciler) SharesForGC() []string { return append([]string(nil), r.order...) }
 
-// putPendingBlock seeds a FileBlock in BlockStatePending — the exact shape the
+// putPendingBlock seeds a FileChunk in BlockStatePending — the exact shape the
 // engine rollup creates and never transitions to Remote. RefCount 0 (the rollup
 // never bumps it; cross-file keep-alive comes from sibling rows in the GC live
 // set, not RefCount). The Remote-gated GetByHash returns nil for these, which is
@@ -60,7 +60,7 @@ func (r *gcMSReconciler) SharesForGC() []string { return append([]string(nil), r
 // #832-regression tests that exercise the real reap path.
 func putPendingBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
-	if err := st.Put(t.Context(), &block.FileBlock{
+	if err := st.Put(t.Context(), &block.FileChunk{
 		ID:            id,
 		Hash:          h,
 		State:         block.BlockStatePending,
@@ -71,14 +71,14 @@ func putPendingBlock(t *testing.T, st metadata.Store, id string, h block.Content
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}); err != nil {
-		t.Fatalf("PutFileBlock(%s): %v", id, err)
+		t.Fatalf("PutFileChunk(%s): %v", id, err)
 	}
 }
 
-// putBlock seeds a FileBlock with a non-zero hash on the given metadata store.
+// putBlock seeds a FileChunk with a non-zero hash on the given metadata store.
 func putBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
-	if err := st.Put(t.Context(), &block.FileBlock{
+	if err := st.Put(t.Context(), &block.FileChunk{
 		ID:            id,
 		Hash:          h,
 		State:         block.BlockStateRemote,
@@ -89,7 +89,7 @@ func putBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 		LastAccess:    time.Now(),
 		CreatedAt:     time.Now(),
 	}); err != nil {
-		t.Fatalf("PutFileBlock(%s): %v", id, err)
+		t.Fatalf("PutFileChunk(%s): %v", id, err)
 	}
 }
 
@@ -127,7 +127,7 @@ func writeCASObject(t *testing.T, ctx context.Context, rs remote.RemoteStore, h 
 // ---------------------------------------------------------------------------
 
 // TestGCMarkSweep_MarkPopulatesLiveSet (behavior 1): given a metadata store
-// with N FileBlocks (M distinct ContentHashes after dedup), the mark phase
+// with N FileChunks (M distinct ContentHashes after dedup), the mark phase
 // populates GCState with exactly the M distinct non-zero hashes. Zero-hash
 // rows are skipped.
 func TestGCMarkSweep_MarkPopulatesLiveSet(t *testing.T) {
@@ -148,21 +148,21 @@ func TestGCMarkSweep_MarkPopulatesLiveSet(t *testing.T) {
 		putBlock(t, st, fmt.Sprintf("file-x/%d", i), hashes[i%3])
 	}
 	// One legacy row with zero hash.
-	if err := st.Put(ctx, &block.FileBlock{
+	if err := st.Put(ctx, &block.FileChunk{
 		ID:        "legacy/0",
 		State:     block.BlockStatePending,
 		LocalPath: "/cache/legacy",
 		DataSize:  32,
 		RefCount:  1,
 	}); err != nil {
-		t.Fatalf("PutFileBlock(legacy): %v", err)
+		t.Fatalf("PutFileChunk(legacy): %v", err)
 	}
 
 	root := t.TempDir()
 	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: root})
 
 	// HashesMarked counts every non-zero hash emission (one per
-	// FileBlock); GCState.Add deduplicates internally so the live set
+	// FileChunk); GCState.Add deduplicates internally so the live set
 	// holds 3 distinct hashes despite 100 marks. The legacy zero-hash
 	// row is skipped (h.IsZero() guard).
 	if stats.HashesMarked != 100 {
@@ -303,7 +303,7 @@ func (c *reapCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadI
 	id := fmt.Sprintf("%s/%d", payloadID, offset)
 	count, err := c.store.DecrementRefCountAndReap(ctx, id)
 	if err != nil {
-		if errors.Is(err, metadata.ErrFileBlockNotFound) {
+		if errors.Is(err, metadata.ErrFileChunkNotFound) {
 			return 0, nil
 		}
 		return 0, err
@@ -311,7 +311,7 @@ func (c *reapCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadI
 	return count, nil
 }
 
-func (c *reapCoordinator) PersistFileBlocks(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
+func (c *reapCoordinator) PersistFileChunks(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
 	return nil
 }
 
@@ -330,21 +330,21 @@ func (c *reapCoordinator) GetFileObjectID(_ context.Context, _ string) (block.Ob
 var _ MetadataCoordinator = (*reapCoordinator)(nil)
 
 // newReapEngine builds an engine.Store whose coordinator reaps RefCount-0
-// FileBlock rows from the supplied metadata store, so a Truncate/Delete that
-// drops a hash's last reference removes it from EnumerateFileBlocks and the GC
+// FileChunk rows from the supplied metadata store, so a Truncate/Delete that
+// drops a hash's last reference removes it from EnumerateFileChunks and the GC
 // sweep can reclaim the remote chunk. The engine's own local store / syncer are
 // memory-only (no remote) — the GC sweep runs directly against the test's
 // separate remote store via CollectGarbage.
 func newReapEngine(t *testing.T, st metadata.Store) *Store {
 	t.Helper()
 	localStore := memory.New()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
 		Syncer:         syncer,
-		FileBlockStore: fbs,
+		FileChunkStore: fbs,
 		Coordinator:    &reapCoordinator{store: st},
 	})
 	if err != nil {
@@ -358,11 +358,11 @@ func newReapEngine(t *testing.T, st metadata.Store) *Store {
 }
 
 // TestGCMarkSweep_TruncateReclaimsRemoteChunk (#832): a Truncate that drops a
-// tail block's LAST reference must reap its FileBlock index row so the hash
+// tail block's LAST reference must reap its FileChunk index row so the hash
 // leaves the GC live set and the sweep reclaims the remote chunk. The retained
 // block's chunk survives. This test FAILS on develop — where Truncate only
 // decremented RefCount (leaving the row at RefCount 0 but still emitted by
-// EnumerateFileBlocks), so the dropped chunk stayed in the live set forever.
+// EnumerateFileChunks), so the dropped chunk stayed in the live set forever.
 func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
@@ -380,7 +380,7 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 	h2 := hashFromString("trunc-drop-h2")
 
 	// Two CAS objects: H1 @ offset 0 (kept), H2 @ offset 4MiB (dropped). Both
-	// have FileBlock index rows keyed by EXACT "{payloadID}/{offset}" (the shape
+	// have FileChunk index rows keyed by EXACT "{payloadID}/{offset}" (the shape
 	// the engine rollup produces) and live CAS objects on remote.
 	putBlock(t, st, "file-trunc/0", h1)
 	putBlock(t, st, fmt.Sprintf("file-trunc/%d", 4*mib), h2)
@@ -420,7 +420,7 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 // TestGCMarkSweep_TruncateDedupSafety (#832 data-loss guard, by-ID model): two
 // files reference the same content hash, each via its OWN per-offset row
 // (file-A/<off> and file-B/<off>). Truncating file-A reaps file-A's own row by
-// EXACT ID; file-B's SIBLING row keeps the hash in EnumerateFileBlocks (the GC
+// EXACT ID; file-B's SIBLING row keeps the hash in EnumerateFileChunks (the GC
 // live set), so the sweep must NOT reclaim the chunk. Keep-alive is provided by
 // the sibling row, not by RefCount.
 func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
@@ -451,7 +451,7 @@ func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
 
 	// file-B's sibling row must keep the hash in the live set.
 	if !hashInLiveSet(t, ctx, st, shared) {
-		t.Fatalf("shared hash left EnumerateFileBlocks after truncating ONE of two files; data-loss — sibling row not keeping it alive")
+		t.Fatalf("shared hash left EnumerateFileChunks after truncating ONE of two files; data-loss — sibling row not keeping it alive")
 	}
 
 	stats := CollectGarbage(ctx, rs, rec, &Options{
@@ -507,7 +507,7 @@ func TestGCMarkSweep_DeleteDuplicateHashNoOverReap(t *testing.T) {
 
 	// Both file-A rows gone, but file-B's sibling row keeps the hash live.
 	if !hashInLiveSet(t, ctx, st, shared) {
-		t.Fatalf("shared hash left EnumerateFileBlocks after deleting file-A; data-loss — file-B sibling row not keeping it alive")
+		t.Fatalf("shared hash left EnumerateFileChunks after deleting file-A; data-loss — file-B sibling row not keeping it alive")
 	}
 
 	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
@@ -557,7 +557,7 @@ func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
 
 	// The kept row (file-S/0) keeps the hash live.
 	if !hashInLiveSet(t, ctx, st, shared) {
-		t.Fatalf("straddling hash left EnumerateFileBlocks after truncate; data-loss — kept row was over-reaped")
+		t.Fatalf("straddling hash left EnumerateFileChunks after truncate; data-loss — kept row was over-reaped")
 	}
 
 	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
@@ -573,10 +573,10 @@ func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
 }
 
 // TestGCMarkSweep_PendingReclaimsRemoteChunk (#832, the real-world gap): the
-// engine rollup creates per-chunk FileBlock rows in BlockStatePending and never
+// engine rollup creates per-chunk FileChunk rows in BlockStatePending and never
 // transitions them to Remote. On develop, Delete/Truncate routed the reap
 // through the Remote-gated GetByHash, which returns nil for a Pending row — so
-// the reap was a no-op: the row stayed in EnumerateFileBlocks and the remote
+// the reap was a no-op: the row stayed in EnumerateFileChunks and the remote
 // chunk leaked forever. The fix reaps by EXACT ID "{payloadID}/{offset}", which
 // resolves the row whatever its state.
 //
@@ -620,12 +620,12 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 	}
 
 	// H2's Pending row (file-pend/1048576) must have been reaped by ID → its
-	// hash leaves EnumerateFileBlocks (no sibling row references it).
+	// hash leaves EnumerateFileChunks (no sibling row references it).
 	if hashInLiveSet(t, ctx, st, h2) {
-		t.Errorf("dropped Pending hash H2 still in EnumerateFileBlocks after reap; want gone (#832 no-op reap)")
+		t.Errorf("dropped Pending hash H2 still in EnumerateFileChunks after reap; want gone (#832 no-op reap)")
 	}
 	if !hashInLiveSet(t, ctx, st, h1) {
-		t.Errorf("retained hash H1 missing from EnumerateFileBlocks; want present")
+		t.Errorf("retained hash H1 missing from EnumerateFileChunks; want present")
 	}
 
 	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
@@ -645,9 +645,9 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 
 // TestGCMarkSweep_CrossFileDedupKeepAlive is the mandated characterization
 // test for the by-ID model: it proves keep-alive is provided by a SIBLING ROW,
-// NOT by RefCount. File A and file B each own an independent FileBlock row for
+// NOT by RefCount. File A and file B each own an independent FileChunk row for
 // the same content hash H (file-A/0 and file-B/0). Deleting file A reaps file
-// A's OWN row by exact ID; file B's sibling row keeps H in EnumerateFileBlocks
+// A's OWN row by exact ID; file B's sibling row keeps H in EnumerateFileChunks
 // (the GC live set), so the chunk must NOT be swept. This is the data-loss
 // safety proof: removing one file's row by ID cannot strand a chunk another
 // file still references, because GC sweeps only when NO row anywhere carries H.
@@ -678,7 +678,7 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 
 	// The shared hash must survive in the live set via file-B's sibling row.
 	if !hashInLiveSet(t, ctx, st, shared) {
-		t.Fatalf("shared hash left EnumerateFileBlocks after deleting one of two referencing files; data-loss — reap removed a hash a sibling file still references")
+		t.Fatalf("shared hash left EnumerateFileChunks after deleting one of two referencing files; data-loss — reap removed a hash a sibling file still references")
 	}
 
 	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
@@ -700,7 +700,7 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 		t.Fatalf("Delete file-B: %v", err)
 	}
 	if hashInLiveSet(t, ctx, st, shared) {
-		t.Fatalf("shared hash still in EnumerateFileBlocks after deleting BOTH files; want gone (last row reaped)")
+		t.Fatalf("shared hash still in EnumerateFileChunks after deleting BOTH files; want gone (last row reaped)")
 	}
 	stats2 := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 	if stats2.ErrorCount != 0 {
@@ -715,9 +715,9 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 }
 
 // TestGCMarkSweep_SameHashTwoOffsetsBothReaped (#832 + by-ID regression): one
-// file holds IDENTICAL content at TWO offsets — TWO independent FileBlock rows
+// file holds IDENTICAL content at TWO offsets — TWO independent FileChunk rows
 // keyed file-X/0 and file-X/<off>, both carrying the same hash H. Deleting the
-// file must reap BOTH rows so H leaves EnumerateFileBlocks and the chunk is
+// file must reap BOTH rows so H leaves EnumerateFileChunks and the chunk is
 // swept. This is the exact edge the prior by-hash reap leaked: resolving by hash
 // reaped only ONE row (an indeterminate one), leaving the other row stranded —
 // the hash stayed live forever and the chunk never reclaimed. By-ID reap removes
@@ -744,10 +744,10 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 	writeCASObject(t, ctx, rs, dup, []byte("identical-content-chunk"))
 
 	// Both rows exist before the delete.
-	if fb, _ := st.GetFileBlock(ctx, id0); fb == nil {
+	if fb, _ := st.GetFileChunk(ctx, id0); fb == nil {
 		t.Fatalf("fixture: row %s missing before delete", id0)
 	}
-	if fb, _ := st.GetFileBlock(ctx, id1); fb == nil {
+	if fb, _ := st.GetFileChunk(ctx, id1); fb == nil {
 		t.Fatalf("fixture: row %s missing before delete", id1)
 	}
 
@@ -760,14 +760,14 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 	}
 
 	// BOTH rows must be gone (the by-hash approach left one stranded).
-	if fb, _ := st.GetFileBlock(ctx, id0); fb != nil {
+	if fb, _ := st.GetFileChunk(ctx, id0); fb != nil {
 		t.Errorf("row %s survived delete; want reaped", id0)
 	}
-	if fb, _ := st.GetFileBlock(ctx, id1); fb != nil {
+	if fb, _ := st.GetFileChunk(ctx, id1); fb != nil {
 		t.Errorf("row %s survived delete (the by-hash leak); want reaped", id1)
 	}
 	if hashInLiveSet(t, ctx, st, dup) {
-		t.Fatalf("dup hash still in EnumerateFileBlocks after deleting both rows; want gone (#832 by-hash leak)")
+		t.Fatalf("dup hash still in EnumerateFileChunks after deleting both rows; want gone (#832 by-hash leak)")
 	}
 
 	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
@@ -782,18 +782,18 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 	}
 }
 
-// hashInLiveSet reports whether h appears in the store's EnumerateFileBlocks
+// hashInLiveSet reports whether h appears in the store's EnumerateFileChunks
 // (the GC mark live set).
 func hashInLiveSet(t *testing.T, ctx context.Context, st metadata.Store, h block.ContentHash) bool {
 	t.Helper()
 	found := false
-	if err := st.EnumerateFileBlocks(ctx, func(got block.ContentHash) error {
+	if err := st.EnumerateFileChunks(ctx, func(got block.ContentHash) error {
 		if got == h {
 			found = true
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("EnumerateFileBlocks: %v", err)
+		t.Fatalf("EnumerateFileChunks: %v", err)
 	}
 	return found
 }
@@ -825,7 +825,7 @@ func TestGCMarkSweep_GraceTTLPreserves(t *testing.T) {
 	}
 }
 
-// TestGCMarkSweep_FailClosed (behavior 4): EnumerateFileBlocks returns an
+// TestGCMarkSweep_FailClosed (behavior 4): EnumerateFileChunks returns an
 // error mid-iteration. Sweep is NOT executed (no Delete calls). Stats
 // reports ErrorCount > 0 and a non-empty FirstErrors slice.
 func TestGCMarkSweep_FailClosed(t *testing.T) {
@@ -839,7 +839,7 @@ func TestGCMarkSweep_FailClosed(t *testing.T) {
 	orphan := hashFromString("would-be-orphan")
 	writeCASObject(t, ctx, rs, orphan, []byte("payload"))
 
-	// Wrap the inner store so EnumerateFileBlocks always errors.
+	// Wrap the inner store so EnumerateFileChunks always errors.
 	innerRec := newGCMSReconciler()
 	innerStore := innerRec.addShare("share-x")
 	putBlock(t, innerStore, "file-x/0", hashFromString("h-1"))
@@ -970,7 +970,7 @@ func (s stubErrHoldProvider) HeldHashes(_ context.Context, _ string, _ []string,
 
 // TestGCMarkSweep_NoSnapshotHoldProvider: Options.HoldProvider == nil keeps
 // the pre-Phase-22 behavior verbatim — mark + sweep proceed with the live
-// set derived solely from EnumerateFileBlocks.
+// set derived solely from EnumerateFileChunks.
 func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
@@ -998,7 +998,7 @@ func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
 		t.Fatalf("ErrorCount=%d want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
 	if stats.HashesMarked != 1 {
-		t.Errorf("HashesMarked=%d want 1 (one FileBlock, no holds)", stats.HashesMarked)
+		t.Errorf("HashesMarked=%d want 1 (one FileChunk, no holds)", stats.HashesMarked)
 	}
 	if stats.ObjectsSwept != 1 {
 		t.Errorf("ObjectsSwept=%d want 1", stats.ObjectsSwept)
@@ -1012,7 +1012,7 @@ func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
 }
 
 // TestGCMarkSweep_SnapshotHoldProvider: held hashes streamed by the
-// HoldProvider land in the same live set as FileBlock hashes — referenced,
+// HoldProvider land in the same live set as FileChunk hashes — referenced,
 // held, and orphan CAS objects each get the right disposition.
 func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
 	ctx := t.Context()
@@ -1024,8 +1024,8 @@ func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
 
-	hashA := hashFromString("ref-A")  // referenced by a FileBlock
-	hashB := hashFromString("held-B") // held by the provider, no FileBlock
+	hashA := hashFromString("ref-A")  // referenced by a FileChunk
+	hashB := hashFromString("held-B") // held by the provider, no FileChunk
 	hashC := hashFromString("orphan-C")
 
 	putBlock(t, st, "file-A/0", hashA)
@@ -1044,7 +1044,7 @@ func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
 	if stats.ErrorCount != 0 {
 		t.Fatalf("ErrorCount=%d want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
-	// 1 FileBlock-derived + 1 held = 2 hashes marked.
+	// 1 FileChunk-derived + 1 held = 2 hashes marked.
 	if stats.HashesMarked != 2 {
 		t.Errorf("HashesMarked=%d want 2 (1 file + 1 held)", stats.HashesMarked)
 	}
@@ -1174,14 +1174,14 @@ func TestGCMarkSweep_StaleDirCleanup(t *testing.T) {
 // Test wrappers: failing reconciler, prefix-failing remote, concurrency tracker.
 // ---------------------------------------------------------------------------
 
-// storeWithFailingEnum wraps a metadata store so EnumerateFileBlocks
+// storeWithFailingEnum wraps a metadata store so EnumerateFileChunks
 // always returns the configured error. Used by the fail-closed test.
 type storeWithFailingEnum struct {
 	metadata.Store
 	err error
 }
 
-func (s *storeWithFailingEnum) EnumerateFileBlocks(_ context.Context, _ func(block.ContentHash) error) error {
+func (s *storeWithFailingEnum) EnumerateFileChunks(_ context.Context, _ func(block.ContentHash) error) error {
 	return s.err
 }
 

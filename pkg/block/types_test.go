@@ -300,13 +300,13 @@ func TestBlockStateConstants(t *testing.T) {
 	}
 }
 
-// TestFileBlockLastSyncAttemptAt asserts the new field exists on the
-// FileBlock zero value as a zero time.Time (janitor uses this to
+// TestFileChunkLastSyncAttemptAt asserts the new field exists on the
+// FileChunk zero value as a zero time.Time (janitor uses this to
 // requeue stale Syncing rows; never-attempted = zero value).
-func TestFileBlockLastSyncAttemptAt(t *testing.T) {
-	var fb FileBlock
+func TestFileChunkLastSyncAttemptAt(t *testing.T) {
+	var fb FileChunk
 	if !fb.LastSyncAttemptAt.IsZero() {
-		t.Fatalf("FileBlock zero value LastSyncAttemptAt = %v, want zero", fb.LastSyncAttemptAt)
+		t.Fatalf("FileChunk zero value LastSyncAttemptAt = %v, want zero", fb.LastSyncAttemptAt)
 	}
 }
 
@@ -442,7 +442,7 @@ func TestBlockRef_JSON(t *testing.T) {
 // TestContentHash_JSONBackwardCompat asserts UnmarshalJSON accepts both
 // the new canonical "blake3:{hex}" form and the legacy default base64
 // form that encoding/json produced for [32]byte before added a
-// MarshalJSON. Critical for reading FileBlock rows persisted by
+// MarshalJSON. Critical for reading FileChunk rows persisted by
 // Badger backends.
 func TestContentHash_JSONBackwardCompat(t *testing.T) {
 	hash, err := ParseContentHash(blake3EmptyHex)

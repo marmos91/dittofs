@@ -26,7 +26,7 @@ func newLoadByHashFixture(t *testing.T) (*Store, *fs.FSStore) {
 	bs, err := New(BlockStoreConfig{
 		Local:          localStore,
 		Syncer:         syncer,
-		FileBlockStore: ms,
+		FileChunkStore: ms,
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
@@ -40,15 +40,15 @@ func newLoadByHashFixture(t *testing.T) (*Store, *fs.FSStore) {
 
 // TestLoadByHash_DelegatesToLocalGet pins the contract that loadByHash
 // reads content-addressed bytes via local.Get(ctx, hash) without
-// consulting the FileBlock row. We stage a chunk directly via
+// consulting the FileChunk row. We stage a chunk directly via
 // FSStore.StoreChunk (which writes to the CAS layout) and call
-// loadByHash with that hash; no FileBlock exists for it. loadByHash
+// loadByHash with that hash; no FileChunk exists for it. loadByHash
 // must return the chunk bytes via local.Get → ReadChunk.
 func TestLoadByHash_DelegatesToLocalGet(t *testing.T) {
 	bs, localStore := newLoadByHashFixture(t)
 	ctx := context.Background()
 
-	// Stage a chunk directly in the CAS layer; no FileBlock row exists.
+	// Stage a chunk directly in the CAS layer; no FileChunk row exists.
 	var h block.ContentHash
 	for i := range h {
 		h[i] = byte(0x10 ^ i)
@@ -70,7 +70,7 @@ func TestLoadByHash_DelegatesToLocalGet(t *testing.T) {
 // TestLoadByHash_MissingChunkReturnsErrChunkNotFound pins the
 // error contract: when the chunk is absent from the CAS layer the
 // caller sees block.ErrChunkNotFound, surfaced verbatim from
-// local.Get. No FileBlock translation layer between caller and store.
+// local.Get. No FileChunk translation layer between caller and store.
 func TestLoadByHash_MissingChunkReturnsErrChunkNotFound(t *testing.T) {
 	bs, _ := newLoadByHashFixture(t)
 

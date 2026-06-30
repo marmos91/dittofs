@@ -66,8 +66,8 @@ func (tx *memoryTransaction) addQuota(uid, gid uint32, bytes, files int64) {
 // that fails midway leaves partial mutations behind, violating the
 // WithTransaction contract (interface.go: error → roll back).
 //
-// Map entries are cloned one level deep. fileData / FileBlock pointer values
-// are copied because incrementRefCountLocked mutates *FileBlock in place;
+// Map entries are cloned one level deep. fileData / FileChunk pointer values
+// are copied because incrementRefCountLocked mutates *FileChunk in place;
 // the rest are replaced (not mutated) by the tx methods, but copying keeps
 // the snapshot robust against future in-place edits.
 type txSnapshot struct {
@@ -78,13 +78,13 @@ type txSnapshot struct {
 	linkCounts    map[string]uint32
 	deviceNumbers map[string]*deviceNumber
 	objectIndex   map[block.ContentHash]string
-	// hadFileBlockData records whether fileBlockData was allocated at snapshot
-	// time. If the closure lazily allocated it (initFileBlockData) and then
+	// hadFileChunkData records whether fileChunkData was allocated at snapshot
+	// time. If the closure lazily allocated it (initFileChunkData) and then
 	// failed, restore must reset the struct's maps to non-nil empties (or it
-	// would leave fileBlockData non-nil with nil maps → a later Put panics on
+	// would leave fileChunkData non-nil with nil maps → a later Put panics on
 	// a nil-map write).
-	hadFileBlockData bool
-	blocks           map[string]*metadata.FileBlock
+	hadFileChunkData bool
+	blocks           map[string]*metadata.FileChunk
 	hashIndex        map[metadata.ContentHash]string
 	serverConfig     metadata.MetadataServerConfig
 	capabilities     metadata.FilesystemCapabilities
@@ -92,14 +92,14 @@ type txSnapshot struct {
 
 // snapshotLocked captures the store's mutable maps. Caller MUST hold the
 // write lock. Top-level maps are shallow-cloned; nested children maps and the
-// in-place-mutated FileBlock values are copied so a rolled-back closure cannot
+// in-place-mutated FileChunk values are copied so a rolled-back closure cannot
 // leak through a shared inner map or pointer.
 func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 	snap := &txSnapshot{
 		// shares holds *shareData mutated in place (UpdateShareOptions,
 		// CreateRootDirectory set RootHandle) — a shallow map clone would share
 		// those pointers and let the mutation leak into the snapshot, defeating
-		// rollback. Copy each struct (same discipline as fileBlockData.blocks).
+		// rollback. Copy each struct (same discipline as fileChunkData.blocks).
 		shares:        make(map[string]*shareData, len(store.shares)),
 		files:         maps.Clone(store.files),
 		parents:       maps.Clone(store.parents),
@@ -117,11 +117,11 @@ func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 	for k, inner := range store.children {
 		snap.children[k] = maps.Clone(inner)
 	}
-	if store.fileBlockData != nil {
-		snap.hadFileBlockData = true
-		snap.blocks = make(map[string]*metadata.FileBlock, len(store.fileBlockData.blocks))
-		snap.hashIndex = maps.Clone(store.fileBlockData.hashIndex)
-		for k, v := range store.fileBlockData.blocks {
+	if store.fileChunkData != nil {
+		snap.hadFileChunkData = true
+		snap.blocks = make(map[string]*metadata.FileChunk, len(store.fileChunkData.blocks))
+		snap.hashIndex = maps.Clone(store.fileChunkData.hashIndex)
+		for k, v := range store.fileChunkData.blocks {
 			// Copy the struct so an in-place RefCount mutation inside the
 			// closure does not leak into the snapshot.
 			bc := *v
@@ -144,16 +144,16 @@ func (store *MemoryMetadataStore) restoreLocked(snap *txSnapshot) {
 	store.serverConfig = snap.serverConfig
 	store.capabilities = snap.capabilities
 	switch {
-	case snap.hadFileBlockData:
-		// fileBlockData existed at snapshot time — restore its maps to the
+	case snap.hadFileChunkData:
+		// fileChunkData existed at snapshot time — restore its maps to the
 		// captured copies (snap.blocks/hashIndex are non-nil).
-		store.fileBlockData.blocks = snap.blocks
-		store.fileBlockData.hashIndex = snap.hashIndex
-	case store.fileBlockData != nil:
-		// The closure lazily allocated fileBlockData then failed. Drop it back
+		store.fileChunkData.blocks = snap.blocks
+		store.fileChunkData.hashIndex = snap.hashIndex
+	case store.fileChunkData != nil:
+		// The closure lazily allocated fileChunkData then failed. Drop it back
 		// to its pre-tx (nil) state so it is re-initialized cleanly on the next
 		// use — never left non-nil with nil maps.
-		store.fileBlockData = nil
+		store.fileChunkData = nil
 	}
 }
 

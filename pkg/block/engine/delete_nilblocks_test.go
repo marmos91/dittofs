@@ -9,11 +9,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
 )
 
-// newReapFixture wires a Store with both a FileBlockStore and a refcount
+// newReapFixture wires a Store with both a FileChunkStore and a refcount
 // coordinator so the delete reap path can resolve a payload's manifest.
-// buildCascadeFixture deliberately omits the FileBlockStore; the #1433 fix
+// buildCascadeFixture deliberately omits the FileChunkStore; the #1433 fix
 // depends on it, so this fixture supplies one.
-func newReapFixture(t *testing.T, coord MetadataCoordinator, fbs *stubFileBlockStore) *Store {
+func newReapFixture(t *testing.T, coord MetadataCoordinator, fbs *stubFileChunkStore) *Store {
 	t.Helper()
 	localStore := memory.New()
 	syncer := NewSyncer(localStore, nil, fbs, DefaultConfig())
@@ -22,7 +22,7 @@ func newReapFixture(t *testing.T, coord MetadataCoordinator, fbs *stubFileBlockS
 		Remote:         nil,
 		Syncer:         syncer,
 		Coordinator:    coord,
-		FileBlockStore: fbs,
+		FileChunkStore: fbs,
 	})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -37,13 +37,13 @@ func newReapFixture(t *testing.T, coord MetadataCoordinator, fbs *stubFileBlockS
 // TestDelete_NilBlocks_ReapsPayloadManifest reproduces #1433: the file-removal
 // path (NFS REMOVE, SMB delete) calls Delete(payloadID, nil). Before the fix
 // the nil slice skipped the coordinator entirely, so block refcounts were
-// never decremented — the FileBlock rows survived, the hashes stayed in the GC
+// never decremented — the FileChunk rows survived, the hashes stayed in the GC
 // live set, and the chunks were never reclaimed on either tier. With the fix
 // Delete enumerates the payload's own manifest and reaps each row.
 func TestDelete_NilBlocks_ReapsPayloadManifest(t *testing.T) {
 	ctx := context.Background()
 	coord := newRefcountCoordinator()
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	bs := newReapFixture(t, coord, fbs)
 
 	const payloadID = "file-1"
@@ -56,12 +56,12 @@ func TestDelete_NilBlocks_ReapsPayloadManifest(t *testing.T) {
 		off  uint64
 		hash block.ContentHash
 	}{{0, h0}, {4096, h1}} {
-		if err := fbs.Put(ctx, &block.FileBlock{
+		if err := fbs.Put(ctx, &block.FileChunk{
 			ID:       fmt.Sprintf("%s/%d", payloadID, r.off),
 			Hash:     r.hash,
 			DataSize: 4096,
 		}); err != nil {
-			t.Fatalf("seed FileBlock: %v", err)
+			t.Fatalf("seed FileChunk: %v", err)
 		}
 		coord.seedBlock(payloadID, r.off, r.hash, 1)
 	}

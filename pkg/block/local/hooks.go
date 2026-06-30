@@ -43,9 +43,9 @@ type MetricsAware interface {
 //
 // Implementations:
 //
-//   - *fs.FSStore — installs the rollup-completion FileBlock + ObjectID
+//   - *fs.FSStore — installs the rollup-completion FileChunk + ObjectID
 //     persister and the synchronous chunk-completion cache-warming
-//     callback. The chunk emitter is a no-op (FSStore drives FileBlock
+//     callback. The chunk emitter is a no-op (FSStore drives FileChunk
 //     rows through the rollup persister path instead).
 //
 //   - *memory.MemoryStore — installs the per-chunk emitter (in-memory
@@ -63,7 +63,7 @@ type MetricsAware interface {
 type ChunkLifecycleHooks interface {
 	// SetObjectIDPersister installs the rollup-completion callback. The
 	// engine wires a closure that delegates to the metadata coordinator's
-	// PersistFileBlocks and writes per-block FileBlock rows so the
+	// PersistFileChunks and writes per-block FileChunk rows so the
 	// engine's CAS read path can resolve (payloadID, offset) -> hash.
 	// Called once at engine.New; implementations that don't drive a
 	// rollup-completion path may treat this as a no-op.
@@ -80,9 +80,9 @@ type ChunkLifecycleHooks interface {
 
 	// SetChunkEmitter installs the per-chunk emitter fired once per
 	// freshly-emitted CAS chunk during synchronous rollup. The engine
-	// wires a closure that mirrors each chunk into a FileBlock row so
+	// wires a closure that mirrors each chunk into a FileChunk row so
 	// the CAS read path can resolve (payloadID, offset) -> hash without
-	// a separate manifest. Implementations that drive FileBlock rows
+	// a separate manifest. Implementations that drive FileChunk rows
 	// through a different path (e.g. rollup-completion persister) may
 	// treat this as a no-op.
 	SetChunkEmitter(emit func(payloadID string, chunkStart uint64, size uint32, hash block.ContentHash))

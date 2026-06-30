@@ -327,7 +327,7 @@ func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader
 	// makes the file read as zeros. file_block_refs always carries the
 	// correct hash, so backfill the per-file read index from it. New
 	// backups already carry the hash; the UPDATE is a no-op for them.
-	if err := reconcileFileBlockHashes(ctx, pgRaw); err != nil {
+	if err := reconcileFileChunkHashes(ctx, pgRaw); err != nil {
 		return fmt.Errorf("%w: reconcile file_blocks hashes: %v", metadata.ErrRestoreCorrupt, err)
 	}
 
@@ -349,7 +349,7 @@ func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader
 	return nil
 }
 
-// reconcileFileBlockHashes backfills file_blocks.hash from
+// reconcileFileChunkHashes backfills file_blocks.hash from
 // file_block_refs for rows whose hash is NULL. The file_blocks row ID is
 // "{files.content_id}/{offset}" and file_block_refs is keyed by
 // (file_id, offset); the join recovers each block's content hash. The
@@ -357,7 +357,7 @@ func (s *PostgresMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader
 // is encoded with encode(..., 'hex'), which produces the same lowercase
 // hex string. Only the hash is touched — block state and remote-durability
 // tracking (synced_hashes) are left as restored.
-func reconcileFileBlockHashes(ctx context.Context, raw *pgconn.PgConn) error {
+func reconcileFileChunkHashes(ctx context.Context, raw *pgconn.PgConn) error {
 	const sql = `
 		UPDATE file_blocks fb
 		SET hash = encode(r.hash, 'hex')

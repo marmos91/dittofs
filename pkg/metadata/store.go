@@ -240,12 +240,12 @@ type ServerConfig interface {
 }
 
 // ============================================================================
-// FileBlockStore Interface (Content-Addressed Block Management)
+// FileChunkStore Interface (Content-Addressed Block Management)
 // ============================================================================
 
-// FileBlockStore defines operations for content-addressed file block management.
-// Type alias to block.FileBlockStore -- all definitions live in pkg/block.
-type FileBlockStore = block.FileBlockStore
+// FileChunkStore defines operations for content-addressed file chunk management.
+// Type alias to block.FileChunkStore -- all definitions live in pkg/block.
+type FileChunkStore = block.FileChunkStore
 
 // ============================================================================
 // Transaction Interface
@@ -253,13 +253,13 @@ type FileBlockStore = block.FileBlockStore
 
 // Transaction provides all operations available within a transactional context.
 //
-// This interface combines Files, Shares, ServerConfig, FileBlockStore, and LockStore
+// This interface combines Files, Shares, ServerConfig, FileChunkStore, and LockStore
 // interfaces to enable atomic operations across all metadata domains.
 type Transaction interface {
 	Files          // File CRUD operations
 	Shares         // Share management
 	ServerConfig   // Server configuration
-	FileBlockStore // Content-addressed block management
+	FileChunkStore // Content-addressed block management
 	lock.LockStore // Lock persistence for NLM/SMB
 }
 
@@ -327,7 +327,7 @@ type FilesystemMeta struct {
 //   - Shares: Share lifecycle and handle management
 //   - ServerConfig: Server configuration, capabilities, and health
 //   - Transactor: Transaction support for atomic operations
-//   - FileBlockStore: Content-addressed block management
+//   - FileChunkStore: Content-addressed block management
 //
 // Note: File locking (SMB/NLM) is handled separately by LockManager at the
 // service level, not by individual stores. Locks are ephemeral (in-memory)
@@ -346,19 +346,19 @@ type Store interface {
 	Shares         // Share lifecycle and handle management
 	ServerConfig   // Server configuration and capabilities
 	Transactor     // Transaction support for atomic operations
-	FileBlockStore // Content-addressed block management
+	FileChunkStore // Content-addressed block management
 
-	// EnumerateFileBlocks streams every FileBlock's ContentHash through fn
+	// EnumerateFileChunks streams every FileChunk's ContentHash through fn
 	// in implementation-defined order. Returns the first non-nil error
 	// from fn or from the underlying store iterator. Implementations MUST
 	// stream via cursors and respect ctx.Done() — never load the full set
 	// into application memory.
 	//
-	// Lifted from FileBlockStore: the operation is store-wide, not
+	// Lifted from FileChunkStore: the operation is store-wide, not
 	// per-block, and belongs at the MetadataStore tier. Used by the GC
 	// mark phase and the refcount audit. Zero-valued ContentHashes
 	// (legacy rows pre-CAS) are emitted; callers skip them as needed.
-	EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error
+	EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error
 
 	// FindByObjectID looks up a file by its Merkle-root ObjectID.
 	// Returns (nil, nil) on miss (no row matches); non-nil result
@@ -382,29 +382,29 @@ type Store interface {
 	// Conformance scenarios live in pkg/metadata/storetest/objectid_*.go.
 	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error)
 
-	// GetFileBlock retrieves a FileBlock by its ID. Engine-internal
+	// GetFileChunk retrieves a FileChunk by its ID. Engine-internal
 	// surface narrowed the public
-	// FileBlockStore to 6 methods, but the read-path resolver
-	// (engine.fetch.resolveFileBlock) and the recovery scan
+	// FileChunkStore to 6 methods, but the read-path resolver
+	// (engine.fetch.resolveFileChunk) and the recovery scan
 	// (local/fs/recovery.go) still need a by-ID lookup until 14
-	// reroutes reads through FileAttr.Blocks. See block.EngineFileBlockStore.
-	GetFileBlock(ctx context.Context, id string) (*block.FileBlock, error)
+	// reroutes reads through FileAttr.Blocks. See block.EngineFileChunkStore.
+	GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error)
 
-	// ListFileBlocks returns every FileBlock whose ID begins with
+	// ListFileChunks returns every FileChunk whose ID begins with
 	// "{payloadID}/", sorted by parsed numeric block index. Returns an
 	// empty (non-nil) slice when no blocks match. Engine-internal
 	// surface: used by syncer GetFileSize/Exists, BlockStore stats fan-
 	// out, and local/fs eviction. Same 14 deprecation timeline
-	// as GetFileBlock above.
-	ListFileBlocks(ctx context.Context, payloadID string) ([]*block.FileBlock, error)
+	// as GetFileChunk above.
+	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
 
 	// EnumeratePayloads streams every distinct payloadID that has at least one
-	// FileBlock row through fn (deduped, order-independent). Unlike the local
+	// FileChunk row through fn (deduped, order-independent). Unlike the local
 	// block store's ListFiles, this enumerates the authoritative metadata, so
 	// it still yields payloads whose append log was discarded after rollup.
 	// Used by `share warm` and block-store stats to enumerate the full payload
 	// set rather than only locally-present payloads. See
-	// block.EngineFileBlockStore.
+	// block.EngineFileChunkStore.
 	EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error
 
 	// EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a

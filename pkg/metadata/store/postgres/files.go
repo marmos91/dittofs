@@ -40,7 +40,7 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 
 	// Fold FileAttr.Blocks into the metadata read via a correlated aggregate
 	// (#1176): one round-trip instead of the metadata SELECT plus a separate
-	// loadFileBlockRefs. blockRefsAggExpr yields NULL for directories,
+	// loadFileChunkRefs. blockRefsAggExpr yields NULL for directories,
 	// symlinks, and blockless files, so the decoded slice stays nil for them —
 	// byte-identical to the prior two-query behaviour.
 	query := `
@@ -285,7 +285,7 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 		//
 		// (review iteration 1): the shape DOES NOT match
 		// GetFile in this backend. GetFile populates FileAttr.Blocks via
-		// loadFileBlockRefs; ListChildren intentionally does NOT (per-row
+		// loadFileChunkRefs; ListChildren intentionally does NOT (per-row
 		// BlockRef hydration would be a quadratic cost on directory
 		// listings). Memory and Badger backends include Blocks on
 		// DirEntry.Attr because their underlying serialisation already
@@ -438,7 +438,7 @@ func (s *PostgresMetadataStore) FindByObjectID(ctx context.Context, objectID blo
 		return nil, mapPgError(err, "FindByObjectID", objectID.String())
 	}
 
-	return s.loadFileBlockRefs(ctx, fileID)
+	return s.loadFileChunkRefs(ctx, fileID)
 }
 
 // GetFileByPayloadID retrieves a file by its content ID (used by cache flusher)

@@ -174,13 +174,13 @@ func runPhase19RandWriteWarmCache(t *testing.T) float64 {
 func newPhase19BlockStore(t *testing.T) *engine.Store {
 	t.Helper()
 	localStore := memory.New()
-	fbs := newAggregateStubFileBlockStore()
+	fbs := newAggregateStubFileChunkStore()
 	syncer := engine.NewSyncer(localStore, nil, fbs, engine.DefaultConfig())
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:          localStore,
 		Remote:         nil,
 		Syncer:         syncer,
-		FileBlockStore: fbs,
+		FileChunkStore: fbs,
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
@@ -192,19 +192,19 @@ func newPhase19BlockStore(t *testing.T) *engine.Store {
 	return bs
 }
 
-// aggregateStubFileBlockStore mirrors engine_test.go's
-// stubFileBlockStore but lives in internal/bench/ so the aggregate
+// aggregateStubFileChunkStore mirrors engine_test.go's
+// stubFileChunkStore but lives in internal/bench/ so the aggregate
 // runner doesn't depend on engine-package test-only symbols.
-type aggregateStubFileBlockStore struct {
+type aggregateStubFileChunkStore struct {
 	mu     sync.Mutex
-	blocks map[string]*block.FileBlock
+	blocks map[string]*block.FileChunk
 }
 
-func newAggregateStubFileBlockStore() *aggregateStubFileBlockStore {
-	return &aggregateStubFileBlockStore{blocks: make(map[string]*block.FileBlock)}
+func newAggregateStubFileChunkStore() *aggregateStubFileChunkStore {
+	return &aggregateStubFileChunkStore{blocks: make(map[string]*block.FileChunk)}
 }
 
-func (s *aggregateStubFileBlockStore) GetByHash(_ context.Context, h block.ContentHash) (*block.FileBlock, error) {
+func (s *aggregateStubFileChunkStore) GetByHash(_ context.Context, h block.ContentHash) (*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, fb := range s.blocks {
@@ -214,29 +214,29 @@ func (s *aggregateStubFileBlockStore) GetByHash(_ context.Context, h block.Conte
 	}
 	return nil, nil
 }
-func (s *aggregateStubFileBlockStore) Put(_ context.Context, block *block.FileBlock) error {
+func (s *aggregateStubFileChunkStore) Put(_ context.Context, block *block.FileChunk) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := *block
 	s.blocks[block.ID] = &cp
 	return nil
 }
-func (s *aggregateStubFileBlockStore) Delete(_ context.Context, id string) error {
+func (s *aggregateStubFileChunkStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.blocks, id)
 	return nil
 }
-func (s *aggregateStubFileBlockStore) IncrementRefCount(_ context.Context, _ string) error {
+func (s *aggregateStubFileChunkStore) IncrementRefCount(_ context.Context, _ string) error {
 	return nil
 }
-func (s *aggregateStubFileBlockStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
+func (s *aggregateStubFileChunkStore) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (s *aggregateStubFileBlockStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
+func (s *aggregateStubFileChunkStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (s *aggregateStubFileBlockStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.BlockRef) error {
+func (s *aggregateStubFileChunkStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.BlockRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, fb := range s.blocks {
@@ -247,20 +247,20 @@ func (s *aggregateStubFileBlockStore) AddRef(_ context.Context, h block.ContentH
 	}
 	return block.ErrUnknownHash
 }
-func (s *aggregateStubFileBlockStore) GetFileBlock(_ context.Context, id string) (*block.FileBlock, error) {
+func (s *aggregateStubFileChunkStore) GetFileChunk(_ context.Context, id string) (*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fb, ok := s.blocks[id]
 	if !ok {
-		return nil, block.ErrFileBlockNotFound
+		return nil, block.ErrFileChunkNotFound
 	}
 	return fb, nil
 }
-func (s *aggregateStubFileBlockStore) ListFileBlocks(_ context.Context, payloadID string) ([]*block.FileBlock, error) {
+func (s *aggregateStubFileChunkStore) ListFileChunks(_ context.Context, payloadID string) ([]*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prefix := payloadID + "/"
-	var out []*block.FileBlock
+	var out []*block.FileChunk
 	for id, fb := range s.blocks {
 		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
 			out = append(out, fb)
@@ -268,7 +268,7 @@ func (s *aggregateStubFileBlockStore) ListFileBlocks(_ context.Context, payloadI
 	}
 	return out, nil
 }
-func (s *aggregateStubFileBlockStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
+func (s *aggregateStubFileChunkStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	s.mu.Lock()
 	seen := make(map[string]struct{})
 	for id := range s.blocks {

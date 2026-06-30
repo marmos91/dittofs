@@ -27,7 +27,7 @@ func newOnChunkCompleteFixture(t *testing.T, readBufferBytes int64) (*Store, *fs
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		ReadBufferBytes: readBufferBytes,
 	})
 	if err != nil {

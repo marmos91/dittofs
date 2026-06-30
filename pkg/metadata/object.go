@@ -30,7 +30,7 @@ type ObjectID = ContentHash
 // BlockState (re-exported from blockstore for backward compatibility)
 // ============================================================================
 
-// BlockState represents the lifecycle state of a FileBlock.
+// BlockState represents the lifecycle state of a FileChunk.
 type BlockState = block.BlockState
 
 // BlockState constants re-exported from blockstore.
@@ -45,15 +45,15 @@ const (
 )
 
 // ============================================================================
-// FileBlock (re-exported from blockstore for backward compatibility)
+// FileChunk (re-exported from blockstore for backward compatibility)
 // ============================================================================
 
-// FileBlock is the single block entity in DittoFS.
-// Type alias to block.FileBlock -- all definitions live in pkg/block.
-type FileBlock = block.FileBlock
+// FileChunk is the per-file content-chunk entity in DittoFS.
+// Type alias to block.FileChunk -- all definitions live in pkg/block.
+type FileChunk = block.FileChunk
 
-// NewFileBlock creates a new pending FileBlock with the given ID and cache path.
-var NewFileBlock = block.NewFileBlock
+// NewFileChunk creates a new pending FileChunk with the given ID and cache path.
+var NewFileChunk = block.NewFileChunk
 
 // ============================================================================
 // Errors (re-exported from blockstore for backward compatibility)
@@ -62,10 +62,10 @@ var NewFileBlock = block.NewFileBlock
 // ErrInvalidHash is returned when a hash string is malformed.
 var ErrInvalidHash = block.ErrInvalidHash
 
-// ErrFileBlockNotFound is returned when a file block is not found.
-var ErrFileBlockNotFound = block.ErrFileBlockNotFound
+// ErrFileChunkNotFound is returned when a file chunk is not found.
+var ErrFileChunkNotFound = block.ErrFileChunkNotFound
 
-// ErrUnknownHash is returned by FileBlockStore.AddRef when the hash is
+// ErrUnknownHash is returned by FileChunkStore.AddRef when the hash is
 // not yet present in the metadata store. Re-exported from blockstore
 // for backward compatibility — see block.ErrUnknownHash for the
 // canonical declaration and full contract..

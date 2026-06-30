@@ -17,7 +17,7 @@ import (
 // half-restored state. The fs rollup worker pool is already running (started
 // by AddShare) over boot-recovered dirty intervals; without quiescing it
 // before ResetLocalState an in-flight rollup could persist post-snapshot
-// FileBlock refs over the just-restored FileAttr.Blocks (silent corruption of
+// FileChunk refs over the just-restored FileAttr.Blocks (silent corruption of
 // the rolled-back share).
 //
 // This drives the real fs block store (append-log + rollup worker active) and

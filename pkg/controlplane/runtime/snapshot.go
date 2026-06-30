@@ -490,7 +490,7 @@ func (r *Runtime) runSnapshotOrchestration(
 
 	// --- Step 0: Drain rollups BEFORE WriteSnapshot ---
 	// Force every dirty append-log payload through rollup into CAS + the
-	// FileBlock manifest so the WriteSnapshot() below sees a fully-populated
+	// FileChunk manifest so the WriteSnapshot() below sees a fully-populated
 	// FileAttr.Blocks. Without this, a snapshot taken before the async
 	// rollup catches up captures an empty/partial manifest.
 	// Resolve the block store once here; the verify gate (Step 4) reuses
@@ -611,7 +611,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	// rollup that never persisted FileAttr.Blocks).
 	// Reporting remote_durable=true here would be a hollow durability
 	// claim over zero verified blocks. Cross-check the manifest against
-	// the live FileBlock enumeration; fail if the store still references
+	// the live FileChunk enumeration; fail if the store still references
 	// hashes but the manifest captured none. A truly-empty share (both
 	// zero) legitimately passes with a vacuous verify.
 	if manifestCount == 0 {
@@ -1111,7 +1111,7 @@ func (r *Runtime) recoverInterruptedRestores(ctx context.Context) error {
 //  4. open the metadata dump.
 //  5. reset the block store's local append-log overlay (BEFORE the
 //     metadata Reset, so no concurrent rollup can flush post-snapshot
-//     FileBlock rows into the restored metadata).
+//     FileChunk rows into the restored metadata).
 //  6. Reset the metadata store.
 //  7. Restore from the dump.
 //  8. post-verify the restored hashes against the remote.
@@ -1319,7 +1319,7 @@ func (r *Runtime) restoreSnapshot(
 	// would otherwise reach ResetLocalState with the fs rollup worker pool
 	// already running on boot-recovered dirty intervals (StartRollup runs in
 	// AddShare, before Serve→recoverInterruptedRestores). A worker mid-rollup
-	// could persist post-snapshot FileBlock refs over the just-restored
+	// could persist post-snapshot FileChunk refs over the just-restored
 	// FileAttr.Blocks (#8 H3, silent corruption of the rolled-back share).
 	// Drain rollups here so the rollback gets the same quiesce guarantee:
 	// DrainRollups waits on the per-file mutex for any in-flight pass to
@@ -1441,9 +1441,9 @@ func (r *Runtime) restoreSnapshot(
 	// This MUST run BEFORE resetable.Reset + snapshotable.RestoreSnapshot (not after):
 	// background rollup workers run throughout the restore. If we cleared
 	// the overlay only after Restore repopulated the metadata, a rollup
-	// worker could call PersistFileBlocks against the freshly-restored
+	// worker could call PersistFileChunks against the freshly-restored
 	// metadata in the window between Restore and the clear, injecting
-	// post-snapshot FileBlock rows into the restored tree. Clearing the
+	// post-snapshot FileChunk rows into the restored tree. Clearing the
 	// overlay first leaves no dirty intervals for a worker to flush.
 	//
 	// Safe here because BOTH the snapshot being restored AND the pre-restore

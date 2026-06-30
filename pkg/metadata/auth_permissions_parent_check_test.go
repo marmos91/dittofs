@@ -74,13 +74,13 @@ func TestCheckParentWriteAccess_NoACLAllowsAdd(t *testing.T) {
 	}
 }
 
-// TestCheckParentCreateAccess_DenyAddFileBlocksFileAllowsDir verifies that
+// TestCheckParentCreateAccess_DenyAddFileChunksFileAllowsDir verifies that
 // a parent DACL denying only SEC_DIR_ADD_FILE (ACE4_ADD_FILE, 0x02) blocks
 // file creates but still permits subdirectory creates. Regresses the
 // smb2.create.mkdir-visible fix: PermissionWrite lumps ADD_FILE and
 // ADD_SUBDIRECTORY together (mask 0x06), so the old combined check
 // incorrectly denied directory creates whenever ADD_FILE was denied.
-func TestCheckParentCreateAccess_DenyAddFileBlocksFileAllowsDir(t *testing.T) {
+func TestCheckParentCreateAccess_DenyAddFileChunksFileAllowsDir(t *testing.T) {
 	f := newTestFixture(t)
 
 	requesterUID := uint32(1001)

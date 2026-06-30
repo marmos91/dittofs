@@ -63,12 +63,12 @@ func (r *latencyRemote) Put(ctx context.Context, hash block.ContentHash, data []
 // remote contract the syncer depends on.
 var _ remote.RemoteStore = (*latencyRemote)(nil)
 
-// seedRemoteOnlyBlock seeds a single FileBlock row in BlockStateRemote and the
+// seedRemoteOnlyBlock seeds a single FileChunk row in BlockStateRemote and the
 // matching CAS bytes in the (latency) remote, WITHOUT placing the chunk in any
 // local store. A subsequent read of (payloadID, blockIdx 0) therefore misses
 // locally and fetches from the remote tier — the exact cold-read path #1362
 // bounds. Returns the chunk hash.
-func seedRemoteOnlyBlock(t testing.TB, fbs *stubFileBlockStore, rs interface {
+func seedRemoteOnlyBlock(t testing.TB, fbs *stubFileChunkStore, rs interface {
 	Put(context.Context, block.ContentHash, []byte) error
 }, payloadID string, data []byte) block.ContentHash {
 	t.Helper()
@@ -76,14 +76,14 @@ func seedRemoteOnlyBlock(t testing.TB, fbs *stubFileBlockStore, rs interface {
 	if err := rs.Put(context.Background(), hash, data); err != nil {
 		t.Fatalf("seed remote Put: %v", err)
 	}
-	fb := &block.FileBlock{
+	fb := &block.FileChunk{
 		ID:       fmt.Sprintf("%s/%d", payloadID, 0),
 		Hash:     hash,
 		DataSize: uint32(len(data)),
 		State:    block.BlockStateRemote,
 	}
 	if err := fbs.Put(context.Background(), fb); err != nil {
-		t.Fatalf("seed FileBlock Put: %v", err)
+		t.Fatalf("seed FileChunk Put: %v", err)
 	}
 	return hash
 }
@@ -117,7 +117,7 @@ func BenchmarkReadThroughCache_ColdVsWarm(b *testing.B) {
 			// genuine miss that pays the WAN latency.
 			loc := memorylocal.New()
 			rs := newLatencyRemote(wanLatency)
-			fbs := newStubFileBlockStore()
+			fbs := newStubFileChunkStore()
 			payloadID := fmt.Sprintf("cold-%d", i)
 			data := makeChunk(chunkSize, byte(i))
 			seedRemoteOnlyBlock(b, fbs, rs, payloadID, data)
@@ -140,7 +140,7 @@ func BenchmarkReadThroughCache_ColdVsWarm(b *testing.B) {
 		// benchmarked read is served from disk with no remote latency.
 		loc := memorylocal.New()
 		rs := newLatencyRemote(wanLatency)
-		fbs := newStubFileBlockStore()
+		fbs := newStubFileChunkStore()
 		payloadID := "warm"
 		data := makeChunk(chunkSize, 0x5A)
 		hash := seedRemoteOnlyBlock(b, fbs, rs, payloadID, data)
@@ -208,7 +208,7 @@ func TestReadThroughCache_NoReuploadOnReadOnlyWorkload(t *testing.T) {
 
 	loc := memorylocal.New()
 	rs := newLatencyRemote(0)
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	mds := metastore.NewMemoryMetadataStoreWithDefaults()
 
 	m := newFetchSyncer(loc, rs.Store, fbs)
@@ -305,7 +305,7 @@ func TestReadThroughCache_BoundedByMaxDisk(t *testing.T) {
 	dir := t.TempDir()
 	// No SyncedHashStore: every fetched chunk is immediately evictable, so the
 	// bound is enforced by Put's ensureSpace alone.
-	loc, err := localfs.NewWithOptions(dir, maxDisk, newStubFileBlockStore(), localfs.FSStoreOptions{})
+	loc, err := localfs.NewWithOptions(dir, maxDisk, newStubFileChunkStore(), localfs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestReadThroughCache_BoundedByMaxDisk(t *testing.T) {
 	})
 
 	rs := newLatencyRemote(0)
-	fbs := newStubFileBlockStore()
+	fbs := newStubFileChunkStore()
 	m := newFetchSyncer(loc, rs.Store, fbs)
 	m.remoteStore = rs
 

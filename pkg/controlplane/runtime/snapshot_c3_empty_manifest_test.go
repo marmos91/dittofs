@@ -14,10 +14,10 @@ import (
 // reported remote_durable=true over an unverified empty set (hollow
 // durability). The orchestration must refuse that case.
 //
-// Scenario: seed a file (which also seeds a standalone FileBlock row),
-// then delete ONLY the File entry — leaving the FileBlock row in place.
+// Scenario: seed a file (which also seeds a standalone FileChunk row),
+// then delete ONLY the File entry — leaving the FileChunk row in place.
 // The Backup-derived manifest is now empty (no file references any
-// hash), but EnumerateFileBlocks still returns the orphan hash. The C3
+// hash), but EnumerateFileChunks still returns the orphan hash. The C3
 // cross-check detects the mismatch and fails the snapshot rather than
 // claiming durability.
 func TestCreateSnapshot_EmptyManifestOnNonEmptyShareFails(t *testing.T) {
@@ -28,9 +28,9 @@ func TestCreateSnapshot_EmptyManifestOnNonEmptyShareFails(t *testing.T) {
 	ctx := fx.ctx()
 	files := fx.populateFiles(ctx, []string{"c3.bin"})
 
-	// Delete ONLY the File, NOT the standalone FileBlock row. This is the
+	// Delete ONLY the File, NOT the standalone FileChunk row. This is the
 	// exact inconsistency C3 protects against: manifest (from file.Blocks)
-	// is empty, but the store still references a hash via EnumerateFileBlocks.
+	// is empty, but the store still references a hash via EnumerateFileChunks.
 	if err := fx.meta.DeleteFile(ctx, files[0].handle); err != nil {
 		t.Fatalf("DeleteFile: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestCreateSnapshot_EmptyManifestOnNonEmptyShareFails(t *testing.T) {
 }
 
 // TestCreateSnapshot_EmptyShareVacuousVerify is the legitimate-empty
-// counterpart: a share with NO files and NO FileBlock rows produces an
+// counterpart: a share with NO files and NO FileChunk rows produces an
 // empty manifest, and the C3 guard must let it pass with a vacuous verify
 // (remote_durable=true over zero blocks is honest here — there is nothing
 // to verify).

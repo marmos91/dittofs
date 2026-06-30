@@ -16,9 +16,9 @@ import (
 // seedAuditTestStore creates a memory metadata store with one share named
 // "audit-test" and three regular files. The first file has 5 BlockRefs,
 // the second has 3, the third has 2 (10 manifest refs total). Each
-// manifest ref is backed by a FileBlock row whose ID is
+// manifest ref is backed by a FileChunk row whose ID is
 // "{payloadID}/{offset}" with a matching non-zero hash, so the
-// manifest↔FileBlock-row invariant holds (DanglingRefs == 0) pre-mutation.
+// manifest↔FileChunk-row invariant holds (DanglingRefs == 0) pre-mutation.
 //
 // Returns the store, the share name, and per-file (payloadID, []offset)
 // so a test can delete a specific backing row to manufacture a dangling
@@ -62,17 +62,17 @@ func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore
 			t.Fatalf("DecodeFileHandle: %v", err)
 		}
 
-		// payloadID is the FileBlock-ID prefix; the engine keys blocks as
+		// payloadID is the FileChunk-ID prefix; the engine keys blocks as
 		// "{payloadID}/{offset}". Use a stable per-file payload id.
 		payloadID := "payload-" + jstr(fi)
 		payloadIDs[fi] = payloadID
 		fileOffsets := make([]uint64, n)
 		refs := make([]block.BlockRef, n)
 		for bi := 0; bi < n; bi++ {
-			h := hashForFileBlock(fi, bi)
+			h := hashForFileChunk(fi, bi)
 			off := uint64(bi) * 4096
 			blockID := payloadID + "/" + jstr(int(off))
-			fb := &block.FileBlock{
+			fb := &block.FileChunk{
 				ID:            blockID,
 				Hash:          h,
 				State:         block.BlockStatePending,
@@ -141,10 +141,10 @@ func jstr(i int) string {
 	return string(buf[pos:])
 }
 
-// hashForFileBlock builds a deterministic non-zero ContentHash for a
+// hashForFileChunk builds a deterministic non-zero ContentHash for a
 // (fileIdx, blockIdx) pair so different files / blocks have distinct
 // hashes. Mirrors storetest's hashOfSeed pattern.
-func hashForFileBlock(fileIdx, blockIdx int) block.ContentHash {
+func hashForFileChunk(fileIdx, blockIdx int) block.ContentHash {
 	var h block.ContentHash
 	seed := []byte("audit-fixture-f" + jstr(fileIdx) + "-b" + jstr(blockIdx))
 	for i := 0; i < block.HashSize; i++ {
@@ -155,7 +155,7 @@ func hashForFileBlock(fileIdx, blockIdx int) block.ContentHash {
 
 // TestAuditRefcounts_Computes asserts AuditRefcounts returns the expected
 // aggregate counts when the invariant holds. 3 files with 5+3+2=10
-// manifest refs, each backed by a FileBlock row, yields DanglingRefs=0
+// manifest refs, each backed by a FileChunk row, yields DanglingRefs=0
 // (Delta=0).
 func TestAuditRefcounts_Computes(t *testing.T) {
 	store, shareName, _, _ := seedAuditTestStore(t)
@@ -193,7 +193,7 @@ func TestAuditRefcounts_Computes(t *testing.T) {
 
 // TestAuditRefcounts_DetectsDelta asserts that a genuine dangling
 // reference surfaces in the audit's DanglingRefs/Delta fields. Deleting
-// one FileBlock row (without touching FileAttr.Blocks) leaves the manifest
+// one FileChunk row (without touching FileAttr.Blocks) leaves the manifest
 // entry pointing at a chunk the store no longer records — the
 // silent-data-loss class. TotalRefs stays 10 (manifest unchanged), but
 // BackedRefs drops to 9 and DanglingRefs == Delta == 1.
@@ -201,7 +201,7 @@ func TestAuditRefcounts_DetectsDelta(t *testing.T) {
 	store, shareName, payloadIDs, offsets := seedAuditTestStore(t)
 	tmpDir := t.TempDir()
 
-	// Delete the FileBlock row backing file 0's first manifest ref, leaving
+	// Delete the FileChunk row backing file 0's first manifest ref, leaving
 	// the manifest entry in place → that ref becomes dangling.
 	danglingID := payloadIDs[0] + "/" + jstr(int(offsets[0][0]))
 	if err := store.Delete(context.Background(), danglingID); err != nil {
@@ -238,16 +238,16 @@ func TestAuditRefcounts_DetectsHashMismatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctx := context.Background()
 
-	// Overwrite the FileBlock row backing file 0's first manifest ref with a
+	// Overwrite the FileChunk row backing file 0's first manifest ref with a
 	// row at the SAME id/offset but a different non-zero hash, leaving the
 	// manifest entry untouched → hash mismatch → that ref is dangling.
 	mismatchID := payloadIDs[0] + "/" + jstr(int(offsets[0][0]))
 	now := time.Now().UTC()
-	wrongHash := hashForFileBlock(99, 99) // distinct from any seeded ref hash
+	wrongHash := hashForFileChunk(99, 99) // distinct from any seeded ref hash
 	if wrongHash.IsZero() {
 		t.Fatal("wrongHash must be non-zero to exercise the mismatch path")
 	}
-	wrongRow := &block.FileBlock{
+	wrongRow := &block.FileChunk{
 		ID:            mismatchID,
 		Hash:          wrongHash,
 		State:         block.BlockStatePending,

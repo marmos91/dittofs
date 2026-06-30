@@ -16,7 +16,7 @@ import (
 func seedReconcileFB(t *testing.T, ctx context.Context, store metadata.Store, payloadID string, n int, created time.Time) {
 	t.Helper()
 	for i := 0; i < n; i++ {
-		b := &block.FileBlock{
+		b := &block.FileChunk{
 			ID:         fmt.Sprintf("%s/%d", payloadID, i),
 			State:      block.BlockStatePending,
 			LocalPath:  fmt.Sprintf("/cache/%s-%d", payloadID, i),
@@ -77,15 +77,15 @@ func TestReapStrandedRows(t *testing.T) {
 	}
 
 	// Live payload rows must survive.
-	if rows, err := store.ListFileBlocks(ctx, livePID); err != nil || len(rows) != 2 {
+	if rows, err := store.ListFileChunks(ctx, livePID); err != nil || len(rows) != 2 {
 		t.Errorf("live rows = %d (err=%v), want 2 (reconcile must not reap live)", len(rows), err)
 	}
 	// Stranded payload rows must be gone.
-	if rows, err := store.ListFileBlocks(ctx, "stranded"); err != nil || len(rows) != 0 {
+	if rows, err := store.ListFileChunks(ctx, "stranded"); err != nil || len(rows) != 0 {
 		t.Errorf("stranded rows = %d (err=%v), want 0", len(rows), err)
 	}
 	// Within-grace stranded rows must be preserved (TOCTOU guard).
-	if rows, err := store.ListFileBlocks(ctx, "fresh"); err != nil || len(rows) != 1 {
+	if rows, err := store.ListFileChunks(ctx, "fresh"); err != nil || len(rows) != 1 {
 		t.Errorf("fresh (in-grace) rows = %d (err=%v), want 1 (grace must protect)", len(rows), err)
 	}
 }
@@ -105,7 +105,7 @@ func TestReapStrandedRows_DryRun(t *testing.T) {
 	if reaped != 4 {
 		t.Errorf("dry-run reaped count = %d, want 4", reaped)
 	}
-	if rows, err := store.ListFileBlocks(ctx, "stranded"); err != nil || len(rows) != 4 {
+	if rows, err := store.ListFileChunks(ctx, "stranded"); err != nil || len(rows) != 4 {
 		t.Errorf("dry-run deleted rows: got %d, want 4 preserved", len(rows))
 	}
 }

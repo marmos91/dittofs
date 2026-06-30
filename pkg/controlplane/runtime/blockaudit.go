@@ -11,7 +11,7 @@ import (
 // AuditRefcounts runs the CAS manifest-consistency audit for the named
 // share. Resolves the share's metadata store and audit-state root, then
 // delegates to engine.AuditRefcounts which walks the metadata and verifies
-// that every manifest reference (FileAttr.Blocks) has a backing FileBlock
+// that every manifest reference (FileAttr.Blocks) has a backing FileChunk
 // row in the store.
 //
 // A non-zero delta (DanglingRefs) indicates at least one file references a

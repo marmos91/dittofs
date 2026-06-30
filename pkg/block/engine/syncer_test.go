@@ -312,19 +312,19 @@ func (m *markFailingSyncedHashStore) DeleteSynced(ctx context.Context, hash bloc
 	return m.inner.DeleteSynced(ctx, hash)
 }
 
-// stubFBS mirrors the engine_test.go stubFileBlockStore — kept here in
+// stubFBS mirrors the engine_test.go stubFileChunkStore — kept here in
 // the external test package because engine_test.go's symbol is in
 // package engine and inaccessible from package engine_test.
 type stubFBS struct {
 	mu     sync.Mutex
-	blocks map[string]*block.FileBlock
+	blocks map[string]*block.FileChunk
 }
 
 func newStubFBS() *stubFBS {
-	return &stubFBS{blocks: make(map[string]*block.FileBlock)}
+	return &stubFBS{blocks: make(map[string]*block.FileChunk)}
 }
 
-func (s *stubFBS) GetByHash(_ context.Context, h block.ContentHash) (*block.FileBlock, error) {
+func (s *stubFBS) GetByHash(_ context.Context, h block.ContentHash) (*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, fb := range s.blocks {
@@ -335,7 +335,7 @@ func (s *stubFBS) GetByHash(_ context.Context, h block.ContentHash) (*block.File
 	return nil, nil
 }
 
-func (s *stubFBS) Put(_ context.Context, block *block.FileBlock) error {
+func (s *stubFBS) Put(_ context.Context, block *block.FileChunk) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := *block
@@ -376,21 +376,21 @@ func (s *stubFBS) AddRef(_ context.Context, h block.ContentHash, _ string, _ blo
 	return block.ErrUnknownHash
 }
 
-func (s *stubFBS) GetFileBlock(_ context.Context, id string) (*block.FileBlock, error) {
+func (s *stubFBS) GetFileChunk(_ context.Context, id string) (*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fb, ok := s.blocks[id]
 	if !ok {
-		return nil, block.ErrFileBlockNotFound
+		return nil, block.ErrFileChunkNotFound
 	}
 	return fb, nil
 }
 
-func (s *stubFBS) ListFileBlocks(_ context.Context, payloadID string) ([]*block.FileBlock, error) {
+func (s *stubFBS) ListFileChunks(_ context.Context, payloadID string) ([]*block.FileChunk, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prefix := payloadID + "/"
-	var out []*block.FileBlock
+	var out []*block.FileChunk
 	for id, fb := range s.blocks {
 		if len(id) >= len(prefix) && id[:len(prefix)] == prefix {
 			out = append(out, fb)
@@ -458,7 +458,7 @@ func newIntegrationFixtureWithConfig(t *testing.T, rs remote.RemoteStore, synced
 		Local:           local,
 		Remote:          rs,
 		Syncer:          syncer,
-		FileBlockStore:  fbs,
+		FileChunkStore:  fbs,
 		SyncedHashStore: synced,
 	})
 	if err != nil {
@@ -857,7 +857,7 @@ func TestEngine_Delete_CascadesDeleteSynced(t *testing.T) {
 			Local:           local,
 			Remote:          rs,
 			Syncer:          syncer,
-			FileBlockStore:  fbs,
+			FileChunkStore:  fbs,
 			Coordinator:     coord,
 			SyncedHashStore: synced,
 		})
@@ -1004,7 +1004,7 @@ func (c *cascadeCoordinator) DecrementRefCountAndReap(_ context.Context, payload
 	return cur, nil
 }
 
-func (c *cascadeCoordinator) PersistFileBlocks(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
+func (c *cascadeCoordinator) PersistFileChunks(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
 	return nil
 }
 

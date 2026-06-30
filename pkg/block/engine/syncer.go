@@ -41,11 +41,11 @@ type Syncer struct {
 	// with SetRemoteStore and a pendingMu→m.mu lock-ordering edge.
 	hasRemote atomic.Bool
 	// the syncer is one of the engine-internal
-	// callers that still reaches into the wider EngineFileBlockStore
-	// surface (GetFileBlock for dual-read resolve, ListFileBlocks for
+	// callers that still reaches into the wider EngineFileChunkStore
+	// surface (GetFileChunk for dual-read resolve, ListFileChunks for
 	// GetFileSize/Exists). routes reads through
 	// FileAttr.Blocks and lets us drop the wider interface.
-	fileBlockStore block.EngineFileBlockStore // Required: enables content-addressed deduplication
+	fileChunkStore block.EngineFileChunkStore // Required: enables content-addressed deduplication
 
 	// syncedHashStore persists per-CAS-hash local→remote mirror state.
 	// The mirror loop in Flush consumes ListUnsynced (which itself
@@ -326,10 +326,10 @@ func (m *Syncer) seedPendingFromDisk(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// NewSyncer creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
-func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore block.EngineFileBlockStore, config SyncerConfig) *Syncer {
-	if fileBlockStore == nil {
-		panic("fileBlockStore is required for Syncer")
+// NewSyncer creates a new Syncer. The fileChunkStore is required for content-addressed dedup.
+func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunkStore block.EngineFileChunkStore, config SyncerConfig) *Syncer {
+	if fileChunkStore == nil {
+		panic("fileChunkStore is required for Syncer")
 	}
 	// Upload concurrency: a pinned ParallelUploads > 0 fixes the window;
 	// otherwise (the default) the syncer auto-tunes between the adaptive floor
@@ -362,7 +362,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 	m := &Syncer{
 		local:            local,
 		remoteStore:      remoteStore,
-		fileBlockStore:   fileBlockStore,
+		fileChunkStore:   fileChunkStore,
 		config:           config,
 		inFlight:         make(map[string]*fetchResult),
 		stopCh:           make(chan struct{}),
@@ -519,14 +519,14 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 		return nil, err
 	}
 
-	// 1. Per-payload metadata quiesce: persist any FileBlock metadata
-	//    that the local store has queued (queueFileBlockUpdate during
+	// 1. Per-payload metadata quiesce: persist any FileChunk metadata
+	//    that the local store has queued (queueFileChunkUpdate during
 	//    rollup commit) so the mirror loop below sees the
 	//    authoritative manifest for this payloadID. This call carries
 	//    only metadata-level semantics — the data-side rollup runs on
 	//    its own worker pool and is observed transitively when
 	//    ListUnsynced walks the CAS chunk store.
-	m.local.SyncFileBlocksForFile(ctx, payloadID)
+	m.local.SyncFileChunksForFile(ctx, payloadID)
 
 	// 2. Mirror loop: enumerate every CAS hash present locally but not
 	//    yet marked synced and copy it to remote, then MarkSynced.
@@ -786,16 +786,16 @@ func (m *Syncer) DrainAllUploads(ctx context.Context) error {
 // GetFileSize returns the total size of a file from the remote store.
 //
 // Blocks are stored under content-addressed keys (cas/XX/YY/<hash>)
-// so we resolve via FileBlock metadata: enumerate every block belonging
+// so we resolve via FileChunk metadata: enumerate every block belonging
 // to payloadID, find the highest-offset remote-mirrored chunk, and
 // compute size = chunkOffset + chunk.DataSize. DataSize is stamped at
 // rollup time, so no extra S3 round-trip is needed.
 //
 // (mirror loop): mirrorOnce writes to remote.Put + MarkSynced
-// but never transitions FileBlock.State to BlockStateRemote (the row
+// but never transitions FileChunk.State to BlockStateRemote (the row
 // state remains Pending/Syncing for the life of the payload). The
 // authoritative per-hash mirror signal is therefore SyncedHashStore —
-// not FileBlock.State. Each candidate row is included only if
+// not FileChunk.State. Each candidate row is included only if
 // syncedHashStore.IsSynced(fb.Hash) returns true. If the SyncedHashStore
 // is not wired (test fixtures), no chunks count as remote-mirrored and
 // the function returns 0 — matching the pre-Phase-18 semantics where
@@ -815,7 +815,7 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		return 0, m.remoteUnavailableError()
 	}
 
-	blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	blocks, err := m.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return 0, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
@@ -833,7 +833,7 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		return 0, nil
 	}
 
-	// ListFileBlocks returns blocks ordered by absolute chunk offset.
+	// ListFileChunks returns blocks ordered by absolute chunk offset.
 	// Walk from the end to find the highest-offset remote-mirrored chunk.
 	// the trailing ID component is the chunk's absolute byte
 	// Offset (FastCDC), not a synthetic blockIdx — do NOT multiply by
@@ -868,7 +868,7 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 // file existence is gated on SyncedHashStore — a chunk is
 // considered remote-resident iff syncedHashStore.IsSynced(fb.Hash)
 // returns true. The mirror loop (mirrorOnce) does not transition
-// FileBlock.State to BlockStateRemote, so the legacy State filter is no
+// FileChunk.State to BlockStateRemote, so the legacy State filter is no
 // longer authoritative. If no SyncedHashStore is wired (test fixtures)
 // Exists returns false — matching the pre-fix behavior under the same
 // configuration.
@@ -886,7 +886,7 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 		return false, m.remoteUnavailableError()
 	}
 
-	blocks, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	blocks, err := m.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return false, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
@@ -1043,7 +1043,7 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 		interval = 2 * time.Second
 	}
 	// The dispatcher sustains upload concurrency in steady state (#1432); the
-	// maintenance loop handles the slow housekeeping (FileBlock metadata flush,
+	// maintenance loop handles the slow housekeeping (FileChunk metadata flush,
 	// drift reconcile, failed-upload requeue) the dispatcher does not.
 	go m.uploadDispatcher(ctx)
 	go m.maintenanceLoop(ctx, interval)
@@ -1159,9 +1159,9 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 	}
 	defer m.gate.releaseExclusive()
 
-	// Flush queued FileBlock metadata to the store so the mirror loop
+	// Flush queued FileChunk metadata to the store so the mirror loop
 	// picks up recently rolled-up chunks.
-	m.local.SyncFileBlocks(ctx)
+	m.local.SyncFileChunks(ctx)
 
 	return m.mirrorOnce(ctx)
 }
@@ -1177,10 +1177,10 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 // Backends that opt in to syncingEnumerator return precise candidates
 // others degrade to a no-op.
 func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
-	if m.fileBlockStore == nil {
+	if m.fileChunkStore == nil {
 		return nil
 	}
-	enum, ok := m.fileBlockStore.(syncingEnumerator)
+	enum, ok := m.fileChunkStore.(syncingEnumerator)
 	if !ok {
 		return nil
 	}
@@ -1201,7 +1201,7 @@ func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
 		}
 		fb.State = block.BlockStatePending
 		fb.LastSyncAttemptAt = time.Time{}
-		if err := m.fileBlockStore.Put(ctx, fb); err != nil {
+		if err := m.fileChunkStore.Put(ctx, fb); err != nil {
 			// elevate per-row failure to ERROR and track
 			// counts so a fully-broken metadata path produces a non-nil
 			// return error visible to the caller (Start logs it at WARN).
@@ -1225,11 +1225,11 @@ func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
 	return nil
 }
 
-// syncingEnumerator is an optional capability a FileBlockStore may
+// syncingEnumerator is an optional capability a FileChunkStore may
 // implement so the syncer's restart-recovery janitor can find stale
 // Syncing rows without a full table scan.
 type syncingEnumerator interface {
-	EnumerateSyncingBlocks(ctx context.Context) ([]*block.FileBlock, error)
+	EnumerateSyncingBlocks(ctx context.Context) ([]*block.FileChunk, error)
 }
 
 // Close shuts down the syncer and waits for pending uploads.

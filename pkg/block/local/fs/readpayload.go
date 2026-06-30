@@ -15,7 +15,7 @@ import (
 
 // ReadPayloadAt serves bytes for [offset, offset+len(dest)) for payloadID
 // by consulting BOTH the in-flight append log (pre-rollup bytes) AND the
-// rolled-up CAS chunks via the FileBlock manifest. This is the primary
+// rolled-up CAS chunks via the FileChunk manifest. This is the primary
 // payload-keyed read entry on FSStore; the engine calls this BEFORE
 // falling back to a CAS-hash-keyed walk on miss.
 //
@@ -28,17 +28,17 @@ import (
 //     live here and ONLY here.
 //
 //  2. For any portion of the requested window NOT satisfied from the log
-//     walk the FileBlock manifest (via the engine-internal FileBlockStore)
+//     walk the FileChunk manifest (via the engine-internal FileChunkStore)
 //     and copy bytes from the rolled-up CAS chunks. This handles
 //     post-rollup reads where the log records past rollup_offset may have
 //     already been consumed.
 //
 //  3. If after both steps any byte of the requested window remains
-//     uncovered, return (0, block.ErrFileBlockNotFound) so the caller
+//     uncovered, return (0, block.ErrFileChunkNotFound) so the caller
 //     falls back to remote-fetch + zero-fill.
 //
 // Returns (len(dest), nil) on full local satisfaction; (0
-// ErrFileBlockNotFound) when nothing is available locally for the range
+// ErrFileChunkNotFound) when nothing is available locally for the range
 // (n, err) for genuine I/O errors.
 func (bc *FSStore) ReadPayloadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error) {
 	if len(dest) == 0 {
@@ -69,7 +69,7 @@ func (bc *FSStore) ReadPayloadAt(ctx context.Context, payloadID string, dest []b
 		return 0, err
 	}
 
-	// Step 2: fill any remaining gaps from the FileBlock manifest
+	// Step 2: fill any remaining gaps from the FileChunk manifest
 	// (rolled-up CAS chunks).
 	if !allCovered(covered) {
 		if err := bc.fillFromCASManifest(ctx, payloadID, dest, offset, covered); err != nil {
@@ -80,7 +80,7 @@ func (bc *FSStore) ReadPayloadAt(ctx context.Context, payloadID string, dest []b
 	if !allCovered(covered) {
 		// Some bytes of the requested window are not in local storage.
 		// Surface as a miss so the caller falls back to remote.
-		return 0, block.ErrFileBlockNotFound
+		return 0, block.ErrFileChunkNotFound
 	}
 	return len(dest), nil
 }
@@ -231,7 +231,7 @@ func copyRecordIntoDest(recOff uint64, payload, dest []byte, reqStart, reqEnd ui
 	}
 }
 
-// fillFromCASManifest walks the FileBlock manifest for payloadID and
+// fillFromCASManifest walks the FileChunk manifest for payloadID and
 // fills any still-uncovered bytes of dest from the corresponding CAS
 // chunks. This is the post-rollup read path — bytes that the rollup has
 // already moved out of the append log into CAS storage. The manifest is
@@ -246,9 +246,9 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 	if bc.blockStore == nil {
 		return nil
 	}
-	rows, err := bc.blockStore.ListFileBlocks(ctx, payloadID)
+	rows, err := bc.blockStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
-		return fmt.Errorf("ReadPayloadAt: ListFileBlocks: %w", err)
+		return fmt.Errorf("ReadPayloadAt: ListFileChunks: %w", err)
 	}
 	if len(rows) == 0 {
 		return nil
@@ -257,7 +257,7 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 	// persister derives from the chunk's absolute offset). Stop early
 	// once every byte is covered.
 	type rowAbs struct {
-		fb        *block.FileBlock
+		fb        *block.FileChunk
 		absOffset uint64
 	}
 	abs := make([]rowAbs, 0, len(rows))

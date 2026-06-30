@@ -69,8 +69,8 @@ func RunSnapshotConformanceSuite(t *testing.T, factory SnapshotableStoreFactory)
 		testSnapshot_LiveSetUnionsManifestNegativeControl(t, factory)
 	})
 
-	t.Run("ExcludesUnlinkedFileBlocks", func(t *testing.T) {
-		testSnapshot_ExcludesUnlinkedFileBlocks(t, factory)
+	t.Run("ExcludesUnlinkedFileChunks", func(t *testing.T) {
+		testSnapshot_ExcludesUnlinkedFileChunks(t, factory)
 	})
 
 	t.Run("UsedBytesAfterRestore", func(t *testing.T) {
@@ -116,9 +116,9 @@ func testSnapshot_UsedBytesAfterRestore(t *testing.T, factory SnapshotableStoreF
 }
 
 // testSnapshot_LiveSetSupersetOfSnapshot pins the GC-vs-snapshot invariant fixed in
-// this change: the GC mark live set (EnumerateFileBlocks) MUST be a SUPERSET of
+// this change: the GC mark live set (EnumerateFileChunks) MUST be a SUPERSET of
 // the snapshot Snapshot HashSet (built from File.Blocks / file_block_refs). Before
-// EnumerateFileBlocks unioned the manifest, a hash present only in the manifest
+// EnumerateFileChunks unioned the manifest, a hash present only in the manifest
 // (the common case — populateTestData writes hashes via PutFile, never to the
 // CAS index) was MISSED by the mark phase and the sweep would reap the still-
 // live remote chunk once a snapshot hold lapsed (data loss). After the union the
@@ -138,18 +138,18 @@ func testSnapshot_LiveSetSupersetOfSnapshot(t *testing.T, factory SnapshotableSt
 	}
 
 	liveSet := make(map[block.ContentHash]struct{})
-	if err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
+	if err := store.EnumerateFileChunks(ctx, func(h block.ContentHash) error {
 		liveSet[h] = struct{}{}
 		return nil
 	}); err != nil {
-		t.Fatalf("EnumerateFileBlocks: %v", err)
+		t.Fatalf("EnumerateFileChunks: %v", err)
 	}
 
 	missing := 0
 	if err := backupHashes.ForEach(func(h block.ContentHash) error {
 		if _, ok := liveSet[h]; !ok {
 			missing++
-			t.Errorf("hash %s in Snapshot HashSet but ABSENT from EnumerateFileBlocks (GC mark live set) — GC would reap a live chunk (data loss)", h)
+			t.Errorf("hash %s in Snapshot HashSet but ABSENT from EnumerateFileChunks (GC mark live set) — GC would reap a live chunk (data loss)", h)
 		}
 		return nil
 	}); err != nil {
@@ -163,7 +163,7 @@ func testSnapshot_LiveSetSupersetOfSnapshot(t *testing.T, factory SnapshotableSt
 // testSnapshot_LiveSetUnionsManifestNegativeControl is the demonstrable negative
 // control mandated by the plan: write a hash to File.Blocks (the manifest) WITHOUT
 // a corresponding CAS index (file_blocks) row, then prove the union picks it up.
-// Before the union the hash would be absent from EnumerateFileBlocks (the CAS
+// Before the union the hash would be absent from EnumerateFileChunks (the CAS
 // index has no row for it); after, it is present. This is exactly the gap that
 // let GC reap a live block.
 func testSnapshot_LiveSetUnionsManifestNegativeControl(t *testing.T, factory SnapshotableStoreFactory) {
@@ -179,8 +179,8 @@ func testSnapshot_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Sna
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	// Manifest carries the hash; NO FileBlockStore.Put is issued, so the CAS
-	// index (file_blocks / fb: / fileBlockData.blocks) has no row for it.
+	// Manifest carries the hash; NO FileChunkStore.Put is issued, so the CAS
+	// index (file_blocks / fb: / fileChunkData.blocks) has no row for it.
 	f.Blocks = []block.BlockRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
@@ -188,24 +188,24 @@ func testSnapshot_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Sna
 	}
 
 	found := false
-	if err := store.EnumerateFileBlocks(ctx, func(h block.ContentHash) error {
+	if err := store.EnumerateFileChunks(ctx, func(h block.ContentHash) error {
 		if h == manifestOnly {
 			found = true
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("EnumerateFileBlocks: %v", err)
+		t.Fatalf("EnumerateFileChunks: %v", err)
 	}
 	if !found {
-		t.Errorf("manifest-only hash %s absent from EnumerateFileBlocks; the live set must UNION File.Blocks with the CAS index, else GC reaps the chunk", manifestOnly)
+		t.Errorf("manifest-only hash %s absent from EnumerateFileChunks; the live set must UNION File.Blocks with the CAS index, else GC reaps the chunk", manifestOnly)
 	}
 }
 
-// testSnapshot_ExcludesUnlinkedFileBlocks proves the snapshot manifest HashSet
+// testSnapshot_ExcludesUnlinkedFileChunks proves the snapshot manifest HashSet
 // excludes blocks of unlinked (nlink=0) files. Since GC now reclaims a deleted
 // file's blocks from remote (#1433), a manifest that still listed them would
 // reference hashes absent from remote and fail the snapshot durability verify.
-func testSnapshot_ExcludesUnlinkedFileBlocks(t *testing.T, factory SnapshotableStoreFactory) {
+func testSnapshot_ExcludesUnlinkedFileChunks(t *testing.T, factory SnapshotableStoreFactory) {
 	store := factory(t)
 	b := asSnapshotable(t, store)
 	ctx := t.Context()

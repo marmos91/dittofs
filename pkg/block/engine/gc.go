@@ -2,7 +2,7 @@
 //
 // Two phases
 //
-//  1. MARK: stream every live FileBlock's ContentHash into a disk-backed
+//  1. MARK: stream every live FileChunk's ContentHash into a disk-backed
 //     live set (see GCState in gcstate.go). Memory is bounded regardless
 //     of metadata size.
 //  2. SWEEP: enumerate the unified CAS namespace via a single
@@ -12,7 +12,7 @@
 //     live set.
 //
 // Invariants
-//   - (mark fail-closed): any error during EnumerateFileBlocks
+//   - (mark fail-closed): any error during EnumerateFileChunks
 //     aborts the sweep entirely — orphan-not-deleted is always preferred
 //     over live-data-deleted.
 //   - (sweep continue+capture): a Delete or list error in one prefix
@@ -21,7 +21,7 @@
 //
 // Cross-share aggregation lives in Runtime.RunBlockGC: it enumerates
 // distinct remote stores and invokes CollectGarbage once per remote
-// with a MultiShareReconciler that fans EnumerateFileBlocks across every
+// with a MultiShareReconciler that fans EnumerateFileChunks across every
 // share pointing at that remote.
 package engine
 
@@ -42,7 +42,7 @@ import (
 
 	// justification: GC is the cross-share metadata-mark
 	// entrypoint — it MUST bind metadata.Store /
-	// MetadataReconciler to enumerate live FileBlocks.
+	// MetadataReconciler to enumerate live FileChunks.
 	// Lifting these to blockstore would create a circular import.
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -221,7 +221,7 @@ type Options struct {
 
 	// HoldProvider injects held hashes into the GC mark phase. Optional —
 	// nil means "no holds" and the live set is determined solely by
-	// EnumerateFileBlocks. Errors from HeldHashes abort the entire run
+	// EnumerateFileChunks. Errors from HeldHashes abort the entire run
 	// (orphan-not-deleted is always preferred over live-data-deleted, per
 	// the mark fail-closed invariant).
 	HoldProvider HoldProvider
@@ -273,13 +273,13 @@ type SyncedHashIndex interface {
 }
 
 // MetadataReconciler resolves per-share metadata stores. The mark phase
-// calls EnumerateFileBlocks on each.
+// calls EnumerateFileChunks on each.
 type MetadataReconciler interface {
 	GetMetadataStoreForShare(shareName string) (metadata.Store, error)
 }
 
 // MultiShareReconciler enumerates every share pointing at a single remote
-// store so the mark phase can union live FileBlocks across all of them
+// store so the mark phase can union live FileChunks across all of them
 // . A reconciler that does not implement this is treated as having
 // no shares — every CAS object becomes a sweep candidate.
 type MultiShareReconciler interface {
@@ -289,7 +289,7 @@ type MultiShareReconciler interface {
 
 // HoldProvider injects "held" hashes into the GC mark phase so referenced
 // blocks are never collected. The mark phase invokes HeldHashes AFTER
-// per-share EnumerateFileBlocks and BEFORE FlushAdd, so held hashes land
+// per-share EnumerateFileChunks and BEFORE FlushAdd, so held hashes land
 // in the SAME live set used by the sweep's presence check. Any error
 // from HeldHashes aborts the run via the mark fail-closed path.
 //
@@ -324,7 +324,7 @@ func CollectGarbage(
 // CollectGarbageLocal reclaims orphaned chunks on a per-share LOCAL block
 // store. Local stores are isolated per share (architecture invariant #4), so
 // the caller scopes the reconciler and snapshot holds to that single share.
-// The grace period protects freshly-written chunks whose FileBlock rows have
+// The grace period protects freshly-written chunks whose FileChunk rows have
 // not yet committed (#1433).
 func CollectGarbageLocal(
 	ctx context.Context,
@@ -413,7 +413,7 @@ func collectGarbage(
 		"hold_provider", options.HoldProvider != nil,
 	)
 
-	// MARK: stream every FileBlock's ContentHash into gcs across every share
+	// MARK: stream every FileChunk's ContentHash into gcs across every share
 	// the reconciler reports. Mark fail-closed.
 	if err := markPhase(ctx, reconciler, gcs, stats, options.HoldProvider, options.RemoteEndpointID, options.Shares); err != nil {
 		recordGCError(stats, "mark: "+err.Error())
@@ -461,8 +461,8 @@ func collectGarbage(
 	return stats
 }
 
-// markPhase iterates every share's FileBlockStore and calls
-// EnumerateFileBlocks to populate the live set. The first error from any
+// markPhase iterates every share's FileChunkStore and calls
+// EnumerateFileChunks to populate the live set. The first error from any
 // store aborts the entire mark phase (fail-closed).
 //
 // an empty share list is treated as a HARD ERROR. With no
@@ -497,7 +497,7 @@ func markPhase(ctx context.Context, reconciler MetadataReconciler, gcs *GCState,
 		if err != nil {
 			return fmt.Errorf("get metadata store for share %q: %w", shareName, err)
 		}
-		if err := store.EnumerateFileBlocks(ctx, addHash); err != nil {
+		if err := store.EnumerateFileChunks(ctx, addHash); err != nil {
 			return fmt.Errorf("enumerate share %q: %w", shareName, err)
 		}
 	}

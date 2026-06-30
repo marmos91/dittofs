@@ -1,7 +1,7 @@
 // TestCache_PopulatedOnRollupComplete pins the end-to-end contract
 // that every chunk emitted by the local rollup pump lands in the
 // engine Cache via the OnChunkComplete callback. After Flush, each
-// post-rollup FileBlock hash must be reachable via bs.cache.Get
+// post-rollup FileChunk hash must be reachable via bs.cache.Get
 // without consulting disk.
 //
 // Mechanism: cache hits are observed via the recordingPutCache
@@ -57,7 +57,7 @@ func newRollupCacheFixture(t *testing.T) (*Store, *fs.FSStore, *recordingPutCach
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		ReadBufferBytes: 64 * 1024 * 1024,
 	})
 	if err != nil {
@@ -77,20 +77,20 @@ func newRollupCacheFixture(t *testing.T) (*Store, *fs.FSStore, *recordingPutCach
 	return bs, localStore, rec
 }
 
-// waitForChunks polls ListFileBlocks until at least one row is present
+// waitForChunks polls ListFileChunks until at least one row is present
 // or the deadline elapses. Returns the post-rollup blocks slice.
-func waitForChunks(t *testing.T, bs *Store, payloadID string, timeout time.Duration) []*block.FileBlock {
+func waitForChunks(t *testing.T, bs *Store, payloadID string, timeout time.Duration) []*block.FileChunk {
 	t.Helper()
 	ctx := context.Background()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		blocks, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+		blocks, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 		if err == nil && len(blocks) > 0 {
 			return blocks
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("no FileBlock rows for %q within %v (rollup did not complete)", payloadID, timeout)
+	t.Fatalf("no FileChunk rows for %q within %v (rollup did not complete)", payloadID, timeout)
 	return nil
 }
 
@@ -152,7 +152,7 @@ func TestCache_PopulatedOnRollupComplete(t *testing.T) {
 	}
 
 	// Manifest is now complete; poll only to absorb the brief gap before
-	// the FileBlock rows are queryable.
+	// the FileChunk rows are queryable.
 	blocks := waitForChunks(t, bs, payloadID, 10*time.Second)
 	if len(blocks) < 2 {
 		t.Fatalf("expected >= 2 chunks for deterministic 8 MiB payload; got %d", len(blocks))
@@ -181,7 +181,7 @@ func TestCache_PopulatedOnRollupComplete(t *testing.T) {
 			continue
 		}
 		if int64(len(got)) != int64(fb.DataSize) {
-			t.Errorf("block[%d] hash=%s: cache returned %d bytes; want %d (FileBlock.DataSize)",
+			t.Errorf("block[%d] hash=%s: cache returned %d bytes; want %d (FileChunk.DataSize)",
 				i, fb.Hash.String(), len(got), fb.DataSize)
 		}
 	}

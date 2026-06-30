@@ -18,7 +18,7 @@ import (
 // TestDrainRollups_ForcesManifestPopulation reproduces C1 (empty/racy
 // manifest). With a LARGE stabilization window and NO rollup worker pool
 // started, the async rollup never fires before a snapshot would run, so
-// the ObjectIDPersister (which writes FileBlock rows + FileAttr.Blocks)
+// the ObjectIDPersister (which writes FileChunk rows + FileAttr.Blocks)
 // is never invoked and the snapshot manifest is empty. DrainRollups must
 // force ALL dirty payloads through rollup to completion regardless of the
 // stabilization gate, so the persister fires and the manifest is
@@ -214,9 +214,9 @@ func TestDrainRollups_DivergentResidualSucceeds(t *testing.T) {
 func TestResetLocalState_DropsStaleLog(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 
-	// Real FileBlock store so ReadPayloadAt's CAS manifest path resolves
+	// Real FileChunk store so ReadPayloadAt's CAS manifest path resolves
 	// post-rollup bytes.
-	fbs := newMemFileBlockStore()
+	fbs := newMemFileChunkStore()
 	persister := func(ctx context.Context, payloadID string, blocks []block.BlockRef, _ block.ObjectID) error {
 		return fbs.persist(ctx, payloadID, blocks)
 	}
@@ -287,7 +287,7 @@ func TestResetLocalState_DropsStaleLog(t *testing.T) {
 // files must exist anywhere under the logs/ directory tree.
 func TestResetLocalState_DropsNestedLog(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	fbs := newMemFileBlockStore()
+	fbs := newMemFileChunkStore()
 	persister := func(ctx context.Context, payloadID string, blocks []block.BlockRef, _ block.ObjectID) error {
 		return fbs.persist(ctx, payloadID, blocks)
 	}

@@ -473,7 +473,7 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	shareName := "data"
 
 	// Build a minimal real engine.Store. The memory local store +
-	// memory remote + memory metadata as FileBlockStore have empty
+	// memory remote + memory metadata as FileChunkStore have empty
 	// ListUnsynced semantics so DrainAllUploads is a fast no-op and
 	// mirrorOnce short-circuits — exactly what the orchestration
 	// integration test wants (we are testing the orchestration
@@ -490,7 +490,7 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 		Local:          localStore,
 		Remote:         wrappedRemote,
 		Syncer:         syncer,
-		FileBlockStore: mem,
+		FileChunkStore: mem,
 	})
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)

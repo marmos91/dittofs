@@ -19,12 +19,12 @@ import (
 // Verifies that across concurrent create/delete/copy churn, the metadata
 // store maintains the global invariant:
 //
-//     ∑ FileBlock.RefCount  ==  ∑ len(FileAttr.Blocks)
+//     ∑ FileChunk.RefCount  ==  ∑ len(FileAttr.Blocks)
 //
 // The property fuzzer (testINV02_PropertyFuzz) runs against all 3 backends
 // via the conformance harness. The leak-injection scenario
 // (testINV02_LeakInjection) uses an optional backend capability —
-// RefCountLeakInjector — to forcibly desynchronize a single FileBlock's
+// RefCountLeakInjector — to forcibly desynchronize a single FileChunk's
 // RefCount and verify the reconciliation arithmetic detects the drift.
 //
 // Bug surface this test covers:
@@ -46,17 +46,17 @@ const (
 
 // RefCountLeakInjector is an optional backend capability used by the
 // leak-injection scenario to artificially desynchronize a
-// single FileBlock's RefCount from the FileAttr.Blocks references that
+// single FileChunk's RefCount from the FileAttr.Blocks references that
 // (logically) own it. Backends that cannot represent a desynchronized
 // refcount cleanly skip the scenario via type-assertion failure.
 //
 // Test-only: never call from production code. The hook bypasses the
-// FileBlockStore contract by mutating RefCount independently of any
+// FileChunkStore contract by mutating RefCount independently of any
 // IncrementRefCount / DecrementRefCount call site.
 type RefCountLeakInjector interface {
 	// InjectRefCountLeak adds leakAmount to the named block's RefCount
 	// without touching FileAttr.Blocks anywhere. The post-call invariant
-	// ∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks) is therefore violated
+	// ∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks) is therefore violated
 	// by exactly leakAmount, which is the property the audit must detect.
 	InjectRefCountLeak(ctx context.Context, blockID string, leakAmount uint32) error
 }
@@ -64,7 +64,7 @@ type RefCountLeakInjector interface {
 // testINV02_PropertyFuzz creates/deletes/copies files concurrently across
 // 10 goroutines, then asserts at the quiescent point that:
 //
-//	∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)
+//	∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)
 //
 // Bug surface style donor leaks, missed decrements on file
 // delete, lost-update on concurrent CopyPayload. Runs against all 3
@@ -181,7 +181,7 @@ func testINV02_LeakInjection(t *testing.T, factory StoreFactory) {
 	const shareName = "inv02-leak"
 	rootHandle := createTestShare(t, store, shareName)
 
-	// Seed one well-formed file with three BlockRefs / three FileBlocks
+	// Seed one well-formed file with three BlockRefs / three FileChunks
 	// each carrying RefCount=1. Pre-leak invariant: refs=3, refCount=3.
 	rng := rand.New(rand.NewSource(42))
 	ws := &workerState{}
@@ -227,8 +227,8 @@ func testINV02_LeakInjection(t *testing.T, factory StoreFactory) {
 // ============================================================================
 
 // fuzzFileEntry tracks a file the fuzzer created — handle for
-// delete/copy, name for parent-child unlink, and the FileBlock IDs
-// used to seed FileBlock rows so cleanup paths know what to decrement.
+// delete/copy, name for parent-child unlink, and the FileChunk IDs
+// used to seed FileChunk rows so cleanup paths know what to decrement.
 type fuzzFileEntry struct {
 	handle    metadata.FileHandle
 	name      string
@@ -243,7 +243,7 @@ type workerState struct {
 }
 
 // fuzzCreateFile creates a new file with 1–3 BlockRefs and matching
-// FileBlock rows (RefCount=1 each). Block IDs are unique per (worker,
+// FileChunk rows (RefCount=1 each). Block IDs are unique per (worker,
 // opID, blockIdx) so independent workers never collide. Hashes are
 // derived from a worker-relative seed so dedup-aware backends see
 // genuinely distinct content.
@@ -261,7 +261,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 	}
 
 	// payloadID is the common prefix of every block ID for this file, so
-	// store.ListFileBlocks(payloadID) recovers exactly this file's rows
+	// store.ListFileChunks(payloadID) recovers exactly this file's rows
 	// (it matches IDs beginning with "{payloadID}/").
 	payloadID := fmt.Sprintf("inv02/%d/%d", workerID, opID)
 
@@ -272,7 +272,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 		hashSeed := fmt.Sprintf("inv02-w%d-op%d-blk%d", workerID, opID, i)
 		h := hashOfSeed(hashSeed)
 		blockID := fmt.Sprintf("%s/%d", payloadID, i)
-		fb := &block.FileBlock{
+		fb := &block.FileChunk{
 			ID:            blockID,
 			Hash:          h,
 			State:         block.BlockStateRemote,
@@ -328,7 +328,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 }
 
 // fuzzDeleteFile removes a random file owned by this worker, decrementing
-// each FileBlock's RefCount. When RefCount drops to 0 the block is
+// each FileChunk's RefCount. When RefCount drops to 0 the block is
 // deleted to keep the audit math correct (a RefCount=0 block contributes
 // 0 to ∑RefCount; dropping the row keeps ∑RefCount cleanly bounded).
 func fuzzDeleteFile(ctx context.Context, store metadata.Store, rootHandle metadata.FileHandle, rng *rand.Rand, ws *workerState) error {
@@ -342,13 +342,13 @@ func fuzzDeleteFile(ctx context.Context, store metadata.Store, rootHandle metada
 		newCount, err := store.DecrementRefCount(ctx, blockID)
 		if err != nil {
 			// Block may have already been deleted via a prior copy/delete.
-			if errors.Is(err, metadata.ErrFileBlockNotFound) {
+			if errors.Is(err, metadata.ErrFileChunkNotFound) {
 				continue
 			}
 			return fmt.Errorf("DecrementRefCount %s: %w", blockID, err)
 		}
 		if newCount == 0 {
-			if err := store.Delete(ctx, blockID); err != nil && !errors.Is(err, metadata.ErrFileBlockNotFound) {
+			if err := store.Delete(ctx, blockID); err != nil && !errors.Is(err, metadata.ErrFileChunkNotFound) {
 				return fmt.Errorf("delete block %s: %w", blockID, err)
 			}
 		}
@@ -384,7 +384,7 @@ func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, r
 	}
 	srcBlocks := append([]block.BlockRef(nil), srcFile.Blocks...)
 
-	// Increment RefCount on each source FileBlock — one bump per BlockRef
+	// Increment RefCount on each source FileChunk — one bump per BlockRef
 	// so multiple refs to the same hash are accounted for explicitly.
 	for _, srcBlockID := range src.blockIDs {
 		if err := store.IncrementRefCount(ctx, srcBlockID); err != nil {
@@ -402,10 +402,10 @@ func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, r
 		return fmt.Errorf("DecodeFileHandle copy: %w", err)
 	}
 	now := time.Now()
-	// The copy shares the source's FileBlock rows (O(1) dedup copy), so it
-	// also shares the source's PayloadID — store.ListFileBlocks(payloadID)
+	// The copy shares the source's FileChunk rows (O(1) dedup copy), so it
+	// also shares the source's PayloadID — store.ListFileChunks(payloadID)
 	// then recovers the same rows under a single payloadID. The reconcile
-	// de-dupes by payloadID and by FileBlock ID so a shared row is summed once.
+	// de-dupes by payloadID and by FileChunk ID so a shared row is summed once.
 	dst := &metadata.File{
 		ID:        fileID,
 		ShareName: shareName,
@@ -435,7 +435,7 @@ func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, r
 		return fmt.Errorf("SetLinkCount copy: %w", err)
 	}
 
-	// The destination shares the source's FileBlock IDs so future deletes
+	// The destination shares the source's FileChunk IDs so future deletes
 	// decrement the same rows the create+copy IncrementRefCount bumps
 	// touched. Tracking with the same blockIDs ensures the math closes.
 	dstBlockIDs := append([]string(nil), src.blockIDs...)
@@ -508,15 +508,15 @@ func isConcurrentQuiesceConflict(err error) bool {
 // reconcileINV02 walks the named share and computes:
 //
 //	totalRefs     = ∑ len(FileAttr.Blocks)   across all files
-//	totalRefCount = ∑ FileBlock.RefCount     across all FileBlock rows
+//	totalRefCount = ∑ FileChunk.RefCount     across all FileChunk rows
 //	                                          (keyed by ID, not hash)
 //
 // Returns both values so callers (the property fuzz + the leak-injection
 // scenario) can distinguish "invariant holds" from "invariant violated"
 // without fataling inside the helper.
 //
-// RefCount is summed per-FileBlock-ID rather than per-distinct-hash: a
-// backend that stores two FileBlock rows carrying the same content hash
+// RefCount is summed per-FileChunk-ID rather than per-distinct-hash: a
+// backend that stores two FileChunk rows carrying the same content hash
 // (legal after dedup-copy operations) must contribute each row's RefCount
 // to the sum. Summing per distinct hash via GetByHash returns ANY one row
 // and silently hides a leaked or inflated RefCount on the other row(s).
@@ -526,7 +526,7 @@ func reconcileINV02(ctx context.Context, store metadata.Store, shareName string)
 		return 0, 0, fmt.Errorf("GetRootHandle: %w", rootErr)
 	}
 
-	// 1) ∑ FileBlock.RefCount across all FileBlock rows, keyed by ID (not
+	// 1) ∑ FileChunk.RefCount across all FileChunk rows, keyed by ID (not
 	//    hash), so duplicate-hash rows each contribute their own RefCount.
 	seenPayloads := make(map[string]struct{})
 	seenIDs := make(map[string]struct{})
@@ -539,9 +539,9 @@ func reconcileINV02(ctx context.Context, store metadata.Store, shareName string)
 			return nil
 		}
 		seenPayloads[pid] = struct{}{}
-		rows, listErr := store.ListFileBlocks(ctx, pid)
+		rows, listErr := store.ListFileChunks(ctx, pid)
 		if listErr != nil {
-			return fmt.Errorf("ListFileBlocks(%s): %w", pid, listErr)
+			return fmt.Errorf("ListFileChunks(%s): %w", pid, listErr)
 		}
 		for _, fb := range rows {
 			if _, ok := seenIDs[fb.ID]; ok {

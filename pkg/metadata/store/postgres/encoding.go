@@ -72,11 +72,11 @@ func fileRowToFileWithNlink(row pgx.Row) (*metadata.File, error) {
 // fileRowToFileWithNlinkAndBlocks decodes a file row that optionally carries a
 // trailing blocks column. When withBlocks is true the SELECT list MUST append
 // blockRefsAggExpr as its final column; the row's FileAttr.Blocks is then
-// hydrated in the same round-trip rather than via a second loadFileBlockRefs
+// hydrated in the same round-trip rather than via a second loadFileChunkRefs
 // query (#1176). With withBlocks=false this is identical to the pre-#1176 read.
 //
 // The folded aggregate is ordered by "offset" ASC and decoded into the same
-// []block.BlockRef shape loadFileBlockRefs produces — an empty/absent set
+// []block.BlockRef shape loadFileChunkRefs produces — an empty/absent set
 // (directories, symlinks, blockless regular files) yields a nil slice.
 func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.File, error) {
 	var (
@@ -229,13 +229,13 @@ func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.Fi
 
 // blockRefsAggExpr is a correlated scalar subquery aggregating a file's
 // file_block_refs rows into a single JSON array, ordered by "offset" ASC to
-// match loadFileBlockRefs. Splice it as the FINAL column of
+// match loadFileChunkRefs. Splice it as the FINAL column of
 // a SELECT whose inode row is aliased `f` (it references f.id) and decode the
 // result with fileRowToFileWithNlinkAndBlocks(row, true).
 //
 // Each element is [offset, size, hash_hex]; hash is encode(...,'hex') so the
 // BYTEA round-trips byte-for-byte. An inode with no refs yields SQL NULL, which
-// decodes to a nil slice (parity with loadFileBlockRefs on an empty set).
+// decodes to a nil slice (parity with loadFileChunkRefs on an empty set).
 const blockRefsAggExpr = `(
 	SELECT json_agg(
 		json_build_array(fbr."offset", fbr.size, encode(fbr.hash, 'hex'))
@@ -247,7 +247,7 @@ const blockRefsAggExpr = `(
 
 // decodeBlockRefsJSON decodes the JSON array produced by blockRefsAggExpr into
 // []block.BlockRef, applying the same hash-length validation as
-// loadFileBlockRefs (a malformed hash is surfaced as an error, never coerced to
+// loadFileChunkRefs (a malformed hash is surfaced as an error, never coerced to
 // a half-decoded ref).
 func decodeBlockRefsJSON(raw []byte) ([]block.BlockRef, error) {
 	// Element shape: [offset(int64), size(int32), hash_hex(string)].

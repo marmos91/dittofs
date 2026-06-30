@@ -65,7 +65,7 @@ func TestDispatchRemoteFetch_StandaloneRoundTrip(t *testing.T) {
 		t.Fatalf("standalone write resolved to block: %+v", loc)
 	}
 
-	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileBlock{Hash: hash})
+	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
 	if err != nil {
 		t.Fatalf("dispatchRemoteFetch: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestDispatchRemoteFetch_LegacyNoLocator(t *testing.T) {
 	}
 	// Deliberately NOT MarkSynced — GetLocator returns (false).
 
-	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileBlock{Hash: hash})
+	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
 	if err != nil {
 		t.Fatalf("dispatchRemoteFetch (legacy): %v", err)
 	}
@@ -126,7 +126,7 @@ func TestDispatchRemoteFetch_BlockLocator(t *testing.T) {
 		t.Fatalf("MarkSynced block: %v", err)
 	}
 
-	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileBlock{Hash: hash})
+	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
 	if err != nil {
 		t.Fatalf("dispatchRemoteFetch (block): %v", err)
 	}
@@ -158,7 +158,7 @@ func TestDispatchRemoteFetch_BlockLocatorVerifyMismatch(t *testing.T) {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
-	_, _, err := syncer.dispatchRemoteFetch(ctx, &block.FileBlock{Hash: hash})
+	_, _, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
 	if !errors.Is(err, block.ErrCASContentMismatch) {
 		t.Fatalf("block verify mismatch: got %v, want ErrCASContentMismatch", err)
 	}

@@ -17,7 +17,7 @@ import (
 //
 // This is the snapshot-create primitive: at snapshot time every written
 // byte must be flushed from the per-payload append log into CAS AND into
-// the FileBlock manifest (via the ObjectIDPersister) so the metadata
+// the FileChunk manifest (via the ObjectIDPersister) so the metadata
 // Backup() observes a fully-populated FileAttr.Blocks. Steady-state
 // rollup only consumes intervals that have aged past the stabilization
 // window; a snapshot taken before that window elapses would otherwise
@@ -131,7 +131,7 @@ func (bc *FSStore) DrainRollups(ctx context.Context) error {
 // context.Canceled in StoreChunk / the ObjectIDPersister and (pre-fix)
 // propagated that as a fatal error to os.Exit (status=1/FAILURE). Rollups are
 // already idempotent + resumable by design — CAS chunks are content-addressed
-// and rollup_offset only advances after the FileBlock manifest lands — so an
+// and rollup_offset only advances after the FileChunk manifest lands — so an
 // interrupted rollup is safe to finish on a fresh context.
 //
 // GracefulStopRollup performs that finish:

@@ -46,7 +46,7 @@ const (
 // 10M+ live sets no longer hit the txn-per-hash throughput cliff
 // (single-row mark would otherwise dominate mark-phase wall time).
 // FlushAdd() forces the in-flight batch to disk; the mark phase calls
-// it once after EnumerateFileBlocks returns so subsequent Has()
+// it once after EnumerateFileChunks returns so subsequent Has()
 // queries see every Add().
 type GCState struct {
 	runDir   string
@@ -118,7 +118,7 @@ func (g *GCState) Add(h block.ContentHash) error {
 }
 
 // FlushAdd forces any in-flight batched Add()s to disk. Mark-phase callers
-// invoke this once after EnumerateFileBlocks returns so the sweep's Has()
+// invoke this once after EnumerateFileChunks returns so the sweep's Has()
 // queries see every marked hash.
 func (g *GCState) FlushAdd() error {
 	if g.batch == nil {

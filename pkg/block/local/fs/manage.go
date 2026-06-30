@@ -29,10 +29,10 @@ func (bc *FSStore) SetDurable(durable bool) {
 }
 
 // GetStoredFileSize returns the total stored data size for a file by summing
-// the DataSize of all FileBlock records in the metadata store.
+// the DataSize of all FileChunk records in the metadata store.
 // Returns 0 for unknown files (no error).
 func (bc *FSStore) GetStoredFileSize(ctx context.Context, payloadID string) (uint64, error) {
-	blocks, err := bc.blockStore.ListFileBlocks(ctx, payloadID)
+	blocks, err := bc.blockStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return 0, err
 	}

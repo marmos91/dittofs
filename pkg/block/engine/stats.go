@@ -182,11 +182,11 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 
 // populateBlockCounts fills block count fields and FileCount from the
 // authoritative metadata. It enumerates payloads via
-// fileBlockStore.EnumeratePayloads (which survives rollup) rather than the
+// fileChunkStore.EnumeratePayloads (which survives rollup) rather than the
 // local store's ListFiles, so a rolled-up share whose append logs are gone
 // still reports its blocks and files instead of zero (#1374).
 func (bs *Store) populateBlockCounts(stats *BlockStoreStats) {
-	if bs.fileBlockStore == nil {
+	if bs.fileChunkStore == nil {
 		return
 	}
 
@@ -194,9 +194,9 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats) {
 	defer cancel()
 
 	var payloadCount int
-	if err := bs.fileBlockStore.EnumeratePayloads(ctx, func(payloadID string) error {
+	if err := bs.fileChunkStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		payloadCount++
-		blocks, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+		blocks, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 		if err != nil {
 			return nil // skip this payload, keep going
 		}
@@ -209,10 +209,10 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats) {
 	stats.FileCount = payloadCount
 }
 
-// classifyBlocks tallies a payload's FileBlock rows into the per-state stats
+// classifyBlocks tallies a payload's FileChunk rows into the per-state stats
 // counters. Split out of populateBlockCounts so the EnumeratePayloads callback
 // stays readable; the classification logic is unchanged.
-func (bs *Store) classifyBlocks(ctx context.Context, stats *BlockStoreStats, blocks []*block.FileBlock) {
+func (bs *Store) classifyBlocks(ctx context.Context, stats *BlockStoreStats, blocks []*block.FileChunk) {
 	for _, b := range blocks {
 		stats.BlocksTotal++
 		// Classify by PHYSICAL presence in the local CAS store, not by sync

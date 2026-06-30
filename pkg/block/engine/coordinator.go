@@ -16,9 +16,9 @@ import (
 // Transaction ownership rule (BLOCKER-1/2/3 resolution, 2026-04-26)
 // the engine NEVER opens a metadata txn. The CALLER (per-share runtime
 // wrapper for CopyPayload/WriteAt; common.WriteToBlockStore for the
-// adapter path; syncer post-Flush wrapper for PersistFileBlocks) opens
+// adapter path; syncer post-Flush wrapper for PersistFileChunks) opens
 // the txn around the engine call. The coordinator's IncrementRefCount /
-// DecrementRefCount / PersistFileBlocks operations run inside that
+// DecrementRefCount / PersistFileChunks operations run inside that
 // caller-owned txn.
 //
 // PayloadID is passed as a `string` rather than a strongly-typed
@@ -29,19 +29,19 @@ import (
 // a typed alias when the adapter call sites converge on a single
 // PayloadID type.
 type MetadataCoordinator interface {
-	// IncrementRefCount atomically bumps the FileBlock RefCount for a
+	// IncrementRefCount atomically bumps the FileChunk RefCount for a
 	// hash. Engine invokes this once per unique hash inside CopyPayload
 	// (under the caller's metadata txn).
 	IncrementRefCount(ctx context.Context, hash block.ContentHash) error
 
 	// DecrementRefCount atomically decrements; returns the new count.
 	// Engine invokes this from dedup/rollback bookkeeping. Plain decrement
-	// — the FileBlock index row survives at RefCount 0.
+	// — the FileChunk index row survives at RefCount 0.
 	DecrementRefCount(ctx context.Context, hash block.ContentHash) (uint32, error)
 
 	// DecrementRefCountAndReap atomically decrements and, when the new count
-	// is 0, deletes the FileBlock index row identified by the exact block ID
-	// "{payloadID}/{offset}" so its hash leaves EnumerateFileBlocks once no
+	// is 0, deletes the FileChunk index row identified by the exact block ID
+	// "{payloadID}/{offset}" so its hash leaves EnumerateFileChunks once no
 	// row anywhere references it and the GC mark-sweep can reclaim the remote
 	// chunk. Engine invokes this from Delete (per BlockRef in the list) and
 	// Truncate (per BlockRef dropped past the new size) — the reclaim path.
@@ -55,16 +55,16 @@ type MetadataCoordinator interface {
 	// reap the wrong file's row — leaking the creator's row or over-reaping a
 	// still-referenced one (data loss). Removing THIS file's own row by ID
 	// is unambiguous; cross-file dedup keep-alive is provided by SIBLING rows
-	// keeping the hash in EnumerateFileBlocks (the GC live set), NOT by
+	// keeping the hash in EnumerateFileChunks (the GC live set), NOT by
 	// RefCount, so GC sweeps the chunk only when no row anywhere references it.
 	//
 	// Returns the new count (0 when reaped or when the row was already
-	// absent). ErrFileBlockNotFound is tolerated and reported as count 0 — a
+	// absent). ErrFileChunkNotFound is tolerated and reported as count 0 — a
 	// row already reaped (or a dedup-miss fallback that never created one) is
 	// not a caller error.
 	DecrementRefCountAndReap(ctx context.Context, payloadID string, offset uint64) (uint32, error)
 
-	// PersistFileBlocks updates FileAttr.Blocks AND FileAttr.ObjectID
+	// PersistFileChunks updates FileAttr.Blocks AND FileAttr.ObjectID
 	// for a given file in a single metadata txn. Engine invokes this
 	// from the local store's rollup-completion callback (the
 	// ObjectIDPersister wired in engine.New). The runtime wrapper
@@ -75,18 +75,18 @@ type MetadataCoordinator interface {
 	// all-zero ObjectID to mean "do not update ObjectID" (e.g.
 	// partial flushes — but those currently never reach this hook per
 	// Flush semantics).
-	PersistFileBlocks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error
+	PersistFileChunks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error
 
 	// GetPersistedBlocks returns the file's currently-persisted
 	// FileAttr.Blocks (with content hashes) for payloadID, or an empty
 	// slice when the file has no blocks yet / does not exist. The
 	// rollup-completion callback reads this to merge a partial rollup
 	// pass into the already-committed block list before calling
-	// PersistFileBlocks, so a multi-pass rollup keeps FileAttr.Blocks
+	// PersistFileChunks, so a multi-pass rollup keeps FileAttr.Blocks
 	// complete instead of replacing it with only the latest pass (#789).
 	//
 	// Reads the manifest source (file_block_refs on Postgres, encoded
-	// FileAttr.Blocks on Badger/Memory) — NOT the per-file FileBlock
+	// FileAttr.Blocks on Badger/Memory) — NOT the per-file FileChunk
 	// index, whose Pending rows carry a NULL hash on Postgres.
 	GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.BlockRef, error)
 
@@ -127,7 +127,7 @@ type MetadataCoordinator interface {
 // coordinator needed).
 var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator not wired")
 
-// ErrPersistFileBlocksNotWired signals that PersistFileBlocks was invoked
+// ErrPersistFileChunksNotWired signals that PersistFileChunks was invoked
 // against a coordinator whose payloadID → fileHandle resolution chain has
 // not yet been wired. The Syncer's post-Flush
 // hook recognises this sentinel and tolerates it (the dual-read shim keeps
@@ -135,9 +135,9 @@ var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator no
 // observable. Other callers should treat it as a hard error so a future
 // plan flipping WriteAt to return real BlockRefs is forced to implement
 // the method rather than silently succeed.
-var ErrPersistFileBlocksNotWired = errors.New("engine: PersistFileBlocks not wired (dual-read shim covers reads)")
+var ErrPersistFileChunksNotWired = errors.New("engine: PersistFileChunks not wired (dual-read shim covers reads)")
 
-// ErrObjectIDConflict signals that PersistFileBlocks rejected a write
+// ErrObjectIDConflict signals that PersistFileChunks rejected a write
 // because another file already holds the same FileAttr.ObjectID
 // (first-committer-wins). The short-circuit
 // caller (applyFileLevelDedupHit) catches this, rolls back the

@@ -156,7 +156,7 @@
 //	          |
 //	+-- orphan sweep
 //	               metadata.GetRollupOffset(payloadID) == 0
-//	                 && no live FileBlock for payloadID
+//	                 && no live FileChunk for payloadID
 //	                 && mtime older than orphan_log_min_age_seconds
 //	                 -> unlink logs/<payloadID>.log
 //

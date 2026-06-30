@@ -54,14 +54,14 @@ type LocalStore interface {
 	// ReadPayloadAt serves bytes for [offset, offset+len(dest)) from the
 	// local store, consulting BOTH the in-flight append log (pre-rollup
 	// bytes that have not yet been chunked into CAS) AND the rolled-up
-	// CAS chunks via the FileBlock manifest. This is the primary
+	// CAS chunks via the FileChunk manifest. This is the primary
 	// payload-keyed read entry on the local store interface; the engine
 	// calls this BEFORE falling back to a CAS-hash-keyed walk on miss.
 	//
 	// Returns (len(dest), nil) when every requested byte was satisfied
-	// from local storage. Returns (0, block.ErrFileBlockNotFound)
+	// from local storage. Returns (0, block.ErrFileChunkNotFound)
 	// when no part of the requested range exists in either the append
-	// log or the FileBlock manifest — the caller treats this as "must
+	// log or the FileChunk manifest — the caller treats this as "must
 	// fall back to remote-fetch + zero-fill". Returns (n, err) for
 	// genuine I/O errors.
 	//
@@ -69,7 +69,7 @@ type LocalStore interface {
 	// CAS-hash-keyed: callers do not need to know which chunk covers
 	// which byte. This is the critical entry that closes the pre-rollup
 	// read-after-write gap; without it, freshly-appended bytes return
-	// zeros until the async rollup commits FileBlock rows.
+	// zeros until the async rollup commits FileChunk rows.
 	ReadPayloadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error)
 
 	// --- Snapshot drain / reset ---
@@ -78,7 +78,7 @@ type LocalStore interface {
 	// completion, bypassing the stabilization-window gate, and waits for
 	// any in-flight rollup-worker passes to finish. After it returns,
 	// every byte written via AppendWrite has been flushed into CAS AND
-	// into the FileBlock manifest (FileAttr.Blocks), so a metadata
+	// into the FileChunk manifest (FileAttr.Blocks), so a metadata
 	// Backup() taken next observes a fully-populated manifest rather than
 	// an empty/partial one.
 	//
@@ -132,19 +132,19 @@ type LocalStore interface {
 	ListFiles() []string
 
 	// GetStoredFileSize returns the total stored data size for a file
-	// by summing the DataSize of all FileBlock records in the metadata
+	// by summing the DataSize of all FileChunk records in the metadata
 	// store.
 	GetStoredFileSize(ctx context.Context, payloadID string) (uint64, error)
 
 	// --- Metadata sync ---
 
-	// SyncFileBlocks persists all queued FileBlock metadata updates to
+	// SyncFileChunks persists all queued FileChunk metadata updates to
 	// the store.
-	SyncFileBlocks(ctx context.Context)
+	SyncFileChunks(ctx context.Context)
 
-	// SyncFileBlocksForFile persists queued FileBlock metadata only for
+	// SyncFileChunksForFile persists queued FileChunk metadata only for
 	// blocks belonging to the given payloadID.
-	SyncFileBlocksForFile(ctx context.Context, payloadID string)
+	SyncFileChunksForFile(ctx context.Context, payloadID string)
 
 	// --- Retention / eviction policy ---
 

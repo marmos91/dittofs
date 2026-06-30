@@ -22,24 +22,24 @@ type WarmResult struct {
 	BlocksAlreadyLocal int64 `json:"blocks_already_local"`
 }
 
-// warmTarget identifies one FileBlock row that must be fetched. It carries the
-// resolved *block.FileBlock from enumeration so the worker fetches by the row
+// warmTarget identifies one FileChunk row that must be fetched. It carries the
+// resolved *block.FileChunk from enumeration so the worker fetches by the row
 // in hand rather than round-tripping through a blockIdx lookup — FastCDC chunks
 // start at arbitrary, non-BlockSize-aligned offsets, so a blockIdx lookup would
 // miss every non-aligned chunk and silently skip it (#1374).
 type warmTarget struct {
 	payloadID string
-	fb        *block.FileBlock
+	fb        *block.FileChunk
 }
 
 // WarmAll proactively materializes every block of every payload in this share
 // onto the local CAS tier by reusing the per-block fetch primitive
 // (fetchResolvedBlock). It enumerates payloads from the authoritative metadata
-// (fileBlockStore.EnumeratePayloads) and the per-payload FileBlock rows, skips
+// (fileChunkStore.EnumeratePayloads) and the per-payload FileChunk rows, skips
 // any block already present locally, and fetches the rest with bounded
 // concurrency (SyncerConfig.ParallelDownloads). Enumerating the metadata rather
 // than the local store's ListFiles is what lets warm materialize payloads whose
-// append log was discarded after rollup — their FileBlock rows survive, but
+// append log was discarded after rollup — their FileChunk rows survive, but
 // local.ListFiles no longer reports them, so the old surface made warm a silent
 // no-op on rolled-up shares (#1374).
 //
@@ -59,16 +59,16 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		return WarmResult{}, errors.New("warm: share has no remote tier to warm from")
 	}
 
-	// Enumerate all FileBlock rows and split into already-local (counted,
+	// Enumerate all FileChunk rows and split into already-local (counted,
 	// skipped) and to-fetch (the work list). The enumeration walks the same
-	// surface as populateBlockCounts: fileBlockStore.EnumeratePayloads ->
-	// per-payload ListFileBlocks (the authoritative metadata, which survives
+	// surface as populateBlockCounts: fileChunkStore.EnumeratePayloads ->
+	// per-payload ListFileChunks (the authoritative metadata, which survives
 	// rollup). Each to-fetch target carries the resolved row so the worker
 	// fetches by the row in hand (fetchResolvedBlock) instead of round-tripping
 	// through a BlockSize-aligned blockIdx lookup, which would miss every
 	// non-aligned FastCDC chunk (#1374).
 	var payloadIDs []string
-	if err := m.fileBlockStore.EnumeratePayloads(ctx, func(payloadID string) error {
+	if err := m.fileChunkStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		payloadIDs = append(payloadIDs, payloadID)
 		return nil
 	}); err != nil {
@@ -83,7 +83,7 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		if err := ctx.Err(); err != nil {
 			return WarmResult{}, err
 		}
-		rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+		rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 		if err != nil {
 			return WarmResult{}, fmt.Errorf("warm: list blocks for %s: %w", payloadID, err)
 		}

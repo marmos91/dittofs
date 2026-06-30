@@ -11,19 +11,19 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// FileBlockRefsAccessor is an optional capability backends may implement to
+// FileChunkRefsAccessor is an optional capability backends may implement to
 // expose direct row-count access to the file_block_refs join table. The
 // conformance suite uses it only for the FK-cascade scenario, which is
 // meaningful exclusively on Postgres — Memory and Badger have no schema-level
 // concept of a separate refs table, so they skip the cascade test cleanly via
 // type-assertion failure.
 //
-// Postgres satisfies this via *PostgresMetadataStore.CountFileBlockRefs
+// Postgres satisfies this via *PostgresMetadataStore.CountFileChunkRefs
 // (defined in pkg/metadata/store/postgres/file_block_refs.go).
-type FileBlockRefsAccessor interface {
-	// CountFileBlockRefs returns the number of file_block_refs rows for the
+type FileChunkRefsAccessor interface {
+	// CountFileChunkRefs returns the number of file_block_refs rows for the
 	// given fileID. Test-only; never call from production code.
-	CountFileBlockRefs(ctx context.Context, fileID uuid.UUID) (int, error)
+	CountFileChunkRefs(ctx context.Context, fileID uuid.UUID) (int, error)
 }
 
 // runBlockRefOpsTests dispatches the BlockRef round-trip conformance
@@ -330,14 +330,14 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 
 // testBlockRef_CascadeDeleteOnFileDelete asserts that deleting a file row
 // cascades to the file_block_refs join table (via FK ON DELETE CASCADE).
-// Postgres-only via the FileBlockRefsAccessor capability hook; Memory
+// Postgres-only via the FileChunkRefsAccessor capability hook; Memory
 // and Badger have no separate refs table and skip cleanly.
 func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 
-	accessor, ok := store.(FileBlockRefsAccessor)
+	accessor, ok := store.(FileChunkRefsAccessor)
 	if !ok {
-		t.Skip("backend does not implement FileBlockRefsAccessor — no separate refs table to cascade")
+		t.Skip("backend does not implement FileChunkRefsAccessor — no separate refs table to cascade")
 	}
 
 	ctx := t.Context()
@@ -365,9 +365,9 @@ func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) 
 		t.Fatalf("DecodeFileHandle: %v", err)
 	}
 
-	pre, err := accessor.CountFileBlockRefs(ctx, fileID)
+	pre, err := accessor.CountFileChunkRefs(ctx, fileID)
 	if err != nil {
-		t.Fatalf("CountFileBlockRefs (pre-delete): %v", err)
+		t.Fatalf("CountFileChunkRefs (pre-delete): %v", err)
 	}
 	if pre != len(blocks) {
 		t.Fatalf("pre-delete row count: got %d, want %d", pre, len(blocks))
@@ -386,9 +386,9 @@ func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) 
 		t.Fatalf("DeleteFile: %v", err)
 	}
 
-	post, err := accessor.CountFileBlockRefs(ctx, fileID)
+	post, err := accessor.CountFileChunkRefs(ctx, fileID)
 	if err != nil {
-		t.Fatalf("CountFileBlockRefs (post-delete): %v", err)
+		t.Fatalf("CountFileChunkRefs (post-delete): %v", err)
 	}
 	if post != 0 {
 		t.Fatalf("post-delete row count: got %d, want 0 (FK ON DELETE CASCADE)", post)

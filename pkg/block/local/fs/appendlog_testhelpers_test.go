@@ -9,23 +9,23 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// nopFBS is a no-op block.EngineFileBlockStore used by
-// tests. Every read returns ErrFileBlockNotFound; every write is a no-op.
+// nopFBS is a no-op block.EngineFileChunkStore used by
+// tests. Every read returns ErrFileChunkNotFound; every write is a no-op.
 // Sufficient for the append-log path because AppendWrite does not
-// consult FileBlockStore at all.
+// consult FileChunkStore at all.
 //
 // Shared across /05/06 test files in the fs package.
-// narrowed the public FileBlockStore to 6 methods; this
+// narrowed the public FileChunkStore to 6 methods; this
 // stub satisfies the wider engine-internal surface (the 6 plus
-// GetFileBlock + ListFileBlocks).
+// GetFileChunk + ListFileChunks).
 type nopFBS struct{}
 
-func (nopFBS) GetByHash(_ context.Context, _ block.ContentHash) (*block.FileBlock, error) {
+func (nopFBS) GetByHash(_ context.Context, _ block.ContentHash) (*block.FileChunk, error) {
 	return nil, nil
 }
-func (nopFBS) Put(_ context.Context, _ *block.FileBlock) error { return nil }
+func (nopFBS) Put(_ context.Context, _ *block.FileChunk) error { return nil }
 func (nopFBS) Delete(_ context.Context, _ string) error {
-	return block.ErrFileBlockNotFound
+	return block.ErrFileChunkNotFound
 }
 func (nopFBS) IncrementRefCount(_ context.Context, _ string) error { return nil }
 func (nopFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
@@ -41,11 +41,11 @@ func (nopFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.B
 	return block.ErrUnknownHash
 }
 
-// Engine-internal surface (kept off the public FileBlockStore per
-func (nopFBS) GetFileBlock(_ context.Context, _ string) (*block.FileBlock, error) {
-	return nil, block.ErrFileBlockNotFound
+// Engine-internal surface (kept off the public FileChunkStore per
+func (nopFBS) GetFileChunk(_ context.Context, _ string) (*block.FileChunk, error) {
+	return nil, block.ErrFileChunkNotFound
 }
-func (nopFBS) ListFileBlocks(_ context.Context, _ string) ([]*block.FileBlock, error) {
+func (nopFBS) ListFileChunks(_ context.Context, _ string) ([]*block.FileChunk, error) {
 	return nil, nil
 }
 func (nopFBS) EnumeratePayloads(_ context.Context, _ func(payloadID string) error) error {

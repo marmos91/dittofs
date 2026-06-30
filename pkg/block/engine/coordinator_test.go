@@ -11,7 +11,7 @@ import (
 )
 
 // fakeCoordinator records every IncrementRefCount/DecrementRefCount/
-// PersistFileBlocks/FindByObjectID call so engine tests can assert what
+// PersistFileChunks/FindByObjectID call so engine tests can assert what
 // the engine invoked (and with what arguments) without coupling to the
 // real metadata-store wiring.
 type fakeCoordinator struct {
@@ -29,12 +29,12 @@ type fakeCoordinator struct {
 
 	// Optional: incErr overrides the error returned by failOnNthIncrement.
 	// When nil the generic induced-failure error is used. Set to
-	// block.ErrFileBlockNotFound to simulate a Pending (non-durable) donor
-	// whose Remote-gated GetByHash resolves to no FileBlock row (#1245 Bug A).
+	// block.ErrFileChunkNotFound to simulate a Pending (non-durable) donor
+	// whose Remote-gated GetByHash resolves to no FileChunk row (#1245 Bug A).
 	incErr error
 
 	// Optional: incAllNotFound makes EVERY IncrementRefCount return
-	// block.ErrFileBlockNotFound, modelling the real coordinator on a CAS
+	// block.ErrFileChunkNotFound, modelling the real coordinator on a CAS
 	// share where all source blocks are Pending and the Remote-gated
 	// GetByHash never resolves them (#1384 CLONE / SMB server-side-copy).
 	incAllNotFound bool
@@ -50,7 +50,7 @@ type fakeCoordinator struct {
 	// tests can assert call sequence + count.
 	findCalls []block.ObjectID
 	// objectIDPersisted records the ObjectID arg passed on every
-	// PersistFileBlocks call (parallel index to persistCalls). Tests
+	// PersistFileChunks call (parallel index to persistCalls). Tests
 	// assert the short-circuit threads the provisional ObjectID through
 	// the same metadata txn that writes Blocks.
 	objectIDPersisted []block.ObjectID
@@ -59,7 +59,7 @@ type fakeCoordinator struct {
 	// list (deep-copied on the way out to keep slice-aliasing discipline
 	// per). Empty / unset key means miss → (nil, nil).
 	objectIDHits map[block.ObjectID][]block.BlockRef
-	// persistErr is a single-shot injection: the next PersistFileBlocks
+	// persistErr is a single-shot injection: the next PersistFileChunks
 	// call returns this error and clears the field. Used by the
 	// concurrent-race RED test to simulate the loser detecting a
 	// unique-violation on the partial UNIQUE index.
@@ -93,7 +93,7 @@ func (f *fakeCoordinator) IncrementRefCount(_ context.Context, hash block.Conten
 	defer f.mu.Unlock()
 	f.incCallCount++
 	if f.incAllNotFound {
-		return block.ErrFileBlockNotFound
+		return block.ErrFileChunkNotFound
 	}
 	if f.failOnNthIncrement > 0 && f.incCallCount == f.failOnNthIncrement {
 		if f.incErr != nil {
@@ -141,7 +141,7 @@ func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]blo
 	return nil, nil
 }
 
-func (f *fakeCoordinator) PersistFileBlocks(_ context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := append([]block.BlockRef(nil), blocks...)
@@ -213,7 +213,7 @@ func TestMetadataCoordinator_NilTolerated(t *testing.T) {
 // TestMetadataCoordinator_AcceptsFakeCoordinator asserts that a *Store
 // can be constructed with a non-nil coordinator and that the field is
 // stored verbatim. Full integration assertions (the engine actually
-// invoking IncrementRefCount/DecrementRefCount/PersistFileBlocks during
+// invoking IncrementRefCount/DecrementRefCount/PersistFileChunks during
 // CopyPayload/Delete/Truncate/syncer-post-Flush) live in Task 2 tests.
 func TestMetadataCoordinator_AcceptsFakeCoordinator(t *testing.T) {
 	fc := &fakeCoordinator{}
@@ -242,7 +242,7 @@ func TestMetadataCoordinator_FakeImpl_RecordsCalls(t *testing.T) {
 	if _, err := fc.DecrementRefCount(ctx, h2); err != nil {
 		t.Fatalf("Decrement: %v", err)
 	}
-	if err := fc.PersistFileBlocks(ctx, "pid", []block.BlockRef{{Hash: h1, Offset: 0, Size: 1}}, block.ObjectID{}); err != nil {
+	if err := fc.PersistFileChunks(ctx, "pid", []block.BlockRef{{Hash: h1, Offset: 0, Size: 1}}, block.ObjectID{}); err != nil {
 		t.Fatalf("Persist: %v", err)
 	}
 

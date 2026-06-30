@@ -172,7 +172,7 @@ type BlockStoreAuditResult struct {
 // BlockStoreAuditRefcounts triggers the on-demand CAS manifest-consistency
 // audit for the named share. Server walks the share's metadata store and
 // verifies every manifest reference (FileAttr.Blocks) has a backing
-// FileBlock row; a non-zero delta (DanglingRefs) indicates a file
+// FileChunk row; a non-zero delta (DanglingRefs) indicates a file
 // references a chunk the store has no record of. The audit persists
 // last-inv02.json under the share's audit-state directory; this client
 // method returns the same summary in the response body for direct

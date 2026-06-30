@@ -241,7 +241,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	// committed Update returns as soon as the value lands in the
 	// memtable + WAL buffer — NOT after the WAL is fsynced. A `kill -9`
 	// (or power loss) between flush boundaries loses every metadata
-	// write since the last sync, including rolled-up FileBlock rows
+	// write since the last sync, including rolled-up FileChunk rows
 	// and FileAttr.Blocks manifests. Without those rows the engine's
 	// read path falls through to the sparse-block zero-fill branch
 	// (engine.go:1072 `clear(dest)`), returning silent zeros for files

@@ -21,7 +21,7 @@ import (
 // testCoordinator is a faithful, test-local re-implementation of the
 // production engine.MetadataCoordinator (pkg/controlplane/runtime/shares/
 // coordinator.go) — that package may not be imported here per the
-// strict-grep boundary. It drives PersistFileBlocks the exact way the
+// strict-grep boundary. It drives PersistFileChunks the exact way the
 // production wrapper does: resolve payloadID -> existing file row via
 // GetFileByPayloadID, mutate Blocks + ObjectID, PutFile under the existing
 // id, all in one metadata transaction, wrapping a backend object_id
@@ -38,7 +38,7 @@ func (c *testCoordinator) IncrementRefCount(ctx context.Context, hash block.Cont
 		return err
 	}
 	if fb == nil {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return c.store.IncrementRefCount(ctx, fb.ID)
 }
@@ -59,7 +59,7 @@ func (c *testCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadI
 	id := fmt.Sprintf("%s/%d", payloadID, offset)
 	count, err := c.store.DecrementRefCountAndReap(ctx, id)
 	if err != nil {
-		if errors.Is(err, metadata.ErrFileBlockNotFound) {
+		if errors.Is(err, metadata.ErrFileChunkNotFound) {
 			return 0, nil
 		}
 		return 0, err
@@ -67,7 +67,7 @@ func (c *testCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadI
 	return count, nil
 }
 
-func (c *testCoordinator) PersistFileBlocks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+func (c *testCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
 	return c.store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 		if err != nil {
@@ -185,7 +185,7 @@ func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		Coordinator:     coord,
 		SyncedHashStore: syncedHashStore,
 		ReadBufferBytes: 64 * 1024 * 1024,
@@ -245,10 +245,10 @@ func createRealFile(t *testing.T, store metadata.Store, shareName, name string, 
 	return payloadID, handle
 }
 
-// fileBlocks reads FileAttr.Blocks for a handle via GetFile (which loads
+// fileChunks reads FileAttr.Blocks for a handle via GetFile (which loads
 // blocks from the per-file block manifest — GetFileByPayloadID does NOT on
 // the Postgres backend).
-func fileBlocks(t *testing.T, store metadata.Store, handle metadata.FileHandle) []block.BlockRef {
+func fileChunks(t *testing.T, store metadata.Store, handle metadata.FileHandle) []block.BlockRef {
 	t.Helper()
 	f, err := store.GetFile(context.Background(), handle)
 	if err != nil {
@@ -348,7 +348,7 @@ func runIdenticalContentDrain(t *testing.T, ms metadata.Store, sharePrefix strin
 		"beta.bin":       hB,
 		"alpha-copy.bin": hC,
 	} {
-		blocks := fileBlocks(t, ms, h)
+		blocks := fileChunks(t, ms, h)
 		if len(blocks) == 0 {
 			t.Fatalf("file %s has empty FileAttr.Blocks after DrainRollups (unrestorable duplicate)", name)
 		}

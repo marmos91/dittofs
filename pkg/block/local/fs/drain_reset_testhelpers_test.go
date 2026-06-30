@@ -11,22 +11,22 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// memFBS is a minimal in-memory block.EngineFileBlockStore that
-// retains the per-payload FileBlock manifest rows persisted by the rollup
-// ObjectIDPersister. Unlike nopFBS, its ListFileBlocks returns the stored
+// memFBS is a minimal in-memory block.EngineFileChunkStore that
+// retains the per-payload FileChunk manifest rows persisted by the rollup
+// ObjectIDPersister. Unlike nopFBS, its ListFileChunks returns the stored
 // rows so ReadPayloadAt's CAS-manifest path can resolve rolled-up bytes —
 // which is exactly what ResetLocalState must leave readable after dropping
 // the stale append log.
 type memFBS struct {
 	mu   sync.Mutex
-	rows map[string]map[string]*block.FileBlock // payloadID -> blockID -> row
+	rows map[string]map[string]*block.FileChunk // payloadID -> blockID -> row
 }
 
-func newMemFileBlockStore() *memFBS {
-	return &memFBS{rows: make(map[string]map[string]*block.FileBlock)}
+func newMemFileChunkStore() *memFBS {
+	return &memFBS{rows: make(map[string]map[string]*block.FileChunk)}
 }
 
-// persist mirrors the engine's ObjectIDPersister FileBlock-row write loop
+// persist mirrors the engine's ObjectIDPersister FileChunk-row write loop
 // (engine.go) so the test FBS holds rows with the canonical
 // "<payloadID>/<offset>" ID that ParseChunkOffset decodes.
 func (m *memFBS) persist(_ context.Context, payloadID string, blocks []block.BlockRef) error {
@@ -34,7 +34,7 @@ func (m *memFBS) persist(_ context.Context, payloadID string, blocks []block.Blo
 	defer m.mu.Unlock()
 	pm := m.rows[payloadID]
 	if pm == nil {
-		pm = make(map[string]*block.FileBlock)
+		pm = make(map[string]*block.FileChunk)
 		m.rows[payloadID] = pm
 	}
 	for _, b := range blocks {
@@ -42,7 +42,7 @@ func (m *memFBS) persist(_ context.Context, payloadID string, blocks []block.Blo
 			continue
 		}
 		id := fmt.Sprintf("%s/%d", payloadID, b.Offset)
-		pm[id] = &block.FileBlock{
+		pm[id] = &block.FileChunk{
 			ID:       id,
 			Hash:     b.Hash,
 			DataSize: b.Size,
@@ -52,11 +52,11 @@ func (m *memFBS) persist(_ context.Context, payloadID string, blocks []block.Blo
 	return nil
 }
 
-func (m *memFBS) ListFileBlocks(_ context.Context, payloadID string) ([]*block.FileBlock, error) {
+func (m *memFBS) ListFileChunks(_ context.Context, payloadID string) ([]*block.FileChunk, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pm := m.rows[payloadID]
-	out := make([]*block.FileBlock, 0, len(pm))
+	out := make([]*block.FileChunk, 0, len(pm))
 	for _, fb := range pm {
 		out = append(out, fb)
 	}
@@ -81,7 +81,7 @@ func (m *memFBS) EnumeratePayloads(ctx context.Context, fn func(payloadID string
 	return nil
 }
 
-func (m *memFBS) GetFileBlock(_ context.Context, blockID string) (*block.FileBlock, error) {
+func (m *memFBS) GetFileChunk(_ context.Context, blockID string) (*block.FileChunk, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, pm := range m.rows {
@@ -89,15 +89,15 @@ func (m *memFBS) GetFileBlock(_ context.Context, blockID string) (*block.FileBlo
 			return fb, nil
 		}
 	}
-	return nil, block.ErrFileBlockNotFound
+	return nil, block.ErrFileChunkNotFound
 }
 
-func (m *memFBS) GetByHash(_ context.Context, _ block.ContentHash) (*block.FileBlock, error) {
+func (m *memFBS) GetByHash(_ context.Context, _ block.ContentHash) (*block.FileChunk, error) {
 	return nil, nil
 }
-func (m *memFBS) Put(_ context.Context, _ *block.FileBlock) error { return nil }
+func (m *memFBS) Put(_ context.Context, _ *block.FileChunk) error { return nil }
 func (m *memFBS) Delete(_ context.Context, _ string) error {
-	return block.ErrFileBlockNotFound
+	return block.ErrFileChunkNotFound
 }
 func (m *memFBS) IncrementRefCount(_ context.Context, _ string) error { return nil }
 func (m *memFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
@@ -111,8 +111,8 @@ func (m *memFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ bloc
 }
 
 // newFSStoreForTestWithFBS is newFSStoreForTest with a caller-supplied
-// FileBlockStore so the CAS-manifest read path can resolve rolled-up bytes.
-func newFSStoreForTestWithFBS(t *testing.T, fbs block.EngineFileBlockStore, opts FSStoreOptions) *FSStore {
+// FileChunkStore so the CAS-manifest read path can resolve rolled-up bytes.
+func newFSStoreForTestWithFBS(t *testing.T, fbs block.EngineFileChunkStore, opts FSStoreOptions) *FSStore {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "fsstore-drainreset-*")
 	if err != nil {

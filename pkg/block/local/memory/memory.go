@@ -37,7 +37,7 @@ type casEntry struct {
 
 // ChunkEmitter is invoked once per CAS chunk freshly emitted by the
 // MemoryStore's synchronous rollup. Engine and test wiring use this
-// hook to populate downstream FileBlock metadata so the engine's CAS
+// hook to populate downstream FileChunk metadata so the engine's CAS
 // read path can resolve (payloadID, offset) → hash. The callback runs
 // under MemoryStore's write lock; implementations must not call back
 // into the MemoryStore (deadlock).
@@ -71,7 +71,7 @@ type MemoryStore struct {
 
 	// chunkEmitter, if non-nil, is invoked once per CAS chunk freshly
 	// emitted by rollup. Installed by engine.New (and by test
-	// harnesses) so downstream FileBlock metadata can mirror the
+	// harnesses) so downstream FileChunk metadata can mirror the
 	// rollup's chunk boundaries.
 	chunkEmitter ChunkEmitter
 
@@ -97,10 +97,10 @@ func (s *MemoryStore) SetChunkEmitter(emit func(payloadID string, chunkStart uin
 }
 
 // SetObjectIDPersister is a no-op on MemoryStore. MemoryStore mirrors
-// FileBlock rows through the per-chunk emitter installed via
+// FileChunk rows through the per-chunk emitter installed via
 // SetChunkEmitter; the rollup-completion persister is only used by the
 // FSStore backend whose writes drive the engine's CAS read path through
-// the rollup-persisted FileBlock manifest. Implemented to satisfy
+// the rollup-persisted FileChunk manifest. Implemented to satisfy
 // [local.ChunkLifecycleHooks] so engine.New can wire all three hooks
 // through a single named-interface assertion.
 func (s *MemoryStore) SetObjectIDPersister(_ func(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error) {
@@ -109,7 +109,7 @@ func (s *MemoryStore) SetObjectIDPersister(_ func(ctx context.Context, payloadID
 // SetOnChunkComplete is a no-op on MemoryStore. MemoryStore's writes
 // don't materialize through the CAS chunkstore + read-Cache hot path
 // that this callback warms; the in-memory rollup keeps everything in
-// the MemoryStore's CAS map and FileBlock rows are emitted via
+// the MemoryStore's CAS map and FileChunk rows are emitted via
 // SetChunkEmitter. Implemented to satisfy [local.ChunkLifecycleHooks]
 // so engine.New can wire all three hooks through a single
 // named-interface assertion.
@@ -388,7 +388,7 @@ func (s *MemoryStore) AppendWrite(_ context.Context, payloadID string, data []by
 // rollupLocked runs FastCDC over the consolidated payload buffer
 // stores the resulting chunks in the CAS map, and invokes the
 // chunkEmitter callback (if wired) once per chunk so downstream
-// FileBlock metadata can mirror the rollup's chunk boundaries.
+// FileChunk metadata can mirror the rollup's chunk boundaries.
 // Caller MUST hold s.mu for write.
 func (s *MemoryStore) rollupLocked(payloadID string, buf []byte) {
 	if len(buf) == 0 {
@@ -427,7 +427,7 @@ func (s *MemoryStore) rollupLocked(payloadID string, buf []byte) {
 // concurrent ReadPayloadAt observes the new bytes immediately).
 //
 // Returns (len(dest), nil) when the requested window lies entirely
-// inside the buffer. Returns (0, block.ErrFileBlockNotFound) when
+// inside the buffer. Returns (0, block.ErrFileChunkNotFound) when
 // the payload is unknown OR the offset is past the buffer end.
 // Partial-coverage requests (offset inside, offset+len past end) are
 // treated as a miss so the engine falls back to remote — the local
@@ -445,13 +445,13 @@ func (s *MemoryStore) ReadPayloadAt(_ context.Context, payloadID string, dest []
 	}
 	log, ok := s.appendLogs[payloadID]
 	if !ok || log == nil {
-		return 0, block.ErrFileBlockNotFound
+		return 0, block.ErrFileChunkNotFound
 	}
 	end := offset + uint64(len(dest))
 	if end > uint64(len(log.buf)) {
 		// Requested window extends past what we have locally — surface as
 		// a miss so the caller can fall back to remote.
-		return 0, block.ErrFileBlockNotFound
+		return 0, block.ErrFileChunkNotFound
 	}
 	copy(dest, log.buf[offset:end])
 	return len(dest), nil
@@ -500,11 +500,11 @@ func (s *MemoryStore) ResetLocalState(_ context.Context) error {
 	return nil
 }
 
-// SyncFileBlocks is a no-op in the memory store (no persistent store to sync to).
-func (s *MemoryStore) SyncFileBlocks(_ context.Context) {}
+// SyncFileChunks is a no-op in the memory store (no persistent store to sync to).
+func (s *MemoryStore) SyncFileChunks(_ context.Context) {}
 
-// SyncFileBlocksForFile is a no-op in the memory store.
-func (s *MemoryStore) SyncFileBlocksForFile(_ context.Context, _ string) {}
+// SyncFileChunksForFile is a no-op in the memory store.
+func (s *MemoryStore) SyncFileChunksForFile(_ context.Context, _ string) {}
 
 // Start is a no-op in the memory store (no background goroutines needed).
 func (s *MemoryStore) Start(_ context.Context) {}

@@ -128,7 +128,7 @@ func (r *Runtime) reapStrandedRows(ctx context.Context, shareName string, mds me
 		if err := ctx.Err(); err != nil {
 			return reaped, err
 		}
-		rows, err := mds.ListFileBlocks(ctx, pid)
+		rows, err := mds.ListFileChunks(ctx, pid)
 		if err != nil {
 			logger.Warn("reconcile: list stranded blocks", "share", shareName, "payload", pid, "err", err)
 			continue

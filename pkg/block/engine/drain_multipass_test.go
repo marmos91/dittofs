@@ -15,7 +15,7 @@ import (
 // DISTINCT offsets (a real append), forcing two rollup passes, then asserts
 // the persisted FileAttr.Blocks cover the WHOLE file [0, size) — not just the
 // last pass's region. This is the assertion prior conformance tests lacked
-// (they checked fileBlocks ⊆ manifest, both derived from the same replaced
+// (they checked fileChunks ⊆ manifest, both derived from the same replaced
 // rows, so a replace-loses-prior-passes bug stayed invisible).
 func runMultiPassAppend(t *testing.T, ms metadata.Store, sharePrefix string) {
 	t.Helper()
@@ -38,8 +38,8 @@ func runMultiPassAppend(t *testing.T, ms metadata.Store, sharePrefix string) {
 	if err := bs.DrainRollups(ctx); err != nil {
 		t.Fatalf("DrainRollups pass1: %v", err)
 	}
-	p1 := fileBlocks(t, ms, h)
-	t.Logf("after pass1: fileBlocks=%d", len(p1))
+	p1 := fileChunks(t, ms, h)
+	t.Logf("after pass1: fileChunks=%d", len(p1))
 
 	// Pass 2: append [2MB, 4MB), drain.
 	if _, err := bs.WriteAt(ctx, pid, nil, second, half); err != nil {
@@ -48,17 +48,17 @@ func runMultiPassAppend(t *testing.T, ms metadata.Store, sharePrefix string) {
 	if err := bs.DrainRollups(ctx); err != nil {
 		t.Fatalf("DrainRollups pass2: %v", err)
 	}
-	p2 := fileBlocks(t, ms, h)
-	t.Logf("after pass2: fileBlocks=%d", len(p2))
+	p2 := fileChunks(t, ms, h)
+	t.Logf("after pass2: fileChunks=%d", len(p2))
 
-	// Probe the per-file FileBlock index (the read-path source) to see if
+	// Probe the per-file FileChunk index (the read-path source) to see if
 	// IT accumulates across passes even though FileAttr.Blocks does not.
 	if fbl, ok := ms.(interface {
-		ListFileBlocks(context.Context, string) ([]*metadata.FileBlock, error)
+		ListFileChunks(context.Context, string) ([]*metadata.FileChunk, error)
 	}); ok {
-		rows, err := fbl.ListFileBlocks(ctx, pid)
+		rows, err := fbl.ListFileChunks(ctx, pid)
 		if err != nil {
-			t.Logf("ListFileBlocks err: %v", err)
+			t.Logf("ListFileChunks err: %v", err)
 		} else {
 			roffs := make([]uint64, 0, len(rows))
 			for _, r := range rows {
@@ -66,7 +66,7 @@ func runMultiPassAppend(t *testing.T, ms metadata.Store, sharePrefix string) {
 					roffs = append(roffs, off)
 				}
 			}
-			t.Logf("after pass2: FileBlock-index rows=%d offsets=%v", len(rows), roffs)
+			t.Logf("after pass2: FileChunk-index rows=%d offsets=%v", len(rows), roffs)
 		}
 	}
 

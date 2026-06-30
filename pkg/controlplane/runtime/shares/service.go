@@ -764,7 +764,7 @@ func (s *Service) createBlockStoreForShare(
 	share *Share,
 	config *ShareConfig,
 	blockStoreProvider BlockStoreConfigProvider,
-	fileBlockStore block.EngineFileBlockStore,
+	fileChunkStore block.EngineFileChunkStore,
 	localStoreDefaults *LocalStoreDefaults,
 	syncerDefaults *SyncerDefaults,
 ) error {
@@ -784,7 +784,7 @@ func (s *Service) createBlockStoreForShare(
 	remoteConfigured := config.RemoteBlockStoreID != ""
 	effectiveDefaults := mergeLocalStoreDefaults(localStoreDefaults, config, remoteConfigured)
 
-	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileBlockStore)
+	localStore, err := CreateLocalStoreFromConfig(ctx, localCfg.Type, localCfg, config.Name, effectiveDefaults, fileChunkStore)
 	if err != nil {
 		return fmt.Errorf("failed to create local store: %w", err)
 	}
@@ -834,14 +834,14 @@ func (s *Service) createBlockStoreForShare(
 		engineRemote = &nonClosingRemote{remoteStore}
 	}
 
-	syncer := engine.NewSyncer(localStore, engineRemote, fileBlockStore, syncerCfg)
+	syncer := engine.NewSyncer(localStore, engineRemote, fileChunkStore, syncerCfg)
 
 	// Inject the read-only syncer accessor into the local store so its
 	// eviction path can engage remote-cache backpressure (stall a writer
 	// while the syncer drains, instead of failing with ErrDiskFull) when a
 	// remote is configured. Local-only shares (engineRemote == nil) keep the
 	// nil source — eviction stays on its evictMaxWait fallback. FSStore takes
-	// a narrow read-only interface, never the FileBlockStore (LSL-08).
+	// a narrow read-only interface, never the FileChunkStore (LSL-08).
 	if engineRemote != nil {
 		if fsStore, ok := localStore.(*fs.FSStore); ok {
 			fsStore.SetBackpressureSource(syncer)
@@ -858,12 +858,12 @@ func (s *Service) createBlockStoreForShare(
 
 	// Wire the metadata coordinator so the engine can invoke RefCount
 	// mutations + FileAttr.Blocks persistence without importing
-	// pkg/metadata on its hot paths. The fileBlockStore on the engine
-	// seam is the per-share metadata store cast to EngineFileBlockStore;
+	// pkg/metadata on its hot paths. The fileChunkStore on the engine
+	// seam is the per-share metadata store cast to EngineFileChunkStore;
 	// the coordinator wraps the same store as a metadata.Store
 	// for the typed operations.
 	var coordinator engine.MetadataCoordinator
-	if metadataStore, ok := fileBlockStore.(metadata.Store); ok {
+	if metadataStore, ok := fileChunkStore.(metadata.Store); ok {
 		coordinator = newMetadataCoordinator(metadataStore)
 	}
 
@@ -871,7 +871,7 @@ func (s *Service) createBlockStoreForShare(
 		Local:          localStore,
 		Remote:         engineRemote,
 		Syncer:         syncer,
-		FileBlockStore: fileBlockStore,
+		FileChunkStore: fileChunkStore,
 		Coordinator:    coordinator,
 	}
 	// Thread the SyncedHashStore from the same per-share metadata
@@ -879,7 +879,7 @@ func (s *Service) createBlockStoreForShare(
 	// can MarkSynced after each successful remote.Put. The interface
 	// check is the standard runtime-type narrowing used elsewhere in
 	// this factory (RollupStore, MetadataStore).
-	if shs, ok := fileBlockStore.(metadata.SyncedHashStore); ok {
+	if shs, ok := fileChunkStore.(metadata.SyncedHashStore); ok {
 		engineCfg.SyncedHashStore = shs
 	}
 	if effectiveDefaults != nil {
@@ -2340,7 +2340,7 @@ func CreateLocalStoreFromConfig(
 	},
 	shareName string,
 	defaults *LocalStoreDefaults,
-	fileBlockStore block.EngineFileBlockStore,
+	fileChunkStore block.EngineFileChunkStore,
 ) (local.LocalStore, error) {
 	config, err := cfg.GetConfig()
 	if err != nil {
@@ -2458,9 +2458,9 @@ func CreateLocalStoreFromConfig(
 		// backend and start the rollup worker pool. The type assertion
 		// couples the block-store factory to a metadata-layer interface
 		// via runtime type check — accepted because memory / badger /
-		// postgres all implement both FileBlockStore and RollupStore on
+		// postgres all implement both FileChunkStore and RollupStore on
 		// the same Store type.
-		rs, ok := fileBlockStore.(metadata.RollupStore)
+		rs, ok := fileChunkStore.(metadata.RollupStore)
 		if !ok {
 			return nil, fmt.Errorf("fs local store: metadata backend must implement metadata.RollupStore for the mandatory append-log path")
 		}
@@ -2470,10 +2470,10 @@ func CreateLocalStoreFromConfig(
 		// collected CAS hash set down to the still-unmirrored subset.
 		// Required when a remote store is configured; harmless when no
 		// remote is wired (mirror loop early-exits in that case).
-		if shs, ok := fileBlockStore.(metadata.SyncedHashStore); ok {
+		if shs, ok := fileChunkStore.(metadata.SyncedHashStore); ok {
 			fsOpts.SyncedHashStore = shs
 		}
-		store, err := fs.NewWithOptions(shareDir, maxDisk, fileBlockStore, fsOpts)
+		store, err := fs.NewWithOptions(shareDir, maxDisk, fileChunkStore, fsOpts)
 		if err != nil {
 			return nil, err
 		}

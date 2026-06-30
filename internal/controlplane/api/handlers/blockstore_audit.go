@@ -47,7 +47,7 @@ type BlockStoreAuditResponse struct {
 //
 // Behavior: invokes Runtime.AuditRefcounts with the URL share name.
 // The audit walks the share's metadata store and verifies that every
-// manifest reference (FileAttr.Blocks) has a backing FileBlock row; a
+// manifest reference (FileAttr.Blocks) has a backing FileChunk row; a
 // non-zero delta (DanglingRefs) indicates a file references a chunk the
 // store has no record of (silent-data-loss class). Last-run summary is
 // persisted under <localStoreRoot>/audit-state/last-inv02.json.

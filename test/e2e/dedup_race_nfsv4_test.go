@@ -5,8 +5,8 @@
 //
 // Background (#1245): bulk concurrent byte-identical writes to a REMOTE-backed
 // (S3) share could hit a dedup short-circuit that targeted a donor whose
-// FileBlock rows were still Pending — yielding
-// "increment refcount … no FileBlock with hash X" → EIO/wedge on COMMIT/close,
+// FileChunk rows were still Pending — yielding
+// "increment refcount … no FileChunk with hash X" → EIO/wedge on COMMIT/close,
 // plus a rollup "Transaction Conflict" non-converging loop. Fixed on develop by
 // #1254 (Pending-donor → MISS, not EIO) and #1256 (wrap ErrConflict + a
 // converging persister).
@@ -27,7 +27,7 @@
 //  3. Prime dedup with a single donor file written first, then write N
 //     additional byte-identical files CONCURRENTLY (goroutines + WaitGroup).
 //     Concurrent identical content maximises contention on the hot dedup keys
-//     (the obj:<hash> object_id index + the content-hash FileBlock rows) and
+//     (the obj:<hash> object_id index + the content-hash FileChunk rows) and
 //     reproduces the Pending-donor window.
 //  4. Assert the FIX holds: every concurrent write/close (which flushes +
 //     COMMITs over NFSv4.1) succeeds with NO EIO, and every file reads back
@@ -163,7 +163,7 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	// ---- Prime dedup with a single donor file written first ----
 	// The donor lands the canonical chunk hashes; the concurrent racers below
 	// then collide on those same hashes — including the window where the
-	// donor's FileBlock rows may still be Pending (the #1245 trigger).
+	// donor's FileChunk rows may still be Pending (the #1245 trigger).
 	donorPath := mount.FilePath("donor.img")
 	t.Cleanup(func() { _ = os.Remove(donorPath) })
 	framework.WriteFile(t, donorPath, payload)

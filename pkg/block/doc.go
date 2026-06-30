@@ -1,6 +1,6 @@
 // Package blockstore defines the unified content-addressed block storage
 // contract DittoFS uses across every storage tier. It is the
-// single source of truth for FileBlock, BlockState, ContentHash, BlockSize
+// single source of truth for FileChunk, BlockState, ContentHash, BlockSize
 // the BlockStore + BlockStoreAppend interfaces, the minimal Meta struct
 // the error sentinels (ErrStopWalk, ErrLegacyLayoutDetected
 // ErrChunkNotFound, …), and the on-disk irreversible-state-transition
@@ -107,7 +107,7 @@
 // Hand-editing the sentinel is a footgun — it bypasses the boot guard
 // without curing the underlying layout mismatch, leaving a partially
 // migrated store that will surface I/O errors on the first legacy
-// FileBlock access. Treat the file as a one-way irreversibility
+// FileChunk access. Treat the file as a one-way irreversibility
 // marker. The recovery procedure for a failed migration lives in
 // docs/CONFIGURATION.md §Migration.
 //
@@ -148,7 +148,7 @@
 //   - ErrCASKeyMalformed — ParseCASKey rejected an input that
 //     did not match the cas/{hh}/{hh}/{hex} shape.
 //   - ErrBlockRefMissing — BlockRef.Hash referred to an absent
-//     FileBlock (mapped to NFS3ERR_IO / STATUS_DATA_ERROR by the
+//     FileChunk (mapped to NFS3ERR_IO / STATUS_DATA_ERROR by the
 //     adapter errmap).
 //
 // # Sub-packages
@@ -170,7 +170,7 @@
 //   - gc: Mark-sweep garbage collection, fail-closed against the
 //     union of live ContentHashes.
 //   - storetest: Legacy conformance test suites for higher-level
-//     FileBlockStore implementations.
+//     FileChunkStore implementations.
 //
 // # Transitional-marker convention
 //

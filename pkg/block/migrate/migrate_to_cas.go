@@ -92,22 +92,22 @@ type MigrationResult struct {
 
 // MetadataAdapter enumerates legacy files and atomically commits each
 // file's new CAS-shaped Blocks manifest. Implementation lives in the CLI
-// subcommand; UpdateFileBlocks MUST commit transactionally (mds.PutFile
+// subcommand; UpdateFileChunks MUST commit transactionally (mds.PutFile
 // — verified by pkg/metadata/storetest conformance).
 type MetadataAdapter interface {
 	// ListLegacyFiles returns files needing migration: BlockLayoutLegacy
 	// OR (Blocks empty && Size > 0 && Type == FileTypeRegular).
 	ListLegacyFiles(ctx context.Context) ([]LegacyFileInfo, error)
 
-	// UpdateFileBlocks atomically sets Blocks + BlockLayout=CASOnly via mds.PutFile.
-	UpdateFileBlocks(ctx context.Context, handle metadata.FileHandle, blocks []block.BlockRef) error
+	// UpdateFileChunks atomically sets Blocks + BlockLayout=CASOnly via mds.PutFile.
+	UpdateFileChunks(ctx context.Context, handle metadata.FileHandle, blocks []block.BlockRef) error
 }
 
 // LegacyFileInfo carries the minimum projection MigrateShareToCAS needs
 // to process one file.
 type LegacyFileInfo struct {
 	// Handle is the metadata-store-native identifier; passed back to
-	// UpdateFileBlocks unchanged.
+	// UpdateFileChunks unchanged.
 	Handle metadata.FileHandle
 	// Path is the share-relative path (forensic display).
 	Path string
@@ -251,7 +251,7 @@ func MigrateShareToCAS(
 		}
 
 		// Atomic per-file cutover via metadata adapter.
-		if err := meta.UpdateFileBlocks(ctx, f.Handle, manifest); err != nil {
+		if err := meta.UpdateFileChunks(ctx, f.Handle, manifest); err != nil {
 			state.LastFilePath = f.Path
 			state.LastOffset = 0
 			state.Timestamp = time.Now().UTC()

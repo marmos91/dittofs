@@ -89,7 +89,7 @@ func TestContentErrMap_CASKeyMalformed_Direct(t *testing.T) {
 
 // TestContentErrMap_BlockRefMissing verifies that a wrapped
 // block.ErrBlockRefMissing maps to I/O-class codes in
-// every protocol arm. A BlockRef.Hash referring to a FileBlock that
+// every protocol arm. A BlockRef.Hash referring to a FileChunk that
 // has been GC'd or never existed is a data-integrity failure surfaced
 // to the client identically to ErrCASContentMismatch.
 func TestContentErrMap_BlockRefMissing(t *testing.T) {

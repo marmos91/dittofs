@@ -39,11 +39,11 @@ func computeFileSize(refs []block.BlockRef) uint64 {
 //
 // The primary entry is LocalStore.ReadPayloadAt — a payload-keyed read
 // that consults BOTH the in-flight append log (pre-rollup bytes) AND
-// the rolled-up CAS chunks via the FileBlock manifest. This closes the
+// the rolled-up CAS chunks via the FileChunk manifest. This closes the
 // pre-rollup read-after-write window where freshly-appended bytes would
-// otherwise return zeros until the async rollup commits FileBlock rows.
+// otherwise return zeros until the async rollup commits FileChunk rows.
 //
-// On a local miss (ErrFileBlockNotFound), fall back to the CAS-hash
+// On a local miss (ErrFileChunkNotFound), fall back to the CAS-hash
 // walk (readLocalByHash, used for chunks that the manifest knows about
 // but the LocalStore did not surface — e.g., post-eviction reads where
 // only the metadata row survived) and finally to remote-fetch via the
@@ -59,13 +59,13 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 	if err == nil {
 		return n, nil
 	}
-	if !errors.Is(err, block.ErrFileBlockNotFound) {
+	if !errors.Is(err, block.ErrFileChunkNotFound) {
 		return 0, fmt.Errorf("local read failed: %w", err)
 	}
 
 	// Local miss — try the CAS-hash walk (handles edge cases where the
-	// FileBlockStore manifest is reachable via the engine's
-	// fileBlockStore field but not the LocalStore-internal one).
+	// FileChunkStore manifest is reachable via the engine's
+	// fileChunkStore field but not the LocalStore-internal one).
 	found, err := bs.readLocalByHash(ctx, payloadID, data, offset)
 	if err != nil {
 		return 0, fmt.Errorf("local read failed: %w", err)
@@ -108,7 +108,7 @@ func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, d
 }
 
 // readLocalByHash serves [offset, offset+len(dest)) by walking the
-// payload's CAS chunk manifest (via FileBlockStore.ListFileBlocks)
+// payload's CAS chunk manifest (via FileChunkStore.ListFileChunks)
 // finding each chunk whose absolute byte range intersects the
 // requested window, and copying the matching slice of the local CAS
 // chunk into dest. Returns (true, nil) when every requested byte was
@@ -116,13 +116,13 @@ func (bs *Store) ensureAndReadFromLocal(ctx context.Context, payloadID string, d
 // could not be served from local CAS — the caller treats the false
 // outcome as "must fall back to remote-fetch".
 //
-// On any unexpected error (FileBlock store failure, local chunk store
+// On any unexpected error (FileChunk store failure, local chunk store
 // I/O error other than ErrChunkNotFound) the function returns
 // (false, err) so the engine can surface it to the protocol layer.
 //
 // Chunk geometry: under the unified CAS surface chunk boundaries are
 // FastCDC-derived (variable size, absolute Offset stored on the
-// FileBlock row's ID-derived blockIdx slot). The walk is O(N) over
+// FileChunk row's ID-derived blockIdx slot). The walk is O(N) over
 // the per-payload row list — acceptable for the test fixtures (small
 // N) and for the steady-state production stream where N is bounded
 // by the payload's total size divided by the average chunk size
@@ -131,16 +131,16 @@ func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []b
 	if len(dest) == 0 {
 		return true, nil
 	}
-	// The engine consults the same EngineFileBlockStore the syncer
-	// uses; ListFileBlocks returns the per-payload row list in
+	// The engine consults the same EngineFileChunkStore the syncer
+	// uses; ListFileChunks returns the per-payload row list in
 	// blockIdx order, which is offset order under the persister's
 	// blockIdx := chunkOffset / BlockSize derivation. Rows missing
 	// from the list are sparse: the caller falls back to the
 	// remote-fetch + zero-fill path.
-	if bs.fileBlockStore == nil {
+	if bs.fileChunkStore == nil {
 		return false, nil
 	}
-	rows, err := bs.fileBlockStore.ListFileBlocks(ctx, payloadID)
+	rows, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return false, err
 	}
@@ -167,7 +167,7 @@ func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []b
 			}
 			return false, err
 		}
-		// Clamp the visible data to FileBlock.DataSize so a padded
+		// Clamp the visible data to FileChunk.DataSize so a padded
 		// on-disk chunk surface doesn't leak garbage past the
 		// rollup-emitted byte count.
 		dataLen := uint64(len(data))
@@ -192,13 +192,13 @@ func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []b
 	return true, nil
 }
 
-// rowWithOffset bundles a FileBlock row with the absolute payload
+// rowWithOffset bundles a FileChunk row with the absolute payload
 // offset of its first byte. The persister encodes the chunk's
 // absolute offset directly as the numeric component of the row ID
 // ("<payloadID>/<chunkOffset>"), so absOffset is the parsed
 // component verbatim.
 type rowWithOffset struct {
-	fb        *block.FileBlock
+	fb        *block.FileChunk
 	absOffset uint64
 }
 
@@ -207,7 +207,7 @@ type rowWithOffset struct {
 // in rows covers it. The walk is O(N) over the per-payload row
 // list — acceptable for the FastCDC steady-state (chunks average ~4 MiB
 // so even a 4 GiB file produces ~1000 rows).
-func findRowCoveringOffset(rows []*block.FileBlock, target uint64) *rowWithOffset {
+func findRowCoveringOffset(rows []*block.FileChunk, target uint64) *rowWithOffset {
 	for _, fb := range rows {
 		if fb == nil {
 			continue

@@ -70,7 +70,7 @@ type Deps interface {
 	// the file's blocks, so it threads them through directly; blockStore.Delete
 	// decrements each block's CAS RefCount so the GC can reclaim now-unreferenced
 	// chunks. (Callers without the manifest may pass nil — Delete then resolves
-	// it from the payload's FileBlock rows; see #1433.) No-op when payloadID is
+	// it from the payload's FileChunk rows; see #1433.) No-op when payloadID is
 	// empty.
 	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.BlockRef) error
 }

@@ -24,7 +24,7 @@ import (
 func TestUnsyncedBytes_TracksDrain(t *testing.T) {
 	env := newHealthTestEnv(t)
 	ctx := context.Background()
-	env.local.Start(ctx) // FileBlock metadata persistence; rollup pool already started by newHealthTestEnv.
+	env.local.Start(ctx) // FileChunk metadata persistence; rollup pool already started by newHealthTestEnv.
 
 	if got := env.syncer.UnsyncedBytes(); got != 0 {
 		t.Fatalf("UnsyncedBytes at start = %d, want 0", got)
@@ -54,7 +54,7 @@ func TestUnsyncedBytes_TracksDrain(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	env.local.SyncFileBlocks(ctx)
+	env.local.SyncFileChunks(ctx)
 
 	// The counter must reflect the unsynced cache bytes now present locally.
 	// With the periodic uploader stopped, nothing drains it behind our back.

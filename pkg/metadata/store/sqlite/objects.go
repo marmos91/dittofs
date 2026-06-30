@@ -14,14 +14,14 @@ import (
 )
 
 // ============================================================================
-// FileBlockStore Implementation for SQLite Store
+// FileChunkStore Implementation for SQLite Store
 // ============================================================================
 //
-// This file implements the FileBlockStore interface for the SQLite metadata store.
-// It provides content-addressed file block tracking for deduplication and caching.
+// This file implements the FileChunkStore interface for the SQLite metadata store.
+// It provides content-addressed file chunk tracking for deduplication and caching.
 //
-// The FileBlockStore interface is narrowed to 6 methods. The backend
-// retains the legacy GetFileBlock + ListFileBlocks helpers as
+// The FileChunkStore interface is narrowed to 6 methods. The backend
+// retains the legacy GetFileChunk + ListFileChunks helpers as
 // concrete methods on the struct (not on the public interface) for
 // engine-internal callers.
 //
@@ -32,32 +32,32 @@ import (
 //
 // ============================================================================
 
-// Ensure SQLiteMetadataStore implements FileBlockStore
-var _ block.FileBlockStore = (*SQLiteMetadataStore)(nil)
+// Ensure SQLiteMetadataStore implements FileChunkStore
+var _ block.FileChunkStore = (*SQLiteMetadataStore)(nil)
 
 // ============================================================================
-// FileBlock Operations
+// FileChunk Operations
 // ============================================================================
 
-// GetFileBlock retrieves a file block by its ID. Not on the narrowed
-// FileBlockStore interface; kept as a backend
+// GetFileChunk retrieves a file chunk by its ID. Not on the narrowed
+// FileChunkStore interface; kept as a backend
 // method for engine-internal callers.
-func (s *SQLiteMetadataStore) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
+func (s *SQLiteMetadataStore) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE id = ?1`
 	row := s.queryRow(ctx, query, id)
 
-	block, err := scanFileBlock(row)
+	block, err := scanFileChunk(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, metadata.ErrFileBlockNotFound
+		return nil, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get file block: %w", err)
+		return nil, fmt.Errorf("get file chunk: %w", err)
 	}
 	return block, nil
 }
 
-// Put stores or updates a file block.
+// Put stores or updates a file chunk.
 //
 // The hash column is persisted whenever the block carries a non-zero
 // content hash, regardless of block state. The content hash is derived
@@ -69,7 +69,7 @@ func (s *SQLiteMetadataStore) GetFileBlock(ctx context.Context, id string) (*met
 // cache eviction, or a snapshot restore's ResetLocalState). The memory
 // and badger backends always store the hash inline on the row, so this
 // matches their behavior.
-func (s *SQLiteMetadataStore) Put(ctx context.Context, block *metadata.FileBlock) error {
+func (s *SQLiteMetadataStore) Put(ctx context.Context, block *metadata.FileChunk) error {
 	var hashStr *string
 	if !block.Hash.IsZero() {
 		h := block.Hash.String()
@@ -96,7 +96,7 @@ func (s *SQLiteMetadataStore) Put(ctx context.Context, block *metadata.FileBlock
 	// IncrementRefCount / DecrementRefCount (which run as atomic SQL `+1` /
 	// `-1` UPDATEs) cannot be silently overwritten by a stale
 	// Put-with-in-memory-RefCount. RefCount on the INSERT path is still set
-	// verbatim from the caller's *FileBlock (matches the contract for new
+	// verbatim from the caller's *FileChunk (matches the contract for new
 	// rows). For existing rows, RefCount mutates exclusively through
 	// Increment/Decrement. hash uses COALESCE so a zero-hash Put never NULLs
 	// a previously-persisted good hash.
@@ -115,20 +115,20 @@ func (s *SQLiteMetadataStore) Put(ctx context.Context, block *metadata.FileBlock
 		block.ID, hashStr, block.DataSize, cachePath, blockStoreKey,
 		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
 	if err != nil {
-		return fmt.Errorf("put file block: %w", err)
+		return fmt.Errorf("put file chunk: %w", err)
 	}
 	return nil
 }
 
-// Delete removes a file block by its ID. Renamed from DeleteFileBlock in
+// Delete removes a file chunk by its ID. Renamed from DeleteFileChunk in
 func (s *SQLiteMetadataStore) Delete(ctx context.Context, id string) error {
 	result, err := s.exec(ctx, `DELETE FROM file_blocks WHERE id = ?1`, id)
 	if err != nil {
-		return fmt.Errorf("delete file block: %w", err)
+		return fmt.Errorf("delete file chunk: %w", err)
 	}
 	rows := result.RowsAffected()
 	if rows == 0 {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
@@ -142,7 +142,7 @@ func (s *SQLiteMetadataStore) IncrementRefCount(ctx context.Context, id string) 
 	}
 	rows := result.RowsAffected()
 	if rows == 0 {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
@@ -153,7 +153,7 @@ func (s *SQLiteMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 	var newCount uint32
 	err := s.queryRow(ctx, query, id).Scan(&newCount)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, metadata.ErrFileBlockNotFound
+		return 0, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
 		return 0, fmt.Errorf("decrement ref count: %w", err)
@@ -188,7 +188,7 @@ func (s *SQLiteMetadataStore) DecrementRefCountAndReap(ctx context.Context, id s
 
 // decrementAndReapTx runs the -1 UPDATE then a conditional DELETE on the given
 // pgx.Tx. Shared by the pool-backed store method and the sqliteTransaction
-// method so both surfaces behave identically. Returns ErrFileBlockNotFound
+// method so both surfaces behave identically. Returns ErrFileChunkNotFound
 // mapped to (0, nil) — i.e. a missing row is tolerated.
 func decrementAndReapTx(ctx context.Context, tx execer, id string) (uint32, error) {
 	var newCount uint32
@@ -210,8 +210,8 @@ func decrementAndReapTx(ctx context.Context, tx execer, id string) (uint32, erro
 	return newCount, nil
 }
 
-// AddRef atomically bumps RefCount on the FileBlock row(s) indexed by
-// the given content hash. Implements the FileBlockStore.AddRef contract
+// AddRef atomically bumps RefCount on the FileChunk row(s) indexed by
+// the given content hash. Implements the FileChunkStore.AddRef contract
 // used by the in-memory hash dedup LRU hit path to
 // reference an already-stored block without creating a new row.
 //
@@ -261,39 +261,39 @@ func (s *SQLiteMetadataStore) AddRef(ctx context.Context, hash block.ContentHash
 
 // GetByHash looks up a finalized block by its content hash.
 // Returns nil without error if not found. Renamed from
-// FindFileBlockByHash. Dedup matches only Remote (state=2) blocks —
+// FindFileChunkByHash. Dedup matches only Remote (state=2) blocks —
 // Pending or Syncing rows have not been confirmed on the remote and
 // are unsafe dedup targets.
-func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`
 	row := s.queryRow(ctx, query, hash.String())
 
-	block, err := scanFileBlock(row)
+	block, err := scanFileChunk(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("find file block by hash: %w", err)
+		return nil, fmt.Errorf("find file chunk by hash: %w", err)
 	}
 	return block, nil
 }
 
-// ListFileBlocks returns all blocks belonging to a file, ordered by block index.
+// ListFileChunks returns all blocks belonging to a file, ordered by block index.
 // Uses LIKE query on block ID prefix, then sorts in Go for correct numeric ordering.
-// Not on the narrowed FileBlockStore interface;
+// Not on the narrowed FileChunkStore interface;
 // kept as a backend method for engine-internal callers.
-func (s *SQLiteMetadataStore) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+func (s *SQLiteMetadataStore) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks
 		WHERE id LIKE ?1
 		ORDER BY id ASC`
 	rows, err := s.query(ctx, query, payloadID+"/%")
 	if err != nil {
-		return nil, fmt.Errorf("list file blocks: %w", err)
+		return nil, fmt.Errorf("list file chunks: %w", err)
 	}
 	defer rows.Close()
-	result, err := scanFileBlockRows(rows)
+	result, err := scanFileChunkRows(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +303,7 @@ func (s *SQLiteMetadataStore) ListFileBlocks(ctx context.Context, payloadID stri
 		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
 	})
 	if result == nil {
-		return []*metadata.FileBlock{}, nil
+		return []*metadata.FileChunk{}, nil
 	}
 	return result, nil
 }
@@ -331,7 +331,7 @@ JOIN inodes i ON fbr.file_id = i.id
 WHERE i.nlink > 0`
 
 // EnumeratePayloads streams every distinct payloadID that has at least one
-// FileBlock row through fn. FileBlock row IDs have the form
+// FileChunk row through fn. FileChunk row IDs have the form
 // {payloadID}/{chunkOffset}; the payloadID is everything BEFORE THE LAST '/'
 // (payloadIDs are BuildPayloadID(shareName, filePath) and themselves contain
 // slashes, so a substr/split on the FIRST slash would truncate every
@@ -340,12 +340,12 @@ WHERE i.nlink > 0`
 //
 // The rows cursor is fully drained and CLOSED before any fn callback runs.
 // The SQLite pool is MaxOpenConns(1), and warm/stats fn callbacks issue
-// further reads (ListFileBlocks) that need that single connection — calling fn
+// further reads (ListFileChunks) that need that single connection — calling fn
 // while the cursor is still open would deadlock. This collect-then-call shape
 // also matches the badger/memory backends.
 func (s *SQLiteMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	const query = `SELECT DISTINCT id FROM file_blocks`
-	ids, err := s.collectFileBlockIDs(ctx, query)
+	ids, err := s.collectFileChunkIDs(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -378,7 +378,7 @@ func (s *SQLiteMetadataStore) EnumeratePayloads(ctx context.Context, fn func(pay
 // dead, so the reconcile must treat it as stranded, not live.
 func (s *SQLiteMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn func(payloadID string) error) error {
 	const query = `SELECT DISTINCT content_id FROM inodes WHERE content_id IS NOT NULL AND content_id != '' AND nlink > 0`
-	ids, err := s.collectFileBlockIDs(ctx, query)
+	ids, err := s.collectFileChunkIDs(ctx, query)
 	if err != nil {
 		return err
 	}
@@ -393,10 +393,10 @@ func (s *SQLiteMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn fu
 	return nil
 }
 
-// collectFileBlockIDs runs query (which must SELECT a single TEXT id column),
+// collectFileChunkIDs runs query (which must SELECT a single TEXT id column),
 // scans every id into a slice, and closes the rows cursor before returning so
 // the caller may safely issue further queries on the single-connection pool.
-func (s *SQLiteMetadataStore) collectFileBlockIDs(ctx context.Context, query string) ([]string, error) {
+func (s *SQLiteMetadataStore) collectFileChunkIDs(ctx context.Context, query string) ([]string, error) {
 	rows, err := s.query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("enumerate payloads: query: %w", err)
@@ -416,21 +416,21 @@ func (s *SQLiteMetadataStore) collectFileBlockIDs(ctx context.Context, query str
 	return ids, nil
 }
 
-// EnumerateFileBlocks streams every live-set ContentHash through fn, unioning
+// EnumerateFileChunks streams every live-set ContentHash through fn, unioning
 // the CAS index with the per-file manifest (see enumerateHashesQuery).
-func (s *SQLiteMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {
+func (s *SQLiteMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error {
 	rows, err := s.query(ctx, enumerateHashesQuery)
 	if err != nil {
-		return fmt.Errorf("enumerate file blocks: query: %w", err)
+		return fmt.Errorf("enumerate file chunks: query: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate file blocks: %w", err)
+			return fmt.Errorf("enumerate file chunks: %w", err)
 		}
 		var hashStr sql.NullString
 		if err := rows.Scan(&hashStr); err != nil {
-			return fmt.Errorf("enumerate file blocks: scan: %w", err)
+			return fmt.Errorf("enumerate file chunks: scan: %w", err)
 		}
 		var h block.ContentHash
 		if hashStr.Valid {
@@ -441,8 +441,8 @@ func (s *SQLiteMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(b
 				// invite the GC mark phase to treat the row as a legacy
 				// pre-CAS entry and the sweep would reap a still-live CAS
 				// object once the grace TTL lapses. Surface the parse error
-				// so EnumerateFileBlocks aborts and the sweep is skipped.
-				return fmt.Errorf("enumerate file blocks: parse hash %q: %w",
+				// so EnumerateFileChunks aborts and the sweep is skipped.
+				return fmt.Errorf("enumerate file chunks: parse hash %q: %w",
 					hashStr.String, perr)
 			}
 			h = parsed
@@ -452,7 +452,7 @@ func (s *SQLiteMetadataStore) EnumerateFileBlocks(ctx context.Context, fn func(b
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("enumerate file blocks: rows: %w", err)
+		return fmt.Errorf("enumerate file chunks: rows: %w", err)
 	}
 	return nil
 }
@@ -472,10 +472,10 @@ func pgParseBlockIdx(id string) int {
 // Scan Helpers
 // ============================================================================
 
-// scanFileBlock scans a single row into a FileBlock.
-func scanFileBlock(row scanRow) (*metadata.FileBlock, error) {
+// scanFileChunk scans a single row into a FileChunk.
+func scanFileChunk(row scanRow) (*metadata.FileChunk, error) {
 	var (
-		block             metadata.FileBlock
+		block             metadata.FileChunk
 		hashStr           sql.NullString
 		cachePath         sql.NullString
 		blockStoreKey     sql.NullString
@@ -487,10 +487,10 @@ func scanFileBlock(row scanRow) (*metadata.FileBlock, error) {
 	}
 	if hashStr.Valid {
 		// do not silently coerce malformed CAS hashes to the
-		// zero hash — see EnumerateFileBlocks for the data-loss scenario.
+		// zero hash — see EnumerateFileChunks for the data-loss scenario.
 		h, perr := metadata.ParseContentHash(hashStr.String)
 		if perr != nil {
-			return nil, fmt.Errorf("scan file block %s: parse hash %q: %w",
+			return nil, fmt.Errorf("scan file chunk %s: parse hash %q: %w",
 				block.ID, hashStr.String, perr)
 		}
 		block.Hash = h
@@ -507,13 +507,13 @@ func scanFileBlock(row scanRow) (*metadata.FileBlock, error) {
 	return &block, nil
 }
 
-// scanFileBlockRows scans multiple rows into FileBlock slices.
-func scanFileBlockRows(rows scanRows) ([]*metadata.FileBlock, error) {
-	var result []*metadata.FileBlock
+// scanFileChunkRows scans multiple rows into FileChunk slices.
+func scanFileChunkRows(rows scanRows) ([]*metadata.FileChunk, error) {
+	var result []*metadata.FileChunk
 	for rows.Next() {
-		block, err := scanFileBlock(rows)
+		block, err := scanFileChunk(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan file block: %w", err)
+			return nil, fmt.Errorf("scan file chunk: %w", err)
 		}
 		result = append(result, block)
 	}
@@ -524,10 +524,10 @@ func scanFileBlockRows(rows scanRows) ([]*metadata.FileBlock, error) {
 // Transaction Support
 // ============================================================================
 
-// Ensure sqliteTransaction implements FileBlockStore
-var _ block.FileBlockStore = (*sqliteTransaction)(nil)
+// Ensure sqliteTransaction implements FileChunkStore
+var _ block.FileChunkStore = (*sqliteTransaction)(nil)
 
-// The FileBlockStore methods on
+// The FileChunkStore methods on
 // sqliteTransaction MUST execute against the txn's own pgx.Tx, not the
 // public store's connection-pool helpers. Previously every method just
 // called `tx.store.X(...)` which routed through the pool — defeating
@@ -536,24 +536,24 @@ var _ block.FileBlockStore = (*sqliteTransaction)(nil)
 // leak). All proxies below are now tx-bound; non-mutating
 // helpers keep the pool path because no caller mutates state through them.
 
-func (tx *sqliteTransaction) GetFileBlock(ctx context.Context, id string) (*metadata.FileBlock, error) {
+func (tx *sqliteTransaction) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE id = ?1`
 	row := tx.tx.QueryRow(ctx, query, id)
-	block, err := scanFileBlock(row)
+	block, err := scanFileChunk(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, metadata.ErrFileBlockNotFound
+		return nil, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get file block: %w", err)
+		return nil, fmt.Errorf("get file chunk: %w", err)
 	}
 	return block, nil
 }
 
-func (tx *sqliteTransaction) Put(ctx context.Context, block *metadata.FileBlock) error {
+func (tx *sqliteTransaction) Put(ctx context.Context, block *metadata.FileChunk) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -593,7 +593,7 @@ func (tx *sqliteTransaction) Put(ctx context.Context, block *metadata.FileBlock)
 		block.ID, hashStr, block.DataSize, cachePath, blockStoreKey,
 		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
 	if err != nil {
-		return fmt.Errorf("put file block: %w", err)
+		return fmt.Errorf("put file chunk: %w", err)
 	}
 	return nil
 }
@@ -604,10 +604,10 @@ func (tx *sqliteTransaction) Delete(ctx context.Context, id string) error {
 	}
 	result, err := tx.tx.Exec(ctx, `DELETE FROM file_blocks WHERE id = ?1`, id)
 	if err != nil {
-		return fmt.Errorf("delete file block: %w", err)
+		return fmt.Errorf("delete file chunk: %w", err)
 	}
 	if result.RowsAffected() == 0 {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
@@ -626,7 +626,7 @@ func (tx *sqliteTransaction) IncrementRefCount(ctx context.Context, id string) e
 		return fmt.Errorf("increment ref count: %w", err)
 	}
 	if result.RowsAffected() == 0 {
-		return metadata.ErrFileBlockNotFound
+		return metadata.ErrFileChunkNotFound
 	}
 	return nil
 }
@@ -641,7 +641,7 @@ func (tx *sqliteTransaction) DecrementRefCount(ctx context.Context, id string) (
 	var newCount uint32
 	err := tx.tx.QueryRow(ctx, query, id).Scan(&newCount)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, metadata.ErrFileBlockNotFound
+		return 0, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
 		return 0, fmt.Errorf("decrement ref count: %w", err)
@@ -683,41 +683,41 @@ func (tx *sqliteTransaction) AddRef(ctx context.Context, hash block.ContentHash,
 	return nil
 }
 
-func (tx *sqliteTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileBlock, error) {
+func (tx *sqliteTransaction) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`
 	row := tx.tx.QueryRow(ctx, query, hash.String())
-	block, err := scanFileBlock(row)
+	block, err := scanFileChunk(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("find file block by hash: %w", err)
+		return nil, fmt.Errorf("find file chunk by hash: %w", err)
 	}
 	return block, nil
 }
 
-// ListFileBlocks / EnumerateFileBlocks run on the active
+// ListFileChunks / EnumerateFileChunks run on the active
 // transaction (tx.tx), NOT the pool. Delegating to the pool opens a separate
 // connection that cannot see this transaction's uncommitted writes, so a Put
 // followed by a List in the same WithTransaction would miss the pending row
 // (read-after-write violation; the SQL is otherwise identical to the
 // store-level methods).
 
-func (tx *sqliteTransaction) ListFileBlocks(ctx context.Context, payloadID string) ([]*metadata.FileBlock, error) {
+func (tx *sqliteTransaction) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
 	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks
 		WHERE id LIKE ?1
 		ORDER BY id ASC`
 	rows, err := tx.tx.Query(ctx, query, payloadID+"/%")
 	if err != nil {
-		return nil, fmt.Errorf("list file blocks: %w", err)
+		return nil, fmt.Errorf("list file chunks: %w", err)
 	}
 	defer rows.Close()
-	result, err := scanFileBlockRows(rows)
+	result, err := scanFileChunkRows(rows)
 	if err != nil {
 		return nil, err
 	}
@@ -727,30 +727,30 @@ func (tx *sqliteTransaction) ListFileBlocks(ctx context.Context, payloadID strin
 		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
 	})
 	if result == nil {
-		return []*metadata.FileBlock{}, nil
+		return []*metadata.FileChunk{}, nil
 	}
 	return result, nil
 }
 
-func (tx *sqliteTransaction) EnumerateFileBlocks(ctx context.Context, fn func(block.ContentHash) error) error {
+func (tx *sqliteTransaction) EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error {
 	rows, err := tx.tx.Query(ctx, enumerateHashesQuery)
 	if err != nil {
-		return fmt.Errorf("enumerate file blocks: query: %w", err)
+		return fmt.Errorf("enumerate file chunks: query: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate file blocks: %w", err)
+			return fmt.Errorf("enumerate file chunks: %w", err)
 		}
 		var hashStr sql.NullString
 		if err := rows.Scan(&hashStr); err != nil {
-			return fmt.Errorf("enumerate file blocks: scan: %w", err)
+			return fmt.Errorf("enumerate file chunks: scan: %w", err)
 		}
 		var h block.ContentHash
 		if hashStr.Valid {
 			parsed, perr := metadata.ParseContentHash(hashStr.String)
 			if perr != nil {
-				return fmt.Errorf("enumerate file blocks: parse hash %q: %w", hashStr.String, perr)
+				return fmt.Errorf("enumerate file chunks: parse hash %q: %w", hashStr.String, perr)
 			}
 			h = parsed
 		}
@@ -759,7 +759,7 @@ func (tx *sqliteTransaction) EnumerateFileBlocks(ctx context.Context, fn func(bl
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("enumerate file blocks: rows: %w", err)
+		return fmt.Errorf("enumerate file chunks: rows: %w", err)
 	}
 	return nil
 }

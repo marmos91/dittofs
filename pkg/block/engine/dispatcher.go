@@ -376,7 +376,7 @@ func (m *Syncer) uploadDispatcher(ctx context.Context) {
 }
 
 // maintenanceLoop runs the slow periodic housekeeping that the steady-state
-// dispatcher does not: it persists queued FileBlock metadata, periodically
+// dispatcher does not: it persists queued FileChunk metadata, periodically
 // re-seeds the pending set from disk (drift reconcile), and requeues pending
 // hashes whose upload attempt failed so they are retried at the upload interval.
 // It never uploads — that is the dispatcher's job.
@@ -402,9 +402,9 @@ func (m *Syncer) maintenanceLoop(ctx context.Context, interval time.Duration) {
 				return
 			}
 			tick++
-			// Persist queued FileBlock metadata so reads/restart-recovery see
+			// Persist queued FileChunk metadata so reads/restart-recovery see
 			// the authoritative manifest for recently rolled-up chunks.
-			m.local.SyncFileBlocks(ctx)
+			m.local.SyncFileChunks(ctx)
 			if tick%reconcileEvery == 0 {
 				if _, err := m.seedPendingFromDisk(ctx); err != nil {
 					logger.Warn("Maintenance loop: drift reconcile failed", "error", err)

@@ -13,22 +13,22 @@ import (
 )
 
 // ============================================================================
-// FileBlock Reference Counting Tests
+// FileChunk Reference Counting Tests
 // ============================================================================
 
-// TestWithTransaction_RollbackReinitsLazyFileBlockData regresses a snapshot
-// restore edge: when fileBlockData is nil at the start of a transaction and the
+// TestWithTransaction_RollbackReinitsLazyFileChunkData regresses a snapshot
+// restore edge: when fileChunkData is nil at the start of a transaction and the
 // closure lazily allocates it (via Put) then fails, the rollback must reset
-// fileBlockData to nil rather than leaving it non-nil with nil maps — otherwise
+// fileChunkData to nil rather than leaving it non-nil with nil maps — otherwise
 // a subsequent Put panics writing to a nil map.
-func TestWithTransaction_RollbackReinitsLazyFileBlockData(t *testing.T) {
+func TestWithTransaction_RollbackReinitsLazyFileChunkData(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
-	// fileBlockData starts nil. Put a block inside a tx that then fails.
+	// fileChunkData starts nil. Put a block inside a tx that then fails.
 	injected := errAlways
 	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		blk := &metadata.FileBlock{ID: uuid.New().String(), DataSize: 1024, RefCount: 1}
+		blk := &metadata.FileChunk{ID: uuid.New().String(), DataSize: 1024, RefCount: 1}
 		if putErr := tx.Put(ctx, blk); putErr != nil {
 			return putErr
 		}
@@ -38,8 +38,8 @@ func TestWithTransaction_RollbackReinitsLazyFileBlockData(t *testing.T) {
 
 	// A subsequent committed Put must succeed (no nil-map panic) and persist.
 	id := uuid.New().String()
-	require.NoError(t, store.Put(ctx, &metadata.FileBlock{ID: id, DataSize: 1024, RefCount: 1}))
-	got, err := store.GetFileBlock(ctx, id)
+	require.NoError(t, store.Put(ctx, &metadata.FileChunk{ID: id, DataSize: 1024, RefCount: 1}))
+	got, err := store.GetFileChunk(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(1), got.RefCount)
 }
@@ -50,13 +50,13 @@ type errTest string
 
 func (e errTest) Error() string { return string(e) }
 
-func TestFileBlockStore_RefCount_Basic(t *testing.T) {
+func TestFileChunkStore_RefCount_Basic(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
 	id := uuid.New().String()
 	hash := sha256.Sum256([]byte("test data"))
-	block := &metadata.FileBlock{
+	block := &metadata.FileChunk{
 		ID:       id,
 		Hash:     hash,
 		DataSize: 1024,
@@ -67,7 +67,7 @@ func TestFileBlockStore_RefCount_Basic(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify initial RefCount
-	retrieved, err := store.GetFileBlock(ctx, id)
+	retrieved, err := store.GetFileChunk(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(1), retrieved.RefCount)
 
@@ -76,7 +76,7 @@ func TestFileBlockStore_RefCount_Basic(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify increment persisted
-	retrieved, err = store.GetFileBlock(ctx, id)
+	retrieved, err = store.GetFileChunk(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), retrieved.RefCount)
 
@@ -96,13 +96,13 @@ func TestFileBlockStore_RefCount_Basic(t *testing.T) {
 	assert.Equal(t, uint32(0), newCount)
 }
 
-func TestFileBlockStore_RefCount_MultipleIncrements(t *testing.T) {
+func TestFileChunkStore_RefCount_MultipleIncrements(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
 	id := uuid.New().String()
 	hash := sha256.Sum256([]byte("shared data"))
-	block := &metadata.FileBlock{
+	block := &metadata.FileChunk{
 		ID:       id,
 		Hash:     hash,
 		DataSize: 4096,
@@ -118,7 +118,7 @@ func TestFileBlockStore_RefCount_MultipleIncrements(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	retrieved, err := store.GetFileBlock(ctx, id)
+	retrieved, err := store.GetFileChunk(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(6), retrieved.RefCount) // 1 initial + 5 increments
 
@@ -128,37 +128,37 @@ func TestFileBlockStore_RefCount_MultipleIncrements(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	retrieved, err = store.GetFileBlock(ctx, id)
+	retrieved, err = store.GetFileChunk(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(3), retrieved.RefCount)
 }
 
-func TestFileBlockStore_RefCount_NotFound(t *testing.T) {
+func TestFileChunkStore_RefCount_NotFound(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
 	// Try to increment non-existent block
 	err := store.IncrementRefCount(ctx, "does-not-exist")
 	assert.Error(t, err)
-	assert.ErrorIs(t, err, metadata.ErrFileBlockNotFound)
+	assert.ErrorIs(t, err, metadata.ErrFileChunkNotFound)
 
 	// Try to decrement non-existent block
 	_, err = store.DecrementRefCount(ctx, "does-not-exist")
 	assert.Error(t, err)
-	assert.ErrorIs(t, err, metadata.ErrFileBlockNotFound)
+	assert.ErrorIs(t, err, metadata.ErrFileChunkNotFound)
 }
 
 // ============================================================================
-// FindFileBlockByHash Tests (Deduplication)
+// FindFileChunkByHash Tests (Deduplication)
 // ============================================================================
 
-func TestFileBlockStore_FindByHash_Found(t *testing.T) {
+func TestFileChunkStore_FindByHash_Found(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
 	id := uuid.New().String()
 	hash := sha256.Sum256([]byte("unique content"))
-	block := &metadata.FileBlock{
+	block := &metadata.FileChunk{
 		ID:            id,
 		Hash:          hash,
 		DataSize:      2048,
@@ -182,7 +182,7 @@ func TestFileBlockStore_FindByHash_Found(t *testing.T) {
 	assert.True(t, found.IsRemote())
 }
 
-func TestFileBlockStore_FindByHash_NotFound(t *testing.T) {
+func TestFileChunkStore_FindByHash_NotFound(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
@@ -193,7 +193,7 @@ func TestFileBlockStore_FindByHash_NotFound(t *testing.T) {
 	assert.Nil(t, found)
 }
 
-func TestFileBlockStore_DedupFlow(t *testing.T) {
+func TestFileChunkStore_DedupFlow(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
@@ -204,7 +204,7 @@ func TestFileBlockStore_DedupFlow(t *testing.T) {
 	// First file writes this block (already finalized to Remote: dedup
 	// only matches confirmed remote blocks per the collapse).
 	id1 := uuid.New().String()
-	block := &metadata.FileBlock{
+	block := &metadata.FileChunk{
 		ID:            id1,
 		Hash:          hash,
 		DataSize:      uint32(len(content)),
@@ -226,7 +226,7 @@ func TestFileBlockStore_DedupFlow(t *testing.T) {
 	err = store.IncrementRefCount(ctx, existing.ID)
 	require.NoError(t, err)
 
-	retrieved, err := store.GetFileBlock(ctx, id1)
+	retrieved, err := store.GetFileChunk(ctx, id1)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(2), retrieved.RefCount)
 }
@@ -235,13 +235,13 @@ func TestFileBlockStore_DedupFlow(t *testing.T) {
 // Delete Tests
 // ============================================================================
 
-func TestFileBlockStore_Delete(t *testing.T) {
+func TestFileChunkStore_Delete(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
 	id := uuid.New().String()
 	hash := sha256.Sum256([]byte("data"))
-	block := &metadata.FileBlock{
+	block := &metadata.FileChunk{
 		ID:       id,
 		Hash:     hash,
 		DataSize: 1024,
@@ -256,8 +256,8 @@ func TestFileBlockStore_Delete(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify deleted
-	_, err = store.GetFileBlock(ctx, id)
-	assert.ErrorIs(t, err, metadata.ErrFileBlockNotFound)
+	_, err = store.GetFileChunk(ctx, id)
+	assert.ErrorIs(t, err, metadata.ErrFileChunkNotFound)
 
 	// Hash index should also be cleared
 	found, err := store.GetByHash(ctx, hash)
@@ -269,13 +269,13 @@ func TestFileBlockStore_Delete(t *testing.T) {
 // Concurrent Access Tests
 // ============================================================================
 
-func TestFileBlockStore_ConcurrentRefCountUpdates(t *testing.T) {
+func TestFileChunkStore_ConcurrentRefCountUpdates(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
 	id := uuid.New().String()
 	hash := sha256.Sum256([]byte("concurrent"))
-	block := &metadata.FileBlock{
+	block := &metadata.FileChunk{
 		ID:       id,
 		Hash:     hash,
 		DataSize: 1024,
@@ -303,7 +303,7 @@ func TestFileBlockStore_ConcurrentRefCountUpdates(t *testing.T) {
 	}
 
 	// Verify final count
-	retrieved, err := store.GetFileBlock(ctx, id)
+	retrieved, err := store.GetFileChunk(ctx, id)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(numGoroutines), retrieved.RefCount)
 }

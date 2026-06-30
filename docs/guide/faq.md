@@ -194,7 +194,7 @@ DittoFS computes ObjectID **lazily — at file quiesce**, when every
 chunk has finished uploading to remote storage. Mid-write the
 ObjectID is the all-zero sentinel meaning "not yet quiesced". The
 post-Flush coordinator hook
-(`Syncer.persistFileBlocksAfterFlush`) writes it in the same metadata
+(`Syncer.persistFileChunksAfterFlush`) writes it in the same metadata
 transaction that updates `FileAttr.Blocks`/`Size`/`Mtime`. Partial
 flushes (some blocks still `Pending`) leave it at zero so the
 short-circuit lookup never returns a half-quiesced file.
@@ -232,8 +232,8 @@ AND no prior ObjectID" — explicitly excludes the running-VM hot path.
 The block-store GC is a fail-closed mark-sweep over the union of every live
 block's `ContentHash`:
 
-1. **Mark.** Stream every `FileBlock`'s `ContentHash` via the
-   `MetadataStore.EnumerateFileBlocks(ctx, fn)` cursor across **every
+1. **Mark.** Stream every `FileChunk`'s `ContentHash` via the
+   `MetadataStore.EnumerateFileChunks(ctx, fn)` cursor across **every
    share that targets the same remote** (cross-share aggregation by
    `bucket+endpoint+prefix`, not share name). The live set is built on
    disk under `<localStore>/gc-state/<runID>/db/` (memory-bounded
@@ -269,7 +269,7 @@ other files via cross-file dedup — stay warm.
 
 If you are seeing whole-file cold misses after a write, that is a bug.
 File a report with the `dfsctl store block audit-refcounts <share>`
-output (see below) — refcount drift between `FileBlock.RefCount` and
+output (see below) — refcount drift between `FileChunk.RefCount` and
 `FileAttr.Blocks` is the most common root cause.
 
 The mechanism: `engine.WriteAt` returns the new `[]BlockRef`, the
@@ -281,9 +281,9 @@ referenced by other files via dedup remain in the cache.
 
 ### How do I run the refcount audit?
 
-The audit checks the invariant `∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`
+The audit checks the invariant `∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)`
 — every block reference in `FileAttr.Blocks` across all files MUST be
-matched by a refcount on the corresponding `FileBlock`:
+matched by a refcount on the corresponding `FileChunk`:
 
 ```bash
 # Aggregate counts to stdout (text by default)

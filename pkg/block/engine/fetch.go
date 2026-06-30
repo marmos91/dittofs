@@ -19,13 +19,13 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 	return fmt.Sprintf("%s/%d", payloadID, blockIdx)
 }
 
-// resolveFileBlock returns the FileBlock whose chunk range covers the
+// resolveFileChunk returns the FileChunk whose chunk range covers the
 // byte window [blockIdx*BlockSize, (blockIdx+1)*BlockSize) for payloadID
 // or (nil, nil) if no row covers that window (sparse / not yet uploaded).
 //
 // Post-Phase-18 the engine writers (ObjectIDPersister, ChunkEmitter)
 // encode the chunk's absolute byte Offset in the trailing component of
-// the FileBlock ID — not a synthetic blockIdx — because FastCDC chunk
+// the FileChunk ID — not a synthetic blockIdx — because FastCDC chunk
 // boundaries do not align to BlockSize. Looking up by
 // "{payloadID}/{blockIdx*BlockSize}" therefore misses every non-first
 // chunk in a multi-chunk file. We instead enumerate the per-payload row
@@ -36,28 +36,28 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 // Post-Phase-17 the engine read path is CAS-only — fb.Hash MUST be non-
 // zero for any reachable block; the dispatchRemoteFetch helper enforces
 // this.
-func (m *Syncer) resolveFileBlock(ctx context.Context, payloadID string, blockIdx uint64) (*block.FileBlock, error) {
-	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+func (m *Syncer) resolveFileChunk(ctx context.Context, payloadID string, blockIdx uint64) (*block.FileChunk, error) {
+	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 	if err != nil {
 		return nil, err
 	}
-	return resolveFileBlockFromRows(rows, blockIdx), nil
+	return resolveFileChunkFromRows(rows, blockIdx), nil
 }
 
-// listFileBlocksSnapshot returns a point-in-time snapshot of the FileBlock rows
-// for payloadID with a single ListFileBlocks store scan. A sparse / not-yet-
-// uploaded payload (ErrFileBlockNotFound) yields (nil, nil). Callers that need
+// listFileChunksSnapshot returns a point-in-time snapshot of the FileChunk rows
+// for payloadID with a single ListFileChunks store scan. A sparse / not-yet-
+// uploaded payload (ErrFileChunkNotFound) yields (nil, nil). Callers that need
 // to test many block indices for one read should fetch the snapshot ONCE and
-// pass it to resolveFileBlockFromRows / blockIsLocalFromRows: each block lookup
+// pass it to resolveFileChunkFromRows / blockIsLocalFromRows: each block lookup
 // then walks the in-memory snapshot instead of issuing its own store scan,
 // collapsing the previous N store scans (one per block index) into one. The
 // snapshot is point-in-time: a concurrent writer that mutates the block set
 // after the scan is not reflected for the remainder of that read, which is the
 // acceptable (and arguably more correct) per-read isolation semantics.
-func (m *Syncer) listFileBlocksSnapshot(ctx context.Context, payloadID string) ([]*block.FileBlock, error) {
-	rows, err := m.fileBlockStore.ListFileBlocks(ctx, payloadID)
+func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) ([]*block.FileChunk, error) {
+	rows, err := m.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
-		if errors.Is(err, block.ErrFileBlockNotFound) {
+		if errors.Is(err, block.ErrFileChunkNotFound) {
 			return nil, nil // Sparse — not an error
 		}
 		return nil, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
@@ -65,10 +65,10 @@ func (m *Syncer) listFileBlocksSnapshot(ctx context.Context, payloadID string) (
 	return rows, nil
 }
 
-// resolveFileBlockFromRows finds the FileBlock covering blockIdx's byte window
-// within an already-fetched row snapshot. See resolveFileBlock for the offset-
+// resolveFileChunkFromRows finds the FileChunk covering blockIdx's byte window
+// within an already-fetched row snapshot. See resolveFileChunk for the offset-
 // covering semantics. Returns nil when no row covers the window.
-func resolveFileBlockFromRows(rows []*block.FileBlock, blockIdx uint64) *block.FileBlock {
+func resolveFileChunkFromRows(rows []*block.FileChunk, blockIdx uint64) *block.FileChunk {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -90,14 +90,14 @@ func resolveFileBlockFromRows(rows []*block.FileBlock, blockIdx uint64) *block.F
 
 // blockIsLocal reports whether the bytes for (payloadID, blockIdx) are
 // currently held in the unified local CAS chunk store. It resolves the
-// FileBlock row (which carries the BLAKE3 content hash populated by
+// FileChunk row (which carries the BLAKE3 content hash populated by
 // rollup) and asks the local store whether the chunk is present under
-// that hash. Returns false when the FileBlock row is sparse / not yet
+// that hash. Returns false when the FileChunk row is sparse / not yet
 // produced by rollup, when the hash is unknown (pre-CAS migration
 // drift), or when local.Has surfaces an error — the caller treats any
 // non-true outcome as "must round-trip to remote".
 func (m *Syncer) blockIsLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	fb, err := m.resolveFileBlock(ctx, payloadID, blockIdx)
+	fb, err := m.resolveFileChunk(ctx, payloadID, blockIdx)
 	if err != nil {
 		return false
 	}
@@ -105,16 +105,16 @@ func (m *Syncer) blockIsLocal(ctx context.Context, payloadID string, blockIdx ui
 }
 
 // blockIsLocalFromRows answers blockIsLocal against an already-fetched row
-// snapshot, avoiding a fresh ListFileBlocks scan per block index.
-func (m *Syncer) blockIsLocalFromRows(ctx context.Context, rows []*block.FileBlock, blockIdx uint64) bool {
-	return m.blockIsLocalFromRow(ctx, resolveFileBlockFromRows(rows, blockIdx))
+// snapshot, avoiding a fresh ListFileChunks scan per block index.
+func (m *Syncer) blockIsLocalFromRows(ctx context.Context, rows []*block.FileChunk, blockIdx uint64) bool {
+	return m.blockIsLocalFromRow(ctx, resolveFileChunkFromRows(rows, blockIdx))
 }
 
-// blockIsLocalFromRow reports whether the resolved FileBlock's CAS chunk is
+// blockIsLocalFromRow reports whether the resolved FileChunk's CAS chunk is
 // present in the local store. A nil row, a zero hash (sparse / pre-CAS drift),
 // or a local.Has error all yield false — the caller treats any non-true outcome
 // as "must round-trip to remote".
-func (m *Syncer) blockIsLocalFromRow(ctx context.Context, fb *block.FileBlock) bool {
+func (m *Syncer) blockIsLocalFromRow(ctx context.Context, fb *block.FileChunk) bool {
 	if fb == nil || fb.Hash.IsZero() {
 		return false
 	}
@@ -126,29 +126,29 @@ func (m *Syncer) blockIsLocalFromRow(ctx context.Context, fb *block.FileBlock) b
 }
 
 // dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
-// read path. Post-Phase-17 there is no legacy fallback: any FileBlock
+// read path. Post-Phase-17 there is no legacy fallback: any FileChunk
 // surfacing here with a zero Hash is migration drift and the boot guard
 // (cmd/dfs/start) should have refused to start. If a stray row
 // reaches this code path at runtime, refuse the read instead of returning
 // silent zeros.
 //
-// Returns ("", nil, nil) if the FileBlock has no actionable key (sparse
+// Returns ("", nil, nil) if the FileChunk has no actionable key (sparse
 // or never-uploaded). Errors from the remote store flow through unchanged.
-func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileBlock) (string, []byte, error) {
+func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
 	if fb == nil {
 		return "", nil, nil
 	}
 	if fb.Hash.IsZero() {
 		// Legacy path deleted (subsumes A6). Any
-		// FileBlock surfacing here without a CAS hash is migration
+		// FileChunk surfacing here without a CAS hash is migration
 		// drift — refuse the read instead of returning silent zeros.
 		// Boot guard (cmd/dfs/start) refuses to start against an un-
 		// migrated store; if this triggers at runtime, the sentinel
 		// file was lost or hand-removed.
-		logger.Error("legacy zero-hash FileBlock encountered post-migration — refusing read",
+		logger.Error("legacy zero-hash FileChunk encountered post-migration — refusing read",
 			"block_id", fb.ID,
 			"store_key", fb.BlockStoreKey)
-		return "", nil, fmt.Errorf("blockstore: legacy zero-hash FileBlock encountered post-migration: block_id=%s", fb.ID)
+		return "", nil, fmt.Errorf("blockstore: legacy zero-hash FileChunk encountered post-migration: block_id=%s", fb.ID)
 	}
 	// Resolve where the chunk's bytes live (#1414). A standalone locator
 	// (BlockID=="") — the only kind written on the live path today, and the
@@ -221,7 +221,7 @@ func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, 
 }
 
 // fetchBlock downloads a single block from the remote store and writes it to the local store.
-// Returns nil data for sparse blocks (no FileBlock entry or missing S3 object).
+// Returns nil data for sparse blocks (no FileChunk entry or missing S3 object).
 // Returns nil data when remoteStore is nil (local-only mode -- no remote data exists).
 func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, error) {
 	if !m.canProcess(ctx) {
@@ -240,7 +240,7 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, m.remoteUnavailableError()
 	}
 
-	fb, err := m.resolveFileBlock(ctx, payloadID, blockIdx)
+	fb, err := m.resolveFileChunk(ctx, payloadID, blockIdx)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +251,7 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 	return m.fetchResolvedBlock(ctx, fb)
 }
 
-// fetchResolvedBlock downloads the already-resolved FileBlock row from the
+// fetchResolvedBlock downloads the already-resolved FileChunk row from the
 // remote store, persists it to the local CAS tier, and marks it
 // fetched-synced. It is the post-resolve body shared by fetchBlock (which
 // resolves by blockIdx round-trip) and WarmAll (which already holds the row
@@ -259,7 +259,7 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 // start at arbitrary, non-BlockSize-aligned offsets, and a blockIdx lookup
 // would miss every non-aligned chunk and silently skip it). Returns nil data
 // when the row has no actionable remote key (sparse / never-uploaded).
-func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileBlock) ([]byte, error) {
+func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk) ([]byte, error) {
 	if fb == nil {
 		return nil, nil
 	}
@@ -278,7 +278,7 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileBlock) ([
 			// branch is gone, so the !IsZero guard is implicit —
 			// any successful dispatchRemoteFetch return implies a
 			// CAS row.
-			logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
+			logger.Error("CAS object missing for live FileChunk — possible GC race or live-data-loss",
 				"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
 			return nil, fmt.Errorf("CAS object missing for live row %s (key %s): %w",
 				fb.ID, storeKey, block.ErrChunkNotFound)
@@ -293,7 +293,7 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileBlock) ([
 	// store under fb.Hash (verified by ReadBlockVerified above). The
 	// previous WriteFromRemote method buffered into the legacy memBlock
 	// + .blk file layout; the unified post-Phase-17 read path resolves
-	// (payloadID, blockIdx) → FileBlock.Hash → local.Get(hash), so the
+	// (payloadID, blockIdx) → FileChunk.Hash → local.Get(hash), so the
 	// downloaded bytes only need to land in the CAS chunk store.
 	if err := m.local.Put(ctx, fb.Hash, data); err != nil {
 		return nil, fmt.Errorf("store downloaded block %s locally: %w", storeKey, err)
@@ -326,14 +326,14 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 
 	startBlockIdx, endBlockIdx := blockRange(offset, length)
 
-	// Single point-in-time store scan of the per-payload FileBlock rows,
+	// Single point-in-time store scan of the per-payload FileChunk rows,
 	// reused for the all-local fast path, the per-block locality checks below,
 	// and the inline fetch hash lookups (all of which walk this in-memory
-	// snapshot). This replaces the prior 2N+ ListFileBlocks store scans (one
+	// snapshot). This replaces the prior 2N+ ListFileChunks store scans (one
 	// per block in the all-local check + one per block in the download loop,
 	// plus one more inside each inlineFetchOrWait) with a single store scan per
 	// read.
-	rows, err := m.listFileBlocksSnapshot(ctx, payloadID)
+	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 	if err != nil {
 		return false, err
 	}
@@ -399,9 +399,9 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 // inlineFetchOrWait downloads a block inline or waits for an in-flight download.
 // Returns (data, true, nil) for inline download, (nil, false, nil) if piggybacked on existing.
 //
-// rows is the caller's point-in-time FileBlock snapshot for payloadID; the
+// rows is the caller's point-in-time FileChunk snapshot for payloadID; the
 // block is resolved from it instead of re-scanning the store.
-func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, rows []*block.FileBlock) ([]byte, bool, error) {
+func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, rows []*block.FileChunk) ([]byte, bool, error) {
 	key := inFlightKey(payloadID, blockIdx)
 
 	m.inFlightMu.Lock()
@@ -433,7 +433,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 		}
 	}()
 
-	fb := resolveFileBlockFromRows(rows, blockIdx)
+	fb := resolveFileChunkFromRows(rows, blockIdx)
 	if fb == nil {
 		return nil, true, nil
 	}
@@ -448,7 +448,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 			// resolves to a missing CAS object is a live-data-loss
 			// signal that must NOT silently return zeros. Post-Phase-17
 			// every reachable row is CAS-shaped.
-			logger.Error("CAS object missing for live FileBlock — possible GC race or live-data-loss",
+			logger.Error("CAS object missing for live FileChunk — possible GC race or live-data-loss",
 				"block_id", fb.ID, "store_key", storeKey, "hash", fb.Hash.String())
 			wrapped := fmt.Errorf("CAS object missing for live row %s (key %s): %w",
 				fb.ID, storeKey, block.ErrChunkNotFound)
@@ -474,7 +474,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	//
 	// CAS rewire: write under fb.Hash (verified by ReadBlockVerified). The
 	// unified post-Phase-17 read path resolves (payloadID, blockIdx) →
-	// FileBlock.Hash → local.Get(hash), so the downloaded bytes only need
+	// FileChunk.Hash → local.Get(hash), so the downloaded bytes only need
 	// to land in the CAS chunk store.
 	//
 	// A Put failure here previously logged at Warn and returned success —

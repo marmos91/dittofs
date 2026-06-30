@@ -694,7 +694,7 @@ Global flags:
   - [`dfsctl status`](#dfsctl-status) — Show server status
   - [`dfsctl store`](#dfsctl-store) — Store management
     - [`dfsctl store block`](#dfsctl-store-block) — Block store management
-      - [`dfsctl store block audit-refcounts`](#dfsctl-store-block-audit-refcounts) — Verify every manifest block reference has a backing FileBlock row
+      - [`dfsctl store block audit-refcounts`](#dfsctl-store-block-audit-refcounts) — Verify every manifest block reference has a backing FileChunk row
       - [`dfsctl store block evict`](#dfsctl-store-block-evict) — Evict block store data
       - [`dfsctl store block gc`](#dfsctl-store-block-gc) — Run garbage collection for a block store share
       - [`dfsctl store block gc-status`](#dfsctl-store-block-gc-status) — Show the last block-store GC run summary for a share
@@ -5488,12 +5488,12 @@ Global flags:
 
 ### `dfsctl store block audit-refcounts`
 
-Verify every manifest block reference has a backing FileBlock row
+Verify every manifest block reference has a backing FileChunk row
 
 Run the CAS manifest-consistency audit for the named share.
 
 Walks every file in the share and checks that each block referenced by the
-file's manifest (FileAttr.Blocks) has a backing FileBlock row in the
+file's manifest (FileAttr.Blocks) has a backing FileChunk row in the
 metadata store. A manifest reference with no backing row is a genuine
 DANGLING reference — the file claims a chunk the store has no record of, so
 a read would return zeros or fail (the silent-data-loss class). The
@@ -5501,7 +5501,7 @@ invariant is "dangling refs == 0"; a non-zero count is real corruption
 worth alerting on, so the command exits non-zero (use it as
 `audit-refcounts <share> || alert`).
 
-The legacy per-hash RefCount metric (∑ FileBlock.RefCount) was removed:
+The legacy per-hash RefCount metric (∑ FileChunk.RefCount) was removed:
 RefCount is not maintained in the content-addressed-store model (CAS blocks
 are written Pending and never transition to Remote), so that sum was
 structurally always 0 and produced false-positive "delta" alarms.

@@ -10,10 +10,10 @@ import (
 
 // TestBadgerStore_SyncWritesEnabledByDefault asserts the crash-consistency
 // fix from #583: badger.DefaultOptions has SyncWrites=false, which causes
-// FileBlock rows (and every other metadata write) to live in the memtable
+// FileChunk rows (and every other metadata write) to live in the memtable
 // + WAL buffer rather than fsyncing to disk on commit. A `kill -9`
 // between flush boundaries loses every metadata write since the last
-// sync, including the rollup-produced FileBlock manifest rows — the
+// sync, including the rollup-produced FileChunk manifest rows — the
 // engine's CAS read path then falls into the sparse-block zero-fill
 // branch and returns silent zeros for files whose chunks survived on
 // disk.

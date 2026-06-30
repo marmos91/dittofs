@@ -71,7 +71,7 @@ func TestNonClosingRemote_EngineRemoteDurableAndCommit(t *testing.T) {
 		Local:           localStore,
 		Remote:          engineRemote,
 		Syncer:          syncer,
-		FileBlockStore:  ms,
+		FileChunkStore:  ms,
 		SyncedHashStore: ms,
 	})
 	if err != nil {

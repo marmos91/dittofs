@@ -181,7 +181,7 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 			break
 		}
 	}
-	env.local.SyncFileBlocks(ctx)
+	env.local.SyncFileChunks(ctx)
 
 	// Wait for periodic uploader to run -- block should NOT be uploaded.
 	time.Sleep(200 * time.Millisecond)
@@ -253,7 +253,7 @@ func TestHealthMonitorRecoveryDrain(t *testing.T) {
 			break
 		}
 	}
-	env.local.SyncFileBlocks(ctx)
+	env.local.SyncFileChunks(ctx)
 
 	// Verify no uploads during outage.
 	memStore := env.remote.RemoteStore.(*remotememory.Store)
