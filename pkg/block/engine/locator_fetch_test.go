@@ -53,7 +53,7 @@ func TestDispatchRemoteFetch_StandaloneRoundTrip(t *testing.T) {
 		t.Fatalf("remote Put: %v", err)
 	}
 	// The write path records a standalone locator on MarkSynced.
-	if err := ms.MarkSynced(ctx, hash, block.ChunkLocator{Length: int64(len(data))}); err != nil {
+	if err := ms.MarkSynced(ctx, hash, block.ChunkLocator{WireLength: int64(len(data))}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
@@ -121,7 +121,7 @@ func TestDispatchRemoteFetch_BlockLocator(t *testing.T) {
 	}
 
 	hash := block.ContentHash(blake3.Sum256(target))
-	loc := block.ChunkLocator{BlockID: blockID, Offset: int64(len(filler)), Length: int64(len(target))}
+	loc := block.ChunkLocator{BlockID: blockID, WireOffset: int64(len(filler)), WireLength: int64(len(target))}
 	if err := ms.MarkSynced(ctx, hash, loc); err != nil {
 		t.Fatalf("MarkSynced block: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestDispatchRemoteFetch_BlockLocatorVerifyMismatch(t *testing.T) {
 	if err := rem.PutBlock(blockID, corrupt); err != nil {
 		t.Fatalf("PutBlock: %v", err)
 	}
-	loc := block.ChunkLocator{BlockID: blockID, Offset: 0, Length: int64(len(target))}
+	loc := block.ChunkLocator{BlockID: blockID, WireOffset: 0, WireLength: int64(len(target))}
 	if err := ms.MarkSynced(ctx, hash, loc); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}

@@ -7,23 +7,23 @@ package block
 //
 //   - BlockID == "" means the chunk is a standalone object at the canonical CAS
 //     key cas/XX/YY/<hash> (see FormatCASKey) and occupies the WHOLE object.
-//     Offset/Length are not consulted in this case — the read path GETs the
-//     entire object and verifies it. This is the value EVERY chunk resolves to
-//     today (and what a synced hash with no recorded locator defaults to), so
+//     WireOffset/WireLength are not consulted in this case — the read path GETs
+//     the entire object and verifies it. This is the value EVERY chunk resolves
+//     to today (and what a synced hash with no recorded locator defaults to), so
 //     existing data needs no migration.
 //   - BlockID != "" means the chunk lives inside the block object blocks/<BlockID>
-//     (see FormatBlockKey), and its wire bytes occupy [Offset, Offset+Length).
-//     The read path issues a ranged GET against the block object. Only PR3b's
-//     packer ever produces such a locator.
+//     (see FormatBlockKey), and its wire bytes occupy
+//     [WireOffset, WireOffset+WireLength). The read path issues a ranged GET
+//     against the block object. Only PR3b's packer ever produces such a locator.
 type ChunkLocator struct {
 	// BlockID identifies the enclosing block object. Empty means standalone.
 	BlockID string
-	// Offset is the byte offset of the chunk's wire bytes within the block
-	// object. Zero (and unused) for standalone chunks.
-	Offset int64
-	// Length is the chunk's wire byte length within the block object. Zero
-	// (and unused) for standalone chunks, whose length is the whole object.
-	Length int64
+	// WireOffset is the chunk's wire-byte offset within the block object.
+	// Zero (and unused) for standalone chunks.
+	WireOffset int64
+	// WireLength is the chunk's wire-byte length within the block object.
+	// Zero (and unused) for standalone chunks, whose length is the whole object.
+	WireLength int64
 }
 
 // IsStandalone reports whether the chunk is stored as its own CAS object

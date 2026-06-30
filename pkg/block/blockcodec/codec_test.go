@@ -113,11 +113,11 @@ func TestPlaintextRoundTrip(t *testing.T) {
 	if records[0].Hash != hash1 {
 		t.Errorf("records[0].Hash mismatch")
 	}
-	if records[0].WireOffset != loc1.Offset {
-		t.Errorf("records[0].WireOffset=%d want %d", records[0].WireOffset, loc1.Offset)
+	if records[0].WireOffset != loc1.WireOffset {
+		t.Errorf("records[0].WireOffset=%d want %d", records[0].WireOffset, loc1.WireOffset)
 	}
-	if records[0].WireLength != loc1.Length {
-		t.Errorf("records[0].WireLength=%d want %d", records[0].WireLength, loc1.Length)
+	if records[0].WireLength != loc1.WireLength {
+		t.Errorf("records[0].WireLength=%d want %d", records[0].WireLength, loc1.WireLength)
 	}
 	got1 := raw[records[0].WireOffset : records[0].WireOffset+records[0].WireLength]
 	if !bytes.Equal(got1, wire1) {
@@ -128,11 +128,11 @@ func TestPlaintextRoundTrip(t *testing.T) {
 	if records[1].Hash != hash2 {
 		t.Errorf("records[1].Hash mismatch")
 	}
-	if records[1].WireOffset != loc2.Offset {
-		t.Errorf("records[1].WireOffset=%d want %d", records[1].WireOffset, loc2.Offset)
+	if records[1].WireOffset != loc2.WireOffset {
+		t.Errorf("records[1].WireOffset=%d want %d", records[1].WireOffset, loc2.WireOffset)
 	}
-	if records[1].WireLength != loc2.Length {
-		t.Errorf("records[1].WireLength=%d want %d", records[1].WireLength, loc2.Length)
+	if records[1].WireLength != loc2.WireLength {
+		t.Errorf("records[1].WireLength=%d want %d", records[1].WireLength, loc2.WireLength)
 	}
 	got2 := raw[records[1].WireOffset : records[1].WireOffset+records[1].WireLength]
 	if !bytes.Equal(got2, wire2) {
@@ -157,8 +157,8 @@ func TestEmptyBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if loc.Length != 0 {
-		t.Errorf("loc.Length=%d want 0", loc.Length)
+	if loc.WireLength != 0 {
+		t.Errorf("loc.WireLength=%d want 0", loc.WireLength)
 	}
 
 	if _, err := b.Finish(); err != nil {
@@ -206,8 +206,8 @@ func TestLargeChunk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if loc.Length != int64(size) {
-		t.Errorf("loc.Length=%d want %d", loc.Length, size)
+	if loc.WireLength != int64(size) {
+		t.Errorf("loc.WireLength=%d want %d", loc.WireLength, size)
 	}
 
 	if _, err := b.Finish(); err != nil {
@@ -298,11 +298,11 @@ func TestSealedRoundTrip(t *testing.T) {
 	if records[0].Hash != hash1 {
 		t.Errorf("records[0].Hash mismatch")
 	}
-	if records[0].WireOffset != loc.Offset {
-		t.Errorf("records[0].WireOffset=%d want %d", records[0].WireOffset, loc.Offset)
+	if records[0].WireOffset != loc.WireOffset {
+		t.Errorf("records[0].WireOffset=%d want %d", records[0].WireOffset, loc.WireOffset)
 	}
-	if records[0].WireLength != loc.Length {
-		t.Errorf("records[0].WireLength=%d want %d", records[0].WireLength, loc.Length)
+	if records[0].WireLength != loc.WireLength {
+		t.Errorf("records[0].WireLength=%d want %d", records[0].WireLength, loc.WireLength)
 	}
 	// Bodies live in plaintext-visible region (after the sealed header).
 	got := raw[records[0].WireOffset : records[0].WireOffset+records[0].WireLength]

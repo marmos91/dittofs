@@ -230,9 +230,9 @@ func (b *Builder) addPlaintext(hash block.ContentHash, wire []byte) (block.Chunk
 	}
 	b.recordIndex++
 	return block.ChunkLocator{
-		BlockID: b.blockID,
-		Offset:  wireBodyStart,
-		Length:  int64(len(wire)),
+		BlockID:    b.blockID,
+		WireOffset: wireBodyStart,
+		WireLength: int64(len(wire)),
 	}, nil
 }
 
@@ -262,9 +262,9 @@ func (b *Builder) addSealed(hash block.ContentHash, wire []byte) (block.ChunkLoc
 	}
 	b.recordIndex++
 	return block.ChunkLocator{
-		BlockID: b.blockID,
-		Offset:  wireBodyStart,
-		Length:  int64(len(wire)),
+		BlockID:    b.blockID,
+		WireOffset: wireBodyStart,
+		WireLength: int64(len(wire)),
 	}, nil
 }
 
