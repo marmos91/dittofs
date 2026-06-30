@@ -172,10 +172,11 @@ func CASKeySetDiff(before, after []string) (added, removed []string) {
 // build (e.g. older binary), the dfsctl runner rejects the unknown
 // subcommand and this helper returns an error. The canonical E2E
 // recognizes that and SKIPS with an explanatory message.
-func TriggerBlockGC(t *testing.T, runner *CLIRunner, shareName string) error {
+func TriggerBlockGC(t *testing.T, runner *CLIRunner, shareName string, extraArgs ...string) error {
 	t.Helper()
 
-	_, err := runner.Run("store", "block", "gc", shareName)
+	args := append([]string{"store", "block", "gc", shareName}, extraArgs...)
+	_, err := runner.Run(args...)
 	if err != nil {
 		return fmt.Errorf("dfsctl store block gc %s: %w", shareName, err)
 	}

@@ -117,6 +117,11 @@ type BlockStoreGCOptions struct {
 	// (leaked by the pre-fix delete path) across all shares, then sweep both
 	// tiers — reclaiming historical leaks a plain GC cannot (#1433).
 	Reconcile bool `json:"reconcile,omitempty"`
+	// GracePeriodSeconds, when non-nil, overrides the server-configured sweep
+	// grace for this run only. Zero is valid: reap every eligible orphan with
+	// no age guard, bypassing the config's 5-minute floor. The server rejects
+	// combining it with Reconcile.
+	GracePeriodSeconds *int64 `json:"grace_period_seconds,omitempty"`
 }
 
 // GCJobStatus is the wire-shape for an async block-store GC job, returned by

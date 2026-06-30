@@ -191,8 +191,16 @@ type Options struct {
 
 	// GracePeriod is the TTL applied during sweep: an object whose
 	// LastModified is within snapshot - GracePeriod is preserved.
-	// Zero defaults to one hour.
+	// Zero defaults to one hour unless GracePeriodSet is true.
 	GracePeriod time.Duration
+
+	// GracePeriodSet, when true, makes GracePeriod authoritative — it is used
+	// verbatim, including a value of zero (reap every eligible orphan with no
+	// age guard). When false, a non-positive GracePeriod falls back to the
+	// one-hour default. This lets an explicit operator override (dfsctl store
+	// block gc --grace-period 0) bypass the floor without changing the
+	// default-substitution behaviour for every other caller.
+	GracePeriodSet bool
 
 	// DryRunSampleSize bounds the count of candidate keys captured in
 	// GCStats.DryRunCandidates. Zero defaults to 1000.
@@ -377,9 +385,16 @@ func collectGarbage(
 	rootLock := acquireGCRootLock(options.GCStateRoot)
 	defer releaseGCRootLock(options.GCStateRoot, rootLock)
 
-	// Apply defaults that the caller did not specify.
+	// Apply defaults that the caller did not specify. An explicit override
+	// (GracePeriodSet) is authoritative — including a zero grace, which a
+	// negative value is clamped to.
 	gracePeriod := options.GracePeriod
-	if gracePeriod <= 0 {
+	switch {
+	case options.GracePeriodSet:
+		if gracePeriod < 0 {
+			gracePeriod = 0
+		}
+	case gracePeriod <= 0:
 		gracePeriod = time.Hour
 	}
 	dryRunSample := options.DryRunSampleSize

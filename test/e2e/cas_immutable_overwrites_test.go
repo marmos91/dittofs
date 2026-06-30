@@ -154,19 +154,13 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 			"should produce different chunk hashes)")
 
 	// ---- Step 3: GC reaps the old keys ----
-	if err := helpers.TriggerBlockGC(t, cli, shareName); err != nil {
+	// --grace-period 0 reaps just-orphaned chunks immediately, bypassing the
+	// server's 5-minute grace floor so the freshly-overwritten A chunks are
+	// eligible within the test's lifetime. The command waits for the async job
+	// to finish before returning.
+	if err := helpers.TriggerBlockGC(t, cli, shareName, "--grace-period", "0"); err != nil {
 		t.Skipf("DEFERRED: dfsctl store block gc subcommand not yet wired (Plan 11-07 dependency): %v", err)
 	}
-
-	// GC has a grace period (default 1h). The test config does NOT
-	// override that today — once a knob to set gc.grace_period or pass
-	// --grace-period 0 on the CLI lands, this test can drop the
-	// conservative wait. For now: sleep briefly to let the in-process
-	// GC last-run.json land, then re-list. If the keys have not yet
-	// been reaped (because the grace period swallowed the run), surface
-	// that as a clear error so the operator knows to configure grace=0
-	// in the test profile.
-	time.Sleep(1 * time.Second)
 
 	keysAfterGC := helpers.ListCASKeys(t, lsHelper, bucket)
 	addedSinceGC, removedByGC := helpers.CASKeySetDiff(keysAB, keysAfterGC)
