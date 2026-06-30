@@ -233,7 +233,7 @@ to update the per-payload sequential tracker for prefetch hints.
 offset)`, FastCDC-rechunks the affected range, returns `newBlocks
 []BlockRef` to the caller; caller persists newBlocks alongside the
 metadata transaction (Mtime, Size, etc.). Syncer asynchronously uploads
-Pending FileBlocks to remote CAS.
+Pending FileChunks to remote CAS.
 
 **Eviction**:
 - Cache: LRU eviction when budget reached. No data loss (local CAS has the data). Cache is per-share but cross-file inside a share — the same hash referenced by two files shares one entry.
@@ -310,7 +310,7 @@ payload.
 
 Recovery (`pkg/block/local/fs/recovery.go`) scans logs from
 `rollup_offset`, truncates at first bad CRC, and rebuilds per-file interval
-trees. Orphan logs (no metadata referrer, no live FileBlock, mtime older
+trees. Orphan logs (no metadata referrer, no live FileChunk, mtime older
 than `orphan_log_min_age_seconds`) are swept. Orphan chunks under
 `blocks/{hh}/{hh}/{hex}` are reclaimed by the mark-sweep GC.
 
@@ -327,7 +327,7 @@ See `docs/CONFIGURATION.md` (`max_log_bytes`, `rollup_workers`,
 
 ## Block Lifecycle (three-state)
 
-The block lifecycle has three persisted states held on `FileBlock.State`
+The block lifecycle has three persisted states held on `FileChunk.State`
 indexed by `ContentHash`. There is no parallel state in memory, in fd
 pools, or anywhere else: the metadata store is the single source of truth,
 and `engine.Syncer` is the sole owner of state transitions.
@@ -364,12 +364,12 @@ blocks (`State=Syncing AND last_sync_attempt_at < now − 1h`).
 ## Garbage Collection (mark-sweep)
 
 The block-store GC is a fail-closed mark-sweep over the union of every live
-`FileBlock.ContentHash` across all shares pointing at the same remote.
+`FileChunk.ContentHash` across all shares pointing at the same remote.
 
 ### Algorithm
 
-1. **Mark phase.** Stream every `FileBlock`'s `ContentHash` via the
-   `MetadataStore.EnumerateFileBlocks(ctx, fn)` cursor. The cursor
+1. **Mark phase.** Stream every `FileChunk`'s `ContentHash` via the
+   `MetadataStore.EnumerateFileChunks(ctx, fn)` cursor. The cursor
    is implemented natively per backend (memory, Badger, Postgres) and
    never loads the full set into application memory. Hashes are appended
    to an on-disk live set under `<localStore>/gc-state/<runID>/db/`
@@ -749,7 +749,7 @@ newBlocks, err := blockStore.WriteAt(ctx, string(attr.PayloadID), currentBlocks,
 
 // 4. Persist newBlocks in the same metadata txn that updates Size/Mtime.
 //    The engine never opens the metadata txn itself.
-err = metadataStore.SetFileBlocks(handle, newBlocks, authCtx)
+err = metadataStore.SetFileChunks(handle, newBlocks, authCtx)
 
 // 5. Post-txn surgical cache invalidation: drop only the hashes that
 //    disappeared, preserving warm dedup entries.
@@ -834,8 +834,8 @@ dittofs/
 │   │
 │   ├── blockstore/               # Per-share block storage
 │   │   ├── doc.go                # Package documentation
-│   │   ├── store.go              # FileBlockStore interface
-│   │   ├── types.go              # FileBlock, BlockState types
+│   │   ├── store.go              # FileChunkStore interface
+│   │   ├── types.go              # FileChunk, BlockState types
 │   │   ├── errors.go             # BlockStore error types
 │   │   ├── chunker/              # FastCDC content-defined chunker
 │   │   │                         # min=1 MiB / avg=4 MiB / max=16 MiB, lvl 2;
@@ -1101,7 +1101,7 @@ documented behavior, not a bug. Past `FileAttr.Size` returns short-read or
 EOF.
 
 `CopyPayload` is **O(1)** — a single metadata transaction increments
-`FileBlock.RefCount` for every distinct hash in `srcBlocks` and inserts
+`FileChunk.RefCount` for every distinct hash in `srcBlocks` and inserts
 the dst rows. No data copy. This is the file-level dedup primitive the
 ObjectID layer (below) builds on.
 
@@ -1155,7 +1155,7 @@ threading, so changes to the read/write path stay confined to the helpers.
 ### Operator surfaces
 
 - `dfsctl blockstore audit-refcounts <share>` runs the refcount
-  reconciliation audit (`∑ FileBlock.RefCount == ∑ len(FileAttr.Blocks)`),
+  reconciliation audit (`∑ FileChunk.RefCount == ∑ len(FileAttr.Blocks)`),
   emits aggregate counts as structured slog INFO, and persists the
   last-run summary at `<localStore>/audit-state/last-inv02.json`. See
   `docs/CLI.md` for the full reference and `docs/FAQ.md` for operator
@@ -1186,7 +1186,7 @@ room for future input-shape changes via `v2`/`v3`).
 - **Cleared (zeroed)** on first dirty write that mutates `FileAttr.Blocks`,
   in the same metadata transaction.
 - **Recomputed and persisted** at the post-Flush coordinator hook
-  (`Syncer.persistFileBlocksAfterFlush` → `MetadataCoordinator.PersistFileBlocks`),
+  (`Syncer.persistFileChunksAfterFlush` → `MetadataCoordinator.PersistFileChunks`),
   in the same metadata transaction that updates `FileAttr.Blocks`/`Size`/`Mtime`.
 - **Persisted ONLY on full quiesce** — every block in `Remote` state.
   Partial flushes leave `ObjectID` at zero.
@@ -1231,14 +1231,14 @@ Production call chain (per-write, on quiesce):
     → engine.BlockStore.Flush
     → engine.Syncer.Flush
         ├─[file-level dedup short-circuit]
-        │   ├─ snapshotPendingBlockRefs(payloadID)         // ListFileBlocks projection
+        │   ├─ snapshotPendingBlockRefs(payloadID)         // ListFileChunks projection
         │   ├─ coordinator.GetFileObjectID(payloadID)      // trigger-condition check
         │   ├─ TrySpeculativeFileLevelDedup
         │   │   ├─ ComputeObjectID(specBlocks)
         │   │   ├─ coordinator.FindByObjectID
         │   │   └─ applyFileLevelDedupHit (one metadata txn):
         │   │       ├─ IncrementRefCount on each target hash
-        │   │       ├─ coordinator.PersistFileBlocks(target.Blocks, provisionalObjectID)
+        │   │       ├─ coordinator.PersistFileChunks(target.Blocks, provisionalObjectID)
         │   │       ├─ DecrementRefCount on speculative-only hashes
         │   │       ├─ Cache.InvalidateFile(removedHashes)
         │   │       └─ local.DeleteAppendLog(payloadID)
@@ -1247,9 +1247,9 @@ Production call chain (per-write, on quiesce):
         └─[post-Flush hook (on miss OR no trigger)]
             ├─ drainPayloadToRemote (uploadOne per Pending block)
             ├─ snapshotBlockRefs (every block now Remote)
-            └─ persistFileBlocksAfterFlush
+            └─ persistFileChunksAfterFlush
                 └─ ComputeObjectID(blocks)
-                └─ coordinator.PersistFileBlocks(blocks, objectID)
+                └─ coordinator.PersistFileChunks(blocks, objectID)
                     └─ runtime coordinator: WithTransaction(GetFileByPayloadID + PutFile)
                         // FileAttr.Blocks AND FileAttr.ObjectID
                         // written in one metadata txn
@@ -1268,9 +1268,9 @@ Source-of-truth file:line anchors:
   `snapshotBlockRefs` (post-Flush input) helpers.
 - `pkg/block/engine/dedup.go::TrySpeculativeFileLevelDedup` and
   `applyFileLevelDedupHit` — the metadata-side swap.
-- `pkg/block/engine/dedup.go::persistFileBlocksAfterFlush` — the
+- `pkg/block/engine/dedup.go::persistFileChunksAfterFlush` — the
   post-Flush coordinator hook.
-- `pkg/controlplane/runtime/shares/coordinator.go::PersistFileBlocks` /
+- `pkg/controlplane/runtime/shares/coordinator.go::PersistFileChunks` /
   `GetFileObjectID` — runtime forwarders.
 
 ### Concurrent quiesce: first-committer-wins
@@ -1394,16 +1394,16 @@ key space. The gate that enforces this sits in
                                              (fail loud, slog Error)
 ```
 
-On a `cas-only` share, a legacy-shaped FileBlock surfaces
+On a `cas-only` share, a legacy-shaped FileChunk surfaces
 `engine.ErrLegacyReadOnCASOnly`: the function logs at Error with
 `block_id` + `store_key` and returns the wrapped sentinel rather than
 silently falling through to `ReadBlock`. This guards against a
-freshly-migrated share encountering a forgotten legacy FileBlock — the
+freshly-migrated share encountering a forgotten legacy FileChunk — the
 engine fails loud rather than reading from a key the migration already
 deleted.
 
 The gate is defense-in-depth: the migration's atomic per-file `PutFile`
-already updates every legacy FileBlock to the CAS shape before flipping
+already updates every legacy FileChunk to the CAS shape before flipping
 `block_layout`. A legacy-shaped block post-cutover indicates a migration
 bug, metadata corruption, or a hand-edited row — all of which demand
 operator attention rather than a silent legacy read.

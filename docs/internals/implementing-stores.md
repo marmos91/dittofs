@@ -110,41 +110,41 @@ The metadata store interface and implementation guide remains the same as before
 
 Conformance tests: `pkg/metadata/storetest/`
 
-### MetadataStore.EnumerateFileBlocks
+### MetadataStore.EnumerateFileChunks
 
 `MetadataStore` carries a mandatory cursor method that the mark-sweep
 garbage collector uses to enumerate every live block hash without loading
 the full file/block set into application memory.
 
-> **Note:** `EnumerateFileBlocks` lives on `MetadataStore`, not
-> `FileBlockStore`. Conceptually it iterates across files for the GC mark
+> **Note:** `EnumerateFileChunks` lives on `MetadataStore`, not
+> `FileChunkStore`. Conceptually it iterates across files for the GC mark
 > phase — a metadata-store-wide concern — so it sits above the narrow
-> `FileBlockStore` surface (see [FileBlockStore narrowing](#fileblockstore-narrowing)
+> `FileChunkStore` surface (see [FileChunkStore narrowing](#filechunkstore-narrowing)
 > below).
 
 ```go
-// EnumerateFileBlocks streams every FileBlock's ContentHash to fn.
+// EnumerateFileChunks streams every FileChunk's ContentHash to fn.
 // Implementations MUST:
 //   - Iterate using a backend-native cursor (Badger prefix iterator,
 //     Postgres server-side cursor with batched fetch, in-memory map
 //     iteration) -- no full-set load.
 //   - Honor ctx.Done(): return ctx.Err() promptly when the context is
 //     cancelled.
-//   - Emit zero-hash FileBlocks the same way as non-zero-hash blocks;
+//   - Emit zero-hash FileChunks the same way as non-zero-hash blocks;
 //     the GC live-set ignores zero hashes.
 //   - Abort iteration and return the fn error verbatim if fn returns
 //     non-nil; do NOT swallow it.
 //   - Be safe under concurrent writes: it is acceptable for the cursor
-//     to miss FileBlocks created mid-iteration; the next mark cycle
+//     to miss FileChunks created mid-iteration; the next mark cycle
 //     will pick them up.
-EnumerateFileBlocks(ctx context.Context, fn func(ContentHash) error) error
+EnumerateFileChunks(ctx context.Context, fn func(ContentHash) error) error
 ```
 
 Conformance scenarios live in `pkg/metadata/storetest/` and every
 backend MUST pass them:
 
 1. **Empty store**: `fn` is never invoked; returns `nil`.
-2. **Single file**: `fn` is invoked once per FileBlock for the file.
+2. **Single file**: `fn` is invoked once per FileChunk for the file.
 3. **Large fanout** (`N` files × `M` blocks): `fn` is invoked exactly
    `N*M` times in any order; no duplicates, no omissions.
 4. **fn-error mid-iteration**: returning a non-nil error from `fn`
@@ -153,30 +153,30 @@ backend MUST pass them:
    the call to return `ctx.Err()` within the polling interval.
 
 Memory-store reference: direct `range` over the in-memory map.
-Badger-store reference: `txn.NewIterator` over the FileBlock prefix.
+Badger-store reference: `txn.NewIterator` over the FileChunk prefix.
 Postgres-store reference: server-side cursor (`DECLARE` + `FETCH`)
 with batches of 1000 rows.
 
-### FileBlockStore narrowing
+### FileChunkStore narrowing
 
-`pkg/block.FileBlockStore` is the narrow public FileBlock surface.
+`pkg/block.FileChunkStore` is the narrow public FileChunk surface.
 Backend implementations are simpler than the engine-internal helpers, which
 live on a separate wider interface.
 
 ```go
 // pkg/block/fileblock.go
-type FileBlockStore interface {
-    // GetByHash returns any FileBlock with the given content hash, or
+type FileChunkStore interface {
+    // GetByHash returns any FileChunk with the given content hash, or
     // (nil, nil) when absent (multiple rows may share a hash; best-effort).
-    GetByHash(ctx context.Context, hash ContentHash) (*FileBlock, error)
+    GetByHash(ctx context.Context, hash ContentHash) (*FileChunk, error)
 
-    // Put creates or replaces a FileBlock by ID (upsert by ID, not hash).
-    Put(ctx context.Context, block *FileBlock) error
+    // Put creates or replaces a FileChunk by ID (upsert by ID, not hash).
+    Put(ctx context.Context, block *FileChunk) error
 
-    // Delete removes a FileBlock by ID. Returns ErrFileBlockNotFound if absent.
+    // Delete removes a FileChunk by ID. Returns ErrFileChunkNotFound if absent.
     Delete(ctx context.Context, id string) error
 
-    // IncrementRefCount atomically bumps RefCount for the given FileBlock id.
+    // IncrementRefCount atomically bumps RefCount for the given FileChunk id.
     IncrementRefCount(ctx context.Context, id string) error
 
     // DecrementRefCount atomically decrements; returns the new count.
@@ -192,12 +192,12 @@ type FileBlockStore interface {
 }
 ```
 
-**Engine-internal companion interface:** `pkg/block.EngineFileBlockStore`
-extends `FileBlockStore` with `GetFileBlock(ctx, id)` and
-`ListFileBlocks(ctx, payloadID)` for the engine's hot paths. All three built-in
+**Engine-internal companion interface:** `pkg/block.EngineFileChunkStore`
+extends `FileChunkStore` with `GetFileChunk(ctx, id)` and
+`ListFileChunks(ctx, payloadID)` for the engine's hot paths. All three built-in
 backends (memory, badger, postgres) satisfy it without changes — the
 narrow public surface is a documentation concern, not a runtime
-restriction. Custom backends implementing `FileBlockStore` SHOULD also
+restriction. Custom backends implementing `FileChunkStore` SHOULD also
 implement the engine-internal helpers if they intend to slot into the
 `*engine.BlockStore`.
 
@@ -228,7 +228,7 @@ Encoding requirements per backend:
   empty `Blocks` slice.
 
 A new metadata-store method persists the list; in the built-in
-backends this is `MetadataStore.SetFileBlocks(ctx, handle, []BlockRef,
+backends this is `MetadataStore.SetFileChunks(ctx, handle, []BlockRef,
 authCtx) error`. Custom metadata backends MUST persist atomically
 with the same transaction that updates `Size`/`Mtime`/`Ctime` — the
 engine relies on caller-side metadata-txn isolation rather than a
@@ -238,13 +238,13 @@ per-chunk metadata roundtrip.
 
 The `pkg/metadata/storetest/` suite includes:
 
-1. **BlockRef round-trip**: `SetFileBlocks` followed by `GetFileAttr`
+1. **BlockRef round-trip**: `SetFileChunks` followed by `GetFileAttr`
    returns the same offset-sorted slice, byte-for-byte.
 2. **Empty / legacy compat**: `FileAttr` blobs without a `Blocks`
    field decode to an empty slice without errors.
 3. **FK cascade (Postgres-only)**: deleting a file removes all
    matching `file_block_refs` rows.
-4. **Refcount reconcile**: `∑ FileBlock.RefCount` over the FileBlockStore
+4. **Refcount reconcile**: `∑ FileChunk.RefCount` over the FileChunkStore
    equals `∑ len(FileAttr.Blocks)` over the MetadataStore at every
    quiescent point.
 5. **Refcount concurrent fuzz** (`pkg/metadata/storetest/inv02_fuzz_test.go`):

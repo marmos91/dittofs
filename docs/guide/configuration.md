@@ -1892,7 +1892,7 @@ committed and verified — partial migrations cannot leave a sentinel behind.
 **Do not hand-create or hand-edit this file.** It is intended as a one-way
 irreversibility marker; modifying it bypasses the boot guard but cannot fix
 a half-migrated store and will surface I/O errors on the first legacy
-FileBlock access.
+FileChunk access.
 
 To confirm a share is fully migrated, inspect the sentinel directly:
 
