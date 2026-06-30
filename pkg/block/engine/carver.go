@@ -201,6 +201,15 @@ func (m *Syncer) requeueCarveBatch(batch []block.ContentHash) {
 	m.pendingMu.Unlock()
 }
 
+// markSyncedRetries is the number of in-place retries when DefaultCommitBlock
+// returns ErrCommitPartial (transaction committed but MarkSynced loop
+// incomplete). Retrying with the same BlockID completes the MarkSynced loop
+// via DefaultCommitBlock's idempotency — no new block is minted.
+const markSyncedRetries = 3
+
+// markSyncedRetryDelay is the backoff between ErrCommitPartial retries.
+const markSyncedRetryDelay = 100 * time.Millisecond
+
 // carveAndCommitBlock reads each chunk's raw bytes from the log-blob substrate,
 // seals it through the per-chunk transform, frames it into one block via
 // blockcodec, uploads the assembled block with PutBlock, and atomically commits
@@ -215,6 +224,32 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	m.mu.RUnlock()
 	if rbs == nil || committer == nil || reader == nil {
 		return errors.New("carve: substrate not wired")
+	}
+
+	// Defense-in-depth (secondary): drop any hash that is already fully synced
+	// before packing. An already-synced hash can appear here if a previous
+	// ErrCommitPartial retry exhausted and the batch was requeued with some
+	// chunks already MarkSynced. Packing such a hash again would inflate the new
+	// block's LiveChunkCount (since MarkSynced is idempotent and the locator
+	// would not update). Drop it from the carve set instead.
+	filtered := batch[:0]
+	for _, h := range batch {
+		synced, err := committer.IsSynced(ctx, h)
+		if err != nil {
+			// Cannot determine: include and let MarkSynced idempotency handle it.
+			filtered = append(filtered, h)
+			continue
+		}
+		if synced {
+			// Already synced: retire from the carve set without re-packing.
+			m.dropCarveHash(h)
+			continue
+		}
+		filtered = append(filtered, h)
+	}
+	batch = filtered
+	if len(batch) == 0 {
+		return nil
 	}
 
 	blockID, err := newBlockID()
@@ -296,8 +331,34 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 		LiveChunkCount: uint32(len(commits)),
 		SyncState:      block.BlockStateRemote,
 	}
-	if err := metadata.DefaultCommitBlock(ctx, committer, rec, commits); err != nil {
-		return fmt.Errorf("carve: commit block %s: %w", blockID, err)
+	commitErr := metadata.DefaultCommitBlock(ctx, committer, rec, commits)
+	if commitErr != nil {
+		var partial *metadata.ErrCommitPartial
+		if errors.As(commitErr, &partial) {
+			// The block record transaction committed but the MarkSynced loop did
+			// not complete. Retry with the SAME blockID: DefaultCommitBlock's
+			// idempotent tx guard skips the transaction and re-runs MarkSynced to
+			// completion — no new block object is needed or minted.
+			logger.Debug("carve: partial MarkSynced, retrying same block",
+				"blockID", partial.BlockID, "cause", partial.Cause)
+			for i := 0; i < markSyncedRetries; i++ {
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("carve: commit block %s (mark-synced retry cancelled): %w",
+						blockID, ctx.Err())
+				case <-time.After(markSyncedRetryDelay):
+				}
+				if retryErr := metadata.DefaultCommitBlock(ctx, committer, rec, commits); retryErr == nil {
+					commitErr = nil
+					break
+				} else {
+					commitErr = retryErr
+				}
+			}
+		}
+	}
+	if commitErr != nil {
+		return fmt.Errorf("carve: commit block %s: %w", blockID, commitErr)
 	}
 
 	// Retire the committed chunks from the carve set and the backpressure

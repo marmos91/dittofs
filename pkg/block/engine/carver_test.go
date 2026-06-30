@@ -3,10 +3,13 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"lukechampine.com/blake3"
 
@@ -217,10 +220,10 @@ func newEncryptionProvider(t *testing.T) keyprovider.KeyProvider {
 }
 
 // TestCarve_ThroughCompressEncryptRemote is DoD test (2) (full stack): carving
-// through a compression(encryption(base)) remote seals each chunk (the block's
-// wire body is neither the plaintext nor merely compressed) and decodes back
-// byte-identical through the decorated remote's ReadChunk — proving no plaintext
-// at rest on an encrypted share.
+// through a compression(encryption(base)) remote seals each chunk (the raw
+// block object does not contain the plaintext) and decodes back byte-identical
+// through the decorated remote's ReadChunk — proving no plaintext at rest on
+// an encrypted share.
 func TestCarve_ThroughCompressEncryptRemote(t *testing.T) {
 	ctx := context.Background()
 	base := remotememory.New()
@@ -249,8 +252,8 @@ func TestCarve_ThroughCompressEncryptRemote(t *testing.T) {
 		t.Fatalf("GetLocator: synced=%v err=%v", synced, err)
 	}
 
-	// Inspect the raw block bytes on the BASE store: the chunk's wire body must
-	// not contain the plaintext (it is encrypted), confirming sealing happened.
+	// Inspect the raw block bytes on the BASE store: the sealed wire body must
+	// not contain the plaintext, confirming the encryption seal ran during carve.
 	rawBlock, err := base.GetBlock(ctx, loc.BlockID)
 	if err != nil {
 		t.Fatalf("base GetBlock: %v", err)
@@ -299,6 +302,29 @@ func TestCarve_NonBlockRemoteDisablesCarve(t *testing.T) {
 	if syncer.PendingCount() != 1 {
 		t.Fatal("chunk should route to the legacy mirror set when carve is disabled")
 	}
+}
+
+// failOnNthMarkSynced is a blockCommitter wrapper that injects a MarkSynced
+// failure on a specific call (1-indexed). All other methods delegate to the
+// embedded real store so the transaction and local-index paths work normally.
+// Used by TestCarve_PartialMarkSyncedRetriesSameBlock to simulate a transient
+// metadata-store blip after the block record transaction commits.
+type failOnNthMarkSynced struct {
+	*metadatamemory.MemoryMetadataStore
+	mu         sync.Mutex
+	count      int
+	failOnCall int // which call (1-indexed) to fail
+}
+
+func (f *failOnNthMarkSynced) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
+	f.mu.Lock()
+	f.count++
+	n := f.count
+	f.mu.Unlock()
+	if n == f.failOnCall {
+		return errors.New("injected MarkSynced failure")
+	}
+	return f.MemoryMetadataStore.MarkSynced(ctx, hash, loc)
 }
 
 // nonBlockRemote wraps a RemoteStore but hides the RemoteBlockStore methods so
@@ -356,5 +382,223 @@ func TestCarve_BoundaryAtBlockCarveBytes(t *testing.T) {
 		if loc.IsStandalone() {
 			t.Fatalf("hash %s: want block locator, got standalone", h)
 		}
+	}
+}
+
+// TestCarve_PartialMarkSyncedRetriesSameBlock is a regression test for
+// Finding #1: if DefaultCommitBlock's transaction commits but the MarkSynced
+// loop fails on a subsequent chunk, carveAndCommitBlock must retry with the
+// SAME blockID (via DefaultCommitBlock's idempotent tx guard) rather than
+// minting a new block. After the in-place retry succeeds, exactly one block
+// object must exist on the remote, and both chunks must be synced to that
+// single block — no orphan record with a non-zero LiveChunkCount and zero
+// referencing locators.
+func TestCarve_PartialMarkSyncedRetriesSameBlock(t *testing.T) {
+	ctx := context.Background()
+	mem := remotememory.New()
+
+	// Wire a real memory store that fails MarkSynced exactly once (call #2) to
+	// simulate a transient metadata-store blip after the block record tx commits.
+	realMS := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	wrapper := &failOnNthMarkSynced{
+		MemoryMetadataStore: realMS,
+		failOnCall:          2, // second chunk's MarkSynced fails once
+	}
+
+	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{
+		LocalChunkIndex: realMS,
+	})
+	if err != nil {
+		t.Fatalf("fs.NewWithOptions: %v", err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+
+	cfg := DefaultConfig()
+	cfg.BlockCarveBytes = DefaultBlockCarveBytes
+	cfg.ManualSync = true
+
+	syncer := NewSyncer(local, mem, realMS, cfg)
+	syncer.SetSyncedHashStore(wrapper) // blockCommitter = wrapper (intercepts MarkSynced)
+	var memRBS remote.RemoteBlockStore = mem
+	syncer.SetRemoteBlockStore(memRBS)
+
+	if !syncer.carveActive.Load() {
+		t.Fatal("carve substrate must be active")
+	}
+
+	f := &carveFixture{local: local, ms: realMS, remote: memRBS, syncer: syncer}
+
+	// Store two chunks so the carver packs both into one block.
+	h1 := f.storeChunk(t, ctx, bytes.Repeat([]byte("chunk-A"), 512))
+	h2 := f.storeChunk(t, ctx, bytes.Repeat([]byte("chunk-B"), 512))
+
+	// carveFlush must succeed: the ErrCommitPartial retry completes MarkSynced
+	// for h2 using the same blockID.
+	if err := syncer.carveFlush(ctx, true); err != nil {
+		t.Fatalf("carveFlush: expected retry to succeed, got: %v", err)
+	}
+
+	// Exactly one block object on remote — no second block minted.
+	if got := countRemoteBlocks(t, ctx, mem); got != 1 {
+		t.Fatalf("remote blocks = %d, want 1 (no second block after ErrCommitPartial retry)", got)
+	}
+	if got := countRemoteCAS(t, ctx, mem); got != 0 {
+		t.Fatalf("remote CAS objects = %d, want 0", got)
+	}
+
+	// Both chunks synced to the SAME blockID.
+	loc1, ok1, err := realMS.GetLocator(ctx, h1)
+	if err != nil || !ok1 {
+		t.Fatalf("h1: synced=%v err=%v", ok1, err)
+	}
+	loc2, ok2, err := realMS.GetLocator(ctx, h2)
+	if err != nil || !ok2 {
+		t.Fatalf("h2: synced=%v err=%v", ok2, err)
+	}
+	if loc1.BlockID == "" || loc2.BlockID == "" {
+		t.Fatalf("chunks must have block locators, got loc1=%+v loc2=%+v", loc1, loc2)
+	}
+	if loc1.BlockID != loc2.BlockID {
+		t.Fatalf("chunks synced to different blocks: %s vs %s — orphan record present",
+			loc1.BlockID, loc2.BlockID)
+	}
+
+	// Block record must reflect both chunks.
+	rec, exists, err := realMS.GetBlockRecord(ctx, loc1.BlockID)
+	if err != nil || !exists {
+		t.Fatalf("GetBlockRecord(%s): exists=%v err=%v", loc1.BlockID, exists, err)
+	}
+	if rec.LiveChunkCount != 2 {
+		t.Fatalf("BlockRecord.LiveChunkCount = %d, want 2", rec.LiveChunkCount)
+	}
+
+	// Carve set fully drained.
+	if n := syncer.CarvePendingCount(); n != 0 {
+		t.Fatalf("carve pending = %d, want 0", n)
+	}
+
+	// Injection must have fired (test was meaningful).
+	wrapper.mu.Lock()
+	fired := wrapper.count >= wrapper.failOnCall
+	wrapper.mu.Unlock()
+	if !fired {
+		t.Fatal("MarkSynced failure injection did not fire — test setup error")
+	}
+}
+
+// TestCarve_DispatcherIdleFlush verifies the carve dispatcher (MINOR #2): a
+// sub-target write must not produce a block during the size-triggered pass, but
+// must appear after the idle window (UploadDelay) elapses. Exercises the
+// carveDispatcher timer path that the ManualSync=true fixtures never launch.
+func TestCarve_DispatcherIdleFlush(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	mem := remotememory.New()
+
+	const carveTarget = 4 * 1024 // 4 KiB; test data is 1 KiB — sub-target
+	const uploadDelay = 100 * time.Millisecond
+
+	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{
+		LocalChunkIndex: ms,
+	})
+	if err != nil {
+		t.Fatalf("fs.NewWithOptions: %v", err)
+	}
+	t.Cleanup(func() { _ = local.Close() })
+
+	cfg := DefaultConfig()
+	cfg.BlockCarveBytes = carveTarget
+	cfg.UploadDelay = uploadDelay
+	cfg.ManualSync = false // required: carveDispatcher drives the idle flush
+
+	syncer := NewSyncer(local, mem, ms, cfg)
+	syncer.SetSyncedHashStore(ms)
+	var memRBS2 remote.RemoteBlockStore = mem
+	syncer.SetRemoteBlockStore(memRBS2)
+
+	if !syncer.carveActive.Load() {
+		t.Fatal("carve substrate must be active")
+	}
+
+	// Launch only the carve dispatcher; no health monitor or legacy dispatcher.
+	go syncer.carveDispatcher(ctx)
+
+	// Write 1 KiB — sub-target relative to the 4 KiB carve size.
+	f := &carveFixture{local: local, ms: ms, remote: memRBS2, syncer: syncer}
+	_ = f.storeChunk(t, ctx, bytes.Repeat([]byte("idle-x"), 170))
+
+	// Size-triggered flush (drainAll=false) must have returned nil: no block yet.
+	if got := countRemoteBlocks(t, ctx, mem); got != 0 {
+		t.Fatalf("blocks immediately after write = %d, want 0 (idle window not elapsed)", got)
+	}
+
+	// Poll until the idle flush fires. Allow 5× the idle window for scheduler
+	// jitter; fail if no block appears within that budget.
+	deadline := time.Now().Add(5 * uploadDelay)
+	for {
+		if countRemoteBlocks(t, ctx, mem) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no block after %v; idle flush did not fire", 5*uploadDelay)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if n := syncer.CarvePendingCount(); n != 0 {
+		t.Fatalf("carve pending = %d, want 0 after idle flush", n)
+	}
+}
+
+// TestCarve_RerouteMiss_LegacyPath verifies rerouteCarveMiss (MINOR #4): a
+// hash in the carve set but absent from the local log-blob chunk index (a
+// stray CAS hash misrouted to carve) is transferred to the legacy standalone-
+// mirror pending set without double-counting unsyncedBytes, and the legacy
+// upload wake is signalled.
+func TestCarve_RerouteMiss_LegacyPath(t *testing.T) {
+	ctx := context.Background()
+	mem := remotememory.New()
+	f := newCarveFixture(t, mem, DefaultBlockCarveBytes)
+
+	// A content hash NOT stored in the local log-blob / chunk index.
+	// addPendingCarveHash forces it into the carve set, simulating a stray CAS
+	// hash that was misrouted to carve before the log-blob / CAS distinction
+	// was enforced.
+	var ghost block.ContentHash
+	ghost[0] = 0x42
+	ghost[1] = 0xcd
+	const ghostSize int64 = 512
+	f.syncer.addPendingCarveHash(ghost, ghostSize)
+
+	if n := f.syncer.CarvePendingCount(); n != 1 {
+		t.Fatalf("carve pending = %d, want 1 before flush", n)
+	}
+	if got := f.syncer.UnsyncedBytes(); got != ghostSize {
+		t.Fatalf("UnsyncedBytes before flush = %d, want %d", got, ghostSize)
+	}
+
+	// carveFlush: GetLocalLocation(ghost) returns (_, false, nil) →
+	// rerouteCarveMiss moves ghost to the legacy pending set.
+	if err := f.syncer.carveFlush(ctx, true); err != nil {
+		t.Fatalf("carveFlush: %v", err)
+	}
+
+	// Ghost must have left the carve set.
+	if n := f.syncer.CarvePendingCount(); n != 0 {
+		t.Fatalf("carve pending = %d, want 0 after reroute", n)
+	}
+	// Ghost must be in the legacy pending set (wake signalled by rerouteCarveMiss).
+	if n := f.syncer.PendingCount(); n != 1 {
+		t.Fatalf("legacy pending = %d, want 1 after reroute", n)
+	}
+	// No remote block: only a reroute occurred, no commit.
+	if got := countRemoteBlocks(t, ctx, mem); got != 0 {
+		t.Fatalf("remote blocks = %d, want 0 (reroute only, no commit)", got)
+	}
+	// unsyncedBytes unchanged: ghost charged once, now in pendingHashes.
+	if got := f.syncer.UnsyncedBytes(); got != ghostSize {
+		t.Fatalf("UnsyncedBytes after reroute = %d, want %d (charged exactly once)", got, ghostSize)
 	}
 }
