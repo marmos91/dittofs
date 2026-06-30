@@ -32,7 +32,7 @@ func TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload(t *testing.T) {
 	m := &Syncer{
 		local:           loc,
 		remoteStore:     rs,
-		fileBlockStore:  fbs,
+		fileChunkStore:  fbs,
 		inFlight:        make(map[string]*fetchResult),
 		stopCh:          make(chan struct{}),
 		config:          DefaultConfig(),

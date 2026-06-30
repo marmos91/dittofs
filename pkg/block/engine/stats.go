@@ -182,11 +182,11 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 
 // populateBlockCounts fills block count fields and FileCount from the
 // authoritative metadata. It enumerates payloads via
-// fileBlockStore.EnumeratePayloads (which survives rollup) rather than the
+// fileChunkStore.EnumeratePayloads (which survives rollup) rather than the
 // local store's ListFiles, so a rolled-up share whose append logs are gone
 // still reports its blocks and files instead of zero (#1374).
 func (bs *Store) populateBlockCounts(stats *BlockStoreStats) {
-	if bs.fileBlockStore == nil {
+	if bs.fileChunkStore == nil {
 		return
 	}
 
@@ -194,9 +194,9 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats) {
 	defer cancel()
 
 	var payloadCount int
-	if err := bs.fileBlockStore.EnumeratePayloads(ctx, func(payloadID string) error {
+	if err := bs.fileChunkStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		payloadCount++
-		blocks, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
+		blocks, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 		if err != nil {
 			return nil // skip this payload, keep going
 		}

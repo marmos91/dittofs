@@ -202,9 +202,9 @@ type MemoryMetadataStore struct {
 	// Note: Sessions are informational only and don't affect access control
 	sessions map[string]*metadata.ShareSession
 
-	// fileBlockData holds content-addressed file block tracking data.
+	// fileChunkData holds content-addressed file chunk tracking data.
 	// Initialized lazily on first use.
-	fileBlockData *fileBlockStoreData
+	fileChunkData *fileChunkStoreData
 
 	// lockStore holds persisted lock data for NLM/SMB lock persistence.
 	// Initialized lazily on first use.
@@ -280,7 +280,7 @@ type MemoryMetadataStore struct {
 	// (post-quiesce); zero entries skipped.
 	//
 	// Maintained inside PutFile/DeleteFile under the same store-level lock
-	// (mu) that guards `files`, mirroring the fileBlockData.hashIndex
+	// (mu) that guards `files`, mirroring the fileChunkData.hashIndex
 	// discipline (objects.go).
 	//
 	// NOTE: `fileData` carries no separate UUID field; the canonical

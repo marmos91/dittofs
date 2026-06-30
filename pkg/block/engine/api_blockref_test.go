@@ -114,7 +114,7 @@ func TestCopyPayload_CreatesDstFileChunkRows(t *testing.T) {
 		t.Fatalf("CopyPayload: %v", err)
 	}
 
-	rows, err := bs.fileBlockStore.ListFileChunks(ctx, dst)
+	rows, err := bs.fileChunkStore.ListFileChunks(ctx, dst)
 	if err != nil {
 		t.Fatalf("ListFileChunks(%s): %v", dst, err)
 	}

@@ -430,10 +430,10 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Bl
 // rows this pass missed. Best-effort matches the rest of Delete's posture:
 // reclaiming disk must never wedge an unlink.
 func (bs *Store) payloadBlockRefs(ctx context.Context, payloadID string) []block.BlockRef {
-	if bs.fileBlockStore == nil {
+	if bs.fileChunkStore == nil {
 		return nil
 	}
-	rows, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
+	rows, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		logger.Warn("delete: list file blocks for reap (proceeding; reconcile will catch orphans)",
 			"payloadID", payloadID, "err", err)
@@ -547,7 +547,7 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// Route the Put through the txn bound in ctx when present. The clone
 	// callers (common.CopyPayload / common.CloneWholeFile) invoke us inside
 	// metadataStore.WithTransaction, which on the memory backend holds the
-	// store mutex for the life of fn; the store-level fileBlockStore.Put would
+	// store mutex for the life of fn; the store-level fileChunkStore.Put would
 	// re-acquire that same (non-reentrant) mutex and self-deadlock. The
 	// tx-bound Put writes under the already-held lock and commits/rolls back
 	// atomically with the caller's dst FileAttr.Blocks PutFile — so the per-file
@@ -560,14 +560,14 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	// backend's non-reentrant mutex and self-deadlock. The store fallback
 	// covers the no-txn path (unit tests wiring the engine directly), matching
 	// the rollup ObjectIDPersister. The row write does NOT depend on
-	// bs.fileBlockStore being non-nil when a txn is bound.
+	// bs.fileChunkStore being non-nil when a txn is bound.
 	tx := metadata.TxFromContext(ctx)
 	var putRow func(context.Context, *block.FileChunk) error
 	switch {
 	case tx != nil:
 		putRow = tx.Put
-	case bs.fileBlockStore != nil:
-		putRow = bs.fileBlockStore.Put
+	case bs.fileChunkStore != nil:
+		putRow = bs.fileChunkStore.Put
 	}
 	for _, b := range srcBlocks {
 		if b.Hash.IsZero() {

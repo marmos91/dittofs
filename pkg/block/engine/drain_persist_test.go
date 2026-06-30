@@ -245,10 +245,10 @@ func createRealFile(t *testing.T, store metadata.Store, shareName, name string, 
 	return payloadID, handle
 }
 
-// fileBlocks reads FileAttr.Blocks for a handle via GetFile (which loads
+// fileChunks reads FileAttr.Blocks for a handle via GetFile (which loads
 // blocks from the per-file block manifest — GetFileByPayloadID does NOT on
 // the Postgres backend).
-func fileBlocks(t *testing.T, store metadata.Store, handle metadata.FileHandle) []block.BlockRef {
+func fileChunks(t *testing.T, store metadata.Store, handle metadata.FileHandle) []block.BlockRef {
 	t.Helper()
 	f, err := store.GetFile(context.Background(), handle)
 	if err != nil {
@@ -348,7 +348,7 @@ func runIdenticalContentDrain(t *testing.T, ms metadata.Store, sharePrefix strin
 		"beta.bin":       hB,
 		"alpha-copy.bin": hC,
 	} {
-		blocks := fileBlocks(t, ms, h)
+		blocks := fileChunks(t, ms, h)
 		if len(blocks) == 0 {
 			t.Fatalf("file %s has empty FileAttr.Blocks after DrainRollups (unrestorable duplicate)", name)
 		}

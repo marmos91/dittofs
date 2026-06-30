@@ -121,7 +121,7 @@ func TestGetStats_PopulateBlockCounts_CASPendingCountedAsLocal(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)
 	ctx := context.Background()
 
-	fbs := bs.fileBlockStore.(*stubFileChunkStore)
+	fbs := bs.fileChunkStore.(*stubFileChunkStore)
 
 	// Block A: CAS-path Pending — non-zero hash, no LocalPath, no BlockStoreKey.
 	// Before fix -> BlocksDirty (wrong). After fix -> BlocksLocal (correct).

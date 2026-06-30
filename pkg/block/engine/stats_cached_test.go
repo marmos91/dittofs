@@ -19,7 +19,7 @@ func TestPopulateBlockCounts_ClassifiesByPhysicalPresence(t *testing.T) {
 	ctx := context.Background()
 	loc := memorylocal.New()
 	fbs := newStubFileChunkStore()
-	bs := &Store{local: loc, fileBlockStore: fbs}
+	bs := &Store{local: loc, fileChunkStore: fbs}
 
 	const payloadID = "p1"
 

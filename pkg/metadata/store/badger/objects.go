@@ -18,7 +18,7 @@ import (
 // ============================================================================
 //
 // This file implements the FileChunkStore interface for the BadgerDB metadata store.
-// It provides content-addressed file block tracking for deduplication and caching.
+// It provides content-addressed file chunk tracking for deduplication and caching.
 //
 // The FileChunkStore interface is narrowed to 6 methods. The backend
 // retains the legacy GetFileChunk + ListFileChunks helpers as
@@ -35,9 +35,9 @@ import (
 // ============================================================================
 
 const (
-	fileBlockPrefix     = "fb:"
-	fileBlockHashPrefix = "fb-hash:"
-	fileBlockFilePrefix = "fb-file:"
+	fileChunkPrefix     = "fb:"
+	fileChunkHashPrefix = "fb-hash:"
+	fileChunkFilePrefix = "fb-file:"
 )
 
 // Ensure BadgerMetadataStore implements FileChunkStore
@@ -48,14 +48,14 @@ var _ blockpkg.FileChunkStore = (*BadgerMetadataStore)(nil)
 // the decrement-and-reap paths so the teardown stays in one place. The caller
 // has already loaded `block` (its Hash drives the hash-index cleanup).
 func reapBlockTxn(txn *badger.Txn, id string, block *metadata.FileChunk) error {
-	if err := txn.Delete([]byte(fileBlockPrefix + id)); err != nil {
+	if err := txn.Delete([]byte(fileChunkPrefix + id)); err != nil {
 		return err
 	}
 	if pid, idx, ok := splitBlockID(id); ok {
-		_ = txn.Delete([]byte(fileBlockFilePrefix + pid + ":" + idx))
+		_ = txn.Delete([]byte(fileChunkFilePrefix + pid + ":" + idx))
 	}
 	if block.IsFinalized() {
-		_ = txn.Delete([]byte(fileBlockHashPrefix + block.Hash.String()))
+		_ = txn.Delete([]byte(fileChunkHashPrefix + block.Hash.String()))
 	}
 	return nil
 }
@@ -64,13 +64,13 @@ func reapBlockTxn(txn *badger.Txn, id string, block *metadata.FileChunk) error {
 // FileChunk Operations
 // ============================================================================
 
-// GetFileChunk retrieves a file block by its ID. Not on the narrowed
+// GetFileChunk retrieves a file chunk by its ID. Not on the narrowed
 // FileChunkStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *BadgerMetadataStore) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
 	var block metadata.FileChunk
 	err := s.db.View(func(txn *badger.Txn) error {
-		key := []byte(fileBlockPrefix + id)
+		key := []byte(fileChunkPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
 			return metadata.ErrFileChunkNotFound
@@ -88,14 +88,14 @@ func (s *BadgerMetadataStore) GetFileChunk(ctx context.Context, id string) (*met
 	return &block, nil
 }
 
-// Put stores or updates a file block. Renamed from PutFileChunk to
+// Put stores or updates a file chunk. Renamed from PutFileChunk to
 // match the narrowed interface.
 func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileChunk) error {
 	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(fileBlockPrefix + block.ID)
+		key := []byte(fileChunkPrefix + block.ID)
 		val, err := json.Marshal(block)
 		if err != nil {
-			return fmt.Errorf("marshal file block: %w", err)
+			return fmt.Errorf("marshal file chunk: %w", err)
 		}
 		if err := txn.Set(key, val); err != nil {
 			return err
@@ -104,7 +104,7 @@ func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileChunk
 		// Maintain file index: fb-file:{payloadID}:{blockIdx} -> block.ID
 		// This allows ListFileChunks to iterate O(file_blocks) via prefix scan.
 		if pid, idx, ok := splitBlockID(block.ID); ok {
-			fileKey := []byte(fileBlockFilePrefix + pid + ":" + idx)
+			fileKey := []byte(fileChunkFilePrefix + pid + ":" + idx)
 			if err := txn.Set(fileKey, []byte(block.ID)); err != nil {
 				return err
 			}
@@ -112,17 +112,17 @@ func (s *BadgerMetadataStore) Put(ctx context.Context, block *metadata.FileChunk
 
 		// Update hash index for finalized blocks
 		if block.IsFinalized() {
-			hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
+			hashKey := []byte(fileChunkHashPrefix + block.Hash.String())
 			return txn.Set(hashKey, []byte(block.ID))
 		}
 		return nil
 	})
 }
 
-// Delete removes a file block by its ID. Renamed from DeleteFileChunk in
+// Delete removes a file chunk by its ID. Renamed from DeleteFileChunk in
 func (s *BadgerMetadataStore) Delete(ctx context.Context, id string) error {
 	return s.db.Update(func(txn *badger.Txn) error {
-		key := []byte(fileBlockPrefix + id)
+		key := []byte(fileChunkPrefix + id)
 
 		// Get block to find hash for index cleanup
 		item, err := txn.Get(key)
@@ -178,7 +178,7 @@ func (s *BadgerMetadataStore) updateWithConflictRetry(ctx context.Context, fn fu
 // on badger.ErrConflict so contended +1/-1/AddRef workloads converge.
 func (s *BadgerMetadataStore) IncrementRefCount(ctx context.Context, id string) error {
 	return s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
-		key := []byte(fileBlockPrefix + id)
+		key := []byte(fileChunkPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
 			return metadata.ErrFileChunkNotFound
@@ -206,7 +206,7 @@ func (s *BadgerMetadataStore) IncrementRefCount(ctx context.Context, id string) 
 func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
 	var newCount uint32
 	err := s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
-		key := []byte(fileBlockPrefix + id)
+		key := []byte(fileChunkPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
 			return metadata.ErrFileChunkNotFound
@@ -241,7 +241,7 @@ func (s *BadgerMetadataStore) DecrementRefCount(ctx context.Context, id string) 
 func (s *BadgerMetadataStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
 	var newCount uint32
 	err := s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
-		key := []byte(fileBlockPrefix + id)
+		key := []byte(fileChunkPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
 			newCount = 0
@@ -298,7 +298,7 @@ func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockpkg.ContentH
 	// blanked.
 	return s.updateWithConflictRetry(ctx, func(txn *badger.Txn) error {
 		// Resolve hash → id via the secondary index.
-		hashKey := []byte(fileBlockHashPrefix + hash.String())
+		hashKey := []byte(fileChunkHashPrefix + hash.String())
 		hashItem, err := txn.Get(hashKey)
 		if err == badger.ErrKeyNotFound {
 			return metadata.ErrUnknownHash
@@ -315,7 +315,7 @@ func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockpkg.ContentH
 		}
 
 		// Fetch the FileChunk value.
-		key := []byte(fileBlockPrefix + id)
+		key := []byte(fileChunkPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
 			// Index/value desync — treat as unknown so the LRU
@@ -347,7 +347,7 @@ func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 	var found bool
 	err := s.db.View(func(txn *badger.Txn) error {
 		// Look up ID via hash index
-		hashKey := []byte(fileBlockHashPrefix + hash.String())
+		hashKey := []byte(fileChunkHashPrefix + hash.String())
 		hashItem, err := txn.Get(hashKey)
 		if err == badger.ErrKeyNotFound {
 			return nil // Not found
@@ -365,7 +365,7 @@ func (s *BadgerMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 		}
 
 		// Fetch the block
-		key := []byte(fileBlockPrefix + id)
+		key := []byte(fileChunkPrefix + id)
 		item, err := txn.Get(key)
 		if err == badger.ErrKeyNotFound {
 			return nil // Index stale, block deleted
@@ -471,7 +471,7 @@ func (s *BadgerMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn fu
 func (s *BadgerMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	seen := make(map[string]struct{})
 	err := s.db.View(func(txn *badger.Txn) error {
-		prefix := []byte(fileBlockFilePrefix)
+		prefix := []byte(fileChunkFilePrefix)
 		opts := badger.DefaultIteratorOptions
 		opts.Prefix = prefix
 		opts.PrefetchValues = false // Keys only — payloadID lives in the key
@@ -530,7 +530,7 @@ func (s *BadgerMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(b
 // tx.Put be observed by a later tx.ListFileChunks in the same WithTransaction.
 func listFileChunksTxn(txn *badger.Txn, payloadID string) []*metadata.FileChunk {
 	var result []*metadata.FileChunk
-	prefix := []byte(fileBlockFilePrefix + payloadID + ":")
+	prefix := []byte(fileChunkFilePrefix + payloadID + ":")
 	opts := badger.DefaultIteratorOptions
 	opts.Prefix = prefix
 	opts.PrefetchValues = true
@@ -545,7 +545,7 @@ func listFileChunksTxn(txn *badger.Txn, payloadID string) []*metadata.FileChunk 
 		}); err != nil {
 			continue
 		}
-		fbItem, err := txn.Get([]byte(fileBlockPrefix + blockID))
+		fbItem, err := txn.Get([]byte(fileChunkPrefix + blockID))
 		if err != nil {
 			continue // Index stale, block deleted
 		}
@@ -578,10 +578,10 @@ func listFileChunksTxn(txn *badger.Txn, payloadID string) []*metadata.FileChunk 
 // harmless — GCState.Add deduplicates the live set.
 func enumerateFileChunksTxn(ctx context.Context, txn *badger.Txn, fn func(blockpkg.ContentHash) error) error {
 	// Each pass is scoped so its iterator is released before the next opens.
-	if err := enumeratePrefixHashes(ctx, txn, fileBlockPrefix, func(val []byte) (blockpkg.ContentHash, error) {
+	if err := enumeratePrefixHashes(ctx, txn, fileChunkPrefix, func(val []byte) (blockpkg.ContentHash, error) {
 		var block metadata.FileChunk
 		if err := json.Unmarshal(val, &block); err != nil {
-			return blockpkg.ContentHash{}, fmt.Errorf("decode file block: %w", err)
+			return blockpkg.ContentHash{}, fmt.Errorf("decode file chunk: %w", err)
 		}
 		return block.Hash, nil
 	}, fn); err != nil {
@@ -611,7 +611,7 @@ func enumeratePrefixHashes(
 
 	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate file blocks: %w", err)
+			return fmt.Errorf("enumerate file chunks: %w", err)
 		}
 		var h blockpkg.ContentHash
 		if err := it.Item().Value(func(val []byte) error {
@@ -643,7 +643,7 @@ func enumeratePrefixFileChunks(ctx context.Context, txn *badger.Txn, fn func(blo
 
 	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate file blocks: %w", err)
+			return fmt.Errorf("enumerate file chunks: %w", err)
 		}
 		var file *metadata.File
 		if err := it.Item().Value(func(val []byte) error {
@@ -654,7 +654,7 @@ func enumeratePrefixFileChunks(ctx context.Context, txn *badger.Txn, fn func(blo
 			file = f
 			return nil
 		}); err != nil {
-			return fmt.Errorf("enumerate file blocks: decode file: %w", err)
+			return fmt.Errorf("enumerate file chunks: decode file: %w", err)
 		}
 		// nlink=0 (unlinked) inodes keep their f: record but the file is dead.
 		// Excluding their manifest blocks from the GC live set is what lets the
@@ -743,7 +743,7 @@ func (tx *badgerTransaction) GetFileChunk(ctx context.Context, id string) (*meta
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	key := []byte(fileBlockPrefix + id)
+	key := []byte(fileChunkPrefix + id)
 	item, err := tx.txn.Get(key)
 	if err == badger.ErrKeyNotFound {
 		return nil, metadata.ErrFileChunkNotFound
@@ -764,22 +764,22 @@ func (tx *badgerTransaction) Put(ctx context.Context, block *metadata.FileChunk)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	key := []byte(fileBlockPrefix + block.ID)
+	key := []byte(fileChunkPrefix + block.ID)
 	val, err := json.Marshal(block)
 	if err != nil {
-		return fmt.Errorf("marshal file block: %w", err)
+		return fmt.Errorf("marshal file chunk: %w", err)
 	}
 	if err := tx.txn.Set(key, val); err != nil {
 		return err
 	}
 	if pid, idx, ok := splitBlockID(block.ID); ok {
-		fileKey := []byte(fileBlockFilePrefix + pid + ":" + idx)
+		fileKey := []byte(fileChunkFilePrefix + pid + ":" + idx)
 		if err := tx.txn.Set(fileKey, []byte(block.ID)); err != nil {
 			return err
 		}
 	}
 	if block.IsFinalized() {
-		hashKey := []byte(fileBlockHashPrefix + block.Hash.String())
+		hashKey := []byte(fileChunkHashPrefix + block.Hash.String())
 		return tx.txn.Set(hashKey, []byte(block.ID))
 	}
 	return nil
@@ -789,7 +789,7 @@ func (tx *badgerTransaction) Delete(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	key := []byte(fileBlockPrefix + id)
+	key := []byte(fileChunkPrefix + id)
 	item, err := tx.txn.Get(key)
 	if err == badger.ErrKeyNotFound {
 		return metadata.ErrFileChunkNotFound
@@ -812,7 +812,7 @@ func (tx *badgerTransaction) IncrementRefCount(ctx context.Context, id string) e
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	key := []byte(fileBlockPrefix + id)
+	key := []byte(fileChunkPrefix + id)
 	item, err := tx.txn.Get(key)
 	if err == badger.ErrKeyNotFound {
 		return metadata.ErrFileChunkNotFound
@@ -840,7 +840,7 @@ func (tx *badgerTransaction) DecrementRefCount(ctx context.Context, id string) (
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	key := []byte(fileBlockPrefix + id)
+	key := []byte(fileChunkPrefix + id)
 	item, err := tx.txn.Get(key)
 	if err == badger.ErrKeyNotFound {
 		return 0, metadata.ErrFileChunkNotFound
@@ -875,7 +875,7 @@ func (tx *badgerTransaction) DecrementRefCountAndReap(ctx context.Context, id st
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	key := []byte(fileBlockPrefix + id)
+	key := []byte(fileChunkPrefix + id)
 	item, err := tx.txn.Get(key)
 	if err == badger.ErrKeyNotFound {
 		return 0, nil // tolerate already-swept row
@@ -917,7 +917,7 @@ func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHa
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	hashKey := []byte(fileBlockHashPrefix + hash.String())
+	hashKey := []byte(fileChunkHashPrefix + hash.String())
 	hashItem, err := tx.txn.Get(hashKey)
 	if err == badger.ErrKeyNotFound {
 		return metadata.ErrUnknownHash
@@ -932,7 +932,7 @@ func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHa
 	}); err != nil {
 		return err
 	}
-	key := []byte(fileBlockPrefix + id)
+	key := []byte(fileChunkPrefix + id)
 	item, err := tx.txn.Get(key)
 	if err == badger.ErrKeyNotFound {
 		return metadata.ErrUnknownHash
@@ -962,7 +962,7 @@ func (tx *badgerTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	hashKey := []byte(fileBlockHashPrefix + hash.String())
+	hashKey := []byte(fileChunkHashPrefix + hash.String())
 	hashItem, err := tx.txn.Get(hashKey)
 	if err == badger.ErrKeyNotFound {
 		return nil, nil
@@ -977,7 +977,7 @@ func (tx *badgerTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 	}); err != nil {
 		return nil, err
 	}
-	key := []byte(fileBlockPrefix + id)
+	key := []byte(fileChunkPrefix + id)
 	item, err := tx.txn.Get(key)
 	if err == badger.ErrKeyNotFound {
 		return nil, nil

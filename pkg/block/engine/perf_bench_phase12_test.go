@@ -129,7 +129,7 @@ func setupPerfFixture(tb testing.TB) *phase12Fixture {
 
 // newPerfTestEngine mirrors newTestEngine (engine_test.go) but is
 // reachable from benchmarks (testing.TB instead of *testing.T). Memory
-// local store + nil remote + stub fileBlockStore — the bench measures
+// local store + nil remote + stub fileChunkStore — the bench measures
 // the engine's read-path overhead (binary search, OnRead, copy out)
 // without any network or remote-store latency.
 func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int) *Store {

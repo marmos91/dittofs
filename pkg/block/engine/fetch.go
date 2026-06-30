@@ -55,7 +55,7 @@ func (m *Syncer) resolveFileChunk(ctx context.Context, payloadID string, blockId
 // after the scan is not reflected for the remainder of that read, which is the
 // acceptable (and arguably more correct) per-read isolation semantics.
 func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) ([]*block.FileChunk, error) {
-	rows, err := m.fileBlockStore.ListFileChunks(ctx, payloadID)
+	rows, err := m.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		if errors.Is(err, block.ErrFileChunkNotFound) {
 			return nil, nil // Sparse — not an error

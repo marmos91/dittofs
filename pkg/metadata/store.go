@@ -243,7 +243,7 @@ type ServerConfig interface {
 // FileChunkStore Interface (Content-Addressed Block Management)
 // ============================================================================
 
-// FileChunkStore defines operations for content-addressed file block management.
+// FileChunkStore defines operations for content-addressed file chunk management.
 // Type alias to block.FileChunkStore -- all definitions live in pkg/block.
 type FileChunkStore = block.FileChunkStore
 

@@ -137,8 +137,8 @@ var (
 	// ErrInvalidHash is returned when a hash string is malformed.
 	ErrInvalidHash = errors.New("invalid content hash format")
 
-	// ErrFileChunkNotFound is returned when a file block is not found.
-	ErrFileChunkNotFound = errors.New("file block not found")
+	// ErrFileChunkNotFound is returned when a file chunk is not found.
+	ErrFileChunkNotFound = errors.New("file chunk not found")
 
 	// ErrUnknownHash is returned by FileChunkStore.AddRef when no
 	// FileChunk row exists for the given hash. The LRU hit path

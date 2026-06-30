@@ -36,7 +36,7 @@ func (s *MemoryMetadataStore) Reset(ctx context.Context) error {
 	s.objectIndex = make(map[block.ContentHash]string)
 	s.serverConfig = metadata.MetadataServerConfig{}
 
-	s.fileBlockData = nil
+	s.fileChunkData = nil
 	s.lockStore = nil
 	s.clientStore = nil
 	s.durableStore = nil

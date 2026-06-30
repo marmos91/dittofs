@@ -84,7 +84,7 @@ func waitForChunks(t *testing.T, bs *Store, payloadID string, timeout time.Durat
 	ctx := context.Background()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		blocks, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
+		blocks, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 		if err == nil && len(blocks) > 0 {
 			return blocks
 		}

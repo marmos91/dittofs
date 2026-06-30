@@ -54,14 +54,14 @@ func (f *failingPutLocal) Put(_ context.Context, _ block.ContentHash, _ []byte) 
 }
 
 // newFetchSyncer wires the minimum Syncer surface inlineFetchOrWait
-// exercises: local, remoteStore, fileBlockStore, inFlight map, and a
+// exercises: local, remoteStore, fileChunkStore, inFlight map, and a
 // nil HealthMonitor (so IsRemoteHealthy returns true). Coordinator and
 // SyncedHashStore are unused on this path.
 func newFetchSyncer(localStore local.LocalStore, rs *remotememory.Store, fbs block.EngineFileChunkStore) *Syncer {
 	return &Syncer{
 		local:          localStore,
 		remoteStore:    rs,
-		fileBlockStore: fbs,
+		fileChunkStore: fbs,
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
 		config:         DefaultConfig(),

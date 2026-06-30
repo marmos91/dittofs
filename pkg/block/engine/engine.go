@@ -86,7 +86,7 @@ type Store struct {
 	// widened to EngineFileChunkStore so populateBlockCounts
 	// can call ListFileChunks (engine-internal method not on the public
 	// FileChunkStore surface).
-	fileBlockStore block.EngineFileChunkStore // optional: for block count stats
+	fileChunkStore block.EngineFileChunkStore // optional: for block count stats
 
 	// coordinator handles all metadata-store operations the engine
 	// needs (RefCount mutations, BlockRef-list persistence). May be nil
@@ -166,7 +166,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		local:           cfg.Local,
 		remote:          cfg.Remote,
 		syncer:          cfg.Syncer,
-		fileBlockStore:  cfg.FileChunkStore,
+		fileChunkStore:  cfg.FileChunkStore,
 		coordinator:     cfg.Coordinator,
 		syncedHashStore: cfg.SyncedHashStore,
 		readBufferBytes: cfg.ReadBufferBytes,
@@ -225,8 +225,8 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 			// (silent corruption after log compaction / local-state
 			// eviction). Snapshot now, reap after PersistFileChunks below.
 			var priorOffsets []uint64
-			if bs.fileBlockStore != nil {
-				priorRows, lerr := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
+			if bs.fileChunkStore != nil {
+				priorRows, lerr := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 				if lerr != nil {
 					return fmt.Errorf("ObjectIDPersister: list prior blocks for %s: %w", payloadID, lerr)
 				}
@@ -782,7 +782,7 @@ func (bs *Store) RemoteStore() remote.RemoteStore { return bs.remote }
 // This reflects only locally-present payloads (those with a live append log);
 // it goes empty after rollup. Callers needing every payload (including
 // rolled-up ones) should enumerate the authoritative metadata via the
-// fileBlock store's EnumeratePayloads instead.
+// fileChunk store's EnumeratePayloads instead.
 func (bs *Store) ListFiles() []string { return bs.local.ListFiles() }
 
 // EvictLocal removes all local per-file state (memory tracking, files

@@ -65,7 +65,7 @@ func (bs *Store) readAtInternal(ctx context.Context, payloadID string, data []by
 
 	// Local miss — try the CAS-hash walk (handles edge cases where the
 	// FileChunkStore manifest is reachable via the engine's
-	// fileBlockStore field but not the LocalStore-internal one).
+	// fileChunkStore field but not the LocalStore-internal one).
 	found, err := bs.readLocalByHash(ctx, payloadID, data, offset)
 	if err != nil {
 		return 0, fmt.Errorf("local read failed: %w", err)
@@ -137,10 +137,10 @@ func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []b
 	// blockIdx := chunkOffset / BlockSize derivation. Rows missing
 	// from the list are sparse: the caller falls back to the
 	// remote-fetch + zero-fill path.
-	if bs.fileBlockStore == nil {
+	if bs.fileChunkStore == nil {
 		return false, nil
 	}
-	rows, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
+	rows, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return false, err
 	}

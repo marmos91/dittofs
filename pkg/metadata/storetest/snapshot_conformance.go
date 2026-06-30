@@ -180,7 +180,7 @@ func testSnapshot_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Sna
 		t.Fatalf("GetFile: %v", err)
 	}
 	// Manifest carries the hash; NO FileChunkStore.Put is issued, so the CAS
-	// index (file_blocks / fb: / fileBlockData.blocks) has no row for it.
+	// index (file_blocks / fb: / fileChunkData.blocks) has no row for it.
 	f.Blocks = []block.BlockRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {

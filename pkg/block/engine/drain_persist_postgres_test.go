@@ -114,7 +114,7 @@ func TestPostgresDrainRollups_UniqueContent(t *testing.T) {
 
 	want := block.NewHashSet(0)
 	for name, h := range map[string]metadata.FileHandle{"alpha.bin": hA, "beta.bin": hB} {
-		blocks := fileBlocks(t, ms, h)
+		blocks := fileChunks(t, ms, h)
 		if len(blocks) == 0 {
 			t.Fatalf("file %s has empty FileAttr.Blocks after DrainRollups", name)
 		}
@@ -188,7 +188,7 @@ func TestPostgresDrainRollups_InPlaceModify(t *testing.T) {
 		t.Fatalf("DrainRollups v2: %v", err)
 	}
 
-	blocks := fileBlocks(t, ms, h)
+	blocks := fileChunks(t, ms, h)
 	if len(blocks) == 0 {
 		t.Fatalf("file has empty FileAttr.Blocks after in-place modify + drain")
 	}

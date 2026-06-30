@@ -78,10 +78,10 @@ type txSnapshot struct {
 	linkCounts    map[string]uint32
 	deviceNumbers map[string]*deviceNumber
 	objectIndex   map[block.ContentHash]string
-	// hadFileChunkData records whether fileBlockData was allocated at snapshot
+	// hadFileChunkData records whether fileChunkData was allocated at snapshot
 	// time. If the closure lazily allocated it (initFileChunkData) and then
 	// failed, restore must reset the struct's maps to non-nil empties (or it
-	// would leave fileBlockData non-nil with nil maps → a later Put panics on
+	// would leave fileChunkData non-nil with nil maps → a later Put panics on
 	// a nil-map write).
 	hadFileChunkData bool
 	blocks           map[string]*metadata.FileChunk
@@ -99,7 +99,7 @@ func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 		// shares holds *shareData mutated in place (UpdateShareOptions,
 		// CreateRootDirectory set RootHandle) — a shallow map clone would share
 		// those pointers and let the mutation leak into the snapshot, defeating
-		// rollback. Copy each struct (same discipline as fileBlockData.blocks).
+		// rollback. Copy each struct (same discipline as fileChunkData.blocks).
 		shares:        make(map[string]*shareData, len(store.shares)),
 		files:         maps.Clone(store.files),
 		parents:       maps.Clone(store.parents),
@@ -117,11 +117,11 @@ func (store *MemoryMetadataStore) snapshotLocked() *txSnapshot {
 	for k, inner := range store.children {
 		snap.children[k] = maps.Clone(inner)
 	}
-	if store.fileBlockData != nil {
+	if store.fileChunkData != nil {
 		snap.hadFileChunkData = true
-		snap.blocks = make(map[string]*metadata.FileChunk, len(store.fileBlockData.blocks))
-		snap.hashIndex = maps.Clone(store.fileBlockData.hashIndex)
-		for k, v := range store.fileBlockData.blocks {
+		snap.blocks = make(map[string]*metadata.FileChunk, len(store.fileChunkData.blocks))
+		snap.hashIndex = maps.Clone(store.fileChunkData.hashIndex)
+		for k, v := range store.fileChunkData.blocks {
 			// Copy the struct so an in-place RefCount mutation inside the
 			// closure does not leak into the snapshot.
 			bc := *v
@@ -145,15 +145,15 @@ func (store *MemoryMetadataStore) restoreLocked(snap *txSnapshot) {
 	store.capabilities = snap.capabilities
 	switch {
 	case snap.hadFileChunkData:
-		// fileBlockData existed at snapshot time — restore its maps to the
+		// fileChunkData existed at snapshot time — restore its maps to the
 		// captured copies (snap.blocks/hashIndex are non-nil).
-		store.fileBlockData.blocks = snap.blocks
-		store.fileBlockData.hashIndex = snap.hashIndex
-	case store.fileBlockData != nil:
-		// The closure lazily allocated fileBlockData then failed. Drop it back
+		store.fileChunkData.blocks = snap.blocks
+		store.fileChunkData.hashIndex = snap.hashIndex
+	case store.fileChunkData != nil:
+		// The closure lazily allocated fileChunkData then failed. Drop it back
 		// to its pre-tx (nil) state so it is re-initialized cleanly on the next
 		// use — never left non-nil with nil maps.
-		store.fileBlockData = nil
+		store.fileChunkData = nil
 	}
 }
 

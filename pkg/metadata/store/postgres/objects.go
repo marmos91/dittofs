@@ -19,7 +19,7 @@ import (
 // ============================================================================
 //
 // This file implements the FileChunkStore interface for the PostgreSQL metadata store.
-// It provides content-addressed file block tracking for deduplication and caching.
+// It provides content-addressed file chunk tracking for deduplication and caching.
 //
 // The FileChunkStore interface is narrowed to 6 methods. The backend
 // retains the legacy GetFileChunk + ListFileChunks helpers as
@@ -40,7 +40,7 @@ var _ block.FileChunkStore = (*PostgresMetadataStore)(nil)
 // FileChunk Operations
 // ============================================================================
 
-// GetFileChunk retrieves a file block by its ID. Not on the narrowed
+// GetFileChunk retrieves a file chunk by its ID. Not on the narrowed
 // FileChunkStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *PostgresMetadataStore) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
@@ -53,12 +53,12 @@ func (s *PostgresMetadataStore) GetFileChunk(ctx context.Context, id string) (*m
 		return nil, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get file block: %w", err)
+		return nil, fmt.Errorf("get file chunk: %w", err)
 	}
 	return block, nil
 }
 
-// Put stores or updates a file block.
+// Put stores or updates a file chunk.
 //
 // The hash column is persisted whenever the block carries a non-zero
 // content hash, regardless of block state. The content hash is derived
@@ -116,16 +116,16 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileChu
 		block.ID, hashStr, block.DataSize, cachePath, blockStoreKey,
 		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
 	if err != nil {
-		return fmt.Errorf("put file block: %w", err)
+		return fmt.Errorf("put file chunk: %w", err)
 	}
 	return nil
 }
 
-// Delete removes a file block by its ID. Renamed from DeleteFileChunk in
+// Delete removes a file chunk by its ID. Renamed from DeleteFileChunk in
 func (s *PostgresMetadataStore) Delete(ctx context.Context, id string) error {
 	result, err := s.exec(ctx, `DELETE FROM file_blocks WHERE id = $1`, id)
 	if err != nil {
-		return fmt.Errorf("delete file block: %w", err)
+		return fmt.Errorf("delete file chunk: %w", err)
 	}
 	rows := result.RowsAffected()
 	if rows == 0 {
@@ -275,7 +275,7 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("find file block by hash: %w", err)
+		return nil, fmt.Errorf("find file chunk by hash: %w", err)
 	}
 	return block, nil
 }
@@ -291,7 +291,7 @@ func (s *PostgresMetadataStore) ListFileChunks(ctx context.Context, payloadID st
 		ORDER BY id ASC`
 	rows, err := s.query(ctx, query, payloadID+"/%")
 	if err != nil {
-		return nil, fmt.Errorf("list file blocks: %w", err)
+		return nil, fmt.Errorf("list file chunks: %w", err)
 	}
 	defer rows.Close()
 	result, err := scanFileChunkRows(rows)
@@ -420,16 +420,16 @@ func (s *PostgresMetadataStore) collectFileChunkIDs(ctx context.Context, query s
 func (s *PostgresMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error {
 	rows, err := s.query(ctx, enumerateHashesQuery)
 	if err != nil {
-		return fmt.Errorf("enumerate file blocks: query: %w", err)
+		return fmt.Errorf("enumerate file chunks: query: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate file blocks: %w", err)
+			return fmt.Errorf("enumerate file chunks: %w", err)
 		}
 		var hashStr sql.NullString
 		if err := rows.Scan(&hashStr); err != nil {
-			return fmt.Errorf("enumerate file blocks: scan: %w", err)
+			return fmt.Errorf("enumerate file chunks: scan: %w", err)
 		}
 		var h block.ContentHash
 		if hashStr.Valid {
@@ -441,7 +441,7 @@ func (s *PostgresMetadataStore) EnumerateFileChunks(ctx context.Context, fn func
 				// pre-CAS entry and the sweep would reap a still-live CAS
 				// object once the grace TTL lapses. Surface the parse error
 				// so EnumerateFileChunks aborts and the sweep is skipped.
-				return fmt.Errorf("enumerate file blocks: parse hash %q: %w",
+				return fmt.Errorf("enumerate file chunks: parse hash %q: %w",
 					hashStr.String, perr)
 			}
 			h = parsed
@@ -451,7 +451,7 @@ func (s *PostgresMetadataStore) EnumerateFileChunks(ctx context.Context, fn func
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("enumerate file blocks: rows: %w", err)
+		return fmt.Errorf("enumerate file chunks: rows: %w", err)
 	}
 	return nil
 }
@@ -489,7 +489,7 @@ func scanFileChunk(row pgx.Row) (*metadata.FileChunk, error) {
 		// zero hash — see EnumerateFileChunks for the data-loss scenario.
 		h, perr := metadata.ParseContentHash(hashStr.String)
 		if perr != nil {
-			return nil, fmt.Errorf("scan file block %s: parse hash %q: %w",
+			return nil, fmt.Errorf("scan file chunk %s: parse hash %q: %w",
 				block.ID, hashStr.String, perr)
 		}
 		block.Hash = h
@@ -512,7 +512,7 @@ func scanFileChunkRows(rows pgx.Rows) ([]*metadata.FileChunk, error) {
 	for rows.Next() {
 		block, err := scanFileChunk(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scan file block: %w", err)
+			return nil, fmt.Errorf("scan file chunk: %w", err)
 		}
 		result = append(result, block)
 	}
@@ -547,7 +547,7 @@ func (tx *postgresTransaction) GetFileChunk(ctx context.Context, id string) (*me
 		return nil, metadata.ErrFileChunkNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get file block: %w", err)
+		return nil, fmt.Errorf("get file chunk: %w", err)
 	}
 	return block, nil
 }
@@ -592,7 +592,7 @@ func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileChun
 		block.ID, hashStr, block.DataSize, cachePath, blockStoreKey,
 		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
 	if err != nil {
-		return fmt.Errorf("put file block: %w", err)
+		return fmt.Errorf("put file chunk: %w", err)
 	}
 	return nil
 }
@@ -603,7 +603,7 @@ func (tx *postgresTransaction) Delete(ctx context.Context, id string) error {
 	}
 	result, err := tx.tx.Exec(ctx, `DELETE FROM file_blocks WHERE id = $1`, id)
 	if err != nil {
-		return fmt.Errorf("delete file block: %w", err)
+		return fmt.Errorf("delete file chunk: %w", err)
 	}
 	if result.RowsAffected() == 0 {
 		return metadata.ErrFileChunkNotFound
@@ -694,7 +694,7 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("find file block by hash: %w", err)
+		return nil, fmt.Errorf("find file chunk by hash: %w", err)
 	}
 	return block, nil
 }
@@ -712,7 +712,7 @@ func (tx *postgresTransaction) ListFileChunks(ctx context.Context, payloadID str
 		ORDER BY id ASC`
 	rows, err := tx.tx.Query(ctx, query, payloadID+"/%")
 	if err != nil {
-		return nil, fmt.Errorf("list file blocks: %w", err)
+		return nil, fmt.Errorf("list file chunks: %w", err)
 	}
 	defer rows.Close()
 	result, err := scanFileChunkRows(rows)
@@ -733,22 +733,22 @@ func (tx *postgresTransaction) ListFileChunks(ctx context.Context, payloadID str
 func (tx *postgresTransaction) EnumerateFileChunks(ctx context.Context, fn func(block.ContentHash) error) error {
 	rows, err := tx.tx.Query(ctx, enumerateHashesQuery)
 	if err != nil {
-		return fmt.Errorf("enumerate file blocks: query: %w", err)
+		return fmt.Errorf("enumerate file chunks: query: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate file blocks: %w", err)
+			return fmt.Errorf("enumerate file chunks: %w", err)
 		}
 		var hashStr sql.NullString
 		if err := rows.Scan(&hashStr); err != nil {
-			return fmt.Errorf("enumerate file blocks: scan: %w", err)
+			return fmt.Errorf("enumerate file chunks: scan: %w", err)
 		}
 		var h block.ContentHash
 		if hashStr.Valid {
 			parsed, perr := metadata.ParseContentHash(hashStr.String)
 			if perr != nil {
-				return fmt.Errorf("enumerate file blocks: parse hash %q: %w", hashStr.String, perr)
+				return fmt.Errorf("enumerate file chunks: parse hash %q: %w", hashStr.String, perr)
 			}
 			h = parsed
 		}
@@ -757,7 +757,7 @@ func (tx *postgresTransaction) EnumerateFileChunks(ctx context.Context, fn func(
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("enumerate file blocks: rows: %w", err)
+		return fmt.Errorf("enumerate file chunks: rows: %w", err)
 	}
 	return nil
 }

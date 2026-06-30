@@ -17,15 +17,15 @@ import (
 // ============================================================================
 
 // TestWithTransaction_RollbackReinitsLazyFileChunkData regresses a snapshot
-// restore edge: when fileBlockData is nil at the start of a transaction and the
+// restore edge: when fileChunkData is nil at the start of a transaction and the
 // closure lazily allocates it (via Put) then fails, the rollback must reset
-// fileBlockData to nil rather than leaving it non-nil with nil maps — otherwise
+// fileChunkData to nil rather than leaving it non-nil with nil maps — otherwise
 // a subsequent Put panics writing to a nil map.
 func TestWithTransaction_RollbackReinitsLazyFileChunkData(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
-	// fileBlockData starts nil. Put a block inside a tx that then fails.
+	// fileChunkData starts nil. Put a block inside a tx that then fails.
 	injected := errAlways
 	err := store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		blk := &metadata.FileChunk{ID: uuid.New().String(), DataSize: 1024, RefCount: 1}

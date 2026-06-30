@@ -64,7 +64,7 @@ func TestEngine_DrainRollups_PopulatesManifest(t *testing.T) {
 
 	// Pre-drain: manifest must be empty — proves the snapshot race would
 	// capture an empty manifest.
-	pre, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
+	pre, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("ListFileChunks (pre): %v", err)
 	}
@@ -76,7 +76,7 @@ func TestEngine_DrainRollups_PopulatesManifest(t *testing.T) {
 		t.Fatalf("DrainRollups: %v", err)
 	}
 
-	post, err := bs.fileBlockStore.ListFileChunks(ctx, payloadID)
+	post, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		t.Fatalf("ListFileChunks (post): %v", err)
 	}

@@ -35,7 +35,7 @@ type warmTarget struct {
 // WarmAll proactively materializes every block of every payload in this share
 // onto the local CAS tier by reusing the per-block fetch primitive
 // (fetchResolvedBlock). It enumerates payloads from the authoritative metadata
-// (fileBlockStore.EnumeratePayloads) and the per-payload FileChunk rows, skips
+// (fileChunkStore.EnumeratePayloads) and the per-payload FileChunk rows, skips
 // any block already present locally, and fetches the rest with bounded
 // concurrency (SyncerConfig.ParallelDownloads). Enumerating the metadata rather
 // than the local store's ListFiles is what lets warm materialize payloads whose
@@ -61,14 +61,14 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 
 	// Enumerate all FileChunk rows and split into already-local (counted,
 	// skipped) and to-fetch (the work list). The enumeration walks the same
-	// surface as populateBlockCounts: fileBlockStore.EnumeratePayloads ->
+	// surface as populateBlockCounts: fileChunkStore.EnumeratePayloads ->
 	// per-payload ListFileChunks (the authoritative metadata, which survives
 	// rollup). Each to-fetch target carries the resolved row so the worker
 	// fetches by the row in hand (fetchResolvedBlock) instead of round-tripping
 	// through a BlockSize-aligned blockIdx lookup, which would miss every
 	// non-aligned FastCDC chunk (#1374).
 	var payloadIDs []string
-	if err := m.fileBlockStore.EnumeratePayloads(ctx, func(payloadID string) error {
+	if err := m.fileChunkStore.EnumeratePayloads(ctx, func(payloadID string) error {
 		payloadIDs = append(payloadIDs, payloadID)
 		return nil
 	}); err != nil {

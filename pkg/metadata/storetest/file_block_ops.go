@@ -12,13 +12,13 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// fileBlockStoreLegacy captures the legacy GetFileChunk + ListFileChunks
+// fileChunkStoreLegacy captures the legacy GetFileChunk + ListFileChunks
 // methods that removed from the public
 // FileChunkStore interface but kept on each backend struct for engine-
 // internal callers. The conformance suite type-asserts the factory's
 // MetadataStore to this interface so the existing tests can still drive
 // the methods without depending on a concrete backend type.
-type fileBlockStoreLegacy interface {
+type fileChunkStoreLegacy interface {
 	GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error)
 	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
 }
@@ -26,11 +26,11 @@ type fileBlockStoreLegacy interface {
 // asLegacy returns the legacy backend interface for a MetadataStore, or
 // fails the test with a clear message when the backend does not provide
 // the kept-but-not-on-interface methods.
-func asLegacy(t *testing.T, store metadata.Store) fileBlockStoreLegacy {
+func asLegacy(t *testing.T, store metadata.Store) fileChunkStoreLegacy {
 	t.Helper()
-	legacy, ok := store.(fileBlockStoreLegacy)
+	legacy, ok := store.(fileChunkStoreLegacy)
 	if !ok {
-		t.Skipf("backend %T does not implement fileBlockStoreLegacy (GetFileChunk/ListFileChunks); engine-internal methods unavailable on this backend", store)
+		t.Skipf("backend %T does not implement fileChunkStoreLegacy (GetFileChunk/ListFileChunks); engine-internal methods unavailable on this backend", store)
 	}
 	return legacy
 }

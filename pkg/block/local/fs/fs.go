@@ -157,13 +157,13 @@ type FSStore struct {
 	// and lets us drop the wider interface entirely.
 	blockStore block.EngineFileChunkStore
 
-	// blocksMu guards the memBlocks and fileBlocks maps. Uses RWMutex for
+	// blocksMu guards the memBlocks and fileChunks maps. Uses RWMutex for
 	// concurrent reads (the common case: checking if a block is already buffered).
 	// RWMutex outperforms sync.Map for write-heavy workloads with high key
 	// churn (random writes that create/flush/recreate blocks frequently).
 	blocksMu   sync.RWMutex
 	memBlocks  map[blockKey]*memBlock
-	fileBlocks map[string]map[uint64]*memBlock // payloadID -> blockIdx -> mb
+	fileChunks map[string]map[uint64]*memBlock // payloadID -> blockIdx -> mb
 
 	// filesMu guards the files map separately from block operations.
 	filesMu sync.RWMutex
@@ -484,7 +484,7 @@ type FSStore struct {
 //   - sentinel PRESENT, .blk files PRESENT  → success (sentinel is ground truth)
 //   - sentinel MISSING, no .blk files       → success (fresh install)
 //   - sentinel MISSING, .blk files PRESENT  → block.ErrLegacyLayoutDetected
-func newFSStore(baseDir string, maxDisk int64, fileBlockStore block.EngineFileChunkStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
+func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore, opts FSStoreOptions, skipSentinelCheck bool) (*FSStore, error) {
 	if !skipSentinelCheck {
 		if err := checkLegacyLayoutSentinel(baseDir); err != nil {
 			return nil, err
@@ -498,9 +498,9 @@ func newFSStore(baseDir string, maxDisk int64, fileBlockStore block.EngineFileCh
 	bc := &FSStore{
 		baseDir:       baseDir,
 		maxDisk:       maxDisk,
-		blockStore:    fileBlockStore,
+		blockStore:    fileChunkStore,
 		memBlocks:     make(map[blockKey]*memBlock),
-		fileBlocks:    make(map[string]map[uint64]*memBlock),
+		fileChunks:    make(map[string]map[uint64]*memBlock),
 		files:         make(map[string]*fileInfo),
 		fdPool:        newFDPool(defaultFDPoolSize),
 		readFDPool:    newFDPool(defaultFDPoolSize),
@@ -986,7 +986,7 @@ type FSStoreOptions struct {
 // Parameters:
 //   - baseDir: directory for .blk block files, created if absent.
 //   - maxDisk: maximum total size of on-disk .blk files in bytes. 0 = unlimited.
-//   - fileBlockStore: persistent store for FileChunk metadata
+//   - fileChunkStore: persistent store for FileChunk metadata
 //     (local path, upload state, etc.).
 //   - opts: tunables for append-log sizing, rollup pool, dedup LRU,
 //     chunk-complete hook, etc. Zero-valued fields fall back to the
@@ -995,8 +995,8 @@ type FSStoreOptions struct {
 // Runs the legacy-layout sentinel gate; returns
 // block.ErrLegacyLayoutDetected when the share holds the pre-CAS
 // `.blk` layout without a `.cas-migrated-v1` marker.
-func NewWithOptions(baseDir string, maxDisk int64, fileBlockStore block.EngineFileChunkStore, opts FSStoreOptions) (*FSStore, error) {
-	return newFSStore(baseDir, maxDisk, fileBlockStore, opts, false)
+func NewWithOptions(baseDir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore, opts FSStoreOptions) (*FSStore, error) {
+	return newFSStore(baseDir, maxDisk, fileChunkStore, opts, false)
 }
 
 // NewFSStoreForMigration constructs an FSStore that skips the legacy-
@@ -1011,8 +1011,8 @@ func NewWithOptions(baseDir string, maxDisk int64, fileBlockStore block.EngineFi
 // the gate would otherwise refuse the open.
 //
 // Behavior is otherwise identical to NewWithOptions.
-func NewFSStoreForMigration(baseDir string, maxDisk int64, fileBlockStore block.EngineFileChunkStore, opts FSStoreOptions) (*FSStore, error) {
-	return newFSStore(baseDir, maxDisk, fileBlockStore, opts, true)
+func NewFSStoreForMigration(baseDir string, maxDisk int64, fileChunkStore block.EngineFileChunkStore, opts FSStoreOptions) (*FSStore, error) {
+	return newFSStore(baseDir, maxDisk, fileChunkStore, opts, true)
 }
 
 // SetObjectIDPersister installs the rollup-completion callback. Safe to
@@ -1296,7 +1296,7 @@ func (bc *FSStore) GetFileSize(_ context.Context, payloadID string) (uint64, boo
 // Releases the 8MB buffer and decrements memUsed for each removed block.
 func (bc *FSStore) purgeMemBlocks(payloadID string, shouldRemove func(blockIdx uint64) bool) {
 	bc.blocksMu.Lock()
-	fm := bc.fileBlocks[payloadID]
+	fm := bc.fileChunks[payloadID]
 	if fm != nil {
 		for blockIdx, mb := range fm {
 			if !shouldRemove(blockIdx) {
@@ -1314,7 +1314,7 @@ func (bc *FSStore) purgeMemBlocks(payloadID string, shouldRemove func(blockIdx u
 			delete(fm, blockIdx)
 		}
 		if len(fm) == 0 {
-			delete(bc.fileBlocks, payloadID)
+			delete(bc.fileChunks, payloadID)
 		}
 	}
 	bc.blocksMu.Unlock()

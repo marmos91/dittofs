@@ -58,14 +58,14 @@ type memoryBackupSnapshot struct {
 	ServerConfigCustomSettingsJSON []byte
 
 	// Lazy sub-store snapshots (nil when sub-store was never initialized).
-	FileChunkData  *fileBlockSnapshotData
+	FileChunkData  *fileChunkSnapshotData
 	Locks          *lockSnapshotData
 	Clients        *clientSnapshotData
 	DurableHandles *durableSnapshotData
 }
 
-// fileBlockSnapshotData is a gob-friendly copy of fileBlockStoreData.
-type fileBlockSnapshotData struct {
+// fileChunkSnapshotData is a gob-friendly copy of fileChunkStoreData.
+type fileChunkSnapshotData struct {
 	Blocks    map[string]*metadata.FileChunk
 	HashIndex map[metadata.ContentHash]string
 }
@@ -156,10 +156,10 @@ func (s *MemoryMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 	}
 
 	// Snapshot lazy sub-stores (nil if never initialized).
-	if s.fileBlockData != nil {
-		snap.FileChunkData = &fileBlockSnapshotData{
-			Blocks:    s.fileBlockData.blocks,
-			HashIndex: s.fileBlockData.hashIndex,
+	if s.fileChunkData != nil {
+		snap.FileChunkData = &fileChunkSnapshotData{
+			Blocks:    s.fileChunkData.blocks,
+			HashIndex: s.fileChunkData.hashIndex,
 		}
 	}
 	if s.lockStore != nil {
@@ -376,12 +376,12 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	// Explicit nil assignment in the else branch is required because the
 	// destination store may have non-nil sub-stores from prior state.
 	if snap.FileChunkData != nil {
-		s.fileBlockData = &fileBlockStoreData{
+		s.fileChunkData = &fileChunkStoreData{
 			blocks:    snap.FileChunkData.Blocks,
 			hashIndex: snap.FileChunkData.HashIndex,
 		}
 	} else {
-		s.fileBlockData = nil
+		s.fileChunkData = nil
 	}
 	if snap.Locks != nil {
 		s.lockStore = &memoryLockStore{

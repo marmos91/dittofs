@@ -48,7 +48,7 @@ const (
 // FileChunk (re-exported from blockstore for backward compatibility)
 // ============================================================================
 
-// FileChunk is the single block entity in DittoFS.
+// FileChunk is the per-file content-chunk entity in DittoFS.
 // Type alias to block.FileChunk -- all definitions live in pkg/block.
 type FileChunk = block.FileChunk
 
@@ -62,7 +62,7 @@ var NewFileChunk = block.NewFileChunk
 // ErrInvalidHash is returned when a hash string is malformed.
 var ErrInvalidHash = block.ErrInvalidHash
 
-// ErrFileChunkNotFound is returned when a file block is not found.
+// ErrFileChunkNotFound is returned when a file chunk is not found.
 var ErrFileChunkNotFound = block.ErrFileChunkNotFound
 
 // ErrUnknownHash is returned by FileChunkStore.AddRef when the hash is

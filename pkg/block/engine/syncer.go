@@ -45,7 +45,7 @@ type Syncer struct {
 	// surface (GetFileChunk for dual-read resolve, ListFileChunks for
 	// GetFileSize/Exists). routes reads through
 	// FileAttr.Blocks and lets us drop the wider interface.
-	fileBlockStore block.EngineFileChunkStore // Required: enables content-addressed deduplication
+	fileChunkStore block.EngineFileChunkStore // Required: enables content-addressed deduplication
 
 	// syncedHashStore persists per-CAS-hash local→remote mirror state.
 	// The mirror loop in Flush consumes ListUnsynced (which itself
@@ -326,10 +326,10 @@ func (m *Syncer) seedPendingFromDisk(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// NewSyncer creates a new Syncer. The fileBlockStore is required for content-addressed dedup.
-func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlockStore block.EngineFileChunkStore, config SyncerConfig) *Syncer {
-	if fileBlockStore == nil {
-		panic("fileBlockStore is required for Syncer")
+// NewSyncer creates a new Syncer. The fileChunkStore is required for content-addressed dedup.
+func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunkStore block.EngineFileChunkStore, config SyncerConfig) *Syncer {
+	if fileChunkStore == nil {
+		panic("fileChunkStore is required for Syncer")
 	}
 	// Upload concurrency: a pinned ParallelUploads > 0 fixes the window;
 	// otherwise (the default) the syncer auto-tunes between the adaptive floor
@@ -362,7 +362,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileBlock
 	m := &Syncer{
 		local:            local,
 		remoteStore:      remoteStore,
-		fileBlockStore:   fileBlockStore,
+		fileChunkStore:   fileChunkStore,
 		config:           config,
 		inFlight:         make(map[string]*fetchResult),
 		stopCh:           make(chan struct{}),
@@ -815,7 +815,7 @@ func (m *Syncer) GetFileSize(ctx context.Context, payloadID string) (uint64, err
 		return 0, m.remoteUnavailableError()
 	}
 
-	blocks, err := m.fileBlockStore.ListFileChunks(ctx, payloadID)
+	blocks, err := m.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return 0, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
@@ -886,7 +886,7 @@ func (m *Syncer) Exists(ctx context.Context, payloadID string) (bool, error) {
 		return false, m.remoteUnavailableError()
 	}
 
-	blocks, err := m.fileBlockStore.ListFileChunks(ctx, payloadID)
+	blocks, err := m.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
 		return false, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
@@ -1177,10 +1177,10 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 // Backends that opt in to syncingEnumerator return precise candidates
 // others degrade to a no-op.
 func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
-	if m.fileBlockStore == nil {
+	if m.fileChunkStore == nil {
 		return nil
 	}
-	enum, ok := m.fileBlockStore.(syncingEnumerator)
+	enum, ok := m.fileChunkStore.(syncingEnumerator)
 	if !ok {
 		return nil
 	}
@@ -1201,7 +1201,7 @@ func (m *Syncer) recoverStaleSyncing(ctx context.Context) error {
 		}
 		fb.State = block.BlockStatePending
 		fb.LastSyncAttemptAt = time.Time{}
-		if err := m.fileBlockStore.Put(ctx, fb); err != nil {
+		if err := m.fileChunkStore.Put(ctx, fb); err != nil {
 			// elevate per-row failure to ERROR and track
 			// counts so a fully-broken metadata path produces a non-nil
 			// return error visible to the caller (Start logs it at WARN).

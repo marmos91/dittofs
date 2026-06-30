@@ -16,7 +16,7 @@ import (
 // ============================================================================
 //
 // This file implements the FileChunkStore interface for the in-memory metadata store.
-// It provides content-addressed file block tracking for deduplication and caching.
+// It provides content-addressed file chunk tracking for deduplication and caching.
 //
 // The FileChunkStore interface is narrowed to 6 methods. The backend
 // retains the legacy GetFileChunk + ListFileChunks helpers as
@@ -29,8 +29,8 @@ import (
 //
 // ============================================================================
 
-// fileBlockStoreData holds the in-memory data structures for file block tracking.
-type fileBlockStoreData struct {
+// fileChunkStoreData holds the in-memory data structures for file chunk tracking.
+type fileChunkStoreData struct {
 	blocks map[string]*metadata.FileChunk // ID -> FileChunk
 
 	// hashIndex maps content hash -> block ID for dedup lookups.
@@ -38,9 +38,9 @@ type fileBlockStoreData struct {
 	hashIndex map[metadata.ContentHash]string
 }
 
-// newFileChunkStoreData creates a new fileBlockStoreData instance.
-func newFileChunkStoreData() *fileBlockStoreData {
-	return &fileBlockStoreData{
+// newFileChunkStoreData creates a new fileChunkStoreData instance.
+func newFileChunkStoreData() *fileChunkStoreData {
+	return &fileChunkStoreData{
 		blocks:    make(map[string]*metadata.FileChunk),
 		hashIndex: make(map[metadata.ContentHash]string),
 	}
@@ -53,7 +53,7 @@ var _ block.FileChunkStore = (*MemoryMetadataStore)(nil)
 // FileChunk Operations
 // ============================================================================
 
-// GetFileChunk retrieves a file block by its ID. Not on the narrowed
+// GetFileChunk retrieves a file chunk by its ID. Not on the narrowed
 // FileChunkStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *MemoryMetadataStore) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
@@ -62,7 +62,7 @@ func (s *MemoryMetadataStore) GetFileChunk(ctx context.Context, id string) (*met
 	return s.getFileChunkLocked(ctx, id)
 }
 
-// Put stores or updates a file block. Renamed from PutFileChunk to
+// Put stores or updates a file chunk. Renamed from PutFileChunk to
 // match the narrowed interface.
 func (s *MemoryMetadataStore) Put(ctx context.Context, block *metadata.FileChunk) error {
 	s.mu.Lock()
@@ -70,7 +70,7 @@ func (s *MemoryMetadataStore) Put(ctx context.Context, block *metadata.FileChunk
 	return s.putFileChunkLocked(ctx, block)
 }
 
-// Delete removes a file block by its ID. Renamed from DeleteFileChunk.
+// Delete removes a file chunk by its ID. Renamed from DeleteFileChunk.
 func (s *MemoryMetadataStore) Delete(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,8 +182,8 @@ func (s *MemoryMetadataStore) EnumerateLivePayloadIDs(ctx context.Context, fn fu
 func (s *MemoryMetadataStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	seen := make(map[string]struct{})
 	s.mu.RLock()
-	if s.fileBlockData != nil {
-		for id := range s.fileBlockData.blocks {
+	if s.fileChunkData != nil {
+		for id := range s.fileChunkData.blocks {
 			i := strings.LastIndex(id, "/")
 			if i < 0 {
 				continue
@@ -216,7 +216,7 @@ func (s *MemoryMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(b
 }
 
 // snapshotBlockHashesLocked copies every live-set hash, unioning the CAS index
-// (fileBlockData.blocks) with the per-file manifest (files[].Attr.Blocks) so
+// (fileChunkData.blocks) with the per-file manifest (files[].Attr.Blocks) so
 // the GC mark live set is a strict SUPERSET of both structures. The snapshot
 // Backup HashSet is built from File.Blocks alone; a hash present only there
 // (manifest row without a CAS index row) would otherwise be missed by the mark
@@ -224,9 +224,9 @@ func (s *MemoryMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(b
 // hold at least the read lock.
 func (s *MemoryMetadataStore) snapshotBlockHashesLocked() []block.ContentHash {
 	var snapshot []block.ContentHash
-	if s.fileBlockData != nil {
-		snapshot = make([]block.ContentHash, 0, len(s.fileBlockData.blocks))
-		for _, b := range s.fileBlockData.blocks {
+	if s.fileChunkData != nil {
+		snapshot = make([]block.ContentHash, 0, len(s.fileChunkData.blocks))
+		for _, b := range s.fileChunkData.blocks {
 			snapshot = append(snapshot, b.Hash)
 		}
 	}
@@ -258,7 +258,7 @@ func (s *MemoryMetadataStore) snapshotBlockHashesLocked() []block.ContentHash {
 func enumerateBlockHashes(ctx context.Context, snapshot []block.ContentHash, fn func(block.ContentHash) error) error {
 	for _, h := range snapshot {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("enumerate file blocks: %w", err)
+			return fmt.Errorf("enumerate file chunks: %w", err)
 		}
 		if err := fn(h); err != nil {
 			return err
@@ -275,11 +275,11 @@ func enumerateBlockHashes(ctx context.Context, snapshot []block.ContentHash, fn 
 func (s *MemoryMetadataStore) EnumerateSyncingBlocks(_ context.Context) ([]*metadata.FileChunk, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return nil, nil
 	}
 	var result []*metadata.FileChunk
-	for _, block := range s.fileBlockData.blocks {
+	for _, block := range s.fileChunkData.blocks {
 		if block.State == metadata.BlockStateSyncing {
 			b := *block
 			result = append(result, &b)
@@ -292,11 +292,11 @@ func (s *MemoryMetadataStore) EnumerateSyncingBlocks(_ context.Context) ([]*meta
 // Helper Methods
 // ============================================================================
 
-// initFileChunkData initializes the fileBlockStoreData if needed.
+// initFileChunkData initializes the fileChunkStoreData if needed.
 // Must be called with the write lock held.
 func (s *MemoryMetadataStore) initFileChunkData() {
-	if s.fileBlockData == nil {
-		s.fileBlockData = newFileChunkStoreData()
+	if s.fileChunkData == nil {
+		s.fileChunkData = newFileChunkStoreData()
 	}
 }
 
@@ -356,10 +356,10 @@ func (tx *memoryTransaction) EnumerateFileChunks(ctx context.Context, fn func(bl
 // ============================================================================
 
 func (s *MemoryMetadataStore) getFileChunkLocked(_ context.Context, id string) (*metadata.FileChunk, error) {
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return nil, metadata.ErrFileChunkNotFound
 	}
-	block, ok := s.fileBlockData.blocks[id]
+	block, ok := s.fileChunkData.blocks[id]
 	if !ok {
 		return nil, metadata.ErrFileChunkNotFound
 	}
@@ -370,40 +370,40 @@ func (s *MemoryMetadataStore) getFileChunkLocked(_ context.Context, id string) (
 func (s *MemoryMetadataStore) putFileChunkLocked(_ context.Context, block *metadata.FileChunk) error {
 	s.initFileChunkData()
 	stored := *block
-	s.fileBlockData.blocks[block.ID] = &stored
+	s.fileChunkData.blocks[block.ID] = &stored
 
 	// Update hash index for finalized blocks
 	if block.IsFinalized() {
-		s.fileBlockData.hashIndex[block.Hash] = block.ID
+		s.fileChunkData.hashIndex[block.Hash] = block.ID
 	}
 	return nil
 }
 
 func (s *MemoryMetadataStore) deleteFileChunkLocked(_ context.Context, id string) error {
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return metadata.ErrFileChunkNotFound
 	}
-	block, ok := s.fileBlockData.blocks[id]
+	block, ok := s.fileChunkData.blocks[id]
 	if !ok {
 		return metadata.ErrFileChunkNotFound
 	}
 
 	// Remove from hash index
 	if block.IsFinalized() {
-		if s.fileBlockData.hashIndex[block.Hash] == id {
-			delete(s.fileBlockData.hashIndex, block.Hash)
+		if s.fileChunkData.hashIndex[block.Hash] == id {
+			delete(s.fileChunkData.hashIndex, block.Hash)
 		}
 	}
 
-	delete(s.fileBlockData.blocks, id)
+	delete(s.fileChunkData.blocks, id)
 	return nil
 }
 
 func (s *MemoryMetadataStore) incrementRefCountLocked(_ context.Context, id string) error {
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return metadata.ErrFileChunkNotFound
 	}
-	block, ok := s.fileBlockData.blocks[id]
+	block, ok := s.fileChunkData.blocks[id]
 	if !ok {
 		return metadata.ErrFileChunkNotFound
 	}
@@ -420,14 +420,14 @@ func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash block.Content
 	// memory backend records ref count only — parameters intentionally
 	// blanked.
 	// No data → no rows → hash is unknown by definition.
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return metadata.ErrUnknownHash
 	}
-	id, ok := s.fileBlockData.hashIndex[hash]
+	id, ok := s.fileChunkData.hashIndex[hash]
 	if !ok || id == "" {
 		return metadata.ErrUnknownHash
 	}
-	block, ok := s.fileBlockData.blocks[id]
+	block, ok := s.fileChunkData.blocks[id]
 	if !ok {
 		// Index/blocks desync — defend by treating the hash as unknown.
 		return metadata.ErrUnknownHash
@@ -437,10 +437,10 @@ func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash block.Content
 }
 
 func (s *MemoryMetadataStore) decrementRefCountLocked(_ context.Context, id string) (uint32, error) {
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return 0, metadata.ErrFileChunkNotFound
 	}
-	block, ok := s.fileBlockData.blocks[id]
+	block, ok := s.fileChunkData.blocks[id]
 	if !ok {
 		return 0, metadata.ErrFileChunkNotFound
 	}
@@ -455,10 +455,10 @@ func (s *MemoryMetadataStore) decrementRefCountLocked(_ context.Context, id stri
 // so the decrement-and-delete is a single atomic critical section. Returns
 // (0, nil) when the row is already absent (a swept row is not a caller error).
 func (s *MemoryMetadataStore) decrementAndReapLocked(ctx context.Context, id string) (uint32, error) {
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return 0, nil
 	}
-	block, ok := s.fileBlockData.blocks[id]
+	block, ok := s.fileChunkData.blocks[id]
 	if !ok {
 		return 0, nil
 	}
@@ -477,14 +477,14 @@ func (s *MemoryMetadataStore) decrementAndReapLocked(ctx context.Context, id str
 }
 
 func (s *MemoryMetadataStore) findFileChunkByHashLocked(_ context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return nil, nil
 	}
-	id, ok := s.fileBlockData.hashIndex[hash]
+	id, ok := s.fileChunkData.hashIndex[hash]
 	if !ok {
 		return nil, nil
 	}
-	block, ok := s.fileBlockData.blocks[id]
+	block, ok := s.fileChunkData.blocks[id]
 	if !ok {
 		return nil, nil
 	}
@@ -498,7 +498,7 @@ func (s *MemoryMetadataStore) findFileChunkByHashLocked(_ context.Context, hash 
 }
 
 func (s *MemoryMetadataStore) listFileChunksLocked(_ context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return []*metadata.FileChunk{}, nil
 	}
 	prefix := payloadID + "/"
@@ -507,7 +507,7 @@ func (s *MemoryMetadataStore) listFileChunksLocked(_ context.Context, payloadID 
 		idx   int
 	}
 	var candidates []indexedBlock
-	for id, block := range s.fileBlockData.blocks {
+	for id, block := range s.fileChunkData.blocks {
 		if strings.HasPrefix(id, prefix) {
 			suffix := id[len(prefix):]
 			blockIdx, err := strconv.Atoi(suffix)
@@ -538,10 +538,10 @@ func (s *MemoryMetadataStore) listFileChunksLocked(_ context.Context, payloadID 
 func (s *MemoryMetadataStore) InjectRefCountLeak(_ context.Context, blockID string, leakAmount uint32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.fileBlockData == nil {
+	if s.fileChunkData == nil {
 		return metadata.ErrFileChunkNotFound
 	}
-	block, ok := s.fileBlockData.blocks[blockID]
+	block, ok := s.fileChunkData.blocks[blockID]
 	if !ok {
 		return metadata.ErrFileChunkNotFound
 	}
