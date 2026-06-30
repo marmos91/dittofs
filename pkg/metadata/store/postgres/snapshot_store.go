@@ -61,6 +61,8 @@ var backupTables = []string{
 	"v4_client_recovery",
 	"rollup_offsets",
 	"synced_hashes",
+	"block_records",
+	"local_chunk_index",
 }
 
 // Compile-time assertion: PostgresMetadataStore implements Snapshotable.
