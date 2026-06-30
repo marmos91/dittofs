@@ -37,6 +37,18 @@ func TestStore_BlockStoreConformance(t *testing.T) {
 	blockstoretest.BlockStoreConformance(t, factory)
 }
 
+// TestMemory_RemoteBlockStoreConformance runs the unified
+// RemoteBlockStoreConformance suite against the in-memory backend. All
+// subtests run in-process with no I/O; they cover the block-keyed (non-CAS)
+// surface: PutBlock/GetBlock/GetBlockRange/DeleteBlock/WalkBlocks.
+func TestMemory_RemoteBlockStoreConformance(t *testing.T) {
+	blockstoretest.RemoteBlockStoreConformance(t, func(t *testing.T) (blockstoretest.RemoteBlockStore, func()) {
+		t.Helper()
+		s := New()
+		return s, func() { _ = s.Close() }
+	})
+}
+
 // hashOf returns the BLAKE3-256 hash of data as a block.ContentHash.
 func hashOf(t *testing.T, data []byte) block.ContentHash {
 	t.Helper()

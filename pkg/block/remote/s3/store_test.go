@@ -108,3 +108,21 @@ func TestStore_BlockStoreConformance(t *testing.T) {
 	}
 	blockstoretest.BlockStoreConformance(t, factory)
 }
+
+// TestS3_RemoteBlockStoreConformance runs the unified
+// RemoteBlockStoreConformance suite against the S3 backend using the
+// in-process mockS3 server (no Localstack/MinIO required). All subtests
+// exercise the block-keyed (non-CAS) surface: PutBlock/GetBlock/
+// GetBlockRange/DeleteBlock/WalkBlocks.
+func TestS3_RemoteBlockStoreConformance(t *testing.T) {
+	blockstoretest.RemoteBlockStoreConformance(t, func(t *testing.T) (blockstoretest.RemoteBlockStore, func()) {
+		t.Helper()
+		store, mock := newTestStore(t)
+		// Force multi-page pagination so WalkBlocks_EnumeratesAll exercises
+		// the paginator code path with the 5 blocks the suite inserts.
+		mock.mu.Lock()
+		mock.listPageSize = 2
+		mock.mu.Unlock()
+		return store, func() { _ = store.Close() }
+	})
+}
