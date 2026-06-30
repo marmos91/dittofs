@@ -18,10 +18,10 @@ import (
 // LeaseState (RWH) until the holder ACKs. opLockConflictsWithByteLock gates on
 // lease.HasWrite(), not on the Breaking flag, so AddUnifiedLock observes the
 // still-present write lease as a conflict if it runs before the break drains.
-// The adapter fix waits (WaitForBreakCompletionExceptKey) between the break and
-// the insert; this test pins the underlying lock-manager contract that makes
-// that wait correct: the byte lock is denied while the break is in flight and
-// granted once the holder ACKs to None.
+// The adapter fix waits (WaitForByteRangeLockBreak, the helper the NFSv4 and NLM
+// LOCK paths call) between the break and the insert; this test drives that exact
+// helper: the byte lock is denied while the break is in flight and granted once
+// the holder ACKs to None.
 func TestByteRangeLock_WaitForBreakBeforeGrant_ACK(t *testing.T) {
 	t.Parallel()
 
@@ -63,9 +63,8 @@ func TestByteRangeLock_WaitForBreakBeforeGrant_ACK(t *testing.T) {
 	}()
 
 	// The adapter fix: wait for the break to drain before retrying the insert.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	require.NoError(t, lm.WaitForBreakCompletionExceptKey(ctx, fileID, [16]byte{}),
+	// Drive the exact helper the NFSv4/NLM LOCK paths use.
+	require.NoError(t, WaitForByteRangeLockBreak(context.Background(), lm, fileID),
 		"wait must observe the ACK and return without a timeout")
 
 	// Post-break: the write bit is gone, so the byte lock is granted.
@@ -156,4 +155,38 @@ func TestWaitForByteRangeLeaseBreak_IgnoresBreakingDelegation(t *testing.T) {
 	require.Len(t, lm.unifiedLocks[fileID], 1)
 	assert.True(t, lm.unifiedLocks[fileID][0].Delegation.Breaking,
 		"the wait must not force-complete or remove the delegation")
+}
+
+// TestWaitForByteRangeLeaseBreak_CancelDoesNotForceBreak asserts that a client
+// cancellation of the LOCK request does NOT force-downgrade the conflicting SMB
+// lease. Only a genuine wait-deadline expiry (the holder failed to ACK) may
+// revoke the lease — a cancelled request inserts no lock, so it must leave the
+// holder's lease intact.
+func TestWaitForByteRangeLeaseBreak_CancelDoesNotForceBreak(t *testing.T) {
+	t.Parallel()
+
+	lm := NewManager()
+
+	const fileID = "xpro2-cancel.dat"
+	smbLease := [16]byte{0xF1}
+
+	require.NoError(t, lm.AddUnifiedLock(fileID, &UnifiedLock{
+		ID:    "ul-smb-write",
+		Owner: LockOwner{OwnerID: "smb:writer", ClientID: "client-SMB"},
+		Lease: &OpLock{LeaseKey: smbLease, LeaseState: LeaseStateRead | LeaseStateWrite | LeaseStateHandle},
+	}))
+	require.NoError(t, lm.BreakLeasesForByteRangeLock(fileID, &LockOwner{}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // client gave up before the holder ACKed
+	require.ErrorIs(t, lm.WaitForByteRangeLeaseBreak(ctx, fileID), context.Canceled)
+
+	// The lease must NOT have been force-downgraded: it is still Breaking with
+	// its Write bit intact, awaiting the holder's own ACK.
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	_, ul, _ := lm.findLeaseByKey(smbLease)
+	require.NotNil(t, ul)
+	assert.True(t, ul.Lease.Breaking, "cancellation must not resolve the break")
+	assert.True(t, ul.Lease.HasWrite(), "cancellation must not strip the holder's Write lease")
 }

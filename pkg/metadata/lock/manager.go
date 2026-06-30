@@ -3,6 +3,7 @@ package lock
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -2231,7 +2232,13 @@ func (lm *Manager) WaitForByteRangeLeaseBreak(ctx context.Context, handleKey str
 
 		select {
 		case <-ctx.Done():
-			lm.forceCompleteBreaksExceptKey(handleKey, [16]byte{})
+			// Force-break the holder's lease only when our own wait deadline
+			// expired (the holder genuinely failed to ACK in time). On a client
+			// cancellation no byte-range lock will be inserted, so we must not
+			// downgrade the SMB holder's lease as a side effect.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				lm.forceCompleteBreaksExceptKey(handleKey, [16]byte{})
+			}
 			return ctx.Err()
 		case <-ch:
 			continue
@@ -2257,8 +2264,10 @@ const byteRangeLockBreakWaitTimeout = 5 * time.Second
 // returns a spurious DENIED (surfaced to the client as EIO) — the #1501
 // regression.
 //
-// Deadlock safety: WaitForBreakCompletionExceptKey releases the manager mutex
-// before blocking, so it cannot deadlock against the break dispatch or the SMB
+// Deadlock safety: it waits via WaitForByteRangeLeaseBreak, which is leases-only
+// (it never blocks on an NFSv4 delegation break — DELEGRETURN needs the
+// StateManager mutex this path holds) and releases the lock-manager mutex before
+// blocking, so it cannot deadlock against the break dispatch or the SMB
 // LEASE_BREAK_ACK path. The wait is bounded by byteRangeLockBreakWaitTimeout so a
 // stuck holder cannot stall the lock indefinitely; on expiry the breaking lease
 // is force-downgraded to None and the lock is granted. The empty exclude key
@@ -2274,10 +2283,22 @@ func WaitForByteRangeLockBreak(ctx context.Context, lm LockManager, handleKey st
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, byteRangeLockBreakWaitTimeout)
 	defer cancel()
-	if err := lm.WaitForByteRangeLeaseBreak(waitCtx, handleKey); err != nil && ctx.Err() != nil {
+	switch err := lm.WaitForByteRangeLeaseBreak(waitCtx, handleKey); {
+	case err == nil:
+		// Break drained (ACK or no breaking lease) — caller may insert the lock.
+		return nil
+	case ctx.Err() != nil:
+		// The originating request was cancelled/expired; abort the lock so we
+		// don't insert one nobody is waiting for.
 		return ctx.Err()
+	case errors.Is(err, context.DeadlineExceeded):
+		// Our derived deadline expired: the holder never ACKed, the lease was
+		// force-downgraded to None, and the lock may now be granted.
+		return nil
+	default:
+		// Unexpected error from the wait implementation — surface it.
+		return err
 	}
-	return nil
 }
 
 // AnyHolderHasLeaseBits reports whether any lease on handleKey (other than
