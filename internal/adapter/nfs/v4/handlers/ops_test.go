@@ -994,7 +994,8 @@ func TestAccess_PseudoFS(t *testing.T) {
 	ctx := newOpsTestContext()
 
 	allBits := uint32(ACCESS4_READ | ACCESS4_LOOKUP | ACCESS4_MODIFY |
-		ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE)
+		ACCESS4_EXTEND | ACCESS4_DELETE | ACCESS4_EXECUTE |
+		ACCESS4_XAREAD | ACCESS4_XAWRITE | ACCESS4_XALIST)
 
 	data := encodeCompoundWithOps("", 0, []encodedOp{
 		encodePutRootFH(),

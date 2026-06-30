@@ -501,9 +501,15 @@ func encodeSingleAttr(buf *bytes.Buffer, bit uint32, node PseudoFSAttrSource) er
 		return EncodeBitmap4(buf, exclcreatAttrs())
 
 	case FATTR4_XATTR_SUPPORT:
-		// bool: the pseudo-fs carries no named attributes, but the attribute is
-		// advertised in SUPPORTED_ATTRS, so report false rather than erroring.
-		return xdr.WriteUint32(buf, 0) // false
+		// bool: report true so the Linux client enables NFS_CAP_XATTR for the whole
+		// mount. The client probes server xattr capability with a GETATTR on the
+		// pseudo-fs root at mount time (its FSINFO/server-capabilities call), and a
+		// false there disables xattr for every file under the mount regardless of
+		// what individual files report. The pseudo-fs is read-only, so a SETXATTR
+		// against it is rejected anyway; real files report true and serve the ops.
+		// Mirrors the CLONE_BLKSIZE case below, which also advertises a working
+		// value here even though the op itself is rejected on the pseudo-fs.
+		return xdr.WriteUint32(buf, 1) // true
 
 	case FATTR4_CLONE_BLKSIZE:
 		// uint32: CLONE alignment block size (RFC 7862 15.13). Advertised in
