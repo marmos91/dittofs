@@ -12,6 +12,32 @@ Locked decisions (2026-06-30):
   metadata store is the one durable place already in the share's transaction domain.
 - **Migration:** automatic, **blocking at startup**, resumable/idempotent.
 - **PR1 backends:** S3 + memory + filesystem-remote all implement the new interface.
+- **Refactor in place, no additive parallel types.** Existing functions/structs/interfaces
+  are reshaped to the new model and renamed — we do NOT leave the old CAS/additive surface
+  beside the new one. Each PR refactors the surface in its blast radius; PR4 does the final
+  sweep. (Per minimize-interface-surface + no-compat-shims.)
+- **Docs updated per PR.** Every PR updates the docs it touches (`docs/internals/
+  implementing-stores.md`, `architecture.md`, `docs/guide/*`); PR4 does the final docs pass.
+
+## Naming model (fix everywhere)
+
+The current names collide: `FileBlock` / `BlockRef` / `BlockState` / `ObjectID` actually
+describe **chunks**, while the new model reserves **Block** for the packed remote container.
+Normalize so "Block" means only the container:
+
+| Current (means chunk) | New | Notes |
+|---|---|---|
+| `FileBlock` (row `{payloadID}/{offset}`) | `FileChunk` / chunk row | per-chunk metadata row |
+| `BlockRef{Hash,Offset,Size}` | `ChunkRef` | chunk locator within a file |
+| `BlockState` (Pending/Syncing/Remote) | `ChunkSyncState` | per-chunk sync state |
+| `RemoteStore` (CAS, hash-keyed) | `RemoteBlockStore` (BlockID-keyed) | slim block interface |
+| `ChunkReader.ReadChunk` (additive) | folded into `GetBlockRange` + decode | remove additive surface |
+| `ChunkLocator{Offset,Length}` | `ChunkLocator{WireOffset,WireLength}` | drop `IsStandalone`/standalone |
+| `ObjectID` (Merkle root) | reassess — keep only if still load-bearing | |
+
+New names with no collision today: **Block** (packed container, `BlockID`), **block record**
+(`BlockID → {blockHash, length, liveChunkCount, syncState}`), **log blob** (`logBlobID`),
+**local index** (`hash → {logBlobID, rawOffset, rawLength}`).
 
 ---
 
@@ -30,7 +56,12 @@ Pure new code. No wiring into the live path. Fully unit-tested.
 - Conformance: new `blockstoretest` block-interface suite + codec round-trip
   (encrypted/plaintext, incompressible input, range reads, blake3 verify).
 
-DoD: interface + codec + 3 backends + conformance green. Nothing else touched.
+- Refactor/naming in this PR's blast radius: rename `RemoteStore`→`RemoteBlockStore`,
+  reshape `ChunkLocator` fields to `WireOffset`/`WireLength`, begin folding the additive
+  `ChunkReader.ReadChunk` into `GetBlockRange`+decode. Update `docs/internals/
+  implementing-stores.md` for the new block-store contract.
+
+DoD: interface + codec + 3 backends + conformance green; touched surface renamed; docs current.
 
 ## PR2 — Persistence layer: local log-blob tier + metadata block records
 
@@ -79,9 +110,13 @@ green. Legacy CAS reader present only for back-compat reads.
   `FormatCASKey`/`ParseCASKey`, the `cas/` walk + keying, `ReadBlockVerified`'s standalone
   use, per-chunk local CAS storage remnants, dead config knobs/tests/interfaces.
 - Leave no vestigial interfaces (minimize-interface-surface rule).
+- **Final naming sweep** (`FileBlock`→`FileChunk`, `BlockRef`→`ChunkRef`,
+  `BlockState`→`ChunkSyncState`, etc. — anything not already renamed in PR1–3) and **final
+  docs pass** across `docs/internals/` + `docs/guide/`, then regenerate `docs/guide/cli.md`
+  via `go run ./cmd/gendocs` if any command/flag changed.
 
 DoD: migration converts a `cas/<hash>` fixture byte-identically + resumable; no standalone
-code remains (`grep` clean); full suite + e2e green.
+code remains (`grep` clean); naming model fully applied; docs current; full suite + e2e green.
 
 ---
 
