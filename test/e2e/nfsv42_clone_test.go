@@ -26,7 +26,11 @@ func TestNFSv42Clone(t *testing.T) {
 		t.Skip("Skipping NFSv4.2 CLONE tests in short mode")
 	}
 
-	_, _, nfsPort := setupNFSv4TestServer(t)
+	// CLONE copies the source's CAS block list (file.Blocks). The memory store
+	// never populates it, so a clone over a memory-backed share copies an empty
+	// manifest and reads back zeros. Use the fs store and wait for the source to
+	// roll up before cloning.
+	_, nfsPort := setupNFSv42FSServer(t)
 	mount := framework.MountNFSWithVersion(t, nfsPort, "4.2")
 	t.Cleanup(mount.Cleanup)
 
@@ -41,6 +45,7 @@ func TestNFSv42Clone(t *testing.T) {
 			full[i] = byte(i*131 + 7)
 		}
 		framework.WriteFile(t, src, full)
+		waitForFullRollup(t, src, int64(len(full))) // CLONE copies CAS blocks
 
 		// cp --reflink=always FAILS rather than falling back to a plain copy if
 		// the server does not support CLONE, so a clean exit proves OP_CLONE ran.
@@ -58,6 +63,7 @@ func TestNFSv42Clone(t *testing.T) {
 
 		original := bytes.Repeat([]byte{0xCC}, 1<<20)
 		framework.WriteFile(t, src, original)
+		waitForFullRollup(t, src, int64(len(original))) // CLONE copies CAS blocks
 
 		out, err := exec.Command("cp", "--reflink=always", src, dst).CombinedOutput()
 		require.NoErrorf(t, err, "cp --reflink=always: %s", out)

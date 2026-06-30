@@ -54,18 +54,18 @@ func blocks512(t *testing.T, path string) int64 {
 	return st.Blocks
 }
 
-// setupNFSv42SparseServer starts a server backed by an fs (not memory) local
-// block store and returns the CLI runner and NFS port.
+// setupNFSv42FSServer starts a server backed by an fs (not memory) local block
+// store and returns the CLI runner and NFS port.
 //
-// The sparse cluster derives its data/hole view from the file's CAS block list
-// (file.Blocks). Only the fs store runs the append-log rollup that chunks
-// written data and persists BlockRefs to metadata; the memory store serves
-// reads directly and never populates file.Blocks. With a memory store a freshly
-// written file therefore looks block-less — SEEK_HOLE reports the whole file as
-// a hole and SEEK_DATA returns ENXIO even though the bytes are present. These
-// tests must run against the fs store; SEEK assertions then wait for the
-// background rollup to populate file.Blocks before reading the hole map.
-func setupNFSv42SparseServer(t *testing.T) (*helpers.CLIRunner, int) {
+// Block-list-dependent NFSv4.2 operations (SEEK/READ_PLUS hole map, CLONE
+// payload copy) read the file's CAS block list (file.Blocks). Only the fs store
+// runs the append-log rollup that chunks written data and persists BlockRefs to
+// metadata; the memory store serves reads directly and never populates
+// file.Blocks. With a memory store a freshly written file therefore looks
+// block-less — SEEK reports it as all-hole and CLONE copies an empty manifest
+// (a zero-filled destination). These tests must run against the fs store and
+// wait for the background rollup to populate file.Blocks before the op.
+func setupNFSv42FSServer(t *testing.T) (*helpers.CLIRunner, int) {
 	t.Helper()
 
 	sp := helpers.StartServerProcess(t, "")
@@ -105,6 +105,19 @@ func setupNFSv42SparseServer(t *testing.T) (*helpers.CLIRunner, int) {
 	return runner, nfsPort
 }
 
+// waitForFullRollup blocks until the entire dense file [0,size) is backed by
+// CAS blocks — i.e. SEEK_HOLE from 0 reports only the hole at EOF. Block-list-
+// dependent ops (CLONE) must run after the source has rolled up; until then the
+// source looks block-less and the op sees no data to copy. Requires a vers=4.2
+// mount so the kernel issues SEEK.
+func waitForFullRollup(t *testing.T, path string, size int64) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		h, err := seekTo(t, path, 0, seekHole)
+		return err == nil && h == size
+	}, 20*time.Second, 250*time.Millisecond, "file should roll up into CAS blocks")
+}
+
 // TestNFSv42Sparse exercises the SEEK / READ_PLUS / DEALLOCATE / ALLOCATE
 // cluster over a vers=4.2 mount (SPARSE-01..04).
 func TestNFSv42Sparse(t *testing.T) {
@@ -112,7 +125,7 @@ func TestNFSv42Sparse(t *testing.T) {
 		t.Skip("Skipping NFSv4.2 sparse tests in short mode")
 	}
 
-	_, nfsPort := setupNFSv42SparseServer(t)
+	_, nfsPort := setupNFSv42FSServer(t)
 	mount := framework.MountNFSWithVersion(t, nfsPort, "4.2")
 	t.Cleanup(mount.Cleanup)
 
