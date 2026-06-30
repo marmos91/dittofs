@@ -64,7 +64,6 @@ func DefaultCommitBlock(
 	rec block.BlockRecord,
 	chunks []block.BlockChunkCommit,
 ) error {
-	var justCommitted bool
 	if err := s.WithTransaction(ctx, func(tx Transaction) error {
 		_, exists, err := tx.GetBlockRecord(ctx, rec.BlockID)
 		if err != nil {
@@ -81,14 +80,16 @@ func DefaultCommitBlock(
 				return err
 			}
 		}
-		justCommitted = true
 		return nil
 	}); err != nil {
 		return err
 	}
-	if !justCommitted {
-		return nil
-	}
+	// MarkSynced runs unconditionally after the transaction commits — even when
+	// the block record already existed (justCommitted would have been false in the
+	// old guard). MarkSynced is idempotent, so a no-op on a fully-committed block
+	// is safe. Crucially, this fixes the retry path: if a previous CommitBlock
+	// call committed the tx but then failed mid-MarkSynced, the retry must still
+	// reach this loop to write the pending remote locators.
 	for _, c := range chunks {
 		if err := s.MarkSynced(ctx, c.Hash, c.Remote); err != nil {
 			return err
