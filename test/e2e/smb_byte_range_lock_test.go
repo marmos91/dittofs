@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -137,7 +138,10 @@ func TestSMBLockHolderHelper(t *testing.T) {
 		if openErr == nil {
 			break
 		}
-		if time.Now().After(deadline) {
+		// Only the cross-session visibility lag is expected to be transient
+		// (ENOENT); any other open error (EACCES, bad path) is a real failure —
+		// fail fast rather than spin the full deadline on a hopeless retry.
+		if !errors.Is(openErr, syscall.ENOENT) || time.Now().After(deadline) {
 			fmt.Printf("HOLDER_ERR open %s: %v\n", path, openErr)
 			return
 		}
@@ -160,7 +164,11 @@ func TestSMBLockHolderHelper(t *testing.T) {
 		if lockErr == nil {
 			break
 		}
-		if time.Now().After(deadline) {
+		// The first (uncontended) acquire can transiently lose a server-busy
+		// race surfacing as EAGAIN/EACCES/EBUSY; retry only those. Anything else
+		// (e.g. EBADF) is a genuine failure — report it immediately.
+		if !(errors.Is(lockErr, syscall.EAGAIN) || errors.Is(lockErr, syscall.EACCES) ||
+			errors.Is(lockErr, syscall.EBUSY)) || time.Now().After(deadline) {
 			fmt.Printf("HOLDER_ERR lock: %v\n", lockErr)
 			return
 		}
