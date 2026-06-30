@@ -7,30 +7,31 @@ import (
 
 // NFSAdapterSettingsResponse is the response for NFS adapter settings.
 type NFSAdapterSettingsResponse struct {
-	MinVersion                 string   `json:"min_version"`
-	MaxVersion                 string   `json:"max_version"`
-	LeaseTime                  int      `json:"lease_time"`
-	GracePeriod                int      `json:"grace_period"`
-	DelegationRecallTimeout    int      `json:"delegation_recall_timeout"`
-	CallbackTimeout            int      `json:"callback_timeout"`
-	LeaseBreakTimeout          int      `json:"lease_break_timeout"`
-	MaxConnections             int      `json:"max_connections"`
-	MaxClients                 int      `json:"max_clients"`
-	MaxCompoundOps             int      `json:"max_compound_ops"`
-	MaxReadSize                int      `json:"max_read_size"`
-	MaxWriteSize               int      `json:"max_write_size"`
-	PreferredTransferSize      int      `json:"preferred_transfer_size"`
-	DelegationsEnabled         bool     `json:"delegations_enabled"`
-	MaxDelegations             int      `json:"max_delegations"`
-	DirDelegBatchWindowMs      int      `json:"dir_deleg_batch_window_ms"`
-	V4MinMinorVersion          int      `json:"v4_min_minor_version"`
-	V4MaxMinorVersion          int      `json:"v4_max_minor_version"`
-	V4MaxConnectionsPerSession int      `json:"v4_max_connections_per_session"`
-	BlockedOperations          []string `json:"blocked_operations"`
-	PortmapperEnabled          bool     `json:"portmapper_enabled"`
-	PortmapperPort             int      `json:"portmapper_port"`
-	UDPEnabled                 bool     `json:"udp_enabled"`
-	Version                    int      `json:"version"`
+	MinVersion                   string   `json:"min_version"`
+	MaxVersion                   string   `json:"max_version"`
+	LeaseTime                    int      `json:"lease_time"`
+	GracePeriod                  int      `json:"grace_period"`
+	DelegationRecallTimeout      int      `json:"delegation_recall_timeout"`
+	CallbackTimeout              int      `json:"callback_timeout"`
+	LeaseBreakTimeout            int      `json:"lease_break_timeout"`
+	MaxConnections               int      `json:"max_connections"`
+	MaxClients                   int      `json:"max_clients"`
+	MaxCompoundOps               int      `json:"max_compound_ops"`
+	MaxReadSize                  int      `json:"max_read_size"`
+	MaxWriteSize                 int      `json:"max_write_size"`
+	PreferredTransferSize        int      `json:"preferred_transfer_size"`
+	DelegationsEnabled           bool     `json:"delegations_enabled"`
+	MaxDelegations               int      `json:"max_delegations"`
+	DirDelegBatchWindowMs        int      `json:"dir_deleg_batch_window_ms"`
+	V4MinMinorVersion            int      `json:"v4_min_minor_version"`
+	V4MaxMinorVersion            int      `json:"v4_max_minor_version"`
+	V4MaxConnectionsPerSession   int      `json:"v4_max_connections_per_session"`
+	BlockedOperations            []string `json:"blocked_operations"`
+	PortmapperEnabled            bool     `json:"portmapper_enabled"`
+	PortmapperPort               int      `json:"portmapper_port"`
+	PortmapperRegisterWithSystem bool     `json:"portmapper_register_with_system"`
+	UDPEnabled                   bool     `json:"udp_enabled"`
+	Version                      int      `json:"version"`
 }
 
 // SMBAdapterSettingsResponse is the response for SMB adapter settings.
@@ -68,29 +69,30 @@ type SMBSettingsDefaultsResponse struct {
 
 // PatchNFSSettingsRequest uses pointer fields for partial updates.
 type PatchNFSSettingsRequest struct {
-	MinVersion                 *string   `json:"min_version,omitempty"`
-	MaxVersion                 *string   `json:"max_version,omitempty"`
-	LeaseTime                  *int      `json:"lease_time,omitempty"`
-	GracePeriod                *int      `json:"grace_period,omitempty"`
-	DelegationRecallTimeout    *int      `json:"delegation_recall_timeout,omitempty"`
-	CallbackTimeout            *int      `json:"callback_timeout,omitempty"`
-	LeaseBreakTimeout          *int      `json:"lease_break_timeout,omitempty"`
-	MaxConnections             *int      `json:"max_connections,omitempty"`
-	MaxClients                 *int      `json:"max_clients,omitempty"`
-	MaxCompoundOps             *int      `json:"max_compound_ops,omitempty"`
-	MaxReadSize                *int      `json:"max_read_size,omitempty"`
-	MaxWriteSize               *int      `json:"max_write_size,omitempty"`
-	PreferredTransferSize      *int      `json:"preferred_transfer_size,omitempty"`
-	DelegationsEnabled         *bool     `json:"delegations_enabled,omitempty"`
-	MaxDelegations             *int      `json:"max_delegations,omitempty"`
-	DirDelegBatchWindowMs      *int      `json:"dir_deleg_batch_window_ms,omitempty"`
-	V4MinMinorVersion          *int      `json:"v4_min_minor_version,omitempty"`
-	V4MaxMinorVersion          *int      `json:"v4_max_minor_version,omitempty"`
-	V4MaxConnectionsPerSession *int      `json:"v4_max_connections_per_session,omitempty"`
-	BlockedOperations          *[]string `json:"blocked_operations,omitempty"`
-	PortmapperEnabled          *bool     `json:"portmapper_enabled,omitempty"`
-	PortmapperPort             *int      `json:"portmapper_port,omitempty"`
-	UDPEnabled                 *bool     `json:"udp_enabled,omitempty"`
+	MinVersion                   *string   `json:"min_version,omitempty"`
+	MaxVersion                   *string   `json:"max_version,omitempty"`
+	LeaseTime                    *int      `json:"lease_time,omitempty"`
+	GracePeriod                  *int      `json:"grace_period,omitempty"`
+	DelegationRecallTimeout      *int      `json:"delegation_recall_timeout,omitempty"`
+	CallbackTimeout              *int      `json:"callback_timeout,omitempty"`
+	LeaseBreakTimeout            *int      `json:"lease_break_timeout,omitempty"`
+	MaxConnections               *int      `json:"max_connections,omitempty"`
+	MaxClients                   *int      `json:"max_clients,omitempty"`
+	MaxCompoundOps               *int      `json:"max_compound_ops,omitempty"`
+	MaxReadSize                  *int      `json:"max_read_size,omitempty"`
+	MaxWriteSize                 *int      `json:"max_write_size,omitempty"`
+	PreferredTransferSize        *int      `json:"preferred_transfer_size,omitempty"`
+	DelegationsEnabled           *bool     `json:"delegations_enabled,omitempty"`
+	MaxDelegations               *int      `json:"max_delegations,omitempty"`
+	DirDelegBatchWindowMs        *int      `json:"dir_deleg_batch_window_ms,omitempty"`
+	V4MinMinorVersion            *int      `json:"v4_min_minor_version,omitempty"`
+	V4MaxMinorVersion            *int      `json:"v4_max_minor_version,omitempty"`
+	V4MaxConnectionsPerSession   *int      `json:"v4_max_connections_per_session,omitempty"`
+	BlockedOperations            *[]string `json:"blocked_operations,omitempty"`
+	PortmapperEnabled            *bool     `json:"portmapper_enabled,omitempty"`
+	PortmapperPort               *int      `json:"portmapper_port,omitempty"`
+	PortmapperRegisterWithSystem *bool     `json:"portmapper_register_with_system,omitempty"`
+	UDPEnabled                   *bool     `json:"udp_enabled,omitempty"`
 }
 
 // PatchSMBSettingsRequest uses pointer fields for partial updates.

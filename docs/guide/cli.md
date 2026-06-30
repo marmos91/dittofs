@@ -1182,6 +1182,7 @@ Flags:
       --min-version string                   Minimum NFS version (e.g., 3)
       --portmapper-enabled                   Enable embedded portmapper
       --portmapper-port int                  Portmapper listen port
+      --portmapper-register-with-system      Register NFS/MOUNT/NLM services with the host's system rpcbind on port 111, so kernel NFSv3 clients can lock without 'nolock' (restart to apply)
       --preferred-transfer-size int          Preferred transfer size in bytes
       --udp-enabled                          Serve NLM/NSM/MOUNT over UDP (needed for NFSv3 locking from macOS/BSD; restart to apply)
       --v4-max-connections-per-session int   Maximum connections per NFSv4.1 session (0=unlimited)
@@ -5625,12 +5626,6 @@ plain GC cannot reclaim because they keep their hashes in the live set.
 Reconcile is server-wide (all shares) and the recommended way to recover
 space leaked by older versions. Combine with --dry-run to preview.
 
-Use --grace-period to override the configured sweep grace for this run
-only. A zero grace (--grace-period 0) reaps every eligible orphan with no
-age guard, bypassing the server's 5-minute floor — useful to reclaim
-just-orphaned chunks immediately in tests or one-off cleanups. Cannot be
-combined with --reconcile.
-
 ```
 dfsctl store block gc <share> [flags]
 ```
@@ -5641,8 +5636,6 @@ dfsctl store block gc <share> [flags]
 dfsctl store block gc myshare
 dfsctl store block gc myshare --dry-run
 dfsctl store block gc myshare --reconcile
-dfsctl store block gc myshare --grace-period 0
-dfsctl store block gc myshare --grace-period 30m
 dfsctl store block gc myshare --no-wait
 dfsctl store block gc myshare -o json
 ```
@@ -5650,10 +5643,9 @@ dfsctl store block gc myshare -o json
 Flags:
 
 ```
-      --dry-run                 Run mark + sweep enumeration but skip deletes; print candidate keys
-      --grace-period duration   Override the sweep grace for this run (e.g. 30m, 0 to reap immediately); bypasses the server's 5m floor. Unset = server default
-      --no-wait                 Start the job and print its id without waiting for completion
-      --reconcile               Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers
+      --dry-run     Run mark + sweep enumeration but skip deletes; print candidate keys
+      --no-wait     Start the job and print its id without waiting for completion
+      --reconcile   Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers
 ```
 
 Global flags:

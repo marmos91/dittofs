@@ -84,8 +84,11 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	if settings.PortmapperPort > 0 {
 		s.config.Portmapper.Port = settings.PortmapperPort
 	}
+	registerWithSystem := settings.PortmapperRegisterWithSystem
+	s.config.Portmapper.RegisterWithSystem = &registerWithSystem
 	logger.Debug("NFS adapter: applied portmapper settings from DB",
-		"enabled", settings.PortmapperEnabled, "port", s.config.Portmapper.Port)
+		"enabled", settings.PortmapperEnabled, "port", s.config.Portmapper.Port,
+		"register_with_system", settings.PortmapperRegisterWithSystem)
 
 	// UDP transport (NLM/NSM/MOUNT over UDP) -> adapter config. Same pattern as
 	// portmapper: DB plain bool drives the adapter config *bool. Takes effect on

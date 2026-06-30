@@ -138,6 +138,13 @@ type NFSAdapter struct {
 	// nil when portmapper is disabled.
 	portmapRegistry *portmap.Registry
 
+	// sysregActive is true once DittoFS's services have been registered with the
+	// host's system rpcbind (adapters.nfs.portmapper.register_with_system), so
+	// shutdown knows to unregister them. Stays false when the feature is
+	// disabled or no system portmapper was reachable at startup. Atomic because
+	// Stop() may race Serve() (Stop is documented safe to call concurrently).
+	sysregActive atomic.Bool
+
 	// udpConn is the UDP listener serving NLM/NSM/MOUNT when the UDP transport
 	// is enabled (adapters.nfs.udp.enabled). nil when UDP is disabled.
 	udpConn *net.UDPConn
@@ -349,16 +356,26 @@ func (t NFSTLSConfig) Enabled() bool {
 // Configuration path: adapters.nfs.portmapper.enabled / adapters.nfs.portmapper.port
 //
 // The Enabled field uses a *bool pointer type to distinguish between
-// "not set in config" (nil, defaults to true) and "explicitly set to false".
+// "not set in config" (nil, defaults to false) and "explicitly set to true".
 type PortmapConfig struct {
-	// Enabled controls whether the portmapper is active.
-	// When nil (not specified in config), defaults to true.
-	// Set to false to explicitly disable the portmapper.
+	// Enabled controls whether the embedded portmapper is active.
+	// When nil (not specified in config), defaults to false.
+	// Set to true to explicitly enable the embedded portmapper.
 	Enabled *bool `mapstructure:"enabled"`
 
 	// Port is the port to listen on for portmapper requests.
 	// Default: 10111 (unprivileged port; standard portmapper uses 111 but requires root).
 	Port int `mapstructure:"port" validate:"min=0,max=65535"`
+
+	// RegisterWithSystem registers DittoFS's services (NFS, MOUNT, NLM, NSM)
+	// with the host's system rpcbind on port 111 at startup, instead of (or in
+	// addition to) running the embedded portmapper. This is what lets a kernel
+	// NFSv3 client discover the NLM port and take byte-range locks without the
+	// `nolock` mount option, on a host that already runs rpcbind. When nil
+	// (not specified), defaults to false. Best effort: if no portmapper answers
+	// on 111 the registration is skipped with a warning (NFS still serves; v3
+	// locking just stays unavailable).
+	RegisterWithSystem *bool `mapstructure:"register_with_system"`
 }
 
 // NFSUDPConfig configures the UDP transport for the lock-manager auxiliary
@@ -771,6 +788,12 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 	if err := s.startPortmapper(ctx); err != nil {
 		logger.Warn("Portmapper failed to start (NFS will continue without it)", "error", err)
 	}
+
+	// Register services with the host's system rpcbind (port 111) when enabled,
+	// so a kernel NFSv3 client can discover the NLM port and lock without
+	// `nolock`. Non-fatal: if no rpcbind answers, NFS serves but v3 locking
+	// stays unavailable.
+	s.startSystemPortmapRegistration(ctx)
 
 	// Start the UDP transport for NLM/NSM/MOUNT when enabled. NFSv3 lock
 	// clients on BSD/macOS require the lock-manager protocols over UDP

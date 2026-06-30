@@ -40,7 +40,10 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 		s.identityProviderUnsub = nil
 	}
 
-	// Stop portmapper first (stops accepting new queries before NFS stops)
+	// Stop portmapper first (stops accepting new queries before NFS stops).
+	// Unregister from the system rpcbind before tearing down listeners so a
+	// client never resolves a stale NLM port to a port we no longer serve.
+	s.stopSystemPortmapRegistration()
 	s.stopPortmapper()
 
 	// Stop GSS processor if running (releases background cleanup goroutine)

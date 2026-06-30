@@ -148,6 +148,19 @@ func (r *Registry) Dump() []*xdr.Mapping {
 //   - NLM (100021) v1, v3, v4
 //   - NSM (100024) v1
 func (r *Registry) RegisterDittoFSServices(nfsPort int, udpEnabled bool) {
+	for _, m := range DittoFSServiceMappings(nfsPort, udpEnabled) {
+		r.Set(m)
+	}
+}
+
+// DittoFSServiceMappings returns the full set of (prog, vers, prot, port)
+// mappings that describe DittoFS's RPC services on nfsPort. It is the single
+// source of truth shared by the embedded portmapper registry
+// (RegisterDittoFSServices) and the system-rpcbind registrar (portmap/sysreg),
+// so both advertise an identical service set.
+//
+// See RegisterDittoFSServices for the always-TCP / UDP-when-enabled rationale.
+func DittoFSServiceMappings(nfsPort int, udpEnabled bool) []*xdr.Mapping {
 	port := uint32(nfsPort)
 
 	type svc struct {
@@ -167,12 +180,14 @@ func (r *Registry) RegisterDittoFSServices(nfsPort int, udpEnabled bool) {
 		{100021, 4}, // NLM v4 (64-bit offsets; Linux)
 		{100024, 1}, // NSM v1
 	}
+
+	mappings := make([]*xdr.Mapping, 0, len(tcpServices)*2)
 	for _, s := range tcpServices {
-		r.Set(&xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoTCP, Port: port})
+		mappings = append(mappings, &xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoTCP, Port: port})
 	}
 
 	if !udpEnabled {
-		return
+		return mappings
 	}
 
 	// UDP services: the lock-manager protocols and MOUNT only. NFS is never
@@ -187,8 +202,9 @@ func (r *Registry) RegisterDittoFSServices(nfsPort int, udpEnabled bool) {
 		{100024, 1}, // NSM v1
 	}
 	for _, s := range udpServices {
-		r.Set(&xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoUDP, Port: port})
+		mappings = append(mappings, &xdr.Mapping{Prog: s.prog, Vers: s.vers, Prot: types.ProtoUDP, Port: port})
 	}
+	return mappings
 }
 
 // RegisterPortmapper registers the portmapper itself in the service registry.
