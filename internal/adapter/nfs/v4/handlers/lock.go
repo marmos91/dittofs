@@ -152,6 +152,7 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			"client", ctx.ClientAddr)
 
 		result, stateErr = h.StateManager.LockNew(
+			ctx.Context,
 			lockOwnerClientID, lockOwnerData, lockSeqid,
 			openStateid, openSeqid,
 			ctx.CurrentFH, lockType, offset, length, reclaim,
@@ -190,6 +191,7 @@ func (h *Handler) handleLock(ctx *types.CompoundContext, reader io.Reader) *type
 			"client", ctx.ClientAddr)
 
 		result, stateErr = h.StateManager.LockExisting(
+			ctx.Context,
 			lockStateid, lockSeqid,
 			ctx.CurrentFH, lockType, offset, length, reclaim,
 		)

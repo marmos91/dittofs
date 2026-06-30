@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -1135,7 +1136,7 @@ func TestFreeStateid(t *testing.T) {
 		confirmedStateid := &confirmed.Stateid
 
 		// Create lock state
-		lockResult, err := sm.LockNew(
+		lockResult, err := sm.LockNew(context.Background(),
 			0, []byte("lock-owner1"), 1,
 			confirmedStateid, 3,
 			fh, types.WRITE_LT, 0, 100, false,
@@ -1190,7 +1191,7 @@ func TestFreeStateid(t *testing.T) {
 		// open2 uses a confirmed owner; no OPEN_CONFIRM needed.
 
 		// Acquire a lock on file1 with the shared lock owner.
-		lock1, err := sm.LockNew(
+		lock1, err := sm.LockNew(context.Background(),
 			clientID, lockOwnerData, 1,
 			&conf1.Stateid, 4,
 			fh1, types.WRITE_LT, 0, 100, false,
@@ -1210,7 +1211,7 @@ func TestFreeStateid(t *testing.T) {
 
 		// Acquire a lock on file2 with the SAME lock owner — this reuses the
 		// existing LockOwner entry in sm.lockOwners and creates a second LockState.
-		lock2, err := sm.LockNew(
+		lock2, err := sm.LockNew(context.Background(),
 			clientID, lockOwnerData, 3,
 			&open2.Stateid, 5,
 			fh2, types.WRITE_LT, 0, 50, false,
@@ -1338,7 +1339,7 @@ func TestFreeStateid(t *testing.T) {
 		confirmedStateid := &confirmed.Stateid
 
 		// Create a lock
-		_, err = sm.LockNew(
+		_, err = sm.LockNew(context.Background(),
 			0, []byte("lock-owner1"), 1,
 			confirmedStateid, 3,
 			fh, types.WRITE_LT, 0, 100, false,

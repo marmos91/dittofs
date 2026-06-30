@@ -1812,6 +1812,7 @@ func (sm *StateManager) SetGracePeriodDuration(d time.Duration) {
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) LockNew(
+	ctx context.Context,
 	lockClientID uint64, lockOwnerData []byte, lockSeqid uint32,
 	openStateid *types.Stateid4, openSeqid uint32,
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
@@ -1945,7 +1946,7 @@ func (sm *StateManager) LockNew(
 	}
 
 	// 7. Acquire the lock via unified lock manager
-	denied, err := sm.acquireLock(lockState, lockType, offset, length, reclaim)
+	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim)
 	if err != nil {
 		return nil, err
 	}
@@ -1980,6 +1981,7 @@ func (sm *StateManager) LockNew(
 //
 // Caller must NOT hold sm.mu.
 func (sm *StateManager) LockExisting(
+	ctx context.Context,
 	lockStateid *types.Stateid4, lockSeqid uint32,
 	fileHandle []byte, lockType uint32, offset, length uint64, reclaim bool,
 ) (*LockResult, error) {
@@ -2047,7 +2049,7 @@ func (sm *StateManager) LockExisting(
 	}
 
 	// 4. Acquire the lock
-	denied, err := sm.acquireLock(lockState, lockType, offset, length, reclaim)
+	denied, err := sm.acquireLock(ctx, lockState, lockType, offset, length, reclaim)
 	if err != nil {
 		return nil, err
 	}
@@ -2078,7 +2080,7 @@ func (sm *StateManager) LockExisting(
 // or (nil, error) on internal errors.
 //
 // Caller must hold sm.mu.
-func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offset, length uint64, reclaim bool) (*LOCK4denied, error) {
+func (sm *StateManager) acquireLock(ctx context.Context, lockState *LockState, lockType uint32, offset, length uint64, reclaim bool) (*LOCK4denied, error) {
 	lm := sm.lockManagerFor(lockState.FileHandle)
 	if lm == nil {
 		return nil, fmt.Errorf("no lock manager configured")
@@ -2118,6 +2120,16 @@ func (sm *StateManager) acquireLock(lockState *LockState, lockType uint32, offse
 	// symmetry with the SMB path; NFS owners never hold SMB leases, so in practice
 	// nothing is excluded.
 	_ = lm.BreakLeasesForByteRangeLock(handleKey, &owner)
+
+	// Drain the in-flight lease break before inserting the lock: the break is
+	// fire-and-forget, so a still-present (Breaking, not-yet-ACKed) write lease is
+	// otherwise observed as a spurious DENIED → client EIO (#1501). See
+	// lock.WaitForByteRangeLockBreak for the deadlock-safety and timeout reasoning.
+	// A non-nil error means the originating request was cancelled, so don't insert
+	// a lock nobody is waiting for.
+	if err := lock.WaitForByteRangeLockBreak(ctx, lm, handleKey); err != nil {
+		return nil, err
+	}
 
 	// Try to add the lock
 	err := lm.AddUnifiedLock(handleKey, enhLock)

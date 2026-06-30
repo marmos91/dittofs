@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -22,7 +23,7 @@ func TestLockManagerResolver_FixesMissingManager(t *testing.T) {
 	// No manager, no resolver: LOCK must fail (reproduces the EIO bug).
 	smBroken := NewStateManager(90 * time.Second)
 	clientID, fileHandle, openStateid, openSeqid := setupClientAndOpenState(t, smBroken)
-	if _, err := smBroken.LockNew(
+	if _, err := smBroken.LockNew(context.Background(),
 		clientID, []byte("owner-a"), 1,
 		openStateid, openSeqid,
 		fileHandle, types.WRITE_LT, 0, 100, false,
@@ -35,7 +36,7 @@ func TestLockManagerResolver_FixesMissingManager(t *testing.T) {
 	sm := NewStateManager(90 * time.Second)
 	sm.SetLockManagerResolver(func(_ []byte) lock.LockManager { return lm })
 	clientID, fileHandle, openStateid, openSeqid = setupClientAndOpenState(t, sm)
-	if _, err := sm.LockNew(
+	if _, err := sm.LockNew(context.Background(),
 		clientID, []byte("owner-a"), 1,
 		openStateid, openSeqid,
 		fileHandle, types.WRITE_LT, 0, 100, false,
@@ -82,7 +83,7 @@ func TestLockManagerResolver_DetectsCrossProtocolConflict(t *testing.T) {
 	}
 
 	// NFSv4 LOCK for the same overlapping range must also be denied (not granted).
-	res, err := sm.LockNew(
+	res, err := sm.LockNew(context.Background(),
 		clientID, []byte("nfs-owner"), 1,
 		openStateid, openSeqid,
 		fileHandle, types.WRITE_LT, 50, 100, false,

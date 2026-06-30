@@ -112,6 +112,16 @@ func (s *nlmService) LockFileNLM(
 	// nothing is excluded (#1495).
 	_ = s.lockMgr.BreakLeasesForByteRangeLock(handleKey, &owner)
 
+	// Drain the in-flight lease break before inserting the lock: the break is
+	// fire-and-forget, so a still-present (Breaking, not-yet-ACKed) write lease is
+	// otherwise observed as a spurious LockConflict (NLM4_DENIED → client EIO,
+	// #1501). See lock.WaitForByteRangeLockBreak for the deadlock-safety and
+	// timeout reasoning. A non-nil error means the originating request was
+	// cancelled, so don't insert an orphan lock.
+	if err := lock.WaitForByteRangeLockBreak(ctx, s.lockMgr, handleKey); err != nil {
+		return nil, err
+	}
+
 	err := s.lockMgr.AddUnifiedLock(handleKey, unifiedLock)
 	if err == nil {
 		// A successful reclaim records the client so grace can exit early once

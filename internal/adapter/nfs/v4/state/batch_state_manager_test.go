@@ -28,7 +28,7 @@ func TestLockNew_BadLockSeqidDoesNotLeakState(t *testing.T) {
 	ownerData := []byte("new-owner")
 
 	// Bad lock seqid for a brand-new lock-owner: only nextSeqID(0)==1 is valid.
-	_, err := sm.LockNew(
+	_, err := sm.LockNew(context.Background(),
 		clientID, ownerData, 99,
 		openStateid, openSeqid+1,
 		fileHandle, types.WRITE_LT, 0, 100, false,
@@ -63,7 +63,7 @@ func TestLockNew_BadLockSeqidDoesNotLeakLockState(t *testing.T) {
 	ownerData := []byte("new-owner")
 
 	// Bad seqid rejection.
-	if _, err := sm.LockNew(
+	if _, err := sm.LockNew(context.Background(),
 		clientID, ownerData, 99,
 		openStateid, openSeqid+1,
 		fileHandle, types.WRITE_LT, 0, 100, false,
@@ -76,7 +76,7 @@ func TestLockNew_BadLockSeqidDoesNotLeakLockState(t *testing.T) {
 	}
 
 	// A valid follow-up LOCK (seqid=1) must now succeed cleanly.
-	res, err := sm.LockNew(
+	res, err := sm.LockNew(context.Background(),
 		clientID, ownerData, 1,
 		openStateid, openSeqid+1,
 		fileHandle, types.WRITE_LT, 0, 100, false,
@@ -205,7 +205,7 @@ func TestAcquireLock_DeniedOwnerDataIsDecodedBytes(t *testing.T) {
 
 	// Client A acquires an exclusive lock on [0, 100).
 	ownerA := []byte("owner-a")
-	if _, err := sm.LockNew(
+	if _, err := sm.LockNew(context.Background(),
 		clientA, ownerA, 1,
 		stateidA, seqA+1,
 		fh, types.WRITE_LT, 0, 100, false,
@@ -214,7 +214,7 @@ func TestAcquireLock_DeniedOwnerDataIsDecodedBytes(t *testing.T) {
 	}
 
 	// Client B requests an overlapping exclusive lock -> DENIED.
-	resB, err := sm.LockNew(
+	resB, err := sm.LockNew(context.Background(),
 		clientB, []byte("owner-b"), 1,
 		stateidB, seqB+1,
 		fh, types.WRITE_LT, 0, 100, false,
