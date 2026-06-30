@@ -1306,6 +1306,9 @@ func TestReadAtZeroLengthAfterClose(t *testing.T) {
 // failed os.Remove: the blob is permanently marked evicted (ReadAt → ErrEvicted)
 // and the error is returned to the caller so it knows the file is an orphan.
 func TestEvictBlobRemoveFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Remove failure injection via a read-only parent directory is a Unix-ism; Windows permits deleting files inside a read-only directory")
+	}
 	if os.Getuid() == 0 {
 		t.Skip("running as root: cannot revoke directory write permission")
 	}
