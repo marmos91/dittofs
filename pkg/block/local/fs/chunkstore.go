@@ -151,10 +151,22 @@ func (bc *FSStore) storeChunkLogBlob(ctx context.Context, h block.ContentHash, d
 		if err != nil {
 			return fmt.Errorf("chunkstore: logblob append: %w", err)
 		}
-		bc.logBlobDiskUsed.Add(int64(len(data)))
+		// NOTE: if PutLocalLocation fails after a successful Append, the bytes
+		// written to the blob at loc are orphaned — they have no index entry and
+		// are not reachable by content hash. A blob-level reclaim pass is
+		// responsible for recovering these indexless extents; this code does not
+		// provide per-chunk reclaim. A subsequent StoreChunk retry for the same
+		// hash re-appends (the HasChunk check at the top of StoreChunk misses the
+		// index, so it does not deduplicate).
 	}
 	if err := bc.localChunkIndex.PutLocalLocation(ctx, h, loc); err != nil {
 		return fmt.Errorf("chunkstore: put local location: %w", err)
+	}
+	// logBlobDiskUsed is incremented only after a successful PutLocalLocation so
+	// the counter reflects indexed (reachable) bytes, not bytes that may have
+	// been orphaned by a failed index write above.
+	if len(data) > 0 {
+		bc.logBlobDiskUsed.Add(int64(len(data)))
 	}
 	// Fire the chunk-completion callback (engine Cache.Put). The path argument
 	// is empty: logblob chunks have no per-chunk on-disk path, and the engine

@@ -726,6 +726,27 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 		// pass — the quantity to release from logBytesTotal below (C3).
 		targetPos, retiredBytes := idx.advanceFenceUpTo(maxReadLogPos)
 
+		// Durability fence: flush the log-blob substrate to durable storage
+		// BEFORE advancing rollup_offset. The previous CAS path fsynced each
+		// chunk file individually in StoreChunk; the log-blob path batches
+		// writes to a single blob file and relies on this single per-pass sync
+		// to provide the same durability guarantee.
+		//
+		// Invariant: a crash after SetRollupOffset returns must never be able
+		// to cause data loss. If the blob bytes were not fsynced first, a crash
+		// between this Sync and SetRollupOffset is safe (recovery replays from
+		// the old fence). A crash after SetRollupOffset with an unsynced blob
+		// would cause recovery to seek past records whose chunk bytes are
+		// missing from disk — unrecoverable data loss.
+		//
+		// nil guard: CAS-only stores do not use a logBlob and are unaffected.
+		if bc.logBlob != nil {
+			if serr := bc.logBlob.Sync(); serr != nil {
+				return fmt.Errorf("rollup: fsync log-blob before fence advance: %w", serr)
+			}
+			bc.logBlobRollupSyncCount.Add(1)
+		}
+
 		// SetRollupOffset is atomic-monotone at the RollupStore layer: on
 		// attempted regression it returns ErrRollupOffsetRegression and the
 		// stored value is unchanged. With Direction-1 the fence is monotonic

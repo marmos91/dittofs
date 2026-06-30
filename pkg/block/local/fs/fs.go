@@ -189,6 +189,12 @@ type FSStore struct {
 	// per-chunk victims. Blob-level eviction is handled separately.
 	logBlobDiskUsed atomic.Int64
 
+	// logBlobRollupSyncCount counts how many times a rollup pass has called
+	// logBlob.Sync() before advancing the rollup_offset fence. Each
+	// successful rollup pass that processes at least one chunk increments this
+	// by one. Test-only observable via LogBlobRollupSyncCountForTest.
+	logBlobRollupSyncCount atomic.Int64
+
 	// flushFsyncCount counts how many times flushBlock has invoked fsync.
 	// Test-only observable surfaced via FlushFsyncCountForTest. Incremented
 	// only on the COMMIT-driven path (withFsync=true); pressure and
