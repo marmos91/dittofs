@@ -56,6 +56,7 @@ var (
 	_ remote.RemoteStore       = (*Store)(nil)
 	_ remote.RemoteBlockStore  = (*Store)(nil)
 	_ remote.ChunkReader       = (*Store)(nil)
+	_ remote.ChunkSealer       = (*Store)(nil)
 	_ block.DurabilityReporter = (*Store)(nil)
 )
 
@@ -526,6 +527,18 @@ func (s *Store) GetRange(ctx context.Context, hash block.ContentHash, offset, le
 // blockKey returns the full S3 key for a block object identified by blockID.
 func (s *Store) blockKey(blockID string) string {
 	return s.fullKey(block.FormatBlockKey(blockID))
+}
+
+// SealChunk implements remote.ChunkSealer as the identity transform. As a base
+// store there is no per-chunk transform to apply — bodies are stored verbatim —
+// so the wire bytes equal the plaintext. The compression/encryption decorators
+// wrap this to seal their own layer. A defensive copy is returned so the carver
+// may retain it independently of the caller's plaintext buffer. hash is unused
+// at this layer.
+func (s *Store) SealChunk(_ context.Context, _ block.ContentHash, plaintext []byte) ([]byte, error) {
+	out := make([]byte, len(plaintext))
+	copy(out, plaintext)
+	return out, nil
 }
 
 // ReadChunk reads the wire bytes [offset, offset+length) from the block object

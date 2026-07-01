@@ -22,6 +22,7 @@ var (
 	_ remote.RemoteStore       = (*Store)(nil)
 	_ remote.RemoteBlockStore  = (*Store)(nil)
 	_ remote.ChunkReader       = (*Store)(nil)
+	_ remote.ChunkSealer       = (*Store)(nil)
 	_ block.DurabilityReporter = (*Store)(nil)
 )
 
@@ -214,6 +215,17 @@ func (s *Store) ReadChunk(_ context.Context, blockID string, offset, length int6
 	result := make([]byte, end-offset)
 	copy(result, data[offset:end])
 	return result, nil
+}
+
+// SealChunk implements remote.ChunkSealer as the identity transform: the base
+// store stores chunk bodies verbatim, so the wire bytes equal the plaintext.
+// The compression/encryption decorators wrap this to seal their own layer.
+// A defensive copy is returned so the carver may retain it independently of the
+// caller's plaintext buffer.
+func (s *Store) SealChunk(_ context.Context, _ block.ContentHash, plaintext []byte) ([]byte, error) {
+	out := make([]byte, len(plaintext))
+	copy(out, plaintext)
+	return out, nil
 }
 
 // Durable reports whether accepted bytes survive a crash/restart

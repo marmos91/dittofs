@@ -11,14 +11,56 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
+// HashLocatorResolver resolves a content hash to its remote locator so the
+// verify gate probes the correct object: a standalone cas/<hash> object or the
+// packed blocks/<id> object it was carved into (#1414 object packing). Satisfied
+// by the per-share metadata store (metadata.SyncedHashStore.GetLocator). A nil
+// resolver disables block-awareness — every hash is probed as a standalone CAS
+// object, the pre-flip behavior.
+type HashLocatorResolver interface {
+	GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error)
+}
+
+// probeHashDurable HEAD-probes the remote object backing hash and returns nil
+// when it is present. A block-resident hash (its locator names a blocks/<id>
+// object) is probed with a one-byte GetBlockRange on the block store; a
+// standalone hash (or any hash when locators is nil) is probed with rs.Head.
+// Both backends return block.ErrChunkNotFound for a missing object, so the
+// caller's NotFound classification is uniform across tiers. A block-resident
+// hash with no block store to probe is reported as ErrChunkNotFound — it cannot
+// be proven durable.
+func probeHashDurable(ctx context.Context, rs remote.RemoteStore, locators HashLocatorResolver, rbs remote.RemoteBlockStore, hash block.ContentHash) error {
+	if locators != nil {
+		loc, ok, err := locators.GetLocator(ctx, hash)
+		if err != nil {
+			return err
+		}
+		if ok && !loc.IsStandalone() {
+			if rbs == nil {
+				return fmt.Errorf("hash %s is block-resident but remote has no block store: %w", hash, block.ErrChunkNotFound)
+			}
+			_, berr := rbs.GetBlockRange(ctx, loc.BlockID, 0, 1)
+			return berr
+		}
+	}
+	_, err := rs.Head(ctx, hash)
+	return err
+}
+
 // VerifyRemoteDurability probes the remote store for every hash in the
 // manifest and reports the first miss. It dispatches up to concurrency
-// parallel Head() probes; the first probe to return ErrChunkNotFound
+// parallel probes; the first probe to return ErrChunkNotFound
 // cancels in-flight siblings and the call returns a wrapped
 // block.ErrChunkNotFound naming the missing hash. Non-NotFound
 // I/O errors propagate unchanged (not wrapped as ErrChunkNotFound) so
 // callers can distinguish "block is genuinely absent on remote" from
 // "remote was unreachable mid-verify."
+//
+// locators + rbs make the probe block-aware (#1414): a hash carved into a
+// packed block is probed against its blocks/<id> object, not the cas/<hash>
+// object that no longer exists. Pass nil for both to probe every hash as a
+// standalone CAS object (the pre-flip behavior, retained for tests and
+// standalone-only deployments).
 //
 // Iteration order matches manifest.Sorted, but with concurrency > 1 the
 // first miss observed depends on remote latency — different remotes can
@@ -41,6 +83,8 @@ import (
 func VerifyRemoteDurability(
 	ctx context.Context,
 	rs remote.RemoteStore,
+	locators HashLocatorResolver,
+	rbs remote.RemoteBlockStore,
 	manifest *block.HashSet,
 	concurrency int,
 ) error {
@@ -82,7 +126,7 @@ loop:
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			_, err := rs.Head(errCtx, hash)
+			err := probeHashDurable(errCtx, rs, locators, rbs, hash)
 			switch {
 			case err == nil:
 				return

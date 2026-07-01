@@ -146,6 +146,25 @@ func (s *MemoryMetadataStore) DeleteLocalLocation(ctx context.Context, hash bloc
 	})
 }
 
+// WalkLocalLocations calls fn for every stored content-hash -> log-blob
+// location in arbitrary order. It is not part of the LocalChunkIndex
+// interface; the local store discovers it via a narrow consumer-side
+// interface to enumerate logblob-resident chunks (Walk / GC).
+func (s *MemoryMetadataStore) WalkLocalLocations(_ context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error {
+	s.mu.RLock()
+	snapshot := make(map[block.ContentHash]block.LocalChunkLocation, len(s.localChunks))
+	for h, loc := range s.localChunks {
+		snapshot[h] = loc
+	}
+	s.mu.RUnlock()
+	for h, loc := range snapshot {
+		if err := fn(h, loc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ============================================================================
 // CommitBlock
 // ============================================================================

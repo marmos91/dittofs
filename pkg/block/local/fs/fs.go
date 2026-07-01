@@ -21,6 +21,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local"
+	"github.com/marmos91/dittofs/pkg/block/local/logblob"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -173,6 +174,26 @@ type FSStore struct {
 
 	memUsed  atomic.Int64
 	diskUsed atomic.Int64
+
+	// logBlob is the per-store log-blob substrate. When non-nil (a
+	// localChunkIndex was wired), rolled-up chunks are appended here and
+	// located via localChunkIndex instead of per-chunk cas/<hash> files.
+	// Nil for index-less fixtures, which stay on the legacy CAS writer.
+	logBlob *logblob.Manager
+	// localChunkIndex maps content hash -> position in a log blob. Source of
+	// truth for local reads of logblob-resident chunks. Nil disables the
+	// logblob path (legacy CAS only).
+	localChunkIndex metadata.LocalChunkIndex
+	// logBlobDiskUsed accounts bytes appended to log blobs. Kept SEPARATE
+	// from diskUsed so it never feeds the CAS LRU eviction loop with phantom
+	// per-chunk victims. Blob-level eviction is handled separately.
+	logBlobDiskUsed atomic.Int64
+
+	// logBlobRollupSyncCount counts how many times a rollup pass has called
+	// logBlob.Sync() before advancing the rollup_offset fence. Each
+	// successful rollup pass that processes at least one chunk increments this
+	// by one. Test-only observable via LogBlobRollupSyncCountForTest.
+	logBlobRollupSyncCount atomic.Int64
 
 	// flushFsyncCount counts how many times flushBlock has invoked fsync.
 	// Test-only observable surfaced via FlushFsyncCountForTest. Incremented
@@ -549,6 +570,18 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 
 	applyFSStoreOptions(bc, opts)
 
+	// When a LocalChunkIndex is wired, open the per-store log-blob substrate
+	// at <baseDir>/blobs/. Rolled-up chunks append here (located via the
+	// index) instead of per-chunk cas/<hash> files. Index-less fixtures skip
+	// this and stay on the legacy CAS writer.
+	if bc.localChunkIndex != nil {
+		mgr, err := logblob.Open(filepath.Join(baseDir, "blobs"), logblob.Options{})
+		if err != nil {
+			return nil, fmt.Errorf("local store: open log-blob substrate: %w", err)
+		}
+		bc.logBlob = mgr
+	}
+
 	// Shared rollup concurrency budget, sized to the final worker count so
 	// the nudge path and the scanAllFiles fan-out share it (#1411). Floor of
 	// 1 guards the degenerate rollupWorkers<=0 path.
@@ -596,6 +629,7 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 	}
 	bc.rollupStore = opts.RollupStore
 	bc.syncedHashStore = opts.SyncedHashStore
+	bc.localChunkIndex = opts.LocalChunkIndex
 	bc.objectIDPersister = opts.ObjectIDPersister
 	if opts.OrphanLogMinAgeSeconds > 0 {
 		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
@@ -922,6 +956,13 @@ type FSStoreOptions struct {
 	// consumes it via ListUnsynced + MarkSynced). Nil is accepted for
 	// local-only stores; in that case ListUnsynced yields nothing.
 	SyncedHashStore metadata.SyncedHashStore
+	// LocalChunkIndex maps content hash -> position in a local log blob.
+	// When non-nil, chunk persistence routes to the log-blob substrate
+	// (logblob.Append + PutLocalLocation) instead of per-chunk cas/<hash>
+	// files, and local reads resolve index hits via logblob.ReadAt. Nil
+	// keeps the store on the legacy CAS writer/reader (index-less fixtures).
+	// Production wires the metadata store, which implements this interface.
+	LocalChunkIndex metadata.LocalChunkIndex
 	// ObjectIDPersister is the rollup-completion hook that receives the
 	// BlockRef manifest + computed ObjectID after SetRollupOffset
 	// succeeds. Wire this to the engine coordinator's PersistFileChunks
@@ -1142,6 +1183,14 @@ func (bc *FSStore) Close() error {
 			delete(sh.logFDs, pid)
 		}
 		sh.mu.Unlock()
+	}
+
+	// Close the log-blob substrate (if wired). Safe after the rollup workers
+	// have joined above, so no Append/ReadAt is in flight.
+	if bc.logBlob != nil {
+		if err := bc.logBlob.Close(); err != nil {
+			logger.Warn("FSStore.Close: log-blob close failed", "error", err)
+		}
 	}
 	return nil
 }

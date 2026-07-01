@@ -2,9 +2,27 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/block"
 )
+
+// ErrCommitPartial is returned by DefaultCommitBlock when the block record
+// transaction committed successfully but the MarkSynced loop did not fully
+// complete. BlockID identifies the committed (but only partially-synced) block.
+// Callers should retry DefaultCommitBlock with the same BlockID and BlockRecord
+// — the idempotent transaction guard skips the transaction and re-runs the
+// MarkSynced loop to completion.
+type ErrCommitPartial struct {
+	BlockID string
+	Cause   error
+}
+
+func (e *ErrCommitPartial) Error() string {
+	return fmt.Sprintf("commit block %s: mark-synced incomplete: %v", e.BlockID, e.Cause)
+}
+
+func (e *ErrCommitPartial) Unwrap() error { return e.Cause }
 
 // BlockRecordStore manages the lifecycle of log-blob block records.
 // Each record tracks the sync state, live chunk count, and hash of a
@@ -90,9 +108,15 @@ func DefaultCommitBlock(
 	// is safe. Crucially, this fixes the retry path: if a previous CommitBlock
 	// call committed the tx but then failed mid-MarkSynced, the retry must still
 	// reach this loop to write the pending remote locators.
+	//
+	// If MarkSynced fails here the transaction has ALREADY committed (block record
+	// + local locations are durable). Return ErrCommitPartial so callers can retry
+	// with the same BlockID — DefaultCommitBlock's idempotent tx guard will skip
+	// the transaction and re-run the MarkSynced loop to completion without minting
+	// a new block.
 	for _, c := range chunks {
 		if err := s.MarkSynced(ctx, c.Hash, c.Remote); err != nil {
-			return err
+			return &ErrCommitPartial{BlockID: rec.BlockID, Cause: err}
 		}
 	}
 	return nil

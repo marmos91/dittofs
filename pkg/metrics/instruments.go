@@ -58,6 +58,17 @@ type instruments struct {
 	uploadQueueDepth prometheus.Gauge
 	uploadWindow     prometheus.Gauge
 	rehashDuration   prometheus.Histogram
+
+	// Data-plane integrity / self-heal (subsystem "datapath"). All bounded,
+	// zero-label counters — corruption is rare and these must never explode
+	// cardinality. localCorruptionTotal / remoteCorruptionTotal count detected
+	// blake3 mismatches by tier; selfHealTotal{result} counts repair outcomes;
+	// blockRangeReads/Bytes count verified ranged reads into packed blocks.
+	localCorruptionTotal  prometheus.Counter
+	remoteCorruptionTotal prometheus.Counter
+	selfHealTotal         *prometheus.CounterVec // {result: success|failure}
+	blockRangeReadsTotal  prometheus.Counter
+	blockRangeReadBytes   prometheus.Counter
 }
 
 func newInstruments(reg *prometheus.Registry) *instruments {
@@ -178,6 +189,26 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 			Help:    "BLAKE3 re-hash (pre-upload bitrot verify) latency per CAS chunk, in seconds.",
 			Buckets: prometheus.DefBuckets,
 		}),
+		localCorruptionTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "local_corruption_total",
+			Help: "Local chunk integrity failures detected on read (blake3 mismatch), before self-heal.",
+		}),
+		remoteCorruptionTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "remote_corruption_total",
+			Help: "Remote chunk integrity failures detected on fetch (blake3 mismatch). Read fails closed.",
+		}),
+		selfHealTotal: factory(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "self_heal_total",
+			Help: "Local-corruption self-heal outcomes, by result (success = repaired+restaged; failure = unrecoverable or served-but-not-persisted).",
+		}, []string{"result"}),
+		blockRangeReadsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "block_range_reads_total",
+			Help: "Verified ranged reads served from packed block objects.",
+		}),
+		blockRangeReadBytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "block_range_read_bytes_total",
+			Help: "Total verified chunk-plaintext bytes served from packed block objects.",
+		}),
 	}
 	reg.MustRegister(
 		in.requests, in.reqDuration, in.connsTotal, in.connsClosed, in.authAttempts, in.authFailures,
@@ -186,6 +217,8 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		in.snapOps, in.snapDuration,
 		in.uploadsTotal, in.uploadDuration, in.uploadBytes, in.uploadsInflight,
 		in.uploadQueueDepth, in.uploadWindow, in.rehashDuration,
+		in.localCorruptionTotal, in.remoteCorruptionTotal, in.selfHealTotal,
+		in.blockRangeReadsTotal, in.blockRangeReadBytes,
 	)
 	return in
 }
@@ -359,4 +392,52 @@ func (m *Metrics) RecordRehash(d time.Duration) {
 		return
 	}
 	m.in.rehashDuration.Observe(d.Seconds())
+}
+
+// RecordLocalCorruption counts n local-chunk integrity failures detected on
+// read (blake3 mismatch) before any self-heal attempt.
+func (m *Metrics) RecordLocalCorruption(n int) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.in.localCorruptionTotal.Add(float64(n))
+}
+
+// RecordSelfHealSuccess counts n local corruptions that were repaired and
+// durably re-staged from the remote block.
+func (m *Metrics) RecordSelfHealSuccess(n int) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.in.selfHealTotal.WithLabelValues("success").Add(float64(n))
+}
+
+// RecordSelfHealFailure counts n local corruptions that could not be
+// repaired-and-persisted (unrecoverable fail-closed, or served-but-degraded).
+func (m *Metrics) RecordSelfHealFailure(n int) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.in.selfHealTotal.WithLabelValues("failure").Add(float64(n))
+}
+
+// RecordRemoteCorruption counts n remote-chunk integrity failures detected on
+// fetch (blake3 mismatch). The read fails closed.
+func (m *Metrics) RecordRemoteCorruption(n int) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.in.remoteCorruptionTotal.Add(float64(n))
+}
+
+// RecordBlockRangeRead counts one verified ranged read served from a packed
+// block object and the chunk-plaintext bytes it returned.
+func (m *Metrics) RecordBlockRangeRead(bytes int) {
+	if m == nil {
+		return
+	}
+	m.in.blockRangeReadsTotal.Inc()
+	if bytes > 0 {
+		m.in.blockRangeReadBytes.Add(float64(bytes))
+	}
 }

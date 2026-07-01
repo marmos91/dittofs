@@ -243,10 +243,25 @@ Pending FileChunks to remote CAS.
 
 The local filesystem store (`pkg/block/local/fs/`) writes through an
 append-only log per file. A rollup pool chunks the log via FastCDC, hashes
-each chunk with BLAKE3, and persists the chunks under a content-addressable
-`blocks/{hh}/{hh}/{hex}` directory. The syncer then uploads those chunks to
-the remote content-addressable keyspace (`cas/{hh}/{hh}/{hex}`), and a
-mark-sweep GC reclaims the remote `cas/` prefix.
+each chunk with BLAKE3, and appends the chunk bytes to the local **log-blob**
+tier (`blobs/<id>.blob`), recording each chunk's position in the
+`LocalChunkIndex`. The per-chunk content-addressed `blocks/{hh}/{hh}/{hex}`
+directory is **legacy and read-only** — retained so chunks written before the
+log-blob flip stay readable, but no new per-chunk file is ever written. See
+[Log-Blob Local Tier](#log-blob-local-tier) below.
+
+**New writes are packed into remote blocks.** On every share, the syncer's
+carver batches locally-rolled chunks and uploads them as packed **block
+objects** under the remote `blocks/<id>` prefix — one PUT per block of
+roughly 16 MiB of chunks (`BlockCarveBytes`), or sooner when the writer goes
+idle. It does **not** write one `cas/<hash>` object per chunk. Per-chunk
+deduplication and refcounting are preserved: a
+`ChunkLocator{BlockID, WireOffset, WireLength}` records where each chunk's
+bytes live inside its enclosing block, so identical chunks are still stored
+once and reclaimed by refcount. The per-chunk `cas/<hash>` remote keyspace is
+now **legacy and read-only** — it is still read for data written before the
+flip and is retired by a later migration, but no new `cas/` object is ever
+written.
 
 This is the only local write path. Servers from v0.16 on require the CAS
 layout; a store directory still holding the older `.blk` layout is detected
@@ -272,8 +287,8 @@ See [Block Lifecycle (three-state)](#block-lifecycle-three-state) and
                                                               |
                                                               v
                                                        StoreChunk
-                                                       blocks/{hh}/{hh}/{hex}
-                                                       (.tmp + rename + fsync)
+                                                       blobs/<id>.blob (append)
+                                                       + LocalChunkIndex entry
                                                               |
                                         CommitChunks atomic:  |
                                          1. metadata.SetRollupOffset (source of truth)
@@ -289,7 +304,8 @@ See [Block Lifecycle (three-state)](#block-lifecycle-three-state) and
 
 ```
 <baseDir>/logs/<payloadID>.log        per-file append-only log
-<baseDir>/blocks/<hh>/<hh>/<hex>      content-addressed chunks (CAS)
+<baseDir>/blobs/<id>.blob             log-blob tier (rolled-up chunk bytes)
+<baseDir>/blocks/<hh>/<hh>/<hex>      legacy per-chunk CAS (read-only, back-compat)
 ```
 
 Log header (64 bytes): magic `DFLG` | version | `rollup_offset` | flags |
@@ -311,8 +327,9 @@ payload.
 Recovery (`pkg/block/local/fs/recovery.go`) scans logs from
 `rollup_offset`, truncates at first bad CRC, and rebuilds per-file interval
 trees. Orphan logs (no metadata referrer, no live FileChunk, mtime older
-than `orphan_log_min_age_seconds`) are swept. Orphan chunks under
-`blocks/{hh}/{hh}/{hex}` are reclaimed by the mark-sweep GC.
+than `orphan_log_min_age_seconds`) are swept. Orphan chunks under the legacy
+`blocks/{hh}/{hh}/{hex}` CAS dir are reclaimed by the mark-sweep GC; log-blob
+bytes are reclaimed by whole-blob eviction (see [Log-Blob Local Tier](#log-blob-local-tier)).
 
 ### Per-`FSStore` surface
 
@@ -327,13 +344,15 @@ See `docs/CONFIGURATION.md` (`max_log_bytes`, `rollup_workers`,
 
 ## Log-Blob Local Tier
 
-`pkg/block/local/logblob` is a raw append-only file manager designed to
-replace the per-file append-log described above. **This substrate is built
-but not yet active.** The live local write path is still the `FSStore`
-append-log → FastCDC → `cas/<hash>` rollup described in
+`pkg/block/local/logblob` is a raw append-only file manager that holds the
+local durable copy of freshly-written chunks. **This substrate is live.**
+Locally-rolled chunks are appended to log-blobs, and the engine carver reads
+them back by position (`LocalChunkLocation{LogBlobID, RawOffset, RawLength}`)
+to pack them into the remote block objects described in
 [Block Store — Local Append-Log Tier](#block-store----local-append-log-tier).
-A later PR wires `logblob.Manager` into the block engine; a further PR
-retires the per-file log.
+Reads resolve through the local chunk index first — a positioned `pread(2)`
+against the log-blob — and fall back to the remote block only on a local
+miss (see [Block Reads](#block-reads-dual-mode-verified)).
 
 ### Layout
 
@@ -472,6 +491,15 @@ requeues any `Syncing` row whose `last_sync_attempt_at` is older than
 content-defined so a duplicate re-upload writes the same bytes to the
 same key — idempotent by construction.
 
+**Known limitation — restart seeding.** Chunks that were appended to the
+local log-blob but not yet carved into a remote block when the process
+crashed are durable on local disk, but they are **not** re-seeded into the
+pending-carve set on restart. They stay local-only — fully readable — until
+the file they belong to is written to again, which re-queues them for
+carving. No data is lost; the only effect is that such chunks are not
+uploaded to the remote until touched again. Re-seeding the carve set from the
+local index on boot is a follow-up item.
+
 **Why a metadata write for every claim?** The Pending → Syncing
 transition is the serialization point against duplicate uploads across
 syncer instances. The batched-claim cost is one txn per tick, in exchange
@@ -499,6 +527,26 @@ The block-store GC is a fail-closed mark-sweep over the union of every live
    each key, the engine keeps the object iff the hash is present in the
    live set OR the object's `LastModified` is newer than
    `T − gc.grace_period` (default 1h). Otherwise the engine issues a DELETE.
+
+### Packed-block reclamation
+
+Because new data lives in packed `blocks/<id>` objects rather than one object
+per chunk, the sweep cannot DELETE one remote object per dead hash. Instead
+each dead chunk is reclaimed by refcount:
+
+1. A dead `ContentHash` — present in the store's synced-hash index but absent
+   from the live set — is resolved to its enclosing block, and
+   `DecrLiveChunkCount(blockID, 1)` is applied.
+2. When a block's live-chunk count reaches **zero**, the block is fully
+   reclaimed: its local blob is evicted, `RemoteBlockStore.DeleteBlock`
+   removes the remote object, and the block record is deleted.
+
+A block that still has *any* live chunk is retained — packing never deletes a
+referenced chunk along with its block-mates. Reclamation is **delete-only**:
+GC never rewrites or repacks a surviving block. Runs are **serialized per
+remote** (keyed on remote-store config identity), so the `LiveChunkCount` that
+several shares targeting the same remote share is only ever mutated by one run
+at a time.
 
 ### Fail-closed posture
 
@@ -691,18 +739,43 @@ call only (`WithRestoreTimeout`).
 For the full operator runbook see
 [SNAPSHOTS.md](../guide/snapshots.md).
 
-## Block Reads (content-addressable)
+## Block Reads (dual-mode, verified)
 
-The engine resolves every block read from the content-addressable keyspace:
-read from `cas/{hh}/{hh}/{hex}`, BLAKE3-verified end-to-end (a header
-pre-check on `x-amz-meta-content-hash` plus a streaming verifier over the
-body). Resolution is by metadata key — one DB lookup per block — not by
-remote trial-and-error, so there is no doubled GET cost.
+Every block read resolves by metadata key — one DB lookup per chunk, not
+remote trial-and-error, so there is no doubled GET cost — and takes one of
+three paths:
+
+1. **Local log-blob hit.** If the chunk is still on local disk, its bytes are
+   served straight from the log-blob via a positioned `pread(2)` at its
+   `LocalChunkLocation`. This is the steady-state path for recently-written
+   and recently-read data.
+2. **Remote packed block.** On a local miss, the engine resolves the chunk's
+   `ChunkLocator`; a non-empty `BlockID` means the chunk lives inside the
+   packed remote object `blocks/<BlockID>` at
+   `[WireOffset, WireOffset+WireLength)`. The engine issues a ranged GET
+   against that block, decodes the wire frame, and recomputes BLAKE3 over the
+   chunk bytes. A verified chunk is re-staged into the local tier so
+   subsequent reads take path 1.
+3. **Legacy standalone CAS object.** A locator with an empty `BlockID`
+   resolves to a standalone `cas/{hh}/{hh}/{hex}` object — data written before
+   the blocks-only flip. It is fetched whole and BLAKE3-verified end-to-end (a
+   header pre-check on `x-amz-meta-content-hash` plus a streaming verifier over
+   the body). No new data uses this path.
+
+**Fail-closed integrity.** Every remote fetch is BLAKE3-verified before the
+bytes reach the caller. A mismatch is never surfaced as data: the read returns
+an error and increments a corruption metric.
+
+**Self-heal.** The two tiers are treated asymmetrically on a verification
+failure. A *local* mismatch (a bit-rotted log-blob) is self-healing — the
+engine discards the bad local pointer, re-fetches the chunk from its remote
+block, verifies it, and re-stages it locally. A *remote* mismatch cannot be
+recovered locally, so it fails closed: the read errors and the corruption is
+recorded rather than papered over.
 
 The older non-CAS layout (`{payloadID}/block-{N}`) is no longer read at
 runtime. A store directory still on that layout is detected on open and the
-operator is directed to run `dfs migrate-to-cas`, which re-chunks all data
-into the CAS keyspace. See
+operator is directed to run `dfs migrate-to-cas`. See
 [Migration & Block-Layout Routing](#migration--block-layout-routing).
 
 ## Adapter Pattern

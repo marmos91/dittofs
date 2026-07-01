@@ -9,6 +9,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
 )
@@ -67,6 +68,32 @@ func (bc *FSStore) GetRange(ctx context.Context, hash block.ContentHash, offset,
 	if length <= 0 {
 		return nil, fmt.Errorf("blockstore.fs: GetRange: %w: length %d", block.ErrInvalidSize, length)
 	}
+	// Log-blob path: index hit -> read a clipped sub-range from the blob.
+	if bc.localChunkIndex != nil {
+		loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, hash)
+		if err != nil {
+			return nil, fmt.Errorf("blockstore.fs: GetRange: get local location: %w", err)
+		}
+		if ok {
+			if offset >= loc.RawLength {
+				return nil, fmt.Errorf("blockstore.fs: GetRange: offset %d beyond size %d", offset, loc.RawLength)
+			}
+			if offset+length > loc.RawLength {
+				length = loc.RawLength - offset
+			}
+			sub := block.LocalChunkLocation{
+				LogBlobID: loc.LogBlobID,
+				RawOffset: loc.RawOffset + offset,
+				RawLength: length,
+			}
+			buf := make([]byte, length)
+			n, rerr := bc.logBlob.ReadAt(ctx, sub, buf)
+			if rerr != nil {
+				return nil, fmt.Errorf("blockstore.fs: GetRange: logblob read: %w", rerr)
+			}
+			return buf[:n], nil
+		}
+	}
 	path := bc.chunkPath(hash)
 	f, err := os.Open(path)
 	if err != nil {
@@ -121,6 +148,20 @@ func (bc *FSStore) Head(ctx context.Context, hash block.ContentHash) (block.Meta
 	if err := ctx.Err(); err != nil {
 		return block.Meta{}, err
 	}
+	// Log-blob path: index hit -> Size from the recorded location, mtime from
+	// the blobs directory (per-chunk timestamps are not tracked).
+	if bc.localChunkIndex != nil {
+		loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, hash)
+		if err != nil {
+			return block.Meta{}, fmt.Errorf("blockstore.fs: Head: get local location: %w", err)
+		}
+		if ok {
+			return block.Meta{
+				Size:         loc.RawLength,
+				LastModified: bc.blobsModTime(),
+			}, nil
+		}
+	}
 	path := bc.chunkPath(hash)
 	info, err := os.Stat(path)
 	if err != nil {
@@ -135,6 +176,40 @@ func (bc *FSStore) Head(ctx context.Context, hash block.ContentHash) (block.Meta
 	}, nil
 }
 
+// ReadLocalAt reads loc.RawLength bytes from the local log-blob substrate at the
+// given location into dst, delegating to the log-blob Manager. It is the read
+// half of the engine's block carver (#1414): the carver resolves a chunk's
+// LocalChunkLocation, reads its raw plaintext here, seals it, and frames it into
+// a block. Returns an error when no log-blob substrate is wired (a CAS-only
+// store), which the carver treats as "not log-blob-resident".
+func (bc *FSStore) ReadLocalAt(ctx context.Context, loc block.LocalChunkLocation, dst []byte) (int, error) {
+	if bc.logBlob == nil {
+		return 0, fmt.Errorf("blockstore.fs: ReadLocalAt: no log-blob substrate")
+	}
+	return bc.logBlob.ReadAt(ctx, loc, dst)
+}
+
+// localChunkWalker is the narrow, consumer-defined capability the local store
+// uses to enumerate logblob-resident chunks (for Walk / GC). A LocalChunkIndex
+// implementation may optionally provide it; absence simply means logblob
+// chunks are not enumerated on that backend (no interface-surface growth).
+type localChunkWalker interface {
+	WalkLocalLocations(ctx context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error
+}
+
+// blobsModTime returns the modification time of the <baseDir>/blobs directory,
+// used as a non-zero LastModified for logblob-resident chunks (which carry no
+// per-chunk timestamp). Falls back to a stat of baseDir on error.
+func (bc *FSStore) blobsModTime() time.Time {
+	if fi, err := os.Stat(filepath.Join(bc.baseDir, "blobs")); err == nil {
+		return fi.ModTime()
+	}
+	if fi, err := os.Stat(bc.baseDir); err == nil {
+		return fi.ModTime()
+	}
+	return time.Now()
+}
+
 // Walk enumerates every CAS object in the local chunk store. The
 // callback receives the content hash and Meta for each object. Returns
 // block.ErrStopWalk from the callback for clean early-exit.
@@ -147,72 +222,101 @@ func (bc *FSStore) Walk(ctx context.Context, fn func(hash block.ContentHash, met
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// CAS files first (legacy + back-compat). A missing blocks/ dir is not an
+	// empty store any more: logblob-resident chunks live only in the index, so
+	// skip the CAS walk and fall through to the index enumeration below.
 	blocksDir := filepath.Join(bc.baseDir, "blocks")
 	if _, err := os.Stat(blocksDir); err != nil {
-		if os.IsNotExist(err) {
-			return nil // empty store
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("blockstore.fs: Walk: stat: %w", err)
 		}
-		return fmt.Errorf("blockstore.fs: Walk: stat: %w", err)
-	}
-	walkErr := filepath.WalkDir(blocksDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
+	} else {
+		walkErr := filepath.WalkDir(blocksDir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+			name := d.Name()
+			if len(name) != block.HashSize*2 {
+				return nil
+			}
+			raw, hexErr := hex.DecodeString(name)
+			if hexErr != nil || len(raw) != block.HashSize {
+				return nil
+			}
+			var h block.ContentHash
+			copy(h[:], raw)
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				// Race vs concurrent Delete: a file enumerated by WalkDir
+				// can disappear before d.Info() runs. Skip vanished
+				// entries silently; surface anything else (permission
+				// transient I/O) so callers like GC don't miss objects.
+				if errors.Is(infoErr, os.ErrNotExist) {
+					return nil
+				}
+				return fmt.Errorf("walk: stat %s: %w", h, infoErr)
+			}
+			meta := block.Meta{
+				Size:         info.Size(),
+				LastModified: info.ModTime(),
+			}
+			if cbErr := fn(h, meta); cbErr != nil {
+				if errors.Is(cbErr, block.ErrStopWalk) {
+					// Translate the public clean-exit sentinel into an
+					// unexported one so we can distinguish "callback
+					// asked to stop cleanly" from "filepath.WalkDir or
+					// the callback returned ErrStopWalk-wrapped-or-not
+					// for some other reason". Using a private sentinel
+					// also keeps io.EOF reserved for its real meaning:
+					// a callback that legitimately returns io.EOF (or
+					// wraps it) must halt with the wrapped error, not
+					// be silently treated as a clean exit.
+					return errStopWalkInternal
+				}
+				return fmt.Errorf("walk halted at %s: %w", h, cbErr)
+			}
+			return nil
+		})
+		if errors.Is(walkErr, errStopWalkInternal) {
 			return nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		name := d.Name()
-		if len(name) != block.HashSize*2 {
-			return nil
+		if walkErr != nil {
+			return walkErr
 		}
-		raw, hexErr := hex.DecodeString(name)
-		if hexErr != nil || len(raw) != block.HashSize {
-			return nil
+	}
+
+	// Logblob-resident chunks: enumerate the index when it supports walking.
+	walker, ok := bc.localChunkIndex.(localChunkWalker)
+	if !ok {
+		return nil
+	}
+	mtime := bc.blobsModTime()
+	idxErr := walker.WalkLocalLocations(ctx, func(h block.ContentHash, loc block.LocalChunkLocation) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
-		var h block.ContentHash
-		copy(h[:], raw)
-		info, infoErr := d.Info()
-		if infoErr != nil {
-			// Race vs concurrent Delete: a file enumerated by WalkDir
-			// can disappear before d.Info() runs. Skip vanished
-			// entries silently; surface anything else (permission
-			// transient I/O) so callers like GC don't miss objects.
-			if errors.Is(infoErr, os.ErrNotExist) {
-				return nil
-			}
-			return fmt.Errorf("walk: stat %s: %w", h, infoErr)
-		}
-		meta := block.Meta{
-			Size:         info.Size(),
-			LastModified: info.ModTime(),
-		}
+		meta := block.Meta{Size: loc.RawLength, LastModified: mtime}
 		if cbErr := fn(h, meta); cbErr != nil {
 			if errors.Is(cbErr, block.ErrStopWalk) {
-				// Translate the public clean-exit sentinel into an
-				// unexported one so we can distinguish "callback
-				// asked to stop cleanly" from "filepath.WalkDir or
-				// the callback returned ErrStopWalk-wrapped-or-not
-				// for some other reason". Using a private sentinel
-				// also keeps io.EOF reserved for its real meaning:
-				// a callback that legitimately returns io.EOF (or
-				// wraps it) must halt with the wrapped error, not
-				// be silently treated as a clean exit.
 				return errStopWalkInternal
 			}
 			return fmt.Errorf("walk halted at %s: %w", h, cbErr)
 		}
 		return nil
 	})
-	if errors.Is(walkErr, errStopWalkInternal) {
+	if errors.Is(idxErr, errStopWalkInternal) {
 		return nil
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	return walkErr
+	return idxErr
 }
 
 // errStopWalkInternal is the unexported short-circuit sentinel

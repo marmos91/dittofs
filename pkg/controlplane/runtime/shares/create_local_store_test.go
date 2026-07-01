@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -166,35 +167,31 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	}
 
 	// Poll for the rollup ticker (50ms stabilization) to fold the append log
-	// into CAS chunks on disk. A live pool converts within a few ticks; a
-	// pool killed by the cancelled caller context never does. We assert on
-	// physical CAS chunk files (the bare FSStore, with no engine wired, still
-	// writes chunks and advances the rollup offset — the FileChunk manifest is
-	// the engine's job, not the store's).
-	casDir := filepath.Join(tmp, "shares", "cancel-share", "blocks")
+	// into chunks. A live pool converts within a few ticks; a pool killed by the
+	// cancelled caller context never does. With the block-storage flip
+	// (#1414/PR3) CreateLocalStoreFromConfig wires a LocalChunkIndex, so the
+	// rollup routes chunks to the log-blob substrate and records their positions
+	// in the index rather than writing cas/<hash> files. We assert on those index
+	// entries — the observable proof that the rollup pool ran despite the
+	// cancelled caller context.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if n := countFiles(casDir); n > 0 {
+		n := 0
+		if err := mds.WalkLocalLocations(context.Background(), func(block.ContentHash, block.LocalChunkLocation) error {
+			n++
+			return nil
+		}); err != nil {
+			t.Fatalf("WalkLocalLocations: %v", err)
+		}
+		if n > 0 {
 			return // rollup ran despite the cancelled caller context — fixed.
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("rollup never produced CAS chunks after caller-context cancel (#1405): "+
-				"0 chunk files under %s", casDir)
+			t.Fatalf("rollup never recorded log-blob chunks after caller-context cancel (#1405): " +
+				"0 LocalChunkIndex entries")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-}
-
-// countFiles returns the number of regular files anywhere under root.
-func countFiles(root string) int {
-	n := 0
-	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
-		if err == nil && info != nil && info.Mode().IsRegular() {
-			n++
-		}
-		return nil
-	})
-	return n
 }
 
 // statDir wraps os.Stat so tests can assert the block directory was

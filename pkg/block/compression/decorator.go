@@ -48,18 +48,50 @@ func NewRemote(inner remote.RemoteStore, p CompressionPolicy) (*Decorator, error
 // (header overhead included) it stores the framed compressed body, else
 // it stores the raw plaintext with no header — incompressible blocks
 // skip the allocate-and-copy frame build entirely.
+//
+// Put and SealChunk share the same single-layer transform (sealLayer) so the
+// standalone-object and packed-block write paths never drift.
 func (d *Decorator) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
+	wire, err := d.sealLayer(data)
+	if err != nil {
+		return err
+	}
+	return d.inner.Put(ctx, hash, wire)
+}
+
+// SealChunk applies this decorator's compression layer to plaintext, then
+// delegates to the inner store's ChunkSealer so a decorated chain produces the
+// fully-transformed wire bytes for a packed block. Implements
+// remote.ChunkSealer (#1414). Symmetric with ReadChunk: ReadChunk decompresses
+// after the inner layer decrypts, inverting this exactly.
+func (d *Decorator) SealChunk(ctx context.Context, hash block.ContentHash, plaintext []byte) ([]byte, error) {
+	wire, err := d.sealLayer(plaintext)
+	if err != nil {
+		return nil, err
+	}
+	sealer, ok := d.inner.(remote.ChunkSealer)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	return sealer.SealChunk(ctx, hash, wire)
+}
+
+// sealLayer is the single source of this decorator's compression transform,
+// shared by Put and SealChunk. It compresses data and returns the framed
+// compressed body when that is strictly smaller than the input, otherwise the
+// raw plaintext (incompressible blocks skip the frame).
+func (d *Decorator) sealLayer(data []byte) ([]byte, error) {
 	var compressed bytes.Buffer
 	enc, err := d.codec.EncodeStream(&compressed)
 	if err != nil {
-		return fmt.Errorf("compression: EncodeStream: %w", err)
+		return nil, fmt.Errorf("compression: EncodeStream: %w", err)
 	}
 	if _, err := enc.Write(data); err != nil {
 		_ = enc.Close()
-		return fmt.Errorf("compression: encoder write: %w", err)
+		return nil, fmt.Errorf("compression: encoder write: %w", err)
 	}
 	if err := enc.Close(); err != nil {
-		return fmt.Errorf("compression: encoder close: %w", err)
+		return nil, fmt.Errorf("compression: encoder close: %w", err)
 	}
 
 	wire := data
@@ -68,7 +100,7 @@ func (d *Decorator) Put(ctx context.Context, hash block.ContentHash, data []byte
 	if frameOverhead(origSize)+len(body) < len(data) {
 		wire = encodeFrame(d.algo, origSize, body)
 	}
-	return d.inner.Put(ctx, hash, wire)
+	return wire, nil
 }
 
 // --- read path ----------------------------------------------------------
@@ -273,10 +305,75 @@ func (d *Decorator) Durable() bool {
 	return block.IsDurable(d.inner)
 }
 
+// --- remote.RemoteBlockStore passthrough (#1414) ---
+//
+// Packed block objects carry per-chunk wire bodies that were already sealed via
+// SealChunk; the assembled block must NOT be re-transformed at the block level.
+// So every block-keyed operation passes through verbatim to the inner store.
+// This lets a decorated remote satisfy remote.RemoteBlockStore (the carve path
+// asserts it) while the per-chunk transform stays in SealChunk/ReadChunk.
+
+// blockInner returns the inner store as a remote.RemoteBlockStore, or an error
+// when the wrapped store does not support block-keyed objects.
+func (d *Decorator) blockInner() (remote.RemoteBlockStore, error) {
+	rbs, ok := d.inner.(remote.RemoteBlockStore)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	return rbs, nil
+}
+
+// PutBlock stores the assembled block verbatim (already-sealed bodies).
+func (d *Decorator) PutBlock(ctx context.Context, blockID string, r io.Reader) error {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.PutBlock(ctx, blockID, r)
+}
+
+// GetBlock returns the raw block object verbatim.
+func (d *Decorator) GetBlock(ctx context.Context, blockID string) ([]byte, error) {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return nil, err
+	}
+	return rbs.GetBlock(ctx, blockID)
+}
+
+// GetBlockRange returns raw block bytes verbatim; per-chunk decode is ReadChunk.
+func (d *Decorator) GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error) {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return nil, err
+	}
+	return rbs.GetBlockRange(ctx, blockID, offset, length)
+}
+
+// DeleteBlock removes the block object.
+func (d *Decorator) DeleteBlock(ctx context.Context, blockID string) error {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.DeleteBlock(ctx, blockID)
+}
+
+// WalkBlocks enumerates block objects.
+func (d *Decorator) WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.WalkBlocks(ctx, fn)
+}
+
 // Compile-time interface assertions.
 var (
 	_ block.Store              = (*Decorator)(nil)
 	_ remote.RemoteStore       = (*Decorator)(nil)
+	_ remote.RemoteBlockStore  = (*Decorator)(nil)
 	_ remote.ChunkReader       = (*Decorator)(nil)
+	_ remote.ChunkSealer       = (*Decorator)(nil)
 	_ block.DurabilityReporter = (*Decorator)(nil)
 )

@@ -615,6 +615,13 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	// at the call site below; both the LRU-hit and StoreChunk paths
 	// append to `blocks`, so no separate buffer is needed.
 	var blocks []block.BlockRef
+	// staged holds log-blob chunks appended this pass whose durable local-index
+	// write is deferred to Phase C (committed only after the blob is fsynced) so
+	// no index entry can outlive un-fsynced blob bytes across a crash. seen
+	// deduplicates identical chunk content within this pass — staged chunks are
+	// not yet in the index, so stageRollupChunk's HasChunk cannot catch them.
+	var staged []stagedChunk
+	seen := make(map[block.ContentHash]struct{})
 	for pos < uint64(len(stream)) {
 		b, _ := ck.Next(stream[pos:], true)
 		if b <= 0 {
@@ -630,12 +637,19 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 			Size:   uint32(b),
 		}
 
-		// StoreChunk is content-addressed and idempotent, so it
-		// physically dedups by content hash on every pass. The BlockRef
-		// append below preserves the manifest invariant: ComputeObjectID
-		// later in this function sees the full BlockRef list.
-		if err := bc.StoreChunk(ctx, h, chunkBytes); err != nil {
-			return fmt.Errorf("rollup: StoreChunk: %w", err)
+		// Store is content-addressed and idempotent, so it physically dedups by
+		// content hash on every pass. The BlockRef append below preserves the
+		// manifest invariant: ComputeObjectID later in this function sees the
+		// full BlockRef list regardless of dedup.
+		if _, dup := seen[h]; !dup {
+			seen[h] = struct{}{}
+			sc, err := bc.stageRollupChunk(ctx, h, chunkBytes)
+			if err != nil {
+				return fmt.Errorf("rollup: stage chunk: %w", err)
+			}
+			if sc.staged {
+				staged = append(staged, sc)
+			}
 		}
 
 		blocks = append(blocks, blockRef)
@@ -701,6 +715,52 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 			return nil
 		}
 
+		// Durability fence: flush the log-blob substrate and commit the deferred
+		// local-index entries BEFORE the destructive fence trim below. The
+		// previous CAS path fsynced each chunk file individually in StoreChunk;
+		// the log-blob path batches writes to a single blob file and relies on
+		// this single per-pass sync to provide the same durability guarantee.
+		//
+		// Two invariants ride on this ordering:
+		//
+		//   - Crash durability: no durable index entry may become visible before
+		//     the blob bytes it references are fsynced, and rollup_offset (the
+		//     fence) may advance only after both the fsync and the index commit
+		//     succeed. So the commit runs strictly after syncLogBlob, and
+		//     SetRollupOffset/advanceRollupOffset run strictly after this block.
+		//     A crash before the fsync leaves no index entry, so the replay's
+		//     HasChunk misses and the bytes are re-appended from the still-live
+		//     append-log rather than being dedup-skipped and lost.
+		//
+		//   - In-process read availability: this sync + commit must precede the
+		//     fence advance, because advanceFenceUpTo destructively TRIMS the
+		//     in-memory logIndex entries. If the trim ran first and the fsync (or
+		//     a commit) then failed transiently — with no crash — the pass would
+		//     return having dropped the interval's entries while the FileChunk
+		//     manifest rows were already written in Phase B. The still-dirty
+		//     interval is then re-picked by a later pass which, finding no
+		//     logIndex coverage, drops it without re-appending; the chunk is
+		//     never committed to the local index. A read would miss BOTH
+		//     ReadPayloadAt paths (append-log replay AND manifest -> local index)
+		//     and hole out to a remote zero-fill of acknowledged data until the
+		//     next restart. Syncing + committing first means a transient failure
+		//     leaves the entries and the dirty interval fully intact for a clean
+		//     retry, and in-window reads keep resolving via the append-log replay.
+		//
+		// nil guard: CAS-only stores do not use a logBlob and are unaffected.
+		if bc.logBlob != nil {
+			if serr := bc.syncLogBlob(); serr != nil {
+				return fmt.Errorf("rollup: fsync log-blob before fence advance: %w", serr)
+			}
+			bc.logBlobRollupSyncCount.Add(1)
+
+			for _, sc := range staged {
+				if cerr := bc.commitStagedChunk(ctx, sc); cerr != nil {
+					return fmt.Errorf("rollup: commit chunk index: %w", cerr)
+				}
+			}
+		}
+
 		// R-7 (#580): mark every surviving record's FILE-OFFSET extent consumed
 		// in the logIndex and ask the index for the new compaction fence. This
 		// is the value we persist as rollup_offset — computed from the consumed
@@ -713,6 +773,10 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 		// landed during Phase B has its own logIndex entry, NOT in
 		// consumedExtents, so the fence does not advance past it and it is
 		// rolled up by a later pass.
+		//
+		// This is the destructive step: advanceFenceUpTo trims the fenced
+		// entries out of the in-memory index, so it MUST run only after the sync
+		// + commit above have succeeded (see the invariants there).
 		for _, ext := range consumedExtents {
 			idx.MarkConsumed(ext.fileOff, ext.payloadLen)
 		}
@@ -831,6 +895,25 @@ var maxReconstructBytes = uint64(1) << 34
 // it to nil) to deterministically interleave a racing AppendWrite. It must not
 // be set while a rollup worker pool is running on an unrelated test.
 var rollupPhaseBHook func(payloadID string)
+
+// rollupPreSyncFailHook, when non-nil, is consulted by syncLogBlob just before
+// the real logBlob.Sync in rollup Phase C. A non-nil return is treated exactly
+// as a blob fsync failure, aborting the pass before the fence advances.
+// Production leaves it nil; durability tests set it (and MUST defer-restore it)
+// to deterministically reproduce a crash in the append→fsync window.
+var rollupPreSyncFailHook func() error
+
+// syncLogBlob fsyncs the log-blob substrate, honoring the rollupPreSyncFailHook
+// test seam. Kept as a thin wrapper so the injection point stays out of the
+// Phase C commit sequence body.
+func (bc *FSStore) syncLogBlob() error {
+	if fn := rollupPreSyncFailHook; fn != nil {
+		if err := fn(); err != nil {
+			return err
+		}
+	}
+	return bc.logBlob.Sync()
+}
 
 // reconstructStream flattens records by file offset, later writes overwriting
 // earlier ones at the same offset. Produces a contiguous byte slice anchored

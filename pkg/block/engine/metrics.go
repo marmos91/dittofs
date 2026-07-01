@@ -22,4 +22,30 @@ type DataplaneMetrics interface {
 	SetUploadWindow(n int)
 	// RecordRehash records pre-upload BLAKE3 re-hash latency for one chunk.
 	RecordRehash(d time.Duration)
+
+	// --- Corruption detection / self-heal (read path) ---
+	// All five counters are BOUNDED zero-label counters: no per-share, per-
+	// hash, or per-block dimensions (the #1188 unbounded-cardinality lesson).
+
+	// RecordLocalCorruption records n local-chunk integrity failures detected
+	// on read (blake3 of the local bytes != the chunk's content hash). One
+	// event per corrupt chunk surfaced to the read path.
+	RecordLocalCorruption(n int)
+	// RecordSelfHealSuccess records n local corruptions that were repaired:
+	// the corrupt local pointer was dropped and the chunk was re-fetched from
+	// its remote block, re-verified, and durably re-staged into local storage.
+	RecordSelfHealSuccess(n int)
+	// RecordSelfHealFailure records n local corruptions that could NOT be
+	// repaired-and-persisted: the chunk was unsynced (only copy is corrupt),
+	// the remote re-fetch failed/was-corrupt (read fails closed), or the good
+	// bytes were served but the local re-stage did not persist (degraded).
+	RecordSelfHealFailure(n int)
+	// RecordRemoteCorruption records n remote-chunk integrity failures detected
+	// on fetch (blake3 of the fetched bytes != the chunk's content hash). The
+	// read fails closed; a corrupt remote is never self-healed from.
+	RecordRemoteCorruption(n int)
+	// RecordBlockRangeRead records one successful block-range read (a ranged
+	// GET into a packed block object that passed per-chunk verification);
+	// bytes is the verified chunk-plaintext length returned.
+	RecordBlockRangeRead(bytes int)
 }

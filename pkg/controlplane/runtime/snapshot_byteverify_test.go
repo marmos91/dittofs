@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	metadatasqlite "github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
 )
 
 // byteVerifyFixture wires a Runtime over the REAL production write path: a
@@ -180,6 +182,16 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	_ = f.rt.Shutdown(ctx)
 	cancel()
 
+	// Release the outgoing block store's log-blob fd. Runtime.Shutdown closes
+	// metadata stores but NOT block stores, so without this the pre-restart
+	// FSStore keeps blobs/*.blob open on the SHARED fsDir. On Windows an open
+	// handle blocks the t.TempDir() RemoveAll of fsDir at teardown (Unix
+	// tolerates unlink-while-open). engine.Store.Close is idempotent, so the
+	// fixture's later RemoveShare double-close is harmless.
+	if f.bs != nil {
+		_ = f.bs.Close()
+	}
+
 	// Close the old store before reopening: an on-disk backend (badger) holds
 	// an exclusive lock on its directory, so the reopen would fail until the
 	// prior handle is released. The first open()'s t.Cleanup will later call
@@ -211,6 +223,17 @@ func (f *byteVerifyFixture) simulateRestart(reopen func(*testing.T) metadata.Sto
 	f.rt = rt
 	f.meta = meta
 	f.bs = share.BlockStore
+
+	// The freshly-opened block store holds a new log-blob fd on the SAME fsDir.
+	// f.rt.Shutdown (via the deferred fixture close) does not close block stores,
+	// so register a cleanup to release it. Registered here — after the fixture's
+	// t.TempDir() cleanup for fsDir — so t.Cleanup's LIFO order closes the fd
+	// BEFORE fsDir's RemoveAll runs (required on Windows). Close is idempotent.
+	f.t.Cleanup(func() {
+		if f.bs != nil {
+			_ = f.bs.Close()
+		}
+	})
 }
 
 func (f *byteVerifyFixture) close() {
@@ -558,6 +581,7 @@ func byteVerifyBackends(t *testing.T) []byteVerifyBackend {
 			},
 		},
 		newBadgerByteVerifyBackend(t),
+		newSQLiteByteVerifyBackend(t),
 	}
 	if postgresByteVerifyBackend != nil {
 		backends = append(backends, *postgresByteVerifyBackend)
@@ -588,6 +612,30 @@ func newBadgerByteVerifyBackend(t *testing.T) byteVerifyBackend {
 	return byteVerifyBackend{
 		name:   "badger",
 		open:   func(t *testing.T) (metadata.Store, string) { return openAt(t), "badger" },
+		reopen: openAt,
+	}
+}
+
+// newSQLiteByteVerifyBackend backs the byte-verify matrix with an on-disk sqlite
+// metadata store. reopen re-opens the SAME db file so the restore cycle proves
+// on-disk persistence (including the synced_hashes locator columns the flip
+// relies on for block-resident restore).
+func newSQLiteByteVerifyBackend(t *testing.T) byteVerifyBackend {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "byteverify.db")
+	openAt := func(t *testing.T) metadata.Store {
+		store, err := metadatasqlite.NewSQLiteMetadataStore(context.Background(),
+			&metadatasqlite.SQLiteMetadataStoreConfig{Path: dbPath, AutoMigrate: true},
+			flipTestCapabilities())
+		if err != nil {
+			t.Fatalf("NewSQLiteMetadataStore: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
+	return byteVerifyBackend{
+		name:   "sqlite",
+		open:   func(t *testing.T) (metadata.Store, string) { return openAt(t), "sqlite" },
 		reopen: openAt,
 	}
 }

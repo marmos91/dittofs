@@ -842,9 +842,9 @@ verification tests.
 
 ## Implementing a Remote Block Store (block-keyed)
 
-The `pkg/block/remote.RemoteBlockStore` interface is the **block-keyed** (non-CAS) remote store surface introduced by the blocks-only storage redesign (epic [#1493](https://github.com/marmos91/dittofs/issues/1493)). Block objects live under the `blocks/` prefix, separate from the legacy CAS `cas/` namespace — the two namespaces never collide.
+The `pkg/block/remote.RemoteBlockStore` interface is the **block-keyed** (non-CAS) remote store surface used by the live write path. Every new write is packed into block objects under the `blocks/` prefix, separate from the legacy CAS `cas/` namespace — the two namespaces never collide. New remote backends should implement `RemoteBlockStore`.
 
-> **Legacy path (being retired):** The per-chunk CAS object path (`cas/<hash>`, hash-keyed `Put`/`Get`/`GetRange` on `RemoteStore`) is being retired in favour of blocks-only storage as part of epic #1493. New remote backends should implement `RemoteBlockStore`. The legacy `RemoteStore` CAS surface will be removed in a later PR of the same epic.
+> **Legacy CAS reads:** The per-chunk CAS object path (`cas/<hash>`, hash-keyed `Get`/`GetRange` on `RemoteStore`) is **read-only** and exists purely for backward compatibility with data written before the blocks-only flip. No new `cas/` objects are ever written; a later migration re-packs the remaining ones, after which the legacy `RemoteStore` CAS surface is removed. A backend that only ever serves fresh DittoFS deployments does not need it.
 
 ### The RemoteBlockStore Interface
 

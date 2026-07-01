@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"lukechampine.com/blake3"
@@ -46,30 +47,62 @@ func NewRemote(inner remote.RemoteStore, policy EncryptionPolicy, provider keypr
 // Put encrypts data and stores the framed result under hash. The block
 // key is fresh per call; the plaintext hash is bound into the AEAD's
 // additional data so a swapped block fails authentication on Get.
+// Put encrypts data into a self-describing frame and stores it on the inner
+// store. Put and SealChunk share the same single-layer transform (sealLayer)
+// so the standalone-object and packed-block write paths never drift.
 func (d *EncryptedRemote) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
-	blockKey := make([]byte, 32)
-	if _, err := rand.Read(blockKey); err != nil {
-		return fmt.Errorf("encryption: read block key: %w", err)
-	}
-	aead, err := newAEAD(d.aead, blockKey)
+	wire, err := d.sealLayer(ctx, hash, data)
 	if err != nil {
 		return err
 	}
+	return d.inner.Put(ctx, hash, wire)
+}
+
+// SealChunk encrypts one chunk's plaintext into a frame and delegates inward so
+// a decorated chain produces the fully-transformed wire bytes for a packed
+// block. Implements remote.ChunkSealer (#1414). hash is bound as AEAD AAD,
+// matching the standalone Put scheme. Symmetric with ReadChunk, which decrypts
+// the ranged frame with the same AAD.
+func (d *EncryptedRemote) SealChunk(ctx context.Context, hash block.ContentHash, plaintext []byte) ([]byte, error) {
+	wire, err := d.sealLayer(ctx, hash, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	sealer, ok := d.inner.(remote.ChunkSealer)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	return sealer.SealChunk(ctx, hash, wire)
+}
+
+// sealLayer is the single source of this decorator's encryption transform,
+// shared by Put and SealChunk. It generates a fresh per-chunk block key + nonce,
+// AEAD-seals data with hash as AAD, wraps the block key, and returns the encoded
+// frame.
+func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash, data []byte) ([]byte, error) {
+	blockKey := make([]byte, 32)
+	if _, err := rand.Read(blockKey); err != nil {
+		return nil, fmt.Errorf("encryption: read block key: %w", err)
+	}
+	aead, err := newAEAD(d.aead, blockKey)
+	if err != nil {
+		return nil, err
+	}
 	nonce := make([]byte, aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return fmt.Errorf("encryption: read nonce: %w", err)
+		return nil, fmt.Errorf("encryption: read nonce: %w", err)
 	}
 	ciphertext := aead.Seal(nil, nonce, data, hash[:])
 
 	wrappedKey, masterKeyID, err := d.provider.Wrap(ctx, blockKey)
 	if err != nil {
-		return fmt.Errorf("encryption: wrap block key: %w", err)
+		return nil, fmt.Errorf("encryption: wrap block key: %w", err)
 	}
 	wire, err := encodeFrame(d.aead, masterKeyID, wrappedKey, nonce, ciphertext)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return d.inner.Put(ctx, hash, wire)
+	return wire, nil
 }
 
 // Get returns the plaintext for the block identified by hash.
@@ -236,6 +269,69 @@ func (d *EncryptedRemote) Durable() bool {
 	return block.IsDurable(d.inner)
 }
 
+// --- remote.RemoteBlockStore passthrough (#1414) ---
+//
+// Packed block objects carry per-chunk wire frames that were already sealed via
+// SealChunk; the assembled block must NOT be re-encrypted at the block level.
+// So every block-keyed operation passes through verbatim to the inner store.
+// This lets a decorated remote satisfy remote.RemoteBlockStore (the carve path
+// asserts it) while the per-chunk transform stays in SealChunk/ReadChunk.
+
+// blockInner returns the inner store as a remote.RemoteBlockStore, or an error
+// when the wrapped store does not support block-keyed objects.
+func (d *EncryptedRemote) blockInner() (remote.RemoteBlockStore, error) {
+	rbs, ok := d.inner.(remote.RemoteBlockStore)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	return rbs, nil
+}
+
+// PutBlock stores the assembled block verbatim (already-sealed frames).
+func (d *EncryptedRemote) PutBlock(ctx context.Context, blockID string, r io.Reader) error {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.PutBlock(ctx, blockID, r)
+}
+
+// GetBlock returns the raw block object verbatim.
+func (d *EncryptedRemote) GetBlock(ctx context.Context, blockID string) ([]byte, error) {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return nil, err
+	}
+	return rbs.GetBlock(ctx, blockID)
+}
+
+// GetBlockRange returns raw block bytes verbatim; per-chunk decrypt is ReadChunk.
+func (d *EncryptedRemote) GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error) {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return nil, err
+	}
+	return rbs.GetBlockRange(ctx, blockID, offset, length)
+}
+
+// DeleteBlock removes the block object.
+func (d *EncryptedRemote) DeleteBlock(ctx context.Context, blockID string) error {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.DeleteBlock(ctx, blockID)
+}
+
+// WalkBlocks enumerates block objects.
+func (d *EncryptedRemote) WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error {
+	rbs, err := d.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.WalkBlocks(ctx, fn)
+}
+
 // decrypt parses the frame, unwraps the block key, and authenticated-
 // decrypts the ciphertext against hash as AAD. An unframed block on an
 // encryption-enabled share is rejected — it indicates external mutation
@@ -305,6 +401,8 @@ func newAEAD(algo AEAD, key []byte) (cipher.AEAD, error) {
 var (
 	_ block.Store              = (*EncryptedRemote)(nil)
 	_ remote.RemoteStore       = (*EncryptedRemote)(nil)
+	_ remote.RemoteBlockStore  = (*EncryptedRemote)(nil)
 	_ remote.ChunkReader       = (*EncryptedRemote)(nil)
+	_ remote.ChunkSealer       = (*EncryptedRemote)(nil)
 	_ block.DurabilityReporter = (*EncryptedRemote)(nil)
 )

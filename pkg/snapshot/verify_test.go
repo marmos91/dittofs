@@ -1,9 +1,11 @@
 package snapshot_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +16,87 @@ import (
 	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
+
+// fakeLocators is a HashLocatorResolver backed by a static map.
+type fakeLocators map[block.ContentHash]block.ChunkLocator
+
+func (f fakeLocators) GetLocator(_ context.Context, h block.ContentHash) (block.ChunkLocator, bool, error) {
+	loc, ok := f[h]
+	return loc, ok, nil
+}
+
+// blockProbeSpy is a RemoteBlockStore that records whether GetBlockRange was
+// called, so a test can assert the standalone (cas) path never touches the
+// block store. All other block methods are unused here.
+type blockProbeSpy struct{ called atomic.Bool }
+
+func (s *blockProbeSpy) PutBlock(context.Context, string, io.Reader) error { return nil }
+func (s *blockProbeSpy) GetBlock(context.Context, string) ([]byte, error)  { return nil, nil }
+func (s *blockProbeSpy) GetBlockRange(_ context.Context, _ string, _, _ int64) ([]byte, error) {
+	s.called.Store(true)
+	return []byte{0x01}, nil
+}
+func (s *blockProbeSpy) DeleteBlock(context.Context, string) error { return nil }
+func (s *blockProbeSpy) WalkBlocks(context.Context, func(string, block.Meta) error) error {
+	return nil
+}
+
+// TestVerifyRemoteDurability_BlockResidentProbesBlock: a hash whose locator
+// names a packed block is proven durable by probing the block object, NOT a
+// cas/<hash> object (which does not exist post-flip). A missing block → the
+// wrapped ErrChunkNotFound.
+func TestVerifyRemoteDurability_BlockResidentProbesBlock(t *testing.T) {
+	ctx := context.Background()
+	rs := remotememory.New()
+	t.Cleanup(func() { _ = rs.Close() })
+
+	h := gateHash(7)
+	hs := block.NewHashSet(1)
+	hs.Add(h)
+	loc := block.ChunkLocator{BlockID: "blk-present"}
+	res := fakeLocators{h: loc}
+
+	// Present block, NO cas object → must resolve via the block.
+	if err := rs.PutBlock(ctx, "blk-present", bytes.NewReader([]byte("packed-block-bytes"))); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+	if err := snapshot.VerifyRemoteDurability(ctx, rs, res, rs, hs, 4); err != nil {
+		t.Fatalf("block-resident present: got %v, want nil", err)
+	}
+
+	// Missing block → ErrChunkNotFound.
+	res2 := fakeLocators{h: block.ChunkLocator{BlockID: "blk-absent"}}
+	err := snapshot.VerifyRemoteDurability(ctx, rs, res2, rs, hs, 4)
+	if !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("missing block: errors.Is(ErrChunkNotFound)=false; err=%v", err)
+	}
+}
+
+// TestVerifyRemoteDurability_StandaloneLocatorProbesCAS is the back-compat
+// guard: a synced hash with a STANDALONE locator (BlockID=="") — the pre-flip
+// cas/-only shape — is probed against cas/<hash> via rs.Head and NEVER touches
+// the block store. Proves a snapshot of legacy CAS data still verifies.
+func TestVerifyRemoteDurability_StandaloneLocatorProbesCAS(t *testing.T) {
+	ctx := context.Background()
+	rs := remotememory.New()
+	t.Cleanup(func() { _ = rs.Close() })
+
+	h := gateHash(9)
+	hs := block.NewHashSet(1)
+	hs.Add(h)
+	if err := rs.Put(ctx, h, []byte{0x01}); err != nil { // standalone cas object
+		t.Fatalf("Put: %v", err)
+	}
+	res := fakeLocators{h: block.ChunkLocator{}} // standalone (BlockID=="")
+	spy := &blockProbeSpy{}
+
+	if err := snapshot.VerifyRemoteDurability(ctx, rs, res, spy, hs, 4); err != nil {
+		t.Fatalf("standalone cas: got %v, want nil", err)
+	}
+	if spy.called.Load() {
+		t.Fatal("standalone locator must probe cas/<hash>, not the block store")
+	}
+}
 
 // gateHash returns a deterministic ContentHash seeded by seed so each
 // test gets unique, sortable hashes without RNG flakiness.
@@ -55,7 +138,7 @@ func TestVerifyRemoteDurability_HappyPath(t *testing.T) {
 	hs := seedManifest(t, 32)
 	putAll(t, rs, hs)
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4); err != nil {
 		t.Fatalf("VerifyRemoteDurability: got %v, want nil", err)
 	}
 }
@@ -67,7 +150,7 @@ func TestVerifyRemoteDurability_EmptyManifest(t *testing.T) {
 	t.Cleanup(func() { _ = rs.Close() })
 
 	hs := block.NewHashSet(0)
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4); err != nil {
 		t.Fatalf("empty manifest: got %v, want nil", err)
 	}
 }
@@ -77,7 +160,7 @@ func TestVerifyRemoteDurability_NilManifest(t *testing.T) {
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, nil, 4); err != nil {
 		t.Fatalf("nil manifest: got %v, want nil", err)
 	}
 }
@@ -98,7 +181,7 @@ func TestVerifyRemoteDurability_MissingHashFailFast(t *testing.T) {
 		}
 	}
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 4)
+	err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4)
 	if err == nil {
 		t.Fatal("missing hash: got nil err, want wrapped ErrChunkNotFound")
 	}
@@ -118,7 +201,7 @@ func TestVerifyRemoteDurability_IOErrorPropagates(t *testing.T) {
 
 	hs := seedManifest(t, 4)
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 2)
+	err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 2)
 	if err == nil {
 		t.Fatal("got nil err, want propagated I/O error")
 	}
@@ -141,7 +224,7 @@ func TestVerifyRemoteDurability_ContextCancelHonored(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- snapshot.VerifyRemoteDurability(ctx, br, hs, 4)
+		errCh <- snapshot.VerifyRemoteDurability(ctx, br, nil, nil, hs, 4)
 	}()
 
 	// Wait for some probes to be in-flight, then cancel.
@@ -175,7 +258,7 @@ func TestVerifyRemoteDurability_ConcurrencyBound(t *testing.T) {
 	cr := newCountingRemote(5 * time.Millisecond)
 	hs := seedManifest(t, total)
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), cr, hs, concurrency); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), cr, nil, nil, hs, concurrency); err != nil {
 		t.Fatalf("VerifyRemoteDurability: %v", err)
 	}
 
@@ -200,7 +283,7 @@ func TestVerifyRemoteDurability_ConcurrencyDefaultsOnNonPositive(t *testing.T) {
 	for _, c := range []int{0, -1, -100} {
 		c := c
 		t.Run(fmt.Sprintf("concurrency=%d", c), func(t *testing.T) {
-			if err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, c); err != nil {
+			if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, c); err != nil {
 				t.Fatalf("concurrency=%d: got %v, want nil", c, err)
 			}
 		})
@@ -224,7 +307,7 @@ func TestVerifyRemoteDurability_FailFastCancelsSiblings(t *testing.T) {
 		delay:   10 * time.Millisecond,
 	}
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), sm, hs, concurrency)
+	err := snapshot.VerifyRemoteDurability(context.Background(), sm, nil, nil, hs, concurrency)
 	if !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("got %v, want wrapped ErrChunkNotFound", err)
 	}

@@ -36,6 +36,14 @@ func (bc *FSStore) BaseDirForTest() string { return bc.baseDir }
 // compute the delta.
 func (bc *FSStore) FlushFsyncCountForTest() int64 { return bc.flushFsyncCount.Load() }
 
+// LogBlobRollupSyncCountForTest returns the cumulative number of times a
+// rollup pass called logBlob.Sync() before advancing the fence. Used by
+// tests to assert the durability invariant: chunk bytes fsynced before
+// rollup_offset advances.
+func (bc *FSStore) LogBlobRollupSyncCountForTest() int64 {
+	return bc.logBlobRollupSyncCount.Load()
+}
+
 // RollupOffsetForTest returns the metadata rollup_offset for payloadID.
 // Returns (0, nil) when no RollupStore is configured.
 func (bc *FSStore) RollupOffsetForTest(ctx context.Context, payloadID string) (uint64, error) {
