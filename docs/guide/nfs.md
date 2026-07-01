@@ -185,6 +185,13 @@ Best effort: if no `rpcbind` answers on 111 the registration is skipped with a
 warning (NFS still serves; only `nolock`-free v3 locking is unavailable). The
 mappings are unregistered cleanly on shutdown.
 
+> **Same-host clients:** if you mount an NFSv3 export *from the same machine that
+> runs DittoFS*, the host kernel's own `lockd` reclaims the NLM (100021)
+> registration and the client sends locks to the kernel, not DittoFS. Mount from
+> a different host, or isolate the client in its own network namespace. This is
+> why the NLM lock-interop tests use netns isolation — see
+> [Real NFSv3 NLM lock testing](../internals/testing.md#real-nfsv3-nlm-lock-testing-network-namespace-isolation).
+
 ### Security
 
 The embedded portmapper follows standard security practices:
