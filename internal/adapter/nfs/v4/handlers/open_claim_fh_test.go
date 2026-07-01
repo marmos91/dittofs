@@ -55,3 +55,37 @@ func TestOpen_ClaimFH_ReopenExistingFile(t *testing.T) {
 		t.Fatalf("CLAIM_FH OPEN status = %d, want NFS4_OK", r.Status)
 	}
 }
+
+// TestOpen_ClaimFH_CreateRejected verifies that OPEN4_CREATE combined with
+// CLAIM_FH is rejected. CLAIM_FH re-opens an existing filehandle; createhow4 is
+// only meaningful for CLAIM_NULL (RFC 8881), so a create claim must not be
+// silently downgraded to a plain open.
+func TestOpen_ClaimFH_CreateRejected(t *testing.T) {
+	const clientID = uint64(0x0BADF00D)
+	owner := []byte("claim-fh-create-owner")
+
+	fx := newRealFSTestFixture(t, "/export")
+	fileHandle := fx.createTestFile(t, fx.rootHandle, "reopen.txt",
+		metadata.FileTypeRegular, 0o644, 1000, 1000)
+
+	ctx := newRealFSContext(1000, 1000)
+	ctx.SkipOwnerSeqid = true
+	ctx.CurrentFH = make([]byte, len(fileHandle))
+	copy(ctx.CurrentFH, fileHandle)
+
+	// UNCHECKED4 createattrs are still encoded so the args are well-formed; the
+	// handler must reject on the OPEN4_CREATE opentype before consuming them.
+	args := encodeOpenArgs(
+		0,
+		types.OPEN4_SHARE_ACCESS_BOTH,
+		types.OPEN4_SHARE_DENY_NONE,
+		clientID, owner,
+		types.OPEN4_CREATE, types.UNCHECKED4, types.CLAIM_FH,
+		"",
+	)
+
+	r := fx.handler.handleOpen(ctx, bytes.NewReader(args))
+	if r.Status != types.NFS4ERR_INVAL {
+		t.Fatalf("CLAIM_FH OPEN4_CREATE status = %d, want NFS4ERR_INVAL", r.Status)
+	}
+}

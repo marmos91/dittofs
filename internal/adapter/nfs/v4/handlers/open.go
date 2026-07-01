@@ -204,6 +204,12 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 				"client", ctx.ClientAddr)
 			return openError(nfsStatus)
 		}
+		// CLAIM_FH re-opens an existing filehandle, so OPEN4_CREATE is illegal
+		// (RFC 8881: createhow4 is only meaningful for CLAIM_NULL). Reject it
+		// rather than silently treating a create as a plain open.
+		if openType == types.OPEN4_CREATE {
+			return openError(types.NFS4ERR_INVAL)
+		}
 		return h.handleOpenClaimFH(ctx, seqid, shareAccess, shareDeny,
 			clientID, ownerData, claimType)
 
