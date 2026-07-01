@@ -155,9 +155,13 @@ func (bc *FSStore) storeChunkLogBlob(ctx context.Context, h block.ContentHash, d
 		// written to the blob at loc are orphaned — they have no index entry and
 		// are not reachable by content hash. A blob-level reclaim pass is
 		// responsible for recovering these indexless extents; this code does not
-		// provide per-chunk reclaim. A subsequent StoreChunk retry for the same
-		// hash re-appends (the HasChunk check at the top of StoreChunk misses the
-		// index, so it does not deduplicate).
+		// provide per-chunk reclaim. Only in this specific failure path — where
+		// no index entry was written — does a subsequent StoreChunk retry
+		// re-append: HasChunk consults the index and, once an entry exists,
+		// dedups. This direct path indexes without an fsync; crash-durable
+		// ordering (index committed only after the blob is fsynced) is provided
+		// by the rollup's Phase C fence via stageRollupChunk/commitStagedChunk,
+		// which is the only production writer of log-blob chunks.
 	}
 	if err := bc.localChunkIndex.PutLocalLocation(ctx, h, loc); err != nil {
 		return fmt.Errorf("chunkstore: put local location: %w", err)
@@ -173,6 +177,86 @@ func (bc *FSStore) storeChunkLogBlob(ctx context.Context, h block.ContentHash, d
 	// discards it.
 	if cb := bc.onChunkComplete.Load(); cb != nil && cb.fn != nil {
 		cb.fn(h, data, "")
+	}
+	return nil
+}
+
+// stagedChunk is a chunk appended to the log-blob during a rollup pass whose
+// durable local-index write has been DEFERRED to Phase C. It carries just
+// enough to commit the index entry (and the disk-usage delta) once the blob
+// has been fsynced.
+type stagedChunk struct {
+	h      block.ContentHash
+	loc    block.LocalChunkLocation
+	size   int
+	staged bool
+}
+
+// stageRollupChunk stores chunk h for a rollup pass. On the log-blob path it
+// APPENDS the bytes to the blob substrate but DEFERS the durable local-index
+// write (PutLocalLocation) to commitStagedChunk, called in Phase C only after
+// logBlob.Sync succeeds. Fencing the index write behind the blob fsync upholds
+// the durability invariant: no durable index entry may point at bytes that are
+// not yet durable on disk. A crash in the append→fsync window therefore leaves
+// NO index entry, so the replay's HasChunk misses and the bytes are re-appended
+// cleanly (they survive in the append-log the rollup drains from).
+//
+// In-window reads are unaffected: until Phase C advances the rollup fence the
+// bytes are still served from the append-log (ReadPayloadAt step 1); the
+// log-blob index only becomes the resolving source after the fence advances,
+// which happens strictly after the fsync + index commit.
+//
+// Returns staged=true with the location to commit for a freshly appended
+// log-blob chunk; staged=false when nothing needs a deferred index write — a
+// dedup hit against an already-durable chunk, or the legacy CAS path (index-less
+// fixtures), which fsyncs the cas/<hash> file inline in StoreChunk.
+func (bc *FSStore) stageRollupChunk(ctx context.Context, h block.ContentHash, data []byte) (stagedChunk, error) {
+	// Legacy CAS path: no log-blob / index wired. StoreChunk fsyncs the
+	// cas/<hash> file before returning, so durability needs no deferral.
+	if bc.logBlob == nil || bc.localChunkIndex == nil {
+		if err := bc.StoreChunk(ctx, h, data); err != nil {
+			return stagedChunk{}, err
+		}
+		return stagedChunk{}, nil
+	}
+
+	// Dedup against chunks already made durable by a prior pass. (Intra-pass
+	// duplicate hashes are deduped by the caller's per-pass set, since staged
+	// chunks are not yet in the index.)
+	exists, err := bc.HasChunk(ctx, h)
+	if err != nil {
+		return stagedChunk{}, err
+	}
+	if exists {
+		return stagedChunk{}, nil
+	}
+
+	// Append the bytes now but hold the index write until Phase C's fsync.
+	var loc block.LocalChunkLocation
+	if len(data) > 0 {
+		loc, err = bc.logBlob.Append(ctx, data)
+		if err != nil {
+			return stagedChunk{}, fmt.Errorf("chunkstore: logblob append: %w", err)
+		}
+	}
+	// Populate the engine read cache eagerly (content-addressed, so correct even
+	// if this pass is later abandoned). This mirrors storeChunkLogBlob's callback
+	// timing and keeps freshly rolled-up chunks warm.
+	if cb := bc.onChunkComplete.Load(); cb != nil && cb.fn != nil {
+		cb.fn(h, data, "")
+	}
+	return stagedChunk{h: h, loc: loc, size: len(data), staged: true}, nil
+}
+
+// commitStagedChunk makes a staged log-blob chunk's local-index entry durable.
+// It MUST be called only after logBlob.Sync has succeeded for the pass, so the
+// index never references un-fsynced blob bytes.
+func (bc *FSStore) commitStagedChunk(ctx context.Context, sc stagedChunk) error {
+	if err := bc.localChunkIndex.PutLocalLocation(ctx, sc.h, sc.loc); err != nil {
+		return fmt.Errorf("chunkstore: put local location: %w", err)
+	}
+	if sc.size > 0 {
+		bc.logBlobDiskUsed.Add(int64(sc.size))
 	}
 	return nil
 }
