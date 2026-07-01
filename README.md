@@ -14,6 +14,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)](LICENSE)
 [![Status](https://img.shields.io/badge/status-experimental-orange?style=flat)](https://github.com/marmos91/dittofs)
 
+[![Unit Tests](https://github.com/marmos91/dittofs/actions/workflows/unit-tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/unit-tests.yml)
+[![Integration Tests](https://github.com/marmos91/dittofs/actions/workflows/integration-tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/integration-tests.yml)
+[![E2E Tests](https://github.com/marmos91/dittofs/actions/workflows/e2e-tests.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/e2e-tests.yml)
+[![Lint](https://github.com/marmos91/dittofs/actions/workflows/lint.yml/badge.svg?branch=develop)](https://github.com/marmos91/dittofs/actions/workflows/lint.yml)
+
 **A modular virtual filesystem written entirely in Go**
 
 NFSv3/v4.0/v4.1/v4.2 and SMB2/3 servers in userspace — no FUSE, no kernel modules — with
