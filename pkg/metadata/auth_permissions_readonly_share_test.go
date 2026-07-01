@@ -220,6 +220,9 @@ func TestCheckParentCreateAccess_NoACLParent_ReadOnlyDiscriminator(t *testing.T)
 
 	t.Run("store-level read-only share is EROFS", func(t *testing.T) {
 		f := newTestFixture(t)
+		// The fixture already registered the share (via CreateRootDirectory), so
+		// CreateShare returns ErrExist here — intentionally ignored; the call only
+		// guarantees a share entry for UpdateShareOptions to target.
 		_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
 		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
 			&metadata.ShareOptions{ReadOnly: true}))
