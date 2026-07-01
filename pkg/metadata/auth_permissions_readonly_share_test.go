@@ -197,6 +197,54 @@ func TestCheckParentCreateAccess_StoreReadOnlyShareReturnsErrReadOnly(t *testing
 	}
 }
 
+// TestCheckParentCreateAccess_NoACLParent_ReadOnlyDiscriminator locks the
+// EROFS-vs-EACCES discriminator for the CREATE path when the parent directory
+// has NO ACL (the generic POSIX-write fallback in CheckParentCreateAccess).
+// TestCheckParentCreateAccess_StoreReadOnlyShareReturnsErrReadOnly already
+// covers the ACL branch; this fills the non-ACL sub-path so both directions of
+// the fork are pinned:
+//   - store-level read-only share (ShareOptions.ReadOnly) → ErrReadOnly (EROFS);
+//   - per-user read-only level (ctx.ShareReadOnly on a writable share) → EACCES.
+//
+// f.rootHandle is a mode-0777 directory with no ACL, so a create there takes the
+// file.ACL == nil fallback → checkWritePermission → checkPermission, exercising
+// the shareIsReadOnly store-level discriminator rather than the ACL block.
+func TestCheckParentCreateAccess_NoACLParent_ReadOnlyDiscriminator(t *testing.T) {
+	asStoreErr := func(t *testing.T, err error) *metadata.StoreError {
+		t.Helper()
+		require.Error(t, err)
+		var storeErr *metadata.StoreError
+		require.True(t, errors.As(err, &storeErr), "err %v is not a *StoreError", err)
+		return storeErr
+	}
+
+	t.Run("store-level read-only share is EROFS", func(t *testing.T) {
+		f := newTestFixture(t)
+		_ = f.store.CreateShare(context.Background(), &metadata.Share{Name: f.shareName})
+		require.NoError(t, f.store.UpdateShareOptions(context.Background(), f.shareName,
+			&metadata.ShareOptions{ReadOnly: true}))
+		// Owner, per-user ShareReadOnly explicitly false: only the store-level
+		// flag is in play, so a non-EROFS result would mean the discriminator
+		// failed to consult ShareOptions.
+		owner := f.authContext(1700, 1700)
+		owner.ShareReadOnly = false
+		got := asStoreErr(t, f.service.CheckParentCreateAccess(owner, f.rootHandle, false))
+		require.Equal(t, metadata.ErrReadOnly, got.Code)
+	})
+
+	t.Run("per-user read-only on writable share is EACCES", func(t *testing.T) {
+		f := newTestFixture(t)
+		// Store NOT read-only; only the per-user ceiling denies. This must stay
+		// EACCES so a squashed/unknown-uid read level (which sets ctx.ShareReadOnly
+		// on a writable share) does not masquerade as a read-only filesystem —
+		// TestNFSRootSquash depends on this.
+		ro := f.authContext(1701, 1701)
+		ro.ShareReadOnly = true
+		got := asStoreErr(t, f.service.CheckParentCreateAccess(ro, f.rootHandle, false))
+		require.Equal(t, metadata.ErrAccessDenied, got.Code)
+	})
+}
+
 // TestCheckParentWriteAccess_ReadOnlyDiscriminator exercises the data-write
 // permission path (checkPermission via CheckParentWriteAccess) and asserts the
 // EROFS-vs-EACCES discriminator directly:
