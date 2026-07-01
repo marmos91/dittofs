@@ -5,9 +5,21 @@ import (
 	"errors"
 	"fmt"
 
+	"lukechampine.com/blake3"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 )
+
+// dataplaneMetrics returns the engine's data-plane metrics sink, or nil when no
+// recorder was injected. Call sites must guard the result: it is a plain
+// interface, not a nil-safe *Metrics.  Mirrors the Syncer's dataplaneMetrics().
+func (bs *Store) dataplaneMetrics() DataplaneMetrics {
+	if p := bs.metrics.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
 
 // blockRefHashes extracts the ContentHash slice from a BlockRef list
 // for OnRead's hint API.
@@ -167,6 +179,16 @@ func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []b
 			}
 			return false, err
 		}
+		// Integrity check: verify the buffer we already have against the
+		// chunk's content hash.  No double-read — we verify in-place.
+		computed := block.ContentHash(blake3.Sum256(data))
+		if computed != row.fb.Hash {
+			var healErr error
+			data, healErr = bs.healLocalChunk(ctx, row.fb.Hash, row.fb)
+			if healErr != nil {
+				return false, healErr
+			}
+		}
 		// Clamp the visible data to FileChunk.DataSize so a padded
 		// on-disk chunk surface doesn't leak garbage past the
 		// rollup-emitted byte count.
@@ -221,4 +243,78 @@ func findRowCoveringOffset(rows []*block.FileChunk, target uint64) *rowWithOffse
 		}
 	}
 	return nil
+}
+
+// healLocalChunk attempts to repair a locally corrupt chunk by re-fetching it
+// from the remote store.  It records corruption + outcome metrics and returns
+// the healed bytes (or nil + error on unrecoverable failure).
+//
+// Decision tree:
+//  1. Record local corruption unconditionally.
+//  2. If no SyncedHashStore is wired, or IsSynced returns false/error:
+//     RecordSelfHealFailure(1) + return (nil, ErrCASContentMismatch).
+//  3. Delete the corrupt local entry (removes the bad hash pointer).
+//  4. Fetch from remote via dispatchRemoteFetch (already blake3-verified).
+//     If fetch fails or returns nil data: RecordSelfHealFailure(1) + (nil, ErrCASContentMismatch).
+//  5. Try to re-stage locally via local.Put.
+//     - Put succeeds: markFetchedSynced + RecordSelfHealSuccess(1) + return data.
+//     - Put fails (disk full etc.): RecordSelfHealFailure(1) + return data (serve degraded).
+func (bs *Store) healLocalChunk(ctx context.Context, hash block.ContentHash, fb *block.FileChunk) ([]byte, error) {
+	dm := bs.dataplaneMetrics()
+	if dm != nil {
+		dm.RecordLocalCorruption(1)
+	}
+
+	// Only synced chunks have a retrievable remote copy.
+	shs := bs.syncedHashStore
+	if shs == nil {
+		logger.Debug("self-heal: no SyncedHashStore wired, cannot heal chunk", "hash", hash)
+		if dm != nil {
+			dm.RecordSelfHealFailure(1)
+		}
+		return nil, block.ErrCASContentMismatch
+	}
+	synced, err := shs.IsSynced(ctx, hash)
+	if err != nil || !synced {
+		logger.Debug("self-heal: chunk not synced, cannot heal", "hash", hash)
+		if dm != nil {
+			dm.RecordSelfHealFailure(1)
+		}
+		return nil, block.ErrCASContentMismatch
+	}
+
+	// Drop the corrupt pointer so a subsequent Put can land cleanly.
+	if delErr := bs.local.Delete(ctx, hash); delErr != nil {
+		logger.Debug("self-heal: delete corrupt chunk failed", "hash", hash, "error", delErr)
+		// Non-fatal: proceed with the remote fetch regardless.
+	}
+
+	// Re-fetch from remote (dispatchRemoteFetch always blake3-verifies).
+	_, data, fetchErr := bs.syncer.dispatchRemoteFetch(ctx, fb)
+	if fetchErr != nil || data == nil {
+		logger.Debug("self-heal: remote fetch failed", "hash", hash, "error", fetchErr)
+		if dm != nil {
+			dm.RecordSelfHealFailure(1)
+		}
+		return nil, block.ErrCASContentMismatch
+	}
+
+	// Try to re-stage locally for future reads.
+	if putErr := bs.local.Put(ctx, hash, data); putErr != nil {
+		// Degraded: serve correct bytes but don't count as a full success.
+		logger.Debug("self-heal: local re-stage failed (degraded), serving bytes",
+			"hash", hash, "error", putErr)
+		if dm != nil {
+			dm.RecordSelfHealFailure(1)
+		}
+		return data, nil
+	}
+
+	// Full success: re-staged + synced marker updated.
+	bs.syncer.markFetchedSynced(ctx, hash)
+	if dm != nil {
+		dm.RecordSelfHealSuccess(1)
+	}
+	logger.Debug("self-heal: chunk repaired successfully", "hash", hash)
+	return data, nil
 }

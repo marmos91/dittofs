@@ -214,8 +214,14 @@ func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, 
 	}
 	computed := block.ContentHash(blake3.Sum256(data))
 	if computed != hash {
+		if dm := m.dataplaneMetrics(); dm != nil {
+			dm.RecordRemoteCorruption(1)
+		}
 		return nil, fmt.Errorf("%w: block %s chunk %s computed %s",
 			block.ErrCASContentMismatch, loc.BlockID, hash, computed)
+	}
+	if dm := m.dataplaneMetrics(); dm != nil {
+		dm.RecordBlockRangeRead(len(data))
 	}
 	return data, nil
 }
