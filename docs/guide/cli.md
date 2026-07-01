@@ -5602,10 +5602,13 @@ Trigger an on-demand GC run for the named share.
 
 The mark phase enumerates every live ContentHash across all shares whose
 remote-store config matches the named share (cross-share aggregation).
-The sweep phase deletes any cas/.../ object absent from the live set
-whose LastModified is older than the configured grace period (default
-1h). The last-run.json summary is persisted under the share's gc-state
-directory and can be inspected with:
+The sweep phase reclaims storage absent from the live set: it decrements
+the refcount of each dead chunk's enclosing packed block and, once a
+block holds no live chunks, deletes it from the remote and evicts its
+local copy. Legacy per-chunk cas/.../ objects (written before packed
+blocks) are also deleted when dead and older than the configured grace
+period (default 1h). The last-run.json summary is persisted under the
+share's gc-state directory and can be inspected with:
 
 ```
 dfsctl store block gc-status <share>
