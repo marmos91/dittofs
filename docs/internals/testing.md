@@ -297,6 +297,95 @@ limitations compared to Linux/macOS NFS clients.
 
 ---
 
+## Real NFSv3 NLM lock testing (network-namespace isolation)
+
+DittoFS coordinates byte-range locks across NFSv3 NLM, NFSv4, and SMB through a single
+cross-protocol lock manager (`pkg/metadata/lock/manager.go`). Proving this end-to-end with a
+**real kernel NFSv3 client** — not the `nolock` mount option, which makes the kernel resolve
+locks locally and never contact the server — requires a specific harness. This section explains
+why, and how the e2e suite does it.
+
+### Why a single host is not enough
+
+A kernel NFSv3 client discovers the server's NLM (lockd) port by querying rpcbind on port 111 —
+a location fixed by RFC 1833 with no client-side override. But the kernel's *own* lockd also
+registers program 100021 with the local rpcbind. The moment an NFSv3-with-locking mount activates
+on the same host as DittoFS, the kernel lockd reclaims the 100021 mapping, so the client sends its
+NLM requests to the local kernel lockd instead of to DittoFS. You cannot run both a userspace NLM
+server and a kernel NFSv3 client's lockd against one shared rpcbind.
+
+This is the same constraint NFS-Ganesha hits, and DittoFS copies Ganesha's solution:
+**isolate the client in a separate Linux network namespace.**
+
+### Harness layout
+
+```
+  server netns (sns)                client netns (cns)
+  ┌────────────────────────┐        ┌────────────────────────┐
+  │ dfs (NFSv3/v4 + SMB)    │        │ kernel NFSv3 client     │
+  │ rpcbind :111 (own)      │◀──────▶│ rpcbind :111 (own)      │
+  │   NLM 100021 → dfs port │  veth  │ rpc.statd (NSM)         │
+  │                         │        │ mount -o nfsvers=3      │
+  └────────────────────────┘        │   (NO nolock)           │
+                                     └────────────────────────┘
+```
+
+Both the server and the client run in their *own* network namespace, each with its *own* rpcbind
+and its own lockd/NSM port space, so the two 100021 registrations never collide. The server's
+rpcbind is made private by launching dfs under `unshare --mount` with a fresh tmpfs on `/run` —
+otherwise it would share the host's rpcbind socket. The client's `GETPORT` for NLM queries the
+**server** namespace's rpcbind across the veth and correctly resolves to the DittoFS port;
+SM_NOTIFY / GRANTED callbacks flow back over the same veth.
+
+Gotchas mirrored from Ganesha (each is a real failure mode):
+
+- **`rpc.statd` must run in the client netns.** Without a reachable NSM, the first lock fails with
+  `SM_MON status 1` → `NLM4_DENIED_NOLOCKS`. The harness gates on a warm-up lock so a not-ready NSM
+  can never be mistaken for a conflict.
+- **Give each side its own rpcbind** (the netns-native form of Ganesha's multi-homed `rpcbind -h`
+  fix). If you see "failed to contact remote rpcbind", a shared/misbound rpcbind is the usual cause.
+- **Use IP addresses, not hostnames**, for the mount target and NSM — the two namespaces do not
+  share DNS resolution.
+- DittoFS must be started with system-rpcbind registration and UDP enabled (below); UDP carries
+  NSM/SM_NOTIFY.
+
+### Enabling server-side registration
+
+The registration is opt-in (default off). The e2e harness turns it on at runtime:
+
+```
+PATCH /api/v1/adapters/nfs/settings
+{ "portmapper_register_with_system": true, "udp_enabled": true }
+```
+
+Equivalent YAML / env: `adapters.nfs.portmapper.register_with_system: true` /
+`DITTOFS_ADAPTERS_NFS_PORTMAPPER_REGISTER_WITH_SYSTEM=true`. See issue #1503.
+
+### What it covers
+
+- **NLM ↔ SMB** — an NFSv3 NLM byte-range lock conflicts with a CIFS byte-range lock on the same
+  file, resolved by the server's unified lock manager (both directions).
+- **NLM ↔ NFSv4** — an NFSv3 NLM lock conflicts with an NFSv4 `LOCK`, both directions.
+- Registration reachability — `rpcinfo -p` shows DittoFS's NLM (100021) mapping.
+
+### Running / prerequisites
+
+These tests need **root**, `rpcbind`, `rpc.statd`, and `iproute2` (network namespaces), so they
+run only on Linux. On unsupported environments (macOS, no root, no rpcbind) they `t.Skip` rather
+than fail. In CI the e2e workflow installs `rpcbind` and the job runs privileged enough to create
+namespaces; locally:
+
+```bash
+cd test/e2e
+sudo ./run-e2e.sh --test TestNLMAxisInterop
+```
+
+Framework code lives in `test/e2e/framework/netns.go`; the tests in
+`test/e2e/nlm_axis_interop_test.go`. The single-host reachability check (which cannot take a real
+lock, for the reason above) is `TestNLMSystemRpcbindRegistration` in `test/e2e/nlm_locking_test.go`.
+
+---
+
 ## Conformance test suites
 
 DittoFS is validated against two industry-standard conformance test suites.
