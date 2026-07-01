@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
+	metadatasqlite "github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
 )
 
 // byteVerifyFixture wires a Runtime over the REAL production write path: a
@@ -558,6 +560,7 @@ func byteVerifyBackends(t *testing.T) []byteVerifyBackend {
 			},
 		},
 		newBadgerByteVerifyBackend(t),
+		newSQLiteByteVerifyBackend(t),
 	}
 	if postgresByteVerifyBackend != nil {
 		backends = append(backends, *postgresByteVerifyBackend)
@@ -588,6 +591,30 @@ func newBadgerByteVerifyBackend(t *testing.T) byteVerifyBackend {
 	return byteVerifyBackend{
 		name:   "badger",
 		open:   func(t *testing.T) (metadata.Store, string) { return openAt(t), "badger" },
+		reopen: openAt,
+	}
+}
+
+// newSQLiteByteVerifyBackend backs the byte-verify matrix with an on-disk sqlite
+// metadata store. reopen re-opens the SAME db file so the restore cycle proves
+// on-disk persistence (including the synced_hashes locator columns the flip
+// relies on for block-resident restore).
+func newSQLiteByteVerifyBackend(t *testing.T) byteVerifyBackend {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "byteverify.db")
+	openAt := func(t *testing.T) metadata.Store {
+		store, err := metadatasqlite.NewSQLiteMetadataStore(context.Background(),
+			&metadatasqlite.SQLiteMetadataStoreConfig{Path: dbPath, AutoMigrate: true},
+			flipTestCapabilities())
+		if err != nil {
+			t.Fatalf("NewSQLiteMetadataStore: %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		return store
+	}
+	return byteVerifyBackend{
+		name:   "sqlite",
+		open:   func(t *testing.T) (metadata.Store, string) { return openAt(t), "sqlite" },
 		reopen: openAt,
 	}
 }

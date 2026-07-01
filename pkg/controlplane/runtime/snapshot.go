@@ -509,11 +509,20 @@ func (r *Runtime) runSnapshotOrchestration(
 	// CRUD methods only need (shareName, id) so we don't need to refetch.
 	snap := &models.Snapshot{ID: snapID, ShareName: shareName}
 
-	// --- Step 0: Drain rollups BEFORE WriteSnapshot ---
-	// Force every dirty append-log payload through rollup into CAS + the
-	// FileChunk manifest so the WriteSnapshot() below sees a fully-populated
-	// FileAttr.Blocks. Without this, a snapshot taken before the async
-	// rollup catches up captures an empty/partial manifest.
+	// --- Step 0: Drain rollups AND carve BEFORE WriteSnapshot ---
+	// Force every dirty append-log payload through rollup into the FileChunk
+	// manifest AND drain the block carver/mirror so the WriteSnapshot() below
+	// sees both a fully-populated FileAttr.Blocks AND — critically for the
+	// blocks-only storage flip (#1414) — the per-hash block LOCATORS that carve
+	// mints via MarkSynced. Before this ordering fix the carve/upload drain ran
+	// only in the Step-6 verify gate (after the dump), so a block-resident hash
+	// had no locator in the metadata dump; a restore then resolved it as a
+	// standalone cas/<hash> object that no longer exists and both the restore
+	// verify gate and post-restore cold reads failed. DrainAllUploads runs the
+	// rollup drain first, then SyncNow (carve → PutBlock → DefaultCommitBlock +
+	// MarkSynced), so every block locator is committed to the metadata store
+	// before it is dumped. A local-only share (no remote) carves nothing — the
+	// upload drain is a no-op — and keeps the legacy local-read path.
 	// Resolve the block store once here; the verify gate (Step 4) reuses
 	// the same lookup pattern.
 	bs, err := r.sharesSvc.GetBlockStoreForShare(shareName)
@@ -525,16 +534,16 @@ func (r *Runtime) runSnapshotOrchestration(
 			"snapshot_id", snapID, "share", shareName, "error", err)
 		return
 	}
-	logger.Debug("snapshot create: drain rollups start", "snapshot_id", snapID, "share", shareName)
-	if derr := bs.DrainRollups(ctx); derr != nil {
-		terminalErr = fmt.Errorf("snapshot create %s: drain rollups: %w: %v",
+	logger.Debug("snapshot create: drain rollups+carve start", "snapshot_id", snapID, "share", shareName)
+	if derr := bs.DrainAllUploads(ctx); derr != nil {
+		terminalErr = fmt.Errorf("snapshot create %s: drain rollups+carve: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, derr)
 		r.failSnap(shareName, snapID, terminalErr)
-		logger.Error("snapshot create: drain rollups failed",
+		logger.Error("snapshot create: drain rollups+carve failed",
 			"snapshot_id", snapID, "share", shareName, "error", derr)
 		return
 	}
-	logger.Debug("snapshot create: drain rollups complete", "snapshot_id", snapID, "share", shareName)
+	logger.Debug("snapshot create: drain rollups+carve complete", "snapshot_id", snapID, "share", shareName)
 
 	// --- Step 1: WriteSnapshot -> metadata.dump (atomic temp+rename) ---
 	dumpPath := snap.MetadataDumpPath(localStoreDir)

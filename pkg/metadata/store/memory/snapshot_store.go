@@ -50,7 +50,17 @@ type memoryBackupSnapshot struct {
 	StoreID       string
 	RollupOffsets map[string]uint64
 	Synced        map[block.ContentHash]time.Time
-	ObjectIndex   map[block.ContentHash]string
+	// SyncedLocators preserves the remote block locator for synced hashes packed
+	// into a block (#1414). Without it a restore keeps the synced SET but drops
+	// each hash's BlockID, so a block-resident hash resolves as standalone and its
+	// bytes (now in blocks/<id>) cannot be found — post-restore reads and the
+	// durability-verify gate both fail. The SQL backends get this free by dumping
+	// the whole synced_hashes table; the gob backends carry it explicitly. The
+	// carve drain now runs BEFORE WriteSnapshot, so these are populated at dump
+	// time. Additive gob field: an older dump decodes it to nil (all-standalone,
+	// the pre-flip behavior).
+	SyncedLocators map[block.ContentHash]block.ChunkLocator
+	ObjectIndex    map[block.ContentHash]string
 
 	// ServerConfigCustomSettingsJSON holds the JSON-encoded form of
 	// ServerConfig.CustomSettings. Gob cannot encode map[string]any
@@ -139,6 +149,13 @@ func (s *MemoryMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 			sy[k] = v
 		}
 		snap.Synced = sy
+	}
+	if len(s.syncedLocators) > 0 {
+		sl := make(map[block.ContentHash]block.ChunkLocator, len(s.syncedLocators))
+		for k, v := range s.syncedLocators {
+			sl[k] = v
+		}
+		snap.SyncedLocators = sl
 	}
 	s.syncedMu.RUnlock()
 
@@ -339,6 +356,7 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 
 	s.syncedMu.Lock()
 	s.synced = snap.Synced
+	s.syncedLocators = snap.SyncedLocators
 	s.syncedMu.Unlock()
 
 	s.objectIndex = snap.ObjectIndex
