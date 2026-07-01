@@ -55,7 +55,7 @@ func TestVerifyRemoteDurability_HappyPath(t *testing.T) {
 	hs := seedManifest(t, 32)
 	putAll(t, rs, hs)
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4); err != nil {
 		t.Fatalf("VerifyRemoteDurability: got %v, want nil", err)
 	}
 }
@@ -67,7 +67,7 @@ func TestVerifyRemoteDurability_EmptyManifest(t *testing.T) {
 	t.Cleanup(func() { _ = rs.Close() })
 
 	hs := block.NewHashSet(0)
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4); err != nil {
 		t.Fatalf("empty manifest: got %v, want nil", err)
 	}
 }
@@ -77,7 +77,7 @@ func TestVerifyRemoteDurability_NilManifest(t *testing.T) {
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, nil, 4); err != nil {
 		t.Fatalf("nil manifest: got %v, want nil", err)
 	}
 }
@@ -98,7 +98,7 @@ func TestVerifyRemoteDurability_MissingHashFailFast(t *testing.T) {
 		}
 	}
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 4)
+	err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4)
 	if err == nil {
 		t.Fatal("missing hash: got nil err, want wrapped ErrChunkNotFound")
 	}
@@ -118,7 +118,7 @@ func TestVerifyRemoteDurability_IOErrorPropagates(t *testing.T) {
 
 	hs := seedManifest(t, 4)
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, 2)
+	err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 2)
 	if err == nil {
 		t.Fatal("got nil err, want propagated I/O error")
 	}
@@ -141,7 +141,7 @@ func TestVerifyRemoteDurability_ContextCancelHonored(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- snapshot.VerifyRemoteDurability(ctx, br, hs, 4)
+		errCh <- snapshot.VerifyRemoteDurability(ctx, br, nil, nil, hs, 4)
 	}()
 
 	// Wait for some probes to be in-flight, then cancel.
@@ -175,7 +175,7 @@ func TestVerifyRemoteDurability_ConcurrencyBound(t *testing.T) {
 	cr := newCountingRemote(5 * time.Millisecond)
 	hs := seedManifest(t, total)
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), cr, hs, concurrency); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), cr, nil, nil, hs, concurrency); err != nil {
 		t.Fatalf("VerifyRemoteDurability: %v", err)
 	}
 
@@ -200,7 +200,7 @@ func TestVerifyRemoteDurability_ConcurrencyDefaultsOnNonPositive(t *testing.T) {
 	for _, c := range []int{0, -1, -100} {
 		c := c
 		t.Run(fmt.Sprintf("concurrency=%d", c), func(t *testing.T) {
-			if err := snapshot.VerifyRemoteDurability(context.Background(), rs, hs, c); err != nil {
+			if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, c); err != nil {
 				t.Fatalf("concurrency=%d: got %v, want nil", c, err)
 			}
 		})
@@ -224,7 +224,7 @@ func TestVerifyRemoteDurability_FailFastCancelsSiblings(t *testing.T) {
 		delay:   10 * time.Millisecond,
 	}
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), sm, hs, concurrency)
+	err := snapshot.VerifyRemoteDurability(context.Background(), sm, nil, nil, hs, concurrency)
 	if !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("got %v, want wrapped ErrChunkNotFound", err)
 	}

@@ -12,11 +12,32 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
+
+// verifyRemoteDurability wraps snapshot.VerifyRemoteDurability with the
+// block-awareness the storage flip requires (#1414 object packing, PR3). It
+// resolves the share's metadata store as the per-hash locator source and the
+// remote as a block store, so a hash carved into a packed blocks/<id> object is
+// probed against that block rather than a standalone cas/<hash> object that no
+// longer exists. A metadata store that cannot be resolved, or a remote that
+// does not implement RemoteBlockStore, degrades to the standalone-CAS probe
+// (nil resolver / nil block store) — safe for legacy CAS-only data.
+func (r *Runtime) verifyRemoteDurability(ctx context.Context, shareName string, remoteStore remote.RemoteStore, manifest *block.HashSet, concurrency int) error {
+	var locators snapshot.HashLocatorResolver
+	if mds, err := r.GetMetadataStoreForShare(shareName); err == nil {
+		locators = mds
+	} else {
+		logger.Warn("snapshot verify: metadata store unavailable — probing hashes as standalone CAS only",
+			"share", shareName, "err", err)
+	}
+	rbs, _ := remoteStore.(remote.RemoteBlockStore)
+	return snapshot.VerifyRemoteDurability(ctx, remoteStore, locators, rbs, manifest, concurrency)
+}
 
 // CreateSnapshotOpts is the operator-facing configuration for one
 // CreateSnapshot invocation. Zero-value (NoVerify=false, RetryOf="")
@@ -686,7 +707,7 @@ func (r *Runtime) runSnapshotOrchestration(
 	logger.Debug("snapshot create: verify start",
 		"snapshot_id", snapID, "share", shareName,
 		"verify_concurrency", concurrency)
-	verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, hashSet, concurrency)
+	verr := r.verifyRemoteDurability(ctx, shareName, remoteStore, hashSet, concurrency)
 	if verr != nil && errors.Is(verr, block.ErrChunkNotFound) {
 		// One drain + re-verify retry. Common cause: syncer was behind
 		// during the first verify; a fresh drain catches up.
@@ -700,7 +721,7 @@ func (r *Runtime) runSnapshotOrchestration(
 				"snapshot_id", snapID, "share", shareName, "error", derr)
 			return
 		}
-		verr = snapshot.VerifyRemoteDurability(ctx, remoteStore, hashSet, concurrency)
+		verr = r.verifyRemoteDurability(ctx, shareName, remoteStore, hashSet, concurrency)
 	}
 	if verr != nil {
 		terminalErr = fmt.Errorf("snapshot create %s: verify: %w: %v",
@@ -1299,7 +1320,7 @@ func (r *Runtime) restoreSnapshot(
 			"manifest_count", manifest.Len(),
 			"verify_concurrency", concurrency,
 		)
-		if verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, manifest, concurrency); verr != nil {
+		if verr := r.verifyRemoteDurability(ctx, shareName, remoteStore, manifest, concurrency); verr != nil {
 			return "", fmt.Errorf("restore snapshot %q: pre-verify: %w: %v",
 				snapID, models.ErrRestoreVerifyFailed, verr)
 		}
@@ -1514,7 +1535,7 @@ func (r *Runtime) restoreSnapshot(
 			"restored_count", restoredCount,
 			"verify_concurrency", concurrency,
 		)
-		if verr := snapshot.VerifyRemoteDurability(ctx, remoteStore, restoredHashes, concurrency); verr != nil {
+		if verr := r.verifyRemoteDurability(ctx, shareName, remoteStore, restoredHashes, concurrency); verr != nil {
 			return safetySnapshotID, fmt.Errorf("restore snapshot %q: post-verify (safety-snap=%s): %w: %v",
 				snapID, safetySnapshotID, models.ErrRestoreVerifyFailed, verr)
 		}

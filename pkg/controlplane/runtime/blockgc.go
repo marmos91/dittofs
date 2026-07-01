@@ -9,6 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -118,6 +119,11 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 		// marker-clear and Walks the namespace instead.
 		opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
 		opts.FullScan = fullScan
+		// Reclaim packed-block chunks (#1414): a swept hash may live inside a
+		// blocks/<id> object, not a standalone cas/<hash>. The per-remote union
+		// reclaimer spans every share on this remote so the owning share frees
+		// the block and non-owning shares are a clean no-op.
+		opts.BlockReclaimer = r.blockReclaimerForEntry(entry)
 		logger.Info("RunBlockGC: starting",
 			"fullScan", opts.FullScan,
 			"configID", entry.ConfigID,
@@ -319,6 +325,9 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 		// remote (perRemoteReconciler below), so a single-share invocation never
 		// treats a sibling share's live block as an orphan.
 		opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
+		// Reclaim packed-block chunks (#1414): per-remote union reclaimer, same as
+		// the server-wide sweep.
+		opts.BlockReclaimer = r.blockReclaimerForEntry(entry)
 		// Per-share GC is steady-state (index sweep, no S3 LIST); FullScan stays
 		// false (its zero value).
 		logger.Info("RunBlockGCForShare: starting",
@@ -507,4 +516,68 @@ func (r *Runtime) syncedHashStoreForShares(shares []string) engine.SyncedHashInd
 		return nil
 	}
 	return stores
+}
+
+// unionBlockReclaimer fans a block-reclaim request across every share's
+// per-share reclaimer on a shared (ref-counted) remote (#1414 object packing,
+// PR3 global flip). The GC sweep reaches a hash only after proving it globally
+// dead, so at most one share owns the enclosing block; the others miss
+// GetLocator and return handled=false cleanly (no error, no spurious
+// LiveChunkCount decrement). The first owner frees the block; a reclaimer error
+// aborts the union (fail-toward-leak — never a premature free of a live dedup
+// sibling). handled=false from every share means the hash is a standalone
+// cas/<hash> object and the sweep deletes it as before.
+type unionBlockReclaimer []*engine.BlockGCReclaimer
+
+var _ engine.BlockReclaimer = unionBlockReclaimer(nil)
+
+func (u unionBlockReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (bool, int64, error) {
+	for _, rec := range u {
+		handled, freed, err := rec.ReclaimDeadChunk(ctx, hash)
+		if err != nil {
+			return false, 0, err
+		}
+		if handled {
+			return true, freed, nil
+		}
+	}
+	return false, 0, nil
+}
+
+// blockReclaimerForEntry builds the per-remote union BlockReclaimer for a GC
+// sweep: one engine.BlockGCReclaimer per share pointing at this remote, each
+// bound to that share's metadata store (locator / block-record / local-index
+// surfaces) and the shared block-keyed remote. It is set on
+// engine.Options.BlockReclaimer so the sweep reclaims a swept hash that lives
+// inside a blocks/<id> object instead of trying to delete a cas/<hash> object
+// that does not exist.
+//
+// Returns nil when the remote does not implement RemoteBlockStore (cannot hold
+// blocks) or no share resolves — the sweep then deletes standalone cas/<hash>
+// objects exactly as before, so non-block deployments are unaffected. Set for
+// the remote (index) tier only; the local tier and reconcile leave it nil.
+func (r *Runtime) blockReclaimerForEntry(entry shares.RemoteStoreEntry) engine.BlockReclaimer {
+	rbs, ok := entry.Store.(remote.RemoteBlockStore)
+	if !ok {
+		return nil
+	}
+	var u unionBlockReclaimer
+	for _, shareName := range entry.Shares {
+		mds, err := r.GetMetadataStoreForShare(shareName)
+		if err != nil {
+			logger.Warn("GC: block reclaimer unavailable for share — its packed blocks will not be reclaimed this sweep",
+				"share", shareName, "err", err)
+			continue
+		}
+		u = append(u, &engine.BlockGCReclaimer{
+			Locators:     mds,
+			Records:      mds,
+			LocalIndex:   mds,
+			RemoteBlocks: rbs,
+		})
+	}
+	if len(u) == 0 {
+		return nil
+	}
+	return u
 }

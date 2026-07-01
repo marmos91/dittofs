@@ -382,6 +382,64 @@ func (n *nonClosingRemote) Close() error { return nil }
 // spurious ErrNotDurableYet on every commit.
 func (n *nonClosingRemote) Durable() bool { return block.IsDurable(n.RemoteStore) }
 
+// --- remote.RemoteBlockStore proxy (#1414 object packing) ---
+//
+// The no-op-Close wrapper embeds only remote.RemoteStore, so without these
+// forwards it would silently HIDE the block-keyed surface (PutBlock/GetBlock/
+// GetBlockRange/DeleteBlock/WalkBlocks) of a wrapped store that implements it —
+// exactly the trap the Durable() forward above fixes for durability. The
+// snapshot durability-verify gate reaches the block store via
+// engine.Store.RemoteStore() (this wrapper), so it MUST be able to probe a
+// packed blocks/<id> object. Each method delegates to the embedded store when it
+// implements RemoteBlockStore; otherwise it returns remote.ErrChunkReadUnsupported
+// (a standalone-only remote is never asked for a block via the locator path).
+func (n *nonClosingRemote) blockInner() (remote.RemoteBlockStore, error) {
+	if rbs, ok := n.RemoteStore.(remote.RemoteBlockStore); ok {
+		return rbs, nil
+	}
+	return nil, remote.ErrChunkReadUnsupported
+}
+
+func (n *nonClosingRemote) PutBlock(ctx context.Context, blockID string, r io.Reader) error {
+	rbs, err := n.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.PutBlock(ctx, blockID, r)
+}
+
+func (n *nonClosingRemote) GetBlock(ctx context.Context, blockID string) ([]byte, error) {
+	rbs, err := n.blockInner()
+	if err != nil {
+		return nil, err
+	}
+	return rbs.GetBlock(ctx, blockID)
+}
+
+func (n *nonClosingRemote) GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error) {
+	rbs, err := n.blockInner()
+	if err != nil {
+		return nil, err
+	}
+	return rbs.GetBlockRange(ctx, blockID, offset, length)
+}
+
+func (n *nonClosingRemote) DeleteBlock(ctx context.Context, blockID string) error {
+	rbs, err := n.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.DeleteBlock(ctx, blockID)
+}
+
+func (n *nonClosingRemote) WalkBlocks(ctx context.Context, fn func(blockID string, meta block.Meta) error) error {
+	rbs, err := n.blockInner()
+	if err != nil {
+		return err
+	}
+	return rbs.WalkBlocks(ctx, fn)
+}
+
 // Service manages share registration, lookup, and configuration.
 type Service struct {
 	mu       sync.RWMutex
@@ -862,6 +920,24 @@ func (s *Service) createBlockStoreForShare(
 	if engineRemote != nil {
 		if fsStore, ok := localStore.(*fs.FSStore); ok {
 			fsStore.SetBackpressureSource(syncer)
+		}
+	}
+
+	// Wire the block-carve substrate (#1414 object packing, PR3 global flip).
+	// Assert on the RAW remoteStore, not engineRemote: the nonClosingRemote
+	// wrapper embeds only remote.RemoteStore and deliberately does NOT proxy the
+	// block-keyed PutBlock/GetBlock/DeleteBlock/WalkBlocks surface, so a
+	// type-assert on the wrapper would always miss. Every shipped remote (memory,
+	// s3) implements RemoteBlockStore, so this flips carve on for EVERY share
+	// with a remote — no feature flag. SetSyncedHashStore (called by engine.New
+	// below) derives the blockCommitter from the same per-share metadata store
+	// and recomputes carveActive; once all deps are set, new writes route to the
+	// carver (blocks/) and never to the legacy standalone mirror (cas/). A remote
+	// that does not implement RemoteBlockStore leaves carve disabled and the
+	// legacy per-hash mirror in effect (back-compat).
+	if remoteStore != nil {
+		if rbs, ok := remoteStore.(remote.RemoteBlockStore); ok {
+			syncer.SetRemoteBlockStore(rbs)
 		}
 	}
 
@@ -2489,6 +2565,15 @@ func CreateLocalStoreFromConfig(
 		// remote is wired (mirror loop early-exits in that case).
 		if shs, ok := fileChunkStore.(metadata.SyncedHashStore); ok {
 			fsOpts.SyncedHashStore = shs
+		}
+		// Wire the LocalChunkIndex from the same metadata backend (#1414 object
+		// packing, PR3 global flip). With it set, rollup routes chunk persistence
+		// to the log-blob substrate + PutLocalLocation instead of the legacy CAS
+		// StoreChunk — the local half of the flip that makes the engine carver's
+		// GetLocalLocation→ReadLocalAt path resolvable. A backend that does not
+		// implement LocalChunkIndex leaves the local tier on the legacy CAS path.
+		if lci, ok := fileChunkStore.(metadata.LocalChunkIndex); ok {
+			fsOpts.LocalChunkIndex = lci
 		}
 		store, err := fs.NewWithOptions(shareDir, maxDisk, fileChunkStore, fsOpts)
 		if err != nil {

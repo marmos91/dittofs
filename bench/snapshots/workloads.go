@@ -104,7 +104,7 @@ func SeedRemote(ctx context.Context, rs remote.RemoteStore, hs *block.HashSet) (
 // an all-present remote (see SeedRemote) every probe runs, giving the
 // worst-case verify wall time for the manifest size.
 func RunVerify(ctx context.Context, rs remote.RemoteStore, hs *block.HashSet) (int, error) {
-	if err := snapshot.VerifyRemoteDurability(ctx, rs, hs, VerifyConcurrency); err != nil {
+	if err := snapshot.VerifyRemoteDurability(ctx, rs, nil, nil, hs, VerifyConcurrency); err != nil {
 		return 0, fmt.Errorf("snapshots bench: verify: %w", err)
 	}
 	return hs.Len(), nil
