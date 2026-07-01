@@ -133,26 +133,6 @@ func setStubMetrics(bs *Store, sm *stubMetrics) {
 	bs.metrics.Store(&dm)
 }
 
-// seedChunk puts chunkData into the local store and registers a FileChunk row
-// with the given payloadID.  Returns the BLAKE3 content hash of chunkData.
-func seedChunk(t *testing.T, ctx context.Context, fbs *stubFileChunkStore, localStore local.LocalStore, payloadID string, chunkData []byte) block.ContentHash {
-	t.Helper()
-	hash := block.ContentHash(blake3.Sum256(chunkData))
-	if err := localStore.Put(ctx, hash, chunkData); err != nil {
-		t.Fatalf("seedChunk: local.Put: %v", err)
-	}
-	fb := &block.FileChunk{
-		ID:       payloadID + "/0",
-		Hash:     hash,
-		DataSize: uint32(len(chunkData)),
-		State:    block.BlockStatePending,
-	}
-	if err := fbs.Put(ctx, fb); err != nil {
-		t.Fatalf("seedChunk: fbs.Put: %v", err)
-	}
-	return hash
-}
-
 // ===== Tests =====
 
 // TestReadLocalByHash_LocalCorruption_SyncedSelfHeals verifies that a corrupt
@@ -346,6 +326,73 @@ func TestReadChunkVerified_RemoteCorruption_RecordsMetric(t *testing.T) {
 
 	if got := sm.remoteCorruptions.Load(); got != 1 {
 		t.Errorf("remoteCorruptions = %d, want 1", got)
+	}
+}
+
+// TestReadLocalByHash_LocalCorrupt_SyncedButRemoteAlsoCorrupt covers the
+// combined failure path: a corrupt local chunk that IS synced but whose remote
+// block copy is ALSO corrupt must fail closed (ErrCASContentMismatch), never
+// serve corrupt bytes, and record one local corruption, one remote corruption,
+// and one self-heal failure.
+func TestReadLocalByHash_LocalCorrupt_SyncedButRemoteAlsoCorrupt(t *testing.T) {
+	ctx := context.Background()
+	correctData := []byte("heal path but remote also corrupt")
+	garbageData := []byte("remote-garbage-yyyy")
+	correctHash := block.ContentHash(blake3.Sum256(correctData))
+
+	inner := memory.New()
+	corruptLocal := newCorruptingGetLocalStore(inner, correctHash)
+	remoteRS := &countingRemoteStore{Store: remotememory.New()}
+	shs := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+
+	// Local holds (corrupt-on-Get) bytes; the remote block holds GARBAGE.
+	if err := inner.Put(ctx, correctHash, correctData); err != nil {
+		t.Fatalf("Put local: %v", err)
+	}
+	if err := remoteRS.PutBlock(ctx, "blkbad", bytes.NewReader(garbageData)); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+	// Synced with a block locator pointing at the garbage block.
+	loc := block.ChunkLocator{BlockID: "blkbad", WireOffset: 0, WireLength: int64(len(garbageData))}
+	if err := shs.MarkSynced(ctx, correctHash, loc); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+
+	bs := newTestEngineWithRemoteAndSHS(t, corruptLocal, remoteRS, shs)
+	sm := &stubMetrics{}
+	setStubMetrics(bs, sm)
+
+	payloadID := "p5"
+	fb := &block.FileChunk{
+		ID:       payloadID + "/0",
+		Hash:     correctHash,
+		DataSize: uint32(len(correctData)),
+		State:    block.BlockStatePending,
+	}
+	if err := bs.syncer.fileChunkStore.Put(ctx, fb); err != nil {
+		t.Fatalf("fbs.Put: %v", err)
+	}
+
+	dest := make([]byte, len(correctData))
+	found, err := bs.readLocalByHash(ctx, payloadID, dest, 0)
+	if found {
+		t.Fatal("readLocalByHash returned found=true; expected false (fail-closed, remote also corrupt)")
+	}
+	if !errors.Is(err, block.ErrCASContentMismatch) {
+		t.Fatalf("error = %v; want ErrCASContentMismatch", err)
+	}
+
+	if got := sm.localCorruptions.Load(); got != 1 {
+		t.Errorf("localCorruptions = %d, want 1", got)
+	}
+	if got := sm.remoteCorruptions.Load(); got != 1 {
+		t.Errorf("remoteCorruptions = %d, want 1", got)
+	}
+	if got := sm.selfHealFailures.Load(); got != 1 {
+		t.Errorf("selfHealFailures = %d, want 1", got)
+	}
+	if got := sm.selfHealSuccesses.Load(); got != 0 {
+		t.Errorf("selfHealSuccesses = %d, want 0", got)
 	}
 }
 
