@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -99,54 +100,62 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 		r.metrics.GCFinished(gcResult(total), total.ObjectsSwept, total.BytesFreed, time.Since(gcStart))
 	}()
 	for _, entry := range entries {
-		opts := &engine.Options{
-			DryRun: dryRun,
-			// Thread the remote-store config UUID and the per-remote
-			// share scope into engine.Options so the engine's own
-			// start/complete log lines carry the correlation keys SREs
-			// need for cross-checking against S3 access logs.
-			RemoteEndpointID: entry.ConfigID,
-			Shares:           append([]string(nil), entry.Shares...),
-		}
-		applyGCDefaults(opts, gcDefaults)
-		applyGCProgress(opts, progress)
-		// Inject held hashes from ready snapshots into the GC mark phase.
-		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
-		// The per-remote synced-hash index: the index-sweep candidate source AND
-		// the marker-clear for swept hashes (so they re-upload if they reappear
-		// in the live set) (#1433). Remote sweep only. A steady-state run sweeps
-		// from it; the reconcile path (fullScan) keeps it only for the
-		// marker-clear and Walks the namespace instead.
-		opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
-		opts.FullScan = fullScan
-		// Reclaim packed-block chunks (#1414): a swept hash may live inside a
-		// blocks/<id> object, not a standalone cas/<hash>. The per-remote union
-		// reclaimer spans every share on this remote so the owning share frees
-		// the block and non-owning shares are a clean no-op.
-		opts.BlockReclaimer = r.blockReclaimerForEntry(entry)
-		logger.Info("RunBlockGC: starting",
-			"fullScan", opts.FullScan,
-			"configID", entry.ConfigID,
-			"shares", entry.Shares,
-			"dryRun", dryRun,
-			"gracePeriod", opts.GracePeriod,
-			"dryRunSampleSize", opts.DryRunSampleSize)
+		// Serialize every sweep of this remote (see remoteGCLock): a packed-block
+		// reclaim decrement double-counts if two sweeps touch the same
+		// ref-counted remote concurrently.
+		func() {
+			lock := r.remoteGCLock(entry.ConfigID)
+			lock.Lock()
+			defer lock.Unlock()
+			opts := &engine.Options{
+				DryRun: dryRun,
+				// Thread the remote-store config UUID and the per-remote
+				// share scope into engine.Options so the engine's own
+				// start/complete log lines carry the correlation keys SREs
+				// need for cross-checking against S3 access logs.
+				RemoteEndpointID: entry.ConfigID,
+				Shares:           append([]string(nil), entry.Shares...),
+			}
+			applyGCDefaults(opts, gcDefaults)
+			applyGCProgress(opts, progress)
+			// Inject held hashes from ready snapshots into the GC mark phase.
+			opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
+			// The per-remote synced-hash index: the index-sweep candidate source AND
+			// the marker-clear for swept hashes (so they re-upload if they reappear
+			// in the live set) (#1433). Remote sweep only. A steady-state run sweeps
+			// from it; the reconcile path (fullScan) keeps it only for the
+			// marker-clear and Walks the namespace instead.
+			opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
+			opts.FullScan = fullScan
+			// Reclaim packed-block chunks (#1414): a swept hash may live inside a
+			// blocks/<id> object, not a standalone cas/<hash>. The per-remote union
+			// reclaimer spans every share on this remote so the owning share frees
+			// the block and non-owning shares are a clean no-op.
+			opts.BlockReclaimer = r.blockReclaimerForEntry(entry)
+			logger.Info("RunBlockGC: starting",
+				"fullScan", opts.FullScan,
+				"configID", entry.ConfigID,
+				"shares", entry.Shares,
+				"dryRun", dryRun,
+				"gracePeriod", opts.GracePeriod,
+				"dryRunSampleSize", opts.DryRunSampleSize)
 
-		// Per-remote MultiShareReconciler: the mark phase enumerates
-		// EnumerateFileChunks across every share pointing at this
-		// remote so the live set is the union. Without this, each
-		// share's GC would treat the other's CAS objects as orphans.
-		rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
+			// Per-remote MultiShareReconciler: the mark phase enumerates
+			// EnumerateFileChunks across every share pointing at this
+			// remote so the live set is the union. Without this, each
+			// share's GC would treat the other's CAS objects as orphans.
+			rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
 
-		stats := collectGarbageFn(ctx, entry.Store, rec, opts)
-		s := accumulateGCStats(total, stats, false)
-		logger.Info("RunBlockGC: complete",
-			"configID", entry.ConfigID,
-			"hashesMarked", s.HashesMarked,
-			"objectsSwept", s.ObjectsSwept,
-			"bytesFreed", s.BytesFreed,
-			"errors", s.ErrorCount,
-		)
+			stats := collectGarbageFn(ctx, entry.Store, rec, opts)
+			s := accumulateGCStats(total, stats, false)
+			logger.Info("RunBlockGC: complete",
+				"configID", entry.ConfigID,
+				"hashesMarked", s.HashesMarked,
+				"objectsSwept", s.ObjectsSwept,
+				"bytesFreed", s.BytesFreed,
+				"errors", s.ErrorCount,
+			)
+		}()
 	}
 	// Sweep the local tier too, so one `gc` invocation reclaims orphaned
 	// chunks on both remote and local stores (#1433).
@@ -302,55 +311,64 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 		r.metrics.GCFinished(gcResult(total), total.ObjectsSwept, total.BytesFreed, time.Since(gcStart))
 	}()
 	for _, entry := range entries {
-		opts := &engine.Options{
-			DryRun:      dryRun,
-			GCStateRoot: gcRoot,
-			// Surface per-remote correlation in the engine logs even on
-			// the per-share path.
-			RemoteEndpointID: entry.ConfigID,
-			Shares:           append([]string(nil), entry.Shares...),
-		}
-		applyGCDefaults(opts, gcDefaults)
-		if gracePeriod != nil {
-			// Operator override for this run only: authoritative grace,
-			// including zero (no age guard).
-			opts.GracePeriod = *gracePeriod
-			opts.GracePeriodSet = true
-		}
-		applyGCProgress(opts, progress)
-		// Inject held hashes from ready snapshots into the GC mark phase.
-		opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
-		// Per-remote synced-hash index: LIST-free candidate source + marker-clear
-		// for swept hashes (#1433). The live set unions every share on this
-		// remote (perRemoteReconciler below), so a single-share invocation never
-		// treats a sibling share's live block as an orphan.
-		opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
-		// Reclaim packed-block chunks (#1414): per-remote union reclaimer, same as
-		// the server-wide sweep.
-		opts.BlockReclaimer = r.blockReclaimerForEntry(entry)
-		// Per-share GC is steady-state (index sweep, no S3 LIST); FullScan stays
-		// false (its zero value).
-		logger.Info("RunBlockGCForShare: starting",
-			"share", name,
-			"configID", entry.ConfigID,
-			"shares", entry.Shares,
-			"dryRun", dryRun,
-			"gcStateRoot", gcRoot,
-			"gracePeriod", opts.GracePeriod,
-			"dryRunSampleSize", opts.DryRunSampleSize,
-		)
+		// Serialize every sweep of this remote against the server-wide,
+		// async, and other per-share paths (see remoteGCLock): they use
+		// different engine gc-state roots, so only this per-remote lock keeps
+		// a packed-block reclaim decrement from double-counting a dead chunk.
+		func() {
+			lock := r.remoteGCLock(entry.ConfigID)
+			lock.Lock()
+			defer lock.Unlock()
+			opts := &engine.Options{
+				DryRun:      dryRun,
+				GCStateRoot: gcRoot,
+				// Surface per-remote correlation in the engine logs even on
+				// the per-share path.
+				RemoteEndpointID: entry.ConfigID,
+				Shares:           append([]string(nil), entry.Shares...),
+			}
+			applyGCDefaults(opts, gcDefaults)
+			if gracePeriod != nil {
+				// Operator override for this run only: authoritative grace,
+				// including zero (no age guard).
+				opts.GracePeriod = *gracePeriod
+				opts.GracePeriodSet = true
+			}
+			applyGCProgress(opts, progress)
+			// Inject held hashes from ready snapshots into the GC mark phase.
+			opts.HoldProvider = r.snapshotHoldForRemote(entry.Shares)
+			// Per-remote synced-hash index: LIST-free candidate source + marker-clear
+			// for swept hashes (#1433). The live set unions every share on this
+			// remote (perRemoteReconciler below), so a single-share invocation never
+			// treats a sibling share's live block as an orphan.
+			opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
+			// Reclaim packed-block chunks (#1414): per-remote union reclaimer, same as
+			// the server-wide sweep.
+			opts.BlockReclaimer = r.blockReclaimerForEntry(entry)
+			// Per-share GC is steady-state (index sweep, no S3 LIST); FullScan stays
+			// false (its zero value).
+			logger.Info("RunBlockGCForShare: starting",
+				"share", name,
+				"configID", entry.ConfigID,
+				"shares", entry.Shares,
+				"dryRun", dryRun,
+				"gcStateRoot", gcRoot,
+				"gracePeriod", opts.GracePeriod,
+				"dryRunSampleSize", opts.DryRunSampleSize,
+			)
 
-		rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
-		stats := collectGarbageFn(ctx, entry.Store, rec, opts)
-		s := accumulateGCStats(total, stats, true)
-		logger.Info("RunBlockGCForShare: complete",
-			"share", name,
-			"configID", entry.ConfigID,
-			"hashesMarked", s.HashesMarked,
-			"objectsSwept", s.ObjectsSwept,
-			"bytesFreed", s.BytesFreed,
-			"errors", s.ErrorCount,
-		)
+			rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
+			stats := collectGarbageFn(ctx, entry.Store, rec, opts)
+			s := accumulateGCStats(total, stats, true)
+			logger.Info("RunBlockGCForShare: complete",
+				"share", name,
+				"configID", entry.ConfigID,
+				"hashesMarked", s.HashesMarked,
+				"objectsSwept", s.ObjectsSwept,
+				"bytesFreed", s.BytesFreed,
+				"errors", s.ErrorCount,
+			)
+		}()
 	}
 	// Sweep this share's local tier too (#1433).
 	r.runLocalGC(ctx, name, dryRun, total, progress, gracePeriod)
@@ -521,27 +539,54 @@ func (r *Runtime) syncedHashStoreForShares(shares []string) engine.SyncedHashInd
 // unionBlockReclaimer fans a block-reclaim request across every share's
 // per-share reclaimer on a shared (ref-counted) remote (#1414 object packing,
 // PR3 global flip). The GC sweep reaches a hash only after proving it globally
-// dead, so at most one share owns the enclosing block; the others miss
-// GetLocator and return handled=false cleanly (no error, no spurious
-// LiveChunkCount decrement). The first owner frees the block; a reclaimer error
-// aborts the union (fail-toward-leak — never a premature free of a live dedup
-// sibling). handled=false from every share means the hash is a standalone
-// cas/<hash> object and the sweep deletes it as before.
+// dead. Identical content carved by two shares packs into TWO distinct blocks
+// (random per-share block IDs), one recorded in each share's metadata store, so
+// EVERY share that packed the now-dead hash must be reclaimed — stopping at the
+// first owner would leak the sibling shares' blocks forever. Each per-share
+// reclaimer touches only its own share's block record, so decrementing all of
+// them is correct, not a double-decrement. A reclaimer error aborts the union
+// (fail-toward-leak — never a premature free of a live dedup sibling).
+// handled=false from every share means the hash is a standalone cas/<hash>
+// object and the sweep deletes it as before.
 type unionBlockReclaimer []*engine.BlockGCReclaimer
 
 var _ engine.BlockReclaimer = unionBlockReclaimer(nil)
 
 func (u unionBlockReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (bool, int64, error) {
+	var anyHandled bool
+	var totalFreed int64
 	for _, rec := range u {
 		handled, freed, err := rec.ReclaimDeadChunk(ctx, hash)
 		if err != nil {
-			return false, 0, err
+			return anyHandled, totalFreed, err
 		}
 		if handled {
-			return true, freed, nil
+			anyHandled = true
+			totalFreed += freed
 		}
 	}
-	return false, 0, nil
+	return anyHandled, totalFreed, nil
+}
+
+// remoteGCLock returns the per-remote serializing mutex for a remote-store
+// config UUID, allocating it on first use and reusing the same pointer
+// thereafter so every GC sweep of that remote contends on ONE lock. Held
+// around a remote's sweep by both the server-wide and per-share paths so a
+// packed-block reclaim's check-then-act decrement cannot double-count a dead
+// chunk (which would free a block a live sibling still needs). Distinct
+// remotes get distinct locks and sweep in parallel.
+func (r *Runtime) remoteGCLock(configID string) *sync.Mutex {
+	r.remoteGCLocksMu.Lock()
+	defer r.remoteGCLocksMu.Unlock()
+	if r.remoteGCLocks == nil {
+		r.remoteGCLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := r.remoteGCLocks[configID]
+	if !ok {
+		lock = &sync.Mutex{}
+		r.remoteGCLocks[configID] = lock
+	}
+	return lock
 }
 
 // blockReclaimerForEntry builds the per-remote union BlockReclaimer for a GC

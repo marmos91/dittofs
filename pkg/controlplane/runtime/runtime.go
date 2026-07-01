@@ -133,6 +133,20 @@ type Runtime struct {
 	restoreLocks   map[string]*sync.Mutex
 	restoreLocksMu sync.Mutex
 
+	// remoteGCLocks serializes block-store GC sweeps that touch the same
+	// remote, keyed by the remote-store config UUID used for ref-counting.
+	// A packed-block reclaim is a check-then-act (read the chunk's local
+	// index entry, delete it, then decrement its block's live-chunk count):
+	// two sweeps over the same ref-counted remote could both observe a dead
+	// chunk's entry before either delete commits, decrement its block twice
+	// for one dead chunk, and free a block a still-live sibling chunk needs
+	// — silent data loss. The server-wide, per-share, and async GC paths use
+	// different engine gc-state roots, so the engine's per-root lock does not
+	// serialize them against each other; holding this lock around each
+	// remote's sweep does, while leaving DISTINCT remotes fully parallel.
+	remoteGCLocks   map[string]*sync.Mutex
+	remoteGCLocksMu sync.Mutex
+
 	// runtimeCtx is a long-lived ctx cancelled by Runtime.Shutdown.
 	// Snapshot orchestration goroutines derive their
 	// child ctx from this so they outlive any caller request ctx
@@ -178,6 +192,7 @@ func New(s store.Store) *Runtime {
 		snapInFlight:     make(map[string]*snapInFlight),
 		snapDeleteLocks:  make(map[string]*sync.RWMutex),
 		restoreLocks:     make(map[string]*sync.Mutex),
+		remoteGCLocks:    make(map[string]*sync.Mutex),
 		storesSvc:        stores.New(),
 		sharesSvc:        shares.New(),
 		lifecycleSvc:     lifecycle.New(DefaultShutdownTimeout),
