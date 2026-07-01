@@ -375,12 +375,17 @@ const (
 	OPEN4_CREATE   = 1
 )
 
-// OPEN claim types (RFC 7530 Section 16.16.4)
+// OPEN claim types (RFC 7530 Section 16.16.4, RFC 8881 Section 18.16.3).
+// CLAIM_FH and the CLAIM_DELEG_*_FH variants are NFSv4.1 additions: they open
+// the file identified by the current filehandle instead of by (dir, name).
 const (
 	CLAIM_NULL          = 0
 	CLAIM_PREVIOUS      = 1
 	CLAIM_DELEGATE_CUR  = 2
 	CLAIM_DELEGATE_PREV = 3
+	CLAIM_FH            = 4 // v4.1: open the current filehandle (no name, void args)
+	CLAIM_DELEG_CUR_FH  = 5 // v4.1: CLAIM_DELEGATE_CUR by current filehandle
+	CLAIM_DELEG_PREV_FH = 6 // v4.1: CLAIM_DELEGATE_PREV by current filehandle
 )
 
 // OPEN result flags (rflags)

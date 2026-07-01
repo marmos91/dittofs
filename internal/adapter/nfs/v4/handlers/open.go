@@ -190,6 +190,29 @@ func (h *Handler) handleOpen(ctx *types.CompoundContext, reader io.Reader) *type
 		return h.handleOpenClaimNull(ctx, reader, seqid, shareAccess, shareDeny,
 			clientID, ownerData, openType, createMode, claimType, createAttrs, createVerifier)
 
+	case types.CLAIM_FH:
+		// CLAIM_FH (RFC 8881 Section 18.16.3): re-open the file named by the
+		// current filehandle, with no component name and no additional args
+		// (open_claim4 is void for this case). Linux NFSv4.1 clients use this to
+		// re-open a file they still hold a filehandle for (e.g. reading back a
+		// file they just created and closed) instead of a fresh CLAIM_NULL
+		// lookup. It is a new open, so it is grace-blocked like CLAIM_NULL.
+		if graceErr := h.StateManager.CheckGraceForNewState(); graceErr != nil {
+			nfsStatus := mapStateError(graceErr)
+			logger.Debug("NFSv4 OPEN blocked by grace period",
+				"claim_type", "CLAIM_FH",
+				"client", ctx.ClientAddr)
+			return openError(nfsStatus)
+		}
+		// CLAIM_FH re-opens an existing filehandle, so OPEN4_CREATE is illegal
+		// (RFC 8881: createhow4 is only meaningful for CLAIM_NULL). Reject it
+		// rather than silently treating a create as a plain open.
+		if openType == types.OPEN4_CREATE {
+			return openError(types.NFS4ERR_INVAL)
+		}
+		return h.handleOpenClaimFH(ctx, seqid, shareAccess, shareDeny,
+			clientID, ownerData, claimType)
+
 	case types.CLAIM_PREVIOUS:
 		return h.handleOpenClaimPrevious(ctx, reader, seqid, shareAccess, shareDeny,
 			clientID, ownerData, claimType)
@@ -487,6 +510,93 @@ func (h *Handler) handleOpenClaimNull(
 
 	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
 		beforeCtime, afterCtime, deleg)
+}
+
+// handleOpenClaimFH handles the CLAIM_FH path for OPEN (NFSv4.1).
+//
+// The file to open is identified by the current filehandle (set by a preceding
+// PUTFH), so there is no component name to look up and open_claim4 carries no
+// additional arguments (it is void). This is otherwise a normal open of an
+// existing file: it always behaves like OPEN4_NOCREATE regardless of the
+// opentype the client sent.
+func (h *Handler) handleOpenClaimFH(
+	ctx *types.CompoundContext,
+	seqid, shareAccess, shareDeny uint32,
+	clientID uint64, ownerData []byte,
+	claimType uint32,
+) *types.CompoundResult {
+	// The current filehandle is the file being opened.
+	fileHandle := make(metadata.FileHandle, len(ctx.CurrentFH))
+	copy(fileHandle, ctx.CurrentFH)
+
+	authCtx, _, err := h.buildV4AuthContext(ctx, ctx.CurrentFH)
+	if err != nil {
+		logger.Debug("NFSv4 OPEN CLAIM_FH auth context failed",
+			"error", err,
+			"client", ctx.ClientAddr)
+		return openError(nfs4StatusForAuthError(err))
+	}
+
+	metaSvc, err := getMetadataServiceForCtx(h)
+	if err != nil {
+		return openError(types.NFS4ERR_SERVERFAULT)
+	}
+
+	// Enforce the requested share_access against the file's permissions.
+	if accessErr := checkOpenAccess(metaSvc, authCtx, fileHandle, shareAccess); accessErr != nil {
+		return openError(common.MapToNFS4(accessErr))
+	}
+
+	// If another client holds a conflicting delegation, recall it and ask the
+	// client to retry, mirroring the CLAIM_NULL NOCREATE path.
+	if conflict, _ := h.StateManager.CheckDelegationConflict([]byte(fileHandle), clientID, shareAccess); conflict {
+		logger.Debug("NFSv4 OPEN CLAIM_FH delegation conflict, returning NFS4ERR_DELAY",
+			"client_id", clientID,
+			"client", ctx.ClientAddr)
+		return openError(types.NFS4ERR_DELAY)
+	}
+
+	// Create tracked open state (enforces share reservations and seqid/replay).
+	openResult, stateErr := h.StateManager.OpenFile(
+		clientID, ownerData, seqid,
+		[]byte(fileHandle),
+		shareAccess, shareDeny,
+		claimType,
+	)
+	if stateErr != nil {
+		return openError(mapStateError(stateErr))
+	}
+
+	if openResult.IsReplay {
+		return &types.CompoundResult{
+			Status: openResult.CachedStatus,
+			OpCode: types.OP_OPEN,
+			Data:   openResult.CachedData,
+		}
+	}
+
+	// NFSv4.1 removed OPEN_CONFIRM; owners are implicitly confirmed via the
+	// session, so strip OPEN4_RESULT_CONFIRM and auto-confirm.
+	if ctx.SkipOwnerSeqid && openResult.RFlags&types.OPEN4_RESULT_CONFIRM != 0 {
+		openResult.RFlags &^= types.OPEN4_RESULT_CONFIRM
+		_ = h.StateManager.ConfirmOpenV41(&openResult.Stateid)
+	}
+
+	delegType, shouldGrant := h.StateManager.ShouldGrantDelegation(clientID, []byte(fileHandle), shareAccess)
+	var deleg *state.DelegationState
+	if shouldGrant {
+		deleg = h.StateManager.GrantDelegation(clientID, []byte(fileHandle), delegType)
+	}
+
+	logger.Debug("NFSv4 OPEN CLAIM_FH successful",
+		"stateid_seqid", openResult.Stateid.Seqid,
+		"rflags", openResult.RFlags,
+		"delegation", delegType,
+		"client", ctx.ClientAddr)
+
+	// CLAIM_FH does not create or change a directory, so change_info is empty.
+	return h.encodeOpenResult(clientID, ownerData, &openResult.Stateid, openResult.RFlags,
+		0, 0, deleg)
 }
 
 // handleOpenClaimPrevious handles the CLAIM_PREVIOUS path for OPEN.
