@@ -678,6 +678,23 @@ func (s *Service) prepareShare(
 		return nil, nil, fmt.Errorf("failed to create root directory: %w", err)
 	}
 
+	// Propagate a read-only share into the metadata store's ShareOptions.
+	// The runtime seeds metadata via CreateRootDirectory (not CreateShare),
+	// which leaves Options zero-valued, so without this the permission layer
+	// never sees ShareOptions.ReadOnly — the store-level discriminator that lets
+	// it deny writes/creates with ErrReadOnly (EROFS) rather than ErrAccessDenied
+	// (EACCES). Only touch read-only shares; read-write shares use the zero default.
+	if config.ReadOnly {
+		shareOpts, err := metadataStore.GetShareOptions(ctx, config.Name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read share options: %w", err)
+		}
+		shareOpts.ReadOnly = true
+		if err := metadataStore.UpdateShareOptions(ctx, config.Name, shareOpts); err != nil {
+			return nil, nil, fmt.Errorf("failed to set read-only share options: %w", err)
+		}
+	}
+
 	rootHandle, err := metadata.EncodeFileHandle(rootFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to encode root handle: %w", err)
