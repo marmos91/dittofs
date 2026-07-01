@@ -153,10 +153,13 @@ func (bc *FSStore) storeChunkLogBlob(ctx context.Context, h block.ContentHash, d
 		}
 		// NOTE: if PutLocalLocation fails after a successful Append, the bytes
 		// written to the blob at loc are orphaned — they have no index entry and
-		// are not reachable by content hash. A blob-level reclaim pass is
-		// responsible for recovering these indexless extents; this code does not
-		// provide per-chunk reclaim. Only in this specific failure path — where
-		// no index entry was written — does a subsequent StoreChunk retry
+		// are not reachable by content hash. There is no dedicated reclaim pass
+		// for such indexless extents: compaction rewrites per-payload append
+		// logs, not the log-blob substrate, and eviction operates on whole
+		// sealed blobs. The orphaned bytes are therefore space-only waste that
+		// is reclaimed only when the entire sealed blob they live in is
+		// eventually evicted. Only in this specific failure path — where no
+		// index entry was written — does a subsequent StoreChunk retry
 		// re-append: HasChunk consults the index and, once an entry exists,
 		// dedups. This direct path indexes without an fsync; crash-durable
 		// ordering (index committed only after the blob is fsynced) is provided

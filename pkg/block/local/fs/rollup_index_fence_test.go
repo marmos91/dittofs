@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -174,4 +175,104 @@ func TestRollup_LocalIndex_FencedBehindBlobSync(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("ReadChunk mismatch after recovery: got %d bytes, want %d", len(got), len(payload))
 	}
+}
+
+// TestRollup_TransientSyncFailure_ReadableWithoutRestart guards the read
+// availability of an acknowledged write across an IN-PROCESS transient blob
+// fsync failure — no crash, no restart.
+//
+// The rollup Phase C commit sequence must flush + commit the log-blob index
+// BEFORE it destructively trims the in-memory log index (the fence advance).
+// If the trim runs first and the fsync then fails, the pass returns having
+// already dropped the interval's index entries while the FileChunk manifest
+// rows were written earlier in Phase B. The rollup worker keeps running and
+// retries the pass, but with the entries gone the retry sees no log-index
+// coverage for the still-dirty interval and drops it without re-appending —
+// so the chunk is never committed to the local index. A read then misses BOTH
+// ReadPayloadAt paths: step 1 (append-log replay) finds no index entries and
+// step 2 (FileChunk manifest -> local index Get) finds no committed location,
+// yielding ErrFileChunkNotFound and a remote-fallback zero-fill of data the
+// caller already acknowledged — a read hole that only heals on the next
+// process restart.
+//
+// This test injects a one-shot blob fsync failure, asserts the payload is
+// STILL readable in-window (before any retry), then lets the same store retry
+// the pass and asserts the payload reads back byte-identical. It FAILS against
+// a trim-before-sync ordering (both reads miss) and PASSES once sync + commit
+// are fenced ahead of the trim.
+func TestRollup_TransientSyncFailure_ReadableWithoutRestart(t *testing.T) {
+	ctx := context.Background()
+
+	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+	idx := memmeta.NewMemoryMetadataStoreWithDefaults()
+	// Real in-memory FileChunk store + persister so ReadPayloadAt's CAS-manifest
+	// path (step 2) can resolve rolled-up bytes after the fence trims the log
+	// index entries — the only read path left once a pass succeeds.
+	fbs := newMemFileChunkStore()
+	persister := func(pctx context.Context, payloadID string, blocks []block.BlockRef, _ block.ObjectID) error {
+		return fbs.persist(pctx, payloadID, blocks)
+	}
+	opts := FSStoreOptions{
+		LocalChunkIndex:   idx,
+		RollupStore:       rs,
+		ObjectIDPersister: persister,
+		MaxLogBytes:       1 << 30,
+		StabilizationMS:   1,
+		RollupWorkers:     1,
+	}
+
+	bc := newFSStoreForTestWithFBS(t, fbs, opts)
+
+	const pid = "logblob/durability/transient-sync"
+	// < MinChunkSize (1 MiB) so the write rolls up as exactly one chunk.
+	payload := bytes.Repeat([]byte{0xD7}, 4096)
+
+	if err := bc.AppendWrite(ctx, pid, payload, 0); err != nil {
+		t.Fatalf("AppendWrite: %v", err)
+	}
+	waitStableForTest(t, bc, pid)
+
+	// Fail the blob fsync exactly once, mid-pass. The pass appends the chunk to
+	// the blob and writes the manifest rows in Phase B, then the injected fault
+	// aborts Phase C before the fence advance.
+	var failNext atomic.Bool
+	failNext.Store(true)
+	rollupPreSyncFailHook = func() error {
+		if failNext.CompareAndSwap(true, false) {
+			return errors.New("injected: transient blob fsync failure")
+		}
+		return nil
+	}
+	defer func() { rollupPreSyncFailHook = nil }()
+
+	if err := bc.ForceRollupForTest(ctx, pid); err == nil {
+		t.Fatal("ForceRollupForTest: want injected sync failure, got nil")
+	}
+
+	// In-window read: the failed pass must NOT have trimmed the log index, so
+	// step 1 (append-log replay) still resolves the payload. Under a
+	// trim-before-sync ordering the entries are gone and this read holes out.
+	readback := func(stage string) {
+		t.Helper()
+		dest := make([]byte, len(payload))
+		n, rerr := bc.ReadPayloadAt(ctx, pid, dest, 0)
+		if rerr != nil {
+			t.Fatalf("ReadPayloadAt (%s) after transient sync failure: %v "+
+				"(acknowledged data holed out to remote zero-fill)", stage, rerr)
+		}
+		if n != len(payload) || !bytes.Equal(dest, payload) {
+			t.Fatalf("ReadPayloadAt (%s) mismatch: got %d bytes, want %d", stage, n, len(payload))
+		}
+	}
+	readback("in-window")
+
+	// Clear the fault and let the SAME store retry the pass, exactly as the
+	// rollup worker would. The interval is still dirty (Phase C never consumed
+	// it), so the retry re-rolls it cleanly and commits the index.
+	rollupPreSyncFailHook = nil
+	waitStableForTest(t, bc, pid)
+	if err := bc.ForceRollupForTest(ctx, pid); err != nil {
+		t.Fatalf("ForceRollupForTest (in-process retry): %v", err)
+	}
+	readback("after-retry")
 }
