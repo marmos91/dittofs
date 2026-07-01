@@ -158,33 +158,43 @@ func (m *Syncer) claimCarveBatch(target int64, drainAll bool) []block.ContentHas
 	m.pendingMu.Lock()
 	defer m.pendingMu.Unlock()
 
+	// Peek: walk the FIFO prefix accumulating the size of still-pending hashes
+	// WITHOUT detaching them. An under-target trickle then bails out leaving
+	// carveQ untouched, avoiding the O(n) pop-then-prepend copy that made
+	// frequent carveWake churn quadratic.
 	var (
-		batch []block.ContentHash
-		total int64
+		batch    []block.ContentHash
+		total    int64
+		consumed int // number of carveQ entries the claimed prefix spans
 	)
-	for len(m.carveQ) > 0 {
-		h := m.carveQ[0]
-		m.carveQ = m.carveQ[1:]
+	for i, h := range m.carveQ {
 		size, ok := m.pendingCarveHashes[h]
 		if !ok {
-			continue // already committed out from under the queue
+			continue // stale: already committed out from under the queue
 		}
 		batch = append(batch, h)
 		total += size
 		if total >= target {
+			consumed = i + 1
 			break
 		}
 	}
-	if len(m.carveQ) == 0 {
-		m.carveQ = nil // release the backing array once fully drained
-	}
-	if !drainAll && total < target {
-		// Not enough for a full block yet: put the claimed hashes back at the
-		// front (preserving order) and wait for more or the idle flush.
-		if len(batch) > 0 {
-			m.carveQ = append(batch, m.carveQ...)
-		}
+
+	if total < target && !drainAll {
+		// Not enough for a full block yet: leave carveQ untouched and wait for
+		// more chunks or the idle flush. Nothing was detached, so FIFO order and
+		// the pending set are exactly as the caller left them.
 		return nil
+	}
+
+	// Committing to carve: detach the claimed prefix now. When target was hit
+	// mid-queue, keep the untouched suffix; otherwise (drainAll drained the tail,
+	// or target landed on the last entry) the queue is empty — release its
+	// backing array.
+	if total >= target && consumed < len(m.carveQ) {
+		m.carveQ = m.carveQ[consumed:]
+	} else {
+		m.carveQ = nil
 	}
 	return batch
 }
