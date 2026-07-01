@@ -186,14 +186,18 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
+
+	metaStore := registerSQLiteMeta(t, rt, cp, "sqlite-meta")
+	localID := createFSLocalBlockStore(t, cp, "fs-local")
+	// Registered AFTER createFSLocalBlockStore so t.Cleanup's LIFO order runs
+	// this (which Close()s the share's block store, releasing the log-blob fd)
+	// BEFORE the block store's t.TempDir() RemoveAll. On Windows an open handle
+	// blocks unlink of blobs/*.blob; Unix tolerates unlink-while-open.
 	t.Cleanup(func() {
 		for _, name := range rt.ListShares() {
 			_ = rt.RemoveShare(name)
 		}
 	})
-
-	metaStore := registerSQLiteMeta(t, rt, cp, "sqlite-meta")
-	localID := createFSLocalBlockStore(t, cp, "fs-local")
 
 	remoteCfg := &models.BlockStoreConfig{Name: "mem-remote", Kind: models.BlockStoreKindRemote, Type: "memory"}
 	remoteID, err := cp.CreateBlockStore(ctx, remoteCfg)
@@ -349,16 +353,20 @@ func TestBlocksFlip_GCUnionReclaimerFreesOwnerOnly(t *testing.T) {
 	t.Cleanup(func() { _ = cp.Close() })
 
 	rt := New(cp)
-	t.Cleanup(func() {
-		for _, name := range rt.ListShares() {
-			_ = rt.RemoveShare(name)
-		}
-	})
 
 	metaA := registerSQLiteMeta(t, rt, cp, "meta-a")
 	metaB := registerSQLiteMeta(t, rt, cp, "meta-b")
 	localA := createFSLocalBlockStore(t, cp, "fs-a")
 	localB := createFSLocalBlockStore(t, cp, "fs-b")
+	// Registered AFTER both createFSLocalBlockStore calls so t.Cleanup's LIFO
+	// order runs this (which Close()s each share's block store, releasing the
+	// log-blob fds) BEFORE the block stores' t.TempDir() RemoveAll. On Windows
+	// an open handle blocks unlink of blobs/*.blob; Unix tolerates unlink-open.
+	t.Cleanup(func() {
+		for _, name := range rt.ListShares() {
+			_ = rt.RemoveShare(name)
+		}
+	})
 
 	// ONE remote config, shared (ref-counted) by both shares.
 	remoteID, err := cp.CreateBlockStore(ctx, &models.BlockStoreConfig{
