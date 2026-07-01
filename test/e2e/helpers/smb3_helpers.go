@@ -202,9 +202,13 @@ func RunSMBClient(t *testing.T, port int, user, pass, share, command string) (st
 	return string(output), cmdErr
 }
 
-// RunSMBClientDebug executes smbclient with debug output for protocol analysis.
-// Returns the combined stdout/stderr output and any error.
-func RunSMBClientDebug(t *testing.T, port int, user, pass, share, command string, debugLevel int) (string, error) {
+// RunSMBClientMinProtocol executes smbclient with the client's minimum SMB
+// dialect pinned to minProtocol (e.g. "SMB3"). If the server negotiates a lower
+// dialect, or negotiation fails, smbclient aborts with an NT_STATUS error before
+// running the command. A successful command therefore proves that a dialect at
+// or above minProtocol was negotiated end-to-end, without depending on the exact
+// strings smbclient prints in its debug output (which vary by Samba version).
+func RunSMBClientMinProtocol(t *testing.T, port int, user, pass, share, command, minProtocol string) (string, error) {
 	t.Helper()
 
 	smbclientPath, err := exec.LookPath("smbclient")
@@ -221,8 +225,8 @@ func RunSMBClientDebug(t *testing.T, port int, user, pass, share, command string
 		"-A", authFile,
 		"-p", fmt.Sprintf("%d", port),
 		"-c", command,
-		fmt.Sprintf("--debuglevel=%d", debugLevel),
 		"--max-protocol=SMB3",
+		fmt.Sprintf("--option=client min protocol=%s", minProtocol),
 	}
 
 	cmd := exec.Command(smbclientPath, args...)

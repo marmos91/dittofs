@@ -98,49 +98,41 @@ func TestSMB3_SmbClient_FileOps(t *testing.T) {
 		"Deleted file should not appear in listing")
 }
 
-// TestSMB3_SmbClient_DialectNegotiation verifies that SMB3 protocol is negotiated
-// by parsing smbclient debug output.
+// TestSMB3_SmbClient_DialectNegotiation verifies that an SMB3 dialect is
+// negotiated between smbclient and the DittoFS server.
+//
+// Rather than grepping smbclient's debug output for dialect strings -- which are
+// absent at low debug levels and vary across Samba versions -- this pins the
+// client's *minimum* dialect to SMB3. If the server negotiated anything lower,
+// or negotiation failed, smbclient would abort with an NT_STATUS error before
+// ever listing the share. A clean directory listing therefore proves that an
+// SMB 3.x dialect was negotiated end-to-end.
 func TestSMB3_SmbClient_DialectNegotiation(t *testing.T) {
 	skipIfSMBClientUnavailable(t)
 	env := helpers.SetupSMB3TestEnv(t)
 
-	// Run smbclient with debug output to capture protocol negotiation
-	output, err := helpers.RunSMBClientDebug(t, env.SMBPort, env.Username, env.Password,
-		env.ShareName, "ls", 1)
+	output, err := helpers.RunSMBClientMinProtocol(t, env.SMBPort, env.Username,
+		env.Password, env.ShareName, "ls", "SMB3")
 
-	// smbclient may return non-zero on empty directories or debug mode
-	if err != nil && strings.Contains(output, "NT_STATUS_LOGON_FAILURE") {
-		t.Fatalf("smbclient auth failed: %s\nOutput: %s", err, output)
+	t.Logf("smbclient (client min protocol=SMB3) output:\n%s", output)
+
+	// Any NT_STATUS error means negotiation or auth failed under the SMB3-only
+	// constraint -- the server did not negotiate an SMB3 dialect.
+	if err != nil && strings.Contains(output, "NT_STATUS_") {
+		t.Fatalf("smbclient failed to negotiate an SMB3 dialect: %s\nOutput: %s", err, output)
 	}
 
-	t.Logf("smbclient debug output:\n%s", output)
-
-	// Assert that SMB2/3 protocol was actually negotiated by checking for
-	// concrete dialect indicators in the debug output. smbclient at debug level 1+
-	// logs protocol negotiation details containing dialect hex codes or protocol names.
-	hasSMB3Dialect := strings.Contains(output, "0x0300") || // SMB 3.0.0
-		strings.Contains(output, "0x0302") || // SMB 3.0.2
-		strings.Contains(output, "0x0311") // SMB 3.1.1
-
-	hasSMBIndicator := hasSMB3Dialect ||
-		strings.Contains(output, "SMB3") ||
-		strings.Contains(output, "smb3") ||
-		strings.Contains(output, "SMB2") ||
-		strings.Contains(output, "smb2")
-
-	assert.True(t, hasSMBIndicator,
-		"Expected SMB2/3 protocol indicator in smbclient debug output, got:\n%s", output)
-
-	if hasSMB3Dialect {
-		t.Log("SMB3 dialect confirmed in negotiation output")
-	}
-
-	// Verify no fatal errors occurred during negotiation
-	assert.NotContains(t, output, "NT_STATUS_NOT_SUPPORTED",
-		"Server should support the negotiated protocol")
 	assert.NotContains(t, output, "NT_STATUS_LOGON_FAILURE",
 		"Authentication should succeed")
+	assert.NotContains(t, output, "NT_STATUS_NOT_SUPPORTED",
+		"Server should support an SMB3 dialect")
+	assert.NotContains(t, strings.ToLower(output), "protocol negotiation failed",
+		"An SMB3 dialect should be negotiated")
 
+	// smbclient prints this trailer only after a successful listing over the
+	// negotiated (SMB3-minimum) session.
+	assert.Contains(t, output, "blocks of size",
+		"Expected a successful directory listing over an SMB3 session, got:\n%s", output)
 }
 
 // TestSMB3_SmbClient_DirectoryOps validates smbclient mkdir, cd, ls, rmdir operations.
