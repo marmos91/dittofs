@@ -243,8 +243,12 @@ Pending FileChunks to remote CAS.
 
 The local filesystem store (`pkg/block/local/fs/`) writes through an
 append-only log per file. A rollup pool chunks the log via FastCDC, hashes
-each chunk with BLAKE3, and persists the chunks locally under a
-content-addressable `blocks/{hh}/{hh}/{hex}` directory.
+each chunk with BLAKE3, and appends the chunk bytes to the local **log-blob**
+tier (`blobs/<id>.blob`), recording each chunk's position in the
+`LocalChunkIndex`. The per-chunk content-addressed `blocks/{hh}/{hh}/{hex}`
+directory is **legacy and read-only** — retained so chunks written before the
+log-blob flip stay readable, but no new per-chunk file is ever written. See
+[Log-Blob Local Tier](#log-blob-local-tier) below.
 
 **New writes are packed into remote blocks.** On every share, the syncer's
 carver batches locally-rolled chunks and uploads them as packed **block
@@ -283,8 +287,8 @@ See [Block Lifecycle (three-state)](#block-lifecycle-three-state) and
                                                               |
                                                               v
                                                        StoreChunk
-                                                       blocks/{hh}/{hh}/{hex}
-                                                       (.tmp + rename + fsync)
+                                                       blobs/<id>.blob (append)
+                                                       + LocalChunkIndex entry
                                                               |
                                         CommitChunks atomic:  |
                                          1. metadata.SetRollupOffset (source of truth)
@@ -300,7 +304,8 @@ See [Block Lifecycle (three-state)](#block-lifecycle-three-state) and
 
 ```
 <baseDir>/logs/<payloadID>.log        per-file append-only log
-<baseDir>/blocks/<hh>/<hh>/<hex>      content-addressed chunks (CAS)
+<baseDir>/blobs/<id>.blob             log-blob tier (rolled-up chunk bytes)
+<baseDir>/blocks/<hh>/<hh>/<hex>      legacy per-chunk CAS (read-only, back-compat)
 ```
 
 Log header (64 bytes): magic `DFLG` | version | `rollup_offset` | flags |
@@ -322,8 +327,9 @@ payload.
 Recovery (`pkg/block/local/fs/recovery.go`) scans logs from
 `rollup_offset`, truncates at first bad CRC, and rebuilds per-file interval
 trees. Orphan logs (no metadata referrer, no live FileChunk, mtime older
-than `orphan_log_min_age_seconds`) are swept. Orphan chunks under
-`blocks/{hh}/{hh}/{hex}` are reclaimed by the mark-sweep GC.
+than `orphan_log_min_age_seconds`) are swept. Orphan chunks under the legacy
+`blocks/{hh}/{hh}/{hex}` CAS dir are reclaimed by the mark-sweep GC; log-blob
+bytes are reclaimed by whole-blob eviction (see [Log-Blob Local Tier](#log-blob-local-tier)).
 
 ### Per-`FSStore` surface
 
