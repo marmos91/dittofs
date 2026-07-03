@@ -130,10 +130,24 @@ func (r *Runtime) reapStrandedRows(ctx context.Context, shareName string, mds me
 		return 0, nil
 	}
 
-	reaped, skippedGrace := 0, 0
+	// Open-handle hold (#1448): a payload referenced by an open-but-unlinked
+	// file is not stranded — the open handle still reads through its rows, and
+	// reaping them would both destroy the manifest and drop the hashes from
+	// the mark live set. Fail closed: if the held set cannot be resolved, the
+	// reconcile must not reap.
+	heldOpen, err := r.openPayloadIDsForShare(ctx, shareName)
+	if err != nil {
+		return 0, fmt.Errorf("resolve open-handle held payloads: %w", err)
+	}
+
+	reaped, skippedGrace, skippedOpen := 0, 0, 0
 	for _, pid := range stranded {
 		if err := ctx.Err(); err != nil {
 			return reaped, err
+		}
+		if _, ok := heldOpen[pid]; ok {
+			skippedOpen++
+			continue
 		}
 		rows, err := mds.ListFileChunks(ctx, pid)
 		if err != nil {
@@ -164,6 +178,7 @@ func (r *Runtime) reapStrandedRows(ctx context.Context, shareName string, mds me
 		"strandedPayloads", len(stranded),
 		"rowsReaped", reaped,
 		"skippedGrace", skippedGrace,
+		"skippedOpenHandle", skippedOpen,
 		"dryRun", dryRun,
 	)
 	return reaped, nil

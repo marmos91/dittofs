@@ -423,12 +423,14 @@ type Store interface {
 	// count (SQL inodes.nlink, badger l: key, memory linkCounts), not the
 	// embedded File.Nlink.
 	//
-	// Open-but-unlinked caveat: DittoFS does not retain a file's data while it is
-	// held open after unlink (NFSv4 REMOVE drops the link immediately; SMB
-	// unlinks at last close), so excluding nlink=0 here does not break an
-	// existing guarantee. The GC grace period is the safety window for any
-	// in-flight reader; a proper open-handle GC hold (to support long-lived
-	// open-unlinked reads beyond grace) is future work.
+	// Open-but-unlinked caveat: excluding nlink=0 here is safe because the
+	// runtime layers an open-handle GC hold on top (#1448): files that are
+	// unlinked while still held open (NFSv4 open stateids, SMB open table)
+	// keep their block hashes in the GC mark live set and their payload rows
+	// out of the stranded-row reconcile until the last close. NFSv3 is
+	// stateless (kernel clients silly-rename), so the server never sees an
+	// open-unlinked file there; the GC grace period remains the safety window
+	// for stateless in-flight readers.
 	//
 	// Implementations MUST drain the result set before invoking fn
 	// (collect-then-call) and honor ctx.Done() throughout.

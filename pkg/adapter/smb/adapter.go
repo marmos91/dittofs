@@ -223,6 +223,12 @@ func (s *Adapter) SetRuntime(rtAny any) {
 	rt := rtAny.(*runtime.Runtime)
 	s.handler.Registry = rt
 
+	// Register the handler's open-file table as an open-file enumerator for
+	// the block-GC open-handle hold (#1448): files unlinked (e.g. over NFS)
+	// while an SMB client holds them open must keep their blocks until the
+	// last SMB close.
+	rt.SetAdapterProvider(adapter.SMBOpenFilesProviderKey, s.handler)
+
 	// Wire LeaseManager: create a thin wrapper over the shared LockManagers.
 	// The LockManagers are per-share, obtained from MetadataService. The
 	// LeaseManager uses a resolver pattern to find the correct LockManager

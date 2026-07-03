@@ -521,7 +521,15 @@ The block-store GC is a fail-closed mark-sweep over the union of every live
    (a Badger temp store). Snapshot time `T` is captured at the start of
    the run. Cross-share aggregation keys on **remote-store identity**
    (`bucket+endpoint+prefix`), not share name, so an object reachable from
-   any share that targets the same remote is considered live.
+   any share that targets the same remote is considered live. Hold
+   providers then inject hashes the namespace no longer references but
+   that must survive the sweep: snapshot manifests
+   (`SnapshotHoldProvider`) and open-but-unlinked files
+   (`openHandleHoldProvider`, #1448) — a file unlinked while still held
+   open via NFSv4 open stateids or SMB open handles keeps its blocks
+   until the last close, restoring POSIX unlink-while-open semantics
+   beyond the grace period. NFSv3 is stateless (kernel clients
+   silly-rename), so no server-side hold applies there.
 2. **Sweep phase.** A single `RemoteStore.Walk` enumerates every CAS
    object cluster-wide; the backend (e.g. S3) paginates internally. For
    each key, the engine keeps the object iff the hash is present in the
