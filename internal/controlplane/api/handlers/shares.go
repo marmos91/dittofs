@@ -516,8 +516,12 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:                        now,
 	}
 	if rootAttr != nil {
-		share.OwnerUID = &rootAttr.UID
-		share.OwnerGID = &rootAttr.GID
+		// Copy into locals so the persisted pointers don't alias the mutable
+		// rootAttr struct (prepareShare rewrites Mode/Type/timestamps on it).
+		uid := rootAttr.UID
+		gid := rootAttr.GID
+		share.OwnerUID = &uid
+		share.OwnerGID = &gid
 	}
 	if err := metadata.ValidateExcludePatterns(req.TrashExcludePatterns); err != nil {
 		BadRequest(w, err.Error())

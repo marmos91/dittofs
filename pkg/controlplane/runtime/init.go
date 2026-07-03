@@ -272,11 +272,12 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 		// ownership to it (#1534).
 		var rootAttr *metadata.FileAttr
 		if share.OwnerUID != nil {
-			gid := *share.OwnerUID
+			uid := *share.OwnerUID
+			gid := uid // default the group to the owner, never root
 			if share.OwnerGID != nil {
 				gid = *share.OwnerGID
 			}
-			rootAttr = &metadata.FileAttr{UID: *share.OwnerUID, GID: gid}
+			rootAttr = &metadata.FileAttr{UID: uid, GID: gid}
 		}
 
 		shareConfig := &ShareConfig{
