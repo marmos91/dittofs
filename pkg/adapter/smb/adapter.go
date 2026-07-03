@@ -394,8 +394,10 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 
 	// Apply signing mode from live settings. Unlike encryption (which only ever
 	// raises security here), signing is fully bidirectional so an operator can
-	// relax an already-required handler at runtime. An empty value means the
-	// setting was never persisted (legacy rows) — leave the config as-is.
+	// relax an already-required handler at runtime. An empty value is the
+	// default and means "inherit the static server config" — leave the
+	// handler's YAML-derived SigningConfig untouched (so an unset DB row never
+	// clobbers the file config at startup).
 	// NOTE: SMB 3.1.1 mandates signing regardless of this setting (MS-SMB2
 	// §3.3.5.4), so "disabled"/"enabled" will not stop signing for 3.1.1 clients.
 	switch settings.Signing {

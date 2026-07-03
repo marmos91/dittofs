@@ -159,13 +159,15 @@ type SMBAdapterSettings struct {
 	// Encryption (stub)
 	EnableEncryption bool `gorm:"default:false" json:"enable_encryption"`
 
-	// Signing controls the SMB2/3 message-signing negotiation mode.
-	// Valid values:
-	//   "required" - advertise SMB2_NEGOTIATE_SIGNING_REQUIRED (current default)
+	// Signing controls the SMB2/3 message-signing negotiation mode. It is an
+	// override: the empty default means "inherit the static server config"
+	// (the `signing:` YAML block), so an unset row never clobbers the file
+	// config at startup. Valid explicit values:
+	//   "required" - advertise SMB2_NEGOTIATE_SIGNING_REQUIRED
 	//   "enabled"  - offer signing but do not require it
 	//   "disabled" - do not offer or require signing
 	// Note: SMB 3.1.1 mandates signing regardless of this setting (MS-SMB2 §3.3.5.4).
-	Signing string `gorm:"default:required;size:10" json:"signing"`
+	Signing string `gorm:"size:10" json:"signing"`
 
 	// Directory leasing capability
 	DirectoryLeasingEnabled bool `gorm:"default:true" json:"directory_leasing_enabled"`
@@ -273,7 +275,7 @@ func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 		MaxConnections:          0,
 		MaxSessions:             10000,
 		EnableEncryption:        false,
-		Signing:                 "required",
+		Signing:                 "", // empty = inherit static server config
 		DirectoryLeasingEnabled: true,
 		NtlmEnabled:             true,
 		GuestEnabled:            true,

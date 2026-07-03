@@ -810,8 +810,9 @@ func validateSMBSettings(s *models.SMBAdapterSettings) map[string]string {
 	if !isValidSMBDialect(s.MaxDialect) {
 		errs["max_dialect"] = fmt.Sprintf("must be one of: %v", models.ValidSMBDialects)
 	}
-	if !slices.Contains(models.ValidSMBSigningModes, s.Signing) {
-		errs["signing"] = fmt.Sprintf("must be one of: %v", models.ValidSMBSigningModes)
+	// Empty is valid and means "inherit static server config" (override unset).
+	if s.Signing != "" && !slices.Contains(models.ValidSMBSigningModes, s.Signing) {
+		errs["signing"] = fmt.Sprintf("must be empty (inherit) or one of: %v", models.ValidSMBSigningModes)
 	}
 
 	validateIntRange(errs, "session_timeout", s.SessionTimeout, ranges.SessionTimeoutMin, ranges.SessionTimeoutMax)

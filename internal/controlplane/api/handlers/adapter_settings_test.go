@@ -418,7 +418,7 @@ func seedSMBAdapter(t *testing.T, cpStore store.Store) {
 	}
 }
 
-func TestSMBSettings_DefaultSigningRequired(t *testing.T) {
+func TestSMBSettings_DefaultSigningUnset(t *testing.T) {
 	cpStore, handler, _ := setupAdapterSettingsTest(t)
 	seedSMBAdapter(t, cpStore)
 	ctx := context.Background()
@@ -431,17 +431,18 @@ func TestSMBSettings_DefaultSigningRequired(t *testing.T) {
 		t.Fatalf("GetSettings() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
 	}
 
+	// Default is empty ("inherit static server config") so an unset row never
+	// clobbers the YAML signing config at startup.
 	var resp SMBSettingsResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp.Signing != "required" {
-		t.Errorf("default Signing = %q, want %q", resp.Signing, "required")
+	if resp.Signing != "" {
+		t.Errorf("default Signing = %q, want %q (unset/inherit)", resp.Signing, "")
 	}
 
-	// Confirm the DB row also defaults to required.
 	adapter, _ := cpStore.GetAdapter(ctx, "smb")
 	dbSettings, _ := cpStore.GetSMBAdapterSettings(ctx, adapter.ID)
-	if dbSettings.Signing != "required" {
-		t.Errorf("DB Signing = %q, want %q", dbSettings.Signing, "required")
+	if dbSettings.Signing != "" {
+		t.Errorf("DB Signing = %q, want %q (unset/inherit)", dbSettings.Signing, "")
 	}
 }
 
