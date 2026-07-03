@@ -140,9 +140,12 @@ type Cell struct {
 	ThroughputMbps float64 `json:"throughput_mbps,omitempty"`
 	// OpsPerSec is files/s (small-file lanes) or objects/s (meta lane).
 	OpsPerSec float64 `json:"ops_per_sec,omitempty"`
-	// RemoteReadBytes (dittofs download lanes) is the verified bytes actually
-	// fetched from packed blocks — proof the reads hit the remote, not a
-	// leftover local copy.
+	// RemoteReadBytes (dittofs download lanes) counts bytes served through
+	// verified ranged reads into packed blocks. It is a LOWER BOUND on remote
+	// traffic — the parallel-download pipeline fetches whole blocks through a
+	// separate path — but any nonzero value proves the cell exercised remote
+	// read-through (the download engine's local store starts empty, so all
+	// payload bytes are necessarily remote in any case).
 	RemoteReadBytes int64  `json:"remote_read_bytes,omitempty"`
 	Error           string `json:"error,omitempty"`
 }

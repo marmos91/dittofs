@@ -35,6 +35,7 @@ fixture code. The unified `cmd/bench` Cobra orchestrator plus the
 | Area        | Scope                                                       | Status |
 |-------------|-------------------------------------------------------------|--------|
 | blockstore  | local FSStore + remote + Syncer + engine                    | done   |
+| parity      | dittofs-vs-rclone scorecard against one S3 bucket (#1467)   | done   |
 | gc          | reference counting + sweep                                  | stub   |
 | snapshots   | reference-CAS snapshot create / verify / manifest scale     | done   |
 | metadata    | listings, rename, hard links, ACL eval                      | stub   |
@@ -102,6 +103,38 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dfsbench.linux ./cmd/bench
 ./dfsbench remote --stack bench --binary dfsbench.linux --ssh-key ~/.ssh/id_rsa --out remote.json
 ```
 
+### rclone-parity scorecard (#1467)
+
+`dfsbench parity` runs the dittofs engine path (write → rollup → packed-block
+carve → drain) and an rclone baseline against the SAME S3 bucket, across the
+four workload quadrants — upload/download × large/small file — plus a
+metadata-ops lane (remote-object list + delete), at several concurrency
+levels. dittofs upload parallelism is pinned per cell so it is comparable to
+rclone `--transfers`. It emits JSON + CSV + markdown scorecards into
+`bench/results/` (see [`bench/results/README.md`](results/README.md)), with
+per-cell datapath gauge timelines (inflight, window, queue depth, goodput)
+embedded in the JSON.
+
+The S3 target comes from environment variables ONLY (`AWS_S3_BUCKET`,
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, plus optional
+`AWS_ENDPOINT_URL` / `AWS_S3_REGION` / `AWS_S3_PATH_STYLE` /
+`AWS_S3_KEY_PREFIX`); the harness fails fast naming any missing variable and
+never writes credentials to disk.
+
+```sh
+# harness self-validation against a throwaway local MinIO (no cloud creds)
+./bench/scripts/parity-smoke.sh
+
+# real WAN run on a disposable Scaleway VM (created + DELETED by the script;
+# --keep retains it for debugging). Defaults: 4x1GiB + 2048x64KiB, conc 1/8/24/64.
+AWS_S3_BUCKET=my-bucket AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
+AWS_ENDPOINT_URL=https://s3.cubbit.eu \
+./bench/scripts/parity-scw.sh
+
+# single quadrant / custom sweep, running wherever you are
+dfsbench parity --quadrant upload-large --conc 8,64 --label mytest
+```
+
 Use `benchstat` to A/B compare two commits:
 
 ```sh
@@ -153,6 +186,7 @@ make bench-all         # umbrella; stubs other areas for now
 cmd/bench/
   main.go            # cobra root, global flags, env-file pre-run
   blockstore.go      # implemented subcommand
+  parity.go          # rclone-parity scorecard subcommand (#1467)
   orchestrate.go     # manifest runner → versioned result JSON + compare
   remote.go          # drive a run on a Scaleway host over SSH
   snapshots.go       # snapshot scale workloads
@@ -165,6 +199,7 @@ bench/
     remote.go        # SetupRemote(ctx, opts) — memory | s3
     latency.go       # per-op LatencyRecorder threaded through the runners
     workloads.go     # Opts, Result, RunWorkload, exported workloads
+  parity/            # rclone-parity harness: quadrants, scorecard, gauge timelines
   orchestrator/      # versioned schema, manifest, runner, compare, latency math
   remote/            # SSH/scp/Pulumi-output ports + the remote orchestrator
   snapshots/ README.md
@@ -174,6 +209,7 @@ bench/
   e2e/       README.md   (points at existing infra/ + workloads/ + scripts/)
   infra/     Pulumi stack for cloud benchmark VMs
   workloads/ fio job files driven by E2E runs
-  scripts/   shell glue for E2E + analysis
+  results/   parity scorecards (gitignored; labeled local-smoke sample committed)
+  scripts/   shell glue for E2E + analysis + parity-smoke.sh / parity-scw.sh
   analysis/  benchstat / CSV post-processing
 ```

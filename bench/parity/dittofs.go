@@ -183,10 +183,10 @@ func writePayload(ctx context.Context, bs *engine.Store, cl sizeClass, index int
 
 // dittofsDownloadCell reads the full dataset back with conc concurrent
 // readers on a COLD engine: same metadata (the chunk manifest resolves), but
-// an empty local store — every byte must come through the verified
-// read-through path (ranged GETs into packed blocks), the cold-restart /
-// cache-lost scenario. RemoteReadBytes is the counter delta proving the bytes
-// actually came from the remote.
+// an empty local store — every byte must come from the remote, the
+// cold-restart / cache-lost scenario. RemoteReadBytes is the verified
+// ranged-block-read counter delta (a lower bound on remote traffic; the
+// parallel-download pipeline fetches whole blocks through a separate path).
 func dittofsDownloadCell(ctx context.Context, opts Opts, bs *engine.Store, mx *metrics.Metrics, cl sizeClass, conc int) (Cell, Timeline, error) {
 	readBytesBefore := remoteReadBytes(mx)
 
