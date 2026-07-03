@@ -216,9 +216,13 @@ type ShareResponse struct {
 	// Enabled mirrors models.Share.Enabled. No omitempty — `false` is
 	// semantically meaningful (the share is disabled) and consumers must
 	// render that state explicitly.
-	Enabled           bool     `json:"enabled"`
-	EncryptData       bool     `json:"encrypt_data"`
-	DefaultPermission string   `json:"default_permission"`
+	Enabled           bool   `json:"enabled"`
+	EncryptData       bool   `json:"encrypt_data"`
+	DefaultPermission string `json:"default_permission"`
+	// OwnerUID/OwnerGID mirror models.Share — the persisted root-directory
+	// owner (#1534). Nil (omitted) means root-owned.
+	OwnerUID          *uint32  `json:"owner_uid,omitempty"`
+	OwnerGID          *uint32  `json:"owner_gid,omitempty"`
 	BlockedOperations []string `json:"blocked_operations,omitempty"`
 	RetentionPolicy   string   `json:"retention_policy"`
 	RetentionTTL      string   `json:"retention_ttl,omitempty"`    // Human-readable duration
@@ -452,6 +456,36 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		trashMaxBytes = *req.TrashMaxBytes
 	}
 
+	// Resolve the share owner (if any) to the UID/GID that will own the root
+	// directory. The root's owner governs who can write at the share root via
+	// POSIX; share permission grants are a separate, gate-only layer. The
+	// resolved IDs are persisted on the share so startup can re-apply them —
+	// otherwise a restart resets the root to UID/GID 0 (#1534).
+	var rootAttr *metadata.FileAttr
+	if req.Owner != "" {
+		owner, err := h.store.GetUser(r.Context(), req.Owner)
+		if err != nil {
+			if errors.Is(err, models.ErrUserNotFound) {
+				BadRequest(w, fmt.Sprintf("Owner user %q not found", req.Owner))
+				return
+			}
+			InternalServerError(w, "Failed to resolve owner")
+			return
+		}
+		if owner.UID == nil {
+			BadRequest(w, fmt.Sprintf("Owner user %q has no UID", req.Owner))
+			return
+		}
+		// Default the group to the owner's own UID rather than GID 0 (root):
+		// an --owner share with no explicit GID must not grant root-group
+		// ownership of the share root.
+		gid := *owner.UID
+		if owner.GID != nil {
+			gid = *owner.GID
+		}
+		rootAttr = &metadata.FileAttr{UID: *owner.UID, GID: gid}
+	}
+
 	now := time.Now()
 	share := &models.Share{
 		ID:                               uuid.New().String(),
@@ -480,6 +514,10 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 		TrashMaxBytes:                    trashMaxBytes,
 		CreatedAt:                        now,
 		UpdatedAt:                        now,
+	}
+	if rootAttr != nil {
+		share.OwnerUID = &rootAttr.UID
+		share.OwnerGID = &rootAttr.GID
 	}
 	if err := metadata.ValidateExcludePatterns(req.TrashExcludePatterns); err != nil {
 		BadRequest(w, err.Error())
@@ -518,34 +556,6 @@ func (h *ShareHandler) Create(w http.ResponseWriter, r *http.Request) {
 			logger.Warn("Failed to persist default SMB adapter config for new share",
 				"share", req.Name, "error", err)
 		}
-	}
-
-	// Resolve the share owner (if any) to the UID/GID that will own the root
-	// directory. The root's owner governs who can write at the share root via
-	// POSIX; share permission grants are a separate, gate-only layer.
-	var rootAttr *metadata.FileAttr
-	if req.Owner != "" {
-		owner, err := h.store.GetUser(r.Context(), req.Owner)
-		if err != nil {
-			if errors.Is(err, models.ErrUserNotFound) {
-				BadRequest(w, fmt.Sprintf("Owner user %q not found", req.Owner))
-				return
-			}
-			InternalServerError(w, "Failed to resolve owner")
-			return
-		}
-		if owner.UID == nil {
-			BadRequest(w, fmt.Sprintf("Owner user %q has no UID", req.Owner))
-			return
-		}
-		// Default the group to the owner's own UID rather than GID 0 (root):
-		// an --owner share with no explicit GID must not grant root-group
-		// ownership of the share root.
-		gid := *owner.UID
-		if owner.GID != nil {
-			gid = *owner.GID
-		}
-		rootAttr = &metadata.FileAttr{UID: *owner.UID, GID: gid}
 	}
 
 	// Add share to runtime if runtime is available
@@ -1304,6 +1314,8 @@ func shareToResponse(s *models.Share) ShareResponse {
 		Enabled:                          s.Enabled,
 		EncryptData:                      s.EncryptData,
 		DefaultPermission:                s.DefaultPermission,
+		OwnerUID:                         s.OwnerUID,
+		OwnerGID:                         s.OwnerGID,
 		BlockedOperations:                s.GetBlockedOps(),
 		RetentionPolicy:                  string(s.GetRetentionPolicy()),
 		RetentionTTL:                     retTTL,

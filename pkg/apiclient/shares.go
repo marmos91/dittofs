@@ -59,13 +59,17 @@ type Share struct {
 	AllowMFsymlink bool `json:"allow_mfsymlink"`
 	// Per-share recycle-bin policy (#190). Mirrors the server
 	// ShareResponse so dfsctl share show can render the trash config.
-	TrashEnabled         bool      `json:"trash_enabled"`
-	TrashRetentionDays   int       `json:"trash_retention_days"`
-	TrashRestrictToAdmin bool      `json:"trash_restrict_to_admin"`
-	TrashMaxBytes        int64     `json:"trash_max_bytes"`
-	TrashExcludePatterns []string  `json:"trash_exclude_patterns,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	TrashEnabled         bool     `json:"trash_enabled"`
+	TrashRetentionDays   int      `json:"trash_retention_days"`
+	TrashRestrictToAdmin bool     `json:"trash_restrict_to_admin"`
+	TrashMaxBytes        int64    `json:"trash_max_bytes"`
+	TrashExcludePatterns []string `json:"trash_exclude_patterns,omitempty"`
+	// OwnerUID/OwnerGID report the persisted root-directory owner (#1534).
+	// Nil means root-owned.
+	OwnerUID  *uint32   `json:"owner_uid,omitempty"`
+	OwnerGID  *uint32   `json:"owner_gid,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // CreateShareRequest is the request to create a share.

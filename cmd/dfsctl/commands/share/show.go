@@ -83,6 +83,7 @@ func (sd ShareDetail) Rows() [][]string {
 		{"Read Only", fmt.Sprintf("%v", s.ReadOnly)},
 		{"Enabled", shareEnabledString(s.Enabled)},
 		{"Default Permission", s.DefaultPermission},
+		{"Root Owner", shareOwnerString(s.OwnerUID, s.OwnerGID)},
 		{"ACL Canonicalize Inherited", fmt.Sprintf("%v", s.AclFlagInheritedCanonicalization)},
 		{"Access-Based Enumeration", fmt.Sprintf("%v", s.AccessBasedEnumeration)},
 		{"Change Notify Disabled", fmt.Sprintf("%v", s.ChangeNotifyDisabled)},
@@ -170,4 +171,17 @@ func runShow(cmd *cobra.Command, args []string) error {
 		metaStoreNames:  metaNames,
 		blockStoreNames: blockNames,
 	})
+}
+
+// shareOwnerString renders the persisted root-directory owner (#1534) for the
+// detail table. Nil UID means the root is owned by root (the default).
+func shareOwnerString(uid, gid *uint32) string {
+	if uid == nil {
+		return "root (0:0)"
+	}
+	group := *uid
+	if gid != nil {
+		group = *gid
+	}
+	return fmt.Sprintf("%d:%d", *uid, group)
 }
