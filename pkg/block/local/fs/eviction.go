@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -243,45 +245,56 @@ func (bc *FSStore) blobEvictOne(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("blob evict: list blobs: %w", err)
 	}
-	var cand *logblob.BlobInfo
+	// ListBlobs is sorted by blob ID = creation order: scan oldest-first.
 	for i := range infos {
 		if infos[i].Active {
 			continue
 		}
-		// Already evicted+accounted by this store but still on disk (unlink
-		// failure orphan): never re-account it.
-		if _, done := bc.blobEvictedIDs[infos[i].LogBlobID]; done {
+		id := infos[i].LogBlobID
+		// Already processed by this store but still on disk (unlink-failure
+		// orphan, see below): its bytes stay counted; skip it.
+		if _, done := bc.blobEvictedIDs[id]; done {
 			continue
 		}
-		cand = &infos[i]
-		break // ListBlobs is sorted by blob ID = creation order
-	}
-	if cand == nil {
-		return 0, errLRUEmpty
-	}
-	if !bc.blobSynced(ctx, cand.LogBlobID) {
-		return 0, errLRUEmpty
-	}
-	// The synced predicate already ran above; EvictBlob re-checks active/
-	// already-evicted state itself.
-	if err := bc.logBlob.EvictBlob(ctx, cand.LogBlobID, func(string) bool { return true }); err != nil {
-		if errors.Is(err, logblob.ErrActiveBlob) {
+		if !bc.blobSynced(ctx, id) {
+			// Blobs are strictly time-ordered: if the oldest candidate is
+			// unsynced, newer ones are too — stop scanning.
 			return 0, errLRUEmpty
 		}
-		// The blob may still have transitioned to evicted in-memory (only
-		// the unlink failed). Do NOT mark it accounted: its bytes were not
-		// subtracted yet, and the retry path above re-accounts exactly once.
-		return 0, fmt.Errorf("blob evict: %w", err)
+		// The synced predicate already ran above; EvictBlob re-checks active/
+		// already-evicted state itself.
+		if err := bc.logBlob.EvictBlob(ctx, id, func(string) bool { return true }); err != nil {
+			if errors.Is(err, logblob.ErrActiveBlob) {
+				return 0, errLRUEmpty
+			}
+			// The blob may still have transitioned to evicted in-memory (only
+			// the unlink failed). Do NOT mark it processed or adjust the
+			// counter: the retry path below settles the accounting.
+			return 0, fmt.Errorf("blob evict: %w", err)
+		}
+		// EvictBlob is idempotent-nil for a blob it already evicted, and it
+		// never retries a failed unlink — so nil does NOT guarantee the file
+		// is gone. Only subtract the bytes when the file has actually left
+		// the disk; otherwise usedBytes would undercount physical usage.
+		// An orphan's bytes stay counted until a restart re-seeds from the
+		// physical files and retries the eviction with a fresh manager.
+		bc.blobEvictedIDs[id] = struct{}{}
+		bc.dropBlobIndexEntries(ctx, id)
+		orphanPath := filepath.Join(bc.baseDir, "blobs", id+".blob")
+		if _, statErr := os.Stat(orphanPath); statErr == nil || !os.IsNotExist(statErr) {
+			logger.Warn("local store: evicted log blob still on disk (unlink failed earlier); keeping its bytes counted until restart",
+				"blob", id, "bytes", infos[i].Size, "dir", bc.baseDir)
+			continue // try the next candidate
+		}
+		bc.subUsed(&bc.logBlobDiskUsed, infos[i].Size, "logblob")
+		if rec := bc.recordMetrics(); rec != nil {
+			rec.RecordEviction(infos[i].Size)
+		}
+		logger.Info("local store: evicted sealed log blob",
+			"blob", id, "bytes", infos[i].Size, "dir", bc.baseDir)
+		return infos[i].Size, nil
 	}
-	bc.blobEvictedIDs[cand.LogBlobID] = struct{}{}
-	bc.dropBlobIndexEntries(ctx, cand.LogBlobID)
-	bc.subUsed(&bc.logBlobDiskUsed, cand.Size, "logblob")
-	if rec := bc.recordMetrics(); rec != nil {
-		rec.RecordEviction(cand.Size)
-	}
-	logger.Info("local store: evicted sealed log blob",
-		"blob", cand.LogBlobID, "bytes", cand.Size, "dir", bc.baseDir)
-	return cand.Size, nil
+	return 0, errLRUEmpty
 }
 
 // blobSynced reports whether every chunk in blobID has been durably mirrored

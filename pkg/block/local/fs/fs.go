@@ -215,8 +215,9 @@ type FSStore struct {
 	// already-evicted blob), so two concurrent callers — ensureSpace on a
 	// Put and reclaimSpace on a rollup worker — could otherwise both pick
 	// the same sealed blob, both get nil, and both subtract its size. The
-	// ID set also keeps a blob whose unlink failed (evicted in-memory but
-	// still listed by ListBlobs) from being re-accounted on later passes.
+	// ID set also marks blobs whose unlink failed (evicted in-memory but
+	// still on disk): those are skipped on later passes and their bytes stay
+	// counted until a restart re-seeds from the physical files.
 	blobEvictMu    sync.Mutex
 	blobEvictedIDs map[string]struct{}
 

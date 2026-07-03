@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -178,12 +179,16 @@ func TestLogBlobBytes_CountedAndSeededAcrossReopen(t *testing.T) {
 	if got := bc.Stats().DiskUsed; got != 600 {
 		t.Fatalf("DiskUsed = %d, want 600 (log-blob bytes must be counted)", got)
 	}
-	if phys := sumBlobFiles(t, dir); phys != 600 {
-		t.Fatalf("physical blob bytes = %d, want 600 (counter must match disk)", phys)
-	}
 
 	if err := bc.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+
+	// Physical check after Close: with the write handle closed the directory
+	// metadata is reliable on every OS (Windows reports stale sizes for files
+	// with open handles).
+	if phys := sumBlobFiles(t, dir); phys != 600 {
+		t.Fatalf("physical blob bytes = %d, want 600 (counter must match disk)", phys)
 	}
 
 	// Reopen over the same dir + index: the counter must be re-seeded from
@@ -220,6 +225,10 @@ func TestEnsureSpace_EvictsSealedSyncedBlob(t *testing.T) {
 	if err := mds.MarkSynced(ctx, oldHash, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
+	oldLoc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, oldHash)
+	if err != nil || !ok {
+		t.Fatalf("GetLocalLocation(old): ok=%v err=%v", ok, err)
+	}
 	if err := bc.logBlob.Rotate(); err != nil {
 		t.Fatalf("Rotate: %v", err)
 	}
@@ -235,8 +244,12 @@ func TestEnsureSpace_EvictsSealedSyncedBlob(t *testing.T) {
 	if got := bc.Stats().DiskUsed; got != 300 {
 		t.Fatalf("DiskUsed after blob eviction = %d, want 300", got)
 	}
-	if phys := sumBlobFiles(t, dir); phys != 300 {
-		t.Fatalf("physical blob bytes = %d, want 300 (sealed blob must be unlinked)", phys)
+	// The sealed blob's file must be unlinked. (Presence check, not a size
+	// sum: the new active blob has an open write handle, and Windows reports
+	// stale directory sizes for open files.)
+	evictedPath := filepath.Join(dir, "blobs", oldLoc.LogBlobID+".blob")
+	if _, statErr := os.Stat(evictedPath); !os.IsNotExist(statErr) {
+		t.Fatalf("sealed blob %s still on disk (stat err=%v), want unlinked", evictedPath, statErr)
 	}
 
 	// The evicted chunk's index entry was pruned: clean local miss, so the
@@ -341,12 +354,15 @@ func TestReclaimSpace_EvictsBlobsWhenOverLimit(t *testing.T) {
 	}
 }
 
-// TestBlobEvictOne_NeverDoubleAccounts asserts that evicting the same sealed
-// blob a second time (racing callers, or an unlink-failure orphan still
-// listed by ListBlobs) does not decrement logBlobDiskUsed twice — EvictBlob
-// is idempotent-nil for already-evicted blobs, so blobEvictOne must track
-// what it has already accounted.
-func TestBlobEvictOne_NeverDoubleAccounts(t *testing.T) {
+// TestBlobEvictOne_UnlinkFailureOrphanStaysCounted pins the accounting
+// around EvictBlob's idempotency edge: after a failed unlink the blob is
+// evicted in-memory but its file is still physically on disk, and later
+// EvictBlob calls answer nil without retrying the remove. blobEvictOne must
+// therefore (a) never subtract bytes that are still on disk (undercounting
+// would re-break maxDisk enforcement), (b) never subtract the same blob
+// twice, and (c) restore truthful accounting after a restart, when the seed
+// walks the physical files and a fresh manager retries the unlink.
+func TestBlobEvictOne_UnlinkFailureOrphanStaysCounted(t *testing.T) {
 	dir := t.TempDir()
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
 	bc := newBlobStoreWithLimit(t, dir, 600, mds)
@@ -366,10 +382,10 @@ func TestBlobEvictOne_NeverDoubleAccounts(t *testing.T) {
 
 	// Inject an unlink failure: EvictBlob marks the blob evicted in-memory
 	// and closes the fd, but os.Remove fails (write-protected directory), so
-	// the orphan file stays listed by ListBlobs. This is the exact window the
-	// blobEvictedIDs set guards: EvictBlob answers nil (idempotent) for the
-	// orphan on every later call, so without the set each call would subtract
-	// the blob's size again.
+	// the orphan file stays on disk and listed by ListBlobs.
+	if runtime.GOOS == "windows" {
+		t.Skip("directory write-protection cannot block deletes on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("directory write-protection does not apply to root")
 	}
@@ -389,26 +405,36 @@ func TestBlobEvictOne_NeverDoubleAccounts(t *testing.T) {
 		t.Fatalf("DiskUsed after failed unlink = %d, want 400 (unchanged)", got)
 	}
 
-	// Retry with unlink still blocked: EvictBlob now answers nil for the
-	// already-evicted blob — the bytes must be accounted exactly ONCE.
-	freed, err := bc.blobEvictOne(ctx)
-	if err != nil || freed != 400 {
-		t.Fatalf("retry blobEvictOne = (%d, %v), want (400, nil)", freed, err)
+	// Retry: EvictBlob answers nil for the already-evicted blob WITHOUT
+	// retrying the unlink — the file is still physically on disk, so the
+	// bytes must STAY counted (no decrement) and the blob must be marked
+	// processed rather than reported as freed space.
+	if freed, err := bc.blobEvictOne(ctx); !errors.Is(err, errLRUEmpty) || freed != 0 {
+		t.Fatalf("retry blobEvictOne = (%d, %v), want (0, errLRUEmpty)", freed, err)
 	}
-	if got := bc.Stats().DiskUsed; got != 0 {
-		t.Fatalf("DiskUsed after retry = %d, want 0", got)
+	if got := bc.Stats().DiskUsed; got != 400 {
+		t.Fatalf("DiskUsed after orphan retry = %d, want 400 (file still on disk)", got)
 	}
 
-	// The orphan file is still on disk and still listed — every further call
-	// must skip it via blobEvictedIDs and report nothing evictable, leaving
-	// the counter untouched (no second decrement, no clamp churn).
+	// Every further call must skip the orphan via blobEvictedIDs: no second
+	// subtraction, no clamp churn, counter still matches the physical file.
 	if freed, err := bc.blobEvictOne(ctx); !errors.Is(err, errLRUEmpty) || freed != 0 {
-		t.Fatalf("post-account blobEvictOne = (%d, %v), want (0, errLRUEmpty)", freed, err)
+		t.Fatalf("post-orphan blobEvictOne = (%d, %v), want (0, errLRUEmpty)", freed, err)
 	}
-	if got := bc.Stats().DiskUsed; got != 0 {
-		t.Fatalf("DiskUsed after skip = %d, want 0", got)
+	if got := bc.Stats().DiskUsed; got != 400 {
+		t.Fatalf("DiskUsed after skip = %d, want 400", got)
 	}
+
+	// Restart self-heal: reopen over the same dir — the seed walks the
+	// physical blob files (orphan included), so accounting stays truthful.
 	restore()
+	if err := bc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	bc2 := newBlobStoreWithLimit(t, dir, 600, mds)
+	if got := bc2.Stats().DiskUsed; got != 400 {
+		t.Fatalf("post-reopen DiskUsed = %d, want 400 (orphan re-seeded)", got)
+	}
 }
 
 // TestReadChunk_DanglingEntryAfterBlobEviction_SelfHeals covers the lazy
