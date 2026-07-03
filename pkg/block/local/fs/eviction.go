@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/local/logblob"
 )
 
 // ensureSpace makes room for the given number of bytes by evicting CAS chunks
@@ -45,7 +46,7 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 
 	// Pin mode or eviction disabled: never evict, just check available space.
 	if ret.policy == block.RetentionPin || !bc.evictionEnabled.Load() {
-		if bc.diskUsed.Load()+needed > bc.maxDisk {
+		if bc.usedBytes()+needed > bc.maxDisk {
 			return ErrDiskFull
 		}
 		return nil
@@ -53,7 +54,7 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 
 	// TTL mode with invalid TTL: treat as non-evictable (same as pin).
 	if ret.policy == block.RetentionTTL && ret.ttl <= 0 {
-		if bc.diskUsed.Load()+needed > bc.maxDisk {
+		if bc.usedBytes()+needed > bc.maxDisk {
 			return ErrDiskFull
 		}
 		return nil
@@ -85,7 +86,7 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 			logger.Info("local cache backpressure released",
 				"store", bc.baseDir,
 				"reason", reason,
-				"disk_used", bc.diskUsed.Load(),
+				"disk_used", bc.usedBytes(),
 				"max_disk", bc.maxDisk,
 				"unsynced_bytes", bc.unsyncedBytesOrZero(),
 				"remote_healthy", bc.remoteHealthyOrTrue(),
@@ -94,10 +95,24 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 		engaged = false
 	}
 
-	for bc.diskUsed.Load()+needed > bc.maxDisk {
+	for bc.usedBytes()+needed > bc.maxDisk {
 		freed, err := bc.lruEvictOne(ctx)
 		if errors.Is(err, errLRUEmpty) {
-			// No more LRU candidates: every cached chunk is still unsynced.
+			// CAS LRU exhausted: fall back to whole-blob eviction of the
+			// oldest sealed, fully-synced log blob (#1527 — post blocks-flip
+			// the bulk of the local tier lives in log blobs, invisible to the
+			// per-chunk LRU). blobEvictOne decrements logBlobDiskUsed itself.
+			// Like the lruEvictOne success path, do NOT release() here — the
+			// stall (if engaged) ends once the loop exits, keeping the
+			// engage/stall bookkeeping to one segment per ensureSpace call.
+			if bfreed, berr := bc.blobEvictOne(ctx); berr == nil && bfreed > 0 {
+				continue
+			} else if berr != nil && !errors.Is(berr, errLRUEmpty) {
+				return fmt.Errorf("ensureSpace: %w", berr)
+			}
+
+			// No evictable CAS chunk or sealed blob: every remaining byte is
+			// still unsynced (or lives in the active blob).
 			// Branch on whether a remote-backed syncer is wired:
 			//
 			//   - remote-backed (bpSource != nil): the local tier is a
@@ -131,7 +146,7 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 					if bc.bpLogLimiter == nil || bc.bpLogLimiter.Allow() {
 						logger.Info("local cache backpressure engaged: waiting for syncer to drain",
 							"store", bc.baseDir,
-							"disk_used", bc.diskUsed.Load(),
+							"disk_used", bc.usedBytes(),
 							"max_disk", bc.maxDisk,
 							"needed", needed,
 							"unsynced_bytes", bc.bpSource.UnsyncedBytes(),
@@ -156,7 +171,7 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 		if err != nil {
 			return fmt.Errorf("ensureSpace: %w", err)
 		}
-		bc.diskUsed.Add(-freed)
+		bc.subUsed(&bc.diskUsed, freed, "cas")
 		if ctx.Err() != nil {
 			release("ctx_cancelled")
 			return ctx.Err()
@@ -192,4 +207,179 @@ func (bc *FSStore) remoteHealthyOrTrue() bool {
 		return true
 	}
 	return bc.bpSource.IsRemoteHealthy()
+}
+
+// blobEvictOne evicts the oldest sealed log blob whose bytes are all mirrored
+// remotely, freeing its physical file. Returns the freed byte count (already
+// subtracted from logBlobDiskUsed), or 0 + errLRUEmpty when there is no
+// evictable blob (no substrate, only the active blob left, or the oldest
+// sealed blob still holds unsynced chunks — blobs are strictly time-ordered,
+// so if the oldest is unsynced, newer ones are too).
+//
+// Sync check: chunks appended in this process lifetime are recorded in
+// blobChunks and verified per-hash via the SyncedHashStore (same source
+// lruEvictOne uses; matching its semantics, a nil SyncedHashStore means every
+// chunk is evictable — production local-only stores are protected by the
+// evictionEnabled gate). Blobs from a previous process have no record and
+// fall back to the coarse global gate: evictable only when the syncer reports
+// zero unsynced bytes anywhere.
+//
+// After eviction the recorded index entries are pruned eagerly (skipping
+// hashes re-staged into a newer blob); entries for pre-restart blobs are
+// dropped lazily by ReadChunk when the read surfaces ErrEvicted /
+// ErrBlobNotFound.
+func (bc *FSStore) blobEvictOne(ctx context.Context) (int64, error) {
+	if bc.logBlob == nil {
+		return 0, errLRUEmpty
+	}
+
+	// Serialize the whole scan→evict→decrement sequence: EvictBlob returns
+	// nil for an already-evicted blob, so without this two concurrent
+	// callers could account the same blob twice (see blobEvictMu field doc).
+	bc.blobEvictMu.Lock()
+	defer bc.blobEvictMu.Unlock()
+
+	infos, err := bc.logBlob.ListBlobs()
+	if err != nil {
+		return 0, fmt.Errorf("blob evict: list blobs: %w", err)
+	}
+	var cand *logblob.BlobInfo
+	for i := range infos {
+		if infos[i].Active {
+			continue
+		}
+		// Already evicted+accounted by this store but still on disk (unlink
+		// failure orphan): never re-account it.
+		if _, done := bc.blobEvictedIDs[infos[i].LogBlobID]; done {
+			continue
+		}
+		cand = &infos[i]
+		break // ListBlobs is sorted by blob ID = creation order
+	}
+	if cand == nil {
+		return 0, errLRUEmpty
+	}
+	if !bc.blobSynced(ctx, cand.LogBlobID) {
+		return 0, errLRUEmpty
+	}
+	// The synced predicate already ran above; EvictBlob re-checks active/
+	// already-evicted state itself.
+	if err := bc.logBlob.EvictBlob(ctx, cand.LogBlobID, func(string) bool { return true }); err != nil {
+		if errors.Is(err, logblob.ErrActiveBlob) {
+			return 0, errLRUEmpty
+		}
+		// The blob may still have transitioned to evicted in-memory (only
+		// the unlink failed). Do NOT mark it accounted: its bytes were not
+		// subtracted yet, and the retry path above re-accounts exactly once.
+		return 0, fmt.Errorf("blob evict: %w", err)
+	}
+	bc.blobEvictedIDs[cand.LogBlobID] = struct{}{}
+	bc.dropBlobIndexEntries(ctx, cand.LogBlobID)
+	bc.subUsed(&bc.logBlobDiskUsed, cand.Size, "logblob")
+	if rec := bc.recordMetrics(); rec != nil {
+		rec.RecordEviction(cand.Size)
+	}
+	logger.Info("local store: evicted sealed log blob",
+		"blob", cand.LogBlobID, "bytes", cand.Size, "dir", bc.baseDir)
+	return cand.Size, nil
+}
+
+// blobSynced reports whether every chunk in blobID has been durably mirrored
+// to the remote. See blobEvictOne for the tracked / untracked split.
+func (bc *FSStore) blobSynced(ctx context.Context, blobID string) bool {
+	bc.blobChunksMu.Lock()
+	recorded, tracked := bc.blobChunks[blobID]
+	hashes := make([]block.ContentHash, len(recorded))
+	copy(hashes, recorded)
+	bc.blobChunksMu.Unlock()
+
+	if bc.syncedHashStore == nil {
+		// Match lruEvictOne: without sync-state tracking every chunk is
+		// considered evictable (local-only stores rely on evictionEnabled).
+		return true
+	}
+	if !tracked {
+		// Blob predates this process: no per-chunk record. Only evict when
+		// the syncer reports nothing unsynced anywhere.
+		return bc.bpSource != nil && bc.bpSource.UnsyncedBytes() == 0
+	}
+	for _, h := range hashes {
+		synced, err := bc.syncedHashStore.IsSynced(ctx, h)
+		if err != nil {
+			logger.Warn("blob evict: IsSynced lookup failed, treating blob as unsynced",
+				"blob", blobID, "hash", h.String(), "error", err)
+			return false
+		}
+		if !synced {
+			return false
+		}
+	}
+	return true
+}
+
+// dropBlobIndexEntries removes the local-index entries recorded for blobID
+// and forgets its blobChunks record. A hash whose current index entry points
+// at a DIFFERENT blob was re-staged after this blob's copy became stale —
+// its live entry is kept. Best-effort: a failed delete leaves a dangling
+// entry that ReadChunk drops lazily (ErrEvicted → miss → remote refetch).
+func (bc *FSStore) dropBlobIndexEntries(ctx context.Context, blobID string) {
+	bc.blobChunksMu.Lock()
+	hashes := bc.blobChunks[blobID]
+	delete(bc.blobChunks, blobID)
+	bc.blobChunksMu.Unlock()
+
+	if bc.localChunkIndex == nil {
+		return
+	}
+	for _, h := range hashes {
+		loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, h)
+		if err != nil || !ok || loc.LogBlobID != blobID {
+			continue
+		}
+		if err := bc.localChunkIndex.DeleteLocalLocation(ctx, h); err != nil {
+			logger.Warn("blob evict: failed to drop index entry",
+				"blob", blobID, "hash", h.String(), "error", err)
+		}
+	}
+}
+
+// reclaimSpace is the write-path counterpart of ensureSpace: called after a
+// rollup pass lands new log-blob bytes, it evicts synced CAS chunks and
+// sealed synced blobs until the store is back under maxDisk. Best-effort and
+// NON-BLOCKING — when nothing is evictable right now (unsynced tail, only the
+// active blob left) it returns immediately rather than stalling the rollup
+// worker; the next pass retries after the syncer has drained more chunks.
+// Serialized via blobReclaimActive so concurrent rollup workers do not
+// stampede; losers skip (the winner is already draining to the limit).
+func (bc *FSStore) reclaimSpace(ctx context.Context) {
+	if bc.maxDisk <= 0 || !bc.evictionEnabled.Load() {
+		return
+	}
+	ret := bc.getRetention()
+	if ret.policy == block.RetentionPin || (ret.policy == block.RetentionTTL && ret.ttl <= 0) {
+		return
+	}
+	if !bc.blobReclaimActive.CompareAndSwap(false, true) {
+		return
+	}
+	defer bc.blobReclaimActive.Store(false)
+
+	for bc.usedBytes() > bc.maxDisk {
+		if ctx.Err() != nil {
+			return
+		}
+		if freed, err := bc.lruEvictOne(ctx); err == nil {
+			bc.subUsed(&bc.diskUsed, freed, "cas")
+			continue
+		} else if !errors.Is(err, errLRUEmpty) {
+			logger.Warn("reclaimSpace: CAS eviction failed", "dir", bc.baseDir, "error", err)
+			return
+		}
+		if _, err := bc.blobEvictOne(ctx); err != nil {
+			if !errors.Is(err, errLRUEmpty) {
+				logger.Warn("reclaimSpace: blob eviction failed", "dir", bc.baseDir, "error", err)
+			}
+			return
+		}
+	}
 }

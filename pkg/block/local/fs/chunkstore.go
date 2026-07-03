@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/local/logblob"
 )
 
 // chunkPath returns the content-addressed chunk path under baseDir/blocks/.
@@ -187,6 +188,7 @@ func (bc *FSStore) storeChunkLogBlob(ctx context.Context, h block.ContentHash, d
 	// been orphaned by a failed index write above.
 	if len(data) > 0 {
 		bc.logBlobDiskUsed.Add(int64(len(data)))
+		bc.trackBlobChunk(loc.LogBlobID, h)
 	}
 	// Fire the chunk-completion callback (engine Cache.Put). The path argument
 	// is empty: logblob chunks have no per-chunk on-disk path, and the engine
@@ -273,6 +275,7 @@ func (bc *FSStore) commitStagedChunk(ctx context.Context, sc stagedChunk) error 
 	}
 	if sc.size > 0 {
 		bc.logBlobDiskUsed.Add(int64(sc.size))
+		bc.trackBlobChunk(sc.loc.LogBlobID, sc.h)
 	}
 	return nil
 }
@@ -312,6 +315,15 @@ func (bc *FSStore) ReadChunk(ctx context.Context, h block.ContentHash) ([]byte, 
 				// durable local bytes and no index entry). Any other error is a
 				// genuine I/O failure and surfaces unchanged.
 				if errors.Is(rerr, io.EOF) {
+					return nil, bc.dropTornIndexEntry(ctx, h)
+				}
+				// An evicted or missing blob means the index entry is a
+				// dangling leftover of blob-level eviction (entries for blobs
+				// written by a previous process are cleaned up lazily here,
+				// and eager cleanup in blobEvictOne is best-effort). Same
+				// recovery routing as the torn tail: drop the entry and
+				// report a miss so the engine refetches from the remote.
+				if errors.Is(rerr, logblob.ErrEvicted) || errors.Is(rerr, logblob.ErrBlobNotFound) {
 					return nil, bc.dropTornIndexEntry(ctx, h)
 				}
 				return nil, fmt.Errorf("chunkstore: logblob read: %w", rerr)
@@ -455,7 +467,7 @@ func (bc *FSStore) DeleteChunk(ctx context.Context, h block.ContentHash) error {
 		return fmt.Errorf("chunkstore: remove: %w", err)
 	}
 	if statErr == nil && st.Size() > 0 {
-		bc.diskUsed.Add(-st.Size())
+		bc.subUsed(&bc.diskUsed, st.Size(), "cas")
 	}
 	// prune from the in-process LRU so a future ensureSpace doesn't
 	// try to unlink a file we just deleted.

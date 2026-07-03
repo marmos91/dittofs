@@ -694,7 +694,7 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	}
 
 	// ---- Phase C: commit log-side state under the re-acquired append mutex ----
-	return func() error {
+	phaseCErr := func() error {
 		mu.Lock()
 		defer mu.Unlock()
 
@@ -876,6 +876,15 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 
 		return nil
 	}()
+	if phaseCErr != nil {
+		return phaseCErr
+	}
+
+	// The pass just landed new log-blob bytes: reclaim space if the store
+	// exceeded maxDisk (#1527). Runs OUTSIDE the append mutex; best-effort
+	// and non-blocking, so a fully-unsynced tier never stalls the rollup.
+	bc.reclaimSpace(ctx)
+	return nil
 }
 
 // maxReconstructBytes caps the in-memory reconstruction buffer at 16 GiB

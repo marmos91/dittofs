@@ -2,6 +2,7 @@ package fs
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +55,20 @@ func isValidPayloadID(s string) bool {
 	return true
 }
 
+// isCASChunkPath reports whether path names a legacy content-addressed chunk
+// file: a <hex[HashSize*2]> basename under <baseDir>/blocks/ (the chunkPath
+// layout). Used by Recover to include CAS bytes in the diskUsed seed.
+func (bc *FSStore) isCASChunkPath(path, name string) bool {
+	if len(name) != block.HashSize*2 {
+		return false
+	}
+	if _, err := hex.DecodeString(name); err != nil {
+		return false
+	}
+	prefix := filepath.Join(bc.baseDir, "blocks") + string(filepath.Separator)
+	return strings.HasPrefix(path, prefix)
+}
+
 // Recover scans the block store directory for .blk files and reconciles them with
 // the FileChunkStore (BadgerDB). Called on startup to restore local store state
 //
@@ -72,7 +87,23 @@ func (bc *FSStore) Recover(ctx context.Context) error {
 	var filesFound, orphansDeleted, syncsReverted int
 
 	err := filepath.WalkDir(bc.baseDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(d.Name(), ".blk") {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".blk") {
+			// Legacy CAS chunk files (blocks/<hh>/<hh>/<hex>) are part of the
+			// local tier's footprint and are eviction candidates
+			// (seedLRUFromDisk registers them), so they must be counted into
+			// the diskUsed seed: an uncounted file whose later eviction or
+			// GC-delete decrements the counter drives it negative and
+			// permanently disables the disk limit (#1527). Log-blob bytes are
+			// seeded separately (logBlobDiskUsed, from ListBlobs at open);
+			// append-log bytes are governed by the MaxLogBytes budget.
+			if bc.isCASChunkPath(path, d.Name()) {
+				if info, ierr := d.Info(); ierr == nil {
+					totalSize += info.Size()
+				}
+			}
 			return nil
 		}
 

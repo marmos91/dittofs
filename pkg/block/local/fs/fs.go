@@ -185,9 +185,40 @@ type FSStore struct {
 	// logblob path (legacy CAS only).
 	localChunkIndex metadata.LocalChunkIndex
 	// logBlobDiskUsed accounts bytes appended to log blobs. Kept SEPARATE
-	// from diskUsed so it never feeds the CAS LRU eviction loop with phantom
-	// per-chunk victims. Blob-level eviction is handled separately.
+	// from diskUsed so the CAS LRU eviction loop never decrements it for
+	// phantom per-chunk victims; blob bytes are reclaimed whole-blob by
+	// blobEvictOne, which is the only decrementer. Seeded from the physical
+	// blob sizes at open (ListBlobs) so it survives restarts (#1527).
+	// usedBytes() folds it into the disk-limit comparison and Stats.
 	logBlobDiskUsed atomic.Int64
+
+	// blobChunks records, per log blob, the content hashes appended during
+	// this process lifetime (storeChunkLogBlob + commitStagedChunk).
+	// blobEvictOne consults it to decide whether every chunk in a candidate
+	// blob has been mirrored (IsSynced) and to prune the corresponding
+	// local-index entries after the blob is evicted. Blobs written by a
+	// previous process have no entry and fall back to the coarse global
+	// "no unsynced bytes anywhere" gate; their dangling index entries are
+	// dropped lazily by ReadChunk (ErrEvicted/ErrBlobNotFound → miss).
+	blobChunksMu sync.Mutex
+	blobChunks   map[string][]block.ContentHash
+
+	// blobReclaimActive serializes reclaimSpace so concurrent rollup passes
+	// do not stampede blob eviction. CAS-guarded try-lock: losers skip the
+	// reclaim entirely (the winner is already draining to the limit).
+	blobReclaimActive atomic.Bool
+
+	// blobEvictMu serializes blobEvictOne end-to-end (candidate scan →
+	// EvictBlob → counter decrement) and blobEvictedIDs records blobs this
+	// store already accounted as evicted. Both exist to prevent a DOUBLE
+	// DECREMENT of logBlobDiskUsed: EvictBlob is idempotent (nil for an
+	// already-evicted blob), so two concurrent callers — ensureSpace on a
+	// Put and reclaimSpace on a rollup worker — could otherwise both pick
+	// the same sealed blob, both get nil, and both subtract its size. The
+	// ID set also keeps a blob whose unlink failed (evicted in-memory but
+	// still listed by ListBlobs) from being re-accounted on later passes.
+	blobEvictMu    sync.Mutex
+	blobEvictedIDs map[string]struct{}
 
 	// logBlobRollupSyncCount counts how many times a rollup pass has called
 	// logBlob.Sync() before advancing the rollup_offset fence. Each
@@ -538,6 +569,8 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 	// in-process LRU for CAS chunks (see field comments).
 	bc.lruIndex = make(map[block.ContentHash]*list.Element)
 	bc.lruList = list.New()
+	bc.blobChunks = make(map[string][]block.ContentHash)
+	bc.blobEvictedIDs = make(map[string]struct{})
 
 	// append-log plumbing — maps + pressure channel are always
 	// initialized; the opt-out flag was deleted with the legacy
@@ -580,6 +613,18 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 			return nil, fmt.Errorf("local store: open log-blob substrate: %w", err)
 		}
 		bc.logBlob = mgr
+		// Seed the blob byte counter from the physical blob files so the
+		// disk-usage figure survives restarts (#1527). ListBlobs reports the
+		// active blob at its recovered tail and sealed blobs at file size.
+		infos, err := mgr.ListBlobs()
+		if err != nil {
+			return nil, fmt.Errorf("local store: seed log-blob disk usage: %w", err)
+		}
+		var blobBytes int64
+		for _, bi := range infos {
+			blobBytes += bi.Size
+		}
+		bc.logBlobDiskUsed.Store(blobBytes)
 	}
 
 	// Shared rollup concurrency budget, sized to the final worker count so
@@ -1283,13 +1328,62 @@ func (bc *FSStore) Stats() local.Stats {
 	bc.blocksMu.RUnlock()
 
 	return local.Stats{
-		DiskUsed:      bc.diskUsed.Load(),
+		// DiskUsed covers the store's data files: legacy CAS chunks + .blk
+		// block files (diskUsed) plus log-blob bytes (logBlobDiskUsed).
+		// Append-log bytes (logs/*.log) are transient rollup input governed
+		// by the separate MaxLogBytes budget and are intentionally excluded.
+		DiskUsed:      bc.usedBytes(),
 		MaxDisk:       bc.maxDisk,
 		MaxLogBytes:   bc.maxLogBytes,
 		MemUsed:       bc.memUsed.Load(),
 		FileCount:     fileCount,
 		MemBlockCount: memBlockCount,
 	}
+}
+
+// usedBytes returns the store's total accounted on-disk data footprint:
+// legacy CAS chunk files + .blk block files (diskUsed) plus log-blob bytes
+// (logBlobDiskUsed). This is the figure ensureSpace and reclaimSpace compare
+// against maxDisk, and what Stats reports as DiskUsed (#1527).
+func (bc *FSStore) usedBytes() int64 {
+	return bc.diskUsed.Load() + bc.logBlobDiskUsed.Load()
+}
+
+// subUsed subtracts delta from the given usage counter, clamping at zero.
+// An attempted underflow means asymmetric accounting — bytes were removed
+// that were never added — and is logged at Error: the counter gates
+// eviction/backpressure, so a silently negative value disables the disk
+// limit entirely (#1527: dittofs_localstore_disk_used_bytes went negative
+// and the local tier grew unbounded).
+func (bc *FSStore) subUsed(c *atomic.Int64, delta int64, counter string) {
+	if delta <= 0 {
+		return
+	}
+	for {
+		cur := c.Load()
+		next := cur - delta
+		if next < 0 {
+			logger.Error("local store: disk-used counter underflow, clamping to 0",
+				"counter", counter, "current", cur, "delta", delta, "dir", bc.baseDir)
+			next = 0
+		}
+		if c.CompareAndSwap(cur, next) {
+			return
+		}
+	}
+}
+
+// trackBlobChunk records that chunk h was appended to blob blobID in this
+// process lifetime. blobEvictOne uses the recorded set for its per-blob
+// synced check and post-evict index cleanup. Zero-length chunks carry an
+// empty blob ID and are not tracked (no blob bytes to reclaim).
+func (bc *FSStore) trackBlobChunk(blobID string, h block.ContentHash) {
+	if blobID == "" {
+		return
+	}
+	bc.blobChunksMu.Lock()
+	bc.blobChunks[blobID] = append(bc.blobChunks[blobID], h)
+	bc.blobChunksMu.Unlock()
 }
 
 // MaxLogBytes returns the effective append-log pressure budget in bytes
