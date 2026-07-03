@@ -251,13 +251,6 @@ func (p *SnapshotHoldProvider) AcquireDeleteLock(shareName string) (release func
 // per share, so AcquireDeleteLock on any instance blocks (or is blocked
 // by) every concurrent mark, closing the delete-vs-mark race the
 // per-instance mutex previously left open.
-// snapshotHoldForShare scopes snapshot holds to a single share for the
-// per-share local GC pass (#1433). Local stores are isolated per share, so the
-// local sweep must protect only that share's snapshot-held hashes.
-func (r *Runtime) snapshotHoldForShare(shareName string) engine.HoldProvider {
-	return r.snapshotHoldForRemote([]string{shareName})
-}
-
 func (r *Runtime) snapshotHoldForRemote(shareNames []string) engine.HoldProvider {
 	scoped := append([]string(nil), shareNames...)
 	locks := make([]*sync.RWMutex, 0, len(scoped))

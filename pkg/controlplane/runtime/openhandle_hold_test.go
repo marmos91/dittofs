@@ -191,6 +191,26 @@ func TestOpenHandleHold_GCHoldForRemoteCombines(t *testing.T) {
 	assert.Contains(t, got, h)
 }
 
+// TestOpenHandleHold_CrossProtocolDedup verifies a file open via multiple
+// protocol enumerators at once (e.g. NFSv4 + SMB) is visited exactly once.
+func TestOpenHandleHold_CrossProtocolDedup(t *testing.T) {
+	rt, store := newOpenHoldRuntime(t, "share")
+	fh := openHoldPutFile(t, store, "share", "/both.bin", 0, "p4", []block.BlockRef{
+		{Hash: hashAll(0x66), Offset: 0, Size: 64},
+	})
+	rt.SetAdapterProvider("test_nfs_open", &fakeOpenFileSource{handles: [][]byte{fh}})
+	rt.SetAdapterProvider("test_smb_open", &fakeOpenFileSource{handles: [][]byte{fh}})
+
+	visits := 0
+	require.NoError(t, rt.forEachOpenUnlinkedFile(context.Background(),
+		map[string]struct{}{"share": {}},
+		func(string, *metadata.File) error {
+			visits++
+			return nil
+		}))
+	assert.Equal(t, 1, visits, "same handle from two enumerators must be visited once")
+}
+
 // TestReapStrandedRows_SkipsOpenUnlinkedPayloads verifies the stranded-row
 // reconcile leaves the payload rows of an open-but-unlinked file intact (the
 // open handle still reads through them) and reaps them after last close.

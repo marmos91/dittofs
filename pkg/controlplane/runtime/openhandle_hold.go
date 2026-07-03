@@ -51,8 +51,16 @@ func (r *Runtime) openFileEnumerators() []OpenFileEnumerator {
 // so the caller fails closed (a GC pass that cannot determine the held set
 // must not sweep).
 func (r *Runtime) forEachOpenUnlinkedFile(ctx context.Context, shares map[string]struct{}, fn func(shareName string, file *metadata.File) error) error {
+	// A file open via multiple protocols at once (e.g. NFSv4 + SMB) is
+	// reported by every enumerator; visit each handle once so per-file work
+	// (GetFile) and observability counters don't scale with protocol fan-out.
+	seen := make(map[string]struct{})
 	for _, enum := range r.openFileEnumerators() {
 		err := enum.EnumerateOpenFiles(ctx, func(fileHandle []byte) error {
+			if _, dup := seen[string(fileHandle)]; dup {
+				return nil
+			}
+			seen[string(fileHandle)] = struct{}{}
 			handle := metadata.FileHandle(fileHandle)
 			shareName, err := r.GetShareNameForHandle(ctx, handle)
 			if err != nil {
@@ -115,7 +123,7 @@ func (p *openHandleHoldProvider) HeldHashes(ctx context.Context, remoteEndpointI
 	// files sharing chunks.
 	union := block.NewHashSet(0)
 	held := 0
-	err := p.rt.forEachOpenUnlinkedFile(ctx, p.shares, func(shareName string, file *metadata.File) error {
+	err := p.rt.forEachOpenUnlinkedFile(ctx, p.shares, func(_ string, file *metadata.File) error {
 		for i := range file.Blocks {
 			union.Add(file.Blocks[i].Hash)
 		}
