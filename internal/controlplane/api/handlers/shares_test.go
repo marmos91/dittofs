@@ -434,3 +434,64 @@ func TestShareHandler_Update_RejectsInvalidDefaultPermission(t *testing.T) {
 		t.Fatalf("Update(invalid default_permission) = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
 }
+
+// TestShareHandler_Update_WarnsOnBlockStoreBindingChange verifies that
+// attaching/changing a share's block store returns an operator-facing warning,
+// since the running syncer/BlockStore is not hot-reloaded (#1532).
+func TestShareHandler_Update_WarnsOnBlockStoreBindingChange(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-bswarn")
+	ctx := context.Background()
+
+	remote := &models.BlockStoreConfig{
+		ID: uuid.New().String(), Name: "warn-remote", Kind: models.BlockStoreKindRemote, Type: "memory", CreatedAt: time.Now(),
+	}
+	if _, err := cpStore.CreateBlockStore(ctx, remote); err != nil {
+		t.Fatalf("CreateBlockStore(remote): %v", err)
+	}
+
+	body := []byte(`{"remote_block_store_id":"warn-remote"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-bswarn", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withShareName(req, "s-bswarn")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Update = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var resp ShareResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Warnings) == 0 {
+		t.Fatalf("expected a restart-required warning on binding change, got none")
+	}
+}
+
+// TestShareHandler_Update_NoWarnWithoutBindingChange verifies a non-binding
+// update (read-only toggle) returns no spurious binding warning.
+func TestShareHandler_Update_NoWarnWithoutBindingChange(t *testing.T) {
+	cpStore, _, handler := setupShareTestWithRuntime(t)
+	seedShare(t, cpStore, "s-nowarn")
+
+	body := []byte(`{"read_only":true}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/shares/s-nowarn", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withShareName(req, "s-nowarn")
+	w := httptest.NewRecorder()
+
+	handler.Update(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("Update = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+
+	var resp ShareResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Warnings) != 0 {
+		t.Errorf("expected no warnings for a non-binding update, got %v", resp.Warnings)
+	}
+}

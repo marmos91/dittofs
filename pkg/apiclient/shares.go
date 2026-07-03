@@ -45,6 +45,10 @@ type Share struct {
 	// AccessBasedEnumeration mirrors models.Share — Refs #532. No omitempty
 	// for the same reason.
 	AccessBasedEnumeration bool `json:"access_based_enumeration"`
+	// Warnings carries non-fatal operator-facing messages about the request
+	// that just completed (e.g. a block-store binding change that only takes
+	// effect after a server restart — #1532). Omitted when empty.
+	Warnings []string `json:"warnings,omitempty"`
 	// ChangeNotifyDisabled mirrors models.Share. No omitempty: `false` is
 	// the operator-meaningful "change notify enabled" state.
 	ChangeNotifyDisabled bool `json:"change_notify_disabled"`

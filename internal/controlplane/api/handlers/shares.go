@@ -262,6 +262,11 @@ type ShareResponse struct {
 	// clients can render "unknown" explicitly when the runtime has
 	// not loaded the share yet.
 	Status health.Report `json:"status"`
+
+	// Warnings carries non-fatal operator-facing messages about the request
+	// that just completed — e.g. a block-store binding change that only takes
+	// effect after a server restart. Omitted when empty.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Create handles POST /api/v1/shares.
@@ -673,6 +678,17 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Snapshot the block-store binding before applying updates. The running
+	// per-share syncer/BlockStore mode (local-only vs. remote) is fixed at
+	// share-load and is NOT hot-reloaded on a binding change (see #1532), so
+	// changing it here silently has no effect on mirroring until a full server
+	// restart. We detect the change below and warn the operator.
+	prevLocalBlockStoreID := share.LocalBlockStoreID
+	prevRemoteBlockStoreID := ""
+	if share.RemoteBlockStoreID != nil {
+		prevRemoteBlockStoreID = *share.RemoteBlockStoreID
+	}
+
 	// Apply updates
 	if req.MetadataStoreID != nil {
 		share.MetadataStoreID = *req.MetadataStoreID
@@ -702,6 +718,16 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			share.RemoteBlockStoreID = &remoteBlockStore.ID
 		}
 	}
+
+	// Detect an effective block-store binding change (see #1532). Compared
+	// against the canonical resolved IDs so a no-op re-submit does not warn.
+	newRemoteBlockStoreID := ""
+	if share.RemoteBlockStoreID != nil {
+		newRemoteBlockStoreID = *share.RemoteBlockStoreID
+	}
+	blockStoreBindingChanged := share.LocalBlockStoreID != prevLocalBlockStoreID ||
+		newRemoteBlockStoreID != prevRemoteBlockStoreID
+
 	if req.ReadOnly != nil {
 		share.ReadOnly = *req.ReadOnly
 	}
@@ -872,6 +898,20 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			"local_store_size", share.LocalStoreSize, "read_buffer_size", share.ReadBufferSize)
 	}
 
+	// The per-share syncer/BlockStore mode is not hot-reloaded (#1532): a
+	// binding change is persisted but only takes effect after a server restart.
+	// Warn loudly so the change is not silently a no-op for mirroring.
+	var updateWarnings []string
+	if blockStoreBindingChanged {
+		const bindingWarn = "block store binding changed but only takes effect after a server restart; " +
+			"until then the running share keeps using its previous block store binding"
+		logger.Warn("Share block store binding changed (takes effect on restart)",
+			"share", share.Name,
+			"local_block_store_id", share.LocalBlockStoreID,
+			"remote_block_store_id", newRemoteBlockStoreID)
+		updateWarnings = append(updateWarnings, bindingWarn)
+	}
+
 	// Update runtime if available
 	if h.runtime != nil {
 		if err := h.runtime.UpdateShare(share.Name, req.ReadOnly, req.DefaultPermission, rtRetPolicy, rtRetTTL); err != nil {
@@ -916,7 +956,9 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), HealthCheckTimeout)
 	defer cancel()
-	WriteJSONOK(w, h.shareToResponseWithUsage(ctx, share))
+	resp := h.shareToResponseWithUsage(ctx, share)
+	resp.Warnings = updateWarnings
+	WriteJSONOK(w, resp)
 }
 
 // Remove handles DELETE /api/v1/shares/{name}.

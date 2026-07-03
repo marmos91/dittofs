@@ -265,6 +265,13 @@ func runEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to update share: %w", err)
 	}
 
+	// Surface any server-side warnings (e.g. a block-store binding change that
+	// only takes effect after a restart — #1532) so the update is not silently
+	// a partial no-op.
+	for _, warning := range share.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
+	}
+
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, share, fmt.Sprintf("Share '%s' updated successfully", share.Name))
 }
 
@@ -419,6 +426,13 @@ func runEditInteractive(client *apiclient.Client, name string) error {
 	share, err := client.UpdateShare(name, req)
 	if err != nil {
 		return fmt.Errorf("failed to update share: %w", err)
+	}
+
+	// Surface any server-side warnings (e.g. a block-store binding change that
+	// only takes effect after a restart — #1532) so the update is not silently
+	// a partial no-op.
+	for _, warning := range share.Warnings {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", warning)
 	}
 
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, share, fmt.Sprintf("Share '%s' updated successfully", share.Name))
