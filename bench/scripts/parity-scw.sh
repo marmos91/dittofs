@@ -33,7 +33,7 @@ for arg in "$@"; do
     esac
 done
 
-for tool in scw ssh go; do
+for tool in scw ssh go python3; do
     command -v "$tool" >/dev/null || { echo "parity-scw: $tool not found in PATH" >&2; exit 1; }
 done
 MISSING=()

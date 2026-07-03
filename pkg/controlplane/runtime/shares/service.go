@@ -938,10 +938,11 @@ func (s *Service) createBlockStoreForShare(
 	}
 
 	// Wire the block-carve substrate (#1414 object packing, PR3 global flip).
-	// Assert on the RAW remoteStore, not engineRemote: the nonClosingRemote
-	// wrapper embeds only remote.RemoteStore and deliberately does NOT proxy the
-	// block-keyed PutBlock/GetBlock/DeleteBlock/WalkBlocks surface, so a
-	// type-assert on the wrapper would always miss. Every shipped remote (memory,
+	// Assert on the RAW remoteStore, not engineRemote: the carver holds its own
+	// dedicated RemoteBlockStore reference, so wiring it straight to the
+	// underlying store skips the no-op-Close wrapper's per-call forwarding hop.
+	// (The wrapper does forward the block-keyed surface + ReadChunk these days,
+	// so this is conventional rather than required.) Every shipped remote (memory,
 	// s3) implements RemoteBlockStore, so this flips carve on for EVERY share
 	// with a remote — no feature flag. SetSyncedHashStore (called by engine.New
 	// below) derives the blockCommitter from the same per-share metadata store
