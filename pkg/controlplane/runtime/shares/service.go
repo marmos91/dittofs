@@ -471,6 +471,13 @@ type Service struct {
 	// inline recording.
 	metricsRec local.MetricsRecorder
 
+	// rebindMu serializes RebindShareBlockStore calls. A rebind tears down and
+	// rebuilds a share's per-share BlockStore over the same local dir, which is
+	// not safe to overlap with another rebind of the same share. Rebinds are
+	// rare (operator-initiated binding changes), so a single coarse mutex across
+	// all shares is acceptable and keeps the teardown/rebuild strictly ordered.
+	rebindMu sync.Mutex
+
 	// warmJobs tracks in-flight/completed async share-warm jobs (one active per
 	// share). Self-guarded; runs warm runs on detached contexts cancelled on
 	// RemoveShare. See warm.go.
@@ -1047,6 +1054,138 @@ func (s *Service) createBlockStoreForShare(
 		"retention", config.RetentionPolicy,
 		"retention_ttl", config.RetentionTTL)
 
+	return nil
+}
+
+// RebindShareBlockStore hot-reloads a running share's per-share BlockStore so a
+// changed local/remote block-store binding takes effect WITHOUT a server
+// restart (see #1532). The syncer mode (local-only vs. remote) and the remote
+// target are fixed at BlockStore construction, so the only correct way to
+// change them on a live share is to tear the old store down and build a new one.
+//
+// The fs local backend is not safe to double-open, and for a remote-only change
+// the local directory is unchanged, so the old store is fully drained + closed
+// BEFORE the new one is constructed over the same dir. The share therefore has a
+// brief I/O gap during the swap: in-flight ops complete (Close drains them),
+// new ops briefly get ErrClosed and are retried by the NFS/SMB client. Binding
+// a remote also backfills pre-existing local blocks — the rebuilt syncer's
+// Start seeds the pending-upload set from disk.
+//
+// newConfig carries the new binding; oldConfig is identical except for the
+// block-store IDs and is used only to rebuild the previous store if the new one
+// fails to build, so a rebind failure never leaves the share storeless.
+func (s *Service) RebindShareBlockStore(
+	ctx context.Context,
+	newConfig *ShareConfig,
+	oldConfig *ShareConfig,
+	storeProvider MetadataStoreProvider,
+	blockStoreProvider BlockStoreConfigProvider,
+	localStoreDefaults *LocalStoreDefaults,
+	syncerDefaults *SyncerDefaults,
+) error {
+	name := newConfig.Name
+	if newConfig.LocalBlockStoreID == "" {
+		return fmt.Errorf("cannot rebind share %q: no local block store configured", name)
+	}
+
+	// Serialize rebinds: overlapping teardown/rebuild over the same local dir is
+	// unsafe.
+	s.rebindMu.Lock()
+	defer s.rebindMu.Unlock()
+
+	s.mu.RLock()
+	share, ok := s.registry[name]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("cannot rebind share %q: not found in registry", name)
+	}
+
+	// Resolve the metadata store (fileChunkStore); unchanged by a binding change.
+	fileChunkStore, err := storeProvider.GetMetadataStore(newConfig.MetadataStore)
+	if err != nil {
+		return fmt.Errorf("failed to resolve metadata store for share %q: %w", name, err)
+	}
+
+	// Pre-validate the new binding resolves BEFORE tearing down the live store,
+	// so a bad binding fails fast without disrupting the running share.
+	if _, err := resolveBlockStoreConfig(ctx, blockStoreProvider, newConfig.LocalBlockStoreID, models.BlockStoreKindLocal); err != nil {
+		return fmt.Errorf("failed to resolve new local block store %q: %w", newConfig.LocalBlockStoreID, err)
+	}
+	if newConfig.RemoteBlockStoreID != "" {
+		if _, err := resolveBlockStoreConfig(ctx, blockStoreProvider, newConfig.RemoteBlockStoreID, models.BlockStoreKindRemote); err != nil {
+			return fmt.Errorf("failed to resolve new remote block store %q: %w", newConfig.RemoteBlockStoreID, err)
+		}
+	}
+
+	s.mu.RLock()
+	oldBS := share.BlockStore
+	oldRemoteConfigID := share.remoteConfigID
+	s.mu.RUnlock()
+
+	// Flush pending uploads to the OLD remote before teardown so switching or
+	// detaching a remote does not strand unmirrored blocks. Best-effort: a drain
+	// error must not block the rebind.
+	if oldBS != nil {
+		if err := oldBS.DrainAllUploads(ctx); err != nil {
+			logger.Warn("rebind: failed to drain uploads before teardown; continuing",
+				"share", name, "error", err)
+		}
+		if err := oldBS.Close(); err != nil {
+			logger.Warn("rebind: error closing previous block store; continuing",
+				"share", name, "error", err)
+		}
+	}
+
+	// Build the new store over the same (now-closed) local dir.
+	rebuilt := &Share{Name: name}
+	if buildErr := s.createBlockStoreForShare(ctx, rebuilt, newConfig, blockStoreProvider, fileChunkStore, localStoreDefaults, syncerDefaults); buildErr != nil {
+		// Recovery: rebuild the previous binding so the share is not left
+		// storeless. oldConfig differs from newConfig only in the block-store IDs.
+		logger.Error("rebind: failed to build new block store; restoring previous binding",
+			"share", name, "error", buildErr)
+		recovered := &Share{Name: name}
+		if recErr := s.createBlockStoreForShare(ctx, recovered, oldConfig, blockStoreProvider, fileChunkStore, localStoreDefaults, syncerDefaults); recErr != nil {
+			// Both failed: the share keeps its now-closed store (ops return
+			// ErrClosed, not a nil-deref panic) and needs a restart. Release the
+			// original remote ref since nothing holds it anymore.
+			if oldRemoteConfigID != "" {
+				s.releaseRemoteStore(oldRemoteConfigID)
+			}
+			return fmt.Errorf("rebind failed for share %q and previous binding could not be restored (%v); share needs a restart: %w", name, recErr, buildErr)
+		}
+		// Previous binding restored. Swap it in and drop the original remote ref
+		// (the recovery rebuild acquired its own).
+		s.mu.Lock()
+		share.BlockStore = recovered.BlockStore
+		share.remoteConfigID = recovered.remoteConfigID
+		share.gcStateRoot = recovered.gcStateRoot
+		share.localStoreDir = recovered.localStoreDir
+		s.mu.Unlock()
+		if oldRemoteConfigID != "" {
+			s.releaseRemoteStore(oldRemoteConfigID)
+		}
+		return fmt.Errorf("failed to rebind block store for share %q (previous binding restored): %w", name, buildErr)
+	}
+
+	// Swap the new store into the registry.
+	s.mu.Lock()
+	share.BlockStore = rebuilt.BlockStore
+	share.remoteConfigID = rebuilt.remoteConfigID
+	share.gcStateRoot = rebuilt.gcStateRoot
+	share.localStoreDir = rebuilt.localStoreDir
+	s.mu.Unlock()
+
+	// Drop the previous remote ref now that the new store holds its own.
+	if oldRemoteConfigID != "" {
+		s.releaseRemoteStore(oldRemoteConfigID)
+	}
+
+	s.notifyShareChange()
+	logger.Info("Per-share BlockStore rebound live",
+		"share", name,
+		"local_block_store_id", newConfig.LocalBlockStoreID,
+		"remote_block_store_id", newConfig.RemoteBlockStoreID,
+		"mode", modeLabel(newConfig.RemoteBlockStoreID != ""))
 	return nil
 }
 

@@ -234,88 +234,13 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 	}
 
 	for _, share := range shares {
-		// Try by ID first, fall back to name lookup
-		metaStoreCfg, err := s.GetMetadataStoreByID(ctx, share.MetadataStoreID)
+		shareConfig, err := buildShareConfig(ctx, s, share)
 		if err != nil {
-			metaStoreCfg, err = s.GetMetadataStore(ctx, share.MetadataStoreID)
-			if err != nil {
-				logger.Warn("Share references unknown metadata store",
-					"share", share.Name,
-					"metadata_store_id", share.MetadataStoreID)
-				continue
-			}
+			return err
 		}
-
-		nfsOpts := models.DefaultNFSExportOptions()
-		nfsCfg, err := s.GetShareAdapterConfig(ctx, share.ID, "nfs")
-		if err == nil && nfsCfg != nil {
-			_ = nfsCfg.ParseConfig(&nfsOpts)
-		}
-
-		var netgroupName string
-		if nfsOpts.NetgroupID != nil && *nfsOpts.NetgroupID != "" {
-			if ns, ok := s.(store.NetgroupStore); ok {
-				ng, ngErr := ns.GetNetgroupByID(ctx, *nfsOpts.NetgroupID)
-				if ngErr == nil {
-					netgroupName = ng.Name
-				} else {
-					logger.Warn("Share references unknown netgroup",
-						"share", share.Name,
-						"netgroup_id", *nfsOpts.NetgroupID)
-				}
-			}
-		}
-
-		// Re-apply the persisted root owner so a restart does not reset the
-		// share root to UID/GID 0: prepareShare defaults a nil RootAttr to the
-		// zero value and the metadata stores force-sync existing root
-		// ownership to it (#1534).
-		var rootAttr *metadata.FileAttr
-		if share.OwnerUID != nil {
-			uid := *share.OwnerUID
-			gid := uid // default the group to the owner, never root
-			if share.OwnerGID != nil {
-				gid = *share.OwnerGID
-			}
-			rootAttr = &metadata.FileAttr{UID: uid, GID: gid}
-		}
-
-		shareConfig := &ShareConfig{
-			Name:                             share.Name,
-			MetadataStore:                    metaStoreCfg.Name,
-			RootAttr:                         rootAttr,
-			ReadOnly:                         share.ReadOnly,
-			Enabled:                          share.Enabled, // propagate DB Enabled flag so adapter gates read the correct runtime value.
-			EncryptData:                      share.EncryptData,
-			AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
-			AccessBasedEnumeration:           share.AccessBasedEnumeration,
-			ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
-			StreamsDisabled:                  share.StreamsDisabled,
-			ContinuousAvailability:           share.ContinuousAvailability,
-			AllowMFsymlink:                   share.AllowMFsymlink,
-			TrashEnabled:                     share.TrashEnabled,
-			TrashRetentionDays:               share.TrashRetentionDays,
-			TrashRestrictToAdmin:             share.TrashRestrictToAdmin,
-			TrashMaxBytes:                    share.TrashMaxBytes,
-			TrashExcludePatterns:             share.GetTrashExcludePatterns(),
-			DefaultPermission:                share.DefaultPermission,
-			Squash:                           nfsOpts.GetSquashMode(),
-			AnonymousUID:                     nfsOpts.GetAnonymousUID(),
-			AnonymousGID:                     nfsOpts.GetAnonymousGID(),
-			AllowAuthSys:                     nfsOpts.AllowAuthSys,
-			AllowAuthSysSet:                  true,
-			RequireKerberos:                  nfsOpts.RequireKerberos,
-			MinKerberosLevel:                 nfsOpts.MinKerberosLevel,
-			DisableReaddirplus:               nfsOpts.DisableReaddirplus,
-			NetgroupName:                     netgroupName,
-			BlockedOperations:                share.GetBlockedOps(),
-			RetentionPolicy:                  share.GetRetentionPolicy(),
-			RetentionTTL:                     share.GetRetentionTTL(),
-			LocalStoreSize:                   share.LocalStoreSize,
-			ReadBufferSize:                   share.ReadBufferSize,
-			QuotaBytes:                       share.QuotaBytes,
-			LocalBlockStoreID:                share.LocalBlockStoreID,
-			RemoteBlockStoreID:               derefString(share.RemoteBlockStoreID),
+		if shareConfig == nil {
+			// Share references an unknown metadata store; already logged.
+			continue
 		}
 
 		if err := rt.AddShare(ctx, shareConfig); err != nil {
@@ -333,10 +258,100 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			continue
 		}
 
-		logger.Info("Loaded share", "name", share.Name, "metadata_store", metaStoreCfg.Name)
+		logger.Info("Loaded share", "name", share.Name, "metadata_store", shareConfig.MetadataStore)
 	}
 
 	return nil
+}
+
+// buildShareConfig assembles the runtime ShareConfig for a persisted share row,
+// resolving its metadata store, NFS export options, and netgroup. It returns
+// (nil, nil) when the share references an unknown metadata store so the caller
+// can skip it (already logged). Extracted so both startup load and live
+// block-store rebind (#1532) build an identical config from the same row.
+func buildShareConfig(ctx context.Context, s store.Store, share *models.Share) (*ShareConfig, error) {
+	// Try by ID first, fall back to name lookup.
+	metaStoreCfg, err := s.GetMetadataStoreByID(ctx, share.MetadataStoreID)
+	if err != nil {
+		metaStoreCfg, err = s.GetMetadataStore(ctx, share.MetadataStoreID)
+		if err != nil {
+			logger.Warn("Share references unknown metadata store",
+				"share", share.Name,
+				"metadata_store_id", share.MetadataStoreID)
+			return nil, nil
+		}
+	}
+
+	nfsOpts := models.DefaultNFSExportOptions()
+	nfsCfg, err := s.GetShareAdapterConfig(ctx, share.ID, "nfs")
+	if err == nil && nfsCfg != nil {
+		_ = nfsCfg.ParseConfig(&nfsOpts)
+	}
+
+	var netgroupName string
+	if nfsOpts.NetgroupID != nil && *nfsOpts.NetgroupID != "" {
+		if ns, ok := s.(store.NetgroupStore); ok {
+			ng, ngErr := ns.GetNetgroupByID(ctx, *nfsOpts.NetgroupID)
+			if ngErr == nil {
+				netgroupName = ng.Name
+			} else {
+				logger.Warn("Share references unknown netgroup",
+					"share", share.Name,
+					"netgroup_id", *nfsOpts.NetgroupID)
+			}
+		}
+	}
+
+	// Re-apply the persisted root owner so a restart does not reset the share
+	// root to UID/GID 0: prepareShare defaults a nil RootAttr to the zero value
+	// and the metadata stores force-sync existing root ownership to it (#1534).
+	var rootAttr *metadata.FileAttr
+	if share.OwnerUID != nil {
+		uid := *share.OwnerUID
+		gid := uid // default the group to the owner, never root
+		if share.OwnerGID != nil {
+			gid = *share.OwnerGID
+		}
+		rootAttr = &metadata.FileAttr{UID: uid, GID: gid}
+	}
+
+	return &ShareConfig{
+		Name:                             share.Name,
+		MetadataStore:                    metaStoreCfg.Name,
+		RootAttr:                         rootAttr,
+		ReadOnly:                         share.ReadOnly,
+		Enabled:                          share.Enabled, // propagate DB Enabled flag so adapter gates read the correct runtime value.
+		EncryptData:                      share.EncryptData,
+		AclFlagInheritedCanonicalization: share.AclFlagInheritedCanonicalization,
+		AccessBasedEnumeration:           share.AccessBasedEnumeration,
+		ChangeNotifyDisabled:             share.ChangeNotifyDisabled,
+		StreamsDisabled:                  share.StreamsDisabled,
+		ContinuousAvailability:           share.ContinuousAvailability,
+		AllowMFsymlink:                   share.AllowMFsymlink,
+		TrashEnabled:                     share.TrashEnabled,
+		TrashRetentionDays:               share.TrashRetentionDays,
+		TrashRestrictToAdmin:             share.TrashRestrictToAdmin,
+		TrashMaxBytes:                    share.TrashMaxBytes,
+		TrashExcludePatterns:             share.GetTrashExcludePatterns(),
+		DefaultPermission:                share.DefaultPermission,
+		Squash:                           nfsOpts.GetSquashMode(),
+		AnonymousUID:                     nfsOpts.GetAnonymousUID(),
+		AnonymousGID:                     nfsOpts.GetAnonymousGID(),
+		AllowAuthSys:                     nfsOpts.AllowAuthSys,
+		AllowAuthSysSet:                  true,
+		RequireKerberos:                  nfsOpts.RequireKerberos,
+		MinKerberosLevel:                 nfsOpts.MinKerberosLevel,
+		DisableReaddirplus:               nfsOpts.DisableReaddirplus,
+		NetgroupName:                     netgroupName,
+		BlockedOperations:                share.GetBlockedOps(),
+		RetentionPolicy:                  share.GetRetentionPolicy(),
+		RetentionTTL:                     share.GetRetentionTTL(),
+		LocalStoreSize:                   share.LocalStoreSize,
+		ReadBufferSize:                   share.ReadBufferSize,
+		QuotaBytes:                       share.QuotaBytes,
+		LocalBlockStoreID:                share.LocalBlockStoreID,
+		RemoteBlockStoreID:               derefString(share.RemoteBlockStoreID),
+	}, nil
 }
 
 // derefString safely dereferences a *string, returning "" if nil.

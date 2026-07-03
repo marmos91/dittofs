@@ -204,6 +204,93 @@ func TestLoadSharesResolvesBlockStoreByName(t *testing.T) {
 	}
 }
 
+// TestRebindShareBlockStore_Live exercises the #1532 hot-reload: changing a
+// running share's block-store binding takes effect live (no restart). It walks
+// local-only -> attach remote -> swap remote -> detach remote and asserts the
+// per-share BlockStore's remote presence flips each time without an error.
+func TestRebindShareBlockStore_Live(t *testing.T) {
+	rt, s := setupTestRuntime(t)
+	ctx := context.Background()
+
+	localID := createLocalBlockStoreConfig(t, s, "reb-local")
+	remoteA := createRemoteBlockStoreConfig(t, s, "reb-remote-a")
+	remoteB := createRemoteBlockStoreConfig(t, s, "reb-remote-b")
+
+	metaStores, _ := s.ListMetadataStores(ctx)
+	share := &models.Share{
+		Name:              "/reb",
+		MetadataStoreID:   metaStores[0].ID,
+		LocalBlockStoreID: localID,
+	}
+	if _, err := s.CreateShare(ctx, share); err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+	if err := LoadSharesFromStore(ctx, rt, s); err != nil {
+		t.Fatalf("LoadSharesFromStore: %v", err)
+	}
+
+	hasRemote := func() bool {
+		shareObj, err := rt.GetShare("/reb")
+		if err != nil {
+			t.Fatalf("GetShare: %v", err)
+		}
+		return shareObj.BlockStore.RemoteStore() != nil
+	}
+	// setRemote persists a new remote binding to the DB, mirroring the PUT handler
+	// before the runtime rebind is invoked.
+	setRemote := func(remoteID string) {
+		dbShare, err := s.GetShare(ctx, "/reb")
+		if err != nil {
+			t.Fatalf("GetShare(db): %v", err)
+		}
+		if remoteID == "" {
+			dbShare.RemoteBlockStoreID = nil
+		} else {
+			dbShare.RemoteBlockStoreID = &remoteID
+		}
+		if err := s.UpdateShare(ctx, dbShare); err != nil {
+			t.Fatalf("UpdateShare: %v", err)
+		}
+	}
+
+	if hasRemote() {
+		t.Fatal("expected local-only share to start with no remote store")
+	}
+
+	// 1) Attach a remote live (the #1532 scenario: bind remote to enable mirroring).
+	setRemote(remoteA)
+	if err := rt.RebindShareBlockStore(ctx, "/reb", localID, ""); err != nil {
+		t.Fatalf("rebind attach: %v", err)
+	}
+	if !hasRemote() {
+		t.Fatal("expected remote store attached after live rebind")
+	}
+
+	// 2) Swap remote A -> remote B.
+	setRemote(remoteB)
+	if err := rt.RebindShareBlockStore(ctx, "/reb", localID, remoteA); err != nil {
+		t.Fatalf("rebind swap: %v", err)
+	}
+	if !hasRemote() {
+		t.Fatal("expected remote store still attached after swap")
+	}
+
+	// 3) Detach: remote -> local-only.
+	setRemote("")
+	if err := rt.RebindShareBlockStore(ctx, "/reb", localID, remoteB); err != nil {
+		t.Fatalf("rebind detach: %v", err)
+	}
+	if hasRemote() {
+		t.Fatal("expected no remote store after detach")
+	}
+
+	// The rebuilt store is still usable after all the swaps.
+	shareObj, _ := rt.GetShare("/reb")
+	if _, err := shareObj.BlockStore.WriteAt(ctx, "payload", nil, []byte("ok"), 0); err != nil {
+		t.Fatalf("WriteAt after rebind: %v", err)
+	}
+}
+
 func TestPerShareBlockStoreIsolation(t *testing.T) {
 	rt, s := setupTestRuntime(t)
 	ctx := context.Background()
