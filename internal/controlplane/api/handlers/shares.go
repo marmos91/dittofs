@@ -904,7 +904,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var updateWarnings []string
 	if blockStoreBindingChanged {
 		const bindingWarn = "block store binding changed but only takes effect after a server restart; " +
-			"until then the running share keeps its previous local-only/remote mode and new writes are not mirrored"
+			"until then the running share keeps using its previous block store binding"
 		logger.Warn("Share block store binding changed (takes effect on restart)",
 			"share", share.Name,
 			"local_block_store_id", share.LocalBlockStoreID,
