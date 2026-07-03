@@ -58,9 +58,7 @@ func (r *rcloneRunner) stage(cl sizeClass) (string, error) {
 func (r *rcloneRunner) runConc(ctx context.Context, basePrefix string, conc int) ([]Cell, error) {
 	var cells []Cell
 	for _, cl := range r.opts.classes() {
-		wantUp := r.opts.wantQuadrant(cl.uploadQ)
-		wantDown := r.opts.wantQuadrant(cl.downloadQ)
-		wantMeta := r.opts.wantQuadrant(QuadMeta) && cl.name == "small"
+		wantUp, wantDown, wantMeta := r.opts.wantLanes(cl)
 		if !wantUp && !wantDown && !wantMeta {
 			continue
 		}

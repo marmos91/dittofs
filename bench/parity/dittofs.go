@@ -34,6 +34,14 @@ func (o *Opts) classes() []sizeClass {
 	}
 }
 
+// wantLanes reports which lanes of a size class the run selected. The meta lane
+// is measured once, on the small class only.
+func (o *Opts) wantLanes(cl sizeClass) (up, down, meta bool) {
+	return o.wantQuadrant(cl.uploadQ),
+		o.wantQuadrant(cl.downloadQ),
+		o.wantQuadrant(QuadMeta) && cl.name == "small"
+}
+
 // runDittofsConc runs every selected dittofs cell at one concurrency level.
 // Each size class gets a fresh engine (fresh local dir, fresh metrics
 // registry, remote prefix isolated per cell) with ParallelUploads pinned to
@@ -43,9 +51,7 @@ func runDittofsConc(ctx context.Context, opts Opts, s3cfg *s3Config, basePrefix 
 	timelines := map[string]Timeline{}
 
 	for _, cl := range opts.classes() {
-		wantUp := opts.wantQuadrant(cl.uploadQ)
-		wantDown := opts.wantQuadrant(cl.downloadQ)
-		wantMeta := opts.wantQuadrant(QuadMeta) && cl.name == "small"
+		wantUp, wantDown, wantMeta := opts.wantLanes(cl)
 		if !wantUp && !wantDown && !wantMeta {
 			continue
 		}
@@ -169,9 +175,9 @@ func dittofsUploadCell(ctx context.Context, opts Opts, bs *engine.Store, remoteS
 func writePayload(ctx context.Context, bs *engine.Store, cl sizeClass, index int, seed uint64) error {
 	pid := payloadID(cl.name, index)
 	rng := rand.NewPCG(fileSeed(seed, cl.name, index), uint64(cl.fileBytes))
-	buf := make([]byte, min64(genChunk, cl.fileBytes))
+	buf := make([]byte, min(genChunk, cl.fileBytes))
 	for off := int64(0); off < cl.fileBytes; {
-		n := min64(int64(len(buf)), cl.fileBytes-off)
+		n := min(int64(len(buf)), cl.fileBytes-off)
 		fillDeterministic(rng, buf[:n])
 		if _, err := bs.WriteAt(ctx, pid, nil, buf[:n], uint64(off)); err != nil {
 			return fmt.Errorf("WriteAt %s@%d: %w", pid, off, err)
@@ -220,10 +226,10 @@ func dittofsDownloadCell(ctx context.Context, opts Opts, bs *engine.Store, mx *m
 
 func readPayload(ctx context.Context, bs *engine.Store, cl sizeClass, index int) (int64, error) {
 	pid := payloadID(cl.name, index)
-	buf := make([]byte, min64(genChunk, cl.fileBytes))
+	buf := make([]byte, min(genChunk, cl.fileBytes))
 	var total int64
 	for off := int64(0); off < cl.fileBytes; {
-		n := min64(int64(len(buf)), cl.fileBytes-off)
+		n := min(int64(len(buf)), cl.fileBytes-off)
 		got, err := bs.ReadAt(ctx, pid, nil, buf[:n], uint64(off))
 		if err != nil {
 			return total, fmt.Errorf("ReadAt %s@%d: %w", pid, off, err)
@@ -356,11 +362,4 @@ func newCell(tool, quadrant string, conc, files int, bytes int64, d time.Duratio
 		c.OpsPerSec = float64(files) / d.Seconds()
 	}
 	return c
-}
-
-func min64(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
 }
