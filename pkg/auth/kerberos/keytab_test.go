@@ -138,6 +138,32 @@ func TestResolveKrb5ConfPath_KRB5ConfigEnvFallback(t *testing.T) {
 	}
 }
 
+func TestResolveKrb5ConfPath_KRB5ConfigPathList(t *testing.T) {
+	// KRB5_CONFIG may be a path list (MIT convention). gokrb5 loads a single
+	// file, so the first non-empty entry is used.
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+	sep := string(os.PathListSeparator)
+	t.Setenv("KRB5_CONFIG", "/env/first/krb5.conf"+sep+"/env/second/krb5.conf")
+
+	result := resolveKrb5ConfPath("")
+	if result != "/env/first/krb5.conf" {
+		t.Fatalf("expected /env/first/krb5.conf, got %s", result)
+	}
+}
+
+func TestResolveKrb5ConfPath_KRB5ConfigPathListLeadingEmpty(t *testing.T) {
+	// Leading empty entries in the path list are skipped in favor of the first
+	// non-empty path.
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+	sep := string(os.PathListSeparator)
+	t.Setenv("KRB5_CONFIG", sep+"/env/real/krb5.conf")
+
+	result := resolveKrb5ConfPath("")
+	if result != "/env/real/krb5.conf" {
+		t.Fatalf("expected /env/real/krb5.conf, got %s", result)
+	}
+}
+
 func TestResolveKrb5ConfPath_ConfigBeatsKRB5Config(t *testing.T) {
 	// An explicitly configured krb5_conf takes precedence over KRB5_CONFIG.
 	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")

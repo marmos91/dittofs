@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -172,8 +173,15 @@ func resolveKrb5ConfPath(configPath string) string {
 	if configPath != "" {
 		return configPath
 	}
+	// KRB5_CONFIG (MIT convention) may be a path list of multiple config files
+	// separated by os.PathListSeparator (':' on Unix, ';' on Windows). gokrb5
+	// loads a single file, so use the first non-empty entry.
 	if envPath := os.Getenv("KRB5_CONFIG"); envPath != "" {
-		return envPath
+		for _, p := range strings.Split(envPath, string(os.PathListSeparator)) {
+			if p != "" {
+				return p
+			}
+		}
 	}
 	return defaultKrb5ConfPath(runtime.GOOS, os.Getenv("ProgramData"))
 }
