@@ -3,6 +3,7 @@ package kerberos
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -125,12 +126,58 @@ func TestResolveKrb5ConfPath_FallbackToConfig(t *testing.T) {
 	}
 }
 
-func TestResolveKrb5ConfPath_DefaultFallback(t *testing.T) {
+func TestResolveKrb5ConfPath_KRB5ConfigEnvFallback(t *testing.T) {
+	// With no DittoFS override and no configured path, the standard MIT
+	// KRB5_CONFIG env var is honored before falling back to the platform default.
 	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+	t.Setenv("KRB5_CONFIG", "/env/standard/krb5.conf")
 
 	result := resolveKrb5ConfPath("")
-	if result != "/etc/krb5.conf" {
-		t.Fatalf("expected /etc/krb5.conf, got %s", result)
+	if result != "/env/standard/krb5.conf" {
+		t.Fatalf("expected /env/standard/krb5.conf, got %s", result)
+	}
+}
+
+func TestResolveKrb5ConfPath_ConfigBeatsKRB5Config(t *testing.T) {
+	// An explicitly configured krb5_conf takes precedence over KRB5_CONFIG.
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+	t.Setenv("KRB5_CONFIG", "/env/standard/krb5.conf")
+
+	result := resolveKrb5ConfPath("/config/path/krb5.conf")
+	if result != "/config/path/krb5.conf" {
+		t.Fatalf("expected /config/path/krb5.conf, got %s", result)
+	}
+}
+
+func TestResolveKrb5ConfPath_DefaultFallback(t *testing.T) {
+	t.Setenv("DITTOFS_KERBEROS_KRB5CONF", "")
+	t.Setenv("KRB5_CONFIG", "")
+
+	result := resolveKrb5ConfPath("")
+	want := defaultKrb5ConfPath(runtime.GOOS, os.Getenv("ProgramData"))
+	if result != want {
+		t.Fatalf("expected %s, got %s", want, result)
+	}
+}
+
+func TestDefaultKrb5ConfPath(t *testing.T) {
+	tests := []struct {
+		name        string
+		goos        string
+		programData string
+		want        string
+	}{
+		{"linux", "linux", "", "/etc/krb5.conf"},
+		{"darwin", "darwin", "", "/etc/krb5.conf"},
+		{"windows with ProgramData", "windows", `D:\ProgramData`, `D:\ProgramData\MIT\Kerberos5\krb5.ini`},
+		{"windows without ProgramData", "windows", "", `C:\ProgramData\MIT\Kerberos5\krb5.ini`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := defaultKrb5ConfPath(tt.goos, tt.programData); got != tt.want {
+				t.Fatalf("defaultKrb5ConfPath(%q, %q) = %q, want %q", tt.goos, tt.programData, got, tt.want)
+			}
+		})
 	}
 }
 
