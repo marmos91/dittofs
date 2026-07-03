@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
@@ -317,23 +318,17 @@ func (h *Handler) SetAttr(
 		}, nil
 	}
 
-	// SetFileAttributes prunes FileAttr.Blocks past the new size, but the
-	// per-share block store still holds the dropped CAS chunks. Mirror the
-	// CREATE-with-truncate path (truncateExistingFile): drive
-	// blockStore.Truncate with the file's PRE-truncate FileAttr.Blocks
-	// snapshot (captured in currentFile before SetFileAttributes ran) so the
-	// engine reaps RefCount on every dropped block and the GC sweep can
-	// reclaim the remote chunks (#832). Handler coordinates metaSvc +
-	// blockStore here exactly as the WRITE path does (invariants #1/#5).
-	// Treated as best-effort: a failure is logged but does not fail the
-	// already-committed metadata update.
-	if hasSize && currentFile.PayloadID != "" && *req.NewAttr.Size < currentFile.Size {
-		if _, blockStore, bsErr := getServicesForHandle(h.Registry, ctx.Context, fileHandle); bsErr != nil {
-			logger.WarnCtx(ctx.Context, "SETATTR: cannot resolve block store for truncate reclaim",
-				"handle", fmt.Sprintf("%x", req.Handle), "error", bsErr)
-		} else if _, tErr := blockStore.Truncate(ctx.Context, string(currentFile.PayloadID), currentFile.Blocks, *req.NewAttr.Size); tErr != nil {
+	// SetFileAttributes prunes FileAttr.Blocks + size, but the per-share block
+	// store still holds the dropped CAS chunks and physical tail bytes. Drive
+	// the shared reclaim with the PRE-truncate snapshot (currentFile, captured
+	// before SetFileAttributes ran) so the engine reaps RefCount on every
+	// dropped block (#832) and a later re-extend reads zeros, not stale data.
+	// No-ops unless a genuine shrink; best-effort (metadata already committed).
+	// Same helper as NFSv4 SETATTR / CREATE-truncate and SMB SetEndOfFile.
+	if hasSize {
+		if rErr := common.ReclaimTruncatedBlocks(ctx.Context, h.Registry, fileHandle, currentFile, *req.NewAttr.Size); rErr != nil {
 			logger.WarnCtx(ctx.Context, "SETATTR: block store truncate reclaim failed",
-				"handle", fmt.Sprintf("%x", req.Handle), "size", *req.NewAttr.Size, "error", tErr)
+				"handle", fmt.Sprintf("%x", req.Handle), "size", *req.NewAttr.Size, "error", rErr)
 		}
 	}
 
