@@ -76,17 +76,23 @@ type Share struct {
 	TrashMaxBytes int64 `gorm:"default:0;not null" json:"trash_max_bytes"`
 	// TrashExcludePatterns are globs that bypass the bin (immediate delete),
 	// stored as a JSON array string (same encoding as BlockedOperations).
-	TrashExcludePatterns string    `gorm:"type:text" json:"-"`
-	DefaultPermission    string    `gorm:"default:none;size:50" json:"default_permission"`            // none, read, read-write, admin
-	Config               string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
-	BlockedOperations    string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
-	RetentionPolicy      string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
-	RetentionTTL         int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
-	LocalStoreSize       int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
-	ReadBufferSize       int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
-	QuotaBytes           int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
-	CreatedAt            time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt            time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	TrashExcludePatterns string `gorm:"type:text" json:"-"`
+	DefaultPermission    string `gorm:"default:none;size:50" json:"default_permission"` // none, read, read-write, admin
+	// OwnerUID/OwnerGID persist the UID/GID that owns the share's root
+	// directory (resolved from the owner username at creation). Nil means no
+	// explicit owner (root-owned). Startup re-applies these to the root so
+	// ownership survives restarts (#1534).
+	OwnerUID          *uint32   `gorm:"column:owner_uid" json:"owner_uid,omitempty"`
+	OwnerGID          *uint32   `gorm:"column:owner_gid" json:"owner_gid,omitempty"`
+	Config            string    `gorm:"type:text" json:"-"`                                        // JSON blob for additional share config
+	BlockedOperations string    `gorm:"type:text" json:"-"`                                        // JSON array of blocked operations
+	RetentionPolicy   string    `gorm:"size:10;default:''" json:"retention_policy"`                // pin, ttl, lru (empty = LRU default)
+	RetentionTTL      int64     `gorm:"default:0" json:"retention_ttl"`                            // TTL in seconds (0 = not set)
+	LocalStoreSize    int64     `gorm:"default:0" json:"local_store_size"`                         // Per-share disk size override in bytes (0 = system default)
+	ReadBufferSize    int64     `gorm:"default:0;column:read_buffer_size" json:"read_buffer_size"` // Read buffer override in bytes (0 = system default)
+	QuotaBytes        int64     `gorm:"default:0;column:quota_bytes" json:"quota_bytes"`           // Per-share byte quota (0 = unlimited)
+	CreatedAt         time.Time `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt         time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relationships
 	MetadataStore    MetadataStoreConfig    `gorm:"foreignKey:MetadataStoreID" json:"metadata_store,omitempty"`

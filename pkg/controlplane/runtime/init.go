@@ -266,9 +266,24 @@ func LoadSharesFromStore(ctx context.Context, rt *Runtime, s store.Store) error 
 			}
 		}
 
+		// Re-apply the persisted root owner so a restart does not reset the
+		// share root to UID/GID 0: prepareShare defaults a nil RootAttr to the
+		// zero value and the metadata stores force-sync existing root
+		// ownership to it (#1534).
+		var rootAttr *metadata.FileAttr
+		if share.OwnerUID != nil {
+			uid := *share.OwnerUID
+			gid := uid // default the group to the owner, never root
+			if share.OwnerGID != nil {
+				gid = *share.OwnerGID
+			}
+			rootAttr = &metadata.FileAttr{UID: uid, GID: gid}
+		}
+
 		shareConfig := &ShareConfig{
 			Name:                             share.Name,
 			MetadataStore:                    metaStoreCfg.Name,
+			RootAttr:                         rootAttr,
 			ReadOnly:                         share.ReadOnly,
 			Enabled:                          share.Enabled, // propagate DB Enabled flag so adapter gates read the correct runtime value.
 			EncryptData:                      share.EncryptData,
