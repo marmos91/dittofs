@@ -88,20 +88,22 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$BIN" "root@$IP
 "${SSH[@]}" chmod +x /root/dfsbench
 
 # Forward the S3 target through stdin (sourced by the remote shell) so the
-# credentials never touch a disk or an argv on either side.
+# credentials never touch a disk or an argv on either side. printf %q quotes
+# each value safely for the remote shell — including embedded quotes.
 LABEL="scw-$(date +%Y%m%d-%H%M%S)"
 echo "parity-scw: running harness (label=$LABEL) — this can take a while"
+env_block() {
+    printf 'AWS_S3_BUCKET=%q\n' "$AWS_S3_BUCKET"
+    printf 'AWS_ACCESS_KEY_ID=%q\n' "$AWS_ACCESS_KEY_ID"
+    printf 'AWS_SECRET_ACCESS_KEY=%q\n' "$AWS_SECRET_ACCESS_KEY"
+    printf 'AWS_ENDPOINT_URL=%q\n' "${AWS_ENDPOINT_URL:-}"
+    printf 'AWS_S3_REGION=%q\n' "${AWS_S3_REGION:-}"
+    printf 'AWS_S3_PATH_STYLE=%q\n' "${AWS_S3_PATH_STYLE:-}"
+    printf 'AWS_S3_KEY_PREFIX=%q\n' "${AWS_S3_KEY_PREFIX:-}"
+    printf 'PARITY_LABEL=%q\n' "$LABEL"
+}
 # shellcheck disable=SC2016 # $PARITY_LABEL expands on the VM, not here
-"${SSH[@]}" 'set -a; . /dev/stdin >/dev/null; set +a; cd /root && ./dfsbench parity --label "$PARITY_LABEL" --out-dir /root/parity-results '"$(printf '%q ' "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}")" <<EOF
-AWS_S3_BUCKET='${AWS_S3_BUCKET}'
-AWS_ACCESS_KEY_ID='${AWS_ACCESS_KEY_ID}'
-AWS_SECRET_ACCESS_KEY='${AWS_SECRET_ACCESS_KEY}'
-AWS_ENDPOINT_URL='${AWS_ENDPOINT_URL:-}'
-AWS_S3_REGION='${AWS_S3_REGION:-}'
-AWS_S3_PATH_STYLE='${AWS_S3_PATH_STYLE:-}'
-AWS_S3_KEY_PREFIX='${AWS_S3_KEY_PREFIX:-}'
-PARITY_LABEL='${LABEL}'
-EOF
+env_block | "${SSH[@]}" 'set -a; . /dev/stdin >/dev/null; set +a; cd /root && ./dfsbench parity --label "$PARITY_LABEL" --out-dir /root/parity-results '"$(printf '%q ' "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}")"
 
 echo "parity-scw: pulling results"
 mkdir -p "$REPO_ROOT/bench/results"
