@@ -95,6 +95,7 @@ type PatchSMBSettingsRequest struct {
 	MaxConnections          *int      `json:"max_connections,omitempty"`
 	MaxSessions             *int      `json:"max_sessions,omitempty"`
 	EnableEncryption        *bool     `json:"enable_encryption,omitempty"`
+	Signing                 *string   `json:"signing,omitempty"`
 	DirectoryLeasingEnabled *bool     `json:"directory_leasing_enabled,omitempty"`
 	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
 }
@@ -108,6 +109,7 @@ type PutSMBSettingsRequest struct {
 	MaxConnections          int      `json:"max_connections"`
 	MaxSessions             int      `json:"max_sessions"`
 	EnableEncryption        bool     `json:"enable_encryption"`
+	Signing                 string   `json:"signing"`
 	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
 }
@@ -152,6 +154,7 @@ type SMBSettingsResponse struct {
 	MaxConnections          int      `json:"max_connections"`
 	MaxSessions             int      `json:"max_sessions"`
 	EnableEncryption        bool     `json:"enable_encryption"`
+	Signing                 string   `json:"signing"`
 	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
 	Version                 int      `json:"version"`
@@ -294,6 +297,7 @@ func (h *AdapterSettingsHandler) GetDefaults(w http.ResponseWriter, r *http.Requ
 			Ranges: map[string]*SettingRange{
 				"min_dialect":          {Values: models.ValidSMBDialects},
 				"max_dialect":          {Values: models.ValidSMBDialects},
+				"signing":              {Values: models.ValidSMBSigningModes},
 				"session_timeout":      {Min: ranges.SessionTimeoutMin, Max: ranges.SessionTimeoutMax},
 				"oplock_break_timeout": {Min: ranges.OplockBreakTimeoutMin, Max: ranges.OplockBreakTimeoutMax},
 				"max_connections":      {Min: ranges.MaxConnectionsMin, Max: ranges.MaxConnectionsMax},
@@ -405,6 +409,7 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.MaxConnections = req.MaxConnections
 		settings.MaxSessions = req.MaxSessions
 		settings.EnableEncryption = req.EnableEncryption
+		settings.Signing = req.Signing
 		settings.DirectoryLeasingEnabled = req.DirectoryLeasingEnabled
 		settings.SetBlockedOperations(req.BlockedOperations)
 
@@ -596,6 +601,9 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		}
 		if req.EnableEncryption != nil {
 			settings.EnableEncryption = *req.EnableEncryption
+		}
+		if req.Signing != nil {
+			settings.Signing = *req.Signing
 		}
 		if req.DirectoryLeasingEnabled != nil {
 			settings.DirectoryLeasingEnabled = *req.DirectoryLeasingEnabled
@@ -802,6 +810,9 @@ func validateSMBSettings(s *models.SMBAdapterSettings) map[string]string {
 	if !isValidSMBDialect(s.MaxDialect) {
 		errs["max_dialect"] = fmt.Sprintf("must be one of: %v", models.ValidSMBDialects)
 	}
+	if !slices.Contains(models.ValidSMBSigningModes, s.Signing) {
+		errs["signing"] = fmt.Sprintf("must be one of: %v", models.ValidSMBSigningModes)
+	}
 
 	validateIntRange(errs, "session_timeout", s.SessionTimeout, ranges.SessionTimeoutMin, ranges.SessionTimeoutMax)
 	validateIntRange(errs, "oplock_break_timeout", s.OplockBreakTimeout, ranges.OplockBreakTimeoutMin, ranges.OplockBreakTimeoutMax)
@@ -991,6 +1002,8 @@ func resetSMBSetting(settings, defaults *models.SMBAdapterSettings, name string)
 		settings.MaxSessions = defaults.MaxSessions
 	case "enable_encryption":
 		settings.EnableEncryption = defaults.EnableEncryption
+	case "signing":
+		settings.Signing = defaults.Signing
 	case "directory_leasing_enabled":
 		settings.DirectoryLeasingEnabled = defaults.DirectoryLeasingEnabled
 	case "blocked_operations":
@@ -1050,6 +1063,7 @@ func smbSettingsToResponse(s *models.SMBAdapterSettings) SMBSettingsResponse {
 		MaxConnections:          s.MaxConnections,
 		MaxSessions:             s.MaxSessions,
 		EnableEncryption:        s.EnableEncryption,
+		Signing:                 s.Signing,
 		DirectoryLeasingEnabled: s.DirectoryLeasingEnabled,
 		BlockedOperations:       ops,
 		Version:                 s.Version,

@@ -398,3 +398,103 @@ func TestResetNFSSettings_Specific(t *testing.T) {
 		t.Error("GracePeriod should still be modified (not reset)")
 	}
 }
+
+// seedSMBAdapter creates an enabled SMB adapter and its default settings row.
+// setupAdapterSettingsTest only seeds NFS, so SMB tests must add it explicitly.
+func seedSMBAdapter(t *testing.T, cpStore store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	adapter := &models.AdapterConfig{
+		ID:      uuid.New().String(),
+		Type:    "smb",
+		Enabled: true,
+		Port:    1445,
+	}
+	if _, err := cpStore.CreateAdapter(ctx, adapter); err != nil {
+		t.Fatalf("Failed to create SMB adapter: %v", err)
+	}
+	if err := cpStore.EnsureAdapterSettings(ctx); err != nil {
+		t.Fatalf("Failed to ensure SMB adapter settings: %v", err)
+	}
+}
+
+func TestSMBSettings_DefaultSigningRequired(t *testing.T) {
+	cpStore, handler, _ := setupAdapterSettingsTest(t)
+	seedSMBAdapter(t, cpStore)
+	ctx := context.Background()
+
+	req := makeAdapterSettingsRequest(t, http.MethodGet, "smb", "", nil)
+	w := httptest.NewRecorder()
+	handler.GetSettings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetSettings() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp SMBSettingsResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Signing != "required" {
+		t.Errorf("default Signing = %q, want %q", resp.Signing, "required")
+	}
+
+	// Confirm the DB row also defaults to required.
+	adapter, _ := cpStore.GetAdapter(ctx, "smb")
+	dbSettings, _ := cpStore.GetSMBAdapterSettings(ctx, adapter.ID)
+	if dbSettings.Signing != "required" {
+		t.Errorf("DB Signing = %q, want %q", dbSettings.Signing, "required")
+	}
+}
+
+func TestPatchSMBSettings_Signing(t *testing.T) {
+	cpStore, handler, _ := setupAdapterSettingsTest(t)
+	seedSMBAdapter(t, cpStore)
+	ctx := context.Background()
+
+	signing := "enabled"
+	patchReq := PatchSMBSettingsRequest{Signing: &signing}
+
+	req := makeAdapterSettingsRequest(t, http.MethodPatch, "smb", "", patchReq)
+	w := httptest.NewRecorder()
+	handler.PatchSettings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("PatchSettings() status = %d, want %d, body = %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp SMBSettingsResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Signing != "enabled" {
+		t.Errorf("Signing = %q, want %q", resp.Signing, "enabled")
+	}
+
+	// Change must persist to the DB.
+	adapter, _ := cpStore.GetAdapter(ctx, "smb")
+	dbSettings, _ := cpStore.GetSMBAdapterSettings(ctx, adapter.ID)
+	if dbSettings.Signing != "enabled" {
+		t.Errorf("DB Signing = %q, want %q (not persisted)", dbSettings.Signing, "enabled")
+	}
+}
+
+func TestPatchSMBSettings_SigningValidationError(t *testing.T) {
+	cpStore, handler, _ := setupAdapterSettingsTest(t)
+	seedSMBAdapter(t, cpStore)
+
+	signing := "bogus"
+	patchReq := PatchSMBSettingsRequest{Signing: &signing}
+
+	req := makeAdapterSettingsRequest(t, http.MethodPatch, "smb", "", patchReq)
+	w := httptest.NewRecorder()
+	handler.PatchSettings(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("PatchSettings() status = %d, want %d, body = %s", w.Code, http.StatusUnprocessableEntity, w.Body.String())
+	}
+
+	var resp ValidationErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("Failed to unmarshal validation error: %v", err)
+	}
+	if _, ok := resp.Errors["signing"]; !ok {
+		t.Errorf("Expected per-field error for signing, got %v", resp.Errors)
+	}
+}
