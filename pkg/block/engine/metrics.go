@@ -20,6 +20,9 @@ type DataplaneMetrics interface {
 	// SetUploadWindow publishes the target upload concurrency (adaptive window
 	// or pinned --parallel-uploads value).
 	SetUploadWindow(n int)
+	// SetUploadGoodput publishes the delivered upload goodput (bytes/s)
+	// measured over the last control interval; 0 when the path was idle.
+	SetUploadGoodput(bytesPerSecond float64)
 	// RecordRehash records pre-upload BLAKE3 re-hash latency for one chunk.
 	RecordRehash(d time.Duration)
 

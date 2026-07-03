@@ -48,15 +48,18 @@ type instruments struct {
 	snapDuration *prometheus.HistogramVec // {op}
 
 	// Data-plane upload pipeline (subsystem "datapath"). Instruments the
-	// engine mirror loop that copies CAS chunks local→remote, to attribute
-	// large-file write throughput across re-hash vs remote-Put and to expose
-	// the loop's effective upload concurrency and backlog.
+	// engine upload path that copies data local→remote — both legacy
+	// standalone CAS-chunk Puts and packed-block PutBlock uploads — to
+	// attribute large-file write throughput across re-hash vs remote-Put and
+	// to expose the path's effective upload concurrency, backlog, and
+	// delivered goodput.
 	uploadsTotal     *prometheus.CounterVec // {result}
 	uploadDuration   prometheus.Histogram
 	uploadBytes      prometheus.Histogram
 	uploadsInflight  prometheus.Gauge
 	uploadQueueDepth prometheus.Gauge
 	uploadWindow     prometheus.Gauge
+	uploadGoodput    prometheus.Gauge
 	rehashDuration   prometheus.Histogram
 
 	// Data-plane integrity / self-heal (subsystem "datapath"). All bounded,
@@ -160,17 +163,20 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 
 		uploadsTotal: factory(prometheus.CounterOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "uploads_total",
-			Help: "CAS chunk uploads to the remote store, by result (ok|error).",
+			Help: "Remote uploads (standalone CAS chunks and packed blocks), by result (ok|error).",
 		}, []string{"result"}),
 		uploadDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "upload_duration_seconds",
-			Help:    "Remote-store Put latency per CAS chunk, in seconds.",
+			Help:    "Remote-store Put/PutBlock latency per uploaded object, in seconds.",
 			Buckets: prometheus.DefBuckets,
 		}),
 		uploadBytes: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "upload_bytes",
-			Help:    "Size of each CAS chunk uploaded to the remote store, in bytes.",
-			Buckets: prometheus.ExponentialBuckets(4096, 2, 12),
+			Help: "Size of each object uploaded to the remote store, in bytes " +
+				"(standalone CAS chunks and packed blocks).",
+			// 4 KiB .. 32 MiB: covers FastCDC chunk sizes (1-16 MiB) and packed
+			// block objects (~16 MiB target, up to double on the final flush).
+			Buckets: prometheus.ExponentialBuckets(4096, 2, 14),
 		}),
 		uploadsInflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "uploads_inflight",
@@ -183,6 +189,10 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		uploadWindow: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "upload_window",
 			Help: "Target upload concurrency: the adaptive controller's current window, or the pinned --parallel-uploads value.",
+		}),
+		uploadGoodput: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: Namespace, Subsystem: "datapath", Name: "upload_goodput_bytes_per_second",
+			Help: "Delivered upload goodput over the last control interval (bytes/s). 0 when the upload path is idle.",
 		}),
 		rehashDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Namespace: Namespace, Subsystem: "datapath", Name: "rehash_duration_seconds",
@@ -216,7 +226,7 @@ func newInstruments(reg *prometheus.Registry) *instruments {
 		in.gcRuns, in.gcRunning, in.gcLastRunTime, in.gcSweptObjects, in.gcFreedBytes, in.gcDurationSecs, in.gcStrandedRows,
 		in.snapOps, in.snapDuration,
 		in.uploadsTotal, in.uploadDuration, in.uploadBytes, in.uploadsInflight,
-		in.uploadQueueDepth, in.uploadWindow, in.rehashDuration,
+		in.uploadQueueDepth, in.uploadWindow, in.uploadGoodput, in.rehashDuration,
 		in.localCorruptionTotal, in.remoteCorruptionTotal, in.selfHealTotal,
 		in.blockRangeReadsTotal, in.blockRangeReadBytes,
 	)
@@ -383,6 +393,17 @@ func (m *Metrics) SetUploadWindow(n int) {
 		return
 	}
 	m.in.uploadWindow.Set(float64(n))
+}
+
+// SetUploadGoodput publishes the delivered upload goodput (bytes/s) measured
+// over the last control interval. Published by the adaptive upload controller
+// tick, or by the pinned-window goodput publisher when --parallel-uploads is
+// fixed. 0 means the upload path was idle during the interval.
+func (m *Metrics) SetUploadGoodput(bytesPerSecond float64) {
+	if m == nil {
+		return
+	}
+	m.in.uploadGoodput.Set(bytesPerSecond)
 }
 
 // RecordRehash records the BLAKE3 re-hash (pre-upload bitrot verify) latency

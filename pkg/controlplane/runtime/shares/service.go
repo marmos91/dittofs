@@ -440,6 +440,20 @@ func (n *nonClosingRemote) WalkBlocks(ctx context.Context, fn func(blockID strin
 	return rbs.WalkBlocks(ctx, fn)
 }
 
+// ReadChunk delegates the remote.ChunkReader capability (#1414) to the wrapped
+// store. The syncer's read path type-asserts ChunkReader on ITS remote — this
+// wrapper — to serve a chunk whose only copy lives inside a packed block.
+// Without this forward every cold read of a packed chunk (local copy lost:
+// restart, eviction, torn tail) on a production share failed with
+// ErrChunkReadUnsupported instead of recovering from the remote block.
+func (n *nonClosingRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
+	cr, ok := n.RemoteStore.(remote.ChunkReader)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	return cr.ReadChunk(ctx, blockID, offset, length, hash)
+}
+
 // Service manages share registration, lookup, and configuration.
 type Service struct {
 	mu       sync.RWMutex

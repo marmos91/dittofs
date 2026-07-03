@@ -329,7 +329,23 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	// Upload the assembled block, then atomically commit. The order matters for
 	// crash-safety: PutBlock first means a crash before the commit leaves an
 	// orphan block (GC reclaims it) but never an unbacked record.
-	if err := rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes)); err != nil {
+	// Instrumented exactly like the legacy mirrorChunk Put so the datapath
+	// inflight/throughput/latency metrics stay live on the packed-blocks path.
+	mx := m.dataplaneMetrics()
+	uploadStart := time.Now()
+	if mx != nil {
+		mx.UploadStarted()
+	}
+	err = rbs.PutBlock(ctx, blockID, bytes.NewReader(blockBytes))
+	if mx != nil {
+		mx.UploadFinished()
+		result := "ok"
+		if err != nil {
+			result = "error"
+		}
+		mx.RecordUpload(len(blockBytes), result, time.Since(uploadStart))
+	}
+	if err != nil {
 		m.uploadErrWindow.Add(1)
 		return fmt.Errorf("carve: put block %s: %w", blockID, err)
 	}

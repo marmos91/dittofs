@@ -38,6 +38,7 @@ func (s *stubMetrics) UploadStarted()                                {}
 func (s *stubMetrics) UploadFinished()                               {}
 func (s *stubMetrics) SetUploadQueueDepth(_ int)                     {}
 func (s *stubMetrics) SetUploadWindow(_ int)                         {}
+func (s *stubMetrics) SetUploadGoodput(_ float64)                    {}
 func (s *stubMetrics) RecordRehash(_ time.Duration)                  {}
 
 // New 5 methods — increment counters.
