@@ -196,7 +196,7 @@ func TestCellsCSV(t *testing.T) {
 func TestS3ConfigFromEnvFailsFast(t *testing.T) {
 	for _, k := range []string{"AWS_S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_ENDPOINT_URL", "AWS_S3_REGION", "AWS_S3_PATH_STYLE", "AWS_S3_KEY_PREFIX"} {
 		t.Setenv(k, "")
-		os.Unsetenv(k)
+		_ = os.Unsetenv(k)
 	}
 	_, err := s3ConfigFromEnv()
 	if err == nil {

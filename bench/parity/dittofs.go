@@ -252,7 +252,7 @@ func dittofsMetaCell(ctx context.Context, opts Opts, s3cfg *s3Config, prefix str
 	if err != nil {
 		return Cell{}, err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	start := time.Now()
 	var casHashes []block.ContentHash
@@ -306,7 +306,7 @@ func deleteRemotePrefix(ctx context.Context, s3cfg *s3Config, prefix string, con
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(conc)

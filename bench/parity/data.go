@@ -58,7 +58,7 @@ func stageDataset(dir string, class string, count int, size int64, seed uint64) 
 			n := min(int64(len(buf)), size-written)
 			fillDeterministic(rng, buf[:n])
 			if _, err := f.Write(buf[:n]); err != nil {
-				f.Close()
+				_ = f.Close()
 				return err
 			}
 			written += n

@@ -192,7 +192,7 @@ func Execute(ctx context.Context, opts Opts) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		defer os.RemoveAll(wd)
+		defer func() { _ = os.RemoveAll(wd) }()
 		opts.WorkDir = wd
 	}
 
