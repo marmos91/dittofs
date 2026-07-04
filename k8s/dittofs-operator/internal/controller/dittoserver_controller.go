@@ -1451,7 +1451,7 @@ func buildSecretEnvVars(dittoServer *dittoiov1alpha1.DittoServer) []corev1.EnvVa
 		// Optional=true so the pod doesn't fail if the Secret is manually deleted.
 		envVars = append(envVars, secretEnvVar(
 			"DITTOFS_ADMIN_INITIAL_PASSWORD",
-			dittoServer.GetAdminCredentialsSecretName(),
+			dittoServer.GetAdminBootstrapCredentialsSecretName(),
 			"password",
 			true,
 		))
@@ -1686,7 +1686,7 @@ func (r *DittoServerReconciler) collectSecretData(ctx context.Context, dittoServ
 		adminSecret := &corev1.Secret{}
 		if err := r.Get(ctx, client.ObjectKey{
 			Namespace: dittoServer.Namespace,
-			Name:      dittoServer.GetAdminCredentialsSecretName(),
+			Name:      dittoServer.GetAdminBootstrapCredentialsSecretName(),
 		}, adminSecret); err == nil {
 			if data, ok := adminSecret.Data["password"]; ok {
 				secrets["admin:password"] = data

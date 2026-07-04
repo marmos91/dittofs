@@ -59,7 +59,7 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 		return nil
 	}
 
-	secretName := dittoServer.GetAdminCredentialsSecretName()
+	secretName := dittoServer.GetAdminBootstrapCredentialsSecretName()
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -67,13 +67,37 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 		},
 	}
 
+	// Migration: on upgrade the bootstrap Secret was renamed. Only consult the
+	// pre-rename Secret while the new-named one is still missing or password-empty
+	// — the one-shot migration window. Once it holds a password we skip the legacy
+	// GET entirely, so a transient legacy-read error can never abort an otherwise
+	// healthy reconcile. When migrating, adopt the legacy password rather than
+	// generating a fresh one: a fresh password would diverge from the already
+	// bootstrapped server's admin and break operator (re)provisioning, which logs
+	// in as admin. A non-NotFound legacy read error aborts (retried with backoff)
+	// rather than silently regenerating.
+	if err := r.Get(ctx, client.ObjectKey{Namespace: dittoServer.Namespace, Name: secretName}, secret); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to read admin bootstrap credentials secret: %w", err)
+	}
+	var legacyData map[string][]byte
+	if secret.Data == nil || len(secret.Data["password"]) == 0 {
+		var err error
+		if legacyData, err = r.legacyAdminSecretData(ctx, dittoServer); err != nil {
+			return err
+		}
+	}
+
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		if err := controllerutil.SetControllerReference(dittoServer, secret, r.Scheme); err != nil {
 			return err
 		}
 
-		// Only generate password if Secret data is nil or empty
+		// Only generate/adopt a password if Secret data is nil or empty
 		if secret.Data == nil || len(secret.Data["password"]) == 0 {
+			if legacyData != nil {
+				secret.Data = legacyData
+				return nil
+			}
 			password, err := generateRandomPassword()
 			if err != nil {
 				return fmt.Errorf("failed to generate admin password: %w", err)
@@ -88,10 +112,65 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 	})
 
 	if err != nil {
-		return fmt.Errorf("failed to create/update admin credentials secret: %w", err)
+		return fmt.Errorf("failed to create/update admin bootstrap credentials secret: %w", err)
+	}
+
+	// Best-effort GC of the adopted legacy Secret so the confusingly-named object
+	// does not linger. Failure is non-fatal: the CR owner reference still cleans
+	// it up on teardown.
+	if legacyData != nil {
+		r.deleteLegacyAdminSecret(ctx, dittoServer)
 	}
 
 	return nil
+}
+
+// legacyAdminSecretData returns the username/password data of the pre-rename
+// admin bootstrap Secret. It returns (nil, nil) when no legacy Secret exists (or
+// it holds no password) so the caller generates a fresh one, and a non-nil error
+// on any other read failure so the caller aborts and retries rather than
+// regenerating a diverging password. Used only by the one-shot rename migration.
+func (r *DittoServerReconciler) legacyAdminSecretData(ctx context.Context, ds *dittoiov1alpha1.DittoServer) (map[string][]byte, error) {
+	logger := logf.FromContext(ctx)
+	legacy := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{
+		Namespace: ds.Namespace,
+		Name:      ds.GetLegacyAdminCredentialsSecretName(),
+	}, legacy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to read legacy admin credentials secret for migration: %w", err)
+	}
+	if len(legacy.Data["password"]) == 0 {
+		return nil, nil
+	}
+	username := legacy.Data["username"]
+	if len(username) == 0 {
+		username = []byte("admin")
+	}
+	logger.Info("Adopting password from legacy admin credentials secret for rename migration",
+		"legacySecret", ds.GetLegacyAdminCredentialsSecretName())
+	return map[string][]byte{
+		"username": username,
+		"password": legacy.Data["password"],
+	}, nil
+}
+
+// deleteLegacyAdminSecret removes the pre-rename admin bootstrap Secret after its
+// value has been adopted. Best-effort: errors are logged, not returned.
+func (r *DittoServerReconciler) deleteLegacyAdminSecret(ctx context.Context, ds *dittoiov1alpha1.DittoServer) {
+	logger := logf.FromContext(ctx)
+	legacy := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ds.GetLegacyAdminCredentialsSecretName(),
+			Namespace: ds.Namespace,
+		},
+	}
+	if err := r.Delete(ctx, legacy); err != nil && !apierrors.IsNotFound(err) {
+		logger.Info("Failed to delete legacy admin credentials secret after migration (harmless)",
+			"error", err.Error())
+	}
 }
 
 // newAPIClient builds a DittoFSClient for the given base URL, wiring TLS trust
@@ -195,7 +274,7 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 
 	// Read admin credentials
 	adminSecret := &corev1.Secret{}
-	adminSecretName := ds.GetAdminCredentialsSecretName()
+	adminSecretName := ds.GetAdminBootstrapCredentialsSecretName()
 
 	// passwordKey is the Secret key holding the admin password (cleartext). For
 	// the operator-managed auto-generated Secret this is always "password"; for a
@@ -206,8 +285,9 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 
 	// If user provided admin password via spec, use that Secret + key.
 	var specAdminUsername string
-	if ds.Spec.Identity != nil && ds.Spec.Identity.Admin != nil &&
-		ds.Spec.Identity.Admin.PasswordSecretRef != nil {
+	userProvidedRef := ds.Spec.Identity != nil && ds.Spec.Identity.Admin != nil &&
+		ds.Spec.Identity.Admin.PasswordSecretRef != nil
+	if userProvidedRef {
 		ref := ds.Spec.Identity.Admin.PasswordSecretRef
 		adminSecretName = ref.Name
 		if ref.Key != "" {
@@ -249,6 +329,27 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 	}
 	tokenResp, err := apiClient.Login(ctx, adminUsername, adminPassword)
 	if err != nil {
+		// The operator only needs the admin password at (re)provisioning time. A
+		// rejected admin login here almost always means the bootstrap Secret no
+		// longer matches the live admin — e.g. the password was rotated with
+		// `dfsctl user passwd admin` after first boot, then the operator-credentials
+		// Secret was deleted/recreated. Surface an actionable event pointing at the
+		// fix instead of an opaque, indefinitely-retried 401.
+		var apiErr *DittoFSAPIError
+		if errors.As(err, &apiErr) && apiErr.IsAuthError() {
+			reason, advice := "AdminBootstrapUnauthorized",
+				fmt.Sprintf("Update the operator-managed bootstrap Secret %q to the current admin password, or set spec.identity.admin.passwordSecretRef.", adminSecretName)
+			if userProvidedRef {
+				reason, advice = "AdminCredentialUnauthorized",
+					fmt.Sprintf("Update the admin password in Secret %q (key %q) referenced by spec.identity.admin.passwordSecretRef to match the live admin password.", adminSecretName, passwordKey)
+			}
+			r.Recorder.Eventf(ds, corev1.EventTypeWarning, reason,
+				"Admin login rejected (%d) while provisioning the operator service account: the admin password is out of sync with the live admin (rotated via dfsctl?). %s",
+				apiErr.StatusCode, advice)
+			return ctrl.Result{}, fmt.Errorf(
+				"admin login rejected (%d) provisioning operator service account: admin credentials secret %q is out of sync with the live admin password: %w",
+				apiErr.StatusCode, adminSecretName, err)
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to login as admin: %w", err)
 	}
 	apiClient.SetToken(tokenResp.AccessToken)
@@ -395,7 +496,7 @@ func (r *DittoServerReconciler) cleanupOperatorServiceAccount(ctx context.Contex
 
 	// Read admin credentials
 	adminSecret := &corev1.Secret{}
-	adminSecretName := ds.GetAdminCredentialsSecretName()
+	adminSecretName := ds.GetAdminBootstrapCredentialsSecretName()
 	passwordKey := "password"
 	var specAdminUsername string
 

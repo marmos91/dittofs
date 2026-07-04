@@ -47,8 +47,19 @@ const (
 	// OperatorCredentialsSecretSuffix is the naming convention for the operator credentials Secret.
 	OperatorCredentialsSecretSuffix = "-operator-credentials"
 
-	// AdminCredentialsSecretSuffix is the naming convention for the admin bootstrap Secret.
-	AdminCredentialsSecretSuffix = "-admin-credentials"
+	// AdminBootstrapCredentialsSecretSuffix is the naming convention for the admin
+	// bootstrap Secret. The "bootstrap" marker makes it self-evident that this
+	// password is consumed once, on first server start, to seed the admin user
+	// (via DITTOFS_ADMIN_INITIAL_PASSWORD). It is NOT the live admin password and
+	// is not kept in sync after `dfsctl user passwd admin`.
+	AdminBootstrapCredentialsSecretSuffix = "-admin-bootstrap-credentials"
+
+	// legacyAdminCredentialsSecretSuffix is the pre-rename Secret name suffix.
+	// Retained only so the operator can adopt an existing bootstrap Secret on
+	// upgrade instead of generating a fresh password that would no longer match
+	// the already-bootstrapped server. Remove once no deployment predates the
+	// rename.
+	legacyAdminCredentialsSecretSuffix = "-admin-credentials"
 
 	// OperatorServiceAccountUsername is the fixed username for the operator service account.
 	OperatorServiceAccountUsername = "k8s-operator"
@@ -92,9 +103,18 @@ func (ds *DittoServer) GetOperatorCredentialsSecretName() string {
 	return ds.Name + OperatorCredentialsSecretSuffix
 }
 
-// GetAdminCredentialsSecretName returns the name of the admin credentials Secret.
-func (ds *DittoServer) GetAdminCredentialsSecretName() string {
-	return ds.Name + AdminCredentialsSecretSuffix
+// GetAdminBootstrapCredentialsSecretName returns the name of the admin bootstrap
+// credentials Secret. The password it holds is used once to seed the admin user;
+// see AdminBootstrapCredentialsSecretSuffix.
+func (ds *DittoServer) GetAdminBootstrapCredentialsSecretName() string {
+	return ds.Name + AdminBootstrapCredentialsSecretSuffix
+}
+
+// GetLegacyAdminCredentialsSecretName returns the pre-rename bootstrap Secret
+// name. Used only by the migration path in reconcileAdminCredentials to adopt an
+// existing password on upgrade; remove once no pre-rename deployments remain.
+func (ds *DittoServer) GetLegacyAdminCredentialsSecretName() string {
+	return ds.Name + legacyAdminCredentialsSecretSuffix
 }
 
 // GetAPIServiceURL returns the in-cluster URL for the DittoFS API service.
