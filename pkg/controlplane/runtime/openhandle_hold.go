@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
+	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -50,13 +52,16 @@ func (r *Runtime) openFileEnumerators() []OpenFileEnumerator {
 // data left to protect behind them. Any other metadata-store error propagates
 // so the caller fails closed (a GC pass that cannot determine the held set
 // must not sweep).
-func (r *Runtime) forEachOpenUnlinkedFile(ctx context.Context, shares map[string]struct{}, fn func(shareName string, file *metadata.File) error) error {
+func (r *Runtime) forEachOpenUnlinkedFile(ctx context.Context, scope map[string]struct{}, fn func(shareName string, file *metadata.File) error) error {
 	// A file open via multiple protocols at once (e.g. NFSv4 + SMB) is
 	// reported by every enumerator; visit each handle once so per-file work
 	// (GetFile) and observability counters don't scale with protocol fan-out.
 	seen := make(map[string]struct{})
 	for _, enum := range r.openFileEnumerators() {
 		err := enum.EnumerateOpenFiles(ctx, func(fileHandle []byte) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if _, dup := seen[string(fileHandle)]; dup {
 				return nil
 			}
@@ -69,11 +74,17 @@ func (r *Runtime) forEachOpenUnlinkedFile(ctx context.Context, shares map[string
 				logger.Debug("open-handle hold: unresolvable handle skipped", "err", err)
 				return nil
 			}
-			if _, ok := shares[shareName]; !ok {
+			if _, ok := scope[shareName]; !ok {
 				return nil
 			}
 			mds, err := r.GetMetadataStoreForShare(shareName)
 			if err != nil {
+				if errors.Is(err, shares.ErrShareNotFound) {
+					// Share removed between handle resolution and store
+					// lookup — nothing left to hold behind the handle.
+					logger.Debug("open-handle hold: share removed mid-scan", "share", shareName)
+					return nil
+				}
 				return fmt.Errorf("open-handle hold: metadata store for share %q: %w", shareName, err)
 			}
 			file, err := mds.GetFile(ctx, handle)
