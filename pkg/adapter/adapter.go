@@ -140,6 +140,13 @@ type Adapter interface {
 // the cross-protocol oplock breaker without import cycles between protocol packages.
 const OplockBreakerProviderKey = "oplock_breaker"
 
+// SMBOpenFilesProviderKey is the Runtime adapter provider key under which the
+// SMB handler registers itself as an open-file enumerator for the block-GC
+// open-handle hold (#1448). The NFSv4 state manager needs no dedicated key:
+// it is already registered under "nfs" and the runtime discovers open-file
+// enumerators structurally across all registered adapter providers.
+const SMBOpenFilesProviderKey = "smb_open_files"
+
 // OplockBreaker provides cross-protocol oplock break coordination.
 // Adapters holding opportunistic locks register an implementation via
 // Runtime.SetAdapterProvider("oplock_breaker", breaker).

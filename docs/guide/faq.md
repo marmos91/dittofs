@@ -237,7 +237,11 @@ block's `ContentHash`:
    share that targets the same remote** (cross-share aggregation by
    `bucket+endpoint+prefix`, not share name). The live set is built on
    disk under `<localStore>/gc-state/<runID>/db/` (memory-bounded
-   regardless of metadata size).
+   regardless of metadata size). Hold providers then add hashes the
+   namespace no longer references but that must survive: snapshot
+   manifests, and files unlinked while still held open (NFSv4 open
+   stateids, SMB open handles) — POSIX unlink-while-open data stays
+   readable until the last close, beyond the grace period.
 2. **Sweep.** A single `RemoteStore.Walk` enumerates every CAS object
    cluster-wide (the backend paginates internally). An object is kept
    iff its hash is in the live set OR its `LastModified` is newer than

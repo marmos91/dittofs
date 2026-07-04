@@ -1784,7 +1784,7 @@ func (s *Service) GetShare(name string) (*Share, error) {
 
 	share, exists := s.registry[name]
 	if !exists {
-		return nil, fmt.Errorf("share %q not found", name)
+		return nil, fmt.Errorf("%w: %q", ErrShareNotFound, name)
 	}
 	// Return a snapshot, not the live registry pointer: UpdateShare /
 	// SetShare* mutate the stored *Share under s.mu, so handing out the live
