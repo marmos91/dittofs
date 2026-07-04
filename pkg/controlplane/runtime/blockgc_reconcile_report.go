@@ -58,6 +58,16 @@ func (r *Runtime) ReconcileReport(ctx context.Context) (*engine.ReconcileReport,
 			views = append(views, view)
 			locals = append(locals, localsByShare[shareName]...)
 		}
+		// No usable metadata view for any share on this remote: metaBlockIDs
+		// would be empty, so EVERY aged remote object would be misreported as a
+		// record-less orphan (class 3). Skip the remote fail-closed rather than
+		// emit false orphans. Unreachable with all current backends (each
+		// implements ReconcileMetaView).
+		if len(views) == 0 {
+			logger.Warn("ReconcileReport: no metadata views for remote — scan skipped fail-closed",
+				"configID", entry.ConfigID, "shares", entry.Shares)
+			continue
+		}
 		// A remote that cannot hold packed blocks (no RemoteBlockStore) still
 		// gets classes 1/2 scanned; class 3 is skipped with a nil remote.
 		rbs, _ := entry.Store.(remote.RemoteBlockStore)

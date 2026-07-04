@@ -217,7 +217,7 @@ func Reconcile(
 	}
 
 	// Class 4: stranded local-only chunks (unsynced, local-durable).
-	// ponytail: no per-chunk byte accounting — that costs one stat each and the
+	// Note: no per-chunk byte accounting — that costs one stat each and the
 	// count + sample is enough for a human to decide. Add Bytes if a cheap size
 	// surfaces on the local view.
 	for _, l := range locals {
