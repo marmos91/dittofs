@@ -11,8 +11,8 @@ import (
 // updates the size, but the per-share block store still holds the tail bytes;
 // without this call a later re-extend re-exposes the discarded data as file
 // content instead of a zero-filled hole (silent data-integrity / info-leak
-// bug) and the dropped CAS chunks leak on the remote until GC never reclaims
-// them (#832).
+// bug) and the dropped CAS chunks leak on the remote because their RefCount is
+// never decremented, so GC never reclaims them (#832).
 //
 // Callers pass the PRE-truncate file snapshot (fetched via GetFile BEFORE
 // SetFileAttributes pruned it) so the engine reaps RefCount on every dropped

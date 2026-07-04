@@ -224,7 +224,7 @@ func TestSetInfo_TruncateDown_ReExtend_ReadsZeros(t *testing.T) {
 
 	for i, b := range res.Data {
 		if b != 0 {
-			t.Fatalf("re-extended hole leaked stale data: read %x at offset %d, want zeros", res.Data, off+uint64(i))
+			t.Fatalf("re-extended hole leaked stale data: byte %#x at offset %d (full read %x), want zero", b, off+uint64(i), res.Data)
 		}
 	}
 }
