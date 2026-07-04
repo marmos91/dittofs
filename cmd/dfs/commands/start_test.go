@@ -96,9 +96,8 @@ func TestStart_LegacyLayoutExitCode(t *testing.T) {
 	stderr := stderrBuf.String()
 	for _, want := range []string{
 		"Detected legacy .blk layout",
-		"dfs migrate-to-cas",
+		"dittofs v0.21 or earlier",
 		sharePath,
-		"docs/CONFIGURATION.md",
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr missing %q\nstderr was:\n%s", want, stderr)

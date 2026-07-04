@@ -438,7 +438,7 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 
 	// persist FileAttr.Blocks into file_block_refs.
 	// Atomic with the files-row UPDATE/INSERT above (same tx). Only regular
-	// files carry BlockRef payloads. Empty/nil Blocks performs a DELETE-only
+	// files carry ChunkRef payloads. Empty/nil Blocks performs a DELETE-only
 	// pass, ensuring no stale rows survive a write that drops Blocks.
 	if file.Type == metadata.FileTypeRegular {
 		if err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks); err != nil {
@@ -909,13 +909,10 @@ func (tx *postgresTransaction) GetShareOptions(ctx context.Context, shareName st
 		return nil, err
 	}
 
-	query := `SELECT options, block_layout FROM shares WHERE share_name = $1`
+	query := `SELECT options FROM shares WHERE share_name = $1`
 
-	var (
-		optionsJSON     []byte
-		blockLayoutText string
-	)
-	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&optionsJSON, &blockLayoutText)
+	var optionsJSON []byte
+	err := tx.tx.QueryRow(ctx, query, shareName).Scan(&optionsJSON)
 	if err != nil {
 		return nil, mapPgError(err, "GetShareOptions", shareName)
 	}
@@ -926,14 +923,6 @@ func (tx *postgresTransaction) GetShareOptions(ctx context.Context, shareName st
 			return nil, mapPgError(err, "GetShareOptions", shareName)
 		}
 	}
-
-	// Authoritative: block_layout column overrides JSON blob (Phase
-	// 14 / D-A6). ParseBlockLayout coerces "" → legacy.
-	layout, err := metadata.ParseBlockLayout(blockLayoutText)
-	if err != nil {
-		return nil, fmt.Errorf("share %q: %w", shareName, err)
-	}
-	options.BlockLayout = layout
 
 	return &options, nil
 }
@@ -948,14 +937,9 @@ func (tx *postgresTransaction) CreateShare(ctx context.Context, share *metadata.
 		return err
 	}
 
-	layout, err := metadata.ParseBlockLayout(string(share.Options.BlockLayout))
-	if err != nil {
-		return fmt.Errorf("share %q: %w", share.Name, err)
-	}
-
 	// Update options for existing share (created by CreateRootDirectory)
-	query := `UPDATE shares SET options = $1, block_layout = $2 WHERE share_name = $3`
-	_, err = tx.tx.Exec(ctx, query, optionsData, string(layout), share.Name)
+	query := `UPDATE shares SET options = $1 WHERE share_name = $2`
+	_, err = tx.tx.Exec(ctx, query, optionsData, share.Name)
 	if err != nil {
 		return mapPgError(err, "CreateShare", share.Name)
 	}
@@ -973,13 +957,8 @@ func (tx *postgresTransaction) UpdateShareOptions(ctx context.Context, shareName
 		return err
 	}
 
-	layout, err := metadata.ParseBlockLayout(string(options.BlockLayout))
-	if err != nil {
-		return fmt.Errorf("share %q: %w", shareName, err)
-	}
-
-	query := `UPDATE shares SET options = $1, block_layout = $2 WHERE share_name = $3`
-	result, err := tx.tx.Exec(ctx, query, optionsData, string(layout), shareName)
+	query := `UPDATE shares SET options = $1 WHERE share_name = $2`
+	result, err := tx.tx.Exec(ctx, query, optionsData, shareName)
 	if err != nil {
 		return mapPgError(err, "UpdateShareOptions", shareName)
 	}

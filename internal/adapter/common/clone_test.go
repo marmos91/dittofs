@@ -11,7 +11,7 @@ import (
 )
 
 // TestCloneWholeFile_O1 asserts the reflink is a pure metadata operation: the
-// destination inherits the source's BlockRef list and each unique source hash
+// destination inherits the source's ChunkRef list and each unique source hash
 // is RefCount-incremented exactly once (no data movement). This is the headline
 // `cp --reflink` case.
 func TestCloneWholeFile_O1(t *testing.T) {
@@ -20,7 +20,7 @@ func TestCloneWholeFile_O1(t *testing.T) {
 	coord := &fakeCoordinator{}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	srcBlocks := []block.BlockRef{
+	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
 		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},
 		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 2048},
@@ -73,7 +73,7 @@ func TestCloneWholeFile_SelfCloneNoOp(t *testing.T) {
 	coord := &fakeCoordinator{}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	srcBlocks := []block.BlockRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
+	srcBlocks := []block.ChunkRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
 	selfHandle := putTestFile(t, ms, "/self.bin", "same-pid", srcBlocks, 4096)
 	cache := &recordingInvalidator{}
 
@@ -100,7 +100,7 @@ func TestCloneWholeFile_RollsBackOnIncrementError(t *testing.T) {
 	}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	srcBlocks := []block.BlockRef{
+	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
 		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},
 	}

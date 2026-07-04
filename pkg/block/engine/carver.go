@@ -17,36 +17,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// addPendingCarveHash registers a freshly-completed log-blob chunk for the next
-// carve pass. O(1); charges unsyncedBytes once per distinct hash (re-adding
-// refreshes the recorded size only). Signals the carve dispatcher so packing
-// overlaps the rollup of later chunks.
-func (m *Syncer) addPendingCarveHash(h block.ContentHash, size int64) {
-	m.pendingMu.Lock()
-	prev, already := m.pendingCarveHashes[h]
-	m.pendingCarveHashes[h] = size
-	m.unsyncedBytes.Add(size - prev)
-	if !already {
-		m.carveQ = append(m.carveQ, h)
-	}
-	m.pendingMu.Unlock()
-
-	if !already {
-		m.publishCarveQueueDepth()
-		m.signalCarveWake()
-	}
-}
-
-// publishCarveQueueDepth folds the carve backlog into the upload-queue-depth
-// gauge alongside the legacy pending set so the metric reflects all
-// not-yet-durable chunks.
+// publishCarveQueueDepth publishes the carve backlog to the
+// upload-queue-depth gauge so the metric reflects all not-yet-durable chunks.
 func (m *Syncer) publishCarveQueueDepth() {
 	mx := m.dataplaneMetrics()
 	if mx == nil {
 		return
 	}
 	m.pendingMu.Lock()
-	n := len(m.pendingHashes) + len(m.pendingCarveHashes)
+	n := len(m.pendingCarveHashes)
 	m.pendingMu.Unlock()
 	mx.SetUploadQueueDepth(n)
 }
@@ -125,6 +104,12 @@ func (m *Syncer) carveDispatcher(ctx context.Context) {
 // commit leaves an orphan remote block (reclaimed by block GC) and re-carves the
 // chunks into a new block, never losing or double-committing them.
 func (m *Syncer) carveFlush(ctx context.Context, drainAll bool) error {
+	if !m.carveActive.Load() {
+		// No remote or the carve substrate is not wired: nothing can be
+		// packed. Pending chunks stay in the set; Flush/SyncNow report the
+		// condition honestly.
+		return nil
+	}
 	m.carveMu.Lock()
 	defer m.carveMu.Unlock()
 
@@ -211,14 +196,68 @@ func (m *Syncer) requeueCarveBatch(batch []block.ContentHash) {
 	m.pendingMu.Unlock()
 }
 
-// markSyncedRetries is the number of in-place retries when DefaultCommitBlock
-// returns ErrCommitPartial (transaction committed but MarkSynced loop
-// incomplete). Retrying with the same BlockID completes the MarkSynced loop
-// via DefaultCommitBlock's idempotency — no new block is minted.
-const markSyncedRetries = 3
+// carveByteState classifies the outcome of resolving a carve-claimed chunk's
+// bytes: found (pack it), transient (bytes not resolvable yet — leave pending
+// and retry a later pass), or gone (bytes genuinely lost — drop it).
+type carveByteState int
 
-// markSyncedRetryDelay is the backoff between ErrCommitPartial retries.
-const markSyncedRetryDelay = 100 * time.Millisecond
+const (
+	carveBytesFound carveByteState = iota
+	carveBytesTransient
+	carveBytesGone
+)
+
+// carveChunkBytes resolves the plaintext for one carve-claimed hash. The
+// log-blob location is the primary source (fs-backed local tier); when the
+// local index has no entry — or no log-blob reader is wired at all (memory
+// local stores have no log-blob substrate) — it falls back to the hash-keyed
+// local store read. The returned location is the zero value on the fallback
+// path, which DefaultCommitBlock treats as "no local index entry to write".
+//
+// A rolled-up chunk is registered for carve (via OnChunkComplete) BEFORE its
+// log-blob index entry is committed in the rollup's Phase C, so an index miss
+// with no hash-keyed copy is almost always "not yet committed" — reported as
+// carveBytesTransient so the caller requeues it for a later pass rather than
+// dropping it (which would silently lose the upload). Only a positively-located
+// entry whose blob bytes have vanished (ReadLocalAt → ErrChunkNotFound) is
+// carveBytesGone.
+func (m *Syncer) carveChunkBytes(
+	ctx context.Context,
+	committer blockCommitter,
+	reader localBlobReader,
+	h block.ContentHash,
+) ([]byte, block.LocalChunkLocation, carveByteState, error) {
+	var zero block.LocalChunkLocation
+	if reader != nil {
+		loc, ok, err := committer.GetLocalLocation(ctx, h)
+		if err != nil {
+			return nil, zero, carveBytesGone, fmt.Errorf("carve: get local location %s: %w", h, err)
+		}
+		if ok {
+			dst := make([]byte, loc.RawLength)
+			if _, err := reader.ReadLocalAt(ctx, loc, dst); err != nil {
+				if errors.Is(err, block.ErrChunkNotFound) {
+					return nil, zero, carveBytesGone, nil // located but bytes vanished
+				}
+				return nil, zero, carveBytesGone, fmt.Errorf("carve: read local %s: %w", h, err)
+			}
+			return dst, loc, carveBytesFound, nil
+		}
+	}
+	// Hash-keyed fallback: the only byte source for local stores without a
+	// log-blob substrate, and the last resort for a missing index entry.
+	data, err := m.local.Get(ctx, h)
+	if err != nil {
+		if errors.Is(err, block.ErrChunkNotFound) {
+			// No index entry and no hash-keyed copy: the pre-Phase-C window.
+			// Requeue rather than drop so the imminent index commit is picked
+			// up next pass.
+			return nil, zero, carveBytesTransient, nil
+		}
+		return nil, zero, carveBytesGone, fmt.Errorf("carve: read local %s: %w", h, err)
+	}
+	return data, zero, carveBytesFound, nil
+}
 
 // carveAndCommitBlock reads each chunk's raw bytes from the log-blob substrate,
 // seals it through the per-chunk transform, frames it into one block via
@@ -232,14 +271,15 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	committer := m.blockCommitter
 	reader := m.localBlobReader
 	m.mu.RUnlock()
-	if rbs == nil || committer == nil || reader == nil {
+	if rbs == nil || committer == nil {
 		return errors.New("carve: substrate not wired")
 	}
 
 	// Defense-in-depth (secondary): drop any hash that is already fully synced
-	// before packing. An already-synced hash can appear here if a previous
-	// ErrCommitPartial retry exhausted and the batch was requeued with some
-	// chunks already MarkSynced. Packing such a hash again would inflate the new
+	// before packing. CommitBlock is atomic (a failed commit leaves nothing
+	// synced), but an already-synced hash can still appear here — e.g. a hash
+	// requeued after a post-commit crash, or one retired concurrently by
+	// markFetchedSynced. Packing such a hash again would inflate the new
 	// block's LiveChunkCount (since MarkSynced is idempotent and the locator
 	// would not update). Drop it from the carve set instead.
 	filtered := batch[:0]
@@ -275,27 +315,22 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 
 	commits := make([]block.BlockChunkCommit, 0, len(batch))
 	for _, h := range batch {
-		loc, ok, err := committer.GetLocalLocation(ctx, h)
+		dst, loc, state, err := m.carveChunkBytes(ctx, committer, reader, h)
 		if err != nil {
-			return fmt.Errorf("carve: get local location %s: %w", h, err)
+			return err
 		}
-		if !ok {
-			// Not log-blob-resident — a stray legacy CAS hash that was routed
-			// here. Hand it to the legacy mirror path and drop it from carve.
-			m.rerouteCarveMiss(h)
+		switch state {
+		case carveBytesTransient:
+			// Bytes not resolvable yet (the chunk's log-blob index entry commits
+			// in the rollup's imminent Phase C). Leave it in the carve set so a
+			// later pass packs it; do NOT drop (that would lose the upload).
 			continue
-		}
-
-		dst := make([]byte, loc.RawLength)
-		if _, err := reader.ReadLocalAt(ctx, loc, dst); err != nil {
-			if errors.Is(err, block.ErrChunkNotFound) {
-				// The chunk's local bytes vanished before carve. Drop it from
-				// the carve set; a write-again or T4 reconcile re-discovers it.
-				logger.Error("carve: chunk bytes lost before carve — dropped", "hash", h.String())
-				m.dropCarveHash(h)
-				continue
-			}
-			return fmt.Errorf("carve: read local %s: %w", h, err)
+		case carveBytesGone:
+			// Bytes genuinely lost. Drop from the carve set; a write-again or the
+			// reconcile sweep re-discovers it if it still exists somewhere.
+			logger.Error("carve: chunk bytes lost — dropped", "hash", h.String())
+			m.dropCarveHash(h)
+			continue
 		}
 
 		wire := dst
@@ -317,7 +352,7 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 		})
 	}
 	if len(commits) == 0 {
-		return nil // every chunk in the batch was rerouted/dropped
+		return nil // every chunk in the batch was dropped
 	}
 	if _, err := builder.Finish(); err != nil {
 		return fmt.Errorf("carve: finish block: %w", err)
@@ -329,8 +364,6 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	// Upload the assembled block, then atomically commit. The order matters for
 	// crash-safety: PutBlock first means a crash before the commit leaves an
 	// orphan block (GC reclaims it) but never an unbacked record.
-	// Instrumented exactly like the legacy mirrorChunk Put so the datapath
-	// inflight/throughput/latency metrics stay live on the packed-blocks path.
 	mx := m.dataplaneMetrics()
 	uploadStart := time.Now()
 	if mx != nil {
@@ -346,7 +379,7 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 		mx.RecordUpload(len(blockBytes), result, time.Since(uploadStart))
 	}
 	if err != nil {
-		m.uploadErrWindow.Add(1)
+		m.failedSyncs.Add(1)
 		return fmt.Errorf("carve: put block %s: %w", blockID, err)
 	}
 
@@ -357,38 +390,17 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 		LiveChunkCount: uint32(len(commits)),
 		SyncState:      block.BlockStateRemote,
 	}
-	commitErr := metadata.DefaultCommitBlock(ctx, committer, rec, commits)
-	if commitErr != nil {
-		var partial *metadata.ErrCommitPartial
-		if errors.As(commitErr, &partial) {
-			// The block record transaction committed but the MarkSynced loop did
-			// not complete. Retry with the SAME blockID: DefaultCommitBlock's
-			// idempotent tx guard skips the transaction and re-runs MarkSynced to
-			// completion — no new block object is needed or minted.
-			logger.Debug("carve: partial MarkSynced, retrying same block",
-				"blockID", partial.BlockID, "cause", partial.Cause)
-			for i := 0; i < markSyncedRetries; i++ {
-				select {
-				case <-ctx.Done():
-					return fmt.Errorf("carve: commit block %s (mark-synced retry cancelled): %w",
-						blockID, ctx.Err())
-				case <-time.After(markSyncedRetryDelay):
-				}
-				if retryErr := metadata.DefaultCommitBlock(ctx, committer, rec, commits); retryErr == nil {
-					commitErr = nil
-					break
-				} else {
-					commitErr = retryErr
-				}
-			}
-		}
-	}
-	if commitErr != nil {
-		return fmt.Errorf("carve: commit block %s: %w", blockID, commitErr)
+	// DefaultCommitBlock is fully atomic: record, local locations, and synced
+	// locators land in one transaction, so an error means NOTHING was
+	// committed. Just return it — the caller's existing requeue logic
+	// (requeueCarveBatch) re-drives the whole batch, and the uploaded block
+	// object becomes an orphan the GC sweep reclaims.
+	if err := metadata.DefaultCommitBlock(ctx, committer, rec, commits); err != nil {
+		return fmt.Errorf("carve: commit block %s: %w", blockID, err)
 	}
 
 	// Retire the committed chunks from the carve set and the backpressure
-	// counter; count them and the uploaded bytes for stats/adaptive feedback.
+	// counter; count them for stats.
 	m.pendingMu.Lock()
 	for _, c := range commits {
 		if size, ok := m.pendingCarveHashes[c.Hash]; ok {
@@ -398,34 +410,11 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	}
 	m.pendingMu.Unlock()
 	m.completedSyncs.Add(int64(len(commits)))
-	m.uploadedBytesWindow.Add(int64(len(blockBytes)))
 	m.publishCarveQueueDepth()
 
 	logger.Debug("Carve: committed block",
 		"blockID", blockID, "chunks", len(commits), "bytes", len(blockBytes))
 	return nil
-}
-
-// rerouteCarveMiss moves a hash that turned out not to be log-blob-resident from
-// the carve set to the legacy standalone-mirror path.
-func (m *Syncer) rerouteCarveMiss(h block.ContentHash) {
-	m.pendingMu.Lock()
-	size, ok := m.pendingCarveHashes[h]
-	if ok {
-		delete(m.pendingCarveHashes, h)
-		// Hand to the legacy pending set; the dispatcher mirrors it as a
-		// standalone CAS object. unsyncedBytes is unchanged (it moves between
-		// sets, still counted once).
-		if _, dup := m.pendingHashes[h]; !dup {
-			m.pendingHashes[h] = size
-			m.readyQ = append(m.readyQ, h)
-		}
-	}
-	m.pendingMu.Unlock()
-	if ok {
-		logger.Warn("carve: non-log-blob hash rerouted to legacy mirror", "hash", h.String())
-		m.signalWake()
-	}
 }
 
 // dropCarveHash removes a hash whose local bytes vanished from the carve set and

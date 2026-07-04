@@ -7,26 +7,26 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// mkBlocks builds a sorted []BlockRef from (offset, size) pairs.
+// mkBlocks builds a sorted []ChunkRef from (offset, size) pairs.
 // Sizes default to 4 MiB when omitted.
-func mkBlocks(offsetsAndSizes ...uint64) []block.BlockRef {
+func mkBlocks(offsetsAndSizes ...uint64) []block.ChunkRef {
 	const defaultSize = 4 << 20
 	if len(offsetsAndSizes)%2 != 0 {
 		// caller passed only offsets — pair them with default size.
-		out := make([]block.BlockRef, len(offsetsAndSizes))
+		out := make([]block.ChunkRef, len(offsetsAndSizes))
 		for i, off := range offsetsAndSizes {
-			out[i] = block.BlockRef{Offset: off, Size: defaultSize}
+			out[i] = block.ChunkRef{Offset: off, Size: defaultSize}
 		}
 		return out
 	}
-	out := make([]block.BlockRef, len(offsetsAndSizes)/2)
+	out := make([]block.ChunkRef, len(offsetsAndSizes)/2)
 	for i := 0; i < len(offsetsAndSizes); i += 2 {
-		out[i/2] = block.BlockRef{Offset: offsetsAndSizes[i], Size: uint32(offsetsAndSizes[i+1])}
+		out[i/2] = block.ChunkRef{Offset: offsetsAndSizes[i], Size: uint32(offsetsAndSizes[i+1])}
 	}
 	return out
 }
 
-// TestFindBlocksForRange_Empty: an empty []BlockRef returns (0, 0) for
+// TestFindBlocksForRange_Empty: an empty []ChunkRef returns (0, 0) for
 // any range.
 func TestFindBlocksForRange_Empty(t *testing.T) {
 	cases := []struct{ offset, size uint64 }{
@@ -65,7 +65,7 @@ func TestFindBlocksForRange_RangeAfterLastBlock(t *testing.T) {
 }
 
 // TestFindBlocksForRange_ExactBlockBoundary: a range exactly at one
-// BlockRef boundary returns indices for that single block.
+// ChunkRef boundary returns indices for that single block.
 func TestFindBlocksForRange_ExactBlockBoundary(t *testing.T) {
 	blocks := mkBlocks(0, 1024, 1024, 1024, 2048, 1024)
 	start, end := findBlocksForRange(blocks, 1024, 1024)
@@ -78,7 +78,7 @@ func TestFindBlocksForRange_ExactBlockBoundary(t *testing.T) {
 }
 
 // TestFindBlocksForRange_SpanThreeContiguousBlocks: a range spanning 3
-// contiguous BlockRefs returns start, end with end-start == 3.
+// contiguous ChunkRefs returns start, end with end-start == 3.
 func TestFindBlocksForRange_SpanThreeContiguousBlocks(t *testing.T) {
 	blocks := mkBlocks(0, 1024, 1024, 1024, 2048, 1024, 3072, 1024)
 	start, end := findBlocksForRange(blocks, 512, 2560) // [512..3072)
@@ -88,7 +88,7 @@ func TestFindBlocksForRange_SpanThreeContiguousBlocks(t *testing.T) {
 }
 
 // TestFindBlocksForRange_SpanWithSparseHole: a range spanning a sparse
-// hole (gap between BlockRef N and N+1) returns indices covering both —
+// hole (gap between ChunkRef N and N+1) returns indices covering both —
 // caller zero-fills the gap.
 func TestFindBlocksForRange_SpanWithSparseHole(t *testing.T) {
 	// Two blocks with a gap [1024..4096)
@@ -119,9 +119,9 @@ func TestFindBlocksForRange_PartialOverlapAtHead(t *testing.T) {
 	}
 }
 
-// TestFindBlocksForRange_Property: for a sorted random []BlockRef and a
-// random (offset, size), every BlockRef within [start, end) overlaps
-// the range, and no BlockRef outside that index range overlaps.
+// TestFindBlocksForRange_Property: for a sorted random []ChunkRef and a
+// random (offset, size), every ChunkRef within [start, end) overlaps
+// the range, and no ChunkRef outside that index range overlaps.
 //
 // caller-snapshot-wins: sortedness is the caller's
 // invariant; this test asserts that given a sorted slice, the helper
@@ -133,12 +133,12 @@ func TestFindBlocksForRange_Property(t *testing.T) {
 		// Build sorted random blocks. Cursor monotonically increases so
 		// the slice stays sorted; gap > 0 introduces sparse holes.
 		n := rng.Intn(20) + 1
-		blocks := make([]block.BlockRef, n)
+		blocks := make([]block.ChunkRef, n)
 		cursor := uint64(0)
 		for i := range blocks {
 			gap := uint64(rng.Intn(2_000_000))
 			sz := uint32(rng.Intn(4_000_000) + 1)
-			blocks[i] = block.BlockRef{Offset: cursor + gap, Size: sz}
+			blocks[i] = block.ChunkRef{Offset: cursor + gap, Size: sz}
 			cursor = blocks[i].Offset + uint64(sz)
 		}
 		offset := uint64(rng.Intn(int(cursor) + 5_000_000))

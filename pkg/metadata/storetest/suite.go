@@ -110,20 +110,20 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runFileChunkOpsTests(t, factory)
 	})
 
-	// BlockRefOps conformance for FileAttr.Blocks []BlockRef
+	// ChunkRefOps conformance for FileAttr.Blocks []ChunkRef
 	// round-trip across PutFile/GetFile, replace semantics, and the
 	// Postgres-only FK-cascade behavior. Memory and Badger skip the
 	// cascade scenario via FileChunkRefsAccessor type-assertion
 	// failure.
-	t.Run("BlockRefOps", func(t *testing.T) {
-		runBlockRefOpsTests(t, factory)
+	t.Run("ChunkRefOps", func(t *testing.T) {
+		runChunkRefOpsTests(t, factory)
 	})
 
-	// TruncateBlockRefOps asserts that a size-down SetAttr prunes
+	// TruncateChunkRefOps asserts that a size-down SetAttr prunes
 	// FileAttr.Blocks / file_block_refs past the new EOF, so the snapshot
 	// manifest never over-references content past the current size (#817).
-	t.Run("TruncateBlockRefOps", func(t *testing.T) {
-		runTruncateBlockRefTests(t, factory)
+	t.Run("TruncateChunkRefOps", func(t *testing.T) {
+		runTruncateChunkRefTests(t, factory)
 	})
 
 	// ObjectIDOps conformance for FileAttr.ObjectID round-trip,
@@ -182,9 +182,18 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 	})
 
 	// CommitBlockOps covers CommitBlock: full commit (record + local locations
-	// + synced markers), idempotency (second call is no-op).
+	// + synced markers, all in ONE transaction), idempotency (second call is
+	// no-op), atomic rollback on mid-commit failure, locator overwrite of
+	// pre-existing standalone markers, and zero-Local skip.
 	t.Run("CommitBlockOps", func(t *testing.T) {
 		runCommitBlockOps(t, factory(t))
+	})
+
+	// SyncedHashTxOps covers the transaction-level SyncedHashStore surface:
+	// read-your-writes, rollback discard, commit persistence, first-wins vs
+	// delete-then-mark overwrite.
+	t.Run("SyncedHashTxOps", func(t *testing.T) {
+		runSyncedHashTxOps(t, factory(t))
 	})
 }
 

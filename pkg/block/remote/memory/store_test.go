@@ -22,8 +22,9 @@ import (
 //
 // The inline TestStore_* tests below remain in place as a fine-grained
 // per-method baseline (data-isolation defensive copies, closed-store
-// rejection paths, ReadBlockVerified mismatch case) — they exercise
-// backend-specific behaviors that are not part of the unified contract.
+// rejection paths) — they exercise backend-specific behaviors that are not
+// part of the unified contract. The legacy standalone-CAS verified-read
+// coverage lives in legacy_cas_migration_test.go.
 //
 // -07 lands the missing Has() method on the remote-memory
 // *Store; until then the factory return type does not type-check.
@@ -333,8 +334,6 @@ func TestStore_Walk_CallbackErrorWrapped(t *testing.T) {
 	}
 }
 
-// TestStore_ReadBlockVerified covers the happy path and the
-// body-mismatch failure mode.
 // TestStore_ReadChunk covers the base-store block range read used by the
 // #1414 locator read path: a chunk staged inside a block object is returned
 // verbatim for its [offset, length) slice, with GetRange-style bounds checks.
@@ -374,39 +373,6 @@ func TestStore_ReadChunk(t *testing.T) {
 	}
 	if !bytes.Equal(clamped, b) {
 		t.Fatalf("clamped read returned wrong bytes")
-	}
-}
-
-func TestStore_ReadBlockVerified(t *testing.T) {
-	ctx := context.Background()
-	s := New()
-	defer func() { _ = s.Close() }()
-
-	data := []byte("verified read")
-	hash := hashOf(t, data)
-	if err := s.Put(ctx, hash, data); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	got, err := s.ReadBlockVerified(ctx, hash, hash)
-	if err != nil {
-		t.Fatalf("ReadBlockVerified happy path: %v", err)
-	}
-	if string(got) != string(data) {
-		t.Fatalf("ReadBlockVerified bytes mismatch: got %q, want %q", got, data)
-	}
-
-	// Mismatched expected => ErrCASContentMismatch
-	wrong := hash
-	wrong[0] ^= 0xFF
-	if _, err := s.ReadBlockVerified(ctx, hash, wrong); !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("ReadBlockVerified mismatch err = %v, want wrapped ErrCASContentMismatch", err)
-	}
-
-	// Not found
-	missing := hashOf(t, []byte("missing"))
-	if _, err := s.ReadBlockVerified(ctx, missing, missing); !errors.Is(err, block.ErrChunkNotFound) {
-		t.Fatalf("ReadBlockVerified on missing hash = %v, want wrapped ErrChunkNotFound", err)
 	}
 }
 

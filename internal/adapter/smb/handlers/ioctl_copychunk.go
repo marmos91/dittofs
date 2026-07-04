@@ -475,7 +475,7 @@ func (h *Handler) executeCopyChunks(
 		}
 
 		// Read from source using pre-allocated buffer.
-		// Nil []BlockRef triggers the dual-read shim. A later refactor
+		// Nil []ChunkRef triggers the dual-read shim. A later refactor
 		// will thread the source's FileAttr.Blocks here.
 		data := buf[:chunk.Length]
 		n, err := srcBlockStore.ReadAt(ctx.Context, srcPayloadID, nil, data, chunk.SourceOffset)
@@ -517,7 +517,7 @@ func (h *Handler) executeCopyChunks(
 
 		// Write to destination.
 		// Nil currentBlocks; legacy / dual-read path drives the syncer.
-		// Returned []BlockRef is discarded — a later refactor will
+		// Returned []ChunkRef is discarded — a later refactor will
 		// thread the destination's FileAttr.Blocks update.
 		if _, err := dstBlockStore.WriteAt(ctx.Context, string(writeOp.PayloadID), nil, data, chunk.TargetOffset); err != nil {
 			logger.Warn("COPYCHUNK: destination write failed",

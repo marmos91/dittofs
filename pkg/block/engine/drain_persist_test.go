@@ -67,7 +67,7 @@ func (c *testCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadI
 	return count, nil
 }
 
-func (c *testCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+func (c *testCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
 	return c.store.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 		if err != nil {
@@ -102,7 +102,7 @@ func mapObjectIDConflict(err error) error {
 	return err
 }
 
-func (c *testCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.BlockRef, error) {
+func (c *testCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.ChunkRef, error) {
 	file, err := c.store.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 	if err != nil {
 		if metadata.IsNotFoundError(err) {
@@ -136,7 +136,7 @@ func (c *testCoordinator) GetPersistedBlocks(ctx context.Context, payloadID stri
 	return full.Blocks, nil
 }
 
-func (c *testCoordinator) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error) {
+func (c *testCoordinator) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error) {
 	if objectID.IsZero() {
 		return nil, nil
 	}
@@ -171,6 +171,7 @@ func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
+		LocalChunkIndex: ms,
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 3_600_000, // 1h — async/ticker rollup can never fire
@@ -248,7 +249,7 @@ func createRealFile(t *testing.T, store metadata.Store, shareName, name string, 
 // fileChunks reads FileAttr.Blocks for a handle via GetFile (which loads
 // blocks from the per-file block manifest — GetFileByPayloadID does NOT on
 // the Postgres backend).
-func fileChunks(t *testing.T, store metadata.Store, handle metadata.FileHandle) []block.BlockRef {
+func fileChunks(t *testing.T, store metadata.Store, handle metadata.FileHandle) []block.ChunkRef {
 	t.Helper()
 	f, err := store.GetFile(context.Background(), handle)
 	if err != nil {

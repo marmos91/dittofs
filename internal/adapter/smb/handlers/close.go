@@ -196,7 +196,7 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 
 	// Flush cached data to ensure durability.
 	// Unlike NFS COMMIT which is non-blocking, SMB CLOSE requires immediate durability.
-	// Routed through common.CommitBlockStore so any future []BlockRef
+	// Routed through common.CommitBlockStore so any future []ChunkRef
 	// plumbing lands in one place (see common/doc.go).
 	//
 	// CLOSE is a durability point (MS-SMB2 3.3.5.10): the client treats a
@@ -926,7 +926,7 @@ func (h *Handler) readMFsymlinkContent(ctx *SMBHandlerContext, openFile *OpenFil
 	}
 
 	// Read the MFsymlink content (always 1067 bytes).
-	// Routed through common.ReadFromBlockStore so any future []BlockRef
+	// Routed through common.ReadFromBlockStore so any future []ChunkRef
 	// plumbing lands in one place (see common/doc.go).
 	// The bytes are copied into a caller-owned slice because the MFsymlink
 	// parse path retains them past Release().

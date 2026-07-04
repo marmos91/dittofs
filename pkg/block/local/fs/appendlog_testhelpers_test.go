@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // nopFBS is a no-op block.EngineFileChunkStore used by
@@ -34,7 +35,7 @@ func (nopFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
 func (nopFBS) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (nopFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.BlockRef) error {
+func (nopFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.ChunkRef) error {
 	// tests don't exercise the LRU hit path, so always
 	// returning ErrUnknownHash matches "hash never Put" — production
 	// callers fall back to the full Put path.
@@ -57,6 +58,12 @@ func (nopFBS) EnumeratePayloads(_ context.Context, _ func(payloadID string) erro
 // store. Shared by /05/06/07/09 test files in the fs package.
 func newFSStoreForTest(t *testing.T, opts FSStoreOptions) *FSStore {
 	t.Helper()
+	// The log-blob substrate is required for all normal chunk I/O. Default-wire
+	// a memory metadata store as the LocalChunkIndex when the caller did not
+	// supply one, so helper-constructed stores exercise the logblob path.
+	if opts.LocalChunkIndex == nil {
+		opts.LocalChunkIndex = memmeta.NewMemoryMetadataStoreWithDefaults()
+	}
 	dir, err := os.MkdirTemp("", "fsstore-test-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)

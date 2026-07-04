@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // memFBS is a minimal in-memory block.EngineFileChunkStore that
@@ -29,7 +30,7 @@ func newMemFileChunkStore() *memFBS {
 // persist mirrors the engine's ObjectIDPersister FileChunk-row write loop
 // (engine.go) so the test FBS holds rows with the canonical
 // "<payloadID>/<offset>" ID that ParseChunkOffset decodes.
-func (m *memFBS) persist(_ context.Context, payloadID string, blocks []block.BlockRef) error {
+func (m *memFBS) persist(_ context.Context, payloadID string, blocks []block.ChunkRef) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	pm := m.rows[payloadID]
@@ -106,7 +107,7 @@ func (m *memFBS) DecrementRefCount(_ context.Context, _ string) (uint32, error) 
 func (m *memFBS) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (m *memFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.BlockRef) error {
+func (m *memFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.ChunkRef) error {
 	return block.ErrUnknownHash
 }
 
@@ -114,6 +115,12 @@ func (m *memFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ bloc
 // FileChunkStore so the CAS-manifest read path can resolve rolled-up bytes.
 func newFSStoreForTestWithFBS(t *testing.T, fbs block.EngineFileChunkStore, opts FSStoreOptions) *FSStore {
 	t.Helper()
+	// The log-blob substrate is required for normal chunk I/O; default-wire a
+	// memory metadata store as the LocalChunkIndex when the caller did not
+	// supply one.
+	if opts.LocalChunkIndex == nil {
+		opts.LocalChunkIndex = memmeta.NewMemoryMetadataStoreWithDefaults()
+	}
 	dir, err := os.MkdirTemp("", "fsstore-drainreset-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)

@@ -151,7 +151,7 @@ func AuditRefcounts(ctx context.Context, share string, store metadata.Store, loc
 // dangling manifest refs for the file.
 //
 // FileChunk IDs are "{payloadID}/{offset}" (the engine writes
-// fmt.Sprintf("%s/%d", payloadID, blockRef.Offset)); the manifest BlockRef
+// fmt.Sprintf("%s/%d", payloadID, blockRef.Offset)); the manifest ChunkRef
 // carries the same Offset and the expected content Hash. A ref is backed
 // iff a row exists at its offset AND that row's hash equals the manifest
 // ref's hash (and is non-zero). Matching by offset alone is not enough:

@@ -79,7 +79,7 @@ func TestRollup_OutOfOrderArrivals_AllRecordsRolledUp(t *testing.T) {
 	// may exceed 4 (large payloads split), but it must NOT be < 4. The
 	// pre-fix bug would have produced 1 (rec#0 only — and even that one
 	// might have been lost depending on stabilization ordering).
-	if n := countChunksInBlocks(t, bc.baseDir); n < 4 {
+	if n := countLocalChunks(t, bc); n < 4 {
 		t.Fatalf("expected at least 4 chunks in blocks/, found %d — Direction-1 bug-shape regression", n)
 	}
 
@@ -158,7 +158,7 @@ func TestRollup_StalledFence_ChunksStillCommitted(t *testing.T) {
 	deadline := time.Now().Add(8 * time.Second)
 	var chunks int
 	for time.Now().Before(deadline) {
-		chunks = countChunksInBlocks(t, bc.baseDir)
+		chunks = countLocalChunks(t, bc)
 		if chunks >= 3 {
 			break
 		}

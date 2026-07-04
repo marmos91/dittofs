@@ -189,7 +189,7 @@ func (h *Handler) Commit(
 	// Per RFC 1813 Section 3.3.21, the server MAY choose when data reaches
 	// stable storage. Our WAL cache provides the durability guarantee.
 	//
-	// Routed through common.CommitBlockStore so any future []BlockRef
+	// Routed through common.CommitBlockStore so any future []ChunkRef
 	// plumbing lands in one place (see common/doc.go).
 	flushErr := common.CommitBlockStore(ctx.Context, blockStore, file.PayloadID)
 	if flushErr != nil {

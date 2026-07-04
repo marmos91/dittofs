@@ -81,6 +81,15 @@ func (c *corruptingGetLocalStore) Get(ctx context.Context, h block.ContentHash) 
 	return c.LocalStore.Get(ctx, h)
 }
 
+// corrupt adds h to the corruption set after construction — used when the
+// fixture must let engine startup (e.g. the cas→blocks migration) read the
+// clean bytes first and only then flip the local copy to garbage.
+func (c *corruptingGetLocalStore) corrupt(h block.ContentHash) {
+	c.mu.Lock()
+	c.corruptHashes[h] = struct{}{}
+	c.mu.Unlock()
+}
+
 func (c *corruptingGetLocalStore) Delete(ctx context.Context, h block.ContentHash) error {
 	c.mu.Lock()
 	delete(c.corruptHashes, h)
@@ -90,26 +99,31 @@ func (c *corruptingGetLocalStore) Delete(ctx context.Context, h block.ContentHas
 
 // ===== countingRemoteStore =====
 
-// countingRemoteStore wraps *remotememory.Store and counts ReadBlockVerified calls.
+// countingRemoteStore wraps *remotememory.Store and counts ReadChunk calls —
+// the post-#1493 remote fetch primitive (dispatchRemoteFetch →
+// readChunkVerified → ReadChunk).
 type countingRemoteStore struct {
 	*remotememory.Store
-	readVerifiedCount atomic.Int32
+	readChunkCount atomic.Int32
 }
 
-func (s *countingRemoteStore) ReadBlockVerified(ctx context.Context, hash, expected block.ContentHash) ([]byte, error) {
-	s.readVerifiedCount.Add(1)
-	return s.Store.ReadBlockVerified(ctx, hash, expected)
+func (s *countingRemoteStore) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
+	s.readChunkCount.Add(1)
+	return s.Store.ReadChunk(ctx, blockID, offset, length, hash)
 }
 
 // ===== newTestEngineWithRemoteAndSHS =====
 
 // newTestEngineWithRemoteAndSHS creates a Store wired with a remote store and a
 // SyncedHashStore, for the self-heal path tests.  The caller provides the local
-// store (possibly a corruptingGetLocalStore wrapper) and the remote / SHS.
+// store (possibly a corruptingGetLocalStore wrapper) and the remote / SHS. The
+// counting remote is also wired as the RemoteBlockStore so Start's cas→blocks
+// migration can repack any standalone-seeded chunk into a packed block.
 func newTestEngineWithRemoteAndSHS(t *testing.T, localStore local.LocalStore, remote *countingRemoteStore, shs metadata.SyncedHashStore) *Store {
 	t.Helper()
 	fbs := newStubFileChunkStore()
 	syncer := NewSyncer(localStore, remote, fbs, DefaultConfig())
+	syncer.SetRemoteBlockStore(remote)
 	bs, err := New(BlockStoreConfig{
 		Local:           localStore,
 		Remote:          remote,
@@ -140,6 +154,13 @@ func setStubMetrics(bs *Store, sm *stubMetrics) {
 // local chunk is transparently replaced from the remote store, the read returns
 // correct data, and metrics counters are incremented once.  A second read after
 // the heal must NOT trigger another remote fetch.
+//
+// Seeding models a pre-#1493 share: the chunk is local plus marked synced with
+// a STANDALONE locator and no remote copy yet. Start's cas→blocks migration
+// repacks it from the verified local bytes into a packed block and rewrites the
+// locator, so the self-heal contract is asserted through the block read path.
+// Corruption is flipped on only after startup so the migration reads clean
+// bytes.
 func TestReadLocalByHash_LocalCorruption_SyncedSelfHeals(t *testing.T) {
 	ctx := context.Background()
 	correctData := []byte("hello self-heal world")
@@ -147,26 +168,33 @@ func TestReadLocalByHash_LocalCorruption_SyncedSelfHeals(t *testing.T) {
 	// Build stores.
 	inner := memory.New()
 	correctHash := block.ContentHash(blake3.Sum256(correctData))
-	corruptLocal := newCorruptingGetLocalStore(inner, correctHash)
+	corruptLocal := newCorruptingGetLocalStore(inner) // corruption enabled after Start
 	remoteRS := &countingRemoteStore{Store: remotememory.New()}
 	shs := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	// Seed: put correct bytes in both local (via inner) and remote.
+	// Seed: correct bytes local, synced marker with a standalone locator —
+	// the pre-migration layout Start must repack into a block.
 	if err := inner.Put(ctx, correctHash, correctData); err != nil {
 		t.Fatalf("Put local: %v", err)
 	}
-	if err := remoteRS.Put(ctx, correctHash, correctData); err != nil {
-		t.Fatalf("Put remote: %v", err)
-	}
-	// Mark synced (standalone locator).
 	if err := shs.MarkSynced(ctx, correctHash, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
-	// Build engine with the corrupting local store.
+	// Build engine with the corrupting local store. Start runs the migration.
 	bs := newTestEngineWithRemoteAndSHS(t, corruptLocal, remoteRS, shs)
 
-	// Wire stub metrics.
+	// Sanity: the migration rewrote the standalone locator to a block locator.
+	loc, synced, err := shs.GetLocator(ctx, correctHash)
+	if err != nil || !synced {
+		t.Fatalf("GetLocator after migration: synced=%v err=%v", synced, err)
+	}
+	if loc.BlockID == "" {
+		t.Fatal("migration did not repack the standalone chunk into a block")
+	}
+
+	// NOW flip the local copy to garbage and wire stub metrics.
+	corruptLocal.corrupt(correctHash)
 	sm := &stubMetrics{}
 	setStubMetrics(bs, sm)
 
@@ -206,8 +234,8 @@ func TestReadLocalByHash_LocalCorruption_SyncedSelfHeals(t *testing.T) {
 	if got := sm.selfHealFailures.Load(); got != 0 {
 		t.Errorf("selfHealFailures = %d, want 0", got)
 	}
-	if got := remoteRS.readVerifiedCount.Load(); got != 1 {
-		t.Errorf("remote readVerifiedCount after first read = %d, want 1", got)
+	if got := remoteRS.readChunkCount.Load(); got != 1 {
+		t.Errorf("remote readChunkCount after first read = %d, want 1", got)
 	}
 
 	// Second read: corruption set cleared, local store has correct bytes — no extra fetch.
@@ -222,8 +250,8 @@ func TestReadLocalByHash_LocalCorruption_SyncedSelfHeals(t *testing.T) {
 	if !bytes.Equal(dest2, correctData) {
 		t.Fatalf("second read data mismatch: got %q, want %q", dest2, correctData)
 	}
-	if got := remoteRS.readVerifiedCount.Load(); got != 1 {
-		t.Errorf("remote readVerifiedCount after second read = %d, want 1 (no extra fetch)", got)
+	if got := remoteRS.readChunkCount.Load(); got != 1 {
+		t.Errorf("remote readChunkCount after second read = %d, want 1 (no extra fetch)", got)
 	}
 }
 
@@ -264,8 +292,8 @@ func TestReadLocalByHash_LocalCorruption_UnsyncedFailClosed(t *testing.T) {
 	if found {
 		t.Fatal("readLocalByHash returned found=true; expected false (fail-closed)")
 	}
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("error = %v; want ErrCASContentMismatch", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("error = %v; want ErrChunkContentMismatch", err)
 	}
 
 	if got := sm.localCorruptions.Load(); got != 1 {
@@ -277,14 +305,14 @@ func TestReadLocalByHash_LocalCorruption_UnsyncedFailClosed(t *testing.T) {
 	if got := sm.selfHealSuccesses.Load(); got != 0 {
 		t.Errorf("selfHealSuccesses = %d, want 0", got)
 	}
-	if got := remoteRS.readVerifiedCount.Load(); got != 0 {
-		t.Errorf("remote readVerifiedCount = %d, want 0 (no fetch for unsynced)", got)
+	if got := remoteRS.readChunkCount.Load(); got != 0 {
+		t.Errorf("remote readChunkCount = %d, want 0 (no fetch for unsynced)", got)
 	}
 }
 
 // TestReadChunkVerified_RemoteCorruption_RecordsMetric verifies that a remote
 // chunk whose bytes don't match the expected BLAKE3 hash records a remote
-// corruption metric and returns ErrCASContentMismatch.
+// corruption metric and returns ErrChunkContentMismatch.
 func TestReadChunkVerified_RemoteCorruption_RecordsMetric(t *testing.T) {
 	ctx := context.Background()
 
@@ -321,8 +349,8 @@ func TestReadChunkVerified_RemoteCorruption_RecordsMetric(t *testing.T) {
 
 	// dispatchRemoteFetch: resolves block locator → readChunkVerified → mismatch.
 	_, _, err := bs.syncer.dispatchRemoteFetch(ctx, fb)
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("error = %v; want ErrCASContentMismatch", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("error = %v; want ErrChunkContentMismatch", err)
 	}
 
 	if got := sm.remoteCorruptions.Load(); got != 1 {
@@ -332,7 +360,7 @@ func TestReadChunkVerified_RemoteCorruption_RecordsMetric(t *testing.T) {
 
 // TestReadLocalByHash_LocalCorrupt_SyncedButRemoteAlsoCorrupt covers the
 // combined failure path: a corrupt local chunk that IS synced but whose remote
-// block copy is ALSO corrupt must fail closed (ErrCASContentMismatch), never
+// block copy is ALSO corrupt must fail closed (ErrChunkContentMismatch), never
 // serve corrupt bytes, and record one local corruption, one remote corruption,
 // and one self-heal failure.
 func TestReadLocalByHash_LocalCorrupt_SyncedButRemoteAlsoCorrupt(t *testing.T) {
@@ -379,8 +407,8 @@ func TestReadLocalByHash_LocalCorrupt_SyncedButRemoteAlsoCorrupt(t *testing.T) {
 	if found {
 		t.Fatal("readLocalByHash returned found=true; expected false (fail-closed, remote also corrupt)")
 	}
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("error = %v; want ErrCASContentMismatch", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("error = %v; want ErrChunkContentMismatch", err)
 	}
 
 	if got := sm.localCorruptions.Load(); got != 1 {
@@ -433,8 +461,8 @@ func TestReadLocalByHash_NilMetrics_NocrashWithCorruption(t *testing.T) {
 	if found {
 		t.Fatal("readLocalByHash returned found=true; expected false")
 	}
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("error = %v; want ErrCASContentMismatch", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("error = %v; want ErrChunkContentMismatch", err)
 	}
 	// If we reach here without panicking, the nil-metrics guard works.
 }

@@ -161,6 +161,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{
+		LocalChunkIndex: ms,
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 50,
@@ -177,7 +178,6 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 	fakeRemote := newFakeRemoteStore()
 
 	syncCfg := SyncerConfig{
-		ParallelUploads:             4,
 		ParallelDownloads:           4,
 		PrefetchBlocks:              2, // Enable prefetch
 		UploadInterval:              50 * time.Millisecond,
@@ -225,7 +225,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 	waitForUnhealthy(t, bsEngine, 500*time.Millisecond)
 
 	// Get queue stats before reading.
-	_, _, prefetchesBefore := syncer.Queue().PendingByType()
+	_, prefetchesBefore := syncer.Queue().PendingByType()
 
 	// Read cached block -- should succeed, but prefetch should be suppressed.
 	readBuf := make([]byte, 4096)
@@ -238,7 +238,7 @@ func TestPrefetchSuppressedWhenUnhealthy(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Get queue stats after reading.
-	_, _, prefetchesAfter := syncer.Queue().PendingByType()
+	_, prefetchesAfter := syncer.Queue().PendingByType()
 
 	// Prefetch count should not increase (prefetch was suppressed).
 	if prefetchesAfter > prefetchesBefore {

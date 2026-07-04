@@ -67,6 +67,7 @@ func TestCompaction_BoundedLogSize(t *testing.T) {
 		RollupWorkers:            2,
 		StabilizationMS:          5,
 		RollupStore:              rs,
+		LocalChunkIndex:          rs,
 		CompactionThresholdBytes: 32 * 1024,
 	}
 	bc := newFSStoreForTest(t, opts)
@@ -124,6 +125,7 @@ func TestCompaction_DisabledByNegativeThreshold(t *testing.T) {
 		RollupWorkers:            2,
 		StabilizationMS:          5,
 		RollupStore:              rs,
+		LocalChunkIndex:          rs,
 		CompactionThresholdBytes: -1,
 	}
 	bc := newFSStoreForTest(t, opts)
@@ -167,6 +169,7 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 		RollupWorkers:            2,
 		StabilizationMS:          5,
 		RollupStore:              rs,
+		LocalChunkIndex:          rs,
 		CompactionThresholdBytes: 16 * 1024,
 	}
 	bc := newFSStoreForTest(t, opts)
@@ -262,6 +265,7 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 		RollupWorkers:            2,
 		StabilizationMS:          5,
 		RollupStore:              rs,
+		LocalChunkIndex:          rs,
 		CompactionThresholdBytes: 8 * 1024,
 	}
 	bc := newFSStoreForTest(t, opts)
@@ -288,7 +292,7 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 		t.Fatalf("DrainRollups: %v", err)
 	}
 
-	chunksBefore := countChunksInBlocks(t, bc.baseDir)
+	chunksBefore := countLocalChunks(t, bc)
 	if chunksBefore == 0 {
 		t.Fatalf("no chunks emitted; cannot validate CAS-preservation invariant")
 	}
@@ -329,7 +333,7 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 	// CAS-preservation: chunk count must not decrease across a
 	// compaction pass. (We tolerate growth from any post-compaction
 	// rollup that ran after the header peek.)
-	chunksAfter := countChunksInBlocks(t, bc.baseDir)
+	chunksAfter := countLocalChunks(t, bc)
 	if chunksAfter < chunksBefore {
 		t.Fatalf("CAS chunk count dropped from %d to %d across compaction — should be additive only",
 			chunksBefore, chunksAfter)
@@ -346,6 +350,7 @@ func TestCompaction_StaleTempCleanedUpOnRecovery(t *testing.T) {
 		RollupWorkers:   2,
 		StabilizationMS: 10,
 		RollupStore:     rs,
+		LocalChunkIndex: rs,
 	})
 	ctx := context.Background()
 
@@ -369,6 +374,7 @@ func TestCompaction_StaleTempCleanedUpOnRecovery(t *testing.T) {
 		RollupWorkers:   2,
 		StabilizationMS: 10,
 		RollupStore:     rs,
+		LocalChunkIndex: rs,
 	})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)

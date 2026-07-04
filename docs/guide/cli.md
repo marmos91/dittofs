@@ -19,7 +19,6 @@ This page is generated from the command definitions (`go run ./cmd/gendocs`). Do
   - [`dfs init`](#dfs-init) — Initialize a sample configuration file
   - [`dfs logs`](#dfs-logs) — Tail server logs
   - [`dfs migrate`](#dfs-migrate) — Run database migrations
-  - [`dfs migrate-to-cas`](#dfs-migrate-to-cas) — Migrate legacy .blk block layout to CAS (offline; required for v0.16+ servers)
   - [`dfs start`](#dfs-start) — Start the DittoFS server
   - [`dfs status`](#dfs-status) — Show server status
   - [`dfs stop`](#dfs-stop) — Stop the DittoFS server
@@ -358,57 +357,6 @@ dfs migrate
 
 # Run migrations with a custom config file
 dfs migrate --config /etc/dittofs/config.yaml
-```
-
-Global flags:
-
-```
-      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
-```
-
-### `dfs migrate-to-cas`
-
-Migrate legacy .blk block layout to CAS (offline; required for v0.16+ servers)
-
-Migrate a stopped DittoFS server's legacy .blk block layout to the
-content-addressed (CAS) layout required by v0.16+.
-
-The dfs server MUST be stopped before running this command — the migration
-rewrites the on-disk layout in place and a concurrent server would race the
-rename and corrupt the store. The command is idempotent: a per-share journal
-lets you resume after a crash or Ctrl-C without re-processing already-migrated
-chunks. On success it writes a .cas-migrated-v1 sentinel per share; the boot
-guard refuses to start dfs until that sentinel exists (exit code 78).
-
-```
-dfs migrate-to-cas [flags]
-```
-
-**Examples:**
-
-```bash
-# Preview what would be migrated without writing anything
-dfs migrate-to-cas --storage-dir /data --metadata-dir /data/metadata --dry-run
-
-# Migrate all shares
-dfs migrate-to-cas --storage-dir /data --metadata-dir /data/metadata
-
-# Migrate a single share with machine-readable progress
-dfs migrate-to-cas --storage-dir /data --metadata-dir /data/metadata --share myshare --json
-
-# Resume a partial migration after a crash (idempotent — already-done chunks are skipped)
-dfs migrate-to-cas --storage-dir /data --metadata-dir /data/metadata
-```
-
-Flags:
-
-```
-      --dry-run               Walk + sample only; report file count, bytes, estimated dedup ratio, ETA. Writes nothing.
-      --json                  Emit one JSON object per second of progress to stdout (machine-parseable)
-      --max-disk int          Per-share max-disk budget for the destination FSStore (0 = unlimited)
-      --metadata-dir string   Path to the badger metadata database directory (REQUIRED; the directory passed to the metadata store's 'path' config)
-      --share string          Scope migration to one share (default: all shares discovered under <storage-dir>/shares/)
-      --storage-dir string    Storage root (REQUIRED; expects <root>/shares/<name>/blocks layout)
 ```
 
 Global flags:
@@ -5609,9 +5557,9 @@ remote-store config matches the named share (cross-share aggregation).
 The sweep phase reclaims storage absent from the live set: it decrements
 the refcount of each dead chunk's enclosing packed block and, once a
 block holds no live chunks, deletes it from the remote and evicts its
-local copy. Legacy per-chunk cas/.../ objects (written before packed
-blocks) are also deleted when dead and older than the configured grace
-period (default 1h). The last-run.json summary is persisted under the
+local copy. Chunks must be dead and older than the configured grace
+period (default 1h) before their block is decremented. The
+last-run.json summary is persisted under the
 share's gc-state directory and can be inspected with:
 
 ```

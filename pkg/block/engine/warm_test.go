@@ -9,7 +9,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"lukechampine.com/blake3"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // listFilesLocal wraps a memory LocalStore and overrides ListFiles to return a
@@ -24,29 +24,13 @@ type listFilesLocal struct {
 func (l *listFilesLocal) ListFiles() []string { return append([]string(nil), l.files...) }
 
 // seedFileChunkAt installs a FileChunk row covering [offset, offset+len(data))
-// under payloadID and seeds the remote CAS with the matching bytes. Unlike
+// under payloadID and seeds the remote with a packed block holding the
+// matching bytes plus a synced marker carrying the block locator. Unlike
 // seedFileChunk it lets the test place a row at a non-zero chunk offset so a
 // single payload can carry multiple blocks.
-func seedFileChunkAt(t *testing.T, fbs *stubFileChunkStore, rs *remotememory.Store, payloadID string, offset uint64, data []byte) block.ContentHash {
+func seedFileChunkAt(t *testing.T, fbs *stubFileChunkStore, rs *remotememory.Store, mds *metadatamemory.MemoryMetadataStore, payloadID string, offset uint64, data []byte) block.ContentHash {
 	t.Helper()
-	hash := block.ContentHash(blake3.Sum256(data))
-	if err := rs.Put(context.Background(), hash, data); err != nil {
-		t.Fatalf("seed remote Put: %v", err)
-	}
-	fb := &block.FileChunk{
-		ID:       payloadIDChunkID(payloadID, offset),
-		Hash:     hash,
-		DataSize: uint32(len(data)),
-		State:    block.BlockStateRemote,
-	}
-	if err := fbs.Put(context.Background(), fb); err != nil {
-		t.Fatalf("seed FileChunk at offset %d: %v", offset, err)
-	}
-	return hash
-}
-
-func payloadIDChunkID(payloadID string, offset uint64) string {
-	return payloadID + "/" + itoa(offset)
+	return seedSyncedRemoteChunk(t, fbs, rs, mds, payloadID, offset, data)
 }
 
 func itoa(n uint64) string {
@@ -64,30 +48,29 @@ func itoa(n uint64) string {
 }
 
 // warmHarness wires a Syncer over a list-aware memory local store, a memory
-// remote, and a stub FileChunk store.
-func warmHarness(payloads []string) (*Syncer, *listFilesLocal, *remotememory.Store, *stubFileChunkStore) {
+// remote, a stub FileChunk store, and a memory metadata store serving as the
+// SyncedHashStore the block-locator fetch path resolves from.
+func warmHarness(payloads []string) (*Syncer, *listFilesLocal, *remotememory.Store, *stubFileChunkStore, *metadatamemory.MemoryMetadataStore) {
 	loc := &listFilesLocal{MemoryStore: memorylocal.New(), files: payloads}
 	rs := remotememory.New()
 	fbs := newStubFileChunkStore()
-	m := newFetchSyncer(loc, rs, fbs)
-	return m, loc, rs, fbs
+	mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	m := newFetchSyncer(loc, rs, fbs, mds)
+	return m, loc, rs, fbs, mds
 }
 
 func TestWarmAll_FetchesMissingSkipsLocal(t *testing.T) {
 	ctx := context.Background()
-	m, loc, rs, fbs := warmHarness([]string{"payA", "payB"})
+	m, loc, rs, fbs, mds := warmHarness([]string{"payA", "payB"})
 
 	// payA: two remote blocks at offsets 0 and BlockSize.
-	hA0 := seedFileChunkAt(t, fbs, rs, "payA", 0, []byte("payA-block-zero-bytes"))
-	hA1 := seedFileChunkAt(t, fbs, rs, "payA", uint64(BlockSize), []byte("payA-block-one-bytes"))
+	dataA0 := []byte("payA-block-zero-bytes")
+	hA0 := seedFileChunkAt(t, fbs, rs, mds, "payA", 0, dataA0)
+	hA1 := seedFileChunkAt(t, fbs, rs, mds, "payA", uint64(BlockSize), []byte("payA-block-one-bytes"))
 	// payB: one remote block at offset 0.
-	hB0 := seedFileChunkAt(t, fbs, rs, "payB", 0, []byte("payB-block-zero-bytes"))
+	hB0 := seedFileChunkAt(t, fbs, rs, mds, "payB", 0, []byte("payB-block-zero-bytes"))
 
 	// Pre-place payA/0 locally so WarmAll must skip it.
-	dataA0, err := rs.Get(ctx, hA0)
-	if err != nil {
-		t.Fatalf("remote Get hA0: %v", err)
-	}
 	if err := loc.Put(ctx, hA0, dataA0); err != nil {
 		t.Fatalf("pre-seed local hA0: %v", err)
 	}
@@ -147,9 +130,9 @@ func TestWarmAll_ProgressMonotonic(t *testing.T) {
 	for i := range payloads {
 		payloads[i] = "pay" + itoa(uint64(i))
 	}
-	m, _, rs, fbs := warmHarness(payloads)
+	m, _, rs, fbs, mds := warmHarness(payloads)
 	for _, p := range payloads {
-		seedFileChunkAt(t, fbs, rs, p, 0, []byte(p+"-block-zero"))
+		seedFileChunkAt(t, fbs, rs, mds, p, 0, []byte(p+"-block-zero"))
 	}
 
 	var (
@@ -191,11 +174,11 @@ func TestWarmAll_ProgressMonotonic(t *testing.T) {
 // (fetchResolvedBlock), so the non-aligned chunk must land locally.
 func TestWarmAll_FetchesNonAlignedChunk(t *testing.T) {
 	ctx := context.Background()
-	m, _, rs, fbs := warmHarness([]string{"payA"})
+	m, _, rs, fbs, mds := warmHarness([]string{"payA"})
 
 	// A remote-only chunk at a deliberately non-BlockSize-aligned offset.
 	offset := uint64(BlockSize) + 12345
-	hash := seedFileChunkAt(t, fbs, rs, "payA", offset, []byte("non-aligned-fastcdc-chunk-bytes"))
+	hash := seedFileChunkAt(t, fbs, rs, mds, "payA", offset, []byte("non-aligned-fastcdc-chunk-bytes"))
 
 	res, err := m.WarmAll(ctx, nil)
 	if err != nil {
@@ -218,7 +201,7 @@ func TestWarmAll_FetchesNonAlignedChunk(t *testing.T) {
 }
 
 func TestWarmAll_NoRemote(t *testing.T) {
-	m, _, _, _ := warmHarness([]string{"payA"})
+	m, _, _, _, _ := warmHarness([]string{"payA"})
 	m.remoteStore = nil
 	if _, err := m.WarmAll(context.Background(), nil); err == nil {
 		t.Fatal("WarmAll with nil remote: want error, got nil")
@@ -226,10 +209,10 @@ func TestWarmAll_NoRemote(t *testing.T) {
 }
 
 func TestWarmAll_Cancellation(t *testing.T) {
-	m, _, rs, fbs := warmHarness([]string{"payA"})
+	m, _, rs, fbs, mds := warmHarness([]string{"payA"})
 	// Seed several remote blocks so there is work to cancel.
 	for i := uint64(0); i < 8; i++ {
-		seedFileChunkAt(t, fbs, rs, "payA", i*uint64(BlockSize), []byte("payA-block-bytes-"+itoa(i)))
+		seedFileChunkAt(t, fbs, rs, mds, "payA", i*uint64(BlockSize), []byte("payA-block-bytes-"+itoa(i)))
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

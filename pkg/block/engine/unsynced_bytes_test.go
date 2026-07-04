@@ -4,8 +4,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
 // TestUnsyncedBytes_TracksDrain drives the real write path (AppendWrite →
@@ -62,8 +60,8 @@ func TestUnsyncedBytes_TracksDrain(t *testing.T) {
 		t.Fatalf("UnsyncedBytes after rollup = %d, want > 0", got)
 	}
 
-	// Drain to remote synchronously: every chunk is mirrored + marked
-	// synced, so the counter must return to zero.
+	// Drain to remote synchronously: every chunk is carved into a packed
+	// block + marked synced, so the counter must return to zero.
 	if err := env.syncer.SyncNow(ctx); err != nil {
 		t.Fatalf("SyncNow: %v", err)
 	}
@@ -71,10 +69,8 @@ func TestUnsyncedBytes_TracksDrain(t *testing.T) {
 		t.Fatalf("UnsyncedBytes after SyncNow drain = %d, want 0", got)
 	}
 
-	// Sanity: the bytes really did reach the remote.
-	if mem, ok := env.remote.RemoteStore.(*remotememory.Store); ok {
-		if mem.BlockCount() == 0 {
-			t.Fatalf("remote has 0 blocks after drain; expected the mirrored chunks")
-		}
+	// Sanity: the bytes really did reach the remote as packed blocks.
+	if got := remoteBlockObjectCount(t, ctx, env.remote.mem); got == 0 {
+		t.Fatalf("remote has 0 packed blocks after drain; expected the carved chunks")
 	}
 }

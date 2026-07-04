@@ -114,7 +114,7 @@ type FileChunkStore interface {
 	// Multi-row-per-hash tolerance
 	// AddRef MAY operate on any one matching row when more than one
 	// row shares the hash (legacy data + dedup short-circuit). The
-	// caller's BlockRef contract is satisfied either way — RefCount
+	// caller's ChunkRef contract is satisfied either way — RefCount
 	// is a per-row property, and any non-zero RefCount keeps the row
 	// alive past GC.
 	//
@@ -128,7 +128,7 @@ type FileChunkStore interface {
 	// observability (logging, tracing) and to allow future
 	// multi-row-per-hash backends to choose which row to bump; they
 	// are NOT part of the persisted state.
-	AddRef(ctx context.Context, hash ContentHash, payloadID string, blockRef BlockRef) error
+	AddRef(ctx context.Context, hash ContentHash, payloadID string, blockRef ChunkRef) error
 }
 
 // EngineFileChunkStore is the engine-internal extension of
@@ -169,14 +169,14 @@ type EngineFileChunkStore interface {
 // Reader defines read operations on the block store.
 //
 // read operations thread a caller-supplied
-// []BlockRef snapshot of the file's FileAttr.Blocks. Empty/nil blocks
+// []ChunkRef snapshot of the file's FileAttr.Blocks. Empty/nil blocks
 // triggers the dual-read shim — engine routes through
 // the legacy {payloadID}/block-{N} resolver. Non-empty blocks routes
 // through the CAS path: findBlocksForRange + cache.OnRead.
 type Reader interface {
 	// ReadAt reads data from storage at the given offset into dest.
 	// Empty blocks => dual-read shim (path).
-	ReadAt(ctx context.Context, payloadID string, blocks []BlockRef, dest []byte, offset uint64) (int, error)
+	ReadAt(ctx context.Context, payloadID string, blocks []ChunkRef, dest []byte, offset uint64) (int, error)
 
 	// GetSize returns the stored size of a payload.
 	GetSize(ctx context.Context, payloadID string) (uint64, error)
@@ -188,32 +188,32 @@ type Reader interface {
 // Writer defines write operations on the block store.
 //
 // write operations thread a caller-supplied
-// []BlockRef snapshot of the file's FileAttr.Blocks. WriteAt returns the
-// new []BlockRef (caller persists via PutFile in the same metadata txn).
+// []ChunkRef snapshot of the file's FileAttr.Blocks. WriteAt returns the
+// new []ChunkRef (caller persists via PutFile in the same metadata txn).
 // Truncate / Delete invoke the MetadataCoordinator to decrement RefCount
 // for hashes the operation drops; CopyPayload becomes O(1) — increments
 // RefCount per unique source hash, no data copy.
 type Writer interface {
 	// WriteAt writes data to storage at the given offset and returns
-	// the file's new BlockRef list (sorted, sparse-hole-preserving).
+	// the file's new ChunkRef list (sorted, sparse-hole-preserving).
 	// Caller persists via PutFile in the same metadata txn.
-	WriteAt(ctx context.Context, payloadID string, currentBlocks []BlockRef, data []byte, offset uint64) ([]BlockRef, error)
+	WriteAt(ctx context.Context, payloadID string, currentBlocks []ChunkRef, data []byte, offset uint64) ([]ChunkRef, error)
 
-	// Truncate changes the size of a payload. Returns the new BlockRef
+	// Truncate changes the size of a payload. Returns the new ChunkRef
 	// list (blocks past newSize are dropped; the coordinator
 	// decrements their RefCount).
-	Truncate(ctx context.Context, payloadID string, currentBlocks []BlockRef, newSize uint64) ([]BlockRef, error)
+	Truncate(ctx context.Context, payloadID string, currentBlocks []ChunkRef, newSize uint64) ([]ChunkRef, error)
 
 	// Delete removes all data for a payload and decrements RefCount on
 	// every hash in blocks via the coordinator.
-	Delete(ctx context.Context, payloadID string, blocks []BlockRef) error
+	Delete(ctx context.Context, payloadID string, blocks []ChunkRef) error
 
-	// CopyPayload duplicates a file's BlockRef list with O(1) cost.
+	// CopyPayload duplicates a file's ChunkRef list with O(1) cost.
 	// Increments the RefCount of each unique hash via the coordinator
 	// (no per-block data copy); returns a deep copy of srcBlocks as
-	// the destination's BlockRef list. The caller's metadata txn
+	// the destination's ChunkRef list. The caller's metadata txn
 	// rolls back all increments on any error.
-	CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []BlockRef) ([]BlockRef, error)
+	CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID string, srcBlocks []ChunkRef) ([]ChunkRef, error)
 }
 
 // Flusher defines flush/sync operations on the block store.

@@ -12,39 +12,37 @@ import (
 )
 
 // HashLocatorResolver resolves a content hash to its remote locator so the
-// verify gate probes the correct object: a standalone cas/<hash> object or the
-// packed blocks/<id> object it was carved into (#1414 object packing). Satisfied
-// by the per-share metadata store (metadata.SyncedHashStore.GetLocator). A nil
-// resolver disables block-awareness — every hash is probed as a standalone CAS
-// object, the pre-flip behavior.
+// verify gate probes the packed blocks/<id> object it was carved into (#1414
+// object packing). Satisfied by the per-share metadata store
+// (metadata.SyncedHashStore.GetLocator). Post-#1493 every durable chunk is
+// block-resident, so a resolver is mandatory: a hash with no block locator is
+// not durable.
 type HashLocatorResolver interface {
 	GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error)
 }
 
-// probeHashDurable HEAD-probes the remote object backing hash and returns nil
-// when it is present. A block-resident hash (its locator names a blocks/<id>
-// object) is probed with a one-byte GetBlockRange on the block store; a
-// standalone hash (or any hash when locators is nil) is probed with rs.Head.
-// Both backends return block.ErrChunkNotFound for a missing object, so the
-// caller's NotFound classification is uniform across tiers. A block-resident
-// hash with no block store to probe is reported as ErrChunkNotFound — it cannot
-// be proven durable.
-func probeHashDurable(ctx context.Context, rs remote.RemoteStore, locators HashLocatorResolver, rbs remote.RemoteBlockStore, hash block.ContentHash) error {
-	if locators != nil {
-		loc, ok, err := locators.GetLocator(ctx, hash)
-		if err != nil {
-			return err
-		}
-		if ok && !loc.IsStandalone() {
-			if rbs == nil {
-				return fmt.Errorf("hash %s is block-resident but remote has no block store: %w", hash, block.ErrChunkNotFound)
-			}
-			_, berr := rbs.GetBlockRange(ctx, loc.BlockID, 0, 1)
-			return berr
-		}
+// probeHashDurable proves hash is durable by resolving its block locator and
+// issuing a one-byte GetBlockRange against the packed blocks/<id> object. Post
+// storage flip (#1493) durability is block-only: a hash whose locator is
+// standalone (BlockID == "") or absent from the resolver is not block-resident
+// and is reported as block.ErrChunkNotFound — it cannot be proven durable. A
+// missing block object surfaces block.ErrChunkNotFound from the block store, so
+// the caller's NotFound classification is uniform.
+func probeHashDurable(ctx context.Context, locators HashLocatorResolver, rbs remote.RemoteBlockStore, hash block.ContentHash) error {
+	if locators == nil || rbs == nil {
+		return fmt.Errorf("hash %s not durable: block-locator resolver or block store unavailable: %w",
+			hash, block.ErrChunkNotFound)
 	}
-	_, err := rs.Head(ctx, hash)
-	return err
+	loc, ok, err := locators.GetLocator(ctx, hash)
+	if err != nil {
+		return err
+	}
+	if !ok || loc.IsStandalone() {
+		return fmt.Errorf("hash %s has no block locator (standalone or absent): %w",
+			hash, block.ErrChunkNotFound)
+	}
+	_, berr := rbs.GetBlockRange(ctx, loc.BlockID, 0, 1)
+	return berr
 }
 
 // VerifyRemoteDurability probes the remote store for every hash in the
@@ -57,10 +55,9 @@ func probeHashDurable(ctx context.Context, rs remote.RemoteStore, locators HashL
 // "remote was unreachable mid-verify."
 //
 // locators + rbs make the probe block-aware (#1414): a hash carved into a
-// packed block is probed against its blocks/<id> object, not the cas/<hash>
-// object that no longer exists. Pass nil for both to probe every hash as a
-// standalone CAS object (the pre-flip behavior, retained for tests and
-// standalone-only deployments).
+// packed block is probed against its blocks/<id> object. Post-#1493 durability
+// is block-only, so both are required — a hash without a block locator (or a
+// nil resolver / block store) is reported not durable via block.ErrChunkNotFound.
 //
 // Iteration order matches manifest.Sorted, but with concurrency > 1 the
 // first miss observed depends on remote latency — different remotes can
@@ -82,7 +79,6 @@ func probeHashDurable(ctx context.Context, rs remote.RemoteStore, locators HashL
 // blockstore-package-oriented.
 func VerifyRemoteDurability(
 	ctx context.Context,
-	rs remote.RemoteStore,
 	locators HashLocatorResolver,
 	rbs remote.RemoteBlockStore,
 	manifest *block.HashSet,
@@ -126,7 +122,7 @@ loop:
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			err := probeHashDurable(errCtx, rs, locators, rbs, hash)
+			err := probeHashDurable(errCtx, locators, rbs, hash)
 			switch {
 			case err == nil:
 				return
@@ -144,18 +140,18 @@ loop:
 				// or the verifier would silently skip a chunk and report
 				// success.
 				if errCtx.Err() == nil {
-					logger.Error("snapshot verify: head probe failed with ctx error pre-cancel",
+					logger.Error("snapshot verify: block probe failed with ctx error pre-cancel",
 						"hash", hash.String(), "error", err)
 					recordErr(fmt.Errorf(
-						"snapshot: remote durability verify: head probe %s: %w",
+						"snapshot: remote durability verify: block probe %s: %w",
 						hash, err,
 					))
 				}
 			default:
-				logger.Error("snapshot verify: head probe failed",
+				logger.Error("snapshot verify: block probe failed",
 					"hash", hash.String(), "error", err)
 				recordErr(fmt.Errorf(
-					"snapshot: remote durability verify: head hash %s: %w",
+					"snapshot: remote durability verify: block probe hash %s: %w",
 					hash, err,
 				))
 			}

@@ -75,7 +75,7 @@ func fileRowToFileWithNlink(r scanRow) (*metadata.File, error) {
 // query (#1176). With withBlocks=false this is identical to the pre-#1176 read.
 //
 // The folded aggregate is ordered by "offset" ASC and decoded into the same
-// []block.BlockRef shape loadFileChunkRefs produces — an empty/absent set
+// []block.ChunkRef shape loadFileChunkRefs produces — an empty/absent set
 // (directories, symlinks, blockless regular files) yields a nil slice.
 func fileRowToFileWithNlinkAndBlocks(r scanRow, withBlocks bool) (*metadata.File, error) {
 	var (
@@ -216,7 +216,7 @@ func fileRowToFileWithNlinkAndBlocks(r scanRow, withBlocks bool) (*metadata.File
 	// Folded block refs (#1176): when the SELECT appended blockRefsAggExpr,
 	// hydrate FileAttr.Blocks from that aggregate rather than a second query.
 	if withBlocks && len(blocksJSON) > 0 {
-		blocks, err := decodeBlockRefsJSON(blocksJSON)
+		blocks, err := decodeChunkRefsJSON(blocksJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -249,11 +249,11 @@ const blockRefsAggExpr = `(
 	) AS fbr
 )`
 
-// decodeBlockRefsJSON decodes the JSON array produced by blockRefsAggExpr into
-// []block.BlockRef, applying the same hash-length validation as
+// decodeChunkRefsJSON decodes the JSON array produced by blockRefsAggExpr into
+// []block.ChunkRef, applying the same hash-length validation as
 // loadFileChunkRefs (a malformed hash is surfaced as an error, never coerced to
 // a half-decoded ref).
-func decodeBlockRefsJSON(raw []byte) ([]block.BlockRef, error) {
+func decodeChunkRefsJSON(raw []byte) ([]block.ChunkRef, error) {
 	// Element shape: [offset(int64), size(int32), hash_hex(string)].
 	var rows [][3]json.RawMessage
 	if err := json.Unmarshal(raw, &rows); err != nil {
@@ -262,7 +262,7 @@ func decodeBlockRefsJSON(raw []byte) ([]block.BlockRef, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	out := make([]block.BlockRef, 0, len(rows))
+	out := make([]block.ChunkRef, 0, len(rows))
 	for _, r := range rows {
 		var (
 			off     int64
@@ -288,7 +288,7 @@ func decodeBlockRefsJSON(raw []byte) ([]block.BlockRef, error) {
 				len(rawHash), block.HashSize,
 			)
 		}
-		var br block.BlockRef
+		var br block.ChunkRef
 		copy(br.Hash[:], rawHash)
 		br.Offset = uint64(off)
 		br.Size = uint32(sz)

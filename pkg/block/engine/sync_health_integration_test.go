@@ -27,11 +27,15 @@ import (
 // memory store, ignoring this fake's `healthy` flag.
 type controllableRemoteStore struct {
 	remote.RemoteStore
+	// mem is the underlying memory store: the block-keyed surface
+	// (PutBlock/WalkBlocks) tests wire into the carver and assert against.
+	mem     *remotememory.Store
 	healthy atomic.Bool
 }
 
 func newControllableRemoteStore() *controllableRemoteStore {
-	s := &controllableRemoteStore{RemoteStore: remotememory.New()}
+	mem := remotememory.New()
+	s := &controllableRemoteStore{RemoteStore: mem, mem: mem}
 	s.healthy.Store(true)
 	return s
 }
@@ -73,13 +77,15 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string)
 }
 
 // healthTestConfig returns a syncer Config with short intervals for testing.
+// UploadDelay doubles as the carve dispatcher's idle-flush window: sub-target
+// batches (all of these tests) only reach the remote via the idle flush, so it
+// must be short for recovery-drain assertions to complete quickly.
 func healthTestConfig() SyncerConfig {
 	return SyncerConfig{
-		ParallelUploads:             4,
 		ParallelDownloads:           4,
 		PrefetchBlocks:              0,
 		UploadInterval:              50 * time.Millisecond,
-		UploadDelay:                 0,
+		UploadDelay:                 50 * time.Millisecond,
 		HealthCheckInterval:         20 * time.Millisecond,
 		HealthCheckFailureThreshold: 2,
 		UnhealthyCheckInterval:      10 * time.Millisecond,
@@ -105,6 +111,7 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 		StabilizationMS: 50,
 		RollupStore:     ms,
 		SyncedHashStore: ms,
+		LocalChunkIndex: ms,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)
@@ -115,13 +122,16 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 
 	rs := newControllableRemoteStore()
 	m := NewSyncer(bc, rs, ms, healthTestConfig())
-	// Wire the SyncedHashStore on the syncer so the mirror loop's
-	// MarkSynced step actually fires (mirror loop short-circuits to a
-	// no-op when the SyncedHashStore is nil).
+	// Wire the carve substrate: the SyncedHashStore (block committer) and the
+	// block-keyed remote. Post-#1493 the carver is the ONLY upload path, so
+	// without both the recovery drain would have nowhere to pack chunks.
+	// Health gating still runs through the controllable wrapper — the carve
+	// dispatcher checks IsRemoteHealthy before every flush.
 	m.SetSyncedHashStore(ms)
+	m.SetRemoteBlockStore(rs.mem)
 	// Replicate engine.New's onChunkComplete wiring (this test builds a
 	// Syncer + FSStore directly, bypassing engine.New): every rolled-up
-	// chunk registers in the syncer pending-upload set so the mirror loop
+	// chunk registers in the syncer pending-carve set so the carve loop
 	// has something to drain.
 	bc.SetOnChunkComplete(func(hash block.ContentHash, data []byte, _ string) {
 		m.addPendingHash(hash, int64(len(data)))
@@ -183,31 +193,32 @@ func TestHealthMonitorCircuitBreaker(t *testing.T) {
 	}
 	env.local.SyncFileChunks(ctx)
 
-	// Wait for periodic uploader to run -- block should NOT be uploaded.
+	// Wait for the carve dispatcher's idle window to elapse -- the chunk
+	// must NOT be uploaded while the circuit breaker is open.
 	time.Sleep(200 * time.Millisecond)
 
-	// The remote store should have no blocks (upload was skipped).
-	memStore := env.remote.RemoteStore.(*remotememory.Store)
-	if memStore.BlockCount() != 0 {
-		t.Fatalf("expected 0 blocks in remote during outage, got %d", memStore.BlockCount())
+	// The remote store should have no packed blocks (upload was skipped).
+	memStore := env.remote.mem
+	if got := remoteBlockObjectCount(t, ctx, memStore); got != 0 {
+		t.Fatalf("expected 0 blocks in remote during outage, got %d", got)
 	}
 
 	// Restore health.
 	env.remote.SetHealthy(true)
 
-	// Wait for recovery detection + periodic upload drain. Poll instead of a
-	// fixed sleep so we don't flake on slow CI runners (the deterministic
-	// failure mode is recovery + upload taking longer than the budget).
+	// Wait for recovery detection + carve drain. Poll instead of a fixed
+	// sleep so we don't flake on slow CI runners (the deterministic failure
+	// mode is recovery + upload taking longer than the budget).
 	waitFor(t, 5*time.Second, func() bool {
-		return env.syncer.IsRemoteHealthy() && memStore.BlockCount() > 0
+		return env.syncer.IsRemoteHealthy() && remoteBlockObjectCount(t, ctx, memStore) > 0
 	}, "remote to recover and block to be uploaded")
 
 	if !env.syncer.IsRemoteHealthy() {
 		t.Fatal("expected remote to be healthy after recovery")
 	}
 
-	// Block should now be uploaded to remote.
-	if memStore.BlockCount() == 0 {
+	// The chunk should now be packed into a block on the remote.
+	if remoteBlockObjectCount(t, ctx, memStore) == 0 {
 		t.Fatal("expected block to be uploaded to remote after recovery")
 	}
 }
@@ -256,28 +267,44 @@ func TestHealthMonitorRecoveryDrain(t *testing.T) {
 	env.local.SyncFileChunks(ctx)
 
 	// Verify no uploads during outage.
-	memStore := env.remote.RemoteStore.(*remotememory.Store)
-	if memStore.BlockCount() != 0 {
-		t.Fatalf("expected 0 blocks in remote during outage, got %d", memStore.BlockCount())
+	memStore := env.remote.mem
+	if got := remoteBlockObjectCount(t, ctx, memStore); got != 0 {
+		t.Fatalf("expected 0 blocks in remote during outage, got %d", got)
+	}
+	unsyncedDuringOutage := env.syncer.UnsyncedBytes()
+	if unsyncedDuringOutage == 0 {
+		t.Fatal("expected pending (unsynced) bytes to accumulate during the outage")
 	}
 
 	// Restore health.
 	env.remote.SetHealthy(true)
 
-	// Wait for recovery + periodic upload drain. Poll instead of a fixed
-	// sleep so we don't flake on slow CI runners (Windows + Linux 1.25.x
-	// have been observed to need >500ms for the full drain).
+	// Wait for recovery + the carve drain. Post-#1493 the carver packs ALL
+	// pending chunks into carve-target-sized blocks (the 3 writes land in one
+	// sub-target block via the idle flush), so the drain contract is "every
+	// chunk accumulated during the outage becomes remote-durable" — asserted
+	// as unsyncedBytes hitting 0 with at least one packed block uploaded —
+	// not a fixed remote object count. Poll instead of a fixed sleep so we
+	// don't flake on slow CI runners.
 	waitFor(t, 5*time.Second, func() bool {
-		return env.syncer.IsRemoteHealthy() && memStore.BlockCount() == 3
-	}, "remote to recover and 3 blocks to drain")
+		return env.syncer.IsRemoteHealthy() &&
+			remoteBlockObjectCount(t, ctx, memStore) > 0 &&
+			env.syncer.UnsyncedBytes() == 0
+	}, "remote to recover and the outage backlog to drain")
 
 	if !env.syncer.IsRemoteHealthy() {
 		t.Fatal("expected remote to be healthy after recovery")
 	}
 
-	// All 3 blocks should now be in remote.
-	if memStore.BlockCount() != 3 {
-		t.Fatalf("expected 3 blocks in remote after drain, got %d", memStore.BlockCount())
+	// Every chunk accumulated during the outage is now durable on the remote.
+	if got := env.syncer.UnsyncedBytes(); got != 0 {
+		t.Fatalf("unsyncedBytes=%d after drain, want 0 (outage backlog fully uploaded)", got)
+	}
+	if n := env.syncer.CarvePendingCount(); n != 0 {
+		t.Fatalf("carve pending=%d after drain, want 0", n)
+	}
+	if got := remoteBlockObjectCount(t, ctx, memStore); got == 0 {
+		t.Fatal("expected at least one packed block on the remote after drain")
 	}
 }
 
@@ -334,13 +361,16 @@ func TestHealthCallbackInvocation(t *testing.T) {
 func TestHealthMonitorNilRemoteStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.NewWithOptions(tmpDir, 0, ms, fs.FSStoreOptions{})
+	bc, err := fs.NewWithOptions(tmpDir, 0, ms, fs.FSStoreOptions{
+		LocalChunkIndex: ms})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)
 	}
 
 	m := NewSyncer(bc, nil, ms, healthTestConfig())
-	defer func() { _ = m.Close() }()
+	// Close bc to release the logBlob fd before the function returns (and thus
+	// before t.TempDir's RemoveAll): Windows cannot unlink an open blob file.
+	defer func() { _ = m.Close(); _ = bc.Close() }()
 
 	ctx := context.Background()
 	m.Start(ctx)

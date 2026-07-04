@@ -10,7 +10,6 @@ import (
 	"io"
 
 	"golang.org/x/crypto/chacha20poly1305"
-	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
@@ -55,7 +54,11 @@ func (d *EncryptedRemote) Put(ctx context.Context, hash block.ContentHash, data 
 	if err != nil {
 		return err
 	}
-	return d.inner.Put(ctx, hash, wire)
+	cs, err := d.casInner()
+	if err != nil {
+		return err
+	}
+	return cs.Put(ctx, hash, wire)
 }
 
 // SealChunk encrypts one chunk's plaintext into a frame and delegates inward so
@@ -107,7 +110,11 @@ func (d *EncryptedRemote) sealLayer(ctx context.Context, hash block.ContentHash,
 
 // Get returns the plaintext for the block identified by hash.
 func (d *EncryptedRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	raw, err := d.inner.Get(ctx, hash)
+	cs, err := d.casInner()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := cs.Get(ctx, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +144,11 @@ func (d *EncryptedRemote) GetRange(ctx context.Context, hash block.ContentHash, 
 // Has reports presence by probing inner.Head. NotFound errors map to
 // (false, nil); any other backend error propagates.
 func (d *EncryptedRemote) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
-	_, err := d.inner.Head(ctx, hash)
+	cs, err := d.casInner()
+	if err != nil {
+		return false, err
+	}
+	_, err = cs.Head(ctx, hash)
 	if err == nil {
 		return true, nil
 	}
@@ -153,7 +164,11 @@ func (d *EncryptedRemote) Has(ctx context.Context, hash block.ContentHash) (bool
 // 16-byte authentication tag, so plaintext_size = wire_size -
 // header_size - aeadTagSize.
 func (d *EncryptedRemote) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
-	m, err := d.inner.Head(ctx, hash)
+	cs, err := d.casInner()
+	if err != nil {
+		return block.Meta{}, err
+	}
+	m, err := cs.Head(ctx, hash)
 	if err != nil {
 		return m, err
 	}
@@ -168,7 +183,11 @@ func (d *EncryptedRemote) Head(ctx context.Context, hash block.ContentHash) (blo
 // Walk rewrites Meta.Size to plaintext size for each block via the same
 // range-GET probe as Head. Per-block probe errors halt the walk.
 func (d *EncryptedRemote) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	return d.inner.Walk(ctx, func(h block.ContentHash, m block.Meta) error {
+	cs, err := d.casInner()
+	if err != nil {
+		return err
+	}
+	return cs.Walk(ctx, func(h block.ContentHash, m block.Meta) error {
 		size, err := d.plaintextSizeFor(ctx, h, m.Size)
 		if err != nil {
 			return err
@@ -187,7 +206,11 @@ func (d *EncryptedRemote) plaintextSizeFor(ctx context.Context, hash block.Conte
 	if probeLen <= 0 {
 		return 0, ErrCiphertextWithoutFrame
 	}
-	probe, err := d.inner.GetRange(ctx, hash, 0, probeLen)
+	cs, err := d.casInner()
+	if err != nil {
+		return 0, err
+	}
+	probe, err := cs.GetRange(ctx, hash, 0, probeLen)
 	if err != nil {
 		return 0, fmt.Errorf("encryption: plaintext-size probe: %w", err)
 	}
@@ -207,23 +230,11 @@ func (d *EncryptedRemote) plaintextSizeFor(ctx context.Context, hash block.Conte
 
 // Delete is a straight passthrough.
 func (d *EncryptedRemote) Delete(ctx context.Context, hash block.ContentHash) error {
-	return d.inner.Delete(ctx, hash)
-}
-
-// ReadBlockVerified GETs the block, decrypts it, then re-verifies the
-// BLAKE3 hash over the plaintext.
-func (d *EncryptedRemote) ReadBlockVerified(ctx context.Context, hash block.ContentHash, expected block.ContentHash) ([]byte, error) {
-	plain, err := d.Get(ctx, hash)
+	cs, err := d.casInner()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	actual := blake3.Sum256(plain)
-	var got block.ContentHash
-	copy(got[:], actual[:])
-	if got != expected {
-		return nil, fmt.Errorf("%w: got %s want %s", block.ErrCASContentMismatch, got, expected)
-	}
-	return plain, nil
+	return cs.Delete(ctx, hash)
 }
 
 // ReadChunk reads the chunk's encrypted wire bytes from the inner store's
@@ -285,6 +296,19 @@ func (d *EncryptedRemote) blockInner() (remote.RemoteBlockStore, error) {
 		return nil, remote.ErrChunkReadUnsupported
 	}
 	return rbs, nil
+}
+
+// casInner exposes the inner store's hash-keyed CAS surface (block.Store),
+// used only by the legacy standalone-CAS read path (block.Store methods +
+// ReadBlockVerified in legacy_cas_migration.go). Every shipped remote backend
+// and decorator implements block.Store, so the assertion succeeds in practice;
+// it returns an error rather than panicking for defense in depth.
+func (d *EncryptedRemote) casInner() (block.Store, error) {
+	cs, ok := d.inner.(block.Store)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	return cs, nil
 }
 
 // PutBlock stores the assembled block verbatim (already-sealed frames).

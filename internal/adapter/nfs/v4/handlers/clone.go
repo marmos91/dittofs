@@ -31,7 +31,7 @@ import (
 // CLONE makes the destination file (CURRENT_FH) reference the same content as a
 // range of the source file (SAVED_FH) — a reflink. DittoFS's block store is
 // content-addressed with dedup, so a whole-file clone is a PURE METADATA op:
-// the destination inherits the source's BlockRef list and the CAS RefCount is
+// the destination inherits the source's ChunkRef list and the CAS RefCount is
 // bumped per unique hash. No data is read or written, even on S3 — O(1).
 // Copy-on-write is intrinsic: a later WRITE to either file produces new CAS
 // blocks under a new hash, leaving the other file's content untouched. This is
@@ -164,7 +164,7 @@ func (h *Handler) handleClone(ctx *types.CompoundContext, reader io.Reader) *typ
 	}
 
 	// DittoFS clones whole files as a pure-metadata O(1) reflink (share the
-	// source BlockRef list, bump CAS RefCount per unique hash). A request is
+	// source ChunkRef list, bump CAS RefCount per unique hash). A request is
 	// "whole file" when it covers the entire source from offset 0 into the
 	// destination at offset 0: src_offset==0, dst_offset==0, and count is 0
 	// ("to EOF") or exactly the source size. RFC 7862 Section 15.13 permits a

@@ -21,7 +21,7 @@
 // # Hybrid tier layout
 //
 //	<baseDir>/logs/<payloadID>.log per-file append-only log
-//	<baseDir>/blocks/<hh>/<hh>/<hex> content-addressed chunks (CAS)
+//	<baseDir>/blobs/ log-blob substrate (content-addressed chunks, indexed via LocalChunkIndex)
 //
 // # Log format
 //
@@ -41,7 +41,8 @@
 // Metadata is the source of truth for rollup_offset; the log header is
 // idempotent derived state. CommitChunks sequence
 //
-//  1. StoreChunk(h, data) -> blocks/<hh>/<hh>/<hex> (.tmp + rename + fsync)
+//  1. StoreChunk(h, data) -> append to the log-blob substrate + record a
+//     LocalChunkIndex entry
 //
 // 2. metadata.SetRollupOffset(ctx, payloadID, target) // atomic commit
 //  3. advanceRollupOffset(log, target) + fsync header
@@ -50,8 +51,8 @@
 //
 // Crash between (2) and (3) is recovered on next boot: recovery reads the
 // metadata offset and rewrites the header if metadata is ahead. Crash
-// between (1) and (2) leaves an orphan chunk under blocks/; 's
-// mark-sweep GC cleans it up (not in).
+// between (1) and (2) leaves an orphan chunk in the log-blob substrate; the
+// mark-sweep GC cleans it up.
 //
 // # Per-file logIndex (Direction 1)
 //
@@ -160,9 +161,8 @@
 //	                 && mtime older than orphan_log_min_age_seconds
 //	                 -> unlink logs/<payloadID>.log
 //
-// Orphan chunks under blocks/{hh}/{hh}/{hex} are NOT swept by
-// recovery; they are content-addressed and idempotent, reclaimed by the
-// (A2) mark-sweep GC.
+// Orphan chunks in the log-blob substrate are NOT swept by recovery; they
+// are content-addressed and idempotent, reclaimed by the (A2) mark-sweep GC.
 //
 // # Concurrency (..)
 //

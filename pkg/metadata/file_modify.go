@@ -414,7 +414,7 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// GC, the same as RemoveFile, which drops a file's entire block list
 		// without inline decrements.
 		if *attrs.Size < file.Size && len(file.Blocks) > 0 {
-			file.Blocks = block.PruneBlockRefsToSize(file.Blocks, *attrs.Size)
+			file.Blocks = block.PruneChunkRefsToSize(file.Blocks, *attrs.Size)
 			// Keep ObjectID (the Merkle root over Blocks) consistent with the
 			// trimmed list, or zero it when no blocks remain so the file reads
 			// as "never quiesced" instead of carrying a stale dedup pointer.

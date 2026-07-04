@@ -59,7 +59,7 @@ func blocks512(t *testing.T, path string) int64 {
 //
 // Block-list-dependent NFSv4.2 operations (SEEK/READ_PLUS hole map, CLONE
 // payload copy) read the file's CAS block list (file.Blocks). Only the fs store
-// runs the append-log rollup that chunks written data and persists BlockRefs to
+// runs the append-log rollup that chunks written data and persists ChunkRefs to
 // metadata; the memory store serves reads directly and never populates
 // file.Blocks. With a memory store a freshly written file therefore looks
 // block-less — SEEK reports it as all-hole and CLONE copies an empty manifest

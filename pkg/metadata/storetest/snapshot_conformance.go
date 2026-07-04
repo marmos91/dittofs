@@ -30,7 +30,7 @@ type SnapshotableStoreFactory func(t *testing.T) metadata.Store
 //   - HashSetCorrectness: exact hash match and dedup verification
 //
 // The factory MUST return a store that implements metadata.Snapshotable.
-// Unlike the optional-capability pattern used in BlockRefOps (which skips),
+// Unlike the optional-capability pattern used in ChunkRefOps (which skips),
 // snapshot conformance uses t.Fatal because the factory explicitly opts in.
 func RunSnapshotConformanceSuite(t *testing.T, factory SnapshotableStoreFactory) {
 	t.Helper()
@@ -181,7 +181,7 @@ func testSnapshot_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Sna
 	}
 	// Manifest carries the hash; NO FileChunkStore.Put is issued, so the CAS
 	// index (file_blocks / fb: / fileChunkData.blocks) has no row for it.
-	f.Blocks = []block.BlockRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
+	f.Blocks = []block.ChunkRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile: %v", err)
@@ -219,7 +219,7 @@ func testSnapshot_ExcludesUnlinkedFileChunks(t *testing.T, factory SnapshotableS
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	f.Blocks = []block.BlockRef{{Hash: dead, Offset: 0, Size: 4 << 20}}
+	f.Blocks = []block.ChunkRef{{Hash: dead, Offset: 0, Size: 4 << 20}}
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile: %v", err)
@@ -261,7 +261,7 @@ func asSnapshotable(t *testing.T, store metadata.Store) metadata.Snapshotable {
 	return b
 }
 
-// populateTestData creates a share with two files carrying BlockRef hashes.
+// populateTestData creates a share with two files carrying ChunkRef hashes.
 // Returns the share name and the list of unique hashes used.
 func populateTestData(t *testing.T, store metadata.Store, sharePrefix string) (string, []block.ContentHash) {
 	t.Helper()
@@ -279,7 +279,7 @@ func populateTestData(t *testing.T, store metadata.Store, sharePrefix string) (s
 	if err != nil {
 		t.Fatalf("GetFile alpha: %v", err)
 	}
-	fA.Blocks = []block.BlockRef{
+	fA.Blocks = []block.ChunkRef{
 		{Hash: hashA0, Offset: 0, Size: 4 << 20},
 		{Hash: hashA1, Offset: 4 << 20, Size: 4 << 20},
 	}
@@ -295,7 +295,7 @@ func populateTestData(t *testing.T, store metadata.Store, sharePrefix string) (s
 	if err != nil {
 		t.Fatalf("GetFile beta: %v", err)
 	}
-	fB.Blocks = []block.BlockRef{
+	fB.Blocks = []block.ChunkRef{
 		{Hash: hashB0, Offset: 0, Size: 2 << 20},
 		{Hash: hashA0, Offset: 2 << 20, Size: 4 << 20}, // shared with alpha
 	}
@@ -484,7 +484,7 @@ func testSnapshot_ConcurrentWriter(t *testing.T, factory SnapshotableStoreFactor
 				UID:  1000,
 				GID:  1000,
 				Size: 1 << 20,
-				Blocks: []block.BlockRef{
+				Blocks: []block.ChunkRef{
 					{Hash: concurrentHash, Offset: 0, Size: 1 << 20},
 				},
 			},
@@ -744,7 +744,7 @@ func testSnapshot_HashSet_ExactMatch(t *testing.T, factory SnapshotableStoreFact
 	if err != nil {
 		t.Fatalf("GetFile f1: %v", err)
 	}
-	f1.Blocks = []block.BlockRef{
+	f1.Blocks = []block.ChunkRef{
 		{Hash: hashes[0], Offset: 0, Size: 1 << 20},
 		{Hash: hashes[1], Offset: 1 << 20, Size: 1 << 20},
 	}
@@ -758,7 +758,7 @@ func testSnapshot_HashSet_ExactMatch(t *testing.T, factory SnapshotableStoreFact
 	if err != nil {
 		t.Fatalf("GetFile f2: %v", err)
 	}
-	f2.Blocks = []block.BlockRef{
+	f2.Blocks = []block.ChunkRef{
 		{Hash: hashes[2], Offset: 0, Size: 1 << 20},
 		{Hash: hashes[3], Offset: 1 << 20, Size: 1 << 20},
 	}
@@ -772,7 +772,7 @@ func testSnapshot_HashSet_ExactMatch(t *testing.T, factory SnapshotableStoreFact
 	if err != nil {
 		t.Fatalf("GetFile f3: %v", err)
 	}
-	f3.Blocks = []block.BlockRef{
+	f3.Blocks = []block.ChunkRef{
 		{Hash: hashes[4], Offset: 0, Size: 1 << 20},
 	}
 	if err := store.PutFile(ctx, f3); err != nil {
@@ -799,7 +799,7 @@ func testSnapshot_HashSet_ExactMatch(t *testing.T, factory SnapshotableStoreFact
 	}
 }
 
-// testSnapshot_HashSet_Dedup creates two files that share the same BlockRef
+// testSnapshot_HashSet_Dedup creates two files that share the same ChunkRef
 // hash and verifies the HashSet correctly deduplicates.
 func testSnapshot_HashSet_Dedup(t *testing.T, factory SnapshotableStoreFactory) {
 	store := factory(t)
@@ -817,7 +817,7 @@ func testSnapshot_HashSet_Dedup(t *testing.T, factory SnapshotableStoreFactory) 
 	if err != nil {
 		t.Fatalf("GetFile dup-a: %v", err)
 	}
-	fA.Blocks = []block.BlockRef{
+	fA.Blocks = []block.ChunkRef{
 		{Hash: sharedHash, Offset: 0, Size: 4 << 20},
 	}
 	if err := store.PutFile(ctx, fA); err != nil {
@@ -830,7 +830,7 @@ func testSnapshot_HashSet_Dedup(t *testing.T, factory SnapshotableStoreFactory) 
 	if err != nil {
 		t.Fatalf("GetFile dup-b: %v", err)
 	}
-	fB.Blocks = []block.BlockRef{
+	fB.Blocks = []block.ChunkRef{
 		{Hash: sharedHash, Offset: 0, Size: 4 << 20},
 	}
 	if err := store.PutFile(ctx, fB); err != nil {

@@ -13,11 +13,12 @@ import (
 // TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload pins the #1362
 // fix for read-fetch sync accounting. A chunk pulled from the remote tier on a
 // read miss is verbatim remote content, so the syncer must NOT schedule it for
-// re-upload (which turns a read-heavy workload into a write-heavy one) and must
-// mark it synced so eviction can reclaim it immediately rather than after a
-// mirror pass. inlineFetchOrWait persists via local.Put then calls
-// markFetchedSynced, which (1) cancels the pending-upload entry StoreChunk's
-// onChunkComplete callback registers and (2) marks the hash synced.
+// re-upload (which turns a read-heavy workload into a write-heavy one) and the
+// hash must stay marked synced so eviction can reclaim it immediately.
+// inlineFetchOrWait persists via local.Put then calls markFetchedSynced, which
+// cancels the pending-upload entry StoreChunk's onChunkComplete callback
+// registers; the synced marker (with its block locator) was recorded when the
+// chunk first became remote-durable and must survive the fetch.
 func TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload(t *testing.T) {
 	ctx := context.Background()
 	payloadID := "payload-readcache"
@@ -27,17 +28,17 @@ func TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload(t *testing.T) {
 	rs := remotememory.New()
 	fbs := newStubFileChunkStore()
 	mds := memory.NewMemoryMetadataStoreWithDefaults()
-	hash, _ := seedFileChunk(t, fbs, rs, payloadID, data)
+	hash := seedFileChunk(t, fbs, rs, mds, payloadID, data)
 
 	m := &Syncer{
-		local:           loc,
-		remoteStore:     rs,
-		fileChunkStore:  fbs,
-		inFlight:        make(map[string]*fetchResult),
-		stopCh:          make(chan struct{}),
-		config:          DefaultConfig(),
-		pendingHashes:   make(map[block.ContentHash]int64),
-		syncedHashStore: mds,
+		local:              loc,
+		remoteStore:        rs,
+		fileChunkStore:     fbs,
+		inFlight:           make(map[string]*fetchResult),
+		stopCh:             make(chan struct{}),
+		config:             DefaultConfig(),
+		pendingCarveHashes: make(map[block.ContentHash]int64),
+		syncedHashStore:    mds,
 	}
 
 	// The memory LocalStore used here does not fire StoreChunk's
@@ -61,9 +62,9 @@ func TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload(t *testing.T) {
 		t.Fatalf("inlineFetchOrWait downloaded=%v data=%v; want a successful inline fetch", downloaded, gotData)
 	}
 
-	// (1) Re-upload canceled: nothing left pending, so mirrorOnce uploads nothing.
+	// (1) Re-upload canceled: nothing left pending, so the carver packs nothing.
 	m.pendingMu.Lock()
-	_, stillPending := m.pendingHashes[hash]
+	_, stillPending := m.pendingCarveHashes[hash]
 	m.pendingMu.Unlock()
 	if stillPending {
 		t.Errorf("fetched chunk still pending upload; the mirror loop would re-upload remote bytes (#1362)")
@@ -72,7 +73,7 @@ func TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload(t *testing.T) {
 		t.Errorf("unsyncedBytes=%d after fetch, want 0 (pending entry must be canceled)", got)
 	}
 
-	// (2) Marked synced: eviction's IsSynced gate can reclaim it immediately.
+	// (2) Still marked synced: eviction's IsSynced gate can reclaim it immediately.
 	synced, err := mds.IsSynced(ctx, hash)
 	if err != nil {
 		t.Fatalf("IsSynced: %v", err)

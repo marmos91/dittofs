@@ -70,38 +70,3 @@ func TestRollup_LogBlob_SyncBeforeFenceAdvance(t *testing.T) {
 			syncBefore, syncAfter)
 	}
 }
-
-// TestRollup_CASOnly_NilLogBlobGuard asserts that the nil logBlob guard is
-// intact: a CAS-only FSStore (no LocalChunkIndex, no logBlob) must complete a
-// rollup pass without panicking and must not increment the logBlob sync counter.
-func TestRollup_CASOnly_NilLogBlobGuard(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc := newFSStoreForTest(t, FSStoreOptions{
-		MaxLogBytes:     1 << 30,
-		RollupWorkers:   1,
-		StabilizationMS: 1,
-		RollupStore:     rs,
-	})
-	ctx := context.Background()
-	const pid = "logblob/cas-only/nil-guard"
-
-	if err := bc.AppendWrite(ctx, pid, bytes.Repeat([]byte{0xBC}, 4096), 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for !bc.EarliestStableForTest(pid) {
-		if time.Now().After(deadline) {
-			t.Fatal("interval never stabilized")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-
-	if err := bc.ForceRollupForTest(ctx, pid); err != nil {
-		t.Fatalf("ForceRollupForTest: %v", err)
-	}
-
-	if n := bc.LogBlobRollupSyncCountForTest(); n != 0 {
-		t.Fatalf("CAS-only store must not increment logBlob sync counter; got %d", n)
-	}
-}

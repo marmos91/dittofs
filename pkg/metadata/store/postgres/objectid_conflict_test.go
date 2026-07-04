@@ -133,7 +133,7 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 	hA := conflictTestFile(t, store, shareName, "a.bin")
 	hB := conflictTestFile(t, store, shareName, "b.bin")
 
-	contested := block.ComputeObjectID([]block.BlockRef{
+	contested := block.ComputeObjectID([]block.ChunkRef{
 		{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096},
 	})
 
@@ -143,7 +143,7 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 		t.Fatalf("GetFile A: %v", err)
 	}
 	fA.ObjectID = contested
-	fA.Blocks = []block.BlockRef{{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096}}
+	fA.Blocks = []block.ChunkRef{{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096}}
 	if err := store.PutFile(ctx, fA); err != nil {
 		t.Fatalf("PutFile A (first claimant): %v", err)
 	}
@@ -154,7 +154,7 @@ func TestPostgresPutFile_ObjectIDConflictMapsToErrConflict(t *testing.T) {
 		t.Fatalf("GetFile B: %v", err)
 	}
 	fB.ObjectID = contested
-	fB.Blocks = []block.BlockRef{{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096}}
+	fB.Blocks = []block.ChunkRef{{Hash: block.ContentHash{1, 2, 3, 4}, Offset: 0, Size: 4096}}
 	err = store.PutFile(ctx, fB)
 	if err == nil {
 		t.Fatal("PutFile B should have failed with object_id conflict")

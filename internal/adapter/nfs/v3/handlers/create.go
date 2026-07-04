@@ -521,7 +521,7 @@ func truncateExistingFile(
 		// without it the truncated tail chunks leak on the remote forever
 		// (#832). existingFile was fetched (via Lookup → GetFile) BEFORE
 		// SetFileAttributes pruned the store copy, so its Blocks list still
-		// reflects the full pre-truncate extent. Returned []BlockRef is
+		// reflects the full pre-truncate extent. Returned []ChunkRef is
 		// discarded — the canonical FileAttr.Blocks is reconciled at flush.
 		if _, err := blockStore.Truncate(authCtx.Context, string(existingFile.PayloadID), existingFile.Blocks, targetSize); err != nil {
 			logger.Warn("Failed to truncate content", "size", targetSize, "error", err)

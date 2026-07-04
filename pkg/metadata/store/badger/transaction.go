@@ -1006,14 +1006,6 @@ func (tx *badgerTransaction) GetShareOptions(ctx context.Context, shareName stri
 			return err
 		}
 		optsCopy := data.Share.Options
-		// Coerce BlockLayout share blobs lack the
-		// field entirely, so the JSON unmarshal produces an empty
-		// string — D-A6 maps that to `legacy`.
-		if normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout)); perr == nil {
-			optsCopy.BlockLayout = normalized
-		} else {
-			optsCopy.BlockLayout = metadata.BlockLayoutLegacy
-		}
 		opts = &optsCopy
 		return nil
 	})
@@ -1273,11 +1265,10 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 
 	// Preserve existing share configuration (e.g. ShareOptions written
 	// by a prior CreateShare call) when materializing the root row.
-	// (Rule 2 deviation): mirrors the same fix in the
-	// non-transactional createNewRoot — the original code wrote a
-	// fresh `metadata.Share{Name: shareName}` here, silently wiping
-	// any Options the caller had set via CreateShare. Correctness-
-	// critical for ShareOptions.BlockLayout (D-A6).
+	// Mirrors the same fix in the non-transactional createNewRoot — the
+	// original code wrote a fresh `metadata.Share{Name: shareName}`
+	// here, silently wiping any Options the caller had set via
+	// CreateShare.
 	preservedShare := metadata.Share{Name: shareName}
 	if existingItem, getErr := tx.txn.Get(keyShare(shareName)); getErr == nil {
 		if vErr := existingItem.Value(func(val []byte) error {

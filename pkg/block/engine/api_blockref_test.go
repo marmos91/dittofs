@@ -21,7 +21,7 @@ func TestCopyPayload_O1_IncrementsRefCountPerUniqueHash(t *testing.T) {
 	h1 := block.ContentHash{0x01}
 	h2 := block.ContentHash{0x02}
 	h3 := block.ContentHash{0x03}
-	src := []block.BlockRef{
+	src := []block.ChunkRef{
 		{Hash: h1, Offset: 0, Size: 1024},
 		{Hash: h2, Offset: 1024, Size: 1024},
 		{Hash: h1, Offset: 2048, Size: 1024}, // duplicate of h1
@@ -35,7 +35,7 @@ func TestCopyPayload_O1_IncrementsRefCountPerUniqueHash(t *testing.T) {
 	}
 
 	if len(dst) != len(src) {
-		t.Errorf("dst len = %d, want %d (BlockRef sequence preserved)", len(dst), len(src))
+		t.Errorf("dst len = %d, want %d (ChunkRef sequence preserved)", len(dst), len(src))
 	}
 	for i := range src {
 		if dst[i] != src[i] {
@@ -71,7 +71,7 @@ func TestCopyPayload_ToleratesPendingBlocks(t *testing.T) {
 	bs := newTestEngineWithCoordinator(t, fc)
 	ctx := context.Background()
 
-	src := []block.BlockRef{
+	src := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 1024},
 		{Hash: block.ContentHash{0x02}, Offset: 1024, Size: 1024},
 		{Hash: block.ContentHash{0x03}, Offset: 2048, Size: 1024},
@@ -104,7 +104,7 @@ func TestCopyPayload_CreatesDstFileChunkRows(t *testing.T) {
 	ctx := context.Background()
 
 	const dst = "dst"
-	src := []block.BlockRef{
+	src := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 1024},
 		{Hash: block.ContentHash{0x02}, Offset: 1024, Size: 2048},
 		{Hash: block.ContentHash{0x03}, Offset: 3072, Size: 512},
@@ -157,7 +157,7 @@ func TestCopyPayload_FailureRollsBack(t *testing.T) {
 	bs := newTestEngineWithCoordinator(t, fc)
 	ctx := context.Background()
 
-	src := []block.BlockRef{
+	src := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 1024},
 		{Hash: block.ContentHash{0x02}, Offset: 1024, Size: 1024},
 		{Hash: block.ContentHash{0x03}, Offset: 2048, Size: 1024}, // 3rd → induced failure
@@ -190,7 +190,7 @@ func TestCopyPayload_NilCoordinator(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)
 	ctx := context.Background()
 
-	src := []block.BlockRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 1024}}
+	src := []block.ChunkRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 1024}}
 	_, err := bs.CopyPayload(ctx, "src", "dst", src)
 	if !errors.Is(err, ErrMetadataCoordinatorNotWired) {
 		t.Errorf("err = %v, want ErrMetadataCoordinatorNotWired", err)
@@ -199,13 +199,13 @@ func TestCopyPayload_NilCoordinator(t *testing.T) {
 
 // TestDelete_DecrementsRefCounts asserts the contract
 // engine.Delete invokes coordinator.DecrementRefCount for every
-// BlockRef hash in the input slice.
+// ChunkRef hash in the input slice.
 func TestDelete_DecrementsRefCounts(t *testing.T) {
 	fc := &fakeCoordinator{}
 	bs := newTestEngineWithCoordinator(t, fc)
 	ctx := context.Background()
 
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 1024},
 		{Hash: block.ContentHash{0x02}, Offset: 1024, Size: 1024},
 		{Hash: block.ContentHash{0x03}, Offset: 2048, Size: 1024},
@@ -236,14 +236,14 @@ func TestDelete_EmptyBlocksSkipsCoordinator(t *testing.T) {
 }
 
 // TestTruncate_DropsBlocksPastNewSize asserts the contract
-// blocks whose Offset >= newSize are dropped from the returned BlockRef
+// blocks whose Offset >= newSize are dropped from the returned ChunkRef
 // list and their hashes flow through DecrementRefCount.
 func TestTruncate_DropsBlocksPastNewSize(t *testing.T) {
 	fc := &fakeCoordinator{}
 	bs := newTestEngineWithCoordinator(t, fc)
 	ctx := context.Background()
 
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},     // kept
 		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},  // kept (Offset < newSize=8192)
 		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 4096},  // dropped
@@ -265,14 +265,14 @@ func TestTruncate_DropsBlocksPastNewSize(t *testing.T) {
 
 // TestPunchHole_ReapsBlocksFullyInsideRange asserts the DEALLOCATE contract:
 // blocks lying entirely within [offset, offset+length) are dropped from the
-// returned BlockRef list and reaped via DecrementRefCountAndReap, while blocks
+// returned ChunkRef list and reaped via DecrementRefCountAndReap, while blocks
 // outside (or only partially overlapping) the range are kept.
 func TestPunchHole_ReapsBlocksFullyInsideRange(t *testing.T) {
 	fc := &fakeCoordinator{}
 	bs := newTestEngineWithCoordinator(t, fc)
 	ctx := context.Background()
 
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},     // kept (outside)
 		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},  // dropped (inside [4096,12288))
 		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 4096},  // dropped (inside)
@@ -336,7 +336,7 @@ func TestPunchHole_ZeroLengthNoOp(t *testing.T) {
 	bs := newTestEngineWithCoordinator(t, fc)
 	ctx := context.Background()
 
-	blocks := []block.BlockRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
+	blocks := []block.ChunkRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
 	kept, err := bs.PunchHole(ctx, "punch-noop", blocks, 100, 0)
 	if err != nil {
 		t.Fatalf("PunchHole: %v", err)
@@ -354,7 +354,7 @@ func TestPunchHole_ZeroLengthNoOp(t *testing.T) {
 func TestPunchHole_OverflowRejected(t *testing.T) {
 	bs := newTestEngine(t, 64*1024*1024, 0)
 	ctx := context.Background()
-	blocks := []block.BlockRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
+	blocks := []block.ChunkRef{{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096}}
 	if _, err := bs.PunchHole(ctx, "punch-overflow", blocks, ^uint64(0)-5, 100); err == nil {
 		t.Fatal("PunchHole with overflowing range should return an error")
 	}
@@ -386,7 +386,7 @@ func TestWriteAt_ReturnsCurrentBlocks(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)
 	ctx := context.Background()
 
-	current := []block.BlockRef{
+	current := []block.ChunkRef{
 		{Hash: block.ContentHash{0xAA}, Offset: 0, Size: 1024},
 	}
 	got, err := bs.WriteAt(ctx, "write-test", current, []byte("hello"), 0)

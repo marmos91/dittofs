@@ -54,7 +54,7 @@ const phase11BaselineRandWriteNsPerOp = 0.0
 const d21MaxRatio = 1.00
 
 // phase19FixtureFileSize is the seeded file size for the RandWrite
-// warm-cache benchmark. 64 MiB / 4 MiB blocks = 16 BlockRefs.
+// warm-cache benchmark. 64 MiB / 4 MiB blocks = 16 ChunkRefs.
 const phase19FixtureFileSize = 64 * 1024 * 1024
 
 // phase19FixtureWriteSize is the per-WriteAt I/O size — 4 KiB matches
@@ -236,7 +236,7 @@ func (s *aggregateStubFileChunkStore) DecrementRefCount(_ context.Context, _ str
 func (s *aggregateStubFileChunkStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (s *aggregateStubFileChunkStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.BlockRef) error {
+func (s *aggregateStubFileChunkStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.ChunkRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, fb := range s.blocks {

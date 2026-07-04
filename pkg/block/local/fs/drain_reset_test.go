@@ -27,8 +27,8 @@ func TestDrainRollups_ForcesManifestPopulation(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 
 	var mu sync.Mutex
-	var persisted []block.BlockRef
-	persister := func(_ context.Context, _ string, blocks []block.BlockRef, _ block.ObjectID) error {
+	var persisted []block.ChunkRef
+	persister := func(_ context.Context, _ string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		mu.Lock()
 		defer mu.Unlock()
 		persisted = append(persisted, blocks...)
@@ -217,7 +217,7 @@ func TestResetLocalState_DropsStaleLog(t *testing.T) {
 	// Real FileChunk store so ReadPayloadAt's CAS manifest path resolves
 	// post-rollup bytes.
 	fbs := newMemFileChunkStore()
-	persister := func(ctx context.Context, payloadID string, blocks []block.BlockRef, _ block.ObjectID) error {
+	persister := func(ctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		return fbs.persist(ctx, payloadID, blocks)
 	}
 
@@ -288,7 +288,7 @@ func TestResetLocalState_DropsStaleLog(t *testing.T) {
 func TestResetLocalState_DropsNestedLog(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	fbs := newMemFileChunkStore()
-	persister := func(ctx context.Context, payloadID string, blocks []block.BlockRef, _ block.ObjectID) error {
+	persister := func(ctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		return fbs.persist(ctx, payloadID, blocks)
 	}
 

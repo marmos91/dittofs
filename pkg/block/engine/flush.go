@@ -7,14 +7,14 @@ import (
 )
 
 // Flush ensures all dirty data for a payload is persisted by delegating
-// to the syncer's mirror loop. CAS StoreChunk already dedups physically
+// to the syncer's carve drain. CAS StoreChunk already dedups physically
 // by content hash, so no separate file-level dedup hook runs here.
 func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResult, error) {
 	if err := bs.enter(); err != nil {
 		return nil, err
 	}
 	defer bs.closeMu.RUnlock()
-	// Delegate to syncer's mirror loop.
+	// Delegate to the syncer's carve drain.
 	return bs.syncer.Flush(ctx, payloadID)
 }
 
@@ -22,7 +22,7 @@ func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 // all pending remote uploads to complete.
 //
 // Rollup must run first: it is what turns still-dirty append-log data into CAS
-// chunks, which is the only thing the syncer mirrors to the remote. Draining
+// chunks, which is the only thing the carver packs to the remote. Draining
 // the syncer alone leaves any data still inside the rollup stabilization window
 // un-chunked, so it never reaches the remote and the caller's durability
 // guarantee silently does not hold (see DrainRollups). The snapshot path rolls
@@ -39,11 +39,11 @@ func (bs *Store) DrainAllUploads(ctx context.Context) error {
 	return bs.syncer.DrainAllUploads(ctx)
 }
 
-// SyncCounts returns the lifetime (completed, failed) mirror counts for this
-// store: chunks that reached the remote and chunks whose mirror attempt
-// failed. Both are monotonic. The drain-uploads idle watchdog reads them as a
+// SyncCounts returns the lifetime (completed, failed) sync counts for this
+// store: chunks that reached the remote and failed carve upload attempts.
+// Both are monotonic. The drain-uploads idle watchdog reads them as a
 // progress signal. Returns (0, 0) when the store is closing or has no remote
-// (local-only stores never mirror, so the counters are meaningless — matching
+// (local-only stores never sync, so the counters are meaningless — matching
 // stats.go, which also reports zeros in that mode).
 func (bs *Store) SyncCounts() (completed, failed int) {
 	if err := bs.enter(); err != nil {
@@ -62,7 +62,7 @@ func (bs *Store) SyncCounts() (completed, failed int) {
 // BEFORE the metadata Backup() so the dump observes a fully-populated
 // FileAttr.Blocks (and therefore a non-empty snapshot manifest). It must
 // run before DrainAllUploads — rollup is what produces the CAS chunks the
-// syncer then mirrors to the remote.
+// carver then packs to the remote.
 func (bs *Store) DrainRollups(ctx context.Context) error {
 	if err := bs.enter(); err != nil {
 		return err

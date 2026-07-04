@@ -23,7 +23,7 @@ import (
 
 // lifecycleFixture owns every moving part of the end-to-end snapshot
 // lifecycle test: the Runtime, the per-share local-store dir on disk, the
-// memory remote store that holds the four CAS objects, and the four
+// memory remote store that holds the four packed-block objects, and the four
 // content hashes the sub-tests reason about.
 //
 // Sub-tests share state by design — the ordering of "ready preserves",
@@ -37,8 +37,8 @@ type lifecycleFixture struct {
 	metaStore     *metadatamemory.MemoryMetadataStore
 	snapID        string
 
-	// Distinct first byte per hash → distinct cas/XX prefixes; aids
-	// readability when the sweep walks the namespace.
+	// Distinct first byte per hash → distinct block IDs; aids readability
+	// in sweep logs and assertions.
 	hLive1  block.ContentHash // referenced by live FileChunks
 	hLive2  block.ContentHash // referenced by live FileChunks
 	hSnap   block.ContentHash // referenced ONLY by the snapshot manifest
@@ -113,16 +113,17 @@ func setupSnapshotLifecycle(t *testing.T) *lifecycleFixture {
 	mustPutBlock(t, metaStore, "live/1", fx.hLive1)
 	mustPutBlock(t, metaStore, "live/2", fx.hLive2)
 
-	// Seed the remote with all four CAS objects.
-	mustPutRemote(t, rs, fx.hLive1, []byte("live-1-payload"))
-	mustPutRemote(t, rs, fx.hLive2, []byte("live-2-payload"))
-	mustPutRemote(t, rs, fx.hSnap, []byte("snap-only-payload"))
-	mustPutRemote(t, rs, fx.hOrphan, []byte("orphan-payload"))
+	// Seed the remote with all four chunks in packed-block form (block object
+	// + block record + local-index entry + synced marker with block locator) —
+	// the only remote-durable layout post-#1493.
+	mustSeedPackedRemote(t, metaStore, rs, fx.hLive1, []byte("live-1-payload"))
+	mustSeedPackedRemote(t, metaStore, rs, fx.hLive2, []byte("live-2-payload"))
+	mustSeedPackedRemote(t, metaStore, rs, fx.hSnap, []byte("snap-only-payload"))
+	mustSeedPackedRemote(t, metaStore, rs, fx.hOrphan, []byte("orphan-payload"))
 
-	// Every object on the remote got there via the mirror (Put-then-Mark), so
-	// it carries a synced marker — that is the steady-state index sweep's
-	// candidate source. Backdate the markers past the grace window (matching the
-	// remote object clock above) so GC reclaims the unheld ones immediately.
+	// The synced markers are the steady-state index sweep's candidate source.
+	// Backdate them past the grace window (matching the remote object clock
+	// above) so GC reclaims the unheld ones immediately.
 	synced := time.Now().Add(-2 * time.Hour)
 	for _, h := range []block.ContentHash{fx.hLive1, fx.hLive2, fx.hSnap, fx.hOrphan} {
 		metaStore.MarkSyncedAtForTest(h, synced)
@@ -307,41 +308,78 @@ func hashAll(seed byte) block.ContentHash {
 func mustPutBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
 	if err := st.Put(context.Background(), &block.FileChunk{
-		ID:            id,
-		Hash:          h,
-		State:         block.BlockStateRemote,
-		BlockStoreKey: block.FormatCASKey(h),
-		LocalPath:     "/cache/" + id,
-		DataSize:      64,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         id,
+		Hash:       h,
+		State:      block.BlockStateRemote,
+		LocalPath:  "/cache/" + id,
+		DataSize:   64,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}); err != nil {
 		t.Fatalf("Put FileChunk(%s): %v", id, err)
 	}
 }
 
-// mustPutRemote seeds a CAS object on the remote keyed by hash.
-func mustPutRemote(t *testing.T, rs *remotememory.Store, h block.ContentHash, data []byte) {
+// blockIDFor derives the deterministic packed-block object ID the fixture
+// seeds for h, so assertions can address the block by hash.
+func blockIDFor(h block.ContentHash) string {
+	return "blk-" + h.String()[:16]
+}
+
+// mustSeedPackedRemote seeds the post-#1493 remote-durable state for one
+// chunk: a packed blocks/<id> object on the remote holding data, plus — in the
+// share's metadata store — the block record (LiveChunkCount=1), the
+// local-index entry (the reclaim path's idempotency token), and the synced
+// marker carrying the block locator. This mirrors what the carver's
+// DefaultCommitBlock produces, minus the codec framing the GC reclaim path
+// never inspects.
+func mustSeedPackedRemote(t *testing.T, st *metadatamemory.MemoryMetadataStore, rs *remotememory.Store, h block.ContentHash, data []byte) {
 	t.Helper()
-	if err := rs.Put(context.Background(), h, data); err != nil {
-		t.Fatalf("remote.Put(%x): %v", h[:4], err)
+	ctx := context.Background()
+	blockID := blockIDFor(h)
+	if err := rs.PutBlock(ctx, blockID, bytes.NewReader(data)); err != nil {
+		t.Fatalf("PutBlock(%s): %v", blockID, err)
+	}
+	if err := st.PutBlockRecord(ctx, block.BlockRecord{
+		BlockID:        blockID,
+		Length:         int64(len(data)),
+		LiveChunkCount: 1,
+		SyncState:      block.BlockStateRemote,
+	}); err != nil {
+		t.Fatalf("PutBlockRecord(%s): %v", blockID, err)
+	}
+	if err := st.PutLocalLocation(ctx, h, block.LocalChunkLocation{
+		LogBlobID: "0000000000000000",
+		RawOffset: 0,
+		RawLength: int64(len(data)),
+	}); err != nil {
+		t.Fatalf("PutLocalLocation(%x): %v", h[:4], err)
+	}
+	if err := st.MarkSynced(ctx, h, block.ChunkLocator{
+		BlockID:    blockID,
+		WireOffset: 0,
+		WireLength: int64(len(data)),
+	}); err != nil {
+		t.Fatalf("MarkSynced(%x): %v", h[:4], err)
 	}
 }
 
-// mustHave asserts the remote currently holds h, failing with msg if not.
+// mustHave asserts the remote still holds h's packed block, failing with msg
+// if not.
 func mustHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h block.ContentHash, msg string) {
 	t.Helper()
-	if _, err := rs.Head(ctx, h); err != nil {
-		t.Fatalf("%s: Head err=%v (expected object present)", msg, err)
+	if _, err := rs.GetBlock(ctx, blockIDFor(h)); err != nil {
+		t.Fatalf("%s: GetBlock err=%v (expected block object present)", msg, err)
 	}
 }
 
-// mustNotHave asserts the remote does NOT hold h, failing with msg if it does.
+// mustNotHave asserts the remote no longer holds h's packed block, failing
+// with msg if it does.
 func mustNotHave(t *testing.T, ctx context.Context, rs *remotememory.Store, h block.ContentHash, msg string) {
 	t.Helper()
-	if _, err := rs.Head(ctx, h); err == nil {
-		t.Fatalf("%s: object still present (expected deleted)", msg)
+	if _, err := rs.GetBlock(ctx, blockIDFor(h)); err == nil {
+		t.Fatalf("%s: block object still present (expected deleted)", msg)
 	}
 }
 

@@ -46,24 +46,15 @@ func (s *SQLiteMetadataStore) GetRootHandle(ctx context.Context, shareName strin
 
 // GetShareOptions returns the share configuration options.
 // Returns ErrNotFound if the share doesn't exist.
-//
-// The block_layout column is read alongside the legacy options JSON
-// blob and overrides whatever the JSON happens to contain — the
-// dedicated column is the authoritative source per
-// (D-A6). Empty / NULL values coerce to legacy via
-// ParseBlockLayout for forward-compat with pre-migration rows.
 func (s *SQLiteMetadataStore) GetShareOptions(ctx context.Context, shareName string) (*metadata.ShareOptions, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	query := `SELECT options, block_layout FROM shares WHERE share_name = ?1`
+	query := `SELECT options FROM shares WHERE share_name = ?1`
 
-	var (
-		optionsJSON     []byte
-		blockLayoutText string
-	)
-	err := s.queryRow(ctx, query, shareName).Scan(&optionsJSON, &blockLayoutText)
+	var optionsJSON []byte
+	err := s.queryRow(ctx, query, shareName).Scan(&optionsJSON)
 	if err != nil {
 		return nil, mapDBError(err, "GetShareOptions", shareName)
 	}
@@ -75,18 +66,6 @@ func (s *SQLiteMetadataStore) GetShareOptions(ctx context.Context, shareName str
 		}
 	}
 
-	// Authoritative: the dedicated block_layout column overrides any
-	// stale value embedded in the JSON blob. ParseBlockLayout coerces
-	// the empty-string default (DEFAULT 'legacy' in the schema, but
-	// also any pre-migration row with NULL→"" via the COALESCE-like
-	// behavior of TEXT NOT NULL DEFAULT) into BlockLayoutLegacy.
-	// Unknown values surface ErrInvalidBlockLayout.
-	layout, err := metadata.ParseBlockLayout(blockLayoutText)
-	if err != nil {
-		return nil, fmt.Errorf("share %q: %w", shareName, err)
-	}
-	options.BlockLayout = layout
-
 	return &options, nil
 }
 
@@ -95,11 +74,6 @@ func (s *SQLiteMetadataStore) GetShareOptions(ctx context.Context, shareName str
 // ============================================================================
 
 // CreateShare creates a new share with the given configuration.
-//
-// The block_layout column is populated from share.Options.BlockLayout;
-// an unset / zero-value field is normalized through ParseBlockLayout
-// (so it stores as 'legacy', matching the schema DEFAULT and D-A6
-// safe-default semantics).
 func (s *SQLiteMetadataStore) CreateShare(ctx context.Context, share *metadata.Share) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -116,13 +90,6 @@ func (s *SQLiteMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 	// caller's options. Callers wanting specific root attrs invoke
 	// CreateRootDirectory afterward; it is idempotent and updates the
 	// existing root in place (no orphaned inode).
-
-	// Validate the block layout BEFORE creating any rows so an invalid value
-	// can't leave a half-created share (root inode materialized, options
-	// rejected). UpdateShareOptions re-parses it; this is the early guard.
-	if _, err := metadata.ParseBlockLayout(string(share.Options.BlockLayout)); err != nil {
-		return fmt.Errorf("create share %q: %w", share.Name, err)
-	}
 
 	// Duplicate detection: a share is "created" once its root inode exists.
 	// This read is the common-case fast path; it is not the integrity
@@ -152,9 +119,8 @@ func (s *SQLiteMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 	// Root-inode insert and options write run in ONE transaction so the share
 	// can never be left half-created (root materialized but options stuck at
 	// their column defaults) if the second step fails or the process crashes
-	// between them. UpdateShareOptions applies the same ParseBlockLayout
-	// normalization the old INSERT did; CreateRootDirectory seeds only
-	// share_name + root_file_id, so the options UPDATE finishes the row.
+	// between them. CreateRootDirectory seeds only share_name + root_file_id,
+	// so the options UPDATE finishes the row.
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		if _, err := tx.CreateRootDirectory(ctx, share.Name, rootAttr); err != nil {
 			return fmt.Errorf("create share %q root directory: %w", share.Name, err)
@@ -167,12 +133,6 @@ func (s *SQLiteMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 }
 
 // UpdateShareOptions updates the share configuration options.
-//
-// The block_layout column is updated alongside the JSON options blob.
-// This is how `dfsctl blockstore migrate` flips a share from `legacy`
-// to `cas-only` once the integrity check passes (D-A7); the operation
-// is a single SQL UPDATE so the flip is atomic with whatever other
-// option changes the migration tool wants to bundle.
 func (s *SQLiteMetadataStore) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -183,13 +143,8 @@ func (s *SQLiteMetadataStore) UpdateShareOptions(ctx context.Context, shareName 
 		return fmt.Errorf("failed to marshal share options: %w", err)
 	}
 
-	layout, err := metadata.ParseBlockLayout(string(options.BlockLayout))
-	if err != nil {
-		return fmt.Errorf("share %q: %w", shareName, err)
-	}
-
-	query := `UPDATE shares SET options = ?1, block_layout = ?2 WHERE share_name = ?3`
-	result, err := s.exec(ctx, query, optionsData, string(layout), shareName)
+	query := `UPDATE shares SET options = ?1 WHERE share_name = ?2`
+	result, err := s.exec(ctx, query, optionsData, shareName)
 	if err != nil {
 		return err
 	}

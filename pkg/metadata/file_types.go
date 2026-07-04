@@ -100,9 +100,9 @@ type FileAttr struct {
 	// Postgres: separate file_block_refs join table.
 	// Badger: rides existing JSON-encoded FileAttr blob.
 	// Memory: typed slice held directly.
-	Blocks []block.BlockRef `json:"blocks,omitempty"`
+	Blocks []block.ChunkRef `json:"blocks,omitempty"`
 
-	// ObjectID is the BLAKE3 Merkle root over BlockRef.Hash values sorted
+	// ObjectID is the BLAKE3 Merkle root over ChunkRef.Hash values sorted
 	// by Offset, populated lazily at the post-Flush coordinator hook
 	// (). All-zero sentinel means
 	// "never quiesced": legacy files, partially-flushed

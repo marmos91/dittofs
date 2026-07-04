@@ -12,7 +12,7 @@ import (
 // makeSparseFile creates a regular file under the fixture root, then stamps it
 // with the given size and block list directly via the store so PunchHole /
 // Allocate have a realistic sparse layout to operate on. Returns the handle.
-func makeSparseFile(t *testing.T, fx *testFixture, name string, size uint64, blocks []block.BlockRef) metadata.FileHandle {
+func makeSparseFile(t *testing.T, fx *testFixture, name string, size uint64, blocks []block.ChunkRef) metadata.FileHandle {
 	t.Helper()
 	file, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, name, &metadata.FileAttr{Mode: 0644})
 	require.NoError(t, err)
@@ -28,15 +28,15 @@ func makeSparseFile(t *testing.T, fx *testFixture, name string, size uint64, blo
 	return handle
 }
 
-func bref(offset uint64, size uint32) block.BlockRef {
-	return block.BlockRef{Offset: offset, Size: size}
+func bref(offset uint64, size uint32) block.ChunkRef {
+	return block.ChunkRef{Offset: offset, Size: size}
 }
 
 func TestService_PunchHole(t *testing.T) {
 	t.Run("drops blocks inside the range and keeps size", func(t *testing.T) {
 		fx := newTestFixture(t)
 		// Dense file [0,300): blocks at 0,100,200 each 100 bytes.
-		handle := makeSparseFile(t, fx, "punch.bin", 300, []block.BlockRef{bref(0, 100), bref(100, 100), bref(200, 100)})
+		handle := makeSparseFile(t, fx, "punch.bin", 300, []block.ChunkRef{bref(0, 100), bref(100, 100), bref(200, 100)})
 
 		res, err := fx.service.PunchHole(fx.rootContext(), handle, 100, 100)
 		require.NoError(t, err)
@@ -58,7 +58,7 @@ func TestService_PunchHole(t *testing.T) {
 
 	t.Run("zero length is a no-op success", func(t *testing.T) {
 		fx := newTestFixture(t)
-		handle := makeSparseFile(t, fx, "noop.bin", 100, []block.BlockRef{bref(0, 100)})
+		handle := makeSparseFile(t, fx, "noop.bin", 100, []block.ChunkRef{bref(0, 100)})
 		res, err := fx.service.PunchHole(fx.rootContext(), handle, 10, 0)
 		require.NoError(t, err)
 		assert.Nil(t, res.PreOpBlocks)
@@ -68,7 +68,7 @@ func TestService_PunchHole(t *testing.T) {
 
 	t.Run("punch at EOF is a no-op success", func(t *testing.T) {
 		fx := newTestFixture(t)
-		handle := makeSparseFile(t, fx, "eof.bin", 100, []block.BlockRef{bref(0, 100)})
+		handle := makeSparseFile(t, fx, "eof.bin", 100, []block.ChunkRef{bref(0, 100)})
 		res, err := fx.service.PunchHole(fx.rootContext(), handle, 200, 50)
 		require.NoError(t, err)
 		assert.Nil(t, res.PreOpBlocks)
@@ -84,7 +84,7 @@ func TestService_PunchHole(t *testing.T) {
 func TestService_Allocate(t *testing.T) {
 	t.Run("extends size past EOF", func(t *testing.T) {
 		fx := newTestFixture(t)
-		handle := makeSparseFile(t, fx, "alloc.bin", 100, []block.BlockRef{bref(0, 100)})
+		handle := makeSparseFile(t, fx, "alloc.bin", 100, []block.ChunkRef{bref(0, 100)})
 
 		f, err := fx.service.Allocate(fx.rootContext(), handle, 50, 500) // 50+500 = 550 > 100
 		require.NoError(t, err)
@@ -102,7 +102,7 @@ func TestService_Allocate(t *testing.T) {
 
 	t.Run("range within current size is a no-op", func(t *testing.T) {
 		fx := newTestFixture(t)
-		handle := makeSparseFile(t, fx, "within.bin", 1000, []block.BlockRef{bref(0, 1000)})
+		handle := makeSparseFile(t, fx, "within.bin", 1000, []block.ChunkRef{bref(0, 1000)})
 		f, err := fx.service.Allocate(fx.rootContext(), handle, 100, 200)
 		require.NoError(t, err)
 		assert.Equal(t, uint64(1000), f.Size, "size unchanged when range fits")

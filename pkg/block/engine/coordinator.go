@@ -43,8 +43,8 @@ type MetadataCoordinator interface {
 	// is 0, deletes the FileChunk index row identified by the exact block ID
 	// "{payloadID}/{offset}" so its hash leaves EnumerateFileChunks once no
 	// row anywhere references it and the GC mark-sweep can reclaim the remote
-	// chunk. Engine invokes this from Delete (per BlockRef in the list) and
-	// Truncate (per BlockRef dropped past the new size) — the reclaim path.
+	// chunk. Engine invokes this from Delete (per ChunkRef in the list) and
+	// Truncate (per ChunkRef dropped past the new size) — the reclaim path.
 	//
 	// Reaping by EXACT ID (not by hash) is load-bearing for correctness: the
 	// engine rollup creates per-chunk rows keyed "{payloadID}/{offset}" in
@@ -75,7 +75,7 @@ type MetadataCoordinator interface {
 	// all-zero ObjectID to mean "do not update ObjectID" (e.g.
 	// partial flushes — but those currently never reach this hook per
 	// Flush semantics).
-	PersistFileChunks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error
+	PersistFileChunks(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error
 
 	// GetPersistedBlocks returns the file's currently-persisted
 	// FileAttr.Blocks (with content hashes) for payloadID, or an empty
@@ -88,7 +88,7 @@ type MetadataCoordinator interface {
 	// Reads the manifest source (file_block_refs on Postgres, encoded
 	// FileAttr.Blocks on Badger/Memory) — NOT the per-file FileChunk
 	// index, whose Pending rows carry a NULL hash on Postgres.
-	GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.BlockRef, error)
+	GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.ChunkRef, error)
 
 	// FindByObjectID looks up a previously-quiesced file in the
 	// metadata store by Merkle-root ObjectID. Returns (nil, nil) on
@@ -97,7 +97,7 @@ type MetadataCoordinator interface {
 	//
 	// Implementations short-circuit on zero-valued ObjectID and return
 	// (nil, nil) without touching the metadata store.
-	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error)
+	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error)
 
 	// GetFileObjectID returns the current FileAttr.ObjectID for
 	// payloadID, or the all-zero sentinel when the file has never
@@ -123,7 +123,7 @@ type MetadataCoordinator interface {
 // constructed with a nil coordinator. Production wiring (per-share
 // runtime service in pkg/controlplane/runtime/shares/) MUST inject a
 // real coordinator; unit tests tolerate nil for ReadAt-only fixtures
-// and for CopyPayload over an empty BlockRef list (no work => no
+// and for CopyPayload over an empty ChunkRef list (no work => no
 // coordinator needed).
 var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator not wired")
 
@@ -133,7 +133,7 @@ var ErrMetadataCoordinatorNotWired = errors.New("engine: metadata coordinator no
 // hook recognises this sentinel and tolerates it (the dual-read shim keeps
 // reads correct), but logs a warning so the silent-drop window is
 // observable. Other callers should treat it as a hard error so a future
-// plan flipping WriteAt to return real BlockRefs is forced to implement
+// plan flipping WriteAt to return real ChunkRefs is forced to implement
 // the method rather than silently succeed.
 var ErrPersistFileChunksNotWired = errors.New("engine: PersistFileChunks not wired (dual-read shim covers reads)")
 

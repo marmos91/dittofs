@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
@@ -56,17 +54,23 @@ func waitForRollup(t *testing.T, rs metadata.RollupStore, payloadID string, time
 	return 0
 }
 
-// countChunksInBlocks walks baseDir/blocks/ and counts non-directory files.
-func countChunksInBlocks(t *testing.T, baseDir string) int {
+// countLocalChunks counts the chunks recorded in the store's log-blob index.
+// This is the blocks-only successor to counting per-chunk cas files under
+// blocks/ — rolled-up chunks now live in the log-blob substrate and are
+// enumerated via the LocalChunkIndex walker.
+func countLocalChunks(t *testing.T, bc *FSStore) int {
 	t.Helper()
-	blocksDir := filepath.Join(baseDir, "blocks")
+	w, ok := bc.localChunkIndex.(localChunkWalker)
+	if !ok {
+		t.Fatalf("localChunkIndex does not support WalkLocalLocations")
+	}
 	count := 0
-	_ = filepath.WalkDir(blocksDir, func(_ string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			count++
-		}
+	if err := w.WalkLocalLocations(context.Background(), func(block.ContentHash, block.LocalChunkLocation) error {
+		count++
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("WalkLocalLocations: %v", err)
+	}
 	return count
 }
 
@@ -107,7 +111,7 @@ func TestRollup_CommitChunks_HappyPath(t *testing.T) {
 		t.Fatalf("logBytesTotal did not drop after rollup: still %d", bc.logBytesTotal.Load())
 	}
 
-	if n := countChunksInBlocks(t, bc.baseDir); n < 1 {
+	if n := countLocalChunks(t, bc); n < 1 {
 		t.Fatalf("expected ≥1 chunk in blocks/, found %d", n)
 	}
 }
@@ -405,7 +409,7 @@ func TestRollup_TruncateMidWindow_DoesNotAdvancePastUncommittedTail(t *testing.T
 // ObjectIDPersister closure.
 type capturedPersist struct {
 	payloadID string
-	blocks    []block.BlockRef
+	blocks    []block.ChunkRef
 	objectID  block.ObjectID
 }
 
@@ -452,7 +456,7 @@ func runRollupOnceErr(bc *FSStore, payloadID string, payload []byte) error {
 //
 //  1. PersistsObjectIDOnCommit — happy path: persister invoked exactly
 //
-// once with a non-empty BlockRef manifest, BlockRefs sorted-by-Offset
+// once with a non-empty ChunkRef manifest, ChunkRefs sorted-by-Offset
 //
 //	   and an ObjectID equal to ComputeObjectID(blocks).
 //	2. NilPersisterIsBenign — rollup proceeds without panic or error when
@@ -465,12 +469,12 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 
 		var mu sync.Mutex
 		var captures []capturedPersist
-		persister := func(_ context.Context, pid string, blocks []block.BlockRef, oid block.ObjectID) error {
+		persister := func(_ context.Context, pid string, blocks []block.ChunkRef, oid block.ObjectID) error {
 			mu.Lock()
 			defer mu.Unlock()
 			// Defensive copy so subsequent rollup passes (none expected
 			// in this subtest) cannot mutate the captured slice.
-			cp := make([]block.BlockRef, len(blocks))
+			cp := make([]block.ChunkRef, len(blocks))
 			copy(cp, blocks)
 			captures = append(captures, capturedPersist{
 				payloadID: pid,
@@ -489,7 +493,7 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 		})
 
 		// 8 MiB payload is large enough that the chunker emits at least one
-		// chunk; FastCDC may emit several. Either way the BlockRef
+		// chunk; FastCDC may emit several. Either way the ChunkRef
 		// manifest is non-empty.
 		payload := bytes.Repeat([]byte{0xCD}, 8*1024*1024)
 		runRollupOnce(t, bc, "happyfile", payload)
@@ -505,12 +509,12 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 			t.Fatalf("captured payloadID: got %q want %q", cap.payloadID, "happyfile")
 		}
 		if len(cap.blocks) == 0 {
-			t.Fatal("captured BlockRefs: got empty slice; chunker should have emitted ≥1 chunk")
+			t.Fatal("captured ChunkRefs: got empty slice; chunker should have emitted ≥1 chunk")
 		}
 		if !sort.SliceIsSorted(cap.blocks, func(i, j int) bool {
 			return cap.blocks[i].Offset < cap.blocks[j].Offset
 		}) {
-			t.Fatalf("captured BlockRefs not sorted by Offset: %+v", cap.blocks)
+			t.Fatalf("captured ChunkRefs not sorted by Offset: %+v", cap.blocks)
 		}
 		expectedOID := block.ComputeObjectID(cap.blocks)
 		if cap.objectID != expectedOID {
@@ -553,7 +557,7 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 		rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 
 		simulated := errors.New("simulated persister failure")
-		persister := func(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
+		persister := func(_ context.Context, _ string, _ []block.ChunkRef, _ block.ObjectID) error {
 			return simulated
 		}
 
@@ -593,7 +597,7 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 
 // TestRollup_ComputeObjectID_StableAcrossPayloads rolls up two distinct
 // payloads carrying identical content and asserts the rollup-time
-// ObjectID + BlockRef manifest are identical. CAS StoreChunk is
+// ObjectID + ChunkRef manifest are identical. CAS StoreChunk is
 // content-addressed and idempotent, so the second payload re-stores the
 // same chunk harmlessly; the manifest must not drift.
 func TestRollup_ComputeObjectID_StableAcrossPayloads(t *testing.T) {
@@ -609,10 +613,10 @@ func TestRollup_ComputeObjectID_StableAcrossPayloads(t *testing.T) {
 
 	var mu sync.Mutex
 	var captured []capturedPersist
-	bc.SetObjectIDPersister(func(_ context.Context, pid string, blocks []block.BlockRef, oid block.ObjectID) error {
+	bc.SetObjectIDPersister(func(_ context.Context, pid string, blocks []block.ChunkRef, oid block.ObjectID) error {
 		mu.Lock()
 		defer mu.Unlock()
-		cp := make([]block.BlockRef, len(blocks))
+		cp := make([]block.ChunkRef, len(blocks))
 		copy(cp, blocks)
 		captured = append(captured, capturedPersist{payloadID: pid, blocks: cp, objectID: oid})
 		return nil
@@ -631,12 +635,12 @@ func TestRollup_ComputeObjectID_StableAcrossPayloads(t *testing.T) {
 			captured[0].objectID.String(), captured[1].objectID.String())
 	}
 	if len(captured[0].blocks) != len(captured[1].blocks) {
-		t.Fatalf("BlockRef manifest length drift: A=%d B=%d", len(captured[0].blocks), len(captured[1].blocks))
+		t.Fatalf("ChunkRef manifest length drift: A=%d B=%d", len(captured[0].blocks), len(captured[1].blocks))
 	}
 	for i := range captured[0].blocks {
 		a, b := captured[0].blocks[i], captured[1].blocks[i]
 		if a.Hash != b.Hash || a.Offset != b.Offset || a.Size != b.Size {
-			t.Fatalf("BlockRef[%d] drift between payloads: A=%+v B=%+v", i, a, b)
+			t.Fatalf("ChunkRef[%d] drift between payloads: A=%+v B=%+v", i, a, b)
 		}
 	}
 }

@@ -22,7 +22,7 @@ func makeHash(seed byte) ContentHash {
 // the "never quiesced" sentinel and must be distinct from any real ObjectID).
 func TestComputeObjectID_Empty(t *testing.T) {
 	a := ComputeObjectID(nil)
-	b := ComputeObjectID([]BlockRef{})
+	b := ComputeObjectID([]ChunkRef{})
 	if a != b {
 		t.Fatalf("ComputeObjectID(nil) != ComputeObjectID(empty slice): %s vs %s", a.String(), b.String())
 	}
@@ -52,16 +52,16 @@ func TestComputeObjectID_DomainSeparation(t *testing.T) {
 	for i := range h0 {
 		h0[i] = 0xAA
 	}
-	got := ComputeObjectID([]BlockRef{{Hash: h0, Offset: 0, Size: 4096}})
+	got := ComputeObjectID([]ChunkRef{{Hash: h0, Offset: 0, Size: 4096}})
 	if got == h0 {
 		t.Fatalf("ObjectID must not equal bare block hash (domain prefix missing?): %s", got.String())
 	}
 }
 
 // TestComputeObjectID_SortStability verifies ComputeObjectID is deterministic
-// two calls on the same BlockRef slice produce identical output.
+// two calls on the same ChunkRef slice produce identical output.
 func TestComputeObjectID_SortStability(t *testing.T) {
-	blocks := []BlockRef{
+	blocks := []ChunkRef{
 		{Hash: makeHash(1), Offset: 0, Size: 4096},
 		{Hash: makeHash(64), Offset: 4096, Size: 4096},
 		{Hash: makeHash(128), Offset: 8192, Size: 4096},
@@ -74,11 +74,11 @@ func TestComputeObjectID_SortStability(t *testing.T) {
 	}
 }
 
-// TestComputeObjectID_OrderSensitivity verifies that permuting the BlockRef
+// TestComputeObjectID_OrderSensitivity verifies that permuting the ChunkRef
 // list produces a different ObjectID — catches a future bug where someone
 // re-sorts inside the helper.
 func TestComputeObjectID_OrderSensitivity(t *testing.T) {
-	blocks := []BlockRef{
+	blocks := []ChunkRef{
 		{Hash: makeHash(1), Offset: 0, Size: 4096},
 		{Hash: makeHash(64), Offset: 4096, Size: 4096},
 		{Hash: makeHash(128), Offset: 8192, Size: 4096},
@@ -86,21 +86,21 @@ func TestComputeObjectID_OrderSensitivity(t *testing.T) {
 	}
 	original := ComputeObjectID(blocks)
 
-	swapped := make([]BlockRef, len(blocks))
+	swapped := make([]ChunkRef, len(blocks))
 	copy(swapped, blocks)
 	swapped[0], swapped[1] = swapped[1], swapped[0]
 	permuted := ComputeObjectID(swapped)
 
 	if original == permuted {
-		t.Fatalf("permuted BlockRef list produced same ObjectID; helper must not re-sort: %s", original.String())
+		t.Fatalf("permuted ChunkRef list produced same ObjectID; helper must not re-sort: %s", original.String())
 	}
 }
 
 // TestComputeObjectID_MutationDiff verifies that flipping a single byte in
-// one of the BlockRef hashes changes the ObjectID. Primitive collision-
+// one of the ChunkRef hashes changes the ObjectID. Primitive collision-
 // resistance check on top of BLAKE3.
 func TestComputeObjectID_MutationDiff(t *testing.T) {
-	blocks := []BlockRef{
+	blocks := []ChunkRef{
 		{Hash: makeHash(1), Offset: 0, Size: 4096},
 		{Hash: makeHash(64), Offset: 4096, Size: 4096},
 		{Hash: makeHash(128), Offset: 8192, Size: 4096},
@@ -108,7 +108,7 @@ func TestComputeObjectID_MutationDiff(t *testing.T) {
 	}
 	before := ComputeObjectID(blocks)
 
-	mutated := make([]BlockRef, len(blocks))
+	mutated := make([]ChunkRef, len(blocks))
 	copy(mutated, blocks)
 	mutated[2].Hash[5] ^= 0xFF
 	after := ComputeObjectID(mutated)
@@ -128,7 +128,7 @@ func TestComputeObjectID_PrefixVersionFreeze(t *testing.T) {
 	for i := 0; i < HashSize; i++ {
 		h[i] = byte(i + 1) // 0x01, 0x02, ..., 0x20
 	}
-	blocks := []BlockRef{{Hash: h, Offset: 0, Size: 1}}
+	blocks := []ChunkRef{{Hash: h, Offset: 0, Size: 1}}
 	got := ComputeObjectID(blocks)
 
 	// Frozen golden value computed from BLAKE3("dittofs:objectid:v1\x00" || [0x01..0x20]).

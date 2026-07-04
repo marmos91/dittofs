@@ -181,7 +181,7 @@ func testINV02_LeakInjection(t *testing.T, factory StoreFactory) {
 	const shareName = "inv02-leak"
 	rootHandle := createTestShare(t, store, shareName)
 
-	// Seed one well-formed file with three BlockRefs / three FileChunks
+	// Seed one well-formed file with three ChunkRefs / three FileChunks
 	// each carrying RefCount=1. Pre-leak invariant: refs=3, refCount=3.
 	rng := rand.New(rand.NewSource(42))
 	ws := &workerState{}
@@ -242,7 +242,7 @@ type workerState struct {
 	files []fuzzFileEntry
 }
 
-// fuzzCreateFile creates a new file with 1–3 BlockRefs and matching
+// fuzzCreateFile creates a new file with 1–3 ChunkRefs and matching
 // FileChunk rows (RefCount=1 each). Block IDs are unique per (worker,
 // opID, blockIdx) so independent workers never collide. Hashes are
 // derived from a worker-relative seed so dedup-aware backends see
@@ -266,7 +266,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 	payloadID := fmt.Sprintf("inv02/%d/%d", workerID, opID)
 
 	blockIDs := make([]string, 0, nBlocks)
-	refs := make([]block.BlockRef, 0, nBlocks)
+	refs := make([]block.ChunkRef, 0, nBlocks)
 	now := time.Now()
 	for i := 0; i < nBlocks; i++ {
 		hashSeed := fmt.Sprintf("inv02-w%d-op%d-blk%d", workerID, opID, i)
@@ -287,7 +287,7 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 			return fmt.Errorf("put block %s: %w", blockID, err)
 		}
 		blockIDs = append(blockIDs, blockID)
-		refs = append(refs, block.BlockRef{
+		refs = append(refs, block.ChunkRef{
 			Hash:   h,
 			Offset: uint64(i) * 4096,
 			Size:   4096,
@@ -382,9 +382,9 @@ func fuzzCopyFile(ctx context.Context, store metadata.Store, shareName string, r
 	if err != nil {
 		return fmt.Errorf("GetFile src: %w", err)
 	}
-	srcBlocks := append([]block.BlockRef(nil), srcFile.Blocks...)
+	srcBlocks := append([]block.ChunkRef(nil), srcFile.Blocks...)
 
-	// Increment RefCount on each source FileChunk — one bump per BlockRef
+	// Increment RefCount on each source FileChunk — one bump per ChunkRef
 	// so multiple refs to the same hash are accounted for explicitly.
 	for _, srcBlockID := range src.blockIDs {
 		if err := store.IncrementRefCount(ctx, srcBlockID); err != nil {

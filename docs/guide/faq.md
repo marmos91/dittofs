@@ -202,7 +202,7 @@ short-circuit lookup never returns a half-quiesced file.
 A non-zero ObjectID always reflects a fully-`Remote` consistent
 state. Empty files dedup to one canonical constant
 `BLAKE3("dittofs:objectid:v1\x00")`; files written before ObjectID existed
-keep the all-zero sentinel until `dfs migrate-to-cas` backfills them.
+keep the all-zero sentinel until their next full flush recomputes it.
 
 See
 [ARCHITECTURE.md — File-Level Dedup](../internals/architecture.md#file-level-dedup-objectid--merkle-root)
@@ -343,29 +343,17 @@ for the full design and
 [IMPLEMENTING_STORES.md](../internals/implementing-stores.md) for storage-encoding
 requirements.
 
-### How do I migrate an older `.blk` store to the CAS layout?
+### How do I migrate an older store layout?
 
-Run `dfs migrate-to-cas` against the **stopped** server's storage root.
-v0.16+ servers require the CAS layout, and the server's boot guard
-refuses to start a store still on the older `.blk` layout.
+Upgrades from the v0.16–v0.21 standalone-CAS layout are automatic: each
+share converts its leftover per-chunk objects into packed blocks on the
+first start after the upgrade, blocking until done (idempotent and
+resumable — a killed migration converges on the next start).
 
-```bash
-sudo systemctl stop dfs
-# --storage-dir and --metadata-dir are both required
-dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage \
-  --metadata-dir /var/lib/dittofs/metadata                          # all shares
-dfs migrate-to-cas --storage-dir /var/lib/dittofs/storage \
-  --metadata-dir /var/lib/dittofs/metadata --share myshare
-sudo systemctl start dfs
-```
-
-The migration is resumable (a per-share journal at
-`<storage-dir>/shares/<name>/.dittofs-migrate-to-cas.state` lets a run
-resume after a crash without re-uploading already-migrated chunks) and
-has a non-destructive preview (`--dry-run` reports file count, estimated
-dedup ratio, and bytes-per-second without writing anything). On success
-it writes the `.cas-migrated-v1` sentinel per share. See
-[BLOCKSTORE_MIGRATION.md](block-store-migration.md) for the full runbook.
+Stores still on the pre-v0.16 `.blk` layout must first be migrated with
+dittofs v0.21 or earlier (`dfs migrate-to-cas`, removed in later
+releases); the boot guard refuses `.blk` layouts with exit code 78. See
+[the migration guide](block-store-migration.md) for the full runbook.
 
 ## Usage Questions
 

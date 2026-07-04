@@ -102,9 +102,9 @@ func (bc *FSStore) maybeCompactLog(ctx context.Context, payloadID string, lf *lo
 // metaOff > hdrOff reconcile that would otherwise misinterpret the
 // renumbered file.
 //
-// BLAKE3 / CAS: no chunk is re-emitted. Compaction touches only the
-// on-disk log bytes; CAS chunks in blocks/{hh}/{hh}/{hex} are produced
-// solely by the rollup path and are unaffected here.
+// BLAKE3 / content-addressing: no chunk is re-emitted. Compaction touches
+// only the on-disk log bytes; content-addressed chunks in the log-blob
+// substrate are produced solely by the rollup path and are unaffected here.
 func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *logFile, idx *logIndex) error {
 	fence := idx.Fence()
 	if fence <= logHeaderSize {

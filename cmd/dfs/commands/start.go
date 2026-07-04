@@ -217,7 +217,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 		BackpressureMaxWait:    cfg.Blockstore.Local.BackpressureMaxWait,
 	})
 	rt.SetSyncerDefaults(&shares.SyncerDefaults{
-		ParallelUploads:   deduced.ParallelSyncs,
 		ParallelDownloads: deduced.ParallelFetches,
 		PrefetchWorkers:   deduced.PrefetchWorkers,
 	})
@@ -865,9 +864,8 @@ func emitAdminPassword(password string) {
 // the offending path without fragile substring extraction.
 func formatLegacyLayoutDirective(err error) string {
 	return fmt.Sprintf(`Detected legacy .blk layout: %s.
-v0.16+ requires CAS migration. Run:
-    dfs migrate-to-cas --share <name>
-or, to migrate every share at once:
-    dfs migrate-to-cas
-See docs/CONFIGURATION.md §migration.`, err)
+This release no longer ships the .blk migration tool. Migrate the share
+with dittofs v0.21 or earlier first:
+    dfs migrate-to-cas --share <name>   (dittofs <= v0.21)
+then upgrade; the cas->blocks conversion runs automatically at startup.`, err)
 }

@@ -116,7 +116,7 @@ func TestRuntimeTrash_RecycleListEmpty_EndToEnd(t *testing.T) {
 
 	// Empty (above) already drove FreeBlocks through the REAL Deps adapter
 	// (GetBlockStoreForHandle + engine.Store.Delete) with the recycled file's
-	// BlockRef list. Re-invoke the adapter directly here as a wiring smoke test:
+	// ChunkRef list. Re-invoke the adapter directly here as a wiring smoke test:
 	// it must resolve the per-share store and return cleanly. The payload was
 	// already purged by Empty, so a nil block list suffices to prove the path
 	// resolves (unit coverage of block-threading lives in the trash package's

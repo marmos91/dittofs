@@ -10,7 +10,6 @@ func TestTransferType_String(t *testing.T) {
 		expected string
 	}{
 		{TransferDownload, "download"},
-		{TransferUpload, "upload"},
 		{TransferPrefetch, "prefetch"},
 		{TransferType(99), "unknown"},
 	}

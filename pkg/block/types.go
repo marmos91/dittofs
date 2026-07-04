@@ -92,7 +92,7 @@ func (s BlockState) String() string {
 // MarshalJSON encodes a ContentHash as the canonical CAS scheme string
 // "blake3:{hex}" (mirrors CASKey()). Round-trips with UnmarshalJSON.
 //
-// Added in to drive BlockRef JSON serialization.
+// Added in to drive ChunkRef JSON serialization.
 // Without this, encoding/json would default to base64 for the [32]byte
 // array — readable diffs in Postgres/Badger payloads would be impossible.
 func (h ContentHash) MarshalJSON() ([]byte, error) {
@@ -143,25 +143,25 @@ func (h *ContentHash) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("ContentHash.UnmarshalJSON: %w (input %q)", ErrInvalidHash, s)
 }
 
-// BlockRef is a single content-addressed reference to a chunk of a
-// file's payload. The list FileAttr.Blocks []BlockRef is sorted by
+// ChunkRef is a single content-addressed reference to a chunk of a
+// file's payload. The list FileAttr.Blocks []ChunkRef is sorted by
 // Offset and covers the file end-to-end (gaps within Size are sparse
 // holes, zero-filled on read per).
 //
-// Hash identifies a CAS object (FormatCASKey -> "cas/{hh}/{hh}/{hex}").
+// Hash is the BLAKE3 content hash identifying the chunk.
 // Offset is the byte offset within the file (uint64 to support files
 // >4 GiB; VM workload requirement).
 // Size is the chunk length in bytes (FastCDC min 1 MiB, max 16 MiB
 // uint32 chosen to match FileChunk.DataSize column type).
 //
 // See, decisions.
-type BlockRef struct {
+type ChunkRef struct {
 	Hash   ContentHash `json:"hash"`
 	Offset uint64      `json:"offset"`
 	Size   uint32      `json:"size"`
 }
 
-// MergeBlockRefsByOffset overlays incoming block refs onto existing ones,
+// MergeChunkRefsByOffset overlays incoming block refs onto existing ones,
 // keyed by byte range. Every incoming ref is kept; an existing ref is kept
 // only if its [Offset, Offset+Size) range does not overlap any incoming ref.
 // The result is sorted by Offset ascending.
@@ -172,14 +172,14 @@ type BlockRef struct {
 // FastCDC boundaries) replaces the overlapped existing chunks. It is the
 // accumulation step that keeps FileAttr.Blocks complete across multi-pass
 // rollups instead of replacing it with only the latest pass (#789).
-func MergeBlockRefsByOffset(existing, incoming []BlockRef) []BlockRef {
+func MergeChunkRefsByOffset(existing, incoming []ChunkRef) []ChunkRef {
 	if len(incoming) == 0 {
-		out := make([]BlockRef, len(existing))
+		out := make([]ChunkRef, len(existing))
 		copy(out, existing)
-		sortBlockRefsByOffset(out)
+		sortChunkRefsByOffset(out)
 		return out
 	}
-	out := make([]BlockRef, 0, len(existing)+len(incoming))
+	out := make([]ChunkRef, 0, len(existing)+len(incoming))
 	for _, e := range existing {
 		eEnd := e.Offset + uint64(e.Size)
 		overlaps := false
@@ -195,27 +195,27 @@ func MergeBlockRefsByOffset(existing, incoming []BlockRef) []BlockRef {
 		}
 	}
 	out = append(out, incoming...)
-	sortBlockRefsByOffset(out)
+	sortChunkRefsByOffset(out)
 	return out
 }
 
-func sortBlockRefsByOffset(b []BlockRef) {
+func sortChunkRefsByOffset(b []ChunkRef) {
 	sort.Slice(b, func(i, j int) bool { return b[i].Offset < b[j].Offset })
 }
 
-// PruneBlockRefsToSize drops block refs that lie entirely at or beyond size,
+// PruneChunkRefsToSize drops block refs that lie entirely at or beyond size,
 // so the list never over-references content past EOF. A ref that straddles
 // the new EOF (Offset < size <= Offset+Size) is kept intact — block payloads
 // are content-addressed and immutable, so the tail bytes past EOF are simply
 // ignored on read; only fully-past-EOF refs are removed. The input slice is
 // not mutated; the result is sorted by Offset ascending.
 //
-// This is the truncate counterpart to MergeBlockRefsByOffset: a size-down
+// This is the truncate counterpart to MergeChunkRefsByOffset: a size-down
 // SetAttr must trim FileAttr.Blocks the same way a rewrite would, otherwise
 // stale-tail refs survive, the GC holds extra blocks, and a restore would
 // emit a file longer than the current size.
-func PruneBlockRefsToSize(refs []BlockRef, size uint64) []BlockRef {
-	out := make([]BlockRef, 0, len(refs))
+func PruneChunkRefsToSize(refs []ChunkRef, size uint64) []ChunkRef {
+	out := make([]ChunkRef, 0, len(refs))
 	for _, r := range refs {
 		if r.Offset < size {
 			out = append(out, r)
@@ -224,7 +224,7 @@ func PruneBlockRefsToSize(refs []BlockRef, size uint64) []BlockRef {
 	if len(out) == 0 {
 		return nil
 	}
-	sortBlockRefsByOffset(out)
+	sortChunkRefsByOffset(out)
 	return out
 }
 
@@ -299,48 +299,6 @@ func (b *FileChunk) IsRemote() bool {
 // IsFinalized returns true if the chunk's upload is complete (State==Remote).
 func (b *FileChunk) IsFinalized() bool {
 	return b.State == BlockStateRemote
-}
-
-// FormatCASKey returns the flat S3 object key for a content-addressed block.
-// Format: "cas/{hex[0:2]}/{hex[2:4]}/{hex}". Two-level fanout caps the
-// top-level prefix count at 256 and bounds per-prefix file count predictably.
-// Mirror to ParseCASKey.
-func FormatCASKey(h ContentHash) string {
-	hexStr := hex.EncodeToString(h[:])
-	return "cas/" + hexStr[0:2] + "/" + hexStr[2:4] + "/" + hexStr
-}
-
-// ParseCASKey parses an S3 object key produced by FormatCASKey and returns
-// the embedded ContentHash. Returns ErrCASKeyMalformed wrapped with the
-// offending input on any shape, length, or hex error.
-// Symmetric to FormatCASKey.
-func ParseCASKey(key string) (ContentHash, error) {
-	const prefix = "cas/"
-	if !strings.HasPrefix(key, prefix) {
-		return ContentHash{}, fmt.Errorf("%w: missing %q prefix in %q", ErrCASKeyMalformed, prefix, key)
-	}
-	rest := key[len(prefix):]
-	parts := strings.Split(rest, "/")
-	if len(parts) != 3 {
-		return ContentHash{}, fmt.Errorf("%w: expected 3 segments after prefix in %q", ErrCASKeyMalformed, key)
-	}
-	shard1, shard2, hexStr := parts[0], parts[1], parts[2]
-	if len(shard1) != 2 || len(shard2) != 2 {
-		return ContentHash{}, fmt.Errorf("%w: shard segments must be 2 hex chars in %q", ErrCASKeyMalformed, key)
-	}
-	if len(hexStr) != HashSize*2 {
-		return ContentHash{}, fmt.Errorf("%w: hex hash must be %d chars in %q", ErrCASKeyMalformed, HashSize*2, key)
-	}
-	if hexStr[0:2] != shard1 || hexStr[2:4] != shard2 {
-		return ContentHash{}, fmt.Errorf("%w: shard prefix does not match hash in %q", ErrCASKeyMalformed, key)
-	}
-	raw, err := hex.DecodeString(hexStr)
-	if err != nil {
-		return ContentHash{}, fmt.Errorf("%w: %v", ErrCASKeyMalformed, err)
-	}
-	var h ContentHash
-	copy(h[:], raw)
-	return h, nil
 }
 
 // ParseBlockID extracts the payloadID and block index from an internal

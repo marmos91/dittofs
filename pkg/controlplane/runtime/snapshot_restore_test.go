@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -16,7 +17,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -359,7 +359,7 @@ func testRestorePreVerifyFailsFast(t *testing.T) {
 	// hash on every subsequent call (threshold=0).
 	fx.deleteFileCascade(ctx, files[0])
 	preCount := fx.countFiles(ctx)
-	fx.remote.failHashAfterCount(files[1].hashes[0], 0) // every Head() for this hash fails
+	fx.remote.failBlockAfterCount(files[1].hashes[0].String(), 0) // every block probe for this hash fails
 
 	_, err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrRestoreVerifyFailed) {
@@ -421,7 +421,7 @@ func testRestorePostVerifyFails(t *testing.T) {
 	//     snap manifest because we deleted files[0] above).
 	//   2nd Head(h0) — post-verify (restored manifest contains h0). FAIL.
 	deletedHash := files[0].hashes[0]
-	fx.remote.failHashAfterCount(deletedHash, 1)
+	fx.remote.failBlockAfterCount(deletedHash.String(), 1)
 
 	_, err = fx.rt.RestoreSnapshot(ctx, fx.shareName, snapID, RestoreSnapshotOpts{})
 	if !errors.Is(err, models.ErrRestoreVerifyFailed) {
@@ -614,7 +614,6 @@ func newRestoreFixture(t *testing.T, opts restoreFixtureOpts) *restoreFixture {
 		engineRemote = wrappedRemote
 	}
 	syncer := engine.NewSyncer(localStore, engineRemote, mem, engine.SyncerConfig{
-		ParallelUploads:   1,
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
@@ -713,7 +712,7 @@ func (f *restoreFixture) populateFiles(ctx context.Context, names []string) []fi
 				UID:    1000,
 				GID:    1000,
 				Size:   4096,
-				Blocks: []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}},
+				Blocks: []block.ChunkRef{{Hash: hash, Offset: 0, Size: 4096}},
 			},
 		}
 		if err := f.meta.PutFile(ctx, file); err != nil {
@@ -737,6 +736,13 @@ func (f *restoreFixture) populateFiles(ctx context.Context, names []string) []fi
 		}
 		if err := f.meta.Put(ctx, fb); err != nil {
 			f.t.Fatalf("Put FileChunk %q: %v", name, err)
+		}
+		// Post-#1493 durability is block-only: mark the chunk synced to a
+		// packed-block locator (BlockID = hash string) so the verify gate — and
+		// any snapshot dump taken from this metadata — resolves it to a
+		// blocks/<id> probe. The block object itself is seeded by seedRemote*.
+		if err := f.meta.MarkSynced(ctx, hash, block.ChunkLocator{BlockID: hash.String()}); err != nil {
+			f.t.Fatalf("MarkSynced %q: %v", name, err)
 		}
 
 		f.mu.Lock()
@@ -785,9 +791,15 @@ func (f *restoreFixture) allHashes() []block.ContentHash {
 
 func (f *restoreFixture) seedRemoteAll(hashes []block.ContentHash) {
 	f.t.Helper()
+	// Post-#1493 durability is block-only: seed a packed block per hash
+	// (BlockID = hash string) and mark the hash synced to that block so the
+	// restore verify gate resolves it to a blocks/<id> probe.
 	for _, h := range hashes {
-		if err := f.remote.inner.Put(context.Background(), h, []byte("payload-"+h.String())); err != nil {
-			f.t.Fatalf("seed remote put: %v", err)
+		if err := f.remote.PutBlock(context.Background(), h.String(), bytes.NewReader([]byte("payload-"+h.String()))); err != nil {
+			f.t.Fatalf("seed remote put block: %v", err)
+		}
+		if err := f.meta.MarkSynced(context.Background(), h, block.ChunkLocator{BlockID: h.String()}); err != nil {
+			f.t.Fatalf("MarkSynced: %v", err)
 		}
 	}
 }
@@ -807,97 +819,58 @@ func (f *restoreFixture) countFiles(ctx context.Context) int {
 // ----- restoreRemote: head-injection wrapper for failure-mode tests -----
 
 // restoreRemote wraps a memory RemoteStore and exposes a phase-aware
-// head-failure injection knob. Each Head call increments a global call
-// counter; when failHashAfterCount(hash, n) is set, the (n+1)-th and
-// subsequent Head calls for hash return ErrChunkNotFound until the knob is
-// cleared. Pre-verify (called first in RestoreSnapshot) sees count==0; the
-// safety-snap create + post-verify see higher counts, so a count of 1
+// block-probe-failure injection knob. Post-#1493 the restore verify gate
+// probes each hash's packed block via GetBlockRange(blockID); each call
+// increments a per-blockID counter, and when failBlockAfterCount(blockID, n)
+// is set, the (n+1)-th and subsequent probes for that blockID return
+// ErrChunkNotFound. Pre-verify (called first in RestoreSnapshot) sees count==0;
+// the safety-snap create + post-verify see higher counts, so a count of 1
 // passes pre-verify and fails post-verify.
 type restoreRemote struct {
-	inner *remotememory.Store
+	*remotememory.Store
 
-	mu             sync.Mutex
-	hashCallCounts map[block.ContentHash]int
-	failAfter      map[block.ContentHash]int // hash -> threshold (calls < threshold pass; calls >= threshold fail)
+	mu              sync.Mutex
+	blockCallCounts map[string]int
+	failAfter       map[string]int // blockID -> threshold (calls < threshold pass; calls >= threshold fail)
 }
 
 func newRestoreRemote(inner *remotememory.Store) *restoreRemote {
 	return &restoreRemote{
-		inner:          inner,
-		hashCallCounts: make(map[block.ContentHash]int),
-		failAfter:      make(map[block.ContentHash]int),
+		Store:           inner,
+		blockCallCounts: make(map[string]int),
+		failAfter:       make(map[string]int),
 	}
 }
 
-// failHashAfterCount configures Head() to return ErrChunkNotFound for hash
-// on the (threshold+1)-th call counted from NOW (subsequent calls after
-// gate-arm). The threshold is interpreted relative to the call counter
-// observed at the moment of arming: a value of 0 means "fail the very
-// next call and every subsequent one"; 1 means "the next call passes,
-// the one after fails", etc. Set threshold negative to clear an active
-// gate.
+// failBlockAfterCount configures GetBlockRange() to return ErrChunkNotFound for
+// blockID on the (threshold+1)-th call counted from NOW. A value of 0 means
+// "fail the very next call and every subsequent one"; 1 means "the next call
+// passes, the one after fails". Set threshold negative to clear an active gate.
 //
-// Counting-from-now decouples test timing from incidental Head() calls
-// the harness made before arming the gate (e.g. the source snapshot's
-// own VerifyRemoteDurability ran Head() once per manifest hash during
-// CreateSnapshot, well before the test reached RestoreSnapshot).
-func (r *restoreRemote) failHashAfterCount(hash block.ContentHash, threshold int) {
+// Counting-from-now decouples test timing from incidental probes the harness
+// made before arming the gate (e.g. the source snapshot's own
+// VerifyRemoteDurability probed once per manifest block during CreateSnapshot).
+func (r *restoreRemote) failBlockAfterCount(blockID string, threshold int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if threshold < 0 {
-		delete(r.failAfter, hash)
+		delete(r.failAfter, blockID)
 		return
 	}
-	current := r.hashCallCounts[hash]
-	r.failAfter[hash] = current + threshold
+	current := r.blockCallCounts[blockID]
+	r.failAfter[blockID] = current + threshold
 }
 
-func (r *restoreRemote) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
-	return r.inner.Put(ctx, hash, data)
-}
-
-func (r *restoreRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	return r.inner.Get(ctx, hash)
-}
-
-func (r *restoreRemote) GetRange(ctx context.Context, hash block.ContentHash, offset, length int64) ([]byte, error) {
-	return r.inner.GetRange(ctx, hash, offset, length)
-}
-
-func (r *restoreRemote) Delete(ctx context.Context, hash block.ContentHash) error {
-	return r.inner.Delete(ctx, hash)
-}
-
-func (r *restoreRemote) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
-	return r.inner.Has(ctx, hash)
-}
-
-func (r *restoreRemote) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
+func (r *restoreRemote) GetBlockRange(ctx context.Context, blockID string, offset, length int64) ([]byte, error) {
 	r.mu.Lock()
-	count := r.hashCallCounts[hash]
-	r.hashCallCounts[hash] = count + 1
-	threshold, hasGate := r.failAfter[hash]
+	count := r.blockCallCounts[blockID]
+	r.blockCallCounts[blockID] = count + 1
+	threshold, hasGate := r.failAfter[blockID]
 	r.mu.Unlock()
 	if hasGate && count >= threshold {
-		return block.Meta{}, block.ErrChunkNotFound
+		return nil, block.ErrChunkNotFound
 	}
-	return r.inner.Head(ctx, hash)
-}
-
-func (r *restoreRemote) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	return r.inner.Walk(ctx, fn)
-}
-
-func (r *restoreRemote) ReadBlockVerified(ctx context.Context, hash, expected block.ContentHash) ([]byte, error) {
-	return r.inner.ReadBlockVerified(ctx, hash, expected)
-}
-
-func (r *restoreRemote) Close() error { return r.inner.Close() }
-
-func (r *restoreRemote) HealthCheck(ctx context.Context) error { return r.inner.HealthCheck(ctx) }
-
-func (r *restoreRemote) Healthcheck(ctx context.Context) health.Report {
-	return r.inner.Healthcheck(ctx)
+	return r.Store.GetBlockRange(ctx, blockID, offset, length)
 }
 
 // Compile-time guard: restoreRemote satisfies remote.RemoteStore.

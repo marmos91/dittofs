@@ -5,18 +5,20 @@
 //  1. MARK: stream every live FileChunk's ContentHash into a disk-backed
 //     live set (see GCState in gcstate.go). Memory is bounded regardless
 //     of metadata size.
-//  2. SWEEP: enumerate the unified CAS namespace via a single
-//     RemoteStore.Walk call (the backend paginates internally). For each
-//     object: parse the CAS key, skip foreign keys, apply the
-//     snapshot - GracePeriod TTL filter, and DELETE iff absent from the
+//  2. SWEEP: derive orphan candidates and reclaim them. The remote tier
+//     sweeps from the synced-hash index (synced − live, see
+//     sweepFromSyncedIndex) and reclaims dead chunks through their packed
+//     blocks (BlockReclaimer). The local tier Walks its own namespace
+//     (sweepByWalk) — a cheap local-disk walk — applying the
+//     snapshot - GracePeriod TTL filter and deleting iff absent from the
 //     live set.
 //
 // Invariants
 //   - (mark fail-closed): any error during EnumerateFileChunks
 //     aborts the sweep entirely — orphan-not-deleted is always preferred
 //     over live-data-deleted.
-//   - (sweep continue+capture): a Delete or list error in one prefix
-//     worker is recorded in GCStats but does not abort the run.
+//   - (sweep continue+capture): a per-object delete/reclaim error is
+//     recorded in GCStats but does not abort the run.
 //   - GC is opt-in: the operator triggers it on demand via dfsctl/REST.
 //
 // Cross-share aggregation lives in Runtime.RunBlockGC: it enumerates
@@ -38,7 +40,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 
 	// justification: GC is the cross-share metadata-mark
 	// entrypoint — it MUST bind metadata.Store /
@@ -179,14 +180,12 @@ type Options struct {
 	DryRun bool
 
 	// MaxOrphansPerShare is preserved for API compatibility but has no
-	// effect in the mark-sweep algorithm — the sweep walks every prefix
-	// to completion. A future plan can repurpose this if a per-prefix
-	// cap becomes useful.
+	// effect in the mark-sweep algorithm — the sweep runs to completion.
+	// A future plan can repurpose this if a cap becomes useful.
 	MaxOrphansPerShare int
 
 	// ProgressCallback is called periodically with progress updates.
-	// May be nil.: invoked at most once per cas/XX/
-	// prefix completion.
+	// May be nil. Invoked once per completed sweep pass.
 	ProgressCallback func(stats GCStats)
 
 	// GracePeriod is the TTL applied during sweep: an object whose
@@ -243,19 +242,12 @@ type Options struct {
 	// Set ONLY for remote-tier sweeps — local eviction does not change remote
 	// synced state, so local sweeps leave it nil.
 	//
-	// For a remote steady-state run (FullScan false) it is ALSO the candidate
-	// source: the sweep enumerates (synced − live) from this index instead of
-	// LISTing the remote (see sweepFromSyncedIndex).
+	// For a remote run it is ALSO the candidate source: the sweep enumerates
+	// (synced − live) from this index — the remote is never LISTed (see
+	// sweepFromSyncedIndex). A remote sweep without an index is skipped
+	// fail-closed. Orphan packed blocks the index cannot see (a PutBlock-
+	// then-commit crash gap) are the #1525 reconcile's job (PR5).
 	SyncedHashIndex SyncedHashIndex
-
-	// FullScan forces the namespace Walk sweep (sweepByWalk) over the remote
-	// store instead of the index-based sweep. It is the drift + upgrade-
-	// migration backstop: only a full Walk finds remote objects the synced
-	// index does not know about (markers written before timestamps existed, or
-	// a Put-then-Mark crash-gap). Reconcile sets it; steady-state remote GC
-	// leaves it false and sweeps from the index (no S3 LIST). Local-tier sweeps
-	// always Walk their own (local-disk) namespace regardless of this flag.
-	FullScan bool
 
 	// MarkProgress, when non-nil, is invoked during the mark phase with the
 	// running count of hashes marked so far — at each share boundary and every
@@ -266,16 +258,16 @@ type Options struct {
 	// not block; implementations just record the latest count.
 	MarkProgress func(hashesMarked int64)
 
-	// BlockReclaimer reclaims block-resident chunks (#1414 object packing) during
-	// the remote steady-state sweep. A swept hash may be packed into a
-	// blocks/<id> object rather than a standalone cas/<hash> object; for those the
-	// sweep consults BlockReclaimer instead of deleting a CAS object that does not
-	// exist. It is reached only after the sweep has proven the hash globally dead
-	// (past grace, absent from the live set), so freeing a block here can never
-	// race a live dedup sibling. Nil means the deployment packs no blocks and the
-	// sweep deletes cas/<hash> objects exactly as before — non-block deployments
-	// are unaffected. Set ONLY for the remote tier (the index sweep); the local
-	// tier and reconcile leave it nil.
+	// BlockReclaimer reclaims block-resident chunks (#1414 object packing)
+	// during the remote sweep. Post-#1493 every synced hash lives inside a
+	// blocks/<id> object, so this is the ONLY remote reclaim path: the sweep
+	// decrements the enclosing block and frees the block object + record when
+	// its last live chunk is gone. It is reached only after the sweep has
+	// proven the hash globally dead (past grace, absent from the live set),
+	// so freeing a block here can never race a live dedup sibling. A nil
+	// reclaimer — or a hash no share can resolve — is metadata drift: the
+	// sweep records the error and keeps the marker (fail-closed). Set ONLY
+	// for the remote tier (the index sweep); the local tier leaves it nil.
 	BlockReclaimer BlockReclaimer
 }
 
@@ -336,25 +328,28 @@ type HoldProvider interface {
 	HeldHashes(ctx context.Context, remoteEndpointID string, shares []string, fn func(block.ContentHash) error) error
 }
 
-// CollectGarbage scans the remote store and removes orphan blocks via the
-// mark-sweep algorithm. Mark errors abort the sweep entirely
+// CollectGarbage reclaims orphaned chunks on a remote store via the shared
+// mark-sweep kernel (collectGarbage). Mark errors abort the sweep entirely
 // (fail-closed); sweep errors are captured and the sweep continues.
 // Returns a non-nil *GCStats with aggregate counts.
+//
+// The remote store itself is never touched directly: orphan candidates come
+// from Options.SyncedHashIndex (synced − live) and reclamation goes through
+// Options.BlockReclaimer, which frees packed block objects via the shares'
+// metadata stores + block-keyed remote. Both must be wired for the sweep to
+// reclaim anything; a missing index/reclaimer is recorded fail-closed.
 //
 // reconciler MUST satisfy MultiShareReconciler when more than one share
 // points at the remote. A reconciler that satisfies only the legacy
 // MetadataReconciler is treated as "no shares" — the live set is empty
-// and every CAS object is a sweep candidate. Callers in production
+// and every synced hash is a sweep candidate. Callers in production
 // (Runtime.RunBlockGC) supply a MultiShareReconciler.
-// CollectGarbage reclaims orphaned objects on a remote (S3) store via the
-// shared mark-sweep kernel (collectGarbage).
 func CollectGarbage(
 	ctx context.Context,
-	remoteStore remote.RemoteStore,
 	reconciler MetadataReconciler,
 	options *Options,
 ) *GCStats {
-	return collectGarbage(ctx, remoteStore, reconciler, options, false)
+	return collectGarbage(ctx, nil, reconciler, options, false)
 }
 
 // CollectGarbageLocal reclaims orphaned chunks on a per-share LOCAL block
@@ -389,9 +384,11 @@ func resolveGracePeriod(options *Options) time.Duration {
 	return options.GracePeriod
 }
 
-// collectGarbage is the shared mark-sweep kernel for both tiers. isLocal only
-// tags the resulting stats; the live-set, grace, and fail-closed semantics are
-// identical regardless of tier.
+// collectGarbage is the shared mark-sweep kernel for both tiers. The live-set,
+// grace, and fail-closed semantics are identical regardless of tier; the sweep
+// mechanism differs — the local tier Walks its own namespace (store is the
+// per-share local store), the remote tier sweeps from the synced-hash index
+// (store is nil).
 func collectGarbage(
 	ctx context.Context,
 	store sweepable,
@@ -477,16 +474,17 @@ func collectGarbage(
 		return stats
 	}
 
-	// SWEEP: a remote steady-state run derives orphan candidates from the
-	// synced-hash index (synced − live), avoiding a full S3 LIST. Local-tier
-	// sweeps and reconcile (FullScan) Walk the CAS namespace instead — for the
-	// local tier that is a cheap local-disk walk; for reconcile it is the
-	// drift + upgrade-migration backstop that finds remote objects the index
-	// cannot (pre-timestamp markers, Put-then-Mark crash-gap).
-	if !isLocal && !options.FullScan && options.SyncedHashIndex != nil {
-		sweepFromSyncedIndex(ctx, store, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
-	} else {
+	// SWEEP: the local tier Walks its own (local-disk) namespace; the remote
+	// tier derives orphan candidates from the synced-hash index (synced −
+	// live) — the remote namespace is never LISTed. A remote sweep without an
+	// index cannot prove anything is orphaned, so it is skipped fail-closed.
+	switch {
+	case isLocal:
 		sweepByWalk(ctx, store, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
+	case options.SyncedHashIndex != nil:
+		sweepFromSyncedIndex(ctx, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
+	default:
+		recordGCError(stats, "remote sweep skipped: no synced-hash index available (index sweep is the only remote reclaim path)")
 	}
 
 	// Mark complete + persist summary.
@@ -605,38 +603,25 @@ func sharesForReconciler(r MetadataReconciler) []string {
 	return nil
 }
 
-// sweepByWalk walks the unified CAS namespace via a single
-// remoteStore.Walk call. Per-object errors are captured in stats but
-// do not abort the sweep. Foreign keys (non-CAS) are silently
-// skipped (T-11-C-07). Objects within snapshot - GracePeriod are
-// preserved.
-//
-// There is no caller-side concurrency knob: the 256-way prefix sharding
-// has been collapsed onto RemoteStore.Walk, which paginates internally
-// at the backend layer. A future re-sharding extension (per-prefix Walk
-// fan-out) is expected to re-wire concurrency at the backend, not
-// here. Callers wanting per-prefix parallelism should file against
-// the backend.
-// sweepable is the minimal store surface the sweep phase needs: enumerate the
-// CAS namespace and delete one object by hash. Both remote.RemoteStore and the
-// local block.Store satisfy it, so the same sweep kernel reclaims orphans on
-// either tier (#1433).
+// sweepable is the minimal store surface the local walk sweep needs: enumerate
+// the chunk namespace and delete one object by hash. The per-share local
+// block.Store satisfies it (#1433).
 //
 // Walk MUST invoke its callback sequentially: sweepByWalk mutates unsynchronized
-// per-run counters (scanned/swept/bytes) from inside the callback. Every
-// current backend (local filepath.WalkDir, remote paginated list) honors this;
-// a backend that parallelizes Walk must serialize the callback before
-// satisfying this interface.
+// per-run counters (scanned/swept/bytes) from inside the callback. The local
+// backend (filepath.WalkDir) honors this; a backend that parallelizes Walk must
+// serialize the callback before satisfying this interface.
 type sweepable interface {
 	Walk(ctx context.Context, fn func(block.ContentHash, block.Meta) error) error
 	Delete(ctx context.Context, hash block.ContentHash) error
 }
 
 // sweepByWalk reclaims orphans by enumerating the ENTIRE store namespace via
-// store.Walk and deleting objects absent from the live set (past grace). For
-// the remote tier this is an S3 LIST — used only by local-tier GC (a cheap
-// local-disk walk) and by reconcile (FullScan), which needs it as the drift +
-// upgrade-migration backstop. Steady-state remote GC uses sweepFromSyncedIndex.
+// store.Walk and deleting objects absent from the live set (past grace).
+// LOCAL tier only (a cheap local-disk walk); remote GC never LISTs the remote
+// and uses sweepFromSyncedIndex instead. Per-object errors are captured in
+// stats but do not abort the sweep. Objects within snapshot - GracePeriod are
+// preserved.
 func sweepByWalk(
 	ctx context.Context,
 	store sweepable,
@@ -650,86 +635,66 @@ func sweepByWalk(
 	var statsMu sync.Mutex
 	addError := newSweepErrorRecorder(stats, &statsMu)
 
-	// Post-Phase-17: the renamed RemoteStore.Walk replaces the per-XX
-	// ListByPrefixWithMeta scan. Walk enumerates every CAS object in the
-	// store in one call. The s3 backend Walk paginates internally; a
-	// future re-sharding extension belongs at the backend Walk layer
-	// (per-prefix fan-out), not here.
-	runSweep := func() {
-		// Count every object the backend reports — before any grace /
-		// zero-LastModified / live-set filtering — so ObjectsScanned is the
-		// total CAS objects present in the store ("blocks found"). Walk
-		// invokes the callback sequentially, so a local counter folded into
-		// stats once after the walk avoids a mutex round-trip per object.
-		var scanned int64
-		walkErr := store.Walk(ctx, func(h block.ContentHash, meta block.Meta) error {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			casKey := block.FormatCASKey(h)
-			scanned++
-			// — fail-closed on missing LastModified.
-			// A zero LastModified means the backend did not report
-			// per-object age; we cannot evaluate the snapshot - grace
-			// TTL filter and we MUST NOT proceed to delete on
-			// the live-set check alone. Preserve the object and capture
-			// a diagnostic.
-			if meta.LastModified.IsZero() {
-				addError("zero LastModified " + casKey + ": backend Walk must populate LastModified for grace TTL evaluation")
-				return nil
-			}
-			if meta.LastModified.After(snapshotTime.Add(-gracePeriod)) {
-				return nil // within grace window
-			}
-			present, err := gcs.Has(h)
-			if err != nil {
-				addError("gcstate has " + casKey + ": " + err.Error())
-				return nil
-			}
-			if present {
-				return nil // live — keep
-			}
-			if options.DryRun {
-				recordDryRunCandidate(stats, &statsMu, casKey, dryRunSample)
-				return nil
-			}
-			if err := store.Delete(ctx, h); err != nil {
-				// continue + capture
-				addError("delete " + casKey + ": " + err.Error())
-				return nil
-			}
-			// Keep the synced-hash index a strict subset of remote contents: the
-			// hash is gone from this store, so it is no longer synced. Without
-			// this, ListUnsynced skips it forever and a later snapshot's
-			// durability verify fails on a block that will never re-upload
-			// (#1433). Idempotent + non-fatal: a stale marker only costs a missed
-			// re-upload, recoverable on the next pass. Set only for remote sweeps.
-			if options.SyncedHashIndex != nil {
-				if serr := options.SyncedHashIndex.DeleteSynced(ctx, h); serr != nil {
-					addError("delete-synced " + casKey + ": " + serr.Error())
-				}
-			}
-			statsMu.Lock()
-			stats.ObjectsSwept++
-			stats.BytesFreed += meta.Size
-			statsMu.Unlock()
+	// Count every object the backend reports — before any grace /
+	// zero-LastModified / live-set filtering — so ObjectsScanned is the
+	// total chunk objects present in the store ("blocks found"). Walk
+	// invokes the callback sequentially, so a local counter folded into
+	// stats once after the walk avoids a mutex round-trip per object.
+	var scanned int64
+	walkErr := store.Walk(ctx, func(h block.ContentHash, meta block.Meta) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		key := h.String()
+		scanned++
+		// — fail-closed on missing LastModified.
+		// A zero LastModified means the backend did not report
+		// per-object age; we cannot evaluate the snapshot - grace
+		// TTL filter and we MUST NOT proceed to delete on
+		// the live-set check alone. Preserve the object and capture
+		// a diagnostic.
+		if meta.LastModified.IsZero() {
+			addError("zero LastModified " + key + ": backend Walk must populate LastModified for grace TTL evaluation")
 			return nil
-		})
-		if walkErr != nil {
-			addError("walk: " + walkErr.Error())
+		}
+		if meta.LastModified.After(snapshotTime.Add(-gracePeriod)) {
+			return nil // within grace window
+		}
+		present, err := gcs.Has(h)
+		if err != nil {
+			addError("gcstate has " + key + ": " + err.Error())
+			return nil
+		}
+		if present {
+			return nil // live — keep
+		}
+		if options.DryRun {
+			recordDryRunCandidate(stats, &statsMu, key, dryRunSample)
+			return nil
+		}
+		if err := store.Delete(ctx, h); err != nil {
+			// continue + capture
+			addError("delete " + key + ": " + err.Error())
+			return nil
 		}
 		statsMu.Lock()
-		stats.ObjectsScanned += scanned
+		stats.ObjectsSwept++
+		stats.BytesFreed += meta.Size
 		statsMu.Unlock()
-		if options.ProgressCallback != nil {
-			statsMu.Lock()
-			snap := *stats
-			statsMu.Unlock()
-			options.ProgressCallback(snap)
-		}
+		return nil
+	})
+	if walkErr != nil {
+		addError("walk: " + walkErr.Error())
 	}
-
-	runSweep()
+	statsMu.Lock()
+	stats.ObjectsScanned += scanned
+	statsMu.Unlock()
+	if options.ProgressCallback != nil {
+		statsMu.Lock()
+		snap := *stats
+		statsMu.Unlock()
+		options.ProgressCallback(snap)
+	}
 }
 
 // finalizeStats fills the legacy aggregator fields from the mark-sweep
@@ -757,7 +722,7 @@ func recordGCError(stats *GCStats, msg string) {
 // newSweepErrorRecorder returns the addError closure both sweep kernels
 // (sweepByWalk, sweepFromSyncedIndex) use to record per-object errors under mu.
 // It keeps FirstErrors heterogeneous: without diversification a burst of
-// identical "list cas/aa: 503 SlowDown" errors fills the 16-slot cap and
+// identical "list aa: 503 SlowDown" errors fills the 16-slot cap and
 // silently hides any 17th distinct error (e.g. an AccessDenied on Delete). We
 // capture the FIRST occurrence of up to 16 distinct error classes so multi-mode
 // failures are visible at a glance. ErrorCount still counts every error.
@@ -796,10 +761,10 @@ func recordDryRunCandidate(stats *GCStats, mu *sync.Mutex, casKey string, dryRun
 // derived from the leading "<verb> <args>:"
 // prefix the addError callers consistently produce — e.g.
 // "list aa: 503 SlowDown" -> "list:503 SlowDown"
-// "delete cas/bb/cc/...: AccessDenied" -> "delete:AccessDenied"
-// "gcstate has cas/bb/...: io error" -> "gcstate has:io error"
+// "delete <hash>: AccessDenied" -> "delete <hash>:AccessDenied"
+// "gcstate has <key>: io error" -> "gcstate has:io error"
 //
-// We strip the per-prefix/per-key tail (which is high-cardinality) and
+// We strip a per-key path tail (which is high-cardinality) and
 // truncate the underlying error to its first ":" segment (S3 errors are
 // typically "<status code> <code>: <message>"). 60 chars is enough to
 // distinguish error families without keying on long stack traces.
@@ -811,15 +776,15 @@ func classifyGCError(msg string) string {
 		}
 		return msg
 	}
-	// Drop the high-cardinality argument from the verb prefix
-	// ("delete cas/bb/cc/dd" -> "delete"). Keep multi-word verbs like
-	// "gcstate has" intact by stripping only the trailing space-token.
+	// Drop a high-cardinality argument from the verb prefix. Keep
+	// multi-word verbs like "gcstate has" intact by stripping only the
+	// trailing space-token, and only when it looks like a path or key.
 	if i := strings.LastIndex(verb, " "); i > 0 {
 		head := verb[:i]
-		// Heuristic: if the trailing token starts with "cas/" or contains
-		// "/", it is a path/prefix argument and gets dropped.
+		// Heuristic: a trailing token containing "/" is a path/prefix
+		// argument; a long token is a hash/key. Both get dropped.
 		tail := verb[i+1:]
-		if strings.HasPrefix(tail, "cas/") || strings.Contains(tail, "/") {
+		if strings.Contains(tail, "/") || len(tail) >= 16 {
 			verb = head
 		}
 	}

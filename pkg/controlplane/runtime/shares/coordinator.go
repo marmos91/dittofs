@@ -168,7 +168,7 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 //
 // This is the post-Flush seam — the syncer invokes this after every
 // successful Flush so the canonical FileAttr.Blocks list reflects every
-// Remote BlockRef the engine has produced.
+// Remote ChunkRef the engine has produced.
 //
 // The syncer computes the BLAKE3 Merkle-root ObjectID over `blocks`
 // (via block.ComputeObjectID) and threads it through this hook so
@@ -181,7 +181,7 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 // mapObjectIDConflict so the file-level dedup short-circuit retry path
 // in Syncer.applyFileLevelDedupHit detects the race uniformly across
 // backends.
-func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
 	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
 		file, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 		if err != nil {
@@ -208,7 +208,7 @@ func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID s
 // read-cost optimization), so we fall back to GetFile-by-handle which loads
 // file_block_refs. Returns an empty slice (nil) when the file has no blocks
 // yet or does not exist.
-func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.BlockRef, error) {
+func (c *metadataCoordinator) GetPersistedBlocks(ctx context.Context, payloadID string) ([]block.ChunkRef, error) {
 	file, err := c.metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(payloadID))
 	if err != nil {
 		// File deleted between WriteAt and rollup commit: no blocks to
@@ -305,9 +305,9 @@ func mapObjectIDConflict(err error) error {
 // (defense-in-depth — backends also short-circuit) and on cache miss.
 //
 // Callers use this to detect whether a provisional ObjectID matches a
-// previously-quiesced file's BlockRef list, enabling file-level dedup
+// previously-quiesced file's ChunkRef list, enabling file-level dedup
 // at write time.
-func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error) {
+func (c *metadataCoordinator) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error) {
 	if objectID.IsZero() {
 		return nil, nil
 	}

@@ -160,116 +160,6 @@ func TestParseBlockID_Invalid(t *testing.T) {
 // vector for the FormatCASKey/ParseCASKey round-trip tests.
 const blake3EmptyHex = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
 
-// TestFormatCASKey asserts FormatCASKey returns exactly
-// "cas/{hex[0:2]}/{hex[2:4]}/{hex}" for both the all-zero hash and a
-// known-vector hash.
-func TestFormatCASKey(t *testing.T) {
-	tests := []struct {
-		name string
-		hash func() ContentHash
-		want string
-	}{
-		{
-			name: "all-zero hash",
-			hash: func() ContentHash { return ContentHash{} },
-			want: "cas/00/00/0000000000000000000000000000000000000000000000000000000000000000",
-		},
-		{
-			name: "known vector (blake3 of empty input)",
-			hash: func() ContentHash {
-				h, err := ParseContentHash(blake3EmptyHex)
-				if err != nil {
-					t.Fatalf("setup: ParseContentHash(%q) error: %v", blake3EmptyHex, err)
-				}
-				return h
-			},
-			want: "cas/af/13/" + blake3EmptyHex,
-		},
-		{
-			name: "incrementing-byte hash",
-			hash: func() ContentHash {
-				var h ContentHash
-				for i := range h {
-					h[i] = byte(i)
-				}
-				return h
-			},
-			want: "cas/00/01/000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := FormatCASKey(tt.hash())
-			if got != tt.want {
-				t.Fatalf("FormatCASKey() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-// TestParseCASKey_RoundTrip asserts ParseCASKey accepts the output of
-// FormatCASKey and returns the original hash unchanged.
-func TestParseCASKey_RoundTrip(t *testing.T) {
-	hashes := []func() ContentHash{
-		func() ContentHash { return ContentHash{} },
-		func() ContentHash {
-			h, _ := ParseContentHash(blake3EmptyHex)
-			return h
-		},
-		func() ContentHash {
-			var h ContentHash
-			for i := range h {
-				h[i] = byte(0xAA)
-			}
-			return h
-		},
-	}
-	for i, mk := range hashes {
-		h := mk()
-		key := FormatCASKey(h)
-		got, err := ParseCASKey(key)
-		if err != nil {
-			t.Fatalf("case %d: ParseCASKey(%q) error: %v", i, key, err)
-		}
-		if got != h {
-			t.Fatalf("case %d: ParseCASKey round-trip mismatch:\n got: %x\nwant: %x", i, got, h)
-		}
-	}
-}
-
-// TestParseCASKey_Malformed asserts ParseCASKey rejects malformed inputs
-// with ErrCASKeyMalformed wrapped via fmt.Errorf %w.
-func TestParseCASKey_Malformed(t *testing.T) {
-	tests := []struct {
-		name string
-		key  string
-	}{
-		{name: "empty string", key: ""},
-		{name: "missing prefix", key: "blake3/00/00/" + blake3EmptyHex},
-		{name: "wrong prefix", key: "chunk/af/13/" + blake3EmptyHex},
-		{name: "shard1 too short", key: "cas/a/13/" + blake3EmptyHex},
-		{name: "shard1 too long", key: "cas/aff/13/" + blake3EmptyHex},
-		{name: "shard2 too short", key: "cas/af/1/" + blake3EmptyHex},
-		{name: "missing third segment", key: "cas/af/13"},
-		{name: "extra trailing segment", key: "cas/af/13/" + blake3EmptyHex + "/extra"},
-		{name: "odd-length hex", key: "cas/af/13/" + blake3EmptyHex + "0"},
-		{name: "non-hex chars", key: "cas/zz/13/" + strings.Repeat("z", 64)},
-		{name: "shard does not match hash prefix", key: "cas/00/00/" + blake3EmptyHex},
-		{name: "payload-style key", key: "export/file.txt/block-0"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := ParseCASKey(tt.key)
-			if err == nil {
-				t.Fatalf("expected error for %q, got nil", tt.key)
-			}
-			if !errors.Is(err, ErrCASKeyMalformed) {
-				t.Fatalf("ParseCASKey(%q) error = %v, want errors.Is(err, ErrCASKeyMalformed)", tt.key, err)
-			}
-		})
-	}
-}
-
 // TestBlockStateConstants asserts the collapsed state machine
 // exposes exactly three named constants Pending=0, Syncing=1,
 // Remote=2 with matching String() output. Pending=0 is the safe
@@ -313,18 +203,18 @@ func TestFileChunkLastSyncAttemptAt(t *testing.T) {
 // TestErrCASSentinels asserts the CAS sentinels exist, are distinct,
 // self-identical via errors.Is, and have non-empty messages prefixed
 // with "blockstore:" (the package-qualified style used by
-// ErrCASContentMismatch and ErrCASKeyMalformed).
+// ErrChunkContentMismatch and ErrCASKeyMalformed).
 func TestErrCASSentinels(t *testing.T) {
-	if !errors.Is(ErrCASContentMismatch, ErrCASContentMismatch) {
-		t.Error("errors.Is(ErrCASContentMismatch, ErrCASContentMismatch) = false")
+	if !errors.Is(ErrChunkContentMismatch, ErrChunkContentMismatch) {
+		t.Error("errors.Is(ErrChunkContentMismatch, ErrChunkContentMismatch) = false")
 	}
 	if !errors.Is(ErrCASKeyMalformed, ErrCASKeyMalformed) {
 		t.Error("errors.Is(ErrCASKeyMalformed, ErrCASKeyMalformed) = false")
 	}
-	if errors.Is(ErrCASContentMismatch, ErrCASKeyMalformed) {
-		t.Error("ErrCASContentMismatch and ErrCASKeyMalformed should be distinct")
+	if errors.Is(ErrChunkContentMismatch, ErrCASKeyMalformed) {
+		t.Error("ErrChunkContentMismatch and ErrCASKeyMalformed should be distinct")
 	}
-	for _, err := range []error{ErrCASContentMismatch, ErrCASKeyMalformed} {
+	for _, err := range []error{ErrChunkContentMismatch, ErrCASKeyMalformed} {
 		msg := err.Error()
 		if msg == "" {
 			t.Errorf("sentinel error has empty message: %v", err)
@@ -335,19 +225,19 @@ func TestErrCASSentinels(t *testing.T) {
 	}
 }
 
-// TestBlockRef_JSON exercises BlockRef zero-value invariants, JSON
+// TestChunkRef_JSON exercises ChunkRef zero-value invariants, JSON
 // round-trip, and slice ordering preservation..
-func TestBlockRef_JSON(t *testing.T) {
+func TestChunkRef_JSON(t *testing.T) {
 	t.Run("zero value", func(t *testing.T) {
-		var br BlockRef
+		var br ChunkRef
 		if !br.Hash.IsZero() {
-			t.Errorf("zero BlockRef Hash IsZero() = false, want true")
+			t.Errorf("zero ChunkRef Hash IsZero() = false, want true")
 		}
 		if br.Offset != 0 {
-			t.Errorf("zero BlockRef Offset = %d, want 0", br.Offset)
+			t.Errorf("zero ChunkRef Offset = %d, want 0", br.Offset)
 		}
 		if br.Size != 0 {
-			t.Errorf("zero BlockRef Size = %d, want 0", br.Size)
+			t.Errorf("zero ChunkRef Size = %d, want 0", br.Size)
 		}
 	})
 
@@ -356,7 +246,7 @@ func TestBlockRef_JSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("setup: ParseContentHash: %v", err)
 		}
-		br := BlockRef{Hash: hash, Offset: 4194304, Size: 1048576}
+		br := ChunkRef{Hash: hash, Offset: 4194304, Size: 1048576}
 		got, err := json.Marshal(br)
 		if err != nil {
 			t.Fatalf("json.Marshal: %v", err)
@@ -372,12 +262,12 @@ func TestBlockRef_JSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("setup: ParseContentHash: %v", err)
 		}
-		want := BlockRef{Hash: hash, Offset: 4194304, Size: 1048576}
+		want := ChunkRef{Hash: hash, Offset: 4194304, Size: 1048576}
 		raw, err := json.Marshal(want)
 		if err != nil {
 			t.Fatalf("json.Marshal: %v", err)
 		}
-		var got BlockRef
+		var got ChunkRef
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatalf("json.Unmarshal: %v", err)
 		}
@@ -400,7 +290,7 @@ func TestBlockRef_JSON(t *testing.T) {
 			}
 			return h
 		}
-		want := []BlockRef{
+		want := []ChunkRef{
 			{Hash: mkHash(0x11), Offset: 0, Size: 4 << 20},
 			{Hash: mkHash(0x22), Offset: 4 << 20, Size: 4 << 20},
 			{Hash: mkHash(0x33), Offset: 8 << 20, Size: 1 << 20},
@@ -409,7 +299,7 @@ func TestBlockRef_JSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("json.Marshal: %v", err)
 		}
-		var got []BlockRef
+		var got []ChunkRef
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatalf("json.Unmarshal: %v", err)
 		}
@@ -432,7 +322,7 @@ func TestBlockRef_JSON(t *testing.T) {
 	t.Run("rejects bad hash length", func(t *testing.T) {
 		// T-12-01 mitigation: a tampered short-hex hash must not deserialize.
 		bad := `{"hash":"blake3:deadbeef","offset":0,"size":0}`
-		var br BlockRef
+		var br ChunkRef
 		if err := json.Unmarshal([]byte(bad), &br); err == nil {
 			t.Fatalf("expected error for short hash, got nil (br=%+v)", br)
 		}
@@ -510,63 +400,63 @@ func TestContentHash_JSONBackwardCompat_V014Array(t *testing.T) {
 	}
 }
 
-// TestErrBlockRefMissing asserts the new sentinel exists, is self-identical
+// TestErrChunkRefMissing asserts the new sentinel exists, is self-identical
 // via errors.Is, and has the expected message style ("blockstore:" prefix
 // + mentions "block ref")..
-func TestErrBlockRefMissing(t *testing.T) {
-	if !errors.Is(ErrBlockRefMissing, ErrBlockRefMissing) {
-		t.Error("errors.Is(ErrBlockRefMissing, ErrBlockRefMissing) = false")
+func TestErrChunkRefMissing(t *testing.T) {
+	if !errors.Is(ErrChunkRefMissing, ErrChunkRefMissing) {
+		t.Error("errors.Is(ErrChunkRefMissing, ErrChunkRefMissing) = false")
 	}
-	if errors.Is(ErrBlockRefMissing, ErrCASKeyMalformed) {
-		t.Error("ErrBlockRefMissing should be distinct from ErrCASKeyMalformed")
+	if errors.Is(ErrChunkRefMissing, ErrCASKeyMalformed) {
+		t.Error("ErrChunkRefMissing should be distinct from ErrCASKeyMalformed")
 	}
-	msg := ErrBlockRefMissing.Error()
+	msg := ErrChunkRefMissing.Error()
 	if !strings.HasPrefix(msg, "blockstore:") {
-		t.Errorf("ErrBlockRefMissing.Error() = %q, want prefix %q", msg, "blockstore:")
+		t.Errorf("ErrChunkRefMissing.Error() = %q, want prefix %q", msg, "blockstore:")
 	}
 	if !strings.Contains(strings.ToLower(msg), "block ref") {
-		t.Errorf("ErrBlockRefMissing.Error() = %q, want it to mention %q", msg, "block ref")
+		t.Errorf("ErrChunkRefMissing.Error() = %q, want it to mention %q", msg, "block ref")
 	}
 }
 
-func TestPruneBlockRefsToSize(t *testing.T) {
-	ref := func(off uint64, sz uint32) BlockRef { return BlockRef{Offset: off, Size: sz} }
+func TestPruneChunkRefsToSize(t *testing.T) {
+	ref := func(off uint64, sz uint32) ChunkRef { return ChunkRef{Offset: off, Size: sz} }
 	const mib = uint64(1 << 20)
 
 	tests := []struct {
 		name    string
-		refs    []BlockRef
+		refs    []ChunkRef
 		size    uint64
 		want    []uint64 // expected surviving offsets, sorted
 		wantNil bool
 	}{
 		{
 			name: "truncate 4MiB to 1MiB keeps only first block",
-			refs: []BlockRef{ref(0, uint32(mib)), ref(mib, uint32(mib)), ref(2*mib, uint32(mib)), ref(3*mib, uint32(mib))},
+			refs: []ChunkRef{ref(0, uint32(mib)), ref(mib, uint32(mib)), ref(2*mib, uint32(mib)), ref(3*mib, uint32(mib))},
 			size: mib,
 			want: []uint64{0},
 		},
 		{
 			name: "block straddling new EOF is kept",
-			refs: []BlockRef{ref(0, uint32(mib)), ref(mib, uint32(mib))},
+			refs: []ChunkRef{ref(0, uint32(mib)), ref(mib, uint32(mib))},
 			size: mib + 100,
 			want: []uint64{0, mib},
 		},
 		{
 			name: "ref starting exactly at new size is dropped",
-			refs: []BlockRef{ref(0, uint32(mib)), ref(mib, uint32(mib))},
+			refs: []ChunkRef{ref(0, uint32(mib)), ref(mib, uint32(mib))},
 			size: mib,
 			want: []uint64{0},
 		},
 		{
 			name:    "truncate to zero drops all and returns nil",
-			refs:    []BlockRef{ref(0, uint32(mib))},
+			refs:    []ChunkRef{ref(0, uint32(mib))},
 			size:    0,
 			wantNil: true,
 		},
 		{
 			name: "result is sorted by offset",
-			refs: []BlockRef{ref(2*mib, uint32(mib)), ref(0, uint32(mib)), ref(mib, uint32(mib))},
+			refs: []ChunkRef{ref(2*mib, uint32(mib)), ref(0, uint32(mib)), ref(mib, uint32(mib))},
 			size: 3 * mib,
 			want: []uint64{0, mib, 2 * mib},
 		},
@@ -574,14 +464,14 @@ func TestPruneBlockRefsToSize(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			in := make([]BlockRef, len(tc.refs))
+			in := make([]ChunkRef, len(tc.refs))
 			copy(in, tc.refs)
 
-			got := PruneBlockRefsToSize(tc.refs, tc.size)
+			got := PruneChunkRefsToSize(tc.refs, tc.size)
 
 			if tc.wantNil {
 				if got != nil {
-					t.Errorf("PruneBlockRefsToSize() = %v, want nil", got)
+					t.Errorf("PruneChunkRefsToSize() = %v, want nil", got)
 				}
 				return
 			}

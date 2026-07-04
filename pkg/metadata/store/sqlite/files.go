@@ -285,14 +285,14 @@ func (s *SQLiteMetadataStore) ListChildren(ctx context.Context, dirHandle metada
 		// (review iteration 1): the shape DOES NOT match
 		// GetFile in this backend. GetFile populates FileAttr.Blocks via
 		// loadFileChunkRefs; ListChildren intentionally does NOT (per-row
-		// BlockRef hydration would be a quadratic cost on directory
+		// ChunkRef hydration would be a quadratic cost on directory
 		// listings). Memory and Badger backends include Blocks on
 		// DirEntry.Attr because their underlying serialisation already
 		// carries the slice — the relational model splits
 		// FileAttr.Blocks into a separate table (file_block_refs) and
 		// listing rows skip the join. Callers MUST treat
 		// DirEntry.Attr.Blocks as not-loaded for the SQLite store and re-read
-		// via GetFile if the BlockRef list is needed for hot-path
+		// via GetFile if the ChunkRef list is needed for hot-path
 		// resolution. Current short-circuit code (FindByObjectID-driven)
 		// never consults DirEntry.Attr.ObjectID, so this asymmetry is
 		// benign at the call surface.
@@ -411,13 +411,13 @@ func (s *SQLiteMetadataStore) PutFilesystemMeta(ctx context.Context, shareName s
 // ============================================================================
 
 // FindByObjectID looks up a file by its Merkle-root ObjectID and returns the
-// canonical BlockRef list of the matching row. Returns (nil, nil) on miss
+// canonical ChunkRef list of the matching row. Returns (nil, nil) on miss
 // (zero-valued input or no matching row).
 //
 // Uses the partial UNIQUE index files_object_id_idx; the LIMIT 1 is defensive
 // (the partial UNIQUE constraint already enforces single-row matches for
 // non-NULL object_id values).
-func (s *SQLiteMetadataStore) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error) {
+func (s *SQLiteMetadataStore) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

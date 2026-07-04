@@ -153,7 +153,7 @@ func (s *BadgerMetadataStore) GetFileByPayloadID(ctx context.Context, payloadID 
 //
 // Block list is deep-copied out of the txn-scoped decoded file to avoid
 // slice aliasing into Badger's internal buffers (discipline).
-func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error) {
+func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 		return nil, nil
 	}
 
-	var blocks []block.BlockRef
+	var blocks []block.ChunkRef
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyObjectID(objectID))
 		if errors.Is(err, badgerdb.ErrKeyNotFound) {
@@ -202,10 +202,10 @@ func (s *BadgerMetadataStore) FindByObjectID(ctx context.Context, objectID block
 			return err
 		}
 
-		// Deep-copy the BlockRef slice so the caller's view does not
+		// Deep-copy the ChunkRef slice so the caller's view does not
 		// alias the JSON-decoded buffer.
 		if len(f.Blocks) > 0 {
-			blocks = append([]block.BlockRef(nil), f.Blocks...)
+			blocks = append([]block.ChunkRef(nil), f.Blocks...)
 		}
 		return nil
 	})

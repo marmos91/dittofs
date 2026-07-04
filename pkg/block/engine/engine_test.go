@@ -64,7 +64,7 @@ func (s *stubFileChunkStore) DecrementRefCount(_ context.Context, _ string) (uin
 func (s *stubFileChunkStore) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (s *stubFileChunkStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.BlockRef) error {
+func (s *stubFileChunkStore) AddRef(_ context.Context, h block.ContentHash, _ string, _ block.ChunkRef) error {
 	// bump RefCount on any row indexed by hash. The stub
 	// holds blocks keyed by id but each row carries a Hash field, so
 	// resolve linearly. ErrUnknownHash when no row matches.
@@ -124,7 +124,7 @@ func (s *stubFileChunkStore) EnumeratePayloads(ctx context.Context, fn func(payl
 // newTestEngine creates an engine.Store with memory local store, nil remote
 // optional cache budget and prefetch settings. Coordinator is left nil — tests
 // that exercise Coordinator-dependent paths (CopyPayload/Delete/Truncate
-// with non-empty BlockRef list) should use newTestEngineWithCoordinator.
+// with non-empty ChunkRef list) should use newTestEngineWithCoordinator.
 func newTestEngine(t *testing.T, readBufferBytes int64, prefetchWorkers int) *Store {
 	t.Helper()
 	localStore := memory.New()
@@ -234,7 +234,7 @@ func TestReadAt_CacheDisabled(t *testing.T) {
 }
 
 // TestReadAt_InvokesCacheOnRead — Task 3 behavior 1.
-// engine.ReadAt invokes cache.OnRead with the BlockRef hashes and a
+// engine.ReadAt invokes cache.OnRead with the ChunkRef hashes and a
 // fileSize derived from max(Offset+Size) after a successful read.
 //
 // We swap in the recording cache AFTER WriteAt so the writer's
@@ -256,8 +256,8 @@ func TestReadAt_InvokesCacheOnRead(t *testing.T) {
 	rec := &recordingCache{}
 	bs.cache = rec
 
-	// Pass a non-empty []BlockRef so OnRead fires with hashes.
-	refs := []block.BlockRef{
+	// Pass a non-empty []ChunkRef so OnRead fires with hashes.
+	refs := []block.ChunkRef{
 		{Hash: hashN(0xAA), Offset: 0, Size: uint32(len(data))},
 	}
 	buf := make([]byte, len(data))
@@ -398,7 +398,7 @@ func TestClose_ClosesCache(t *testing.T) {
 }
 
 // TestCopyPayload_EmptySource verifies CopyPayload handles empty source gracefully.
-// with an empty []BlockRef the engine returns nil
+// with an empty []ChunkRef the engine returns nil
 // without invoking the coordinator (no work to do).
 func TestCopyPayload_EmptySource(t *testing.T) {
 	bs := newTestEngine(t, 0, 0)

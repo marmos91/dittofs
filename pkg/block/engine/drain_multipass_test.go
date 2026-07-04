@@ -73,7 +73,7 @@ func runMultiPassAppend(t *testing.T, ms metadata.Store, sharePrefix string) {
 	// Assert the persisted blocks cover the whole [0, 4MB) byte range
 	// contiguously. A replace-loses-prior-passes bug leaves a hole at the
 	// front (only [2MB,4MB) survives).
-	blocks := append([]block.BlockRef(nil), p2...)
+	blocks := append([]block.ChunkRef(nil), p2...)
 	sort.Slice(blocks, func(i, j int) bool { return blocks[i].Offset < blocks[j].Offset })
 	var cursor uint64
 	for _, b := range blocks {

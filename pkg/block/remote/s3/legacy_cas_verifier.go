@@ -13,7 +13,7 @@ import (
 
 // verifyingReader wraps an io.ReadCloser and feeds every byte through a
 // BLAKE3 hasher. On EOF, the accumulated hash is compared to expected
-// mismatch surfaces ErrCASContentMismatch. The wrapper is single-use and
+// mismatch surfaces ErrChunkContentMismatch. The wrapper is single-use and
 // not goroutine-safe.
 //
 // Zero extra body allocation: the verifier sees bytes once as they
@@ -51,7 +51,7 @@ func newVerifyingReader(src io.ReadCloser, expected block.ContentHash) *verifyin
 
 // Read implements io.Reader. Bytes flowing through the reader are fed
 // to the BLAKE3 hasher. On io.EOF the hash is checked; if it does not
-// match, ErrCASContentMismatch is returned in place of io.EOF and the
+// match, ErrChunkContentMismatch is returned in place of io.EOF and the
 // caller's buffer holds whatever bytes were last read (which the
 // caller MUST discard).
 func (v *verifyingReader) Read(p []byte) (int, error) {
@@ -72,7 +72,7 @@ func (v *verifyingReader) Read(p []byte) (int, error) {
 
 // Close closes the underlying ReadCloser. If the caller closed before
 // reaching EOF (so the hash was never verified), Close returns
-// ErrCASContentMismatch — we MUST treat unverified bytes as untrusted.
+// ErrChunkContentMismatch — we MUST treat unverified bytes as untrusted.
 // If the underlying close itself errors, that error is returned only
 // when the hash check passed (or no read happened at all).
 //
@@ -95,7 +95,7 @@ func (v *verifyingReader) Close() error {
 		// Caller didn't read to EOF — verification was not completed.
 		// Surface as mismatch (untrusted) rather than silently OK.
 		return fmt.Errorf("%w: stream closed before EOF (verification incomplete)",
-			block.ErrCASContentMismatch)
+			block.ErrChunkContentMismatch)
 	}
 	return closeErr
 }
@@ -106,14 +106,14 @@ func (v *verifyingReader) Close() error {
 const maxBodyDrainBytes = 1 << 14 // 16 KiB
 
 // checkHash compares the accumulated BLAKE3 sum to expected. Returns
-// a wrapped ErrCASContentMismatch on mismatch.
+// a wrapped ErrChunkContentMismatch on mismatch.
 func (v *verifyingReader) checkHash() error {
 	var got block.ContentHash
 	sum := v.hasher.Sum(nil)
 	copy(got[:], sum)
 	if got != v.expected {
 		return fmt.Errorf("%w: got %s, want %s",
-			block.ErrCASContentMismatch, got.CASKey(), v.expected.CASKey())
+			block.ErrChunkContentMismatch, got.CASKey(), v.expected.CASKey())
 	}
 	return nil
 }
@@ -122,7 +122,7 @@ func (v *verifyingReader) checkHash() error {
 // buffer. When contentLength is known and positive, the buffer is
 // pre-sized exactly; otherwise fallback is used (capped at maxBlockReadSize).
 //
-// Per: on ErrCASContentMismatch (surfaced by the verifier on EOF
+// Per: on ErrChunkContentMismatch (surfaced by the verifier on EOF
 // or by a header pre-check upstream), the partially-filled buffer is
 // discarded by returning a nil slice. Bad bytes never escape.
 func readAllVerified(r *verifyingReader, contentLength *int64, fallbackSize int64) ([]byte, error) {
@@ -130,7 +130,7 @@ func readAllVerified(r *verifyingReader, contentLength *int64, fallbackSize int6
 		data := make([]byte, *contentLength)
 		_, err := io.ReadFull(r, data)
 		if err != nil {
-			if errors.Is(err, block.ErrCASContentMismatch) {
+			if errors.Is(err, block.ErrChunkContentMismatch) {
 				return nil, err
 			}
 			return nil, fmt.Errorf("read s3 object body: %w", err)
@@ -144,7 +144,7 @@ func readAllVerified(r *verifyingReader, contentLength *int64, fallbackSize int6
 			// More bytes than ContentLength promised — corrupt response.
 			return nil, fmt.Errorf("s3 object body exceeded content-length")
 		}
-		if errors.Is(peekErr, block.ErrCASContentMismatch) {
+		if errors.Is(peekErr, block.ErrChunkContentMismatch) {
 			return nil, peekErr
 		}
 		// Any non-EOF, non-mismatch error: surface as I/O failure.
@@ -157,7 +157,7 @@ func readAllVerified(r *verifyingReader, contentLength *int64, fallbackSize int6
 	buf := bytes.NewBuffer(make([]byte, 0, fallbackSize))
 	_, err := buf.ReadFrom(r)
 	if err != nil {
-		if errors.Is(err, block.ErrCASContentMismatch) {
+		if errors.Is(err, block.ErrChunkContentMismatch) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("read s3 object body: %w", err)

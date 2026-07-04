@@ -2,27 +2,9 @@ package metadata
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/marmos91/dittofs/pkg/block"
 )
-
-// ErrCommitPartial is returned by DefaultCommitBlock when the block record
-// transaction committed successfully but the MarkSynced loop did not fully
-// complete. BlockID identifies the committed (but only partially-synced) block.
-// Callers should retry DefaultCommitBlock with the same BlockID and BlockRecord
-// — the idempotent transaction guard skips the transaction and re-runs the
-// MarkSynced loop to completion.
-type ErrCommitPartial struct {
-	BlockID string
-	Cause   error
-}
-
-func (e *ErrCommitPartial) Error() string {
-	return fmt.Sprintf("commit block %s: mark-synced incomplete: %v", e.BlockID, e.Cause)
-}
-
-func (e *ErrCommitPartial) Unwrap() error { return e.Cause }
 
 // BlockRecordStore manages the lifecycle of log-blob block records.
 // Each record tracks the sync state, live chunk count, and hash of a
@@ -66,23 +48,34 @@ type LocalChunkIndex interface {
 	DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error
 }
 
-// DefaultCommitBlock atomically writes a block record and all associated local
-// chunk locations within a single transaction, then (outside the tx) marks
-// each chunk synced via MarkSynced. Idempotent: if the block record already
-// exists the function is a no-op (LiveChunkCount is not double-counted).
+// DefaultCommitBlock atomically writes a block record, all associated local
+// chunk locations, and every chunk's synced marker + remote locator within a
+// SINGLE transaction. Either the whole commit is visible or none of it is —
+// there is no partially-committed state to retry, so a commit error simply
+// propagates to the caller (whose existing requeue logic re-drives the batch).
+//
+// Semantics:
+//
+//   - Idempotent on BlockID: if the block record already exists the function
+//     is a no-op (LiveChunkCount is not double-counted, locators untouched).
+//   - A chunk's local location is written only when its Local field is
+//     non-zero. Migrated chunks (cas→blocks) have no local bytes; writing a
+//     zero-valued location would make local reads resolve to empty bytes.
+//   - Locator writes are LAST-WINS: DeleteSynced-then-MarkSynced inside the
+//     tx overwrites any existing locator with the new block locator. The
+//     direct MarkSynced method stays first-wins; CommitBlock needs overwrite
+//     because the cas→blocks migration re-commits chunks whose standalone
+//     (zero-BlockID) locators must be rewritten to point into the new block.
 //
 // Exported so Store implementations in sub-packages can delegate CommitBlock
 // to this shared logic.
 func DefaultCommitBlock(
 	ctx context.Context,
-	s interface {
-		Transactor
-		SyncedHashStore
-	},
+	s Transactor,
 	rec block.BlockRecord,
 	chunks []block.BlockChunkCommit,
 ) error {
-	if err := s.WithTransaction(ctx, func(tx Transaction) error {
+	return s.WithTransaction(ctx, func(tx Transaction) error {
 		_, exists, err := tx.GetBlockRecord(ctx, rec.BlockID)
 		if err != nil {
 			return err
@@ -94,30 +87,21 @@ func DefaultCommitBlock(
 			return err
 		}
 		for _, c := range chunks {
-			if err := tx.PutLocalLocation(ctx, c.Hash, c.Local); err != nil {
+			if c.Local != (block.LocalChunkLocation{}) {
+				if err := tx.PutLocalLocation(ctx, c.Hash, c.Local); err != nil {
+					return err
+				}
+			}
+			// DeleteSynced + MarkSynced = locator overwrite (last-wins), see
+			// the function comment. MarkSynced alone would be first-wins and
+			// leave a stale standalone locator in place.
+			if err := tx.DeleteSynced(ctx, c.Hash); err != nil {
+				return err
+			}
+			if err := tx.MarkSynced(ctx, c.Hash, c.Remote); err != nil {
 				return err
 			}
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	// MarkSynced runs unconditionally after the transaction commits — even when
-	// the block record already existed (justCommitted would have been false in the
-	// old guard). MarkSynced is idempotent, so a no-op on a fully-committed block
-	// is safe. Crucially, this fixes the retry path: if a previous CommitBlock
-	// call committed the tx but then failed mid-MarkSynced, the retry must still
-	// reach this loop to write the pending remote locators.
-	//
-	// If MarkSynced fails here the transaction has ALREADY committed (block record
-	// + local locations are durable). Return ErrCommitPartial so callers can retry
-	// with the same BlockID — DefaultCommitBlock's idempotent tx guard will skip
-	// the transaction and re-run the MarkSynced loop to completion without minting
-	// a new block.
-	for _, c := range chunks {
-		if err := s.MarkSynced(ctx, c.Hash, c.Remote); err != nil {
-			return &ErrCommitPartial{BlockID: rec.BlockID, Cause: err}
-		}
-	}
-	return nil
+	})
 }

@@ -35,8 +35,6 @@ type TransferType int
 const (
 	// TransferDownload is the highest priority - user is waiting for data.
 	TransferDownload TransferType = iota
-	// TransferUpload is medium priority - ensures data durability.
-	TransferUpload
 	// TransferPrefetch is lowest priority - speculative optimization.
 	TransferPrefetch
 )
@@ -46,8 +44,6 @@ func (t TransferType) String() string {
 	switch t {
 	case TransferDownload:
 		return "download"
-	case TransferUpload:
-		return "upload"
 	case TransferPrefetch:
 		return "prefetch"
 	default:
@@ -55,7 +51,7 @@ func (t TransferType) String() string {
 	}
 }
 
-// TransferRequest holds data for a pending transfer operation (download, upload, or prefetch).
+// TransferRequest holds data for a pending transfer operation (download or prefetch).
 type TransferRequest struct {
 	Type       TransferType // Transfer type and priority
 	PayloadID  string       // Payload ID
@@ -63,22 +59,8 @@ type TransferRequest struct {
 	Done       chan error   // Completion channel; nil for async (fire-and-forget)
 }
 
-// Adaptive upload-concurrency bounds (#1407). When ParallelUploads is unset
-// (<= 0), the syncer auto-tunes the number of concurrent CAS-chunk uploads to
-// saturate the uplink: it starts at AdaptiveUploadFloor and ramps toward
-// AdaptiveUploadCeiling, settling at the goodput knee. A pinned
-// ParallelUploads > 0 overrides this with a fixed window.
-const (
-	AdaptiveUploadFloor   = 16 // starting window in adaptive mode (greedy start)
-	AdaptiveUploadCeiling = 64 // max window adaptive mode ramps to
-)
-
 // Config holds configuration for the Syncer.
 type SyncerConfig struct {
-	// ParallelUploads is the concurrent CAS-chunk upload count. > 0 pins a fixed
-	// window; <= 0 (the default) enables adaptive auto-tuning between
-	// AdaptiveUploadFloor and AdaptiveUploadCeiling (#1407).
-	ParallelUploads    int
 	ParallelDownloads  int           // Concurrent block downloads per file (default: 32)
 	PrefetchBlocks     int           // Blocks to prefetch ahead of reads; 0 = disabled (default: 64)
 	SmallFileThreshold int64         // Files below this are flushed synchronously; 0 = disabled
@@ -93,11 +75,11 @@ type SyncerConfig struct {
 	// carver buffers at most one block (this many bytes) in RAM at a time.
 	BlockCarveBytes int64
 
-	// ManualSync, when true, suppresses the background periodic uploader (and
-	// its adaptive controller). Durability is then driven solely by explicit
-	// Flush, making Flush the single deterministic mirror driver. Off by
-	// default; used where a concurrent uploader would race observable
-	// mirror-loop semantics (snapshot bounds, crash-replay).
+	// ManualSync, when true, suppresses the background carve dispatcher.
+	// Durability is then driven solely by explicit Flush, making Flush the
+	// single deterministic durability driver. Off by default; used where a
+	// concurrent carver would race observable sync semantics (snapshot
+	// bounds, crash-replay).
 	ManualSync bool
 
 	// Health check configuration for remote store monitoring.
@@ -116,9 +98,6 @@ type SyncerConfig struct {
 // DefaultConfig returns the default Syncer configuration tuned for S3 performance.
 func DefaultConfig() SyncerConfig {
 	return SyncerConfig{
-		// 0 = adaptive: the syncer auto-tunes upload concurrency to saturate the
-		// uplink (#1407). A pinned --parallel-uploads overrides this.
-		ParallelUploads:             0,
 		ParallelDownloads:           DefaultParallelDownloads,
 		PrefetchBlocks:              DefaultPrefetchBlocks,
 		SmallFileThreshold:          0,
@@ -136,7 +115,6 @@ func DefaultConfig() SyncerConfig {
 // SyncQueueConfig holds configuration for the transfer queue.
 type SyncQueueConfig struct {
 	QueueSize       int // Max pending requests per channel (default: 1000)
-	Workers         int // Upload worker goroutines (default: 4)
 	DownloadWorkers int // Download+prefetch worker goroutines (default: ParallelDownloads)
 }
 
@@ -144,7 +122,6 @@ type SyncQueueConfig struct {
 func DefaultSyncQueueConfig() SyncQueueConfig {
 	return SyncQueueConfig{
 		QueueSize:       1000,
-		Workers:         4,
 		DownloadWorkers: DefaultParallelDownloads,
 	}
 }

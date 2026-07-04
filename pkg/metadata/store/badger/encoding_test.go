@@ -41,7 +41,7 @@ func TestBadgerEncodeFile_BlocksRoundTrip(t *testing.T) {
 			Ctime:        time.Unix(1700000000, 0).UTC(),
 			Atime:        time.Unix(1700000000, 0).UTC(),
 			CreationTime: time.Unix(1700000000, 0).UTC(),
-			Blocks: []block.BlockRef{
+			Blocks: []block.ChunkRef{
 				{Hash: h1, Offset: 0, Size: 4 * 1024 * 1024},
 				{Hash: h2, Offset: 4 * 1024 * 1024, Size: 4 * 1024 * 1024},
 				{Hash: h3, Offset: 8 * 1024 * 1024, Size: 4 * 1024 * 1024},

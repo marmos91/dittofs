@@ -12,11 +12,11 @@ import (
 // file_block_refs CRUD
 // ============================================================================
 //
-// Stores FileAttr.Blocks []block.BlockRef rows for files. Per
+// Stores FileAttr.Blocks []block.ChunkRef rows for files. Per
 // we use a separate table (not JSONB on files) to avoid TOAST write
 // amplification on the VM-primary workload.
 //
-// All helpers operate against a pgx.Tx so that PutFile's BlockRef replace
+// All helpers operate against a pgx.Tx so that PutFile's ChunkRef replace
 // happens atomically with the files row UPDATE.
 //
 // Schema lives in migrations/000012_file_block_refs.up.sql.
@@ -28,7 +28,7 @@ import (
 // (file_id, "offset") PK — a duplicate offset would be rejected. The
 // DELETE first ensures stale offsets from a prior list are not left
 // behind when the new list is shorter.
-func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.BlockRef) error {
+func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks []block.ChunkRef) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM file_block_refs WHERE file_id = ?1`, fileID); err != nil {
 		return fmt.Errorf("delete file_block_refs for %s: %w", fileID, err)
 	}
@@ -68,7 +68,7 @@ func deleteFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID) error
 // ordered by offset ASC; returns a nil slice when no rows exist.
 // Used by FindByObjectID. GetFile no longer calls this — it folds the same
 // rows into its metadata read via blockRefsAggExpr (#1176).
-func (s *SQLiteMetadataStore) loadFileChunkRefs(ctx context.Context, fileID uuid.UUID) ([]block.BlockRef, error) {
+func (s *SQLiteMetadataStore) loadFileChunkRefs(ctx context.Context, fileID uuid.UUID) ([]block.ChunkRef, error) {
 	rows, err := s.query(ctx,
 		`SELECT "offset", size, hash FROM file_block_refs WHERE file_id = ?1 ORDER BY "offset" ASC`,
 		fileID,
@@ -78,7 +78,7 @@ func (s *SQLiteMetadataStore) loadFileChunkRefs(ctx context.Context, fileID uuid
 	}
 	defer rows.Close()
 
-	var out []block.BlockRef
+	var out []block.ChunkRef
 	for rows.Next() {
 		var off int64
 		var sz int32
@@ -92,7 +92,7 @@ func (s *SQLiteMetadataStore) loadFileChunkRefs(ctx context.Context, fileID uuid
 				fileID, off, len(raw), block.HashSize,
 			)
 		}
-		var br block.BlockRef
+		var br block.ChunkRef
 		copy(br.Hash[:], raw)
 		br.Offset = uint64(off)
 		br.Size = uint32(sz)

@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -12,8 +11,10 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
+	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"lukechampine.com/blake3"
+	"github.com/marmos91/dittofs/pkg/metadata"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // errBoomLocalPut is the sentinel error returned by failingPutLocal.
@@ -54,42 +55,31 @@ func (f *failingPutLocal) Put(_ context.Context, _ block.ContentHash, _ []byte) 
 }
 
 // newFetchSyncer wires the minimum Syncer surface inlineFetchOrWait
-// exercises: local, remoteStore, fileChunkStore, inFlight map, and a
-// nil HealthMonitor (so IsRemoteHealthy returns true). Coordinator and
-// SyncedHashStore are unused on this path.
-func newFetchSyncer(localStore local.LocalStore, rs *remotememory.Store, fbs block.EngineFileChunkStore) *Syncer {
+// exercises: local, remoteStore, fileChunkStore, the SyncedHashStore the
+// post-#1493 fetch path resolves block locators from, the inFlight map, and a
+// nil HealthMonitor (so IsRemoteHealthy returns true). Coordinator is unused
+// on this path.
+func newFetchSyncer(localStore local.LocalStore, rs remote.RemoteStore, fbs block.EngineFileChunkStore, shs metadata.SyncedHashStore) *Syncer {
 	return &Syncer{
-		local:          localStore,
-		remoteStore:    rs,
-		fileChunkStore: fbs,
-		inFlight:       make(map[string]*fetchResult),
-		stopCh:         make(chan struct{}),
-		config:         DefaultConfig(),
-		pendingHashes:  make(map[block.ContentHash]int64),
+		local:              localStore,
+		remoteStore:        rs,
+		fileChunkStore:     fbs,
+		syncedHashStore:    shs,
+		inFlight:           make(map[string]*fetchResult),
+		stopCh:             make(chan struct{}),
+		config:             DefaultConfig(),
+		pendingCarveHashes: make(map[block.ContentHash]int64),
 	}
 }
 
 // seedFileChunk installs a single FileChunk row covering byte window
-// [0, len(data)) under payloadID and seeds the remote store's CAS map
-// with the matching bytes. inlineFetchOrWait will then resolve the row,
-// pass the verified-read through dispatchRemoteFetch, and reach the
-// local.Put step under test.
-func seedFileChunk(t *testing.T, fbs *stubFileChunkStore, rs *remotememory.Store, payloadID string, data []byte) (block.ContentHash, *block.FileChunk) {
+// [0, len(data)) under payloadID, seeds the remote store with a packed block
+// holding the matching bytes, and records the synced marker + block locator.
+// inlineFetchOrWait will then resolve the row, resolve the locator through
+// dispatchRemoteFetch, and reach the local.Put step under test.
+func seedFileChunk(t *testing.T, fbs *stubFileChunkStore, rbs remote.RemoteBlockStore, shs metadata.SyncedHashStore, payloadID string, data []byte) block.ContentHash {
 	t.Helper()
-	hash := block.ContentHash(blake3.Sum256(data))
-	if err := rs.Put(context.Background(), hash, data); err != nil {
-		t.Fatalf("seed remote Put: %v", err)
-	}
-	fb := &block.FileChunk{
-		ID:       fmt.Sprintf("%s/%d", payloadID, 0),
-		Hash:     hash,
-		DataSize: uint32(len(data)),
-		State:    block.BlockStateRemote,
-	}
-	if err := fbs.Put(context.Background(), fb); err != nil {
-		t.Fatalf("seed FileChunk Put: %v", err)
-	}
-	return hash, fb
+	return seedSyncedRemoteChunk(t, fbs, rbs, shs, payloadID, 0, data)
 }
 
 // TestInlineFetchOrWait_LocalPutError_PropagatesToCaller pins the I-5
@@ -108,9 +98,10 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToCaller(t *testing.T) {
 	close(loc.release) // no waiter — let Put fail immediately
 	rs := remotememory.New()
 	fbs := newStubFileChunkStore()
-	_, _ = seedFileChunk(t, fbs, rs, payloadID, data)
+	mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	_ = seedFileChunk(t, fbs, rs, mds, payloadID, data)
 
-	m := newFetchSyncer(loc, rs, fbs)
+	m := newFetchSyncer(loc, rs, fbs, mds)
 
 	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 	if err != nil {
@@ -155,9 +146,10 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	loc := newFailingPutLocal()
 	rs := remotememory.New()
 	fbs := newStubFileChunkStore()
-	_, _ = seedFileChunk(t, fbs, rs, payloadID, data)
+	mds := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	_ = seedFileChunk(t, fbs, rs, mds, payloadID, data)
 
-	m := newFetchSyncer(loc, rs, fbs)
+	m := newFetchSyncer(loc, rs, fbs, mds)
 
 	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
 	if err != nil {

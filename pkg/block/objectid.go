@@ -4,7 +4,7 @@ import (
 	"lukechampine.com/blake3"
 )
 
-// ObjectID is the BLAKE3 Merkle root over a file's BlockRef.Hash values
+// ObjectID is the BLAKE3 Merkle root over a file's ChunkRef.Hash values
 // sorted by Offset (the canonical FileAttr.Blocks invariant). Same width
 // (32 bytes) and wire form as ContentHash.
 //
@@ -19,7 +19,7 @@ type ObjectID = ContentHash
 // ContentHash values. Bump to v2/v3/... if the input shape ever changes
 const objectIDDomainPrefix = "dittofs:objectid:v1\x00"
 
-// ComputeObjectID returns the BLAKE3 Merkle root over the BlockRef list
+// ComputeObjectID returns the BLAKE3 Merkle root over the ChunkRef list
 //
 //	ObjectID = BLAKE3(prefix || h0 || h1 || ... || hN-1)
 //
@@ -33,7 +33,7 @@ const objectIDDomainPrefix = "dittofs:objectid:v1\x00"
 // to one constant. Callers that wish to retain the all-zero sentinel
 // for "never quiesced" semantics MUST check len(blocks)==0
 // themselves before calling.
-func ComputeObjectID(blocks []BlockRef) ObjectID {
+func ComputeObjectID(blocks []ChunkRef) ObjectID {
 	h := blake3.New(32, nil)
 	_, _ = h.Write([]byte(objectIDDomainPrefix))
 	for i := range blocks {

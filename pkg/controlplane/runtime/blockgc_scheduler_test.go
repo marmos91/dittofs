@@ -15,7 +15,7 @@ import (
 func TestStartScheduledGC_TicksAndStops(t *testing.T) {
 	var runs int32
 	orig := collectGarbageFn
-	collectGarbageFn = func(_ context.Context, _ remote.RemoteStore, _ engine.MetadataReconciler, _ *engine.Options) *engine.GCStats {
+	collectGarbageFn = func(_ context.Context, _ engine.MetadataReconciler, _ *engine.Options) *engine.GCStats {
 		atomic.AddInt32(&runs, 1)
 		return &engine.GCStats{}
 	}

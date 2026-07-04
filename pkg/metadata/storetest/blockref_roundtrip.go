@@ -26,7 +26,7 @@ type FileChunkRefsAccessor interface {
 	CountFileChunkRefs(ctx context.Context, fileID uuid.UUID) (int, error)
 }
 
-// runBlockRefOpsTests dispatches the BlockRef round-trip conformance
+// runChunkRefOpsTests dispatches the ChunkRef round-trip conformance
 // scenarios against the provided factory. Each backend wires
 // RunConformanceSuite into its *_conformance_test.go, so adding scenarios here
 // automatically runs them against Memory, Badger, and Postgres.
@@ -34,31 +34,31 @@ type FileChunkRefsAccessor interface {
 // Every metadata backend MUST round-trip FileAttr.Blocks across
 // PutFile/GetFile (including replace and nil semantics). Postgres
 // additionally exercises the FK ON DELETE CASCADE behavior.
-func runBlockRefOpsTests(t *testing.T, factory StoreFactory) {
+func runChunkRefOpsTests(t *testing.T, factory StoreFactory) {
 	t.Helper()
 
 	t.Run("RoundTripBasic", func(t *testing.T) {
-		testBlockRef_RoundTripBasic(t, factory)
+		testChunkRef_RoundTripBasic(t, factory)
 	})
 
 	t.Run("NilBlocks", func(t *testing.T) {
-		testBlockRef_NilBlocks(t, factory)
+		testChunkRef_NilBlocks(t, factory)
 	})
 
 	t.Run("ReplaceBlocks", func(t *testing.T) {
-		testBlockRef_ReplaceBlocks(t, factory)
+		testChunkRef_ReplaceBlocks(t, factory)
 	})
 
 	t.Run("CascadeDeleteOnFileDelete", func(t *testing.T) {
-		testBlockRef_CascadeDeleteOnFileDelete(t, factory)
+		testChunkRef_CascadeDeleteOnFileDelete(t, factory)
 	})
 
 	t.Run("MultiPassMerge", func(t *testing.T) {
-		testBlockRef_MultiPassMerge(t, factory)
+		testChunkRef_MultiPassMerge(t, factory)
 	})
 }
 
-// testBlockRef_MultiPassMerge guards the store-layer contract that a file's
+// testChunkRef_MultiPassMerge guards the store-layer contract that a file's
 // complete block list survives successive PutFile calls — both an append
 // (A then A+B) and an in-place overlay of an existing offset (A'). GetFile
 // and WriteSnapshot must return the full, correct set after each pass; no earlier
@@ -70,14 +70,14 @@ func runBlockRefOpsTests(t *testing.T, factory StoreFactory) {
 // silently drop earlier offsets — exactly the data-loss class this asserts
 // against. The contract is: whatever complete list the caller hands PutFile,
 // GetFile/WriteSnapshot return it intact and ordered by offset.
-func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
+func testChunkRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 
 	rootHandle := createTestShare(t, store, "blockref-multipass")
 	fileHandle := createTestFile(t, store, "blockref-multipass", rootHandle, "multipass.bin", 0o644)
 
 	// Pass 1 — block list A: three contiguous 1 MiB blocks (offsets 0..2 MiB).
-	listA := []block.BlockRef{
+	listA := []block.ChunkRef{
 		{Hash: hashOfSeed("mp-a0"), Offset: 0, Size: 1 << 20},
 		{Hash: hashOfSeed("mp-a1"), Offset: 1 << 20, Size: 1 << 20},
 		{Hash: hashOfSeed("mp-a2"), Offset: 2 << 20, Size: 1 << 20},
@@ -89,11 +89,11 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	// Pass 2 — append block list B onto A. The caller computes the complete
 	// merged list (A+B); the store must persist all of it. A REPLACE-only
 	// persist of just B would drop A's three offsets.
-	listB := []block.BlockRef{
+	listB := []block.ChunkRef{
 		{Hash: hashOfSeed("mp-b0"), Offset: 3 << 20, Size: 1 << 20},
 		{Hash: hashOfSeed("mp-b1"), Offset: 4 << 20, Size: 1 << 20},
 	}
-	merged := append(append([]block.BlockRef(nil), listA...), listB...)
+	merged := append(append([]block.ChunkRef(nil), listA...), listB...)
 	putBlocks(t, store, fileHandle, merged)
 	assertBlocks(t, store, fileHandle, merged)
 	assertSnapshotContains(t, store, merged)
@@ -101,7 +101,7 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 	// Pass 3 — in-place overlay: rewrite the block at offset 1 MiB (A1 -> A1')
 	// while keeping every other offset. The overlay must replace only that
 	// offset's hash and leave the rest of the complete list intact.
-	overlay := append([]block.BlockRef(nil), merged...)
+	overlay := append([]block.ChunkRef(nil), merged...)
 	overlay[1].Hash = hashOfSeed("mp-a1-overlay")
 	putBlocks(t, store, fileHandle, overlay)
 	assertBlocks(t, store, fileHandle, overlay)
@@ -115,7 +115,7 @@ func testBlockRef_MultiPassMerge(t *testing.T, factory StoreFactory) {
 }
 
 // putBlocks loads the file, sets its complete block list, and persists it.
-func putBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandle, blocks []block.BlockRef) {
+func putBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandle, blocks []block.ChunkRef) {
 	t.Helper()
 	ctx := t.Context()
 
@@ -131,7 +131,7 @@ func putBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandl
 
 // assertBlocks asserts GetFile returns exactly want, ordered by offset, with
 // deep equality on every field.
-func assertBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandle, want []block.BlockRef) {
+func assertBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandle, want []block.ChunkRef) {
 	t.Helper()
 	ctx := t.Context()
 
@@ -170,7 +170,7 @@ func snapshotHashes(t *testing.T, store metadata.Store) *block.HashSet {
 // assertSnapshotContains asserts WriteSnapshot's referenced-hash set includes every
 // block hash in want — the snapshot's block manifest must cover the complete
 // list, not just the latest persisted segment.
-func assertSnapshotContains(t *testing.T, store metadata.Store, want []block.BlockRef) {
+func assertSnapshotContains(t *testing.T, store metadata.Store, want []block.ChunkRef) {
 	t.Helper()
 
 	hs := snapshotHashes(t, store)
@@ -181,17 +181,17 @@ func assertSnapshotContains(t *testing.T, store metadata.Store, want []block.Blo
 	}
 }
 
-// testBlockRef_RoundTripBasic asserts that a file with three sorted-by-offset
-// BlockRefs survives a PutFile/GetFile round-trip with deep equality on every
-// field of every BlockRef. Catches encoding drift between backends.
-func testBlockRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
+// testChunkRef_RoundTripBasic asserts that a file with three sorted-by-offset
+// ChunkRefs survives a PutFile/GetFile round-trip with deep equality on every
+// field of every ChunkRef. Catches encoding drift between backends.
+func testChunkRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
 	rootHandle := createTestShare(t, store, "blockref-roundtrip")
 	fileHandle := createTestFile(t, store, "blockref-roundtrip", rootHandle, "round.bin", 0o644)
 
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: hashOfSeed("ref-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("ref-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("ref-2"), Offset: 8 << 20, Size: 1 << 20},
@@ -227,11 +227,11 @@ func testBlockRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testBlockRef_NilBlocks asserts that a regular file with no BlockRefs
+// testChunkRef_NilBlocks asserts that a regular file with no ChunkRefs
 // (Blocks == nil) round-trips without error. The retrieved Blocks slice
 // must be empty (nil or zero-length both pass — backends differ on
 // nil-vs-empty representation, but len() == 0 is the contract).
-func testBlockRef_NilBlocks(t *testing.T, factory StoreFactory) {
+func testChunkRef_NilBlocks(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -264,11 +264,11 @@ func testBlockRef_NilBlocks(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testBlockRef_ReplaceBlocks asserts that PutFile fully replaces the
-// previous BlockRefs list — no leftover rows from prior PutFile calls.
+// testChunkRef_ReplaceBlocks asserts that PutFile fully replaces the
+// previous ChunkRefs list — no leftover rows from prior PutFile calls.
 // The Postgres backend implements this via DELETE+INSERT in the same tx;
 // Memory and Badger replace the slice trivially (single-blob encoding).
-func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
+func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 	ctx := t.Context()
 
@@ -276,7 +276,7 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	fileHandle := createTestFile(t, store, "blockref-replace", rootHandle, "replace.bin", 0o644)
 
 	// Initial PutFile with 5 blocks.
-	five := []block.BlockRef{
+	five := []block.ChunkRef{
 		{Hash: hashOfSeed("rep-0"), Offset: 0, Size: 1 << 20},
 		{Hash: hashOfSeed("rep-1"), Offset: 1 << 20, Size: 1 << 20},
 		{Hash: hashOfSeed("rep-2"), Offset: 2 << 20, Size: 1 << 20},
@@ -303,7 +303,7 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	// Replace with 2 different blocks at different offsets. After the
 	// second PutFile the GetFile must return exactly the new 2 — no
 	// leftover rows from the prior list.
-	two := []block.BlockRef{
+	two := []block.ChunkRef{
 		{Hash: hashOfSeed("rep-X"), Offset: 0, Size: 2 << 20},
 		{Hash: hashOfSeed("rep-Y"), Offset: 2 << 20, Size: 2 << 20},
 	}
@@ -328,11 +328,11 @@ func testBlockRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// testBlockRef_CascadeDeleteOnFileDelete asserts that deleting a file row
+// testChunkRef_CascadeDeleteOnFileDelete asserts that deleting a file row
 // cascades to the file_block_refs join table (via FK ON DELETE CASCADE).
 // Postgres-only via the FileChunkRefsAccessor capability hook; Memory
 // and Badger have no separate refs table and skip cleanly.
-func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) {
+func testChunkRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 
 	accessor, ok := store.(FileChunkRefsAccessor)
@@ -345,7 +345,7 @@ func testBlockRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) 
 	rootHandle := createTestShare(t, store, "blockref-cascade")
 	fileHandle := createTestFile(t, store, "blockref-cascade", rootHandle, "cascade.bin", 0o644)
 
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: hashOfSeed("cas-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("cas-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("cas-2"), Offset: 8 << 20, Size: 4 << 20},

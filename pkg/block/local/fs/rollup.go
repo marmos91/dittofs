@@ -600,9 +600,9 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	defer putReconstructBuf(stream)
 	ck := chunker.NewChunker()
 	// pos indexes the buffer; the absolute file offset of buf[pos] is
-	// baseOff+pos (used for the BlockRef manifest below).
+	// baseOff+pos (used for the ChunkRef manifest below).
 	pos := uint64(0)
-	// Accumulate the BlockRef manifest as chunks are emitted. Sorted-by-
+	// Accumulate the ChunkRef manifest as chunks are emitted. Sorted-by-
 	// Offset is automatic because pos advances monotonically — that
 	// matches the canonical FileAttr.Blocks invariant the downstream
 	// ObjectID compute relies on.
@@ -614,7 +614,7 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	// loop). The hashes pushed into the LRU are derived from `blocks`
 	// at the call site below; both the LRU-hit and StoreChunk paths
 	// append to `blocks`, so no separate buffer is needed.
-	var blocks []block.BlockRef
+	var blocks []block.ChunkRef
 	// staged holds log-blob chunks appended this pass whose durable local-index
 	// write is deferred to Phase C (committed only after the blob is fsynced) so
 	// no index entry can outlive un-fsynced blob bytes across a crash. seen
@@ -631,16 +631,16 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 		}
 		chunkBytes := stream[pos : pos+uint64(b)]
 		h := blake3ContentHash(chunkBytes)
-		blockRef := block.BlockRef{
+		blockRef := block.ChunkRef{
 			Hash:   h,
 			Offset: baseOff + pos,
 			Size:   uint32(b),
 		}
 
 		// Store is content-addressed and idempotent, so it physically dedups by
-		// content hash on every pass. The BlockRef append below preserves the
+		// content hash on every pass. The ChunkRef append below preserves the
 		// manifest invariant: ComputeObjectID later in this function sees the
-		// full BlockRef list regardless of dedup.
+		// full ChunkRef list regardless of dedup.
 		if _, dup := seen[h]; !dup {
 			seen[h] = struct{}{}
 			sc, err := bc.stageRollupChunk(ctx, h, chunkBytes)
@@ -1069,8 +1069,8 @@ func (bc *FSStore) alignRecsToChunkBoundaries(ctx context.Context, payloadID str
 }
 
 // blake3ContentHash returns the 32-byte BLAKE3 hash of data as a
-// block.ContentHash. Matches the rollup's content-address contract
-// chunks in blocks/{hh}/{hh}/{hex} are keyed by BLAKE3(data).
+// block.ContentHash. Matches the rollup's content-address contract:
+// chunks in the log-blob substrate are keyed by BLAKE3(data).
 func blake3ContentHash(data []byte) block.ContentHash {
 	var h block.ContentHash
 	sum := blake3.Sum256(data)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -22,6 +23,7 @@ func newLocatorFetchSyncer(t *testing.T) (*Syncer, *remotememory.Store, *metadat
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	t.Cleanup(func() { _ = ms.Close() })
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
+		LocalChunkIndex: ms,
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 5,
@@ -39,20 +41,24 @@ func newLocatorFetchSyncer(t *testing.T) (*Syncer, *remotememory.Store, *metadat
 	return syncer, rem, ms
 }
 
-// TestDispatchRemoteFetch_StandaloneRoundTrip covers the live PR3a path: a chunk
-// written and marked synced with a standalone locator reads back via the direct
-// CAS object (ReadBlockVerified), and the recorded locator resolves as
-// standalone.
-func TestDispatchRemoteFetch_StandaloneRoundTrip(t *testing.T) {
+// TestDispatchRemoteFetch_StandaloneLocatorRefused pins the post-#1493
+// fail-closed contract: the startup migration repacked every legacy standalone
+// chunk into a block, so a synced hash whose recorded locator is still
+// standalone (BlockID == "") is post-migration drift. dispatchRemoteFetch must
+// REFUSE the read — even when the legacy cas/ object still exists on the
+// remote — instead of silently falling back or returning zeros.
+func TestDispatchRemoteFetch_StandaloneLocatorRefused(t *testing.T) {
 	ctx := context.Background()
 	syncer, rem, ms := newLocatorFetchSyncer(t)
 
 	data := bytes.Repeat([]byte{0xAB}, 4096)
 	hash := block.ContentHash(blake3.Sum256(data))
+	// Plant the legacy standalone cas/ object so the refusal below is
+	// provably a policy decision, not a missing-object accident.
 	if err := rem.Put(ctx, hash, data); err != nil {
 		t.Fatalf("remote Put: %v", err)
 	}
-	// The write path records a standalone locator on MarkSynced.
+	// A pre-#1493 write path recorded a standalone locator on MarkSynced.
 	if err := ms.MarkSynced(ctx, hash, block.ChunkLocator{WireLength: int64(len(data))}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
@@ -66,40 +72,101 @@ func TestDispatchRemoteFetch_StandaloneRoundTrip(t *testing.T) {
 	}
 
 	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
-	if err != nil {
-		t.Fatalf("dispatchRemoteFetch: %v", err)
+	if err == nil {
+		t.Fatalf("dispatchRemoteFetch: want post-migration drift refusal, got nil (data=%d bytes)", len(got))
 	}
-	if key != block.FormatCASKey(hash) {
-		t.Fatalf("standalone key = %q, want %q", key, block.FormatCASKey(hash))
+	if !strings.Contains(err.Error(), "post-migration drift") {
+		t.Fatalf("dispatchRemoteFetch err = %v, want post-migration drift refusal", err)
 	}
-	if !bytes.Equal(got, data) {
-		t.Fatalf("standalone data mismatch")
+	if got != nil {
+		t.Fatalf("dispatchRemoteFetch data = %d bytes, want nil on refusal", len(got))
+	}
+	if key != "" {
+		t.Fatalf("dispatchRemoteFetch key = %q, want empty on refusal", key)
 	}
 }
 
-// TestDispatchRemoteFetch_LegacyNoLocator covers backward compatibility: a hash
-// with NO recorded synced marker (a pre-#1414 fixture, or drift) still reads via
-// the standalone CAS object — resolveLocator defaults to standalone.
-func TestDispatchRemoteFetch_LegacyNoLocator(t *testing.T) {
+// TestDispatchRemoteFetch_UnsyncedChunkFallsBackToLocal verifies that a chunk
+// with NO synced marker (not uploaded yet) is not treated as remote data: the
+// dispatch returns ("", nil, nil) so the caller serves it from the local tier,
+// rather than failing closed. A read racing the async carve must not error.
+func TestDispatchRemoteFetch_UnsyncedChunkFallsBackToLocal(t *testing.T) {
 	ctx := context.Background()
-	syncer, rem, _ := newLocatorFetchSyncer(t)
+	syncer, _, _ := newLocatorFetchSyncer(t)
 
 	data := bytes.Repeat([]byte{0xCD}, 2048)
 	hash := block.ContentHash(blake3.Sum256(data))
-	if err := rem.Put(ctx, hash, data); err != nil {
-		t.Fatalf("remote Put: %v", err)
-	}
 	// Deliberately NOT MarkSynced — GetLocator returns (false).
 
 	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
 	if err != nil {
-		t.Fatalf("dispatchRemoteFetch (legacy): %v", err)
+		t.Fatalf("dispatchRemoteFetch for unsynced chunk: want no error, got %v", err)
 	}
-	if key != block.FormatCASKey(hash) {
-		t.Fatalf("legacy key = %q, want standalone CAS key", key)
+	if got != nil || key != "" {
+		t.Fatalf("dispatchRemoteFetch for unsynced chunk: want empty result, got key=%q data=%d bytes", key, len(got))
+	}
+}
+
+// TestDispatchRemoteFetch_SyncedStandaloneLocatorRefused verifies that a chunk
+// that IS synced but whose recorded locator has an empty BlockID (post-#1493
+// drift — the migration should have rewritten every standalone locator) is
+// refused fail-closed.
+func TestDispatchRemoteFetch_SyncedStandaloneLocatorRefused(t *testing.T) {
+	ctx := context.Background()
+	syncer, _, ms := newLocatorFetchSyncer(t)
+
+	data := bytes.Repeat([]byte{0xCD}, 2048)
+	hash := block.ContentHash(blake3.Sum256(data))
+	// Synced marker with an empty-BlockID (standalone) locator = drift.
+	if err := ms.MarkSynced(ctx, hash, block.ChunkLocator{}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+
+	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
+	if err == nil {
+		t.Fatalf("dispatchRemoteFetch: want post-migration drift refusal, got nil (data=%d bytes)", len(got))
+	}
+	if !strings.Contains(err.Error(), "post-migration drift") {
+		t.Fatalf("dispatchRemoteFetch err = %v, want post-migration drift refusal", err)
+	}
+	if got != nil || key != "" {
+		t.Fatalf("dispatchRemoteFetch: want empty result on refusal, got key=%q data=%d bytes", key, len(got))
+	}
+}
+
+// TestDispatchRemoteFetch_CarvedChunkRoundTrip is the positive companion to the
+// refusal tests above: a chunk seeded through the live carve path (StoreChunk →
+// addPendingHash → carveFlush) gets a block locator, and dispatchRemoteFetch
+// round-trips it byte-identical through the packed-block read path.
+func TestDispatchRemoteFetch_CarvedChunkRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	mem := remotememory.New()
+	f := newCarveFixture(t, mem, DefaultBlockCarveBytes)
+
+	data := bytes.Repeat([]byte("carved-round-trip-"), 512)
+	hash := f.storeChunk(t, ctx, data)
+
+	if err := f.syncer.carveFlush(ctx, true); err != nil {
+		t.Fatalf("carveFlush: %v", err)
+	}
+
+	loc, synced, err := f.ms.GetLocator(ctx, hash)
+	if err != nil || !synced {
+		t.Fatalf("GetLocator: synced=%v err=%v", synced, err)
+	}
+	if loc.IsStandalone() {
+		t.Fatalf("carve must record a block locator, got standalone: %+v", loc)
+	}
+
+	key, got, err := f.syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
+	if err != nil {
+		t.Fatalf("dispatchRemoteFetch: %v", err)
+	}
+	if key != block.FormatBlockKey(loc.BlockID) {
+		t.Fatalf("key = %q, want %q", key, block.FormatBlockKey(loc.BlockID))
 	}
 	if !bytes.Equal(got, data) {
-		t.Fatalf("legacy data mismatch")
+		t.Fatalf("carved chunk round-trip mismatch")
 	}
 }
 
@@ -159,7 +226,7 @@ func TestDispatchRemoteFetch_BlockLocatorVerifyMismatch(t *testing.T) {
 	}
 
 	_, _, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("block verify mismatch: got %v, want ErrCASContentMismatch", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("block verify mismatch: got %v, want ErrChunkContentMismatch", err)
 	}
 }

@@ -5,16 +5,13 @@ package runtime
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
 // ds3RemoteConfig builds a remote s3 BlockStoreConfig from the DS3_* env
@@ -123,11 +120,9 @@ func runDS3DurableCycle(t *testing.T, fx *byteVerifyFixture) {
 		t.Fatalf("snap.RemoteDurable = false, want true — remote durability gate did not pass")
 	}
 
-	// Independently re-verify every manifest hash is HEAD-visible on DS3
-	// (belt-and-braces beyond the orchestration's own gate).
-	if err := reverifyManifestOnRemote(ctx, fx, snap); err != nil {
-		t.Fatalf("post-create manifest re-verify on DS3 failed: %v", err)
-	}
+	// (No per-hash remote re-verify: blocks-only packs chunks into blocks,
+	// so there is no hash-keyed remote object to HEAD. The RemoteDurable gate
+	// above plus the wiped-local restore round-trip below prove durability.)
 
 	// (3) Mutate: overwrite A in place (same length), delete B, add C.
 	mutA := distinctBytes(4*mib, 0xD54)
@@ -169,33 +164,4 @@ func runDS3DurableCycle(t *testing.T, fx *byteVerifyFixture) {
 	if fx.fileExists(ctx, "fileC.bin") {
 		t.Fatal("fileC still present after restore (created post-snapshot)")
 	}
-}
-
-// reverifyManifestOnRemote re-reads the snapshot manifest from disk and HEADs
-// every hash against the live remote, independent of the orchestration's own
-// verify pass. Returns the first miss (wrapping ErrChunkNotFound) so a
-// nondeterministic gap is surfaced even if the create-time gate passed.
-func reverifyManifestOnRemote(ctx context.Context, fx *byteVerifyFixture, snap *models.Snapshot) error {
-	manifestPath := snap.ManifestPath(fx.localStoreDir)
-	f, err := os.Open(manifestPath)
-	if err != nil {
-		return fmt.Errorf("open manifest %s: %w", manifestPath, err)
-	}
-	defer func() { _ = f.Close() }()
-	hs, err := snapshot.ReadManifest(f)
-	if err != nil {
-		return fmt.Errorf("read manifest %s: %w", manifestPath, err)
-	}
-	rs := fx.bs.RemoteStore()
-	if rs == nil {
-		return errors.New("no remote store")
-	}
-	hctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	for _, h := range hs.Sorted() {
-		if _, herr := rs.Head(hctx, h); herr != nil {
-			return fmt.Errorf("manifest hash %s HEAD failed (%w)", h, herr)
-		}
-	}
-	return nil
 }

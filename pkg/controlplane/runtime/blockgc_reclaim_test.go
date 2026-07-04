@@ -123,7 +123,7 @@ func TestBlockGC_SerializesPerRemote(t *testing.T) {
 	inFlight := map[string]int{}
 	peak := map[string]int{}
 	orig := collectGarbageFn
-	collectGarbageFn = func(_ context.Context, _ remote.RemoteStore, _ engine.MetadataReconciler, opts *engine.Options) *engine.GCStats {
+	collectGarbageFn = func(_ context.Context, _ engine.MetadataReconciler, opts *engine.Options) *engine.GCStats {
 		cid := opts.RemoteEndpointID
 		mu.Lock()
 		inFlight[cid]++

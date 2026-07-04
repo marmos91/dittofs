@@ -47,10 +47,9 @@
 // neither compression framing nor per-block encryption keys influence
 // the hash. Dedup therefore works across remotes that differ in
 // compression algorithm, encryption key, or AEAD choice: identical
-// plaintexts always map to the same content hash. Get path verification
-// hashes the recovered plaintext (after decrypt + decompress) against
-// the requested hash; see [Decorator.ReadBlockVerified] and
-// [encryption.EncryptedRemote.ReadBlockVerified].
+// plaintexts always map to the same content hash. The engine read path
+// hashes the recovered plaintext (after decrypt + decompress) against the
+// requested hash after the full decorator stack unseals it.
 //
 // Composition is fixed in the controlplane share service — there is no
 // runtime toggle to flip the order. The order is established once at

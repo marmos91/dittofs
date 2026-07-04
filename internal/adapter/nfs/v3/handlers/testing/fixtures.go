@@ -102,7 +102,7 @@ func NewHandlerFixtureWithStore(
 
 	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	localStore, err := fs.NewWithOptions(tmpDir, 0, metaStore, fs.FSStoreOptions{})
+	localStore, err := fs.NewWithOptions(tmpDir, 0, metaStore, fs.FSStoreOptions{LocalChunkIndex: metaStore})
 	if err != nil {
 		t.Fatalf("Failed to create local store: %v", err)
 	}
@@ -445,7 +445,7 @@ func (f *HandlerTestFixture) ReadContent(path string) []byte {
 
 	// Read content using BlockStore
 	content := make([]byte, size)
-	// Nil []BlockRef => dual-read shim path.
+	// Nil []ChunkRef => dual-read shim path.
 	n, err := f.BlockStore.ReadAt(ctx, string(file.PayloadID), nil, content, 0)
 	if err != nil {
 		f.t.Fatalf("Failed to read content from %q: %v", path, err)

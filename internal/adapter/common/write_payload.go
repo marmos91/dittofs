@@ -32,7 +32,7 @@ var ErrNotDurableYet = errors.New("block: data not yet durable (local store is v
 // WriteToBlockStore is the structural twin of ReadFromBlockStore. It is a
 // direct passthrough to engine.WriteAt today — there is no FileAttr.Blocks
 // to fetch yet. The helper exists so that when FileAttr.Blocks is
-// reintroduced as []BlockRef and the engine signature changes, the
+// reintroduced as []ChunkRef and the engine signature changes, the
 // fetch-and-slice logic lands here in exactly one place — every protocol
 // handler (NFSv3, NFSv4, SMB v2) calls this function and therefore stays
 // unchanged.
@@ -43,9 +43,9 @@ var ErrNotDurableYet = errors.New("block: data not yet durable (local store is v
 //
 // Wire protocol fidelity: the wire carries (offset, length); NFS3/4 and SMB2/3
 // do not know about blocks. The (payloadID, data, offset) signature is kept
-// identical to the current engine contract. BlockRef resolution can later be
+// identical to the current engine contract. ChunkRef resolution can later be
 // added INSIDE this function body (fetch FileAttr.Blocks → slice to
-// [offset, offset+len(data)) → pass resolved []BlockRef to engine.WriteAt)
+// [offset, offset+len(data)) → pass resolved []ChunkRef to engine.WriteAt)
 // without disturbing call-site code.
 //
 // Unlike ReadFromBlockStore, WriteToBlockStore does NOT take a pooled
@@ -59,7 +59,7 @@ func WriteToBlockStore(
 	offset uint64,
 ) error {
 	// Pass nil currentBlocks so the engine runs the legacy/dual-read
-	// path; discard the returned []BlockRef. Caller-snapshot []BlockRef
+	// path; discard the returned []ChunkRef. Caller-snapshot []ChunkRef
 	// threading lands in a later refactor.
 	_, err := blockStore.WriteAt(ctx, string(payloadID), nil, data, offset)
 	return err
@@ -68,7 +68,7 @@ func WriteToBlockStore(
 // CommitBlockStore is the COMMIT/flush seam used by NFSv3 COMMIT, NFSv4
 // COMMIT, and SMB CLOSE. All three protocols today flush via
 // engine.Flush(ctx, payloadID) with identical signatures; this helper wraps
-// that call so a later refactor can add BlockRef-aware plumbing once,
+// that call so a later refactor can add ChunkRef-aware plumbing once,
 // keeping protocol-handler code unchanged.
 //
 // A hard flush error (I/O fault, remote.Put rejection, metadata error) is

@@ -17,7 +17,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -64,7 +63,7 @@ func putPendingBlock(t *testing.T, st metadata.Store, id string, h block.Content
 		ID:            id,
 		Hash:          h,
 		State:         block.BlockStatePending,
-		BlockStoreKey: block.FormatCASKey(h),
+		BlockStoreKey: h.String(),
 		LocalPath:     "/cache/" + id,
 		DataSize:      64,
 		RefCount:      0,
@@ -82,7 +81,7 @@ func putBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 		ID:            id,
 		Hash:          h,
 		State:         block.BlockStateRemote,
-		BlockStoreKey: block.FormatCASKey(h),
+		BlockStoreKey: h.String(),
 		LocalPath:     "/cache/" + id,
 		DataSize:      64,
 		RefCount:      1,
@@ -113,13 +112,57 @@ func hashFromString(seed string) block.ContentHash {
 	return h
 }
 
-// writeCASObject seeds a CAS object on the remote store under the
-// FormatCASKey key for the given hash.
-func writeCASObject(t *testing.T, ctx context.Context, rs remote.RemoteStore, h block.ContentHash, data []byte) {
+// seedRemoteChunk packs h into its own single-chunk packed block on rbs and
+// records the block record + local location + backdated (past-grace) synced
+// marker in st — the post-#1493 shape of "this chunk is on remote". Returns
+// the block object's length: the bytes a sweep frees when it reclaims the
+// chunk.
+func seedRemoteChunk(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStore, h block.ContentHash) int64 {
 	t.Helper()
-	if err := rs.Put(ctx, h, data); err != nil {
-		t.Fatalf("Put(%x): %v", h[:8], err)
+	blockID := "blk-" + h.String()[:16]
+	seedPackedBlock(t, st, rbs, blockID, []block.ContentHash{h})
+	rec, ok, err := st.GetBlockRecord(t.Context(), blockID)
+	if err != nil || !ok {
+		t.Fatalf("GetBlockRecord(%s): ok=%v err=%v", blockID, ok, err)
 	}
+	return rec.Length
+}
+
+// chunkOnRemote reports whether h is still remote-reachable post-#1493: its
+// synced marker resolves to a block locator whose block record still exists.
+func chunkOnRemote(t *testing.T, st metadata.Store, h block.ContentHash) bool {
+	t.Helper()
+	ctx := t.Context()
+	loc, ok, err := st.GetLocator(ctx, h)
+	if err != nil {
+		t.Fatalf("GetLocator(%s): %v", h, err)
+	}
+	if !ok || loc.BlockID == "" {
+		return false
+	}
+	_, ok, err = st.GetBlockRecord(ctx, loc.BlockID)
+	if err != nil {
+		t.Fatalf("GetBlockRecord(%s): %v", loc.BlockID, err)
+	}
+	return ok
+}
+
+// collectGarbageBlocks runs the post-#1493 remote sweep over a single-share
+// fixture: orphan candidates come from st's synced-hash index and reclamation
+// goes through a per-share BlockGCReclaimer bound to rbs. opts may carry any
+// other knob (DryRun, GracePeriod, HoldProvider, ...).
+func collectGarbageBlocks(t *testing.T, rec MetadataReconciler, st metadata.Store, rbs remote.RemoteBlockStore, opts *Options) *GCStats {
+	t.Helper()
+	if opts == nil {
+		opts = &Options{}
+	}
+	idx, ok := st.(SyncedHashIndex)
+	if !ok {
+		t.Fatalf("metadata store %T does not implement SyncedHashIndex", st)
+	}
+	opts.SyncedHashIndex = idx
+	opts.BlockReclaimer = newBlockGCReclaimer(st, rbs)
+	return CollectGarbage(t.Context(), rec, opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +202,7 @@ func TestGCMarkSweep_MarkPopulatesLiveSet(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: root})
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: root})
 
 	// HashesMarked counts every non-zero hash emission (one per
 	// FileChunk); GCState.Add deduplicates internally so the live set
@@ -175,35 +218,29 @@ func TestGCMarkSweep_MarkPopulatesLiveSet(t *testing.T) {
 	// Verify dedup: the GCState backing the run only stored 3 distinct keys.
 	// We validate via a follow-up sweep where 5 CAS objects (3 referenced
 	// by the live set, 2 orphans) get the right disposition.
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 	for _, h := range hashes {
-		writeCASObject(t, ctx, rs, h, []byte("live"))
+		seedRemoteChunk(t, st, rs, h)
 	}
 	orphans := []block.ContentHash{
 		hashFromString("orphan-x"),
 		hashFromString("orphan-y"),
 	}
 	for _, h := range orphans {
-		writeCASObject(t, ctx, rs, h, []byte("orphan"))
+		seedRemoteChunk(t, st, rs, h)
 	}
-	stats2 := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: root, GracePeriod: time.Minute})
+	stats2 := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: root, GracePeriod: time.Minute})
 	if stats2.ObjectsSwept != int64(len(orphans)) {
 		t.Errorf("follow-up sweep deleted %d, want %d (dedup miscount)", stats2.ObjectsSwept, len(orphans))
 	}
 }
 
-// TestGCMarkSweep_SweepHappyPath (behavior 2): given a remote store with 5
-// CAS objects (3 referenced + 2 orphan), sweep deletes exactly the 2
-// orphans. GCStats.HashesMarked=3, ObjectsSwept=2, BytesFreed=sum.
+// TestGCMarkSweep_SweepHappyPath (behavior 2): given a remote with 5 synced
+// chunks (3 referenced + 2 orphan), sweep reclaims exactly the 2 orphans'
+// blocks. GCStats.HashesMarked=3, ObjectsSwept=2, BytesFreed=sum of the
+// orphans' block object lengths.
 func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
-	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
-
-	// Force LastModified to be old enough that the grace TTL does NOT
-	// preserve any object.
-	old := time.Now().Add(-2 * time.Hour)
-	rs.SetNowFnForTest(func() time.Time { return old })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -220,17 +257,17 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 
 	for i, h := range live {
 		putBlock(t, st, fmt.Sprintf("file-live/%d", i), h)
-		writeCASObject(t, ctx, rs, h, []byte("live-data-"+string(rune('a'+i))))
+		seedRemoteChunk(t, st, rs, h)
 	}
-	orphan1Data := []byte("orphan-data-1-padding")
-	orphan2Data := []byte("orphan-data-2-padding-longer")
-	writeCASObject(t, ctx, rs, orphans[0], orphan1Data)
-	writeCASObject(t, ctx, rs, orphans[1], orphan2Data)
+	var wantBytes int64
+	for _, h := range orphans {
+		wantBytes += seedRemoteChunk(t, st, rs, h)
+	}
 
 	root := t.TempDir()
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot: root,
-		GracePeriod: time.Minute, // < 2h so the seeded objects are eligible
+		GracePeriod: time.Minute, // < 2h so the seeded markers are eligible
 	})
 
 	if stats.HashesMarked != 3 {
@@ -239,32 +276,31 @@ func TestGCMarkSweep_SweepHappyPath(t *testing.T) {
 	if stats.ObjectsSwept != 2 {
 		t.Errorf("ObjectsSwept = %d, want 2", stats.ObjectsSwept)
 	}
-	// ObjectsScanned counts every CAS object the sweep walked: the 3 live
-	// blocks plus the 2 orphans = 5, regardless of how many were deleted.
+	// ObjectsScanned counts every synced marker the sweep inspected: the 3
+	// live chunks plus the 2 orphans = 5, regardless of how many were swept.
 	if stats.ObjectsScanned != 5 {
 		t.Errorf("ObjectsScanned = %d, want 5 (3 live + 2 orphans)", stats.ObjectsScanned)
 	}
 	if stats.ObjectsScanned < stats.ObjectsSwept {
 		t.Errorf("ObjectsScanned (%d) must be >= ObjectsSwept (%d)", stats.ObjectsScanned, stats.ObjectsSwept)
 	}
-	wantBytes := int64(len(orphan1Data) + len(orphan2Data))
 	if stats.BytesFreed != wantBytes {
-		t.Errorf("BytesFreed = %d, want %d", stats.BytesFreed, wantBytes)
+		t.Errorf("BytesFreed = %d, want %d (sum of the orphans' block lengths)", stats.BytesFreed, wantBytes)
 	}
 	if stats.ErrorCount != 0 {
 		t.Errorf("ErrorCount = %d, want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
 
-	// Verify live blocks survive.
+	// Verify live chunks survive.
 	for _, h := range live {
-		if _, err := rs.Get(ctx, h); err != nil {
-			t.Errorf("live block %x deleted: %v", h[:8], err)
+		if !chunkOnRemote(t, st, h) {
+			t.Errorf("live chunk %x reclaimed", h[:8])
 		}
 	}
-	// Verify orphans gone.
+	// Verify orphans reclaimed.
 	for _, h := range orphans {
-		if _, err := rs.Get(ctx, h); err == nil {
-			t.Errorf("orphan %x not deleted", h[:8])
+		if chunkOnRemote(t, st, h) {
+			t.Errorf("orphan %x not reclaimed", h[:8])
 		}
 	}
 }
@@ -311,15 +347,15 @@ func (c *reapCoordinator) DecrementRefCountAndReap(ctx context.Context, payloadI
 	return count, nil
 }
 
-func (c *reapCoordinator) PersistFileChunks(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
+func (c *reapCoordinator) PersistFileChunks(_ context.Context, _ string, _ []block.ChunkRef, _ block.ObjectID) error {
 	return nil
 }
 
-func (c *reapCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.BlockRef, error) {
+func (c *reapCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.ChunkRef, error) {
 	return nil, nil
 }
 
-func (c *reapCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.BlockRef, error) {
+func (c *reapCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.ChunkRef, error) {
 	return nil, nil
 }
 
@@ -368,9 +404,6 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
 
-	// Age every remote object past the grace window so the sweep is eligible.
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
-
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
 	bs := newReapEngine(t, st)
@@ -384,11 +417,11 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 	// the engine rollup produces) and live CAS objects on remote.
 	putBlock(t, st, "file-trunc/0", h1)
 	putBlock(t, st, fmt.Sprintf("file-trunc/%d", 4*mib), h2)
-	writeCASObject(t, ctx, rs, h1, []byte("keep-chunk-data"))
-	writeCASObject(t, ctx, rs, h2, []byte("drop-chunk-data-longer"))
+	seedRemoteChunk(t, st, rs, h1)
+	seedRemoteChunk(t, st, rs, h2)
 
 	// Truncate to 4MiB: H2 (offset 4MiB) is dropped, H1 (offset 0) kept.
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: h1, Offset: 0, Size: uint32(mib)},
 		{Hash: h2, Offset: 4 * mib, Size: uint32(mib)},
 	}
@@ -396,7 +429,7 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 		t.Fatalf("Truncate: %v", err)
 	}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot: t.TempDir(),
 		GracePeriod: time.Minute,
 	})
@@ -405,12 +438,12 @@ func TestGCMarkSweep_TruncateReclaimsRemoteChunk(t *testing.T) {
 	}
 
 	// H2's chunk MUST be swept (its row was reaped → left the live set).
-	if _, err := rs.Get(ctx, h2); err == nil {
+	if chunkOnRemote(t, st, h2) {
 		t.Errorf("dropped chunk H2 still present on remote after Truncate+GC; want swept (#832 leak)")
 	}
 	// H1's chunk MUST survive (still referenced).
-	if _, err := rs.Get(ctx, h1); err != nil {
-		t.Errorf("retained chunk H1 swept after Truncate+GC: %v; want retained", err)
+	if !chunkOnRemote(t, st, h1) {
+		t.Errorf("retained chunk H1 swept after Truncate+GC; want retained")
 	}
 	if stats.ObjectsSwept != 1 {
 		t.Errorf("ObjectsSwept = %d, want 1 (only the dropped H2)", stats.ObjectsSwept)
@@ -428,8 +461,6 @@ func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
 
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
-
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
 	bs := newReapEngine(t, st)
@@ -440,11 +471,11 @@ func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
 	// Two independent rows for the shared hash: one per file. One CAS object.
 	putBlock(t, st, fmt.Sprintf("file-A/%d", 4*mib), shared)
 	putBlock(t, st, "file-B/0", shared)
-	writeCASObject(t, ctx, rs, shared, []byte("shared-dedup-chunk"))
+	seedRemoteChunk(t, st, rs, shared)
 
 	// Truncate file-A dropping its block: file-A's own row (file-A/4MiB) is
 	// reaped by ID; file-B's sibling row remains.
-	blocks := []block.BlockRef{{Hash: shared, Offset: 4 * mib, Size: uint32(mib)}}
+	blocks := []block.ChunkRef{{Hash: shared, Offset: 4 * mib, Size: uint32(mib)}}
 	if _, err := bs.Truncate(ctx, "file-A", blocks, 0); err != nil {
 		t.Fatalf("Truncate: %v", err)
 	}
@@ -454,7 +485,7 @@ func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
 		t.Fatalf("shared hash left EnumerateFileChunks after truncating ONE of two files; data-loss — sibling row not keeping it alive")
 	}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot: t.TempDir(),
 		GracePeriod: time.Minute,
 	})
@@ -463,8 +494,8 @@ func TestGCMarkSweep_TruncateDedupSafety(t *testing.T) {
 	}
 
 	// The shared chunk MUST survive: file-B's sibling row still references it.
-	if _, err := rs.Get(ctx, shared); err != nil {
-		t.Errorf("shared chunk swept after truncating ONE of two referencing files: %v; want retained (sibling row keeps it live)", err)
+	if !chunkOnRemote(t, st, shared) {
+		t.Errorf("shared chunk swept after truncating ONE of two referencing files; want retained (sibling row keeps it live)")
 	}
 	if stats.ObjectsSwept != 0 {
 		t.Errorf("ObjectsSwept = %d, want 0 (shared chunk still referenced)", stats.ObjectsSwept)
@@ -481,7 +512,6 @@ func TestGCMarkSweep_DeleteDuplicateHashNoOverReap(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -494,10 +524,10 @@ func TestGCMarkSweep_DeleteDuplicateHashNoOverReap(t *testing.T) {
 	putBlock(t, st, "file-A/0", shared)
 	putBlock(t, st, fmt.Sprintf("file-A/%d", 4*mib), shared)
 	putBlock(t, st, "file-B/0", shared)
-	writeCASObject(t, ctx, rs, shared, []byte("dup-shared-chunk"))
+	seedRemoteChunk(t, st, rs, shared)
 
 	// Delete file-A: both its rows (offsets 0 and 4MiB) are reaped by ID.
-	dupBlocks := []block.BlockRef{
+	dupBlocks := []block.ChunkRef{
 		{Hash: shared, Offset: 0, Size: uint32(mib)},
 		{Hash: shared, Offset: 4 * mib, Size: uint32(mib)},
 	}
@@ -510,12 +540,12 @@ func TestGCMarkSweep_DeleteDuplicateHashNoOverReap(t *testing.T) {
 		t.Fatalf("shared hash left EnumerateFileChunks after deleting file-A; data-loss — file-B sibling row not keeping it alive")
 	}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 	if stats.ErrorCount != 0 {
 		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
-	if _, err := rs.Get(ctx, shared); err != nil {
-		t.Errorf("shared chunk swept after deleting file-A: %v; want retained (file-B sibling row still refs it)", err)
+	if !chunkOnRemote(t, st, shared) {
+		t.Errorf("shared chunk swept after deleting file-A; want retained (file-B sibling row still refs it)")
 	}
 	if stats.ObjectsSwept != 0 {
 		t.Errorf("ObjectsSwept = %d, want 0 (shared chunk still referenced by file-B)", stats.ObjectsSwept)
@@ -532,7 +562,6 @@ func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -544,10 +573,10 @@ func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
 	// Two rows in one file for the same hash: offset 0 (kept) and 4MiB (dropped).
 	putBlock(t, st, "file-S/0", shared)
 	putBlock(t, st, fmt.Sprintf("file-S/%d", 4*mib), shared)
-	writeCASObject(t, ctx, rs, shared, []byte("straddle-chunk"))
+	seedRemoteChunk(t, st, rs, shared)
 
 	// Same hash kept (offset 0) and dropped (offset 4 MiB). Truncate to 1 MiB.
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: shared, Offset: 0, Size: uint32(mib)},
 		{Hash: shared, Offset: 4 * mib, Size: uint32(mib)},
 	}
@@ -560,12 +589,12 @@ func TestGCMarkSweep_TruncateStraddleHashNoOverReap(t *testing.T) {
 		t.Fatalf("straddling hash left EnumerateFileChunks after truncate; data-loss — kept row was over-reaped")
 	}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 	if stats.ErrorCount != 0 {
 		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
-	if _, err := rs.Get(ctx, shared); err != nil {
-		t.Errorf("straddling chunk swept after truncate: %v; want retained (still referenced below newSize)", err)
+	if !chunkOnRemote(t, st, shared) {
+		t.Errorf("straddling chunk swept after truncate; want retained (still referenced below newSize)")
 	}
 	if stats.ObjectsSwept != 0 {
 		t.Errorf("ObjectsSwept = %d, want 0 (hash still kept below newSize)", stats.ObjectsSwept)
@@ -588,7 +617,6 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -602,8 +630,8 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 	// these; the reap path resolves them by EXACT ID "{payloadID}/{offset}".
 	putPendingBlock(t, st, "file-pend/0", h1)
 	putPendingBlock(t, st, "file-pend/1048576", h2)
-	writeCASObject(t, ctx, rs, h1, []byte("keep-chunk-data"))
-	writeCASObject(t, ctx, rs, h2, []byte("drop-chunk-data-longer"))
+	seedRemoteChunk(t, st, rs, h1)
+	seedRemoteChunk(t, st, rs, h2)
 
 	// Sanity: GetByHash (Remote-gated) cannot see the Pending rows.
 	if fb, _ := st.GetByHash(ctx, h2); fb != nil {
@@ -611,7 +639,7 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 	}
 
 	// Truncate to 1MiB: H2 (offset 1MiB) dropped, H1 (offset 0) kept.
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: h1, Offset: 0, Size: uint32(mib)},
 		{Hash: h2, Offset: mib, Size: uint32(mib)},
 	}
@@ -628,15 +656,15 @@ func TestGCMarkSweep_PendingReclaimsRemoteChunk(t *testing.T) {
 		t.Errorf("retained hash H1 missing from EnumerateFileChunks; want present")
 	}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 	if stats.ErrorCount != 0 {
 		t.Fatalf("ErrorCount = %d, want 0; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
-	if _, err := rs.Get(ctx, h2); err == nil {
-		t.Errorf("dropped chunk H2 still present on remote after Truncate+GC; want swept (#832 leak)")
+	if chunkOnRemote(t, st, h2) {
+		t.Errorf("dropped chunk H2 still remote-reachable after Truncate+GC; want swept (#832 leak)")
 	}
-	if _, err := rs.Get(ctx, h1); err != nil {
-		t.Errorf("retained chunk H1 swept: %v; want retained", err)
+	if !chunkOnRemote(t, st, h1) {
+		t.Errorf("retained chunk H1 swept; want retained")
 	}
 	if stats.ObjectsSwept != 1 {
 		t.Errorf("ObjectsSwept = %d, want 1 (only the dropped H2)", stats.ObjectsSwept)
@@ -655,7 +683,6 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -668,11 +695,11 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 	// keep-alive is the sibling row, not a shared RefCount on one row.
 	putBlock(t, st, "file-A/0", shared)
 	putBlock(t, st, "file-B/0", shared)
-	writeCASObject(t, ctx, rs, shared, []byte("shared-dedup-chunk"))
+	seedRemoteChunk(t, st, rs, shared)
 
 	// Delete file A: the reap removes file-A's OWN row by ID (file-A/0); file-B's
 	// sibling row keeps the hash in the GC live set, so the chunk is NOT swept.
-	if err := bs.Delete(ctx, "file-A", []block.BlockRef{{Hash: shared, Offset: 0, Size: uint32(mib)}}); err != nil {
+	if err := bs.Delete(ctx, "file-A", []block.ChunkRef{{Hash: shared, Offset: 0, Size: uint32(mib)}}); err != nil {
 		t.Fatalf("Delete file-A: %v", err)
 	}
 
@@ -681,12 +708,12 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 		t.Fatalf("shared hash left EnumerateFileChunks after deleting one of two referencing files; data-loss — reap removed a hash a sibling file still references")
 	}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 	if stats.ErrorCount != 0 {
 		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
-	if _, err := rs.Get(ctx, shared); err != nil {
-		t.Errorf("shared chunk swept after deleting ONE of two referencing files: %v; want retained (file-B still refs it)", err)
+	if !chunkOnRemote(t, st, shared) {
+		t.Errorf("shared chunk swept after deleting ONE of two referencing files; want retained (file-B still refs it)")
 	}
 	if stats.ObjectsSwept != 0 {
 		t.Errorf("ObjectsSwept = %d, want 0 (shared chunk still referenced by file-B)", stats.ObjectsSwept)
@@ -696,18 +723,18 @@ func TestGCMarkSweep_CrossFileDedupKeepAlive(t *testing.T) {
 	// hash leaves the live set and the next sweep reclaims the chunk. This
 	// completes the keep-alive proof — the chunk dies only when the LAST
 	// referencing row is reaped.
-	if err := bs.Delete(ctx, "file-B", []block.BlockRef{{Hash: shared, Offset: 0, Size: uint32(mib)}}); err != nil {
+	if err := bs.Delete(ctx, "file-B", []block.ChunkRef{{Hash: shared, Offset: 0, Size: uint32(mib)}}); err != nil {
 		t.Fatalf("Delete file-B: %v", err)
 	}
 	if hashInLiveSet(t, ctx, st, shared) {
 		t.Fatalf("shared hash still in EnumerateFileChunks after deleting BOTH files; want gone (last row reaped)")
 	}
-	stats2 := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	stats2 := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 	if stats2.ErrorCount != 0 {
 		t.Fatalf("phase-2 ErrorCount = %d; FirstErrors=%v", stats2.ErrorCount, stats2.FirstErrors)
 	}
-	if _, err := rs.Get(ctx, shared); err == nil {
-		t.Errorf("shared chunk still present after deleting BOTH referencing files; want swept (no row references it)")
+	if chunkOnRemote(t, st, shared) {
+		t.Errorf("shared chunk still remote-reachable after deleting BOTH referencing files; want swept (no row references it)")
 	}
 	if stats2.ObjectsSwept != 1 {
 		t.Errorf("phase-2 ObjectsSwept = %d, want 1 (the now-unreferenced chunk)", stats2.ObjectsSwept)
@@ -727,7 +754,6 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -741,7 +767,7 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 	id1 := fmt.Sprintf("file-dup/%d", mib)
 	putPendingBlock(t, st, id0, dup)
 	putPendingBlock(t, st, id1, dup)
-	writeCASObject(t, ctx, rs, dup, []byte("identical-content-chunk"))
+	seedRemoteChunk(t, st, rs, dup)
 
 	// Both rows exist before the delete.
 	if fb, _ := st.GetFileChunk(ctx, id0); fb == nil {
@@ -752,7 +778,7 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 	}
 
 	// Delete the file: its block list carries the SAME hash at both offsets.
-	if err := bs.Delete(ctx, "file-dup", []block.BlockRef{
+	if err := bs.Delete(ctx, "file-dup", []block.ChunkRef{
 		{Hash: dup, Offset: 0, Size: uint32(mib)},
 		{Hash: dup, Offset: mib, Size: uint32(mib)},
 	}); err != nil {
@@ -770,7 +796,7 @@ func TestGCMarkSweep_SameHashTwoOffsetsBothReaped(t *testing.T) {
 		t.Fatalf("dup hash still in EnumerateFileChunks after deleting both rows; want gone (#832 by-hash leak)")
 	}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 	if stats.ErrorCount != 0 {
 		t.Fatalf("ErrorCount = %d; FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
@@ -798,57 +824,55 @@ func hashInLiveSet(t *testing.T, ctx context.Context, st metadata.Store, h block
 	return found
 }
 
-// TestGCMarkSweep_GraceTTLPreserves (behavior 3): an orphan with
-// LastModified > snapshot - GracePeriod is NOT deleted (within the grace
-// window).
+// TestGCMarkSweep_GraceTTLPreserves (behavior 3): an orphan whose synced
+// marker is younger than snapshot - GracePeriod is NOT reclaimed (within the
+// grace window).
 func TestGCMarkSweep_GraceTTLPreserves(t *testing.T) {
-	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
 
-	// Seed an orphan with LastModified = now (within any grace window).
 	rec := newGCMSReconciler()
-	rec.addShare("empty")
+	st := rec.addShare("empty")
 
+	// Seed an orphan, then re-stamp its marker to now (within any grace window).
 	orphan := hashFromString("recent-orphan")
-	writeCASObject(t, ctx, rs, orphan, []byte("recent"))
+	seedRemoteChunk(t, st, rs, orphan)
+	st.(*metadatamemory.MemoryMetadataStore).MarkSyncedAtForTest(orphan, time.Now())
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot: t.TempDir(),
 		GracePeriod: time.Hour,
 	})
 	if stats.ObjectsSwept != 0 {
 		t.Errorf("ObjectsSwept = %d, want 0 (within grace window)", stats.ObjectsSwept)
 	}
-	if _, err := rs.Get(ctx, orphan); err != nil {
-		t.Errorf("recent orphan should be preserved by grace TTL: %v", err)
+	if !chunkOnRemote(t, st, orphan) {
+		t.Errorf("recent orphan should be preserved by grace TTL")
 	}
 }
 
 // TestGCMarkSweep_FailClosed (behavior 4): EnumerateFileChunks returns an
-// error mid-iteration. Sweep is NOT executed (no Delete calls). Stats
+// error mid-iteration. Sweep is NOT executed (no block reclaims). Stats
 // reports ErrorCount > 0 and a non-empty FirstErrors slice.
 func TestGCMarkSweep_FailClosed(t *testing.T) {
-	ctx := t.Context()
-	rs := &deleteCountingRemote{inner: remotememory.New()}
+	rs := &blockDeleteCountingRemote{Store: remotememory.New()}
 	defer func() { _ = rs.Close() }()
 
-	// Seed an orphan that, absent the mark failure, the sweep would delete.
-	old := time.Now().Add(-2 * time.Hour)
-	rs.inner.SetNowFnForTest(func() time.Time { return old })
-	orphan := hashFromString("would-be-orphan")
-	writeCASObject(t, ctx, rs, orphan, []byte("payload"))
-
-	// Wrap the inner store so EnumerateFileChunks always errors.
 	innerRec := newGCMSReconciler()
 	innerStore := innerRec.addShare("share-x")
+
+	// Seed an orphan that, absent the mark failure, the sweep would reclaim.
+	orphan := hashFromString("would-be-orphan")
+	seedRemoteChunk(t, innerStore, rs, orphan)
+
+	// Wrap the inner store so EnumerateFileChunks always errors.
 	putBlock(t, innerStore, "file-x/0", hashFromString("h-1"))
 	innerRec.stores["share-x"] = &storeWithFailingEnum{
 		Store: innerStore,
 		err:   errors.New("synthetic enum failure"),
 	}
 
-	stats := CollectGarbage(ctx, rs, innerRec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	stats := collectGarbageBlocks(t, innerRec, innerStore, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 
 	if stats.ErrorCount == 0 {
 		t.Errorf("ErrorCount = 0, want > 0")
@@ -862,44 +886,48 @@ func TestGCMarkSweep_FailClosed(t *testing.T) {
 	if rs.deletes.Load() != 0 {
 		t.Errorf("DeleteBlock invoked %d times, want 0 (sweep must not run)", rs.deletes.Load())
 	}
+	if !chunkOnRemote(t, innerStore, orphan) {
+		t.Errorf("orphan reclaimed despite mark fail-closed")
+	}
 }
 
-// TestGCMarkSweep_SweepErrorsContinueAndCapture (behavior 5): a RemoteStore
-// that fails Delete on prefix "ab" but succeeds on others — GC continues
-// sweeping the other 255 prefixes; final ErrorCount > 0 and FirstErrors[0]
-// mentions the failing prefix.
+// TestGCMarkSweep_SweepErrorsContinueAndCapture (behavior 5): a remote whose
+// DeleteBlock fails for one block but succeeds for others — GC continues
+// sweeping the remaining candidates; final ErrorCount > 0 and FirstErrors[0]
+// mentions the failing block.
 func TestGCMarkSweep_SweepErrorsContinueAndCapture(t *testing.T) {
-	ctx := t.Context()
 	inner := remotememory.New()
 	defer func() { _ = inner.Close() }()
 
-	// Force LastModified to be old enough that grace TTL doesn't preserve.
-	inner.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-empty")
 
-	// Pick two hashes whose CAS keys land in distinct top-level prefixes
-	// one inside "ab" (failing) and one elsewhere.
+	// Two orphans in distinct blocks: one whose block delete fails, one ok.
 	failHash := mustHashWithPrefix(t, "ab")
 	okHash := mustHashWithPrefix(t, "cd")
 
-	writeCASObject(t, ctx, inner, failHash, []byte("orphan-fail"))
-	writeCASObject(t, ctx, inner, okHash, []byte("orphan-ok"))
+	seedRemoteChunk(t, st, inner, failHash)
+	seedRemoteChunk(t, st, inner, okHash)
 
-	rs := &prefixDeleteFailerRemote{inner: inner, failPrefix: "cas/ab/"}
+	// seedRemoteChunk derives block IDs as "blk-<hash-prefix>", so failing
+	// the "blk-ab" prefix poisons exactly failHash's block.
+	rs := &blockDeleteFailerRemote{Store: inner, failIDPrefix: "blk-ab"}
 
-	rec := newGCMSReconciler()
-	rec.addShare("share-empty")
-
-	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: t.TempDir(), GracePeriod: time.Minute})
 
 	if stats.ErrorCount == 0 {
-		t.Fatalf("ErrorCount = 0, want > 0 (delete error in 'ab' prefix)")
+		t.Fatalf("ErrorCount = 0, want > 0 (delete error on failHash's block)")
 	}
-	if len(stats.FirstErrors) == 0 || !strings.Contains(stats.FirstErrors[0], "cas/ab/") {
-		t.Errorf("FirstErrors[0] = %v, want one mentioning cas/ab/", stats.FirstErrors)
+	if len(stats.FirstErrors) == 0 || !strings.Contains(stats.FirstErrors[0], "blk-ab") {
+		t.Errorf("FirstErrors[0] = %v, want one mentioning blk-ab", stats.FirstErrors)
 	}
-	// The "cd" orphan must still have been swept.
-	if _, err := inner.Get(ctx, okHash); err == nil {
-		t.Errorf("orphan in non-failing prefix not deleted")
+	// The other orphan must still have been swept.
+	if chunkOnRemote(t, st, okHash) {
+		t.Errorf("orphan in non-failing block not reclaimed")
+	}
+	// The poisoned orphan is retained fail-closed for the next pass.
+	if !chunkOnRemote(t, st, failHash) {
+		t.Errorf("poisoned orphan's block record dropped despite delete failure")
 	}
 }
 
@@ -907,20 +935,17 @@ func TestGCMarkSweep_SweepErrorsContinueAndCapture(t *testing.T) {
 // DryRunCandidates contains up to DryRunSampleSize candidates
 // ObjectsSwept counts what WOULD be deleted; BytesFreed=0.
 func TestGCMarkSweep_DryRun(t *testing.T) {
-	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
 
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-empty")
 
 	for i := 0; i < 5; i++ {
-		writeCASObject(t, ctx, rs, hashFromString(fmt.Sprintf("orphan-%d", i)), []byte("data"))
+		seedRemoteChunk(t, st, rs, hashFromString(fmt.Sprintf("orphan-%d", i)))
 	}
 
-	rec := newGCMSReconciler()
-	rec.addShare("share-empty")
-
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot:      t.TempDir(),
 		GracePeriod:      time.Minute,
 		DryRun:           true,
@@ -939,8 +964,8 @@ func TestGCMarkSweep_DryRun(t *testing.T) {
 	// Verify nothing was actually deleted.
 	for i := 0; i < 5; i++ {
 		h := hashFromString(fmt.Sprintf("orphan-%d", i))
-		if _, err := rs.Get(ctx, h); err != nil {
-			t.Errorf("dry-run deleted block %s: %v", block.FormatCASKey(h), err)
+		if !chunkOnRemote(t, st, h) {
+			t.Errorf("dry-run reclaimed chunk %s; want everything preserved", h)
 		}
 	}
 }
@@ -972,12 +997,10 @@ func (s stubErrHoldProvider) HeldHashes(_ context.Context, _ string, _ []string,
 // the pre-Phase-22 behavior verbatim — mark + sweep proceed with the live
 // set derived solely from EnumerateFileChunks.
 func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
-	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
 
 	// Force LastModified into the past so the orphan is sweep-eligible.
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -985,10 +1008,10 @@ func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
 	liveHash := hashFromString("nil-hold-live")
 	orphanHash := hashFromString("nil-hold-orphan")
 	putBlock(t, st, "file-live/0", liveHash)
-	writeCASObject(t, ctx, rs, liveHash, []byte("L"))
-	writeCASObject(t, ctx, rs, orphanHash, []byte("O"))
+	seedRemoteChunk(t, st, rs, liveHash)
+	seedRemoteChunk(t, st, rs, orphanHash)
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot: t.TempDir(),
 		GracePeriod: time.Minute,
 		// HoldProvider intentionally left nil.
@@ -1003,10 +1026,10 @@ func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
 	if stats.ObjectsSwept != 1 {
 		t.Errorf("ObjectsSwept=%d want 1", stats.ObjectsSwept)
 	}
-	if _, err := rs.Get(ctx, liveHash); err != nil {
-		t.Errorf("live hash deleted: %v", err)
+	if !chunkOnRemote(t, st, liveHash) {
+		t.Errorf("live hash deleted; want retained")
 	}
-	if _, err := rs.Get(ctx, orphanHash); err == nil {
+	if chunkOnRemote(t, st, orphanHash) {
 		t.Errorf("orphan should have been deleted")
 	}
 }
@@ -1015,11 +1038,8 @@ func TestGCMarkSweep_NoSnapshotHoldProvider(t *testing.T) {
 // HoldProvider land in the same live set as FileChunk hashes — referenced,
 // held, and orphan CAS objects each get the right disposition.
 func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
-	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
-
-	rs.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -1029,13 +1049,13 @@ func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
 	hashC := hashFromString("orphan-C")
 
 	putBlock(t, st, "file-A/0", hashA)
-	writeCASObject(t, ctx, rs, hashA, []byte("A"))
-	writeCASObject(t, ctx, rs, hashB, []byte("B"))
-	writeCASObject(t, ctx, rs, hashC, []byte("C"))
+	seedRemoteChunk(t, st, rs, hashA)
+	seedRemoteChunk(t, st, rs, hashB)
+	seedRemoteChunk(t, st, rs, hashC)
 
 	provider := stubHoldProvider{held: []block.ContentHash{hashB}}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot:  t.TempDir(),
 		GracePeriod:  time.Minute,
 		HoldProvider: provider,
@@ -1051,13 +1071,13 @@ func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
 	if stats.ObjectsSwept != 1 {
 		t.Errorf("ObjectsSwept=%d want 1 (only C is truly orphan)", stats.ObjectsSwept)
 	}
-	if _, err := rs.Get(ctx, hashA); err != nil {
-		t.Errorf("referenced hash A deleted: %v", err)
+	if !chunkOnRemote(t, st, hashA) {
+		t.Errorf("referenced hash A deleted; want retained")
 	}
-	if _, err := rs.Get(ctx, hashB); err != nil {
-		t.Errorf("held hash B deleted (HoldProvider live-set leak): %v", err)
+	if !chunkOnRemote(t, st, hashB) {
+		t.Errorf("held hash B deleted (HoldProvider live-set leak); want retained")
 	}
-	if _, err := rs.Get(ctx, hashC); err == nil {
+	if chunkOnRemote(t, st, hashC) {
 		t.Errorf("unheld orphan C should have been swept")
 	}
 }
@@ -1066,22 +1086,19 @@ func TestGCMarkSweep_SnapshotHoldProvider(t *testing.T) {
 // from HeldHashes aborts the run via the mark fail-closed path — sweep does
 // NOT execute, and the orphan that would have been deleted stays put.
 func TestGCMarkSweep_HoldProvider_ErrorFailsClosed(t *testing.T) {
-	ctx := t.Context()
-	rs := &deleteCountingRemote{inner: remotememory.New()}
+	rs := &blockDeleteCountingRemote{Store: remotememory.New()}
 	defer func() { _ = rs.Close() }()
-
-	rs.inner.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
 	putBlock(t, st, "file-live/0", hashFromString("hp-live"))
 
 	orphanHash := hashFromString("hp-orphan")
-	writeCASObject(t, ctx, rs, orphanHash, []byte("orphan"))
+	seedRemoteChunk(t, st, rs, orphanHash)
 
 	provider := stubErrHoldProvider{err: errors.New("simulated hold failure")}
 
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot:  t.TempDir(),
 		GracePeriod:  time.Minute,
 		HoldProvider: provider,
@@ -1097,25 +1114,24 @@ func TestGCMarkSweep_HoldProvider_ErrorFailsClosed(t *testing.T) {
 		t.Errorf("ObjectsSwept=%d want 0 (sweep must not run)", stats.ObjectsSwept)
 	}
 	if rs.deletes.Load() != 0 {
-		t.Errorf("Delete invoked %d times, want 0 (sweep must not run)", rs.deletes.Load())
+		t.Errorf("DeleteBlock invoked %d times, want 0 (sweep must not run)", rs.deletes.Load())
 	}
-	if _, err := rs.inner.Get(ctx, orphanHash); err != nil {
-		t.Errorf("orphan deleted despite mark fail-closed: %v", err)
+	if !chunkOnRemote(t, st, orphanHash) {
+		t.Errorf("orphan reclaimed despite mark fail-closed")
 	}
 }
 
 // TestGCMarkSweep_LastRunJSON (behavior 8): after a successful run
 // <gcStateRoot>/last-run.json exists and parses as GCRunSummary.
 func TestGCMarkSweep_LastRunJSON(t *testing.T) {
-	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	rec.addShare("share-empty")
+	st := rec.addShare("share-empty")
 
 	root := t.TempDir()
-	stats := CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: root})
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: root})
 	if stats.ErrorCount != 0 {
 		t.Fatalf("ErrorCount = %d, FirstErrors=%v", stats.ErrorCount, stats.FirstErrors)
 	}
@@ -1150,13 +1166,12 @@ func TestGCMarkSweep_StaleDirCleanup(t *testing.T) {
 		t.Fatalf("flag missing pre-run: %v", err)
 	}
 
-	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	rec.addShare("share-empty")
-	_ = CollectGarbage(ctx, rs, rec, &Options{GCStateRoot: root})
+	st := rec.addShare("share-empty")
+	_ = collectGarbageBlocks(t, rec, st, rs, &Options{GCStateRoot: root})
 
 	if _, err := os.Stat(filepath.Join(root, "stale-prior-run")); !os.IsNotExist(err) {
 		t.Errorf("stale dir not cleaned at run start: stat err=%v", err)
@@ -1185,89 +1200,32 @@ func (s *storeWithFailingEnum) EnumerateFileChunks(_ context.Context, _ func(blo
 	return s.err
 }
 
-// prefixDeleteFailerRemote wraps a memory store and returns an error from
-// Delete when the CAS key derived from hash starts with failPrefix. Post-
-// Phase-17 the engine uses RemoteStore.Walk + Delete; the failure
-// predicate keys off the rendered CAS key shape (cas/XX/YY/...).
-type prefixDeleteFailerRemote struct {
-	inner      *remotememory.Store
-	failPrefix string
+// blockDeleteFailerRemote wraps the memory remote and fails DeleteBlock for
+// block IDs carrying the given prefix. Used by the continue+capture sweep
+// test: one poisoned block must not stop the sweep from reclaiming others.
+type blockDeleteFailerRemote struct {
+	*remotememory.Store
+	failIDPrefix string
 }
 
-func (p *prefixDeleteFailerRemote) Put(ctx context.Context, h block.ContentHash, d []byte) error {
-	return p.inner.Put(ctx, h, d)
-}
-func (p *prefixDeleteFailerRemote) Get(ctx context.Context, h block.ContentHash) ([]byte, error) {
-	return p.inner.Get(ctx, h)
-}
-func (p *prefixDeleteFailerRemote) GetRange(ctx context.Context, h block.ContentHash, o, l int64) ([]byte, error) {
-	return p.inner.GetRange(ctx, h, o, l)
-}
-func (p *prefixDeleteFailerRemote) Delete(ctx context.Context, h block.ContentHash) error {
-	if strings.HasPrefix(block.FormatCASKey(h), p.failPrefix) {
-		return fmt.Errorf("synthetic delete failure for prefix %q", p.failPrefix)
+func (p *blockDeleteFailerRemote) DeleteBlock(ctx context.Context, blockID string) error {
+	if strings.HasPrefix(blockID, p.failIDPrefix) {
+		return fmt.Errorf("synthetic delete failure for block %q", blockID)
 	}
-	return p.inner.Delete(ctx, h)
+	return p.Store.DeleteBlock(ctx, blockID)
 }
-func (p *prefixDeleteFailerRemote) Has(ctx context.Context, h block.ContentHash) (bool, error) {
-	return p.inner.Has(ctx, h)
-}
-func (p *prefixDeleteFailerRemote) Head(ctx context.Context, h block.ContentHash) (block.Meta, error) {
-	return p.inner.Head(ctx, h)
-}
-func (p *prefixDeleteFailerRemote) Walk(ctx context.Context, fn func(block.ContentHash, block.Meta) error) error {
-	return p.inner.Walk(ctx, fn)
-}
-func (p *prefixDeleteFailerRemote) ReadBlockVerified(ctx context.Context, h, exp block.ContentHash) ([]byte, error) {
-	return p.inner.ReadBlockVerified(ctx, h, exp)
-}
-func (p *prefixDeleteFailerRemote) HealthCheck(ctx context.Context) error {
-	return p.inner.HealthCheck(ctx)
-}
-func (p *prefixDeleteFailerRemote) Healthcheck(ctx context.Context) health.Report {
-	return p.inner.Healthcheck(ctx)
-}
-func (p *prefixDeleteFailerRemote) Close() error { return p.inner.Close() }
 
-// deleteCountingRemote wraps a memory store and counts Delete calls.
-// Used to assert that the sweep does NOT execute on mark failure.
-type deleteCountingRemote struct {
-	inner   *remotememory.Store
+// blockDeleteCountingRemote wraps the memory remote and counts DeleteBlock
+// calls. Used to assert that the sweep does NOT execute on mark failure.
+type blockDeleteCountingRemote struct {
+	*remotememory.Store
 	deletes atomic.Int64
 }
 
-func (d *deleteCountingRemote) Put(ctx context.Context, h block.ContentHash, b []byte) error {
-	return d.inner.Put(ctx, h, b)
-}
-func (d *deleteCountingRemote) Get(ctx context.Context, h block.ContentHash) ([]byte, error) {
-	return d.inner.Get(ctx, h)
-}
-func (d *deleteCountingRemote) GetRange(ctx context.Context, h block.ContentHash, o, l int64) ([]byte, error) {
-	return d.inner.GetRange(ctx, h, o, l)
-}
-func (d *deleteCountingRemote) Delete(ctx context.Context, h block.ContentHash) error {
+func (d *blockDeleteCountingRemote) DeleteBlock(ctx context.Context, blockID string) error {
 	d.deletes.Add(1)
-	return d.inner.Delete(ctx, h)
+	return d.Store.DeleteBlock(ctx, blockID)
 }
-func (d *deleteCountingRemote) Has(ctx context.Context, h block.ContentHash) (bool, error) {
-	return d.inner.Has(ctx, h)
-}
-func (d *deleteCountingRemote) Head(ctx context.Context, h block.ContentHash) (block.Meta, error) {
-	return d.inner.Head(ctx, h)
-}
-func (d *deleteCountingRemote) Walk(ctx context.Context, fn func(block.ContentHash, block.Meta) error) error {
-	return d.inner.Walk(ctx, fn)
-}
-func (d *deleteCountingRemote) ReadBlockVerified(ctx context.Context, h, exp block.ContentHash) ([]byte, error) {
-	return d.inner.ReadBlockVerified(ctx, h, exp)
-}
-func (d *deleteCountingRemote) HealthCheck(ctx context.Context) error {
-	return d.inner.HealthCheck(ctx)
-}
-func (d *deleteCountingRemote) Healthcheck(ctx context.Context) health.Report {
-	return d.inner.Healthcheck(ctx)
-}
-func (d *deleteCountingRemote) Close() error { return d.inner.Close() }
 
 // TestClassifyGCError_DiversifiesByVerb: the
 // classifier strips the high-cardinality path/key tail from the verb
@@ -1337,37 +1295,25 @@ func TestClassifyGCError_DiversifiesByVerb(t *testing.T) {
 // distinct error MUST land in FirstErrors instead of being shadowed by
 // the homogeneous burst.
 func TestGCMarkSweep_FirstErrorsDiversifyAcrossClasses(t *testing.T) {
-	ctx := t.Context()
 	inner := remotememory.New()
 	defer func() { _ = inner.Close() }()
 
-	// Inject many old orphans across many prefixes so List never errors
-	// (we'll cover the homogeneous case via DeleteBlock failing).
-	inner.SetNowFnForTest(func() time.Time { return time.Now().Add(-2 * time.Hour) })
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-empty")
 
-	// Seed 20 orphans whose hashes hit the same "ab" prefix so
-	// DeleteBlock fires for each. The wrapper makes them all fail
-	// identically.
+	// Seed 20 orphans whose hashes land in the failing "blk-ab" block-ID
+	// shard so DeleteBlock fires for each and they all fail identically.
 	for i := 0; i < 20; i++ {
 		h := hashFromString(fmt.Sprintf("ab-orphan-%d", i))
-		// Force "ab/" prefix in the CAS key to land in the failing shard.
-		h[0] = 0xab
-		writeCASObject(t, ctx, inner, h, []byte("X"))
+		h[0] = 0xab // force the "blk-ab..." block-ID prefix
+		seedRemoteChunk(t, st, inner, h)
 	}
-	// Plus one orphan in a non-failing prefix that we will cause to
-	// produce a distinct error class via gcstate-has injection. Easier
-	// path: fail Deletes in two distinct classes by stacking two
-	// wrappers — but the simpler observation is enough: the existing
-	// error path captures the first occurrence per class. Here we just
-	// assert that with 20 identical "delete cas/ab/...: ..." failures
-	// FirstErrors has exactly ONE entry (collapsed by class) and
+	// With 20 identical "block-reclaim <hash>: ... delete block ..." failures
+	// FirstErrors must hold exactly ONE entry (collapsed by class) while
 	// ErrorCount reflects the full count.
-	rs := &prefixDeleteFailerRemote{inner: inner, failPrefix: "cas/ab/"}
+	rs := &blockDeleteFailerRemote{Store: inner, failIDPrefix: "blk-ab"}
 
-	rec := newGCMSReconciler()
-	rec.addShare("share-empty")
-
-	stats := CollectGarbage(ctx, rs, rec, &Options{
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
 		GCStateRoot: t.TempDir(),
 		GracePeriod: time.Minute,
 	})
@@ -1394,7 +1340,6 @@ func TestGCMarkSweep_ConcurrentRunsAgainstSharedRoot(t *testing.T) {
 
 	// Each goroutine gets its own remote + reconciler so the assertions
 	// are simple per-run. Sharing the GCStateRoot is the contended axis.
-	ctx := t.Context()
 	var wg sync.WaitGroup
 	errs := make([]error, goroutines)
 	stats := make([]*GCStats, goroutines)
@@ -1415,10 +1360,10 @@ func TestGCMarkSweep_ConcurrentRunsAgainstSharedRoot(t *testing.T) {
 			liveHash := hashFromString(fmt.Sprintf("live-%d", idx))
 			orphanHash := hashFromString(fmt.Sprintf("orphan-%d", idx))
 			putBlock(t, st, fmt.Sprintf("file-%d/0", idx), liveHash)
-			writeCASObject(t, ctx, rs, liveHash, []byte("L"))
-			writeCASObject(t, ctx, rs, orphanHash, []byte("O"))
+			seedRemoteChunk(t, st, rs, liveHash)
+			seedRemoteChunk(t, st, rs, orphanHash)
 
-			s := CollectGarbage(ctx, rs, rec, &Options{
+			s := collectGarbageBlocks(t, rec, st, rs, &Options{
 				GCStateRoot: root,
 				GracePeriod: time.Nanosecond, // make orphan eligible immediately
 			})
@@ -1474,16 +1419,16 @@ func mustHashWithPrefix(t *testing.T, hexPrefix string) block.ContentHash {
 }
 
 // TestGCMarkSweep_ClearsSyncedMarkerForSweptHash proves the remote sweep clears
-// the synced marker for every hash it deletes, keeping the synced set a strict
+// the synced marker for every chunk it reclaims, keeping the synced set a strict
 // subset of remote contents. Without it, ListUnsynced skips a swept hash forever
-// and a later snapshot's durability verify fails on a block that never re-uploads
-// (#1433). A surviving live block keeps its marker.
+// and a later snapshot's durability verify fails on a chunk that never re-uploads
+// (#1433). A surviving live chunk keeps its marker. Unlike
+// TestGCIndexSweep_DeletesOrphansWithoutWalk (fake index), this runs against the
+// real metadata store's marker index.
 func TestGCMarkSweep_ClearsSyncedMarkerForSweptHash(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
-	old := time.Now().Add(-2 * time.Hour)
-	rs.SetNowFnForTest(func() time.Time { return old })
 
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
@@ -1491,37 +1436,27 @@ func TestGCMarkSweep_ClearsSyncedMarkerForSweptHash(t *testing.T) {
 	live := hashFromString("live-keep")
 	orphan := hashFromString("orphan-sweep")
 	putBlock(t, st, "file-live/0", live)
-	writeCASObject(t, ctx, rs, live, []byte("live-data"))
-	writeCASObject(t, ctx, rs, orphan, []byte("orphan-data"))
+	seedRemoteChunk(t, st, rs, live)
+	seedRemoteChunk(t, st, rs, orphan)
 
-	synced := newRecordingSyncedHashStore()
-	synced.markSyncedForTest(live)
-	synced.markSyncedForTest(orphan)
-
-	stats := CollectGarbage(ctx, rs, rec, &Options{
-		GCStateRoot:     t.TempDir(),
-		GracePeriod:     time.Minute,
-		SyncedHashIndex: synced,
-		// FullScan: this case exercises the namespace-Walk sweep's marker-clear
-		// (the remote object is backdated past grace; the synced markers are
-		// fresh). The index sweep's marker-clear is covered by
-		// TestGCIndexSweep_DeletesOrphansWithoutWalk.
-		FullScan: true,
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
+		GCStateRoot: t.TempDir(),
+		GracePeriod: time.Minute,
 	})
 	if stats.ObjectsSwept != 1 {
-		t.Fatalf("ObjectsSwept = %d, want 1", stats.ObjectsSwept)
+		t.Fatalf("ObjectsSwept = %d, want 1 (FirstErrors=%v)", stats.ObjectsSwept, stats.FirstErrors)
 	}
 
 	// Swept orphan: marker cleared so it can re-upload if it reappears live.
-	if ok, _ := synced.IsSynced(ctx, orphan); ok {
+	if ok, _ := st.IsSynced(ctx, orphan); ok {
 		t.Errorf("swept orphan still marked synced; ListUnsynced would skip it forever (#1433)")
 	}
-	// Live block: still on remote AND still synced (marker untouched).
-	if ok, _ := synced.IsSynced(ctx, live); !ok {
-		t.Errorf("live block's synced marker wrongly cleared")
+	// Live chunk: still on remote AND still synced (marker untouched).
+	if ok, _ := st.IsSynced(ctx, live); !ok {
+		t.Errorf("live chunk's synced marker wrongly cleared")
 	}
-	if _, err := rs.Get(ctx, live); err != nil {
-		t.Errorf("live block deleted: %v", err)
+	if !chunkOnRemote(t, st, live) {
+		t.Errorf("live chunk reclaimed")
 	}
 }
 

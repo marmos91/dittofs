@@ -542,9 +542,9 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 //     step 2 has serialized us against all pre-delete writers/rollups
 //     so it is safe to allow fresh recreates here.
 //
-// Orphan content-addressed chunks under blocks/{hh}/{hh}/{hex} are NOT
-// removed here; they are swept by 's mark-sweep GC. This is a
-// known and documented limitation (10-CONTEXT.md).
+// Orphan content-addressed chunks in the log-blob substrate are NOT
+// removed here; they are swept by the mark-sweep GC. This is a
+// known and documented limitation.
 func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error {
 	if bc.isClosed() {
 		return ErrStoreClosed
@@ -754,7 +754,7 @@ func isTransientUnlinkError(err error) bool {
 //
 // explicitly accepts that the truncation boundary is in-memory only
 // this phase. Persistent truncate across crash is
-// when `[]BlockRef` carries per-chunk size.
+// when `[]ChunkRef` carries per-chunk size.
 func (bc *FSStore) TruncateAppendLog(_ context.Context, payloadID string, newSize uint64) error {
 	if bc.isClosed() {
 		return ErrStoreClosed

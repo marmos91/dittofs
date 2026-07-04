@@ -10,18 +10,17 @@ import (
 )
 
 var (
-	bsWorkload       string
-	bsOps            int
-	bsBlockSize      int
-	bsWorkingSet     int
-	bsWorkers        int
-	bsSeed           uint64
-	bsRemote         string
-	bsGCGarbageRatio float64
-	bsFullProfiles   bool
-	bsPhase          string
-	bsReplay         string
-	bsMix            string
+	bsWorkload     string
+	bsOps          int
+	bsBlockSize    int
+	bsWorkingSet   int
+	bsWorkers      int
+	bsSeed         uint64
+	bsRemote       string
+	bsFullProfiles bool
+	bsPhase        string
+	bsReplay       string
+	bsMix          string
 )
 
 var blockstoreCmd = &cobra.Command{
@@ -33,7 +32,7 @@ Syncer and drives one of:
   mixed-ops-storm (concurrent WRITE/READ/LIST/DELETE; use --workers, --mix)
   concurrent-small-write | concurrent-small-read (4-64 KiB, --workers)
   concurrent-big-write   | concurrent-big-read   (64-256 MiB, --workers)
-  walk | delete | gc | raw-s3-put
+  walk | delete | raw-s3-put
 
 Captures wall-clock, throughput, and CPU + heap + goroutine pprof to
 <profile-dir>/blockstore/[<phase>/]<workload>-<timestamp>/. Add
@@ -54,7 +53,6 @@ func init() {
 	flags.Uint64Var(&bsSeed, "seed", 1, "PRNG seed for randomized workloads")
 	flags.IntVar(&bsWorkers, "workers", 1, "concurrent worker goroutines (mixed-ops-storm only)")
 	flags.StringVar(&bsRemote, "remote", bsbench.RemoteMemory, "remote backend: memory | s3")
-	flags.Float64Var(&bsGCGarbageRatio, "gc-garbage-ratio", bsbench.DefaultGCGarbage, "fraction of seeded chunks left unreferenced for the gc workload")
 	flags.BoolVar(&bsFullProfiles, "full-profiles", false, "also capture mutex + block profiles (enables runtime mutex/block profilers; adds overhead)")
 	flags.StringVar(&bsPhase, "phase", "", "optional capture phase subdir under <profile-dir>/blockstore/ (e.g. baseline | post-fix)")
 	flags.StringVar(&bsReplay, "replay", "", "replay a recorded run: load workload params from <dir>/seed.txt (overrides other flags except --phase/--profile-dir)")
@@ -107,8 +105,6 @@ func runBlockstore(cmd *cobra.Command, _ []string) error {
 	switch opts.Workload {
 	case bsbench.WorkloadWalk, bsbench.WorkloadDelete:
 		return runLocalWorkload(ctx, cmd, opts, tmpDir)
-	case bsbench.WorkloadGC:
-		return runGCWorkload(ctx, cmd, opts)
 	case bsbench.WorkloadRawS3Put:
 		return runRawS3Workload(ctx, cmd, opts)
 	case bsbench.WorkloadMixedOpStorm:
@@ -263,33 +259,6 @@ func runLocalWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts
 	return nil
 }
 
-func runGCWorkload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts) error {
-	remoteStore, remoteClose, err := bsbench.SetupRemote(ctx, opts)
-	if err != nil {
-		return err
-	}
-	defer remoteClose()
-
-	sess, err := startProfileSession(opts.ProfileDir, "blockstore", bsPhase, opts.Workload, bsFullProfiles)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = sess.stop() }()
-	if err := sess.writeSeed(opts); err != nil {
-		return err
-	}
-
-	res, err := bsbench.RunGC(ctx, remoteStore, opts, bsGCGarbageRatio)
-	if stopErr := sess.stop(); err == nil {
-		err = stopErr
-	}
-	if err != nil {
-		return err
-	}
-	printResult(cmd, opts, res, sess.dir, false)
-	return nil
-}
-
 func runRawS3Workload(ctx context.Context, cmd *cobra.Command, opts bsbench.Opts) error {
 	remoteStore, remoteClose, err := bsbench.SetupRemote(ctx, opts)
 	if err != nil {
@@ -336,7 +305,7 @@ func resolveBlockSize(workload string, requested int) int {
 // followed by the engine stats line. Matches the legacy
 // cmd/blockstore-perf format byte for byte so downstream scrapers
 // keep working: bytes_per_sec is omitted when res.Bytes == 0 (walk /
-// delete / gc), and the stats line is emitted only for engine-backed
+// delete), and the stats line is emitted only for engine-backed
 // workloads. The future --output-format=json switch will be added
 // here.
 func printResult(cmd *cobra.Command, opts bsbench.Opts, res bsbench.Result, profDir string, withStats bool) {

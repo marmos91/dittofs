@@ -103,7 +103,7 @@ func (s *MemoryStore) SetChunkEmitter(emit func(payloadID string, chunkStart uin
 // the rollup-persisted FileChunk manifest. Implemented to satisfy
 // [local.ChunkLifecycleHooks] so engine.New can wire all three hooks
 // through a single named-interface assertion.
-func (s *MemoryStore) SetObjectIDPersister(_ func(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error) {
+func (s *MemoryStore) SetObjectIDPersister(_ func(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error) {
 }
 
 // SetOnChunkComplete is a no-op on MemoryStore. MemoryStore's writes

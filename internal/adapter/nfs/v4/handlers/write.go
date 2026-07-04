@@ -247,7 +247,7 @@ func (h *Handler) handleWrite(ctx *types.CompoundContext, reader io.Reader) *typ
 			"client", ctx.ClientAddr)
 	}
 
-	// Routed through common.WriteToBlockStore so any future []BlockRef
+	// Routed through common.WriteToBlockStore so any future []ChunkRef
 	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(ctx.Context, blockStore, intent.PayloadID, data, offset)
 	if err != nil {

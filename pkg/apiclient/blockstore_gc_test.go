@@ -85,7 +85,7 @@ func TestGetBlockStoreGCJob_RoundTrip(t *testing.T) {
 				ObjectsSwept:     3,
 				BytesFreed:       4096,
 				DryRun:           true,
-				DryRunCandidates: []string{"cas/aa/bb/abc"},
+				DryRunCandidates: []string{"blocks/1f2e3d4c"},
 			},
 		})
 	}))
@@ -98,7 +98,7 @@ func TestGetBlockStoreGCJob_RoundTrip(t *testing.T) {
 	assert.Equal(t, "done", got.State)
 	assert.Equal(t, int64(3), got.ObjectsSwept)
 	require.NotNil(t, got.Stats)
-	assert.Equal(t, []string{"cas/aa/bb/abc"}, got.Stats.DryRunCandidates)
+	assert.Equal(t, []string{"blocks/1f2e3d4c"}, got.Stats.DryRunCandidates)
 }
 
 // TestBlockStoreGCStatus_RoundTrip verifies the GC-status read returns

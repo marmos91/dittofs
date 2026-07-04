@@ -65,14 +65,14 @@ type Deps interface {
 	// EnabledTrashShares lists the shares with trash enabled.
 	EnabledTrashShares() []string
 	// FreeBlocks frees the CAS blocks for a permanently-deleted file (the
-	// payloadID and BlockRef list RemoveFile returned). Implemented by the
+	// payloadID and ChunkRef list RemoveFile returned). Implemented by the
 	// runtime via GetBlockStoreForHandle + blockStore.Delete. The reaper holds
 	// the file's blocks, so it threads them through directly; blockStore.Delete
 	// decrements each block's CAS RefCount so the GC can reclaim now-unreferenced
 	// chunks. (Callers without the manifest may pass nil — Delete then resolves
 	// it from the payload's FileChunk rows; see #1433.) No-op when payloadID is
 	// empty.
-	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.BlockRef) error
+	FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.ChunkRef) error
 }
 
 // Service lists, restores, and empties per-share recycle bins.
@@ -531,7 +531,7 @@ func (s *Service) purgeEntry(ctx *metadata.AuthContext, svc *metadata.Service, s
 	if err != nil {
 		return err
 	}
-	// Pass the removed file's BlockRef list, not just its payloadID: Delete only
+	// Pass the removed file's ChunkRef list, not just its payloadID: Delete only
 	// decrements per-block CAS RefCounts (freeing now-unreferenced chunks for GC)
 	// when given the blocks. Dropping them here would leak the refcounts (#832).
 	return s.deps.FreeBlocks(ctx.Context, shareName, root, string(removed.PayloadID), removed.Blocks)

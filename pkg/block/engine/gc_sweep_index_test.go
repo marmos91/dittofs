@@ -1,35 +1,21 @@
 package engine
 
 import (
-	"context"
 	"testing"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// noWalkRemote fails the test if RemoteStore.Walk is called. The LIST-free
-// sweep must derive its candidates from the synced-hash index alone, never
-// from an S3 LIST — wrapping the remote this way turns that invariant into a
-// hard assertion.
-type noWalkRemote struct {
-	remote.RemoteStore
-	t *testing.T
-}
-
-func (n noWalkRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
-	n.t.Fatalf("LIST-free sweep must not call RemoteStore.Walk (S3 LIST)")
-	return nil
-}
-
 // TestGCIndexSweep_DeletesOrphansWithoutWalk proves the index-based remote
-// sweep (steady-state, FullScan false): it reclaims a past-grace orphan present
-// in the synced index but absent from the live set, WITHOUT walking the remote,
-// while preserving (a) a live block, (b) a within-grace freshly-synced block,
-// and (c) a legacy marker with no recorded timestamp (fail-closed). The swept
-// orphan's marker is cleared so it re-uploads if it reappears live (#1433).
+// sweep: it reclaims a past-grace orphan present in the synced index but
+// absent from the live set — through its packed block, never via a remote
+// LIST — while preserving (a) a live chunk, (b) a within-grace freshly-synced
+// chunk, and (c) a legacy marker with no recorded timestamp (fail-closed).
+// The swept orphan's marker is cleared so it re-uploads if it reappears live
+// (#1433).
 func TestGCIndexSweep_DeletesOrphansWithoutWalk(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
@@ -38,33 +24,25 @@ func TestGCIndexSweep_DeletesOrphansWithoutWalk(t *testing.T) {
 	rec := newGCMSReconciler()
 	st := rec.addShare("share-a")
 
-	now := time.Now()
 	live := hashFromString("lf-live-keep")      // in manifest → live
 	orphan := hashFromString("lf-orphan-sweep") // not in manifest, past grace → swept
 	fresh := hashFromString("lf-fresh-keep")    // not in manifest, within grace → kept
 	legacy := hashFromString("lf-legacy-keep")  // not in manifest, zero ts → fail-closed keep
 
-	// Only the live block has a manifest row (FileChunk).
+	// Only the live chunk has a manifest row (FileChunk).
 	putBlock(t, st, "file-live/0", live)
 	for _, h := range []block.ContentHash{live, orphan, fresh, legacy} {
-		writeCASObject(t, ctx, rs, h, []byte("data-"+h.String()[:8]))
+		seedRemoteChunk(t, st, rs, h) // marker backdated past grace
 	}
-
-	synced := newRecordingSyncedHashStore()
-	// live & orphan marked LONG ago (past grace) — only the live-set check can
-	// save the live one; grace cannot.
-	synced.markSyncedAtForTest(live, now.Add(-2*time.Hour))
-	synced.markSyncedAtForTest(orphan, now.Add(-2*time.Hour))
+	mm := st.(*metadatamemory.MemoryMetadataStore)
 	// fresh marked just now — within the grace window.
-	synced.markSyncedAtForTest(fresh, now)
+	mm.MarkSyncedAtForTest(fresh, time.Now())
 	// legacy marker carries no timestamp (pre-upgrade badger marker).
-	synced.markSyncedAtForTest(legacy, time.Time{})
+	mm.MarkSyncedAtForTest(legacy, time.Time{})
 
-	stats := CollectGarbage(ctx, noWalkRemote{RemoteStore: rs, t: t}, rec, &Options{
-		GCStateRoot:     t.TempDir(),
-		GracePeriod:     time.Hour,
-		SyncedHashIndex: synced,
-		// FullScan omitted (false) → steady-state index sweep.
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
+		GCStateRoot: t.TempDir(),
+		GracePeriod: time.Hour,
 	})
 
 	if stats.ErrorCount != 0 {
@@ -74,56 +52,91 @@ func TestGCIndexSweep_DeletesOrphansWithoutWalk(t *testing.T) {
 		t.Fatalf("ObjectsSwept = %d, want 1 (only the past-grace orphan)", stats.ObjectsSwept)
 	}
 
-	// Orphan: deleted from remote, marker cleared.
-	if _, err := rs.Get(ctx, orphan); err == nil {
-		t.Errorf("orphan still present on remote after LIST-free sweep")
+	// Orphan: block reclaimed, marker cleared.
+	if chunkOnRemote(t, st, orphan) {
+		t.Errorf("orphan still remote-reachable after index sweep")
 	}
-	if ok, _ := synced.IsSynced(ctx, orphan); ok {
+	if ok, _ := st.IsSynced(ctx, orphan); ok {
 		t.Errorf("swept orphan still marked synced; ListUnsynced would skip it forever (#1433)")
 	}
 
-	// Live, fresh, legacy: kept on remote with markers intact.
+	// Live, fresh, legacy: kept with markers intact.
 	for name, h := range map[string]block.ContentHash{"live": live, "fresh": fresh, "legacy": legacy} {
-		if _, err := rs.Get(ctx, h); err != nil {
-			t.Errorf("%s block wrongly deleted: %v", name, err)
+		if !chunkOnRemote(t, st, h) {
+			t.Errorf("%s chunk wrongly reclaimed", name)
 		}
-		if ok, _ := synced.IsSynced(ctx, h); !ok {
-			t.Errorf("%s block's synced marker wrongly cleared", name)
+		if ok, _ := st.IsSynced(ctx, h); !ok {
+			t.Errorf("%s chunk's synced marker wrongly cleared", name)
 		}
 	}
 }
 
 // TestGCIndexSweep_DryRunCountsWithoutDeleting verifies dry-run reports the
-// orphan as a candidate without deleting it or clearing its marker.
+// orphan as a candidate without reclaiming it or clearing its marker.
 func TestGCIndexSweep_DryRunCountsWithoutDeleting(t *testing.T) {
 	ctx := t.Context()
 	rs := remotememory.New()
 	defer func() { _ = rs.Close() }()
 
 	rec := newGCMSReconciler()
-	_ = rec.addShare("share-a")
+	st := rec.addShare("share-a")
 
 	orphan := hashFromString("lf-dryrun-orphan")
-	writeCASObject(t, ctx, rs, orphan, []byte("orphan-data"))
+	seedRemoteChunk(t, st, rs, orphan)
 
-	synced := newRecordingSyncedHashStore()
-	synced.markSyncedAtForTest(orphan, time.Now().Add(-2*time.Hour))
-
-	stats := CollectGarbage(ctx, noWalkRemote{RemoteStore: rs, t: t}, rec, &Options{
-		GCStateRoot:     t.TempDir(),
-		GracePeriod:     time.Hour,
-		SyncedHashIndex: synced,
-		DryRun:          true,
-		// FullScan omitted (false) → steady-state index sweep.
+	stats := collectGarbageBlocks(t, rec, st, rs, &Options{
+		GCStateRoot: t.TempDir(),
+		GracePeriod: time.Hour,
+		DryRun:      true,
 	})
 
 	if stats.ObjectsSwept != 1 {
 		t.Fatalf("dry-run ObjectsSwept = %d, want 1 (candidate count)", stats.ObjectsSwept)
 	}
-	if _, err := rs.Get(ctx, orphan); err != nil {
-		t.Errorf("dry-run deleted the orphan: %v", err)
+	if !chunkOnRemote(t, st, orphan) {
+		t.Errorf("dry-run reclaimed the orphan")
 	}
-	if ok, _ := synced.IsSynced(ctx, orphan); !ok {
+	if ok, _ := st.IsSynced(ctx, orphan); !ok {
 		t.Errorf("dry-run cleared the synced marker")
+	}
+}
+
+// TestGCIndexSweep_NoReclaimerFailsClosed proves the post-#1493 drift
+// handling: with no BlockReclaimer wired the sweep must record the condition
+// and keep both the marker and the dead chunk — it never guesses at a remote
+// key to delete.
+func TestGCIndexSweep_NoReclaimerFailsClosed(t *testing.T) {
+	ctx := t.Context()
+	rs := remotememory.New()
+	defer func() { _ = rs.Close() }()
+
+	rec := newGCMSReconciler()
+	st := rec.addShare("share-a")
+
+	orphan := hashFromString("lf-noreclaimer-orphan")
+	seedRemoteChunk(t, st, rs, orphan)
+
+	idx, ok := st.(SyncedHashIndex)
+	if !ok {
+		t.Fatalf("metadata store %T does not implement SyncedHashIndex", st)
+	}
+	stats := CollectGarbage(ctx, rec, &Options{
+		GCStateRoot:     t.TempDir(),
+		GracePeriod:     time.Minute,
+		SyncedHashIndex: idx,
+		// BlockReclaimer deliberately nil.
+	})
+
+	if stats.ErrorCount == 0 {
+		t.Fatalf("ErrorCount = 0, want > 0 (missing reclaimer is drift)")
+	}
+	if stats.ObjectsSwept != 0 {
+		t.Errorf("ObjectsSwept = %d, want 0 (nothing reclaimable without a reclaimer)", stats.ObjectsSwept)
+	}
+	if ok, _ := st.IsSynced(ctx, orphan); !ok {
+		t.Errorf("marker cleared despite fail-closed skip")
+	}
+	if !chunkOnRemote(t, st, orphan) {
+		t.Errorf("chunk reclaimed despite missing reclaimer")
 	}
 }

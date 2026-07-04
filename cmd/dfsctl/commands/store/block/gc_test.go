@@ -162,7 +162,7 @@ func TestGCCmd_DryRunFlag(t *testing.T) {
 		RunID:            "run-2",
 		DryRun:           true,
 		HashesMarked:     20,
-		DryRunCandidates: []string{"cas/aa/bb/abcdef", "cas/aa/cc/123456"},
+		DryRunCandidates: []string{"blocks/1f2e3d4c", "blocks/9a8b7c6d"},
 	}
 	withGCTestServer(t, s.URL)
 
@@ -180,7 +180,7 @@ func TestGCCmd_DryRunFlag(t *testing.T) {
 	if !s.lastDryRun {
 		t.Error("dry_run flag should be true on request body")
 	}
-	for _, frag := range []string{"Dry-run candidates", "cas/aa/bb/abcdef", "cas/aa/cc/123456"} {
+	for _, frag := range []string{"Dry-run candidates", "blocks/1f2e3d4c", "blocks/9a8b7c6d"} {
 		if !strings.Contains(out, frag) {
 			t.Errorf("stdout missing %q, got %q", frag, out)
 		}
@@ -199,7 +199,7 @@ func TestGCCmd_SweepErrorsExitNonZeroAcrossFormats(t *testing.T) {
 			s.gcStats = &engine.GCStats{
 				RunID:       "run-err",
 				ErrorCount:  2,
-				FirstErrors: []string{"delete cas/aa/bb: timeout"},
+				FirstErrors: []string{"delete blocks/1f2e3d4c: timeout"},
 			}
 			withGCTestServer(t, s.URL)
 			cmdutil.Flags.Output = format

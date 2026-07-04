@@ -13,10 +13,15 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/local/logblob"
 )
 
-// ensureSpace makes room for the given number of bytes by evicting CAS chunks
-// from the in-process LRU. Eviction order is least-recently-
-// used; the picked chunk file is unlinked from blocks/{hh}/{hh}/{hex} and
-// bc.diskUsed is decremented atomically.
+// ensureSpace enforces the local disk-capacity gate for the given number of
+// bytes on the Put (read-through staging) path. When over capacity it attempts
+// to free space via the in-process LRU (lruEvictOne unlinks the
+// least-recently-used evictable chunk and decrements bc.diskUsed); when no
+// evictable candidate remains it applies backpressure or returns ErrDiskFull as
+// described below. Note: with the per-chunk cas-file writer removed, the LRU is
+// not populated in steady state, so eviction frees nothing until blob-level
+// eviction is wired in — the capacity gate itself (diskUsed vs maxDisk) still
+// applies.
 //
 // Critical invariant (LSL-08): the eviction path must NOT consult the
 // FileChunkStore (the engine-level metadata store). On the write hot
@@ -74,6 +79,9 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	var (
 		engaged    bool
 		stallStart time.Time
+		// rotatedUnderPressure caps active-blob sealing at one Rotate per
+		// ensureSpace call (see the blobEvictOne fall-through below).
+		rotatedUnderPressure bool
 	)
 	release := func(reason string) {
 		if !engaged {
@@ -111,6 +119,23 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 				continue
 			} else if berr != nil && !errors.Is(berr, errLRUEmpty) {
 				return fmt.Errorf("ensureSpace: %w", berr)
+			}
+
+			// blobEvictOne found no sealed, fully-synced blob to reclaim, yet
+			// log-blob bytes remain — they are sitting in the still-open active
+			// blob. This is the read-through cache case: a small maxDisk fills
+			// one active blob long before it reaches the roll threshold, so
+			// blobEvictOne (sealed-only) can never touch it. Seal it via Rotate
+			// so the next blobEvictOne can reclaim it. Capped at one rotation
+			// per call: an active blob of *unsynced* bytes is still refused by
+			// blobEvictOne and must fall through to backpressure below rather
+			// than spin out empty blobs. (#1497 replaces this whole-blob seal
+			// with finer-grained log-blob compaction.)
+			if !rotatedUnderPressure && bc.logBlob != nil && bc.logBlobDiskUsed.Load() > 0 {
+				if rerr := bc.logBlob.Rotate(); rerr == nil {
+					rotatedUnderPressure = true
+					continue
+				}
 			}
 
 			// No evictable CAS chunk or sealed blob: every remaining byte is

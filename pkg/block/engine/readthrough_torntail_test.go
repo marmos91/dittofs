@@ -61,13 +61,12 @@ func TestReadThrough_TornTail_RecoversFromRemote(t *testing.T) {
 	hash := block.ContentHash(blake3.Sum256(data))
 	payloadID := "p-recover"
 
-	// Seed the remote with the authoritative copy and mark the chunk synced
-	// (standalone locator) — exactly what the read-through path does after a
-	// remote fetch (markFetchedSynced).
-	if err := remoteRS.Put(ctx, hash, data); err != nil {
-		t.Fatalf("remote Put: %v", err)
-	}
-	if err := ms.MarkSynced(ctx, hash, block.ChunkLocator{}); err != nil {
+	// Seed the remote with the authoritative copy as a packed block and mark
+	// the chunk synced with the block locator — exactly the remote-durable
+	// state the carver commits (post-#1493 every synced chunk is
+	// block-resident).
+	loc := putChunkBlock(t, ctx, remoteRS, "blk-recover", data)
+	if err := ms.MarkSynced(ctx, hash, loc); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
@@ -110,7 +109,7 @@ func TestReadThrough_TornTail_RecoversFromRemote(t *testing.T) {
 	if !bytes.Equal(dest, data) {
 		t.Fatalf("post-tear read not byte-identical to remote copy (zeros/garbage?): recovered %d bytes", len(dest))
 	}
-	if got := remoteRS.readVerifiedCount.Load(); got == 0 {
+	if got := remoteRS.readChunkCount.Load(); got == 0 {
 		t.Fatal("recovery did not consult the remote store — read did not self-heal from remote")
 	}
 }

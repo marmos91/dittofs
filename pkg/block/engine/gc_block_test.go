@@ -55,10 +55,10 @@ func newBlockGCReclaimer(st metadata.Store, rbs remote.RemoteBlockStore) *BlockG
 // Unit tests: BlockGCReclaimer.ReclaimDeadChunk
 // ---------------------------------------------------------------------------
 
-// TestBlockReclaimer_StandalonePassthrough proves a standalone synced hash (no
-// block locator) is NOT handled — the sweep must delete its cas/<hash> object as
-// before. No block bookkeeping is touched.
-func TestBlockReclaimer_StandalonePassthrough(t *testing.T) {
+// TestBlockReclaimer_NoLocatorNotHandled proves a synced hash with no block
+// locator is NOT handled — post-#1493 the sweep treats that as metadata drift
+// and keeps the marker fail-closed. No block bookkeeping is touched.
+func TestBlockReclaimer_NoLocatorNotHandled(t *testing.T) {
 	ctx := t.Context()
 	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	rbs := remotememory.New()
@@ -74,10 +74,10 @@ func TestBlockReclaimer_StandalonePassthrough(t *testing.T) {
 		t.Fatalf("ReclaimDeadChunk: %v", err)
 	}
 	if handled {
-		t.Errorf("handled = true for a standalone hash; sweep must delete the CAS object instead")
+		t.Errorf("handled = true for a locator-less hash; the sweep must record drift instead")
 	}
 	if freed != 0 {
-		t.Errorf("bytesFreed = %d, want 0 for standalone passthrough", freed)
+		t.Errorf("bytesFreed = %d, want 0 for a locator-less hash", freed)
 	}
 }
 
@@ -206,12 +206,11 @@ func newBlockGCEnv(t *testing.T) *blockGCEnv {
 
 func (e *blockGCEnv) runGC(t *testing.T) *GCStats {
 	t.Helper()
-	return CollectGarbage(t.Context(), noWalkRemote{RemoteStore: e.rs, t: t}, e.rec, &Options{
+	return CollectGarbage(t.Context(), e.rec, &Options{
 		GCStateRoot:     t.TempDir(),
 		GracePeriod:     time.Hour,
 		SyncedHashIndex: e.st,
 		BlockReclaimer:  newBlockGCReclaimer(e.st, e.rs),
-		// FullScan omitted (false) → steady-state index sweep.
 	})
 }
 
@@ -321,30 +320,31 @@ func TestGCBlockSweep_PartialUnlinkLeavesIntact(t *testing.T) {
 	}
 }
 
-// TestGCBlockSweep_StandaloneStillDeletesCAS proves wiring a BlockReclaimer does
-// NOT change standalone CAS reclaim: a dead standalone synced hash is deleted
-// from the CAS namespace as before (the reclaimer reports not-handled).
-func TestGCBlockSweep_StandaloneStillDeletesCAS(t *testing.T) {
+// TestGCBlockSweep_LocatorlessMarkerFailsClosed proves the post-#1493 drift
+// handling in the sweep: a dead synced hash whose marker carries NO block
+// locator (post-migration this cannot legitimately exist) is recorded as an
+// error and its marker is KEPT — the sweep never issues a per-hash remote
+// delete.
+func TestGCBlockSweep_LocatorlessMarkerFailsClosed(t *testing.T) {
 	ctx := t.Context()
 	env := newBlockGCEnv(t)
 
 	h := hashFromString("standalone-dead")
-	writeCASObject(t, ctx, env.rs, h, []byte("standalone-bytes"))
 	if err := env.st.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 	env.st.MarkSyncedAtForTest(h, time.Now().Add(-2*time.Hour))
-	// No FileChunk row → not in the live set → orphan.
+	// No FileChunk row → not in the live set → dead, but locator-less.
 
 	stats := env.runGC(t)
-	if stats.ErrorCount != 0 {
-		t.Fatalf("ErrorCount = %d (%v)", stats.ErrorCount, stats.FirstErrors)
+	if stats.ErrorCount == 0 {
+		t.Fatalf("ErrorCount = 0, want > 0 (locator-less dead marker is drift)")
 	}
-	if stats.ObjectsSwept != 1 {
-		t.Fatalf("ObjectsSwept = %d, want 1", stats.ObjectsSwept)
+	if stats.ObjectsSwept != 0 {
+		t.Fatalf("ObjectsSwept = %d, want 0 (fail-closed keep)", stats.ObjectsSwept)
 	}
-	if _, err := env.rs.Get(ctx, h); err == nil {
-		t.Errorf("standalone CAS object not deleted with a BlockReclaimer wired")
+	if ok, _ := env.st.IsSynced(ctx, h); !ok {
+		t.Errorf("marker cleared despite fail-closed drift handling")
 	}
 }
 

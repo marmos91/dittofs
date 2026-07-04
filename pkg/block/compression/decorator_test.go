@@ -13,7 +13,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/blockstoretest"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 )
 
@@ -39,11 +38,11 @@ func TestConformance_LZ4(t *testing.T) {
 
 // --- savings (paired raw vs zstd vs lz4) --------------------------------
 
-// spyRemote wraps an inner RemoteStore and records the wire bytes
-// observed at Put, so the savings test can compare the compressed wire
-// size against the plaintext.
+// spyRemote wraps an inner memory store and records the wire bytes
+// observed at the legacy hash-keyed Put, so the savings test can compare the
+// compressed wire size against the plaintext.
 type spyRemote struct {
-	remote.RemoteStore
+	*remotememory.Store
 	mu       sync.Mutex
 	lastWire []byte
 }
@@ -52,7 +51,7 @@ func (s *spyRemote) Put(ctx context.Context, h block.ContentHash, data []byte) e
 	s.mu.Lock()
 	s.lastWire = append([]byte(nil), data...)
 	s.mu.Unlock()
-	return s.RemoteStore.Put(ctx, h, data)
+	return s.Store.Put(ctx, h, data)
 }
 
 func (s *spyRemote) wireLen() int {
@@ -110,11 +109,11 @@ func TestSavings_PairedRawZstdLZ4(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// raw baseline
-			rawSpy := &spyRemote{RemoteStore: remotememory.New()}
+			rawSpy := &spyRemote{Store: remotememory.New()}
 			rawHash := putThroughSpy(t, rawSpy, tc.payload)
 			rawWire := rawSpy.wireLen()
 
-			zstdSpy := &spyRemote{RemoteStore: remotememory.New()}
+			zstdSpy := &spyRemote{Store: remotememory.New()}
 			zstdDec, err := NewRemote(zstdSpy, CompressionPolicy{Algo: AlgoZstd})
 			if err != nil {
 				t.Fatalf("NewRemote zstd: %v", err)
@@ -122,7 +121,7 @@ func TestSavings_PairedRawZstdLZ4(t *testing.T) {
 			zstdHash := putAndGet(t, zstdDec, tc.payload)
 			zstdWire := zstdSpy.wireLen()
 
-			lz4Spy := &spyRemote{RemoteStore: remotememory.New()}
+			lz4Spy := &spyRemote{Store: remotememory.New()}
 			lz4Dec, err := NewRemote(lz4Spy, CompressionPolicy{Algo: AlgoLZ4})
 			if err != nil {
 				t.Fatalf("NewRemote lz4: %v", err)
@@ -182,47 +181,6 @@ func putThroughSpy(t *testing.T, spy *spyRemote, payload []byte) block.ContentHa
 	return h
 }
 
-// --- ReadBlockVerified --------------------------------------------------
-
-func TestReadBlockVerified_RoundTrip(t *testing.T) {
-	inner := remotememory.New()
-	d, err := NewRemote(inner, CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte("verify-me-please. "), 4096)
-	h := hashOf(payload)
-	if err := d.Put(context.Background(), h, payload); err != nil {
-		t.Fatal(err)
-	}
-	out, err := d.ReadBlockVerified(context.Background(), h, h)
-	if err != nil {
-		t.Fatalf("ReadBlockVerified: %v", err)
-	}
-	if !bytes.Equal(out, payload) {
-		t.Fatal("plaintext mismatch")
-	}
-}
-
-func TestReadBlockVerified_MismatchTrips(t *testing.T) {
-	inner := remotememory.New()
-	d, err := NewRemote(inner, CompressionPolicy{Algo: AlgoZstd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte("trip-me. "), 4096)
-	h := hashOf(payload)
-	if err := d.Put(context.Background(), h, payload); err != nil {
-		t.Fatal(err)
-	}
-	bogus := h
-	bogus[0] ^= 0xff
-	_, err = d.ReadBlockVerified(context.Background(), h, bogus)
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("err: got %v want wraps ErrCASContentMismatch", err)
-	}
-}
-
 // --- Head + Walk plaintext-size contract --------------------------------
 
 func TestHead_ReportsPlaintextSize(t *testing.T) {
@@ -264,11 +222,11 @@ func TestGetRange_InvalidLength(t *testing.T) {
 	}
 }
 
-// failingRangeStore wraps an inner RemoteStore and forces inner.GetRange
-// to return an error. Used to exercise the plaintext-size probe failure
-// path.
+// failingRangeStore wraps an inner memory store and forces the legacy
+// hash-keyed GetRange to return an error. Used to exercise the plaintext-size
+// probe failure path.
 type failingRangeStore struct {
-	remote.RemoteStore
+	*remotememory.Store
 }
 
 func (f *failingRangeStore) GetRange(ctx context.Context, hash block.ContentHash, offset, length int64) ([]byte, error) {
@@ -290,7 +248,7 @@ func TestHead_ProbeFailurePropagates(t *testing.T) {
 	if err := staging.Put(context.Background(), h, payload); err != nil {
 		t.Fatal(err)
 	}
-	d, err := NewRemote(&failingRangeStore{RemoteStore: inner}, CompressionPolicy{Algo: AlgoZstd})
+	d, err := NewRemote(&failingRangeStore{Store: inner}, CompressionPolicy{Algo: AlgoZstd})
 	if err != nil {
 		t.Fatal(err)
 	}

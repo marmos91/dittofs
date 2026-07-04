@@ -1,118 +1,61 @@
 # Block Store Migration Guide
 
-Older DittoFS servers stored block content under a path-indexed layout
-(`{payloadID}/block-{idx}`). Current servers (v0.16+) use a
-content-addressable (CAS) layout: file content is chunked with FastCDC,
-each chunk is hashed with BLAKE3, and chunks are stored under
-`blocks/{hh}/{hh}/{hex}` locally and `cas/{hh}/{hh}/{hex}` remotely.
+DittoFS has changed its on-disk/remote block layout twice:
 
-A v0.16+ server **refuses to start** against a store still on the older
-layout — its boot guard exits with a clear directive to run
-`dfs migrate-to-cas` first. This guide is the operator runbook for that
-offline migration.
+| Layout | Servers | Local | Remote |
+|--------|---------|-------|--------|
+| Path-indexed (`.blk`) | ≤ v0.15 | `{payloadID}/block-{idx}.blk` | per-block objects |
+| Standalone CAS | v0.16 – v0.21 | per-chunk files `blocks/{hh}/{hh}/{hex}` | per-chunk objects `cas/{hh}/{hh}/{hex}` |
+| Packed blocks | current | append-only log blobs (`blobs/`) | packed containers `blocks/<id>` |
 
-For the underlying design (BlockRef, ObjectID dedup, the CAS-only gate),
-see [ARCHITECTURE.md](../internals/architecture.md#migration--block-layout-routing).
+Current servers store file content as FastCDC chunks (BLAKE3-hashed,
+dedup-safe) packed into ~16 MiB block containers. What you need to do
+depends on the layout your data is on.
 
-## Why migrate
+## Standalone CAS (v0.16 – v0.21) → packed blocks: automatic
 
-- **CAS layout:** immutable, hash-keyed, dedup-safe across files and across
-  VMs that share a remote — typically 40–80% cross-VM dedup.
-- **Simpler GC:** a single mark-sweep over one hash-keyed namespace.
-- **Atomic per-share snapshots** (reference holds; see [SNAPSHOTS.md](snapshots.md)).
-- **Cost:** one offline maintenance window. Each share carries a
-  `block_layout` flag (`legacy` or `cas-only`); the migration flips it to
-  `cas-only` in the same step that deletes the last legacy keys, so the
-  engine never sees a half-migrated share.
+Nothing to run. On startup, each share's block store detects leftover
+standalone-CAS state — pre-flip per-chunk local files, remote `cas/`
+objects, or chunk locators that still point at standalone objects — and
+converts it **before the share starts serving**:
 
-## The tool
+1. Local per-chunk files are imported into the append-only log-blob tier
+   (BLAKE3-verified, deduplicated) and deleted.
+2. Standalone remote chunks are re-packed into `blocks/<id>` containers.
+   Each container's chunk locators and block record commit in a single
+   metadata transaction, so a crash can never leave a half-pointed block.
+3. The now-unreferenced `cas/` namespace is purged.
 
-`dfs migrate-to-cas` runs against the **stopped** server's on-disk storage
-root. It is part of the `dfs` server binary (not `dfsctl`).
+The migration is **idempotent and resumable**: if the process is killed
+mid-way, the next start picks up where it left off and converges. There is
+no flag, sentinel, or journal to manage. Expect the first start after an
+upgrade to take roughly (total standalone bytes ÷ remote throughput);
+chunks that are still cached locally are re-packed without downloading.
 
-```
-dfs migrate-to-cas [flags]
-```
+If the share's remote is unreachable at startup and standalone chunks
+remain, the server refuses to start that share (the data would be
+unreadable anyway — the read path no longer understands standalone
+objects). Restore connectivity and start again.
 
-| Flag | Required | Meaning |
-|------|----------|---------|
-| `--storage-dir <root>` | yes | Storage root; expects a `shares/<name>/blocks/` subtree per share. |
-| `--metadata-dir <path>` | yes | Path to the Badger metadata database directory (the `path` from the metadata store config). |
-| `--share <name>` | no | Scope the run to one share. Default: every share discovered under `<storage-dir>/shares/`. |
-| `--dry-run` | no | Walk + sample only; report file count, bytes, estimated dedup ratio, and ETA. Writes nothing. |
-| `--json` | no | Emit one JSON progress object per second to stdout (machine-parseable). |
-| `--max-disk <bytes>` | no | Per-share max-disk budget for the destination store (0 = unlimited). |
-| `--max-memory <bytes>` | no | Per-share max-memory budget for the destination store (0 = 256 MiB default). |
+## Path-indexed `.blk` (≤ v0.15): migrate with an older release first
 
-The tool is **idempotent and resumable**: a per-share journal at
-`<storage-dir>/shares/<name>/.dittofs-migrate-to-cas.state` lets a run
-resume after a crash or Ctrl-C without re-uploading already-migrated
-chunks. On success it writes `<storage-dir>/shares/<name>/.cas-migrated-v1`
-via atomic rename — the boot guard refuses to start the server until that
-sentinel exists (it exits with code 78 otherwise).
+The offline `dfs migrate-to-cas` tool shipped through **v0.21** and has
+been removed. A current server still refuses to start against a `.blk`
+layout (exit code 78) — but the directive now is:
 
-## Procedure
+1. Install dittofs v0.21 (or any v0.16–v0.21 release).
+2. Stop the server and run `dfs migrate-to-cas` per that release's
+   documentation (idempotent, resumable, per-share `.cas-migrated-v1`
+   sentinel on success).
+3. Upgrade to the current release. The automatic cas→blocks conversion
+   above finishes the job on first start.
 
-1. **Stop the server.** The migration rewrites the on-disk layout in place;
-   a concurrent server would race the rename and corrupt the store.
+## Verifying
 
-   ```bash
-   sudo systemctl stop dfs    # or: pkill -INT dfs
-   ```
+After the first post-upgrade start:
 
-2. **Estimate the work** with a dry run:
-
-   ```bash
-   dfs migrate-to-cas \
-     --storage-dir /var/lib/dittofs/storage \
-     --metadata-dir /var/lib/dittofs/metadata \
-     --share myshare \
-     --dry-run
-   ```
-
-   Multiply the reported upload bytes by your remote-store throughput to
-   size the maintenance window (add ~50% headroom).
-
-3. **Migrate.** Drop `--dry-run`; optionally scope to one share. Omit
-   `--share` to migrate every share under the storage root:
-
-   ```bash
-   dfs migrate-to-cas \
-     --storage-dir /var/lib/dittofs/storage \
-     --metadata-dir /var/lib/dittofs/metadata \
-     --share myshare
-   ```
-
-   For unattended runs, add `--json` and capture stdout for progress
-   monitoring.
-
-4. **Restart the server.** With the `.cas-migrated-v1` sentinel in place,
-   the boot guard passes:
-
-   ```bash
-   sudo systemctl start dfs
-   ```
-
-## Recovery
-
-- **Crash or Ctrl-C mid-migration.** Re-run the exact same command. The
-  journal makes the tool skip already-migrated chunks; it does not
-  re-upload them.
-- **Integrity-check failure.** The tool HEADs each uploaded chunk against
-  its expected BLAKE3 hash before cutover. A mismatch aborts the run before
-  any legacy key is deleted and before the `block_layout` flip — the share
-  stays on the old layout and is safe to retry. Inspect the failure log,
-  verify the remote object, then re-run.
-- **The server won't start (exit code 78).** The store still lacks the
-  `.cas-migrated-v1` sentinel for some share. Run `dfs migrate-to-cas`
-  (without `--share`) to migrate any remaining shares, then start the
-  server.
-
-## Pre-flight checklist
-
-- [ ] Confirm the server binary: `dfs --version`.
-- [ ] Stop the server.
-- [ ] Confirm remote credentials are valid (e.g. `aws s3 head-bucket --bucket NAME`).
-- [ ] Run `--dry-run` and size the maintenance window.
-- [ ] Confirm free space in each share's data dir for the journal.
-- [ ] Run the migration; restart the server.
+- The log line `cas→blocks migration complete` reports repacked chunk and
+  purged object counts (only printed when there was something to do).
+- The remote bucket/prefix should contain no keys under `cas/`.
+- Reads verify BLAKE3 end-to-end; any corruption introduced in transit
+  fails closed rather than returning wrong bytes.

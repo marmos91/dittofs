@@ -30,9 +30,9 @@ remote-store config matches the named share (cross-share aggregation).
 The sweep phase reclaims storage absent from the live set: it decrements
 the refcount of each dead chunk's enclosing packed block and, once a
 block holds no live chunks, deletes it from the remote and evicts its
-local copy. Legacy per-chunk cas/.../ objects (written before packed
-blocks) are also deleted when dead and older than the configured grace
-period (default 1h). The last-run.json summary is persisted under the
+local copy. Chunks must be dead and older than the configured grace
+period (default 1h) before their block is decremented. The
+last-run.json summary is persisted under the
 share's gc-state directory and can be inspected with:
 
   dfsctl store block gc-status <share>

@@ -128,7 +128,7 @@ var (
 // delegate to a metadata coordinator's PersistFileChunks. The
 // callback is optional; when nil, ObjectID compute still runs but
 // the persist step is skipped (local-only / no-engine fixtures).
-type ObjectIDPersister func(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error
+type ObjectIDPersister func(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error
 
 // FSStore is a two-tier (memory + disk) block store for file data.
 //
@@ -1121,7 +1121,7 @@ func NewFSStoreForMigration(baseDir string, maxDisk int64, fileChunkStore block.
 // cross-package type ceremony. The FSStoreOptions.ObjectIDPersister
 // constructor slot continues to accept the named type for in-package
 // callers.
-func (bc *FSStore) SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error) {
+func (bc *FSStore) SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error) {
 	bc.persisterMu.Lock()
 	defer bc.persisterMu.Unlock()
 	bc.objectIDPersister = p

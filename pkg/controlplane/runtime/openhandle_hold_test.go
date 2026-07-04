@@ -53,7 +53,7 @@ func newOpenHoldRuntime(t *testing.T, shareName string) (*Runtime, metadata.Stor
 
 // openHoldPutFile persists a file object with the supplied nlink, payload and
 // blocks, returning its handle.
-func openHoldPutFile(t *testing.T, store metadata.Store, shareName, path string, nlink uint32, payloadID string, blocks []block.BlockRef) metadata.FileHandle {
+func openHoldPutFile(t *testing.T, store metadata.Store, shareName, path string, nlink uint32, payloadID string, blocks []block.ChunkRef) metadata.FileHandle {
 	t.Helper()
 	ctx := context.Background()
 	h, err := store.GenerateHandle(ctx, shareName, path)
@@ -99,7 +99,7 @@ func heldHashes(t *testing.T, rt *Runtime, shareName string) map[block.ContentHa
 func TestOpenHandleHold_OpenUnlinkedFileHeld(t *testing.T) {
 	rt, store := newOpenHoldRuntime(t, "share")
 	h1, h2 := hashAll(0x11), hashAll(0x22)
-	fh := openHoldPutFile(t, store, "share", "/scratch.bin", 0, "p1", []block.BlockRef{
+	fh := openHoldPutFile(t, store, "share", "/scratch.bin", 0, "p1", []block.ChunkRef{
 		{Hash: h1, Offset: 0, Size: 128},
 		{Hash: h2, Offset: 128, Size: 128},
 	})
@@ -121,7 +121,7 @@ func TestOpenHandleHold_OpenUnlinkedFileHeld(t *testing.T) {
 // re-emitted by the hold: their hashes are already in the store live set.
 func TestOpenHandleHold_LinkedFileSkipped(t *testing.T) {
 	rt, store := newOpenHoldRuntime(t, "share")
-	fh := openHoldPutFile(t, store, "share", "/linked.bin", 1, "p1", []block.BlockRef{
+	fh := openHoldPutFile(t, store, "share", "/linked.bin", 1, "p1", []block.ChunkRef{
 		{Hash: hashAll(0x33), Offset: 0, Size: 64},
 	})
 	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
@@ -148,7 +148,7 @@ func TestOpenHandleHold_StaleAndForeignHandlesSkipped(t *testing.T) {
 
 	// Open-unlinked file in a share outside the provider's scope contributes
 	// nothing to this share's pass.
-	fh := openHoldPutFile(t, store, "share", "/scoped.bin", 0, "p2", []block.BlockRef{
+	fh := openHoldPutFile(t, store, "share", "/scoped.bin", 0, "p2", []block.ChunkRef{
 		{Hash: hashAll(0x44), Offset: 0, Size: 64},
 	})
 	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
@@ -178,7 +178,7 @@ func TestOpenHandleHold_EnumeratorErrorFailsClosed(t *testing.T) {
 func TestOpenHandleHold_CanceledContextStopsEarly(t *testing.T) {
 	rt, store := newOpenHoldRuntime(t, "share")
 	// An open-unlinked file that would otherwise be held.
-	fh := openHoldPutFile(t, store, "share", "/scratch.bin", 0, "p1", []block.BlockRef{
+	fh := openHoldPutFile(t, store, "share", "/scratch.bin", 0, "p1", []block.ChunkRef{
 		{Hash: hashAll(0x77), Offset: 0, Size: 64},
 	})
 	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
@@ -211,7 +211,7 @@ func TestGetMetadataStoreForShare_UnknownShareIsErrShareNotFound(t *testing.T) {
 func TestOpenHandleHold_GCHoldForRemoteCombines(t *testing.T) {
 	rt, store := newOpenHoldRuntime(t, "share")
 	h := hashAll(0x55)
-	fh := openHoldPutFile(t, store, "share", "/combined.bin", 0, "p3", []block.BlockRef{
+	fh := openHoldPutFile(t, store, "share", "/combined.bin", 0, "p3", []block.ChunkRef{
 		{Hash: h, Offset: 0, Size: 64},
 	})
 	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
@@ -229,7 +229,7 @@ func TestOpenHandleHold_GCHoldForRemoteCombines(t *testing.T) {
 // protocol enumerators at once (e.g. NFSv4 + SMB) is visited exactly once.
 func TestOpenHandleHold_CrossProtocolDedup(t *testing.T) {
 	rt, store := newOpenHoldRuntime(t, "share")
-	fh := openHoldPutFile(t, store, "share", "/both.bin", 0, "p4", []block.BlockRef{
+	fh := openHoldPutFile(t, store, "share", "/both.bin", 0, "p4", []block.ChunkRef{
 		{Hash: hashAll(0x66), Offset: 0, Size: 64},
 	})
 	rt.SetAdapterProvider("test_nfs_open", &fakeOpenFileSource{handles: [][]byte{fh}})

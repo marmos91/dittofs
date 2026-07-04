@@ -236,7 +236,7 @@ func decrementAndReapTx(ctx context.Context, tx pgx.Tx, id string) (uint32, erro
 // Only ref_count is mutated. block_state is never touched: AddRef
 // references an existing block, and the LRU hit path never creates
 // or transitions one.
-func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.BlockRef) error {
+func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// postgres backend records ref count only — parameters intentionally
 	// blanked.
@@ -661,7 +661,7 @@ func (tx *postgresTransaction) DecrementRefCountAndReap(ctx context.Context, id 
 // AddRef runs the +1 UPDATE keyed by hash on the active pgx.Tx so a
 // subsequent rollback undoes the bump (parity for the
 // LRU hit path). Returns metadata.ErrUnknownHash when no row matches.
-func (tx *postgresTransaction) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.BlockRef) error {
+func (tx *postgresTransaction) AddRef(ctx context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// postgres backend records ref count only — parameters intentionally
 	// blanked.

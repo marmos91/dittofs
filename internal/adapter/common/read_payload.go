@@ -42,8 +42,8 @@ func (r *BlockReadResult) Release() {
 // (clientIP, handle bytes) are logged at the call site, not here, because
 // they are protocol-specific and common/ cannot couple to those types.
 //
-// When FileAttr.Blocks becomes []BlockRef and engine.Store.ReadAt
-// takes []BlockRef, this function body gains the "fetch FileAttr.Blocks →
+// When FileAttr.Blocks becomes []ChunkRef and engine.Store.ReadAt
+// takes []ChunkRef, this function body gains the "fetch FileAttr.Blocks →
 // slice to [offset, offset+len) → pass resolved refs" logic. Call-site
 // code (protocol handlers) does not change.
 func ReadFromBlockStore(
@@ -54,8 +54,8 @@ func ReadFromBlockStore(
 	count uint32,
 ) (BlockReadResult, error) {
 	data := pool.Get(int(count))
-	// Pass nil []BlockRef so the engine routes through the dual-read
-	// shim. The caller-snapshot []BlockRef from FileAttr.Blocks will
+	// Pass nil []ChunkRef so the engine routes through the dual-read
+	// shim. The caller-snapshot []ChunkRef from FileAttr.Blocks will
 	// thread here in a later adapter-helper refactor; until then the
 	// engine resolves via the legacy {payloadID}/block-{N} path and the
 	// result is identical.
