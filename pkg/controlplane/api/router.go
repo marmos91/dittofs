@@ -323,6 +323,10 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// Read-only orphan-storage reporter (#1493/#1525). Server-wide
 				// scan; mutates nothing. Reviewed before the delete stages act.
 				r.Get("/reconcile-report", blockGCHandler.ReconcileReport)
+				// Zero-ref record reclaim (#1493 PR5b): deletes class-1 orphans
+				// and frees their remote objects. Mutating, so POST; dry_run
+				// previews.
+				r.Post("/reconcile/zero-ref-records", blockGCHandler.ReconcileReclaimZeroRef)
 			})
 
 			// Store management (admin only)

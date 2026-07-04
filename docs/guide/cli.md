@@ -652,6 +652,7 @@ Global flags:
         - [`dfsctl store block local edit`](#dfsctl-store-block-local-edit) — Edit a local block store
         - [`dfsctl store block local list`](#dfsctl-store-block-local-list) — List local block stores
         - [`dfsctl store block local remove`](#dfsctl-store-block-local-remove) — Remove a local block store
+      - [`dfsctl store block reclaim`](#dfsctl-store-block-reclaim) — Reclaim zero-ref block records (deletes; use --dry-run to preview)
       - [`dfsctl store block reconcile`](#dfsctl-store-block-reconcile) — Report orphaned block storage (read-only; no deletes)
       - [`dfsctl store block remote`](#dfsctl-store-block-remote) — Remote block store management
         - [`dfsctl store block remote add`](#dfsctl-store-block-remote-add) — Add a remote block store
@@ -5942,6 +5943,57 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl store block reclaim`
+
+Reclaim zero-ref block records (deletes; use --dry-run to preview)
+
+Delete class-1 orphaned block records across every remote-backed share and
+free their remote objects. A zero-ref record has no live locator and a zero live
+chunk count — left behind by a crash between decrementing the count and deleting
+the record. Such a record is terminally dead, so reclaiming it is safe with no
+grace window.
+
+This DELETES. Run 'dfsctl store block reconcile' first to review what exists, or
+pass --dry-run here to preview the exact set this command would delete without
+deleting anything.
+
+```
+dfsctl store block reclaim [flags]
+```
+
+**Examples:**
+
+```bash
+# Preview what would be reclaimed
+dfsctl store block reclaim --dry-run
+
+# Reclaim zero-ref records
+dfsctl store block reclaim
+
+# As JSON for scripting
+dfsctl store block reclaim -o json
+```
+
+Flags:
+
+```
+      --dry-run   Report the records that would be reclaimed without deleting anything
 ```
 
 Global flags:

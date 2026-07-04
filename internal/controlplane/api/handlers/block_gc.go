@@ -46,6 +46,11 @@ type BlockGCRuntime interface {
 	// storage and returns a READ-ONLY report of the four orphan classes. It
 	// mutates nothing (#1493/#1525 reconcile reporter).
 	ReconcileReport(ctx context.Context) (*engine.ReconcileReport, error)
+
+	// ReconcileReclaimZeroRef deletes class-1 orphans server-wide (block records
+	// with a zero live chunk count and no live locator) and frees their remote
+	// objects. dryRun previews without deleting (#1493 PR5b).
+	ReconcileReclaimZeroRef(ctx context.Context, dryRun bool) (*engine.ReclaimReport, error)
 }
 
 // BlockStoreGCHandler exposes on-demand GC + last-run-summary endpoints.
@@ -313,6 +318,47 @@ func (h *BlockStoreGCHandler) ReconcileReport(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		logger.Debug("Block store reconcile report error", "error", err)
 		InternalServerError(w, "reconcile report failed")
+		return
+	}
+
+	WriteJSONOK(w, report)
+}
+
+// ReconcileReclaimZeroRefRequest is the JSON body for the zero-ref reclaim
+// endpoint. dry_run previews the exact set without deleting.
+type ReconcileReclaimZeroRefRequest struct {
+	DryRun bool `json:"dry_run,omitempty"`
+}
+
+// ReconcileReclaimZeroRef handles POST /api/v1/blockstore/reconcile/zero-ref-records.
+//
+// Server-wide, admin-only. It DELETES class-1 orphans (block records with a zero
+// live chunk count and no live locator — a crash between decrementing the count
+// and deleting the record) and frees their remote objects. Set dry_run to preview
+// the set without deleting. First deleting reconcile stage (#1493/#1525 PR5b).
+//
+// Status codes:
+//   - 200 OK with engine.ReclaimReport
+//   - 400 Bad Request when the body decode fails
+//   - 500 Internal Server Error on unexpected runtime errors
+func (h *BlockStoreGCHandler) ReconcileReclaimZeroRef(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		InternalServerError(w, "runtime not initialized")
+		return
+	}
+
+	var req ReconcileReclaimZeroRefRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			BadRequest(w, "invalid request body: "+err.Error())
+			return
+		}
+	}
+
+	report, err := h.runtime.ReconcileReclaimZeroRef(r.Context(), req.DryRun)
+	if err != nil {
+		logger.Debug("Block store zero-ref reclaim error", "error", err)
+		InternalServerError(w, "zero-ref reclaim failed")
 		return
 	}
 
