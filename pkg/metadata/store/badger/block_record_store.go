@@ -445,6 +445,81 @@ func (s *BadgerMetadataStore) DeleteLocalLocation(ctx context.Context, hash bloc
 	return nil
 }
 
+// WalkLocalLocations calls fn for every stored content-hash -> log-blob
+// location. Read-only; deliberately NOT part of the LocalChunkIndex interface —
+// the local block store discovers it via a narrow consumer-side interface to
+// re-seed crash-stranded unsynced logblob chunks on restart (Walk / ListUnsynced).
+// Collects all entries under a read-only View first, then calls fn outside the
+// iterator so the callback never runs with the iterator open (mirrors
+// WalkBlockRecords).
+func (s *BadgerMetadataStore) WalkLocalLocations(ctx context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	prefix := []byte(prefixLocalChunkIdx)
+
+	type entry struct {
+		hash block.ContentHash
+		loc  block.LocalChunkLocation
+	}
+	var entries []entry
+	if err := s.db.View(func(txn *badgerdb.Txn) error {
+		opts := badgerdb.DefaultIteratorOptions
+		opts.Prefix = prefix
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			// The local chunk index can be very large (one entry per unique
+			// chunk); re-check cancellation per entry to stay responsive.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			item := it.Item()
+			hash, err := hashFromLocalChunkKey(item.Key())
+			if err != nil {
+				return err
+			}
+			var loc block.LocalChunkLocation
+			if verr := item.Value(func(val []byte) error {
+				var decErr error
+				loc, decErr = decodeLocalChunkLocation(val)
+				return decErr
+			}); verr != nil {
+				return verr
+			}
+			entries = append(entries, entry{hash: hash, loc: loc})
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("badger WalkLocalLocations: %w", err)
+	}
+
+	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := fn(e.hash, e.loc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hashFromLocalChunkKey decodes a li:{hex(hash)} key back into a ContentHash.
+func hashFromLocalChunkKey(key []byte) (block.ContentHash, error) {
+	hexHash := key[len(prefixLocalChunkIdx):]
+	raw, err := hex.DecodeString(string(hexHash))
+	if err != nil {
+		return block.ContentHash{}, fmt.Errorf("badger: decode local-chunk key %q: %w", key, err)
+	}
+	if len(raw) != len(block.ContentHash{}) {
+		return block.ContentHash{}, fmt.Errorf("badger: local-chunk key %q decodes to %d bytes", key, len(raw))
+	}
+	var h block.ContentHash
+	copy(h[:], raw)
+	return h, nil
+}
+
 // ============================================================================
 // CommitBlock — delegate to shared DefaultCommitBlock logic
 // ============================================================================

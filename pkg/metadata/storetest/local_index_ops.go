@@ -85,4 +85,74 @@ func runLocalIndexOps(t *testing.T, store metadata.Store) {
 			t.Fatal("GetLocalLocation(missing) found = true, want false")
 		}
 	})
+
+	// WalkEnumeratesAll guards the restart-seed path: FSStore.Walk /
+	// ListUnsynced discover logblob-resident chunks by type-asserting the
+	// LocalChunkIndex to this exact walker capability. A production backend
+	// that fails to implement it silently drops crash-stranded unsynced chunks
+	// from re-seeding, so this FAILS (not skips) when the method is absent.
+	//
+	// The suite shares one store across subtests, so the walk legitimately
+	// contains entries from earlier cases — this asserts SUPERSET semantics, not
+	// exact-set equality: every location we Put here is enumerated with the
+	// correct value, each hash is yielded at most once, and a deleted entry is
+	// never surfaced. It does not couple to any other subtest's contents.
+	t.Run("WalkEnumeratesAll", func(t *testing.T) {
+		walker, ok := store.(interface {
+			WalkLocalLocations(context.Context, func(block.ContentHash, block.LocalChunkLocation) error) error
+		})
+		if !ok {
+			t.Fatalf("%T does not implement WalkLocalLocations — restart-seed of unsynced logblob chunks is broken on this backend", store)
+		}
+
+		want := map[block.ContentHash]block.LocalChunkLocation{
+			{0xA1}: {LogBlobID: "walk-blob-1", RawOffset: 0, RawLength: 128},
+			{0xA2}: {LogBlobID: "walk-blob-2", RawOffset: 128, RawLength: 256},
+			{0xA3}: {LogBlobID: "walk-blob-3", RawOffset: 384, RawLength: 512},
+		}
+		for h, l := range want {
+			if err := store.PutLocalLocation(ctx, h, l); err != nil {
+				t.Fatalf("PutLocalLocation(%x) error = %v", h, err)
+			}
+		}
+
+		// Sentinel: put then delete — the walk must NOT surface it (proves Walk
+		// honors deletes, not just accumulates every hash ever written).
+		deleted := block.ContentHash{0xA4}
+		if err := store.PutLocalLocation(ctx, deleted, block.LocalChunkLocation{LogBlobID: "walk-blob-deleted", RawLength: 64}); err != nil {
+			t.Fatalf("PutLocalLocation(sentinel) error = %v", err)
+		}
+		if err := store.DeleteLocalLocation(ctx, deleted); err != nil {
+			t.Fatalf("DeleteLocalLocation(sentinel) error = %v", err)
+		}
+
+		got := make(map[block.ContentHash]block.LocalChunkLocation)
+		seen := make(map[block.ContentHash]int)
+		if err := walker.WalkLocalLocations(ctx, func(h block.ContentHash, l block.LocalChunkLocation) error {
+			got[h] = l
+			seen[h]++
+			return nil
+		}); err != nil {
+			t.Fatalf("WalkLocalLocations() error = %v", err)
+		}
+
+		for h, n := range seen {
+			if n > 1 {
+				t.Errorf("WalkLocalLocations() enumerated hash %x %d times, want at most 1", h, n)
+			}
+		}
+		if _, ok := got[deleted]; ok {
+			t.Errorf("WalkLocalLocations() surfaced deleted hash %x", deleted)
+		}
+		for h, l := range want {
+			g, ok := got[h]
+			if !ok {
+				t.Errorf("WalkLocalLocations() did not enumerate hash %x", h)
+				continue
+			}
+			if g != l {
+				t.Errorf("WalkLocalLocations()[%x] = %+v, want %+v", h, g, l)
+			}
+		}
+	})
 }
