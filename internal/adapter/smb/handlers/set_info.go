@@ -1359,10 +1359,26 @@ func (h *Handler) setFileInfoFromStore(
 			Size: &newSize,
 		}
 
+		// Snapshot the pre-truncate file BEFORE SetFileAttributes prunes
+		// FileAttr.Blocks, so the block-store truncate reclaim below can reap
+		// RefCount on every dropped block and discard the physical tail bytes.
+		// Best-effort: a snapshot failure only forfeits reclaim, not the op.
+		preFile, _ := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+
 		_, err = metaSvc.SetFileAttributes(authCtx, openFile.MetadataHandle, setAttrs)
 		if err != nil {
 			logger.Debug("SET_INFO: failed to set EOF", "path", openFile.Path, "error", err)
 			return setInfoStatus(common.MapToSMB(err)), nil
+		}
+
+		// Physically discard block data past the new EOF. SetFileAttributes
+		// only prunes the metadata block list + size; without this the tail
+		// bytes survive and a later re-extend re-exposes them as file content
+		// instead of a zero-filled hole (data-integrity / info-leak bug). NFS
+		// SETATTR/CREATE-truncate drive the same common helper.
+		if rErr := common.ReclaimTruncatedBlocks(authCtx.Context, h.Registry, openFile.MetadataHandle, preFile, newSize); rErr != nil {
+			logger.Warn("SET_INFO: block store truncate reclaim failed",
+				"path", openFile.Path, "size", newSize, "error", rErr)
 		}
 
 		// Restore frozen timestamps after truncation (which updates Mtime/Ctime)
@@ -1448,6 +1464,14 @@ func (h *Handler) setFileInfoFromStore(
 						logger.Debug("SET_INFO: allocation-driven truncate failed",
 							"path", openFile.Path, "error", err)
 						return setInfoStatus(common.MapToSMB(err)), nil
+					}
+					// Discard block data past the new EOF (curFile is the pre-op
+					// snapshot). Same reclaim the FileEndOfFileInformation path
+					// drives — without it a later re-extend re-exposes the tail
+					// bytes as content instead of zeros.
+					if rErr := common.ReclaimTruncatedBlocks(authCtx.Context, h.Registry, openFile.MetadataHandle, curFile, requested); rErr != nil {
+						logger.Warn("SET_INFO: allocation-driven block truncate reclaim failed",
+							"path", openFile.Path, "size", requested, "error", rErr)
 					}
 					h.restoreFrozenTimestamps(authCtx, openFile)
 					flushSmbDelayedWrite(openFile)

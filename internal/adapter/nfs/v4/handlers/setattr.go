@@ -12,7 +12,6 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	xdr "github.com/marmos91/dittofs/internal/adapter/nfs/xdr/core"
 	"github.com/marmos91/dittofs/internal/logger"
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -240,33 +239,22 @@ func (h *Handler) applySetAttrsWithTruncateReclaim(
 	preFile *metadata.File,
 	attrs *metadata.SetAttrs,
 ) error {
-	// Capture the pre-truncate FileAttr.Blocks snapshot BEFORE SetFileAttributes
-	// prunes them, so the engine reaps RefCount on every dropped block (#832).
-	// Stays nil unless this is a genuine shrink, so reclaim is skipped for
-	// grows / no-ops.
-	var (
-		preTruncateBlocks []block.BlockRef
-		preTruncatePID    metadata.PayloadID
-		newSize           uint64
-	)
-	if attrs.Size != nil && preFile != nil &&
-		*attrs.Size < preFile.Size && preFile.PayloadID != "" {
-		preTruncateBlocks = preFile.Blocks
-		preTruncatePID = preFile.PayloadID
-		newSize = *attrs.Size
-	}
-
 	if _, err := metaSvc.SetFileAttributes(authCtx, handle, attrs); err != nil {
 		return err
 	}
 
-	if preTruncateBlocks != nil {
-		if blockStore, bsErr := common.ResolveForWrite(ctx.Context, h.Registry, handle); bsErr != nil {
-			logger.Warn("NFSv4 truncate reclaim: cannot resolve block store",
-				"handle", string(handle), "error", bsErr)
-		} else if _, tErr := blockStore.Truncate(ctx.Context, string(preTruncatePID), preTruncateBlocks, newSize); tErr != nil {
-			logger.Warn("NFSv4 truncate reclaim: block store truncate failed",
-				"handle", string(handle), "size", newSize, "error", tErr)
+	// Reclaim block data past the new EOF only on a size change. This helper
+	// is also reached from OPEN(UNCHECKED4) with attrs carrying no size (mode
+	// only); guarding on attrs.Size != nil keeps a mode-only OPEN from
+	// truncating an existing file's content to zero. The helper further
+	// no-ops unless this is a genuine shrink (newSize < preFile.Size), reaps
+	// RefCount on every dropped block (#832), and is best-effort — the
+	// metadata write already committed. Same seam as NFSv3 SETATTR /
+	// CREATE-truncate and SMB SetEndOfFile.
+	if attrs.Size != nil {
+		if rErr := common.ReclaimTruncatedBlocks(ctx.Context, h.Registry, handle, preFile, *attrs.Size); rErr != nil {
+			logger.Warn("NFSv4 truncate reclaim failed",
+				"handle", string(handle), "size", *attrs.Size, "error", rErr)
 		}
 	}
 	return nil
