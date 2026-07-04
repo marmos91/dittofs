@@ -11,8 +11,8 @@ import (
 // ReconcileReclaimZeroRef reclaims class-1 orphans server-wide: block records
 // with a zero live chunk count and no live locator — a crash between
 // DecrLiveChunkCount and DeleteBlockRecord. It frees each record's remote block
-// object (idempotent) and deletes the record. This is the first DELETING
-// reconcile stage after the read-only reporter (PR5b, #1493/#1525); dryRun
+// object (idempotent) and deletes the record. This is PR5b, the first DELETING
+// reconcile stage after the read-only reporter (PR5a, #1493/#1525); dryRun
 // tallies what would be reclaimed without deleting.
 //
 // Like the GC sweep it unions the shares that reference each remote and holds the
