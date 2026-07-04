@@ -99,6 +99,9 @@ Examples:
   # Require SMB 3.x and enable encryption
   dfsctl adapter settings smb update --min-dialect SMB3.0 --enable-encryption
 
+  # Relax SMB signing (offer but do not require)
+  dfsctl adapter settings smb update --signing enabled
+
   # Reset the SMB session timeout to its default
   dfsctl adapter settings smb reset --setting session_timeout`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -224,6 +227,7 @@ var (
 	settingsOplockBreakTimeout int
 	settingsMaxSessions        int
 	settingsEnableEncryption   bool
+	settingsSigning            string
 
 	// Common flags
 	settingsDryRun       bool
@@ -304,6 +308,7 @@ func registerSMBUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&settingsMaxConnections, "max-connections", 0, "Maximum concurrent connections")
 	cmd.Flags().IntVar(&settingsMaxSessions, "max-sessions", 0, "Maximum concurrent SMB sessions")
 	cmd.Flags().BoolVar(&settingsEnableEncryption, "enable-encryption", false, "Enable SMB encryption")
+	cmd.Flags().StringVar(&settingsSigning, "signing", "", "SMB message signing mode: disabled|enabled|required")
 	cmd.Flags().StringVar(&settingsBlockedOperations, "blocked-operations", "", "Comma-separated list of blocked operations")
 	cmd.Flags().BoolVar(&smbSettingsDryRun, "dry-run", false, "Validate without applying changes")
 	cmd.Flags().BoolVar(&smbSettingsForce, "force", false, "Bypass range validation")
@@ -420,6 +425,7 @@ func showSMBSettings(client *apiclient.Client, format output.Format) error {
 	})
 	printSettingsGroup("Security", []settingRow{
 		newSettingRowBool("enable_encryption", settings.EnableEncryption, d.EnableEncryption),
+		newSettingRow("signing", settings.Signing, d.Signing),
 	})
 	printSettingsGroup("Operations", []settingRow{
 		newSettingRowStrSlice("blocked_operations", settings.BlockedOperations, d.BlockedOperations),
@@ -678,6 +684,10 @@ func updateSMBSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	}
 	if cmd.Flags().Changed("enable-encryption") {
 		req.EnableEncryption = &settingsEnableEncryption
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("signing") {
+		req.Signing = &settingsSigning
 		hasChanges = true
 	}
 	if cmd.Flags().Changed("blocked-operations") {

@@ -299,6 +299,7 @@ func (w *SettingsWatcher) pollSMBSettings(ctx context.Context) error {
 				"max_connections", settings.MaxConnections,
 				"max_sessions", settings.MaxSessions,
 				"enable_encryption", settings.EnableEncryption,
+				"signing", settings.Signing,
 				"directory_leasing_enabled", settings.DirectoryLeasingEnabled,
 			)
 

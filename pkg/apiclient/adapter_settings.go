@@ -43,6 +43,7 @@ type SMBAdapterSettingsResponse struct {
 	MaxConnections          int      `json:"max_connections"`
 	MaxSessions             int      `json:"max_sessions"`
 	EnableEncryption        bool     `json:"enable_encryption"`
+	Signing                 string   `json:"signing"`
 	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
 	Version                 int      `json:"version"`
@@ -104,6 +105,7 @@ type PatchSMBSettingsRequest struct {
 	MaxConnections          *int      `json:"max_connections,omitempty"`
 	MaxSessions             *int      `json:"max_sessions,omitempty"`
 	EnableEncryption        *bool     `json:"enable_encryption,omitempty"`
+	Signing                 *string   `json:"signing,omitempty"`
 	DirectoryLeasingEnabled *bool     `json:"directory_leasing_enabled,omitempty"`
 	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
 }

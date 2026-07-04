@@ -1225,6 +1225,9 @@ dfsctl adapter settings smb show
 # Require SMB 3.x and enable encryption
 dfsctl adapter settings smb update --min-dialect SMB3.0 --enable-encryption
 
+# Relax SMB signing (offer but do not require)
+dfsctl adapter settings smb update --signing enabled
+
 # Reset the SMB session timeout to its default
 dfsctl adapter settings smb reset --setting session_timeout
 ```
@@ -1363,6 +1366,7 @@ Flags:
       --min-dialect string          Minimum SMB dialect
       --oplock-break-timeout int    Oplock break timeout in seconds
       --session-timeout int         SMB session timeout in seconds
+      --signing string              SMB message signing mode: disabled|enabled|required
 ```
 
 Global flags:
@@ -5629,6 +5633,12 @@ plain GC cannot reclaim because they keep their hashes in the live set.
 Reconcile is server-wide (all shares) and the recommended way to recover
 space leaked by older versions. Combine with --dry-run to preview.
 
+Use --grace-period to override the configured sweep grace for this run
+only. A zero grace (--grace-period 0) reaps every eligible orphan with no
+age guard, bypassing the server's 5-minute floor — useful to reclaim
+just-orphaned chunks immediately in tests or one-off cleanups. Cannot be
+combined with --reconcile.
+
 ```
 dfsctl store block gc <share> [flags]
 ```
@@ -5639,6 +5649,8 @@ dfsctl store block gc <share> [flags]
 dfsctl store block gc myshare
 dfsctl store block gc myshare --dry-run
 dfsctl store block gc myshare --reconcile
+dfsctl store block gc myshare --grace-period 0
+dfsctl store block gc myshare --grace-period 30m
 dfsctl store block gc myshare --no-wait
 dfsctl store block gc myshare -o json
 ```
@@ -5646,9 +5658,10 @@ dfsctl store block gc myshare -o json
 Flags:
 
 ```
-      --dry-run     Run mark + sweep enumeration but skip deletes; print candidate keys
-      --no-wait     Start the job and print its id without waiting for completion
-      --reconcile   Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers
+      --dry-run                 Run mark + sweep enumeration but skip deletes; print candidate keys
+      --grace-period duration   Override the sweep grace for this run (e.g. 30m, 0 to reap immediately); bypasses the server's 5m floor. Unset = server default
+      --no-wait                 Start the job and print its id without waiting for completion
+      --reconcile               Also reap stranded file_blocks rows leaked by older versions (server-wide), then sweep both tiers
 ```
 
 Global flags:

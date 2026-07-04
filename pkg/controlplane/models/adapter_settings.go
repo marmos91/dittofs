@@ -159,6 +159,16 @@ type SMBAdapterSettings struct {
 	// Encryption (stub)
 	EnableEncryption bool `gorm:"default:false" json:"enable_encryption"`
 
+	// Signing controls the SMB2/3 message-signing negotiation mode. It is an
+	// override: the empty default means "inherit the static server config"
+	// (the `signing:` YAML block), so an unset row never clobbers the file
+	// config at startup. Valid explicit values:
+	//   "required" - advertise SMB2_NEGOTIATE_SIGNING_REQUIRED
+	//   "enabled"  - offer signing but do not require it
+	//   "disabled" - do not offer or require signing
+	// Note: SMB 3.1.1 mandates signing regardless of this setting (MS-SMB2 §3.3.5.4).
+	Signing string `gorm:"size:10" json:"signing"`
+
 	// Directory leasing capability
 	DirectoryLeasingEnabled bool `gorm:"default:true" json:"directory_leasing_enabled"`
 
@@ -265,6 +275,7 @@ func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 		MaxConnections:          0,
 		MaxSessions:             10000,
 		EnableEncryption:        false,
+		Signing:                 "", // empty = inherit static server config
 		DirectoryLeasingEnabled: true,
 		NtlmEnabled:             true,
 		GuestEnabled:            true,
@@ -364,6 +375,12 @@ var ValidNFSVersions = []string{"3", "4.0", "4.1"}
 
 // ValidSMBDialects lists supported SMB dialect strings.
 var ValidSMBDialects = []string{"SMB2.0", "SMB2.1", "SMB3.0", "SMB3.0.2", "SMB3.1.1"}
+
+// ValidSMBSigningModes lists the accepted values for the SMB signing setting.
+//   - "required": advertise SMB2_NEGOTIATE_SIGNING_REQUIRED
+//   - "enabled":  offer signing but do not require it
+//   - "disabled": do not offer or require signing
+var ValidSMBSigningModes = []string{"disabled", "enabled", "required"}
 
 // ValidKerberosLevels lists valid Kerberos authentication levels.
 var ValidKerberosLevels = []string{"krb5", "krb5i", "krb5p"}

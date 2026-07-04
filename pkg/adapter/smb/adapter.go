@@ -392,6 +392,35 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 			"mode", s.handler.EncryptionConfig.Mode)
 	}
 
+	// Apply signing mode from live settings. Unlike encryption (which only ever
+	// raises security here), signing is fully bidirectional so an operator can
+	// relax an already-required handler at runtime. An empty value is the
+	// default and means "inherit the static server config" — leave the
+	// handler's YAML-derived SigningConfig untouched (so an unset DB row never
+	// clobbers the file config at startup).
+	// NOTE: SMB 3.1.1 mandates signing regardless of this setting (MS-SMB2
+	// §3.3.5.4), so "disabled"/"enabled" will not stop signing for 3.1.1 clients.
+	switch settings.Signing {
+	case "disabled":
+		if s.handler.SigningConfig.Enabled || s.handler.SigningConfig.Required {
+			s.handler.SigningConfig.Enabled = false
+			s.handler.SigningConfig.Required = false
+			logger.Info("SMB signing disabled via live settings")
+		}
+	case "enabled":
+		if !s.handler.SigningConfig.Enabled || s.handler.SigningConfig.Required {
+			s.handler.SigningConfig.Enabled = true
+			s.handler.SigningConfig.Required = false
+			logger.Info("SMB signing enabled (not required) via live settings")
+		}
+	case "required":
+		if !s.handler.SigningConfig.Enabled || !s.handler.SigningConfig.Required {
+			s.handler.SigningConfig.Enabled = true
+			s.handler.SigningConfig.Required = true
+			logger.Info("SMB signing required via live settings")
+		}
+	}
+
 	// Dialect range: apply from settings to handler
 	if minD, ok := types.ParseSMBDialect(settings.MinDialect); ok {
 		s.handler.MinDialect = minD
