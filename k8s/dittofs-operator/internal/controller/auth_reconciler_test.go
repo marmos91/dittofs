@@ -881,3 +881,54 @@ func TestReconcileAdminCredentials_LegacyReadError_AbortsWithoutRegenerating(t *
 		t.Errorf("bootstrap secret must not be created on legacy read error, got err=%v data=%v", err, newSecret.Data)
 	}
 }
+
+// TestProvisionOperatorAccount_UserProvidedRef_StalePassword_EmitsTailoredEvent
+// verifies #1413: when the user supplied spec.identity.admin.passwordSecretRef,
+// a rejected admin login emits AdminCredentialUnauthorized (not the bootstrap
+// reason) and names the referenced key — the bootstrap/dfsctl advice would be
+// misleading here.
+func TestProvisionOperatorAccount_UserProvidedRef_StalePassword_EmitsTailoredEvent(t *testing.T) {
+	const userKey = "adminpw"
+	ds := newTestDittoServer("test-server", "default")
+	ds.Spec.Identity = &dittoiov1alpha1.IdentityConfig{
+		Admin: &dittoiov1alpha1.AdminConfig{
+			Username: "admin",
+			PasswordSecretRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "user-admin-secret"},
+				Key:                  userKey,
+			},
+		},
+	}
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "user-admin-secret", Namespace: "default"},
+		Data:       map[string][]byte{userKey: []byte("stale-user-pass")},
+	}
+	r := setupAuthReconciler(t, ds, adminSecret)
+
+	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
+		"POST /api/v1/auth/login": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"title":"invalid credentials"}`))
+		},
+	})
+
+	if _, err := r.provisionOperatorAccount(context.Background(), ds, server.URL); err == nil {
+		t.Fatal("expected error when admin login is rejected")
+	}
+
+	rec := r.Recorder.(*record.FakeRecorder)
+	select {
+	case ev := <-rec.Events:
+		if !strings.Contains(ev, "AdminCredentialUnauthorized") {
+			t.Errorf("event = %q, want reason AdminCredentialUnauthorized for a passwordSecretRef deployment", ev)
+		}
+		if !strings.Contains(ev, userKey) {
+			t.Errorf("event = %q, want it to name the referenced key %q", ev, userKey)
+		}
+		if strings.Contains(ev, "AdminBootstrapUnauthorized") || strings.Contains(ev, "bootstrap Secret") {
+			t.Errorf("event = %q, should not give bootstrap-Secret advice when a passwordSecretRef is set", ev)
+		}
+	default:
+		t.Error("expected a Warning event on rejected admin login, got none")
+	}
+}

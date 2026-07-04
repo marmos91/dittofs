@@ -67,21 +67,27 @@ func (r *DittoServerReconciler) reconcileAdminCredentials(ctx context.Context, d
 		},
 	}
 
-	// Migration: on upgrade the bootstrap Secret was renamed. If the new-named
-	// Secret does not yet exist but a pre-rename one does, adopt its password
-	// rather than generating a fresh one. Generating fresh here would diverge
-	// from the already-bootstrapped server's admin password and break operator
-	// service-account (re)provisioning, which logs in as admin. Fetched outside
-	// the mutate closure so the legacy Secret can be garbage-collected after the
-	// new one is committed. A non-NotFound read error must abort the reconcile
-	// (retried with backoff): silently treating it as "no legacy Secret" would
-	// generate a fresh, diverging password and permanently lock out the operator.
-	legacyData, err := r.legacyAdminSecretData(ctx, dittoServer)
-	if err != nil {
-		return err
+	// Migration: on upgrade the bootstrap Secret was renamed. Only consult the
+	// pre-rename Secret while the new-named one is still missing or password-empty
+	// — the one-shot migration window. Once it holds a password we skip the legacy
+	// GET entirely, so a transient legacy-read error can never abort an otherwise
+	// healthy reconcile. When migrating, adopt the legacy password rather than
+	// generating a fresh one: a fresh password would diverge from the already
+	// bootstrapped server's admin and break operator (re)provisioning, which logs
+	// in as admin. A non-NotFound legacy read error aborts (retried with backoff)
+	// rather than silently regenerating.
+	if err := r.Get(ctx, client.ObjectKey{Namespace: dittoServer.Namespace, Name: secretName}, secret); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to read admin bootstrap credentials secret: %w", err)
+	}
+	var legacyData map[string][]byte
+	if secret.Data == nil || len(secret.Data["password"]) == 0 {
+		var err error
+		if legacyData, err = r.legacyAdminSecretData(ctx, dittoServer); err != nil {
+			return err
+		}
 	}
 
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		if err := controllerutil.SetControllerReference(dittoServer, secret, r.Scheme); err != nil {
 			return err
 		}
@@ -279,8 +285,9 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 
 	// If user provided admin password via spec, use that Secret + key.
 	var specAdminUsername string
-	if ds.Spec.Identity != nil && ds.Spec.Identity.Admin != nil &&
-		ds.Spec.Identity.Admin.PasswordSecretRef != nil {
+	userProvidedRef := ds.Spec.Identity != nil && ds.Spec.Identity.Admin != nil &&
+		ds.Spec.Identity.Admin.PasswordSecretRef != nil
+	if userProvidedRef {
 		ref := ds.Spec.Identity.Admin.PasswordSecretRef
 		adminSecretName = ref.Name
 		if ref.Key != "" {
@@ -330,13 +337,17 @@ func (r *DittoServerReconciler) provisionOperatorAccount(ctx context.Context, ds
 		// fix instead of an opaque, indefinitely-retried 401.
 		var apiErr *DittoFSAPIError
 		if errors.As(err, &apiErr) && apiErr.IsAuthError() {
-			r.Recorder.Eventf(ds, corev1.EventTypeWarning, "AdminBootstrapUnauthorized",
-				"Admin login rejected (%d) while provisioning the operator service account. "+
-					"The bootstrap credentials Secret %q is likely out of sync with the live admin password "+
-					"(rotated via dfsctl?). Update that Secret to the current admin password, or set "+
-					"spec.identity.admin.passwordSecretRef.", apiErr.StatusCode, adminSecretName)
+			reason, advice := "AdminBootstrapUnauthorized",
+				fmt.Sprintf("Update the operator-managed bootstrap Secret %q to the current admin password, or set spec.identity.admin.passwordSecretRef.", adminSecretName)
+			if userProvidedRef {
+				reason, advice = "AdminCredentialUnauthorized",
+					fmt.Sprintf("Update the admin password in Secret %q (key %q) referenced by spec.identity.admin.passwordSecretRef to match the live admin password.", adminSecretName, passwordKey)
+			}
+			r.Recorder.Eventf(ds, corev1.EventTypeWarning, reason,
+				"Admin login rejected (%d) while provisioning the operator service account: the admin password is out of sync with the live admin (rotated via dfsctl?). %s",
+				apiErr.StatusCode, advice)
 			return ctrl.Result{}, fmt.Errorf(
-				"admin login rejected (%d) provisioning operator service account: bootstrap credentials secret %q is out of sync with the live admin password: %w",
+				"admin login rejected (%d) provisioning operator service account: admin credentials secret %q is out of sync with the live admin password: %w",
 				apiErr.StatusCode, adminSecretName, err)
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to login as admin: %w", err)
