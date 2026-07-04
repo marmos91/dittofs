@@ -39,6 +39,11 @@ type fakeGCRuntime struct {
 	// ReconcileReport hooks
 	report    *engine.ReconcileReport
 	reportErr error
+
+	// ReconcileReclaimZeroRef hooks
+	reclaim        *engine.ReclaimReport
+	reclaimErr     error
+	reclaimDryRuns []bool
 }
 
 type startCall struct {
@@ -78,6 +83,17 @@ func (f *fakeGCRuntime) ReconcileReport(context.Context) (*engine.ReconcileRepor
 		return f.report, nil
 	}
 	return &engine.ReconcileReport{}, nil
+}
+
+func (f *fakeGCRuntime) ReconcileReclaimZeroRef(_ context.Context, dryRun bool) (*engine.ReclaimReport, error) {
+	f.reclaimDryRuns = append(f.reclaimDryRuns, dryRun)
+	if f.reclaimErr != nil {
+		return nil, f.reclaimErr
+	}
+	if f.reclaim != nil {
+		return f.reclaim, nil
+	}
+	return &engine.ReclaimReport{}, nil
 }
 
 // gcStartBody mirrors the 202 response shape from RunGC.
@@ -558,5 +574,64 @@ func TestBlockStoreHandler_ReconcileReport_NilRuntime(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("ReconcileReport: expected 500 on nil runtime, got %d", w.Code)
+	}
+}
+
+// TestBlockStoreHandler_ReclaimZeroRef_PropagatesDryRun asserts the dry_run flag
+// reaches the runtime and the report is returned.
+func TestBlockStoreHandler_ReclaimZeroRef_PropagatesDryRun(t *testing.T) {
+	fake := &fakeGCRuntime{reclaim: &engine.ReclaimReport{
+		Reclaimed: engine.ReconcileClass{Count: 2, Bytes: 42, Sample: []string{"blk-a", "blk-b"}},
+		DryRun:    true,
+	}}
+	h := NewBlockStoreGCHandler(fake)
+
+	body, _ := json.Marshal(ReconcileReclaimZeroRefRequest{DryRun: true})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/zero-ref-records", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.ReconcileReclaimZeroRef(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("ReconcileReclaimZeroRef: expected 200, got %d (body=%q)", w.Code, w.Body.String())
+	}
+	if len(fake.reclaimDryRuns) != 1 || !fake.reclaimDryRuns[0] {
+		t.Fatalf("ReconcileReclaimZeroRef: expected dry_run=true propagated, got %v", fake.reclaimDryRuns)
+	}
+	var got engine.ReclaimReport
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("ReconcileReclaimZeroRef: decode: %v", err)
+	}
+	if got.Reclaimed.Count != 2 || got.Reclaimed.Bytes != 42 || !got.DryRun {
+		t.Fatalf("ReconcileReclaimZeroRef: unexpected body: %+v", got)
+	}
+}
+
+// TestBlockStoreHandler_ReclaimZeroRef_RuntimeError maps a runtime failure to 500.
+func TestBlockStoreHandler_ReclaimZeroRef_RuntimeError(t *testing.T) {
+	fake := &fakeGCRuntime{reclaimErr: fmt.Errorf("boom")}
+	h := NewBlockStoreGCHandler(fake)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/zero-ref-records", nil)
+	w := httptest.NewRecorder()
+
+	h.ReconcileReclaimZeroRef(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("ReconcileReclaimZeroRef: expected 500 on runtime error, got %d", w.Code)
+	}
+}
+
+// TestBlockStoreHandler_ReclaimZeroRef_NilRuntime fails closed on a nil runtime.
+func TestBlockStoreHandler_ReclaimZeroRef_NilRuntime(t *testing.T) {
+	h := NewBlockStoreGCHandler(nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/zero-ref-records", nil)
+	w := httptest.NewRecorder()
+
+	h.ReconcileReclaimZeroRef(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("ReconcileReclaimZeroRef: expected 500 on nil runtime, got %d", w.Code)
 	}
 }
