@@ -57,9 +57,11 @@ type SnapshotDrainer interface {
 // flight races it and fails with "sql: database is closed", which can drop a
 // local chunk that was never mirrored. Called AFTER StopAllAdapters (no new
 // writes create fresh rollup work) and BEFORE the stores close. Pass nil to
-// skip (tests without a block-store rollup pool).
+// skip (tests without a block-store rollup pool). The ctx bounds the total
+// drain time so shutdown has a predictable upper bound regardless of share
+// count; each share's rollup fence still runs even once the deadline passes.
 type RollupStopper interface {
-	StopRollups()
+	StopRollups(ctx context.Context)
 }
 
 // MachineSIDStore provides access to the SettingsStore for machine SID
@@ -347,7 +349,9 @@ func (s *Service) shutdown(
 	// the DB is still open or it races the close ("sql: database is closed").
 	// Runs after StopAllAdapters (no new writes create fresh rollup work).
 	if rollupStopper != nil {
-		rollupStopper.StopRollups()
+		rollupCtx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+		rollupStopper.StopRollups(rollupCtx)
+		cancel()
 	}
 
 	if storeCloser != nil {

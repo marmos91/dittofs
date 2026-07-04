@@ -86,7 +86,7 @@ type fakeRollupStopper struct {
 	closerToCheck *fakeStoreCloser
 }
 
-func (f *fakeRollupStopper) StopRollups() {
+func (f *fakeRollupStopper) StopRollups(ctx context.Context) {
 	f.stopped = true
 	if f.closerToCheck != nil {
 		f.closedAtStop = f.closerToCheck.closed

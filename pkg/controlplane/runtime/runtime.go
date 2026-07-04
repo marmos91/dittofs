@@ -314,8 +314,9 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	// Fence the per-share rollup workers BEFORE closing the metadata stores
 	// (#1543): the rollup ticker writes FileChunk manifests + rollup offsets
 	// through the metadata store, so an in-flight rollup must be drained while
-	// the DB is still open or it races the close.
-	r.sharesSvc.StopRollups()
+	// the DB is still open or it races the close. Bounded by the caller's ctx
+	// (an overall deadline across shares) so shutdown stays predictable.
+	r.sharesSvc.StopRollups(ctx)
 	r.CloseMetadataStores()
 	return nil
 }
@@ -780,7 +781,7 @@ func (r *Runtime) Serve(ctx context.Context) error {
 // server path (signal -> ctx cancel -> lifecycle.shutdown) fences the rollup
 // ticker BEFORE CloseMetadataStores — otherwise an in-flight rollup races the
 // metadata-store close and fails with "sql: database is closed".
-func (r *Runtime) StopRollups() { r.sharesSvc.StopRollups() }
+func (r *Runtime) StopRollups(ctx context.Context) { r.sharesSvc.StopRollups(ctx) }
 
 // ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
 // shutdown sequence so the normal server path (signal -> ctx cancel ->
