@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -486,6 +487,38 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 		logger.Warn("failed to reconcile share root ACL", "share", config.Name, "error", err)
 	}
 	return nil
+}
+
+// RebindShareBlockStore hot-reloads a running share's per-share BlockStore after
+// its local/remote block-store binding changed, so the change takes effect
+// without a server restart (#1532). It rebuilds the new ShareConfig from the
+// (already-persisted) DB row and passes the previous block-store IDs so the
+// share service can restore the old binding if the new one fails to build.
+func (r *Runtime) RebindShareBlockStore(ctx context.Context, name, oldLocalBlockStoreID, oldRemoteBlockStoreID string) error {
+	shareModel, err := r.store.GetShare(ctx, name)
+	if err != nil {
+		return fmt.Errorf("rebind: failed to load share %q: %w", name, err)
+	}
+	newCfg, err := buildShareConfig(ctx, r.store, shareModel)
+	if err != nil {
+		return fmt.Errorf("rebind: failed to build share config for %q: %w", name, err)
+	}
+	if newCfg == nil {
+		return fmt.Errorf("rebind: share %q references an unknown metadata store", name)
+	}
+
+	// oldConfig is the same row with the previous block-store binding — used only
+	// for recovery if the new store fails to build.
+	oldCfg := *newCfg
+	oldCfg.LocalBlockStoreID = oldLocalBlockStoreID
+	oldCfg.RemoteBlockStoreID = oldRemoteBlockStoreID
+
+	r.mu.RLock()
+	localDefaults := r.localStoreDefaults
+	syncDefaults := r.syncerDefaults
+	r.mu.RUnlock()
+
+	return r.sharesSvc.RebindShareBlockStore(ctx, newCfg, &oldCfg, r.storesSvc, r.store, localDefaults, syncDefaults)
 }
 
 // RegisterShareForTesting registers a minimal enabled share in the share

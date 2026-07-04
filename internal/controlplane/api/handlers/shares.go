@@ -912,18 +912,23 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			"local_store_size", share.LocalStoreSize, "read_buffer_size", share.ReadBufferSize)
 	}
 
-	// The per-share syncer/BlockStore mode is not hot-reloaded (#1532): a
-	// binding change is persisted but only takes effect after a server restart.
-	// Warn loudly so the change is not silently a no-op for mirroring.
+	// A block-store binding change is not picked up by the running syncer until
+	// the per-share BlockStore is rebuilt. Attempt a live hot-reload (#1532); only
+	// if that fails do we warn the operator that a restart is required, so the
+	// change is never a silent no-op for mirroring.
 	var updateWarnings []string
-	if blockStoreBindingChanged {
-		const bindingWarn = "block store binding changed but only takes effect after a server restart; " +
-			"until then the running share keeps using its previous block store binding"
-		logger.Warn("Share block store binding changed (takes effect on restart)",
-			"share", share.Name,
-			"local_block_store_id", share.LocalBlockStoreID,
-			"remote_block_store_id", newRemoteBlockStoreID)
-		updateWarnings = append(updateWarnings, bindingWarn)
+	if blockStoreBindingChanged && h.runtime != nil {
+		if err := h.runtime.RebindShareBlockStore(r.Context(), share.Name, prevLocalBlockStoreID, prevRemoteBlockStoreID); err != nil {
+			logger.Error("Failed to hot-reload share block store after binding change; a restart is required",
+				"share", share.Name, "error", err)
+			updateWarnings = append(updateWarnings,
+				"block store binding changed but live reload failed; a server restart is required for the change to take effect")
+		} else {
+			logger.Info("Share block store rebound live after binding change",
+				"share", share.Name,
+				"local_block_store_id", share.LocalBlockStoreID,
+				"remote_block_store_id", newRemoteBlockStoreID)
+		}
 	}
 
 	// Update runtime if available

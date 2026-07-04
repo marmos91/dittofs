@@ -435,10 +435,12 @@ func TestShareHandler_Update_RejectsInvalidDefaultPermission(t *testing.T) {
 	}
 }
 
-// TestShareHandler_Update_WarnsOnBlockStoreBindingChange verifies that
-// attaching/changing a share's block store returns an operator-facing warning,
-// since the running syncer/BlockStore is not hot-reloaded (#1532).
-func TestShareHandler_Update_WarnsOnBlockStoreBindingChange(t *testing.T) {
+// TestShareHandler_Update_WarnsWhenLiveReloadFails verifies the #1532 fallback:
+// a binding change triggers a live block-store rebind, and if that rebind fails
+// (here the share is DB-configured but not loaded into the runtime registry) the
+// response carries an operator-facing "restart required" warning instead of
+// silently doing nothing.
+func TestShareHandler_Update_WarnsWhenLiveReloadFails(t *testing.T) {
 	cpStore, _, handler := setupShareTestWithRuntime(t)
 	seedShare(t, cpStore, "s-bswarn")
 	ctx := context.Background()
