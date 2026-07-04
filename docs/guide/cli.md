@@ -652,6 +652,7 @@ Global flags:
         - [`dfsctl store block local edit`](#dfsctl-store-block-local-edit) — Edit a local block store
         - [`dfsctl store block local list`](#dfsctl-store-block-local-list) — List local block stores
         - [`dfsctl store block local remove`](#dfsctl-store-block-local-remove) — Remove a local block store
+      - [`dfsctl store block reconcile`](#dfsctl-store-block-reconcile) — Report orphaned block storage (read-only; no deletes)
       - [`dfsctl store block remote`](#dfsctl-store-block-remote) — Remote block store management
         - [`dfsctl store block remote add`](#dfsctl-store-block-remote-add) — Add a remote block store
         - [`dfsctl store block remote edit`](#dfsctl-store-block-remote-edit) — Edit a remote block store
@@ -5941,6 +5942,62 @@ Flags:
 
 ```
   -f, --force   Skip confirmation prompt
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl store block reconcile`
+
+Report orphaned block storage (read-only; no deletes)
+
+Scan every remote-backed share for orphaned block storage and print a
+classified report. This is READ-ONLY: it deletes nothing, decrements nothing,
+and changes no markers. Use it to review what the later reclaim stages would
+act on before running them.
+
+Four orphan classes are reported:
+
+```
+Zero-ref records       Block records with no live locator and a zero live
+                       chunk count — a crash between decrementing the count
+                       and deleting the record.
+Leaked blocks          Block records with no live locator but a non-zero live
+                       chunk count — a re-carve moved the hash onto a new
+                       block without decrementing this one.
+Orphan remote objects  blocks/<id> objects with no backing record, older than
+                       the grace window — the upload succeeded but the commit
+                       failed. Objects within the grace window are preserved
+                       (they may be freshly uploaded, commit pending).
+Stranded local chunks  Unsynced, local-durable chunks awaiting upload.
+```
+
+Each class reports an exact count plus a bounded sample of IDs (truncated is
+flagged when the full set is larger than the sample).
+
+```
+dfsctl store block reconcile
+```
+
+**Examples:**
+
+```bash
+# Report orphans as a table
+dfsctl store block reconcile
+
+# As JSON for scripting
+dfsctl store block reconcile -o json
 ```
 
 Global flags:

@@ -198,6 +198,14 @@ func (c *Client) BlockStoreGCStatus(shareName string) (*engine.GCRunSummary, err
 	)
 }
 
+// BlockStoreReconcileReport scans every remote-backed share for orphaned block
+// storage and returns the classified engine.ReconcileReport. Server-wide,
+// admin-only, and READ-ONLY: it mutates nothing (#1493/#1525 reconcile
+// reporter), so an operator can review orphans before the delete stages act.
+func (c *Client) BlockStoreReconcileReport() (*engine.ReconcileReport, error) {
+	return getResource[engine.ReconcileReport](c, "/api/v1/blockstore/reconcile-report")
+}
+
 // BlockStoreAuditResult is the response body for
 // POST /api/v1/shares/{name}/audit/refcounts. Wraps the
 // engine.AuditRefcountsResult value (CAS manifest-consistency audit).
