@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -182,6 +183,30 @@ func TestCompaction_EnforcesLocalStoreSizeViaEnsureSpace(t *testing.T) {
 	}
 	if _, err := bc.ReadChunk(ctx, syncedHash); !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("ReadChunk(synced, dropped) = %v, want ErrChunkNotFound", err)
+	}
+}
+
+// TestSurvivorReadErr_ShortReadNilError_IsNotNil is the regression for the
+// fmt.Errorf("...%w", nil) trap: a survivor read that returns fewer bytes than
+// wanted WITH a nil error must still yield a non-nil error. Forwarding the nil
+// would make relocateSurvivors "succeed" on a partially-read only-copy survivor,
+// letting compactBlobOne evict the old blob → permanent data loss. os.File can't
+// produce a nil-error short read (io.ReaderAt contract), so the classification
+// seam is unit-tested directly.
+func TestSurvivorReadErr_ShortReadNilError_IsNotNil(t *testing.T) {
+	h := blake3ContentHash([]byte("survivor"))
+
+	// Short read, nil error: the exact trap. Must be a real (non-nil) error.
+	if err := survivorReadErr(50, nil, 100, h, "0000000000000003"); err == nil {
+		t.Fatal("survivorReadErr(short, nil) = nil, want non-nil (else the old blob is evicted after a partial relocate → data loss)")
+	}
+	// Non-nil read error is propagated.
+	if err := survivorReadErr(0, io.EOF, 100, h, "0000000000000003"); err == nil {
+		t.Fatal("survivorReadErr(_, io.EOF) = nil, want non-nil")
+	}
+	// Full read, nil error: success.
+	if err := survivorReadErr(100, nil, 100, h, "0000000000000003"); err != nil {
+		t.Fatalf("survivorReadErr(full, nil) = %v, want nil", err)
 	}
 }
 

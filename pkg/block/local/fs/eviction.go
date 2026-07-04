@@ -420,9 +420,10 @@ func (bc *FSStore) dropBlobIndexEntries(ctx context.Context, blobID string) {
 // their index entries so the next read refetches them from the durable remote
 // copy (they are hot-cache misses, never data loss).
 //
-// Returns the bytes reclaimed, or (0, errLRUEmpty) when no sealed blob has any
-// reclaimable dead weight: every candidate is either fully synced (handled by
-// blobEvictOne), entirely unsynced-live (nothing can be reclaimed), or a
+// Returns the NET bytes reclaimed (the old blob's size minus the survivor bytes
+// re-appended into the active blob), or (0, errLRUEmpty) when no sealed blob has
+// any reclaimable dead weight: every candidate is either fully synced (handled
+// by blobEvictOne), entirely unsynced-live (nothing can be reclaimed), or a
 // pre-restart blob with no per-chunk record to enumerate.
 //
 // Durability invariant: the only durable copy of an unsynced chunk is its
@@ -468,7 +469,8 @@ func (bc *FSStore) compactBlobOne(ctx context.Context) (int64, error) {
 			// zero net reclaim. Nothing to gain — skip.
 			continue
 		}
-		if err := bc.relocateSurvivors(ctx, id, survivors); err != nil {
+		relocatedBytes, err := bc.relocateSurvivors(ctx, id, survivors)
+		if err != nil {
 			// A survivor's bytes were unreadable (torn/corrupt sealed blob).
 			// Never delete a blob whose must-keep chunks we could not relocate:
 			// skip it and try the next candidate. Any already-appended survivor
@@ -484,10 +486,13 @@ func (bc *FSStore) compactBlobOne(ctx context.Context) (int64, error) {
 		if freed == 0 {
 			continue // orphan: unlink failed earlier, bytes stay counted
 		}
+		// NET reclaimed: the old blob's bytes left disk, but the survivors were
+		// re-appended into the active blob, so those bytes were not freed.
+		net := freed - relocatedBytes
 		logger.Info("local store: compacted sealed log blob",
-			"blob", id, "reclaimed", freed, "relocated_bytes", unsyncedBytes,
-			"survivors", len(survivors), "dir", bc.baseDir)
-		return freed, nil
+			"blob", id, "net_reclaimed", net, "relocated_bytes", relocatedBytes,
+			"blob_size", freed, "survivors", len(survivors), "dir", bc.baseDir)
+		return net, nil
 	}
 	return 0, errLRUEmpty
 }
@@ -523,6 +528,26 @@ func (bc *FSStore) blobSurvivors(ctx context.Context, blobID string) (survivors 
 	return survivors, unsyncedBytes, true
 }
 
+// survivorReadErr classifies the result of reading a survivor chunk's bytes out
+// of the old blob. It returns a non-nil error whenever the bytes could not be
+// fully read — INCLUDING a short read with a nil error (n < want, rerr == nil).
+// That nil-error case is the trap: forwarding it as fmt.Errorf("...%w", rerr)
+// yields a NIL error, which would let the caller evict the old blob after only
+// partially relocating a must-keep (unsynced, only-copy) survivor — permanent
+// data loss. os.File.ReadAt honors the io.ReaderAt contract (short read ⇒
+// non-nil error), so the nil-short branch is defensive, but a silent nil here
+// is unrecoverable, so it is guarded explicitly.
+func survivorReadErr(n int, rerr error, want int64, h block.ContentHash, blobID string) error {
+	if rerr != nil {
+		return fmt.Errorf("read survivor %s from %s: %w", h.String(), blobID, rerr)
+	}
+	if int64(n) < want {
+		return fmt.Errorf("read survivor %s from %s: torn tail, got %d of %d bytes",
+			h.String(), blobID, n, want)
+	}
+	return nil
+}
+
 // relocateSurvivors copies each survivor chunk's bytes out of the old sealed
 // blob into the active blob, fsyncs the active blob, then rewrites the durable
 // index entry to the new location. The fsync BEFORE the index rewrite upholds
@@ -533,9 +558,12 @@ func (bc *FSStore) blobSurvivors(ctx context.Context, blobID string) (survivors 
 // One chunk is held in RAM at a time (bounded by the FastCDC chunk size), never
 // the whole blob. A read failure on any survivor returns an error so the caller
 // leaves the old blob in place rather than deleting bytes it could not relocate.
-func (bc *FSStore) relocateSurvivors(ctx context.Context, oldBlobID string, survivors []block.ContentHash) error {
+//
+// Returns the total bytes actually relocated (the second on-disk copy the caller
+// must subtract from the evicted blob's size to report NET reclaimed).
+func (bc *FSStore) relocateSurvivors(ctx context.Context, oldBlobID string, survivors []block.ContentHash) (int64, error) {
 	if len(survivors) == 0 {
-		return nil
+		return 0, nil
 	}
 	type moved struct {
 		h   block.ContentHash
@@ -545,7 +573,7 @@ func (bc *FSStore) relocateSurvivors(ctx context.Context, oldBlobID string, surv
 	for _, h := range survivors {
 		loc, present, err := bc.localChunkIndex.GetLocalLocation(ctx, h)
 		if err != nil {
-			return fmt.Errorf("get local location %s: %w", h.String(), err)
+			return 0, fmt.Errorf("get local location %s: %w", h.String(), err)
 		}
 		if !present || loc.LogBlobID != oldBlobID {
 			continue // moved/deleted since the survivor scan: no longer ours
@@ -557,33 +585,34 @@ func (bc *FSStore) relocateSurvivors(ctx context.Context, oldBlobID string, surv
 		// the whole log blob.
 		dst := make([]byte, loc.RawLength)
 		n, rerr := bc.logBlob.ReadAt(ctx, loc, dst)
-		if rerr != nil || int64(n) < loc.RawLength {
-			return fmt.Errorf("read survivor %s from %s (torn or unreadable): %w",
-				h.String(), oldBlobID, rerr)
+		if err := survivorReadErr(n, rerr, loc.RawLength, h, oldBlobID); err != nil {
+			return 0, err
 		}
 		newLoc, aerr := bc.logBlob.Append(ctx, dst)
 		if aerr != nil {
-			return fmt.Errorf("append survivor %s: %w", h.String(), aerr)
+			return 0, fmt.Errorf("append survivor %s: %w", h.String(), aerr)
 		}
 		relocated = append(relocated, moved{h: h, loc: newLoc})
 	}
 	if len(relocated) == 0 {
-		return nil
+		return 0, nil
 	}
 	// Durability fence: fsync the active blob so every relocated survivor is on
 	// stable storage BEFORE any durable index entry points at it. (Size-cap
 	// rotations during the Append loop already fsynced the blobs they sealed.)
 	if err := bc.logBlob.Sync(); err != nil {
-		return fmt.Errorf("sync active blob before index rewrite: %w", err)
+		return 0, fmt.Errorf("sync active blob before index rewrite: %w", err)
 	}
+	var relocatedBytes int64
 	for _, m := range relocated {
 		if err := bc.localChunkIndex.PutLocalLocation(ctx, m.h, m.loc); err != nil {
-			return fmt.Errorf("rewrite index %s: %w", m.h.String(), err)
+			return 0, fmt.Errorf("rewrite index %s: %w", m.h.String(), err)
 		}
 		bc.logBlobDiskUsed.Add(m.loc.RawLength)
 		bc.trackBlobChunk(m.loc.LogBlobID, m.h)
+		relocatedBytes += m.loc.RawLength
 	}
-	return nil
+	return relocatedBytes, nil
 }
 
 // reclaimSpace is the write-path counterpart of ensureSpace: called after a
