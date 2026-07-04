@@ -121,6 +121,16 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 				return fmt.Errorf("ensureSpace: %w", berr)
 			}
 
+			// No fully-synced blob to drop whole. Try compaction (#1497):
+			// relocate a sealed blob's unsynced survivors into the active blob
+			// and reclaim the dead remainder, so a few unsynced chunks no longer
+			// pin a whole blob and --local-store-size stays enforceable.
+			if cfreed, cerr := bc.compactBlobOne(ctx); cerr == nil && cfreed > 0 {
+				continue
+			} else if cerr != nil && !errors.Is(cerr, errLRUEmpty) {
+				return fmt.Errorf("ensureSpace: %w", cerr)
+			}
+
 			// blobEvictOne found no sealed, fully-synced blob to reclaim, yet
 			// log-blob bytes remain — they are sitting in the still-open active
 			// blob. This is the read-through cache case: a small maxDisk fills
@@ -283,43 +293,60 @@ func (bc *FSStore) blobEvictOne(ctx context.Context) (int64, error) {
 		}
 		if !bc.blobSynced(ctx, id) {
 			// Blobs are strictly time-ordered: if the oldest candidate is
-			// unsynced, newer ones are too — stop scanning.
+			// unsynced, newer ones are too — stop scanning. The unsynced bytes
+			// pinning this blob are reclaimed at sub-blob granularity by
+			// compactBlobOne (#1497), which the caller tries next.
 			return 0, errLRUEmpty
 		}
-		// The synced predicate already ran above; EvictBlob re-checks active/
-		// already-evicted state itself.
-		if err := bc.logBlob.EvictBlob(ctx, id, func(string) bool { return true }); err != nil {
-			if errors.Is(err, logblob.ErrActiveBlob) {
-				return 0, errLRUEmpty
-			}
-			// The blob may still have transitioned to evicted in-memory (only
-			// the unlink failed). Do NOT mark it processed or adjust the
-			// counter: the retry path below settles the accounting.
-			return 0, fmt.Errorf("blob evict: %w", err)
+		freed, err := bc.evictBlobLocked(ctx, id, infos[i].Size)
+		if err != nil {
+			return 0, err // errLRUEmpty (active blob) or a real evict failure
 		}
-		// EvictBlob is idempotent-nil for a blob it already evicted, and it
-		// never retries a failed unlink — so nil does NOT guarantee the file
-		// is gone. Only subtract the bytes when the file has actually left
-		// the disk; otherwise usedBytes would undercount physical usage.
-		// An orphan's bytes stay counted until a restart re-seeds from the
-		// physical files and retries the eviction with a fresh manager.
-		bc.blobEvictedIDs[id] = struct{}{}
-		bc.dropBlobIndexEntries(ctx, id)
-		orphanPath := filepath.Join(bc.baseDir, "blobs", id+".blob")
-		if _, statErr := os.Stat(orphanPath); statErr == nil || !os.IsNotExist(statErr) {
-			logger.Warn("local store: evicted log blob still on disk (unlink failed earlier); keeping its bytes counted until restart",
-				"blob", id, "bytes", infos[i].Size, "dir", bc.baseDir)
-			continue // try the next candidate
-		}
-		bc.subUsed(&bc.logBlobDiskUsed, infos[i].Size, "logblob")
-		if rec := bc.recordMetrics(); rec != nil {
-			rec.RecordEviction(infos[i].Size)
+		if freed == 0 {
+			continue // orphan: unlink failed earlier, bytes stay counted
 		}
 		logger.Info("local store: evicted sealed log blob",
-			"blob", id, "bytes", infos[i].Size, "dir", bc.baseDir)
-		return infos[i].Size, nil
+			"blob", id, "bytes", freed, "dir", bc.baseDir)
+		return freed, nil
 	}
 	return 0, errLRUEmpty
+}
+
+// evictBlobLocked physically removes sealed blob id (size bytes) from disk,
+// records it evicted, prunes its stale index entries, and settles disk
+// accounting. It FORCES eviction (synced predicate always true), so callers
+// must have already relocated every must-keep chunk in the blob — blobEvictOne
+// gates on blobSynced first; compactBlobOne relocates unsynced survivors first.
+//
+// Caller MUST hold bc.blobEvictMu.
+//
+// Returns the bytes reclaimed, or 0 when the unlink failed and the file is
+// still on disk (its bytes stay counted until a restart re-seeds and retries).
+// EvictBlob is idempotent-nil for an already-evicted blob and never retries a
+// failed unlink, so a nil error does not guarantee the file is gone — only
+// subtract when it has actually left the disk, or usedBytes would undercount.
+func (bc *FSStore) evictBlobLocked(ctx context.Context, id string, size int64) (int64, error) {
+	if err := bc.logBlob.EvictBlob(ctx, id, func(string) bool { return true }); err != nil {
+		if errors.Is(err, logblob.ErrActiveBlob) {
+			return 0, errLRUEmpty
+		}
+		// The blob may still have transitioned to evicted in-memory (only the
+		// unlink failed). Do NOT mark it processed or adjust the counter.
+		return 0, fmt.Errorf("blob evict: %w", err)
+	}
+	bc.blobEvictedIDs[id] = struct{}{}
+	bc.dropBlobIndexEntries(ctx, id)
+	orphanPath := filepath.Join(bc.baseDir, "blobs", id+".blob")
+	if _, statErr := os.Stat(orphanPath); statErr == nil || !os.IsNotExist(statErr) {
+		logger.Warn("local store: evicted log blob still on disk (unlink failed earlier); keeping its bytes counted until restart",
+			"blob", id, "bytes", size, "dir", bc.baseDir)
+		return 0, nil
+	}
+	bc.subUsed(&bc.logBlobDiskUsed, size, "logblob")
+	if rec := bc.recordMetrics(); rec != nil {
+		rec.RecordEviction(size)
+	}
+	return size, nil
 }
 
 // blobSynced reports whether every chunk in blobID has been durably mirrored
@@ -381,6 +408,184 @@ func (bc *FSStore) dropBlobIndexEntries(ctx context.Context, blobID string) {
 	}
 }
 
+// compactBlobOne reclaims the dead space pinned inside a sealed log blob whose
+// only surviving bytes are unsynced (crash-stranded) chunks — the exact case
+// blobEvictOne refuses because the whole blob is not synced. Without this, one
+// small unsynced chunk pins a whole ~1 GB blob and --local-store-size cannot be
+// enforced.
+//
+// It relocates those unsynced survivors into the active blob, fsyncs them, and
+// then drops the old blob whole — reclaiming every dead/synced byte at sub-blob
+// granularity. Synced chunks are NOT relocated: dropping the old blob removes
+// their index entries so the next read refetches them from the durable remote
+// copy (they are hot-cache misses, never data loss).
+//
+// Returns the bytes reclaimed, or (0, errLRUEmpty) when no sealed blob has any
+// reclaimable dead weight: every candidate is either fully synced (handled by
+// blobEvictOne), entirely unsynced-live (nothing can be reclaimed), or a
+// pre-restart blob with no per-chunk record to enumerate.
+//
+// Durability invariant: the only durable copy of an unsynced chunk is its
+// log-blob bytes. relocateSurvivors fsyncs the active blob BEFORE rewriting any
+// durable index entry and BEFORE the old blob is deleted, so at every instant
+// the chunk is readable from at least one durable location. A crash mid-compact
+// leaves the index pointing at the still-present old blob (survivor re-appended
+// but index not yet flipped) or at the fsynced new copy (index flipped, old
+// blob not yet deleted) — never at lost bytes.
+//
+// ponytail: covers in-process blobs (those with a blobChunks record); a blob
+// carried over from a previous process is left to the coarse whole-blob gate,
+// matching blobEvictOne's tracked/untracked split. Add index-scan enumeration
+// only if pre-restart pinning is observed in practice.
+func (bc *FSStore) compactBlobOne(ctx context.Context) (int64, error) {
+	if bc.logBlob == nil || bc.localChunkIndex == nil || bc.syncedHashStore == nil {
+		return 0, errLRUEmpty
+	}
+
+	// Serialize with blobEvictOne (same accounting + evictedIDs bookkeeping).
+	bc.blobEvictMu.Lock()
+	defer bc.blobEvictMu.Unlock()
+
+	infos, err := bc.logBlob.ListBlobs()
+	if err != nil {
+		return 0, fmt.Errorf("blob compact: list blobs: %w", err)
+	}
+	// Oldest-first, matching blobEvictOne's LRU-ish ordering.
+	for i := range infos {
+		if infos[i].Active {
+			continue
+		}
+		id := infos[i].LogBlobID
+		if _, done := bc.blobEvictedIDs[id]; done {
+			continue
+		}
+		survivors, unsyncedBytes, ok := bc.blobSurvivors(ctx, id)
+		if !ok {
+			continue // pre-restart blob: no per-chunk record to enumerate
+		}
+		if unsyncedBytes >= infos[i].Size {
+			// Entirely unsynced-live: relocating would copy the whole blob for
+			// zero net reclaim. Nothing to gain — skip.
+			continue
+		}
+		if err := bc.relocateSurvivors(ctx, id, survivors); err != nil {
+			// A survivor's bytes were unreadable (torn/corrupt sealed blob).
+			// Never delete a blob whose must-keep chunks we could not relocate:
+			// skip it and try the next candidate. Any already-appended survivor
+			// bytes are harmless orphans (index still points at the old blob).
+			logger.Warn("local store: blob compaction relocate failed, skipping",
+				"blob", id, "error", err, "dir", bc.baseDir)
+			continue
+		}
+		freed, err := bc.evictBlobLocked(ctx, id, infos[i].Size)
+		if err != nil {
+			return 0, err // errLRUEmpty (active blob) or a real evict failure
+		}
+		if freed == 0 {
+			continue // orphan: unlink failed earlier, bytes stay counted
+		}
+		logger.Info("local store: compacted sealed log blob",
+			"blob", id, "reclaimed", freed, "relocated_bytes", unsyncedBytes,
+			"survivors", len(survivors), "dir", bc.baseDir)
+		return freed, nil
+	}
+	return 0, errLRUEmpty
+}
+
+// blobSurvivors returns the unsynced chunks still resident in blobID (index
+// entry still points at blobID and IsSynced reports false) — the chunks
+// compaction must relocate before the blob can be dropped — with their total
+// byte size. ok is false when blobID has no per-chunk record (a pre-restart
+// blob compaction cannot enumerate). A chunk whose sync state cannot be
+// confirmed is treated as a survivor (never drop a chunk we cannot prove is
+// durable elsewhere).
+func (bc *FSStore) blobSurvivors(ctx context.Context, blobID string) (survivors []block.ContentHash, unsyncedBytes int64, ok bool) {
+	bc.blobChunksMu.Lock()
+	recorded, tracked := bc.blobChunks[blobID]
+	hashes := make([]block.ContentHash, len(recorded))
+	copy(hashes, recorded)
+	bc.blobChunksMu.Unlock()
+	if !tracked {
+		return nil, 0, false
+	}
+	for _, h := range hashes {
+		loc, present, err := bc.localChunkIndex.GetLocalLocation(ctx, h)
+		if err != nil || !present || loc.LogBlobID != blobID {
+			continue // deleted or re-staged elsewhere: dead weight here
+		}
+		synced, serr := bc.syncedHashStore.IsSynced(ctx, h)
+		if serr == nil && synced {
+			continue // durable on remote: drop-and-refetch, no relocate needed
+		}
+		survivors = append(survivors, h)
+		unsyncedBytes += loc.RawLength
+	}
+	return survivors, unsyncedBytes, true
+}
+
+// relocateSurvivors copies each survivor chunk's bytes out of the old sealed
+// blob into the active blob, fsyncs the active blob, then rewrites the durable
+// index entry to the new location. The fsync BEFORE the index rewrite upholds
+// the durability invariant: no durable index entry may reference un-fsynced
+// bytes. Until the rewrite the old entry (and old blob) still resolve the
+// chunk, so a crash never strands it.
+//
+// One chunk is held in RAM at a time (bounded by the FastCDC chunk size), never
+// the whole blob. A read failure on any survivor returns an error so the caller
+// leaves the old blob in place rather than deleting bytes it could not relocate.
+func (bc *FSStore) relocateSurvivors(ctx context.Context, oldBlobID string, survivors []block.ContentHash) error {
+	if len(survivors) == 0 {
+		return nil
+	}
+	type moved struct {
+		h   block.ContentHash
+		loc block.LocalChunkLocation
+	}
+	relocated := make([]moved, 0, len(survivors))
+	for _, h := range survivors {
+		loc, present, err := bc.localChunkIndex.GetLocalLocation(ctx, h)
+		if err != nil {
+			return fmt.Errorf("get local location %s: %w", h.String(), err)
+		}
+		if !present || loc.LogBlobID != oldBlobID {
+			continue // moved/deleted since the survivor scan: no longer ours
+		}
+		if loc.RawLength == 0 {
+			continue // zero-length chunk has no bytes in any blob
+		}
+		// One chunk in RAM at a time — bounded by the FastCDC chunk size, never
+		// the whole log blob.
+		dst := make([]byte, loc.RawLength)
+		n, rerr := bc.logBlob.ReadAt(ctx, loc, dst)
+		if rerr != nil || int64(n) < loc.RawLength {
+			return fmt.Errorf("read survivor %s from %s (torn or unreadable): %w",
+				h.String(), oldBlobID, rerr)
+		}
+		newLoc, aerr := bc.logBlob.Append(ctx, dst)
+		if aerr != nil {
+			return fmt.Errorf("append survivor %s: %w", h.String(), aerr)
+		}
+		relocated = append(relocated, moved{h: h, loc: newLoc})
+	}
+	if len(relocated) == 0 {
+		return nil
+	}
+	// Durability fence: fsync the active blob so every relocated survivor is on
+	// stable storage BEFORE any durable index entry points at it. (Size-cap
+	// rotations during the Append loop already fsynced the blobs they sealed.)
+	if err := bc.logBlob.Sync(); err != nil {
+		return fmt.Errorf("sync active blob before index rewrite: %w", err)
+	}
+	for _, m := range relocated {
+		if err := bc.localChunkIndex.PutLocalLocation(ctx, m.h, m.loc); err != nil {
+			return fmt.Errorf("rewrite index %s: %w", m.h.String(), err)
+		}
+		bc.logBlobDiskUsed.Add(m.loc.RawLength)
+		bc.trackBlobChunk(m.loc.LogBlobID, m.h)
+	}
+	return nil
+}
+
 // reclaimSpace is the write-path counterpart of ensureSpace: called after a
 // rollup pass lands new log-blob bytes, it evicts synced CAS chunks and
 // sealed synced blobs until the store is back under maxDisk. Best-effort and
@@ -413,10 +618,22 @@ func (bc *FSStore) reclaimSpace(ctx context.Context) {
 			logger.Warn("reclaimSpace: CAS eviction failed", "dir", bc.baseDir, "error", err)
 			return
 		}
-		if _, err := bc.blobEvictOne(ctx); err != nil {
+		if bfreed, err := bc.blobEvictOne(ctx); err != nil {
 			if !errors.Is(err, errLRUEmpty) {
 				logger.Warn("reclaimSpace: blob eviction failed", "dir", bc.baseDir, "error", err)
+				return
 			}
+			// No fully-synced blob to drop whole. Compact a blob pinned by
+			// unsynced survivors (#1497); stop when nothing more can be freed.
+			if cfreed, cerr := bc.compactBlobOne(ctx); cerr != nil {
+				if !errors.Is(cerr, errLRUEmpty) {
+					logger.Warn("reclaimSpace: blob compaction failed", "dir", bc.baseDir, "error", cerr)
+				}
+				return
+			} else if cfreed == 0 {
+				return
+			}
+		} else if bfreed == 0 {
 			return
 		}
 	}
