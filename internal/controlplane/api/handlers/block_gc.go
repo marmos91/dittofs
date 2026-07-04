@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -40,6 +41,11 @@ type BlockGCRuntime interface {
 	// engine writes `last-run.json` into. Empty when the share's local
 	// store has no persistent root (in-memory backend).
 	GCStateDirForShare(shareName string) (string, error)
+
+	// ReconcileReport scans every remote-backed share for orphaned block
+	// storage and returns a READ-ONLY report of the four orphan classes. It
+	// mutates nothing (#1493/#1525 reconcile reporter).
+	ReconcileReport(ctx context.Context) (*engine.ReconcileReport, error)
 }
 
 // BlockStoreGCHandler exposes on-demand GC + last-run-summary endpoints.
@@ -285,4 +291,30 @@ func (h *BlockStoreGCHandler) GCStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	WriteJSONOK(w, summary)
+}
+
+// ReconcileReport handles GET /api/v1/blockstore/reconcile-report.
+//
+// Server-wide, admin-only, READ-ONLY: it scans every remote-backed share for
+// orphaned block storage and returns the classified engine.ReconcileReport. It
+// mutates nothing — no deletes, no decrements — so an operator can review
+// orphans before the later delete stages act (#1493/#1525).
+//
+// Status codes:
+//   - 200 OK with engine.ReconcileReport
+//   - 500 Internal Server Error on unexpected runtime errors
+func (h *BlockStoreGCHandler) ReconcileReport(w http.ResponseWriter, r *http.Request) {
+	if h.runtime == nil {
+		InternalServerError(w, "runtime not initialized")
+		return
+	}
+
+	report, err := h.runtime.ReconcileReport(r.Context())
+	if err != nil {
+		logger.Debug("Block store reconcile report error", "error", err)
+		InternalServerError(w, "reconcile report failed")
+		return
+	}
+
+	WriteJSONOK(w, report)
 }

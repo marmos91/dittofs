@@ -320,6 +320,9 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 				r.Get("/stats", blockStoreHandler.Stats)
 				r.Post("/evict", blockStoreHandler.Evict)
+				// Read-only orphan-storage reporter (#1493/#1525). Server-wide
+				// scan; mutates nothing. Reviewed before the delete stages act.
+				r.Get("/reconcile-report", blockGCHandler.ReconcileReport)
 			})
 
 			// Store management (admin only)

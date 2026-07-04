@@ -35,6 +35,10 @@ type fakeGCRuntime struct {
 	// GCStateDirForShare hooks
 	gcStateRoot   string
 	gcStateRootEr error
+
+	// ReconcileReport hooks
+	report    *engine.ReconcileReport
+	reportErr error
 }
 
 type startCall struct {
@@ -64,6 +68,16 @@ func (f *fakeGCRuntime) GCStateDirForShare(_ string) (string, error) {
 		return "", f.gcStateRootEr
 	}
 	return f.gcStateRoot, nil
+}
+
+func (f *fakeGCRuntime) ReconcileReport(context.Context) (*engine.ReconcileReport, error) {
+	if f.reportErr != nil {
+		return nil, f.reportErr
+	}
+	if f.report != nil {
+		return f.report, nil
+	}
+	return &engine.ReconcileReport{}, nil
 }
 
 // gcStartBody mirrors the 202 response shape from RunGC.
@@ -487,5 +501,62 @@ func TestBlockStoreHandler_GCStatus_NilRuntime(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("GCStatus: expected 500 on nil runtime, got %d", w.Code)
+	}
+}
+
+// TestBlockStoreHandler_ReconcileReport_Success returns the runtime's report.
+func TestBlockStoreHandler_ReconcileReport_Success(t *testing.T) {
+	fake := &fakeGCRuntime{report: &engine.ReconcileReport{
+		ZeroRefRecords:      engine.ReconcileClass{Count: 1, Sample: []string{"blk-zeroref"}},
+		LeakedBlocks:        engine.ReconcileClass{Count: 2},
+		OrphanRemoteObjects: engine.ReconcileClass{Count: 3},
+		StrandedLocalChunks: engine.ReconcileClass{Count: 4},
+	}}
+	h := NewBlockStoreGCHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/blockstore/reconcile-report", nil)
+	w := httptest.NewRecorder()
+
+	h.ReconcileReport(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("ReconcileReport: expected 200, got %d (body=%q)", w.Code, w.Body.String())
+	}
+	var got engine.ReconcileReport
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("ReconcileReport: decode: %v", err)
+	}
+	if got.ZeroRefRecords.Count != 1 || got.LeakedBlocks.Count != 2 ||
+		got.OrphanRemoteObjects.Count != 3 || got.StrandedLocalChunks.Count != 4 {
+		t.Fatalf("ReconcileReport: unexpected body: %+v", got)
+	}
+}
+
+// TestBlockStoreHandler_ReconcileReport_RuntimeError maps a runtime failure to 500.
+func TestBlockStoreHandler_ReconcileReport_RuntimeError(t *testing.T) {
+	fake := &fakeGCRuntime{reportErr: fmt.Errorf("boom")}
+	h := NewBlockStoreGCHandler(fake)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/blockstore/reconcile-report", nil)
+	w := httptest.NewRecorder()
+
+	h.ReconcileReport(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("ReconcileReport: expected 500 on runtime error, got %d", w.Code)
+	}
+}
+
+// TestBlockStoreHandler_ReconcileReport_NilRuntime fails closed on a nil runtime.
+func TestBlockStoreHandler_ReconcileReport_NilRuntime(t *testing.T) {
+	h := NewBlockStoreGCHandler(nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/blockstore/reconcile-report", nil)
+	w := httptest.NewRecorder()
+
+	h.ReconcileReport(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("ReconcileReport: expected 500 on nil runtime, got %d", w.Code)
 	}
 }

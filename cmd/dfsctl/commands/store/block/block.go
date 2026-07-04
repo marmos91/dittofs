@@ -40,4 +40,5 @@ func init() {
 	Cmd.AddCommand(gcCmd)
 	Cmd.AddCommand(gcStatusCmd)
 	Cmd.AddCommand(auditRefcountsCmd)
+	Cmd.AddCommand(reconcileCmd)
 }
