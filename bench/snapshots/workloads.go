@@ -80,15 +80,29 @@ func RunWriteManifest(hs *block.HashSet) (int64, error) {
 	return cd.n, nil
 }
 
-// SeedRemote PUTs a zero-length object for every hash in hs into rs so a
-// subsequent RunVerify finds every probe present (the all-durable happy
-// path, which is also the most expensive: it never short-circuits on a
-// miss). Returns the number of objects seeded.
+// benchLocators maps every hash to a distinct packed-block locator so
+// RunVerify's block-only durability probe (#1493) resolves each hash to a
+// blocks/<id> object seeded by SeedRemote.
+type benchLocators map[block.ContentHash]block.ChunkLocator
+
+func (b benchLocators) GetLocator(_ context.Context, h block.ContentHash) (block.ChunkLocator, bool, error) {
+	loc, ok := b[h]
+	return loc, ok, nil
+}
+
+// blockIDForHash derives a deterministic block ID from a content hash so
+// SeedRemote and RunVerify agree on the packed-block key.
+func blockIDForHash(h block.ContentHash) string { return "bench-" + h.String() }
+
+// SeedRemote PUTs a one-byte packed block for every hash in hs into rs so a
+// subsequent RunVerify finds every block-durability probe present (the
+// all-durable happy path, which is also the most expensive: it never
+// short-circuits on a miss). Returns the number of objects seeded.
 func SeedRemote(ctx context.Context, rs remote.RemoteStore, hs *block.HashSet) (int, error) {
 	n := 0
 	err := hs.ForEach(func(h block.ContentHash) error {
-		if err := rs.Put(ctx, h, nil); err != nil {
-			return fmt.Errorf("snapshots bench: seed remote put: %w", err)
+		if err := rs.PutBlock(ctx, blockIDForHash(h), bytes.NewReader([]byte{0x01})); err != nil {
+			return fmt.Errorf("snapshots bench: seed remote put block: %w", err)
 		}
 		n++
 		return nil
@@ -99,12 +113,17 @@ func SeedRemote(ctx context.Context, rs remote.RemoteStore, hs *block.HashSet) (
 	return n, nil
 }
 
-// RunVerify HEAD-probes every hash in hs against rs at VerifyConcurrency
+// RunVerify block-probes every hash in hs against rs at VerifyConcurrency
 // and returns the number of hashes probed. The caller times the call. With
 // an all-present remote (see SeedRemote) every probe runs, giving the
 // worst-case verify wall time for the manifest size.
 func RunVerify(ctx context.Context, rs remote.RemoteStore, hs *block.HashSet) (int, error) {
-	if err := snapshot.VerifyRemoteDurability(ctx, rs, nil, nil, hs, VerifyConcurrency); err != nil {
+	locators := make(benchLocators, hs.Len())
+	_ = hs.ForEach(func(h block.ContentHash) error {
+		locators[h] = block.ChunkLocator{BlockID: blockIDForHash(h)}
+		return nil
+	})
+	if err := snapshot.VerifyRemoteDurability(ctx, locators, rs, hs, VerifyConcurrency); err != nil {
 		return 0, fmt.Errorf("snapshots bench: verify: %w", err)
 	}
 	return hs.Len(), nil

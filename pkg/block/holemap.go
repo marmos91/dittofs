@@ -7,7 +7,7 @@ import "sort"
 //
 // DittoFS does not store an explicit hole bitmap. The authoritative hole map is
 // the file's content-addressed block list (FileAttr.Blocks, sorted by Offset):
-// any byte in [0, fileSize) that no BlockRef covers is a hole and reads back as
+// any byte in [0, fileSize) that no ChunkRef covers is a hole and reads back as
 // zeros. The functions here derive data/hole boundaries from that list so SEEK,
 // READ_PLUS and DEALLOCATE all report consistent results from one source of
 // truth.
@@ -43,7 +43,7 @@ func (s Segment) Len() uint64 { return s.End - s.Start }
 // sorted by start and merged across touching/overlapping refs. A ref straddling
 // fileSize is clamped to fileSize; refs entirely at/after fileSize are dropped.
 // The result is the data coverage from which holes are the complement.
-func normalizedExtents(refs []BlockRef, fileSize uint64) [][2]uint64 {
+func normalizedExtents(refs []ChunkRef, fileSize uint64) [][2]uint64 {
 	if fileSize == 0 || len(refs) == 0 {
 		return nil
 	}
@@ -89,7 +89,7 @@ func normalizedExtents(refs []BlockRef, fileSize uint64) [][2]uint64 {
 // file (fileSize == 0) returns nil. A file with no covering blocks returns a
 // single hole segment; a file fully covered by blocks returns a single data
 // segment. Used by READ_PLUS to emit data and NFS4_CONTENT_HOLE runs.
-func Segments(refs []BlockRef, fileSize uint64) []Segment {
+func Segments(refs []ChunkRef, fileSize uint64) []Segment {
 	return SegmentsExtents(normalizedExtents(refs, fileSize), fileSize)
 }
 
@@ -127,7 +127,7 @@ func SegmentsExtents(extents [][2]uint64, fileSize uint64) []Segment {
 // or after `from` (the rest of the file is a hole, or `from` is at/after
 // fileSize), it returns (0, false) — the caller maps this to NFS4ERR_NXIO per
 // RFC 7862 Section 15.11.
-func NextDataOffset(refs []BlockRef, fileSize, from uint64) (uint64, bool) {
+func NextDataOffset(refs []ChunkRef, fileSize, from uint64) (uint64, bool) {
 	return NextDataOffsetExtents(normalizedExtents(refs, fileSize), fileSize, from)
 }
 
@@ -158,7 +158,7 @@ func NextDataOffsetExtents(extents [][2]uint64, fileSize, from uint64) (uint64, 
 // `from <= fileSize`: when `from` sits inside the file's final data extent the
 // returned offset is fileSize itself (RFC 7862 Section 15.11). For `from >=
 // fileSize` it returns (0, false) so the caller can map it to NFS4ERR_NXIO.
-func NextHoleOffset(refs []BlockRef, fileSize, from uint64) (uint64, bool) {
+func NextHoleOffset(refs []ChunkRef, fileSize, from uint64) (uint64, bool) {
 	return NextHoleOffsetExtents(normalizedExtents(refs, fileSize), fileSize, from)
 }
 
@@ -192,7 +192,7 @@ func NextHoleOffsetExtents(extents [][2]uint64, fileSize, from uint64) (uint64, 
 // partially overlaps the range at its head or tail — is KEPT unchanged.
 // length == 0 is a no-op.
 //
-// Why partial-overlap refs are kept (not clipped): a BlockRef is content
+// Why partial-overlap refs are kept (not clipped): a ChunkRef is content
 // addressed — its Hash covers exactly the original [Offset, Offset+Size) bytes,
 // so it cannot be split or shortened without invalidating the hash. Crucially,
 // the bytes of a partially-overlapping ref that fall OUTSIDE the punch range are
@@ -204,7 +204,7 @@ func NextHoleOffsetExtents(extents [][2]uint64, fileSize, from uint64) (uint64, 
 //
 // This "drop only fully-contained refs" predicate matches engine.PunchHole's
 // reap predicate, keeping the metadata and block-store views consistent.
-func PunchHole(refs []BlockRef, offset, length uint64) []BlockRef {
+func PunchHole(refs []ChunkRef, offset, length uint64) []ChunkRef {
 	if length == 0 || len(refs) == 0 {
 		return refs
 	}
@@ -216,7 +216,7 @@ func PunchHole(refs []BlockRef, offset, length uint64) []BlockRef {
 	if end < offset {
 		end = ^uint64(0)
 	}
-	out := make([]BlockRef, 0, len(refs))
+	out := make([]ChunkRef, 0, len(refs))
 	for _, r := range refs {
 		rEnd := r.Offset + uint64(r.Size)
 		// Drop only refs entirely inside the punched range; keep everything else
@@ -227,6 +227,6 @@ func PunchHole(refs []BlockRef, offset, length uint64) []BlockRef {
 		}
 		out = append(out, r)
 	}
-	sortBlockRefsByOffset(out)
+	sortChunkRefsByOffset(out)
 	return out
 }

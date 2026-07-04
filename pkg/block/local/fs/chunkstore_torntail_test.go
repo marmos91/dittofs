@@ -1,13 +1,32 @@
 package fs
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
+
+// newLogBlobStore builds an FSStore with a LocalChunkIndex wired (the memory
+// metadata store), so chunk persistence routes to the log-blob substrate.
+// maxDisk is unbounded so the capacity gate never trips during the test.
+func newLogBlobStore(t *testing.T) (*FSStore, context.Context) {
+	t.Helper()
+	dir := t.TempDir()
+	idx := memmeta.NewMemoryMetadataStoreWithDefaults()
+	bc, err := NewWithOptions(dir, 0, nil, FSStoreOptions{
+		LocalChunkIndex: idx,
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	t.Cleanup(func() { _ = bc.Close() })
+	return bc, context.Background()
+}
 
 // TestReadChunk_TornLogBlobTail_TreatedAsMiss proves the read-through
 // crash-consistency contract: when a log-blob tail is torn (the durable index
@@ -20,7 +39,7 @@ import (
 // blob bytes lost. Before the fix, logBlob.ReadAt returned io.EOF and ReadChunk
 // wrapped it into a hard error with no recovery route.
 func TestReadChunk_TornLogBlobTail_TreatedAsMiss(t *testing.T) {
-	bc, _, ctx := newLogBlobStore(t)
+	bc, ctx := newLogBlobStore(t)
 
 	data := []byte("read-through staged chunk that will be torn by a crash")
 	h := blake3ContentHash(data)

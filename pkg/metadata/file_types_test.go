@@ -10,10 +10,10 @@ import (
 )
 
 // TestFileAttr_BlocksRoundTrip exercises the reintroduction of
-// FileAttr.Blocks []block.BlockRef. Asserts:
+// FileAttr.Blocks []block.ChunkRef. Asserts:
 //
 //  1. omitempty: zero-value FileAttr does not emit a "blocks" key.
-//  2. Round trip preserves order and all fields of every BlockRef.
+//  2. Round trip preserves order and all fields of every ChunkRef.
 //  3. Legacy JSON without a "blocks" key deserializes cleanly to nil
 //
 // (forward compat for files written before dual-read
@@ -43,7 +43,7 @@ func TestFileAttr_BlocksRoundTrip(t *testing.T) {
 			}
 			return h
 		}
-		want := []block.BlockRef{
+		want := []block.ChunkRef{
 			{Hash: mkHash(0xAA), Offset: 0, Size: 4 << 20},
 			{Hash: mkHash(0xBB), Offset: 4 << 20, Size: 4 << 20},
 			{Hash: mkHash(0xCC), Offset: 8 << 20, Size: 1 << 20},
@@ -97,7 +97,7 @@ func TestFileAttr_BlocksRoundTrip(t *testing.T) {
 
 	t.Run("blocks field omits when explicitly empty slice", func(t *testing.T) {
 		// omitempty omits both nil AND zero-length slices.
-		fa := FileAttr{Blocks: []block.BlockRef{}}
+		fa := FileAttr{Blocks: []block.ChunkRef{}}
 		raw, err := json.Marshal(fa)
 		if err != nil {
 			t.Fatalf("json.Marshal: %v", err)

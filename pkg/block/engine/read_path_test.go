@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -12,7 +13,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/compression"
 	"github.com/marmos91/dittofs/pkg/block/encryption"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -122,14 +122,21 @@ func TestReadPath_BlockLocator_ThroughCompressEncrypt(t *testing.T) {
 	}
 }
 
-// TestReadPath_CASBackCompat_StandaloneLocator verifies that a hash with no
-// recorded locator (standalone default) is read back through the CAS path.
-func TestReadPath_CASBackCompat_StandaloneLocator(t *testing.T) {
+// TestReadPath_StandaloneLocatorRefused pins the post-#1493 inversion of the
+// old CAS back-compat contract: a synced hash whose recorded locator is still
+// standalone (BlockID == "") is post-migration drift — the one-shot startup
+// migration repacked every legacy standalone chunk into a block, so
+// fetchResolvedBlock must refuse the read (no silent zeros, no legacy
+// fallback), even though the legacy cas/ object still exists on the remote.
+// The positive round-trip contract lives in TestReadPath_BlockLocator_Plaintext
+// above, which seeds through the carve path and reads back byte-identical.
+func TestReadPath_StandaloneLocatorRefused(t *testing.T) {
 	ctx := context.Background()
 	mem := remotememory.New()
 
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{})
+	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{
+		LocalChunkIndex: metadatamemory.NewMemoryMetadataStoreWithDefaults()})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
@@ -141,26 +148,30 @@ func TestReadPath_CASBackCompat_StandaloneLocator(t *testing.T) {
 	data := []byte("cas-back-compat-payload")
 	h := block.ContentHash(blake3.Sum256(data))
 
-	// Write directly to the CAS remote (simulates a pre-#1414 standalone upload).
+	// Plant the legacy standalone cas/ object (a pre-#1414 upload shape) so
+	// the refusal below is provably fail-closed policy, not a missing object.
 	if err := mem.Put(ctx, h, data); err != nil {
 		t.Fatalf("mem.Put: %v", err)
 	}
-	// Record a standalone locator (BlockID=="" → CAS path).
+	// Record a standalone locator (BlockID == "") — post-migration drift.
 	if err := ms.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
-	got, err := syncer.fetchResolvedBlock(ctx, &block.FileChunk{Hash: h})
-	if err != nil {
-		t.Fatalf("fetchResolvedBlock (CAS back-compat): %v", err)
+	got, err := syncer.fetchResolvedBlock(ctx, &block.FileChunk{ID: "share/standalone/0", Hash: h})
+	if err == nil {
+		t.Fatalf("fetchResolvedBlock: want post-migration drift refusal, got nil (data=%d bytes)", len(got))
 	}
-	if !bytes.Equal(got, data) {
-		t.Fatal("fetchResolvedBlock round-trip mismatch (CAS standalone)")
+	if !strings.Contains(err.Error(), "post-migration drift") {
+		t.Fatalf("fetchResolvedBlock err = %v, want post-migration drift refusal", err)
+	}
+	if got != nil {
+		t.Fatalf("fetchResolvedBlock data = %d bytes, want nil on refusal", len(got))
 	}
 }
 
 // TestReadPath_CorruptBlock_FailClosed verifies that readChunkVerified returns
-// ErrCASContentMismatch when the chunk is read back with the wrong expected hash.
+// ErrChunkContentMismatch when the chunk is read back with the wrong expected hash.
 func TestReadPath_CorruptBlock_FailClosed(t *testing.T) {
 	ctx := context.Background()
 	mem := remotememory.New()
@@ -188,46 +199,7 @@ func TestReadPath_CorruptBlock_FailClosed(t *testing.T) {
 	}
 
 	_, err = f.syncer.readChunkVerified(ctx, loc, wrongHash)
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("readChunkVerified with wrong hash: want ErrCASContentMismatch, got %v", err)
-	}
-}
-
-// noChunkReaderRemote wraps a RemoteStore but hides the ChunkReader interface,
-// so readChunkVerified must return ErrChunkReadUnsupported.
-type noChunkReaderRemote struct{ remote.RemoteStore }
-
-// TestReadPath_NoChunkReader_FailsClosed verifies that readChunkVerified returns
-// ErrChunkReadUnsupported when the remote store does not implement ChunkReader.
-func TestReadPath_NoChunkReader_FailsClosed(t *testing.T) {
-	ctx := context.Background()
-	base := remotememory.New()
-
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{LocalChunkIndex: ms})
-	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
-	}
-	t.Cleanup(func() { _ = local.Close() })
-
-	// Wrap the remote in a type that hides ChunkReader.
-	stripped := noChunkReaderRemote{base}
-	syncer := NewSyncer(local, stripped, ms, DefaultConfig())
-	syncer.SetSyncedHashStore(ms)
-	// Do NOT wire a RemoteBlockStore: carve stays disabled, which is fine —
-	// we call readChunkVerified directly.
-
-	data := []byte("no-chunk-reader-payload")
-	h := block.ContentHash(blake3.Sum256(data))
-
-	// Record a block locator for h — not standalone — to force the block-read branch.
-	blockLoc := block.ChunkLocator{BlockID: "fake-block", WireOffset: 10, WireLength: 20}
-	if err := ms.MarkSynced(ctx, h, blockLoc); err != nil {
-		t.Fatalf("MarkSynced: %v", err)
-	}
-
-	_, err = syncer.readChunkVerified(ctx, blockLoc, h)
-	if !errors.Is(err, remote.ErrChunkReadUnsupported) {
-		t.Fatalf("readChunkVerified without ChunkReader: want ErrChunkReadUnsupported, got %v", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("readChunkVerified with wrong hash: want ErrChunkContentMismatch, got %v", err)
 	}
 }

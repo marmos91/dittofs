@@ -105,8 +105,8 @@ type cacheEntry struct {
 // (local FS or remote S3). Injected at NewCache time; called by the
 // prefetch worker pool when sequential detection triggers.
 //
-// Signature is CAS-keyed. The engine bridges to the local/remote
-// stores using FormatCASKey.
+// Signature is CAS-keyed: the engine resolves the hash through the local
+// tier first, then the chunk's block locator on the remote.
 type loadByHashFn func(ctx context.Context, hash block.ContentHash) ([]byte, error)
 
 // seqTracker — per-payloadID sequential-read state machine. lastHashes
@@ -286,7 +286,7 @@ func (c *Cache) evictLocked() {
 // dedup is preserved).
 //
 // CACHE-05 surgical invalidation: callers pass the set of hashes to drop —
-// typically a computed old/new BlockRef diff, but delete paths may pass a
+// typically a computed old/new ChunkRef diff, but delete paths may pass a
 // file's full hash list (or nil). Drop semantics preserve duplicate-hash
 // multiplicity expectations (callers may pass the same hash multiple times;
 // the cache just drops it on first match).
@@ -312,7 +312,7 @@ func (c *Cache) InvalidateFile(payloadID string, removedHashes []block.ContentHa
 }
 
 // OnRead is the sole prefetch hint API (CACHE-04). The engine calls
-// this after a successful ReadAt with the BlockRef hashes that
+// this after a successful ReadAt with the ChunkRef hashes that
 // satisfied the read; the cache uses the per-payloadID sequential
 // tracker to decide whether to fire prefetch on the upcoming hashes.
 //

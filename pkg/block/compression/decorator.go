@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 
-	"lukechampine.com/blake3"
-
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/health"
@@ -56,7 +54,11 @@ func (d *Decorator) Put(ctx context.Context, hash block.ContentHash, data []byte
 	if err != nil {
 		return err
 	}
-	return d.inner.Put(ctx, hash, wire)
+	cs, err := d.casInner()
+	if err != nil {
+		return err
+	}
+	return cs.Put(ctx, hash, wire)
 }
 
 // SealChunk applies this decorator's compression layer to plaintext, then
@@ -107,7 +109,11 @@ func (d *Decorator) sealLayer(data []byte) ([]byte, error) {
 
 // Get returns the plaintext for the block identified by hash.
 func (d *Decorator) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	raw, err := d.inner.Get(ctx, hash)
+	cs, err := d.casInner()
+	if err != nil {
+		return nil, err
+	}
+	raw, err := cs.Get(ctx, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +180,11 @@ func (d *Decorator) GetRange(ctx context.Context, hash block.ContentHash, offset
 // Has reports presence by probing inner.Head. NotFound errors map to
 // (false, nil); any other backend error propagates.
 func (d *Decorator) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
-	_, err := d.inner.Head(ctx, hash)
+	cs, err := d.casInner()
+	if err != nil {
+		return false, err
+	}
+	_, err = cs.Head(ctx, hash)
 	if err == nil {
 		return true, nil
 	}
@@ -188,7 +198,11 @@ func (d *Decorator) Has(ctx context.Context, hash block.ContentHash) (bool, erro
 // framed blocks this requires a short range-GET to parse the frame
 // header.
 func (d *Decorator) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
-	m, err := d.inner.Head(ctx, hash)
+	cs, err := d.casInner()
+	if err != nil {
+		return block.Meta{}, err
+	}
+	m, err := cs.Head(ctx, hash)
 	if err != nil {
 		return m, err
 	}
@@ -215,7 +229,11 @@ func (d *Decorator) plaintextSizeFor(ctx context.Context, hash block.ContentHash
 	if probeLen <= 0 {
 		return wireSize, nil
 	}
-	probe, err := d.inner.GetRange(ctx, hash, 0, probeLen)
+	cs, err := d.casInner()
+	if err != nil {
+		return 0, err
+	}
+	probe, err := cs.GetRange(ctx, hash, 0, probeLen)
 	if err != nil {
 		return 0, fmt.Errorf("compression: plaintext-size probe: %w", err)
 	}
@@ -233,7 +251,11 @@ func (d *Decorator) plaintextSizeFor(ctx context.Context, hash block.ContentHash
 // for each framed block before invoking the user callback. Per-block
 // probe errors halt the walk and are surfaced to the caller.
 func (d *Decorator) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	return d.inner.Walk(ctx, func(h block.ContentHash, m block.Meta) error {
+	cs, err := d.casInner()
+	if err != nil {
+		return err
+	}
+	return cs.Walk(ctx, func(h block.ContentHash, m block.Meta) error {
 		size, err := d.plaintextSizeFor(ctx, h, m.Size)
 		if err != nil {
 			return err
@@ -245,26 +267,11 @@ func (d *Decorator) Walk(ctx context.Context, fn func(hash block.ContentHash, me
 
 // Delete is a straight passthrough.
 func (d *Decorator) Delete(ctx context.Context, hash block.ContentHash) error {
-	return d.inner.Delete(ctx, hash)
-}
-
-// --- remote.RemoteStore extras -----------------------------------------
-
-// ReadBlockVerified GETs the block, decodes it, then re-verifies the
-// BLAKE3 hash over the plaintext. Streaming verification over the wire
-// bytes is not possible once the body is compressed.
-func (d *Decorator) ReadBlockVerified(ctx context.Context, hash block.ContentHash, expected block.ContentHash) ([]byte, error) {
-	plain, err := d.Get(ctx, hash)
+	cs, err := d.casInner()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	actual := blake3.Sum256(plain)
-	var got block.ContentHash
-	copy(got[:], actual[:])
-	if got != expected {
-		return nil, fmt.Errorf("%w: got %s want %s", block.ErrCASContentMismatch, got, expected)
-	}
-	return plain, nil
+	return cs.Delete(ctx, hash)
 }
 
 // ReadChunk reads the chunk's compressed wire bytes from the inner store's
@@ -321,6 +328,19 @@ func (d *Decorator) blockInner() (remote.RemoteBlockStore, error) {
 		return nil, remote.ErrChunkReadUnsupported
 	}
 	return rbs, nil
+}
+
+// casInner exposes the inner store's hash-keyed CAS surface (block.Store),
+// used only by the legacy standalone-CAS read path (block.Store methods +
+// ReadBlockVerified in legacy_cas_migration.go). Every shipped remote backend
+// and decorator implements block.Store, so the assertion succeeds in practice;
+// it returns an error rather than panicking for defense in depth.
+func (d *Decorator) casInner() (block.Store, error) {
+	cs, ok := d.inner.(block.Store)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	return cs, nil
 }
 
 // PutBlock stores the assembled block verbatim (already-sealed bodies).

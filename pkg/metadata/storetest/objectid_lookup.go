@@ -19,11 +19,11 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 	fileA := createTestFile(t, store, "objid-find", rootHandle, "a.bin", 0o644)
 	fileB := createTestFile(t, store, "objid-find", rootHandle, "b.bin", 0o644)
 
-	blocksA := []block.BlockRef{
+	blocksA := []block.ChunkRef{
 		{Hash: hashOfSeed("oid-find-a-0"), Offset: 0, Size: 4096},
 		{Hash: hashOfSeed("oid-find-a-1"), Offset: 4096, Size: 4096},
 	}
-	blocksB := []block.BlockRef{
+	blocksB := []block.ChunkRef{
 		{Hash: hashOfSeed("oid-find-b-0"), Offset: 0, Size: 4096},
 		{Hash: hashOfSeed("oid-find-b-1"), Offset: 4096, Size: 4096},
 		{Hash: hashOfSeed("oid-find-b-2"), Offset: 8192, Size: 4096},
@@ -37,7 +37,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 	// PutFile A + B with their respective ObjectIDs.
 	for _, pair := range []struct {
 		handle metadata.FileHandle
-		blocks []block.BlockRef
+		blocks []block.ChunkRef
 		oid    block.ObjectID
 		label  string
 	}{
@@ -55,7 +55,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 		}
 	}
 
-	// FindByObjectID(oidA) returns A's BlockRef list.
+	// FindByObjectID(oidA) returns A's ChunkRef list.
 	gotA, err := store.FindByObjectID(ctx, oidA)
 	if err != nil {
 		t.Fatalf("FindByObjectID(A): %v", err)
@@ -69,7 +69,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 		}
 	}
 
-	// FindByObjectID(oidB) returns B's BlockRef list.
+	// FindByObjectID(oidB) returns B's ChunkRef list.
 	gotB, err := store.FindByObjectID(ctx, oidB)
 	if err != nil {
 		t.Fatalf("FindByObjectID(B): %v", err)
@@ -79,7 +79,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 	}
 
 	// Miss: an ObjectID nobody indexed.
-	missOID := block.ComputeObjectID([]block.BlockRef{
+	missOID := block.ComputeObjectID([]block.ChunkRef{
 		{Hash: hashOfSeed("oid-find-miss"), Offset: 0, Size: 1},
 	})
 	gotMiss, err := store.FindByObjectID(ctx, missOID)
@@ -110,7 +110,7 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 	rootHandle := createTestShare(t, store, "objid-restart")
 	fileHandle := createTestFile(t, store, "objid-restart", rootHandle, "restart.bin", 0o644)
 
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: hashOfSeed("oid-rst-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-rst-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-rst-2"), Offset: 8 << 20, Size: 1 << 20},
@@ -177,7 +177,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 	handleB := createTestFile(t, store, shareName, rootHandle, "race-b.bin", 0o644)
 
 	// Both files target the same contested ObjectID.
-	contested := block.ComputeObjectID([]block.BlockRef{
+	contested := block.ComputeObjectID([]block.ChunkRef{
 		{Hash: hashOfSeed("oid-race-contest"), Offset: 0, Size: 4096},
 	})
 
@@ -189,7 +189,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 		if err != nil {
 			t.Fatalf("GetFile (stage %s): %v", seed, err)
 		}
-		f.Blocks = []block.BlockRef{
+		f.Blocks = []block.ChunkRef{
 			{Hash: hashOfSeed(seed), Offset: 0, Size: 4096},
 		}
 		f.ObjectID = contested
@@ -238,7 +238,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 // resolves at the metadata-store layer, NOT at the share layer. Two shares are
 // created against the SAME factory-produced store, each receives a quiesced
 // file with a DIFFERENT ObjectID, and the store-level FindByObjectID returns
-// each share's BlockRef list correctly when looked up by its respective
+// each share's ChunkRef list correctly when looked up by its respective
 // ObjectID — proving cross-share dedup hits are addressable. A negative
 // lookup against a never-persisted ObjectID returns nil (no false hit
 // across the share boundary either way).
@@ -256,11 +256,11 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 	fileA := createTestFile(t, store, "objid-cross-a", rootA, "shared.bin", 0o644)
 	fileB := createTestFile(t, store, "objid-cross-b", rootB, "other.bin", 0o644)
 
-	blocksA := []block.BlockRef{
+	blocksA := []block.ChunkRef{
 		{Hash: hashOfSeed("oid-cross-a-0"), Offset: 0, Size: 4096},
 		{Hash: hashOfSeed("oid-cross-a-1"), Offset: 4096, Size: 4096},
 	}
-	blocksB := []block.BlockRef{
+	blocksB := []block.ChunkRef{
 		{Hash: hashOfSeed("oid-cross-b-0"), Offset: 0, Size: 8192},
 		{Hash: hashOfSeed("oid-cross-b-1"), Offset: 8192, Size: 4096},
 		{Hash: hashOfSeed("oid-cross-b-2"), Offset: 12288, Size: 1024},
@@ -274,7 +274,7 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 	// PutFile each share's file with its respective ObjectID.
 	for _, pair := range []struct {
 		handle metadata.FileHandle
-		blocks []block.BlockRef
+		blocks []block.ChunkRef
 		oid    block.ObjectID
 		label  string
 	}{
@@ -294,9 +294,9 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 
 	// Per the lookup operates at the metadata-store layer, not the
 	// share layer; either share's ObjectID resolves to its persisted
-	// BlockRef list regardless of which share's file owns it.
+	// ChunkRef list regardless of which share's file owns it.
 
-	// Lookup A: returns share-A's BlockRefs.
+	// Lookup A: returns share-A's ChunkRefs.
 	gotA, err := store.FindByObjectID(ctx, oidA)
 	if err != nil {
 		t.Fatalf("FindByObjectID share-A (cross-share): %v", err)
@@ -306,7 +306,7 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 			gotA, blocksA)
 	}
 
-	// Lookup B: returns share-B's BlockRefs.
+	// Lookup B: returns share-B's ChunkRefs.
 	gotB, err := store.FindByObjectID(ctx, oidB)
 	if err != nil {
 		t.Fatalf("FindByObjectID share-B (cross-share): %v", err)
@@ -317,7 +317,7 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 	}
 
 	// Negative: an ObjectID never persisted by either share returns nil.
-	missOID := block.ComputeObjectID([]block.BlockRef{
+	missOID := block.ComputeObjectID([]block.ChunkRef{
 		{Hash: hashOfSeed("oid-cross-miss"), Offset: 0, Size: 1},
 	})
 	if missOID == oidA || missOID == oidB {
@@ -332,10 +332,10 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 	}
 }
 
-// blockRefSlicesEqual returns true if a and b have identical BlockRef
+// blockRefSlicesEqual returns true if a and b have identical ChunkRef
 // fields (Hash, Offset, Size) in order. Defined as a local helper so
 // objectid_lookup.go scenarios stay self-contained.
-func blockRefSlicesEqual(a, b []block.BlockRef) bool {
+func blockRefSlicesEqual(a, b []block.ChunkRef) bool {
 	if len(a) != len(b) {
 		return false
 	}

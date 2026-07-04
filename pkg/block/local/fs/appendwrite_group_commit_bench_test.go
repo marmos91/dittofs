@@ -32,6 +32,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // BenchmarkAppendWrite_GroupCommit — Opt 2 yellow-flag bench.
@@ -136,6 +138,9 @@ func BenchmarkAppendWrite_GroupCommit(b *testing.B) {
 // refactoring the test-side helper.
 func newBenchFSStore(b *testing.B, opts FSStoreOptions) *FSStore {
 	b.Helper()
+	if opts.LocalChunkIndex == nil {
+		opts.LocalChunkIndex = memmeta.NewMemoryMetadataStoreWithDefaults()
+	}
 	dir := b.TempDir()
 	bc, err := NewWithOptions(dir, 1<<30, nopFBS{}, opts)
 	if err != nil {

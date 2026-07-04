@@ -6,16 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"github.com/marmos91/dittofs/pkg/metadata/storetest"
 )
-
-// TestBlockLayoutConformance runs the per-share BlockLayout conformance
-// scenarios against the in-memory metadata store.
-func TestBlockLayoutConformance(t *testing.T) {
-	storetest.RunBlockLayoutSuite(t, func(t *testing.T) metadata.Store {
-		return memory.NewMemoryMetadataStoreWithDefaults()
-	})
-}
 
 // TestSeededShareRegistration verifies that CreateRootDirectory alone (the path
 // the runtime uses — it never calls CreateShare) makes a share resolvable by

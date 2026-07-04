@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,21 +13,18 @@ import (
 	memorylocal "github.com/marmos91/dittofs/pkg/block/local/memory"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
+	"github.com/marmos91/dittofs/pkg/metadata"
 	metastore "github.com/marmos91/dittofs/pkg/metadata/store/memory"
-	"lukechampine.com/blake3"
 )
 
-// latencyRemote wraps a remotememory.Store and (a) injects a fixed per-Get
-// WAN latency into the verified-read path the engine fetch code actually
-// calls (dispatchRemoteFetch → ReadBlockVerified), and (b) counts Get and Put
-// calls atomically. It models a high-latency remote tier (S3 / object store)
-// so a benchmark can show the warm (all-local) read path avoiding the injected
-// round-trip, and an invariant test can assert that a read-only workload
-// issues zero re-uploads (Put count 0) after the #1362 fix.
-//
-// The counters and latency are wrapped around ReadBlockVerified rather than
-// Get because dispatchRemoteFetch routes every block fetch through the
-// verified-read CAS path; Get is wrapped too for completeness.
+// latencyRemote wraps a remotememory.Store and (a) injects a fixed per-read
+// WAN latency into the block-read path the engine fetch code actually calls
+// (dispatchRemoteFetch → readChunkVerified → ReadChunk), and (b) counts
+// ReadChunk and PutBlock calls atomically. It models a high-latency remote
+// tier (S3 / object store) so a benchmark can show the warm (all-local) read
+// path avoiding the injected round-trip, and an invariant test can assert that
+// a read-only workload issues zero re-uploads (PutBlock count 0) after the
+// #1362 fix.
 type latencyRemote struct {
 	*remotememory.Store
 	getLatency time.Duration
@@ -38,54 +36,36 @@ func newLatencyRemote(getLatency time.Duration) *latencyRemote {
 	return &latencyRemote{Store: remotememory.New(), getLatency: getLatency}
 }
 
-func (r *latencyRemote) ReadBlockVerified(ctx context.Context, hash, expected block.ContentHash) ([]byte, error) {
+func (r *latencyRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
 	r.gets.Add(1)
 	if r.getLatency > 0 {
 		time.Sleep(r.getLatency)
 	}
-	return r.Store.ReadBlockVerified(ctx, hash, expected)
+	return r.Store.ReadChunk(ctx, blockID, offset, length, hash)
 }
 
-func (r *latencyRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	r.gets.Add(1)
-	if r.getLatency > 0 {
-		time.Sleep(r.getLatency)
-	}
-	return r.Store.Get(ctx, hash)
-}
-
-func (r *latencyRemote) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
+func (r *latencyRemote) PutBlock(ctx context.Context, blockID string, body io.Reader) error {
 	r.puts.Add(1)
-	return r.Store.Put(ctx, hash, data)
+	return r.Store.PutBlock(ctx, blockID, body)
 }
 
-// Compile-time assertion that the latency wrapper still satisfies the full
-// remote contract the syncer depends on.
-var _ remote.RemoteStore = (*latencyRemote)(nil)
+// Compile-time assertions that the latency wrapper still satisfies the remote
+// contracts the syncer depends on (block upload + ranged chunk read).
+var (
+	_ remote.RemoteStore      = (*latencyRemote)(nil)
+	_ remote.RemoteBlockStore = (*latencyRemote)(nil)
+	_ remote.ChunkReader      = (*latencyRemote)(nil)
+)
 
-// seedRemoteOnlyBlock seeds a single FileChunk row in BlockStateRemote and the
-// matching CAS bytes in the (latency) remote, WITHOUT placing the chunk in any
-// local store. A subsequent read of (payloadID, blockIdx 0) therefore misses
-// locally and fetches from the remote tier — the exact cold-read path #1362
-// bounds. Returns the chunk hash.
-func seedRemoteOnlyBlock(t testing.TB, fbs *stubFileChunkStore, rs interface {
-	Put(context.Context, block.ContentHash, []byte) error
-}, payloadID string, data []byte) block.ContentHash {
+// seedRemoteOnlyBlock seeds a single FileChunk row in BlockStateRemote, the
+// matching packed block on the (latency) remote, and the synced marker with
+// the block locator — WITHOUT placing the chunk in any local store. A
+// subsequent read of (payloadID, blockIdx 0) therefore misses locally and
+// fetches from the remote tier — the exact cold-read path #1362 bounds.
+// Returns the chunk hash.
+func seedRemoteOnlyBlock(t testing.TB, fbs *stubFileChunkStore, rbs remote.RemoteBlockStore, shs metadata.SyncedHashStore, payloadID string, data []byte) block.ContentHash {
 	t.Helper()
-	hash := block.ContentHash(blake3.Sum256(data))
-	if err := rs.Put(context.Background(), hash, data); err != nil {
-		t.Fatalf("seed remote Put: %v", err)
-	}
-	fb := &block.FileChunk{
-		ID:       fmt.Sprintf("%s/%d", payloadID, 0),
-		Hash:     hash,
-		DataSize: uint32(len(data)),
-		State:    block.BlockStateRemote,
-	}
-	if err := fbs.Put(context.Background(), fb); err != nil {
-		t.Fatalf("seed FileChunk Put: %v", err)
-	}
-	return hash
+	return seedSyncedRemoteChunk(t, fbs, rbs, shs, payloadID, 0, data)
 }
 
 // BenchmarkReadThroughCache_ColdVsWarm quantifies the benefit of the
@@ -118,12 +98,12 @@ func BenchmarkReadThroughCache_ColdVsWarm(b *testing.B) {
 			loc := memorylocal.New()
 			rs := newLatencyRemote(wanLatency)
 			fbs := newStubFileChunkStore()
+			mds := metastore.NewMemoryMetadataStoreWithDefaults()
 			payloadID := fmt.Sprintf("cold-%d", i)
 			data := makeChunk(chunkSize, byte(i))
-			seedRemoteOnlyBlock(b, fbs, rs, payloadID, data)
+			seedRemoteOnlyBlock(b, fbs, rs, mds, payloadID, data)
 
-			m := newFetchSyncer(loc, rs.Store, fbs)
-			m.remoteStore = rs // route through the latency wrapper
+			m := newFetchSyncer(loc, rs, fbs, mds)
 
 			got, err := m.fetchBlock(ctx, payloadID, 0)
 			if err != nil {
@@ -141,12 +121,12 @@ func BenchmarkReadThroughCache_ColdVsWarm(b *testing.B) {
 		loc := memorylocal.New()
 		rs := newLatencyRemote(wanLatency)
 		fbs := newStubFileChunkStore()
+		mds := metastore.NewMemoryMetadataStoreWithDefaults()
 		payloadID := "warm"
 		data := makeChunk(chunkSize, 0x5A)
-		hash := seedRemoteOnlyBlock(b, fbs, rs, payloadID, data)
+		hash := seedRemoteOnlyBlock(b, fbs, rs, mds, payloadID, data)
 
-		m := newFetchSyncer(loc, rs.Store, fbs)
-		m.remoteStore = rs
+		m := newFetchSyncer(loc, rs, fbs, mds)
 
 		// Prime: one cold fetch persists the chunk locally.
 		if _, err := m.fetchBlock(ctx, payloadID, 0); err != nil {
@@ -211,15 +191,13 @@ func TestReadThroughCache_NoReuploadOnReadOnlyWorkload(t *testing.T) {
 	fbs := newStubFileChunkStore()
 	mds := metastore.NewMemoryMetadataStoreWithDefaults()
 
-	m := newFetchSyncer(loc, rs.Store, fbs)
-	m.remoteStore = rs      // count Puts through the wrapper
-	m.syncedHashStore = mds // so markFetchedSynced can mark synced
+	m := newFetchSyncer(loc, rs, fbs, mds)
 	hashes := make([]block.ContentHash, 0, setSize)
 
 	for i := 0; i < setSize; i++ {
 		payloadID := fmt.Sprintf("ro-%d", i)
 		data := makeChunk(chunkSize, byte(i))
-		h := seedRemoteOnlyBlock(t, fbs, rs, payloadID, data)
+		h := seedRemoteOnlyBlock(t, fbs, rs, mds, payloadID, data)
 		hashes = append(hashes, h)
 
 		// Model the real read-fetch path: StoreChunk's onChunkComplete callback
@@ -233,8 +211,8 @@ func TestReadThroughCache_NoReuploadOnReadOnlyWorkload(t *testing.T) {
 		t.Fatalf("precondition unsyncedBytes=%d, want %d", got, setSize*chunkSize)
 	}
 
-	// Reset the Put counter: the remote-seed Puts above are fixture setup, not
-	// re-uploads. We only care about Puts the READ path issues.
+	// Reset the upload counter: the seed PutBlocks above are fixture setup,
+	// not re-uploads. We only care about uploads the READ path issues.
 	rs.puts.Store(0)
 
 	// Read the entire working set through the fetch+persist path.
@@ -251,7 +229,7 @@ func TestReadThroughCache_NoReuploadOnReadOnlyWorkload(t *testing.T) {
 
 	// Invariant 1: the read-only workload issued zero re-uploads.
 	if got := rs.puts.Load(); got != 0 {
-		t.Errorf("remote Put count=%d after read-only workload; want 0 (#1362 read→write amplification eliminated)", got)
+		t.Errorf("remote PutBlock count=%d after read-only workload; want 0 (#1362 read→write amplification eliminated)", got)
 	}
 
 	// Invariant 2: the pending-upload set is fully drained, so the mirror loop
@@ -260,7 +238,7 @@ func TestReadThroughCache_NoReuploadOnReadOnlyWorkload(t *testing.T) {
 		t.Errorf("unsyncedBytes=%d after reads; want 0 (every fetched chunk canceled its pending upload)", got)
 	}
 	m.pendingMu.Lock()
-	pending := len(m.pendingHashes)
+	pending := len(m.pendingCarveHashes)
 	m.pendingMu.Unlock()
 	if pending != 0 {
 		t.Errorf("pendingHashes has %d entries; want 0", pending)
@@ -305,7 +283,8 @@ func TestReadThroughCache_BoundedByMaxDisk(t *testing.T) {
 	dir := t.TempDir()
 	// No SyncedHashStore: every fetched chunk is immediately evictable, so the
 	// bound is enforced by Put's ensureSpace alone.
-	loc, err := localfs.NewWithOptions(dir, maxDisk, newStubFileChunkStore(), localfs.FSStoreOptions{})
+	loc, err := localfs.NewWithOptions(dir, maxDisk, newStubFileChunkStore(), localfs.FSStoreOptions{
+		LocalChunkIndex: metastore.NewMemoryMetadataStoreWithDefaults()})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}
@@ -318,13 +297,13 @@ func TestReadThroughCache_BoundedByMaxDisk(t *testing.T) {
 
 	rs := newLatencyRemote(0)
 	fbs := newStubFileChunkStore()
-	m := newFetchSyncer(loc, rs.Store, fbs)
-	m.remoteStore = rs
+	mds := metastore.NewMemoryMetadataStoreWithDefaults()
+	m := newFetchSyncer(loc, rs, fbs, mds)
 
 	for i := 0; i < setSize; i++ {
 		payloadID := fmt.Sprintf("bound-%d", i)
 		data := makeChunk(chunkSize, byte(i))
-		seedRemoteOnlyBlock(t, fbs, rs, payloadID, data)
+		seedRemoteOnlyBlock(t, fbs, rs, mds, payloadID, data)
 
 		got, err := m.fetchBlock(ctx, payloadID, 0)
 		if err != nil {

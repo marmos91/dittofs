@@ -29,13 +29,13 @@ type SeedOpts struct {
 	// Files is the number of regular files to seed (e.g. 1e5, 1e6).
 	Files int
 
-	// BlocksPerFile is the number of BlockRef entries per file. Total
+	// BlocksPerFile is the number of ChunkRef entries per file. Total
 	// referenced blocks = Files * BlocksPerFile; with Dedup=1 every block
 	// hash is unique so the returned HashSet has Files*BlocksPerFile
 	// entries — the worst case for create-path RAM.
 	BlocksPerFile int
 
-	// BlockSize is the byte size recorded on each BlockRef (drives the
+	// BlockSize is the byte size recorded on each ChunkRef (drives the
 	// reported logical-bytes metric only; no real bytes are written).
 	BlockSize uint32
 
@@ -51,7 +51,7 @@ type SeedOpts struct {
 
 // NewStore constructs the metadata engine named by opts.Engine and seeds
 // it with opts.Files synthetic regular files, each carrying
-// opts.BlocksPerFile BlockRefs. Returns the store, the number of unique
+// opts.BlocksPerFile ChunkRefs. Returns the store, the number of unique
 // block hashes seeded, and a cleanup func.
 //
 // Files are attached directly under the share root via PutFile + SetParent
@@ -139,12 +139,12 @@ func seed(ctx context.Context, store metadata.Store, opts SeedOpts) (int, error)
 			return 0, fmt.Errorf("snapshots bench: decode handle: %w", err)
 		}
 
-		refs := make([]block.BlockRef, blocksPerFile)
+		refs := make([]block.ChunkRef, blocksPerFile)
 		for b := 0; b < blocksPerFile; b++ {
 			// One distinct hash per (dedup-bucketed) block. blockSeq/dedup
 			// collapses every dedup-th block onto a shared hash.
 			h := hashFromSeq(blockSeq / uint64(dedup))
-			refs[b] = block.BlockRef{
+			refs[b] = block.ChunkRef{
 				Hash:   h,
 				Offset: uint64(b) * uint64(blockSize),
 				Size:   blockSize,

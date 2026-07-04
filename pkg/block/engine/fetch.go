@@ -9,7 +9,6 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 )
 
 // inFlightKey returns the deterministic per-block dedup key used by
@@ -146,69 +145,71 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 		// migrated store; if this triggers at runtime, the sentinel
 		// file was lost or hand-removed.
 		logger.Error("legacy zero-hash FileChunk encountered post-migration — refusing read",
-			"block_id", fb.ID,
-			"store_key", fb.BlockStoreKey)
+			"block_id", fb.ID)
 		return "", nil, fmt.Errorf("blockstore: legacy zero-hash FileChunk encountered post-migration: block_id=%s", fb.ID)
 	}
-	// Resolve where the chunk's bytes live (#1414). A standalone locator
-	// (BlockID=="") — the only kind written on the live path today, and the
-	// default for any not-yet-recorded hash — reads the chunk's own CAS
-	// object exactly as before. A block locator routes a ranged read into the
-	// enclosing block object (produced by PR3b; exercised here only by tests).
-	loc, err := m.resolveLocator(ctx, fb.Hash)
+	// Resolve the block locator for the chunk (#1414). Two distinct cases:
+	//
+	//   - No synced marker at all (synced==false): the chunk has not been
+	//     uploaded yet, so it has no remote copy. This is NOT drift — the bytes
+	//     are still local-only (a read that raced the async carve). Return
+	//     ("", nil, nil) so the caller falls back to the local read path rather
+	//     than failing closed.
+	//   - Synced marker present but empty BlockID: post-#1493 every synced hash
+	//     carries a block locator (the startup migration repacked all legacy
+	//     standalone chunks), so a synced hash with no BlockID is genuine
+	//     metadata drift. Refuse the read.
+	loc, synced, err := m.resolveLocator(ctx, fb.Hash)
 	if err != nil {
 		return "", nil, err
 	}
-	if loc.IsStandalone() {
-		// CAS path: verified read via BLAKE3 recompute. Canonical key is
-		// derived from the hash; both arguments to ReadBlockVerified are
-		// the same hash per the signature (canonical-key hash +
-		// expected-body hash collapse onto one value when hash IS the key).
-		key := block.FormatCASKey(fb.Hash)
-		data, rerr := m.remoteStore.ReadBlockVerified(ctx, fb.Hash, fb.Hash)
-		return key, data, rerr
+	if !synced {
+		return "", nil, nil // not on remote yet — caller serves from local
+	}
+	if loc.BlockID == "" {
+		logger.Error("synced chunk has no block locator — refusing remote fetch (post-migration drift)",
+			"block_id", fb.ID,
+			"hash", fb.Hash.String())
+		return "", nil, fmt.Errorf("blockstore: no block locator recorded for synced chunk %s (post-migration drift)", fb.Hash)
 	}
 	key := block.FormatBlockKey(loc.BlockID)
 	data, perr := m.readChunkVerified(ctx, loc, fb.Hash)
 	return key, data, perr
 }
 
-// resolveLocator returns the recorded remote locator for hash, defaulting to a
-// standalone locator (BlockID=="") when no SyncedHashStore is wired (test
-// fixtures) or when the hash has no recorded marker. The standalone default
-// preserves the exact pre-#1414 behavior — a direct CAS GET by hash — for every
-// existing path, since the live mirror path only ever records standalone
-// locators in PR3a.
-func (m *Syncer) resolveLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, error) {
+// resolveLocator returns the recorded remote locator for hash and whether the
+// hash is synced (has a marker at all). synced==false means the chunk has not
+// been uploaded yet (still local-only); dispatchRemoteFetch treats that as
+// "not on remote" and falls back to local, NOT as drift. A synced hash with an
+// empty BlockID is the drift case the caller fails closed on. With no
+// SyncedHashStore wired (test fixtures) the hash is reported not synced.
+func (m *Syncer) resolveLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
 	m.mu.RLock()
 	hs := m.syncedHashStore
 	m.mu.RUnlock()
 	if hs == nil {
-		return block.ChunkLocator{}, nil
+		return block.ChunkLocator{}, false, nil
 	}
 	loc, ok, err := hs.GetLocator(ctx, hash)
 	if err != nil {
-		return block.ChunkLocator{}, fmt.Errorf("resolve locator %s: %w", hash, err)
+		return block.ChunkLocator{}, false, fmt.Errorf("resolve locator %s: %w", hash, err)
 	}
 	if !ok {
-		return block.ChunkLocator{}, nil
+		return block.ChunkLocator{}, false, nil
 	}
-	return loc, nil
+	return loc, true, nil
 }
 
 // readChunkVerified fetches a block-resident chunk through the remote store's
 // ChunkReader capability and verifies its BLAKE3 matches hash. Verification
 // happens here (not in the store stack) because no single decorator layer holds
 // both the chunk's wire bytes and its plaintext-hash domain — ReadChunk
-// returns decrypted/decompressed plaintext, and we recompute over it, mirroring
-// ReadBlockVerified's guarantee for standalone objects.
+// returns decrypted/decompressed plaintext, and we recompute over it so a
+// corrupt ranged read can never be served.
 func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, hash block.ContentHash) ([]byte, error) {
-	pcr, ok := m.remoteStore.(remote.ChunkReader)
-	if !ok {
-		return nil, fmt.Errorf("chunk %s has block locator %q but remote store lacks block-read support: %w",
-			hash, loc.BlockID, remote.ErrChunkReadUnsupported)
-	}
-	data, err := pcr.ReadChunk(ctx, loc.BlockID, loc.WireOffset, loc.WireLength, hash)
+	// remote.RemoteStore embeds ChunkReader, so ranged block reads are always
+	// available — no capability probe needed.
+	data, err := m.remoteStore.ReadChunk(ctx, loc.BlockID, loc.WireOffset, loc.WireLength, hash)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +219,7 @@ func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, 
 			dm.RecordRemoteCorruption(1)
 		}
 		return nil, fmt.Errorf("%w: block %s chunk %s computed %s",
-			block.ErrCASContentMismatch, loc.BlockID, hash, computed)
+			block.ErrChunkContentMismatch, loc.BlockID, hash, computed)
 	}
 	if dm := m.dataplaneMetrics(); dm != nil {
 		dm.RecordBlockRangeRead(len(data))
@@ -296,7 +297,7 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk) ([
 	}
 
 	// CAS rewire: persist the downloaded bytes to the local CAS chunk
-	// store under fb.Hash (verified by ReadBlockVerified above). The
+	// store under fb.Hash (verified by readChunkVerified above). The
 	// previous WriteFromRemote method buffered into the legacy memBlock
 	// + .blk file layout; the unified post-Phase-17 read path resolves
 	// (payloadID, blockIdx) → FileChunk.Hash → local.Get(hash), so the
@@ -478,7 +479,7 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	// reason to hold it in a background goroutine. Under high concurrency
 	// background goroutines each holding 8MB data caused OOM.
 	//
-	// CAS rewire: write under fb.Hash (verified by ReadBlockVerified). The
+	// CAS rewire: write under fb.Hash (verified by readChunkVerified). The
 	// unified post-Phase-17 read path resolves (payloadID, blockIdx) →
 	// FileChunk.Hash → local.Get(hash), so the downloaded bytes only need
 	// to land in the CAS chunk store.

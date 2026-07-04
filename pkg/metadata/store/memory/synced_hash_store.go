@@ -8,8 +8,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Compile-time assertion: the memory engine implements SyncedHashStore.
-var _ metadata.SyncedHashStore = (*MemoryMetadataStore)(nil)
+// Compile-time assertions: the memory engine and its transaction implement
+// SyncedHashStore.
+var (
+	_ metadata.SyncedHashStore = (*MemoryMetadataStore)(nil)
+	_ metadata.SyncedHashStore = (*memoryTransaction)(nil)
+)
 
 // MarkSyncedAtForTest stamps a synced marker with an explicit first-mirror
 // time. Test-only: it lets GC grace-window tests backdate when a hash was
@@ -125,5 +129,72 @@ func (s *MemoryMetadataStore) DeleteSynced(ctx context.Context, hash block.Conte
 	}
 	delete(s.synced, hash)
 	delete(s.syncedLocators, hash)
+	return nil
+}
+
+// ============================================================================
+// Transaction-level SyncedHashStore
+// ============================================================================
+//
+// The synced maps are guarded by syncedMu (not the store.mu the transaction
+// holds), so the tx methods do NOT mutate them directly. Mutations buffer in
+// tx.syncedOps — overlaid over the store for read-your-writes — and
+// WithTransaction applies the buffer under syncedMu after a successful
+// commit, so a rollback discards them (see transaction.go).
+
+func (tx *memoryTransaction) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
+	if st, ok := tx.syncedOps[hash]; ok {
+		return !st.deleted, nil
+	}
+	return tx.store.IsSynced(ctx, hash)
+}
+
+// MarkSynced records the synced marker inside the transaction. First-wins,
+// matching the direct method: a hash already marked (in this tx or in the
+// store) is a no-op — EXCEPT after a DeleteSynced in the same tx, where the
+// new locator wins (read-your-writes; this is what gives DefaultCommitBlock
+// its locator-overwrite semantics).
+func (tx *memoryTransaction) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
+	if st, ok := tx.syncedOps[hash]; ok {
+		if st.deleted {
+			tx.syncedOps[hash] = syncedTxState{loc: loc}
+		}
+		return nil // already marked in this tx — first locator wins
+	}
+	synced, err := tx.store.IsSynced(ctx, hash)
+	if err != nil {
+		return err
+	}
+	if synced {
+		return nil // already marked in the store — first locator wins
+	}
+	if tx.syncedOps == nil {
+		tx.syncedOps = make(map[block.ContentHash]syncedTxState)
+	}
+	tx.syncedOps[hash] = syncedTxState{loc: loc}
+	return nil
+}
+
+func (tx *memoryTransaction) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	if st, ok := tx.syncedOps[hash]; ok {
+		if st.deleted {
+			return block.ChunkLocator{}, false, nil
+		}
+		if st.loc.IsStandalone() {
+			return block.ChunkLocator{}, true, nil
+		}
+		return st.loc, true, nil
+	}
+	return tx.store.GetLocator(ctx, hash)
+}
+
+func (tx *memoryTransaction) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if tx.syncedOps == nil {
+		tx.syncedOps = make(map[block.ContentHash]syncedTxState)
+	}
+	tx.syncedOps[hash] = syncedTxState{deleted: true}
 	return nil
 }

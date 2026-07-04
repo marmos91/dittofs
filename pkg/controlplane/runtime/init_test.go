@@ -1,12 +1,10 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
-	"lukechampine.com/blake3"
-
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
@@ -460,13 +458,11 @@ func TestPerShareBlockStoreRemoteSharing(t *testing.T) {
 
 	// Verify shared remote: write via share-1's remote, visible via share-2's remote.
 	testData := []byte("shared remote data")
-	testHash := blake3.Sum256(testData)
-	var hash block.ContentHash
-	copy(hash[:], testHash[:])
-	if err := remote1.Put(ctx, hash, testData); err != nil {
+	const blockID = "shared-remote-block"
+	if err := remote1.PutBlock(ctx, blockID, bytes.NewReader(testData)); err != nil {
 		t.Fatalf("write to shared remote via share-1 failed: %v", err)
 	}
-	readBack, err := remote2.Get(ctx, hash)
+	readBack, err := remote2.GetBlock(ctx, blockID)
 	if err != nil {
 		t.Fatalf("read from shared remote via share-2 failed: %v", err)
 	}

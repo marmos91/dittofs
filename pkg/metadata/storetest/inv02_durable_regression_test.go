@@ -36,7 +36,7 @@ func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
 	sharedHash := hashOfSeed("inv02-dup-shared-hash")
 	now := time.Now()
 
-	refs := make([]block.BlockRef, 0, 2)
+	refs := make([]block.ChunkRef, 0, 2)
 	for i := 0; i < 2; i++ {
 		blockID := payloadID + "/" + string(rune('0'+i))
 		fb := &block.FileChunk{
@@ -53,7 +53,7 @@ func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
 		if err := store.Put(ctx, fb); err != nil {
 			t.Fatalf("Put(%s): %v", blockID, err)
 		}
-		refs = append(refs, block.BlockRef{
+		refs = append(refs, block.ChunkRef{
 			Hash:   sharedHash,
 			Offset: uint64(i) * 4096,
 			Size:   4096,
@@ -103,9 +103,9 @@ func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
 		t.Fatalf("reconcileINV02: %v", err)
 	}
 
-	// Two BlockRef entries -> totalRefs == 2.
+	// Two ChunkRef entries -> totalRefs == 2.
 	if totalRefs != 2 {
-		t.Errorf("totalRefs = %d, want 2 (two BlockRef entries)", totalRefs)
+		t.Errorf("totalRefs = %d, want 2 (two ChunkRef entries)", totalRefs)
 	}
 	// Both duplicate-hash rows must contribute their RefCount independently:
 	// 3 + 3 == 6. A per-distinct-hash sum would report only 3.

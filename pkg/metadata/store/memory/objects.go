@@ -117,7 +117,7 @@ func (s *MemoryMetadataStore) DecrementRefCountAndReap(ctx context.Context, id s
 // RefCount is the ONLY field mutated. BlockState is left
 // unchanged — no Pending→Syncing→Remote transition; no new row is
 // materialized on either the success or the ErrUnknownHash branch.
-func (s *MemoryMetadataStore) AddRef(ctx context.Context, hash block.ContentHash, payloadID string, blockRef block.BlockRef) error {
+func (s *MemoryMetadataStore) AddRef(ctx context.Context, hash block.ContentHash, payloadID string, blockRef block.ChunkRef) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.addRefLocked(ctx, hash, payloadID, blockRef)
@@ -331,7 +331,7 @@ func (tx *memoryTransaction) DecrementRefCountAndReap(ctx context.Context, id st
 	return tx.store.decrementAndReapLocked(ctx, id)
 }
 
-func (tx *memoryTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, payloadID string, blockRef block.BlockRef) error {
+func (tx *memoryTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, payloadID string, blockRef block.ChunkRef) error {
 	return tx.store.addRefLocked(ctx, hash, payloadID, blockRef)
 }
 
@@ -415,7 +415,7 @@ func (s *MemoryMetadataStore) incrementRefCountLocked(_ context.Context, id stri
 // RefCount on the resolved row. Caller MUST hold s.mu Write lock so
 // the entire resolve+mutate sequence is atomic (TOCTOU-free
 // against concurrent DecrementRefCount cascade).
-func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash block.ContentHash, _ string, _ block.BlockRef) error {
+func (s *MemoryMetadataStore) addRefLocked(_ context.Context, hash block.ContentHash, _ string, _ block.ChunkRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// memory backend records ref count only — parameters intentionally
 	// blanked.

@@ -78,7 +78,7 @@ func TestVerifyingReader_HappyPath(t *testing.T) {
 }
 
 // TestVerifyingReader_BodyTampered verifies that flipping a single byte
-// surfaces ErrCASContentMismatch on EOF observation. Note: the buffer
+// surfaces ErrChunkContentMismatch on EOF observation. Note: the buffer
 // callers receive on this path is corrupt — callers MUST discard it.
 func TestVerifyingReader_BodyTampered(t *testing.T) {
 	clean := []byte("authoritative payload — must hash to expected")
@@ -90,10 +90,10 @@ func TestVerifyingReader_BodyTampered(t *testing.T) {
 
 	_, err := io.ReadAll(v)
 	if err == nil {
-		t.Fatal("ReadAll: expected ErrCASContentMismatch, got nil")
+		t.Fatal("ReadAll: expected ErrChunkContentMismatch, got nil")
 	}
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("ReadAll err = %v, want wrapped ErrCASContentMismatch", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("ReadAll err = %v, want wrapped ErrChunkContentMismatch", err)
 	}
 }
 
@@ -115,10 +115,10 @@ func TestVerifyingReader_EarlyClose(t *testing.T) {
 
 	closeErr := v.Close()
 	if closeErr == nil {
-		t.Fatal("Close: expected ErrCASContentMismatch on early close, got nil")
+		t.Fatal("Close: expected ErrChunkContentMismatch on early close, got nil")
 	}
-	if !errors.Is(closeErr, block.ErrCASContentMismatch) {
-		t.Fatalf("Close err = %v, want wrapped ErrCASContentMismatch", closeErr)
+	if !errors.Is(closeErr, block.ErrChunkContentMismatch) {
+		t.Fatalf("Close err = %v, want wrapped ErrChunkContentMismatch", closeErr)
 	}
 	if !strings.Contains(closeErr.Error(), "before EOF") {
 		t.Errorf("Close err message should mention early EOF, got %q", closeErr.Error())
@@ -193,10 +193,10 @@ func TestReadAllVerified_ContentLengthMismatch(t *testing.T) {
 	v := newVerifyingReader(io.NopCloser(bytes.NewReader(tampered)), expected)
 	out, err := readAllVerified(v, &cl, maxBlockReadSize)
 	if err == nil {
-		t.Fatal("expected ErrCASContentMismatch, got nil")
+		t.Fatal("expected ErrChunkContentMismatch, got nil")
 	}
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("err = %v, want wrapped ErrCASContentMismatch", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("err = %v, want wrapped ErrChunkContentMismatch", err)
 	}
 	if out != nil {
 		t.Fatalf("expected nil buffer on mismatch, got %d bytes", len(out))

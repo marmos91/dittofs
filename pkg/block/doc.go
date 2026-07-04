@@ -69,7 +69,7 @@
 //
 // Lifecycle
 //
-//   - Written by migration tooling (e.g., `dfs migrate-to-cas`) via
+//   - Written by the (now-removed, <= v0.21) migration tooling via
 //     atomic rename ONLY at successful completion of the transition.
 //     A crash mid-migration cannot leave the sentinel behind because
 //     the tooling writes <name>.tmp first, fsyncs, then renames into
@@ -118,18 +118,14 @@
 //
 // # Migration tooling
 //
-// The offline one-shot legacy-to-CAS migration ships as the cobra
-// subcommand `dfs migrate-to-cas`, backed by the shared library at
-// pkg/block/migrate/migrate_to_cas.go (MigrateShareToCAS). The
-// command is server-side and offline (refuses to run while the dfs
-// PID lockfile exists), idempotent via a per-share journal
-// (.dittofs-migrate-to-cas.state), and writes the .cas-migrated-v1
-// sentinel via atomic rename only on full per-share success.
-//
-// Operators who arrive here via `go doc` should next read
-// docs/CONFIGURATION.md §Migration for the boot-guard contract
-// exit code 78, recovery procedure, and crash-safety guarantees, and
-// docs/CLI.md for the full `dfs migrate-to-cas` flag reference.
+// The offline .blk-to-CAS migration tool (`dfs migrate-to-cas`) shipped
+// through dittofs v0.21 and has been removed; shares still on the `.blk`
+// layout must be migrated with an older release before upgrading. The
+// constructors keep honoring the .cas-migrated-v1 sentinels those runs
+// left behind. The follow-on cas->blocks conversion (standalone CAS
+// objects into packed blocks/<id> containers, #1493) is automatic: it
+// runs blocking at share startup (engine.Store.Start), is resumable and
+// idempotent, and needs no tooling or sentinel.
 //
 // # Error sentinels
 //
@@ -139,15 +135,14 @@
 //
 // - ErrStopWalk — Walk callback early-exit signal.
 //   - ErrLegacyLayoutDetected — backend constructor refused an
-//     un-migrated `.blk` layout; operator must run
-//     `dfs migrate-to-cas`.
+//     un-migrated `.blk` layout; migrate with dittofs <= v0.21 first.
 //   - ErrChunkNotFound — content-addressed chunk is absent
 //     from the store (local or remote).
-//   - ErrCASContentMismatch — recomputed BLAKE3 disagreed with the
+//   - ErrChunkContentMismatch — recomputed BLAKE3 disagreed with the
 //     expected ContentHash on read (fail-closed).
-//   - ErrCASKeyMalformed — ParseCASKey rejected an input that
-//     did not match the cas/{hh}/{hh}/{hex} shape.
-//   - ErrBlockRefMissing — BlockRef.Hash referred to an absent
+//   - ErrCASKeyMalformed — ParseCASKey (migration-only, legacy_cas.go)
+//     rejected an input that did not match the legacy key shape.
+//   - ErrChunkRefMissing — ChunkRef.Hash referred to an absent
 //     FileChunk (mapped to NFS3ERR_IO / STATUS_DATA_ERROR by the
 //     adapter errmap).
 //

@@ -145,47 +145,6 @@ func TestGet_TamperFailsAuth(t *testing.T) {
 	}
 }
 
-// --- ReadBlockVerified --------------------------------------------------
-
-func TestReadBlockVerified_RoundTrip(t *testing.T) {
-	inner := remotememory.New()
-	d, err := NewRemote(inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := bytes.Repeat([]byte("verify-me-please. "), 4096)
-	h := hashOf(payload)
-	if err := d.Put(context.Background(), h, payload); err != nil {
-		t.Fatal(err)
-	}
-	out, err := d.ReadBlockVerified(context.Background(), h, h)
-	if err != nil {
-		t.Fatalf("ReadBlockVerified: %v", err)
-	}
-	if !bytes.Equal(out, payload) {
-		t.Fatal("plaintext mismatch")
-	}
-}
-
-func TestReadBlockVerified_HashMismatch(t *testing.T) {
-	inner := remotememory.New()
-	d, err := NewRemote(inner, EncryptionPolicy{AEAD: AEADAES256GCM}, newProvider(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte("trip-me-please")
-	h := hashOf(payload)
-	if err := d.Put(context.Background(), h, payload); err != nil {
-		t.Fatal(err)
-	}
-	bogus := h
-	bogus[0] ^= 0xFF
-	_, err = d.ReadBlockVerified(context.Background(), h, bogus)
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("want ErrCASContentMismatch, got %v", err)
-	}
-}
-
 // --- Head plaintext-size contract ---------------------------------------
 
 func TestHead_ReportsPlaintextSize(t *testing.T) {

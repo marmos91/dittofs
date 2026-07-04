@@ -24,7 +24,7 @@ func TestReapSupersededFileChunks_ZeroNewBlocks_ReapsAllPrior(t *testing.T) {
 	bs := buildCascadeFixture(t, coord, nil)
 
 	priorOffsets := []uint64{0, 4096}
-	var newBlocks []block.BlockRef // empty — truncated to zero
+	var newBlocks []block.ChunkRef // empty — truncated to zero
 
 	if err := bs.reapSupersededFileChunks(ctx, "pid-trunc", priorOffsets, newBlocks); err != nil {
 		t.Fatalf("reapSupersededFileChunks: %v", err)
@@ -52,7 +52,7 @@ func TestReapSupersededFileChunks_EmptyPrior_IsNoOp(t *testing.T) {
 
 	bs := buildCascadeFixture(t, coord, nil)
 
-	newBlocks := []block.BlockRef{{Hash: h0, Offset: 0, Size: 4096}}
+	newBlocks := []block.ChunkRef{{Hash: h0, Offset: 0, Size: 4096}}
 
 	if err := bs.reapSupersededFileChunks(ctx, "pid-empty-prior", nil, newBlocks); err != nil {
 		t.Fatalf("reapSupersededFileChunks: %v", err)
@@ -73,7 +73,7 @@ func TestReapSupersededFileChunks_NilCoordinator_IsNoOp(t *testing.T) {
 	bs := buildCascadeFixture(t, nil, nil)
 
 	priorOffsets := []uint64{0, 4096}
-	var newBlocks []block.BlockRef // empty — truncated to zero
+	var newBlocks []block.ChunkRef // empty — truncated to zero
 
 	if err := bs.reapSupersededFileChunks(ctx, "pid-nil-coord", priorOffsets, newBlocks); err != nil {
 		t.Fatalf("reapSupersededFileChunks with nil coordinator: %v", err)
@@ -113,7 +113,7 @@ func TestReapSupersededFileChunks_RegionFilter(t *testing.T) {
 	var nh0, nh1 block.ContentHash
 	nh0[0] = 0x20
 	nh1[0] = 0x21
-	newBlocks := []block.BlockRef{
+	newBlocks := []block.ChunkRef{
 		{Hash: hKept, Offset: 0, Size: 4096},  // reuses prior offset 0
 		{Hash: nh0, Offset: 4096, Size: 4096}, // fresh
 		{Hash: nh1, Offset: 6144, Size: 4096}, // fresh, extends regionEnd to 10240

@@ -263,6 +263,7 @@ type Transaction interface {
 	lock.LockStore   // Lock persistence for NLM/SMB
 	BlockRecordStore // Log-blob block record lifecycle
 	LocalChunkIndex  // Content-hash → local log-blob position
+	SyncedHashStore  // Per-hash remote-mirror state (read-your-writes within the tx)
 }
 
 // ============================================================================
@@ -367,7 +368,7 @@ type Store interface {
 
 	// FindByObjectID looks up a file by its Merkle-root ObjectID.
 	// Returns (nil, nil) on miss (no row matches); non-nil result
-	// carries the canonical BlockRef list of the matching file
+	// carries the canonical ChunkRef list of the matching file
 	// (per-metadata-store scope, NOT per-share).
 	//
 	// All three backends maintain a secondary index from ObjectID to
@@ -385,7 +386,7 @@ type Store interface {
 	// a non-zero provisional ObjectID.
 	//
 	// Conformance scenarios live in pkg/metadata/storetest/objectid_*.go.
-	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.BlockRef, error)
+	FindByObjectID(ctx context.Context, objectID block.ObjectID) ([]block.ChunkRef, error)
 
 	// GetFileChunk retrieves a FileChunk by its ID. Engine-internal
 	// surface narrowed the public
@@ -440,9 +441,12 @@ type Store interface {
 	// Block Packing
 	// ========================================================================
 
-	// CommitBlock atomically writes rec and the local location for each chunk,
-	// then marks every chunk synced with its remote locator. Idempotent on
-	// BlockID: if the block record already exists the call is a no-op.
+	// CommitBlock atomically writes rec, the local location for each chunk
+	// (skipping zero-valued locals — migrated chunks have no local bytes), and
+	// every chunk's synced marker + remote locator, all in ONE transaction.
+	// Locator writes are last-wins (an existing standalone locator is
+	// overwritten by the block locator). Idempotent on BlockID: if the block
+	// record already exists the call is a no-op. See DefaultCommitBlock.
 	CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error
 
 	// ========================================================================

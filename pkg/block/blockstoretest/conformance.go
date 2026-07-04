@@ -600,7 +600,7 @@ func testConcurrentPutWalkNoDuplicates(t *testing.T, factory Factory) {
 // responsibility (e.g., the S3 read path's streaming BLAKE3 verifier in
 // ReadBlockVerified). A Put with a payload whose bytes do not hash to
 // the supplied key succeeds; a subsequent Get under that key returns
-// the stored bytes verbatim. No ErrCASContentMismatch surfaces from
+// the stored bytes verbatim. No ErrChunkContentMismatch surfaces from
 // Put — that sentinel is read-side only.
 func testPutWrongHashNoVerify(t *testing.T, factory Factory) {
 	bs, cleanup := factory(t)
@@ -610,8 +610,8 @@ func testPutWrongHashNoVerify(t *testing.T, factory Factory) {
 	wrongHash := blake3Sum([]byte("foo"))
 	payload := []byte("bar")
 	if err := bs.Put(ctx, wrongHash, payload); err != nil {
-		if errors.Is(err, block.ErrCASContentMismatch) {
-			t.Fatalf("Put with mismatched hash returned ErrCASContentMismatch — backends must not verify on Put: %v", err)
+		if errors.Is(err, block.ErrChunkContentMismatch) {
+			t.Fatalf("Put with mismatched hash returned ErrChunkContentMismatch — backends must not verify on Put: %v", err)
 		}
 		t.Fatalf("Put with mismatched hash: want success, got %v", err)
 	}

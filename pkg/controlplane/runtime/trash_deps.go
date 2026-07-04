@@ -76,13 +76,13 @@ func (d *trashDeps) EnabledTrashShares() []string {
 // and blocks are the values RemoveFile returned for the purged node; an empty
 // payloadID (hard links still reference the content, or a directory) is a
 // no-op. The per-share block store is resolved from the share root handle, and
-// Delete is invoked WITH the file's BlockRef list so the engine decrements each
+// Delete is invoked WITH the file's ChunkRef list so the engine decrements each
 // block's CAS RefCount and lets the GC reclaim chunks no other file references.
 // The reaper holds the removed file's blocks, so it threads them through
 // directly rather than making the engine re-enumerate them. (The NFS v3 / SMB
 // unlink path does not have the manifest on hand and passes nil; Delete then
 // resolves it from the payload's FileChunk rows — see #1433/#832.)
-func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.BlockRef) error {
+func (d *trashDeps) FreeBlocks(ctx context.Context, shareName string, root metadata.FileHandle, payloadID string, blocks []block.ChunkRef) error {
 	if payloadID == "" {
 		return nil
 	}

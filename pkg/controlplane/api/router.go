@@ -320,14 +320,6 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 
 				r.Get("/stats", blockStoreHandler.Stats)
 				r.Post("/evict", blockStoreHandler.Evict)
-
-				// Per-share migration progress surface. Mirrors the
-				// dfsctl `blockstore migrate status` CLI's output shape so
-				// dittofs-pro consumes a single contract. RequireAdmin
-				// (inherited from this group) + JWTAuth (inherited from
-				// the protected /api/v1 group) enforce admin-only access.
-				migrateStatusHandler := handlers.NewMigrateStatusHandler(rt)
-				r.Get("/migrate/status", migrateStatusHandler.Status)
 			})
 
 			// Store management (admin only)

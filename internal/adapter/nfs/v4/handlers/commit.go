@@ -119,7 +119,7 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 		}
 	}
 
-	// Routed through common.CommitBlockStore so any future []BlockRef
+	// Routed through common.CommitBlockStore so any future []ChunkRef
 	// plumbing lands in one place (see common/doc.go).
 	flushErr := common.CommitBlockStore(authCtx.Context, blockStore, file.PayloadID)
 	if flushErr != nil {

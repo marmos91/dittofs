@@ -254,7 +254,7 @@ func (h *Handler) Write(
 	}
 
 	// Write to BlockStore (uses local cache, will be flushed on COMMIT).
-	// Routed through common.WriteToBlockStore so any future []BlockRef
+	// Routed through common.WriteToBlockStore so any future []ChunkRef
 	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(ctx.Context, blockStore, writeIntent.PayloadID, req.Data, req.Offset)
 	if err != nil {

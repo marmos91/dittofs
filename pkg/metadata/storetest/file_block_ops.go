@@ -230,7 +230,7 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 			ID:            "file-reap/0",
 			Hash:          hash,
 			State:         block.BlockStateRemote,
-			BlockStoreKey: block.FormatCASKey(hash),
+			BlockStoreKey: "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String(),
 			LocalPath:     "/cache/reap0",
 			DataSize:      4096,
 			RefCount:      1,
@@ -275,7 +275,7 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 			ID:            "file-survive/0",
 			Hash:          hash,
 			State:         block.BlockStateRemote,
-			BlockStoreKey: block.FormatCASKey(hash),
+			BlockStoreKey: "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String(),
 			LocalPath:     "/cache/survive0",
 			DataSize:      4096,
 			RefCount:      1,
@@ -1333,7 +1333,7 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 		t.Fatalf("seed Put: %v", err)
 	}
 
-	blockRef := block.BlockRef{Hash: hash, Offset: 0, Size: 4096}
+	blockRef := block.ChunkRef{Hash: hash, Offset: 0, Size: 4096}
 	if err := store.AddRef(ctx, hash, "file-addref", blockRef); err != nil {
 		t.Fatalf("AddRef(existing hash): %v", err)
 	}
@@ -1367,7 +1367,7 @@ func testAddRef_MissingHash_ReturnsErrUnknownHash(t *testing.T, factory StoreFac
 	ctx := t.Context()
 
 	hash := hashOfSeed("addref-missing-hash-never-put")
-	blockRef := block.BlockRef{Hash: hash, Offset: 0, Size: 1024}
+	blockRef := block.ChunkRef{Hash: hash, Offset: 0, Size: 1024}
 
 	err := store.AddRef(ctx, hash, "file-missing", blockRef)
 	if err == nil {
@@ -1430,7 +1430,7 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 	rowID := resolved.ID
 
 	const halfN = 8
-	blockRef := block.BlockRef{Hash: hash, Offset: 0, Size: 4096}
+	blockRef := block.ChunkRef{Hash: hash, Offset: 0, Size: 4096}
 
 	var wg sync.WaitGroup
 	wg.Add(2 * halfN)
@@ -1567,7 +1567,7 @@ func testEnumerateFileChunks_UnlinkedFileExcludesManifest(t *testing.T, factory 
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	f.Blocks = []block.BlockRef{{Hash: want, Offset: 0, Size: 4 << 20}}
+	f.Blocks = []block.ChunkRef{{Hash: want, Offset: 0, Size: 4 << 20}}
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile (linked): %v", err)
@@ -1608,7 +1608,7 @@ func testEnumerateFileChunks_HardLinkSurvivesOneRemoval(t *testing.T, factory St
 	if err != nil {
 		t.Fatalf("GetFile: %v", err)
 	}
-	f.Blocks = []block.BlockRef{{Hash: want, Offset: 0, Size: 4 << 20}}
+	f.Blocks = []block.ChunkRef{{Hash: want, Offset: 0, Size: 4 << 20}}
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile: %v", err)

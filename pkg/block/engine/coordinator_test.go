@@ -55,10 +55,10 @@ type fakeCoordinator struct {
 	// the same metadata txn that writes Blocks.
 	objectIDPersisted []block.ObjectID
 	// objectIDHits is the seedable hit-table: when FindByObjectID is
-	// invoked with an ObjectID present here, returns the canned BlockRef
+	// invoked with an ObjectID present here, returns the canned ChunkRef
 	// list (deep-copied on the way out to keep slice-aliasing discipline
 	// per). Empty / unset key means miss → (nil, nil).
-	objectIDHits map[block.ObjectID][]block.BlockRef
+	objectIDHits map[block.ObjectID][]block.ChunkRef
 	// persistErr is a single-shot injection: the next PersistFileChunks
 	// call returns this error and clears the field. Used by the
 	// concurrent-race RED test to simulate the loser detecting a
@@ -84,7 +84,7 @@ type fakeCoordinator struct {
 
 type persistRecord struct {
 	payloadID string
-	blocks    []block.BlockRef
+	blocks    []block.ChunkRef
 	objectID  block.ObjectID
 }
 
@@ -137,14 +137,14 @@ func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID 
 	return 0, nil
 }
 
-func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.BlockRef, error) {
+func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.ChunkRef, error) {
 	return nil, nil
 }
 
-func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	cp := append([]block.BlockRef(nil), blocks...)
+	cp := append([]block.ChunkRef(nil), blocks...)
 	f.persistCalls = append(f.persistCalls, persistRecord{payloadID: payloadID, blocks: cp, objectID: objectID})
 	f.objectIDPersisted = append(f.objectIDPersisted, objectID)
 	if f.persistErr != nil {
@@ -156,16 +156,16 @@ func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string,
 }
 
 // FindByObjectID —. Records every lookup
-// in findCalls and returns a deep-copied BlockRef slice when the
+// in findCalls and returns a deep-copied ChunkRef slice when the
 // ObjectID is present in the seeded objectIDHits map. Miss returns
 // (nil, nil). The deep copy preserves slice-aliasing
 // discipline so tests cannot accidentally mutate seeded state.
-func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid block.ObjectID) ([]block.BlockRef, error) {
+func (f *fakeCoordinator) FindByObjectID(_ context.Context, oid block.ObjectID) ([]block.ChunkRef, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.findCalls = append(f.findCalls, oid)
 	if hit, ok := f.objectIDHits[oid]; ok {
-		return append([]block.BlockRef(nil), hit...), nil
+		return append([]block.ChunkRef(nil), hit...), nil
 	}
 	return nil, nil
 }
@@ -242,7 +242,7 @@ func TestMetadataCoordinator_FakeImpl_RecordsCalls(t *testing.T) {
 	if _, err := fc.DecrementRefCount(ctx, h2); err != nil {
 		t.Fatalf("Decrement: %v", err)
 	}
-	if err := fc.PersistFileChunks(ctx, "pid", []block.BlockRef{{Hash: h1, Offset: 0, Size: 1}}, block.ObjectID{}); err != nil {
+	if err := fc.PersistFileChunks(ctx, "pid", []block.ChunkRef{{Hash: h1, Offset: 0, Size: 1}}, block.ObjectID{}); err != nil {
 		t.Fatalf("Persist: %v", err)
 	}
 

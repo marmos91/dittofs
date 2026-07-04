@@ -24,7 +24,7 @@ func putFileForBlocksTest(
 	store *MemoryMetadataStore,
 	shareName string,
 	name string,
-	blocks []block.BlockRef,
+	blocks []block.ChunkRef,
 ) (metadata.FileHandle, *metadata.File) {
 	t.Helper()
 
@@ -65,12 +65,12 @@ func putFileForBlocksTest(
 	return handle, file
 }
 
-// makeBlock returns a BlockRef with a deterministic ContentHash whose first
+// makeBlock returns a ChunkRef with a deterministic ContentHash whose first
 // byte is `seed` and offset/size pegged to the block index.
-func makeBlock(seed byte, idx int) block.BlockRef {
+func makeBlock(seed byte, idx int) block.ChunkRef {
 	var h block.ContentHash
 	h[0] = seed
-	return block.BlockRef{
+	return block.ChunkRef{
 		Hash:   h,
 		Offset: uint64(idx) * 4 * 1024 * 1024,
 		Size:   4 * 1024 * 1024,
@@ -78,13 +78,13 @@ func makeBlock(seed byte, idx int) block.BlockRef {
 }
 
 // TestMemoryStore_PutFile_BlocksDeepCopy verifies that PutFile deep-copies
-// the caller's []BlockRef so a subsequent caller-side mutation cannot
+// the caller's []ChunkRef so a subsequent caller-side mutation cannot
 // observably mutate the stored view (T-12-09 mitigation).
 func TestMemoryStore_PutFile_BlocksDeepCopy(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
-	original := []block.BlockRef{
+	original := []block.ChunkRef{
 		makeBlock(0xAA, 0),
 		makeBlock(0xBB, 1),
 		makeBlock(0xCC, 2),
@@ -111,13 +111,13 @@ func TestMemoryStore_PutFile_BlocksDeepCopy(t *testing.T) {
 }
 
 // TestMemoryStore_GetFile_BlocksDeepCopy verifies that GetFile returns a
-// deep copy of the stored []BlockRef so a subsequent caller-side mutation
+// deep copy of the stored []ChunkRef so a subsequent caller-side mutation
 // of the returned slice cannot observably mutate the stored view.
 func TestMemoryStore_GetFile_BlocksDeepCopy(t *testing.T) {
 	store := NewMemoryMetadataStoreWithDefaults()
 	ctx := context.Background()
 
-	original := []block.BlockRef{
+	original := []block.ChunkRef{
 		makeBlock(0x11, 0),
 		makeBlock(0x22, 1),
 	}

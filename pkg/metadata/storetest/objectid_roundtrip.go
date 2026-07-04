@@ -51,7 +51,7 @@ func runObjectIDOpsTests(t *testing.T, factory StoreFactory) {
 }
 
 // testObjectID_RoundTripBasic asserts that a non-zero ObjectID computed over
-// three sorted-by-offset BlockRefs survives a PutFile/GetFile round-trip
+// three sorted-by-offset ChunkRefs survives a PutFile/GetFile round-trip
 // with byte-equal payload. Catches encoding drift between backends.
 func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -60,7 +60,7 @@ func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 	rootHandle := createTestShare(t, store, "objid-roundtrip")
 	fileHandle := createTestFile(t, store, "objid-roundtrip", rootHandle, "round.bin", 0o644)
 
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: hashOfSeed("oid-rt-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-rt-1"), Offset: 4 << 20, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-rt-2"), Offset: 8 << 20, Size: 1 << 20},
@@ -148,7 +148,7 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 	rootHandle := createTestShare(t, store, "objid-mutate")
 	fileHandle := createTestFile(t, store, "objid-mutate", rootHandle, "mutate.bin", 0o644)
 
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: hashOfSeed("oid-mut-0"), Offset: 0, Size: 4 << 20},
 		{Hash: hashOfSeed("oid-mut-1"), Offset: 4 << 20, Size: 4 << 20},
 	}
@@ -205,7 +205,7 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 }
 
 // testObjectID_SortStability asserts ComputeObjectID determinism (two
-// independent calls over the same sorted BlockRef list yield byte-equal
+// independent calls over the same sorted ChunkRef list yield byte-equal
 // ObjectIDs) and survives a PutFile/GetFile/recompute cycle.
 func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 	store := factory(t)
@@ -215,7 +215,7 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 	fileHandle := createTestFile(t, store, "objid-sort", rootHandle, "sort.bin", 0o644)
 
 	// Five blocks already in canonical sorted-by-offset order.
-	blocks := []block.BlockRef{
+	blocks := []block.ChunkRef{
 		{Hash: hashOfSeed("oid-srt-0"), Offset: 0, Size: 1 << 20},
 		{Hash: hashOfSeed("oid-srt-1"), Offset: 1 << 20, Size: 1 << 20},
 		{Hash: hashOfSeed("oid-srt-2"), Offset: 2 << 20, Size: 1 << 20},

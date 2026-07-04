@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,26 +20,27 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// spyingRemoteStore wraps a remote.RemoteStore and counts how many times
-// the CAS verified-read entry point is invoked. Post-Phase-17 the legacy
-// fallback is gone; only the verified-read counter survives.
+// spyingRemoteStore wraps a remote.RemoteStore and counts how many times the
+// ranged block-chunk read entry point (ChunkReader.ReadChunk) is invoked.
+// Post-#1493 that is the ONLY remote read path — the legacy per-hash
+// ReadBlockVerified surface is gone from the engine read path.
 type spyingRemoteStore struct {
 	remote.RemoteStore
-	readVerifiedCalls atomic.Int64
-	mu                gosync.Mutex
-	readVerifiedKeys  []string
+	readChunkCalls atomic.Int64
+	mu             gosync.Mutex
+	readChunkKeys  []string // blocks/<id> store keys, in call order
 }
 
 func newSpyingRemoteStore(inner remote.RemoteStore) *spyingRemoteStore {
 	return &spyingRemoteStore{RemoteStore: inner}
 }
 
-func (s *spyingRemoteStore) ReadBlockVerified(ctx context.Context, hash, expected block.ContentHash) ([]byte, error) {
-	s.readVerifiedCalls.Add(1)
+func (s *spyingRemoteStore) ReadChunk(ctx context.Context, blockID string, offset, length int64, expected block.ContentHash) ([]byte, error) {
+	s.readChunkCalls.Add(1)
 	s.mu.Lock()
-	s.readVerifiedKeys = append(s.readVerifiedKeys, block.FormatCASKey(hash))
+	s.readChunkKeys = append(s.readChunkKeys, block.FormatBlockKey(blockID))
 	s.mu.Unlock()
-	return s.RemoteStore.ReadBlockVerified(ctx, hash, expected)
+	return s.RemoteStore.(remote.ChunkReader).ReadChunk(ctx, blockID, offset, length, expected)
 }
 
 // Healthcheck delegates so the syncer's HealthMonitor sees a healthy
@@ -63,7 +65,8 @@ func newDualReadEnv(t *testing.T) *dualReadEnv {
 	t.Helper()
 	tmp := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.NewWithOptions(tmp, 0, ms, fs.FSStoreOptions{})
+	bc, err := fs.NewWithOptions(tmp, 0, ms, fs.FSStoreOptions{
+		LocalChunkIndex: ms})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
@@ -74,8 +77,15 @@ func newDualReadEnv(t *testing.T) *dualReadEnv {
 	cfg.ClaimTimeout = 100 * time.Millisecond
 
 	m := NewSyncer(bc, rs, ms, cfg)
+	// Wire the synced-hash store so dispatchRemoteFetch can resolve block
+	// locators recorded by MarkSynced (post-#1493 the ONLY remote read route).
+	m.SetSyncedHashStore(ms)
 	t.Cleanup(func() {
 		_ = m.Close()
+		// Close the fs store to release the logBlob fd BEFORE t.TempDir's
+		// RemoveAll runs (LIFO: this cleanup is registered after TempDir, so
+		// it runs first). Windows cannot unlink a blob file that is still open.
+		_ = bc.Close()
 		_ = inner.Close()
 	})
 	return &dualReadEnv{tmp: tmp, ms: ms, rs: rs, innerRS: inner, syncer: m}
@@ -88,31 +98,24 @@ func dualReadHash(data []byte) block.ContentHash {
 	return h
 }
 
-// TestDualRead_CASRowRoutesToVerified asserts a FileChunk with a non-zero
-// Hash routes through ReadBlockVerified using the renamed (hash, expected)
-// argument signature.
-func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
-	env := newDualReadEnv(t)
-	ctx := context.Background()
-
-	const payloadID = "share/cas-file"
-	data := []byte("CAS path bytes — verified read on fetch")
-	hash := dualReadHash(data)
-	casKey := block.FormatCASKey(hash)
-
-	// Stash bytes in the remote at the CAS key with the matching
-	// content-hash header.
-	if err := env.innerRS.Put(ctx, hash, data); err != nil {
-		t.Fatalf("seed remote: %v", err)
+// seedBlockChunk registers data as a single-chunk packed block: the block
+// object lands on the remote, MarkSynced records its block locator, and a
+// FileChunk row makes the chunk reachable from (payloadID, blockIdx 0) — the
+// same durable state a carve commit leaves behind.
+func (env *dualReadEnv) seedBlockChunk(t *testing.T, ctx context.Context, payloadID, blockID string, blockBytes []byte, hash block.ContentHash, dataSize uint32) {
+	t.Helper()
+	if err := env.innerRS.PutBlock(ctx, blockID, bytes.NewReader(blockBytes)); err != nil {
+		t.Fatalf("PutBlock: %v", err)
 	}
-
-	// Register the FileChunk metadata: Hash set, BlockStoreKey = casKey
-	// State = Remote (post-Phase-11 row).
+	loc := block.ChunkLocator{BlockID: blockID, WireOffset: 0, WireLength: int64(len(blockBytes))}
+	if err := env.ms.MarkSynced(ctx, hash, loc); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
 	fb := &block.FileChunk{
 		ID:            fmt.Sprintf("%s/0", payloadID),
 		Hash:          hash,
-		DataSize:      uint32(len(data)),
-		BlockStoreKey: casKey,
+		DataSize:      dataSize,
+		BlockStoreKey: block.FormatBlockKey(blockID),
 		State:         block.BlockStateRemote,
 		RefCount:      1,
 		LastAccess:    time.Now(),
@@ -121,6 +124,21 @@ func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
 	if err := env.ms.Put(ctx, fb); err != nil {
 		t.Fatalf("PutFileChunk: %v", err)
 	}
+}
+
+// TestDualRead_BlockRowRoutesToVerifiedChunkRead asserts a FileChunk with a
+// non-zero Hash and a recorded block locator routes through the ranged
+// ChunkReader.ReadChunk path (BLAKE3-verified in readChunkVerified) and
+// round-trips byte-identical.
+func TestDualRead_BlockRowRoutesToVerifiedChunkRead(t *testing.T) {
+	env := newDualReadEnv(t)
+	ctx := context.Background()
+
+	const payloadID = "share/block-file"
+	const blockID = "blk-dualread-route"
+	data := []byte("packed-block bytes — verified ranged read on fetch")
+	hash := dualReadHash(data)
+	env.seedBlockChunk(t, ctx, payloadID, blockID, data, hash, uint32(len(data)))
 
 	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
 	if err != nil {
@@ -130,11 +148,61 @@ func TestDualRead_CASRowRoutesToVerified(t *testing.T) {
 		t.Fatalf("fetchBlock data mismatch: got %q, want %q", got, data)
 	}
 
-	if env.rs.readVerifiedCalls.Load() != 1 {
-		t.Errorf("ReadBlockVerified calls = %d, want 1", env.rs.readVerifiedCalls.Load())
+	if env.rs.readChunkCalls.Load() != 1 {
+		t.Errorf("ReadChunk calls = %d, want 1", env.rs.readChunkCalls.Load())
 	}
-	if got := env.rs.readVerifiedKeys[0]; got != casKey {
-		t.Errorf("ReadBlockVerified key = %q, want %q", got, casKey)
+	if got := env.rs.readChunkKeys[0]; got != block.FormatBlockKey(blockID) {
+		t.Errorf("ReadChunk key = %q, want %q", got, block.FormatBlockKey(blockID))
+	}
+}
+
+// TestDualRead_MissingLocatorRowRefused pins the fetchBlock-level fail-closed
+// contract: a FileChunk row with a non-zero Hash but NO recorded locator (the
+// startup migration repacked every synced hash, so this is post-migration
+// drift) must be refused without touching the remote — never silent zeros.
+// TestDualRead_SyncedStandaloneLocatorRefused: a row whose hash IS synced but
+// carries an empty-BlockID (standalone) locator is post-#1493 drift — the
+// migration rewrites every standalone locator to a block locator before
+// serving — and must be refused fail-closed. (A hash with NO marker is the
+// benign "not uploaded yet" case, covered by
+// TestDispatchRemoteFetch_UnsyncedChunkFallsBackToLocal.)
+func TestDualRead_SyncedStandaloneLocatorRefused(t *testing.T) {
+	env := newDualReadEnv(t)
+	ctx := context.Background()
+
+	const payloadID = "share/drift-row"
+	data := []byte("drifted bytes with a standalone locator")
+	hash := dualReadHash(data)
+
+	fb := &block.FileChunk{
+		ID:         fmt.Sprintf("%s/0", payloadID),
+		Hash:       hash,
+		DataSize:   uint32(len(data)),
+		State:      block.BlockStateRemote,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
+	}
+	if err := env.ms.Put(ctx, fb); err != nil {
+		t.Fatalf("PutFileChunk: %v", err)
+	}
+	// Synced marker with an empty-BlockID (standalone) locator = drift.
+	if err := env.ms.MarkSynced(ctx, hash, block.ChunkLocator{}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+
+	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
+	if err == nil {
+		t.Fatalf("fetchBlock: want post-migration drift refusal, got nil with data=%v", got)
+	}
+	if !contains(err.Error(), "post-migration drift") {
+		t.Fatalf("fetchBlock err = %v, want post-migration drift refusal", err)
+	}
+	if got != nil {
+		t.Errorf("fetchBlock data = %v, want nil on refusal", got)
+	}
+	if env.rs.readChunkCalls.Load() != 0 {
+		t.Errorf("ReadChunk calls = %d, want 0 (refusal happens before the remote)", env.rs.readChunkCalls.Load())
 	}
 }
 
@@ -151,89 +219,69 @@ func TestDualRead_NoFileChunkReturnsNil(t *testing.T) {
 	if got != nil {
 		t.Fatalf("fetchBlock data = %v, want nil for sparse block", got)
 	}
-	if env.rs.readVerifiedCalls.Load() != 0 {
-		t.Errorf("expected zero verified-read calls for sparse block, got %d",
-			env.rs.readVerifiedCalls.Load())
+	if env.rs.readChunkCalls.Load() != 0 {
+		t.Errorf("expected zero remote chunk reads for sparse block, got %d",
+			env.rs.readChunkCalls.Load())
 	}
 }
 
-// TestDualRead_CASRowMismatchSurfacesError asserts that bytes that fail
-// BLAKE3 verification are surfaced as ErrCASContentMismatch through the
-// engine read path (plumbed end-to-end).
-func TestDualRead_CASRowMismatchSurfacesError(t *testing.T) {
+// TestDualRead_BlockRowMismatchSurfacesError asserts that corrupted remote
+// block bytes that fail the BLAKE3 recompute are surfaced as
+// ErrChunkContentMismatch through the engine read path (plumbed end-to-end),
+// with no data returned.
+func TestDualRead_BlockRowMismatchSurfacesError(t *testing.T) {
 	env := newDualReadEnv(t)
 	ctx := context.Background()
 
-	const payloadID = "share/cas-mismatch"
+	const payloadID = "share/block-mismatch"
+	const blockID = "blk-dualread-corrupt"
 	expected := []byte("expected payload — caller asks for THIS hash")
-	wrongBytes := []byte("WRONG bytes — should fail body recompute")
+	wrongBytes := []byte("WRONG bytes — must fail body recompute!!!!!!")
 	hash := dualReadHash(expected)
-	casKey := block.FormatCASKey(hash)
 
-	// Stash WRONG bytes under the EXPECTED hash. The memory backend's
-	// Put accepts the caller-supplied hash as the key without recomputing
-	// — a deliberate seam for corruption tests like this one. The
-	// downstream ReadBlockVerified re-hashes the stored bytes and surfaces
-	// ErrCASContentMismatch when they fail to match `expected`.
-	if err := env.innerRS.Put(ctx, hash, wrongBytes); err != nil {
-		t.Fatalf("seed corrupted remote: %v", err)
-	}
+	// Seed the block-resident chunk with CORRUPT remote block bytes: the
+	// locator and FileChunk row claim `hash`, but the block object holds
+	// wrongBytes. readChunkVerified re-hashes the ranged read and must
+	// surface ErrChunkContentMismatch.
+	env.seedBlockChunk(t, ctx, payloadID, blockID, wrongBytes, hash, uint32(len(expected)))
 
-	fb := &block.FileChunk{
-		ID:            fmt.Sprintf("%s/0", payloadID),
-		Hash:          hash,
-		DataSize:      uint32(len(expected)),
-		BlockStoreKey: casKey,
-		State:         block.BlockStateRemote,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
-	}
-	if err := env.ms.Put(ctx, fb); err != nil {
-		t.Fatalf("PutFileChunk: %v", err)
-	}
-
-	_, err := env.syncer.fetchBlock(ctx, payloadID, 0)
+	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
 	if err == nil {
-		t.Fatal("fetchBlock: expected ErrCASContentMismatch, got nil")
+		t.Fatal("fetchBlock: expected ErrChunkContentMismatch, got nil")
 	}
-	if !errors.Is(err, block.ErrCASContentMismatch) {
-		t.Fatalf("fetchBlock err = %v, want wrapped ErrCASContentMismatch", err)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("fetchBlock err = %v, want wrapped ErrChunkContentMismatch", err)
+	}
+	if got != nil {
+		t.Errorf("fetchBlock data = %v, want nil on content mismatch", got)
 	}
 
-	// Verified path must have been chosen.
-	if env.rs.readVerifiedCalls.Load() != 1 {
-		t.Errorf("ReadBlockVerified calls = %d, want 1", env.rs.readVerifiedCalls.Load())
+	// The verified ranged-read path must have been chosen.
+	if env.rs.readChunkCalls.Load() != 1 {
+		t.Errorf("ReadChunk calls = %d, want 1", env.rs.readChunkCalls.Load())
 	}
 }
 
-// TestDualRead_CASMissingObjectFailsClosed: a row
-// with a non-zero hash whose CAS object is absent from the remote MUST
-// surface as ErrChunkNotFound, NOT silently return zeros.
-// fail-closed makes this state structurally impossible under correct GC
-// but if a bug ever lets a live CAS object get reaped, the read path
-// should fail loudly rather than corrupt the caller's data.
-func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
+// TestDualRead_MissingBlockObjectFailsClosed: a row with a non-zero hash
+// whose recorded locator points at a block object that has been DELETED from
+// the remote MUST surface as ErrChunkNotFound, NOT silently return zeros.
+// Fail-closed GC makes this state structurally impossible, but if a bug ever
+// lets a live block get reaped, the read path should fail loudly rather than
+// corrupt the caller's data.
+func TestDualRead_MissingBlockObjectFailsClosed(t *testing.T) {
 	env := newDualReadEnv(t)
 	ctx := context.Background()
 
-	const payloadID = "share/cas-missing"
-	hash := dualReadHash([]byte("expected payload"))
-	casKey := block.FormatCASKey(hash)
+	const payloadID = "share/block-missing"
+	const blockID = "blk-dualread-reaped"
+	data := []byte("expected payload")
+	hash := dualReadHash(data)
 
-	// Register a CAS-shaped FileChunk but DO NOT seed the remote object.
-	fb := &block.FileChunk{
-		ID:            fmt.Sprintf("%s/0", payloadID),
-		Hash:          hash,
-		DataSize:      32,
-		BlockStoreKey: casKey,
-		State:         block.BlockStateRemote,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
-	}
-	if err := env.ms.Put(ctx, fb); err != nil {
-		t.Fatalf("PutFileChunk: %v", err)
+	// Seed the full block-resident state, then delete the block object out
+	// from under the locator — the "live data loss" drift this test pins.
+	env.seedBlockChunk(t, ctx, payloadID, blockID, data, hash, uint32(len(data)))
+	if err := env.innerRS.DeleteBlock(ctx, blockID); err != nil {
+		t.Fatalf("DeleteBlock: %v", err)
 	}
 
 	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
@@ -244,7 +292,7 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 		t.Fatalf("fetchBlock err = %v, want wrapped ErrChunkNotFound", err)
 	}
 	if got != nil {
-		t.Errorf("fetchBlock data = %v, want nil on fail-closed CAS miss", got)
+		t.Errorf("fetchBlock data = %v, want nil on fail-closed block miss", got)
 	}
 }
 
@@ -253,8 +301,7 @@ func TestDualRead_CASMissingObjectFailsClosed(t *testing.T) {
 // drift. 's boot guard refuses to start against an un-migrated
 // store, but if the sentinel is lost or hand-removed and a stray legacy-
 // shaped row surfaces at runtime, the read path MUST refuse rather than
-// silently return zeros. This is the replacement for the pre-Phase-17
-// per-share BlockLayout gate.
+// silently return zeros.
 func TestDualRead_LegacyRowRefusedPostMigration(t *testing.T) {
 	env := newDualReadEnv(t)
 	ctx := context.Background()
@@ -291,8 +338,8 @@ func TestDualRead_LegacyRowRefusedPostMigration(t *testing.T) {
 	if got != nil {
 		t.Errorf("fetchBlock data = %v, want nil on legacy refusal", got)
 	}
-	if env.rs.readVerifiedCalls.Load() != 0 {
-		t.Errorf("ReadBlockVerified calls = %d, want 0 (legacy row has no hash)", env.rs.readVerifiedCalls.Load())
+	if env.rs.readChunkCalls.Load() != 0 {
+		t.Errorf("ReadChunk calls = %d, want 0 (legacy row has no hash)", env.rs.readChunkCalls.Load())
 	}
 }
 

@@ -163,21 +163,17 @@ var (
 	//   - HTTP: 503 Service Unavailable
 	ErrRemoteUnavailable = errors.New("remote store unavailable")
 
-	// ErrCASContentMismatch is returned by the streaming BLAKE3 verifier on
+	// ErrChunkContentMismatch is returned by the streaming BLAKE3 verifier on
 	// S3 GET when the recomputed hash (or the x-amz-meta-content-hash header)
 	// does not match the expected ContentHash. On mismatch, the buffer is
 	// discarded and this error surfaces — bad bytes never reach the caller.
-	ErrCASContentMismatch = errors.New("blockstore: CAS content hash mismatch")
+	ErrChunkContentMismatch = errors.New("blockstore: chunk content hash mismatch")
 
-	// ErrCASKeyMalformed is returned by ParseCASKey for any input that does
-	// not match the cas/{hh}/{hh}/{hex} shape.
-	ErrCASKeyMalformed = errors.New("blockstore: malformed CAS key")
-
-	// ErrBlockRefMissing is returned by engine.ReadAt when a BlockRef.Hash
+	// ErrChunkRefMissing is returned by engine.ReadAt when a ChunkRef.Hash
 	// refers to a FileChunk that has been GC'd or never existed. The
 	// adapter layer (internal/adapter/common/errmap.go) maps this to
 	// NFS3ERR_IO / STATUS_DATA_ERROR consistently across protocols.
-	ErrBlockRefMissing = errors.New("blockstore: block ref hash missing in store")
+	ErrChunkRefMissing = errors.New("blockstore: block ref hash missing in store")
 
 	// ErrStopWalk is the sentinel a Walk callback returns to request a
 	// clean early exit (e.g., GC found its target). Walk returns nil to
@@ -218,5 +214,5 @@ var (
 	// Operator action: run `dfs migrate-to-cas --share <name>` (or
 	// `dfs migrate-to-cas` for all shares) and retry. See
 	// docs/CONFIGURATION.md §migration..
-	ErrLegacyLayoutDetected = errors.New("blockstore: legacy .blk layout detected (run `dfs migrate-to-cas`)")
+	ErrLegacyLayoutDetected = errors.New("blockstore: legacy .blk layout detected (migrate with dittofs <= v0.21 first)")
 )

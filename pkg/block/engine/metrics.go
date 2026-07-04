@@ -2,29 +2,21 @@ package engine
 
 import "time"
 
-// DataplaneMetrics is the engine-side metrics seam for the mirror/upload path.
+// DataplaneMetrics is the engine-side metrics seam for the carve/upload path.
 // It follows the nil-safe Record* convention of pkg/metrics, which *Metrics
 // satisfies. The engine depends on this interface rather than importing
 // pkg/metrics directly, keeping pkg/block free of the metrics dependency
 // (the same reason local.MetricsRecorder exists for the local store).
 type DataplaneMetrics interface {
-	// RecordUpload records one CAS chunk upload to remote: result is "ok" or
-	// "error", bytes is the chunk size, d is the remote Put latency.
+	// RecordUpload records one packed-block upload to remote: result is "ok"
+	// or "error", bytes is the block size, d is the remote PutBlock latency.
 	RecordUpload(bytes int, result string, d time.Duration)
-	// UploadStarted/UploadFinished bracket one in-flight remote Put so the
-	// inflight gauge reflects the mirror loop's effective upload concurrency.
+	// UploadStarted/UploadFinished bracket one in-flight remote PutBlock so
+	// the inflight gauge reflects the carver's effective upload concurrency.
 	UploadStarted()
 	UploadFinished()
-	// SetUploadQueueDepth publishes pending-upload backlog at mirror-pass start.
+	// SetUploadQueueDepth publishes the pending-carve backlog.
 	SetUploadQueueDepth(n int)
-	// SetUploadWindow publishes the target upload concurrency (adaptive window
-	// or pinned --parallel-uploads value).
-	SetUploadWindow(n int)
-	// SetUploadGoodput publishes the delivered upload goodput (bytes/s)
-	// measured over the last control interval; 0 when the path was idle.
-	SetUploadGoodput(bytesPerSecond float64)
-	// RecordRehash records pre-upload BLAKE3 re-hash latency for one chunk.
-	RecordRehash(d time.Duration)
 
 	// --- Corruption detection / self-heal (read path) ---
 	// All five counters are BOUNDED zero-label counters: no per-share, per-

@@ -21,6 +21,7 @@ func newC3BudgetStore(t *testing.T, maxLogBytes int64) *FSStore {
 		StabilizationMS: 1,
 		RollupStore:     mem,
 		SyncedHashStore: mem,
+		LocalChunkIndex: mem,
 	})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)

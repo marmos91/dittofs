@@ -346,7 +346,6 @@ type LocalStoreDefaults struct {
 
 // SyncerDefaults holds default syncer configuration applied to all shares.
 type SyncerDefaults struct {
-	ParallelUploads    int
 	ParallelDownloads  int
 	PrefetchBlocks     int
 	SmallFileThreshold int64
@@ -530,9 +529,6 @@ func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) engine.SyncerConfig
 	cfg := engine.DefaultConfig()
 	if defaults == nil {
 		return cfg
-	}
-	if defaults.ParallelUploads > 0 {
-		cfg.ParallelUploads = defaults.ParallelUploads
 	}
 	if defaults.ParallelDownloads > 0 {
 		cfg.ParallelDownloads = defaults.ParallelDownloads
@@ -903,25 +899,6 @@ func (s *Service) createBlockStoreForShare(
 	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
-
-	// Apply the optional per-remote upload-concurrency override. Unset or 0
-	// keeps the server default (CPU-deduced); a positive value pins this
-	// remote's upload parallelism. Validated to [0,256] at config admission.
-	// acquireRemoteStore caches only the instantiated store, not its config,
-	// so this re-resolves the BlockStoreConfig (a DB read). A failure here is
-	// non-fatal — fall back to the default and warn rather than fail attach.
-	if config.RemoteBlockStoreID != "" {
-		if remoteCfg, cfgErr := resolveBlockStoreConfig(ctx, blockStoreProvider, config.RemoteBlockStoreID, models.BlockStoreKindRemote); cfgErr == nil {
-			if parsed, pErr := remoteCfg.GetConfig(); pErr == nil {
-				if v, ok := parsed["parallel_uploads"].(float64); ok && v > 0 {
-					syncerCfg.ParallelUploads = int(v)
-				}
-			}
-		} else {
-			logger.Warn("failed to resolve remote config for parallel_uploads override; using server default",
-				"share", config.Name, "error", cfgErr)
-		}
-	}
 
 	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it;
 	// releaseRemoteStore handles actual closing via ref counting.

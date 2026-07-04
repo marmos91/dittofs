@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -101,7 +102,6 @@ func addConcShare(t *testing.T, rt *Runtime, backup *controlledSnapshotable, sha
 	t.Cleanup(func() { _ = innerRemote.Close() })
 	mem := backup.MemoryMetadataStore
 	syncer := engine.NewSyncer(localStore, innerRemote, mem, engine.SyncerConfig{
-		ParallelUploads:   1,
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
@@ -533,9 +533,19 @@ func seedConcRemoteForShare(t *testing.T, rt *Runtime, shareName string, hashes 
 	if rs == nil {
 		t.Fatalf("share %s has no remote store", shareName)
 	}
+	mds, err := rt.GetMetadataStoreForShare(shareName)
+	if err != nil {
+		t.Fatalf("GetMetadataStoreForShare(%s): %v", shareName, err)
+	}
+	// Post-#1493 durability is block-only: seed a packed block per hash and
+	// mark the hash synced to that block so the verify gate resolves it to a
+	// blocks/<id> probe.
 	for _, h := range hashes {
-		if err := rs.Put(context.Background(), h, []byte("payload-"+h.String())); err != nil {
-			t.Fatalf("seed remote put: %v", err)
+		if err := rs.PutBlock(context.Background(), h.String(), bytes.NewReader([]byte("payload-"+h.String()))); err != nil {
+			t.Fatalf("seed remote put block: %v", err)
+		}
+		if err := mds.MarkSynced(context.Background(), h, block.ChunkLocator{BlockID: h.String()}); err != nil {
+			t.Fatalf("MarkSynced: %v", err)
 		}
 	}
 }

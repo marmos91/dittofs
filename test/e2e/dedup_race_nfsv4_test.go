@@ -44,7 +44,10 @@ package e2e
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -221,4 +224,43 @@ func TestDedupRace_NFSv4_ConcurrentIdenticalWrites(t *testing.T) {
 	}
 	t.Logf("all %d files (donor + %d racers) read back byte-identical over NFSv4.1",
 		len(allPaths), dedupRaceNFSv4Concurrent)
+}
+
+// dedupDeterministicPayload returns size bytes of deterministic pseudo-random
+// data for the given seed (moved here from the retired cross-share object
+// dedup test — packed blocks are per-share, so object-level cross-share dedup
+// no longer exists; chunk-level dedup within a share still does).
+func dedupDeterministicPayload(t *testing.T, size int, seed int64) []byte {
+	t.Helper()
+	r := rand.New(rand.NewSource(seed))
+	buf := make([]byte, size)
+	if _, err := r.Read(buf); err != nil {
+		t.Fatalf("dedupDeterministicPayload(seed=%d size=%d): %v", seed, size, err)
+	}
+	return buf
+}
+
+// shortPayloadSha returns the first 6 bytes of sha256(b) hex-encoded.
+func shortPayloadSha(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:6])
+}
+
+func dedupDrainUploads(t *testing.T, runner *helpers.CLIRunner) {
+	t.Helper()
+	out, err := runner.Run("system", "drain-uploads")
+	require.NoError(t, err, "drain-uploads should succeed: %s", string(out))
+}
+
+func assertShaEqual(t *testing.T, want, got []byte) bool {
+	t.Helper()
+	w := sha256.Sum256(want)
+	g := sha256.Sum256(got)
+	if w != g {
+		t.Errorf("payload sha256 mismatch: want=%s got=%s (lengths want=%d got=%d)",
+			hex.EncodeToString(w[:]), hex.EncodeToString(g[:]),
+			len(want), len(got))
+		return false
+	}
+	return true
 }

@@ -7,7 +7,7 @@
 // real Localstack S3:
 //
 //  1. Write payload A (deterministic pseudo-random bytes) to a file.
-//  2. Drain uploads. List S3 directly: assert a non-empty cas/ key set
+//  2. Drain uploads. List S3 directly: assert a non-empty blocks/ key set
 //     exists. Snapshot it (keysA).
 //  3. Overwrite the same file with payload B (different bytes, same
 //     length). Drain uploads. List S3 directly: assert BOTH old and
@@ -59,7 +59,7 @@ const payloadSize = 16 * 1024 * 1024 // 16 MiB
 
 func TestBlockStoreImmutableOverwrites(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping canonical CAS immutable-overwrites E2E in short mode")
+		t.Skip("Skipping canonical packed-block immutable-overwrites E2E in short mode")
 	}
 
 	if !framework.CheckLocalstackAvailable(t) {
@@ -89,7 +89,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 	// the Localstack helper's Buckets list — last-created bucket.
 	require.NotEmpty(t, lsHelper.Buckets, "Localstack helper should track at least one bucket")
 	bucket := lsHelper.Buckets[len(lsHelper.Buckets)-1]
-	t.Logf("CAS bucket = %q", bucket)
+	t.Logf("blocks bucket = %q", bucket)
 
 	// ---- Mount NFS so we write through the real protocol path ----
 	nfsPort := helpers.FindFreePort(t)
@@ -118,17 +118,16 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 
 	drainUploads(t, cli)
 
-	keysA := helpers.ListCASKeys(t, lsHelper, bucket)
-	require.NotEmpty(t, keysA, "expected at least one cas/ object after writing payload A + drain")
-	t.Logf("step 1 cas/ keys after A = %d", len(keysA))
+	keysA := helpers.ListBlockKeys(t, lsHelper, bucket)
+	require.NotEmpty(t, keysA, "expected at least one blocks/ object after writing payload A + drain")
+	t.Logf("step 1 blocks/ keys after A = %d", len(keysA))
 
-	// Sanity: every key must parse as a valid cas/{hh}/{hh}/{hex} shape.
+	// Sanity: every key must parse as a packed-block key: blocks/<hex id>.
 	for _, k := range keysA {
 		parts := strings.Split(k, "/")
-		require.Lenf(t, parts, 4, "cas key %q must have 4 path segments", k)
-		require.Equal(t, "cas", parts[0], "cas key %q must start with cas/", k)
-		require.Lenf(t, parts[1], 2, "cas shard1 %q must be 2 hex chars (key=%q)", parts[1], k)
-		require.Lenf(t, parts[2], 2, "cas shard2 %q must be 2 hex chars (key=%q)", parts[2], k)
+		require.Lenf(t, parts, 2, "block key %q must have 2 path segments", k)
+		require.Equal(t, "blocks", parts[0], "block key %q must start with blocks/", k)
+		require.NotEmpty(t, parts[1], "block key %q must carry a block id", k)
 	}
 
 	// ---- Step 2: overwrite with payload B ----
@@ -137,21 +136,21 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 
 	drainUploads(t, cli)
 
-	keysAB := helpers.ListCASKeys(t, lsHelper, bucket)
+	keysAB := helpers.ListBlockKeys(t, lsHelper, bucket)
 	added, removed := helpers.CASKeySetDiff(keysA, keysAB)
-	t.Logf("step 2 cas/ delta after B: +%d added, -%d removed (total now %d)",
+	t.Logf("step 2 blocks/ delta after B: +%d added, -%d removed (total now %d)",
 		len(added), len(removed), len(keysAB))
 
 	// Immutability assertion: A's bytes are NOT stomped — every keysA
 	// entry must still be present in keysAB. New B keys may also have
 	// appeared (that's the +added set).
 	require.Empty(t, removed,
-		"INV-01 IMMUTABILITY VIOLATION: %d cas/ keys disappeared between writing A and B; "+
-			"old chunks must remain at their CAS keys until GC reaps them. removed=%v",
+		"INV-01 IMMUTABILITY VIOLATION: %d blocks/ keys disappeared between writing A and B; "+
+			"overwritten chunks must remain inside their immutable block objects until GC reaps the whole block. removed=%v",
 		len(removed), removed)
 	require.NotEmpty(t, added,
-		"expected at least one new cas/ object for payload B (different content "+
-			"should produce different chunk hashes)")
+		"expected at least one new blocks/ object for payload B (different content "+
+			"should pack into at least one new block object)")
 
 	// ---- Step 3: GC reaps the old keys ----
 	// --grace-period 0 reaps just-orphaned chunks immediately, bypassing the
@@ -162,12 +161,12 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 		t.Skipf("DEFERRED: dfsctl store block gc subcommand not yet wired (Plan 11-07 dependency): %v", err)
 	}
 
-	keysAfterGC := helpers.ListCASKeys(t, lsHelper, bucket)
+	keysAfterGC := helpers.ListBlockKeys(t, lsHelper, bucket)
 	addedSinceGC, removedByGC := helpers.CASKeySetDiff(keysAB, keysAfterGC)
-	t.Logf("step 3 cas/ delta after GC: +%d added, -%d removed (total now %d)",
+	t.Logf("step 3 blocks/ delta after GC: +%d added, -%d removed (total now %d)",
 		len(addedSinceGC), len(removedByGC), len(keysAfterGC))
 
-	require.Empty(t, addedSinceGC, "GC must not introduce new cas/ keys")
+	require.Empty(t, addedSinceGC, "GC must not introduce new blocks/ keys")
 
 	// All A-only keys (i.e., in keysA but not in keysAB-added → in keysA but not in B's added set)
 	// MUST have been reaped. Equivalently: every key still present must
@@ -184,7 +183,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 		// a key is in BOTH keysA and added; we accept it.
 		if _, isB := keysBSet[k]; !isB {
 			// k is in keysA only (since keysAB = keysA + added). It must have been GC'd.
-			t.Errorf("GC FAILURE: cas/ key %q (from payload A) should have been reaped but is still present", k)
+			t.Errorf("GC FAILURE: blocks/ key %q (from payload A) should have been reaped but is still present", k)
 		}
 	}
 
@@ -202,7 +201,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 		}
 	}
 	require.True(t, reapedAny,
-		"GC FAILURE: not a single payload-A cas/ key was reaped. "+
+		"GC FAILURE: not a single payload-A blocks/ key was reaped. "+
 			"Either the GC did not run, the grace period suppressed the sweep, "+
 			"or the live set incorrectly includes A's chunk hashes. "+
 			"len(keysA)=%d len(keysAfterGC)=%d",
@@ -238,7 +237,7 @@ func TestBlockStoreImmutableOverwrites(t *testing.T) {
 	}
 
 	helpers.PutCASObject(t, lsHelper, bucket, tamperKey, tamperedBody, originalMeta)
-	t.Logf("step 5: tampered cas/ key %q (replaced %d body bytes; metadata preserved)",
+	t.Logf("step 5: tampered blocks/ key %q (replaced %d body bytes; metadata preserved)",
 		tamperKey, len(tamperedBody))
 
 	// Force the engine to re-fetch from S3 by forcing a re-read. If the

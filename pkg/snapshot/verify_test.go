@@ -11,9 +11,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/remote"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
-	"github.com/marmos91/dittofs/pkg/health"
 	"github.com/marmos91/dittofs/pkg/snapshot"
 )
 
@@ -25,26 +23,34 @@ func (f fakeLocators) GetLocator(_ context.Context, h block.ContentHash) (block.
 	return loc, ok, nil
 }
 
-// blockProbeSpy is a RemoteBlockStore that records whether GetBlockRange was
-// called, so a test can assert the standalone (cas) path never touches the
-// block store. All other block methods are unused here.
-type blockProbeSpy struct{ called atomic.Bool }
-
-func (s *blockProbeSpy) PutBlock(context.Context, string, io.Reader) error { return nil }
-func (s *blockProbeSpy) GetBlock(context.Context, string) ([]byte, error)  { return nil, nil }
-func (s *blockProbeSpy) GetBlockRange(_ context.Context, _ string, _, _ int64) ([]byte, error) {
-	s.called.Store(true)
-	return []byte{0x01}, nil
+// blockLocatorsFor maps every hash in hs to a distinct block-resident locator
+// (BlockID = hash string). Post-#1493 durability is block-only, so a resolver
+// is required for any hash to be probed at all.
+func blockLocatorsFor(hs *block.HashSet) fakeLocators {
+	res := make(fakeLocators, hs.Len())
+	_ = hs.ForEach(func(h block.ContentHash) error {
+		res[h] = block.ChunkLocator{BlockID: h.String()}
+		return nil
+	})
+	return res
 }
-func (s *blockProbeSpy) DeleteBlock(context.Context, string) error { return nil }
-func (s *blockProbeSpy) WalkBlocks(context.Context, func(string, block.Meta) error) error {
-	return nil
+
+// seedBlocks PutBlocks a one-byte packed block per hash, keyed to match
+// blockLocatorsFor.
+func seedBlocks(t *testing.T, rs *remotememory.Store, hs *block.HashSet) {
+	t.Helper()
+	ctx := context.Background()
+	_ = hs.ForEach(func(h block.ContentHash) error {
+		if err := rs.PutBlock(ctx, h.String(), bytes.NewReader([]byte{0x01})); err != nil {
+			t.Fatalf("seed PutBlock: %v", err)
+		}
+		return nil
+	})
 }
 
 // TestVerifyRemoteDurability_BlockResidentProbesBlock: a hash whose locator
-// names a packed block is proven durable by probing the block object, NOT a
-// cas/<hash> object (which does not exist post-flip). A missing block → the
-// wrapped ErrChunkNotFound.
+// names a packed block is proven durable by probing the block object. A missing
+// block → the wrapped ErrChunkNotFound.
 func TestVerifyRemoteDurability_BlockResidentProbesBlock(t *testing.T) {
 	ctx := context.Background()
 	rs := remotememory.New()
@@ -56,27 +62,26 @@ func TestVerifyRemoteDurability_BlockResidentProbesBlock(t *testing.T) {
 	loc := block.ChunkLocator{BlockID: "blk-present"}
 	res := fakeLocators{h: loc}
 
-	// Present block, NO cas object → must resolve via the block.
 	if err := rs.PutBlock(ctx, "blk-present", bytes.NewReader([]byte("packed-block-bytes"))); err != nil {
 		t.Fatalf("PutBlock: %v", err)
 	}
-	if err := snapshot.VerifyRemoteDurability(ctx, rs, res, rs, hs, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(ctx, res, rs, hs, 4); err != nil {
 		t.Fatalf("block-resident present: got %v, want nil", err)
 	}
 
 	// Missing block → ErrChunkNotFound.
 	res2 := fakeLocators{h: block.ChunkLocator{BlockID: "blk-absent"}}
-	err := snapshot.VerifyRemoteDurability(ctx, rs, res2, rs, hs, 4)
+	err := snapshot.VerifyRemoteDurability(ctx, res2, rs, hs, 4)
 	if !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("missing block: errors.Is(ErrChunkNotFound)=false; err=%v", err)
 	}
 }
 
-// TestVerifyRemoteDurability_StandaloneLocatorProbesCAS is the back-compat
-// guard: a synced hash with a STANDALONE locator (BlockID=="") — the pre-flip
-// cas/-only shape — is probed against cas/<hash> via rs.Head and NEVER touches
-// the block store. Proves a snapshot of legacy CAS data still verifies.
-func TestVerifyRemoteDurability_StandaloneLocatorProbesCAS(t *testing.T) {
+// TestVerifyRemoteDurability_StandaloneLocatorNotDurable: post-#1493 a hash with
+// a STANDALONE locator (BlockID=="") — the pre-flip cas/-only shape — is no
+// longer block-resident and is reported not durable (ErrChunkNotFound), never
+// probing the block store.
+func TestVerifyRemoteDurability_StandaloneLocatorNotDurable(t *testing.T) {
 	ctx := context.Background()
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
@@ -84,17 +89,30 @@ func TestVerifyRemoteDurability_StandaloneLocatorProbesCAS(t *testing.T) {
 	h := gateHash(9)
 	hs := block.NewHashSet(1)
 	hs.Add(h)
-	if err := rs.Put(ctx, h, []byte{0x01}); err != nil { // standalone cas object
-		t.Fatalf("Put: %v", err)
-	}
 	res := fakeLocators{h: block.ChunkLocator{}} // standalone (BlockID=="")
-	spy := &blockProbeSpy{}
 
-	if err := snapshot.VerifyRemoteDurability(ctx, rs, res, spy, hs, 4); err != nil {
-		t.Fatalf("standalone cas: got %v, want nil", err)
+	err := snapshot.VerifyRemoteDurability(ctx, res, rs, hs, 4)
+	if !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("standalone locator: errors.Is(ErrChunkNotFound)=false; err=%v", err)
 	}
-	if spy.called.Load() {
-		t.Fatal("standalone locator must probe cas/<hash>, not the block store")
+}
+
+// TestVerifyRemoteDurability_NoLocatorNotDurable: a hash absent from the
+// resolver, or a nil resolver, cannot be proven durable → ErrChunkNotFound.
+func TestVerifyRemoteDurability_NoLocatorNotDurable(t *testing.T) {
+	ctx := context.Background()
+	rs := remotememory.New()
+	t.Cleanup(func() { _ = rs.Close() })
+
+	hs := seedManifest(t, 4)
+
+	// Nil resolver.
+	if err := snapshot.VerifyRemoteDurability(ctx, nil, rs, hs, 4); !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("nil resolver: want ErrChunkNotFound, got %v", err)
+	}
+	// Empty resolver (no locator for any hash).
+	if err := snapshot.VerifyRemoteDurability(ctx, fakeLocators{}, rs, hs, 4); !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("empty resolver: want ErrChunkNotFound, got %v", err)
 	}
 }
 
@@ -118,27 +136,16 @@ func seedManifest(t *testing.T, n int) *block.HashSet {
 	return hs
 }
 
-// putAll Puts every manifest hash with a one-byte body into rs.
-func putAll(t *testing.T, rs *remotememory.Store, hs *block.HashSet) {
-	t.Helper()
-	ctx := context.Background()
-	for _, h := range hs.Sorted() {
-		if err := rs.Put(ctx, h, []byte{0x01}); err != nil {
-			t.Fatalf("seed Put: %v", err)
-		}
-	}
-}
-
-// TestVerifyRemoteDurability_HappyPath: every hash in manifest is present
-// on remote → returns nil.
+// TestVerifyRemoteDurability_HappyPath: every hash in manifest resolves to a
+// present block → returns nil.
 func TestVerifyRemoteDurability_HappyPath(t *testing.T) {
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
 
 	hs := seedManifest(t, 32)
-	putAll(t, rs, hs)
+	seedBlocks(t, rs, hs)
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), blockLocatorsFor(hs), rs, hs, 4); err != nil {
 		t.Fatalf("VerifyRemoteDurability: got %v, want nil", err)
 	}
 }
@@ -150,7 +157,7 @@ func TestVerifyRemoteDurability_EmptyManifest(t *testing.T) {
 	t.Cleanup(func() { _ = rs.Close() })
 
 	hs := block.NewHashSet(0)
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), nil, rs, hs, 4); err != nil {
 		t.Fatalf("empty manifest: got %v, want nil", err)
 	}
 }
@@ -160,28 +167,28 @@ func TestVerifyRemoteDurability_NilManifest(t *testing.T) {
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, nil, 4); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), nil, rs, nil, 4); err != nil {
 		t.Fatalf("nil manifest: got %v, want nil", err)
 	}
 }
 
-// TestVerifyRemoteDurability_MissingHashFailFast: at least one hash is
-// absent → returns wrapped ErrChunkNotFound naming that hash.
+// TestVerifyRemoteDurability_MissingHashFailFast: at least one hash resolves to
+// an absent block → returns wrapped ErrChunkNotFound naming that hash.
 func TestVerifyRemoteDurability_MissingHashFailFast(t *testing.T) {
 	rs := remotememory.New()
 	t.Cleanup(func() { _ = rs.Close() })
 
 	hs := seedManifest(t, 16)
-	// Seed all but the first hash (deterministic via Sorted()).
+	// Seed a block for all but the first hash (deterministic via Sorted()).
 	sorted := hs.Sorted()
 	missing := sorted[0]
 	for _, h := range sorted[1:] {
-		if err := rs.Put(context.Background(), h, []byte{0x01}); err != nil {
-			t.Fatalf("seed Put: %v", err)
+		if err := rs.PutBlock(context.Background(), h.String(), bytes.NewReader([]byte{0x01})); err != nil {
+			t.Fatalf("seed PutBlock: %v", err)
 		}
 	}
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 4)
+	err := snapshot.VerifyRemoteDurability(context.Background(), blockLocatorsFor(hs), rs, hs, 4)
 	if err == nil {
 		t.Fatal("missing hash: got nil err, want wrapped ErrChunkNotFound")
 	}
@@ -193,15 +200,15 @@ func TestVerifyRemoteDurability_MissingHashFailFast(t *testing.T) {
 	}
 }
 
-// TestVerifyRemoteDurability_IOErrorPropagates: a non-NotFound Head
+// TestVerifyRemoteDurability_IOErrorPropagates: a non-NotFound block-probe
 // error propagates without being wrapped as ErrChunkNotFound.
 func TestVerifyRemoteDurability_IOErrorPropagates(t *testing.T) {
 	sentinel := errors.New("synthetic-io-failure")
-	rs := &errRemote{err: sentinel}
+	rs := &errBlockRemote{err: sentinel}
 
 	hs := seedManifest(t, 4)
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, 2)
+	err := snapshot.VerifyRemoteDurability(context.Background(), blockLocatorsFor(hs), rs, hs, 2)
 	if err == nil {
 		t.Fatal("got nil err, want propagated I/O error")
 	}
@@ -216,15 +223,13 @@ func TestVerifyRemoteDurability_IOErrorPropagates(t *testing.T) {
 // TestVerifyRemoteDurability_ContextCancelHonored: parent ctx cancelled
 // mid-flight → returns ctx error.
 func TestVerifyRemoteDurability_ContextCancelHonored(t *testing.T) {
-	// blockingRemote stalls until released; ensures all in-flight Heads
-	// are still running when we cancel the parent ctx.
 	br := newBlockingRemote()
 	hs := seedManifest(t, 16)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- snapshot.VerifyRemoteDurability(ctx, br, nil, nil, hs, 4)
+		errCh <- snapshot.VerifyRemoteDurability(ctx, blockLocatorsFor(hs), br, hs, 4)
 	}()
 
 	// Wait for some probes to be in-flight, then cancel.
@@ -236,7 +241,7 @@ func TestVerifyRemoteDurability_ContextCancelHonored(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	cancel()
-	// Release any goroutines blocked in Head so they observe cancel.
+	// Release any goroutines blocked in GetBlockRange so they observe cancel.
 	br.releaseAll()
 
 	select {
@@ -258,7 +263,7 @@ func TestVerifyRemoteDurability_ConcurrencyBound(t *testing.T) {
 	cr := newCountingRemote(5 * time.Millisecond)
 	hs := seedManifest(t, total)
 
-	if err := snapshot.VerifyRemoteDurability(context.Background(), cr, nil, nil, hs, concurrency); err != nil {
+	if err := snapshot.VerifyRemoteDurability(context.Background(), blockLocatorsFor(hs), cr, hs, concurrency); err != nil {
 		t.Fatalf("VerifyRemoteDurability: %v", err)
 	}
 
@@ -266,7 +271,7 @@ func TestVerifyRemoteDurability_ConcurrencyBound(t *testing.T) {
 		t.Fatalf("max in-flight = %d, want <= %d", got, concurrency)
 	}
 	if got := cr.totalCalls(); got != total {
-		t.Fatalf("total Head calls = %d, want %d", got, total)
+		t.Fatalf("total probe calls = %d, want %d", got, total)
 	}
 }
 
@@ -278,12 +283,13 @@ func TestVerifyRemoteDurability_ConcurrencyDefaultsOnNonPositive(t *testing.T) {
 	t.Cleanup(func() { _ = rs.Close() })
 
 	hs := seedManifest(t, 8)
-	putAll(t, rs, hs)
+	seedBlocks(t, rs, hs)
+	locators := blockLocatorsFor(hs)
 
 	for _, c := range []int{0, -1, -100} {
 		c := c
 		t.Run(fmt.Sprintf("concurrency=%d", c), func(t *testing.T) {
-			if err := snapshot.VerifyRemoteDurability(context.Background(), rs, nil, nil, hs, c); err != nil {
+			if err := snapshot.VerifyRemoteDurability(context.Background(), locators, rs, hs, c); err != nil {
 				t.Fatalf("concurrency=%d: got %v, want nil", c, err)
 			}
 		})
@@ -292,33 +298,29 @@ func TestVerifyRemoteDurability_ConcurrencyDefaultsOnNonPositive(t *testing.T) {
 
 // TestVerifyRemoteDurability_FailFastCancelsSiblings: a single miss
 // cancels in-flight sibling probes — observed by counting completed
-// Heads being strictly less than the manifest size.
+// probes being strictly less than the manifest size.
 func TestVerifyRemoteDurability_FailFastCancelsSiblings(t *testing.T) {
 	const total = 64
 	const concurrency = 4
 
-	// Returns NotFound for the first hash (by Sorted order), nil for the
-	// rest; introduces a small delay so the cancellation race is real.
 	hs := seedManifest(t, total)
 	missing := hs.Sorted()[0]
 
 	sm := &slowMissingRemote{
-		missing: missing,
+		// The block probe keys on BlockID, which blockLocatorsFor sets to the
+		// hash string; so mark the missing hash's block ID.
+		missing: missing.String(),
 		delay:   10 * time.Millisecond,
 	}
 
-	err := snapshot.VerifyRemoteDurability(context.Background(), sm, nil, nil, hs, concurrency)
+	err := snapshot.VerifyRemoteDurability(context.Background(), blockLocatorsFor(hs), sm, hs, concurrency)
 	if !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("got %v, want wrapped ErrChunkNotFound", err)
 	}
 
-	// With cancellation, far fewer than `total` Heads should complete.
-	// The worker pool is concurrency, so an upper bound on completed
-	// probes is roughly concurrency + a small slack. Total minus a safety
-	// margin is the conservative ceiling.
 	completed := sm.completedCalls()
 	if completed >= total {
-		t.Fatalf("expected fewer than %d Head completions due to cancel; got %d", total, completed)
+		t.Fatalf("expected fewer than %d probe completions due to cancel; got %d", total, completed)
 	}
 }
 
@@ -333,47 +335,26 @@ func contains(s, sub string) bool {
 	return false
 }
 
-// errRemote returns the configured err from every method. Compile-time
-// asserted to satisfy remote.RemoteStore.
-type errRemote struct {
+// errBlockRemote returns the configured err from every block probe.
+type errBlockRemote struct {
 	err error
 }
 
-var _ remote.RemoteStore = (*errRemote)(nil)
-
-func (e *errRemote) Put(context.Context, block.ContentHash, []byte) error {
+func (e *errBlockRemote) PutBlock(context.Context, string, io.Reader) error { return e.err }
+func (e *errBlockRemote) GetBlock(context.Context, string) ([]byte, error)  { return nil, e.err }
+func (e *errBlockRemote) GetBlockRange(context.Context, string, int64, int64) ([]byte, error) {
+	return nil, e.err
+}
+func (e *errBlockRemote) DeleteBlock(context.Context, string) error { return e.err }
+func (e *errBlockRemote) WalkBlocks(context.Context, func(string, block.Meta) error) error {
 	return e.err
 }
-func (e *errRemote) Get(context.Context, block.ContentHash) ([]byte, error) {
-	return nil, e.err
-}
-func (e *errRemote) GetRange(context.Context, block.ContentHash, int64, int64) ([]byte, error) {
-	return nil, e.err
-}
-func (e *errRemote) Has(context.Context, block.ContentHash) (bool, error) {
-	return false, e.err
-}
-func (e *errRemote) Delete(context.Context, block.ContentHash) error { return e.err }
-func (e *errRemote) Head(context.Context, block.ContentHash) (block.Meta, error) {
-	return block.Meta{}, e.err
-}
-func (e *errRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
-	return e.err
-}
-func (e *errRemote) ReadBlockVerified(context.Context, block.ContentHash, block.ContentHash) ([]byte, error) {
-	return nil, e.err
-}
-func (e *errRemote) Close() error                              { return nil }
-func (e *errRemote) HealthCheck(context.Context) error         { return e.err }
-func (e *errRemote) Healthcheck(context.Context) health.Report { return health.Report{} }
 
-// blockingRemote: Head blocks on a per-call gate until release.
+// blockingRemote: GetBlockRange blocks on a per-call gate until release.
 type blockingRemote struct {
 	release chan struct{}
 	flying  atomic.Int64
 }
-
-var _ remote.RemoteStore = (*blockingRemote)(nil)
 
 func newBlockingRemote() *blockingRemote {
 	return &blockingRemote{release: make(chan struct{})}
@@ -382,48 +363,32 @@ func newBlockingRemote() *blockingRemote {
 func (b *blockingRemote) inFlight() int64 { return b.flying.Load() }
 func (b *blockingRemote) releaseAll()     { close(b.release) }
 
-func (b *blockingRemote) Head(ctx context.Context, _ block.ContentHash) (block.Meta, error) {
+func (b *blockingRemote) GetBlockRange(ctx context.Context, _ string, _, _ int64) ([]byte, error) {
 	b.flying.Add(1)
 	defer b.flying.Add(-1)
 	select {
 	case <-b.release:
-		return block.Meta{}, nil
+		return []byte{0x01}, nil
 	case <-ctx.Done():
-		return block.Meta{}, ctx.Err()
+		return nil, ctx.Err()
 	}
 }
 
-func (b *blockingRemote) Put(context.Context, block.ContentHash, []byte) error { return nil }
-func (b *blockingRemote) Get(context.Context, block.ContentHash) ([]byte, error) {
-	return nil, nil
-}
-func (b *blockingRemote) GetRange(context.Context, block.ContentHash, int64, int64) ([]byte, error) {
-	return nil, nil
-}
-func (b *blockingRemote) Has(context.Context, block.ContentHash) (bool, error) {
-	return false, nil
-}
-func (b *blockingRemote) Delete(context.Context, block.ContentHash) error { return nil }
-func (b *blockingRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
+func (b *blockingRemote) PutBlock(context.Context, string, io.Reader) error { return nil }
+func (b *blockingRemote) GetBlock(context.Context, string) ([]byte, error)  { return nil, nil }
+func (b *blockingRemote) DeleteBlock(context.Context, string) error         { return nil }
+func (b *blockingRemote) WalkBlocks(context.Context, func(string, block.Meta) error) error {
 	return nil
 }
-func (b *blockingRemote) ReadBlockVerified(context.Context, block.ContentHash, block.ContentHash) ([]byte, error) {
-	return nil, nil
-}
-func (b *blockingRemote) Close() error                              { return nil }
-func (b *blockingRemote) HealthCheck(context.Context) error         { return nil }
-func (b *blockingRemote) Healthcheck(context.Context) health.Report { return health.Report{} }
 
 // countingRemote: tracks max-in-flight + total calls; sleeps `delay`
-// per Head so the bound assertion is observable.
+// per probe so the bound assertion is observable.
 type countingRemote struct {
 	delay  time.Duration
 	flying atomic.Int64
 	maxFly atomic.Int64
 	calls  atomic.Int64
 }
-
-var _ remote.RemoteStore = (*countingRemote)(nil)
 
 func newCountingRemote(delay time.Duration) *countingRemote {
 	return &countingRemote{delay: delay}
@@ -432,11 +397,10 @@ func newCountingRemote(delay time.Duration) *countingRemote {
 func (c *countingRemote) maxInFlight() int64 { return c.maxFly.Load() }
 func (c *countingRemote) totalCalls() int64  { return c.calls.Load() }
 
-func (c *countingRemote) Head(ctx context.Context, _ block.ContentHash) (block.Meta, error) {
+func (c *countingRemote) GetBlockRange(ctx context.Context, _ string, _, _ int64) ([]byte, error) {
 	c.calls.Add(1)
 	now := c.flying.Add(1)
 	defer c.flying.Add(-1)
-	// Update high-water mark.
 	for {
 		prev := c.maxFly.Load()
 		if now <= prev {
@@ -448,76 +412,46 @@ func (c *countingRemote) Head(ctx context.Context, _ block.ContentHash) (block.M
 	}
 	select {
 	case <-time.After(c.delay):
-		return block.Meta{}, nil
+		return []byte{0x01}, nil
 	case <-ctx.Done():
-		return block.Meta{}, ctx.Err()
+		return nil, ctx.Err()
 	}
 }
 
-func (c *countingRemote) Put(context.Context, block.ContentHash, []byte) error { return nil }
-func (c *countingRemote) Get(context.Context, block.ContentHash) ([]byte, error) {
-	return nil, nil
-}
-func (c *countingRemote) GetRange(context.Context, block.ContentHash, int64, int64) ([]byte, error) {
-	return nil, nil
-}
-func (c *countingRemote) Has(context.Context, block.ContentHash) (bool, error) {
-	return false, nil
-}
-func (c *countingRemote) Delete(context.Context, block.ContentHash) error { return nil }
-func (c *countingRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
+func (c *countingRemote) PutBlock(context.Context, string, io.Reader) error { return nil }
+func (c *countingRemote) GetBlock(context.Context, string) ([]byte, error)  { return nil, nil }
+func (c *countingRemote) DeleteBlock(context.Context, string) error         { return nil }
+func (c *countingRemote) WalkBlocks(context.Context, func(string, block.Meta) error) error {
 	return nil
 }
-func (c *countingRemote) ReadBlockVerified(context.Context, block.ContentHash, block.ContentHash) ([]byte, error) {
-	return nil, nil
-}
-func (c *countingRemote) Close() error                              { return nil }
-func (c *countingRemote) HealthCheck(context.Context) error         { return nil }
-func (c *countingRemote) Healthcheck(context.Context) health.Report { return health.Report{} }
 
-// slowMissingRemote: returns ErrChunkNotFound for a single
-// nominated hash, nil for everything else, with a small delay per call
-// so the fail-fast cancellation is observable.
+// slowMissingRemote: returns ErrChunkNotFound for a single nominated blockID,
+// nil for everything else, with a small delay per call so the fail-fast
+// cancellation is observable.
 type slowMissingRemote struct {
-	missing   block.ContentHash
+	missing   string
 	delay     time.Duration
 	completed atomic.Int64
 }
 
-var _ remote.RemoteStore = (*slowMissingRemote)(nil)
-
 func (s *slowMissingRemote) completedCalls() int64 { return s.completed.Load() }
 
-func (s *slowMissingRemote) Head(ctx context.Context, h block.ContentHash) (block.Meta, error) {
+func (s *slowMissingRemote) GetBlockRange(ctx context.Context, blockID string, _, _ int64) ([]byte, error) {
 	select {
 	case <-time.After(s.delay):
 	case <-ctx.Done():
-		return block.Meta{}, ctx.Err()
+		return nil, ctx.Err()
 	}
 	s.completed.Add(1)
-	if h == s.missing {
-		return block.Meta{}, block.ErrChunkNotFound
+	if blockID == s.missing {
+		return nil, block.ErrChunkNotFound
 	}
-	return block.Meta{}, nil
+	return []byte{0x01}, nil
 }
 
-func (s *slowMissingRemote) Put(context.Context, block.ContentHash, []byte) error { return nil }
-func (s *slowMissingRemote) Get(context.Context, block.ContentHash) ([]byte, error) {
-	return nil, nil
-}
-func (s *slowMissingRemote) GetRange(context.Context, block.ContentHash, int64, int64) ([]byte, error) {
-	return nil, nil
-}
-func (s *slowMissingRemote) Has(context.Context, block.ContentHash) (bool, error) {
-	return false, nil
-}
-func (s *slowMissingRemote) Delete(context.Context, block.ContentHash) error { return nil }
-func (s *slowMissingRemote) Walk(context.Context, func(block.ContentHash, block.Meta) error) error {
+func (s *slowMissingRemote) PutBlock(context.Context, string, io.Reader) error { return nil }
+func (s *slowMissingRemote) GetBlock(context.Context, string) ([]byte, error)  { return nil, nil }
+func (s *slowMissingRemote) DeleteBlock(context.Context, string) error         { return nil }
+func (s *slowMissingRemote) WalkBlocks(context.Context, func(string, block.Meta) error) error {
 	return nil
 }
-func (s *slowMissingRemote) ReadBlockVerified(context.Context, block.ContentHash, block.ContentHash) ([]byte, error) {
-	return nil, nil
-}
-func (s *slowMissingRemote) Close() error                              { return nil }
-func (s *slowMissingRemote) HealthCheck(context.Context) error         { return nil }
-func (s *slowMissingRemote) Healthcheck(context.Context) health.Report { return health.Report{} }

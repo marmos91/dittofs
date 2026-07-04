@@ -113,15 +113,15 @@ func (c *refcountCoordinator) DecrementRefCountAndReap(_ context.Context, payloa
 	return cur, nil
 }
 
-func (c *refcountCoordinator) PersistFileChunks(_ context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
+func (c *refcountCoordinator) PersistFileChunks(_ context.Context, _ string, _ []block.ChunkRef, _ block.ObjectID) error {
 	return nil
 }
 
-func (c *refcountCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.BlockRef, error) {
+func (c *refcountCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.ChunkRef, error) {
 	return nil, nil
 }
 
-func (c *refcountCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.BlockRef, error) {
+func (c *refcountCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.ChunkRef, error) {
 	return nil, nil
 }
 
@@ -288,7 +288,7 @@ func TestEngine_Delete_PreservesSyncedMarker(t *testing.T) {
 
 		bs := buildCascadeFixture(t, coord, syncedStore)
 
-		blocks := []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}}
+		blocks := []block.ChunkRef{{Hash: hash, Offset: 0, Size: 4096}}
 		if err := bs.Delete(ctx, "pid-keep-zero", blocks); err != nil {
 			t.Fatalf("Delete returned error: %v", err)
 		}
@@ -327,7 +327,7 @@ func TestEngine_Delete_PreservesSyncedMarker(t *testing.T) {
 
 		bs := buildCascadeFixture(t, coord, syncedStore)
 
-		blocks := []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}}
+		blocks := []block.ChunkRef{{Hash: hash, Offset: 0, Size: 4096}}
 		if err := bs.Delete(ctx, "pid-keep-nonzero", blocks); err != nil {
 			t.Fatalf("Delete returned error: %v", err)
 		}
@@ -355,7 +355,7 @@ func TestEngine_Delete_PreservesSyncedMarker(t *testing.T) {
 		// still drive the coordinator decrement.
 		bs := buildCascadeFixture(t, coord, nil)
 
-		blocks := []block.BlockRef{{Hash: hash, Offset: 0, Size: 4096}}
+		blocks := []block.ChunkRef{{Hash: hash, Offset: 0, Size: 4096}}
 		if err := bs.Delete(ctx, "pid-keep-nil", blocks); err != nil {
 			t.Fatalf("Delete returned error: %v", err)
 		}

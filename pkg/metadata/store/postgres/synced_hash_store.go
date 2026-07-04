@@ -18,8 +18,12 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Compile-time assertion: the Postgres engine implements SyncedHashStore.
-var _ metadata.SyncedHashStore = (*PostgresMetadataStore)(nil)
+// Compile-time assertions: the Postgres engine and its transaction implement
+// SyncedHashStore.
+var (
+	_ metadata.SyncedHashStore = (*PostgresMetadataStore)(nil)
+	_ metadata.SyncedHashStore = (*postgresTransaction)(nil)
+)
 
 // EnumerateSynced streams every synced marker with its first-mirror time,
 // read straight from the synced_hashes table. Used by the LIST-free GC sweep
@@ -150,6 +154,89 @@ func (s *PostgresMetadataStore) DeleteSynced(ctx context.Context, hash block.Con
 		`DELETE FROM synced_hashes WHERE hash = $1`,
 		hash[:]); err != nil {
 		return fmt.Errorf("postgres synced delete: %w", err)
+	}
+	return nil
+}
+
+// ============================================================================
+// Transaction-level SyncedHashStore
+// ============================================================================
+//
+// Same executor plumbing as the transaction-level BlockRecordStore /
+// LocalChunkIndex (block_record_store.go): each method runs its statement on
+// the enclosing pgx.Tx (tx.tx) instead of the pool helpers, sharing the
+// locatorArgs / scan logic with the store-level variants. Postgres gives
+// read-your-writes within a transaction, so a MarkSynced after a DeleteSynced
+// in the same tx records the new locator.
+
+func (tx *postgresTransaction) IsSynced(ctx context.Context, hash block.ContentHash) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	var dummy int
+	err := tx.tx.QueryRow(ctx,
+		`SELECT 1 FROM synced_hashes WHERE hash = $1`,
+		hash[:]).Scan(&dummy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("postgres tx synced get: %w", err)
+	}
+	return true, nil
+}
+
+// MarkSynced records the synced marker inside the transaction. First-wins per
+// ON CONFLICT (hash) DO NOTHING, matching the store-level method — except
+// after a DeleteSynced in the same tx, whose pending delete makes this insert
+// take effect with the new locator (read-your-writes).
+func (tx *postgresTransaction) MarkSynced(ctx context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	blockID, off, length := locatorArgs(loc)
+	if _, err := tx.tx.Exec(ctx,
+		`INSERT INTO synced_hashes (hash, synced_at, block_id, block_offset, block_length)
+			VALUES ($1, NOW(), $2, $3, $4)
+			ON CONFLICT (hash) DO NOTHING`,
+		hash[:], blockID, off, length); err != nil {
+		return fmt.Errorf("postgres tx synced mark: %w", err)
+	}
+	return nil
+}
+
+func (tx *postgresTransaction) GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return block.ChunkLocator{}, false, err
+	}
+	var blockID sql.NullString
+	var off, length sql.NullInt64
+	err := tx.tx.QueryRow(ctx,
+		`SELECT block_id, block_offset, block_length FROM synced_hashes WHERE hash = $1`,
+		hash[:]).Scan(&blockID, &off, &length)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return block.ChunkLocator{}, false, nil
+	}
+	if err != nil {
+		return block.ChunkLocator{}, false, fmt.Errorf("postgres tx synced get locator: %w", err)
+	}
+	if !blockID.Valid || blockID.String == "" {
+		return block.ChunkLocator{}, true, nil
+	}
+	if !off.Valid || !length.Valid {
+		return block.ChunkLocator{}, false, fmt.Errorf("corrupt locator row: block_id %q with NULL offset/length", blockID.String)
+	}
+	return block.ChunkLocator{BlockID: blockID.String, WireOffset: off.Int64, WireLength: length.Int64}, true, nil
+}
+
+func (tx *postgresTransaction) DeleteSynced(ctx context.Context, hash block.ContentHash) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := tx.tx.Exec(ctx,
+		`DELETE FROM synced_hashes WHERE hash = $1`,
+		hash[:]); err != nil {
+		return fmt.Errorf("postgres tx synced delete: %w", err)
 	}
 	return nil
 }

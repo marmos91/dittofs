@@ -228,13 +228,13 @@ func TestBadgerStore_PutGetFile_BlocksRoundTrip(t *testing.T) {
 	rootHandle, err := metadata.EncodeFileHandle(rootFile)
 	require.NoError(t, err)
 
-	// Build deterministic BlockRef fixtures.
+	// Build deterministic ChunkRef fixtures.
 	var h1, h2 block.ContentHash
 	for i := range h1 {
 		h1[i] = byte(i)
 		h2[i] = byte(0xff - i)
 	}
-	want := []block.BlockRef{
+	want := []block.ChunkRef{
 		{Hash: h1, Offset: 0, Size: 4 * 1024 * 1024},
 		{Hash: h2, Offset: 4 * 1024 * 1024, Size: 4 * 1024 * 1024},
 	}

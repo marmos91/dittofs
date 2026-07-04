@@ -1,9 +1,9 @@
 // Package engine — block-aware GC reclaim (#1414 object packing, PR3).
 //
-// A packed-block chunk lives inside blocks/<blockID> rather than as a standalone
-// cas/<hash> object. Its bytes are shared with the other chunks in the same
-// block, so the block object can be reclaimed only when its LAST live chunk is
-// gone. Reclaim is driven by the existing remote GC sweep — NOT by the unlink
+// A chunk lives inside a packed blocks/<blockID> object. Its bytes are shared
+// with the other chunks in the same block, so the block object can be
+// reclaimed only when its LAST live chunk is gone. Reclaim is driven by the
+// existing remote GC sweep — NOT by the unlink
 // refcount cascade — because only the sweep's live-set scan proves a hash is
 // globally dead (no sibling FileChunk row, in any file, still references it).
 // Deciding to free a block on a single file's unlink would corrupt a dedup
@@ -20,20 +20,18 @@ import (
 )
 
 // BlockReclaimer reclaims a globally-dead chunk that the remote GC sweep has
-// proven unreferenced. It is consulted ONCE per swept hash, in place of the
-// standalone cas/<hash> Delete: a block-resident hash has no CAS object, so the
-// reclaimer decrements its enclosing block and frees the block object + record
-// when the last live chunk is gone. A nil Options.BlockReclaimer means the
-// deployment packs no blocks — the sweep deletes cas/<hash> objects exactly as
-// before, so non-block deployments are unaffected.
+// proven unreferenced. It is consulted ONCE per swept hash and is the ONLY
+// remote reclaim path: the reclaimer decrements the chunk's enclosing block
+// and frees the block object + record when the last live chunk is gone.
 type BlockReclaimer interface {
 	// ReclaimDeadChunk handles a globally-dead chunk hash. It returns
-	// handled=true (with the remote bytes freed, if any) when the hash was
-	// block-resident and the block bookkeeping was applied — the caller MUST
-	// then skip the standalone CAS delete (no such object exists). handled=false
-	// means the hash is a standalone CAS object and the caller deletes it as
-	// before. Idempotent: a hash whose block was already freed by a sibling
-	// chunk in the same sweep returns handled=true with zero bytes.
+	// handled=true (with the remote bytes freed, if any) when the hash
+	// resolved to a block locator and the block bookkeeping was applied.
+	// handled=false means this reclaimer has no block locator for the hash —
+	// post-#1493 the caller treats that as metadata drift and keeps the
+	// marker (fail-closed); it never issues a per-hash remote delete.
+	// Idempotent: a hash whose block was already freed by a sibling chunk in
+	// the same sweep returns handled=true with zero bytes.
 	ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (handled bool, bytesFreed int64, err error)
 }
 
@@ -90,8 +88,11 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 	if err != nil {
 		return false, 0, fmt.Errorf("block reclaim: get locator %s: %w", hash, err)
 	}
-	if !synced || loc.IsStandalone() {
-		// Standalone CAS object (or unsynced): the caller deletes cas/<hash>.
+	if !synced || loc.BlockID == "" {
+		// No block locator recorded in THIS share's store. Another share on
+		// the same remote may still resolve it (the runtime unions per-share
+		// reclaimers); if none does, the caller records the drift and keeps
+		// the marker fail-closed.
 		return false, 0, nil
 	}
 	blockID := loc.BlockID
@@ -104,7 +105,7 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 	}
 	if !ok {
 		// Orphan locator pointing at an already-freed block: drop its local entry
-		// and report handled so the caller skips the (nonexistent) CAS delete.
+		// and report handled — the block bookkeeping for this hash is complete.
 		if derr := r.LocalIndex.DeleteLocalLocation(ctx, hash); derr != nil {
 			return false, 0, fmt.Errorf("block reclaim: delete local location %s: %w", hash, derr)
 		}
@@ -129,8 +130,8 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 		// Crash-recovery re-entry: DeleteLocalLocation already ran in a prior
 		// pass, so DecrLiveChunkCount was either already applied or will be
 		// skipped here. Either way, the count is at least as high as the true
-		// live count — no premature free possible. Return handled so the caller
-		// skips the (nonexistent) standalone CAS delete.
+		// live count — no premature free possible. Report handled: the block
+		// bookkeeping for this hash is complete.
 		return true, 0, nil
 	}
 

@@ -26,8 +26,8 @@ func TestRollupFile_ShutdownCancellationIsBenign(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 
 	var mu sync.Mutex
-	var persisted []block.BlockRef
-	persister := func(ctx context.Context, _ string, blocks []block.BlockRef, _ block.ObjectID) error {
+	var persisted []block.ChunkRef
+	persister := func(ctx context.Context, _ string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		// Honour ctx cancellation the way the real engine persister does.
 		if err := ctx.Err(); err != nil {
 			return err
@@ -107,7 +107,7 @@ func TestDrainRollups_ShutdownCancellationIsBenign(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var enterOnce sync.Once
-	persister := func(ctx context.Context, _ string, _ []block.BlockRef, _ block.ObjectID) error {
+	persister := func(ctx context.Context, _ string, _ []block.ChunkRef, _ block.ObjectID) error {
 		enterOnce.Do(func() { close(entered) })
 		<-release
 		return ctx.Err()
@@ -164,7 +164,7 @@ func TestGracefulStopRollup_DrainsInFlight(t *testing.T) {
 
 	var mu sync.Mutex
 	var persistedBlocks int
-	persister := func(ctx context.Context, _ string, blocks []block.BlockRef, _ block.ObjectID) error {
+	persister := func(ctx context.Context, _ string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

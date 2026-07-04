@@ -419,7 +419,7 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// Step 10: Write data to BlockStore (uses local cache internally)
 	// ========================================================================
 
-	// Routed through common.WriteToBlockStore so any future []BlockRef
+	// Routed through common.WriteToBlockStore so any future []ChunkRef
 	// plumbing lands in one place (see common/doc.go).
 	err = common.WriteToBlockStore(authCtx.Context, blockStore, writeOp.PayloadID, req.Data, req.Offset)
 	if err != nil {

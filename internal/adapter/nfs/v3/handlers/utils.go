@@ -177,7 +177,7 @@ func readMFsymlinkContentForNFS(
 		return nil, err
 	}
 
-	// Routed through common.ReadFromBlockStore so any future []BlockRef
+	// Routed through common.ReadFromBlockStore so any future []ChunkRef
 	// plumbing lands in one place (see common/doc.go).
 	// The copy below materialises the pooled buffer into a caller-owned
 	// slice because the MFsymlink path retains the bytes past Release().

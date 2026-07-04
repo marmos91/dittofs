@@ -1,4 +1,4 @@
-// Bench / regression gate for the []BlockRef-threaded read path
+// Bench / regression gate for the []ChunkRef-threaded read path
 // (binary search via findBlocksForRange, Cache OnRead hint
 // RAM-cache-backed local.Get on miss).
 //
@@ -36,7 +36,7 @@ import (
 // run.
 const phase12FixtureFileSize = 64 * 1024 * 1024
 
-// phase12FixtureBlockSize is the per-BlockRef chunk size — matches the
+// phase12FixtureBlockSize is the per-ChunkRef chunk size — matches the
 // FastCDC average chunk target.
 const phase12FixtureBlockSize = 4 * 1024 * 1024
 
@@ -50,19 +50,19 @@ const phase12ReadSize = 4096
 const phase12RandSeed = 42
 
 // phase12Fixture wraps a primed engine.Store + the corresponding
-// []BlockRef list covering the seeded file. Tests/benches run
+// []ChunkRef list covering the seeded file. Tests/benches run
 // rand-reads through Store.ReadAt(payloadID, blocks, dest, offset)
 // so the new binary-search + Cache-OnRead + mmap path is exercised.
 type phase12Fixture struct {
 	Store     *Store
 	PayloadID string
 	FileSize  uint64
-	blocks    []block.BlockRef
+	blocks    []block.ChunkRef
 }
 
-// AllBlockRefs returns the sorted []BlockRef list covering the seeded
+// AllChunkRefs returns the sorted []ChunkRef list covering the seeded
 // file. The slice is shared (callers must not mutate).
-func (f *phase12Fixture) AllBlockRefs() []block.BlockRef { return f.blocks }
+func (f *phase12Fixture) AllChunkRefs() []block.ChunkRef { return f.blocks }
 
 // Close is a no-op — the underlying engine cleans itself up via
 // t.Cleanup hooks attached to newTestEngine.
@@ -70,7 +70,7 @@ func (f *phase12Fixture) Close() {}
 
 // setupPerfFixture seeds an engine.Store with one
 // phase12FixtureFileSize-byte payload split into N
-// phase12FixtureBlockSize chunks. Each chunk's BlockRef carries a
+// phase12FixtureBlockSize chunks. Each chunk's ChunkRef carries a
 // stable BLAKE3 hash of its (deterministic) payload so the OnRead hint
 // path in engine.ReadAt sees a realistic []ContentHash sequence — but
 // the actual byte-serving comes from the in-memory local store
@@ -93,7 +93,7 @@ func setupPerfFixture(tb testing.TB) *phase12Fixture {
 	rng := rand.New(rand.NewSource(phase12RandSeed)) //nolint:gosec // bench fixture
 	buf := make([]byte, phase12FixtureBlockSize)
 	const nBlocks = phase12FixtureFileSize / phase12FixtureBlockSize
-	blocks := make([]block.BlockRef, 0, nBlocks)
+	blocks := make([]block.ChunkRef, 0, nBlocks)
 
 	for i := uint64(0); i < uint64(nBlocks); i++ {
 		// Entropy-rich payload so cross-block compression / dedup
@@ -112,7 +112,7 @@ func setupPerfFixture(tb testing.TB) *phase12Fixture {
 		h := blake3.Sum256(buf)
 		var hash block.ContentHash
 		copy(hash[:], h[:])
-		blocks = append(blocks, block.BlockRef{
+		blocks = append(blocks, block.ChunkRef{
 			Hash:   hash,
 			Offset: offset,
 			Size:   uint32(phase12FixtureBlockSize),
@@ -155,9 +155,9 @@ func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int
 	return bs
 }
 
-// BenchmarkRandRead_Phase12 exercises the new []BlockRef-threaded
-// ReadAt path: caller passes []BlockRef; engine binary-searches via
-// findBlocksForRange and fires Cache.OnRead with the BlockRef hashes
+// BenchmarkRandRead_Phase12 exercises the new []ChunkRef-threaded
+// ReadAt path: caller passes []ChunkRef; engine binary-searches via
+// findBlocksForRange and fires Cache.OnRead with the ChunkRef hashes
 // after a successful read. The synchronous rand-read goes through the
 // in-memory local store, so the hot-path cost here is binary search +
 // Cache.OnRead bookkeeping + buffer copy.
@@ -167,7 +167,7 @@ func newPerfTestEngine(tb testing.TB, readBufferBytes int64, prefetchWorkers int
 func BenchmarkRandRead_Phase12(b *testing.B) {
 	fixture := setupPerfFixture(b)
 	defer fixture.Close()
-	blocks := fixture.AllBlockRefs()
+	blocks := fixture.AllChunkRefs()
 	dest := make([]byte, phase12ReadSize)
 	rng := rand.New(rand.NewSource(phase12RandSeed)) //nolint:gosec // bench
 	ctx := context.Background()
@@ -212,7 +212,7 @@ func BenchmarkRandRead_Phase12(b *testing.B) {
 func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 	fixture := setupPerfFixture(b)
 	defer fixture.Close()
-	blocks := fixture.AllBlockRefs()
+	blocks := fixture.AllChunkRefs()
 	dest := make([]byte, phase12ReadSize)
 	rng := rand.New(rand.NewSource(phase12RandSeed)) //nolint:gosec // bench
 	ctx := context.Background()
@@ -271,15 +271,15 @@ func BenchmarkPerfGate_Phase12RandReadRegression(b *testing.B) {
 const phase12MicrobenchFloorIOPS = 50000.0
 
 // TestPerfGate_Phase12_BinarySearchOverhead is a supporting bound
-// findBlocksForRange over a 16 K BlockRef slice (the VM-workload upper
+// findBlocksForRange over a 16 K ChunkRef slice (the VM-workload upper
 // bound — 16 K × 4 MiB = 64 GiB file) MUST average <1 µs per call. If
 // the lookup grows linear (or worse) the rand-read gate will trip
 // this test localises the regression to the binary-search seam itself.
 func TestPerfGate_Phase12_BinarySearchOverhead(t *testing.T) {
 	const N = 16000
-	blocks := make([]block.BlockRef, N)
+	blocks := make([]block.ChunkRef, N)
 	for i := range blocks {
-		blocks[i] = block.BlockRef{
+		blocks[i] = block.ChunkRef{
 			Offset: uint64(i) * (4 << 20),
 			Size:   4 << 20,
 		}
@@ -300,7 +300,7 @@ func TestPerfGate_Phase12_BinarySearchOverhead(t *testing.T) {
 
 	// 10µs tolerance: binary search over 16K blocks measures ~50ns
 	// locally; shared GitHub runners are 6-8x noisier. Linear scan
-	// over 16K BlockRefs would be ~50µs, so this still catches O(N)
+	// over 16K ChunkRefs would be ~50µs, so this still catches O(N)
 	// regressions while tolerating CI hardware variance.
 	if perCall > 10*time.Microsecond {
 		t.Fatalf("supporting gate FAILED: findBlocksForRange %v per call > 10µs (likely linear scan)", perCall)

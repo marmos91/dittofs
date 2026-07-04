@@ -70,7 +70,7 @@ func (h *Handler) handleDeallocate(ctx *types.CompoundContext, reader io.Reader)
 	}
 
 	// The engine punch is correctness-critical, not just reclaim: the read path
-	// resolves bytes with an empty BlockRef list (the dual-read shim), so pruning
+	// resolves bytes with an empty ChunkRef list (the dual-read shim), so pruning
 	// the metadata block list alone does NOT guarantee zero reads — only the
 	// block-store zero-overwrite does. Therefore a failure here must FAIL the op
 	// (rather than log-and-succeed), or stale bytes could remain readable in the

@@ -23,7 +23,7 @@ var snapshotsCmd = &cobra.Command{
 	Use:   "snapshots",
 	Short: "Scale/perf workload for the snapshot create + verify pipeline",
 	Long: `Seeds a synthetic share (--files regular files, each with
---blocks-per-file BlockRefs) into the chosen metadata engine, then times
+--blocks-per-file ChunkRefs) into the chosen metadata engine, then times
 the three snapshot cost centers in sequence:
 
   backup          metadata dump + resident HashSet
@@ -45,7 +45,7 @@ func init() {
 	flags := snapshotsCmd.Flags()
 	flags.StringVar(&snapEngine, "engine", snapbench.EngineMemory, "metadata engine: memory | badger")
 	flags.IntVar(&snapFiles, "files", 100000, "number of synthetic files to seed")
-	flags.IntVar(&snapBlocksPerFile, "blocks-per-file", 1, "BlockRefs per file")
+	flags.IntVar(&snapBlocksPerFile, "blocks-per-file", 1, "ChunkRefs per file")
 	flags.IntVar(&snapBlockSize, "block-size", 1<<20, "logical block size in bytes (metadata only)")
 	flags.IntVar(&snapDedup, "dedup", 1, "share every Nth block hash (>1 shrinks unique-hash count)")
 }

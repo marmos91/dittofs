@@ -20,23 +20,22 @@ import (
 )
 
 // verifyRemoteDurability wraps snapshot.VerifyRemoteDurability with the
-// block-awareness the storage flip requires (#1414 object packing, PR3). It
+// block-awareness the storage flip requires (#1414 object packing, #1493). It
 // resolves the share's metadata store as the per-hash locator source and the
 // remote as a block store, so a hash carved into a packed blocks/<id> object is
-// probed against that block rather than a standalone cas/<hash> object that no
-// longer exists. A metadata store that cannot be resolved, or a remote that
-// does not implement RemoteBlockStore, degrades to the standalone-CAS probe
-// (nil resolver / nil block store) — safe for legacy CAS-only data.
+// probed against that block. Post-#1493 durability is block-only: if the
+// metadata store cannot be resolved (nil resolver), every hash is reported not
+// durable and the verify fails closed rather than silently passing.
 func (r *Runtime) verifyRemoteDurability(ctx context.Context, shareName string, remoteStore remote.RemoteStore, manifest *block.HashSet, concurrency int) error {
 	var locators snapshot.HashLocatorResolver
 	if mds, err := r.GetMetadataStoreForShare(shareName); err == nil {
 		locators = mds
 	} else {
-		logger.Warn("snapshot verify: metadata store unavailable — probing hashes as standalone CAS only",
+		logger.Warn("snapshot verify: metadata store unavailable — hashes cannot be proven block-durable",
 			"share", shareName, "err", err)
 	}
 	rbs, _ := remoteStore.(remote.RemoteBlockStore)
-	return snapshot.VerifyRemoteDurability(ctx, remoteStore, locators, rbs, manifest, concurrency)
+	return snapshot.VerifyRemoteDurability(ctx, locators, rbs, manifest, concurrency)
 }
 
 // CreateSnapshotOpts is the operator-facing configuration for one

@@ -8,21 +8,17 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 )
 
-// SyncQueue handles asynchronous transfers with dedicated worker pools.
-//
-// Download workers process only downloads and prefetch (never uploads).
-// Upload workers process only uploads (never downloads).
-// This isolation prevents upload bursts from starving latency-sensitive downloads.
+// SyncQueue handles asynchronous downloads and prefetch with a dedicated
+// worker pool. Uploads do not go through the queue: the carve dispatcher owns
+// the local→remote path.
 type SyncQueue struct {
 	manager *Syncer
 
 	// Priority channels
 	downloads chan TransferRequest // Processed by download workers
-	uploads   chan TransferRequest // Processed by upload workers
 	prefetch  chan TransferRequest // Processed by download workers when idle
 
 	// Worker management
-	uploadWorkers   int // Number of upload-only workers
 	downloadWorkers int // Number of download+prefetch workers
 	wg              gosync.WaitGroup
 	stopCh          chan struct{}
@@ -40,7 +36,6 @@ type SyncQueue struct {
 	// Metrics
 	mu              gosync.Mutex
 	pendingDownload int
-	pendingUpload   int
 	pendingPrefetch int
 	completed       int
 	failed          int
@@ -48,13 +43,10 @@ type SyncQueue struct {
 	lastErrorAt     time.Time
 }
 
-// NewSyncQueue creates a new transfer queue with dedicated worker pools.
+// NewSyncQueue creates a new transfer queue with a dedicated worker pool.
 func NewSyncQueue(m *Syncer, cfg SyncQueueConfig) *SyncQueue {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 1000
-	}
-	if cfg.Workers <= 0 {
-		cfg.Workers = 4
 	}
 	if cfg.DownloadWorkers <= 0 {
 		cfg.DownloadWorkers = DefaultParallelDownloads
@@ -63,9 +55,7 @@ func NewSyncQueue(m *Syncer, cfg SyncQueueConfig) *SyncQueue {
 	return &SyncQueue{
 		manager:         m,
 		downloads:       make(chan TransferRequest, cfg.QueueSize),
-		uploads:         make(chan TransferRequest, cfg.QueueSize),
 		prefetch:        make(chan TransferRequest, cfg.QueueSize),
-		uploadWorkers:   cfg.Workers,
 		downloadWorkers: cfg.DownloadWorkers,
 		stopCh:          make(chan struct{}),
 		stoppedCh:       make(chan struct{}),
@@ -94,16 +84,11 @@ func (q *SyncQueue) Start(ctx context.Context) {
 		workerCancel()
 	}()
 
-	logger.Info("Starting transfer queue",
-		"download_workers", q.downloadWorkers, "upload_workers", q.uploadWorkers)
+	logger.Info("Starting transfer queue", "download_workers", q.downloadWorkers)
 
 	for i := 0; i < q.downloadWorkers; i++ {
 		q.wg.Add(1)
 		go q.downloadWorker(ctx, i)
-	}
-	for i := 0; i < q.uploadWorkers; i++ {
-		q.wg.Add(1)
-		go q.uploadWorker(ctx, i)
 	}
 
 	go func() {
@@ -155,23 +140,6 @@ func (q *SyncQueue) EnqueueDownload(req TransferRequest) bool {
 	}
 }
 
-// EnqueueUpload adds an upload request (medium priority).
-// Returns false if the queue is full (non-blocking).
-func (q *SyncQueue) EnqueueUpload(req TransferRequest) bool {
-	req.Type = TransferUpload
-	select {
-	case q.uploads <- req:
-		q.mu.Lock()
-		q.pendingUpload++
-		q.mu.Unlock()
-		return true
-	default:
-		logger.Warn("Sync queue full, dropping request",
-			"payloadID", req.PayloadID)
-		return false
-	}
-}
-
 // EnqueuePrefetch adds a prefetch request (lowest priority).
 // Returns false if the queue is full (non-blocking, best effort).
 func (q *SyncQueue) EnqueuePrefetch(req TransferRequest) bool {
@@ -191,21 +159,21 @@ func (q *SyncQueue) EnqueuePrefetch(req TransferRequest) bool {
 func (q *SyncQueue) Pending() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.pendingDownload + q.pendingUpload + q.pendingPrefetch
+	return q.pendingDownload + q.pendingPrefetch
 }
 
 // PendingByType returns pending counts by transfer type.
-func (q *SyncQueue) PendingByType() (download, upload, prefetch int) {
+func (q *SyncQueue) PendingByType() (download, prefetch int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.pendingDownload, q.pendingUpload, q.pendingPrefetch
+	return q.pendingDownload, q.pendingPrefetch
 }
 
 // Stats returns transfer statistics.
 func (q *SyncQueue) Stats() (pending, completed, failed int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	pending = q.pendingDownload + q.pendingUpload + q.pendingPrefetch
+	pending = q.pendingDownload + q.pendingPrefetch
 	return pending, q.completed, q.failed
 }
 
@@ -243,24 +211,6 @@ func (q *SyncQueue) downloadWorker(_ context.Context, id int) {
 	}
 }
 
-// uploadWorker processes upload requests, exiting on stopCh close.
-func (q *SyncQueue) uploadWorker(_ context.Context, id int) {
-	defer q.wg.Done()
-
-	logger.Debug("Sync worker started", "workerID", id)
-
-	for {
-		select {
-		case req := <-q.uploads:
-			q.processRequest(req)
-		case <-q.stopCh:
-			q.drainUploads()
-			logger.Debug("Sync worker stopped", "workerID", id)
-			return
-		}
-	}
-}
-
 // drainDownloads processes remaining downloads and prefetch during shutdown.
 func (q *SyncQueue) drainDownloads() {
 	for {
@@ -268,18 +218,6 @@ func (q *SyncQueue) drainDownloads() {
 		case req := <-q.downloads:
 			q.processRequest(req)
 		case req := <-q.prefetch:
-			q.processRequest(req)
-		default:
-			return
-		}
-	}
-}
-
-// drainUploads processes remaining uploads during shutdown.
-func (q *SyncQueue) drainUploads() {
-	for {
-		select {
-		case req := <-q.uploads:
 			q.processRequest(req)
 		default:
 			return
@@ -305,10 +243,6 @@ func (q *SyncQueue) processRequest(req TransferRequest) {
 	case TransferDownload:
 		err = q.processDownload(ctx, req)
 		q.decrementPending(&q.pendingDownload)
-
-	case TransferUpload:
-		err = q.processUpload(ctx, req)
-		q.decrementPending(&q.pendingUpload)
 
 	case TransferPrefetch:
 		_ = q.processDownload(ctx, req) // Best effort - ignore errors
@@ -365,12 +299,4 @@ func (q *SyncQueue) processDownload(ctx context.Context, req TransferRequest) er
 
 	_, err := q.manager.fetchBlock(ctx, req.PayloadID, req.BlockIndex)
 	return err
-}
-
-// processUpload handles an upload request.
-func (q *SyncQueue) processUpload(ctx context.Context, req TransferRequest) error {
-	if q.manager == nil {
-		return nil
-	}
-	return q.manager.uploadBlock(ctx, req.PayloadID, req.BlockIndex)
 }

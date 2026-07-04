@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -18,7 +19,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	cpstore "github.com/marmos91/dittofs/pkg/controlplane/store"
-	"github.com/marmos91/dittofs/pkg/health"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -483,7 +483,6 @@ func newOrchestrationFixture(t *testing.T) *orchestrationFixture {
 	t.Cleanup(func() { _ = innerRemote.Close() })
 	wrappedRemote := newInterceptingRemote(innerRemote)
 	syncer := engine.NewSyncer(localStore, wrappedRemote, mem, engine.SyncerConfig{
-		ParallelUploads:   1,
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
@@ -543,22 +542,27 @@ func (f *orchestrationFixture) ctx() context.Context {
 
 func (f *orchestrationFixture) setBackupHashes(h []block.ContentHash) {
 	f.backup.setHashes(h)
+	// Post-#1493 durability is block-only: mark every manifest hash synced to
+	// a distinct packed-block locator (BlockID = hash string) so the verify
+	// gate resolves it to a blocks/<id> probe. Seeding the block itself is the
+	// separate seedRemote* step, which may omit some to force a miss.
+	for _, hash := range h {
+		if err := f.backup.MarkSynced(context.Background(), hash, block.ChunkLocator{BlockID: hash.String()}); err != nil {
+			f.t.Fatalf("MarkSynced: %v", err)
+		}
+	}
 }
 
 func (f *orchestrationFixture) seedRemoteAll(hashes []block.ContentHash) {
 	f.t.Helper()
-	for _, h := range hashes {
-		if err := f.remote.inner.Put(context.Background(), h, []byte("payload-"+h.String())); err != nil {
-			f.t.Fatalf("seed remote put: %v", err)
-		}
-	}
+	f.seedRemoteSubset(hashes)
 }
 
 func (f *orchestrationFixture) seedRemoteSubset(hashes []block.ContentHash) {
 	f.t.Helper()
 	for _, h := range hashes {
-		if err := f.remote.inner.Put(context.Background(), h, []byte("payload-"+h.String())); err != nil {
-			f.t.Fatalf("seed remote put: %v", err)
+		if err := f.remote.PutBlock(context.Background(), h.String(), bytes.NewReader([]byte("payload-"+h.String()))); err != nil {
+			f.t.Fatalf("seed remote put block: %v", err)
 		}
 	}
 }
@@ -625,51 +629,11 @@ func (c *controlledSnapshotable) WriteSnapshot(ctx context.Context, w io.Writer)
 // naturally). The wrapper is retained as a future hook point and to
 // keep all RemoteStore-related test helpers funnelled through one type.
 type interceptingRemote struct {
-	inner *remotememory.Store
+	*remotememory.Store
 }
 
 func newInterceptingRemote(inner *remotememory.Store) *interceptingRemote {
-	return &interceptingRemote{inner: inner}
-}
-
-func (r *interceptingRemote) Put(ctx context.Context, hash block.ContentHash, data []byte) error {
-	return r.inner.Put(ctx, hash, data)
-}
-
-func (r *interceptingRemote) Get(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	return r.inner.Get(ctx, hash)
-}
-
-func (r *interceptingRemote) GetRange(ctx context.Context, hash block.ContentHash, offset, length int64) ([]byte, error) {
-	return r.inner.GetRange(ctx, hash, offset, length)
-}
-
-func (r *interceptingRemote) Delete(ctx context.Context, hash block.ContentHash) error {
-	return r.inner.Delete(ctx, hash)
-}
-
-func (r *interceptingRemote) Has(ctx context.Context, hash block.ContentHash) (bool, error) {
-	return r.inner.Has(ctx, hash)
-}
-
-func (r *interceptingRemote) Head(ctx context.Context, hash block.ContentHash) (block.Meta, error) {
-	return r.inner.Head(ctx, hash)
-}
-
-func (r *interceptingRemote) Walk(ctx context.Context, fn func(hash block.ContentHash, meta block.Meta) error) error {
-	return r.inner.Walk(ctx, fn)
-}
-
-func (r *interceptingRemote) ReadBlockVerified(ctx context.Context, hash, expected block.ContentHash) ([]byte, error) {
-	return r.inner.ReadBlockVerified(ctx, hash, expected)
-}
-
-func (r *interceptingRemote) Close() error { return r.inner.Close() }
-
-func (r *interceptingRemote) HealthCheck(ctx context.Context) error { return r.inner.HealthCheck(ctx) }
-
-func (r *interceptingRemote) Healthcheck(ctx context.Context) health.Report {
-	return r.inner.Healthcheck(ctx)
+	return &interceptingRemote{Store: inner}
 }
 
 // Compile-time guard: interceptingRemote satisfies remote.RemoteStore.

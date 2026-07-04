@@ -90,14 +90,6 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 				return err
 			}
 			optsCopy := data.Share.Options
-			// D-A6: empty BlockLayout (share blob without
-			// the field) coerces to `legacy`. Unknown values are
-			// fail-loud — matches Postgres backend + ErrInvalidBlockLayout.
-			normalized, perr := metadata.ParseBlockLayout(string(optsCopy.BlockLayout))
-			if perr != nil {
-				return fmt.Errorf("share %q: %w", shareName, perr)
-			}
-			optsCopy.BlockLayout = normalized
 			opts = &optsCopy
 			return nil
 		})
@@ -636,12 +628,9 @@ func (s *BadgerMetadataStore) createNewRoot(txn *badgerdb.Txn, shareName string,
 
 	// Preserve existing share configuration (e.g. ShareOptions written
 	// by a prior CreateShare call) when materializing the root row.
-	// (Rule 2 deviation): the original code wrote a
-	// fresh `metadata.Share{Name: shareName}` here, silently wiping
-	// any Options the caller had set via CreateShare. That's
-	// correctness-critical now that ShareOptions.BlockLayout is the
-	// per-share dual-read shim gate (D-A6) — losing the field means
-	// the engine can't tell migrated shares from unmigrated ones.
+	// The original code wrote a fresh `metadata.Share{Name: shareName}`
+	// here, silently wiping any Options the caller had set via
+	// CreateShare.
 	preservedShare := metadata.Share{Name: shareName}
 	if existingItem, getErr := txn.Get(keyShare(shareName)); getErr == nil {
 		if vErr := existingItem.Value(func(val []byte) error {

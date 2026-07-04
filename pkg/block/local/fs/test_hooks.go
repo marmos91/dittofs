@@ -170,22 +170,6 @@ func (bc *FSStore) EnsureSpaceForTest(ctx context.Context, needed int64) error {
 	return bc.ensureSpace(ctx, needed)
 }
 
-// ChunkPathForTest returns the absolute path where a chunk addressed by h
-// would live under blocks/{hh}/{hh}/{hex}. Used by the conformance
-// suite to assert eviction unlinked the file.
-func (bc *FSStore) ChunkPathForTest(h block.ContentHash) string {
-	return bc.chunkPath(h)
-}
-
-// SeedLRUFromDiskForTest re-runs the cold-start LRU seeding pass against
-// the current on-disk blocks/ tree. Returns true unconditionally so a
-// callable factory can override behavior; the suite uses the
-// boolean as a "is this supported" probe.
-func (bc *FSStore) SeedLRUFromDiskForTest() bool {
-	bc.seedLRUFromDisk()
-	return true
-}
-
 // fbsCallCounterForTest hooks for the "no FileChunkStore calls
 // during ensureSpace" assertion. Backends that wrap FBS in a counting
 // wrapper expose ResetFBSCallCounterForTest / FBSCallCountForTest
@@ -252,7 +236,7 @@ func (nopFBSForTest) DecrementRefCount(_ context.Context, _ string) (uint32, err
 func (nopFBSForTest) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
 	return 0, nil
 }
-func (nopFBSForTest) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.BlockRef) error {
+func (nopFBSForTest) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.ChunkRef) error {
 	// no-op test stub. Every hash is "unknown" so the
 	// LRU hit path in production would always fall back to the full
 	// Put path — but this stub is only used by ReopenForTest scenarios

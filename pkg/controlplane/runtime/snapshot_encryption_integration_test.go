@@ -102,7 +102,6 @@ func newEncryptedFixture(t *testing.T) *encryptedFixture {
 	enc := newEncryptedRemote(t, inner)
 
 	syncer := engine.NewSyncer(localStore, enc, mem, engine.SyncerConfig{
-		ParallelUploads:   1,
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
@@ -182,8 +181,17 @@ func (f *encryptedFixture) seedEncrypted(payloads [][]byte) []block.ContentHash 
 	hashes := make([]block.ContentHash, 0, len(payloads))
 	for _, p := range payloads {
 		h := block.ContentHash(blake3.Sum256(p))
+		// Legacy standalone-CAS object (framed ciphertext) so the decorator
+		// round-trip sanity check still works.
 		if err := f.enc.Put(context.Background(), h, p); err != nil {
 			f.t.Fatalf("encrypted Put: %v", err)
+		}
+		// Post-#1493 durability is block-only: also seed a packed block per
+		// hash (BlockID = hash string) so the verify gate's GetBlockRange probe
+		// against the encrypted remote finds it. setBackupHashes marks each
+		// hash synced to that block locator.
+		if err := f.enc.PutBlock(context.Background(), h.String(), bytes.NewReader(p)); err != nil {
+			f.t.Fatalf("encrypted PutBlock: %v", err)
 		}
 		hashes = append(hashes, h)
 	}

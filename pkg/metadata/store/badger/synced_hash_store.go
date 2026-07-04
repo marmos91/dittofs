@@ -85,12 +85,75 @@ func decodeSyncedLocator(val []byte) block.ChunkLocator {
 	return block.ChunkLocator{BlockID: blockID, WireOffset: off, WireLength: length}
 }
 
-// Compile-time assertion: the Badger engine implements SyncedHashStore.
-var _ metadata.SyncedHashStore = (*BadgerMetadataStore)(nil)
+// Compile-time assertions: the Badger engine and its transaction implement
+// SyncedHashStore.
+var (
+	_ metadata.SyncedHashStore = (*BadgerMetadataStore)(nil)
+	_ metadata.SyncedHashStore = (*badgerTransaction)(nil)
+)
 
 // keySyncedHash generates the key for a hash's synced marker.
 func keySyncedHash(hash block.ContentHash) []byte {
 	return append([]byte(syncedHashPrefix), hash[:]...)
+}
+
+// ============================================================================
+// Shared per-Txn bodies
+// ============================================================================
+//
+// The store-level methods run each body in its own View/Update; the
+// transaction-level methods (metadata.Transaction embeds SyncedHashStore) run
+// them against the enclosing WithTransaction txn, where Badger natively gives
+// read-your-writes: a Set/Delete inside the txn is visible to a later Get in
+// the same txn, so DeleteSynced-then-MarkSynced records the new locator.
+
+// isSyncedTxn reports marker presence within txn.
+func isSyncedTxn(txn *badger.Txn, hash block.ContentHash) (bool, error) {
+	_, err := txn.Get(keySyncedHash(hash))
+	if errors.Is(err, badger.ErrKeyNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// markSyncedTxn writes the marker within txn. First-write-wins: an existing
+// marker (committed or pending in this txn) is preserved untouched.
+func markSyncedTxn(txn *badger.Txn, hash block.ContentHash, loc block.ChunkLocator) error {
+	key := keySyncedHash(hash)
+	if _, gerr := txn.Get(key); gerr == nil {
+		return nil // already marked — preserve first-write timestamp + locator
+	} else if !errors.Is(gerr, badger.ErrKeyNotFound) {
+		return gerr
+	}
+	return txn.Set(key, encodeSyncedValue(time.Now().UnixNano(), loc))
+}
+
+// getLocatorTxn reads the marker's locator within txn.
+func getLocatorTxn(txn *badger.Txn, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	item, gerr := txn.Get(keySyncedHash(hash))
+	if errors.Is(gerr, badger.ErrKeyNotFound) {
+		return block.ChunkLocator{}, false, nil
+	}
+	if gerr != nil {
+		return block.ChunkLocator{}, false, gerr
+	}
+	var loc block.ChunkLocator
+	if err := item.Value(func(val []byte) error {
+		loc = decodeSyncedLocator(val)
+		return nil
+	}); err != nil {
+		return block.ChunkLocator{}, false, err
+	}
+	return loc, true, nil
+}
+
+// deleteSyncedTxn removes the marker within txn. Idempotent (Badger's
+// txn.Delete does not error on missing keys).
+func deleteSyncedTxn(txn *badger.Txn, hash block.ContentHash) error {
+	return txn.Delete(keySyncedHash(hash))
 }
 
 // IsSynced reports whether hash has been mirrored to remote. Returns
@@ -102,15 +165,9 @@ func (s *BadgerMetadataStore) IsSynced(ctx context.Context, hash block.ContentHa
 
 	var present bool
 	err := s.db.View(func(txn *badger.Txn) error {
-		_, err := txn.Get(keySyncedHash(hash))
-		if errors.Is(err, badger.ErrKeyNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		present = true
-		return nil
+		var verr error
+		present, verr = isSyncedTxn(txn, hash)
+		return verr
 	})
 	if err != nil {
 		return false, fmt.Errorf("badger synced get: %w", err)
@@ -132,13 +189,7 @@ func (s *BadgerMetadataStore) MarkSynced(ctx context.Context, hash block.Content
 	}
 
 	err := s.db.Update(func(txn *badger.Txn) error {
-		key := keySyncedHash(hash)
-		if _, gerr := txn.Get(key); gerr == nil {
-			return nil // already marked — preserve first-write timestamp + locator
-		} else if !errors.Is(gerr, badger.ErrKeyNotFound) {
-			return gerr
-		}
-		return txn.Set(key, encodeSyncedValue(time.Now().UnixNano(), loc))
+		return markSyncedTxn(txn, hash, loc)
 	})
 	if err != nil {
 		return fmt.Errorf("badger synced mark: %w", err)
@@ -159,18 +210,9 @@ func (s *BadgerMetadataStore) GetLocator(ctx context.Context, hash block.Content
 		found bool
 	)
 	err := s.db.View(func(txn *badger.Txn) error {
-		item, gerr := txn.Get(keySyncedHash(hash))
-		if errors.Is(gerr, badger.ErrKeyNotFound) {
-			return nil
-		}
-		if gerr != nil {
-			return gerr
-		}
-		found = true
-		return item.Value(func(val []byte) error {
-			loc = decodeSyncedLocator(val)
-			return nil
-		})
+		var verr error
+		loc, found, verr = getLocatorTxn(txn, hash)
+		return verr
 	})
 	if err != nil {
 		return block.ChunkLocator{}, false, fmt.Errorf("badger synced get locator: %w", err)
@@ -245,10 +287,51 @@ func (s *BadgerMetadataStore) DeleteSynced(ctx context.Context, hash block.Conte
 	}
 
 	err := s.db.Update(func(txn *badger.Txn) error {
-		return txn.Delete(keySyncedHash(hash))
+		return deleteSyncedTxn(txn, hash)
 	})
 	if err != nil {
 		return fmt.Errorf("badger synced delete: %w", err)
+	}
+	return nil
+}
+
+// ============================================================================
+// Transaction-level SyncedHashStore
+// ============================================================================
+//
+// Same executor plumbing as the transaction-level BlockRecordStore /
+// LocalChunkIndex (block_record_store.go): operate directly on the enclosing
+// tx.txn. Badger gives read-your-writes within a txn, so a MarkSynced after a
+// DeleteSynced in the same transaction records the new locator. Conflicting
+// concurrent writers surface as ErrConflict at commit, which the store's
+// WithTransaction retry loop already handles.
+
+func (tx *badgerTransaction) IsSynced(_ context.Context, hash block.ContentHash) (bool, error) {
+	present, err := isSyncedTxn(tx.txn, hash)
+	if err != nil {
+		return false, fmt.Errorf("badger tx synced get: %w", err)
+	}
+	return present, nil
+}
+
+func (tx *badgerTransaction) MarkSynced(_ context.Context, hash block.ContentHash, loc block.ChunkLocator) error {
+	if err := markSyncedTxn(tx.txn, hash, loc); err != nil {
+		return fmt.Errorf("badger tx synced mark: %w", err)
+	}
+	return nil
+}
+
+func (tx *badgerTransaction) GetLocator(_ context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error) {
+	loc, found, err := getLocatorTxn(tx.txn, hash)
+	if err != nil {
+		return block.ChunkLocator{}, false, fmt.Errorf("badger tx synced get locator: %w", err)
+	}
+	return loc, found, nil
+}
+
+func (tx *badgerTransaction) DeleteSynced(_ context.Context, hash block.ContentHash) error {
+	if err := deleteSyncedTxn(tx.txn, hash); err != nil {
+		return fmt.Errorf("badger tx synced delete: %w", err)
 	}
 	return nil
 }

@@ -7,19 +7,19 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// runTruncateBlockRefTests dispatches the truncate-down block-ref pruning
+// runTruncateChunkRefTests dispatches the truncate-down block-ref pruning
 // scenario against the provided factory. It runs against Memory, Badger, and
 // Postgres via RunConformanceSuite, so every backend is held to the same
 // "no stale-tail refs past EOF" contract.
-func runTruncateBlockRefTests(t *testing.T, factory StoreFactory) {
+func runTruncateChunkRefTests(t *testing.T, factory StoreFactory) {
 	t.Helper()
 
-	t.Run("TruncateDownPrunesBlockRefs", func(t *testing.T) {
-		testTruncateDownPrunesBlockRefs(t, factory)
+	t.Run("TruncateDownPrunesChunkRefs", func(t *testing.T) {
+		testTruncateDownPrunesChunkRefs(t, factory)
 	})
 }
 
-// testTruncateDownPrunesBlockRefs reproduces the snapshot over-reference bug:
+// testTruncateDownPrunesChunkRefs reproduces the snapshot over-reference bug:
 // a 4 MiB file is reduced to 1 MiB via a size-down SetAttr, then the surviving
 // FileAttr.Blocks must cover only [0, 1 MiB). Higher-offset blocks from the old
 // size must not linger — otherwise the snapshot manifest (built from
@@ -29,7 +29,7 @@ func runTruncateBlockRefTests(t *testing.T, factory StoreFactory) {
 // The scenario drives the real SetFileAttributes truncate path through
 // MetadataService over the backend store, so it validates pruning on every
 // backend's FileAttr.Blocks / file_block_refs representation.
-func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
+func testTruncateDownPrunesChunkRefs(t *testing.T, factory StoreFactory) {
 	store := factory(t)
 
 	const shareName = "/trunc"
@@ -47,11 +47,11 @@ func testTruncateDownPrunesBlockRefs(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile() failed: %v", err)
 	}
 	file.Size = 4 * mib
-	file.Blocks = make([]block.BlockRef, 4)
+	file.Blocks = make([]block.ChunkRef, 4)
 	for i := range file.Blocks {
 		var h block.ContentHash
 		h[0] = byte(i + 1)
-		file.Blocks[i] = block.BlockRef{
+		file.Blocks[i] = block.ChunkRef{
 			Hash:   h,
 			Offset: uint64(i) * mib,
 			Size:   uint32(mib),

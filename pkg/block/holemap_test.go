@@ -5,16 +5,16 @@ import (
 	"testing"
 )
 
-// ref builds a BlockRef at offset with the given size (hash left zero — the
+// ref builds a ChunkRef at offset with the given size (hash left zero — the
 // hole map only reads Offset/Size).
-func ref(offset uint64, size uint32) BlockRef {
-	return BlockRef{Offset: offset, Size: size}
+func ref(offset uint64, size uint32) ChunkRef {
+	return ChunkRef{Offset: offset, Size: size}
 }
 
 func TestSegments(t *testing.T) {
 	tests := []struct {
 		name string
-		refs []BlockRef
+		refs []ChunkRef
 		size uint64
 		want []Segment
 	}{
@@ -30,43 +30,43 @@ func TestSegments(t *testing.T) {
 		},
 		{
 			name: "fully covered is single data segment",
-			refs: []BlockRef{ref(0, 100)},
+			refs: []ChunkRef{ref(0, 100)},
 			size: 100,
 			want: []Segment{{SegmentData, 0, 100}},
 		},
 		{
 			name: "leading hole then data",
-			refs: []BlockRef{ref(50, 50)},
+			refs: []ChunkRef{ref(50, 50)},
 			size: 100,
 			want: []Segment{{SegmentHole, 0, 50}, {SegmentData, 50, 100}},
 		},
 		{
 			name: "data then trailing hole",
-			refs: []BlockRef{ref(0, 40)},
+			refs: []ChunkRef{ref(0, 40)},
 			size: 100,
 			want: []Segment{{SegmentData, 0, 40}, {SegmentHole, 40, 100}},
 		},
 		{
 			name: "hole in the middle",
-			refs: []BlockRef{ref(0, 20), ref(60, 40)},
+			refs: []ChunkRef{ref(0, 20), ref(60, 40)},
 			size: 100,
 			want: []Segment{{SegmentData, 0, 20}, {SegmentHole, 20, 60}, {SegmentData, 60, 100}},
 		},
 		{
 			name: "adjacent blocks merge into one data segment",
-			refs: []BlockRef{ref(0, 20), ref(20, 20)},
+			refs: []ChunkRef{ref(0, 20), ref(20, 20)},
 			size: 40,
 			want: []Segment{{SegmentData, 0, 40}},
 		},
 		{
 			name: "block straddling EOF is clamped",
-			refs: []BlockRef{ref(0, 200)},
+			refs: []ChunkRef{ref(0, 200)},
 			size: 100,
 			want: []Segment{{SegmentData, 0, 100}},
 		},
 		{
 			name: "unsorted overlapping input is normalized",
-			refs: []BlockRef{ref(60, 40), ref(0, 70)},
+			refs: []ChunkRef{ref(60, 40), ref(0, 70)},
 			size: 100,
 			want: []Segment{{SegmentData, 0, 100}},
 		},
@@ -96,7 +96,7 @@ func TestSegments(t *testing.T) {
 }
 
 func TestNextDataOffset(t *testing.T) {
-	refs := []BlockRef{ref(0, 20), ref(60, 40)} // data [0,20) [60,100), hole [20,60)
+	refs := []ChunkRef{ref(0, 20), ref(60, 40)} // data [0,20) [60,100), hole [20,60)
 	size := uint64(100)
 	tests := []struct {
 		from      uint64
@@ -120,14 +120,14 @@ func TestNextDataOffset(t *testing.T) {
 	}
 
 	// A file whose tail is a hole: SEEK_DATA past the last data returns NXIO.
-	tailHole := []BlockRef{ref(0, 20)}
+	tailHole := []ChunkRef{ref(0, 20)}
 	if off, found := NextDataOffset(tailHole, 100, 50); found {
 		t.Errorf("NextDataOffset in trailing hole = (%d,true), want not found", off)
 	}
 }
 
 func TestNextHoleOffset(t *testing.T) {
-	refs := []BlockRef{ref(0, 20), ref(60, 40)} // data [0,20) [60,100), hole [20,60)
+	refs := []ChunkRef{ref(0, 20), ref(60, 40)} // data [0,20) [60,100), hole [20,60)
 	size := uint64(100)
 	tests := []struct {
 		from      uint64
@@ -150,7 +150,7 @@ func TestNextHoleOffset(t *testing.T) {
 	}
 
 	// Fully dense file: the only hole is the virtual one at EOF.
-	dense := []BlockRef{ref(0, 100)}
+	dense := []ChunkRef{ref(0, 100)}
 	if off, found := NextHoleOffset(dense, 100, 0); !found || off != 100 {
 		t.Errorf("NextHoleOffset dense = (%d,%v), want (100,true)", off, found)
 	}
@@ -161,7 +161,7 @@ func TestNextHoleOffset(t *testing.T) {
 // takes for the un-rolled-up data that the CAS block list omits (#1481).
 func TestNextOffsetExtents(t *testing.T) {
 	// Sparse layout: data [0,20), hole [20,60), data [60,100). Same shape as
-	// the BlockRef-based tests so the extent variants are verified to agree.
+	// the ChunkRef-based tests so the extent variants are verified to agree.
 	extents := [][2]uint64{{0, 20}, {60, 100}}
 	size := uint64(100)
 
@@ -189,9 +189,9 @@ func TestNextOffsetExtents(t *testing.T) {
 		t.Error("NextHoleOffsetExtents at EOF = found, want not found")
 	}
 
-	// The extent variants must agree with the BlockRef wrappers that delegate
+	// The extent variants must agree with the ChunkRef wrappers that delegate
 	// to them (regression guard for the refactor).
-	refs := []BlockRef{ref(0, 20), ref(60, 40)}
+	refs := []ChunkRef{ref(0, 20), ref(60, 40)}
 	for from := uint64(0); from <= size; from++ {
 		dOff, dFound := NextDataOffset(refs, size, from)
 		eOff, eFound := NextDataOffsetExtents(extents, size, from)
@@ -209,45 +209,45 @@ func TestNextOffsetExtents(t *testing.T) {
 func TestPunchHole(t *testing.T) {
 	tests := []struct {
 		name           string
-		refs           []BlockRef
+		refs           []ChunkRef
 		offset, length uint64
-		want           []BlockRef
+		want           []ChunkRef
 	}{
 		{
 			name:   "zero length is no-op",
-			refs:   []BlockRef{ref(0, 100)},
+			refs:   []ChunkRef{ref(0, 100)},
 			offset: 10, length: 0,
-			want: []BlockRef{ref(0, 100)},
+			want: []ChunkRef{ref(0, 100)},
 		},
 		{
 			name:   "drop block fully inside range",
-			refs:   []BlockRef{ref(0, 20), ref(40, 20), ref(80, 20)},
+			refs:   []ChunkRef{ref(0, 20), ref(40, 20), ref(80, 20)},
 			offset: 40, length: 20,
-			want: []BlockRef{ref(0, 20), ref(80, 20)},
+			want: []ChunkRef{ref(0, 20), ref(80, 20)},
 		},
 		{
 			name:   "head-overlapping block is kept (out-of-range tail data survives)",
-			refs:   []BlockRef{ref(0, 100)},
+			refs:   []ChunkRef{ref(0, 100)},
 			offset: 50, length: 50,
-			want: []BlockRef{ref(0, 100)},
+			want: []ChunkRef{ref(0, 100)},
 		},
 		{
 			name:   "tail-overlapping block is kept (out-of-range head data survives)",
-			refs:   []BlockRef{ref(50, 50)},
+			refs:   []ChunkRef{ref(50, 50)},
 			offset: 0, length: 70,
-			want: []BlockRef{ref(50, 50)},
+			want: []ChunkRef{ref(50, 50)},
 		},
 		{
 			name:   "block straddling both ends is kept (head+tail data survive)",
-			refs:   []BlockRef{ref(0, 100)},
+			refs:   []ChunkRef{ref(0, 100)},
 			offset: 30, length: 40,
-			want: []BlockRef{ref(0, 100)},
+			want: []ChunkRef{ref(0, 100)},
 		},
 		{
 			name:   "no overlap leaves blocks untouched",
-			refs:   []BlockRef{ref(0, 20), ref(80, 20)},
+			refs:   []ChunkRef{ref(0, 20), ref(80, 20)},
 			offset: 40, length: 20,
-			want: []BlockRef{ref(0, 20), ref(80, 20)},
+			want: []ChunkRef{ref(0, 20), ref(80, 20)},
 		},
 	}
 	for _, tt := range tests {

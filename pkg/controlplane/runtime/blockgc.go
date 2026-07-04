@@ -48,8 +48,8 @@ func gcResult(total *engine.GCStats) string {
 // Returns the summed *engine.GCStats across all per-remote invocations and any
 // fatal error.
 func (r *Runtime) RunBlockGC(ctx context.Context, sharePrefix string, dryRun bool) (*engine.GCStats, error) {
-	// Steady-state GC: index-based remote sweep (synced − live), no S3 LIST.
-	return r.runBlockGCSweep(ctx, sharePrefix, dryRun, false, nil)
+	// Index-based remote sweep (synced − live), no S3 LIST.
+	return r.runBlockGCSweep(ctx, sharePrefix, dryRun, nil)
 }
 
 // applyGCProgress wires an optional progress sink into engine.Options so a
@@ -68,13 +68,13 @@ func applyGCProgress(opts *engine.Options, progress func(engine.GCStats)) {
 	opts.ProgressCallback = progress
 }
 
-// runBlockGCSweep is the shared remote+local GC pass. fullScan selects the
-// full RemoteStore.Walk sweep (the reconcile drift + upgrade-migration
-// backstop, which scans the real remote to catch objects the synced-hash index
-// does not know about) instead of the steady-state index sweep (synced − live,
-// no S3 LIST). Both paths clear synced markers on delete, preserving the
-// synced ⊆ remote invariant (#1433).
-func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRun, fullScan bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
+// runBlockGCSweep is the shared remote+local GC pass. The remote tier sweeps
+// from the synced-hash index (synced − live, no S3 LIST) and reclaims dead
+// chunks through their packed blocks; the local tier walks its own namespace.
+// Markers are cleared on reclaim, preserving the synced ⊆ remote invariant
+// (#1433). Orphan block objects the index cannot see (a PutBlock-then-commit
+// crash gap) are the #1525 reconcile sweep's job (PR5).
+func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRun bool, progress func(engine.GCStats)) (*engine.GCStats, error) {
 	if sharePrefix != "" {
 		logger.Warn("RunBlockGC: sharePrefix is no longer honored — mark-sweep uses a global live set across every cas/XX prefix",
 			"ignored_sharePrefix", sharePrefix)
@@ -123,18 +123,14 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 			opts.HoldProvider = r.gcHoldForRemote(entry.Shares)
 			// The per-remote synced-hash index: the index-sweep candidate source AND
 			// the marker-clear for swept hashes (so they re-upload if they reappear
-			// in the live set) (#1433). Remote sweep only. A steady-state run sweeps
-			// from it; the reconcile path (fullScan) keeps it only for the
-			// marker-clear and Walks the namespace instead.
+			// in the live set) (#1433). Remote sweep only.
 			opts.SyncedHashIndex = r.syncedHashStoreForShares(entry.Shares)
-			opts.FullScan = fullScan
-			// Reclaim packed-block chunks (#1414): a swept hash may live inside a
-			// blocks/<id> object, not a standalone cas/<hash>. The per-remote union
-			// reclaimer spans every share on this remote so the owning share frees
-			// the block and non-owning shares are a clean no-op.
+			// Reclaim packed-block chunks (#1414): every synced hash lives inside a
+			// blocks/<id> object. The per-remote union reclaimer spans every share on
+			// this remote so the owning share frees the block and non-owning shares
+			// are a clean no-op.
 			opts.BlockReclaimer = r.blockReclaimerForEntry(entry)
 			logger.Info("RunBlockGC: starting",
-				"fullScan", opts.FullScan,
 				"configID", entry.ConfigID,
 				"shares", entry.Shares,
 				"dryRun", dryRun,
@@ -147,7 +143,7 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 			// share's GC would treat the other's CAS objects as orphans.
 			rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
 
-			stats := collectGarbageFn(ctx, entry.Store, rec, opts)
+			stats := collectGarbageFn(ctx, rec, opts)
 			s := accumulateGCStats(total, stats, false)
 			logger.Info("RunBlockGC: complete",
 				"configID", entry.ConfigID,
@@ -347,8 +343,6 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 			// Reclaim packed-block chunks (#1414): per-remote union reclaimer, same as
 			// the server-wide sweep.
 			opts.BlockReclaimer = r.blockReclaimerForEntry(entry)
-			// Per-share GC is steady-state (index sweep, no S3 LIST); FullScan stays
-			// false (its zero value).
 			logger.Info("RunBlockGCForShare: starting",
 				"share", name,
 				"configID", entry.ConfigID,
@@ -360,7 +354,7 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 			)
 
 			rec := &perRemoteReconciler{rt: r, shares: entry.Shares}
-			stats := collectGarbageFn(ctx, entry.Store, rec, opts)
+			stats := collectGarbageFn(ctx, rec, opts)
 			s := accumulateGCStats(total, stats, true)
 			logger.Info("RunBlockGCForShare: complete",
 				"share", name,

@@ -10,19 +10,19 @@ import (
 // Offset) covering the byte range [offset, offset+size). Used by ReadAt
 // and the prefetch-hint path. O(log n).
 //
-// Sparse holes (gaps between consecutive BlockRefs that overlap the
+// Sparse holes (gaps between consecutive ChunkRefs that overlap the
 // range) are NOT skipped — the caller's responsibility is to zero-fill
 // those bytes.
 //
 // Empty blocks input returns (0, 0). A range entirely before the first
-// BlockRef returns (0, 0) (zero-width slice at the head). A range
+// ChunkRef returns (0, 0) (zero-width slice at the head). A range
 // entirely after the last returns (len, len) (zero-width slice at the
 // tail). A zero-size range always returns (0, 0).
 //
 // Caller invariant (caller-snapshot-wins): blocks MUST be sorted
 // by Offset. The metadata-store conformance suite verifies
 // that PutFile/GetFile preserve sort order.
-func findBlocksForRange(blocks []block.BlockRef, offset, size uint64) (start, end int) {
+func findBlocksForRange(blocks []block.ChunkRef, offset, size uint64) (start, end int) {
 	if len(blocks) == 0 || size == 0 {
 		return 0, 0
 	}

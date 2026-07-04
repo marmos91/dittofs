@@ -41,7 +41,8 @@ func newIOTestFixture(t *testing.T, shareName string) *ioTestFixture {
 
 	// Create local store, syncer, and block store engine
 	tmpDir := t.TempDir()
-	localStore, err := fs.NewWithOptions(tmpDir, 0, metaStore, fs.FSStoreOptions{})
+	localStore, err := fs.NewWithOptions(tmpDir, 0, metaStore, fs.FSStoreOptions{
+		LocalChunkIndex: memorymeta.NewMemoryMetadataStoreWithDefaults()})
 	if err != nil {
 		t.Fatalf("create local store: %v", err)
 	}
@@ -153,7 +154,7 @@ func (fx *ioTestFixture) writeContent(t *testing.T, fileHandle metadata.FileHand
 	}
 
 	// Write via block store (test oracle — route through common helper so
-	// the Phase-12 []BlockRef plumbing covers fixtures too, not just
+	// the Phase-12 []ChunkRef plumbing covers fixtures too, not just
 	// production handlers).
 	if err := common.WriteToBlockStore(ctx, fx.blockStore, file.PayloadID, data, 0); err != nil {
 		t.Fatalf("write payload: %v", err)

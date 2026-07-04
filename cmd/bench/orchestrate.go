@@ -204,15 +204,6 @@ func runOneWorkload(ctx context.Context, opts bsbench.Opts, tmpDir string) (bsbe
 			}
 			return bsbench.RunDelete(ctx, local, opts)
 		})
-	case bsbench.WorkloadGC:
-		remoteStore, remoteClose, err := bsbench.SetupRemote(ctx, opts)
-		if err != nil {
-			return bsbench.Result{}, "", err
-		}
-		defer remoteClose()
-		return capture(opts, func() (bsbench.Result, error) {
-			return bsbench.RunGC(ctx, remoteStore, opts, bsbench.DefaultGCGarbage)
-		})
 	case bsbench.WorkloadRawS3Put:
 		remoteStore, remoteClose, err := bsbench.SetupRemote(ctx, opts)
 		if err != nil {

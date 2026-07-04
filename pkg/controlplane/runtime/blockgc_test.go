@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
@@ -22,28 +23,35 @@ type fakeRemoteStore struct {
 // All methods on remote.RemoteStore. The fake is identity-only — it
 // never actually performs I/O; tests assert on pointer identity and
 // dedup wiring, not on byte-level behavior.
-func (f *fakeRemoteStore) Put(_ context.Context, _ block.ContentHash, _ []byte) error {
+
+// remote.RemoteBlockStore
+func (f *fakeRemoteStore) PutBlock(_ context.Context, _ string, _ io.Reader) error { return nil }
+func (f *fakeRemoteStore) GetBlock(_ context.Context, _ string) ([]byte, error)    { return nil, nil }
+func (f *fakeRemoteStore) GetBlockRange(_ context.Context, _ string, _, _ int64) ([]byte, error) {
+	return nil, nil
+}
+func (f *fakeRemoteStore) DeleteBlock(_ context.Context, _ string) error { return nil }
+func (f *fakeRemoteStore) WalkBlocks(_ context.Context, _ func(string, block.Meta) error) error {
 	return nil
 }
-func (f *fakeRemoteStore) Get(_ context.Context, _ block.ContentHash) ([]byte, error) {
+
+// remote.ChunkReader / remote.ChunkSealer
+func (f *fakeRemoteStore) ReadChunk(_ context.Context, _ string, _, _ int64, _ block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
-func (f *fakeRemoteStore) GetRange(_ context.Context, _ block.ContentHash, _, _ int64) ([]byte, error) {
-	return nil, nil
+func (f *fakeRemoteStore) SealChunk(_ context.Context, _ block.ContentHash, plaintext []byte) ([]byte, error) {
+	return plaintext, nil
 }
-func (f *fakeRemoteStore) Has(_ context.Context, _ block.ContentHash) (bool, error) {
-	return false, nil
-}
-func (f *fakeRemoteStore) Delete(_ context.Context, _ block.ContentHash) error { return nil }
-func (f *fakeRemoteStore) Head(_ context.Context, _ block.ContentHash) (block.Meta, error) {
-	return block.Meta{}, nil
-}
-func (f *fakeRemoteStore) Walk(_ context.Context, _ func(block.ContentHash, block.Meta) error) error {
+
+// remote.LegacyCASStore
+func (f *fakeRemoteStore) WalkLegacyChunks(_ context.Context, _ func(block.ContentHash, int64) error) error {
 	return nil
 }
-func (f *fakeRemoteStore) ReadBlockVerified(_ context.Context, _ block.ContentHash, _ block.ContentHash) ([]byte, error) {
+func (f *fakeRemoteStore) ReadLegacyChunkVerified(_ context.Context, _ block.ContentHash) ([]byte, error) {
 	return nil, nil
 }
+func (f *fakeRemoteStore) DeleteLegacyChunk(_ context.Context, _ block.ContentHash) error { return nil }
+
 func (f *fakeRemoteStore) HealthCheck(_ context.Context) error { return nil }
 func (f *fakeRemoteStore) Healthcheck(_ context.Context) health.Report {
 	return health.Report{Status: health.StatusHealthy}
@@ -58,7 +66,7 @@ func installCollectGarbageSpy(t *testing.T) *[]*engine.Options {
 	t.Helper()
 	captured := make([]*engine.Options, 0, 4)
 	orig := collectGarbageFn
-	collectGarbageFn = func(_ context.Context, _ remote.RemoteStore, _ engine.MetadataReconciler, opts *engine.Options) *engine.GCStats {
+	collectGarbageFn = func(_ context.Context, _ engine.MetadataReconciler, opts *engine.Options) *engine.GCStats {
 		captured = append(captured, opts)
 		return &engine.GCStats{}
 	}

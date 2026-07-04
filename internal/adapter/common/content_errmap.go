@@ -34,23 +34,18 @@ func MapContentToNFS3(err error) uint32 {
 	if goerrors.Is(err, engine.ErrStoreClosed) {
 		return nfs3types.NFS3ErrStale
 	}
-	// CAS key parse failure indicates corrupted metadata; surfaced as
-	// invalid argument.
-	if goerrors.Is(err, block.ErrCASKeyMalformed) {
-		return nfs3types.NFS3ErrInval
-	}
 	// Silent S3 corruption surfaced as I/O error to the client. The
 	// streaming verifier rejected bytes before they reached the caller;
 	// the protocol arm reports EIO.
-	if goerrors.Is(err, block.ErrCASContentMismatch) {
+	if goerrors.Is(err, block.ErrChunkContentMismatch) {
 		return nfs3types.NFS3ErrIO
 	}
-	// BlockRef.Hash refers to a FileChunk that's been GC'd or never
+	// ChunkRef.Hash refers to a FileChunk that's been GC'd or never
 	// existed. Operators triage via log inspection (vs.
-	// ErrCASContentMismatch which means bytes don't match the hash).
+	// ErrChunkContentMismatch which means bytes don't match the hash).
 	// Both surface as EIO at the wire — a data-integrity failure the
 	// client must retry / refresh against.
-	if goerrors.Is(err, block.ErrBlockRefMissing) {
+	if goerrors.Is(err, block.ErrChunkRefMissing) {
 		return nfs3types.NFS3ErrIO
 	}
 	if goerrors.Is(err, block.ErrRemoteUnavailable) {
@@ -77,11 +72,11 @@ func MapContentToNFS4(err error) uint32 {
 	if goerrors.Is(err, block.ErrCASKeyMalformed) {
 		return nfs4types.NFS4ERR_INVAL
 	}
-	if goerrors.Is(err, block.ErrCASContentMismatch) {
+	if goerrors.Is(err, block.ErrChunkContentMismatch) {
 		return nfs4types.NFS4ERR_IO
 	}
-	// BlockRef hash missing (see MapContentToNFS3).
-	if goerrors.Is(err, block.ErrBlockRefMissing) {
+	// ChunkRef hash missing (see MapContentToNFS3).
+	if goerrors.Is(err, block.ErrChunkRefMissing) {
 		return nfs4types.NFS4ERR_IO
 	}
 	if goerrors.Is(err, block.ErrRemoteUnavailable) {
@@ -106,20 +101,17 @@ func MapContentToSMB(err error) smbtypes.Status {
 	if goerrors.Is(err, engine.ErrStoreClosed) {
 		return smbtypes.StatusFileClosed
 	}
-	if goerrors.Is(err, block.ErrCASKeyMalformed) {
-		return smbtypes.StatusInvalidParameter
-	}
-	if goerrors.Is(err, block.ErrCASContentMismatch) {
+	if goerrors.Is(err, block.ErrChunkContentMismatch) {
 		// SMB does not have a dedicated data-checksum status that maps
 		// cleanly to the client (StatusDataError is not in our types
 		// table); StatusUnexpectedIOError is the closest analog and is
 		// also what the existing fallback uses for opaque I/O failures.
 		return smbtypes.StatusUnexpectedIOError
 	}
-	// BlockRef hash missing (see MapContentToNFS3).
+	// ChunkRef hash missing (see MapContentToNFS3).
 	// SMB clients see the same StatusUnexpectedIOError signal as for
 	// CAS content mismatch; both are CAS-integrity failures.
-	if goerrors.Is(err, block.ErrBlockRefMissing) {
+	if goerrors.Is(err, block.ErrChunkRefMissing) {
 		return smbtypes.StatusUnexpectedIOError
 	}
 	if goerrors.Is(err, block.ErrRemoteUnavailable) {

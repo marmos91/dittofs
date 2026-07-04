@@ -44,8 +44,8 @@ func (o *Opts) wantLanes(cl sizeClass) (up, down, meta bool) {
 
 // runDittofsConc runs every selected dittofs cell at one concurrency level.
 // Each size class gets a fresh engine (fresh local dir, fresh metrics
-// registry, remote prefix isolated per cell) with ParallelUploads pinned to
-// conc so upload parallelism is comparable to rclone --transfers.
+// registry, remote prefix isolated per cell); conc drives the number of
+// concurrent writers so upload parallelism is comparable to rclone --transfers.
 func runDittofsConc(ctx context.Context, opts Opts, s3cfg *s3Config, basePrefix string, conc int) ([]Cell, map[string]Timeline, error) {
 	var cells []Cell
 	timelines := map[string]Timeline{}
@@ -62,7 +62,9 @@ func runDittofsConc(ctx context.Context, opts Opts, s3cfg *s3Config, basePrefix 
 			return nil, nil, err
 		}
 		cfg := engine.DefaultConfig()
-		cfg.ParallelUploads = conc
+		// ponytail: upload concurrency moved off SyncerConfig to the remote's
+		// parallel_uploads config in the blocks-only model (#1493). Re-wire conc
+		// onto the remote config if this bench's upload-concurrency axis matters.
 
 		// Engine 1: upload. Fresh metadata + local dir + metrics registry.
 		// KeepRemoteOpen: the parity runner owns the remote store's lifetime
@@ -255,14 +257,7 @@ func dittofsMetaCell(ctx context.Context, opts Opts, s3cfg *s3Config, prefix str
 	defer func() { _ = store.Close() }()
 
 	start := time.Now()
-	var casHashes []block.ContentHash
 	var blockIDs []string
-	if err := store.Walk(ctx, func(h block.ContentHash, _ block.Meta) error {
-		casHashes = append(casHashes, h)
-		return nil
-	}); err != nil {
-		return Cell{}, fmt.Errorf("meta walk cas: %w", err)
-	}
 	rbs, hasBlocks := store.(remote.RemoteBlockStore)
 	if hasBlocks {
 		if err := rbs.WalkBlocks(ctx, func(id string, _ block.Meta) error {
@@ -273,13 +268,10 @@ func dittofsMetaCell(ctx context.Context, opts Opts, s3cfg *s3Config, prefix str
 		}
 	}
 
-	objects := int64(len(casHashes) + len(blockIDs))
+	objects := int64(len(blockIDs))
 	if !opts.KeepRemote {
 		g, gctx := errgroup.WithContext(ctx)
 		g.SetLimit(conc)
-		for _, h := range casHashes {
-			g.Go(func() error { return store.Delete(gctx, h) })
-		}
 		for _, id := range blockIDs {
 			g.Go(func() error { return rbs.DeleteBlock(gctx, id) })
 		}
@@ -310,17 +302,12 @@ func deleteRemotePrefix(ctx context.Context, s3cfg *s3Config, prefix string, con
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(conc)
-	walkErr := store.Walk(ctx, func(h block.ContentHash, _ block.Meta) error {
-		g.Go(func() error { return store.Delete(gctx, h) })
-		return nil
-	})
+	var walkErr error
 	if rbs, ok := store.(remote.RemoteBlockStore); ok {
-		if err := rbs.WalkBlocks(ctx, func(id string, _ block.Meta) error {
+		walkErr = rbs.WalkBlocks(ctx, func(id string, _ block.Meta) error {
 			g.Go(func() error { return rbs.DeleteBlock(gctx, id) })
 			return nil
-		}); err != nil && walkErr == nil {
-			walkErr = err
-		}
+		})
 	}
 	if err := g.Wait(); err != nil {
 		return err
@@ -333,7 +320,8 @@ func payloadID(class string, index int) string {
 }
 
 func countRemoteObjects(ctx context.Context, store remote.RemoteStore) (cas, blocks int64) {
-	_ = store.Walk(ctx, func(block.ContentHash, block.Meta) error { cas++; return nil })
+	// cas is always 0 in the blocks-only model (#1493); kept in the signature so
+	// the scorecard columns stay stable.
 	if rbs, ok := store.(remote.RemoteBlockStore); ok {
 		_ = rbs.WalkBlocks(ctx, func(string, block.Meta) error { blocks++; return nil })
 	}

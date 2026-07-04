@@ -119,9 +119,9 @@ func init() {
 // CloneBlockSize is the value reported by FATTR4_CLONE_BLKSIZE and the
 // alignment a CLONE source offset, destination offset, and count must satisfy
 // (RFC 7862 Section 15.13). DittoFS clones by splicing the content-addressed
-// BlockRef list of the source range into the destination — a pure metadata,
+// ChunkRef list of the source range into the destination — a pure metadata,
 // O(1), zero-copy operation. A value of 1 advertises byte-granular alignment:
-// the block engine splits/merges BlockRefs at arbitrary boundaries when the
+// the block engine splits/merges ChunkRefs at arbitrary boundaries when the
 // requested range does not fall on existing chunk edges, so no client-visible
 // alignment constraint is required. Reporting 1 (rather than 0) keeps the
 // attribute meaningful — RFC 7862 reserves 0 for "CLONE not supported".
@@ -750,7 +750,7 @@ func encodeRealFileAttr(buf *bytes.Buffer, bit uint32, file *metadata.File, hand
 
 	case FATTR4_CLONE_BLKSIZE:
 		// uint32: alignment for CLONE source/dest offsets and count (RFC 7862
-		// 15.13). DittoFS clones by content-addressed BlockRef splicing, so any
+		// 15.13). DittoFS clones by content-addressed ChunkRef splicing, so any
 		// byte offset is valid — report 1 (byte-granular).
 		return xdr.WriteUint32(buf, CloneBlockSize)
 

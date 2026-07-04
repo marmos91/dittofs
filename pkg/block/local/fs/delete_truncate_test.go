@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
@@ -243,6 +244,7 @@ func TestDelete_DuringActiveRollup_NoMetadataZombie(t *testing.T) {
 		RollupWorkers:   2,
 		StabilizationMS: 2,
 		RollupStore:     rs,
+		LocalChunkIndex: rs,
 	})
 	ctx := context.Background()
 
@@ -313,6 +315,7 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 		RollupWorkers:          2,
 		StabilizationMS:        10,
 		RollupStore:            rs,
+		LocalChunkIndex:        rs,
 		OrphanLogMinAgeSeconds: 1, // short window so the test can age past it
 	})
 	if err != nil {
@@ -341,6 +344,7 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 		RollupWorkers:          2,
 		StabilizationMS:        10,
 		RollupStore:            rs,
+		LocalChunkIndex:        rs,
 		OrphanLogMinAgeSeconds: 1,
 	})
 	if err != nil {
@@ -466,6 +470,7 @@ func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 		RollupWorkers:   2,
 		StabilizationMS: 2,
 		RollupStore:     rs,
+		LocalChunkIndex: rs,
 	})
 	ctx := context.Background()
 
@@ -497,21 +502,24 @@ func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 		t.Fatalf("rollupFile after truncate: %v", err)
 	}
 
-	// Read back every chunk on disk; their concatenation must NOT
-	// contain any 0x33 bytes (the above-boundary payload).
-	blocksDir := filepath.Join(bc.baseDir, "blocks")
+	// Read back every chunk recorded in the log-blob index; their
+	// concatenation must NOT contain any 0x33 bytes (the above-boundary
+	// payload).
+	w, ok := bc.localChunkIndex.(localChunkWalker)
+	if !ok {
+		t.Fatal("localChunkIndex does not support WalkLocalLocations")
+	}
 	var chunkBytes []byte
-	_ = filepath.WalkDir(blocksDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		data, rerr := os.ReadFile(path)
+	if err := w.WalkLocalLocations(ctx, func(h block.ContentHash, _ block.LocalChunkLocation) error {
+		data, rerr := bc.ReadChunk(ctx, h)
 		if rerr != nil {
-			return nil
+			return rerr
 		}
 		chunkBytes = append(chunkBytes, data...)
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk local chunks: %v", err)
+	}
 	if bytes.Contains(chunkBytes, []byte{0x33, 0x33, 0x33, 0x33}) {
 		t.Fatalf("emitted chunks contain above-boundary bytes (0x33); truncation filter failed")
 	}

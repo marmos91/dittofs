@@ -38,19 +38,19 @@ type BlockStoreConfig struct {
 	FileChunkStore block.EngineFileChunkStore
 
 	// Coordinator handles all metadata-store operations the engine
-	// needs (RefCount mutations, BlockRef-list persistence).
+	// needs (RefCount mutations, ChunkRef-list persistence).
 	// keeps pkg/metadata out of the engine hot path. May be nil in
 	// tests; production wiring (pkg/controlplane/runtime/shares/
 	// service.go) MUST inject a real impl. See coordinator.go for the
 	// contract.
 	Coordinator MetadataCoordinator
 
-	// SyncedHashStore persists per-CAS-hash local→remote mirror state.
+	// SyncedHashStore persists per-CAS-hash local→remote sync state.
 	// Sourced from the same per-share metadata-store handle the
-	// Coordinator wraps. Threaded through to the Syncer so the mirror
-	// loop in Flush can call MarkSynced after each successful
-	// remote.Put. Nil is accepted (local-only / no-remote fixtures)
-	// the Syncer's mirror loop early-exits in that mode.
+	// Coordinator wraps. Threaded through to the Syncer so the carver
+	// can commit synced markers + block locators atomically
+	// (DefaultCommitBlock). Nil is accepted (local-only / no-remote
+	// fixtures); carve stays disabled in that mode.
 	SyncedHashStore metadata.SyncedHashStore
 
 	// ReadBufferBytes is the memory budget for the read buffer per share.
@@ -75,7 +75,7 @@ type Store struct {
 	remote remote.RemoteStore
 	syncer *Syncer
 
-	// metrics is the engine-side data-plane metrics sink (mirror/upload
+	// metrics is the engine-side data-plane metrics sink (carve/upload
 	// path). Retained from SetMetrics when the injected recorder also
 	// satisfies DataplaneMetrics. Held as an atomic.Pointer because
 	// SetMetrics back-fills it on already-serving shares (the registry is
@@ -89,7 +89,7 @@ type Store struct {
 	fileChunkStore block.EngineFileChunkStore // optional: for block count stats
 
 	// coordinator handles all metadata-store operations the engine
-	// needs (RefCount mutations, BlockRef-list persistence). May be nil
+	// needs (RefCount mutations, ChunkRef-list persistence). May be nil
 	// in tests; production wiring (pkg/controlplane/runtime/shares/
 	// service.go) MUST inject a real impl. See coordinator.go for the
 	// contract.
@@ -177,10 +177,10 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	// so engine code can call bs.cache.* without nil-checks even before
 	// Start runs.
 	bs.cache = nullCache{}
-	// Thread the SyncedHashStore into the Syncer so the mirror loop in
-	// Flush can call MarkSynced after each remote.Put. Nil is accepted
-	// (local-only / no-remote fixtures); the mirror loop early-exits in
-	// that mode.
+	// Thread the SyncedHashStore into the Syncer so the carver can commit
+	// synced markers + block locators atomically. Nil is accepted
+	// (local-only / no-remote fixtures); carve stays disabled in that
+	// mode.
 	if cfg.SyncedHashStore != nil {
 		cfg.Syncer.SetSyncedHashStore(cfg.SyncedHashStore)
 	}
@@ -205,7 +205,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		// below) install a no-op setter — ObjectID compute still runs
 		// inside rollup but the persist step is no-op.
 		fbs := cfg.FileChunkStore
-		hooks.SetObjectIDPersister(func(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+		hooks.SetObjectIDPersister(func(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
 			// (1) Per-chunk FileChunk rows. The row ID encodes the
 			//     chunk's absolute byte Offset directly (rather than
 			//     a synthetic blockIdx = Offset / BlockSize); the
@@ -294,7 +294,7 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 				return fmt.Errorf("ObjectIDPersister: read persisted blocks for %s: %w", payloadID, gerr)
 			}
 			if len(existing) > 0 {
-				persistBlocks = block.MergeBlockRefsByOffset(existing, blocks)
+				persistBlocks = block.MergeChunkRefsByOffset(existing, blocks)
 				persistObjID = block.ComputeObjectID(persistBlocks)
 			}
 			if err := bs.persistRollupBlocksConverging(ctx, payloadID, persistBlocks, persistObjID); err != nil {
@@ -323,10 +323,10 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 		// chunk activity fires before Start completes.
 		hooks.SetOnChunkComplete(func(hash block.ContentHash, data []byte, _ string) {
 			bs.loadCache().Put(hash, data)
-			// Register the freshly-stored chunk for upload without a
-			// directory walk (B1). The syncer drains this set on each
-			// mirror pass; harmless when no remote is configured. The byte
-			// size feeds the syncer's unsynced-bytes backpressure counter.
+			// Register the freshly-stored chunk for carve without a
+			// directory walk (B1). The carve dispatcher drains this set;
+			// harmless when no remote is configured. The byte size feeds
+			// the syncer's unsynced-bytes backpressure counter.
 			bs.syncer.addPendingHash(hash, int64(len(data)))
 		})
 
@@ -358,10 +358,10 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 				if err := fbs.Put(context.Background(), fb); err != nil {
 					logger.Error("ChunkEmitter: FileChunk.Put failed", "id", fb.ID, "error", err)
 				}
-				// Register for upload (B1). The in-memory backend creates
+				// Register for carve (B1). The in-memory backend creates
 				// chunks via this emitter rather than onChunkComplete, so
-				// without this the mirror loop's pending set would never
-				// see memory-backend chunks. size is the chunk's byte
+				// without this the pending-carve set would never see
+				// memory-backend chunks. size is the chunk's byte
 				// length, feeding the unsynced-bytes backpressure counter.
 				bs.syncer.addPendingHash(hash, int64(size))
 			})
@@ -468,7 +468,7 @@ func isRollupPersistConflict(err error) bool {
 // only thing it forfeits is ownership of the canonical object_id pointer (left
 // zero = "not the dedup target"), which the partial unique index skips so the
 // per-file block list lands cleanly and the file stays restorable.
-func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID string, persistBlocks []block.BlockRef, persistObjID block.ObjectID) error {
+func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID string, persistBlocks []block.ChunkRef, persistObjID block.ObjectID) error {
 	var zeroObjectID block.ObjectID
 
 	// wantObjID is the object_id this file will TRY to claim. The pre-check and
@@ -569,6 +569,16 @@ func (bs *Store) Start(ctx context.Context) error {
 	// Start local store background goroutines (e.g., periodic FileChunk metadata persistence).
 	// Use background context so these outlive the calling request context.
 	bs.local.Start(context.Background())
+
+	// One-shot cas→blocks migration (#1493 PR4): import pre-flip local
+	// per-chunk files into the log-blob substrate and re-pack standalone
+	// remote objects into packed blocks. Blocking by design — the share must
+	// not serve until the legacy layout is gone — and a no-op on migrated
+	// (or fresh) stores. Runs BEFORE the syncer starts so no mirror/carve
+	// activity races the rewrite.
+	if err := bs.migrateLegacyCAS(ctx); err != nil {
+		return fmt.Errorf("cas→blocks migration: %w", err)
+	}
 
 	// Wire the health callback BEFORE starting the syncer. The health monitor
 	// captures the callback at Start time (startHealthMonitor reads

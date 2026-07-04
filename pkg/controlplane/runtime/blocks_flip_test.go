@@ -151,8 +151,8 @@ func remoteForShare(t *testing.T, rt *Runtime) (remote.RemoteStore, remote.Remot
 func countCAS(t *testing.T, rs remote.RemoteStore) int {
 	t.Helper()
 	n := 0
-	if err := rs.Walk(context.Background(), func(block.ContentHash, block.Meta) error { n++; return nil }); err != nil {
-		t.Fatalf("Walk (cas count): %v", err)
+	if err := rs.WalkLegacyChunks(context.Background(), func(block.ContentHash, int64) error { n++; return nil }); err != nil {
+		t.Fatalf("WalkLegacyChunks (cas count): %v", err)
 	}
 	return n
 }

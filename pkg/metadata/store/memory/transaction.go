@@ -31,6 +31,20 @@ type memoryTransaction struct {
 	// keyed by (scope, id). Applied to the store's userUsage/groupUsage maps
 	// exactly once after a successful commit, identical to pendingDelta.
 	quotaDelta map[quotaKey]metadata.UsageStat
+	// syncedOps buffers SyncedHashStore mutations made inside the closure.
+	// The synced maps live under their own mutex (syncedMu), NOT store.mu, so
+	// they cannot participate in the snapshot/restore rollback: instead the
+	// tx methods overlay this map over the store (read-your-writes) and
+	// WithTransaction applies it under syncedMu exactly once after a
+	// successful commit. A rolled-back closure discards it untouched.
+	syncedOps map[block.ContentHash]syncedTxState
+}
+
+// syncedTxState is one hash's pending synced-marker mutation inside a tx:
+// either a pending delete, or a pending mark carrying the locator to record.
+type syncedTxState struct {
+	deleted bool
+	loc     block.ChunkLocator
 }
 
 // quotaKey identifies a per-identity usage bucket inside a transaction's
@@ -238,6 +252,34 @@ func (store *MemoryMetadataStore) WithTransaction(ctx context.Context, fn func(t
 			}
 		}
 		store.quotaMu.Unlock()
+	}
+	// Apply buffered synced-marker mutations once, under syncedMu. Map writes
+	// cannot fail, so the commit stays all-or-nothing. A concurrent direct
+	// MarkSynced racing the same hash between the closure's first-wins check
+	// and this apply loses to the tx — an inherent (and acceptable) race for
+	// the in-memory test backend.
+	if len(tx.syncedOps) > 0 {
+		store.syncedMu.Lock()
+		for h, st := range tx.syncedOps {
+			if st.deleted {
+				delete(store.synced, h)
+				delete(store.syncedLocators, h)
+				continue
+			}
+			if store.synced == nil {
+				store.synced = make(map[block.ContentHash]time.Time)
+			}
+			store.synced[h] = time.Now()
+			if st.loc.IsStandalone() {
+				delete(store.syncedLocators, h)
+			} else {
+				if store.syncedLocators == nil {
+					store.syncedLocators = make(map[block.ContentHash]block.ChunkLocator)
+				}
+				store.syncedLocators[h] = st.loc
+			}
+		}
+		store.syncedMu.Unlock()
 	}
 	return nil
 }

@@ -16,135 +16,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// countingFileChunkStore wraps a block.EngineFileChunkStore and
-// counts calls per method. Used by the conformance suite (and
-// neighboring eviction tests) to assert that the local store's
-// synchronous hot-path / eviction paths make zero FileChunkStore calls
-// (d /).
-//
-// Counters are atomic so tests may observe them without racing the
-// background SyncFileChunks goroutine that Start() launches.
-type countingFileChunkStore struct {
-	inner block.EngineFileChunkStore
-
-	get               atomic.Int64 // GetFileChunk (engine-internal)
-	put               atomic.Int64 // Put (was PutFileChunk)
-	del               atomic.Int64 // Delete (was DeleteFileChunk)
-	incrementRefCount atomic.Int64
-	decrementRefCount atomic.Int64
-	addRef            atomic.Int64 // LRU hit path
-	getByHash         atomic.Int64 // GetByHash (was FindFileChunkByHash)
-	listFileChunks    atomic.Int64 // engine-internal
-}
-
-func newCountingFileChunkStore(inner block.EngineFileChunkStore) *countingFileChunkStore {
-	return &countingFileChunkStore{inner: inner}
-}
-
-func (c *countingFileChunkStore) GetFileChunk(ctx context.Context, id string) (*block.FileChunk, error) {
-	c.get.Add(1)
-	return c.inner.GetFileChunk(ctx, id)
-}
-
-func (c *countingFileChunkStore) Put(ctx context.Context, block *block.FileChunk) error {
-	c.put.Add(1)
-	return c.inner.Put(ctx, block)
-}
-
-func (c *countingFileChunkStore) Delete(ctx context.Context, id string) error {
-	c.del.Add(1)
-	return c.inner.Delete(ctx, id)
-}
-
-func (c *countingFileChunkStore) IncrementRefCount(ctx context.Context, id string) error {
-	c.incrementRefCount.Add(1)
-	return c.inner.IncrementRefCount(ctx, id)
-}
-
-func (c *countingFileChunkStore) DecrementRefCount(ctx context.Context, id string) (uint32, error) {
-	c.decrementRefCount.Add(1)
-	return c.inner.DecrementRefCount(ctx, id)
-}
-
-func (c *countingFileChunkStore) DecrementRefCountAndReap(ctx context.Context, id string) (uint32, error) {
-	c.decrementRefCount.Add(1)
-	return c.inner.DecrementRefCountAndReap(ctx, id)
-}
-
-func (c *countingFileChunkStore) AddRef(ctx context.Context, hash block.ContentHash, payloadID string, blockRef block.BlockRef) error {
-	c.addRef.Add(1)
-	return c.inner.AddRef(ctx, hash, payloadID, blockRef)
-}
-
-func (c *countingFileChunkStore) GetByHash(ctx context.Context, hash block.ContentHash) (*block.FileChunk, error) {
-	c.getByHash.Add(1)
-	return c.inner.GetByHash(ctx, hash)
-}
-
-func (c *countingFileChunkStore) ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error) {
-	c.listFileChunks.Add(1)
-	return c.inner.ListFileChunks(ctx, payloadID)
-}
-func (c *countingFileChunkStore) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
-	return c.inner.EnumeratePayloads(ctx, fn)
-}
-
-// snapshot captures the current call counts for comparison.
-type fbsCallSnapshot struct {
-	get, put, del, inc, dec, addref, find, listFile int64
-}
-
-func (c *countingFileChunkStore) snapshot() fbsCallSnapshot {
-	return fbsCallSnapshot{
-		get:      c.get.Load(),
-		put:      c.put.Load(),
-		del:      c.del.Load(),
-		inc:      c.incrementRefCount.Load(),
-		dec:      c.decrementRefCount.Load(),
-		addref:   c.addRef.Load(),
-		find:     c.getByHash.Load(),
-		listFile: c.listFileChunks.Load(),
-	}
-}
-
-func diffSnapshot(before, after fbsCallSnapshot) fbsCallSnapshot {
-	return fbsCallSnapshot{
-		get:      after.get - before.get,
-		put:      after.put - before.put,
-		del:      after.del - before.del,
-		inc:      after.inc - before.inc,
-		dec:      after.dec - before.dec,
-		addref:   after.addref - before.addref,
-		find:     after.find - before.find,
-		listFile: after.listFile - before.listFile,
-	}
-}
-
-// ResetCount and TotalCount satisfy the FBSCounter interface declared in
-// test_hooks.go so the conformance suite can assert no
-// FileChunkStore calls happen during ensureSpace.
-func (c *countingFileChunkStore) ResetCount() {
-	c.get.Store(0)
-	c.put.Store(0)
-	c.del.Store(0)
-	c.incrementRefCount.Store(0)
-	c.decrementRefCount.Store(0)
-	c.addRef.Store(0)
-	c.getByHash.Store(0)
-	c.listFileChunks.Store(0)
-}
-
-func (c *countingFileChunkStore) TotalCount() int {
-	return int(c.get.Load() +
-		c.put.Load() +
-		c.del.Load() +
-		c.incrementRefCount.Load() +
-		c.decrementRefCount.Load() +
-		c.addRef.Load() +
-		c.getByHash.Load() +
-		c.listFileChunks.Load())
-}
-
 // writeSentinelForTest writes a minimal valid `.cas-migrated-v1` marker
 // at the share-dir root. Mirrors pkg/block/migrate.writeSentinel's
 // contract (file content is opaque to the boot guard; presence is what
@@ -307,28 +178,6 @@ func TestNewFSStore_DeepBlkFile(t *testing.T) {
 	})
 }
 
-// TestNewFSStoreForMigration_BypassesSentinel asserts the bypass
-// constructor opens an FSStore against the very state the legacy gate
-// refuses (sentinel-missing, .blk-present). This is the entry point
-// the `dfs migrate-to-cas` subcommand uses to process legacy data.
-func TestNewFSStoreForMigration_BypassesSentinel(t *testing.T) {
-	shareDir := t.TempDir()
-	writeLegacyBlkForTest(t, shareDir)
-
-	// Confirm the production constructor refuses, so we know the
-	// bypass is actually being exercised by the next call.
-	if _, err := NewWithOptions(shareDir, 0, memory.NewMemoryMetadataStoreWithDefaults(), FSStoreOptions{}); !errors.Is(err, block.ErrLegacyLayoutDetected) {
-		t.Fatalf("precondition: NewWithOptions should refuse legacy layout; got %v", err)
-	}
-
-	bc, err := NewFSStoreForMigration(shareDir, 0,
-		memory.NewMemoryMetadataStoreWithDefaults(), FSStoreOptions{})
-	if err != nil {
-		t.Fatalf("NewFSStoreForMigration: expected success on legacy layout; got %v", err)
-	}
-	t.Cleanup(func() { _ = bc.Close() })
-}
-
 // ---: FSStoreOptions OnChunkComplete. ---
 //
 // These tests assert the OnChunkComplete callback is stored on the
@@ -348,14 +197,14 @@ func TestFSStore_NilOnChunkComplete_LruTouchUnchanged(t *testing.T) {
 	}
 	h := hashFromHex(t, strings.Repeat("19", 32))
 	data := bytes.Repeat([]byte{0x19}, 256)
-	if err := bc.StoreChunk(context.Background(), h, data); err != nil {
+	ctx := context.Background()
+	if err := bc.StoreChunk(ctx, h, data); err != nil {
 		t.Fatalf("StoreChunk with nil OnChunkComplete: %v", err)
 	}
-	// Confirm the canonical on-disk path resolves and the LRU was
-	// touched (lruTouch is the post-store hook that an Opt-3 wire-in
-	// will later fire OnChunkComplete from).
-	if _, err := os.Stat(bc.chunkPath(h)); err != nil {
-		t.Fatalf("chunk on disk missing after StoreChunk: %v", err)
+	// Confirm the chunk was recorded (nil callback must not affect storage).
+	exists, err := bc.HasChunk(ctx, h)
+	if err != nil || !exists {
+		t.Fatalf("chunk missing after StoreChunk: exists=%v err=%v", exists, err)
 	}
 }
 

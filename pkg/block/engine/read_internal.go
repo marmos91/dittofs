@@ -21,9 +21,9 @@ func (bs *Store) dataplaneMetrics() DataplaneMetrics {
 	return nil
 }
 
-// blockRefHashes extracts the ContentHash slice from a BlockRef list
+// blockRefHashes extracts the ContentHash slice from a ChunkRef list
 // for OnRead's hint API.
-func blockRefHashes(refs []block.BlockRef) []block.ContentHash {
+func blockRefHashes(refs []block.ChunkRef) []block.ContentHash {
 	out := make([]block.ContentHash, len(refs))
 	for i, r := range refs {
 		out[i] = r.Hash
@@ -32,9 +32,9 @@ func blockRefHashes(refs []block.BlockRef) []block.ContentHash {
 }
 
 // computeFileSize returns the maximum (Offset + Size) across the
-// BlockRef list — a conservative upper bound on file size used as
+// ChunkRef list — a conservative upper bound on file size used as
 // the OnRead fileSize hint.
-func computeFileSize(refs []block.BlockRef) uint64 {
+func computeFileSize(refs []block.ChunkRef) uint64 {
 	var maxEnd uint64
 	for _, r := range refs {
 		end := r.Offset + uint64(r.Size)
@@ -252,10 +252,10 @@ func findRowCoveringOffset(rows []*block.FileChunk, target uint64) *rowWithOffse
 // Decision tree:
 //  1. Record local corruption unconditionally.
 //  2. If no SyncedHashStore is wired, or IsSynced returns false/error:
-//     RecordSelfHealFailure(1) + return (nil, ErrCASContentMismatch).
+//     RecordSelfHealFailure(1) + return (nil, ErrChunkContentMismatch).
 //  3. Delete the corrupt local entry (removes the bad hash pointer).
 //  4. Fetch from remote via dispatchRemoteFetch (already blake3-verified).
-//     If fetch fails or returns nil data: RecordSelfHealFailure(1) + (nil, ErrCASContentMismatch).
+//     If fetch fails or returns nil data: RecordSelfHealFailure(1) + (nil, ErrChunkContentMismatch).
 //  5. Try to re-stage locally via local.Put.
 //     - Put succeeds: markFetchedSynced + RecordSelfHealSuccess(1) + return data.
 //     - Put fails (disk full etc.): RecordSelfHealFailure(1) + return data (serve degraded).
@@ -272,7 +272,7 @@ func (bs *Store) healLocalChunk(ctx context.Context, hash block.ContentHash, fb 
 		if dm != nil {
 			dm.RecordSelfHealFailure(1)
 		}
-		return nil, block.ErrCASContentMismatch
+		return nil, block.ErrChunkContentMismatch
 	}
 	synced, err := shs.IsSynced(ctx, hash)
 	if err != nil || !synced {
@@ -280,7 +280,7 @@ func (bs *Store) healLocalChunk(ctx context.Context, hash block.ContentHash, fb 
 		if dm != nil {
 			dm.RecordSelfHealFailure(1)
 		}
-		return nil, block.ErrCASContentMismatch
+		return nil, block.ErrChunkContentMismatch
 	}
 
 	// Drop the corrupt pointer so a subsequent Put can land cleanly.
@@ -296,7 +296,7 @@ func (bs *Store) healLocalChunk(ctx context.Context, hash block.ContentHash, fb 
 		if dm != nil {
 			dm.RecordSelfHealFailure(1)
 		}
-		return nil, block.ErrCASContentMismatch
+		return nil, block.ErrChunkContentMismatch
 	}
 
 	// Try to re-stage locally for future reads.

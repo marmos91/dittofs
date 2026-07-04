@@ -67,7 +67,7 @@ type ChunkLifecycleHooks interface {
 	// engine's CAS read path can resolve (payloadID, offset) -> hash.
 	// Called once at engine.New; implementations that don't drive a
 	// rollup-completion path may treat this as a no-op.
-	SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error)
+	SetObjectIDPersister(p func(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error)
 
 	// SetOnChunkComplete installs the chunk-completion callback fired
 	// once per successful chunkstore write. The engine wires a closure

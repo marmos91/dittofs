@@ -85,7 +85,6 @@ func TestDittofsCells_MemoryRemote(t *testing.T) {
 	ctx := context.Background()
 	remoteStore := remotememory.New()
 	cfg := engine.DefaultConfig()
-	cfg.ParallelUploads = 2
 
 	upMx := metrics.New("test", "test")
 	bs, ms, cleanup, err := blockstore.NewEngineWithOpts(t.TempDir(), remoteStore, blockstore.EngineOpts{

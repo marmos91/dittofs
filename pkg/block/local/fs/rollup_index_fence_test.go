@@ -209,7 +209,7 @@ func TestRollup_TransientSyncFailure_ReadableWithoutRestart(t *testing.T) {
 	// path (step 2) can resolve rolled-up bytes after the fence trims the log
 	// index entries — the only read path left once a pass succeeds.
 	fbs := newMemFileChunkStore()
-	persister := func(pctx context.Context, payloadID string, blocks []block.BlockRef, _ block.ObjectID) error {
+	persister := func(pctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		return fbs.persist(pctx, payloadID, blocks)
 	}
 	opts := FSStoreOptions{

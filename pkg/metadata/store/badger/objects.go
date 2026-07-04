@@ -292,7 +292,7 @@ func (s *BadgerMetadataStore) DecrementRefCountAndReap(ctx context.Context, id s
 // RefCount is the ONLY field mutated. BlockState is preserved
 // across the read-modify-write (Pending stays Pending, Remote stays
 // Remote — no transition is fired by the hit path).
-func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockpkg.ContentHash, _ string, _ blockpkg.BlockRef) error {
+func (s *BadgerMetadataStore) AddRef(ctx context.Context, hash blockpkg.ContentHash, _ string, _ blockpkg.ChunkRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// badger backend records ref count only — parameters intentionally
 	// blanked.
@@ -910,7 +910,7 @@ func (tx *badgerTransaction) DecrementRefCountAndReap(ctx context.Context, id st
 // the active badger.Txn so a subsequent rollback discards the mutation
 // (mirrors the fix applied to IncrementRefCount). Returns
 // metadata.ErrUnknownHash on index miss or value miss.
-func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, _ string, _ blockpkg.BlockRef) error {
+func (tx *badgerTransaction) AddRef(ctx context.Context, hash metadata.ContentHash, _ string, _ blockpkg.ChunkRef) error {
 	// payloadID + blockRef accepted for future GC traceability;
 	// badger backend records ref count only — parameters intentionally
 	// blanked.

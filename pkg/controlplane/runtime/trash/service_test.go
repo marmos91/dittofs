@@ -36,7 +36,7 @@ type testDeps struct {
 	rootHandle metadata.FileHandle
 	cfg        Config
 	freed      []string
-	// freedBlocks records the BlockRef count threaded into each FreeBlocks call,
+	// freedBlocks records the ChunkRef count threaded into each FreeBlocks call,
 	// keyed by payloadID, so tests can assert the purge path passes the file's
 	// blocks (not nil) — the CAS RefCounts are only decremented when blocks flow
 	// through, so a regression to nil would leak them (#832).
@@ -61,7 +61,7 @@ func (d *testDeps) EnabledTrashShares() []string {
 	return []string{d.shareName}
 }
 
-func (d *testDeps) FreeBlocks(_ context.Context, _ string, _ metadata.FileHandle, payloadID string, blocks []block.BlockRef) error {
+func (d *testDeps) FreeBlocks(_ context.Context, _ string, _ metadata.FileHandle, payloadID string, blocks []block.ChunkRef) error {
 	if payloadID == "" {
 		return nil
 	}
@@ -295,7 +295,7 @@ func TestEmptyRemovesAllBinEntries(t *testing.T) {
 }
 
 // TestEmptyThreadsBlocksToFreeBlocks guards the purge path against regressing to
-// a nil BlockRef list: blockStore.Delete only decrements per-block CAS RefCounts
+// a nil ChunkRef list: blockStore.Delete only decrements per-block CAS RefCounts
 // (so GC can reclaim now-unreferenced chunks) when handed the file's blocks.
 // Passing nil would leak the refcounts (#832). The test recycles a file carrying
 // blocks and asserts the count threaded into FreeBlocks matches.
@@ -313,7 +313,7 @@ func TestEmptyThreadsBlocksToFreeBlocks(t *testing.T) {
 	file, err := store.GetFile(tt.ctx.Context, handle)
 	require.NoError(t, err)
 	file.PayloadID = "payload-withblocks"
-	file.Blocks = []block.BlockRef{
+	file.Blocks = []block.ChunkRef{
 		{Offset: 0, Size: 4096},
 		{Offset: 4096, Size: 4096},
 	}
@@ -328,7 +328,7 @@ func TestEmptyThreadsBlocksToFreeBlocks(t *testing.T) {
 
 	// The purge must thread the file's two blocks into FreeBlocks, not nil.
 	assert.Equal(t, 2, tt.deps.freedBlocks["payload-withblocks"],
-		"purge must pass the removed file's BlockRefs so CAS refcounts are decremented")
+		"purge must pass the removed file's ChunkRefs so CAS refcounts are decremented")
 }
 
 func TestListUnknownShareReturnsNotFound(t *testing.T) {

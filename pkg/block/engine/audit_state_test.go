@@ -14,7 +14,7 @@ import (
 )
 
 // seedAuditTestStore creates a memory metadata store with one share named
-// "audit-test" and three regular files. The first file has 5 BlockRefs,
+// "audit-test" and three regular files. The first file has 5 ChunkRefs,
 // the second has 3, the third has 2 (10 manifest refs total). Each
 // manifest ref is backed by a FileChunk row whose ID is
 // "{payloadID}/{offset}" with a matching non-zero hash, so the
@@ -45,7 +45,7 @@ func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore
 		t.Fatalf("EncodeFileHandle: %v", err)
 	}
 
-	// Three files with 5, 3, 2 BlockRefs respectively.
+	// Three files with 5, 3, 2 ChunkRefs respectively.
 	perFile := []int{5, 3, 2}
 	now := time.Now().UTC()
 	payloadIDs = make([]string, len(perFile))
@@ -67,7 +67,7 @@ func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore
 		payloadID := "payload-" + jstr(fi)
 		payloadIDs[fi] = payloadID
 		fileOffsets := make([]uint64, n)
-		refs := make([]block.BlockRef, n)
+		refs := make([]block.ChunkRef, n)
 		for bi := 0; bi < n; bi++ {
 			h := hashForFileChunk(fi, bi)
 			off := uint64(bi) * 4096
@@ -86,7 +86,7 @@ func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore
 				t.Fatalf("Put block %s: %v", blockID, err)
 			}
 			fileOffsets[bi] = off
-			refs[bi] = block.BlockRef{Hash: h, Offset: off, Size: 4096}
+			refs[bi] = block.ChunkRef{Hash: h, Offset: off, Size: 4096}
 		}
 
 		file := &metadata.File{

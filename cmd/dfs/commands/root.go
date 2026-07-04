@@ -49,7 +49,6 @@ func init() {
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(migrateCmd)
-	rootCmd.AddCommand(migrateToCASCmd)
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(logsCmd)

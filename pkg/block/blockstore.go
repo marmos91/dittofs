@@ -39,19 +39,26 @@ type Meta struct {
 	LastModified time.Time
 }
 
-// Store is the unified content-addressed block storage contract.
+// Store is the content-addressed block storage contract for the LOCAL tier.
 // Every implementation is keyed by ContentHash (BLAKE3-256, 32 bytes)
 // no opaque "block key" strings appear on this surface.
 //
+// The production REMOTE tier no longer exposes this hash-keyed surface — it is
+// block-keyed via remote.RemoteBlockStore (packed blocks/<id> objects, #1414).
+// The remote s3/memory backends still implement Store, but only behind the
+// migration-only remote.LegacyCASStore path used to read and purge legacy
+// standalone cas/<hash> objects during the one-shot cas→blocks migration
+// (#1493). New production code must not depend on remote backends implementing
+// this interface.
+//
 // Implementations
 //   - pkg/block/local/fs.FSStore (also implements BlockStoreAppend)
-//   - pkg/block/remote/s3.Store
-//   - pkg/block/remote/memory.Store
+//   - pkg/block/remote/s3.Store, pkg/block/remote/memory.Store (legacy-CAS only)
 //
 // All methods take ctx context.Context as the first argument and MUST
 // honor cancellation. All hash arguments are the full 32-byte
-// ContentHash; backends translate to their on-disk / on-wire key shape
-// (cas/{hh}/{hh}/{hex} for fs/s3) internally.
+// ContentHash; backends translate to their storage-native location
+// (log-blob index entry, in-memory map, …) internally.
 type Store interface {
 	// Put writes data under the key derived from hash. Put is
 	// idempotent: a second Put with the same hash and identical bytes

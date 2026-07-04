@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"iter"
 	"os"
 	"path/filepath"
@@ -17,10 +16,10 @@ import (
 // This file lands the BlockStore + BlockStoreAppend method surface on
 // *FSStore. Each method delegates to the existing
 // chunkstore.go primitives (StoreChunk / ReadChunk / HasChunk /
-// DeleteChunk / chunkPath) — there is no new on-disk layout introduced
-// here. The CAS chunk store under <baseDir>/blocks/<hh>/<hh>/<hex>
-// already implements the byte-level contract; this file is a thin
-// adapter that matches the unified interface signatures.
+// DeleteChunk) — there is no new on-disk layout introduced here. The
+// log-blob substrate + LocalChunkIndex already implement the byte-level
+// contract; this file is a thin adapter that matches the unified interface
+// signatures.
 
 // Put writes data under the key derived from hash. Idempotent on
 // (hash, identical bytes) — same as StoreChunk.
@@ -68,57 +67,31 @@ func (bc *FSStore) GetRange(ctx context.Context, hash block.ContentHash, offset,
 	if length <= 0 {
 		return nil, fmt.Errorf("blockstore.fs: GetRange: %w: length %d", block.ErrInvalidSize, length)
 	}
-	// Log-blob path: index hit -> read a clipped sub-range from the blob.
-	if bc.localChunkIndex != nil {
-		loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, hash)
-		if err != nil {
-			return nil, fmt.Errorf("blockstore.fs: GetRange: get local location: %w", err)
-		}
-		if ok {
-			if offset >= loc.RawLength {
-				return nil, fmt.Errorf("blockstore.fs: GetRange: offset %d beyond size %d", offset, loc.RawLength)
-			}
-			if offset+length > loc.RawLength {
-				length = loc.RawLength - offset
-			}
-			sub := block.LocalChunkLocation{
-				LogBlobID: loc.LogBlobID,
-				RawOffset: loc.RawOffset + offset,
-				RawLength: length,
-			}
-			buf := make([]byte, length)
-			n, rerr := bc.logBlob.ReadAt(ctx, sub, buf)
-			if rerr != nil {
-				return nil, fmt.Errorf("blockstore.fs: GetRange: logblob read: %w", rerr)
-			}
-			return buf[:n], nil
-		}
-	}
-	path := bc.chunkPath(hash)
-	f, err := os.Open(path)
+	// Index hit -> read a clipped sub-range from the log-blob substrate.
+	loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, hash)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, block.ErrChunkNotFound
-		}
-		return nil, fmt.Errorf("blockstore.fs: GetRange: open: %w", err)
+		return nil, fmt.Errorf("blockstore.fs: GetRange: get local location: %w", err)
 	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("blockstore.fs: GetRange: stat: %w", err)
+	if !ok {
+		return nil, block.ErrChunkNotFound
 	}
-	if offset >= info.Size() {
-		return nil, fmt.Errorf("blockstore.fs: GetRange: offset %d beyond size %d", offset, info.Size())
+	if offset >= loc.RawLength {
+		return nil, fmt.Errorf("blockstore.fs: GetRange: offset %d beyond size %d", offset, loc.RawLength)
 	}
-	// Clamp to remaining bytes.
-	if offset+length > info.Size() {
-		length = info.Size() - offset
+	if offset+length > loc.RawLength {
+		length = loc.RawLength - offset
+	}
+	sub := block.LocalChunkLocation{
+		LogBlobID: loc.LogBlobID,
+		RawOffset: loc.RawOffset + offset,
+		RawLength: length,
 	}
 	buf := make([]byte, length)
-	if _, err := f.ReadAt(buf, offset); err != nil && err != io.EOF {
-		return nil, fmt.Errorf("blockstore.fs: GetRange: read: %w", err)
+	n, rerr := bc.logBlob.ReadAt(ctx, sub, buf)
+	if rerr != nil {
+		return nil, fmt.Errorf("blockstore.fs: GetRange: logblob read: %w", rerr)
 	}
-	return buf, nil
+	return buf[:n], nil
 }
 
 // Has reports whether the store currently holds an object addressed by
@@ -148,31 +121,18 @@ func (bc *FSStore) Head(ctx context.Context, hash block.ContentHash) (block.Meta
 	if err := ctx.Err(); err != nil {
 		return block.Meta{}, err
 	}
-	// Log-blob path: index hit -> Size from the recorded location, mtime from
-	// the blobs directory (per-chunk timestamps are not tracked).
-	if bc.localChunkIndex != nil {
-		loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, hash)
-		if err != nil {
-			return block.Meta{}, fmt.Errorf("blockstore.fs: Head: get local location: %w", err)
-		}
-		if ok {
-			return block.Meta{
-				Size:         loc.RawLength,
-				LastModified: bc.blobsModTime(),
-			}, nil
-		}
-	}
-	path := bc.chunkPath(hash)
-	info, err := os.Stat(path)
+	// Index hit -> Size from the recorded location, mtime from the blobs
+	// directory (per-chunk timestamps are not tracked).
+	loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, hash)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return block.Meta{}, block.ErrChunkNotFound
-		}
-		return block.Meta{}, fmt.Errorf("blockstore.fs: Head: stat: %w", err)
+		return block.Meta{}, fmt.Errorf("blockstore.fs: Head: get local location: %w", err)
+	}
+	if !ok {
+		return block.Meta{}, block.ErrChunkNotFound
 	}
 	return block.Meta{
-		Size:         info.Size(),
-		LastModified: info.ModTime(),
+		Size:         loc.RawLength,
+		LastModified: bc.blobsModTime(),
 	}, nil
 }
 

@@ -29,7 +29,7 @@ type fakeCoordinator struct {
 
 type persistCall struct {
 	payloadID string
-	blocks    []block.BlockRef
+	blocks    []block.ChunkRef
 	objectID  block.ObjectID
 }
 
@@ -54,19 +54,19 @@ func (f *fakeCoordinator) DecrementRefCountAndReap(_ context.Context, payloadID 
 	return 0, nil
 }
 
-func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string, blocks []block.BlockRef, objectID block.ObjectID) error {
+func (f *fakeCoordinator) PersistFileChunks(_ context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
 	f.persistCalls = append(f.persistCalls, persistCall{payloadID: payloadID, blocks: blocks, objectID: objectID})
 	return nil
 }
 
-func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.BlockRef, error) {
+func (f *fakeCoordinator) GetPersistedBlocks(_ context.Context, _ string) ([]block.ChunkRef, error) {
 	return nil, nil
 }
 
 // FindByObjectID stub. Adapter-common tests don't exercise short-circuit
 // lookups (those live in pkg/block/engine and pkg/metadata/storetest);
 // satisfy the interface so the fake satisfies engine.MetadataCoordinator.
-func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.BlockRef, error) {
+func (f *fakeCoordinator) FindByObjectID(_ context.Context, _ block.ObjectID) ([]block.ChunkRef, error) {
 	return nil, nil
 }
 
@@ -80,7 +80,7 @@ func (f *fakeCoordinator) GetFileObjectID(_ context.Context, _ string) (block.Ob
 
 // putTestFile creates a file with the given Blocks list in the metadata
 // store and returns its handle. Used to seed src/dst before CopyPayload.
-func putTestFile(t *testing.T, ms metadata.Store, path string, payloadID metadata.PayloadID, blocks []block.BlockRef, size uint64) metadata.FileHandle {
+func putTestFile(t *testing.T, ms metadata.Store, path string, payloadID metadata.PayloadID, blocks []block.ChunkRef, size uint64) metadata.FileHandle {
 	t.Helper()
 	ctx := context.Background()
 
@@ -119,9 +119,9 @@ func putTestFile(t *testing.T, ms metadata.Store, path string, payloadID metadat
 	return handle
 }
 
-// TestCopyPayload_AtomicSuccess seeds src with 3 distinct BlockRefs and
+// TestCopyPayload_AtomicSuccess seeds src with 3 distinct ChunkRefs and
 // asserts:
-//   - dst's FileAttr.Blocks matches src's BlockRefs
+//   - dst's FileAttr.Blocks matches src's ChunkRefs
 //   - each unique hash got exactly one IncrementRefCount call
 //   - PutFile(dst) was invoked through the metadataStore (visible via
 //     a GetFile call after the helper returns)
@@ -132,8 +132,8 @@ func TestCopyPayload_AtomicSuccess(t *testing.T) {
 	coord := &fakeCoordinator{}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	// Seed src with 3 distinct BlockRefs.
-	srcBlocks := []block.BlockRef{
+	// Seed src with 3 distinct ChunkRefs.
+	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
 		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},
 		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 4096},
@@ -155,7 +155,7 @@ func TestCopyPayload_AtomicSuccess(t *testing.T) {
 		t.Fatalf("got %d IncrementRefCount calls, want 3", len(coord.incrementCalls))
 	}
 
-	// dst persisted with src's BlockRefs and src's Size.
+	// dst persisted with src's ChunkRefs and src's Size.
 	dstFile, err := ms.GetFile(ctx, dstHandle)
 	if err != nil {
 		t.Fatalf("GetFile(dst) after CopyPayload failed: %v", err)
@@ -206,7 +206,7 @@ func TestCopyPayload_RollsBackOnIncrementError(t *testing.T) {
 	}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	srcBlocks := []block.BlockRef{
+	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0x01}, Offset: 0, Size: 4096},
 		{Hash: block.ContentHash{0x02}, Offset: 4096, Size: 4096},
 		{Hash: block.ContentHash{0x03}, Offset: 8192, Size: 4096},
@@ -288,7 +288,7 @@ func TestCopyPayload_NilCacheTolerated(t *testing.T) {
 	coord := &fakeCoordinator{}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	srcBlocks := []block.BlockRef{
+	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0xAA}, Offset: 0, Size: 4096},
 	}
 	srcHandle := putTestFile(t, ms, "/src3.bin", "src3-pid", srcBlocks, 4096)
@@ -311,7 +311,7 @@ func TestCopyPayload_CtimeUpdated(t *testing.T) {
 	coord := &fakeCoordinator{}
 	bs := newCopyTestEngineWithMS(t, coord, ms)
 
-	srcBlocks := []block.BlockRef{
+	srcBlocks := []block.ChunkRef{
 		{Hash: block.ContentHash{0xCC}, Offset: 0, Size: 4096},
 	}
 	srcHandle := putTestFile(t, ms, "/ctime-src.bin", "ctime-src-pid", srcBlocks, 4096)
@@ -361,7 +361,8 @@ func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatam
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{})
+	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{
+		LocalChunkIndex: ms})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions failed: %v", err)
 	}

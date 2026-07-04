@@ -69,7 +69,7 @@ func TestCreateSnapshot_PointInTimeConsistency(t *testing.T) {
 			default:
 			}
 			name := fmt.Sprintf("hot-%d.bin", i%8)
-			// Vary chunk count so multi-chunk files churn their BlockRef
+			// Vary chunk count so multi-chunk files churn their ChunkRef
 			// list — the torn-file failure mode #811 describes.
 			chunks := 2 + (i % 5)
 			if err := fx.tryPutMultiChunkFile(ctx, name, chunks); err != nil {
@@ -126,7 +126,7 @@ func TestCreateSnapshot_PointInTimeConsistency(t *testing.T) {
 //   - manifest carries a hash no restored file references => phantom hold
 //
 // It also verifies that every regular file in the restored dump is whole:
-// its BlockRefs tile [0, size) contiguously with no gap or overlap (a torn
+// its ChunkRefs tile [0, size) contiguously with no gap or overlap (a torn
 // multi-chunk file would fail this).
 func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.Snapshot, n int) {
 	t.Helper()
@@ -149,7 +149,7 @@ func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.
 
 	// Intrinsic hash set of the restored image: re-run Backup on the
 	// restored store (to a discard sink) and take the HashSet it derives
-	// from the restored files' BlockRefs. This is backend-agnostic and
+	// from the restored files' ChunkRefs. This is backend-agnostic and
 	// uses the same extraction path the manifest was built from.
 	dumpHashes, err := restored.WriteSnapshot(context.Background(), io.Discard)
 	if err != nil {
@@ -188,12 +188,12 @@ func (f *realBackupFixture) assertSnapshotConsistent(t *testing.T, snap *models.
 	})
 
 	// Whole-file check: walk every regular file in the restored image and
-	// confirm its BlockRefs tile [0, size) with no gap/overlap.
+	// confirm its ChunkRefs tile [0, size) with no gap/overlap.
 	f.assertNoTornFiles(t, restored, n)
 }
 
 // assertNoTornFiles walks the share's directory tree in the restored store
-// and verifies each regular file's BlockRefs form a contiguous,
+// and verifies each regular file's ChunkRefs form a contiguous,
 // non-overlapping tiling of [0, size).
 func (f *realBackupFixture) assertNoTornFiles(t *testing.T, store metadata.Store, n int) {
 	t.Helper()
@@ -287,7 +287,6 @@ func newRealBackupFixture(t *testing.T) *realBackupFixture {
 	innerRemote := remotememory.New()
 	t.Cleanup(func() { _ = innerRemote.Close() })
 	syncer := engine.NewSyncer(localStore, innerRemote, mem, engine.SyncerConfig{
-		ParallelUploads:   1,
 		ParallelDownloads: 1,
 	})
 	bs, err := engine.New(engine.BlockStoreConfig{
@@ -346,7 +345,7 @@ func (f *realBackupFixture) putMultiChunkFile(ctx context.Context, name string, 
 
 // tryPutMultiChunkFile is the goroutine-safe variant: it returns errors
 // instead of calling t.Fatalf (forbidden off the test goroutine). Each
-// chunk gets a freshly minted unique hash so the file's BlockRef list is a
+// chunk gets a freshly minted unique hash so the file's ChunkRef list is a
 // genuine multi-chunk tiling.
 func (f *realBackupFixture) tryPutMultiChunkFile(ctx context.Context, name string, chunks int) error {
 	root, err := f.mem.GetRootHandle(ctx, f.shareName)
@@ -375,10 +374,10 @@ func (f *realBackupFixture) tryPutMultiChunkFile(ctx context.Context, name strin
 	}
 
 	const chunkSize = uint32(1 << 20)
-	blocks := make([]block.BlockRef, chunks)
+	blocks := make([]block.ChunkRef, chunks)
 	for i := 0; i < chunks; i++ {
 		ctr := atomic.AddUint64(&f.hctr, 1)
-		blocks[i] = block.BlockRef{
+		blocks[i] = block.ChunkRef{
 			Hash:   mintHash(ctr),
 			Offset: uint64(i) * uint64(chunkSize),
 			Size:   chunkSize,
