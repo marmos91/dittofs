@@ -440,6 +440,20 @@ func (n *nonClosingRemote) WalkBlocks(ctx context.Context, fn func(blockID strin
 	return rbs.WalkBlocks(ctx, fn)
 }
 
+// ReadChunk delegates the remote.ChunkReader capability (#1414) to the wrapped
+// store. The syncer's read path type-asserts ChunkReader on ITS remote — this
+// wrapper — to serve a chunk whose only copy lives inside a packed block.
+// Without this forward every cold read of a packed chunk (local copy lost:
+// restart, eviction, torn tail) on a production share failed with
+// ErrChunkReadUnsupported instead of recovering from the remote block.
+func (n *nonClosingRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
+	cr, ok := n.RemoteStore.(remote.ChunkReader)
+	if !ok {
+		return nil, remote.ErrChunkReadUnsupported
+	}
+	return cr.ReadChunk(ctx, blockID, offset, length, hash)
+}
+
 // Service manages share registration, lookup, and configuration.
 type Service struct {
 	mu       sync.RWMutex
@@ -924,10 +938,11 @@ func (s *Service) createBlockStoreForShare(
 	}
 
 	// Wire the block-carve substrate (#1414 object packing, PR3 global flip).
-	// Assert on the RAW remoteStore, not engineRemote: the nonClosingRemote
-	// wrapper embeds only remote.RemoteStore and deliberately does NOT proxy the
-	// block-keyed PutBlock/GetBlock/DeleteBlock/WalkBlocks surface, so a
-	// type-assert on the wrapper would always miss. Every shipped remote (memory,
+	// Assert on the RAW remoteStore, not engineRemote: the carver holds its own
+	// dedicated RemoteBlockStore reference, so wiring it straight to the
+	// underlying store skips the no-op-Close wrapper's per-call forwarding hop.
+	// (The wrapper does forward the block-keyed surface + ReadChunk these days,
+	// so this is conventional rather than required.) Every shipped remote (memory,
 	// s3) implements RemoteBlockStore, so this flips carve on for EVERY share
 	// with a remote — no feature flag. SetSyncedHashStore (called by engine.New
 	// below) derives the blockCommitter from the same per-share metadata store

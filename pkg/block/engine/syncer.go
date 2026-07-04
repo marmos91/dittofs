@@ -1199,11 +1199,16 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	// Adaptive mode only: launch the goodput controller that resizes the
 	// upload window to saturate the uplink (#1407). Pinned --parallel-uploads
 	// leaves uploadController nil and keeps the fixed window — publish that
-	// fixed window once so the gauge reflects it instead of reading 0.
+	// fixed window once so the gauge reflects it instead of reading 0, and
+	// launch the metrics-only goodput publisher (the adaptive tick, which
+	// normally publishes goodput, does not run in pinned mode).
 	if m.uploadController != nil {
 		go m.runUploadController(ctx, uploadControlInterval)
-	} else if mx := m.dataplaneMetrics(); mx != nil {
-		mx.SetUploadWindow(m.uploadLimiter.Limit())
+	} else {
+		if mx := m.dataplaneMetrics(); mx != nil {
+			mx.SetUploadWindow(m.uploadLimiter.Limit())
+		}
+		go m.runPinnedGoodputPublisher(ctx, uploadControlInterval)
 	}
 }
 
@@ -1253,6 +1258,33 @@ func (m *Syncer) runUploadController(ctx context.Context, interval time.Duration
 	}
 }
 
+// runPinnedGoodputPublisher is the metrics-only counterpart of
+// runUploadController for pinned --parallel-uploads mode, where no adaptive
+// tick runs and the delivered-goodput gauge would otherwise stay dead. Every
+// interval it converts the bytes uploaded since the last tick into a goodput
+// sample and publishes it. It makes no control decisions and touches no
+// window state; uploadedBytesWindow has no other consumer in pinned mode, so
+// the Swap cannot starve anything.
+func (m *Syncer) runPinnedGoodputPublisher(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+		}
+
+		bytes := m.uploadedBytesWindow.Swap(0)
+		if mx := m.dataplaneMetrics(); mx != nil {
+			mx.SetUploadGoodput(float64(bytes) / interval.Seconds())
+		}
+	}
+}
+
 // adaptiveUploadTick performs one control step: it converts the bytes uploaded
 // since the last tick into a goodput sample, feeds it (with the interval's
 // error flag) to the goodput controller, and applies the resulting window to
@@ -1271,6 +1303,11 @@ func (m *Syncer) adaptiveUploadTick(interval time.Duration) (window int, goodput
 	curWindow := m.uploadLimiter.Limit()
 
 	if bytes == 0 && inflight == 0 && !sawErr {
+		// Idle interval: no control decision, but publish the honest zero so
+		// the goodput gauge does not freeze at the last active sample.
+		if mx := m.dataplaneMetrics(); mx != nil {
+			mx.SetUploadGoodput(0)
+		}
 		return curWindow, 0, inflight, false, false
 	}
 
@@ -1280,6 +1317,7 @@ func (m *Syncer) adaptiveUploadTick(interval time.Duration) (window int, goodput
 	m.uploadLimiter.SetLimit(window)
 	if mx := m.dataplaneMetrics(); mx != nil {
 		mx.SetUploadWindow(window)
+		mx.SetUploadGoodput(goodput)
 	}
 	return window, goodput, inflight, sawErr, true
 }
