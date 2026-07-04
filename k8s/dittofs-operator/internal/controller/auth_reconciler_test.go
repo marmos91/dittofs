@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // newTestDittoServer creates a DittoServer for auth reconciler tests.
@@ -108,7 +110,7 @@ func TestProvisionOperatorAccount_Success(t *testing.T) {
 	// Create admin credentials Secret
 	adminSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      ds.GetAdminCredentialsSecretName(),
+			Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
@@ -253,7 +255,7 @@ func TestProvisionOperatorAccount_UserAlreadyExists(t *testing.T) {
 
 	adminSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      ds.GetAdminCredentialsSecretName(),
+			Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
@@ -345,7 +347,7 @@ func TestReconcileAuth_DBReset_ReprovisionsAuthenticatableSecret(t *testing.T) {
 
 	adminSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      ds.GetAdminCredentialsSecretName(),
+			Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
@@ -558,7 +560,7 @@ func TestReconcileAuth_APIUnreachable(t *testing.T) {
 
 	adminSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      ds.GetAdminCredentialsSecretName(),
+			Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
@@ -608,7 +610,7 @@ func TestReconcileAuth_APIUnreachable(t *testing.T) {
 	stillExists := &corev1.Secret{}
 	err = r.Get(context.Background(), types.NamespacedName{
 		Namespace: "default",
-		Name:      ds.GetAdminCredentialsSecretName(),
+		Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 	}, stillExists)
 	if err != nil {
 		t.Errorf("Admin credentials Secret should still exist after transient failure: %v", err)
@@ -620,7 +622,7 @@ func TestCleanupOperatorServiceAccount_BestEffort(t *testing.T) {
 
 	adminSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      ds.GetAdminCredentialsSecretName(),
+			Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
@@ -653,7 +655,7 @@ func TestReconcileAdminCredentials_AutoGenerate(t *testing.T) {
 	secret := &corev1.Secret{}
 	err = r.Get(context.Background(), types.NamespacedName{
 		Namespace: "default",
-		Name:      ds.GetAdminCredentialsSecretName(),
+		Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 	}, secret)
 	if err != nil {
 		t.Fatalf("Failed to get admin credentials secret: %v", err)
@@ -677,7 +679,7 @@ func TestReconcileAdminCredentials_AutoGenerate(t *testing.T) {
 	secret2 := &corev1.Secret{}
 	err = r.Get(context.Background(), types.NamespacedName{
 		Namespace: "default",
-		Name:      ds.GetAdminCredentialsSecretName(),
+		Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 	}, secret2)
 	if err != nil {
 		t.Fatalf("Failed to get admin credentials secret (second call): %v", err)
@@ -711,7 +713,7 @@ func TestReconcileAdminCredentials_SkipWhenUserProvided(t *testing.T) {
 	secret := &corev1.Secret{}
 	err = r.Get(context.Background(), types.NamespacedName{
 		Namespace: "default",
-		Name:      ds.GetAdminCredentialsSecretName(),
+		Name:      ds.GetAdminBootstrapCredentialsSecretName(),
 	}, secret)
 	if err == nil {
 		t.Errorf("Admin credentials Secret should NOT be created when user provides passwordSecretRef")
@@ -747,5 +749,135 @@ func TestComputeBackoff_NegativeRetry(t *testing.T) {
 	result := computeBackoff(-1)
 	if result != 2*time.Second {
 		t.Errorf("computeBackoff(-1) = %v, want %v", result, 2*time.Second)
+	}
+}
+
+// TestReconcileAdminCredentials_MigratesLegacySecret verifies the #1412 rename
+// migration: when only the pre-rename bootstrap Secret exists, the operator
+// adopts its password under the new name (generating a fresh one would diverge
+// from the already-bootstrapped server and lock out operator provisioning) and
+// garbage-collects the legacy Secret.
+func TestReconcileAdminCredentials_MigratesLegacySecret(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+
+	legacy := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ds.GetLegacyAdminCredentialsSecretName(),
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("preserved-bootstrap-pass"),
+		},
+	}
+	r := setupAuthReconciler(t, ds, legacy)
+
+	if err := r.reconcileAdminCredentials(context.Background(), ds); err != nil {
+		t.Fatalf("reconcileAdminCredentials failed: %v", err)
+	}
+
+	newSecret := &corev1.Secret{}
+	if err := r.Get(context.Background(), types.NamespacedName{
+		Namespace: "default",
+		Name:      ds.GetAdminBootstrapCredentialsSecretName(),
+	}, newSecret); err != nil {
+		t.Fatalf("renamed bootstrap secret not created: %v", err)
+	}
+	if got := string(newSecret.Data["password"]); got != "preserved-bootstrap-pass" {
+		t.Errorf("migrated password = %q, want the legacy value preserved", got)
+	}
+
+	old := &corev1.Secret{}
+	err := r.Get(context.Background(), types.NamespacedName{
+		Namespace: "default",
+		Name:      ds.GetLegacyAdminCredentialsSecretName(),
+	}, old)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("legacy secret should be deleted after migration, got err=%v", err)
+	}
+}
+
+// TestProvisionOperatorAccount_StaleAdminPassword_EmitsActionableEvent verifies
+// the #1413 mitigation: a rejected admin login during provisioning emits an
+// actionable AdminBootstrapUnauthorized event instead of an opaque 401.
+func TestProvisionOperatorAccount_StaleAdminPassword_EmitsActionableEvent(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+	adminSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ds.GetAdminBootstrapCredentialsSecretName(),
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			"username": []byte("admin"),
+			"password": []byte("stale-pass"),
+		},
+	}
+	r := setupAuthReconciler(t, ds, adminSecret)
+
+	server := mockDittoFSServer(t, map[string]http.HandlerFunc{
+		"POST /api/v1/auth/login": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"title":"invalid credentials"}`))
+		},
+	})
+
+	if _, err := r.provisionOperatorAccount(context.Background(), ds, server.URL); err == nil {
+		t.Fatal("expected error when admin login is rejected")
+	}
+
+	rec := r.Recorder.(*record.FakeRecorder)
+	select {
+	case ev := <-rec.Events:
+		if !strings.Contains(ev, "AdminBootstrapUnauthorized") {
+			t.Errorf("event = %q, want it to mention AdminBootstrapUnauthorized", ev)
+		}
+	default:
+		t.Error("expected a Warning event on rejected admin login, got none")
+	}
+}
+
+// TestReconcileAdminCredentials_LegacyReadError_AbortsWithoutRegenerating checks
+// the anti-lockout invariant: a transient (non-NotFound) failure reading the
+// legacy bootstrap Secret must abort the reconcile for retry, NOT be treated as
+// "no legacy Secret" and fall through to generating a fresh, diverging password.
+func TestReconcileAdminCredentials_LegacyReadError_AbortsWithoutRegenerating(t *testing.T) {
+	ds := newTestDittoServer("test-server", "default")
+	legacyName := ds.GetLegacyAdminCredentialsSecretName()
+
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatalf("failed to add core scheme: %v", err)
+	}
+	if err := dittoiov1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("failed to add v1alpha1 scheme: %v", err)
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(s).
+		WithRuntimeObjects(ds).
+		WithStatusSubresource(&dittoiov1alpha1.DittoServer{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if key.Name == legacyName {
+					return apierrors.NewServiceUnavailable("apiserver busy")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+
+	r := &DittoServerReconciler{Client: fakeClient, Scheme: s, Recorder: record.NewFakeRecorder(100)}
+
+	if err := r.reconcileAdminCredentials(context.Background(), ds); err == nil {
+		t.Fatal("expected reconcile to abort on legacy secret read error, got nil (would regenerate a diverging password)")
+	}
+
+	newSecret := &corev1.Secret{}
+	err := r.Get(context.Background(), types.NamespacedName{
+		Namespace: "default",
+		Name:      ds.GetAdminBootstrapCredentialsSecretName(),
+	}, newSecret)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("bootstrap secret must not be created on legacy read error, got err=%v data=%v", err, newSecret.Data)
 	}
 }
