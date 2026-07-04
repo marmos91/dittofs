@@ -1450,6 +1450,36 @@ func (s *Service) RemoveShare(name string) error {
 	return errors.Join(errs...)
 }
 
+// StopRollups stops and drains the rollup worker pool of every registered
+// share's block store. The runtime calls this during shutdown BEFORE it closes
+// the metadata stores (#1543): the rollup ticker persists FileChunk manifests
+// and rollup offsets through the metadata store, so it must be fenced first or
+// an in-flight rollup races the DB close ("sql: database is closed") and can
+// drop a local chunk that was never mirrored.
+//
+// Best-effort — a per-share drain error is logged, not propagated, so one share
+// cannot block the rest of shutdown. Drains run outside the registry lock (a
+// drain can block up to the store's grace window). The block stores stay OPEN;
+// their full teardown still happens in RemoveShare.
+func (s *Service) StopRollups() {
+	s.mu.RLock()
+	stores := make([]*engine.Store, 0, len(s.registry))
+	for _, share := range s.registry {
+		if share.BlockStore != nil {
+			stores = append(stores, share.BlockStore)
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, bs := range stores {
+		// grace 0 defers to the store's default drain window, matching Close.
+		if err := bs.StopRollup(0); err != nil {
+			logger.Warn("StopRollups: rollup drain incomplete for a share; remaining rollups resume on restart",
+				"error", err)
+		}
+	}
+}
+
 func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -263,7 +263,13 @@ func (r *Runtime) SetShutdownTimeout(d time.Duration) {
 //     use-after-close.
 //  2. StopAllAdapters — adapters no longer accept new RPCs. Existing
 //     in-flight RPCs fail naturally (no waiters left to receive them).
-//  3. CloseMetadataStores — now safe; nothing holds open references.
+//  3. StopRollups — fence every share's rollup worker pool (#1543). The
+//     rollup ticker persists FileChunk manifests + rollup offsets through the
+//     metadata store; if the store's DB closes while a rollup is in flight it
+//     fails with "sql: database is closed" and can drop a local chunk that was
+//     never mirrored. Draining here (metadata still open) closes that race.
+//     Block stores stay open — their full teardown is RemoveShare's job.
+//  4. CloseMetadataStores — now safe; nothing holds open references.
 //
 // Idempotent: a second call is a no-op (runtimeCancel is already
 // triggered, adapters and storesSvc handle re-close internally).
@@ -305,6 +311,11 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		// close still must run so file handles are released.
 		logger.Warn("Runtime.Shutdown: StopAllAdapters error", "error", err)
 	}
+	// Fence the per-share rollup workers BEFORE closing the metadata stores
+	// (#1543): the rollup ticker writes FileChunk manifests + rollup offsets
+	// through the metadata store, so an in-flight rollup must be drained while
+	// the DB is still open or it races the close.
+	r.sharesSvc.StopRollups()
 	r.CloseMetadataStores()
 	return nil
 }
@@ -761,8 +772,15 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		logger.Error("restore recovery returned error (continuing startup)", "error", err)
 	}
 
-	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store, r)
+	return r.lifecycleSvc.Serve(ctx, r.settingsWatcher, r.adaptersSvc, r.metadataService, r.storesSvc, r.store, r, r)
 }
+
+// StopRollups stops + drains every share's block-store rollup worker pool.
+// Exposed for the lifecycle.Service shutdown sequence (#1543) so the normal
+// server path (signal -> ctx cancel -> lifecycle.shutdown) fences the rollup
+// ticker BEFORE CloseMetadataStores — otherwise an in-flight rollup races the
+// metadata-store close and fails with "sql: database is closed".
+func (r *Runtime) StopRollups() { r.sharesSvc.StopRollups() }
 
 // ShutdownSnapshots exposes shutdownSnapshots for the lifecycle.Service
 // shutdown sequence so the normal server path (signal -> ctx cancel ->

@@ -49,6 +49,19 @@ type SnapshotDrainer interface {
 	ShutdownSnapshots(ctx context.Context)
 }
 
+// RollupStopper stops + drains every share's block-store rollup worker pool.
+// Threaded through Serve so the normal server shutdown path (signal -> ctx
+// cancel -> lifecycle.shutdown) fences the rollup ticker BEFORE
+// CloseMetadataStores (#1543): the ticker persists FileChunk manifests and
+// rollup offsets through the metadata store, so closing the DB with a rollup in
+// flight races it and fails with "sql: database is closed", which can drop a
+// local chunk that was never mirrored. Called AFTER StopAllAdapters (no new
+// writes create fresh rollup work) and BEFORE the stores close. Pass nil to
+// skip (tests without a block-store rollup pool).
+type RollupStopper interface {
+	StopRollups()
+}
+
 // MachineSIDStore provides access to the SettingsStore for machine SID
 // persistence. The lifecycle service uses this to load or generate the
 // machine SID on first boot, ensuring consistent identity mapping across
@@ -222,12 +235,13 @@ func (s *Service) Serve(
 	storeCloser StoreCloser,
 	machineSIDStore MachineSIDStore,
 	snapshotDrainer SnapshotDrainer,
+	rollupStopper RollupStopper,
 ) error {
 	var err error
 
 	s.serveOnce.Do(func() {
 		s.served = true
-		err = s.serve(ctx, settings, adapterLoader, metadataFlusher, storeCloser, machineSIDStore, snapshotDrainer)
+		err = s.serve(ctx, settings, adapterLoader, metadataFlusher, storeCloser, machineSIDStore, snapshotDrainer, rollupStopper)
 	})
 
 	return err
@@ -241,6 +255,7 @@ func (s *Service) serve(
 	storeCloser StoreCloser,
 	machineSIDStore MachineSIDStore,
 	snapshotDrainer SnapshotDrainer,
+	rollupStopper RollupStopper,
 ) error {
 	logger.Info("Starting DittoFS runtime")
 
@@ -281,7 +296,7 @@ func (s *Service) serve(
 		shutdownErr = fmt.Errorf("API server error: %w", err)
 	}
 
-	s.shutdown(settings, adapterLoader, metadataFlusher, storeCloser, snapshotDrainer)
+	s.shutdown(settings, adapterLoader, metadataFlusher, storeCloser, snapshotDrainer, rollupStopper)
 
 	logger.Info("DittoFS runtime stopped")
 	return shutdownErr
@@ -293,6 +308,7 @@ func (s *Service) shutdown(
 	metadataFlusher MetadataFlusher,
 	storeCloser StoreCloser,
 	snapshotDrainer SnapshotDrainer,
+	rollupStopper RollupStopper,
 ) {
 	if settings != nil {
 		settings.Stop()
@@ -323,6 +339,15 @@ func (s *Service) shutdown(
 		} else if flushed > 0 {
 			logger.Info("Flushed pending metadata writes", "count", flushed)
 		}
+	}
+
+	// Fence the per-share rollup workers BEFORE closing the metadata stores
+	// (#1543): the rollup ticker persists FileChunk manifests + rollup offsets
+	// through the metadata store, so an in-flight rollup must be drained while
+	// the DB is still open or it races the close ("sql: database is closed").
+	// Runs after StopAllAdapters (no new writes create fresh rollup work).
+	if rollupStopper != nil {
+		rollupStopper.StopRollups()
 	}
 
 	if storeCloser != nil {
