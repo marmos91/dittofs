@@ -226,6 +226,51 @@ func (s *PostgresMetadataStore) DeleteLocalLocation(ctx context.Context, hash bl
 	})
 }
 
+// WalkLocalLocations calls fn for every stored content-hash -> log-blob
+// location. Read-only; deliberately NOT part of the LocalChunkIndex interface —
+// the local block store discovers it via a narrow consumer-side interface to
+// re-seed crash-stranded unsynced logblob chunks on restart (Walk / ListUnsynced).
+func (s *PostgresMetadataStore) WalkLocalLocations(ctx context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rows, err := s.query(ctx,
+		`SELECT hash, log_blob_id, raw_offset, raw_length FROM local_chunk_index`)
+	if err != nil {
+		return fmt.Errorf("postgres WalkLocalLocations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		// The local chunk index can be very large (one row per unique chunk),
+		// so re-check cancellation per row to stay responsive during a full walk.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var (
+			hashRaw   []byte
+			logBlobID string
+			rawOffset int64
+			rawLength int64
+		)
+		if err := rows.Scan(&hashRaw, &logBlobID, &rawOffset, &rawLength); err != nil {
+			return fmt.Errorf("postgres WalkLocalLocations scan: %w", err)
+		}
+		if len(hashRaw) != len(block.ContentHash{}) {
+			return fmt.Errorf("postgres WalkLocalLocations: malformed hash length %d", len(hashRaw))
+		}
+		var h block.ContentHash
+		copy(h[:], hashRaw)
+		if err := fn(h, block.LocalChunkLocation{
+			LogBlobID: logBlobID,
+			RawOffset: rawOffset,
+			RawLength: rawLength,
+		}); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // ============================================================================
 // CommitBlock
 // ============================================================================

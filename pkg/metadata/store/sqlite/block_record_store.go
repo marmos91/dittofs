@@ -173,6 +173,38 @@ func (s *SQLiteMetadataStore) DeleteLocalLocation(ctx context.Context, hash bloc
 	return nil
 }
 
+// WalkLocalLocations calls fn for every stored content-hash -> log-blob
+// location. Read-only; deliberately NOT part of the LocalChunkIndex interface —
+// the local block store discovers it via a narrow consumer-side interface to
+// re-seed crash-stranded unsynced logblob chunks on restart (Walk / ListUnsynced).
+// Streams rows on the pool path, mirroring WalkBlockRecords.
+func (s *SQLiteMetadataStore) WalkLocalLocations(ctx context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rows, err := s.query(ctx,
+		`SELECT hash, log_blob_id, raw_offset, raw_length FROM local_chunk_index`)
+	if err != nil {
+		return fmt.Errorf("sqlite local_chunk_index walk: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		// The local chunk index can be very large (one row per unique chunk),
+		// so re-check cancellation per row to stay responsive during a full walk.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		h, loc, err := scanLocalLocationRow(rows)
+		if err != nil {
+			return fmt.Errorf("sqlite local_chunk_index walk scan: %w", err)
+		}
+		if err := fn(h, loc); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
 // ============================================================================
 // CommitBlock (store-level, delegates to DefaultCommitBlock)
 // ============================================================================
@@ -398,6 +430,30 @@ func scanBlockRecordRow(rows scanRows) (block.BlockRecord, bool, error) {
 		LiveChunkCount: liveCount,
 		SyncState:      block.BlockState(syncState),
 	}, true, nil
+}
+
+// scanLocalLocationRow scans a streaming Rows cursor (from WalkLocalLocations),
+// including the hash key column. The caller drives rows.Next().
+func scanLocalLocationRow(rows scanRows) (block.ContentHash, block.LocalChunkLocation, error) {
+	var (
+		hashRaw   []byte
+		logBlobID string
+		rawOffset int64
+		rawLength int64
+	)
+	if err := rows.Scan(&hashRaw, &logBlobID, &rawOffset, &rawLength); err != nil {
+		return block.ContentHash{}, block.LocalChunkLocation{}, err
+	}
+	if len(hashRaw) != len(block.ContentHash{}) {
+		return block.ContentHash{}, block.LocalChunkLocation{}, fmt.Errorf("sqlite scanLocalLocationRow: malformed hash length %d", len(hashRaw))
+	}
+	var h block.ContentHash
+	copy(h[:], hashRaw)
+	return h, block.LocalChunkLocation{
+		LogBlobID: logBlobID,
+		RawOffset: rawOffset,
+		RawLength: rawLength,
+	}, nil
 }
 
 // scanLocalLocation scans a single-row query result into a LocalChunkLocation.
