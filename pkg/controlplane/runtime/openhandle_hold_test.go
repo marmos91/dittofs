@@ -172,6 +172,40 @@ func TestOpenHandleHold_EnumeratorErrorFailsClosed(t *testing.T) {
 	require.ErrorIs(t, err, boom)
 }
 
+// TestOpenHandleHold_CanceledContextStopsEarly verifies that a canceled GC
+// pass aborts the open-handle enumeration promptly and propagates the context
+// error, instead of iterating every open handle after cancellation.
+func TestOpenHandleHold_CanceledContextStopsEarly(t *testing.T) {
+	rt, store := newOpenHoldRuntime(t, "share")
+	// An open-unlinked file that would otherwise be held.
+	fh := openHoldPutFile(t, store, "share", "/scratch.bin", 0, "p1", []block.BlockRef{
+		{Hash: hashAll(0x77), Offset: 0, Size: 64},
+	})
+	rt.SetAdapterProvider("test_open_files", &fakeOpenFileSource{handles: [][]byte{fh}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	p := &openHandleHoldProvider{rt: rt, shares: map[string]struct{}{"share": {}}}
+	emitted := 0
+	err := p.HeldHashes(ctx, "remote-1", nil, func(block.ContentHash) error {
+		emitted++
+		return nil
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, emitted, "a canceled pass must not emit held hashes")
+}
+
+// TestGetMetadataStoreForShare_UnknownShareIsErrShareNotFound guards the
+// linchpin the open-handle hold relies on: a share removed mid-scan surfaces
+// as an ErrShareNotFound-wrapped error, so forEachOpenUnlinkedFile can skip it
+// rather than fail the whole GC pass closed.
+func TestGetMetadataStoreForShare_UnknownShareIsErrShareNotFound(t *testing.T) {
+	rt, _ := newOpenHoldRuntime(t, "share")
+	_, err := rt.GetMetadataStoreForShare("ghost")
+	require.ErrorIs(t, err, shares.ErrShareNotFound)
+}
+
 // TestOpenHandleHold_GCHoldForRemoteCombines verifies the combined provider
 // wired into the GC options includes the open-handle contribution.
 func TestOpenHandleHold_GCHoldForRemoteCombines(t *testing.T) {
