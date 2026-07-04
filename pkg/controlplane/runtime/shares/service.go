@@ -1154,8 +1154,21 @@ func (s *Service) RebindShareBlockStore(
 			return fmt.Errorf("rebind failed for share %q and previous binding could not be restored (%v); share needs a restart: %w", name, recErr, buildErr)
 		}
 		// Previous binding restored. Swap it in and drop the original remote ref
-		// (the recovery rebuild acquired its own).
+		// (the recovery rebuild acquired its own) — but only if the share is
+		// still registered; a concurrent RemoveShare would already have released
+		// oldRemoteConfigID, so releasing it again here underflows the ref-count.
 		s.mu.Lock()
+		if cur, ok := s.registry[name]; !ok || cur != share {
+			s.mu.Unlock()
+			if closeErr := recovered.BlockStore.Close(); closeErr != nil {
+				logger.Warn("rebind: failed to close recovered block store after concurrent share removal",
+					"share", name, "error", closeErr)
+			}
+			if recovered.remoteConfigID != "" {
+				s.releaseRemoteStore(recovered.remoteConfigID)
+			}
+			return fmt.Errorf("share %q was removed during rebind (new binding also failed: %v)", name, buildErr)
+		}
 		share.BlockStore = recovered.BlockStore
 		share.remoteConfigID = recovered.remoteConfigID
 		share.gcStateRoot = recovered.gcStateRoot
@@ -1167,8 +1180,26 @@ func (s *Service) RebindShareBlockStore(
 		return fmt.Errorf("failed to rebind block store for share %q (previous binding restored): %w", name, buildErr)
 	}
 
-	// Swap the new store into the registry.
+	// Swap the new store into the registry, but only if the share is still
+	// registered under the same pointer. A concurrent RemoveShare (which does
+	// not take rebindMu) can delete it and release oldRemoteConfigID while we
+	// rebuild; swapping into the stale pointer and releasing the old ref again
+	// would double-decrement the shared remote ref-count and could close a
+	// remote store still used by other shares.
 	s.mu.Lock()
+	if cur, ok := s.registry[name]; !ok || cur != share {
+		s.mu.Unlock()
+		// Share removed during rebind. Tear down the store we just built and
+		// drop its own remote ref; leave the old ref to RemoveShare.
+		if closeErr := rebuilt.BlockStore.Close(); closeErr != nil {
+			logger.Warn("rebind: failed to close new block store after concurrent share removal",
+				"share", name, "error", closeErr)
+		}
+		if rebuilt.remoteConfigID != "" {
+			s.releaseRemoteStore(rebuilt.remoteConfigID)
+		}
+		return fmt.Errorf("share %q was removed during rebind", name)
+	}
 	share.BlockStore = rebuilt.BlockStore
 	share.remoteConfigID = rebuilt.remoteConfigID
 	share.gcStateRoot = rebuilt.gcStateRoot

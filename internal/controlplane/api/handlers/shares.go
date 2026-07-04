@@ -922,7 +922,7 @@ func (h *ShareHandler) Update(w http.ResponseWriter, r *http.Request) {
 			logger.Error("Failed to hot-reload share block store after binding change; a restart is required",
 				"share", share.Name, "error", err)
 			updateWarnings = append(updateWarnings,
-				"block store binding changed but live reload failed ("+err.Error()+"); a server restart is required for the change to take effect")
+				"block store binding changed but live reload failed; a server restart is required for the change to take effect")
 		} else {
 			logger.Info("Share block store rebound live after binding change",
 				"share", share.Name,

@@ -501,7 +501,7 @@ func (r *Runtime) RebindShareBlockStore(ctx context.Context, name, oldLocalBlock
 	}
 	newCfg, err := buildShareConfig(ctx, r.store, shareModel)
 	if err != nil {
-		return err
+		return fmt.Errorf("rebind: failed to build share config for %q: %w", name, err)
 	}
 	if newCfg == nil {
 		return fmt.Errorf("rebind: share %q references an unknown metadata store", name)

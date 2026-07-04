@@ -285,7 +285,10 @@ func TestRebindShareBlockStore_Live(t *testing.T) {
 	}
 
 	// The rebuilt store is still usable after all the swaps.
-	shareObj, _ := rt.GetShare("/reb")
+	shareObj, err := rt.GetShare("/reb")
+	if err != nil {
+		t.Fatalf("GetShare after rebind: %v", err)
+	}
 	if _, err := shareObj.BlockStore.WriteAt(ctx, "payload", nil, []byte("ok"), 0); err != nil {
 		t.Fatalf("WriteAt after rebind: %v", err)
 	}
