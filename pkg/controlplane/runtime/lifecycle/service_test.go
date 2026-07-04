@@ -78,6 +78,21 @@ type fakeDrainer struct{ drained bool }
 
 func (f *fakeDrainer) ShutdownSnapshots(ctx context.Context) { f.drained = true }
 
+// fakeRollupStopper records whether StopRollups ran and, via the shared closer,
+// that it ran BEFORE the metadata stores were closed (#1543 ordering).
+type fakeRollupStopper struct {
+	stopped       bool
+	closedAtStop  bool
+	closerToCheck *fakeStoreCloser
+}
+
+func (f *fakeRollupStopper) StopRollups(ctx context.Context) {
+	f.stopped = true
+	if f.closerToCheck != nil {
+		f.closedAtStop = f.closerToCheck.closed
+	}
+}
+
 type fakeAPIServer struct {
 	port     int
 	stopped  bool
@@ -129,7 +144,7 @@ func TestSetAPIServerPanicsAfterServe(t *testing.T) {
 	s := New(time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Serve returns immediately on cancelled ctx
-	_ = s.Serve(ctx, nil, &fakeAdapters{}, nil, nil, nil, nil)
+	_ = s.Serve(ctx, nil, &fakeAdapters{}, nil, nil, nil, nil, nil)
 
 	defer func() {
 		if recover() == nil {
@@ -148,11 +163,12 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	flusher := &fakeFlusher{n: 3}
 	closer := &fakeStoreCloser{}
 	drainer := &fakeDrainer{}
+	rollups := &fakeRollupStopper{closerToCheck: closer}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := s.Serve(ctx, settings, adapters, flusher, closer, nil, drainer)
+	err := s.Serve(ctx, settings, adapters, flusher, closer, nil, drainer, rollups)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v, want context.Canceled", err)
 	}
@@ -174,6 +190,14 @@ func TestServeGracefulShutdownOnCancel(t *testing.T) {
 	if !closer.closed {
 		t.Error("metadata stores not closed")
 	}
+	if !rollups.stopped {
+		t.Error("rollup stopper not invoked")
+	}
+	// #1543: rollups MUST be fenced before the metadata stores close, or an
+	// in-flight rollup races the DB close ("sql: database is closed").
+	if rollups.closedAtStop {
+		t.Error("StopRollups ran AFTER CloseMetadataStores — rollup ticker can race the DB close")
+	}
 }
 
 // A failure loading adapters aborts Serve before entering the select loop and
@@ -185,7 +209,7 @@ func TestServeAdapterLoadFailure(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := s.Serve(ctx, nil, adapters, nil, closer, nil, nil)
+	err := s.Serve(ctx, nil, adapters, nil, closer, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected error from adapter load failure")
 	}
@@ -207,7 +231,7 @@ func TestServeAPIServerFailureTriggersShutdown(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := s.Serve(ctx, nil, &fakeAdapters{}, nil, closer, nil, nil)
+	err := s.Serve(ctx, nil, &fakeAdapters{}, nil, closer, nil, nil, nil)
 	if err == nil || !errors.Is(err, api.startErr) {
 		t.Errorf("err = %v, want wrapped %v", err, api.startErr)
 	}
@@ -225,10 +249,10 @@ func TestServeOnlyRunsOnce(t *testing.T) {
 	adapters := &fakeAdapters{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_ = s.Serve(ctx, nil, adapters, nil, nil, nil, nil)
+	_ = s.Serve(ctx, nil, adapters, nil, nil, nil, nil, nil)
 
 	second := &fakeAdapters{}
-	if err := s.Serve(ctx, nil, second, nil, nil, nil, nil); err != nil {
+	if err := s.Serve(ctx, nil, second, nil, nil, nil, nil, nil); err != nil {
 		t.Errorf("second Serve = %v, want nil", err)
 	}
 	if second.loaded {

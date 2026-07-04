@@ -1450,6 +1450,55 @@ func (s *Service) RemoveShare(name string) error {
 	return errors.Join(errs...)
 }
 
+// StopRollups stops and drains the rollup worker pool of every registered
+// share's block store. The runtime calls this during shutdown BEFORE it closes
+// the metadata stores (#1543): the rollup ticker persists FileChunk manifests
+// and rollup offsets through the metadata store, so it must be fenced first or
+// an in-flight rollup races the DB close ("sql: database is closed") and can
+// drop a local chunk that was never mirrored.
+//
+// The ctx bounds the TOTAL drain time (an overall deadline): each store is
+// given the time remaining until ctx's deadline as its grace, so shutdown stays
+// bounded regardless of share count. Once the budget is spent the worker-pool
+// fence still runs (that is the load-bearing part — it stops the ticker); only
+// the best-effort drain is skipped, and those intervals resume on restart.
+//
+// Best-effort — a per-share drain error is logged, not propagated, so one share
+// cannot block the rest of shutdown. Drains run outside the registry lock (a
+// drain can block up to its grace window). The block stores stay OPEN; their
+// full teardown still happens in RemoveShare.
+func (s *Service) StopRollups(ctx context.Context) {
+	type namedStore struct {
+		name string
+		bs   *engine.Store
+	}
+	s.mu.RLock()
+	stores := make([]namedStore, 0, len(s.registry))
+	for name, share := range s.registry {
+		if share.BlockStore != nil {
+			stores = append(stores, namedStore{name: name, bs: share.BlockStore})
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, ns := range stores {
+		// grace = time left until the shared deadline (overall bound). No
+		// deadline → 0, which defers to the store's default. Budget already
+		// spent → a 1ms floor so we still fence the pool without reviving the
+		// 30s default that GracefulStopRollup applies to grace <= 0.
+		grace := time.Duration(0)
+		if dl, ok := ctx.Deadline(); ok {
+			if grace = time.Until(dl); grace <= 0 {
+				grace = time.Millisecond
+			}
+		}
+		if err := ns.bs.StopRollup(grace); err != nil {
+			logger.Warn("Failed to stop rollup for share; remaining rollups resume on restart",
+				"share", ns.name, "error", err)
+		}
+	}
+}
+
 func (s *Service) UpdateShare(name string, readOnly *bool, defaultPermission *string, retentionPolicy *block.RetentionPolicy, retentionTTL *time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

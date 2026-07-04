@@ -714,6 +714,34 @@ func (bs *Store) Close() error {
 	return bs.closeErr
 }
 
+// rollupStopper is the narrow, consumer-defined capability a local store
+// exposes to stop + drain its rollup worker pool WITHOUT a full Close. Only
+// *fs.FSStore implements it (memory stores have no rollup pool), so absence is
+// a benign no-op.
+type rollupStopper interface {
+	GracefulStopRollup(grace time.Duration) error
+}
+
+// StopRollup stops and drains the local store's rollup worker pool, if it has
+// one, using the given grace deadline (grace <= 0 defers to the store default).
+//
+// This is the shutdown-ordering fence for #1543. The rollup ticker persists
+// FileChunk manifest rows and rollup offsets THROUGH the metadata store, so it
+// must be quiesced BEFORE the runtime closes the metadata stores — otherwise an
+// in-flight rollup races the DB close and fails with "sql: database is closed",
+// which can leave a chunk dropped locally but never mirrored to the remote.
+//
+// The block store itself stays open (fds intact); the full teardown still
+// happens in the engine Close driven by RemoveShare. Idempotent: the underlying
+// GracefulStopRollup guards with stopRollupOnce, so the later Close is a no-op.
+func (bs *Store) StopRollup(grace time.Duration) error {
+	rs, ok := bs.local.(rollupStopper)
+	if !ok {
+		return nil
+	}
+	return rs.GracefulStopRollup(grace)
+}
+
 // SetMetrics forwards the inline metrics recorder to the underlying local
 // store when it participates in the [local.MetricsAware] capability surface
 // (the *fs.FSStore eviction/backpressure path). Stores that emit no inline
