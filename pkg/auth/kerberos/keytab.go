@@ -3,6 +3,8 @@ package kerberos
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -156,18 +158,46 @@ func resolveServicePrincipal(configPrincipal string) string {
 	return configPrincipal
 }
 
-// resolveKrb5ConfPath resolves the krb5.conf path with environment variable override.
+// resolveKrb5ConfPath resolves the krb5.conf path.
 //
 // Resolution order (highest priority first):
-//  1. DITTOFS_KERBEROS_KRB5CONF env var
-//  2. configPath from configuration file
-//  3. Default: /etc/krb5.conf
+//  1. DITTOFS_KERBEROS_KRB5CONF env var (explicit DittoFS override)
+//  2. configPath from the identity provider / config file (krb5_conf)
+//  3. KRB5_CONFIG env var (standard MIT Kerberos convention)
+//  4. Platform default: %ProgramData%\MIT\Kerberos5\krb5.ini on Windows,
+//     /etc/krb5.conf elsewhere.
 func resolveKrb5ConfPath(configPath string) string {
 	if envPath := os.Getenv("DITTOFS_KERBEROS_KRB5CONF"); envPath != "" {
 		return envPath
 	}
 	if configPath != "" {
 		return configPath
+	}
+	// KRB5_CONFIG (MIT convention) may be a path list of multiple config files
+	// separated by os.PathListSeparator (':' on Unix, ';' on Windows). gokrb5
+	// loads a single file, so use the first non-empty entry.
+	if envPath := os.Getenv("KRB5_CONFIG"); envPath != "" {
+		for _, p := range strings.Split(envPath, string(os.PathListSeparator)) {
+			if p != "" {
+				return p
+			}
+		}
+	}
+	return defaultKrb5ConfPath(runtime.GOOS, os.Getenv("ProgramData"))
+}
+
+// defaultKrb5ConfPath returns the platform-appropriate default krb5.conf path.
+//
+// Split out from resolveKrb5ConfPath so the OS-specific branching is unit
+// testable without depending on the host platform. The Windows path is built
+// with literal backslashes (not filepath.Join) so it is deterministic when
+// exercised from a non-Windows host.
+func defaultKrb5ConfPath(goos, programData string) string {
+	if goos == "windows" {
+		if programData == "" {
+			programData = `C:\ProgramData`
+		}
+		return programData + `\MIT\Kerberos5\krb5.ini`
 	}
 	return "/etc/krb5.conf"
 }
