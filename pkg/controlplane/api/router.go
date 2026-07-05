@@ -326,7 +326,7 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				// Zero-ref record reclaim (#1493 PR5b): deletes class-1 orphans
 				// and frees their remote objects. Mutating, so POST; dry_run
 				// previews.
-				r.Post("/reconcile/zero-ref-records", blockGCHandler.ReconcileReclaimZeroRef)
+				r.Post("/reconcile/reclaim", blockGCHandler.ReconcileReclaim)
 			})
 
 			// Store management (admin only)

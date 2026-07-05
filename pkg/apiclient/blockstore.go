@@ -206,17 +206,18 @@ func (c *Client) BlockStoreReconcileReport() (*engine.ReconcileReport, error) {
 	return getResource[engine.ReconcileReport](c, "/api/v1/blockstore/reconcile-report")
 }
 
-// BlockStoreReclaimZeroRefRequest is the request body for the zero-ref reclaim.
-type BlockStoreReclaimZeroRefRequest struct {
+// BlockStoreReclaimRequest is the request body for the reclaim endpoint.
+type BlockStoreReclaimRequest struct {
 	DryRun bool `json:"dry_run,omitempty"`
 }
 
-// BlockStoreReclaimZeroRef deletes class-1 orphans server-wide (block records
-// with a zero live chunk count and no live locator) and frees their remote
-// objects, returning the engine.ReclaimReport tally. Server-wide, admin-only.
-// Set DryRun to preview the set without deleting (#1493/#1525 PR5b).
-func (c *Client) BlockStoreReclaimZeroRef(req *BlockStoreReclaimZeroRefRequest) (*engine.ReclaimReport, error) {
-	return createResource[engine.ReclaimReport](c, "/api/v1/blockstore/reconcile/zero-ref-records", req)
+// BlockStoreReclaim deletes orphaned block storage server-wide — class-1 zero-ref
+// and class-2 leaked block records (with their remote objects) plus class-3
+// record-less remote objects past the grace window — returning the
+// engine.ReclaimReport tally. Server-wide, admin-only. Set DryRun to preview the
+// set without deleting (#1493/#1525 PR5b+PR5c).
+func (c *Client) BlockStoreReclaim(req *BlockStoreReclaimRequest) (*engine.ReclaimReport, error) {
+	return createResource[engine.ReclaimReport](c, "/api/v1/blockstore/reconcile/reclaim", req)
 }
 
 // BlockStoreAuditResult is the response body for

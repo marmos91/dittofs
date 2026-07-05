@@ -11,16 +11,24 @@ import (
 	"github.com/marmos91/dittofs/pkg/apiclient"
 )
 
-// reclaimCmd deletes class-1 orphans (zero-ref block records) across all
-// remote-backed shares. It is the first deleting stage after `reconcile`.
+// reclaimCmd deletes orphaned block storage (zero-ref + leaked records and
+// record-less remote objects) across all remote-backed shares. It is the deleting
+// counterpart to `reconcile`.
 var reclaimCmd = &cobra.Command{
 	Use:   "reclaim",
-	Short: "Reclaim zero-ref block records (deletes; use --dry-run to preview)",
-	Long: `Delete class-1 orphaned block records across every remote-backed share and
-free their remote objects. A zero-ref record has no live locator and a zero live
-chunk count — left behind by a crash between decrementing the count and deleting
-the record. Such a record is terminally dead, so reclaiming it is safe with no
-grace window.
+	Short: "Reclaim orphaned block storage (deletes; use --dry-run to preview)",
+	Long: `Delete orphaned block storage across every remote-backed share:
+
+  - zero-ref records: no live locator and a zero live chunk count (a crash
+    between decrementing the count and deleting the record);
+  - leaked records: no live locator but a stale non-zero count, left behind
+    when a block re-carve moved the hash without decrementing the old block;
+  - record-less remote objects: an uploaded block with no backing record,
+    older than the grace window (a commit that never landed).
+
+A record with no live locator is terminally dead — block IDs are never reused —
+so reclaiming records needs no grace window. Only record-less objects use one, to
+spare an upload whose commit may still be in flight.
 
 This DELETES. Run 'dfsctl store block reconcile' first to review what exists, or
 pass --dry-run here to preview the exact set this command would delete without
@@ -30,7 +38,7 @@ Examples:
   # Preview what would be reclaimed
   dfsctl store block reclaim --dry-run
 
-  # Reclaim zero-ref records
+  # Reclaim orphaned block storage
   dfsctl store block reclaim
 
   # As JSON for scripting
@@ -54,9 +62,9 @@ func runBlockStoreReclaim(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	report, err := client.BlockStoreReclaimZeroRef(&apiclient.BlockStoreReclaimZeroRefRequest{DryRun: dryRun})
+	report, err := client.BlockStoreReclaim(&apiclient.BlockStoreReclaimRequest{DryRun: dryRun})
 	if err != nil {
-		return fmt.Errorf("failed to reclaim zero-ref records: %w", err)
+		return fmt.Errorf("failed to reclaim orphaned block storage: %w", err)
 	}
 
 	format, err := cmdutil.GetOutputFormatParsed()
@@ -75,15 +83,20 @@ func runBlockStoreReclaim(cmd *cobra.Command, args []string) error {
 			verb = "Would reclaim"
 		}
 		pairs := [][2]string{
-			{verb, classSummary(report.Reclaimed)},
+			{verb + " zero-ref records", classSummary(report.Reclaimed)},
+			{verb + " leaked records", classSummary(report.LeakedReclaimed)},
+			{verb + " orphan objects", classSummary(report.OrphanObjectsReclaimed)},
 			{"Block records scanned", fmt.Sprintf("%d", report.BlockRecordsScanned)},
+			{"Remote objects scanned", fmt.Sprintf("%d", report.RemoteObjectsScanned)},
 			{"Errors", fmt.Sprintf("%d", report.Errors)},
 			{"Dry run", fmt.Sprintf("%t", report.DryRun)},
 		}
 		if err := output.SimpleTable(os.Stdout, pairs); err != nil {
 			return err
 		}
-		printSample(os.Stdout, verb, report.Reclaimed)
+		printSample(os.Stdout, verb+" zero-ref", report.Reclaimed)
+		printSample(os.Stdout, verb+" leaked", report.LeakedReclaimed)
+		printSample(os.Stdout, verb+" orphan object", report.OrphanObjectsReclaimed)
 		return nil
 	}
 }

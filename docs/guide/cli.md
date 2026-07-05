@@ -652,7 +652,7 @@ Global flags:
         - [`dfsctl store block local edit`](#dfsctl-store-block-local-edit) — Edit a local block store
         - [`dfsctl store block local list`](#dfsctl-store-block-local-list) — List local block stores
         - [`dfsctl store block local remove`](#dfsctl-store-block-local-remove) — Remove a local block store
-      - [`dfsctl store block reclaim`](#dfsctl-store-block-reclaim) — Reclaim zero-ref block records (deletes; use --dry-run to preview)
+      - [`dfsctl store block reclaim`](#dfsctl-store-block-reclaim) — Reclaim orphaned block storage (deletes; use --dry-run to preview)
       - [`dfsctl store block reconcile`](#dfsctl-store-block-reconcile) — Report orphaned block storage (read-only; no deletes)
       - [`dfsctl store block remote`](#dfsctl-store-block-remote) — Remote block store management
         - [`dfsctl store block remote add`](#dfsctl-store-block-remote-add) — Add a remote block store
@@ -5961,13 +5961,22 @@ Global flags:
 
 ### `dfsctl store block reclaim`
 
-Reclaim zero-ref block records (deletes; use --dry-run to preview)
+Reclaim orphaned block storage (deletes; use --dry-run to preview)
 
-Delete class-1 orphaned block records across every remote-backed share and
-free their remote objects. A zero-ref record has no live locator and a zero live
-chunk count — left behind by a crash between decrementing the count and deleting
-the record. Such a record is terminally dead, so reclaiming it is safe with no
-grace window.
+Delete orphaned block storage across every remote-backed share:
+
+```
+- zero-ref records: no live locator and a zero live chunk count (a crash
+  between decrementing the count and deleting the record);
+- leaked records: no live locator but a stale non-zero count, left behind
+  when a block re-carve moved the hash without decrementing the old block;
+- record-less remote objects: an uploaded block with no backing record,
+  older than the grace window (a commit that never landed).
+```
+
+A record with no live locator is terminally dead — block IDs are never reused —
+so reclaiming records needs no grace window. Only record-less objects use one, to
+spare an upload whose commit may still be in flight.
 
 This DELETES. Run 'dfsctl store block reconcile' first to review what exists, or
 pass --dry-run here to preview the exact set this command would delete without
@@ -5983,7 +5992,7 @@ dfsctl store block reclaim [flags]
 # Preview what would be reclaimed
 dfsctl store block reclaim --dry-run
 
-# Reclaim zero-ref records
+# Reclaim orphaned block storage
 dfsctl store block reclaim
 
 # As JSON for scripting
