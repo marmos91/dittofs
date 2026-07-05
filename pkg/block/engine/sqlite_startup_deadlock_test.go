@@ -110,6 +110,22 @@ func seedSyncedMarkers(t *testing.T, st *sqlite.SQLiteMetadataStore, blockID str
 	return hashes
 }
 
+// seedLiveAndOrphan seeds 8 block-resident synced markers plus two block
+// records: blk-live (still referenced by those markers) and blk-orphan
+// (zero-ref, no live locator), so the reporter/reclaimer classifies real data
+// rather than scanning an empty view.
+func seedLiveAndOrphan(t *testing.T, st *sqlite.SQLiteMetadataStore) {
+	t.Helper()
+	ctx := context.Background()
+	seedSyncedMarkers(t, st, "blk-live", 8)
+	if err := st.PutBlockRecord(ctx, block.BlockRecord{BlockID: "blk-live", Length: 128, LiveChunkCount: 8, SyncState: block.BlockStateRemote}); err != nil {
+		t.Fatalf("PutBlockRecord(live): %v", err)
+	}
+	if err := st.PutBlockRecord(ctx, block.BlockRecord{BlockID: "blk-orphan", Length: 64, LiveChunkCount: 0, SyncState: block.BlockStateRemote}); err != nil {
+		t.Fatalf("PutBlockRecord(orphan): %v", err)
+	}
+}
+
 // TestSQLiteStartup_LegacyCASMigration_NoDeadlock drives the real block engine's
 // Store.Start against a sqlite-backed SyncedHashStore. Start runs the one-shot
 // legacy-CAS migration (migrateLegacyCASRemote) synchronously — the exact path
@@ -147,18 +163,7 @@ func TestSQLiteStartup_LegacyCASMigration_NoDeadlock(t *testing.T) {
 // locator; on the single-connection pool a nested resolve would deadlock.
 func TestSQLiteReconcile_NoDeadlock(t *testing.T) {
 	st := newSQLiteStoreForDeadlockTest(t)
-	ctx := context.Background()
-	seedSyncedMarkers(t, st, "blk-live", 8)
-
-	// A healthy record (still referenced by a live locator) and an orphan record
-	// (zero-ref, no live locator) so the reporter classifies real data, not just
-	// an empty scan.
-	if err := st.PutBlockRecord(ctx, block.BlockRecord{BlockID: "blk-live", Length: 128, LiveChunkCount: 8, SyncState: block.BlockStateRemote}); err != nil {
-		t.Fatalf("PutBlockRecord(live): %v", err)
-	}
-	if err := st.PutBlockRecord(ctx, block.BlockRecord{BlockID: "blk-orphan", Length: 64, LiveChunkCount: 0, SyncState: block.BlockStateRemote}); err != nil {
-		t.Fatalf("PutBlockRecord(orphan): %v", err)
-	}
+	seedLiveAndOrphan(t, st)
 
 	var rep ReconcileReport
 	runBounded(t, "Reconcile", func(ctx context.Context) error {
@@ -181,15 +186,7 @@ func TestSQLiteReconcile_NoDeadlock(t *testing.T) {
 // candidate set — the same single-connection nested-query hazard.
 func TestSQLiteReclaimRecords_NoDeadlock(t *testing.T) {
 	st := newSQLiteStoreForDeadlockTest(t)
-	ctx := context.Background()
-	seedSyncedMarkers(t, st, "blk-live", 8)
-
-	if err := st.PutBlockRecord(ctx, block.BlockRecord{BlockID: "blk-live", Length: 128, LiveChunkCount: 8, SyncState: block.BlockStateRemote}); err != nil {
-		t.Fatalf("PutBlockRecord(live): %v", err)
-	}
-	if err := st.PutBlockRecord(ctx, block.BlockRecord{BlockID: "blk-orphan", Length: 64, LiveChunkCount: 0, SyncState: block.BlockStateRemote}); err != nil {
-		t.Fatalf("PutBlockRecord(orphan): %v", err)
-	}
+	seedLiveAndOrphan(t, st)
 
 	var rep ReclaimReport
 	runBounded(t, "ReclaimRecords", func(ctx context.Context) error {
