@@ -239,11 +239,7 @@ func compactOneBlock(
 	// Select the chunks still live in THIS block: a synced locator that still
 	// points here. Dropped: dead chunks (marker cleared by the sweep) and any
 	// already moved to another block (locator points elsewhere — re-run).
-	type moved struct {
-		hash block.ContentHash
-		wire []byte
-	}
-	moveable := make([]moved, 0, len(records))
+	moveable := make([]blockcodec.Record, 0, len(records))
 	for _, r := range records {
 		loc, ok, err := v.GetLocator(ctx, r.Hash)
 		if err != nil {
@@ -252,7 +248,7 @@ func compactOneBlock(
 			return
 		}
 		if ok && loc.BlockID == blockID {
-			moveable = append(moveable, moved{hash: r.Hash, wire: data[r.WireOffset : r.WireOffset+r.WireLength]})
+			moveable = append(moveable, r)
 		}
 	}
 
@@ -291,16 +287,16 @@ func compactOneBlock(
 		return
 	}
 	commits := make([]block.BlockChunkCommit, 0, len(moveable))
-	for _, mv := range moveable {
-		loc, err := builder.Add(mv.hash, mv.wire)
+	for _, r := range moveable {
+		loc, err := builder.Add(r.Hash, data[r.WireOffset:r.WireOffset+r.WireLength])
 		if err != nil {
-			slog.Warn("compaction: frame chunk failed — skipping block", "block_id", blockID, "hash", mv.hash.String(), "err", err)
+			slog.Warn("compaction: frame chunk failed — skipping block", "block_id", blockID, "hash", r.Hash.String(), "err", err)
 			report.Errors++
 			return
 		}
 		// Local left zero: the bytes are read from remote and the chunk's local
 		// index entry (if any) already points at its log blob and is unchanged.
-		commits = append(commits, block.BlockChunkCommit{Hash: mv.hash, Remote: loc})
+		commits = append(commits, block.BlockChunkCommit{Hash: r.Hash, Remote: loc})
 	}
 	if _, err := builder.Finish(); err != nil {
 		slog.Warn("compaction: finish block failed — skipping", "block_id", blockID, "err", err)
