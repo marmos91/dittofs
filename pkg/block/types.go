@@ -273,18 +273,6 @@ type FileChunk struct {
 	State BlockState `json:"state"`
 }
 
-// NewFileChunk creates a new pending FileChunk with the given ID and local path.
-func NewFileChunk(id string, localPath string) *FileChunk {
-	now := time.Now()
-	return &FileChunk{
-		ID:         id,
-		LocalPath:  localPath,
-		RefCount:   1,
-		LastAccess: now,
-		CreatedAt:  now,
-	}
-}
-
 // IsRemote returns true if the chunk has been synced to the remote block store.
 // Dual-read fallback: legacy zero-valued rows (State==Pending) that
 // already carry a BlockStoreKey were uploaded under the legacy non-CAS path

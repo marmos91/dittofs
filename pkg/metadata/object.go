@@ -52,9 +52,6 @@ const (
 // Type alias to block.FileChunk -- all definitions live in pkg/block.
 type FileChunk = block.FileChunk
 
-// NewFileChunk creates a new pending FileChunk with the given ID and cache path.
-var NewFileChunk = block.NewFileChunk
-
 // ============================================================================
 // Errors (re-exported from blockstore for backward compatibility)
 // ============================================================================
