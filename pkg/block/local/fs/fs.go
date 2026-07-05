@@ -123,7 +123,7 @@ var (
 )
 
 // ObjectIDPersister is invoked after a rollup quiesces successfully.
-// It receives the payloadID, the BlockRef manifest collected during
+// It receives the payloadID, the ChunkRef manifest collected during
 // chunking, and the computed ObjectID. Implementations typically
 // delegate to a metadata coordinator's PersistFileChunks. The
 // callback is optional; when nil, ObjectID compute still runs but
@@ -447,7 +447,7 @@ type FSStore struct {
 	syncedHashStore metadata.SyncedHashStore
 
 	// objectIDPersister is invoked after a rollup quiesces successfully.
-	// rollupFile passes the chunker's accumulated BlockRef manifest and
+	// rollupFile passes the chunker's accumulated ChunkRef manifest and
 	// the BLAKE3 Merkle-root ObjectID derived from it. Nil-valued on
 	// local-only / no-engine fixtures; in that case ObjectID compute
 	// still runs but the persist step is skipped harmlessly.
@@ -1010,7 +1010,7 @@ type FSStoreOptions struct {
 	// Production wires the metadata store, which implements this interface.
 	LocalChunkIndex metadata.LocalChunkIndex
 	// ObjectIDPersister is the rollup-completion hook that receives the
-	// BlockRef manifest + computed ObjectID after SetRollupOffset
+	// ChunkRef manifest + computed ObjectID after SetRollupOffset
 	// succeeds. Wire this to the engine coordinator's PersistFileChunks
 	// so local-only and remote-backed shares both materialize ObjectIDs
 	// at rollup time. Nil is accepted: ObjectID is still computed, but
