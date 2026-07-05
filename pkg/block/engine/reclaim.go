@@ -158,17 +158,29 @@ func ReclaimRecords(
 
 		// Any block ID a synced locator still points at is NOT an orphan, whatever
 		// its record's counter says — drop it from the candidate set.
+		//
+		// Collect the hashes first and resolve their locators AFTER the enumerate
+		// cursor closes: the sqlite metadata pool is MaxOpenConns(1), so calling
+		// GetLocator inside the EnumerateSynced callback (while its rows cursor
+		// still holds the only connection) would deadlock waiting for a second.
+		var synced []block.ContentHash
 		if err := v.EnumerateSynced(ctx, func(h block.ContentHash, _ time.Time) error {
+			synced = append(synced, h)
+			return nil
+		}); err != nil {
+			return report, fmt.Errorf("reclaim: enumerate synced: %w", err)
+		}
+		for _, h := range synced {
+			if err := ctx.Err(); err != nil {
+				return report, err
+			}
 			loc, ok, err := v.GetLocator(ctx, h)
 			if err != nil {
-				return err
+				return report, fmt.Errorf("reclaim: get locator: %w", err)
 			}
 			if ok && loc.BlockID != "" {
 				delete(candidates, loc.BlockID)
 			}
-			return nil
-		}); err != nil {
-			return report, fmt.Errorf("reclaim: enumerate synced: %w", err)
 		}
 
 		for blockID, c := range candidates {

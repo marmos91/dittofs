@@ -221,6 +221,66 @@ func (v *raceView) DeleteBlockRecord(_ context.Context, blockID string) error {
 	return nil
 }
 
+// nestedGuardView models the sqlite metadata pool's MaxOpenConns(1) hazard: while
+// an EnumerateSynced cursor is open it holds the only connection, so any query
+// issued from inside the callback (e.g. GetLocator) would block forever waiting
+// for a second. This view fails loudly instead of deadlocking, so the reclaimer
+// must drain EnumerateSynced before resolving locators. blk-leaked has a record
+// with no locator (class 2); blk-live has a record and a locator (must survive).
+type nestedGuardView struct {
+	t           *testing.T
+	inEnumerate bool
+	deleted     []string
+}
+
+func (v *nestedGuardView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, time.Time) error) error {
+	v.inEnumerate = true
+	defer func() { v.inEnumerate = false }()
+	return fn(hashFromString("live-chunk"), time.Time{})
+}
+
+func (v *nestedGuardView) GetLocator(_ context.Context, _ block.ContentHash) (block.ChunkLocator, bool, error) {
+	if v.inEnumerate {
+		v.t.Fatal("GetLocator called while EnumerateSynced cursor is open — deadlocks on sqlite MaxOpenConns(1)")
+	}
+	return block.ChunkLocator{BlockID: "blk-live"}, true, nil
+}
+
+func (v *nestedGuardView) WalkBlockRecords(_ context.Context, fn func(block.BlockRecord) error) error {
+	for _, r := range []block.BlockRecord{
+		{BlockID: "blk-live", Length: 5, LiveChunkCount: 1},
+		{BlockID: "blk-leaked", Length: 7, LiveChunkCount: 3},
+	} {
+		if err := fn(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (v *nestedGuardView) DeleteBlockRecord(_ context.Context, blockID string) error {
+	v.deleted = append(v.deleted, blockID)
+	return nil
+}
+
+// TestReclaimRecords_NoNestedQueryDuringEnumerate guards against re-introducing a
+// GetLocator call inside the EnumerateSynced callback, which deadlocks on the
+// single-connection sqlite pool (found via a real sqlite backend on a live VM).
+func TestReclaimRecords_NoNestedQueryDuringEnumerate(t *testing.T) {
+	v := &nestedGuardView{t: t}
+	rep, err := ReclaimRecords(t.Context(), []ReclaimMetaView{v}, nil, ReclaimOptions{})
+	if err != nil {
+		t.Fatalf("ReclaimRecords: %v", err)
+	}
+	// Only the unreferenced leaked record is reclaimed; the located one survives.
+	if len(v.deleted) != 1 || v.deleted[0] != "blk-leaked" {
+		t.Errorf("deleted = %v; want [blk-leaked]", v.deleted)
+	}
+	if rep.LeakedReclaimed.Count != 1 || rep.Reclaimed.Count != 0 {
+		t.Errorf("tally: leaked=%d zeroRef=%d; want leaked=1 zeroRef=0", rep.LeakedReclaimed.Count, rep.Reclaimed.Count)
+	}
+}
+
 // TestReclaimRecords_CommitDuringScanNotDeleted is the #1525 TOCTOU regression:
 // a block committed while a reclaim is scanning must never be reclaimed.
 func TestReclaimRecords_CommitDuringScanNotDeleted(t *testing.T) {
