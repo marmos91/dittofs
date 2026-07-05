@@ -221,3 +221,43 @@ func (s reconcileState) assertEqual(t *testing.T, other reconcileState) {
 		}
 	}
 }
+
+// nestedGuardMetaView models the sqlite MaxOpenConns(1) hazard: while an
+// EnumerateSynced cursor is open it holds the only connection, so any query from
+// inside the callback (GetLocator) would deadlock. It fails loudly instead, so
+// Reconcile must drain the enumeration before resolving locators.
+type nestedGuardMetaView struct {
+	t           *testing.T
+	inEnumerate bool
+}
+
+func (v *nestedGuardMetaView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, time.Time) error) error {
+	v.inEnumerate = true
+	defer func() { v.inEnumerate = false }()
+	return fn(hashFromString("chunk"), time.Time{})
+}
+
+func (v *nestedGuardMetaView) GetLocator(_ context.Context, _ block.ContentHash) (block.ChunkLocator, bool, error) {
+	if v.inEnumerate {
+		v.t.Fatal("GetLocator called while EnumerateSynced cursor is open — deadlocks on sqlite MaxOpenConns(1)")
+	}
+	return block.ChunkLocator{BlockID: "blk-live"}, true, nil
+}
+
+func (v *nestedGuardMetaView) WalkBlockRecords(_ context.Context, fn func(block.BlockRecord) error) error {
+	return fn(block.BlockRecord{BlockID: "blk-live", Length: 5, LiveChunkCount: 1})
+}
+
+// TestReconcile_NoNestedQueryDuringEnumerate guards the #1552 sqlite deadlock:
+// Reconcile must not call GetLocator inside the EnumerateSynced callback.
+func TestReconcile_NoNestedQueryDuringEnumerate(t *testing.T) {
+	v := &nestedGuardMetaView{t: t}
+	rep, err := Reconcile(t.Context(), []ReconcileMetaView{v}, nil, nil, ReconcileOptions{})
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	// blk-live has a live locator → healthy, not flagged in any class.
+	if rep.ZeroRefRecords.Count != 0 || rep.LeakedBlocks.Count != 0 {
+		t.Errorf("healthy located block misclassified: zeroRef=%d leaked=%d", rep.ZeroRefRecords.Count, rep.LeakedBlocks.Count)
+	}
+}

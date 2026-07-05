@@ -161,18 +161,30 @@ func Reconcile(
 		// refSet: every block ID still pointed at by a live synced locator in
 		// THIS share. Built fully first, then WalkBlockRecords classifies each
 		// record against it.
-		refSet := make(map[string]struct{})
+		//
+		// Drain EnumerateSynced into a slice, THEN resolve locators: the sqlite
+		// pool is MaxOpenConns(1), so calling GetLocator inside the enumerate
+		// callback (cursor still open) would deadlock waiting for a second
+		// connection.
+		var synced []block.ContentHash
 		if err := v.EnumerateSynced(ctx, func(h block.ContentHash, _ time.Time) error {
+			synced = append(synced, h)
+			return nil
+		}); err != nil {
+			return report, fmt.Errorf("reconcile: enumerate synced: %w", err)
+		}
+		refSet := make(map[string]struct{})
+		for _, h := range synced {
+			if err := ctx.Err(); err != nil {
+				return report, err
+			}
 			loc, ok, err := v.GetLocator(ctx, h)
 			if err != nil {
-				return err
+				return report, fmt.Errorf("reconcile: get locator: %w", err)
 			}
 			if ok && loc.BlockID != "" {
 				refSet[loc.BlockID] = struct{}{}
 			}
-			return nil
-		}); err != nil {
-			return report, fmt.Errorf("reconcile: enumerate synced: %w", err)
 		}
 
 		if err := v.WalkBlockRecords(ctx, func(rec block.BlockRecord) error {
