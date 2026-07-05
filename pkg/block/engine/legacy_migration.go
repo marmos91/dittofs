@@ -98,7 +98,19 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 	enum, canEnumerate := shs.(SyncedHashIndex)
 	var standalone []block.ContentHash
 	if canEnumerate {
+		// Drain the enumeration into a slice, THEN resolve locators: the sqlite
+		// metadata pool is MaxOpenConns(1), so calling GetLocator inside the
+		// EnumerateSynced callback (while its cursor still holds the only
+		// connection) deadlocks waiting for a second — which blocks Store.Start
+		// and, via LoadSharesFromStore, the whole server from coming up.
+		var synced []block.ContentHash
 		if err := enum.EnumerateSynced(ctx, func(h block.ContentHash, _ time.Time) error {
+			synced = append(synced, h)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("cas→blocks migration: enumerate synced hashes: %w", err)
+		}
+		for _, h := range synced {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -109,9 +121,6 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 			if ok && loc.BlockID == "" { // standalone locator: pre-flip layout
 				standalone = append(standalone, h)
 			}
-			return nil
-		}); err != nil {
-			return fmt.Errorf("cas→blocks migration: enumerate synced hashes: %w", err)
 		}
 	}
 
