@@ -45,8 +45,9 @@
 // reclaim do) so compaction cannot race a concurrent sweep's DecrLiveChunkCount
 // or DeleteBlock on the same block. An in-flight reader that resolved a locator
 // to the old block before step 2 and issues its GET after step 3 sees a 404.
-// That is NOT data loss only because the read path (fetchResolvedBlock) re-
-// resolves the locator once on ErrChunkNotFound and retries against the moved
+// That is NOT data loss only because the read path (dispatchRemoteFetch, the
+// chokepoint both the client demand read and background prefetch route through)
+// re-resolves the locator once on ErrChunkNotFound and retries against the moved
 // chunk's new block — without that guard this delete would surface a spurious
 // EIO to the client, not the "harmless same-window-as-reclaim" it looks like.
 package engine

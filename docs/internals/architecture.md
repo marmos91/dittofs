@@ -596,7 +596,8 @@ second live-set scan.
 Because compaction rewrites a live chunk's locator to a new block before
 deleting the old one, a reader that resolved the old locator *before* the
 rewrite and issues its `GetBlock` *after* the delete sees a miss. This is safe
-only because the read path (`fetchResolvedBlock`) re-resolves the locator once
+only because the read path (`dispatchRemoteFetch`, the chokepoint both the
+client demand read and background prefetch share) re-resolves the locator once
 on `ErrChunkNotFound` and retries against the moved chunk's new block — without
 that guard the delete would surface a spurious `EIO` for a perfectly live chunk.
 
