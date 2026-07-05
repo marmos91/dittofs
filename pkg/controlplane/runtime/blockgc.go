@@ -152,6 +152,11 @@ func (r *Runtime) runBlockGCSweep(ctx context.Context, sharePrefix string, dryRu
 				"bytesFreed", s.BytesFreed,
 				"errors", s.ErrorCount,
 			)
+			// Compact partially-dead blocks on this remote (#1487) while the
+			// per-remote lock is still held and the sweep has just cleared the
+			// synced markers of past-grace dead chunks. Gated by the operator's
+			// gc.compaction_live_ratio (no-op when unset or on dry-run).
+			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
 		}()
 	}
 	// Sweep the local tier too, so one `gc` invocation reclaims orphaned
@@ -364,6 +369,9 @@ func (r *Runtime) runBlockGCForShare(ctx context.Context, name string, dryRun bo
 				"bytesFreed", s.BytesFreed,
 				"errors", s.ErrorCount,
 			)
+			// Compact partially-dead blocks on this remote (#1487), under the
+			// same per-remote lock and after the sweep. See runBlockGCSweep.
+			r.compactRemoteForEntry(ctx, entry, dryRun, gcDefaults, total)
 		}()
 	}
 	// Sweep this share's local tier too (#1433).
@@ -562,6 +570,63 @@ func (u unionBlockReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Co
 		}
 	}
 	return anyHandled, totalFreed, nil
+}
+
+// compactRemoteForEntry compacts partially-dead blocks on one remote (#1487).
+// It is a no-op unless the operator set gc.compaction_live_ratio > 0, and it is
+// skipped on dry-run (compaction mutates). The caller MUST already hold the
+// per-remote GC lock and MUST call this AFTER the sweep so the sweep has
+// cleared the synced markers of past-grace dead chunks — the signal compaction
+// uses to tell live chunks from dead. Errors are logged; per-block failures are
+// counted in the returned engine report and folded into total.BytesReclaimed.
+func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.RemoteStoreEntry, dryRun bool, gcDefaults *GCDefaults, total *engine.GCStats) {
+	if dryRun || gcDefaults == nil || gcDefaults.CompactionLiveRatio <= 0 {
+		return
+	}
+	rbs, ok := entry.Store.(remote.RemoteBlockStore)
+	if !ok {
+		return // remote cannot hold packed blocks — nothing to compact
+	}
+	var views []engine.CompactMetaView
+	for _, shareName := range entry.Shares {
+		mds, err := r.GetMetadataStoreForShare(shareName)
+		if err != nil {
+			logger.Warn("GC compaction: metadata store unavailable for share — its blocks are not compacted this run",
+				"share", shareName, "err", err)
+			continue
+		}
+		// EnumerateSynced is a concrete backend method, not on metadata.Store —
+		// assert the compaction view like the reconcile/reclaim passes do.
+		if cv, ok := mds.(engine.CompactMetaView); ok {
+			views = append(views, cv)
+		} else {
+			logger.Warn("GC compaction: metadata store does not implement the compaction view — share excluded",
+				"share", shareName)
+		}
+	}
+	if len(views) == 0 {
+		return
+	}
+	rep, err := engine.CompactBlocks(ctx, views, rbs, engine.CompactOptions{LiveRatio: gcDefaults.CompactionLiveRatio})
+	if err != nil {
+		logger.Warn("GC compaction: aborted", "configID", entry.ConfigID, "err", err)
+	}
+	if rep.BlocksCompacted > 0 || rep.Errors > 0 {
+		logger.Info("GC compaction: complete",
+			"configID", entry.ConfigID,
+			"blocksScanned", rep.BlocksScanned,
+			"blocksCompacted", rep.BlocksCompacted,
+			"chunksMoved", rep.ChunksMoved,
+			"bytesReclaimed", rep.BytesReclaimed,
+			"errors", rep.Errors,
+		)
+	}
+	// Fold reclaimed bytes into the run's total so `gc-status` reflects the space
+	// compaction freed alongside the sweep's.
+	total.BytesFreed += rep.BytesReclaimed
+	total.BytesReclaimed += rep.BytesReclaimed
+	total.ErrorCount += int(rep.Errors)
+	total.Errors += int(rep.Errors)
 }
 
 // remoteGCLock returns the per-remote serializing mutex for a remote-store

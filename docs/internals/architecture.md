@@ -553,12 +553,51 @@ each dead chunk is reclaimed by refcount:
    reclaimed: its local blob is evicted, `RemoteBlockStore.DeleteBlock`
    removes the remote object, and the block record is deleted.
 
-A block that still has *any* live chunk is retained — packing never deletes a
-referenced chunk along with its block-mates. Reclamation is **delete-only**:
-GC never rewrites or repacks a surviving block. Runs are **serialized per
-remote** (keyed on remote-store config identity), so the `LiveChunkCount` that
-several shares targeting the same remote share is only ever mutated by one run
-at a time.
+A block that still has *any* live chunk is retained by the refcount pass —
+packing never deletes a referenced chunk along with its block-mates. Runs are
+**serialized per remote** (keyed on remote-store config identity), so the
+`LiveChunkCount` that several shares targeting the same remote share is only
+ever mutated by one run at a time.
+
+### Compaction of partially-dead blocks
+
+Refcount reclamation alone frees a block only when its *last* live chunk dies,
+so a block that keeps a few live chunks but has shed many dead ones pins the
+dead bytes forever. Compaction (`engine.CompactBlocks`, #1487) closes that gap.
+It runs as an optional final phase of each per-remote sweep, under the same
+per-remote lock and immediately **after** the sweep — by which point the sweep
+has already cleared the synced marker of every past-grace dead chunk. So a
+chunk resident in a block is "still live here" iff its synced locator still
+points at that block; a chunk that lost its marker (swept dead) or whose
+locator has moved is dropped. This reuses the sweep's own keep/delete decision,
+so compaction never reclaims a chunk the sweep would have spared, and needs no
+second live-set scan.
+
+- **Candidate selection** is byte-based: the sum of the `WireLength` of every
+  live locator pointing at a block, over the block's object `Length`. Below the
+  operator's `gc.compaction_live_ratio` (0 disables; a value like `0.5` compacts
+  a block once it is more than half dead) the block is a candidate. Computed
+  from the block record + locators alone — no per-block download to decide, and
+  no extra stored field.
+- **Repack** downloads the candidate block once, verifies it against its
+  record's whole-block BLAKE3 hash, copies the still-live chunks' wire bodies
+  verbatim into a fresh block (the per-chunk encryption already lives in the
+  body), `PutBlock`s it, then `DefaultCommitBlock` writes the new record and
+  rewrites the moved chunks' locators (last-wins) in one transaction, and
+  finally deletes the old block object + record.
+- **Crash safety** is identical to the live carver / cas→blocks migration and
+  every crash window lands on an existing reconcile class: a crash after
+  `PutBlock` before the commit leaves an orphan object (reconcile class 3); a
+  crash after the commit before the old block is deleted leaves the old block as
+  a leaked record (class 2). A re-run converges — the moved chunks' locators no
+  longer point at the old block, so compaction finds nothing to move and just
+  deletes the husk.
+
+Because compaction rewrites a live chunk's locator to a new block before
+deleting the old one, a reader that resolved the old locator *before* the
+rewrite and issues its `GetBlock` *after* the delete sees a miss — the same
+narrow window the refcount reclaim already has; acceptable for this opt-in
+maintenance pass.
 
 ### Fail-closed posture
 

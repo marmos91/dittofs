@@ -907,6 +907,10 @@ func (r *Runtime) SetSyncerDefaults(cfg *shares.SyncerDefaults) {
 type GCDefaults struct {
 	GracePeriod      time.Duration
 	DryRunSampleSize int
+	// CompactionLiveRatio, when > 0, enables GC compaction of partially-dead
+	// blocks after each remote sweep (#1487): a block whose live bytes /
+	// object length is below this ratio is repacked and its dead bytes freed.
+	CompactionLiveRatio float64
 }
 
 // SetGCDefaults sets the operator-configured GC knobs the runtime forwards
