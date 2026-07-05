@@ -44,9 +44,11 @@
 // Concurrency: the caller MUST hold the per-remote GC lock (as the sweep and
 // reclaim do) so compaction cannot race a concurrent sweep's DecrLiveChunkCount
 // or DeleteBlock on the same block. An in-flight reader that resolved a locator
-// to the old block before step 2 and issues its GET after step 3 sees a 404 —
-// the same narrow window the delete-only reclaim already has for its blocks;
-// acceptable for an opt-in maintenance pass.
+// to the old block before step 2 and issues its GET after step 3 sees a 404.
+// That is NOT data loss only because the read path (fetchResolvedBlock) re-
+// resolves the locator once on ErrChunkNotFound and retries against the moved
+// chunk's new block — without that guard this delete would surface a spurious
+// EIO to the client, not the "harmless same-window-as-reclaim" it looks like.
 package engine
 
 import (
@@ -329,12 +331,15 @@ func compactOneBlock(
 	// (3) Delete the old block: object then record (matches reclaim order — a
 	// crash between leaves a class-2 leaked record, reclaimed by ReclaimRecords).
 	// The live chunks are already safe in the new block regardless of the outcome
-	// here; a failed delete leaves the old block for the next run / reconcile.
-	deleteOldBlock(ctx, v, rbs, blockID, report)
-
-	report.BlocksCompacted++
-	report.ChunksMoved += int64(len(commits))
-	report.BytesReclaimed += rec.Length - int64(len(newBytes))
+	// here; a failed delete leaves the old block for the next run / reconcile. Only
+	// count the reclaim (and this block) when the delete actually freed the old
+	// object — otherwise no space was reclaimed and the counters would over-report
+	// (mirrors the husk path above).
+	if deleteOldBlock(ctx, v, rbs, blockID, report) {
+		report.BlocksCompacted++
+		report.ChunksMoved += int64(len(commits))
+		report.BytesReclaimed += rec.Length - int64(len(newBytes))
+	}
 }
 
 // deleteOldBlock deletes a block's remote object then its record (that order —

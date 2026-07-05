@@ -29,6 +29,9 @@ type spyingRemoteStore struct {
 	readChunkCalls atomic.Int64
 	mu             gosync.Mutex
 	readChunkKeys  []string // blocks/<id> store keys, in call order
+	// onReadChunk, if set, runs at the start of each ReadChunk with the target
+	// block ID — lets a test inject a concurrent relocation mid-fetch.
+	onReadChunk func(blockID string)
 }
 
 func newSpyingRemoteStore(inner remote.RemoteStore) *spyingRemoteStore {
@@ -39,7 +42,11 @@ func (s *spyingRemoteStore) ReadChunk(ctx context.Context, blockID string, offse
 	s.readChunkCalls.Add(1)
 	s.mu.Lock()
 	s.readChunkKeys = append(s.readChunkKeys, block.FormatBlockKey(blockID))
+	hook := s.onReadChunk
 	s.mu.Unlock()
+	if hook != nil {
+		hook(blockID)
+	}
 	return s.RemoteStore.(remote.ChunkReader).ReadChunk(ctx, blockID, offset, length, expected)
 }
 
@@ -293,6 +300,72 @@ func TestDualRead_MissingBlockObjectFailsClosed(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("fetchBlock data = %v, want nil on fail-closed block miss", got)
+	}
+}
+
+// TestDualRead_RelocatedChunkReResolvesOnMiss pins the #1487 compaction
+// stale-locator guard: a reader that resolved a chunk's locator to the OLD
+// block, then had that block deleted after compaction relocated+recommitted the
+// chunk into a NEW block, must re-resolve and read through — NOT surface a
+// spurious EIO. Without the read-path re-resolve (fetchResolvedBlock) this fails
+// closed with ErrChunkNotFound even though the chunk is perfectly live.
+func TestDualRead_RelocatedChunkReResolvesOnMiss(t *testing.T) {
+	env := newDualReadEnv(t)
+	ctx := context.Background()
+
+	const payloadID = "share/relocated-chunk"
+	const oldBlockID = "blk-old-precompaction"
+	const newBlockID = "blk-new-postcompaction"
+	data := []byte("live chunk bytes relocated by compaction")
+	hash := dualReadHash(data)
+
+	// Seed the pre-compaction state: the locator points at the old block.
+	env.seedBlockChunk(t, ctx, payloadID, oldBlockID, data, hash, uint32(len(data)))
+
+	// Delete the old block object up front (compaction's step-3 DeleteBlock). The
+	// reader below still resolves the OLD locator first, so its first GET 404s —
+	// the stale-locator window.
+	if err := env.innerRS.DeleteBlock(ctx, oldBlockID); err != nil {
+		t.Fatalf("DeleteBlock(old): %v", err)
+	}
+
+	// The instant the reader issues its (doomed) GET against the old block,
+	// simulate compaction committing the relocation: put the new block object
+	// (step 1) and rebind the locator to it (step 2). The reader's FIRST fetch
+	// still 404s on the already-deleted old object; the guard must re-resolve the
+	// now-updated locator and succeed against the new block.
+	var once gosync.Once
+	env.rs.onReadChunk = func(blockID string) {
+		if blockID != oldBlockID {
+			return
+		}
+		once.Do(func() {
+			if err := env.innerRS.PutBlock(ctx, newBlockID, bytes.NewReader(data)); err != nil {
+				t.Errorf("PutBlock(new): %v", err)
+			}
+			// Last-wins rebind, as DefaultCommitBlock does: clear the old marker
+			// then record the new locator so GetLocator now points at the new block.
+			if err := env.ms.DeleteSynced(ctx, hash); err != nil {
+				t.Errorf("DeleteSynced(old): %v", err)
+			}
+			newLoc := block.ChunkLocator{BlockID: newBlockID, WireOffset: 0, WireLength: int64(len(data))}
+			if err := env.ms.MarkSynced(ctx, hash, newLoc); err != nil {
+				t.Errorf("MarkSynced(new): %v", err)
+			}
+		})
+	}
+
+	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
+	if err != nil {
+		t.Fatalf("fetchBlock: relocated chunk must re-resolve and read through, got %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("fetchBlock data mismatch: got %q, want %q", got, data)
+	}
+	// Exactly two ReadChunk calls: the doomed old-block GET + the re-resolved
+	// new-block GET. Proves a single bounded retry, not a loop.
+	if n := env.rs.readChunkCalls.Load(); n != 2 {
+		t.Errorf("ReadChunk calls = %d, want 2 (one miss + one re-resolved hit)", n)
 	}
 }
 

@@ -272,6 +272,18 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk) ([
 	}
 
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
+	if err != nil && errors.Is(err, block.ErrChunkNotFound) {
+		// Stale-locator window (#1487 compaction, and the cas→blocks migration /
+		// refcount reclaim paths): a concurrent maintenance pass relocated this
+		// chunk into a fresh block and deleted the old one AFTER we resolved its
+		// locator, so the GET 404s against bytes that moved. Re-resolve ONCE — a
+		// fresh GetLocator (inside dispatchRemoteFetch) now points at the new
+		// block, so a merely-relocated live chunk reads through instead of a
+		// spurious EIO. A second miss (locator unchanged, or the chunk is
+		// genuinely gone) falls through to the fail-closed path below. Single
+		// bounded retry — never a loop, to avoid livelock.
+		storeKey, data, err = m.dispatchRemoteFetch(ctx, fb)
+	}
 	if err != nil {
 		if errors.Is(err, block.ErrChunkNotFound) {
 			// fail-closed on the CAS path. A row
