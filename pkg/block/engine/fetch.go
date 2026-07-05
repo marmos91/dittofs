@@ -148,17 +148,40 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 			"block_id", fb.ID)
 		return "", nil, fmt.Errorf("blockstore: legacy zero-hash FileChunk encountered post-migration: block_id=%s", fb.ID)
 	}
-	// Resolve the block locator for the chunk (#1414). Two distinct cases:
-	//
-	//   - No synced marker at all (synced==false): the chunk has not been
-	//     uploaded yet, so it has no remote copy. This is NOT drift — the bytes
-	//     are still local-only (a read that raced the async carve). Return
-	//     ("", nil, nil) so the caller falls back to the local read path rather
-	//     than failing closed.
-	//   - Synced marker present but empty BlockID: post-#1493 every synced hash
-	//     carries a block locator (the startup migration repacked all legacy
-	//     standalone chunks), so a synced hash with no BlockID is genuine
-	//     metadata drift. Refuse the read.
+
+	key, data, err := m.resolveAndReadChunk(ctx, fb)
+	if err != nil && errors.Is(err, block.ErrChunkNotFound) {
+		// Stale-locator window (#1487 compaction, and the cas→blocks migration /
+		// refcount reclaim paths): a concurrent maintenance pass relocated this
+		// chunk into a fresh block and deleted the old one AFTER we resolved its
+		// locator, so the GET 404s against bytes that moved. Re-resolve ONCE — a
+		// fresh GetLocator now points at the new block, so a merely-relocated live
+		// chunk reads through instead of a spurious EIO. A second miss (locator
+		// unchanged, or the chunk is genuinely gone) is returned so the caller
+		// fails closed. Single bounded retry — never a loop, to avoid livelock.
+		// This is the shared chokepoint for BOTH read paths (fetchResolvedBlock's
+		// background prefetch/warm and inlineFetchOrWait's client demand read), so
+		// the guard lives here rather than in either caller.
+		key, data, err = m.resolveAndReadChunk(ctx, fb)
+	}
+	return key, data, err
+}
+
+// resolveAndReadChunk resolves fb.Hash's current remote block locator and does
+// one verified ranged read. Split out of dispatchRemoteFetch so the stale-
+// locator retry there can re-resolve from scratch (fresh GetLocator).
+//
+// Two distinct non-read outcomes, both returned to the caller unchanged:
+//
+//   - No synced marker at all (synced==false): the chunk has not been uploaded
+//     yet, so it has no remote copy. NOT drift — the bytes are still local-only
+//     (a read that raced the async carve). Returns ("", nil, nil) so the caller
+//     falls back to the local read path rather than failing closed.
+//   - Synced marker present but empty BlockID: post-#1493 every synced hash
+//     carries a block locator (the startup migration repacked all legacy
+//     standalone chunks), so a synced hash with no BlockID is genuine metadata
+//     drift. Refuse the read.
+func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
 	loc, synced, err := m.resolveLocator(ctx, fb.Hash)
 	if err != nil {
 		return "", nil, err
@@ -271,6 +294,9 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk) ([
 		return nil, nil
 	}
 
+	// dispatchRemoteFetch carries the stale-locator re-resolve retry (#1487), so
+	// a chunk relocated by compaction/migration reads through before we ever get
+	// here; a surviving ErrChunkNotFound is genuine live-data-loss.
 	storeKey, data, err := m.dispatchRemoteFetch(ctx, fb)
 	if err != nil {
 		if errors.Is(err, block.ErrChunkNotFound) {

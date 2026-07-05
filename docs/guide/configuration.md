@@ -487,6 +487,14 @@ gc:
                               # the snapshot.
   dry_run_sample_size: 1000   # Maximum candidate keys reported in
                               # --dry-run mode. Default 1000.
+  compaction_live_ratio: 0    # Reclaim dead bytes from partially-dead
+                              # blocks. After each sweep, a block whose
+                              # live bytes / object size is below this
+                              # ratio is repacked (live chunks only) and
+                              # the old block deleted. Must be in [0, 1];
+                              # 0 (default) disables compaction. A value
+                              # like 0.5 compacts a block once it is more
+                              # than half dead.
   auto_enabled: true          # Run background GC automatically so you
                               # don't have to invoke the CLI. Default
                               # true. Set false to require manual

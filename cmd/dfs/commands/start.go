@@ -225,8 +225,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// the validated gc.* config in pkg/config/config.go is silently dropped
 	// and the engine falls back to hardcoded defaults.
 	rt.SetGCDefaults(&runtime.GCDefaults{
-		GracePeriod:      cfg.GC.GracePeriod,
-		DryRunSampleSize: cfg.GC.DryRunSampleSize,
+		GracePeriod:         cfg.GC.GracePeriod,
+		DryRunSampleSize:    cfg.GC.DryRunSampleSize,
+		CompactionLiveRatio: cfg.GC.CompactionLiveRatio,
 	})
 
 	// Thread the operator-configured lock-manager grace period into the

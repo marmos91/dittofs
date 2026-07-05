@@ -143,6 +143,14 @@ type GCConfig struct {
 	// dry-run report. Defaults to 1000.
 	DryRunSampleSize int `mapstructure:"dry_run_sample_size" yaml:"dry_run_sample_size"`
 
+	// CompactionLiveRatio enables GC compaction of partially-dead blocks
+	// (#1487): after each sweep, a block whose live bytes / object length is
+	// below this ratio is repacked into a fresh block (live chunks only) and
+	// the old block is deleted, reclaiming the dead bytes. 0 (the default)
+	// disables compaction; a sensible enabled value is ~0.5 (compact once a
+	// block is more than half dead). Must be in [0, 1].
+	CompactionLiveRatio float64 `mapstructure:"compaction_live_ratio" yaml:"compaction_live_ratio"`
+
 	// AutoEnabled turns on the background GC scheduler, which periodically
 	// reclaims orphaned blocks on both tiers without operator action.
 	// Defaults to true. Set false to require manual `dfsctl store block gc`.
@@ -206,6 +214,9 @@ func (c *GCConfig) Validate() error {
 	}
 	if c.AutoInterval > 0 && c.AutoInterval < time.Minute {
 		return fmt.Errorf("gc.auto_interval must be >= 1m to avoid hammering the stores (got %v); set 0 to use the 15m default", c.AutoInterval)
+	}
+	if c.CompactionLiveRatio < 0 || c.CompactionLiveRatio > 1 {
+		return fmt.Errorf("gc.compaction_live_ratio must be in [0, 1] (got %v); 0 disables compaction", c.CompactionLiveRatio)
 	}
 	return nil
 }
