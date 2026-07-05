@@ -610,6 +610,7 @@ func (r *Runtime) compactRemoteForEntry(ctx context.Context, entry shares.Remote
 	rep, err := engine.CompactBlocks(ctx, views, rbs, engine.CompactOptions{LiveRatio: gcDefaults.CompactionLiveRatio})
 	if err != nil {
 		logger.Warn("GC compaction: aborted", "configID", entry.ConfigID, "err", err)
+		return
 	}
 	if rep.BlocksCompacted > 0 || rep.Errors > 0 {
 		logger.Info("GC compaction: complete",
