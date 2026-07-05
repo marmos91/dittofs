@@ -56,6 +56,24 @@ func runBounded(t *testing.T, name string, fn func(context.Context) error) {
 	}
 }
 
+// cleanupClose registers a bounded Close in t.Cleanup. If a regression leaves a
+// goroutine wedged on the single sqlite connection (the true-hang path guarded
+// by runBounded's watchdog), a synchronous Close could block on it and turn a
+// fast failure back into a hung run — so cleanup waits only briefly, then moves
+// on. On the normal (passing) path Close returns immediately.
+func cleanupClose(t *testing.T, name string, closeFn func() error) {
+	t.Helper()
+	t.Cleanup(func() {
+		done := make(chan struct{})
+		go func() { _ = closeFn(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Logf("%s: Close did not return within 5s (a wedged goroutine still holds the connection)", name)
+		}
+	})
+}
+
 // newSQLiteStoreForDeadlockTest builds a fresh, migrated on-disk sqlite store.
 func newSQLiteStoreForDeadlockTest(t *testing.T) *sqlite.SQLiteMetadataStore {
 	t.Helper()
@@ -71,7 +89,7 @@ func newSQLiteStoreForDeadlockTest(t *testing.T) *sqlite.SQLiteMetadataStore {
 	if err != nil {
 		t.Fatalf("NewSQLiteMetadataStore: %v", err)
 	}
-	t.Cleanup(func() { _ = st.Close() })
+	cleanupClose(t, "sqlite store", st.Close)
 	return st
 }
 
@@ -119,7 +137,7 @@ func TestSQLiteStartup_LegacyCASMigration_NoDeadlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = bs.Close() })
+	cleanupClose(t, "block store", bs.Close)
 
 	runBounded(t, "Store.Start (legacy-CAS migration)", bs.Start)
 }
