@@ -338,6 +338,80 @@ To re-baseline on a new machine class: capture several runs, take the lowest
 ops/sec, multiply by 0.90, and update the floor constant — a deliberate
 calibration event that must be reviewed in PR.
 
+### Per-stage write-path profiling (#1555)
+
+The blocks-only write path splits into stages that each own a CPU and allocation
+budget. One `Benchmark*` per stage measures it *in isolation* against in-process
+memory stores, so a `-cpuprofile` / `-memprofile` run attributes cost to a single
+seam instead of a tangled end-to-end flow. All four are plain `testing.B` +
+`runtime/pprof` (no harness, no deps): standard
+`go test -benchmem -cpuprofile -memprofile` wiring is all that's needed.
+
+| Stage | Bench (package) | Code seam |
+| ----- | --------------- | --------- |
+| Append log | `BenchmarkAppendWrite_GroupCommit` (`pkg/block/local/fs/`) | `appendwrite.go` + `groupcommit.go` |
+| FastCDC chunker | `BenchmarkChunker_Throughput_64MiB` (`pkg/block/chunker/`) | `chunker.go` |
+| BLAKE3 hash | `BenchmarkBLAKE3_256MiB` (`pkg/block/`) | content-hash layer |
+| Streamer (carve→codec→PutBlock) | `BenchmarkStreamer_CarveCodecPutBlock` (`pkg/block/engine/`) | `carver.go:carveAndCommitBlock` + `blockcodec/codec.go` |
+
+```bash
+# Profile any single stage — CPU + heap attributed to that seam only:
+go test -bench=BenchmarkStreamer_CarveCodecPutBlock -benchmem -run=^$ \
+    -cpuprofile=cpu.out -memprofile=mem.out ./pkg/block/engine/
+go tool pprof -top cpu.out      # where the CPU went
+go tool pprof -top -alloc_space mem.out   # where the bytes were allocated
+```
+
+Two memory invariants are pinned as hard tests (fail the build, not just report):
+
+- `TestChunker_ConstantMemory` (`pkg/block/chunker/`) — the FastCDC scan is
+  allocation-free regardless of input size; `Next` must report offsets into the
+  caller's slice, never copy chunk bytes.
+- `TestStreamer_AllocationTracksBlockCount` (`pkg/block/engine/`) — the streamer's
+  allocation grows linearly with block count, not super-linearly with file size;
+  it must carve one block at a time, never buffer the whole file.
+
+GC + compaction is intentionally **not** benched here: #1487 reshaped that path
+and it is latency/sweep-bound rather than a CPU/alloc hot spot on the write path —
+a dedicated bench is deferred until there is a measured reason to add one.
+
+#### Baseline reading (Apple M1 Max, in-memory, `-benchtime=5x`)
+
+| Stage | ns/op | Throughput | B/op | allocs/op |
+| ----- | ----: | ---------: | ---: | --------: |
+| Append log (coalesced 64 B) | 4.6 ms | — | 353 | 6 |
+| FastCDC chunker (64 MiB) | 42.2 ms | 1,592 MB/s | **0** | **0** |
+| BLAKE3 hash (256 MiB) | 53.8 ms | 4,994 MB/s | 3.7 MB | 35,713 |
+| Streamer (64 MiB) | 19.6 ms | 3,426 MB/s | **346 MB** | 753 |
+
+Normalizing to cost-per-MiB pushed through the write path:
+
+- **CPU is dominated by the FastCDC chunker** — 0.63 ms/MiB, ~3× the hash
+  (0.20 ms/MiB) and ~2× the streamer (0.29 ms/MiB of codec framing + remote body
+  copy; hashing is the separate BLAKE3 stage above and is precomputed in the
+  streamer fixture, matching production carve, which reuses each chunk's
+  write-time hash). The boundary scan, not framing or upload, is the write-path
+  CPU floor.
+- **Allocations are dominated by the streamer** — ~346 MB allocated per 64 MiB
+  carved (~5× write amplification), from `bytes.Buffer` doubling growth while
+  assembling each block plus the remote body copy. The chunker is allocation-free;
+  the streamer is the only stage with a real allocation lever, and the cheap fix is
+  pre-sizing the carve buffer to the target block size — no format or sizing change.
+
+Gate call for the deferred perf issues this profiling was meant to decide:
+
+- **#1491 (decoupled log-blob / block sizing) — not justified by this data.** The
+  streamer's allocation cost is transient buffer growth, not sizing granularity;
+  a one-line buffer pre-size captures the win without decoupling the two sizes.
+- **#1488 (chunk-range refetch granularity) — read-path, not a write-path
+  bottleneck here.** The warm read path already avoids the WAN round-trip
+  (`BenchmarkReadThroughCache_ColdVsWarm`), so there is no measured pressure to
+  build finer read-miss granularity yet.
+
+Re-run all four on a new machine class before trusting the ranking — the absolute
+numbers are machine-specific; the *ordering* (chunker = CPU, streamer = allocs) is
+the durable finding.
+
 ### A/B comparing commits
 
 For ad-hoc before/after work, run any package's `Benchmark*` against two commits
