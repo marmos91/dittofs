@@ -587,7 +587,7 @@ func TestBlockStoreHandler_ReclaimZeroRef_PropagatesDryRun(t *testing.T) {
 	h := NewBlockStoreGCHandler(fake)
 
 	body, _ := json.Marshal(ReconcileReclaimRequest{DryRun: true})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/zero-ref-records", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/reclaim", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 
 	h.ReconcileReclaim(w, req)
@@ -612,7 +612,7 @@ func TestBlockStoreHandler_ReclaimZeroRef_RuntimeError(t *testing.T) {
 	fake := &fakeGCRuntime{reclaimErr: fmt.Errorf("boom")}
 	h := NewBlockStoreGCHandler(fake)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/zero-ref-records", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/reclaim", nil)
 	w := httptest.NewRecorder()
 
 	h.ReconcileReclaim(w, req)
@@ -626,7 +626,7 @@ func TestBlockStoreHandler_ReclaimZeroRef_RuntimeError(t *testing.T) {
 func TestBlockStoreHandler_ReclaimZeroRef_NilRuntime(t *testing.T) {
 	h := NewBlockStoreGCHandler(nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/zero-ref-records", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/blockstore/reconcile/reclaim", nil)
 	w := httptest.NewRecorder()
 
 	h.ReconcileReclaim(w, req)

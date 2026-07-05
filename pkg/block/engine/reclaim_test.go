@@ -140,6 +140,9 @@ func TestReclaimOrphanObjects_GraceWindow(t *testing.T) {
 	putBareBlock(t, rbs, "blk-known", time.Now().Add(-2*time.Hour))
 	putBareBlock(t, rbs, "blk-aged-orphan", time.Now().Add(-2*time.Hour))
 	putBareBlock(t, rbs, "blk-fresh-orphan", time.Now())
+	// blk-noage-orphan is record-less with a zero LastModified: its age cannot
+	// be evaluated, so the sweep must fail closed and spare it.
+	putBareBlock(t, rbs, "blk-noage-orphan", time.Time{})
 	metaBlockIDs := map[string]struct{}{"blk-known": {}}
 
 	rep, err := ReclaimOrphanObjects(ctx, metaBlockIDs, rbs, ReclaimOptions{GracePeriod: time.Hour})
@@ -155,6 +158,9 @@ func TestReclaimOrphanObjects_GraceWindow(t *testing.T) {
 	}
 	if !remoteHasBlock(t, rbs, "blk-fresh-orphan") {
 		t.Error("fresh orphan inside grace window was wrongly reclaimed")
+	}
+	if !remoteHasBlock(t, rbs, "blk-noage-orphan") {
+		t.Error("zero-LastModified orphan (unevaluable age) was wrongly reclaimed; must fail closed")
 	}
 	if !remoteHasBlock(t, rbs, "blk-known") {
 		t.Error("object with a backing record was wrongly reclaimed")
