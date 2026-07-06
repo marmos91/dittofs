@@ -3,6 +3,7 @@ package badger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -400,6 +401,91 @@ func (s *BadgerMetadataStore) ListFileChunks(_ context.Context, payloadID string
 	var result []*metadata.FileChunk
 	err := s.db.View(func(txn *badger.Txn) error {
 		result = listFileChunksTxn(txn, payloadID)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetFileChunkAtOffset returns the FileChunk covering absolute byte offset off
+// for payloadID — the row with the largest chunkOffset <= off whose range
+// [chunkOffset, chunkOffset+DataSize) contains off — or (nil, nil) for a sparse
+// hole, an empty payload, or a read past EOF. This is the read hot path: a
+// keys-only scan of the fb-file:{payloadID}: secondary index finds the covering
+// offset without materializing the whole manifest (no per-row Get, no JSON
+// unmarshal, no sort), then two point Gets fetch the winning row.
+//
+// ponytail: O(n) keys-only scan per read; upgrade to a big-endian fb-off index
+// for a true O(log n) reverse-seek only if profiling at real N still shows it.
+func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
+	var result *metadata.FileChunk
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileChunkFilePrefix + payloadID + ":")
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = false // keys only — the offset lives in the key
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		var (
+			bestOff uint64
+			found   bool
+		)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			suffix := it.Item().Key()[len(prefix):]
+			cand, perr := strconv.ParseUint(string(suffix), 10, 64)
+			if perr != nil {
+				continue // tolerate a malformed index row, like parseBlockIdx
+			}
+			if cand <= off && (!found || cand > bestOff) {
+				bestOff, found = cand, true
+			}
+		}
+		if !found {
+			return nil // nothing starts at or before off — hole
+		}
+
+		// Fetch the winning row: index key -> block ID -> primary row. A
+		// missing index/primary row (ErrKeyNotFound) is a stale index entry —
+		// treat as a hole, mirroring listFileChunksTxn's "index stale, block
+		// deleted" skip. Any other Get/Value/unmarshal error is real IO or
+		// corruption and must propagate, not masquerade as a hole.
+		idxItem, gerr := txn.Get([]byte(fileChunkFilePrefix + payloadID + ":" + strconv.FormatUint(bestOff, 10)))
+		if errors.Is(gerr, badger.ErrKeyNotFound) {
+			return nil
+		} else if gerr != nil {
+			return gerr
+		}
+		var blockID string
+		if verr := idxItem.Value(func(val []byte) error {
+			blockID = string(val)
+			return nil
+		}); verr != nil {
+			return verr
+		}
+		fbItem, gerr := txn.Get([]byte(fileChunkPrefix + blockID))
+		if errors.Is(gerr, badger.ErrKeyNotFound) {
+			return nil
+		} else if gerr != nil {
+			return gerr
+		}
+		var fc metadata.FileChunk
+		if verr := fbItem.Value(func(val []byte) error {
+			return json.Unmarshal(val, &fc)
+		}); verr != nil {
+			return verr
+		}
+		// Covering guard keyed on the row's OWN start offset (the source of
+		// truth), not the index key, so an inconsistent index can't serve a
+		// neighbour chunk's bytes into a hole. off-abs is overflow-free since
+		// the scan guarantees abs <= off.
+		abs, ok := blockpkg.ParseChunkOffset(fc.ID)
+		if !ok || off < abs || off-abs >= uint64(fc.DataSize) {
+			return nil
+		}
+		result = &fc
 		return nil
 	})
 	if err != nil {

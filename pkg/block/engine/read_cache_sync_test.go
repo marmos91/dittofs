@@ -50,11 +50,11 @@ func TestInlineFetch_MarksFetchedChunkSyncedAndCancelsReupload(t *testing.T) {
 		t.Fatalf("precondition unsyncedBytes=%d, want %d", got, len(data))
 	}
 
-	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
+	fb, err := m.resolveFileChunk(ctx, payloadID, 0)
 	if err != nil {
-		t.Fatalf("listFileChunksSnapshot: %v", err)
+		t.Fatalf("resolveFileChunk: %v", err)
 	}
-	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
+	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, fb)
 	if err != nil {
 		t.Fatalf("inlineFetchOrWait: %v", err)
 	}

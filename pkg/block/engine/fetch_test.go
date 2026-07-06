@@ -103,12 +103,12 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToCaller(t *testing.T) {
 
 	m := newFetchSyncer(loc, rs, fbs, mds)
 
-	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
+	fb, err := m.resolveFileChunk(ctx, payloadID, 0)
 	if err != nil {
-		t.Fatalf("listFileChunksSnapshot: %v", err)
+		t.Fatalf("resolveFileChunk: %v", err)
 	}
 
-	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
+	gotData, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, 0, fb)
 	if err == nil {
 		t.Fatalf("inlineFetchOrWait returned nil err; want error wrapping %v", errBoomLocalPut)
 	}
@@ -151,9 +151,9 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 
 	m := newFetchSyncer(loc, rs, fbs, mds)
 
-	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
+	fb, err := m.resolveFileChunk(ctx, payloadID, 0)
 	if err != nil {
-		t.Fatalf("listFileChunksSnapshot: %v", err)
+		t.Fatalf("resolveFileChunk: %v", err)
 	}
 
 	// Goroutine A: enters inlineFetchOrWait first, registers the in-flight
@@ -165,7 +165,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	}
 	chA := make(chan result, 1)
 	go func() {
-		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
+		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, fb)
 		chA <- result{d, dl, e}
 	}()
 
@@ -181,7 +181,7 @@ func TestInlineFetchOrWait_LocalPutError_PropagatesToWaiter(t *testing.T) {
 	// the waiter branch, and blocks on <-existing.done.
 	chB := make(chan result, 1)
 	go func() {
-		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, rows)
+		d, dl, e := m.inlineFetchOrWait(ctx, payloadID, 0, fb)
 		chB <- result{d, dl, e}
 	}()
 

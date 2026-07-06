@@ -36,23 +36,15 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 // zero for any reachable block; the dispatchRemoteFetch helper enforces
 // this.
 func (m *Syncer) resolveFileChunk(ctx context.Context, payloadID string, blockIdx uint64) (*block.FileChunk, error) {
-	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
-	if err != nil {
-		return nil, err
-	}
-	return resolveFileChunkFromRows(rows, blockIdx), nil
+	fb, _, err := resolveCovering(ctx, m.fileChunkStore, payloadID, blockIdx*uint64(BlockSize))
+	return fb, err
 }
 
-// listFileChunksSnapshot returns a point-in-time snapshot of the FileChunk rows
-// for payloadID with a single ListFileChunks store scan. A sparse / not-yet-
-// uploaded payload (ErrFileChunkNotFound) yields (nil, nil). Callers that need
-// to test many block indices for one read should fetch the snapshot ONCE and
-// pass it to resolveFileChunkFromRows / blockIsLocalFromRows: each block lookup
-// then walks the in-memory snapshot instead of issuing its own store scan,
-// collapsing the previous N store scans (one per block index) into one. The
-// snapshot is point-in-time: a concurrent writer that mutates the block set
-// after the scan is not reflected for the remainder of that read, which is the
-// acceptable (and arguably more correct) per-read isolation semantics.
+// listFileChunksSnapshot returns a point-in-time snapshot of the whole
+// FileChunk row list for payloadID with a single ListFileChunks store scan. A
+// sparse / not-yet-uploaded payload (ErrFileChunkNotFound) yields (nil, nil).
+// Used by whole-manifest consumers (warm); the read path resolves a single
+// covering chunk via resolveCovering instead of enumerating.
 func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) ([]*block.FileChunk, error) {
 	rows, err := m.fileChunkStore.ListFileChunks(ctx, payloadID)
 	if err != nil {
@@ -62,29 +54,6 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 		return nil, fmt.Errorf("list file blocks for %s: %w", payloadID, err)
 	}
 	return rows, nil
-}
-
-// resolveFileChunkFromRows finds the FileChunk covering blockIdx's byte window
-// within an already-fetched row snapshot. See resolveFileChunk for the offset-
-// covering semantics. Returns nil when no row covers the window.
-func resolveFileChunkFromRows(rows []*block.FileChunk, blockIdx uint64) *block.FileChunk {
-	if len(rows) == 0 {
-		return nil
-	}
-	target := blockIdx * uint64(BlockSize)
-	for _, fb := range rows {
-		if fb == nil {
-			continue
-		}
-		abs, ok := block.ParseChunkOffset(fb.ID)
-		if !ok {
-			continue
-		}
-		if target >= abs && target < abs+uint64(fb.DataSize) {
-			return fb
-		}
-	}
-	return nil
 }
 
 // blockIsLocal reports whether the bytes for (payloadID, blockIdx) are
@@ -101,12 +70,6 @@ func (m *Syncer) blockIsLocal(ctx context.Context, payloadID string, blockIdx ui
 		return false
 	}
 	return m.blockIsLocalFromRow(ctx, fb)
-}
-
-// blockIsLocalFromRows answers blockIsLocal against an already-fetched row
-// snapshot, avoiding a fresh ListFileChunks scan per block index.
-func (m *Syncer) blockIsLocalFromRows(ctx context.Context, rows []*block.FileChunk, blockIdx uint64) bool {
-	return m.blockIsLocalFromRow(ctx, resolveFileChunkFromRows(rows, blockIdx))
 }
 
 // blockIsLocalFromRow reports whether the resolved FileChunk's CAS chunk is
@@ -359,21 +322,18 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 
 	startBlockIdx, endBlockIdx := blockRange(offset, length)
 
-	// Single point-in-time store scan of the per-payload FileChunk rows,
-	// reused for the all-local fast path, the per-block locality checks below,
-	// and the inline fetch hash lookups (all of which walk this in-memory
-	// snapshot). This replaces the prior 2N+ ListFileChunks store scans (one
-	// per block in the all-local check + one per block in the download loop,
-	// plus one more inside each inlineFetchOrWait) with a single store scan per
-	// read.
-	rows, err := m.listFileChunksSnapshot(ctx, payloadID)
-	if err != nil {
-		return false, err
-	}
-
+	// Resolve the covering chunk per block via the indexed lookup
+	// (resolveCovering) rather than enumerating the whole manifest. Each block
+	// is a cheap single-chunk lookup, so the all-local probe and the download
+	// loop each resolve independently; a genuine store error now propagates
+	// (the prior in-memory snapshot could not surface one mid-loop).
 	allLocal := true
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		if !m.blockIsLocalFromRows(ctx, rows, blockIdx) {
+		fb, err := m.resolveFileChunk(ctx, payloadID, blockIdx)
+		if err != nil {
+			return false, err
+		}
+		if !m.blockIsLocalFromRow(ctx, fb) {
 			allLocal = false
 			break
 		}
@@ -393,12 +353,16 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	needLocalReadAt := false
 
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		if m.blockIsLocalFromRows(ctx, rows, blockIdx) {
+		fb, err := m.resolveFileChunk(ctx, payloadID, blockIdx)
+		if err != nil {
+			return false, err
+		}
+		if m.blockIsLocalFromRow(ctx, fb) {
 			needLocalReadAt = true
 			continue
 		}
 
-		data, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, blockIdx, rows)
+		data, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, blockIdx, fb)
 		if err != nil {
 			return false, err
 		}
@@ -432,9 +396,9 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 // inlineFetchOrWait downloads a block inline or waits for an in-flight download.
 // Returns (data, true, nil) for inline download, (nil, false, nil) if piggybacked on existing.
 //
-// rows is the caller's point-in-time FileChunk snapshot for payloadID; the
-// block is resolved from it instead of re-scanning the store.
-func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, rows []*block.FileChunk) ([]byte, bool, error) {
+// fb is the caller's already-resolved covering FileChunk for the block; a nil
+// fb is a sparse block (nothing to fetch).
+func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, fb *block.FileChunk) ([]byte, bool, error) {
 	key := inFlightKey(payloadID, blockIdx)
 
 	m.inFlightMu.Lock()
@@ -466,7 +430,6 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 		}
 	}()
 
-	fb := resolveFileChunkFromRows(rows, blockIdx)
 	if fb == nil {
 		return nil, true, nil
 	}
