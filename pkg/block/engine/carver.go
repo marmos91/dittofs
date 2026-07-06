@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"lukechampine.com/blake3"
@@ -319,8 +320,12 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	// identity sealer this is an exact upper bound (and the sync filter only
 	// drops chunks, never adds). A sealer that inflates past the headroom (e.g. a
 	// pathologically large wrapped key) costs at most one regrow — still correct,
-	// just less optimal.
-	buf.Grow(int(batchBytes) + len(batch)*256 + 512)
+	// just less optimal. Computed in int64 and range-checked: the pre-grow is
+	// best-effort, so on an absurd block-size config we skip it rather than risk
+	// a negative int conversion panicking bytes.Buffer.Grow.
+	if grow := batchBytes + int64(len(batch))*256 + 512; grow > 0 && grow <= math.MaxInt {
+		buf.Grow(int(grow))
+	}
 	builder, err := blockcodec.NewBuilder(&buf, blockID, nil)
 	if err != nil {
 		return fmt.Errorf("carve: new builder: %w", err)
