@@ -3,8 +3,9 @@ package engine
 import "math"
 
 // goodputController is the pure decision core of adaptive upload concurrency
-// (#1407). When the user does not pin --parallel-uploads, the syncer ramps the
-// number of concurrent CAS-chunk uploads to saturate the uplink on its own.
+// (#1407 / #1432). When the user does not pin parallel_uploads, the syncer ramps
+// the number of concurrent block PutBlock uploads in the carve path to saturate
+// the uplink on its own.
 //
 // The control signal is GOODPUT (delivered bytes/sec), not latency. An earlier
 // latency-gradient design (#1400) read the per-PUT latency rise *caused by

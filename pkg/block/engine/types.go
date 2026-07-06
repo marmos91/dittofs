@@ -32,9 +32,10 @@ const DefaultBlockCarveBytes int64 = 16 << 20
 // a fixed window. Block PUTs are network-latency bound, so a serial carver leaves
 // the link idle — one in-flight PutBlock sustained only ~200 Mbit/s VM→fr-par.
 const (
-	AdaptiveUploadFloor   = 16 // starting window in adaptive mode (greedy start)
-	AdaptiveUploadCeiling = 64 // max window the adaptive controller ramps to
-	AdaptiveUploadDefault = 0  // ParallelUploads sentinel: 0 = adaptive auto-tune
+	AdaptiveUploadFloor   = 16  // starting window in adaptive mode (greedy start)
+	AdaptiveUploadCeiling = 64  // max window the adaptive controller ramps to
+	AdaptiveUploadDefault = 0   // ParallelUploads sentinel: 0 = adaptive auto-tune
+	MaxParallelUploads    = 256 // upper bound on a pinned ParallelUploads window
 )
 
 // uploadControlInterval is how often the adaptive controller samples goodput and

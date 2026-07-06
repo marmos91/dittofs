@@ -553,7 +553,11 @@ func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) engine.SyncerConfig
 // (#1407 / #1432). Any lookup/parse miss falls back to 0 (adaptive) so a
 // malformed value never blocks share creation — validateParallelUploads already
 // rejects out-of-range values at store-create time. The value arrives as a JSON
-// number (float64) from the stored config blob.
+// number (float64) from the stored config blob. We still re-validate here
+// (integer-ness + 0..engine.MaxParallelUploads clamp) as defense-in-depth against a
+// corrupted or old-server config blob that skipped validateParallelUploads —
+// silently truncating 2.5 or honoring an absurd window would risk FD/goroutine
+// exhaustion.
 func remotePinnedUploads(ctx context.Context, provider BlockStoreConfigProvider, ref string) int {
 	if ref == "" || provider == nil {
 		return 0
@@ -566,17 +570,22 @@ func remotePinnedUploads(ctx context.Context, provider BlockStoreConfigProvider,
 	if err != nil {
 		return 0
 	}
+	var n int
 	switch v := m["parallel_uploads"].(type) {
 	case float64:
-		if v > 0 {
-			return int(v)
+		if v != math.Trunc(v) { // fractional => malformed, fall back to adaptive
+			return 0
 		}
+		n = int(v)
 	case int:
-		if v > 0 {
-			return v
-		}
+		n = v
+	default:
+		return 0
 	}
-	return 0
+	if n <= 0 || n > engine.MaxParallelUploads {
+		return 0
+	}
+	return n
 }
 
 func (s *Service) AddShare(

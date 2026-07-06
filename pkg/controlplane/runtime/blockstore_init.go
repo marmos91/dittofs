@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/marmos91/dittofs/internal/pathutil"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	s3store "github.com/marmos91/dittofs/pkg/block/remote/s3"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 )
@@ -135,10 +136,6 @@ func validateCompressionSubconfig(config map[string]any) error {
 	}
 }
 
-// maxParallelUploads bounds the per-remote parallel_uploads override. It is a
-// safety rail against FD/goroutine exhaustion, not a tuning target.
-const maxParallelUploads = 256
-
 // validateParallelUploads checks the optional per-remote parallel_uploads
 // override. 0 / absent means "use the server default" (CPU-deduced); a
 // positive value pins the per-remote upload concurrency. JSON numbers decode
@@ -155,8 +152,8 @@ func validateParallelUploads(config map[string]any) error {
 	if n != float64(int(n)) {
 		return fmt.Errorf("parallel_uploads: expected integer, got %v", n)
 	}
-	if n < 0 || n > maxParallelUploads {
-		return fmt.Errorf("parallel_uploads: must be between 0 and %d (got %d)", maxParallelUploads, int(n))
+	if n < 0 || n > engine.MaxParallelUploads {
+		return fmt.Errorf("parallel_uploads: must be between 0 and %d (got %d)", engine.MaxParallelUploads, int(n))
 	}
 	return nil
 }
