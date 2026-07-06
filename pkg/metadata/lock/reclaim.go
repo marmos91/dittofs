@@ -120,6 +120,14 @@ func (lm *Manager) reclaimLeaseImpl(ctx context.Context, leaseKey [16]byte,
 				}
 			}
 
+			// Directories may only reclaim Read/Handle caching, never Write
+			// (IsValidDirectoryLeaseState). Clamp before the subset check and
+			// the LeaseState overwrites below so a client reclaiming against a
+			// legacy RWH-directory record can't restore Write (#1570).
+			if pl.IsDirectory {
+				requestedState &^= LeaseStateWrite
+			}
+
 			// Step 6: Validate requested state is subset of persisted
 			if requestedState&^pl.LeaseState != 0 {
 				return nil, fmt.Errorf("requested state %s exceeds persisted state %s",

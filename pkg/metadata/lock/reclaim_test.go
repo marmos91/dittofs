@@ -224,3 +224,55 @@ func TestReclaimLeaseWithPrincipal_NoRecoveryRecord(t *testing.T) {
 	require.NotNil(t, lock)
 	require.True(t, lock.Reclaim)
 }
+
+// TestReclaimLease_DirectoryStripsWriteFromLegacyRecord ensures the persisted
+// -state ingestion path enforces the directory Write-strip invariant. A binary
+// predating the #1570 fix could persist an illegal RWH directory lease; after
+// upgrading and restarting, reclaiming that record must not restore Write —
+// otherwise Windows regains a write-caching directory lease and the stale
+// -listing delete bug returns for that session.
+func TestReclaimLease_DirectoryStripsWriteFromLegacyRecord(t *testing.T) {
+	ctx := context.Background()
+	lm, store := newGraceManagerWithStore(t, []string{"client-a"})
+	leaseKey := [16]byte{9, 8, 7, 6}
+
+	// Legacy illegal record: directory lease carrying Write (RWH).
+	require.NoError(t, store.PutLock(ctx, &PersistedLock{
+		ID:          "lease-dir",
+		ShareName:   "share-a",
+		FileID:      "share-a:dir-1",
+		ClientID:    "client-a",
+		LeaseKey:    leaseKey[:],
+		LeaseState:  LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
+		IsDirectory: true,
+	}))
+
+	lock, err := lm.ReclaimLease(ctx, leaseKey, LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true, "client-a")
+	require.NoError(t, err)
+	require.NotNil(t, lock)
+	require.Equal(t, uint32(LeaseStateRead|LeaseStateHandle), lock.Lease.LeaseState,
+		"reclaimed directory lease must have Write stripped (#1570)")
+}
+
+// TestRestoreLocks_DirectoryStripsWriteFromLegacyRecord ensures startup restore
+// (which loads persisted records directly, before any client reclaim) also
+// enforces the directory Write-strip invariant for legacy RWH records.
+func TestRestoreLocks_DirectoryStripsWriteFromLegacyRecord(t *testing.T) {
+	lm := NewManager()
+	leaseKey := [16]byte{5, 5, 5, 5}
+
+	require.NoError(t, lm.RestoreLocks([]*PersistedLock{{
+		ID:          "lease-dir",
+		ShareName:   "share-a",
+		FileID:      "share-a:dir-1",
+		ClientID:    "client-a",
+		LeaseKey:    leaseKey[:],
+		LeaseState:  LeaseStateRead | LeaseStateWrite | LeaseStateHandle,
+		IsDirectory: true,
+	}}))
+
+	_, lock, _ := lm.findLeaseByKey(leaseKey)
+	require.NotNil(t, lock, "restored lease must be present in memory")
+	require.Equal(t, uint32(LeaseStateRead|LeaseStateHandle), lock.Lease.LeaseState,
+		"restored directory lease must have Write stripped (#1570)")
+}
