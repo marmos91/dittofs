@@ -408,6 +408,83 @@ func (s *BadgerMetadataStore) ListFileChunks(_ context.Context, payloadID string
 	return result, nil
 }
 
+// GetFileChunkAtOffset returns the FileChunk covering absolute byte offset off
+// for payloadID — the row with the largest chunkOffset <= off whose range
+// [chunkOffset, chunkOffset+DataSize) contains off — or (nil, nil) for a sparse
+// hole, an empty payload, or a read past EOF. This is the read hot path: a
+// keys-only scan of the fb-file:{payloadID}: secondary index finds the covering
+// offset without materializing the whole manifest (no per-row Get, no JSON
+// unmarshal, no sort), then two point Gets fetch the winning row.
+//
+// ponytail: O(n) keys-only scan per read; upgrade to a big-endian fb-off index
+// for a true O(log n) reverse-seek only if profiling at real N still shows it.
+func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
+	var result *metadata.FileChunk
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileChunkFilePrefix + payloadID + ":")
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = false // keys only — the offset lives in the key
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		var (
+			bestOff uint64
+			found   bool
+		)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			suffix := it.Item().Key()[len(prefix):]
+			cand, perr := strconv.ParseUint(string(suffix), 10, 64)
+			if perr != nil {
+				continue // tolerate a malformed index row, like parseBlockIdx
+			}
+			if cand <= off && (!found || cand > bestOff) {
+				bestOff, found = cand, true
+			}
+		}
+		if !found {
+			return nil // nothing starts at or before off — hole
+		}
+
+		// Fetch the winning row: index key -> block ID -> primary row. A stale
+		// index row (deleted block) is treated as a hole, mirroring
+		// listFileChunksTxn's "index stale, block deleted" skip.
+		idxItem, gerr := txn.Get([]byte(fileChunkFilePrefix + payloadID + ":" + strconv.FormatUint(bestOff, 10)))
+		if gerr != nil {
+			return nil
+		}
+		var blockID string
+		if verr := idxItem.Value(func(val []byte) error {
+			blockID = string(val)
+			return nil
+		}); verr != nil {
+			return nil
+		}
+		fbItem, gerr := txn.Get([]byte(fileChunkPrefix + blockID))
+		if gerr != nil {
+			return nil
+		}
+		var fc metadata.FileChunk
+		if verr := fbItem.Value(func(val []byte) error {
+			return json.Unmarshal(val, &fc)
+		}); verr != nil {
+			return nil
+		}
+		// Covering guard: the scan guarantees bestOff <= off; require
+		// off < bestOff+DataSize, else off falls in a hole past this chunk and
+		// must NOT be served this chunk's bytes.
+		if off >= bestOff+uint64(fc.DataSize) {
+			return nil
+		}
+		result = &fc
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // EnumerateLivePayloadIDs streams every distinct PayloadID referenced by a live
 // inode. It scans the f: inode keyspace, decodes each file record, and collects
 // distinct non-empty PayloadIDs. Corrupt inode records are skipped so a single

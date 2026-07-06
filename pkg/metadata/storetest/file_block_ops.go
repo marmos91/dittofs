@@ -56,6 +56,15 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 		testListFileChunksEmptyStore(t, factory)
 	})
 
+	// GetFileChunkAtOffset is the read-path fast path: it resolves the single
+	// chunk covering a byte offset without enumerating the manifest. The
+	// covering guard (off < chunkOffset+DataSize) must return nil for a hole /
+	// past-EOF rather than a neighbouring chunk's bytes (silent corruption).
+	// Only badger implements it today; other backends skip.
+	t.Run("GetFileChunkAtOffset", func(t *testing.T) {
+		testGetFileChunkAtOffset(t, factory)
+	})
+
 	// the syncer claim cycle stamps
 	// LastSyncAttemptAt = now when flipping a block to Syncing, and the
 	// restart-recovery janitor compares it against ClaimTimeout. Every
@@ -327,6 +336,113 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 }
 
 // ============================================================================
+// GetFileChunkAtOffset Test
+// ============================================================================
+
+// chunkAtOffsetProbe is the indexed covering-chunk lookup, implemented only by
+// the badger backend today. Backends without it skip the subtest.
+type chunkAtOffsetProbe interface {
+	GetFileChunkAtOffset(ctx context.Context, payloadID string, off uint64) (*block.FileChunk, error)
+}
+
+// coveringOracle independently resolves the chunk covering off by walking the
+// full ListFileChunks result with the same covering check the fast path uses —
+// the reference the indexed lookup must agree with.
+func coveringOracle(rows []*block.FileChunk, off uint64) *block.FileChunk {
+	for _, fb := range rows {
+		abs, ok := block.ParseChunkOffset(fb.ID)
+		if !ok {
+			continue
+		}
+		if off >= abs && off < abs+uint64(fb.DataSize) {
+			return fb
+		}
+	}
+	return nil
+}
+
+func testGetFileChunkAtOffset(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	probe, ok := store.(chunkAtOffsetProbe)
+	if !ok {
+		t.Skipf("backend %T does not implement GetFileChunkAtOffset", store)
+	}
+
+	// Chunks at absolute byte offsets with deliberate holes. The decimal
+	// offsets in the IDs (0, 20, 100, 200) sort lexically as 0,100,20,200 —
+	// NOT numeric order — so this exercises the decimal-vs-numeric trap the
+	// badger keys-only scan must handle. Coverage: [0,20) [20,50) [100,110)
+	// [200,300); holes at [50,100), [110,200), and past 300.
+	blocks := []*block.FileChunk{
+		{ID: "file-hole/0", State: block.BlockStatePending, DataSize: 20, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-hole/20", State: block.BlockStatePending, DataSize: 30, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-hole/100", State: block.BlockStatePending, DataSize: 10, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-hole/200", State: block.BlockStatePending, DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+	}
+	for _, b := range blocks {
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s): %v", b.ID, err)
+		}
+	}
+	rows, err := asLegacy(t, store).ListFileChunks(ctx, "file-hole")
+	if err != nil {
+		t.Fatalf("ListFileChunks: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		off  uint64
+		want string // covering block ID, "" for a hole
+	}{
+		{"exact-start-0", 0, "file-hole/0"},
+		{"exact-start-20", 20, "file-hole/20"},
+		{"exact-start-100", 100, "file-hole/100"},
+		{"exact-start-200", 200, "file-hole/200"},
+		{"mid-chunk-10", 10, "file-hole/0"},
+		{"mid-chunk-35", 35, "file-hole/20"},
+		{"mid-chunk-250", 250, "file-hole/200"},
+		{"last-byte-19", 19, "file-hole/0"},
+		{"last-byte-49", 49, "file-hole/20"},
+		{"hole-50", 50, ""},
+		{"hole-110", 110, ""},
+		{"hole-150", 150, ""},
+		{"past-eof-300", 300, ""},
+		{"past-eof-400", 400, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := probe.GetFileChunkAtOffset(ctx, "file-hole", tc.off)
+			if err != nil {
+				t.Fatalf("GetFileChunkAtOffset(%d): %v", tc.off, err)
+			}
+			gotID := ""
+			if got != nil {
+				gotID = got.ID
+			}
+			if gotID != tc.want {
+				t.Errorf("GetFileChunkAtOffset(%d) = %q, want %q", tc.off, gotID, tc.want)
+			}
+			// Cross-check against the independent ListFileChunks walk.
+			oracleID := ""
+			if o := coveringOracle(rows, tc.off); o != nil {
+				oracleID = o.ID
+			}
+			if gotID != oracleID {
+				t.Errorf("GetFileChunkAtOffset(%d) = %q disagrees with ListFileChunks oracle %q", tc.off, gotID, oracleID)
+			}
+		})
+	}
+
+	// Unknown payload → hole, not error.
+	if got, err := probe.GetFileChunkAtOffset(ctx, "no-such-payload", 0); err != nil {
+		t.Fatalf("GetFileChunkAtOffset(unknown): %v", err)
+	} else if got != nil {
+		t.Errorf("GetFileChunkAtOffset(unknown payload) = %q, want nil", got.ID)
+	}
+}
+
 // ListFileChunks Tests
 //
 // ListFileChunks is no longer on the public

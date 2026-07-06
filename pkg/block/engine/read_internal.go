@@ -144,35 +144,23 @@ func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []b
 		return true, nil
 	}
 	// The engine consults the same EngineFileChunkStore the syncer
-	// uses; ListFileChunks returns the per-payload row list in
-	// blockIdx order, which is offset order under the persister's
-	// blockIdx := chunkOffset / BlockSize derivation. Rows missing
-	// from the list are sparse: the caller falls back to the
-	// remote-fetch + zero-fill path.
+	// uses. resolveCovering resolves the single chunk covering each
+	// offset via the badger index (falling back to a ListFileChunks
+	// walk for other backends); a nil result is sparse and the caller
+	// falls back to the remote-fetch + zero-fill path.
 	if bs.fileChunkStore == nil {
-		return false, nil
-	}
-	rows, err := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
-	if err != nil {
-		return false, err
-	}
-	if len(rows) == 0 {
 		return false, nil
 	}
 	endOff := offset + uint64(len(dest))
 	for currentOffset := offset; currentOffset < endOff; {
-		// Find the row whose chunk covers currentOffset. blockIdx is
-		// chunkOffset / BlockSize so the chunk's absolute Offset is
-		// not directly stored on the row, but we can reconstruct
-		// the chunk start by walking rows in order and tracking a
-		// running expected offset. For the test fixtures + steady-
-		// state production stream chunks land in offset-ascending
-		// order, and the row ID's blockIdx component is monotone.
-		row := findRowCoveringOffset(rows, currentOffset)
-		if row == nil || row.fb.Hash.IsZero() {
+		fb, absOffset, err := resolveCovering(ctx, bs.fileChunkStore, payloadID, currentOffset)
+		if err != nil {
+			return false, err
+		}
+		if fb == nil || fb.Hash.IsZero() {
 			return false, nil
 		}
-		data, err := bs.local.Get(ctx, row.fb.Hash)
+		data, err := bs.local.Get(ctx, fb.Hash)
 		if err != nil {
 			if errors.Is(err, block.ErrChunkNotFound) {
 				return false, nil
@@ -182,9 +170,9 @@ func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []b
 		// Integrity check: verify the buffer we already have against the
 		// chunk's content hash.  No double-read — we verify in-place.
 		computed := block.ContentHash(blake3.Sum256(data))
-		if computed != row.fb.Hash {
+		if computed != fb.Hash {
 			var healErr error
-			data, healErr = bs.healLocalChunk(ctx, row.fb.Hash, row.fb)
+			data, healErr = bs.healLocalChunk(ctx, fb.Hash, fb)
 			if healErr != nil {
 				return false, healErr
 			}
@@ -193,17 +181,17 @@ func (bs *Store) readLocalByHash(ctx context.Context, payloadID string, dest []b
 		// on-disk chunk surface doesn't leak garbage past the
 		// rollup-emitted byte count.
 		dataLen := uint64(len(data))
-		if uint64(row.fb.DataSize) > 0 && uint64(row.fb.DataSize) < dataLen {
-			dataLen = uint64(row.fb.DataSize)
+		if uint64(fb.DataSize) > 0 && uint64(fb.DataSize) < dataLen {
+			dataLen = uint64(fb.DataSize)
 		}
-		chunkAbsEnd := row.absOffset + dataLen
+		chunkAbsEnd := absOffset + dataLen
 		if currentOffset >= chunkAbsEnd {
-			// Should not happen if findRowCoveringOffset returned
-			// a row covering currentOffset — surface as sparse and
-			// let the caller fall back.
+			// Should not happen if resolveCovering returned a row
+			// covering currentOffset — surface as sparse and let
+			// the caller fall back.
 			return false, nil
 		}
-		srcOff := currentOffset - row.absOffset
+		srcOff := currentOffset - absOffset
 		copyLen := chunkAbsEnd - currentOffset
 		if copyLen > endOff-currentOffset {
 			copyLen = endOff - currentOffset
@@ -243,6 +231,45 @@ func findRowCoveringOffset(rows []*block.FileChunk, target uint64) *rowWithOffse
 		}
 	}
 	return nil
+}
+
+// chunkAtOffsetResolver is the indexed covering-chunk lookup, implemented only
+// by the badger metadata backend. resolveCovering type-asserts for it and falls
+// back to a ListFileChunks walk otherwise.
+type chunkAtOffsetResolver interface {
+	GetFileChunkAtOffset(ctx context.Context, payloadID string, off uint64) (*block.FileChunk, error)
+}
+
+// resolveCovering returns the FileChunk covering absolute byte offset off and
+// its parsed absolute start offset, or (nil, 0, nil) for a hole. When the store
+// implements chunkAtOffsetResolver (badger) it uses the indexed single-chunk
+// lookup that avoids enumerating the whole per-payload manifest; otherwise it
+// falls back to ListFileChunks + findRowCoveringOffset (memory/sqlite/postgres —
+// not the profiled hot path).
+func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payloadID string, off uint64) (*block.FileChunk, uint64, error) {
+	if store == nil {
+		return nil, 0, nil
+	}
+	if r, ok := store.(chunkAtOffsetResolver); ok {
+		fb, err := r.GetFileChunkAtOffset(ctx, payloadID, off)
+		if err != nil || fb == nil {
+			return nil, 0, err
+		}
+		abs, _ := block.ParseChunkOffset(fb.ID)
+		return fb, abs, nil
+	}
+	rows, err := store.ListFileChunks(ctx, payloadID)
+	if err != nil {
+		if errors.Is(err, block.ErrFileChunkNotFound) {
+			return nil, 0, nil
+		}
+		return nil, 0, err
+	}
+	rw := findRowCoveringOffset(rows, off)
+	if rw == nil {
+		return nil, 0, nil
+	}
+	return rw.fb, rw.absOffset, nil
 }
 
 // healLocalChunk attempts to repair a locally corrupt chunk by re-fetching it
