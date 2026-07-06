@@ -25,6 +25,23 @@ const DefaultParallelDownloads = 32
 // small enough to cap the carver's per-block RAM and keep ranged reads cheap.
 const DefaultBlockCarveBytes int64 = 16 << 20
 
+// Adaptive upload-concurrency bounds (#1407). When SyncerConfig.ParallelUploads
+// is unset (0), the carver auto-tunes concurrent block PUTs to saturate the
+// uplink: it starts at AdaptiveUploadFloor and ramps toward AdaptiveUploadCeiling,
+// settling at the goodput knee. A pinned ParallelUploads > 0 overrides this with
+// a fixed window. Block PUTs are network-latency bound, so a serial carver leaves
+// the link idle — one in-flight PutBlock sustained only ~200 Mbit/s VM→fr-par.
+const (
+	AdaptiveUploadFloor   = 16  // starting window in adaptive mode (greedy start)
+	AdaptiveUploadCeiling = 64  // max window the adaptive controller ramps to
+	AdaptiveUploadDefault = 0   // ParallelUploads sentinel: 0 = adaptive auto-tune
+	MaxParallelUploads    = 256 // upper bound on a pinned ParallelUploads window
+)
+
+// uploadControlInterval is how often the adaptive controller samples goodput and
+// resizes the upload window (#1407).
+const uploadControlInterval = 500 * time.Millisecond
+
 // DefaultPrefetchBlocks is the default number of blocks to prefetch.
 // 64 blocks = 512MB lookahead at 8MB block size.
 const DefaultPrefetchBlocks = 64
@@ -75,6 +92,14 @@ type SyncerConfig struct {
 	// carver buffers at most one block (this many bytes) in RAM at a time.
 	BlockCarveBytes int64
 
+	// ParallelUploads bounds concurrent block PUTs from the carver (#1407 /
+	// #1432). 0 (the default, AdaptiveUploadDefault) means the carver auto-tunes
+	// the window between AdaptiveUploadFloor and AdaptiveUploadCeiling to
+	// saturate the uplink; > 0 pins a fixed window (from the per-remote
+	// parallel_uploads config / --parallel-uploads). A serial carver (window 1)
+	// leaves a WAN link idle, which is the #1432 upload-throughput regression.
+	ParallelUploads int
+
 	// ManualSync, when true, suppresses the background carve dispatcher.
 	// Durability is then driven solely by explicit Flush, making Flush the
 	// single deterministic durability driver. Off by default; used where a
@@ -104,6 +129,7 @@ func DefaultConfig() SyncerConfig {
 		UploadInterval:              2 * time.Second,
 		UploadDelay:                 10 * time.Second,
 		BlockCarveBytes:             DefaultBlockCarveBytes,
+		ParallelUploads:             AdaptiveUploadDefault,
 		HealthCheckInterval:         30 * time.Second,
 		HealthCheckFailureThreshold: 3,
 		UnhealthyCheckInterval:      5 * time.Second,

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	gosync "sync"
+	"sync/atomic"
 	"time"
 
 	"lukechampine.com/blake3"
@@ -111,25 +113,87 @@ func (m *Syncer) carveFlush(ctx context.Context, drainAll bool) error {
 		// condition honestly.
 		return nil
 	}
+	// Created outside carveMu to avoid a carveMu→m.mu nesting; idempotent.
+	m.ensureUploadLimiter()
+
 	m.carveMu.Lock()
 	defer m.carveMu.Unlock()
 
 	target := m.carveBlockSize()
+
+	var (
+		wg       gosync.WaitGroup
+		errOnce  gosync.Once
+		firstErr error
+		failed   atomic.Bool
+	)
+	fail := func(err error) {
+		errOnce.Do(func() { firstErr = err })
+		failed.Store(true)
+	}
+
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			fail(err)
+			break
+		}
+		// Stop claiming more once any in-flight block failed: a failing remote
+		// should not keep draining the queue this pass (it retries next pass).
+		if failed.Load() {
+			break
 		}
 		batch, batchBytes := m.claimCarveBatch(target, drainAll)
 		if len(batch) == 0 {
-			return nil
+			break
 		}
-		if err := m.carveAndCommitBlock(ctx, batch, batchBytes); err != nil {
-			// Return the batch to the queue for a later retry and surface the
-			// error so an explicit Flush reports non-durability.
+		// Bound concurrent PutBlocks by the pinned or adaptive window. Acquire
+		// blocks for a slot and returns ctx.Err() on cancellation, so a
+		// cancelled flush stops dispatching without stranding the claimed batch.
+		if err := m.uploadLimiter.Acquire(ctx); err != nil {
 			m.requeueCarveBatch(batch)
-			return err
+			fail(err)
+			break
 		}
+		wg.Add(1)
+		go func(batch []block.ContentHash, batchBytes int64) {
+			defer wg.Done()
+			defer m.uploadLimiter.Release()
+			// Each block is independent — distinct chunks, a fresh random
+			// blockID, an idempotent PutBlock, an atomic per-block commit — so
+			// blocks carve and upload concurrently. claimCarveBatch and
+			// requeueCarveBatch serialize carveQ under pendingMu; carveMu (held
+			// by the parent) serializes whole flushes so a background pass and an
+			// explicit Flush never build a block from the same chunk twice.
+			if err := m.carveAndCommitBlock(ctx, batch, batchBytes); err != nil {
+				// Return the batch to the queue for a later retry and surface the
+				// first error so an explicit Flush reports non-durability.
+				m.requeueCarveBatch(batch)
+				fail(err)
+			}
+		}(batch, batchBytes)
 	}
+	// Block until every dispatched block is durable (or errored). Flush/SyncNow
+	// must not report success while a PutBlock is still in flight.
+	wg.Wait()
+	return firstErr
+}
+
+// ensureUploadLimiter lazily creates the upload limiter for Syncers built
+// directly (test fixtures) rather than via NewSyncer, which always wires it. A
+// fixture has no adaptive control goroutine, so the limiter holds a fixed
+// window: the pinned ParallelUploads if set, else the adaptive ceiling so
+// fixtures still get full concurrency. Idempotent under m.mu.
+func (m *Syncer) ensureUploadLimiter() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.uploadLimiter != nil {
+		return
+	}
+	start := m.config.ParallelUploads
+	if start <= 0 {
+		start = AdaptiveUploadCeiling
+	}
+	m.uploadLimiter = newDynamicSemaphore(start)
 }
 
 // claimCarveBatch pops chunks from the carve FIFO (validating against the
@@ -398,8 +462,14 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	}
 	if err != nil {
 		m.failedSyncs.Add(1)
+		// Feed the adaptive controller: an upload error this interval signals
+		// server pushback, so the controller backs the window off next tick.
+		m.uploadErrWindow.Add(1)
 		return fmt.Errorf("carve: put block %s: %w", blockID, err)
 	}
+	// Count delivered bytes for the adaptive controller's goodput sample. The
+	// control goroutine swaps this to zero each tick to compute bytes/sec.
+	m.uploadedBytesWindow.Add(int64(len(blockBytes)))
 
 	rec := block.BlockRecord{
 		BlockID:        blockID,

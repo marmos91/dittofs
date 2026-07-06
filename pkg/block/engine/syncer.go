@@ -101,6 +101,23 @@ type Syncer struct {
 	completedSyncs atomic.Int64
 	failedSyncs    atomic.Int64
 
+	// uploadLimiter bounds concurrent block PUTs in carveFlush (#1407 / #1432).
+	// When ParallelUploads is pinned (> 0) its limit is fixed at that value.
+	// When unset (adaptive mode) the uploadController resizes it every control
+	// interval to track the goodput knee. Lazily created by ensureUploadLimiter
+	// so directly-built test fixtures still get bounded concurrency.
+	uploadLimiter *dynamicSemaphore
+	// uploadController is non-nil only in adaptive mode. It consumes one
+	// (goodput, windowLimited, sawError) sample per control interval and returns
+	// the next target window, applied to uploadLimiter by the control goroutine.
+	uploadController *goodputController
+	// uploadedBytesWindow accumulates bytes successfully PutBlock'd since the
+	// last control tick; uploadErrWindow counts block-upload errors in the same
+	// span. The control goroutine swaps both to zero each tick to compute the
+	// goodput sample and the error flag. Plain atomics — no lock needed.
+	uploadedBytesWindow atomic.Int64
+	uploadErrWindow     atomic.Int64
+
 	// --- block carve path (#1414 object packing) ---
 
 	// remoteBlockStore is the block-keyed remote (PutBlock) the carver uploads
@@ -288,6 +305,18 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 		config.ClaimTimeout = 10 * time.Minute
 	}
 
+	// Upload concurrency (#1407 / #1432): a pinned ParallelUploads > 0 fixes the
+	// window; otherwise (the default) the carver auto-tunes between the adaptive
+	// floor and ceiling. The limiter starts at the floor in adaptive mode and at
+	// the pinned value otherwise; the control goroutine (adaptive only, launched
+	// in Start) resizes it at runtime.
+	var uploadController *goodputController
+	startWindow := config.ParallelUploads
+	if config.ParallelUploads <= 0 {
+		startWindow = AdaptiveUploadFloor
+		uploadController = newGoodputController(AdaptiveUploadFloor, AdaptiveUploadCeiling)
+	}
+
 	m := &Syncer{
 		local:          local,
 		remoteStore:    remoteStore,
@@ -295,6 +324,9 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 		config:         config,
 		inFlight:       make(map[string]*fetchResult),
 		stopCh:         make(chan struct{}),
+
+		uploadLimiter:    newDynamicSemaphore(startWindow),
+		uploadController: uploadController,
 
 		pendingCarveHashes: make(map[block.ContentHash]int64),
 		carveWake:          make(chan struct{}, 1),
@@ -810,6 +842,76 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	// (FileChunk metadata flush, drift reconcile) the dispatcher does not.
 	go m.maintenanceLoop(ctx, interval)
 	go m.carveDispatcher(ctx)
+
+	// Adaptive mode (ParallelUploads unset): launch the goodput controller that
+	// resizes the upload window to saturate the uplink (#1407). Pinned
+	// --parallel-uploads leaves uploadController nil and keeps the fixed window;
+	// publish it once so the gauge reflects it instead of reading 0.
+	if m.uploadController != nil {
+		go m.runUploadController(ctx, uploadControlInterval)
+	} else if mx := m.dataplaneMetrics(); mx != nil && m.uploadLimiter != nil {
+		mx.SetUploadWindow(m.uploadLimiter.Limit())
+	}
+}
+
+// runUploadController is the adaptive upload-concurrency control loop (#1407).
+// Every interval it turns the bytes/error accumulated by carveAndCommitBlock
+// into a goodput sample, feeds the goodputController, and applies the returned
+// window to the shared uploadLimiter. Runs only in adaptive mode (controller
+// non-nil). Idle intervals (no bytes, nothing in flight, no error) are skipped
+// so a write pause is not misread as a goodput collapse.
+func (m *Syncer) runUploadController(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	// Publish the starting window so the gauge is populated before the first
+	// adjustment.
+	if mx := m.dataplaneMetrics(); mx != nil {
+		mx.SetUploadWindow(m.uploadLimiter.Limit())
+	}
+	seconds := interval.Seconds()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+			m.adaptiveUploadTick(seconds)
+		}
+	}
+}
+
+// adaptiveUploadTick converts one control interval's accumulated bytes and
+// error flag into a goodput sample, feeds the controller, and applies the
+// resulting window to the upload limiter. Extracted from the goroutine loop so
+// the bytes→goodput→window glue is unit-testable without a clock. intervalSec
+// is the control interval in seconds.
+func (m *Syncer) adaptiveUploadTick(intervalSec float64) {
+	bytes := m.uploadedBytesWindow.Swap(0)
+	sawErr := m.uploadErrWindow.Swap(0) > 0
+	// Peak in-flight over the interval distinguishes window-limited from
+	// app-limited: uploads that filled the window mean goodput reflects the
+	// window; otherwise the upstream carve pipeline was the constraint (see
+	// goodputController.observe).
+	peak := m.uploadLimiter.TakePeak()
+	windowLimited := peak >= m.uploadLimiter.Limit()
+
+	if bytes == 0 && peak == 0 && !sawErr {
+		// Idle interval: no control decision, but publish an honest zero so the
+		// goodput gauge does not freeze at the last active sample.
+		if mx := m.dataplaneMetrics(); mx != nil {
+			mx.SetUploadGoodput(0)
+		}
+		return
+	}
+
+	goodput := float64(bytes) / intervalSec
+	window := m.uploadController.observe(goodput, windowLimited, sawErr)
+	m.uploadLimiter.SetLimit(window)
+	if mx := m.dataplaneMetrics(); mx != nil {
+		mx.SetUploadWindow(window)
+		mx.SetUploadGoodput(goodput)
+	}
 }
 
 // maintenanceLoop runs the slow periodic housekeeping that the steady-state

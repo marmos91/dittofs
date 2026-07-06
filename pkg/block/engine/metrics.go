@@ -17,6 +17,12 @@ type DataplaneMetrics interface {
 	UploadFinished()
 	// SetUploadQueueDepth publishes the pending-carve backlog.
 	SetUploadQueueDepth(n int)
+	// SetUploadWindow publishes the target upload concurrency — the pinned
+	// parallel_uploads value or the adaptive controller's current window (#1407).
+	SetUploadWindow(n int)
+	// SetUploadGoodput publishes the delivered bytes/sec the adaptive controller
+	// measured over the last control interval (#1407).
+	SetUploadGoodput(bytesPerSec float64)
 
 	// --- Corruption detection / self-heal (read path) ---
 	// All five counters are BOUNDED zero-label counters: no per-share, per-
