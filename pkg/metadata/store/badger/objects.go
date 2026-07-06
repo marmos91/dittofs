@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -716,8 +717,7 @@ func splitBlockID(id string) (pid, idx string, ok bool) {
 // parseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
 func parseBlockIdx(id string) int {
 	if _, idx, ok := splitBlockID(id); ok {
-		var v int
-		if _, err := fmt.Sscanf(idx, "%d", &v); err == nil {
+		if v, err := strconv.Atoi(idx); err == nil {
 			return v
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -459,8 +460,7 @@ func (s *PostgresMetadataStore) EnumerateFileChunks(ctx context.Context, fn func
 // pgParseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
 func pgParseBlockIdx(id string) int {
 	if idx := strings.LastIndex(id, "/"); idx >= 0 {
-		var v int
-		if _, err := fmt.Sscanf(id[idx+1:], "%d", &v); err == nil {
+		if v, err := strconv.Atoi(id[idx+1:]); err == nil {
 			return v
 		}
 	}
