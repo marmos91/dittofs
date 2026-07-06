@@ -255,7 +255,10 @@ func resolveCovering(ctx context.Context, store block.EngineFileChunkStore, payl
 		if err != nil || fb == nil {
 			return nil, 0, err
 		}
-		abs, _ := block.ParseChunkOffset(fb.ID)
+		abs, ok := block.ParseChunkOffset(fb.ID)
+		if !ok {
+			return nil, 0, fmt.Errorf("resolveCovering: malformed FileChunk ID %q", fb.ID)
+		}
 		return fb, abs, nil
 	}
 	rows, err := store.ListFileChunks(ctx, payloadID)

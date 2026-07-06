@@ -3,6 +3,7 @@ package badger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -446,34 +447,42 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 			return nil // nothing starts at or before off — hole
 		}
 
-		// Fetch the winning row: index key -> block ID -> primary row. A stale
-		// index row (deleted block) is treated as a hole, mirroring
-		// listFileChunksTxn's "index stale, block deleted" skip.
+		// Fetch the winning row: index key -> block ID -> primary row. A
+		// missing index/primary row (ErrKeyNotFound) is a stale index entry —
+		// treat as a hole, mirroring listFileChunksTxn's "index stale, block
+		// deleted" skip. Any other Get/Value/unmarshal error is real IO or
+		// corruption and must propagate, not masquerade as a hole.
 		idxItem, gerr := txn.Get([]byte(fileChunkFilePrefix + payloadID + ":" + strconv.FormatUint(bestOff, 10)))
-		if gerr != nil {
+		if errors.Is(gerr, badger.ErrKeyNotFound) {
 			return nil
+		} else if gerr != nil {
+			return gerr
 		}
 		var blockID string
 		if verr := idxItem.Value(func(val []byte) error {
 			blockID = string(val)
 			return nil
 		}); verr != nil {
-			return nil
+			return verr
 		}
 		fbItem, gerr := txn.Get([]byte(fileChunkPrefix + blockID))
-		if gerr != nil {
+		if errors.Is(gerr, badger.ErrKeyNotFound) {
 			return nil
+		} else if gerr != nil {
+			return gerr
 		}
 		var fc metadata.FileChunk
 		if verr := fbItem.Value(func(val []byte) error {
 			return json.Unmarshal(val, &fc)
 		}); verr != nil {
-			return nil
+			return verr
 		}
-		// Covering guard: the scan guarantees bestOff <= off; require
-		// off < bestOff+DataSize, else off falls in a hole past this chunk and
-		// must NOT be served this chunk's bytes.
-		if off >= bestOff+uint64(fc.DataSize) {
+		// Covering guard keyed on the row's OWN start offset (the source of
+		// truth), not the index key, so an inconsistent index can't serve a
+		// neighbour chunk's bytes into a hole. off-abs is overflow-free since
+		// the scan guarantees abs <= off.
+		abs, ok := blockpkg.ParseChunkOffset(fc.ID)
+		if !ok || off < abs || off-abs >= uint64(fc.DataSize) {
 			return nil
 		}
 		result = &fc
