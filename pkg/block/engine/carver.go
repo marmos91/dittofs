@@ -118,11 +118,11 @@ func (m *Syncer) carveFlush(ctx context.Context, drainAll bool) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		batch := m.claimCarveBatch(target, drainAll)
+		batch, batchBytes := m.claimCarveBatch(target, drainAll)
 		if len(batch) == 0 {
 			return nil
 		}
-		if err := m.carveAndCommitBlock(ctx, batch); err != nil {
+		if err := m.carveAndCommitBlock(ctx, batch, batchBytes); err != nil {
 			// Return the batch to the queue for a later retry and surface the
 			// error so an explicit Flush reports non-durability.
 			m.requeueCarveBatch(batch)
@@ -139,7 +139,9 @@ func (m *Syncer) carveFlush(ctx context.Context, drainAll bool) error {
 // are removed from carveQ but remain in pendingCarveHashes until their block
 // commits (or are requeued on failure). Caller holds carveMu (so no concurrent
 // claim races the same chunks).
-func (m *Syncer) claimCarveBatch(target int64, drainAll bool) []block.ContentHash {
+// The returned total is the summed body size of the claimed chunks, so the
+// caller can pre-size the block buffer exactly (avoiding grow-and-copy churn).
+func (m *Syncer) claimCarveBatch(target int64, drainAll bool) ([]block.ContentHash, int64) {
 	m.pendingMu.Lock()
 	defer m.pendingMu.Unlock()
 
@@ -169,7 +171,7 @@ func (m *Syncer) claimCarveBatch(target int64, drainAll bool) []block.ContentHas
 		// Not enough for a full block yet: leave carveQ untouched and wait for
 		// more chunks or the idle flush. Nothing was detached, so FIFO order and
 		// the pending set are exactly as the caller left them.
-		return nil
+		return nil, 0
 	}
 
 	// Committing to carve: detach the claimed prefix now. When target was hit
@@ -181,7 +183,7 @@ func (m *Syncer) claimCarveBatch(target int64, drainAll bool) []block.ContentHas
 	} else {
 		m.carveQ = nil
 	}
-	return batch
+	return batch, total
 }
 
 // requeueCarveBatch returns a failed batch's hashes to the carve queue (only
@@ -264,7 +266,7 @@ func (m *Syncer) carveChunkBytes(
 // blockcodec, uploads the assembled block with PutBlock, and atomically commits
 // the block record + per-chunk locators + synced markers. On success the
 // committed hashes leave pendingCarveHashes and the bytes leave unsyncedBytes.
-func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentHash) error {
+func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentHash, batchBytes int64) error {
 	m.mu.RLock()
 	rbs := m.remoteBlockStore
 	sealer := m.chunkSealer
@@ -308,6 +310,17 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	}
 
 	var buf bytes.Buffer
+	// Pre-size so the block is written into one backing array instead of being
+	// doubled-and-copied as it grows — #1555 profiling showed that growth was the
+	// streamer's dominant allocation (~346 MB per 64 MiB). batchBytes is the raw
+	// claimed body size; per chunk we add 256 B of headroom to cover the codec
+	// record/header (~38 B) plus a decorated sealer's per-frame wire inflation
+	// (encryption's magic + wrapped-key + nonce + AEAD tag ≈ 80 B). For the
+	// identity sealer this is an exact upper bound (and the sync filter only
+	// drops chunks, never adds). A sealer that inflates past the headroom (e.g. a
+	// pathologically large wrapped key) costs at most one regrow — still correct,
+	// just less optimal.
+	buf.Grow(int(batchBytes) + len(batch)*256 + 512)
 	builder, err := blockcodec.NewBuilder(&buf, blockID, nil)
 	if err != nil {
 		return fmt.Errorf("carve: new builder: %w", err)

@@ -27,8 +27,8 @@ func TestClaimCarveBatch_UnderTargetLeavesQueueUntouched(t *testing.T) {
 	m.pendingCarveHashes[h2] = 10
 	before := &m.carveQ[0] // backing-array identity
 
-	if got := m.claimCarveBatch(25, false); got != nil {
-		t.Fatalf("under-target claim = %v, want nil", got)
+	if got, gotBytes := m.claimCarveBatch(25, false); got != nil || gotBytes != 0 {
+		t.Fatalf("under-target claim = %v (%d bytes), want nil (0)", got, gotBytes)
 	}
 	if len(m.carveQ) != 2 || m.carveQ[0] != h1 || m.carveQ[1] != h2 {
 		t.Fatalf("carveQ mutated on under-target peek: %v", m.carveQ)
@@ -50,7 +50,10 @@ func TestClaimCarveBatch_ReachesTargetClaimsPrefixKeepsSuffix(t *testing.T) {
 	}
 
 	// target 15: h1(10) then h2(20>=15) -> claim [h1,h2], leave [h3].
-	got := m.claimCarveBatch(15, false)
+	got, gotBytes := m.claimCarveBatch(15, false)
+	if gotBytes != 20 {
+		t.Fatalf("claimed bytes = %d, want 20 (h1=10 + h2=10)", gotBytes)
+	}
 	if len(got) != 2 || got[0] != h1 || got[1] != h2 {
 		t.Fatalf("claimed = %v, want [h1 h2] (FIFO prefix)", got)
 	}
@@ -70,7 +73,10 @@ func TestClaimCarveBatch_DrainAllClaimsRemainderSkippingStale(t *testing.T) {
 	m.pendingCarveHashes[h1] = 10
 	m.pendingCarveHashes[h3] = 10
 
-	got := m.claimCarveBatch(1000, true) // target far above total, but drainAll
+	got, gotBytes := m.claimCarveBatch(1000, true) // target far above total, but drainAll
+	if gotBytes != 20 {
+		t.Fatalf("claimed bytes = %d, want 20 (h1=10 + h3=10, stale h2 skipped)", gotBytes)
+	}
 	if len(got) != 2 || got[0] != h1 || got[1] != h3 {
 		t.Fatalf("claimed = %v, want [h1 h3] (stale h2 dropped, FIFO)", got)
 	}
