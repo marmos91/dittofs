@@ -185,7 +185,7 @@ func captureState(t *testing.T, st *metadatamemory.MemoryMetadataStore, rbs *rem
 	}); err != nil {
 		t.Fatalf("WalkBlocks: %v", err)
 	}
-	if err := st.EnumerateSynced(ctx, func(h block.ContentHash, _ time.Time) error {
+	if err := st.EnumerateSynced(ctx, func(h block.ContentHash, _ block.ChunkLocator, _ time.Time) error {
 		s.syncedHashes[h.String()] = struct{}{}
 		return nil
 	}); err != nil {
@@ -222,25 +222,21 @@ func (s reconcileState) assertEqual(t *testing.T, other reconcileState) {
 	}
 }
 
-// nestedGuardMetaView models the sqlite MaxOpenConns(1) hazard: while an
-// EnumerateSynced cursor is open it holds the only connection, so any query from
-// inside the callback (GetLocator) would deadlock. It fails loudly instead, so
-// Reconcile must drain the enumeration before resolving locators.
+// nestedGuardMetaView proves the #1554 locator fold: EnumerateSynced yields each
+// marker's locator in-scan, so Reconcile resolves references without any
+// GetLocator round trip. GetLocator fails loudly if called at all — the fold
+// removed the per-hash resolve that the sqlite MaxOpenConns(1) pool serialized
+// (and that, called inside the cursor, used to deadlock #1552).
 type nestedGuardMetaView struct {
-	t           *testing.T
-	inEnumerate bool
+	t *testing.T
 }
 
-func (v *nestedGuardMetaView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, time.Time) error) error {
-	v.inEnumerate = true
-	defer func() { v.inEnumerate = false }()
-	return fn(hashFromString("chunk"), time.Time{})
+func (v *nestedGuardMetaView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, block.ChunkLocator, time.Time) error) error {
+	return fn(hashFromString("chunk"), block.ChunkLocator{BlockID: "blk-live"}, time.Time{})
 }
 
 func (v *nestedGuardMetaView) GetLocator(_ context.Context, _ block.ContentHash) (block.ChunkLocator, bool, error) {
-	if v.inEnumerate {
-		v.t.Fatal("GetLocator called while EnumerateSynced cursor is open — deadlocks on sqlite MaxOpenConns(1)")
-	}
+	v.t.Fatal("GetLocator called — the locator fold means Reconcile resolves from the EnumerateSynced scan, never a per-hash round trip (#1554)")
 	return block.ChunkLocator{BlockID: "blk-live"}, true, nil
 }
 
@@ -248,9 +244,10 @@ func (v *nestedGuardMetaView) WalkBlockRecords(_ context.Context, fn func(block.
 	return fn(block.BlockRecord{BlockID: "blk-live", Length: 5, LiveChunkCount: 1})
 }
 
-// TestReconcile_NoNestedQueryDuringEnumerate guards the #1552 sqlite deadlock:
-// Reconcile must not call GetLocator inside the EnumerateSynced callback.
-func TestReconcile_NoNestedQueryDuringEnumerate(t *testing.T) {
+// TestReconcile_ResolvesLocatorsFromEnumerateScan proves the #1554 fold:
+// Reconcile classifies blocks using the locator yielded by EnumerateSynced and
+// never issues a per-hash GetLocator (the guard view fatals if it does).
+func TestReconcile_ResolvesLocatorsFromEnumerateScan(t *testing.T) {
 	v := &nestedGuardMetaView{t: t}
 	rep, err := Reconcile(t.Context(), []ReconcileMetaView{v}, nil, nil, ReconcileOptions{})
 	if err != nil {

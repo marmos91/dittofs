@@ -135,28 +135,18 @@ func CompactBlocks(
 
 	for _, v := range views {
 		// Live bytes per block: sum the WireLength of every live synced locator.
-		// Drain EnumerateSynced THEN resolve locators — the sqlite pool is
-		// MaxOpenConns(1), so GetLocator inside the enumerate callback (cursor
-		// still open) would deadlock waiting for a second connection.
-		var synced []block.ContentHash
-		if err := v.EnumerateSynced(ctx, func(h block.ContentHash, _ time.Time) error {
-			synced = append(synced, h)
+		// Single scan: EnumerateSynced yields each marker's locator alongside its
+		// hash (same row), so no GetLocator round trip per hash — the O(N) serial
+		// cost on the sqlite MaxOpenConns(1) pool (#1554). Folding the locator in
+		// also removes the nested-query deadlock class structurally.
+		liveBytes := make(map[string]int64)
+		if err := v.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {
+			if loc.BlockID != "" {
+				liveBytes[loc.BlockID] += loc.WireLength
+			}
 			return nil
 		}); err != nil {
 			return report, fmt.Errorf("compaction: enumerate synced: %w", err)
-		}
-		liveBytes := make(map[string]int64)
-		for _, h := range synced {
-			if err := ctx.Err(); err != nil {
-				return report, err
-			}
-			loc, ok, err := v.GetLocator(ctx, h)
-			if err != nil {
-				return report, fmt.Errorf("compaction: get locator: %w", err)
-			}
-			if ok && loc.BlockID != "" {
-				liveBytes[loc.BlockID] += loc.WireLength
-			}
 		}
 
 		// Collect candidate block IDs first — never GET/commit/delete while the

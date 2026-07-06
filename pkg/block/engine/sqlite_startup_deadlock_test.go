@@ -208,7 +208,7 @@ type countingMetaView struct {
 	getLocatorCall int
 }
 
-func (v *countingMetaView) EnumerateSynced(ctx context.Context, fn func(block.ContentHash, time.Time) error) error {
+func (v *countingMetaView) EnumerateSynced(ctx context.Context, fn func(block.ContentHash, block.ChunkLocator, time.Time) error) error {
 	v.enumerateCalls++
 	return v.SQLiteMetadataStore.EnumerateSynced(ctx, fn)
 }
@@ -218,17 +218,15 @@ func (v *countingMetaView) GetLocator(ctx context.Context, h block.ContentHash) 
 	return v.SQLiteMetadataStore.GetLocator(ctx, h)
 }
 
-// TestSQLiteReconcile_LocatorRoundTripsAreLinear documents the slow-startup
-// finding of #1554. After the collect-then-query deadlock fix, the migration /
-// reconcile / reclaim passes are correct but still issue one GetLocator round
-// trip per synced hash. On the sqlite backend every one of those round trips is
-// serialized on the single pooled connection (SetMaxOpenConns(1)), so the cost
-// of resolving locators is O(synced-hash-count) sequential statements — the
-// latent serialization behind the ">120s to first healthy" symptom on a large
-// sqlite+S3 share. This test pins that N+1 shape so the profiling finding is
-// observable in CI; the batch fix is to fold the locator columns into the
-// EnumerateSynced scan (they already live in the same synced_hashes row).
-func TestSQLiteReconcile_LocatorRoundTripsAreLinear(t *testing.T) {
+// TestSQLiteReconcile_LocatorResolutionIsSinglePass pins the #1554 fix. Before
+// the fold, reconcile (and the boot-critical migration-detection scan, and
+// reclaim/compaction) resolved locators with one GetLocator per synced hash —
+// O(synced-hash-count) statements serialized on the sqlite SetMaxOpenConns(1)
+// pool, the latent serialization behind the ">120s to first healthy" cold-start
+// on a large sqlite+S3 share. The fold yields each marker's locator directly in
+// the EnumerateSynced scan (same synced_hashes row), so resolution is now ONE
+// scan with ZERO per-hash round trips. A regression back to N+1 fails here.
+func TestSQLiteReconcile_LocatorResolutionIsSinglePass(t *testing.T) {
 	st := newSQLiteStoreForDeadlockTest(t)
 	const n = 32
 	seedSyncedMarkers(t, st, "blk-live", n)
@@ -239,13 +237,55 @@ func TestSQLiteReconcile_LocatorRoundTripsAreLinear(t *testing.T) {
 	}
 
 	if view.enumerateCalls != 1 {
-		t.Errorf("EnumerateSynced calls = %d; want 1", view.enumerateCalls)
+		t.Errorf("EnumerateSynced calls = %d; want 1 (single scan)", view.enumerateCalls)
 	}
-	// One serial GetLocator per synced hash: the O(n) round-trip pattern that
-	// serializes on the single sqlite connection at startup.
-	if view.getLocatorCall != n {
-		t.Errorf("GetLocator round trips = %d; want %d (one per synced hash)", view.getLocatorCall, n)
+	// Zero per-hash GetLocator round trips: the locator is folded into the scan,
+	// so nothing serializes on the single sqlite connection per hash.
+	if view.getLocatorCall != 0 {
+		t.Errorf("GetLocator round trips = %d; want 0 (locator folded into EnumerateSynced) — regression of the #1554 N+1 fix", view.getLocatorCall)
 	}
-	t.Logf("sqlite locator resolution issued %d serial GetLocator round trips for %d synced hashes "+
-		"(each serialized on the MaxOpenConns(1) pool) — see #1554 profiling finding", view.getLocatorCall, n)
+}
+
+// TestSQLiteStartup_MigrationDetectionIsSinglePass reproduces the #1554 cold-
+// start on the boot-critical path: Store.Start's one-shot legacy-CAS migration
+// runs its standalone-detection scan on every boot, before the API server binds.
+// With the locator folded into EnumerateSynced, detection is a single scan with
+// zero per-hash GetLocator round trips (was O(n) serial statements on the
+// MaxOpenConns(1) pool). Block-resident markers mean nothing is standalone, so
+// no repack runs — the point is the detection scan's round-trip shape.
+func TestSQLiteStartup_MigrationDetectionIsSinglePass(t *testing.T) {
+	st := newSQLiteStoreForDeadlockTest(t)
+	const n = 32
+	seedSyncedMarkers(t, st, "blk-live", n)
+	view := &countingMetaView{SQLiteMetadataStore: st}
+
+	local := localmemory.New()
+	rbs := remotememory.New()
+	fbs := newStubFileChunkStore()
+	syncer := NewSyncer(local, rbs, fbs, DefaultConfig())
+	syncer.SetRemoteBlockStore(rbs)
+
+	bs, err := New(BlockStoreConfig{
+		Local:           local,
+		Remote:          rbs,
+		Syncer:          syncer,
+		FileChunkStore:  fbs,
+		SyncedHashStore: view,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	cleanupClose(t, "block store", bs.Close)
+
+	runBounded(t, "Store.Start (migration detection)", bs.Start)
+
+	if view.enumerateCalls < 1 {
+		t.Errorf("EnumerateSynced calls = %d; want >=1 (migration detection scan ran)", view.enumerateCalls)
+	}
+	// The migration detection must resolve standalone-ness from the folded
+	// locator, never a per-hash GetLocator — the O(n) serial cost that delayed
+	// the :8080 bind past 120s on a large sqlite+S3 share.
+	if view.getLocatorCall != 0 {
+		t.Errorf("migration detection issued %d GetLocator round trips; want 0 (locator folded into the scan) — regression of the #1554 cold-start fix", view.getLocatorCall)
+	}
 }

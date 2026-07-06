@@ -47,7 +47,7 @@ func sweepFromSyncedIndex(
 	graceCutoff := snapshotTime.Add(-gracePeriod)
 	var scanned int64
 
-	enumErr := options.SyncedHashIndex.EnumerateSynced(ctx, func(h block.ContentHash, syncedAt time.Time) error {
+	enumErr := options.SyncedHashIndex.EnumerateSynced(ctx, func(h block.ContentHash, _ block.ChunkLocator, syncedAt time.Time) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

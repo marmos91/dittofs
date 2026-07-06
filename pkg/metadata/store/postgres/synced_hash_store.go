@@ -25,14 +25,16 @@ var (
 	_ metadata.SyncedHashStore = (*postgresTransaction)(nil)
 )
 
-// EnumerateSynced streams every synced marker with its first-mirror time,
-// read straight from the synced_hashes table. Used by the LIST-free GC sweep
-// to compute remote-orphan candidates without an S3 LIST.
-func (s *PostgresMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error {
+// EnumerateSynced streams every synced marker with its locator and first-mirror
+// time, read straight from the synced_hashes table. The locator columns live in
+// the same row, so yielding them here lets callers resolve locators in a single
+// scan instead of a GetLocator round trip per hash (#1554). A synced row with
+// NULL/empty block columns yields the zero (standalone) locator.
+func (s *PostgresMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	rows, err := s.query(ctx, `SELECT hash, synced_at FROM synced_hashes`)
+	rows, err := s.query(ctx, `SELECT hash, synced_at, block_id, block_offset, block_length FROM synced_hashes`)
 	if err != nil {
 		return fmt.Errorf("postgres synced enumerate: %w", err)
 	}
@@ -42,8 +44,10 @@ func (s *PostgresMetadataStore) EnumerateSynced(ctx context.Context, fn func(has
 		var (
 			raw      []byte
 			syncedAt time.Time
+			blockID  sql.NullString
+			off, ln  sql.NullInt64
 		)
-		if err := rows.Scan(&raw, &syncedAt); err != nil {
+		if err := rows.Scan(&raw, &syncedAt, &blockID, &off, &ln); err != nil {
 			return fmt.Errorf("postgres synced enumerate scan: %w", err)
 		}
 		if len(raw) != len(block.ContentHash{}) {
@@ -53,11 +57,28 @@ func (s *PostgresMetadataStore) EnumerateSynced(ctx context.Context, fn func(has
 		}
 		var h block.ContentHash
 		copy(h[:], raw)
-		if err := fn(h, syncedAt); err != nil {
+		loc, err := locatorFromCols(blockID, off, ln)
+		if err != nil {
+			return fmt.Errorf("postgres synced enumerate: %w", err)
+		}
+		if err := fn(h, loc, syncedAt); err != nil {
 			return err
 		}
 	}
 	return rows.Err()
+}
+
+// locatorFromCols builds a ChunkLocator from already-scanned (block_id,
+// block_offset, block_length) columns. NULL/empty block_id yields the zero
+// (standalone) locator. Mirrors GetLocator's decode for the folded enumeration.
+func locatorFromCols(blockID sql.NullString, off, length sql.NullInt64) (block.ChunkLocator, error) {
+	if !blockID.Valid || blockID.String == "" {
+		return block.ChunkLocator{}, nil
+	}
+	if !off.Valid || !length.Valid {
+		return block.ChunkLocator{}, fmt.Errorf("corrupt locator row: block_id %q with NULL offset/length", blockID.String)
+	}
+	return block.ChunkLocator{BlockID: blockID.String, WireOffset: off.Int64, WireLength: length.Int64}, nil
 }
 
 // IsSynced reports whether hash has been MarkSynced'd at least once.

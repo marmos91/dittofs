@@ -24,7 +24,7 @@ const defaultReconcileSampleCap = 100
 // consumes. metadata.Store satisfies it structurally (EnumerateSynced concrete
 // method + SyncedHashStore.GetLocator + BlockRecordStore.WalkBlockRecords).
 type ReconcileMetaView interface {
-	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error
+	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error
 	GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error)
 	WalkBlockRecords(ctx context.Context, fn func(block.BlockRecord) error) error
 }
@@ -162,29 +162,18 @@ func Reconcile(
 		// THIS share. Built fully first, then WalkBlockRecords classifies each
 		// record against it.
 		//
-		// Drain EnumerateSynced into a slice, THEN resolve locators: the sqlite
-		// pool is MaxOpenConns(1), so calling GetLocator inside the enumerate
-		// callback (cursor still open) would deadlock waiting for a second
-		// connection.
-		var synced []block.ContentHash
-		if err := v.EnumerateSynced(ctx, func(h block.ContentHash, _ time.Time) error {
-			synced = append(synced, h)
+		// Single scan: EnumerateSynced yields each marker's locator alongside its
+		// hash (same row), so no GetLocator round trip per hash — the O(N) serial
+		// cost on the sqlite MaxOpenConns(1) pool (#1554). Folding the locator in
+		// also removes the nested-query deadlock class structurally.
+		refSet := make(map[string]struct{})
+		if err := v.EnumerateSynced(ctx, func(_ block.ContentHash, loc block.ChunkLocator, _ time.Time) error {
+			if loc.BlockID != "" {
+				refSet[loc.BlockID] = struct{}{}
+			}
 			return nil
 		}); err != nil {
 			return report, fmt.Errorf("reconcile: enumerate synced: %w", err)
-		}
-		refSet := make(map[string]struct{})
-		for _, h := range synced {
-			if err := ctx.Err(); err != nil {
-				return report, err
-			}
-			loc, ok, err := v.GetLocator(ctx, h)
-			if err != nil {
-				return report, fmt.Errorf("reconcile: get locator: %w", err)
-			}
-			if ok && loc.BlockID != "" {
-				refSet[loc.BlockID] = struct{}{}
-			}
 		}
 
 		if err := v.WalkBlockRecords(ctx, func(rec block.BlockRecord) error {

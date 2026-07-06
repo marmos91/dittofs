@@ -466,26 +466,30 @@ var _ engine.SyncedHashIndex = multiSyncedHashStore(nil)
 // different first-mirror times; it keeps the LATEST so the grace window covers
 // the most recent upload — the most conservative choice (never delete a hash
 // still within any share's grace). A real timestamp supersedes a legacy zero.
-func (m multiSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error {
+func (m multiSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	latest := make(map[block.ContentHash]time.Time)
+	type entry struct {
+		loc      block.ChunkLocator
+		syncedAt time.Time
+	}
+	latest := make(map[block.ContentHash]entry)
 	for _, s := range m {
-		if err := s.EnumerateSynced(ctx, func(h block.ContentHash, syncedAt time.Time) error {
-			if prev, ok := latest[h]; !ok || syncedAt.After(prev) {
-				latest[h] = syncedAt
+		if err := s.EnumerateSynced(ctx, func(h block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error {
+			if prev, ok := latest[h]; !ok || syncedAt.After(prev.syncedAt) {
+				latest[h] = entry{loc: loc, syncedAt: syncedAt}
 			}
 			return nil
 		}); err != nil {
 			return err
 		}
 	}
-	for h, t := range latest {
+	for h, e := range latest {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := fn(h, t); err != nil {
+		if err := fn(h, e.loc, e.syncedAt); err != nil {
 			return err
 		}
 	}

@@ -175,8 +175,9 @@ func (s *recordingSyncedHashStore) MarkSynced(_ context.Context, hash block.Cont
 }
 
 // EnumerateSynced satisfies engine.SyncedHashIndex, yielding each marker with
-// its recorded first-mirror time (the LIST-free sweep's grace anchor).
-func (s *recordingSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(block.ContentHash, time.Time) error) error {
+// its locator (standalone here — this fake records no block locators) and
+// recorded first-mirror time (the LIST-free sweep's grace anchor).
+func (s *recordingSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(block.ContentHash, block.ChunkLocator, time.Time) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -187,7 +188,7 @@ func (s *recordingSyncedHashStore) EnumerateSynced(ctx context.Context, fn func(
 	}
 	s.mu.Unlock()
 	for h, t := range snapshot {
-		if err := fn(h, t); err != nil {
+		if err := fn(h, block.ChunkLocator{}, t); err != nil {
 			return err
 		}
 	}

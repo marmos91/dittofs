@@ -28,24 +28,31 @@ func (s *MemoryMetadataStore) MarkSyncedAtForTest(hash block.ContentHash, when t
 	s.synced[hash] = when
 }
 
-// EnumerateSynced streams every synced marker with its first-mirror time.
-// It snapshots the map under the read lock so fn runs without holding it.
-func (s *MemoryMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error {
+// EnumerateSynced streams every synced marker with its locator and first-mirror
+// time. It snapshots the maps under the read lock so fn runs without holding it.
+// Yielding the locator here lets callers resolve locators in a single pass
+// instead of a GetLocator lookup per hash (#1554). A standalone chunk has no
+// entry in syncedLocators, so it yields the zero (standalone) locator.
+func (s *MemoryMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	type entry struct {
+		loc      block.ChunkLocator
+		syncedAt time.Time
+	}
 	s.syncedMu.RLock()
-	snapshot := make(map[block.ContentHash]time.Time, len(s.synced))
+	snapshot := make(map[block.ContentHash]entry, len(s.synced))
 	for h, t := range s.synced {
-		snapshot[h] = t
+		snapshot[h] = entry{loc: s.syncedLocators[h], syncedAt: t}
 	}
 	s.syncedMu.RUnlock()
 
-	for h, t := range snapshot {
+	for h, e := range snapshot {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := fn(h, t); err != nil {
+		if err := fn(h, e.loc, e.syncedAt); err != nil {
 			return err
 		}
 	}

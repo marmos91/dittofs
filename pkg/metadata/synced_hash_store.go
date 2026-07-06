@@ -68,7 +68,7 @@ type SyncedHashStore interface {
 
 // NOTE: backends additionally expose a concrete
 //
-//	EnumerateSynced(ctx, func(hash block.ContentHash, syncedAt time.Time) error) error
+//	EnumerateSynced(ctx, func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error
 //
 // method used by the LIST-free GC sweep (#1433). It is deliberately NOT part of
 // the SyncedHashStore contract: only the GC consumer needs it, so the engine
