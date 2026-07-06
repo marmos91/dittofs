@@ -100,6 +100,21 @@ func (s *PostgresMetadataStore) SetRollupOffset(ctx context.Context, payloadID s
 		prev = v
 	}
 
+	if newOffset == 0 {
+		// 0 is the "unrolled" sentinel: unconditionally delete the row,
+		// bypassing the monotone WHERE guard. DeleteAppendLog uses this to drop
+		// a deleted payload's fence even when a racing rollup already persisted
+		// a positive offset — otherwise the row leaks as a zombie.
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM rollup_offsets WHERE payload_id = $1`, payloadID); err != nil {
+			return 0, fmt.Errorf("postgres rollup reset: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("postgres rollup reset commit: %w", err)
+		}
+		return prev, nil
+	}
+
 	// Monotone upsert: the WHERE predicate rejects a strictly-lower offset on
 	// the conflict branch, so a regression performs no write and reports
 	// RowsAffected()==0. This is the single point that enforces INV-03 and is

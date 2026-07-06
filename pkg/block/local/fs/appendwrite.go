@@ -531,11 +531,13 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 //     for a tombstoned payload even if it acquired the mutex first — so
 //     once we hold the mutex, metadata is guaranteed consistent with the
 //     tombstone we just set.
-//  3. Clear the rollup_offset row (best-effort; rejection is
-//     expected when a prior rollup persisted a positive offset and is
-//     treated as benign — the tombstone blocks any future rollup so a
-//     residual positive offset is harmless once the log and dirty state
-//     are gone).
+//  3. Reset the rollup_offset row to 0. SetRollupOffset treats newOffset==0
+//     as an unconditional reset that bypasses the monotone guard (see
+//     metadata.RollupStore), so this reliably removes the row even when a
+//     rollup that raced this delete already persisted a positive offset. The
+//     rmu drain in step 2 guarantees that racing rollup has fully committed
+//     before we get here, and the tombstone blocks any future rollup — so
+//     after this the fence is gone and stays gone (no zombie row).
 //  4. Close + unlink the log file.
 //  5. Clear per-file in-memory state (fd, lock, interval tree
 //     truncation boundary) AND clear the tombstone — the drain in
@@ -590,15 +592,17 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 		mu.Unlock() //nolint:staticcheck // SA2001: see above
 	}
 
-	// Step 3: clear metadata row (source of truth advance).
-	// monotone enforcement means SetRollupOffset(payloadID, 0) is
-	// rejected with ErrRollupOffsetRegression when a prior rollup
-	// persisted a positive offset. That rejection is BENIGN: the
-	// tombstone set in step 1 prevents any future rollup from touching
-	// this payload, and mark-sweep GC will collect the
-	// associated chunks. We deliberately swallow the error.
+	// Step 3: clear the metadata row. SetRollupOffset(payloadID, 0) is an
+	// unconditional reset (0 == unrolled sentinel) that bypasses the monotone
+	// guard, so it removes the row even when a rollup that raced this delete
+	// already persisted a positive offset — the rmu drain in step 2 guarantees
+	// that rollup has fully committed by now, and the tombstone blocks any
+	// future one. This is what keeps a deleted payload from leaving a zombie
+	// rollup_offset row behind. mark-sweep GC collects the associated chunks.
 	if bc.rollupStore != nil {
-		_, _ = bc.rollupStore.SetRollupOffset(ctx, payloadID, 0)
+		if _, err := bc.rollupStore.SetRollupOffset(ctx, payloadID, 0); err != nil {
+			logger.Warn("DeleteAppendLog: rollup_offset reset failed", "payloadID", payloadID, "error", err)
+		}
 	}
 
 	// Step 4: close + unlink the log file. Closing an already-closed fd is

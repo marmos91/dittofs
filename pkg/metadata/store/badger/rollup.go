@@ -83,6 +83,15 @@ func (s *BadgerMetadataStore) SetRollupOffset(ctx context.Context, payloadID str
 			}
 		}
 
+		if newOffset == 0 {
+			// 0 is the "unrolled" sentinel: unconditionally clear the row,
+			// bypassing the monotone guard. DeleteAppendLog uses this to drop a
+			// deleted payload's fence even when a racing rollup already
+			// persisted a positive offset — otherwise the row leaks as a
+			// zombie. Delete of a missing key is a no-op.
+			return txn.Delete(keyRollupOffset(payloadID))
+		}
+
 		if newOffset < prev {
 			// Regression rejected. Commit the txn with no write so the
 			// stored value remains untouched.
