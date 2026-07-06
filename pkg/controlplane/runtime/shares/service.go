@@ -548,6 +548,37 @@ func buildSyncerConfigFromDefaults(defaults *SyncerDefaults) engine.SyncerConfig
 	return cfg
 }
 
+// remotePinnedUploads returns the per-remote parallel_uploads override: > 0
+// pins the carver's upload window, 0/absent keeps the adaptive auto-tune
+// (#1407 / #1432). Any lookup/parse miss falls back to 0 (adaptive) so a
+// malformed value never blocks share creation — validateParallelUploads already
+// rejects out-of-range values at store-create time. The value arrives as a JSON
+// number (float64) from the stored config blob.
+func remotePinnedUploads(ctx context.Context, provider BlockStoreConfigProvider, ref string) int {
+	if ref == "" || provider == nil {
+		return 0
+	}
+	cfg, err := resolveBlockStoreConfig(ctx, provider, ref, models.BlockStoreKindRemote)
+	if err != nil {
+		return 0
+	}
+	m, err := cfg.GetConfig()
+	if err != nil {
+		return 0
+	}
+	switch v := m["parallel_uploads"].(type) {
+	case float64:
+		if v > 0 {
+			return int(v)
+		}
+	case int:
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
 func (s *Service) AddShare(
 	ctx context.Context,
 	config *ShareConfig,
@@ -899,6 +930,11 @@ func (s *Service) createBlockStoreForShare(
 	localStore.SetRetentionPolicy(config.RetentionPolicy, config.RetentionTTL)
 
 	syncerCfg := buildSyncerConfigFromDefaults(syncerDefaults)
+	// A per-remote parallel_uploads override pins the carver's upload window;
+	// 0 (the default) keeps the adaptive auto-tune (#1407 / #1432).
+	if pinned := remotePinnedUploads(ctx, blockStoreProvider, config.RemoteBlockStoreID); pinned > 0 {
+		syncerCfg.ParallelUploads = pinned
+	}
 
 	// Wrap shared remote in nonClosingRemote so engine.Close() doesn't close it;
 	// releaseRemoteStore handles actual closing via ref counting.
