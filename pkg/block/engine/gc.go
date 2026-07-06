@@ -286,15 +286,20 @@ const gcMarkProgressInterval = 100_000
 // only what it uses so the broader IsSynced/MarkSynced surface stays out of
 // this dependency.
 type SyncedHashIndex interface {
-	// EnumerateSynced calls fn once per synced marker with its content hash
-	// and first-mirror timestamp. A zero syncedAt means the backend has no
-	// recorded time (legacy marker) — the sweep treats it as fail-closed.
+	// EnumerateSynced calls fn once per synced marker with its content hash,
+	// remote locator, and first-mirror timestamp. The locator is read from the
+	// same marker row, so callers that need it resolve every hash in a single
+	// scan instead of a GetLocator round trip per hash — the O(N)-serial cost on
+	// the sqlite MaxOpenConns(1) pool behind the slow cold-start (#1554). A
+	// standalone (pre-flip) marker yields the zero ChunkLocator. A zero syncedAt
+	// means the backend has no recorded time (legacy marker) — the sweep treats
+	// it as fail-closed.
 	//
 	// fn is invoked SEQUENTIALLY (never concurrently), so the sweep mutates its
 	// unsynchronized per-run counters from inside fn without a lock. A non-nil
 	// error from fn aborts enumeration and is returned; implementations must
 	// honor ctx cancellation.
-	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error
+	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error
 
 	// DeleteSynced removes the synced marker for a swept hash. Idempotent.
 	DeleteSynced(ctx context.Context, hash block.ContentHash) error

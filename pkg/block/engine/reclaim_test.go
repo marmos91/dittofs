@@ -211,9 +211,9 @@ func (v *raceView) WalkBlockRecords(_ context.Context, fn func(block.BlockRecord
 	return nil
 }
 
-func (v *raceView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, time.Time) error) error {
+func (v *raceView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, block.ChunkLocator, time.Time) error) error {
 	if v.reveal() {
-		return fn(hashFromString("R-chunk"), time.Time{})
+		return fn(hashFromString("R-chunk"), block.ChunkLocator{BlockID: "R"}, time.Time{})
 	}
 	return nil
 }
@@ -227,28 +227,26 @@ func (v *raceView) DeleteBlockRecord(_ context.Context, blockID string) error {
 	return nil
 }
 
-// nestedGuardView models the sqlite metadata pool's MaxOpenConns(1) hazard: while
-// an EnumerateSynced cursor is open it holds the only connection, so any query
-// issued from inside the callback (e.g. GetLocator) would block forever waiting
-// for a second. This view fails loudly instead of deadlocking, so the reclaimer
-// must drain EnumerateSynced before resolving locators. blk-leaked has a record
-// with no locator (class 2); blk-live has a record and a locator (must survive).
+// nestedGuardView proves the #1554 locator fold: EnumerateSynced yields each
+// marker's locator in-scan, so the reclaimer classifies blocks without any
+// GetLocator round trip. GetLocator fails loudly if called at all — the fold
+// removed the per-hash resolve that the sqlite MaxOpenConns(1) pool serialized
+// (and that, called inside the cursor, used to deadlock #1552). blk-leaked has a
+// record with no locator (class 2); blk-live has a record and a locator (must
+// survive).
 type nestedGuardView struct {
-	t           *testing.T
-	inEnumerate bool
-	deleted     []string
+	t       *testing.T
+	deleted []string
 }
 
-func (v *nestedGuardView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, time.Time) error) error {
-	v.inEnumerate = true
-	defer func() { v.inEnumerate = false }()
-	return fn(hashFromString("live-chunk"), time.Time{})
+func (v *nestedGuardView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, block.ChunkLocator, time.Time) error) error {
+	// Locator folded into the scan (#1554): reclaim drops still-referenced blocks
+	// from the candidate set using this yielded locator, not a per-hash GetLocator.
+	return fn(hashFromString("live-chunk"), block.ChunkLocator{BlockID: "blk-live"}, time.Time{})
 }
 
 func (v *nestedGuardView) GetLocator(_ context.Context, _ block.ContentHash) (block.ChunkLocator, bool, error) {
-	if v.inEnumerate {
-		v.t.Fatal("GetLocator called while EnumerateSynced cursor is open — deadlocks on sqlite MaxOpenConns(1)")
-	}
+	v.t.Fatal("GetLocator called — the locator fold means reclaim resolves from the EnumerateSynced scan, never a per-hash round trip (#1554)")
 	return block.ChunkLocator{BlockID: "blk-live"}, true, nil
 }
 
@@ -269,10 +267,10 @@ func (v *nestedGuardView) DeleteBlockRecord(_ context.Context, blockID string) e
 	return nil
 }
 
-// TestReclaimRecords_NoNestedQueryDuringEnumerate guards against re-introducing a
-// GetLocator call inside the EnumerateSynced callback, which deadlocks on the
-// single-connection sqlite pool (found via a real sqlite backend on a live VM).
-func TestReclaimRecords_NoNestedQueryDuringEnumerate(t *testing.T) {
+// TestReclaimRecords_ResolvesLocatorsFromEnumerateScan proves the #1554 fold:
+// reclaim classifies blocks using the locator yielded by EnumerateSynced and
+// never issues a per-hash GetLocator (the guard view fatals if it does).
+func TestReclaimRecords_ResolvesLocatorsFromEnumerateScan(t *testing.T) {
 	v := &nestedGuardView{t: t}
 	rep, err := ReclaimRecords(t.Context(), []ReclaimMetaView{v}, nil, ReclaimOptions{})
 	if err != nil {

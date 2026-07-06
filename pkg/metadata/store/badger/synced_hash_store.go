@@ -220,11 +220,14 @@ func (s *BadgerMetadataStore) GetLocator(ctx context.Context, hash block.Content
 	return loc, found, nil
 }
 
-// EnumerateSynced streams every synced marker with its first-mirror time via a
-// prefix scan over synced:. Collects under a read txn then calls fn outside
-// iteration so the callback never runs with the iterator open. Used by the
-// LIST-free GC sweep to compute remote-orphan candidates without an S3 LIST.
-func (s *BadgerMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error {
+// EnumerateSynced streams every synced marker with its locator and first-mirror
+// time via a prefix scan over synced:. Both the timestamp and the locator suffix
+// live in the same marker value, so yielding the locator here lets callers
+// resolve locators in a single scan instead of a GetLocator round trip per hash
+// (#1554). Collects under a read txn then calls fn outside iteration so the
+// callback never runs with the iterator open. A marker with no locator suffix
+// yields the zero (standalone) locator.
+func (s *BadgerMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -232,6 +235,7 @@ func (s *BadgerMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash 
 
 	type entry struct {
 		hash     block.ContentHash
+		loc      block.ChunkLocator
 		syncedAt time.Time
 	}
 	var entries []entry
@@ -250,16 +254,20 @@ func (s *BadgerMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash 
 			}
 			var h block.ContentHash
 			copy(h[:], raw)
-			var syncedAt time.Time
+			var (
+				syncedAt time.Time
+				loc      block.ChunkLocator
+			)
 			if verr := item.Value(func(val []byte) error {
 				if nanos := decodeInt64(val); nanos != 0 {
 					syncedAt = time.Unix(0, nanos)
 				}
+				loc = decodeSyncedLocator(val)
 				return nil
 			}); verr != nil {
 				return verr
 			}
-			entries = append(entries, entry{hash: h, syncedAt: syncedAt})
+			entries = append(entries, entry{hash: h, loc: loc, syncedAt: syncedAt})
 		}
 		return nil
 	})
@@ -271,7 +279,7 @@ func (s *BadgerMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := fn(e.hash, e.syncedAt); err != nil {
+		if err := fn(e.hash, e.loc, e.syncedAt); err != nil {
 			return err
 		}
 	}

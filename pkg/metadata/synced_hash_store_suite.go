@@ -252,7 +252,7 @@ func RunSyncedHashStoreSuite(t *testing.T, s SyncedHashStore) {
 // pass their concrete store; Go checks satisfaction structurally at the call.
 type syncedHashEnumerating interface {
 	SyncedHashStore
-	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error
+	EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error
 }
 
 // RunSyncedHashEnumeratorSuite exercises a backend's EnumerateSynced against
@@ -266,12 +266,19 @@ func RunSyncedHashEnumeratorSuite(t *testing.T, e syncedHashEnumerating) {
 	t.Run("EnumerateSynced", func(t *testing.T) {
 		ctx := context.Background()
 		before := time.Now()
-		hA := mustHash("enum-suite-a")
-		hB := mustHash("enum-suite-b")
+		hA := mustHash("enum-suite-a") // block-resident locator
+		hB := mustHash("enum-suite-b") // standalone (pre-flip) locator
 		hGone := mustHash("enum-suite-gone")
 
-		for _, h := range []block.ContentHash{hA, hB, hGone} {
-			if err := e.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
+		// hA carries a real block locator; hB is standalone. EnumerateSynced must
+		// yield each marker's locator (folded into the scan) identical to what
+		// GetLocator returns — the contract that lets the migration/reconcile/
+		// reclaim/compaction passes resolve locators in one scan instead of a
+		// GetLocator round trip per hash (#1554).
+		locA := block.ChunkLocator{BlockID: "enum-suite-block", WireOffset: 128, WireLength: 64}
+		marks := map[block.ContentHash]block.ChunkLocator{hA: locA, hB: {}, hGone: {}}
+		for h, loc := range marks {
+			if err := e.MarkSynced(ctx, h, loc); err != nil {
 				t.Fatalf("MarkSynced %x: %v", h[:4], err)
 			}
 		}
@@ -280,9 +287,13 @@ func RunSyncedHashEnumeratorSuite(t *testing.T, e syncedHashEnumerating) {
 			t.Fatalf("DeleteSynced: %v", err)
 		}
 
-		seen := make(map[block.ContentHash]time.Time)
-		if err := e.EnumerateSynced(ctx, func(h block.ContentHash, syncedAt time.Time) error {
-			seen[h] = syncedAt
+		type seenEntry struct {
+			loc      block.ChunkLocator
+			syncedAt time.Time
+		}
+		seen := make(map[block.ContentHash]seenEntry)
+		if err := e.EnumerateSynced(ctx, func(h block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error {
+			seen[h] = seenEntry{loc: loc, syncedAt: syncedAt}
 			return nil
 		}); err != nil {
 			t.Fatalf("EnumerateSynced: %v", err)
@@ -297,10 +308,21 @@ func RunSyncedHashEnumeratorSuite(t *testing.T, e syncedHashEnumerating) {
 		if _, ok := seen[hGone]; ok {
 			t.Errorf("EnumerateSynced yielded deleted hash hGone")
 		}
+		// The yielded locator must match GetLocator for every enumerated hash:
+		// hA resolves to its block locator, hB to the zero (standalone) locator.
+		if got := seen[hA].loc; got != locA {
+			t.Errorf("EnumerateSynced yielded locator for hA = %+v; want %+v", got, locA)
+		}
+		if got := seen[hB].loc; got != (block.ChunkLocator{}) {
+			t.Errorf("EnumerateSynced yielded locator for standalone hB = %+v; want zero", got)
+		}
+		if want, ok, err := e.GetLocator(ctx, hA); err != nil || !ok || seen[hA].loc != want {
+			t.Errorf("EnumerateSynced locator for hA = %+v; GetLocator = %+v (ok=%v err=%v)", seen[hA].loc, want, ok, err)
+		}
 		// A backend that records timestamps must report one no earlier than
 		// the mark. A zero timestamp is the documented fail-closed signal for
 		// backends without recorded times — accept it too.
-		if ts := seen[hA]; !ts.IsZero() && ts.Before(before.Add(-time.Minute)) {
+		if ts := seen[hA].syncedAt; !ts.IsZero() && ts.Before(before.Add(-time.Minute)) {
 			t.Errorf("EnumerateSynced syncedAt %v precedes mark time %v", ts, before)
 		}
 	})
@@ -308,7 +330,7 @@ func RunSyncedHashEnumeratorSuite(t *testing.T, e syncedHashEnumerating) {
 	t.Run("EnumerateSyncedCtxCancel", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		err := e.EnumerateSynced(ctx, func(block.ContentHash, time.Time) error { return nil })
+		err := e.EnumerateSynced(ctx, func(block.ContentHash, block.ChunkLocator, time.Time) error { return nil })
 		if err == nil {
 			t.Fatalf("EnumerateSynced with cancelled ctx: want error, got nil")
 		}

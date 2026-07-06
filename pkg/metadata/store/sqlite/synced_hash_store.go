@@ -23,14 +23,17 @@ var (
 	_ metadata.SyncedHashStore = (*sqliteTransaction)(nil)
 )
 
-// EnumerateSynced streams every synced marker with its first-mirror time,
-// read straight from the synced_hashes table. Used by the LIST-free GC sweep
-// to compute remote-orphan candidates without an S3 LIST.
-func (s *SQLiteMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, syncedAt time.Time) error) error {
+// EnumerateSynced streams every synced marker with its locator and first-mirror
+// time, read straight from the synced_hashes table. The locator columns live in
+// the same row, so yielding them here lets callers resolve locators in a single
+// scan instead of a GetLocator round trip per hash — the O(N)-serial-statements
+// cost on the MaxOpenConns(1) pool behind the slow cold-start (#1554). A synced
+// row with NULL/empty block columns yields the zero (standalone) locator.
+func (s *SQLiteMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash block.ContentHash, loc block.ChunkLocator, syncedAt time.Time) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	rows, err := s.query(ctx, `SELECT hash, synced_at FROM synced_hashes`)
+	rows, err := s.query(ctx, `SELECT hash, synced_at, block_id, block_offset, block_length FROM synced_hashes`)
 	if err != nil {
 		return fmt.Errorf("sqlite synced enumerate: %w", err)
 	}
@@ -40,8 +43,10 @@ func (s *SQLiteMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash 
 		var (
 			raw      []byte
 			syncedAt time.Time
+			blockID  sql.NullString
+			off, ln  sql.NullInt64
 		)
-		if err := rows.Scan(&raw, &syncedAt); err != nil {
+		if err := rows.Scan(&raw, &syncedAt, &blockID, &off, &ln); err != nil {
 			return fmt.Errorf("sqlite synced enumerate scan: %w", err)
 		}
 		if len(raw) != len(block.ContentHash{}) {
@@ -51,7 +56,11 @@ func (s *SQLiteMetadataStore) EnumerateSynced(ctx context.Context, fn func(hash 
 		}
 		var h block.ContentHash
 		copy(h[:], raw)
-		if err := fn(h, syncedAt); err != nil {
+		loc, err := locatorFromCols(blockID, off, ln)
+		if err != nil {
+			return fmt.Errorf("sqlite synced enumerate: %w", err)
+		}
+		if err := fn(h, loc, syncedAt); err != nil {
 			return err
 		}
 	}
@@ -172,6 +181,14 @@ func scanLocatorRow(row scanRow) (block.ChunkLocator, error) {
 	if err := row.Scan(&blockID, &off, &length); err != nil {
 		return block.ChunkLocator{}, err
 	}
+	return locatorFromCols(blockID, off, length)
+}
+
+// locatorFromCols builds a ChunkLocator from already-scanned (block_id,
+// block_offset, block_length) columns. NULL/empty block_id yields the zero
+// (standalone) locator. Shared by scanLocatorRow (single-row lookup) and
+// EnumerateSynced (folded into the enumeration scan).
+func locatorFromCols(blockID sql.NullString, off, length sql.NullInt64) (block.ChunkLocator, error) {
 	if !blockID.Valid || blockID.String == "" {
 		return block.ChunkLocator{}, nil
 	}

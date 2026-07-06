@@ -228,19 +228,23 @@ func TestCompactBlocks_DisabledAndNilRemote(t *testing.T) {
 	}
 }
 
-// compactNestedGuardView models the sqlite MaxOpenConns(1) hazard: a metadata
-// query issued while the EnumerateSynced cursor is open would deadlock. It fails
-// loudly instead, so CompactBlocks must drain EnumerateSynced before resolving
-// locators (the collect-then-query rule).
+// compactNestedGuardView is the #1554 regression tripwire. After the locator
+// fold, compaction sums live bytes from the locator yielded in the
+// EnumerateSynced scan; it still calls GetLocator later (in compactOneBlock,
+// after the cursor closes) to select moveable chunks. So GetLocator fatals only
+// when called WHILE the enumerate cursor is open — the nested query that would
+// deadlock the sqlite MaxOpenConns(1) pool.
 type compactNestedGuardView struct {
 	t           *testing.T
 	inEnumerate bool
 }
 
-func (v *compactNestedGuardView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, time.Time) error) error {
+func (v *compactNestedGuardView) EnumerateSynced(_ context.Context, fn func(block.ContentHash, block.ChunkLocator, time.Time) error) error {
 	v.inEnumerate = true
 	defer func() { v.inEnumerate = false }()
-	return fn(hashFromString("live-chunk"), time.Now().Add(-2*time.Hour))
+	// Locator folded into the scan (#1554): compaction sums live bytes from this
+	// yielded locator, not a per-hash GetLocator round trip.
+	return fn(hashFromString("live-chunk"), block.ChunkLocator{BlockID: "blk-x", WireLength: 10}, time.Now().Add(-2*time.Hour))
 }
 
 func (v *compactNestedGuardView) GetLocator(_ context.Context, _ block.ContentHash) (block.ChunkLocator, bool, error) {
