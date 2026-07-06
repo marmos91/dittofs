@@ -55,6 +55,8 @@ func newStreamerFixture(blockCount int) streamerFixture {
 func (f streamerFixture) streamBlocks(ctx context.Context, rbs *remotememory.Store) error {
 	for blk := range f.blockIDs {
 		var buf bytes.Buffer
+		// mirror carveAndCommitBlock's pre-grow: body bytes + per-chunk headroom, one alloc
+		buf.Grow(streamerPerBlock*streamerChunkSize + streamerPerBlock*256 + 512)
 		builder, err := blockcodec.NewBuilder(&buf, f.blockIDs[blk], nil)
 		if err != nil {
 			return err
