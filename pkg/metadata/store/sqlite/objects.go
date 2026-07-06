@@ -458,7 +458,7 @@ func (s *SQLiteMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(b
 	return nil
 }
 
-// parseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
+// parseBlockIdx returns the numeric suffix of a block ID ("{payloadID}/{n}"), used as a sort key; 0 if absent.
 func parseBlockIdx(id string) int {
 	if idx := strings.LastIndex(id, "/"); idx >= 0 {
 		if v, err := strconv.Atoi(id[idx+1:]); err == nil {
