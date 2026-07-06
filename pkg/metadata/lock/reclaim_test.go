@@ -225,12 +225,12 @@ func TestReclaimLeaseWithPrincipal_NoRecoveryRecord(t *testing.T) {
 	require.True(t, lock.Reclaim)
 }
 
-// TestReclaimLease_DirectoryStripsWriteFromLegacyRecord ensures the persisted
-// -state ingestion path enforces the directory Write-strip invariant. A binary
-// predating the #1570 fix could persist an illegal RWH directory lease; after
-// upgrading and restarting, reclaiming that record must not restore Write —
-// otherwise Windows regains a write-caching directory lease and the stale
-// -listing delete bug returns for that session.
+// TestReclaimLease_DirectoryStripsWriteFromLegacyRecord ensures the
+// persisted-state ingestion path enforces the directory Write-strip invariant.
+// A binary predating the #1570 fix could persist an illegal RWH directory
+// lease; after upgrading and restarting, reclaiming that record must not
+// restore Write — otherwise Windows regains a write-caching directory lease and
+// the stale-listing delete bug returns for that session.
 func TestReclaimLease_DirectoryStripsWriteFromLegacyRecord(t *testing.T) {
 	ctx := context.Background()
 	lm, store := newGraceManagerWithStore(t, []string{"client-a"})
