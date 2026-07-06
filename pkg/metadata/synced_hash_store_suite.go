@@ -319,6 +319,12 @@ func RunSyncedHashEnumeratorSuite(t *testing.T, e syncedHashEnumerating) {
 		if want, ok, err := e.GetLocator(ctx, hA); err != nil || !ok || seen[hA].loc != want {
 			t.Errorf("EnumerateSynced locator for hA = %+v; GetLocator = %+v (ok=%v err=%v)", seen[hA].loc, want, ok, err)
 		}
+		// Standalone hB: the enumerated locator must match GetLocator too. A
+		// standalone row has no block locator, so GetLocator may report ok=false;
+		// either way its locator must equal the zero locator enumeration yielded.
+		if want, _, err := e.GetLocator(ctx, hB); err != nil || seen[hB].loc != want {
+			t.Errorf("EnumerateSynced locator for standalone hB = %+v; GetLocator = %+v (err=%v)", seen[hB].loc, want, err)
+		}
 		// A backend that records timestamps must report one no earlier than
 		// the mark. A zero timestamp is the documented fail-closed signal for
 		// backends without recorded times — accept it too.
