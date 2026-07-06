@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -713,11 +714,10 @@ func splitBlockID(id string) (pid, idx string, ok bool) {
 	return id[:lastSlash], id[lastSlash+1:], true
 }
 
-// parseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
+// parseBlockIdx returns the numeric suffix of a block ID ("{payloadID}/{n}"), used as a sort key; 0 if absent.
 func parseBlockIdx(id string) int {
 	if _, idx, ok := splitBlockID(id); ok {
-		var v int
-		if _, err := fmt.Sscanf(idx, "%d", &v); err == nil {
+		if v, err := strconv.Atoi(idx); err == nil {
 			return v
 		}
 	}

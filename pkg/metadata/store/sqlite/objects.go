@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -300,7 +301,7 @@ func (s *SQLiteMetadataStore) ListFileChunks(ctx context.Context, payloadID stri
 	// SQL ORDER BY id ASC gives lexicographic order which is wrong for multi-digit
 	// block indices (e.g., "10" < "2"). Sort by parsed numeric index.
 	sort.Slice(result, func(i, j int) bool {
-		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
+		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
 	})
 	if result == nil {
 		return []*metadata.FileChunk{}, nil
@@ -457,11 +458,10 @@ func (s *SQLiteMetadataStore) EnumerateFileChunks(ctx context.Context, fn func(b
 	return nil
 }
 
-// pgParseBlockIdx extracts the numeric block index from a block ID ("{payloadID}/{blockIdx}").
-func pgParseBlockIdx(id string) int {
+// parseBlockIdx returns the numeric suffix of a block ID ("{payloadID}/{n}"), used as a sort key; 0 if absent.
+func parseBlockIdx(id string) int {
 	if idx := strings.LastIndex(id, "/"); idx >= 0 {
-		var v int
-		if _, err := fmt.Sscanf(id[idx+1:], "%d", &v); err == nil {
+		if v, err := strconv.Atoi(id[idx+1:]); err == nil {
 			return v
 		}
 	}
@@ -724,7 +724,7 @@ func (tx *sqliteTransaction) ListFileChunks(ctx context.Context, payloadID strin
 	// Lexicographic SQL order mis-sorts multi-digit indices ("10" < "2");
 	// sort by parsed numeric index, matching the store-level method.
 	sort.Slice(result, func(i, j int) bool {
-		return pgParseBlockIdx(result[i].ID) < pgParseBlockIdx(result[j].ID)
+		return parseBlockIdx(result[i].ID) < parseBlockIdx(result[j].ID)
 	})
 	if result == nil {
 		return []*metadata.FileChunk{}, nil
