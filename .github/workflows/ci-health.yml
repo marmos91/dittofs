@@ -61,6 +61,12 @@ jobs:
       IS_RED: ${{ github.event.workflow_run.conclusion != 'success' }}
 
     steps:
+      # The alarm builds its email body from a committed Python script, so the
+      # repo must be on the runner. workflow_run has no implicit checkout.
+      - name: Check out repo
+        if: env.IS_RED == 'true'
+        uses: actions/checkout@v4
+
       - name: Ensure develop-red label exists
         if: env.IS_RED == 'true'
         env:
