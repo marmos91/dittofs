@@ -366,7 +366,7 @@ func (h *Handler) executeCopyChunks(
 		return NewErrorResult(types.StatusInternalError), nil
 	}
 
-	srcFile, err := metaSvc.GetFile(ctx.Context, srcOpen.MetadataHandle)
+	srcFile, err := metaSvc.GetFileForRead(ctx.Context, srcOpen.MetadataHandle)
 	if err != nil {
 		logger.Debug("COPYCHUNK: failed to get source file", "path", srcOpen.Path, "error", err)
 		return NewErrorResult(common.MapToSMB(err)), nil

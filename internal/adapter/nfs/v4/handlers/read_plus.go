@@ -87,7 +87,8 @@ func (h *Handler) handleReadPlus(ctx *types.CompoundContext, reader io.Reader) *
 		return readPlusErr(types.NFS4ERR_SERVERFAULT)
 	}
 
-	file, err := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
+	file, err := metaSvc.GetFileForRead(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
 		return readPlusErr(common.MapToNFS4(err))
 	}

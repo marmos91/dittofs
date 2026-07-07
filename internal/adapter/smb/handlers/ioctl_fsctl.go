@@ -28,7 +28,7 @@ func (h *Handler) handleGetCompression(ctx *SMBHandlerContext, body []byte) (*Ha
 	// Read compression state from metadata (persistent across handles).
 	var format uint16
 	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
+	file, err := metaSvc.GetFileForRead(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		return NewErrorResult(common.MapToSMB(err)), nil
 	}
@@ -231,7 +231,7 @@ func (h *Handler) handleQueryFileRegions(ctx *SMBHandlerContext, body []byte) (*
 
 	// Get file size from metadata
 	metaSvc := h.Registry.GetMetadataService()
-	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
+	file, err := metaSvc.GetFileForRead(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		return NewErrorResult(common.MapToSMB(err)), nil
 	}

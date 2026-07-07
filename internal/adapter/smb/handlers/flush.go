@@ -218,7 +218,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	}
 
 	// Verify file exists
-	file, err := metaSvc.GetFile(ctx.Context, openFile.MetadataHandle)
+	file, err := metaSvc.GetFileForRead(ctx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("FLUSH: file not found", "path", openFile.Path, "error", err)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil

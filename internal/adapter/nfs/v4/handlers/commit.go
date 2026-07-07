@@ -83,7 +83,8 @@ func (h *Handler) handleCommit(ctx *types.CompoundContext, reader io.Reader) *ty
 	}
 
 	fileHandle := metadata.FileHandle(ctx.CurrentFH)
-	file, err := metaSvc.GetFile(authCtx.Context, fileHandle)
+	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
+	file, err := metaSvc.GetFileForRead(authCtx.Context, fileHandle)
 	if err != nil {
 		status := common.MapToNFS4(err)
 		return &types.CompoundResult{
