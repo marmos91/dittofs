@@ -353,17 +353,21 @@ func (s *Service) createEntry(
 	// state immediately before and after the create (H9).
 	wcc := &DirWcc{}
 
-	// Execute all write operations in a single transaction for better performance.
-	// This reduces PostgreSQL round-trips from 6+ to 2 (BEGIN + COMMIT).
-	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
-		// Re-read the parent inside the transaction so the pre-op snapshot and
-		// the timestamp mutation derive from the same committed state (After is
-		// then guaranteed monotonic w.r.t. Before).
-		if txParent, pErr := tx.GetFile(ctx.Context, parentHandle); pErr == nil && txParent != nil {
-			parent = txParent
-		}
-		wcc.Before = CopyFileAttr(&parent.FileAttr)
+	// Overlay any coalesced (not-yet-persisted) parent-directory timestamps onto
+	// the pre-op snapshot so WCC.Before reflects what readers currently observe
+	// (#1573). Captured before the transaction: the create no longer reads or
+	// writes the parent inode, so there is nothing to re-snapshot inside it.
+	s.mergeDirTimes(parentHandle, &parent.FileAttr)
+	wcc.Before = CopyFileAttr(&parent.FileAttr)
+	now := time.Now()
 
+	// Execute the child-creating writes in a single transaction. Crucially this
+	// transaction does NOT read or write the parent inode: the parent mtime bump
+	// used to make every concurrent same-dir create read+write one shared key,
+	// which BadgerDB SSI aborts as a conflict, serializing them on retry-backoff
+	// (#1573). Touching only the new child's disjoint keys lets group-commit
+	// batch concurrent creates; the parent timestamp is coalesced below.
+	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
 		// TOCTOU guard: re-check inside transaction.
 		if _, innerErr := tx.GetChild(ctx.Context, parentHandle, name); innerErr == nil {
 			return &StoreError{
@@ -393,7 +397,10 @@ func (s *Service) createEntry(
 			return err
 		}
 
-		// For directories, increment parent's link count (new ".." reference)
+		// For directories, increment parent's link count (new ".." reference).
+		// This still reads+writes the parent link-count key, so concurrent
+		// mkdirs in one directory serialize on it — acceptable, mkdir is rare
+		// relative to file create, which is fully disjoint above.
 		if fileType == FileTypeDirectory {
 			parentLinkCount, err := tx.GetLinkCount(ctx.Context, parentHandle)
 			if err == nil {
@@ -402,21 +409,20 @@ func (s *Service) createEntry(
 				}
 			}
 		}
-
-		// Update parent timestamps. Per MS-FSA 2.1.4.4 (Algorithm for
-		// Noting File Modified): when a directory is modified (entries
-		// added/removed), LastAccessTime (Atime) is also updated.
-		now := time.Now()
-		parent.Mtime = now
-		parent.Ctime = now
-		parent.Atime = now
-		wcc.After = CopyFileAttr(&parent.FileAttr)
-		return tx.PutFile(ctx.Context, parent)
+		return nil
 	})
 
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Coalesce the parent directory timestamp bump. Per MS-FSA 2.1.4.4 a
+	// directory modified by adding an entry updates Mtime, Ctime and Atime.
+	s.recordDirTimes(ctx.Context, parentHandle, now)
+	parent.Mtime = now
+	parent.Ctime = now
+	parent.Atime = now
+	wcc.After = CopyFileAttr(&parent.FileAttr)
 
 	return newFile, wcc, nil
 }

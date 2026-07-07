@@ -55,6 +55,10 @@ func (s *Service) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cookie u
 	if err != nil {
 		return nil, err
 	}
+	// Overlay coalesced directory timestamps so ReadDirPage.DirMtime (the NFS
+	// readdir-cache validation key) reflects not-yet-persisted create/remove
+	// bumps in this directory (#1573).
+	s.mergeDirTimes(dirHandle, &dir.FileAttr)
 
 	// Verify it's a directory
 	if dir.Type != FileTypeDirectory {
@@ -93,9 +97,14 @@ func (s *Service) ReadDirectory(ctx *AuthContext, dirHandle FileHandle, cookie u
 		return nil, err
 	}
 
-	// Generate cookies for each entry
+	// Generate cookies for each entry, and overlay coalesced dir-times onto any
+	// subdirectory entry whose own create/remove bump is not yet persisted, so
+	// READDIRPLUS / READDIR / QUERY_DIRECTORY report the same fresh mtime a
+	// direct GETATTR/LOOKUP on that subdirectory would (#1573). mergeDirTimes is
+	// a no-op for entries with a nil or non-directory Attr.
 	for i := range entries {
 		entries[i].Cookie = s.cookies.GenerateCookie(dirHandle, entries[i].Name)
+		s.mergeDirTimes(entries[i].Handle, entries[i].Attr)
 	}
 
 	// Generate next cookie from next token
@@ -249,6 +258,11 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 	if txErr != nil {
 		return nil, txErr
 	}
+
+	// The removed directory can no longer be read; drop any coalesced timestamps
+	// still pending for it so the tracker map does not accumulate dead handles
+	// under create-then-rmdir churn (#1573).
+	s.dirTimes.Clear(dirHandle)
 
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeRemoveEntry, ctx)
 	return wcc, nil
