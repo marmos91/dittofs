@@ -210,3 +210,19 @@ jobs:
             org.opencontainers.image.version=${{ steps.version.outputs.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=Apache-2.0
+
+  sync-docs:
+    name: Sync docs to website
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger dittofs-web docs refresh
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_SYNC_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          # Docs "latest" tracks develop; skip pre-release (rc) tags.
+          if [[ "${VERSION}" == *-* ]]; then
+            echo "Pre-release ${VERSION}; skipping docs sync."
+            exit 0
+          fi
+          gh workflow run refresh-docs.yml --repo marmos91/dittofs-web
