@@ -403,10 +403,16 @@ func resolveSharePermission(
 
 	// 3. Direct AD/SID grants (#1528). The Kerberos PAC user + group SIDs are on
 	// the session independent of local user resolution, so this authorizes an AD
-	// principal that has no local DittoFS account. The higher of the local and
-	// SID-grant levels wins (additive, like group membership).
+	// principal that has no local DittoFS account. SID grants are additive (like
+	// group membership) EXCEPT when the user has an explicit per-user local grant
+	// — including an explicit 'none' block — which is authoritative and must not
+	// be overridden, mirroring the local resolver's "user-explicit wins" rule.
 	effective := localPerm
-	if r, ok := userStore.(sidSharePermissionResolver); ok {
+	userExplicit := false
+	if sess.User != nil {
+		_, userExplicit = sess.User.GetExplicitSharePermission(share.Name)
+	}
+	if r, ok := userStore.(sidSharePermissionResolver); ok && !userExplicit {
 		groupSIDs, userSID := sess.PACIdentity()
 		sids := groupSIDs
 		if userSID != "" {

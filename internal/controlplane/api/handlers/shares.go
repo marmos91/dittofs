@@ -20,6 +20,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/health"
+	"github.com/marmos91/dittofs/pkg/identity/ldap"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -1194,16 +1195,26 @@ func (h *ShareHandler) grantDirectoryPrincipal(ctx context.Context, share *model
 	return true, h.store.SetSIDSharePermission(ctx, perm)
 }
 
-// revokeDirectoryPrincipal best-effort removes a direct AD/SID grant for a
-// principal NAME by resolving it via the directory (#1528). A directory outage
-// must not fail a revoke, so resolution errors are ignored.
-func (h *ShareHandler) revokeDirectoryPrincipal(ctx context.Context, shareName, name string, isGroup bool) {
-	if h.runtime == nil {
-		return
+// revokeDirectoryPrincipal removes any direct AD/SID grant for a principal NAME
+// (#1528). The SID grant stored the principal's sAMAccountName as its
+// DisplayName at grant time, so the grant is deleted by that name WITHOUT
+// re-resolving through LDAP — keeping revoke working when the directory is
+// unreachable and avoiding a directory round-trip on every local revoke.
+func (h *ShareHandler) revokeDirectoryPrincipal(ctx context.Context, shareName, name string, isGroup bool) error {
+	return h.store.DeleteSIDSharePermissionsByDisplayName(ctx, shareName, samAccountName(name), isGroup)
+}
+
+// samAccountName reduces a principal string to its bare sAMAccountName by
+// stripping a "DOMAIN\" prefix and/or an "@REALM" suffix, matching how a
+// directory grant stores its DisplayName.
+func samAccountName(s string) string {
+	if i := strings.LastIndex(s, "\\"); i >= 0 {
+		s = s[i+1:]
 	}
-	if resolved, found, err := h.runtime.ResolveDirectoryPrincipalSID(ctx, name, isGroup); err == nil && found {
-		_ = h.store.DeleteSIDSharePermission(ctx, resolved.SID, shareName)
+	if i := strings.Index(s, "@"); i > 0 {
+		s = s[:i]
 	}
+	return strings.TrimSpace(s)
 }
 
 // reconcileRootACL projects the share's current permission grants onto its root
@@ -1241,7 +1252,10 @@ func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Also drop a direct AD/SID grant for the same principal name (#1528).
-	h.revokeDirectoryPrincipal(r.Context(), shareName, username, false)
+	if err := h.revokeDirectoryPrincipal(r.Context(), shareName, username, false); err != nil {
+		InternalServerError(w, "Failed to delete user permission")
+		return
+	}
 
 	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
@@ -1344,7 +1358,10 @@ func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Also drop a direct AD/SID grant for the same principal name (#1528).
-	h.revokeDirectoryPrincipal(r.Context(), shareName, groupName, true)
+	if err := h.revokeDirectoryPrincipal(r.Context(), shareName, groupName, true); err != nil {
+		InternalServerError(w, "Failed to delete group permission")
+		return
+	}
 
 	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
@@ -1382,6 +1399,10 @@ func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) 
 		BadRequest(w, "Permission level is required")
 		return
 	}
+	if !models.SharePermission(req.Level).IsValid() {
+		BadRequest(w, "Invalid permission level")
+		return
+	}
 
 	// No GetUser/GetGroup lookup: a SID grant intentionally requires no local
 	// object. Only the share must exist.
@@ -1403,9 +1424,17 @@ func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Derive the Unix id from the SID's RID for the NFS numeric projection
-	// (idmap=rid: the login path derives the same RID). A raw-SID grant has no
-	// directory context, so an rfc2307 deployment (GID = gidNumber, not the RID)
-	// should grant by name instead to get an NFS-matchable id.
+	// (idmap=rid: the login path derives the same RID). Under idmap=rfc2307 the
+	// login GID comes from gidNumber, not the RID, so a raw-SID grant cannot
+	// supply an NFS-matchable id — leave it unset (SMB still matches via the
+	// sid: ACE; grant by name to get an NFS-matchable id under rfc2307).
+	unixID := parsedSID.RID()
+	if h.runtime != nil {
+		if cfg := h.runtime.LDAPConfig(); cfg != nil && cfg.Idmap == ldap.IdmapRFC2307 {
+			unixID = 0
+		}
+	}
+
 	perm := &models.SIDSharePermission{
 		SID:         sidStr,
 		ShareID:     share.ID,
@@ -1413,7 +1442,7 @@ func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) 
 		Permission:  req.Level,
 		IsGroup:     isGroup,
 		DisplayName: req.DisplayName,
-		UnixID:      parsedSID.RID(),
+		UnixID:      unixID,
 	}
 
 	if err := h.store.SetSIDSharePermission(r.Context(), perm); err != nil {
@@ -1435,10 +1464,14 @@ func (h *ShareHandler) RemoveSIDPermission(w http.ResponseWriter, r *http.Reques
 		BadRequest(w, "Share name is required")
 		return
 	}
-	if sidStr == "" {
-		BadRequest(w, "SID is required")
+	// Canonicalize to match the stored form (SetSIDPermission stores the
+	// canonical SID), so a non-canonical revoke does not silently no-op.
+	parsedSID, err := sid.ParseSIDString(sidStr)
+	if err != nil {
+		BadRequest(w, "Invalid SID")
 		return
 	}
+	sidStr = sid.FormatSID(parsedSID)
 
 	if err := h.store.DeleteSIDSharePermission(r.Context(), sidStr, shareName); err != nil {
 		InternalServerError(w, "Failed to delete SID permission")

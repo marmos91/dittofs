@@ -237,11 +237,14 @@ func (p *Provider) ResolvePrincipalSID(ctx context.Context, name string, isGroup
 	}
 	defer func() { _ = c.Close() }()
 
-	objectClass := "user"
+	// Users are matched on the configured name attribute (UserAttr); groups are
+	// matched on sAMAccountName, the AD group-name attribute — UserAttr may be a
+	// user-only attribute (e.g. "uid") that group objects do not carry.
+	objectClass, nameAttr := "user", p.cfg.UserAttr
 	if isGroup {
-		objectClass = "group"
+		objectClass, nameAttr = "group", "sAMAccountName"
 	}
-	filter := fmt.Sprintf("(&(objectClass=%s)(%s=%s))", objectClass, p.cfg.UserAttr, ldapv3.EscapeFilter(sam))
+	filter := fmt.Sprintf("(&(objectClass=%s)(%s=%s))", objectClass, nameAttr, ldapv3.EscapeFilter(sam))
 	req := ldapv3.NewSearchRequest(
 		p.cfg.BaseDN,
 		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, 2, int(p.cfg.Timeout.Seconds()), false,

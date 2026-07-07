@@ -275,5 +275,14 @@ workstation never bleed permissions.
   principal resolves to (the RID in `idmap: rid`), and the NFS gate + root ACL
   match on that GID/UID. Grant by **name** (or a raw SID in `idmap: rid`) so the
   numeric id is captured; see [identity.md](identity.md) for NFS client setup.
+  Because NFS matches by the *mapped* id (no SID is on the NFS wire), NFS
+  authorization inherits the idmap's range contract: ensure AD ids do not overlap
+  your local UID/GID space (the same requirement Samba meets with dedicated idmap
+  ranges), or a local principal could match an AD grant over NFS. The SMB path is
+  always SID-exact and not subject to this. A raw `--sid` grant only carries an
+  NFS-matchable id under `idmap: rid`; under `idmap: rfc2307` grant by **name** so
+  the correct `gidNumber` is captured.
+- A **user-explicit** local grant (including `--level none`) is authoritative and
+  is never overridden by a group or AD/SID grant — an explicit block stays a block.
 
 See [access-control.md](access-control.md) for the full SID/ACL model.

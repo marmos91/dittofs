@@ -140,4 +140,32 @@ func TestSIDSharePermission_CRUDAndResolve(t *testing.T) {
 			t.Errorf("after delete = %q, want none", got)
 		}
 	})
+
+	t.Run("delete by display name (name-based revoke, no LDAP)", func(t *testing.T) {
+		// Re-grant the group with a DisplayName, then revoke by that name.
+		if err := st.SetSIDSharePermission(ctx, &models.SIDSharePermission{
+			SID: groupSID, ShareID: shareID, ShareName: share, Permission: string(models.PermissionRead),
+			IsGroup: true, UnixID: 1104, DisplayName: "Cubbit",
+		}); err != nil {
+			t.Fatalf("re-grant: %v", err)
+		}
+		// A user-form grant of the same display name must NOT be removed by a
+		// group revoke (is_group disambiguates).
+		if err := st.SetSIDSharePermission(ctx, &models.SIDSharePermission{
+			SID: "S-1-5-21-111-222-333-1300", ShareID: shareID, ShareName: share,
+			Permission: string(models.PermissionRead), IsGroup: false, UnixID: 1300, DisplayName: "Cubbit",
+		}); err != nil {
+			t.Fatalf("grant user with same name: %v", err)
+		}
+
+		if err := st.DeleteSIDSharePermissionsByDisplayName(ctx, share, "Cubbit", true); err != nil {
+			t.Fatalf("delete by display name: %v", err)
+		}
+		if got, _ := st.ResolveSharePermissionForSIDs(ctx, []string{groupSID}, share); got != models.PermissionNone {
+			t.Errorf("group grant should be revoked by name, still = %q", got)
+		}
+		if got, _ := st.ResolveSharePermissionForSIDs(ctx, []string{"S-1-5-21-111-222-333-1300"}, share); got != models.PermissionRead {
+			t.Errorf("user grant of same name must survive a group revoke, got %q", got)
+		}
+	})
 }

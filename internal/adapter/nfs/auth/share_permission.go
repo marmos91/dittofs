@@ -158,8 +158,9 @@ func ResolveSharePermission(
 		perm = defaultPerm
 	}
 	// A direct AD/SID grant can elevate a local user's access (additive, like
-	// group membership).
-	if sidPerm.Level() > perm.Level() {
+	// group membership) — but NOT when the user has an explicit per-user grant
+	// (including an explicit 'none' block), which is authoritative.
+	if _, explicit := user.GetExplicitSharePermission(shareName); !explicit && sidPerm.Level() > perm.Level() {
 		perm = sidPerm
 	}
 

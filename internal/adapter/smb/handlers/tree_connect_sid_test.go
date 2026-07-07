@@ -20,14 +20,18 @@ type sidGrantStore struct {
 	grant map[string]models.SharePermission
 }
 
-func (s *sidGrantStore) GetUser(context.Context, string) (*models.User, error) { return nil, models.ErrUserNotFound }
+func (s *sidGrantStore) GetUser(context.Context, string) (*models.User, error) {
+	return nil, models.ErrUserNotFound
+}
 func (s *sidGrantStore) ValidateCredentials(context.Context, string, string) (*models.User, error) {
 	return nil, models.ErrUserNotFound
 }
-func (s *sidGrantStore) ListUsers(context.Context) ([]*models.User, error)         { return nil, nil }
+func (s *sidGrantStore) ListUsers(context.Context) ([]*models.User, error)          { return nil, nil }
 func (s *sidGrantStore) GetGuestUser(context.Context, string) (*models.User, error) { return nil, nil }
-func (s *sidGrantStore) GetGroup(context.Context, string) (*models.Group, error)    { return nil, models.ErrGroupNotFound }
-func (s *sidGrantStore) ListGroups(context.Context) ([]*models.Group, error)        { return nil, nil }
+func (s *sidGrantStore) GetGroup(context.Context, string) (*models.Group, error) {
+	return nil, models.ErrGroupNotFound
+}
+func (s *sidGrantStore) ListGroups(context.Context) ([]*models.Group, error) { return nil, nil }
 func (s *sidGrantStore) GetUserGroups(context.Context, string) ([]*models.Group, error) {
 	return nil, nil
 }
@@ -80,13 +84,37 @@ func TestResolveSharePermission_SIDGrant(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit local none blocks a matching SID grant (no override)", func(t *testing.T) {
+		// Admin explicitly blocked alice locally with --level none; a SID grant on
+		// her group must NOT override that block.
+		uid := uint32(1000)
+		user := &models.User{
+			Username: "alice", UID: &uid,
+			SharePermissions: []models.UserSharePermission{
+				{ShareName: "/export", Permission: string(models.PermissionNone)},
+			},
+		}
+		sess := session.NewSessionWithUser(1, "127.0.0.1", user, "")
+		sess.SetPACIdentity([]string{groupSID}, "")
+
+		store := &sidGrantStore{
+			localPerm: models.PermissionNone, // explicit user 'none'
+			grant:     map[string]models.SharePermission{groupSID: models.PermissionReadWrite},
+		}
+
+		perm, _ := resolveSharePermission(ctx, sess, share, models.PermissionNone, store)
+		if perm != models.PermissionNone {
+			t.Errorf("explicit local 'none' must block; SID grant overrode it to %v", perm)
+		}
+	})
+
 	t.Run("SID grant elevates a lower local permission", func(t *testing.T) {
 		uid := uint32(1000)
 		sess := session.NewSessionWithUser(1, "127.0.0.1", &models.User{Username: "alice", UID: &uid}, "")
 		sess.SetPACIdentity([]string{groupSID}, "")
 
 		store := &sidGrantStore{
-			localPerm: models.PermissionRead, // local grant is read...
+			localPerm: models.PermissionRead,                                                   // local grant is read...
 			grant:     map[string]models.SharePermission{groupSID: models.PermissionReadWrite}, // ...SID grant is higher
 		}
 

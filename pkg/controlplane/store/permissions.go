@@ -239,6 +239,19 @@ func (s *GORMStore) DeleteSIDSharePermission(ctx context.Context, sid, shareName
 		Delete(&models.SIDSharePermission{}).Error
 }
 
+// DeleteSIDSharePermissionsByDisplayName removes SID grants on a share whose
+// stored DisplayName (the principal's sAMAccountName, captured at grant time)
+// matches, so a name-based revoke works without re-resolving the name through
+// LDAP. isGroup disambiguates a user grant from a group grant of the same name.
+func (s *GORMStore) DeleteSIDSharePermissionsByDisplayName(ctx context.Context, shareName, displayName string, isGroup bool) error {
+	if displayName == "" {
+		return nil
+	}
+	return s.db.WithContext(ctx).
+		Where("share_name = ? AND display_name = ? AND is_group = ?", shareName, displayName, isGroup).
+		Delete(&models.SIDSharePermission{}).Error
+}
+
 func (s *GORMStore) GetShareSIDPermissions(ctx context.Context, shareName string) ([]*models.SIDSharePermission, error) {
 	share, err := s.GetShare(ctx, shareName)
 	if err != nil {
@@ -283,6 +296,13 @@ func (s *GORMStore) ResolveSharePermissionForSIDs(ctx context.Context, sids []st
 // ResolveSharePermissionForSIDs it queries by share_name to avoid a full share
 // load. Only SID grants that carry a resolved numeric id can match an NFS login,
 // which has no SID on the wire.
+//
+// CAVEAT: NFS matching is by MAPPED Unix id, not the SID itself (the SID is not
+// on the NFS wire), so it inherits the idmap's range contract: a local principal
+// whose UID/GID collides with a foreign SID's mapped id would match the grant.
+// This is safe only when AD ids do not overlap the local id space — the same
+// requirement Samba meets with dedicated idmap ranges. The SMB path
+// (ResolveSharePermissionForSIDs) is always SID-exact and not subject to this.
 func (s *GORMStore) ResolveSharePermissionForUnixIDs(ctx context.Context, uid uint32, gids []uint32, shareName string) (models.SharePermission, error) {
 	var perms []models.SIDSharePermission
 	if err := s.db.WithContext(ctx).

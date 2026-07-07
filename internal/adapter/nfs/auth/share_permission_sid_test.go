@@ -41,6 +41,28 @@ func TestResolveSharePermission_SIDGrantByGID(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit local none blocks a matching SID grant (no override)", func(t *testing.T) {
+		// A known local user explicitly granted 'none' must stay denied even when
+		// a group-SID grant matches one of their GIDs.
+		uid := uint32(4000)
+		store := newPermMockStore()
+		store.usersByUID[uid] = &models.User{
+			Username: "blocked", UID: &uid,
+			SharePermissions: []models.UserSharePermission{
+				{ShareName: "/export", Permission: string(models.PermissionNone)},
+			},
+		}
+		store.perm = models.PermissionNone // explicit user 'none'
+		store.sidPerm = models.PermissionReadWrite
+		store.sidMatchIDs = map[uint32]bool{1104: true}
+
+		_, err := ResolveSharePermission(
+			context.Background(), store, share, "/export", "10.0.0.1:1", ptrUID(uid), []uint32{1104})
+		if err != ErrShareAccessDenied {
+			t.Fatalf("explicit local 'none' must deny despite a matching SID grant; got err=%v", err)
+		}
+	})
+
 	t.Run("read-level SID grant coerces read-only", func(t *testing.T) {
 		store := newPermMockStore()
 		store.sidPerm = models.PermissionRead

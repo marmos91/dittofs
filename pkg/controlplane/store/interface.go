@@ -336,6 +336,11 @@ type PermissionStore interface {
 	// enumerate grants for listing.
 	GetShareSIDPermissions(ctx context.Context, shareName string) ([]*models.SIDSharePermission, error)
 
+	// DeleteSIDSharePermissionsByDisplayName removes SID grants on a share whose
+	// stored DisplayName (sAMAccountName) and IsGroup match, so a name-based
+	// revoke works without re-resolving the name through LDAP.
+	DeleteSIDSharePermissionsByDisplayName(ctx context.Context, shareName, displayName string, isGroup bool) error
+
 	// ResolveSharePermissionForSIDs returns the highest permission any of the
 	// given SIDs (a login's PAC user SID + group SIDs) has been granted on the
 	// share, or PermissionNone if none match. Unlike ResolveSharePermission it
