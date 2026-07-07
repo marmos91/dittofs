@@ -302,6 +302,19 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		return h.handleSymlinkRead(ctx, openFile, file, req)
 	}
 
+	// Only regular files are readable. PrepareRead used to reject directories
+	// and other special types (FIFO/socket/device) before it was folded out of
+	// the read path; preserve that so a cross-protocol special node can't fall
+	// through to an empty EOF read instead of a proper error.
+	if file.Type != metadata.FileTypeRegular {
+		rerr := &metadata.StoreError{Code: metadata.ErrInvalidArgument, Message: "cannot read non-regular file"}
+		if file.Type == metadata.FileTypeDirectory {
+			rerr = &metadata.StoreError{Code: metadata.ErrIsDirectory, Message: "cannot read directory"}
+		}
+		logger.Debug("READ: not a regular file", "path", openFile.Path, "type", file.Type)
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(rerr)}}, nil
+	}
+
 	// Validate read permission on the already-loaded file (no re-fetch).
 	if err := metaSvc.CheckReadPermissionFile(authCtx, openFile.MetadataHandle, file); err != nil {
 		logger.Debug("READ: permission check failed", "path", openFile.Path, "error", err)
