@@ -334,7 +334,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 9: Handle zero-length reads and EOF conditions
 	// ========================================================================
 
-	fileSize := file.FileAttr.Size
+	fileSize := file.Size
 
 	// Per MS-SMB2 and Windows behavior (confirmed by smbtorture smb2.read.eof):
 	//   - Zero-length read with MinimumCount == 0: always STATUS_OK (even past EOF)
@@ -355,10 +355,10 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		}, nil
 	}
 
-	if file.FileAttr.PayloadID == "" || fileSize == 0 || req.Offset >= fileSize {
+	if file.PayloadID == "" || fileSize == 0 || req.Offset >= fileSize {
 		logger.Debug("READ: at or beyond EOF", "path", openFile.Path,
 			"offset", req.Offset, "size", fileSize,
-			"hasPayload", file.FileAttr.PayloadID != "")
+			"hasPayload", file.PayloadID != "")
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
 	}
 
@@ -387,7 +387,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// SMBResponseBase.ReleaseData so the pool.Put fires AFTER the wire write
 	// completes (plain, encrypted, compound). On error paths the helper
 	// already returns the buffer internally, so ReleaseData stays nil.
-	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, file.FileAttr.PayloadID, req.Offset, actualLength)
+	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 		// common.MapContentToSMB mirrors the old ContentErrorToSMBStatus
