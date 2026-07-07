@@ -71,11 +71,17 @@ func TestAppendWrite_DeleteRace_NoDeadlock(t *testing.T) {
 		close(done)
 	}()
 
-	deadline := 10 * time.Second
+	// Budget the deadlock guard off the actual go-test timeout rather than a
+	// fixed 10s. A real lock-order regression still hangs and trips this with
+	// a clear message just before Go's own raw timeout panic; a slow/contended
+	// runner (Windows CI) gets the full budget instead of a hardcoded 10s that
+	// fires as a false positive under load (#1585). The fixed fallback only
+	// applies when the test runs without a deadline.
+	deadline := 30 * time.Second
 	if dl, ok := t.Deadline(); ok {
 		// Leave a 2 s buffer so we fail with a clear message rather than
 		// truncating arbitrary post-test cleanup.
-		if budget := time.Until(dl) - 2*time.Second; budget > 0 && budget < deadline {
+		if budget := time.Until(dl) - 2*time.Second; budget > 0 {
 			deadline = budget
 		}
 	}
