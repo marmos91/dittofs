@@ -455,6 +455,19 @@ func FromPersistedLock(pl *PersistedLock) *UnifiedLock {
 				el.Lease.BreakingToRequired = el.Lease.LeaseState
 			}
 		}
+
+		// Directories may only carry Read/Handle caching, never Write
+		// (IsValidDirectoryLeaseState). A record written by a pre-fix binary
+		// could hold an illegal RWH directory lease (#1570); strip Write on
+		// ingestion so restoring or reclaiming that record can't reintroduce
+		// the stale-directory-cache bug after an upgrade + restart. Grant and
+		// upgrade paths already clamp before persisting, so this only rewrites
+		// legacy records.
+		if el.Lease.IsDirectory {
+			el.Lease.LeaseState &^= LeaseStateWrite
+			el.Lease.BreakToState &^= LeaseStateWrite
+			el.Lease.BreakingToRequired &^= LeaseStateWrite
+		}
 	}
 
 	// Restore delegation fields if this is a delegation (DelegationID present)

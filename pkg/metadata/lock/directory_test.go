@@ -651,3 +651,47 @@ func TestRenameC3_DstParent_PreConflictBreak_OnlyStripsHandle(t *testing.T) {
 	assert.Equal(t, 1, breakCount, "dst-parent dir lease must break exactly once on the pre-conflict path")
 	assert.Equal(t, uint32(LeaseStateRead), lastBreakTo, "pre-conflict dst-parent break must strip H but preserve R (RH → R, rename_dst_parent Phase 1)")
 }
+
+// TestRequestLease_DirectoryNeverGrantsWrite verifies that a directory is never
+// granted a Write-caching lease, on either the initial-grant or the same-key
+// upgrade path. Regression for #1570: Windows opened a directory with an RH
+// lease, then re-requested RWH; the directory-blind upgrade path applied the
+// RWH transition, handing the folder an illegal write-caching lease. Windows
+// then served a stale (empty) directory listing from cache and deleted the
+// folder without enumerating/removing its children, so the rmdir failed with
+// STATUS_DIRECTORY_NOT_EMPTY.
+func TestRequestLease_DirectoryNeverGrantsWrite(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	parentKey := [16]byte{}
+
+	t.Run("initial RWH request grants only RH", func(t *testing.T) {
+		t.Parallel()
+		mgr := NewManager()
+		leaseKey := [16]byte{0xa1}
+		state, _, err := mgr.RequestLease(ctx, FileHandle("dir-a"), leaseKey, parentKey,
+			"owner", "client", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
+		require.NoError(t, err)
+		assert.Equal(t, uint32(LeaseStateRead|LeaseStateHandle), state,
+			"directory RWH request must be capped at RH (Write not valid for directories)")
+	})
+
+	t.Run("RH then RWH upgrade stays RH", func(t *testing.T) {
+		t.Parallel()
+		mgr := NewManager()
+		leaseKey := [16]byte{0xb2}
+
+		state, _, err := mgr.RequestLease(ctx, FileHandle("dir-b"), leaseKey, parentKey,
+			"owner", "client", "/share", LeaseStateRead|LeaseStateHandle, true)
+		require.NoError(t, err)
+		require.Equal(t, uint32(LeaseStateRead|LeaseStateHandle), state)
+
+		// Same-key upgrade request to RWH — must not escalate a directory to Write.
+		state, _, err = mgr.RequestLease(ctx, FileHandle("dir-b"), leaseKey, parentKey,
+			"owner", "client", "/share", LeaseStateRead|LeaseStateWrite|LeaseStateHandle, true)
+		require.NoError(t, err)
+		assert.Equal(t, uint32(LeaseStateRead|LeaseStateHandle), state,
+			"RH→RWH upgrade on a directory must be rejected; state stays RH (#1570)")
+	})
+}

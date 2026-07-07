@@ -289,6 +289,21 @@ func (lm *Manager) requestLeaseImplWithMode(ctx context.Context, fileHandle File
 		return LeaseStateNone, 0, nil
 	}
 
+	// Directories may only be granted Read/Handle caching, never Write
+	// (MS-SMB2 §3.3.5.9.11 / IsValidDirectoryLeaseState allows only None, R,
+	// RH). Strip Write here, at the single request-normalization point, so
+	// BOTH the same-key upgrade path (isValidUpgrade) and the initial-grant
+	// path (bestGrantableState) observe a W-stripped request. The grant path
+	// already re-validates via IsValidDirectoryLeaseState, but isValidUpgrade
+	// is directory-blind — without this an RH→RWH upgrade would hand a
+	// directory an illegal write-caching lease. Windows then treats its local
+	// directory view as authoritative, serves a stale (empty) listing from
+	// cache, and deletes the folder without first enumerating and removing its
+	// children — so the rmdir fails with STATUS_DIRECTORY_NOT_EMPTY (#1570).
+	if isDirectory {
+		requestedState &^= LeaseStateWrite
+	}
+
 	handleKey := string(fileHandle)
 
 	// LeaseStateNone probe: clients (and smbtorture breaking4 / upgrade2)
