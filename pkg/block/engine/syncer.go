@@ -70,6 +70,11 @@ type Syncer struct {
 	inFlight   map[string]*fetchResult // In-flight download dedup (store key -> broadcast)
 	inFlightMu gosync.Mutex
 
+	// readahead holds per-payload sequential-access state so remote prefetch
+	// ramps on sequential runs and backs off on random access (see readahead.go).
+	readahead   map[string]*raState
+	readaheadMu gosync.Mutex
+
 	stopCh chan struct{} // Signals periodic uploader to stop
 	closed bool
 	mu     gosync.RWMutex
@@ -323,6 +328,7 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 		fileChunkStore: fileChunkStore,
 		config:         config,
 		inFlight:       make(map[string]*fetchResult),
+		readahead:      make(map[string]*raState),
 		stopCh:         make(chan struct{}),
 
 		uploadLimiter:    newDynamicSemaphore(startWindow),
