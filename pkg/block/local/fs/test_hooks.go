@@ -36,6 +36,29 @@ func (bc *FSStore) BaseDirForTest() string { return bc.baseDir }
 // compute the delta.
 func (bc *FSStore) FlushFsyncCountForTest() int64 { return bc.flushFsyncCount.Load() }
 
+// LogFsyncCountForTest returns the cumulative number of append-log fd fsyncs
+// issued through the store-level syncLeader (SyncEveryWrite writes +
+// SyncPayload COMMITs). Used to assert the deferred (UNSTABLE) write path
+// issues ZERO fsyncs and the COMMIT path issues them. Not incremented when
+// appendSyncFailHook short-circuits the real fsync.
+func (bc *FSStore) LogFsyncCountForTest() int64 { return bc.logFsyncCount.Load() }
+
+// SyncedPosForTest returns the per-file durable watermark for payloadID, or
+// (0, false) when no log fd is open. Serialized by the per-file mu.
+func (bc *FSStore) SyncedPosForTest(payloadID string) (uint64, bool) {
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	lf := sh.logFDs[payloadID]
+	mu := sh.logLocks[payloadID]
+	sh.mu.RUnlock()
+	if lf == nil || mu == nil {
+		return 0, false
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	return lf.syncedPos, true
+}
+
 // LogBlobRollupSyncCountForTest returns the cumulative number of times a
 // rollup pass called logBlob.Sync() before advancing the fence. Used by
 // tests to assert the durability invariant: chunk bytes fsynced before

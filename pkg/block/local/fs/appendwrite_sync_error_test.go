@@ -17,18 +17,20 @@ func snapshotLogFile(bc *FSStore, payloadID string) *logFile {
 }
 
 // TestAppendWrite_SyncError_EvictsFdAndKeepsLogIndexConsistent reproduces
-// the desync bug where a groupCommit.Sync failure left lf.eofPos behind the
+// the desync bug where an inline-fsync failure left lf.eofPos behind the
 // fd position: the next AppendWrite would record a logIndex entry pointing
 // at the orphaned, un-fsync'd frame instead of the new record, permanently
-// wedging rollup.
+// wedging rollup. It runs on the SyncEveryWrite path (the only path that
+// fsyncs inside AppendWrite post-PR3), injecting the fsync failure via
+// appendSyncFailHook.
 //
-// Before the fix, AppendWrite returned on Sync error WITHOUT evicting the
+// Before the fix, AppendWrite returned on fsync error WITHOUT evicting the
 // fd, so the same *logFile (with a stale eofPos) was reused. After the fix,
 // the fd is evicted exactly like the writeRecord-error path, so the next
 // AppendWrite reopens fresh from the on-disk EOF and records a correct
 // logIndex entry.
 func TestAppendWrite_SyncError_EvictsFdAndKeepsLogIndexConsistent(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30, SyncEveryWrite: true})
 	ctx := context.Background()
 	payloadID := "file-syncerr"
 
@@ -44,10 +46,11 @@ func TestAppendWrite_SyncError_EvictsFdAndKeepsLogIndexConsistent(t *testing.T) 
 	}
 
 	// Force the NEXT fsync to fail. The frame bytes still reach the OS fd
-	// (writeRecord runs before Sync), advancing the fd position, but Sync
-	// returns an error so eofPos is not advanced.
+	// (writeRecord runs before the fsync), advancing the fd position, but the
+	// fsync returns an error so eofPos is not advanced.
 	wantErr := errors.New("injected fsync failure")
-	lf.groupCommit = newGroupCommit(func() error { return wantErr })
+	appendSyncFailHook = func() error { return wantErr }
+	defer func() { appendSyncFailHook = nil }()
 
 	second := bytes.Repeat([]byte{0x22}, 256)
 	err := bc.AppendWrite(ctx, payloadID, second, 4096)
@@ -63,6 +66,9 @@ func TestAppendWrite_SyncError_EvictsFdAndKeepsLogIndexConsistent(t *testing.T) 
 	if got := snapshotLogFile(bc, payloadID); got == lf {
 		t.Fatal("fd not evicted after Sync error: stale logFile still in logFDs")
 	}
+
+	// Clear the fault so the recovery write's fsync succeeds.
+	appendSyncFailHook = nil
 
 	// A subsequent write must succeed, reopen fresh, and record a logIndex
 	// entry whose logPos equals the reopened on-disk EOF — never the

@@ -22,32 +22,22 @@ import (
 type logFile struct {
 	f    *os.File
 	path string
-	// groupCommit coalesces concurrent fsyncs against this log's fd into
-	// a single underlying f.Sync() call (Opt 2).
-	// Per-file scope — different logFiles fsync independently. Synchronous
-	// durability preserved: Sync(ctx) blocks until fsync completes; NFS
-	// COMMIT / SMB Flush callers see no async ack.
-	//
-	// The coordinator is bound to lf.f.Sync at construction (bound method
-	// value). The fd is owned for the lifetime of the FSStore (not
-	// pooled, not rotated); there is no file-rotation path that would
-	// stale-capture lf.f. On error-recovery close (the writeRecord-error
-	// branch in AppendWrite), the entire *logFile is dropped from
-	// the shard's logFDs and a fresh one is constructed on next touch — the
-	// coordinator goes with it.
-	//
-	// Teardown: no explicit Stop is required. The design has no
-	// goroutines outside the in-flight piggyback path; any in-flight
-	// fsync against a Close()d fd surfaces as an EBADF to its caller
-	// which is the correct error posture (caller observes the
-	// fsync result).
-	groupCommit *groupCommit
+	// syncedPos is the on-disk-durable watermark: bytes at log positions
+	// below syncedPos have been fsync'd to the platter. It is always
+	// <= eofPos. AppendWrite advances eofPos on the page-cache pwrite but,
+	// on the deferred (UNSTABLE) path, leaves syncedPos behind; SyncPayload
+	// fsyncs and advances syncedPos to eofPos. Initialized to the on-disk
+	// EOF at open/recovery (whatever survived is durable) and to eofPos on
+	// the SyncEveryWrite inline-fsync path and after compaction (which
+	// fsyncs the rewritten file). Serialized by the per-file mu.
+	syncedPos uint64
 
 	// eofPos tracks the on-disk EOF byte offset of this log. Initialized
 	// at construction (either logHeaderSize for a freshly initialized log
 	// or the seek-end offset for a reopened one) and advanced under the
-	// per-file `mu` after each successful writeRecord + groupCommit.Sync
-	// pair in AppendWrite. It is the canonical "log position" cursor used
+	// per-file `mu` after each successful writeRecord in AppendWrite (the
+	// fsync is deferred to SyncPayload unless SyncEveryWrite is set). It is
+	// the canonical "log position" cursor used
 	// by the per-file logIndex (Direction 1 redesign) to record where in
 	// the log each AppendWrite's record landed without re-statting the fd.
 	eofPos uint64
@@ -150,11 +140,10 @@ func (bc *FSStore) getOrCreateLog(payloadID string) (*logFile, *sync.Mutex, *int
 		} else {
 			return nil, nil, nil, nil, fmt.Errorf("append log: stat: %w", statErr)
 		}
-		lf = &logFile{f: f, path: path, eofPos: uint64(eof)}
-		// Opt 2: per-file fsync coordinator.
-		// Bound method value captures lf.f at construction; lf.f is not
-		// rotated for the FSStore lifetime, so the binding stays valid.
-		lf.groupCommit = newGroupCommit(lf.f.Sync)
+		// syncedPos seeds at the on-disk EOF: whatever is already in the
+		// file survived a prior open/crash and is durable, so nothing below
+		// eof needs re-fsyncing until a new deferred write extends the log.
+		lf = &logFile{f: f, path: path, eofPos: uint64(eof), syncedPos: uint64(eof)}
 		sh.logFDs[payloadID] = lf
 	}
 	if !muOk {
@@ -377,11 +366,11 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		//
 		// LOCK ORDERING (FIX-2 / FIX-20 extension)
 		//   per-file `mu` (held by caller across this region)
-		//     → groupCommit.mu (acquired inside lf.groupCommit.Sync below)
-		// → the shard lock (NEVER held while waiting on groupCommit.mu
-		//                    the coordinator NEVER references a shard lock
+		//     → syncLeader.mu (acquired inside bc.fsyncLogFile below)
+		// → the shard lock (NEVER held while waiting on syncLeader.mu
+		//                    the leader NEVER references a shard lock
 		//                    directly — enforced by the
-		//                    TestGroupCommit_NoLogsMuTouch grep gate).
+		//                    TestSyncLeader_NoShardLockTouch grep gate).
 		// The pre-Phase-19 rule still holds: release per-file mu BEFORE
 		// acquiring the shard lock (any path that holds the shard lock and
 		// waits on mu would otherwise deadlock against us; the global
@@ -408,45 +397,45 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		_ = lf.f.Close()
 		return fmt.Errorf("append log: %w", err)
 	}
-	// Opt 2: fsync coalesced through the
-	// per-logFile groupCommit coordinator. Synchronous durability
-	// preserved — caller blocks until fsync completes; NFS COMMIT /
-	// SMB Flush callers see no async ack. The per-file `mu` is still
-	// held across this call; coordinator's internal mu is a different
-	// lock (lock-order rule in the godoc block above).
+	// Honor NFS UNSTABLE (PR3): the default path does NOT fsync here — the
+	// record is durable-in-page-cache and the fsync is deferred to the next
+	// durability point (COMMIT / DATA_SYNC/FILE_SYNC WRITE / SMB Flush /
+	// graceful drain), each routing through SyncPayload. This is what
+	// collapses the per-write fsync wall on sequential writes.
 	//
-	// TRANSITIONAL-NEXT-MILESTONE: O_DIRECT for log writes (see #519
-	// "Deferred to v0.17+"). When O_DIRECT lands, the groupCommit
-	// coordinator may need to switch from fsync to fdatasync or
-	// fsync(O_SYNC) — revisit the fsyncFn closure at construction
-	// (logFile creation in getOrCreateLog / recovery.go).
-	if err := lf.groupCommit.Sync(ctx); err != nil {
-		// writeRecord already advanced the OS fd position by n bytes, but we
-		// have NOT advanced lf.eofPos yet (that happens below). If we simply
-		// returned here, the next AppendWrite to this payload would write its
-		// record at fd_pos = old_eofPos + n while capturing logPos = eofPos
-		// (the pre-write value), recording a logIndex entry that points at the
-		// orphaned, un-fsync'd frame instead of the new one — permanently
-		// wedging rollup with a wrong file_offset / CRC mismatch. Evict the fd
-		// exactly as the writeRecord-error path does so the next call reopens
-		// fresh from the on-disk eofPos and the orphaned tail is ignored.
-		mu.Unlock()
-		muUnlocked = true
-		tsh.mu.Lock()
-		delete(tsh.logFDs, payloadID)
-		tsh.mu.Unlock()
-		_ = lf.f.Close()
-		return fmt.Errorf("log fsync: %w", err)
+	// Only when SyncEveryWrite is set (operator opt-out for clients that
+	// never COMMIT) do we fsync inline. We fsync BEFORE advancing lf.eofPos:
+	// writeRecord already advanced the OS fd position by n bytes but eofPos
+	// is still the pre-write value, so a fsync failure can evict the fd
+	// exactly as the writeRecord-error path does — the next call reopens
+	// fresh from the on-disk eofPos and the orphaned, un-fsync'd tail is
+	// ignored, never recording a logIndex entry pointing at it (which would
+	// wedge rollup with a wrong file_offset / CRC mismatch). The per-file
+	// `mu` is held across the call; the leader's internal mu is a different
+	// lock (lock-order rule in the godoc block above).
+	if bc.syncEveryWrite {
+		if err := bc.fsyncLogFile(ctx, lf); err != nil {
+			mu.Unlock()
+			muUnlocked = true
+			tsh.mu.Lock()
+			delete(tsh.logFDs, payloadID)
+			tsh.mu.Unlock()
+			_ = lf.f.Close()
+			return fmt.Errorf("log fsync: %w", err)
+		}
 	}
-	// Advance the log-position cursor only after the writeRecord +
-	// groupCommit.Sync pair has succeeded. We are still under the per-
-	// file `mu`, so the increment is serialized against any other writer
-	// or rollup pread that consults lf.eofPos. Direction-1 redesign: the
-	// pre-advance value is the logPos at which this record's frame
-	// starts; capture it before the advance so the logIndex entry
-	// points at the correct frame boundary.
+	// Advance the log-position cursor. We are still under the per-file `mu`,
+	// so the increment is serialized against any other writer or rollup
+	// pread that consults lf.eofPos. Direction-1 redesign: the pre-advance
+	// value is the logPos at which this record's frame starts; capture it
+	// before the advance so the logIndex entry points at the correct frame
+	// boundary.
 	logPos := lf.eofPos
 	lf.eofPos += uint64(n)
+	if bc.syncEveryWrite {
+		// The inline fsync above made everything up to the new EOF durable.
+		lf.syncedPos = lf.eofPos
+	}
 	bc.logBytesTotal.Add(int64(n))
 	// Direction-1 redesign: record this AppendWrite in the per-payload
 	// logIndex. The interval tree answers "which file regions are
@@ -472,6 +461,73 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		default:
 		}
 	}
+	return nil
+}
+
+// appendSyncFailHook, when non-nil, replaces the real fd fsync with its own
+// result. Test-only fault injection for the append-log durability path
+// (mirrors rollupPreSyncFailHook). Never set in production.
+var appendSyncFailHook func() error
+
+// fsyncLogFile fsyncs lf.f through the store-level syncLeader so concurrent
+// fds coalesce into as few journal commits as possible. The caller MUST hold
+// lf's per-file mu across this call so the fd cannot be closed under it. Used
+// by the SyncEveryWrite inline path and by SyncPayload (COMMIT).
+func (bc *FSStore) fsyncLogFile(ctx context.Context, lf *logFile) error {
+	// Capture the fd under the caller's held mu (matching the pre-PR3
+	// bound-method-value semantics). The leader may run this closure on
+	// another goroutine after a ctx-canceled caller released its mu; reading
+	// lf.f inside the closure would then race a concurrent compaction fd swap.
+	// A captured fd that a later Close reaps just yields ErrClosed (os.File
+	// serializes Sync/Close), never corruption.
+	f := lf.f
+	return bc.syncLeader.Sync(ctx, func() error {
+		if h := appendSyncFailHook; h != nil {
+			return h()
+		}
+		bc.logFsyncCount.Add(1)
+		return f.Sync()
+	})
+}
+
+// SyncPayload makes every byte written to payloadID's append log durable on
+// the platter, fsyncing through the store-level leader. It is the durability
+// barrier for the deferred (UNSTABLE) write path: NFS COMMIT, NFSv4 COMMIT,
+// NFS DATA_SYNC/FILE_SYNC WRITE, and SMB CLOSE/Flush all route here via
+// engine.Store.Flush before reporting success.
+//
+// A per-file syncedPos watermark makes a COMMIT with no new writes a no-op, so
+// repeated COMMITs of a quiescent file cost nothing. Returns nil when the
+// payload has no open log (never written this process, or already rolled up
+// into durable CAS and its log fd retired) — there is nothing local to fsync.
+// A fsync failure is surfaced so the durability point does not falsely ack.
+func (bc *FSStore) SyncPayload(ctx context.Context, payloadID string) error {
+	if bc.isClosed() {
+		return ErrStoreClosed
+	}
+	sh := bc.shardFor(payloadID)
+	sh.mu.RLock()
+	lf := sh.logFDs[payloadID]
+	mu := sh.logLocks[payloadID]
+	sh.mu.RUnlock()
+	if lf == nil || mu == nil {
+		return nil
+	}
+
+	// Hold the per-file mu across the fsync: it serializes us against a
+	// concurrent AppendWrite (so eofPos cannot move under us) and, more
+	// importantly, keeps DeleteAppendLog from closing lf.f mid-fsync.
+	mu.Lock()
+	defer mu.Unlock()
+	if lf.syncedPos >= lf.eofPos {
+		// Watermark already caught up — nothing new since the last fsync.
+		return nil
+	}
+	target := lf.eofPos
+	if err := bc.fsyncLogFile(ctx, lf); err != nil {
+		return fmt.Errorf("log commit fsync: %w", err)
+	}
+	lf.syncedPos = target
 	return nil
 }
 

@@ -517,6 +517,11 @@ func (s *MemoryStore) DeleteAppendLog(_ context.Context, payloadID string) error
 // current. Returns nil. Implements local.LocalStore.
 func (s *MemoryStore) DrainRollups(_ context.Context) error { return nil }
 
+// SyncPayload is a no-op on the memory store: it has no durable append log
+// to fsync (its "durability" is governed by DurabilityReporter, which reports
+// the memory tier as volatile). Returns nil. Implements local.LocalStore.
+func (s *MemoryStore) SyncPayload(_ context.Context, _ string) error { return nil }
+
 // ResetLocalState clears the per-payload append-log buffers and tracked
 // file sizes so a subsequent ReadPayloadAt cannot serve stale post-restore
 // bytes from the in-memory buffer. The CAS map is intentionally retained:
