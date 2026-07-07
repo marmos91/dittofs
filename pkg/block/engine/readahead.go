@@ -1,7 +1,8 @@
 package engine
 
 // maxReadaheadEntries bounds the per-payload readahead state map. Readahead
-// state is disposable — a dropped entry just re-ramps from depth 1 — so on
+// state is disposable — a dropped entry just re-ramps from a cold start (the
+// re-creating read returns 0, the next sequential read reaches depth 1) — so on
 // overflow we evict an arbitrary entry rather than track access order.
 // ponytail: arbitrary eviction; switch to LRU only if churn across >4096
 // concurrently-hot files ever measurably costs re-ramps.
