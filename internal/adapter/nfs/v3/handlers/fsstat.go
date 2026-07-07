@@ -130,7 +130,7 @@ func (h *Handler) FsStat(
 		return &FsStatResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	logger.DebugCtx(ctx.Context, "FSSTAT", "share", ctx.Share, "path", file.Path)
+	logger.DebugCtx(ctx.Context, "FSSTAT", "share", ctx.Share)
 
 	// Check context before store call
 	if ctx.isContextCancelled() {
