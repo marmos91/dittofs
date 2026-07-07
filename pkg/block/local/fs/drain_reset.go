@@ -185,8 +185,9 @@ func (bc *FSStore) GracefulStopRollup(grace time.Duration) error {
 
 	if err := bc.DrainRollups(drainCtx); err != nil {
 		// A grace-deadline timeout is benign: any residual dirty intervals
-		// resume rollup on restart. Records a client acknowledged durable were
-		// already fsynced at their COMMIT/CLOSE (SyncPayload); un-COMMITted
+		// resume rollup on restart. Records that were acknowledged to a client
+		// as durable were already fsynced at their COMMIT/CLOSE (SyncPayload);
+		// un-COMMITted
 		// UNSTABLE bytes that miss the drain are protocol-legal to lose (the
 		// write Verf changes across the restart).
 		// ErrDrainIncomplete is likewise non-fatal at shutdown — we did the
