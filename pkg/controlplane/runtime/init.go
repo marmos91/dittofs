@@ -88,10 +88,17 @@ func CreateMetadataStoreFromConfig(ctx context.Context, storeType string, cfg in
 		if indexCacheMB < 0 {
 			return nil, fmt.Errorf("badger metadata store index_cache_mb must be >= 0 (0 = auto), got %d", indexCacheMB)
 		}
-		return badger.NewBadgerMetadataStoreWithDefaultsAndCaches(ctx, dbPath, blockCacheMB, indexCacheMB)
+		// Relaxed durability defers namespace-op fsyncs for higher single-thread
+		// throughput; data-paired writes stay synchronous (#1573 Wall 1).
+		// Shipped default: enabled. Operators restore strict per-txn fsync with
+		// relaxed_durability: false.
+		relaxedDurability := configBoolDefault(config, "relaxed_durability", true)
+		return badger.NewBadgerMetadataStoreWithDefaultsAndCaches(ctx, dbPath, blockCacheMB, indexCacheMB, relaxedDurability)
 
 	case "postgres":
 		pgCfg := &postgres.PostgresMetadataStoreConfig{}
+		// See badger branch: relaxed by default, opt out with relaxed_durability: false.
+		pgCfg.RelaxedDurability = configBoolDefault(config, "relaxed_durability", true)
 
 		if host, ok := config["host"].(string); ok {
 			pgCfg.Host = host
@@ -224,6 +231,17 @@ func configInt64(config map[string]any, key string) int64 {
 	default:
 		return 0
 	}
+}
+
+// configBoolDefault extracts a bool value from a type-specific config map under
+// key, returning def when the key is absent. Used for opt-out flags whose
+// shipped default is not the zero value (e.g. relaxed_durability defaults to
+// true — #1573 Wall 1).
+func configBoolDefault(config map[string]any, key string, def bool) bool {
+	if v, ok := config[key].(bool); ok {
+		return v
+	}
+	return def
 }
 
 // LoadSharesFromStore loads shares from the database into the runtime.

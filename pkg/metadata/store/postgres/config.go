@@ -32,6 +32,15 @@ type PostgresMetadataStoreConfig struct {
 	PrepareStatements bool          `mapstructure:"prepare_statements"` // Default: true
 	AutoMigrate       bool          `mapstructure:"auto_migrate"`       // Default: false (manual control)
 	StatsCacheTTL     time.Duration `mapstructure:"stats_cache_ttl"`    // Default: 5s
+
+	// RelaxedDurability defers commit-time WAL flush for pure-namespace metadata
+	// writes via SET LOCAL synchronous_commit=off, honoring the same
+	// UNSTABLE-style tradeoff as badger's relaxed mode (#1573 Wall 1).
+	// Data-paired writes (file size, block manifest, rollup offset) keep the
+	// default synchronous_commit=on, so #588 silent-zeros cannot recur; a hard
+	// crash can lose only the last few async-committed namespace ops (Postgres
+	// never corrupts — WAL replay is consistent). Default false (strict).
+	RelaxedDurability bool `mapstructure:"relaxed_durability"`
 }
 
 // ApplyDefaults sets default values for unspecified configuration fields

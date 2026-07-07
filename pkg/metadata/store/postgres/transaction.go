@@ -105,9 +105,28 @@ func isRetryableError(err error) bool {
 // Connection acquisition has a timeout to prevent indefinite blocking when
 // the pool is exhausted under high concurrent load.
 func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
+	return s.withTransaction(ctx, fn, false)
+}
+
+// WithTransactionRelaxed runs fn like WithTransaction but, when the store is
+// configured for relaxed durability, sets synchronous_commit=off for the
+// transaction so its commit does not wait for a WAL fsync (#1573 Wall 1). Use
+// ONLY for pure-namespace/attr writes not paired with block data. Data-paired
+// writes must use WithTransaction so their WAL is flushed synchronously (#588).
+// In strict mode this is identical to WithTransaction.
+func (s *PostgresMetadataStore) WithTransactionRelaxed(ctx context.Context, fn func(tx metadata.Transaction) error) error {
+	return s.withTransaction(ctx, fn, true)
+}
+
+func (s *PostgresMetadataStore) withTransaction(ctx context.Context, fn func(tx metadata.Transaction) error, relaxed bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// synchronous_commit=off is honored only for relaxed namespace writes AND
+	// only when the operator opted in. SET LOCAL is transaction-scoped, so it
+	// resets at COMMIT and never leaks across pooled connections.
+	relaxCommit := relaxed && s.config.RelaxedDurability
 
 	var lastErr error
 	for attempt := 0; attempt < maxTransactionRetries; attempt++ {
@@ -132,6 +151,17 @@ func (s *PostgresMetadataStore) WithTransaction(ctx context.Context, fn func(tx 
 					"constructing_conns", stats.ConstructingConns())
 			}
 			return err
+		}
+
+		// Relaxed namespace write: drop synchronous_commit for this transaction
+		// only. SET LOCAL is scoped to the tx and reset at COMMIT/ROLLBACK, so
+		// pooled connections are never left in an off state. A failure here is
+		// non-fatal — fall through to a fully-durable commit rather than abort.
+		if relaxCommit {
+			if _, serr := tx.Exec(ctx, "SET LOCAL synchronous_commit = off"); serr != nil {
+				s.logger.Warn("relaxed durability: SET LOCAL synchronous_commit failed; committing synchronously",
+					"error", serr)
+			}
 		}
 
 		ptx := &postgresTransaction{store: s, tx: tx}

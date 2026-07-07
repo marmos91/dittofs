@@ -6,6 +6,15 @@ package badger
 // shrink the budget to deterministically drive WithTransaction into its
 // retry-exhausted conflict path without spinning thousands of contending
 // goroutines. Production code never calls it.
+// InlineSyncCountForTest returns the number of explicit db.Sync() calls made on
+// the durable write path (WithTransaction / SetRollupOffset in relaxed mode).
+// It excludes the background bounded-lag syncer, so a test can assert that a
+// durable commit fsynced inline and a relaxed commit did not. Production code
+// never calls it.
+func (s *BadgerMetadataStore) InlineSyncCountForTest() int64 {
+	return s.inlineSyncs.Load()
+}
+
 func SetMaxTransactionRetriesForTest(n int) func() {
 	prev := maxTransactionRetries.Load()
 	// Clamp to at least 1: a value <= 0 would make WithTransaction run zero

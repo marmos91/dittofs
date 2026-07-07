@@ -98,6 +98,27 @@ var maxTransactionRetries = func() *atomic.Int32 {
 // If fn returns nil, the transaction is committed.
 // Retries automatically on transaction conflicts (ErrConflict).
 func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx metadata.Transaction) error) error {
+	return s.withTransaction(ctx, fn, true)
+}
+
+// WithTransactionRelaxed runs fn exactly like WithTransaction but, in
+// relaxed-durability mode, does NOT force an inline fsync on commit — the write
+// becomes durable via the background syncer within durabilitySyncInterval
+// instead (#1573 Wall 1). Use ONLY for pure-namespace/attr writes
+// (create/remove/rename/mkdir/mode/owner/times) that are not paired with block
+// data. NEVER use it for file-size, block-manifest, or rollup-offset writes —
+// those are data-paired and must stay synchronous (WithTransaction) or #588
+// silent-zeros can recur. In strict mode this is identical to WithTransaction.
+func (s *BadgerMetadataStore) WithTransactionRelaxed(ctx context.Context, fn func(tx metadata.Transaction) error) error {
+	return s.withTransaction(ctx, fn, false)
+}
+
+// withTransaction is the shared retry/commit loop. When durable is true and the
+// store runs relaxed (SyncWrites=false), it fsyncs after a successful commit so
+// data-paired writes survive a crash; when durable is false it relies on the
+// background syncer. In strict mode (SyncWrites=true) the flag is moot — every
+// commit already fsynced — so both paths behave identically.
+func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx metadata.Transaction) error, durable bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -126,6 +147,14 @@ func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 			}
 			// Apply per-identity usage deltas once, after commit.
 			s.applyQuotaDelta(quotaDelta)
+			// Durable (data-paired) commit in relaxed mode: fsync now so the
+			// write survives a crash. A sync failure must not falsely ack a
+			// durable write (#588), so surface it. No-op in strict mode.
+			if durable {
+				if syncErr := s.syncIfRelaxed(); syncErr != nil {
+					return fmt.Errorf("badger WithTransaction: durability sync after commit: %w", syncErr)
+				}
+			}
 			return nil // Success
 		}
 

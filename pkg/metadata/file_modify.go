@@ -535,7 +535,20 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		if attrs.Ctime == nil {
 			file.Ctime = now
 		}
-		if err := store.PutFile(ctx.Context, file); err != nil {
+		// A size change (truncate/grow) is data-paired: the new size must
+		// survive a crash together with the block data, or a read past the new
+		// EOF returns stale-tail / silent-truncation bytes (#588). Persist it
+		// through a fully-durable transaction so relaxed-durability mode still
+		// fsyncs it. Pure-attribute changes (mode/owner/times/xattr/ACL) are not
+		// data-paired and take the store's default PutFile path, which defers in
+		// relaxed mode (#1573 Wall 1).
+		if attrs.Size != nil {
+			if err := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+				return tx.PutFile(ctx.Context, file)
+			}); err != nil {
+				return nil, err
+			}
+		} else if err := store.PutFile(ctx.Context, file); err != nil {
 			return nil, err
 		}
 
@@ -748,7 +761,11 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	}
 
 	// Execute all write operations in a single transaction for better performance.
-	txErr := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	// Relaxed durability (#1573 Wall 1): rename rewrites only directory entries
+	// and inode paths — the moved file's size and block manifest are untouched,
+	// so this is pure namespace. A crash can lose the rename (old name
+	// persists), never corrupt data.
+	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// Re-read the source/destination directories inside the transaction so
 		// the pre-op snapshots and the timestamp mutations derive from the same
 		// committed state (After then monotonic w.r.t. Before).

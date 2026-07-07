@@ -139,6 +139,26 @@ type BadgerMetadataStore struct {
 	// DB reset (which rotates cfg.ID) does NOT cause the engine to report a
 	// different identity.
 	storeID string
+
+	// relaxedDurability, when set, opens the DB with SyncWrites=false and
+	// defers namespace-op fsyncs to the background syncLoop below; durable
+	// writes (WithTransaction, SetRollupOffset) call db.Sync() explicitly.
+	// When false the DB is opened SyncWrites=true and every commit fsyncs, so
+	// WithTransactionRelaxed is indistinguishable from WithTransaction (the
+	// pre-#1573 posture). See BadgerMetadataStoreConfig.RelaxedDurability.
+	relaxedDurability bool
+
+	// syncStop signals the bounded-lag background syncer to exit; syncWG waits
+	// for it in Close(). Only started when relaxedDurability is set. Mirrors the
+	// gcStop/gcWG lifecycle so the syncer never runs against a closed DB.
+	syncStop     chan struct{}
+	syncStopOnce sync.Once
+	syncWG       sync.WaitGroup
+
+	// inlineSyncs counts explicit db.Sync() calls on the durable write path
+	// (syncIfRelaxed), NOT the background ticker. Tests read it to assert the
+	// durable/relaxed classification is wired correctly.
+	inlineSyncs atomic.Int64
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.
@@ -164,6 +184,18 @@ type BadgerMetadataStoreConfig struct {
 	// BadgerOptions allows customization of BadgerDB behavior
 	// If nil, sensible defaults are used
 	BadgerOptions *badger.Options
+
+	// RelaxedDurability defers the per-transaction fsync for pure-namespace
+	// metadata writes (create/remove/rename/mkdir/attr) to a bounded-lag
+	// background sync, honoring the same UNSTABLE-style tradeoff the block
+	// append-log took in #1584. Data-paired writes — file size on WRITE, the
+	// block manifest (DefaultCommitBlock), and the rollup offset — stay
+	// synchronous regardless, so this can never resurrect the #588 silent-zeros
+	// bug; only a hard crash can lose the last sub-100ms of namespace ops (the
+	// op vanishes / reappears, never corrupts). When false (the safe default at
+	// the store layer) every commit fsyncs, exactly reproducing pre-#1573
+	// behavior. The server product enables it via config (#1573 Wall 1).
+	RelaxedDurability bool `mapstructure:"relaxed_durability"`
 
 	// BlockCacheSizeMB is BadgerDB's block cache size in MiB. This caches
 	// decompressed LSM-tree data blocks for faster reads. When 0 (unset) the
@@ -247,20 +279,26 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	// (engine.go:1072 `clear(dest)`), returning silent zeros for files
 	// whose CAS chunks are still on disk.
 	//
-	// Override here UNCONDITIONALLY so an operator tuning unrelated
-	// knobs via BadgerOptions cannot accidentally re-disable crash
-	// durability by inheriting badger's default SyncWrites=false. If a
-	// future workload needs to opt out (e.g. dev/test harnesses
-	// favoring perf over durability) a dedicated config flag should
-	// be introduced rather than relying on badger's permissive default.
+	// Override here so an operator tuning unrelated knobs via BadgerOptions
+	// cannot accidentally change the durability posture by inheriting badger's
+	// permissive SyncWrites=false default — the posture is decided ONLY by
+	// config.RelaxedDurability.
 	//
-	// Performance cost: every metadata Update transaction now fsyncs.
-	// In our deployment profile (NFSv3/SMB workloads with high write
-	// concurrency) this is acceptable because (a) badger amortizes
-	// fsyncs across the transactions in a single commit batch and
-	// (b) DittoFS already requires durability at every COMMIT /
-	// FILE_FLUSH so the cost was paid elsewhere previously.
-	opts = opts.WithSyncWrites(true)
+	// Strict (default, RelaxedDurability=false): SyncWrites=true, every commit
+	// fsyncs — the #583/#588 posture, unchanged.
+	//
+	// Relaxed (RelaxedDurability=true, #1573 Wall 1): SyncWrites=false, so
+	// namespace-op commits return once the write lands in the memtable/WAL
+	// buffer. Durability is re-established two ways: (a) durable writes
+	// (WithTransaction, SetRollupOffset) call db.Sync() explicitly after commit
+	// — this keeps every DATA-PAIRED write (file size, block manifest, rollup
+	// offset) synchronous, so #588 silent-zeros cannot recur; (b) the
+	// background syncLoop fsyncs on a bounded interval so an un-barriered
+	// namespace op is durable within syncLoopInterval. A hard crash can lose
+	// only the last <interval of pure-namespace ops (the op vanishes/reappears,
+	// never corrupts) — the same UNSTABLE-style tradeoff #1584 took for the
+	// block append-log.
+	opts = opts.WithSyncWrites(!config.RelaxedDurability)
 
 	// Open BadgerDB
 	db, err := badger.Open(opts)
@@ -278,12 +316,14 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	}
 
 	store := &BadgerMetadataStore{
-		db:              db,
-		gcStop:          make(chan struct{}),
-		capabilities:    config.Capabilities,
-		maxStorageBytes: config.MaxStorageBytes,
-		maxFiles:        config.MaxFiles,
-		storeID:         sid,
+		db:                db,
+		gcStop:            make(chan struct{}),
+		capabilities:      config.Capabilities,
+		maxStorageBytes:   config.MaxStorageBytes,
+		maxFiles:          config.MaxFiles,
+		storeID:           sid,
+		relaxedDurability: config.RelaxedDurability,
+		syncStop:          make(chan struct{}),
 	}
 
 	// Initialize stats cache with a 5-second TTL for responsive updates
@@ -309,6 +349,15 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	// stopped in Close().
 	store.gcWG.Add(1)
 	go store.runValueLogGC()
+
+	// Bounded-lag durability syncer: only needed in relaxed mode, where
+	// namespace-op commits do not fsync inline. It caps how long an
+	// un-barriered namespace op can sit un-fsynced (worst-case crash-loss
+	// window). Strict mode fsyncs every commit, so no syncer runs.
+	if store.relaxedDurability {
+		store.syncWG.Add(1)
+		go store.runDurabilitySync()
+	}
 
 	return store, nil
 }
@@ -358,6 +407,48 @@ func (s *BadgerMetadataStore) runValueLogGC() {
 			}
 		}
 	}
+}
+
+// durabilitySyncInterval bounds how long a relaxed (namespace-op) commit can
+// sit un-fsynced before the background syncer forces it to disk — i.e. the
+// worst-case crash-loss window for pure-namespace ops. 100ms is an order of
+// magnitude tighter than ext4's default 5s journal-commit interval.
+const durabilitySyncInterval = 100 * time.Millisecond
+
+// runDurabilitySync periodically fsyncs the value log so relaxed-mode
+// namespace commits become durable within durabilitySyncInterval even when no
+// durable write (which fsyncs inline) happens to follow them. Only started in
+// relaxed mode. Exits promptly when syncStop is closed by Close(); a final
+// flush is guaranteed by db.Close() itself.
+func (s *BadgerMetadataStore) runDurabilitySync() {
+	defer s.syncWG.Done()
+
+	ticker := time.NewTicker(durabilitySyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.syncStop:
+			return
+		case <-ticker.C:
+			// A failed periodic sync is not fatal here: the next durable
+			// write or db.Close() will retry, and callers that need a hard
+			// guarantee go through the inline db.Sync() on the durable path.
+			_ = s.db.Sync()
+		}
+	}
+}
+
+// syncIfRelaxed fsyncs the value log when running in relaxed mode, turning a
+// just-committed (SyncWrites=false) write durable. In strict mode SyncWrites=true
+// already fsynced on commit, so this is a no-op. Callers on the DATA-PAIRED
+// path (WithTransaction, SetRollupOffset) use it to keep #588 durability.
+func (s *BadgerMetadataStore) syncIfRelaxed() error {
+	if !s.relaxedDurability {
+		return nil
+	}
+	s.inlineSyncs.Add(1)
+	return s.db.Sync()
 }
 
 // storeIDKey is the BadgerDB key for the engine-persistent store identifier.
@@ -502,10 +593,11 @@ func NewBadgerMetadataStoreWithDefaults(ctx context.Context, dbPath string) (*Ba
 // (see cache.go / #1245 Bug D). Used by the per-store config-map path so an
 // operator can pin caches on a single metadata store via its config keys
 // (block_cache_mb / index_cache_mb).
-func NewBadgerMetadataStoreWithDefaultsAndCaches(ctx context.Context, dbPath string, blockCacheMB, indexCacheMB int64) (*BadgerMetadataStore, error) {
+func NewBadgerMetadataStoreWithDefaultsAndCaches(ctx context.Context, dbPath string, blockCacheMB, indexCacheMB int64, relaxedDurability bool) (*BadgerMetadataStore, error) {
 	cfg := defaultStoreConfig(dbPath)
 	cfg.BlockCacheSizeMB = blockCacheMB
 	cfg.IndexCacheSizeMB = indexCacheMB
+	cfg.RelaxedDurability = relaxedDurability
 	return NewBadgerMetadataStore(ctx, cfg)
 }
 
@@ -624,6 +716,13 @@ func (s *BadgerMetadataStore) Close() error {
 			close(s.gcStop)
 		})
 		s.gcWG.Wait()
+
+		// Stop the bounded-lag durability syncer (relaxed mode only) before
+		// closing the DB. syncStopOnce is a no-op if the syncer never started.
+		s.syncStopOnce.Do(func() {
+			close(s.syncStop)
+		})
+		s.syncWG.Wait()
 
 		// Record a clean-shutdown marker LAST, after the GC goroutine has
 		// drained and before closing the DB, so the lock-recovery boot path can

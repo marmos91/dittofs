@@ -128,7 +128,11 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 	wcc := &DirWcc{}
 
 	// Execute all write operations in a single transaction for better performance.
-	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	// Relaxed durability (#1573 Wall 1): a create writes only child keys (+
+	// parent nlink for mkdir) — pure namespace, not paired with block data — so
+	// its commit may become durable with bounded lag. A crash can lose the
+	// just-created entry (the client re-creates); it can never corrupt data.
+	err = withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// Re-read the directory inside the transaction so the pre-op snapshot and
 		// the timestamp mutation derive from the same committed state.
 		if txDir, dErr := tx.GetFile(ctx.Context, dirHandle); dErr == nil && txDir != nil {
@@ -368,7 +372,12 @@ func (s *Service) createEntry(
 	// which BadgerDB SSI aborts as a conflict, serializing them on retry-backoff
 	// (#1573). Touching only the new child's disjoint keys lets group-commit
 	// batch concurrent creates; the parent timestamp is coalesced below.
-	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	//
+	// Relaxed durability (#1573 Wall 1): these are pure-namespace child keys, not
+	// paired with block data, so the commit may become durable with bounded lag.
+	// A crash can lose the just-created entry (the client re-creates); it can
+	// never corrupt data.
+	err = withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// TOCTOU guard: re-check inside transaction.
 		if _, innerErr := tx.GetChild(ctx.Context, parentHandle, name); innerErr == nil {
 			return &StoreError{

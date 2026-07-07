@@ -134,7 +134,11 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 	// this transaction does NOT touch the parent inode — the parent timestamp
 	// bump that used to serialize concurrent same-dir removes on a BadgerDB SSI
 	// hot key is coalesced after commit instead (#1573).
-	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	//
+	// Relaxed durability (#1573 Wall 1): these writes are pure namespace — the
+	// child unlink and link-count — not paired with block data. A crash can lose
+	// the removal (the entry reappears; the client re-unlinks), never corrupt data.
+	err = withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// Read the link count INSIDE the transaction so the read, the
 		// branch decision, and the write are atomic. Reading it outside the
 		// tx is a TOCTOU race with CreateHardLink: a concurrent link bump in
