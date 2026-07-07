@@ -773,24 +773,59 @@ func (s *Service) GetFile(ctx context.Context, handle FileHandle) (*File, error)
 		return nil, err
 	}
 
-	// Check for pending write state (when deferred commits are enabled)
-	if pending, ok := s.pendingWrites.GetPending(handle); ok {
-		// Merge pending state with stored state
-		if pending.MaxSize > file.Size {
-			file.Size = pending.MaxSize
-		}
-		// Update timestamps from pending state
-		if pending.LastMtime.After(file.Mtime) {
-			file.Mtime = pending.LastMtime
-			file.Ctime = pending.LastMtime
-		}
-		// Apply setuid/setgid clearing
-		if pending.ClearSetuidSetgid {
-			file.Mode &= ^uint32(0o6000)
-		}
+	s.mergePendingWrites(handle, file)
+	return file, nil
+}
+
+// fileForReadStore is the optional read fast path — a GetFile that skips
+// deriving File.Path. Implemented only by the badger backend; other backends
+// fall through to the regular GetFile in GetFileForRead.
+type fileForReadStore interface {
+	GetFileForRead(ctx context.Context, handle FileHandle) (*File, error)
+}
+
+// GetFileForRead loads a file for the handle-addressed hot paths (NFS
+// READ/WRITE/GETATTR) that never read File.Path. When the backend implements
+// fileForReadStore it skips the derivePath parent-edge walk; otherwise it
+// falls back to GetFile. Pending write state is merged identically to GetFile.
+func (s *Service) GetFileForRead(ctx context.Context, handle FileHandle) (*File, error) {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return nil, err
 	}
 
+	var file *File
+	if r, ok := store.(fileForReadStore); ok {
+		file, err = r.GetFileForRead(ctx, handle)
+	} else {
+		file, err = store.GetFile(ctx, handle)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	s.mergePendingWrites(handle, file)
 	return file, nil
+}
+
+// mergePendingWrites overlays deferred-commit state (size, mtime/ctime,
+// setuid/setgid clearing) onto a freshly loaded file, so a read sees its own
+// not-yet-persisted writes.
+func (s *Service) mergePendingWrites(handle FileHandle, file *File) {
+	pending, ok := s.pendingWrites.GetPending(handle)
+	if !ok {
+		return
+	}
+	if pending.MaxSize > file.Size {
+		file.Size = pending.MaxSize
+	}
+	if pending.LastMtime.After(file.Mtime) {
+		file.Mtime = pending.LastMtime
+		file.Ctime = pending.LastMtime
+	}
+	if pending.ClearSetuidSetgid {
+		file.Mode &= ^uint32(0o6000)
+	}
 }
 
 // GetFileCached returns file metadata, trying the pending-writes cache first

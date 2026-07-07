@@ -187,7 +187,11 @@ func (h *Handler) Read(
 		}, nil
 	}
 
-	if _, err := metaSvc.PrepareRead(authCtx, fileHandle); err != nil {
+	// Gate the read on the File already loaded above (getFileOrError). Using
+	// the in-hand file avoids PrepareRead's redundant re-fetch of the same
+	// inode (and the permission path's own re-fetch) — the regular-file check
+	// PrepareRead also performs was already done above.
+	if err := metaSvc.CheckReadPermissionFile(authCtx, fileHandle, file); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}

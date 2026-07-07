@@ -243,6 +243,26 @@ func (s *Service) checkFilePermissions(ctx *AuthContext, handle FileHandle, requ
 		return 0, err
 	}
 
+	return s.checkFilePermissionsFile(ctx, handle, file, requested)
+}
+
+// checkFilePermissionsFile is checkFilePermissions on an already-loaded file:
+// it skips the store.GetFile re-fetch (and its derivePath + JSON decode) so a
+// caller that already holds the File — e.g. the NFS READ/WRITE handlers, which
+// loaded it once via getFileOrError — pays for the inode lookup once per op
+// rather than two or three times. handle is used only for cheap store routing
+// and the share read-only lookup, never to re-read the file.
+func (s *Service) checkFilePermissionsFile(ctx *AuthContext, handle FileHandle, file *File, requested Permission) (Permission, error) {
+	store, err := s.storeForHandle(handle)
+	if err != nil {
+		return 0, err
+	}
+
+	// Check context
+	if err := ctx.Context.Err(); err != nil {
+		return 0, err
+	}
+
 	// Get share options for read-only check
 	shareOpts, err := store.GetShareOptions(ctx.Context, file.ShareName)
 	if err != nil {
@@ -489,6 +509,23 @@ func (s *Service) checkPermission(ctx *AuthContext, handle FileHandle, perm Perm
 	if err != nil {
 		return err
 	}
+	return s.permissionResult(ctx, handle, granted, perm, msg)
+}
+
+// checkPermissionFile is checkPermission on an already-loaded file — it routes
+// the permission evaluation through checkFilePermissionsFile so the READ/WRITE
+// handlers avoid re-fetching an inode they already hold.
+func (s *Service) checkPermissionFile(ctx *AuthContext, handle FileHandle, file *File, perm Permission, msg string) error {
+	granted, err := s.checkFilePermissionsFile(ctx, handle, file, perm)
+	if err != nil {
+		return err
+	}
+	return s.permissionResult(ctx, handle, granted, perm, msg)
+}
+
+// permissionResult maps a granted-permission mask to the denial error a caller
+// should surface, or nil when the requested permission is granted.
+func (s *Service) permissionResult(ctx *AuthContext, handle FileHandle, granted, perm Permission, msg string) error {
 	if granted&perm == 0 {
 		// A write or delete denied because the share/export itself is
 		// read-only must surface as ErrReadOnly so NFSv3 returns
@@ -510,6 +547,14 @@ func (s *Service) checkPermission(ctx *AuthContext, handle FileHandle, perm Perm
 		}
 	}
 	return nil
+}
+
+// CheckReadPermissionFile verifies read permission on an already-loaded file,
+// without re-fetching it. The NFS READ handler uses this to gate a read on the
+// File it already loaded via getFileOrError, replacing PrepareRead's redundant
+// inode re-fetch + permission-path re-fetch.
+func (s *Service) CheckReadPermissionFile(ctx *AuthContext, handle FileHandle, file *File) error {
+	return s.checkPermissionFile(ctx, handle, file, PermissionRead, "read permission denied")
 }
 
 // shareForbidsWrites reports whether a read-only ceiling — per-user

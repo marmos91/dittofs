@@ -171,6 +171,15 @@ func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 // ============================================================================
 
 func (tx *badgerTransaction) GetFile(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error) {
+	return tx.getFile(ctx, handle, true)
+}
+
+// getFile loads a file by handle. When withPath is false it skips the
+// parent-edge walk that populates File.Path (derivePath) — a per-level pair of
+// badger gets that the handle-based read/write/getattr hot paths never consume
+// (NFS is handle-addressed, not path-addressed). Callers that need File.Path
+// (rename, path-facing errors) go through GetFile with withPath = true.
+func (tx *badgerTransaction) getFile(ctx context.Context, handle metadata.FileHandle, withPath bool) (*metadata.File, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -233,7 +242,10 @@ func (tx *badgerTransaction) GetFile(ctx context.Context, handle metadata.FileHa
 	// the stored proto field (#1166): parent edges are the sole source of
 	// truth, so the returned path always reflects the inode's current location
 	// and never goes stale after a hard-linked name is renamed or unlinked.
-	file.Path = tx.derivePath(fileID)
+	// Skipped for handle-addressed hot paths that never read Path (withPath=false).
+	if withPath {
+		file.Path = tx.derivePath(fileID)
+	}
 
 	return file, nil
 }

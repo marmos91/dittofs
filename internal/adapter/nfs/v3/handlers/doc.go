@@ -182,7 +182,9 @@ func (h *Handler) getFileOrError(
 	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
 	metaSvc := h.Registry.GetMetadataService()
 
-	file, err := metaSvc.GetFile(ctx.Context, fileHandle)
+	// GetFileForRead: NFS is handle-addressed, so no v3 handler reads
+	// File.Path — skip the derivePath parent-edge walk on this hot path.
+	file, err := metaSvc.GetFileForRead(ctx.Context, fileHandle)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
