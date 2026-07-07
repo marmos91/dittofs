@@ -150,7 +150,7 @@ func (h *Handler) FsInfo(
 		return &FsInfoResponse{NFSResponseBase: NFSResponseBase{Status: status}}, err
 	}
 
-	logger.DebugCtx(ctx.Context, "FSINFO", "share", ctx.Share, "path", file.Path)
+	logger.DebugCtx(ctx.Context, "FSINFO", "share", ctx.Share)
 
 	// Retrieve filesystem capabilities from the store
 	// All business logic about filesystem limits is handled by the store

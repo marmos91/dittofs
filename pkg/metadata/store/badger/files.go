@@ -36,6 +36,26 @@ func (s *BadgerMetadataStore) GetFile(ctx context.Context, handle metadata.FileH
 	return result, err
 }
 
+// GetFileForRead is GetFile without deriving File.Path — it skips the
+// parent-edge walk (a per-directory-level pair of badger gets) for the
+// handle-addressed hot paths (NFS READ/WRITE/GETATTR) that never read Path.
+// Implements the optional metadata read-fast-path interface; other backends
+// fall back to GetFile.
+func (s *BadgerMetadataStore) GetFileForRead(ctx context.Context, handle metadata.FileHandle) (*metadata.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var result *metadata.File
+	err := s.db.View(func(txn *badgerdb.Txn) error {
+		tx := &badgerTransaction{store: s, txn: txn}
+		var err error
+		result, err = tx.getFile(ctx, handle, false)
+		return err
+	})
+	return result, err
+}
+
 // PutFile stores or updates file metadata.
 func (s *BadgerMetadataStore) PutFile(ctx context.Context, file *metadata.File) error {
 	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {

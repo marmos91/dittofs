@@ -79,7 +79,8 @@ func (h *Handler) handleSeek(ctx *types.CompoundContext, reader io.Reader) *type
 		return seekErr(types.NFS4ERR_SERVERFAULT)
 	}
 
-	file, err := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+	// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
+	file, err := metaSvc.GetFileForRead(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
 	if err != nil {
 		return seekErr(common.MapToNFS4(err))
 	}

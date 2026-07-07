@@ -289,7 +289,9 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 7: Check for symlink - generate MFsymlink content on-the-fly
 	// ========================================================================
 
-	file, err := metaSvc.GetFile(authCtx.Context, openFile.MetadataHandle)
+	// GetFileForRead skips the expensive File.Path derivation; read.go never
+	// reads file.Path (loggers use openFile.Path, symlink uses file.LinkTarget).
+	file, err := metaSvc.GetFileForRead(authCtx.Context, openFile.MetadataHandle)
 	if err != nil {
 		logger.Debug("READ: failed to get file metadata", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
@@ -300,9 +302,21 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		return h.handleSymlinkRead(ctx, openFile, file, req)
 	}
 
-	// Validate read permission using PrepareRead (for regular files only)
-	readMeta, err := metaSvc.PrepareRead(authCtx, openFile.MetadataHandle)
-	if err != nil {
+	// Only regular files are readable. PrepareRead used to reject directories
+	// and other special types (FIFO/socket/device) before it was folded out of
+	// the read path; preserve that so a cross-protocol special node can't fall
+	// through to an empty EOF read instead of a proper error.
+	if file.Type != metadata.FileTypeRegular {
+		rerr := &metadata.StoreError{Code: metadata.ErrInvalidArgument, Message: "cannot read non-regular file"}
+		if file.Type == metadata.FileTypeDirectory {
+			rerr = &metadata.StoreError{Code: metadata.ErrIsDirectory, Message: "cannot read directory"}
+		}
+		logger.Debug("READ: not a regular file", "path", openFile.Path, "type", file.Type)
+		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(rerr)}}, nil
+	}
+
+	// Validate read permission on the already-loaded file (no re-fetch).
+	if err := metaSvc.CheckReadPermissionFile(authCtx, openFile.MetadataHandle, file); err != nil {
 		logger.Debug("READ: permission check failed", "path", openFile.Path, "error", err)
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: common.MapToSMB(err)}}, nil
 	}
@@ -333,7 +347,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// Step 9: Handle zero-length reads and EOF conditions
 	// ========================================================================
 
-	fileSize := readMeta.Attr.Size
+	fileSize := file.Size
 
 	// Per MS-SMB2 and Windows behavior (confirmed by smbtorture smb2.read.eof):
 	//   - Zero-length read with MinimumCount == 0: always STATUS_OK (even past EOF)
@@ -354,10 +368,10 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 		}, nil
 	}
 
-	if readMeta.Attr.PayloadID == "" || fileSize == 0 || req.Offset >= fileSize {
+	if file.PayloadID == "" || fileSize == 0 || req.Offset >= fileSize {
 		logger.Debug("READ: at or beyond EOF", "path", openFile.Path,
 			"offset", req.Offset, "size", fileSize,
-			"hasPayload", readMeta.Attr.PayloadID != "")
+			"hasPayload", file.PayloadID != "")
 		return &ReadResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusEndOfFile}}, nil
 	}
 
@@ -386,7 +400,7 @@ func (h *Handler) Read(ctx *SMBHandlerContext, req *ReadRequest) (*ReadResponse,
 	// SMBResponseBase.ReleaseData so the pool.Put fires AFTER the wire write
 	// completes (plain, encrypted, compound). On error paths the helper
 	// already returns the buffer internally, so ReleaseData stays nil.
-	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, readMeta.Attr.PayloadID, req.Offset, actualLength)
+	readResult, err := common.ReadFromBlockStore(authCtx.Context, blockStore, file.PayloadID, req.Offset, actualLength)
 	if err != nil {
 		logger.Warn("READ: content read failed", "path", openFile.Path, "error", err)
 		// common.MapContentToSMB mirrors the old ContentErrorToSMBStatus

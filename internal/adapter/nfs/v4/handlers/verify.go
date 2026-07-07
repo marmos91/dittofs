@@ -67,7 +67,8 @@ func verifyAttributes(h *Handler, ctx *types.CompoundContext, reader io.Reader) 
 			return false, types.NFS4ERR_SERVERFAULT
 		}
 
-		file, getErr := metaSvc.GetFile(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
+		// GetFileForRead: handle-addressed, File.Path unused — skip derivePath.
+		file, getErr := metaSvc.GetFileForRead(authCtx.Context, metadata.FileHandle(ctx.CurrentFH))
 		if getErr != nil {
 			return false, common.MapToNFS4(getErr)
 		}

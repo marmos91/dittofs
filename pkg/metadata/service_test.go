@@ -1584,6 +1584,38 @@ func TestMetadataService_CommitWrite(t *testing.T) {
 	})
 }
 
+func TestMetadataService_GetFileForRead(t *testing.T) {
+	t.Parallel()
+
+	// The memory store does not implement the fileForReadStore fast-path
+	// interface, so this exercises GetFileForRead's fallback branch: it must
+	// route to store.GetFile and return the same file (both then apply the
+	// identical mergePendingWrites overlay). A missing store handle must error,
+	// not panic.
+	fx := newTestFixture(t)
+
+	_, _, err := fx.service.CreateFile(fx.rootContext(), fx.rootHandle, "r.txt", &metadata.FileAttr{Mode: 0644})
+	require.NoError(t, err)
+	handle, err := fx.store.GetChild(context.Background(), fx.rootHandle, "r.txt")
+	require.NoError(t, err)
+
+	viaGet, err := fx.service.GetFile(context.Background(), handle)
+	require.NoError(t, err)
+	viaRead, err := fx.service.GetFileForRead(context.Background(), handle)
+	require.NoError(t, err)
+
+	require.NotNil(t, viaRead)
+	assert.Equal(t, viaGet.Type, viaRead.Type)
+	assert.Equal(t, viaGet.ShareName, viaRead.ShareName)
+	assert.Equal(t, viaGet.Mode, viaRead.Mode)
+	assert.Equal(t, viaGet.Size, viaRead.Size)
+	assert.Equal(t, viaGet.Path, viaRead.Path, "fallback path derives Path exactly like GetFile")
+
+	// Unknown handle surfaces the store error through the fallback path.
+	_, err = fx.service.GetFileForRead(context.Background(), metadata.FileHandle("bogus"))
+	require.Error(t, err)
+}
+
 func TestMetadataService_PrepareRead(t *testing.T) {
 	t.Parallel()
 

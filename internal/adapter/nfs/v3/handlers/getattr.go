@@ -94,8 +94,7 @@ func (h *Handler) GetAttr(
 	}
 
 	logger.DebugCtx(ctx.Context, "GETATTR",
-		"share", ctx.Share,
-		"path", file.Path)
+		"share", ctx.Share)
 
 	// The file ID is extracted from the handle for NFS protocol purposes.
 	// This is a protocol-layer concern for creating the wire format.
