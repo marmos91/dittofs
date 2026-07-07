@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// waitTimeout scales a "goroutine should have completed by now" ceiling for
+// timing-sensitive tests. Windows CI runners have much slower NTFS
+// open/close/fsync latency under contention, so a base that is ample on Linux
+// fires as a false positive there (#1585). Scale it up on Windows.
+func waitTimeout(base time.Duration) time.Duration {
+	if runtime.GOOS == "windows" {
+		return base * 8
+	}
+	return base
+}
+
 // TestAppendWrite_Enabled_HappyPath writes three records and verifies
 // - the on-disk log has header + 3 records of the expected total size
 // - logBytesTotal counts the framed-record overhead (not just payload)
@@ -136,7 +147,7 @@ func TestAppendWrite_PressureBlocks_UntilSignaled(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AppendWrite after pressure release: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(waitTimeout(2 * time.Second)):
 		t.Fatal("AppendWrite did not unblock after pressure release")
 	}
 }
@@ -311,7 +322,7 @@ func TestAppendWrite_CtxCancel_StillFsyncs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("A: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(waitTimeout(2 * time.Second)):
 		t.Fatal("A did not complete")
 	}
 	select {
@@ -323,7 +334,7 @@ func TestAppendWrite_CtxCancel_StillFsyncs(t *testing.T) {
 			// abort A's fsync".
 			t.Logf("B finished with: %v (acceptable)", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(waitTimeout(2 * time.Second)):
 		t.Fatal("B did not return")
 	}
 

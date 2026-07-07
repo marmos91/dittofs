@@ -22,6 +22,15 @@ import (
 type logFile struct {
 	f    *os.File
 	path string
+	// closeOnce guards the fd close. Concurrent DeleteAppendLog callers (and
+	// the AppendWrite error-recovery paths) can snapshot the same *logFile
+	// before its shard entry is cleared and would otherwise each call
+	// f.Close(), producing benign but noisy "file already closed" errors on
+	// Windows whose logging inflates per-op latency under stress (#1585). A
+	// logFile is never reused after its fd is closed (the instance is dropped
+	// from logFDs and a fresh one built on next touch), so a lifetime once is
+	// correct. Compaction's fd-swap does not route through closeFD.
+	closeOnce sync.Once
 	// syncedPos is the on-disk-durable watermark: bytes at log positions
 	// below syncedPos have been fsync'd to the platter. It is always
 	// <= eofPos. AppendWrite advances eofPos on the page-cache pwrite but,
@@ -394,7 +403,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 		tsh.mu.Lock()
 		delete(tsh.logFDs, payloadID)
 		tsh.mu.Unlock()
-		_ = lf.f.Close()
+		_ = lf.closeFD()
 		return fmt.Errorf("append log: %w", err)
 	}
 	// Honor NFS UNSTABLE (PR3): the default path does NOT fsync here — the
@@ -420,7 +429,7 @@ func (bc *FSStore) AppendWrite(ctx context.Context, payloadID string, data []byt
 			tsh.mu.Lock()
 			delete(tsh.logFDs, payloadID)
 			tsh.mu.Unlock()
-			_ = lf.f.Close()
+			_ = lf.closeFD()
 			return fmt.Errorf("log fsync: %w", err)
 		}
 	}
@@ -603,6 +612,19 @@ func (bc *FSStore) SyncPayload(ctx context.Context, payloadID string) error {
 // Orphan content-addressed chunks in the log-blob substrate are NOT
 // removed here; they are swept by the mark-sweep GC. This is a
 // known and documented limitation.
+// closeFD closes the log's fd exactly once. Redundant callers get nil (the
+// fd is already closed — not an error worth logging); only the goroutine that
+// performs the real close observes its error. See the closeOnce field doc.
+func (lf *logFile) closeFD() error {
+	var err error
+	lf.closeOnce.Do(func() {
+		if lf.f != nil {
+			err = lf.f.Close()
+		}
+	})
+	return err
+}
+
 func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error {
 	if bc.isClosed() {
 		return ErrStoreClosed
@@ -671,10 +693,8 @@ func (bc *FSStore) DeleteAppendLog(ctx context.Context, payloadID string) error 
 	// boot-time orphan sweep eventually cleans the residual file.
 	var stepFourErr error
 	if lf != nil {
-		if lf.f != nil {
-			if cerr := lf.f.Close(); cerr != nil {
-				logger.Warn("DeleteAppendLog: log file close failed", "payloadID", payloadID, "path", lf.path, "error", cerr)
-			}
+		if cerr := lf.closeFD(); cerr != nil {
+			logger.Warn("DeleteAppendLog: log file close failed", "payloadID", payloadID, "path", lf.path, "error", cerr)
 		}
 		if lf.path != "" {
 			if rerr := removeLogFile(lf.path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
