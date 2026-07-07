@@ -43,6 +43,7 @@ type Service struct {
 	unifiedViews       map[string]*UnifiedLockView       // shareName -> unified lock view (cross-protocol)
 	dirChangeNotifiers map[string]lock.DirChangeNotifier // shareName -> notifier for directory changes
 	pendingWrites      *PendingWritesTracker             // deferred metadata commits for performance
+	dirTimes           *DirTimesTracker                  // coalesced directory mtime/ctime/atime bumps (#1573)
 	deferredCommit     bool                              // if true, use deferred commits (default: true)
 	cookies            *CookieManager                    // NFS/SMB cookie to store token translation
 	quotas             map[string]int64                  // shareName -> quota in bytes (0 = unlimited)
@@ -126,6 +127,7 @@ func New() *Service {
 		unifiedViews:       make(map[string]*UnifiedLockView),
 		dirChangeNotifiers: make(map[string]lock.DirChangeNotifier),
 		pendingWrites:      NewPendingWritesTracker(),
+		dirTimes:           NewDirTimesTracker(),
 		deferredCommit:     true, // Enable deferred commits by default
 		cookies:            NewCookieManager(),
 		quotas:             make(map[string]int64),
@@ -773,7 +775,12 @@ func (s *Service) GetFile(ctx context.Context, handle FileHandle) (*File, error)
 		return nil, err
 	}
 
-	s.mergePendingWrites(handle, file)
+	// A misbehaving store may return (nil, nil); tolerate it (some callers, e.g.
+	// the NFSv3 WCC re-fetch, rely on GetFile not panicking on a nil re-fetch).
+	if file != nil {
+		s.mergePendingWrites(handle, file)
+		s.mergeDirTimes(handle, &file.FileAttr)
+	}
 	return file, nil
 }
 
@@ -804,7 +811,12 @@ func (s *Service) GetFileForRead(ctx context.Context, handle FileHandle) (*File,
 		return nil, err
 	}
 
-	s.mergePendingWrites(handle, file)
+	// A misbehaving store may return (nil, nil); tolerate it (some callers, e.g.
+	// the NFSv3 WCC re-fetch, rely on GetFile not panicking on a nil re-fetch).
+	if file != nil {
+		s.mergePendingWrites(handle, file)
+		s.mergeDirTimes(handle, &file.FileAttr)
+	}
 	return file, nil
 }
 
@@ -826,6 +838,92 @@ func (s *Service) mergePendingWrites(handle FileHandle, file *File) {
 	if pending.ClearSetuidSetgid {
 		file.Mode &= ^uint32(0o6000)
 	}
+}
+
+// mergeDirTimes overlays a directory's coalesced (not-yet-persisted) mtime/
+// ctime/atime bumps onto a freshly loaded directory's attributes, so a read
+// always sees the latest create/remove timestamp even though the parent inode
+// write was deferred out of the hot transaction (#1573). No-op for a nil attr
+// or a non-directory. Takes *FileAttr so it also serves READDIR entry attrs,
+// not just whole *File reads.
+func (s *Service) mergeDirTimes(handle FileHandle, attr *FileAttr) {
+	if attr == nil || attr.Type != FileTypeDirectory {
+		return
+	}
+	if mtime, ctime, atime, ok := s.dirTimes.GetPending(handle); ok {
+		applyDirTimes(attr, mtime, ctime, atime)
+	}
+}
+
+// applyDirTimes overlays coalesced mtime/ctime/atime onto attr (latest wins per
+// field) and reports whether any field advanced. Shared by the read overlay
+// (mergeDirTimes) and the durable flush (#1573).
+func applyDirTimes(attr *FileAttr, mtime, ctime, atime time.Time) (changed bool) {
+	if mtime.After(attr.Mtime) {
+		attr.Mtime = mtime
+		changed = true
+	}
+	if ctime.After(attr.Ctime) {
+		attr.Ctime = ctime
+		changed = true
+	}
+	if atime.After(attr.Atime) {
+		attr.Atime = atime
+		changed = true
+	}
+	return changed
+}
+
+// recordDirTimes coalesces a directory-timestamp bump from a create/remove and
+// triggers a durable flush when the flush interval has elapsed. Called after
+// the mutating transaction commits: on a crash between commit and this call the
+// child is durable and only the directory's timestamp bump is lost.
+func (s *Service) recordDirTimes(ctx context.Context, dirHandle FileHandle, t time.Time) {
+	if s.dirTimes.RecordBump(dirHandle, t) {
+		s.flushDirTimes(ctx, dirHandle)
+	}
+}
+
+// flushDirTimes durably persists a directory's coalesced timestamps in a
+// dedicated transaction, serialized per-directory. Because create/remove no
+// longer touch the parent inode, this write never conflicts with concurrent
+// same-dir mutations. Best-effort: a failure (e.g. the directory was removed)
+// leaves the bump to be retried or dropped, never failing the caller.
+func (s *Service) flushDirTimes(ctx context.Context, dirHandle FileHandle) {
+	lock := s.dirTimes.FlushLock(dirHandle)
+	lock.Lock()
+	defer lock.Unlock()
+
+	mtime, ctime, atime, ok := s.dirTimes.GetPending(dirHandle)
+	if !ok {
+		return // already flushed by a concurrent caller
+	}
+
+	store, err := s.storeForHandle(dirHandle)
+	if err != nil {
+		return
+	}
+
+	err = store.WithTransaction(ctx, func(tx Transaction) error {
+		dir, gErr := tx.GetFile(ctx, dirHandle)
+		if gErr != nil {
+			return gErr
+		}
+		if dir == nil {
+			return nil // dir was concurrently removed or handle is stale; nothing to flush
+		}
+		if dir.Type != FileTypeDirectory {
+			return nil
+		}
+		if !applyDirTimes(&dir.FileAttr, mtime, ctime, atime) {
+			return nil
+		}
+		return tx.PutFile(ctx, dir)
+	})
+	if err != nil {
+		return // leave pending in place; a later bump/flush will retry
+	}
+	s.dirTimes.ClearIfFlushed(dirHandle, mtime)
 }
 
 // GetFileCached returns file metadata, trying the pending-writes cache first

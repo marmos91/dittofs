@@ -29,6 +29,9 @@ func (s *Service) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*
 	if err != nil {
 		return nil, err
 	}
+	// Overlay coalesced directory timestamps so "." and the dir's own attrs
+	// reflect not-yet-persisted create/remove bumps (#1573).
+	s.mergeDirTimes(dirHandle, &dir.FileAttr)
 
 	// Verify it's a directory
 	if dir.Type != FileTypeDirectory {
@@ -65,7 +68,9 @@ func (s *Service) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*
 			// No parent means this is root, return self
 			return dir, nil
 		}
-		return store.GetFile(ctx.Context, parentHandle)
+		// s.GetFile overlays coalesced dir timestamps if the parent is a
+		// directory with pending create/remove bumps (#1573).
+		return s.GetFile(ctx.Context, parentHandle)
 	}
 
 	// Regular name lookup
@@ -74,7 +79,9 @@ func (s *Service) Lookup(ctx *AuthContext, dirHandle FileHandle, name string) (*
 		return nil, err
 	}
 
-	return store.GetFile(ctx.Context, childHandle)
+	// s.GetFile overlays coalesced dir timestamps when the child is itself a
+	// directory that has had entries created/removed in it (#1573).
+	return s.GetFile(ctx.Context, childHandle)
 }
 
 // equalFoldName reports whether two directory entry names match under SMB's
@@ -218,6 +225,26 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 	if err != nil {
 		return nil, err
 	}
+
+	// When this SetAttr targets a directory and sets its timestamps, hold the
+	// per-directory flush lock across the whole persist-then-Clear sequence so a
+	// concurrent flushDirTimes cannot interleave: without it a flush that already
+	// captured the pending bump could commit AFTER we persist a deliberately
+	// OLDER time (e.g. an SMB frozen-timestamp restore) and resurrect the bump
+	// durably (#1573). Only the time-setting case needs this — a mode/owner-only
+	// change never lowers a timestamp, so a racing flush is harmless there.
+	dirTimeSet := file.Type == FileTypeDirectory &&
+		(attrs.Mtime != nil || attrs.Atime != nil || attrs.MtimeNow || attrs.AtimeNow)
+	if dirTimeSet {
+		lock := s.dirTimes.FlushLock(handle)
+		lock.Lock()
+		defer lock.Unlock()
+	}
+
+	// Overlay any coalesced (not-yet-persisted) directory timestamps so the WCC
+	// pre-op snapshot and the returned post-op attrs match what a concurrent
+	// GETATTR/LOOKUP on this directory would report right now (#1573).
+	s.mergeDirTimes(handle, &file.FileAttr)
 
 	// Capture pre-op attributes: a copy of the file as observed by this
 	// operation, before any mutation is applied below. This is exactly the
@@ -515,6 +542,16 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// Invalidate cached file in pending writes to ensure subsequent
 		// writes use fresh attributes (e.g., mode changes for SUID/SGID clearing)
 		s.pendingWrites.InvalidateCache(handle)
+	}
+
+	// An explicit directory-timestamp set supersedes any coalesced create/remove
+	// bump: the persisted mtime/atime (which may be deliberately OLDER, e.g. an
+	// SMB frozen-timestamp restore) is now authoritative, so drop the pending
+	// overlay that would otherwise resurrect the newer create time (#1573). Runs
+	// under the flush lock acquired above, so no concurrent flush can re-persist
+	// the bump between the store write and this Clear.
+	if dirTimeSet {
+		s.dirTimes.Clear(handle)
 	}
 
 	// Post-op attributes reflect the resulting file state (mutated in place

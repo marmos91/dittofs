@@ -115,26 +115,26 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 		FileAttr:  file.FileAttr,
 	}
 
-	// wcc captures the parent directory attributes immediately before and after
-	// the mutation, both inside the transaction below so they atomically bracket
-	// the operation (H9: closes the WCC pre-op TOCTOU window).
+	// wcc captures the parent directory attributes before and after the
+	// mutation. Per #1573 the child-removing transaction no longer touches the
+	// parent inode, so WCC.Before is captured here (before the transaction) and
+	// WCC.After is synthesized after commit rather than both being read inside
+	// the txn.
 	wcc := &DirWcc{}
 
-	// Execute all write operations in a single transaction for better performance.
-	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
-		// Sample the mutation timestamp inside the transaction (after the pre-op
-		// snapshot) so the post-op directory mtime is monotonic w.r.t. Before.
-		now := time.Now()
-		// Re-read the parent INSIDE the transaction so the pre-op WCC snapshot,
-		// the timestamp mutation, and the post-op snapshot all derive from the
-		// same committed state. The in-tx read registers the key for conflict
-		// detection so a racing mutation triggers a retry, and basing the
-		// mutation on the in-tx copy guarantees After is never older than Before.
-		if txParent, pErr := tx.GetFile(ctx.Context, parentHandle); pErr == nil && txParent != nil {
-			parent = txParent
-		}
-		wcc.Before = CopyFileAttr(&parent.FileAttr)
+	// Overlay any coalesced parent-directory timestamps onto the pre-op snapshot
+	// so WCC.Before reflects what readers currently observe, then capture it
+	// before the transaction: the remove no longer reads or writes the parent
+	// inode, so there is nothing to re-snapshot inside it (#1573).
+	s.mergeDirTimes(parentHandle, &parent.FileAttr)
+	wcc.Before = CopyFileAttr(&parent.FileAttr)
+	now := time.Now()
 
+	// Execute the child-removing writes in a single transaction. Like create,
+	// this transaction does NOT touch the parent inode — the parent timestamp
+	// bump that used to serialize concurrent same-dir removes on a BadgerDB SSI
+	// hot key is coalesced after commit instead (#1573).
+	err = store.WithTransaction(ctx.Context, func(tx Transaction) error {
 		// Read the link count INSIDE the transaction so the read, the
 		// branch decision, and the write are atomic. Reading it outside the
 		// tx is a TOCTOU race with CreateHardLink: a concurrent link bump in
@@ -189,18 +189,20 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 		if err := tx.DeleteChild(ctx.Context, parentHandle, name); err != nil {
 			return err
 		}
-
-		// Update parent timestamps (including Atime per MS-FSA 2.1.4.4)
-		parent.Mtime = now
-		parent.Ctime = now
-		parent.Atime = now
-		wcc.After = CopyFileAttr(&parent.FileAttr)
-		return tx.PutFile(ctx.Context, parent)
+		return nil
 	})
 
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Coalesce the parent directory timestamp bump (Mtime/Ctime/Atime per
+	// MS-FSA 2.1.4.4) out of the transaction, same as create (#1573).
+	s.recordDirTimes(ctx.Context, parentHandle, now)
+	parent.Mtime = now
+	parent.Ctime = now
+	parent.Atime = now
+	wcc.After = CopyFileAttr(&parent.FileAttr)
 
 	s.notifyDirChange(shareNameForHandle(parentHandle), parentHandle, lock.DirChangeRemoveEntry, ctx)
 	return returnFile, wcc, nil
