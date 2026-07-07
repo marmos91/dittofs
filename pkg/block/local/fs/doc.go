@@ -106,7 +106,7 @@
 // the post-rollup pass rewrites the log file dropping every record
 // below the fence. The rewrite uses a temp file + fsync + parent-dir
 // fsync (skipped on Windows) + atomic rename, then swaps the in-memory
-// fd / groupCommit / logIndex under the per-file mu. The compacted
+// fd / logIndex under the per-file mu. The compacted
 // header carries a LogFlagCompacted bit so recovery skips the
 // metaOff > hdrOff reconcile (post-compaction metadata.rollup_offset
 // legitimately sits above the compacted file's header offset and is no

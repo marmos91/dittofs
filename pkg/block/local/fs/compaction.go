@@ -84,7 +84,7 @@ func (bc *FSStore) maybeCompactLog(ctx context.Context, payloadID string, lf *lo
 // logHeaderSize in a temporary file alongside the original; the temp is
 // fsync'd, the containing directory is fsync'd, and a rename atomically
 // replaces the live log. After the swap the in-memory lf is mutated in
-// place (new fd + new groupCommit + reset eofPos) and idx is rebased
+// place (new fd + reset eofPos/syncedPos) and idx is rebased
 // (entries' logPos values shifted, compactionFence reset to
 // logHeaderSize, consumed map rekeyed).
 //
@@ -381,17 +381,18 @@ func (bc *FSStore) compactLogLocked(ctx context.Context, payloadID string, lf *l
 		return fmt.Errorf("compaction: seek end after rename: %w", err)
 	}
 
-	// Swap the fd in lf and rebuild the groupCommit coordinator. The
-	// per-file mu we hold serializes us against all AppendWrite /
-	// rollupFile sites that touch lf.f or lf.groupCommit, so the swap
-	// is observed atomically by any caller that subsequently acquires
-	// mu. The old groupCommit is quiescent (no in-flight Sync — Sync
-	// is only called under mu) so dropping the reference is safe.
-	// oldFd is nil on Windows (closed before the rename); only close
-	// it on POSIX where we kept it open across the rename.
+	// Swap the fd in lf. The per-file mu we hold serializes us against all
+	// AppendWrite / rollupFile / SyncPayload sites that touch lf.f, so the
+	// swap is observed atomically by any caller that subsequently acquires
+	// mu. The store-level syncLeader is stateless w.r.t. any single fd (each
+	// Sync call passes the current fd's closure), so no coordinator rebind
+	// is needed. compaction fsync'd the rewritten temp file + parent dir
+	// before the rename, so the whole compacted log is on the platter —
+	// syncedPos catches up to the new EOF. oldFd is nil on Windows (closed
+	// before the rename); only close it on POSIX where we kept it open.
 	lf.f = newFd
 	lf.eofPos = uint64(eof)
-	lf.groupCommit = newGroupCommit(newFd.Sync)
+	lf.syncedPos = uint64(eof)
 	if oldFd != nil {
 		_ = oldFd.Close()
 	}

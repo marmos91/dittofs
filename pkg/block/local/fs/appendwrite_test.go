@@ -141,116 +141,22 @@ func TestAppendWrite_PressureBlocks_UntilSignaled(t *testing.T) {
 	}
 }
 
-// TestLogFile_GroupCommit_NonNilAfterConstruction verifies Task 1
-// step 1: the logFile struct gains a `groupCommit *groupCommit` field that
-// is instantiated by the canonical constructor (getOrCreateLog → on first
-// touch). The field MUST be non-nil after the first AppendWrite drives
-// getOrCreateLog to materialize the logFile for "file1" (per-file
-// scope, one coordinator per open log fd).
-func TestLogFile_GroupCommit_NonNilAfterConstruction(t *testing.T) {
+// TestSyncLeader_WiredOnStore verifies the store-level fsync leader is
+// constructed (PR3 replaced the per-file groupCommit with one leader per
+// FSStore).
+func TestSyncLeader_WiredOnStore(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
-	if err := bc.AppendWrite(context.Background(), "file1", []byte("hi"), 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
-	}
-	sh := bc.shardFor("file1")
-	sh.mu.RLock()
-	lf := sh.logFDs["file1"]
-	sh.mu.RUnlock()
-	if lf == nil {
-		t.Fatal("logFile not present after AppendWrite")
-	}
-	if lf.groupCommit == nil {
-		t.Fatal("logFile.groupCommit is nil after construction; Plan 06 Task 1 requires non-nil instantiation")
+	if bc.syncLeader == nil {
+		t.Fatal("FSStore.syncLeader is nil after construction")
 	}
 }
 
-// TestLogFile_GroupCommit_FsyncFn_BoundToLfFile verifies the coordinator's
-// fsyncFn actually fsyncs the underlying log file. End-to-end durability
-// via the coordinator: write a record, drive lf.groupCommit.Sync directly
-// close, reopen, and verify the bytes are on disk. This guards against a
-// future refactor where the coordinator is constructed with the wrong
-// fsync target (e.g., a no-op or a different fd).
-func TestLogFile_GroupCommit_FsyncFn_BoundToLfFile(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
-	payload := []byte("durability via coordinator")
-	if err := bc.AppendWrite(context.Background(), "file1", payload, 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
-	}
-	sh := bc.shardFor("file1")
-	sh.mu.RLock()
-	lf := sh.logFDs["file1"]
-	sh.mu.RUnlock()
-	if lf == nil || lf.groupCommit == nil {
-		t.Fatal("logFile or coordinator missing after AppendWrite")
-	}
-	// Drive the coordinator directly — this should fsync lf.f. If the
-	// coordinator was bound to a different file (or a no-op), the test
-	// still passes for happy-path post-AppendWrite-fsync, so we instead
-	// verify by writing extra bytes through lf.f directly (bypassing
-	// AppendWrite's own fsync), then driving the coordinator's Sync.
-	extra := []byte("ZZ")
-	if _, err := lf.f.Write(extra); err != nil {
-		t.Fatalf("raw write: %v", err)
-	}
-	if err := lf.groupCommit.Sync(context.Background()); err != nil {
-		t.Fatalf("groupCommit.Sync: %v", err)
-	}
-	path := filepath.Join(bc.baseDir, "logs", "file1.log")
-	st, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat log: %v", err)
-	}
-	// The on-disk size must include the extra bytes since the coordinator's
-	// Sync flushed lf.f's buffers.
-	wantMin := int64(logHeaderSize + recordFrameOverhead + len(payload) + len(extra))
-	if st.Size() < wantMin {
-		t.Fatalf("log size after coordinator Sync: got %d, want >= %d", st.Size(), wantMin)
-	}
-}
-
-// TestAppendWrite_CoordinatorOnHotPath_BurstCounts: N=4 AppendWrites to
-// the same payload. The per-file mutex serializes the writers
-// strictly — only one can enter the Sync call site at a time — so the
-// in-flight piggyback CANNOT batch same-payload writes (this is the
-// architectural cost of crash-safe log ordering, see rationale in
-// AppendWrite's godoc). What we CAN verify is that the coordinator is
-// on the hot path: every successful AppendWrite goes through
-// lf.groupCommit.Sync exactly once (no double-fsync regression, no
-// fsync-bypass regression).
-//
-// The plan's original expectation of "only ONE fsync syscall observable"
-// is architecturally impossible under per-file-mu serialization — the
-// in-flight piggyback wins when multiple goroutines call coordinator.Sync
-// concurrently, which the per-file mu prevents for same-payload writes.
-// Documented as a deviation in 19-06-SUMMARY.md. Batching wins are still
-// real for: (a) future call sites that call Sync without holding mu (e.g.
-// an NFS COMMIT path that flushes already-appended records), and (b)
-// micro-architectural — the coordinator absorbs one syscall even at
-// depth-1 with no extra overhead (adaptive bypass verified by the
-// SingleWriter_NoLatencyPenalty test).
-func TestAppendWrite_CoordinatorOnHotPath_BurstCounts(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
-	// Force the logFile into existence so we can instrument the coordinator
-	// BEFORE any concurrent traffic arrives.
-	if err := bc.AppendWrite(context.Background(), "file1", []byte("seed"), 0); err != nil {
-		t.Fatalf("seed AppendWrite: %v", err)
-	}
-	sh := bc.shardFor("file1")
-	sh.mu.RLock()
-	lf := sh.logFDs["file1"]
-	sh.mu.RUnlock()
-	if lf == nil || lf.groupCommit == nil {
-		t.Fatal("logFile/coordinator missing")
-	}
-
-	// Wrap fsyncFn to count invocations.
-	var calls atomic.Int32
-	orig := lf.groupCommit.fsyncFn
-	lf.groupCommit.fsyncFn = func() error {
-		calls.Add(1)
-		return orig()
-	}
-
+// TestSyncEveryWrite_FsyncsInline: with SyncEveryWrite set, each AppendWrite
+// fsyncs the log fd inline. N writes to the same payload issue between 1 and N
+// fsyncs (the per-file mu serializes them so no double-fsync), proving the
+// leader is on the inline durability path.
+func TestSyncEveryWrite_FsyncsInline(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30, SyncEveryWrite: true})
 	const goroutines = 4
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
@@ -264,14 +170,42 @@ func TestAppendWrite_CoordinatorOnHotPath_BurstCounts(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Coordinator MUST be on the path: at least one fsync observed.
-	if calls.Load() < 1 {
-		t.Fatalf("no fsync observed via coordinator; wire-in broken")
+	got := bc.LogFsyncCountForTest()
+	if got < 1 {
+		t.Fatalf("no fsync observed under SyncEveryWrite; inline path broken")
 	}
-	// Upper bound: at most one fsync per writer (per-file mu serialization).
-	// More than `goroutines` fsyncs would indicate double-fsync regression.
-	if got := calls.Load(); got > int32(goroutines) {
+	if got > int64(goroutines) {
 		t.Fatalf("fsync calls under burst: got %d, want <= %d (double-fsync regression)", got, goroutines)
+	}
+}
+
+// TestAppendWrite_DefersFsyncByDefault pins the PR3 behavior change: the
+// default (UNSTABLE) AppendWrite path does NOT fsync — records land in the
+// page cache and the fsync is deferred to SyncPayload.
+func TestAppendWrite_DefersFsyncByDefault(t *testing.T) {
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
+	for _, off := range []uint64{0, 4096, 8192} {
+		if err := bc.AppendWrite(context.Background(), "file1", []byte("payload"), off); err != nil {
+			t.Fatalf("AppendWrite: %v", err)
+		}
+	}
+	if got := bc.LogFsyncCountForTest(); got != 0 {
+		t.Fatalf("deferred UNSTABLE writes issued %d fsyncs, want 0", got)
+	}
+	// The COMMIT barrier fsyncs.
+	if err := bc.SyncPayload(context.Background(), "file1"); err != nil {
+		t.Fatalf("SyncPayload: %v", err)
+	}
+	if got := bc.LogFsyncCountForTest(); got < 1 {
+		t.Fatalf("SyncPayload issued %d fsyncs, want >= 1", got)
+	}
+	// A second COMMIT with no new writes is a no-op (watermark caught up).
+	before := bc.LogFsyncCountForTest()
+	if err := bc.SyncPayload(context.Background(), "file1"); err != nil {
+		t.Fatalf("second SyncPayload: %v", err)
+	}
+	if got := bc.LogFsyncCountForTest(); got != before {
+		t.Fatalf("idempotent COMMIT fsynced again: got %d, want %d", got, before)
 	}
 }
 
@@ -300,26 +234,20 @@ func TestAppendWrite_SingleWriter_NoLatencyPenalty(t *testing.T) {
 	}
 }
 
-// TestAppendWrite_FsyncError_PropagatesToCaller injects a sentinel error
-// into the coordinator's fsyncFn and verifies AppendWrite surfaces it
-// wrapped as `log fsync: %w` — the operator-visible error contract.
+// TestAppendWrite_FsyncError_PropagatesToCaller injects a sentinel fsync error
+// via appendSyncFailHook on the SyncEveryWrite inline path and verifies
+// AppendWrite surfaces it wrapped as `log fsync: %w` — the operator-visible
+// error contract.
 func TestAppendWrite_FsyncError_PropagatesToCaller(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
-	// Force the logFile into existence so we can swap fsyncFn before the
-	// hot-path call we care about.
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30, SyncEveryWrite: true})
+	// Seed a successful write so the fd exists before we arm the fault.
 	if err := bc.AppendWrite(context.Background(), "file1", []byte("seed"), 0); err != nil {
 		t.Fatalf("seed AppendWrite: %v", err)
 	}
-	sh := bc.shardFor("file1")
-	sh.mu.RLock()
-	lf := sh.logFDs["file1"]
-	sh.mu.RUnlock()
-	if lf == nil || lf.groupCommit == nil {
-		t.Fatal("logFile/coordinator missing")
-	}
 
 	wantErr := errors.New("disk on fire")
-	lf.groupCommit.fsyncFn = func() error { return wantErr }
+	appendSyncFailHook = func() error { return wantErr }
+	defer func() { appendSyncFailHook = nil }()
 
 	err := bc.AppendWrite(context.Background(), "file1", []byte("y"), 4096)
 	if err == nil {
@@ -330,49 +258,42 @@ func TestAppendWrite_FsyncError_PropagatesToCaller(t *testing.T) {
 	}
 }
 
-// TestAppendWrite_CtxCancel_StillFsyncs verifies durability
-// AppendWrite-B's ctx is canceled while it is enqueued behind A's
-// in-flight fsync; B observes ctx.Err() but A's fsync still completes and
-// the data ends up on disk. We instrument fsyncFn to gate completion on
-// a release channel so we can deterministically drive the ordering.
+// TestAppendWrite_CtxCancel_StillFsyncs verifies durability: on the
+// SyncEveryWrite inline path, AppendWrite-B's ctx is canceled while it is
+// enqueued behind A's in-flight fsync; B observes ctx.Err() but A's fsync
+// still completes and the data ends up on disk. We gate the injected fsync on
+// a release channel to deterministically drive the ordering.
 func TestAppendWrite_CtxCancel_StillFsyncs(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
-	// Force the logFile into existence.
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30, SyncEveryWrite: true})
+	// Seed a successful write so the fd exists.
 	if err := bc.AppendWrite(context.Background(), "file1", []byte("seed"), 0); err != nil {
 		t.Fatalf("seed AppendWrite: %v", err)
-	}
-	sh := bc.shardFor("file1")
-	sh.mu.RLock()
-	lf := sh.logFDs["file1"]
-	sh.mu.RUnlock()
-	if lf == nil || lf.groupCommit == nil {
-		t.Fatal("logFile/coordinator missing")
 	}
 
 	released := make(chan struct{})
 	var fsyncCalls atomic.Int32
-	orig := lf.groupCommit.fsyncFn
-	lf.groupCommit.fsyncFn = func() error {
+	appendSyncFailHook = func() error {
 		fsyncCalls.Add(1)
 		<-released
-		return orig()
+		return nil
 	}
+	defer func() { appendSyncFailHook = nil }()
 
 	// A: appends + drives fsync inline (gated by `released`).
 	aDone := make(chan error, 1)
 	go func() {
 		aDone <- bc.AppendWrite(context.Background(), "file1", []byte("AAAA"), 4096)
 	}()
-	// Give A enough time to acquire mu, write the record, enter Sync, and
-	// block in fsyncFn. The per-file mu is held across this entire
-	// window — B's AppendWrite below MUST wait for A to release it.
+	// Give A enough time to acquire mu, write the record, enter the fsync, and
+	// block in the hook. The per-file mu is held across this entire window —
+	// B's AppendWrite below MUST wait for A to release it.
 	time.Sleep(20 * time.Millisecond)
 
 	// B: a separate ctx that we cancel while B is blocked on mu (since
 	// the per-file mu serializes B behind A). When mu becomes available
-	// B will observe its own ctx is canceled at the next ctx check OR
-	// proceed and observe cancel inside coordinator's waitOn. Either way
-	// AppendWrite-B returns ctx.Err() per the contract.
+	// B observes its ctx is canceled at the next ctx check OR proceeds and
+	// observes cancel inside the leader's waitOn. Either way AppendWrite-B
+	// returns ctx.Err() per the contract.
 	ctxB, cancelB := context.WithCancel(context.Background())
 	bDone := make(chan error, 1)
 	go func() {
@@ -505,13 +426,13 @@ func TestAppendWrite_ValidPayloadID_StillWorks(t *testing.T) {
 }
 
 // TestAppendWrite_LockOrder_PerFileMuStillHeldAcrossSync runs concurrent
-// writers under -race and asserts no race detection. The per-file mu
-// (bc.logLocks[payloadID]) is held by AppendWrite across the
-// lf.groupCommit.Sync call site; the coordinator's internal mu is a
-// separate lock. If either lock were inverted with bc.logsMu, the
-// race detector would surface it under heavy load.
+// writers under -race and asserts no race detection. It uses SyncEveryWrite so
+// the fsync-under-mu path is exercised: the per-file mu (bc.logLocks[payloadID])
+// is held by AppendWrite across the store-level syncLeader.Sync call site; the
+// leader's internal mu is a separate lock. If either were inverted with a shard
+// lock, the race detector would surface it under heavy load.
 func TestAppendWrite_LockOrder_PerFileMuStillHeldAcrossSync(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30})
+	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30, SyncEveryWrite: true})
 	const goroutines = 32
 	payload := []byte("xxxxxxxx") // 8 bytes
 	var wg sync.WaitGroup
@@ -530,7 +451,7 @@ func TestAppendWrite_LockOrder_PerFileMuStillHeldAcrossSync(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
-	// 640 serialized writes through the per-file mu + groupCommit.Sync; on
+	// 640 serialized writes through the per-file mu + syncLeader.Sync; on
 	// Windows GHA runners fsync latency dominates and a 10s budget false-fails.
 	// 60s gives headroom; a real deadlock will trip the same channel select.
 	select {

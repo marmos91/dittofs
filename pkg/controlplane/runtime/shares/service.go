@@ -2768,6 +2768,13 @@ func CreateLocalStoreFromConfig(
 			logger.Warn("block store config has stabilization_ms but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
+	if v, ok := config["sync_every_write"]; ok {
+		if b, ok := v.(bool); ok {
+			fsOpts.SyncEveryWrite = b
+		} else {
+			logger.Warn("block store config has sync_every_write but it is not a bool; ignoring", "value", v)
+		}
+	}
 	if v, ok := config["orphan_log_min_age_seconds"]; ok {
 		if n, ok := v.(float64); ok && n > 0 {
 			fsOpts.OrphanLogMinAgeSeconds = int(n)

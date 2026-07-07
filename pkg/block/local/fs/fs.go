@@ -302,6 +302,26 @@ type FSStore struct {
 	stabilizationMS int
 	rollupWorkers   int
 
+	// syncEveryWrite, when true, makes AppendWrite fsync the append log
+	// inline on every record (the pre-PR3 behavior). The default (false)
+	// honors NFS UNSTABLE: AppendWrite leaves the record in the page cache
+	// and the fsync is deferred to the next durability point (COMMIT /
+	// DATA_SYNC/FILE_SYNC WRITE / SMB Flush / graceful drain), each of which
+	// routes through SyncPayload. Operators mount clients that never issue
+	// COMMIT can opt back into per-write fsync via config["sync_every_write"].
+	syncEveryWrite bool
+
+	// syncLeader batches every append-log fd fsync (inline SyncEveryWrite
+	// writes and SyncPayload COMMITs alike) into as few journal commits as
+	// possible. One per store so concurrent fds coalesce (PR3 / #1416).
+	syncLeader *syncLeader
+
+	// logFsyncCount counts fsyncs issued against append-log fds through the
+	// syncLeader (SyncEveryWrite writes + SyncPayload). Test-only observable
+	// via LogFsyncCountForTest, used to assert the deferred/COMMIT fsync
+	// accounting. Not incremented on the deferred UNSTABLE write path.
+	logFsyncCount atomic.Int64
+
 	// pressureMaxWait caps how long AppendWrite blocks in the pressure
 	// loop before returning ErrPressureTimeout. Defense-in-depth against
 	// a wedged rollup (#670): NFS COMMIT and SMB Flush callers commonly
@@ -577,6 +597,7 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 	// initialized; the opt-out flag was deleted with the legacy
 	// path-keyed writer.
 	bc.pressureCh = make(chan struct{}, 1)
+	bc.syncLeader = newSyncLeader()
 	bc.logShards = make([]*logShard, numLogShards)
 	for i := range bc.logShards {
 		bc.logShards[i] = newLogShard()
@@ -658,6 +679,7 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 	if opts.StabilizationMS > 0 {
 		bc.stabilizationMS = opts.StabilizationMS
 	}
+	bc.syncEveryWrite = opts.SyncEveryWrite
 	switch {
 	case opts.PressureMaxWait > 0:
 		bc.pressureMaxWait = opts.PressureMaxWait
@@ -993,6 +1015,14 @@ type FSStoreOptions struct {
 	MaxLogBytes     int64
 	RollupWorkers   int
 	StabilizationMS int
+	// SyncEveryWrite forces AppendWrite to fsync the append log on every
+	// record. Default false honors NFS UNSTABLE — the fsync is deferred to
+	// the next durability point (COMMIT / DATA_SYNC/FILE_SYNC WRITE / SMB
+	// Flush / graceful drain), which is where the ~3x sequential-write win
+	// comes from. Set true (config["sync_every_write"]) only for clients that
+	// never issue COMMIT and expect per-write durability. See
+	// FSStore.syncEveryWrite.
+	SyncEveryWrite bool
 	// RollupStore persists per-file rollup_offset. Required
 	// when StartRollup will be called. Nil is accepted when the caller
 	// will not start the rollup pool.

@@ -9,11 +9,23 @@ import (
 // Flush ensures all dirty data for a payload is persisted by delegating
 // to the syncer's carve drain. CAS StoreChunk already dedups physically
 // by content hash, so no separate file-level dedup hook runs here.
+//
+// Flush is the single COMMIT/CLOSE seam for every protocol (NFSv3 COMMIT,
+// NFSv4 COMMIT, NFS DATA_SYNC/FILE_SYNC WRITE, SMB Flush/CLOSE all reach it
+// via common.CommitBlockStore). The WRITE path honors NFS UNSTABLE and defers
+// the append-log fsync, so this is where that fsync is paid: SyncPayload
+// makes the payload's page-cache-resident records durable BEFORE the syncer
+// drain and BEFORE we report success. A fsync failure aborts the flush so the
+// durability point never falsely acks (PR3).
 func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResult, error) {
 	if err := bs.enter(); err != nil {
 		return nil, err
 	}
 	defer bs.closeMu.RUnlock()
+	// Durability barrier: fsync the deferred append-log writes first.
+	if err := bs.local.SyncPayload(ctx, payloadID); err != nil {
+		return nil, err
+	}
 	// Delegate to the syncer's carve drain.
 	return bs.syncer.Flush(ctx, payloadID)
 }

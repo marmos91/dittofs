@@ -43,8 +43,11 @@ func TestRunWorkload_AllWorkloads(t *testing.T) {
 			if res.Ops != 4 {
 				t.Errorf("Ops = %d, want 4", res.Ops)
 			}
-			if res.Duration <= 0 {
-				t.Errorf("Duration = %v, want > 0", res.Duration)
+			// A 4-op run with deferred fsync can complete faster than the
+			// platform clock's resolution (notably Windows' ~15ms timer), so a
+			// zero duration is valid — only a negative value is a real bug.
+			if res.Duration < 0 {
+				t.Errorf("Duration = %v, want >= 0", res.Duration)
 			}
 		})
 	}

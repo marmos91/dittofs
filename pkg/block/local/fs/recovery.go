@@ -489,10 +489,10 @@ func (bc *FSStore) recoverAppendLogs(ctx context.Context) (int, int, int, int, i
 		}
 		sh := bc.shardFor(payloadID)
 		sh.mu.Lock()
-		lf := &logFile{f: f, path: path, eofPos: uint64(eof)}
-		// Opt 2: per-file fsync coordinator
-		// matching the getOrCreateLog construction site in appendwrite.go.
-		lf.groupCommit = newGroupCommit(lf.f.Sync)
+		// syncedPos seeds at the recovered on-disk EOF: whatever survived
+		// the crash is durable, matching the getOrCreateLog construction
+		// site in appendwrite.go.
+		lf := &logFile{f: f, path: path, eofPos: uint64(eof), syncedPos: uint64(eof)}
 		sh.logFDs[payloadID] = lf
 		sh.logLocks[payloadID] = &sync.Mutex{}
 		sh.rollupLocks[payloadID] = &sync.Mutex{} // C1: per-file rollup mutex

@@ -96,6 +96,15 @@ func TestRollup_C1_WriteDuringPhaseB_NotConsumed(t *testing.T) {
 		if p != pid || !fired.CompareAndSwap(false, true) {
 			return
 		}
+		// ConsumeUpToStable preserves this racing write only if its Touched
+		// instant is strictly after the pass's phaseStart. Both are time.Now()
+		// readings; on Windows the monotonic clock granularity (~15ms) can
+		// collapse two sub-tick-apart readings to equal, and PR3's deferred-fsync
+		// write path is now fast enough to land the Insert inside that same tick
+		// as phaseStart (captured moments earlier in Phase A). Cross one tick so
+		// Touched > phaseStart holds at any clock resolution — the write is still
+		// "mid-Phase-B" (the real CAS phase runs far longer than this pause).
+		time.Sleep(20 * time.Millisecond)
 		// Racing overwrite of the same region, mid-rollup. AppendWrite takes
 		// the append mutex (released for Phase B) — not the rollup mutex — so
 		// this does not deadlock against the in-flight pass on this goroutine.

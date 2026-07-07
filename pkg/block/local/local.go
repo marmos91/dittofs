@@ -90,6 +90,15 @@ type LocalStore interface {
 	// RFC-safe; under-reporting (a false hole) is the bug.
 	DataExtents(ctx context.Context, payloadID string, fileSize uint64) ([][2]uint64, error)
 
+	// SyncPayload makes every byte written to payloadID's append log durable
+	// on stable storage. It is the durability barrier for the deferred
+	// (NFS UNSTABLE) write path: the WRITE handler leaves records in the page
+	// cache and the fsync is paid here, at COMMIT / DATA_SYNC/FILE_SYNC WRITE
+	// / SMB Flush — all of which route through engine.Store.Flush before
+	// reporting durable. Backends without a durable append log (the in-memory
+	// store) implement it as a no-op returning nil.
+	SyncPayload(ctx context.Context, payloadID string) error
+
 	// --- Snapshot drain / reset ---
 
 	// DrainRollups forces rollup of ALL currently-dirty payloads to
