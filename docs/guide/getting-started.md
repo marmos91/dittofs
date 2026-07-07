@@ -47,14 +47,21 @@ dfs init      # writes ~/.config/dittofs/config.yaml
 dfs start
 ```
 
-On first start DittoFS creates an `admin` user. The password is **auto-generated and
-printed once to the log**, or you can pre-set it — recommended for Docker/Kubernetes/CI
-where you can't read interactive output:
+On first start DittoFS creates an `admin` user. **Pre-set the password** with
+`DITTOFS_ADMIN_INITIAL_PASSWORD` — this is the recommended path for every deployment and
+the only reliable one for Docker/Kubernetes/CI and systemd:
 
 ```bash
 # Choose your own password (also skips the forced first-login password change)
 DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password dfs start
 ```
+
+If you don't pre-set it, a random password is generated — but it is **shown only when you
+run `dfs start --foreground` in an interactive terminal**, printed once to that terminal.
+In background mode (the default `dfs start`), and under Docker/systemd (where stdout is a
+pipe, not a terminal), the generated password is **never written anywhere and cannot be
+recovered** — the log only notes that one was created. If you get locked out this way, set
+`DITTOFS_ADMIN_INITIAL_PASSWORD` (or `admin.password_hash` in the config) and restart.
 
 By default the server listens on these ports:
 

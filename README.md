@@ -124,18 +124,21 @@ go build -o dfsctl cmd/dfsctl/main.go
 
 ### First run & admin password
 
-On first start, DittoFS creates an `admin` user. The password is either auto-generated
-and printed **once** to the log, or pre-set via the `DITTOFS_ADMIN_INITIAL_PASSWORD`
-environment variable (recommended for Docker/Kubernetes/CI, where you can't read
-interactive output):
+On first start, DittoFS creates an `admin` user. **Pre-set the password** via the
+`DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable — this is the recommended path for
+every deployment, and the only reliable one for Docker/Kubernetes/CI and systemd:
 
 ```bash
-# Auto-generated — save the password from the log; it is not shown again
-./dfs start
-
-# Or choose your own (skips the forced password change on first login)
+# Choose your own password (also skips the forced password change on first login)
 DITTOFS_ADMIN_INITIAL_PASSWORD=my-secure-password ./dfs start
 ```
+
+If you don't pre-set it, a random password is generated — but it is **shown only when you
+run `./dfs start --foreground` in an interactive terminal** (printed once). In background
+mode (the default `./dfs start`), and under Docker/systemd where stdout is a pipe rather
+than a terminal, the generated password is **not written to the log and cannot be
+recovered**. If that happens, set `DITTOFS_ADMIN_INITIAL_PASSWORD` (or `admin.password_hash`
+in the config) and restart.
 
 ### Serve an NFS share in under a minute
 

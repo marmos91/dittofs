@@ -853,8 +853,10 @@ func emitAdminPassword(password string) {
 		return
 	}
 	// Daemon / non-interactive: never write the secret to the log.
-	logger.Warn("Admin user created with a generated password; " +
-		"reset it with 'dfsctl user passwd admin' (the password is not written to the log)")
+	logger.Warn("Admin user created with a generated password, which is NOT recoverable in " +
+		"background mode (stdout is not a terminal, so the password is not written to the log). " +
+		"Set DITTOFS_ADMIN_INITIAL_PASSWORD (or admin.password_hash) and restart, or run " +
+		"'dfs start --foreground' in a terminal to have it printed once.")
 }
 
 // formatLegacyLayoutDirective renders the multi-line operator directive
