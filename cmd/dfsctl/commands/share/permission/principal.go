@@ -49,12 +49,12 @@ func selectPrincipal(user, group, sidFlag string) (kind principalKind, value str
 		return principalSID, sidFlag, true, fmt.Sprintf("SID '%s'", sidFlag), nil
 	case user != "":
 		if isSIDLiteral(user) {
-			return principalSID, user, false, fmt.Sprintf("user '%s'", user), nil
+			return principalSID, user, false, fmt.Sprintf("user SID '%s'", user), nil
 		}
 		return principalUserName, user, false, fmt.Sprintf("user '%s'", user), nil
 	default: // group
 		if isSIDLiteral(group) {
-			return principalSID, group, true, fmt.Sprintf("group '%s'", group), nil
+			return principalSID, group, true, fmt.Sprintf("group SID '%s'", group), nil
 		}
 		return principalGroupName, group, true, fmt.Sprintf("group '%s'", group), nil
 	}

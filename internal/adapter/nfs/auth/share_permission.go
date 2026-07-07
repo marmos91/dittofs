@@ -17,7 +17,7 @@ var ErrShareAccessDenied = errors.New("share access denied")
 // sidUnixSharePermissionResolver is the subset of the control-plane store that
 // resolves a share permission from an NFS login's numeric UID + GIDs against
 // direct AD/SID grants (#1528). The concrete store implements it; a store that
-// does not simply skips the direct-AD-grant path.
+// does not implement it simply skips the direct-AD-grant path.
 type sidUnixSharePermissionResolver interface {
 	ResolveSharePermissionForUnixIDs(ctx context.Context, uid uint32, gids []uint32, shareName string) (models.SharePermission, error)
 }

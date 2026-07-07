@@ -342,7 +342,7 @@ func parseSharePath(path string) string {
 // sidSharePermissionResolver is the subset of the control-plane store that
 // resolves a share permission from a set of Windows SIDs (a login's PAC user +
 // group SIDs). The concrete store implements it; a mock userStore that does not
-// simply skips the direct-AD-grant path (#1528).
+// implement it simply skips the direct-AD-grant path (#1528).
 type sidSharePermissionResolver interface {
 	ResolveSharePermissionForSIDs(ctx context.Context, sids []string, shareName string) (models.SharePermission, error)
 }

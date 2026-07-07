@@ -218,10 +218,11 @@ type ResolvedPrincipal struct {
 
 // ResolvePrincipalSID resolves a directory principal NAME to its canonical
 // Windows SID and Unix id, for granting share access directly to an AD user or
-// group with no local DittoFS object (#1528). The name may be a bare
-// sAMAccountName ("Cubbit"), a NetBIOS-qualified name ("CUBBIT\\Cubbit"), or a
-// UPN/Kerberos principal ("alice@cubbit.local") — the domain qualifier is
-// stripped and the sAMAccountName is matched. isGroup selects the object class.
+// group with no local DittoFS object (#1528). The name may be a bare name
+// ("Cubbit"), a NetBIOS-qualified name ("CUBBIT\\Cubbit"), or a UPN/Kerberos
+// principal ("alice@cubbit.local") — the domain qualifier is stripped, then a
+// user is matched on the configured UserAttr and a group on sAMAccountName.
+// isGroup selects the object class.
 //
 // Returns found=false when no object matches; an error only for dial/bind/search
 // failures.

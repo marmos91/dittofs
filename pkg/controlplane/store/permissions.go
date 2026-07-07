@@ -304,9 +304,15 @@ func (s *GORMStore) ResolveSharePermissionForSIDs(ctx context.Context, sids []st
 // requirement Samba meets with dedicated idmap ranges. The SMB path
 // (ResolveSharePermissionForSIDs) is always SID-exact and not subject to this.
 func (s *GORMStore) ResolveSharePermissionForUnixIDs(ctx context.Context, uid uint32, gids []uint32, shareName string) (models.SharePermission, error) {
+	// Restrict the query to the login's candidate ids (uid + gids) so the scan
+	// is bounded by the caller's group count, not the total number of grants on
+	// the share. The in-memory pass below still applies the user-vs-group rule.
+	candidates := append(make([]uint32, 0, len(gids)+1), uid)
+	candidates = append(candidates, gids...)
+
 	var perms []models.SIDSharePermission
 	if err := s.db.WithContext(ctx).
-		Where("share_name = ? AND unix_id <> 0", shareName).
+		Where("share_name = ? AND unix_id <> 0 AND unix_id IN ?", shareName, candidates).
 		Find(&perms).Error; err != nil {
 		return models.PermissionNone, err
 	}
