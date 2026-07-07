@@ -4254,8 +4254,8 @@ mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittof
 Flags:
 
 ```
-      --dir-mode string      Directory permissions for SMB mount (octal) (default "0777")
-      --file-mode string     File permissions for SMB mount (octal, default 0777 on macOS since uid/gid not supported) (default "0777")
+      --dir-mode string      Directory permissions for SMB mount (octal)
+      --file-mode string     File permissions (not applicable on Windows)
       --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
   -P, --password string      Password for SMB mount (will prompt if not provided)
   -p, --protocol string      Protocol to use (nfs or smb) (required)
@@ -4451,9 +4451,9 @@ Grant permission on a share
 
 Grant a permission level to a user or group on a share.
 
-Specify exactly one of --user or --group together with --level. Re-running
-the command on a principal that already has a permission replaces the existing
-level. Permission levels in order of increasing access:
+Specify exactly one of --user, --group, or --sid together with --level.
+Re-running the command on a principal that already has a permission replaces the
+existing level. Permission levels in order of increasing access:
 
 ```
 - none:       No access (explicitly blocks the principal)
@@ -4462,6 +4462,12 @@ level. Permission levels in order of increasing access:
 - admin:      Full administrative access including ACL management
 ```
 
+Active Directory principals can be granted directly, with no local DittoFS
+account (issue #1528). --user / --group accept a local name, an AD name
+(user@REALM or DOMAIN\group, resolved to a SID via the configured LDAP
+directory), or a raw Windows SID. A bare name resolves to a local user/group if
+one exists, otherwise to the directory. --sid grants to a raw SID explicitly.
+
 ```
 dfsctl share permission grant <share> [flags]
 ```
@@ -4469,25 +4475,29 @@ dfsctl share permission grant <share> [flags]
 **Examples:**
 
 ```bash
-# Grant read-write access to a specific user
+# Grant read-write access to a local user
 dfsctl share permission grant /archive --user alice --level read-write
 
-# Grant read-only access to a group
+# Grant read-only access to a local group
 dfsctl share permission grant /archive --group editors --level read
 
-# Block a specific user despite a permissive share default
-dfsctl share permission grant /archive --user bob --level none
+# Grant directly to an AD group (resolved to its SID via LDAP) — no local group
+dfsctl share permission grant /archive --group 'CUBBIT\Cubbit' --level read-write
 
-# Grant admin access to a service account
-dfsctl share permission grant /archive --user svc-backup --level admin
+# Grant directly to an AD user by Kerberos principal
+dfsctl share permission grant /archive --user alice@cubbit.local --level read
+
+# Grant to a raw Windows SID (no directory lookup)
+dfsctl share permission grant /archive --sid S-1-5-21-1111-2222-3333-1104 --level read
 ```
 
 Flags:
 
 ```
-      --group string   Group name to grant permission to
+      --group string   Group to grant permission to (local name, AD name, or SID)
       --level string   Permission level (none|read|read-write|admin)
-      --user string    Username to grant permission to
+      --sid string     Raw Windows SID to grant permission to (e.g. S-1-5-21-...)
+      --user string    User to grant permission to (local name, AD name, or SID)
 ```
 
 Global flags:
@@ -4555,7 +4565,10 @@ Remove a per-principal permission entry from a share.
 After revoking, the user or group falls back to the share's default permission
 level (see 'dfsctl share show'). To explicitly block a principal rather than
 fall back to the default, use 'dfsctl share permission grant ... --level none'
-instead. Specify exactly one of --user or --group.
+instead. Specify exactly one of --user, --group, or --sid.
+
+--user / --group accept a local name, an AD name, or a raw SID (matching the
+grant command); --sid revokes a raw SID grant directly.
 
 ```
 dfsctl share permission revoke <share> [flags]
@@ -4569,13 +4582,17 @@ dfsctl share permission revoke /archive --user alice
 
 # Revoke a group's explicit permission
 dfsctl share permission revoke /archive --group editors
+
+# Revoke a direct AD/SID grant
+dfsctl share permission revoke /archive --sid S-1-5-21-1111-2222-3333-1104
 ```
 
 Flags:
 
 ```
-      --group string   Group name to revoke permission from
-      --user string    Username to revoke permission from
+      --group string   Group to revoke permission from (local name, AD name, or SID)
+      --sid string     Raw Windows SID to revoke permission from
+      --user string    User to revoke permission from (local name, AD name, or SID)
 ```
 
 Global flags:

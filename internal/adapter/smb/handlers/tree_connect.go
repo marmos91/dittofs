@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -338,13 +339,24 @@ func parseSharePath(path string) string {
 	return "/" + strings.ToLower(parts[1])
 }
 
+// sidSharePermissionResolver is the subset of the control-plane store that
+// resolves a share permission from a set of Windows SIDs (a login's PAC user +
+// group SIDs). The concrete store implements it; a mock userStore that does not
+// implement it simply skips the direct-AD-grant path (#1528).
+type sidSharePermissionResolver interface {
+	ResolveSharePermissionForSIDs(ctx context.Context, sids []string, shareName string) (models.SharePermission, error)
+}
+
 // resolveSharePermission determines the effective permission for a session on a share.
 // Returns the permission level and a user identifier for logging.
 //
 // Permission resolution follows this order:
 //  1. Root user bypass: If user has UID=0 and squash mode allows root access, grant PermissionAdmin
-//  2. User-level permission from UserStore.ResolveSharePermission (if userStore available)
-//  3. Default permission if no explicit permission found
+//  2. Local user/group permission from UserStore.ResolveSharePermission (if userStore available)
+//  3. Direct AD/SID grants (#1528): the session's Kerberos PAC user + group SIDs
+//     matched against the share's SID grants — applied even when the principal
+//     has no local User object. The higher of (2) and (3) wins.
+//  4. Default permission if no explicit permission found
 //
 // This mirrors the NFS behavior where root users get automatic admin access based on squash settings.
 func resolveSharePermission(
@@ -354,52 +366,71 @@ func resolveSharePermission(
 	defaultPerm models.SharePermission,
 	userStore models.UserStore,
 ) (models.SharePermission, string) {
-	// Authenticated user with valid session
-	if sess != nil && sess.User != nil {
-		// Check if user is root (UID 0) and squash mode allows root access
-		// This mirrors the NFS behavior in resolveNFSSharePermission
-		// Root bypass applies regardless of whether userStore is available
-		if isRootUser(sess.User) && rootHasAdminAccess(share) {
-			logger.Debug("Root user granted admin access via squash mode",
-				"shareName", share.Name, "user", sess.User.Username, "squash", share.Squash)
-			return models.PermissionAdmin, sess.User.Username
-		}
-
-		// If userStore is available, use it to resolve permission
-		if userStore != nil {
-			perm, err := userStore.ResolveSharePermission(ctx.Context, sess.User, share.Name)
-			if err != nil {
-				logger.Debug("Permission resolution failed, using default",
-					"shareName", share.Name, "user", sess.User.Username, "error", err, "default", defaultPerm)
-				return defaultPerm, sess.User.Username
-			}
-			return perm, sess.User.Username
-		}
-
-		// No userStore - use default permission
-		logger.Debug("No userStore available, using default permission",
-			"shareName", share.Name, "user", sess.User.Username, "default", defaultPerm)
-		return defaultPerm, sess.User.Username
-	}
-
-	// Guest session - use default permission
-	if sess != nil && sess.IsGuest {
-		return defaultPerm, "guest"
-	}
-
-	// Session exists but its identity was not resolved to a User (e.g. an
-	// authenticated username with no matching user record) and it is not a
-	// guest: apply the share's default permission, same as a guest. NOT
-	// read-write — defaulting an unresolved identity to read-write is an
-	// authorization bypass (a share with no configured default resolves to
-	// PermissionNone, i.e. access denied).
-	if sess != nil {
-		return defaultPerm, sess.Username
-	}
-
 	// No session at all — deny (the caller maps PermissionNone to
 	// STATUS_ACCESS_DENIED).
-	return models.PermissionNone, ""
+	if sess == nil {
+		return models.PermissionNone, ""
+	}
+
+	// 1. Root user bypass: UID 0 with a squash mode that allows root access gets
+	// admin regardless of grants. Mirrors resolveNFSSharePermission.
+	if sess.User != nil && isRootUser(sess.User) && rootHasAdminAccess(share) {
+		logger.Debug("Root user granted admin access via squash mode",
+			"shareName", share.Name, "user", sess.User.Username, "squash", share.Squash)
+		return models.PermissionAdmin, sess.User.Username
+	}
+
+	// 2. Local user/group resolution.
+	localPerm := defaultPerm
+	identifier := sess.Username
+	switch {
+	case sess.User != nil:
+		identifier = sess.User.Username
+		if userStore != nil {
+			if perm, err := userStore.ResolveSharePermission(ctx.Context, sess.User, share.Name); err != nil {
+				logger.Debug("Permission resolution failed, using default",
+					"shareName", share.Name, "user", sess.User.Username, "error", err, "default", defaultPerm)
+			} else {
+				localPerm = perm
+			}
+		} else {
+			logger.Debug("No userStore available, using default permission",
+				"shareName", share.Name, "user", sess.User.Username, "default", defaultPerm)
+		}
+	case sess.IsGuest:
+		identifier = "guest"
+	}
+
+	// 3. Direct AD/SID grants (#1528). The Kerberos PAC user + group SIDs are on
+	// the session independent of local user resolution, so this authorizes an AD
+	// principal that has no local DittoFS account. SID grants are additive (like
+	// group membership) EXCEPT when the user has an explicit per-user local grant
+	// — including an explicit 'none' block — which is authoritative and must not
+	// be overridden, mirroring the local resolver's "user-explicit wins" rule.
+	effective := localPerm
+	userExplicit := false
+	if sess.User != nil {
+		_, userExplicit = sess.User.GetExplicitSharePermission(share.Name)
+	}
+	if r, ok := userStore.(sidSharePermissionResolver); ok && !userExplicit {
+		groupSIDs, userSID := sess.PACIdentity()
+		sids := groupSIDs
+		if userSID != "" {
+			sids = append(sids, userSID)
+		}
+		if len(sids) > 0 {
+			if sidPerm, err := r.ResolveSharePermissionForSIDs(ctx.Context, sids, share.Name); err != nil {
+				logger.Debug("SID permission resolution failed, ignoring",
+					"shareName", share.Name, "error", err)
+			} else if sidPerm.Level() > effective.Level() {
+				logger.Debug("Direct AD/SID grant elevates share permission",
+					"shareName", share.Name, "user", identifier, "from", effective, "to", sidPerm)
+				effective = sidPerm
+			}
+		}
+	}
+
+	return effective, identifier
 }
 
 // isRootUser checks if the user has UID 0 (root).

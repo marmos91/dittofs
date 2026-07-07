@@ -19,6 +19,11 @@ See also: [docs/CONFIGURATION.md](configuration.md) (every config key + env var)
 [docs/SMB.md](smb.md), [docs/NFS.md](nfs.md), and [docs/ACLS.md](access-control.md) (the
 cross-protocol ACL/SID model).
 
+> **Joining a real Windows Server AD?** For an end-to-end operator runbook
+> (`ktpass` keytab, LDAP, granting AD users/groups directly, and per-user
+> "mount on login"), see [windows-ad-setup.md](windows-ad-setup.md). This page
+> is the reference for every provider field; that page is the step-by-step.
+
 ---
 
 ## Overview: cross-protocol identity unification
@@ -311,6 +316,35 @@ Each key has a `DITTOFS_LDAP_*` env equivalent (e.g. `DITTOFS_LDAP_ENABLED`,
 
 (Verified against `cmd/dfs/commands/start.go` `resolveIdentityProviders` and the
 handler in `internal/controlplane/api/handlers/identity_providers.go`.)
+
+---
+
+## Part B2: Grant AD principals directly to shares (no local users)
+
+With LDAP configured, you can grant share access straight to an AD user or group
+— resolved to its **SID** — with **no local DittoFS user/group object** (#1528).
+At login, a Kerberos-authenticated principal's PAC user + group SIDs are matched
+against these grants.
+
+```bash
+# By AD name (resolved to a SID via LDAP; a bare name resolves to a local
+# object first, otherwise to the directory):
+dfsctl share permission grant /ditto --group 'CUBBIT\Cubbit'     --level read-write
+dfsctl share permission grant /ditto --user  alice@cubbit.local  --level read
+
+# By raw SID (no directory lookup — works even with LDAP disabled):
+dfsctl share permission grant /ditto --sid S-1-5-21-...-1104      --level read
+
+dfsctl share permission list /ditto     # shows each grant + its resolved SID
+```
+
+Grants are additive (highest matching level wins) and apply on both SMB (matched
+on PAC SIDs) and NFS (matched on the Unix id the SID resolves to — the RID under
+`idmap: rid`, so grant by name or use `idmap: rid` for an NFS-matchable id). This
+is the Samba `idmap_rid`-style, no-shadow-users model. For the full Windows
+Server walkthrough including per-user "mount on login", see
+[windows-ad-setup.md](windows-ad-setup.md); for the ACE model, see
+[access-control.md](access-control.md).
 
 ---
 

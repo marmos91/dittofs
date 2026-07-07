@@ -17,6 +17,7 @@ func AllModels() []any {
 		&ShareAdapterConfig{},
 		&UserSharePermission{},
 		&GroupSharePermission{},
+		&SIDSharePermission{},
 		&AdapterConfig{},
 		&Setting{},
 		&IdentityMapping{},

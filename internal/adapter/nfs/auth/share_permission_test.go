@@ -15,6 +15,12 @@ type permMockStore struct {
 	usersByUID map[uint32]*models.User
 	perm       models.SharePermission
 	permErr    error
+
+	// sidPerm is returned by ResolveSharePermissionForUnixIDs when the login's
+	// UID or one of its GIDs is present in sidMatchIDs (a direct AD/SID grant,
+	// #1528). Left zero, the SID path resolves to none — existing tests unchanged.
+	sidPerm     models.SharePermission
+	sidMatchIDs map[uint32]bool
 }
 
 func newPermMockStore() *permMockStore {
@@ -55,6 +61,21 @@ func (m *permMockStore) GetUserByUID(_ context.Context, uid uint32) (*models.Use
 	return user, nil
 }
 
+func (m *permMockStore) ResolveSharePermissionForUnixIDs(_ context.Context, uid uint32, gids []uint32, _ string) (models.SharePermission, error) {
+	if m.sidMatchIDs == nil {
+		return models.PermissionNone, nil
+	}
+	if m.sidMatchIDs[uid] {
+		return m.sidPerm, nil
+	}
+	for _, g := range gids {
+		if m.sidMatchIDs[g] {
+			return m.sidPerm, nil
+		}
+	}
+	return models.PermissionNone, nil
+}
+
 func ptrUID(v uint32) *uint32 { return &v }
 
 // Behavior 1: default_permission=none denies an unknown UID. This is the v4
@@ -67,7 +88,7 @@ func TestResolveSharePermission_DefaultPermissionNoneDeniesUnknownUID(t *testing
 		Squash:            models.SquashNone,
 	}
 
-	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1234))
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1234), nil)
 	if !errors.Is(err, ErrShareAccessDenied) {
 		t.Fatalf("expected ErrShareAccessDenied for unknown UID under default_permission=none, got %v", err)
 	}
@@ -81,7 +102,7 @@ func TestResolveSharePermission_DefaultPermissionReadWriteAllowsUnknownUID(t *te
 		Squash:            models.SquashNone,
 	}
 
-	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1234))
+	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1234), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -102,7 +123,7 @@ func TestResolveSharePermission_RootPromotedToAdmin(t *testing.T) {
 			Squash:            sq,
 		}
 
-		res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(0))
+		res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(0), nil)
 		if err != nil {
 			t.Fatalf("squash=%q: unexpected error: %v", sq, err)
 		}
@@ -127,7 +148,7 @@ func TestResolveSharePermission_EmptySquashDoesNotPromoteRoot(t *testing.T) {
 		Squash:            "", // unset → DefaultSquashMode (root_to_guest)
 	}
 
-	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(0))
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(0), nil)
 	if !errors.Is(err, ErrShareAccessDenied) {
 		t.Fatalf("empty squash + default none: err = %v, want ErrShareAccessDenied (root not promoted)", err)
 	}
@@ -145,7 +166,7 @@ func TestResolveSharePermission_ReadPermissionCoercesReadOnly(t *testing.T) {
 		Squash:            models.SquashNone,
 	}
 
-	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000))
+	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,7 +185,7 @@ func TestResolveSharePermission_KnownUserPermissionNoneDenied(t *testing.T) {
 
 	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", Squash: models.SquashNone}
 
-	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000))
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000), nil)
 	if !errors.Is(err, ErrShareAccessDenied) {
 		t.Fatalf("expected ErrShareAccessDenied for known user with permission=none, got %v", err)
 	}
@@ -186,7 +207,7 @@ func TestResolveSharePermission_NilInputsAllow(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := ResolveSharePermission(context.Background(), tc.store, tc.share, "/export", "127.0.0.1:1", tc.uid)
+			res, err := ResolveSharePermission(context.Background(), tc.store, tc.share, "/export", "127.0.0.1:1", tc.uid, nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -203,7 +224,7 @@ func TestResolveSharePermission_NilInputsAllow(t *testing.T) {
 func TestResolveSharePermission_NilStoreHonoursShareReadOnly(t *testing.T) {
 	share := &runtime.Share{Name: "/export", ReadOnly: true}
 
-	res, err := ResolveSharePermission(context.Background(), nil, share, "/export", "127.0.0.1:1", ptrUID(1000))
+	res, err := ResolveSharePermission(context.Background(), nil, share, "/export", "127.0.0.1:1", ptrUID(1000), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,7 +245,7 @@ func TestResolveSharePermission_AnonymousAuthNullDeniedWhenDefaultNone(t *testin
 		Squash:            models.SquashNone,
 	}
 
-	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil)
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil, nil)
 	if !errors.Is(err, ErrShareAccessDenied) {
 		t.Fatalf("anonymous AUTH_NULL caller on default_permission=none: expected ErrShareAccessDenied, got %v", err)
 	}
@@ -238,7 +259,7 @@ func TestResolveSharePermission_AnonymousAuthNullCoercedReadOnly(t *testing.T) {
 
 	t.Run("share read-only flag", func(t *testing.T) {
 		share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", ReadOnly: true}
-		res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil)
+		res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -249,7 +270,7 @@ func TestResolveSharePermission_AnonymousAuthNullCoercedReadOnly(t *testing.T) {
 
 	t.Run("default_permission=read", func(t *testing.T) {
 		share := &runtime.Share{Name: "/export", DefaultPermission: "read"}
-		res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil)
+		res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -265,7 +286,7 @@ func TestResolveSharePermission_AnonymousAuthNullAllowedReadWrite(t *testing.T) 
 	store := newPermMockStore()
 	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write"}
 
-	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil)
+	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -283,7 +304,7 @@ func TestResolveSharePermission_ShareReadOnlyForcesReadOnly(t *testing.T) {
 
 	share := &runtime.Share{Name: "/export", DefaultPermission: "read-write", Squash: models.SquashNone, ReadOnly: true}
 
-	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000))
+	res, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(1000), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -304,7 +325,7 @@ func TestResolveSharePermission_DefaultNoneDeniesUnmappedUID(t *testing.T) {
 		Squash:            models.SquashNone,
 	}
 
-	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(2001))
+	_, err := ResolveSharePermission(context.Background(), store, share, "/export", "127.0.0.1:1", ptrUID(2001), nil)
 	if !errors.Is(err, ErrShareAccessDenied) {
 		t.Fatalf("uid=2001 on default_permission=none: expected ErrShareAccessDenied, got %v", err)
 	}

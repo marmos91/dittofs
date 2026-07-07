@@ -144,8 +144,12 @@ func (h *Handler) buildV4AuthContext(ctx *types.CompoundContext, handle []byte) 
 	// SAME policy the v3 path applies via auth.ResolveSharePermission; v4
 	// previously skipped it, so default_permission=none did not deny unknown
 	// UIDs and read-only coercion never fired.
+	permGIDs := append([]uint32(nil), ctx.GIDs...)
+	if ctx.GID != nil {
+		permGIDs = append(permGIDs, *ctx.GID)
+	}
 	permResult, err := auth.ResolveSharePermission(
-		ctx.Context, h.Registry.GetIdentityStore(), share, shareName, ctx.ClientAddr, ctx.UID)
+		ctx.Context, h.Registry.GetIdentityStore(), share, shareName, ctx.ClientAddr, ctx.UID, permGIDs)
 	if err != nil {
 		// A share-permission denial (e.g. default_permission=none for an
 		// unmapped principal — the krb5 machine-principal-maps-to-nobody case)

@@ -14,6 +14,14 @@ import (
 // resolved permission for a known user is "none").
 var ErrShareAccessDenied = errors.New("share access denied")
 
+// sidUnixSharePermissionResolver is the subset of the control-plane store that
+// resolves a share permission from an NFS login's numeric UID + GIDs against
+// direct AD/SID grants (#1528). The concrete store implements it; a store that
+// does not implement it simply skips the direct-AD-grant path.
+type sidUnixSharePermissionResolver interface {
+	ResolveSharePermissionForUnixIDs(ctx context.Context, uid uint32, gids []uint32, shareName string) (models.SharePermission, error)
+}
+
 // SharePermissionResult is the outcome of export-squash permission resolution.
 type SharePermissionResult struct {
 	// ReadOnly is true when the effective access is read-only — either the
@@ -52,6 +60,7 @@ func ResolveSharePermission(
 	shareName string,
 	clientAddr string,
 	uid *uint32,
+	gids []uint32,
 ) (SharePermissionResult, error) {
 	var result SharePermissionResult
 
@@ -100,21 +109,41 @@ func ResolveSharePermission(
 		return result, nil
 	}
 
+	// Direct AD/SID grants (#1528): match the login's UID + group GIDs against
+	// the share's SID grants. This authorizes an AD principal that has no local
+	// DittoFS account — the NFS analogue of the SMB PAC-SID path (NFS carries no
+	// SID, so grants are matched on the numeric id the login resolved to).
+	sidPerm := models.PermissionNone
+	if r, ok := identityStore.(sidUnixSharePermissionResolver); ok {
+		if p, sErr := r.ResolveSharePermissionForUnixIDs(ctx, *uid, gids, shareName); sErr != nil {
+			logger.DebugCtx(ctx, "SID permission resolution failed, ignoring",
+				"share", shareName, "uid", *uid, "error", sErr)
+		} else {
+			sidPerm = p
+		}
+	}
+
 	// Try reverse lookup: find user by UID.
 	user, err := identityStore.GetUserByUID(ctx, *uid)
 	if err != nil || user == nil {
 		logger.DebugCtx(ctx, "NFS UID reverse lookup failed, treating as guest",
 			"share", shareName, "uid", *uid, "client", clientAddr, "error", err)
 
-		// Guest access - check default permission.
-		if defaultPerm == models.PermissionNone {
-			logger.DebugCtx(ctx, "Share access denied (unknown UID, default permission is none)",
+		// Guest access: the higher of the share default and any direct AD/SID
+		// grant. A SID grant lets an AD principal with no local account through
+		// even when default_permission is none.
+		guestPerm := defaultPerm
+		if sidPerm.Level() > guestPerm.Level() {
+			guestPerm = sidPerm
+		}
+		if guestPerm == models.PermissionNone {
+			logger.DebugCtx(ctx, "Share access denied (unknown UID, no default or SID grant)",
 				"share", shareName, "uid", *uid)
 			return SharePermissionResult{}, ErrShareAccessDenied
 		}
 
-		result.ReadOnly = share.ReadOnly || defaultPerm == models.PermissionRead
-		logger.DebugCtx(ctx, "Guest access granted", "share", shareName, "permission", defaultPerm, "readOnly", result.ReadOnly)
+		result.ReadOnly = share.ReadOnly || guestPerm == models.PermissionRead
+		logger.DebugCtx(ctx, "Access granted (guest/AD-SID)", "share", shareName, "permission", guestPerm, "readOnly", result.ReadOnly)
 		return result, nil
 	}
 
@@ -127,6 +156,12 @@ func ResolveSharePermission(
 		logger.DebugCtx(ctx, "Permission resolution failed, using default",
 			"share", shareName, "user", user.Username, "error", permErr, "default", defaultPerm)
 		perm = defaultPerm
+	}
+	// A direct AD/SID grant can elevate a local user's access (additive, like
+	// group membership) — but NOT when the user has an explicit per-user grant
+	// (including an explicit 'none' block), which is authoritative.
+	if _, explicit := user.GetExplicitSharePermission(shareName); !explicit && sidPerm.Level() > perm.Level() {
+		perm = sidPerm
 	}
 
 	if perm == models.PermissionNone {

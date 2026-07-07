@@ -38,14 +38,14 @@ type PermissionList []apiclient.SharePermission
 
 // Headers implements TableRenderer.
 func (pl PermissionList) Headers() []string {
-	return []string{"TYPE", "NAME", "LEVEL"}
+	return []string{"TYPE", "NAME", "LEVEL", "SID"}
 }
 
 // Rows implements TableRenderer.
 func (pl PermissionList) Rows() [][]string {
 	rows := make([][]string, 0, len(pl))
 	for _, p := range pl {
-		rows = append(rows, []string{p.Type, p.Name, p.Level})
+		rows = append(rows, []string{p.Type, p.Name, p.Level, p.SID})
 	}
 	return rows
 }

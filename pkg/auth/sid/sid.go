@@ -45,6 +45,16 @@ func SIDSize(sid *SID) int {
 	return 8 + 4*int(sid.SubAuthorityCount)
 }
 
+// RID returns the SID's relative identifier — the final sub-authority — or 0
+// when the SID has none. For an AD principal SID this is the value used as the
+// Unix UID/GID under idmap_rid.
+func (s *SID) RID() uint32 {
+	if len(s.SubAuthorities) == 0 {
+		return 0
+	}
+	return s.SubAuthorities[len(s.SubAuthorities)-1]
+}
+
 // EncodeSID writes a binary SID to buf per MS-DTYP Section 2.4.2.
 func EncodeSID(buf *bytes.Buffer, sid *SID) {
 	buf.WriteByte(sid.Revision)

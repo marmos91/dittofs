@@ -101,6 +101,7 @@ type Share struct {
 	AccessRules      []ShareAccessRule      `gorm:"foreignKey:ShareID" json:"access_rules,omitempty"`
 	UserPermissions  []UserSharePermission  `gorm:"foreignKey:ShareID" json:"user_permissions,omitempty"`
 	GroupPermissions []GroupSharePermission `gorm:"foreignKey:ShareID" json:"group_permissions,omitempty"`
+	SIDPermissions   []SIDSharePermission   `gorm:"foreignKey:ShareID" json:"sid_permissions,omitempty"`
 
 	// Parsed configuration (not stored in DB)
 	ParsedConfig map[string]any `gorm:"-" json:"config,omitempty"`

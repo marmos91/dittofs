@@ -32,6 +32,12 @@ type RootGrant struct {
 	IsGroup bool
 	// Level is the access level to grant.
 	Level GrantLevel
+	// SID, when non-empty, is a direct Active Directory grant (#1528): it
+	// projects an additional "sid:<SID>" ACE so a Kerberos/PAC login is matched
+	// by its Windows user/group SID (the SMB path). Such a grant may ALSO carry
+	// a non-zero ID — a Unix GID allocated for the SID — so NFS, which has no
+	// SID on the wire, matches via the "{id}@localdomain" numeric form.
+	SID string
 }
 
 // LocalDomainPrincipal formats a Unix UID/GID as the "{id}@localdomain" ACE
@@ -94,6 +100,29 @@ func BuildShareRootACL(defaultLevel GrantLevel, grants []RootGrant) *ACL {
 		allow(SpecialAdministrators, FullAccessMask),
 	}
 
+	// Direct AD/SID grants (#1528): project a "sid:<SID>" ACE matched against a
+	// login's PAC user/group SIDs (the SMB path). Dedup by SID keeping the
+	// highest level; deterministic order by SID string.
+	sidMerged := make(map[string]GrantLevel, len(grants))
+	for _, g := range grants {
+		if g.SID == "" {
+			continue
+		}
+		if lvl, ok := sidMerged[g.SID]; !ok || g.Level > lvl {
+			sidMerged[g.SID] = g.Level
+		}
+	}
+	sidKeys := make([]string, 0, len(sidMerged))
+	for s := range sidMerged {
+		sidKeys = append(sidKeys, s)
+	}
+	sort.Strings(sidKeys)
+	for _, s := range sidKeys {
+		if mask := maskForLevel(sidMerged[s]); mask != 0 {
+			aces = append(aces, allow("sid:"+s, mask))
+		}
+	}
+
 	// Merge grants that project to the same ACE, keeping the highest level.
 	// The merge key is the numeric id, not (id, isGroup): LocalDomainPrincipal
 	// encodes only the id, so a user UID and a group GID with the same value
@@ -102,8 +131,15 @@ func BuildShareRootACL(defaultLevel GrantLevel, grants []RootGrant) *ACL {
 	// collapse here (all to the same fallback id). A user grant takes
 	// precedence over a group grant for ordering when ids collide, so the order
 	// stays deterministic.
+	//
+	// A pure SID grant (SID set, no allocated Unix id) is excluded — it projects
+	// only the "sid:" ACE above. A SID grant that carries a numeric GID for NFS
+	// (#1528) has ID != 0 and IS merged here so it also gets a numeric ACE.
 	merged := make(map[uint32]RootGrant, len(grants))
 	for _, g := range grants {
+		if g.SID != "" && g.ID == 0 {
+			continue
+		}
 		cur, ok := merged[g.ID]
 		if !ok {
 			merged[g.ID] = g
