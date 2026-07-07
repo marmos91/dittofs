@@ -284,6 +284,9 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Delete("/{name}/permissions/users/{username}", shareHandler.RemoveUserPermission)
 				r.Put("/{name}/permissions/groups/{groupname}", shareHandler.SetGroupPermission)
 				r.Delete("/{name}/permissions/groups/{groupname}", shareHandler.RemoveGroupPermission)
+				// Direct AD/SID grants (#1528): grant to a Windows SID with no local object.
+				r.Put("/{name}/permissions/sids/{sid}", shareHandler.SetSIDPermission)
+				r.Delete("/{name}/permissions/sids/{sid}", shareHandler.RemoveSIDPermission)
 
 				// Per-share block store management
 				r.Get("/{name}/blockstore/stats", blockStoreHandler.Stats)

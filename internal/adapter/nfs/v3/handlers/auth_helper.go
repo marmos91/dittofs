@@ -102,9 +102,14 @@ func BuildAuthContextWithMapping(
 		return nil, fmt.Errorf("failed to get share: %w", shareErr)
 	}
 
-	// Resolve permissions (export-squash policy, shared with NFSv4).
+	// Resolve permissions (export-squash policy, shared with NFSv4). The GID set
+	// (supplementary + primary) lets a direct AD/SID grant match by GID (#1528).
 	identityStore := reg.GetIdentityStore()
-	permResult, err := auth.ResolveSharePermission(ctx, identityStore, share, shareName, clientAddr, nfsCtx.UID)
+	permGIDs := append([]uint32(nil), nfsCtx.GIDs...)
+	if nfsCtx.GID != nil {
+		permGIDs = append(permGIDs, *nfsCtx.GID)
+	}
+	permResult, err := auth.ResolveSharePermission(ctx, identityStore, share, shareName, clientAddr, nfsCtx.UID, permGIDs)
 	if err != nil {
 		return nil, err
 	}

@@ -113,6 +113,22 @@ func (r *Runtime) ReconcileShareRootACL(ctx context.Context, shareName string) e
 		grants = append(grants, acl.RootGrant{ID: *group.GID, IsGroup: true, Level: level})
 	}
 
+	// Direct AD/SID grants (#1528): project a "sid:<SID>" ACE (matched against a
+	// login's PAC SIDs on the SMB path) and, when the grant carries a resolved
+	// Unix id, an additional "{id}@localdomain" numeric ACE so NFS — which has no
+	// SID on the wire — matches by UID/GID. No local object to resolve.
+	sidPerms, err := r.store.GetShareSIDPermissions(ctx, shareName)
+	if err != nil {
+		return fmt.Errorf("reconcile root ACL for %q: list SID permissions: %w", shareName, err)
+	}
+	for _, p := range sidPerms {
+		level := grantLevelFor(p.Permission)
+		if level == acl.GrantNone {
+			continue
+		}
+		grants = append(grants, acl.RootGrant{ID: p.UnixID, SID: p.SID, IsGroup: p.IsGroup, Level: level})
+	}
+
 	dacl := acl.BuildShareRootACL(grantLevelFor(share.DefaultPermission), grants)
 
 	// The root directory is owned by uid 0; only a superuser context may

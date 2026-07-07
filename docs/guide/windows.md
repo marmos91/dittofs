@@ -105,6 +105,23 @@ Open Explorer and type the UNC path in the address bar:
 
 Windows will prompt for credentials if the server requires them.
 
+### Per-user access on a shared workstation (Active Directory)
+
+When DittoFS is joined to AD (Kerberos), each interactive Windows logon mounts
+the share with **that user's own permissions** — no per-user configuration on the
+DittoFS side. Because each logon holds its own Kerberos ticket, mounting
+`\\<host>\<share>` presents that user's identity, and DittoFS authorizes them by
+their AD user/group SIDs. On one shared machine: alice logs in and gets her
+level, bob logs in and gets his, an administrator gets theirs — each independent.
+
+To mount automatically at logon for every user, use **Group Policy Drive Maps**
+(User Configuration → Preferences → Windows Settings → Drive Maps) or a per-user
+logon script running `net use Z: \\<host>\<share> /persistent:yes` — no
+credentials are passed, Windows uses the logged-in user's ticket (SSO).
+
+Grant AD users/groups directly, with no local DittoFS accounts — see the
+[Windows AD setup runbook](windows-ad-setup.md).
+
 ---
 
 ## Mounting an NFS share
@@ -159,7 +176,7 @@ SMB3 encryption and signing, change notifications, durable handles, and server-s
 | Symptom | Cause | Solution |
 |---------|-------|----------|
 | "The network path was not found" | DittoFS not running or firewall blocking the port | Verify `dfs start` is running; check port 12445 is accessible with `Test-NetConnection` |
-| "Access denied" | Invalid credentials or missing share permissions | Verify user exists (`dfsctl user list`); check share permissions (`dfsctl share permission list /<share>`) |
+| "Access denied" | Invalid credentials or missing share permissions | Check share permissions (`dfsctl share permission list /<share>`). For a local user, verify it exists (`dfsctl user list`). For an AD user, no local account is needed — confirm a grant matches their SID or one of their AD group SIDs (see [windows-ad-setup.md](windows-ad-setup.md)) |
 | "The specified network name is no longer available" | Connection dropped during operation | Retry `net use`; check DittoFS logs for errors |
 | "Insecure guest logon" error | Windows 11 24H2 blocks guest logons by default | Follow [Enabling insecure guest logons](#enabling-insecure-guest-logons-if-needed) above |
 

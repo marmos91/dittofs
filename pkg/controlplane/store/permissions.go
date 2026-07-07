@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -213,4 +214,95 @@ func (s *GORMStore) ResolveSharePermission(ctx context.Context, user *models.Use
 	}
 
 	return highestPerm, nil
+}
+
+func (s *GORMStore) SetSIDSharePermission(ctx context.Context, perm *models.SIDSharePermission) error {
+	return s.db.WithContext(ctx).
+		Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "sid"}, {Name: "share_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"share_name", "permission", "is_group", "display_name", "unix_id"}),
+		}).
+		Create(perm).Error
+}
+
+func (s *GORMStore) DeleteSIDSharePermission(ctx context.Context, sid, shareName string) error {
+	share, err := s.GetShare(ctx, shareName)
+	if err != nil {
+		if errors.Is(err, models.ErrShareNotFound) {
+			return nil // Not an error if share doesn't exist
+		}
+		return err
+	}
+
+	return s.db.WithContext(ctx).
+		Where("sid = ? AND share_id = ?", sid, share.ID).
+		Delete(&models.SIDSharePermission{}).Error
+}
+
+func (s *GORMStore) GetShareSIDPermissions(ctx context.Context, shareName string) ([]*models.SIDSharePermission, error) {
+	share, err := s.GetShare(ctx, shareName)
+	if err != nil {
+		return nil, err
+	}
+
+	var perms []*models.SIDSharePermission
+	if err := s.db.WithContext(ctx).
+		Where("share_id = ?", share.ID).
+		Find(&perms).Error; err != nil {
+		return nil, err
+	}
+	return perms, nil
+}
+
+// ResolveSharePermissionForSIDs is on the SMB TREE_CONNECT hot path, so it
+// queries the SID grant table directly by the denormalized share_name (unique)
+// rather than loading the share with all its associations first.
+func (s *GORMStore) ResolveSharePermissionForSIDs(ctx context.Context, sids []string, shareName string) (models.SharePermission, error) {
+	if len(sids) == 0 {
+		return models.PermissionNone, nil
+	}
+
+	var perms []models.SIDSharePermission
+	if err := s.db.WithContext(ctx).
+		Where("share_name = ? AND sid IN ?", shareName, sids).
+		Find(&perms).Error; err != nil {
+		return models.PermissionNone, err
+	}
+
+	highest := models.PermissionNone
+	for _, perm := range perms {
+		p := models.ParseSharePermission(perm.Permission)
+		if p.Level() > highest.Level() {
+			highest = p
+		}
+	}
+	return highest, nil
+}
+
+// ResolveSharePermissionForUnixIDs is on the NFS auth hot path; like
+// ResolveSharePermissionForSIDs it queries by share_name to avoid a full share
+// load. Only SID grants that carry a resolved numeric id can match an NFS login,
+// which has no SID on the wire.
+func (s *GORMStore) ResolveSharePermissionForUnixIDs(ctx context.Context, uid uint32, gids []uint32, shareName string) (models.SharePermission, error) {
+	var perms []models.SIDSharePermission
+	if err := s.db.WithContext(ctx).
+		Where("share_name = ? AND unix_id <> 0", shareName).
+		Find(&perms).Error; err != nil {
+		return models.PermissionNone, err
+	}
+
+	highest := models.PermissionNone
+	for _, perm := range perms {
+		matched := perm.UnixID == uid
+		if perm.IsGroup {
+			matched = slices.Contains(gids, perm.UnixID)
+		}
+		if !matched {
+			continue
+		}
+		if p := models.ParseSharePermission(perm.Permission); p.Level() > highest.Level() {
+			highest = p
+		}
+	}
+	return highest, nil
 }

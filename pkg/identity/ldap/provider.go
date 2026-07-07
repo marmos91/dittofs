@@ -203,6 +203,115 @@ func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*ide
 	}, nil
 }
 
+// ResolvedPrincipal is the directory resolution of a principal name for a share
+// grant (#1528): its canonical Windows SID plus the Unix id it maps to.
+type ResolvedPrincipal struct {
+	// SID is the canonical Windows SID string ("S-1-5-21-...").
+	SID string
+	// UnixID is the Unix GID (group) or UID (user) the principal maps to under
+	// the configured idmap mode — the SAME id the login path derives — so NFS,
+	// which carries no SID, can match the grant numerically.
+	UnixID uint32
+	// DisplayName is the object's sAMAccountName, captured for listing/UI.
+	DisplayName string
+}
+
+// ResolvePrincipalSID resolves a directory principal NAME to its canonical
+// Windows SID and Unix id, for granting share access directly to an AD user or
+// group with no local DittoFS object (#1528). The name may be a bare
+// sAMAccountName ("Cubbit"), a NetBIOS-qualified name ("CUBBIT\\Cubbit"), or a
+// UPN/Kerberos principal ("alice@cubbit.local") — the domain qualifier is
+// stripped and the sAMAccountName is matched. isGroup selects the object class.
+//
+// Returns found=false when no object matches; an error only for dial/bind/search
+// failures.
+func (p *Provider) ResolvePrincipalSID(ctx context.Context, name string, isGroup bool) (result ResolvedPrincipal, found bool, err error) {
+	sam := sAMAccountNameFromPrincipal(name)
+	if sam == "" {
+		return ResolvedPrincipal{}, false, nil
+	}
+
+	c, err := p.connect(ctx, p.cfg)
+	if err != nil {
+		return ResolvedPrincipal{}, false, fmt.Errorf("ldap: connect/bind: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	objectClass := "user"
+	if isGroup {
+		objectClass = "group"
+	}
+	filter := fmt.Sprintf("(&(objectClass=%s)(%s=%s))", objectClass, p.cfg.UserAttr, ldapv3.EscapeFilter(sam))
+	req := ldapv3.NewSearchRequest(
+		p.cfg.BaseDN,
+		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, 2, int(p.cfg.Timeout.Seconds()), false,
+		filter, []string{"objectSid", "sAMAccountName", "uidNumber", "gidNumber"}, nil,
+	)
+	res, err := c.Search(req)
+	if err != nil {
+		return ResolvedPrincipal{}, false, fmt.Errorf("ldap: principal search: %w", err)
+	}
+	if len(res.Entries) == 0 {
+		logger.Debug("ldap: no principal matched", "filter", filter, "base", p.cfg.BaseDN)
+		return ResolvedPrincipal{}, false, nil
+	}
+	if len(res.Entries) > 1 {
+		logger.Warn("ldap: ambiguous principal lookup — multiple entries matched, using first",
+			"filter", filter, "base", p.cfg.BaseDN, "count", len(res.Entries))
+	}
+	entry := res.Entries[0]
+
+	raw := entry.GetRawAttributeValue("objectSid")
+	if len(raw) == 0 {
+		return ResolvedPrincipal{}, false, fmt.Errorf("ldap: entry %s has no objectSid", entry.DN)
+	}
+	s, _, err := sid.DecodeSID(raw)
+	if err != nil {
+		return ResolvedPrincipal{}, false, fmt.Errorf("ldap: decode objectSid for %s: %w", entry.DN, err)
+	}
+	unixID, err := p.unixIDFromEntry(entry, isGroup)
+	if err != nil {
+		return ResolvedPrincipal{}, false, err
+	}
+	return ResolvedPrincipal{
+		SID:         sid.FormatSID(s),
+		UnixID:      unixID,
+		DisplayName: entry.GetAttributeValue("sAMAccountName"),
+	}, true, nil
+}
+
+// unixIDFromEntry derives the Unix id a principal maps to under the configured
+// idmap mode, matching the login path so a grant's numeric NFS projection equals
+// the id the principal resolves to at login.
+func (p *Provider) unixIDFromEntry(entry *ldapv3.Entry, isGroup bool) (uint32, error) {
+	if !isGroup {
+		// Reuse the exact user derivation the login path uses (deriveUIDGID
+		// applies the rfc2307 both-attrs-required rule, else the RID).
+		uid, _, err := p.deriveUIDGID(entry)
+		return uid, err
+	}
+	// Group: rfc2307 gidNumber, else the RID — mirroring groupGID's handling of
+	// a group entry.
+	if p.cfg.Idmap == IdmapRFC2307 {
+		if g := entry.GetAttributeValue("gidNumber"); g != "" {
+			return parseUint32(g)
+		}
+	}
+	return ridFromEntry(entry)
+}
+
+// sAMAccountNameFromPrincipal reduces a principal string to its bare
+// sAMAccountName by stripping a "DOMAIN\\" prefix and/or an "@REALM" suffix.
+func sAMAccountNameFromPrincipal(s string) string {
+	if i := strings.LastIndex(s, "\\"); i >= 0 {
+		s = s[i+1:]
+	}
+	if i := strings.Index(s, "@"); i > 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
 // LookupUID resolves a POSIX UID to an AD account name + realm via an
 // RFC2307 reverse search (&(objectClass=user)(uidNumber=N)). It backs the
 // LSARPC owner-SID display path: the machine-domain SID decodes to a UID that

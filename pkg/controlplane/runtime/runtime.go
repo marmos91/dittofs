@@ -1028,6 +1028,27 @@ func (r *Runtime) LDAPConfig() *ldap.Config {
 	return r.ldapConfig
 }
 
+// ResolveDirectoryPrincipalSID resolves an AD principal NAME (bare
+// sAMAccountName, DOMAIN\name, or name@REALM) to its Windows SID and Unix id via
+// the configured LDAP directory, so a share can be granted to a domain
+// user/group with no local DittoFS object (#1528). isGroup selects a group vs
+// user object.
+//
+// Returns found=false when LDAP is not configured/enabled or no object matches;
+// an error only for a directory infrastructure failure. A one-shot provider is
+// built per call — grants are infrequent, so no connection is cached.
+func (r *Runtime) ResolveDirectoryPrincipalSID(ctx context.Context, name string, isGroup bool) (ldap.ResolvedPrincipal, bool, error) {
+	cfg := r.LDAPConfig()
+	if cfg == nil || !cfg.Enabled {
+		return ldap.ResolvedPrincipal{}, false, nil
+	}
+	provider, err := ldap.New(cfg, nil, nil)
+	if err != nil {
+		return ldap.ResolvedPrincipal{}, false, err
+	}
+	return provider.ResolvePrincipalSID(ctx, name, isGroup)
+}
+
 // SetNetlogonCredential sets the NETLOGON machine credential / DC binding used
 // for SMB NTLM pass-through. A nil value disables passthrough. It is set at
 // startup from the Kerberos machine-account config and updated by the

@@ -15,12 +15,12 @@ import (
 
 func (s *GORMStore) GetShare(ctx context.Context, name string) (*models.Share, error) {
 	return getByNameOrID[models.Share](s.db, ctx, "name", name, models.ErrShareNotFound,
-		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions")
+		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions", "SIDPermissions")
 }
 
 func (s *GORMStore) GetShareByID(ctx context.Context, id string) (*models.Share, error) {
 	return getByField[models.Share](s.db, ctx, "id", id, models.ErrShareNotFound,
-		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions")
+		"MetadataStore", "LocalBlockStore", "RemoteBlockStore", "AccessRules", "UserPermissions", "GroupPermissions", "SIDPermissions")
 }
 
 func (s *GORMStore) ListShares(ctx context.Context) ([]*models.Share, error) {

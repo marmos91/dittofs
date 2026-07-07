@@ -22,6 +22,24 @@ Access to a file is decided by **two independent layers**, both of which must al
 
    A grant **only opens the gate**. It does not modify any file's owner, mode, or ACL.
 
+   **Granting AD principals directly by SID (no local users).** A grant can
+   target a raw Windows **SID**, or an AD **name** that DittoFS resolves to a SID
+   via the configured LDAP directory — with **no local DittoFS user/group
+   object** (#1528). `--user`/`--group` accept a local name, an AD name
+   (`user@REALM` / `DOMAIN\group`), or a SID; a bare name resolves to a local
+   object if one exists, otherwise to the directory. The resolved SID is stored.
+
+   ```bash
+   dfsctl share permission grant /data --group 'CUBBIT\Cubbit'    --level read-write
+   dfsctl share permission grant /data --sid   S-1-5-21-...-1104  --level read
+   ```
+
+   At the gate, a Kerberos login is matched against SID grants by its **PAC user
+   + group SIDs** (SMB) or the Unix id the SID resolves to (NFS); the highest
+   matching level wins, alongside any local grant. The share-root ACL projects a
+   `sid:<SID>` ACE per grant so the filesystem layer agrees. See
+   [windows-ad-setup.md](windows-ad-setup.md) for the operator walkthrough.
+
 2. **Filesystem permissions (POSIX mode + ACL).** Once past the gate, the file's own POSIX mode bits and ACL decide the actual operation — exactly as described in the rest of this page. A share-level grant never overrides these; a user granted `read-write` on the export still cannot write a file whose mode/ACL denies them.
 
 **Effective access = share gate AND filesystem permission.** Both must allow.

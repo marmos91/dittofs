@@ -321,6 +321,34 @@ type PermissionStore interface {
 	// Resolution order: user explicit > group permissions (highest wins) > share default
 	// Fetches the share's default permission internally.
 	ResolveSharePermission(ctx context.Context, user *models.User, shareName string) (models.SharePermission, error)
+
+	// SetSIDSharePermission grants a permission on a share directly to a Windows/AD
+	// SID (#1528). No local user/group object is required; the record is keyed on
+	// the raw SID and upserted on (sid, share_id).
+	SetSIDSharePermission(ctx context.Context, perm *models.SIDSharePermission) error
+
+	// DeleteSIDSharePermission removes a SID's permission on a share. Not an error
+	// if the share or grant does not exist.
+	DeleteSIDSharePermission(ctx context.Context, sid, shareName string) error
+
+	// GetShareSIDPermissions returns every SID permission granted on a share.
+	// Used to project SID grants onto the share root directory's ACL and to
+	// enumerate grants for listing.
+	GetShareSIDPermissions(ctx context.Context, shareName string) ([]*models.SIDSharePermission, error)
+
+	// ResolveSharePermissionForSIDs returns the highest permission any of the
+	// given SIDs (a login's PAC user SID + group SIDs) has been granted on the
+	// share, or PermissionNone if none match. Unlike ResolveSharePermission it
+	// consults ONLY the SID grant table — the caller combines it with the
+	// local-user/group resolution and takes the higher level.
+	ResolveSharePermissionForSIDs(ctx context.Context, sids []string, shareName string) (models.SharePermission, error)
+
+	// ResolveSharePermissionForUnixIDs returns the highest permission any SID
+	// grant with a resolved numeric id matches, given an NFS login's UID and
+	// group GIDs. A group-SID grant matches when its UnixID is in gids; a
+	// user-SID grant matches when its UnixID equals uid. This is the NFS
+	// counterpart of ResolveSharePermissionForSIDs (NFS carries no SID).
+	ResolveSharePermissionForUnixIDs(ctx context.Context, uid uint32, gids []uint32, shareName string) (models.SharePermission, error)
 }
 
 // MetadataStoreConfigStore provides metadata store configuration CRUD.

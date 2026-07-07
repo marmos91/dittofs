@@ -192,9 +192,12 @@ type PatchShareNFSConfigRequest struct {
 
 // SharePermission represents a permission on a share.
 type SharePermission struct {
-	Type  string `json:"type"`  // "user" or "group"
-	Name  string `json:"name"`  // username or group name
+	Type  string `json:"type"`  // "user", "group", or "sid"
+	Name  string `json:"name"`  // username, group name, or SID/display name
 	Level string `json:"level"` // "none", "read", "read-write", "admin"
+	// SID and IsGroup are populated only for "sid" entries (direct AD grants).
+	SID     string `json:"sid,omitempty"`
+	IsGroup *bool  `json:"is_group,omitempty"`
 }
 
 // ListShares returns all shares.
@@ -281,6 +284,20 @@ func (c *Client) SetGroupSharePermission(shareName, groupName, level string) err
 // RemoveGroupSharePermission removes a group's permission from a share.
 func (c *Client) RemoveGroupSharePermission(shareName, groupName string) error {
 	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/groups/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), groupName), nil)
+}
+
+// SetSIDSharePermission grants a permission on a share directly to a Windows/AD
+// SID — a domain user or group — with no local DittoFS object (#1528). isGroup
+// marks a group SID vs a user SID; displayName is an optional label captured for
+// listing/UI.
+func (c *Client) SetSIDSharePermission(shareName, sidStr, level string, isGroup bool, displayName string) error {
+	req := map[string]any{"level": level, "is_group": isGroup, "display_name": displayName}
+	return c.put(fmt.Sprintf("/api/v1/shares/%s/permissions/sids/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), url.PathEscape(sidStr)), req, nil)
+}
+
+// RemoveSIDSharePermission removes a SID's permission from a share.
+func (c *Client) RemoveSIDSharePermission(shareName, sidStr string) error {
+	return c.delete(fmt.Sprintf("/api/v1/shares/%s/permissions/sids/%s", url.PathEscape(normalizeShareNameForAPI(shareName)), url.PathEscape(sidStr)), nil)
 }
 
 // DisableShare flips Enabled=false on the share. Returns the updated Share

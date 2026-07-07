@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/bytesize"
 	"github.com/marmos91/dittofs/internal/logger"
+	"github.com/marmos91/dittofs/pkg/auth/sid"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -1112,17 +1113,6 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Look up user and share to get their IDs
-	user, err := h.store.GetUser(r.Context(), username)
-	if err != nil {
-		if errors.Is(err, models.ErrUserNotFound) {
-			NotFound(w, "User not found")
-			return
-		}
-		InternalServerError(w, "Failed to get user")
-		return
-	}
-
 	share, err := h.store.GetShare(r.Context(), shareName)
 	if err != nil {
 		if errors.Is(err, models.ErrShareNotFound) {
@@ -1130,6 +1120,29 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		InternalServerError(w, "Failed to get share")
+		return
+	}
+
+	// Look up the local user. When no local user exists, fall back to the
+	// directory: an AD user with no local DittoFS account is granted directly by
+	// SID (#1528).
+	user, err := h.store.GetUser(r.Context(), username)
+	if err != nil {
+		if errors.Is(err, models.ErrUserNotFound) {
+			handled, gerr := h.grantDirectoryPrincipal(r.Context(), share, username, false, req.Level)
+			if gerr != nil {
+				InternalServerError(w, "Failed to set user permission")
+				return
+			}
+			if !handled {
+				NotFound(w, "User not found")
+				return
+			}
+			h.reconcileRootACL(r.Context(), shareName)
+			WriteNoContent(w)
+			return
+		}
+		InternalServerError(w, "Failed to get user")
 		return
 	}
 
@@ -1147,6 +1160,50 @@ func (h *ShareHandler) SetUserPermission(w http.ResponseWriter, r *http.Request)
 
 	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
+}
+
+// grantDirectoryPrincipal resolves an AD principal NAME to its SID via the
+// configured LDAP directory and stores a direct SID grant on the share (#1528),
+// so a domain user/group can be granted with no local DittoFS object. Returns
+// handled=false (with no error) when LDAP is unconfigured or the name does not
+// resolve — the caller then surfaces the original "not found".
+func (h *ShareHandler) grantDirectoryPrincipal(ctx context.Context, share *models.Share, name string, isGroup bool, level string) (handled bool, err error) {
+	if h.runtime == nil {
+		return false, nil
+	}
+	resolved, found, err := h.runtime.ResolveDirectoryPrincipalSID(ctx, name, isGroup)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	display := resolved.DisplayName
+	if display == "" {
+		display = name
+	}
+	perm := &models.SIDSharePermission{
+		SID:         resolved.SID,
+		ShareID:     share.ID,
+		ShareName:   share.Name,
+		Permission:  level,
+		IsGroup:     isGroup,
+		DisplayName: display,
+		UnixID:      resolved.UnixID,
+	}
+	return true, h.store.SetSIDSharePermission(ctx, perm)
+}
+
+// revokeDirectoryPrincipal best-effort removes a direct AD/SID grant for a
+// principal NAME by resolving it via the directory (#1528). A directory outage
+// must not fail a revoke, so resolution errors are ignored.
+func (h *ShareHandler) revokeDirectoryPrincipal(ctx context.Context, shareName, name string, isGroup bool) {
+	if h.runtime == nil {
+		return
+	}
+	if resolved, found, err := h.runtime.ResolveDirectoryPrincipalSID(ctx, name, isGroup); err == nil && found {
+		_ = h.store.DeleteSIDSharePermission(ctx, resolved.SID, shareName)
+	}
 }
 
 // reconcileRootACL projects the share's current permission grants onto its root
@@ -1183,6 +1240,9 @@ func (h *ShareHandler) RemoveUserPermission(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Also drop a direct AD/SID grant for the same principal name (#1528).
+	h.revokeDirectoryPrincipal(r.Context(), shareName, username, false)
+
 	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
 }
@@ -1214,17 +1274,6 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Look up group and share to get their IDs
-	group, err := h.store.GetGroup(r.Context(), groupName)
-	if err != nil {
-		if errors.Is(err, models.ErrGroupNotFound) {
-			NotFound(w, "Group not found")
-			return
-		}
-		InternalServerError(w, "Failed to get group")
-		return
-	}
-
 	share, err := h.store.GetShare(r.Context(), shareName)
 	if err != nil {
 		if errors.Is(err, models.ErrShareNotFound) {
@@ -1232,6 +1281,29 @@ func (h *ShareHandler) SetGroupPermission(w http.ResponseWriter, r *http.Request
 			return
 		}
 		InternalServerError(w, "Failed to get share")
+		return
+	}
+
+	// Look up the local group. When no local group exists, fall back to the
+	// directory: an AD group with no local DittoFS object is granted directly by
+	// SID (#1528).
+	group, err := h.store.GetGroup(r.Context(), groupName)
+	if err != nil {
+		if errors.Is(err, models.ErrGroupNotFound) {
+			handled, gerr := h.grantDirectoryPrincipal(r.Context(), share, groupName, true, req.Level)
+			if gerr != nil {
+				InternalServerError(w, "Failed to set group permission")
+				return
+			}
+			if !handled {
+				NotFound(w, "Group not found")
+				return
+			}
+			h.reconcileRootACL(r.Context(), shareName)
+			WriteNoContent(w)
+			return
+		}
+		InternalServerError(w, "Failed to get group")
 		return
 	}
 
@@ -1271,15 +1343,120 @@ func (h *ShareHandler) RemoveGroupPermission(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Also drop a direct AD/SID grant for the same principal name (#1528).
+	h.revokeDirectoryPrincipal(r.Context(), shareName, groupName, true)
+
+	h.reconcileRootACL(r.Context(), shareName)
+	WriteNoContent(w)
+}
+
+// SetSIDPermission handles PUT /api/v1/shares/{name}/permissions/sids/{sid}.
+// Grants a permission on a share directly to a Windows/AD SID — a domain user or
+// group — with no local DittoFS user/group object (#1528). Admin only.
+func (h *ShareHandler) SetSIDPermission(w http.ResponseWriter, r *http.Request) {
+	shareName := normalizeShareName(chi.URLParam(r, "name"))
+	sidStr := chi.URLParam(r, "sid")
+
+	if shareName == "/" {
+		BadRequest(w, "Share name is required")
+		return
+	}
+	parsedSID, err := sid.ParseSIDString(sidStr)
+	if err != nil {
+		BadRequest(w, "Invalid SID")
+		return
+	}
+	// Canonicalize so the stored SID exactly matches the form a login's PAC
+	// user/group SIDs carry (the "sid:" ACE matcher is string-equality).
+	sidStr = sid.FormatSID(parsedSID)
+
+	var req struct {
+		Level       string `json:"level"`
+		IsGroup     *bool  `json:"is_group"`
+		DisplayName string `json:"display_name"`
+	}
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+	if req.Level == "" {
+		BadRequest(w, "Permission level is required")
+		return
+	}
+
+	// No GetUser/GetGroup lookup: a SID grant intentionally requires no local
+	// object. Only the share must exist.
+	share, err := h.store.GetShare(r.Context(), shareName)
+	if err != nil {
+		if errors.Is(err, models.ErrShareNotFound) {
+			NotFound(w, "Share not found")
+			return
+		}
+		InternalServerError(w, "Failed to get share")
+		return
+	}
+
+	// A SID grant defaults to a group grant (the common case); an explicit
+	// is_group=false marks a user SID (affects NFS numeric projection + display).
+	isGroup := true
+	if req.IsGroup != nil {
+		isGroup = *req.IsGroup
+	}
+
+	// Derive the Unix id from the SID's RID for the NFS numeric projection
+	// (idmap=rid: the login path derives the same RID). A raw-SID grant has no
+	// directory context, so an rfc2307 deployment (GID = gidNumber, not the RID)
+	// should grant by name instead to get an NFS-matchable id.
+	perm := &models.SIDSharePermission{
+		SID:         sidStr,
+		ShareID:     share.ID,
+		ShareName:   share.Name,
+		Permission:  req.Level,
+		IsGroup:     isGroup,
+		DisplayName: req.DisplayName,
+		UnixID:      parsedSID.RID(),
+	}
+
+	if err := h.store.SetSIDSharePermission(r.Context(), perm); err != nil {
+		InternalServerError(w, "Failed to set SID permission")
+		return
+	}
+
+	h.reconcileRootACL(r.Context(), shareName)
+	WriteNoContent(w)
+}
+
+// RemoveSIDPermission handles DELETE /api/v1/shares/{name}/permissions/sids/{sid}.
+// Removes a SID's permission on a share (admin only).
+func (h *ShareHandler) RemoveSIDPermission(w http.ResponseWriter, r *http.Request) {
+	shareName := normalizeShareName(chi.URLParam(r, "name"))
+	sidStr := chi.URLParam(r, "sid")
+
+	if shareName == "/" {
+		BadRequest(w, "Share name is required")
+		return
+	}
+	if sidStr == "" {
+		BadRequest(w, "SID is required")
+		return
+	}
+
+	if err := h.store.DeleteSIDSharePermission(r.Context(), sidStr, shareName); err != nil {
+		InternalServerError(w, "Failed to delete SID permission")
+		return
+	}
+
 	h.reconcileRootACL(r.Context(), shareName)
 	WriteNoContent(w)
 }
 
 // PermissionResponse represents a permission entry for a share.
 type PermissionResponse struct {
-	Type  string `json:"type"`  // "user" or "group"
-	Name  string `json:"name"`  // username or group name
+	Type  string `json:"type"`  // "user", "group", or "sid"
+	Name  string `json:"name"`  // username, group name, or SID/display name
 	Level string `json:"level"` // permission level
+	// SID and IsGroup are populated only for "sid" entries (direct AD grants).
+	SID     string `json:"sid,omitempty"`
+	IsGroup *bool  `json:"is_group,omitempty"`
 }
 
 // ListPermissions handles GET /api/v1/shares/{name}/permissions.
@@ -1332,6 +1509,23 @@ func (h *ShareHandler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 			Type:  "group",
 			Name:  group.Name,
 			Level: gp.Permission,
+		})
+	}
+
+	// Direct AD/SID grants (#1528). No local object to look up: the display
+	// name (captured at grant time) or the raw SID identifies the principal.
+	for _, sp := range share.SIDPermissions {
+		name := sp.DisplayName
+		if name == "" {
+			name = sp.SID
+		}
+		isGroup := sp.IsGroup
+		perms = append(perms, PermissionResponse{
+			Type:    "sid",
+			Name:    name,
+			Level:   sp.Permission,
+			SID:     sp.SID,
+			IsGroup: &isGroup,
 		})
 	}
 
