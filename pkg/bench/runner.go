@@ -78,7 +78,10 @@ func (r *Runner) Run(ctx context.Context) (*Result, error) {
 	for _, w := range workloads {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			// Cancelled (e.g. Ctrl-C): stop launching lanes but return
+			// whatever completed so partial results aren't lost.
+			result.TotalDuration = time.Since(start)
+			return result, nil
 		default:
 		}
 
@@ -101,11 +104,15 @@ func (r *Runner) Run(ctx context.Context) (*Result, error) {
 		case SmallFiles:
 			wr, err = runSmallFiles(ctx, r.cfg, dir, r.progress)
 		default:
-			return nil, fmt.Errorf("unknown workload %q", w)
+			err = fmt.Errorf("unknown workload %q", w)
 		}
 
 		if err != nil {
-			return nil, fmt.Errorf("workload %s: %w", w, err)
+			// Record the failure and keep going — one bad lane must not
+			// discard every other lane's results. The caller surfaces the
+			// error and the JSON preserves it per lane.
+			result.Workloads[w] = &WorkloadResult{Workload: w, Error: err.Error()}
+			continue
 		}
 
 		result.Workloads[w] = wr

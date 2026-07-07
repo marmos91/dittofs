@@ -1443,6 +1443,7 @@ Flags:
       --duration string        Time limit for duration-based workloads (default "60s")
       --file-size string       Size of each test file (default "1GiB")
       --meta-files int         Number of files for metadata workload (default 1000)
+      --quiet                  Suppress per-workload progress output (useful for log files)
       --save string            Save results to JSON file
       --small-file-count int   Number of files for small-files workload (default 10000)
       --system string          Label identifying the system under test
@@ -4254,8 +4255,8 @@ mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittof
 Flags:
 
 ```
-      --dir-mode string      Directory permissions for SMB mount (octal)
-      --file-mode string     File permissions (not applicable on Windows)
+      --dir-mode string      Directory permissions for SMB mount (octal) (default "0777")
+      --file-mode string     File permissions for SMB mount (octal, default 0777 on macOS since uid/gid not supported) (default "0777")
       --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
   -P, --password string      Password for SMB mount (will prompt if not provided)
   -p, --protocol string      Protocol to use (nfs or smb) (required)
