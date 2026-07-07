@@ -383,7 +383,12 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		}
 	}
 
-	for i := range m.config.PrefetchBlocks {
+	// Prefetch ahead only as far as the payload's access pattern justifies:
+	// a sequential run ramps the window up to PrefetchBlocks, a random read
+	// prefetches nothing (planReadahead returns 0) so we never spend remote
+	// GETs on blocks a random reader will not touch.
+	depth := m.planReadahead(payloadID, startBlockIdx, endBlockIdx)
+	for i := 0; i < depth; i++ {
 		m.enqueuePrefetch(payloadID, endBlockIdx+1+uint64(i))
 	}
 
