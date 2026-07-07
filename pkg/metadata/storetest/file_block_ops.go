@@ -65,6 +65,14 @@ func runFileChunkOpsTests(t *testing.T, factory StoreFactory) {
 		testGetFileChunkAtOffset(t, factory)
 	})
 
+	// GetFileChunkAtOrAfterOffset is the read-path successor lookup: it resolves
+	// the next chunk starting at/after a byte offset so a hole read skips to the
+	// next data boundary in one indexed scan instead of a per-byte probe storm.
+	// Only badger implements it today; other backends skip.
+	t.Run("GetFileChunkAtOrAfterOffset", func(t *testing.T) {
+		testGetFileChunkAtOrAfterOffset(t, factory)
+	})
+
 	// the syncer claim cycle stamps
 	// LastSyncAttemptAt = now when flipping a block to Syncing, and the
 	// restart-recovery janitor compares it against ClaimTimeout. Every
@@ -373,13 +381,16 @@ func testGetFileChunkAtOffset(t *testing.T, factory StoreFactory) {
 	// Chunks at absolute byte offsets with deliberate holes. The decimal
 	// offsets in the IDs (0, 20, 100, 200) sort lexically as 0,100,20,200 —
 	// NOT numeric order — so this exercises the decimal-vs-numeric trap the
-	// badger keys-only scan must handle. Coverage: [0,20) [20,50) [100,110)
-	// [200,300); holes at [50,100), [110,200), and past 300.
+	// badger keys-only scan must handle. The 1-byte chunk at 300 exercises the
+	// single-byte covering guard (off==abs covers, off==abs+1 is a hole).
+	// Coverage: [0,20) [20,50) [100,110) [200,300) [300,301); holes at
+	// [50,100), [110,200), and past 301.
 	blocks := []*block.FileChunk{
 		{ID: "file-hole/0", State: block.BlockStatePending, DataSize: 20, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 		{ID: "file-hole/20", State: block.BlockStatePending, DataSize: 30, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 		{ID: "file-hole/100", State: block.BlockStatePending, DataSize: 10, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 		{ID: "file-hole/200", State: block.BlockStatePending, DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-hole/300", State: block.BlockStatePending, DataSize: 1, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 	}
 	for _, b := range blocks {
 		if err := store.Put(ctx, b); err != nil {
@@ -408,7 +419,8 @@ func testGetFileChunkAtOffset(t *testing.T, factory StoreFactory) {
 		{"hole-50", 50, ""},
 		{"hole-110", 110, ""},
 		{"hole-150", 150, ""},
-		{"past-eof-300", 300, ""},
+		{"single-byte-300", 300, "file-hole/300"}, // off==abs covers a 1-byte chunk
+		{"single-byte-past-301", 301, ""},         // off==abs+DataSize is a hole
 		{"past-eof-400", 400, ""},
 	}
 	for _, tc := range cases {
@@ -440,6 +452,112 @@ func testGetFileChunkAtOffset(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFileChunkAtOffset(unknown): %v", err)
 	} else if got != nil {
 		t.Errorf("GetFileChunkAtOffset(unknown payload) = %q, want nil", got.ID)
+	}
+}
+
+// chunkAtOrAfterProbe is the indexed successor lookup, implemented only by the
+// badger backend today. Backends without it skip the subtest.
+type chunkAtOrAfterProbe interface {
+	GetFileChunkAtOrAfterOffset(ctx context.Context, payloadID string, off uint64) (*block.FileChunk, error)
+}
+
+// successorOracle independently resolves the chunk with the smallest start
+// offset >= off by walking the full ListFileChunks result — the reference the
+// indexed successor lookup must agree with.
+func successorOracle(rows []*block.FileChunk, off uint64) *block.FileChunk {
+	var best *block.FileChunk
+	var bestAbs uint64
+	for _, fb := range rows {
+		abs, ok := block.ParseChunkOffset(fb.ID)
+		if !ok {
+			continue
+		}
+		if abs >= off && (best == nil || abs < bestAbs) {
+			best, bestAbs = fb, abs
+		}
+	}
+	return best
+}
+
+func testGetFileChunkAtOrAfterOffset(t *testing.T, factory StoreFactory) {
+	store := factory(t)
+	ctx := t.Context()
+
+	probe, ok := store.(chunkAtOrAfterProbe)
+	if !ok {
+		t.Skipf("backend %T does not implement GetFileChunkAtOrAfterOffset", store)
+	}
+
+	// Same fixture as the covering test: chunk starts 0,20,100,200 (decimal
+	// offsets that sort lexically as 0,100,20,200 — the numeric-vs-lexical
+	// trap), coverage [0,20) [20,50) [100,110) [200,300), holes [50,100),
+	// [110,200), and past 300.
+	blocks := []*block.FileChunk{
+		{ID: "file-succ/0", State: block.BlockStatePending, DataSize: 20, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-succ/20", State: block.BlockStatePending, DataSize: 30, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-succ/100", State: block.BlockStatePending, DataSize: 10, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-succ/200", State: block.BlockStatePending, DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-succ/300", State: block.BlockStatePending, DataSize: 1, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+	}
+	for _, b := range blocks {
+		if err := store.Put(ctx, b); err != nil {
+			t.Fatalf("Put(%s): %v", b.ID, err)
+		}
+	}
+	rows, err := asLegacy(t, store).ListFileChunks(ctx, "file-succ")
+	if err != nil {
+		t.Fatalf("ListFileChunks: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		off  uint64
+		want string // next chunk ID with start >= off, "" for none
+	}{
+		{"at-start-0", 0, "file-succ/0"},
+		{"before-20", 1, "file-succ/20"},  // nothing else starts in [1,20)
+		{"last-of-0", 19, "file-succ/20"}, // successor is by start, not coverage
+		{"at-start-20", 20, "file-succ/20"},
+		{"after-20", 21, "file-succ/100"},
+		{"hole-50", 50, "file-succ/100"}, // hole → next data boundary
+		{"at-start-100", 100, "file-succ/100"},
+		{"hole-110", 110, "file-succ/200"}, // hole after /100's coverage ends
+		{"hole-150", 150, "file-succ/200"},
+		{"at-start-200", 200, "file-succ/200"},
+		{"after-200-hole", 201, "file-succ/300"}, // next start is the 1-byte chunk
+		{"at-single-byte-300", 300, "file-succ/300"},
+		{"past-last-301", 301, ""}, // nothing starts at/after 301
+		{"past-eof-400", 400, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := probe.GetFileChunkAtOrAfterOffset(ctx, "file-succ", tc.off)
+			if err != nil {
+				t.Fatalf("GetFileChunkAtOrAfterOffset(%d): %v", tc.off, err)
+			}
+			gotID := ""
+			if got != nil {
+				gotID = got.ID
+			}
+			if gotID != tc.want {
+				t.Errorf("GetFileChunkAtOrAfterOffset(%d) = %q, want %q", tc.off, gotID, tc.want)
+			}
+			// Cross-check against the independent ListFileChunks walk.
+			oracleID := ""
+			if o := successorOracle(rows, tc.off); o != nil {
+				oracleID = o.ID
+			}
+			if gotID != oracleID {
+				t.Errorf("GetFileChunkAtOrAfterOffset(%d) = %q disagrees with ListFileChunks oracle %q", tc.off, gotID, oracleID)
+			}
+		})
+	}
+
+	// Unknown payload → no successor, not error.
+	if got, err := probe.GetFileChunkAtOrAfterOffset(ctx, "no-such-payload", 0); err != nil {
+		t.Fatalf("GetFileChunkAtOrAfterOffset(unknown): %v", err)
+	} else if got != nil {
+		t.Errorf("GetFileChunkAtOrAfterOffset(unknown payload) = %q, want nil", got.ID)
 	}
 }
 

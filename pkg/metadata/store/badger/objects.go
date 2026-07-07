@@ -409,6 +409,40 @@ func (s *BadgerMetadataStore) ListFileChunks(_ context.Context, payloadID string
 	return result, nil
 }
 
+// loadFileChunkAtIndexOffset resolves the FileChunk whose secondary-index key is
+// fb-file:{payloadID}:{off} via index key -> block ID -> primary row. It returns
+// (nil, nil) when either row is missing (ErrKeyNotFound) — a stale index entry
+// left by a deleted block, treated as absent, mirroring listFileChunksTxn's skip.
+// Any other Get/Value/unmarshal error is real IO or corruption and propagates.
+func loadFileChunkAtIndexOffset(txn *badger.Txn, payloadID string, off uint64) (*metadata.FileChunk, error) {
+	idxItem, gerr := txn.Get([]byte(fileChunkFilePrefix + payloadID + ":" + strconv.FormatUint(off, 10)))
+	if errors.Is(gerr, badger.ErrKeyNotFound) {
+		return nil, nil
+	} else if gerr != nil {
+		return nil, gerr
+	}
+	var blockID string
+	if verr := idxItem.Value(func(val []byte) error {
+		blockID = string(val)
+		return nil
+	}); verr != nil {
+		return nil, verr
+	}
+	fbItem, gerr := txn.Get([]byte(fileChunkPrefix + blockID))
+	if errors.Is(gerr, badger.ErrKeyNotFound) {
+		return nil, nil
+	} else if gerr != nil {
+		return nil, gerr
+	}
+	var fc metadata.FileChunk
+	if verr := fbItem.Value(func(val []byte) error {
+		return json.Unmarshal(val, &fc)
+	}); verr != nil {
+		return nil, verr
+	}
+	return &fc, nil
+}
+
 // GetFileChunkAtOffset returns the FileChunk covering absolute byte offset off
 // for payloadID — the row with the largest chunkOffset <= off whose range
 // [chunkOffset, chunkOffset+DataSize) contains off — or (nil, nil) for a sparse
@@ -447,35 +481,12 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 			return nil // nothing starts at or before off — hole
 		}
 
-		// Fetch the winning row: index key -> block ID -> primary row. A
-		// missing index/primary row (ErrKeyNotFound) is a stale index entry —
-		// treat as a hole, mirroring listFileChunksTxn's "index stale, block
-		// deleted" skip. Any other Get/Value/unmarshal error is real IO or
-		// corruption and must propagate, not masquerade as a hole.
-		idxItem, gerr := txn.Get([]byte(fileChunkFilePrefix + payloadID + ":" + strconv.FormatUint(bestOff, 10)))
-		if errors.Is(gerr, badger.ErrKeyNotFound) {
-			return nil
-		} else if gerr != nil {
-			return gerr
+		fc, ferr := loadFileChunkAtIndexOffset(txn, payloadID, bestOff)
+		if ferr != nil {
+			return ferr
 		}
-		var blockID string
-		if verr := idxItem.Value(func(val []byte) error {
-			blockID = string(val)
-			return nil
-		}); verr != nil {
-			return verr
-		}
-		fbItem, gerr := txn.Get([]byte(fileChunkPrefix + blockID))
-		if errors.Is(gerr, badger.ErrKeyNotFound) {
-			return nil
-		} else if gerr != nil {
-			return gerr
-		}
-		var fc metadata.FileChunk
-		if verr := fbItem.Value(func(val []byte) error {
-			return json.Unmarshal(val, &fc)
-		}); verr != nil {
-			return verr
+		if fc == nil {
+			return nil // stale index entry — treat as a hole
 		}
 		// Covering guard keyed on the row's OWN start offset (the source of
 		// truth), not the index key, so an inconsistent index can't serve a
@@ -485,7 +496,57 @@ func (s *BadgerMetadataStore) GetFileChunkAtOffset(_ context.Context, payloadID 
 		if !ok || off < abs || off-abs >= uint64(fc.DataSize) {
 			return nil
 		}
-		result = &fc
+		result = fc
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetFileChunkAtOrAfterOffset returns the FileChunk with the smallest
+// chunkOffset >= off for payloadID — the next data boundary at or after a sparse
+// hole — or (nil, nil) when no chunk starts at or after off (a read past the last
+// chunk). The read path uses it to skip a hole straight to the next chunk in one
+// indexed keys-only scan instead of probing byte by byte. Same index, cost model,
+// and stale-index-as-absent semantics as GetFileChunkAtOffset. No covering guard:
+// the successor is returned regardless of whether it contains off.
+//
+// ponytail: O(n) keys-only scan per hole; shares the fb-off-index upgrade path
+// with GetFileChunkAtOffset if profiling at real N ever demands O(log n).
+func (s *BadgerMetadataStore) GetFileChunkAtOrAfterOffset(_ context.Context, payloadID string, off uint64) (*metadata.FileChunk, error) {
+	var result *metadata.FileChunk
+	err := s.db.View(func(txn *badger.Txn) error {
+		prefix := []byte(fileChunkFilePrefix + payloadID + ":")
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = prefix
+		opts.PrefetchValues = false // keys only — the offset lives in the key
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		var (
+			bestOff uint64
+			found   bool
+		)
+		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+			suffix := it.Item().Key()[len(prefix):]
+			cand, perr := strconv.ParseUint(string(suffix), 10, 64)
+			if perr != nil {
+				continue // tolerate a malformed index row, like parseBlockIdx
+			}
+			if cand >= off && (!found || cand < bestOff) {
+				bestOff, found = cand, true
+			}
+		}
+		if !found {
+			return nil // nothing starts at or after off — past the last chunk
+		}
+		fc, ferr := loadFileChunkAtIndexOffset(txn, payloadID, bestOff)
+		if ferr != nil {
+			return ferr
+		}
+		result = fc // may be nil for a stale index entry — caller treats as end
 		return nil
 	})
 	if err != nil {
