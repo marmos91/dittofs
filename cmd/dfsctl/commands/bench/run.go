@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -107,6 +108,9 @@ func runBench(cmd *cobra.Command, args []string) error {
 		lastPct := make(map[bench.WorkloadType]int)
 		progress = func(w bench.WorkloadType, pct float64) {
 			p := int(pct * 100)
+			if p > 100 { // time-based lanes can tick elapsed/duration slightly over 1
+				p = 100
+			}
 			mu.Lock()
 			if p == lastPct[w] {
 				mu.Unlock()
@@ -142,6 +146,7 @@ func runBench(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if len(failed) > 0 {
+		sort.Strings(failed) // stable order for log diffing
 		fmt.Fprintf(os.Stderr, "warning: %d workload(s) failed: %s\n",
 			len(failed), strings.Join(failed, "; "))
 	}
