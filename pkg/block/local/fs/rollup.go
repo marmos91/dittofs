@@ -598,7 +598,7 @@ func (bc *FSStore) rollupFileInner(ctx context.Context, payloadID string, force 
 	// tail: stream is consumed entirely by the chunker loop below and is
 	// never captured by a closure, goroutine, or persisted beyond it.
 	defer putReconstructBuf(stream)
-	ck := chunker.NewChunker()
+	ck := chunker.NewChunkerWithParams(bc.chunkParams)
 	// pos indexes the buffer; the absolute file offset of buf[pos] is
 	// baseOff+pos (used for the ChunkRef manifest below).
 	pos := uint64(0)

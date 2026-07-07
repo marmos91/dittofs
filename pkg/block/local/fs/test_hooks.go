@@ -9,8 +9,13 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// ChunkParamsForTest returns the FastCDC sizing the store's rollup chunker uses,
+// so tests can assert FSStoreOptions.ChunkParams threaded through (#1569).
+func (bc *FSStore) ChunkParamsForTest() chunker.Params { return bc.chunkParams }
 
 // This file exposes a small set of test-only accessors and helpers on
 // *FSStore so the fs-internal conformance scenarios in

@@ -432,6 +432,45 @@ the added latency.
 data-at-risk gauge (local CAS bytes not yet mirrored to the remote) — which is
 the way to observe the async mirror backlog under the default policy.
 
+#### Chunk size — random-access shares (`chunk_size`)
+
+DittoFS splits file data into content-defined (FastCDC) chunks. A chunk is the
+unit of dedup, of the local cache, and — critically — of a **read fetch**: a
+small random read pulls the whole chunk covering its offset. The default chunk
+floor is ~1 MiB, so a 4 KiB random read into a large file amplifies to ~1 MiB
+(~256×). That is fine for sequential and archival workloads but poor for random
+I/O (VM images, databases).
+
+`chunk_size` (bytes) lowers the FastCDC minimum for a share, shrinking the read
+unit. Effective average chunk size ≈ `chunk_size`; a hard ceiling is derived
+(8× `chunk_size`) unless you set `chunk_max` explicitly.
+
+```sh
+# Random-access share: ~128 KiB chunks (≈8× less read amplification)
+dfsctl store block local edit <share> --config '{"chunk_size": 131072}'
+```
+
+| Setting | Effective avg | 4 KiB random-read amplification | Trade-off |
+|---------|---------------|---------------------------------|-----------|
+| default (unset) | ~1 MiB | ~256× | best dedup, fewest manifest rows |
+| `65536` (64 KiB) | ~94 KiB | ~16× | ~16× more `FileChunk` rows; ~0 extra dedup loss on VM/DB |
+| `131072` (128 KiB) | ~159 KiB | ~32× | ~8× more manifest rows |
+| `262144` (256 KiB) | ~287 KiB | ~64× | ~4× more manifest rows |
+
+Notes:
+
+- **S3 object count is unchanged.** Chunks are packed into ~16 MiB block objects
+  regardless of `chunk_size`, so smaller chunks do **not** create more/smaller
+  S3 objects — only more `FileChunk` manifest rows. Writes/uploads keep their
+  full throughput.
+- **Write-time only.** Reads never re-chunk — the manifest records each chunk's
+  boundaries — so changing `chunk_size` affects only newly written data, and old
+  data stays readable. Dedup is not restored across a change (different
+  boundaries → different hashes), but on VM/DB images dedup is already ~0.
+- Invalid or below-floor (< 4 KiB) values are ignored with a startup warning and
+  the default stands. Applies to `fs` local stores; `memory` local stores ignore
+  it (in-RAM reads have no amplification).
+
 #### GC knobs
 
 The CAS write path uses an async syncer and a fail-closed mark-sweep

@@ -17,6 +17,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/internal/pathutil"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/compression"
 	"github.com/marmos91/dittofs/pkg/block/encryption"
 	"github.com/marmos91/dittofs/pkg/block/encryption/keyprovider"
@@ -2780,6 +2781,36 @@ func CreateLocalStoreFromConfig(
 			fsOpts.OrphanLogMinAgeSeconds = int(n)
 		} else {
 			logger.Warn("block store config has orphan_log_min_age_seconds but it is invalid or non-positive; ignoring", "value", v)
+		}
+	}
+	// chunk_size sets the FastCDC Min for this share's rollup chunker (#1569) —
+	// the dominant knob for effective chunk size and thus random-read
+	// amplification. Avg/Max are derived (4x/8x Min) unless chunk_max overrides
+	// the ceiling. Absent => the FSStore default (1M/4M/16M, byte-identical to
+	// pre-#1569). Lower it (e.g. 131072 = 128 KiB) on random-access shares
+	// (VM images / databases): trades weaker dedup + more FileChunk manifest
+	// rows for far less read amplification. Reads never re-chunk, so changing
+	// this only affects newly written data.
+	if v, ok := config["chunk_size"]; ok {
+		if n, ok := v.(float64); ok && n > 0 && n == math.Trunc(n) && n <= float64(math.MaxInt32) {
+			cp := chunker.Params{Min: int(n), Avg: int(n) * 4, Max: int(n) * 8}
+			if mv, ok := config["chunk_max"]; ok {
+				if m, ok := mv.(float64); ok && m > 0 && m == math.Trunc(m) && m <= float64(math.MaxInt32) {
+					cp.Max = int(m)
+					if cp.Avg > cp.Max {
+						cp.Avg = cp.Max
+					}
+				} else {
+					logger.Warn("block store config has chunk_max but it is invalid; ignoring", "value", mv)
+				}
+			}
+			if err := cp.Validate(); err != nil {
+				logger.Warn("block store config chunk_size produced invalid chunker params; keeping default", "error", err)
+			} else {
+				fsOpts.ChunkParams = cp
+			}
+		} else {
+			logger.Warn("block store config has chunk_size but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
 	switch storeType {
