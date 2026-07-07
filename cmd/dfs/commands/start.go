@@ -844,7 +844,9 @@ func handleLoadSharesError(err error, stderr *os.File) bool {
 // stdout is redirected to a persistent log file; writing the password there
 // leaves a long-lived on-disk copy of an admin credential readable by anyone
 // who can read the log. When stdout is not a terminal we instead emit a
-// secret-free notice directing the operator to reset the password via dfsctl.
+// secret-free notice: the generated password is unrecoverable, and because the
+// admin user now exists a restart will not re-bootstrap it, so a known
+// credential can only be pre-set at the next fresh bootstrap.
 func emitAdminPassword(password string) {
 	if isTerminal(os.Stdout.Fd()) {
 		fmt.Printf("\n*** IMPORTANT: Admin user created with password: %s ***\n", password)
@@ -855,8 +857,10 @@ func emitAdminPassword(password string) {
 	// Daemon / non-interactive: never write the secret to the log.
 	logger.Warn("Admin user created with a generated password, which is NOT recoverable in " +
 		"background mode (stdout is not a terminal, so the password is not written to the log). " +
-		"Set DITTOFS_ADMIN_INITIAL_PASSWORD (or admin.password_hash) and restart, or run " +
-		"'dfs start --foreground' in a terminal to have it printed once.")
+		"The admin user now exists, so restarting with DITTOFS_ADMIN_INITIAL_PASSWORD or " +
+		"admin.password_hash set will NOT change it. To obtain a known credential, remove the " +
+		"admin user (reset the control-plane database) and re-bootstrap with one of those set, " +
+		"or bootstrap with 'dfs start --foreground' in a terminal to have it printed once.")
 }
 
 // formatLegacyLayoutDirective renders the multi-line operator directive

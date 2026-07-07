@@ -137,8 +137,11 @@ If you don't pre-set it, a random password is generated — but it is **shown on
 run `./dfs start --foreground` in an interactive terminal** (printed once). In background
 mode (the default `./dfs start`), and under Docker/systemd where stdout is a pipe rather
 than a terminal, the generated password is **not written to the log and cannot be
-recovered**. If that happens, set `DITTOFS_ADMIN_INITIAL_PASSWORD` (or `admin.password_hash`
-in the config) and restart.
+recovered**. Because the `admin` user is created on that first start, setting
+`DITTOFS_ADMIN_INITIAL_PASSWORD` and simply restarting will **not** change it — that variable
+is only read while bootstrapping a *new* admin. To recover, remove the admin user (reset the
+control-plane database), then start again with the password pre-set. So: **set it before the
+very first start.**
 
 ### Serve an NFS share in under a minute
 

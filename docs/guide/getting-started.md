@@ -60,8 +60,11 @@ If you don't pre-set it, a random password is generated — but it is **shown on
 run `dfs start --foreground` in an interactive terminal**, printed once to that terminal.
 In background mode (the default `dfs start`), and under Docker/systemd (where stdout is a
 pipe, not a terminal), the generated password is **never written anywhere and cannot be
-recovered** — the log only notes that one was created. If you get locked out this way, set
-`DITTOFS_ADMIN_INITIAL_PASSWORD` (or `admin.password_hash` in the config) and restart.
+recovered** — the log only notes that one was created. And because the `admin` user now
+exists, setting `DITTOFS_ADMIN_INITIAL_PASSWORD` and restarting will **not** change it (that
+variable is only read while bootstrapping a *new* admin). To recover you must remove the admin
+user (reset the control-plane database) and start again with the password pre-set — so set it
+before the very first start.
 
 By default the server listens on these ports:
 
