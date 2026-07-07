@@ -29,6 +29,16 @@ type RollupStore interface {
 	//
 	// On monotone violation (newOffset < stored), returns (storedOffset,
 	// ErrRollupOffsetRegression); the stored value is unchanged.
+	//
+	// newOffset == 0 is a special case: it unconditionally resets (removes)
+	// the stored offset, bypassing the monotone guard, and returns the
+	// previous value with a nil error. 0 is the "unrolled" sentinel —
+	// GetRollupOffset already reports an absent row as 0 — so a reset is
+	// observationally identical to "never rolled up". DeleteAppendLog relies
+	// on this to clear a deleted payload's fence even when a racing rollup
+	// already persisted a positive offset (otherwise the row leaks as a
+	// zombie). rollupFile only ever persists positive offsets, so this never
+	// collides with a legitimate monotone advance.
 	SetRollupOffset(ctx context.Context, payloadID string, newOffset uint64) (storedOffset uint64, err error)
 
 	// GetRollupOffset returns the persisted rollup_offset for payloadID.

@@ -26,6 +26,14 @@ func (s *MemoryMetadataStore) SetRollupOffset(ctx context.Context, payloadID str
 		s.rollupOffsets = make(map[string]uint64)
 	}
 	prev := s.rollupOffsets[payloadID]
+	if newOffset == 0 {
+		// 0 is the "unrolled" sentinel: unconditionally clear the row,
+		// bypassing the monotone guard. DeleteAppendLog uses this to drop a
+		// deleted payload's fence even when a racing rollup already persisted
+		// a positive offset — otherwise the row leaks as a zombie.
+		delete(s.rollupOffsets, payloadID)
+		return prev, nil
+	}
 	if newOffset < prev {
 		// Regression rejected; leave stored value untouched.
 		return prev, metadata.ErrRollupOffsetRegression

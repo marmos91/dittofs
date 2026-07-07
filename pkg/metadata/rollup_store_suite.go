@@ -1,7 +1,7 @@
 // Package metadata — rollup_store_suite.go.
 //
 // Shared conformance suite for the RollupStore interface. Each metadata
-// backend (memory, badger, postgres) exercises this suite to prove it
+// backend (memory, badger, postgres, sqlite) exercises this suite to prove it
 // upholds the atomic-monotone contract.
 //
 // The suite lives in the metadata package rather than storetest to keep
@@ -123,6 +123,33 @@ func RunRollupStoreSuite(t *testing.T, rs RollupStore) {
 		}
 		if got != 500 {
 			t.Fatalf("stored offset regressed despite ErrRollupOffsetRegression: got %d want 500", got)
+		}
+	})
+
+	t.Run("SetRollupOffset_ZeroResets", func(t *testing.T) {
+		// newOffset == 0 unconditionally resets the row, bypassing the
+		// monotone guard — the escape hatch DeleteAppendLog uses to clear a
+		// deleted payload's fence even behind a racing rollup's positive
+		// offset. Without this the row leaks as a zombie (issue #1570 CI flake).
+		ctx := context.Background()
+		const pid = "suite-zero-reset"
+
+		if _, err := rs.SetRollupOffset(ctx, pid, 900); err != nil {
+			t.Fatalf("initial Set: %v", err)
+		}
+		prev, err := rs.SetRollupOffset(ctx, pid, 0)
+		if err != nil {
+			t.Fatalf("reset to 0 must not error (monotone guard bypassed): %v", err)
+		}
+		if prev != 900 {
+			t.Fatalf("reset prev: got %d want 900", prev)
+		}
+		got, err := rs.GetRollupOffset(ctx, pid)
+		if err != nil {
+			t.Fatalf("Get after reset: %v", err)
+		}
+		if got != 0 {
+			t.Fatalf("offset after reset: got %d want 0", got)
 		}
 	})
 
