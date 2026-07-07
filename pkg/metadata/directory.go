@@ -220,7 +220,10 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 	wcc := &DirWcc{}
 
 	// Execute all write operations in a single transaction for better performance.
-	txErr := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	// Relaxed durability (#1573 Wall 1): rmdir touches only namespace keys, not
+	// block data. A crash can lose the removal (dir reappears empty), never
+	// corrupt data.
+	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// Re-read the parent inside the transaction so the pre-op snapshot and
 		// the timestamp mutation derive from the same committed state.
 		if txParent, pErr := tx.GetFile(ctx.Context, parentHandle); pErr == nil && txParent != nil {

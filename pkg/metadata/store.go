@@ -303,6 +303,31 @@ type Transactor interface {
 	WithTransaction(ctx context.Context, fn func(tx Transaction) error) error
 }
 
+// RelaxedTransactor is an OPTIONAL store capability (#1573 Wall 1): running a
+// transaction whose commit may become durable with bounded lag instead of an
+// inline fsync. It is intended ONLY for pure-namespace/attr writes
+// (create/remove/rename/mkdir/mode/owner/times) that are not paired with block
+// data — a crash can lose the last sub-interval of such ops (the op vanishes or
+// reappears), never corrupt data. Data-paired writes (file size, block
+// manifest, rollup offset) must always use the fully-durable WithTransaction.
+//
+// Stores that do not implement this interface transparently fall back to
+// WithTransaction (fully durable) via withRelaxedTransaction, so a missing
+// implementation is always safe — never a correctness hazard.
+type RelaxedTransactor interface {
+	WithTransactionRelaxed(ctx context.Context, fn func(tx Transaction) error) error
+}
+
+// withRelaxedTransaction runs fn with relaxed durability when the store
+// supports it, otherwise fully durably. Namespace/attr mutations route through
+// here to opt into the deferred-fsync fast path (#1573 Wall 1).
+func withRelaxedTransaction(store Transactor, ctx context.Context, fn func(tx Transaction) error) error {
+	if r, ok := store.(RelaxedTransactor); ok {
+		return r.WithTransactionRelaxed(ctx, fn)
+	}
+	return store.WithTransaction(ctx, fn)
+}
+
 // ============================================================================
 // FilesystemMeta
 // ============================================================================

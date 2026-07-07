@@ -106,6 +106,12 @@ func (s *BadgerMetadataStore) SetRollupOffset(ctx context.Context, payloadID str
 	if err != nil {
 		return 0, fmt.Errorf("badger rollup set: %w", err)
 	}
+	// The rollup offset is paired with the append-log fsync it fences; losing
+	// it after a crash re-replays or zero-fills, so it must be durable even in
+	// relaxed mode. No-op in strict mode (commit already fsynced).
+	if syncErr := s.syncIfRelaxed(); syncErr != nil {
+		return 0, fmt.Errorf("badger rollup set: durability sync: %w", syncErr)
+	}
 	if regressed {
 		return prev, metadata.ErrRollupOffsetRegression
 	}
