@@ -82,6 +82,42 @@ func (m *memFBS) EnumeratePayloads(ctx context.Context, fn func(payloadID string
 	return nil
 }
 
+// GetFileChunkAtOffset + GetFileChunkAtOrAfterOffset make memFBS satisfy the
+// coveringChunkResolver fast path so ReadPayloadAt drives fillFromCASManifest's
+// indexed covering + successor loop (not the ListFileChunks scan fallback).
+// Both mirror the badger backend's contract, which pkg/metadata/storetest pins.
+func (m *memFBS) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*block.FileChunk, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, fb := range m.rows[payloadID] {
+		abs, ok := block.ParseChunkOffset(fb.ID)
+		if !ok {
+			continue
+		}
+		if off >= abs && off-abs < uint64(fb.DataSize) {
+			return fb, nil // covering guard: off is within [abs, abs+DataSize)
+		}
+	}
+	return nil, nil
+}
+
+func (m *memFBS) GetFileChunkAtOrAfterOffset(_ context.Context, payloadID string, off uint64) (*block.FileChunk, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best *block.FileChunk
+	var bestAbs uint64
+	for _, fb := range m.rows[payloadID] {
+		abs, ok := block.ParseChunkOffset(fb.ID)
+		if !ok {
+			continue
+		}
+		if abs >= off && (best == nil || abs < bestAbs) {
+			best, bestAbs = fb, abs
+		}
+	}
+	return best, nil
+}
+
 func (m *memFBS) GetFileChunk(_ context.Context, blockID string) (*block.FileChunk, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
