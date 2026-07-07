@@ -540,15 +540,19 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// EOF returns stale-tail / silent-truncation bytes (#588). Persist it
 		// through a fully-durable transaction so relaxed-durability mode still
 		// fsyncs it. Pure-attribute changes (mode/owner/times/xattr/ACL) are not
-		// data-paired and take the store's default PutFile path, which defers in
-		// relaxed mode (#1573 Wall 1).
+		// data-paired, so they take the relaxed path — note store.PutFile would
+		// force an inline fsync (it wraps the durable WithTransaction), so it is
+		// deliberately bypassed here in favor of withRelaxedTransaction to
+		// actually defer the write (#1573 Wall 1).
 		if attrs.Size != nil {
 			if err := store.WithTransaction(ctx.Context, func(tx Transaction) error {
 				return tx.PutFile(ctx.Context, file)
 			}); err != nil {
 				return nil, err
 			}
-		} else if err := store.PutFile(ctx.Context, file); err != nil {
+		} else if err := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
+			return tx.PutFile(ctx.Context, file)
+		}); err != nil {
 			return nil, err
 		}
 
