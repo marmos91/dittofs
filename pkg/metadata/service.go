@@ -909,6 +909,9 @@ func (s *Service) flushDirTimes(ctx context.Context, dirHandle FileHandle) {
 		if gErr != nil {
 			return gErr
 		}
+		if dir == nil {
+			return nil // dir was concurrently removed or handle is stale; nothing to flush
+		}
 		if dir.Type != FileTypeDirectory {
 			return nil
 		}

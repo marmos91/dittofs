@@ -115,9 +115,11 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 		FileAttr:  file.FileAttr,
 	}
 
-	// wcc captures the parent directory attributes immediately before and after
-	// the mutation, both inside the transaction below so they atomically bracket
-	// the operation (H9: closes the WCC pre-op TOCTOU window).
+	// wcc captures the parent directory attributes before and after the
+	// mutation. Per #1573 the child-removing transaction no longer touches the
+	// parent inode, so WCC.Before is captured here (before the transaction) and
+	// WCC.After is synthesized after commit rather than both being read inside
+	// the txn.
 	wcc := &DirWcc{}
 
 	// Overlay any coalesced parent-directory timestamps onto the pre-op snapshot

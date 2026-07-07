@@ -348,9 +348,10 @@ func (s *Service) createEntry(
 		newFile.ACL = inherited
 	}
 
-	// wcc brackets the parent directory attributes around the mutation, both
-	// captured inside the transaction below so they atomically describe the
-	// state immediately before and after the create (H9).
+	// wcc brackets the parent directory attributes around the mutation. Per
+	// #1573 the child-creating transaction no longer touches the parent inode,
+	// so WCC.Before is captured here (before the transaction) and WCC.After is
+	// synthesized after commit rather than both being read inside the txn.
 	wcc := &DirWcc{}
 
 	// Overlay any coalesced (not-yet-persisted) parent-directory timestamps onto

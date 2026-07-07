@@ -40,8 +40,12 @@ func TestBadgerWriteConflictMechanism(t *testing.T) {
 				defer wg.Done()
 				for i := 0; i < iters; i++ {
 					// single attempt (no retry) so we count raw conflicts
-					if err := db.Update(func(txn *badgerdb.Txn) error { return fn(txn, w, i) }); err == badgerdb.ErrConflict {
+					err := db.Update(func(txn *badgerdb.Txn) error { return fn(txn, w, i) })
+					switch {
+					case err == badgerdb.ErrConflict:
 						atomic.AddInt64(&conflicts, 1)
+					case err != nil:
+						t.Errorf("unexpected non-conflict Update error: %v", err)
 					}
 				}
 			}(w)
