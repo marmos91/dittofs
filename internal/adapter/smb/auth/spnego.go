@@ -187,6 +187,16 @@ func (p *ParsedToken) HasKerberos() bool {
 	return p.HasMechanism(OIDKerberosV5) || p.HasMechanism(OIDMSKerberosV5)
 }
 
+// HasMechListMIC reports whether the initiator supplied a mechListMIC (the
+// SPNEGO downgrade-protection MIC over the mechList, RFC 4178). An SPNEGO
+// acceptor consults this to decide whether it must answer with its own
+// mechListMIC: per RFC 4178 §5, when the initiator's optimistic mechanism is
+// accepted and the initiator sent no MIC, the acceptor MUST NOT attach an
+// unsolicited one. Nil-safe so callers can query a token that failed to parse.
+func (p *ParsedToken) HasMechListMIC() bool {
+	return p != nil && len(p.MechListMIC) > 0
+}
+
 // BuildResponse creates a SPNEGO NegTokenResp for server responses.
 //
 // Parameters:

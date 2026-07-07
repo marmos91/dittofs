@@ -286,7 +286,7 @@ func (h *Handler) buildKerberosAcceptResponse(
 	var serverMIC []byte
 	if parsedToken != nil && len(parsedToken.MechListBytes) > 0 {
 		// Verify client-sent MIC if present
-		if len(parsedToken.MechListMIC) > 0 {
+		if parsedToken.HasMechListMIC() {
 			if err := auth.VerifyMechListMIC(authResult.SessionKey, parsedToken.MechListBytes, parsedToken.MechListMIC); err != nil {
 				logger.Debug("Client mechListMIC verification failed", "error", err)
 				// Per RFC 4178, failed MIC verification should reject the negotiation
@@ -295,13 +295,20 @@ func (h *Handler) buildKerberosAcceptResponse(
 			logger.Debug("Client mechListMIC verified successfully")
 		}
 
-		// Compute server mechListMIC using the Kerberos session key
-		// (NOT the normalized 16-byte key -- MIC uses the full session key)
-		serverMIC, err = auth.ComputeMechListMIC(authResult.SessionKey, parsedToken.MechListBytes)
-		if err != nil {
-			logger.Debug("Failed to compute server mechListMIC", "error", err)
-			// Non-fatal: response without MIC still works
-			serverMIC = nil
+		// RFC 4178 §5: answer with an acceptor mechListMIC only when the initiator
+		// sent one. Here the mech we complete is the initiator's own optimistic
+		// Kerberos choice (a failure restarts SESSION_SETUP as NTLM, not an in-band
+		// downgrade), so there is nothing to protect against — and an UNSOLICITED
+		// acceptor MIC makes a real Windows client treat the completed context as a
+		// negotiation failure and forcibly close the connection right after the
+		// signed SESSION_SETUP success (STATUS_INTERNAL_ERROR / error 1359, #1530).
+		if parsedToken.HasMechListMIC() {
+			serverMIC, err = auth.ComputeMechListMIC(authResult.SessionKey, parsedToken.MechListBytes)
+			if err != nil {
+				logger.Debug("Failed to compute server mechListMIC", "error", err)
+				// Non-fatal: response without MIC still works
+				serverMIC = nil
+			}
 		}
 	}
 
@@ -400,7 +407,7 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 	// BEFORE registering any channel state. A bad MIC rejects the bind, so it
 	// must be checked before AddChannel — otherwise a live signing channel
 	// would be left attached to the session on a rejected bind.
-	if len(parsedToken.MechListBytes) > 0 && len(parsedToken.MechListMIC) > 0 {
+	if len(parsedToken.MechListBytes) > 0 && parsedToken.HasMechListMIC() {
 		if vErr := auth.VerifyMechListMIC(authResult.SessionKey, parsedToken.MechListBytes, parsedToken.MechListMIC); vErr != nil {
 			logger.Debug("Kerberos bind: client mechListMIC verification failed", "error", vErr)
 			return NewErrorResult(types.StatusLogonFailure), nil
@@ -460,10 +467,12 @@ func (h *Handler) completeKerberosBind(ctx *SMBHandlerContext, sess *session.Ses
 	}
 	responseOID := clientKerberosOID(parsedToken)
 
-	// Compute the server-side mechListMIC for the response (the client MIC was
-	// already verified above, before any channel state was registered).
+	// RFC 4178 §5: answer with an acceptor mechListMIC only when the initiator
+	// sent one (see buildKerberosAcceptResponse for why an unsolicited MIC breaks
+	// real Windows clients). The client MIC, if any, was already verified above,
+	// before any channel state was registered.
 	var serverMIC []byte
-	if len(parsedToken.MechListBytes) > 0 {
+	if parsedToken.HasMechListMIC() {
 		serverMIC, _ = auth.ComputeMechListMIC(authResult.SessionKey, parsedToken.MechListBytes)
 	}
 
