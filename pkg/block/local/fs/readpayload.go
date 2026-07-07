@@ -231,18 +231,110 @@ func copyRecordIntoDest(recOff uint64, payload, dest []byte, reqStart, reqEnd ui
 	}
 }
 
-// fillFromCASManifest walks the FileChunk manifest for payloadID and
-// fills any still-uncovered bytes of dest from the corresponding CAS
-// chunks. This is the post-rollup read path — bytes that the rollup has
-// already moved out of the append log into CAS storage. The manifest is
-// the authoritative ordering once a chunk is committed.
+// chunkAtOffsetResolver is the indexed covering-chunk lookup, implemented
+// only by the badger metadata backend. fillFromCASManifest type-asserts for
+// it to resolve the one or two chunks under a read without enumerating the
+// whole per-payload manifest.
+type chunkAtOffsetResolver interface {
+	GetFileChunkAtOffset(ctx context.Context, payloadID string, off uint64) (*block.FileChunk, error)
+}
+
+// fillFromCASManifest fills any still-uncovered bytes of dest from the
+// rolled-up CAS chunks that back payloadID. This is the post-rollup read
+// path — bytes the rollup has already moved out of the append log into CAS.
 //
-// Silently no-ops when no manifest store is wired (fixtures that drive
-// the FSStore directly without a coordinator). A nil manifest is
-// indistinguishable from "no rolled-up chunks for this payload" so we
-// just leave any uncovered bytes uncovered; the caller surfaces them as
-// a miss.
+// Fast path: when the manifest store exposes an offset index (badger), each
+// still-uncovered offset is resolved to the single covering chunk via
+// GetFileChunkAtOffset instead of listing + sorting the entire per-payload
+// manifest on every read (the O(N)-per-read hot spot the #1466 profile
+// pinned at ~46% CPU). A 4 KiB read touches one or two chunks, so this is
+// O(chunks-touched) not O(manifest). Any hole (sparse read), an evicted
+// chunk, or a backend without the index hands the remaining window to the
+// legacy full walk (fillFromCASManifestScan).
+//
+// Silently no-ops when no manifest store is wired (fixtures that drive the
+// FSStore directly without a coordinator); the caller surfaces uncovered
+// bytes as a miss.
 func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, dest []byte, reqStart uint64, covered []bool) error {
+	if bc.blockStore == nil {
+		return nil
+	}
+	resolver, ok := bc.blockStore.(chunkAtOffsetResolver)
+	if !ok {
+		return bc.fillFromCASManifestScan(ctx, payloadID, dest, reqStart, covered)
+	}
+	reqEnd := reqStart + uint64(len(dest))
+	for cur := reqStart; cur < reqEnd; {
+		if covered[cur-reqStart] {
+			cur++
+			continue
+		}
+		fb, err := resolver.GetFileChunkAtOffset(ctx, payloadID, cur)
+		if err != nil {
+			return fmt.Errorf("ReadPayloadAt: GetFileChunkAtOffset(%d): %w", cur, err)
+		}
+		if fb == nil || fb.Hash.IsZero() {
+			// Hole under the fast path: hand the rest of the window to the
+			// legacy walk, which spans sparse gaps without a per-byte
+			// lookup storm.
+			return bc.fillFromCASManifestScan(ctx, payloadID, dest, reqStart, covered)
+		}
+		absOffset, ok := block.ParseChunkOffset(fb.ID)
+		if !ok {
+			return fmt.Errorf("ReadPayloadAt: malformed FileChunk ID %q", fb.ID)
+		}
+		data, gerr := bc.Get(ctx, fb.Hash)
+		if gerr != nil {
+			if errors.Is(gerr, block.ErrChunkNotFound) {
+				// Chunk evicted or never landed — defer to the walk, which
+				// leaves this offset uncovered for the caller to fall back.
+				return bc.fillFromCASManifestScan(ctx, payloadID, dest, reqStart, covered)
+			}
+			return fmt.Errorf("ReadPayloadAt: Get chunk %s: %w", fb.Hash.String(), gerr)
+		}
+		// Clamp the visible data to DataSize so a padded on-disk chunk does
+		// not leak garbage past the rollup-emitted byte count.
+		dataLen := uint64(len(data))
+		if uint64(fb.DataSize) > 0 && uint64(fb.DataSize) < dataLen {
+			dataLen = uint64(fb.DataSize)
+		}
+		chunkStart := absOffset
+		chunkEnd := absOffset + dataLen
+		if chunkEnd <= cur {
+			// Covering row exists but clamped DataSize doesn't reach cur —
+			// treat as a hole and defer (also avoids a non-advancing loop).
+			return bc.fillFromCASManifestScan(ctx, payloadID, dest, reqStart, covered)
+		}
+		copyStart := chunkStart
+		if copyStart < reqStart {
+			copyStart = reqStart
+		}
+		copyEnd := chunkEnd
+		if copyEnd > reqEnd {
+			copyEnd = reqEnd
+		}
+		if copyEnd > copyStart {
+			destIdx := copyStart - reqStart
+			srcIdx := copyStart - chunkStart
+			n := copyEnd - copyStart
+			copy(dest[destIdx:destIdx+n], data[srcIdx:srcIdx+n])
+			for i := destIdx; i < destIdx+n; i++ {
+				covered[i] = true
+			}
+		}
+		cur = chunkEnd
+		if allCovered(covered) {
+			return nil
+		}
+	}
+	return nil
+}
+
+// fillFromCASManifestScan walks the entire FileChunk manifest for payloadID
+// and fills any still-uncovered bytes of dest from the corresponding CAS
+// chunks. It is the fallback for fillFromCASManifest: backends without the
+// offset index, and sparse/evicted reads where the fast path bails.
+func (bc *FSStore) fillFromCASManifestScan(ctx context.Context, payloadID string, dest []byte, reqStart uint64, covered []bool) error {
 	if bc.blockStore == nil {
 		return nil
 	}

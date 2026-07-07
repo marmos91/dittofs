@@ -64,6 +64,31 @@ func (m *memFBS) ListFileChunks(_ context.Context, payloadID string) ([]*block.F
 	return out, nil
 }
 
+// GetFileChunkAtOffset mirrors the badger offset index: it returns the row
+// whose absolute byte range [chunkOffset, chunkOffset+DataSize) covers off,
+// or (nil, nil) for a hole. Implementing it here makes every post-rollup
+// read test drive fillFromCASManifest's indexed fast path rather than the
+// scan fallback.
+func (m *memFBS) GetFileChunkAtOffset(_ context.Context, payloadID string, off uint64) (*block.FileChunk, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best *block.FileChunk
+	var bestOff uint64
+	for _, fb := range m.rows[payloadID] {
+		o, ok := block.ParseChunkOffset(fb.ID)
+		if !ok || o > off {
+			continue
+		}
+		if best == nil || o > bestOff {
+			best, bestOff = fb, o
+		}
+	}
+	if best == nil || off >= bestOff+uint64(best.DataSize) {
+		return nil, nil
+	}
+	return best, nil
+}
+
 func (m *memFBS) EnumeratePayloads(ctx context.Context, fn func(payloadID string) error) error {
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.rows))
