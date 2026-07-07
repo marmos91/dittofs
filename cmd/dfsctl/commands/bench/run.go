@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/bench"
@@ -21,6 +24,7 @@ var (
 	runMetaFiles      int
 	runSmallFileCount int
 	runClean          bool
+	runQuiet          bool
 )
 
 var runCmd = &cobra.Command{
@@ -57,6 +61,7 @@ func init() {
 	runCmd.Flags().IntVar(&runMetaFiles, "meta-files", 1000, "Number of files for metadata workload")
 	runCmd.Flags().IntVar(&runSmallFileCount, "small-file-count", 10000, "Number of files for small-files workload")
 	runCmd.Flags().BoolVar(&runClean, "clean", false, "Remove test files after benchmark (default: keep for cold read reruns)")
+	runCmd.Flags().BoolVar(&runQuiet, "quiet", false, "Suppress per-workload progress output (useful for log files)")
 }
 
 func runBench(cmd *cobra.Command, args []string) error {
@@ -93,9 +98,26 @@ func runBench(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	runner := bench.NewRunner(cfg, func(w bench.WorkloadType, pct float64) {
-		fmt.Fprintf(os.Stderr, "\r  %s: %.0f%%", w, pct*100)
-	})
+	// Progress is throttled to whole-percent changes so it stays a single
+	// updating line on a TTY and doesn't spam log files (each \r is a fresh
+	// line when stderr isn't a terminal). --quiet suppresses it entirely.
+	progress := func(bench.WorkloadType, float64) {}
+	if !runQuiet {
+		var mu sync.Mutex
+		lastPct := make(map[bench.WorkloadType]int)
+		progress = func(w bench.WorkloadType, pct float64) {
+			p := int(pct * 100)
+			mu.Lock()
+			if p == lastPct[w] {
+				mu.Unlock()
+				return
+			}
+			lastPct[w] = p
+			mu.Unlock()
+			fmt.Fprintf(os.Stderr, "\r  %s: %d%%", w, p)
+		}
+	}
+	runner := bench.NewRunner(cfg, progress)
 
 	if err := runner.Validate(); err != nil {
 		return err
@@ -111,8 +133,26 @@ func runBench(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintln(os.Stderr) // Clear progress line
 
+	// Surface any lanes that failed — the run continued past them so their
+	// failure didn't discard the lanes that succeeded.
+	var failed []string
+	for w, wr := range result.Workloads {
+		if wr.Error != "" {
+			failed = append(failed, fmt.Sprintf("%s (%s)", w, wr.Error))
+		}
+	}
+	if len(failed) > 0 {
+		fmt.Fprintf(os.Stderr, "warning: %d workload(s) failed: %s\n",
+			len(failed), strings.Join(failed, "; "))
+	}
+
 	// Save JSON if requested.
 	if runSave != "" {
+		if dir := filepath.Dir(runSave); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("create results dir: %w", err)
+			}
+		}
 		data, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal results: %w", err)

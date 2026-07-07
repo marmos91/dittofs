@@ -501,9 +501,17 @@ func TestRun_ContextCancelled(t *testing.T) {
 	cancel() // Cancel immediately.
 
 	r := NewRunner(cfg, nil)
-	_, err := r.Run(ctx)
-	if err == nil {
-		t.Fatal("Run() with cancelled context expected error, got nil")
+	res, err := r.Run(ctx)
+	// Cancellation stops launching lanes but returns the partial result so
+	// completed lanes aren't discarded — no error, no lanes for this run.
+	if err != nil {
+		t.Fatalf("Run() with cancelled context returned error: %v", err)
+	}
+	if res == nil {
+		t.Fatal("Run() returned nil result on cancellation")
+	}
+	if len(res.Workloads) != 0 {
+		t.Errorf("expected no completed workloads, got %d", len(res.Workloads))
 	}
 }
 
@@ -559,9 +567,15 @@ func TestRun_UnknownWorkload(t *testing.T) {
 	}
 
 	r := NewRunner(cfg, nil)
-	_, err := r.Run(context.Background())
-	if err == nil {
-		t.Fatal("Run() with unknown workload expected error, got nil")
+	res, err := r.Run(context.Background())
+	// An unknown workload is recorded as a failed lane, not a fatal run
+	// error — one bad lane must not discard the others' results.
+	if err != nil {
+		t.Fatalf("Run() with unknown workload returned error: %v", err)
+	}
+	wr := res.Workloads["nonexistent-workload"]
+	if wr == nil || wr.Error == "" {
+		t.Fatalf("expected failed lane with Error set, got %+v", wr)
 	}
 }
 

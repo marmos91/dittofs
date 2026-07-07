@@ -131,6 +131,11 @@ type WorkloadResult struct {
 
 	// Duration is the wall-clock time for this workload.
 	Duration time.Duration `json:"duration"`
+
+	// Error is set when the workload failed to complete. The metric fields
+	// above are then zero; the lane is recorded so one failure doesn't
+	// discard the other lanes' results. Empty on success.
+	Error string `json:"error,omitempty"`
 }
 
 // ProgressFunc is called to report benchmark progress.

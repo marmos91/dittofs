@@ -30,6 +30,8 @@ BENCH_FILE_SIZE="${BENCH_FILE_SIZE:-1GiB}"
 BENCH_BLOCK_SIZE="${BENCH_BLOCK_SIZE:-4KiB}"
 BENCH_DURATION="${BENCH_DURATION:-60s}"
 BENCH_META_FILES="${BENCH_META_FILES:-1000}"
+BENCH_SMALL_FILES="${BENCH_SMALL_FILES:-10000}"
+BENCH_WORKLOAD="${BENCH_WORKLOAD:-}"
 RESULTS_DIR="${RESULTS_DIR:-./results}"
 MOUNT_POINT="${MOUNT_POINT:-/mnt/bench}"
 SCRIPTS_DIR="${SCRIPTS_DIR:-/opt/dittofs/bench/infra/scripts}"
@@ -65,6 +67,8 @@ Environment Variables:
   BENCH_BLOCK_SIZE I/O block size for random workloads (default: 4KiB)
   BENCH_DURATION   Duration for time-based workloads (default: 60s)
   BENCH_META_FILES Number of files for metadata workload (default: 1000)
+  BENCH_SMALL_FILES Number of files for small-files workload (default: 10000)
+  BENCH_WORKLOAD   Comma-separated workloads to run (default: all)
   RESULTS_DIR      Directory for JSON result files (default: ./results)
   MOUNT_POINT      Local mount point (default: /mnt/bench)
   SCRIPTS_DIR      Path to install scripts on server (default: /opt/dittofs/bench/infra/scripts)
@@ -131,6 +135,7 @@ ALL_SYSTEMS=(
 # Logging
 # ---------------------------------------------------------------------------
 LOG_FILE="${RESULTS_DIR}/run-all.log"
+mkdir -p "$(dirname "$LOG_FILE")"
 
 log() {
     local ts
@@ -675,8 +680,10 @@ benchmark_system() {
         --block-size "$BENCH_BLOCK_SIZE"
         --duration "$BENCH_DURATION"
         --meta-files "$BENCH_META_FILES"
+        --small-file-count "$BENCH_SMALL_FILES"
         --save "$result_file"
     )
+    [ -n "$BENCH_WORKLOAD" ] && bench_cmd+=(--workload "$BENCH_WORKLOAD")
 
     if $DRY_RUN; then
         log "[DRY-RUN] ${bench_cmd[*]}"
