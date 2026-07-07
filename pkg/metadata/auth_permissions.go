@@ -594,6 +594,14 @@ func (s *Service) checkWritePermission(ctx *AuthContext, handle FileHandle) erro
 	return s.checkPermission(ctx, handle, PermissionWrite, "write permission denied")
 }
 
+// checkWritePermissionFile is checkWritePermission on an already-loaded file —
+// PrepareWrite holds the file (its own cache/fetch) before checking, so this
+// avoids the permission path's redundant re-fetch (store.GetFile + derivePath +
+// JSON decode) on every write.
+func (s *Service) checkWritePermissionFile(ctx *AuthContext, handle FileHandle, file *File) error {
+	return s.checkPermissionFile(ctx, handle, file, PermissionWrite, "write permission denied")
+}
+
 // CheckParentWriteAccess verifies the caller may add or remove a child entry
 // in the given directory. It is the public, protocol-facing entry point that
 // SMB / NFS handlers call before attempting an entry-creating or

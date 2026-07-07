@@ -90,9 +90,11 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 	// Fast path: check if we have cached file metadata from a previous write
 	// This avoids store.GetFile for sequential writes to the same file
 	var file *File
+	freshFetch := false
 	if cachedFile := s.pendingWrites.GetCachedFile(handle); cachedFile != nil {
 		file = cachedFile
 	} else {
+		freshFetch = true
 		// Slow path: fetch from store
 		fetchedFile, err := store.GetFile(ctx.Context, handle)
 		if err != nil {
@@ -157,8 +159,19 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 	// DOS READONLY (mode bit 0x100000) is enforced for owners. calculatePermissions
 	// already handles owner vs non-owner mode-bit evaluation correctly (owner gets
 	// bits 6-8), and it gates on 0x100000 regardless of ownership.
-	if err := s.checkWritePermission(ctx, handle); err != nil {
-		return nil, err
+	// Permission gate. On a cache miss `file` is a fresh store read, so reuse it
+	// (no redundant second fetch). On a cache hit the cached file may be stale
+	// vs a concurrent chmod, so re-read current mode via checkWritePermission —
+	// permission is a security boundary and must not be checked against a
+	// possibly-stale cache (unlike the soft size/quota checks above).
+	permErr := error(nil)
+	if freshFetch {
+		permErr = s.checkWritePermissionFile(ctx, handle, file)
+	} else {
+		permErr = s.checkWritePermission(ctx, handle)
+	}
+	if permErr != nil {
+		return nil, permErr
 	}
 
 	// Make a copy of current attributes for PreWriteAttr
