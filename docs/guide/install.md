@@ -191,8 +191,9 @@ scoop install dfsctl    # client CLI
 When installed via the system package managers, the server runs under systemd as the `dfs`
 service. Set the admin password before the first start with the
 `DITTOFS_ADMIN_INITIAL_PASSWORD` environment variable (see the
-[README](../../README.md#first-run--admin-password)); otherwise an auto-generated password is
-written to the service log.
+[README](../../README.md#first-run--admin-password)). Under systemd the server's stdout is
+not a terminal, so an auto-generated password would **not** be shown or written to the
+service log — pre-setting it is the only way to know the credential.
 
 ## Docker
 
@@ -223,7 +224,8 @@ docker run -d \
   marmos91c/dittofs:latest
 
 curl http://localhost:8080/health
-docker logs dittofs | head -20    # auto-generated admin password lands here if not pre-set
+# Always set DITTOFS_ADMIN_INITIAL_PASSWORD (above): the container's stdout is a pipe, so an
+# auto-generated password is NOT printed to `docker logs` and cannot be recovered.
 ```
 
 **Image tags:**
