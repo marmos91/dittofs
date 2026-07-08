@@ -20,6 +20,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/local/logblob"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -310,6 +311,13 @@ type FSStore struct {
 	// routes through SyncPayload. Operators mount clients that never issue
 	// COMMIT can opt back into per-write fsync via config["sync_every_write"].
 	syncEveryWrite bool
+
+	// chunkParams is the FastCDC sizing used by the rollup chunker (#1569).
+	// Lowering Min shrinks chunks to cut random-read amplification on this
+	// share; the zero value falls back to chunker.DefaultParams() (1M/4M/16M).
+	// Write-time only — reads never re-chunk (the FileChunk manifest freezes
+	// boundaries), so a share may change this and still read its older data.
+	chunkParams chunker.Params
 
 	// syncLeader batches every append-log fd fsync (inline SyncEveryWrite
 	// writes and SyncPayload COMMITs alike) into as few journal commits as
@@ -680,6 +688,10 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 		bc.stabilizationMS = opts.StabilizationMS
 	}
 	bc.syncEveryWrite = opts.SyncEveryWrite
+	bc.chunkParams = opts.ChunkParams
+	if bc.chunkParams.Validate() != nil {
+		bc.chunkParams = chunker.DefaultParams()
+	}
 	switch {
 	case opts.PressureMaxWait > 0:
 		bc.pressureMaxWait = opts.PressureMaxWait
@@ -1015,6 +1027,12 @@ type FSStoreOptions struct {
 	MaxLogBytes     int64
 	RollupWorkers   int
 	StabilizationMS int
+	// ChunkParams sets the FastCDC sizing for this share's rollup chunker
+	// (#1569). The zero value falls back to chunker.DefaultParams() (1M/4M/16M,
+	// byte-identical to pre-#1569). A random-access share lowers ChunkParams.Min
+	// (and Max) to shrink chunks and cut random-read amplification.
+	ChunkParams chunker.Params
+
 	// SyncEveryWrite forces AppendWrite to fsync the append log on every
 	// record. Default false honors NFS UNSTABLE — the fsync is deferred to
 	// the next durability point (COMMIT / DATA_SYNC/FILE_SYNC WRITE / SMB
