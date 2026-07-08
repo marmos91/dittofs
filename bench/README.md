@@ -135,6 +135,29 @@ AWS_ENDPOINT_URL=https://s3.cubbit.eu \
 dfsbench parity --quadrant upload-large --conc 8,64 --label mytest
 ```
 
+#### Regression check against the committed baseline
+
+`bench/parity/baselines/wan.json` holds a fair reference run (pinned upload,
+100 GB VM, conc 1/8/24/64) where dittofs sits at/near rclone parity and wins
+decisively on small files. `parity_check.py` diffs a fresh scorecard against it
+and fails only on GROSS (≥2×) structural regressions — the rig is noisy (±40%
+run-to-run) so a tighter gate would flake.
+
+```sh
+# after a WAN run, gate against the baseline (exit 1 on a >2x regression)
+python3 bench/scripts/parity_check.py bench/results/parity-*.json \
+    --baseline bench/parity/baselines/wan.json
+
+# informational table only (no gate) — used by the Parity Tripwire CI smoke job
+python3 bench/scripts/parity_check.py bench/results/parity-local-smoke-*.json
+```
+
+Run the WAN check before a release; investigate any cell it flags. The
+`.github/workflows/parity.yml` tripwire runs the secret-free localhost smoke
+weekly (and on harness changes) for visibility — it is non-gating by design.
+To refresh the baseline after an intended perf change, replace `wan.json` with
+a fresh scorecard (drop its `timelines` key to keep it small).
+
 Use `benchstat` to A/B compare two commits:
 
 ```sh

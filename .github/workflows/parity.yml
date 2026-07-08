@@ -1,0 +1,59 @@
+name: Parity Tripwire
+
+# rclone-parity regression visibility (#1467). Runs the secret-free localhost
+# MinIO smoke (bench/scripts/parity-smoke.sh) and prints the dittofs-vs-rclone
+# scorecard so a structural regression in the block/upload/read path is visible
+# in CI. It is deliberately NON-gating: the bench rig is noisy (±40% run-to-run)
+# and localhost ratios differ from WAN, so a hard throughput gate here would
+# flake. The real regression check is the on-demand WAN run — see
+# bench/scripts/parity-matrix-scw.sh + parity_check.py --baseline (docs in
+# bench/README.md), run before releases.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays 06:00 UTC
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "bench/scripts/parity-smoke.sh"
+      - "bench/scripts/parity_check.py"
+      - "bench/parity/**"
+      - "cmd/bench/parity.go"
+      - ".github/workflows/parity.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity-smoke:
+    name: parity smoke (localhost MinIO)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Install rclone
+        run: curl -fsSL https://rclone.org/install.sh | sudo bash
+
+      - name: Run parity smoke
+        run: ./bench/scripts/parity-smoke.sh
+
+      - name: Print parity scorecard (informational, non-gating)
+        run: |
+          card=$(ls -t bench/results/parity-local-smoke-*.json | head -1)
+          python3 bench/scripts/parity_check.py "$card"
+
+      - name: Upload scorecard artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-smoke-scorecard
+          path: bench/results/parity-local-smoke-*
+          if-no-files-found: ignore
