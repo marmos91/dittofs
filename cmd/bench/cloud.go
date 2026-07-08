@@ -236,7 +236,7 @@ func buildDriver(runCmd string) string {
 		"#!/bin/sh",
 		"rm -f /root/DONE",
 		"set -a; [ -f /root/bench.env ] && . /root/bench.env; set +a",
-		"mkdir -p /root/bench-results",
+		"rm -rf /root/bench-results && mkdir -p /root/bench-results", // fresh: a failed backend must not re-pull a prior run's cells
 		runCmd + " > /root/run.log 2>&1",
 		"echo $? > /root/EXIT",
 		"touch /root/DONE",

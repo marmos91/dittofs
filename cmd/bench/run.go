@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -111,7 +112,7 @@ func runBench(ctx context.Context, f *runFlags) error {
 	// matrix logic is unit-tested, the recipes are exercised on the VM.
 	if !f.smoke && !f.local {
 		if len(f.systems) == 0 {
-			return fmt.Errorf("choose a mode: --local --target PATH, --smoke, or --systems <backend>...")
+			return errors.New("choose a mode: --local --target PATH, --smoke, or --systems <backend>")
 		}
 		return runManaged(ctx, f, opts, cfg)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 )
 
 // FUSE competitors: each mounts its own S3-backed FUSE filesystem at srcDir,
@@ -75,9 +76,29 @@ func clearCache(dir string) func(context.Context) error {
 // fuseUnmount lazily unmounts a FUSE mountpoint (best-effort).
 func fuseUnmount(mnt string) func(context.Context) error {
 	return func(ctx context.Context) error {
-		_ = sh(ctx, "fusermount", "-u", mnt)
+		cleanMount(ctx, mnt)
 		return nil
 	}
+}
+
+// cleanMount force-unmounts any stale FUSE mount an aborted run left behind, so
+// the next mount doesn't hit "directory already mounted / not empty".
+func cleanMount(ctx context.Context, mnt string) {
+	_ = sh(ctx, "fusermount", "-uz", mnt)
+	_ = sh(ctx, "umount", "-lf", mnt)
+}
+
+// waitMounted blocks until mnt answers as a mountpoint. FUSE tools that
+// daemonize (rclone --daemon, juicefs -d) return before the mount is serving;
+// re-exporting too early yields an empty/racy export (the juicefs-nfs3 failure).
+func waitMounted(ctx context.Context, mnt string) error {
+	for i := 0; i < 30; i++ {
+		if sh(ctx, "mountpoint", "-q", mnt) == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("mount %s not ready after wait", mnt)
 }
 
 func rcloneSetup(ctx context.Context, env BackendEnv) error {
@@ -98,7 +119,7 @@ func rcloneSetup(ctx context.Context, env BackendEnv) error {
 	}
 	return sh(ctx, "rclone", "mount", "bench:"+env.Bucket, rcloneMnt,
 		"--config", "/etc/bench-rclone.conf", "--cache-dir", rcloneCache,
-		"--vfs-cache-mode", "writes", "--allow-other", "--daemon")
+		"--vfs-cache-mode", "writes", "--daemon")
 }
 
 func s3fsSetup(ctx context.Context, env BackendEnv) error {
@@ -117,7 +138,7 @@ func s3fsSetup(ctx context.Context, env BackendEnv) error {
 	}
 	return sh(ctx, "s3fs", env.Bucket, s3fsMnt,
 		"-o", "passwd_file=/etc/passwd-s3fs", "-o", "url="+env.Endpoint,
-		"-o", "use_path_request_style", "-o", "allow_other", "-o", "use_cache="+s3fsCache)
+		"-o", "use_path_request_style", "-o", "use_cache="+s3fsCache)
 }
 
 func juicefsSetup(ctx context.Context, env BackendEnv) error {
@@ -164,7 +185,7 @@ func s3qlSetup(ctx context.Context, env BackendEnv) error {
 	// mkfs is a no-op if the filesystem already exists (--force off).
 	_ = sh(ctx, "mkfs.s3ql", "--authfile", "/etc/bench-s3ql-authinfo2", "--plain", url)
 	return sh(ctx, "mount.s3ql", "--authfile", "/etc/bench-s3ql-authinfo2",
-		"--cachedir", s3qlCache, "--allow-other", url, s3qlMnt)
+		"--cachedir", s3qlCache, url, s3qlMnt)
 }
 
 func s3qlTeardown(ctx context.Context) error {

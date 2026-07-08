@@ -131,13 +131,19 @@ func newSrcBackend(sb srcBackend) *Backend {
 		S3Backed: sb.s3Backed,
 		Support:  support,
 		Setup: func(ctx context.Context, env BackendEnv) error {
+			if sb.setup != nil {
+				cleanMount(ctx, sb.srcDir) // clear any stale FUSE mount from an aborted run
+			}
 			if err := os.MkdirAll(sb.srcDir, 0o777); err != nil {
 				return err
 			}
-			if sb.setup != nil {
-				return sb.setup(ctx, env)
+			if sb.setup == nil {
+				return nil // plain dir (control): nothing to mount or wait on
 			}
-			return nil
+			if err := sb.setup(ctx, env); err != nil {
+				return err
+			}
+			return waitMounted(ctx, sb.srcDir) // don't re-export before the FUSE mount is serving
 		},
 		Mount:   func(ctx context.Context, proto Protocol) (string, error) { return reexportMount(ctx, sb.srcDir, proto) },
 		Unmount: func(ctx context.Context, proto Protocol) error { return reexportUnmount(ctx, proto) },
