@@ -52,7 +52,7 @@ jobs:
           # Drop the runner image's pre-configured Microsoft apt repos; they
           # periodically break signing verification and fail apt-get update
           # (NOSPLIT / "no longer signed"). We don't need them here.
-          sudo grep -rlZ packages.microsoft.com /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -0r rm -f
+          sudo bash -c 'grep -rlZ packages.microsoft.com /etc/apt/sources.list.d/ 2>/dev/null || true' | sudo xargs -0r rm -f
           sudo apt-get update && sudo apt-get install -y dpkg-dev createrepo-c
 
       - name: Run GoReleaser
