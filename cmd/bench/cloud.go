@@ -174,6 +174,11 @@ func runRemote(ctx context.Context, f *runFlags) error {
 	if err := ex.Push(ctx, mustTemp(driver), vm.IP, remoteUser, "/root/driver.sh"); err != nil {
 		return err
 	}
+	// Clear any prior sentinel/log synchronously before launching, so pollDone
+	// can't race and return on a stale DONE left by an earlier run.
+	if _, err := ex.Run(ctx, vm.IP, remoteUser, "rm -f /root/DONE /root/run.log"); err != nil {
+		return err
+	}
 	// Launch detached: the ssh session returns immediately; the run keeps going
 	// and drops /root/DONE when finished (survives our ssh dropping).
 	if _, err := ex.Run(ctx, vm.IP, remoteUser, "nohup sh /root/driver.sh >/dev/null 2>&1 &"); err != nil {
@@ -208,6 +213,12 @@ func remoteRunArgs(f *runFlags) string {
 	}
 	if len(f.sizes) > 0 {
 		args = append(args, "--sizes", strings.Join(f.sizes, ","))
+	}
+	if f.runtime > 0 {
+		args = append(args, "--runtime", fmt.Sprintf("%d", f.runtime))
+	}
+	if f.threads > 0 {
+		args = append(args, "--threads", fmt.Sprintf("%d", f.threads))
 	}
 	if !f.evictCache {
 		args = append(args, "--evict-cache=false")
