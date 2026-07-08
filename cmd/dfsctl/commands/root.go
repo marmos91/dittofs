@@ -6,7 +6,6 @@ import (
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	adaptercmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/adapter"
-	benchcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/bench"
 	clientcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/client"
 	ctxcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/context"
 	gracecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/grace"
@@ -106,7 +105,6 @@ func init() {
 	rootCmd.AddCommand(settingscmd.Cmd)
 	rootCmd.AddCommand(switchUserCmd)
 	rootCmd.AddCommand(systemcmd.Cmd)
-	rootCmd.AddCommand(benchcmd.Cmd)
 	rootCmd.AddCommand(completionCmd)
 
 	// Hide the default completion command (we provide our own)

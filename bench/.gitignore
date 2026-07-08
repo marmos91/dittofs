@@ -1,8 +1,1 @@
-results/*
-!results/README.md
-!results/parity-local-smoke-sample.json
-!results/parity-local-smoke-sample.csv
-!results/parity-local-smoke-sample.md
 .env
-*.pyc
-__pycache__/

@@ -196,86 +196,25 @@ Performance improvements from the `feat/cache-rewrite` branch optimization cycle
 
 ## Running benchmarks
 
-The benchmark suite has three layers, all driven from the `dfsbench`
-orchestrator binary plus per-package Go `Benchmark*` tests:
-
-- **In-process micro/macro workloads** — `bench/blockstore`, `bench/snapshots`,
-  driven by `dfsbench <area>` or `go test -bench`. No network, no mount.
-- **Versioned result documents** — `dfsbench orchestrate` runs a manifest of
-  workloads and emits a machine-readable JSON document (host info, per-workload
-  ns/op, throughput, latency p50/p95/p99, succeeded/failed op counts, structured
-  errors, pprof paths). A compare mode flags ns/op regressions between two runs.
-- **Remote infrastructure runs** — `dfsbench remote` drives a benchmark on a
-  Scaleway host (provisioned via the `bench/infra` Pulumi stack) over SSH and
-  collects the result JSON back.
-
-Build the binary once:
+Component microbenchmarks live in their home package and run via `go test -bench`
+— no network, no mount, no cloud:
 
 ```bash
-go build -o dfsbench ./cmd/bench
+go test -bench=. -benchmem -run=^$ ./pkg/block/engine/    # write + read-path engine
+go test -bench=. -benchmem -run=^$ ./pkg/snapshot/        # snapshot create/manifest/verify scale
+go test -bench=. -benchmem -run=^$ ./pkg/block/chunker/   # FastCDC throughput
+go test -bench=. -benchmem -run=^$ ./pkg/block/           # BLAKE3 vs SHA-256
 ```
 
-### In-process workloads
+Use `-count=N` and [`benchstat`](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat)
+to A/B two commits.
 
-```bash
-# A single blockstore workload with pprof capture:
-./dfsbench blockstore --workload sequential-write --ops 10000
-./dfsbench blockstore --workload random-write --ops 5000 --remote=s3 --env-file ./.env
-
-# A manifest of workloads → one versioned result JSON + a summary table:
-./dfsbench orchestrate --out result.json --summary
-
-# Compare two result documents (exits non-zero on a regression — CI-gateable):
-./dfsbench orchestrate --compare-baseline base.json --compare-candidate new.json
-```
-
-The manifest format, full result schema, and the additive-vs-breaking version
-contract live in [`bench/orchestrator/README.md`](../bench/orchestrator/README.md).
-
-### Remote runs (Scaleway)
-
-The `bench/infra` Pulumi stack provisions an ephemeral server VM (with a block
-volume) and a persistent client VM on a private network. `dfsbench remote` then
-drives a run against an already-provisioned host: it reads the server's public
-IP (for SSH) and private-network IP (for the mount) from the stack outputs,
-scp's a prebuilt `dfsbench` binary to the host, runs `orchestrate` over SSH, and
-pulls the result JSON back.
-
-SSH always uses the public IP; the benchmark serves/mounts over the
-private-network IP only — the two are kept distinct so a run is never carried
-over the public path.
-
-Required setup:
-
-- A Pulumi stack provisioned: `cd bench/infra && pulumi up --stack bench`
-  (needs Scaleway credentials in the environment; see `bench/infra/Pulumi.yaml`).
-- SSH access to the server's public IP (`--ssh-key` or an agent).
-- A `linux/amd64` `dfsbench` build to push.
-
-```bash
-# Cross-build the bench binary for the Linux server:
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o dfsbench.linux ./cmd/bench
-
-# Resolve the target + print the plan WITHOUT touching the host:
-./dfsbench remote --stack bench --dry-run
-
-# Push the binary, run the bench over SSH, fetch the result:
-./dfsbench remote --stack bench \
-  --binary dfsbench.linux --ssh-key ~/.ssh/id_rsa \
-  --out remote-result.json --summary
-```
-
-Pass `--private-ip` if the stack does not surface the server's private-network
-address (it is assigned by DHCP). Provisioning the VMs themselves stays in
-Pulumi; `dfsbench remote` drives an existing host. Live-infra runs cannot be
-exercised in CI — the orchestrator's SSH/scp/Pulumi-output logic is unit-tested
-with fakes, and `--dry-run` verifies the wiring without credentials.
-
-The remote bench currently runs the in-process `orchestrate` workloads on the
-server (no NFS mount), so the resolved private IP is exported to the remote
-process as `DITTOFS_BENCH_MOUNT_IP` but not yet consumed for a kernel mount.
-That env var is the wiring point for a future client-driven, mount-based runner;
-SSH/scp transport already correctly uses the public IP only.
+The **cross-system comparison harness** (`dfsbench`, `cmd/bench`) — DittoFS vs
+juicefs / s3ql / rclone-mount / s3fs over NFSv3 / NFSv4.1 / SMB3 on a single
+disposable Scaleway VM, with uniform fio metrics and a real server↔S3 bandwidth
+number for every system — is being built incrementally. See **issue #1602** and
+`.planning/2026-07-08-bench-harness-consolidation.md` for the plan and per-PR
+sequence.
 
 ### Regenerating charts
 
@@ -418,9 +357,9 @@ For ad-hoc before/after work, run any package's `Benchmark*` against two commits
 and diff with `benchstat`:
 
 ```bash
-go test -bench=. -count=10 -run=^$ ./bench/blockstore/ > before.txt
+go test -bench=. -count=10 -run=^$ ./pkg/block/engine/ > before.txt
 # ... check out the other commit ...
-go test -bench=. -count=10 -run=^$ ./bench/blockstore/ > after.txt
+go test -bench=. -count=10 -run=^$ ./pkg/block/engine/ > after.txt
 benchstat before.txt after.txt
 ```
 
@@ -430,19 +369,16 @@ Snapshot `create` does a metadata `Backup` (a streamed dump plus an in-RAM
 `HashSet` of every referenced block hash), writes a hash manifest, drains
 uploads, then verifies durability by HEAD-probing every manifest hash at
 concurrency 16. `restore` reads the manifest back, resets, restores the dump,
-and re-verifies. The workloads in `bench/snapshots/` isolate the three cost
+and re-verifies. The benchmarks in `pkg/snapshot/` isolate the three cost
 centers (backup, manifest, verify) so a single benchmark can sweep file counts
 without standing up adapters / the control-plane DB / real S3.
 
 ```bash
 # CI-safe sweep (1e4 / 1e5 files; 1e6 cases skipped under -short):
-go test -bench=. -benchmem -short -run=^$ ./bench/snapshots/
+go test -bench=. -benchmem -short -run=^$ ./pkg/snapshot/
 
 # Full sweep including 1e6-file scales (heavy — minutes, multi-GB allocs):
-go test -bench=. -benchmem -benchtime=1x -run=^$ -timeout=900s ./bench/snapshots/
-
-# One ad-hoc seed→backup→manifest→verify pass with per-stage wall time:
-./dfsbench snapshots --files 1000000 --blocks-per-file 8
+go test -bench=. -benchmem -benchtime=1x -run=^$ -timeout=900s ./pkg/snapshot/
 ```
 
 ### Indicative numbers (Apple M1 Max, memory engine, in-memory remote)
@@ -484,5 +420,5 @@ serialized dump size, not a resident buffer.
 
 Each result JSON contains per-workload metrics: throughput/IOPS, latency
 percentiles (p50/p95/p99), total + succeeded + failed operation counts, and
-structured per-op errors. `dfsbench orchestrate --summary` prints the same data
-as a table.
+structured per-op errors. `go test -bench` reports the same per-op metrics; the
+forthcoming `dfsbench` harness (#1602) emits the cross-system result JSON.

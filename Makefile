@@ -53,7 +53,7 @@ build:
 # benchmark runs. The benchmark fails fast (b.Fatalf) on >5%
 # regression, which surfaces as a non-zero exit from `go test -bench`.
 bench-phase12:
-	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$$ ./pkg/blockstore/engine/...
+	go test -bench BenchmarkPerfGate_Phase12 -benchtime=10s -run=^$$ ./pkg/block/engine/...
 
 # Build the unified bench CLI (cmd/bench). See bench/README.md.
 # Output is dfsbench (not "bench") to avoid colliding with the
@@ -61,12 +61,13 @@ bench-phase12:
 build-bench:
 	go build -o dfsbench ./cmd/bench
 
-# Run blockstore Go benchmarks (10 iterations for benchstat).
+# Run the blockstore engine write-path Go benchmarks (10 iterations for benchstat).
 bench-blockstore:
-	go test -bench=. -benchtime=10x -run=^$$ ./bench/blockstore/
+	go test -bench 'SequentialWrite8MB|RandomWrite4KB|DedupHeavy|MixedRW|FlushChurn' \
+		-benchtime=10x -run=^$$ ./pkg/block/engine/
 
-# Umbrella target — only blockstore is wired today. As gc / snapshots /
-# metadata / adapters / e2e land, append their bench-<area> targets.
+# Umbrella target for the relocated component benches. Append more bench-<area>
+# targets (e.g. ./pkg/snapshot/) as they grow.
 bench-all: bench-blockstore
 
 # Run unit + integration tests with the race detector, matching CI.
