@@ -270,6 +270,9 @@
           gettext # envsubst for ptfconfig template rendering
           xmlstarlet # TRX result parsing
           curl # health checks in bootstrap/local mode
+
+          # Benchmark load generator for the dfsbench harness (bench/, cmd/bench)
+          fio
         ];
 
         # Platform-specific inputs

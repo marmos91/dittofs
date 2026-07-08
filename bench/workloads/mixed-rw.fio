@@ -9,6 +9,6 @@ ioengine=${FIO_ENGINE:-libaio}
 numjobs=${BENCH_THREADS:-4}
 runtime=${BENCH_RUNTIME:-60}
 time_based
-size=1g
-directory=/mnt/bench
+size=${BENCH_SIZE:-1g}
+directory=${BENCH_DIR:-/mnt/bench}
 group_reporting
