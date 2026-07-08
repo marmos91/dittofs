@@ -34,8 +34,13 @@ func newRootCmd() *cobra.Command {
 func newListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List available workloads and size classes",
+		Short: "List available backends, workloads, and size classes",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, _ = fmt.Fprintln(cmdOut, "backends (managed mode):")
+			for _, n := range backendNames() {
+				b := registry[n]
+				_, _ = fmt.Fprintf(cmdOut, "  %-12s %s\n", n, backendProtos(b))
+			}
 			_, _ = fmt.Fprintln(cmdOut, "workloads:")
 			for _, w := range knownWorkloads {
 				_, _ = fmt.Fprintf(cmdOut, "  %s\n", w)

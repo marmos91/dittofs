@@ -143,6 +143,54 @@ func splitSystemLabel(label string) (b *Backend, proto Protocol, explicit bool, 
 	return bk, "", false, nil
 }
 
+// readWorkloads are the workloads whose cold (post-evict) pass is meaningful —
+// only reads exercise the from-S3 path. Write/metadata workloads run warm only,
+// so the cold pass isn't padded with numbers that say nothing about S3 latency.
+var readWorkloads = map[string]bool{
+	"seq-read":     true,
+	"rand-read-4k": true,
+	"mixed-rw":     true,
+}
+
+// managedMatrix expands resolved plans into cells: a warm pass for every
+// workload, plus a cold pass (post-evict) for read workloads when eviction is
+// on. target is left empty — the runner fills it per plan after Mount.
+func managedMatrix(plans []plan, workloads, sizes []string, evict bool) []cell {
+	if len(sizes) == 0 {
+		sizes = []string{"medium"}
+	}
+	var cells []cell
+	for _, p := range plans {
+		for _, w := range workloads {
+			for _, s := range sizes {
+				cells = append(cells, cell{
+					system: p.systemLabel(), workload: w, size: s,
+					protocol: string(p.protocol), pass: "warm",
+				})
+				if evict && readWorkloads[w] {
+					cells = append(cells, cell{
+						system: p.systemLabel(), workload: w, size: s,
+						protocol: string(p.protocol), pass: "cold",
+					})
+				}
+			}
+		}
+	}
+	return cells
+}
+
+// backendProtos formats a backend's supported protocols for `list`, e.g.
+// "nfs3(reexport) nfs4(reexport)".
+func backendProtos(b *Backend) string {
+	var parts []string
+	for _, p := range managedProtocols {
+		if sup := b.Support[p]; sup != NA {
+			parts = append(parts, fmt.Sprintf("%s(%s)", p, sup))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 // backendNames returns registered backend names, sorted, for `list`.
 func backendNames() []string {
 	names := make([]string, 0, len(registry))

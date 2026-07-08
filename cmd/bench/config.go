@@ -21,6 +21,9 @@ type Config struct {
 	Runtime int    `yaml:"runtime"` // fio runtime seconds
 	Engine  string `yaml:"engine"`  // fio ioengine
 	FioBin  string `yaml:"fio_bin"` // fio binary path
+
+	Bucket   string `yaml:"bucket"`   // S3 bucket for managed S3-backed backends
+	Endpoint string `yaml:"endpoint"` // S3 endpoint URL (creds stay in env)
 }
 
 // loadConfig reads a dfsbench YAML config. A missing path is not an error only

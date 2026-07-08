@@ -118,6 +118,42 @@ func TestSplitSystemLabel_HyphenatedBackendName(t *testing.T) {
 	}
 }
 
+func TestManagedMatrix_WarmAllColdReadsOnly(t *testing.T) {
+	plans := []plan{
+		{backend: &Backend{Name: "dittofs-s3"}, protocol: ProtoNFS3, support: Native},
+	}
+	workloads := []string{"seq-write", "seq-read", "metadata"}
+	cells := managedMatrix(plans, workloads, []string{"medium"}, true)
+
+	// warm for all 3 + cold for the 1 read workload (seq-read) = 4 cells.
+	if len(cells) != 4 {
+		t.Fatalf("got %d cells, want 4: %v", len(cells), cells)
+	}
+	cold := 0
+	for _, c := range cells {
+		if c.protocol != "nfs3" || c.system != "dittofs-s3-nfs3" {
+			t.Errorf("bad stamp: %+v", c)
+		}
+		if c.pass == "cold" {
+			cold++
+			if c.workload != "seq-read" {
+				t.Errorf("cold pass on non-read workload %q", c.workload)
+			}
+		}
+	}
+	if cold != 1 {
+		t.Errorf("got %d cold cells, want 1 (seq-read only)", cold)
+	}
+}
+
+func TestManagedMatrix_NoEvictSkipsColdPass(t *testing.T) {
+	plans := []plan{{backend: &Backend{Name: "b"}, protocol: ProtoNFS3}}
+	cells := managedMatrix(plans, []string{"seq-read"}, []string{"medium"}, false)
+	if len(cells) != 1 || cells[0].pass != "warm" {
+		t.Fatalf("without evict expect single warm cell, got %v", cells)
+	}
+}
+
 func TestBackendNamesSorted(t *testing.T) {
 	withRegistry(t,
 		&Backend{Name: "s3fs"},
