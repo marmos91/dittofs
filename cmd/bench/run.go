@@ -26,6 +26,7 @@ type runFlags struct {
 	resume     bool
 	dryRun     bool
 	evictCache bool
+	remote     bool
 }
 
 func newRunCmd() *cobra.Command {
@@ -69,6 +70,7 @@ SCW provisioning + resume land in a follow-up PR (see issue #1602).`,
 	fl.BoolVar(&f.resume, "resume", false, "skip cells whose result JSON already exists")
 	fl.BoolVar(&f.dryRun, "dry-run", false, "print the cell matrix and exit")
 	fl.BoolVar(&f.evictCache, "evict-cache", true, "run a cold (post-evict) read pass in managed mode")
+	fl.BoolVar(&f.remote, "remote", false, "drive the run on the SCW VM from .bench-vm.json (needs `dfsbench setup`)")
 	return cmd
 }
 
@@ -88,6 +90,11 @@ func runBench(ctx context.Context, f *runFlags) error {
 		return err
 	}
 	f.applyConfig(cfg)
+
+	// Remote: orchestrate the run on the provisioned VM instead of here.
+	if f.remote {
+		return runRemote(ctx, f)
+	}
 
 	if f.smoke && f.local {
 		return fmt.Errorf("--smoke and --local are mutually exclusive")
