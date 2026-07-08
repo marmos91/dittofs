@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -59,16 +60,25 @@ func runSetup(ctx context.Context) error {
 	if err := waitSSH(ctx, ex, vm); err != nil {
 		return err
 	}
-	bin, err := crossBuild(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.RemoveAll(bin) }()
-	if err := ex.Push(ctx, bin, vm.IP, remoteUser, "/root/dfsbench"); err != nil {
-		return err
-	}
-	if _, err := ex.Run(ctx, vm.IP, remoteUser, "chmod +x /root/dfsbench"); err != nil {
-		return err
+	// Push dfsbench plus the DittoFS server + client (the dittofs-s3 subject
+	// runs `dfs`/`dfsctl` on the VM). All are pure-Go / CGO-free cross-builds.
+	for _, b := range []struct{ pkg, name, dst string }{
+		{"./cmd/bench", "dfsbench", "/root/dfsbench"},
+		{"./cmd/dfs", "dfs", "/usr/local/bin/dfs"},
+		{"./cmd/dfsctl", "dfsctl", "/usr/local/bin/dfsctl"},
+	} {
+		bin, err := crossBuild(ctx, b.pkg, b.name)
+		if err != nil {
+			return err
+		}
+		err = ex.Push(ctx, bin, vm.IP, remoteUser, b.dst)
+		_ = os.RemoveAll(filepath.Dir(bin))
+		if err != nil {
+			return err
+		}
+		if _, err := ex.Run(ctx, vm.IP, remoteUser, "chmod +x "+b.dst); err != nil {
+			return err
+		}
 	}
 	_, _ = fmt.Fprintf(cmdOut, "ready: dfsbench run --remote --systems ...  (then dfsbench teardown)\n")
 	return nil
@@ -103,17 +113,17 @@ func waitSSH(ctx context.Context, ex Executor, vm VM) error {
 	return fmt.Errorf("ssh to %s never came up", vm.IP)
 }
 
-// crossBuild builds a static linux/amd64 dfsbench and returns its path.
-func crossBuild(ctx context.Context) (string, error) {
+// crossBuild builds a static linux/amd64 binary from pkg and returns its path.
+func crossBuild(ctx context.Context, pkg, name string) (string, error) {
 	dir, err := os.MkdirTemp("", "dfsbench-build-")
 	if err != nil {
 		return "", err
 	}
-	bin := dir + "/dfsbench"
-	c := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/bench")
+	bin := filepath.Join(dir, name)
+	c := exec.CommandContext(ctx, "go", "build", "-o", bin, pkg)
 	c.Env = append(os.Environ(), "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
 	if out, err := c.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("cross-build: %w\n%s", err, out)
+		return "", fmt.Errorf("cross-build %s: %w\n%s", pkg, err, out)
 	}
 	return bin, nil
 }
