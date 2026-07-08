@@ -73,6 +73,7 @@ func runDittofsConc(ctx context.Context, opts Opts, s3cfg *s3Config, basePrefix 
 		upDir := filepath.Join(opts.WorkDir, fmt.Sprintf("engine-c%d-%s-up", conc, cl.name))
 		bs, ms, cleanup, err := blockstore.NewEngineWithOpts(upDir, remoteStore, blockstore.EngineOpts{
 			Syncer: &cfg, Metrics: upMx, KeepRemoteOpen: true, PackedBlocks: true,
+			ChunkParams: opts.ChunkParams(),
 		})
 		if err != nil {
 			_ = remoteStore.Close()

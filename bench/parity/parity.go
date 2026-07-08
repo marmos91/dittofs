@@ -28,6 +28,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // Quadrant identifiers. "meta" is the metadata-ops lane: remote-object
@@ -68,7 +70,31 @@ type Opts struct {
 	SmallFileBytes int64 // size of each small file
 	SmallFileCount int   // number of small files
 
+	// MinChunk / MaxChunk sweep the dittofs FastCDC chunk size (#1569) to
+	// measure cold-read amplification. MinChunk is the dominant knob (effective
+	// chunk ≈ Min under the shared masks); 0 keeps the default 1M/4M/16M
+	// profile. MaxChunk is the ceiling (default 16 MiB when only MinChunk set).
+	MinChunk int // FastCDC min chunk bytes; 0 = default profile
+	MaxChunk int // FastCDC max chunk bytes; 0 = 16 MiB when MinChunk > 0
+
 	KeepRemote bool // skip remote cleanup (debugging); meta-delete phase is skipped
+}
+
+// ChunkParams builds the dittofs upload engine's FastCDC sizing from the
+// Min/Max knobs. Zero MinChunk → zero Params, which the FSStore maps to
+// chunker.DefaultParams(). When only MinChunk is set, Max defaults to the
+// 16 MiB ceiling and Avg=Max so the shared small-region mask spans the whole
+// [Min,Max) range (see pkg/block/chunker). MaxChunk alone (no MinChunk) is
+// ignored — Min drives the sweep.
+func (o *Opts) ChunkParams() chunker.Params {
+	if o.MinChunk == 0 {
+		return chunker.Params{}
+	}
+	max := o.MaxChunk
+	if max == 0 {
+		max = chunker.MaxChunkSize
+	}
+	return chunker.Params{Min: o.MinChunk, Avg: max, Max: max}
 }
 
 // Validate applies defaults and rejects nonsense.
@@ -117,6 +143,11 @@ func (o *Opts) Validate() error {
 	}
 	if o.SmallFileCount <= 0 {
 		o.SmallFileCount = 2048
+	}
+	if o.MinChunk != 0 {
+		if err := o.ChunkParams().Validate(); err != nil {
+			return err
+		}
 	}
 	if o.OutDir == "" {
 		o.OutDir = filepath.Join("bench", "results")
@@ -175,6 +206,8 @@ type RunOpts struct {
 	SmallFileBytes int64  `json:"small_file_bytes"`
 	SmallFileCount int    `json:"small_file_count"`
 	Seed           uint64 `json:"seed"`
+	MinChunk       int    `json:"min_chunk,omitempty"` // FastCDC min chunk bytes (#1569 sweep); absent = default profile
+	MaxChunk       int    `json:"max_chunk,omitempty"` // FastCDC max chunk bytes (#1569 sweep); absent = default profile
 }
 
 // Execute runs the full harness and writes the scorecard artifacts.
@@ -212,6 +245,8 @@ func Execute(ctx context.Context, opts Opts) (string, error) {
 			SmallFileBytes: opts.SmallFileBytes,
 			SmallFileCount: opts.SmallFileCount,
 			Seed:           opts.Seed,
+			MinChunk:       opts.MinChunk,
+			MaxChunk:       opts.MaxChunk,
 		},
 		Timelines: map[string]Timeline{},
 	}

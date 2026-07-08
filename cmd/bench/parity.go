@@ -26,6 +26,8 @@ var parityFlags struct {
 	largeCount int
 	smallBytes int64
 	smallCount int
+	minChunk   int
+	maxChunk   int
 	keepRemote bool
 }
 
@@ -70,6 +72,8 @@ bench/scripts/parity-scw.sh (disposable Scaleway VM -> Cubbit / SCW S3).`,
 			LargeFileCount: parityFlags.largeCount,
 			SmallFileBytes: parityFlags.smallBytes,
 			SmallFileCount: parityFlags.smallCount,
+			MinChunk:       parityFlags.minChunk,
+			MaxChunk:       parityFlags.maxChunk,
 			KeepRemote:     parityFlags.keepRemote,
 		}
 		var err error
@@ -134,6 +138,8 @@ func init() {
 	f.IntVar(&parityFlags.largeCount, "large-file-count", 0, "large-file count (default 4; smoke 2)")
 	f.Int64Var(&parityFlags.smallBytes, "small-file-bytes", 0, "small-file size (default 64KiB)")
 	f.IntVar(&parityFlags.smallCount, "small-file-count", 0, "small-file count (default 2048; smoke 128)")
+	f.IntVar(&parityFlags.minChunk, "min-chunk", 0, "dittofs FastCDC min chunk bytes (0=default ~1MiB; lower to cut cold-read amplification, #1569)")
+	f.IntVar(&parityFlags.maxChunk, "max-chunk", 0, "dittofs FastCDC max chunk bytes ceiling (default 16MiB when --min-chunk set)")
 	f.BoolVar(&parityFlags.keepRemote, "keep-remote", false, "skip remote cleanup + meta delete phase (debugging)")
 	rootCmd.AddCommand(parityCmd)
 }
