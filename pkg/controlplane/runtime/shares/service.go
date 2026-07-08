@@ -2572,11 +2572,17 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 			// bytes live in sealed log blobs it never touches. Drain them now
 			// (synced-only; safe because the no-remote refusal above guarantees
 			// a remote copy exists) so reads fall back to the remote.
-			if _, err := bs.DrainLocalSynced(ctx); err != nil {
+			drained, err := bs.DrainLocalSynced(ctx)
+			if err != nil {
 				return nil, fmt.Errorf("drain local synced blocks for share %q: %w", share.Name, err)
 			}
 
-			result.BytesFreed += beforeDisk - bs.LocalStats().DiskUsed
+			// Report the larger of the observed DiskUsed delta (captures the
+			// EvictLocal loop plus the drain) and the drain's own freed count.
+			// The raw delta can go negative if a concurrent write grows DiskUsed
+			// mid-eviction; max with the non-negative drained count keeps
+			// BytesFreed honest and never negative.
+			result.BytesFreed += max(beforeDisk-bs.LocalStats().DiskUsed, drained)
 		}
 	}
 

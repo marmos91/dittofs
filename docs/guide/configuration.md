@@ -591,7 +591,7 @@ filling the host volume, the local cache is bounded and writes apply
   demand with `dfsctl store block evict` (drops the read buffer and drains
   resident synced blocks; never drops not-yet-uploaded data). Remote read-miss
   volume (the read-amplification signal) is observable via the
-  `datapath_block_range_read_bytes_total` metric.
+  `dittofs_datapath_block_range_read_bytes_total` metric.
 - **Backpressure stall.** When the cache is full and every cached chunk is
   still unsynced, a write **stalls** waiting for the syncer to drain to the
   remote and free space, rather than failing. The stall is bounded by

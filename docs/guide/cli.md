@@ -5512,7 +5512,7 @@ Global flags:
 Evict block store data
 
 Evict block store data from local storage, forcing subsequent reads
-to fetch from the remote (S3) tier.
+to fetch from the remote tier.
 
 By default, evicts both the in-memory read buffer and the resident local
 disk blocks for all shares. Local eviction drains every locally-resident
