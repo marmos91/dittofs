@@ -48,7 +48,12 @@ jobs:
         uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
 
       - name: Install Linux packaging tools
-        run: sudo apt-get update && sudo apt-get install -y dpkg-dev createrepo-c
+        run: |
+          # Drop the runner image's pre-configured Microsoft apt repos; they
+          # periodically break signing verification and fail apt-get update
+          # (NOSPLIT / "no longer signed"). We don't need them here.
+          sudo grep -rlZ packages.microsoft.com /etc/apt/sources.list.d/ 2>/dev/null | sudo xargs -0r rm -f
+          sudo apt-get update && sudo apt-get install -y dpkg-dev createrepo-c
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@9a127d869fb706213d29cdf8eef3a4ea2b869415 # v7
