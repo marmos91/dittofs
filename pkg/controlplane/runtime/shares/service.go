@@ -2567,6 +2567,15 @@ func (s *Service) EvictBlockStore(ctx context.Context, shareName string, opts Ev
 				result.LocalFilesEvicted++
 			}
 
+			// EvictLocal only clears per-file append-log/memory state, and
+			// ListFiles goes empty after rollup — so post-rollup the resident
+			// bytes live in sealed log blobs it never touches. Drain them now
+			// (synced-only; safe because the no-remote refusal above guarantees
+			// a remote copy exists) so reads fall back to the remote.
+			if _, err := bs.DrainLocalSynced(ctx); err != nil {
+				return nil, fmt.Errorf("drain local synced blocks for share %q: %w", share.Name, err)
+			}
+
 			result.BytesFreed += beforeDisk - bs.LocalStats().DiskUsed
 		}
 	}

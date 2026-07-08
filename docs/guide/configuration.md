@@ -583,7 +583,15 @@ filling the host volume, the local cache is bounded and writes apply
   `blockstore.local.default_remote_cache_size` (default **10 GiB**). An
   explicit `--local-store-size` always wins. **Local-only shares are
   unaffected** — they keep their existing system-deduced local size and never
-  apply remote-cache backpressure.
+  apply remote-cache backpressure. The cap is enforced **lazily, on the
+  write/rollup path** (it evicts synced blocks to make room for new writes); it
+  is **not** a background reaper, so on an idle or read-only workload the
+  resident local tier is not shrunk toward the cap. To reclaim local disk — or
+  to force cold, remote-served reads for read-path benchmarking — evict on
+  demand with `dfsctl store block evict` (drops the read buffer and drains
+  resident synced blocks; never drops not-yet-uploaded data). Remote read-miss
+  volume (the read-amplification signal) is observable via the
+  `datapath_block_range_read_bytes_total` metric.
 - **Backpressure stall.** When the cache is full and every cached chunk is
   still unsynced, a write **stalls** waiting for the syncer to drain to the
   remote and free space, rather than failing. The stall is bounded by

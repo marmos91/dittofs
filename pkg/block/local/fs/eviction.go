@@ -623,6 +623,58 @@ func (bc *FSStore) relocateSurvivors(ctx context.Context, oldBlobID string, surv
 // worker; the next pass retries after the syncer has drained more chunks.
 // Serialized via blobReclaimActive so concurrent rollup workers do not
 // stampede; losers skip (the winner is already draining to the limit).
+// DrainLocalSynced evicts every locally-resident block whose bytes are already
+// durable on the remote, on demand — the operator-triggered counterpart to
+// reclaimSpace (which runs only on the write/rollup path and only down to
+// maxDisk). It drives the same CAS-LRU → sealed-blob → compaction ladder to
+// exhaustion, ignoring the maxDisk cap and the pin / eviction-disabled *policy*
+// gates: this is an explicit "evict local now" command, not automatic pressure.
+//
+// Data safety is unconditional and independent of those gates: blobEvictOne
+// drops only fully-synced blobs and compactBlobOne relocates a blob's unsynced
+// survivors before reclaiming its dead space, so unsynced (remote-missing)
+// bytes are never lost. EvictBlockStore refuses to call this without a remote
+// store for that reason. Returns the total bytes freed.
+func (bc *FSStore) DrainLocalSynced(ctx context.Context) (int64, error) {
+	var total int64
+	for {
+		if ctx.Err() != nil {
+			return total, ctx.Err()
+		}
+		if freed, err := bc.lruEvictOne(ctx); err == nil {
+			bc.subUsed(&bc.diskUsed, freed, "cas")
+			total += freed
+			continue
+		} else if !errors.Is(err, errLRUEmpty) {
+			return total, fmt.Errorf("drain local synced: %w", err)
+		}
+		bfreed, err := bc.blobEvictOne(ctx)
+		if err != nil {
+			if !errors.Is(err, errLRUEmpty) {
+				return total, fmt.Errorf("drain local synced: %w", err)
+			}
+			// No fully-synced blob to drop whole. Compact a blob pinned by
+			// unsynced survivors (#1497); stop when nothing more can be freed.
+			cfreed, cerr := bc.compactBlobOne(ctx)
+			if cerr != nil {
+				if !errors.Is(cerr, errLRUEmpty) {
+					return total, fmt.Errorf("drain local synced: %w", cerr)
+				}
+				return total, nil
+			}
+			if cfreed == 0 {
+				return total, nil
+			}
+			total += cfreed
+			continue
+		}
+		if bfreed == 0 {
+			return total, nil
+		}
+		total += bfreed
+	}
+}
+
 func (bc *FSStore) reclaimSpace(ctx context.Context) {
 	if bc.maxDisk <= 0 || !bc.evictionEnabled.Load() {
 		return
