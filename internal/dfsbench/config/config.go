@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -26,9 +26,9 @@ type Config struct {
 	Endpoint string `yaml:"endpoint"` // S3 endpoint URL (creds stay in env)
 }
 
-// loadConfig reads a dfsbench YAML config. A missing path is not an error only
+// LoadConfig reads a dfsbench YAML config. A missing path is not an error only
 // when path is empty (no --config given).
-func loadConfig(path string) (Config, error) {
+func LoadConfig(path string) (Config, error) {
 	if path == "" {
 		return Config{}, nil
 	}

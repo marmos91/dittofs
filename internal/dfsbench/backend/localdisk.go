@@ -1,4 +1,4 @@
-package main
+package backend
 
 // local-disk is the no-storage-backend control: a plain directory re-exported
 // over NFS (knfsd) and SMB (Samba) and mounted back over loopback. It carries

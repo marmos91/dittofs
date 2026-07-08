@@ -1,4 +1,4 @@
-package main
+package cloud
 
 import (
 	"context"
@@ -53,7 +53,8 @@ func saveVM(vm VM) error {
 	return os.WriteFile(vmStateFile, data, 0o644)
 }
 
-func loadVM() (VM, error) {
+// LoadVM reads the persisted bench-VM handle written by setup.
+func LoadVM() (VM, error) {
 	data, err := os.ReadFile(vmStateFile)
 	if err != nil {
 		return VM{}, fmt.Errorf("no bench VM (run `dfsbench setup` first): %w", err)

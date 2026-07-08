@@ -1,12 +1,18 @@
-package main
+package exec
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strings"
 )
+
+// CmdOut is where commands write their human-facing output. A package var keeps
+// the plumbing out of every function signature; tests point it at a buffer.
+var CmdOut io.Writer = os.Stdout
 
 // Executor runs commands and moves files on a remote host. The dfsbench
 // harness drives a single disposable benchmark VM through it (ssh/scp today);

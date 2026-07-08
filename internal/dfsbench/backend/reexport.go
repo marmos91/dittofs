@@ -1,10 +1,13 @@
-package main
+package backend
 
 import (
 	"context"
 	_ "embed"
 	"fmt"
 	"os"
+
+	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/marmos91/dittofs/internal/dfsbench/fio"
 )
 
 // Re-export layer: re-serve a source directory (a FUSE mountpoint or a plain
@@ -22,7 +25,7 @@ const (
 	sambaShare     = "bench"
 )
 
-//go:embed configs/smb.conf.tmpl
+//go:embed smb.conf.tmpl
 var smbConfTmpl string
 
 // reexportMount re-serves srcDir over proto and returns the loopback client
@@ -45,11 +48,11 @@ func reexportMount(ctx context.Context, srcDir string, proto Protocol) (string, 
 
 // reexportUnmount reverses reexportMount for proto.
 func reexportUnmount(ctx context.Context, proto Protocol) error {
-	_ = sh(ctx, "umount", clientMntDir)
+	_ = exec.Sh(ctx, "umount", clientMntDir)
 	switch proto {
 	case ProtoNFS3, ProtoNFS4:
 		_ = os.Remove(nfsExportsFile)
-		return sh(ctx, "exportfs", "-ra")
+		return exec.Sh(ctx, "exportfs", "-ra")
 	case ProtoSMB3:
 		return nil // smbd keeps running; the share dir is torn down by the backend
 	}
@@ -57,7 +60,7 @@ func reexportUnmount(ctx context.Context, proto Protocol) error {
 }
 
 func nfsReexport(ctx context.Context, srcDir, vers string) (string, error) {
-	if err := sh(ctx, "sh", "-c",
+	if err := exec.Sh(ctx, "sh", "-c",
 		"command -v exportfs >/dev/null || { apt-get update && apt-get install -y nfs-kernel-server; }"); err != nil {
 		return "", err
 	}
@@ -69,37 +72,37 @@ func nfsReexport(ctx context.Context, srcDir, vers string) (string, error) {
 	if err := os.WriteFile(nfsExportsFile, []byte(line), 0o644); err != nil {
 		return "", err
 	}
-	if err := sh(ctx, "systemctl", "restart", "nfs-kernel-server"); err != nil {
+	if err := exec.Sh(ctx, "systemctl", "restart", "nfs-kernel-server"); err != nil {
 		return "", err
 	}
-	if err := sh(ctx, "exportfs", "-ra"); err != nil {
+	if err := exec.Sh(ctx, "exportfs", "-ra"); err != nil {
 		return "", err
 	}
 	src := "127.0.0.1:" + srcDir
 	if vers != "3" {
 		src = "127.0.0.1:/"
 	}
-	if err := sh(ctx, "mount", "-t", "nfs", "-o", "vers="+vers, src, clientMntDir); err != nil {
+	if err := exec.Sh(ctx, "mount", "-t", "nfs", "-o", "vers="+vers, src, clientMntDir); err != nil {
 		return "", err
 	}
 	return clientMntDir, nil
 }
 
 func smbReexport(ctx context.Context, srcDir string) (string, error) {
-	if err := sh(ctx, "sh", "-c",
+	if err := exec.Sh(ctx, "sh", "-c",
 		"command -v smbd >/dev/null || { apt-get update && apt-get install -y samba cifs-utils; }"); err != nil {
 		return "", err
 	}
-	conf := expandJob(smbConfTmpl, map[string]string{"SHARE": sambaShare, "SRC_PATH": srcDir})
+	conf := fio.ExpandJob(smbConfTmpl, map[string]string{"SHARE": sambaShare, "SRC_PATH": srcDir})
 	if err := os.WriteFile(sambaConfFile, []byte(conf), 0o644); err != nil {
 		return "", err
 	}
-	if err := sh(ctx, "systemctl", "restart", "smbd"); err != nil {
+	if err := exec.Sh(ctx, "systemctl", "restart", "smbd"); err != nil {
 		return "", err
 	}
 	// Guest share (map to guest = Bad User) — no auth machinery for a localhost
 	// disposable VM.
-	if err := sh(ctx, "mount", "-t", "cifs", "//127.0.0.1/"+sambaShare, clientMntDir,
+	if err := exec.Sh(ctx, "mount", "-t", "cifs", "//127.0.0.1/"+sambaShare, clientMntDir,
 		"-o", "guest,vers=3.0,uid=0,gid=0"); err != nil {
 		return "", err
 	}

@@ -1,4 +1,4 @@
-package main
+package backend
 
 import (
 	"testing"
@@ -22,7 +22,7 @@ func TestResolveSystems_BareNameExpandsSupportedProtocols(t *testing.T) {
 		Support: map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
 	})
 
-	plans, err := resolveSystems([]string{"dittofs-s3"})
+	plans, err := ResolveSystems([]string{"dittofs-s3"})
 	if err != nil {
 		t.Fatalf("resolveSystems: %v", err)
 	}
@@ -32,11 +32,11 @@ func TestResolveSystems_BareNameExpandsSupportedProtocols(t *testing.T) {
 		t.Fatalf("got %d plans, want %d: %v", len(plans), len(want), plans)
 	}
 	for i, p := range plans {
-		if p.systemLabel() != want[i] {
-			t.Errorf("plan[%d] = %q, want %q", i, p.systemLabel(), want[i])
+		if p.SystemLabel() != want[i] {
+			t.Errorf("plan[%d] = %q, want %q", i, p.SystemLabel(), want[i])
 		}
-		if p.support != Native {
-			t.Errorf("plan[%d] support = %s, want native", i, p.support)
+		if p.Support != Native {
+			t.Errorf("plan[%d] support = %s, want native", i, p.Support)
 		}
 	}
 }
@@ -47,7 +47,7 @@ func TestResolveSystems_BareNameSkipsNAProtocols(t *testing.T) {
 		Support: map[Protocol]Support{ProtoNFS3: Reexport, ProtoNFS4: Reexport}, // no smb3
 	})
 
-	plans, err := resolveSystems([]string{"kernel-nfs"})
+	plans, err := ResolveSystems([]string{"kernel-nfs"})
 	if err != nil {
 		t.Fatalf("resolveSystems: %v", err)
 	}
@@ -55,11 +55,11 @@ func TestResolveSystems_BareNameSkipsNAProtocols(t *testing.T) {
 		t.Fatalf("got %d plans, want 2 (smb3 is NA and must skip): %v", len(plans), plans)
 	}
 	for _, p := range plans {
-		if p.protocol == ProtoSMB3 {
+		if p.Protocol == ProtoSMB3 {
 			t.Errorf("smb3 must not appear for kernel-nfs: %v", p)
 		}
-		if p.support != Reexport {
-			t.Errorf("support = %s, want reexport", p.support)
+		if p.Support != Reexport {
+			t.Errorf("support = %s, want reexport", p.Support)
 		}
 	}
 }
@@ -70,11 +70,11 @@ func TestResolveSystems_ExplicitProtocol(t *testing.T) {
 		Support: map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
 	})
 
-	plans, err := resolveSystems([]string{"dittofs-s3-nfs4"})
+	plans, err := ResolveSystems([]string{"dittofs-s3-nfs4"})
 	if err != nil {
 		t.Fatalf("resolveSystems: %v", err)
 	}
-	if len(plans) != 1 || plans[0].protocol != ProtoNFS4 {
+	if len(plans) != 1 || plans[0].Protocol != ProtoNFS4 {
 		t.Fatalf("want single nfs4 plan, got %v", plans)
 	}
 }
@@ -85,17 +85,17 @@ func TestResolveSystems_ExplicitNARejected(t *testing.T) {
 		Support: map[Protocol]Support{ProtoNFS3: Reexport},
 	})
 
-	if _, err := resolveSystems([]string{"kernel-nfs-smb3"}); err == nil {
+	if _, err := ResolveSystems([]string{"kernel-nfs-smb3"}); err == nil {
 		t.Fatal("expected error for explicitly-named NA combo, got nil")
 	}
 }
 
 func TestResolveSystems_UnknownBackend(t *testing.T) {
 	withRegistry(t) // empty
-	if _, err := resolveSystems([]string{"nope"}); err == nil {
+	if _, err := ResolveSystems([]string{"nope"}); err == nil {
 		t.Fatal("expected error for unknown backend")
 	}
-	if _, err := resolveSystems([]string{"nope-nfs3"}); err == nil {
+	if _, err := ResolveSystems([]string{"nope-nfs3"}); err == nil {
 		t.Fatal("expected error for unknown backend with protocol suffix")
 	}
 }
@@ -119,11 +119,11 @@ func TestSplitSystemLabel_HyphenatedBackendName(t *testing.T) {
 }
 
 func TestManagedMatrix_WarmAllColdReadsOnly(t *testing.T) {
-	plans := []plan{
-		{backend: &Backend{Name: "dittofs-s3"}, protocol: ProtoNFS3, support: Native},
+	plans := []Plan{
+		{Backend: &Backend{Name: "dittofs-s3"}, Protocol: ProtoNFS3, Support: Native},
 	}
 	workloads := []string{"seq-write", "seq-read", "metadata"}
-	cells := managedMatrix(plans, workloads, []string{"medium"}, true)
+	cells := ManagedMatrix(plans, workloads, []string{"medium"}, true)
 
 	// warm for all 3 + cold for the 1 read workload (seq-read) = 4 cells.
 	if len(cells) != 4 {
@@ -131,13 +131,13 @@ func TestManagedMatrix_WarmAllColdReadsOnly(t *testing.T) {
 	}
 	cold := 0
 	for _, c := range cells {
-		if c.protocol != "nfs3" || c.system != "dittofs-s3-nfs3" {
+		if c.Protocol != "nfs3" || c.System != "dittofs-s3-nfs3" {
 			t.Errorf("bad stamp: %+v", c)
 		}
-		if c.pass == "cold" {
+		if c.Pass == "cold" {
 			cold++
-			if c.workload != "seq-read" {
-				t.Errorf("cold pass on non-read workload %q", c.workload)
+			if c.Workload != "seq-read" {
+				t.Errorf("cold pass on non-read workload %q", c.Workload)
 			}
 		}
 	}
@@ -147,9 +147,9 @@ func TestManagedMatrix_WarmAllColdReadsOnly(t *testing.T) {
 }
 
 func TestManagedMatrix_NoEvictSkipsColdPass(t *testing.T) {
-	plans := []plan{{backend: &Backend{Name: "b"}, protocol: ProtoNFS3}}
-	cells := managedMatrix(plans, []string{"seq-read"}, []string{"medium"}, false)
-	if len(cells) != 1 || cells[0].pass != "warm" {
+	plans := []Plan{{Backend: &Backend{Name: "b"}, Protocol: ProtoNFS3}}
+	cells := ManagedMatrix(plans, []string{"seq-read"}, []string{"medium"}, false)
+	if len(cells) != 1 || cells[0].Pass != "warm" {
 		t.Fatalf("without evict expect single warm cell, got %v", cells)
 	}
 }

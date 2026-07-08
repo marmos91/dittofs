@@ -1,4 +1,4 @@
-package main
+package fio
 
 import (
 	"bytes"
@@ -33,7 +33,8 @@ type fioLatNS struct {
 	Percentile map[string]float64 `json:"percentile"`
 }
 
-const mib = 1 << 20
+// Mib is one mebibyte in bytes, used to scale fio's byte-rate metrics.
+const Mib = 1 << 20
 
 // parseFioJSON turns one fio JSON report into a CellResult's metric fields. It
 // combines the read and write directions (a mixed workload populates both; a
@@ -56,7 +57,7 @@ func parseFioJSON(data []byte) (CellResult, error) {
 	j := out.Jobs[0]
 
 	var r CellResult
-	r.ThroughputMBps = float64(j.Read.BWBytes+j.Write.BWBytes) / mib
+	r.ThroughputMBps = float64(j.Read.BWBytes+j.Write.BWBytes) / Mib
 	r.IOPS = j.Read.IOPS + j.Write.IOPS
 	r.TotalOps = j.Read.TotalIOS + j.Write.TotalIOS
 	r.TotalBytes = j.Read.IOBytes + j.Write.IOBytes

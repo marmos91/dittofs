@@ -1,4 +1,4 @@
-package main
+package report
 
 import (
 	"fmt"
@@ -6,23 +6,28 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/marmos91/dittofs/internal/dfsbench/exec"
+	"github.com/marmos91/dittofs/internal/dfsbench/fio"
 )
 
-func newReportCmd() *cobra.Command {
+// NewReportCmd builds the `report` subcommand, which re-renders the comparison
+// table from a results directory.
+func NewReportCmd() *cobra.Command {
 	var results string
 	cmd := &cobra.Command{
 		Use:     "report",
 		Short:   "Re-render the comparison table from a results directory",
 		Example: "  dfsbench report --results ./bench-results",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			rs, err := loadResults(results)
+			rs, err := fio.LoadResults(results)
 			if err != nil {
 				return err
 			}
 			if len(rs) == 0 {
 				return fmt.Errorf("no results in %q", results)
 			}
-			_, _ = fmt.Fprint(cmdOut, renderTable(rs))
+			_, _ = fmt.Fprint(exec.CmdOut, RenderTable(rs))
 			return nil
 		},
 	}
@@ -30,10 +35,10 @@ func newReportCmd() *cobra.Command {
 	return cmd
 }
 
-// renderTable produces the markdown comparison table. Columns follow the plan's
+// RenderTable produces the markdown comparison table. Columns follow the plan's
 // dictionary; rate columns render "—" when not the workload's headline metric
 // (S3MB/CTXSW land once their meters exist — carried, shown as 0/— for now).
-func renderTable(rs []CellResult) string {
+func RenderTable(rs []fio.CellResult) string {
 	if len(rs) == 0 {
 		return "no results\n"
 	}
@@ -57,7 +62,7 @@ func renderTable(rs []CellResult) string {
 			rate(r.ThroughputMBps, !isRandom(r.Workload)),
 			fmt.Sprintf("%.0f", r.LatencyP50Us),
 			fmt.Sprintf("%.0f", r.LatencyP99Us),
-			fmt.Sprintf("%d", r.S3Bytes/mib),
+			fmt.Sprintf("%d", r.S3Bytes/fio.Mib),
 			fmt.Sprintf("%d", r.Errors),
 		})
 	}

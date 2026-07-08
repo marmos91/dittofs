@@ -1,9 +1,11 @@
-package main
+package backend
 
 import (
 	"context"
 	"fmt"
 	"os"
+
+	"github.com/marmos91/dittofs/internal/dfsbench/exec"
 )
 
 // dittofs-s3 is the subject: DittoFS serving badger metadata + an S3 remote
@@ -30,7 +32,7 @@ func init() {
 		Setup:    dittofsSetup,
 		Mount:    dittofsMount,
 		Evict:    dittofsEvict,
-		Unmount:  func(ctx context.Context, _ Protocol) error { return sh(ctx, "umount", clientMntDir) },
+		Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
 		Teardown: dittofsTeardown,
 	})
 }
@@ -45,7 +47,7 @@ func dittofsSetup(ctx context.Context, env BackendEnv) error {
 	}
 	// Start the server (config schema pinned on the VM), then wait for its NFS
 	// port before driving dfsctl.
-	if err := sh(ctx, "sh", "-c", "dfs start >/var/log/bench-dittofs.log 2>&1 &"); err != nil {
+	if err := exec.Sh(ctx, "sh", "-c", "dfs start >/var/log/bench-dittofs.log 2>&1 &"); err != nil {
 		return err
 	}
 	if err := waitPort(ctx, dittofsNFSPort); err != nil {
@@ -54,11 +56,11 @@ func dittofsSetup(ctx context.Context, env BackendEnv) error {
 	// Attach an S3 remote block store and create the share bound to it.
 	storeCfg := fmt.Sprintf(`{"bucket":%q,"endpoint":%q,"access_key":%q,"secret_key":%q,"force_path_style":true}`,
 		env.Bucket, env.Endpoint, id, secret)
-	if err := sh(ctx, "dfsctl", "store", "block", "remote", "add",
+	if err := exec.Sh(ctx, "dfsctl", "store", "block", "remote", "add",
 		"--name", "bench-s3", "--type", "s3", "--config", storeCfg); err != nil {
 		return err
 	}
-	return sh(ctx, "dfsctl", "share", "create", "--name", dittofsShare, "--block-store", "bench-s3")
+	return exec.Sh(ctx, "dfsctl", "share", "create", "--name", dittofsShare, "--block-store", "bench-s3")
 }
 
 func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
@@ -79,7 +81,7 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 	default:
 		return "", fmt.Errorf("dittofs-s3: unsupported protocol %s", proto)
 	}
-	if err := sh(ctx, "mount", "-t", typ, "-o", opts, src, clientMntDir); err != nil {
+	if err := exec.Sh(ctx, "mount", "-t", typ, "-o", opts, src, clientMntDir); err != nil {
 		return "", err
 	}
 	return clientMntDir, nil
@@ -88,16 +90,16 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 // dittofsEvict drops locally-cached blocks so the next read is cold-from-S3.
 // #1595's DrainLocalSynced is what makes `store block evict` actually force it.
 func dittofsEvict(ctx context.Context) error {
-	return sh(ctx, "dfsctl", "store", "block", "evict")
+	return exec.Sh(ctx, "dfsctl", "store", "block", "evict")
 }
 
 func dittofsTeardown(ctx context.Context) error {
-	_ = sh(ctx, "sh", "-c", "pkill -f 'dfs start' || true")
+	_ = exec.Sh(ctx, "sh", "-c", "pkill -f 'dfs start' || true")
 	return os.RemoveAll(dittofsDataDir)
 }
 
 // waitPort blocks until 127.0.0.1:port accepts a connection or ~60s elapse.
 func waitPort(ctx context.Context, port string) error {
-	return sh(ctx, "sh", "-c",
+	return exec.Sh(ctx, "sh", "-c",
 		fmt.Sprintf("for i in $(seq 1 60); do nc -z 127.0.0.1 %s && exit 0; sleep 1; done; exit 1", port))
 }
