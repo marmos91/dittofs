@@ -86,7 +86,10 @@ func fuseUnmount(mnt string) func(context.Context) error {
 // cleanMount force-unmounts any stale FUSE mount an aborted run left behind, so
 // the next mount doesn't hit "directory already mounted / not empty".
 func cleanMount(ctx context.Context, mnt string) {
-	_ = exec.Sh(ctx, "fusermount", "-uz", mnt)
+	// fuse3-only distros ship `fusermount3` and may lack `fusermount`; try both.
+	if exec.Sh(ctx, "fusermount3", "-uz", mnt) != nil {
+		_ = exec.Sh(ctx, "fusermount", "-uz", mnt)
+	}
 	_ = exec.Sh(ctx, "umount", "-lf", mnt)
 }
 

@@ -66,13 +66,17 @@ func PollDone(ctx context.Context, ex exec.Executor, vm VM) error {
 	return fmt.Errorf("timed out waiting for /root/DONE (partial results may exist on VM)")
 }
 
-// PushRemoteConfig writes the non-secret bucket/endpoint config and a 0600 creds
-// env file to the VM (creds stay off argv and logs).
+// PushRemoteConfig writes the fully-merged non-secret config and a 0600 creds
+// env file to the VM, so a remote run honors every setting (engine, fio_bin, …),
+// not just bucket/endpoint. Creds stay off argv and logs.
 func PushRemoteConfig(ctx context.Context, ex exec.Executor, vm VM, cfg config.Config) error {
-	bucket := orEnv(cfg.Bucket, "BENCH_BUCKET")
-	endpoint := orEnv(cfg.Endpoint, "BENCH_ENDPOINT")
-	yaml := fmt.Sprintf("bucket: %q\nendpoint: %q\n", bucket, endpoint)
-	if err := ex.Push(ctx, MustTemp(yaml), vm.IP, remoteUser, "/root/dfsbench.yaml"); err != nil {
+	cfg.Bucket = orEnv(cfg.Bucket, "BENCH_BUCKET")
+	cfg.Endpoint = orEnv(cfg.Endpoint, "BENCH_ENDPOINT")
+	yaml, err := config.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err := ex.Push(ctx, MustTemp(string(yaml)), vm.IP, remoteUser, "/root/dfsbench.yaml"); err != nil {
 		return err
 	}
 	// Creds: 0600 env file, pushed (kept off argv and logs).
@@ -86,7 +90,7 @@ func PushRemoteConfig(ctx context.Context, ex exec.Executor, vm VM, cfg config.C
 	if err := ex.Push(ctx, envFile, vm.IP, remoteUser, "/root/bench.env"); err != nil {
 		return err
 	}
-	_, err := ex.Run(ctx, vm.IP, remoteUser, "chmod 600 /root/bench.env")
+	_, err = ex.Run(ctx, vm.IP, remoteUser, "chmod 600 /root/bench.env")
 	return err
 }
 

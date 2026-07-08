@@ -137,7 +137,7 @@ func newSrcBackend(sb srcBackend) *Backend {
 			if sb.setup != nil {
 				cleanMount(ctx, sb.srcDir) // clear any stale FUSE mount from an aborted run
 			}
-			if err := os.MkdirAll(sb.srcDir, 0o777); err != nil {
+			if err := os.MkdirAll(sb.srcDir, 0o755); err != nil {
 				return err
 			}
 			if sb.setup == nil {

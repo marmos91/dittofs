@@ -21,8 +21,12 @@ func runBench(ctx context.Context, f *runFlags) error {
 	}
 	f.applyConfig(cfg)
 
-	// Remote: orchestrate the run on the provisioned VM instead of here.
+	// Remote: orchestrate the managed run on the provisioned VM instead of here.
+	// --remote only makes sense for managed mode, so reject the local/smoke modes.
 	if f.remote {
+		if f.smoke || f.local || f.target != "" {
+			return errors.New("--remote runs the managed matrix only; drop --smoke/--local/--target")
+		}
 		return runRemote(ctx, f)
 	}
 

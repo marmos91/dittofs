@@ -26,6 +26,11 @@ type Config struct {
 	Endpoint string `yaml:"endpoint"` // S3 endpoint URL (creds stay in env)
 }
 
+// Marshal renders a Config back to YAML. Used to forward the fully-merged
+// config (file + env defaults) to a remote VM so `run --remote` honors every
+// setting — engine, fio_bin, etc. — not just bucket/endpoint.
+func Marshal(c Config) ([]byte, error) { return yaml.Marshal(c) }
+
 // LoadConfig reads a dfsbench YAML config. A missing path is not an error only
 // when path is empty (no --config given).
 func LoadConfig(path string) (Config, error) {

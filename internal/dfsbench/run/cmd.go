@@ -42,7 +42,7 @@ Modes:
                           and tears it down (needs Linux + knfsd/Samba/mount)
 
 See registered backends with 'dfsbench list'. fio must be installed and on PATH.
-SCW provisioning + resume land in a follow-up PR (see issue #1602).`,
+Add --remote to run the managed matrix on a provisioned VM (see 'dfsbench setup').`,
 		Example: `  dfsbench run --local --target /mnt/dittofs
   dfsbench run --smoke
   dfsbench run --systems local-disk,dittofs-s3 --sizes large
@@ -67,6 +67,6 @@ SCW provisioning + resume land in a follow-up PR (see issue #1602).`,
 	fl.BoolVar(&f.resume, "resume", false, "skip cells whose result JSON already exists")
 	fl.BoolVar(&f.dryRun, "dry-run", false, "print the cell matrix and exit")
 	fl.BoolVar(&f.evictCache, "evict-cache", true, "run a cold (post-evict) read pass in managed mode")
-	fl.BoolVar(&f.remote, "remote", false, "drive the run on the SCW VM from .bench-vm.json (needs `dfsbench setup`)")
+	fl.BoolVar(&f.remote, "remote", false, "drive the managed run on the provisioned VM from .bench-vm.json (needs `dfsbench setup`)")
 	return cmd
 }

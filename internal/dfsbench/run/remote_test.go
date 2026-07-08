@@ -18,9 +18,9 @@ func TestRemoteRunArgs_ForwardsSelection(t *testing.T) {
 		"/root/dfsbench run",
 		"--config /root/dfsbench.yaml",
 		"--results /root/bench-results",
-		"--systems dittofs-s3,s3fs",
-		"--workloads seq-read",
-		"--sizes large",
+		"--systems 'dittofs-s3,s3fs'", // forwarded values are shell-quoted
+		"--workloads 'seq-read'",
+		"--sizes 'large'",
 		"--resume",
 	} {
 		if !strings.Contains(got, want) {

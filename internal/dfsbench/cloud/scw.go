@@ -1,6 +1,7 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,12 +10,15 @@ import (
 	"time"
 )
 
-// Provisioning shells the `scw` CLI from Go, reusing the validated
-// parity-scw.sh robustness (IP-poll, transient-aware terminate) but parsing
-// JSON with encoding/json instead of python3. One disposable VM per run; its
-// handle is persisted to .bench-vm.json so run/teardown reattach.
+// scwProvider provisions bench VMs on Scaleway by shelling the `scw` CLI,
+// parsing JSON with encoding/json (not python3). It implements Provider.
+type scwProvider struct{}
 
-const vmStateFile = ".bench-vm.json"
+func (scwProvider) Provision(ctx context.Context) (VM, error) {
+	return provisionVM(ctx, defaultVMSpec())
+}
+
+func (scwProvider) Terminate(ctx context.Context, vm VM) error { return terminateVM(ctx, vm) }
 
 // vmSpec is the create-time shape; every field has an env override matching the
 // old script's knobs.
@@ -38,44 +42,15 @@ func defaultVMSpec() vmSpec {
 	}
 }
 
-// VM is the persisted handle to a provisioned bench VM.
-type VM struct {
-	ServerID string `json:"server_id"`
-	IP       string `json:"ip"`
-	Zone     string `json:"zone"`
-}
-
-func saveVM(vm VM) error {
-	data, err := json.MarshalIndent(vm, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(vmStateFile, data, 0o644)
-}
-
-// LoadVM reads the persisted bench-VM handle written by setup.
-func LoadVM() (VM, error) {
-	data, err := os.ReadFile(vmStateFile)
-	if err != nil {
-		return VM{}, fmt.Errorf("no bench VM (run `dfsbench setup` first): %w", err)
-	}
-	var vm VM
-	return vm, json.Unmarshal(data, &vm)
-}
-
-func clearVMState() error {
-	err := os.Remove(vmStateFile)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
-}
-
-// scwJSON runs a scw command with `-o json` and decodes stdout into v.
+// scwJSON runs a scw command with `-o json` and decodes stdout into v. It
+// captures stderr into the error so auth/quota/arg failures stay diagnosable.
 func scwJSON(ctx context.Context, v any, args ...string) error {
-	out, err := exec.CommandContext(ctx, "scw", append(args, "-o", "json")...).Output()
+	cmd := exec.CommandContext(ctx, "scw", append(args, "-o", "json")...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("scw %v: %w", args, err)
+		return fmt.Errorf("scw %v: %w: %s", args, err, bytes.TrimSpace(stderr.Bytes()))
 	}
 	return json.Unmarshal(out, v)
 }
@@ -93,7 +68,7 @@ func provisionVM(ctx context.Context, spec vmSpec) (VM, error) {
 		"name="+spec.Name, "ip=new", "root-volume="+spec.RootVol); err != nil {
 		return VM{}, fmt.Errorf("scw create: %w", err)
 	}
-	vm := VM{ServerID: created.ID, Zone: spec.Zone}
+	vm := VM{Provider: "scw", ServerID: created.ID, Zone: spec.Zone}
 	for i := 0; i < 30; i++ {
 		if ip, err := serverIP(ctx, vm); err == nil && ip != "" {
 			vm.IP = ip

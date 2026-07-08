@@ -67,13 +67,13 @@ func runRemote(ctx context.Context, f *runFlags) error {
 func remoteRunArgs(f *runFlags) string {
 	args := []string{"run", "--config", "/root/dfsbench.yaml", "--results", "/root/bench-results"}
 	if len(f.systems) > 0 {
-		args = append(args, "--systems", strings.Join(f.systems, ","))
+		args = append(args, "--systems", shQuote(strings.Join(f.systems, ",")))
 	}
 	if len(f.workloads) > 0 {
-		args = append(args, "--workloads", strings.Join(f.workloads, ","))
+		args = append(args, "--workloads", shQuote(strings.Join(f.workloads, ",")))
 	}
 	if len(f.sizes) > 0 {
-		args = append(args, "--sizes", strings.Join(f.sizes, ","))
+		args = append(args, "--sizes", shQuote(strings.Join(f.sizes, ",")))
 	}
 	if f.runtime > 0 {
 		args = append(args, "--runtime", fmt.Sprintf("%d", f.runtime))
@@ -88,4 +88,10 @@ func remoteRunArgs(f *runFlags) string {
 		args = append(args, "--resume")
 	}
 	return "/root/dfsbench " + strings.Join(args, " ")
+}
+
+// shQuote single-quotes a value forwarded into the remote /bin/sh command, so a
+// backend/workload name with shell metacharacters can't be reinterpreted.
+func shQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
