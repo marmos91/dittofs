@@ -93,13 +93,17 @@ func runSetup(ctx context.Context) error {
 // fast `command -v` no-op and guarantees fio exists before any run. (juicefs is
 // not in apt — its recipe curl-installs it.)
 func installPrereqs(ctx context.Context, ex Executor, vm VM) error {
-	const pkgs = "fio netcat-openbsd curl fuse3 " + // shared
-		"nfs-kernel-server samba cifs-utils " + // re-export layer
-		"s3fs s3ql rclone" // FUSE competitors in apt
+	// Core (fio load generator + waitPort's nc + the re-export servers) must
+	// install. Competitor tools are best-effort (|| true) so a package missing
+	// on this Ubuntu release disables just that backend, not the whole run
+	// (s3ql, e.g., is absent from noble's repos).
+	const core = "fio netcat-openbsd curl fuse3 nfs-kernel-server samba cifs-utils"
+	const apt = "DEBIAN_FRONTEND=noninteractive apt-get install -y "
+	cmd := "DEBIAN_FRONTEND=noninteractive apt-get update && " + apt + core +
+		" ; " + apt + "s3fs rclone || true" +
+		" ; " + apt + "s3ql || true"
 	_, _ = fmt.Fprintln(cmdOut, "installing prerequisites (fio + backend packages)…")
-	_, err := ex.Run(ctx, vm.IP, remoteUser,
-		"DEBIAN_FRONTEND=noninteractive apt-get update && "+
-			"DEBIAN_FRONTEND=noninteractive apt-get install -y "+pkgs)
+	_, err := ex.Run(ctx, vm.IP, remoteUser, cmd)
 	return err
 }
 
