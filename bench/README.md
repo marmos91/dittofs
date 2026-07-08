@@ -13,9 +13,13 @@ bandwidth number for every system.
 
 ## Using `dfsbench` (local mode)
 
-The harness runs `fio` (must be installed and on `PATH`) against a mounted
-filesystem and prints a comparison table; each cell's metrics are written as a
-JSON file under `--results` so `--resume` re-runs skip completed cells.
+The harness runs `fio` against a mounted filesystem and prints a comparison
+table; each cell's metrics are written as a JSON file under `--results` so
+`--resume` re-runs skip completed cells.
+
+`fio` must be installed and on `PATH`. The dev shell provides it — `nix develop`
+(fio is in `commonBuildInputs`) — otherwise install it yourself (`brew install
+fio`, `apt-get install fio`, …).
 
 ```sh
 go build -o dfsbench ./cmd/bench
