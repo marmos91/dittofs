@@ -1,5 +1,10 @@
 # DittoFS Benchmark Infrastructure Plan
 
+> **Superseded (2026-07-08):** the harness described here (in-process orchestrator +
+> Pulumi infra + Go fio-alike) has been consolidated into ONE fio-based competitor
+> harness, `dfsbench` (`cmd/bench`). See `.planning/2026-07-08-bench-harness-consolidation.md`
+> and issue #1602. This document is retained for historical context only.
+
 ## Context
 
 DittoFS needs real-world performance benchmarks to guide optimization work and compare against competitors. The existing `bench/` directory has Docker Compose infrastructure for comparative benchmarking (9 profiles), but Docker adds container/VM overhead that distorts results, the fio workload files are empty, and there's no built-in benchmark command or automation.

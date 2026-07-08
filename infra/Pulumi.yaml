@@ -1,3 +1,0 @@
-name: dittofs-bench
-runtime: go
-description: DittoFS infrastructure — Scaleway VMs for benchmarks and edge tests

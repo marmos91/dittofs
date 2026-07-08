@@ -1,3 +1,0 @@
-name: dittofs-bench
-runtime: go
-description: DittoFS benchmark infrastructure — Scaleway VMs with snapshot-based isolation

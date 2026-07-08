@@ -123,6 +123,3 @@ Notes:
 - `develop` and `main` are protected; admin bypass lets release pushes through (old unsigned
   commits in the catch-up range show as harmless "violations").
 - A flaky SMB-conformance run does not block cutting a tag.
-- Before a release, sanity-check S3 throughput parity: run `bench/scripts/parity-scw.sh`
-  then `bench/scripts/parity_check.py <scorecard> --baseline bench/parity/baselines/wan.json`.
-  It only fails on ≥2× structural regressions (the rig is noisy); investigate anything it flags.
