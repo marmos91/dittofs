@@ -54,8 +54,13 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.4.0
+          version: v2.12.2
           args: --timeout=5m
+          # Skip the action's online `config verify` — it fetches the config
+          # JSON schema over the network and times out intermittently, failing
+          # the job for reasons unrelated to the diff. golangci-lint still
+          # validates the config locally at runtime.
+          verify: false
 
   shellcheck-changes:
     name: Detect shell script changes
