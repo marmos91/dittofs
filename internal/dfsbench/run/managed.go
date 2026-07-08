@@ -106,28 +106,52 @@ func runPlan(ctx context.Context, p backend.Plan, env backend.BackendEnv, wls, s
 		defer func() { _ = b.Unmount(ctx, p.Protocol) }()
 	}
 
+	// Lay down the read target before any pass, so seq-read reads a real,
+	// full-size, durable file (not one fio implicitly creates then can't read
+	// cold from a writeback backend).
+	if err := layoutReadTarget(ctx, wls, sizes, mnt, opts); err != nil {
+		return err
+	}
+
 	if err := runPass(ctx, p, "warm", wls, sizes, mnt, opts, f); err != nil {
 		return err
 	}
 	if f.evictCache {
-		if b.Evict != nil {
-			if err := b.Evict(ctx); err != nil {
-				return fmt.Errorf("evict: %w", err)
-			}
-		}
-		// Universal cold step: drop the OS page cache so reads come from the
-		// backend, not RAM. Best-effort — a warn beats aborting the whole run.
-		if err := exec.DropOSCache(ctx); err != nil {
-			_, _ = fmt.Fprintf(exec.CmdOut, "warn: drop OS cache: %v\n", err)
-		}
 		var reads []string
 		for _, w := range wls {
 			if backend.ReadWorkloads[w] {
 				reads = append(reads, w)
 			}
 		}
-		if err := runPass(ctx, p, "cold", reads, sizes, mnt, opts, f); err != nil {
-			return err
+		if len(reads) > 0 {
+			// Make the read cold-from-S3. FUSE backends: bounce the mount stack —
+			// unmount the re-export, flush+remount the FUSE mount (the unmount
+			// guarantees the full writeback upload; the remount empties its cache),
+			// then re-export the fresh mount. Others (local-disk): just evict.
+			if b.FlushFUSE != nil {
+				if b.Unmount != nil {
+					_ = b.Unmount(ctx, p.Protocol)
+				}
+				if err := b.FlushFUSE(ctx); err != nil {
+					return fmt.Errorf("flush: %w", err)
+				}
+				newMnt, err := b.Mount(ctx, p.Protocol)
+				if err != nil {
+					return fmt.Errorf("remount: %w", err)
+				}
+				mnt = newMnt
+			} else if b.Evict != nil {
+				if err := b.Evict(ctx); err != nil {
+					return fmt.Errorf("evict: %w", err)
+				}
+			}
+			// Drop the OS page cache too, so reads come from the backend, not RAM.
+			if err := exec.DropOSCache(ctx); err != nil {
+				_, _ = fmt.Fprintf(exec.CmdOut, "warn: drop OS cache: %v\n", err)
+			}
+			if err := runPass(ctx, p, "cold", reads, sizes, mnt, opts, f); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -155,6 +179,39 @@ func runPass(ctx context.Context, p backend.Plan, pass string, wls, sizes []stri
 		}
 	}
 	return nil
+}
+
+// layoutReadTarget writes the file seq-read reads and records its byte count so
+// a writeback backend's Evict can wait for the full upload before the cold read.
+// It lays down one file at the largest requested size — a smaller-size read cell
+// just reads a prefix of it. No-op when no read workload is scheduled.
+func layoutReadTarget(ctx context.Context, wls, sizes []string, mnt string, opts fio.LoadOpts) error {
+	hasRead := false
+	for _, w := range wls {
+		if backend.ReadWorkloads[w] {
+			hasRead = true
+			break
+		}
+	}
+	if !hasRead {
+		return nil
+	}
+	size := maxReadSize(sizes)
+	if _, err := fio.RunFio(ctx, "layout", mnt, withSize(opts, size)); err != nil {
+		return fmt.Errorf("lay down read target: %w", err)
+	}
+	return nil
+}
+
+// maxReadSize returns the size selector resolving to the most bytes.
+func maxReadSize(sizes []string) string {
+	best, bestN := sizes[0], int64(-1)
+	for _, s := range sizes {
+		if n := fio.SizeBytes(fio.ResolveSize(s)); n > bestN {
+			best, bestN = s, n
+		}
+	}
+	return best
 }
 
 func printMatrix(cells []backend.Cell) {

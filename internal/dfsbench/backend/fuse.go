@@ -27,28 +27,24 @@ const (
 func init() {
 	all := []Protocol{ProtoNFS3, ProtoNFS4, ProtoSMB3}
 
+	// remount is the cold-read barrier for every FUSE backend: flush writeback to
+	// S3 + remount empty (see FlushFUSE). No evict needed — the remount replaces
+	// the local cache wholesale.
 	register(newSrcBackend(srcBackend{
 		name: "rclone", s3Backed: true, protos: all, srcDir: rcloneMnt,
-		setup: rcloneSetup, teardown: fuseUnmount(rcloneMnt),
-		evict: clearCache(rcloneCache),
+		setup: rcloneSetup, teardown: fuseUnmount(rcloneMnt), remount: rcloneRemount,
 	}))
 	register(newSrcBackend(srcBackend{
 		name: "s3ql", s3Backed: true, protos: all, srcDir: s3qlMnt,
-		setup: s3qlSetup, teardown: s3qlTeardown,
-		evict: func(ctx context.Context) error {
-			_ = exec.Sh(ctx, "s3qlctrl", "flushcache", s3qlMnt) // tool cache first, then OS drop
-			return clearDir(ctx, s3qlCache)
-		},
+		setup: s3qlSetup, teardown: s3qlTeardown, remount: s3qlRemount,
 	}))
 	register(newSrcBackend(srcBackend{
 		name: "juicefs", s3Backed: true, protos: all, srcDir: juicefsMnt,
-		setup: juicefsSetup, teardown: juicefsTeardown,
-		evict: clearCache(juicefsCache),
+		setup: juicefsSetup, teardown: juicefsTeardown, remount: juicefsRemount,
 	}))
 	register(newSrcBackend(srcBackend{
 		name: "s3fs", s3Backed: true, protos: all, srcDir: s3fsMnt,
-		setup: s3fsSetup, teardown: fuseUnmount(s3fsMnt),
-		evict: clearCache(s3fsCache),
+		setup: s3fsSetup, teardown: fuseUnmount(s3fsMnt), remount: s3fsRemount,
 	}))
 }
 
@@ -67,12 +63,9 @@ func ensureInstalled(ctx context.Context, cmd, pkg string) error {
 		fmt.Sprintf("command -v %s >/dev/null || { apt-get update && apt-get install -y %s; }", cmd, pkg))
 }
 
-// clearDir empties dir (keeping the dir itself); clearCache adapts it to an Evict.
+// clearDir empties dir (keeping the dir itself).
 func clearDir(ctx context.Context, dir string) error {
 	return exec.Sh(ctx, "sh", "-c", fmt.Sprintf("rm -rf %q/* %q/.[!.]* 2>/dev/null || true", dir, dir))
-}
-func clearCache(dir string) func(context.Context) error {
-	return func(ctx context.Context) error { return clearDir(ctx, dir) }
 }
 
 // fuseUnmount lazily unmounts a FUSE mountpoint (best-effort).
@@ -83,9 +76,29 @@ func fuseUnmount(mnt string) func(context.Context) error {
 	}
 }
 
-// juicefsVol is the current juicefs volume name (one backend runs at a time, so
-// a package var is enough); juicefsEndpoint/Bucket let teardown clean its data.
-var juicefsVol, juicefsEndpoint, juicefsBucket string
+// benchEnv is the current run's S3 target (one backend runs at a time, so a
+// package var suffices); it lets recipes reach S3 without threading env through
+// every one. juicefsVol is the current juicefs volume name.
+var (
+	benchEnv   BackendEnv
+	juicefsVol string
+)
+
+// flushUnmount unmounts a FUSE mountpoint non-lazily, so the tool flushes its
+// writeback cache to S3 before exiting — a lazy `-uz` would detach and keep
+// uploading in the background, which is exactly the race we're avoiding.
+// Best-effort: fuse3 then fuse2.
+func flushUnmount(ctx context.Context, mnt string) {
+	if exec.Sh(ctx, "fusermount3", "-u", mnt) != nil {
+		_ = exec.Sh(ctx, "fusermount", "-u", mnt)
+	}
+	// Only force-detach if the graceful unmount didn't take — a `-lf` while the
+	// tool is still flushing its writeback would abandon the un-uploaded tail
+	// (rclone's cold-read EIO), the very thing we're unmounting to avoid.
+	if exec.Sh(ctx, "mountpoint", "-q", mnt) == nil {
+		_ = exec.Sh(ctx, "umount", "-lf", mnt)
+	}
+}
 
 // juicefsTeardown stops juicefs gracefully, then best-effort-cleans the volume's
 // S3 data. `juicefs umount` stops the writeback daemon and flushes its cache (a
@@ -97,7 +110,7 @@ func juicefsTeardown(ctx context.Context) error {
 		cleanMount(ctx, juicefsMnt)
 	}
 	if juicefsVol != "" {
-		_ = cleanS3Prefix(ctx, juicefsEndpoint, juicefsBucket, juicefsVol+"/")
+		_ = cleanS3Prefix(ctx, juicefsVol+"/")
 	}
 	return nil
 }
@@ -143,12 +156,40 @@ func rcloneSetup(ctx context.Context, env BackendEnv) error {
 	}
 	// Own prefix + clean it, so a re-run isn't served stale files and rclone
 	// doesn't share the bucket root with other backends.
-	if err := cleanS3Prefix(ctx, env.Endpoint, env.Bucket, "rclone/"); err != nil {
+	benchEnv = env
+	if err := cleanS3Prefix(ctx, "rclone/"); err != nil {
 		return err
 	}
-	return exec.Sh(ctx, "rclone", "mount", "bench:"+env.Bucket+"/rclone", rcloneMnt,
+	return rcloneMountFUSE(ctx)
+}
+
+func rcloneMountFUSE(ctx context.Context) error {
+	return exec.Sh(ctx, "rclone", "mount", "bench:"+benchEnv.Bucket+"/rclone", rcloneMnt,
 		"--config", "/etc/bench-rclone.conf", "--cache-dir", rcloneCache,
 		"--vfs-cache-mode", "writes", "--daemon")
+}
+
+// rcloneRemount flushes rclone's vfs write cache to S3 (non-lazy unmount waits
+// for the daemon to upload + exit), clears the on-disk cache, and remounts empty
+// so the next read is cold-from-S3.
+func rcloneRemount(ctx context.Context) error {
+	// Drain the vfs write-back to S3 before unmounting: rclone keeps uploading in
+	// the background after `fusermount -u` returns, so without this the remount +
+	// cache-wipe races an in-flight upload and the cold read EIOs (rclone-nfs3).
+	_ = waitS3Settled(ctx, "rclone/")
+	flushUnmount(ctx, rcloneMnt)
+	if err := clearDir(ctx, rcloneCache); err != nil {
+		return err
+	}
+	if err := rcloneMountFUSE(ctx); err != nil {
+		return err
+	}
+	// Warm the vfs dir cache from S3: after a fresh mount the listing is empty,
+	// so over NFSv3 fio sees the read target as absent and ftruncates it → EIO
+	// (rclone-nfs3). A stat/list populates it with the real size first.
+	_ = waitMounted(ctx, rcloneMnt)
+	_ = exec.Sh(ctx, "ls", rcloneMnt)
+	return nil
 }
 
 func s3fsSetup(ctx context.Context, env BackendEnv) error {
@@ -162,21 +203,36 @@ func s3fsSetup(ctx context.Context, env BackendEnv) error {
 	if err := os.WriteFile("/etc/passwd-s3fs", []byte(id+":"+secret+"\n"), 0o600); err != nil {
 		return err
 	}
+	benchEnv = env
 	if err := os.MkdirAll(s3fsCache, 0o755); err != nil {
 		return err
 	}
 	// Clear the on-disk cache before each protocol's mount: the managed run reuses
-	// the same filenames (seq-write.0.0…) across nfs3/nfs4/smb3, and s3fs's stale
-	// use_cache entries from a prior protocol EIO the third writer under Samba.
+	// the same filenames across nfs3/nfs4/smb3, and s3fs's stale use_cache entries
+	// from a prior protocol EIO the third writer under Samba.
 	if err := clearDir(ctx, s3fsCache); err != nil {
 		return err
 	}
+	return s3fsMountFUSE(ctx)
+}
+
+func s3fsMountFUSE(ctx context.Context) error {
 	// allow_other: smbd's concurrent writers hit EIO on the re-exported mount
 	// without it (numjobs>1 SMB writes fail); knfsd tolerates its absence but
 	// Samba does not. s3fs runs as root here, so no /etc/fuse.conf edit is needed.
-	return exec.Sh(ctx, "s3fs", env.Bucket, s3fsMnt,
-		"-o", "passwd_file=/etc/passwd-s3fs", "-o", "url="+env.Endpoint,
+	return exec.Sh(ctx, "s3fs", benchEnv.Bucket, s3fsMnt,
+		"-o", "passwd_file=/etc/passwd-s3fs", "-o", "url="+benchEnv.Endpoint,
 		"-o", "use_path_request_style", "-o", "use_cache="+s3fsCache, "-o", "allow_other")
+}
+
+// s3fsRemount is uniform with the writeback backends' bounce; s3fs is already
+// durable-on-close, so this just guarantees a genuinely cold cache for the read.
+func s3fsRemount(ctx context.Context) error {
+	flushUnmount(ctx, s3fsMnt)
+	if err := clearDir(ctx, s3fsCache); err != nil {
+		return err
+	}
+	return s3fsMountFUSE(ctx)
 }
 
 func juicefsSetup(ctx context.Context, env BackendEnv) error {
@@ -195,27 +251,60 @@ func juicefsSetup(ctx context.Context, env BackendEnv) error {
 	// phantom entries. A never-used prefix is unambiguously empty. Teardown
 	// best-effort-cleans this volume's data (stored below for that).
 	juicefsVol = fmt.Sprintf("bench-%d", time.Now().UnixNano())
-	juicefsEndpoint, juicefsBucket = env.Endpoint, env.Bucket
+	benchEnv = env
 	// juicefs reads creds from ACCESS_KEY/SECRET_KEY — pass via env, never argv,
 	// so the secret stays out of the process list and run.log.
 	_ = os.Setenv("ACCESS_KEY", id)
 	_ = os.Setenv("SECRET_KEY", secret)
-	meta := "sqlite3:///var/lib/bench-juicefs.db"
 	_ = os.Remove("/var/lib/bench-juicefs.db") // fresh meta db for the fresh volume
 	if err := exec.Sh(ctx, "juicefs", "format", "--storage", "s3",
-		"--bucket", env.Endpoint+"/"+env.Bucket, meta, juicefsVol); err != nil {
+		"--bucket", env.Endpoint+"/"+env.Bucket, juicefsMeta, juicefsVol); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(juicefsCache, 0o755); err != nil {
 		return err
 	}
+	return juicefsMountFUSE(ctx)
+}
+
+const juicefsMeta = "sqlite3:///var/lib/bench-juicefs.db"
+
+func juicefsMountFUSE(ctx context.Context) error {
 	// --writeback: local-ack writes + async upload, matching DittoFS's local
 	// store + syncer and rclone's --vfs-cache-mode writes. Off by default in
 	// JuiceFS (default flushes to S3 on fsync/close), so without it the write
 	// pass compares different durability tiers. --cache-size caps the on-disk
 	// cache (default 100 GiB would exceed the VM disk).
 	return exec.Sh(ctx, "juicefs", "mount", "-d", "--writeback",
-		"--cache-dir", juicefsCache, "--cache-size", "10240", meta, juicefsMnt)
+		"--cache-dir", juicefsCache, "--cache-size", "10240", juicefsMeta, juicefsMnt)
+}
+
+// juicefsRemount flushes writeback fully to S3, then remounts with an empty
+// cache so the next read is cold-from-S3. `juicefs umount` ABANDONS whatever
+// writeback hasn't uploaded, and the clearDir would then wipe it — EIOing the
+// cold read past that offset — so first wait for the staging cache to drain.
+func juicefsRemount(ctx context.Context) error {
+	juicefsWaitUploaded(ctx)
+	if exec.Sh(ctx, "juicefs", "umount", juicefsMnt) != nil {
+		cleanMount(ctx, juicefsMnt)
+	}
+	if err := clearDir(ctx, juicefsCache); err != nil {
+		return err
+	}
+	return juicefsMountFUSE(ctx)
+}
+
+// juicefsWaitUploaded blocks until the writeback staging cache is empty — every
+// chunk uploaded to S3 — so the following umount + cache-wipe loses nothing.
+// Bounded to ~180s; best-effort.
+func juicefsWaitUploaded(ctx context.Context) {
+	check := fmt.Sprintf("[ -z \"$(find %q -path '*rawstaging*' -type f -print -quit 2>/dev/null)\" ]", juicefsCache)
+	for i := 0; i < 180; i++ {
+		if exec.Sh(ctx, "sh", "-c", check) == nil {
+			return
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func s3qlSetup(ctx context.Context, env BackendEnv) error {
@@ -228,12 +317,11 @@ func s3qlSetup(ctx context.Context, env BackendEnv) error {
 	}
 	// Own prefix + clean it (idempotent mkfs on a fresh prefix; no collision with
 	// juicefs's bench/).
-	if err := cleanS3Prefix(ctx, env.Endpoint, env.Bucket, "s3ql/"); err != nil {
+	benchEnv = env
+	if err := cleanS3Prefix(ctx, "s3ql/"); err != nil {
 		return err
 	}
-	// s3ql addresses generic S3 as s3c://<host>/<bucket>/<prefix>.
-	host := stripScheme(env.Endpoint)
-	url := fmt.Sprintf("s3c://%s/%s/s3ql", host, env.Bucket)
+	url := s3qlURL()
 	authinfo := fmt.Sprintf("[bench]\nstorage-url: %s\nbackend-login: %s\nbackend-password: %s\n", url, id, secret)
 	if err := os.WriteFile("/etc/bench-s3ql-authinfo2", []byte(authinfo), 0o600); err != nil {
 		return err
@@ -243,8 +331,27 @@ func s3qlSetup(ctx context.Context, env BackendEnv) error {
 	}
 	// mkfs is a no-op if the filesystem already exists (--force off).
 	_ = exec.Sh(ctx, "mkfs.s3ql", "--authfile", "/etc/bench-s3ql-authinfo2", "--plain", url)
+	return s3qlMountFUSE(ctx)
+}
+
+// s3qlURL addresses generic S3 as s3c://<host>/<bucket>/<prefix>.
+func s3qlURL() string {
+	return fmt.Sprintf("s3c://%s/%s/s3ql", stripScheme(benchEnv.Endpoint), benchEnv.Bucket)
+}
+
+func s3qlMountFUSE(ctx context.Context) error {
 	return exec.Sh(ctx, "mount.s3ql", "--authfile", "/etc/bench-s3ql-authinfo2",
-		"--cachedir", s3qlCache, url, s3qlMnt)
+		"--cachedir", s3qlCache, s3qlURL(), s3qlMnt)
+}
+
+// s3qlRemount flushes s3ql to S3 (umount.s3ql uploads its cache), clears the
+// local cache, and remounts empty for a cold read.
+func s3qlRemount(ctx context.Context) error {
+	_ = exec.Sh(ctx, "umount.s3ql", s3qlMnt)
+	if err := clearDir(ctx, s3qlCache); err != nil {
+		return err
+	}
+	return s3qlMountFUSE(ctx)
 }
 
 func s3qlTeardown(ctx context.Context) error {

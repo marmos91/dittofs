@@ -1,12 +1,16 @@
 [seq-read]
 description=Sequential read throughput
+# Single-pass (no time_based): a time-looped read re-serves a cached file from
+# RAM after the first pass, so on a big-RAM VM it measures cache, not the
+# backend. Reading the file exactly once — after the evict/S3-settle barrier —
+# measures a genuine cold read. Reads the file seq-write laid down (shared
+# filename_format), so the data is real and durably in S3 before the cold pass.
 rw=read
 bs=1m
 direct=1
 ioengine=${FIO_ENGINE:-libaio}
 numjobs=${BENCH_THREADS:-4}
-runtime=${BENCH_RUNTIME:-60}
-time_based
 size=${BENCH_SIZE:-1g}
 directory=${BENCH_DIR:-/mnt/bench}
+filename_format=bench.$jobnum
 group_reporting

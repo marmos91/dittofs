@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
 	"github.com/marmos91/dittofs/internal/dfsbench/fio"
@@ -54,7 +55,10 @@ func reexportUnmount(ctx context.Context, proto Protocol) error {
 		_ = os.Remove(nfsExportsFile)
 		return exec.Sh(ctx, "exportfs", "-ra")
 	case ProtoSMB3:
-		return nil // smbd keeps running; the share dir is torn down by the backend
+		// Stop smbd so it releases its open handles on the FUSE srcDir — otherwise
+		// a following FlushFUSE can't unmount the mount to flush it. reexportMount
+		// restarts smbd on the next mount.
+		return exec.Sh(ctx, "systemctl", "stop", "smbd")
 	}
 	return nil
 }
@@ -68,7 +72,9 @@ func nfsReexport(ctx context.Context, srcDir, vers string) (string, error) {
 		return "", err
 	}
 	// fsid=0 makes srcDir the NFSv4 pseudo-root (v4 mounts "/"); v3 mounts the path.
-	line := fmt.Sprintf("%s 127.0.0.1(rw,sync,no_subtree_check,no_root_squash,fsid=0)\n", srcDir)
+	// async: the server acks before committing (knfsd's fast path), matching
+	// Samba's async so SMB and NFS compare on the same (fastest) durability tier.
+	line := fmt.Sprintf("%s 127.0.0.1(rw,async,no_subtree_check,no_root_squash,fsid=0)\n", srcDir)
 	if err := os.WriteFile(nfsExportsFile, []byte(line), 0o644); err != nil {
 		return "", err
 	}
@@ -101,9 +107,17 @@ func smbReexport(ctx context.Context, srcDir string) (string, error) {
 		return "", err
 	}
 	// Guest share (map to guest = Bad User) — no auth machinery for a localhost
-	// disposable VM.
-	if err := exec.Sh(ctx, "mount", "-t", "cifs", "//127.0.0.1/"+sambaShare, clientMntDir,
-		"-o", "guest,vers=3.0,uid=0,gid=0"); err != nil {
+	// disposable VM. Retry: smbd isn't accepting connections the instant restart
+	// returns, so the first cifs mount can fail (exit 32) during a remount bounce.
+	var err error
+	for i := 0; i < 10; i++ {
+		if err = exec.Sh(ctx, "mount", "-t", "cifs", "//127.0.0.1/"+sambaShare, clientMntDir,
+			"-o", "guest,vers=3.0,uid=0,gid=0"); err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil {
 		return "", err
 	}
 	return clientMntDir, nil
@@ -120,6 +134,7 @@ type srcBackend struct {
 	setup    func(ctx context.Context, env BackendEnv) error // install + FUSE-mount at srcDir; nil = plain dir
 	teardown func(ctx context.Context) error                 // FUSE-unmount; nil = none
 	evict    func(ctx context.Context) error                 // clear tool cache; nil = OS-drop only
+	remount  func(ctx context.Context) error                 // flush writeback to S3 + remount empty-cache; nil = none
 }
 
 // newSrcBackend wires a srcBackend into a Backend, routing all protocols through
@@ -129,7 +144,7 @@ func newSrcBackend(sb srcBackend) *Backend {
 	for _, p := range sb.protos {
 		support[p] = Reexport
 	}
-	return &Backend{
+	b := &Backend{
 		Name:     sb.name,
 		S3Backed: sb.s3Backed,
 		Support:  support,
@@ -160,4 +175,15 @@ func newSrcBackend(sb srcBackend) *Backend {
 			return err
 		},
 	}
+	if sb.remount != nil {
+		// The runner unmounts the re-export first, so remount can flush + rebuild
+		// the FUSE mount; wait for it to serve before the runner re-exports.
+		b.FlushFUSE = func(ctx context.Context) error {
+			if err := sb.remount(ctx); err != nil {
+				return err
+			}
+			return waitMounted(ctx, sb.srcDir)
+		}
+	}
+	return b
 }

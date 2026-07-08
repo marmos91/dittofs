@@ -59,6 +59,12 @@ type Backend struct {
 	Evict    func(ctx context.Context) error
 	Unmount  func(ctx context.Context, proto Protocol) error
 	Teardown func(ctx context.Context) error
+
+	// FlushFUSE flushes a FUSE backend's writeback cache to S3 and remounts it
+	// with an empty cache, so the next read is genuinely cold-from-S3. nil for
+	// non-FUSE backends (the runner falls back to Evict + OS-cache drop). The
+	// runner unmounts the re-export around this, then re-exports the fresh mount.
+	FlushFUSE func(ctx context.Context) error
 }
 
 // BackendEnv carries the per-run knobs a Setup recipe needs (S3 creds stay in

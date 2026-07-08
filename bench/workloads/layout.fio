@@ -1,0 +1,15 @@
+[layout]
+description=Lay down a fixed-size read target (internal, unmeasured)
+# Writes bench.$jobnum at exactly --size, buffered + end_fsync, so seq-read has a
+# real, full-size file to read. Not time_based (must write the whole file, not
+# "as much as fits in N seconds") and not in KnownWorkloads (not user-selectable).
+rw=write
+bs=1m
+direct=0
+end_fsync=1
+ioengine=${FIO_ENGINE:-libaio}
+numjobs=${BENCH_THREADS:-4}
+size=${BENCH_SIZE:-1g}
+directory=${BENCH_DIR:-/mnt/bench}
+filename_format=bench.$jobnum
+group_reporting

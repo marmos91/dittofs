@@ -3,9 +3,36 @@ package fio
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 
 	"github.com/marmos91/dittofs/bench/workloads"
 )
+
+// SizeBytes parses an fio size string ("64k", "1m", "1g", "512M", or plain
+// bytes) into a byte count; returns 0 if unparseable. Used to size the read
+// target's durability barrier.
+func SizeBytes(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	mult := int64(1)
+	num := s
+	switch s[len(s)-1] {
+	case 'k', 'K':
+		mult, num = 1<<10, s[:len(s)-1]
+	case 'm', 'M':
+		mult, num = 1<<20, s[:len(s)-1]
+	case 'g', 'G':
+		mult, num = 1<<30, s[:len(s)-1]
+	case 't', 'T':
+		mult, num = 1<<40, s[:len(s)-1]
+	}
+	v, err := strconv.ParseInt(num, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v * mult
+}
 
 // KnownWorkloads are the fio job files shipped in bench/workloads. Each maps to
 // <name>.fio. Kept as an explicit list (not a dir scan) so --workloads
