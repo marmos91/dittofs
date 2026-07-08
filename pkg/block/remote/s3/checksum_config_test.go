@@ -7,14 +7,16 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
-// TestNewFromConfig_DisablesSDKChecksums pins #1466: block content is
-// BLAKE3-verified end-to-end, so the S3 client must run with the aws-sdk-go-v2
-// flexible-checksum layer set to WhenRequired. Left at the SDK default
-// (WhenSupported) every PutObject is wrapped in an aws-chunked streaming-trailer
-// encoding with a full CRC32 pass over each ~16 MiB block — redundant CPU + wire
-// framing, and an interop friction point with non-AWS S3 endpoints. This guards
-// against a future SDK default change or an accidental removal of the option.
-func TestNewFromConfig_DisablesSDKChecksums(t *testing.T) {
+// TestNewFromConfig_SkipsOptionalSDKChecksums pins #1466: block content is
+// BLAKE3-verified end-to-end, so the S3 client runs with the aws-sdk-go-v2
+// flexible-checksum layer set to WhenRequired — dropping the *optional*
+// checksums (operations the API mandates one for still get it). Left at the SDK
+// default (WhenSupported) every PutObject is wrapped in an aws-chunked
+// streaming-trailer encoding with a full CRC32 pass over each ~16 MiB block —
+// redundant CPU + wire framing, and an interop friction point with non-AWS S3
+// endpoints. This guards against a future SDK default change or an accidental
+// removal of the option.
+func TestNewFromConfig_SkipsOptionalSDKChecksums(t *testing.T) {
 	store, err := NewFromConfig(context.Background(), Config{
 		Bucket:    "b",
 		Region:    "us-east-1",
