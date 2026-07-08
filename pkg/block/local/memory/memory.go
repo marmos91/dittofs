@@ -592,6 +592,11 @@ func (s *MemoryStore) EvictMemory(_ context.Context, payloadID string) error {
 // process lifetime), so the toggle is a no-op.
 func (s *MemoryStore) SetEvictionEnabled(_ bool) {}
 
+// DrainLocalSynced satisfies local.LocalStore. The in-memory backend has no
+// sealed-blob tier to reclaim (chunks live for the process lifetime), so there
+// is nothing to drain on demand.
+func (s *MemoryStore) DrainLocalSynced(_ context.Context) (int64, error) { return 0, nil }
+
 // SetRetentionPolicy is a no-op in the memory store (memory store doesn't do eviction).
 func (s *MemoryStore) SetRetentionPolicy(_ block.RetentionPolicy, _ time.Duration) {}
 

@@ -839,6 +839,20 @@ func (bs *Store) EvictLocal(ctx context.Context, payloadID string) error {
 	return bs.local.DeleteAppendLog(ctx, payloadID)
 }
 
+// DrainLocalSynced evicts every locally-resident block already durable on the
+// remote, returning the bytes freed. Unlike EvictLocal (which clears per-file
+// append-log/memory state and whose ListFiles source goes empty after rollup),
+// this reclaims the sealed log-blob tier that holds the bulk of resident bytes
+// post-rollup — the on-demand path the shares evict admin uses to force reads
+// back onto the remote. Never drops unsynced (remote-missing) data.
+func (bs *Store) DrainLocalSynced(ctx context.Context) (int64, error) {
+	if err := bs.enter(); err != nil {
+		return 0, err
+	}
+	defer bs.closeMu.RUnlock()
+	return bs.local.DrainLocalSynced(ctx)
+}
+
 // WarmAll proactively fetches every remote block of every payload in this
 // share onto the local CAS tier, delegating to the syncer's WarmAll under the
 // store's close-gate so a concurrent Close drains the run instead of racing

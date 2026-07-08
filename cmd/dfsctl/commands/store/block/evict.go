@@ -13,18 +13,29 @@ import (
 var evictCmd = &cobra.Command{
 	Use:   "evict",
 	Short: "Evict block store data",
-	Long: `Evict block store data from local storage.
+	Long: `Evict block store data from local storage, forcing subsequent reads
+to fetch from the remote tier.
 
-By default, evicts both read buffer and local disk data for all shares.
+By default, evicts both the in-memory read buffer and the resident local
+disk blocks for all shares. Local eviction drains every locally-resident
+block whose bytes are already synced to the remote — including the sealed
+log blobs that hold the bulk of resident data after a rollup, which the
+lazy --local-store-size cap only reclaims on the write path. Blocks not yet
+uploaded to the remote are never dropped.
+
 Use --read-buffer-only to evict only the read buffer (in-memory).
 Use --local-only to evict only local disk data (preserves read buffer).
 Use --share to evict a specific share only.
 
-Safety: Eviction of local blocks is refused if no remote store is
+Safety: eviction of local blocks is refused if no remote store is
 configured for a share, since that would cause data loss.
 
+Uses: reclaim local disk on demand, or force cold (remote-served) reads for
+read-path benchmarking — the local tier is otherwise sticky, so a benchmark
+would measure locally-served reads.
+
 Examples:
-  # Evict all storage tiers for all shares
+  # Evict all storage tiers for all shares (drops resident local blocks)
   dfsctl store block evict
 
   # Evict only read buffer

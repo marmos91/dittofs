@@ -257,15 +257,19 @@ evict_dittofs_cache() {
         *) return 0 ;;
     esac
 
-    log "[${name}] Evicting DittoFS server-side cache via dfsctl..."
+    log "[${name}] Evicting DittoFS local block tier (read buffer + resident blobs) via dfsctl..."
 
     if $DRY_RUN; then
-        log "[DRY-RUN] Would SSH to server and run: dfsctl cache evict"
+        log "[DRY-RUN] Would SSH to server and run: dfsctl store block evict"
         return 0
     fi
 
-    if ! ssh_server "dfsctl cache evict -v" 2>&1; then
-        log "WARN: dfsctl cache evict failed (server cache may still be warm)"
+    # Drops the in-memory read buffer AND drains the resident local blocks that
+    # are already synced to the remote, so subsequent reads must fetch from S3
+    # (the cold-read path this benchmark measures). Synced-only: never loses
+    # not-yet-uploaded data. Replaces the removed `dfsctl cache evict`.
+    if ! ssh_server "dfsctl store block evict -v" 2>&1; then
+        log "WARN: dfsctl store block evict failed (local blocks may still be resident → reads served locally)"
     fi
 }
 

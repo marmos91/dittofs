@@ -154,6 +154,13 @@ type LocalStore interface {
 	// file.
 	EvictMemory(ctx context.Context, payloadID string) error
 
+	// DrainLocalSynced evicts every locally-resident block whose bytes are
+	// already durable on the remote, on demand, returning the bytes freed.
+	// Unsynced (remote-missing) blocks are never dropped. Used by the
+	// block-store evict admin path to force reads back onto the remote (e.g.
+	// cold-read benchmarking). A backend with no evictable local tier returns 0.
+	DrainLocalSynced(ctx context.Context) (int64, error)
+
 	// ListFiles returns the payloadIDs of all files currently tracked
 	// in the local store.
 	ListFiles() []string
