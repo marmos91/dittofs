@@ -1,27 +1,57 @@
 // Command dfsbench is the DittoFS-vs-competitors benchmark harness.
 //
-// The fio-based comparison, provisioning, and reporting commands land in
-// follow-up PRs (see issue #1602). This binary currently establishes the
-// entrypoint and carries the salvaged SSH executor (exec.go) the provisioning
-// path will drive; running it with no subcommand prints help.
+// This PR wires the core: a fio load-generator driver, a per-cell result schema with
+// crash-safe resume, and a comparison-table report — driven locally via
+// `run --local`/`run --smoke` (no cloud). Cloud provisioning, the competitor
+// backend registry, protocol re-export, and ceiling baselines land in
+// follow-up PRs (see issue #1602). exec.go carries the salvaged SSH executor
+// the provisioning path will drive.
 package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/spf13/cobra"
 )
 
-func main() {
+// cmdOut is where commands write their human-facing output. A package var keeps
+// the plumbing out of every function signature; tests point it at a buffer.
+var cmdOut io.Writer = os.Stdout
+
+func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "dfsbench",
-		Short:         "DittoFS benchmark harness (fio comparison — under construction, see #1602)",
+		Short:         "DittoFS benchmark harness — fio across DittoFS and competitors (#1602)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	root.AddCommand(newRunCmd(), newReportCmd(), newListCmd())
+	return root
+}
+
+func newListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List available workloads and size classes",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, _ = fmt.Fprintln(cmdOut, "workloads:")
+			for _, w := range knownWorkloads {
+				_, _ = fmt.Fprintf(cmdOut, "  %s\n", w)
+			}
+			_, _ = fmt.Fprintln(cmdOut, "sizes:")
+			for _, s := range sizeClassOrder() {
+				_, _ = fmt.Fprintf(cmdOut, "  %-7s %s\n", s, sizeClasses[s])
+			}
+			return nil
+		},
+	}
+}
+
+func main() {
+	if err := newRootCmd().Execute(); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

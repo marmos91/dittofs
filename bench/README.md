@@ -11,6 +11,29 @@ competitors (juicefs, s3ql, rclone-mount, s3fs) over NFSv3 / NFSv4.1 / SMB3 on a
 single disposable Scaleway VM, with uniform fio metrics and a real server↔S3
 bandwidth number for every system.
 
+## Using `dfsbench` (local mode)
+
+The harness runs `fio` (must be installed and on `PATH`) against a mounted
+filesystem and prints a comparison table; each cell's metrics are written as a
+JSON file under `--results` so `--resume` re-runs skip completed cells.
+
+```sh
+go build -o dfsbench ./cmd/bench
+
+./dfsbench list                                   # workloads + size classes
+./dfsbench run --smoke                            # self-contained tiny run (CI, no secrets)
+./dfsbench run --local --target /mnt/dittofs      # fio a filesystem you mounted
+./dfsbench run --local --target /mnt/juicefs \
+    --workloads rand-read-4k --sizes large        # one cell
+./dfsbench run --local --target /mnt/x --resume   # skip cells already recorded
+./dfsbench report --results ./bench-results       # re-render the table from saved JSON
+```
+
+Size classes: `small` = 64 KiB, `medium` = 1 MiB, `large` = 1 GiB. Sequential
+workloads use a 1 MiB block, so they need `medium` or larger (fio requires file
+size ≥ block size). Cloud provisioning, competitor backends, protocol
+re-export, and S3-byte/ctxsw metering land in follow-up PRs (see #1602).
+
 ## Component microbenchmarks live with their code
 
 Per-package `Benchmark*` functions (chunker, hash, block engine, metadata,
