@@ -1,0 +1,11 @@
+[global]
+   map to guest = Bad User
+   server min protocol = SMB3_00
+   log level = 1
+
+[${SHARE}]
+   path = ${SRC_PATH}
+   browseable = yes
+   read only = no
+   guest ok = yes
+   force user = root

@@ -47,7 +47,7 @@ See registered backends with 'dfsbench list'. fio must be installed and on PATH.
 SCW provisioning + resume land in a follow-up PR (see issue #1602).`,
 		Example: `  dfsbench run --local --target /mnt/dittofs
   dfsbench run --smoke
-  dfsbench run --systems kernel-nfs,dittofs-s3 --sizes large
+  dfsbench run --systems local-disk,dittofs-s3 --sizes large
   dfsbench run --systems dittofs-s3-nfs3 --workloads seq-read --resume`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runBench(cmd.Context(), f)
