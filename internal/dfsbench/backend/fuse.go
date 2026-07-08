@@ -42,7 +42,7 @@ func init() {
 	}))
 	register(newSrcBackend(srcBackend{
 		name: "juicefs", s3Backed: true, protos: all, srcDir: juicefsMnt,
-		setup: juicefsSetup, teardown: fuseUnmount(juicefsMnt),
+		setup: juicefsSetup, teardown: juicefsTeardown,
 		evict: clearCache(juicefsCache),
 	}))
 	register(newSrcBackend(srcBackend{
@@ -81,6 +81,25 @@ func fuseUnmount(mnt string) func(context.Context) error {
 		cleanMount(ctx, mnt)
 		return nil
 	}
+}
+
+// juicefsVol is the current juicefs volume name (one backend runs at a time, so
+// a package var is enough); juicefsEndpoint/Bucket let teardown clean its data.
+var juicefsVol, juicefsEndpoint, juicefsBucket string
+
+// juicefsTeardown stops juicefs gracefully, then best-effort-cleans the volume's
+// S3 data. `juicefs umount` stops the writeback daemon and flushes its cache (a
+// lazy fusermount would leave it uploading); fall back to a force unmount if it
+// can't. The prefix clean is hygiene only — a new setup uses a new volume name,
+// so a stale-listing miss here never blocks the next format.
+func juicefsTeardown(ctx context.Context) error {
+	if exec.Sh(ctx, "juicefs", "umount", juicefsMnt) != nil {
+		cleanMount(ctx, juicefsMnt)
+	}
+	if juicefsVol != "" {
+		_ = cleanS3Prefix(ctx, juicefsEndpoint, juicefsBucket, juicefsVol+"/")
+	}
+	return nil
 }
 
 // cleanMount force-unmounts any stale FUSE mount an aborted run left behind, so
@@ -146,6 +165,12 @@ func s3fsSetup(ctx context.Context, env BackendEnv) error {
 	if err := os.MkdirAll(s3fsCache, 0o755); err != nil {
 		return err
 	}
+	// Clear the on-disk cache before each protocol's mount: the managed run reuses
+	// the same filenames (seq-write.0.0…) across nfs3/nfs4/smb3, and s3fs's stale
+	// use_cache entries from a prior protocol EIO the third writer under Samba.
+	if err := clearDir(ctx, s3fsCache); err != nil {
+		return err
+	}
 	// allow_other: smbd's concurrent writers hit EIO on the re-exported mount
 	// without it (numjobs>1 SMB writes fail); knfsd tolerates its absence but
 	// Samba does not. s3fs runs as root here, so no /etc/fuse.conf edit is needed.
@@ -164,21 +189,21 @@ func juicefsSetup(ctx context.Context, env BackendEnv) error {
 	if err != nil {
 		return err
 	}
-	// Wipe orphaned data first: the meta db lives on this disposable VM, so a
-	// fresh VM can't re-attach to prior S3 data and `format` refuses a non-empty
-	// prefix (--force overwrites the config but NOT the data check). Volume name
-	// "bench" ⇒ data prefix "bench/".
-	if err := cleanS3Prefix(ctx, env.Endpoint, env.Bucket, "bench/"); err != nil {
-		return err
-	}
+	// A fresh volume name per setup sidesteps `format`'s "not empty" gate: SCW's
+	// S3 LIST is eventually consistent after DELETE (deleted keys reappear in
+	// listings for seconds), so cleaning a fixed prefix then formatting races
+	// phantom entries. A never-used prefix is unambiguously empty. Teardown
+	// best-effort-cleans this volume's data (stored below for that).
+	juicefsVol = fmt.Sprintf("bench-%d", time.Now().UnixNano())
+	juicefsEndpoint, juicefsBucket = env.Endpoint, env.Bucket
 	// juicefs reads creds from ACCESS_KEY/SECRET_KEY — pass via env, never argv,
 	// so the secret stays out of the process list and run.log.
 	_ = os.Setenv("ACCESS_KEY", id)
 	_ = os.Setenv("SECRET_KEY", secret)
 	meta := "sqlite3:///var/lib/bench-juicefs.db"
-	_ = os.Remove("/var/lib/bench-juicefs.db") // fresh meta to match the cleaned prefix
+	_ = os.Remove("/var/lib/bench-juicefs.db") // fresh meta db for the fresh volume
 	if err := exec.Sh(ctx, "juicefs", "format", "--storage", "s3",
-		"--bucket", env.Endpoint+"/"+env.Bucket, meta, "bench"); err != nil {
+		"--bucket", env.Endpoint+"/"+env.Bucket, meta, juicefsVol); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(juicefsCache, 0o755); err != nil {
