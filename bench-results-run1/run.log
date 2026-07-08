@@ -1,0 +1,150 @@
+FAIL dittofs-s3-nfs3: setup: dfs did not open NFS port 12049: sh [-c for i in $(seq 1 60); do nc -z 127.0.0.1 12049 && exit 0; sleep 1; done; exit 1]: exit status 1
+
+FAIL dittofs-s3-nfs4: setup: dfs did not open NFS port 12049: sh [-c for i in $(seq 1 60); do nc -z 127.0.0.1 12049 && exit 0; sleep 1; done; exit 1]: exit status 1
+
+FAIL dittofs-s3-smb3: setup: dfs did not open NFS port 12049: sh [-c for i in $(seq 1 60); do nc -z 127.0.0.1 12049 && exit 0; sleep 1; done; exit 1]: exit status 1
+
+run: local-disk-nfs3__seq-write__medium__nfs3__warm
+FAIL local-disk-nfs3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+run: local-disk-nfs4__seq-write__medium__nfs4__warm
+FAIL local-disk-nfs4: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+run: local-disk-smb3__seq-write__medium__smb3__warm
+FAIL local-disk-smb3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+run: rclone-nfs3__seq-write__medium__nfs3__warm
+FAIL rclone-nfs3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+FAIL rclone-nfs4: setup: rclone [mount bench:dittofs-bench-fanout /mnt/fuse-rclone --config /etc/bench-rclone.conf --cache-dir /var/cache/bench-rclone --vfs-cache-mode writes --allow-other --daemon]: exit status 1
+2026/07/08 12:00:06 Fatal error: directory already mounted, use --allow-non-empty to mount anyway: /mnt/fuse-rclone
+
+FAIL rclone-smb3: setup: rclone [mount bench:dittofs-bench-fanout /mnt/fuse-rclone --config /etc/bench-rclone.conf --cache-dir /var/cache/bench-rclone --vfs-cache-mode writes --allow-other --daemon]: exit status 1
+2026/07/08 12:00:06 Fatal error: directory already mounted, use --allow-non-empty to mount anyway: /mnt/fuse-rclone
+
+FAIL s3ql-nfs3: setup: sh [-c command -v mkfs.s3ql >/dev/null || { apt-get update && apt-get install -y s3ql; }]: exit status 100
+Hit:1 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:5 https://ppa.launchpadcontent.net/scaleway/stable/ubuntu noble InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+E: Unable to locate package s3ql
+
+FAIL s3ql-nfs4: setup: sh [-c command -v mkfs.s3ql >/dev/null || { apt-get update && apt-get install -y s3ql; }]: exit status 100
+Hit:1 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:5 https://ppa.launchpadcontent.net/scaleway/stable/ubuntu noble InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+E: Unable to locate package s3ql
+
+FAIL s3ql-smb3: setup: sh [-c command -v mkfs.s3ql >/dev/null || { apt-get update && apt-get install -y s3ql; }]: exit status 100
+Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:2 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:5 https://ppa.launchpadcontent.net/scaleway/stable/ubuntu noble InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+E: Unable to locate package s3ql
+
+run: juicefs-nfs3__seq-write__medium__nfs3__warm
+FAIL juicefs-nfs3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+run: juicefs-nfs4__seq-write__medium__nfs4__warm
+FAIL juicefs-nfs4: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+run: juicefs-smb3__seq-write__medium__smb3__warm
+FAIL juicefs-smb3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+run: s3fs-nfs3__seq-write__medium__nfs3__warm
+FAIL s3fs-nfs3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+run: s3fs-nfs4__seq-write__medium__nfs4__warm
+FAIL s3fs-nfs4: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+run: s3fs-smb3__seq-write__medium__smb3__warm
+FAIL s3fs-smb3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+
+no results
+
+18 backend(s) failed:
+  - dittofs-s3-nfs3: setup: dfs did not open NFS port 12049: sh [-c for i in $(seq 1 60); do nc -z 127.0.0.1 12049 && exit 0; sleep 1; done; exit 1]: exit status 1
+
+  - dittofs-s3-nfs4: setup: dfs did not open NFS port 12049: sh [-c for i in $(seq 1 60); do nc -z 127.0.0.1 12049 && exit 0; sleep 1; done; exit 1]: exit status 1
+
+  - dittofs-s3-smb3: setup: dfs did not open NFS port 12049: sh [-c for i in $(seq 1 60); do nc -z 127.0.0.1 12049 && exit 0; sleep 1; done; exit 1]: exit status 1
+
+  - local-disk-nfs3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - local-disk-nfs4: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - local-disk-smb3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - rclone-nfs3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - rclone-nfs4: setup: rclone [mount bench:dittofs-bench-fanout /mnt/fuse-rclone --config /etc/bench-rclone.conf --cache-dir /var/cache/bench-rclone --vfs-cache-mode writes --allow-other --daemon]: exit status 1
+2026/07/08 12:00:06 Fatal error: directory already mounted, use --allow-non-empty to mount anyway: /mnt/fuse-rclone
+
+  - rclone-smb3: setup: rclone [mount bench:dittofs-bench-fanout /mnt/fuse-rclone --config /etc/bench-rclone.conf --cache-dir /var/cache/bench-rclone --vfs-cache-mode writes --allow-other --daemon]: exit status 1
+2026/07/08 12:00:06 Fatal error: directory already mounted, use --allow-non-empty to mount anyway: /mnt/fuse-rclone
+
+  - s3ql-nfs3: setup: sh [-c command -v mkfs.s3ql >/dev/null || { apt-get update && apt-get install -y s3ql; }]: exit status 100
+Hit:1 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:5 https://ppa.launchpadcontent.net/scaleway/stable/ubuntu noble InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+E: Unable to locate package s3ql
+
+  - s3ql-nfs4: setup: sh [-c command -v mkfs.s3ql >/dev/null || { apt-get update && apt-get install -y s3ql; }]: exit status 100
+Hit:1 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:2 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:5 https://ppa.launchpadcontent.net/scaleway/stable/ubuntu noble InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+E: Unable to locate package s3ql
+
+  - s3ql-smb3: setup: sh [-c command -v mkfs.s3ql >/dev/null || { apt-get update && apt-get install -y s3ql; }]: exit status 100
+Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease
+Hit:2 http://security.ubuntu.com/ubuntu noble-security InRelease
+Hit:3 http://archive.ubuntu.com/ubuntu noble-updates InRelease
+Hit:4 http://archive.ubuntu.com/ubuntu noble-backports InRelease
+Hit:5 https://ppa.launchpadcontent.net/scaleway/stable/ubuntu noble InRelease
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+E: Unable to locate package s3ql
+
+  - juicefs-nfs3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - juicefs-nfs4: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - juicefs-smb3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - s3fs-nfs3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - s3fs-nfs4: run fio (seq-write): exec: "fio": executable file not found in $PATH
+
+  - s3fs-smb3: run fio (seq-write): exec: "fio": executable file not found in $PATH
+

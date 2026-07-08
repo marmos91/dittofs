@@ -80,8 +80,27 @@ func runSetup(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := installPrereqs(ctx, ex, vm); err != nil {
+		return err
+	}
 	_, _ = fmt.Fprintf(cmdOut, "ready: dfsbench run --remote --systems ...  (then dfsbench teardown)\n")
 	return nil
+}
+
+// installPrereqs installs the shared load generator (fio — needed by every
+// cell), the netcat used by waitPort, and every backend's server/client
+// packages in one apt transaction. Front-loading here makes per-backend Setup a
+// fast `command -v` no-op and guarantees fio exists before any run. (juicefs is
+// not in apt — its recipe curl-installs it.)
+func installPrereqs(ctx context.Context, ex Executor, vm VM) error {
+	const pkgs = "fio netcat-openbsd curl fuse3 " + // shared
+		"nfs-kernel-server samba cifs-utils " + // re-export layer
+		"s3fs s3ql rclone" // FUSE competitors in apt
+	_, _ = fmt.Fprintln(cmdOut, "installing prerequisites (fio + backend packages)…")
+	_, err := ex.Run(ctx, vm.IP, remoteUser,
+		"DEBIAN_FRONTEND=noninteractive apt-get update && "+
+			"DEBIAN_FRONTEND=noninteractive apt-get install -y "+pkgs)
+	return err
 }
 
 func newTeardownCmd() *cobra.Command {
