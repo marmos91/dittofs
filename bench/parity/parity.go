@@ -144,10 +144,17 @@ func (o *Opts) Validate() error {
 	if o.SmallFileCount <= 0 {
 		o.SmallFileCount = 2048
 	}
+	// Normalize the chunk knobs to the effective params so the persisted
+	// RunOpts is self-describing: a default run omits both; a sweep run records
+	// the real min and the resolved ceiling (16 MiB when --max-chunk is unset).
 	if o.MinChunk != 0 {
-		if err := o.ChunkParams().Validate(); err != nil {
+		p := o.ChunkParams()
+		if err := p.Validate(); err != nil {
 			return err
 		}
+		o.MaxChunk = p.Max
+	} else {
+		o.MaxChunk = 0 // --max-chunk without --min-chunk has no effect; don't record it
 	}
 	if o.OutDir == "" {
 		o.OutDir = filepath.Join("bench", "results")
