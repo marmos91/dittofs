@@ -8,6 +8,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
@@ -53,6 +54,12 @@ type EngineOpts struct {
 	// reroute path when per-op Flush supersedes still-pending chunks — their
 	// baselines keep the legacy mirror until that is resolved.
 	PackedBlocks bool
+
+	// ChunkParams overrides the rollup chunker's FastCDC sizing (#1569) for
+	// this engine. Zero value falls back to chunker.DefaultParams() (1M/4M/16M).
+	// Write-time only — reads resolve through the frozen FileChunk manifest, so
+	// a cold-restart download engine ignores it.
+	ChunkParams chunker.Params
 }
 
 // nonClosingRemote makes engine.Close a no-op on the shared remote, like the
@@ -101,6 +108,7 @@ func NewEngineWithOpts(baseDir string, remoteStore remote.RemoteStore, opts Engi
 		StabilizationMS: StabilizationMS,
 		RollupStore:     ms,
 		SyncedHashStore: ms,
+		ChunkParams:     opts.ChunkParams,
 	}
 	// Wire the LocalChunkIndex like the production share factory (#1414 PR3
 	// flip): rollup then persists chunks to the log-blob substrate so the
