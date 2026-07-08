@@ -162,6 +162,17 @@ func GetSIDMapper() *sid.SIDMapper {
 //
 // Returns the binary Security Descriptor or an error.
 func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]byte, error) {
+	return BuildSecurityDescriptorWithGrants(file, additionalSecInfo, nil)
+}
+
+// BuildSecurityDescriptorWithGrants is BuildSecurityDescriptor plus a set of
+// share-grant ACEs to merge into the DACL so Windows' Security tab lists the
+// AD principals (users, groups, direct SID grants) that govern the share, not
+// just the file's synthesized owner+SYSTEM descriptor (#1608). grantACEs is the
+// output of Runtime.ShareRootGrantACL for the share owning the file; pass nil to
+// build a descriptor from per-file metadata only. Merging affects only the
+// displayed descriptor — server-side access enforcement is unchanged.
+func BuildSecurityDescriptorWithGrants(file *metadata.File, additionalSecInfo uint32, grantACEs []acl.ACE) ([]byte, error) {
 	includeOwner := (additionalSecInfo & OwnerSecurityInformation) != 0
 	includeGroup := (additionalSecInfo & GroupSecurityInformation) != 0
 	includeDACL := (additionalSecInfo & DACLSecurityInformation) != 0
@@ -180,7 +191,7 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	daclBuf := smbenc.NewWriter(64)
 	var fileACL *acl.ACL
 	if includeDACL && !isNullDACL {
-		fileACL = buildDACL(daclBuf, file)
+		fileACL = buildDACL(daclBuf, file, grantACEs)
 	}
 
 	// Build SACL. When the file has stored SACL ACEs, serialize them;
@@ -338,9 +349,15 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 // here is what the client sees; actual access enforcement keeps the legacy
 // POSIX semantics so Unix mode bits stay authoritative on the server.
 //
+// grantACEs, when non-nil, are share-level grant ACEs (Runtime.ShareRootGrantACL)
+// merged into the DACL so Windows' Security tab lists the AD principals that
+// govern the share (#1608). They are appended after the file's own ACEs and
+// deduped by resolved SID, so the always-on OWNER@/SYSTEM@ that both the
+// synthesized default and the grant ACL emit are not shown twice. This changes
+// only the displayed descriptor, never server-side enforcement.
+//
 // Returns the source ACL used for SD control flag computation.
-func buildDACL(buf *smbenc.Writer, file *metadata.File) *acl.ACL {
-	var aces []windowsACE
+func buildDACL(buf *smbenc.Writer, file *metadata.File, grantACEs []acl.ACE) *acl.ACL {
 	var fileACL *acl.ACL
 
 	if file.ACL != nil {
@@ -349,19 +366,51 @@ func buildDACL(buf *smbenc.Writer, file *metadata.File) *acl.ACL {
 		fileACL = acl.SynthesizeWindowsDefault()
 	}
 
-	aces = make([]windowsACE, 0, len(fileACL.ACEs))
-	for _, ace := range fileACL.ACEs {
+	aces := make([]windowsACE, 0, len(fileACL.ACEs)+len(grantACEs))
+	// SIDs already present from the file's own ACEs. Used ONLY to dedup the
+	// merged share-grant trustees below — the file's own ACL is emitted verbatim
+	// (a file may legitimately carry several ACEs for one SID, e.g. a DENY then
+	// an ALLOW, and their order is significant).
+	fileSIDs := make(map[string]struct{}, len(fileACL.ACEs))
+	toWindowsACE := func(ace acl.ACE) (windowsACE, bool) {
 		aceType, ok := nfsToWindowsACEType(ace.Type)
 		if !ok {
-			continue
+			return windowsACE{}, false
 		}
-
-		aces = append(aces, windowsACE{
+		return windowsACE{
 			aceType:    aceType,
 			aceFlags:   acl.NFSv4FlagsToWindowsFlags(ace.Flag),
 			accessMask: ace.AccessMask,
 			sid:        principalToSID(ace.Who, file.UID, file.GID),
-		})
+		}, true
+	}
+
+	for _, ace := range fileACL.ACEs {
+		wace, ok := toWindowsACE(ace)
+		if !ok {
+			continue
+		}
+		if wace.sid != nil {
+			fileSIDs[sid.FormatSID(wace.sid)] = struct{}{}
+		}
+		aces = append(aces, wace)
+	}
+	// Merge share-grant trustees, skipping any whose SID the file already carries
+	// (the always-on OWNER@/SYSTEM@ that both the synthesized default and the
+	// grant ACL emit) so the Security tab does not show duplicate rows (#1608).
+	for _, ace := range grantACEs {
+		wace, ok := toWindowsACE(ace)
+		if !ok {
+			continue
+		}
+		if wace.sid != nil {
+			key := sid.FormatSID(wace.sid)
+			if _, dup := fileSIDs[key]; dup {
+				continue
+			}
+			fileSIDs[key] = struct{}{}
+		}
+		aces = append(aces, wace)
 	}
 
 	// Compute total ACL size

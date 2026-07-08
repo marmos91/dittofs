@@ -172,6 +172,91 @@ func TestBuildSD_NilACL_SynthesizesWindowsDefault(t *testing.T) {
 	}
 }
 
+// TestBuildSD_MergesShareGrantACEs verifies that BuildSecurityDescriptorWithGrants
+// projects the share's control-plane grant trustees (a direct AD SID grant plus
+// the always-on Administrators@) into the file DACL so Windows' Security tab can
+// list them, while deduping the OWNER@/SYSTEM@ that both the synthesized default
+// and the grant ACL emit (#1608).
+func TestBuildSD_MergesShareGrantACEs(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			// nil ACL → synthesized default (owner@ + SYSTEM@).
+		},
+	}
+
+	const aliceSID = "S-1-5-21-188294588-3368521931-100232490-1106"
+	grantACL := acl.BuildShareRootACL(acl.GrantNone, []acl.RootGrant{
+		{SID: aliceSID, Level: acl.GrantRead},
+	})
+
+	// Baseline without grants: the synthesized default is exactly owner + SYSTEM.
+	baseline, err := BuildSecurityDescriptor(file, allSecInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	_, _, baseACL, err := ParseSecurityDescriptor(baseline)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor(baseline): %v", err)
+	}
+	if len(baseACL.ACEs) != 2 {
+		t.Fatalf("baseline DACL = %d ACEs, want 2 (owner + SYSTEM)", len(baseACL.ACEs))
+	}
+
+	data, err := BuildSecurityDescriptorWithGrants(file, allSecInfo, grantACL.ACEs)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptorWithGrants: %v", err)
+	}
+	_, _, mergedACL, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor(merged): %v", err)
+	}
+
+	whoCount := map[string]int{}
+	for _, ace := range mergedACL.ACEs {
+		whoCount[ace.Who]++
+	}
+
+	// The AD SID grant must be present so Explorer can resolve it to alice.
+	if whoCount["sid:"+aliceSID] != 1 {
+		t.Errorf("merged DACL missing the AD SID grant %q (Who counts: %v)", aliceSID, whoCount)
+	}
+	// The always-on Administrators@ grant (BUILTIN\Administrators) must appear.
+	if whoCount["sid:S-1-5-32-544"] != 1 {
+		t.Errorf("merged DACL missing Administrators grant (Who counts: %v)", whoCount)
+	}
+	// OWNER@ / SYSTEM@ are shared between the file default and the grant ACL —
+	// each must appear exactly once (deduped by SID).
+	if whoCount["1000@localdomain"] != 1 {
+		t.Errorf("owner ACE not deduped: appears %d times (want 1)", whoCount["1000@localdomain"])
+	}
+	if whoCount["sid:S-1-5-18"] != 1 {
+		t.Errorf("SYSTEM ACE not deduped: appears %d times (want 1)", whoCount["sid:S-1-5-18"])
+	}
+}
+
+// TestBuildSD_NilGrants_MatchesBaseline verifies that passing nil grantACEs is
+// identical to the plain BuildSecurityDescriptor (no behavior change for the
+// non-grant path).
+func TestBuildSD_NilGrants_MatchesBaseline(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{UID: 1000, GID: 1000, Mode: 0o755},
+	}
+	plain, err := BuildSecurityDescriptor(file, allSecInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	withNil, err := BuildSecurityDescriptorWithGrants(file, allSecInfo, nil)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptorWithGrants: %v", err)
+	}
+	if !bytes.Equal(plain, withNil) {
+		t.Fatal("BuildSecurityDescriptorWithGrants(nil) differs from BuildSecurityDescriptor")
+	}
+}
+
 // TestBuildSD_ZeroSecInfo_ReturnsEmptySD verifies that additionalSecInfo==0
 // produces a minimal 20-byte header-only SD with control=SE_SELF_RELATIVE
 // and no owner/group/DACL/SACL. Matches Windows behavior exercised by
