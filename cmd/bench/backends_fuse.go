@@ -161,7 +161,11 @@ func juicefsSetup(ctx context.Context, env BackendEnv) error {
 	if err := os.MkdirAll(juicefsCache, 0o755); err != nil {
 		return err
 	}
-	return sh(ctx, "juicefs", "mount", "-d", "--cache-dir", juicefsCache, meta, juicefsMnt)
+	// --writeback: local-ack writes + async upload, matching DittoFS's local
+	// store + syncer and rclone's --vfs-cache-mode writes. Off by default in
+	// JuiceFS (default flushes to S3 on fsync/close), so without it the write
+	// pass compares different durability tiers.
+	return sh(ctx, "juicefs", "mount", "-d", "--writeback", "--cache-dir", juicefsCache, meta, juicefsMnt)
 }
 
 func s3qlSetup(ctx context.Context, env BackendEnv) error {
