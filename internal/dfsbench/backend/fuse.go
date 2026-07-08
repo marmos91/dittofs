@@ -122,7 +122,12 @@ func rcloneSetup(ctx context.Context, env BackendEnv) error {
 	if err := os.MkdirAll(rcloneCache, 0o755); err != nil {
 		return err
 	}
-	return exec.Sh(ctx, "rclone", "mount", "bench:"+env.Bucket, rcloneMnt,
+	// Own prefix + clean it, so a re-run isn't served stale files and rclone
+	// doesn't share the bucket root with other backends.
+	if err := cleanS3Prefix(ctx, env.Endpoint, env.Bucket, "rclone/"); err != nil {
+		return err
+	}
+	return exec.Sh(ctx, "rclone", "mount", "bench:"+env.Bucket+"/rclone", rcloneMnt,
 		"--config", "/etc/bench-rclone.conf", "--cache-dir", rcloneCache,
 		"--vfs-cache-mode", "writes", "--daemon")
 }
@@ -141,9 +146,12 @@ func s3fsSetup(ctx context.Context, env BackendEnv) error {
 	if err := os.MkdirAll(s3fsCache, 0o755); err != nil {
 		return err
 	}
+	// allow_other: smbd's concurrent writers hit EIO on the re-exported mount
+	// without it (numjobs>1 SMB writes fail); knfsd tolerates its absence but
+	// Samba does not. s3fs runs as root here, so no /etc/fuse.conf edit is needed.
 	return exec.Sh(ctx, "s3fs", env.Bucket, s3fsMnt,
 		"-o", "passwd_file=/etc/passwd-s3fs", "-o", "url="+env.Endpoint,
-		"-o", "use_path_request_style", "-o", "use_cache="+s3fsCache)
+		"-o", "use_path_request_style", "-o", "use_cache="+s3fsCache, "-o", "allow_other")
 }
 
 func juicefsSetup(ctx context.Context, env BackendEnv) error {
@@ -156,11 +164,21 @@ func juicefsSetup(ctx context.Context, env BackendEnv) error {
 	if err != nil {
 		return err
 	}
+	// Wipe orphaned data first: the meta db lives on this disposable VM, so a
+	// fresh VM can't re-attach to prior S3 data and `format` refuses a non-empty
+	// prefix (--force overwrites the config but NOT the data check). Volume name
+	// "bench" ⇒ data prefix "bench/".
+	if err := cleanS3Prefix(ctx, env.Endpoint, env.Bucket, "bench/"); err != nil {
+		return err
+	}
+	// juicefs reads creds from ACCESS_KEY/SECRET_KEY — pass via env, never argv,
+	// so the secret stays out of the process list and run.log.
+	_ = os.Setenv("ACCESS_KEY", id)
+	_ = os.Setenv("SECRET_KEY", secret)
 	meta := "sqlite3:///var/lib/bench-juicefs.db"
-	// format is safe to re-run against an existing volume (idempotent).
+	_ = os.Remove("/var/lib/bench-juicefs.db") // fresh meta to match the cleaned prefix
 	if err := exec.Sh(ctx, "juicefs", "format", "--storage", "s3",
-		"--bucket", env.Endpoint+"/"+env.Bucket, "--access-key", id, "--secret-key", secret,
-		meta, "bench"); err != nil {
+		"--bucket", env.Endpoint+"/"+env.Bucket, meta, "bench"); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(juicefsCache, 0o755); err != nil {
@@ -169,8 +187,10 @@ func juicefsSetup(ctx context.Context, env BackendEnv) error {
 	// --writeback: local-ack writes + async upload, matching DittoFS's local
 	// store + syncer and rclone's --vfs-cache-mode writes. Off by default in
 	// JuiceFS (default flushes to S3 on fsync/close), so without it the write
-	// pass compares different durability tiers.
-	return exec.Sh(ctx, "juicefs", "mount", "-d", "--writeback", "--cache-dir", juicefsCache, meta, juicefsMnt)
+	// pass compares different durability tiers. --cache-size caps the on-disk
+	// cache (default 100 GiB would exceed the VM disk).
+	return exec.Sh(ctx, "juicefs", "mount", "-d", "--writeback",
+		"--cache-dir", juicefsCache, "--cache-size", "10240", meta, juicefsMnt)
 }
 
 func s3qlSetup(ctx context.Context, env BackendEnv) error {
@@ -181,9 +201,14 @@ func s3qlSetup(ctx context.Context, env BackendEnv) error {
 	if err != nil {
 		return err
 	}
+	// Own prefix + clean it (idempotent mkfs on a fresh prefix; no collision with
+	// juicefs's bench/).
+	if err := cleanS3Prefix(ctx, env.Endpoint, env.Bucket, "s3ql/"); err != nil {
+		return err
+	}
 	// s3ql addresses generic S3 as s3c://<host>/<bucket>/<prefix>.
 	host := stripScheme(env.Endpoint)
-	url := fmt.Sprintf("s3c://%s/%s/bench", host, env.Bucket)
+	url := fmt.Sprintf("s3c://%s/%s/s3ql", host, env.Bucket)
 	authinfo := fmt.Sprintf("[bench]\nstorage-url: %s\nbackend-login: %s\nbackend-password: %s\n", url, id, secret)
 	if err := os.WriteFile("/etc/bench-s3ql-authinfo2", []byte(authinfo), 0o600); err != nil {
 		return err
