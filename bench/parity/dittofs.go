@@ -62,9 +62,12 @@ func runDittofsConc(ctx context.Context, opts Opts, s3cfg *s3Config, basePrefix 
 			return nil, nil, err
 		}
 		cfg := engine.DefaultConfig()
-		// ponytail: upload concurrency moved off SyncerConfig to the remote's
-		// parallel_uploads config in the blocks-only model (#1493). Re-wire conc
-		// onto the remote config if this bench's upload-concurrency axis matters.
+		// Pin the carver's upload window to this cell's concurrency so the
+		// dittofs upload lane is comparable to rclone --transfers=conc (the
+		// harness's stated intent). Without this the carver runs its adaptive
+		// window (16→64) regardless of conc, so the upload axis is meaningless
+		// and c1/c24 both saturate. conc=1 → serial carver (the #1432 floor).
+		cfg.ParallelUploads = conc
 
 		// Engine 1: upload. Fresh metadata + local dir + metrics registry.
 		// KeepRemoteOpen: the parity runner owns the remote store's lifetime
