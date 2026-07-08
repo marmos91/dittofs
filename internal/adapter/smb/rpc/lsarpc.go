@@ -784,27 +784,5 @@ func appendUint32Buf(buf *bytes.Buffer, v uint32) {
 
 // buildFault builds a DCE/RPC fault response.
 func (h *LSARPCHandler) buildFault(callID uint32, status uint32) []byte {
-	fragLen := HeaderSize + 16
-
-	hdr := Header{
-		VersionMajor: 5,
-		VersionMinor: 0,
-		PacketType:   PDUFault,
-		Flags:        FlagFirstFrag | FlagLastFrag,
-		DataRep:      [4]byte{0x10, 0x00, 0x00, 0x00},
-		FragLength:   uint16(fragLen),
-		AuthLength:   0,
-		CallID:       callID,
-	}
-
-	buf := make([]byte, fragLen)
-	copy(buf[0:16], hdr.Encode())
-	binary.LittleEndian.PutUint32(buf[16:20], 0)      // alloc_hint
-	binary.LittleEndian.PutUint16(buf[20:22], 0)      // context_id
-	buf[22] = 0                                       // cancel_count
-	buf[23] = 0                                       // reserved
-	binary.LittleEndian.PutUint32(buf[24:28], status) // status
-	binary.LittleEndian.PutUint32(buf[28:32], 0)      // reserved
-
-	return buf
+	return EncodeFaultPDU(callID, status)
 }

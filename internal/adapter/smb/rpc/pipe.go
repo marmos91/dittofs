@@ -66,13 +66,33 @@ func (p *PipeState) dispatchRPC(data []byte) ([]byte, error) {
 		p.Bound = true
 		return response, nil
 
-	case PDURequest:
-		if !p.Bound {
-			return nil, nil
+	case PDUAlterContext:
+		// Alter_Context shares the Bind body layout and elicits an
+		// alter_context_resp that is byte-identical to a bind_ack except for the
+		// PDU type. Windows' RPC runtime issues this to (re)negotiate a
+		// presentation context / transfer syntax after the initial bind; dropping
+		// it silently starves the client's follow-up READ (#1607).
+		altReq, err := ParseAlterContext(data)
+		if err != nil {
+			return nil, err
 		}
+		response := p.Handler.HandleBind(altReq)
+		if len(response) > 2 {
+			response[2] = PDUAlterContextR // bind_ack (12) -> alter_context_resp (15)
+		}
+		p.Bound = true
+		return response, nil
+
+	case PDURequest:
 		rpcReq, err := ParseRequest(data)
 		if err != nil {
 			return nil, err
+		}
+		if !p.Bound {
+			// A request before a successful bind cannot be dispatched. Return a
+			// DCE/RPC fault (rather than nothing) so the client's paired READ
+			// always completes instead of parking forever (#1607).
+			return EncodeFaultPDU(rpcReq.Header.CallID, NcaSProtoError), nil
 		}
 		return p.Handler.HandleRequest(rpcReq), nil
 
@@ -87,13 +107,39 @@ func (p *PipeState) ProcessWrite(data []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	response, err := p.dispatchRPC(data)
-	if err != nil {
-		return err
-	}
+	// A single named-pipe WRITE may carry more than one complete DCE/RPC PDU
+	// (e.g. a client that coalesces BIND+request, or OpenPolicy+LookupSids, into
+	// one write). Dispatch every complete PDU and enqueue each response, so no
+	// PDU — and therefore no client READ waiting on its response — is silently
+	// dropped (#1607).
+	for len(data) >= HeaderSize {
+		hdr, err := ParseHeader(data)
+		if err != nil {
+			return err
+		}
+		// Trailing bytes that are not a DCE/RPC v5 PDU (e.g. write padding) are
+		// not misparsed as a bogus request — stop rather than fault the write.
+		if hdr.VersionMajor != 5 {
+			break
+		}
+		// Advance by the declared fragment length. Guard a malformed/zero
+		// FragLength (which would not advance the loop) and a fragment that
+		// claims more bytes than we received — there is no cross-write
+		// reassembly, so treat the remainder as this final PDU.
+		fragLen := int(hdr.FragLength)
+		if fragLen < HeaderSize || fragLen > len(data) {
+			fragLen = len(data)
+		}
 
-	if len(response) > 0 {
-		p.ReadBuffer.Write(response)
+		response, err := p.dispatchRPC(data[:fragLen])
+		if err != nil {
+			return err
+		}
+		if len(response) > 0 {
+			p.ReadBuffer.Write(response)
+		}
+
+		data = data[fragLen:]
 	}
 
 	return nil
