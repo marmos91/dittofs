@@ -201,6 +201,21 @@ func NewFromConfig(ctx context.Context, config Config) (*Store, error) {
 
 	var s3Opts []func(*s3.Options)
 
+	// Blocks are BLAKE3-verified end-to-end (sealed by the carver, re-verified
+	// on read), so the SDK's flexible-checksum layer is redundant work. At the
+	// aws-sdk-go-v2 default (WhenSupported) every PutObject is wrapped in an
+	// aws-chunked streaming-trailer encoding with a full CRC32 pass over each
+	// ~16 MiB block — extra CPU and wire framing, and a known interop friction
+	// point with non-AWS S3 endpoints. WhenRequired drops only these optional
+	// checksums (operations the API mandates one for still get it), so a PutBlock
+	// whose body length is known — the carver hands PutBlock a *bytes.Reader —
+	// goes out as a clean Content-Length PUT, and the redundant checksum work is
+	// skipped on PUT and GET.
+	s3Opts = append(s3Opts, func(o *s3.Options) {
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+	})
+
 	if config.Endpoint != "" {
 		s3Opts = append(s3Opts, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(normalizeEndpoint(config.Endpoint))
