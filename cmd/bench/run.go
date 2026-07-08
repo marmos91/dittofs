@@ -297,9 +297,13 @@ func runManaged(ctx context.Context, f *runFlags, opts LoadOpts, cfg Config) err
 	}
 
 	env := BackendEnv{Bucket: cfg.Bucket, Endpoint: cfg.Endpoint}
+	// A comparison shouldn't die because one competitor's recipe breaks — record
+	// the failure and keep going, so one run surfaces every backend's state.
+	var failures []string
 	for _, p := range plans {
 		if err := runPlan(ctx, p, env, wls, sizes, opts, f); err != nil {
-			return fmt.Errorf("%s: %w", p.systemLabel(), err)
+			_, _ = fmt.Fprintf(cmdOut, "FAIL %s: %v\n", p.systemLabel(), err)
+			failures = append(failures, fmt.Sprintf("%s: %v", p.systemLabel(), err))
 		}
 	}
 
@@ -315,6 +319,12 @@ func runManaged(ctx context.Context, f *runFlags, opts LoadOpts, cfg Config) err
 	}
 	_, _ = fmt.Fprintln(cmdOut)
 	_, _ = fmt.Fprint(cmdOut, renderTable(rows))
+	if len(failures) > 0 {
+		_, _ = fmt.Fprintf(cmdOut, "\n%d backend(s) failed:\n", len(failures))
+		for _, fl := range failures {
+			_, _ = fmt.Fprintf(cmdOut, "  - %s\n", fl)
+		}
+	}
 	return nil
 }
 
