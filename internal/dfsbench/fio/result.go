@@ -37,6 +37,11 @@ type CellResult struct {
 	DurationS  float64 `json:"duration_s"`
 
 	S3Bytes int64 `json:"s3_bytes"` // server↔S3 bytes; populated in a later PR
+
+	// Server-side resource use during the fio pass (system-wide, from /proc/stat).
+	// CtxSwPerSec is the FUSE-tax indicator; 0 off Linux (local/smoke on macOS).
+	CtxSwPerSec float64 `json:"ctxsw_per_sec,omitempty"`
+	CPUPct      float64 `json:"cpu_pct,omitempty"`
 }
 
 // Slug is the stable, filesystem-safe identity of a cell. Two runs of the same

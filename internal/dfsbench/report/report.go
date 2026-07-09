@@ -36,8 +36,9 @@ func NewReportCmd() *cobra.Command {
 }
 
 // RenderTable produces the markdown comparison table. Columns follow the plan's
-// dictionary; rate columns render "—" when not the workload's headline metric
-// (S3MB/CTXSW land once their meters exist — carried, shown as 0/— for now).
+// dictionary; rate columns render "—" when not the workload's headline metric,
+// and CTXSW/s + CPU% dash when unmetered (off Linux / pre-meter runs). S3MB
+// stays 0 until the S3 network meter lands.
 func RenderTable(rs []fio.CellResult) string {
 	if len(rs) == 0 {
 		return "no results\n"
@@ -53,7 +54,7 @@ func RenderTable(rs []fio.CellResult) string {
 		return a.Size < b.Size
 	})
 
-	head := []string{"SYSTEM", "WORKLOAD", "SIZE", "PROTO", "PASS", "IOPS", "MB/s", "p50µs", "p99µs", "S3MB", "err"}
+	head := []string{"SYSTEM", "WORKLOAD", "SIZE", "PROTO", "PASS", "IOPS", "MB/s", "p50µs", "p99µs", "S3MB", "CTXSW/s", "CPU%", "err"}
 	rows := make([][]string, 0, len(rs))
 	for _, r := range rs {
 		rows = append(rows, []string{
@@ -63,6 +64,8 @@ func RenderTable(rs []fio.CellResult) string {
 			fmt.Sprintf("%.0f", r.LatencyP50Us),
 			fmt.Sprintf("%.0f", r.LatencyP99Us),
 			fmt.Sprintf("%d", r.S3Bytes/fio.Mib),
+			metered(r.CtxSwPerSec),
+			metered(r.CPUPct),
 			fmt.Sprintf("%d", r.Errors),
 		})
 	}
@@ -77,6 +80,15 @@ func isRandom(w string) bool {
 // rate formats a rate column, dashing it when it isn't this workload's headline.
 func rate(v float64, headline bool) string {
 	if !headline {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f", v)
+}
+
+// metered formats a server-resource column, dashing an unmeasured 0 (off Linux,
+// or a run predating the meter) rather than printing a misleading zero.
+func metered(v float64) string {
+	if v == 0 {
 		return "—"
 	}
 	return fmt.Sprintf("%.0f", v)
