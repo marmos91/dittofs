@@ -504,3 +504,28 @@ func TestLookupUID_RIDMode_NoDomainSID(t *testing.T) {
 		t.Error("must not issue an account objectSid search without a domain SID")
 	}
 }
+
+// TestDeriveUIDGID_RFC2307_GroupUsesGidNumber guards the #1617 round-trip fix: a
+// group object carries gidNumber but no uidNumber, so the paired uid+gid guard
+// misses it. deriveUIDGID must honor the stamped gidNumber rather than falling
+// through to the RID — otherwise resolving a group SID back to a GID (Group SD
+// round-trip) would recover the RID and silently rewrite a file's gid.
+func TestDeriveUIDGID_RFC2307_GroupUsesGidNumber(t *testing.T) {
+	p, err := New(baseCfg(), nil, nil) // baseCfg() is IdmapRFC2307
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Group entry: objectClass=group, gidNumber present, NO uidNumber, RID 1105.
+	e := entry("CN=devs,CN=Users,DC=dittofs,DC=ad", map[string][]string{
+		"objectClass": {"top", "group"},
+		"gidNumber":   {"10010"},
+	}, encodeSID(t, 1105))
+
+	_, gid, err := p.deriveUIDGID(e)
+	if err != nil {
+		t.Fatalf("deriveUIDGID: %v", err)
+	}
+	if gid != 10010 {
+		t.Errorf("gid = %d, want 10010 (gidNumber, not RID 1105)", gid)
+	}
+}

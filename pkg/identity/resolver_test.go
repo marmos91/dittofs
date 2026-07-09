@@ -347,14 +347,18 @@ func TestResolver_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-// reverseMockProvider is a mockProvider that also implements ReverseResolver,
-// used to exercise the resolver's reverse uid/gid lookup chain.
+// reverseMockProvider is a mockProvider that also implements ReverseResolver and
+// SIDReverseResolver, used to exercise the resolver's reverse uid/gid lookup and
+// uid/gid → SID chains.
 type reverseMockProvider struct {
 	mockProvider
-	uids     map[uint32]string
-	gids     map[uint32]string
-	domain   string
-	uidCalls atomic.Int32
+	uids        map[uint32]string
+	gids        map[uint32]string
+	sidUIDs     map[uint32]string
+	sidGIDs     map[uint32]string
+	domain      string
+	uidCalls    atomic.Int32
+	sidUIDCalls atomic.Int32
 }
 
 func (m *reverseMockProvider) LookupUID(_ context.Context, uid uint32) (string, string, bool) {
@@ -370,6 +374,24 @@ func (m *reverseMockProvider) LookupGID(_ context.Context, gid uint32) (string, 
 		return n, m.domain, true
 	}
 	return "", "", false
+}
+
+// SIDForUID returns ok=true whenever the uid is known — INCLUDING when the mapped
+// SID is empty — so the Resolver's own "empty SID is a miss" guard is exercised
+// rather than short-circuited here.
+func (m *reverseMockProvider) SIDForUID(_ context.Context, uid uint32) (string, bool) {
+	m.sidUIDCalls.Add(1)
+	if s, ok := m.sidUIDs[uid]; ok {
+		return s, true
+	}
+	return "", false
+}
+
+func (m *reverseMockProvider) SIDForGID(_ context.Context, gid uint32) (string, bool) {
+	if s, ok := m.sidGIDs[gid]; ok {
+		return s, true
+	}
+	return "", false
 }
 
 // TestResolver_ReverseLookup_Chain verifies LookupUID/LookupGID consult only
@@ -427,5 +449,74 @@ func TestResolver_ReverseLookup_Cached(t *testing.T) {
 	}
 	if got := dir.uidCalls.Load(); got != 2 {
 		t.Errorf("provider LookupUID called %d times total, want 2 (one hit + one miss, both cached)", got)
+	}
+}
+
+// TestResolver_SIDForUID_Chain verifies SIDForUID/SIDForGID consult only
+// providers implementing SIDReverseResolver (a plain provider in the chain is
+// skipped, not a panic) and that the first hit wins (#1617).
+func TestResolver_SIDForUID_Chain(t *testing.T) {
+	plain := &mockProvider{name: "kerberos"} // no SIDReverseResolver
+	dir := &reverseMockProvider{
+		mockProvider: mockProvider{name: "ldap"},
+		sidUIDs:      map[uint32]string{500: "S-1-5-21-1-2-3-500"},
+		sidGIDs:      map[uint32]string{512: "S-1-5-21-1-2-3-512"},
+	}
+	r := NewResolver(WithProvider(plain), WithProvider(dir))
+
+	if s, ok := r.SIDForUID(context.Background(), 500); !ok || s != "S-1-5-21-1-2-3-500" {
+		t.Fatalf("SIDForUID(500) = (%q, %v), want (S-1-5-21-1-2-3-500, true)", s, ok)
+	}
+	if s, ok := r.SIDForGID(context.Background(), 512); !ok || s != "S-1-5-21-1-2-3-512" {
+		t.Fatalf("SIDForGID(512) = (%q, %v), want (S-1-5-21-1-2-3-512, true)", s, ok)
+	}
+	if _, ok := r.SIDForUID(context.Background(), 999); ok {
+		t.Error("SIDForUID(999) should miss (unknown uid)")
+	}
+}
+
+// TestResolver_SIDForUID_Cached verifies a repeated SID lookup is served from
+// cache — the provider is queried once for a hit and once for a miss — matching
+// the LookupUID cache semantics.
+func TestResolver_SIDForUID_Cached(t *testing.T) {
+	dir := &reverseMockProvider{
+		mockProvider: mockProvider{name: "ldap"},
+		sidUIDs:      map[uint32]string{42: "S-1-5-21-9-9-9-42"},
+	}
+	r := NewResolver(WithProvider(dir))
+
+	for i := 0; i < 3; i++ {
+		if s, ok := r.SIDForUID(context.Background(), 42); !ok || s != "S-1-5-21-9-9-9-42" {
+			t.Fatalf("iter %d: SIDForUID(42) = (%q, %v)", i, s, ok)
+		}
+	}
+	if got := dir.sidUIDCalls.Load(); got != 1 {
+		t.Errorf("provider SIDForUID called %d times, want 1 (cached)", got)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, ok := r.SIDForUID(context.Background(), 7); ok {
+			t.Fatalf("iter %d: SIDForUID(7) should miss", i)
+		}
+	}
+	if got := dir.sidUIDCalls.Load(); got != 2 {
+		t.Errorf("provider SIDForUID called %d times total, want 2 (one hit + one miss, both cached)", got)
+	}
+}
+
+// TestResolver_SIDForUID_EmptyIsMiss verifies that a provider returning
+// (sidStr="", ok=true) — a directory object with no usable objectSid — is
+// treated as a MISS by the Resolver, so the caller keeps the machine-domain SID
+// rather than an empty string (#1617; also guards the ldap provider's own
+// empty-SID gate at a different layer).
+func TestResolver_SIDForUID_EmptyIsMiss(t *testing.T) {
+	dir := &reverseMockProvider{
+		mockProvider: mockProvider{name: "ldap"},
+		sidUIDs:      map[uint32]string{500: ""}, // known uid, but empty SID
+	}
+	r := NewResolver(WithProvider(dir))
+
+	if s, ok := r.SIDForUID(context.Background(), 500); ok || s != "" {
+		t.Fatalf("SIDForUID(500) = (%q, %v), want (\"\", false) — empty SID must be a miss", s, ok)
 	}
 }

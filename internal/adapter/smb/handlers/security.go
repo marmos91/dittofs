@@ -238,6 +238,30 @@ func directoryGIDForSID(s *sid.SID) (uint32, bool) {
 	return 0, false
 }
 
+// sameSID reports whether two SIDs are identical. A nil operand never matches.
+// Used by the SET_INFO owner/group gate to recognize a re-set of the file's
+// current owner/group SID as a no-op (#1617).
+func sameSID(a, b *sid.SID) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return sid.FormatSID(a) == sid.FormatSID(b)
+}
+
+// isCurrentOwnerSID reports whether reqSID equals the SID the server currently
+// emits for a file owned by uid — the machine-domain SID, or the real directory
+// SID when the bridge maps the uid (#1617). The SET_INFO gate uses this to
+// distinguish a no-op owner re-set (accept) from a genuine unmappable chown
+// (reject, #1228), independent of whether the reverse directory lookup is up.
+func isCurrentOwnerSID(reqSID *sid.SID, uid uint32) bool {
+	return sameSID(reqSID, ownerSIDFor(_defaultSIDMapper.Load(), uid))
+}
+
+// isCurrentGroupSID mirrors isCurrentOwnerSID for a file's group GID.
+func isCurrentGroupSID(reqSID *sid.SID, gid uint32) bool {
+	return sameSID(reqSID, groupSIDFor(_defaultSIDMapper.Load(), gid))
+}
+
 // ============================================================================
 // Security Descriptor Building
 // ============================================================================

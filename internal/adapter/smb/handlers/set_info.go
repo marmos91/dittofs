@@ -1854,15 +1854,31 @@ func (h *Handler) setSecurityInfo(
 		reqOwnerSID, reqGroupSID, hasOwnerSID, hasGroupSID := securityDescriptorOwnerGroupSIDs(buffer)
 		mapper := GetSIDMapper()
 
-		if (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil &&
-			mapper.IsForeignDomainSID(reqOwnerSID) {
-			logger.Debug("SET_INFO Security: owner change requested with foreign-domain SID", "path", openFile.Path)
-			return setInfoStatus(types.StatusInvalidOwner), nil
-		}
-		if (additionalInfo&GroupSecurityInformation) != 0 && hasGroupSID && ownerGID == nil &&
-			mapper.IsForeignDomainSID(reqGroupSID) {
-			logger.Debug("SET_INFO Security: group change requested with foreign-domain SID", "path", openFile.Path)
-			return setInfoStatus(types.StatusNoneMapped), nil
+		// A foreign owner/group SID the parse path could not reverse-map (nil
+		// ownerUID/ownerGID) normally means an unmappable chown, which #1228
+		// rejects. But #1617 emits an AD-owned file's owner/group AS a foreign AD
+		// SID, and Windows echoes that exact SID back on unrelated DACL edits — so
+		// a re-set of the file's CURRENT owner/group SID must be accepted as a
+		// no-op even when the reverse directory lookup is momentarily unavailable
+		// (a transient miss must not turn a no-op into StatusInvalidOwner). Fetch
+		// the file's current uid/gid only when we might otherwise reject.
+		ownerReject := (additionalInfo&OwnerSecurityInformation) != 0 && hasOwnerSID && ownerUID == nil &&
+			mapper.IsForeignDomainSID(reqOwnerSID)
+		groupReject := (additionalInfo&GroupSecurityInformation) != 0 && hasGroupSID && ownerGID == nil &&
+			mapper.IsForeignDomainSID(reqGroupSID)
+		if ownerReject || groupReject {
+			var curUID, curGID uint32
+			if cur, gerr := h.Registry.GetMetadataService().GetFile(authCtx.Context, openFile.MetadataHandle); gerr == nil && cur != nil {
+				curUID, curGID = cur.UID, cur.GID
+			}
+			if ownerReject && !isCurrentOwnerSID(reqOwnerSID, curUID) {
+				logger.Debug("SET_INFO Security: owner change requested with foreign-domain SID", "path", openFile.Path)
+				return setInfoStatus(types.StatusInvalidOwner), nil
+			}
+			if groupReject && !isCurrentGroupSID(reqGroupSID, curGID) {
+				logger.Debug("SET_INFO Security: group change requested with foreign-domain SID", "path", openFile.Path)
+				return setInfoStatus(types.StatusNoneMapped), nil
+			}
 		}
 	}
 

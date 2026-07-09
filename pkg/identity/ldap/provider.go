@@ -370,13 +370,17 @@ func (p *Provider) LookupGID(ctx context.Context, gid uint32) (name, domain stri
 // unknown uid so the caller keeps the machine SID.
 func (p *Provider) SIDForUID(ctx context.Context, uid uint32) (string, bool) {
 	_, _, sidStr, ok := p.reverseLookup(ctx, "user", "uidNumber", uid)
-	return sidStr, ok
+	// ok from reverseLookup means "object found"; for this interface ok must mean
+	// "SID resolved", so an object whose objectSid was missing/undecodable (empty
+	// sidStr) is a miss — the caller then keeps the machine-domain SID rather than
+	// treating "" as a valid SID.
+	return sidStr, ok && sidStr != ""
 }
 
 // SIDForGID mirrors SIDForUID for a group GID → group SID.
 func (p *Provider) SIDForGID(ctx context.Context, gid uint32) (string, bool) {
 	_, _, sidStr, ok := p.reverseLookup(ctx, "group", "gidNumber", gid)
-	return sidStr, ok
+	return sidStr, ok && sidStr != ""
 }
 
 // reverseLookup maps a POSIX id back to a directory object, returning its
@@ -413,10 +417,19 @@ func (p *Provider) reverseLookup(ctx context.Context, objectClass, numAttr strin
 	if name == "" {
 		return "", "", "", false
 	}
+	// Decode objectSid into the canonical SID string. sidStr stays empty on a
+	// missing/undecodable attribute; the SID-returning callers (SIDForUID/GID,
+	// #1617) treat empty as a miss, while the name-only callers (LookupUID/GID)
+	// ignore it. Log the anomaly at Debug so an objectSid read regression (schema
+	// / ACL) is diagnosable rather than a silent fall-back to the machine SID.
 	if raw := res.Entries[0].GetRawAttributeValue("objectSid"); len(raw) > 0 {
 		if s, _, derr := sid.DecodeSID(raw); derr == nil {
 			sidStr = sid.FormatSID(s)
+		} else {
+			logger.Debug("ldap: reverse lookup objectSid decode failed", "name", name, "error", derr)
 		}
+	} else {
+		logger.Debug("ldap: reverse lookup entry has no objectSid", "name", name)
 	}
 	return name, p.cfg.Realm, sidStr, true
 }
@@ -596,6 +609,19 @@ func (p *Provider) deriveUIDGID(entry *ldapv3.Entry) (uint32, uint32, error) {
 				return 0, 0, fmt.Errorf("ldap: parse gidNumber %q: %w", gidStr, err)
 			}
 			return uid, gid, nil
+		}
+		// A group object carries gidNumber but no uidNumber, so the paired guard
+		// above misses it. Honor the stamped gidNumber directly (GID==UID for a
+		// group's own identity) rather than falling through to the RID. Without
+		// this, resolving a group SID (#1617 GIDForSID: SID→GID for a Group SD
+		// round-trip) would recover the group's RID instead of its real gidNumber
+		// and silently rewrite a file's gid on an owner/group re-set.
+		if gidStr != "" && isGroupEntry(entry) {
+			gid, err := parseUint32(gidStr)
+			if err != nil {
+				return 0, 0, fmt.Errorf("ldap: parse gidNumber %q: %w", gidStr, err)
+			}
+			return gid, gid, nil
 		}
 		logger.Debug("ldap: RFC2307 attrs absent, falling back to RID idmap",
 			"dn", entry.DN)

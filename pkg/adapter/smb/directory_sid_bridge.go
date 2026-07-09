@@ -55,26 +55,31 @@ func (b *directorySIDBridge) SIDForGID(gid uint32) (string, bool) {
 }
 
 // UIDForSID resolves a directory SID string back to its POSIX UID (parse path).
-// It issues a SID-keyed credential to the resolver, which routes it to the
-// LDAP/AD provider's objectSid search.
 func (b *directorySIDBridge) UIDForSID(sidStr string) (uint32, bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
-	defer cancel()
-	resolved, err := b.resolver.Resolve(ctx, &identity.Credential{ExternalID: sidStr})
-	if err != nil || resolved == nil || !resolved.Found {
-		return 0, false
+	if resolved, ok := b.resolveSID(sidStr); ok {
+		return resolved.UID, true
 	}
-	return resolved.UID, true
+	return 0, false
 }
 
 // GIDForSID resolves a directory SID string back to its POSIX GID (parse path).
-// Mirrors UIDForSID for a group SID.
 func (b *directorySIDBridge) GIDForSID(sidStr string) (uint32, bool) {
+	if resolved, ok := b.resolveSID(sidStr); ok {
+		return resolved.GID, true
+	}
+	return 0, false
+}
+
+// resolveSID issues a SID-keyed credential to the resolver, which routes it to
+// the LDAP/AD provider's objectSid search. Shared by UIDForSID/GIDForSID (they
+// differ only in which field of the resolved identity they return). Returns
+// ok=false on any error or a not-found result.
+func (b *directorySIDBridge) resolveSID(sidStr string) (*identity.ResolvedIdentity, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), b.timeout)
 	defer cancel()
 	resolved, err := b.resolver.Resolve(ctx, &identity.Credential{ExternalID: sidStr})
 	if err != nil || resolved == nil || !resolved.Found {
-		return 0, false
+		return nil, false
 	}
-	return resolved.GID, true
+	return resolved, true
 }

@@ -175,3 +175,44 @@ func TestBuildSD_DirectoryBridge_SpecialOwnerACEUsesADSID(t *testing.T) {
 		t.Errorf("OWNER@ SID = %q, want %q", s, ownerSID)
 	}
 }
+
+// A SET_INFO that re-sends the file's CURRENT owner/group AD SID (Windows does
+// this on any DACL edit) must be recognized as a no-op by isCurrentOwnerSID /
+// isCurrentGroupSID — independent of whether the reverse directory lookup is up
+// — so the #1228 foreign-domain gate does not reject it (#1617 finding #2).
+func TestSetInfo_DirectoryBridge_CurrentOwnerGroupSIDIsNoOp(t *testing.T) {
+	const (
+		adUID    = 500
+		adGID    = 512
+		ownerSID = "S-1-5-21-100-200-300-500"
+		groupSID = "S-1-5-21-100-200-300-512"
+	)
+	withDirectoryBridge(t, fakeDirectorySIDBridge{
+		uid: adUID, uidSID: ownerSID, gid: adGID, gidSID: groupSID,
+	})
+
+	reqOwner, err := sid.ParseSIDString(ownerSID)
+	if err != nil {
+		t.Fatalf("ParseSIDString(owner): %v", err)
+	}
+	reqGroup, err := sid.ParseSIDString(groupSID)
+	if err != nil {
+		t.Fatalf("ParseSIDString(group): %v", err)
+	}
+
+	if !isCurrentOwnerSID(reqOwner, adUID) {
+		t.Error("re-set of the file's current AD owner SID must be a no-op")
+	}
+	if !isCurrentGroupSID(reqGroup, adGID) {
+		t.Error("re-set of the file's current AD group SID must be a no-op")
+	}
+
+	// A different SID is a genuine change, not a no-op.
+	other, err := sid.ParseSIDString("S-1-5-21-100-200-300-999")
+	if err != nil {
+		t.Fatalf("ParseSIDString(other): %v", err)
+	}
+	if isCurrentOwnerSID(other, adUID) {
+		t.Error("a different SID must not be treated as the current owner")
+	}
+}
