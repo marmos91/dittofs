@@ -1,0 +1,21 @@
+[seq-write-buffered]
+description=Sequential write throughput, buffered + fsync-at-close (realistic durability)
+# The FAIR write comparison. Unlike seq-write (direct=1), this buffers through the
+# page cache and fsyncs once at close — the common path real apps use. Over NFS
+# it issues UNSTABLE writes + one COMMIT, so it exercises the deferred-fsync fast
+# path (DittoFS #1584) instead of a per-block FILE_SYNC barrier. Every backend
+# still fsyncs at close, so durability is matched; what differs is only how well
+# each pipelines a buffered stream. Pair with seq-write to see the O_DIRECT tax.
+rw=write
+bs=1m
+direct=0
+end_fsync=1
+ioengine=${FIO_ENGINE:-libaio}
+numjobs=${BENCH_THREADS:-4}
+# Size-bounded, NOT time_based: write exactly one --size file per job then fsync
+# once. time_based would buffer 60 s of writes into the page cache and flush them
+# all at end_fsync, overrunning the backend's local store (end_fsync EIO). One
+# fixed file measures the durable file-write rate cleanly and can't overflow.
+size=${BENCH_SIZE:-1g}
+directory=${BENCH_DIR:-/mnt/bench}
+group_reporting

@@ -22,7 +22,8 @@ const (
 	dittofsSMBPort = "12445"
 	dittofsShare   = "bench"
 	dittofsDataDir = "/var/lib/bench-dittofs"
-	dittofsAPIURL  = "http://127.0.0.1:8080"
+	dittofsAPIPort = "8080"
+	dittofsAPIURL  = "http://127.0.0.1:" + dittofsAPIPort
 	dittofsMeta    = "bench-meta"
 	dittofsLocal   = "bench-local"
 	dittofsRemote  = "bench-s3"
@@ -51,13 +52,15 @@ func dittofsSetup(ctx context.Context, env BackendEnv) error {
 	if err != nil {
 		return err
 	}
-	// Kill any dfs left over by a crashed prior run (else it still holds NFS 12049
-	// / API 8080 and the new server can't bind), then wipe control-plane + client
-	// state so bootstrap (admin user, stores, share) is deterministic and
-	// re-runnable — a stale controlplane.db would make the creates fail "already
-	// exists". Resilience: a managed run must survive a dirty VM.
+	// Kill any dfs left over by a crashed prior run and WAIT for it to actually
+	// die before wiping state: a still-live old dfs holds the BadgerDB directory
+	// lock and keeps rewriting controlplane.db, so racing rm+start against it made
+	// the metadata-store create fail "cannot acquire directory lock". Only after
+	// it's gone do we wipe control-plane + client state, so bootstrap (admin user,
+	// stores, share) is deterministic and re-runnable. Resilience: survive a dirty VM.
 	_ = exec.Sh(ctx, "sh", "-c",
-		"pkill -9 -f 'dfs start' 2>/dev/null; rm -rf ~/.config/dittofs ~/.local/state/dittofs ~/.config/dfsctl "+dittofsDataDir+"; true")
+		"pkill -9 -f 'dfs start' 2>/dev/null; for i in $(seq 1 30); do pgrep -x dfs >/dev/null 2>&1 || break; sleep 0.5; done; "+
+			"rm -rf ~/.config/dittofs ~/.local/state/dittofs ~/.config/dfsctl "+dittofsDataDir+"; true")
 	if err := os.MkdirAll(dittofsDataDir+"/meta", 0o755); err != nil {
 		return err
 	}
@@ -75,6 +78,11 @@ func dittofsSetup(ctx context.Context, env BackendEnv) error {
 	}
 	if err := waitPort(ctx, dittofsNFSPort); err != nil {
 		return fmt.Errorf("dfs did not open NFS port %s: %w", dittofsNFSPort, err)
+	}
+	// The API server (8080) can come up after the NFS listener; wait for it too so
+	// the login below doesn't race a not-yet-listening control plane.
+	if err := waitPort(ctx, dittofsAPIPort); err != nil {
+		return fmt.Errorf("dfs did not open API port %s: %w", dittofsAPIPort, err)
 	}
 	// dfsctl talks to the authenticated control-plane API — log in first, then
 	// build the store stack a share needs: a metadata store, a local block store

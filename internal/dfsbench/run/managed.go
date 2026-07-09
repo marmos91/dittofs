@@ -102,15 +102,19 @@ func runPlan(ctx context.Context, p backend.Plan, env backend.BackendEnv, wls, s
 		_, _ = fmt.Fprintf(exec.CmdOut, "skip %s: no recipe yet\n", p.SystemLabel())
 		return nil
 	}
-	if err := b.Setup(ctx, env); err != nil {
-		return fmt.Errorf("setup: %w", err)
-	}
+	// Register teardown BEFORE Setup so a Setup that fails partway — e.g. after
+	// starting the server but before the share is ready — still cleans up. Otherwise
+	// a half-started dfs leaks, keeps holding its metadata-store (Badger) directory
+	// lock, and wedges every later run's store-create. Teardown is idempotent.
 	if b.Teardown != nil {
 		defer func() {
 			if e := b.Teardown(ctx); e != nil && err == nil {
 				err = fmt.Errorf("teardown: %w", e)
 			}
 		}()
+	}
+	if err := b.Setup(ctx, env); err != nil {
+		return fmt.Errorf("setup: %w", err)
 	}
 
 	mnt, err := b.Mount(ctx, p.Protocol)
@@ -138,38 +142,53 @@ func runPlan(ctx context.Context, p backend.Plan, env backend.BackendEnv, wls, s
 				reads = append(reads, w)
 			}
 		}
-		if len(reads) > 0 {
-			// Make the read cold-from-S3. FUSE backends: bounce the mount stack —
-			// unmount the re-export, flush+remount the FUSE mount (the unmount
-			// guarantees the full writeback upload; the remount empties its cache),
-			// then re-export the fresh mount. Others (local-disk): just evict.
-			if b.FlushFUSE != nil {
-				if b.Unmount != nil {
-					_ = b.Unmount(ctx, p.Protocol)
-				}
-				if err := b.FlushFUSE(ctx); err != nil {
-					return fmt.Errorf("flush: %w", err)
-				}
-				newMnt, err := b.Mount(ctx, p.Protocol)
-				if err != nil {
-					return fmt.Errorf("remount: %w", err)
-				}
-				mnt = newMnt
-			} else if b.Evict != nil {
-				if err := b.Evict(ctx); err != nil {
-					return fmt.Errorf("evict: %w", err)
-				}
+		// Re-establish a cold cache before EACH read workload, not once for all of
+		// them. The first cold read pulls the whole file back from S3 into the
+		// local cache, so a later cold cell reading the same file would be served
+		// warm — that's what made the old single-evict cold rand-read implausibly
+		// fast. A per-workload barrier keeps every cold number genuinely cold.
+		for _, w := range reads {
+			newMnt, err := coldBarrier(ctx, b, p, mnt)
+			if err != nil {
+				return err
 			}
-			// Drop the OS page cache too, so reads come from the backend, not RAM.
-			if err := exec.DropOSCache(ctx); err != nil {
-				_, _ = fmt.Fprintf(exec.CmdOut, "warn: drop OS cache: %v\n", err)
-			}
-			if err := runPass(ctx, p, "cold", reads, sizes, mnt, opts, f); err != nil {
+			mnt = newMnt
+			if err := runPass(ctx, p, "cold", []string{w}, sizes, mnt, opts, f); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// coldBarrier forces the next read to come from the backend, not a warm cache:
+// FUSE backends bounce the mount stack (unmount re-export → flush+remount the
+// FUSE mount so the writeback fully uploads and the cache empties → re-export),
+// others evict; then the OS page cache is dropped. Returns the (possibly new)
+// client mountpoint. Run before EACH cold read cell so cells don't warm each other.
+func coldBarrier(ctx context.Context, b *backend.Backend, p backend.Plan, mnt string) (string, error) {
+	if b.FlushFUSE != nil {
+		if b.Unmount != nil {
+			_ = b.Unmount(ctx, p.Protocol)
+		}
+		if err := b.FlushFUSE(ctx); err != nil {
+			return mnt, fmt.Errorf("flush: %w", err)
+		}
+		newMnt, err := b.Mount(ctx, p.Protocol)
+		if err != nil {
+			return mnt, fmt.Errorf("remount: %w", err)
+		}
+		mnt = newMnt
+	} else if b.Evict != nil {
+		if err := b.Evict(ctx); err != nil {
+			return mnt, fmt.Errorf("evict: %w", err)
+		}
+	}
+	// Drop the OS page cache too, so reads come from the backend, not client RAM.
+	if err := exec.DropOSCache(ctx); err != nil {
+		_, _ = fmt.Fprintf(exec.CmdOut, "warn: drop OS cache: %v\n", err)
+	}
+	return mnt, nil
 }
 
 // runPass fios one pass (warm|cold) of a plan's workload×size cells against mnt.

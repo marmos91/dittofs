@@ -29,8 +29,9 @@ const (
 //go:embed smb.conf.tmpl
 var smbConfTmpl string
 
-// prepareMountpoint returns clientMntDir as a clean, mountable empty directory.
-// It force-lazy-unmounts anything already there first: a stale mount left by a
+// prepareMountpoint makes clientMntDir a clean, mountable empty directory (its
+// path is the package const clientMntDir; this returns only an error). It
+// force-lazy-unmounts anything already there first: a stale mount left by a
 // crashed prior run — especially a hard NFS mount to a now-dead server — would
 // otherwise make the MkdirAll's stat() hang uninterruptibly (D-state) and wedge
 // the whole run. Lazy (-l) detaches from the namespace immediately even if busy,

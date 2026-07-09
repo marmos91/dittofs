@@ -87,8 +87,10 @@ func zerofsSetup(ctx context.Context, env BackendEnv) error {
 	// fails it with "Protocol family not supported". The reexport backends restart
 	// knfsd in their own setup, and zerofsTeardown restores it for any that follow.
 	// Also kill any zerofs left by a crashed prior run so the fresh one can bind
-	// 2049 (resilience against a dirty VM).
-	_ = exec.Sh(ctx, "sh", "-c", "pkill -9 -f 'zerofs run' 2>/dev/null; systemctl stop nfs-server nfs-mountd 2>/dev/null; exportfs -ua 2>/dev/null; true")
+	// 2049 (resilience against a dirty VM). Stop both unit names — the re-export
+	// backends restart nfs-kernel-server, and nfs-server is only an alias on some
+	// distros — so we reliably free the port the same server later reclaims.
+	_ = exec.Sh(ctx, "sh", "-c", "pkill -9 -f 'zerofs run' 2>/dev/null; systemctl stop nfs-server nfs-kernel-server nfs-mountd 2>/dev/null; exportfs -ua 2>/dev/null; true")
 	return zerofsStart(ctx)
 }
 
@@ -174,7 +176,7 @@ func zerofsStart(ctx context.Context) error {
 	// too early and the first mount races a not-yet-serving server (mount.nfs:
 	// "Protocol family not supported").
 	if err := exec.Sh(ctx, "sh", "-c",
-		"for i in $(seq 1 120); do grep -qa 'Starting NFS server' "+zerofsLog+" && exit 0; sleep 1; done; exit 1"); err != nil {
+		"for i in $(seq 1 120); do grep -qa 'Starting NFS server' "+zerofsLog+" 2>/dev/null && exit 0; sleep 1; done; exit 1"); err != nil {
 		return fmt.Errorf("zerofs NFS server did not begin serving (see %s): %w", zerofsLog, err)
 	}
 	return nil
@@ -197,8 +199,9 @@ func zerofsStop(ctx context.Context) error {
 func zerofsTeardown(ctx context.Context) error {
 	_ = zerofsStop(ctx)
 	// Restore the kernel NFS server that setup stopped, so a reexport backend
-	// scheduled after zerofs still has a knfsd to export into.
-	_ = exec.Sh(ctx, "sh", "-c", "systemctl start nfs-server 2>/dev/null; true")
+	// scheduled after zerofs still has a knfsd to export into. Start both unit
+	// names for distro/alias robustness (re-export uses nfs-kernel-server).
+	_ = exec.Sh(ctx, "sh", "-c", "systemctl start nfs-kernel-server nfs-server 2>/dev/null; true")
 	_ = cleanS3Prefix(ctx, zerofsPrefix+"/")
 	return os.RemoveAll(zerofsCacheDir)
 }
