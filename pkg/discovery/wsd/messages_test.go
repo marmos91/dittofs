@@ -30,10 +30,11 @@ func TestEndpointUUID_StableForSameName(t *testing.T) {
 }
 
 func TestMessageID_FreshAndPrefixed(t *testing.T) {
-	if MessageID() == MessageID() {
+	a, b := MessageID(), MessageID()
+	if a == b {
 		t.Fatal("MessageID should be unique per call")
 	}
-	if !strings.HasPrefix(MessageID(), "urn:uuid:") {
+	if !strings.HasPrefix(a, "urn:uuid:") {
 		t.Fatal("MessageID missing urn:uuid: prefix")
 	}
 }

@@ -2,7 +2,6 @@ package smb
 
 import (
 	"context"
-	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
@@ -90,7 +89,9 @@ func (s *Adapter) newWSDSidecar() auxsvc.Service {
 	// A non-empty NetBIOS domain means this server is an AD member, so Windows
 	// should group it under Domain: rather than Workgroup:.
 	isDomain := workgroup != ""
-	return wsd.NewResponder(s.discoveryName(), workgroup, isDomain, uint64(time.Now().Unix()))
+	// Distinct, strictly-increasing InstanceId per responder build (see the
+	// wsdInstanceID field) so a live toggle never rewinds the AppSequence.
+	return wsd.NewResponder(s.discoveryName(), workgroup, isDomain, s.wsdInstanceID.Add(1))
 }
 
 // Compile-time assertions that the discovery advertisers satisfy auxsvc.Service.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
@@ -124,6 +125,14 @@ type Adapter struct {
 	// WS-Discovery advertisers (issue #1609) — under one uniform lifecycle.
 	// Seeded with the Serve context and torn down in Stop. See discovery.go.
 	sidecars *auxsvc.Group
+
+	// wsdInstanceID sources the WS-Discovery AppSequence InstanceId. Seeded once
+	// per adapter (process start time) and incremented per responder build, so
+	// every WSD responder in this process gets a distinct, strictly-increasing
+	// InstanceId — a live discovery toggle can never reuse an InstanceId with a
+	// rewound MessageNumber, which Windows would treat as a stale/duplicate
+	// sequence and discard.
+	wsdInstanceID atomic.Uint64
 }
 
 // New creates a new Adapter with the specified configuration.
@@ -206,13 +215,17 @@ func New(config Config) *Adapter {
 		ShutdownTimeout: config.Timeouts.Shutdown,
 	}
 
-	return &Adapter{
+	a := &Adapter{
 		BaseAdapter:    adapter.NewBaseAdapter(baseConfig, "SMB"),
 		config:         config,
 		handler:        handler,
 		sessionManager: sessionManager,
 		sidecars:       auxsvc.NewGroup(),
 	}
+	// Seed the WS-Discovery InstanceId base with the process start time so it is
+	// stable for this adapter and increases across process restarts.
+	a.wsdInstanceID.Store(uint64(time.Now().Unix()))
+	return a
 }
 
 // SetRuntime injects the runtime containing all stores and shares.

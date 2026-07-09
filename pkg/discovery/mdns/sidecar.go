@@ -34,8 +34,10 @@ func NewSidecar(services []ServiceRecord) *Sidecar {
 // Name implements auxsvc.Service.
 func (s *Sidecar) Name() string { return SidecarName }
 
-// Start registers the services with the shared Responder (idempotent).
-func (s *Sidecar) Start(context.Context) error {
+// Start registers the services with the shared Responder (idempotent). If ctx is
+// cancelled without an explicit Stop, the registration is withdrawn — matching
+// the ctx-driven lifetime of the other auxiliary services.
+func (s *Sidecar) Start(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.handle != nil {
@@ -46,6 +48,10 @@ func (s *Sidecar) Start(context.Context) error {
 		return err
 	}
 	s.handle = h
+	go func() {
+		<-ctx.Done()
+		_ = s.Stop(context.Background())
+	}()
 	return nil
 }
 

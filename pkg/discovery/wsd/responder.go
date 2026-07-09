@@ -72,7 +72,11 @@ func (r *Responder) Name() string { return SidecarName }
 // Start binds the UDP multicast socket and the HTTP metadata server, then emits
 // a Hello. A bind failure on either returns an error; the caller (the SMB
 // adapter) treats it as non-fatal, matching the portmapper precedent.
-func (r *Responder) Start(context.Context) error {
+//
+// ctx bounds the responder's lifetime: if it is cancelled (the owning adapter's
+// Serve context ends) without an explicit Stop, the responder tears itself down,
+// matching the ctx-driven NFS auxiliary services.
+func (r *Responder) Start(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -102,7 +106,8 @@ func (r *Responder) Start(context.Context) error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", mb.metadataHandler())
-	r.httpSrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	r.httpSrv = srv
 
 	// UDP multicast responder.
 	conn, err := net.ListenMulticastUDP("udp4", nil, discoveryUDPAddrV4)
@@ -115,16 +120,26 @@ func (r *Responder) Start(context.Context) error {
 	r.loopCtx, r.loopStop = context.WithCancel(context.Background())
 	loopCtx := r.loopCtx
 
+	// Capture srv/conn/loopCtx as locals for the goroutines — Stop nils the
+	// struct fields under r.mu, so the goroutines must not read them unlocked.
 	r.wg.Add(2)
 	go func() {
 		defer r.wg.Done()
-		if serr := r.httpSrv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
+		if serr := srv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
 			logger.Debug("wsd: metadata server stopped", "error", serr)
 		}
 	}()
 	go func() {
 		defer r.wg.Done()
 		r.readLoop(conn, loopCtx)
+	}()
+
+	// Tear down if the base context is cancelled without an explicit Stop. This
+	// watcher is intentionally NOT in r.wg (it blocks until ctx is cancelled, so
+	// Stop's wg.Wait must not wait on it); Stop is idempotent.
+	go func() {
+		<-ctx.Done()
+		_ = r.Stop(context.Background())
 	}()
 
 	// Announce presence. Write directly to the local conn: we still hold r.mu

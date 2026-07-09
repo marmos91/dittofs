@@ -143,7 +143,9 @@ func (g *Group) Reconcile(name string, want bool, build func() Service) error {
 			return err
 		}
 	case !want && running:
-		return g.StopOne(name)
+		// Swallow the stop error (StopOne already debug-logs it) so the caller
+		// never surfaces a benign shutdown error as a "failed to start" warning.
+		_ = g.StopOne(name)
 	}
 	return nil
 }
