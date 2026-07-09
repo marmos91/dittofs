@@ -1696,7 +1696,7 @@ func TestLookupSids_ReferencedDomains_DeferredOrder(t *testing.T) {
 	if iName0 < 0 || iName1 < 0 || iSid0 < 0 {
 		t.Fatalf("missing bytes: name0=%d name1=%d sid0=%d", iName0, iName1, iSid0)
 	}
-	if !(iName0 < iSid0 && iSid0 < iName1) {
+	if iName0 >= iSid0 || iSid0 >= iName1 {
 		t.Errorf("referenced-domain deferred order wrong: name0@%d sid0@%d name1@%d; want name0 < sid0 < name1",
 			iName0, iSid0, iName1)
 	}
