@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
 )
@@ -115,10 +116,11 @@ func zerofsMount(ctx context.Context, proto Protocol) (string, error) {
 		return "", err
 	}
 	// zerofs serves NFSv3 on :2049 from its own userspace server (no knfsd) — the
-	// same native path dittofs-s3 takes. async + nolock to sit on the fastest
-	// durability tier, matching every other cell.
-	opts := "nfsvers=3,tcp,port=" + zerofsNFSPort + ",mountport=" + zerofsNFSPort +
-		",async,nolock,rsize=1048576,wsize=1048576"
+	// same native path dittofs-s3 takes. Use the IDENTICAL option set as the
+	// dittofs-s3 nfs3 cell (actimeo=0,nolock) so attribute-cache behavior can't
+	// skew the native-vs-native comparison; rsize/wsize negotiate to the kernel
+	// default (1 MiB over TCP) for both.
+	opts := "nfsvers=3,tcp,port=" + zerofsNFSPort + ",mountport=" + zerofsNFSPort + ",actimeo=0,nolock"
 	if err := exec.Sh(ctx, "mount", "-t", "nfs", "-o", opts, "127.0.0.1:/", clientMntDir); err != nil {
 		return "", err
 	}
@@ -143,8 +145,10 @@ func zerofsColdBarrier(ctx context.Context) error {
 }
 
 func zerofsStart(ctx context.Context) error {
+	// Truncate the log each start (single '>') so repeated runs don't interleave
+	// old and new output — matches dittofs.go.
 	if err := exec.Sh(ctx, "sh", "-c",
-		"zerofs run -c "+zerofsConf+" >>/var/log/bench-zerofs.log 2>&1 &"); err != nil {
+		"zerofs run -c "+zerofsConf+" >/var/log/bench-zerofs.log 2>&1 &"); err != nil {
 		return err
 	}
 	if err := waitPort(ctx, zerofsNFSPort); err != nil {
@@ -153,8 +157,18 @@ func zerofsStart(ctx context.Context) error {
 	return nil
 }
 
+// zerofsStop signals the server and waits for it to actually exit — pkill only
+// sends the signal, so without the wait a following cache wipe or restart races
+// a process still holding the LSM cache dir open.
 func zerofsStop(ctx context.Context) error {
-	return exec.Sh(ctx, "sh", "-c", "pkill -f 'zerofs run' || true")
+	_ = exec.Sh(ctx, "sh", "-c", "pkill -f 'zerofs run' || true")
+	for i := 0; i < 50; i++ {
+		if exec.Sh(ctx, "sh", "-c", "! pgrep -f 'zerofs run' >/dev/null 2>&1") == nil {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil
 }
 
 func zerofsTeardown(ctx context.Context) error {
