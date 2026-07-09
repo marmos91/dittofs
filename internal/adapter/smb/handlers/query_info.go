@@ -387,13 +387,15 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 				}
 			}
 		}
-		// Merge the share's control-plane grants into the DACL so Windows'
-		// Security tab lists the AD principals (users, groups, direct SID
-		// grants) that actually govern the share — not just the file's
-		// synthesized owner+SYSTEM descriptor (#1608). Best-effort: a lookup
-		// failure (or a partially-wired runtime returning nil) falls back to the
-		// per-file descriptor so QUERY_INFO stays robust. Only worth doing when
-		// the DACL section is requested.
+		// Surface the share's direct AD/SID grants in the DACL so Windows'
+		// Security tab lists the AD principals that govern the share — not just
+		// the file's synthesized owner+SYSTEM descriptor (#1608). The projection
+		// is narrowed in buildDACL (sid: grants only, synthesized descriptors
+		// only) so it never perturbs an explicitly-set ACL or breaks SMB
+		// ACL-inheritance conformance. Best-effort: a lookup failure (or a
+		// partially-wired runtime returning nil) falls back to the per-file
+		// descriptor so QUERY_INFO stays robust. Only worth doing when the DACL
+		// section is requested.
 		var grantACEs []acl.ACE
 		if req.AdditionalInfo&DACLSecurityInformation != 0 && h.Registry != nil {
 			if grantACL, gerr := h.Registry.ShareRootGrantACL(ctx.Context, openFile.ShareName); gerr != nil {

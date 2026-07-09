@@ -18,6 +18,7 @@ package handlers
 
 import (
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -166,12 +167,16 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 }
 
 // BuildSecurityDescriptorWithGrants is BuildSecurityDescriptor plus a set of
-// share-grant ACEs to merge into the DACL so Windows' Security tab lists the
-// AD principals (users, groups, direct SID grants) that govern the share, not
-// just the file's synthesized owner+SYSTEM descriptor (#1608). grantACEs is the
-// output of Runtime.ShareRootGrantACL for the share owning the file; pass nil to
-// build a descriptor from per-file metadata only. Merging affects only the
-// displayed descriptor — server-side access enforcement is unchanged.
+// share-grant ACEs (the output of Runtime.ShareRootGrantACL for the share owning
+// the file) to surface in the DACL so Windows' Security tab lists the direct
+// AD/SID principals (#1528) that govern the share, not just the file's
+// synthesized owner+SYSTEM descriptor (#1608). Pass nil to build a descriptor
+// from per-file metadata only.
+//
+// The projection is intentionally narrow (see buildDACL): only direct "sid:"
+// grants are surfaced, and only onto files that have no explicitly-stored ACL.
+// Merging affects only the displayed descriptor — server-side access enforcement
+// is unchanged.
 func BuildSecurityDescriptorWithGrants(file *metadata.File, additionalSecInfo uint32, grantACEs []acl.ACE) ([]byte, error) {
 	includeOwner := (additionalSecInfo & OwnerSecurityInformation) != 0
 	includeGroup := (additionalSecInfo & GroupSecurityInformation) != 0
@@ -350,11 +355,25 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 // POSIX semantics so Unix mode bits stay authoritative on the server.
 //
 // grantACEs, when non-nil, are share-level grant ACEs (Runtime.ShareRootGrantACL)
-// merged into the DACL so Windows' Security tab lists the AD principals that
-// govern the share (#1608). They are appended after the file's own ACEs and
-// deduped by resolved SID, so the always-on OWNER@/SYSTEM@ that both the
-// synthesized default and the grant ACL emit are not shown twice. This changes
-// only the displayed descriptor, never server-side enforcement.
+// surfaced in the DACL so Windows' Security tab lists the AD principals that
+// govern the share (#1608). The projection is deliberately narrow so it can
+// never alter a descriptor a client set or that a conformance client round-trips
+// against:
+//
+//   - Only files with NO explicitly-stored ACL (file.ACL == nil → synthesized
+//     default) are decorated. A client that SET a file's ACL — or one that reads
+//     a NULL DACL back — sees exactly what was stored, unperturbed.
+//   - Only direct AD/SID grants (#1528, Who has the "sid:" prefix) are surfaced.
+//     A direct SID grant has no other way to appear in Windows (it maps to no
+//     local file owner/group). The always-on OWNER@/SYSTEM@/ADMINISTRATORS@
+//     trustees, local user/group grants, and the EVERYONE@ default already reach
+//     Windows through the reconciled share-root ACL and the owner/group SIDs, and
+//     injecting them into every child descriptor breaks SMB ACL-inheritance
+//     conformance (smbtorture smb2.create.aclfile/acldir create a child with no
+//     SD and assert its default is exactly owner+SYSTEM).
+//
+// Surfaced grants are appended after the file's own ACEs and deduped by resolved
+// SID. This changes only the displayed descriptor, never server-side enforcement.
 //
 // Returns the source ACL used for SD control flag computation.
 func buildDACL(buf *smbenc.Writer, file *metadata.File, grantACEs []acl.ACE) *acl.ACL {
@@ -364,6 +383,12 @@ func buildDACL(buf *smbenc.Writer, file *metadata.File, grantACEs []acl.ACE) *ac
 		fileACL = file.ACL
 	} else {
 		fileACL = acl.SynthesizeWindowsDefault()
+	}
+
+	// Only a synthesized default is decorated with share grants (see the doc
+	// comment above). A file carrying an explicit ACL is emitted verbatim.
+	if file.ACL != nil {
+		grantACEs = nil
 	}
 
 	aces := make([]windowsACE, 0, len(fileACL.ACEs)+len(grantACEs))
@@ -395,10 +420,16 @@ func buildDACL(buf *smbenc.Writer, file *metadata.File, grantACEs []acl.ACE) *ac
 		}
 		aces = append(aces, wace)
 	}
-	// Merge share-grant trustees, skipping any whose SID the file already carries
-	// (the always-on OWNER@/SYSTEM@ that both the synthesized default and the
-	// grant ACL emit) so the Security tab does not show duplicate rows (#1608).
+	// Surface direct AD/SID grants only (see the doc comment): the always-on
+	// OWNER@/SYSTEM@/ADMINISTRATORS@ trustees, local "{id}@localdomain" grants,
+	// and the EVERYONE@ default already reach Windows via the reconciled share
+	// root and the owner/group SIDs. Skipping them here keeps child descriptors
+	// conformance-clean. Any surviving grant whose SID the file already carries is
+	// also skipped so the Security tab does not show duplicate rows (#1608).
 	for _, ace := range grantACEs {
+		if !strings.HasPrefix(ace.Who, "sid:") {
+			continue
+		}
 		wace, ok := toWindowsACE(ace)
 		if !ok {
 			continue

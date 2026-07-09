@@ -51,7 +51,7 @@ func buildRaceBindPDU(callID uint32) []byte {
 // single SID.
 func buildRaceLookupSids2PDU(callID uint32, s *sid.SID) []byte {
 	var stub bytes.Buffer
-	stub.Write(make([]byte, 20)) // 20-byte policy handle
+	stub.Write(make([]byte, 20))                                     // 20-byte policy handle
 	_ = binary.Write(&stub, binary.LittleEndian, uint32(1))          // Count
 	_ = binary.Write(&stub, binary.LittleEndian, uint32(0x00020000)) // array pointer
 	_ = binary.Write(&stub, binary.LittleEndian, uint32(1))          // conformant max
