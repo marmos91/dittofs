@@ -1093,8 +1093,8 @@ func TestBuildLookupSidsResponse_TwoDomains(t *testing.T) {
 	var domains []domainEntry
 	for i := range resolved {
 		r := &resolved[i]
-		if _, ok := domainMap[r.domainName]; !ok {
-			domainMap[r.domainName] = len(domains)
+		if _, ok := domainMap[domainKeyOf(r)]; !ok {
+			domainMap[domainKeyOf(r)] = len(domains)
 			domains = append(domains, domainEntry{name: r.domainName, sid: r.domainSID})
 		}
 	}
@@ -1119,6 +1119,51 @@ func TestBuildLookupSidsResponse_TwoDomains(t *testing.T) {
 	}
 	if res.status != statusSuccess {
 		t.Errorf("status = 0x%08x, want success", res.status)
+	}
+}
+
+// TestBuildLookupSidsResponse_SameNameDifferentSID reproduces the crash where an
+// AD-owned file's owner (algorithmic MACHINE-domain SID, resolved to the AD
+// account name + AD NetBIOS domain) shares a NetBIOS name with an AD SID grant
+// (real AD domain SID). Deduping the referenced-domain list by NAME collapsed
+// them, leaving the grant's SID inconsistent with the referenced domain SID —
+// the client rejected the batch (raw SIDs) and Explorer crashed. The two domains
+// must stay distinct so each account's RID pairs with the correct domain SID.
+func TestBuildLookupSidsResponse_SameNameDifferentSID(t *testing.T) {
+	h := newTestLSAHandler()
+	machineDom := sid.ParseSIDMust("S-1-5-21-9-9-9")
+	adDom := sid.ParseSIDMust("S-1-5-21-1-2-3")
+	resolved := []resolvedSID{
+		{name: "Administrator", sidType: SidTypeUser, domainName: "CUBBIT", domainSID: machineDom}, // owner, machine SID
+		{name: "alice", sidType: SidTypeUser, domainName: "CUBBIT", domainSID: adDom},              // AD grant, AD SID
+	}
+
+	domainMap := make(map[string]int)
+	var domains []domainEntry
+	for i := range resolved {
+		r := &resolved[i]
+		if _, ok := domainMap[domainKeyOf(r)]; !ok {
+			domainMap[domainKeyOf(r)] = len(domains)
+			domains = append(domains, domainEntry{name: r.domainName, sid: r.domainSID})
+		}
+	}
+	if len(domains) != 2 {
+		t.Fatalf("domains = %d, want 2 (same name, different SID must NOT collapse)", len(domains))
+	}
+
+	stub := h.buildLookupSidsResponse(resolved, domains, domainMap, true, true)
+	response := append(make([]byte, 24), stub...)
+	res := parseLookupSidsResponse(t, response, true)
+
+	if res.names[0].domainIdx == res.names[1].domainIdx {
+		t.Errorf("owner and grant share domain index %d; must differ (distinct SIDs)", res.names[0].domainIdx)
+	}
+	if res.names[0].domainIdx < 0 || res.names[1].domainIdx < 0 {
+		t.Fatalf("unmapped domain index: %d, %d", res.names[0].domainIdx, res.names[1].domainIdx)
+	}
+	if res.domains[res.names[0].domainIdx] != "CUBBIT" || res.domains[res.names[1].domainIdx] != "CUBBIT" {
+		t.Errorf("both entries should display as CUBBIT; got %q, %q",
+			res.domains[res.names[0].domainIdx], res.domains[res.names[1].domainIdx])
 	}
 }
 

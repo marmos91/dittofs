@@ -488,8 +488,18 @@ func (h *LSARPCHandler) handleLookupSids(req *Request) []byte {
 		}
 	}
 
-	// Build domain list (deduplicated)
-	domainMap := make(map[string]int) // domain name -> index
+	// Build the referenced-domain list, deduplicated by domain SID — NOT by name.
+	// Two domains can legitimately share a NetBIOS name yet have different SIDs:
+	// a file owned by an AD user carries the algorithmic MACHINE-domain SID but
+	// resolves (by uidNumber/rid) to the AD account name + AD NetBIOS domain, so
+	// it reports e.g. name "CUBBIT" with the machine domain SID, while an AD SID
+	// grant reports the SAME name "CUBBIT" with the real AD domain SID. Deduping
+	// by name would collapse them to one entry with a single SID, leaving every
+	// account whose SID does not match that SID inconsistent with its referenced
+	// domain (relative-id vs domain-SID mismatch) — which the client rejects,
+	// showing raw SIDs and crashing Explorer. Keying on the SID keeps each domain
+	// distinct so every account's RID pairs with the correct domain SID.
+	domainMap := make(map[string]int) // domain SID key -> index
 	var domains []domainEntry
 
 	for i := range resolved {
@@ -497,8 +507,9 @@ func (h *LSARPCHandler) handleLookupSids(req *Request) []byte {
 		if r.domainName == "" {
 			continue
 		}
-		if _, exists := domainMap[r.domainName]; !exists {
-			domainMap[r.domainName] = len(domains)
+		key := domainKeyOf(r)
+		if _, exists := domainMap[key]; !exists {
+			domainMap[key] = len(domains)
 			domains = append(domains, domainEntry{name: r.domainName, sid: r.domainSID})
 		}
 	}
@@ -597,6 +608,17 @@ func (h *LSARPCHandler) parseSIDsFromRequest(data []byte, opnum uint16) []*sid.S
 type domainEntry struct {
 	name string
 	sid  *sid.SID
+}
+
+// domainKeyOf is the referenced-domain dedup/index key for a resolved SID. It
+// keys on the domain SID (identity), NOT the display name, so two domains that
+// share a NetBIOS name but differ in SID stay distinct (see handleLookupSids).
+// Falls back to the name when no domain SID is known.
+func domainKeyOf(r *resolvedSID) string {
+	if r.domainSID == nil {
+		return "name:" + r.domainName
+	}
+	return "sid:" + sid.FormatSID(r.domainSID)
 }
 
 // buildLookupSidsResponse builds the NDR-encoded LookupSids response.
@@ -710,10 +732,12 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 			_ = binary.Write(&buf, binary.LittleEndian, nameUTF16Len) // MaximumLength (bytes, no NUL)
 			appendUint32Buf(&buf, nameRefID)                          // unique pointer
 			nameRefID += 4
-			// Domain index (int32)
+			// Domain index (int32). Look up by the SID-based key so each account
+			// references the domain entry whose SID matches its own (see
+			// handleLookupSids / domainKeyOf) — not merely one that shares a name.
 			domIdx := int32(-1) // -1 = no domain
 			if r.domainName != "" {
-				if idx, ok := domainMap[r.domainName]; ok {
+				if idx, ok := domainMap[domainKeyOf(&r)]; ok {
 					domIdx = int32(idx)
 				}
 			}
