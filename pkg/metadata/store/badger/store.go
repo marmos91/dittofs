@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -303,6 +304,16 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	// Open BadgerDB
 	db, err := badger.Open(opts)
 	if err != nil {
+		// BadgerDB takes a directory lock, so this is the failure a second server
+		// (or a leftover one that never shut down) hits against the same data dir.
+		// Badger's raw "resource temporarily unavailable" is opaque — point the
+		// operator straight at the cause and the fix instead.
+		if isDirLockErr(err) {
+			return nil, fmt.Errorf("metadata store at %s is locked by another process — "+
+				"a DittoFS server is almost certainly already running against this data directory. "+
+				"Stop it ('dfs stop', or kill the running dfs) before starting another, or point "+
+				"this share at a different db_path: %w", config.DBPath, err)
+		}
 		return nil, fmt.Errorf("failed to open BadgerDB at %s: %w", config.DBPath, err)
 	}
 
@@ -370,6 +381,17 @@ const valueLogGCInterval = 5 * time.Minute
 
 // valueLogGCDiscardRatio is the fraction of stale data a value-log file
 // must contain before Badger will rewrite it. 0.5 is Badger's commonly
+// isDirLockErr reports whether err is BadgerDB's "directory is already locked"
+// failure — the signature of a second server (or a leftover one that never shut
+// down) opening the same data directory. Badger surfaces it as a plain error
+// with an EAGAIN-flavoured message, so we match on its text.
+func isDirLockErr(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "Cannot acquire directory lock") ||
+		strings.Contains(strings.ToLower(s), "another process is using this badger database") ||
+		strings.Contains(s, "resource temporarily unavailable")
+}
+
 // recommended starting point — rewrite files at least half garbage.
 const valueLogGCDiscardRatio = 0.5
 
