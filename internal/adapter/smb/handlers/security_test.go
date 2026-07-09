@@ -287,6 +287,54 @@ func TestBuildSD_ExplicitACL_IgnoresGrants(t *testing.T) {
 	}
 }
 
+// TestBuildSD_ShareGrant_SuppressesNumericTwin verifies that when a share-grant
+// ACL (the reconciled share-root DACL) carries a principal in both its SMB
+// "sid:" form and its NFS "{id}@localdomain" numeric form, the SMB descriptor
+// shows only the sid: form — so the Windows Security tab does not list the same
+// AD principal twice (and a group's numeric twin does not surface as
+// unix_user:<rid>). A pure local grant, which has no sid: twin, is kept.
+func TestBuildSD_ShareGrant_SuppressesNumericTwin(t *testing.T) {
+	const aliceSID = "S-1-5-21-188294588-3368521931-100232490-1106"
+	// alice: an AD/SID grant that carries a resolved Unix id (1106) → emits BOTH
+	// sid:…-1106 and 1106@localdomain. localUID 4242: a local grant → only the
+	// numeric form.
+	rootACL := acl.BuildShareRootACL(acl.GrantNone, []acl.RootGrant{
+		{ID: 1106, SID: aliceSID, Level: acl.GrantRead},
+		{ID: 4242, Level: acl.GrantReadWrite},
+	})
+	if rootACL.Source != acl.ACLSourceShareGrant {
+		t.Fatalf("BuildShareRootACL source = %v, want share-grant", rootACL.Source)
+	}
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{UID: 0, GID: 0, Mode: 0o755, ACL: rootACL},
+	}
+
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	_, _, dacl, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	whoCount := map[string]int{}
+	for _, ace := range dacl.ACEs {
+		whoCount[ace.Who]++
+	}
+
+	// alice's sid: form survives; her numeric twin is suppressed.
+	if whoCount["sid:"+aliceSID] != 1 {
+		t.Errorf("alice sid: ACE count = %d, want 1 (Who counts: %v)", whoCount["sid:"+aliceSID], whoCount)
+	}
+	if n := whoCount["1106@localdomain"]; n != 0 {
+		t.Errorf("alice numeric twin not suppressed: 1106@localdomain count = %d, want 0", n)
+	}
+	// The local grant (no sid: twin) is kept.
+	if whoCount["4242@localdomain"] != 1 {
+		t.Errorf("local grant dropped: 4242@localdomain count = %d, want 1", whoCount["4242@localdomain"])
+	}
+}
+
 // TestBuildSD_NilGrants_MatchesBaseline verifies that passing nil grantACEs is
 // identical to the plain BuildSecurityDescriptor (no behavior change for the
 // non-grant path).

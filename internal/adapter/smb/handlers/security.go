@@ -311,6 +311,23 @@ type windowsACE struct {
 	sid        *sid.SID
 }
 
+// ridFromSIDWho returns the trailing RID of a "sid:<SID>" ACE principal (the
+// last sub-authority of the SID). ok is false for any Who that is not a
+// well-formed "sid:" principal. Used to pair a share grant's SMB "sid:" ACE with
+// its NFS "{rid}@localdomain" numeric twin so the duplicate can be collapsed for
+// display.
+func ridFromSIDWho(who string) (uint32, bool) {
+	rest, ok := strings.CutPrefix(who, "sid:")
+	if !ok {
+		return 0, false
+	}
+	s, err := sid.ParseSIDString(rest)
+	if err != nil || s.SubAuthorityCount == 0 || len(s.SubAuthorities) == 0 {
+		return 0, false
+	}
+	return s.SubAuthorities[len(s.SubAuthorities)-1], true
+}
+
 // principalToSID maps an NFSv4 ACE principal identifier to a binary SID.
 // Handles special identifiers (OWNER@, GROUP@, EVERYONE@, SYSTEM@,
 // ADMINISTRATORS@) and falls back to SIDMapper.PrincipalToSID for others.
@@ -410,7 +427,29 @@ func buildDACL(buf *smbenc.Writer, file *metadata.File, grantACEs []acl.ACE) *ac
 		}, true
 	}
 
+	// A control-plane share-grant ACL (the reconciled share-root DACL) carries
+	// each AD principal TWICE: a "sid:<SID>" ACE matched over SMB/PAC, and a
+	// "{id}@localdomain" numeric ACE matched over NFS (which has no SID on the
+	// wire). The Windows Security tab resolves both to the same account, so the
+	// numeric twin shows as a duplicate row — and a group's numeric twin
+	// (matched via the user-only reverse lookup) resolves to a bogus
+	// "unix_user:<rid>". Suppress the numeric form when a sid: ACE for the same
+	// principal (RID == id) is present. Only share-grant ACLs carry this dual
+	// pattern; client-set ACLs are emitted verbatim (guarded by Source), and a
+	// pure local grant that has no sid: twin is kept.
+	suppressWho := map[string]struct{}{}
+	if fileACL.Source == acl.ACLSourceShareGrant {
+		for _, ace := range fileACL.ACEs {
+			if rid, ok := ridFromSIDWho(ace.Who); ok {
+				suppressWho[acl.LocalDomainPrincipal(rid)] = struct{}{}
+			}
+		}
+	}
+
 	for _, ace := range fileACL.ACEs {
+		if _, skip := suppressWho[ace.Who]; skip {
+			continue
+		}
 		wace, ok := toWindowsACE(ace)
 		if !ok {
 			continue
