@@ -159,7 +159,7 @@ func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*ide
 		return nil, err
 	}
 
-	attrs := []string{"sAMAccountName", "uidNumber", "gidNumber", "objectSid", "primaryGroupID", "memberOf", "distinguishedName"}
+	attrs := []string{"sAMAccountName", "uidNumber", "gidNumber", "objectSid", "objectClass", "primaryGroupID", "memberOf", "distinguishedName"}
 	req := ldapv3.NewSearchRequest(
 		p.cfg.BaseDN,
 		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, 2, int(p.cfg.Timeout.Seconds()), false,
@@ -186,6 +186,21 @@ func (p *Provider) Resolve(ctx context.Context, cred *identity.Credential) (*ide
 	uid, gid, err := p.deriveUIDGID(entry)
 	if err != nil {
 		return nil, err
+	}
+
+	// A group object (matched by objectSid when resolving a group share grant for
+	// the LSARPC Security-tab display, e.g. "Domain Admins") has no meaningful
+	// primary/supplementary group set of its own — return its identity and type
+	// directly, skipping the user-only group-membership expansion below.
+	if isGroupEntry(entry) {
+		return &identity.ResolvedIdentity{
+			Username: username,
+			UID:      uid,
+			GID:      gid,
+			Domain:   p.cfg.Realm,
+			Found:    true,
+			IsGroup:  true,
+		}, nil
 	}
 
 	gids, err := p.resolveGroupGIDs(ctx, c, entry, gid)
@@ -379,20 +394,37 @@ func (p *Provider) reverseLookup(ctx context.Context, objectClass, numAttr strin
 }
 
 // userFilter builds an LDAP filter matching the credential. SIDs are matched on
-// objectSid; principals on the configured user attribute (sAMAccountName).
+// objectSid across both users AND groups — a SID uniquely identifies one object,
+// and a group SID (e.g. "Domain Admins", or a directly-granted AD group) must
+// resolve to its name for the SMB Security-tab display, not fall through to
+// "Account Unknown". Principals (non-SID) still match the configured user
+// attribute (sAMAccountName).
 func (p *Provider) userFilter(cred *identity.Credential) (string, error) {
 	if strings.HasPrefix(cred.ExternalID, "S-1-") {
 		s, err := sid.ParseSIDString(cred.ExternalID)
 		if err != nil {
 			return "", fmt.Errorf("ldap: parse SID %q: %w", cred.ExternalID, err)
 		}
-		return fmt.Sprintf("(&(objectClass=user)(objectSid=%s))", sidToLDAPFilter(s)), nil
+		return fmt.Sprintf("(&(|(objectClass=user)(objectClass=group))(objectSid=%s))", sidToLDAPFilter(s)), nil
 	}
 	name, _ := splitPrincipal(cred.ExternalID)
 	if name == "" {
 		name = cred.ExternalID
 	}
 	return fmt.Sprintf("(&(objectClass=user)(%s=%s))", p.cfg.UserAttr, ldapv3.EscapeFilter(name)), nil
+}
+
+// isGroupEntry reports whether a directory entry is a group object (objectClass
+// contains "group"). Used to tag a SID resolution as a group so the LSARPC path
+// reports SidTypeGroup. AD's objectClass is multi-valued (e.g. top, group), so
+// this scans all values case-insensitively.
+func isGroupEntry(entry *ldapv3.Entry) bool {
+	for _, oc := range entry.GetAttributeValues("objectClass") {
+		if strings.EqualFold(oc, "group") {
+			return true
+		}
+	}
+	return false
 }
 
 // deriveUIDGID returns the user's POSIX UID/GID according to the idmap mode.

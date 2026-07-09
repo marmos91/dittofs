@@ -219,6 +219,48 @@ func TestResolve_BySID(t *testing.T) {
 	}
 }
 
+// TestResolve_BySID_Group verifies that a group SID (e.g. "Domain Admins",
+// RID 512) resolves by objectSid across both object classes and is tagged
+// IsGroup, so the LSARPC Security-tab path reports SidTypeGroup instead of
+// leaving it "Account Unknown" (the pre-fix user-only filter missed groups).
+func TestResolve_BySID_Group(t *testing.T) {
+	dn := "CN=Domain Admins,CN=Users,DC=dittofs,DC=ad"
+	var gotFilter string
+	fc := &fakeConn{
+		search: func(req *ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
+			gotFilter = req.Filter
+			if strings.Contains(req.Filter, "objectSid=") {
+				return []*ldapv3.Entry{entry(dn, map[string][]string{
+					"sAMAccountName": {"Domain Admins"},
+					"objectClass":    {"top", "group"},
+				}, encodeSID(t, 512))}, nil
+			}
+			return nil, nil
+		},
+	}
+	cfg := baseCfg()
+	cfg.NestedGroups = false
+	p := newTestProvider(t, cfg, fc)
+	res, err := p.Resolve(context.Background(), &identity.Credential{ExternalID: "S-1-5-21-1-2-3-512"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !res.Found || res.Username != "Domain Admins" {
+		t.Fatalf("group by-SID resolve failed: %+v", res)
+	}
+	if !res.IsGroup {
+		t.Error("expected IsGroup=true for a group SID resolution")
+	}
+	// The filter must admit group objects, not just users.
+	if !strings.Contains(gotFilter, "objectClass=group") {
+		t.Errorf("SID filter does not match groups: %q", gotFilter)
+	}
+	// idmap:rid → UID/GID derive from the RID (512).
+	if res.UID != 512 || res.GID != 512 {
+		t.Errorf("UID/GID = %d/%d, want 512/512 (RID)", res.UID, res.GID)
+	}
+}
+
 func TestCanResolve(t *testing.T) {
 	p := newTestProvider(t, baseCfg(), &fakeConn{search: func(*ldapv3.SearchRequest) ([]*ldapv3.Entry, error) { return nil, nil }})
 	cases := []struct {
