@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -303,6 +304,16 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	// Open BadgerDB
 	db, err := badger.Open(opts)
 	if err != nil {
+		// BadgerDB takes a directory lock, so this is the failure a second server
+		// (or a leftover one that never shut down) hits against the same data dir.
+		// Badger's raw "resource temporarily unavailable" is opaque — point the
+		// operator straight at the cause and the fix instead.
+		if isDirLockErr(err) {
+			return nil, fmt.Errorf("metadata store at %s is locked by another process — "+
+				"a DittoFS server is almost certainly already running against this data directory. "+
+				"Stop it ('dfs stop', or kill the running dfs) before starting another, or point "+
+				"this share at a different db_path: %w", config.DBPath, err)
+		}
 		return nil, fmt.Errorf("failed to open BadgerDB at %s: %w", config.DBPath, err)
 	}
 
@@ -372,6 +383,18 @@ const valueLogGCInterval = 5 * time.Minute
 // must contain before Badger will rewrite it. 0.5 is Badger's commonly
 // recommended starting point — rewrite files at least half garbage.
 const valueLogGCDiscardRatio = 0.5
+
+// isDirLockErr reports whether err is BadgerDB's "directory is already locked"
+// failure — the signature of a second server (or a leftover one that never shut
+// down) opening the same data directory. Badger's message names the cause
+// ("Cannot acquire directory lock ... Another process is using this Badger
+// database") before the wrapped EAGAIN errno, so match on that text and not the
+// bare "resource temporarily unavailable" (which unrelated failures also carry).
+func isDirLockErr(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "cannot acquire directory lock") ||
+		strings.Contains(s, "another process is using this badger database")
+}
 
 // runValueLogGC periodically reclaims Badger value-log space. On each
 // tick it drains all rewritable value-log files (RunValueLogGC returns
