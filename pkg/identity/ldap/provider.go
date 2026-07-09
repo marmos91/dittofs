@@ -432,15 +432,28 @@ func (p *Provider) reverseFilter(c conn, objectClass, numAttr string, id uint32)
 // resolution.
 func (p *Provider) domainSID(c conn) (string, bool) {
 	p.domainSIDMu.Lock()
-	defer p.domainSIDMu.Unlock()
-	if p.domainSIDVal != "" {
-		return p.domainSIDVal, true
+	cached := p.domainSIDVal
+	p.domainSIDMu.Unlock()
+	if cached != "" {
+		return cached, true
 	}
+
+	// Discover OUTSIDE the lock: discoverDomainSID issues blocking LDAP searches,
+	// and holding domainSIDMu across them would serialize (head-of-line block)
+	// every concurrent rid-mode reverse lookup behind the first one for up to the
+	// directory timeout. Concurrent first-callers may each discover — that is
+	// idempotent and cheap, and the result is cached from then on.
 	val := p.discoverDomainSID(c)
-	if val != "" {
+	if val == "" {
+		return "", false
+	}
+	p.domainSIDMu.Lock()
+	if p.domainSIDVal == "" {
 		p.domainSIDVal = val
 	}
-	return val, val != ""
+	cached = p.domainSIDVal
+	p.domainSIDMu.Unlock()
+	return cached, true
 }
 
 // discoverDomainSID reads the domain SID from the directory. The domain object
