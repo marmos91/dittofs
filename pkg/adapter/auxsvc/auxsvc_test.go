@@ -191,6 +191,58 @@ func TestGroup_StopOneFromCallbackWhileOthersRun(t *testing.T) {
 	}
 }
 
+func TestGroup_ReconcileStartsAndStops(t *testing.T) {
+	g := NewGroup()
+	g.SetBaseContext(context.Background())
+	svc := &fakeService{name: "mdns"}
+
+	if err := g.Reconcile("mdns", true, func() Service { return svc }); err != nil {
+		t.Fatalf("Reconcile(start): %v", err)
+	}
+	if !g.IsRunning("mdns") {
+		t.Fatal("Reconcile(want=true) should have started the service")
+	}
+	if err := g.Reconcile("mdns", false, func() Service { return svc }); err != nil {
+		t.Fatalf("Reconcile(stop): %v", err)
+	}
+	if g.IsRunning("mdns") {
+		t.Fatal("Reconcile(want=false) should have stopped the service")
+	}
+}
+
+func TestGroup_ReconcileNoOpBeforeReady(t *testing.T) {
+	g := NewGroup() // no SetBaseContext
+	built := false
+	if err := g.Reconcile("mdns", true, func() Service { built = true; return &fakeService{name: "mdns"} }); err != nil {
+		t.Fatalf("Reconcile before Ready should be a no-op, got %v", err)
+	}
+	if built || g.IsRunning("mdns") {
+		t.Fatal("Reconcile must not build or start a service before SetBaseContext")
+	}
+}
+
+func TestGroup_StopAllClearsBaseContextSoLateReconcileNoOps(t *testing.T) {
+	g := NewGroup()
+	g.SetBaseContext(context.Background())
+	_ = g.Start(&fakeService{name: "a"})
+
+	if err := g.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll: %v", err)
+	}
+	if g.Ready() {
+		t.Fatal("StopAll should clear the base context so Ready() is false")
+	}
+	// A live reconcile racing shutdown must not start a service the now-stopped
+	// group would never tear down.
+	built := false
+	if err := g.Reconcile("b", true, func() Service { built = true; return &fakeService{name: "b"} }); err != nil {
+		t.Fatalf("post-StopAll Reconcile: %v", err)
+	}
+	if built || g.IsRunning("b") {
+		t.Fatal("post-StopAll Reconcile must no-op")
+	}
+}
+
 func idx(ss []string, want string) int {
 	for i, s := range ss {
 		if s == want {

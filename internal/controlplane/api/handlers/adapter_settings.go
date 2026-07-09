@@ -1001,6 +1001,8 @@ func resetNFSSetting(settings, defaults *models.NFSAdapterSettings, name string)
 		settings.PortmapperPort = defaults.PortmapperPort
 	case "portmapper_register_with_system":
 		settings.PortmapperRegisterWithSystem = defaults.PortmapperRegisterWithSystem
+	case "mdns_enabled":
+		settings.MDNSEnabled = defaults.MDNSEnabled
 	default:
 		return false
 	}
@@ -1030,6 +1032,10 @@ func resetSMBSetting(settings, defaults *models.SMBAdapterSettings, name string)
 		settings.DirectoryLeasingEnabled = defaults.DirectoryLeasingEnabled
 	case "blocked_operations":
 		settings.BlockedOperations = defaults.BlockedOperations
+	case "mdns_enabled":
+		settings.MDNSEnabled = defaults.MDNSEnabled
+	case "wsdiscovery_enabled":
+		settings.WSDiscoveryEnabled = defaults.WSDiscoveryEnabled
 	default:
 		return false
 	}

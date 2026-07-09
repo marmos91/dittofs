@@ -6,6 +6,22 @@ import (
 	"strings"
 )
 
+// xmlEscaper escapes the five XML metacharacters. The SOAP messages are built by
+// literal string substitution (Windows is prefix/order-sensitive, so no
+// encoding/xml marshalling), which does no escaping of its own — so any value
+// that can contain XML metacharacters (the inbound MessageID echoed into
+// RelatesTo, the OS hostname / NetBIOS names) must be run through esc first, or
+// a stray & / < makes the envelope non-well-formed and clients discard it.
+var xmlEscaper = strings.NewReplacer(
+	"&", "&amp;",
+	"<", "&lt;",
+	">", "&gt;",
+	`"`, "&quot;",
+	"'", "&apos;",
+)
+
+func esc(s string) string { return xmlEscaper.Replace(s) }
+
 // WS-Discovery / WS-Addressing constants.
 const (
 	nsDiscovery = "http://schemas.xmlsoap.org/ws/2005/04/discovery"
@@ -56,9 +72,9 @@ func announce(action, element string, e Endpoint, msgNum uint64) []byte {
 		"{inst}", strconv.FormatUint(e.InstanceID, 10),
 		"{num}", strconv.FormatUint(msgNum, 10),
 		"{element}", element,
-		"{uuid}", e.UUID,
-		"{types}", e.Types,
-		"{xaddrs}", e.XAddrs,
+		"{uuid}", esc(e.UUID),
+		"{types}", e.Types, // constant QName list — no XML metacharacters
+		"{xaddrs}", esc(e.XAddrs),
 		"{mv}", strconv.Itoa(e.MetadataVersion),
 	)
 	return []byte(r.Replace(envelopeHeader +
@@ -91,15 +107,15 @@ func match(action, matchesEl, matchEl, relatesTo string, e Endpoint, msgNum uint
 	r := strings.NewReplacer(
 		"{action}", action,
 		"{msgid}", MessageID(),
-		"{relates}", relatesTo,
+		"{relates}", esc(relatesTo), // inbound MessageID — untrusted
 		"{to}", toAnonymous,
 		"{inst}", strconv.FormatUint(e.InstanceID, 10),
 		"{num}", strconv.FormatUint(msgNum, 10),
 		"{matches}", matchesEl,
 		"{match}", matchEl,
-		"{uuid}", e.UUID,
-		"{types}", e.Types,
-		"{xaddrs}", e.XAddrs,
+		"{uuid}", esc(e.UUID),
+		"{types}", e.Types, // constant QName list — no XML metacharacters
+		"{xaddrs}", esc(e.XAddrs),
 		"{mv}", strconv.Itoa(e.MetadataVersion),
 	)
 	return []byte(r.Replace(envelopeHeader +

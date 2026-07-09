@@ -145,13 +145,14 @@ func (r *Responder) startLocked() error {
 	}
 	r.conn = conn
 	r.loopCtx, r.loopStop = context.WithCancel(context.Background())
+	loopCtx := r.loopCtx
 	wg := &sync.WaitGroup{}
 	r.wg = wg
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		r.readLoop(conn)
+		r.readLoop(conn, loopCtx)
 	}()
 	logger.Info("mDNS responder listening", "group", multicastGroupV4, "port", multicastPort)
 	return nil
@@ -161,6 +162,13 @@ func (r *Responder) startLocked() error {
 // generation's goroutines to exit.
 func (r *Responder) stop() {
 	r.mu.Lock()
+	// A Register may have raced in between the caller deciding this was the last
+	// registration and acquiring the lock here; if so, keep the socket up so its
+	// records stay advertised rather than tearing down under it.
+	if len(r.services) != 0 {
+		r.mu.Unlock()
+		return
+	}
 	conn := r.conn
 	stop := r.loopStop
 	wg := r.wg
@@ -182,7 +190,7 @@ func (r *Responder) stop() {
 	logger.Info("mDNS responder stopped")
 }
 
-func (r *Responder) readLoop(conn *net.UDPConn) {
+func (r *Responder) readLoop(conn *net.UDPConn, loopCtx context.Context) {
 	buf := make([]byte, maxDatagram)
 	for {
 		n, src, err := conn.ReadFromUDP(buf)
@@ -191,7 +199,7 @@ func (r *Responder) readLoop(conn *net.UDPConn) {
 				return
 			}
 			select {
-			case <-r.loopCtx.Done():
+			case <-loopCtx.Done():
 				return
 			default:
 			}

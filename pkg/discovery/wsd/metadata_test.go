@@ -48,6 +48,25 @@ func TestMetadataHandler_RendersComputer(t *testing.T) {
 	}
 }
 
+func TestMetadataHandler_DomainMemberLabelsDomain(t *testing.T) {
+	mb := metadataBuilder{uuid: "urn:uuid:x", name: "VM2", workgroup: "CUBBIT", isDomain: true}
+	got := string(mb.buildGetResponse("urn:uuid:r"))
+	if !strings.Contains(got, "<pub:Computer>VM2/Domain:CUBBIT</pub:Computer>") {
+		t.Errorf("AD member should be labelled Domain:, got:\n%s", got)
+	}
+}
+
+func TestMetadataHandler_EscapesName(t *testing.T) {
+	mb := metadataBuilder{uuid: "urn:uuid:x", name: "A&B", workgroup: "W<G", isDomain: false}
+	got := string(mb.buildGetResponse("urn:uuid:r"))
+	if strings.Contains(got, "A&B") || strings.Contains(got, "W<G") {
+		t.Errorf("name/workgroup not XML-escaped:\n%s", got)
+	}
+	if !strings.Contains(got, "A&amp;B/Workgroup:W&lt;G") {
+		t.Errorf("expected escaped pub:Computer content:\n%s", got)
+	}
+}
+
 func TestMetadataHandler_RejectsGET(t *testing.T) {
 	mb := metadataBuilder{uuid: "urn:uuid:x", name: "N", workgroup: "W"}
 	srv := httptest.NewServer(mb.metadataHandler())
@@ -66,7 +85,7 @@ func TestMetadataHandler_RejectsGET(t *testing.T) {
 // TestHandleDatagram_NoPanicWithoutSocket ensures the inbound dispatch is safe
 // even before the socket is up (send is a no-op on a nil conn).
 func TestHandleDatagram_NoPanicWithoutSocket(t *testing.T) {
-	r := NewResponder("VM2", "CUBBIT", 1)
+	r := NewResponder("VM2", "CUBBIT", true, 1)
 	r.endpoint = Endpoint{UUID: "urn:uuid:self"}
 
 	probe := []byte(`<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"

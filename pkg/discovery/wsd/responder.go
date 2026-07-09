@@ -39,6 +39,7 @@ var discoveryUDPAddrV4 = &net.UDPAddr{IP: net.ParseIP(discoveryGroupV4), Port: d
 type Responder struct {
 	name       string // computer / friendly name
 	workgroup  string // NetBIOS domain or workgroup label
+	isDomain   bool   // true => label as Domain: (AD member), false => Workgroup:
 	instanceID uint64 // AppSequence InstanceId
 
 	mu       sync.Mutex
@@ -52,14 +53,17 @@ type Responder struct {
 }
 
 // NewResponder builds a WS-Discovery responder advertising the given computer
-// name under the given workgroup/domain. instanceID is the AppSequence
-// InstanceId — it should be stable within a process run and increase across
-// restarts (e.g. the process start time in unix seconds).
-func NewResponder(name, workgroup string, instanceID uint64) *Responder {
+// name. workgroup is the NetBIOS domain (AD member) or workgroup (standalone)
+// name; isDomain selects how Windows labels it in the pub:Computer relationship
+// (Domain: vs Workgroup:). instanceID is the AppSequence InstanceId — it should
+// be stable within a process run and increase across restarts (e.g. the process
+// start time in unix seconds).
+func NewResponder(name, workgroup string, isDomain bool, instanceID uint64) *Responder {
 	if workgroup == "" {
 		workgroup = "WORKGROUP"
+		isDomain = false
 	}
-	return &Responder{name: name, workgroup: workgroup, instanceID: instanceID}
+	return &Responder{name: name, workgroup: workgroup, isDomain: isDomain, instanceID: instanceID}
 }
 
 // Name implements the adapter auxsvc.Service interface.
@@ -91,7 +95,7 @@ func (r *Responder) Start(context.Context) error {
 
 	// HTTP metadata endpoint (bind first so a failure doesn't leave the UDP
 	// socket dangling).
-	mb := metadataBuilder{uuid: uuidURN, name: r.name, workgroup: r.workgroup}
+	mb := metadataBuilder{uuid: uuidURN, name: r.name, workgroup: r.workgroup, isDomain: r.isDomain}
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", MetadataPort))
 	if err != nil {
 		return fmt.Errorf("wsd: listen tcp :%d: %w", MetadataPort, err)
@@ -109,6 +113,7 @@ func (r *Responder) Start(context.Context) error {
 	}
 	r.udpConn = conn
 	r.loopCtx, r.loopStop = context.WithCancel(context.Background())
+	loopCtx := r.loopCtx
 
 	r.wg.Add(2)
 	go func() {
@@ -119,11 +124,15 @@ func (r *Responder) Start(context.Context) error {
 	}()
 	go func() {
 		defer r.wg.Done()
-		r.readLoop(conn)
+		r.readLoop(conn, loopCtx)
 	}()
 
-	// Announce presence.
-	r.send(Hello(r.endpoint, r.msgNum.Add(1)), nil)
+	// Announce presence. Write directly to the local conn: we still hold r.mu
+	// here and r.send would re-acquire it (a self-deadlock that would also wedge
+	// the caller's auxsvc.Group, since Group.Start holds its own lock across this).
+	if _, err := conn.WriteToUDP(Hello(r.endpoint, r.msgNum.Add(1)), discoveryUDPAddrV4); err != nil {
+		logger.Debug("wsd: failed to send Hello", "error", err)
+	}
 
 	logger.Info("WS-Discovery responder listening",
 		"udp", fmt.Sprintf("%s:%d", discoveryGroupV4, discoveryPort),
@@ -168,7 +177,7 @@ func (r *Responder) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (r *Responder) readLoop(conn *net.UDPConn) {
+func (r *Responder) readLoop(conn *net.UDPConn, loopCtx context.Context) {
 	buf := make([]byte, maxDatagram)
 	for {
 		n, src, err := conn.ReadFromUDP(buf)
@@ -177,7 +186,7 @@ func (r *Responder) readLoop(conn *net.UDPConn) {
 				return
 			}
 			select {
-			case <-r.loopCtx.Done():
+			case <-loopCtx.Done():
 				return
 			default:
 			}

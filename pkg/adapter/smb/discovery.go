@@ -87,7 +87,10 @@ func (s *Adapter) newWSDSidecar() auxsvc.Service {
 	if s.handler != nil {
 		workgroup = s.handler.NetBIOSDomain
 	}
-	return wsd.NewResponder(s.discoveryName(), workgroup, uint64(time.Now().Unix()))
+	// A non-empty NetBIOS domain means this server is an AD member, so Windows
+	// should group it under Domain: rather than Workgroup:.
+	isDomain := workgroup != ""
+	return wsd.NewResponder(s.discoveryName(), workgroup, isDomain, uint64(time.Now().Unix()))
 }
 
 // Compile-time assertions that the discovery advertisers satisfy auxsvc.Service.

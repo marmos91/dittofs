@@ -83,6 +83,18 @@ func TestResolveMatch_CarriesXAddrs(t *testing.T) {
 	}
 }
 
+func TestProbeMatch_EscapesUntrustedRelatesTo(t *testing.T) {
+	// A LAN client can send a MessageID that decodes to text with XML
+	// metacharacters; echoing it unescaped into RelatesTo would break the reply.
+	msg := string(ProbeMatch(testEndpoint(), "urn:uuid:x&y<z", 1))
+	if !strings.Contains(msg, "<a:RelatesTo>urn:uuid:x&amp;y&lt;z</a:RelatesTo>") {
+		t.Errorf("RelatesTo not XML-escaped:\n%s", msg)
+	}
+	if strings.Contains(msg, "x&y<z") {
+		t.Error("raw unescaped metacharacters leaked into the message")
+	}
+}
+
 func TestParseInbound_Probe(t *testing.T) {
 	probe := `<?xml version="1.0"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"

@@ -20,12 +20,17 @@ package auxsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// ErrAlreadyRunning is returned by Start when a service with the same Name is
+// already tracked. Reconcile treats it as benign (a lost start race).
+var ErrAlreadyRunning = errors.New("auxsvc: service already running")
 
 // stopTimeout bounds a single-service Stop initiated by StopOne, where the
 // caller (e.g. a settings-watcher callback) has no natural context to bound the
@@ -97,7 +102,7 @@ func (g *Group) Start(s Service) error {
 	}
 	name := s.Name()
 	if _, ok := g.running[name]; ok {
-		return fmt.Errorf("auxsvc: service %q already running", name)
+		return fmt.Errorf("%w: %q", ErrAlreadyRunning, name)
 	}
 	if err := s.Start(g.baseCtx); err != nil {
 		return fmt.Errorf("auxsvc: start %q: %w", name, err)
@@ -130,7 +135,13 @@ func (g *Group) Reconcile(name string, want bool, build func() Service) error {
 	}
 	switch running := g.IsRunning(name); {
 	case want && !running:
-		return g.Start(build())
+		// Two goroutines can observe want && !running concurrently (e.g. the NFS
+		// accept-loop apply and the settings-watcher poll); the loser gets
+		// ErrAlreadyRunning, which is benign here — the single-instance invariant
+		// still holds — so it is not surfaced as a start failure.
+		if err := g.Start(build()); err != nil && !errors.Is(err, ErrAlreadyRunning) {
+			return err
+		}
 	case !want && running:
 		return g.StopOne(name)
 	}
@@ -187,6 +198,10 @@ func (g *Group) StopAll(ctx context.Context) error {
 	}
 	g.running = make(map[string]Service)
 	g.order = nil
+	// Clear the base context so any live reconcile that races this shutdown
+	// no-ops (Ready() becomes false, and Start re-checks baseCtx under the lock)
+	// rather than starting a service that StopAll would never tear down.
+	g.baseCtx = nil
 	g.mu.Unlock()
 
 	var firstErr error

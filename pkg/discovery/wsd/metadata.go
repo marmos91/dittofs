@@ -24,6 +24,7 @@ type metadataBuilder struct {
 	uuid      string // "urn:uuid:…"
 	name      string // computer / friendly name
 	workgroup string // NetBIOS domain or workgroup label
+	isDomain  bool   // true => "Domain:", false => "Workgroup:"
 }
 
 // buildGetResponse renders the WS-Transfer GetResponse. It is kept as an
@@ -31,14 +32,23 @@ type metadataBuilder struct {
 // WS-Transfer/devprof parser is sensitive to namespace prefixes and element
 // ordering; the template pins both.
 func (b metadataBuilder) buildGetResponse(relatesTo string) []byte {
+	membership := "Workgroup"
+	if b.isDomain {
+		membership = "Domain"
+	}
+	// Escape every substituted value: relatesTo is the (untrusted) inbound
+	// MessageID, and name/workgroup come from the OS hostname / NetBIOS domain —
+	// an unescaped & or < would make the whole envelope non-well-formed and the
+	// client would silently discard it.
 	r := strings.NewReplacer(
 		"{action}", actionGetResponse,
 		"{msgid}", MessageID(),
-		"{relates}", relatesTo,
+		"{relates}", esc(relatesTo),
 		"{to}", toAnonymous,
-		"{uuid}", b.uuid,
-		"{name}", b.name,
-		"{workgroup}", b.workgroup,
+		"{uuid}", esc(b.uuid),
+		"{name}", esc(b.name),
+		"{membership}", membership,
+		"{workgroup}", esc(b.workgroup),
 	)
 	return []byte(r.Replace(`<?xml version="1.0" encoding="utf-8"?>` +
 		`<s:Envelope` +
@@ -75,7 +85,7 @@ func (b metadataBuilder) buildGetResponse(relatesTo string) []byte {
 		`<a:EndpointReference><a:Address>{uuid}</a:Address></a:EndpointReference>` +
 		`<dp:Types>pub:Computer</dp:Types>` +
 		`<dp:ServiceId>{uuid}</dp:ServiceId>` +
-		`<pub:Computer>{name}/Workgroup:{workgroup}</pub:Computer>` +
+		`<pub:Computer>{name}/{membership}:{workgroup}</pub:Computer>` +
 		`</dp:Host>` +
 		`</dp:Relationship>` +
 		`</mex:MetadataSection>` +

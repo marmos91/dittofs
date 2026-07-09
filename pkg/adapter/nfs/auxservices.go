@@ -70,7 +70,13 @@ func (s *NFSAdapter) mdnsEnabled() bool {
 
 // newMDNSSidecar builds the NFS mDNS advertiser: an _nfs._tcp instance named
 // after the server, on the adapter's real port (12049), with a path= TXT naming
-// the first export so Finder mounts the right share.
+// an export so Finder mounts a valid share.
+//
+// The path is the lexicographically-first export, chosen deterministically
+// (ListShares order is not defined). Limitation: the record is built when the
+// advertiser starts and is not rebuilt when shares change, so renaming/removing
+// that export leaves a stale path hint until the adapter or advertiser restarts;
+// re-advertising on share changes is a follow-up.
 func (s *NFSAdapter) newMDNSSidecar() auxsvc.Service {
 	rec := mdns.ServiceRecord{
 		Instance: hostinfo.ServerName(),
@@ -79,7 +85,13 @@ func (s *NFSAdapter) newMDNSSidecar() auxsvc.Service {
 	}
 	if s.Registry != nil {
 		if shares := s.Registry.ListShares(); len(shares) > 0 {
-			rec.TXT = []string{"path=/" + shares[0]}
+			first := shares[0]
+			for _, sh := range shares[1:] {
+				if sh < first {
+					first = sh
+				}
+			}
+			rec.TXT = []string{"path=/" + first}
 		}
 	}
 	return mdns.NewSidecar([]mdns.ServiceRecord{rec})
