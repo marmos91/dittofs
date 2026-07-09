@@ -42,6 +42,11 @@ type CellResult struct {
 	// CtxSwPerSec is the FUSE-tax indicator; 0 off Linux (local/smoke on macOS).
 	CtxSwPerSec float64 `json:"ctxsw_per_sec,omitempty"`
 	CPUPct      float64 `json:"cpu_pct,omitempty"`
+
+	// AccessMode is how the backend served this cell: "native" (its own server,
+	// e.g. dittofs/zerofs) or "reexport" (a FUSE mount re-served over knfsd/Samba
+	// — the FUSE tax). Empty for direct local/smoke mounts. Drives the pairing view.
+	AccessMode string `json:"access_mode,omitempty"`
 }
 
 // Slug is the stable, filesystem-safe identity of a cell. Two runs of the same

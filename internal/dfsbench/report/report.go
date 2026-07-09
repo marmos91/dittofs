@@ -28,6 +28,7 @@ func NewReportCmd() *cobra.Command {
 				return fmt.Errorf("no results in %q", results)
 			}
 			_, _ = fmt.Fprint(exec.CmdOut, RenderTable(rs))
+			_, _ = fmt.Fprint(exec.CmdOut, RenderPairing(rs))
 			return nil
 		},
 	}
@@ -54,11 +55,11 @@ func RenderTable(rs []fio.CellResult) string {
 		return a.Size < b.Size
 	})
 
-	head := []string{"SYSTEM", "WORKLOAD", "SIZE", "PROTO", "PASS", "IOPS", "MB/s", "p50µs", "p99µs", "S3MB", "CTXSW/s", "CPU%", "err"}
+	head := []string{"SYSTEM", "ACCESS", "WORKLOAD", "SIZE", "PROTO", "PASS", "IOPS", "MB/s", "p50µs", "p99µs", "S3MB", "CTXSW/s", "CPU%", "err"}
 	rows := make([][]string, 0, len(rs))
 	for _, r := range rs {
 		rows = append(rows, []string{
-			r.System, r.Workload, r.Size, r.Protocol, r.Pass,
+			r.System, access(r.AccessMode), r.Workload, r.Size, r.Protocol, r.Pass,
 			rate(r.IOPS, isRandom(r.Workload)),
 			rate(r.ThroughputMBps, !isRandom(r.Workload)),
 			fmt.Sprintf("%.0f", r.LatencyP50Us),
@@ -70,6 +71,103 @@ func RenderTable(rs []fio.CellResult) string {
 		})
 	}
 	return markdownTable(head, rows)
+}
+
+// access formats the access-mode column, dashing an unset mode (direct
+// local/smoke mounts, or pre-meter runs).
+func access(m string) string {
+	if m == "" {
+		return "—"
+	}
+	return m
+}
+
+// pairKey groups results that are directly comparable across access modes — same
+// workload, size, protocol, and pass.
+type pairKey struct{ workload, size, proto, pass string }
+
+// RenderPairing is the FUSE-tax view: for every (workload, size, protocol, pass)
+// that has BOTH a native and a re-exported system, it prints them side by side —
+// native rows first — so the throughput vs CTXSW/s contrast is legible (the
+// architectural thesis: native serving avoids the FUSE context-switch tax).
+// Groups without both modes are skipped; returns "" when nothing pairs.
+func RenderPairing(rs []fio.CellResult) string {
+	groups := map[pairKey][]fio.CellResult{}
+	for _, r := range rs {
+		if r.AccessMode == "" {
+			continue // direct mount — nothing to pair against
+		}
+		k := pairKey{r.Workload, r.Size, r.Protocol, r.Pass}
+		groups[k] = append(groups[k], r)
+	}
+
+	keys := make([]pairKey, 0, len(groups))
+	for k, g := range groups {
+		if hasBothModes(g) {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.workload != b.workload {
+			return a.workload < b.workload
+		}
+		if a.size != b.size {
+			return a.size < b.size
+		}
+		if a.proto != b.proto {
+			return a.proto < b.proto
+		}
+		return a.pass < b.pass
+	})
+
+	var b strings.Builder
+	b.WriteString("\nFUSE-tax pairing — native vs re-exported at the same workload/size/protocol/pass.\n")
+	b.WriteString("Higher CTXSW/s on the re-exported rows is the context-switch tax native serving avoids.\n\n")
+	head := []string{"SYSTEM", "ACCESS", "MB/s", "IOPS", "CTXSW/s", "CPU%", "err"}
+	for _, k := range keys {
+		g := groups[k]
+		sort.Slice(g, func(i, j int) bool {
+			if native(g[i]) != native(g[j]) {
+				return native(g[i]) // native rows first
+			}
+			return g[i].System < g[j].System
+		})
+		fmt.Fprintf(&b, "### %s · %s · %s · %s\n", k.workload, k.size, k.proto, k.pass)
+		rows := make([][]string, 0, len(g))
+		for _, r := range g {
+			rows = append(rows, []string{
+				r.System, access(r.AccessMode),
+				rate(r.ThroughputMBps, !isRandom(r.Workload)),
+				rate(r.IOPS, isRandom(r.Workload)),
+				metered(r.CtxSwPerSec), metered(r.CPUPct),
+				fmt.Sprintf("%d", r.Errors),
+			})
+		}
+		b.WriteString(markdownTable(head, rows))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// native reports whether a cell was served by the backend's own server.
+func native(r fio.CellResult) bool { return r.AccessMode == "native" }
+
+// hasBothModes reports whether a group contains at least one native and one
+// re-exported cell — the precondition for a meaningful pairing.
+func hasBothModes(g []fio.CellResult) bool {
+	var haveNative, haveReexport bool
+	for _, r := range g {
+		if native(r) {
+			haveNative = true
+		} else if r.AccessMode == "reexport" {
+			haveReexport = true
+		}
+	}
+	return haveNative && haveReexport
 }
 
 // isRandom reports whether IOPS is the workload's headline metric.

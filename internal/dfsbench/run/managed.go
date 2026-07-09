@@ -70,6 +70,7 @@ func runManaged(ctx context.Context, f *runFlags, opts fio.LoadOpts, cfg config.
 	}
 	_, _ = fmt.Fprintln(exec.CmdOut)
 	_, _ = fmt.Fprint(exec.CmdOut, report.RenderTable(rows))
+	_, _ = fmt.Fprint(exec.CmdOut, report.RenderPairing(rows))
 	if len(failures) > 0 {
 		_, _ = fmt.Fprintf(exec.CmdOut, "\n%d backend(s) failed:\n", len(failures))
 		for _, fl := range failures {
@@ -178,6 +179,7 @@ func runPass(ctx context.Context, p backend.Plan, pass string, wls, sizes []stri
 			}
 			r := before.RatesTo(sysstat.Now())
 			m.CtxSwPerSec, m.CPUPct = r.CtxSwPerSec, r.CPUPct
+			m.AccessMode = p.Support.String() // "native" | "reexport" — the pairing axis
 			m.System, m.Workload, m.Size, m.Protocol, m.Pass = res.System, w, s, res.Protocol, pass
 			m.Timestamp = time.Now().UTC()
 			if err := m.Save(f.results); err != nil {
