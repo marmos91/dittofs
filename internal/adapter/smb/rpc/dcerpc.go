@@ -152,7 +152,7 @@ func ParseBindRequest(data []byte) (*BindRequest, error) {
 	if hdr.PacketType != PDUBind {
 		return nil, fmt.Errorf("not a bind PDU: type %d", hdr.PacketType)
 	}
-	return parseBindLike(data)
+	return parseBindLike(data, hdr)
 }
 
 // ParseAlterContext parses an Alter_Context PDU. Its body layout is identical
@@ -166,19 +166,15 @@ func ParseAlterContext(data []byte) (*BindRequest, error) {
 	if hdr.PacketType != PDUAlterContext {
 		return nil, fmt.Errorf("not an alter_context PDU: type %d", hdr.PacketType)
 	}
-	return parseBindLike(data)
+	return parseBindLike(data, hdr)
 }
 
 // parseBindLike parses the shared Bind / Alter_Context body without asserting a
-// specific PDU type (the caller validates the type).
-func parseBindLike(data []byte) (*BindRequest, error) {
+// specific PDU type (the caller validates the type). hdr is the already-parsed
+// header for data, threaded in so the header is parsed exactly once per PDU.
+func parseBindLike(data []byte, hdr *Header) (*BindRequest, error) {
 	if len(data) < HeaderSize+9 {
 		return nil, fmt.Errorf("bind/alter request too short")
-	}
-
-	hdr, err := ParseHeader(data)
-	if err != nil {
-		return nil, err
 	}
 
 	req := &BindRequest{
