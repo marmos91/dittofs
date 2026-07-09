@@ -591,6 +591,45 @@ func (h *Handler) handlePipeRead(ctx *SMBHandlerContext, req *ReadRequest, openF
 			}, nil
 		}
 
+		// Lost-wakeup guard (#1607). A concurrent WRITE goroutine
+		// (handlePipeWrite) may have filled the pipe's ReadBuffer AND run its
+		// UnregisterByFileID completion sweep in the window between our
+		// ProcessRead above (which observed an empty buffer) and our Register
+		// here — finding no pending entry and thus never delivering the
+		// response. The buffer (PipeState.mu) and the registry use disjoint
+		// locks, so that interleaving strands the RPC response with nobody to
+		// wake this parked read, hanging Explorer's Security tab.
+		//
+		// Now that we are registered, re-check the buffer. If data is present and
+		// we can still reclaim our own pending entry (i.e. the WRITE path has not
+		// already grabbed it to deliver via callback), complete the read
+		// synchronously instead of parking. UnregisterByFileID is the atomic
+		// arbiter: whoever removes the pending entry owns delivery, so this can
+		// never double-deliver.
+		if pipe.HasData() {
+			if reclaimed := h.PipeReadRegistry.UnregisterByFileID(req.FileID); reclaimed != nil {
+				data := pipe.ProcessRead(int(req.Length))
+				if len(data) > 0 {
+					if ctx.ReleaseAsync != nil {
+						ctx.ReleaseAsync() // completing synchronously; return the reserved slot
+					}
+					logger.Debug("READ from pipe successful (lost-wakeup recheck)",
+						"pipeName", openFile.PipeName,
+						"bytesRead", len(data))
+					return &ReadResponse{
+						SMBResponseBase: SMBResponseBase{Status: types.StatusSuccess},
+						DataOffset:      0x50,
+						Data:            data,
+						DataRemaining:   0,
+					}, nil
+				}
+				// Buffer emptied out from under us despite HasData (we own the
+				// only pending read for this handle, so this should not happen).
+				// Re-register to preserve the wakeup contract and stay pending.
+				h.PipeReadRegistry.Register(reclaimed)
+			}
+		}
+
 		return &ReadResponse{
 			SMBResponseBase: SMBResponseBase{Status: types.StatusPending},
 			AsyncId:         asyncId,

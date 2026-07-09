@@ -44,6 +44,22 @@ func encodeSID(t *testing.T, rid uint32) []byte {
 	return buf.Bytes()
 }
 
+// encodeDomainSID returns the binary objectSid for the domain object
+// "S-1-5-21-1-2-3" (four sub-authorities, no RID) — what a base read of the
+// domain root returns, and the prefix rid-mode reverse lookup appends a RID to.
+func encodeDomainSID(t *testing.T) []byte {
+	t.Helper()
+	s := &sid.SID{
+		Revision:            1,
+		SubAuthorityCount:   4,
+		IdentifierAuthority: [6]byte{0, 0, 0, 0, 0, 5},
+		SubAuthorities:      []uint32{21, 1, 2, 3},
+	}
+	var buf bytes.Buffer
+	sid.EncodeSID(&buf, s)
+	return buf.Bytes()
+}
+
 func entry(dn string, attrs map[string][]string, sidBytes []byte) *ldapv3.Entry {
 	e := ldapv3.NewEntry(dn, attrs)
 	if sidBytes != nil {
@@ -219,6 +235,48 @@ func TestResolve_BySID(t *testing.T) {
 	}
 }
 
+// TestResolve_BySID_Group verifies that a group SID (e.g. "Domain Admins",
+// RID 512) resolves by objectSid across both object classes and is tagged
+// IsGroup, so the LSARPC Security-tab path reports SidTypeGroup instead of
+// leaving it "Account Unknown" (the pre-fix user-only filter missed groups).
+func TestResolve_BySID_Group(t *testing.T) {
+	dn := "CN=Domain Admins,CN=Users,DC=dittofs,DC=ad"
+	var gotFilter string
+	fc := &fakeConn{
+		search: func(req *ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
+			gotFilter = req.Filter
+			if strings.Contains(req.Filter, "objectSid=") {
+				return []*ldapv3.Entry{entry(dn, map[string][]string{
+					"sAMAccountName": {"Domain Admins"},
+					"objectClass":    {"top", "group"},
+				}, encodeSID(t, 512))}, nil
+			}
+			return nil, nil
+		},
+	}
+	cfg := baseCfg()
+	cfg.NestedGroups = false
+	p := newTestProvider(t, cfg, fc)
+	res, err := p.Resolve(context.Background(), &identity.Credential{ExternalID: "S-1-5-21-1-2-3-512"})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !res.Found || res.Username != "Domain Admins" {
+		t.Fatalf("group by-SID resolve failed: %+v", res)
+	}
+	if !res.IsGroup {
+		t.Error("expected IsGroup=true for a group SID resolution")
+	}
+	// The filter must admit group objects, not just users.
+	if !strings.Contains(gotFilter, "objectClass=group") {
+		t.Errorf("SID filter does not match groups: %q", gotFilter)
+	}
+	// idmap:rid → UID/GID derive from the RID (512).
+	if res.UID != 512 || res.GID != 512 {
+		t.Errorf("UID/GID = %d/%d, want 512/512 (RID)", res.UID, res.GID)
+	}
+}
+
 func TestCanResolve(t *testing.T) {
 	p := newTestProvider(t, baseCfg(), &fakeConn{search: func(*ldapv3.SearchRequest) ([]*ldapv3.Entry, error) { return nil, nil }})
 	cases := []struct {
@@ -348,22 +406,101 @@ func TestLookupGID_RFC2307(t *testing.T) {
 	}
 }
 
-// TestLookupUID_RIDMode confirms reverse lookup is a no-op (miss) in rid mode,
-// where the POSIX id is the RID and there is no uidNumber attribute to match.
+// TestLookupUID_RIDMode confirms reverse lookup RESOLVES in rid mode by
+// reconstructing the account SID (discovered domain SID + UID-as-RID) and
+// matching objectSid — so a file owner (e.g. the domain Administrator, RID 500)
+// renders as DOMAIN\name in the LSARPC Security-tab display instead of a
+// synthetic unix_user:N. The domain SID is discovered once (base read of the
+// domain root) and cached across lookups.
 func TestLookupUID_RIDMode(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Idmap = IdmapRID
-	searched := false
-	fc := &fakeConn{search: func(*ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
-		searched = true
+	// The exact objectSid filter fragment for the reconstructed RID-500 SID, so
+	// the mock only "finds" Administrator for RID 500 (a different RID misses).
+	want500 := sidToLDAPFilter(sid.ParseSIDMust("S-1-5-21-1-2-3-500"))
+	var acctFilter string
+	domainReads := 0
+	fc := &fakeConn{search: func(req *ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
+		switch {
+		// Account search by the reconstructed objectSid (domain SID + RID).
+		case strings.Contains(req.Filter, "objectClass=user") && strings.Contains(req.Filter, want500):
+			acctFilter = req.Filter
+			return []*ldapv3.Entry{entry("CN=Administrator,CN=Users,DC=dittofs,DC=ad",
+				map[string][]string{"sAMAccountName": {"Administrator"}}, encodeSID(t, 500))}, nil
+		// Domain SID discovery: a base-scoped read of the base DN (the domain root).
+		case req.Scope == ldapv3.ScopeBaseObject && req.BaseDN == cfg.BaseDN:
+			domainReads++
+			return []*ldapv3.Entry{entry(cfg.BaseDN, nil, encodeDomainSID(t))}, nil
+		}
 		return nil, nil
 	}}
 	p := newTestProvider(t, cfg, fc)
 
-	if _, _, ok := p.LookupUID(context.Background(), 1234); ok {
-		t.Error("LookupUID in rid mode should miss")
+	name, domain, ok := p.LookupUID(context.Background(), 500)
+	if !ok || name != "Administrator" || domain != "DITTOFS.AD" {
+		t.Fatalf("LookupUID(500) = (%q, %q, %v), want (Administrator, DITTOFS.AD, true)", name, domain, ok)
 	}
-	if searched {
-		t.Error("rid mode must not issue a directory search for reverse uid lookup")
+	if !strings.Contains(acctFilter, "objectClass=user") || !strings.Contains(acctFilter, "objectSid=") {
+		t.Errorf("account filter = %q, want objectClass=user + objectSid=", acctFilter)
+	}
+
+	// A second lookup must reuse the cached domain SID (no second base read).
+	if _, _, ok := p.LookupUID(context.Background(), 500); !ok {
+		t.Error("second LookupUID(500) should still resolve")
+	}
+	if domainReads != 1 {
+		t.Errorf("domain SID read %d times, want 1 (cached after first)", domainReads)
+	}
+
+	// An unknown RID still misses cleanly.
+	if _, _, ok := p.LookupUID(context.Background(), 99999); ok {
+		t.Error("LookupUID(99999) should miss in rid mode")
+	}
+}
+
+// TestLookupGID_RIDMode mirrors the UID path for a group RID (e.g. Domain
+// Admins, RID 512) so a file's group owner resolves in rid mode too.
+func TestLookupGID_RIDMode(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Idmap = IdmapRID
+	fc := &fakeConn{search: func(req *ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
+		switch {
+		case strings.Contains(req.Filter, "objectSid=") && strings.Contains(req.Filter, "objectClass=group"):
+			return []*ldapv3.Entry{entry("CN=Domain Admins,CN=Users,DC=dittofs,DC=ad",
+				map[string][]string{"sAMAccountName": {"Domain Admins"}}, encodeSID(t, 512))}, nil
+		case req.Scope == ldapv3.ScopeBaseObject && req.BaseDN == cfg.BaseDN:
+			return []*ldapv3.Entry{entry(cfg.BaseDN, nil, encodeDomainSID(t))}, nil
+		}
+		return nil, nil
+	}}
+	p := newTestProvider(t, cfg, fc)
+
+	name, _, ok := p.LookupGID(context.Background(), 512)
+	if !ok || name != "Domain Admins" {
+		t.Fatalf("LookupGID(512) = (%q, %v), want (Domain Admins, true)", name, ok)
+	}
+}
+
+// TestLookupUID_RIDMode_NoDomainSID confirms that when the domain SID cannot be
+// discovered, rid-mode reverse lookup degrades to a clean miss (raw SID) rather
+// than issuing a malformed objectSid search.
+func TestLookupUID_RIDMode_NoDomainSID(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Idmap = IdmapRID
+	acctSearched := false
+	fc := &fakeConn{search: func(req *ldapv3.SearchRequest) ([]*ldapv3.Entry, error) {
+		if strings.Contains(req.Filter, "objectSid=") {
+			acctSearched = true
+		}
+		// No domain object and no RootDSE defaultNamingContext: every search misses.
+		return nil, nil
+	}}
+	p := newTestProvider(t, cfg, fc)
+
+	if _, _, ok := p.LookupUID(context.Background(), 500); ok {
+		t.Error("LookupUID should miss when the domain SID is undiscoverable")
+	}
+	if acctSearched {
+		t.Error("must not issue an account objectSid search without a domain SID")
 	}
 }

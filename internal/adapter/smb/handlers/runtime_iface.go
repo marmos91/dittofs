@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"context"
+
 	"github.com/marmos91/dittofs/internal/adapter/common"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
 	"github.com/marmos91/dittofs/pkg/controlplane/store"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metrics"
 )
 
@@ -26,6 +29,12 @@ type smbRuntime interface {
 	GetShare(name string) (*runtime.Share, error)
 	GetRootHandle(shareName string) (metadata.FileHandle, error)
 	ListShares() []string
+
+	// ShareRootGrantACL returns the allow-only ACL projecting the share's
+	// control-plane grants (user/group/SID + default) into Windows ACE form.
+	// The SMB Security-tab path merges these into file/dir descriptors (#1608).
+	// Returns (nil, nil) for a partially-wired runtime.
+	ShareRootGrantACL(ctx context.Context, shareName string) (*acl.ACL, error)
 
 	// Share-change notification (tree-connect cache invalidation).
 	OnShareChange(callback func(shares []string)) func()

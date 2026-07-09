@@ -488,8 +488,18 @@ func (h *LSARPCHandler) handleLookupSids(req *Request) []byte {
 		}
 	}
 
-	// Build domain list (deduplicated)
-	domainMap := make(map[string]int) // domain name -> index
+	// Build the referenced-domain list, deduplicated by domain SID — NOT by name.
+	// Two domains can legitimately share a NetBIOS name yet have different SIDs:
+	// a file owned by an AD user carries the algorithmic MACHINE-domain SID but
+	// resolves (by uidNumber/rid) to the AD account name + AD NetBIOS domain, so
+	// it reports e.g. name "CUBBIT" with the machine domain SID, while an AD SID
+	// grant reports the SAME name "CUBBIT" with the real AD domain SID. Deduping
+	// by name would collapse them to one entry with a single SID, leaving every
+	// account whose SID does not match that SID inconsistent with its referenced
+	// domain (relative-id vs domain-SID mismatch) — which the client rejects,
+	// showing raw SIDs and crashing Explorer. Keying on the SID keeps each domain
+	// distinct so every account's RID pairs with the correct domain SID.
+	domainMap := make(map[string]int) // domain SID key -> index
 	var domains []domainEntry
 
 	for i := range resolved {
@@ -497,8 +507,9 @@ func (h *LSARPCHandler) handleLookupSids(req *Request) []byte {
 		if r.domainName == "" {
 			continue
 		}
-		if _, exists := domainMap[r.domainName]; !exists {
-			domainMap[r.domainName] = len(domains)
+		key := domainKeyOf(r)
+		if _, exists := domainMap[key]; !exists {
+			domainMap[key] = len(domains)
 			domains = append(domains, domainEntry{name: r.domainName, sid: r.domainSID})
 		}
 	}
@@ -599,6 +610,17 @@ type domainEntry struct {
 	sid  *sid.SID
 }
 
+// domainKeyOf is the referenced-domain dedup/index key for a resolved SID. It
+// keys on the domain SID (identity), NOT the display name, so two domains that
+// share a NetBIOS name but differ in SID stay distinct (see handleLookupSids).
+// Falls back to the name when no domain SID is known.
+func domainKeyOf(r *resolvedSID) string {
+	if r.domainSID == nil {
+		return "name:" + r.domainName
+	}
+	return "sid:" + sid.FormatSID(r.domainSID)
+}
+
 // buildLookupSidsResponse builds the NDR-encoded LookupSids response.
 //
 // The referenced-domain list, mapped count, and status are identical across
@@ -652,13 +674,16 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 			refID += 4
 		}
 
-		// Deferred string data for each domain
+		// Deferred pointee data for each domain, in POINTER-APPEARANCE order: for
+		// every entry its Name buffer THEN its SID (matching the interleaved
+		// referent IDs assigned above). NDR decoders read deferred referents
+		// positionally in appearance order, NOT grouped as all-names-then-all-SIDs
+		// — with ≥2 domains, grouping makes the client read domain[i+1]'s name
+		// bytes as domain[i]'s SID, corrupting the parse (raw SIDs / client crash).
+		// With a single domain the two orders coincide, which is why single-SID
+		// lookups never hit this.
 		for _, d := range domains {
 			writeNDRUnicodeString(&buf, d.name)
-		}
-
-		// Deferred SID data for each domain
-		for _, d := range domains {
 			if d.sid != nil {
 				writeNDRSID(&buf, d.sid)
 			} else {
@@ -672,9 +697,21 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 	// Count
 	appendUint32Buf(&buf, uint32(len(resolved)))
 
-	// Pointer to array
+	// Pointer to array.
+	//
+	// NDR referent IDs must be UNIQUE across the whole response. The referenced-
+	// domain entries above consume referents from 0x00020008 upward, TWO per
+	// domain (name string + SID) — so with N domains they span up to
+	// 0x00020008+8*N. A hardcoded 0x00020010 here collides with the SECOND
+	// domain's name referent as soon as there are ≥2 referenced domains (e.g. a
+	// LookupSids batch mixing a machine-domain owner with AD-domain grants),
+	// which corrupts NDR pointer resolution — the client then fails the whole
+	// batch (raw SIDs) and Explorer can crash. Use a base well past the domain
+	// and per-name referent ranges (per-name referents below start at
+	// 0x00030000; the parser caps the batch at 100 SIDs) so no overlap is
+	// possible.
 	if len(resolved) > 0 {
-		appendUint32Buf(&buf, 0x00020010) // non-null pointer
+		appendUint32Buf(&buf, 0x00040000) // non-null pointer, disjoint from domain/name referents
 	} else {
 		appendUint32Buf(&buf, 0)
 	}
@@ -695,10 +732,12 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 			_ = binary.Write(&buf, binary.LittleEndian, nameUTF16Len) // MaximumLength (bytes, no NUL)
 			appendUint32Buf(&buf, nameRefID)                          // unique pointer
 			nameRefID += 4
-			// Domain index (int32)
+			// Domain index (int32). Look up by the SID-based key so each account
+			// references the domain entry whose SID matches its own (see
+			// handleLookupSids / domainKeyOf) — not merely one that shares a name.
 			domIdx := int32(-1) // -1 = no domain
 			if r.domainName != "" {
-				if idx, ok := domainMap[r.domainName]; ok {
+				if idx, ok := domainMap[domainKeyOf(&r)]; ok {
 					domIdx = int32(idx)
 				}
 			}
@@ -784,27 +823,5 @@ func appendUint32Buf(buf *bytes.Buffer, v uint32) {
 
 // buildFault builds a DCE/RPC fault response.
 func (h *LSARPCHandler) buildFault(callID uint32, status uint32) []byte {
-	fragLen := HeaderSize + 16
-
-	hdr := Header{
-		VersionMajor: 5,
-		VersionMinor: 0,
-		PacketType:   PDUFault,
-		Flags:        FlagFirstFrag | FlagLastFrag,
-		DataRep:      [4]byte{0x10, 0x00, 0x00, 0x00},
-		FragLength:   uint16(fragLen),
-		AuthLength:   0,
-		CallID:       callID,
-	}
-
-	buf := make([]byte, fragLen)
-	copy(buf[0:16], hdr.Encode())
-	binary.LittleEndian.PutUint32(buf[16:20], 0)      // alloc_hint
-	binary.LittleEndian.PutUint16(buf[20:22], 0)      // context_id
-	buf[22] = 0                                       // cancel_count
-	buf[23] = 0                                       // reserved
-	binary.LittleEndian.PutUint32(buf[24:28], status) // status
-	binary.LittleEndian.PutUint32(buf[28:32], 0)      // reserved
-
-	return buf
+	return EncodeFaultPDU(callID, status)
 }

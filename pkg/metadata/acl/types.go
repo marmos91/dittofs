@@ -130,6 +130,18 @@ type ACE struct {
 	Flag       uint32 `json:"flag"`        // aceflag4
 	AccessMask uint32 `json:"access_mask"` // acemask4
 	Who        string `json:"who"`         // utf8str_mixed: "user@domain", "OWNER@", etc.
+
+	// NFSNumericTwin marks a share-grant "{id}@localdomain" ACE that exists ONLY
+	// to let NFS (which carries no SID) match an AD principal by its numeric
+	// Unix id — it shadows a "sid:<SID>" ACE for the same principal (see
+	// BuildShareRootACL). It is a full participant in access checks (both NFS and
+	// SMB), but the SMB security-descriptor builder hides it so the Windows
+	// Security tab does not list the principal twice. Keying suppression on this
+	// flag (set where the SID↔id pairing is known) rather than reconstructing it
+	// from the SID's RID makes it correct in every idmap mode — the RID equals
+	// the Unix id only in idmap:rid, not rfc2307. Never set on client-supplied
+	// ACLs (SET_INFO parses to plain ACEs), so it is a reliable display marker.
+	NFSNumericTwin bool `json:"nfs_numeric_twin,omitempty"`
 }
 
 // ACLSource indicates how an ACL was created. The zero value (empty string)

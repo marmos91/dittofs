@@ -898,14 +898,12 @@ func parseLookupSidsResponse(t *testing.T, response []byte, withFlags bool) look
 			_ = u32()       // SID pointer
 			domFixeds = append(domFixeds, domFixed{nameUTF16Bytes: length})
 		}
-		// Deferred domain name strings.
+		// Deferred domain pointees in NDR appearance order: each entry's Name
+		// buffer THEN its SID (interleaved), not all-names-then-all-SIDs.
 		for _, d := range domFixeds {
 			name := readNDRUnicodeString(t, stub, &off)
 			_ = d
 			res.domains = append(res.domains, name)
-		}
-		// Deferred domain SIDs.
-		for range domCount {
 			skipNDRSID(t, stub, &off)
 		}
 	}
@@ -1095,8 +1093,8 @@ func TestBuildLookupSidsResponse_TwoDomains(t *testing.T) {
 	var domains []domainEntry
 	for i := range resolved {
 		r := &resolved[i]
-		if _, ok := domainMap[r.domainName]; !ok {
-			domainMap[r.domainName] = len(domains)
+		if _, ok := domainMap[domainKeyOf(r)]; !ok {
+			domainMap[domainKeyOf(r)] = len(domains)
 			domains = append(domains, domainEntry{name: r.domainName, sid: r.domainSID})
 		}
 	}
@@ -1121,6 +1119,51 @@ func TestBuildLookupSidsResponse_TwoDomains(t *testing.T) {
 	}
 	if res.status != statusSuccess {
 		t.Errorf("status = 0x%08x, want success", res.status)
+	}
+}
+
+// TestBuildLookupSidsResponse_SameNameDifferentSID reproduces the crash where an
+// AD-owned file's owner (algorithmic MACHINE-domain SID, resolved to the AD
+// account name + AD NetBIOS domain) shares a NetBIOS name with an AD SID grant
+// (real AD domain SID). Deduping the referenced-domain list by NAME collapsed
+// them, leaving the grant's SID inconsistent with the referenced domain SID —
+// the client rejected the batch (raw SIDs) and Explorer crashed. The two domains
+// must stay distinct so each account's RID pairs with the correct domain SID.
+func TestBuildLookupSidsResponse_SameNameDifferentSID(t *testing.T) {
+	h := newTestLSAHandler()
+	machineDom := sid.ParseSIDMust("S-1-5-21-9-9-9")
+	adDom := sid.ParseSIDMust("S-1-5-21-1-2-3")
+	resolved := []resolvedSID{
+		{name: "Administrator", sidType: SidTypeUser, domainName: "CUBBIT", domainSID: machineDom}, // owner, machine SID
+		{name: "alice", sidType: SidTypeUser, domainName: "CUBBIT", domainSID: adDom},              // AD grant, AD SID
+	}
+
+	domainMap := make(map[string]int)
+	var domains []domainEntry
+	for i := range resolved {
+		r := &resolved[i]
+		if _, ok := domainMap[domainKeyOf(r)]; !ok {
+			domainMap[domainKeyOf(r)] = len(domains)
+			domains = append(domains, domainEntry{name: r.domainName, sid: r.domainSID})
+		}
+	}
+	if len(domains) != 2 {
+		t.Fatalf("domains = %d, want 2 (same name, different SID must NOT collapse)", len(domains))
+	}
+
+	stub := h.buildLookupSidsResponse(resolved, domains, domainMap, true, true)
+	response := append(make([]byte, 24), stub...)
+	res := parseLookupSidsResponse(t, response, true)
+
+	if res.names[0].domainIdx == res.names[1].domainIdx {
+		t.Errorf("owner and grant share domain index %d; must differ (distinct SIDs)", res.names[0].domainIdx)
+	}
+	if res.names[0].domainIdx < 0 || res.names[1].domainIdx < 0 {
+		t.Fatalf("unmapped domain index: %d, %d", res.names[0].domainIdx, res.names[1].domainIdx)
+	}
+	if res.domains[res.names[0].domainIdx] != "CUBBIT" || res.domains[res.names[1].domainIdx] != "CUBBIT" {
+		t.Errorf("both entries should display as CUBBIT; got %q, %q",
+			res.domains[res.names[0].domainIdx], res.domains[res.names[1].domainIdx])
 	}
 }
 
@@ -1624,5 +1667,82 @@ func TestLSARPC_TranslatedName_ExactLengths_AllOpnums(t *testing.T) {
 			}
 			assertExactName(t, "domain[0]", domains[0], domainName)
 		})
+	}
+}
+
+// TestLookupSids_MultiDomain_NoReferentCollision guards against the NDR
+// referent-ID collision that crashed Explorer: with ≥2 referenced domains (a
+// LookupSids batch mixing a machine-domain owner with AD-domain grants), the
+// translated-names array pointer must not reuse a domain entry's referent ID.
+// A collision corrupts pointer resolution, the client fails the whole batch
+// (raw SIDs), and Explorer can crash.
+func TestLookupSids_MultiDomain_NoReferentCollision(t *testing.T) {
+	domains := []domainEntry{
+		{name: "DITTOFS", sid: sid.ParseSIDMust("S-1-5-21-1-2-3")},
+		{name: "CUBBIT", sid: sid.ParseSIDMust("S-1-5-21-4-5-6")},
+	}
+	domainMap := map[string]int{"DITTOFS": 0, "CUBBIT": 1}
+	resolved := []resolvedSID{
+		{name: "admin", sidType: SidTypeUser, domainName: "DITTOFS", domainSID: domains[0].sid},
+		{name: "alice", sidType: SidTypeUser, domainName: "CUBBIT", domainSID: domains[1].sid},
+		{name: "Domain Admins", sidType: SidTypeGroup, domainName: "CUBBIT", domainSID: domains[1].sid},
+	}
+
+	h := &LSARPCHandler{}
+	out := h.buildLookupSidsResponse(resolved, domains, domainMap, true, true)
+
+	// The second domain's name referent is 0x00020010 (0x00020008 + 1*8). It must
+	// appear exactly ONCE in the response — reused as the translated-names array
+	// pointer, it would appear twice (the pre-fix collision).
+	if n := countLEUint32(out, 0x00020010); n != 1 {
+		t.Errorf("referent 0x00020010 appears %d times, want 1 (collision regressed)", n)
+	}
+	// The translated-names array pointer now lives in a disjoint range.
+	if n := countLEUint32(out, 0x00040000); n != 1 {
+		t.Errorf("translated-names array pointer 0x00040000 appears %d times, want 1", n)
+	}
+}
+
+// countLEUint32 counts non-overlapping 4-byte-aligned little-endian occurrences
+// of v in b.
+func countLEUint32(b []byte, v uint32) int {
+	n := 0
+	for i := 0; i+4 <= len(b); i += 4 {
+		if binary.LittleEndian.Uint32(b[i:i+4]) == v {
+			n++
+		}
+	}
+	return n
+}
+
+// TestLookupSids_ReferencedDomains_DeferredOrder validates that the referenced-
+// domain deferred pointees are emitted in NDR appearance order (name0, sid0,
+// name1, sid1) rather than grouped (name0, name1, sid0, sid1). With ≥2 domains
+// the grouped order makes the client read domain1's name as domain0's SID,
+// corrupting the parse (raw SIDs / Explorer crash). Asserts domain0's SID sits
+// BETWEEN the two domain names in the wire bytes.
+func TestLookupSids_ReferencedDomains_DeferredOrder(t *testing.T) {
+	d0 := sid.ParseSIDMust("S-1-5-21-1-2-3")
+	d1 := sid.ParseSIDMust("S-1-5-21-4-5-6")
+	domains := []domainEntry{{name: "DITTOFS", sid: d0}, {name: "CUBBIT", sid: d1}}
+	domainMap := map[string]int{"DITTOFS": 0, "CUBBIT": 1}
+	resolved := []resolvedSID{
+		{name: "admin", sidType: SidTypeUser, domainName: "DITTOFS", domainSID: d0},
+		{name: "alice", sidType: SidTypeUser, domainName: "CUBBIT", domainSID: d1},
+	}
+
+	out := (&LSARPCHandler{}).buildLookupSidsResponse(resolved, domains, domainMap, true, true)
+
+	var sidBuf bytes.Buffer
+	sid.EncodeSID(&sidBuf, d0)
+	iName0 := bytes.Index(out, encodeUTF16LE("DITTOFS"))
+	iName1 := bytes.Index(out, encodeUTF16LE("CUBBIT"))
+	iSid0 := bytes.Index(out, sidBuf.Bytes())
+	if iName0 < 0 || iName1 < 0 || iSid0 < 0 {
+		t.Fatalf("missing bytes: name0=%d name1=%d sid0=%d", iName0, iName1, iSid0)
+	}
+	if iName0 >= iSid0 || iSid0 >= iName1 {
+		t.Errorf("referenced-domain deferred order wrong: name0@%d sid0@%d name1@%d; want name0 < sid0 < name1",
+			iName0, iSid0, iName1)
 	}
 }

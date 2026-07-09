@@ -18,6 +18,7 @@ package handlers
 
 import (
 	"fmt"
+	"strings"
 	"sync/atomic"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/smbenc"
@@ -162,6 +163,21 @@ func GetSIDMapper() *sid.SIDMapper {
 //
 // Returns the binary Security Descriptor or an error.
 func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]byte, error) {
+	return BuildSecurityDescriptorWithGrants(file, additionalSecInfo, nil)
+}
+
+// BuildSecurityDescriptorWithGrants is BuildSecurityDescriptor plus a set of
+// share-grant ACEs (the output of Runtime.ShareRootGrantACL for the share owning
+// the file) to surface in the DACL so Windows' Security tab lists the direct
+// AD/SID principals (#1528) that govern the share, not just the file's
+// synthesized owner+SYSTEM descriptor (#1608). Pass nil to build a descriptor
+// from per-file metadata only.
+//
+// The projection is intentionally narrow (see buildDACL): only direct "sid:"
+// grants are surfaced, and only onto files that have no explicitly-stored ACL.
+// Merging affects only the displayed descriptor — server-side access enforcement
+// is unchanged.
+func BuildSecurityDescriptorWithGrants(file *metadata.File, additionalSecInfo uint32, grantACEs []acl.ACE) ([]byte, error) {
 	includeOwner := (additionalSecInfo & OwnerSecurityInformation) != 0
 	includeGroup := (additionalSecInfo & GroupSecurityInformation) != 0
 	includeDACL := (additionalSecInfo & DACLSecurityInformation) != 0
@@ -180,7 +196,7 @@ func BuildSecurityDescriptor(file *metadata.File, additionalSecInfo uint32) ([]b
 	daclBuf := smbenc.NewWriter(64)
 	var fileACL *acl.ACL
 	if includeDACL && !isNullDACL {
-		fileACL = buildDACL(daclBuf, file)
+		fileACL = buildDACL(daclBuf, file, grantACEs)
 	}
 
 	// Build SACL. When the file has stored SACL ACEs, serialize them;
@@ -338,9 +354,29 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 // here is what the client sees; actual access enforcement keeps the legacy
 // POSIX semantics so Unix mode bits stay authoritative on the server.
 //
+// grantACEs, when non-nil, are share-level grant ACEs (Runtime.ShareRootGrantACL)
+// surfaced in the DACL so Windows' Security tab lists the AD principals that
+// govern the share (#1608). The projection is deliberately narrow so it can
+// never alter a descriptor a client set or that a conformance client round-trips
+// against:
+//
+//   - Only files with NO explicitly-stored ACL (file.ACL == nil → synthesized
+//     default) are decorated. A client that SET a file's ACL — or one that reads
+//     a NULL DACL back — sees exactly what was stored, unperturbed.
+//   - Only direct AD/SID grants (#1528, Who has the "sid:" prefix) are surfaced.
+//     A direct SID grant has no other way to appear in Windows (it maps to no
+//     local file owner/group). The always-on OWNER@/SYSTEM@/ADMINISTRATORS@
+//     trustees, local user/group grants, and the EVERYONE@ default already reach
+//     Windows through the reconciled share-root ACL and the owner/group SIDs, and
+//     injecting them into every child descriptor breaks SMB ACL-inheritance
+//     conformance (smbtorture smb2.create.aclfile/acldir create a child with no
+//     SD and assert its default is exactly owner+SYSTEM).
+//
+// Surfaced grants are appended after the file's own ACEs and deduped by resolved
+// SID. This changes only the displayed descriptor, never server-side enforcement.
+//
 // Returns the source ACL used for SD control flag computation.
-func buildDACL(buf *smbenc.Writer, file *metadata.File) *acl.ACL {
-	var aces []windowsACE
+func buildDACL(buf *smbenc.Writer, file *metadata.File, grantACEs []acl.ACE) *acl.ACL {
 	var fileACL *acl.ACL
 
 	if file.ACL != nil {
@@ -349,19 +385,75 @@ func buildDACL(buf *smbenc.Writer, file *metadata.File) *acl.ACL {
 		fileACL = acl.SynthesizeWindowsDefault()
 	}
 
-	aces = make([]windowsACE, 0, len(fileACL.ACEs))
-	for _, ace := range fileACL.ACEs {
+	// Only a synthesized default is decorated with share grants (see the doc
+	// comment above). A file carrying an explicit ACL is emitted verbatim.
+	if file.ACL != nil {
+		grantACEs = nil
+	}
+
+	aces := make([]windowsACE, 0, len(fileACL.ACEs)+len(grantACEs))
+	// SIDs already present from the file's own ACEs. Used ONLY to dedup the
+	// merged share-grant trustees below — the file's own ACL is emitted verbatim
+	// (a file may legitimately carry several ACEs for one SID, e.g. a DENY then
+	// an ALLOW, and their order is significant).
+	fileSIDs := make(map[string]struct{}, len(fileACL.ACEs))
+	toWindowsACE := func(ace acl.ACE) (windowsACE, bool) {
 		aceType, ok := nfsToWindowsACEType(ace.Type)
 		if !ok {
-			continue
+			return windowsACE{}, false
 		}
-
-		aces = append(aces, windowsACE{
+		return windowsACE{
 			aceType:    aceType,
 			aceFlags:   acl.NFSv4FlagsToWindowsFlags(ace.Flag),
 			accessMask: ace.AccessMask,
 			sid:        principalToSID(ace.Who, file.UID, file.GID),
-		})
+		}, true
+	}
+
+	for _, ace := range fileACL.ACEs {
+		// Hide a share-grant NFS numeric twin: a "{id}@localdomain" ACE that
+		// duplicates a "sid:<SID>" ACE for the same AD principal and exists only
+		// for NFS numeric matching (acl.ACE.NFSNumericTwin, set by
+		// BuildShareRootACL where the SID↔id pairing is known — correct in every
+		// idmap mode). Without this the Windows Security tab lists the principal
+		// twice, and a group's numeric twin resolves via the user-only reverse
+		// path to a bogus "unix_user:<id>". Enforcement is unaffected: the ACL
+		// evaluator still honors the twin for NFS. Client-set ACLs never carry
+		// the flag, so their ACEs are always emitted verbatim.
+		if ace.NFSNumericTwin {
+			continue
+		}
+		wace, ok := toWindowsACE(ace)
+		if !ok {
+			continue
+		}
+		if wace.sid != nil {
+			fileSIDs[sid.FormatSID(wace.sid)] = struct{}{}
+		}
+		aces = append(aces, wace)
+	}
+	// Surface direct AD/SID grants only (see the doc comment): the always-on
+	// OWNER@/SYSTEM@/ADMINISTRATORS@ trustees, local "{id}@localdomain" grants,
+	// and the EVERYONE@ default already reach Windows via the reconciled share
+	// root and the owner/group SIDs. Skipping them here keeps child descriptors
+	// conformance-clean. Any surviving grant whose SID the file already carries is
+	// also skipped so the Security tab does not show duplicate rows (#1608).
+	for _, ace := range grantACEs {
+		if !strings.HasPrefix(ace.Who, "sid:") {
+			continue
+		}
+		wace, ok := toWindowsACE(ace)
+		if !ok {
+			continue
+		}
+		if wace.sid != nil {
+			key := sid.FormatSID(wace.sid)
+			if _, dup := fileSIDs[key]; dup {
+				continue
+			}
+			fileSIDs[key] = struct{}{}
+		}
+		aces = append(aces, wace)
 	}
 
 	// Compute total ACL size

@@ -143,19 +143,38 @@ type SyntaxID struct {
 	Version uint32
 }
 
-// ParseBindRequest parses a Bind PDU
+// ParseBindRequest parses a Bind PDU.
 func ParseBindRequest(data []byte) (*BindRequest, error) {
-	if len(data) < HeaderSize+9 {
-		return nil, fmt.Errorf("bind request too short")
-	}
-
 	hdr, err := ParseHeader(data)
 	if err != nil {
 		return nil, err
 	}
-
 	if hdr.PacketType != PDUBind {
 		return nil, fmt.Errorf("not a bind PDU: type %d", hdr.PacketType)
+	}
+	return parseBindLike(data, hdr)
+}
+
+// ParseAlterContext parses an Alter_Context PDU. Its body layout is identical
+// to a Bind PDU (max_xmit/max_recv/assoc_group + presentation-context list), so
+// it shares the Bind parser; only the PDU type differs on the wire.
+func ParseAlterContext(data []byte) (*BindRequest, error) {
+	hdr, err := ParseHeader(data)
+	if err != nil {
+		return nil, err
+	}
+	if hdr.PacketType != PDUAlterContext {
+		return nil, fmt.Errorf("not an alter_context PDU: type %d", hdr.PacketType)
+	}
+	return parseBindLike(data, hdr)
+}
+
+// parseBindLike parses the shared Bind / Alter_Context body without asserting a
+// specific PDU type (the caller validates the type). hdr is the already-parsed
+// header for data, threaded in so the header is parsed exactly once per PDU.
+func parseBindLike(data []byte, hdr *Header) (*BindRequest, error) {
+	if len(data) < HeaderSize+9 {
+		return nil, fmt.Errorf("bind/alter request too short")
 	}
 
 	req := &BindRequest{
@@ -370,5 +389,41 @@ func (r *Response) Encode(callID uint32) []byte {
 
 	copy(buf[24:], r.StubData)
 
+	return buf
+}
+
+// =============================================================================
+// Fault PDU
+// =============================================================================
+
+// DCE/RPC reject status codes [C706 §14.6 / MS-RPCE]. Returned in a FAULT PDU.
+const (
+	// NcaSProtoError is nca_s_proto_error — a protocol error, e.g. a Request PDU
+	// arriving before a successful Bind established a presentation context.
+	NcaSProtoError uint32 = 0x1C01000B
+)
+
+// EncodeFaultPDU builds a DCE/RPC FAULT PDU carrying the given reject status.
+// It is used to answer a request that cannot be dispatched so the client's
+// paired pipe READ always completes instead of starving (#1607).
+func EncodeFaultPDU(callID uint32, status uint32) []byte {
+	fragLen := HeaderSize + 16
+
+	hdr := Header{
+		VersionMajor: 5,
+		VersionMinor: 0,
+		PacketType:   PDUFault,
+		Flags:        FlagFirstFrag | FlagLastFrag,
+		DataRep:      [4]byte{0x10, 0x00, 0x00, 0x00},
+		FragLength:   uint16(fragLen),
+		AuthLength:   0,
+		CallID:       callID,
+	}
+
+	buf := make([]byte, fragLen)
+	copy(buf[0:16], hdr.Encode())
+	// alloc_hint(4) + context_id(2) + cancel_count(1) + reserved(1) stay zero.
+	binary.LittleEndian.PutUint32(buf[24:28], status) // status
+	binary.LittleEndian.PutUint32(buf[28:32], 0)      // reserved
 	return buf
 }

@@ -62,9 +62,14 @@ func (r *identityForeignSIDResolver) LookupSID(sidString string) (name, domain s
 		return "", "", 0, false
 	}
 
-	// The forward directory resolve matches objectClass=user, so a hit is an
-	// account (user) rather than a group.
-	return resolved.Username, r.netbiosOrDerive(resolved.Domain), smbrpc.SidTypeUser, true
+	// The forward directory resolve matches users AND groups by objectSid; report
+	// the SID_NAME_USE that fits so Explorer shows a group (e.g. "Domain Admins")
+	// with the correct kind/icon rather than as a user.
+	sidType = smbrpc.SidTypeUser
+	if resolved.IsGroup {
+		sidType = smbrpc.SidTypeGroup
+	}
+	return resolved.Username, r.netbiosOrDerive(resolved.Domain), sidType, true
 }
 
 // LookupUID resolves a POSIX UID to its directory account name + NetBIOS

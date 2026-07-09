@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/acl"
 )
 
 // ============================================================================
@@ -386,7 +387,25 @@ func (h *Handler) QueryInfo(ctx *SMBHandlerContext, req *QueryInfoRequest) (*Que
 				}
 			}
 		}
-		info, err = BuildSecurityDescriptor(file, req.AdditionalInfo)
+		// Surface the share's direct AD/SID grants in the DACL so Windows'
+		// Security tab lists the AD principals that govern the share — not just
+		// the file's synthesized owner+SYSTEM descriptor (#1608). The projection
+		// is narrowed in buildDACL (sid: grants only, synthesized descriptors
+		// only) so it never perturbs an explicitly-set ACL or breaks SMB
+		// ACL-inheritance conformance. Best-effort: a lookup failure (or a
+		// partially-wired runtime returning nil) falls back to the per-file
+		// descriptor so QUERY_INFO stays robust. Only worth doing when the DACL
+		// section is requested.
+		var grantACEs []acl.ACE
+		if req.AdditionalInfo&DACLSecurityInformation != 0 && h.Registry != nil {
+			if grantACL, gerr := h.Registry.ShareRootGrantACL(ctx.Context, openFile.ShareName); gerr != nil {
+				logger.Debug("QUERY_INFO: share-grant ACL lookup failed (non-fatal)",
+					"share", openFile.ShareName, "error", gerr)
+			} else if grantACL != nil {
+				grantACEs = grantACL.ACEs
+			}
+		}
+		info, err = BuildSecurityDescriptorWithGrants(file, req.AdditionalInfo, grantACEs)
 	default:
 		return &QueryInfoResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInvalidParameter}}, nil
 	}

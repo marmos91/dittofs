@@ -172,6 +172,191 @@ func TestBuildSD_NilACL_SynthesizesWindowsDefault(t *testing.T) {
 	}
 }
 
+// TestBuildSD_MergesShareGrantACEs verifies the narrowed #1608 projection: on a
+// file with no stored ACL, BuildSecurityDescriptorWithGrants surfaces the share's
+// direct AD/SID grant (Who="sid:…") so Windows' Security tab can resolve it, but
+// does NOT inject the always-on ADMINISTRATORS@ or a local "{id}@localdomain"
+// grant — those reach Windows via the reconciled share-root ACL and would break
+// SMB ACL-inheritance conformance if stamped onto every child descriptor. OWNER@
+// and SYSTEM@ come from the synthesized default and appear exactly once.
+func TestBuildSD_MergesShareGrantACEs(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			// nil ACL → synthesized default (owner@ + SYSTEM@).
+		},
+	}
+
+	const aliceSID = "S-1-5-21-188294588-3368521931-100232490-1106"
+	// A realistic share grant set: the always-on trustees (OWNER@, SYSTEM@,
+	// ADMINISTRATORS@), a local user grant (uid 4242), and a direct AD/SID grant.
+	grantACL := acl.BuildShareRootACL(acl.GrantNone, []acl.RootGrant{
+		{ID: 4242, Level: acl.GrantReadWrite},
+		{SID: aliceSID, Level: acl.GrantRead},
+	})
+
+	// Baseline without grants: the synthesized default is exactly owner + SYSTEM.
+	baseline, err := BuildSecurityDescriptor(file, allSecInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	_, _, baseACL, err := ParseSecurityDescriptor(baseline)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor(baseline): %v", err)
+	}
+	if len(baseACL.ACEs) != 2 {
+		t.Fatalf("baseline DACL = %d ACEs, want 2 (owner + SYSTEM)", len(baseACL.ACEs))
+	}
+
+	data, err := BuildSecurityDescriptorWithGrants(file, allSecInfo, grantACL.ACEs)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptorWithGrants: %v", err)
+	}
+	_, _, mergedACL, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor(merged): %v", err)
+	}
+
+	whoCount := map[string]int{}
+	for _, ace := range mergedACL.ACEs {
+		whoCount[ace.Who]++
+	}
+
+	// The AD SID grant must be present so Explorer can resolve it to alice.
+	if whoCount["sid:"+aliceSID] != 1 {
+		t.Errorf("merged DACL missing the AD SID grant %q (Who counts: %v)", aliceSID, whoCount)
+	}
+	// The always-on ADMINISTRATORS@ trustee must NOT be stamped onto the child —
+	// it is not a direct SID grant and would regress smbtorture acls/create.
+	if whoCount["sid:S-1-5-32-544"] != 0 {
+		t.Errorf("Administrators@ leaked into child DACL (Who counts: %v)", whoCount)
+	}
+	// A local user grant must NOT be stamped onto the child either.
+	if whoCount["4242@localdomain"] != 0 {
+		t.Errorf("local user grant leaked into child DACL (Who counts: %v)", whoCount)
+	}
+	// OWNER@ / SYSTEM@ come from the synthesized default only — one each.
+	if whoCount["1000@localdomain"] != 1 {
+		t.Errorf("owner ACE count = %d (want 1)", whoCount["1000@localdomain"])
+	}
+	if whoCount["sid:S-1-5-18"] != 1 {
+		t.Errorf("SYSTEM ACE count = %d (want 1)", whoCount["sid:S-1-5-18"])
+	}
+}
+
+// TestBuildSD_ExplicitACL_IgnoresGrants verifies that a file carrying an
+// explicitly-stored ACL is emitted verbatim even when share grants (including a
+// direct SID grant) are supplied: a client that SET a file's ACL, or reads it
+// back, must see exactly what was stored. This is what keeps smbtorture
+// smb2.acls / smb2.create round-trips byte-exact after #1608.
+func TestBuildSD_ExplicitACL_IgnoresGrants(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{
+			UID:  1000,
+			GID:  1000,
+			Mode: 0o755,
+			ACL: &acl.ACL{
+				ACEs: []acl.ACE{
+					{
+						Type:       acl.ACE4_ACCESS_ALLOWED_ACE_TYPE,
+						AccessMask: acl.ACE4_READ_DATA | acl.ACE4_EXECUTE,
+						Who:        "EVERYONE@",
+					},
+				},
+			},
+		},
+	}
+
+	const aliceSID = "S-1-5-21-188294588-3368521931-100232490-1106"
+	grantACL := acl.BuildShareRootACL(acl.GrantNone, []acl.RootGrant{
+		{SID: aliceSID, Level: acl.GrantRead},
+	})
+
+	plain, err := BuildSecurityDescriptor(file, allSecInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	withGrants, err := BuildSecurityDescriptorWithGrants(file, allSecInfo, grantACL.ACEs)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptorWithGrants: %v", err)
+	}
+	if !bytes.Equal(plain, withGrants) {
+		t.Fatal("explicit-ACL descriptor changed when share grants were supplied; grants must not touch a stored ACL")
+	}
+}
+
+// TestBuildSD_ShareGrant_SuppressesNumericTwin verifies that when a share-grant
+// ACL (the reconciled share-root DACL) carries a principal in both its SMB
+// "sid:" form and its NFS "{id}@localdomain" numeric form, the SMB descriptor
+// shows only the sid: form — so the Windows Security tab does not list the same
+// AD principal twice (and a group's numeric twin does not surface as
+// unix_user:<rid>). A pure local grant, which has no sid: twin, is kept.
+func TestBuildSD_ShareGrant_SuppressesNumericTwin(t *testing.T) {
+	const aliceSID = "S-1-5-21-188294588-3368521931-100232490-1106"
+	// alice: an AD/SID grant whose resolved Unix id (99001) DIFFERS from the SID's
+	// RID (1106) — the idmap:rfc2307 shape the old RID-keyed suppression missed.
+	// It emits BOTH sid:…-1106 and 99001@localdomain (flagged NFSNumericTwin).
+	// localUID 4242: a plain local grant → only the numeric form, unflagged.
+	rootACL := acl.BuildShareRootACL(acl.GrantNone, []acl.RootGrant{
+		{ID: 99001, SID: aliceSID, Level: acl.GrantRead},
+		{ID: 4242, Level: acl.GrantReadWrite},
+	})
+	if rootACL.Source != acl.ACLSourceShareGrant {
+		t.Fatalf("BuildShareRootACL source = %v, want share-grant", rootACL.Source)
+	}
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{UID: 0, GID: 0, Mode: 0o755, ACL: rootACL},
+	}
+
+	data, err := BuildSecurityDescriptor(file, allSecInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	_, _, dacl, err := ParseSecurityDescriptor(data)
+	if err != nil {
+		t.Fatalf("ParseSecurityDescriptor: %v", err)
+	}
+	whoCount := map[string]int{}
+	for _, ace := range dacl.ACEs {
+		whoCount[ace.Who]++
+	}
+
+	// alice's sid: form survives; her numeric twin (99001@localdomain, id != RID)
+	// is suppressed regardless of idmap mode.
+	if whoCount["sid:"+aliceSID] != 1 {
+		t.Errorf("alice sid: ACE count = %d, want 1 (Who counts: %v)", whoCount["sid:"+aliceSID], whoCount)
+	}
+	if n := whoCount["99001@localdomain"]; n != 0 {
+		t.Errorf("alice numeric twin not suppressed: 99001@localdomain count = %d, want 0", n)
+	}
+	// The local grant (no sid: twin) is kept.
+	if whoCount["4242@localdomain"] != 1 {
+		t.Errorf("local grant dropped: 4242@localdomain count = %d, want 1", whoCount["4242@localdomain"])
+	}
+}
+
+// TestBuildSD_NilGrants_MatchesBaseline verifies that passing nil grantACEs is
+// identical to the plain BuildSecurityDescriptor (no behavior change for the
+// non-grant path).
+func TestBuildSD_NilGrants_MatchesBaseline(t *testing.T) {
+	file := &metadata.File{
+		FileAttr: metadata.FileAttr{UID: 1000, GID: 1000, Mode: 0o755},
+	}
+	plain, err := BuildSecurityDescriptor(file, allSecInfo)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptor: %v", err)
+	}
+	withNil, err := BuildSecurityDescriptorWithGrants(file, allSecInfo, nil)
+	if err != nil {
+		t.Fatalf("BuildSecurityDescriptorWithGrants: %v", err)
+	}
+	if !bytes.Equal(plain, withNil) {
+		t.Fatal("BuildSecurityDescriptorWithGrants(nil) differs from BuildSecurityDescriptor")
+	}
+}
+
 // TestBuildSD_ZeroSecInfo_ReturnsEmptySD verifies that additionalSecInfo==0
 // produces a minimal 20-byte header-only SD with control=SE_SELF_RELATIVE
 // and no owner/group/DACL/SACL. Matches Windows behavior exercised by

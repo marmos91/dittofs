@@ -53,6 +53,14 @@ type ResolvedIdentity struct {
 
 	// GroupSIDs is the list of Windows group SIDs for the user, when known.
 	GroupSIDs []string
+
+	// IsGroup marks a resolution whose subject is a group object rather than a
+	// user account. It is set when a directory SID lookup matches a group (e.g.
+	// resolving "Domain Admins" for the SMB Security-tab display of a group
+	// share grant), so the LSARPC path can report SID_NAME_USE = SidTypeGroup
+	// instead of SidTypeUser. Login/authz paths always resolve a user and leave
+	// this false.
+	IsGroup bool
 }
 
 // IdentityProvider resolves external credentials to DittoFS users.
