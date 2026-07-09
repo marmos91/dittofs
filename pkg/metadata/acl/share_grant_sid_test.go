@@ -38,6 +38,28 @@ func TestBuildShareRootACL_SIDGrant(t *testing.T) {
 		}
 	})
 
+	t.Run("numeric twin of a SID grant is flagged NFSNumericTwin; a local grant is not", func(t *testing.T) {
+		const gid uint32 = 99001 // deliberately != the SID RID (1104): idmap:rfc2307 shape
+		a := BuildShareRootACL(GrantNone, []RootGrant{
+			{ID: gid, SID: groupSID, IsGroup: true, Level: GrantRead}, // AD grant → twin
+			{ID: 4242, Level: GrantReadWrite},                         // local grant → not a twin
+		})
+		twin := allowACE(a, LocalDomainPrincipal(gid))
+		if twin == nil {
+			t.Fatalf("missing numeric ACE for the SID grant")
+		}
+		if !twin.NFSNumericTwin {
+			t.Errorf("SID grant's numeric ACE not flagged NFSNumericTwin")
+		}
+		local := allowACE(a, LocalDomainPrincipal(4242))
+		if local == nil {
+			t.Fatalf("missing numeric ACE for the local grant")
+		}
+		if local.NFSNumericTwin {
+			t.Errorf("plain local grant's numeric ACE wrongly flagged NFSNumericTwin")
+		}
+	})
+
 	t.Run("highest level wins on duplicate SID", func(t *testing.T) {
 		a := BuildShareRootACL(GrantNone, []RootGrant{
 			{SID: groupSID, IsGroup: true, Level: GrantRead},

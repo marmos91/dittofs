@@ -295,11 +295,12 @@ func TestBuildSD_ExplicitACL_IgnoresGrants(t *testing.T) {
 // unix_user:<rid>). A pure local grant, which has no sid: twin, is kept.
 func TestBuildSD_ShareGrant_SuppressesNumericTwin(t *testing.T) {
 	const aliceSID = "S-1-5-21-188294588-3368521931-100232490-1106"
-	// alice: an AD/SID grant that carries a resolved Unix id (1106) → emits BOTH
-	// sid:…-1106 and 1106@localdomain. localUID 4242: a local grant → only the
-	// numeric form.
+	// alice: an AD/SID grant whose resolved Unix id (99001) DIFFERS from the SID's
+	// RID (1106) — the idmap:rfc2307 shape the old RID-keyed suppression missed.
+	// It emits BOTH sid:…-1106 and 99001@localdomain (flagged NFSNumericTwin).
+	// localUID 4242: a plain local grant → only the numeric form, unflagged.
 	rootACL := acl.BuildShareRootACL(acl.GrantNone, []acl.RootGrant{
-		{ID: 1106, SID: aliceSID, Level: acl.GrantRead},
+		{ID: 99001, SID: aliceSID, Level: acl.GrantRead},
 		{ID: 4242, Level: acl.GrantReadWrite},
 	})
 	if rootACL.Source != acl.ACLSourceShareGrant {
@@ -322,12 +323,13 @@ func TestBuildSD_ShareGrant_SuppressesNumericTwin(t *testing.T) {
 		whoCount[ace.Who]++
 	}
 
-	// alice's sid: form survives; her numeric twin is suppressed.
+	// alice's sid: form survives; her numeric twin (99001@localdomain, id != RID)
+	// is suppressed regardless of idmap mode.
 	if whoCount["sid:"+aliceSID] != 1 {
 		t.Errorf("alice sid: ACE count = %d, want 1 (Who counts: %v)", whoCount["sid:"+aliceSID], whoCount)
 	}
-	if n := whoCount["1106@localdomain"]; n != 0 {
-		t.Errorf("alice numeric twin not suppressed: 1106@localdomain count = %d, want 0", n)
+	if n := whoCount["99001@localdomain"]; n != 0 {
+		t.Errorf("alice numeric twin not suppressed: 99001@localdomain count = %d, want 0", n)
 	}
 	// The local grant (no sid: twin) is kept.
 	if whoCount["4242@localdomain"] != 1 {

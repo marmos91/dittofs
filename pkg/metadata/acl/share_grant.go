@@ -135,6 +135,17 @@ func BuildShareRootACL(defaultLevel GrantLevel, grants []RootGrant) *ACL {
 	// A pure SID grant (SID set, no allocated Unix id) is excluded — it projects
 	// only the "sid:" ACE above. A SID grant that carries a numeric GID for NFS
 	// (#1528) has ID != 0 and IS merged here so it also gets a numeric ACE.
+	// Numeric ids that also carry a SID grant: their "{id}@localdomain" ACE is a
+	// twin of a "sid:<SID>" ACE for the same AD principal, so it is flagged
+	// NFSNumericTwin (still enforced for NFS, hidden from the SMB Security tab to
+	// avoid a duplicate row — see ACE.NFSNumericTwin).
+	sidCompanionIDs := make(map[uint32]struct{})
+	for _, g := range grants {
+		if g.SID != "" && g.ID != 0 {
+			sidCompanionIDs[g.ID] = struct{}{}
+		}
+	}
+
 	merged := make(map[uint32]RootGrant, len(grants))
 	for _, g := range grants {
 		if g.SID != "" && g.ID == 0 {
@@ -168,7 +179,11 @@ func BuildShareRootACL(defaultLevel GrantLevel, grants []RootGrant) *ACL {
 	})
 	for _, g := range sorted {
 		if mask := maskForLevel(g.Level); mask != 0 { // GrantNone → no ACE
-			aces = append(aces, allow(LocalDomainPrincipal(g.ID), mask))
+			ace := allow(LocalDomainPrincipal(g.ID), mask)
+			if _, isTwin := sidCompanionIDs[g.ID]; isTwin {
+				ace.NFSNumericTwin = true
+			}
+			aces = append(aces, ace)
 		}
 	}
 
