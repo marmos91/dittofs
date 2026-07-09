@@ -61,9 +61,11 @@ func parseStat(data string) (Sample, bool) {
 		switch fields[0] {
 		case "cpu": // aggregate line: "cpu user nice system idle iowait irq softirq steal ..."
 			var total, idle uint64
+			valid := true
 			for i, f := range fields[1:] {
 				v, err := strconv.ParseUint(f, 10, 64)
-				if err != nil {
+				if err != nil { // corrupt /proc line — reject the whole sample, don't keep partial counters
+					valid = false
 					break
 				}
 				total += v
@@ -71,7 +73,9 @@ func parseStat(data string) (Sample, bool) {
 					idle += v
 				}
 			}
-			s.CPUTotal, s.CPUBusy, haveCPU = total, total-idle, true
+			if valid {
+				s.CPUTotal, s.CPUBusy, haveCPU = total, total-idle, true
+			}
 		case "ctxt":
 			if v, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
 				s.CtxSwitches, haveCtxt = v, true

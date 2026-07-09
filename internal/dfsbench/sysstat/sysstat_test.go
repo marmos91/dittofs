@@ -35,6 +35,14 @@ func TestParseStat_MissingFields(t *testing.T) {
 	}
 }
 
+func TestParseStat_MalformedCPU(t *testing.T) {
+	// A non-numeric cpu field must reject the whole sample, not return ok=true
+	// with partial/bogus counters.
+	if _, ok := parseStat("cpu 100 0 bad 800 50\nctxt 42000\n"); ok {
+		t.Error("want ok=false when a cpu field is non-numeric")
+	}
+}
+
 func TestRatesTo(t *testing.T) {
 	t0 := time.Unix(0, 0)
 	a := Sample{T: t0, CtxSwitches: 1000, CPUBusy: 100, CPUTotal: 1000, ok: true}

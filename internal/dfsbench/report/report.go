@@ -36,8 +36,9 @@ func NewReportCmd() *cobra.Command {
 }
 
 // RenderTable produces the markdown comparison table. Columns follow the plan's
-// dictionary; rate columns render "—" when not the workload's headline metric
-// (S3MB/CTXSW land once their meters exist — carried, shown as 0/— for now).
+// dictionary; rate columns render "—" when not the workload's headline metric,
+// and CTXSW/s + CPU% dash when unmetered (off Linux / pre-meter runs). S3MB
+// stays 0 until the S3 network meter lands.
 func RenderTable(rs []fio.CellResult) string {
 	if len(rs) == 0 {
 		return "no results\n"
