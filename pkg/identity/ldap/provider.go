@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	ldapv3 "github.com/go-ldap/ldap/v3"
 
@@ -57,6 +58,14 @@ type Provider struct {
 	// external-ID → username link before querying the directory.
 	store      identity.LinkStore
 	userLookup identity.UserLookup
+
+	// domainSIDMu guards the lazily-discovered AD domain SID (S-1-5-21-a-b-c, no
+	// RID) used by the idmap:rid reverse lookup to reconstruct an account's full
+	// SID from its RID. Discovered once from the directory and cached for the
+	// Provider's lifetime (a config reload builds a fresh Provider). Only a
+	// successful discovery is cached, so a transient directory outage retries.
+	domainSIDMu  sync.Mutex
+	domainSIDVal string
 }
 
 // New constructs an LDAP identity provider from a validated Config.
@@ -331,40 +340,32 @@ func sAMAccountNameFromPrincipal(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// LookupUID resolves a POSIX UID to an AD account name + realm via an
-// RFC2307 reverse search (&(objectClass=user)(uidNumber=N)). It backs the
+// LookupUID resolves a POSIX UID to an AD account name + realm. It backs the
 // LSARPC owner-SID display path: the machine-domain SID decodes to a UID that
-// has no local DittoFS account (the owner is an AD-only user such as alice),
-// so the name is recovered from the directory instead.
+// has no local DittoFS account (the owner is an AD-only user such as alice or
+// the domain Administrator), so the name is recovered from the directory. The
+// reverse search matches uidNumber in rfc2307 mode, or the reconstructed
+// account SID (domain SID + UID-as-RID) on objectSid in rid mode — so owners
+// render as DOMAIN\name in both idmap modes rather than a synthetic unix_user:N.
 //
-// Returns ok=false (no error logged as fatal) when no object matches or the
-// directory is unreachable, so a miss degrades to a raw SID rather than a
-// fault. Only meaningful in the rfc2307 idmap mode; in rid mode the UID is the
-// RID and is matched on objectSid by the forward path instead, so this returns
-// ok=false.
+// Returns ok=false (never a fatal error) when no object matches or the directory
+// is unreachable, so a miss degrades to the raw SID rather than a fault.
 func (p *Provider) LookupUID(ctx context.Context, uid uint32) (name, domain string, ok bool) {
 	return p.reverseLookup(ctx, "user", "uidNumber", uid)
 }
 
-// LookupGID resolves a POSIX GID to an AD group name + realm via an RFC2307
-// reverse search (&(objectClass=group)(gidNumber=N)). Mirrors LookupUID for
-// the GROUP SID on a file. Returns ok=false on a miss or in rid mode.
+// LookupGID resolves a POSIX GID to an AD group name + realm. Mirrors LookupUID
+// for the GROUP SID on a file (matched on gidNumber in rfc2307, or the
+// reconstructed group SID on objectSid in rid mode).
 func (p *Provider) LookupGID(ctx context.Context, gid uint32) (name, domain string, ok bool) {
 	return p.reverseLookup(ctx, "group", "gidNumber", gid)
 }
 
-// reverseLookup performs a single RFC2307 reverse search for the given object
-// class and POSIX-number attribute, returning the object's sAMAccountName and
-// the configured realm. Infrastructure errors are logged at Debug and folded
-// into ok=false so a directory outage never faults the LSARPC pipe.
+// reverseLookup maps a POSIX id back to a directory object's sAMAccountName,
+// using the idmap-appropriate filter (see reverseFilter). Infrastructure errors
+// are logged at Debug and folded into ok=false so a directory outage never
+// faults the LSARPC pipe.
 func (p *Provider) reverseLookup(ctx context.Context, objectClass, numAttr string, id uint32) (string, string, bool) {
-	// Only RFC2307 stamps uidNumber/gidNumber. In rid mode the POSIX id is the
-	// object's RID; there is no number attribute to match on, so report a miss
-	// and let the caller fall back to the raw SID.
-	if p.cfg.Idmap != IdmapRFC2307 {
-		return "", "", false
-	}
-
 	c, err := p.connect(ctx, p.cfg)
 	if err != nil {
 		logger.Debug("ldap: reverse lookup connect/bind failed", "attr", numAttr, "id", id, "error", err)
@@ -372,7 +373,10 @@ func (p *Provider) reverseLookup(ctx context.Context, objectClass, numAttr strin
 	}
 	defer func() { _ = c.Close() }()
 
-	filter := fmt.Sprintf("(&(objectClass=%s)(%s=%d))", objectClass, numAttr, id)
+	filter, ok := p.reverseFilter(c, objectClass, numAttr, id)
+	if !ok {
+		return "", "", false
+	}
 	req := ldapv3.NewSearchRequest(
 		p.cfg.BaseDN,
 		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, 2, int(p.cfg.Timeout.Seconds()), false,
@@ -391,6 +395,115 @@ func (p *Provider) reverseLookup(ctx context.Context, objectClass, numAttr strin
 		return "", "", false
 	}
 	return name, p.cfg.Realm, true
+}
+
+// reverseFilter builds the LDAP filter that maps a POSIX id back to a directory
+// object, per idmap mode:
+//   - rfc2307: match the stamped uidNumber/gidNumber attribute directly.
+//   - rid: the POSIX id IS the object's RID, so reconstruct its full account SID
+//     (domain SID + RID) and match objectSid. This makes the LSARPC owner/group
+//     display resolve to DOMAIN\name in rid mode too, instead of a synthetic
+//     unix_user:N / unix_group:N. Requires the domain SID (discovered + cached).
+//
+// Returns ok=false when the rid-mode domain SID is unavailable so the caller
+// degrades to the raw SID rather than issuing a malformed search.
+func (p *Provider) reverseFilter(c conn, objectClass, numAttr string, id uint32) (string, bool) {
+	if p.cfg.Idmap == IdmapRFC2307 {
+		return fmt.Sprintf("(&(objectClass=%s)(%s=%d))", objectClass, numAttr, id), true
+	}
+	domSID, ok := p.domainSID(c)
+	if !ok {
+		logger.Debug("ldap: rid-mode reverse lookup skipped — domain SID unavailable", "id", id)
+		return "", false
+	}
+	s, err := sid.ParseSIDString(fmt.Sprintf("%s-%d", domSID, id))
+	if err != nil {
+		logger.Debug("ldap: rid-mode reverse lookup — bad reconstructed SID",
+			"domainSID", domSID, "rid", id, "error", err)
+		return "", false
+	}
+	return fmt.Sprintf("(&(objectClass=%s)(objectSid=%s))", objectClass, sidToLDAPFilter(s)), true
+}
+
+// domainSID returns the AD domain SID (S-1-5-21-a-b-c, no RID), discovering it
+// from the directory on first use and caching the result. Only a successful
+// discovery is cached; a failure returns ok=false and is retried on the next
+// call so a transient outage does not permanently disable rid-mode reverse
+// resolution.
+func (p *Provider) domainSID(c conn) (string, bool) {
+	p.domainSIDMu.Lock()
+	defer p.domainSIDMu.Unlock()
+	if p.domainSIDVal != "" {
+		return p.domainSIDVal, true
+	}
+	val := p.discoverDomainSID(c)
+	if val != "" {
+		p.domainSIDVal = val
+	}
+	return val, val != ""
+}
+
+// discoverDomainSID reads the domain SID from the directory. The domain object
+// carries it as its objectSid; when the configured base DN IS the domain root
+// (the common case) a base-scoped read of the base DN suffices. If the base DN
+// is an OU below the domain (no objectSid), fall back to the RootDSE's
+// defaultNamingContext to locate the domain object. Returns "" on any failure.
+func (p *Provider) discoverDomainSID(c conn) string {
+	if s := p.domainSIDFromDN(c, p.cfg.BaseDN); s != "" {
+		return s
+	}
+	if dnc := p.rootDSEAttr(c, "defaultNamingContext"); dnc != "" && dnc != p.cfg.BaseDN {
+		if s := p.domainSIDFromDN(c, dnc); s != "" {
+			return s
+		}
+	}
+	logger.Debug("ldap: could not discover domain SID for rid-mode reverse lookup", "base", p.cfg.BaseDN)
+	return ""
+}
+
+// domainSIDFromDN base-reads objectSid at dn and returns it as a SID string,
+// but only when it is a bare domain SID (S-1-5-21-a-b-c, four sub-authorities —
+// no account RID) so it is safe to append a RID to. Returns "" otherwise.
+func (p *Provider) domainSIDFromDN(c conn, dn string) string {
+	req := ldapv3.NewSearchRequest(
+		dn,
+		ldapv3.ScopeBaseObject, ldapv3.NeverDerefAliases, 1, int(p.cfg.Timeout.Seconds()), false,
+		"(objectClass=*)", []string{"objectSid"}, nil,
+	)
+	res, err := c.Search(req)
+	if err != nil || len(res.Entries) == 0 {
+		return ""
+	}
+	raw := res.Entries[0].GetRawAttributeValue("objectSid")
+	if len(raw) == 0 {
+		return ""
+	}
+	s, _, err := sid.DecodeSID(raw)
+	if err != nil {
+		return ""
+	}
+	// A domain SID has exactly four sub-authorities (21 + three domain
+	// identifiers); an account/group SID has a fifth (its RID) and must not be
+	// mistaken for a domain prefix.
+	if s.SubAuthorityCount != 4 {
+		return ""
+	}
+	return sid.FormatSID(s)
+}
+
+// rootDSEAttr reads a single attribute from the anonymous RootDSE (base "",
+// base scope). Returns "" on any failure.
+func (p *Provider) rootDSEAttr(c conn, attr string) string {
+	req := ldapv3.NewSearchRequest(
+		"",
+		ldapv3.ScopeBaseObject, ldapv3.NeverDerefAliases, 1, int(p.cfg.Timeout.Seconds()), false,
+		"(objectClass=*)", []string{attr}, nil,
+	)
+	res, err := c.Search(req)
+	if err != nil || len(res.Entries) == 0 {
+		return ""
+	}
+	return res.Entries[0].GetAttributeValue(attr)
 }
 
 // userFilter builds an LDAP filter matching the credential. SIDs are matched on
