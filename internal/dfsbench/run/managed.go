@@ -179,7 +179,12 @@ func runPass(ctx context.Context, p backend.Plan, pass string, wls, sizes []stri
 			}
 			r := before.RatesTo(sysstat.Now())
 			m.CtxSwPerSec, m.CPUPct = r.CtxSwPerSec, r.CPUPct
-			m.AccessMode = p.Support.String() // "native" | "reexport" — the pairing axis
+			// "native" | "reexport" — the pairing axis. Guard the Support.String()
+			// "na" sentinel to empty so an unexpected value never leaks into the
+			// ACCESS column or the pairing grouping.
+			if m.AccessMode = p.Support.String(); m.AccessMode == "na" {
+				m.AccessMode = ""
+			}
 			m.System, m.Workload, m.Size, m.Protocol, m.Pass = res.System, w, s, res.Protocol, pass
 			m.Timestamp = time.Now().UTC()
 			if err := m.Save(f.results); err != nil {
