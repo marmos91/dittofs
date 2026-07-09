@@ -29,10 +29,22 @@ const (
 //go:embed smb.conf.tmpl
 var smbConfTmpl string
 
+// prepareMountpoint makes clientMntDir a clean, mountable empty directory (its
+// path is the package const clientMntDir; this returns only an error). It
+// force-lazy-unmounts anything already there first: a stale mount left by a
+// crashed prior run — especially a hard NFS mount to a now-dead server — would
+// otherwise make the MkdirAll's stat() hang uninterruptibly (D-state) and wedge
+// the whole run. Lazy (-l) detaches from the namespace immediately even if busy,
+// so it never blocks. This is what makes a managed run resilient to a dirty VM.
+func prepareMountpoint(ctx context.Context) error {
+	_ = exec.Sh(ctx, "sh", "-c", "umount -f -l "+clientMntDir+" 2>/dev/null; true")
+	return os.MkdirAll(clientMntDir, 0o755)
+}
+
 // reexportMount re-serves srcDir over proto and returns the loopback client
 // mountpoint. srcDir must already exist and hold the backend's data.
 func reexportMount(ctx context.Context, srcDir string, proto Protocol) (string, error) {
-	if err := os.MkdirAll(clientMntDir, 0o755); err != nil {
+	if err := prepareMountpoint(ctx); err != nil {
 		return "", err
 	}
 	switch proto {

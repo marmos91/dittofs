@@ -39,6 +39,7 @@ func SizeBytes(s string) int64 {
 // selection and `list` have a stable, ordered set.
 var KnownWorkloads = []string{
 	"seq-write",
+	"seq-write-buffered",
 	"seq-read",
 	"rand-write-4k",
 	"rand-read-4k",
