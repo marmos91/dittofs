@@ -64,6 +64,25 @@ func TestResolveSystems_BareNameSkipsNAProtocols(t *testing.T) {
 	}
 }
 
+func TestResolveSystems_NativeSingleProtocol(t *testing.T) {
+	withRegistry(t, &Backend{
+		Name:    "zerofs", // native NFSv3 only (no nfs4/smb3)
+		Support: map[Protocol]Support{ProtoNFS3: Native},
+	})
+
+	plans, err := ResolveSystems([]string{"zerofs"})
+	if err != nil {
+		t.Fatalf("resolveSystems: %v", err)
+	}
+	if len(plans) != 1 || plans[0].Protocol != ProtoNFS3 || plans[0].Support != Native {
+		t.Fatalf("want single native nfs3 plan, got %v", plans)
+	}
+	// nfs4/smb3 named explicitly must be rejected, not silently produced.
+	if _, err := ResolveSystems([]string{"zerofs-smb3"}); err == nil {
+		t.Fatal("expected error for zerofs-smb3 (zerofs has no SMB)")
+	}
+}
+
 func TestResolveSystems_ExplicitProtocol(t *testing.T) {
 	withRegistry(t, &Backend{
 		Name:    "dittofs-s3",

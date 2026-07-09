@@ -60,10 +60,12 @@ type Backend struct {
 	Unmount  func(ctx context.Context, proto Protocol) error
 	Teardown func(ctx context.Context) error
 
-	// FlushFUSE flushes a FUSE backend's writeback cache to S3 and remounts it
-	// with an empty cache, so the next read is genuinely cold-from-S3. nil for
-	// non-FUSE backends (the runner falls back to Evict + OS-cache drop). The
-	// runner unmounts the re-export around this, then re-exports the fresh mount.
+	// FlushFUSE is the cold-read barrier for backends that keep their own cache:
+	// it flushes writeback to S3 and rebuilds on an empty cache, so the next read
+	// is genuinely cold-from-S3. FUSE backends remount empty (flush + fresh mount);
+	// the native zerofs restarts its server on a wiped LSM cache dir. nil for
+	// backends where an Evict + OS-cache drop suffices. The runner unmounts around
+	// this, then re-mounts the fresh backend.
 	FlushFUSE func(ctx context.Context) error
 }
 
