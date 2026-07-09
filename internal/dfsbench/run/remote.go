@@ -87,6 +87,9 @@ func remoteRunArgs(f *runFlags) string {
 	if f.resume {
 		args = append(args, "--resume")
 	}
+	if f.skipBaseline {
+		args = append(args, "--skip-baseline")
+	}
 	return "/root/dfsbench " + strings.Join(args, " ")
 }
 

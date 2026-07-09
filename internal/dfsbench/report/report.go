@@ -36,6 +36,24 @@ func NewReportCmd() *cobra.Command {
 	return cmd
 }
 
+// Baseline holds the reference ceilings printed atop the scorecard, so every FS
+// number reads as a fraction of what the hardware/pipe can do. Zero value =
+// unmeasured (--skip-baseline or a failed measurement) → RenderBaseline emits
+// nothing. The raw-S3 PUT/GET ceiling (warp) lands with its own fields later.
+type Baseline struct {
+	LocalDiskSeqMBps  float64 // fio sequential bandwidth against bare scratch (no FS/S3)
+	LocalDiskRandIOPS float64 // fio random-4k IOPS against bare scratch
+}
+
+// RenderBaseline formats the ceilings header. Empty when nothing was measured.
+func RenderBaseline(b Baseline) string {
+	if b == (Baseline{}) {
+		return ""
+	}
+	return fmt.Sprintf("BASELINES (ceilings)\n  local-disk  seq %.0f MB/s   rand-4k %.0f IOPS\n\n",
+		b.LocalDiskSeqMBps, b.LocalDiskRandIOPS)
+}
+
 // RenderTable produces the markdown comparison table. Columns follow the plan's
 // dictionary; rate columns render "—" when not the workload's headline metric,
 // and CTXSW/s + CPU% dash when unmetered (off Linux / pre-meter runs). S3MB
