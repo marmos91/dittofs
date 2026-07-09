@@ -205,6 +205,12 @@ func (r *Responder) readLoop(conn *net.UDPConn) {
 }
 
 func (r *Responder) handlePacket(query []byte, src *net.UDPAddr) {
+	// Cheap pre-filter: the multicast group carries mostly responses (other
+	// hosts' and our own announcements). Drop those on a header-only parse before
+	// snapshotting the record set.
+	if !isQuery(query) {
+		return
+	}
 	r.mu.Lock()
 	services := r.snapshotServicesLocked()
 	r.mu.Unlock()

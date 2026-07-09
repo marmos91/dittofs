@@ -118,6 +118,25 @@ func (g *Group) Ready() bool {
 	return g.baseCtx != nil
 }
 
+// Reconcile starts or stops the named service so its running state matches want,
+// letting a live settings change toggle it. It is a no-op until Ready (before
+// Serve has seeded the base context), so the initial start — performed by Serve
+// itself — is never raced. build is invoked only when a start is needed. Returns
+// the Start error, if any; a stop error is swallowed (StopAll/StopOne already
+// debug-log it).
+func (g *Group) Reconcile(name string, want bool, build func() Service) error {
+	if !g.Ready() {
+		return nil
+	}
+	switch running := g.IsRunning(name); {
+	case want && !running:
+		return g.Start(build())
+	case !want && running:
+		return g.StopOne(name)
+	}
+	return nil
+}
+
 // IsRunning reports whether a service with the given name is currently tracked
 // as running.
 func (g *Group) IsRunning(name string) bool {

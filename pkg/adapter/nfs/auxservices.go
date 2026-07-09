@@ -55,11 +55,7 @@ func (s *NFSAdapter) startEnabledAuxServices(ctx context.Context) {
 
 	// mDNS advertiser (_nfs._tcp) for macOS Finder / Linux Avahi (issue #1609).
 	// Live-toggled via NFS settings; the initial start happens here.
-	if s.mdnsEnabled() {
-		if err := s.sidecars.Start(s.newMDNSSidecar()); err != nil {
-			logger.Warn("NFS mDNS advertiser failed to start", "error", err)
-		}
-	}
+	s.reconcileDiscovery()
 }
 
 // mdnsEnabled reports whether the NFS mDNS advertiser should run, from live
@@ -89,24 +85,12 @@ func (s *NFSAdapter) newMDNSSidecar() auxsvc.Service {
 	return mdns.NewSidecar([]mdns.ServiceRecord{rec})
 }
 
-// reconcileMDNS starts or stops the mDNS advertiser to match live settings. It
-// is a no-op until Serve has started the auxsvc group, so a settings-apply that
-// runs before Serve does not race the initial start.
-func (s *NFSAdapter) reconcileMDNS() {
-	if s.sidecars == nil || !s.sidecars.Ready() {
-		return
-	}
-	want := s.mdnsEnabled()
-	running := s.sidecars.IsRunning(mdns.SidecarName)
-	switch {
-	case want && !running:
-		if err := s.sidecars.Start(s.newMDNSSidecar()); err != nil {
-			logger.Warn("NFS mDNS advertiser failed to start", "error", err)
-		}
-	case !want && running:
-		if err := s.sidecars.StopOne(mdns.SidecarName); err != nil {
-			logger.Debug("NFS mDNS advertiser stop reported an error", "error", err)
-		}
+// reconcileDiscovery starts or stops the NFS discovery advertiser(s) to match
+// live settings. Called from Serve (initial start) and from applyNFSSettings
+// (live toggle); Group.Reconcile is a no-op until Serve has seeded the group.
+func (s *NFSAdapter) reconcileDiscovery() {
+	if err := s.sidecars.Reconcile(mdns.SidecarName, s.mdnsEnabled(), s.newMDNSSidecar); err != nil {
+		logger.Warn("NFS mDNS advertiser failed to start", "error", err)
 	}
 }
 
@@ -156,10 +140,13 @@ func (n nsmSidecar) Start(ctx context.Context) error {
 }
 func (n nsmSidecar) Stop(context.Context) error { return nil }
 
-// Compile-time assertions that every wrapper satisfies auxsvc.Service.
+// Compile-time assertions that every wrapper satisfies auxsvc.Service. The mDNS
+// sidecar is asserted here too so a signature drift in pkg/discovery/mdns (which
+// satisfies the interface structurally, without importing it) breaks at build.
 var (
 	_ auxsvc.Service = portmapSidecar{}
 	_ auxsvc.Service = sysregSidecar{}
 	_ auxsvc.Service = udpSidecar{}
 	_ auxsvc.Service = nsmSidecar{}
+	_ auxsvc.Service = (*mdns.Sidecar)(nil)
 )

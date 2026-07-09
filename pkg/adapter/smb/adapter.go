@@ -487,8 +487,7 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 
 	// Network discovery: start/stop the mDNS and WS-Discovery advertisers live to
 	// match settings. No-op until Serve has started the auxsvc group.
-	s.reconcileMDNS()
-	s.reconcileWSDiscovery()
+	s.reconcileDiscovery()
 }
 
 // Serve starts the SMB server and blocks until the context is cancelled

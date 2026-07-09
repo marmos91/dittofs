@@ -100,7 +100,7 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	// mDNS advertiser: unlike portmapper/UDP (which take effect on the next
 	// restart), the mDNS sidecar is toggled live here — start or stop it to
 	// match the setting. No-op until Serve has started the auxsvc group.
-	s.reconcileMDNS()
+	s.reconcileDiscovery()
 }
 
 // fsCapabilitiesProbeTimeout bounds the metadata read issued when refreshing

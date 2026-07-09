@@ -19,7 +19,12 @@ const FallbackName = "DITTOFS"
 // OS hostname, upper-cased (NetBIOS convention), or FallbackName when the
 // hostname is empty/unavailable. e.g. "vm2.cubbit.local" -> "VM2".
 func ServerName() string {
-	h, err := os.Hostname()
+	return serverNameFrom(os.Hostname())
+}
+
+// serverNameFrom is the pure core of ServerName, taking the os.Hostname() result
+// so it can be tested without depending on the real hostname.
+func serverNameFrom(h string, err error) string {
 	if err != nil || h == "" {
 		return FallbackName
 	}

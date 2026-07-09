@@ -28,22 +28,6 @@ func TestServerName_SingleLabel(t *testing.T) {
 	}
 }
 
-// serverNameFrom is the pure core of ServerName, extracted for testing without
-// depending on the real os.Hostname().
-func serverNameFrom(h string, err error) string {
-	if err != nil || h == "" {
-		return FallbackName
-	}
-	if i := strings.IndexByte(h, '.'); i >= 0 {
-		h = h[:i]
-	}
-	h = strings.TrimSpace(h)
-	if h == "" {
-		return FallbackName
-	}
-	return strings.ToUpper(h)
-}
-
 func TestServerName_RealHostDoesNotPanic(t *testing.T) {
 	// Smoke: the real accessor returns a non-empty, upper-cased name.
 	got := ServerName()

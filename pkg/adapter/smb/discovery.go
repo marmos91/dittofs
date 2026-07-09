@@ -6,6 +6,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
 	"github.com/marmos91/dittofs/pkg/discovery/mdns"
 	"github.com/marmos91/dittofs/pkg/discovery/wsd"
@@ -20,36 +21,39 @@ import (
 // whichever discovery advertisers are enabled. Called once from Serve.
 func (s *Adapter) startEnabledDiscovery(ctx context.Context) {
 	s.sidecars.SetBaseContext(ctx)
+	s.reconcileDiscovery()
+}
 
-	if s.mdnsEnabled() {
-		if err := s.sidecars.Start(s.newMDNSSidecar()); err != nil {
-			logger.Warn("SMB mDNS advertiser failed to start", "error", err)
-		}
+// reconcileDiscovery starts or stops the SMB discovery advertisers to match live
+// settings. Called from Serve (initial start) and from applySMBSettings (live
+// toggle); Group.Reconcile is a no-op until Serve has seeded the group.
+func (s *Adapter) reconcileDiscovery() {
+	if err := s.sidecars.Reconcile(mdns.SidecarName, s.mdnsEnabled(), s.newMDNSSidecar); err != nil {
+		logger.Warn("SMB mDNS advertiser failed to start", "error", err)
 	}
-	if s.wsDiscoveryEnabled() {
-		if err := s.sidecars.Start(s.newWSDSidecar()); err != nil {
-			logger.Warn("SMB WS-Discovery advertiser failed to start", "error", err)
-		}
+	if err := s.sidecars.Reconcile(wsd.SidecarName, s.wsDiscoveryEnabled(), s.newWSDSidecar); err != nil {
+		logger.Warn("SMB WS-Discovery advertiser failed to start", "error", err)
 	}
 }
 
-// mdnsEnabled reports whether the SMB mDNS advertiser should run, from live
-// settings (defaults false when settings are unavailable).
-func (s *Adapter) mdnsEnabled() bool {
+// smbSettings returns the live SMB adapter settings, or nil when unavailable.
+func (s *Adapter) smbSettings() *models.SMBAdapterSettings {
 	if s.Registry == nil {
-		return false
+		return nil
 	}
-	st := s.Registry.GetSMBSettings()
+	return s.Registry.GetSMBSettings()
+}
+
+// mdnsEnabled reports whether the SMB mDNS advertiser should run (default false).
+func (s *Adapter) mdnsEnabled() bool {
+	st := s.smbSettings()
 	return st != nil && st.MDNSEnabled
 }
 
-// wsDiscoveryEnabled reports whether the SMB WS-Discovery advertiser should run,
-// from live settings (defaults false when settings are unavailable).
+// wsDiscoveryEnabled reports whether the SMB WS-Discovery advertiser should run
+// (default false).
 func (s *Adapter) wsDiscoveryEnabled() bool {
-	if s.Registry == nil {
-		return false
-	}
-	st := s.Registry.GetSMBSettings()
+	st := s.smbSettings()
 	return st != nil && st.WSDiscoveryEnabled
 }
 
@@ -86,43 +90,10 @@ func (s *Adapter) newWSDSidecar() auxsvc.Service {
 	return wsd.NewResponder(s.discoveryName(), workgroup, uint64(time.Now().Unix()))
 }
 
-// reconcileMDNS starts or stops the mDNS advertiser to match live settings. It
-// is a no-op until Serve has started the auxsvc group, so a settings-apply that
-// runs before Serve (during SetRuntime) does not race the initial start.
-func (s *Adapter) reconcileMDNS() {
-	if s.sidecars == nil || !s.sidecars.Ready() {
-		return
-	}
-	want := s.mdnsEnabled()
-	running := s.sidecars.IsRunning(mdns.SidecarName)
-	switch {
-	case want && !running:
-		if err := s.sidecars.Start(s.newMDNSSidecar()); err != nil {
-			logger.Warn("SMB mDNS advertiser failed to start", "error", err)
-		}
-	case !want && running:
-		if err := s.sidecars.StopOne(mdns.SidecarName); err != nil {
-			logger.Debug("SMB mDNS advertiser stop reported an error", "error", err)
-		}
-	}
-}
-
-// reconcileWSDiscovery starts or stops the WS-Discovery advertiser to match live
-// settings. Like reconcileMDNS it is a no-op until Serve has started the group.
-func (s *Adapter) reconcileWSDiscovery() {
-	if s.sidecars == nil || !s.sidecars.Ready() {
-		return
-	}
-	want := s.wsDiscoveryEnabled()
-	running := s.sidecars.IsRunning(wsd.SidecarName)
-	switch {
-	case want && !running:
-		if err := s.sidecars.Start(s.newWSDSidecar()); err != nil {
-			logger.Warn("SMB WS-Discovery advertiser failed to start", "error", err)
-		}
-	case !want && running:
-		if err := s.sidecars.StopOne(wsd.SidecarName); err != nil {
-			logger.Debug("SMB WS-Discovery advertiser stop reported an error", "error", err)
-		}
-	}
-}
+// Compile-time assertions that the discovery advertisers satisfy auxsvc.Service.
+// They satisfy it structurally (pkg/discovery does not import the adapter
+// layer), so asserting here breaks a signature drift at build time.
+var (
+	_ auxsvc.Service = (*mdns.Sidecar)(nil)
+	_ auxsvc.Service = (*wsd.Responder)(nil)
+)

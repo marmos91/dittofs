@@ -6,9 +6,6 @@ import (
 	"strings"
 )
 
-func utoa(v uint64) string { return strconv.FormatUint(v, 10) }
-func itoa(v int) string    { return strconv.Itoa(v) }
-
 // WS-Discovery / WS-Addressing constants.
 const (
 	nsDiscovery = "http://schemas.xmlsoap.org/ws/2005/04/discovery"
@@ -56,13 +53,13 @@ func announce(action, element string, e Endpoint, msgNum uint64) []byte {
 		"{action}", action,
 		"{msgid}", MessageID(),
 		"{to}", toDiscovery,
-		"{inst}", utoa(e.InstanceID),
-		"{num}", utoa(msgNum),
+		"{inst}", strconv.FormatUint(e.InstanceID, 10),
+		"{num}", strconv.FormatUint(msgNum, 10),
 		"{element}", element,
 		"{uuid}", e.UUID,
 		"{types}", e.Types,
 		"{xaddrs}", e.XAddrs,
-		"{mv}", itoa(e.MetadataVersion),
+		"{mv}", strconv.Itoa(e.MetadataVersion),
 	)
 	return []byte(r.Replace(envelopeHeader +
 		`<s:Header>` +
@@ -96,14 +93,14 @@ func match(action, matchesEl, matchEl, relatesTo string, e Endpoint, msgNum uint
 		"{msgid}", MessageID(),
 		"{relates}", relatesTo,
 		"{to}", toAnonymous,
-		"{inst}", utoa(e.InstanceID),
-		"{num}", utoa(msgNum),
+		"{inst}", strconv.FormatUint(e.InstanceID, 10),
+		"{num}", strconv.FormatUint(msgNum, 10),
 		"{matches}", matchesEl,
 		"{match}", matchEl,
 		"{uuid}", e.UUID,
 		"{types}", e.Types,
 		"{xaddrs}", e.XAddrs,
-		"{mv}", itoa(e.MetadataVersion),
+		"{mv}", strconv.Itoa(e.MetadataVersion),
 	)
 	return []byte(r.Replace(envelopeHeader +
 		`<s:Header>` +

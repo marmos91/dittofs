@@ -83,24 +83,28 @@ type answerSet struct {
 	err         error
 }
 
-// answer adds a record (built lazily by build) to the Answer section, unless
-// its key was already emitted. A build error is latched into a.err.
-func (a *answerSet) answer(key string, build func() (dnsmessage.Resource, error)) {
-	a.appendTo(&a.answers, key, build)
+// rec adapts a record builder's (Resource, error) result for the answer/
+// additional helpers: it latches any build error into a.err and returns the
+// resource (zero on error, which the latched a.err then suppresses). This lets
+// call sites stay one line — a.answer(key, a.rec(s.srvRecord(false))).
+func (a *answerSet) rec(r dnsmessage.Resource, err error) dnsmessage.Resource {
+	if err != nil && a.err == nil {
+		a.err = err
+	}
+	return r
 }
+
+// answer adds a record to the Answer section unless its key was already emitted
+// or a build error has been latched.
+func (a *answerSet) answer(key string, r dnsmessage.Resource) { a.appendTo(&a.answers, key, r) }
 
 // additional adds a record to the Additional section under the same dedupe set.
-func (a *answerSet) additional(key string, build func() (dnsmessage.Resource, error)) {
-	a.appendTo(&a.additionals, key, build)
+func (a *answerSet) additional(key string, r dnsmessage.Resource) {
+	a.appendTo(&a.additionals, key, r)
 }
 
-func (a *answerSet) appendTo(dst *[]dnsmessage.Resource, key string, build func() (dnsmessage.Resource, error)) {
+func (a *answerSet) appendTo(dst *[]dnsmessage.Resource, key string, r dnsmessage.Resource) {
 	if a.err != nil || a.seen[key] {
-		return
-	}
-	r, err := build()
-	if err != nil {
-		a.err = err
 		return
 	}
 	a.seen[key] = true
@@ -121,25 +125,25 @@ func (a *answerSet) matchQuestion(s ServiceRecord, qname string, qt dnsmessage.T
 
 	// PTR browse: "_smb._tcp.local." -> instance, plus supporting records.
 	if isPTR && equalName(qname, s.serviceName()) {
-		a.answer("ptr:"+s.serviceName(), func() (dnsmessage.Resource, error) { return s.ptrRecord(false) })
-		a.additional("srv:"+s.instanceName(), func() (dnsmessage.Resource, error) { return s.srvRecord(false) })
-		a.additional("txt:"+s.instanceName(), func() (dnsmessage.Resource, error) { return s.txtRecord(false) })
+		a.answer("ptr:"+s.serviceName(), a.rec(s.ptrRecord(false)))
+		a.additional("srv:"+s.instanceName(), a.rec(s.srvRecord(false)))
+		a.additional("txt:"+s.instanceName(), a.rec(s.txtRecord(false)))
 		a.addAddrs(s, true, true, false)
 		matched = true
 	}
 	// Service-type enumeration.
 	if isPTR && equalName(qname, s.metaName()) {
-		a.answer("meta:"+s.metaName()+"/"+s.serviceName(), func() (dnsmessage.Resource, error) { return s.metaPTRRecord(false) })
+		a.answer("meta:"+s.metaName()+"/"+s.serviceName(), a.rec(s.metaPTRRecord(false)))
 		matched = true
 	}
 	// Direct SRV/TXT for the instance.
 	if isSRV && equalName(qname, s.instanceName()) {
-		a.answer("srv:"+s.instanceName(), func() (dnsmessage.Resource, error) { return s.srvRecord(false) })
+		a.answer("srv:"+s.instanceName(), a.rec(s.srvRecord(false)))
 		a.addAddrs(s, true, true, false)
 		matched = true
 	}
 	if isTXT && equalName(qname, s.instanceName()) {
-		a.answer("txt:"+s.instanceName(), func() (dnsmessage.Resource, error) { return s.txtRecord(false) })
+		a.answer("txt:"+s.instanceName(), a.rec(s.txtRecord(false)))
 		matched = true
 	}
 	// Host address records.
@@ -176,12 +180,10 @@ func (a *answerSet) addAddrs(s ServiceRecord, wantA, wantAAAA, toAnswer bool) {
 		default:
 			continue
 		}
-		rec := r // capture per iteration for the closure
-		build := func() (dnsmessage.Resource, error) { return rec, nil }
 		if toAnswer {
-			a.answer(key, build)
+			a.answer(key, r)
 		} else {
-			a.additional(key, build)
+			a.additional(key, r)
 		}
 	}
 }
@@ -196,6 +198,16 @@ func addrKey(r dnsmessage.Resource) string {
 	default:
 		return ""
 	}
+}
+
+// isQuery reports whether data is a DNS query (not a response) worth answering.
+// It parses only the header, so the responder can drop the many response packets
+// on the multicast group (other hosts' and our own announcements) before the
+// more expensive record snapshot and full parse in buildResponse.
+func isQuery(data []byte) bool {
+	var p dnsmessage.Parser
+	hdr, err := p.Start(data)
+	return err == nil && !hdr.Response
 }
 
 // equalName compares two DNS names case-insensitively (mDNS names are
