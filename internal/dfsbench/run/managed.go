@@ -10,6 +10,7 @@ import (
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
 	"github.com/marmos91/dittofs/internal/dfsbench/fio"
 	"github.com/marmos91/dittofs/internal/dfsbench/report"
+	"github.com/marmos91/dittofs/internal/dfsbench/sysstat"
 )
 
 // runManaged drives the backend-provisioning path: resolve --systems into
@@ -167,10 +168,16 @@ func runPass(ctx context.Context, p backend.Plan, pass string, wls, sizes []stri
 				continue
 			}
 			_, _ = fmt.Fprintf(exec.CmdOut, "run: %s\n", res.Slug())
+			// Meter server-side ctxsw + CPU across just the fio pass — the FUSE-tax
+			// evidence (system-wide; on the single-tenant bench VM that's the
+			// serving stack). Zero off Linux.
+			before := sysstat.Now()
 			m, err := fio.RunFio(ctx, w, mnt, withSize(opts, s))
 			if err != nil {
 				return err
 			}
+			r := before.RatesTo(sysstat.Now())
+			m.CtxSwPerSec, m.CPUPct = r.CtxSwPerSec, r.CPUPct
 			m.System, m.Workload, m.Size, m.Protocol, m.Pass = res.System, w, s, res.Protocol, pass
 			m.Timestamp = time.Now().UTC()
 			if err := m.Save(f.results); err != nil {
