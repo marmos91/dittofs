@@ -67,6 +67,29 @@ const (
 	portmapperUDPContainerPortName = "adapter-pm-udp"
 	// nfsAdapterType is the canonical sanitized type string for the NFS adapter.
 	nfsAdapterType = "nfs"
+	// smbAdapterType is the canonical sanitized type string for the SMB adapter.
+	smbAdapterType = "smb"
+
+	// Network-discovery ports (issue #1609). mDNS is a shared, host-level
+	// responder (one per pod); WS-Discovery (UDP responder + HTTP metadata) is
+	// SMB-only. IMPORTANT: IP multicast (mDNS 224.0.0.251, WSD 239.255.255.250)
+	// does NOT traverse standard Kubernetes CNIs or a ClusterIP/LoadBalancer
+	// Service — these ports are declared for completeness and hostNetwork
+	// deployments only; on a normal cluster, discovery is effectively
+	// LAN/hostNetwork-scoped.
+	mdnsDiscoveryPort = int32(5353) // mDNS / DNS-SD (UDP)
+	wsdDiscoveryPort  = int32(3702) // WS-Discovery SOAP (UDP)
+	wsdMetadataPort   = int32(5357) // WS-Discovery metadata (HTTP/TCP)
+	// Service port names (unique within a single adapter Service).
+	mdnsPortName    = "mdns"
+	wsdPortName     = "wsd"
+	wsdMetaPortName = "wsd-meta"
+	// Container port names — carry the adapter- prefix so reconcileContainerPorts
+	// manages them as dynamic ports (rebuilt each reconcile, cleaned up when no
+	// adapter is active). Must be ≤15 chars (DNS-1123).
+	mdnsContainerPortName    = "adapter-mdns"    // 12
+	wsdContainerPortName     = "adapter-wsd"     // 11
+	wsdMetaContainerPortName = "adapter-wsdmeta" // 15
 )
 
 // invalidDNSChars matches characters not allowed in DNS-1035 labels.
@@ -134,6 +157,11 @@ func isNFSAdapter(adapterType string) bool {
 	return sanitizeAdapterType(adapterType) == nfsAdapterType
 }
 
+// isSMBAdapter returns true if the sanitized adapter type is "smb".
+func isSMBAdapter(adapterType string) bool {
+	return sanitizeAdapterType(adapterType) == smbAdapterType
+}
+
 // buildAdapterServicePorts returns the Service ports for an adapter.
 // NFS adapters get 4 ports (NFS TCP, portmapper TCP + UDP 111→10111, and the
 // NFS data port over UDP for NLM/NSM/MOUNT); all others get 1.
@@ -169,6 +197,32 @@ func buildAdapterServicePorts(adapterType string, info AdapterInfo) []corev1.Ser
 				Port:       int32(info.Port),
 				TargetPort: intstr.FromInt32(int32(info.Port)),
 				Protocol:   corev1.ProtocolUDP,
+			},
+		)
+	}
+
+	// Network discovery (issue #1609). Each adapter's Service exposes the mDNS
+	// port; SMB additionally exposes the WS-Discovery UDP + HTTP metadata ports.
+	// Multicast does not traverse standard CNIs — see the port constants.
+	ports = append(ports, corev1.ServicePort{
+		Name:       mdnsPortName,
+		Port:       mdnsDiscoveryPort,
+		TargetPort: intstr.FromInt32(mdnsDiscoveryPort),
+		Protocol:   corev1.ProtocolUDP,
+	})
+	if isSMBAdapter(adapterType) {
+		ports = append(ports,
+			corev1.ServicePort{
+				Name:       wsdPortName,
+				Port:       wsdDiscoveryPort,
+				TargetPort: intstr.FromInt32(wsdDiscoveryPort),
+				Protocol:   corev1.ProtocolUDP,
+			},
+			corev1.ServicePort{
+				Name:       wsdMetaPortName,
+				Port:       wsdMetadataPort,
+				TargetPort: intstr.FromInt32(wsdMetadataPort),
+				Protocol:   corev1.ProtocolTCP,
 			},
 		)
 	}
@@ -496,6 +550,38 @@ func (r *DittoServerReconciler) reconcileContainerPorts(ctx context.Context, ds 
 				},
 			)
 		}
+	}
+
+	// Discovery ports live on the shared pod, so add them once (deduped across
+	// adapters), not per adapter: the mDNS responder when any adapter is active,
+	// and the WS-Discovery UDP + HTTP ports when SMB is active (issue #1609).
+	smbActive := false
+	for adapterType := range activeAdapters {
+		if isSMBAdapter(adapterType) {
+			smbActive = true
+			break
+		}
+	}
+	if len(activeAdapters) > 0 {
+		dynamicPorts = append(dynamicPorts, corev1.ContainerPort{
+			Name:          mdnsContainerPortName,
+			ContainerPort: mdnsDiscoveryPort,
+			Protocol:      corev1.ProtocolUDP,
+		})
+	}
+	if smbActive {
+		dynamicPorts = append(dynamicPorts,
+			corev1.ContainerPort{
+				Name:          wsdContainerPortName,
+				ContainerPort: wsdDiscoveryPort,
+				Protocol:      corev1.ProtocolUDP,
+			},
+			corev1.ContainerPort{
+				Name:          wsdMetaContainerPortName,
+				ContainerPort: wsdMetadataPort,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		)
 	}
 
 	// Build final desired ports: static (preserved) + dynamic (from active adapters).

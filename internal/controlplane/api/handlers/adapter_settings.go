@@ -54,6 +54,7 @@ type PatchNFSSettingsRequest struct {
 	PortmapperPort               *int      `json:"portmapper_port,omitempty"`
 	PortmapperRegisterWithSystem *bool     `json:"portmapper_register_with_system,omitempty"`
 	UDPEnabled                   *bool     `json:"udp_enabled,omitempty"`
+	MDNSEnabled                  *bool     `json:"mdns_enabled,omitempty"`
 }
 
 // PutNFSSettingsRequest requires all fields for full replacement.
@@ -82,6 +83,7 @@ type PutNFSSettingsRequest struct {
 	PortmapperPort               int      `json:"portmapper_port"`
 	PortmapperRegisterWithSystem bool     `json:"portmapper_register_with_system"`
 	UDPEnabled                   bool     `json:"udp_enabled"`
+	MDNSEnabled                  bool     `json:"mdns_enabled"`
 }
 
 // --- SMB request types ---
@@ -98,6 +100,8 @@ type PatchSMBSettingsRequest struct {
 	Signing                 *string   `json:"signing,omitempty"`
 	DirectoryLeasingEnabled *bool     `json:"directory_leasing_enabled,omitempty"`
 	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
+	MDNSEnabled             *bool     `json:"mdns_enabled,omitempty"`
+	WSDiscoveryEnabled      *bool     `json:"wsdiscovery_enabled,omitempty"`
 }
 
 // PutSMBSettingsRequest requires all fields for full replacement.
@@ -112,6 +116,8 @@ type PutSMBSettingsRequest struct {
 	Signing                 string   `json:"signing"`
 	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
+	MDNSEnabled             bool     `json:"mdns_enabled"`
+	WSDiscoveryEnabled      bool     `json:"wsdiscovery_enabled"`
 }
 
 // --- Response types ---
@@ -142,6 +148,7 @@ type NFSSettingsResponse struct {
 	PortmapperPort               int      `json:"portmapper_port"`
 	PortmapperRegisterWithSystem bool     `json:"portmapper_register_with_system"`
 	UDPEnabled                   bool     `json:"udp_enabled"`
+	MDNSEnabled                  bool     `json:"mdns_enabled"`
 	Version                      int      `json:"version"`
 }
 
@@ -157,6 +164,8 @@ type SMBSettingsResponse struct {
 	Signing                 string   `json:"signing"`
 	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
+	MDNSEnabled             bool     `json:"mdns_enabled"`
+	WSDiscoveryEnabled      bool     `json:"wsdiscovery_enabled"`
 	Version                 int      `json:"version"`
 }
 
@@ -365,6 +374,7 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.PortmapperPort = req.PortmapperPort
 		settings.PortmapperRegisterWithSystem = req.PortmapperRegisterWithSystem
 		settings.UDPEnabled = req.UDPEnabled
+		settings.MDNSEnabled = req.MDNSEnabled
 
 		if !h.validateAndRespond(w, adapterType, settings, nil, force) {
 			return
@@ -412,6 +422,8 @@ func (h *AdapterSettingsHandler) PutSettings(w http.ResponseWriter, r *http.Requ
 		settings.Signing = req.Signing
 		settings.DirectoryLeasingEnabled = req.DirectoryLeasingEnabled
 		settings.SetBlockedOperations(req.BlockedOperations)
+		settings.MDNSEnabled = req.MDNSEnabled
+		settings.WSDiscoveryEnabled = req.WSDiscoveryEnabled
 
 		if !h.validateAndRespond(w, adapterType, nil, settings, force) {
 			return
@@ -544,6 +556,9 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		if req.UDPEnabled != nil {
 			settings.UDPEnabled = *req.UDPEnabled
 		}
+		if req.MDNSEnabled != nil {
+			settings.MDNSEnabled = *req.MDNSEnabled
+		}
 
 		if !h.validateAndRespond(w, adapterType, settings, nil, force) {
 			return
@@ -610,6 +625,12 @@ func (h *AdapterSettingsHandler) PatchSettings(w http.ResponseWriter, r *http.Re
 		}
 		if req.BlockedOperations != nil {
 			settings.SetBlockedOperations(*req.BlockedOperations)
+		}
+		if req.MDNSEnabled != nil {
+			settings.MDNSEnabled = *req.MDNSEnabled
+		}
+		if req.WSDiscoveryEnabled != nil {
+			settings.WSDiscoveryEnabled = *req.WSDiscoveryEnabled
 		}
 
 		if !h.validateAndRespond(w, adapterType, nil, settings, force) {
@@ -1047,6 +1068,7 @@ func nfsSettingsToResponse(s *models.NFSAdapterSettings) NFSSettingsResponse {
 		PortmapperPort:               s.PortmapperPort,
 		PortmapperRegisterWithSystem: s.PortmapperRegisterWithSystem,
 		UDPEnabled:                   s.UDPEnabled,
+		MDNSEnabled:                  s.MDNSEnabled,
 		Version:                      s.Version,
 	}
 }
@@ -1067,6 +1089,8 @@ func smbSettingsToResponse(s *models.SMBAdapterSettings) SMBSettingsResponse {
 		Signing:                 s.Signing,
 		DirectoryLeasingEnabled: s.DirectoryLeasingEnabled,
 		BlockedOperations:       ops,
+		MDNSEnabled:             s.MDNSEnabled,
+		WSDiscoveryEnabled:      s.WSDiscoveryEnabled,
 		Version:                 s.Version,
 	}
 }

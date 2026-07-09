@@ -2,6 +2,8 @@ package nfs
 
 import (
 	"context"
+
+	"github.com/marmos91/dittofs/internal/logger"
 )
 
 // Stop initiates graceful shutdown of the NFS server.
@@ -40,11 +42,15 @@ func (s *NFSAdapter) Stop(ctx context.Context) error {
 		s.identityProviderUnsub = nil
 	}
 
-	// Stop portmapper first (stops accepting new queries before NFS stops).
-	// Unregister from the system rpcbind before tearing down listeners so a
-	// client never resolves a stale NLM port to a port we no longer serve.
-	s.stopSystemPortmapRegistration()
-	s.stopPortmapper()
+	// Stop the auxiliary/companion services (portmapper, system rpcbind
+	// registration, UDP transport, NSM) before tearing down the main listener.
+	// The group stops them in reverse start order, which preserves the ordering
+	// that matters: unregister from the system rpcbind before the embedded
+	// portmapper closes, so a client never resolves a stale NLM port to a port
+	// we no longer serve.
+	if err := s.sidecars.StopAll(ctx); err != nil {
+		logger.Debug("NFS auxiliary service shutdown reported an error", "error", err)
+	}
 
 	// Stop GSS processor if running (releases background cleanup goroutine)
 	if s.gssProcessor != nil {

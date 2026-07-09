@@ -98,6 +98,12 @@ type NFSAdapterSettings struct {
 	// 111. Enable both to allow macOS NFSv3 locking.
 	UDPEnabled bool `gorm:"default:false" json:"udp_enabled"`
 
+	// MDNSEnabled advertises the NFS export over multicast DNS / DNS-SD
+	// (_nfs._tcp) so it appears in macOS Finder and Linux/Avahi browsers
+	// (issue #1609). Defaults to false (opt-in). Applied live: toggling it
+	// starts/stops the mDNS advertiser without an adapter restart.
+	MDNSEnabled bool `gorm:"default:false" json:"mdns_enabled"`
+
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
 
@@ -197,6 +203,19 @@ type SMBAdapterSettings struct {
 	// (e.g., "nfs/host@REALM" -> "cifs/host@REALM").
 	SMBServicePrincipal string `gorm:"size:256" json:"smb_service_principal"`
 
+	// Network discovery (issue #1609). Both default to false (opt-in) and are
+	// applied live: toggling one starts/stops its advertiser without an adapter
+	// restart.
+
+	// MDNSEnabled advertises the SMB service over multicast DNS / DNS-SD
+	// (_smb._tcp + _device-info._tcp) so it appears in macOS Finder and
+	// Linux/Avahi browsers.
+	MDNSEnabled bool `gorm:"default:false" json:"mdns_enabled"`
+
+	// WSDiscoveryEnabled advertises the host over WS-Discovery so it appears in
+	// the Windows Explorer Network view.
+	WSDiscoveryEnabled bool `gorm:"default:false" json:"wsdiscovery_enabled"`
+
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
 
@@ -259,6 +278,7 @@ func NewDefaultNFSSettings(adapterID string) *NFSAdapterSettings {
 		PortmapperPort:               10111,
 		PortmapperRegisterWithSystem: false,
 		UDPEnabled:                   false,
+		MDNSEnabled:                  false,
 		Version:                      1,
 	}
 }
@@ -280,6 +300,8 @@ func NewDefaultSMBSettings(adapterID string) *SMBAdapterSettings {
 		NtlmEnabled:             true,
 		GuestEnabled:            true,
 		SMBServicePrincipal:     "",
+		MDNSEnabled:             false,
+		WSDiscoveryEnabled:      false,
 		Version:                 1,
 	}
 	s.SetSigningAlgorithmPreference([]string{"AES-128-GMAC", "AES-128-CMAC", "HMAC-SHA256"})

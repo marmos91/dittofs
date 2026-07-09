@@ -1632,6 +1632,35 @@ export DITTOFS_ADAPTERS_SMB_CROSS_PROTOCOL_DELEGATION_RECALL_TIMEOUT=90s
 export DITTOFS_ADAPTERS_SMB_CROSS_PROTOCOL_ANTI_STORM_TTL=30s
 ```
 
+#### Network discovery (mDNS / WS-Discovery)
+
+DittoFS can advertise itself on the LAN so it appears in **macOS Finder →
+Network**, Linux file managers (via Avahi), and the **Windows Explorer →
+Network** view — the same job the external `avahi-daemon` and `wsdd`/`wsdd2`
+daemons do for Samba, but built in-process. Discovery is **off by default** and
+managed through the live adapter settings (`dfsctl` / REST), so it applies
+immediately without an adapter restart:
+
+```bash
+# mDNS / DNS-SD — macOS Finder + Linux Avahi
+dfsctl adapter settings nfs update --mdns-enabled          # advertises _nfs._tcp (port 12049)
+dfsctl adapter settings smb update --mdns-enabled          # advertises _smb._tcp + _device-info._tcp
+
+# WS-Discovery — Windows Explorer Network (SMB only; Windows does not browse NFS)
+dfsctl adapter settings smb update --wsdiscovery-enabled
+```
+
+This opens additional listeners: mDNS on UDP `5353`, and — for WS-Discovery —
+UDP `3702` plus an HTTP metadata endpoint on TCP `5357`. NFS advertises the
+first export's path in a `path=` TXT record so Finder mounts the right share.
+
+> **Note:** discovery is multicast-based and LAN-local. It works on a host
+> network (bare metal, VM, or a `hostNetwork` pod) but does **not** traverse
+> standard Kubernetes / overlay networks — Explorer and Finder will only see the
+> server on the same L2 segment. Mounting by name/IP always works regardless.
+> WS-Discovery makes the machine *appear* in Explorer; Windows still connects to
+> SMB on port `445`, so the SMB adapter must be reachable there.
+
 ### 11. NFSv4 Configuration
 
 ```yaml

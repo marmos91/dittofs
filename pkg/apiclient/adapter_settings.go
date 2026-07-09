@@ -31,6 +31,7 @@ type NFSAdapterSettingsResponse struct {
 	PortmapperPort               int      `json:"portmapper_port"`
 	PortmapperRegisterWithSystem bool     `json:"portmapper_register_with_system"`
 	UDPEnabled                   bool     `json:"udp_enabled"`
+	MDNSEnabled                  bool     `json:"mdns_enabled"`
 	Version                      int      `json:"version"`
 }
 
@@ -46,6 +47,8 @@ type SMBAdapterSettingsResponse struct {
 	Signing                 string   `json:"signing"`
 	DirectoryLeasingEnabled bool     `json:"directory_leasing_enabled"`
 	BlockedOperations       []string `json:"blocked_operations"`
+	MDNSEnabled             bool     `json:"mdns_enabled"`
+	WSDiscoveryEnabled      bool     `json:"wsdiscovery_enabled"`
 	Version                 int      `json:"version"`
 }
 
@@ -94,6 +97,7 @@ type PatchNFSSettingsRequest struct {
 	PortmapperPort               *int      `json:"portmapper_port,omitempty"`
 	PortmapperRegisterWithSystem *bool     `json:"portmapper_register_with_system,omitempty"`
 	UDPEnabled                   *bool     `json:"udp_enabled,omitempty"`
+	MDNSEnabled                  *bool     `json:"mdns_enabled,omitempty"`
 }
 
 // PatchSMBSettingsRequest uses pointer fields for partial updates.
@@ -108,6 +112,8 @@ type PatchSMBSettingsRequest struct {
 	Signing                 *string   `json:"signing,omitempty"`
 	DirectoryLeasingEnabled *bool     `json:"directory_leasing_enabled,omitempty"`
 	BlockedOperations       *[]string `json:"blocked_operations,omitempty"`
+	MDNSEnabled             *bool     `json:"mdns_enabled,omitempty"`
+	WSDiscoveryEnabled      *bool     `json:"wsdiscovery_enabled,omitempty"`
 }
 
 // SettingsOption is a functional option for settings API calls.

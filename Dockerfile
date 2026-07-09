@@ -62,7 +62,12 @@ USER 65532:65532
 # - 12049: NFS server (default)
 # - 12445: SMB server (default)
 # - 8080: REST API (health checks, management)
-EXPOSE 12049/tcp 12445/tcp 8080/tcp
+# - 5353/udp: mDNS / DNS-SD network discovery (macOS Finder, Linux Avahi) — issue #1609
+# - 3702/udp: WS-Discovery (Windows Explorer Network) — issue #1609
+# - 5357/tcp: WS-Discovery device metadata (HTTP) — issue #1609
+# Note: multicast discovery (5353/3702) only works on the host LAN / hostNetwork;
+# it does not traverse standard container/K8s overlay networks.
+EXPOSE 12049/tcp 12445/tcp 8080/tcp 5353/udp 3702/udp 5357/tcp
 
 # Volume mounts:
 # - /data/metadata: Metadata store (BadgerDB, etc.)

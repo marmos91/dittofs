@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
+	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -118,6 +119,11 @@ type Adapter struct {
 	// kerberosProvider is retained for lifecycle management. It owns a
 	// background keytab-reload goroutine that must be stopped in Stop().
 	kerberosProvider *kerberos.Provider
+
+	// sidecars manages the adapter's auxiliary/companion services — the mDNS and
+	// WS-Discovery advertisers (issue #1609) — under one uniform lifecycle.
+	// Seeded with the Serve context and torn down in Stop. See discovery.go.
+	sidecars *auxsvc.Group
 }
 
 // New creates a new Adapter with the specified configuration.
@@ -205,6 +211,7 @@ func New(config Config) *Adapter {
 		config:         config,
 		handler:        handler,
 		sessionManager: sessionManager,
+		sidecars:       auxsvc.NewGroup(),
 	}
 }
 
@@ -477,6 +484,11 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 		logger.Info("SMB adapter: operation blocklist from settings (advisory only)",
 			"blocked_ops", blockedOps)
 	}
+
+	// Network discovery: start/stop the mDNS and WS-Discovery advertisers live to
+	// match settings. No-op until Serve has started the auxsvc group.
+	s.reconcileMDNS()
+	s.reconcileWSDiscovery()
 }
 
 // Serve starts the SMB server and blocks until the context is cancelled
@@ -524,6 +536,11 @@ func (s *Adapter) Serve(ctx context.Context) error {
 			"interval", DefaultDurableScavengerInterval,
 			"timeout_ms", durableTimeout)
 	}
+
+	// Start the discovery advertisers (mDNS, WS-Discovery) through the shared
+	// auxsvc group so they share the adapter's lifecycle and can be toggled live
+	// from settings (issue #1609). See discovery.go.
+	s.startEnabledDiscovery(ctx)
 
 	return s.ServeWithFactory(ctx, s, s.preAcceptCheck, nil)
 }
@@ -899,6 +916,14 @@ func (s *Adapter) Stop(ctx context.Context) error {
 	// not outlive the adapter.
 	if netlogonAuth != nil {
 		netlogonAuth.Close(ctx)
+	}
+
+	// Stop the discovery advertisers (mDNS / WS-Discovery) before tearing down
+	// the main listener, so a Bye/goodbye is emitted while the network is still up.
+	if s.sidecars != nil {
+		if err := s.sidecars.StopAll(ctx); err != nil {
+			logger.Debug("SMB discovery advertiser shutdown reported an error", "error", err)
+		}
 	}
 
 	// Unsubscribe from share change notifications to prevent stale callbacks

@@ -25,6 +25,7 @@ import (
 	"github.com/marmos91/dittofs/internal/logger"
 
 	"github.com/marmos91/dittofs/pkg/adapter"
+	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/config"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -129,6 +130,12 @@ type NFSAdapter struct {
 	// resolverMu serializes wireIdentityResolver so concurrent identity-provider
 	// config changes cannot race on identityUnsub/identityProviderUnsub.
 	resolverMu sync.Mutex
+
+	// sidecars manages the adapter's auxiliary/companion services (portmapper,
+	// system-rpcbind registration, UDP transport, NSM startup) under one uniform
+	// lifecycle. Seeded with the Serve context and torn down in Stop. See
+	// auxservices.go.
+	sidecars *auxsvc.Group
 
 	// portmapServer is the embedded portmapper server (RFC 1057).
 	// nil when portmapper is disabled.
@@ -486,6 +493,7 @@ func New(nfsConfig NFSConfig) *NFSAdapter {
 		nfsHandler:   &v3.Handler{},
 		mountHandler: &mount.Handler{},
 		drc:          newDuplicateRequestCache(),
+		sidecars:     auxsvc.NewGroup(),
 	}
 }
 
@@ -781,33 +789,12 @@ func (s *NFSAdapter) Serve(ctx context.Context) error {
 			"mtls", s.config.TLS.ClientCA != "")
 	}
 
-	// Start embedded portmapper (RFC 1057) for NFS service discovery.
-	// This allows clients to query rpcinfo/showmount without needing
-	// a system-level rpcbind daemon. Portmapper failure is non-fatal
-	// (privileged ports like 111 may require root privileges).
-	if err := s.startPortmapper(ctx); err != nil {
-		logger.Warn("Portmapper failed to start (NFS will continue without it)", "error", err)
-	}
-
-	// Register services with the host's system rpcbind (port 111) when enabled,
-	// so a kernel NFSv3 client can discover the NLM port and lock without
-	// `nolock`. Non-fatal and time-bounded: if no rpcbind answers (or it hangs)
-	// NFS still serves; registration cannot delay NFS availability for more than
-	// systemRegTimeout.
-	s.startSystemPortmapRegistration(ctx)
-
-	// Start the UDP transport for NLM/NSM/MOUNT when enabled. NFSv3 lock
-	// clients on BSD/macOS require the lock-manager protocols over UDP
-	// (issue #1353). Failure is non-fatal: TCP serving continues.
-	if s.isUDPEnabled() {
-		if err := s.startUDP(ctx); err != nil {
-			logger.Warn("NFS UDP transport failed to start (NLM/NSM/MOUNT over UDP unavailable)", "error", err)
-		}
-	}
-
-	// NSM startup: Load persisted registrations and notify all clients
-	// Per CONTEXT.md: Parallel notification for fastest recovery
-	s.performNSMStartup(ctx)
+	// Start the auxiliary/companion services (embedded portmapper, system
+	// rpcbind registration, UDP lock-manager transport, and NSM startup) through
+	// the shared auxsvc.Group so they share one lifecycle and are torn down
+	// uniformly in Stop. Each is individually gated and non-fatal — NFS serves
+	// over TCP regardless. See auxservices.go.
+	s.startEnabledAuxServices(ctx)
 
 	// Start NFSv4.1 session reaper for expired/unconfirmed client cleanup
 	if s.v4Handler != nil && s.v4Handler.StateManager != nil {

@@ -216,18 +216,21 @@ var (
 	settingsPortmapperPort             int
 	settingsPortmapperRegisterWithSys  bool
 	settingsUDPEnabled                 bool
+	settingsMDNSEnabled                bool
 	settingsV4MinMinorVersion          int
 	settingsV4MaxMinorVersion          int
 	settingsV4MaxConnectionsPerSession int
 
 	// SMB update flags
-	settingsMinDialect         string
-	settingsMaxDialect         string
-	settingsSessionTimeout     int
-	settingsOplockBreakTimeout int
-	settingsMaxSessions        int
-	settingsEnableEncryption   bool
-	settingsSigning            string
+	settingsMinDialect            string
+	settingsMaxDialect            string
+	settingsSessionTimeout        int
+	settingsOplockBreakTimeout    int
+	settingsMaxSessions           int
+	settingsEnableEncryption      bool
+	settingsSigning               string
+	settingsSMBMDNSEnabled        bool
+	settingsSMBWSDiscoveryEnabled bool
 
 	// Common flags
 	settingsDryRun       bool
@@ -293,6 +296,7 @@ func registerNFSUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().IntVar(&settingsPortmapperPort, "portmapper-port", 0, "Portmapper listen port")
 	cmd.Flags().BoolVar(&settingsPortmapperRegisterWithSys, "portmapper-register-with-system", false, "Register NFS/MOUNT/NLM services with the host's system rpcbind on port 111, so kernel NFSv3 clients can lock without 'nolock' (restart to apply)")
 	cmd.Flags().BoolVar(&settingsUDPEnabled, "udp-enabled", false, "Serve NLM/NSM/MOUNT over UDP (needed for NFSv3 locking from macOS/BSD; restart to apply)")
+	cmd.Flags().BoolVar(&settingsMDNSEnabled, "mdns-enabled", false, "Advertise the NFS export over mDNS/DNS-SD (_nfs._tcp) for macOS Finder / Linux Avahi (applied immediately)")
 	cmd.Flags().IntVar(&settingsV4MinMinorVersion, "v4-min-minor-version", 0, "Minimum NFSv4 minor version (0=v4.0, 1=v4.1)")
 	cmd.Flags().IntVar(&settingsV4MaxMinorVersion, "v4-max-minor-version", 0, "Maximum NFSv4 minor version (0=v4.0, 1=v4.1)")
 	cmd.Flags().IntVar(&settingsV4MaxConnectionsPerSession, "v4-max-connections-per-session", 0, "Maximum connections per NFSv4.1 session (0=unlimited)")
@@ -310,6 +314,8 @@ func registerSMBUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&settingsEnableEncryption, "enable-encryption", false, "Enable SMB encryption")
 	cmd.Flags().StringVar(&settingsSigning, "signing", "", "SMB message signing mode: disabled|enabled|required")
 	cmd.Flags().StringVar(&settingsBlockedOperations, "blocked-operations", "", "Comma-separated list of blocked operations")
+	cmd.Flags().BoolVar(&settingsSMBMDNSEnabled, "mdns-enabled", false, "Advertise the SMB service over mDNS/DNS-SD (_smb._tcp) for macOS Finder / Linux Avahi (applied immediately)")
+	cmd.Flags().BoolVar(&settingsSMBWSDiscoveryEnabled, "wsdiscovery-enabled", false, "Advertise the host over WS-Discovery so it appears in the Windows Explorer Network view (applied immediately)")
 	cmd.Flags().BoolVar(&smbSettingsDryRun, "dry-run", false, "Validate without applying changes")
 	cmd.Flags().BoolVar(&smbSettingsForce, "force", false, "Bypass range validation")
 }
@@ -388,6 +394,9 @@ func showNFSSettings(client *apiclient.Client, format output.Format) error {
 		newSettingRowInt("portmapper_port", settings.PortmapperPort, d.PortmapperPort, ""),
 		newSettingRowBool("udp_enabled", settings.UDPEnabled, d.UDPEnabled),
 	})
+	printSettingsGroup("Discovery", []settingRow{
+		newSettingRowBool("mdns_enabled", settings.MDNSEnabled, d.MDNSEnabled),
+	})
 	printSettingsGroup("Operations", []settingRow{
 		newSettingRowStrSlice("blocked_operations", settings.BlockedOperations, d.BlockedOperations),
 	})
@@ -426,6 +435,10 @@ func showSMBSettings(client *apiclient.Client, format output.Format) error {
 	printSettingsGroup("Security", []settingRow{
 		newSettingRowBool("enable_encryption", settings.EnableEncryption, d.EnableEncryption),
 		newSettingRow("signing", settings.Signing, d.Signing),
+	})
+	printSettingsGroup("Discovery", []settingRow{
+		newSettingRowBool("mdns_enabled", settings.MDNSEnabled, d.MDNSEnabled),
+		newSettingRowBool("wsdiscovery_enabled", settings.WSDiscoveryEnabled, d.WSDiscoveryEnabled),
 	})
 	printSettingsGroup("Operations", []settingRow{
 		newSettingRowStrSlice("blocked_operations", settings.BlockedOperations, d.BlockedOperations),
@@ -615,6 +628,10 @@ func updateNFSSettings(cmd *cobra.Command, client *apiclient.Client) error {
 		req.UDPEnabled = &settingsUDPEnabled
 		hasChanges = true
 	}
+	if cmd.Flags().Changed("mdns-enabled") {
+		req.MDNSEnabled = &settingsMDNSEnabled
+		hasChanges = true
+	}
 	if cmd.Flags().Changed("v4-min-minor-version") {
 		req.V4MinMinorVersion = &settingsV4MinMinorVersion
 		hasChanges = true
@@ -693,6 +710,14 @@ func updateSMBSettings(cmd *cobra.Command, client *apiclient.Client) error {
 	if cmd.Flags().Changed("blocked-operations") {
 		ops := cmdutil.ParseCommaSeparatedList(settingsBlockedOperations)
 		req.BlockedOperations = &ops
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("mdns-enabled") {
+		req.MDNSEnabled = &settingsSMBMDNSEnabled
+		hasChanges = true
+	}
+	if cmd.Flags().Changed("wsdiscovery-enabled") {
+		req.WSDiscoveryEnabled = &settingsSMBWSDiscoveryEnabled
 		hasChanges = true
 	}
 

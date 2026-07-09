@@ -96,6 +96,11 @@ func (s *NFSAdapter) applyNFSSettings(rt *runtime.Runtime) {
 	udpEnabled := settings.UDPEnabled
 	s.config.UDP.Enabled = &udpEnabled
 	logger.Debug("NFS adapter: applied UDP transport setting from DB", "enabled", settings.UDPEnabled)
+
+	// mDNS advertiser: unlike portmapper/UDP (which take effect on the next
+	// restart), the mDNS sidecar is toggled live here — start or stop it to
+	// match the setting. No-op until Serve has started the auxsvc group.
+	s.reconcileMDNS()
 }
 
 // fsCapabilitiesProbeTimeout bounds the metadata read issued when refreshing
