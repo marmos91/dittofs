@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/net/ipv4"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
 )
@@ -42,6 +44,9 @@ var multicastUDPAddrV4 = &net.UDPAddr{IP: net.ParseIP(multicastGroupV4), Port: m
 type Responder struct {
 	mu       sync.Mutex
 	conn     *net.UDPConn
+	pconn    *ipv4.PacketConn  // wraps conn for per-interface group join + multicast send
+	ifaces   []net.Interface   // multicast interfaces the group is joined on
+	sendMu   sync.Mutex        // serializes SetMulticastInterface + WriteTo across interfaces
 	loopCtx  context.Context
 	loopStop context.CancelFunc
 	wg       *sync.WaitGroup // per-socket-generation; isolates Wait from a later generation's Add
@@ -144,6 +149,22 @@ func (r *Responder) startLocked() error {
 		return fmt.Errorf("mdns: listen %s:%d: %w", multicastGroupV4, multicastPort, err)
 	}
 	r.conn = conn
+
+	// Join the group on every multicast interface so the responder receives
+	// queries arriving on any of them — critical on multi-homed hosts, where the
+	// OS default multicast interface may not be the LAN the clients are on.
+	// ListenMulticastUDP already joined the default interface; re-joining is
+	// harmless. Unicast replies route back normally via WriteToUDP(src).
+	r.pconn = ipv4.NewPacketConn(conn)
+	_ = r.pconn.SetMulticastLoopback(true)
+	r.ifaces = hostinfo.MulticastInterfaces()
+	joined := 0
+	for i := range r.ifaces {
+		if err := r.pconn.JoinGroup(&r.ifaces[i], multicastUDPAddrV4); err == nil {
+			joined++
+		}
+	}
+
 	r.loopCtx, r.loopStop = context.WithCancel(context.Background())
 	loopCtx := r.loopCtx
 	wg := &sync.WaitGroup{}
@@ -154,7 +175,7 @@ func (r *Responder) startLocked() error {
 		defer wg.Done()
 		r.readLoop(conn, loopCtx)
 	}()
-	logger.Info("mDNS responder listening", "group", multicastGroupV4, "port", multicastPort)
+	logger.Info("mDNS responder listening", "group", multicastGroupV4, "port", multicastPort, "interfaces", joined)
 	return nil
 }
 
@@ -173,6 +194,8 @@ func (r *Responder) stop() {
 	stop := r.loopStop
 	wg := r.wg
 	r.conn = nil
+	r.pconn = nil
+	r.ifaces = nil
 	r.loopStop = nil
 	r.loopCtx = nil
 	r.wg = nil
@@ -261,20 +284,40 @@ func (r *Responder) announce(ctx context.Context, services []ServiceRecord) {
 	}
 }
 
-// send writes msg to dst, or to the multicast group when dst is nil.
+// send writes msg unicast to dst, or — when dst is nil — multicasts it out every
+// joined interface so announcements/responses reach clients on all of them.
 func (r *Responder) send(msg []byte, dst *net.UDPAddr) {
 	r.mu.Lock()
 	conn := r.conn
+	pconn := r.pconn
+	ifaces := r.ifaces
 	r.mu.Unlock()
 	if conn == nil {
 		return
 	}
-	target := dst
-	if target == nil {
-		target = multicastUDPAddrV4
+	if dst != nil { // unicast reply — routed normally
+		if _, err := conn.WriteToUDP(msg, dst); err != nil {
+			logger.Debug("mdns: send failed", "error", err)
+		}
+		return
 	}
-	if _, err := conn.WriteToUDP(msg, target); err != nil {
-		logger.Debug("mdns: send failed", "error", err)
+	// Multicast: send out each interface. Serialize because SetMulticastInterface
+	// mutates shared socket state.
+	if pconn == nil || len(ifaces) == 0 {
+		if _, err := conn.WriteToUDP(msg, multicastUDPAddrV4); err != nil {
+			logger.Debug("mdns: send failed", "error", err)
+		}
+		return
+	}
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
+	for i := range ifaces {
+		if err := pconn.SetMulticastInterface(&ifaces[i]); err != nil {
+			continue
+		}
+		if _, err := pconn.WriteTo(msg, nil, multicastUDPAddrV4); err != nil {
+			logger.Debug("mdns: multicast send failed", "iface", ifaces[i].Name, "error", err)
+		}
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/net/ipv4"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/discovery/hostinfo"
 )
@@ -44,6 +46,9 @@ type Responder struct {
 
 	mu       sync.Mutex
 	udpConn  *net.UDPConn
+	pconn    *ipv4.PacketConn // wraps udpConn for per-interface group join + multicast send
+	ifaces   []net.Interface  // multicast interfaces the group is joined on
+	sendMu   sync.Mutex       // serializes SetMulticastInterface + WriteTo
 	httpSrv  *http.Server
 	endpoint Endpoint
 	loopCtx  context.Context
@@ -84,15 +89,26 @@ func (r *Responder) Start(ctx context.Context) error {
 		return nil // already started
 	}
 
-	host := hostinfo.PrimaryIPv4()
-	if host == nil {
+	uuidURN := EndpointUUID()
+	uuidBare := strings.TrimPrefix(uuidURN, "urn:uuid:")
+
+	// XAddrs is a space-separated list of metadata URLs. Advertise one per host
+	// IPv4 so a client on any of a multi-homed host's subnets can reach the
+	// metadata endpoint — advertising a single "primary" IP fails when the
+	// client is on a different interface's subnet.
+	var xaddrs []string
+	for _, ip := range hostinfo.AllHostIPs() {
+		if v4 := ip.To4(); v4 != nil {
+			xaddrs = append(xaddrs, fmt.Sprintf("http://%s:%d/%s/", v4, MetadataPort, uuidBare))
+		}
+	}
+	if len(xaddrs) == 0 {
 		return errors.New("wsd: no routable IPv4 address to advertise")
 	}
-	uuidURN := EndpointUUID()
 	r.endpoint = Endpoint{
 		UUID:            uuidURN,
 		Types:           TypesComputer,
-		XAddrs:          fmt.Sprintf("http://%s:%d/%s/", host, MetadataPort, strings.TrimPrefix(uuidURN, "urn:uuid:")),
+		XAddrs:          strings.Join(xaddrs, " "),
 		MetadataVersion: 1,
 		InstanceID:      r.instanceID,
 	}
@@ -117,6 +133,18 @@ func (r *Responder) Start(ctx context.Context) error {
 		return fmt.Errorf("wsd: listen udp %s:%d: %w", discoveryGroupV4, discoveryPort, err)
 	}
 	r.udpConn = conn
+
+	// Join the group on every multicast interface so probes arriving on any of
+	// them are received — critical on multi-homed hosts where the OS default
+	// multicast interface may not be the LAN the Windows clients are on. Unicast
+	// ProbeMatch/ResolveMatch replies route back normally via WriteToUDP(src).
+	r.pconn = ipv4.NewPacketConn(conn)
+	_ = r.pconn.SetMulticastLoopback(true)
+	r.ifaces = hostinfo.MulticastInterfaces()
+	for i := range r.ifaces {
+		_ = r.pconn.JoinGroup(&r.ifaces[i], discoveryUDPAddrV4)
+	}
+
 	r.loopCtx, r.loopStop = context.WithCancel(context.Background())
 	loopCtx := r.loopCtx
 
@@ -142,12 +170,9 @@ func (r *Responder) Start(ctx context.Context) error {
 		_ = r.Stop(context.Background())
 	}()
 
-	// Announce presence. Write directly to the local conn: we still hold r.mu
-	// here and r.send would re-acquire it (a self-deadlock that would also wedge
-	// the caller's auxsvc.Group, since Group.Start holds its own lock across this).
-	if _, err := conn.WriteToUDP(Hello(r.endpoint, r.msgNum.Add(1)), discoveryUDPAddrV4); err != nil {
-		logger.Debug("wsd: failed to send Hello", "error", err)
-	}
+	// Announce presence out every interface. Uses the local pconn/ifaces (not
+	// r.send, which would re-acquire r.mu that we still hold — a self-deadlock).
+	multicastAll(r.pconn, conn, r.ifaces, &r.sendMu, Hello(r.endpoint, r.msgNum.Add(1)))
 
 	logger.Info("WS-Discovery responder listening",
 		"udp", fmt.Sprintf("%s:%d", discoveryGroupV4, discoveryPort),
@@ -160,10 +185,14 @@ func (r *Responder) Start(ctx context.Context) error {
 func (r *Responder) Stop(ctx context.Context) error {
 	r.mu.Lock()
 	conn := r.udpConn
+	pconn := r.pconn
+	ifaces := r.ifaces
 	httpSrv := r.httpSrv
 	stop := r.loopStop
 	endpoint := r.endpoint
 	r.udpConn = nil
+	r.pconn = nil
+	r.ifaces = nil
 	r.httpSrv = nil
 	r.loopStop = nil
 	r.loopCtx = nil
@@ -173,10 +202,8 @@ func (r *Responder) Stop(ctx context.Context) error {
 		return nil
 	}
 
-	// Goodbye while the socket is still open.
-	if _, err := conn.WriteToUDP(Bye(endpoint, r.msgNum.Add(1)), discoveryUDPAddrV4); err != nil {
-		logger.Debug("wsd: failed to send Bye", "error", err)
-	}
+	// Goodbye out every interface while the socket is still open.
+	multicastAll(pconn, conn, ifaces, &r.sendMu, Bye(endpoint, r.msgNum.Add(1)))
 
 	if stop != nil {
 		stop()
@@ -232,19 +259,43 @@ func (r *Responder) handleDatagram(data []byte, src *net.UDPAddr) {
 	}
 }
 
-// send writes msg to dst, or to the multicast group when dst is nil.
+// send writes msg unicast to dst (a ProbeMatch/ResolveMatch reply), or — when
+// dst is nil — multicasts it out every joined interface.
 func (r *Responder) send(msg []byte, dst *net.UDPAddr) {
 	r.mu.Lock()
 	conn := r.udpConn
+	pconn := r.pconn
+	ifaces := r.ifaces
 	r.mu.Unlock()
 	if conn == nil {
 		return
 	}
-	target := dst
-	if target == nil {
-		target = discoveryUDPAddrV4
+	if dst != nil { // unicast reply — routed normally
+		if _, err := conn.WriteToUDP(msg, dst); err != nil {
+			logger.Debug("wsd: send failed", "error", err)
+		}
+		return
 	}
-	if _, err := conn.WriteToUDP(msg, target); err != nil {
-		logger.Debug("wsd: send failed", "error", err)
+	multicastAll(pconn, conn, ifaces, &r.sendMu, msg)
+}
+
+// multicastAll sends msg to the WS-Discovery group out every interface, falling
+// back to the default route when no interface list is available. Serialized via
+// mu because SetMulticastInterface mutates shared socket state.
+func multicastAll(pconn *ipv4.PacketConn, conn *net.UDPConn, ifaces []net.Interface, mu *sync.Mutex, msg []byte) {
+	if conn == nil {
+		return
+	}
+	if pconn == nil || len(ifaces) == 0 {
+		_, _ = conn.WriteToUDP(msg, discoveryUDPAddrV4)
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i := range ifaces {
+		if err := pconn.SetMulticastInterface(&ifaces[i]); err != nil {
+			continue
+		}
+		_, _ = pconn.WriteTo(msg, nil, discoveryUDPAddrV4)
 	}
 }

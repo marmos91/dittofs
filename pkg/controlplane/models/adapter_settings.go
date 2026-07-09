@@ -102,7 +102,9 @@ type NFSAdapterSettings struct {
 	// (_nfs._tcp) so it appears in macOS Finder and Linux/Avahi browsers
 	// (issue #1609). Defaults to false (opt-in). Applied live: toggling it
 	// starts/stops the mDNS advertiser without an adapter restart.
-	MDNSEnabled bool `gorm:"default:false" json:"mdns_enabled"`
+	// Explicit column: GORM would otherwise derive "m_dns_enabled" from the
+	// field name, mismatching the JSON tag and the store's column maps.
+	MDNSEnabled bool `gorm:"column:mdns_enabled;default:false" json:"mdns_enabled"`
 
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
@@ -209,12 +211,14 @@ type SMBAdapterSettings struct {
 
 	// MDNSEnabled advertises the SMB service over multicast DNS / DNS-SD
 	// (_smb._tcp + _device-info._tcp) so it appears in macOS Finder and
-	// Linux/Avahi browsers.
-	MDNSEnabled bool `gorm:"default:false" json:"mdns_enabled"`
+	// Linux/Avahi browsers. Explicit column: GORM would otherwise derive
+	// "m_dns_enabled" from the field name.
+	MDNSEnabled bool `gorm:"column:mdns_enabled;default:false" json:"mdns_enabled"`
 
 	// WSDiscoveryEnabled advertises the host over WS-Discovery so it appears in
-	// the Windows Explorer Network view.
-	WSDiscoveryEnabled bool `gorm:"default:false" json:"wsdiscovery_enabled"`
+	// the Windows Explorer Network view. Explicit column: GORM would otherwise
+	// derive "ws_discovery_enabled".
+	WSDiscoveryEnabled bool `gorm:"column:wsdiscovery_enabled;default:false" json:"wsdiscovery_enabled"`
 
 	// Version counter for change detection (monotonic, starts at 1, incremented on every update)
 	Version int `gorm:"default:1" json:"version"`
