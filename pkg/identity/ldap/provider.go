@@ -351,50 +351,74 @@ func sAMAccountNameFromPrincipal(s string) string {
 // Returns ok=false (never a fatal error) when no object matches or the directory
 // is unreachable, so a miss degrades to the raw SID rather than a fault.
 func (p *Provider) LookupUID(ctx context.Context, uid uint32) (name, domain string, ok bool) {
-	return p.reverseLookup(ctx, "user", "uidNumber", uid)
+	name, domain, _, ok = p.reverseLookup(ctx, "user", "uidNumber", uid)
+	return name, domain, ok
 }
 
 // LookupGID resolves a POSIX GID to an AD group name + realm. Mirrors LookupUID
 // for the GROUP SID on a file (matched on gidNumber in rfc2307, or the
 // reconstructed group SID on objectSid in rid mode).
 func (p *Provider) LookupGID(ctx context.Context, gid uint32) (name, domain string, ok bool) {
-	return p.reverseLookup(ctx, "group", "gidNumber", gid)
+	name, domain, _, ok = p.reverseLookup(ctx, "group", "gidNumber", gid)
+	return name, domain, ok
 }
 
-// reverseLookup maps a POSIX id back to a directory object's sAMAccountName,
-// using the idmap-appropriate filter (see reverseFilter). Infrastructure errors
-// are logged at Debug and folded into ok=false so a directory outage never
-// faults the LSARPC pipe.
-func (p *Provider) reverseLookup(ctx context.Context, objectClass, numAttr string, id uint32) (string, string, bool) {
+// SIDForUID resolves a POSIX UID to its real directory (AD) SID string, when the
+// uid maps to a directory user object. Backs the security-descriptor OWNER-SID
+// projection (#1617): a file owned by an AD user should carry the account's real
+// SID, not the algorithmic machine-domain SID. Returns ok=false for a local /
+// unknown uid so the caller keeps the machine SID.
+func (p *Provider) SIDForUID(ctx context.Context, uid uint32) (string, bool) {
+	_, _, sidStr, ok := p.reverseLookup(ctx, "user", "uidNumber", uid)
+	return sidStr, ok
+}
+
+// SIDForGID mirrors SIDForUID for a group GID → group SID.
+func (p *Provider) SIDForGID(ctx context.Context, gid uint32) (string, bool) {
+	_, _, sidStr, ok := p.reverseLookup(ctx, "group", "gidNumber", gid)
+	return sidStr, ok
+}
+
+// reverseLookup maps a POSIX id back to a directory object, returning its
+// sAMAccountName, realm, and canonical objectSid string, using the
+// idmap-appropriate filter (see reverseFilter). Infrastructure errors are logged
+// at Debug and folded into ok=false so a directory outage never faults the
+// LSARPC pipe.
+func (p *Provider) reverseLookup(ctx context.Context, objectClass, numAttr string, id uint32) (name, domain, sidStr string, ok bool) {
 	c, err := p.connect(ctx, p.cfg)
 	if err != nil {
 		logger.Debug("ldap: reverse lookup connect/bind failed", "attr", numAttr, "id", id, "error", err)
-		return "", "", false
+		return "", "", "", false
 	}
 	defer func() { _ = c.Close() }()
 
-	filter, ok := p.reverseFilter(c, objectClass, numAttr, id)
-	if !ok {
-		return "", "", false
+	filter, fok := p.reverseFilter(c, objectClass, numAttr, id)
+	if !fok {
+		return "", "", "", false
 	}
 	req := ldapv3.NewSearchRequest(
 		p.cfg.BaseDN,
 		ldapv3.ScopeWholeSubtree, ldapv3.NeverDerefAliases, 2, int(p.cfg.Timeout.Seconds()), false,
-		filter, []string{"sAMAccountName"}, nil,
+		filter, []string{"sAMAccountName", "objectSid"}, nil,
 	)
 	res, err := c.Search(req)
 	if err != nil {
 		logger.Debug("ldap: reverse lookup search failed", "filter", filter, "error", err)
-		return "", "", false
+		return "", "", "", false
 	}
 	if len(res.Entries) == 0 {
-		return "", "", false
+		return "", "", "", false
 	}
-	name := res.Entries[0].GetAttributeValue("sAMAccountName")
+	name = res.Entries[0].GetAttributeValue("sAMAccountName")
 	if name == "" {
-		return "", "", false
+		return "", "", "", false
 	}
-	return name, p.cfg.Realm, true
+	if raw := res.Entries[0].GetRawAttributeValue("objectSid"); len(raw) > 0 {
+		if s, _, derr := sid.DecodeSID(raw); derr == nil {
+			sidStr = sid.FormatSID(s)
+		}
+	}
+	return name, p.cfg.Realm, sidStr, true
 }
 
 // reverseFilter builds the LDAP filter that maps a POSIX id back to a directory
