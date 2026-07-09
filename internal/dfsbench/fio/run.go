@@ -1,4 +1,4 @@
-package main
+package fio
 
 import (
 	"context"
@@ -29,9 +29,9 @@ func defaultEngine() string {
 	return "psync"
 }
 
-// runFio executes workload against targetDir and fills the metric fields of a
+// RunFio executes workload against targetDir and fills the metric fields of a
 // CellResult. The caller stamps identity/pass fields.
-func runFio(ctx context.Context, workload, targetDir string, opts LoadOpts) (CellResult, error) {
+func RunFio(ctx context.Context, workload, targetDir string, opts LoadOpts) (CellResult, error) {
 	engine := opts.Engine
 	if engine == "" {
 		engine = defaultEngine()
@@ -93,9 +93,9 @@ func fioStderr(err error) []byte {
 	return nil
 }
 
-// checkTarget verifies the target directory exists and is writable — fio's own
+// CheckTarget verifies the target directory exists and is writable — fio's own
 // error on a bad dir is opaque, so fail early and clearly.
-func checkTarget(dir string) error {
+func CheckTarget(dir string) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("target %q: %w", dir, err)

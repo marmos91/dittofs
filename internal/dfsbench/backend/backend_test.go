@@ -1,0 +1,173 @@
+package backend
+
+import (
+	"testing"
+)
+
+// withRegistry swaps in a fresh registry for the test and restores it after, so
+// test backends don't leak into other tests (registry is a package global).
+func withRegistry(t *testing.T, backends ...*Backend) {
+	t.Helper()
+	saved := registry
+	registry = map[string]*Backend{}
+	t.Cleanup(func() { registry = saved })
+	for _, b := range backends {
+		register(b)
+	}
+}
+
+func TestResolveSystems_BareNameExpandsSupportedProtocols(t *testing.T) {
+	withRegistry(t, &Backend{
+		Name:    "dittofs-s3",
+		Support: map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
+	})
+
+	plans, err := ResolveSystems([]string{"dittofs-s3"})
+	if err != nil {
+		t.Fatalf("resolveSystems: %v", err)
+	}
+	// Expands to all three managed protocols, in managedProtocols order.
+	want := []string{"dittofs-s3-nfs3", "dittofs-s3-nfs4", "dittofs-s3-smb3"}
+	if len(plans) != len(want) {
+		t.Fatalf("got %d plans, want %d: %v", len(plans), len(want), plans)
+	}
+	for i, p := range plans {
+		if p.SystemLabel() != want[i] {
+			t.Errorf("plan[%d] = %q, want %q", i, p.SystemLabel(), want[i])
+		}
+		if p.Support != Native {
+			t.Errorf("plan[%d] support = %s, want native", i, p.Support)
+		}
+	}
+}
+
+func TestResolveSystems_BareNameSkipsNAProtocols(t *testing.T) {
+	withRegistry(t, &Backend{
+		Name:    "kernel-nfs",                                                   // local-disk control, re-exported over knfsd only
+		Support: map[Protocol]Support{ProtoNFS3: Reexport, ProtoNFS4: Reexport}, // no smb3
+	})
+
+	plans, err := ResolveSystems([]string{"kernel-nfs"})
+	if err != nil {
+		t.Fatalf("resolveSystems: %v", err)
+	}
+	if len(plans) != 2 {
+		t.Fatalf("got %d plans, want 2 (smb3 is NA and must skip): %v", len(plans), plans)
+	}
+	for _, p := range plans {
+		if p.Protocol == ProtoSMB3 {
+			t.Errorf("smb3 must not appear for kernel-nfs: %v", p)
+		}
+		if p.Support != Reexport {
+			t.Errorf("support = %s, want reexport", p.Support)
+		}
+	}
+}
+
+func TestResolveSystems_ExplicitProtocol(t *testing.T) {
+	withRegistry(t, &Backend{
+		Name:    "dittofs-s3",
+		Support: map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
+	})
+
+	plans, err := ResolveSystems([]string{"dittofs-s3-nfs4"})
+	if err != nil {
+		t.Fatalf("resolveSystems: %v", err)
+	}
+	if len(plans) != 1 || plans[0].Protocol != ProtoNFS4 {
+		t.Fatalf("want single nfs4 plan, got %v", plans)
+	}
+}
+
+func TestResolveSystems_ExplicitNARejected(t *testing.T) {
+	withRegistry(t, &Backend{
+		Name:    "kernel-nfs",
+		Support: map[Protocol]Support{ProtoNFS3: Reexport},
+	})
+
+	if _, err := ResolveSystems([]string{"kernel-nfs-smb3"}); err == nil {
+		t.Fatal("expected error for explicitly-named NA combo, got nil")
+	}
+}
+
+func TestResolveSystems_UnknownBackend(t *testing.T) {
+	withRegistry(t) // empty
+	if _, err := ResolveSystems([]string{"nope"}); err == nil {
+		t.Fatal("expected error for unknown backend")
+	}
+	if _, err := ResolveSystems([]string{"nope-nfs3"}); err == nil {
+		t.Fatal("expected error for unknown backend with protocol suffix")
+	}
+}
+
+func TestSplitSystemLabel_HyphenatedBackendName(t *testing.T) {
+	withRegistry(t, &Backend{
+		Name:    "dittofs-s3", // name itself contains a hyphen
+		Support: map[Protocol]Support{ProtoNFS3: Native},
+	})
+
+	// Bare hyphenated name: not explicit, backend resolves.
+	b, _, explicit, err := splitSystemLabel("dittofs-s3")
+	if err != nil || explicit || b.Name != "dittofs-s3" {
+		t.Fatalf("bare: b=%v explicit=%v err=%v", b, explicit, err)
+	}
+	// With protocol suffix: peels only the protocol, keeps the hyphenated name.
+	b, proto, explicit, err := splitSystemLabel("dittofs-s3-nfs3")
+	if err != nil || !explicit || b.Name != "dittofs-s3" || proto != ProtoNFS3 {
+		t.Fatalf("suffixed: b=%v proto=%v explicit=%v err=%v", b, proto, explicit, err)
+	}
+}
+
+func TestManagedMatrix_WarmAllColdReadsOnly(t *testing.T) {
+	plans := []Plan{
+		{Backend: &Backend{Name: "dittofs-s3"}, Protocol: ProtoNFS3, Support: Native},
+	}
+	workloads := []string{"seq-write", "seq-read", "metadata"}
+	cells := ManagedMatrix(plans, workloads, []string{"medium"}, true)
+
+	// warm for all 3 + cold for the 1 read workload (seq-read) = 4 cells.
+	if len(cells) != 4 {
+		t.Fatalf("got %d cells, want 4: %v", len(cells), cells)
+	}
+	cold := 0
+	for _, c := range cells {
+		if c.Protocol != "nfs3" || c.System != "dittofs-s3-nfs3" {
+			t.Errorf("bad stamp: %+v", c)
+		}
+		if c.Pass == "cold" {
+			cold++
+			if c.Workload != "seq-read" {
+				t.Errorf("cold pass on non-read workload %q", c.Workload)
+			}
+		}
+	}
+	if cold != 1 {
+		t.Errorf("got %d cold cells, want 1 (seq-read only)", cold)
+	}
+}
+
+func TestManagedMatrix_NoEvictSkipsColdPass(t *testing.T) {
+	plans := []Plan{{Backend: &Backend{Name: "b"}, Protocol: ProtoNFS3}}
+	cells := ManagedMatrix(plans, []string{"seq-read"}, []string{"medium"}, false)
+	if len(cells) != 1 || cells[0].Pass != "warm" {
+		t.Fatalf("without evict expect single warm cell, got %v", cells)
+	}
+}
+
+func TestBackendNamesSorted(t *testing.T) {
+	withRegistry(t,
+		&Backend{Name: "s3fs"},
+		&Backend{Name: "juicefs"},
+		&Backend{Name: "dittofs-s3"},
+	)
+	got := backendNames()
+	want := []string{"dittofs-s3", "juicefs", "s3fs"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}

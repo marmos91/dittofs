@@ -1,4 +1,4 @@
-package main
+package fio
 
 import (
 	"encoding/json"
@@ -39,17 +39,17 @@ type CellResult struct {
 	S3Bytes int64 `json:"s3_bytes"` // server↔S3 bytes; populated in a later PR
 }
 
-// slug is the stable, filesystem-safe identity of a cell. Two runs of the same
+// Slug is the stable, filesystem-safe identity of a cell. Two runs of the same
 // cell produce the same slug, which is what makes --resume idempotent (skip if
 // the result file already exists).
-func (c CellResult) slug() string {
+func (c CellResult) Slug() string {
 	return fmt.Sprintf("%s__%s__%s__%s__%s", c.System, c.Workload, c.Size, c.Protocol, c.Pass)
 }
 
-func (c CellResult) filename() string { return c.slug() + ".json" }
+func (c CellResult) filename() string { return c.Slug() + ".json" }
 
-// save writes the cell result JSON atomically into dir.
-func (c CellResult) save(dir string) error {
+// Save writes the cell result JSON atomically into dir.
+func (c CellResult) Save(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -65,9 +65,9 @@ func (c CellResult) save(dir string) error {
 	return os.Rename(tmp, final)
 }
 
-// loadResults reads every *.json cell result from dir (ignoring .tmp partials),
+// LoadResults reads every *.json cell result from dir (ignoring .tmp partials),
 // used by `report` and by `--resume` skip checks.
-func loadResults(dir string) ([]CellResult, error) {
+func LoadResults(dir string) ([]CellResult, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -93,8 +93,8 @@ func loadResults(dir string) ([]CellResult, error) {
 	return out, nil
 }
 
-// resultExists reports whether a completed result file for slug is on disk.
-func resultExists(dir, slug string) bool {
+// ResultExists reports whether a completed result file for slug is on disk.
+func ResultExists(dir, slug string) bool {
 	_, err := os.Stat(filepath.Join(dir, slug+".json"))
 	return err == nil
 }

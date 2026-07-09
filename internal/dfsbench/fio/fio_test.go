@@ -1,4 +1,4 @@
-package main
+package fio
 
 import (
 	"path/filepath"
@@ -35,7 +35,7 @@ func TestParseFioJSON_RandRead(t *testing.T) {
 	if r.IOPS != 8533.2 {
 		t.Errorf("iops=%v want 8533.2", r.IOPS)
 	}
-	if want := 34952533.0 / mib; r.ThroughputMBps != want {
+	if want := 34952533.0 / Mib; r.ThroughputMBps != want {
 		t.Errorf("mbps=%v want %v", r.ThroughputMBps, want)
 	}
 	if r.LatencyP99Us != 2310 { // 2310000 ns → µs
@@ -88,7 +88,7 @@ func TestParseFioJSON_NoJobs(t *testing.T) {
 
 func TestExpandJob_DefaultsAndOverrides(t *testing.T) {
 	tmpl := "ioengine=${FIO_ENGINE:-libaio}\nnumjobs=${BENCH_THREADS:-4}\nx=${UNSET}"
-	got := expandJob(tmpl, map[string]string{"FIO_ENGINE": "psync"})
+	got := ExpandJob(tmpl, map[string]string{"FIO_ENGINE": "psync"})
 	if !strings.Contains(got, "ioengine=psync") {
 		t.Errorf("override not applied: %q", got)
 	}
@@ -101,7 +101,7 @@ func TestExpandJob_DefaultsAndOverrides(t *testing.T) {
 }
 
 func TestLoadJob_AllWorkloadsEmbedded(t *testing.T) {
-	for _, w := range knownWorkloads {
+	for _, w := range KnownWorkloads {
 		body, err := loadJob(w, jobDefaults("psync", "/mnt/bench", "64k", 4, 60))
 		if err != nil {
 			t.Errorf("%s: %v", w, err)
@@ -118,36 +118,21 @@ func TestLoadJob_AllWorkloadsEmbedded(t *testing.T) {
 func TestResume_SkipsExistingResult(t *testing.T) {
 	dir := t.TempDir()
 	c := CellResult{System: "local", Workload: "seq-read", Size: "small", Protocol: "local", Pass: "warm"}
-	if resultExists(dir, c.slug()) {
+	if ResultExists(dir, c.Slug()) {
 		t.Fatal("should not exist yet")
 	}
-	if err := c.save(dir); err != nil {
+	if err := c.Save(dir); err != nil {
 		t.Fatal(err)
 	}
-	if !resultExists(dir, c.slug()) {
+	if !ResultExists(dir, c.Slug()) {
 		t.Fatal("should exist after save")
 	}
 	// .tmp partials must not count as completed cells.
-	rs, err := loadResults(dir)
+	rs, err := LoadResults(dir)
 	if err != nil || len(rs) != 1 {
 		t.Fatalf("loadResults: %v n=%d", err, len(rs))
 	}
 	if filepath.Base(rs[0].System) != "local" {
 		t.Errorf("bad load: %+v", rs[0])
-	}
-}
-
-func TestRenderTable_HeadlineDashing(t *testing.T) {
-	rs := []CellResult{
-		{System: "local", Workload: "seq-read", Size: "large", Protocol: "local", Pass: "warm", ThroughputMBps: 2400},
-		{System: "local", Workload: "rand-read-4k", Size: "large", Protocol: "local", Pass: "warm", IOPS: 8940},
-	}
-	out := renderTable(rs)
-	if !strings.Contains(out, "2400") || !strings.Contains(out, "8940") {
-		t.Errorf("missing values:\n%s", out)
-	}
-	// seq-read: IOPS column dashed; rand: MB/s column dashed.
-	if !strings.Contains(out, "—") {
-		t.Errorf("expected dashed non-headline cells:\n%s", out)
 	}
 }

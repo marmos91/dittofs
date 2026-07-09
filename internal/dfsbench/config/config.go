@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"fmt"
@@ -21,11 +21,19 @@ type Config struct {
 	Runtime int    `yaml:"runtime"` // fio runtime seconds
 	Engine  string `yaml:"engine"`  // fio ioengine
 	FioBin  string `yaml:"fio_bin"` // fio binary path
+
+	Bucket   string `yaml:"bucket"`   // S3 bucket for managed S3-backed backends
+	Endpoint string `yaml:"endpoint"` // S3 endpoint URL (creds stay in env)
 }
 
-// loadConfig reads a dfsbench YAML config. A missing path is not an error only
+// Marshal renders a Config back to YAML. Used to forward the fully-merged
+// config (file + env defaults) to a remote VM so `run --remote` honors every
+// setting — engine, fio_bin, etc. — not just bucket/endpoint.
+func Marshal(c Config) ([]byte, error) { return yaml.Marshal(c) }
+
+// LoadConfig reads a dfsbench YAML config. A missing path is not an error only
 // when path is empty (no --config given).
-func loadConfig(path string) (Config, error) {
+func LoadConfig(path string) (Config, error) {
 	if path == "" {
 		return Config{}, nil
 	}
