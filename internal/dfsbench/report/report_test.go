@@ -61,3 +61,17 @@ func TestRenderPairing_NothingToPair(t *testing.T) {
 		t.Errorf("want empty pairing when nothing pairs, got:\n%s", out)
 	}
 }
+
+func TestRenderBaseline(t *testing.T) {
+	// Zero value → nothing rendered (skipped/failed baseline).
+	if out := RenderBaseline(Baseline{}); out != "" {
+		t.Errorf("empty baseline should render nothing, got %q", out)
+	}
+	out := RenderBaseline(Baseline{LocalDiskSeqMBps: 2400, LocalDiskRandIOPS: 180000})
+	if !strings.Contains(out, "2400") || !strings.Contains(out, "180000") {
+		t.Errorf("baseline missing values:\n%s", out)
+	}
+	if !strings.Contains(out, "local-disk") {
+		t.Errorf("baseline missing label:\n%s", out)
+	}
+}

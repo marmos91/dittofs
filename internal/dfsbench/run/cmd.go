@@ -6,22 +6,23 @@ import (
 
 // runFlags are the `run` command's flags; they override any --config values.
 type runFlags struct {
-	config     string
-	local      bool
-	smoke      bool
-	target     string
-	systems    []string
-	workloads  []string
-	sizes      []string
-	results    string
-	threads    int
-	runtime    int
-	engine     string
-	fioBin     string
-	resume     bool
-	dryRun     bool
-	evictCache bool
-	remote     bool
+	config       string
+	local        bool
+	smoke        bool
+	target       string
+	systems      []string
+	workloads    []string
+	sizes        []string
+	results      string
+	threads      int
+	runtime      int
+	engine       string
+	fioBin       string
+	resume       bool
+	dryRun       bool
+	evictCache   bool
+	remote       bool
+	skipBaseline bool
 }
 
 // NewRunCmd builds the `run` subcommand, which drives fio across the workload ×
@@ -68,5 +69,6 @@ Add --remote to run the managed matrix on a provisioned VM (see 'dfsbench setup'
 	fl.BoolVar(&f.dryRun, "dry-run", false, "print the cell matrix and exit")
 	fl.BoolVar(&f.evictCache, "evict-cache", true, "run a cold (post-evict) read pass in managed mode")
 	fl.BoolVar(&f.remote, "remote", false, "drive the managed run on the provisioned VM from .bench-vm.json (needs `dfsbench setup`)")
+	fl.BoolVar(&f.skipBaseline, "skip-baseline", false, "skip the local-disk ceiling measured before the managed matrix")
 	return cmd
 }

@@ -47,6 +47,18 @@ func runManaged(ctx context.Context, f *runFlags, opts fio.LoadOpts, cfg config.
 		want[(fio.CellResult{System: c.System, Workload: c.Workload, Size: c.Size, Protocol: c.Protocol, Pass: c.Pass}).Slug()] = true
 	}
 
+	// Measure the local-disk ceiling once, up front, so the scorecard opens with
+	// the "is the bottleneck the FS or the hardware?" anchor. Best-effort: a
+	// failed/absent baseline warns and the comparison still runs.
+	var baseline report.Baseline
+	if !f.skipBaseline {
+		if b, err := measureLocalDiskCeiling(ctx, maxReadSize(sizes), opts); err != nil {
+			_, _ = fmt.Fprintf(exec.CmdOut, "warn: baseline: %v\n", err)
+		} else {
+			baseline = b
+		}
+	}
+
 	env := backend.BackendEnv{Bucket: cfg.Bucket, Endpoint: cfg.Endpoint}
 	// A comparison shouldn't die because one competitor's recipe breaks — record
 	// the failure and keep going, so one run surfaces every backend's state.
@@ -69,6 +81,7 @@ func runManaged(ctx context.Context, f *runFlags, opts fio.LoadOpts, cfg config.
 		}
 	}
 	_, _ = fmt.Fprintln(exec.CmdOut)
+	_, _ = fmt.Fprint(exec.CmdOut, report.RenderBaseline(baseline))
 	_, _ = fmt.Fprint(exec.CmdOut, report.RenderTable(rows))
 	_, _ = fmt.Fprint(exec.CmdOut, report.RenderPairing(rows))
 	if len(failures) > 0 {
