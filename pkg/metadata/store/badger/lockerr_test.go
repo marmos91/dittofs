@@ -11,7 +11,6 @@ import (
 func TestIsDirLockErr(t *testing.T) {
 	locked := []error{
 		errors.New(`Cannot acquire directory lock on "/var/lib/dittofs/meta".  Another process is using this Badger database. error: resource temporarily unavailable`),
-		errors.New("resource temporarily unavailable"),
 		errors.New("Another process is using this Badger database"),
 	}
 	for _, e := range locked {
@@ -22,6 +21,9 @@ func TestIsDirLockErr(t *testing.T) {
 	notLocked := []error{
 		errors.New("failed to open BadgerDB: manifest corrupted"),
 		errors.New("no space left on device"),
+		// A bare EAGAIN must NOT be mistaken for a lock — many unrelated
+		// failures carry it; only Badger's named lock message counts.
+		errors.New("resource temporarily unavailable"),
 	}
 	for _, e := range notLocked {
 		if isDirLockErr(e) {

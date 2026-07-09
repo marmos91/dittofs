@@ -381,19 +381,20 @@ const valueLogGCInterval = 5 * time.Minute
 
 // valueLogGCDiscardRatio is the fraction of stale data a value-log file
 // must contain before Badger will rewrite it. 0.5 is Badger's commonly
-// isDirLockErr reports whether err is BadgerDB's "directory is already locked"
-// failure — the signature of a second server (or a leftover one that never shut
-// down) opening the same data directory. Badger surfaces it as a plain error
-// with an EAGAIN-flavoured message, so we match on its text.
-func isDirLockErr(err error) bool {
-	s := err.Error()
-	return strings.Contains(s, "Cannot acquire directory lock") ||
-		strings.Contains(strings.ToLower(s), "another process is using this badger database") ||
-		strings.Contains(s, "resource temporarily unavailable")
-}
-
 // recommended starting point — rewrite files at least half garbage.
 const valueLogGCDiscardRatio = 0.5
+
+// isDirLockErr reports whether err is BadgerDB's "directory is already locked"
+// failure — the signature of a second server (or a leftover one that never shut
+// down) opening the same data directory. Badger's message names the cause
+// ("Cannot acquire directory lock ... Another process is using this Badger
+// database") before the wrapped EAGAIN errno, so match on that text and not the
+// bare "resource temporarily unavailable" (which unrelated failures also carry).
+func isDirLockErr(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "cannot acquire directory lock") ||
+		strings.Contains(s, "another process is using this badger database")
+}
 
 // runValueLogGC periodically reclaims Badger value-log space. On each
 // tick it drains all rewritable value-log files (RunValueLogGC returns
