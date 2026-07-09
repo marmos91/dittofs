@@ -1626,3 +1626,48 @@ func TestLSARPC_TranslatedName_ExactLengths_AllOpnums(t *testing.T) {
 		})
 	}
 }
+
+// TestLookupSids_MultiDomain_NoReferentCollision guards against the NDR
+// referent-ID collision that crashed Explorer: with ≥2 referenced domains (a
+// LookupSids batch mixing a machine-domain owner with AD-domain grants), the
+// translated-names array pointer must not reuse a domain entry's referent ID.
+// A collision corrupts pointer resolution, the client fails the whole batch
+// (raw SIDs), and Explorer can crash.
+func TestLookupSids_MultiDomain_NoReferentCollision(t *testing.T) {
+	domains := []domainEntry{
+		{name: "DITTOFS", sid: sid.ParseSIDMust("S-1-5-21-1-2-3")},
+		{name: "CUBBIT", sid: sid.ParseSIDMust("S-1-5-21-4-5-6")},
+	}
+	domainMap := map[string]int{"DITTOFS": 0, "CUBBIT": 1}
+	resolved := []resolvedSID{
+		{name: "admin", sidType: SidTypeUser, domainName: "DITTOFS", domainSID: domains[0].sid},
+		{name: "alice", sidType: SidTypeUser, domainName: "CUBBIT", domainSID: domains[1].sid},
+		{name: "Domain Admins", sidType: SidTypeGroup, domainName: "CUBBIT", domainSID: domains[1].sid},
+	}
+
+	h := &LSARPCHandler{}
+	out := h.buildLookupSidsResponse(resolved, domains, domainMap, true, true)
+
+	// The second domain's name referent is 0x00020010 (0x00020008 + 1*8). It must
+	// appear exactly ONCE in the response — reused as the translated-names array
+	// pointer, it would appear twice (the pre-fix collision).
+	if n := countLEUint32(out, 0x00020010); n != 1 {
+		t.Errorf("referent 0x00020010 appears %d times, want 1 (collision regressed)", n)
+	}
+	// The translated-names array pointer now lives in a disjoint range.
+	if n := countLEUint32(out, 0x00040000); n != 1 {
+		t.Errorf("translated-names array pointer 0x00040000 appears %d times, want 1", n)
+	}
+}
+
+// countLEUint32 counts non-overlapping 4-byte-aligned little-endian occurrences
+// of v in b.
+func countLEUint32(b []byte, v uint32) int {
+	n := 0
+	for i := 0; i+4 <= len(b); i += 4 {
+		if binary.LittleEndian.Uint32(b[i:i+4]) == v {
+			n++
+		}
+	}
+	return n
+}

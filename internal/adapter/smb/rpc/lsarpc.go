@@ -672,9 +672,21 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 	// Count
 	appendUint32Buf(&buf, uint32(len(resolved)))
 
-	// Pointer to array
+	// Pointer to array.
+	//
+	// NDR referent IDs must be UNIQUE across the whole response. The referenced-
+	// domain entries above consume referents from 0x00020008 upward, TWO per
+	// domain (name string + SID) — so with N domains they span up to
+	// 0x00020008+8*N. A hardcoded 0x00020010 here collides with the SECOND
+	// domain's name referent as soon as there are ≥2 referenced domains (e.g. a
+	// LookupSids batch mixing a machine-domain owner with AD-domain grants),
+	// which corrupts NDR pointer resolution — the client then fails the whole
+	// batch (raw SIDs) and Explorer can crash. Use a base well past the domain
+	// and per-name referent ranges (per-name referents below start at
+	// 0x00030000; the parser caps the batch at 100 SIDs) so no overlap is
+	// possible.
 	if len(resolved) > 0 {
-		appendUint32Buf(&buf, 0x00020010) // non-null pointer
+		appendUint32Buf(&buf, 0x00040000) // non-null pointer, disjoint from domain/name referents
 	} else {
 		appendUint32Buf(&buf, 0)
 	}
