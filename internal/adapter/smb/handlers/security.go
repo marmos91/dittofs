@@ -137,6 +137,132 @@ func GetSIDMapper() *sid.SIDMapper {
 }
 
 // ============================================================================
+// Directory SID Bridge (#1617)
+// ============================================================================
+
+// DirectorySIDBridge couples a POSIX UID/GID to its real directory (AD) SID in
+// both directions, backing #1617. Emit (SIDForUID/SIDForGID) advertises a file
+// owner/group as the account's actual AD SID instead of the algorithmic
+// machine-domain SID from the SIDMapper; parse (UIDForSID/GIDForSID) recovers
+// the UID/GID when Windows echoes that AD SID back through SET_INFO so an owner
+// emitted this way round-trips instead of tripping the unmappable-owner gate.
+//
+// Every method returns ok=false on a miss (never an error) and the caller falls
+// back to the SIDMapper's machine-domain mapping. Because the bridge only hits
+// on accounts the directory actually holds, a local-only or conformance
+// deployment (no AD provider) is a transparent no-op: SIDForUID/GID always miss
+// and the descriptor stays byte-for-byte what it was before #1617.
+type DirectorySIDBridge interface {
+	// SIDForUID resolves a POSIX UID to its directory user SID string.
+	SIDForUID(uid uint32) (sidStr string, ok bool)
+	// SIDForGID resolves a POSIX GID to its directory group SID string.
+	SIDForGID(gid uint32) (sidStr string, ok bool)
+	// UIDForSID resolves a directory SID string back to its POSIX UID.
+	UIDForSID(sidStr string) (uid uint32, ok bool)
+	// GIDForSID resolves a directory SID string back to its POSIX GID.
+	GIDForSID(sidStr string) (gid uint32, ok bool)
+}
+
+// dirSIDHolder wraps a DirectorySIDBridge so it can live in an atomic.Pointer
+// (an interface value cannot be stored atomically directly).
+type dirSIDHolder struct{ bridge DirectorySIDBridge }
+
+// _directorySIDBridge is the package-level directory-SID bridge, installed by
+// SetDirectorySIDBridge during adapter wiring. Unset means "machine-domain SID
+// only" — the pre-#1617 behavior.
+var _directorySIDBridge atomic.Pointer[dirSIDHolder]
+
+// SetDirectorySIDBridge installs the package-level DirectorySIDBridge used to
+// emit and round-trip real directory (AD) owner/group SIDs (#1617). Passing nil
+// clears it (back to machine-domain SIDs only). Wired alongside SetSIDMapper
+// before any connections are accepted.
+func SetDirectorySIDBridge(b DirectorySIDBridge) {
+	if b == nil {
+		_directorySIDBridge.Store(nil)
+		return
+	}
+	_directorySIDBridge.Store(&dirSIDHolder{bridge: b})
+}
+
+// directoryBridge returns the installed DirectorySIDBridge, or nil when none is
+// configured.
+func directoryBridge() DirectorySIDBridge {
+	if h := _directorySIDBridge.Load(); h != nil {
+		return h.bridge
+	}
+	return nil
+}
+
+// ownerSIDFor returns the SID to advertise for a file owner UID: the real
+// directory (AD) SID when the bridge maps it (#1617), otherwise the algorithmic
+// machine-domain SID from the mapper. A malformed bridge SID string falls back
+// to the machine SID rather than faulting.
+func ownerSIDFor(mapper *sid.SIDMapper, uid uint32) *sid.SID {
+	if b := directoryBridge(); b != nil {
+		if sidStr, ok := b.SIDForUID(uid); ok && sidStr != "" {
+			if s, err := sid.ParseSIDString(sidStr); err == nil {
+				return s
+			}
+		}
+	}
+	return mapper.UserSID(uid)
+}
+
+// groupSIDFor mirrors ownerSIDFor for a file group GID → group SID.
+func groupSIDFor(mapper *sid.SIDMapper, gid uint32) *sid.SID {
+	if b := directoryBridge(); b != nil {
+		if sidStr, ok := b.SIDForGID(gid); ok && sidStr != "" {
+			if s, err := sid.ParseSIDString(sidStr); err == nil {
+				return s
+			}
+		}
+	}
+	return mapper.GroupSID(gid)
+}
+
+// directoryUIDForSID resolves a decoded directory (AD) SID back to its POSIX UID
+// via the bridge, the parse-side inverse of ownerSIDFor (#1617). Returns
+// ok=false when no bridge is configured or the SID is not a directory account.
+func directoryUIDForSID(s *sid.SID) (uint32, bool) {
+	if b := directoryBridge(); b != nil {
+		return b.UIDForSID(sid.FormatSID(s))
+	}
+	return 0, false
+}
+
+// directoryGIDForSID mirrors directoryUIDForSID for a group SID → GID.
+func directoryGIDForSID(s *sid.SID) (uint32, bool) {
+	if b := directoryBridge(); b != nil {
+		return b.GIDForSID(sid.FormatSID(s))
+	}
+	return 0, false
+}
+
+// sameSID reports whether two SIDs are identical. A nil operand never matches.
+// Used by the SET_INFO owner/group gate to recognize a re-set of the file's
+// current owner/group SID as a no-op (#1617).
+func sameSID(a, b *sid.SID) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return sid.FormatSID(a) == sid.FormatSID(b)
+}
+
+// isCurrentOwnerSID reports whether reqSID equals the SID the server currently
+// emits for a file owned by uid — the machine-domain SID, or the real directory
+// SID when the bridge maps the uid (#1617). The SET_INFO gate uses this to
+// distinguish a no-op owner re-set (accept) from a genuine unmappable chown
+// (reject, #1228), independent of whether the reverse directory lookup is up.
+func isCurrentOwnerSID(reqSID *sid.SID, uid uint32) bool {
+	return sameSID(reqSID, ownerSIDFor(_defaultSIDMapper.Load(), uid))
+}
+
+// isCurrentGroupSID mirrors isCurrentOwnerSID for a file's group GID.
+func isCurrentGroupSID(reqSID *sid.SID, gid uint32) bool {
+	return sameSID(reqSID, groupSIDFor(_defaultSIDMapper.Load(), gid))
+}
+
+// ============================================================================
 // Security Descriptor Building
 // ============================================================================
 
@@ -186,8 +312,8 @@ func BuildSecurityDescriptorWithGrants(file *metadata.File, additionalSecInfo ui
 	// Build SIDs using the shared mapper. Snapshot the atomic pointer once so
 	// a concurrent SetSIDMapper does not race this read.
 	mapper := _defaultSIDMapper.Load()
-	ownerSID := mapper.UserSID(file.UID)
-	groupSID := mapper.GroupSID(file.GID)
+	ownerSID := ownerSIDFor(mapper, file.UID)
+	groupSID := groupSIDFor(mapper, file.GID)
 
 	// Null DACL: SE_DACL_PRESENT set but no DACL body (daclOffset stays 0)
 	isNullDACL := includeDACL && file.ACL != nil && file.ACL.NullDACL
@@ -318,9 +444,9 @@ func principalToSID(who string, fileUID, fileGID uint32) *sid.SID {
 	mapper := _defaultSIDMapper.Load()
 	switch who {
 	case acl.SpecialOwner:
-		return mapper.UserSID(fileUID)
+		return ownerSIDFor(mapper, fileUID)
 	case acl.SpecialGroup:
-		return mapper.GroupSID(fileGID)
+		return groupSIDFor(mapper, fileGID)
 	case acl.SpecialEveryone:
 		return sid.WellKnownEveryone
 	case acl.SpecialOwnerRights:
@@ -592,21 +718,33 @@ func ParseSecurityDescriptorWithOptions(data []byte, opts ParseSDOptions) (owner
 		return nil, nil, nil, fmt.Errorf("failed to parse SD header: %w", r.Err())
 	}
 
-	// Parse Owner SID — only set ownerUID if the SID is recognized
+	// Parse Owner SID — only set ownerUID if the SID is recognized. The machine
+	// mapper resolves algorithmic machine-domain SIDs; a real directory (AD) SID
+	// we emitted for the owner (#1617) is unknown to the mapper, so fall back to
+	// the directory bridge to recover the same UID. Without this, Windows echoing
+	// back the AD-SID owner would look like a foreign-domain chown and trip the
+	// unmappable-owner gate in SET_INFO.
 	if offsetOwner > 0 && int(offsetOwner) < len(data) {
 		s, _, err := sid.DecodeSID(data[offsetOwner:])
 		if err == nil {
 			if uid, ok := mapper.UIDFromSID(s); ok {
 				ownerUID = &uid
+			} else if uid, ok := directoryUIDForSID(s); ok {
+				ownerUID = &uid
 			}
 		}
 	}
 
-	// Parse Group SID — only set ownerGID if the SID is recognized
+	// Parse Group SID — only set ownerGID if the SID is recognized. Directory
+	// bridge fallback mirrors the owner path (#1617); the trailing user-SID
+	// fallback preserves the pre-existing lenient behavior for a group section
+	// carrying a user SID.
 	if offsetGroup > 0 && int(offsetGroup) < len(data) {
 		s, _, err := sid.DecodeSID(data[offsetGroup:])
 		if err == nil {
 			if gid, ok := mapper.GIDFromSID(s); ok {
+				ownerGID = &gid
+			} else if gid, ok := directoryGIDForSID(s); ok {
 				ownerGID = &gid
 			} else if uid, ok := mapper.UIDFromSID(s); ok {
 				ownerGID = &uid

@@ -165,12 +165,61 @@ type ReverseResolver interface {
 	LookupGID(ctx context.Context, gid uint32) (name, domain string, ok bool)
 }
 
+// SIDReverseResolver is an optional capability a Provider may implement to map a
+// POSIX UID/GID to its real directory (AD) SID. It backs emitting a file
+// owner/group as the account's actual SID rather than the algorithmic
+// machine-domain SID (#1617). A miss returns ok=false and is never an error.
+type SIDReverseResolver interface {
+	// SIDForUID resolves a POSIX UID to its directory user SID string.
+	SIDForUID(ctx context.Context, uid uint32) (sidStr string, ok bool)
+	// SIDForGID resolves a POSIX GID to its directory group SID string.
+	SIDForGID(ctx context.Context, gid uint32) (sidStr string, ok bool)
+}
+
 // reverseUIDKey / reverseGIDKey are synthetic cache keys for reverse lookups.
 // They share the Resolver's cache (positive + negative TTL) with forward
 // resolution but cannot collide with a forward key, which always embeds a
 // provider name and an ExternalID via cacheKey.
-func reverseUIDKey(uid uint32) string { return fmt.Sprintf("ruid:%d", uid) }
-func reverseGIDKey(gid uint32) string { return fmt.Sprintf("rgid:%d", gid) }
+func reverseUIDKey(uid uint32) string    { return fmt.Sprintf("ruid:%d", uid) }
+func reverseGIDKey(gid uint32) string    { return fmt.Sprintf("rgid:%d", gid) }
+func reverseSIDUIDKey(uid uint32) string { return fmt.Sprintf("rsiduid:%d", uid) }
+func reverseSIDGIDKey(gid uint32) string { return fmt.Sprintf("rsidgid:%d", gid) }
+
+// SIDForUID resolves a POSIX UID to its real directory SID via any provider that
+// implements SIDReverseResolver, cached like the other reverse lookups. Returns
+// ok=false for a local/unknown uid so the caller keeps the machine-domain SID.
+func (r *Resolver) SIDForUID(ctx context.Context, uid uint32) (string, bool) {
+	return r.reverseSID(reverseSIDUIDKey(uid), func(sr SIDReverseResolver) (string, bool) {
+		return sr.SIDForUID(ctx, uid)
+	})
+}
+
+// SIDForGID mirrors SIDForUID for a group GID → group SID.
+func (r *Resolver) SIDForGID(ctx context.Context, gid uint32) (string, bool) {
+	return r.reverseSID(reverseSIDGIDKey(gid), func(sr SIDReverseResolver) (string, bool) {
+		return sr.SIDForGID(ctx, gid)
+	})
+}
+
+// reverseSID runs a cached UID/GID → SID lookup against the provider chain,
+// riding the identity cache via ResolvedIdentity.SID.
+func (r *Resolver) reverseSID(key string, query func(SIDReverseResolver) (string, bool)) (string, bool) {
+	if cached, _, hit := r.cache.get(key); hit && cached != nil {
+		return cached.SID, cached.Found
+	}
+	for _, p := range r.providers {
+		sr, capable := p.(SIDReverseResolver)
+		if !capable {
+			continue
+		}
+		if sidStr, ok := query(sr); ok && sidStr != "" {
+			r.cache.put(key, &ResolvedIdentity{SID: sidStr, Found: true}, nil)
+			return sidStr, true
+		}
+	}
+	r.cache.put(key, &ResolvedIdentity{Found: false}, nil)
+	return "", false
+}
 
 // LookupUID resolves a POSIX UID to a directory account name + domain by
 // consulting every registered provider that implements ReverseResolver, in
