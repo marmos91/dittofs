@@ -801,6 +801,13 @@ func (s *Adapter) wireForeignSIDResolver(rt *runtime.Runtime) {
 		newIdentityForeignSIDResolver(resolver, s.handler.NetBIOSDomain),
 	)
 
+	// Wire the directory-SID bridge so file owner/group descriptors carry the
+	// account's real AD SID (and round-trip it back) rather than the algorithmic
+	// machine-domain SID (#1617). Shares the same resolver chain and config-change
+	// re-run as the foreign-SID resolver above; a no-op when no LDAP/AD provider
+	// is configured (the bridge simply never hits).
+	handlers.SetDirectorySIDBridge(newDirectorySIDBridge(resolver))
+
 	if s.foreignSIDProviderUnsub == nil {
 		s.foreignSIDProviderUnsub = rt.OnIdentityProviderConfigChange(func() {
 			s.wireForeignSIDResolver(rt)
