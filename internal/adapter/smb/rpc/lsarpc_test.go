@@ -898,14 +898,12 @@ func parseLookupSidsResponse(t *testing.T, response []byte, withFlags bool) look
 			_ = u32()       // SID pointer
 			domFixeds = append(domFixeds, domFixed{nameUTF16Bytes: length})
 		}
-		// Deferred domain name strings.
+		// Deferred domain pointees in NDR appearance order: each entry's Name
+		// buffer THEN its SID (interleaved), not all-names-then-all-SIDs.
 		for _, d := range domFixeds {
 			name := readNDRUnicodeString(t, stub, &off)
 			_ = d
 			res.domains = append(res.domains, name)
-		}
-		// Deferred domain SIDs.
-		for range domCount {
 			skipNDRSID(t, stub, &off)
 		}
 	}
@@ -1670,4 +1668,36 @@ func countLEUint32(b []byte, v uint32) int {
 		}
 	}
 	return n
+}
+
+// TestLookupSids_ReferencedDomains_DeferredOrder validates that the referenced-
+// domain deferred pointees are emitted in NDR appearance order (name0, sid0,
+// name1, sid1) rather than grouped (name0, name1, sid0, sid1). With ≥2 domains
+// the grouped order makes the client read domain1's name as domain0's SID,
+// corrupting the parse (raw SIDs / Explorer crash). Asserts domain0's SID sits
+// BETWEEN the two domain names in the wire bytes.
+func TestLookupSids_ReferencedDomains_DeferredOrder(t *testing.T) {
+	d0 := sid.ParseSIDMust("S-1-5-21-1-2-3")
+	d1 := sid.ParseSIDMust("S-1-5-21-4-5-6")
+	domains := []domainEntry{{name: "DITTOFS", sid: d0}, {name: "CUBBIT", sid: d1}}
+	domainMap := map[string]int{"DITTOFS": 0, "CUBBIT": 1}
+	resolved := []resolvedSID{
+		{name: "admin", sidType: SidTypeUser, domainName: "DITTOFS", domainSID: d0},
+		{name: "alice", sidType: SidTypeUser, domainName: "CUBBIT", domainSID: d1},
+	}
+
+	out := (&LSARPCHandler{}).buildLookupSidsResponse(resolved, domains, domainMap, true, true)
+
+	var sidBuf bytes.Buffer
+	sid.EncodeSID(&sidBuf, d0)
+	iName0 := bytes.Index(out, encodeUTF16LE("DITTOFS"))
+	iName1 := bytes.Index(out, encodeUTF16LE("CUBBIT"))
+	iSid0 := bytes.Index(out, sidBuf.Bytes())
+	if iName0 < 0 || iName1 < 0 || iSid0 < 0 {
+		t.Fatalf("missing bytes: name0=%d name1=%d sid0=%d", iName0, iName1, iSid0)
+	}
+	if !(iName0 < iSid0 && iSid0 < iName1) {
+		t.Errorf("referenced-domain deferred order wrong: name0@%d sid0@%d name1@%d; want name0 < sid0 < name1",
+			iName0, iSid0, iName1)
+	}
 }

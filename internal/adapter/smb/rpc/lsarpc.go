@@ -652,13 +652,16 @@ func (h *LSARPCHandler) buildLookupSidsResponse(
 			refID += 4
 		}
 
-		// Deferred string data for each domain
+		// Deferred pointee data for each domain, in POINTER-APPEARANCE order: for
+		// every entry its Name buffer THEN its SID (matching the interleaved
+		// referent IDs assigned above). NDR decoders read deferred referents
+		// positionally in appearance order, NOT grouped as all-names-then-all-SIDs
+		// — with ≥2 domains, grouping makes the client read domain[i+1]'s name
+		// bytes as domain[i]'s SID, corrupting the parse (raw SIDs / client crash).
+		// With a single domain the two orders coincide, which is why single-SID
+		// lookups never hit this.
 		for _, d := range domains {
 			writeNDRUnicodeString(&buf, d.name)
-		}
-
-		// Deferred SID data for each domain
-		for _, d := range domains {
 			if d.sid != nil {
 				writeNDRSID(&buf, d.sid)
 			} else {
