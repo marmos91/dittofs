@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
@@ -16,6 +17,7 @@ import (
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
+	"github.com/marmos91/dittofs/pkg/adapter/auxsvc"
 	"github.com/marmos91/dittofs/pkg/auth/kerberos"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime"
@@ -118,6 +120,19 @@ type Adapter struct {
 	// kerberosProvider is retained for lifecycle management. It owns a
 	// background keytab-reload goroutine that must be stopped in Stop().
 	kerberosProvider *kerberos.Provider
+
+	// sidecars manages the adapter's auxiliary/companion services — the mDNS and
+	// WS-Discovery advertisers (issue #1609) — under one uniform lifecycle.
+	// Seeded with the Serve context and torn down in Stop. See discovery.go.
+	sidecars *auxsvc.Group
+
+	// wsdInstanceID sources the WS-Discovery AppSequence InstanceId. Seeded once
+	// per adapter (process start time) and incremented per responder build, so
+	// every WSD responder in this process gets a distinct, strictly-increasing
+	// InstanceId — a live discovery toggle can never reuse an InstanceId with a
+	// rewound MessageNumber, which Windows would treat as a stale/duplicate
+	// sequence and discard.
+	wsdInstanceID atomic.Uint64
 }
 
 // New creates a new Adapter with the specified configuration.
@@ -200,12 +215,17 @@ func New(config Config) *Adapter {
 		ShutdownTimeout: config.Timeouts.Shutdown,
 	}
 
-	return &Adapter{
+	a := &Adapter{
 		BaseAdapter:    adapter.NewBaseAdapter(baseConfig, "SMB"),
 		config:         config,
 		handler:        handler,
 		sessionManager: sessionManager,
+		sidecars:       auxsvc.NewGroup(),
 	}
+	// Seed the WS-Discovery InstanceId base with the process start time so it is
+	// stable for this adapter and increases across process restarts.
+	a.wsdInstanceID.Store(uint64(time.Now().Unix()))
+	return a
 }
 
 // SetRuntime injects the runtime containing all stores and shares.
@@ -477,6 +497,10 @@ func (s *Adapter) applySMBSettings(rt *runtime.Runtime) {
 		logger.Info("SMB adapter: operation blocklist from settings (advisory only)",
 			"blocked_ops", blockedOps)
 	}
+
+	// Network discovery: start/stop the mDNS and WS-Discovery advertisers live to
+	// match settings. No-op until Serve has started the auxsvc group.
+	s.reconcileDiscovery()
 }
 
 // Serve starts the SMB server and blocks until the context is cancelled
@@ -524,6 +548,11 @@ func (s *Adapter) Serve(ctx context.Context) error {
 			"interval", DefaultDurableScavengerInterval,
 			"timeout_ms", durableTimeout)
 	}
+
+	// Start the discovery advertisers (mDNS, WS-Discovery) through the shared
+	// auxsvc group so they share the adapter's lifecycle and can be toggled live
+	// from settings (issue #1609). See discovery.go.
+	s.startEnabledDiscovery(ctx)
 
 	return s.ServeWithFactory(ctx, s, s.preAcceptCheck, nil)
 }
@@ -906,6 +935,14 @@ func (s *Adapter) Stop(ctx context.Context) error {
 	// not outlive the adapter.
 	if netlogonAuth != nil {
 		netlogonAuth.Close(ctx)
+	}
+
+	// Stop the discovery advertisers (mDNS / WS-Discovery) before tearing down
+	// the main listener, so a Bye/goodbye is emitted while the network is still up.
+	if s.sidecars != nil {
+		if err := s.sidecars.StopAll(ctx); err != nil {
+			logger.Debug("SMB discovery advertiser shutdown reported an error", "error", err)
+		}
 	}
 
 	// Unsubscribe from share change notifications to prevent stale callbacks

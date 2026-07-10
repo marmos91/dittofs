@@ -1125,6 +1125,7 @@ Flags:
       --max-read-size int                    Maximum read size in bytes
       --max-version string                   Maximum NFS version (e.g., 4.1)
       --max-write-size int                   Maximum write size in bytes
+      --mdns-enabled                         Advertise the NFS export over mDNS/DNS-SD (_nfs._tcp) for macOS Finder / Linux Avahi (applied immediately)
       --min-version string                   Minimum NFS version (e.g., 3)
       --portmapper-enabled                   Enable embedded portmapper
       --portmapper-port int                  Portmapper listen port
@@ -1309,10 +1310,12 @@ Flags:
       --max-connections int         Maximum concurrent connections
       --max-dialect string          Maximum SMB dialect
       --max-sessions int            Maximum concurrent SMB sessions
+      --mdns-enabled                Advertise the SMB service over mDNS/DNS-SD (_smb._tcp) for macOS Finder / Linux Avahi (applied immediately)
       --min-dialect string          Minimum SMB dialect
       --oplock-break-timeout int    Oplock break timeout in seconds
       --session-timeout int         SMB session timeout in seconds
       --signing string              SMB message signing mode: disabled|enabled|required
+      --wsdiscovery-enabled         Advertise the host over WS-Discovery so it appears in the Windows Explorer Network view (applied immediately)
 ```
 
 Global flags:
@@ -4064,8 +4067,8 @@ mkdir -p ~/mnt/dittofs && dfsctl share mount /export --protocol smb ~/mnt/dittof
 Flags:
 
 ```
-      --dir-mode string      Directory permissions for SMB mount (octal) (default "0777")
-      --file-mode string     File permissions for SMB mount (octal, default 0777 on macOS since uid/gid not supported) (default "0777")
+      --dir-mode string      Directory permissions for SMB mount (octal)
+      --file-mode string     File permissions (not applicable on Windows)
       --nfs-version string   NFS protocol version for NFS mounts (3, 4, 4.0, 4.1, 4.2). v4 carries locking in-protocol; v3 locking needs the server UDP transport + portmapper (default "3")
   -P, --password string      Password for SMB mount (will prompt if not provided)
   -p, --protocol string      Protocol to use (nfs or smb) (required)

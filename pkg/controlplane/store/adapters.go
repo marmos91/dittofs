@@ -149,6 +149,7 @@ func (s *GORMStore) UpdateNFSAdapterSettings(ctx context.Context, settings *mode
 			"portmapper_port":                 settings.PortmapperPort,
 			"portmapper_register_with_system": settings.PortmapperRegisterWithSystem,
 			"udp_enabled":                     settings.UDPEnabled,
+			"mdns_enabled":                    settings.MDNSEnabled,
 			"version":                         gorm.Expr("version + 1"),
 			"updated_at":                      time.Now(),
 		})
@@ -191,6 +192,7 @@ func (s *GORMStore) ResetNFSAdapterSettings(ctx context.Context, adapterID strin
 			"portmapper_port":                 defaults.PortmapperPort,
 			"portmapper_register_with_system": defaults.PortmapperRegisterWithSystem,
 			"udp_enabled":                     defaults.UDPEnabled,
+			"mdns_enabled":                    defaults.MDNSEnabled,
 			"version":                         gorm.Expr("version + 1"),
 			"updated_at":                      time.Now(),
 		})
@@ -228,6 +230,8 @@ func (s *GORMStore) UpdateSMBAdapterSettings(ctx context.Context, settings *mode
 			"signing":                   settings.Signing,
 			"directory_leasing_enabled": settings.DirectoryLeasingEnabled,
 			"blocked_operations":        settings.BlockedOperations,
+			"mdns_enabled":              settings.MDNSEnabled,
+			"wsdiscovery_enabled":       settings.WSDiscoveryEnabled,
 			"version":                   gorm.Expr("version + 1"),
 			"updated_at":                time.Now(),
 		})
@@ -259,6 +263,8 @@ func (s *GORMStore) ResetSMBAdapterSettings(ctx context.Context, adapterID strin
 			"signing":                   defaults.Signing,
 			"directory_leasing_enabled": defaults.DirectoryLeasingEnabled,
 			"blocked_operations":        "",
+			"mdns_enabled":              defaults.MDNSEnabled,
+			"wsdiscovery_enabled":       defaults.WSDiscoveryEnabled,
 			"version":                   gorm.Expr("version + 1"),
 			"updated_at":                time.Now(),
 		})

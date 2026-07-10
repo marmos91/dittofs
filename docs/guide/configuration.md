@@ -1632,6 +1632,68 @@ export DITTOFS_ADAPTERS_SMB_CROSS_PROTOCOL_DELEGATION_RECALL_TIMEOUT=90s
 export DITTOFS_ADAPTERS_SMB_CROSS_PROTOCOL_ANTI_STORM_TTL=30s
 ```
 
+#### Network discovery (mDNS / WS-Discovery)
+
+DittoFS can advertise itself on the LAN so it appears in **macOS Finder →
+Network**, Linux file managers (via Avahi), and the **Windows Explorer →
+Network** view — the same job the external `avahi-daemon` and `wsdd`/`wsdd2`
+daemons do for Samba, but built in-process. Discovery is **off by default** and
+managed through the live adapter settings (`dfsctl` / REST), so it applies
+immediately without an adapter restart:
+
+```bash
+# mDNS / DNS-SD — macOS Finder + Linux Avahi
+dfsctl adapter settings nfs update --mdns-enabled          # advertises _nfs._tcp (port 12049)
+dfsctl adapter settings smb update --mdns-enabled          # advertises _smb._tcp + _device-info._tcp
+
+# WS-Discovery — Windows Explorer Network (SMB only; Windows does not browse NFS)
+dfsctl adapter settings smb update --wsdiscovery-enabled
+```
+
+This opens additional listeners: mDNS on UDP `5353`, and — for WS-Discovery —
+UDP `3702` plus an HTTP metadata endpoint on TCP `5357`. NFS advertises the
+first export's path in a `path=` TXT record so Finder mounts the right share.
+
+**Advertised name.** All advertisers share one instance-wide name, so a server
+shows up consistently across Finder and Explorer. It defaults to
+`DittoFS-<hostname>` (e.g. `DittoFS-VM2`) — distinct per host so several DittoFS
+servers on one LAN stay distinguishable — and is overridable:
+
+```bash
+dfsctl settings set discovery.name "Marketing Files"   # custom instance name
+dfsctl settings set discovery.name ""                  # revert to DittoFS-<hostname>
+```
+
+Each adapter formats the name for its own protocol: mDNS uses it verbatim, while
+WS-Discovery folds it to a NetBIOS-legal computer name (upper-cased, illegal
+characters replaced with `-`, capped at 15 characters) since Explorer renders it
+as a Windows computer name. A name change takes effect the next time an
+advertiser (re)starts — toggle discovery off/on, or restart the adapter.
+
+> **Note:** discovery is multicast-based and LAN-local. It works on a host
+> network (bare metal, VM, or a `hostNetwork` pod) but does **not** traverse
+> standard Kubernetes / overlay networks — Explorer and Finder will only see the
+> server on the same L2 segment. Mounting by name/IP always works regardless.
+> WS-Discovery makes the machine *appear* in Explorer; Windows still connects to
+> SMB on port `445`, so the SMB adapter must be reachable there.
+
+> **Windows host firewall:** when DittoFS runs *on* a Windows host, the built-in
+> "Network Discovery" firewall rules only cover Windows' own services (they are
+> scoped to `System` / `svchost`), so inbound traffic to `dfs.exe` is dropped by
+> default. Explorer then discovers the server over multicast but silently fails
+> the follow-up metadata fetch (a TCP `5357` connection that never completes),
+> and the machine never renders. Add inbound allow rules for the `dfs.exe`
+> program on TCP `5357` and UDP `3702`/`5353`:
+>
+> ```powershell
+> New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD meta)"  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5357 -Program "C:\path\to\dfs.exe" -Profile Any
+> New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD probe)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3702 -Program "C:\path\to\dfs.exe" -Profile Any
+> New-NetFirewallRule -DisplayName "DittoFS Discovery (mDNS)"      -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program "C:\path\to\dfs.exe" -Profile Any
+> ```
+>
+> This is a Windows-host concern only; a Linux DittoFS host needs no equivalent
+> (any host firewall there just needs the same ports open).
+
 ### 11. NFSv4 Configuration
 
 ```yaml

@@ -304,6 +304,57 @@ func TestUpdateSMBAdapterSettings_IncrementsVersion(t *testing.T) {
 	}
 }
 
+// TestUpdateSMBAdapterSettings_PersistsDiscoveryToggles guards the discovery
+// toggles' full round-trip: the store's explicit-column Update map must include
+// them, and the GORM column name must match. A missing map key or a mismatched
+// column name (e.g. GORM deriving "m_dns_enabled" from the field) silently
+// drops the write — the failure mode found only in live testing for #1609.
+func TestUpdateSMBAdapterSettings_PersistsDiscoveryToggles(t *testing.T) {
+	s, adapter := createTestStoreWithSMBAdapter(t)
+	ctx := context.Background()
+
+	settings, _ := s.GetSMBAdapterSettings(ctx, adapter.ID)
+	settings.MDNSEnabled = true
+	settings.WSDiscoveryEnabled = true
+	if err := s.UpdateSMBAdapterSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateSMBAdapterSettings failed: %v", err)
+	}
+
+	updated, _ := s.GetSMBAdapterSettings(ctx, adapter.ID)
+	if !updated.MDNSEnabled {
+		t.Error("MDNSEnabled did not persist through Update")
+	}
+	if !updated.WSDiscoveryEnabled {
+		t.Error("WSDiscoveryEnabled did not persist through Update")
+	}
+
+	// And it round-trips back to false.
+	updated.MDNSEnabled = false
+	updated.WSDiscoveryEnabled = false
+	if err := s.UpdateSMBAdapterSettings(ctx, updated); err != nil {
+		t.Fatalf("UpdateSMBAdapterSettings (clear) failed: %v", err)
+	}
+	cleared, _ := s.GetSMBAdapterSettings(ctx, adapter.ID)
+	if cleared.MDNSEnabled || cleared.WSDiscoveryEnabled {
+		t.Error("discovery toggles did not clear back to false")
+	}
+}
+
+func TestUpdateNFSAdapterSettings_PersistsMDNSToggle(t *testing.T) {
+	s, adapter := createTestStoreWithNFSAdapter(t)
+	ctx := context.Background()
+
+	settings, _ := s.GetNFSAdapterSettings(ctx, adapter.ID)
+	settings.MDNSEnabled = true
+	if err := s.UpdateNFSAdapterSettings(ctx, settings); err != nil {
+		t.Fatalf("UpdateNFSAdapterSettings failed: %v", err)
+	}
+	updated, _ := s.GetNFSAdapterSettings(ctx, adapter.ID)
+	if !updated.MDNSEnabled {
+		t.Error("NFS MDNSEnabled did not persist through Update")
+	}
+}
+
 func TestResetSMBAdapterSettings_RestoresDefaults(t *testing.T) {
 	s, adapter := createTestStoreWithSMBAdapter(t)
 	ctx := context.Background()

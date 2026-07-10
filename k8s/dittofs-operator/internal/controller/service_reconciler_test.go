@@ -200,8 +200,8 @@ func TestReconcileAdapterServices_CreateServices(t *testing.T) {
 	if nfsSvc.Name != "test-server-adapter-nfs" {
 		t.Errorf("Expected NFS service name 'test-server-adapter-nfs', got %s", nfsSvc.Name)
 	}
-	if len(nfsSvc.Spec.Ports) != 4 {
-		t.Fatalf("Expected NFS service to have 4 ports (NFS TCP + portmapper TCP + portmapper UDP + NFS UDP), got %d: %v", len(nfsSvc.Spec.Ports), nfsSvc.Spec.Ports)
+	if len(nfsSvc.Spec.Ports) != 5 {
+		t.Fatalf("Expected NFS service to have 5 ports (NFS TCP + portmapper TCP + portmapper UDP + NFS UDP + mDNS), got %d: %v", len(nfsSvc.Spec.Ports), nfsSvc.Spec.Ports)
 	}
 	nfsSvcPortMap := make(map[string]corev1.ServicePort)
 	for _, p := range nfsSvc.Spec.Ports {
@@ -220,7 +220,7 @@ func TestReconcileAdapterServices_CreateServices(t *testing.T) {
 		t.Errorf("Expected NFS service type LoadBalancer, got %s", nfsSvc.Spec.Type)
 	}
 
-	// Check SMB Service (should have 1 port, no portmapper).
+	// Check SMB Service (SMB TCP + discovery ports, no portmapper).
 	smbSvc, ok := svcByType["smb"]
 	if !ok {
 		t.Fatal("SMB adapter Service not found")
@@ -228,8 +228,8 @@ func TestReconcileAdapterServices_CreateServices(t *testing.T) {
 	if smbSvc.Name != "test-server-adapter-smb" {
 		t.Errorf("Expected SMB service name 'test-server-adapter-smb', got %s", smbSvc.Name)
 	}
-	if len(smbSvc.Spec.Ports) != 1 || smbSvc.Spec.Ports[0].Port != 12445 {
-		t.Errorf("Expected SMB port 12445, got %v", smbSvc.Spec.Ports)
+	if len(smbSvc.Spec.Ports) != 4 || smbSvc.Spec.Ports[0].Port != 12445 {
+		t.Errorf("Expected SMB port 12445 plus discovery ports, got %v", smbSvc.Spec.Ports)
 	}
 
 	// Check owner references.
@@ -306,8 +306,8 @@ func TestReconcileAdapterServices_UpdatePortChange(t *testing.T) {
 		t.Fatalf("Failed to get updated Service: %v", err)
 	}
 
-	if len(updated.Spec.Ports) != 4 {
-		t.Fatalf("Expected 4 ports (NFS TCP + portmapper TCP + portmapper UDP + NFS UDP), got %d", len(updated.Spec.Ports))
+	if len(updated.Spec.Ports) != 5 {
+		t.Fatalf("Expected 5 ports (NFS TCP + portmapper TCP + portmapper UDP + NFS UDP + mDNS), got %d", len(updated.Spec.Ports))
 	}
 	updatedPortMap := make(map[string]corev1.ServicePort)
 	for _, p := range updated.Spec.Ports {
@@ -544,8 +544,10 @@ func TestReconcileContainerPorts_AddsAdapterPorts(t *testing.T) {
 	}
 
 	ports := updated.Spec.Template.Spec.Containers[0].Ports
-	if len(ports) != 5 {
-		t.Fatalf("Expected 5 ports (nfs, api, adapter-nfs, %s, %s), got %d: %v", portmapperContainerPortName, portmapperUDPContainerPortName, len(ports), portNames(ports))
+	// nfs, api (static) + adapter-nfs, portmapper TCP+UDP, and the shared mDNS
+	// discovery port (issue #1609).
+	if len(ports) != 6 {
+		t.Fatalf("Expected 6 ports (nfs, api, adapter-nfs, %s, %s, %s), got %d: %v", portmapperContainerPortName, portmapperUDPContainerPortName, mdnsContainerPortName, len(ports), portNames(ports))
 	}
 
 	// Verify both static "nfs" and dynamic "adapter-nfs" + portmapper (TCP+UDP) coexist.
@@ -568,6 +570,9 @@ func TestReconcileContainerPorts_AddsAdapterPorts(t *testing.T) {
 	}
 	if portMap[portmapperUDPContainerPortName] != portmapperContainerPort {
 		t.Errorf("Dynamic %s port should be %d, got %d", portmapperUDPContainerPortName, portmapperContainerPort, portMap[portmapperUDPContainerPortName])
+	}
+	if portMap[mdnsContainerPortName] != mdnsDiscoveryPort {
+		t.Errorf("Dynamic %s port should be %d, got %d", mdnsContainerPortName, mdnsDiscoveryPort, portMap[mdnsContainerPortName])
 	}
 }
 
@@ -638,13 +643,15 @@ func TestReconcileContainerPorts_RemovesStoppedAdapterPorts(t *testing.T) {
 func TestReconcileContainerPorts_NoChange_NoUpdate(t *testing.T) {
 	ds := newTestDittoServer("test-server", "default")
 
-	// Create StatefulSet with static ports AND matching dynamic adapter-nfs + adapter-portmap ports (TCP+UDP).
+	// Create StatefulSet with static ports AND matching dynamic adapter-nfs +
+	// adapter-portmap ports (TCP+UDP) + the shared mDNS discovery port.
 	ports := []corev1.ContainerPort{
 		{Name: "nfs", ContainerPort: 12049, Protocol: corev1.ProtocolTCP},
 		{Name: "api", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 		{Name: "adapter-nfs", ContainerPort: 12049, Protocol: corev1.ProtocolTCP},
 		{Name: portmapperContainerPortName, ContainerPort: portmapperContainerPort, Protocol: corev1.ProtocolTCP},
 		{Name: portmapperUDPContainerPortName, ContainerPort: portmapperContainerPort, Protocol: corev1.ProtocolUDP},
+		{Name: mdnsContainerPortName, ContainerPort: mdnsDiscoveryPort, Protocol: corev1.ProtocolUDP},
 	}
 	sts := newTestStatefulSet("test-server", "default", ports)
 
@@ -1013,8 +1020,12 @@ func TestSyncManagedAnnotations_ClearsAll(t *testing.T) {
 
 func TestBuildAdapterServicePorts_NFS(t *testing.T) {
 	ports := buildAdapterServicePorts("nfs", AdapterInfo{Port: 12049})
-	if len(ports) != 4 {
-		t.Fatalf("Expected 4 ports for NFS (NFS TCP + portmapper TCP + portmapper UDP + NFS data port UDP), got %d", len(ports))
+	// NFS TCP + portmapper TCP + portmapper UDP + NFS data port UDP + mDNS (#1609).
+	if len(ports) != 5 {
+		t.Fatalf("Expected 5 ports for NFS, got %d: %v", len(ports), servicePortNames(ports))
+	}
+	if !hasServicePort(ports, mdnsPortName, mdnsDiscoveryPort, corev1.ProtocolUDP) {
+		t.Errorf("Expected NFS Service to expose the mDNS port %d/UDP", mdnsDiscoveryPort)
 	}
 
 	// First port: NFS
@@ -1043,12 +1054,42 @@ func TestBuildAdapterServicePorts_NFS(t *testing.T) {
 
 func TestBuildAdapterServicePorts_SMB(t *testing.T) {
 	ports := buildAdapterServicePorts("smb", AdapterInfo{Port: 12445})
-	if len(ports) != 1 {
-		t.Fatalf("Expected 1 port for SMB (no portmapper), got %d", len(ports))
+	// SMB TCP (no portmapper) + mDNS + WS-Discovery UDP + WS-Discovery metadata (#1609).
+	if len(ports) != 4 {
+		t.Fatalf("Expected 4 ports for SMB, got %d: %v", len(ports), servicePortNames(ports))
 	}
 	if ports[0].Port != 12445 {
 		t.Errorf("Expected SMB port 12445, got %d", ports[0].Port)
 	}
+	if !hasServicePort(ports, mdnsPortName, mdnsDiscoveryPort, corev1.ProtocolUDP) {
+		t.Errorf("Expected SMB Service to expose the mDNS port %d/UDP", mdnsDiscoveryPort)
+	}
+	if !hasServicePort(ports, wsdPortName, wsdDiscoveryPort, corev1.ProtocolUDP) {
+		t.Errorf("Expected SMB Service to expose the WS-Discovery port %d/UDP", wsdDiscoveryPort)
+	}
+	if !hasServicePort(ports, wsdMetaPortName, wsdMetadataPort, corev1.ProtocolTCP) {
+		t.Errorf("Expected SMB Service to expose the WS-Discovery metadata port %d/TCP", wsdMetadataPort)
+	}
+}
+
+// hasServicePort reports whether ports contains a port with the given name,
+// port number, and protocol.
+func hasServicePort(ports []corev1.ServicePort, name string, port int32, proto corev1.Protocol) bool {
+	for _, p := range ports {
+		if p.Name == name && p.Port == port && p.Protocol == proto {
+			return true
+		}
+	}
+	return false
+}
+
+// servicePortNames returns the names of the given service ports for diagnostics.
+func servicePortNames(ports []corev1.ServicePort) []string {
+	names := make([]string, len(ports))
+	for i, p := range ports {
+		names[i] = p.Name
+	}
+	return names
 }
 
 func TestServicePortsMatch(t *testing.T) {
@@ -1163,14 +1204,25 @@ func TestReconcileContainerPorts_SMB_NoPortmapperPort(t *testing.T) {
 		portMap[p.Name] = p.ContainerPort
 	}
 
-	// Should have api (static) + adapter-smb (dynamic), no portmapper.
-	if len(ports) != 2 {
-		t.Fatalf("Expected 2 ports (api, adapter-smb), got %d: %v", len(ports), portNames(ports))
+	// Should have api (static) + adapter-smb + the discovery ports (mDNS, WSD
+	// UDP, WSD metadata), no portmapper.
+	if len(ports) != 5 {
+		t.Fatalf("Expected 5 ports (api, adapter-smb, %s, %s, %s), got %d: %v",
+			mdnsContainerPortName, wsdContainerPortName, wsdMetaContainerPortName, len(ports), portNames(ports))
 	}
 	if _, exists := portMap[portmapperContainerPortName]; exists {
 		t.Error("SMB adapter should NOT have portmapper container port")
 	}
 	if portMap["adapter-smb"] != 12445 {
 		t.Errorf("Expected adapter-smb port 12445, got %d", portMap["adapter-smb"])
+	}
+	if portMap[mdnsContainerPortName] != mdnsDiscoveryPort {
+		t.Errorf("Expected %s port %d, got %d", mdnsContainerPortName, mdnsDiscoveryPort, portMap[mdnsContainerPortName])
+	}
+	if portMap[wsdContainerPortName] != wsdDiscoveryPort {
+		t.Errorf("Expected %s port %d, got %d", wsdContainerPortName, wsdDiscoveryPort, portMap[wsdContainerPortName])
+	}
+	if portMap[wsdMetaContainerPortName] != wsdMetadataPort {
+		t.Errorf("Expected %s port %d, got %d", wsdMetaContainerPortName, wsdMetadataPort, portMap[wsdMetaContainerPortName])
 	}
 }
