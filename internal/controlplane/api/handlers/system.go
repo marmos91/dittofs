@@ -90,6 +90,18 @@ func (h *SystemHandler) DrainUploads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clear this connection's write deadline. A multi-GiB flush legitimately runs
+	// for minutes, far longer than http.Server.WriteTimeout (10s by default, 120s
+	// under pprof); without this the transport tears the connection down mid-drain
+	// and the client sees a bare EOF — not the 200/504 this handler returns. The
+	// request-deadline detachment below handles chi middleware.Timeout; this
+	// handles the separate transport-level write deadline. Best-effort: the stdlib
+	// server's ResponseWriter supports it; a wrapper that does not just keeps its
+	// deadline (#1627 fixed the symmetric client-side timeout).
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+		logger.Warn("drain-uploads: could not clear write deadline; a long drain may be cut off", "error", err)
+	}
+
 	// Detach from the request deadline (total <= 0 → no wall-clock cap); the
 	// idle watchdog below is the only bound. A real client disconnect still
 	// cancels via the helper. cancel doubles as the watchdog's abort handle.
