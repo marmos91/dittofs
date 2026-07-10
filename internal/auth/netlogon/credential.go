@@ -100,6 +100,17 @@ func (p *MutableProvider) Credential(ctx context.Context) (*MachineCredential, e
 	return &cp, nil
 }
 
+// snapshot returns a copy of the current credential WITHOUT validation, for
+// status introspection: `netlogon status` must report the account/realm/domain
+// even when the credential is incomplete (e.g. after an API hot-reload disabled
+// passthrough by installing an empty credential), where Credential would instead
+// return a validation error.
+func (p *MutableProvider) snapshot() MachineCredential {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.cred
+}
+
 // Set atomically replaces the credential. The next Credential call (and thus the
 // next secure-channel rebuild) uses the new value. It does not itself tear down
 // any cached channel — callers that want the change to take effect immediately

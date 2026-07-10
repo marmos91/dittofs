@@ -45,6 +45,11 @@ func (m *machineSecretStore) SetMachineSecret(ctx context.Context, secret string
 // It also returns a *netlogon.RotationManager when the online-join provider is
 // active (nil otherwise); the caller starts it and stops it on shutdown.
 //
+// The third return is a *netlogon.Controller (nil when passthrough is disabled):
+// the runtime handle the caller registers with the Runtime so the admin API can
+// report `netlogon status` and force `netlogon rotate` against this running
+// authenticator (#1631).
+//
 // The offline path is backed by a netlogon.MutableProvider so the machine
 // credential / DC binding can be hot-reloaded over the API without a restart
 // (#1325). The online-join path (#1323) owns its own credential lifecycle via
@@ -58,9 +63,9 @@ func (m *machineSecretStore) SetMachineSecret(ctx context.Context, secret string
 // ReloadCredential/Close methods for the #1325 hot-reload and shutdown. The
 // disabled path returns a nil *Authenticator, so callers can test `auth == nil`
 // directly.
-func buildNetlogonAuthenticator(k config.KerberosConfig, secret netlogon.SecretStore) (*netlogon.Authenticator, *netlogon.RotationManager) {
+func buildNetlogonAuthenticator(k config.KerberosConfig, secret netlogon.SecretStore) (*netlogon.Authenticator, *netlogon.RotationManager, *netlogon.Controller) {
 	if !k.MachineAccount.Enabled {
-		return nil, nil
+		return nil, nil, nil
 	}
 	ma := k.MachineAccount
 
@@ -70,15 +75,15 @@ func buildNetlogonAuthenticator(k config.KerberosConfig, secret netlogon.SecretS
 	if ma.OnlineJoin.Enabled {
 		if ma.AccountName == "" {
 			slog.Warn("NETLOGON machine account is enabled but AccountName is not set; NTLM passthrough disabled")
-			return nil, nil
+			return nil, nil, nil
 		}
 		if k.NetBIOSDomain == "" {
 			slog.Warn("NETLOGON machine account is enabled but kerberos.netbios_domain (DomainName) is not set; NTLM passthrough disabled")
-			return nil, nil
+			return nil, nil, nil
 		}
 		if k.Realm == "" {
 			slog.Warn("NETLOGON machine account is enabled but kerberos.realm is not set (required for the Kerberos SMB session to the DC and for DNS SRV discovery); NTLM passthrough disabled")
-			return nil, nil
+			return nil, nil, nil
 		}
 
 		// Derive the NetBIOS workstation name. MS-NRPC §3.1.4.1 requires the short
@@ -112,20 +117,24 @@ func buildNetlogonAuthenticator(k config.KerberosConfig, secret netlogon.SecretS
 		provider := netlogon.NewOnlineProvider(cfg, secret)
 		auth := netlogon.NewAuthenticator(provider)
 		rot := netlogon.NewRotationManager(provider, auth, oj.RotationInterval)
+		ctrl := netlogon.NewController(netlogon.ProviderOnlineJoin, auth, provider, rot)
 		slog.Info("NETLOGON machine account: online-join provider active",
 			"account", ma.AccountName, "ldap_url", oj.LDAPURL, "rotation_interval", oj.RotationInterval)
-		return auth, rot
+		return auth, rot, ctrl
 	}
 
 	// Offline path: a static admin-supplied secret, wrapped in a MutableProvider so
 	// the credential can be hot-reloaded over the API without a restart (#1325).
 	cred, ok := netlogonCredentialFromConfig(k)
 	if !ok {
-		return nil, nil
+		return nil, nil, nil
 	}
+	provider := netlogon.NewMutableProvider(cred)
+	auth := netlogon.NewAuthenticator(provider)
+	ctrl := netlogon.NewController(netlogon.ProviderOffline, auth, provider, nil)
 	slog.Info("NETLOGON machine account: offline provider active",
 		"account", ma.AccountName, "dc_addresses", ma.DCAddresses)
-	return netlogon.NewAuthenticator(netlogon.NewMutableProvider(cred)), nil
+	return auth, nil, ctrl
 }
 
 // netlogonCredentialFromConfig validates the machine-account sub-block and, when

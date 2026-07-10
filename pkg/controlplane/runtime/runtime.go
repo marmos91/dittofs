@@ -1069,6 +1069,25 @@ func (r *Runtime) NetlogonCredential() *netlogon.MachineCredential {
 	return r.netlogonCredential
 }
 
+// netlogonControllerKey is the adapter-provider key under which the NETLOGON
+// machine-account controller is registered (#1631).
+const netlogonControllerKey = "netlogon"
+
+// SetNetlogonController registers the NETLOGON machine-account controller so the
+// admin API (`netlogon status` / `netlogon rotate`) can introspect and rotate the
+// machine account on the running server. Set once at startup when passthrough is
+// configured; a nil-controller process simply never registers one.
+func (r *Runtime) SetNetlogonController(c *netlogon.Controller) {
+	r.SetAdapterProvider(netlogonControllerKey, c)
+}
+
+// NetlogonController returns the registered NETLOGON machine-account controller,
+// or nil when passthrough is not configured on this server.
+func (r *Runtime) NetlogonController() *netlogon.Controller {
+	c, _ := r.GetAdapterProvider(netlogonControllerKey).(*netlogon.Controller)
+	return c
+}
+
 // OnIdentityMappingChange registers a callback invoked when identity mappings
 // are created or deleted via the API. Adapters use this to invalidate their
 // identity resolver caches. Returns an unsubscribe function.

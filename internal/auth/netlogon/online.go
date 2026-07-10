@@ -42,9 +42,43 @@ type onlineProvider struct {
 	secret SecretStore
 	dial   ldapDialer // swapped in tests; defaults to dialAndBindJoin
 
-	mu       sync.Mutex
-	password string // current machine password (loaded or generated)
-	joined   bool   // true once the account is provisioned + password persisted
+	mu           sync.Mutex
+	password     string    // current machine password (loaded or generated)
+	joined       bool      // true once the account is provisioned + password persisted
+	lastRotation time.Time // zero until the first successful rotation this run
+
+	// rotateMu serializes rotations so a manual `netlogon rotate` cannot race the
+	// scheduled RotationManager and set two different passwords on the DC at once
+	// (which would leave the persisted secret out of sync with whichever set won).
+	rotateMu sync.Mutex
+}
+
+// onlineSnapshot is a side-effect-free view of an onlineProvider's introspectable
+// state, used by the Controller to build a Status without triggering the lazy AD
+// join (which a Credential() call would).
+type onlineSnapshot struct {
+	account      string
+	realm        string
+	domain       string
+	dc           []string
+	joined       bool
+	lastRotation time.Time
+}
+
+// snapshot returns the provider's current introspectable state under its lock.
+// It performs no directory or DC I/O — in particular it does NOT provision the
+// account — so it is safe to call for `netlogon status` at any time.
+func (p *onlineProvider) snapshot() onlineSnapshot {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return onlineSnapshot{
+		account:      p.cfg.AccountName,
+		realm:        p.cfg.Realm,
+		domain:       p.cfg.DomainName,
+		dc:           p.cfg.DCAddresses,
+		joined:       p.joined,
+		lastRotation: p.lastRotation,
+	}
 }
 
 // NewOnlineProvider creates an online-join provider. The provider is lazy: no
@@ -136,6 +170,11 @@ func (p *onlineProvider) ensureJoinedLocked(ctx context.Context) error {
 // the DC must accept the new password before we persist/switch, or a crash
 // between steps would leave the persisted secret out of sync with the DC.
 func (p *onlineProvider) rotate(ctx context.Context, auth *Authenticator) error {
+	// Serialize concurrent rotations (scheduled timer vs. a forced `netlogon
+	// rotate`) so only one PasswordSet2 → persist sequence runs at a time.
+	p.rotateMu.Lock()
+	defer p.rotateMu.Unlock()
+
 	newPassword, err := generateMachinePassword()
 	if err != nil {
 		return err
@@ -152,6 +191,7 @@ func (p *onlineProvider) rotate(ctx context.Context, auth *Authenticator) error 
 	// expects — keeping the old one would break all NTLM passthrough).
 	p.mu.Lock()
 	p.password = newPassword
+	p.lastRotation = time.Now()
 	p.mu.Unlock()
 
 	// Then persist so the new secret survives a restart.
@@ -185,6 +225,9 @@ type RotationManager struct {
 	startOnce sync.Once
 	stopOnce  sync.Once
 	started   atomic.Bool
+	// startedAt is the UnixNano at which the ticker started, so nextRotation can
+	// project the fixed-cadence firing schedule for `netlogon status`.
+	startedAt atomic.Int64
 }
 
 // NewRotationManager wires an online provider to its authenticator for periodic
@@ -211,9 +254,26 @@ func (m *RotationManager) Start() {
 		return
 	}
 	m.startOnce.Do(func() {
+		m.startedAt.Store(time.Now().UnixNano())
 		m.started.Store(true)
 		go m.run()
 	})
+}
+
+// nextRotation projects the next scheduled rotation time from the ticker's fixed
+// cadence (startedAt + k*interval). It returns the zero time when the manager is
+// nil or was never started, so `netlogon status` can report "not scheduled".
+func (m *RotationManager) nextRotation() time.Time {
+	if m == nil || !m.started.Load() {
+		return time.Time{}
+	}
+	start := time.Unix(0, m.startedAt.Load())
+	now := time.Now()
+	if !now.After(start) {
+		return start.Add(m.interval)
+	}
+	n := now.Sub(start) / m.interval
+	return start.Add((n + 1) * m.interval)
 }
 
 func (m *RotationManager) run() {

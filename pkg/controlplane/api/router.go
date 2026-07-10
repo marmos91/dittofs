@@ -499,6 +499,20 @@ func NewRouter(rt *runtime.Runtime, jwtService *auth.JWTService, cpStore store.S
 				r.Post("/{type}/test", idpHandler.Test)
 			})
 
+			// NETLOGON machine-account (NTLM pass-through) status + rotation
+			// against the running server — admin only. Mounted only when
+			// pass-through is configured (the controller is registered at
+			// startup); otherwise the routes cleanly 404.
+			if rt != nil {
+				if nlHandler := handlers.NewNetlogonHandler(rt.NetlogonController()); nlHandler != nil {
+					r.Route("/netlogon", func(r chi.Router) {
+						r.Use(apiMiddleware.RequireAdmin())
+						r.Get("/status", nlHandler.Status)
+						r.Post("/rotate", nlHandler.Rotate)
+					})
+				}
+			}
+
 			// Unified client listing and disconnect (admin only) - all protocols
 			if clientHandler := handlers.NewClientHandler(rt); clientHandler != nil {
 				r.Route("/clients", func(r chi.Router) {
