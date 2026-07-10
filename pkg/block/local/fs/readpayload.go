@@ -10,6 +10,8 @@ import (
 	"slices"
 	"sync"
 
+	"lukechampine.com/blake3"
+
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
@@ -318,6 +320,18 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 				// past this chunk; the caller falls back to remote for it.
 				data = nil
 			}
+			if data != nil && block.ContentHash(blake3.Sum256(data)) != fb.Hash {
+				// Local bytes are corrupt (blake3 of the on-disk chunk does not
+				// match the manifest hash). Do NOT serve them: leave this region
+				// uncovered so ReadPayloadAt returns a miss and the engine routes
+				// the read to the blake3-verified remote-fetch/heal path
+				// (readLocalByHash -> healLocalChunk / ensureAndReadFromLocal).
+				// Mirrors the verify readLocalByHash already does on the sibling
+				// CAS-hash walk — without it silent local corruption reaches the
+				// client (warm reads have no integrity gate; the cold/remote path
+				// does).
+				data = nil
+			}
 			if data != nil {
 				// Clamp visible data to DataSize so a padded on-disk chunk
 				// does not leak garbage past the rollup-emitted byte count.
@@ -394,6 +408,13 @@ func (bc *FSStore) fillFromCASManifestScan(ctx context.Context, payloadID string
 				continue
 			}
 			return fmt.Errorf("ReadPayloadAt: Get chunk %s: %w", r.fb.Hash.String(), gerr)
+		}
+		if block.ContentHash(blake3.Sum256(data)) != r.fb.Hash {
+			// Corrupt local bytes: skip (leave uncovered) so the engine routes
+			// this read to the blake3-verified remote-fetch/heal path rather than
+			// serving silently-wrong data. Mirrors the fast-path guard above and
+			// readLocalByHash's verify.
+			continue
 		}
 		// Clamp the visible data to DataSize so a padded on-disk chunk
 		// does not leak garbage past the rollup-emitted byte count.
