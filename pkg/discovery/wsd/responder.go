@@ -309,7 +309,13 @@ func (r *Responder) send(msg []byte, dst *net.UDPAddr) {
 		return
 	}
 	if dst != nil { // unicast reply — routed normally
-		if _, err := conn.WriteToUDP(msg, dst); err != nil {
+		// Serialize with multicastAll: it sets a write deadline on the shared
+		// conn, and without this lock a concurrent unicast reply could inherit
+		// that deadline and time out.
+		r.sendMu.Lock()
+		_, err := conn.WriteToUDP(msg, dst)
+		r.sendMu.Unlock()
+		if err != nil {
 			logger.Debug("wsd: send failed", "error", err)
 		}
 		return

@@ -153,8 +153,9 @@ func (r *Responder) unregister(id uint64) {
 		return
 	}
 
-	// Stop this registration's re-announce loop before the goodbye so it cannot
-	// re-multicast the withdrawn records afterwards.
+	// Stop this registration's re-announce loop before the goodbye. This is
+	// best-effort ordering: an announce() already blocked on sendMu can still
+	// fire once after the goodbye, but the loop won't schedule further sends.
 	if cancel != nil {
 		cancel()
 	}
@@ -177,9 +178,10 @@ func (r *Responder) startLocked() error {
 	// bind succeeds yet the kernel delivers no inbound multicast to us, so Finder
 	// queries never reach the responder.
 	lc := net.ListenConfig{Control: reusePort}
-	pc, err := lc.ListenPacket(context.Background(), "udp4", fmt.Sprintf("%s:%d", multicastGroupV4, multicastPort))
+	addr := fmt.Sprintf("%s:%d", multicastGroupV4, multicastPort)
+	pc, err := lc.ListenPacket(context.Background(), "udp4", addr)
 	if err != nil {
-		return fmt.Errorf("mdns: listen :%d: %w", multicastPort, err)
+		return fmt.Errorf("mdns: listen %s: %w", addr, err)
 	}
 	conn := pc.(*net.UDPConn)
 	r.conn = conn
