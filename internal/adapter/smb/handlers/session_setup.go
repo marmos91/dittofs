@@ -765,6 +765,35 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 	), nil
 }
 
+// bindIdentityMatchesSession reports whether the identity authenticated on a
+// SESSION_SETUP bind is the same principal that owns the existing session
+// (MS-SMB2 §3.3.5.5.2). A bind must attach the SAME user to the session; a
+// different identity is a security boundary violation the caller rejects with
+// STATUS_ACCESS_DENIED.
+//
+// Matching is by the Windows SID — the authoritative, globally-unique identity
+// for a directory-resolved / NETLOGON pass-through domain user, stamped by
+// synthUserFromResolved onto both the primary session's user and this bind's
+// user. If EITHER identity carries a SID (i.e. is a directory/domain principal),
+// the bind MUST match by SID; the username fallback is reserved for pure-local
+// sessions where NEITHER side has a SID. Allowing the fallback when only one
+// side has a SID would let a SID-less local account named "alice" bind onto
+// DOMAIN\alice's session and inherit her authorization context (a privilege
+// escalation — control-plane accounts may legitimately have an empty SID). The
+// fallback is case-insensitive, matching Windows username semantics.
+func bindIdentityMatchesSession(sess *session.Session, authUser *models.User) bool {
+	if authUser == nil || sess == nil || sess.User == nil {
+		return false
+	}
+	if authUser.SID != "" || sess.User.SID != "" {
+		// Equal only when both are the same non-empty SID: a SID-vs-empty
+		// comparison is unequal, so a SID-less identity can never bind onto a
+		// SID-bearing session (and vice versa).
+		return authUser.SID == sess.User.SID
+	}
+	return strings.EqualFold(authUser.Username, sess.User.Username)
+}
+
 // completeSessionBind finalizes an SMB2 session bind after NTLM auth proved
 // identity on the new connection. Instead of creating a new session (normal
 // completeNTLMAuth path), it registers a session.Channel on the existing
@@ -796,7 +825,9 @@ func (h *Handler) completeSessionBind(
 	// user (MS-SMB2 §3.3.5.5.2: "If the user represented by
 	// Session.SecurityContext is not the same as the user authenticated by
 	// the security subsystem, the server MUST return STATUS_ACCESS_DENIED").
-	if authUser == nil || sess.User == nil || authUser.Username != sess.User.Username {
+	// A mismatch is a security boundary — a bind must never attach a different
+	// identity to an existing session — so log it at Warn.
+	if !bindIdentityMatchesSession(sess, authUser) {
 		sessUser := "<nil>"
 		if sess.User != nil {
 			sessUser = sess.User.Username
@@ -805,7 +836,7 @@ func (h *Handler) completeSessionBind(
 		if authUser != nil {
 			authUserName = authUser.Username
 		}
-		logger.Info("SESSION_SETUP bind: identity mismatch",
+		logger.Warn("SESSION_SETUP bind: identity mismatch",
 			"sessionID", pending.BindingSessionID,
 			"sessionUser", sessUser,
 			"bindUser", authUserName,
@@ -1272,19 +1303,33 @@ func (h *Handler) completeNTLMAuth(ctx *SMBHandlerContext, securityBuffer []byte
 		// User not found or disabled
 		if err != nil || user == nil {
 			logger.Debug("User not found in UserStore", "username", resolvedUsername, "error", err)
-			// NETLOGON domain-user fallback (#1314): a domain user with no local
+			// NETLOGON domain-user fallback: a domain user with no local
 			// control-plane account may still be authenticated by forwarding the
 			// NTLM response to a Domain Controller over a NETLOGON secure channel.
 			// Mirrors the Kerberos directory-resolved-identity path (#1317): the DC
 			// returns the SIDs + session base key, the resolver maps the SID to a
-			// UID/GID, and a transient session is synthesized. Only attempted on a
-			// fresh, non-binding SESSION_SETUP — a bind must match the existing
-			// session's identity, and a re-auth must not resurrect a passed-through
-			// identity. Fails closed: on a missing authenticator or any DC error,
+			// UID/GID.
+			//
+			// Re-auth is ALWAYS excluded (a re-auth must not resurrect a
+			// passed-through identity in place of the original). The two other
+			// paths differ only in what they build:
+			//   - fresh, non-binding SESSION_SETUP (#1314): synthesize a new
+			//     session for the resolved identity (tryNetlogonFallback);
+			//   - session bind / multichannel (#1632): validate the SAME domain
+			//     user on an additional connection and register a channel on the
+			//     existing session (tryNetlogonBind). completeSessionBind enforces
+			//     that the DC-resolved identity matches the bound session's user,
+			//     rejecting a mismatch with STATUS_ACCESS_DENIED.
+			//
+			// Both fail closed: on a missing authenticator or any DC error,
 			// execution falls through to the LOGON_FAILURE / reauth-destroy paths
-			// below (never guest, never partial session).
-			if !pending.IsBinding && !pending.IsReauth {
-				if res, handled := h.tryNetlogonFallback(ctx, pending, authMsg); handled {
+			// below (never guest, never partial session, never a replaced session).
+			if !pending.IsReauth {
+				if pending.IsBinding {
+					if res, handled := h.tryNetlogonBind(ctx, pending, authMsg); handled {
+						return res, nil
+					}
+				} else if res, handled := h.tryNetlogonFallback(ctx, pending, authMsg); handled {
 					return res, nil
 				}
 			}
@@ -1415,6 +1460,90 @@ func (h *Handler) tryNetlogonFallback(ctx *SMBHandlerContext, pending *PendingAu
 		"isGuest", sess.IsGuest, "signingEnabled", sess.ShouldSign(), "encryptData", sess.ShouldEncrypt())
 
 	return h.buildAuthenticatedResponse(pending, signingKey[:], authMsg.NegotiateFlags, sess.ShouldEncrypt()), true
+}
+
+// tryNetlogonBind validates a domain user that has no local control-plane
+// account on an SMB2 session-bind (multichannel) path (#1632) and, when the
+// DC-resolved identity matches the bound session's existing user, registers a
+// new signing channel on that session.
+//
+// It mirrors tryNetlogonFallback's DC exchange and SID resolution but, instead
+// of synthesizing a fresh session, completes a channel bind via
+// completeSessionBind. The channel signing key is derived from the DC-returned
+// SessionBaseKey exactly as the fresh-session and local-user bind paths do
+// (auth.DeriveSigningKey honors KEY_EXCH by RC4-unwrapping the client's
+// EncryptedRandomSessionKey when NTLMSSP_NEGOTIATE_KEY_EXCH is set);
+// completeSessionBind then feeds that key into session.DeriveChannelSigningKey.
+// The identity match against the existing session's user is enforced inside
+// completeSessionBind, which returns STATUS_ACCESS_DENIED on a mismatch — a bind
+// must never attach a different identity to an existing session.
+//
+// Returns (result, true) when this path produced a terminal verdict: a
+// registered channel (STATUS_SUCCESS) on success, or STATUS_ACCESS_DENIED on an
+// identity mismatch. Returns (nil, false) when the fallback is unavailable or
+// could not complete (no authenticator, DC error, or unresolvable SID) so the
+// caller falls through to STATUS_LOGON_FAILURE. It NEVER creates, replaces, or
+// downgrades the existing session.
+//
+// Only called on a binding (IsBinding), non-reauth SESSION_SETUP (enforced by
+// the caller): a re-auth must not resurrect a passed-through identity.
+func (h *Handler) tryNetlogonBind(ctx *SMBHandlerContext, pending *PendingAuth, authMsg *auth.AuthenticateMessage) (*HandlerResult, bool) {
+	// Disabled (no authenticator injected): behave exactly as before — the
+	// caller returns STATUS_LOGON_FAILURE for the unknown domain user, leaving
+	// the existing session untouched.
+	if h.NetlogonAuth == nil {
+		return nil, false
+	}
+
+	res, err := h.NetlogonAuth.NetworkLogon(ctx.Context, netlogon.NetworkLogonRequest{
+		Username:        authMsg.Username,
+		Domain:          authMsg.Domain,
+		ServerChallenge: pending.ServerChallenge,
+		NTResponse:      authMsg.NtChallengeResponse,
+		LMResponse:      authMsg.LmChallengeResponse,
+	})
+	if err != nil {
+		// Fail closed: the DC rejected the credential or the channel failed.
+		// Fall through to STATUS_LOGON_FAILURE in the caller — the primary
+		// channel keeps working, only this bind attempt fails.
+		logger.Debug("NETLOGON bind pass-through authentication failed",
+			"username", authMsg.Username, "domain", authMsg.Domain, "error", err)
+		return nil, false
+	}
+	if res == nil {
+		logger.Debug("NETLOGON bind returned a nil result without error", "username", authMsg.Username)
+		return nil, false
+	}
+
+	// Resolve the DC-returned SID to a DittoFS identity, mirroring the
+	// fresh-session path. Without a resolved identity we cannot compare against
+	// the session's user, so fail closed.
+	resolved := h.resolveNetlogonIdentity(ctx, res)
+	if resolved == nil || !resolved.Found {
+		logger.Info("NETLOGON bind pass-through succeeded but identity could not be resolved (fail closed)",
+			"username", authMsg.Username, "userSID", res.UserSID)
+		return nil, false
+	}
+	user := synthUserFromResolved(resolved)
+
+	// Derive the channel signing key from the DC-provided session base key,
+	// honoring KEY_EXCH exactly as tryNetlogonFallback and the local-user bind
+	// path do. completeSessionBind consumes this as the bind's session key.
+	signingKey := auth.DeriveSigningKey(
+		res.SessionBaseKey,
+		authMsg.NegotiateFlags,
+		authMsg.EncryptedRandomSessionKey,
+	)
+
+	ctx.IsGuest = false
+
+	logger.Info("NETLOGON bind pass-through: validated directory-resolved domain user (no local account)",
+		"username", user.Username, "userSID", res.UserSID, "domain", res.DomainName)
+
+	// completeSessionBind verifies the resolved identity matches the existing
+	// session's user (STATUS_ACCESS_DENIED on mismatch) before registering the
+	// channel, and derives the per-channel key from signingKey.
+	return h.completeSessionBind(ctx, pending, user, h.sessionDomain(authMsg.Domain), signingKey[:], authMsg.NegotiateFlags), true
 }
 
 // resolveNetlogonIdentity maps a NETLOGON LogonResult to a DittoFS identity,
