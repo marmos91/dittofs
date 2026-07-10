@@ -10,8 +10,6 @@ import (
 	"slices"
 	"sync"
 
-	"lukechampine.com/blake3"
-
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
@@ -320,7 +318,7 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 				// past this chunk; the caller falls back to remote for it.
 				data = nil
 			}
-			if data != nil && block.ContentHash(blake3.Sum256(data)) != fb.Hash {
+			if data != nil && !bc.chunkTrusted(fb.Hash, data) {
 				// Local bytes are corrupt (blake3 of the on-disk chunk does not
 				// match the manifest hash). Do NOT serve them: leave this region
 				// uncovered so ReadPayloadAt returns a miss and the engine routes
@@ -409,7 +407,7 @@ func (bc *FSStore) fillFromCASManifestScan(ctx context.Context, payloadID string
 			}
 			return fmt.Errorf("ReadPayloadAt: Get chunk %s: %w", r.fb.Hash.String(), gerr)
 		}
-		if block.ContentHash(blake3.Sum256(data)) != r.fb.Hash {
+		if !bc.chunkTrusted(r.fb.Hash, data) {
 			// Corrupt local bytes: skip (leave uncovered) so the engine routes
 			// this read to the blake3-verified remote-fetch/heal path rather than
 			// serving silently-wrong data. Mirrors the fast-path guard above and
