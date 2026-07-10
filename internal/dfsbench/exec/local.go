@@ -20,6 +20,19 @@ func Sh(ctx context.Context, name string, args ...string) error {
 	return nil
 }
 
+// Out runs a command on the local host and returns its stdout. On failure it
+// returns an error carrying stderr so a broken step is legible. Used to read
+// `dfsctl ... -o json` for the cold-barrier drain/verify polling.
+func Out(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%s %v: %w\n%s", name, args, err, errb.String())
+	}
+	return out.Bytes(), nil
+}
+
 // DropOSCache flushes and drops the kernel page cache so the next read pass is
 // genuinely cold, not served from RAM. Universal across backends (runs after a
 // backend's own Evict). Linux/root-only; best-effort — the caller warns on error

@@ -2,8 +2,10 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
 )
@@ -158,11 +160,110 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 // on local disk, so the "cold" read serves it from cache — the pass reads warm,
 // S3MB stays 0, and cold≈warm. Draining first makes every block synced and
 // therefore evictable, so the next read genuinely comes from S3.
+// dittofsColdBarrierFloorBytes is the resident-bytes threshold below which the
+// cold-barrier verification stops caring about an exact drop ratio — small
+// datasets and metadata slack shouldn't fail the check.
+const dittofsColdBarrierFloorBytes = 64 << 20 // 64 MiB
+
+// dittofsBlockTotals is the subset of `dfsctl store block stats -o json` the
+// cold barrier needs: how much is resident locally, and how much is not yet
+// durable on the remote (so DrainLocalSynced can't drop it).
+type dittofsBlockTotals struct {
+	LocalDiskUsed  int64 `json:"local_disk_used"`
+	UnsyncedBytes  int64 `json:"unsynced_bytes"`
+	PendingUploads int   `json:"pending_uploads"`
+}
+
+func dittofsBlockStats(ctx context.Context) (dittofsBlockTotals, error) {
+	out, err := exec.Out(ctx, "dfsctl", "store", "block", "stats", "-o", "json")
+	if err != nil {
+		return dittofsBlockTotals{}, fmt.Errorf("dfsctl store block stats: %w", err)
+	}
+	var resp struct {
+		Totals dittofsBlockTotals `json:"totals"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return dittofsBlockTotals{}, fmt.Errorf("parse block stats json: %w\n%s", err, out)
+	}
+	return resp.Totals, nil
+}
+
+// dittofsDrainDriftFloorBytes is the residual unsynced size the drain loop
+// tolerates as "done". A freshly-written file's final bytes sit in the append log
+// until the next rollup boundary, so a few chunks stay un-carved/un-synced
+// indefinitely without another write — requiring EXACTLY 0 loops forever. A few
+// MiB out of a multi-GiB file is <0.1% and does not meaningfully warm the cold
+// pass (the post-evict ≥80%-drop check is the real cold gate).
+const dittofsDrainDriftFloorBytes = 32 << 20 // 32 MiB
+
+// dittofsDrainUntilSynced loops `dfsctl system drain-uploads` until the store's
+// unsynced bytes fall to the drift floor, stable across two polls. A single drain
+// is not enough: rollup is async and carveFlush is snapshot-at-claim, so one pass
+// misses chunks that roll up mid-drain — leaving them locally resident and
+// un-evictable, so the "cold" pass silently reads them from local disk (the
+// confound that made several cold-read A/Bs meaningless). The short settle between
+// rounds lets the async rollup produce the next batch of CAS chunks for the
+// following drain to upload.
+func dittofsDrainUntilSynced(ctx context.Context) error {
+	const maxRounds = 60
+	stable := 0
+	for i := 0; i < maxRounds; i++ {
+		if err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads"); err != nil {
+			return fmt.Errorf("dfsctl system drain-uploads: %w", err)
+		}
+		st, err := dittofsBlockStats(ctx)
+		if err != nil {
+			return err
+		}
+		if st.UnsyncedBytes <= dittofsDrainDriftFloorBytes {
+			if stable++; stable >= 2 {
+				return nil
+			}
+		} else {
+			stable = 0
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	st, _ := dittofsBlockStats(ctx)
+	return fmt.Errorf("drain-uploads never fell below %dMiB unsynced after %d rounds (unsynced=%dMiB pending_uploads=%d) — cannot force a cold read",
+		dittofsDrainDriftFloorBytes>>20, maxRounds, st.UnsyncedBytes>>20, st.PendingUploads)
+}
+
 func dittofsEvict(ctx context.Context) error {
-	if err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads"); err != nil {
+	// Cold-read barrier. Force the whole warm-written file durable on S3, evict the
+	// local tier, then VERIFY it actually emptied — otherwise the cold pass reads
+	// locally-resident bytes and silently measures a warm read (the confound the
+	// DiskWr/NetRx meter exposed: cold pulled only ~15-33 MB/s from S3 while the
+	// data sat on the block volume).
+	before, err := dittofsBlockStats(ctx)
+	if err != nil {
 		return err
 	}
-	return exec.Sh(ctx, "dfsctl", "store", "block", "evict")
+	if err := dittofsDrainUntilSynced(ctx); err != nil {
+		return err
+	}
+	// Evict local blocks + read buffer. DrainLocalSynced drops only synced blocks;
+	// now that everything is synced it can drop the whole file.
+	if err := exec.Sh(ctx, "dfsctl", "store", "block", "evict"); err != nil {
+		return fmt.Errorf("dfsctl store block evict: %w", err)
+	}
+	after, err := dittofsBlockStats(ctx)
+	if err != nil {
+		return err
+	}
+	// Verify: the local tier must have shed the bulk of its resident bytes. If a
+	// large remainder survives (>20% of a non-trivial starting size), the cold pass
+	// would read it from disk — FAIL LOUDLY rather than emit a warm number labelled
+	// "cold". The DiskWr/NetRx columns independently confirm coldness post-hoc.
+	if before.LocalDiskUsed > dittofsColdBarrierFloorBytes && after.LocalDiskUsed*5 > before.LocalDiskUsed {
+		return fmt.Errorf("cold barrier failed: local disk only fell %dMiB→%dMiB (want ≥80%% drop); the cold pass would measure locally-served reads, not S3",
+			before.LocalDiskUsed>>20, after.LocalDiskUsed>>20)
+	}
+	return nil
 }
 
 func dittofsTeardown(ctx context.Context) error {
