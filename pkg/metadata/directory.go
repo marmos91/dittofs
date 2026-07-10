@@ -227,6 +227,7 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 	// rmdir decrements the parent's link-count key (dropping the ".." ref, below).
 	// Serialize that per-parent against concurrent mkdir/rmdir on the same parent
 	// so the shared counter key is never a BadgerDB SSI conflict source (#1571).
+	now := time.Now()
 	defer s.lockParentLink(parentHandle)()
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// Re-read the parent inside the transaction so the pre-op snapshot and
@@ -234,6 +235,10 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 		if txParent, pErr := tx.GetFile(ctx.Context, parentHandle); pErr == nil && txParent != nil {
 			parent = txParent
 		}
+		// Overlay any pending coalesced bump so Before reflects the same mtime a
+		// concurrent GETATTR would see (and that the prior op's After returned),
+		// keeping WCC continuity — the tx read only sees durable state (#1573).
+		s.mergeDirTimes(parentHandle, &parent.FileAttr)
 		wcc.Before = CopyFileAttr(&parent.FileAttr)
 
 		// Remove directory entry
@@ -254,18 +259,23 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 			}
 		}
 
-		// Update parent timestamps (including Atime per MS-FSA 2.1.4.4)
-		now := time.Now()
-		parent.Mtime = now
-		parent.Ctime = now
-		parent.Atime = now
-		wcc.After = CopyFileAttr(&parent.FileAttr)
-		return tx.PutFile(ctx.Context, parent)
+		return nil
 	})
 
 	if txErr != nil {
 		return nil, txErr
 	}
+
+	// Coalesce the parent directory timestamp bump (Mtime/Ctime/Atime per
+	// MS-FSA 2.1.4.4) out of the transaction, same as create/unlink, so the
+	// rmdir transaction touches only disjoint namespace keys and never the
+	// shared parent-inode key that made concurrent same-parent ops serialize
+	// (#1573/#1643). The read overlay (mergeDirTimes) makes the bump visible.
+	s.recordDirTimes(ctx.Context, parentHandle, now)
+	parent.Mtime = now
+	parent.Ctime = now
+	parent.Atime = now
+	wcc.After = CopyFileAttr(&parent.FileAttr)
 
 	// The removed directory can no longer be read; drop any coalesced timestamps
 	// still pending for it so the tracker map does not accumulate dead handles
