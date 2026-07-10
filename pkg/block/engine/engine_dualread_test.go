@@ -403,15 +403,19 @@ func TestEnsureAvailableAndRead_RelocatedChunkReResolvesOnMiss(t *testing.T) {
 	env.rs.onReadChunk = relocateOnFirstRead(t, env, oldBlockID, newBlockID, hash, data)
 
 	dest := make([]byte, len(data))
-	filled, err := env.syncer.EnsureAvailableAndRead(ctx, payloadID, 0, uint32(len(data)), dest)
-	if err != nil {
+	if _, err := env.syncer.EnsureAvailableAndRead(ctx, payloadID, 0, uint32(len(data)), dest); err != nil {
 		t.Fatalf("EnsureAvailableAndRead: relocated chunk must re-resolve and read through, got %v", err)
 	}
-	if !filled {
-		t.Fatal("EnsureAvailableAndRead filled=false; want the demand read served from the relocated block")
+	// New contract: EnsureAvailableAndRead ensures every covering chunk is LOCAL
+	// and returns (false, nil); it no longer copies into dest (the caller's
+	// readLocalByHash does the correct per-offset assembly). Verify the relocated
+	// bytes were staged locally, byte-identical.
+	staged, err := env.syncer.local.Get(ctx, hash)
+	if err != nil {
+		t.Fatalf("relocated chunk not staged locally after re-resolve: %v", err)
 	}
-	if !bytes.Equal(dest, data) {
-		t.Fatalf("demand read data mismatch: got %q, want %q", dest, data)
+	if !bytes.Equal(staged, data) {
+		t.Fatalf("staged chunk mismatch: got %q, want %q", staged, data)
 	}
 	// One miss + one re-resolved hit: single bounded retry, not a loop.
 	if n := env.rs.readChunkCalls.Load(); n != 2 {
