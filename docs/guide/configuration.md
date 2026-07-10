@@ -1654,6 +1654,22 @@ This opens additional listeners: mDNS on UDP `5353`, and — for WS-Discovery �
 UDP `3702` plus an HTTP metadata endpoint on TCP `5357`. NFS advertises the
 first export's path in a `path=` TXT record so Finder mounts the right share.
 
+**Advertised name.** All advertisers share one instance-wide name, so a server
+shows up consistently across Finder and Explorer. It defaults to
+`DittoFS-<hostname>` (e.g. `DittoFS-VM2`) — distinct per host so several DittoFS
+servers on one LAN stay distinguishable — and is overridable:
+
+```bash
+dfsctl settings set discovery.name "Marketing Files"   # custom instance name
+dfsctl settings set discovery.name ""                  # revert to DittoFS-<hostname>
+```
+
+Each adapter formats the name for its own protocol: mDNS uses it verbatim, while
+WS-Discovery folds it to a NetBIOS-legal computer name (upper-cased, illegal
+characters replaced with `-`, capped at 15 characters) since Explorer renders it
+as a Windows computer name. A name change takes effect the next time an
+advertiser (re)starts — toggle discovery off/on, or restart the adapter.
+
 > **Note:** discovery is multicast-based and LAN-local. It works on a host
 > network (bare metal, VM, or a `hostNetwork` pod) but does **not** traverse
 > standard Kubernetes / overlay networks — Explorer and Finder will only see the

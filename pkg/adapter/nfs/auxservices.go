@@ -58,6 +58,18 @@ func (s *NFSAdapter) startEnabledAuxServices(ctx context.Context) {
 	s.reconcileDiscovery()
 }
 
+// discoveryName is the instance-wide name to advertise, resolved from the
+// control plane (the `discovery.name` setting, defaulting to
+// "DittoFS-<hostname>"). NFS advertises only over mDNS, which uses it verbatim.
+func (s *NFSAdapter) discoveryName() string {
+	if s.Registry != nil {
+		if n := s.Registry.DiscoveryName(); n != "" {
+			return n
+		}
+	}
+	return hostinfo.DefaultDiscoveryName()
+}
+
 // mdnsEnabled reports whether the NFS mDNS advertiser should run, from live
 // settings (defaults false when settings are unavailable).
 func (s *NFSAdapter) mdnsEnabled() bool {
@@ -79,7 +91,7 @@ func (s *NFSAdapter) mdnsEnabled() bool {
 // re-advertising on share changes is a follow-up.
 func (s *NFSAdapter) newMDNSSidecar() auxsvc.Service {
 	rec := mdns.ServiceRecord{
-		Instance: hostinfo.ServerName(),
+		Instance: s.discoveryName(),
 		Service:  "_nfs._tcp",
 		Port:     uint16(s.Port()),
 	}

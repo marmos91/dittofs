@@ -56,13 +56,17 @@ func (s *Adapter) wsDiscoveryEnabled() bool {
 	return st != nil && st.WSDiscoveryEnabled
 }
 
-// discoveryName is the name to advertise: the SMB NetBIOS/computer name when
-// known (domain member), else the OS-derived server name.
+// discoveryName is the instance-wide name to advertise, resolved from the
+// control plane (the `discovery.name` setting, defaulting to
+// "DittoFS-<hostname>"). mDNS uses it verbatim; WS-Discovery folds it to a
+// NetBIOS-legal computer name (see newWSDSidecar).
 func (s *Adapter) discoveryName() string {
-	if s.handler != nil && s.handler.NetBIOSName != "" {
-		return s.handler.NetBIOSName
+	if s.Registry != nil {
+		if n := s.Registry.DiscoveryName(); n != "" {
+			return n
+		}
 	}
-	return hostinfo.ServerName()
+	return hostinfo.DefaultDiscoveryName()
 }
 
 // newMDNSSidecar builds the SMB mDNS advertiser: an _smb._tcp instance on the
@@ -89,9 +93,13 @@ func (s *Adapter) newWSDSidecar() auxsvc.Service {
 	// A non-empty NetBIOS domain means this server is an AD member, so Windows
 	// should group it under Domain: rather than Workgroup:.
 	isDomain := workgroup != ""
+	// WS-Discovery renders the value as a Windows computer name, so fold it to a
+	// NetBIOS-legal form (the raw instance name may contain characters or a
+	// length Explorer rejects). mDNS keeps the raw name.
+	name := hostinfo.NetBIOSSafe(s.discoveryName())
 	// Distinct, strictly-increasing InstanceId per responder build (see the
 	// wsdInstanceID field) so a live toggle never rewinds the AppSequence.
-	return wsd.NewResponder(s.discoveryName(), workgroup, isDomain, s.wsdInstanceID.Add(1))
+	return wsd.NewResponder(name, workgroup, isDomain, s.wsdInstanceID.Add(1))
 }
 
 // Compile-time assertions that the discovery advertisers satisfy auxsvc.Service.

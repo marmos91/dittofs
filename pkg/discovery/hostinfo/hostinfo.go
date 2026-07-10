@@ -38,6 +38,47 @@ func serverNameFrom(h string, err error) string {
 	return strings.ToUpper(h)
 }
 
+// DefaultNamePrefix is the product-branded prefix of the auto-generated
+// discovery name.
+const DefaultNamePrefix = "DittoFS"
+
+// DefaultDiscoveryName is the instance-wide name advertised on the LAN when the
+// operator has not set an override: "DittoFS-<hostname>" (e.g. "DittoFS-VM2"),
+// so multiple DittoFS servers on one network stay distinguishable by default.
+// Falls back to the bare prefix when the hostname is unavailable.
+func DefaultDiscoveryName() string {
+	name := ServerName()
+	if name == FallbackName {
+		return DefaultNamePrefix
+	}
+	return DefaultNamePrefix + "-" + name
+}
+
+// NetBIOSSafe folds an arbitrary discovery name into a NetBIOS-legal computer
+// name for WS-Discovery: upper-cased, illegal characters replaced with '-',
+// trimmed of leading/trailing '-', and capped at the 15-character NetBIOS limit.
+// Returns FallbackName if nothing legal survives. mDNS instance names have no
+// such constraint and use the raw name.
+func NetBIOSSafe(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(name) {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if len(s) > 15 {
+		s = strings.TrimRight(s[:15], "-")
+	}
+	if s == "" {
+		return FallbackName
+	}
+	return s
+}
+
 // MulticastInterfaces returns the interfaces suitable for multicast discovery:
 // up, multicast-capable, and not loopback. Empty when none qualify.
 func MulticastInterfaces() []net.Interface {
