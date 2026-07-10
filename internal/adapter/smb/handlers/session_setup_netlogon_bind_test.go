@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/smb/session"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
@@ -289,5 +290,39 @@ func TestReauth_DoesNotUseNetlogonFallback(t *testing.T) {
 	}
 	if nl.called {
 		t.Fatal("NETLOGON fallback was consulted on a re-auth (must be excluded)")
+	}
+}
+
+// TestBindIdentityMatchesSession covers the identity match that guards channel
+// binding. The security-critical case is the SID-vs-empty escalation: a SID-less
+// local account must never bind onto a SID-bearing (domain) session by matching
+// on username alone.
+func TestBindIdentityMatchesSession(t *testing.T) {
+	const sidA = "S-1-5-21-1-2-3-1107"
+	const sidB = "S-1-5-21-1-2-3-1200"
+	mk := func(username, sid string) *session.Session {
+		return &session.Session{User: &models.User{Username: username, SID: sid}}
+	}
+	tests := []struct {
+		name string
+		sess *session.Session
+		auth *models.User
+		want bool
+	}{
+		{"same SID matches", mk("alice", sidA), &models.User{Username: "alice", SID: sidA}, true},
+		{"different SID rejected", mk("alice", sidA), &models.User{Username: "alice", SID: sidB}, false},
+		{"SID session vs SID-less local same name rejected (escalation)", mk("alice", sidA), &models.User{Username: "alice", SID: ""}, false},
+		{"SID-less bind onto SID session rejected regardless of name", mk("alice", sidA), &models.User{Username: "ALICE", SID: ""}, false},
+		{"SID bind onto SID-less session rejected", mk("alice", ""), &models.User{Username: "alice", SID: sidA}, false},
+		{"local-vs-local same name (case-insensitive) matches", mk("alice", ""), &models.User{Username: "ALICE", SID: ""}, true},
+		{"local-vs-local different name rejected", mk("alice", ""), &models.User{Username: "bob", SID: ""}, false},
+		{"nil auth user rejected", mk("alice", sidA), nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := bindIdentityMatchesSession(tt.sess, tt.auth); got != tt.want {
+				t.Fatalf("bindIdentityMatchesSession = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

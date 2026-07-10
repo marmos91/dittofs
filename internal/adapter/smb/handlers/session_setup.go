@@ -771,20 +771,27 @@ func (h *Handler) handleNTLMNegotiateBinding(ctx *SMBHandlerContext, req *Sessio
 // different identity is a security boundary violation the caller rejects with
 // STATUS_ACCESS_DENIED.
 //
-// Matching prefers the Windows SID — the authoritative, globally-unique identity
+// Matching is by the Windows SID — the authoritative, globally-unique identity
 // for a directory-resolved / NETLOGON pass-through domain user, stamped by
 // synthUserFromResolved onto both the primary session's user and this bind's
-// user. When either side lacks a SID (e.g. a purely local control-plane
-// account) it falls back to the username, matching the convention of the
-// Kerberos bind path (completeKerberosBind) and the pre-#1632 NTLM bind check.
+// user. If EITHER identity carries a SID (i.e. is a directory/domain principal),
+// the bind MUST match by SID; the username fallback is reserved for pure-local
+// sessions where NEITHER side has a SID. Allowing the fallback when only one
+// side has a SID would let a SID-less local account named "alice" bind onto
+// DOMAIN\alice's session and inherit her authorization context (a privilege
+// escalation — control-plane accounts may legitimately have an empty SID). The
+// fallback is case-insensitive, matching Windows username semantics.
 func bindIdentityMatchesSession(sess *session.Session, authUser *models.User) bool {
 	if authUser == nil || sess == nil || sess.User == nil {
 		return false
 	}
-	if authUser.SID != "" && sess.User.SID != "" {
+	if authUser.SID != "" || sess.User.SID != "" {
+		// Equal only when both are the same non-empty SID: a SID-vs-empty
+		// comparison is unequal, so a SID-less identity can never bind onto a
+		// SID-bearing session (and vice versa).
 		return authUser.SID == sess.User.SID
 	}
-	return authUser.Username == sess.User.Username
+	return strings.EqualFold(authUser.Username, sess.User.Username)
 }
 
 // completeSessionBind finalizes an SMB2 session bind after NTLM auth proved
