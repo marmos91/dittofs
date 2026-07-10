@@ -7,6 +7,7 @@ import (
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/internal/cli/prompt"
 	"github.com/marmos91/dittofs/pkg/apiclient"
+	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +19,7 @@ var (
 	createReadOnly          bool
 	createEncryptData       bool
 	createDefaultPermission string
+	createSquash            string
 	createOwner             string
 	createDescription       string
 	createRetention         string
@@ -72,7 +74,10 @@ Examples:
   dfsctl share create --name /bigdata --metadata default --local fs-cache --local-store-size 10GiB --read-buffer-size 2GiB
 
   # Create with per-share quota
-  dfsctl share create --name /limited --metadata default --local fs-cache --quota-bytes 10GiB`,
+  dfsctl share create --name /limited --metadata default --local fs-cache --quota-bytes 10GiB
+
+  # Create an export that does not squash root (e.g. for root-mounted/benchmark clients)
+  dfsctl share create --name /export --metadata default --local fs-cache --squash none`,
 	RunE: runCreate,
 }
 
@@ -84,6 +89,7 @@ func init() {
 	createCmd.Flags().BoolVar(&createReadOnly, "read-only", false, "Make share read-only")
 	createCmd.Flags().BoolVar(&createEncryptData, "encrypt-data", false, "Require SMB3 encryption for this share")
 	createCmd.Flags().StringVar(&createDefaultPermission, "default-permission", "none", "Default permission for unmapped UIDs (none|read|read-write|admin)")
+	createCmd.Flags().StringVar(&createSquash, "squash", "", "NFS export squash mode (none|root_to_admin|root_to_guest|all_to_admin|all_to_guest). Default root_to_guest (root_squash); use none or root_to_admin so a root-mounted client is not squashed to guest.")
 	createCmd.Flags().StringVar(&createOwner, "owner", "", "Username that owns the share's root directory (defaults to root). The owner can write at the share root; other principals are governed by POSIX mode plus their share permission grant.")
 	createCmd.Flags().StringVar(&createDescription, "description", "", "Share description")
 	createCmd.Flags().StringVar(&createRetention, "retention", "", "Retention policy (pin|ttl|lru)")
@@ -233,9 +239,22 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		req.TrashExcludePatterns = createTrashExclude
 	}
 
+	// Squash lives on the NFS adapter config endpoint, not the share record.
+	// Validate up front so we don't create a share and then fail to apply a
+	// bogus squash mode, leaving it half-configured.
+	if cmd.Flags().Changed("squash") && !models.SquashMode(createSquash).IsValid() {
+		return fmt.Errorf("--squash: invalid value %q, must be one of none|root_to_admin|root_to_guest|all_to_admin|all_to_guest", createSquash)
+	}
+
 	share, err := client.CreateShare(req)
 	if err != nil {
 		return fmt.Errorf("failed to create share: %w", err)
+	}
+
+	if cmd.Flags().Changed("squash") {
+		if _, err := client.PatchShareNFSConfig(share.Name, &apiclient.PatchShareNFSConfigRequest{Squash: &createSquash}); err != nil {
+			return fmt.Errorf("share '%s' created, but failed to set NFS squash mode: %w", share.Name, err)
+		}
 	}
 
 	return cmdutil.PrintResourceWithSuccess(os.Stdout, share, fmt.Sprintf("Share '%s' created successfully", share.Name))

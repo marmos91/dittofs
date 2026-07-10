@@ -69,6 +69,7 @@ func resetCreateFlags() {
 	createReadOnly = false
 	createEncryptData = false
 	createDefaultPermission = "read-write"
+	createSquash = ""
 	createDescription = ""
 	createRetention = ""
 	createRetentionTTL = ""
