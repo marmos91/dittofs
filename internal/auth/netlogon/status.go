@@ -133,5 +133,13 @@ func (c *Controller) Rotate(ctx context.Context) error {
 	if !ok {
 		return ErrRotateNotOnlineJoin
 	}
+	// Detach from the caller's context so a client-side cancellation — a dropped
+	// connection or the apiclient's 30s deadline — cannot abort the rotation
+	// *between* PasswordSet2 on the DC and persisting the new secret, which would
+	// leave the stored secret out of sync with the DC (the exact desync this path
+	// exists to prevent). Mirror the scheduled rotation's own fresh 2-minute
+	// context (RotationManager.run).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
 	return op.rotate(ctx, c.auth)
 }
