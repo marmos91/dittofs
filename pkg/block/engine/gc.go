@@ -486,6 +486,20 @@ func collectGarbage(
 	switch {
 	case isLocal:
 		sweepByWalk(ctx, store, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
+		// Reclaim the physical bytes of any log blob the sweep just fully
+		// orphaned. sweepByWalk (DeleteChunk) removes a chunk's index entry but
+		// blob bytes are reclaimed only by blob-level eviction, which skips the
+		// still-open ACTIVE blob — so read-through-staged chunks that land in
+		// the active blob would otherwise leak local disk after an unlink.
+		if !options.DryRun {
+			if r, ok := store.(deadBlobReclaimer); ok {
+				if freed, err := r.ReclaimDeadBlobs(ctx); err != nil {
+					recordGCError(stats, "reclaim dead blobs: "+err.Error())
+				} else {
+					stats.BytesFreed += freed
+				}
+			}
+		}
 	case options.SyncedHashIndex != nil:
 		sweepFromSyncedIndex(ctx, gcs, stats, snapshotTime, gracePeriod, dryRunSample, options)
 	default:
@@ -616,6 +630,14 @@ func sharesForReconciler(r MetadataReconciler) []string {
 // per-run counters (scanned/swept/bytes) from inside the callback. The local
 // backend (filepath.WalkDir) honors this; a backend that parallelizes Walk must
 // serialize the callback before satisfying this interface.
+// deadBlobReclaimer is the optional local-store surface the local GC sweep uses
+// to reclaim the physical bytes of log blobs it just fully orphaned (the fs
+// store implements it; other backends do not need it). Kept off sweepable so
+// only the local tier reaches for it.
+type deadBlobReclaimer interface {
+	ReclaimDeadBlobs(ctx context.Context) (int64, error)
+}
+
 type sweepable interface {
 	Walk(ctx context.Context, fn func(block.ContentHash, block.Meta) error) error
 	Delete(ctx context.Context, hash block.ContentHash) error

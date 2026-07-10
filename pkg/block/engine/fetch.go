@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
 
 	"golang.org/x/sync/errgroup"
 	"lukechampine.com/blake3"
@@ -352,94 +351,92 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		return false, nil // Local-only: all data must be in local store, no downloads possible
 	}
 
-	startBlockIdx, endBlockIdx := blockRange(offset, length)
+	end := offset + uint64(length)
 
-	// Resolve the covering chunk per block via the indexed lookup
-	// (resolveCovering) rather than enumerating the whole manifest. Each block
-	// is a cheap single-chunk lookup, so the all-local probe and the download
-	// loop each resolve independently; a genuine store error now propagates
-	// (the prior in-memory snapshot could not surface one mid-loop).
+	// Resolve EVERY chunk covering [offset, end), not just the chunk at each
+	// 8 MiB block-aligned offset. FastCDC chunks are typically smaller than
+	// BlockSize, so a block holds several chunks and a read window routinely
+	// spans chunk boundaries. The old loop iterated block indices and resolved
+	// only the chunk covering blockIdx*BlockSize, so every read window past a
+	// block's first chunk went unfetched — served as zeros/stale bytes — and
+	// only the block-aligned chunks were staged locally. Walk the actual
+	// covering chunks (mirrors readLocalByHash / fillFromCASManifest) so the
+	// whole window is downloaded.
+	type pending struct {
+		blockIdx uint64
+		fb       *block.FileChunk
+	}
+	var toFetch []pending
 	allLocal := true
-	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		fb, err := m.resolveFileChunk(ctx, payloadID, blockIdx)
+	for cur := offset; cur < end; {
+		fb, absOff, err := resolveCovering(ctx, m.fileChunkStore, payloadID, cur)
 		if err != nil {
 			return false, err
 		}
+		if fb == nil {
+			// Sparse hole at cur: no chunk covers it. Probe the next block
+			// boundary — real files are fully written (no holes), and this
+			// keeps parity with the old block-strided probe for sparse layouts
+			// that place chunks at block starts. The caller's readLocalByHash
+			// zero-fills any bytes left uncovered.
+			cur = (cur/uint64(BlockSize) + 1) * uint64(BlockSize)
+			continue
+		}
 		if !m.blockIsLocalFromRow(ctx, fb) {
 			allLocal = false
-			break
+			toFetch = append(toFetch, pending{blockIdx: absOff / uint64(BlockSize), fb: fb})
 		}
+		next := absOff + uint64(fb.DataSize)
+		if next <= cur {
+			next = cur + 1 // guard: a zero/short DataSize row must still advance
+		}
+		cur = next
 	}
 	if allLocal {
+		// Every covering chunk is already local — let the caller assemble the
+		// window from the local tier (readLocalByHash) with a correct
+		// per-offset copy.
 		return false, nil
 	}
 
 	// Health gate: fail fast when remote is unreachable
 	if !m.IsRemoteHealthy() {
 		m.offlineReadsBlocked.Add(1)
-		m.logOfflineRead("EnsureAvailableAndRead", payloadID, startBlockIdx)
+		m.logOfflineRead("EnsureAvailableAndRead", payloadID, offset/uint64(BlockSize))
 		return false, m.remoteUnavailableError()
 	}
 
-	var filledFlag, needLocalFlag atomic.Bool
-
-	// Fetch the missing blocks concurrently rather than one S3 round-trip at a
-	// time. A cold sequential read spans many blocks, and a serial demand loop
-	// pins throughput at blockSize/latency (one GET per RTT) — the cold-read
-	// wall. fetchGroup bounds the fan-out by ParallelDownloads (the same knob
-	// and helper the warm path uses). Each block writes a DISJOINT region of
-	// dest, and inlineFetchOrWait's in-flight map dedups concurrent callers, so
-	// the fan-out is race-free; the first error cancels the rest via gctx.
+	// Download the missing chunks concurrently rather than one S3 round-trip at
+	// a time. A cold sequential read spans many chunks, and a serial demand loop
+	// pins throughput at chunkSize/latency (one GET per RTT) — the cold-read
+	// wall. fetchGroup bounds the fan-out by ParallelDownloads; inlineFetchOrWait
+	// stages each chunk into the local tier and dedups concurrent callers (now
+	// keyed per chunk), so the fan-out is race-free and the first error cancels
+	// the rest via gctx. We deliberately do NOT copy to dest here: a chunk can
+	// start mid-window, so a block-relative copy is wrong — the caller's
+	// readLocalByHash does the correct per-offset assembly from the now-local
+	// chunks. The extra local pass is cheap next to the S3 GETs just eliminated.
+	//
+	// Readahead is driven from Store.ReadAt on EVERY read (scheduleReadahead),
+	// so the demand path no longer schedules prefetch here.
 	g, gctx := m.fetchGroup(ctx)
-	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
+	for _, p := range toFetch {
 		if gctx.Err() != nil {
-			break // first error/cancel: stop scheduling the remaining blocks
+			break // first error/cancel: stop scheduling the remaining chunks
 		}
-		blockIdx := blockIdx
+		p := p
 		g.Go(func() error {
-			fb, err := m.resolveFileChunk(gctx, payloadID, blockIdx)
-			if err != nil {
-				return err
-			}
-			if m.blockIsLocalFromRow(gctx, fb) {
-				needLocalFlag.Store(true)
-				return nil
-			}
-			data, downloaded, err := m.inlineFetchOrWait(gctx, payloadID, blockIdx, fb)
-			if err != nil {
-				return err
-			}
-			if !downloaded {
-				needLocalFlag.Store(true)
-				return nil
-			}
-			if data == nil {
-				zeroBlockRegion(dest, blockIdx, offset, uint64(length))
-				filledFlag.Store(true)
-				return nil
-			}
-			if copyBlockToDest(dest, data, blockIdx, offset, uint64(length)) {
-				filledFlag.Store(true)
-			}
-			return nil
+			_, _, err := m.inlineFetchOrWait(gctx, payloadID, p.blockIdx, p.fb)
+			return err
 		})
 	}
 	if err := g.Wait(); err != nil {
 		return false, err
 	}
-	filled := filledFlag.Load()
-	needLocalReadAt := needLocalFlag.Load()
 
-	// Readahead is driven from Store.ReadAt on EVERY read (scheduleReadahead),
-	// so the demand path no longer schedules prefetch here. The old on-miss
-	// trigger stalled once a sequential reader started hitting the local tier —
-	// EnsureAvailableAndRead is not even reached on a local hit — so the window
-	// stopped advancing exactly when it needed to stay ahead.
-
-	if needLocalReadAt {
-		return false, nil // Some blocks were in local store -- caller should use local store ReadAt
-	}
-	return filled, nil
+	// Bytes are now local (or genuinely sparse); the caller re-reads via
+	// readLocalByHash for the correct assembly.
+	return false, nil
 }
 
 // inlineFetchOrWait downloads a block inline or waits for an in-flight download.
@@ -448,7 +445,16 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 // fb is the caller's already-resolved covering FileChunk for the block; a nil
 // fb is a sparse block (nothing to fetch).
 func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockIdx uint64, fb *block.FileChunk) ([]byte, bool, error) {
+	// Dedup key must be per-CHUNK, not per-block: a read window can span several
+	// chunks that live in the same 8 MiB block (FastCDC chunks are typically
+	// smaller than BlockSize), so keying by blockIdx alone would make the second
+	// chunk piggyback on the first's in-flight slot and never get downloaded.
+	// fb.ID is "<payloadID>/<absOffset>" — unique per chunk — and demand and
+	// prefetch resolve the same fb.ID for the same chunk, so they still dedup.
 	key := inFlightKey(payloadID, blockIdx)
+	if fb != nil {
+		key = fb.ID
+	}
 
 	m.inFlightMu.Lock()
 	if existing, ok := m.inFlight[key]; ok {
@@ -553,45 +559,4 @@ func (m *Syncer) completeInFlight(key string, result *fetchResult, err error) {
 	m.inFlightMu.Lock()
 	delete(m.inFlight, key)
 	m.inFlightMu.Unlock()
-}
-
-// blockRegion computes the source offset within a block and destination offset within
-// the read buffer for a given block, read offset, and read length.
-// Returns (srcOffset, destOffset, copyLen). copyLen=0 means no overlap.
-func blockRegion(blockIdx, readOffset, readLength, blockDataLen uint64) (srcOff, destOff, copyLen uint64) {
-	blockStart := blockIdx * uint64(BlockSize)
-	if readOffset > blockStart {
-		srcOff = readOffset - blockStart
-	}
-	if blockStart > readOffset {
-		destOff = blockStart - readOffset
-	}
-	if srcOff >= blockDataLen || destOff >= readLength {
-		return 0, 0, 0
-	}
-	available := blockDataLen - srcOff
-	remaining := readLength - destOff
-	copyLen = available
-	if remaining < copyLen {
-		copyLen = remaining
-	}
-	return srcOff, destOff, copyLen
-}
-
-// zeroBlockRegion zeroes the portion of dest that corresponds to a sparse block.
-func zeroBlockRegion(dest []byte, blockIdx, offset, length uint64) {
-	_, destOff, n := blockRegion(blockIdx, offset, length, uint64(BlockSize))
-	if n > 0 && int(destOff+n) <= len(dest) {
-		clear(dest[destOff : destOff+n])
-	}
-}
-
-// copyBlockToDest copies the relevant portion of block data into dest.
-func copyBlockToDest(dest, data []byte, blockIdx, offset, length uint64) bool {
-	srcOff, destOff, n := blockRegion(blockIdx, offset, length, uint64(len(data)))
-	if n > 0 && int(destOff+n) <= len(dest) && int(srcOff+n) <= len(data) {
-		copy(dest[destOff:destOff+n], data[srcOff:srcOff+n])
-		return true
-	}
-	return false
 }

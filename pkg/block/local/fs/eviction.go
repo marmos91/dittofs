@@ -687,6 +687,97 @@ func (bc *FSStore) DrainLocalSynced(ctx context.Context) (int64, error) {
 	}
 }
 
+// ReclaimDeadBlobs reclaims the physical bytes of log blobs whose chunks have
+// all been removed from the local index — e.g. read-through-staged chunks the
+// mark-sweep GC dropped after an unlink. DeleteChunk (the sweep) removes a
+// chunk's index entry, but blob bytes are reclaimed only by blob-level
+// eviction, which skips the still-open ACTIVE blob. A read-through-staged chunk
+// (FSStore.Put) lands in the active blob, so after a GC sweep its bytes would
+// otherwise leak: logBlobDiskUsed stays non-zero and never drains (only an
+// explicit evict/DrainLocalSynced would seal the active blob).
+//
+// This seals a fully-dead active blob so its bytes become evictable, then
+// evicts every SEALED blob that has no live index entry left. A blob with ANY
+// live chunk (synced or not) is left untouched — no live data is dropped here;
+// reclaiming a blob that still holds live chunks is compaction's job under
+// memory pressure (#1497). Safe to call after each local GC sweep.
+func (bc *FSStore) ReclaimDeadBlobs(ctx context.Context) (int64, error) {
+	if bc.logBlob == nil || bc.localChunkIndex == nil {
+		return 0, nil
+	}
+
+	// Seal the active blob when it is now fully dead so blobEvictOne can reclaim
+	// it. Only seal a fully-dead active blob, so we never spin out empty blobs
+	// or churn a blob that still backs live reads.
+	infos, err := bc.logBlob.ListBlobs()
+	if err != nil {
+		return 0, fmt.Errorf("reclaim dead blobs: list blobs: %w", err)
+	}
+	for i := range infos {
+		if infos[i].Active && bc.blobFullyDead(ctx, infos[i].LogBlobID) {
+			if rerr := bc.logBlob.Rotate(); rerr != nil {
+				return 0, fmt.Errorf("reclaim dead blobs: seal active blob: %w", rerr)
+			}
+			break
+		}
+	}
+
+	bc.blobEvictMu.Lock()
+	defer bc.blobEvictMu.Unlock()
+
+	infos, err = bc.logBlob.ListBlobs()
+	if err != nil {
+		return 0, fmt.Errorf("reclaim dead blobs: list blobs: %w", err)
+	}
+	var total int64
+	for i := range infos {
+		if infos[i].Active {
+			continue
+		}
+		id := infos[i].LogBlobID
+		if _, done := bc.blobEvictedIDs[id]; done {
+			continue
+		}
+		if !bc.blobFullyDead(ctx, id) {
+			continue
+		}
+		freed, err := bc.evictBlobLocked(ctx, id, infos[i].Size)
+		if err != nil {
+			if errors.Is(err, errLRUEmpty) {
+				continue // raced to active; skip
+			}
+			return total, fmt.Errorf("reclaim dead blobs: evict %s: %w", id, err)
+		}
+		total += freed
+	}
+	return total, nil
+}
+
+// blobFullyDead reports whether none of blobID's recorded chunks still has a
+// live local-index entry pointing at blobID. A blob predating this process (no
+// blobChunks record) is reported not-dead: without a per-chunk record we cannot
+// prove it holds nothing live, and the coarse whole-blob gate already covers it.
+func (bc *FSStore) blobFullyDead(ctx context.Context, blobID string) bool {
+	bc.blobChunksMu.Lock()
+	recorded, tracked := bc.blobChunks[blobID]
+	hashes := make([]block.ContentHash, len(recorded))
+	copy(hashes, recorded)
+	bc.blobChunksMu.Unlock()
+	if !tracked || len(hashes) == 0 {
+		return false
+	}
+	for _, h := range hashes {
+		loc, present, err := bc.localChunkIndex.GetLocalLocation(ctx, h)
+		if err != nil {
+			return false // uncertain: never evict
+		}
+		if present && loc.LogBlobID == blobID {
+			return false // a live chunk still references this blob
+		}
+	}
+	return true
+}
+
 func (bc *FSStore) reclaimSpace(ctx context.Context) {
 	if bc.maxDisk <= 0 || !bc.evictionEnabled.Load() {
 		return
