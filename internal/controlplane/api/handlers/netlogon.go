@@ -83,9 +83,15 @@ func (h *NetlogonHandler) Rotate(w http.ResponseWriter, r *http.Request) {
 
 // netlogonStatusToDTO maps the domain Status onto the wire DTO, formatting times
 // as RFC3339 (empty when zero) and the interval as a Go duration string.
+//
+// Enabled is derived from a non-empty account name rather than hard-coded: a
+// controller is only registered when pass-through is configured, but the offline
+// MutableProvider can be cleared to an empty MachineCredential via #1325
+// hot-reload, which effectively disables pass-through — that must surface as
+// enabled=false, not a stale true.
 func netlogonStatusToDTO(s netlogon.Status) netlogonStatusDTO {
 	dto := netlogonStatusDTO{
-		Enabled:          true,
+		Enabled:          s.AccountName != "",
 		Provider:         string(s.Provider),
 		AccountName:      s.AccountName,
 		Realm:            s.Realm,
