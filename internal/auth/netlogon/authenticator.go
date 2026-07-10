@@ -323,6 +323,33 @@ func (a *Authenticator) RotatePassword(ctx context.Context, newPassword string) 
 	return err
 }
 
+// Probe establishes the NETLOGON secure channel to the DC and immediately tears
+// it down, returning nil when the machine account authenticated and the sealed
+// channel came up. It runs the same connect handshake a real domain-user NTLM
+// logon triggers (Kerberos SMB session to \PIPE\netlogon + schannel
+// ServerAuthenticate) but issues no NetrLogonSamLogon, so it validates
+// machine-account credentials, DC reachability, and Kerberos configuration
+// without a user logon.
+//
+// It backs the operator "dfs netlogon test" command: a nil return means the
+// channel is ready for pass-through; an error names what failed (a wrong machine
+// password, an unreachable DC, or a Kerberos misconfiguration). Note that for an
+// online-join provider the Credential() call performs the AD join as a side
+// effect, so callers that must avoid provisioning should probe only the offline
+// provider.
+func (a *Authenticator) Probe(ctx context.Context) error {
+	mc, err := a.provider.Credential(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := a.ensureChannel(ctx, mc); err != nil {
+		return err
+	}
+	// Connected — drop the channel so a probe never leaves a live schannel behind.
+	a.reset(ctx)
+	return nil
+}
+
 // Close shuts down the cached secure channel connection.
 func (a *Authenticator) Close(ctx context.Context) {
 	a.reset(ctx)

@@ -52,6 +52,7 @@ func init() {
 	rootCmd.AddCommand(stopCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(logsCmd)
+	rootCmd.AddCommand(netlogonCmd)
 	rootCmd.AddCommand(config.Cmd)
 	rootCmd.AddCommand(completionCmd)
 

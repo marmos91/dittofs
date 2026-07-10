@@ -138,8 +138,18 @@ func netlogonCredentialFromConfig(k config.KerberosConfig) (netlogon.MachineCred
 		return netlogon.MachineCredential{}, false
 	}
 
-	// Validate required fields before constructing a doomed credential.
 	ma := k.MachineAccount
+
+	// Online-join owns the machine-credential lifecycle (it generates, persists,
+	// and rotates the password), so there is legitimately no static Secret to seed
+	// the offline hot-reload credential from. Return quietly: passthrough is NOT
+	// disabled here (the online provider handles it), so the "Secret is not set"
+	// warnings below would be misleading.
+	if ma.OnlineJoin.Enabled {
+		return netlogon.MachineCredential{}, false
+	}
+
+	// Validate required fields before constructing a doomed credential.
 	if ma.AccountName == "" {
 		slog.Warn("NETLOGON machine account is enabled but AccountName is not set; NTLM passthrough disabled")
 		return netlogon.MachineCredential{}, false

@@ -613,9 +613,13 @@ so domain users authenticate against the correct domain (see Part C / docs/SMB.m
 
 A real Windows client gets the cleanest experience by **joining the domain** and
 authenticating to DittoFS over **Kerberos** — the server side is fully proven
-(SMB SPNEGO/PAC + AES keytab, Part C). A non-domain-joined Windows box would need
-NTLM passthrough (NETLOGON), which is a separate track (see #1314 / #1345). For
-acceptance testing, domain-join is the path with no extra server dependency.
+(SMB SPNEGO/PAC + AES keytab, Part C). Connecting by a name with no Kerberos SPN
+(an IP, or the Explorer → Network discovery name) falls back to **NTLM**, which
+is now supported for AD domain users via **NETLOGON pass-through** — configure a
+machine account (`kerberos.machine_account`, see
+[configuration.md](configuration.md#12-kerberos-configuration) and
+[windows-ad-setup.md](windows-ad-setup.md)). For Kerberos acceptance testing,
+domain-join is still the path with no extra server dependency.
 
 The in-cluster AD-DC is not publicly reachable by default. To let an external
 test VM join, expose the directory roles via the **scoped** dev LoadBalancer
@@ -687,5 +691,11 @@ icacls \\<dittofs-smb-ip>\<share>\<file>     # CLI equivalent of the Security ta
   `unix_user:*` / `unix_group:*`). See [docs/ACLS.md](access-control.md).
 - **RC4-only keytabs are rejected by Windows 11 (#1318).** Ensure the keytab
   carries AES256/AES128 keys for the SPNs (Part A).
-- Online `net ads join` + machine-password rotation is out of scope; supply the
-  keytab offline.
+- **Machine account (NETLOGON) for NTLM pass-through:** the keytab covers
+  Kerberos; for AD domain users authenticating over **NTLM** (Explorer
+  double-click / connect by IP, no SPN) configure `kerberos.machine_account`.
+  Both **offline** (pre-created computer account + supplied secret) and **online
+  `net ads join`** (DittoFS creates the computer object over LDAPS and rotates
+  the password) are supported. See
+  [configuration.md](configuration.md#12-kerberos-configuration) and
+  [windows-ad-setup.md](windows-ad-setup.md).

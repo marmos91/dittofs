@@ -19,6 +19,8 @@ This page is generated from the command definitions (`go run ./cmd/gendocs`). Do
   - [`dfs init`](#dfs-init) — Initialize a sample configuration file
   - [`dfs logs`](#dfs-logs) — Tail server logs
   - [`dfs migrate`](#dfs-migrate) — Run database migrations
+  - [`dfs netlogon`](#dfs-netlogon) — Inspect and test NETLOGON machine-account (NTLM pass-through) setup
+    - [`dfs netlogon test`](#dfs-netlogon-test) — Probe the NETLOGON secure channel to the domain controller
   - [`dfs start`](#dfs-start) — Start the DittoFS server
   - [`dfs status`](#dfs-status) — Show server status
   - [`dfs stop`](#dfs-stop) — Stop the DittoFS server
@@ -357,6 +359,63 @@ dfs migrate
 
 # Run migrations with a custom config file
 dfs migrate --config /etc/dittofs/config.yaml
+```
+
+Global flags:
+
+```
+      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
+```
+
+### `dfs netlogon`
+
+Inspect and test NETLOGON machine-account (NTLM pass-through) setup
+
+NETLOGON machine-account tooling for SMB NTLM pass-through of AD domain users.
+
+When a client connects by a name with no Kerberos SPN (an IP, or the Explorer →
+Network discovery name), Windows falls back to NTLM. DittoFS validates that NTLM
+response against a domain controller over a NETLOGON secure channel, using a
+machine (computer) account configured under 'kerberos.machine_account'. Use these
+subcommands to verify that setup.
+
+Global flags:
+
+```
+      --config string   config file (default: $XDG_CONFIG_HOME/dittofs/config.yaml)
+```
+
+### `dfs netlogon test`
+
+Probe the NETLOGON secure channel to the domain controller
+
+Validate that the configured machine account can establish a NETLOGON secure
+channel to a domain controller — the channel NTLM pass-through for AD domain users
+rides.
+
+It authenticates the machine account and brings up the sealed secure channel (the
+same handshake a real domain-user NTLM logon triggers), then tears it down. No user
+logon (NetrLogonSamLogon) is performed. Use it to verify machine-account
+credentials, DC reachability, and Kerberos configuration before relying on Explorer
+double-click / NTLM logons.
+
+This probes the OFFLINE machine-account channel (kerberos.machine_account with an
+account_name + secret). Online join provisions the computer object lazily on the
+first domain logon against the running server — start the server and check its log
+for the join result instead.
+
+```
+dfs netlogon test
+```
+
+**Examples:**
+
+```bash
+# Probe using the default config location
+dfs netlogon test
+
+# Probe using an explicit config file
+dfs netlogon test --config /etc/dittofs/config.yaml
 ```
 
 Global flags:
