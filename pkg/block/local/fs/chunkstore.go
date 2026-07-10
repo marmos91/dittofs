@@ -384,6 +384,45 @@ func (bc *FSStore) ReadChunk(ctx context.Context, h block.ContentHash) ([]byte, 
 	return data, nil
 }
 
+// readChunkRangeInto serves [subOffset, subOffset+len(dst)) of CAS chunk h
+// directly into dst via a ranged pread, avoiding the whole-chunk allocation and
+// read that ReadChunk performs. It is a best-effort fast path for the warm read
+// path: it returns served=true only when every requested byte was delivered from
+// the local logblob tier. On any miss — chunk not in the local index (legacy
+// .blk tier or evicted), torn tail, or short read — it returns (false, nil) so
+// the caller falls back to the whole-chunk ReadChunk/Get path, which owns the
+// miss -> remote-refetch -> re-stage recovery (and drops any torn index entry).
+//
+// It performs NO integrity check: the ranged bytes cannot be BLAKE3-verified in
+// isolation, so callers MUST only use it for chunks already known-good (present
+// in the verified set), whose whole body was verified on an earlier read.
+func (bc *FSStore) readChunkRangeInto(ctx context.Context, h block.ContentHash, dst []byte, subOffset int64) (bool, error) {
+	if bc.isClosed() {
+		return false, ErrStoreClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if bc.localChunkIndex == nil || len(dst) == 0 {
+		return false, nil
+	}
+	loc, ok, err := bc.localChunkIndex.GetLocalLocation(ctx, h)
+	if err != nil {
+		return false, fmt.Errorf("chunkstore: get local location: %w", err)
+	}
+	if !ok || subOffset < 0 || subOffset+int64(len(dst)) > loc.RawLength {
+		return false, nil
+	}
+	n, rerr := bc.logBlob.ReadAtRange(ctx, loc, dst, subOffset)
+	if rerr != nil || n < len(dst) {
+		// Torn/evicted/missing/short: fall back to the whole-chunk path rather
+		// than error — ReadChunk hits the same condition and drops the dangling
+		// index entry, routing the read to the remote refetch.
+		return false, nil
+	}
+	return true, nil
+}
+
 // dropTornIndexEntry removes the dangling local-index entry for a chunk whose
 // log-blob bytes were lost to a torn tail, then reports the chunk as absent.
 // After this the chunk reads as a clean miss (HasChunk consults the index),

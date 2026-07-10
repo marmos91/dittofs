@@ -231,6 +231,34 @@ func copyRecordIntoDest(recOff uint64, payload, dest []byte, reqStart, reqEnd ui
 	}
 }
 
+// serveVerifiedRange attempts the ranged-read fast path for one chunk covering
+// [copyStart, copyEnd) of the request window (chunk data begins at absOffset in
+// the payload). It serves those bytes straight into dest via a ranged pread —
+// skipping the whole-chunk allocation, read, and re-hash — but ONLY when hash is
+// already in the verified set (so the bytes were BLAKE3-verified on an earlier
+// read and need no fresh integrity check). Returns served=true and marks the
+// bytes covered on success; served=false means the caller must fall back to the
+// whole-chunk read+verify path (first touch, unverified, or a ranged miss).
+func (bc *FSStore) serveVerifiedRange(ctx context.Context, hash block.ContentHash, absOffset, copyStart, copyEnd, reqStart uint64, dest []byte, covered []bool) (bool, error) {
+	if copyEnd <= copyStart || !bc.verified.contains(hash) {
+		return false, nil
+	}
+	destIdx := copyStart - reqStart
+	subOff := copyStart - absOffset
+	n := copyEnd - copyStart
+	served, err := bc.readChunkRangeInto(ctx, hash, dest[destIdx:destIdx+n], int64(subOff))
+	if err != nil {
+		return false, err
+	}
+	if !served {
+		return false, nil
+	}
+	for i := destIdx; i < destIdx+n; i++ {
+		covered[i] = true
+	}
+	return true, nil
+}
+
 // coveringChunkResolver is the indexed covering + successor lookup,
 // implemented only by the badger metadata backend. fillFromCASManifest
 // type-asserts for it to resolve just the chunks a read touches (plus one
@@ -309,6 +337,18 @@ func (bc *FSStore) fillFromCASManifest(ctx context.Context, payloadID string, de
 			return nil
 		}
 		if !fb.Hash.IsZero() {
+			// Fast path: an already-verified immutable chunk needs no re-read of
+			// its whole (~1 MiB) body — pread only the covered window straight
+			// into dest. Falls through to the whole-chunk read+verify on a miss.
+			served, rerr := bc.serveVerifiedRange(ctx, fb.Hash, absOffset, cur, min(absOffset+uint64(fb.DataSize), reqEnd), reqStart, dest, covered)
+			if rerr != nil {
+				return fmt.Errorf("ReadPayloadAt: ranged read chunk %s: %w", fb.Hash.String(), rerr)
+			}
+			if served {
+				cur = chunkEnd
+				continue
+			}
+
 			data, gerr := bc.Get(ctx, fb.Hash)
 			if gerr != nil {
 				if !errors.Is(gerr, block.ErrChunkNotFound) {
@@ -395,6 +435,20 @@ func (bc *FSStore) fillFromCASManifestScan(ctx context.Context, payloadID string
 		chunkStart := r.absOffset
 		chunkEnd := r.absOffset + uint64(r.fb.DataSize)
 		if chunkEnd <= reqStart || chunkStart >= reqEnd {
+			continue
+		}
+		// Fast path: an already-verified chunk needs no whole-chunk read+verify —
+		// pread only the intersecting window straight into dest.
+		fpStart := max(chunkStart, reqStart)
+		fpEnd := min(chunkStart+uint64(r.fb.DataSize), reqEnd)
+		served, rerr := bc.serveVerifiedRange(ctx, r.fb.Hash, chunkStart, fpStart, fpEnd, reqStart, dest, covered)
+		if rerr != nil {
+			return fmt.Errorf("ReadPayloadAt: ranged read chunk %s: %w", r.fb.Hash.String(), rerr)
+		}
+		if served {
+			if allCovered(covered) {
+				return nil
+			}
 			continue
 		}
 		// Fetch the chunk lazily — only when it intersects.
