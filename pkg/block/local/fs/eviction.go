@@ -637,6 +637,9 @@ func (bc *FSStore) relocateSurvivors(ctx context.Context, oldBlobID string, surv
 // store for that reason. Returns the total bytes freed.
 func (bc *FSStore) DrainLocalSynced(ctx context.Context) (int64, error) {
 	var total int64
+	// rotatedActive caps active-blob sealing at one Rotate per call (see the
+	// blobEvictOne fall-through below), mirroring ensureSpace.
+	var rotatedActive bool
 	for {
 		if ctx.Err() != nil {
 			return total, ctx.Err()
@@ -656,17 +659,26 @@ func (bc *FSStore) DrainLocalSynced(ctx context.Context) (int64, error) {
 			// No fully-synced blob to drop whole. Compact a blob pinned by
 			// unsynced survivors (#1497); stop when nothing more can be freed.
 			cfreed, cerr := bc.compactBlobOne(ctx)
-			if cerr != nil {
-				if !errors.Is(cerr, errLRUEmpty) {
-					return total, fmt.Errorf("drain local synced: %w", cerr)
+			if cerr != nil && !errors.Is(cerr, errLRUEmpty) {
+				return total, fmt.Errorf("drain local synced: %w", cerr)
+			}
+			if cfreed > 0 {
+				total += cfreed
+				continue
+			}
+			// CAS-LRU, sealed-blob eviction, and compaction are all exhausted,
+			// yet log-blob bytes remain: they sit in the still-open ACTIVE blob
+			// (a store below the 1 GiB roll threshold never seals — #1465). Seal
+			// it once so the next blobEvictOne can reclaim it. Capped at one
+			// Rotate per call: an active blob of *unsynced* bytes is still
+			// refused by blobEvictOne and must not spin out empty blobs.
+			if !rotatedActive && bc.logBlob != nil && bc.logBlobDiskUsed.Load() > 0 {
+				if rerr := bc.logBlob.Rotate(); rerr == nil {
+					rotatedActive = true
+					continue
 				}
-				return total, nil
 			}
-			if cfreed == 0 {
-				return total, nil
-			}
-			total += cfreed
-			continue
+			return total, nil
 		}
 		if bfreed == 0 {
 			return total, nil

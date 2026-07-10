@@ -70,6 +70,47 @@ func TestDrainLocalSynced_FreesSealedSyncedBlobOnDemand(t *testing.T) {
 	}
 }
 
+// TestDrainLocalSynced_SealsActiveBlob pins the small-store case (#1465): data
+// below the 1 GiB roll threshold all lives in the still-open ACTIVE blob, which
+// blobEvictOne refuses (sealed-only). Without an active-blob seal step the drain
+// frees nothing and DiskUsed stays put — the exact e2e blocks-flip failure. Note
+// this test does NOT call Rotate: DrainLocalSynced must seal on its own.
+func TestDrainLocalSynced_SealsActiveBlob(t *testing.T) {
+	dir := t.TempDir()
+	mds := memory.NewMemoryMetadataStoreWithDefaults()
+	bc := newBlobStoreWithLimit(t, dir, 0, mds) // 0 = no maxDisk cap → active blob never rolls
+	ctx := context.Background()
+
+	a := bytes.Repeat([]byte{0xB1}, 400)
+	b := bytes.Repeat([]byte{0xB2}, 350)
+	aH, bH := blake3ContentHash(a), blake3ContentHash(b)
+	for _, kv := range []struct {
+		h block.ContentHash
+		d []byte
+	}{{aH, a}, {bH, b}} {
+		if err := bc.StoreChunk(ctx, kv.h, kv.d); err != nil {
+			t.Fatalf("StoreChunk: %v", err)
+		}
+		if err := mds.MarkSynced(ctx, kv.h, block.ChunkLocator{}); err != nil {
+			t.Fatalf("MarkSynced: %v", err)
+		}
+	}
+	if got := bc.Stats().DiskUsed; got != 750 {
+		t.Fatalf("DiskUsed before drain = %d, want 750", got)
+	}
+
+	freed, err := bc.DrainLocalSynced(ctx)
+	if err != nil {
+		t.Fatalf("DrainLocalSynced: %v", err)
+	}
+	if freed != 750 {
+		t.Fatalf("DrainLocalSynced freed = %d, want 750 (must seal the active blob)", freed)
+	}
+	if got := bc.Stats().DiskUsed; got != 0 {
+		t.Fatalf("DiskUsed after drain = %d, want 0 (active blob sealed + evicted)", got)
+	}
+}
+
 // TestDrainLocalSynced_KeepsUnsyncedSurvivor pins the data-safety invariant: a
 // sealed blob mixing synced (evictable) and unsynced (only copy) chunks is
 // drained via compaction — the synced remainder is reclaimed, the unsynced
