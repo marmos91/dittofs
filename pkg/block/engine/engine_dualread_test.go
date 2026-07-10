@@ -167,13 +167,14 @@ func TestDualRead_BlockRowRoutesToVerifiedChunkRead(t *testing.T) {
 // contract: a FileChunk row with a non-zero Hash but NO recorded locator (the
 // startup migration repacked every synced hash, so this is post-migration
 // drift) must be refused without touching the remote — never silent zeros.
-// TestDualRead_SyncedStandaloneLocatorRefused: a row whose hash IS synced but
-// carries an empty-BlockID (standalone) locator is post-#1493 drift — the
-// migration rewrites every standalone locator to a block locator before
-// serving — and must be refused fail-closed. (A hash with NO marker is the
-// benign "not uploaded yet" case, covered by
-// TestDispatchRemoteFetch_UnsyncedChunkFallsBackToLocal.)
-func TestDualRead_SyncedStandaloneLocatorRefused(t *testing.T) {
+// TestDualRead_SyncedStandaloneLocatorMissingFailsClosed: a row whose hash IS
+// synced but carries an empty-BlockID (standalone) locator with no bytes
+// anywhere (no local copy, no legacy cas/ object) must fail closed with
+// ErrChunkNotFound — never silent zeros. (When the legacy object exists, the
+// read-path fallback serves it; that path is covered in read_path_test.go and
+// locator_fetch_test.go. A hash with NO marker is the benign "not uploaded yet"
+// case, covered by TestDispatchRemoteFetch_UnsyncedChunkFallsBackToLocal.)
+func TestDualRead_SyncedStandaloneLocatorMissingFailsClosed(t *testing.T) {
 	env := newDualReadEnv(t)
 	ctx := context.Background()
 
@@ -199,17 +200,14 @@ func TestDualRead_SyncedStandaloneLocatorRefused(t *testing.T) {
 	}
 
 	got, err := env.syncer.fetchBlock(ctx, payloadID, 0)
-	if err == nil {
-		t.Fatalf("fetchBlock: want post-migration drift refusal, got nil with data=%v", got)
-	}
-	if !contains(err.Error(), "post-migration drift") {
-		t.Fatalf("fetchBlock err = %v, want post-migration drift refusal", err)
+	if !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("fetchBlock err = %v, want ErrChunkNotFound (standalone bytes resident nowhere)", err)
 	}
 	if got != nil {
-		t.Errorf("fetchBlock data = %v, want nil on refusal", got)
+		t.Errorf("fetchBlock data = %v, want nil on miss", got)
 	}
 	if env.rs.readChunkCalls.Load() != 0 {
-		t.Errorf("ReadChunk calls = %d, want 0 (refusal happens before the remote)", env.rs.readChunkCalls.Load())
+		t.Errorf("ReadChunk calls = %d, want 0 (block-range read never runs for a standalone locator)", env.rs.readChunkCalls.Load())
 	}
 }
 

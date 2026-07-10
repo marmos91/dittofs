@@ -19,9 +19,10 @@ import (
 // This file is the one-shot cas→blocks migration (#1493 PR4): the ONLY code
 // outside the remote.LegacyCASStore implementations that still understands the
 // legacy standalone-CAS layout (one sealed object per chunk under "cas/",
-// located by a synced marker with an empty BlockID). It runs synchronously
-// from Store.Start — blocking, before the share serves — and is resumable and
-// idempotent by construction:
+// located by a synced marker with an empty BlockID). Start runs it in the
+// background — the share serves immediately and reads any not-yet-repacked
+// standalone chunk through the read-path fallback (readStandaloneChunk) — and
+// it is resumable and idempotent by construction:
 //
 //   - Phase L imports pre-flip per-chunk local files into the log-blob
 //     substrate (FSStore.MigrateLegacyChunkFiles).
@@ -284,6 +285,38 @@ func (m *Syncer) migrationChunkBytes(
 		return nil, zero, err
 	}
 	return data, zero, nil
+}
+
+// legacyCAS returns the migration-only legacy CAS accessor derived from the
+// remote block store, and whether the backend exposes it. Local-only shares and
+// backends without the legacy surface report (nil, false).
+func (m *Syncer) legacyCAS() (remote.LegacyCASStore, bool) {
+	m.mu.RLock()
+	rbs := m.remoteBlockStore
+	m.mu.RUnlock()
+	if rbs == nil {
+		return nil, false
+	}
+	legacy, ok := rbs.(remote.LegacyCASStore)
+	return legacy, ok
+}
+
+// readStandaloneChunk serves a pre-flip standalone (empty-BlockID) chunk while
+// the background cas→blocks migration is still in flight: local-first
+// (BLAKE3-verified), then a verified legacy remote read. Returns
+// block.ErrChunkNotFound when the chunk is resident nowhere. Read-path twin of
+// migrationChunkBytes, without the local-location lookup the repacker needs.
+func (m *Syncer) readStandaloneChunk(ctx context.Context, h block.ContentHash) ([]byte, error) {
+	if has, err := m.local.Has(ctx, h); err == nil && has {
+		if data, gerr := m.local.Get(ctx, h); gerr == nil && block.ContentHash(blake3.Sum256(data)) == h {
+			return data, nil
+		}
+	}
+	legacy, ok := m.legacyCAS()
+	if !ok {
+		return nil, fmt.Errorf("chunk %s: %w", h, block.ErrChunkNotFound)
+	}
+	return legacy.ReadLegacyChunkVerified(ctx, h)
 }
 
 // getBlockCommitter returns the wired block committer under the syncer lock.
