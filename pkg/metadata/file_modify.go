@@ -779,6 +779,7 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 	// and inode paths — the moved file's size and block manifest are untouched,
 	// so this is pure namespace. A crash can lose the rename (old name
 	// persists), never corrupt data.
+	now := time.Now()
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// Re-read the source/destination directories inside the transaction so
 		// the pre-op snapshots and the timestamp mutations derive from the same
@@ -786,11 +787,16 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		if txSrc, sErr := tx.GetFile(ctx.Context, fromDir); sErr == nil && txSrc != nil {
 			srcDir = txSrc
 		}
+		// Overlay any pending coalesced bump so Before reflects the same mtime a
+		// concurrent GETATTR would see (the tx read only sees durable state), so
+		// WCC stays continuous across rapid same-dir mutations (#1573).
+		s.mergeDirTimes(fromDir, &srcDir.FileAttr)
 		rename.FromDir.Before = CopyFileAttr(&srcDir.FileAttr)
 		if !sameDir {
 			if txDst, dErr := tx.GetFile(ctx.Context, toDir); dErr == nil && txDst != nil {
 				dstDir = txDst
 			}
+			s.mergeDirTimes(toDir, &dstDir.FileAttr)
 			rename.ToDir.Before = CopyFileAttr(&dstDir.FileAttr)
 		}
 
@@ -885,26 +891,9 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		// This is what makes hard links correct: renaming one name can never
 		// stale another name's path. PutFile is tx-critical: a failed ctime
 		// write must roll the whole rename back.
-		now := time.Now()
 		srcFile.Ctime = now
 		if err := tx.PutFile(ctx.Context, srcFile); err != nil {
 			return err
-		}
-
-		srcDir.Mtime = now
-		srcDir.Ctime = now
-		rename.FromDir.After = CopyFileAttr(&srcDir.FileAttr)
-		if err := tx.PutFile(ctx.Context, srcDir); err != nil {
-			return err
-		}
-
-		if !sameDir {
-			dstDir.Mtime = now
-			dstDir.Ctime = now
-			rename.ToDir.After = CopyFileAttr(&dstDir.FileAttr)
-			if err := tx.PutFile(ctx.Context, dstDir); err != nil {
-				return err
-			}
 		}
 
 		return nil
@@ -912,6 +901,21 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 
 	if txErr != nil {
 		return nil, txErr
+	}
+
+	// Coalesce the parent directory mtime/ctime bumps out of the transaction so
+	// a rename never writes the shared source/destination parent-inode keys
+	// inside the txn — the same treatment create/unlink/rmdir already get
+	// (#1573/#1643). The read overlay (mergeDirTimes) keeps the bump visible.
+	s.recordDirTimes(ctx.Context, fromDir, now)
+	srcDir.Mtime = now
+	srcDir.Ctime = now
+	rename.FromDir.After = CopyFileAttr(&srcDir.FileAttr)
+	if !sameDir {
+		s.recordDirTimes(ctx.Context, toDir, now)
+		dstDir.Mtime = now
+		dstDir.Ctime = now
+		rename.ToDir.After = CopyFileAttr(&dstDir.FileAttr)
 	}
 
 	// Notify directory change after successful move
