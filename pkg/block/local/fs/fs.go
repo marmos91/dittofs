@@ -256,6 +256,11 @@ type FSStore struct {
 	// is SHARED with pendingFBs so queued updates mutate a single instance.
 	diskIndex sync.Map
 
+	// verified tracks CAS chunk hashes already BLAKE3-verified this process, so
+	// the warm read path skips re-hashing the whole covering chunk on every
+	// read of an immutable chunk (see verified_chunks.go / chunkTrusted).
+	verified *verifiedChunkSet
+
 	// fdPool pools open file descriptors for .blk files to avoid
 	// open+close syscalls on every 4KB random write in tryDirectDiskWrite.
 	fdPool *fdPool
@@ -585,6 +590,7 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 		files:         make(map[string]*fileInfo),
 		fdPool:        newFDPool(defaultFDPoolSize),
 		readFDPool:    newFDPool(defaultFDPoolSize),
+		verified:      newVerifiedChunkSet(verifiedChunkCap),
 		accessTracker: newAccessTracker(),
 		retention:     unsafe.Pointer(defaultRetention),
 		done:          make(chan struct{}),
