@@ -1661,6 +1661,23 @@ first export's path in a `path=` TXT record so Finder mounts the right share.
 > WS-Discovery makes the machine *appear* in Explorer; Windows still connects to
 > SMB on port `445`, so the SMB adapter must be reachable there.
 
+> **Windows host firewall:** when DittoFS runs *on* a Windows host, the built-in
+> "Network Discovery" firewall rules only cover Windows' own services (they are
+> scoped to `System` / `svchost`), so inbound traffic to `dfs.exe` is dropped by
+> default. Explorer then discovers the server over multicast but silently fails
+> the follow-up metadata fetch (a TCP `5357` connection that never completes),
+> and the machine never renders. Add inbound allow rules for the `dfs.exe`
+> program on TCP `5357` and UDP `3702`/`5353`:
+>
+> ```powershell
+> New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD meta)"  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5357 -Program "C:\path\to\dfs.exe" -Profile Any
+> New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD probe)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3702 -Program "C:\path\to\dfs.exe" -Profile Any
+> New-NetFirewallRule -DisplayName "DittoFS Discovery (mDNS)"      -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program "C:\path\to\dfs.exe" -Profile Any
+> ```
+>
+> This is a Windows-host concern only; a Linux DittoFS host needs no equivalent
+> (any host firewall there just needs the same ports open).
+
 ### 11. NFSv4 Configuration
 
 ```yaml
