@@ -26,6 +26,21 @@ func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 	if err := bs.local.SyncPayload(ctx, payloadID); err != nil {
 		return nil, err
 	}
+	// A durable local store already makes the payload crash-safe at this point,
+	// so under the default (async-remote) policy the ack must NOT block on the
+	// remote mirror — that is exactly what common.CommitBlockStore documents.
+	// Carving to the remote synchronously here turned every FILE_SYNC/DATA_SYNC
+	// WRITE into an inline S3 PutObject the reply waited on: multi-second per-op
+	// stalls at ~3% CPU (#1621). The background carve loop mirrors the data; a
+	// strict share (require_durable_commit) still drains inline below.
+	//
+	// Still perform the per-payload FileChunk metadata quiesce that syncer.Flush
+	// would (persist queued manifest updates so reads and restart-recovery see
+	// the authoritative manifest) — only the remote carve drain is skipped.
+	if bs.LocalDurable() && !bs.RequireDurableCommit() {
+		bs.local.SyncFileChunksForFile(ctx, payloadID)
+		return &block.FlushResult{Finalized: false}, nil
+	}
 	// Delegate to the syncer's carve drain.
 	return bs.syncer.Flush(ctx, payloadID)
 }
