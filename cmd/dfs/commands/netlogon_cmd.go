@@ -79,7 +79,7 @@ func runNetlogonTest(cmd *cobra.Command, _ []string) error {
 	// nil secret store: the offline path reads the static secret from config and
 	// never touches the control-plane store, so this is safe to run alongside a
 	// running server (it makes only an outbound probe to the DC, binds no ports).
-	auth, _ := buildNetlogonAuthenticator(k, nil)
+	auth, _, _ := buildNetlogonAuthenticator(k, nil)
 	if auth == nil {
 		return fmt.Errorf("machine-account configuration is incomplete (see the warnings above); NTLM pass-through is disabled")
 	}

@@ -305,6 +305,31 @@ secure channel (no user logon), so it isolates a machine-account/DC/Kerberos
 problem from an NTLM-logon problem. It probes the **offline** machine account;
 online join provisions on the first logon (check the server log).
 
+**Inspecting / rotating against the running server.** `dfs netlogon test` runs
+from the config file; to interrogate the **live** server instead use `dfsctl`
+(admin credentials required):
+
+```bash
+# Live machine-account and secure-channel state
+dfsctl netlogon status
+#   Provider           online-join
+#   Account            DITTOFS$
+#   Realm              CUBBIT.LOCAL
+#   Channel connected  yes
+#   Joined             yes
+#   Next rotation      2026-07-17T09:00:00Z
+
+# Force a machine-password rotation now (online-join only)
+dfsctl netlogon rotate
+```
+
+`netlogon rotate` performs the complete rotation — it sets the new password on
+the DC (NetrServerPasswordSet2), switches the in-memory credential, and persists
+the new secret — so the stored secret never drifts from the DC. It applies only
+to the **online-join** provider (which owns the password lifecycle); for the
+offline/static provider rotate the secret by updating the machine-account
+configuration instead.
+
 **Step 3 — test the NTLM path.** From a domain member, connect by **IP** (forces
 NTLM) or double-click the server in Explorer → Network:
 

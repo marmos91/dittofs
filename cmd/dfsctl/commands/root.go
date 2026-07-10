@@ -13,6 +13,7 @@ import (
 	idpcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/identityprovider"
 	idmapcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/idmap"
 	netgroupcmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/netgroup"
+	netlogoncmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/netlogon"
 	quotacmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/quota"
 	settingscmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/settings"
 	sharecmd "github.com/marmos91/dittofs/cmd/dfsctl/commands/share"
@@ -100,6 +101,7 @@ func init() {
 	rootCmd.AddCommand(clientcmd.Cmd)
 	rootCmd.AddCommand(gracecmd.Cmd)
 	rootCmd.AddCommand(netgroupcmd.Cmd)
+	rootCmd.AddCommand(netlogoncmd.Cmd)
 	rootCmd.AddCommand(idmapcmd.Cmd)
 	rootCmd.AddCommand(idpcmd.Cmd)
 	rootCmd.AddCommand(settingscmd.Cmd)

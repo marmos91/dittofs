@@ -296,7 +296,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	// control-plane settings store, so it survives restarts. nlAuth is nil when
 	// machine_account is disabled. nlRotation drives periodic password rotation
 	// and is started below / stopped on shutdown.
-	nlAuth, nlRotation := buildNetlogonAuthenticator(effectiveKerberos, newMachineSecretStore(cpStore))
+	nlAuth, nlRotation, nlController := buildNetlogonAuthenticator(effectiveKerberos, newMachineSecretStore(cpStore))
 	nlRotation.Start()
 	// Single defer with deterministic ordering: stop the rotation loop FIRST so
 	// no rotation can re-establish (and leak) the secure channel after Close, then
@@ -307,6 +307,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 			nlAuth.Close(context.Background())
 		}
 	}()
+
+	// Expose the machine-account controller to the Runtime so the admin API can
+	// report `netlogon status` and force `netlogon rotate` against this running
+	// authenticator (#1631). nil when passthrough is disabled.
+	if nlController != nil {
+		rt.SetNetlogonController(nlController)
+	}
 
 	rt.SetAdapterFactory(createAdapterFactory(&effectiveKerberos, nlAuth))
 

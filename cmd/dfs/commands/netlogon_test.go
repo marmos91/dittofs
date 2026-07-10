@@ -12,7 +12,7 @@ func TestBuildNetlogonAuthenticator_Disabled(t *testing.T) {
 	k := config.KerberosConfig{
 		MachineAccount: config.MachineAccountConfig{Enabled: false},
 	}
-	got, _ := buildNetlogonAuthenticator(k, nil)
+	got, _, _ := buildNetlogonAuthenticator(k, nil)
 	if got != nil {
 		t.Fatalf("expected nil for disabled machine account, got %v", got)
 	}
@@ -29,7 +29,7 @@ func TestBuildNetlogonAuthenticator_Enabled(t *testing.T) {
 			DCAddresses: []string{"192.168.1.1"},
 		},
 	}
-	got, _ := buildNetlogonAuthenticator(k, nil)
+	got, _, _ := buildNetlogonAuthenticator(k, nil)
 	if got == nil {
 		t.Fatal("expected non-nil authenticator for enabled machine account")
 	}
@@ -46,7 +46,7 @@ func TestBuildNetlogonAuthenticator_EnabledMissingSecret(t *testing.T) {
 			DCAddresses: []string{"192.168.1.1"},
 		},
 	}
-	got, _ := buildNetlogonAuthenticator(k, nil)
+	got, _, _ := buildNetlogonAuthenticator(k, nil)
 	if got != nil {
 		t.Fatal("expected nil when Secret is missing")
 	}
@@ -64,7 +64,7 @@ func TestBuildNetlogonAuthenticator_EnabledKeytabOnly(t *testing.T) {
 			DCAddresses: []string{"192.168.1.1"},
 		},
 	}
-	got, _ := buildNetlogonAuthenticator(k, nil)
+	got, _, _ := buildNetlogonAuthenticator(k, nil)
 	if got != nil {
 		t.Fatal("expected nil when only KeytabPath is set (not yet supported)")
 	}
@@ -81,7 +81,7 @@ func TestBuildNetlogonAuthenticator_EnabledMissingDomain(t *testing.T) {
 			DCAddresses: []string{"192.168.1.1"},
 		},
 	}
-	got, _ := buildNetlogonAuthenticator(k, nil)
+	got, _, _ := buildNetlogonAuthenticator(k, nil)
 	if got != nil {
 		t.Fatal("expected nil when NetBIOSDomain is missing")
 	}
@@ -100,7 +100,7 @@ func TestBuildNetlogonAuthenticator_EnabledMissingDCAddressesUsesDiscovery(t *te
 			// DCAddresses intentionally empty — located from the realm.
 		},
 	}
-	got, _ := buildNetlogonAuthenticator(k, nil)
+	got, _, _ := buildNetlogonAuthenticator(k, nil)
 	if got == nil {
 		t.Fatal("expected non-nil authenticator when realm is set (DC located via DNS SRV)")
 	}
@@ -119,7 +119,7 @@ func TestBuildNetlogonAuthenticator_EnabledMissingRealm(t *testing.T) {
 			DCAddresses: []string{"192.168.1.1"},
 		},
 	}
-	got, _ := buildNetlogonAuthenticator(k, nil)
+	got, _, _ := buildNetlogonAuthenticator(k, nil)
 	if got != nil {
 		t.Fatal("expected nil when realm is missing")
 	}
@@ -147,12 +147,30 @@ func TestBuildNetlogonAuthenticator_OnlineJoinNoSecretNeeded(t *testing.T) {
 			},
 		},
 	}
-	got, rot := buildNetlogonAuthenticator(k, &fakeSecretStore{})
+	got, rot, ctrl := buildNetlogonAuthenticator(k, &fakeSecretStore{})
 	if got == nil {
 		t.Fatal("expected non-nil authenticator for online-join (no static secret required)")
 	}
 	if rot != nil {
 		t.Fatal("expected nil rotation manager when rotation_interval is 0")
+	}
+	if ctrl == nil {
+		t.Fatal("expected non-nil controller for online-join")
+	}
+	// Status must not trigger the lazy join (no DC/LDAP I/O) and must report the
+	// online-join provider identity from config.
+	st := ctrl.Status(context.Background())
+	if st.Provider != netlogon.ProviderOnlineJoin {
+		t.Errorf("provider = %q, want online-join", st.Provider)
+	}
+	if st.AccountName != "DITTOFS$" || st.Realm != "EXAMPLE.COM" || st.NetBIOSDomain != "EXAMPLE" {
+		t.Errorf("unexpected status identity: %+v", st)
+	}
+	if st.Joined {
+		t.Error("Status must not perform the lazy join (joined should be false before first logon)")
+	}
+	if st.RotationEnabled {
+		t.Error("rotation should be disabled when interval is 0")
 	}
 }
 

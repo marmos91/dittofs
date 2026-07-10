@@ -655,6 +655,9 @@ Global flags:
     - [`dfsctl netgroup remove`](#dfsctl-netgroup-remove) — Remove a netgroup
     - [`dfsctl netgroup remove-member`](#dfsctl-netgroup-remove-member) — Remove a member from a netgroup
     - [`dfsctl netgroup show`](#dfsctl-netgroup-show) — Show netgroup details
+  - [`dfsctl netlogon`](#dfsctl-netlogon) — Inspect and control the NETLOGON machine account (SMB NTLM pass-through)
+    - [`dfsctl netlogon rotate`](#dfsctl-netlogon-rotate) — Force a machine-account password rotation now
+    - [`dfsctl netlogon status`](#dfsctl-netlogon-status) — Show live NETLOGON machine-account and secure-channel state
   - [`dfsctl quota`](#dfsctl-quota) — Per-identity quota management
     - [`dfsctl quota list`](#dfsctl-quota-list) — List all quotas on a share
     - [`dfsctl quota remove`](#dfsctl-quota-remove) — Remove a per-identity quota
@@ -3328,6 +3331,120 @@ dfsctl netgroup show office-network -o json
 
 # Output as YAML
 dfsctl netgroup show office-network -o yaml
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl netlogon`
+
+Inspect and control the NETLOGON machine account (SMB NTLM pass-through)
+
+Inspect and control the NETLOGON machine account used for SMB NTLM pass-through
+of Active Directory domain users on the running DittoFS server.
+
+When a client connects by a name with no Kerberos SPN (an IP, or the Explorer →
+Network discovery name), Windows falls back to NTLM; DittoFS validates that NTLM
+response against a domain controller over a NETLOGON secure channel using a
+machine account. These commands report the live machine-account / secure-channel
+state and force a machine-password rotation.
+
+Unlike 'dfs netlogon test' (a self-contained probe run from the config file),
+these talk to the RUNNING server over the API and require admin credentials.
+
+**Examples:**
+
+```bash
+# Show live machine-account and secure-channel state
+dfsctl netlogon status
+
+# Force a machine-password rotation now (online-join only)
+dfsctl netlogon rotate
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl netlogon rotate`
+
+Force a machine-account password rotation now
+
+Force an immediate rotation of the machine-account password on the running server.
+
+Rotation applies only to the online-join provider, which owns the machine-password
+lifecycle: the new password is set on the domain controller (NetrServerPasswordSet2),
+switched in memory, and persisted — keeping the stored secret in sync with the DC.
+The offline/static provider owns no password lifecycle, so this command returns an
+error there; rotate that secret by updating the machine-account configuration.
+
+```
+dfsctl netlogon rotate
+```
+
+**Examples:**
+
+```bash
+# Rotate the machine password now
+dfsctl netlogon rotate
+```
+
+Global flags:
+
+```
+      --cacert string        Path to a PEM CA bundle trusted for the server certificate (overrides stored)
+      --client-cert string   Path to a PEM client certificate for mutual TLS (overrides stored)
+      --client-key string    Path to the PEM client private key for mutual TLS (overrides stored)
+      --no-color             Disable colored output
+  -o, --output string        Output format (table|json|yaml) (default "table")
+      --server string        Server URL (overrides stored credential)
+      --tls-skip-verify      Disable TLS certificate verification (insecure; overrides stored)
+      --token string         Bearer token (overrides stored credential)
+  -v, --verbose              Enable verbose output
+```
+
+### `dfsctl netlogon status`
+
+Show live NETLOGON machine-account and secure-channel state
+
+Report the live state of the NETLOGON machine account on the running server:
+the active provider (offline or online-join), the machine-account name, the
+realm / NetBIOS domain / DC binding, whether the account is joined, whether the
+secure channel is currently established, and the automatic-rotation schedule.
+
+```
+dfsctl netlogon status
+```
+
+**Examples:**
+
+```bash
+# Show status as a table
+dfsctl netlogon status
+
+# Show status as JSON
+dfsctl netlogon status -o json
 ```
 
 Global flags:

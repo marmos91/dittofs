@@ -355,6 +355,19 @@ func (a *Authenticator) Close(ctx context.Context) {
 	a.reset(ctx)
 }
 
+// Connected reports whether a secure channel is currently established (cached).
+// It is best-effort introspection for `netlogon status`: the channel connects
+// lazily on the first domain logon and is torn down on reload/rotation, so a
+// false result means "no channel is cached right now", NOT "the DC is
+// unreachable". `netlogon test` (an active probe) remains the way to prove the
+// channel can be established. ensureChannel drops a channel that failed to
+// connect, so a non-nil cached channel is one that connected successfully.
+func (a *Authenticator) Connected() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.chan_ != nil
+}
+
 // ensureChannel returns the cached secureChannel, creating and connecting it if
 // needed. connect is idempotent and self-locking; a concurrent reset that clears
 // a.chan_ just causes the next call to build a fresh channel.
