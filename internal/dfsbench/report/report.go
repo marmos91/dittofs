@@ -73,7 +73,7 @@ func RenderTable(rs []fio.CellResult) string {
 		return a.Size < b.Size
 	})
 
-	head := []string{"SYSTEM", "ACCESS", "WORKLOAD", "SIZE", "PROTO", "PASS", "IOPS", "MB/s", "p50µs", "p99µs", "S3MB", "CTXSW/s", "CPU%", "err"}
+	head := []string{"SYSTEM", "ACCESS", "WORKLOAD", "SIZE", "PROTO", "PASS", "IOPS", "MB/s", "p50µs", "p99µs", "S3MB", "DiskWrMB/s", "NetRxMB/s", "CTXSW/s", "CPU%", "err"}
 	rows := make([][]string, 0, len(rs))
 	for _, r := range rs {
 		rows = append(rows, []string{
@@ -83,8 +83,10 @@ func RenderTable(rs []fio.CellResult) string {
 			fmt.Sprintf("%.0f", r.LatencyP50Us),
 			fmt.Sprintf("%.0f", r.LatencyP99Us),
 			fmt.Sprintf("%d", r.S3Bytes/fio.Mib),
-			metered(r.CtxSwPerSec),
-			metered(r.CPUPct),
+			metered(r.DiskWrMBps, r.Metered),
+			metered(r.NetRxMBps, r.Metered),
+			metered(r.CtxSwPerSec, r.Metered),
+			metered(r.CPUPct, r.Metered),
 			fmt.Sprintf("%d", r.Errors),
 		})
 	}
@@ -161,7 +163,7 @@ func RenderPairing(rs []fio.CellResult) string {
 				r.System, access(r.AccessMode),
 				rate(r.ThroughputMBps, !isRandom(r.Workload)),
 				rate(r.IOPS, isRandom(r.Workload)),
-				metered(r.CtxSwPerSec), metered(r.CPUPct),
+				metered(r.CtxSwPerSec, r.Metered), metered(r.CPUPct, r.Metered),
 				fmt.Sprintf("%d", r.Errors),
 			})
 		}
@@ -201,10 +203,11 @@ func rate(v float64, headline bool) string {
 	return fmt.Sprintf("%.0f", v)
 }
 
-// metered formats a server-resource column, dashing an unmeasured 0 (off Linux,
-// or a run predating the meter) rather than printing a misleading zero.
-func metered(v float64) string {
-	if v == 0 {
+// metered formats a server-resource column, dashing it when the meter didn't run
+// (off Linux, or a run predating the meter) so a genuine measured 0 — e.g. a warm
+// read with no S3 download — still prints as "0" rather than the unmeasured dash.
+func metered(v float64, on bool) string {
+	if !on {
 		return "—"
 	}
 	return fmt.Sprintf("%.0f", v)

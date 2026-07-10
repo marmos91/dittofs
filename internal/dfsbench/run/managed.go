@@ -211,6 +211,8 @@ func runPass(ctx context.Context, p backend.Plan, pass string, wls, sizes []stri
 			}
 			r := before.RatesTo(sysstat.Now())
 			m.CtxSwPerSec, m.CPUPct = r.CtxSwPerSec, r.CPUPct
+			m.DiskWrMBps, m.NetRxMBps = r.DiskWrMBps, r.NetRxMBps
+			m.Metered = r.Metered
 			// "native" | "reexport" — the pairing axis. Guard the Support.String()
 			// "na" sentinel to empty so an unexpected value never leaks into the
 			// ACCESS column or the pairing grouping.
