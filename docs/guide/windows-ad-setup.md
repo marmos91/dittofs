@@ -314,13 +314,36 @@ net use \\192.168.100.50\ditto /user:CUBBIT\alice P4ssword!
 ```
 
 The debug log shows `NETLOGON pass-through: authenticated directory-resolved
-domain user`, then the usual SID-grant match at TREE_CONNECT. For the
-**double-click** experience specifically, LAN discovery (§10 of
-[configuration.md](configuration.md)) must be enabled and, on a Windows host, the
-discovery ports must be allowed **for the dfs.exe program** (Windows' built-in
-Network-Discovery rules are scoped to `System`/`svchost`, so a third-party binary
-is dropped by default — add inbound allow rules for 5357/TCP, 3702/UDP, 5353/UDP
-pointing at your exact `dfs.exe` path).
+domain user`, then the usual SID-grant match at TREE_CONNECT.
+
+### Ports and firewall
+
+This feature is **server-OS-agnostic** — the DittoFS server can run on **Linux or
+Windows**; the AD/Kerberos/NETLOGON setup is identical and only the host firewall
+differs. Pass-through needs the DittoFS host to reach the **DC outbound** on
+Kerberos `88`, LDAP `389`/`636`, SMB `445`, and DNS `53`, and to accept SMB `445`
+**inbound** from clients. The Explorer **double-click** additionally needs LAN
+discovery (see [configuration.md](configuration.md) → *Network discovery*):
+inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
+`5357`.
+
+- **DittoFS on Windows** — the built-in "Network Discovery" rules are scoped to
+  `System`/`svchost`, so inbound discovery traffic to a third-party `dfs.exe` is
+  dropped by default. Add **program-scoped** inbound rules:
+  ```powershell
+  $dfs = "C:\path\to\dfs.exe"
+  New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD meta)"  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5357 -Program $dfs -Profile Any
+  New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD probe)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3702 -Program $dfs -Profile Any
+  New-NetFirewallRule -DisplayName "DittoFS Discovery (mDNS)"      -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program $dfs -Profile Any
+  ```
+- **DittoFS on Linux** — no program-scoping quirk; just open the ports (e.g. with
+  firewalld):
+  ```bash
+  firewall-cmd --permanent --add-port=445/tcp --add-port=5357/tcp --add-port=3702/udp --add-port=5353/udp
+  firewall-cmd --reload
+  ```
+  Outbound to the DC is usually already permitted; if you restrict egress, allow
+  `88`, `389`/`636`, `445`, and `53` to the DC.
 
 > **Known limitation:** SMB multichannel **session-bind** for pass-through domain
 > users is not yet supported — a client that opens extra channels logs a benign
