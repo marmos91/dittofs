@@ -7,8 +7,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
 )
@@ -110,11 +108,6 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		return WarmResult{BlocksAlreadyLocal: alreadyLocal}, nil
 	}
 
-	parallel := m.config.ParallelDownloads
-	if parallel < 1 {
-		parallel = 1
-	}
-
 	var (
 		blocksFetched atomic.Int64
 		bytesFetched  atomic.Int64
@@ -143,22 +136,14 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		progress(done, total)
 	}
 
-	g, gctx := errgroup.WithContext(ctx)
-	sem := make(chan struct{}, parallel)
+	// Bound remote-download concurrency via the shared fetchGroup helper (same
+	// ParallelDownloads limit the cold-read demand loop uses). g.Go blocks once
+	// the limit is reached and the first error cancels the rest via gctx.
+	g, gctx := m.fetchGroup(ctx)
 
 	for _, t := range targets {
 		t := t
-		// Block for a slot, but stop dispatching the moment the group is
-		// failing/cancelled (a fetch returned an error or ctx was cancelled).
-		select {
-		case <-gctx.Done():
-		case sem <- struct{}{}:
-		}
-		if gctx.Err() != nil {
-			break
-		}
 		g.Go(func() error {
-			defer func() { <-sem }()
 			data, err := m.fetchResolvedBlock(gctx, t.fb)
 			if err != nil {
 				if errors.Is(err, fs.ErrDiskFull) {

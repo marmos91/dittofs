@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
+	"golang.org/x/sync/errgroup"
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -16,6 +18,21 @@ import (
 // block.FormatStoreKey was removed.
 func inFlightKey(payloadID string, blockIdx uint64) string {
 	return fmt.Sprintf("%s/%d", payloadID, blockIdx)
+}
+
+// fetchGroup returns an errgroup bounded to ParallelDownloads — the single
+// limit on how many block fetches hit the remote at once. Both fetch fan-outs
+// (the cold-read demand loop and WarmAll) share it so there is one place that
+// decides remote-download concurrency. g.Go blocks once the limit is reached;
+// the first task error cancels the rest via the returned context.
+func (m *Syncer) fetchGroup(ctx context.Context) (*errgroup.Group, context.Context) {
+	parallel := m.config.ParallelDownloads
+	if parallel < 1 {
+		parallel = 1
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(parallel)
+	return g, gctx
 }
 
 // resolveFileChunk returns the FileChunk whose chunk range covers the
@@ -349,39 +366,51 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		return false, m.remoteUnavailableError()
 	}
 
-	filled := false
-	needLocalReadAt := false
+	var filledFlag, needLocalFlag atomic.Bool
 
+	// Fetch the missing blocks concurrently rather than one S3 round-trip at a
+	// time. A cold sequential read spans many blocks, and a serial demand loop
+	// pins throughput at blockSize/latency (one GET per RTT) — the cold-read
+	// wall. fetchGroup bounds the fan-out by ParallelDownloads (the same knob
+	// and helper the warm path uses). Each block writes a DISJOINT region of
+	// dest, and inlineFetchOrWait's in-flight map dedups concurrent callers, so
+	// the fan-out is race-free; the first error cancels the rest via gctx.
+	g, gctx := m.fetchGroup(ctx)
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
-		fb, err := m.resolveFileChunk(ctx, payloadID, blockIdx)
-		if err != nil {
-			return false, err
-		}
-		if m.blockIsLocalFromRow(ctx, fb) {
-			needLocalReadAt = true
-			continue
-		}
-
-		data, downloaded, err := m.inlineFetchOrWait(ctx, payloadID, blockIdx, fb)
-		if err != nil {
-			return false, err
-		}
-
-		if !downloaded {
-			needLocalReadAt = true
-			continue
-		}
-
-		if data == nil {
-			zeroBlockRegion(dest, blockIdx, offset, uint64(length))
-			filled = true
-			continue
-		}
-
-		if copyBlockToDest(dest, data, blockIdx, offset, uint64(length)) {
-			filled = true
-		}
+		blockIdx := blockIdx
+		g.Go(func() error {
+			fb, err := m.resolveFileChunk(gctx, payloadID, blockIdx)
+			if err != nil {
+				return err
+			}
+			if m.blockIsLocalFromRow(gctx, fb) {
+				needLocalFlag.Store(true)
+				return nil
+			}
+			data, downloaded, err := m.inlineFetchOrWait(gctx, payloadID, blockIdx, fb)
+			if err != nil {
+				return err
+			}
+			if !downloaded {
+				needLocalFlag.Store(true)
+				return nil
+			}
+			if data == nil {
+				zeroBlockRegion(dest, blockIdx, offset, uint64(length))
+				filledFlag.Store(true)
+				return nil
+			}
+			if copyBlockToDest(dest, data, blockIdx, offset, uint64(length)) {
+				filledFlag.Store(true)
+			}
+			return nil
+		})
 	}
+	if err := g.Wait(); err != nil {
+		return false, err
+	}
+	filled := filledFlag.Load()
+	needLocalReadAt := needLocalFlag.Load()
 
 	// Prefetch ahead only as far as the payload's access pattern justifies:
 	// a sequential run ramps the window up to PrefetchBlocks, a random read
