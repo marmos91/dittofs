@@ -339,7 +339,7 @@ func localIPForDest(dst net.IP) net.IP {
 	if err != nil {
 		return nil
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	if la, ok := c.LocalAddr().(*net.UDPAddr); ok {
 		return la.IP
 	}

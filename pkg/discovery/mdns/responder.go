@@ -44,9 +44,9 @@ var multicastUDPAddrV4 = &net.UDPAddr{IP: net.ParseIP(multicastGroupV4), Port: m
 type Responder struct {
 	mu       sync.Mutex
 	conn     *net.UDPConn
-	pconn    *ipv4.PacketConn  // wraps conn for per-interface group join + multicast send
-	ifaces   []net.Interface   // multicast interfaces the group is joined on
-	sendMu   sync.Mutex        // serializes SetMulticastInterface + WriteTo across interfaces
+	pconn    *ipv4.PacketConn // wraps conn for per-interface group join + multicast send
+	ifaces   []net.Interface  // multicast interfaces the group is joined on
+	sendMu   sync.Mutex       // serializes SetMulticastInterface + WriteTo across interfaces
 	loopCtx  context.Context
 	loopStop context.CancelFunc
 	wg       *sync.WaitGroup // per-socket-generation; isolates Wait from a later generation's Add

@@ -49,13 +49,13 @@ func TestDefaultDiscoveryName_RealHost(t *testing.T) {
 
 func TestNetBIOSSafe(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"DittoFS-VM2", "DITTOFS-VM2"},           // already legal, upper-cased
-		{"DittoFS@vm2", "DITTOFS-VM2"},           // '@' is illegal -> '-'
-		{"My File Server!", "MY-FILE-SERVER"},    // spaces/punct -> '-', trailing trimmed
-		{"a.b.c", "A-B-C"},                          // dots -> '-'
+		{"DittoFS-VM2", "DITTOFS-VM2"},                    // already legal, upper-cased
+		{"DittoFS@vm2", "DITTOFS-VM2"},                    // '@' is illegal -> '-'
+		{"My File Server!", "MY-FILE-SERVER"},             // spaces/punct -> '-', trailing trimmed
+		{"a.b.c", "A-B-C"},                                // dots -> '-'
 		{"DittoFS-ReallyLongHostname", "DITTOFS-REALLYL"}, // capped at 15 chars
-		{"@@@", FallbackName},                        // nothing legal survives
-		{"", FallbackName},                           // empty
+		{"@@@", FallbackName},                             // nothing legal survives
+		{"", FallbackName},                                // empty
 	}
 	for _, c := range cases {
 		if got := NetBIOSSafe(c.in); got != c.want {
