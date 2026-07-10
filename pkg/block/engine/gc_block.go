@@ -35,10 +35,13 @@ type BlockReclaimer interface {
 	ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (handled bool, bytesFreed int64, err error)
 }
 
-// blockLocatorResolver resolves a chunk hash to its remote locator. Satisfied by
-// the per-share metadata store (metadata.SyncedHashStore.GetLocator).
-type blockLocatorResolver interface {
+// blockSyncedMarkerGC is the synced-marker surface the reclaimer needs: resolve
+// a chunk hash to its remote locator, then clear the marker. The marker doubles
+// as the decrement's per-hash idempotency token (see ReclaimDeadChunk). Satisfied
+// by the per-share metadata store (metadata.SyncedHashStore).
+type blockSyncedMarkerGC interface {
 	GetLocator(ctx context.Context, hash block.ContentHash) (block.ChunkLocator, bool, error)
+	DeleteSynced(ctx context.Context, hash block.ContentHash) error
 }
 
 // blockRecordGC is the block-record bookkeeping the reclaimer mutates. Satisfied
@@ -50,10 +53,9 @@ type blockRecordGC interface {
 }
 
 // localChunkIndexGC is the narrow LocalChunkIndex surface the block reclaimer
-// needs: read-then-delete under the idempotency protocol. Satisfied by the
+// needs: an idempotent delete of a chunk's local-index entry. Satisfied by the
 // per-share metadata store (metadata.LocalChunkIndex).
 type localChunkIndexGC interface {
-	GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error)
 	DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error
 }
 
@@ -63,7 +65,7 @@ type localChunkIndexGC interface {
 // runtime constructs one per remote-store sweep scope and sets it on
 // engine.Options.BlockReclaimer.
 type BlockGCReclaimer struct {
-	Locators     blockLocatorResolver
+	Locators     blockSyncedMarkerGC
 	Records      blockRecordGC
 	LocalIndex   localChunkIndexGC
 	RemoteBlocks remote.RemoteBlockStore
@@ -71,17 +73,34 @@ type BlockGCReclaimer struct {
 
 // ReclaimDeadChunk implements BlockReclaimer. See the interface contract.
 //
-// Ordering is chosen for crash-safety and exactly-once decrement semantics.
-// DeleteLocalLocation runs BEFORE DecrLiveChunkCount so the local-index entry
-// serves as a per-hash idempotency token for the decrement: if the process is
-// killed after DeleteLocalLocation commits but before DecrLiveChunkCount, the
-// next sweep re-visits the hash (its synced marker was not cleared), finds the
-// local entry already gone, and skips the decrement. This fails toward over-count
-// (a remote leak, reclaimed by the deferred orphan-object sweep) rather than
-// under-count (premature block free = data loss for live siblings).
+// Ordering is chosen for crash-safety and exactly-once decrement semantics. The
+// SYNCED MARKER — not the local-index entry — is the decrement's per-hash
+// idempotency token: once cleared, GetLocator reports the hash unsynced on any
+// re-visit and this reclaimer is a no-op, so DecrLiveChunkCount can never run
+// twice for the same hash. The marker is the token because EVICTION drops a
+// chunk's local-index entry WITHOUT decrementing (pkg/block/local/fs/eviction.go
+// dropBlobIndexEntries), so under the old local-index token an evicted-then-
+// orphaned chunk looked "already reclaimed", its decrement was skipped, and its
+// block leaked forever (#1637). The marker is untouched by eviction.
 //
-// The remote DeleteBlock precedes DeleteBlockRecord so a crash between them
-// leaves a record-less orphan object (reclaimed by the deferred orphan-object
+// The marker is cleared at one of two points, keyed off whether this is the
+// block's LAST live chunk (its record count is about to floor to 0):
+//
+//   - NOT the last chunk (a live sibling remains): clear the marker BEFORE the
+//     decrement. A double decrement here would drop LiveChunkCount below the
+//     true live count and could free a block a live dedup sibling still needs
+//     (data loss), so the marker must gate the decrement. A crash after the
+//     clear but before the decrement fails toward over-count: a record with no
+//     live locator and a stale count > 0 — a class-2 "leaked" record the
+//     reconcile sweep reaps (reclaim.go). Never toward a premature free.
+//
+//   - the LAST chunk (count floors to 0): clear the marker LAST, after the
+//     remote object and record are freed. A re-visit before that re-decrements
+//     0 → 0 (harmless floor), so gating is unnecessary; deferring the clear lets
+//     a transient DeleteBlock failure keep the marker so the next sweep retries.
+//
+// DeleteBlock precedes DeleteBlockRecord so a crash between them leaves a
+// record-less orphan object (class 3, reclaimed by the deferred orphan-object
 // sweep) rather than a record pointing at deleted bytes.
 func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.ContentHash) (bool, int64, error) {
 	loc, synced, err := r.Locators.GetLocator(ctx, hash)
@@ -89,10 +108,12 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 		return false, 0, fmt.Errorf("block reclaim: get locator %s: %w", hash, err)
 	}
 	if !synced || loc.BlockID == "" {
-		// No block locator recorded in THIS share's store. Another share on
-		// the same remote may still resolve it (the runtime unions per-share
-		// reclaimers); if none does, the caller records the drift and keeps
-		// the marker fail-closed.
+		// Either no block locator recorded in THIS share's store (another share
+		// on the same remote may still resolve it — the runtime unions per-share
+		// reclaimers; if none does, the caller records the drift and keeps the
+		// marker fail-closed), OR a crash-recovery re-visit whose marker this
+		// reclaimer already cleared alongside its committed decrement. Nothing
+		// left to reclaim here.
 		return false, 0, nil
 	}
 	blockID := loc.BlockID
@@ -105,50 +126,54 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 	}
 	if !ok {
 		// Orphan locator pointing at an already-freed block: drop its local entry
-		// and report handled — the block bookkeeping for this hash is complete.
+		// and report handled — the block bookkeeping for this hash is complete
+		// (the sweep clears the marker).
 		if derr := r.LocalIndex.DeleteLocalLocation(ctx, hash); derr != nil {
 			return false, 0, fmt.Errorf("block reclaim: delete local location %s: %w", hash, derr)
 		}
 		return true, 0, nil
 	}
 
-	// Check the local-index entry BEFORE deleting it: the entry serves as an
-	// idempotency token for DecrLiveChunkCount. If it is already gone a previous
-	// run already applied the decrement and we must not decrement again.
-	_, localExisted, err := r.LocalIndex.GetLocalLocation(ctx, hash)
-	if err != nil {
-		return false, 0, fmt.Errorf("block reclaim: get local location %s: %w", hash, err)
-	}
+	// The GC sweep and reconcile serialize on the per-remote lock, so this count
+	// cannot change under us: it reliably tells the last-chunk case (marker
+	// cleared last, retryable) from a partial one (marker cleared first, gated).
+	lastChunk := rec.LiveChunkCount <= 1
 
-	// Delete the local-index entry first (idempotent). A crash here leaves an
-	// orphan entry reclaimed by the periodic local reconcile — safe direction.
-	if derr := r.LocalIndex.DeleteLocalLocation(ctx, hash); derr != nil {
-		return false, 0, fmt.Errorf("block reclaim: delete local location %s: %w", hash, derr)
-	}
-
-	if !localExisted {
-		// Crash-recovery re-entry: DeleteLocalLocation already ran in a prior
-		// pass, so DecrLiveChunkCount was either already applied or will be
-		// skipped here. Either way, the count is at least as high as the true
-		// live count — no premature free possible. Report handled: the block
-		// bookkeeping for this hash is complete.
-		return true, 0, nil
+	if !lastChunk {
+		// Partial: clear the marker BEFORE decrementing so a re-visit resolves
+		// synced=false above and cannot double-decrement a live sibling's block.
+		if derr := r.Locators.DeleteSynced(ctx, hash); derr != nil {
+			return false, 0, fmt.Errorf("block reclaim: delete synced marker %s: %w", hash, derr)
+		}
 	}
 
 	remaining, err := r.Records.DecrLiveChunkCount(ctx, blockID, 1)
 	if err != nil {
 		return false, 0, fmt.Errorf("block reclaim: decr live chunk count %s: %w", blockID, err)
 	}
-	if remaining > 0 {
-		return true, 0, nil // block still has live chunks — keep it
+
+	// Drop the local-index entry (idempotent — eviction may already have removed
+	// it). A crash before this leaves an orphan entry the local reconcile reaps.
+	if derr := r.LocalIndex.DeleteLocalLocation(ctx, hash); derr != nil {
+		return false, 0, fmt.Errorf("block reclaim: delete local location %s: %w", hash, derr)
 	}
 
-	// Last live chunk gone: free the remote object, then the record.
+	if remaining > 0 {
+		return true, 0, nil // block still has live chunks — keep it (marker cleared above)
+	}
+
+	// Last live chunk gone: free the remote object, then the record, then clear
+	// the marker. A DeleteBlock failure returns here with the marker still set,
+	// so the next sweep retries; the record + object are retained for it (and for
+	// the reconcile class-1 zero-ref backstop) — never dropped on a failed delete.
 	if derr := r.RemoteBlocks.DeleteBlock(ctx, blockID); derr != nil {
 		return false, 0, fmt.Errorf("block reclaim: delete block %s: %w", blockID, derr)
 	}
 	if derr := r.Records.DeleteBlockRecord(ctx, blockID); derr != nil {
 		return false, 0, fmt.Errorf("block reclaim: delete record %s: %w", blockID, derr)
+	}
+	if derr := r.Locators.DeleteSynced(ctx, hash); derr != nil {
+		return false, 0, fmt.Errorf("block reclaim: delete synced marker %s: %w", hash, derr)
 	}
 	return true, rec.Length, nil
 }

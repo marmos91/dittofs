@@ -349,16 +349,18 @@ func TestGCBlockSweep_LocatorlessMarkerFailsClosed(t *testing.T) {
 }
 
 // TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement is the critical
-// data-loss regression test for the partial-reclaim re-entry bug. If the GC
-// is killed or DeleteSynced fails between ReclaimDeadChunk and its caller
-// clearing the synced marker, the next sweep re-visits the same hash (the
-// synced marker is still present). Without the fix, a second call to
-// ReclaimDeadChunk decrements live_chunk_count a second time — driving it to
-// 0 for a block that still has a live sibling → DeleteBlock fires → the
-// sibling chunk's reads break permanently (silent data loss).
+// data-loss regression test for the partial-reclaim re-entry bug. If the GC is
+// killed between ReclaimDeadChunk's committed decrement and the sweep's own
+// marker-clear, the next sweep could re-visit the same hash. A second decrement
+// would drive live_chunk_count to 0 for a block that still has a live sibling →
+// DeleteBlock fires → the sibling chunk's reads break permanently (silent data
+// loss).
 //
-// The fix: DeleteLocalLocation runs FIRST as an idempotency token; the decrement
-// is skipped on re-entry (the local location is already gone).
+// The fix makes the SYNCED MARKER the decrement's idempotency token: DeleteSynced
+// runs BEFORE (and thus commits with) the decrement, so on re-entry GetLocator
+// reports the hash unsynced and the reclaimer is a no-op (handled=false) — no
+// second decrement. (In the real sweep a cleared marker also drops the hash from
+// EnumerateSynced, so it is never re-visited at all.)
 func TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement(t *testing.T) {
 	ctx := t.Context()
 	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -372,9 +374,8 @@ func TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement(t *testing.T) {
 
 	reclaimer := newBlockGCReclaimer(st, rbs)
 
-	// First reclaim of h1: normal path — decrements count, deletes local location.
-	// DeleteSynced is NOT called (simulating crash between ReclaimDeadChunk and
-	// its caller clearing the synced marker).
+	// First reclaim of h1: normal path — clears h1's marker, decrements count,
+	// deletes h1's local location.
 	handled, freed, err := reclaimer.ReclaimDeadChunk(ctx, h1)
 	if err != nil {
 		t.Fatalf("first ReclaimDeadChunk: %v", err)
@@ -386,25 +387,27 @@ func TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement(t *testing.T) {
 		t.Errorf("first pass bytesFreed=%d, want 0 (block still alive, one chunk remains)", freed)
 	}
 
-	// Verify intermediate state: count decremented to 1, h1 local gone, h2 intact.
+	// Verify intermediate state: count decremented to 1, h1 marker+local gone.
 	rec, ok, _ := st.GetBlockRecord(ctx, "blk-crash")
 	if !ok || rec.LiveChunkCount != 1 {
 		t.Fatalf("after first pass: ok=%v LiveChunkCount=%d, want 1", ok, rec.LiveChunkCount)
 	}
+	if ok, _ := st.IsSynced(ctx, h1); ok {
+		t.Fatalf("after first pass: h1 marker still present; it is the re-entry token and must be cleared")
+	}
 
-	// Simulate crash: DeleteSynced was skipped, so h1's synced marker remains.
-	// The next sweep re-visits h1 (it's still absent from the live FileChunk set).
-	// This is the crash-recovery re-entry — must NOT decrement again.
+	// Crash-recovery re-entry: the marker was cleared with the decrement, so the
+	// reclaimer must be a no-op — NOT a second decrement.
 	handled, freed, err = reclaimer.ReclaimDeadChunk(ctx, h1)
 	if err != nil {
 		t.Fatalf("second ReclaimDeadChunk (crash recovery): %v", err)
 	}
-	if !handled {
-		t.Fatalf("second ReclaimDeadChunk: handled=false, want true")
+	if handled {
+		t.Errorf("second ReclaimDeadChunk: handled=true, want false (marker already cleared → nothing to reclaim)")
 	}
 
-	// CRITICAL: the block must NOT have been freed. Without the fix, the second
-	// decrement drives live_chunk_count to 0 → DeleteBlock → data loss for h2.
+	// CRITICAL: the block must NOT have been freed. A second decrement would
+	// drive live_chunk_count to 0 → DeleteBlock → data loss for h2.
 	if _, err := rbs.GetBlock(ctx, "blk-crash"); err != nil {
 		t.Errorf("block prematurely freed on crash-recovery reclaim (DATA LOSS): GetBlock: %v", err)
 	}
@@ -417,16 +420,68 @@ func TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement(t *testing.T) {
 	if freed != 0 {
 		t.Errorf("crash-recovery bytesFreed=%d, want 0 (block must not be freed)", freed)
 	}
-	// h2's local location must remain intact — it is still live.
+	// h2's local location and marker must remain intact — it is still live.
 	if _, ok, _ := st.GetLocalLocation(ctx, h2); !ok {
 		t.Errorf("h2 local location wrongly deleted during crash-recovery reclaim")
+	}
+	if ok, _ := st.IsSynced(ctx, h2); !ok {
+		t.Errorf("h2 synced marker wrongly cleared during crash-recovery reclaim (still live)")
+	}
+}
+
+// TestBlockReclaimer_ReclaimsAfterEviction is the #1637 regression guard. It
+// proves the reclaimer still frees a block whose chunks' LOCAL-index entries
+// were already dropped by EVICTION (pkg/block/local/fs/eviction.go
+// dropBlobIndexEntries deletes them WITHOUT decrementing LiveChunkCount) before
+// the GC sweep reached them. The synced marker — untouched by eviction — is the
+// decrement's idempotency token, so the decrement runs, LiveChunkCount reaches
+// 0, and both the block record AND the remote blocks/<id> object are reclaimed.
+//
+// Before the fix the reclaimer used the local-index entry as its token: the
+// evicted (now-absent) entry made it treat the chunk as already reclaimed, skip
+// the decrement, and leak the block object forever ("1 survived" in
+// TestBlocksFlipLifecycle step 3).
+func TestBlockReclaimer_ReclaimsAfterEviction(t *testing.T) {
+	ctx := t.Context()
+	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
+	rbs := remotememory.New()
+	defer func() { _ = rbs.Close() }()
+
+	h := hashFromString("evicted-only-chunk")
+	seedPackedBlock(t, st, rbs, "blk-evicted", []block.ContentHash{h})
+
+	// Simulate eviction of the sealed log blob: the local-index entry is dropped
+	// WITHOUT decrementing the block's LiveChunkCount; the synced marker stays.
+	if err := st.DeleteLocalLocation(ctx, h); err != nil {
+		t.Fatalf("simulate eviction DeleteLocalLocation: %v", err)
+	}
+	if ok, _ := st.IsSynced(ctx, h); !ok {
+		t.Fatalf("precondition: synced marker must survive eviction")
+	}
+
+	handled, freed, err := newBlockGCReclaimer(st, rbs).ReclaimDeadChunk(ctx, h)
+	if err != nil {
+		t.Fatalf("ReclaimDeadChunk: %v", err)
+	}
+	if !handled {
+		t.Fatalf("handled = false, want true for an evicted block-resident chunk")
+	}
+	if freed <= 0 {
+		t.Errorf("bytesFreed = %d, want the block Length (last chunk freed)", freed)
+	}
+	// The block record AND the remote object must be reclaimed — the whole bug.
+	if _, ok, _ := st.GetBlockRecord(ctx, "blk-evicted"); ok {
+		t.Errorf("block record survived reclaim after eviction (#1637: GC leaks the blocks/<id> object)")
+	}
+	if _, err := rbs.GetBlock(ctx, "blk-evicted"); err == nil {
+		t.Errorf("remote block object survived reclaim after eviction (#1637: 1 survived)")
 	}
 }
 
 // compile-time: the memory metadata store satisfies the reclaimer surfaces.
 var (
-	_ blockLocatorResolver = (*metadatamemory.MemoryMetadataStore)(nil)
-	_ blockRecordGC        = (*metadatamemory.MemoryMetadataStore)(nil)
-	_ localChunkIndexGC    = (*metadatamemory.MemoryMetadataStore)(nil)
-	_ context.Context      = nil
+	_ blockSyncedMarkerGC = (*metadatamemory.MemoryMetadataStore)(nil)
+	_ blockRecordGC       = (*metadatamemory.MemoryMetadataStore)(nil)
+	_ localChunkIndexGC   = (*metadatamemory.MemoryMetadataStore)(nil)
+	_ context.Context     = nil
 )
