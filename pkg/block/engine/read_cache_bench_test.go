@@ -27,9 +27,11 @@ import (
 // #1362 fix.
 type latencyRemote struct {
 	*remotememory.Store
-	getLatency time.Duration
-	gets       atomic.Int64
-	puts       atomic.Int64
+	getLatency  time.Duration
+	gets        atomic.Int64
+	puts        atomic.Int64
+	inFlight    atomic.Int64 // ReadChunk calls currently in their injected-latency window
+	maxInFlight atomic.Int64 // high-water mark of inFlight — the fetch concurrency
 }
 
 func newLatencyRemote(getLatency time.Duration) *latencyRemote {
@@ -38,6 +40,16 @@ func newLatencyRemote(getLatency time.Duration) *latencyRemote {
 
 func (r *latencyRemote) ReadChunk(ctx context.Context, blockID string, offset, length int64, hash block.ContentHash) ([]byte, error) {
 	r.gets.Add(1)
+	// Track peak concurrency: hold the in-flight count across the injected
+	// latency so overlapping GETs register. Serial fetching pins this at 1.
+	cur := r.inFlight.Add(1)
+	for {
+		mx := r.maxInFlight.Load()
+		if cur <= mx || r.maxInFlight.CompareAndSwap(mx, cur) {
+			break
+		}
+	}
+	defer r.inFlight.Add(-1)
 	if r.getLatency > 0 {
 		time.Sleep(r.getLatency)
 	}
