@@ -152,6 +152,10 @@ type Rates struct {
 	CPUPct      float64 // busy jiffies as % of total over the interval, 0..100
 	DiskWrMBps  float64 // whole-disk bytes written ÷ wall-seconds ÷ 1e6
 	NetRxMBps   float64 // non-lo bytes received ÷ wall-seconds ÷ 1e6
+	// Metered is true when both samples were ok (Linux /proc read+parsed), so a
+	// genuine measured 0 (e.g. a warm read with no S3 download) can be told apart
+	// from an unmetered run (macOS/local smoke), which the report dashes instead.
+	Metered bool
 }
 
 // RatesTo computes rates from a (earlier) to b (later). Returns zeros unless
@@ -162,7 +166,7 @@ func (a Sample) RatesTo(b Sample) Rates {
 		return Rates{}
 	}
 	dt := b.T.Sub(a.T).Seconds()
-	var r Rates
+	r := Rates{Metered: true}
 	if dt > 0 && b.CtxSwitches >= a.CtxSwitches {
 		r.CtxSwPerSec = float64(b.CtxSwitches-a.CtxSwitches) / dt
 	}

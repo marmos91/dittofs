@@ -50,6 +50,9 @@ type CellResult struct {
 	// the read is disk-write bound; if cold MB/s ≈ NetRxMBps it is S3-network bound.
 	DiskWrMBps float64 `json:"disk_wr_mbps,omitempty"`
 	NetRxMBps  float64 `json:"net_rx_mbps,omitempty"`
+	// Metered is true when the server-resource columns above were actually
+	// sampled (Linux), so a measured 0 renders as "0" not "—" (unmetered).
+	Metered bool `json:"metered,omitempty"`
 
 	// AccessMode is how the backend served this cell: "native" (its own server,
 	// e.g. dittofs/zerofs) or "reexport" (a FUSE mount re-served over knfsd/Samba

@@ -61,9 +61,9 @@ func dittofsSetup(ctx context.Context, env BackendEnv) error {
 	// metadata-store create fail "cannot acquire directory lock"; worse, the rm
 	// deleted SST files out from under the live process (badger "no such file"
 	// spam) while the new `dfs start` reported "DittoFS is already running". So kill
-	// by both cmdline and exact name, free the NFS port, and if dfs still refuses to
-	// die, ABORT the cell rather than wipe state under it — a clean FAIL beats
-	// corrupting the store and mis-attributing the result to the binary under test.
+	// by exact name, free the NFS port, and if dfs still refuses to die, ABORT the
+	// cell rather than wipe state under it — a clean FAIL beats corrupting the store
+	// and mis-attributing the result to the binary under test.
 	//
 	// Match dfs by EXACT process name (-x dfs), never by `-f 'dfs start'`: the -f
 	// pattern is matched against every process's full cmdline, and THIS cleanup
@@ -259,7 +259,7 @@ func dittofsEvict(ctx context.Context) error {
 	// large remainder survives (>20% of a non-trivial starting size), the cold pass
 	// would read it from disk — FAIL LOUDLY rather than emit a warm number labelled
 	// "cold". The DiskWr/NetRx columns independently confirm coldness post-hoc.
-	if before.LocalDiskUsed > dittofsColdBarrierFloorBytes && after.LocalDiskUsed*5 > before.LocalDiskUsed {
+	if before.LocalDiskUsed > dittofsColdBarrierFloorBytes && after.LocalDiskUsed > before.LocalDiskUsed/5 {
 		return fmt.Errorf("cold barrier failed: local disk only fell %dMiB→%dMiB (want ≥80%% drop); the cold pass would measure locally-served reads, not S3",
 			before.LocalDiskUsed>>20, after.LocalDiskUsed>>20)
 	}
@@ -269,13 +269,20 @@ func dittofsEvict(ctx context.Context) error {
 func dittofsTeardown(ctx context.Context) error {
 	// SIGKILL + wait for the process to actually exit so a subsequent same-VM run
 	// (e.g. an A/B binary swap) starts clean instead of tripping dfs's "already
-	// running" guard. Best-effort: a wedged dfs is caught+failed by the next
-	// Setup's pre-start cleanup rather than silently wiped under.
-	// Match by exact name (-x dfs); a `-f 'dfs start'` pattern would self-match the
-	// shell running it (its argv contains the literal). See dittofsSetup's cleanup.
-	_ = exec.Sh(ctx, "sh", "-c",
+	// running" guard. Match by exact name (-x dfs); a `-f 'dfs start'` pattern would
+	// self-match the shell running it (its argv contains the literal). See
+	// dittofsSetup's cleanup.
+	//
+	// Only wipe the data dir once dfs is confirmed dead: RemoveAll under a live dfs
+	// deletes Badger SSTs out from under it and corrupts the store — the exact
+	// failure Setup hardens against. If dfs survives SIGKILL, leave the dir intact
+	// and let the next Setup's pre-start guard catch it and FAIL loudly.
+	if err := exec.Sh(ctx, "sh", "-c",
 		"pkill -9 -x dfs 2>/dev/null; "+
-			"for i in $(seq 1 20); do pgrep -x dfs >/dev/null 2>&1 || break; sleep 0.5; done; true")
+			"for i in $(seq 1 20); do pgrep -x dfs >/dev/null 2>&1 || break; sleep 0.5; done; "+
+			"pgrep -x dfs >/dev/null 2>&1 && { echo 'dfs survived SIGKILL — leaving data dir for next Setup to catch' >&2; exit 1; }; true"); err != nil {
+		return nil // best-effort teardown; don't wipe state under a wedged process
+	}
 	return os.RemoveAll(dittofsDataDir)
 }
 

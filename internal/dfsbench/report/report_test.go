@@ -35,10 +35,10 @@ func TestRenderTable_HeadlineDashing(t *testing.T) {
 
 func TestRenderPairing(t *testing.T) {
 	rs := []fio.CellResult{
-		{System: "dittofs-s3", AccessMode: "native", Workload: "seq-read", Size: "medium", Protocol: "nfs3", Pass: "cold", ThroughputMBps: 349, CtxSwPerSec: 18400},
-		{System: "juicefs", AccessMode: "reexport", Workload: "seq-read", Size: "medium", Protocol: "nfs3", Pass: "cold", ThroughputMBps: 437, CtxSwPerSec: 96300},
+		{System: "dittofs-s3", AccessMode: "native", Workload: "seq-read", Size: "medium", Protocol: "nfs3", Pass: "cold", ThroughputMBps: 349, CtxSwPerSec: 18400, Metered: true},
+		{System: "juicefs", AccessMode: "reexport", Workload: "seq-read", Size: "medium", Protocol: "nfs3", Pass: "cold", ThroughputMBps: 437, CtxSwPerSec: 96300, Metered: true},
 		// A group with only a native row must NOT produce a pairing section.
-		{System: "dittofs-s3", AccessMode: "native", Workload: "seq-write", Size: "medium", Protocol: "nfs3", Pass: "warm", ThroughputMBps: 500, CtxSwPerSec: 12000},
+		{System: "dittofs-s3", AccessMode: "native", Workload: "seq-write", Size: "medium", Protocol: "nfs3", Pass: "warm", ThroughputMBps: 500, CtxSwPerSec: 12000, Metered: true},
 	}
 	out := RenderPairing(rs)
 	if !strings.Contains(out, "seq-read") || !strings.Contains(out, "18400") || !strings.Contains(out, "96300") {
@@ -50,6 +50,17 @@ func TestRenderPairing(t *testing.T) {
 	// native row is ordered before the re-exported one.
 	if strings.Index(out, "dittofs-s3") > strings.Index(out, "juicefs") {
 		t.Errorf("native row must precede re-exported row:\n%s", out)
+	}
+}
+
+func TestMetered_ZeroVsUnmetered(t *testing.T) {
+	// A genuine measured 0 (metered warm read, no S3 download) must render "0";
+	// an unmetered run (off Linux) dashes even when the value is 0.
+	if got := metered(0, true); got != "0" {
+		t.Errorf("measured 0 should render 0, got %q", got)
+	}
+	if got := metered(0, false); got != "—" {
+		t.Errorf("unmetered should dash, got %q", got)
 	}
 }
 
