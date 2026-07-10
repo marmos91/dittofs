@@ -14,10 +14,11 @@ import (
 // a non-nil/non-empty []ChunkRef carries the CAS hashes covering the
 // requested range (zero-filling sparse holes).
 //
-// After a successful read the engine calls cache.OnRead(payloadID
-// blockHashes, fileSize) so the Cache's sequential-detection state
-// machine can fire prefetch on upcoming hashes. The cache is hint-only
-// here; reads always go through local/remote stores.
+// After a successful read the engine drives the offset-based readahead window
+// (Syncer.scheduleReadahead) so a sequential reader keeps the local read-serving
+// tier populated ahead of the read frontier. This fires on EVERY read — the
+// `blocks` argument is ignored here (the hot NFS/SMB path passes nil), so the
+// window is computed purely from offset+len(data).
 func (bs *Store) ReadAt(ctx context.Context, payloadID string, blocks []block.ChunkRef, data []byte, offset uint64) (int, error) {
 	if err := bs.enter(); err != nil {
 		return 0, err
@@ -27,13 +28,8 @@ func (bs *Store) ReadAt(ctx context.Context, payloadID string, blocks []block.Ch
 	if err != nil {
 		return n, err
 	}
-	// Hint-only post-read: pass the ChunkRef hashes and the maximal
-	// file-size estimate so the Cache can decide on prefetch. nullCache
-	// is a no-op so the unconditional call is safe (Null Object).
-	if len(blocks) > 0 {
-		hashes := blockRefHashes(blocks)
-		bs.loadCache().OnRead(payloadID, hashes, computeFileSize(blocks))
-	}
+	_ = blocks // opaque to the readahead driver; kept for interface symmetry
+	bs.syncer.scheduleReadahead(payloadID, offset, uint32(len(data)))
 	return n, nil
 }
 

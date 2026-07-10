@@ -74,22 +74,6 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 	return rows, nil
 }
 
-// blockIsLocal reports whether the bytes for (payloadID, blockIdx) are
-// currently held in the unified local CAS chunk store. It resolves the
-// FileChunk row (which carries the BLAKE3 content hash populated by
-// rollup) and asks the local store whether the chunk is present under
-// that hash. Returns false when the FileChunk row is sparse / not yet
-// produced by rollup, when the hash is unknown (pre-CAS migration
-// drift), or when local.Has surfaces an error — the caller treats any
-// non-true outcome as "must round-trip to remote".
-func (m *Syncer) blockIsLocal(ctx context.Context, payloadID string, blockIdx uint64) bool {
-	fb, err := m.resolveFileChunk(ctx, payloadID, blockIdx)
-	if err != nil {
-		return false
-	}
-	return m.blockIsLocalFromRow(ctx, fb)
-}
-
 // blockIsLocalFromRow reports whether the resolved FileChunk's CAS chunk is
 // present in the local store. A nil row, a zero hash (sparse / pre-CAS drift),
 // or a local.Has error all yield false — the caller treats any non-true outcome
@@ -243,9 +227,17 @@ func (m *Syncer) readChunkVerified(ctx context.Context, loc block.ChunkLocator, 
 	return data, nil
 }
 
-// fetchBlock downloads a single block from the remote store and writes it to the local store.
+// fetchBlock downloads a single block from the remote store and writes it to the
+// local store. It backs the SyncQueue's prefetch/download workers, so it is the
+// engine's readahead fetch path (scheduleReadahead).
 // Returns nil data for sparse blocks (no FileChunk entry or missing S3 object).
-// Returns nil data when remoteStore is nil (local-only mode -- no remote data exists).
+// Returns nil data when remoteStore is nil (local-only mode -- no remote data
+// exists) or when the block is already resident locally (nothing to fetch).
+//
+// The fetch is routed through inlineFetchOrWait so it registers in the in-flight
+// dedup map: a concurrent demand read for the same block piggybacks on this
+// prefetch instead of issuing its own S3 GET. That shared budget is what keeps
+// total remote concurrency bounded when the readahead window overlaps demand.
 func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint64) ([]byte, error) {
 	if !m.canProcess(ctx) {
 		return nil, ErrClosed
@@ -271,7 +263,17 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, nil
 	}
 
-	return m.fetchResolvedBlock(ctx, fb)
+	// Already local: by the time this prefetch worker runs, the block may already
+	// be staged locally by a demand read or an earlier prefetch (each block is
+	// scheduled at most once, but the worker races demand). Skipping it here
+	// avoids a redundant S3 GET. The probe runs in the worker goroutine, off the
+	// read hot path.
+	if m.blockIsLocalFromRow(ctx, fb) {
+		return nil, nil
+	}
+
+	data, _, err := m.inlineFetchOrWait(ctx, payloadID, blockIdx, fb)
+	return data, err
 }
 
 // fetchResolvedBlock downloads the already-resolved FileChunk row from the
@@ -428,14 +430,11 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	filled := filledFlag.Load()
 	needLocalReadAt := needLocalFlag.Load()
 
-	// Prefetch ahead only as far as the payload's access pattern justifies:
-	// a sequential run ramps the window up to PrefetchBlocks, a random read
-	// prefetches nothing (planReadahead returns 0) so we never spend remote
-	// GETs on blocks a random reader will not touch.
-	depth := m.planReadahead(payloadID, startBlockIdx, endBlockIdx)
-	for i := 0; i < depth; i++ {
-		m.enqueuePrefetch(payloadID, endBlockIdx+1+uint64(i))
-	}
+	// Readahead is driven from Store.ReadAt on EVERY read (scheduleReadahead),
+	// so the demand path no longer schedules prefetch here. The old on-miss
+	// trigger stalled once a sequential reader started hitting the local tier —
+	// EnsureAvailableAndRead is not even reached on a local hit — so the window
+	// stopped advancing exactly when it needed to stay ahead.
 
 	if needLocalReadAt {
 		return false, nil // Some blocks were in local store -- caller should use local store ReadAt
@@ -595,30 +594,4 @@ func copyBlockToDest(dest, data []byte, blockIdx, offset, length uint64) bool {
 		return true
 	}
 	return false
-}
-
-// enqueuePrefetch enqueues a prefetch request (non-blocking, best effort).
-func (m *Syncer) enqueuePrefetch(payloadID string, blockIdx uint64) {
-	if m.blockIsLocal(context.Background(), payloadID, blockIdx) {
-		return
-	}
-
-	// Suppress prefetch when remote is unreachable
-	if !m.IsRemoteHealthy() {
-		return
-	}
-
-	key := inFlightKey(payloadID, blockIdx)
-	m.inFlightMu.Lock()
-	_, inFlight := m.inFlight[key]
-	m.inFlightMu.Unlock()
-	if inFlight {
-		return
-	}
-
-	m.queue.EnqueuePrefetch(TransferRequest{
-		Type:       TransferPrefetch,
-		PayloadID:  payloadID,
-		BlockIndex: blockIdx,
-	})
 }

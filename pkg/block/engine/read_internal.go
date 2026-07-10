@@ -31,20 +31,6 @@ func blockRefHashes(refs []block.ChunkRef) []block.ContentHash {
 	return out
 }
 
-// computeFileSize returns the maximum (Offset + Size) across the
-// ChunkRef list — a conservative upper bound on file size used as
-// the OnRead fileSize hint.
-func computeFileSize(refs []block.ChunkRef) uint64 {
-	var maxEnd uint64
-	for _, r := range refs {
-		end := r.Offset + uint64(r.Size)
-		if end > maxEnd {
-			maxEnd = end
-		}
-	}
-	return maxEnd
-}
-
 // readAtInternal reads from the primary payloadID. Always goes through
 // the local store (with remote-fallback on miss); the cache is hint-only
 // and does not serve bytes here.
