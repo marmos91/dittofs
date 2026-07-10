@@ -50,7 +50,7 @@ func TestSMB3_KerberosFeatureMatrix(t *testing.T) {
 
 	// Add user principals
 	kdc.AddPrincipal(t, "alice", "alice123")
-	kdc.AddPrincipal(t, "bob", "bob123")
+	kdc.AddPrincipal(t, "bob", "bob12345")
 
 	// Add service principals for both NFS and SMB (cifs)
 	kdc.AddServicePrincipal(t, "nfs", "localhost")
@@ -88,7 +88,7 @@ func TestSMB3_KerberosFeatureMatrix(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create control plane user "bob"
-	_, err = runner.CreateUser("bob", "bob123")
+	_, err = runner.CreateUser("bob", "bob12345")
 	require.NoError(t, err)
 	err = runner.GrantUserPermission("/export", "bob", "read-write")
 	require.NoError(t, err)
