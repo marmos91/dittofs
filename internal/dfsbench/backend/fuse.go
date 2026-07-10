@@ -63,6 +63,30 @@ func ensureInstalled(ctx context.Context, cmd, pkg string) error {
 		fmt.Sprintf("command -v %s >/dev/null || { apt-get update && apt-get install -y %s; }", cmd, pkg))
 }
 
+// s3qlVenv/s3qlTarball: s3ql was dropped from the Ubuntu archive (no apt
+// candidate on noble) and its PyPI sdist won't resolve on Python 3.12, so the
+// only reliable install is the upstream release tarball into a dedicated venv.
+const (
+	s3qlVenv    = "/opt/s3ql-venv"
+	s3qlTarball = "https://github.com/s3ql/s3ql/releases/download/s3ql-6.2.2/s3ql-6.2.2.tar.gz"
+)
+
+// ensureS3QL installs s3ql from the upstream tarball into a venv and exposes its
+// CLIs on PATH. Idempotent: a no-op once mkfs.s3ql resolves.
+func ensureS3QL(ctx context.Context) error {
+	return exec.Sh(ctx, "sh", "-c", `command -v mkfs.s3ql >/dev/null && exit 0
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y -qq python3-venv python3-dev libsqlite3-dev libfuse3-dev fuse3 pkg-config build-essential
+python3 -m venv `+s3qlVenv+`
+`+s3qlVenv+`/bin/pip install -q --upgrade pip wheel
+`+s3qlVenv+`/bin/pip install -q pyfuse3 "`+s3qlTarball+`"
+for b in mkfs.s3ql mount.s3ql umount.s3ql fsck.s3ql s3qladm s3qlctrl; do
+  ln -sf `+s3qlVenv+`/bin/"$b" /usr/local/bin/"$b"
+done`)
+}
+
 // clearDir empties dir (keeping the dir itself).
 func clearDir(ctx context.Context, dir string) error {
 	return exec.Sh(ctx, "sh", "-c", fmt.Sprintf("rm -rf %q/* %q/.[!.]* 2>/dev/null || true", dir, dir))
@@ -308,7 +332,7 @@ func juicefsWaitUploaded(ctx context.Context) {
 }
 
 func s3qlSetup(ctx context.Context, env BackendEnv) error {
-	if err := ensureInstalled(ctx, "mkfs.s3ql", "s3ql"); err != nil {
+	if err := ensureS3QL(ctx); err != nil {
 		return err
 	}
 	id, secret, err := s3Creds()
