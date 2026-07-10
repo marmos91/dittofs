@@ -223,6 +223,11 @@ func (s *Service) RemoveDirectory(ctx *AuthContext, parentHandle FileHandle, nam
 	// Relaxed durability (#1573 Wall 1): rmdir touches only namespace keys, not
 	// block data. A crash can lose the removal (dir reappears empty), never
 	// corrupt data.
+	//
+	// rmdir decrements the parent's link-count key (dropping the ".." ref, below).
+	// Serialize that per-parent against concurrent mkdir/rmdir on the same parent
+	// so the shared counter key is never a BadgerDB SSI conflict source (#1571).
+	defer s.lockParentLink(parentHandle)()
 	txErr := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// Re-read the parent inside the transaction so the pre-op snapshot and
 		// the timestamp mutation derive from the same committed state.

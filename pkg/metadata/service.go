@@ -45,8 +45,21 @@ type Service struct {
 	pendingWrites      *PendingWritesTracker             // deferred metadata commits for performance
 	dirTimes           *DirTimesTracker                  // coalesced directory mtime/ctime/atime bumps (#1573)
 	deferredCommit     bool                              // if true, use deferred commits (default: true)
-	cookies            *CookieManager                    // NFS/SMB cookie to store token translation
-	quotas             map[string]int64                  // shareName -> quota in bytes (0 = unlimited)
+
+	// parentLinkShards is a fixed bank of mutexes that serialize the parent
+	// directory link-count read-modify-write (the ".." bump) done by mkdir (+1),
+	// rmdir (-1), and cross-parent directory rename (-1 source, +1 destination).
+	// That counter is the one shared key in an otherwise per-child-disjoint
+	// namespace transaction; racing it made BadgerDB SSI abort the losers, and
+	// under load the abort exhausted the retry budget and escaped as ErrConflict —
+	// surfaced to SMB clients as a hard "mkdir failed" (#1571). Serializing the
+	// counter keeps it exact and atomic with the child write while file creates
+	// (which never touch it) stay fully concurrent. A fixed bank (rather than a
+	// per-parent map) bounds memory: distinct parents may hash to one shard —
+	// harmless extra serialization on a rare path, never an unbounded map.
+	parentLinkShards [parentLinkShardCount]sync.Mutex
+	cookies          *CookieManager   // NFS/SMB cookie to store token translation
+	quotas           map[string]int64 // shareName -> quota in bytes (0 = unlimited)
 
 	// identityQuotas holds hot-updatable per-user / per-group quota limits,
 	// loaded from the control-plane DB and consulted on the write/create hot
@@ -838,6 +851,53 @@ func (s *Service) mergePendingWrites(handle FileHandle, file *File) {
 	if pending.ClearSetuidSetgid {
 		file.Mode &= ^uint32(0o6000)
 	}
+}
+
+// parentLinkShardCount is the size of the parentLinkShards bank. 256 is ample:
+// the lock is held only for a rare namespace op (mkdir/rmdir/dir-rename), so
+// collisions between two distinct parents cost at most a little extra
+// serialization, never correctness.
+const parentLinkShardCount = 256
+
+// parentLinkShard maps a handle key to its shard via FNV-1a. Inlined to avoid a
+// hash/fnv allocation on this hot-ish namespace path.
+func parentLinkShard(key string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return h % parentLinkShardCount
+}
+
+// lockParentLink locks the shard guarding handle's parent link-count
+// read-modify-write (the ".." bump done by mkdir/rmdir) and returns its unlock;
+// callers defer it. See the parentLinkShards field for why this exists (#1571).
+func (s *Service) lockParentLink(handle FileHandle) func() {
+	mu := &s.parentLinkShards[parentLinkShard(handleKey(handle))]
+	mu.Lock()
+	return mu.Unlock
+}
+
+// lockParentLinks locks the shards for a directory rename's two parents (source
+// and destination) and returns a single unlock. Shards are taken in index order
+// so opposite-direction renames can't invert and deadlock; if both parents map
+// to the same shard it is locked once (the bank's mutexes are not reentrant).
+func (s *Service) lockParentLinks(a, b FileHandle) func() {
+	ia := parentLinkShard(handleKey(a))
+	ib := parentLinkShard(handleKey(b))
+	if ia == ib {
+		mu := &s.parentLinkShards[ia]
+		mu.Lock()
+		return mu.Unlock
+	}
+	if ia > ib {
+		ia, ib = ib, ia
+	}
+	lo, hi := &s.parentLinkShards[ia], &s.parentLinkShards[ib]
+	lo.Lock()
+	hi.Lock()
+	return func() { hi.Unlock(); lo.Unlock() }
 }
 
 // mergeDirTimes overlays a directory's coalesced (not-yet-persisted) mtime/

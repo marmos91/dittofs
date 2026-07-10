@@ -764,6 +764,16 @@ func (s *Service) Move(ctx *AuthContext, fromDir FileHandle, fromName string, to
 		rename.ToDir = &DirWcc{}
 	}
 
+	// A cross-parent directory rename decrements fromDir's link-count key and
+	// increments toDir's (the ".." reference moves parents, below). Those are the
+	// same shared counter keys mkdir/rmdir bump, so without serialization a rename
+	// re-introduces the BadgerDB SSI conflict #1571 fixes — racing a concurrent
+	// mkdir/rmdir/rename on either parent. Serialize both parents for the whole
+	// transaction. File moves never touch parent nlink and stay lock-free.
+	if srcFile.Type == FileTypeDirectory && !sameDir {
+		defer s.lockParentLinks(fromDir, toDir)()
+	}
+
 	// Execute all write operations in a single transaction for better performance.
 	// Relaxed durability (#1573 Wall 1): rename rewrites only directory entries
 	// and inode paths — the moved file's size and block manifest are untouched,
