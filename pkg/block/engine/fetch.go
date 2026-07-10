@@ -20,11 +20,12 @@ func inFlightKey(payloadID string, blockIdx uint64) string {
 	return fmt.Sprintf("%s/%d", payloadID, blockIdx)
 }
 
-// fetchGroup returns an errgroup bounded to ParallelDownloads — the single
-// limit on how many block fetches hit the remote at once. Both fetch fan-outs
-// (the cold-read demand loop and WarmAll) share it so there is one place that
-// decides remote-download concurrency. g.Go blocks once the limit is reached;
-// the first task error cancels the rest via the returned context.
+// fetchGroup returns an errgroup bounded to ParallelDownloads — the per-call
+// limit on concurrent remote block fetches. The two synchronous fan-out
+// fetchers (the cold-read demand loop and WarmAll) share it so they bound
+// download concurrency the same way; the background SyncQueue prefetch pool is
+// separate. g.Go blocks once the limit is reached; the first task error cancels
+// the rest via the returned context.
 func (m *Syncer) fetchGroup(ctx context.Context) (*errgroup.Group, context.Context) {
 	parallel := m.config.ParallelDownloads
 	if parallel < 1 {
@@ -377,6 +378,9 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 	// the fan-out is race-free; the first error cancels the rest via gctx.
 	g, gctx := m.fetchGroup(ctx)
 	for blockIdx := startBlockIdx; blockIdx <= endBlockIdx; blockIdx++ {
+		if gctx.Err() != nil {
+			break // first error/cancel: stop scheduling the remaining blocks
+		}
 		blockIdx := blockIdx
 		g.Go(func() error {
 			fb, err := m.resolveFileChunk(gctx, payloadID, blockIdx)

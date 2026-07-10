@@ -30,7 +30,7 @@ type latencyRemote struct {
 	getLatency  time.Duration
 	gets        atomic.Int64
 	puts        atomic.Int64
-	inFlight    atomic.Int64 // ReadChunks currently in their injected-latency window
+	inFlight    atomic.Int64 // ReadChunk calls currently in their injected-latency window
 	maxInFlight atomic.Int64 // high-water mark of inFlight — the fetch concurrency
 }
 

@@ -142,6 +142,9 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 	g, gctx := m.fetchGroup(ctx)
 
 	for _, t := range targets {
+		if gctx.Err() != nil {
+			break // first error/cancel: stop scheduling the remaining fetches
+		}
 		t := t
 		g.Go(func() error {
 			data, err := m.fetchResolvedBlock(gctx, t.fb)
