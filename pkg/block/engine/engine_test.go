@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"sync"
@@ -233,14 +234,17 @@ func TestReadAt_CacheDisabled(t *testing.T) {
 	}
 }
 
-// TestReadAt_InvokesCacheOnRead — Task 3 behavior 1.
-// engine.ReadAt invokes cache.OnRead with the ChunkRef hashes and a
-// fileSize derived from max(Offset+Size) after a successful read.
+// TestReadAt_DoesNotInvokeCacheOnReadPath guards the Step-1 retirement of the
+// dead cache read-prefetch trigger: readahead is now driven by the offset-based
+// Syncer.scheduleReadahead (covered in readahead_test.go), and the RAM Cache is
+// off the read path entirely (readAtInternal serves from the local store). So a
+// successful ReadAt must NOT call cache.OnRead — even when the caller passes a
+// non-nil []ChunkRef (the argument is opaque to the read path). This prevents
+// silently re-wiring the never-read cache onto the hot path.
 //
-// We swap in the recording cache AFTER WriteAt so the writer's
-// tracker-reset OnRead(nil) doesn't pollute the count we want to
-// assert on.
-func TestReadAt_InvokesCacheOnRead(t *testing.T) {
+// We swap in the recording cache AFTER WriteAt so the writer's tracker-reset
+// OnRead(nil) doesn't pollute the count.
+func TestReadAt_DoesNotInvokeCacheOnReadPath(t *testing.T) {
 	bs := newTestEngine(t, 0, 0) // start with nullCache
 
 	ctx := context.Background()
@@ -251,12 +255,10 @@ func TestReadAt_InvokesCacheOnRead(t *testing.T) {
 		t.Fatalf("WriteAt failed: %v", err)
 	}
 
-	// Swap in recording cache after the write so we observe only the
-	// ReadAt path's OnRead invocation.
 	rec := &recordingCache{}
 	bs.cache = rec
 
-	// Pass a non-empty []ChunkRef so OnRead fires with hashes.
+	// A non-empty []ChunkRef used to force the old OnRead hint; it is now ignored.
 	refs := []block.ChunkRef{
 		{Hash: hashN(0xAA), Offset: 0, Size: uint32(len(data))},
 	}
@@ -264,20 +266,14 @@ func TestReadAt_InvokesCacheOnRead(t *testing.T) {
 	if _, err := bs.ReadAt(ctx, payloadID, refs, buf, 0); err != nil {
 		t.Fatalf("ReadAt failed: %v", err)
 	}
+	if !bytes.Equal(buf, data) {
+		t.Fatalf("ReadAt bytes = %q, want %q", buf, data)
+	}
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if rec.onReadCalls != 1 {
-		t.Fatalf("expected 1 OnRead call, got %d", rec.onReadCalls)
-	}
-	if rec.lastPayloadID != payloadID {
-		t.Fatalf("OnRead payloadID = %q, want %q", rec.lastPayloadID, payloadID)
-	}
-	if len(rec.lastHashes) != 1 || rec.lastHashes[0] != refs[0].Hash {
-		t.Fatalf("OnRead hashes mismatch: got %v", rec.lastHashes)
-	}
-	if rec.lastFileSize != uint64(len(data)) {
-		t.Fatalf("OnRead fileSize = %d, want %d", rec.lastFileSize, len(data))
+	if rec.onReadCalls != 0 {
+		t.Fatalf("cache is off the read path: expected 0 OnRead calls, got %d", rec.onReadCalls)
 	}
 }
 
