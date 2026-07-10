@@ -31,6 +31,11 @@ const (
 	// helloInterval is how often the responder re-announces its presence so
 	// clients that came up after the initial Hello still learn about it.
 	helloInterval = 30 * time.Second
+
+	// multicastWriteTimeout caps a single per-interface multicast send. Some
+	// interfaces (notably macOS awdl0) can block a multicast WriteTo forever;
+	// without a deadline that hangs the caller.
+	multicastWriteTimeout = 250 * time.Millisecond
 )
 
 // SidecarName is the auxsvc.Group key used for the WS-Discovery responder.
@@ -184,8 +189,12 @@ func (r *Responder) Start(ctx context.Context) error {
 		_ = r.Stop(context.Background())
 	}()
 
-	// Announce presence out every interface. Uses the local pconn/ifaces (not
-	// r.send, which would re-acquire r.mu that we still hold — a self-deadlock).
+	// Announce presence out every interface. multicastAll bounds each per-
+	// interface send with a write deadline, so a blocked interface (notably macOS
+	// awdl0) can no longer wedge Start — and thus can't delay the SMB listener
+	// that auxsvc.Group.Start binds after us. Kept synchronous under r.mu so this
+	// Hello is guaranteed to precede any Bye (Stop must take r.mu first). Uses the
+	// local pconn/ifaces (not r.send, which would re-acquire r.mu we still hold).
 	multicastAll(r.pconn, conn, r.ifaces, &r.sendMu, Hello(r.endpoint, r.msgNum.Add(1)))
 
 	logger.Info("WS-Discovery responder listening",
@@ -300,7 +309,13 @@ func (r *Responder) send(msg []byte, dst *net.UDPAddr) {
 		return
 	}
 	if dst != nil { // unicast reply — routed normally
-		if _, err := conn.WriteToUDP(msg, dst); err != nil {
+		// Serialize with multicastAll: it sets a write deadline on the shared
+		// conn, and without this lock a concurrent unicast reply could inherit
+		// that deadline and time out.
+		r.sendMu.Lock()
+		_, err := conn.WriteToUDP(msg, dst)
+		r.sendMu.Unlock()
+		if err != nil {
 			logger.Debug("wsd: send failed", "error", err)
 		}
 		return
@@ -387,6 +402,11 @@ func multicastAll(pconn *ipv4.PacketConn, conn *net.UDPConn, ifaces []net.Interf
 		if err := pconn.SetMulticastInterface(&ifaces[i]); err != nil {
 			continue
 		}
+		// Bound each send: a multicast WriteTo on some interfaces (notably macOS
+		// awdl0) can block indefinitely, which would otherwise wedge a synchronous
+		// caller. A short deadline caps it and moves on.
+		_ = conn.SetWriteDeadline(time.Now().Add(multicastWriteTimeout))
 		_, _ = pconn.WriteTo(msg, nil, discoveryUDPAddrV4)
 	}
+	_ = conn.SetWriteDeadline(time.Time{})
 }
