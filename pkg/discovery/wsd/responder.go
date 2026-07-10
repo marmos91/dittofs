@@ -27,6 +27,10 @@ const (
 
 	// httpShutdownTimeout bounds the metadata server's graceful shutdown.
 	httpShutdownTimeout = 3 * time.Second
+
+	// helloInterval is how often the responder re-announces its presence so
+	// clients that came up after the initial Hello still learn about it.
+	helloInterval = 30 * time.Second
 )
 
 // SidecarName is the auxsvc.Group key used for the WS-Discovery responder.
@@ -51,6 +55,8 @@ type Responder struct {
 	sendMu   sync.Mutex       // serializes SetMulticastInterface + WriteTo
 	httpSrv  *http.Server
 	endpoint Endpoint
+	hostIPs  []net.IP // advertised host IPv4s (for per-client XAddrs ordering)
+	uuidBare string   // endpoint UUID without the urn:uuid: prefix (for XAddrs)
 	loopCtx  context.Context
 	loopStop context.CancelFunc
 	wg       sync.WaitGroup
@@ -90,25 +96,25 @@ func (r *Responder) Start(ctx context.Context) error {
 	}
 
 	uuidURN := EndpointUUID()
-	uuidBare := strings.TrimPrefix(uuidURN, "urn:uuid:")
+	r.uuidBare = strings.TrimPrefix(uuidURN, "urn:uuid:")
 
-	// XAddrs is a space-separated list of metadata URLs. Advertise one per host
-	// IPv4 so a client on any of a multi-homed host's subnets can reach the
-	// metadata endpoint — advertising a single "primary" IP fails when the
-	// client is on a different interface's subnet.
-	var xaddrs []string
+	// Collect the host IPv4s. XAddrs is a space-separated list of metadata URLs
+	// (one per IP) so a client on any of a multi-homed host's subnets can reach
+	// the endpoint; per Probe/Resolve the list is reordered so the address that
+	// routes to that client comes first (see endpointFor).
+	r.hostIPs = nil
 	for _, ip := range hostinfo.AllHostIPs() {
 		if v4 := ip.To4(); v4 != nil {
-			xaddrs = append(xaddrs, fmt.Sprintf("http://%s:%d/%s/", v4, MetadataPort, uuidBare))
+			r.hostIPs = append(r.hostIPs, v4)
 		}
 	}
-	if len(xaddrs) == 0 {
+	if len(r.hostIPs) == 0 {
 		return errors.New("wsd: no routable IPv4 address to advertise")
 	}
 	r.endpoint = Endpoint{
 		UUID:            uuidURN,
 		Types:           TypesComputer,
-		XAddrs:          strings.Join(xaddrs, " "),
+		XAddrs:          buildXAddrs(r.uuidBare, r.hostIPs),
 		MetadataVersion: 1,
 		InstanceID:      r.instanceID,
 	}
@@ -150,7 +156,7 @@ func (r *Responder) Start(ctx context.Context) error {
 
 	// Capture srv/conn/loopCtx as locals for the goroutines — Stop nils the
 	// struct fields under r.mu, so the goroutines must not read them unlocked.
-	r.wg.Add(2)
+	r.wg.Add(3)
 	go func() {
 		defer r.wg.Done()
 		if serr := srv.Serve(ln); serr != nil && !errors.Is(serr, http.ErrServerClosed) {
@@ -160,6 +166,14 @@ func (r *Responder) Start(ctx context.Context) error {
 	go func() {
 		defer r.wg.Done()
 		r.readLoop(conn, loopCtx)
+	}()
+	// Periodic Hello: the spec only requires Hello on join, but a client whose
+	// Function Discovery starts after us (or that misses the one-shot Hello) then
+	// never learns about us unless it actively probes. Re-announcing keeps such
+	// clients' caches populated. Bounded by loopCtx.
+	go func() {
+		defer r.wg.Done()
+		r.periodicHello(loopCtx)
 	}()
 
 	// Tear down if the base context is cancelled without an explicit Stop. This
@@ -249,14 +263,29 @@ func (r *Responder) handleDatagram(data []byte, src *net.UDPAddr) {
 	switch in.kind {
 	case kindProbe:
 		if probeMatchesTypes(in.types) {
-			r.send(ProbeMatch(r.endpoint, in.messageID, r.msgNum.Add(1)), src)
+			r.send(ProbeMatch(r.endpointFor(src), in.messageID, r.msgNum.Add(1)), src)
 		}
 	case kindResolve:
 		// Only answer a Resolve targeting our endpoint.
 		if in.address == "" || in.address == r.endpoint.UUID {
-			r.send(ResolveMatch(r.endpoint, in.messageID, r.msgNum.Add(1)), src)
+			r.send(ResolveMatch(r.endpointFor(src), in.messageID, r.msgNum.Add(1)), src)
 		}
 	}
+}
+
+// endpointFor returns the advertised endpoint with its XAddrs reordered so the
+// metadata URL on the interface that routes to src comes first — a client on a
+// multi-homed host's other subnet would otherwise try an unreachable address
+// first and give up before rendering the device.
+func (r *Responder) endpointFor(src *net.UDPAddr) Endpoint {
+	ep := r.endpoint
+	if src == nil {
+		return ep
+	}
+	if local := localIPForDest(src.IP); local != nil {
+		ep.XAddrs = buildXAddrs(r.uuidBare, preferFirst(r.hostIPs, local))
+	}
+	return ep
 }
 
 // send writes msg unicast to dst (a ProbeMatch/ResolveMatch reply), or — when
@@ -277,6 +306,68 @@ func (r *Responder) send(msg []byte, dst *net.UDPAddr) {
 		return
 	}
 	multicastAll(pconn, conn, ifaces, &r.sendMu, msg)
+}
+
+// periodicHello re-multicasts a Hello every helloInterval until ctx is done.
+func (r *Responder) periodicHello(ctx context.Context) {
+	t := time.NewTicker(helloInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			r.send(Hello(r.endpoint, r.msgNum.Add(1)), nil)
+		}
+	}
+}
+
+// buildXAddrs renders the space-separated list of metadata URLs, one per IP.
+func buildXAddrs(uuidBare string, ips []net.IP) string {
+	urls := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		urls = append(urls, fmt.Sprintf("http://%s:%d/%s/", ip, MetadataPort, uuidBare))
+	}
+	return strings.Join(urls, " ")
+}
+
+// localIPForDest returns the local source IP the OS would use to reach dst (no
+// packet is sent — Dial on a UDP socket just resolves the route). Returns nil on
+// error.
+func localIPForDest(dst net.IP) net.IP {
+	c, err := net.Dial("udp4", net.JoinHostPort(dst.String(), "5357"))
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+	if la, ok := c.LocalAddr().(*net.UDPAddr); ok {
+		return la.IP
+	}
+	return nil
+}
+
+// preferFirst returns ips reordered so first leads, preserving the relative
+// order of the rest. If first is not one of ips (not an address we advertise),
+// the order is left unchanged.
+func preferFirst(ips []net.IP, first net.IP) []net.IP {
+	found := false
+	for _, ip := range ips {
+		if ip.Equal(first) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return ips
+	}
+	out := make([]net.IP, 0, len(ips))
+	out = append(out, first)
+	for _, ip := range ips {
+		if !ip.Equal(first) {
+			out = append(out, ip)
+		}
+	}
+	return out
 }
 
 // multicastAll sends msg to the WS-Discovery group out every interface, falling
