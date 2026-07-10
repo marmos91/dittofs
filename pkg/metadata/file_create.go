@@ -377,6 +377,16 @@ func (s *Service) createEntry(
 	// paired with block data, so the commit may become durable with bounded lag.
 	// A crash can lose the just-created entry (the client re-creates); it can
 	// never corrupt data.
+	//
+	// A directory create also bumps the parent's link-count key (the ".." ref,
+	// below). That is the one shared, non-disjoint key in this transaction, so
+	// concurrent same-parent mkdirs would race it and BadgerDB SSI would abort the
+	// losers — escaping under load as ErrConflict (#1571). Serialize just that
+	// bump per-parent so the counter stays exact and atomic with the child write;
+	// file creates never take this lock and stay fully concurrent.
+	if fileType == FileTypeDirectory {
+		defer s.lockParentLink(parentHandle)()
+	}
 	err = withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		// TOCTOU guard: re-check inside transaction.
 		if _, innerErr := tx.GetChild(ctx.Context, parentHandle, name); innerErr == nil {
