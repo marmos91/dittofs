@@ -1759,9 +1759,76 @@ samba-tool domain exportkeytab /etc/dittofs/dittofs.keytab \
 
 Point `kerberos.keytab_path` at the combined keytab. The SMB handler selects
 the `cifs/` principal (deriving it from the NFS `service_principal`, or via an
-explicit override); NFS RPCSEC_GSS uses the `nfs/` principal. Online
-`net ads join` + machine-password rotation is out of scope (deferred — see
-#1231).
+explicit override); NFS RPCSEC_GSS uses the `nfs/` principal.
+
+#### NTLM pass-through for AD domain users (NETLOGON machine account)
+
+The keytab above authenticates AD users over **Kerberos** (mounting by the SPN
+FQDN, e.g. `\\server.example.com\share`). But when a client connects by a name
+that has **no Kerberos SPN** — an IP address, or the LAN-discovery name a user
+gets by **double-clicking the server in Explorer → Network** (§10) — Windows
+falls back to **NTLM**, which the KDC never sees. To let AD domain users
+authenticate on that path, DittoFS validates their NTLM response against a
+Domain Controller via **NETLOGON pass-through** (MS-NRPC `NetrLogonSamLogon`).
+
+This is **opt-in** and requires a dedicated **machine (computer) account** —
+distinct from the `cifs/` service account in the keytab, because NETLOGON needs
+a *workstation-trust* secure channel that only a machine account can establish.
+The secure channel rides a Kerberos-authenticated SMB session to the DC's
+`\PIPE\netlogon` (reusing the same `krb5_conf` / realm as above). On success the
+DC returns the user's SID **and group SIDs**, which resolve to a UID/GID through
+the directory idmap (§13 / the LDAP identity provider, or `idmap_rid`) and are
+matched against share grants — the **same SID-based authorization** as the
+Kerberos/PAC path, so a domain user or **group** (e.g. `Domain Admins`) granted
+on a share is authorized identically over NTLM.
+
+```yaml
+kerberos:
+  # ... realm / netbios_domain / keytab_path as above ...
+
+  machine_account:
+    enabled: true                 # opt-in; false (default) => no NTLM pass-through
+    account_name: "DITTOFS$"      # the machine account sAMAccountName (trailing '$')
+    dc_address:                   # optional; empty => discover the DC via DNS SRV
+      - "10.0.0.10"
+
+    # Provisioning — pick ONE:
+
+    # (A) OFFLINE: you pre-create the computer account and give DittoFS its
+    #     password. Nothing is written to AD at runtime.
+    secret: "the-machine-account-password"
+
+    # (B) ONLINE JOIN: DittoFS creates the computer object itself over LDAPS on
+    #     first domain logon, owns the password, and rotates it. Requires a
+    #     privileged bind account that can create computer objects. Omit
+    #     `secret` when using this. LDAPS (or ldap:// + start_tls) is mandatory —
+    #     AD refuses a machine-password write over an unencrypted connection.
+    online_join:
+      enabled: true
+      ldap_url: "ldaps://dc.example.com"
+      bind_dn: "CN=Administrator,CN=Users,DC=example,DC=com"
+      bind_password: "..."
+      base_dn: "DC=example,DC=com"
+      # ou: "OU=Servers,DC=example,DC=com"   # default: CN=Computers,<base_dn>
+      rotation_interval: 168h                 # 0 disables rotation (AD max age ~30d)
+      # ca_cert_file: /etc/dittofs/dc-ca.pem  # pin the DC cert (recommended)
+      # insecure_skip_verify: false           # lab only; exposes the password to MITM
+```
+
+| Key | Env var | Default |
+|---|---|---|
+| `kerberos.machine_account.enabled` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ENABLED` | `false` |
+| `kerberos.machine_account.account_name` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ACCOUNT_NAME` | (empty) |
+| `kerberos.machine_account.secret` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_SECRET` | (empty; offline path) |
+| `kerberos.machine_account.dc_address` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_DC_ADDRESS` | (empty → DNS SRV discovery) |
+| `kerberos.machine_account.online_join.enabled` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ONLINE_JOIN_ENABLED` | `false` |
+| `kerberos.machine_account.online_join.ldap_url` | `DITTOFS_KERBEROS_MACHINE_ACCOUNT_ONLINE_JOIN_LDAP_URL` | (empty) |
+
+`realm` and `netbios_domain` are **required** for pass-through (the secure
+channel and NTLM `TargetInfo` both need them). The `secret` / `bind_password`
+are redacted in `dfs config show`. For a full walkthrough — pre-creating the
+`DITTOFS$` account and testing the Explorer double-click — see
+[docs/guide/windows-ad-setup.md](windows-ad-setup.md).
 
 ### 13. Identity Mapping Configuration
 

@@ -2,6 +2,7 @@ package netlogon
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -12,20 +13,30 @@ import (
 // fakeLDAP is an in-memory ldapConn that records the operations the join
 // performs so tests can assert on the computer object and password write.
 type fakeLDAP struct {
-	existing  bool // computer already present on Search
-	adds      []*ldapv3.AddRequest
-	modifies  []*ldapv3.ModifyRequest
-	bindErr   error
-	addErr    error
-	modifyErr error
-	closed    bool
+	existing    bool   // computer already present on Search
+	existingUAC uint32 // userAccountControl returned for the existing computer
+	adds        []*ldapv3.AddRequest
+	modifies    []*ldapv3.ModifyRequest
+	bindErr     error
+	addErr      error
+	modifyErr   error
+	closed      bool
 }
 
 func (f *fakeLDAP) Bind(string, string) error { return f.bindErr }
 func (f *fakeLDAP) Search(*ldapv3.SearchRequest) (*ldapv3.SearchResult, error) {
 	res := &ldapv3.SearchResult{}
 	if f.existing {
-		res.Entries = []*ldapv3.Entry{{DN: "CN=DITTOFS,CN=Computers,DC=dittofs,DC=ad"}}
+		uac := f.existingUAC
+		if uac == 0 {
+			uac = uacWorkstationTrustAccount // sensible default: an enabled workstation
+		}
+		res.Entries = []*ldapv3.Entry{{
+			DN: "CN=DITTOFS,CN=Computers,DC=dittofs,DC=ad",
+			Attributes: []*ldapv3.EntryAttribute{
+				{Name: "userAccountControl", Values: []string{fmt.Sprintf("%d", uac)}},
+			},
+		}}
 	}
 	return res, nil
 }
@@ -73,22 +84,42 @@ func TestJoinDirectory_CreatesComputerAndSetsPassword(t *testing.T) {
 	if !hasAttr(add, "sAMAccountName", "DITTOFS$") {
 		t.Errorf("sAMAccountName not set to DITTOFS$: %+v", add.Attributes)
 	}
-	if !hasAttr(add, "userAccountControl", "4096") {
-		t.Errorf("userAccountControl not WORKSTATION_TRUST_ACCOUNT (4096): %+v", add.Attributes)
+	// Created DISABLED (WORKSTATION_TRUST | ACCOUNTDISABLE = 4098): AD rejects an
+	// enabled, password-less create with a Constraint Violation. The password and
+	// enable steps follow.
+	if !hasAttr(add, "userAccountControl", "4098") {
+		t.Errorf("userAccountControl not WORKSTATION_TRUST|ACCOUNTDISABLE (4098): %+v", add.Attributes)
+	}
+	// enctypes must NOT be set at create time — it is written after the password,
+	// on the now-existing object (best-effort for a non-admin creator).
+	for _, a := range add.Attributes {
+		if a.Type == "msDS-SupportedEncryptionTypes" {
+			t.Errorf("msDS-SupportedEncryptionTypes should not be set on the Add: %+v", add.Attributes)
+		}
 	}
 
-	// Two modifies: unicodePwd + userAccountControl reassertion.
-	if len(fake.modifies) != 2 {
-		t.Fatalf("expected 2 Modify (unicodePwd + uac), got %d", len(fake.modifies))
+	// Three modifies: unicodePwd, enable (uac=4096), enctypes.
+	if len(fake.modifies) != 3 {
+		t.Fatalf("expected 3 Modify (unicodePwd + enable + enctypes), got %d", len(fake.modifies))
 	}
 	assertUnicodePwd(t, fake.modifies[0], "Sup3rSecret!")
+	if !modReplaces(fake.modifies[1], "userAccountControl", "4096") {
+		t.Errorf("second Modify should enable the account (userAccountControl=4096): %+v", fake.modifies[1].Changes)
+	}
+	if !modReplaces(fake.modifies[2], "msDS-SupportedEncryptionTypes", "31") {
+		t.Errorf("third Modify should set msDS-SupportedEncryptionTypes=31: %+v", fake.modifies[2].Changes)
+	}
 	if !fake.closed {
 		t.Error("expected connection to be closed")
 	}
 }
 
 func TestJoinDirectory_IdempotentWhenComputerExists(t *testing.T) {
-	fake := &fakeLDAP{existing: true}
+	// Pre-existing account carries WORKSTATION_TRUST | DONT_EXPIRE_PASSWORD (0x10000)
+	// and is already enabled. A reconciling re-join must preserve the extra flag,
+	// not clobber userAccountControl down to a bare 4096.
+	const dontExpirePassword = 0x10000
+	fake := &fakeLDAP{existing: true, existingUAC: uacWorkstationTrustAccount | dontExpirePassword}
 	dial := func(context.Context, *JoinConfig) (ldapConn, error) { return fake, nil }
 
 	if err := joinDirectory(context.Background(), dial, baseJoinConfig(), "NewPass1!"); err != nil {
@@ -97,11 +128,16 @@ func TestJoinDirectory_IdempotentWhenComputerExists(t *testing.T) {
 	if len(fake.adds) != 0 {
 		t.Errorf("expected no Add when computer exists, got %d", len(fake.adds))
 	}
-	// Still resets the password (re-join after lost secret) + reasserts uac.
-	if len(fake.modifies) != 2 {
-		t.Fatalf("expected 2 Modify on existing computer, got %d", len(fake.modifies))
+	// Still resets the password (re-join after lost secret) + enable + enctypes.
+	if len(fake.modifies) != 3 {
+		t.Fatalf("expected 3 Modify on existing computer, got %d", len(fake.modifies))
 	}
 	assertUnicodePwd(t, fake.modifies[0], "NewPass1!")
+	// Enable must preserve the pre-existing flags: 0x11000 = 69632, not 4096.
+	want := fmt.Sprintf("%d", uint32(uacWorkstationTrustAccount|dontExpirePassword))
+	if !modReplaces(fake.modifies[1], "userAccountControl", want) {
+		t.Errorf("enable Modify should preserve existing UAC flags (want userAccountControl=%s): %+v", want, fake.modifies[1].Changes)
+	}
 }
 
 func TestJoinDirectory_UsesOUWhenSet(t *testing.T) {
@@ -166,6 +202,20 @@ func hasAttr(add *ldapv3.AddRequest, name, value string) bool {
 	for _, a := range add.Attributes {
 		if a.Type == name {
 			for _, v := range a.Vals {
+				if v == value {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// modReplaces reports whether mod carries a Replace of attribute name to value.
+func modReplaces(mod *ldapv3.ModifyRequest, name, value string) bool {
+	for _, ch := range mod.Changes {
+		if ch.Modification.Type == name {
+			for _, v := range ch.Modification.Vals {
 				if v == value {
 					return true
 				}

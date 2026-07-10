@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf16"
 
@@ -19,6 +20,16 @@ import (
 // set: the account always carries a strong password we generate.
 const (
 	uacWorkstationTrustAccount = 0x1000
+
+	// uacAccountDisable (ADS_UF_ACCOUNTDISABLE) marks the account disabled. The
+	// computer object is CREATED disabled (WORKSTATION_TRUST | ACCOUNTDISABLE)
+	// because AD refuses to create an ENABLED account that has no valid password
+	// yet — the initial Add carries no unicodePwd (that write needs the object to
+	// exist first), so creating it enabled fails with a Constraint Violation
+	// (LDAP result 19, AtrErr on userAccountControl). joinDirectory sets the
+	// password next, then reasserts userAccountControl WITHOUT this flag to enable
+	// it — the standard create-disabled → set-password → enable join sequence.
+	uacAccountDisable = 0x0002
 
 	// supportedEncTypes advertises the Kerberos enctypes the machine account
 	// supports via msDS-SupportedEncryptionTypes (MS-KILE 2.2.7). 0x1F =
@@ -184,18 +195,73 @@ func joinDirectory(ctx context.Context, dial ldapDialer, cfg *JoinConfig, newPas
 		return fmt.Errorf("netlogon join: set machine password on %q: %w", dn, err)
 	}
 
-	// Ensure the account is enabled with the workstation-trust UAC and advertises
-	// AES enctypes. A freshly created object may be disabled until the password is
-	// set, and an existing object from a prior (pre-AES) join may lack the enctype
-	// attribute; reasserting both here makes the join converge regardless of the
-	// create path, so the NETLOGON channel negotiates AES.
-	mod := ldapv3.NewModifyRequest(dn, nil)
-	mod.Replace("userAccountControl", []string{fmt.Sprintf("%d", uacWorkstationTrustAccount)})
-	mod.Replace("msDS-SupportedEncryptionTypes", []string{fmt.Sprintf("%d", supportedEncTypes)})
-	if err := conn.Modify(mod); err != nil {
-		return fmt.Errorf("netlogon join: enable computer %q (uac + enctypes): %w", dn, err)
+	// Enable the account now that it exists and carries a password (created
+	// disabled above). This is critical — a still-disabled machine account cannot
+	// establish the NETLOGON secure channel.
+	if err := enableComputer(conn, cfg, dn, !exists); err != nil {
+		return fmt.Errorf("netlogon join: enable computer %q: %w", dn, err)
+	}
+
+	// Advertise AES enctypes (msDS-SupportedEncryptionTypes) so the NETLOGON
+	// channel negotiates AES. Best-effort: a machine-account-quota (non-admin)
+	// creator may lack write access to this attribute, so a failure here must NOT
+	// fail an otherwise complete join. It is logged at Warn (not silenced) because
+	// the consequence is real: on a DC hardened to reject RC4 (AES-only), a machine
+	// account that never got AES advertised can fail later Kerberos with
+	// KDC_ERR_ETYPE_NOSUPP — the message names the remediation.
+	encMod := ldapv3.NewModifyRequest(dn, nil)
+	encMod.Replace("msDS-SupportedEncryptionTypes", []string{fmt.Sprintf("%d", supportedEncTypes)})
+	if err := conn.Modify(encMod); err != nil {
+		slog.Default().Warn("netlogon join: could not set msDS-SupportedEncryptionTypes; the machine account keeps the DC's default enctypes — if the DC rejects RC4 (AES-only), advertise AES on the computer object manually or re-run the join with a bind account that can write this attribute",
+			"dn", dn, "error", err)
 	}
 	return nil
+}
+
+// enableComputer clears ACCOUNTDISABLE so the machine account can establish the
+// secure channel. On the object we just created (created=true) it was created
+// with exactly WORKSTATION_TRUST|ACCOUNTDISABLE, so a plain WORKSTATION_TRUST is
+// the correct enabled value. On a pre-existing account (a reconciling re-join) it
+// reads the current userAccountControl and clears ONLY ACCOUNTDISABLE, preserving
+// any other flags the account carries (TRUSTED_FOR_DELEGATION, DONT_EXPIRE_PASSWORD,
+// …) so the join never silently strips them.
+func enableComputer(conn ldapConn, cfg *JoinConfig, dn string, created bool) error {
+	uac := uint32(uacWorkstationTrustAccount)
+	if !created {
+		current, err := readUserAccountControl(conn, dn)
+		if err != nil {
+			return err
+		}
+		uac = (current &^ uacAccountDisable) | uacWorkstationTrustAccount
+	}
+	mod := ldapv3.NewModifyRequest(dn, nil)
+	mod.Replace("userAccountControl", []string{fmt.Sprintf("%d", uac)})
+	return conn.Modify(mod)
+}
+
+// readUserAccountControl fetches the current userAccountControl of the computer
+// object at dn (base-scoped read), so a re-join can clear ACCOUNTDISABLE without
+// clobbering the account's other UAC flags.
+func readUserAccountControl(conn ldapConn, dn string) (uint32, error) {
+	req := ldapv3.NewSearchRequest(
+		dn,
+		ldapv3.ScopeBaseObject, ldapv3.NeverDerefAliases, 1, 0, false,
+		"(objectClass=computer)",
+		[]string{"userAccountControl"}, nil,
+	)
+	res, err := conn.Search(req)
+	if err != nil {
+		return 0, fmt.Errorf("netlogon join: read userAccountControl for %q: %w", dn, err)
+	}
+	if len(res.Entries) == 0 {
+		return 0, fmt.Errorf("netlogon join: computer %q vanished before enable", dn)
+	}
+	raw := strings.TrimSpace(res.Entries[0].GetAttributeValue("userAccountControl"))
+	v, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("netlogon join: parse userAccountControl %q for %q: %w", raw, dn, err)
+	}
+	return uint32(v), nil
 }
 
 // computerExists reports whether a computer object with the given
@@ -214,14 +280,19 @@ func computerExists(conn ldapConn, cfg *JoinConfig, sam string) (bool, error) {
 	return len(res.Entries) > 0, nil
 }
 
-// addComputerObject creates the computer object with the workstation-trust UAC
-// and optional dNSHostName / SPNs.
+// addComputerObject creates the computer object DISABLED (workstation-trust UAC +
+// ACCOUNTDISABLE) with optional dNSHostName / SPNs. It is created disabled — and
+// WITHOUT msDS-SupportedEncryptionTypes — because the initial Add carries no
+// password: AD rejects an enabled, password-less create with a Constraint
+// Violation, and a non-privileged (machine-account-quota) creator may likewise be
+// unable to set the enctype attribute before the object exists. joinDirectory
+// sets unicodePwd next, then reasserts userAccountControl (enabled) and
+// msDS-SupportedEncryptionTypes on the now-existing, password-bearing object.
 func addComputerObject(conn ldapConn, cfg *JoinConfig, dn, sam string) error {
 	add := ldapv3.NewAddRequest(dn, nil)
 	add.Attribute("objectClass", []string{"top", "person", "organizationalPerson", "user", "computer"})
 	add.Attribute("sAMAccountName", []string{sam})
-	add.Attribute("userAccountControl", []string{fmt.Sprintf("%d", uacWorkstationTrustAccount)})
-	add.Attribute("msDS-SupportedEncryptionTypes", []string{fmt.Sprintf("%d", supportedEncTypes)})
+	add.Attribute("userAccountControl", []string{fmt.Sprintf("%d", uacWorkstationTrustAccount|uacAccountDisable)})
 	if cfg.DNSHostName != "" {
 		add.Attribute("dNSHostName", []string{cfg.DNSHostName})
 	}

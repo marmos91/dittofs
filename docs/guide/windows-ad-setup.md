@@ -242,7 +242,117 @@ directory is configured (step 3); without it they show as raw `S-1-5-21-…`.
 
 ---
 
-## 6. Verify and troubleshoot
+## 6. NTLM pass-through: Explorer double-click for AD users (optional)
+
+Everything above authenticates over **Kerberos**, which needs a service ticket
+for the SPN — so it works when you mount by the FQDN (`\\vm2.cubbit.local\ditto`).
+But when a user **double-clicks the server in Explorer → Network** (LAN
+discovery), or connects by **IP**, Windows connects by a name with **no SPN** and
+falls back to **NTLM** — which the KDC never sees. Without extra setup, an AD
+domain user fails that path with `STATUS_LOGON_FAILURE` (only local DittoFS users
+with a stored password work over NTLM).
+
+To make double-click work for **domain** users, enable **NETLOGON pass-through**:
+DittoFS forwards the client's NTLM response to a DC (`NetrLogonSamLogon`) over a
+secure channel, gets back the user + group SIDs, and authorizes them with the
+**same SID grants** from step 4 (so `Domain Admins` etc. apply unchanged).
+
+This needs a dedicated **machine (computer) account** — *not* the `svc-dittofs`
+service account, because NETLOGON requires a workstation-trust secure channel
+that only a machine account can establish.
+
+**Step 1 — create the machine account (offline).** On a DC, elevated PowerShell:
+
+```powershell
+New-ADComputer -Name DITTOFS `
+  -AccountPassword (ConvertTo-SecureString 'M4chine!Pass2026' -AsPlainText -Force) `
+  -Enabled $true `
+  -OtherAttributes @{'msDS-SupportedEncryptionTypes'=31}   # 31 = advertise AES
+```
+
+Don't set a `dNSHostName`/SPN on it — the host already owns `HOST/vm2…` via its
+own computer account, and this account is only a NETLOGON client identity.
+(Alternatively, skip this step and let DittoFS create + rotate the account itself
+with `online_join` — see [configuration.md](configuration.md#12-kerberos-configuration).)
+
+**Step 2 — add the machine account to the server config** (under `kerberos:`):
+
+```yaml
+kerberos:
+  enabled: true
+  realm: "CUBBIT.LOCAL"
+  netbios_domain: "CUBBIT"
+  # ... keytab_path etc. as in step 2 ...
+  machine_account:
+    enabled: true
+    account_name: "DITTOFS$"
+    secret: "M4chine!Pass2026"
+    dc_address: ["192.168.100.70"]   # optional; empty => DNS SRV discovery
+```
+
+Restart the server. The log should show
+`NETLOGON machine account: offline provider active account=DITTOFS$`.
+
+Verify the machine account can reach the DC before testing a real logon:
+
+```bash
+dfs netlogon test --config /etc/dittofs/config.yaml
+# OK — NETLOGON secure channel established and torn down successfully.
+```
+
+`dfs netlogon test` authenticates the machine account and brings up the NETLOGON
+secure channel (no user logon), so it isolates a machine-account/DC/Kerberos
+problem from an NTLM-logon problem. It probes the **offline** machine account;
+online join provisions on the first logon (check the server log).
+
+**Step 3 — test the NTLM path.** From a domain member, connect by **IP** (forces
+NTLM) or double-click the server in Explorer → Network:
+
+```powershell
+net use * /delete /y
+net use \\192.168.100.50\ditto /user:CUBBIT\alice P4ssword!
+```
+
+The debug log shows `NETLOGON pass-through: authenticated directory-resolved
+domain user`, then the usual SID-grant match at TREE_CONNECT.
+
+### Ports and firewall
+
+This feature is **server-OS-agnostic** — the DittoFS server can run on **Linux or
+Windows**; the AD/Kerberos/NETLOGON setup is identical and only the host firewall
+differs. Pass-through needs the DittoFS host to reach the **DC outbound** on
+Kerberos `88`, LDAP `389`/`636`, SMB `445`, and DNS `53`, and to accept SMB `445`
+**inbound** from clients. The Explorer **double-click** additionally needs LAN
+discovery (see [configuration.md](configuration.md) → *Network discovery*):
+inbound WS-Discovery UDP `3702`, mDNS UDP `5353`, and the metadata fetch on TCP
+`5357`.
+
+- **DittoFS on Windows** — the built-in "Network Discovery" rules are scoped to
+  `System`/`svchost`, so inbound discovery traffic to a third-party `dfs.exe` is
+  dropped by default. Add **program-scoped** inbound rules:
+  ```powershell
+  $dfs = "C:\path\to\dfs.exe"
+  New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD meta)"  -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5357 -Program $dfs -Profile Any
+  New-NetFirewallRule -DisplayName "DittoFS Discovery (WSD probe)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 3702 -Program $dfs -Profile Any
+  New-NetFirewallRule -DisplayName "DittoFS Discovery (mDNS)"      -Direction Inbound -Action Allow -Protocol UDP -LocalPort 5353 -Program $dfs -Profile Any
+  ```
+- **DittoFS on Linux** — no program-scoping quirk; just open the ports (e.g. with
+  firewalld):
+  ```bash
+  firewall-cmd --permanent --add-port=445/tcp --add-port=5357/tcp --add-port=3702/udp --add-port=5353/udp
+  firewall-cmd --reload
+  ```
+  Outbound to the DC is usually already permitted; if you restrict egress, allow
+  `88`, `389`/`636`, `445`, and `53` to the DC.
+
+> **Known limitation:** SMB multichannel **session-bind** for pass-through domain
+> users is not yet supported — a client that opens extra channels logs a benign
+> `LOGON_FAILURE` on the spare connection and keeps working on the primary. It
+> does not affect browsing or mounting.
+
+---
+
+## 7. Verify and troubleshoot
 
 **Prove no local users are needed:** you never ran `dfsctl user create` for alice
 or bob — they mount purely as AD principals.

@@ -3,7 +3,6 @@ package netlogon
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 
@@ -33,8 +32,8 @@ import (
 var gssapiMechRegister sync.Once
 
 // registerGSSAPIMechanisms registers the SPNEGO/NTLM/KRB5/Netlogon mechanisms
-// with go-msrpc exactly once (process-global). The initial GetDCName/ReqChallenge
-// bind inside NewSecureChannelClient authenticates the machine account via
+// with go-msrpc exactly once (process-global). The initial ReqChallenge bind
+// inside NewSecureChannelClient authenticates the machine account via
 // NTLM/SPNEGO (the netlogon schannel config does not exist yet at that point);
 // the Netlogon mechanism is used only for the sealed secure channel afterward.
 // KRB5 authenticates the NETLOGON named-pipe SMB session: Samba rejects a
@@ -97,7 +96,7 @@ type SecureChannel struct {
 	mu     sync.Mutex
 	cc     dcerpc.Conn
 	cli    logon.LogonSecureChannelClient
-	dcName string // UNC DC computer name (e.g. \\DC01); populated by connect() via GetDCName
+	dcName string // UNC DC name (e.g. \\DC01) for the LogonServer; derived locally by connect() (see deriveLogonServer)
 }
 
 // connect establishes the NETLOGON schannel connection to the given DC. It is
@@ -199,22 +198,49 @@ func (sc *SecureChannel) connect(ctx context.Context, mc MachineCredential) erro
 	sc.cc = cc
 	sc.cli = cli
 
-	// Discover the DC's computer name via GetDCName so samLogon can use the
-	// correct UNC LogonServer (MS-NRPC requires the DC name, not the domain name).
-	// Failure is non-fatal: we fall back to the domain-name form.
-	dcResp, err := cli.GetDCName(gctx, &logon.GetDCNameRequest{
-		ComputerName: mc.Workstation,
-		DomainName:   mc.DomainName,
-	})
-	if err != nil || dcResp == nil || dcResp.DomainControllerInfo == nil || dcResp.DomainControllerInfo.DomainControllerName == "" {
-		slog.Default().Debug("netlogon: GetDCName failed or returned empty name, falling back to domain name", "error", err)
-		sc.dcName = "\\\\" + mc.DomainName
-	} else {
-		// DomainControllerName is already UNC-prefixed (e.g. \\DC01) per MS-NRPC.
-		sc.dcName = dcResp.DomainControllerInfo.DomainControllerName
-	}
+	// LogonServer / PrimaryName for the NETLOGON RPCs (samLogon, setPassword) is
+	// derived LOCALLY from the Kerberos SPN (cifs/<dc-fqdn>) of the DC we dialed —
+	// we deliberately do NOT issue DsrGetDcName over the sealed channel.
+	//
+	// Why not GetDCName: against a real Windows DC that call's response fails to
+	// decode in go-msrpc AND the decode error tears down the shared DCERPC
+	// transport, so the very next NetrLogonSamLogon on this channel fails with
+	// "transport is closed" — the passthrough never validates the user (#1629). The
+	// earlier comment that GetDCName failure is "non-fatal" held only against Samba
+	// (which returned a decodable response); on Windows it is fatal to the channel.
+	//
+	// MS-NRPC treats LogonServer loosely: the DC authenticates the caller by the
+	// secure-channel authenticator (established above), not by this string, and both
+	// Windows and Samba accept the short DC label. So the local derivation is
+	// sufficient and removes a fragile, inessential round-trip.
+	sc.dcName = deriveLogonServer(spn, mc.DomainName)
 
 	return nil
+}
+
+// deriveLogonServer builds the UNC "\\<DCNAME>" used as the NETLOGON LogonServer
+// (NetrLogonSamLogon) / PrimaryName (NetrServerPasswordSet2). It takes the short
+// host label of the DC's Kerberos SPN (cifs/<fqdn>), so a dialed cifs/dc01.example.com
+// yields "\\DC01". When no host can be derived it falls back to the NetBIOS domain
+// name.
+//
+// This assumes the DC's NetBIOS/computer name equals the uppercased leftmost DNS
+// label — the AD default. It can diverge for a renamed DC or a DNS label longer
+// than the 15-char NetBIOS limit; that is tolerated because the DC authenticates
+// the caller by the secure-channel authenticator (established in connect), not by
+// this string, which MS-NRPC treats as informational. Deriving it locally is what
+// avoids the DsrGetDcName round-trip whose response decode tears down the shared
+// DCERPC transport on a real Windows DC (#1629).
+func deriveLogonServer(spn, domainName string) string {
+	host := strings.TrimPrefix(spn, "cifs/")
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return "\\\\" + domainName
+	}
+	return "\\\\" + strings.ToUpper(host)
 }
 
 // setPassword changes the machine account's password on the DC via
@@ -247,16 +273,10 @@ func (sc *SecureChannel) setPassword(ctx context.Context, mc MachineCredential, 
 		return err
 	}
 
-	// PrimaryName is the DC's UNC name. Mirror samLogon's fallback so a failed
-	// GetDCName in connect() (which leaves sc.dcName empty) does not send an empty
-	// PrimaryName that the DC would reject.
-	primaryName := sc.dcName
-	if primaryName == "" {
-		primaryName = "\\\\" + mc.DomainName
-	}
-
+	// PrimaryName is the DC's UNC name, derived locally in connect()
+	// (deriveLogonServer) and therefore always non-empty.
 	req := &logon.PasswordSet2Request{
-		PrimaryName:       primaryName,
+		PrimaryName:       sc.dcName,
 		AccountName:       mc.AccountName,
 		SecureChannelType: logon.SecureChannelTypeWorkstationSecureChannel,
 		ComputerName:      mc.Workstation,
@@ -316,15 +336,10 @@ func (sc *SecureChannel) samLogon(ctx context.Context, mc MachineCredential, req
 	}
 
 	cli := sc.cli
-	dcName := sc.dcName
 
-	// Use the DC's computer name as LogonServer per MS-NRPC.
-	// dcName is already UNC-prefixed (\\DC01) and set in connect(); fall back
-	// to domain name if it was not discovered.
-	logonServer := dcName
-	if logonServer == "" {
-		logonServer = "\\\\" + mc.DomainName
-	}
+	// LogonServer is the DC's UNC name (\\DC01) per MS-NRPC, derived locally in
+	// connect() (deriveLogonServer) and therefore always non-empty.
+	logonServer := sc.dcName
 
 	out, err := cli.SAMLogon(ctx, &logon.SAMLogonRequest{
 		LogonServer:  logonServer,

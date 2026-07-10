@@ -138,8 +138,23 @@ func netlogonCredentialFromConfig(k config.KerberosConfig) (netlogon.MachineCred
 		return netlogon.MachineCredential{}, false
 	}
 
-	// Validate required fields before constructing a doomed credential.
 	ma := k.MachineAccount
+
+	// Online-join is wired separately in buildNetlogonAuthenticator, where its own
+	// provider generates, persists, and rotates the machine password. This function
+	// derives only the OFFLINE static credential, so for online-join it returns
+	// (zero, false) meaning "no offline credential to seed" — NOT "pass-through
+	// disabled". The caller (start.go) consequently seeds a nil runtime hot-reload
+	// credential, which is correct: that credential drives the MutableProvider
+	// hot-reload path, and online-join does not use it (its provider is not a
+	// MutableProvider — a ReloadCredential just drops the cached channel and the
+	// online provider re-supplies the password). Returning quietly here also avoids
+	// the misleading "Secret is not set" warnings below.
+	if ma.OnlineJoin.Enabled {
+		return netlogon.MachineCredential{}, false
+	}
+
+	// Validate required fields before constructing a doomed credential.
 	if ma.AccountName == "" {
 		slog.Warn("NETLOGON machine account is enabled but AccountName is not set; NTLM passthrough disabled")
 		return netlogon.MachineCredential{}, false
