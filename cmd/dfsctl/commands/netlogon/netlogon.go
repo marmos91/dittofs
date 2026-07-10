@@ -6,6 +6,7 @@ package netlogon
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/marmos91/dittofs/cmd/dfsctl/cmdutil"
 	"github.com/marmos91/dittofs/pkg/apiclient"
@@ -78,7 +79,7 @@ func (r statusRenderer) Rows() [][]string {
 		{"Account", cmdutil.EmptyOr(s.AccountName, "-")},
 		{"Realm", cmdutil.EmptyOr(s.Realm, "-")},
 		{"NetBIOS domain", cmdutil.EmptyOr(s.NetBIOSDomain, "-")},
-		{"DC addresses", cmdutil.EmptyOr(joinDCs(s.DCAddresses), "(discover via DNS SRV)")},
+		{"DC addresses", cmdutil.EmptyOr(strings.Join(s.DCAddresses, ", "), "(discover via DNS SRV)")},
 		{"Channel connected", cmdutil.BoolToYesNo(s.ChannelConnected)},
 	}
 	// "Joined" is only meaningful for the online-join provider (the offline
@@ -97,17 +98,6 @@ func (r statusRenderer) Rows() [][]string {
 		rows = append(rows, []string{"Joined", "n/a (offline provider)"})
 	}
 	return rows
-}
-
-func joinDCs(dcs []string) string {
-	out := ""
-	for i, dc := range dcs {
-		if i > 0 {
-			out += ", "
-		}
-		out += dc
-	}
-	return out
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
