@@ -138,7 +138,16 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 
 // dittofsEvict drops locally-cached blocks so the next read is cold-from-S3.
 // #1595's DrainLocalSynced is what makes `store block evict` actually force it.
+//
+// Drain queued uploads FIRST: `store block evict` (DrainLocalSynced) only drops
+// blocks already synced to S3. A block whose upload is still in flight is left
+// on local disk, so the "cold" read serves it from cache — the pass reads warm,
+// S3MB stays 0, and cold≈warm. Draining first makes every block synced and
+// therefore evictable, so the next read genuinely comes from S3.
 func dittofsEvict(ctx context.Context) error {
+	if err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads"); err != nil {
+		return err
+	}
 	return exec.Sh(ctx, "dfsctl", "store", "block", "evict")
 }
 
