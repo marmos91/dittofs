@@ -33,7 +33,12 @@ func (bs *Store) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 	// WRITE into an inline S3 PutObject the reply waited on: multi-second per-op
 	// stalls at ~3% CPU (#1621). The background carve loop mirrors the data; a
 	// strict share (require_durable_commit) still drains inline below.
+	//
+	// Still perform the per-payload FileChunk metadata quiesce that syncer.Flush
+	// would (persist queued manifest updates so reads and restart-recovery see
+	// the authoritative manifest) — only the remote carve drain is skipped.
 	if bs.LocalDurable() && !bs.RequireDurableCommit() {
+		bs.local.SyncFileChunksForFile(ctx, payloadID)
 		return &block.FlushResult{Finalized: false}, nil
 	}
 	// Delegate to the syncer's carve drain.
