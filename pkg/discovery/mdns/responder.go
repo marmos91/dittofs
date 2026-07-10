@@ -24,8 +24,21 @@ const (
 	// sent on registration (RFC 6762 §8.3 recommends 1s).
 	announceInterval = 1 * time.Second
 
+	// announceRefresh re-sends the full record set periodically to keep the OS
+	// mDNS cache warm. On macOS the system mDNSResponder owns :5353, so our
+	// receive socket only sees a hashed subset of inbound queries and cannot be
+	// relied on to answer live resolves; re-announcing below the SRV/A record TTL
+	// (120s) lets Finder resolve and connect at any time, not just within TTL of
+	// startup.
+	announceRefresh = 60 * time.Second
+
 	// maxDatagram bounds a single inbound mDNS datagram read.
 	maxDatagram = 65535
+
+	// multicastWriteTimeout caps a single per-interface multicast send. Some
+	// interfaces (notably macOS awdl0) can block a multicast WriteTo forever;
+	// without a deadline that stalls sends to the remaining interfaces.
+	multicastWriteTimeout = 250 * time.Millisecond
 )
 
 // multicastUDPAddrV4 is the destination for outgoing announcements/responses.
@@ -42,16 +55,19 @@ var multicastUDPAddrV4 = &net.UDPAddr{IP: net.ParseIP(multicastGroupV4), Port: m
 // adapter enabling/disabling its mDNS advertising just adds/removes its rows
 // without churning the socket (unless it was the last registration).
 type Responder struct {
-	mu       sync.Mutex
-	conn     *net.UDPConn
-	pconn    *ipv4.PacketConn // wraps conn for per-interface group join + multicast send
-	ifaces   []net.Interface  // multicast interfaces the group is joined on
-	sendMu   sync.Mutex       // serializes SetMulticastInterface + WriteTo across interfaces
-	loopCtx  context.Context
-	loopStop context.CancelFunc
-	wg       *sync.WaitGroup // per-socket-generation; isolates Wait from a later generation's Add
-	services map[uint64][]ServiceRecord
-	nextID   uint64
+	mu        sync.Mutex
+	conn      *net.UDPConn
+	pconn     *ipv4.PacketConn // wraps conn for per-interface group join (receive only)
+	sendConn  *net.UDPConn     // dedicated ephemeral-port socket for outbound packets
+	sendPconn *ipv4.PacketConn // wraps sendConn for per-interface multicast send
+	ifaces    []net.Interface  // multicast interfaces the group is joined on
+	sendMu    sync.Mutex       // serializes SetMulticastInterface + WriteTo across interfaces
+	loopCtx   context.Context
+	loopStop  context.CancelFunc
+	wg        *sync.WaitGroup // per-socket-generation; isolates Wait from a later generation's Add
+	services  map[uint64][]ServiceRecord
+	cancels   map[uint64]context.CancelFunc // stops each registration's re-announce loop
+	nextID    uint64
 }
 
 var (
@@ -92,14 +108,20 @@ func (r *Responder) Register(services []ServiceRecord) (*Handle, error) {
 	id := r.nextID
 	r.nextID++
 	r.services[id] = services
-	ctx := r.loopCtx
+	// Per-registration context so unregister() can stop this registration's
+	// re-announce loop without waiting for the whole socket to be torn down.
+	regCtx, cancel := context.WithCancel(r.loopCtx)
+	if r.cancels == nil {
+		r.cancels = make(map[uint64]context.CancelFunc)
+	}
+	r.cancels[id] = cancel
 	wg := r.wg
 	wg.Add(1) // under r.mu so it cannot race a concurrent stop's Wait
 	r.mu.Unlock()
 
 	go func() {
 		defer wg.Done()
-		r.announce(ctx, services)
+		r.announce(regCtx, services)
 	}()
 
 	logger.Info("mDNS advertising registered", "services", len(services))
@@ -122,11 +144,19 @@ func (r *Responder) unregister(id uint64) {
 	if ok {
 		delete(r.services, id)
 	}
+	cancel := r.cancels[id]
+	delete(r.cancels, id)
 	last := ok && len(r.services) == 0
 	r.mu.Unlock()
 
 	if !ok {
 		return
+	}
+
+	// Stop this registration's re-announce loop before the goodbye so it cannot
+	// re-multicast the withdrawn records afterwards.
+	if cancel != nil {
+		cancel()
 	}
 
 	// Goodbye so caches evict promptly.
@@ -141,20 +171,23 @@ func (r *Responder) unregister(id uint64) {
 // startLocked opens the multicast socket and launches the read loop. Caller
 // holds r.mu.
 func (r *Responder) startLocked() error {
-	// ListenMulticastUDP sets SO_REUSEADDR so we coexist with a host mDNS
-	// responder (e.g. Avahi), and joins the group on the system's default
-	// multicast interface. Multi-interface join is a documented follow-up.
-	conn, err := net.ListenMulticastUDP("udp4", nil, multicastUDPAddrV4)
+	// Bind :5353 with SO_REUSEADDR *and* SO_REUSEPORT so we coexist with a host
+	// mDNS responder. SO_REUSEADDR alone suffices on Linux (Avahi), but macOS's
+	// system mDNSResponder holds the port with SO_REUSEPORT — without it here the
+	// bind succeeds yet the kernel delivers no inbound multicast to us, so Finder
+	// queries never reach the responder.
+	lc := net.ListenConfig{Control: reusePort}
+	pc, err := lc.ListenPacket(context.Background(), "udp4", fmt.Sprintf("%s:%d", multicastGroupV4, multicastPort))
 	if err != nil {
-		return fmt.Errorf("mdns: listen %s:%d: %w", multicastGroupV4, multicastPort, err)
+		return fmt.Errorf("mdns: listen :%d: %w", multicastPort, err)
 	}
+	conn := pc.(*net.UDPConn)
 	r.conn = conn
 
 	// Join the group on every multicast interface so the responder receives
 	// queries arriving on any of them — critical on multi-homed hosts, where the
 	// OS default multicast interface may not be the LAN the clients are on.
-	// ListenMulticastUDP already joined the default interface; re-joining is
-	// harmless. Unicast replies route back normally via WriteToUDP(src).
+	// Unicast replies route back normally via WriteToUDP(src).
 	r.pconn = ipv4.NewPacketConn(conn)
 	_ = r.pconn.SetMulticastLoopback(true)
 	r.ifaces = hostinfo.MulticastInterfaces()
@@ -164,6 +197,31 @@ func (r *Responder) startLocked() error {
 			joined++
 		}
 	}
+	// ListenConfig does not auto-join a default interface the way
+	// ListenMulticastUDP did, so if no per-interface join landed, fall back to
+	// the system default interface.
+	if joined == 0 {
+		if err := r.pconn.JoinGroup(nil, multicastUDPAddrV4); err == nil {
+			joined++
+		}
+	}
+
+	// Send from a *separate* ephemeral-port socket, never the :5353 receive
+	// socket. On macOS a multicast datagram sent from a socket bound to :5353 is
+	// looped straight back to that same socket instead of the system
+	// mDNSResponder, so our announcements and replies never reach Finder. An
+	// ephemeral source port sidesteps the loopback capture and unicast replies to
+	// the querier's :5353 land on the OS responder rather than being reclaimed by
+	// our own receive socket.
+	sc, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		_ = conn.Close()
+		r.conn, r.pconn, r.ifaces = nil, nil, nil
+		return fmt.Errorf("mdns: send socket: %w", err)
+	}
+	r.sendConn = sc
+	r.sendPconn = ipv4.NewPacketConn(sc)
+	_ = r.sendPconn.SetMulticastLoopback(true)
 
 	r.loopCtx, r.loopStop = context.WithCancel(context.Background())
 	loopCtx := r.loopCtx
@@ -191,10 +249,13 @@ func (r *Responder) stop() {
 		return
 	}
 	conn := r.conn
+	sendConn := r.sendConn
 	stop := r.loopStop
 	wg := r.wg
 	r.conn = nil
 	r.pconn = nil
+	r.sendConn = nil
+	r.sendPconn = nil
 	r.ifaces = nil
 	r.loopStop = nil
 	r.loopCtx = nil
@@ -206,6 +267,9 @@ func (r *Responder) stop() {
 	}
 	if conn != nil {
 		_ = conn.Close()
+	}
+	if sendConn != nil {
+		_ = sendConn.Close()
 	}
 	if wg != nil {
 		wg.Wait()
@@ -264,8 +328,9 @@ func (r *Responder) handlePacket(query []byte, src *net.UDPAddr) {
 	}
 }
 
-// announce sends the two startup announcements, bailing if the socket is torn
-// down between them.
+// announce sends the two startup announcements, then re-announces periodically
+// for the lifetime of the registration to keep the OS mDNS cache warm. It bails
+// as soon as the responder's context is cancelled.
 func (r *Responder) announce(ctx context.Context, services []ServiceRecord) {
 	msg, err := announcement(services, false)
 	if err != nil {
@@ -282,43 +347,67 @@ func (r *Responder) announce(ctx context.Context, services []ServiceRecord) {
 		}
 		r.send(msg, nil)
 	}
+
+	ticker := time.NewTicker(announceRefresh)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// ctx may have been cancelled while this tick was pending; don't
+			// re-announce a registration that unregister() is withdrawing.
+			if ctx.Err() != nil {
+				return
+			}
+			r.send(msg, nil)
+		}
+	}
 }
 
 // send writes msg unicast to dst, or — when dst is nil — multicasts it out every
 // joined interface so announcements/responses reach clients on all of them.
 func (r *Responder) send(msg []byte, dst *net.UDPAddr) {
 	r.mu.Lock()
-	conn := r.conn
-	pconn := r.pconn
+	conn := r.sendConn
+	pconn := r.sendPconn
 	ifaces := r.ifaces
 	r.mu.Unlock()
 	if conn == nil {
 		return
 	}
+	// Serialize every write on the shared send socket. The multicast loop below
+	// mutates SetMulticastInterface and the per-write deadline; without this a
+	// concurrent unicast reply could inherit that deadline and be dropped.
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
 	if dst != nil { // unicast reply — routed normally
 		if _, err := conn.WriteToUDP(msg, dst); err != nil {
 			logger.Debug("mdns: send failed", "error", err)
 		}
 		return
 	}
-	// Multicast: send out each interface. Serialize because SetMulticastInterface
-	// mutates shared socket state.
+	// Multicast: send out each interface.
 	if pconn == nil || len(ifaces) == 0 {
 		if _, err := conn.WriteToUDP(msg, multicastUDPAddrV4); err != nil {
 			logger.Debug("mdns: send failed", "error", err)
 		}
 		return
 	}
-	r.sendMu.Lock()
-	defer r.sendMu.Unlock()
 	for i := range ifaces {
 		if err := pconn.SetMulticastInterface(&ifaces[i]); err != nil {
 			continue
 		}
+		// Bound each send: a multicast WriteTo on some interfaces (notably macOS
+		// awdl0) can block indefinitely, which would stall the remaining sends —
+		// including the LAN interface where the OS mDNS responder listens, so the
+		// announcement never reaches Finder.
+		_ = conn.SetWriteDeadline(time.Now().Add(multicastWriteTimeout))
 		if _, err := pconn.WriteTo(msg, nil, multicastUDPAddrV4); err != nil {
 			logger.Debug("mdns: multicast send failed", "iface", ifaces[i].Name, "error", err)
 		}
 	}
+	_ = conn.SetWriteDeadline(time.Time{})
 }
 
 // snapshotServicesLocked flattens every registration's records into one slice.
