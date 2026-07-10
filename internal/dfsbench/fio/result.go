@@ -43,6 +43,14 @@ type CellResult struct {
 	CtxSwPerSec float64 `json:"ctxsw_per_sec,omitempty"`
 	CPUPct      float64 `json:"cpu_pct,omitempty"`
 
+	// Server-side I/O throughput during the pass (Linux only; 0 off Linux). For a
+	// cold read these discriminate the fill bottleneck: DiskWrMBps is the local
+	// tier's write rate (block volume), NetRxMBps the S3 download rate (non-loopback
+	// NIC; NFS/SMB run over loopback here). If cold MB/s ≈ DiskWrMBps ≪ NetRxMBps
+	// the read is disk-write bound; if cold MB/s ≈ NetRxMBps it is S3-network bound.
+	DiskWrMBps float64 `json:"disk_wr_mbps,omitempty"`
+	NetRxMBps  float64 `json:"net_rx_mbps,omitempty"`
+
 	// AccessMode is how the backend served this cell: "native" (its own server,
 	// e.g. dittofs/zerofs) or "reexport" (a FUSE mount re-served over knfsd/Samba
 	// — the FUSE tax). Empty for direct local/smoke mounts. Drives the pairing view.

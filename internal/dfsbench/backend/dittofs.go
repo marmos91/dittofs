@@ -52,15 +52,29 @@ func dittofsSetup(ctx context.Context, env BackendEnv) error {
 	if err != nil {
 		return err
 	}
-	// Kill any dfs left over by a crashed prior run and WAIT for it to actually
-	// die before wiping state: a still-live old dfs holds the BadgerDB directory
-	// lock and keeps rewriting controlplane.db, so racing rm+start against it made
-	// the metadata-store create fail "cannot acquire directory lock". Only after
-	// it's gone do we wipe control-plane + client state, so bootstrap (admin user,
-	// stores, share) is deterministic and re-runnable. Resilience: survive a dirty VM.
-	_ = exec.Sh(ctx, "sh", "-c",
-		"pkill -9 -f 'dfs start' 2>/dev/null; for i in $(seq 1 30); do pgrep -x dfs >/dev/null 2>&1 || break; sleep 0.5; done; "+
-			"rm -rf ~/.config/dittofs ~/.local/state/dittofs ~/.config/dfsctl "+dittofsDataDir+"; true")
+	// Kill any dfs left over by a prior run and WAIT for it to actually die before
+	// wiping state. This is what makes a same-VM re-run — e.g. an A/B binary swap —
+	// safe. A still-live old dfs holds the BadgerDB directory lock and keeps
+	// rewriting controlplane.db, so racing rm+start against it made the
+	// metadata-store create fail "cannot acquire directory lock"; worse, the rm
+	// deleted SST files out from under the live process (badger "no such file"
+	// spam) while the new `dfs start` reported "DittoFS is already running". So kill
+	// by both cmdline and exact name, free the NFS port, and if dfs still refuses to
+	// die, ABORT the cell rather than wipe state under it — a clean FAIL beats
+	// corrupting the store and mis-attributing the result to the binary under test.
+	//
+	// Match dfs by EXACT process name (-x dfs), never by `-f 'dfs start'`: the -f
+	// pattern is matched against every process's full cmdline, and THIS cleanup
+	// shell's own argv contains the literal "dfs start", so `pkill -f 'dfs start'`
+	// SIGKILLs its own parent shell before the rm runs ("signal: killed"). -x dfs
+	// matches the server's comm ("dfs") and can't self-match the "sh" running this.
+	clean := "pkill -9 -x dfs 2>/dev/null; " +
+		"for i in $(seq 1 40); do pgrep -x dfs >/dev/null 2>&1 || break; sleep 0.5; done; " +
+		"if pgrep -x dfs >/dev/null 2>&1; then echo 'dfs still alive after SIGKILL — refusing to wipe state under it' >&2; exit 1; fi; " +
+		"rm -rf ~/.config/dittofs ~/.local/state/dittofs ~/.config/dfsctl " + dittofsDataDir
+	if err := exec.Sh(ctx, "sh", "-c", clean); err != nil {
+		return fmt.Errorf("dittofs setup: pre-start cleanup failed (stale dfs?): %w", err)
+	}
 	if err := os.MkdirAll(dittofsDataDir+"/meta", 0o755); err != nil {
 		return err
 	}
@@ -152,7 +166,15 @@ func dittofsEvict(ctx context.Context) error {
 }
 
 func dittofsTeardown(ctx context.Context) error {
-	_ = exec.Sh(ctx, "sh", "-c", "pkill -f 'dfs start' || true")
+	// SIGKILL + wait for the process to actually exit so a subsequent same-VM run
+	// (e.g. an A/B binary swap) starts clean instead of tripping dfs's "already
+	// running" guard. Best-effort: a wedged dfs is caught+failed by the next
+	// Setup's pre-start cleanup rather than silently wiped under.
+	// Match by exact name (-x dfs); a `-f 'dfs start'` pattern would self-match the
+	// shell running it (its argv contains the literal). See dittofsSetup's cleanup.
+	_ = exec.Sh(ctx, "sh", "-c",
+		"pkill -9 -x dfs 2>/dev/null; "+
+			"for i in $(seq 1 20); do pgrep -x dfs >/dev/null 2>&1 || break; sleep 0.5; done; true")
 	return os.RemoveAll(dittofsDataDir)
 }
 

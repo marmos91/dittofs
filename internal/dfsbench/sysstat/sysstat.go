@@ -15,6 +15,7 @@ package sysstat
 
 import (
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,11 +30,29 @@ type Sample struct {
 	CtxSwitches uint64 // /proc/stat "ctxt": cumulative context switches since boot
 	CPUBusy     uint64 // non-idle jiffies (user+nice+system+irq+softirq+steal)
 	CPUTotal    uint64 // all jiffies, incl. idle+iowait
-	ok          bool
+	// DiskWrBytes is the cumulative bytes written across whole-disk block devices
+	// (/proc/diskstats sectors-written × 512). On the bench VM this is dominated by
+	// the block volume holding the DittoFS local tier, so its rate is the tier's
+	// fill throughput — the discriminator for "is a cold read disk-write bound?".
+	DiskWrBytes uint64
+	// NetRxBytes is cumulative bytes received across non-loopback interfaces
+	// (/proc/net/dev). NFS/SMB to the fio client run over loopback here, so the
+	// non-lo rate isolates the S3 DOWNLOAD rate — the "is a cold read S3-network
+	// bound?" discriminator that pairs with DiskWrBytes.
+	NetRxBytes uint64
+	ok         bool
 }
 
-// Now snapshots /proc/stat. On any read/parse failure it returns a not-ok
-// Sample (rates from it are zero) — the caller never has to handle an error.
+// wholeDiskRe matches whole-disk device names in /proc/diskstats (sda, vda,
+// xvdb, nvme0n1) but not their partitions (sda1, nvme0n1p1) — summing both would
+// double-count the same writes.
+var wholeDiskRe = regexp.MustCompile(`^(sd[a-z]+|vd[a-z]+|xvd[a-z]+|nvme\d+n\d+)$`)
+
+// Now snapshots /proc/stat (required) plus /proc/diskstats and /proc/net/dev
+// (best-effort). On a /proc/stat read/parse failure it returns a not-ok Sample
+// (rates from it are zero) — the caller never has to handle an error. Missing
+// disk/net files (macOS) leave those counters zero, so they degrade to empty
+// columns exactly like the CPU/ctxsw pair.
 func Now() Sample {
 	data, err := os.ReadFile("/proc/stat")
 	if err != nil {
@@ -45,7 +64,49 @@ func Now() Sample {
 	}
 	s.T = time.Now()
 	s.ok = true
+	if d, err := os.ReadFile("/proc/diskstats"); err == nil {
+		s.DiskWrBytes = parseDiskWriteBytes(string(d))
+	}
+	if n, err := os.ReadFile("/proc/net/dev"); err == nil {
+		s.NetRxBytes = parseNetRxBytes(string(n))
+	}
 	return s
+}
+
+// parseDiskWriteBytes sums sectors-written (field 10, 512-byte sectors) across
+// whole-disk devices in /proc/diskstats. Split out for testing without /proc.
+func parseDiskWriteBytes(data string) uint64 {
+	var total uint64
+	for _, line := range strings.Split(data, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 10 || !wholeDiskRe.MatchString(f[2]) {
+			continue
+		}
+		if sectors, err := strconv.ParseUint(f[9], 10, 64); err == nil {
+			total += sectors * 512
+		}
+	}
+	return total
+}
+
+// parseNetRxBytes sums rx-bytes across non-loopback interfaces in /proc/net/dev.
+// Split out for testing without /proc.
+func parseNetRxBytes(data string) uint64 {
+	var total uint64
+	for _, line := range strings.Split(data, "\n") {
+		iface, rest, found := strings.Cut(line, ":")
+		if !found || strings.TrimSpace(iface) == "lo" {
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) < 1 {
+			continue
+		}
+		if rx, err := strconv.ParseUint(f[0], 10, 64); err == nil {
+			total += rx
+		}
+	}
+	return total
 }
 
 // parseStat extracts the aggregate "cpu" and "ctxt" lines. Split out for
@@ -89,6 +150,8 @@ func parseStat(data string) (Sample, bool) {
 type Rates struct {
 	CtxSwPerSec float64 // Δctxt ÷ wall-seconds
 	CPUPct      float64 // busy jiffies as % of total over the interval, 0..100
+	DiskWrMBps  float64 // whole-disk bytes written ÷ wall-seconds ÷ 1e6
+	NetRxMBps   float64 // non-lo bytes received ÷ wall-seconds ÷ 1e6
 }
 
 // RatesTo computes rates from a (earlier) to b (later). Returns zeros unless
@@ -105,6 +168,12 @@ func (a Sample) RatesTo(b Sample) Rates {
 	}
 	if dTotal := b.CPUTotal - a.CPUTotal; b.CPUTotal > a.CPUTotal && b.CPUBusy >= a.CPUBusy {
 		r.CPUPct = float64(b.CPUBusy-a.CPUBusy) / float64(dTotal) * 100
+	}
+	if dt > 0 && b.DiskWrBytes >= a.DiskWrBytes {
+		r.DiskWrMBps = float64(b.DiskWrBytes-a.DiskWrBytes) / dt / 1e6
+	}
+	if dt > 0 && b.NetRxBytes >= a.NetRxBytes {
+		r.NetRxMBps = float64(b.NetRxBytes-a.NetRxBytes) / dt / 1e6
 	}
 	return r
 }

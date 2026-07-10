@@ -73,7 +73,7 @@ func RenderTable(rs []fio.CellResult) string {
 		return a.Size < b.Size
 	})
 
-	head := []string{"SYSTEM", "ACCESS", "WORKLOAD", "SIZE", "PROTO", "PASS", "IOPS", "MB/s", "p50µs", "p99µs", "S3MB", "CTXSW/s", "CPU%", "err"}
+	head := []string{"SYSTEM", "ACCESS", "WORKLOAD", "SIZE", "PROTO", "PASS", "IOPS", "MB/s", "p50µs", "p99µs", "S3MB", "DiskWrMB/s", "NetRxMB/s", "CTXSW/s", "CPU%", "err"}
 	rows := make([][]string, 0, len(rs))
 	for _, r := range rs {
 		rows = append(rows, []string{
@@ -83,6 +83,8 @@ func RenderTable(rs []fio.CellResult) string {
 			fmt.Sprintf("%.0f", r.LatencyP50Us),
 			fmt.Sprintf("%.0f", r.LatencyP99Us),
 			fmt.Sprintf("%d", r.S3Bytes/fio.Mib),
+			metered(r.DiskWrMBps),
+			metered(r.NetRxMBps),
 			metered(r.CtxSwPerSec),
 			metered(r.CPUPct),
 			fmt.Sprintf("%d", r.Errors),
