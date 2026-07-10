@@ -138,6 +138,13 @@ type Store struct {
 	closed   bool  // guarded by closeMu; true once teardown has run
 	closeErr error // memoized result of the first Close (idempotent)
 
+	// migrateCancel/migrateDone govern the background cas→blocks migration
+	// goroutine spawned by Start. Close cancels the context and waits on the
+	// channel so the goroutine's in-flight remote I/O never races the store
+	// teardown below it. Both nil/zero until Start runs.
+	migrateCancel context.CancelFunc
+	migrateDone   chan struct{}
+
 	// requireDurableCommit gates the strict honest-CLOSE/COMMIT rule (#1274).
 	// When false (the default), CommitBlockStore acks once engine.Flush
 	// succeeds regardless of local/remote durability — the remote mirror
@@ -570,15 +577,24 @@ func (bs *Store) Start(ctx context.Context) error {
 	// Use background context so these outlive the calling request context.
 	bs.local.Start(context.Background())
 
-	// One-shot cas→blocks migration (#1493 PR4): import pre-flip local
-	// per-chunk files into the log-blob substrate and re-pack standalone
-	// remote objects into packed blocks. Blocking by design — the share must
-	// not serve until the legacy layout is gone — and a no-op on migrated
-	// (or fresh) stores. Runs BEFORE the syncer starts so no mirror/carve
-	// activity races the rewrite.
-	if err := bs.migrateLegacyCAS(ctx); err != nil {
-		return fmt.Errorf("cas→blocks migration: %w", err)
-	}
+	// One-shot cas→blocks migration: import pre-flip local per-chunk files
+	// into the log-blob substrate and re-pack standalone remote objects into
+	// packed blocks. Runs in the background so a slow/stalled remote or a
+	// near-full disk can't wedge startup — the share serves immediately and any
+	// not-yet-repacked standalone chunk is read through the legacy fallback
+	// (resolveAndReadChunk). Idempotent and resumable: a failed or cancelled
+	// pass is a no-op retry on the next start. Uses a detached context so it
+	// outlives Start; Close cancels it and waits on migrateDone before tearing
+	// down the stores it uses.
+	migrateCtx, cancel := context.WithCancel(context.Background())
+	bs.migrateCancel = cancel
+	bs.migrateDone = make(chan struct{})
+	go func() {
+		defer close(bs.migrateDone)
+		if err := bs.migrateLegacyCAS(migrateCtx); err != nil && migrateCtx.Err() == nil {
+			logger.Warn("cas→blocks migration: background pass failed; will retry next start", "error", err)
+		}
+	}()
 
 	// Wire the health callback BEFORE starting the syncer. The health monitor
 	// captures the callback at Start time (startHealthMonitor reads
@@ -691,6 +707,16 @@ func (bs *Store) Close() error {
 		return bs.closeErr
 	}
 	bs.closed = true
+
+	// Stop the background cas→blocks migration before tearing down the local,
+	// remote, and syncer stores it uses. Cancel unblocks any in-flight remote
+	// PutBlock/GET; the receive waits for the goroutine to fully exit so it
+	// never races the closes below. Safe from under closeMu: the migration
+	// goroutine does not take closeMu.
+	if bs.migrateCancel != nil {
+		bs.migrateCancel()
+		<-bs.migrateDone
+	}
 
 	// Cache is never nil thanks to the Null Object pattern. Swap in the
 	// Null Object under cacheMu so any concurrent OnChunkComplete read sees

@@ -140,10 +140,10 @@ func (m *Syncer) dispatchRemoteFetch(ctx context.Context, fb *block.FileChunk) (
 //     yet, so it has no remote copy. NOT drift — the bytes are still local-only
 //     (a read that raced the async carve). Returns ("", nil, nil) so the caller
 //     falls back to the local read path rather than failing closed.
-//   - Synced marker present but empty BlockID: post-#1493 every synced hash
-//     carries a block locator (the startup migration repacked all legacy
-//     standalone chunks), so a synced hash with no BlockID is genuine metadata
-//     drift. Refuse the read.
+//   - Synced marker present but empty BlockID: a pre-flip standalone chunk the
+//     background cas→blocks migration has not repacked yet. Served through the
+//     legacy CAS fallback (readStandaloneChunk); only a chunk that is resident
+//     nowhere yields an error.
 func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (string, []byte, error) {
 	loc, synced, err := m.resolveLocator(ctx, fb.Hash)
 	if err != nil {
@@ -153,10 +153,22 @@ func (m *Syncer) resolveAndReadChunk(ctx context.Context, fb *block.FileChunk) (
 		return "", nil, nil // not on remote yet — caller serves from local
 	}
 	if loc.BlockID == "" {
-		logger.Error("synced chunk has no block locator — refusing remote fetch (post-migration drift)",
-			"block_id", fb.ID,
-			"hash", fb.Hash.String())
-		return "", nil, fmt.Errorf("blockstore: no block locator recorded for synced chunk %s (post-migration drift)", fb.Hash)
+		// Pre-flip standalone locator: the cas→blocks repack runs as a
+		// background pass, so a synced hash can still carry the legacy layout
+		// while the repack is in flight. Serve it from the legacy CAS objects
+		// (local-first, then remote, BLAKE3-verified); the background migration
+		// repacks it and rewrites the locator. Only when the chunk is resident
+		// nowhere is this genuine drift / live-data-loss — surfaced (as
+		// ErrChunkNotFound) so the caller fails closed rather than serving zeros.
+		data, rerr := m.readStandaloneChunk(ctx, fb.Hash)
+		if rerr != nil {
+			logger.Error("standalone chunk unreadable (no local copy, no legacy object)",
+				"block_id", fb.ID, "hash", fb.Hash.String(), "error", rerr)
+			return "", nil, rerr
+		}
+		// Non-empty key so the caller persists the bytes (an empty key is its
+		// sparse/never-uploaded sentinel); the hash is the natural CAS key here.
+		return fb.Hash.String(), data, nil
 	}
 	key := block.FormatBlockKey(loc.BlockID)
 	data, perr := m.readChunkVerified(ctx, loc, fb.Hash)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -41,24 +40,26 @@ func newLocatorFetchSyncer(t *testing.T) (*Syncer, *remotememory.Store, *metadat
 	return syncer, rem, ms
 }
 
-// TestDispatchRemoteFetch_StandaloneLocatorRefused pins the post-#1493
-// fail-closed contract: the startup migration repacked every legacy standalone
-// chunk into a block, so a synced hash whose recorded locator is still
-// standalone (BlockID == "") is post-migration drift. dispatchRemoteFetch must
-// REFUSE the read — even when the legacy cas/ object still exists on the
-// remote — instead of silently falling back or returning zeros.
-func TestDispatchRemoteFetch_StandaloneLocatorRefused(t *testing.T) {
+// TestDispatchRemoteFetch_StandaloneLocatorServedViaFallback: the cas→blocks
+// repack runs as a background pass, so a synced hash whose recorded locator is
+// still standalone (BlockID == "") is served
+// through the legacy CAS fallback — byte-identical — instead of being refused.
+// This is what lets a share serve immediately while the migration repacks in
+// the background.
+func TestDispatchRemoteFetch_StandaloneLocatorServedViaFallback(t *testing.T) {
 	ctx := context.Background()
 	syncer, rem, ms := newLocatorFetchSyncer(t)
+	// Wire the block-keyed remote like production so the fallback can reach the
+	// legacy cas/ namespace through it.
+	syncer.SetRemoteBlockStore(rem)
 
 	data := bytes.Repeat([]byte{0xAB}, 4096)
 	hash := block.ContentHash(blake3.Sum256(data))
-	// Plant the legacy standalone cas/ object so the refusal below is
-	// provably a policy decision, not a missing-object accident.
-	if err := rem.Put(ctx, hash, data); err != nil {
-		t.Fatalf("remote Put: %v", err)
+	// Plant the legacy standalone cas/ object plus a standalone locator — the
+	// exact pre-flip state a not-yet-repacked synced hash carries.
+	if err := rem.PutLegacyChunk(ctx, hash, data); err != nil {
+		t.Fatalf("PutLegacyChunk: %v", err)
 	}
-	// A pre-#1493 write path recorded a standalone locator on MarkSynced.
 	if err := ms.MarkSynced(ctx, hash, block.ChunkLocator{WireLength: int64(len(data))}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
@@ -72,17 +73,14 @@ func TestDispatchRemoteFetch_StandaloneLocatorRefused(t *testing.T) {
 	}
 
 	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
-	if err == nil {
-		t.Fatalf("dispatchRemoteFetch: want post-migration drift refusal, got nil (data=%d bytes)", len(got))
+	if err != nil {
+		t.Fatalf("dispatchRemoteFetch: want standalone fallback to serve, got err=%v", err)
 	}
-	if !strings.Contains(err.Error(), "post-migration drift") {
-		t.Fatalf("dispatchRemoteFetch err = %v, want post-migration drift refusal", err)
+	if !bytes.Equal(got, data) {
+		t.Fatalf("dispatchRemoteFetch standalone fallback returned %d bytes, want the planted payload", len(got))
 	}
-	if got != nil {
-		t.Fatalf("dispatchRemoteFetch data = %d bytes, want nil on refusal", len(got))
-	}
-	if key != "" {
-		t.Fatalf("dispatchRemoteFetch key = %q, want empty on refusal", key)
+	if key == "" {
+		t.Fatal("dispatchRemoteFetch key is empty; want a non-empty CAS key so the caller persists the bytes")
 	}
 }
 
@@ -107,30 +105,29 @@ func TestDispatchRemoteFetch_UnsyncedChunkFallsBackToLocal(t *testing.T) {
 	}
 }
 
-// TestDispatchRemoteFetch_SyncedStandaloneLocatorRefused verifies that a chunk
-// that IS synced but whose recorded locator has an empty BlockID (post-#1493
-// drift — the migration should have rewritten every standalone locator) is
-// refused fail-closed.
-func TestDispatchRemoteFetch_SyncedStandaloneLocatorRefused(t *testing.T) {
+// TestDispatchRemoteFetch_SyncedStandaloneLocatorMissingFailsClosed verifies
+// the genuine data-loss case is still fail-closed: a synced hash with a
+// standalone (empty-BlockID) locator whose bytes are resident nowhere — no
+// local copy, no legacy cas/ object — surfaces ErrChunkNotFound rather than
+// serving zeros.
+func TestDispatchRemoteFetch_SyncedStandaloneLocatorMissingFailsClosed(t *testing.T) {
 	ctx := context.Background()
-	syncer, _, ms := newLocatorFetchSyncer(t)
+	syncer, rem, ms := newLocatorFetchSyncer(t)
+	syncer.SetRemoteBlockStore(rem)
 
 	data := bytes.Repeat([]byte{0xCD}, 2048)
 	hash := block.ContentHash(blake3.Sum256(data))
-	// Synced marker with an empty-BlockID (standalone) locator = drift.
+	// Standalone marker but no bytes anywhere (nothing planted locally or in cas/).
 	if err := ms.MarkSynced(ctx, hash, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
 	key, got, err := syncer.dispatchRemoteFetch(ctx, &block.FileChunk{Hash: hash})
-	if err == nil {
-		t.Fatalf("dispatchRemoteFetch: want post-migration drift refusal, got nil (data=%d bytes)", len(got))
-	}
-	if !strings.Contains(err.Error(), "post-migration drift") {
-		t.Fatalf("dispatchRemoteFetch err = %v, want post-migration drift refusal", err)
+	if !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("dispatchRemoteFetch err = %v, want ErrChunkNotFound", err)
 	}
 	if got != nil || key != "" {
-		t.Fatalf("dispatchRemoteFetch: want empty result on refusal, got key=%q data=%d bytes", key, len(got))
+		t.Fatalf("dispatchRemoteFetch: want empty result on miss, got key=%q data=%d bytes", key, len(got))
 	}
 }
 

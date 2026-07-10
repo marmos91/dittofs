@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"lukechampine.com/blake3"
@@ -122,15 +121,14 @@ func TestReadPath_BlockLocator_ThroughCompressEncrypt(t *testing.T) {
 	}
 }
 
-// TestReadPath_StandaloneLocatorRefused pins the post-#1493 inversion of the
-// old CAS back-compat contract: a synced hash whose recorded locator is still
-// standalone (BlockID == "") is post-migration drift — the one-shot startup
-// migration repacked every legacy standalone chunk into a block, so
-// fetchResolvedBlock must refuse the read (no silent zeros, no legacy
-// fallback), even though the legacy cas/ object still exists on the remote.
-// The positive round-trip contract lives in TestReadPath_BlockLocator_Plaintext
-// above, which seeds through the carve path and reads back byte-identical.
-func TestReadPath_StandaloneLocatorRefused(t *testing.T) {
+// TestReadPath_StandaloneLocatorServedViaFallback: a synced hash whose recorded
+// locator is still standalone (BlockID == "") — a chunk the now-background
+// cas→blocks migration has not repacked yet — is served
+// through the legacy CAS fallback, byte-identical, instead of being refused.
+// This is what lets the share serve immediately while the migration runs in the
+// background. The genuine-data-loss case (bytes resident nowhere) is covered by
+// TestReadPath_StandaloneLocatorMissingEverywhere below.
+func TestReadPath_StandaloneLocatorServedViaFallback(t *testing.T) {
 	ctx := context.Background()
 	mem := remotememory.New()
 
@@ -144,29 +142,54 @@ func TestReadPath_StandaloneLocatorRefused(t *testing.T) {
 
 	syncer := NewSyncer(local, mem, ms, DefaultConfig())
 	syncer.SetSyncedHashStore(ms)
+	// Wire the block-keyed remote like production (shares/service.go) and
+	// carveFixture do — it's the object the legacy-CAS fallback reads through.
+	syncer.SetRemoteBlockStore(mem)
 
 	data := []byte("cas-back-compat-payload")
 	h := block.ContentHash(blake3.Sum256(data))
 
-	// Plant the legacy standalone cas/ object (a pre-#1414 upload shape) so
-	// the refusal below is provably fail-closed policy, not a missing object.
-	if err := mem.Put(ctx, h, data); err != nil {
-		t.Fatalf("mem.Put: %v", err)
+	// Plant the legacy standalone cas/ object (a pre-#1414 upload shape) plus a
+	// standalone locator (BlockID == "") — the exact pre-flip state a synced
+	// hash carries before the background migration repacks it.
+	if err := mem.PutLegacyChunk(ctx, h, data); err != nil {
+		t.Fatalf("PutLegacyChunk: %v", err)
 	}
-	// Record a standalone locator (BlockID == "") — post-migration drift.
 	if err := ms.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
 
 	got, err := syncer.fetchResolvedBlock(ctx, &block.FileChunk{ID: "share/standalone/0", Hash: h})
-	if err == nil {
-		t.Fatalf("fetchResolvedBlock: want post-migration drift refusal, got nil (data=%d bytes)", len(got))
+	if err != nil {
+		t.Fatalf("fetchResolvedBlock: want standalone fallback to serve, got err=%v", err)
 	}
-	if !strings.Contains(err.Error(), "post-migration drift") {
-		t.Fatalf("fetchResolvedBlock err = %v, want post-migration drift refusal", err)
+	if !bytes.Equal(got, data) {
+		t.Fatalf("fetchResolvedBlock standalone fallback returned %d bytes, want the planted payload", len(got))
+	}
+}
+
+// TestReadPath_StandaloneLocatorMissingEverywhere proves the genuine
+// data-loss case is still fail-closed: a standalone (empty-BlockID) marker whose
+// bytes are resident nowhere — no local copy, no legacy cas/ object — surfaces
+// ErrChunkNotFound rather than serving zeros.
+func TestReadPath_StandaloneLocatorMissingEverywhere(t *testing.T) {
+	ctx := context.Background()
+	mem := remotememory.New()
+	f := newCarveFixture(t, mem, DefaultBlockCarveBytes)
+
+	// A standalone marker with no bytes anywhere (nothing planted on the remote,
+	// nothing stored locally).
+	h := block.ContentHash(blake3.Sum256([]byte("vanished-standalone")))
+	if err := f.ms.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
+		t.Fatalf("MarkSynced: %v", err)
+	}
+
+	got, err := f.syncer.fetchResolvedBlock(ctx, &block.FileChunk{ID: "share/lost/0", Hash: h})
+	if !errors.Is(err, block.ErrChunkNotFound) {
+		t.Fatalf("fetchResolvedBlock: want ErrChunkNotFound, got err=%v", err)
 	}
 	if got != nil {
-		t.Fatalf("fetchResolvedBlock data = %d bytes, want nil on refusal", len(got))
+		t.Fatalf("fetchResolvedBlock data = %d bytes, want nil on missing chunk", len(got))
 	}
 }
 

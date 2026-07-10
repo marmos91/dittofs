@@ -184,6 +184,11 @@ func TestReadLocalByHash_LocalCorruption_SyncedSelfHeals(t *testing.T) {
 	// Build engine with the corrupting local store. Start runs the migration.
 	bs := newTestEngineWithRemoteAndSHS(t, corruptLocal, remoteRS, shs)
 
+	// The cas→blocks migration now runs in the background; wait for it before
+	// asserting its side effects — and before corrupting the local copy, since
+	// the migration reads the clean local bytes to repack them.
+	<-bs.migrateDone
+
 	// Sanity: the migration rewrote the standalone locator to a block locator.
 	loc, synced, err := shs.GetLocator(ctx, correctHash)
 	if err != nil || !synced {

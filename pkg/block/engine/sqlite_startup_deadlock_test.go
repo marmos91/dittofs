@@ -279,6 +279,11 @@ func TestSQLiteStartup_MigrationDetectionIsSinglePass(t *testing.T) {
 
 	runBounded(t, "Store.Start (migration detection)", bs.Start)
 
+	// The migration detection scan now runs in a background goroutine; wait for
+	// it to finish before reading the call counters (avoids a race on
+	// countingMetaView and asserts on the completed scan).
+	<-bs.migrateDone
+
 	if view.enumerateCalls < 1 {
 		t.Errorf("EnumerateSynced calls = %d; want >=1 (migration detection scan ran)", view.enumerateCalls)
 	}
