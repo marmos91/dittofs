@@ -8,7 +8,8 @@
 #
 #   WPTS BVT     presubmit: memory + postgres-s3; postsubmit/nightly: all 5.
 #   smbtorture   presubmit: memory + badger-fs (run.sh has no *-s3 profile);
-#                postsubmit/nightly: memory + memory-fs + badger-fs.
+#                postsubmit/nightly: memory + memory-fs + badger-fs + sqlite
+#                + postgres (one job per metadata backend).
 #   Kerberos     OFF presubmit — push-to-develop + nightly cron + dispatch only.
 
 name: SMB Conformance Tests
@@ -49,6 +50,8 @@ on:
           - badger-fs
           - badger-s3
           - postgres-s3
+          - sqlite
+          - postgres
 
 concurrency:
   group: smb-conformance-${{ github.ref }}
@@ -137,8 +140,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # smbtorture run.sh supports only memory/memory-fs/badger-fs (no *-s3),
-        # so presubmit pairs memory + badger-fs (parallel ≈ one profile). A
+        # smbtorture run.sh supports memory/memory-fs/badger-fs plus the
+        # metadata-store profiles sqlite and postgres (no *-s3 — they pair the
+        # metadata engine with the memory block store). Presubmit stays fast
+        # (memory + badger-fs); postsubmit/nightly adds memory-fs, sqlite, and
+        # postgres so each metadata backend gets full conformance coverage. A
         # workflow_dispatch with an unsupported (*-s3) profile clamps to memory
         # rather than crashing run.sh.
         profile: >-
@@ -146,11 +152,11 @@ jobs:
             github.event_name == 'pull_request'
               && fromJson('["memory", "badger-fs"]')
             || github.event_name == 'workflow_dispatch'
-              && contains(fromJson('["memory", "memory-fs", "badger-fs"]'), inputs.profile)
+              && contains(fromJson('["memory", "memory-fs", "badger-fs", "sqlite", "postgres"]'), inputs.profile)
               && fromJson(format('["{0}"]', inputs.profile))
             || github.event_name == 'workflow_dispatch'
               && fromJson('["memory"]')
-            || fromJson('["memory", "memory-fs", "badger-fs"]')
+            || fromJson('["memory", "memory-fs", "badger-fs", "sqlite", "postgres"]')
           }}
 
     steps:

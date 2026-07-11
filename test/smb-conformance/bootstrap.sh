@@ -98,6 +98,10 @@ create_metadata_store() {
             $DFSCTL store metadata add --name default --type badger \
                 --config '{"db_path":"/data/metadata"}'
             ;;
+        sqlite*)
+            $DFSCTL store metadata add --name default --type sqlite \
+                --config '{"path":"/data/metadata.db"}'
+            ;;
         postgres*)
             $DFSCTL store metadata add --name default --type postgres \
                 --config '{"host":"postgres","port":5432,"user":"dittofs","password":"dittofs","database":"dittofs_test","sslmode":"disable"}'
@@ -114,7 +118,10 @@ create_block_stores() {
     log_info "Creating block stores for profile: ${PROFILE}"
 
     case "$PROFILE" in
-        memory|memory-kerberos)
+        memory|memory-kerberos|sqlite|postgres)
+            # sqlite/postgres profiles exercise the metadata store only; they
+            # pair it with the memory block store (no S3) so smbtorture stays
+            # self-contained.
             $DFSCTL store block local add --name default --type memory
             ;;
         *-s3-legacy|*-fs)

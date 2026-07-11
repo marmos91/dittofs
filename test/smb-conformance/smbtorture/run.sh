@@ -18,7 +18,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFORMANCE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VALID_PROFILES=("memory" "memory-fs" "badger-fs" "memory-kerberos")
+VALID_PROFILES=("memory" "memory-fs" "badger-fs" "sqlite" "postgres" "memory-kerberos")
 
 # --------------------------------------------------------------------------
 # Colors
@@ -268,6 +268,18 @@ if $KERBEROS; then
     # klist parses the full keytab; only succeeds once kadmin has finished
     # writing and flushing the file, avoiding a partial-read race.
     wait_until "docker compose exec kdc klist -k /keytabs/dittofs.keytab > /dev/null 2>&1" 60 "KDC keytab"
+fi
+
+# Postgres profile: activate the "postgres" compose profile and start the
+# PostgreSQL service first, waiting until it is healthy — DittoFS's metadata
+# store connects to it during bootstrap. Same COMPOSE_PROFILES-via-env reason
+# as the Kerberos block above. (Kerberos and postgres profiles are disjoint.)
+if [[ "$PROFILE" == postgres* ]]; then
+    export COMPOSE_PROFILES="postgres"
+
+    log_step "Starting PostgreSQL..."
+    docker compose up -d postgres
+    wait_until "docker compose exec postgres pg_isready -U dittofs -d dittofs_test > /dev/null 2>&1" 60 "PostgreSQL"
 fi
 
 # Build and start DittoFS
