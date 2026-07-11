@@ -46,6 +46,21 @@ func (s *BadgerMetadataStore) GetFileForRead(ctx context.Context, handle metadat
 		return nil, err
 	}
 
+	// Read-cache fast path: skip the badger View txn + File JSON decode for a
+	// hot file. Keyed by fileID; invalidated after each committed write.
+	_, fileID, decErr := metadata.DecodeFileHandle(handle)
+	var key string
+	if decErr == nil {
+		key = fileID.String()
+		if cached, ok := s.readCache.get(key); ok {
+			cp := *cached   // shallow copy: a caller may set scalar attrs; the
+			return &cp, nil // shared Blocks/EAs/ACL are read-only on this path
+		}
+	}
+
+	// Snapshot the invalidation generation BEFORE the backing read so a write
+	// that races this read cannot leave a stale value cached (store() checks it).
+	gen := s.readCache.generation()
 	var result *metadata.File
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		tx := &badgerTransaction{store: s, txn: txn}
@@ -53,7 +68,15 @@ func (s *BadgerMetadataStore) GetFileForRead(ctx context.Context, handle metadat
 		result, err = tx.getFile(ctx, handle, false)
 		return err
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	if key != "" {
+		s.readCache.store(key, result, gen)
+		cp := *result
+		return &cp, nil
+	}
+	return result, nil
 }
 
 // PutFile stores or updates file metadata.
