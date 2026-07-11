@@ -53,8 +53,7 @@ func (s *BadgerMetadataStore) GetFileForRead(ctx context.Context, handle metadat
 	if decErr == nil {
 		key = fileID.String()
 		if cached, ok := s.readCache.get(key); ok {
-			cp := *cached   // shallow copy: a caller may set scalar attrs; the
-			return &cp, nil // shared Blocks/EAs/ACL are read-only on this path
+			return copyForRead(cached), nil
 		}
 	}
 
@@ -73,10 +72,23 @@ func (s *BadgerMetadataStore) GetFileForRead(ctx context.Context, handle metadat
 	}
 	if key != "" {
 		s.readCache.store(key, result, gen)
-		cp := *result
-		return &cp, nil
+		return copyForRead(result), nil
 	}
 	return result, nil
+}
+
+// copyForRead returns a caller-owned copy of a cached File: the struct is
+// copied and the reference-bearing fields (Blocks, ACL, EAs) are deep-copied so
+// neither the caller nor a concurrent reader can mutate the shared cache entry.
+// This preserves badger's no-alias invariant — before the read cache, every
+// GetFileForRead JSON-decoded a fresh File, so callers never aliased stored
+// state. The clones are cheap relative to the decode the cache skips.
+func copyForRead(f *metadata.File) *metadata.File {
+	cp := *f
+	cp.Blocks = metadata.CloneBlocks(f.Blocks)
+	cp.ACL = metadata.CloneACL(f.ACL)
+	cp.EAs = metadata.CloneEAs(f.EAs)
+	return &cp
 }
 
 // PutFile stores or updates file metadata.

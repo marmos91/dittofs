@@ -63,6 +63,16 @@ func (c *fileReadCache) store(key string, file *metadata.File, genAtRead uint64)
 
 // invalidate drops key and advances the generation so any in-flight populate for
 // a now-superseded value is rejected. MUST be called AFTER the write commits.
+//
+// Order matters: bump gen BEFORE delete, not after. A concurrent reader that
+// snapshotted the old generation and is about to store() a pre-write value is
+// rejected the instant gen moves; deleting first would leave a window in which
+// that reader's store() (still seeing the old gen) re-inserts the stale entry
+// after the delete. The get() path is intentionally ungated by gen: a read that
+// is ordered-after this write (the writer's PutFile returns only once invalidate
+// finishes, within withTransaction) always sees the delete and misses; a read
+// merely concurrent with the still-uncommitted write has no ordering guarantee,
+// so serving either value is correct.
 func (c *fileReadCache) invalidate(key string) {
 	c.gen.Add(1)
 	if _, ok := c.m.LoadAndDelete(key); ok {

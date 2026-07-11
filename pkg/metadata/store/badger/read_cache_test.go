@@ -62,11 +62,19 @@ func TestReadCache_NoStaleReadAfterMutation(t *testing.T) {
 		t.Fatalf("STALE READ: got mode %o after write set 0o600", got.Mode)
 	}
 
-	// A returned File must be a copy — mutating it must not corrupt the cache.
+	// A returned File must be a copy — mutating it (scalar OR reference-bearing
+	// fields) must not corrupt the shared cache entry. Before the cache, badger
+	// JSON-decoded a fresh File per read, so callers never aliased stored state.
 	got.Mode = 0o000
+	if len(got.Blocks) > 0 {
+		got.Blocks[0].Offset = 0xdeadbeef // in-place mutation of the block slice
+	}
 	again, _ := s.GetFileForRead(ctx, handle)
 	if again.Mode != 0o600 {
-		t.Fatalf("cache corrupted by caller mutation: got %o", again.Mode)
+		t.Fatalf("cache corrupted by caller scalar mutation: got %o", again.Mode)
+	}
+	if len(again.Blocks) > 0 && again.Blocks[0].Offset == 0xdeadbeef {
+		t.Fatal("cache Blocks aliased: caller in-place edit leaked into the cached File")
 	}
 }
 
