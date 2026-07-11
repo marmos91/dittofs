@@ -59,6 +59,15 @@ func (c *fileReadCache) store(key string, file *metadata.File, genAtRead uint64)
 			c.pruneToHalf()
 		}
 	}
+	// The guard above and the Swap are not atomic: a write could commit and
+	// invalidate() (bump gen + delete) in between, leaving our now-stale entry
+	// live. Re-check the generation; if it moved, drop our entry — but only if a
+	// newer reader hasn't already replaced it (CompareAndDelete on our pointer).
+	if c.gen.Load() != genAtRead {
+		if c.m.CompareAndDelete(key, file) {
+			c.n.Add(-1)
+		}
+	}
 }
 
 // invalidate drops key and advances the generation so any in-flight populate for
