@@ -41,7 +41,7 @@ ops/s). **Bold** = DittoFS. Best *real competitor* per row is marked ✦
 | seq-write (MB/s) | **156** | 204 | 310 | 1336 | 1523 | 1775 ✦ | 3287 |
 | seq-read (MB/s) | **677** | 13 | 552 | 1616 | 1181 | 2876 ✦ | 4774 |
 | rand-write 4k (IOPS) | **2365** | 2133 | 1256 | 826 | 17346 ✦ | 2183 | 40883 |
-| rand-read 4k (IOPS) | **4010** | 2568 | 39563 ✦ | 12418 | fail | 11101 | — |
+| rand-read 4k (IOPS) | **7437** † | 2568 | 39563 ✦ | 12418 | fail | 11101 | — |
 | metadata (ops/s) | **239** | 371 | 700 | 1824 ✦ | — | fail | — |
 | mixed-rw (IOPS) | **1256** | 1776 | 4928 ✦ | 281 | — | 4453 | — |
 
@@ -54,8 +54,18 @@ such free ride.
 | Workload | **DittoFS-S3** | ZeroFS | s3ql | JuiceFS | rclone | s3fs | local-disk ↑ |
 |---|--:|--:|--:|--:|--:|--:|--:|
 | rand-write 4k (IOPS) | **2337** | 2885 | 3844 | 588 | 19231 | 25229 ✦ | 43712 |
-| rand-read 4k (IOPS) | **10981** | 2548 | 38636 | 45743 | fail | 46500 ✦ | 45835 |
+| rand-read 4k (IOPS) | **24862** † | 2548 | 38636 | 45743 | fail | 46500 ✦ | 45835 |
 | metadata (ops/s) | **219** | 235 | 451 | 2597 ✦ | — | — | — |
+
+> † **DittoFS random-read reflects the warm-read fast path** (verify-once cache
+> + ranged sub-chunk reads, #1648/#1651, merged 2026-07-11) — measured in a
+> later same-VM run. Before it, DittoFS was 4010 (large) / 10981 (medium); the
+> fix removed a 256× read amplification (a whole ~1 MiB CAS chunk was read and
+> BLAKE3-verified to serve every 4 KiB), taking DittoFS from ~24–32% of JuiceFS
+> to ~56–58%. Competitor columns are the original full-suite run; JuiceFS
+> random-read varied <7% between the two runs, so the comparison holds. The gap
+> that remains is no longer the block read (20× faster at the engine level) but
+> per-read NFS + metadata overhead — see Analysis.
 
 ## Cold reads — large files, first byte after cache-evict
 
@@ -96,8 +106,18 @@ tails; its read latencies are competitive.
 
 3. **Read throughput is respectable, not dominant** — sequential read (677 MB/s)
    beats s3ql (552) and dwarfs ZeroFS (13 MB/s, whose native-S3 read path collapses
-   under NFS). The re-export rivals win random-read only by serving 4k reads from a
-   local-FS page cache that DittoFS does not lean on.
+   under NFS).
+
+4. **Random-read is much improved but still trails the page-cache re-exports.**
+   The warm-read fast path (#1648/#1651) removed the block store's 256× read
+   amplification — at the engine level a 4 KiB warm CAS read went from ~437 µs to
+   ~21 µs (~20×, ~47k IOPS). End to end over NFSv3 that lands as ~2× (7437 large /
+   24862 medium), moving DittoFS from ~24–32% of JuiceFS to ~56–58%. That the
+   engine's 20× only shows as ~2× on the wire means the block read is no longer the
+   bottleneck: what remains is **per-read NFS RPC + metadata lookup overhead**,
+   which the kernel-NFS re-exports (JuiceFS/s3fs) pay far less of because their
+   4 KiB reads are served straight from the Linux page cache. That per-read
+   server-side path is the next random-read target.
 
 4. **ZeroFS is the instructive comparison** — a fellow native NFS→S3 server whose
    sequential and random reads are far worse than DittoFS's. Being native-S3 is not
