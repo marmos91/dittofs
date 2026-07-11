@@ -1,0 +1,34 @@
+# DittoFS Configuration for SMB Conformance Testing
+# Profile: sqlite (SQLite metadata store + memory block store)
+#
+# Bootstrap creates: SQLite metadata store + memory local block store.
+# The metadata backend is selected in bootstrap.sh (create_metadata_store);
+# this file only configures the control-plane DB, API, and cache, which are
+# identical across profiles.
+
+logging:
+  level: "DEBUG"
+  format: "text"
+  output: "stdout"
+
+shutdown_timeout: 30s
+
+# Control plane database
+database:
+  type: sqlite
+  sqlite:
+    path: "/data/controlplane.db"
+
+# Control plane API server
+controlplane:
+  host: "0.0.0.0"
+  port: 8080
+  jwt:
+    secret: "smb-conformance-test-secret-key-32ch"
+    access_token_duration: 15m
+    refresh_token_duration: 168h
+
+# Cache configuration
+cache:
+  path: "/data/cache"
+  size: "256MB"
