@@ -93,6 +93,12 @@ type BadgerMetadataStore struct {
 	// 0 means unlimited (constrained only by available disk space).
 	maxFiles uint64
 
+	// shareCache caches decoded ShareOptions for the permission hot path so
+	// GetShareOptions (17.4% of server CPU on warm random-read) skips the
+	// badger View txn + JSON decode. Invalidated after every committed
+	// share-record write; a stale entry is a wrong permission decision.
+	shareCache shareReadCache
+
 	// statsCache caches filesystem statistics to avoid expensive database scans.
 	// Filesystem statistics require scanning all file entries, which can be slow.
 	// This cache stores the result with a timestamp and TTL to serve repeated

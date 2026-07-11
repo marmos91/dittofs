@@ -42,6 +42,12 @@ type badgerTransaction struct {
 	// commit, identical to pendingDelta (so a conflict-retry cannot
 	// double-count).
 	quotaDelta map[badgerQuotaKey]metadata.UsageStat
+	// dirtyShares collects share names whose stored share record this
+	// transaction mutated. Captured per attempt and, after a successful commit,
+	// used to invalidate the share read cache (see withTransaction). Reset per
+	// attempt like pendingDelta so a conflict-retry cannot leak a phantom
+	// invalidation. A stale entry is a wrong permission decision.
+	dirtyShares []string
 }
 
 // badgerQuotaKey identifies a per-identity usage bucket inside a transaction's
@@ -136,6 +142,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		var pendingDelta int64
 		var quotaDelta map[badgerQuotaKey]metadata.UsageStat
 		var dirtyFiles []string
+		var dirtyShares []string
 		err := s.db.Update(func(txn *badgerdb.Txn) error {
 			tx := &badgerTransaction{store: s, txn: txn}
 			if fnErr := fn(tx); fnErr != nil {
@@ -144,6 +151,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			pendingDelta = tx.pendingDelta
 			quotaDelta = tx.quotaDelta
 			dirtyFiles = tx.dirtyFiles
+			dirtyShares = tx.dirtyShares
 			return nil
 		})
 
@@ -154,11 +162,15 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			}
 			// Apply per-identity usage deltas once, after commit.
 			s.applyQuotaDelta(quotaDelta)
-			// Invalidate the read cache for every file this transaction mutated,
-			// AFTER the commit so a concurrent reader that saw the pre-commit
-			// value cannot leave it cached (its generation-guarded store loses).
+			// Invalidate the read caches for every file / share this transaction
+			// mutated, AFTER the commit so a concurrent reader that saw the
+			// pre-commit value cannot leave it cached (its generation-guarded
+			// store loses). A stale share entry is a wrong permission decision.
 			for _, id := range dirtyFiles {
 				s.readCache.invalidate(id)
+			}
+			for _, name := range dirtyShares {
+				s.shareCache.invalidate(name)
 			}
 			// Durable (data-paired) commit in relaxed mode: fsync now so the
 			// write survives a crash. A sync failure must not falsely ack a
@@ -1102,7 +1114,11 @@ func (tx *badgerTransaction) CreateShare(ctx context.Context, share *metadata.Sh
 		return err
 	}
 
-	return tx.txn.Set(keyShare(share.Name), encoded)
+	if err := tx.txn.Set(keyShare(share.Name), encoded); err != nil {
+		return err
+	}
+	tx.dirtyShares = append(tx.dirtyShares, share.Name)
+	return nil
 }
 
 func (tx *badgerTransaction) UpdateShareOptions(ctx context.Context, shareName string, options *metadata.ShareOptions) error {
@@ -1142,7 +1158,11 @@ func (tx *badgerTransaction) UpdateShareOptions(ctx context.Context, shareName s
 		return err
 	}
 
-	return tx.txn.Set(keyShare(shareName), updatedData)
+	if err := tx.txn.Set(keyShare(shareName), updatedData); err != nil {
+		return err
+	}
+	tx.dirtyShares = append(tx.dirtyShares, shareName)
+	return nil
 }
 
 func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) error {
@@ -1176,7 +1196,11 @@ func (tx *badgerTransaction) DeleteShare(ctx context.Context, shareName string) 
 		tx.addQuota2(k, d)
 	}
 
-	return tx.txn.Delete(keyShare(shareName))
+	if err := tx.txn.Delete(keyShare(shareName)); err != nil {
+		return err
+	}
+	tx.dirtyShares = append(tx.dirtyShares, shareName)
+	return nil
 }
 
 func (tx *badgerTransaction) ListShares(ctx context.Context) ([]string, error) {
@@ -1355,6 +1379,7 @@ func (tx *badgerTransaction) CreateRootDirectory(ctx context.Context, shareName 
 	if err := tx.txn.Set(keyShare(shareName), shareBytes); err != nil {
 		return nil, err
 	}
+	tx.dirtyShares = append(tx.dirtyShares, shareName)
 
 	return rootFile, nil
 }

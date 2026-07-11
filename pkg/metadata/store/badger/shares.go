@@ -70,6 +70,16 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 		return nil, err
 	}
 
+	// Cache fast path: skip the badger View txn + share-record decode on a hit.
+	// Return a deep copy so callers can never mutate the shared cache entry.
+	if cached, ok := s.shareCache.get(shareName); ok {
+		return cloneShareOptions(cached), nil
+	}
+
+	// Snapshot the invalidation generation BEFORE the backing read so a write
+	// that races this read cannot leave a stale value cached (store() checks it).
+	gen := s.shareCache.generation()
+
 	var opts *metadata.ShareOptions
 	err := s.db.View(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyShare(shareName))
@@ -99,7 +109,8 @@ func (s *BadgerMetadataStore) GetShareOptions(ctx context.Context, shareName str
 		return nil, err
 	}
 
-	return opts, nil
+	s.shareCache.store(shareName, opts, gen)
+	return cloneShareOptions(opts), nil
 }
 
 // ============================================================================
@@ -112,7 +123,7 @@ func (s *BadgerMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 		return err
 	}
 
-	return s.db.Update(func(txn *badgerdb.Txn) error {
+	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		_, err := txn.Get(keyShare(share.Name))
 		if err == nil {
 			return &metadata.StoreError{
@@ -138,6 +149,10 @@ func (s *BadgerMetadataStore) CreateShare(ctx context.Context, share *metadata.S
 
 		return txn.Set(keyShare(share.Name), encoded)
 	})
+	if err == nil {
+		s.shareCache.invalidate(share.Name)
+	}
+	return err
 }
 
 // UpdateShareOptions updates the share configuration options.
@@ -146,7 +161,7 @@ func (s *BadgerMetadataStore) UpdateShareOptions(ctx context.Context, shareName 
 		return err
 	}
 
-	return s.db.Update(func(txn *badgerdb.Txn) error {
+	err := s.db.Update(func(txn *badgerdb.Txn) error {
 		item, err := txn.Get(keyShare(shareName))
 		if err == badgerdb.ErrKeyNotFound {
 			return &metadata.StoreError{
@@ -182,6 +197,10 @@ func (s *BadgerMetadataStore) UpdateShareOptions(ctx context.Context, shareName 
 
 		return txn.Set(keyShare(shareName), updatedData)
 	})
+	if err == nil {
+		s.shareCache.invalidate(shareName)
+	}
+	return err
 }
 
 // DeleteShare removes a share and all its metadata.
@@ -217,6 +236,8 @@ func (s *BadgerMetadataStore) DeleteShare(ctx context.Context, shareName string)
 	if err != nil {
 		return err
 	}
+	// Drop any cached options for the removed share, after a successful commit.
+	s.shareCache.invalidate(shareName)
 	// Apply the usedBytes decrement once, after a successful commit.
 	if freedBytes > 0 {
 		s.usedBytes.Add(-freedBytes)
@@ -476,6 +497,10 @@ func (s *BadgerMetadataStore) CreateRootDirectory(ctx context.Context, shareName
 	if err != nil {
 		return nil, err
 	}
+
+	// Both branches (createNewRoot / loadExistingRoot) rewrite the share record,
+	// so drop any cached options for it after the commit.
+	s.shareCache.invalidate(shareName)
 
 	return rootFile, nil
 }
