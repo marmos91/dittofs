@@ -1,5 +1,7 @@
 package engine
 
+import "sync/atomic"
+
 // maxReadaheadEntries bounds the per-payload readahead state map. Readahead
 // state is disposable — a dropped entry just re-ramps from a cold start (the
 // re-creating read establishes the frontier, the next sequential read schedules
@@ -11,11 +13,14 @@ const maxReadaheadEntries = 4096
 
 // raState tracks a payload's read frontier so the readahead driver can keep a
 // fixed window of blocks fetched ahead of a sequential reader and schedule each
-// block exactly once.
+// block exactly once. Fields are atomic so planWindow updates the frontier
+// without a lock; concurrent reads of one payload may race here, but the state
+// is a disposable heuristic (a stale frontier only mis-sizes prefetch), so the
+// races are benign.
 type raState struct {
-	lastEnd       uint64 // block index the previous read ended at
-	scheduledUpTo uint64 // highest block index already scheduled for prefetch
-	valid         bool   // false until the first read establishes lastEnd
+	lastEnd       atomic.Uint64 // block index the previous read ended at
+	scheduledUpTo atomic.Uint64 // highest block index already scheduled for prefetch
+	valid         atomic.Bool   // false until the first read establishes lastEnd
 }
 
 // planWindow advances the payload's read frontier for a read spanning block
@@ -38,33 +43,30 @@ func (m *Syncer) planWindow(payloadID string, start, end uint64) (from, to uint6
 		return 0, 0, false // prefetch disabled
 	}
 
-	m.readaheadMu.Lock()
-	defer m.readaheadMu.Unlock()
-
-	st, ok := m.readahead[payloadID]
-	if !ok {
-		if len(m.readahead) >= maxReadaheadEntries {
-			for k := range m.readahead { // evict one arbitrary disposable entry
-				delete(m.readahead, k)
-				break
-			}
-		}
-		st = &raState{}
-		m.readahead[payloadID] = st
+	// Lock-free per-payload lookup. A gosync.Map keeps the read hot path free of
+	// the global mutex that previously serialized every read here.
+	v, loaded := m.readahead.LoadOrStore(payloadID, &raState{})
+	if !loaded && m.readaheadN.Add(1) > maxReadaheadEntries {
+		m.pruneReadahead()
 	}
+	st := v.(*raState)
 
 	// Sequential = the new read begins at or immediately after the previous
 	// frontier (tolerates a re-read of the last block and a contiguous advance).
-	sequential := st.valid && start >= st.lastEnd && start <= st.lastEnd+1
-	st.lastEnd = end
-	st.valid = true
+	// Load lastEnd once; a concurrent same-payload read may interleave, but the
+	// frontier is a disposable heuristic so a mis-detected pattern only affects
+	// prefetch sizing, never correctness.
+	last := st.lastEnd.Load()
+	sequential := st.valid.Load() && start >= last && start <= last+1
+	st.lastEnd.Store(end)
+	st.valid.Store(true)
 
 	// First read of a payload is not a pattern (sequential requires the prior
-	// st.valid, so a first read is never sequential); a random jump resets the
+	// valid, so a first read is never sequential); a random jump resets the
 	// anchor. Either way we re-anchor scheduledUpTo to the current frontier and
 	// prefetch nothing this call.
 	if !sequential {
-		st.scheduledUpTo = end
+		st.scheduledUpTo.Store(end)
 		return 0, 0, false
 	}
 
@@ -72,15 +74,36 @@ func (m *Syncer) planWindow(payloadID string, start, end uint64) (from, to uint6
 	// geometric ramp — that lagged the reader (the reader consumes a local block
 	// faster than a single S3 fetch completes, so a slow ramp never gets ahead).
 	target := end + uint64(maxDepth)
-	from = st.scheduledUpTo
+	from = st.scheduledUpTo.Load()
 	if from < end {
 		from = end
 	}
 	if target <= from {
 		return 0, 0, false // window already scheduled — nothing new
 	}
-	st.scheduledUpTo = target
+	st.scheduledUpTo.Store(target)
 	return from, target, true
+}
+
+// pruneReadahead best-effort trims the disposable readahead map back toward
+// half of maxReadaheadEntries when it overflows. Only one goroutine prunes at a
+// time; entries are dropped in gosync.Map.Range order (arbitrary) — a dropped
+// payload just re-ramps from a cold frontier on its next read. readaheadN is
+// approximate under concurrent inserts, which is fine for a soft bound.
+func (m *Syncer) pruneReadahead() {
+	if !m.readaheadPruning.CompareAndSwap(false, true) {
+		return // another goroutine is already pruning
+	}
+	defer m.readaheadPruning.Store(false)
+	target := int64(maxReadaheadEntries / 2)
+	m.readahead.Range(func(k, _ any) bool {
+		if m.readaheadN.Load() <= target {
+			return false
+		}
+		m.readahead.Delete(k)
+		m.readaheadN.Add(-1)
+		return true
+	})
 }
 
 // scheduleReadahead is the offset-based sliding-window readahead driver, invoked

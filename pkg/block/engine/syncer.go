@@ -70,10 +70,17 @@ type Syncer struct {
 	inFlight   map[string]*fetchResult // In-flight download dedup (store key -> broadcast)
 	inFlightMu gosync.Mutex
 
-	// readahead holds per-payload sequential-access state so remote prefetch
-	// ramps on sequential runs and backs off on random access (see readahead.go).
-	readahead   map[string]*raState
-	readaheadMu gosync.Mutex
+	// readahead holds per-payload sequential-access frontier state so remote
+	// prefetch ramps on sequential runs and backs off on random access (see
+	// readahead.go). A gosync.Map + atomic raState fields keep the read hot path
+	// lock-free: planWindow previously took a single global mutex on EVERY read
+	// (whenever a remote is configured), so a concurrent 4k random-read fleet on
+	// one payload serialized there. Readahead state is a disposable heuristic, so
+	// the atomic load-decide-store races are benign (a stale frontier only
+	// mis-sizes prefetch, never affects correctness).
+	readahead        gosync.Map   // payloadID(string) -> *raState
+	readaheadN       atomic.Int64 // approximate entry count, for bounding
+	readaheadPruning atomic.Bool  // single-pruner guard for the bound
 
 	stopCh chan struct{} // Signals periodic uploader to stop
 	closed bool
@@ -328,7 +335,6 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 		fileChunkStore: fileChunkStore,
 		config:         config,
 		inFlight:       make(map[string]*fetchResult),
-		readahead:      make(map[string]*raState),
 		stopCh:         make(chan struct{}),
 
 		uploadLimiter:    newDynamicSemaphore(startWindow),
