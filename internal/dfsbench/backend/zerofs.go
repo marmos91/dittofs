@@ -132,11 +132,13 @@ func zerofsMount(ctx context.Context, proto Protocol) (string, error) {
 	// skew the native-vs-native comparison; rsize/wsize negotiate to the kernel
 	// default (1 MiB over TCP) for both.
 	opts := "nfsvers=3,tcp,port=" + zerofsNFSPort + ",mountport=" + zerofsNFSPort + ",actimeo=0,nolock"
-	// Retry a few times: zerofs's embedded NFS/MOUNT can still refuse the very
-	// first handshake right after it starts serving. zerofsStart already gates on
-	// the "serving" log line, so this only absorbs that last narrow race.
+	// zerofs logs "Starting NFS server" (the zerofsStart gate) within a few
+	// seconds of launch, but doesn't actually answer MOUNT/NFS RPCs until it has
+	// loaded the encryption key and warmed the LSM from S3 — ~35s on a cold cache.
+	// The mount is the only true readiness probe, so retry across a window wide
+	// enough to cover that warmup (measured ~40s on a fresh bucket prefix).
 	var err error
-	for a := 0; a < 5; a++ {
+	for a := 0; a < 45; a++ {
 		if err = exec.Sh(ctx, "mount", "-t", "nfs", "-o", opts, "127.0.0.1:/", clientMntDir); err == nil {
 			return clientMntDir, nil
 		}
