@@ -250,6 +250,39 @@ func (m *Manager) ReadAt(ctx context.Context, loc block.LocalChunkLocation, dst 
 	return n, nil
 }
 
+// ReadAtRange reads len(dst) bytes from the chunk at loc starting subOffset
+// bytes into the chunk body, i.e. the on-disk range
+// [loc.RawOffset+subOffset, loc.RawOffset+subOffset+len(dst)). It lets the read
+// path serve a small window of a large packed chunk without materializing the
+// whole chunk. subOffset and len(dst) must stay within loc.RawLength.
+//
+// Concurrency and error semantics match ReadAt: a brief mutex to snapshot the
+// blob fd, then an unlocked pread(2); ErrEvicted / ErrBlobNotFound / io.EOF from
+// the underlying blob surface unchanged so callers can route recovery.
+func (m *Manager) ReadAtRange(ctx context.Context, loc block.LocalChunkLocation, dst []byte, subOffset int64) (int, error) {
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	if subOffset < 0 || subOffset+int64(len(dst)) > loc.RawLength {
+		return 0, fmt.Errorf("logblob: ReadAtRange: range [%d,%d) out of chunk bounds (RawLength %d)",
+			subOffset, subOffset+int64(len(dst)), loc.RawLength)
+	}
+
+	fd, err := m.fdForBlob(loc.LogBlobID)
+	if err != nil {
+		return 0, err
+	}
+
+	n, err := fd.ReadAt(dst, loc.RawOffset+subOffset)
+	if err != nil {
+		return n, fmt.Errorf("logblob: ReadAtRange %s@%d+%d: %w", loc.LogBlobID, loc.RawOffset, subOffset, err)
+	}
+	return n, nil
+}
+
 // Rotate seals the current active blob and creates a fresh one. Subsequent
 // Appends will target the new blob starting at offset 0.
 //
