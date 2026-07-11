@@ -2419,7 +2419,7 @@ func adsBasePath(filePath string) string {
 func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 	const fileShareDelete = uint32(0x04) // FILE_SHARE_DELETE
 
-	conflict := false
+	var culprit *OpenFile
 	h.files.Range(func(key, value any) bool {
 		other := value.(*OpenFile)
 		// Skip the handle being renamed
@@ -2435,12 +2435,45 @@ func (h *Handler) checkShareDeleteConflict(renameFile *OpenFile) bool {
 		}
 		// If this other handle does not allow delete sharing, conflict
 		if other.ShareAccess&fileShareDelete == 0 {
-			conflict = true
+			culprit = other
 			return false // Stop iterating
 		}
 		return true
 	})
-	return conflict
+	if culprit != nil {
+		// #1652: dump the offending holder so a spurious/intermittent
+		// SHARING_VIOLATION on rename is diagnosable — the call-site log only
+		// records the renamer. The conflict is expected only when a live
+		// sibling open lacks FILE_SHARE_DELETE; a holder on a different
+		// session/tree, a durable handle, or a delete-pending stub pointing
+		// here is the fingerprint of a leaked/stale open.
+		logRenameConflictHolder("source-file share-delete gate", renameFile, culprit)
+		return true
+	}
+	return false
+}
+
+// logRenameConflictHolder emits (at Debug) the full identity of the open handle
+// that tripped a rename share-mode gate, alongside the renamer. Fields chosen to
+// answer "is this a legitimate live sibling, or a stale/cross-connection leak?":
+// session/tree locate the owning connection, ShareAccess/DesiredAccess show why
+// it conflicted, IsDurable/DeletePending flag reconnect/teardown stubs. #1652.
+func logRenameConflictHolder(gate string, renamer, holder *OpenFile) {
+	logger.Debug("SET_INFO rename conflict holder",
+		"gate", gate,
+		"renamerFileID", fmt.Sprintf("%x", renamer.FileID),
+		"renamerPath", renamer.Path,
+		"renamerSession", renamer.SessionID,
+		"renamerTree", renamer.TreeID,
+		"holderFileID", fmt.Sprintf("%x", holder.FileID),
+		"holderPath", holder.Path,
+		"holderShare", holder.ShareName,
+		"holderSession", holder.SessionID,
+		"holderTree", holder.TreeID,
+		"holderShareAccess", fmt.Sprintf("0x%x", holder.ShareAccess),
+		"holderDesiredAccess", fmt.Sprintf("0x%x", holder.DesiredAccess),
+		"holderIsDurable", holder.IsDurable,
+		"holderDeletePending", holder.DeletePending)
 }
 
 // checkParentDirRenameConflict applies the destination-parent share-mode
@@ -2459,7 +2492,7 @@ func (h *Handler) checkParentDirRenameConflict(renamerFileID [16]byte, dstParent
 	if len(dstParent) == 0 {
 		return false
 	}
-	conflict := false
+	var culprit *OpenFile
 	h.files.Range(func(_, value any) bool {
 		other := value.(*OpenFile)
 		if other.FileID == renamerFileID {
@@ -2481,12 +2514,19 @@ func (h *Handler) checkParentDirRenameConflict(renamerFileID [16]byte, dstParent
 			return true
 		}
 		if other.ShareAccess&fileShareDelete == 0 || hasDeleteAccess(other.DesiredAccess) {
-			conflict = true
+			culprit = other
 			return false
 		}
 		return true
 	})
-	return conflict
+	if culprit != nil {
+		// #1652: dump the dst-parent holder that tripped the gate. renamerFileID
+		// is only an ID here, so pass a minimal renamer view for the log.
+		logRenameConflictHolder("dst-parent share-mode gate",
+			&OpenFile{FileID: renamerFileID}, culprit)
+		return true
+	}
+	return false
 }
 
 // snapshotOpenChildren returns the metadata handles of every open file whose
