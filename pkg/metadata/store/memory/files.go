@@ -19,12 +19,7 @@ import (
 // Returns nil if the input is nil or empty so the round-trip preserves
 // the omitempty wire form (json:"blocks,omitempty" on FileAttr.Blocks).
 func cloneBlocks(in []block.ChunkRef) []block.ChunkRef {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]block.ChunkRef, len(in))
-	copy(out, in)
-	return out
+	return metadata.CloneBlocks(in)
 }
 
 // cloneACL returns a deep copy of a *acl.ACL, including fresh copies of its
@@ -42,19 +37,7 @@ func cloneBlocks(in []block.ChunkRef) []block.ChunkRef {
 // Returns nil if the input is nil so the round-trip preserves the
 // "no ACL set" semantics (json:"acl,omitempty" on FileAttr.ACL).
 func cloneACL(in *acl.ACL) *acl.ACL {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	if in.ACEs != nil {
-		out.ACEs = make([]acl.ACE, len(in.ACEs))
-		copy(out.ACEs, in.ACEs)
-	}
-	if in.SACL != nil {
-		out.SACL = make([]acl.ACE, len(in.SACL))
-		copy(out.SACL, in.SACL)
-	}
-	return &out
+	return metadata.CloneACL(in)
 }
 
 // cloneEAs returns a deep copy of a FileAttr.EAs map, copying each value slice
@@ -64,16 +47,7 @@ func cloneACL(in *acl.ACL) *acl.ACL {
 // Badger/Postgres backends round-trip through JSON and never alias, so the
 // memory backend must copy to keep cross-backend parity.
 func cloneEAs(in map[string][]byte) map[string][]byte {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string][]byte, len(in))
-	for k, v := range in {
-		vc := make([]byte, len(v))
-		copy(vc, v)
-		out[k] = vc
-	}
-	return out
+	return metadata.CloneEAs(in)
 }
 
 // ============================================================================

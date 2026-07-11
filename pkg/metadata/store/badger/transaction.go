@@ -31,6 +31,11 @@ type badgerTransaction struct {
 	store        *BadgerMetadataStore
 	txn          *badgerdb.Txn
 	pendingDelta int64
+	// dirtyFiles collects fileID keys whose stored File blob or link count this
+	// transaction mutated. Captured per attempt and, after a successful commit,
+	// used to invalidate the read cache (see withTransaction). Reset per attempt
+	// like pendingDelta so a conflict-retry cannot leak a phantom invalidation.
+	dirtyFiles []string
 	// quotaDelta accumulates per-identity usage changes (bytes + file count)
 	// keyed by (scope, id). Captured per attempt and applied to the store's
 	// in-memory userUsage/groupUsage cache exactly once after a successful
@@ -130,6 +135,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		// from zero, so a conflict-retry cannot double-count usedBytes).
 		var pendingDelta int64
 		var quotaDelta map[badgerQuotaKey]metadata.UsageStat
+		var dirtyFiles []string
 		err := s.db.Update(func(txn *badgerdb.Txn) error {
 			tx := &badgerTransaction{store: s, txn: txn}
 			if fnErr := fn(tx); fnErr != nil {
@@ -137,6 +143,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			}
 			pendingDelta = tx.pendingDelta
 			quotaDelta = tx.quotaDelta
+			dirtyFiles = tx.dirtyFiles
 			return nil
 		})
 
@@ -147,6 +154,12 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			}
 			// Apply per-identity usage deltas once, after commit.
 			s.applyQuotaDelta(quotaDelta)
+			// Invalidate the read cache for every file this transaction mutated,
+			// AFTER the commit so a concurrent reader that saw the pre-commit
+			// value cannot leave it cached (its generation-guarded store loses).
+			for _, id := range dirtyFiles {
+				s.readCache.invalidate(id)
+			}
 			// Durable (data-paired) commit in relaxed mode: fsync now so the
 			// write survives a crash. A sync failure must not falsely ack a
 			// durable write (#588), so surface it. No-op in strict mode.
@@ -410,6 +423,7 @@ func (tx *badgerTransaction) PutFile(ctx context.Context, file *metadata.File) e
 	if err := tx.txn.Set(keyFile(file.ID), data); err != nil {
 		return err
 	}
+	tx.dirtyFiles = append(tx.dirtyFiles, file.ID.String())
 
 	// maintain ObjectID -> file UUID secondary index in the
 	// same Txn as the primary file write (atomic on commit).
@@ -482,6 +496,8 @@ func (tx *badgerTransaction) DeleteFile(ctx context.Context, handle metadata.Fil
 			Message: "invalid file handle",
 		}
 	}
+
+	tx.dirtyFiles = append(tx.dirtyFiles, fileID.String())
 
 	// Check if exists first and read for size tracking.
 	item, err := tx.txn.Get(keyFile(fileID))
@@ -916,6 +932,7 @@ func (tx *badgerTransaction) SetLinkCount(ctx context.Context, handle metadata.F
 		}
 	}
 
+	tx.dirtyFiles = append(tx.dirtyFiles, fileID.String())
 	return tx.txn.Set(keyLinkCount(fileID), encodeUint32(count))
 }
 

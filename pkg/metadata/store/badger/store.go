@@ -59,6 +59,11 @@ type BadgerMetadataStore struct {
 	// db is the BadgerDB database handle (thread-safe, uses internal MVCC)
 	db *badger.DB
 
+	// readCache caches decoded File records for the read hot path so
+	// GetFileForRead skips the per-read badger View transaction + File JSON
+	// decode. Invalidated after each committed write (see withTransaction).
+	readCache fileReadCache
+
 	// gcStop signals the value-log GC goroutine to exit. Closed once by
 	// Close() (guarded by gcStopOnce); gcWG waits for the goroutine to
 	// drain before Close() shuts the DB so the GC never runs against a
