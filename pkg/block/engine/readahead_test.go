@@ -7,10 +7,7 @@ import (
 
 // newRAsyncer builds a Syncer exercising only planWindow (no queue/remote).
 func newRAsyncer(prefetch int) *Syncer {
-	return &Syncer{
-		config:    SyncerConfig{PrefetchBlocks: prefetch},
-		readahead: make(map[string]*raState),
-	}
+	return &Syncer{config: SyncerConfig{PrefetchBlocks: prefetch}}
 }
 
 // window is a test helper: the block indices planWindow schedules for a read
@@ -87,7 +84,9 @@ func TestPlanWindow_MapBounded(t *testing.T) {
 	for i := 0; i < maxReadaheadEntries*2; i++ {
 		m.window("payload-"+strconv.Itoa(i), 0, 0)
 	}
-	if got := len(m.readahead); got > maxReadaheadEntries {
+	got := 0
+	m.readahead.Range(func(_, _ any) bool { got++; return true })
+	if got > maxReadaheadEntries {
 		t.Fatalf("readahead map unbounded: %d entries, cap %d", got, maxReadaheadEntries)
 	}
 }
@@ -95,10 +94,7 @@ func TestPlanWindow_MapBounded(t *testing.T) {
 // newSchedSyncer builds a Syncer with a real (unstarted) SyncQueue so
 // scheduleReadahead enqueues into an inspectable prefetch channel.
 func newSchedSyncer(prefetch int) *Syncer {
-	m := &Syncer{
-		config:    SyncerConfig{PrefetchBlocks: prefetch},
-		readahead: make(map[string]*raState),
-	}
+	m := &Syncer{config: SyncerConfig{PrefetchBlocks: prefetch}}
 	m.hasRemote.Store(true) // IsRemoteHealthy() is true with no health monitor
 	m.queue = NewSyncQueue(m, SyncQueueConfig{QueueSize: 1000, DownloadWorkers: 4})
 	return m
