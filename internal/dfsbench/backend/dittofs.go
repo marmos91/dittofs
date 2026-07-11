@@ -36,20 +36,101 @@ const (
 	dittofsAdminPass = "dfsbench-admin-pw"
 )
 
-func init() {
-	register(&Backend{
-		Name:     "dittofs-s3",
-		S3Backed: true,
-		Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
-		Setup:    dittofsSetup,
-		Mount:    dittofsMount,
-		Evict:    dittofsEvict,
-		Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
-		Teardown: dittofsTeardown,
-	})
+// dittofsMetaKind selects the metadata-store engine. The block store (fs local
+// cache + S3 remote) is identical across all three, so a badger/sqlite/postgres
+// A/B isolates the metadata engine — the axis that dominates create/rename/
+// dir-heavy workloads and that only badger had ever been measured on.
+type dittofsMetaKind int
+
+const (
+	metaBadger dittofsMetaKind = iota
+	metaSQLite
+	metaPostgres
+)
+
+// Postgres bench DB provisioned on the (Debian) bench VM for the postgres
+// metadata variant. Throwaway single-tenant VM — fixed literals, same
+// convention as dittofsSecret.
+const (
+	dittofsPGDB   = "dittofs_bench"
+	dittofsPGUser = "dittofs"
+	dittofsPGPass = "dittofs"
+)
+
+// dittofsAddMetadataStore registers the subject's metadata store with the
+// engine selected by kind. badger/sqlite need no server; postgres is
+// provisioned on the (throwaway, single-tenant) bench VM first. All three pair
+// with the same fs-local + S3 block store added by the caller, so a run across
+// the three variants is a clean metadata-engine A/B.
+func dittofsAddMetadataStore(ctx context.Context, kind dittofsMetaKind) error {
+	switch kind {
+	case metaSQLite:
+		return exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
+			"--name", dittofsMeta, "--type", "sqlite",
+			"--config", fmt.Sprintf(`{"path":%q}`, dittofsDataDir+"/meta.db"))
+	case metaPostgres:
+		if err := dittofsProvisionPostgres(ctx); err != nil {
+			return err
+		}
+		return exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
+			"--name", dittofsMeta, "--type", "postgres",
+			"--config", fmt.Sprintf(
+				`{"host":"127.0.0.1","port":5432,"user":%q,"password":%q,"database":%q,"sslmode":"disable"}`,
+				dittofsPGUser, dittofsPGPass, dittofsPGDB))
+	default: // metaBadger
+		return exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
+			"--name", dittofsMeta, "--type", "badger", "--db-path", dittofsDataDir+"/meta")
+	}
 }
 
-func dittofsSetup(ctx context.Context, env BackendEnv) error {
+// dittofsProvisionPostgres installs, configures (trust auth on loopback — the
+// bench VM is throwaway and single-tenant), starts PostgreSQL, and (re)creates
+// a clean bench role+database. Idempotent; mirrors the apt install-on-demand
+// idiom the re-export backends use. Debian/Ubuntu bench image assumed.
+func dittofsProvisionPostgres(ctx context.Context) error {
+	script := fmt.Sprintf(`set -eu
+command -v pg_isready >/dev/null 2>&1 || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql; }
+hba="$(ls /etc/postgresql/*/main/pg_hba.conf 2>/dev/null | head -1)"
+if [ -n "$hba" ]; then
+  grep -q '127.0.0.1/32 trust' "$hba" || echo 'host all all 127.0.0.1/32 trust' >> "$hba"
+fi
+service postgresql restart 2>/dev/null || systemctl restart postgresql 2>/dev/null || pg_ctlcluster "$(ls /etc/postgresql 2>/dev/null | head -1)" main restart 2>/dev/null || true
+for i in $(seq 1 30); do pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && break; sleep 1; done
+psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 <<SQL || su - postgres -c 'psql -v ON_ERROR_STOP=1' <<SQL
+DROP DATABASE IF EXISTS %[1]s;
+DO $do$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='%[2]s') THEN CREATE ROLE %[2]s LOGIN PASSWORD '%[3]s'; END IF; END $do$;
+CREATE DATABASE %[1]s OWNER %[2]s;
+SQL`, dittofsPGDB, dittofsPGUser, dittofsPGPass)
+	return exec.Sh(ctx, "sh", "-c", script)
+}
+
+func init() {
+	// badger keeps the existing "dittofs-s3" name (result files key off it);
+	// sqlite/postgres get explicit variant names. Same S3 block store, so the
+	// only axis that moves between them is the metadata engine.
+	for _, v := range []struct {
+		name string
+		kind dittofsMetaKind
+	}{
+		{"dittofs-s3", metaBadger},
+		{"dittofs-sqlite-s3", metaSQLite},
+		{"dittofs-postgres-s3", metaPostgres},
+	} {
+		kind := v.kind
+		register(&Backend{
+			Name:     v.name,
+			S3Backed: true,
+			Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
+			Setup:    func(ctx context.Context, env BackendEnv) error { return dittofsSetup(ctx, env, kind) },
+			Mount:    dittofsMount,
+			Evict:    dittofsEvict,
+			Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
+			Teardown: dittofsTeardown,
+		})
+	}
+}
+
+func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind) error {
 	id, secret, err := s3Creds()
 	if err != nil {
 		return err
@@ -108,8 +189,7 @@ func dittofsSetup(ctx context.Context, env BackendEnv) error {
 		"--server", dittofsAPIURL, "--username", "admin", "--password", dittofsAdminPass); err != nil {
 		return fmt.Errorf("dfsctl login: %w", err)
 	}
-	if err := exec.Sh(ctx, "dfsctl", "store", "metadata", "add",
-		"--name", dittofsMeta, "--type", "badger", "--db-path", dittofsDataDir+"/meta"); err != nil {
+	if err := dittofsAddMetadataStore(ctx, kind); err != nil {
 		return err
 	}
 	if err := exec.Sh(ctx, "dfsctl", "store", "block", "local", "add",
