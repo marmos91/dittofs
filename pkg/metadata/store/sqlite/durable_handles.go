@@ -27,12 +27,13 @@ const durableHandleColumns = `
 	username, session_key_hash, is_v2, created_at, disconnected_at,
 	timeout_ms, server_start_time,
 	delete_pending, parent_handle, file_name, is_directory,
-	position_info, original_file_id, requested_alloc_size, is_persistent
+	position_info, original_file_id, requested_alloc_size, is_persistent,
+	client_guid
 `
 
 func scanDurableHandle(row scanRow) (*lock.PersistedDurableHandle, error) {
 	var h lock.PersistedDurableHandle
-	var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
+	var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes, clientGuidBytes []byte
 	var positionInfoSigned, requestedAllocSizeSigned int64
 	var leaseEpochSigned int32
 
@@ -68,6 +69,7 @@ func scanDurableHandle(row scanRow) (*lock.PersistedDurableHandle, error) {
 		&originalFileIDBytes,
 		&requestedAllocSizeSigned,
 		&h.IsPersistent,
+		&clientGuidBytes,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -81,7 +83,7 @@ func scanDurableHandle(row scanRow) (*lock.PersistedDurableHandle, error) {
 	h.PositionInfo = uint64(positionInfoSigned)
 	h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
 	copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes,
-		appInstanceIdBytes, sessionKeyHashBytes)
+		appInstanceIdBytes, sessionKeyHashBytes, clientGuidBytes)
 	if len(originalFileIDBytes) == 16 {
 		copy(h.OriginalFileID[:], originalFileIDBytes)
 	}
@@ -94,7 +96,7 @@ func scanDurableHandleRows(rows scanRows) ([]*lock.PersistedDurableHandle, error
 	var result []*lock.PersistedDurableHandle
 	for rows.Next() {
 		var h lock.PersistedDurableHandle
-		var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes []byte
+		var fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, originalFileIDBytes, clientGuidBytes []byte
 		var positionInfoSigned, requestedAllocSizeSigned int64
 		var leaseEpochSigned int32
 
@@ -130,6 +132,7 @@ func scanDurableHandleRows(rows scanRows) ([]*lock.PersistedDurableHandle, error
 			&originalFileIDBytes,
 			&requestedAllocSizeSigned,
 			&h.IsPersistent,
+			&clientGuidBytes,
 		)
 		if err != nil {
 			return nil, err
@@ -138,7 +141,7 @@ func scanDurableHandleRows(rows scanRows) ([]*lock.PersistedDurableHandle, error
 		h.LeaseEpoch = uint16(leaseEpochSigned)
 		h.PositionInfo = uint64(positionInfoSigned)
 		h.RequestedAllocSize = uint64(requestedAllocSizeSigned)
-		copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes)
+		copyFixedByteArrays(&h, fileIDBytes, leaseKeyBytes, createGuidBytes, appInstanceIdBytes, sessionKeyHashBytes, clientGuidBytes)
 		if len(originalFileIDBytes) == 16 {
 			copy(h.OriginalFileID[:], originalFileIDBytes)
 		}
@@ -152,7 +155,7 @@ func scanDurableHandleRows(rows scanRows) ([]*lock.PersistedDurableHandle, error
 	return result, nil
 }
 
-func copyFixedByteArrays(h *lock.PersistedDurableHandle, fileID, leaseKey, createGuid, appInstanceId, sessionKeyHash []byte) {
+func copyFixedByteArrays(h *lock.PersistedDurableHandle, fileID, leaseKey, createGuid, appInstanceId, sessionKeyHash, clientGuid []byte) {
 	if len(fileID) == 16 {
 		copy(h.FileID[:], fileID)
 	}
@@ -167,6 +170,9 @@ func copyFixedByteArrays(h *lock.PersistedDurableHandle, fileID, leaseKey, creat
 	}
 	if len(sessionKeyHash) == 32 {
 		copy(h.SessionKeyHash[:], sessionKeyHash)
+	}
+	if len(clientGuid) == 16 {
+		copy(h.ClientGUID[:], clientGuid)
 	}
 }
 
@@ -189,9 +195,9 @@ func (s *sqliteDurableStore) PutDurableHandle(ctx context.Context, handle *lock.
 			timeout_ms, server_start_time,
 			delete_pending, parent_handle, file_name, is_directory,
 			position_info, original_file_id, requested_alloc_size,
-			lease_epoch, is_persistent
+			lease_epoch, is_persistent, client_guid
 		)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)
 		ON CONFLICT (id) DO UPDATE SET
 			file_id = EXCLUDED.file_id,
 			path = EXCLUDED.path,
@@ -222,7 +228,8 @@ func (s *sqliteDurableStore) PutDurableHandle(ctx context.Context, handle *lock.
 			original_file_id = EXCLUDED.original_file_id,
 			requested_alloc_size = EXCLUDED.requested_alloc_size,
 			lease_epoch = EXCLUDED.lease_epoch,
-			is_persistent = EXCLUDED.is_persistent
+			is_persistent = EXCLUDED.is_persistent,
+			client_guid = EXCLUDED.client_guid
 	`
 
 	_, err := s.pool.Exec(ctx, query,
@@ -269,6 +276,12 @@ func (s *sqliteDurableStore) PutDurableHandle(ctx context.Context, handle *lock.
 		// IsPersistent marks a persistent durable handle granted on a CA share
 		// (#739) so a reconnect re-echoes the DH2Q PERSISTENT flag.
 		handle.IsPersistent,
+		// ClientGUID binds a lease-backed durable handle to the SMB2 client GUID
+		// that established it; a reconnect from a different GUID must fail
+		// OBJECT_NAME_NOT_FOUND (smbtorture durable-open.reopen1a-lease). Without
+		// persisting it the restored handle had a zero GUID and the mismatch gate
+		// was silently skipped.
+		nullableBytes16(handle.ClientGUID),
 	)
 	return err
 }
