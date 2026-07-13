@@ -6786,7 +6786,7 @@ Wait for all pending uploads to complete
 
 Wait for all in-flight block store uploads to complete across every share.
 
-The command blocks until the server confirms that no blocks are queued for remote upload, or until the client timeout (--timeout, default 6m) is reached. Use this before running benchmarks or taking snapshots to ensure a clean data boundary.
+The command blocks until the server confirms that no blocks are queued for remote upload, or until the client timeout (--timeout, default 6m) is reached. The server can also end the wait early with a 504 if upload progress stalls for controlplane.drain_stall_timeout (default 5m). Use this before running benchmarks or taking snapshots to ensure a clean data boundary.
 
 ```
 dfsctl system drain-uploads [flags]
@@ -6808,7 +6808,7 @@ dfsctl system drain-uploads -o json
 Flags:
 
 ```
-      --timeout duration   client-side wait for the drain (0 = default 6m)
+      --timeout duration   client-side wait for the drain (0 or negative uses the built-in default, 6m)
 ```
 
 Global flags:

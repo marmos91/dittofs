@@ -19,7 +19,7 @@ var drainUploadsCmd = &cobra.Command{
 	Short: "Wait for all pending uploads to complete",
 	Long: `Wait for all in-flight block store uploads to complete across every share.
 
-The command blocks until the server confirms that no blocks are queued for remote upload, or until the client timeout (--timeout, default 6m) is reached. Use this before running benchmarks or taking snapshots to ensure a clean data boundary.
+The command blocks until the server confirms that no blocks are queued for remote upload, or until the client timeout (--timeout, default 6m) is reached. The server can also end the wait early with a 504 if upload progress stalls for controlplane.drain_stall_timeout (default 5m). Use this before running benchmarks or taking snapshots to ensure a clean data boundary.
 
 Examples:
   # Block until all pending uploads are flushed
@@ -35,7 +35,7 @@ Examples:
 
 func init() {
 	drainUploadsCmd.Flags().DurationVar(&drainTimeout, "timeout", 0,
-		"client-side wait for the drain (0 = default 6m)")
+		"client-side wait for the drain (0 or negative uses the built-in default, 6m)")
 }
 
 func runDrainUploads(cmd *cobra.Command, args []string) error {
