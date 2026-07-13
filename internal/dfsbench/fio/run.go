@@ -1,8 +1,8 @@
 package fio
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,11 +13,12 @@ import (
 // LoadOpts are the per-cell fio knobs the harness overrides on top of the .fio
 // template. Zero values mean "use the job file's own value".
 type LoadOpts struct {
-	Size    string // fio --size (e.g. "64k", "1g")
-	Threads int    // BENCH_THREADS
-	Runtime int    // BENCH_RUNTIME seconds
-	Engine  string // FIO_ENGINE (defaults per-OS)
-	FioBin  string // fio binary (default "fio")
+	Size         string // fio --size (e.g. "64k", "1g")
+	Threads      int    // BENCH_THREADS
+	Runtime      int    // BENCH_RUNTIME seconds
+	Engine       string // FIO_ENGINE (defaults per-OS)
+	FioBin       string // fio binary (default "fio")
+	LiveProgress bool   // let fio's live ETA line reach stdout (set on a TTY)
 }
 
 // defaultEngine picks a portable fio ioengine. libaio is Linux-only; local dev
@@ -69,14 +70,37 @@ func RunFio(ctx context.Context, workload, targetDir string, opts LoadOpts) (Cel
 		return CellResult{}, closeErr
 	}
 
+	// --output routes the JSON report to a file so fio's stdout is free for its
+	// live ETA line. On a TTY (LiveProgress) we let that reach the terminal;
+	// otherwise fio's stdout is discarded and it auto-suppresses the ETA, keeping
+	// piped/captured output clean.
+	outFile, err := os.CreateTemp("", "dfsbench-out-*.json")
+	if err != nil {
+		return CellResult{}, err
+	}
+	outPath := outFile.Name()
+	_ = outFile.Close()
+	defer func() { _ = os.Remove(outPath) }()
+
 	// directory/size/threads/runtime are baked into the rendered job file (see
 	// jobDefaults) because job-file options beat fio's global CLI flags.
-	cmd := exec.CommandContext(ctx, bin, "--output-format=json", jobPath)
-	out, err := cmd.Output()
-	if err != nil {
-		return CellResult{}, fmt.Errorf("run %s (%s): %w\n%s", bin, workload, err, fioStderr(err))
+	cmd := exec.CommandContext(ctx, bin, "--output="+outPath, "--output-format=json", jobPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if opts.LiveProgress {
+		cmd.Stdout = os.Stdout
+	}
+	if err := cmd.Run(); err != nil {
+		return CellResult{}, fmt.Errorf("run %s (%s): %w\n%s", bin, workload, err, stderr.Bytes())
+	}
+	if opts.LiveProgress {
+		_, _ = fmt.Fprintln(os.Stdout) // close fio's in-place ETA line
 	}
 
+	out, err := os.ReadFile(outPath)
+	if err != nil {
+		return CellResult{}, err
+	}
 	res, err := parseFioJSON(out)
 	if err != nil {
 		return CellResult{}, fmt.Errorf("%s: %w", workload, err)
@@ -84,24 +108,12 @@ func RunFio(ctx context.Context, workload, targetDir string, opts LoadOpts) (Cel
 	return res, nil
 }
 
-// fioStderr surfaces a failed fio invocation's stderr, if any.
-func fioStderr(err error) []byte {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.Stderr
-	}
-	return nil
-}
-
-// CheckTarget verifies the target directory exists and is writable — fio's own
-// error on a bad dir is opaque, so fail early and clearly.
+// CheckTarget makes the target directory (mkdir -p, 0755) if absent and verifies
+// it is writable — fio's own error on a bad dir is opaque, so fail early and
+// clearly. An existing non-directory makes MkdirAll fail with a clear error.
 func CheckTarget(dir string) error {
-	info, err := os.Stat(dir)
-	if err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("target %q: %w", dir, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("target %q is not a directory", dir)
 	}
 	probe := filepath.Join(dir, ".dfsbench-write-probe")
 	if err := os.WriteFile(probe, []byte("x"), 0o644); err != nil {

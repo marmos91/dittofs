@@ -1,10 +1,31 @@
 package fio
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestCheckTarget_CreatesMissingDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "does", "not", "exist")
+	if err := CheckTarget(dir); err != nil {
+		t.Fatalf("CheckTarget should mkdir -p a fresh path: %v", err)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Fatalf("target not created as a dir: err=%v", err)
+	}
+}
+
+func TestCheckTarget_ExistingFileErrors(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckTarget(file); err == nil {
+		t.Fatal("CheckTarget should error when the target is an existing file")
+	}
+}
 
 // a trimmed but real-shaped fio --output-format=json report (rand-read-4k).
 const fioRandReadJSON = `{
