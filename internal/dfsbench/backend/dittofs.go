@@ -97,6 +97,12 @@ func dittofsAddMetadataStore(ctx context.Context, kind dittofsMetaKind) error {
 // pg_hba edit needed. dfsctl then connects over TCP (127.0.0.1) as the freshly
 // created role, which the default `host all all 127.0.0.1/32 scram-sha-256` rule
 // admits with the password set below.
+//
+// Every postgres-user command uses `runuser -u postgres --`, never `su - postgres
+// -c`: the harness launches the whole matrix detached (nohup, no controlling tty
+// / login session), where `su -`'s PAM login shell misbehaves (psql exit 2).
+// runuser sets up no PAM/login/tty session, so it works identically detached or
+// interactive (issue #1671).
 func dittofsProvisionPostgres(ctx context.Context) error {
 	script := fmt.Sprintf(`set -eu
 command -v pg_isready >/dev/null 2>&1 || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql; }
@@ -104,11 +110,11 @@ service postgresql start 2>/dev/null || systemctl start postgresql 2>/dev/null |
 # Wait on the local socket as the postgres user — the same path the SQL below
 # connects through — for up to 60s. A fresh apt-install has just created the
 # cluster, and a shorter TCP probe raced the cluster still coming up (psql exit 2).
-for i in $(seq 1 60); do su - postgres -c 'pg_isready -q' 2>/dev/null && break; sleep 1; done
+for i in $(seq 1 60); do runuser -u postgres -- pg_isready -q 2>/dev/null && break; sleep 1; done
 # Fail loudly with cluster diagnostics if it never came up, rather than letting
 # the provisioning psql below fail with a cryptic connection error (exit 2).
-su - postgres -c 'pg_isready -q' 2>/dev/null || { echo 'postgres cluster never became ready:'; pg_lsclusters 2>/dev/null; exit 1; }
-su - postgres -c 'psql -v ON_ERROR_STOP=1' <<SQL
+runuser -u postgres -- pg_isready -q 2>/dev/null || { echo 'postgres cluster never became ready:'; pg_lsclusters 2>/dev/null; exit 1; }
+runuser -u postgres -- psql -v ON_ERROR_STOP=1 <<SQL
 DROP DATABASE IF EXISTS %[1]s;
 DO $do$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='%[2]s') THEN CREATE ROLE %[2]s LOGIN PASSWORD '%[3]s'; END IF; END $do$;
 CREATE DATABASE %[1]s OWNER %[2]s;
