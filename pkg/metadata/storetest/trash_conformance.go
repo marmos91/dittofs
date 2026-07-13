@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
@@ -185,6 +186,12 @@ func testUnlinkRecyclesIntoBin(t *testing.T, factory StoreFactory) {
 	}
 	if moved.DeletedAt == nil {
 		t.Error("recycled file missing DeletedAt stamp")
+	} else if skew := time.Since(*moved.DeletedAt); skew < -time.Minute || skew > time.Hour {
+		// The stamp must round-trip to ~now. A write/read timestamp-encoding
+		// mismatch (e.g. writing unix-nanos but decoding Windows FILETIME)
+		// stamps a wildly wrong instant, silently breaking retention-based
+		// trash reaping (reaper compares DeletedAt against a cutoff).
+		t.Errorf("DeletedAt = %v, want within ~now (skew %v)", moved.DeletedAt, skew)
 	}
 	if moved.OriginalPath != "doc.txt" {
 		t.Errorf("OriginalPath = %q, want %q", moved.OriginalPath, "doc.txt")
