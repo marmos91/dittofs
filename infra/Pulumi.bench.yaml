@@ -1,0 +1,9 @@
+encryptionsalt: v1:Cfspf2z4/xw=:v1:b8ZHTe/gdsloFGn2:fSvnAhCXTbQYD/0ylswSHw1MVcj0ZQ==
+config:
+  dittofs-bench:system: dittofs-edge
+  dittofs-bench:privateNetworkID: fr-par/76341fed-f602-4c82-9fe4-4c1641883d82
+  dittofs-bench:s3AccessKey:
+    secure: v1:ao3cOyu2IO7sCl/H:uJedFKIm0Xbw4gom94yvcDvvQJmKk6UJfpLxDTXc+DwsrSDF
+  dittofs-bench:s3SecretKey:
+    secure: v1:enAqEuBJ5U0Ibpcc:aqEnqDO93Ck8K7hwgXFeqcDis/03G6m5ZNVO0n3GFBaPIvHmvf/s8Ifryjc2O61EDBtPsw==
+  dittofs-bench:vmType: POP2-HC-32C-64G

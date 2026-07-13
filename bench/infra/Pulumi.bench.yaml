@@ -1,0 +1,5 @@
+encryptionsalt: v1:Cfspf2z4/xw=:v1:b8ZHTe/gdsloFGn2:fSvnAhCXTbQYD/0ylswSHw1MVcj0ZQ==
+config:
+  dittofs-bench:system: dittofs-badger-s3
+  dittofs-bench:privateNetworkID: fr-par/76341fed-f602-4c82-9fe4-4c1641883d82
+  dittofs-bench:vmType: POP2-HC-32C-64G

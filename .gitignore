@@ -101,3 +101,10 @@ __pycache__/
 bench-results/
 bench-results-*/
 .bench-vm.json
+
+# local artifacts / caches (never committed)
+graphify-out/
+.tokensave/
+results/
+bench/results/
+infra/infra
