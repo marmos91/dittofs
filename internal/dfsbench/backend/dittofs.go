@@ -83,20 +83,27 @@ func dittofsAddMetadataStore(ctx context.Context, kind dittofsMetaKind) error {
 	}
 }
 
-// dittofsProvisionPostgres installs, configures (trust auth on loopback — the
-// bench VM is throwaway and single-tenant), starts PostgreSQL, and (re)creates
-// a clean bench role+database. Idempotent; mirrors the apt install-on-demand
-// idiom the re-export backends use. Debian/Ubuntu bench image assumed.
+// dittofsProvisionPostgres installs, starts PostgreSQL, and (re)creates a clean
+// bench role+database. Idempotent; mirrors the apt install-on-demand idiom the
+// re-export backends use. Debian/Ubuntu bench image assumed.
+//
+// The provisioning SQL runs as the `postgres` OS user over the local socket,
+// which the default pg_hba `local all postgres peer` rule always admits — no
+// pg_hba edit needed. dfsctl then connects over TCP (127.0.0.1) as the freshly
+// created role, which the default `host all all 127.0.0.1/32 scram-sha-256` rule
+// admits with the password set below.
 func dittofsProvisionPostgres(ctx context.Context) error {
 	script := fmt.Sprintf(`set -eu
 command -v pg_isready >/dev/null 2>&1 || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql; }
-hba="$(ls /etc/postgresql/*/main/pg_hba.conf 2>/dev/null | head -1)"
-if [ -n "$hba" ]; then
-  grep -q '127.0.0.1/32 trust' "$hba" || echo 'host all all 127.0.0.1/32 trust' >> "$hba"
-fi
-service postgresql restart 2>/dev/null || systemctl restart postgresql 2>/dev/null || pg_ctlcluster "$(ls /etc/postgresql 2>/dev/null | head -1)" main restart 2>/dev/null || true
-for i in $(seq 1 30); do pg_isready -h 127.0.0.1 -p 5432 >/dev/null 2>&1 && break; sleep 1; done
-psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 <<SQL || su - postgres -c 'psql -v ON_ERROR_STOP=1' <<SQL
+service postgresql start 2>/dev/null || systemctl start postgresql 2>/dev/null || pg_ctlcluster "$(ls /etc/postgresql 2>/dev/null | head -1)" main start 2>/dev/null || true
+# Wait on the local socket as the postgres user — the same path the SQL below
+# connects through — for up to 60s. A fresh apt-install has just created the
+# cluster, and a shorter TCP probe raced the cluster still coming up (psql exit 2).
+for i in $(seq 1 60); do su - postgres -c 'pg_isready -q' 2>/dev/null && break; sleep 1; done
+# Fail loudly with cluster diagnostics if it never came up, rather than letting
+# the provisioning psql below fail with a cryptic connection error (exit 2).
+su - postgres -c 'pg_isready -q' 2>/dev/null || { echo 'postgres cluster never became ready:'; pg_lsclusters 2>/dev/null; exit 1; }
+su - postgres -c 'psql -v ON_ERROR_STOP=1' <<SQL
 DROP DATABASE IF EXISTS %[1]s;
 DO $do$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='%[2]s') THEN CREATE ROLE %[2]s LOGIN PASSWORD '%[3]s'; END IF; END $do$;
 CREATE DATABASE %[1]s OWNER %[2]s;

@@ -353,8 +353,20 @@ func s3qlSetup(ctx context.Context, env BackendEnv) error {
 	if err := os.MkdirAll(s3qlCache, 0o755); err != nil {
 		return err
 	}
-	// mkfs is a no-op if the filesystem already exists (--force off).
-	_ = exec.Sh(ctx, "mkfs.s3ql", "--authfile", "/etc/bench-s3ql-authinfo2", "--plain", url)
+	// mkfs.s3ql refuses to overwrite an existing filesystem, and SCW's eventual
+	// LIST-after-DELETE can still surface a prior run's fs to mkfs even after
+	// cleanS3Prefix (the same object-store quirk zerofsSetup notes). Force-clear
+	// first — best-effort, since a truly empty prefix has nothing to clear. Global
+	// options (--authfile) must precede the `clear` action, and its "yes" prompt is
+	// answered on stdin. (When SCW rate-limits the clear's object walk this can
+	// still fail; s3ql then just produces no cells and the rest of the matrix runs.)
+	_ = exec.Sh(ctx, "sh", "-c", fmt.Sprintf("printf 'yes\\n' | s3qladm --authfile /etc/bench-s3ql-authinfo2 clear %s 2>/dev/null; true", url))
+	// Fresh prefix, so mkfs creates the filesystem. Surface its error instead of
+	// swallowing it — a silent mkfs failure otherwise resurfaces as an opaque
+	// `mount.s3ql` exit 31 ("not an s3ql filesystem") that hides the real cause.
+	if err := exec.Sh(ctx, "mkfs.s3ql", "--authfile", "/etc/bench-s3ql-authinfo2", "--plain", url); err != nil {
+		return fmt.Errorf("mkfs.s3ql: %w", err)
+	}
 	return s3qlMountFUSE(ctx)
 }
 
