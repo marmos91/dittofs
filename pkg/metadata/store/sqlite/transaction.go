@@ -289,12 +289,14 @@ func (tx *sqliteTransaction) PutFile(ctx context.Context, file *metadata.File) e
 		objectIDArg = file.ObjectID[:]
 	}
 
-	// deleted_at is a BIGINT unix-nanoseconds column (#190), nullable: NULL marks
-	// a live node, a value records the recycle instant losslessly (like the other
-	// file timestamps). Pass *int64 so a nil DeletedAt writes SQL NULL.
+	// deleted_at is a BIGINT Windows-FILETIME column (#190), nullable: NULL marks
+	// a live node, a value records the recycle instant losslessly (same encoding
+	// as the other file timestamps — must use timeToNanos, not UnixNano, so it
+	// decodes back correctly via nanosToTime). Pass *int64 so a nil DeletedAt
+	// writes SQL NULL.
 	var deletedAtArg *int64
 	if file.DeletedAt != nil {
-		n := file.DeletedAt.UnixNano()
+		n := timeToNanos(*file.DeletedAt)
 		deletedAtArg = &n
 	}
 
