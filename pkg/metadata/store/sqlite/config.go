@@ -61,7 +61,13 @@ func (c *SQLiteMetadataStoreConfig) Validate() error {
 // per connection. busy_timeout (milliseconds) lets writers queue behind the
 // single-writer lock instead of failing immediately. journal_mode=WAL improves
 // read/write concurrency for the embedded single-binary workload this store
-// targets. The pragmas are passed via the `_pragma` query parameters that
+// targets. synchronous=NORMAL is the documented WAL pairing: it drops the
+// per-commit fsync to a checkpoint-only fsync, which is what makes a large
+// write-heavy flush (e.g. a multi-GiB buffered write draining thousands of
+// block-record commits) sustainable instead of fsync-bound — modernc.org/sqlite
+// otherwise defaults to FULL. It stays durable across app crashes; only an OS
+// crash between checkpoints can lose the last commits, acceptable for this store.
+// The pragmas are passed via the `_pragma` query parameters that
 // modernc.org/sqlite recognises, so they apply to every pooled connection.
 func (c *SQLiteMetadataStoreConfig) DSN() string {
 	// An in-memory database must be shared across the connection pool, otherwise
@@ -82,7 +88,7 @@ func (c *SQLiteMetadataStoreConfig) DSN() string {
 		busyMS = 5000
 	}
 	return fmt.Sprintf(
-		"%s%s_pragma=foreign_keys(1)&_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)",
+		"%s%s_pragma=foreign_keys(1)&_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)",
 		path, sep, busyMS,
 	)
 }
