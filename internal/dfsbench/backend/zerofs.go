@@ -94,7 +94,13 @@ func zerofsSetup(ctx context.Context, env BackendEnv) error {
 	// `rpc.nfsd 0` is required to actually tear them down; then wait until :2049 is
 	// genuinely free before zerofs tries to claim it. Stop (not disable) the units
 	// so a following re-export backend's zerofsTeardown can start knfsd again.
-	_ = exec.Sh(ctx, "sh", "-c", "pkill -9 -f 'zerofs run' 2>/dev/null; systemctl stop nfs-server nfs-kernel-server nfs-mountd 2>/dev/null; exportfs -ua 2>/dev/null; for i in $(seq 1 20); do rpc.nfsd 0 2>/dev/null; ss -ltn 2>/dev/null | grep -q ':2049 ' || break; sleep 1; done; true")
+	//
+	// Match the leftover zerofs by exact process name (-x zerofs), never
+	// `-f 'zerofs run'`: this cleanup runs in an `sh -c` whose own argv contains
+	// "zerofs run", so `pkill -f 'zerofs run'` would SIGKILL this very shell before
+	// the rpc.nfsd/wait loop runs, reintroducing the :2049 race (same self-kill
+	// pitfall documented for `-x dfs` in dittofs.go).
+	_ = exec.Sh(ctx, "sh", "-c", "pkill -9 -x zerofs 2>/dev/null; systemctl stop nfs-server nfs-kernel-server nfs-mountd 2>/dev/null; exportfs -ua 2>/dev/null; for i in $(seq 1 20); do rpc.nfsd 0 2>/dev/null; ss -ltn 2>/dev/null | grep -q ':2049 ' || break; sleep 1; done; true")
 	return zerofsStart(ctx)
 }
 
@@ -200,9 +206,12 @@ func zerofsStart(ctx context.Context) error {
 // sends the signal, so without the wait a following cache wipe or restart races
 // a process still holding the LSM cache dir open.
 func zerofsStop(ctx context.Context) error {
-	_ = exec.Sh(ctx, "sh", "-c", "pkill -f 'zerofs run' || true")
+	// Match by exact name (-x zerofs), not `-f 'zerofs run'`: the wait shell's own
+	// argv contains "zerofs run", so `pgrep -f` self-matches and the loop would
+	// never confirm exit (hangs the full window). Same self-kill pitfall as -x dfs.
+	_ = exec.Sh(ctx, "sh", "-c", "pkill -x zerofs || true")
 	for i := 0; i < 50; i++ {
-		if exec.Sh(ctx, "sh", "-c", "! pgrep -f 'zerofs run' >/dev/null 2>&1") == nil {
+		if exec.Sh(ctx, "sh", "-c", "! pgrep -x zerofs >/dev/null 2>&1") == nil {
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
