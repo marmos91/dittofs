@@ -90,7 +90,11 @@ func zerofsSetup(ctx context.Context, env BackendEnv) error {
 	// 2049 (resilience against a dirty VM). Stop both unit names — the re-export
 	// backends restart nfs-kernel-server, and nfs-server is only an alias on some
 	// distros — so we reliably free the port the same server later reclaims.
-	_ = exec.Sh(ctx, "sh", "-c", "pkill -9 -f 'zerofs run' 2>/dev/null; systemctl stop nfs-server nfs-kernel-server nfs-mountd 2>/dev/null; exportfs -ua 2>/dev/null; true")
+	// `systemctl stop` alone leaves the in-kernel [nfsd] threads bound to :2049, so
+	// `rpc.nfsd 0` is required to actually tear them down; then wait until :2049 is
+	// genuinely free before zerofs tries to claim it. Stop (not disable) the units
+	// so a following re-export backend's zerofsTeardown can start knfsd again.
+	_ = exec.Sh(ctx, "sh", "-c", "pkill -9 -f 'zerofs run' 2>/dev/null; systemctl stop nfs-server nfs-kernel-server nfs-mountd 2>/dev/null; exportfs -ua 2>/dev/null; for i in $(seq 1 20); do rpc.nfsd 0 2>/dev/null; ss -ltn 2>/dev/null | grep -q ':2049 ' || break; sleep 1; done; true")
 	return zerofsStart(ctx)
 }
 
@@ -172,14 +176,22 @@ func zerofsStart(ctx context.Context) error {
 		"zerofs run -c "+zerofsConf+" >"+zerofsLog+" 2>&1 &"); err != nil {
 		return err
 	}
-	// Wait for zerofs to actually be SERVING, not just listening. It binds the TCP
-	// socket immediately but only starts answering NFS ~35s later, after loading
-	// the encryption key and warming the LSM from S3 — a plain port probe returns
-	// too early and the first mount races a not-yet-serving server (mount.nfs:
-	// "Protocol family not supported").
-	if err := exec.Sh(ctx, "sh", "-c",
-		"for i in $(seq 1 120); do grep -qa 'Starting NFS server' "+zerofsLog+" 2>/dev/null && exit 0; sleep 1; done; exit 1"); err != nil {
-		return fmt.Errorf("zerofs NFS server did not begin serving (see %s): %w", zerofsLog, err)
+	// Readiness = zerofs is alive AND actually OWNS :<port>, not just that it logged
+	// a serving line. Two failure modes the old log-only grep missed: (1) zerofs
+	// crashes on startup (bad config / S3 auth) yet the mount loop still retries 90s
+	// against nothing; (2) leftover knfsd still holds :<port>, so zerofs never binds,
+	// the mount hits knfsd — which has no export for "/" — and fails with exit 32.
+	// `ss` attributes the listener to a pid, so we can tell zerofs from knfsd. The
+	// mount retries (zerofsMount) still cover the ~35s serve-warmup after the bind.
+	// Echo the log tail + listener owner on failure — exec.Sh folds a command's
+	// combined output into the returned error, so it lands in run.log.
+	probe := "for i in $(seq 1 120); do " +
+		"pgrep -x zerofs >/dev/null 2>&1 || { echo 'zerofs exited during startup'; tail -30 " + zerofsLog + " 2>/dev/null; exit 1; }; " +
+		"ss -ltnp 2>/dev/null | grep ':" + zerofsNFSPort + "' | grep -q zerofs && grep -qa 'Starting NFS server' " + zerofsLog + " 2>/dev/null && exit 0; " +
+		"sleep 1; done; " +
+		"echo 'zerofs did not bind :" + zerofsNFSPort + " within window — knfsd may still hold it:'; ss -ltnp 2>/dev/null | grep ':" + zerofsNFSPort + "'; tail -30 " + zerofsLog + " 2>/dev/null; exit 1"
+	if err := exec.Sh(ctx, "sh", "-c", probe); err != nil {
+		return fmt.Errorf("zerofs not serving on :%s (see %s): %w", zerofsNFSPort, zerofsLog, err)
 	}
 	return nil
 }

@@ -10,4 +10,8 @@ runtime=${BENCH_RUNTIME:-60}
 time_based
 size=${BENCH_SIZE:-1g}
 directory=${BENCH_DIR:-/mnt/bench}
+# Read the file layout.fio pre-wrote (shared filename_format), so random reads hit
+# real, durably-uploaded data — and never ftruncate-extend a fresh file, which EIOs
+# on writeback FUSE re-exports (rclone --vfs-cache-mode writes, juicefs --writeback).
+filename_format=bench.$jobnum
 group_reporting
