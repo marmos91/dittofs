@@ -207,7 +207,14 @@ func runPass(ctx context.Context, p backend.Plan, pass string, wls, sizes []stri
 			before := sysstat.Now()
 			m, err := fio.RunFio(ctx, w, mnt, withSize(opts, s))
 			if err != nil {
-				return err
+				// Isolate a single cell's failure: an inherent competitor limit (e.g.
+				// s3fs random-read over a 1 GiB object, or a metadata EIO) must not
+				// abort this backend's remaining cells. Log it and keep going so the
+				// run still records every cell it CAN and the table shows the real
+				// ceiling, not an empty column. Setup/mount failures still skip the
+				// whole backend upstream — there's nothing to measure without a mount.
+				_, _ = fmt.Fprintf(exec.CmdOut, "FAIL cell %s: %v\n", res.Slug(), err)
+				continue
 			}
 			r := before.RatesTo(sysstat.Now())
 			m.CtxSwPerSec, m.CPUPct = r.CtxSwPerSec, r.CPUPct
