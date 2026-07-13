@@ -288,7 +288,10 @@ func dittofsDrainUntilSynced(ctx context.Context) error {
 	const maxRounds = 60
 	stable := 0
 	for i := 0; i < maxRounds; i++ {
-		if err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads"); err != nil {
+		// Bound each drain explicitly (issue #1668): a cold-evict drain of a large
+		// working set can exceed the client's 6m default, and the failure surfaces
+		// as a bare "context deadline exceeded" that aborts the cell.
+		if err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads", "--timeout", "15m"); err != nil {
 			return fmt.Errorf("dfsctl system drain-uploads: %w", err)
 		}
 		st, err := dittofsBlockStats(ctx)
