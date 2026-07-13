@@ -304,10 +304,10 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        pgNanosToTime(atime),
-			Mtime:        pgNanosToTime(mtime),
-			Ctime:        pgNanosToTime(ctime),
-			CreationTime: pgNanosToTime(creationTime),
+			Atime:        pgFiletimeToTime(atime),
+			Mtime:        pgFiletimeToTime(mtime),
+			Ctime:        pgFiletimeToTime(ctime),
+			CreationTime: pgFiletimeToTime(creationTime),
 			Hidden:       hidden,
 		}
 		if len(objectIDRaw) > 0 {
@@ -322,9 +322,9 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 
 		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
 		// enumeration via listing reflects recycle state without a re-read.
-		// deleted_at is BIGINT unix-nanoseconds; decode via pgNanosToTime.
+		// deleted_at is BIGINT Windows FILETIME; decode via pgFiletimeToTime.
 		if deletedAt.Valid {
-			t := pgNanosToTime(deletedAt.Int64)
+			t := pgFiletimeToTime(deletedAt.Int64)
 			attr.DeletedAt = &t
 		}
 		attr.OriginalPath = originalPath

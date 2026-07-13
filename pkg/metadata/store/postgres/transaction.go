@@ -361,12 +361,12 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		objectIDArg = file.ObjectID[:]
 	}
 
-	// deleted_at is a BIGINT unix-nanoseconds column (#190), nullable: NULL marks
+	// deleted_at is a BIGINT Windows FILETIME column (#190), nullable: NULL marks
 	// a live node, a value records the recycle instant losslessly (like the other
 	// file timestamps). Pass *int64 so a nil DeletedAt writes SQL NULL.
 	var deletedAtArg *int64
 	if file.DeletedAt != nil {
-		n := file.DeletedAt.UnixNano()
+		n := timeToPGFiletime(*file.DeletedAt)
 		deletedAtArg = &n
 	}
 
@@ -380,8 +380,8 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	updated := true
 	scanErr := tx.tx.QueryRow(ctx, updateQuery,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
-		timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
-		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
+		timeToPGFiletime(file.Atime), timeToPGFiletime(file.Mtime),
+		timeToPGFiletime(file.Ctime), timeToPGFiletime(file.CreationTime),
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden, aclJSON, easJSON, objectIDArg,
 		deletedAtArg, file.OriginalPath, file.DeletedBy,
@@ -440,8 +440,8 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		if _, err := tx.tx.Exec(ctx, insertQuery,
 			file.ID, file.ShareName,
 			file.Type, file.Mode, file.UID, file.GID, file.Size,
-			timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
-			timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
+			timeToPGFiletime(file.Atime), timeToPGFiletime(file.Mtime),
+			timeToPGFiletime(file.Ctime), timeToPGFiletime(file.CreationTime),
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 			file.Hidden, aclJSON, easJSON, objectIDArg,
 			deletedAtArg, file.OriginalPath, file.DeletedBy,
@@ -712,10 +712,10 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        pgNanosToTime(atime),
-			Mtime:        pgNanosToTime(mtime),
-			Ctime:        pgNanosToTime(ctime),
-			CreationTime: pgNanosToTime(creationTime),
+			Atime:        pgFiletimeToTime(atime),
+			Mtime:        pgFiletimeToTime(mtime),
+			Ctime:        pgFiletimeToTime(ctime),
+			CreationTime: pgFiletimeToTime(creationTime),
 			Hidden:       hidden,
 		}
 		if len(objectIDRaw) > 0 {
@@ -730,10 +730,10 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 
 		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
 		// enumeration via listing reflects recycle state without a re-read,
-		// matching the pool-query path. deleted_at is BIGINT unix-nanoseconds;
-		// decode via pgNanosToTime.
+		// matching the pool-query path. deleted_at is BIGINT Windows FILETIME;
+		// decode via pgFiletimeToTime.
 		if deletedAt.Valid {
-			t := pgNanosToTime(deletedAt.Int64)
+			t := pgFiletimeToTime(deletedAt.Int64)
 			attr.DeletedAt = &t
 		}
 		attr.OriginalPath = originalPath
@@ -1186,10 +1186,10 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 				UID:          uint32(existingUID),
 				GID:          uint32(existingGID),
 				Size:         uint64(size),
-				Atime:        pgNanosToTime(atime),
-				Mtime:        pgNanosToTime(mtime),
-				Ctime:        pgNanosToTime(ctime),
-				CreationTime: pgNanosToTime(creationTime),
+				Atime:        pgFiletimeToTime(atime),
+				Mtime:        pgFiletimeToTime(mtime),
+				Ctime:        pgFiletimeToTime(ctime),
+				CreationTime: pgFiletimeToTime(creationTime),
 				Hidden:       hidden,
 			},
 		}, nil
@@ -1226,10 +1226,10 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		int32(uid),                        // uid
 		int32(gid),                        // gid
 		int64(0),                          // size
-		timeToPGNanos(now),                // atime
-		timeToPGNanos(now),                // mtime
-		timeToPGNanos(now),                // ctime
-		timeToPGNanos(now),                // creation_time
+		timeToPGFiletime(now),             // atime
+		timeToPGFiletime(now),             // mtime
+		timeToPGFiletime(now),             // ctime
+		timeToPGFiletime(now),             // creation_time
 		nil,                               // content_id (NULL for directories)
 		nil,                               // link_target (NULL)
 		nil,                               // device_major (NULL)

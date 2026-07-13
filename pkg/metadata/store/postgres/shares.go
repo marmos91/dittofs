@@ -276,7 +276,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 				int32(existingRoot.Mode),
 				int32(existingRoot.UID),
 				int32(existingRoot.GID),
-				timeToPGNanos(now),
+				timeToPGFiletime(now),
 				existingRoot.ID,
 			)
 			if err != nil {
@@ -332,10 +332,10 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		int32(uid),                        // uid
 		int32(gid),                        // gid
 		int64(0),                          // size
-		timeToPGNanos(now),                // atime
-		timeToPGNanos(now),                // mtime
-		timeToPGNanos(now),                // ctime
-		timeToPGNanos(now),                // creation_time
+		timeToPGFiletime(now),             // atime
+		timeToPGFiletime(now),             // mtime
+		timeToPGFiletime(now),             // ctime
+		timeToPGFiletime(now),             // creation_time
 		nil,                               // content_id (NULL for directories)
 		nil,                               // link_target (NULL)
 		nil,                               // device_major (NULL)
@@ -450,10 +450,10 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        pgNanosToTime(atime),
-			Mtime:        pgNanosToTime(mtime),
-			Ctime:        pgNanosToTime(ctime),
-			CreationTime: pgNanosToTime(creationTime),
+			Atime:        pgFiletimeToTime(atime),
+			Mtime:        pgFiletimeToTime(mtime),
+			Ctime:        pgFiletimeToTime(ctime),
+			CreationTime: pgFiletimeToTime(creationTime),
 			Hidden:       hidden,
 		},
 	}, nil

@@ -303,10 +303,10 @@ func (s *SQLiteMetadataStore) ListChildren(ctx context.Context, dirHandle metada
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        nanosToTime(atime),
-			Mtime:        nanosToTime(mtime),
-			Ctime:        nanosToTime(ctime),
-			CreationTime: nanosToTime(creationTime),
+			Atime:        filetimeToTime(atime),
+			Mtime:        filetimeToTime(mtime),
+			Ctime:        filetimeToTime(ctime),
+			CreationTime: filetimeToTime(creationTime),
 			Hidden:       hidden,
 		}
 		if len(objectIDRaw) > 0 {
@@ -321,9 +321,9 @@ func (s *SQLiteMetadataStore) ListChildren(ctx context.Context, dirHandle metada
 
 		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
 		// enumeration via listing reflects recycle state without a re-read.
-		// deleted_at is BIGINT unix-nanoseconds; decode via nanosToTime.
+		// deleted_at is BIGINT Windows FILETIME; decode via filetimeToTime.
 		if deletedAt.Valid {
-			t := nanosToTime(deletedAt.Int64)
+			t := filetimeToTime(deletedAt.Int64)
 			attr.DeletedAt = &t
 		}
 		attr.OriginalPath = originalPath

@@ -122,6 +122,11 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 	var appInstanceId [16]byte
 	copy(appInstanceId[:], []byte("appid-"+id))
 
+	// ClientGUID is the SMB2 NEGOTIATE client GUID. It must round-trip so
+	// lease-backed durable reconnect can reject a different client (#1663).
+	var clientGUID [16]byte
+	copy(clientGUID[:], []byte("cliguid-"+id))
+
 	var leaseKey [16]byte
 	copy(leaseKey[:], []byte("lease-"+id))
 
@@ -152,6 +157,7 @@ func makeDurableHandle(id string, shareName string) *lock.PersistedDurableHandle
 		LeaseEpoch:         0x2a,
 		CreateGuid:         createGuid,
 		AppInstanceId:      appInstanceId,
+		ClientGUID:         clientGUID,
 		Username:           "user-" + id,
 		SessionKeyHash:     sessionKeyHash,
 		IsV2:               true,
@@ -220,6 +226,9 @@ func assertDurableHandleEqual(t *testing.T, expected, actual *lock.PersistedDura
 	}
 	if expected.AppInstanceId != actual.AppInstanceId {
 		t.Errorf("AppInstanceId: got %x, want %x", actual.AppInstanceId, expected.AppInstanceId)
+	}
+	if expected.ClientGUID != actual.ClientGUID {
+		t.Errorf("ClientGUID: got %x, want %x", actual.ClientGUID, expected.ClientGUID)
 	}
 	if expected.Username != actual.Username {
 		t.Errorf("Username: got %q, want %q", actual.Username, expected.Username)

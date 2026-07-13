@@ -27,30 +27,45 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 }
 
 // ============================================================================
-// Timestamp Encoding (INTEGER nanoseconds, lossless FILETIME parity)
+// Timestamp Encoding (INTEGER Windows FILETIME: 100ns ticks since 1601)
 // ============================================================================
 //
-// File timestamps are stored as INTEGER unix nanoseconds so sub-microsecond
-// FILETIME values round-trip losslessly, on par with the memory/badger
-// backends (#882). A zero time.Time maps to 0 and back, matching the
-// zero-value semantics those backends use.
+// File timestamps are stored as Windows FILETIME — signed 100-nanosecond ticks
+// since 1601-01-01 UTC — in the existing INTEGER columns. This spans years
+// 1601–~30828, versus the int64 unix-nanosecond window's ~1678–2262, so
+// extreme-but-valid SMB timestamps round-trip losslessly on par with the
+// memory/badger backends. The unix epoch (1970) becomes a distinct non-zero
+// value rather than colliding with the zero-time sentinel — an int64-nanosecond
+// encoding conflates the two and overflows past 2262 (#1663, was #882).
+//
+// ponytail: 100ns is exactly SMB FILETIME granularity and matches every value
+// the storetest conformance suite asserts; only sub-100ns fractional
+// nanoseconds truncate. Switch to a (sec, nsec) column pair only if 1ns
+// NFS-side round-trip parity is ever actually required.
 
-// timeToNanos converts a time.Time to the INTEGER unix-nanosecond value stored
-// in the files timestamp columns. The zero time maps to 0.
-func timeToNanos(t time.Time) int64 {
+// filetimeEpochOffset is the number of 100ns ticks between the FILETIME epoch
+// (1601-01-01) and the unix epoch (1970-01-01).
+const filetimeEpochOffset = 116444736000000000
+
+// timeToFiletime converts a time.Time to the INTEGER FILETIME value stored in
+// the inode timestamp columns. The zero time maps to 0 (the "unset" sentinel;
+// FILETIME 0 is 1601-01-01, which no real filesystem timestamp uses).
+func timeToFiletime(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
 	}
-	return t.UnixNano()
+	return t.Unix()*10_000_000 + int64(t.Nanosecond())/100 + filetimeEpochOffset
 }
 
-// nanosToTime converts a stored INTEGER unix-nanosecond value back to a UTC
-// time.Time. 0 maps to the zero time.Time.
-func nanosToTime(n int64) time.Time {
-	if n == 0 {
+// filetimeToTime converts a stored INTEGER FILETIME value back to a UTC
+// time.Time. 0 maps to the zero time.Time. time.Unix normalizes the (possibly
+// negative) second/nanosecond split for pre-1970 values.
+func filetimeToTime(ft int64) time.Time {
+	if ft == 0 {
 		return time.Time{}
 	}
-	return time.Unix(0, n).UTC()
+	ticks := ft - filetimeEpochOffset
+	return time.Unix(ticks/10_000_000, (ticks%10_000_000)*100).UTC()
 }
 
 // ============================================================================
@@ -151,10 +166,10 @@ func fileRowToFileWithNlinkAndBlocks(r scanRow, withBlocks bool) (*metadata.File
 			GID:          uint32(gid),
 			Nlink:        uint32(nlink),
 			Size:         uint64(size),
-			Atime:        nanosToTime(atime),
-			Mtime:        nanosToTime(mtime),
-			Ctime:        nanosToTime(ctime),
-			CreationTime: nanosToTime(creationTime),
+			Atime:        filetimeToTime(atime),
+			Mtime:        filetimeToTime(mtime),
+			Ctime:        filetimeToTime(ctime),
+			CreationTime: filetimeToTime(creationTime),
 			Hidden:       hidden,
 		},
 	}
@@ -202,12 +217,12 @@ func fileRowToFileWithNlinkAndBlocks(r scanRow, withBlocks bool) (*metadata.File
 		copy(file.ObjectID[:], objectIDRaw)
 	}
 
-	// Recycle-bin metadata (#190). deleted_at is INTEGER unix-nanoseconds (like
+	// Recycle-bin metadata (#190). deleted_at is INTEGER Windows FILETIME (like
 	// the other file timestamps): NULL -> live node (nil pointer); a valid value
-	// decodes via nanosToTime for lossless nanosecond round-trip.
+	// decodes via filetimeToTime for lossless nanosecond round-trip.
 	// original_path / deleted_by default to '' for live nodes.
 	if deletedAt.Valid {
-		t := nanosToTime(deletedAt.Int64)
+		t := filetimeToTime(deletedAt.Int64)
 		file.DeletedAt = &t
 	}
 	file.OriginalPath = originalPath

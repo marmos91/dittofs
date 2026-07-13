@@ -83,6 +83,38 @@ func testTimestampPrecision(t *testing.T, factory StoreFactory) {
 	check("Atime", atime, got.Atime)
 	check("Ctime", ctime, got.Ctime)
 	check("CreationTime", creation, got.CreationTime)
+
+	// Edge-of-range values a naive int64-unix-nanosecond encoding corrupts
+	// (#1663). SMB FILETIME spans well beyond the int64-nanosecond window
+	// (~1678–2262), and the unix epoch is a valid, distinct instant — not the
+	// "unset" zero time. memory/badger (JSON time.Time) round-trip these; a SQL
+	// backend storing UnixNano() truncates past 2262 and conflates epoch with a
+	// zero sentinel. Exercised by smbtorture smb2.timestamps.time_t_{0,
+	// 10000000000, 15032385535}.
+	edges := []struct {
+		name string
+		t    time.Time
+	}{
+		{"epoch", time.Unix(0, 0).UTC()},              // time_t_0
+		{"year2286", time.Unix(10000000000, 0).UTC()}, // time_t_10000000000, past int64-nanos overflow
+		{"year2446", time.Unix(15032385535, 0).UTC()}, // time_t_15032385535
+	}
+	for _, e := range edges {
+		file.Mtime = e.t
+		file.Atime = e.t
+		file.Ctime = e.t
+		file.CreationTime = e.t
+		if err := store.PutFile(ctx, file); err != nil {
+			t.Fatalf("PutFile(%s) failed: %v", e.name, err)
+		}
+		got, err := store.GetFile(ctx, handle)
+		if err != nil {
+			t.Fatalf("GetFile(%s) failed: %v", e.name, err)
+		}
+		check(e.name+".Mtime", e.t, got.Mtime)
+		check(e.name+".Ctime", e.t, got.Ctime)
+		check(e.name+".CreationTime", e.t, got.CreationTime)
+	}
 }
 
 // testHighModeBits verifies a file mode carrying high bits above the POSIX

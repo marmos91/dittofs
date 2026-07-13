@@ -28,30 +28,46 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 }
 
 // ============================================================================
-// Timestamp Encoding (BIGINT nanoseconds, lossless FILETIME parity)
+// Timestamp Encoding (BIGINT Windows FILETIME: 100ns ticks since 1601)
 // ============================================================================
 //
-// File timestamps are stored as BIGINT unix nanoseconds rather than TIMESTAMPTZ
-// (microsecond) so sub-microsecond FILETIME values round-trip losslessly, on
-// par with the memory/badger backends (#882). A zero time.Time maps to 0 and
-// back, matching the zero-value semantics those backends use.
+// File timestamps are stored as Windows FILETIME — signed 100-nanosecond ticks
+// since 1601-01-01 UTC — in BIGINT columns rather than TIMESTAMPTZ (microsecond)
+// or unix nanoseconds. This spans years 1601–~30828, versus the int64
+// unix-nanosecond window's ~1678–2262, so extreme-but-valid SMB timestamps
+// round-trip losslessly on par with the memory/badger backends. The unix epoch
+// (1970) becomes a distinct non-zero value rather than colliding with the
+// zero-time sentinel — an int64-nanosecond encoding conflates the two and
+// overflows past 2262 (#1663, was #882).
+//
+// ponytail: 100ns is exactly SMB FILETIME granularity and matches every value
+// the storetest conformance suite asserts; only sub-100ns fractional
+// nanoseconds truncate. Switch to a (sec, nsec) column pair only if 1ns
+// NFS-side round-trip parity is ever actually required.
 
-// timeToPGNanos converts a time.Time to the BIGINT unix-nanosecond value stored
-// in the files timestamp columns. The zero time maps to 0.
-func timeToPGNanos(t time.Time) int64 {
+// filetimeEpochOffset is the number of 100ns ticks between the FILETIME epoch
+// (1601-01-01) and the unix epoch (1970-01-01).
+const filetimeEpochOffset = 116444736000000000
+
+// timeToPGFiletime converts a time.Time to the BIGINT FILETIME value stored in
+// the inode timestamp columns. The zero time maps to 0 (the "unset" sentinel;
+// FILETIME 0 is 1601-01-01, which no real filesystem timestamp uses).
+func timeToPGFiletime(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
 	}
-	return t.UnixNano()
+	return t.Unix()*10_000_000 + int64(t.Nanosecond())/100 + filetimeEpochOffset
 }
 
-// pgNanosToTime converts a stored BIGINT unix-nanosecond value back to a UTC
-// time.Time. 0 maps to the zero time.Time.
-func pgNanosToTime(n int64) time.Time {
-	if n == 0 {
+// pgFiletimeToTime converts a stored BIGINT FILETIME value back to a UTC
+// time.Time. 0 maps to the zero time.Time. time.Unix normalizes the (possibly
+// negative) second/nanosecond split for pre-1970 values.
+func pgFiletimeToTime(ft int64) time.Time {
+	if ft == 0 {
 		return time.Time{}
 	}
-	return time.Unix(0, n).UTC()
+	ticks := ft - filetimeEpochOffset
+	return time.Unix(ticks/10_000_000, (ticks%10_000_000)*100).UTC()
 }
 
 // ============================================================================
@@ -152,10 +168,10 @@ func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.Fi
 			GID:          uint32(gid),
 			Nlink:        uint32(nlink),
 			Size:         uint64(size),
-			Atime:        pgNanosToTime(atime),
-			Mtime:        pgNanosToTime(mtime),
-			Ctime:        pgNanosToTime(ctime),
-			CreationTime: pgNanosToTime(creationTime),
+			Atime:        pgFiletimeToTime(atime),
+			Mtime:        pgFiletimeToTime(mtime),
+			Ctime:        pgFiletimeToTime(ctime),
+			CreationTime: pgFiletimeToTime(creationTime),
 			Hidden:       hidden,
 		},
 	}
@@ -203,12 +219,12 @@ func fileRowToFileWithNlinkAndBlocks(row pgx.Row, withBlocks bool) (*metadata.Fi
 		copy(file.ObjectID[:], objectIDRaw)
 	}
 
-	// Recycle-bin metadata (#190). deleted_at is BIGINT unix-nanoseconds (like
+	// Recycle-bin metadata (#190). deleted_at is BIGINT Windows FILETIME (like
 	// the other file timestamps): NULL -> live node (nil pointer); a valid value
-	// decodes via pgNanosToTime for lossless nanosecond round-trip.
+	// decodes via pgFiletimeToTime for lossless nanosecond round-trip.
 	// original_path / deleted_by default to '' for live nodes.
 	if deletedAt.Valid {
-		t := pgNanosToTime(deletedAt.Int64)
+		t := pgFiletimeToTime(deletedAt.Int64)
 		file.DeletedAt = &t
 	}
 	file.OriginalPath = originalPath
