@@ -45,8 +45,8 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 // 100ns-aligned) and matches memory/badger fidelity for FILETIME inputs.
 //
 // The timeToNanos/nanosToTime names are historical (the columns held unix
-// nanoseconds before this change, migrated in place by the ..._filetime_ts
-// migration); the stored unit is now FILETIME.
+// nanoseconds before this change, migrated in place by
+// 000005_file_timestamps_filetime); the stored unit is now FILETIME.
 
 // filetimeEpochDelta is the number of 100ns ticks between the FILETIME epoch
 // (1601-01-01) and the unix epoch (1970-01-01). ticksPerSecond is 100ns ticks

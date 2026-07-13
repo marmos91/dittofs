@@ -41,8 +41,8 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 // value, so it no longer collides with the 0 sentinel for an unset/zero
 // time.Time (fixes smb2.timestamps.time_t_0). Verbatim port of the SQLite
 // store's encoding. The timeToPGNanos/pgNanosToTime names are historical (the
-// columns held unix nanoseconds before this change, migrated in place by the
-// ..._filetime_ts migration); the stored unit is now FILETIME.
+// columns held unix nanoseconds before this change, migrated in place by
+// 000038_file_timestamps_filetime); the stored unit is now FILETIME.
 
 // filetimeEpochDelta is the number of 100ns ticks between the FILETIME epoch
 // (1601-01-01) and the unix epoch (1970-01-01). ticksPerSecond is 100ns ticks
