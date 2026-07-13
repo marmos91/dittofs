@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -23,6 +24,14 @@ func TestRollup_ChunkParams_SmallChunksReadBack(t *testing.T) {
 		RollupWorkers:   1,
 		StabilizationMS: 1,
 		RollupStore:     rs,
+		// Persist the rollup manifest into fbs so the post-rollup read resolves
+		// via the CAS-manifest path (fillFromCASManifest → blockStore). Without
+		// it ListFileChunks is empty and the read only succeeds while the bytes
+		// still sit in the un-trimmed append log — a race that flaked on CI once
+		// the rollup won (ReadPayloadAt "file chunk not found").
+		ObjectIDPersister: func(ctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
+			return fbs.persist(ctx, payloadID, blocks)
+		},
 		// 64 KiB floor → effective avg ~94 KiB (see chunker distribution test).
 		ChunkParams: chunker.Params{Min: 64 << 10, Avg: 256 << 10, Max: 512 << 10},
 	})

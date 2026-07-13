@@ -48,26 +48,20 @@ func TestRollup_OutOfOrderArrivals_AllRecordsRolledUp(t *testing.T) {
 		}
 	}
 
-	// All four intervals must eventually roll up. Wait for the log
-	// budget to decrement (the rollup pool fires the ConsumeUpTo +
-	// logBytesTotal.Add(-reclaimed) sequence once chunks are durable).
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		off, err := rs.GetRollupOffset(ctx, "file-ooo")
-		if err != nil {
-			t.Fatalf("GetRollupOffset: %v", err)
-		}
-		// Expected end-state rollup_offset: header + 4 * (frame + payload).
-		wantOff := uint64(logHeaderSize) + 4*(uint64(recordFrameOverhead)+uint64(payloadLen))
-		if off >= wantOff {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
+	// All four intervals must roll up. Drive it deterministically instead of
+	// polling the background pool against a wall-clock deadline — that deadline
+	// flaked on loaded CI runners (the pool goroutines starve and the 8s window
+	// lapses). DrainRollups forces every dirty interval through the identical
+	// rollupFileInner path the pool uses, so it still exercises the Direction-1
+	// out-of-order regression while removing the timing dependency.
+	if err := bc.DrainRollups(ctx); err != nil {
+		t.Fatalf("DrainRollups: %v", err)
 	}
 	off, err := rs.GetRollupOffset(ctx, "file-ooo")
 	if err != nil {
 		t.Fatalf("GetRollupOffset: %v", err)
 	}
+	// Expected end-state rollup_offset: header + 4 * (frame + payload).
 	wantOff := uint64(logHeaderSize) + 4*(uint64(recordFrameOverhead)+uint64(payloadLen))
 	if off < wantOff {
 		t.Fatalf("rollup_offset did not advance to EOF: got %d want >= %d (pre-fix bug shape)", off, wantOff)
@@ -83,16 +77,10 @@ func TestRollup_OutOfOrderArrivals_AllRecordsRolledUp(t *testing.T) {
 		t.Fatalf("expected at least 4 chunks in blocks/, found %d — Direction-1 bug-shape regression", n)
 	}
 
-	// logBytesTotal must have dropped to zero (every dirty interval
-	// consumed). A non-zero residue would indicate the log-budget
-	// release missed an interval.
-	deadline = time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if bc.logBytesTotal.Load() == 0 {
-			break
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
+	// logBytesTotal must have dropped to zero (every dirty interval consumed).
+	// DrainRollups drove every interval to completion above, so this is now a
+	// direct assertion — a non-zero residue means the log-budget release missed
+	// an interval.
 	if got := bc.logBytesTotal.Load(); got != 0 {
 		t.Fatalf("logBytesTotal nonzero after full out-of-order rollup: %d", got)
 	}

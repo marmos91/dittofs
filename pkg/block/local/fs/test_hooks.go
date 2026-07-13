@@ -154,8 +154,16 @@ func (bc *FSStore) HeaderRollupOffsetForTest(payloadID string) uint64 {
 // ForceRollupForTest runs one rollup pass synchronously on payloadID. The
 // conformance suite uses this when the ambient worker pool is disabled or
 // timing would otherwise be flaky.
+//
+// It passes force=true (the snapshot-drain path) so the pass bypasses the
+// stabilization-window gate. With force=false a just-written interval is "not
+// stable at this instant", so the pass was a silent no-op returning nil — and a
+// following read failed "file chunk not found". That raced the background pool
+// and surfaced intermittently on CI (notably Windows, whose coarse clock makes
+// two successive time.Now() calls equal). Callers that need multiple intervals
+// flushed already loop on this helper.
 func (bc *FSStore) ForceRollupForTest(ctx context.Context, payloadID string) error {
-	return bc.rollupFile(ctx, payloadID, false)
+	return bc.rollupFile(ctx, payloadID, true)
 }
 
 // ReopenForTest closes no store — it constructs a fresh FSStore on
