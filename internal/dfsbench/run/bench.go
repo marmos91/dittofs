@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/marmos91/dittofs/internal/dfsbench/backend"
 	"github.com/marmos91/dittofs/internal/dfsbench/config"
@@ -13,6 +16,13 @@ import (
 	"github.com/marmos91/dittofs/internal/dfsbench/fio"
 	"github.com/marmos91/dittofs/internal/dfsbench/report"
 )
+
+// isInteractive reports whether w is a terminal. On a non-terminal (pipe, file,
+// CI) we keep progress sparse and let fio suppress its per-percent ETA.
+func isInteractive(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
 
 func runBench(ctx context.Context, f *runFlags) error {
 	cfg, err := config.LoadConfig(f.config)
@@ -33,11 +43,13 @@ func runBench(ctx context.Context, f *runFlags) error {
 	if f.smoke && f.local {
 		return fmt.Errorf("--smoke and --local are mutually exclusive")
 	}
+	live := isInteractive(exec.CmdOut)
 	opts := fio.LoadOpts{
-		Threads: f.threads,
-		Runtime: f.runtime,
-		Engine:  f.engine,
-		FioBin:  f.fioBin,
+		Threads:      f.threads,
+		Runtime:      f.runtime,
+		Engine:       f.engine,
+		FioBin:       f.fioBin,
+		LiveProgress: live,
 	}
 
 	// Managed mode: the harness itself sets up/mounts each --systems backend
