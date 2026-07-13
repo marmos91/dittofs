@@ -56,9 +56,12 @@ jobs:
       RUN_URL: ${{ github.event.workflow_run.html_url }}
       RUN_ID: ${{ github.event.workflow_run.id }}
       REPO: ${{ github.repository }}
-      # Any non-success terminal conclusion (failure, timed_out, cancelled,
-      # action_required, …) means develop is not green and must alarm.
-      IS_RED: ${{ github.event.workflow_run.conclusion != 'success' }}
+      # A genuine break surfaces as failure/timed_out/action_required on the
+      # latest commit and must alarm. `cancelled` is excluded: the conformance
+      # workflows set cancel-in-progress, so every newer develop push cancels the
+      # in-flight run — benign, and the superseding run reports the true status.
+      # Alarming on it produced stuck false-positive develop-red issues (#1672).
+      IS_RED: ${{ github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'cancelled' }}
 
     steps:
       # The alarm builds its email body from a committed Python script, so the
@@ -180,7 +183,9 @@ jobs:
             CONC=$(gh run list --repo "$REPO" --workflow "$wf" --branch develop \
               --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"')
             echo "  $wf -> $CONC"
-            if [ "$CONC" != "success" ] && [ "$CONC" != "none" ]; then
+            # `cancelled` is benign (concurrency-superseded run) — treat it like
+            # "none" so a stray cancel doesn't wedge the issue open. See IS_RED.
+            if [ "$CONC" != "success" ] && [ "$CONC" != "none" ] && [ "$CONC" != "cancelled" ]; then
               ALL_GREEN=false
             fi
           done

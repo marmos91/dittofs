@@ -134,6 +134,14 @@ jobs:
       - name: Generate summary
         if: always()
         run: |
+          # No log means tests never ran (run cancelled, or build failed first).
+          # Bail cleanly — a bare `cat` on the missing file under `bash -e` would
+          # exit 1 and paint a red step on an otherwise-benign cancelled run.
+          if [ ! -f "$GITHUB_WORKSPACE/e2e.log" ]; then
+            echo "## E2E Test Results" >> $GITHUB_STEP_SUMMARY
+            echo ":grey_question: No test log — run was cancelled or failed before tests ran." >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
           echo "## E2E Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if grep -qE "^ok[[:space:]]" "$GITHUB_WORKSPACE/e2e.log" && ! grep -qE "^FAIL" "$GITHUB_WORKSPACE/e2e.log"; then
