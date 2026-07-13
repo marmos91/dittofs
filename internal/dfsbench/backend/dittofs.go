@@ -57,6 +57,11 @@ const (
 	dittofsPGPass = "dittofs"
 )
 
+// dittofsDrainTimeout bounds each `dfsctl system drain-uploads` in the cold-evict
+// loop above the client's 6m default, so a large cold-evict working set drains
+// instead of aborting the cell on a bare deadline (issue #1668).
+const dittofsDrainTimeout = "15m"
+
 // dittofsAddMetadataStore registers the subject's metadata store with the
 // engine selected by kind. badger/sqlite need no server; postgres is
 // provisioned on the (throwaway, single-tenant) bench VM first. All three pair
@@ -295,7 +300,10 @@ func dittofsDrainUntilSynced(ctx context.Context) error {
 	const maxRounds = 60
 	stable := 0
 	for i := 0; i < maxRounds; i++ {
-		if err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads"); err != nil {
+		// Bound each drain explicitly (issue #1668): a cold-evict drain of a large
+		// working set can exceed the client's 6m default, and the failure surfaces
+		// as a bare "context deadline exceeded" that aborts the cell.
+		if err := exec.Sh(ctx, "dfsctl", "system", "drain-uploads", "--timeout", dittofsDrainTimeout); err != nil {
 			return fmt.Errorf("dfsctl system drain-uploads: %w", err)
 		}
 		st, err := dittofsBlockStats(ctx)
