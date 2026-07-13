@@ -28,30 +28,48 @@ func encodeFileHandle(shareName string, idStr string) (metadata.FileHandle, erro
 }
 
 // ============================================================================
-// Timestamp Encoding (BIGINT nanoseconds, lossless FILETIME parity)
+// Timestamp Encoding (BIGINT Windows FILETIME, 100ns ticks since 1601)
 // ============================================================================
 //
-// File timestamps are stored as BIGINT unix nanoseconds rather than TIMESTAMPTZ
-// (microsecond) so sub-microsecond FILETIME values round-trip losslessly, on
-// par with the memory/badger backends (#882). A zero time.Time maps to 0 and
-// back, matching the zero-value semantics those backends use.
+// File timestamps are stored as BIGINT Windows FILETIME — 100-nanosecond ticks
+// since 1601-01-01 UTC — rather than TIMESTAMPTZ (microsecond) or unix
+// nanoseconds. This is the native SMB/NTFS unit and, unlike unix nanoseconds,
+// it fits the full FILETIME range in an int64 (year 1601 to ~30828) so extreme
+// values round-trip losslessly (smbtorture smb2.timestamps.time_t_10000000000 /
+// _15032385535 set years 2286/2446, which overflow time.Time.UnixNano —
+// undefined past ~2262). FILETIME also makes the unix epoch (1970) a nonzero
+// value, so it no longer collides with the 0 sentinel for an unset/zero
+// time.Time (fixes smb2.timestamps.time_t_0). Verbatim port of the SQLite
+// store's encoding. The timeToPGNanos/pgNanosToTime names are historical (the
+// columns held unix nanoseconds before this change, migrated in place by the
+// ..._filetime_ts migration); the stored unit is now FILETIME.
 
-// timeToPGNanos converts a time.Time to the BIGINT unix-nanosecond value stored
+// filetimeEpochDelta is the number of 100ns ticks between the FILETIME epoch
+// (1601-01-01) and the unix epoch (1970-01-01). ticksPerSecond is 100ns ticks
+// per second.
+const (
+	filetimeEpochDelta = int64(116444736000000000)
+	ticksPerSecond     = int64(10000000)
+)
+
+// timeToPGNanos converts a time.Time to the BIGINT Windows FILETIME value stored
 // in the files timestamp columns. The zero time maps to 0.
 func timeToPGNanos(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
 	}
-	return t.UnixNano()
+	return t.Unix()*ticksPerSecond + int64(t.Nanosecond())/100 + filetimeEpochDelta
 }
 
-// pgNanosToTime converts a stored BIGINT unix-nanosecond value back to a UTC
-// time.Time. 0 maps to the zero time.Time.
+// pgNanosToTime converts a stored BIGINT Windows FILETIME value back to a UTC
+// time.Time. 0 maps to the zero time.Time. time.Unix normalizes the negative
+// sub-second remainder for pre-1970 FILETIMEs.
 func pgNanosToTime(n int64) time.Time {
 	if n == 0 {
 		return time.Time{}
 	}
-	return time.Unix(0, n).UTC()
+	ticks := n - filetimeEpochDelta
+	return time.Unix(ticks/ticksPerSecond, (ticks%ticksPerSecond)*100).UTC()
 }
 
 // ============================================================================
