@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -47,6 +48,14 @@ func TestFSStore_Healthcheck_UnhealthyAfterClose(t *testing.T) {
 }
 
 func TestFSStore_Healthcheck_UnhealthyWhenBaseDirRemoved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The store now always opens a log-blob substrate, so an active
+		// .blob fd is held for the store's lifetime. Removing baseDir out
+		// from under an open store is POSIX unlink-while-open semantics;
+		// Windows locks the open fd and RemoveAll fails, so the scenario
+		// this test exercises cannot occur on Windows.
+		t.Skip("baseDir cannot be removed while the log-blob fd is open on Windows")
+	}
 	dir := t.TempDir()
 	bs, err := NewWithOptions(dir, 0, memmeta.NewMemoryMetadataStoreWithDefaults(), FSStoreOptions{})
 	if err != nil {

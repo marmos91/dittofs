@@ -610,7 +610,7 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 	// metadata backend (badger/sqlite/postgres/memory) that implements it.
 	lci, ok := fileChunkStore.(metadata.LocalChunkIndex)
 	if !ok {
-		return nil, fmt.Errorf("fs local store: metadata backend must implement metadata.LocalChunkIndex")
+		return nil, fmt.Errorf("fs local store: metadata backend %T must implement metadata.LocalChunkIndex", fileChunkStore)
 	}
 	bc.localChunkIndex = lci
 
