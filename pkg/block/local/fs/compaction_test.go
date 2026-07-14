@@ -67,10 +67,9 @@ func TestCompaction_BoundedLogSize(t *testing.T) {
 		RollupWorkers:            2,
 		StabilizationMS:          5,
 		RollupStore:              rs,
-		LocalChunkIndex:          rs,
 		CompactionThresholdBytes: 32 * 1024,
 	}
-	bc := newFSStoreForTest(t, opts)
+	bc := newFSStoreForTestWithFBS(t, rs, opts)
 	if err := bc.StartRollup(context.Background()); err != nil {
 		t.Fatalf("StartRollup: %v", err)
 	}
@@ -125,10 +124,9 @@ func TestCompaction_DisabledByNegativeThreshold(t *testing.T) {
 		RollupWorkers:            2,
 		StabilizationMS:          5,
 		RollupStore:              rs,
-		LocalChunkIndex:          rs,
 		CompactionThresholdBytes: -1,
 	}
-	bc := newFSStoreForTest(t, opts)
+	bc := newFSStoreForTestWithFBS(t, rs, opts)
 	if err := bc.StartRollup(context.Background()); err != nil {
 		t.Fatalf("StartRollup: %v", err)
 	}
@@ -169,10 +167,9 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 		RollupWorkers:            2,
 		StabilizationMS:          5,
 		RollupStore:              rs,
-		LocalChunkIndex:          rs,
 		CompactionThresholdBytes: 16 * 1024,
 	}
-	bc := newFSStoreForTest(t, opts)
+	bc := newFSStoreForTestWithFBS(t, rs, opts)
 	if err := bc.StartRollup(context.Background()); err != nil {
 		t.Fatalf("StartRollup: %v", err)
 	}
@@ -210,7 +207,7 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 		t.Fatalf("compaction did not trim log: size=%d cumulative writes=%d",
 			preReopenSize, phase1Bytes)
 	}
-	bc2, err := NewWithOptions(baseDir, 1<<30, nopFBS{}, opts)
+	bc2, err := NewWithOptions(baseDir, 1<<30, rs, opts)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -265,10 +262,9 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 		RollupWorkers:            2,
 		StabilizationMS:          5,
 		RollupStore:              rs,
-		LocalChunkIndex:          rs,
 		CompactionThresholdBytes: 8 * 1024,
 	}
-	bc := newFSStoreForTest(t, opts)
+	bc := newFSStoreForTestWithFBS(t, rs, opts)
 	if err := bc.StartRollup(context.Background()); err != nil {
 		t.Fatalf("StartRollup: %v", err)
 	}
@@ -345,12 +341,11 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 // cleanupCompactTemps sweep.
 func TestCompaction_StaleTempCleanedUpOnRecovery(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc := newFSStoreForTest(t, FSStoreOptions{
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 		MaxLogBytes:     1 << 20,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
 		RollupStore:     rs,
-		LocalChunkIndex: rs,
 	})
 	ctx := context.Background()
 
@@ -369,12 +364,11 @@ func TestCompaction_StaleTempCleanedUpOnRecovery(t *testing.T) {
 	}
 
 	// Reopen and run recovery.
-	bc2, err := NewWithOptions(baseDir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc2, err := NewWithOptions(baseDir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:     1 << 20,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
 		RollupStore:     rs,
-		LocalChunkIndex: rs,
 	})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)

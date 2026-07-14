@@ -184,31 +184,11 @@ func TestMigrateLegacyChunkFiles_IgnoresForeignFiles(t *testing.T) {
 	}
 }
 
-// TestMigrateLegacyChunkFiles_NoSubstrateErrors proves the guard: a store
-// without the log-blob substrate cannot migrate.
-func TestMigrateLegacyChunkFiles_NoSubstrateErrors(t *testing.T) {
-	dir := t.TempDir()
-	writeLegacyChunkFile(t, dir, []byte("stranded"))
-	bc, err := NewWithOptions(dir, 0, nil, FSStoreOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = bc.Close() })
-	if bc.HasLogBlobSubstrate() {
-		t.Fatal("fixture should have no substrate")
-	}
-	if _, err := bc.MigrateLegacyChunkFiles(context.Background()); err == nil {
-		t.Fatal("expected error migrating without substrate")
-	}
-}
-
 // newLogBlobStoreAt mirrors newLogBlobStore but over a caller-owned dir so
 // legacy files can be planted before the store opens.
 func newLogBlobStoreAt(t *testing.T, dir string) (*FSStore, context.Context) {
 	t.Helper()
-	bc, err := NewWithOptions(dir, 0, nil, FSStoreOptions{
-		LocalChunkIndex: memmeta.NewMemoryMetadataStoreWithDefaults(),
-	})
+	bc, err := NewWithOptions(dir, 0, memmeta.NewMemoryMetadataStoreWithDefaults(), FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}

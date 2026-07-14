@@ -33,9 +33,7 @@ func TestReadThrough_TornTail_RecoversFromRemote(t *testing.T) {
 	// agree on a single source of truth (as they do in production).
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
-		LocalChunkIndex: ms,
-	})
+	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}

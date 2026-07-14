@@ -58,17 +58,13 @@ func (nopFBS) EnumeratePayloads(_ context.Context, _ func(payloadID string) erro
 // store. Shared by /05/06/07/09 test files in the fs package.
 func newFSStoreForTest(t *testing.T, opts FSStoreOptions) *FSStore {
 	t.Helper()
-	// The log-blob substrate is required for all normal chunk I/O. Default-wire
-	// a memory metadata store as the LocalChunkIndex when the caller did not
-	// supply one, so helper-constructed stores exercise the logblob path.
-	if opts.LocalChunkIndex == nil {
-		opts.LocalChunkIndex = memmeta.NewMemoryMetadataStoreWithDefaults()
-	}
 	dir, err := os.MkdirTemp("", "fsstore-test-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
-	bc, err := NewWithOptions(dir, 1<<30, nopFBS{}, opts)
+	// The metadata backend is mandatory: it doubles as the LocalChunkIndex for
+	// the log-blob substrate. A memory store serves both facets.
+	bc, err := NewWithOptions(dir, 1<<30, memmeta.NewMemoryMetadataStoreWithDefaults(), opts)
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("NewWithOptions: %v", err)

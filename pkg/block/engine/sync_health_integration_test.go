@@ -111,7 +111,6 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 		StabilizationMS: 50,
 		RollupStore:     ms,
 		SyncedHashStore: ms,
-		LocalChunkIndex: ms,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)
@@ -361,8 +360,7 @@ func TestHealthCallbackInvocation(t *testing.T) {
 func TestHealthMonitorNilRemoteStore(t *testing.T) {
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := fs.NewWithOptions(tmpDir, 0, ms, fs.FSStoreOptions{
-		LocalChunkIndex: ms})
+	bc, err := fs.NewWithOptions(tmpDir, 0, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)
 	}

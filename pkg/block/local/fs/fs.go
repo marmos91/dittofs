@@ -1,15 +1,12 @@
 package fs
 
 import (
-	"container/list"
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	iofs "io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -112,7 +109,8 @@ var (
 	ErrDiskFull       = errors.New("local store: disk full after eviction")
 	ErrFileNotInStore = errors.New("file not in local store")
 
-	// errLRUEmpty is returned by lruEvictOne when there are no candidates left.
+	// errLRUEmpty is returned by blobEvictOne/compactBlobOne when there is no
+	// evictable (sealed, fully-synced) blob left to reclaim.
 	errLRUEmpty = errors.New("local store: LRU empty, no eviction candidates")
 )
 
@@ -492,32 +490,10 @@ type FSStore struct {
 	persisterMu       sync.RWMutex
 	objectIDPersister ObjectIDPersister
 
-	// ---: in-process LRU for CAS chunks. ---
-	//
-	// Eviction is driven entirely from on-disk presence under
-	// blocks/{hh}/{hh}/{hex}, indexed by ContentHash in lruIndex/lruList.
-	// Eviction = unlink the file directly; no FileChunkStore lookup happens
-	// on the write hot path.
-	//
-	// Population
-	// - StoreChunk(...) -> lruTouch on rename success.
-	// - ReadChunk(...) -> lruTouch on read success (re-promote).
-	//   - seedLRUFromDisk() -> alphabetical scan at New() so warm-started
-	//                          stores have a deterministic LRU position.
-	//
-	// Mutations (Touch / EvictOne) are serialized by lruMu. Disk unlinks
-	// happen under lruMu; concurrent ReadChunk that races an evict surfaces
-	// as ENOENT and falls through to the engine refetch path (T-11-B-08).
-	lruMu    sync.Mutex
-	lruIndex map[block.ContentHash]*list.Element // *lruEntry
-	lruList  *list.List                          // most-recent at front
-
 	// ---: chunk-complete hook. ---
 
-	// onChunkComplete fires once per successful chunkstore.StoreChunk
-	// (immediately after that path's lruTouch). The ReadChunk path also
-	// touches the LRU but does not fire the callback — only the rollup
-	// pool's StoreChunk completion is reported. Install via
+	// onChunkComplete fires once per successful chunkstore.StoreChunk.
+	// Install via
 	// FSStoreOptions at construction or post-hoc via SetOnChunkComplete;
 	// the engine's Cache materializes in BlockStore.Start, AFTER
 	// cfg.Local is constructed, so the setter path is the production
@@ -601,9 +577,6 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 	// post-construction via SetDurable from the controlplane config["durable"].
 	bc.durable.Store(true)
 
-	// in-process LRU for CAS chunks (see field comments).
-	bc.lruIndex = make(map[block.ContentHash]*list.Element)
-	bc.lruList = list.New()
 	bc.blobChunks = make(map[string][]block.ContentHash)
 	bc.blobEvictedIDs = make(map[string]struct{})
 
@@ -632,36 +605,36 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 	// on the next scan.
 	bc.rollupCh = make(chan string, bc.rollupWorkers*4)
 
-	// Seed the in-process LRU from any chunks already present on
-	// disk under blocks/{hh}/{hh}/{hex}. Cold-start order is alphabetical
-	// for determinism; subsequent reads/writes promote chunks to the front.
-	bc.seedLRUFromDisk()
+	// LocalChunkIndex is mandatory: chunk persistence routes exclusively to
+	// the log-blob substrate + index. Production and all fixtures wire a
+	// metadata backend (badger/sqlite/postgres/memory) that implements it.
+	lci, ok := fileChunkStore.(metadata.LocalChunkIndex)
+	if !ok {
+		return nil, fmt.Errorf("fs local store: metadata backend must implement metadata.LocalChunkIndex")
+	}
+	bc.localChunkIndex = lci
 
 	applyFSStoreOptions(bc, opts)
 
-	// When a LocalChunkIndex is wired, open the per-store log-blob substrate
-	// at <baseDir>/blobs/. Rolled-up chunks append here (located via the
-	// index) instead of per-chunk cas/<hash> files. Index-less fixtures skip
-	// this and stay on the legacy CAS writer.
-	if bc.localChunkIndex != nil {
-		mgr, err := logblob.Open(filepath.Join(baseDir, "blobs"), logblob.Options{})
-		if err != nil {
-			return nil, fmt.Errorf("local store: open log-blob substrate: %w", err)
-		}
-		bc.logBlob = mgr
-		// Seed the blob byte counter from the physical blob files so the
-		// disk-usage figure survives restarts (#1527). ListBlobs reports the
-		// active blob at its recovered tail and sealed blobs at file size.
-		infos, err := mgr.ListBlobs()
-		if err != nil {
-			return nil, fmt.Errorf("local store: seed log-blob disk usage: %w", err)
-		}
-		var blobBytes int64
-		for _, bi := range infos {
-			blobBytes += bi.Size
-		}
-		bc.logBlobDiskUsed.Store(blobBytes)
+	// Open the per-store log-blob substrate at <baseDir>/blobs/. Rolled-up
+	// chunks append here (located via the index).
+	mgr, err := logblob.Open(filepath.Join(baseDir, "blobs"), logblob.Options{})
+	if err != nil {
+		return nil, fmt.Errorf("local store: open log-blob substrate: %w", err)
 	}
+	bc.logBlob = mgr
+	// Seed the blob byte counter from the physical blob files so the
+	// disk-usage figure survives restarts (#1527). ListBlobs reports the
+	// active blob at its recovered tail and sealed blobs at file size.
+	infos, err := mgr.ListBlobs()
+	if err != nil {
+		return nil, fmt.Errorf("local store: seed log-blob disk usage: %w", err)
+	}
+	var blobBytes int64
+	for _, bi := range infos {
+		blobBytes += bi.Size
+	}
+	bc.logBlobDiskUsed.Store(blobBytes)
 
 	// Shared rollup concurrency budget, sized to the final worker count so
 	// the nudge path and the scanAllFiles fan-out share it (#1411). Floor of
@@ -715,7 +688,6 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 	}
 	bc.rollupStore = opts.RollupStore
 	bc.syncedHashStore = opts.SyncedHashStore
-	bc.localChunkIndex = opts.LocalChunkIndex
 	bc.objectIDPersister = opts.ObjectIDPersister
 	if opts.OrphanLogMinAgeSeconds > 0 {
 		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
@@ -821,210 +793,6 @@ func checkLegacyLayoutSentinel(baseDir string) error {
 	return fmt.Errorf("share %s: %w", baseDir, block.ErrLegacyLayoutDetected)
 }
 
-// lruEntry is a single LRU-tracked CAS chunk on disk.
-type lruEntry struct {
-	hash block.ContentHash
-	size int64
-	path string // absolute path under <baseDir>/blocks/<hh>/<hh>/<hex>
-}
-
-// lruTouch promotes (or inserts) a chunk to the most-recent end of the LRU.
-// Called from StoreChunk on rename success and from ReadChunk on cache hit.
-// Safe to call from concurrent goroutines.
-func (bc *FSStore) lruTouch(h block.ContentHash, size int64, path string) {
-	bc.lruMu.Lock()
-	defer bc.lruMu.Unlock()
-	if el, ok := bc.lruIndex[h]; ok {
-		bc.lruList.MoveToFront(el)
-		// Update size/path in case the chunk was re-stored (idempotent CAS).
-		entry := el.Value.(*lruEntry)
-		entry.size = size
-		entry.path = path
-		return
-	}
-	el := bc.lruList.PushFront(&lruEntry{hash: h, size: size, path: path})
-	bc.lruIndex[h] = el
-}
-
-// lruEvictOne removes the least-recently-used EVICTABLE chunk from the
-// LRU and unlinks its on-disk file. Returns the freed byte count, or 0 +
-// sentinel when there are no evictable candidates left. Concurrent
-// ReadChunk that races an evict surfaces as block.ErrChunkNotFound
-// (T-11-B-08, accept/refetch posture).
-//
-// A chunk is NOT evictable until it has been mirrored to remote: evicting
-// an unsynced chunk before its first upload silently destroys the only
-// copy. When a SyncedHashStore is wired, each candidate is consulted via
-// IsSynced; an unsynced candidate is moved to the FRONT of the LRU (the
-// most-recent end, away from the eviction tail) so the scan advances to
-// the next-oldest candidate instead of re-popping the same chunk. To
-// avoid spinning forever when every candidate is unsynced, the scan visits
-// at most a one-shot snapshot of the LRU length before giving up with
-// errLRUEmpty (ensureSpace then waits/back-pressures with ErrDiskFull).
-// When no SyncedHashStore is wired (local-only, no remote), every chunk is
-// evictable and the IsSynced step is skipped.
-//
-// IsSynced is called OUTSIDE lruMu: the SyncedHashStore has its own
-// internal mutex, so holding lruMu across the call would invert lock
-// ordering against the StoreChunk/touch path, and IsSynced may be slow on
-// the badger/postgres backends.
-//
-// Race-free design (optimistic peek-recheck): the candidate is NEVER
-// removed from lruIndex during the unlocked IsSynced call. Earlier code
-// popped the tail (list+index) before IsSynced and re-pushed afterwards;
-// during that unlocked window the entry was ABSENT from lruIndex, so a
-// concurrent ReadChunk/StoreChunk lruTouch for the same hash would insert
-// a SECOND list element — leaving lruIndex pointing at only one of two
-// duplicates (ghost entries + wrong disk accounting). Instead this loop:
-//  1. PEEKS the tail under lruMu (reads hash+size+path, leaves it in
-//     list/index), releases lruMu.
-//  2. Calls IsSynced unlocked.
-//  3. Re-acquires lruMu and VERIFIES the tail is still the same entry
-//     (same element, same hash, still indexed). A concurrent lruTouch may
-//     have moved it to the front in the meantime; if so it is no longer a
-//     victim, so we drop it and retry the peek loop. If still the tail and
-//     synced, remove+unlink under the recheck. If still the tail and
-//     unsynced, move it to the front and continue scanning.
-//
-// Because the entry is never absent from lruIndex during the unlocked
-// IsSynced, a concurrent lruTouch always finds it and moves it normally —
-// no ghost entries can form.
-func (bc *FSStore) lruEvictOne(ctx context.Context) (int64, error) {
-	// Snapshot the candidate budget under lruMu: at most this many
-	// unsynced/moved peeks before declaring "no evictable candidates".
-	bc.lruMu.Lock()
-	budget := bc.lruList.Len()
-	bc.lruMu.Unlock()
-
-	for attempts := 0; attempts < budget; attempts++ {
-		// 1. PEEK the tail without removing it from list/index.
-		bc.lruMu.Lock()
-		el := bc.lruList.Back()
-		if el == nil {
-			bc.lruMu.Unlock()
-			return 0, errLRUEmpty
-		}
-		entry := el.Value.(*lruEntry)
-		hash := entry.hash
-		bc.lruMu.Unlock()
-
-		// 2. Consult sync state OUTSIDE lruMu. Skip entirely for
-		//    local-only stores (no SyncedHashStore wired) — every chunk
-		//    is evictable there.
-		evictable := true
-		if bc.syncedHashStore != nil {
-			synced, err := bc.syncedHashStore.IsSynced(ctx, hash)
-			if err != nil {
-				// Treat lookup failures as unsynced: refuse to evict on
-				// uncertainty rather than risk destroying the only copy.
-				logger.Warn("lruEvictOne: IsSynced lookup failed, treating chunk as unsynced",
-					"hash", hash.String(), "error", err)
-				evictable = false
-			} else {
-				evictable = synced
-			}
-		}
-
-		// 3. Re-acquire lruMu and recheck the tail. A concurrent
-		//    lruTouch/StoreChunk may have moved this entry off the tail
-		//    during the unlocked IsSynced call.
-		bc.lruMu.Lock()
-		cur := bc.lruList.Back()
-		idxEl, stillIndexed := bc.lruIndex[hash]
-		if cur != el || !stillIndexed || idxEl != el {
-			// The tail changed (entry was touched/moved/removed): it is no
-			// longer the eviction victim. Drop it and retry the peek loop.
-			bc.lruMu.Unlock()
-			continue
-		}
-
-		if !evictable {
-			// Still the tail but unsynced: move it to the FRONT (away from
-			// the eviction tail) so the scan advances to the next-oldest
-			// candidate instead of re-popping this same chunk.
-			bc.lruList.MoveToFront(el)
-			bc.lruMu.Unlock()
-			continue
-		}
-
-		// Still the tail AND synced: remove from list+index under the
-		// recheck, then unlink the file.
-		path := entry.path
-		size := entry.size
-		bc.lruList.Remove(el)
-		delete(bc.lruIndex, hash)
-		bc.lruMu.Unlock()
-
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			// File system error: re-insert to avoid losing the bookkeeping
-			// (the chunk is still on disk, it just couldn't be unlinked).
-			bc.lruMu.Lock()
-			bc.lruIndex[hash] = bc.lruList.PushBack(entry)
-			bc.lruMu.Unlock()
-			return 0, fmt.Errorf("evict %s: %w", path, err)
-		}
-		if rec := bc.recordMetrics(); rec != nil {
-			rec.RecordEviction(size)
-		}
-		return size, nil
-	}
-
-	// Every candidate within the snapshot budget was unsynced or moved off
-	// the tail (or the LRU was empty to begin with): no evictable chunk.
-	return 0, errLRUEmpty
-}
-
-// seedLRUFromDisk walks <baseDir>/blocks/ at startup and registers every
-// chunk file in the LRU. Order is deterministic (alphabetical hash hex)
-// so repeated startups produce the same cold-start eviction order.
-//
-// Best-effort: any per-file error is silently skipped (the next StoreChunk
-// or ReadChunk will register the chunk on demand).
-func (bc *FSStore) seedLRUFromDisk() {
-	blocksDir := filepath.Join(bc.baseDir, "blocks")
-	if _, err := os.Stat(blocksDir); err != nil {
-		return
-	}
-	type seed struct {
-		hash block.ContentHash
-		size int64
-		path string
-	}
-	var seeds []seed
-	_ = filepath.WalkDir(blocksDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		// Path layout: <baseDir>/blocks/<hh>/<hh>/<hex>.
-		name := d.Name()
-		if len(name) != block.HashSize*2 {
-			return nil
-		}
-		raw, err := hex.DecodeString(name)
-		if err != nil || len(raw) != block.HashSize {
-			return nil
-		}
-		var h block.ContentHash
-		copy(h[:], raw)
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		seeds = append(seeds, seed{hash: h, size: info.Size(), path: path})
-		return nil
-	})
-	// Sort alphabetically by hash hex for deterministic cold-start order.
-	// Files visited by WalkDir are already lexicographically ordered within
-	// directories, but cross-directory order depends on filesystem
-	// traversal — sort explicitly to be safe.
-	sort.Slice(seeds, func(i, j int) bool {
-		return seeds[i].hash.String() < seeds[j].hash.String()
-	})
-	for _, s := range seeds {
-		bc.lruTouch(s.hash, s.size, s.path)
-	}
-}
-
 // FSStoreOptions configures the append-log path. Append is mandatory in
 // — the UseAppendLog opt-out flag was deleted with the legacy
 // path-keyed writer. MaxLogBytes, RollupWorkers, and StabilizationMS
@@ -1056,13 +824,6 @@ type FSStoreOptions struct {
 	// consumes it via ListUnsynced + MarkSynced). Nil is accepted for
 	// local-only stores; in that case ListUnsynced yields nothing.
 	SyncedHashStore metadata.SyncedHashStore
-	// LocalChunkIndex maps content hash -> position in a local log blob.
-	// When non-nil, chunk persistence routes to the log-blob substrate
-	// (logblob.Append + PutLocalLocation) instead of per-chunk cas/<hash>
-	// files, and local reads resolve index hits via logblob.ReadAt. Nil
-	// keeps the store on the legacy CAS writer/reader (index-less fixtures).
-	// Production wires the metadata store, which implements this interface.
-	LocalChunkIndex metadata.LocalChunkIndex
 	// ObjectIDPersister is the rollup-completion hook that receives the
 	// ChunkRef manifest + computed ObjectID after SetRollupOffset
 	// succeeds. Wire this to the engine coordinator's PersistFileChunks
@@ -1077,12 +838,12 @@ type FSStoreOptions struct {
 	// for the rationale.
 	OrphanLogMinAgeSeconds int
 
-	// OnChunkComplete is invoked once per successful chunkstore.lruTouch
-	// (post-disk-store), with the chunk's content hash, bytes, and on-disk
-	// path. Wire to engine.Cache.Put to populate the read cache at write
-	// time. Nil is accepted: chunkstore behaves identically to the
-	// pre-callback path if absent. Callback MUST be non-blocking on
-	// hot paths.
+	// OnChunkComplete is invoked once per successful chunk store
+	// (storeChunkLogBlob / stageRollupChunk), with the chunk's content hash and
+	// bytes (the path argument is empty on the log-blob path). Wire to
+	// engine.Cache.Put to populate the read cache at write time. Nil is
+	// accepted: chunkstore behaves identically to the pre-callback path if
+	// absent. Callback MUST be non-blocking on hot paths.
 	OnChunkComplete func(hash block.ContentHash, data []byte, path string)
 
 	// PressureMaxWait bounds how long AppendWrite blocks in its pressure

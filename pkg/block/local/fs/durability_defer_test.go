@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestUnstableWriteThenCommit_SurvivesReopen is the PR3 durability gate: an
@@ -13,7 +15,10 @@ import (
 // bytes read back. This is the "UNSTABLE writes + COMMIT → recover → data
 // present" half of the crash contract.
 func TestUnstableWriteThenCommit_SurvivesReopen(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{MaxLogBytes: 1 << 30, StabilizationMS: 100000})
+	// Wire a shared metadata store as FCS/LocalChunkIndex + RollupStore so the
+	// reopen below (ReopenForTest) resolves the same backend.
+	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{MaxLogBytes: 1 << 30, StabilizationMS: 100000, RollupStore: rs})
 	ctx := context.Background()
 	const payloadID = "commit-survives"
 	payload := bytes.Repeat([]byte{0x5A}, 4096)
@@ -38,7 +43,6 @@ func TestUnstableWriteThenCommit_SurvivesReopen(t *testing.T) {
 	}
 
 	baseDir := bc.BaseDirForTest()
-	rs := bc.RollupStoreForTest()
 	if err := bc.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}

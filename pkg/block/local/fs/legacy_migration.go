@@ -134,12 +134,6 @@ func (bc *FSStore) importLegacyChunkFile(ctx context.Context, h block.ContentHas
 	if statErr == nil && st.Size() > 0 {
 		bc.diskUsed.Add(-st.Size())
 	}
-	bc.lruMu.Lock()
-	if el, ok := bc.lruIndex[h]; ok {
-		bc.lruList.Remove(el)
-		delete(bc.lruIndex, h)
-	}
-	bc.lruMu.Unlock()
 	return nil
 }
 

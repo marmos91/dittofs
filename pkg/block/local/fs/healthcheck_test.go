@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/health"
+	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // newTestStore creates an FSStore rooted at a fresh tempdir suitable
@@ -15,7 +16,7 @@ import (
 func newTestStore(t *testing.T) *FSStore {
 	t.Helper()
 	dir := t.TempDir()
-	bs, err := NewWithOptions(dir, 0, nil, FSStoreOptions{})
+	bs, err := NewWithOptions(dir, 0, memmeta.NewMemoryMetadataStoreWithDefaults(), FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithDefaults: %v", err)
 	}
@@ -47,7 +48,7 @@ func TestFSStore_Healthcheck_UnhealthyAfterClose(t *testing.T) {
 
 func TestFSStore_Healthcheck_UnhealthyWhenBaseDirRemoved(t *testing.T) {
 	dir := t.TempDir()
-	bs, err := NewWithOptions(dir, 0, nil, FSStoreOptions{})
+	bs, err := NewWithOptions(dir, 0, memmeta.NewMemoryMetadataStoreWithDefaults(), FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithDefaults: %v", err)
 	}

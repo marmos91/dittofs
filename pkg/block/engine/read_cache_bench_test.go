@@ -295,8 +295,7 @@ func TestReadThroughCache_BoundedByMaxDisk(t *testing.T) {
 	dir := t.TempDir()
 	// No SyncedHashStore: every fetched chunk is immediately evictable, so the
 	// bound is enforced by Put's ensureSpace alone.
-	loc, err := localfs.NewWithOptions(dir, maxDisk, newStubFileChunkStore(), localfs.FSStoreOptions{
-		LocalChunkIndex: metastore.NewMemoryMetadataStoreWithDefaults()})
+	loc, err := localfs.NewWithOptions(dir, maxDisk, metastore.NewMemoryMetadataStoreWithDefaults(), localfs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}

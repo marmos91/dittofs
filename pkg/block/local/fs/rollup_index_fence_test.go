@@ -76,14 +76,13 @@ func TestRollup_LocalIndex_FencedBehindBlobSync(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	idx := memmeta.NewMemoryMetadataStoreWithDefaults()
 	opts := FSStoreOptions{
-		LocalChunkIndex: idx,
 		RollupStore:     rs,
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
 		RollupWorkers:   1,
 	}
 
-	bc, err := NewWithOptions(dir, 0, nil, opts)
+	bc, err := NewWithOptions(dir, 0, idx, opts)
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}
@@ -139,7 +138,7 @@ func TestRollup_LocalIndex_FencedBehindBlobSync(t *testing.T) {
 	if err := bc.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	bc2, err := NewWithOptions(dir, 0, nil, opts)
+	bc2, err := NewWithOptions(dir, 0, idx, opts)
 	if err != nil {
 		t.Fatalf("NewWithOptions (reopen): %v", err)
 	}
@@ -204,16 +203,15 @@ func TestRollup_TransientSyncFailure_ReadableWithoutRestart(t *testing.T) {
 	ctx := context.Background()
 
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	idx := memmeta.NewMemoryMetadataStoreWithDefaults()
 	// Real in-memory FileChunk store + persister so ReadPayloadAt's CAS-manifest
 	// path (step 2) can resolve rolled-up bytes after the fence trims the log
-	// index entries — the only read path left once a pass succeeds.
+	// index entries — the only read path left once a pass succeeds. fbs also
+	// serves as the mandatory LocalChunkIndex.
 	fbs := newMemFileChunkStore()
 	persister := func(pctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		return fbs.persist(pctx, payloadID, blocks)
 	}
 	opts := FSStoreOptions{
-		LocalChunkIndex:   idx,
 		RollupStore:       rs,
 		ObjectIDPersister: persister,
 		MaxLogBytes:       1 << 30,

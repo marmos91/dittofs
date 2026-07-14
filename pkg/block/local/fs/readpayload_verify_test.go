@@ -51,12 +51,7 @@ func runCorruptLocalChunk(t *testing.T, ms metadata.Store) {
 	if !ok {
 		t.Fatalf("metadata store %T does not implement block.EngineFileChunkStore", ms)
 	}
-	lci, ok := ms.(metadata.LocalChunkIndex)
-	if !ok {
-		t.Fatalf("metadata store %T does not implement metadata.LocalChunkIndex", ms)
-	}
-
-	store, err := NewWithOptions(t.TempDir(), 0, fcs, FSStoreOptions{LocalChunkIndex: lci})
+	store, err := NewWithOptions(t.TempDir(), 0, fcs, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}

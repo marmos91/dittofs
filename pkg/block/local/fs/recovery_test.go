@@ -68,12 +68,11 @@ func reopenFSStore(t *testing.T, bc *FSStore, rs *memmeta.MemoryMetadataStore) *
 	t.Helper()
 	baseDir := bc.baseDir
 	_ = bc.Close()
-	bc2, err := NewWithOptions(baseDir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc2, err := NewWithOptions(baseDir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
 		RollupStore:     rs,
-		LocalChunkIndex: rs,
 	})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
@@ -88,12 +87,11 @@ func reopenFSStore(t *testing.T, bc *FSStore, rs *memmeta.MemoryMetadataStore) *
 func newFSStoreWithRS(t *testing.T, rs *memmeta.MemoryMetadataStore) *FSStore {
 	t.Helper()
 	dir := t.TempDir()
-	bc, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc, err := NewWithOptions(dir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
 		RollupStore:     rs,
-		LocalChunkIndex: rs,
 	})
 	if err != nil {
 		t.Fatalf("new: %v", err)
@@ -265,12 +263,11 @@ func TestRecovery_FreshLogNotSwept(t *testing.T) {
 func TestRecovery_OrphanSweep_UnlinksLog(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	dir := t.TempDir()
-	bc, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc, err := NewWithOptions(dir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
 		RollupStore:            rs,
-		LocalChunkIndex:        rs,
 		OrphanLogMinAgeSeconds: 1, // 1 second — short enough to trip during the test
 	})
 	if err != nil {
@@ -284,12 +281,11 @@ func TestRecovery_OrphanSweep_UnlinksLog(t *testing.T) {
 	// Wait out the configured 1s age gate.
 	time.Sleep(1100 * time.Millisecond)
 
-	bc2, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc2, err := NewWithOptions(dir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
 		RollupStore:            rs,
-		LocalChunkIndex:        rs,
 		OrphanLogMinAgeSeconds: 1,
 	})
 	if err != nil {
@@ -518,12 +514,11 @@ func TestRecovery_OrphanAgeFloor_WarnsOnNonPositive(t *testing.T) {
 
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	dir := t.TempDir()
-	bc, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc, err := NewWithOptions(dir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
 		RollupStore:            rs,
-		LocalChunkIndex:        rs,
 		OrphanLogMinAgeSeconds: 1, // pass NewWithOptions normalization
 	})
 	if err != nil {
@@ -544,12 +539,11 @@ func TestRecovery_OrphanAgeFloor_WarnsOnNonPositive(t *testing.T) {
 	}
 	_ = bc.Close()
 
-	bc2, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc2, err := NewWithOptions(dir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
 		RollupStore:            rs,
-		LocalChunkIndex:        rs,
 		OrphanLogMinAgeSeconds: 1, // again pass normalization
 	})
 	if err != nil {

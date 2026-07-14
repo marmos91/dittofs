@@ -35,7 +35,6 @@ import (
 func newBlobStoreWithLimit(t *testing.T, dir string, maxDisk int64, mds *memory.MemoryMetadataStore) *FSStore {
 	t.Helper()
 	bc, err := NewWithOptions(dir, maxDisk, mds, FSStoreOptions{
-		LocalChunkIndex: mds,
 		SyncedHashStore: mds,
 	})
 	if err != nil {
@@ -45,21 +44,6 @@ func newBlobStoreWithLimit(t *testing.T, dir string, maxDisk int64, mds *memory.
 	bc.SetRetentionPolicy(block.RetentionLRU, 0)
 	t.Cleanup(func() { _ = bc.Close() })
 	return bc
-}
-
-// writeCASFile writes a legacy per-chunk CAS file directly on disk (bypassing
-// StoreChunk and all accounting), simulating pre-flip data found at startup.
-func writeCASFile(t *testing.T, bc *FSStore, data []byte) block.ContentHash {
-	t.Helper()
-	h := blake3ContentHash(data)
-	path := bc.chunkPath(h)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("write CAS file: %v", err)
-	}
-	return h
 }
 
 // sumBlobFiles returns the total size of *.blob files under <dir>/blobs.
@@ -84,71 +68,6 @@ func sumBlobFiles(t *testing.T, dir string) int64 {
 		total += fi.Size()
 	}
 	return total
-}
-
-// TestRecover_SeedsDiskUsedFromLegacyCASFiles asserts that startup recovery
-// counts legacy CAS chunk files into diskUsed — the exact gap that let #1527's
-// counter go negative: seedLRUFromDisk made those files eviction candidates
-// while Recover's .blk-only walk left their bytes out of the seed.
-func TestRecover_SeedsDiskUsedFromLegacyCASFiles(t *testing.T) {
-	dir := t.TempDir()
-	mds := memory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := NewWithOptions(dir, 0, mds, FSStoreOptions{})
-	if err != nil {
-		t.Fatalf("NewWithOptions: %v", err)
-	}
-	t.Cleanup(func() { _ = bc.Close() })
-	ctx := context.Background()
-
-	h1 := writeCASFile(t, bc, bytes.Repeat([]byte{0x01}, 100))
-	h2 := writeCASFile(t, bc, bytes.Repeat([]byte{0x02}, 200))
-	h3 := writeCASFile(t, bc, bytes.Repeat([]byte{0x03}, 300))
-
-	if err := bc.Recover(ctx); err != nil {
-		t.Fatalf("Recover: %v", err)
-	}
-	if got := bc.Stats().DiskUsed; got != 600 {
-		t.Fatalf("post-Recover DiskUsed = %d, want 600 (CAS bytes must be seeded)", got)
-	}
-
-	// GC-style deletes must walk the counter back to exactly zero — before
-	// the fix each delete subtracted from an unseeded counter, driving it
-	// negative and permanently disabling the disk limit.
-	for _, h := range []block.ContentHash{h1, h2, h3} {
-		if err := bc.DeleteChunk(ctx, h); err != nil {
-			t.Fatalf("DeleteChunk: %v", err)
-		}
-		if got := bc.Stats().DiskUsed; got < 0 {
-			t.Fatalf("DiskUsed went NEGATIVE after delete: %d", got)
-		}
-	}
-	if got := bc.Stats().DiskUsed; got != 0 {
-		t.Fatalf("DiskUsed after deleting everything = %d, want 0", got)
-	}
-}
-
-// TestDeleteChunk_UncountedFile_ClampsAtZero asserts the defensive clamp:
-// deleting a CAS file whose bytes were never added (accounting asymmetry)
-// must clamp the counter at 0 instead of underflowing negative.
-func TestDeleteChunk_UncountedFile_ClampsAtZero(t *testing.T) {
-	dir := t.TempDir()
-	mds := memory.NewMemoryMetadataStoreWithDefaults()
-	bc, err := NewWithOptions(dir, 0, mds, FSStoreOptions{})
-	if err != nil {
-		t.Fatalf("NewWithOptions: %v", err)
-	}
-	t.Cleanup(func() { _ = bc.Close() })
-	ctx := context.Background()
-
-	// Written directly on disk: present, evictable, but never counted.
-	h := writeCASFile(t, bc, bytes.Repeat([]byte{0xAA}, 500))
-
-	if err := bc.DeleteChunk(ctx, h); err != nil {
-		t.Fatalf("DeleteChunk: %v", err)
-	}
-	if got := bc.Stats().DiskUsed; got != 0 {
-		t.Fatalf("DiskUsed after uncounted delete = %d, want 0 (clamped, not negative)", got)
-	}
 }
 
 // TestLogBlobBytes_CountedAndSeededAcrossReopen asserts that log-blob bytes
