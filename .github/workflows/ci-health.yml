@@ -34,8 +34,6 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
-  # Needed for the retry-before-alarm step to re-run the failed conformance jobs.
-  actions: write
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -50,6 +48,14 @@ jobs:
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.head_branch == 'develop' &&
       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')
+    # Scoped here (not workflow-level) so the pull_request `warn-on-pr` job never
+    # gets `actions: write`. Job-level permissions replace the workflow default,
+    # so re-list what this job needs: checkout (contents), open issue (issues),
+    # and re-run failed jobs (actions).
+    permissions:
+      contents: read
+      issues: write
+      actions: write
     env:
       HAS_SMTP: ${{ secrets.SMTP_PASSWORD != '' }}
       WORKFLOW: ${{ github.event.workflow_run.name }}
@@ -81,7 +87,15 @@ jobs:
         run: |
           echo "Attempt 1 of ${WORKFLOW} is red; re-running failed jobs before alarming."
           echo "A genuine break fails again on attempt 2 and pages; a flake self-heals."
-          gh run rerun "$RUN_ID" --repo "$REPO" --failed
+          if gh run rerun "$RUN_ID" --repo "$REPO" --failed; then
+            echo "Re-run queued; attempt 2 will alarm if it is still red."
+          else
+            # If the re-run cannot be queued (gh/API outage, run not rerunnable),
+            # no attempt-2 event will ever fire — so don't swallow the signal.
+            # Alarm now by promoting this attempt to the alarm path.
+            echo "Re-run could not be queued; alarming on this attempt instead."
+            echo "SHOULD_ALARM=true" >> "$GITHUB_ENV"
+          fi
 
       # The alarm builds its email body from a committed Python script, so the
       # repo must be on the runner. workflow_run has no implicit checkout.
