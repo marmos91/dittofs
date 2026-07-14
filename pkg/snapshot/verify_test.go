@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"lukechampine.com/blake3"
+
 	"github.com/marmos91/dittofs/pkg/block"
 	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/snapshot"
@@ -74,6 +76,45 @@ func TestVerifyRemoteDurability_BlockResidentProbesBlock(t *testing.T) {
 	err := snapshot.VerifyRemoteDurability(ctx, res2, rs, hs, 4)
 	if !errors.Is(err, block.ErrChunkNotFound) {
 		t.Fatalf("missing block: errors.Is(ErrChunkNotFound)=false; err=%v", err)
+	}
+}
+
+// TestVerifyRemoteDurability_ContentMismatchFailsWhenExtentKnown: when the
+// locator carries a wire extent (WireLength>0), the probe reads the chunk back
+// via ReadChunk and recomputes BLAKE3. A plain remote returning wrong-but-
+// present bytes (ReadChunk ignores hash on base stores) must fail with
+// ErrChunkContentMismatch, not pass as durable. Correct bytes under their true
+// hash still pass.
+func TestVerifyRemoteDurability_ContentMismatchFailsWhenExtentKnown(t *testing.T) {
+	ctx := context.Background()
+	rs := remotememory.New()
+	t.Cleanup(func() { _ = rs.Close() })
+
+	body := []byte("the-actual-stored-bytes")
+	trueHash := block.ContentHash(blake3.Sum256(body))
+	if err := rs.PutBlock(ctx, "blk", bytes.NewReader(body)); err != nil {
+		t.Fatalf("PutBlock: %v", err)
+	}
+
+	// A hash that does NOT match the stored content.
+	claimed := gateHash(42)
+	if claimed == trueHash {
+		t.Fatal("test setup: claimed hash collided with content hash")
+	}
+	hs := block.NewHashSet(1)
+	hs.Add(claimed)
+	res := fakeLocators{claimed: block.ChunkLocator{BlockID: "blk", WireLength: int64(len(body))}}
+	err := snapshot.VerifyRemoteDurability(ctx, res, rs, hs, 4)
+	if !errors.Is(err, block.ErrChunkContentMismatch) {
+		t.Fatalf("content mismatch: errors.Is(ErrChunkContentMismatch)=false; err=%v", err)
+	}
+
+	// Correct content under its true hash passes.
+	hs2 := block.NewHashSet(1)
+	hs2.Add(trueHash)
+	res2 := fakeLocators{trueHash: block.ChunkLocator{BlockID: "blk", WireLength: int64(len(body))}}
+	if err := snapshot.VerifyRemoteDurability(ctx, res2, rs, hs2, 4); err != nil {
+		t.Fatalf("correct content: got %v, want nil", err)
 	}
 }
 

@@ -27,7 +27,7 @@ import (
 // manifest / verify / restore path against an encryption-enabled remote
 // (issue #816). The encryption decorator stores framed CIPHERTEXT in the
 // inner remote but keeps the PLAINTEXT BLAKE3 as the CAS storage key:
-// dedup, GC, the snapshot manifest, and the verify HEAD-probe must all
+// dedup, GC, the snapshot manifest, and the verify probe must all
 // operate on the plaintext content hash, never on a ciphertext-derived
 // key.
 //
@@ -36,16 +36,16 @@ import (
 //
 //   - Manifest entries are the plaintext content hashes used to Put, so
 //     the hashes recorded on disk address the encrypted blocks correctly.
-//   - The verify gate's per-hash Head probe resolves every manifest hash
-//     against the encrypted remote (Head parses the wire frame to derive
-//     plaintext size) and the snapshot reaches ready + remote-durable.
+//   - The verify gate's per-hash probe reads every manifest chunk back
+//     through ReadChunk (deframe + authenticated decrypt) against the
+//     encrypted remote, and the snapshot reaches ready + remote-durable.
 //   - Multi-chunk blocks round-trip byte-for-byte back through the
 //     decorator's authenticated decrypt — the restore-time read path
 //     reconstructs the exact plaintext.
-//   - A manifest hash whose block is present in the inner store but
+//   - A manifest hash whose block is present in the packed keyspace but
 //     UNFRAMED (e.g. written bypassing the encryption decorator) fails
-//     verify rather than masquerading as durable — the probe really hits
-//     the encrypted identity, not a raw presence check.
+//     verify rather than masquerading as durable — the probe decrypt-
+//     verifies the chunk, it is not a raw presence check.
 func TestSnapshot_EncryptionInteraction(t *testing.T) {
 	t.Run("ManifestHashesArePlaintextAndVerifyProbesEncryptedRemote", testEncryptionManifestAndVerify)
 	t.Run("MultiChunkRoundTripBytesCorrect", testEncryptionMultiChunkRoundTrip)
@@ -186,17 +186,36 @@ func (f *encryptedFixture) seedEncrypted(payloads [][]byte) []block.ContentHash 
 		if err := f.enc.Put(context.Background(), h, p); err != nil {
 			f.t.Fatalf("encrypted Put: %v", err)
 		}
-		// Post-#1493 durability is block-only: also seed a packed block per
-		// hash (BlockID = hash string) so the verify gate's GetBlockRange probe
-		// against the encrypted remote finds it. setBackupHashes marks each
-		// hash synced to that block locator.
-		if err := f.enc.PutBlock(context.Background(), h.String(), bytes.NewReader(p)); err != nil {
-			f.t.Fatalf("encrypted PutBlock: %v", err)
-		}
+		// Post-#1493 durability is block-only: seed a real sealed frame as the
+		// packed block so the verify gate's ReadChunk probe deframes and
+		// decrypt-verifies it. seedBlockFrame records the frame's wire extent
+		// on the hash's locator.
+		f.seedBlockFrame(h, p)
 		hashes = append(hashes, h)
 	}
-	f.setBackupHashes(hashes)
+	f.backup.setHashes(hashes)
 	return hashes
+}
+
+// seedBlockFrame seals plaintext into an encryption frame, stores it as the
+// packed block object under blockID = hash, and marks the hash synced to a
+// locator carrying the frame's wire extent (WireLength) so the verify gate
+// reads the chunk back through ReadChunk rather than a bare presence probe.
+func (f *encryptedFixture) seedBlockFrame(h block.ContentHash, plaintext []byte) {
+	f.t.Helper()
+	wire, err := f.enc.SealChunk(context.Background(), h, plaintext)
+	if err != nil {
+		f.t.Fatalf("SealChunk: %v", err)
+	}
+	if err := f.inner.PutBlock(context.Background(), h.String(), bytes.NewReader(wire)); err != nil {
+		f.t.Fatalf("PutBlock (frame): %v", err)
+	}
+	if err := f.backup.MarkSynced(context.Background(), h, block.ChunkLocator{
+		BlockID:    h.String(),
+		WireLength: int64(len(wire)),
+	}); err != nil {
+		f.t.Fatalf("MarkSynced: %v", err)
+	}
 }
 
 func testEncryptionManifestAndVerify(t *testing.T) {
@@ -309,13 +328,13 @@ func testEncryptionUnframedFailsVerify(t *testing.T) {
 	fx := newEncryptedFixture(t)
 	defer fx.close()
 
-	// Seed two real encrypted blocks, then inject a THIRD block whose body
-	// was written straight to the inner remote WITHOUT the encryption frame
-	// (simulating an externally-mutated / pre-encryption block). The
-	// manifest lists its plaintext hash, but the verify HEAD-probe must
-	// reject it: EncryptedRemote.Head parses the wire frame and returns a
-	// non-NotFound error for an unframed body, so verify fails rather than
-	// reporting hollow durability over a block it cannot decrypt.
+	// Seed two real encrypted blocks, then inject a THIRD packed block whose
+	// body was written WITHOUT the encryption frame (simulating an externally-
+	// mutated / pre-encryption block) under a valid block locator. The manifest
+	// lists its hash, but the verify gate reads each chunk back through
+	// ReadChunk: deframing the raw body fails (ErrCiphertextWithoutFrame), so
+	// verify fails rather than reporting hollow durability over a block it
+	// cannot decrypt.
 	good := [][]byte{
 		bytes.Repeat([]byte{0xa1}, 2048),
 		bytes.Repeat([]byte{0xb2}, 2048),
@@ -324,13 +343,20 @@ func testEncryptionUnframedFailsVerify(t *testing.T) {
 
 	unframed := bytes.Repeat([]byte{0xc3}, 2048)
 	unframedHash := block.ContentHash(blake3.Sum256(unframed))
-	if err := fx.inner.Put(context.Background(), unframedHash, unframed); err != nil {
-		t.Fatalf("inner Put (unframed): %v", err)
+	// Present in the PACKED keyspace under a valid locator, but not a frame.
+	if err := fx.inner.PutBlock(context.Background(), unframedHash.String(), bytes.NewReader(unframed)); err != nil {
+		t.Fatalf("inner PutBlock (unframed): %v", err)
+	}
+	if err := fx.backup.MarkSynced(context.Background(), unframedHash, block.ChunkLocator{
+		BlockID:    unframedHash.String(),
+		WireLength: int64(len(unframed)),
+	}); err != nil {
+		t.Fatalf("MarkSynced (unframed): %v", err)
 	}
 
 	// Manifest = two framed blocks + the unframed one.
 	allHashes := append(append([]block.ContentHash{}, hashes...), unframedHash)
-	fx.setBackupHashes(allHashes)
+	fx.backup.setHashes(allHashes)
 
 	ctx := fx.ctx()
 	snapID, err := fx.rt.CreateSnapshot(ctx, fx.shareName, CreateSnapshotOpts{})

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 
+	"lukechampine.com/blake3"
+
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/remote"
@@ -22,7 +24,9 @@ type HashLocatorResolver interface {
 }
 
 // probeHashDurable proves hash is durable by resolving its block locator and
-// issuing a one-byte GetBlockRange against the packed blocks/<id> object. Post
+// reading its chunk back out of the packed blocks/<id> object — via ReadChunk
+// (deframe + decrypt + BLAKE3 content-verify) when the wire extent is known,
+// else a one-byte GetBlockRange presence probe. Post
 // storage flip (#1493) durability is block-only: a hash whose locator is
 // standalone (BlockID == "") or absent from the resolver is not block-resident
 // and is reported as block.ErrChunkNotFound — it cannot be proven durable. A
@@ -40,6 +44,30 @@ func probeHashDurable(ctx context.Context, locators HashLocatorResolver, rbs rem
 	if !ok || loc.IsStandalone() {
 		return fmt.Errorf("hash %s has no block locator (standalone or absent): %w",
 			hash, block.ErrChunkNotFound)
+	}
+	// Prove recoverability, not mere presence. When the chunk's wire extent is
+	// known (the carve path always sets it on block-keyed locators) and the
+	// remote can invert its transform, read the chunk through ReadChunk: an
+	// encrypted remote deframes and AEAD-verifies against the hash, so a
+	// present-but-undecryptable block (unframed / externally mutated) fails
+	// verify instead of masquerading as durable. A 1-byte GetBlockRange only
+	// proves the object exists — hollow durability over bytes we can't decrypt.
+	// Fall back to that presence probe when the extent is unknown (WireLength
+	// == 0) or the remote is not a chunk reader.
+	if cr, ok := rbs.(remote.ChunkReader); ok && loc.WireLength > 0 {
+		plain, rerr := cr.ReadChunk(ctx, loc.BlockID, loc.WireOffset, loc.WireLength, hash)
+		if rerr != nil {
+			return rerr
+		}
+		// ReadChunk does not verify BLAKE3 — the base stores and the
+		// compression layer ignore hash (only encryption binds it as AEAD AAD).
+		// Recompute here so "remote durable" means recoverable AND correct:
+		// a plain/compressed remote returning wrong-but-present bytes must fail.
+		if got := block.ContentHash(blake3.Sum256(plain)); got != hash {
+			return fmt.Errorf("hash %s: %w (remote returned %s)",
+				hash, block.ErrChunkContentMismatch, got)
+		}
+		return nil
 	}
 	_, berr := rbs.GetBlockRange(ctx, loc.BlockID, 0, 1)
 	return berr
