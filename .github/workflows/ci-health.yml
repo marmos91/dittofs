@@ -34,6 +34,8 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  # Needed for the retry-before-alarm step to re-run the failed conformance jobs.
+  actions: write
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -62,16 +64,33 @@ jobs:
       # in-flight run — benign, and the superseding run reports the true status.
       # Alarming on it produced stuck false-positive develop-red issues (#1672).
       IS_RED: ${{ github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'cancelled' }}
+      # Retry-before-alarm: transient conformance flakes (slow-runner timeouts ->
+      # smbtorture exit 124, docker 502s, OOM-killed containers) surface as a
+      # `failure` conclusion and used to page a P0 on the first attempt. Instead,
+      # on attempt 1 we re-run the failed jobs once and stay silent; only if the
+      # re-run (attempt >= 2) is still red do we alarm. A genuine break fails
+      # twice and still pages; a flake self-heals with no issue opened.
+      SHOULD_RETRY: ${{ github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.run_attempt == 1 }}
+      SHOULD_ALARM: ${{ github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.run_attempt > 1 }}
 
     steps:
+      - name: Retry failed jobs once before alarming
+        if: env.SHOULD_RETRY == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Attempt 1 of ${WORKFLOW} is red; re-running failed jobs before alarming."
+          echo "A genuine break fails again on attempt 2 and pages; a flake self-heals."
+          gh run rerun "$RUN_ID" --repo "$REPO" --failed
+
       # The alarm builds its email body from a committed Python script, so the
       # repo must be on the runner. workflow_run has no implicit checkout.
       - name: Check out repo
-        if: env.IS_RED == 'true'
+        if: env.SHOULD_ALARM == 'true'
         uses: actions/checkout@v4
 
       - name: Ensure develop-red label exists
-        if: env.IS_RED == 'true'
+        if: env.SHOULD_ALARM == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -85,7 +104,7 @@ jobs:
       # email (HTML + text), subject, and issue markdown. The Python script is
       # committed + unit-testable, which keeps fragile body templating out of YAML.
       - name: Collect failure details
-        if: env.IS_RED == 'true'
+        if: env.SHOULD_ALARM == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
@@ -119,7 +138,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Send failure email
-        if: env.IS_RED == 'true' && env.HAS_SMTP == 'true'
+        if: env.SHOULD_ALARM == 'true' && env.HAS_SMTP == 'true'
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
@@ -137,7 +156,7 @@ jobs:
           body: ${{ env.MAIL_TEXT }}
 
       - name: Open or update develop-red issue
-        if: env.IS_RED == 'true'
+        if: env.SHOULD_ALARM == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
