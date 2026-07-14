@@ -57,7 +57,7 @@ ops/s). **Bold** = DittoFS. Best *real competitor* per row is marked ✦
 | mixed-rw (IOPS) | **1409** | 1983 ✦ | 125 | 5531 | 4455 | 41634 |
 
 ‡ JuiceFS large rand-read (88 IOPS) is an outlier — its 1 GiB working set thrashes
-its local cache on this box; its medium rand-read (42 380) is representative.
+its local cache on this box; its medium rand-read (42 380 IOPS) is representative.
 
 ## Random & metadata — medium files (1 MiB), warm
 
@@ -92,6 +92,10 @@ of ZeroFS on reads.
 | rand-write | **39 059 / 120 062** | 32 113 / 17 112 760 | 77 070 / 400 556 | 57 934 / 152 044 |
 | rand-read | **11 600 / 67 633** | 54 788 / 103 285 | 1 082 130 / 4 328 522 | 4 178 / 7 635 |
 | seq-read | **3 883 / 16 712** | 90 702 / 2 231 370 | 2 040 / 6 259 | 1 221 / 8 454 |
+
+JuiceFS's ~1 s rand-read p50 is the same 1 GiB cache-thrashing outlier flagged ‡
+above (88 IOPS): on this box every large-file random read misses its local cache
+and pays an S3 round trip. It is not the medium-file figure (42 380 IOPS).
 
 ## Analysis
 
@@ -136,6 +140,12 @@ The harness is `cmd/bench` (`dfsbench`), library code under `internal/dfsbench/`
 
 ```sh
 go build -o dfsbench ./cmd/bench
+
+# Run config: just the S3 bucket + endpoint (credentials come from the env, below).
+cat > bench.yaml <<'EOF'
+bucket: dittofs-bench
+endpoint: https://s3.fr-par.scw.cloud
+EOF
 
 # Cloud run: provision one disposable VM, run the managed matrix, collect, tear down.
 dfsbench setup                              # SCW_* env selects type/zone/image
