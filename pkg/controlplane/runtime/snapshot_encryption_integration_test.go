@@ -27,7 +27,7 @@ import (
 // manifest / verify / restore path against an encryption-enabled remote
 // (issue #816). The encryption decorator stores framed CIPHERTEXT in the
 // inner remote but keeps the PLAINTEXT BLAKE3 as the CAS storage key:
-// dedup, GC, the snapshot manifest, and the verify HEAD-probe must all
+// dedup, GC, the snapshot manifest, and the verify probe must all
 // operate on the plaintext content hash, never on a ciphertext-derived
 // key.
 //
@@ -36,16 +36,16 @@ import (
 //
 //   - Manifest entries are the plaintext content hashes used to Put, so
 //     the hashes recorded on disk address the encrypted blocks correctly.
-//   - The verify gate's per-hash Head probe resolves every manifest hash
-//     against the encrypted remote (Head parses the wire frame to derive
-//     plaintext size) and the snapshot reaches ready + remote-durable.
+//   - The verify gate's per-hash probe reads every manifest chunk back
+//     through ReadChunk (deframe + authenticated decrypt) against the
+//     encrypted remote, and the snapshot reaches ready + remote-durable.
 //   - Multi-chunk blocks round-trip byte-for-byte back through the
 //     decorator's authenticated decrypt — the restore-time read path
 //     reconstructs the exact plaintext.
-//   - A manifest hash whose block is present in the inner store but
+//   - A manifest hash whose block is present in the packed keyspace but
 //     UNFRAMED (e.g. written bypassing the encryption decorator) fails
-//     verify rather than masquerading as durable — the probe really hits
-//     the encrypted identity, not a raw presence check.
+//     verify rather than masquerading as durable — the probe decrypt-
+//     verifies the chunk, it is not a raw presence check.
 func TestSnapshot_EncryptionInteraction(t *testing.T) {
 	t.Run("ManifestHashesArePlaintextAndVerifyProbesEncryptedRemote", testEncryptionManifestAndVerify)
 	t.Run("MultiChunkRoundTripBytesCorrect", testEncryptionMultiChunkRoundTrip)
