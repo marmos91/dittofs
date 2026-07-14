@@ -15,6 +15,15 @@ func (s *BadgerMetadataStore) InlineSyncCountForTest() int64 {
 	return s.inlineSyncs.Load()
 }
 
+// DrainPassCountForTest returns the number of non-empty barrier batches the
+// group-commit leader has run (#1573). A concurrent burst of durable commits
+// that coalesces onto few leader runs shows drainPasses far below the number of
+// inline sync calls — the coalescing the benchmark asserts. Production code
+// never calls it.
+func (s *BadgerMetadataStore) DrainPassCountForTest() int64 {
+	return s.syncLeader.drainPasses.Load()
+}
+
 func SetMaxTransactionRetriesForTest(n int) func() {
 	prev := maxTransactionRetries.Load()
 	// Clamp to at least 1: a value <= 0 would make WithTransaction run zero

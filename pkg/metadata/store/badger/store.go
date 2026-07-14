@@ -171,6 +171,13 @@ type BadgerMetadataStore struct {
 	// (syncIfRelaxed), NOT the background ticker. Tests read it to assert the
 	// durable/relaxed classification is wired correctly.
 	inlineSyncs atomic.Int64
+
+	// syncLeader coalesces concurrent durable db.Sync() calls (write path +
+	// rollup + ticker) into as few fsyncs as possible. See #1573: without it,
+	// N concurrent durable commits serialize on badger's single Sync mutex and
+	// pay N fsyncs where one would do. Always initialized; only exercised in
+	// relaxed mode (strict mode fsyncs on commit, so syncIfRelaxed is a no-op).
+	syncLeader *commitLeader
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.
@@ -347,6 +354,7 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 		relaxedDurability: config.RelaxedDurability,
 		syncStop:          make(chan struct{}),
 	}
+	store.syncLeader = newCommitLeader(store.db.Sync)
 
 	// Initialize stats cache with a 5-second TTL for responsive updates
 	// This prevents expensive database scans on every FSSTAT request while
@@ -468,7 +476,9 @@ func (s *BadgerMetadataStore) runDurabilitySync() {
 			// A failed periodic sync is not fatal here: the next durable
 			// write or db.Close() will retry, and callers that need a hard
 			// guarantee go through the inline db.Sync() on the durable path.
-			_ = s.db.Sync()
+			// Route through the leader so the ticker coalesces with concurrent
+			// writers instead of contending on badger's Sync mutex (#1573).
+			_ = s.syncLeader.Sync(context.Background())
 		}
 	}
 }
@@ -482,7 +492,11 @@ func (s *BadgerMetadataStore) syncIfRelaxed() error {
 		return nil
 	}
 	s.inlineSyncs.Add(1)
-	return s.db.Sync()
+	// Coalesce concurrent durable syncs onto one db.Sync (#1573). Every caller
+	// commits its badger txn before reaching here, so a barrier that runs after
+	// this enqueue flushes this caller's write — identical durability to a direct
+	// s.db.Sync(), minus the redundant fsyncs N concurrent commits would pay.
+	return s.syncLeader.Sync(context.Background())
 }
 
 // storeIDKey is the BadgerDB key for the engine-persistent store identifier.
