@@ -290,6 +290,25 @@ func (s *SQLiteMetadataStore) GetStoreID() string { return s.storeID }
 // Compile-time assertion: the SQLite engine exposes GetStoreID.
 var _ interface{ GetStoreID() string } = (*SQLiteMetadataStore)(nil)
 
+// SyncDurable forces WAL-buffered commits to disk — the durability barrier the
+// Service's commit leader coalesces (#1573). Under journal_mode=WAL +
+// synchronous=NORMAL (config.go) a COMMIT does not fsync the WAL, so a PASSIVE
+// checkpoint is the barrier: it fsyncs the WAL (making committed transactions
+// durable) and folds ready frames into the main DB. PASSIVE never blocks on
+// concurrent readers/writers — it syncs what is committed and returns.
+//
+// Correctness depends on this store's single-connection pool (SetMaxOpenConns(1)
+// in Open): a PASSIVE checkpoint syncs the WAL only for frames up to the oldest
+// reader's mark, so with concurrent readers on stale snapshots it could skip
+// just-committed frames. With exactly one serialized connection there is no
+// second reader pinning an older snapshot when this runs, so PASSIVE fsyncs all
+// committed frames — equivalent to FULL here. A future move to a pooled/multi-
+// connection SQLite setup would reintroduce that gap and must revisit this.
+func (s *SQLiteMetadataStore) SyncDurable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)")
+	return err
+}
+
 // Close records the clean-shutdown marker and closes the database handle.
 func (s *SQLiteMetadataStore) Close() error {
 	s.logger.Info("Closing SQLite metadata store...")

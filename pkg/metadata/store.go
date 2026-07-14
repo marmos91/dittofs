@@ -513,6 +513,14 @@ type Store interface {
 	// passed where a Checker is expected.
 	Healthcheck(ctx context.Context) health.Report
 
+	// SyncDurable makes every write committed so far on this store durable
+	// (fsync / WAL checkpoint) and returns only once it has. It is the barrier
+	// the Service's per-store commit leader coalesces so N concurrent NFS
+	// COMMITs collapse onto one backend sync instead of N (#1573). Backends
+	// without crash durability (memory) or with native per-commit durability
+	// (postgres) implement it as a no-op. MUST be safe for concurrent callers.
+	SyncDurable(ctx context.Context) error
+
 	// Close releases any resources held by the store.
 	Close() error
 }

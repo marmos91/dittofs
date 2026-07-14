@@ -315,6 +315,39 @@ func (s *PostgresMetadataStore) GetStoreID() string { return s.storeID }
 // Compile-time assertion: the Postgres engine exposes GetStoreID.
 var _ interface{ GetStoreID() string } = (*PostgresMetadataStore)(nil)
 
+// SyncDurable forces any relaxed (synchronous_commit=off) staging commits to
+// stable storage — the durability barrier the Service's commit leader coalesces
+// (#1573).
+//
+// In strict mode this is a no-op: every COMMIT already fsynced the WAL
+// (synchronous_commit=on), so committed metadata is durable the moment
+// WithTransaction returns. But when relaxed_durability is on, flushPendingWrite
+// stages the data-paired file-size write via WithTransactionRelaxed
+// (synchronous_commit=off), so its WAL record is written but not yet fsynced.
+// Force a synchronous WAL flush: txid_current() assigns an xid so this commit
+// writes a real commit record, and because postgres flushes WAL sequentially, a
+// single synchronous commit durably covers every earlier async commit up to the
+// current LSN — including the staged write (which committed, at a lower LSN,
+// before this barrier ran). This is what preserves the #588 "data-paired writes
+// are durable synchronously" contract now that flushPendingWrite stages relaxed.
+func (s *PostgresMetadataStore) SyncDurable(ctx context.Context) error {
+	if !s.config.RelaxedDurability {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit = on"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "SELECT txid_current()"); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // Close closes the PostgreSQL connection pool and releases resources
 func (s *PostgresMetadataStore) Close() error {
 	s.logger.Info("Closing PostgreSQL metadata store...")

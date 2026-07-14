@@ -46,6 +46,15 @@ type Service struct {
 	dirTimes           *DirTimesTracker                  // coalesced directory mtime/ctime/atime bumps (#1573)
 	deferredCommit     bool                              // if true, use deferred commits (default: true)
 
+	// commitLeaders coalesces the durable-flush barrier per store (#1573):
+	// N concurrent NFS COMMITs / stable SMB flushes on the same backend collapse
+	// onto one Store.SyncDurable instead of N independent fsyncs. Keyed by the
+	// Store value (a backend pointer) so distinct backends never share a leader
+	// — a leader's barrier makes exactly one store durable. Lazily populated by
+	// commitLeaderFor; guarded by its own mutex (never contends with s.mu).
+	commitLeaders   map[Store]*commitLeader
+	commitLeadersMu sync.Mutex
+
 	// parentLinkShards is a fixed bank of mutexes that serialize the parent
 	// directory link-count read-modify-write (the ".." bump) done by mkdir (+1),
 	// rmdir (-1), and cross-parent directory rename (-1 source, +1 destination).
@@ -146,7 +155,24 @@ func New() *Service {
 		quotas:             make(map[string]int64),
 		identityQuotas:     newQuotaLimits(),
 		removeGen:          make(map[string]uint64),
+		commitLeaders:      make(map[Store]*commitLeader),
 	}
+}
+
+// commitLeaderFor returns the per-store commit leader, creating it on first use.
+// The leader's barrier drives that store's SyncDurable with a background context
+// so a caller's cancellation never abandons an in-flight durability fsync
+// (matches the commitLeader contract).
+func (s *Service) commitLeaderFor(store Store) *commitLeader {
+	s.commitLeadersMu.Lock()
+	defer s.commitLeadersMu.Unlock()
+	if l := s.commitLeaders[store]; l != nil {
+		return l
+	}
+	st := store
+	l := newCommitLeader(func() error { return st.SyncDurable(context.Background()) })
+	s.commitLeaders[store] = l
+	return l
 }
 
 // QuotaGracePersister persists a per-identity quota's grace timer transition
@@ -461,6 +487,17 @@ func (s *Service) RemoveStoreForShare(shareName string) {
 		// a removed share. AbortGracePeriod stops the timer synchronously and
 		// does not block, so holding s.mu across it is safe.
 		lm.AbortGracePeriod()
+	}
+
+	// Drop this store's commit leader too (#1573). commitLeaders is keyed by the
+	// Store value and lazily populated, so without this it grows unbounded across
+	// AddShare/RemoveShare churn and pins the closed Store (and its DB handles)
+	// reachable via the barrier closure. commitLeadersMu is independent of s.mu
+	// (never nested the other way), so taking it here is deadlock-free.
+	if st := s.stores[shareName]; st != nil {
+		s.commitLeadersMu.Lock()
+		delete(s.commitLeaders, st)
+		s.commitLeadersMu.Unlock()
 	}
 
 	delete(s.stores, shareName)

@@ -314,6 +314,12 @@ func (store *MemoryMetadataStore) CreateRootDirectory(
 // marker so the lock-recovery boot path treats this drain as clean. The marker
 // is in-process only (memory is non-durable across restarts), which is correct
 // — a new process always starts with a fresh, unclean-by-default store.
+// SyncDurable is a no-op durability barrier (#1573): the memory store holds all
+// state in RAM and offers no crash durability, so there is nothing to flush.
+func (store *MemoryMetadataStore) SyncDurable(_ context.Context) error {
+	return nil
+}
+
 func (store *MemoryMetadataStore) Close() error {
 	store.mu.Lock()
 	store.initLockStore()

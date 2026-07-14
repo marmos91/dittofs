@@ -435,7 +435,15 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 		return err
 	}
 
-	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	// Stage the write with relaxed durability (no inline fsync), then force a
+	// COALESCED durable barrier through the per-store commit leader. Net
+	// durability is identical to a fully-durable WithTransaction — the barrier
+	// completes before we return (strict group-commit, #1573) — but N concurrent
+	// COMMITs collapse onto one Store.SyncDurable instead of N independent
+	// fsyncs. Staging relaxed is safe despite the file-size (data-paired) write
+	// because we do NOT rely on the background ticker: the leader.Sync below
+	// makes it durable synchronously before returning.
+	if err := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 		file, err := tx.GetFile(ctx.Context, handle)
 		if err != nil {
 			return err
@@ -458,7 +466,11 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 		}
 
 		return tx.PutFile(ctx.Context, file)
-	})
+	}); err != nil {
+		return err
+	}
+
+	return s.commitLeaderFor(store).Sync(ctx.Context)
 }
 
 // GetPendingSize returns the pending size for a file if there are uncommitted writes.

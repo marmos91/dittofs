@@ -485,6 +485,16 @@ func (s *BadgerMetadataStore) syncIfRelaxed() error {
 	return s.db.Sync()
 }
 
+// SyncDurable forces every committed-but-unsynced write to disk — the durability
+// barrier the Service's commit leader coalesces (#1573). It is the same
+// db.Sync() syncIfRelaxed issues inline; in strict mode (SyncWrites=true) each
+// commit already fsynced, so this is a cheap redundant sync. Counts toward
+// inlineSyncs so a coalesced burst (N commits, one SyncDurable) is observable.
+func (s *BadgerMetadataStore) SyncDurable(_ context.Context) error {
+	s.inlineSyncs.Add(1)
+	return s.db.Sync()
+}
+
 // storeIDKey is the BadgerDB key for the engine-persistent store identifier.
 // It lives under the existing "cfg:" singleton-config prefix so it shares a
 // namespace with server config and filesystem capabilities.
