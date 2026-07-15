@@ -1,4 +1,4 @@
-# Wall A — `segstore` local block store redesign: architecture blueprint
+# Wall A — `journal` local block store redesign: architecture blueprint
 
 > Finalized executor-ready blueprint for Wall A of the three-wall NFS/SMB perf plan
 > (`2026-07-15-nfs-smb-three-walls-PLAN.md`). All design decisions are LOCKED in the plan;
@@ -9,11 +9,11 @@ Locked spec: `2026-07-15-nfs-smb-three-walls-PLAN.md` (Wall A §1–§6 + Unifyi
 
 ## 1. Package layout
 
-New standalone package: **`pkg/block/segstore/`** — owns all persistent local-cache state, zero imports from `pkg/controlplane`, `pkg/metadata`, or protocol packages. Only external deps: `pkg/block/remote` (for the `RemoteBlockStore` shape it borrows, not imports directly — see §2) and stdlib.
+New standalone package: **`pkg/block/journal/`** — owns all persistent local-cache state, zero imports from `pkg/controlplane`, `pkg/metadata`, or protocol packages. Only external deps: `pkg/block/remote` (for the `RemoteBlockStore` shape it borrows, not imports directly — see §2) and stdlib.
 
 ```
-pkg/block/segstore/
-  segstore.go   // Store struct, Open/Close/Stats, Config, Clock
+pkg/block/journal/
+  journal.go   // Store struct, Open/Close/Stats, Config, Clock
   record.go     // record framing, encode/decode, CRC
   segment.go    // active/sealed segment lifecycle, sealed-fd pool, append primitive
   index.go      // per-file interval index, SegmentLocation, DataExtents
@@ -27,12 +27,12 @@ pkg/block/segstore/
 
 Replaces, in `pkg/block/local/fs/`: `rollup.go`, `compaction.go`, `appendlog.go`, `appendwrite.go`, `logindex.go`, `readpayload.go`, `eviction.go`, `recovery.go` — all deleted (§6). Replaces `pkg/block/local/logblob/` entirely (deleted). `pkg/block/local/fs/sync_leader.go` and the shard-hashing idea in `logshard.go` are **ported, not deleted** — they're already format-agnostic (§6).
 
-`FSStore` (surviving, slimmed) becomes a thin adapter: it still implements `block.Store` / `block.BlockStoreAppend` / `DurabilityReporter` (`pkg/block/blockstore.go`) for the rest of the codebase, but every method body delegates to a `*segstore.Store` instance plus the existing `metadata.LocalChunkIndex` bookkeeping on the other side of the seam.
+`FSStore` (surviving, slimmed) becomes a thin adapter: it still implements `block.Store` / `block.BlockStoreAppend` / `DurabilityReporter` (`pkg/block/blockstore.go`) for the rest of the codebase, but every method body delegates to a `*journal.Store` instance plus the existing `metadata.LocalChunkIndex` bookkeeping on the other side of the seam.
 
 ## 2. Public API
 
 ```go
-package segstore
+package journal
 
 type FileID string // == today's payloadID; same value space, same shardFor hash
 
@@ -67,7 +67,7 @@ func (s *Store) Stats() Stats
 Injected dependencies:
 
 ```go
-// Mirrors pkg/block/remote/remote.go:74 RemoteBlockStore in shape; segstore
+// Mirrors pkg/block/remote/remote.go:74 RemoteBlockStore in shape; journal
 // depends on this narrow interface, not the remote package's concrete type.
 type RemoteStore interface {
     PutBlock(ctx context.Context, id BlockID, r io.Reader, size int64) error
@@ -185,8 +185,8 @@ type segmentMeta struct {
 4. **No hash-verify** — record CRC checked only by GC/repack/recovery. Retires #1648 verify-once (moot: no separate CAS-verify step).
 
 **Cold read (serve-direct + async hydrate, A8)**
-1. On an interval-index miss for a range known remote (resolved by the FSStore/engine caller via logical-offset→hash→`ChunkLocator`; segstore has no namespace dependency), the caller does `GetRange`/`GetBlock` and serves the client immediately — never blocks on a local write.
-2. Fetched bytes copied to wire first; only then `segstore.Hydrate` (buffer-ownership discipline).
+1. On an interval-index miss for a range known remote (resolved by the FSStore/engine caller via logical-offset→hash→`ChunkLocator`; journal has no namespace dependency), the caller does `GetRange`/`GetBlock` and serves the client immediately — never blocks on a local write.
+2. Fetched bytes copied to wire first; only then `journal.Hydrate` (buffer-ownership discipline).
 3. Hydrate **every** chunk unpacked from the fetched block — free prefetch.
 4. Concurrent cold readers singleflight at the caller's read-through-cache (#1362).
 
@@ -210,18 +210,18 @@ type segmentMeta struct {
 5. Orphan sweep: age-gated; any on-disk segment unreferenced by bookkeeping is redundant (per GC ordering invariant), safe to delete after the age gate.
 
 **Migration (A6)**
-Drain→discard→re-hydrate, no format converter. Upgrade blocks until `UnsyncedBytes()==0`, then starts segstore with an **empty** local cache — first post-upgrade reads are cold and repopulate via Hydrate. One-shot, deleted the release after it ships (precedent: `fs/legacy_migration.go`).
+Drain→discard→re-hydrate, no format converter. Upgrade blocks until `UnsyncedBytes()==0`, then starts journal with an **empty** local cache — first post-upgrade reads are cold and repopulate via Hydrate. One-shot, deleted the release after it ships (precedent: `fs/legacy_migration.go`).
 
 ## 6. Mapping to existing code
 
-**Delete:** `pkg/block/local/fs/{rollup,compaction,appendlog,appendwrite,logindex,readpayload,eviction,recovery}.go`; `pkg/block/local/logblob/` (entire package — reusable patterns reimplemented against the shared-segment format in `segstore/segment.go`).
+**Delete:** `pkg/block/local/fs/{rollup,compaction,appendlog,appendwrite,logindex,readpayload,eviction,recovery}.go`; `pkg/block/local/logblob/` (entire package — reusable patterns reimplemented against the shared-segment format in `journal/segment.go`).
 
 **Modify:**
-- `pkg/block/local/fs/chunkstore.go`, `blockstore_methods.go` — read/write bodies (`chunkstore.go:185,251,300`) delegate to `segstore.Store.ReadAt`/`WriteAt`/`Hydrate`.
+- `pkg/block/local/fs/chunkstore.go`, `blockstore_methods.go` — read/write bodies (`chunkstore.go:185,251,300`) delegate to `journal.Store.ReadAt`/`WriteAt`/`Hydrate`.
 - `pkg/block/block_record.go` — rename `LocalChunkLocation{LogBlobID,RawOffset,RawLength}` → `SegmentLocation{SegmentID uint64, Offset, Length int64}`; mechanical across callers (`carver.go:293-299`, `eviction.go:381/498/555/744`, `legacy_migration.go:120/270`, `blockstore_methods.go:71/126`).
-- `pkg/block/engine/carver.go`/`syncer.go` — **biggest boundary shift.** Chunk-boundary discovery moves to carve time, inside `segstore.Carve()`. **Delete** `localBlobReader` (`syncer.go:191-198`) + field (`syncer.go:151`); segstore does its own local reads. `engine/syncer.go` keeps only packing+PutBlock+commit: calls `segstore.Carve()`, gets chunked/hashed novel batches, frames via `blockcodec.Builder` + `PutBlock` + `blockCommitter`. Delete `pendingCarveHashes`/`carveQ`/`addPendingHash` (`syncer.go:100-230`) and the `onChunkComplete` ingest hook — no chunk-at-ingest anymore.
-- `pkg/controlplane/runtime/shares/service.go` — `CreateLocalStoreFromConfig` constructs segstore-backed `FSStore`; delete dead `use_append_log` flag.
-- `pkg/block/blockstoretest/conformance.go`, `appendlog.go` — kept; four currently-skipped scenarios (`PressureChannel_INV05`, `TornWriteRecovery_LSL06`, `ConcurrentStorm`, `RollupOffsetMonotone_INV03`) get their fs-internal probes rewritten against segstore internals (PR3/PR8), not dropped.
+- `pkg/block/engine/carver.go`/`syncer.go` — **biggest boundary shift.** Chunk-boundary discovery moves to carve time, inside `journal.Carve()`. **Delete** `localBlobReader` (`syncer.go:191-198`) + field (`syncer.go:151`); journal does its own local reads. `engine/syncer.go` keeps only packing+PutBlock+commit: calls `journal.Carve()`, gets chunked/hashed novel batches, frames via `blockcodec.Builder` + `PutBlock` + `blockCommitter`. Delete `pendingCarveHashes`/`carveQ`/`addPendingHash` (`syncer.go:100-230`) and the `onChunkComplete` ingest hook — no chunk-at-ingest anymore.
+- `pkg/controlplane/runtime/shares/service.go` — `CreateLocalStoreFromConfig` constructs journal-backed `FSStore`; delete dead `use_append_log` flag.
+- `pkg/block/blockstoretest/conformance.go`, `appendlog.go` — kept; four currently-skipped scenarios (`PressureChannel_INV05`, `TornWriteRecovery_LSL06`, `ConcurrentStorm`, `RollupOffsetMonotone_INV03`) get their fs-internal probes rewritten against journal internals (PR3/PR8), not dropped.
 
 **Keep unchanged:** `metadata.Transactor`/`SyncedHashStore`/`LocalChunkIndex`; `remote.RemoteBlockStore` (`remote/remote.go:74`); `block.EngineFileChunkStore` (`filechunk.go:145`); `blockcodec.Builder`; `fs/sync_leader.go` (ported as-is). `engine/{gc,gc_block,reclaim,dataextents,readahead,cache,sync_health}.go` — flagged for a targeted read-through to confirm none hide `LocalChunkLocation`-shaped assumptions (open item).
 
@@ -229,16 +229,16 @@ Drain→discard→re-hydrate, no format converter. Upgrade blocks until `Unsynce
 
 Each independently reviewable, conformance-gated where applicable, `-race` clean, simplifier→reviewer→lint→PR→CI-green→squash-merge.
 
-0. **PR0 — standalone bench harness.** `pkg/block/segstore/` skeleton + in-package benchmarks vs a fake in-memory `RemoteStore`, no wiring. Acceptance: `go test -bench=.` produces write/read/carve throughput; the baseline every later PR is measured against.
+0. **PR0 — standalone bench harness.** `pkg/block/journal/` skeleton + in-package benchmarks vs a fake in-memory `RemoteStore`, no wiring. Acceptance: `go test -bench=.` produces write/read/carve throughput; the baseline every later PR is measured against.
 1. **PR1 — segment format + append primitive.** `record.go`, `segment.go`: header, framing, active/sealed, sealed-fd pool, `.idx` writer, `Open`/`WriteAt`/`ReadAt`/`Commit`/`Close`/`Stats`. Acceptance: random offset/length spans across many `FileID`s byte-identical readback; crash-injection mid-append → clean recovery truncation; `-race`.
 2. **PR2 — interval index.** `index.go`: tree rekeyed to `SegmentLocation`, hole/gap, `DataExtents`. Acceptance: sparse/hole/newest-wins-after-out-of-order conformance.
 3. **PR3 — recovery.** `recovery.go`: tail-scan, CRC, torn-write truncate, Version-LSN recompute, orphan sweep. Acceptance: `TornWriteRecovery_LSL06` becomes a real passing test.
 4. **PR4 — carve.** `carve.go`: FastCDC+BLAKE3+dedup-at-carve, size+age batching, in-place synced-bit flip. Acceptance: chunk boundaries match a reference FastCDC/BLAKE3 run; re-carve-after-crash no double-count; dedup vs fake `EngineFileChunkStore`.
 5. **PR5 — eviction.** `evict.go`: pressure-gated whole-segment, synced-gate, cold-marker invalidation. Acceptance: evicting a synced segment leaves reads on its ranges reporting cold (not hole/error); `DataExtents` still reports range present.
 6. **PR6 — GC/repack.** `gc.go`: dead-byte hooks, size-tiered pick, `GCDeadRatioForce`, fsync-then-unlink. Acceptance: forced repack fires above threshold without idle wait; crash before unlink → harmless orphan, data intact.
-7. **PR7 — engine wiring.** Rework `engine/syncer.go`/`carver.go` (segstore owns chunking); delete `localBlobReader`, `pendingCarveHashes`/`carveQ`, `onChunkComplete`. Acceptance: `carver_test.go` passes new call shape; e2e `BlockStoreConformance` green through the real `Syncer`. **Riskiest interface change — extra reviewer scrutiny.**
-8. **PR8 — FSStore adapter rewrite.** Delegate to segstore; `LocalChunkLocation`→`SegmentLocation` rename; delete the eight `fs/*.go` files + `logblob/`. Acceptance: full conformance green, `-race`, compile-gate on no dangling refs.
-9. **PR9 — share wiring.** `CreateLocalStoreFromConfig` segstore-backed by default (no flag); delete dead `use_append_log`. Acceptance: NFS+SMB e2e green.
+7. **PR7 — engine wiring.** Rework `engine/syncer.go`/`carver.go` (journal owns chunking); delete `localBlobReader`, `pendingCarveHashes`/`carveQ`, `onChunkComplete`. Acceptance: `carver_test.go` passes new call shape; e2e `BlockStoreConformance` green through the real `Syncer`. **Riskiest interface change — extra reviewer scrutiny.**
+8. **PR8 — FSStore adapter rewrite.** Delegate to journal; `LocalChunkLocation`→`SegmentLocation` rename; delete the eight `fs/*.go` files + `logblob/`. Acceptance: full conformance green, `-race`, compile-gate on no dangling refs.
+9. **PR9 — share wiring.** `CreateLocalStoreFromConfig` journal-backed by default (no flag); delete dead `use_append_log`. Acceptance: NFS+SMB e2e green.
 10. **PR10 — migration.** One-shot drain-then-cold-start (A6), deletion-scheduled next release. Acceptance: e2e upgrade test — drain to `UnsyncedBytes()==0`, post-upgrade cold reads correct.
 11. **PR11 (deferred, A7) — O_DIRECT + io_uring** for background carve/GC bulk reads, Linux-only, gated behind post-PR10 profiling.
 
