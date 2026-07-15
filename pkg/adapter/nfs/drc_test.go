@@ -1,7 +1,9 @@
 package nfs
 
 import (
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -230,26 +232,69 @@ func TestDRC_TTLEviction(t *testing.T) {
 	}
 }
 
-// TestDRC_CapEviction proves the entry cap is enforced (no unbounded growth).
+// TestDRC_CapEviction proves the per-shard entry cap is enforced (no unbounded
+// growth). A fixed (srcAddr, xid) pins every request to one shard, while a
+// varying body yields distinct keys, so the cap is exercised on a single shard.
 func TestDRC_CapEviction(t *testing.T) {
 	d := newDuplicateRequestCache()
-	d.maxEntries = 8
+	d.maxPerShard = 8
 	now := time.Unix(2000, 0)
 	d.now = func() time.Time { return now }
 
+	s := d.shard("c:1", 1)
 	for i := 0; i < 100; i++ {
 		now = now.Add(time.Millisecond) // distinct ages for oldest-eviction
 		body := []byte{byte(i), byte(i >> 8)}
-		d.lookup("c:1", uint32(i), body)
-		d.record("c:1", uint32(i), body, []byte{0})
+		d.lookup("c:1", 1, body)
+		d.record("c:1", 1, body, []byte{0})
 	}
 
-	d.mu.Lock()
-	n := len(d.entries)
-	d.mu.Unlock()
-	if n > d.maxEntries {
-		t.Fatalf("cache holds %d entries, exceeds cap %d", n, d.maxEntries)
+	s.mu.Lock()
+	n := len(s.entries)
+	s.mu.Unlock()
+	if n > d.maxPerShard {
+		t.Fatalf("shard holds %d entries, exceeds cap %d", n, d.maxPerShard)
 	}
+}
+
+// TestDRC_ShardRoutingStable proves a given (srcAddr, xid) always routes to the
+// same shard regardless of body, so lookup/record/abort agree on the partition.
+func TestDRC_ShardRoutingStable(t *testing.T) {
+	d := newDuplicateRequestCache()
+	a := d.shard("10.0.0.1:1010", 42)
+	b := d.shard("10.0.0.1:1010", 42)
+	if a != b {
+		t.Fatal("same (srcAddr, xid) routed to different shards")
+	}
+	// Sanity: keys do spread across shards.
+	seen := map[*drcShard]bool{}
+	for xid := uint32(0); xid < 256; xid++ {
+		seen[d.shard("c:1", xid)] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("routing collapsed to %d shard(s), expected spread", len(seen))
+	}
+}
+
+// BenchmarkDRC_Contended measures the contended path under many concurrent
+// clients each running distinct (srcAddr, xid) lookup+record cycles.
+func BenchmarkDRC_Contended(b *testing.B) {
+	d := newDuplicateRequestCache()
+	var ctr int64
+	b.RunParallel(func(pb *testing.PB) {
+		g := atomic.AddInt64(&ctr, 1)
+		addr := "10.0.0." + strconv.FormatInt(g%64, 10) + ":1010"
+		var i uint32
+		reply := []byte{0, 0, 0, 0}
+		for pb.Next() {
+			i++
+			xid := i % 32 // bounded working set: exercise the lock, not eviction
+			body := []byte{byte(xid), byte(g)}
+			if res, _ := d.lookup(addr, xid, body); res == drcMiss {
+				d.record(addr, xid, body, reply)
+			}
+		}
+	})
 }
 
 // TestDRC_ConcurrentAccess exercises the cache under -race with many goroutines
