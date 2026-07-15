@@ -216,8 +216,9 @@ func (s *Store) Commit(ctx context.Context, id FileID) error {
 	sh.mu.Lock()
 	fd := sh.active.fd
 	sh.mu.Unlock()
-	// ponytail: direct per-shard fsync. syncLeader batching (fs/sync_leader.go)
-	// is ported in with the append primitive PR; wire it here then.
+	// ponytail: direct per-shard fsync. syncLeader coalescing (fs/sync_leader.go)
+	// is a throughput optimization for concurrent commits on one shard, not a
+	// correctness requirement; port it here if commit contention shows up.
 	if err := fd.Sync(); err != nil {
 		return fmt.Errorf("journal: commit fsync: %w", err)
 	}

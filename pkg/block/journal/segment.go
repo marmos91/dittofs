@@ -99,12 +99,38 @@ func (s *Store) createSegment() (*segmentMeta, error) {
 		_ = fd.Close()
 		return nil, fmt.Errorf("journal: write segment header %q: %w", path, err)
 	}
+	// Make the header and the directory entry durable before any record can be
+	// committed into this segment: a later Commit fsyncs record bytes, but that
+	// is worthless after a crash if the file itself or its header never reached
+	// disk. Recovery trusts the header to tell active from sealed.
+	if err := fd.Sync(); err != nil {
+		_ = fd.Close()
+		return nil, fmt.Errorf("journal: fsync segment header %q: %w", path, err)
+	}
+	if err := fsyncDir(s.dir); err != nil {
+		_ = fd.Close()
+		return nil, fmt.Errorf("journal: fsync dir %q: %w", s.dir, err)
+	}
 	// The .idx sidecar is best-effort: if it can't be opened, records still
 	// append and the index is rebuildable from the .seg on recovery.
 	idxFD, _ := os.OpenFile(s.idxPath(id), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	m := &segmentMeta{id: id, createdAt: createdAt, fd: fd, idxFD: idxFD}
 	m.tail.Store(segHeaderSize)
 	return m, nil
+}
+
+// fsyncDir flushes a directory's entries so a freshly created file survives a
+// crash. A directory Open+Sync is the portable way to fsync directory metadata.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // sealSegment fsyncs the shard's active segment, flips its on-disk sealed bit,
@@ -131,6 +157,14 @@ func (s *Store) sealSegment(sh *shard) error {
 	if old.idxFD != nil {
 		_ = old.idxFD.Close()
 		old.idxFD = nil
+	}
+	// Downgrade the segment's fd to O_RDONLY: sealed segments serve warm reads
+	// only, and a read-only handle makes that immutability OS-enforced (mirrors
+	// logblob's sealed read-only fd pool). If the reopen fails we keep the
+	// existing writable fd — reads still work, we just skip the downgrade.
+	if ro, err := os.Open(s.segPath(old.id)); err == nil {
+		_ = old.fd.Close()
+		old.fd = ro
 	}
 	old.sealed.Store(true)
 	sh.sealed[old.id] = old
