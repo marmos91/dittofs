@@ -62,35 +62,40 @@ func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, erro
 
 // claimColdestEvictable finds the coldest sealed, fully-synced, unclaimed segment
 // across all shards and claims it (busy CAS) so eviction and GC never race on the
-// same segment. It returns nil when nothing qualifies or a racer won the claim.
+// same segment. It returns nil only when no segment qualifies. Losing the claim
+// to a concurrent GC/evict does not abort the pass: that segment is now busy and
+// drops out of the next scan, so the coldest remaining candidate is tried
+// instead. The retry terminates because a lost CAS means the segment is busy,
+// shrinking the candidate set each round.
 func (s *Store) claimColdestEvictable() (*segmentMeta, *shard) {
-	var (
-		best       *segmentMeta
-		bestShard  *shard
-		bestAccess int64
-	)
-	for _, sh := range s.shards {
-		sh.mu.Lock()
-		for _, seg := range sh.sealed {
-			if !evictable(seg) {
-				continue
+	for {
+		var (
+			best       *segmentMeta
+			bestShard  *shard
+			bestAccess int64
+		)
+		for _, sh := range s.shards {
+			sh.mu.Lock()
+			for _, seg := range sh.sealed {
+				if !evictable(seg) {
+					continue
+				}
+				if la := seg.lastAccess.Load(); best == nil || la < bestAccess {
+					best, bestShard, bestAccess = seg, sh, la
+				}
 			}
-			if la := seg.lastAccess.Load(); best == nil || la < bestAccess {
-				best, bestShard, bestAccess = seg, sh, la
-			}
+			sh.mu.Unlock()
 		}
-		sh.mu.Unlock()
+		if best == nil {
+			return nil, nil
+		}
+		// The synced-gate only ever loosens for a sealed segment (carve raises
+		// syncedRecords toward records; records is frozen once sealed), so the sole
+		// concurrency hazard is another claimer — the CAS settles it.
+		if best.busy.CompareAndSwap(false, true) {
+			return best, bestShard
+		}
 	}
-	if best == nil {
-		return nil, nil
-	}
-	// The synced-gate only ever loosens for a sealed segment (carve raises
-	// syncedRecords toward records; records is frozen once sealed), so the sole
-	// concurrency hazard is another claimer — the CAS settles it.
-	if !best.busy.CompareAndSwap(false, true) {
-		return nil, nil
-	}
-	return best, bestShard
 }
 
 // evictable reports whether seg can be dropped whole: sealed, unclaimed, and with
@@ -139,6 +144,16 @@ func (s *Store) evictSegment(sh *shard, seg *segmentMeta) (int64, error) {
 // EvictMaxWait (giving carve time to drain to the remote) and finally returns
 // ErrLocalStoreFull. A no-op when MaxLocalBytes is unset. Holds no lock, so the
 // eviction it drives never contends with the caller's own shard.
+//
+// MaxLocalBytes is a soft pressure threshold, not a hard byte quota: admission
+// reads diskBytes without reserving, so N concurrent writers across shards can
+// each clear the gate and append before any lands, briefly overshooting the cap
+// — and eviction is whole-segment anyway, so exact enforcement is neither
+// possible nor the goal. The gate relieves pressure (evict) and, failing that,
+// backpressures; a later writer's round evicts the overshoot. ErrLocalStoreFull
+// means genuinely nothing is evictable, never mere overshoot. A hard ceiling
+// would need a global reserved-bytes counter, deliberately not built (the
+// eviction design is lazy and pressure-gated).
 func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 	if s.cfg.MaxLocalBytes <= 0 {
 		return nil

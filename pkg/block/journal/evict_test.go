@@ -109,6 +109,42 @@ func TestEvictColdestSyncedSegment(t *testing.T) {
 	}
 }
 
+// TestEvictSkipsClaimedSegment: a segment already claimed (busy, e.g. GC mid-op)
+// must not abort the eviction pass — the next-coldest evictable segment is taken
+// instead, and the claimed one is left untouched.
+func TestEvictSkipsClaimedSegment(t *testing.T) {
+	s, _ := evictStore(t, Config{})
+	ctx := context.Background()
+
+	fillUntilSealed(t, s, "f", true, 2)
+	segs := sealedSegs(s.shardFor("f"))
+	if len(segs) < 2 {
+		t.Fatalf("want >=2 sealed segments, got %d", len(segs))
+	}
+	// segs[0] is the coldest but is claimed out from under eviction.
+	segs[0].lastAccess.Store(100)
+	segs[1].lastAccess.Store(200)
+	for _, seg := range segs[2:] {
+		seg.lastAccess.Store(300)
+	}
+	claimed, next := segs[0], segs[1]
+	claimed.busy.Store(true)
+
+	res, err := s.Evict(ctx, 0)
+	if err != nil {
+		t.Fatalf("Evict: %v", err)
+	}
+	if res.SegmentsEvicted != 1 {
+		t.Fatalf("a claimed coldest must not abort the pass, evicted %d", res.SegmentsEvicted)
+	}
+	if _, err := os.Stat(s.segPath(next.id)); !os.IsNotExist(err) {
+		t.Fatalf("next-coldest %d should be evicted, stat err=%v", next.id, err)
+	}
+	if _, err := os.Stat(s.segPath(claimed.id)); err != nil {
+		t.Fatalf("claimed segment %d must be left untouched, stat err=%v", claimed.id, err)
+	}
+}
+
 func TestEvictSyncedGateRefusesDirty(t *testing.T) {
 	s, _ := evictStore(t, Config{})
 	ctx := context.Background()
@@ -173,7 +209,8 @@ func TestEvictedRangeReadsCold(t *testing.T) {
 // blockstoretest PressureChannel_INV05 probe (skipped there because it needs
 // backend internals): once the local cap is exceeded and every segment is
 // pinned by unsynced bytes, the write path backpressures and finally fails with
-// ErrLocalStoreFull rather than blowing the cap.
+// ErrLocalStoreFull (the cap is a soft pressure threshold; ErrLocalStoreFull
+// signals genuinely-nothing-evictable, not mere overshoot).
 func TestPressureBackpressureDirtyPinned(t *testing.T) {
 	s, _ := evictStore(t, Config{MaxLocalBytes: 2 << 20, EvictMaxWait: 50 * time.Millisecond})
 	ctx := context.Background()
