@@ -149,6 +149,13 @@ type SMBHandlerContext struct {
 	// This is set from the session during request handling.
 	User *models.User
 
+	// session is the *session.Session that owns this request, set by
+	// primeAuthContext. It backs the per-session AuthContext identity cache so
+	// BuildAuthContextFromUser can reuse a memoized identity instead of
+	// re-deriving it on every op. Nil on paths that do not prime (the build then
+	// falls back to constructing the identity fresh).
+	session *session.Session
+
 	// PACGroupSIDs carries the Kerberos PAC group SIDs of the request's
 	// session (when it authenticated via Kerberos against AD). Populated from
 	// Session.PACGroupSIDs by primeAuthContext and the Kerberos SESSION_SETUP
