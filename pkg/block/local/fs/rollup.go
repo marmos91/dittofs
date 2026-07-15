@@ -50,7 +50,7 @@ type consumedExt struct {
 // Workers join on Close() via bc.rollupWg; see Close in fs.go.
 func (bc *FSStore) StartRollup(ctx context.Context) error {
 	if bc.rollupStore == nil {
-		return fmt.Errorf("rollup: nil RollupStore (set opts.RollupStore in NewWithOptions)")
+		return fmt.Errorf("rollup: nil RollupStore (backend passed to NewWithOptions must implement metadata.RollupStore)")
 	}
 	if !bc.rollupStarted.CompareAndSwap(false, true) {
 		return nil
