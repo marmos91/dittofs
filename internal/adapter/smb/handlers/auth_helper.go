@@ -231,10 +231,12 @@ func (ctx *SMBHandlerContext) cachedIdentity(user *models.User) *metadata.Identi
 }
 
 // maybeCacheIdentity memoizes identity on the session only when user is the
-// session's current authenticated user. A handle-frozen opener snapshot (which may
-// differ after a re-auth) is never written back, so it can't poison the cache.
+// request's session-current user. ctx.User is primeAuthContext's snapshot of
+// Session.User taken for this request's lifetime, so comparing against it (not
+// Session.User, which other goroutines reassign on re-auth) is race-free and
+// still refuses to cache a handle-frozen opener snapshot.
 func (ctx *SMBHandlerContext) maybeCacheIdentity(user *models.User, identity *metadata.Identity) {
-	if ctx.session != nil && user == ctx.session.User {
+	if ctx.session != nil && user == ctx.User {
 		ctx.session.SetCachedAuthIdentity(user, identity)
 	}
 }
