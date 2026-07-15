@@ -9,7 +9,7 @@ import (
 )
 
 // benchRawMessage models the read-loop per-request raw-message reconstruct
-// (header + body) exercised in Connection.handleRequests. It compares the
+// (header + body) exercised in Connection.Serve. It compares the
 // pooled path against a fresh allocation per request.
 func benchRawMessage(b *testing.B, bodyLen int, pooled bool) {
 	b.Helper()

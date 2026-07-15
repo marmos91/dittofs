@@ -351,10 +351,12 @@ func (c *Connection) Serve(ctx context.Context) {
 		// race with the LOGOFF handler, causing the signing verifier to
 		// return STATUS_ACCESS_DENIED instead of STATUS_USER_SESSION_DELETED.
 		if hdr.Command == types.CommandLogoff && len(remainingCompound) == 0 {
-			if err := smb.ProcessSingleRequest(ctx, hdr, body, rawMessage, ci, isEncrypted, nil); err != nil {
-				logger.Debug("Error processing LOGOFF request", "address", clientAddr, "messageID", hdr.MessageID, "error", err)
-			}
-			pool.Put(rawMessage)
+			func() {
+				defer pool.Put(rawMessage)
+				if err := smb.ProcessSingleRequest(ctx, hdr, body, rawMessage, ci, isEncrypted, nil); err != nil {
+					logger.Debug("Error processing LOGOFF request", "address", clientAddr, "messageID", hdr.MessageID, "error", err)
+				}
+			}()
 			continue
 		}
 
