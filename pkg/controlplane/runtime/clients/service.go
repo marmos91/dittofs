@@ -6,6 +6,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,11 +44,24 @@ type SmbDetails struct {
 	Encrypted bool   `json:"encrypted"`
 }
 
+// clientEntry is the map value. It holds the record's structural fields plus a
+// lock-free last-activity timestamp. The timestamp is bumped on every request,
+// so it lives in an atomic instead of under the registry write lock.
+type clientEntry struct {
+	ClientRecord
+	lastActivity atomic.Int64 // Unix nanos; hot path, lock-free
+}
+
 // Registry provides thread-safe client tracking with TTL-based stale cleanup.
 // It follows the same sub-service pattern as mounts.Tracker.
+//
+// mu guards the map structure and each entry's non-atomic fields (Shares).
+// The per-request activity bump (UpdateActivity) takes only a shared read lock
+// for map safety and stores into the entry's atomic timestamp, so the
+// highest-fan-in call in the system no longer serializes on the write lock.
 type Registry struct {
 	mu      sync.RWMutex
-	clients map[string]*ClientRecord // keyed by ClientID
+	clients map[string]*clientEntry // keyed by ClientID
 	ttl     time.Duration
 	stopCh  chan struct{}
 }
@@ -58,7 +72,7 @@ func NewRegistry(ttl time.Duration) *Registry {
 		ttl = DefaultTTL
 	}
 	return &Registry{
-		clients: make(map[string]*ClientRecord),
+		clients: make(map[string]*clientEntry),
 		ttl:     ttl,
 		stopCh:  make(chan struct{}),
 	}
@@ -75,9 +89,13 @@ func (r *Registry) Register(record *ClientRecord) {
 		record.LastActivity = now
 	}
 
+	e := &clientEntry{ClientRecord: *record}
+	deepCopyRefs(&e.ClientRecord) // don't alias caller-owned slice/pointers
+	e.lastActivity.Store(record.LastActivity.UnixNano())
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.clients[record.ClientID] = record
+	r.clients[record.ClientID] = e
 }
 
 // Deregister removes and returns a client record. Returns nil if not found.
@@ -85,12 +103,12 @@ func (r *Registry) Deregister(clientID string) *ClientRecord {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	rec, ok := r.clients[clientID]
+	e, ok := r.clients[clientID]
 	if !ok {
 		return nil
 	}
 	delete(r.clients, clientID)
-	return rec
+	return copyRecord(e)
 }
 
 // Get returns a deep copy of the client record, or nil if not found.
@@ -98,21 +116,22 @@ func (r *Registry) Get(clientID string) *ClientRecord {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	rec, ok := r.clients[clientID]
+	e, ok := r.clients[clientID]
 	if !ok {
 		return nil
 	}
-	return copyRecord(rec)
+	return copyRecord(e)
 }
 
-// UpdateActivity updates the LastActivity timestamp for a client.
-// No-op if the client does not exist.
+// UpdateActivity bumps the LastActivity timestamp for a client. Called on every
+// NFS/SMB request, so it takes only a read lock (map safety) and stores into the
+// per-client atomic — no write-lock convoy. No-op if the client does not exist.
 func (r *Registry) UpdateActivity(clientID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-	if rec, ok := r.clients[clientID]; ok {
-		rec.LastActivity = time.Now()
+	if e, ok := r.clients[clientID]; ok {
+		e.lastActivity.Store(time.Now().UnixNano())
 	}
 }
 
@@ -122,12 +141,12 @@ func (r *Registry) AddShare(clientID, share string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	rec, ok := r.clients[clientID]
+	e, ok := r.clients[clientID]
 	if !ok {
 		return
 	}
-	if !slices.Contains(rec.Shares, share) {
-		rec.Shares = append(rec.Shares, share)
+	if !slices.Contains(e.Shares, share) {
+		e.Shares = append(e.Shares, share)
 	}
 }
 
@@ -137,13 +156,13 @@ func (r *Registry) RemoveShare(clientID, share string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	rec, ok := r.clients[clientID]
+	e, ok := r.clients[clientID]
 	if !ok {
 		return
 	}
-	for i, s := range rec.Shares {
+	for i, s := range e.Shares {
 		if s == share {
-			rec.Shares = append(rec.Shares[:i], rec.Shares[i+1:]...)
+			e.Shares = append(e.Shares[:i], e.Shares[i+1:]...)
 			return
 		}
 	}
@@ -183,11 +202,12 @@ func (r *Registry) collect(filter func(*ClientRecord) bool) []*ClientRecord {
 	defer r.mu.RUnlock()
 
 	result := make([]*ClientRecord, 0, len(r.clients))
-	for _, rec := range r.clients {
+	for _, e := range r.clients {
+		rec := copyRecord(e) // snapshot carries the atomic LastActivity
 		if filter != nil && !filter(rec) {
 			continue
 		}
-		result = append(result, copyRecord(rec))
+		result = append(result, rec)
 	}
 	return result
 }
@@ -218,9 +238,9 @@ func (r *Registry) sweep() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
-	for id, rec := range r.clients {
-		if now.Sub(rec.LastActivity) > r.ttl {
+	now := time.Now().UnixNano()
+	for id, e := range r.clients {
+		if now-e.lastActivity.Load() > int64(r.ttl) {
 			delete(r.clients, id)
 		}
 	}
@@ -236,22 +256,28 @@ func (r *Registry) Stop() {
 	}
 }
 
-// copyRecord creates a deep copy of a ClientRecord, including the Shares
-// slice and protocol detail structs.
-func copyRecord(src *ClientRecord) *ClientRecord {
-	dst := *src
-	// Deep copy Shares slice.
-	if src.Shares != nil {
-		dst.Shares = append([]string(nil), src.Shares...)
-	}
-	// Deep copy protocol details.
-	if src.NFS != nil {
-		nfsCopy := *src.NFS
-		dst.NFS = &nfsCopy
-	}
-	if src.SMB != nil {
-		smbCopy := *src.SMB
-		dst.SMB = &smbCopy
-	}
+// copyRecord creates a deep copy of an entry's ClientRecord, filling
+// LastActivity from the atomic timestamp.
+func copyRecord(e *clientEntry) *ClientRecord {
+	dst := e.ClientRecord
+	dst.LastActivity = time.Unix(0, e.lastActivity.Load())
+	deepCopyRefs(&dst)
 	return &dst
+}
+
+// deepCopyRefs replaces the reference-typed fields of rec (the Shares slice and
+// the NFS/SMB detail pointers) with independent copies, so the record no longer
+// aliases the caller's or the registry's data.
+func deepCopyRefs(rec *ClientRecord) {
+	if rec.Shares != nil {
+		rec.Shares = append([]string(nil), rec.Shares...)
+	}
+	if rec.NFS != nil {
+		nfsCopy := *rec.NFS
+		rec.NFS = &nfsCopy
+	}
+	if rec.SMB != nil {
+		smbCopy := *rec.SMB
+		rec.SMB = &smbCopy
+	}
 }
