@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -45,7 +46,7 @@ type Service struct {
 	dirChangeNotifiers map[string]lock.DirChangeNotifier // shareName -> notifier for directory changes
 	pendingWrites      *PendingWritesTracker             // deferred metadata commits for performance
 	dirTimes           *DirTimesTracker                  // coalesced directory mtime/ctime/atime bumps (#1573)
-	deferredCommit     bool                              // if true, use deferred commits (default: true)
+	deferredCommit     atomic.Bool                       // if true, use deferred commits (default: true); read lock-free on the write hot path
 
 	// parentLinkShards is a fixed bank of mutexes that serialize the parent
 	// directory link-count read-modify-write (the ".." bump) done by mkdir (+1),
@@ -135,19 +136,20 @@ type GraceCoordinator interface {
 // Use RegisterStoreForShare to configure stores for each share.
 // By default, deferred commits are enabled for better write performance.
 func New() *Service {
-	return &Service{
+	s := &Service{
 		stores:             make(map[string]Store),
 		lockManagers:       make(map[string]*LockManager),
 		unifiedViews:       make(map[string]*UnifiedLockView),
 		dirChangeNotifiers: make(map[string]lock.DirChangeNotifier),
 		pendingWrites:      NewPendingWritesTracker(),
 		dirTimes:           NewDirTimesTracker(),
-		deferredCommit:     true, // Enable deferred commits by default
 		cookies:            NewCookieManager(),
 		quotas:             make(map[string]int64),
 		identityQuotas:     newQuotaLimits(),
 		removeGen:          make(map[string]uint64),
 	}
+	s.deferredCommit.Store(true) // Enable deferred commits by default
+	return s
 }
 
 // QuotaGracePersister persists a per-identity quota's grace timer transition
@@ -225,9 +227,7 @@ func (s *Service) ListIdentityQuotas() []ConfiguredQuota {
 // When enabled, CommitWrite batches updates until FlushPendingWrites is called.
 // This significantly improves write performance for sequential workloads.
 func (s *Service) SetDeferredCommit(enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.deferredCommit = enabled
+	s.deferredCommit.Store(enabled)
 }
 
 // SetLockGracePeriod sets the grace period applied to per-share lock managers
