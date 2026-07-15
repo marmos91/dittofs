@@ -46,6 +46,7 @@ import (
 	"github.com/marmos91/dittofs/internal/adapter/smb/signing"
 	"github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // Session represents an SMB2 session with both identity and credit tracking.
@@ -90,6 +91,17 @@ type Session struct {
 	// SetPACIdentity / PACIdentity, which copy in and out.
 	pacGroupSIDs []string
 	pacUserSID   string
+
+	// authIdentity memoizes the *metadata.Identity derived from User + the PAC
+	// group SIDs above. That derivation (UID/GID lookup, supplementary-GID slice,
+	// group-SID concat + dedup) is fixed for the life of a session's identity, so
+	// rebuilding it on every READ/WRITE is pure waste. authIdentityUser records
+	// the exact *models.User it was built for: a re-authentication swaps
+	// Session.User for a fresh pointer, so the pointer guard makes a stale entry
+	// miss. SetPACIdentity additionally clears it whenever the PAC set changes.
+	// Guarded by mu (identity is only read, never mutated, by consumers).
+	authIdentity     *metadata.Identity
+	authIdentityUser *models.User
 
 	// cryptoState holds per-session cryptographic state (signing keys, signer,
 	// encryption/decryption keys). Replaces the old Signing field.
@@ -219,6 +231,35 @@ func (s *Session) SetPACIdentity(groupSIDs []string, userSID string) {
 		s.pacGroupSIDs = append([]string(nil), groupSIDs...)
 	}
 	s.pacUserSID = userSID
+	// The memoized identity folds in the PAC group SIDs, so any refresh (or the
+	// NTLM-reauth clear) must drop it. Both re-auth paths call SetPACIdentity, so
+	// this is the single chokepoint that keeps the cache from going stale.
+	s.authIdentity = nil
+	s.authIdentityUser = nil
+}
+
+// CachedAuthIdentity returns the memoized identity for user, or nil when none is
+// cached for that exact *models.User. The pointer guard is deliberate: a
+// re-authentication assigns Session.User a fresh pointer, so a request carrying
+// the old (or a handle-frozen opener) user misses and rebuilds. Safe for
+// concurrent use.
+func (s *Session) CachedAuthIdentity(user *models.User) *metadata.Identity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.authIdentityUser == user {
+		return s.authIdentity
+	}
+	return nil
+}
+
+// SetCachedAuthIdentity memoizes identity as the built identity for user. Callers
+// must only pass the session's current User; a handle-frozen opener snapshot must
+// not be cached here. Safe for concurrent use.
+func (s *Session) SetCachedAuthIdentity(user *models.User, identity *metadata.Identity) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authIdentityUser = user
+	s.authIdentity = identity
 }
 
 // PACIdentity returns a copy of the session's Kerberos PAC group SIDs and the

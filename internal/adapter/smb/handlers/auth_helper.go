@@ -146,56 +146,97 @@ func getUserIdentity(user *models.User) (uid, gid uint32) {
 // here — it is set by the WRITE / SET_INFO op handlers from the open handle's
 // GrantedAccess, since SMB write authorization is handle-based.
 func BuildAuthContextFromUser(ctx *SMBHandlerContext, user *models.User) *metadata.AuthContext {
+	// The identity is fixed for the life of a session's authentication, so reuse
+	// the session's memoized one instead of re-deriving it (UID/GID lookup, GID
+	// slice, group-SID concat + dedup) on every op. Handle-bound callers pass the
+	// frozen OpenFile.OpenerUser: after a re-auth that differs from Session.User,
+	// so the pointer-guarded cache misses and the snapshot identity is rebuilt.
+	identity := &metadata.Identity{}
+	if user != nil {
+		if cached := ctx.cachedIdentity(user); cached != nil {
+			identity = cached
+		} else {
+			identity = buildIdentity(ctx, user)
+			ctx.maybeCacheIdentity(user, identity)
+		}
+	}
+
 	authCtx := &metadata.AuthContext{
 		Context:                ctx.Context,
 		ClientAddr:             ctx.ClientAddr,
 		LockClientID:           fmt.Sprintf("smb:%d", ctx.SessionID),
-		Identity:               &metadata.Identity{},
+		Identity:               identity,
 		BypassTraverseChecking: true,
 	}
 
-	if user != nil {
-		uid, gid := getUserIdentity(user)
-		authCtx.Identity.UID = &uid
-		authCtx.Identity.GID = &gid
-		authCtx.Identity.Username = user.Username
-		// Supplementary group IDs: populate Identity.GIDs from every group the
-		// user belongs to so POSIX-mode permission checks (Identity.HasGID)
-		// honor secondary / nested-AD-group membership, not just the primary
-		// GID. Without this an AD user resolved over Kerberos — or any local
-		// user in multiple groups — was granted group access over NFS (which
-		// carries the full set) but denied over SMB. Mirrors the NFS GSS path
-		// (#1327).
-		if len(user.Groups) > 0 {
-			gids := make([]uint32, 0, len(user.Groups))
-			for _, group := range user.Groups {
-				if group.GID != nil {
-					gids = append(gids, *group.GID)
-				}
-			}
-			authCtx.Identity.GIDs = gids
-		}
-		if user.SID != "" {
-			userSID := user.SID
-			authCtx.Identity.SID = &userSID
-		}
-		// Merge the user's persisted named group SIDs with any Kerberos PAC
-		// group SIDs carried on this request's session. For an AD-issued ticket
-		// the PAC delivers the DC-resolved transitive group set, so a DACL ACE
-		// keyed on an AD group matches even when the local user model never
-		// enumerated it. slices.Concat allocates a fresh slice (no aliasing of
-		// user.GroupSIDs); mergeImplicitAuthSIDs then dedups (first occurrence wins).
-		authCtx.Identity.GroupSIDs = mergeImplicitAuthSIDs(
-			slices.Concat(user.GroupSIDs, ctx.PACGroupSIDs),
-		)
-	}
-
-	// Set the share-level read-only ceiling. Per-handle write authorization
-	// (WriteAuthorizedByHandle) is set by the WRITE / SET_INFO op handlers from
-	// OpenFile.GrantedAccess, not here — SMB write authorization is handle-based.
+	// Set the share-level read-only ceiling. This is the only per-(session,tree)
+	// input and is cheap, so it is recomputed per op rather than cached. Per-handle
+	// write authorization (WriteAuthorizedByHandle) is set by the WRITE / SET_INFO
+	// op handlers from OpenFile.GrantedAccess, not here — SMB write authorization
+	// is handle-based.
 	authCtx.ShareReadOnly = ctx.Permission == models.PermissionRead
 
 	return authCtx
+}
+
+// buildIdentity derives the metadata.Identity for user from its UID/GID, group
+// membership, SID, and the request's Kerberos PAC group SIDs. The returned value
+// is treated as immutable — consumers only read it, so it is safe to share via the
+// per-session cache.
+func buildIdentity(ctx *SMBHandlerContext, user *models.User) *metadata.Identity {
+	uid, gid := getUserIdentity(user)
+	identity := &metadata.Identity{
+		UID:      &uid,
+		GID:      &gid,
+		Username: user.Username,
+	}
+	// Supplementary group IDs: populate Identity.GIDs from every group the
+	// user belongs to so POSIX-mode permission checks (Identity.HasGID)
+	// honor secondary / nested-AD-group membership, not just the primary
+	// GID. Without this an AD user resolved over Kerberos — or any local
+	// user in multiple groups — was granted group access over NFS (which
+	// carries the full set) but denied over SMB. Mirrors the NFS GSS path
+	// (#1327).
+	if len(user.Groups) > 0 {
+		gids := make([]uint32, 0, len(user.Groups))
+		for _, group := range user.Groups {
+			if group.GID != nil {
+				gids = append(gids, *group.GID)
+			}
+		}
+		identity.GIDs = gids
+	}
+	if user.SID != "" {
+		userSID := user.SID
+		identity.SID = &userSID
+	}
+	// Merge the user's persisted named group SIDs with any Kerberos PAC
+	// group SIDs carried on this request's session. For an AD-issued ticket
+	// the PAC delivers the DC-resolved transitive group set, so a DACL ACE
+	// keyed on an AD group matches even when the local user model never
+	// enumerated it. slices.Concat allocates a fresh slice (no aliasing of
+	// user.GroupSIDs); mergeImplicitAuthSIDs then dedups (first occurrence wins).
+	identity.GroupSIDs = mergeImplicitAuthSIDs(
+		slices.Concat(user.GroupSIDs, ctx.PACGroupSIDs),
+	)
+	return identity
+}
+
+// cachedIdentity returns the session's memoized identity for user, or nil.
+func (ctx *SMBHandlerContext) cachedIdentity(user *models.User) *metadata.Identity {
+	if ctx.session == nil {
+		return nil
+	}
+	return ctx.session.CachedAuthIdentity(user)
+}
+
+// maybeCacheIdentity memoizes identity on the session only when user is the
+// session's current authenticated user. A handle-frozen opener snapshot (which may
+// differ after a re-auth) is never written back, so it can't poison the cache.
+func (ctx *SMBHandlerContext) maybeCacheIdentity(user *models.User, identity *metadata.Identity) {
+	if ctx.session != nil && user == ctx.session.User {
+		ctx.session.SetCachedAuthIdentity(user, identity)
+	}
 }
 
 // mergeImplicitAuthSIDs returns the union of an authenticated user's named
@@ -254,6 +295,9 @@ func (h *Handler) primeAuthContext(ctx *SMBHandlerContext, treeID uint32, sessio
 		ctx.Permission = tree.Permission
 	}
 	if sess, ok := h.GetSession(sessionID); ok && sess != nil {
+		// Hand the owning session to BuildAuthContextFromUser so it can reuse the
+		// session's memoized identity instead of re-deriving it per op.
+		ctx.session = sess
 		// Propagate guest-ness independent of User: guest sessions seed
 		// User=nil + IsGuest=true and BuildAuthContext relies on IsGuest
 		// to pick the nobody/nogroup (65534) arm instead of root.
