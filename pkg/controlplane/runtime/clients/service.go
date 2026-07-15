@@ -56,8 +56,9 @@ type clientEntry struct {
 // It follows the same sub-service pattern as mounts.Tracker.
 //
 // mu guards the map structure and each entry's non-atomic fields (Shares).
-// The per-request activity bump does not take mu — it stores into the entry's
-// atomic timestamp, so the highest-fan-in call in the system never contends.
+// The per-request activity bump (UpdateActivity) takes only a shared read lock
+// for map safety and stores into the entry's atomic timestamp, so the
+// highest-fan-in call in the system no longer serializes on the write lock.
 type Registry struct {
 	mu      sync.RWMutex
 	clients map[string]*clientEntry // keyed by ClientID
@@ -89,6 +90,7 @@ func (r *Registry) Register(record *ClientRecord) {
 	}
 
 	e := &clientEntry{ClientRecord: *record}
+	deepCopyRefs(&e.ClientRecord) // don't alias caller-owned slice/pointers
 	e.lastActivity.Store(record.LastActivity.UnixNano())
 
 	r.mu.Lock()
@@ -201,10 +203,11 @@ func (r *Registry) collect(filter func(*ClientRecord) bool) []*ClientRecord {
 
 	result := make([]*ClientRecord, 0, len(r.clients))
 	for _, e := range r.clients {
-		if filter != nil && !filter(&e.ClientRecord) {
+		rec := copyRecord(e) // snapshot carries the atomic LastActivity
+		if filter != nil && !filter(rec) {
 			continue
 		}
-		result = append(result, copyRecord(e))
+		result = append(result, rec)
 	}
 	return result
 }
@@ -254,21 +257,27 @@ func (r *Registry) Stop() {
 }
 
 // copyRecord creates a deep copy of an entry's ClientRecord, filling
-// LastActivity from the atomic timestamp and deep-copying the Shares slice and
-// protocol detail structs.
+// LastActivity from the atomic timestamp.
 func copyRecord(e *clientEntry) *ClientRecord {
 	dst := e.ClientRecord
 	dst.LastActivity = time.Unix(0, e.lastActivity.Load())
-	if e.Shares != nil {
-		dst.Shares = append([]string(nil), e.Shares...)
-	}
-	if e.NFS != nil {
-		nfsCopy := *e.NFS
-		dst.NFS = &nfsCopy
-	}
-	if e.SMB != nil {
-		smbCopy := *e.SMB
-		dst.SMB = &smbCopy
-	}
+	deepCopyRefs(&dst)
 	return &dst
+}
+
+// deepCopyRefs replaces the reference-typed fields of rec (the Shares slice and
+// the NFS/SMB detail pointers) with independent copies, so the record no longer
+// aliases the caller's or the registry's data.
+func deepCopyRefs(rec *ClientRecord) {
+	if rec.Shares != nil {
+		rec.Shares = append([]string(nil), rec.Shares...)
+	}
+	if rec.NFS != nil {
+		nfsCopy := *rec.NFS
+		rec.NFS = &nfsCopy
+	}
+	if rec.SMB != nil {
+		smbCopy := *rec.SMB
+		rec.SMB = &smbCopy
+	}
 }
