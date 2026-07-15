@@ -1,4 +1,4 @@
-package segstore
+package journal
 
 // Garbage collection / repack (not yet implemented).
 //

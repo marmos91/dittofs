@@ -1,11 +1,44 @@
-package segstore
+package journal
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
+
+func TestInputGuards(t *testing.T) {
+	ctx := context.Background()
+
+	// SegmentSize below the floor is rejected at Open.
+	if _, err := Open(t.TempDir(), Config{SegmentSize: 100}, newFakeRemote(), SystemClock()); err == nil {
+		t.Fatalf("expected too-small SegmentSize to be rejected")
+	}
+
+	s := testStore(t, Config{})
+
+	if err := s.WriteAt(ctx, "f", -1, []byte("x")); err == nil {
+		t.Fatalf("expected negative offset to be rejected")
+	}
+	// A single record larger than the segment capacity is rejected explicitly.
+	big := make([]byte, s.cfg.SegmentSize)
+	if err := s.WriteAt(ctx, "f", 0, big); err == nil {
+		t.Fatalf("expected oversize record to be rejected")
+	}
+	if _, _, err := s.ReadAt(ctx, "f", -1, make([]byte, 1)); err == nil {
+		t.Fatalf("expected negative read offset to be rejected")
+	}
+	if _, err := s.DataExtents(ctx, "f", -1); err == nil {
+		t.Fatalf("expected negative fileSize to be rejected")
+	}
+
+	// After Close, reads report the shared closed-store error.
+	_ = s.Close()
+	if _, _, err := s.ReadAt(ctx, "f", 0, make([]byte, 1)); !errors.Is(err, errClosed) {
+		t.Fatalf("expected errClosed after Close, got %v", err)
+	}
+}
 
 func testStore(t *testing.T, cfg Config) *Store {
 	t.Helper()
@@ -21,7 +54,7 @@ func TestAppendReadRoundTrip(t *testing.T) {
 	s := testStore(t, Config{})
 	ctx := context.Background()
 
-	payload := bytes.Repeat([]byte("dittofs-segstore-"), 4096) // ~68 KiB
+	payload := bytes.Repeat([]byte("dittofs-journal-"), 4096) // ~68 KiB
 	if err := s.WriteAt(ctx, "file-a", 0, payload); err != nil {
 		t.Fatalf("WriteAt: %v", err)
 	}

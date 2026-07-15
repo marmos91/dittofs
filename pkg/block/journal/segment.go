@@ -1,4 +1,4 @@
-package segstore
+package journal
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 // (segHeaderSize bytes, little-endian). Records begin at segHeaderSize.
 //
 //	off  size  field
-//	0    8     Magic       "DFSSEG1\0"
+//	0    8     Magic       "DFSJRN1\0"
 //	8    8     SegmentID
 //	16   8     CreatedAt   unix nanos
 //	24   4     Flags       bit0=sealed
@@ -32,12 +32,19 @@ const (
 	idxSuffix = ".idx"
 )
 
-var segMagic = [8]byte{'D', 'F', 'S', 'S', 'E', 'G', '1', 0}
+var segMagic = [8]byte{'D', 'F', 'S', 'J', 'R', 'N', '1', 0}
+
+// maxFileIDLen is the largest FileID a record can frame (FileIDLen is uint16).
+const maxFileIDLen = 1<<16 - 1
+
+// maxPayloadLen is the largest payload a record can frame (PayloadLen is uint32).
+const maxPayloadLen int64 = 1<<32 - 1
 
 // segmentMeta is the in-memory handle for one on-disk segment. The append
 // cursor lives in tail; the byte counters feed eviction and GC.
 type segmentMeta struct {
 	id            uint64
+	createdAt     time.Time // preserved across the seal header rewrite for age-gating
 	sealed        atomic.Bool
 	tail          atomic.Int64 // next append offset
 	liveBytes     atomic.Int64
@@ -45,8 +52,26 @@ type segmentMeta struct {
 	syncedRecords atomic.Int64 // records with the synced flag set (eviction gate)
 	lastAccess    atomic.Int64 // unix nanos, approx-LRU victim key
 	fd            *os.File
+	idxFD         *os.File // persistent append handle for the .idx sidecar (nil if unavailable)
 	// ponytail: the quotient-filter membership hint (rebuilt on repack) arrives
 	// with GC; a linear index scan suffices until segments are large.
+}
+
+// close closes the segment's data and index file descriptors.
+func (m *segmentMeta) close() error {
+	var firstErr error
+	if m.idxFD != nil {
+		if err := m.idxFD.Close(); err != nil {
+			firstErr = err
+		}
+		m.idxFD = nil
+	}
+	if m.fd != nil {
+		if err := m.fd.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func encodeSegHeader(id uint64, createdAt time.Time, flags uint32) []byte {
@@ -67,13 +92,17 @@ func (s *Store) createSegment() (*segmentMeta, error) {
 	path := s.segPath(id)
 	fd, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
-		return nil, fmt.Errorf("segstore: create segment %q: %w", path, err)
+		return nil, fmt.Errorf("journal: create segment %q: %w", path, err)
 	}
-	if _, err := fd.WriteAt(encodeSegHeader(id, s.clock.Now(), 0), 0); err != nil {
+	createdAt := s.clock.Now()
+	if _, err := fd.WriteAt(encodeSegHeader(id, createdAt, 0), 0); err != nil {
 		_ = fd.Close()
-		return nil, fmt.Errorf("segstore: write segment header %q: %w", path, err)
+		return nil, fmt.Errorf("journal: write segment header %q: %w", path, err)
 	}
-	m := &segmentMeta{id: id, fd: fd}
+	// The .idx sidecar is best-effort: if it can't be opened, records still
+	// append and the index is rebuildable from the .seg on recovery.
+	idxFD, _ := os.OpenFile(s.idxPath(id), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	m := &segmentMeta{id: id, createdAt: createdAt, fd: fd, idxFD: idxFD}
 	m.tail.Store(segHeaderSize)
 	return m, nil
 }
@@ -87,13 +116,21 @@ func (s *Store) createSegment() (*segmentMeta, error) {
 func (s *Store) sealSegment(sh *shard) error {
 	old := sh.active
 	if err := old.fd.Sync(); err != nil {
-		return fmt.Errorf("segstore: fsync before seal: %w", err)
+		return fmt.Errorf("journal: fsync before seal: %w", err)
 	}
-	if _, err := old.fd.WriteAt(encodeSegHeader(old.id, time.Unix(0, 0), segFlagSealed), 0); err != nil {
-		return fmt.Errorf("segstore: set sealed bit: %w", err)
+	// Rewrite the header with the sealed bit set, preserving the original
+	// CreatedAt so age-gating stays correct.
+	if _, err := old.fd.WriteAt(encodeSegHeader(old.id, old.createdAt, segFlagSealed), 0); err != nil {
+		return fmt.Errorf("journal: set sealed bit: %w", err)
 	}
 	if err := old.fd.Sync(); err != nil {
-		return fmt.Errorf("segstore: fsync after seal: %w", err)
+		return fmt.Errorf("journal: fsync after seal: %w", err)
+	}
+	// A sealed segment is immutable: close its .idx append handle (the file
+	// stays on disk, read-only).
+	if old.idxFD != nil {
+		_ = old.idxFD.Close()
+		old.idxFD = nil
 	}
 	old.sealed.Store(true)
 	sh.sealed[old.id] = old
@@ -115,13 +152,25 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 		return err
 	}
 	if s.closed.Load() {
-		return fmt.Errorf("segstore: closed")
+		return fmt.Errorf("journal: closed")
 	}
 	if len(data) == 0 {
 		return nil
 	}
+	if offset < 0 {
+		return fmt.Errorf("journal: negative offset %d", offset)
+	}
 	fileID := []byte(id)
+	if len(fileID) > maxFileIDLen {
+		return fmt.Errorf("journal: FileID length %d exceeds max %d", len(fileID), maxFileIDLen)
+	}
+	if int64(len(data)) > maxPayloadLen {
+		return fmt.Errorf("journal: payload length %d exceeds max %d", len(data), int64(maxPayloadLen))
+	}
 	recLen := recordLen(len(fileID), len(data))
+	if maxRec := s.cfg.SegmentSize - segHeaderSize; recLen > maxRec {
+		return fmt.Errorf("journal: record size %d exceeds segment capacity %d", recLen, maxRec)
+	}
 
 	sh := s.shardFor(id)
 	sh.mu.Lock()
@@ -150,15 +199,15 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 
 	payloadOff := segOff + int64(len(hdr))
 	if _, err := seg.fd.WriteAt(hdr, segOff); err != nil {
-		return fmt.Errorf("segstore: write record header: %w", err)
+		return fmt.Errorf("journal: write record header: %w", err)
 	}
 	if _, err := seg.fd.WriteAt(data, payloadOff); err != nil {
-		return fmt.Errorf("segstore: write payload: %w", err)
+		return fmt.Errorf("journal: write payload: %w", err)
 	}
 	var crcBuf [payloadCRCSize]byte
 	binary.LittleEndian.PutUint32(crcBuf[:], crc(data))
 	if _, err := seg.fd.WriteAt(crcBuf[:], payloadOff+int64(len(data))); err != nil {
-		return fmt.Errorf("segstore: write payload CRC: %w", err)
+		return fmt.Errorf("journal: write payload CRC: %w", err)
 	}
 	seg.tail.Store(segOff + recLen)
 	seg.liveBytes.Add(int64(len(data)))
@@ -167,16 +216,19 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 		seg.syncedRecords.Add(1)
 	}
 
-	// Best-effort .idx sidecar; a failure is a rebuildable performance event,
-	// never a lost write.
-	s.appendIdx(seg.id, idxEntry{
-		FileIDHash: fnv1a(string(id)),
-		FileOffset: uint64(offset),
-		PayloadLen: uint32(len(data)),
-		Version:    version,
-		SegOffset:  uint64(payloadOff),
-		Flags:      flags,
-	})
+	// Best-effort .idx sidecar via the segment's persistent append handle; a
+	// failure is a rebuildable performance event, never a lost write. The write
+	// runs under sh.mu, so appends to idxFD stay ordered.
+	if seg.idxFD != nil {
+		_, _ = seg.idxFD.Write(idxEntry{
+			FileIDHash: fnv1a(string(id)),
+			FileOffset: uint64(offset),
+			PayloadLen: uint32(len(data)),
+			Version:    version,
+			SegOffset:  uint64(payloadOff),
+			Flags:      flags,
+		}.encode())
+	}
 
 	sh.indexFor(id).insert(interval{
 		fileOff: offset,
@@ -200,12 +252,12 @@ func (s *Store) readPayload(sh *shard, loc SegmentLocation, subOffset int64, dst
 	seg := sh.segment(loc.SegmentID)
 	sh.mu.Unlock()
 	if seg == nil {
-		return 0, fmt.Errorf("segstore: unknown segment %d", loc.SegmentID)
+		return 0, fmt.Errorf("journal: unknown segment %d", loc.SegmentID)
 	}
 	seg.lastAccess.Store(s.clock.Now().UnixNano())
 	n, err := seg.fd.ReadAt(dst, loc.Offset+subOffset)
 	if err != nil {
-		return n, fmt.Errorf("segstore: read segment %d@%d: %w", loc.SegmentID, loc.Offset+subOffset, err)
+		return n, fmt.Errorf("journal: read segment %d@%d: %w", loc.SegmentID, loc.Offset+subOffset, err)
 	}
 	return n, nil
 }

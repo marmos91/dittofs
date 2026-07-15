@@ -1,4 +1,4 @@
-package segstore
+package journal
 
 import (
 	"fmt"
@@ -24,7 +24,7 @@ import (
 func scanSegmentIDs(dir string) ([]uint64, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("segstore: readdir %q: %w", dir, err)
+		return nil, fmt.Errorf("journal: readdir %q: %w", dir, err)
 	}
 	var ids []uint64
 	for _, e := range entries {

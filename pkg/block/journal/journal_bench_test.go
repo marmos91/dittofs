@@ -1,4 +1,4 @@
-package segstore
+package journal
 
 import (
 	"bytes"

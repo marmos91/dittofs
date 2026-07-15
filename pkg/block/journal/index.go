@@ -1,9 +1,9 @@
-package segstore
+package journal
 
 import (
 	"context"
 	"encoding/binary"
-	"os"
+	"fmt"
 	"sort"
 )
 
@@ -97,6 +97,12 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}
+	if s.closed.Load() {
+		return 0, false, errClosed
+	}
+	if offset < 0 {
+		return 0, false, fmt.Errorf("journal: negative offset %d", offset)
+	}
 	if len(dst) == 0 {
 		return 0, false, nil
 	}
@@ -138,6 +144,12 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 func (s *Store) DataExtents(ctx context.Context, id FileID, fileSize int64) ([][2]uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if s.closed.Load() {
+		return nil, errClosed
+	}
+	if fileSize < 0 {
+		return nil, fmt.Errorf("journal: negative fileSize %d", fileSize)
 	}
 	sh := s.shardFor(id)
 	sh.mu.Lock()
@@ -209,15 +221,4 @@ func (e idxEntry) encode() []byte {
 	binary.LittleEndian.PutUint64(buf[28:36], e.SegOffset)
 	buf[36] = e.Flags
 	return buf
-}
-
-// appendIdx appends an entry to a segment's .idx sidecar, best-effort: any
-// failure is swallowed (the sidecar is rebuildable from the .seg).
-func (s *Store) appendIdx(segID uint64, e idxEntry) {
-	f, err := os.OpenFile(s.idxPath(segID), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
-	if err != nil {
-		return
-	}
-	_, _ = f.Write(e.encode())
-	_ = f.Close()
 }

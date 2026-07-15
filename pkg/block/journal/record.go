@@ -1,4 +1,4 @@
-package segstore
+package journal
 
 import (
 	"encoding/binary"
@@ -79,17 +79,17 @@ func encodeHeader(h recordHeader, fileID []byte) []byte {
 // the FileID or payload.
 func decodeHeader(buf []byte) (recordHeader, error) {
 	if len(buf) < recordHeaderSize {
-		return recordHeader{}, fmt.Errorf("segstore: short record header: %d bytes", len(buf))
+		return recordHeader{}, fmt.Errorf("journal: short record header: %d bytes", len(buf))
 	}
 	if buf[0] != recordMagic {
-		return recordHeader{}, fmt.Errorf("segstore: bad record magic 0x%02x", buf[0])
+		return recordHeader{}, fmt.Errorf("journal: bad record magic 0x%02x", buf[0])
 	}
 	if buf[1] != recordHeaderSize {
-		return recordHeader{}, fmt.Errorf("segstore: unsupported header len %d", buf[1])
+		return recordHeader{}, fmt.Errorf("journal: unsupported header len %d", buf[1])
 	}
 	want := binary.LittleEndian.Uint32(buf[25:29])
 	if got := crc(buf[:headerCRCCovers]); got != want {
-		return recordHeader{}, fmt.Errorf("segstore: header CRC mismatch: got %08x want %08x", got, want)
+		return recordHeader{}, fmt.Errorf("journal: header CRC mismatch: got %08x want %08x", got, want)
 	}
 	return recordHeader{
 		FileIDLen:  binary.LittleEndian.Uint16(buf[2:4]),

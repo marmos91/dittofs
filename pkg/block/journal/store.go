@@ -1,4 +1,4 @@
-package segstore
+package journal
 
 import (
 	"context"
@@ -20,11 +20,19 @@ type BlockID string
 
 // errNotImplemented is returned by operations whose implementation lands in a
 // later change (carve, evict, gc, delete, reopen recovery).
-var errNotImplemented = errors.New("segstore: not yet implemented")
+var errNotImplemented = errors.New("journal: not yet implemented")
 
-// RemoteStore is the narrow remote contract segstore carves to and hydrates
+// errClosed is returned by every operation attempted on a closed Store.
+var errClosed = errors.New("journal: store closed")
+
+// minSegmentSize is the floor for Config.SegmentSize. A segment must comfortably
+// hold its header plus real records; below this a single write could exceed the
+// cap. 1 MiB clears the largest protocol write plus framing with wide margin.
+const minSegmentSize int64 = 1 << 20
+
+// RemoteStore is the narrow remote contract journal carves to and hydrates
 // from. It mirrors the shape of pkg/block/remote's RemoteBlockStore but is
-// declared here so segstore imports nothing from the block/remote package.
+// declared here so journal imports nothing from the block/remote package.
 type RemoteStore interface {
 	PutBlock(ctx context.Context, id BlockID, r io.Reader, size int64) error
 	GetBlock(ctx context.Context, id BlockID) (io.ReadCloser, error)
@@ -118,20 +126,23 @@ type Store struct {
 func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, error) {
 	cfg = cfg.withDefaults()
 	if cfg.ShardCount&(cfg.ShardCount-1) != 0 {
-		return nil, fmt.Errorf("segstore: ShardCount %d is not a power of two", cfg.ShardCount)
+		return nil, fmt.Errorf("journal: ShardCount %d is not a power of two", cfg.ShardCount)
+	}
+	if cfg.SegmentSize < minSegmentSize {
+		return nil, fmt.Errorf("journal: SegmentSize %d below floor %d (header+record framing)", cfg.SegmentSize, minSegmentSize)
 	}
 	if clock == nil {
 		clock = SystemClock()
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("segstore: mkdir %q: %w", dir, err)
+		return nil, fmt.Errorf("journal: mkdir %q: %w", dir, err)
 	}
 	if ids, err := scanSegmentIDs(dir); err != nil {
 		return nil, err
 	} else if len(ids) > 0 {
 		// Crash-recovery replay is not yet implemented; refuse to start a fresh
 		// cache over stale segments rather than silently lose their data.
-		return nil, fmt.Errorf("segstore: %w: reopen of populated dir %q", errNotImplemented, dir)
+		return nil, fmt.Errorf("journal: %w: reopen of populated dir %q", errNotImplemented, dir)
 	}
 
 	s := &Store{
@@ -165,12 +176,12 @@ func (s *Store) Close() error {
 		}
 		sh.mu.Lock()
 		if sh.active != nil {
-			if err := sh.active.fd.Close(); err != nil && firstErr == nil {
+			if err := sh.active.close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
 		for _, seg := range sh.sealed {
-			if err := seg.fd.Close(); err != nil && firstErr == nil {
+			if err := seg.close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
 		}
@@ -199,7 +210,7 @@ func (s *Store) Commit(ctx context.Context, id FileID) error {
 		return err
 	}
 	if s.closed.Load() {
-		return errors.New("segstore: closed")
+		return errClosed
 	}
 	sh := s.shardFor(id)
 	sh.mu.Lock()
@@ -208,7 +219,7 @@ func (s *Store) Commit(ctx context.Context, id FileID) error {
 	// ponytail: direct per-shard fsync. syncLeader batching (fs/sync_leader.go)
 	// is ported in with the append primitive PR; wire it here then.
 	if err := fd.Sync(); err != nil {
-		return fmt.Errorf("segstore: commit fsync: %w", err)
+		return fmt.Errorf("journal: commit fsync: %w", err)
 	}
 	return nil
 }

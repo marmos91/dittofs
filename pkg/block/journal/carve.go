@@ -1,4 +1,4 @@
-package segstore
+package journal
 
 // Carve packs dirty ranges into fixed-size remote blocks. The flow (not yet
 // implemented): snapshot covering dirty intervals for files whose dirty-byte

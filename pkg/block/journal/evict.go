@@ -1,4 +1,4 @@
-package segstore
+package journal
 
 // Evict frees whole sealed segments under storage pressure (not yet
 // implemented). The victim is the coldest sealed segment by lastAccess whose
