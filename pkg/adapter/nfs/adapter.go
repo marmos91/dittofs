@@ -615,6 +615,15 @@ func (s *NFSAdapter) SetRuntime(rtAny any) {
 	})
 	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubAuthInvalidate)
 
+	// Drop cached v3 auth contexts when a user/group identity mapping changes
+	// (a UID or group-membership edit alters who a credential resolves to) so
+	// the change takes effect immediately instead of lingering until the entry
+	// TTL expires or the server restarts.
+	unsubIdentityChange := rt.OnIdentityMappingChange(func() {
+		s.nfsHandler.ClearAuthCache()
+	})
+	s.shareUnsubscribers = append(s.shareUnsubscribers, unsubIdentityChange)
+
 	// Create blocking queue for NLM lock operations
 	s.blockingQueue = blocking.NewBlockingQueue(nlm_handlers.DefaultBlockingQueueSize)
 
