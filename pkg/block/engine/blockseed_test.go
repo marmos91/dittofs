@@ -10,7 +10,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/remote"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -64,15 +63,4 @@ func seedSyncedRemoteChunk(
 		t.Fatalf("seed FileChunk Put: %v", err)
 	}
 	return hash
-}
-
-// remoteBlockObjectCount returns the number of packed blocks/ objects on the
-// memory remote.
-func remoteBlockObjectCount(t testing.TB, ctx context.Context, s *remotememory.Store) int {
-	t.Helper()
-	n := 0
-	if err := s.WalkBlocks(ctx, func(string, block.Meta) error { n++; return nil }); err != nil {
-		t.Fatalf("WalkBlocks: %v", err)
-	}
-	return n
 }

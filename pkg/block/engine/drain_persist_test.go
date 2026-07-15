@@ -10,8 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
-	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
@@ -153,55 +151,28 @@ func (c *testCoordinator) GetFileObjectID(ctx context.Context, payloadID string)
 	return file.ObjectID, nil
 }
 
-// newEngineOverStore builds a full engine.Store over a real fs local
-// store + the supplied metadata store, wired with a faithful coordinator,
-// and a LARGE stabilization window with the rollup worker pool NOT started
-// so the only path from append-log bytes -> CAS + manifest is an explicit
-// DrainRollups (the snapshot-create primitive).
-func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
+func createShare(t *testing.T, store metadata.Store, shareName string) metadata.FileHandle {
 	t.Helper()
-	if _, ok := ms.(metadata.RollupStore); !ok {
-		t.Fatalf("metadata store %T does not implement metadata.RollupStore", ms)
-	}
-	syncedHashStore, ok := ms.(metadata.SyncedHashStore)
-	if !ok {
-		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
-	}
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
-		MaxLogBytes: 128 * 1024 * 1024,
+	ctx := context.Background()
+	// CreateRootDirectory inserts BOTH the "/" files-row AND the share row
+	// (Postgres' shares.root_file_id is NOT NULL, so the share row cannot be
+	// created independently). It is idempotent on the share name.
+	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
 	})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
+		t.Fatalf("CreateRootDirectory: %v", err)
 	}
-	coord := &testCoordinator{store: ms}
-	// Chunking now happens at CARVE, which needs a wired remote block sink (the
-	// journal has no local-only rollup). Use ManualSync so DrainRollups/Flush are
-	// the deterministic carve drivers (no background dispatcher racing asserts).
-	rem := remotememory.New()
-	cfg := engine.DefaultConfig()
-	cfg.ManualSync = true
-	syncer := engine.NewSyncer(localStore, rem, ms, cfg)
-	bs, err := engine.New(engine.BlockStoreConfig{
-		Local:           localStore,
-		Remote:          rem,
-		Syncer:          syncer,
-		FileChunkStore:  ms,
-		Coordinator:     coord,
-		SyncedHashStore: syncedHashStore,
-		ReadBufferBytes: 64 * 1024 * 1024,
-	})
+	rootHandle, err := metadata.EncodeFileHandle(rootFile)
 	if err != nil {
-		t.Fatalf("engine.New: %v", err)
+		t.Fatalf("EncodeFileHandle: %v", err)
 	}
-	// Wire the carve substrate (SetSyncedHashStore ran inside engine.New; this
-	// completes the deps so recomputeCarveActive wires the journal's sink).
-	syncer.SetRemoteBlockStore(rem)
-	if err := bs.Start(context.Background()); err != nil {
-		t.Fatalf("engine.Start: %v", err)
-	}
-	t.Cleanup(func() { _ = bs.Close() })
-	return bs
+	return rootHandle
 }
+
+// manifestHashes returns the set of DISTINCT content hashes the metadata
+// snapshot manifest exposes, plus the serialized manifest size.
 
 // createRealFile creates a file row through the metadata store the way the
 // production CreateFile path does — crucially setting a UUID-based PayloadID
@@ -247,52 +218,3 @@ func createRealFile(t *testing.T, store metadata.Store, shareName, name string, 
 	}
 	return payloadID, handle
 }
-
-// fileChunks reads FileAttr.Blocks for a handle via GetFile (which loads
-// blocks from the per-file block manifest — GetFileByPayloadID does NOT on
-// the Postgres backend).
-func fileChunks(t *testing.T, store metadata.Store, handle metadata.FileHandle) []block.ChunkRef {
-	t.Helper()
-	f, err := store.GetFile(context.Background(), handle)
-	if err != nil {
-		t.Fatalf("GetFile: %v", err)
-	}
-	return f.Blocks
-}
-
-func createShare(t *testing.T, store metadata.Store, shareName string) metadata.FileHandle {
-	t.Helper()
-	ctx := context.Background()
-	// CreateRootDirectory inserts BOTH the "/" files-row AND the share row
-	// (Postgres' shares.root_file_id is NOT NULL, so the share row cannot be
-	// created independently). It is idempotent on the share name.
-	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
-		Type: metadata.FileTypeDirectory,
-		Mode: 0o755,
-	})
-	if err != nil {
-		t.Fatalf("CreateRootDirectory: %v", err)
-	}
-	rootHandle, err := metadata.EncodeFileHandle(rootFile)
-	if err != nil {
-		t.Fatalf("EncodeFileHandle: %v", err)
-	}
-	return rootHandle
-}
-
-// distinctContent builds an n-byte buffer whose bytes derive from a per-test
-// seed so that NO two test functions sharing the same metadata store produce
-// colliding Merkle-root ObjectIDs (object_id dedup is store-wide, crossing
-// share boundaries — see the CrossShareDedupScope conformance scenario).
-// Within a single test, passing the same seed yields byte-identical content
-// (used to drive the file-level-dedup conflict).
-func distinctContent(seed byte, n int) []byte {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = seed ^ byte(i*31+17)
-	}
-	return b
-}
-
-// manifestHashes returns the set of DISTINCT content hashes the metadata
-// snapshot manifest exposes, plus the serialized manifest size.

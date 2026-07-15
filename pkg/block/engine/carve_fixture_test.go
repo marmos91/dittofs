@@ -96,30 +96,12 @@ func (f *carveFixture) storeChunk(t *testing.T, ctx context.Context, data []byte
 	return block.ContentHash(blake3.Sum256(data))
 }
 
-// carve force-drains the fixture payload's dirty ranges to the remote.
-func (f *carveFixture) carve(t *testing.T, ctx context.Context) {
-	t.Helper()
-	if err := f.syncer.SyncNow(ctx); err != nil {
-		t.Fatalf("SyncNow: %v", err)
-	}
-}
-
 // countRemoteBlocks returns the number of blocks/ objects on the memory remote.
 func countRemoteBlocks(t *testing.T, ctx context.Context, s *remotememory.Store) int {
 	t.Helper()
 	n := 0
 	if err := s.WalkBlocks(ctx, func(string, block.Meta) error { n++; return nil }); err != nil {
 		t.Fatalf("WalkBlocks: %v", err)
-	}
-	return n
-}
-
-// countRemoteCAS returns the number of legacy cas/ objects on the memory remote.
-func countRemoteCAS(t *testing.T, ctx context.Context, s *remotememory.Store) int {
-	t.Helper()
-	n := 0
-	if err := s.Walk(ctx, func(block.ContentHash, block.Meta) error { n++; return nil }); err != nil {
-		t.Fatalf("Walk: %v", err)
 	}
 	return n
 }

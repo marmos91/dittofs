@@ -8,16 +8,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 )
 
-// dataplaneMetrics returns the engine's data-plane metrics sink, or nil when no
-// recorder was injected. Call sites must guard the result: it is a plain
-// interface, not a nil-safe *Metrics.  Mirrors the Syncer's dataplaneMetrics().
-func (bs *Store) dataplaneMetrics() DataplaneMetrics {
-	if p := bs.metrics.Load(); p != nil {
-		return *p
-	}
-	return nil
-}
-
 // blockRefHashes extracts the ContentHash slice from a ChunkRef list
 // for OnRead's hint API.
 func blockRefHashes(refs []block.ChunkRef) []block.ContentHash {

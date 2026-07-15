@@ -304,13 +304,6 @@ func (m *Syncer) readStandaloneChunk(ctx context.Context, h block.ContentHash) (
 	return legacy.ReadLegacyChunkVerified(ctx, h)
 }
 
-// getBlockCommitter returns the wired block committer under the syncer lock.
-func (m *Syncer) getBlockCommitter() blockCommitter {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.blockCommitter
-}
-
 // packAndCommitMigrated seals, frames, uploads, and atomically commits one
 // batch as a packed block — the migration twin of carveAndCommitBlock, with
 // the chunk bytes already in hand instead of read from the log blob.
