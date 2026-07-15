@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -17,82 +18,152 @@ type SegmentLocation struct {
 }
 
 // interval maps a logical file range to the segment bytes holding it. version
-// disambiguates overlapping writes: highest version wins.
+// is the record's global LSN; it breaks ties when overlapping writes are indexed
+// out of arrival order (recovery/repack), where a lower version must never
+// supersede a higher one. loc.Offset always points at the segment byte for
+// fileOff, so splitting an interval only advances loc.Offset by the trimmed
+// prefix.
 type interval struct {
 	fileOff int64
 	length  int64
 	version uint64
 	loc     SegmentLocation
+	// cold marks a range that was written and is durable remotely but whose
+	// local bytes have been evicted. Distinct from an absent interval (a true
+	// hole): a cold range is served by fetching from the remote store.
+	cold bool
 }
 
 func (iv interval) end() int64 { return iv.fileOff + iv.length }
 
-// fileIndex is the per-file coverage set. Newest-wins is resolved at query
-// time by picking the highest-version interval covering a position.
-//
-// ponytail: an append-only slice with a boundary-walk query, O(n) per read.
-// The interval-tree rekeying that makes this sublinear lands in the index PR;
-// this holds correctly (arbitrary overlaps included) until segments get large.
+// clamp returns the sub-interval over [lo, hi), advancing the segment location's
+// offset by the trimmed prefix so it keeps pointing at the byte for lo. Caller
+// guarantees iv.fileOff <= lo < hi <= iv.end().
+func (iv interval) clamp(lo, hi int64) interval {
+	frontTrim := lo - iv.fileOff
+	return interval{
+		fileOff: lo,
+		length:  hi - lo,
+		version: iv.version,
+		cold:    iv.cold,
+		loc: SegmentLocation{
+			SegmentID: iv.loc.SegmentID,
+			Offset:    iv.loc.Offset + frontTrim,
+			Length:    hi - lo,
+		},
+	}
+}
+
+// without returns the fragments of iv left after removing [rs, re): the left
+// and/or right survivors, loc offsets adjusted. A non-overlapping range returns
+// iv unchanged; a range covering iv entirely returns nothing.
+func (iv interval) without(rs, re int64) []interval {
+	var out []interval
+	if iv.fileOff < rs {
+		out = append(out, iv.clamp(iv.fileOff, min(iv.end(), rs)))
+	}
+	if iv.end() > re {
+		out = append(out, iv.clamp(max(iv.fileOff, re), iv.end()))
+	}
+	return out
+}
+
+// fileIndex is the per-file coverage set: a slice of non-overlapping intervals
+// sorted by fileOff. Newest-wins is resolved at insert time by punching the new
+// write's range out of the older intervals it overlaps (version breaks ties for
+// out-of-order inserts), so a query is a binary search plus a forward walk
+// rather than an O(n) version scan.
 type fileIndex struct {
 	ivs []interval
 }
 
-func (fi *fileIndex) insert(iv interval) { fi.ivs = append(fi.ivs, iv) }
+// insert records iv, resolving overlaps by version (highest wins). Existing
+// intervals with a higher version shadow iv; those with a lower version are
+// trimmed to make room. The result stays sorted and non-overlapping.
+func (fi *fileIndex) insert(iv interval) {
+	ns, ne := iv.fileOff, iv.end()
+	// First interval that can overlap [ns, ne): end() is strictly increasing
+	// across the non-overlapping sorted set, so the predicate is monotone.
+	lo := sort.Search(len(fi.ivs), func(k int) bool { return fi.ivs[k].end() > ns })
 
-// piece is one contiguous span of a read: either a segment read or a hole.
+	newFrags := []interval{iv}
+	var survivors []interval
+	hi := lo
+	for hi < len(fi.ivs) && fi.ivs[hi].fileOff < ne {
+		e := fi.ivs[hi]
+		if e.version > iv.version {
+			// Existing wins the overlap: keep it whole, carve iv around it.
+			survivors = append(survivors, e)
+			newFrags = subtractAll(newFrags, e.fileOff, e.end())
+		} else {
+			// New wins the overlap: keep only the parts of e outside iv.
+			survivors = append(survivors, e.without(ns, ne)...)
+		}
+		hi++
+	}
+
+	merged := append(survivors, newFrags...)
+	sort.Slice(merged, func(i, j int) bool { return merged[i].fileOff < merged[j].fileOff })
+	fi.ivs = slices.Replace(fi.ivs, lo, hi, merged...)
+}
+
+// subtractAll removes [rs, re) from every fragment, flattening the survivors.
+func subtractAll(frags []interval, rs, re int64) []interval {
+	var out []interval
+	for _, f := range frags {
+		out = append(out, f.without(rs, re)...)
+	}
+	return out
+}
+
+// piece is one contiguous span of a read: a segment read, a hole, or a cold
+// (evicted, remote-resident) range.
 type piece struct {
 	dstStart int64
 	dstEnd   int64
 	loc      SegmentLocation
 	subOff   int64
 	hole     bool
+	cold     bool
 }
 
-// plan resolves the read [offset, offset+n) into contiguous pieces. Boundaries
-// fall at every interval start/end, so within a piece exactly one interval is
-// the newest covering it.
+// plan resolves the read [offset, offset+n) into contiguous pieces. Intervals
+// are non-overlapping and sorted, so a covering interval is found by binary
+// search and gaps between them become holes.
 func (fi *fileIndex) plan(offset, n int64) []piece {
 	end := offset + n
+	i := sort.Search(len(fi.ivs), func(k int) bool { return fi.ivs[k].end() > offset })
 	var pieces []piece
 	pos := offset
 	for pos < end {
-		// Newest interval covering pos, and the next boundary after pos.
-		var winner *interval
-		nextBoundary := end
-		for i := range fi.ivs {
-			iv := &fi.ivs[i]
-			if iv.fileOff <= pos && pos < iv.end() {
-				if winner == nil || iv.version > winner.version {
-					winner = iv
-				}
-			}
-			if iv.fileOff > pos && iv.fileOff < nextBoundary {
-				nextBoundary = iv.fileOff
-			}
-			if iv.end() > pos && iv.end() < nextBoundary {
-				nextBoundary = iv.end()
-			}
+		if i >= len(fi.ivs) || fi.ivs[i].fileOff >= end {
+			pieces = append(pieces, piece{dstStart: pos - offset, dstEnd: end - offset, hole: true})
+			break
 		}
-		spanEnd := nextBoundary
-		if winner != nil && winner.end() < spanEnd {
-			spanEnd = winner.end()
+		iv := fi.ivs[i]
+		if pos < iv.fileOff { // gap before this interval
+			pieces = append(pieces, piece{dstStart: pos - offset, dstEnd: iv.fileOff - offset, hole: true})
+			pos = iv.fileOff
 		}
+		spanEnd := min(iv.end(), end)
 		p := piece{dstStart: pos - offset, dstEnd: spanEnd - offset}
-		if winner == nil {
-			p.hole = true
+		if iv.cold {
+			p.cold = true
 		} else {
-			p.loc = winner.loc
-			p.subOff = pos - winner.fileOff
+			p.loc = iv.loc
+			p.subOff = pos - iv.fileOff
 		}
 		pieces = append(pieces, p)
 		pos = spanEnd
+		i++
 	}
 	return pieces
 }
 
 // ReadAt fills dst with the file's bytes at offset. Ranges never written locally
-// are POSIX holes and are zero-filled. cold reports whether any range was served
-// from the remote store (always false until eviction/cold-read land).
+// are POSIX holes and are zero-filled. Ranges written but evicted are reported
+// via cold so the caller can hydrate from the remote store and retry; their dst
+// bytes are zero-filled as a placeholder until that cold-read path is wired.
 func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte) (n int, cold bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
@@ -111,36 +182,35 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 	sh := s.shardFor(id)
 	sh.mu.Lock()
 	fi := sh.index[id]
-	var pieces []piece
-	if fi != nil {
-		pieces = fi.plan(offset, int64(len(dst)))
-	}
-	sh.mu.Unlock()
-
-	if len(pieces) == 0 { // unknown file: all hole
-		for i := range dst {
-			dst[i] = 0
-		}
+	if fi == nil { // unknown file: all hole
+		sh.mu.Unlock()
+		clear(dst)
 		return len(dst), false, nil
 	}
+	pieces := fi.plan(offset, int64(len(dst)))
+	sh.mu.Unlock()
 
 	for _, p := range pieces {
 		seg := dst[p.dstStart:p.dstEnd]
-		if p.hole {
-			for i := range seg {
-				seg[i] = 0
+		switch {
+		case p.hole:
+			clear(seg)
+		case p.cold:
+			clear(seg)
+			cold = true
+			s.coldReads.Add(1)
+		default:
+			if _, err := s.readPayload(sh, p.loc, p.subOff, seg); err != nil {
+				return int(p.dstStart), false, err
 			}
-			continue
-		}
-		if _, err := s.readPayload(sh, p.loc, p.subOff, seg); err != nil {
-			return int(p.dstStart), false, err
 		}
 	}
-	return len(dst), false, nil
+	return len(dst), cold, nil
 }
 
-// DataExtents returns the merged [start,end) byte ranges that hold data,
-// clamped to fileSize. A caller uses it to answer SEEK_DATA/SEEK_HOLE.
+// DataExtents returns the merged [start, end) byte ranges that hold written data
+// — including evicted (cold) ranges, which are still logically present — clamped
+// to fileSize. A caller uses it to answer SEEK_DATA/SEEK_HOLE.
 func (s *Store) DataExtents(ctx context.Context, id FileID, fileSize int64) ([][2]uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -153,24 +223,17 @@ func (s *Store) DataExtents(ctx context.Context, id FileID, fileSize int64) ([][
 	}
 	sh := s.shardFor(id)
 	sh.mu.Lock()
+	defer sh.mu.Unlock()
 	fi := sh.index[id]
-	var ivs []interval
-	if fi != nil {
-		ivs = append(ivs, fi.ivs...)
-	}
-	sh.mu.Unlock()
-	if len(ivs) == 0 {
+	if fi == nil || len(fi.ivs) == 0 {
 		return nil, nil
 	}
 
-	sort.Slice(ivs, func(i, j int) bool { return ivs[i].fileOff < ivs[j].fileOff })
 	var out [][2]uint64
-	curStart, curEnd := ivs[0].fileOff, ivs[0].end()
-	for _, iv := range ivs[1:] {
-		if iv.fileOff <= curEnd { // overlap or adjacency
-			if iv.end() > curEnd {
-				curEnd = iv.end()
-			}
+	curStart, curEnd := fi.ivs[0].fileOff, fi.ivs[0].end()
+	for _, iv := range fi.ivs[1:] {
+		if iv.fileOff <= curEnd { // adjacent or overlapping (overlap only via versioned splits)
+			curEnd = max(curEnd, iv.end())
 			continue
 		}
 		out = appendExtent(out, curStart, curEnd, fileSize)
