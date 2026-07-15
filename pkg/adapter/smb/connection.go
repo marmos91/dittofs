@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/marmos91/dittofs/internal/adapter/pool"
 	smb "github.com/marmos91/dittofs/internal/adapter/smb"
 	"github.com/marmos91/dittofs/internal/adapter/smb/encryption"
 	"github.com/marmos91/dittofs/internal/adapter/smb/handlers"
@@ -335,8 +336,12 @@ func (c *Connection) Serve(ctx context.Context) {
 		ci.DecryptFailures.Store(0)
 
 		// Reconstruct raw message (header + body) for dispatch hooks.
-		// The hooks need the original wire bytes for preauth integrity hash computation.
-		rawMessage := make([]byte, header.HeaderSize+len(body))
+		// The hooks need the original wire bytes for preauth integrity hash
+		// computation. The buffer is pooled: the owning goroutine (or the
+		// synchronous LOGOFF path) returns it via pool.Put once dispatch
+		// completes. Dispatch consumes these bytes synchronously (SHA-512
+		// preauth chaining into a [64]byte), so no reference outlives the call.
+		rawMessage := pool.Get(header.HeaderSize + len(body))
 		copy(rawMessage, hdr.Encode())
 		copy(rawMessage[header.HeaderSize:], body)
 
@@ -349,6 +354,7 @@ func (c *Connection) Serve(ctx context.Context) {
 			if err := smb.ProcessSingleRequest(ctx, hdr, body, rawMessage, ci, isEncrypted, nil); err != nil {
 				logger.Debug("Error processing LOGOFF request", "address", clientAddr, "messageID", hdr.MessageID, "error", err)
 			}
+			pool.Put(rawMessage)
 			continue
 		}
 
@@ -386,12 +392,14 @@ func (c *Connection) Serve(ctx context.Context) {
 			copy(compoundData, remainingCompound)
 
 			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool) {
+				defer pool.Put(raw)
 				defer c.handleRequestPanic(clientAddr, reqHeader.MessageID)
 				asyncCallback := c.makeAsyncNotifyCallback(ci)
 				smb.ProcessCompoundRequest(ctx, reqHeader, reqBody, raw, compoundData, ci, encrypted, asyncCallback)
 			}(hdr, body, rawMessage, isEncrypted)
 		} else {
 			go func(reqHeader *header.SMB2Header, reqBody, raw []byte, encrypted bool, release func()) {
+				defer pool.Put(raw)
 				if release != nil {
 					defer release()
 				}
