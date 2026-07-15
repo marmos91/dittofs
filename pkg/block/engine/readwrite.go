@@ -40,8 +40,8 @@ func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) 
 		return 0, err
 	}
 	defer bs.closeMu.RUnlock()
-	if size, found := bs.local.GetFileSize(ctx, payloadID); found {
-		return size, nil
+	if size, found := bs.local.FileSize(ctx, payloadID); found {
+		return uint64(size), nil
 	}
 	return bs.syncer.GetFileSize(ctx, payloadID)
 }
@@ -53,7 +53,7 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 		return false, err
 	}
 	defer bs.closeMu.RUnlock()
-	if _, found := bs.local.GetFileSize(ctx, payloadID); found {
+	if _, found := bs.local.FileSize(ctx, payloadID); found {
 		return true, nil
 	}
 	return bs.syncer.Exists(ctx, payloadID)
@@ -88,7 +88,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	if len(data) == 0 {
 		return currentBlocks, nil
 	}
-	if err := bs.local.AppendWrite(ctx, payloadID, data, offset); err != nil {
+	if err := bs.local.WriteAt(ctx, payloadID, int64(offset), data); err != nil {
 		return currentBlocks, err
 	}
 	// Cache invalidation lives in common.WriteToBlockStore (post-txn)
@@ -183,7 +183,7 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 		}
 	}
 
-	if err := bs.local.Truncate(ctx, payloadID, newSize); err != nil {
+	if err := bs.local.Truncate(ctx, payloadID, int64(newSize)); err != nil {
 		return currentBlocks, fmt.Errorf("local truncate failed: %w", err)
 	}
 
@@ -280,7 +280,7 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 		if n > zeroChunk {
 			n = zeroChunk
 		}
-		if err := bs.local.AppendWrite(ctx, payloadID, zeros[:n], pos); err != nil {
+		if err := bs.local.WriteAt(ctx, payloadID, int64(pos), zeros[:n]); err != nil {
 			return currentBlocks, fmt.Errorf("zero punched range %s [%d,%d): %w", payloadID, pos, pos+n, err)
 		}
 		pos += n
@@ -316,12 +316,8 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	bs.local.SyncFileChunksForFile(ctx, payloadID)
-	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
-		return fmt.Errorf("local evict memory failed: %w", err)
-	}
-	if err := bs.local.DeleteAppendLog(ctx, payloadID); err != nil {
-		return fmt.Errorf("local delete append log failed: %w", err)
+	if err := bs.local.Delete(ctx, payloadID); err != nil {
+		return fmt.Errorf("local delete failed: %w", err)
 	}
 	// Resolve the manifest to reap. The file-removal path (NFS REMOVE, SMB
 	// delete) unlinks a file without carrying its block list, passing nil.
@@ -595,86 +591,4 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	_ = srcPayloadID
 
 	return dst, nil
-}
-
-// reapSupersededFileChunks deletes the per-file FileChunk rows that a
-// rollup pass's re-chunk superseded (#953). A row is superseded when its
-// chunk offset falls inside the byte region this pass rewrote
-// (newBlocks span) but is NOT one of the new chunk offsets — i.e. an
-// old-generation chunk that an in-place overwrite re-chunked onto
-// different FastCDC boundaries. Left behind, such rows accumulate in the
-// CAS manifest (ListFileChunks) and the cold read path mixes generations,
-// returning stale bytes after log compaction or local-state eviction.
-//
-// Region-scoped + by-exact-ID, mirroring the engine Delete/Truncate reap
-// contract:
-//   - Only rows whose offset is in [regionStart, regionEnd) are eligible —
-//     a row strictly before the region (a straddling predecessor the FS
-//     rollup could not boundary-align because its chunk was not locally
-//     readable) is KEPT so its non-overwritten head still serves bytes.
-//   - Rows whose offset is reused by a new chunk (overwritten in place by
-//     FileChunk.Put above) are skipped — they are the current generation.
-//   - Reap by EXACT ID "{payloadID}/{offset}" via DecrementRefCountAndReap.
-//     Each {payloadID}/offset row is independent; reaping this file's own
-//     row never touches another file's row. Cross-file dedup keep-alive is
-//     by-hash in the GC live set (EnumerateFileChunks): the chunk is
-//     reclaimed only when no row anywhere references the hash, so a hash a
-//     sibling file still uses stays alive even after this row is reaped.
-//
-// No-ops when the coordinator is unwired or when priorOffsets is empty
-// (first write). When newBlocks is empty all prior rows are reaped
-// unconditionally (file truncated to zero bytes this pass).
-func (bs *Store) reapSupersededFileChunks(ctx context.Context, payloadID string, priorOffsets []uint64, newBlocks []block.ChunkRef) error {
-	if bs.coordinator == nil || len(priorOffsets) == 0 {
-		return nil
-	}
-
-	// superseded decides whether a prior offset is reaped this pass.
-	//
-	// When newBlocks is empty no chunks were produced (file truncated to zero
-	// bytes, or the reconstructed stream was entirely clipped by the
-	// truncation fence): every prior row is unconditionally superseded.
-	// Otherwise a prior offset is superseded only when it falls inside the
-	// rewritten region [regionStart, regionEnd) and is not itself a reused
-	// offset (those rows were overwritten in place by FileChunk.Put and are
-	// the current generation).
-	var superseded func(off uint64) bool
-	if len(newBlocks) == 0 {
-		superseded = func(uint64) bool { return true }
-	} else {
-		regionStart := newBlocks[0].Offset
-		var regionEnd uint64
-		newOffsets := make(map[uint64]struct{}, len(newBlocks))
-		for _, b := range newBlocks {
-			if b.Offset < regionStart {
-				regionStart = b.Offset
-			}
-			if end := b.Offset + uint64(b.Size); end > regionEnd {
-				regionEnd = end
-			}
-			newOffsets[b.Offset] = struct{}{}
-		}
-		superseded = func(off uint64) bool {
-			if off < regionStart || off >= regionEnd {
-				return false // outside the rewritten region — untouched, keep.
-			}
-			_, isNew := newOffsets[off]
-			return !isNew // reused offset is the current generation — keep.
-		}
-	}
-
-	reaped := make(map[uint64]struct{}, len(priorOffsets))
-	for _, off := range priorOffsets {
-		if !superseded(off) {
-			continue
-		}
-		if _, done := reaped[off]; done {
-			continue
-		}
-		reaped[off] = struct{}{}
-		if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, off); err != nil {
-			return fmt.Errorf("reap superseded block %s/%d: %w", payloadID, off, err)
-		}
-	}
-	return nil
 }

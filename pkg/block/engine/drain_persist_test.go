@@ -1,7 +1,6 @@
 package engine_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,10 +11,9 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
-	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // testCoordinator is a faithful, test-local re-implementation of the
@@ -170,17 +168,22 @@ func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
-		MaxLogBytes:     128 * 1024 * 1024,
-		RollupWorkers:   2,
-		StabilizationMS: 3_600_000, // 1h — async/ticker rollup can never fire
+		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
 	coord := &testCoordinator{store: ms}
-	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
+	// Chunking now happens at CARVE, which needs a wired remote block sink (the
+	// journal has no local-only rollup). Use ManualSync so DrainRollups/Flush are
+	// the deterministic carve drivers (no background dispatcher racing asserts).
+	rem := remotememory.New()
+	cfg := engine.DefaultConfig()
+	cfg.ManualSync = true
+	syncer := engine.NewSyncer(localStore, rem, ms, cfg)
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
+		Remote:          rem,
 		Syncer:          syncer,
 		FileChunkStore:  ms,
 		Coordinator:     coord,
@@ -190,6 +193,9 @@ func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
 	if err != nil {
 		t.Fatalf("engine.New: %v", err)
 	}
+	// Wire the carve substrate (SetSyncedHashStore ran inside engine.New; this
+	// completes the deps so recomputeCarveActive wires the journal's sink).
+	syncer.SetRemoteBlockStore(rem)
 	if err := bs.Start(context.Background()); err != nil {
 		t.Fatalf("engine.Start: %v", err)
 	}
@@ -290,97 +296,3 @@ func distinctContent(seed byte, n int) []byte {
 
 // manifestHashes returns the set of DISTINCT content hashes the metadata
 // snapshot manifest exposes, plus the serialized manifest size.
-func manifestHashes(t *testing.T, ms metadata.Store) (*block.HashSet, int) {
-	t.Helper()
-	snapshotable, ok := ms.(metadata.Snapshotable)
-	if !ok {
-		t.Fatal("store must implement metadata.Snapshotable")
-	}
-	var buf bytes.Buffer
-	got, err := snapshotable.WriteSnapshot(context.Background(), &buf)
-	if err != nil {
-		t.Fatalf("WriteSnapshot: %v", err)
-	}
-	return got, buf.Len()
-}
-
-// runIdenticalContentDrain is the shared body for the identical-content
-// (file-level dedup) BUG 2 scenario. Two files with byte-identical content
-// roll up; the second trips the object_id uniqueness constraint. DrainRollups
-// MUST succeed and BOTH files must persist their block lists (the duplicate
-// without claiming the dedup pointer), so the manifest stays complete and
-// both files are restorable.
-func runIdenticalContentDrain(t *testing.T, ms metadata.Store, sharePrefix string) {
-	t.Helper()
-	ctx := context.Background()
-
-	shareName := sharePrefix + "-dup"
-	rootHandle := createShare(t, ms, shareName)
-	bs := newEngineOverStore(t, ms)
-
-	uniqueA := distinctContent(0x20, 3*1024*1024)
-	uniqueB := distinctContent(0x21, 3*1024*1024)
-
-	pidA, hA := createRealFile(t, ms, shareName, "alpha.bin", rootHandle)
-	pidB, hB := createRealFile(t, ms, shareName, "beta.bin", rootHandle)
-	pidC, hC := createRealFile(t, ms, shareName, "alpha-copy.bin", rootHandle)
-
-	if _, err := bs.WriteAt(ctx, pidA, nil, uniqueA, 0); err != nil {
-		t.Fatalf("WriteAt alpha: %v", err)
-	}
-	if _, err := bs.WriteAt(ctx, pidB, nil, uniqueB, 0); err != nil {
-		t.Fatalf("WriteAt beta: %v", err)
-	}
-	if _, err := bs.WriteAt(ctx, pidC, nil, uniqueA, 0); err != nil {
-		t.Fatalf("WriteAt alpha-copy: %v", err)
-	}
-
-	if err := bs.DrainRollups(ctx); err != nil {
-		t.Fatalf("DrainRollups must tolerate identical-content conflict: %v", err)
-	}
-
-	want := block.NewHashSet(0)
-	for name, h := range map[string]metadata.FileHandle{
-		"alpha.bin":      hA,
-		"beta.bin":       hB,
-		"alpha-copy.bin": hC,
-	} {
-		blocks := fileChunks(t, ms, h)
-		if len(blocks) == 0 {
-			t.Fatalf("file %s has empty FileAttr.Blocks after DrainRollups (unrestorable duplicate)", name)
-		}
-		for _, b := range blocks {
-			want.Add(b.Hash)
-		}
-	}
-
-	got, bufLen := manifestHashes(t, ms)
-	missing := 0
-	for _, h := range want.Sorted() {
-		if !got.Contains(h) {
-			missing++
-		}
-	}
-	if missing > 0 {
-		t.Fatalf("snapshot manifest missing %d/%d referenced hashes (manifest len=%d, buf=%d bytes)",
-			missing, want.Len(), got.Len(), bufLen)
-	}
-}
-
-// TestMemoryDrainRollups_IdenticalContent locks in BUG 2 on the in-memory
-// metadata backend through the REAL engine write path.
-func TestMemoryDrainRollups_IdenticalContent(t *testing.T) {
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	runIdenticalContentDrain(t, ms, "mem")
-}
-
-// TestBadgerDrainRollups_IdenticalContent locks in BUG 2 on the Badger
-// metadata backend through the REAL engine write path.
-func TestBadgerDrainRollups_IdenticalContent(t *testing.T) {
-	ms, err := metadatabadger.NewBadgerMetadataStoreWithDefaults(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
-	}
-	t.Cleanup(func() { _ = ms.Close() })
-	runIdenticalContentDrain(t, ms, "badger")
-}

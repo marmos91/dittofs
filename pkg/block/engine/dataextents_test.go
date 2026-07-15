@@ -25,9 +25,9 @@ func TestStore_DataExtents_UnionsLocalAndCAS(t *testing.T) {
 	const chunk = uint64(4096)
 	fileSize := casOff + chunk
 
-	// Pre-rollup bytes: live only in the local append log at [0, 4096).
-	if err := bs.local.AppendWrite(ctx, payloadID, make([]byte, chunk), 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
+	// Pre-carve bytes: live only in the local journal tier at [0, 4096).
+	if err := bs.local.WriteAt(ctx, payloadID, 0, make([]byte, chunk)); err != nil {
+		t.Fatalf("WriteAt: %v", err)
 	}
 	// Post-rollup bytes: a committed CAS chunk at [1 MiB, 1 MiB+4096) that the
 	// local append log does NOT cover.

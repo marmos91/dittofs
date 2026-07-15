@@ -10,6 +10,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
@@ -86,24 +87,13 @@ type Syncer struct {
 	closed bool
 	mu     gosync.RWMutex
 
-	periodicStarted bool // true once the carve dispatcher + maintenance goroutines are launched
+	periodicStarted bool // true once the carve dispatcher goroutine is launched
 
 	healthMonitor   *HealthMonitor           // Monitors remote store health (nil when no remote)
 	onHealthChanged healthTransitionCallback // Callback invoked on health state transitions
 
 	firstOfflineRead    atomic.Bool  // Tracks if WARN was already logged since last healthy->unhealthy transition
 	offlineReadsBlocked atomic.Int64 // Count of read operations blocked by remote unavailability
-
-	// pendingMu guards the carve pending set (pendingCarveHashes + carveQ).
-	pendingMu gosync.Mutex
-
-	// unsyncedBytes is the running total on-disk size of pendingCarveHashes:
-	// the number of cache bytes that cannot be evicted until they reach
-	// remote. The local store reads it (via UnsyncedBytes) to decide
-	// whether a backpressure stall can make progress. Charged once per
-	// distinct hash (CAS dedup): re-adding a hash already pending does not
-	// double-count, and a drained hash subtracts exactly what it added.
-	unsyncedBytes atomic.Int64
 
 	// completedSyncs / failedSyncs are lifetime counters of CAS chunks that
 	// reached remote (committed inside a packed block) and of failed carve
@@ -140,40 +130,20 @@ type Syncer struct {
 	// a chunk is framed into a block. Derived from remoteBlockStore (the same
 	// decorated remote); nil means identity (raw) sealing. Guarded by m.mu.
 	chunkSealer remote.ChunkSealer
-	// blockCommitter atomically persists the block record + local locations +
-	// synced markers (DefaultCommitBlock) and resolves a chunk's log-blob
-	// location (GetLocalLocation). It is the per-share metadata store; nil
-	// disables carve. Guarded by m.mu.
+	// blockCommitter atomically persists the block record + synced markers
+	// (DefaultCommitBlock) — the per-share metadata store the carve BlockSink
+	// commits through. nil disables carve. Guarded by m.mu.
 	blockCommitter blockCommitter
-	// localBlobReader reads a chunk's raw bytes from the local log-blob
-	// substrate (FSStore). nil disables carve. Asserted from m.local at
-	// construction; guarded by m.mu only for read symmetry with the others.
-	localBlobReader localBlobReader
 
 	// carveActive mirrors "all carve deps wired AND a remote exists" as an
-	// atomic so hot paths (Flush honesty check, carveFlush early-out) can read
-	// it without taking m.mu. Recomputed by the setters.
+	// atomic so hot paths (Flush honesty check, the dispatcher early-out) can
+	// read it without taking m.mu. Recomputed by the setters.
 	carveActive atomic.Bool
 
-	// pendingCarveHashes holds chunks awaiting carve into a block, keyed by
-	// hash → raw byte size. Populated O(1) by addPendingHash (fired from the
-	// onChunkComplete chokepoint) and drained by carveAndCommitBlock after
-	// each atomic commit. A startup reconciliation (seedPendingFromDisk)
-	// re-seeds it after a restart, since the set is volatile and chunks
-	// written-but-not-synced before a crash would otherwise be missed. carveQ
-	// is the FIFO insertion order the carver drains. Both guarded by
-	// pendingMu. The per-hash size feeds unsyncedBytes, the backpressure
-	// signal the local store consults to decide whether to keep stalling a
-	// writer.
-	pendingCarveHashes map[block.ContentHash]int64
-	carveQ             []block.ContentHash
-
-	// carveWake nudges the carve dispatcher that a chunk is ready (non-blocking,
-	// coalescing, buffered len 1) so packing overlaps later writes.
-	carveWake chan struct{}
-	// carveMu serializes carve flushes so the background dispatcher and an
-	// explicit Flush/SyncNow never build a block from the same chunk twice.
-	carveMu gosync.Mutex
+	// carveTargetsWired guards the one-shot SetCarveTargets call on the local
+	// journal (built from the wired remote/committer/synced deps). Guarded by
+	// m.mu.
+	carveTargetsWired bool
 }
 
 // blockCommitter is the narrow consumer-side slice of metadata.Store the carver
@@ -188,117 +158,12 @@ type blockCommitter interface {
 	metadata.LocalChunkIndex
 }
 
-// localBlobReader is the narrow consumer-side capability the carver needs from
-// the local store: read a chunk's raw bytes from the log-blob substrate at a
-// known location. *fs.FSStore satisfies it via a thin delegation to its
-// log-blob Manager. Kept off local.LocalStore so non-log-blob backends compile
-// unchanged (the carver is simply disabled for them).
-type localBlobReader interface {
-	ReadLocalAt(ctx context.Context, loc block.LocalChunkLocation, dst []byte) (int, error)
-}
-
-// addPendingHash registers a newly-stored CAS hash (of the given on-disk
-// byte size) for the next carve pass. Fired from the onChunkComplete
-// callback (engine.New) on every successful StoreChunk. Safe for concurrent
-// use; O(1). Charges unsyncedBytes once per distinct hash — re-adding a hash
-// already pending updates the recorded size but does not double-count.
-// Harmless when no remote is configured: the set simply accumulates until a
-// remote is attached (SetRemoteStore) or the chunks are marked synced.
-// Signals the carve dispatcher so packing overlaps the rollup of later chunks.
-func (m *Syncer) addPendingHash(h block.ContentHash, size int64) {
-	m.pendingMu.Lock()
-	// prev is the zero value (0) when the hash is new, so size-prev charges
-	// the full size on first insert and only the delta on re-add — never
-	// double-counting a hash already pending (CAS dedup). The counter update
-	// stays INSIDE pendingMu so it is serialized against the carve drain
-	// (which deletes from the map and subtracts under the same lock).
-	prev, already := m.pendingCarveHashes[h]
-	m.pendingCarveHashes[h] = size
-	m.unsyncedBytes.Add(size - prev)
-	if !already {
-		m.carveQ = append(m.carveQ, h)
-	}
-	m.pendingMu.Unlock()
-
-	// Only a newly-inserted hash changes the queue depth; re-adding an
-	// already-pending hash (size refresh) leaves the gauge unchanged, so skip
-	// the extra lock/metric churn on that hot path (incl. seedPendingFromDisk).
-	if !already {
-		m.publishCarveQueueDepth()
-		m.signalCarveWake()
-	}
-}
-
-// markFetchedSynced retires a chunk that was just downloaded from the remote
-// store from the pending-carve set. The bytes are verbatim remote content —
-// the chunk was resolved through its recorded block locator, so it is already
-// marked synced and provably durable on remote. All that remains is to cancel
-// the pending entry that StoreChunk's onChunkComplete callback registered for
-// it, so the carver does not waste a redundant block commit re-packing data
-// that is already remote (read-amplification → write-amplification, #1362).
-//
-// It deliberately does NOT call MarkSynced: the hash already carries a block
-// locator, and re-marking it here would overwrite that locator (the legacy
-// path recorded a standalone locator, which is post-migration drift).
-func (m *Syncer) markFetchedSynced(_ context.Context, h block.ContentHash) {
-	if h.IsZero() {
-		return
-	}
-	// A concurrent carve pass that already claimed this hash may still pack it
-	// once — harmless and rare (the commit is idempotent per MarkSynced).
-	m.dropCarveHash(h)
-	m.publishCarveQueueDepth()
-}
-
-// UnsyncedBytes returns the running total on-disk size of CAS chunks present
-// locally but not yet mirrored to remote. This is the backpressure signal
-// the local store consults: a non-zero value with a healthy remote means a
-// stalled writer can make progress once the syncer drains. The raw counter
-// can briefly go negative when a drift reconcile re-seeds a still-pending
-// hash with a best-effort size of 0 (its bytes vanished mid-walk); this
-// method clamps such a transient to 0 so callers always see a non-negative
-// pending-byte count.
+// UnsyncedBytes returns the on-disk size of local ranges not yet carved to the
+// remote. It is the journal's own dirty-byte counter — the backpressure signal
+// the eviction path consults: a non-zero value with a healthy remote means a
+// stalled writer can make progress once the carve dispatcher drains.
 func (m *Syncer) UnsyncedBytes() int64 {
-	if v := m.unsyncedBytes.Load(); v > 0 {
-		return v
-	}
-	return 0
-}
-
-// seedPendingFromDisk reconciles the in-memory pending-carve set against the
-// on-disk state by walking every locally-present chunk that is not yet
-// marked synced (ListUnsynced) and adding it to the set. This is the
-// O(total-chunks) walk — but it runs ONCE at startup (the pending set is
-// volatile, so chunks written-but-not-synced before a crash must be
-// rediscovered) and periodically as a slow drift reconciler, NOT on every
-// carve tick. Returns the number of hashes seeded.
-//
-// Restart-seed coverage of unsynced LOG-BLOB chunks is not yet guaranteed:
-// ListUnsynced enumerates log-blob chunks only on index backends that implement
-// local-location walking, so on the production backends an unsynced log-blob
-// chunk written just before a crash is not re-queued for carve here. The chunk
-// is durable locally (its blob is fsynced before the rollup fence advances), so
-// no data is lost; full cross-backend restart-seed via blob-index enumeration
-// is deferred to the #1525 reconcile work (PR5).
-func (m *Syncer) seedPendingFromDisk(ctx context.Context) (int, error) {
-	n := 0
-	for hash, err := range m.local.ListUnsynced(ctx) {
-		if err != nil {
-			return n, fmt.Errorf("seed pending: %w", err)
-		}
-		// Recover each unsynced chunk's on-disk size so unsyncedBytes is
-		// accurate after a restart. A chunk that vanished between the
-		// ListUnsynced walk and this Head (external delete / concurrent
-		// evict) is recorded as zero bytes rather than aborting the seed —
-		// the next drift reconcile re-walks disk and corrects the set.
-		var size int64
-		if meta, herr := m.local.Head(ctx, hash); herr == nil {
-			size = meta.Size
-		}
-		m.addPendingHash(hash, size)
-		n++
-	}
-	return n, nil
+	return m.local.UnsyncedBytes()
 }
 
 // NewSyncer creates a new Syncer. The fileChunkStore is required for content-addressed dedup.
@@ -339,16 +204,8 @@ func NewSyncer(local local.LocalStore, remoteStore remote.RemoteStore, fileChunk
 
 		uploadLimiter:    newDynamicSemaphore(startWindow),
 		uploadController: uploadController,
-
-		pendingCarveHashes: make(map[block.ContentHash]int64),
-		carveWake:          make(chan struct{}, 1),
 	}
 	m.hasRemote.Store(remoteStore != nil)
-	// The local store provides the carve read path only if it exposes the
-	// log-blob substrate; non-log-blob backends leave the carver disabled.
-	if r, ok := local.(localBlobReader); ok {
-		m.localBlobReader = r
-	}
 	m.recomputeCarveActive()
 
 	queueConfig := DefaultSyncQueueConfig()
@@ -415,6 +272,13 @@ func (m *Syncer) recomputeCarveActive() {
 		m.blockCommitter != nil &&
 		m.hasRemote.Load()
 	m.carveActive.Store(active)
+	// Wire the journal's carve collaborators as soon as every dep is present.
+	// Done here (not only in Start) so ManualSync fixtures — which drive carve
+	// via Flush/SyncNow and never launch the dispatcher — still get a wired
+	// journal. Guarded + one-shot inside wireCarveTargets. Caller holds m.mu.
+	if active {
+		m.wireCarveTargets()
+	}
 }
 
 // SetHealthCallback sets the callback invoked when the remote store health state changes.
@@ -521,28 +385,22 @@ func (m *Syncer) Flush(ctx context.Context, payloadID string) (*block.FlushResul
 		return nil, err
 	}
 
-	// 1. Per-payload metadata quiesce: persist any FileChunk metadata
-	//    that the local store has queued (queueFileChunkUpdate during
-	//    rollup commit) so reads and restart-recovery see the
-	//    authoritative manifest for this payloadID.
-	m.local.SyncFileChunksForFile(ctx, payloadID)
-
-	// 2. Local-only or remote-unhealthy: early-exit with Finalized=false.
+	// Local-only or remote-unhealthy: early-exit with Finalized=false.
 	if m.remoteStore == nil || !m.IsRemoteHealthy() {
 		return &block.FlushResult{Finalized: false}, nil
 	}
 
-	// A remote without the carve substrate (partial test fixture, or a local
-	// backend without the log-blob substrate) cannot make anything durable:
-	// report the soft condition instead of claiming durability.
+	// A remote without the carve substrate wired (partial test fixture) cannot
+	// make anything durable: report the soft condition instead of claiming it.
 	if !m.carveActive.Load() {
 		return &block.FlushResult{Finalized: false}, nil
 	}
 
-	// 3. Drain the carve set (#1414): pack every pending chunk into block
-	//    objects and commit them. Hashes added concurrently surface on the
-	//    next Flush (snapshot-at-claim semantics).
-	if err := m.carveFlush(ctx, true); err != nil {
+	// Force-carve this file's dirty ranges into remote blocks and commit them
+	// (the BlockSink writes the FileChunk manifest rows in the same txn). The
+	// journal serializes carve per shard, so the explicit drain and the
+	// background dispatcher never pack the same range twice.
+	if _, err := m.local.Carve(ctx, journal.CarveOptions{FileID: journal.FileID(payloadID), Force: true}); err != nil {
 		return nil, err
 	}
 	return &block.FlushResult{Finalized: true}, nil
@@ -559,16 +417,6 @@ func (m *Syncer) dataplaneMetrics() DataplaneMetrics {
 		return *p
 	}
 	return nil
-}
-
-// PendingCount returns the number of CAS chunks present locally but not yet
-// committed into a remote block — the live pending-carve backlog. Sourced
-// from the addPendingHash/carve set, which is the actual upload path (unlike
-// the vestigial SyncQueue).
-func (m *Syncer) PendingCount() int {
-	m.pendingMu.Lock()
-	defer m.pendingMu.Unlock()
-	return len(m.pendingCarveHashes)
 }
 
 // SyncCounts returns lifetime (completed, failed) sync counts: chunks that
@@ -798,14 +646,9 @@ func (m *Syncer) Start(ctx context.Context) {
 		logger.Warn("Syncer janitor: recoverStaleSyncing failed", "error", err)
 	}
 
-	// Seed the pending-upload set from disk: after a restart the volatile
-	// set is empty, so chunks written-but-not-synced before shutdown would
-	// otherwise never upload. This is the full walk, run once at startup.
-	if n, err := m.seedPendingFromDisk(ctx); err != nil {
-		logger.Warn("Syncer: seedPendingFromDisk failed; periodic reconcile will retry", "error", err)
-	} else if n > 0 {
-		logger.Info("Syncer: seeded pending uploads from disk", "count", n)
-	}
+	// No pending-set to seed from disk: the journal owns the unsynced state
+	// (its recovered interval index re-marks every not-yet-carved record dirty
+	// on Open), so the carve dispatcher re-drains them without a reconcile walk.
 
 	m.startHealthMonitor(ctx)
 	m.startPeriodicUploader(ctx)
@@ -849,10 +692,10 @@ func (m *Syncer) startPeriodicUploader(ctx context.Context) {
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
-	// The carve dispatcher packs log-blob chunks into block objects (#1414)
-	// in steady state; the maintenance loop handles the slow housekeeping
-	// (FileChunk metadata flush, drift reconcile) the dispatcher does not.
-	go m.maintenanceLoop(ctx, interval)
+	_ = interval
+	// Carve collaborators are wired by recomputeCarveActive once all deps are
+	// present; launch the dispatcher that periodically packs the journal's dirty
+	// ranges into remote blocks.
 	go m.carveDispatcher(ctx)
 
 	// Adaptive mode (ParallelUploads unset): launch the goodput controller that
@@ -926,42 +769,21 @@ func (m *Syncer) adaptiveUploadTick(intervalSec float64) {
 	}
 }
 
-// maintenanceLoop runs the slow periodic housekeeping that the steady-state
-// carve dispatcher does not: it persists queued FileChunk metadata and
-// periodically re-seeds the pending-carve set from disk (drift reconcile) so
-// chunks that predate the dispatcher — or whose carve attempt was dropped —
-// are retried. It never uploads — that is the carve dispatcher's job.
-func (m *Syncer) maintenanceLoop(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	reconcileEvery := int((10 * time.Minute) / interval)
-	if reconcileEvery < 1 {
-		reconcileEvery = 1
+// wireCarveTargets injects the journal's carve collaborators (the remote-durable
+// dedup oracle and the block sink that seals/frames/uploads/commits) built from
+// the syncer's wired remote/committer/synced deps. One-shot, guarded by m.mu;
+// safe to call again from a late SetRemoteStore attach.
+func (m *Syncer) wireCarveTargets() {
+	if m.carveTargetsWired {
+		return
 	}
-	tick := 0
-
-	for {
-		select {
-		case <-ticker.C:
-			if !m.canProcess(ctx) {
-				return
-			}
-			tick++
-			// Persist queued FileChunk metadata so reads/restart-recovery see
-			// the authoritative manifest for recently rolled-up chunks.
-			m.local.SyncFileChunks(ctx)
-			if tick%reconcileEvery == 0 {
-				if _, err := m.seedPendingFromDisk(ctx); err != nil {
-					logger.Warn("Maintenance loop: drift reconcile failed", "error", err)
-				}
-			}
-		case <-m.stopCh:
-			return
-		case <-ctx.Done():
-			return
-		}
+	if m.remoteBlockStore == nil || m.blockCommitter == nil || m.syncedHashStore == nil {
+		return
 	}
+	deduper := engineDeduper{synced: m.syncedHashStore}
+	sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter}
+	m.local.SetCarveTargets(deduper, sink)
+	m.carveTargetsWired = true
 }
 
 // SyncNow triggers an immediate carve drain of every locally stored chunk
@@ -977,20 +799,17 @@ func (m *Syncer) SyncNow(ctx context.Context) error {
 		return nil
 	}
 
-	// Flush queued FileChunk metadata to the store so the drain pass
-	// picks up recently rolled-up chunks.
-	m.local.SyncFileChunks(ctx)
-
 	if !m.carveActive.Load() {
 		// A remote without the carve substrate cannot drain anything. Fail
-		// honestly when chunks are pending rather than claiming durability.
-		if m.PendingCount() > 0 {
-			return errors.New("syncer: carve substrate not wired — pending chunks cannot reach remote")
+		// honestly when dirty bytes are pending rather than claiming durability.
+		if m.local.UnsyncedBytes() > 0 {
+			return errors.New("syncer: carve substrate not wired — pending ranges cannot reach remote")
 		}
 		return nil
 	}
 
-	return m.carveFlush(ctx, true)
+	_, err := m.local.Carve(ctx, journal.CarveOptions{Force: true})
+	return err
 }
 
 // recoverStaleSyncing requeues blocks left in Syncing by a previous

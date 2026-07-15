@@ -261,22 +261,10 @@ func (m *Syncer) migrationChunkBytes(
 	h block.ContentHash,
 ) ([]byte, block.LocalChunkLocation, error) {
 	var zero block.LocalChunkLocation
-	if has, err := m.local.Has(ctx, h); err == nil && has {
-		data, gerr := m.local.Get(ctx, h)
-		if gerr == nil {
-			if block.ContentHash(blake3.Sum256(data)) == h {
-				loc := zero
-				if committer := m.getBlockCommitter(); committer != nil {
-					if l, ok, lerr := committer.GetLocalLocation(ctx, h); lerr == nil && ok {
-						loc = l
-					}
-				}
-				return data, loc, nil
-			}
-			logger.Warn("cas→blocks migration: local copy failed verification, falling back to remote",
-				"hash", h.String())
-		}
-	}
+	// The journal local tier is (payloadID,offset)-keyed, not hash-keyed, so
+	// there is no local-first read here anymore: the migration reads standalone
+	// chunks straight from the legacy remote. Pre-flip local per-chunk files no
+	// longer exist under the journal store.
 	if !hasLegacy {
 		return nil, zero, fmt.Errorf("chunk %s: %w", h, block.ErrChunkNotFound)
 	}
@@ -307,11 +295,8 @@ func (m *Syncer) legacyCAS() (remote.LegacyCASStore, bool) {
 // block.ErrChunkNotFound when the chunk is resident nowhere. Read-path twin of
 // migrationChunkBytes, without the local-location lookup the repacker needs.
 func (m *Syncer) readStandaloneChunk(ctx context.Context, h block.ContentHash) ([]byte, error) {
-	if has, err := m.local.Has(ctx, h); err == nil && has {
-		if data, gerr := m.local.Get(ctx, h); gerr == nil && block.ContentHash(blake3.Sum256(data)) == h {
-			return data, nil
-		}
-	}
+	// No local-first read: the journal local tier is not hash-keyed. Standalone
+	// pre-flip chunks are served straight from the legacy remote.
 	legacy, ok := m.legacyCAS()
 	if !ok {
 		return nil, fmt.Errorf("chunk %s: %w", h, block.ErrChunkNotFound)

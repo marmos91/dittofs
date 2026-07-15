@@ -27,8 +27,8 @@ func (bs *Store) DataExtents(ctx context.Context, payloadID string, fileSize uin
 		return nil, nil
 	}
 
-	// (a) Pre-rollup bytes the local tier knows but CAS does not yet.
-	ext, err := bs.local.DataExtents(ctx, payloadID, fileSize)
+	// (a) Bytes the local journal tier knows (dirty or evicted/cold).
+	ext, err := bs.local.DataExtents(ctx, payloadID, int64(fileSize))
 	if err != nil {
 		return nil, err
 	}

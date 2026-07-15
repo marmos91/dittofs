@@ -69,14 +69,14 @@ func TestMemoryStore_ReadPayloadAt_SparseLeadingGap(t *testing.T) {
 	const payloadID = "sparse-local"
 
 	data := bytes.Repeat([]byte{0xAB}, 4096)
-	if err := store.AppendWrite(ctx, payloadID, data, 4096); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
+	if err := store.WriteAt(ctx, payloadID, 4096, data); err != nil {
+		t.Fatalf("WriteAt: %v", err)
 	}
 
 	dest := make([]byte, 8192)
-	n, err := store.ReadPayloadAt(ctx, payloadID, dest, 0)
+	n, _, err := store.ReadAt(ctx, payloadID, 0, dest)
 	if err != nil {
-		t.Fatalf("ReadPayloadAt: %v", err)
+		t.Fatalf("ReadAt: %v", err)
 	}
 	if n != len(dest) {
 		t.Fatalf("ReadPayloadAt short read: got %d, want %d", n, len(dest))

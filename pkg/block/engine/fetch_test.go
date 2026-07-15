@@ -41,10 +41,11 @@ func newFailingPutLocal() *failingPutLocal {
 	}
 }
 
-// Put records the call, signals first-entry on `entered` (one shot), waits
-// for the test to close `release` (with a safety timeout so a buggy test
-// does not wedge the suite), then returns the sentinel error.
-func (f *failingPutLocal) Put(_ context.Context, _ block.ContentHash, _ []byte) error {
+// Hydrate records the call, signals first-entry on `entered` (one shot), waits
+// for the test to close `release` (with a safety timeout so a buggy test does
+// not wedge the suite), then returns the sentinel error. The cold-fetch path
+// persists via journal Hydrate (payloadID+offset), not the old hash-keyed Put.
+func (f *failingPutLocal) Hydrate(_ context.Context, _ string, _ int64, _ []byte) error {
 	f.puts.Add(1)
 	f.once.Do(func() { close(f.entered) })
 	select {
@@ -61,14 +62,13 @@ func (f *failingPutLocal) Put(_ context.Context, _ block.ContentHash, _ []byte) 
 // on this path.
 func newFetchSyncer(localStore local.LocalStore, rs remote.RemoteStore, fbs block.EngineFileChunkStore, shs metadata.SyncedHashStore) *Syncer {
 	return &Syncer{
-		local:              localStore,
-		remoteStore:        rs,
-		fileChunkStore:     fbs,
-		syncedHashStore:    shs,
-		inFlight:           make(map[string]*fetchResult),
-		stopCh:             make(chan struct{}),
-		config:             DefaultConfig(),
-		pendingCarveHashes: make(map[block.ContentHash]int64),
+		local:           localStore,
+		remoteStore:     rs,
+		fileChunkStore:  fbs,
+		syncedHashStore: shs,
+		inFlight:        make(map[string]*fetchResult),
+		stopCh:          make(chan struct{}),
+		config:          DefaultConfig(),
 	}
 }
 
