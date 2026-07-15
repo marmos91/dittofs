@@ -84,7 +84,7 @@ func hashSetEqual(a, b []block.ContentHash) bool {
 func TestFSStore_ListUnsynced(t *testing.T) {
 	t.Run("EmptyStore", func(t *testing.T) {
 		shs := memory.NewMemoryMetadataStoreWithDefaults()
-		bc := newFSStoreForTest(t, FSStoreOptions{SyncedHashStore: shs})
+		bc := newFSStoreForTestWithFBS(t, shs, FSStoreOptions{})
 
 		got, errs := collectIter(bc.ListUnsynced(context.Background()))
 		if len(got) != 0 {
@@ -98,9 +98,10 @@ func TestFSStore_ListUnsynced(t *testing.T) {
 	})
 
 	t.Run("NilSyncedHashStore", func(t *testing.T) {
-		// No SyncedHashStore wired — strict-subset invariant says
-		// "no synced markers" collapses to empty iterator.
-		bc := newFSStoreForTest(t, FSStoreOptions{})
+		// Backend without a SyncedHashStore facet — the soft derivation
+		// leaves bc.syncedHashStore nil, and the strict-subset invariant
+		// says "no synced markers" collapses to an empty iterator.
+		bc := newFSStoreForTestWithFBS(t, newMemFileChunkStore(), FSStoreOptions{})
 		_ = seedChunks(t, bc, 5)
 
 		got, errs := collectIter(bc.ListUnsynced(context.Background()))
@@ -116,7 +117,7 @@ func TestFSStore_ListUnsynced(t *testing.T) {
 
 	t.Run("AllSynced", func(t *testing.T) {
 		shs := memory.NewMemoryMetadataStoreWithDefaults()
-		bc := newFSStoreForTest(t, FSStoreOptions{SyncedHashStore: shs})
+		bc := newFSStoreForTestWithFBS(t, shs, FSStoreOptions{})
 		hashes := seedChunks(t, bc, 4)
 		ctx := context.Background()
 		for _, h := range hashes {
@@ -138,7 +139,7 @@ func TestFSStore_ListUnsynced(t *testing.T) {
 
 	t.Run("AllUnsynced", func(t *testing.T) {
 		shs := memory.NewMemoryMetadataStoreWithDefaults()
-		bc := newFSStoreForTest(t, FSStoreOptions{SyncedHashStore: shs})
+		bc := newFSStoreForTestWithFBS(t, shs, FSStoreOptions{})
 		hashes := seedChunks(t, bc, 4)
 
 		got, errs := collectIter(bc.ListUnsynced(context.Background()))
@@ -154,7 +155,7 @@ func TestFSStore_ListUnsynced(t *testing.T) {
 
 	t.Run("Partial", func(t *testing.T) {
 		shs := memory.NewMemoryMetadataStoreWithDefaults()
-		bc := newFSStoreForTest(t, FSStoreOptions{SyncedHashStore: shs})
+		bc := newFSStoreForTestWithFBS(t, shs, FSStoreOptions{})
 		hashes := seedChunks(t, bc, 5)
 		ctx := context.Background()
 
@@ -180,7 +181,7 @@ func TestFSStore_ListUnsynced(t *testing.T) {
 
 	t.Run("CtxCancelMidIter", func(t *testing.T) {
 		shs := memory.NewMemoryMetadataStoreWithDefaults()
-		bc := newFSStoreForTest(t, FSStoreOptions{SyncedHashStore: shs})
+		bc := newFSStoreForTestWithFBS(t, shs, FSStoreOptions{})
 		_ = seedChunks(t, bc, 10)
 
 		ctx, cancel := context.WithCancel(context.Background())

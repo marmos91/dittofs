@@ -37,11 +37,12 @@ func TestDrainRollups_ForcesManifestPopulation(t *testing.T) {
 
 	// Stabilization window is enormous (1 hour) so the ticker/stable path
 	// can NEVER consume the interval; only a forced drain can.
-	bc := newFSStoreForTest(t, FSStoreOptions{
+	// rs doubles as the backing FileChunkStore so the derived RollupStore
+	// is the same store this test reads for rollup-offset progress.
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 		MaxLogBytes:       1 << 30,
 		RollupWorkers:     2,
 		StabilizationMS:   3_600_000,
-		RollupStore:       rs,
 		ObjectIDPersister: persister,
 	})
 	// NOTE: intentionally NOT calling StartRollup — mirrors the snapshot
@@ -103,7 +104,6 @@ func TestDrainRollups_RealResidualReturnsErrDrainIncomplete(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
-		RollupStore:     memmeta.NewMemoryMetadataStoreWithDefaults(),
 	})
 	ctx := context.Background()
 	const payloadID = "file-real-residual"
@@ -137,7 +137,6 @@ func TestDrainRollups_TombstonedResidualSucceeds(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
-		RollupStore:     memmeta.NewMemoryMetadataStoreWithDefaults(),
 	})
 	ctx := context.Background()
 	const payloadID = "file-tombstoned-residual"
@@ -171,7 +170,6 @@ func TestDrainRollups_DivergentResidualSucceeds(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
-		RollupStore:     memmeta.NewMemoryMetadataStoreWithDefaults(),
 	})
 	ctx := context.Background()
 	const payloadID = "file-divergent-residual"
@@ -212,11 +210,9 @@ func TestDrainRollups_DivergentResidualSucceeds(t *testing.T) {
 // ("last record wins"), returning the MUTATED bytes. ResetLocalState must
 // drop the stale log so reads go purely through CAS.
 func TestResetLocalState_DropsStaleLog(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-
 	// Real FileChunk store so ReadPayloadAt's CAS manifest path resolves
 	// post-rollup bytes.
-	fbs := newMemFileChunkStore()
+	fbs := newRollupMemFileChunkStore()
 	persister := func(ctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		return fbs.persist(ctx, payloadID, blocks)
 	}
@@ -225,7 +221,6 @@ func TestResetLocalState_DropsStaleLog(t *testing.T) {
 		MaxLogBytes:       1 << 30,
 		RollupWorkers:     2,
 		StabilizationMS:   3_600_000,
-		RollupStore:       rs,
 		ObjectIDPersister: persister,
 	})
 
@@ -286,8 +281,7 @@ func TestResetLocalState_DropsStaleLog(t *testing.T) {
 // log files in place after a restore. After ResetLocalState, no .log
 // files must exist anywhere under the logs/ directory tree.
 func TestResetLocalState_DropsNestedLog(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	fbs := newMemFileChunkStore()
+	fbs := newRollupMemFileChunkStore()
 	persister := func(ctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		return fbs.persist(ctx, payloadID, blocks)
 	}
@@ -296,7 +290,6 @@ func TestResetLocalState_DropsNestedLog(t *testing.T) {
 		MaxLogBytes:       1 << 30,
 		RollupWorkers:     2,
 		StabilizationMS:   3_600_000,
-		RollupStore:       rs,
 		ObjectIDPersister: persister,
 	})
 

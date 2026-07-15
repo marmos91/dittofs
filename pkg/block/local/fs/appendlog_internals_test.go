@@ -39,7 +39,6 @@ func appendlogFactory(t *testing.T) *fs.FSStore {
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 50,
-		RollupStore:     rs,
 	})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)

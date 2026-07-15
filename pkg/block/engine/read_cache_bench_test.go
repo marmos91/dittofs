@@ -17,6 +17,16 @@ import (
 	metastore "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
+// backendNoSyncedHashStore adapts a metadata store to the local FSStore backend
+// surface (EngineFileChunkStore + the mandatory LocalChunkIndex) while omitting
+// the SyncedHashStore facet, so the soft derivation in NewWithOptions leaves
+// bc.syncedHashStore nil. Embedding the interfaces (not the concrete store)
+// keeps IsSynced/MarkSynced off the method set.
+type backendNoSyncedHashStore struct {
+	block.EngineFileChunkStore
+	metadata.LocalChunkIndex
+}
+
 // latencyRemote wraps a remotememory.Store and (a) injects a fixed per-read
 // WAN latency into the block-read path the engine fetch code actually calls
 // (dispatchRemoteFetch → readChunkVerified → ReadChunk), and (b) counts
@@ -293,9 +303,11 @@ func TestReadThroughCache_BoundedByMaxDisk(t *testing.T) {
 	ctx := context.Background()
 
 	dir := t.TempDir()
-	// No SyncedHashStore: every fetched chunk is immediately evictable, so the
-	// bound is enforced by Put's ensureSpace alone.
-	loc, err := localfs.NewWithOptions(dir, maxDisk, metastore.NewMemoryMetadataStoreWithDefaults(), localfs.FSStoreOptions{})
+	// A backend WITHOUT the SyncedHashStore facet so bc.syncedHashStore derives
+	// to nil: every fetched chunk is immediately evictable and the bound is
+	// enforced by Put's ensureSpace alone.
+	mds0 := metastore.NewMemoryMetadataStoreWithDefaults()
+	loc, err := localfs.NewWithOptions(dir, maxDisk, backendNoSyncedHashStore{EngineFileChunkStore: mds0, LocalChunkIndex: mds0}, localfs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}

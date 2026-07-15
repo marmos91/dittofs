@@ -8,7 +8,6 @@ import (
 
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/chunker"
-	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestRollup_ChunkParams_SmallChunksReadBack is the #1569 threading guard: an
@@ -17,13 +16,11 @@ import (
 // reaches the rollup chunker), and (b) read that data back byte-for-byte
 // (proving small chunks round-trip through rollup + the CAS-manifest read path).
 func TestRollup_ChunkParams_SmallChunksReadBack(t *testing.T) {
-	fbs := newMemFileChunkStore()
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+	fbs := newRollupMemFileChunkStore()
 	bc := newFSStoreForTestWithFBS(t, fbs, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   1,
 		StabilizationMS: 1,
-		RollupStore:     rs,
 		// Persist the rollup manifest into fbs so the post-rollup read resolves
 		// via the CAS-manifest path (fillFromCASManifest → blockStore). Without
 		// it ListFileChunks is empty and the read only succeeds while the bytes

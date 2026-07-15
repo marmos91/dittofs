@@ -2856,28 +2856,15 @@ func CreateLocalStoreFromConfig(
 			return nil, fmt.Errorf("failed to create share directory: %w", err)
 		}
 
-		// Append is mandatory. Wire a RollupStore from the metadata
-		// backend and start the rollup worker pool. The type assertion
-		// couples the block-store factory to a metadata-layer interface
-		// via runtime type check — accepted because memory / badger /
-		// postgres all implement both FileChunkStore and RollupStore on
-		// the same Store type.
-		rs, ok := fileChunkStore.(metadata.RollupStore)
-		if !ok {
+		// Append is mandatory. Enforce the production guardrail that the
+		// metadata backend implements RollupStore so the rollup worker pool
+		// can be started below. The RollupStore, SyncedHashStore, and
+		// LocalChunkIndex are all derived from this same fileChunkStore
+		// backend inside NewWithOptions — accepted because memory / badger /
+		// postgres all implement them on the same Store type.
+		if _, ok := fileChunkStore.(metadata.RollupStore); !ok {
 			return nil, fmt.Errorf("fs local store: metadata backend must implement metadata.RollupStore for the mandatory append-log path")
 		}
-		fsOpts.RollupStore = rs
-		// Wire the SyncedHashStore from the same metadata backend so
-		// the local store's ListUnsynced surface can filter the Walk-
-		// collected CAS hash set down to the still-unmirrored subset.
-		// Required when a remote store is configured; harmless when no
-		// remote is wired (mirror loop early-exits in that case).
-		if shs, ok := fileChunkStore.(metadata.SyncedHashStore); ok {
-			fsOpts.SyncedHashStore = shs
-		}
-		// The LocalChunkIndex is derived from the same metadata backend inside
-		// NewWithOptions (mandatory: chunk persistence routes to the log-blob
-		// substrate + PutLocalLocation). All backends implement it.
 		store, err := fs.NewWithOptions(shareDir, maxDisk, fileChunkStore, fsOpts)
 		if err != nil {
 			return nil, err

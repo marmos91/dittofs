@@ -72,7 +72,6 @@ func reopenFSStore(t *testing.T, bc *FSStore, rs *memmeta.MemoryMetadataStore) *
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
-		RollupStore:     rs,
 	})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
@@ -91,7 +90,6 @@ func newFSStoreWithRS(t *testing.T, rs *memmeta.MemoryMetadataStore) *FSStore {
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
-		RollupStore:     rs,
 	})
 	if err != nil {
 		t.Fatalf("new: %v", err)
@@ -267,7 +265,6 @@ func TestRecovery_OrphanSweep_UnlinksLog(t *testing.T) {
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
-		RollupStore:            rs,
 		OrphanLogMinAgeSeconds: 1, // 1 second — short enough to trip during the test
 	})
 	if err != nil {
@@ -285,7 +282,6 @@ func TestRecovery_OrphanSweep_UnlinksLog(t *testing.T) {
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
-		RollupStore:            rs,
 		OrphanLogMinAgeSeconds: 1,
 	})
 	if err != nil {
@@ -518,7 +514,6 @@ func TestRecovery_OrphanAgeFloor_WarnsOnNonPositive(t *testing.T) {
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
-		RollupStore:            rs,
 		OrphanLogMinAgeSeconds: 1, // pass NewWithOptions normalization
 	})
 	if err != nil {
@@ -543,7 +538,6 @@ func TestRecovery_OrphanAgeFloor_WarnsOnNonPositive(t *testing.T) {
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
-		RollupStore:            rs,
 		OrphanLogMinAgeSeconds: 1, // again pass normalization
 	})
 	if err != nil {

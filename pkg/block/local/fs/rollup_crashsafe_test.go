@@ -38,11 +38,12 @@ func TestRollupFile_ShutdownCancellationIsBenign(t *testing.T) {
 		return nil
 	}
 
-	bc := newFSStoreForTest(t, FSStoreOptions{
+	// rs is the backend so its derived RollupStore is the one this test reads
+	// to assert the fence advances only on the committed (fresh-context) pass.
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 		MaxLogBytes:       1 << 30,
 		RollupWorkers:     2,
 		StabilizationMS:   1, // tiny so force isn't required for the fresh pass
-		RollupStore:       rs,
 		ObjectIDPersister: persister,
 	})
 	// Intentionally do NOT StartRollup — we drive rollupFile directly.
@@ -98,7 +99,6 @@ func TestRollupFile_ShutdownCancellationIsBenign(t *testing.T) {
 // hard failure. A cancelled drain is a benign abort: the rollup resumes on a
 // later (fresh-context) pass.
 func TestDrainRollups_ShutdownCancellationIsBenign(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 
 	// Persister gate: signal when the rollup pass has entered Phase B (so the
 	// cancellation lands MID-FLIGHT, not before the drain starts), then block
@@ -117,7 +117,6 @@ func TestDrainRollups_ShutdownCancellationIsBenign(t *testing.T) {
 		MaxLogBytes:       1 << 30,
 		RollupWorkers:     2,
 		StabilizationMS:   3_600_000,
-		RollupStore:       rs,
 		ObjectIDPersister: persister,
 	})
 
@@ -177,11 +176,12 @@ func TestGracefulStopRollup_DrainsInFlight(t *testing.T) {
 	// Large stabilization window so the steady-state worker/ticker never
 	// consumes the interval on its own — only the graceful-stop FORCED drain
 	// can flush it. This isolates the drain behaviour.
-	bc := newFSStoreForTest(t, FSStoreOptions{
+	// rs is the backend so its derived RollupStore is the one this test reads
+	// to prove the in-flight drain completed on a fresh context.
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 		MaxLogBytes:       1 << 30,
 		RollupWorkers:     2,
 		StabilizationMS:   3_600_000,
-		RollupStore:       rs,
 		ObjectIDPersister: persister,
 	})
 

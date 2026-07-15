@@ -7,8 +7,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestConsumeUpToStable_PreservesTouchedAfter is the unit-level guard for the
@@ -66,12 +64,10 @@ func TestConsumeUpToStable_EqualTimestampConsumed(t *testing.T) {
 func TestRollup_C1_WriteDuringPhaseB_NotConsumed(t *testing.T) {
 	// Mutates the package-global rollupPhaseBHook — must not run in parallel
 	// with other rollup tests and must restore the hook on exit.
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   1,
 		StabilizationMS: 1,
-		RollupStore:     rs,
 	})
 	// Deliberately do NOT StartRollup: ForceRollupForTest drives the pass
 	// synchronously so the hook fires on this goroutine.
@@ -158,12 +154,10 @@ func TestRollup_C1_WriteDuringPhaseB_NotConsumed(t *testing.T) {
 // offset's bytes are already in CAS; only a leftover dirty marker is dropped).
 // It does not fail the test and is not a lost write.
 func TestRollup_C1_ConcurrentOverwriteStorm(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   3,
 		StabilizationMS: 2,
-		RollupStore:     rs,
 	})
 	if err := bc.StartRollup(context.Background()); err != nil {
 		t.Fatalf("StartRollup: %v", err)

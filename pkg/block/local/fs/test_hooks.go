@@ -182,7 +182,6 @@ func ReopenForTest(baseDir string, rs metadata.RollupStore) (*FSStore, error) {
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 50,
-		RollupStore:     rs,
 	})
 	if err != nil {
 		return nil, err

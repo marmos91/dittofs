@@ -61,8 +61,6 @@ func newWriteBenchEngine(tb testing.TB) *Store {
 		MaxLogBytes:     writeBenchLogBudget,
 		RollupWorkers:   writeBenchRollupWorkers,
 		StabilizationMS: writeBenchStabilizationMS,
-		RollupStore:     ms,
-		SyncedHashStore: ms,
 	})
 	if err != nil {
 		tb.Fatalf("fs.NewWithOptions: %v", err)

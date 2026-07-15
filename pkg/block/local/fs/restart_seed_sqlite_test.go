@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/metadata"
-	"github.com/marmos91/dittofs/pkg/metadata/store/memory"
 	"github.com/marmos91/dittofs/pkg/metadata/store/sqlite"
 )
 
@@ -34,9 +33,7 @@ func TestFSStore_ListUnsynced_SQLiteIndex(t *testing.T) {
 	// SyncedHashStore with nothing marked synced → every logblob chunk is
 	// unsynced. Wire the SQLite store as the LocalChunkIndex so the seed path
 	// must walk a production backend's index, not the memory one.
-	bc := newFSStoreForTestWithFBS(t, idx, FSStoreOptions{
-		SyncedHashStore: memory.NewMemoryMetadataStoreWithDefaults(),
-	})
+	bc := newFSStoreForTestWithFBS(t, idx, FSStoreOptions{})
 
 	want := seedChunks(t, bc, 3)
 

@@ -162,8 +162,7 @@ func (c *testCoordinator) GetFileObjectID(ctx context.Context, payloadID string)
 // DrainRollups (the snapshot-create primitive).
 func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
 	t.Helper()
-	rollupStore, ok := ms.(metadata.RollupStore)
-	if !ok {
+	if _, ok := ms.(metadata.RollupStore); !ok {
 		t.Fatalf("metadata store %T does not implement metadata.RollupStore", ms)
 	}
 	syncedHashStore, ok := ms.(metadata.SyncedHashStore)
@@ -174,8 +173,6 @@ func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 3_600_000, // 1h — async/ticker rollup can never fire
-		RollupStore:     rollupStore,
-		SyncedHashStore: syncedHashStore,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
