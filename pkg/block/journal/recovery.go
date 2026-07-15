@@ -204,14 +204,11 @@ func (s *Store) recover() error {
 			m.liveBytes.Add(int64(rec.header.PayloadLen))
 			if synced {
 				m.syncedRecords.Add(1)
-			} else {
-				unsynced += int64(rec.header.PayloadLen)
+			} else if fi.firstDirtyNanos == 0 {
 				// A recovered dirty file gets a fresh dirty-age stamp so the carve
 				// age gate fires after a restart (approximate — the original write
 				// time is not persisted; it is only a batching heuristic).
-				if fi.firstDirtyNanos == 0 {
-					fi.firstDirtyNanos = s.clock.Now().UnixNano()
-				}
+				fi.firstDirtyNanos = s.clock.Now().UnixNano()
 			}
 		}
 	}
@@ -224,6 +221,18 @@ func (s *Store) recover() error {
 	// nextVersion increments-then-returns, so storing maxVersion makes the next
 	// issued LSN exactly max(observed)+1 — strictly past every replayed record.
 	s.version.Store(maxVersion)
+	// Recompute unsynced from the final live coverage rather than the raw
+	// per-record sum: insert resolves overlaps, so a superseded record's bytes are
+	// dead and must not count toward the backpressure signal.
+	for _, idxMap := range indexByShard {
+		for _, fi := range idxMap {
+			for k := range fi.ivs {
+				if !fi.ivs[k].synced && !fi.ivs[k].cold {
+					unsynced += fi.ivs[k].length
+				}
+			}
+		}
+	}
 	s.unsynced.Store(unsynced)
 
 	// Give every shard an active segment: reuse a pooled empty one, else mint a

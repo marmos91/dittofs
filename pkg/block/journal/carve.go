@@ -291,35 +291,97 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	return flush(run[len(run)-1].end())
 }
 
-// flipUpTo marks every not-yet-flipped record in run whose live range ends at or
-// before watermark as synced: a one-byte pwrite of the synced flag at the
-// record's SegOffset (no fsync — a lost flip just re-carves), then the matching
-// in-memory interval is marked synced. A concurrent overwrite that replaced the
-// record since the snapshot leaves findRecord empty; the physical flip lands on
-// the now-dead record (harmless) and the newer write carves next pass.
+// flipUpTo advances the durable frontier to watermark. It marks each live
+// interval fragment whose range ends there as synced in memory, then flips a
+// physical record's on-disk synced bit — but only once none of that record's
+// live fragments remain dirty.
+//
+// The distinction is load-bearing. A newer overlapping write splits one physical
+// record into several live fragments that can become durable in different
+// flushes, yet the on-disk synced bit is a single record-level flag that
+// recovery replays over the record's whole original range. Flipping it after
+// only the first fragment is durable would, on a crash, make recovery treat the
+// record's still-dirty fragments as synced — silent data loss. So the bit is set
+// strictly after the record has no dirty live coverage left.
+//
+// The flip is a read-modify-write of the flags byte (preserving tombstone / any
+// other bits) with no fsync — a lost flip just re-carves, which dedup makes a
+// no-op. A concurrent overwrite that replaced a fragment since the snapshot
+// leaves findRecord empty; the newer record carves next pass.
 func (s *Store) flipUpTo(sh *shard, id FileID, run []interval, flipIdx *int, watermark int64) error {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	fi := sh.index[id]
+
+	type recKey struct {
+		seg uint64
+		off int64
+	}
+	touched := map[recKey]struct{}{}
 	for *flipIdx < len(run) && run[*flipIdx].end() <= watermark {
 		iv := run[*flipIdx]
 		*flipIdx++
-		seg := sh.segment(iv.loc.SegmentID)
+		if fi == nil {
+			continue
+		}
+		if k := fi.findRecord(iv.fileOff, iv.version); k >= 0 && !fi.ivs[k].synced {
+			fi.ivs[k].synced = true
+			s.unsynced.Add(-fi.ivs[k].length)
+			touched[recKey{iv.loc.SegmentID, iv.recOff}] = struct{}{}
+		}
+	}
+
+	for rk := range touched {
+		if recordHasDirtyFragment(fi, rk.seg, rk.off) {
+			continue // a live fragment of this record is not durable yet
+		}
+		seg := sh.segment(rk.seg)
 		if seg == nil {
 			continue // segment relocated/evicted (later PRs); nothing to flip
 		}
-		if _, err := seg.fd.WriteAt([]byte{flagSynced}, iv.recOff+recordFlagsOffset); err != nil {
-			return fmt.Errorf("journal: flip synced seg %d rec %d: %w", iv.loc.SegmentID, iv.recOff, err)
+		flipped, err := flipRecordSynced(seg, rk.off)
+		if err != nil {
+			return err
 		}
-		if fi != nil {
-			if k := fi.findRecord(iv.fileOff, iv.version); k >= 0 && !fi.ivs[k].synced {
-				fi.ivs[k].synced = true
-				s.unsynced.Add(-fi.ivs[k].length)
-				seg.syncedRecords.Add(1)
-			}
+		if flipped {
+			seg.syncedRecords.Add(1)
 		}
 	}
 	return nil
+}
+
+// recordHasDirtyFragment reports whether any live interval still backed by the
+// given physical record (segment + record offset) is dirty. Caller holds sh.mu.
+func recordHasDirtyFragment(fi *fileIndex, seg uint64, recOff int64) bool {
+	if fi == nil {
+		return false
+	}
+	for k := range fi.ivs {
+		if fi.ivs[k].loc.SegmentID == seg && fi.ivs[k].recOff == recOff &&
+			!fi.ivs[k].synced && !fi.ivs[k].cold {
+			return true
+		}
+	}
+	return false
+}
+
+// flipRecordSynced sets a record's on-disk synced bit with a one-byte
+// read-modify-write, preserving any other flag bits. It returns false without
+// writing when the bit is already set. The header CRC excludes Flags, so no CRC
+// rewrite is needed.
+func flipRecordSynced(seg *segmentMeta, recOff int64) (bool, error) {
+	var b [1]byte
+	if _, err := seg.fd.ReadAt(b[:], recOff+recordFlagsOffset); err != nil {
+		return false, fmt.Errorf("journal: read record flags seg %d off %d: %w", seg.id, recOff, err)
+	}
+	if b[0]&flagSynced != 0 {
+		return false, nil
+	}
+	b[0] |= flagSynced
+	if _, err := seg.fd.WriteAt(b[:], recOff+recordFlagsOffset); err != nil {
+		return false, fmt.Errorf("journal: flip synced seg %d off %d: %w", seg.id, recOff, err)
+	}
+	return true, nil
 }
 
 // maybeResetDirtyClock clears a file's dirty-age marker once no dirty interval

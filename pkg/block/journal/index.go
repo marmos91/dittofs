@@ -106,7 +106,10 @@ func (fi *fileIndex) findRecord(fileOff int64, version uint64) int {
 // insert records iv, resolving overlaps by version (highest wins). Existing
 // intervals with a higher version shadow iv; those with a lower version are
 // trimmed to make room. The result stays sorted and non-overlapping.
-func (fi *fileIndex) insert(iv interval) {
+// It returns the number of still-dirty (unsynced, non-cold) live bytes that this
+// insert superseded, so the caller can keep an unsynced-byte counter accurate
+// (dead bytes must leave the count).
+func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64) {
 	ns, ne := iv.fileOff, iv.end()
 	// First interval that can overlap [ns, ne): end() is strictly increasing
 	// across the non-overlapping sorted set, so the predicate is monotone.
@@ -122,7 +125,13 @@ func (fi *fileIndex) insert(iv interval) {
 			survivors = append(survivors, e)
 			newFrags = subtractAll(newFrags, e.fileOff, e.end())
 		} else {
-			// New wins the overlap: keep only the parts of e outside iv.
+			// New wins the overlap: keep only the parts of e outside iv. The
+			// removed slice of a dirty interval leaves the live dirty coverage.
+			if !e.synced && !e.cold {
+				if ov := min(e.end(), ne) - max(e.fileOff, ns); ov > 0 {
+					dirtyRemoved += ov
+				}
+			}
 			survivors = append(survivors, e.without(ns, ne)...)
 		}
 		hi++
@@ -131,6 +140,7 @@ func (fi *fileIndex) insert(iv interval) {
 	merged := append(survivors, newFrags...)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].fileOff < merged[j].fileOff })
 	fi.ivs = slices.Replace(fi.ivs, lo, hi, merged...)
+	return dirtyRemoved
 }
 
 // subtractAll removes [rs, re) from every fragment, flattening the survivors.

@@ -54,12 +54,13 @@ func (d *fakeDeduper) markDurable(h ChunkHash) {
 // in the paired deduper (so a later carve dedups it). failErr and onCommit let a
 // test force a commit failure or assert store state at commit time.
 type fakeSink struct {
-	mu       sync.Mutex
-	dedup    *fakeDeduper
-	blocks   int
-	chunks   map[int64][]byte // fileOffset -> plaintext
-	failErr  error
-	onCommit func(chunks []CarveChunk)
+	mu        sync.Mutex
+	dedup     *fakeDeduper
+	blocks    int
+	chunks    map[int64][]byte // fileOffset -> plaintext
+	failErr   error
+	okCommits int // number of commits allowed before failErr kicks in
+	onCommit  func(chunks []CarveChunk)
 }
 
 func newFakeSink(d *fakeDeduper) *fakeSink {
@@ -69,12 +70,13 @@ func newFakeSink(d *fakeDeduper) *fakeSink {
 func (s *fakeSink) CommitBlock(_ context.Context, chunks []CarveChunk) error {
 	s.mu.Lock()
 	hook := s.onCommit
+	fail := s.failErr != nil && s.blocks >= s.okCommits
 	failErr := s.failErr
 	s.mu.Unlock()
 	if hook != nil {
 		hook(chunks)
 	}
-	if failErr != nil {
+	if fail {
 		return failErr
 	}
 	s.mu.Lock()
@@ -155,6 +157,25 @@ func recRawFlags(t *testing.T, s *Store, id FileID, fileOff int64) uint8 {
 				t.Fatalf("read flags: %v", err)
 			}
 			return b[0]
+		}
+	}
+	t.Fatalf("no interval covering offset %d", fileOff)
+	return 0
+}
+
+// recOffAt returns the SegOffset of the record backing fileOff.
+func recOffAt(t *testing.T, s *Store, id FileID, fileOff int64) int64 {
+	t.Helper()
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		t.Fatalf("no index for %q", id)
+	}
+	for _, iv := range fi.ivs {
+		if iv.fileOff <= fileOff && fileOff < iv.end() {
+			return iv.recOff
 		}
 	}
 	t.Fatalf("no interval covering offset %d", fileOff)
@@ -308,6 +329,56 @@ func TestCarveDedupReCarveIsNoOp(t *testing.T) {
 	}
 	if f := recRawFlags(t, s, "f", 0); f&flagSynced == 0 {
 		t.Fatalf("re-carve did not re-flip on disk: flags=%#x", f)
+	}
+}
+
+func TestCarveRecordSplitNoPrematureFlip(t *testing.T) {
+	// A newer overlapping write splits one physical record into two live fragments.
+	// If only the first fragment's block commits (the second fails), the record's
+	// on-disk synced bit must stay clear — flipping it while a live fragment is
+	// still dirty would let a crash make recovery treat that dirty fragment as
+	// synced, and its bytes would never carve (data loss).
+	s, _, sink, _ := carveStore(t, Config{CarveBlockSize: 1 << 20})
+	ctx := context.Background()
+
+	if err := s.WriteAt(ctx, "f", 0, randBytes(6<<20, 21)); err != nil { // record R = [0,6MiB)
+		t.Fatal(err)
+	}
+	if err := s.WriteAt(ctx, "f", 1<<20, randBytes(1<<20, 22)); err != nil { // split R at [1MiB,2MiB)
+		t.Fatal(err)
+	}
+	// Both surviving fragments must be the same physical record.
+	if a, b := recOffAt(t, s, "f", 0), recOffAt(t, s, "f", 2<<20); a != b {
+		t.Fatalf("fragments not from one record: %d vs %d", a, b)
+	}
+
+	// Let the first block commit, then fail — the [2MiB,6MiB) fragment stays undurable.
+	sink.okCommits = 1
+	sink.failErr = errors.New("second block fails")
+	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err == nil {
+		t.Fatalf("expected carve to fail on the second block (need >=2 chunks)")
+	}
+	if sink.blockCount() < 1 {
+		t.Fatalf("first block did not commit")
+	}
+	// The record must NOT be flipped: it still has a dirty live fragment.
+	if f := recRawFlags(t, s, "f", 0); f&flagSynced != 0 {
+		t.Fatalf("record flipped while a live fragment is still dirty: flags=%#x", f)
+	}
+	if s.UnsyncedBytes() == 0 {
+		t.Fatalf("dirty fragment not tracked as unsynced after partial carve")
+	}
+
+	// Completing the carve now flips the record and drains the dirty bytes.
+	sink.failErr = nil
+	if _, err := s.Carve(ctx, CarveOptions{Force: true}); err != nil {
+		t.Fatalf("completing carve: %v", err)
+	}
+	if s.UnsyncedBytes() != 0 {
+		t.Fatalf("record not fully carved after retry: unsynced=%d", s.UnsyncedBytes())
+	}
+	if f := recRawFlags(t, s, "f", 0); f&flagSynced == 0 {
+		t.Fatalf("record not flipped after full carve: flags=%#x", f)
 	}
 }
 

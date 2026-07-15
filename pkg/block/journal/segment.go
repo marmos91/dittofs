@@ -288,7 +288,7 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	}
 
 	fi := sh.indexFor(id)
-	fi.insert(interval{
+	dirtyRemoved := fi.insert(interval{
 		fileOff: offset,
 		length:  int64(len(data)),
 		version: version,
@@ -298,13 +298,20 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	})
 
 	s.writes.Add(1)
+	// unsynced tracks live dirty bytes: add this write if dirty, and always drop
+	// the dirty bytes this write superseded (they are dead now, not evictable-
+	// pending). A synced (Hydrate) write adds nothing but can still supersede.
+	dirtyDelta := -dirtyRemoved
 	if !synced {
-		s.unsynced.Add(int64(len(data)))
+		dirtyDelta += int64(len(data))
 		// Stamp the file's dirty age on the first dirty record so carve's age gate
 		// has a reference without a per-interval timestamp.
 		if fi.firstDirtyNanos == 0 {
 			fi.firstDirtyNanos = s.clock.Now().UnixNano()
 		}
+	}
+	if dirtyDelta != 0 {
+		s.unsynced.Add(dirtyDelta)
 	}
 	return nil
 }
