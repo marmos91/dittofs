@@ -212,7 +212,7 @@ func (s *SQLiteMetadataStore) WalkLocalLocations(ctx context.Context, fn func(bl
 // CommitBlock atomically writes rec and all chunk local locations within a
 // single transaction, then marks each chunk synced.  Idempotent on BlockID.
 func (s *SQLiteMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
-	return metadata.DefaultCommitBlock(ctx, s, rec, chunks)
+	return metadata.DefaultCommitBlock(ctx, s, rec, chunks, nil)
 }
 
 // ============================================================================

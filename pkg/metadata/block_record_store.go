@@ -74,6 +74,7 @@ func DefaultCommitBlock(
 	s Transactor,
 	rec block.BlockRecord,
 	chunks []block.BlockChunkCommit,
+	fileChunks []*block.FileChunk,
 ) error {
 	return s.WithTransaction(ctx, func(tx Transaction) error {
 		_, exists, err := tx.GetBlockRecord(ctx, rec.BlockID)
@@ -85,6 +86,17 @@ func DefaultCommitBlock(
 		}
 		if err := tx.PutBlockRecord(ctx, rec); err != nil {
 			return err
+		}
+		// Per-file manifest rows: the block carver passes one FileChunk per chunk
+		// (ID={FileID}/{FileOffset}, Hash, DataSize, State=Pending); legacy callers
+		// pass nil and write no rows.
+		for _, fc := range fileChunks {
+			if fc == nil {
+				continue
+			}
+			if err := tx.Put(ctx, fc); err != nil {
+				return err
+			}
 		}
 		for _, c := range chunks {
 			if c.Local != (block.LocalChunkLocation{}) {

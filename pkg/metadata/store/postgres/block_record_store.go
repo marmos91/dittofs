@@ -280,7 +280,7 @@ func (s *PostgresMetadataStore) WalkLocalLocations(ctx context.Context, fn func(
 // Delegates to DefaultCommitBlock for idempotency logic — identical to the
 // memory and badger backends.
 func (s *PostgresMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
-	return metadata.DefaultCommitBlock(ctx, s, rec, chunks)
+	return metadata.DefaultCommitBlock(ctx, s, rec, chunks, nil)
 }
 
 // ============================================================================

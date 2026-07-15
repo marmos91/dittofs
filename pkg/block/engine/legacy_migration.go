@@ -392,7 +392,7 @@ func (m *Syncer) packAndCommitMigrated(
 		LiveChunkCount: uint32(len(commits)),
 		SyncState:      block.BlockStateRemote,
 	}
-	if err := metadata.DefaultCommitBlock(ctx, committer, rec, commits); err != nil {
+	if err := metadata.DefaultCommitBlock(ctx, committer, rec, commits, nil); err != nil {
 		return fmt.Errorf("migration: commit block %s: %w", blockID, err)
 	}
 	return nil

@@ -23,6 +23,13 @@ const orphanMinAge = 5 * time.Minute
 // index sidecar, a swept orphan).
 var logf = log.Printf
 
+// truncMark records the highest-Version truncate marker seen for a file during
+// recovery: the new size and the Version that fences which intervals it clips.
+type truncMark struct {
+	version uint64
+	newSize int64
+}
+
 // scanSegmentIDs returns the IDs of every well-formed <id>.seg file in dir.
 func scanSegmentIDs(dir string) ([]uint64, error) {
 	entries, err := os.ReadDir(dir)
@@ -69,15 +76,16 @@ func (s *Store) recover() error {
 	}
 
 	var (
-		emptyPool  []*segmentMeta // empty unsealed segments, reusable as any shard's active
-		orphans    []uint64       // unattachable segment ids, candidates for the age-gated sweep
-		maxSegID   uint64
-		maxVersion uint64
-		unsynced   int64
-		missingIdx int
-		opened     []*segmentMeta        // every fd we opened, closed on error
-		tombstones = map[FileID]uint64{} // deleted file -> highest tombstone version
-		ok         bool
+		emptyPool   []*segmentMeta // empty unsealed segments, reusable as any shard's active
+		orphans     []uint64       // unattachable segment ids, candidates for the age-gated sweep
+		maxSegID    uint64
+		maxVersion  uint64
+		unsynced    int64
+		missingIdx  int
+		opened      []*segmentMeta           // every fd we opened, closed on error
+		tombstones  = map[FileID]uint64{}    // deleted file -> highest tombstone version
+		truncations = map[FileID]truncMark{} // truncated file -> highest truncate marker
+		ok          bool
 	)
 	defer func() {
 		if !ok {
@@ -184,6 +192,13 @@ func (s *Store) recover() error {
 				}
 				continue
 			}
+			if rec.header.Flags&flagTruncate != 0 {
+				fid := FileID(rec.fileID)
+				if cur, ok := truncations[fid]; !ok || rec.header.Version > cur.version {
+					truncations[fid] = truncMark{version: rec.header.Version, newSize: int64(rec.header.FileOffset)}
+				}
+				continue
+			}
 			payloadOff := rec.segOff + recordHeaderSize + int64(len(rec.fileID))
 			fid := FileID(rec.fileID)
 			fi := idxMap[fid]
@@ -242,6 +257,35 @@ func (s *Store) recover() error {
 				if iv.version > tv {
 					kept = append(kept, iv)
 				}
+			}
+			if len(kept) == 0 {
+				delete(idxMap, fid)
+			} else {
+				fi.ivs = kept
+			}
+		}
+	}
+
+	// Honor truncate markers: a size-down's marker Version exceeds every write it
+	// buries, so drop the file's intervals past newSize (and clip a straddling
+	// one) for every interval at or below the marker. A write that raced past the
+	// truncate carries a higher Version and survives, re-extending the file.
+	for _, idxMap := range indexByShard {
+		for fid, fi := range idxMap {
+			tm, ok := truncations[fid]
+			if !ok {
+				continue
+			}
+			kept := fi.ivs[:0]
+			for _, iv := range fi.ivs {
+				if iv.version > tm.version || iv.end() <= tm.newSize {
+					kept = append(kept, iv)
+					continue
+				}
+				if iv.fileOff < tm.newSize {
+					kept = append(kept, iv.clamp(iv.fileOff, tm.newSize))
+				}
+				// else entirely past newSize: drop it.
 			}
 			if len(kept) == 0 {
 				delete(idxMap, fid)

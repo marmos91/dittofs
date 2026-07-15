@@ -206,7 +206,7 @@ func (s *Store) carveFile(ctx context.Context, sh *shard, id FileID, res *CarveR
 // packs novel chunks into blocks (flushed at CarveBlockSize and at the run's end),
 // and flips the run's records to synced as the durable frontier advances.
 func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interval, res *CarveResult) error {
-	c := chunker.NewChunker()
+	c := chunker.NewChunkerWithParams(s.cfg.ChunkParams)
 	rr := &runReader{s: s, sh: sh, ivs: run}
 
 	fileOff := run[0].fileOff

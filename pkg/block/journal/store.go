@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
 
 // FileID identifies a file's byte stream inside the cache. It is the same
@@ -56,6 +58,11 @@ type Config struct {
 	ShardCount       int           // number of shards, power of two, immutable per store
 	MaxLocalBytes    int64         // local on-disk cap that triggers eviction; 0 = unlimited
 	EvictMaxWait     time.Duration // write-path backpressure budget before ErrLocalStoreFull
+	// ChunkParams sets the per-share FastCDC sizing carve feeds the chunker
+	// (#1569). The zero value (or any params that fail Validate) degrades to
+	// chunker.DefaultParams — the historical 1M/4M/16M profile — so a
+	// misconfiguration is never a hard error, matching the fs store.
+	ChunkParams chunker.Params
 }
 
 const (
@@ -85,6 +92,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.EvictMaxWait <= 0 {
 		c.EvictMaxWait = defaultEvictMaxWait
+	}
+	if c.ChunkParams.Validate() != nil {
+		c.ChunkParams = chunker.DefaultParams()
 	}
 	// MaxLocalBytes intentionally has no default: 0 means "no local cap" (eviction
 	// off), the safe posture until the FSStore adapter wires --local-store-size.
@@ -135,6 +145,12 @@ type Store struct {
 	writes    atomic.Int64
 	reads     atomic.Int64
 	coldReads atomic.Int64
+
+	// evictionDisabled gates Evict (and thus the write-path ensureSpace that
+	// drives it). Health-driven: while the remote is unhealthy, cold-marking a
+	// segment would strand bytes that can't be refetched, so eviction is paused.
+	// Zero value = enabled, the safe default.
+	evictionDisabled atomic.Bool
 
 	closed atomic.Bool
 }
@@ -317,6 +333,153 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 				continue
 			}
 			// Buried by the tombstone: its bytes become dead in their segment.
+			if iv.cold {
+				continue
+			}
+			if seg := sh.segment(iv.loc.SegmentID); seg != nil {
+				seg.deadBytes.Add(iv.length)
+			}
+			if !iv.synced {
+				dirty += iv.length
+			}
+		}
+		if len(kept) == 0 {
+			delete(sh.index, id)
+		} else {
+			fi.ivs = kept
+		}
+	}
+	sh.mu.Unlock()
+	if dirty != 0 {
+		s.unsynced.Add(-dirty)
+	}
+	return nil
+}
+
+// FileSize reports a file's data high-water mark: the maximum end offset over
+// all its live intervals (dirty or cold). The second result is false when the
+// file has no index entry. It is the fileSize input DataExtents needs — the
+// journal tracks data extents, not the logical size (a grow's trailing hole
+// lives in the metadata store, not here).
+func (s *Store) FileSize(_ context.Context, id FileID) (int64, bool) {
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.index[id]
+	if fi == nil {
+		return 0, false
+	}
+	var size int64
+	for _, iv := range fi.ivs {
+		if e := iv.end(); e > size {
+			size = e
+		}
+	}
+	return size, true
+}
+
+// SetEvictionEnabled toggles whole-segment eviction. Disabling it pauses Evict
+// (and the write-path ensureSpace that drives it) so a health monitor can stop
+// the store shedding local bytes while the remote is unreachable — a cold-marked
+// range would otherwise be unrecoverable until the remote returns.
+func (s *Store) SetEvictionEnabled(enabled bool) {
+	s.evictionDisabled.Store(!enabled)
+}
+
+// ListFiles returns every FileID with a live index entry across all shards, in
+// no guaranteed order. It lets a caller drive a bulk reset (Delete every file)
+// without tracking IDs itself.
+func (s *Store) ListFiles(_ context.Context) []FileID {
+	var out []FileID
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		for id := range sh.index {
+			out = append(out, id)
+		}
+		sh.mu.Unlock()
+	}
+	return out
+}
+
+// Truncate shrinks a file to newSize: every live interval past newSize is
+// dropped and an interval straddling newSize is clipped to end there, the freed
+// bytes becoming dead in their segments (GC reclaims them). Growing a file —
+// newSize at or past the current high-water mark — is a no-op here; a grow's
+// trailing hole lives in the metadata store, not the journal.
+//
+// Crash-safety mirrors Delete. A durable, fsynced truncate marker is persisted
+// BEFORE the in-memory index is touched, so a failed marker write leaves the
+// file intact and a crash after the marker can never resurrect the truncated
+// bytes: the on-disk data records past newSize linger until GC repacks them
+// away, and recovery re-applies the clip from the marker. The marker's Version
+// fences the clip — only intervals at or below it are affected, so a write that
+// raced past the truncate (a higher Version) survives, re-extending the file.
+// An in-flight carve of a clipped range is harmless: its post-upload flip
+// re-resolves the interval by (offset, version) and simply skips a fragment the
+// truncate dropped or clipped, exactly as it skips a concurrent overwrite.
+func (s *Store) Truncate(ctx context.Context, id FileID, newSize int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.closed.Load() {
+		return errClosed
+	}
+	if newSize < 0 {
+		return fmt.Errorf("journal: negative truncate size %d", newSize)
+	}
+
+	sh := s.shardFor(id)
+	// Peek: with nothing past newSize this is a grow or no-op, so skip the marker
+	// fsync entirely. A write that lands past newSize after this peek carries a
+	// higher Version than any marker we would issue and is meant to survive, so
+	// not fencing it is correct.
+	sh.mu.Lock()
+	fi := sh.index[id]
+	past := false
+	if fi != nil {
+		for _, iv := range fi.ivs {
+			if iv.end() > newSize {
+				past = true
+				break
+			}
+		}
+	}
+	sh.mu.Unlock()
+	if !past {
+		return nil
+	}
+
+	// Durability first: the marker must be on disk before the index is clipped.
+	truncVer, err := s.appendTruncateMarker(ctx, id, newSize)
+	if err != nil {
+		return err
+	}
+
+	sh.mu.Lock()
+	fi = sh.index[id]
+	var dirty int64
+	if fi != nil {
+		kept := fi.ivs[:0]
+		for _, iv := range fi.ivs {
+			if iv.version > truncVer || iv.end() <= newSize {
+				kept = append(kept, iv) // raced past the truncate, or already within
+				continue
+			}
+			if iv.fileOff < newSize {
+				// Straddles newSize: clip to [fileOff, newSize); the tail dies.
+				dead := iv.end() - newSize
+				if !iv.cold {
+					if seg := sh.segment(iv.loc.SegmentID); seg != nil {
+						seg.deadBytes.Add(dead)
+					}
+				}
+				if !iv.synced {
+					dirty += dead
+				}
+				kept = append(kept, iv.clamp(iv.fileOff, newSize))
+				continue
+			}
+			// Entirely past newSize: drop it; its bytes become dead.
 			if iv.cold {
 				continue
 			}
