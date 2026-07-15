@@ -78,13 +78,18 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
+    # PR comments are posted via the `/issues/{pr}/comments` endpoint, which is
+    # authorized by `issues: write` — not `pull-requests: write`. `actions: read`
+    # is for the `gh run list` develop-status queries.
     permissions:
       contents: read
       actions: read
-      pull-requests: write
+      issues: write
 
     steps:
       - name: Post/update develop-red warning
+        # Warn-only: never let a GitHub API/CLI hiccup turn this into a red check.
+        # Individual gh calls are made best-effort; the step always exits 0.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -98,7 +103,8 @@ jobs:
           RED=""
           for wf in posix-tests.yml smb-conformance.yml e2e-tests.yml nfs-kerberos.yml; do
             CONC=$(gh run list --repo "$REPO" --workflow "$wf" --branch develop \
-              --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"')
+              --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"' \
+              || echo "none")
             echo "  $wf -> $CONC"
             if [ "$CONC" != "success" ] && [ "$CONC" != "none" ] && [ "$CONC" != "cancelled" ]; then
               RED="$RED $wf"
@@ -109,14 +115,14 @@ jobs:
           # --paginate walks all pages so a stale marker is never missed (which
           # would otherwise post a duplicate comment each run).
           EXISTING_COMMENT=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
-            --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1)
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" 2>/dev/null | head -n1 || true)
 
           if [ -z "$RED" ]; then
             echo "develop is green; no warning needed."
             if [ -n "$EXISTING_COMMENT" ]; then
               CLEARED=$(printf '%s\n✅ develop is green again — earlier warning cleared.' "$MARKER")
               gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING_COMMENT" \
-                -f body="$CLEARED" >/dev/null
+                -f body="$CLEARED" >/dev/null || echo "warn-only: could not clear comment (non-blocking)."
               echo "Cleared stale warning comment $EXISTING_COMMENT"
             fi
             exit 0
@@ -126,10 +132,10 @@ jobs:
 
           if [ -n "$EXISTING_COMMENT" ]; then
             gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING_COMMENT" \
-              -f body="$BODY" >/dev/null
+              -f body="$BODY" >/dev/null || echo "warn-only: could not update comment (non-blocking)."
             echo "Updated existing warning comment $EXISTING_COMMENT"
           else
             gh api -X POST "repos/$REPO/issues/$PR/comments" \
-              -f body="$BODY" >/dev/null
+              -f body="$BODY" >/dev/null || echo "warn-only: could not post comment (non-blocking)."
             echo "Posted new warning comment"
           fi
