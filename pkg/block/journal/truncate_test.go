@@ -207,6 +207,34 @@ func TestTruncateSurvivesReopen(t *testing.T) {
 	}
 }
 
+// TestTruncateDeadBytesReconstructedOnReopen guards the recovery deadBytes
+// rebuild: replay charges only physical records, so a truncate's clipped tail
+// leaves dead payload the counter never saw. Without reconstruction, pickVictim's
+// deadBytes<=0 gate skips the segment forever and GC can't reclaim the space.
+func TestTruncateDeadBytesReconstructedOnReopen(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	s, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := s.WriteAt(ctx, "f", 0, randBytes(1000, 9)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Truncate(ctx, "f", 400); err != nil {
+		t.Fatal(err)
+	}
+	if d := s.Stats().DeadBytes; d != 600 {
+		t.Fatalf("pre-reopen DeadBytes = %d, want 600", d)
+	}
+
+	r := reopen(t, s)
+	if d := r.Stats().DeadBytes; d != 600 {
+		t.Fatalf("recovered DeadBytes = %d, want 600 (deadBytes not reconstructed)", d)
+	}
+}
+
 func TestVictimMarkersCollectsTruncate(t *testing.T) {
 	s := testStore(t, Config{})
 	ctx := context.Background()

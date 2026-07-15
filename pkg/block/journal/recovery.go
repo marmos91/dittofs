@@ -297,13 +297,34 @@ func (s *Store) recover() error {
 
 	// Recompute unsynced from the final live coverage rather than the raw
 	// per-record sum: insert resolves overlaps, so a superseded record's bytes are
-	// dead and must not count toward the backpressure signal.
-	for _, idxMap := range indexByShard {
+	// dead and must not count toward the backpressure signal. In the same pass,
+	// reconstruct each segment's deadBytes from the authoritative live coverage
+	// (occupied liveBytes − currently-live): replay charges only physical records,
+	// so tombstones, same-segment overlaps, and truncate clips leave dead payload
+	// that never touched the counter. Without this, pickVictim's deadBytes<=0 gate
+	// skips every recovered segment and GC can never reclaim pre-restart dead space.
+	// Skip cold intervals exactly as pickVictim does so the live totals agree.
+	for i, idxMap := range indexByShard {
+		live := make(map[uint64]int64)
 		for _, fi := range idxMap {
 			for k := range fi.ivs {
-				if !fi.ivs[k].synced && !fi.ivs[k].cold {
+				if fi.ivs[k].cold {
+					continue
+				}
+				if !fi.ivs[k].synced {
 					unsynced += fi.ivs[k].length
 				}
+				live[fi.ivs[k].loc.SegmentID] += fi.ivs[k].length
+			}
+		}
+		for id, seg := range sealedByShard[i] {
+			if dead := seg.liveBytes.Load() - live[id]; dead > 0 {
+				seg.deadBytes.Store(dead)
+			}
+		}
+		if a := actives[i]; a != nil {
+			if dead := a.liveBytes.Load() - live[a.id]; dead > 0 {
+				a.deadBytes.Store(dead)
 			}
 		}
 	}
