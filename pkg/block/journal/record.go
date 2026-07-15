@@ -2,8 +2,10 @@ package journal
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
+	"io"
 )
 
 // Record framing. Many files pack into one shared segment, so each record
@@ -98,4 +100,89 @@ func decodeHeader(buf []byte) (recordHeader, error) {
 		Version:    binary.LittleEndian.Uint64(buf[16:24]),
 		Flags:      buf[24],
 	}, nil
+}
+
+// errTornRecord marks a record that fails structural validation: bad magic,
+// header CRC, an implausible PayloadLen, a payload that runs past the written
+// bytes, or a payload CRC mismatch. A recovery tail-scan stops at the first
+// torn record and truncates there. A clean end-of-data (nothing left to read)
+// surfaces as io.EOF, distinct from corruption.
+var errTornRecord = errors.New("journal: torn record")
+
+// record is a fully decoded and CRC-verified record read back from a segment.
+type record struct {
+	header  recordHeader
+	fileID  []byte
+	payload []byte
+	segOff  int64 // record start offset within the segment
+}
+
+// readRecordAt reads and fully validates the record at segment offset off.
+//
+// It is the single point that decides a record is trustworthy: it validates the
+// header CRC, then rejects any PayloadLen above maxPayload BEFORE allocating so
+// a header CRC that validates by coincidence on a torn tail can never make the
+// reader trust a bogus length and blow up memory, then verifies the payload CRC.
+// A torn or corrupt record returns errTornRecord; a clean boundary (no bytes
+// left) returns io.EOF. On success it also returns the offset of the next
+// record so a scan can advance.
+func readRecordAt(r io.ReaderAt, off, maxPayload int64) (record, int64, error) {
+	var hdrBuf [recordHeaderSize]byte
+	n, err := r.ReadAt(hdrBuf[:], off)
+	if err != nil {
+		// Only a zero-byte read at off is a clean end of the record stream. A
+		// partial header (n>0) is a torn write at the tail, not a boundary.
+		if errors.Is(err, io.EOF) && n == 0 {
+			return record{}, 0, io.EOF
+		}
+		return record{}, 0, fmt.Errorf("%w: header read: %v", errTornRecord, err)
+	}
+	h, err := decodeHeader(hdrBuf[:])
+	if err != nil {
+		return record{}, 0, fmt.Errorf("%w: %v", errTornRecord, err)
+	}
+	if int64(h.PayloadLen) > maxPayload {
+		return record{}, 0, fmt.Errorf("%w: payload len %d exceeds ceiling %d", errTornRecord, h.PayloadLen, maxPayload)
+	}
+	body := int64(h.FileIDLen) + int64(h.PayloadLen) + payloadCRCSize
+	// Reject a length that would not survive the int64->int narrowing make does
+	// on 32-bit platforms, so a corrupt header can never overflow or panic here.
+	if int64(int(body)) != body {
+		return record{}, 0, fmt.Errorf("%w: record length %d out of range", errTornRecord, body)
+	}
+	buf := make([]byte, body)
+	if _, err := r.ReadAt(buf, off+recordHeaderSize); err != nil {
+		// A truncated payload (torn write) shows up as EOF here, mid-record —
+		// corruption, not a clean boundary.
+		return record{}, 0, fmt.Errorf("%w: body read: %v", errTornRecord, err)
+	}
+	payloadEnd := int64(h.FileIDLen) + int64(h.PayloadLen)
+	payload := buf[h.FileIDLen:payloadEnd]
+	wantCRC := binary.LittleEndian.Uint32(buf[payloadEnd:])
+	if got := crc(payload); got != wantCRC {
+		return record{}, 0, fmt.Errorf("%w: payload CRC mismatch", errTornRecord)
+	}
+	return record{
+		header:  h,
+		fileID:  buf[:h.FileIDLen],
+		payload: payload,
+		segOff:  off,
+	}, off + recordHeaderSize + body, nil
+}
+
+// scanValidRecords walks a segment's record stream from the first record to the
+// first torn record or clean end, returning the valid records and the offset up
+// to which the segment is intact. Recovery replays the records and truncates the
+// segment at validUpTo. maxPayload is the per-record sanity ceiling.
+func scanValidRecords(r io.ReaderAt, segSize, maxPayload int64) (recs []record, validUpTo int64) {
+	off := int64(segHeaderSize)
+	for off < segSize {
+		rec, next, err := readRecordAt(r, off, maxPayload)
+		if err != nil {
+			break
+		}
+		recs = append(recs, rec)
+		off = next
+	}
+	return recs, off
 }

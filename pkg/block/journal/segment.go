@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -99,12 +100,43 @@ func (s *Store) createSegment() (*segmentMeta, error) {
 		_ = fd.Close()
 		return nil, fmt.Errorf("journal: write segment header %q: %w", path, err)
 	}
+	// Make the header and the directory entry durable before any record can be
+	// committed into this segment: a later Commit fsyncs record bytes, but that
+	// is worthless after a crash if the file itself or its header never reached
+	// disk. Recovery trusts the header to tell active from sealed.
+	if err := fd.Sync(); err != nil {
+		_ = fd.Close()
+		return nil, fmt.Errorf("journal: fsync segment header %q: %w", path, err)
+	}
+	if err := fsyncDir(s.dir); err != nil {
+		_ = fd.Close()
+		return nil, fmt.Errorf("journal: fsync dir %q: %w", s.dir, err)
+	}
 	// The .idx sidecar is best-effort: if it can't be opened, records still
 	// append and the index is rebuildable from the .seg on recovery.
 	idxFD, _ := os.OpenFile(s.idxPath(id), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	m := &segmentMeta{id: id, createdAt: createdAt, fd: fd, idxFD: idxFD}
 	m.tail.Store(segHeaderSize)
 	return m, nil
+}
+
+// fsyncDir flushes a directory's entries so a freshly created file survives a
+// crash. Skipped on Windows: opening a directory read-only and calling fsync
+// returns "Access is denied", and NTFS makes the create durable without an
+// explicit dir flush — same treatment the fs block store uses (fs/compaction.go).
+func fsyncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	if err := d.Sync(); err != nil {
+		_ = d.Close()
+		return err
+	}
+	return d.Close()
 }
 
 // sealSegment fsyncs the shard's active segment, flips its on-disk sealed bit,
@@ -132,6 +164,11 @@ func (s *Store) sealSegment(sh *shard) error {
 		_ = old.idxFD.Close()
 		old.idxFD = nil
 	}
+	// Keep the segment's existing fd open and hand it to the sealed set — the
+	// same fd serves warm reads. It is set once at creation and never swapped,
+	// so readPayload's snapshot-then-unlocked-pread races nothing (mirrors how
+	// logblob pools the old active fd on rotate rather than reopening it). No
+	// append path touches a sealed segment, so the writable handle is harmless.
 	old.sealed.Store(true)
 	sh.sealed[old.id] = old
 
