@@ -8,7 +8,7 @@ import (
 	nfs4types "github.com/marmos91/dittofs/internal/adapter/nfs/v4/types"
 	smbtypes "github.com/marmos91/dittofs/internal/adapter/smb/types"
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // TestContentErrMap_ChunkContentMismatch verifies that a wrapped
@@ -127,18 +127,18 @@ func TestContentErrMap_NonCAS_NoRegression(t *testing.T) {
 }
 
 // TestContentErrMap_PressureTimeout_SurfacedNonSuccess locks in #1267: the
-// append-log backpressure sentinel fs.ErrPressureTimeout (returned when a
-// wedged rollup pool cannot admit a write, and the durability-point flush the
-// NFS COMMIT / SMB CLOSE handlers run cannot make forward progress) must map to
-// a non-success, I/O-class status in every protocol arm. Surfacing it is what
+// local-store backpressure sentinel journal.ErrLocalStoreFull (returned when
+// the local cache is at its cap and every segment is pinned by unsynced bytes,
+// so a durability-point flush cannot make forward progress) must map to a
+// non-success, I/O-class status in every protocol arm. Surfacing it is what
 // lets the handler fail the COMMIT/CLOSE loudly instead of acknowledging a
 // payload that never durably flushed.
 func TestContentErrMap_PressureTimeout_SurfacedNonSuccess(t *testing.T) {
 	// Direct sentinel and a wrapped form (handlers receive the engine-wrapped
 	// error) must both resolve to the same non-success codes via errors.Is.
 	cases := []error{
-		fs.ErrPressureTimeout,
-		fmt.Errorf("engine flush payload p1: %w", fs.ErrPressureTimeout),
+		journal.ErrLocalStoreFull,
+		fmt.Errorf("engine flush payload p1: %w", journal.ErrLocalStoreFull),
 	}
 	for _, err := range cases {
 		if got := MapContentToNFS3(err); got != nfs3types.NFS3ErrIO {

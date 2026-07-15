@@ -62,14 +62,13 @@ func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 		t.Fatalf("returned store type = %T, want *fs.FSStore", store)
 	}
 
-	// AppendWrite must succeed unconditionally — append is mandatory.
-	if err := fsStore.AppendWrite(ctx, "test-payload", []byte("hello phase 17"), 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
+	// WriteAt must succeed — the journal-backed store accepts writes immediately.
+	if err := fsStore.WriteAt(ctx, "test-payload", 0, []byte("hello phase 17")); err != nil {
+		t.Fatalf("WriteAt: %v", err)
 	}
 
 	// Sanity check: the share root was created at the expected location.
-	// baseDir is shareDir, not shareDir/blocks; the FSStore creates
-	// `blocks/` (CAS) + `logs/` (append log) inside.
+	// The FSStore opens the journal under `journal/` inside the share dir.
 	expectedShareDir := filepath.Join(tmp, "shares", "test-share")
 	if _, statErr := statDir(expectedShareDir); statErr != nil {
 		t.Errorf("share dir %q not created: %v", expectedShareDir, statErr)
@@ -103,10 +102,10 @@ func TestCreateLocalStoreFromConfig_InvalidTypesIgnored(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	// Defaults still produce a working append path.
+	// Defaults still produce a working write path.
 	fsStore := store.(*fs.FSStore)
-	if err := fsStore.AppendWrite(ctx, "p", []byte("x"), 0); err != nil {
-		t.Fatalf("AppendWrite under invalid-types config: %v", err)
+	if err := fsStore.WriteAt(ctx, "p", 0, []byte("x")); err != nil {
+		t.Fatalf("WriteAt under invalid-types config: %v", err)
 	}
 }
 
@@ -162,8 +161,8 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i*7 + 1)
 	}
-	if err := fsStore.AppendWrite(context.Background(), payloadID, data, 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
+	if err := fsStore.WriteAt(context.Background(), payloadID, 0, data); err != nil {
+		t.Fatalf("WriteAt: %v", err)
 	}
 
 	// Poll for the rollup ticker (50ms stabilization) to fold the append log

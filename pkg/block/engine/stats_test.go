@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"testing"
-
 )
 
 // TestStats_EmptyStore verifies Stats() returns UsedSize==0 for an empty store.

@@ -3,7 +3,6 @@ package common
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
@@ -27,15 +26,10 @@ func newTestEngine(t *testing.T) *engine.Store {
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{
-		MaxLogBytes:     128 * 1024 * 1024,
-		RollupWorkers:   2,
-		StabilizationMS: 50,
+		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions failed: %v", err)
-	}
-	if err := localStore.StartRollup(context.Background()); err != nil {
-		t.Fatalf("StartRollup: %v", err)
 	}
 
 	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
@@ -59,27 +53,11 @@ func newTestEngine(t *testing.T) *engine.Store {
 	return bs
 }
 
-// forceRollup drives a synchronous rollup pass on the FSStore inside
-// the engine so AppendWrite-staged bytes land in the CAS chunk store +
-// FileChunk rows before the test reads them back. Mirrors the helper
-// used by the engine-package offline tests.
-func forceRollup(t *testing.T, bs *engine.Store, payloadID string) {
-	t.Helper()
-	fsLocal, ok := bs.LocalForTest().(*fs.FSStore)
-	if !ok {
-		return
-	}
-	time.Sleep(80 * time.Millisecond)
-	for i := 0; i < 16; i++ {
-		if err := fsLocal.ForceRollupForTest(context.Background(), payloadID); err != nil {
-			t.Fatalf("ForceRollupForTest: %v", err)
-		}
-		if fsLocal.IntervalsLenForTest(payloadID) == 0 {
-			break
-		}
-	}
-	fsLocal.SyncFileChunksForFile(context.Background(), payloadID)
-}
+// forceRollup is a no-op in the journal model: WriteAt lands bytes in the
+// journal's interval index that ReadAt serves warm immediately, so there is no
+// rollup pass to drive before reading back. Retained so the call sites read
+// intentionally.
+func forceRollup(_ *testing.T, _ *engine.Store, _ string) {}
 
 // TestWriteToBlockStore_Passthrough asserts the Phase-09 passthrough contract:
 // WriteToBlockStore writes identical bytes at identical offsets to the

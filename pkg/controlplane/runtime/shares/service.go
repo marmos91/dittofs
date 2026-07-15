@@ -968,17 +968,10 @@ func (s *Service) createBlockStoreForShare(
 
 	syncer := engine.NewSyncer(localStore, engineRemote, fileChunkStore, syncerCfg)
 
-	// Inject the read-only syncer accessor into the local store so its
-	// eviction path can engage remote-cache backpressure (stall a writer
-	// while the syncer drains, instead of failing with ErrDiskFull) when a
-	// remote is configured. Local-only shares (engineRemote == nil) keep the
-	// nil source — eviction stays on its evictMaxWait fallback. FSStore takes
-	// a narrow read-only interface, never the FileChunkStore (LSL-08).
-	if engineRemote != nil {
-		if fsStore, ok := localStore.(*fs.FSStore); ok {
-			fsStore.SetBackpressureSource(syncer)
-		}
-	}
+	// Write-path backpressure is now internal to the journal-backed local store
+	// (Config.EvictMaxWait): a full local cache stalls the writer while the carve
+	// dispatcher drains unsynced bytes, so there is no SetBackpressureSource
+	// wiring to inject here anymore.
 
 	// Wire the block-carve substrate (#1414 object packing, PR3 global flip).
 	// Assert on the RAW remoteStore, not engineRemote: the carver holds its own
@@ -2873,31 +2866,13 @@ func CreateLocalStoreFromConfig(
 			return nil, fmt.Errorf("failed to create share directory: %w", err)
 		}
 
-		// Append is mandatory. Enforce the production guardrail that the
-		// metadata backend implements RollupStore so the rollup worker pool
-		// can be started below. The RollupStore, SyncedHashStore, and
-		// LocalChunkIndex are all derived from this same fileChunkStore
-		// backend inside NewWithOptions — accepted because memory / badger /
-		// postgres all implement them on the same Store type.
-		if _, ok := fileChunkStore.(metadata.RollupStore); !ok {
-			return nil, fmt.Errorf("fs local store: metadata backend must implement metadata.RollupStore for the mandatory append-log path")
-		}
+		// The SyncedHashStore and LocalChunkIndex are derived from this same
+		// fileChunkStore backend inside NewWithOptions. There is no longer a
+		// rollup worker pool (the journal carves dirty ranges directly), so the
+		// former RollupStore guard and StartRollup call are gone.
 		store, err := fs.NewWithOptions(shareDir, maxDisk, fileChunkStore, fsOpts)
 		if err != nil {
 			return nil, err
-		}
-		// The rollup worker pool is a persistent, store-lifetime background
-		// goroutine — it must NOT be tied to the caller's context. When a share
-		// is created live via the REST API, ctx is the HTTP request context and
-		// is cancelled the instant the response is sent; binding the rollup
-		// ticker to it kills the pool immediately, so append-log data is never
-		// chunked into CAS (and therefore never mirrored to the remote). Detach
-		// cancellation (keeping ctx values for tracing); shutdown is driven by
-		// store.Close()/GracefulStopRollup, mirroring engine.Start's use of a
-		// background context for the syncer and local-store loops.
-		if err := store.StartRollup(context.WithoutCancel(ctx)); err != nil {
-			_ = store.Close()
-			return nil, fmt.Errorf("fs local store: StartRollup: %w", err)
 		}
 		applyDurableOverride(store, config, "local "+storeType, shareName)
 		return store, nil
