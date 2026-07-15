@@ -2241,7 +2241,9 @@ func (s *Service) XattrStreamReader() metadata.StreamContentReader {
 // store.
 func (s *Service) GetBlockStoreForShare(name string) (*engine.Store, error) {
 	if v, ok := s.blockStoreCache.Load(name); ok {
-		return v.(*engine.Store), nil
+		if bs, ok := v.(*engine.Store); ok {
+			return bs, nil
+		}
 	}
 
 	s.mu.RLock()

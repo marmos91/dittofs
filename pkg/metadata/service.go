@@ -627,7 +627,9 @@ func (s *Service) newGraceAwareLockManager(duration time.Duration) *LockManager 
 // locked map and yields the stale-handle error below — never a stale store.
 func (s *Service) GetStoreForShare(shareName string) (Store, error) {
 	if v, ok := s.storeCache.Load(shareName); ok {
-		return v.(Store), nil
+		if store, ok := v.(Store); ok {
+			return store, nil
+		}
 	}
 
 	s.mu.RLock()
