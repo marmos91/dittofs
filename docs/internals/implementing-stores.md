@@ -108,8 +108,13 @@ The metadata store interface and implementation guide remains the same as before
 - `pkg/metadata/store/memory/`: In-memory (fast, ephemeral)
 - `pkg/metadata/store/badger/`: BadgerDB (persistent, embedded)
 - `pkg/metadata/store/postgres/`: PostgreSQL (persistent, distributed)
+- `pkg/metadata/store/sqlite/`: SQLite (persistent, single-node)
 
 Conformance tests: `pkg/metadata/storetest/`
+
+> **See also:** [The Metadata Store](./metadata-store.md) — the entity model and how each
+> backend realizes it (key layouts, the relational schema, and the durability model).
+> This guide covers the *contract*; that one covers the *design and implementation*.
 
 ### MetadataStore.EnumerateFileChunks
 
