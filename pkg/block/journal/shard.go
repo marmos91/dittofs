@@ -59,8 +59,12 @@ func (sh *shard) indexFor(id FileID) *fileIndex {
 	return fi
 }
 
+// shardIndex returns the shard slot owning id. Recovery needs the slot before
+// s.shards is populated, so it is factored out of shardFor.
+func (s *Store) shardIndex(id FileID) uint64 { return fnv1a(string(id)) & s.shardMask }
+
 // shardFor returns the shard owning id: FNV-1a masked to the power-of-two
 // shard count.
 func (s *Store) shardFor(id FileID) *shard {
-	return s.shards[fnv1a(string(id))&s.shardMask]
+	return s.shards[s.shardIndex(id)]
 }

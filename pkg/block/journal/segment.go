@@ -75,6 +75,26 @@ func (m *segmentMeta) close() error {
 	return firstErr
 }
 
+// decodeSegHeader validates and parses a segment header. It checks the magic
+// and header CRC; a failure means the file is not a well-formed segment (a torn
+// create or unrelated file) and recovery treats it as an orphan.
+func decodeSegHeader(buf []byte) (id uint64, createdAt time.Time, flags uint32, ok bool) {
+	if len(buf) < segHeaderSize {
+		return 0, time.Time{}, 0, false
+	}
+	if [8]byte(buf[0:8]) != segMagic {
+		return 0, time.Time{}, 0, false
+	}
+	want := binary.LittleEndian.Uint32(buf[28:32])
+	if crc(buf[:segHeaderCRCCovers]) != want {
+		return 0, time.Time{}, 0, false
+	}
+	id = binary.LittleEndian.Uint64(buf[8:16])
+	createdAt = time.Unix(0, int64(binary.LittleEndian.Uint64(buf[16:24])))
+	flags = binary.LittleEndian.Uint32(buf[24:28])
+	return id, createdAt, flags, true
+}
+
 func encodeSegHeader(id uint64, createdAt time.Time, flags uint32) []byte {
 	buf := make([]byte, segHeaderSize)
 	copy(buf[0:8], segMagic[:])

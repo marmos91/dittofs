@@ -19,7 +19,7 @@ type FileID string
 type BlockID string
 
 // errNotImplemented is returned by operations whose implementation lands in a
-// later change (carve, evict, gc, delete, reopen recovery).
+// later change (carve, evict, gc, delete).
 var errNotImplemented = errors.New("journal: not yet implemented")
 
 // errClosed is returned by every operation attempted on a closed Store.
@@ -121,8 +121,10 @@ type Store struct {
 }
 
 // Open opens (or creates) a Store rooted at dir. A fresh directory gets one
-// active segment per shard. Reopen of a populated directory (crash recovery
-// replay) is not yet implemented; callers currently start from an empty cache.
+// active segment per shard. A populated directory is recovered: the active
+// segment of each shard is tail-scanned and its torn tail truncated, every
+// valid record is replayed into a fresh interval index, and the global Version
+// LSN is resumed past the highest observed record. See recover.
 func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, error) {
 	cfg = cfg.withDefaults()
 	if cfg.ShardCount&(cfg.ShardCount-1) != 0 {
@@ -137,13 +139,6 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("journal: mkdir %q: %w", dir, err)
 	}
-	if ids, err := scanSegmentIDs(dir); err != nil {
-		return nil, err
-	} else if len(ids) > 0 {
-		// Crash-recovery replay is not yet implemented; refuse to start a fresh
-		// cache over stale segments rather than silently lose their data.
-		return nil, fmt.Errorf("journal: %w: reopen of populated dir %q", errNotImplemented, dir)
-	}
 
 	s := &Store{
 		dir:       dir,
@@ -152,6 +147,19 @@ func Open(dir string, cfg Config, remote RemoteStore, clock Clock) (*Store, erro
 		clock:     clock,
 		shardMask: uint64(cfg.ShardCount - 1),
 	}
+
+	ids, err := scanSegmentIDs(dir)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) > 0 {
+		if err := s.recover(); err != nil {
+			_ = s.Close()
+			return nil, err
+		}
+		return s, nil
+	}
+
 	s.shards = make([]*shard, cfg.ShardCount)
 	for i := range s.shards {
 		seg, err := s.createSegment()
