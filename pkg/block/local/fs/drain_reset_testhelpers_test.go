@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
 // memFBS is a minimal in-memory block.EngineFileChunkStore that
@@ -172,6 +173,43 @@ func (m *memFBS) DeleteLocalLocation(_ context.Context, h block.ContentHash) err
 	defer m.mu.Unlock()
 	delete(m.locs, h)
 	return nil
+}
+
+// rollupMemFBS extends memFBS with the RollupStore facet so a single backend
+// serves FileChunkStore + LocalChunkIndex + RollupStore (mirrors production's
+// metadata backend, where all three are the same object derived from the
+// fileChunkStore inside NewWithOptions). Kept separate from memFBS so the plain
+// double still lacks RollupStore — the nil-RollupStore guardrail test relies on
+// a backend that does NOT implement it.
+type rollupMemFBS struct {
+	*memFBS
+	rollupMu sync.Mutex
+	rollups  map[string]uint64 // payloadID -> rollup_offset
+}
+
+func newRollupMemFileChunkStore() *rollupMemFBS {
+	return &rollupMemFBS{memFBS: newMemFileChunkStore(), rollups: make(map[string]uint64)}
+}
+
+func (m *rollupMemFBS) SetRollupOffset(_ context.Context, payloadID string, newOffset uint64) (uint64, error) {
+	m.rollupMu.Lock()
+	defer m.rollupMu.Unlock()
+	prev := m.rollups[payloadID]
+	if newOffset == 0 { // sentinel: unconditional reset
+		delete(m.rollups, payloadID)
+		return prev, nil
+	}
+	if newOffset < prev {
+		return prev, metadata.ErrRollupOffsetRegression
+	}
+	m.rollups[payloadID] = newOffset
+	return prev, nil
+}
+
+func (m *rollupMemFBS) GetRollupOffset(_ context.Context, payloadID string) (uint64, error) {
+	m.rollupMu.Lock()
+	defer m.rollupMu.Unlock()
+	return m.rollups[payloadID], nil
 }
 
 // newFSStoreForTestWithFBS is newFSStoreForTest with a caller-supplied

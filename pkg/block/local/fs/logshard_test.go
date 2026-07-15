@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-
-	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestShardFor_Deterministic verifies shardFor is stable per payloadID and
@@ -44,12 +42,10 @@ func TestShardFor_Deterministic(t *testing.T) {
 // cross-shard mistake would deadlock (caught by the test timeout) or trip the
 // race detector. It asserts every payload ends fully torn down.
 func TestLogShards_ConcurrentCreateDelete(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   3,
 		StabilizationMS: 2,
-		RollupStore:     rs,
 	})
 	if err := bc.StartRollup(context.Background()); err != nil {
 		t.Fatalf("StartRollup: %v", err)

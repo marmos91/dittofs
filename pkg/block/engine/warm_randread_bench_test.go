@@ -98,8 +98,6 @@ func buildWarmFSFixture(tb testing.TB) (*engine.Store, string, []block.ChunkRef,
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 3_600_000, // async rollup never fires; only explicit DrainRollups
-		RollupStore:     ms,
-		SyncedHashStore: ms,
 	})
 	if err != nil {
 		tb.Fatalf("fs.NewWithOptions: %v", err)

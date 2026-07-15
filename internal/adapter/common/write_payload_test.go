@@ -30,8 +30,6 @@ func newTestEngine(t *testing.T) *engine.Store {
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 50,
-		RollupStore:     ms,
-		SyncedHashStore: ms,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions failed: %v", err)

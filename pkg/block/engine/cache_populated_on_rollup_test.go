@@ -43,8 +43,6 @@ func newRollupCacheFixture(t *testing.T) (*Store, *fs.FSStore, *recordingPutCach
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 5,
-		RollupStore:     ms,
-		SyncedHashStore: ms,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)

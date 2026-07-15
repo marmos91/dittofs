@@ -18,7 +18,7 @@ func TestUnstableWriteThenCommit_SurvivesReopen(t *testing.T) {
 	// Wire a shared metadata store as FCS/LocalChunkIndex + RollupStore so the
 	// reopen below (ReopenForTest) resolves the same backend.
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{MaxLogBytes: 1 << 30, StabilizationMS: 100000, RollupStore: rs})
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{MaxLogBytes: 1 << 30, StabilizationMS: 100000})
 	ctx := context.Background()
 	const payloadID = "commit-survives"
 	payload := bytes.Repeat([]byte{0x5A}, 4096)

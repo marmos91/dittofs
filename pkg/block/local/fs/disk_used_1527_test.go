@@ -34,9 +34,7 @@ import (
 // post-flip configuration.
 func newBlobStoreWithLimit(t *testing.T, dir string, maxDisk int64, mds *memory.MemoryMetadataStore) *FSStore {
 	t.Helper()
-	bc, err := NewWithOptions(dir, maxDisk, mds, FSStoreOptions{
-		SyncedHashStore: mds,
-	})
+	bc, err := NewWithOptions(dir, maxDisk, mds, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}

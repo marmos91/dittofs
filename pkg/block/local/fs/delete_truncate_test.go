@@ -243,7 +243,6 @@ func TestDelete_DuringActiveRollup_NoMetadataZombie(t *testing.T) {
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 2,
-		RollupStore:     rs,
 	})
 	ctx := context.Background()
 
@@ -313,7 +312,6 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
-		RollupStore:            rs,
 		OrphanLogMinAgeSeconds: 1, // short window so the test can age past it
 	})
 	if err != nil {
@@ -341,7 +339,6 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
-		RollupStore:            rs,
 		OrphanLogMinAgeSeconds: 1,
 	})
 	if err != nil {
@@ -466,7 +463,6 @@ func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 2,
-		RollupStore:     rs,
 	})
 	ctx := context.Background()
 

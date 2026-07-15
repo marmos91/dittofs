@@ -109,8 +109,6 @@ func newHealthTestEnv(t *testing.T) *healthTestEnv {
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 50,
-		RollupStore:     ms,
-		SyncedHashStore: ms,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)

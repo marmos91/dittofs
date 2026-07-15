@@ -22,8 +22,6 @@ func newDrainResetFixture(t *testing.T) (*Store, *fs.FSStore) {
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 3_600_000, // 1h — async/ticker rollup can never fire
-		RollupStore:     ms,
-		SyncedHashStore: ms,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)

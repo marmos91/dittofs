@@ -66,7 +66,6 @@ func TestCompaction_BoundedLogSize(t *testing.T) {
 		MaxLogBytes:              1 << 30,
 		RollupWorkers:            2,
 		StabilizationMS:          5,
-		RollupStore:              rs,
 		CompactionThresholdBytes: 32 * 1024,
 	}
 	bc := newFSStoreForTestWithFBS(t, rs, opts)
@@ -123,7 +122,6 @@ func TestCompaction_DisabledByNegativeThreshold(t *testing.T) {
 		MaxLogBytes:              1 << 30,
 		RollupWorkers:            2,
 		StabilizationMS:          5,
-		RollupStore:              rs,
 		CompactionThresholdBytes: -1,
 	}
 	bc := newFSStoreForTestWithFBS(t, rs, opts)
@@ -166,7 +164,6 @@ func TestCompaction_RecoveryRebuildsAfterCompact(t *testing.T) {
 		MaxLogBytes:              1 << 30,
 		RollupWorkers:            2,
 		StabilizationMS:          5,
-		RollupStore:              rs,
 		CompactionThresholdBytes: 16 * 1024,
 	}
 	bc := newFSStoreForTestWithFBS(t, rs, opts)
@@ -261,7 +258,6 @@ func TestCompaction_HeaderFlagSetAndPreservesCAS(t *testing.T) {
 		MaxLogBytes:              1 << 30,
 		RollupWorkers:            2,
 		StabilizationMS:          5,
-		RollupStore:              rs,
 		CompactionThresholdBytes: 8 * 1024,
 	}
 	bc := newFSStoreForTestWithFBS(t, rs, opts)
@@ -345,7 +341,6 @@ func TestCompaction_StaleTempCleanedUpOnRecovery(t *testing.T) {
 		MaxLogBytes:     1 << 20,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
-		RollupStore:     rs,
 	})
 	ctx := context.Background()
 
@@ -368,7 +363,6 @@ func TestCompaction_StaleTempCleanedUpOnRecovery(t *testing.T) {
 		MaxLogBytes:     1 << 20,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
-		RollupStore:     rs,
 	})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)

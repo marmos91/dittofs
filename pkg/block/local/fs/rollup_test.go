@@ -25,9 +25,10 @@ func newRollupFSStore(t *testing.T, maxLogBytes int64, stabilizationMS int) (*FS
 		MaxLogBytes:     maxLogBytes,
 		RollupWorkers:   2,
 		StabilizationMS: stabilizationMS,
-		RollupStore:     rs,
 	}
-	bc := newFSStoreForTest(t, opts)
+	// rs doubles as the backing FileChunkStore so the derived RollupStore
+	// is the same store the caller observes for rollup-offset progress.
+	bc := newFSStoreForTestWithFBS(t, rs, opts)
 	if err := bc.StartRollup(context.Background()); err != nil {
 		t.Fatalf("StartRollup: %v", err)
 	}
@@ -158,11 +159,12 @@ func TestRollup_PressureReleasesAppendWrite(t *testing.T) {
 // becomes stable within a few ms.
 func TestRollup_CommitChunks_MonotoneEnforced(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc := newFSStoreForTest(t, FSStoreOptions{
+	// rs is the backend so its derived RollupStore is the one this test
+	// pre-seeds and reads back to exercise the monotone-regression branch.
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 1, // 1 ms — record stabilizes almost immediately
-		RollupStore:     rs,
 	})
 	ctx := context.Background()
 
@@ -208,9 +210,9 @@ func TestRollup_CommitChunks_MonotoneEnforced(t *testing.T) {
 // TestRollup_StartRollup_NilStore: StartRollup with a nil RollupStore must
 // return a descriptive error so misconfiguration fails loudly.
 func TestRollup_StartRollup_NilStore(t *testing.T) {
-	bc := newFSStoreForTest(t, FSStoreOptions{
-		// RollupStore intentionally nil.
-	})
+	// A backend WITHOUT the RollupStore facet → the soft derivation leaves
+	// bc.rollupStore nil, so StartRollup must reject it.
+	bc := newFSStoreForTestWithFBS(t, newMemFileChunkStore(), FSStoreOptions{})
 	if err := bc.StartRollup(context.Background()); err == nil {
 		t.Fatalf("StartRollup with nil RollupStore: want error, got nil")
 	}
@@ -359,11 +361,12 @@ func TestRollup_ReconstructStream_DoSCeiling_FIX5(t *testing.T) {
 // past the dropped record.
 func TestRollup_TruncateMidWindow_DoesNotAdvancePastUncommittedTail(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc := newFSStoreForTest(t, FSStoreOptions{
+	// rs is the backend so its derived RollupStore is the one this test reads
+	// back to assert the fence stopped at the last surviving record.
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 1,
-		RollupStore:     rs,
 	})
 	ctx := context.Background()
 
@@ -465,7 +468,6 @@ func runRollupOnceErr(bc *FSStore, payloadID string, payload []byte) error {
 //	   errors.Is so callers can distinguish it from neighbour errors.
 func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 	t.Run("PersistsObjectIDOnCommit", func(t *testing.T) {
-		rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 
 		var mu sync.Mutex
 		var captures []capturedPersist
@@ -488,7 +490,6 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 			MaxLogBytes:       1 << 30,
 			RollupWorkers:     2,
 			StabilizationMS:   1,
-			RollupStore:       rs,
 			ObjectIDPersister: persister,
 		})
 
@@ -531,11 +532,12 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 
 	t.Run("NilPersisterIsBenign", func(t *testing.T) {
 		rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-		bc := newFSStoreForTest(t, FSStoreOptions{
+		// rs is the backend so its derived RollupStore is the one this test
+		// reads to confirm the fence advanced despite a nil persister.
+		bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 			MaxLogBytes:     1 << 30,
 			RollupWorkers:   2,
 			StabilizationMS: 1,
-			RollupStore:     rs,
 			// ObjectIDPersister left nil — local-only fixture.
 		})
 
@@ -554,7 +556,6 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 	})
 
 	t.Run("PersisterErrorPropagates", func(t *testing.T) {
-		rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 
 		simulated := errors.New("simulated persister failure")
 		persister := func(_ context.Context, _ string, _ []block.ChunkRef, _ block.ObjectID) error {
@@ -565,7 +566,6 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 			MaxLogBytes:       1 << 30,
 			RollupWorkers:     2,
 			StabilizationMS:   1,
-			RollupStore:       rs,
 			ObjectIDPersister: persister,
 		})
 
@@ -601,12 +601,10 @@ func TestRollup_CommitChunks_PersistsObjectID(t *testing.T) {
 // content-addressed and idempotent, so the second payload re-stores the
 // same chunk harmlessly; the manifest must not drift.
 func TestRollup_ComputeObjectID_StableAcrossPayloads(t *testing.T) {
-	mem := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 1,
-		RollupStore:     mem,
 	})
 
 	payload := bytes.Repeat([]byte{0xF1}, 256*1024)

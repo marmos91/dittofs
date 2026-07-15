@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestRollup_DivergentInterval_DroppedNoLoop is the #668 regression for
@@ -23,7 +21,6 @@ func TestRollup_DivergentInterval_DroppedNoLoop(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 5,
-		RollupStore:     memmeta.NewMemoryMetadataStoreWithDefaults(),
 	})
 	ctx := context.Background()
 	const payloadID = "file-divergent"
@@ -103,7 +100,6 @@ func TestRollup_DivergentInterval_NoErrorReturned(t *testing.T) {
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
-		RollupStore:     memmeta.NewMemoryMetadataStoreWithDefaults(),
 	})
 	ctx := context.Background()
 	const payloadID = "file-divergent-unit"

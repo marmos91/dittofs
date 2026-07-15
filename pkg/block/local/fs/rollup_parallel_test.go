@@ -7,8 +7,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestScanAllFiles_DispatchesConcurrently proves the ticker/backlog drain path
@@ -24,13 +22,11 @@ import (
 // single dispatch goroutine is parked inside the first rollup), so fewer than
 // `workers` arrivals land within the timeout and the test fails.
 func TestScanAllFiles_DispatchesConcurrently(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	const workers = 4
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   workers,
 		StabilizationMS: 1,
-		RollupStore:     rs,
 	})
 	// Deliberately do NOT StartRollup: this test drives scanAllFiles directly
 	// so the only concurrency under observation is its own dispatch fan-out.

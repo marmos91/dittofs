@@ -24,8 +24,7 @@ import (
 // remote, no eviction.
 func newEngineWithRemote(t *testing.T, ms metadata.Store, mem *remotememory.Store) *engine.Store {
 	t.Helper()
-	rollupStore, ok := ms.(metadata.RollupStore)
-	if !ok {
+	if _, ok := ms.(metadata.RollupStore); !ok {
 		t.Fatalf("metadata store %T does not implement metadata.RollupStore", ms)
 	}
 	syncedHashStore, ok := ms.(metadata.SyncedHashStore)
@@ -36,8 +35,6 @@ func newEngineWithRemote(t *testing.T, ms metadata.Store, mem *remotememory.Stor
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 3_600_000, // async rollup never fires; explicit DrainRollups only
-		RollupStore:     rollupStore,
-		SyncedHashStore: syncedHashStore,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)

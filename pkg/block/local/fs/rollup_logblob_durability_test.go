@@ -14,10 +14,8 @@ import (
 // passes). Used by logblob durability tests only.
 func newLogBlobStoreWithRollup(t *testing.T) *FSStore {
 	t.Helper()
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	idx := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc, err := NewWithOptions(t.TempDir(), 0, idx, FSStoreOptions{
-		RollupStore:     rs,
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
 		RollupWorkers:   1,

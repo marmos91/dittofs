@@ -70,13 +70,11 @@ func TestRollup_LocalIndex_FencedBehindBlobSync(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 
-	// Memory stores stand in for the (durable) production LocalChunkIndex and
-	// RollupStore; sharing the SAME instances across the reopen models their
-	// durability surviving a crash.
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
+	// A memory store stands in for the (durable) production backend that
+	// serves both the LocalChunkIndex and RollupStore facets; sharing the SAME
+	// instance across the reopen models its durability surviving a crash.
 	idx := memmeta.NewMemoryMetadataStoreWithDefaults()
 	opts := FSStoreOptions{
-		RollupStore:     rs,
 		MaxLogBytes:     1 << 30,
 		StabilizationMS: 1,
 		RollupWorkers:   1,
@@ -202,17 +200,15 @@ func TestRollup_LocalIndex_FencedBehindBlobSync(t *testing.T) {
 func TestRollup_TransientSyncFailure_ReadableWithoutRestart(t *testing.T) {
 	ctx := context.Background()
 
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	// Real in-memory FileChunk store + persister so ReadPayloadAt's CAS-manifest
 	// path (step 2) can resolve rolled-up bytes after the fence trims the log
 	// index entries — the only read path left once a pass succeeds. fbs also
-	// serves as the mandatory LocalChunkIndex.
-	fbs := newMemFileChunkStore()
+	// serves as the mandatory LocalChunkIndex and RollupStore.
+	fbs := newRollupMemFileChunkStore()
 	persister := func(pctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		return fbs.persist(pctx, payloadID, blocks)
 	}
 	opts := FSStoreOptions{
-		RollupStore:       rs,
 		ObjectIDPersister: persister,
 		MaxLogBytes:       1 << 30,
 		StabilizationMS:   1,

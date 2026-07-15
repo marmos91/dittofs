@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // memFBS must satisfy the fast-path resolver so ReadPayloadAt drives the
@@ -19,8 +18,7 @@ var _ coveringChunkResolver = (*memFBS)(nil)
 // fillFromCASManifest's indexed fast path.
 func newCoveringTestStore(t *testing.T) (*FSStore, context.Context) {
 	t.Helper()
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	fbs := newMemFileChunkStore()
+	fbs := newRollupMemFileChunkStore()
 	persister := func(ctx context.Context, payloadID string, blocks []block.ChunkRef, _ block.ObjectID) error {
 		return fbs.persist(ctx, payloadID, blocks)
 	}
@@ -28,7 +26,6 @@ func newCoveringTestStore(t *testing.T) (*FSStore, context.Context) {
 		MaxLogBytes:       1 << 30,
 		RollupWorkers:     2,
 		StabilizationMS:   3_600_000,
-		RollupStore:       rs,
 		ObjectIDPersister: persister,
 	})
 	return bc, context.Background()

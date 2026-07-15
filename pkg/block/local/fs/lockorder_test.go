@@ -5,8 +5,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // TestAppendWrite_DeleteRace_NoDeadlock is a regression guard for FIX-2
@@ -28,12 +26,10 @@ import (
 // intent. The actual ceiling lives in the select { case <-time.After(...)
 // } at the bottom — that is the genuine wall-clock guard.
 func TestAppendWrite_DeleteRace_NoDeadlock(t *testing.T) {
-	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	bc := newFSStoreForTest(t, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 10,
-		RollupStore:     rs,
 	})
 	ctx := context.Background()
 

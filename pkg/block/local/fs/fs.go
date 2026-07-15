@@ -614,6 +614,14 @@ func newFSStore(baseDir string, maxDisk int64, fileChunkStore block.EngineFileCh
 	}
 	bc.localChunkIndex = lci
 
+	// RollupStore and SyncedHashStore are the same backend object, derived
+	// softly (not mandatory here). RollupStore is nil-tolerant: the caller
+	// may not start the rollup pool (service.go enforces the production
+	// guardrail). SyncedHashStore is nil-tolerant: local-only stores have no
+	// remote to mirror, so ListUnsynced yields nothing.
+	bc.rollupStore, _ = fileChunkStore.(metadata.RollupStore)
+	bc.syncedHashStore, _ = fileChunkStore.(metadata.SyncedHashStore)
+
 	applyFSStoreOptions(bc, opts)
 
 	// Open the per-store log-blob substrate at <baseDir>/blobs/. Rolled-up
@@ -686,8 +694,6 @@ func applyFSStoreOptions(bc *FSStore, opts FSStoreOptions) {
 	if opts.RollupDrainGrace > 0 {
 		bc.rollupDrainGraceDur = opts.RollupDrainGrace
 	}
-	bc.rollupStore = opts.RollupStore
-	bc.syncedHashStore = opts.SyncedHashStore
 	bc.objectIDPersister = opts.ObjectIDPersister
 	if opts.OrphanLogMinAgeSeconds > 0 {
 		bc.orphanLogMinAgeSeconds = opts.OrphanLogMinAgeSeconds
@@ -815,15 +821,6 @@ type FSStoreOptions struct {
 	// never issue COMMIT and expect per-write durability. See
 	// FSStore.syncEveryWrite.
 	SyncEveryWrite bool
-	// RollupStore persists per-file rollup_offset. Required
-	// when StartRollup will be called. Nil is accepted when the caller
-	// will not start the rollup pool.
-	RollupStore metadata.RollupStore
-	// SyncedHashStore persists per-CAS-hash local→remote sync state.
-	// Required when a remote store is configured (the engine's Syncer
-	// consumes it via ListUnsynced + MarkSynced). Nil is accepted for
-	// local-only stores; in that case ListUnsynced yields nothing.
-	SyncedHashStore metadata.SyncedHashStore
 	// ObjectIDPersister is the rollup-completion hook that receives the
 	// ChunkRef manifest + computed ObjectID after SetRollupOffset
 	// succeeds. Wire this to the engine coordinator's PersistFileChunks
