@@ -95,7 +95,7 @@ func (h *Handler) SetAttr(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "SETATTR",
 		"handle", fmt.Sprintf("%x", req.Handle),
@@ -259,7 +259,7 @@ func (h *Handler) SetAttr(
 				wccAfter = h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 			}
 
-			status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "SETATTR")
+			status := xdr.MapStoreErrorToNFSStatus(err, clientIP.String(), "SETATTR")
 			return &SetAttrResponse{
 				NFSResponseBase: NFSResponseBase{Status: status},
 				AttrBefore:      wccBefore,
@@ -309,7 +309,7 @@ func (h *Handler) SetAttr(
 		}
 
 		// Map store errors to NFS status codes
-		status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "SETATTR")
+		status := xdr.MapStoreErrorToNFSStatus(err, clientIP.String(), "SETATTR")
 
 		return &SetAttrResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},
@@ -428,7 +428,7 @@ func validateSetAttrRequest(req *SetAttrRequest) *validationError {
 
 // logSetAttrRequest logs which attributes are being set in a SETATTR request.
 // This provides detailed debugging information about the operation.
-func logSetAttrRequest(req *SetAttrRequest, clientIP string) {
+func logSetAttrRequest(req *SetAttrRequest, clientIP fmt.Stringer) {
 	attrs := make([]string, 0, 6)
 
 	if req.NewAttr.Mode != nil {

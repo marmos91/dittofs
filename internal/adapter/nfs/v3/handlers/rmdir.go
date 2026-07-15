@@ -72,7 +72,7 @@ func (h *Handler) Rmdir(
 	req *RmdirRequest,
 ) (*RmdirResponse, error) {
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "RMDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 

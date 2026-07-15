@@ -226,7 +226,7 @@ func (h *Handler) getFileOrError(
 	operationName string,
 	handleBytes []byte,
 ) (*metadata.File, uint32, error) {
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 	metaSvc := h.Registry.GetMetadataService()
 
 	// GetFileForRead: NFS is handle-addressed, so no v3 handler reads
@@ -274,7 +274,7 @@ func (h *Handler) buildAuthContextWithWCCError(
 	filename string,
 	dirHandleBytes []byte,
 ) (*metadata.AuthContext, *types.NFSFileAttr, uint32, error) {
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
 	if err != nil {
@@ -301,7 +301,8 @@ func (h *Handler) getOplockBreaker() adapter.OplockBreaker {
 	if h.Registry == nil {
 		return nil
 	}
-	provider := h.Registry.GetAdapterProvider(adapter.OplockBreakerProviderKey)
+	// Lock-free atomic load; nil when no SMB adapter registered (common case).
+	provider := h.Registry.OplockBreakerProvider()
 	if provider == nil {
 		return nil
 	}

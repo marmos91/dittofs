@@ -93,7 +93,7 @@ func (h *Handler) Rename(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "RENAME", "from", req.FromName, "from_dir", fmt.Sprintf("0x%x", req.FromDirHandle), "to", req.ToName, "to_dir", fmt.Sprintf("0x%x", req.ToDirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
@@ -315,7 +315,7 @@ func (h *Handler) Rename(
 		}
 
 		// Map store errors to NFS status codes
-		status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "rename")
+		status := xdr.MapStoreErrorToNFSStatus(err, clientIP.String(), "rename")
 
 		return &RenameResponse{
 			NFSResponseBase:  NFSResponseBase{Status: status},

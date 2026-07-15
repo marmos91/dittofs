@@ -217,12 +217,8 @@ func (s *Service) PrepareWrite(ctx *AuthContext, handle FileHandle, newSize uint
 // This prevents race conditions where concurrent writes would result in
 // the smaller size being stored if it commits last.
 func (s *Service) CommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
-	// Check if deferred commits are enabled
-	s.mu.RLock()
-	deferredCommit := s.deferredCommit
-	s.mu.RUnlock()
-
-	if deferredCommit {
+	// Check if deferred commits are enabled (lock-free read on the hot path).
+	if s.deferredCommit.Load() {
 		return s.deferredCommitWrite(ctx, intent)
 	}
 	return s.immediateCommitWrite(ctx, intent)

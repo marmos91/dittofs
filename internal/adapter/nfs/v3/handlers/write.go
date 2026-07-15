@@ -122,7 +122,7 @@ func (h *Handler) Write(
 	req *WriteRequest,
 ) (*WriteResponse, error) {
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.DebugCtx(ctx.Context, "WRITE", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "stable", req.Stable, "client", clientIP, "auth", ctx.AuthFlavor)
 

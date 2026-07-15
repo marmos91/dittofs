@@ -28,6 +28,11 @@ type nfsRuntime interface {
 
 	// Adapter-provided extensions (e.g. GSS processor) keyed by name.
 	GetAdapterProvider(key string) any
+
+	// OplockBreakerProvider is the lock-free fast path for the cross-protocol
+	// oplock breaker, checked on every read/write op. Returns nil when no SMB
+	// adapter is registered.
+	OplockBreakerProvider() any
 }
 
 var _ nfsRuntime = (*runtime.Runtime)(nil)

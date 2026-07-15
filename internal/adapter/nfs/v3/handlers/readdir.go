@@ -104,7 +104,7 @@ func (h *Handler) ReadDir(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "READDIR", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 

@@ -158,7 +158,7 @@ func (h *Handler) ReadDirPlus(
 	req *ReadDirPlusRequest,
 ) (*ReadDirPlusResponse, error) {
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "READDIRPLUS", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "dircount", req.DirCount, "maxcount", req.MaxCount, "client", clientIP, "auth", ctx.AuthFlavor)
 

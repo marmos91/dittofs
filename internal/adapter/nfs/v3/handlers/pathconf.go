@@ -98,7 +98,7 @@ func (h *Handler) PathConf(
 	req *PathConfRequest,
 ) (*PathConfResponse, error) {
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "PATHCONF", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
 

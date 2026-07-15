@@ -77,7 +77,7 @@ func (h *Handler) ReadLink(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "READLINK", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
 

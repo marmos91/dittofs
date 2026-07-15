@@ -77,7 +77,7 @@ func (h *Handler) Remove(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "REMOVE", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
@@ -171,7 +171,7 @@ func (h *Handler) Remove(
 		}
 
 		// Map store errors to NFS status codes
-		nfsStatus := xdr.MapStoreErrorToNFSStatus(err, clientIP, "REMOVE")
+		nfsStatus := xdr.MapStoreErrorToNFSStatus(err, clientIP.String(), "REMOVE")
 
 		// Get updated directory attributes for WCC data (best effort)
 		var wccAfter *types.NFSFileAttr

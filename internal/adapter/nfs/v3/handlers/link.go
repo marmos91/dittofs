@@ -76,7 +76,7 @@ func (h *Handler) Link(
 	req *LinkRequest,
 ) (*LinkResponse, error) {
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "LINK", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
