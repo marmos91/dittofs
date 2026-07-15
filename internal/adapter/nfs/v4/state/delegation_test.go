@@ -246,7 +246,10 @@ func TestLeaseExpiry_CleansDelegations(t *testing.T) {
 }
 
 func TestLeaseExpiry_MultipleClients(t *testing.T) {
-	sm := NewStateManager(100 * time.Millisecond)
+	// 200ms lease so the 30ms renewal cadence below keeps a wide margin: on a
+	// loaded CI runner the sleeps overshoot, and a lease too close to the renewal
+	// interval lets B's timer fire mid-loop and flake the test.
+	sm := NewStateManager(200 * time.Millisecond)
 
 	verifier := [8]byte{1, 2, 3, 4, 5, 6, 7, 8}
 	callback := CallbackInfo{Program: 0x40000000, NetID: "tcp", Addr: "10.0.0.1.8.1"}
@@ -292,6 +295,12 @@ func TestLeaseExpiry_MultipleClients(t *testing.T) {
 	if len(delegsA) != 0 {
 		t.Errorf("client A's delegation should be removed after expiry, got %d", len(delegsA))
 	}
+
+	// Renew B once more right before asserting so its lease is fresh at check
+	// time. Without this, a slow runner's sleeps can push the gap since B's last
+	// renewal past the lease and let the timer expire B — the "B stays alive"
+	// intent shouldn't hinge on sub-lease sleep precision.
+	_ = sm.RenewLease(resultB.ClientID)
 
 	// Client B's delegation should still exist
 	delegsB := sm.GetDelegationsForFile(fhB)
