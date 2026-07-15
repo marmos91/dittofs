@@ -202,6 +202,7 @@ func (s *Store) recover() error {
 			// Coarse byte accounting: liveBytes ignores same-segment supersession
 			// (GC recomputes deadBytes on repack). unsynced feeds write backpressure.
 			m.liveBytes.Add(int64(rec.header.PayloadLen))
+			m.records.Add(1)
 			if synced {
 				m.syncedRecords.Add(1)
 			} else if fi.firstDirtyNanos == 0 {
@@ -271,6 +272,19 @@ func (s *Store) recover() error {
 
 	s.sweepOrphans(orphans)
 	s.shards = shards
+	// Reconcile the disk-byte counter with what recovery actually opened: each
+	// segment's tail is its on-disk size (header + intact records). createSegment
+	// bumped diskBytes for any fresh active it minted; Store the true total over it.
+	var disk int64
+	for _, sh := range shards {
+		if sh.active != nil {
+			disk += sh.active.tail.Load()
+		}
+		for _, seg := range sh.sealed {
+			disk += seg.tail.Load()
+		}
+	}
+	s.diskBytes.Store(disk)
 	ok = true
 	return nil
 }

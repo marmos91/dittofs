@@ -14,7 +14,7 @@
 // in whether the record is born clean (already durable in the remote store) or
 // dirty (must be carved before it can be evicted).
 //
-// This package is built incrementally. The append/read/commit primitives are
-// live; carve, evict, gc and full recovery are stubbed and return
-// errNotImplemented until their respective changes land.
+// This package is built incrementally. The append/read/commit, recovery, carve
+// and pressure-gated eviction paths are live; gc and Delete are stubbed and
+// return errNotImplemented until their respective changes land.
 package journal

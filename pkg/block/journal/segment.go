@@ -47,13 +47,18 @@ type segmentMeta struct {
 	id            uint64
 	createdAt     time.Time // preserved across the seal header rewrite for age-gating
 	sealed        atomic.Bool
-	tail          atomic.Int64 // next append offset
+	tail          atomic.Int64 // next append offset (also the on-disk file size)
 	liveBytes     atomic.Int64
 	deadBytes     atomic.Int64 // superseded/tombstoned payload bytes (GC input)
+	records       atomic.Int64 // physical records appended (eviction synced-gate denominator)
 	syncedRecords atomic.Int64 // records with the synced flag set (eviction gate)
 	lastAccess    atomic.Int64 // unix nanos, approx-LRU victim key
-	fd            *os.File
-	idxFD         *os.File // persistent append handle for the .idx sidecar (nil if unavailable)
+	// busy claims the segment for an exclusive whole-segment operation (evict, and
+	// GC repack once it lands). A claimer CAS-sets it true so eviction and GC never
+	// touch the same sealed segment concurrently; warm reads and carve don't claim.
+	busy  atomic.Bool
+	fd    *os.File
+	idxFD *os.File // persistent append handle for the .idx sidecar (nil if unavailable)
 	// ponytail: the quotient-filter membership hint (rebuilt on repack) arrives
 	// with GC; a linear index scan suffices until segments are large.
 }
@@ -137,6 +142,7 @@ func (s *Store) createSegment() (*segmentMeta, error) {
 	idxFD, _ := os.OpenFile(s.idxPath(id), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	m := &segmentMeta{id: id, createdAt: createdAt, fd: fd, idxFD: idxFD}
 	m.tail.Store(segHeaderSize)
+	s.diskBytes.Add(segHeaderSize)
 	return m, nil
 }
 
@@ -217,6 +223,13 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	if offset < 0 {
 		return fmt.Errorf("journal: negative offset %d", offset)
 	}
+	// Enforce the local-storage cap before buffering the write: evict cold synced
+	// segments to make room, or backpressure when every segment is dirty-pinned.
+	// A no-op when MaxLocalBytes is unset. Runs before the shard lock so eviction
+	// (which locks shards) never contends with this writer's own shard.
+	if err := s.ensureSpace(ctx, recordLen(len(id), len(data))); err != nil {
+		return err
+	}
 	fileID := []byte(id)
 	if len(fileID) > maxFileIDLen {
 		return fmt.Errorf("journal: FileID length %d exceeds max %d", len(fileID), maxFileIDLen)
@@ -268,7 +281,9 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	}
 	seg.tail.Store(segOff + recLen)
 	seg.liveBytes.Add(int64(len(data)))
+	seg.records.Add(1)
 	seg.lastAccess.Store(s.clock.Now().UnixNano())
+	s.diskBytes.Add(recLen)
 	if synced {
 		seg.syncedRecords.Add(1)
 	}
