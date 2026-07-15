@@ -23,9 +23,9 @@ type Handler struct {
 	// Exported to allow injection by the NFS adapter
 	Registry nfsRuntime
 
-	// authCache caches auth contexts per (share, UID, GID) to avoid
-	// repeated registry lookups on every WRITE request.
-	// Key: "share:uid:gid", Value: *authCacheEntry
+	// authCache caches auth contexts to avoid rebuilding them on every op.
+	// Key: authCacheKey(ctx) — "share:authflavor:uid:gid[:gid...]" covering the
+	// full credential set (see authCacheKey). Value: *authCacheEntry.
 	authCache sync.Map
 
 	// authCacheTTL bounds how long a cached auth context is served before it
@@ -95,8 +95,11 @@ func (h *Handler) loadLiveAuthCtx(key string) *metadata.AuthContext {
 	if !ok {
 		return nil
 	}
-	entry := cached.(*authCacheEntry)
-	if time.Since(entry.cachedAt) >= h.authCacheEntryTTL() {
+	entry, ok := cached.(*authCacheEntry)
+	if !ok || time.Since(entry.cachedAt) >= h.authCacheEntryTTL() {
+		// Expired or an unexpected value type: drop it so the slow path
+		// rebuilds a fresh entry instead of re-checking a dead one each op.
+		h.authCache.Delete(key)
 		return nil
 	}
 	return entry.authCtx
