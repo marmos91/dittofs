@@ -1191,8 +1191,11 @@ func (r *Runtime) SetAdapterProvider(key string, p any) {
 
 	// Mirror the oplock breaker into an atomic for the NFS hot path. Keyed by
 	// the literal to avoid importing pkg/adapter (which imports runtime).
+	// Wrap in a stable holder: atomic.Value.Store panics on a nil interface or
+	// a changing concrete type, but SetAdapterProvider accepts nil and may be
+	// called more than once — the holder keeps the stored type constant.
 	if key == oplockBreakerProviderKey {
-		r.oplockBreaker.Store(p)
+		r.oplockBreaker.Store(oplockProviderHolder{p: p})
 	}
 }
 
@@ -1201,12 +1204,17 @@ func (r *Runtime) SetAdapterProvider(key string, p any) {
 // mismatch would surface immediately in cross-protocol oplock e2e tests.
 const oplockBreakerProviderKey = "oplock_breaker"
 
+// oplockProviderHolder gives the oplockBreaker atomic.Value a single, stable
+// concrete type so nil providers and repeat registrations never panic Store.
+type oplockProviderHolder struct{ p any }
+
 // OplockBreakerProvider returns the registered cross-protocol oplock breaker
 // (as an opaque any the NFS handlers type-assert), or nil if none is
 // registered. A lock-free atomic load: the NFS read/write path calls this per
 // op and the no-SMB case must stay cheap.
 func (r *Runtime) OplockBreakerProvider() any {
-	return r.oplockBreaker.Load()
+	h, _ := r.oplockBreaker.Load().(oplockProviderHolder)
+	return h.p
 }
 
 func (r *Runtime) GetAdapterProvider(key string) any {
