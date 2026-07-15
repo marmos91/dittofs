@@ -483,7 +483,7 @@ func (m *Syncer) carveAndCommitBlock(ctx context.Context, batch []block.ContentH
 	// committed. Just return it — the caller's existing requeue logic
 	// (requeueCarveBatch) re-drives the whole batch, and the uploaded block
 	// object becomes an orphan the GC sweep reclaims.
-	if err := metadata.DefaultCommitBlock(ctx, committer, rec, commits); err != nil {
+	if err := metadata.DefaultCommitBlock(ctx, committer, rec, commits, nil); err != nil {
 		return fmt.Errorf("carve: commit block %s: %w", blockID, err)
 	}
 

@@ -23,6 +23,13 @@ const orphanMinAge = 5 * time.Minute
 // index sidecar, a swept orphan).
 var logf = log.Printf
 
+// truncMark records the highest-Version truncate marker seen for a file during
+// recovery: the new size and the Version that fences which intervals it clips.
+type truncMark struct {
+	version uint64
+	newSize int64
+}
+
 // scanSegmentIDs returns the IDs of every well-formed <id>.seg file in dir.
 func scanSegmentIDs(dir string) ([]uint64, error) {
 	entries, err := os.ReadDir(dir)
@@ -69,15 +76,16 @@ func (s *Store) recover() error {
 	}
 
 	var (
-		emptyPool  []*segmentMeta // empty unsealed segments, reusable as any shard's active
-		orphans    []uint64       // unattachable segment ids, candidates for the age-gated sweep
-		maxSegID   uint64
-		maxVersion uint64
-		unsynced   int64
-		missingIdx int
-		opened     []*segmentMeta        // every fd we opened, closed on error
-		tombstones = map[FileID]uint64{} // deleted file -> highest tombstone version
-		ok         bool
+		emptyPool   []*segmentMeta // empty unsealed segments, reusable as any shard's active
+		orphans     []uint64       // unattachable segment ids, candidates for the age-gated sweep
+		maxSegID    uint64
+		maxVersion  uint64
+		unsynced    int64
+		missingIdx  int
+		opened      []*segmentMeta           // every fd we opened, closed on error
+		tombstones  = map[FileID]uint64{}    // deleted file -> highest tombstone version
+		truncations = map[FileID]truncMark{} // truncated file -> highest truncate marker
+		ok          bool
 	)
 	defer func() {
 		if !ok {
@@ -184,6 +192,13 @@ func (s *Store) recover() error {
 				}
 				continue
 			}
+			if rec.header.Flags&flagTruncate != 0 {
+				fid := FileID(rec.fileID)
+				if cur, ok := truncations[fid]; !ok || rec.header.Version > cur.version {
+					truncations[fid] = truncMark{version: rec.header.Version, newSize: int64(rec.header.FileOffset)}
+				}
+				continue
+			}
 			payloadOff := rec.segOff + recordHeaderSize + int64(len(rec.fileID))
 			fid := FileID(rec.fileID)
 			fi := idxMap[fid]
@@ -251,15 +266,65 @@ func (s *Store) recover() error {
 		}
 	}
 
+	// Honor truncate markers: a size-down's marker Version exceeds every write it
+	// buries, so drop the file's intervals past newSize (and clip a straddling
+	// one) for every interval at or below the marker. A write that raced past the
+	// truncate carries a higher Version and survives, re-extending the file.
+	for _, idxMap := range indexByShard {
+		for fid, fi := range idxMap {
+			tm, ok := truncations[fid]
+			if !ok {
+				continue
+			}
+			kept := fi.ivs[:0]
+			for _, iv := range fi.ivs {
+				if iv.version > tm.version || iv.end() <= tm.newSize {
+					kept = append(kept, iv)
+					continue
+				}
+				if iv.fileOff < tm.newSize {
+					kept = append(kept, iv.clamp(iv.fileOff, tm.newSize))
+				}
+				// else entirely past newSize: drop it.
+			}
+			if len(kept) == 0 {
+				delete(idxMap, fid)
+			} else {
+				fi.ivs = kept
+			}
+		}
+	}
+
 	// Recompute unsynced from the final live coverage rather than the raw
 	// per-record sum: insert resolves overlaps, so a superseded record's bytes are
-	// dead and must not count toward the backpressure signal.
-	for _, idxMap := range indexByShard {
+	// dead and must not count toward the backpressure signal. In the same pass,
+	// reconstruct each segment's deadBytes from the authoritative live coverage
+	// (occupied liveBytes − currently-live): replay charges only physical records,
+	// so tombstones, same-segment overlaps, and truncate clips leave dead payload
+	// that never touched the counter. Without this, pickVictim's deadBytes<=0 gate
+	// skips every recovered segment and GC can never reclaim pre-restart dead space.
+	// Skip cold intervals exactly as pickVictim does so the live totals agree.
+	for i, idxMap := range indexByShard {
+		live := make(map[uint64]int64)
 		for _, fi := range idxMap {
 			for k := range fi.ivs {
-				if !fi.ivs[k].synced && !fi.ivs[k].cold {
+				if fi.ivs[k].cold {
+					continue
+				}
+				if !fi.ivs[k].synced {
 					unsynced += fi.ivs[k].length
 				}
+				live[fi.ivs[k].loc.SegmentID] += fi.ivs[k].length
+			}
+		}
+		for id, seg := range sealedByShard[i] {
+			if dead := seg.liveBytes.Load() - live[id]; dead > 0 {
+				seg.deadBytes.Store(dead)
+			}
+		}
+		if a := actives[i]; a != nil {
+			if dead := a.liveBytes.Load() - live[a.id]; dead > 0 {
+				a.deadBytes.Store(dead)
 			}
 		}
 	}

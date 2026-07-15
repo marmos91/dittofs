@@ -312,7 +312,7 @@ func compactOneBlock(
 		LiveChunkCount: uint32(len(commits)),
 		SyncState:      block.BlockStateRemote,
 	}
-	if err := metadata.DefaultCommitBlock(ctx, v, newRec, commits); err != nil {
+	if err := metadata.DefaultCommitBlock(ctx, v, newRec, commits, nil); err != nil {
 		// New block is an orphan object (no record) — reconcile class 3; the old
 		// block is untouched and still resolves. Safe to abandon this attempt.
 		slog.Warn("compaction: commit new block failed — old block kept, new object orphaned for reconcile", "block_id", blockID, "new_block_id", newID, "err", err)

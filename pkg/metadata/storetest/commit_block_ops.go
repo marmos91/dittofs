@@ -34,7 +34,7 @@ func (f *faultyLocalLocationStore) WithTransaction(ctx context.Context, fn func(
 }
 
 func (f *faultyLocalLocationStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
-	return metadata.DefaultCommitBlock(ctx, f, rec, chunks)
+	return metadata.DefaultCommitBlock(ctx, f, rec, chunks, nil)
 }
 
 type faultyLocalLocationTx struct {
@@ -70,7 +70,7 @@ func (f *faultyMarkSyncedStore) WithTransaction(ctx context.Context, fn func(met
 }
 
 func (f *faultyMarkSyncedStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
-	return metadata.DefaultCommitBlock(ctx, f, rec, chunks)
+	return metadata.DefaultCommitBlock(ctx, f, rec, chunks, nil)
 }
 
 type faultyMarkSyncedTx struct {

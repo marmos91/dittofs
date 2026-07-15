@@ -54,6 +54,9 @@ func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, erro
 	if s.closed.Load() {
 		return EvictResult{}, errClosed
 	}
+	if s.evictionDisabled.Load() {
+		return EvictResult{}, nil
+	}
 	var res EvictResult
 	for {
 		seg, sh := s.claimColdestEvictable()
@@ -434,11 +437,11 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 	occupied := victim.liveBytes.Load()
 	sh.mu.Unlock()
 
-	// 1b. Carry forward the victim's tombstones so deletes stay durable until
-	// every shadowed data record is gone.
-	tombs := victimTombstones(victim, s.cfg.SegmentSize)
+	// 1b. Carry forward the victim's tombstones and truncate markers so deletes
+	// and size-downs stay durable until every record they fence is gone.
+	markers := victimMarkers(victim, s.cfg.SegmentSize)
 
-	if len(moves) == 0 && len(tombs) == 0 {
+	if len(moves) == 0 && len(markers) == 0 {
 		return s.dropVictim(sh, victim, occupied)
 	}
 
@@ -476,8 +479,14 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 			syncedCount++
 		}
 	}
-	for _, t := range tombs {
-		if _, werr := writeTombstoneRecord(target, t.id, t.version); werr != nil {
+	for _, mk := range markers {
+		var werr error
+		if mk.flags&flagTruncate != 0 {
+			_, werr = writeTruncateRecord(target, mk.id, mk.version, mk.newSize)
+		} else {
+			_, werr = writeTombstoneRecord(target, mk.id, mk.version)
+		}
+		if werr != nil {
 			cleanup()
 			return 0, werr
 		}
@@ -572,21 +581,34 @@ func (s *Store) dropVictim(sh *shard, victim *segmentMeta, occupied int64) (int6
 	return occupied, nil
 }
 
-// tombRec is a tombstone carried forward across a repack.
-type tombRec struct {
+// markRec is a tombstone or truncate marker carried forward across a repack.
+// newSize is meaningful only for truncate markers (flags&flagTruncate != 0).
+type markRec struct {
 	id      FileID
 	version uint64
+	flags   uint8
+	newSize int64
 }
 
-// victimTombstones scans a sealed victim's record stream for tombstones. A
-// sealed segment is trusted intact, so a torn tail (should never occur) simply
-// yields the records read so far.
-func victimTombstones(seg *segmentMeta, segSize int64) []tombRec {
+// victimMarkers scans a sealed victim's record stream for the non-data records
+// (tombstones and truncate markers) a repack must carry forward so the deletes
+// and size-downs they encode survive the source segment's reclamation. A sealed
+// segment is trusted intact, so a torn tail (should never occur) simply yields
+// the records read so far.
+func victimMarkers(seg *segmentMeta, segSize int64) []markRec {
 	recs, _ := scanValidRecords(seg.fd, segSize, segSize)
-	var out []tombRec
+	var out []markRec
 	for _, rec := range recs {
-		if rec.header.Flags&flagTombstone != 0 {
-			out = append(out, tombRec{id: FileID(rec.fileID), version: rec.header.Version})
+		switch {
+		case rec.header.Flags&flagTombstone != 0:
+			out = append(out, markRec{id: FileID(rec.fileID), version: rec.header.Version, flags: flagTombstone})
+		case rec.header.Flags&flagTruncate != 0:
+			out = append(out, markRec{
+				id:      FileID(rec.fileID),
+				version: rec.header.Version,
+				flags:   flagTruncate,
+				newSize: int64(rec.header.FileOffset),
+			})
 		}
 	}
 	return out

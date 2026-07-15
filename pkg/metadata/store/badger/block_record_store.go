@@ -528,7 +528,7 @@ func hashFromLocalChunkKey(key []byte) (block.ContentHash, error) {
 // within a single transaction (via DefaultCommitBlock), then marks each chunk
 // synced. Idempotent: a second call for an already-committed block is a no-op.
 func (s *BadgerMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
-	return metadata.DefaultCommitBlock(ctx, s, rec, chunks)
+	return metadata.DefaultCommitBlock(ctx, s, rec, chunks, nil)
 }
 
 // Compile-time guards: both the store and its transaction implement the new

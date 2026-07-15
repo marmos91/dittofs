@@ -404,6 +404,85 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) 
 // Always empty in production.
 var testFailTombstone FileID
 
+// appendTruncateMarker frames a zero-payload truncate marker for id (FileOffset
+// carries newSize) and fsyncs the shard's active segment, returning the marker's
+// Version. Like appendTombstone, the fsync makes the truncation at least as
+// durable as any data record it clips, so recovery can never replay bytes past
+// newSize whose marker was lost.
+func (s *Store) appendTruncateMarker(ctx context.Context, id FileID, newSize int64) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	fileID := []byte(id)
+	if len(fileID) > maxFileIDLen {
+		return 0, fmt.Errorf("journal: FileID length %d exceeds max %d", len(fileID), maxFileIDLen)
+	}
+	if testFailTruncate != "" && id == testFailTruncate {
+		return 0, fmt.Errorf("journal: injected truncate failure for %q", id)
+	}
+	recLen := recordLen(len(fileID), 0)
+
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	if sh.active.tail.Load()+recLen > s.cfg.SegmentSize {
+		if err := s.sealSegment(sh); err != nil {
+			sh.mu.Unlock()
+			return 0, err
+		}
+	}
+	seg := sh.active
+	version := s.nextVersion()
+	recStart, err := writeTruncateRecord(seg, id, version, newSize)
+	if err != nil {
+		sh.mu.Unlock()
+		return 0, err
+	}
+	if seg.idxFD != nil {
+		_, _ = seg.idxFD.Write(idxEntry{
+			FileIDHash: fnv1a(string(id)),
+			FileOffset: uint64(newSize),
+			Version:    version,
+			SegOffset:  uint64(recStart + recordHeaderSize + int64(len(fileID))),
+			Flags:      flagTruncate,
+		}.encode())
+	}
+	fd := seg.fd
+	sh.mu.Unlock()
+	if err := fd.Sync(); err != nil {
+		return 0, fmt.Errorf("journal: fsync truncate marker: %w", err)
+	}
+	return version, nil
+}
+
+// testFailTruncate, when it equals a Truncate's FileID, makes
+// appendTruncateMarker return an error before persisting anything, modeling a
+// durability failure. Always empty in production.
+var testFailTruncate FileID
+
+// writeTruncateRecord frames a zero-payload truncate marker at seg's tail, with
+// FileOffset carrying newSize, and advances the tail. Shared by the live
+// truncate path and repack's marker carry-forward.
+func writeTruncateRecord(seg *segmentMeta, id FileID, version uint64, newSize int64) (recStart int64, err error) {
+	fileID := []byte(id)
+	recStart = seg.tail.Load()
+	hdr := encodeHeader(recordHeader{
+		FileIDLen:  uint16(len(fileID)),
+		FileOffset: uint64(newSize),
+		Version:    version,
+		Flags:      flagTruncate,
+	}, fileID)
+	if _, err = seg.fd.WriteAt(hdr, recStart); err != nil {
+		return 0, fmt.Errorf("journal: write truncate header: %w", err)
+	}
+	var crcBuf [payloadCRCSize]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc(nil))
+	if _, err = seg.fd.WriteAt(crcBuf[:], recStart+int64(len(hdr))); err != nil {
+		return 0, fmt.Errorf("journal: write truncate CRC: %w", err)
+	}
+	seg.tail.Store(recStart + recordLen(len(fileID), 0))
+	return recStart, nil
+}
+
 // writeTombstoneRecord frames a zero-payload tombstone at seg's tail and advances
 // it. Shared by the delete path and by repack's tombstone carry-forward.
 func writeTombstoneRecord(seg *segmentMeta, id FileID, version uint64) (recStart int64, err error) {

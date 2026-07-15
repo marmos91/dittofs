@@ -172,5 +172,5 @@ func (s *MemoryMetadataStore) WalkLocalLocations(_ context.Context, fn func(bloc
 // CommitBlock atomically writes rec and all chunk local locations, then marks
 // each chunk synced. Delegates to DefaultCommitBlock for idempotency logic.
 func (s *MemoryMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
-	return metadata.DefaultCommitBlock(ctx, s, rec, chunks)
+	return metadata.DefaultCommitBlock(ctx, s, rec, chunks, nil)
 }

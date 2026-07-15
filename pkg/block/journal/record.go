@@ -44,6 +44,11 @@ const (
 
 	flagSynced    = 1 << 0
 	flagTombstone = 1 << 1
+	// flagTruncate marks a zero-payload record whose FileOffset carries a file's
+	// new size. Recovery clips/drops every live interval past that size whose
+	// Version is at or below the marker's, mirroring how flagTombstone buries a
+	// file's records — a durable size-down that a crash cannot resurrect.
+	flagTruncate = 1 << 2
 )
 
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
