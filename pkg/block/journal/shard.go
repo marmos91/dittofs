@@ -29,6 +29,11 @@ type shard struct {
 	active *segmentMeta
 	sealed map[uint64]*segmentMeta
 	index  map[FileID]*fileIndex
+	// carveMu serializes a shard's carve passes: the background flush and an
+	// explicit Carve() never build a block from the same records twice. It is
+	// distinct from mu, which serializes appends and index mutation — carve holds
+	// carveMu across its whole pass but only grabs mu briefly to snapshot and flip.
+	carveMu sync.Mutex
 }
 
 func newShard(active *segmentMeta) *shard {

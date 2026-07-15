@@ -186,10 +186,13 @@ func (s *Store) recover() error {
 				fi = &fileIndex{}
 				idxMap[fid] = fi
 			}
+			synced := rec.header.Flags&flagSynced != 0
 			fi.insert(interval{
 				fileOff: int64(rec.header.FileOffset),
 				length:  int64(rec.header.PayloadLen),
 				version: rec.header.Version,
+				recOff:  rec.segOff,
+				synced:  synced,
 				loc: SegmentLocation{
 					SegmentID: id,
 					Offset:    payloadOff,
@@ -199,10 +202,13 @@ func (s *Store) recover() error {
 			// Coarse byte accounting: liveBytes ignores same-segment supersession
 			// (GC recomputes deadBytes on repack). unsynced feeds write backpressure.
 			m.liveBytes.Add(int64(rec.header.PayloadLen))
-			if rec.header.Flags&flagSynced != 0 {
+			if synced {
 				m.syncedRecords.Add(1)
-			} else {
-				unsynced += int64(rec.header.PayloadLen)
+			} else if fi.firstDirtyNanos == 0 {
+				// A recovered dirty file gets a fresh dirty-age stamp so the carve
+				// age gate fires after a restart (approximate — the original write
+				// time is not persisted; it is only a batching heuristic).
+				fi.firstDirtyNanos = s.clock.Now().UnixNano()
 			}
 		}
 	}
@@ -215,6 +221,18 @@ func (s *Store) recover() error {
 	// nextVersion increments-then-returns, so storing maxVersion makes the next
 	// issued LSN exactly max(observed)+1 — strictly past every replayed record.
 	s.version.Store(maxVersion)
+	// Recompute unsynced from the final live coverage rather than the raw
+	// per-record sum: insert resolves overlaps, so a superseded record's bytes are
+	// dead and must not count toward the backpressure signal.
+	for _, idxMap := range indexByShard {
+		for _, fi := range idxMap {
+			for k := range fi.ivs {
+				if !fi.ivs[k].synced && !fi.ivs[k].cold {
+					unsynced += fi.ivs[k].length
+				}
+			}
+		}
+	}
 	s.unsynced.Store(unsynced)
 
 	// Give every shard an active segment: reuse a pooled empty one, else mint a

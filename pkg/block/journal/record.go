@@ -36,6 +36,12 @@ const (
 	headerCRCCovers  = 24 // Magic..Version, excludes Flags
 	payloadCRCSize   = 4
 
+	// recordFlagsOffset is the byte offset of the Flags field within a record
+	// header. Carve flips the synced bit here with a single one-byte pwrite; it
+	// equals headerCRCCovers because the CRC deliberately covers only the bytes
+	// before Flags, so the flip never invalidates the header CRC.
+	recordFlagsOffset = headerCRCCovers
+
 	flagSynced    = 1 << 0
 	flagTombstone = 1 << 1
 )
