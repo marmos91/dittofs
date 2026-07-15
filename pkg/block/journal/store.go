@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -17,10 +18,6 @@ type FileID string
 
 // BlockID is the opaque key of a packed block in the remote store.
 type BlockID string
-
-// errNotImplemented is returned by operations whose implementation lands in a
-// later change (carve, evict, gc, delete).
-var errNotImplemented = errors.New("journal: not yet implemented")
 
 // errClosed is returned by every operation attempted on a closed Store.
 var errClosed = errors.New("journal: store closed")
@@ -123,6 +120,10 @@ type Store struct {
 
 	shards    []*shard
 	shardMask uint64
+
+	// gcMu serializes GC passes: only one repack runs at a time so two passes
+	// never pick the same victim.
+	gcMu sync.Mutex
 
 	nextSeg   atomic.Uint64 // global segment-ID allocator
 	version   atomic.Uint64 // global monotonic LSN
@@ -278,9 +279,42 @@ func (s *Store) Stats() Stats {
 	return st
 }
 
-// Delete drops all of a file's cached ranges. Not yet implemented.
+// Delete drops all of a file's cached ranges and persists a tombstone so
+// recovery does not resurrect the file from its still-on-disk records (they
+// linger in their segments until GC repacks them away). The tombstone's Version
+// exceeds every prior write to the file, so a rewrite after the delete — with a
+// higher Version — survives, recreating the file (correct create-after-unlink).
 func (s *Store) Delete(ctx context.Context, id FileID) error {
-	return errNotImplemented
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.closed.Load() {
+		return errClosed
+	}
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	fi := sh.index[id]
+	var dirty int64
+	if fi != nil {
+		// Every live, non-cold interval's bytes become dead in their segment.
+		for _, iv := range fi.ivs {
+			if iv.cold {
+				continue
+			}
+			if seg := sh.segment(iv.loc.SegmentID); seg != nil {
+				seg.deadBytes.Add(iv.length)
+			}
+			if !iv.synced {
+				dirty += iv.length
+			}
+		}
+		delete(sh.index, id)
+	}
+	sh.mu.Unlock()
+	if dirty != 0 {
+		s.unsynced.Add(-dirty)
+	}
+	return s.appendTombstone(ctx, id)
 }
 
 // segPath returns the on-disk path of a segment by ID.
