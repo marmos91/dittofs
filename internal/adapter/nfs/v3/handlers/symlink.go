@@ -100,7 +100,7 @@ func (h *Handler) Symlink(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "SYMLINK", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
@@ -217,7 +217,7 @@ func (h *Handler) Symlink(
 		}
 
 		// Map store errors to NFS status codes
-		status := xdr.MapStoreErrorToNFSStatus(err, clientIP, "SYMLINK")
+		status := xdr.MapStoreErrorToNFSStatus(err, clientIP.String(), "SYMLINK")
 
 		return &SymlinkResponse{
 			NFSResponseBase: NFSResponseBase{Status: status},

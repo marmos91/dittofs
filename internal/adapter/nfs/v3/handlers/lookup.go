@@ -77,7 +77,7 @@ func (h *Handler) Lookup(
 	req *LookupRequest,
 ) (*LookupResponse, error) {
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "LOOKUP",
 		"name", req.Filename,

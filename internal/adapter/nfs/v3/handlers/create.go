@@ -90,7 +90,7 @@ func (h *Handler) Create(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.InfoCtx(ctx.Context, "CREATE", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "mode", createModeName(req.Mode), "client", clientIP, "auth", ctx.AuthFlavor)
 

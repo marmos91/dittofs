@@ -66,7 +66,7 @@ func (h *Handler) GetAttr(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.DebugCtx(ctx.Context, "GETATTR",
 		"handle", fmt.Sprintf("%x", req.Handle),

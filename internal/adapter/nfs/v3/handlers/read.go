@@ -111,7 +111,7 @@ func (h *Handler) Read(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	logger.DebugCtx(ctx.Context, "READ", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", bytesize.ByteSize(req.Offset), "count", bytesize.ByteSize(req.Count), "client", clientIP, "auth", ctx.AuthFlavor)
 

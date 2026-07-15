@@ -100,7 +100,7 @@ func (h *Handler) Mkdir(
 	}
 
 	// Extract client IP for logging
-	clientIP := xdr.ExtractClientIP(ctx.ClientAddr)
+	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
 	var mode uint32 = 0755 // Default
 	if req.Attr != nil && req.Attr.Mode != nil {
