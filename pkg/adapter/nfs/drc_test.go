@@ -1,6 +1,7 @@
 package nfs
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -282,7 +283,7 @@ func BenchmarkDRC_Contended(b *testing.B) {
 	var ctr int64
 	b.RunParallel(func(pb *testing.PB) {
 		g := atomic.AddInt64(&ctr, 1)
-		addr := "10.0.0." + string(rune('A'+g%64)) + ":1010"
+		addr := "10.0.0." + strconv.FormatInt(g%64, 10) + ":1010"
 		var i uint32
 		reply := []byte{0, 0, 0, 0}
 		for pb.Next() {

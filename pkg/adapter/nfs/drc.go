@@ -51,7 +51,17 @@ const (
 	// drcShardCount partitions the cache so unrelated clients/XIDs don't
 	// serialize on one lock. Power of two so shard selection is a mask.
 	drcShardCount = 32
+)
 
+// Compile-time guards: drcShardCount must be a power of two (mask routing) and
+// must divide drcMaxEntries evenly (per-shard cap). A bad edit makes these
+// constant conversions negative, which fails to compile.
+const (
+	_ = uint(-(drcShardCount & (drcShardCount - 1)))
+	_ = uint(-(drcMaxEntries % drcShardCount))
+)
+
+const (
 	// drcTTL is how long a completed reply is retained for replay. NFS client
 	// retransmit timeouts are on the order of seconds and back off; a few
 	// seconds of retention catches the retransmit window without holding stale
@@ -243,7 +253,9 @@ func (d *duplicateRequestCache) abort(srcAddr string, xid uint32, body []byte) {
 	}
 }
 
-// evictIfNeeded enforces the per-shard entry cap. It first drops TTL-expired
+// evictIfNeeded enforces the per-shard entry cap. The cap is per-shard by
+// design (drcMaxEntries/drcShardCount): a global counter would re-introduce the
+// cross-shard contention the sharding removes. It first drops TTL-expired
 // entries; if still at capacity it evicts the oldest entry (approximate LRU by
 // insertion/completion time). Caller must hold s.mu.
 func (d *duplicateRequestCache) evictIfNeeded(s *drcShard) {
