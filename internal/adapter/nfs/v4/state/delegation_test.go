@@ -299,8 +299,12 @@ func TestLeaseExpiry_MultipleClients(t *testing.T) {
 	// Renew B once more right before asserting so its lease is fresh at check
 	// time. Without this, a slow runner's sleeps can push the gap since B's last
 	// renewal past the lease and let the timer expire B — the "B stays alive"
-	// intent shouldn't hinge on sub-lease sleep precision.
-	_ = sm.RenewLease(resultB.ClientID)
+	// intent shouldn't hinge on sub-lease sleep precision. A renewal error here
+	// means B was already reaped, which is the exact failure this test guards
+	// against — surface it directly rather than as a downstream "got 0".
+	if err := sm.RenewLease(resultB.ClientID); err != nil {
+		t.Fatalf("client B unexpectedly expired before assertion: %v", err)
+	}
 
 	// Client B's delegation should still exist
 	delegsB := sm.GetDelegationsForFile(fhB)
