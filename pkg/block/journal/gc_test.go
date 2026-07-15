@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"sync"
 	"testing"
+	"time"
 )
 
 // onlySealed returns the shard's single sealed segment, failing if there isn't
@@ -270,6 +271,106 @@ func TestGCCrashBeforeUnlinkOrphanSwept(t *testing.T) {
 	}
 	if !bytes.Equal(got2, keep) {
 		t.Fatalf("keep corrupted after post-recovery GC")
+	}
+}
+
+// TestGCTombstoneOnlySegmentTerminates guards pickVictim against an infinite
+// repack loop. A fully-dead payload segment that also carries a tombstone gets
+// repacked into a tombstone-only segment (0 live records, 0 dead bytes). That
+// tombstone-only segment must NOT be re-selected — repacking it would only copy
+// the tombstone into another identical segment forever.
+func TestGCTombstoneOnlySegmentTerminates(t *testing.T) {
+	s := testStore(t, Config{SegmentSize: minSegmentSize, ShardCount: 1})
+	ctx := context.Background()
+
+	// "gone" data + its tombstone land in one active segment; "roll" seals it.
+	gone := make([]byte, 700<<10)
+	rand.New(rand.NewSource(7)).Read(gone)
+	if err := s.WriteAt(ctx, "gone", 0, gone); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, "gone"); err != nil { // tombstone in the same segment
+		t.Fatal(err)
+	}
+	if err := s.WriteAt(ctx, "roll", 0, make([]byte, 400<<10)); err != nil { // force seal
+		t.Fatal(err)
+	}
+
+	// Non-Force GC must terminate. With the bug it repacks the fully-dead segment
+	// into a tombstone-only one, then loops forever repacking that. Bound the pass.
+	done := make(chan error, 1)
+	go func() { _, err := s.GC(ctx, GCOptions{}); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("GC did not terminate: tombstone-only segment repack loop")
+	}
+
+	// A second pass finds nothing to reclaim in the tombstone-only segment.
+	res, err := s.GC(ctx, GCOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SegmentsRepacked != 0 {
+		t.Fatalf("second GC pass repacked a tombstone-only segment: %d", res.SegmentsRepacked)
+	}
+
+	// "gone" stays deleted; "roll" is intact.
+	goneGot := make([]byte, 700<<10)
+	for i := range goneGot {
+		goneGot[i] = 0xFF
+	}
+	if _, _, err := s.ReadAt(ctx, "gone", 0, goneGot); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(goneGot, make([]byte, 700<<10)) {
+		t.Fatalf("deleted file resurrected across GC")
+	}
+}
+
+// TestDeleteFailedTombstoneLeavesIndexIntact verifies Delete's durability-first
+// ordering: if the tombstone append fails, the in-memory index and counters are
+// unchanged, so a failed Delete never makes data disappear.
+func TestDeleteFailedTombstoneLeavesIndexIntact(t *testing.T) {
+	s := testStore(t, Config{})
+	ctx := context.Background()
+	want := bytes.Repeat([]byte("x"), 100)
+	if err := s.WriteAt(ctx, "f", 0, want); err != nil {
+		t.Fatal(err)
+	}
+	before := s.UnsyncedBytes()
+
+	testFailTombstone = "f"
+	err := s.Delete(ctx, "f")
+	testFailTombstone = ""
+	if err == nil {
+		t.Fatal("Delete: want error from failed tombstone append, got nil")
+	}
+
+	sh := s.shardFor("f")
+	sh.mu.Lock()
+	_, stillIndexed := sh.index["f"]
+	dead := sh.active.deadBytes.Load()
+	sh.mu.Unlock()
+	if !stillIndexed {
+		t.Fatal("file dropped from index despite failed tombstone append")
+	}
+	if dead != 0 {
+		t.Fatalf("deadBytes charged despite failed tombstone append: %d", dead)
+	}
+	if u := s.UnsyncedBytes(); u != before {
+		t.Fatalf("unsynced changed on failed delete: %d -> %d", before, u)
+	}
+	// The file still reads back intact.
+	got := make([]byte, 100)
+	if _, _, err := s.ReadAt(ctx, "f", 0, got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("file data corrupted by failed delete")
 	}
 }
 

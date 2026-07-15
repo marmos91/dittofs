@@ -102,10 +102,13 @@ func (s *Store) gcShard(ctx context.Context, sh *shard, opts GCOptions) (reclaim
 }
 
 // pickVictim returns the sealed segment with the highest dead fraction, or nil
-// if none qualifies. Live bytes are summed authoritatively from the interval
-// index (robust to the recovery-time deadBytes approximation and to the extra
-// dead a crash-during-repack leaves behind); a segment's dead fraction is
-// dead/occupied. Without Force, a victim must reach GCDeadRatioForce.
+// if none qualifies. A segment carrying no dead bytes is never a victim (there
+// is nothing to reclaim), which is also what keeps a tombstone-only segment from
+// being repacked into an identical one forever. Live bytes are summed
+// authoritatively from the interval index (robust to the recovery-time deadBytes
+// approximation and to the extra dead a crash-during-repack leaves behind); a
+// segment's dead fraction is dead/occupied. Without Force, a victim must reach
+// GCDeadRatioForce.
 func (s *Store) pickVictim(sh *shard, opts GCOptions) *segmentMeta {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -130,10 +133,17 @@ func (s *Store) pickVictim(sh *shard, opts GCOptions) *segmentMeta {
 		if seg.busy.Load() {
 			continue // claimed by eviction or an in-flight repack
 		}
+		if seg.deadBytes.Load() <= 0 {
+			// Nothing to reclaim. This skips a tombstone-only segment (records with
+			// no payload: liveBytes==0 AND deadBytes==0) — repacking it would just
+			// copy the tombstones into an identical tombstone-only segment and loop
+			// forever reclaiming zero. Only a segment carrying dead payload qualifies.
+			continue
+		}
 		occupied := seg.liveBytes.Load() // physical payload bytes ever written here
 		var ratio float64
 		if occupied <= 0 {
-			ratio = 1 // empty/overhead-only segment: pure garbage
+			ratio = 1 // fully-dead payload (deadBytes>0, no live bytes): pure garbage
 		} else {
 			dead := occupied - live[id]
 			if dead <= 0 {
@@ -233,7 +243,11 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 	var relocated, syncedCount int64
 	for i := range moves {
 		m := moves[i]
-		data := make([]byte, m.length) // one interval in RAM at a time
+		if m.length < 0 || m.length > maxPayloadLen {
+			cleanup()
+			return 0, fmt.Errorf("journal: repack implausible record length %d in segment %d", m.length, victim.id)
+		}
+		data := make([]byte, int(m.length)) // one interval in RAM at a time
 		if _, rerr := victim.fd.ReadAt(data, m.srcOff); rerr != nil {
 			cleanup()
 			return 0, fmt.Errorf("journal: repack read victim %d@%d: %w", victim.id, m.srcOff, rerr)

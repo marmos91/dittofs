@@ -348,17 +348,23 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 }
 
 // appendTombstone frames a zero-payload tombstone record for id and fsyncs the
-// shard's active segment. The fsync makes the delete at least as durable as any
-// data record it shadows (which was durable only if fsynced), so recovery can
-// never replay data whose tombstone was lost. Not indexed: a tombstone is not
-// live data; recovery reads it to suppress the file's older records.
-func (s *Store) appendTombstone(ctx context.Context, id FileID) error {
+// shard's active segment, returning the tombstone's Version. The fsync makes the
+// delete at least as durable as any data record it shadows (which was durable
+// only if fsynced), so recovery can never replay data whose tombstone was lost.
+// The record is indexed too (an idxEntry with flagTombstone), so rebuildIdx and
+// recovery suppress the file's older records without rescanning the .seg.
+func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	fileID := []byte(id)
 	if len(fileID) > maxFileIDLen {
-		return fmt.Errorf("journal: FileID length %d exceeds max %d", len(fileID), maxFileIDLen)
+		return 0, fmt.Errorf("journal: FileID length %d exceeds max %d", len(fileID), maxFileIDLen)
+	}
+	if testFailTombstone != "" && id == testFailTombstone {
+		// Test seam: model a durability failure (e.g. a failed fsync) before any
+		// state is persisted. Delete must then leave its in-memory index untouched.
+		return 0, fmt.Errorf("journal: injected tombstone failure for %q", id)
 	}
 	recLen := recordLen(len(fileID), 0)
 
@@ -367,7 +373,7 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) error {
 	if sh.active.tail.Load()+recLen > s.cfg.SegmentSize {
 		if err := s.sealSegment(sh); err != nil {
 			sh.mu.Unlock()
-			return err
+			return 0, err
 		}
 	}
 	seg := sh.active
@@ -375,7 +381,7 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) error {
 	recStart, err := writeTombstoneRecord(seg, id, version)
 	if err != nil {
 		sh.mu.Unlock()
-		return err
+		return 0, err
 	}
 	if seg.idxFD != nil {
 		_, _ = seg.idxFD.Write(idxEntry{
@@ -388,10 +394,15 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) error {
 	fd := seg.fd
 	sh.mu.Unlock()
 	if err := fd.Sync(); err != nil {
-		return fmt.Errorf("journal: fsync tombstone: %w", err)
+		return 0, fmt.Errorf("journal: fsync tombstone: %w", err)
 	}
-	return nil
+	return version, nil
 }
+
+// testFailTombstone, when it equals a Delete's FileID, makes appendTombstone
+// return an error before persisting anything, modeling a durability failure.
+// Always empty in production.
+var testFailTombstone FileID
 
 // writeTombstoneRecord frames a zero-payload tombstone at seg's tail and advances
 // it. Shared by the delete path and by repack's tombstone carry-forward.
