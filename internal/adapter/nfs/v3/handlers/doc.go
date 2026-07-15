@@ -5,11 +5,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/xdr"
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/adapter"
+	"github.com/marmos91/dittofs/pkg/identity"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
@@ -21,10 +23,23 @@ type Handler struct {
 	// Exported to allow injection by the NFS adapter
 	Registry nfsRuntime
 
-	// authCache caches auth contexts per (share, UID, GID) to avoid
-	// repeated registry lookups on every WRITE request.
-	// Key: "share:uid:gid", Value: *metadata.AuthContext
+	// authCache caches auth contexts to avoid rebuilding them on every op.
+	// Key: authCacheKey(ctx) — "share:authflavor:uid:gid[:gid...]" covering the
+	// full credential set (see authCacheKey). Value: *authCacheEntry.
 	authCache sync.Map
+
+	// authCacheTTL bounds how long a cached auth context is served before it
+	// is rebuilt. It caps how long an out-of-band UID/group-membership change
+	// can stay effective when no invalidation event fires. A zero value means
+	// identity.DefaultCacheTTL (aligned with the pkg/identity positive cache).
+	authCacheTTL time.Duration
+}
+
+// authCacheEntry is a cached auth context plus the time it was built, so
+// GetCachedAuthContext can expire it once authCacheTTL has elapsed.
+type authCacheEntry struct {
+	authCtx  *metadata.AuthContext
+	cachedAt time.Time
 }
 
 // authCacheKey generates a cache key for auth context caching.
@@ -62,6 +77,34 @@ func appendUint(b *strings.Builder, n uint64) {
 	b.WriteString(strconv.FormatUint(n, 10))
 }
 
+// authCacheEntryTTL returns the configured cache TTL, defaulting to the
+// pkg/identity positive cache TTL so a stale entry can't outlive an identity
+// change indefinitely.
+func (h *Handler) authCacheEntryTTL() time.Duration {
+	if h.authCacheTTL > 0 {
+		return h.authCacheTTL
+	}
+	return identity.DefaultCacheTTL
+}
+
+// loadLiveAuthCtx returns the cached auth context for key when present and
+// not past authCacheEntryTTL, otherwise nil (miss or expired). Splitting the
+// TTL check out keeps it unit-testable without a registry.
+func (h *Handler) loadLiveAuthCtx(key string) *metadata.AuthContext {
+	cached, ok := h.authCache.Load(key)
+	if !ok {
+		return nil
+	}
+	entry, ok := cached.(*authCacheEntry)
+	if !ok || time.Since(entry.cachedAt) >= h.authCacheEntryTTL() {
+		// Expired or an unexpected value type: drop it so the slow path
+		// rebuilds a fresh entry instead of re-checking a dead one each op.
+		h.authCache.Delete(key)
+		return nil
+	}
+	return entry.authCtx
+}
+
 // GetCachedAuthContext returns a cached auth context or builds a new one.
 // This avoids repeated BuildAuthContextWithMapping calls for the same client.
 func (h *Handler) GetCachedAuthContext(
@@ -69,10 +112,9 @@ func (h *Handler) GetCachedAuthContext(
 ) (*metadata.AuthContext, error) {
 	key := authCacheKey(ctx)
 
-	// Fast path: check cache
-	if cached, ok := h.authCache.Load(key); ok {
-		authCtx := cached.(*metadata.AuthContext)
-		// Return a copy with the current request's context
+	// Fast path: serve a live (non-expired) cache entry, returning a copy with
+	// the current request's context.
+	if authCtx := h.loadLiveAuthCtx(key); authCtx != nil {
 		return &metadata.AuthContext{
 			Context:       ctx.Context,
 			ClientAddr:    ctx.ClientAddr,
@@ -92,20 +134,25 @@ func (h *Handler) GetCachedAuthContext(
 	// pin the first request's Context (and any values/cancellation attached to
 	// it) and ClientAddr for the lifetime of the entry; the hit path always
 	// re-derives those from the current request anyway.
-	h.authCache.Store(key, &metadata.AuthContext{
-		AuthMethod:    authCtx.AuthMethod,
-		Identity:      authCtx.Identity,
-		ShareReadOnly: authCtx.ShareReadOnly,
+	h.authCache.Store(key, &authCacheEntry{
+		authCtx: &metadata.AuthContext{
+			AuthMethod:    authCtx.AuthMethod,
+			Identity:      authCtx.Identity,
+			ShareReadOnly: authCtx.ShareReadOnly,
+		},
+		cachedAt: time.Now(),
 	})
 
 	return authCtx, nil
 }
 
 // ClearAuthCache drops all cached auth contexts. Called when share permission
-// state changes (grants, default-permission, squash) so active clients pick up
-// the new policy without a server restart. Config changes are rare admin
-// operations, so clearing the whole (small) cache is preferred over fragile
-// per-share key-prefix matching; entries repopulate on the next op.
+// state changes (grants, default-permission, squash) or when a user/group
+// identity mapping changes, so active clients pick up the new policy without a
+// server restart. These are rare admin operations, so clearing the whole
+// (small) cache is preferred over fragile per-key matching; entries repopulate
+// on the next op. The TTL in GetCachedAuthContext is the backstop for changes
+// that arrive without an explicit invalidation event.
 func (h *Handler) ClearAuthCache() {
 	h.authCache.Range(func(key, _ any) bool {
 		h.authCache.Delete(key)
