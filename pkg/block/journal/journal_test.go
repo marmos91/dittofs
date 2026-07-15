@@ -172,15 +172,27 @@ func TestShardForDeterministicAndMasked(t *testing.T) {
 	}
 }
 
-func TestReopenPopulatedDirRefused(t *testing.T) {
+func TestReopenPopulatedDirRecovers(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
+	if err := s.WriteAt(context.Background(), "f", 0, []byte("hello")); err != nil {
+		t.Fatalf("WriteAt: %v", err)
+	}
 	_ = s.Close()
-	if _, err := Open(dir, Config{}, newFakeRemote(), SystemClock()); err == nil {
-		t.Fatalf("expected reopen to be refused")
+	r, err := Open(dir, Config{}, newFakeRemote(), SystemClock())
+	if err != nil {
+		t.Fatalf("reopen should recover, got: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+	got := make([]byte, 5)
+	if _, _, err := r.ReadAt(context.Background(), "f", 0, got); err != nil {
+		t.Fatalf("ReadAt after recovery: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("recovered data mismatch: %q", got)
 	}
 }
 
