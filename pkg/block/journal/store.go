@@ -106,6 +106,13 @@ type Store struct {
 	remote RemoteStore
 	clock  Clock
 
+	// deduper and sink are the carve collaborators, injected via SetCarveTargets
+	// at wiring time. They own every step that touches pkg/block, blockcodec and
+	// the metadata store, so journal imports none of them. Set once before the
+	// first Carve; nil until wired (Carve reports the substrate is unwired).
+	deduper Deduper
+	sink    BlockSink
+
 	shards    []*shard
 	shardMask uint64
 
@@ -260,12 +267,6 @@ func (s *Store) Stats() Stats {
 		sh.mu.Unlock()
 	}
 	return st
-}
-
-// Carve packs dirty ranges into remote blocks and flips their records to
-// synced. Not yet implemented.
-func (s *Store) Carve(ctx context.Context, opts CarveOptions) (CarveResult, error) {
-	return CarveResult{}, errNotImplemented
 }
 
 // Evict frees whole sealed segments under storage pressure. Not yet implemented.

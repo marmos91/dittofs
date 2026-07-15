@@ -287,16 +287,24 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 		}.encode())
 	}
 
-	sh.indexFor(id).insert(interval{
+	fi := sh.indexFor(id)
+	fi.insert(interval{
 		fileOff: offset,
 		length:  int64(len(data)),
 		version: version,
+		recOff:  segOff,
+		synced:  synced,
 		loc:     SegmentLocation{SegmentID: seg.id, Offset: payloadOff, Length: int64(len(data))},
 	})
 
 	s.writes.Add(1)
 	if !synced {
 		s.unsynced.Add(int64(len(data)))
+		// Stamp the file's dirty age on the first dirty record so carve's age gate
+		// has a reference without a per-interval timestamp.
+		if fi.firstDirtyNanos == 0 {
+			fi.firstDirtyNanos = s.clock.Now().UnixNano()
+		}
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeRemote is an in-memory RemoteStore for tests and benchmarks. It buffers
@@ -125,11 +126,42 @@ func BenchmarkReadWarm(b *testing.B) {
 	}
 }
 
-// BenchmarkCarve is a placeholder until the carve path lands; it establishes
-// the benchmark name so the baseline gains a carve column with no rewrite.
+// BenchmarkCarve measures the FastCDC+BLAKE3+dedup+commit carve of an 8 MiB file.
+// The deduper always misses and the sink is a no-op, so every pass does the full
+// chunk-hash-pack work (the worst case) rather than short-circuiting on dedup.
 func BenchmarkCarve(b *testing.B) {
-	s := benchStore(b)
-	if _, err := s.Carve(context.Background(), CarveOptions{Force: true}); errors.Is(err, errNotImplemented) {
-		b.Skip("carve not yet implemented")
+	s, err := Open(b.TempDir(), Config{}, newFakeRemote(), newFakeClock())
+	if err != nil {
+		b.Fatalf("Open: %v", err)
+	}
+	b.Cleanup(func() { _ = s.Close() })
+	s.SetCarveTargets(missDeduper{}, nopSink{})
+
+	ctx := context.Background()
+	data := bytes.Repeat([]byte("dittofs-journal-carve-"), (8<<20)/22)
+
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		id := FileID("carve-" + string(rune('a'+i%26)) + time.Duration(i).String())
+		if err := s.WriteAt(ctx, id, 0, data); err != nil {
+			b.Fatalf("seed WriteAt: %v", err)
+		}
+		b.StartTimer()
+		if _, err := s.Carve(ctx, CarveOptions{FileID: id, Force: true}); err != nil {
+			b.Fatalf("Carve: %v", err)
+		}
 	}
 }
+
+// missDeduper reports every chunk novel, forcing the full pack path each pass.
+type missDeduper struct{}
+
+func (missDeduper) IsChunkDurable(context.Context, ChunkHash) (bool, error) { return false, nil }
+
+// nopSink discards committed chunks — the benchmark measures journal's carve
+// work, not a remote round-trip.
+type nopSink struct{}
+
+func (nopSink) CommitBlock(context.Context, []CarveChunk) error { return nil }

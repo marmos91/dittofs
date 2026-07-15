@@ -186,10 +186,13 @@ func (s *Store) recover() error {
 				fi = &fileIndex{}
 				idxMap[fid] = fi
 			}
+			synced := rec.header.Flags&flagSynced != 0
 			fi.insert(interval{
 				fileOff: int64(rec.header.FileOffset),
 				length:  int64(rec.header.PayloadLen),
 				version: rec.header.Version,
+				recOff:  rec.segOff,
+				synced:  synced,
 				loc: SegmentLocation{
 					SegmentID: id,
 					Offset:    payloadOff,
@@ -199,10 +202,16 @@ func (s *Store) recover() error {
 			// Coarse byte accounting: liveBytes ignores same-segment supersession
 			// (GC recomputes deadBytes on repack). unsynced feeds write backpressure.
 			m.liveBytes.Add(int64(rec.header.PayloadLen))
-			if rec.header.Flags&flagSynced != 0 {
+			if synced {
 				m.syncedRecords.Add(1)
 			} else {
 				unsynced += int64(rec.header.PayloadLen)
+				// A recovered dirty file gets a fresh dirty-age stamp so the carve
+				// age gate fires after a restart (approximate — the original write
+				// time is not persisted; it is only a batching heuristic).
+				if fi.firstDirtyNanos == 0 {
+					fi.firstDirtyNanos = s.clock.Now().UnixNano()
+				}
 			}
 		}
 	}
