@@ -1,21 +1,19 @@
-# CI Health — develop-red alarm + forcing function
+# CI Health — develop-red flake self-heal + PR warning
 #
-# Centralizes all conformance alerting. Per-workflow ad-hoc "create regression
-# issue" steps were removed in favor of this single owner.
+# Alerting (P0 develop-red issue + email) was removed: it produced a flood of
+# mails/issues on flaky conformance runs. The only alarm surface now is a
+# warn-only comment on PRs.
 #
 # Two responsibilities:
 #
-#   alarm (workflow_run): when a conformance workflow finishes a POSTSUBMIT or
-#     PERIODIC run on develop (push or schedule — NOT a PR run):
-#       - on failure: email alarm (if SMTP secrets present) + open/comment a
-#         deduped P0 `develop-red` issue.
-#       - on success: close any open `develop-red` issue ("tree reopened").
+#   retry (workflow_run): when a conformance workflow's first attempt fails a
+#     POSTSUBMIT or PERIODIC run on develop (push or schedule — NOT a PR run),
+#     re-run its failed jobs once so a transient flake self-heals to green with
+#     no human touch. No paging.
 #
-#   warn-on-pr (pull_request): if develop is currently RED, post/update a single
-#     loud (warn-only, non-blocking) comment on the PR.
-#
-# Email is guarded so it no-ops cleanly when secrets are absent — CI never fails
-# just because SMTP secrets are not configured yet.
+#   warn-on-pr (pull_request): if develop is currently RED (any monitored
+#     conformance workflow's latest completed develop run failed), post/update a
+#     single loud (warn-only, non-blocking) comment on the PR; clear it on green.
 
 name: CI Health
 
@@ -32,206 +30,41 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Alarm: react to a finished conformance run on develop.
-  # Only postsubmit/periodic runs (push or schedule on develop) trigger alerts;
-  # PR-triggered conformance runs are ignored here (warn-on-pr handles PRs).
+  # Flake self-heal: re-run a red conformance run's failed jobs once.
+  # Only postsubmit/periodic runs (push or schedule on develop) qualify, and
+  # only the first attempt — attempt 2 is left as the final word.
+  # `cancelled` is excluded: conformance workflows set cancel-in-progress, so a
+  # newer develop push cancels the in-flight run (benign; the superseding run
+  # reports the true status).
   # ---------------------------------------------------------------------------
-  alarm:
-    name: develop-red alarm
+  retry:
+    name: retry conformance flake
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.head_branch == 'develop' &&
-      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')
-    # Scoped here (not workflow-level) so the pull_request `warn-on-pr` job never
-    # gets `actions: write`. Job-level permissions replace the workflow default,
-    # so re-list what this job needs: checkout (contents), open issue (issues),
-    # and re-run failed jobs (actions).
+      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule') &&
+      github.event.workflow_run.conclusion != 'success' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.run_attempt == 1
     permissions:
       contents: read
-      issues: write
       actions: write
-    env:
-      HAS_SMTP: ${{ secrets.SMTP_PASSWORD != '' }}
-      WORKFLOW: ${{ github.event.workflow_run.name }}
-      CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-      RUN_URL: ${{ github.event.workflow_run.html_url }}
-      RUN_ID: ${{ github.event.workflow_run.id }}
-      REPO: ${{ github.repository }}
-      # A genuine break surfaces as failure/timed_out/action_required on the
-      # latest commit and must alarm. `cancelled` is excluded: the conformance
-      # workflows set cancel-in-progress, so every newer develop push cancels the
-      # in-flight run — benign, and the superseding run reports the true status.
-      # Alarming on it produced stuck false-positive develop-red issues (#1672).
-      IS_RED: ${{ github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'cancelled' }}
-      # Retry-before-alarm: transient conformance flakes (slow-runner timeouts ->
-      # smbtorture exit 124, docker 502s, OOM-killed containers) surface as a
-      # `failure` conclusion and used to page a P0 on the first attempt. Instead,
-      # on attempt 1 we re-run the failed jobs once and stay silent; only if the
-      # re-run (attempt >= 2) is still red do we alarm. A genuine break fails
-      # twice and still pages; a flake self-heals with no issue opened.
-      SHOULD_RETRY: ${{ github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.run_attempt == 1 }}
-      SHOULD_ALARM: ${{ github.event.workflow_run.conclusion != 'success' && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.run_attempt > 1 }}
-
     steps:
-      - name: Retry failed jobs once before alarming
-        if: env.SHOULD_RETRY == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Attempt 1 of ${WORKFLOW} is red; re-running failed jobs before alarming."
-          echo "A genuine break fails again on attempt 2 and pages; a flake self-heals."
-          if gh run rerun "$RUN_ID" --repo "$REPO" --failed; then
-            echo "Re-run queued; attempt 2 will alarm if it is still red."
-          else
-            # If the re-run cannot be queued (gh/API outage, run not rerunnable),
-            # no attempt-2 event will ever fire — so don't swallow the signal.
-            # Alarm now by promoting this attempt to the alarm path.
-            echo "Re-run could not be queued; alarming on this attempt instead."
-            echo "SHOULD_ALARM=true" >> "$GITHUB_ENV"
-          fi
-
-      # The alarm builds its email body from a committed Python script, so the
-      # repo must be on the runner. workflow_run has no implicit checkout.
-      - name: Check out repo
-        if: env.SHOULD_ALARM == 'true'
-        uses: actions/checkout@v4
-
-      - name: Ensure develop-red label exists
-        if: env.SHOULD_ALARM == 'true'
+      - name: Re-run failed jobs once
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
         run: |
-          gh label create develop-red \
-            --repo "$REPO" \
-            --color B60205 \
-            --description "develop branch CI is red (P0)" 2>/dev/null || true
-
-      # Gather failed-job links + best-effort failing test names, then build the
-      # email (HTML + text), subject, and issue markdown. The Python script is
-      # committed + unit-testable, which keeps fragile body templating out of YAML.
-      - name: Collect failure details
-        if: env.SHOULD_ALARM == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-        run: |
-          set -uo pipefail
-
-          # Failed jobs: name, deep log URL, and the failed step name.
-          gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
-            --jq '.jobs[]
-                  | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")
-                  | {name, url: .html_url, step: ([.steps[]? | select(.conclusion == "failure" or .conclusion == "timed_out") | .name] | join(", "))}' \
-            > /tmp/failed_jobs.ndjson || true
-
-          # Failed-step logs — the email builder attributes failing test names
-          # to each job by parsing the "<job>\t<step>\t<line>" prefix.
-          gh run view "$RUN_ID" --repo "$REPO" --log-failed > /tmp/failed.log 2>/dev/null || true
-
-          # Commit subject + author for context in the alarm.
-          COMMIT_MSG=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null | head -1 || true)
-          COMMIT_AUTHOR=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.author.name' 2>/dev/null || true)
-          export COMMIT_MSG COMMIT_AUTHOR
-
-          python3 .github/scripts/ci_health_email.py
-
-          # Hand the built content to later steps (multiline-safe).
-          {
-            echo "MAIL_SUBJECT=$(cat /tmp/mail_subject)"
-            echo "MAIL_HTML<<__CIH_HTML__"; cat /tmp/mail.html; echo; echo "__CIH_HTML__"
-            echo "MAIL_TEXT<<__CIH_TEXT__"; cat /tmp/mail.txt; echo; echo "__CIH_TEXT__"
-            echo "ISSUE_MD<<__CIH_ISSUE__"; cat /tmp/issue.md; echo; echo "__CIH_ISSUE__"
-          } >> "$GITHUB_ENV"
-
-      - name: Send failure email
-        if: env.SHOULD_ALARM == 'true' && env.HAS_SMTP == 'true'
-        uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          # Port 465 = implicit TLS; 587 = STARTTLS (the action's default).
-          secure: ${{ secrets.SMTP_PORT == '465' }}
-          username: ${{ secrets.SMTP_USERNAME }}
-          password: ${{ secrets.SMTP_PASSWORD }}
-          subject: ${{ env.MAIL_SUBJECT }}
-          to: ${{ secrets.ALERT_EMAIL_TO }}
-          # MUST be an SES-verified identity — SMTP_USERNAME is the access-key id,
-          # not an address, so it would bounce. ALERT_EMAIL_FROM is the verified sender.
-          from: DittoFS CI <${{ secrets.ALERT_EMAIL_FROM }}>
-          html_body: ${{ env.MAIL_HTML }}
-          body: ${{ env.MAIL_TEXT }}
-
-      - name: Open or update develop-red issue
-        if: env.SHOULD_ALARM == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          # ISSUE_MD is built by the "Collect failure details" step — failed-job
-          # links + best-effort failing test names, same facts as the email.
-          COMMENT="$ISSUE_MD"
-
-          EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
-            --json number --jq '.[0].number // empty')
-
-          if [ -n "$EXISTING" ]; then
-            gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT"
-            echo "Commented on existing develop-red issue #$EXISTING"
-          else
-            BODY=$(printf 'develop CI is RED. Builds on develop are landing on a broken base.\n\n%s\n\nThis issue auto-closes once every monitored conformance workflow is green on develop.' \
-              "$COMMENT")
-            gh issue create --repo "$REPO" \
-              --title "🔴 develop CI is RED" \
-              --label develop-red \
-              --assignee marmos91 \
-              --body "$BODY"
-          fi
-
-      - name: Close develop-red issue on green
-        if: env.CONCLUSION == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-        run: |
-          EXISTING=$(gh issue list --repo "$REPO" --label develop-red --state open \
-            --json number --jq '.[0].number // empty')
-          if [ -z "$EXISTING" ]; then
-            echo "No open develop-red issue; nothing to close."
-            exit 0
-          fi
-
-          # Only reopen the tree once EVERY monitored workflow's latest
-          # completed run on develop is success — otherwise one workflow going
-          # green while another is still red would falsely close the issue.
-          ALL_GREEN=true
-          for wf in posix-tests.yml smb-conformance.yml e2e-tests.yml nfs-kerberos.yml; do
-            CONC=$(gh run list --repo "$REPO" --workflow "$wf" --branch develop \
-              --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"')
-            echo "  $wf -> $CONC"
-            # `cancelled` is benign (concurrency-superseded run) — treat it like
-            # "none" so a stray cancel doesn't wedge the issue open. See IS_RED.
-            if [ "$CONC" != "success" ] && [ "$CONC" != "none" ] && [ "$CONC" != "cancelled" ]; then
-              ALL_GREEN=false
-            fi
-          done
-
-          if [ "$ALL_GREEN" = true ]; then
-            gh issue close "$EXISTING" --repo "$REPO" \
-              --comment "✅ develop green again at \`${HEAD_SHA}\` — all conformance workflows passing. Tree reopened."
-            echo "Closed develop-red issue #$EXISTING"
-          else
-            gh issue comment "$EXISTING" --repo "$REPO" \
-              --body "**${WORKFLOW}** is green at \`${HEAD_SHA}\`, but another monitored workflow is still red — keeping this open until all pass."
-            echo "Kept develop-red issue #$EXISTING open (not all workflows green)"
-          fi
+          echo "Attempt 1 of ${WORKFLOW} on develop is red; re-running failed jobs once."
+          echo "A transient flake self-heals on attempt 2; a genuine break stays red (surfaced on PRs)."
+          gh run rerun "$RUN_ID" --repo "$REPO" --failed \
+            || echo "Re-run could not be queued; leaving the run as-is."
 
   # ---------------------------------------------------------------------------
   # Forcing function (warn-only): if develop is currently RED, warn on the PR.
@@ -245,6 +78,10 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
 
     steps:
       - name: Post/update develop-red warning
@@ -255,13 +92,18 @@ jobs:
         run: |
           MARKER="<!-- ci-health:develop-red-warning -->"
 
-          ISSUE=$(gh issue list --repo "$REPO" --label develop-red --state open \
-            --json number --jq '.[0].number // empty')
-
-          if [ -z "$ISSUE" ]; then
-            echo "develop is green; no warning needed."
-            exit 0
-          fi
+          # develop is RED if any monitored conformance workflow's latest
+          # completed run on develop failed. `none` (never ran) and `cancelled`
+          # (concurrency-superseded) are benign — treated as not-red.
+          RED=""
+          for wf in posix-tests.yml smb-conformance.yml e2e-tests.yml nfs-kerberos.yml; do
+            CONC=$(gh run list --repo "$REPO" --workflow "$wf" --branch develop \
+              --status completed -L 1 --json conclusion --jq '.[0].conclusion // "none"')
+            echo "  $wf -> $CONC"
+            if [ "$CONC" != "success" ] && [ "$CONC" != "none" ] && [ "$CONC" != "cancelled" ]; then
+              RED="$RED $wf"
+            fi
+          done
 
           # Find any existing bot warning comment by its hidden marker.
           # --paginate walks all pages so a stale marker is never missed (which
@@ -269,8 +111,18 @@ jobs:
           EXISTING_COMMENT=$(gh api --paginate "repos/$REPO/issues/$PR/comments?per_page=100" \
             --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1)
 
-          BODY=$(printf '%s\n⚠️ **develop is currently RED (see #%s).** Your PR builds on a broken base — fix/await develop before merging. (Warning only; this does not block the merge.)' \
-            "$MARKER" "$ISSUE")
+          if [ -z "$RED" ]; then
+            echo "develop is green; no warning needed."
+            if [ -n "$EXISTING_COMMENT" ]; then
+              CLEARED=$(printf '%s\n✅ develop is green again — earlier warning cleared.' "$MARKER")
+              gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING_COMMENT" \
+                -f body="$CLEARED" >/dev/null
+              echo "Cleared stale warning comment $EXISTING_COMMENT"
+            fi
+            exit 0
+          fi
+
+          BODY=$(printf '%s\n⚠️ **develop is currently RED** (failing:%s). Your PR builds on a broken base — fix/await develop before merging. (Warning only; this does not block the merge.)' "$MARKER" "$RED")
 
           if [ -n "$EXISTING_COMMENT" ]; then
             gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING_COMMENT" \
