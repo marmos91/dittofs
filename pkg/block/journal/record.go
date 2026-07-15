@@ -128,8 +128,11 @@ type record struct {
 // record so a scan can advance.
 func readRecordAt(r io.ReaderAt, off, maxPayload int64) (record, int64, error) {
 	var hdrBuf [recordHeaderSize]byte
-	if _, err := r.ReadAt(hdrBuf[:], off); err != nil {
-		if errors.Is(err, io.EOF) {
+	n, err := r.ReadAt(hdrBuf[:], off)
+	if err != nil {
+		// Only a zero-byte read at off is a clean end of the record stream. A
+		// partial header (n>0) is a torn write at the tail, not a boundary.
+		if errors.Is(err, io.EOF) && n == 0 {
 			return record{}, 0, io.EOF
 		}
 		return record{}, 0, fmt.Errorf("%w: header read: %v", errTornRecord, err)
@@ -142,6 +145,11 @@ func readRecordAt(r io.ReaderAt, off, maxPayload int64) (record, int64, error) {
 		return record{}, 0, fmt.Errorf("%w: payload len %d exceeds ceiling %d", errTornRecord, h.PayloadLen, maxPayload)
 	}
 	body := int64(h.FileIDLen) + int64(h.PayloadLen) + payloadCRCSize
+	// Reject a length that would not survive the int64->int narrowing make does
+	// on 32-bit platforms, so a corrupt header can never overflow or panic here.
+	if int64(int(body)) != body {
+		return record{}, 0, fmt.Errorf("%w: record length %d out of range", errTornRecord, body)
+	}
 	buf := make([]byte, body)
 	if _, err := r.ReadAt(buf, off+recordHeaderSize); err != nil {
 		// A truncated payload (torn write) shows up as EOF here, mid-record —

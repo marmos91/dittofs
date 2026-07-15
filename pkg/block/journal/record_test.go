@@ -65,13 +65,23 @@ func TestReadRecordRoundTrip(t *testing.T) {
 
 func TestReadRecordTruncatedHeader(t *testing.T) {
 	rec := frameRecord("f", 0, []byte("hello"), 1, 0)
-	// Cut the record mid-header: only a few header bytes survive.
+	// Cut the record mid-header: only a few header bytes survive. A partial
+	// header (n>0 then EOF) is a torn write, NOT a clean boundary.
 	seg := segmentBytes(rec[:5])
 	_, _, err := readRecordAt(bytes.NewReader(seg), segHeaderSize, 1<<20)
-	// A partial header at the tail is a clean truncation boundary: nothing
-	// valid to read, so the scan stops here rather than trusting garbage.
-	if err == nil {
-		t.Fatalf("expected error on truncated header")
+	if !errors.Is(err, errTornRecord) {
+		t.Fatalf("expected errTornRecord on partial header, got %v", err)
+	}
+}
+
+func TestReadRecordCleanEOF(t *testing.T) {
+	rec := frameRecord("f", 0, []byte("hello"), 1, 0)
+	seg := segmentBytes(rec)
+	// Reading exactly at the end of the stream (zero bytes available) is a clean
+	// boundary: io.EOF, distinct from a torn record.
+	_, _, err := readRecordAt(bytes.NewReader(seg), int64(len(seg)), 1<<20)
+	if !errors.Is(err, io.EOF) || errors.Is(err, errTornRecord) {
+		t.Fatalf("expected clean io.EOF at stream end, got %v", err)
 	}
 }
 

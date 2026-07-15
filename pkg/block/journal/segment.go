@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -120,8 +121,13 @@ func (s *Store) createSegment() (*segmentMeta, error) {
 }
 
 // fsyncDir flushes a directory's entries so a freshly created file survives a
-// crash. A directory Open+Sync is the portable way to fsync directory metadata.
+// crash. Skipped on Windows: opening a directory read-only and calling fsync
+// returns "Access is denied", and NTFS makes the create durable without an
+// explicit dir flush — same treatment the fs block store uses (fs/compaction.go).
 func fsyncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	d, err := os.Open(dir)
 	if err != nil {
 		return err
@@ -158,14 +164,11 @@ func (s *Store) sealSegment(sh *shard) error {
 		_ = old.idxFD.Close()
 		old.idxFD = nil
 	}
-	// Downgrade the segment's fd to O_RDONLY: sealed segments serve warm reads
-	// only, and a read-only handle makes that immutability OS-enforced (mirrors
-	// logblob's sealed read-only fd pool). If the reopen fails we keep the
-	// existing writable fd — reads still work, we just skip the downgrade.
-	if ro, err := os.Open(s.segPath(old.id)); err == nil {
-		_ = old.fd.Close()
-		old.fd = ro
-	}
+	// Keep the segment's existing fd open and hand it to the sealed set — the
+	// same fd serves warm reads. It is set once at creation and never swapped,
+	// so readPayload's snapshot-then-unlocked-pread races nothing (mirrors how
+	// logblob pools the old active fd on rotate rather than reopening it). No
+	// append path touches a sealed segment, so the writable handle is harmless.
 	old.sealed.Store(true)
 	sh.sealed[old.id] = old
 
