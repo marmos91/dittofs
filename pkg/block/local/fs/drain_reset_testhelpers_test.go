@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	memmeta "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // memFBS is a minimal in-memory block.EngineFileChunkStore that
@@ -21,10 +20,14 @@ import (
 type memFBS struct {
 	mu   sync.Mutex
 	rows map[string]map[string]*block.FileChunk // payloadID -> blockID -> row
+	locs map[block.ContentHash]block.LocalChunkLocation
 }
 
 func newMemFileChunkStore() *memFBS {
-	return &memFBS{rows: make(map[string]map[string]*block.FileChunk)}
+	return &memFBS{
+		rows: make(map[string]map[string]*block.FileChunk),
+		locs: make(map[block.ContentHash]block.LocalChunkLocation),
+	}
 }
 
 // persist mirrors the engine's ObjectIDPersister FileChunk-row write loop
@@ -147,16 +150,34 @@ func (m *memFBS) AddRef(_ context.Context, _ block.ContentHash, _ string, _ bloc
 	return block.ErrUnknownHash
 }
 
+// LocalChunkIndex surface — memFBS doubles as the mandatory local chunk index
+// so a single store serves both facets (mirrors production's metadata backend).
+func (m *memFBS) PutLocalLocation(_ context.Context, h block.ContentHash, loc block.LocalChunkLocation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.locs == nil {
+		m.locs = make(map[block.ContentHash]block.LocalChunkLocation)
+	}
+	m.locs[h] = loc
+	return nil
+}
+func (m *memFBS) GetLocalLocation(_ context.Context, h block.ContentHash) (block.LocalChunkLocation, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	loc, ok := m.locs[h]
+	return loc, ok, nil
+}
+func (m *memFBS) DeleteLocalLocation(_ context.Context, h block.ContentHash) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.locs, h)
+	return nil
+}
+
 // newFSStoreForTestWithFBS is newFSStoreForTest with a caller-supplied
 // FileChunkStore so the CAS-manifest read path can resolve rolled-up bytes.
 func newFSStoreForTestWithFBS(t *testing.T, fbs block.EngineFileChunkStore, opts FSStoreOptions) *FSStore {
 	t.Helper()
-	// The log-blob substrate is required for normal chunk I/O; default-wire a
-	// memory metadata store as the LocalChunkIndex when the caller did not
-	// supply one.
-	if opts.LocalChunkIndex == nil {
-		opts.LocalChunkIndex = memmeta.NewMemoryMetadataStoreWithDefaults()
-	}
 	dir, err := os.MkdirTemp("", "fsstore-drainreset-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)

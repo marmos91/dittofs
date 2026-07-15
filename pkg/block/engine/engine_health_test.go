@@ -64,7 +64,6 @@ func buildHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{
-		LocalChunkIndex: ms,
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 50,

@@ -2875,15 +2875,9 @@ func CreateLocalStoreFromConfig(
 		if shs, ok := fileChunkStore.(metadata.SyncedHashStore); ok {
 			fsOpts.SyncedHashStore = shs
 		}
-		// Wire the LocalChunkIndex from the same metadata backend (#1414 object
-		// packing, PR3 global flip). With it set, rollup routes chunk persistence
-		// to the log-blob substrate + PutLocalLocation instead of the legacy CAS
-		// StoreChunk — the local half of the flip that makes the engine carver's
-		// GetLocalLocation→ReadLocalAt path resolvable. A backend that does not
-		// implement LocalChunkIndex leaves the local tier on the legacy CAS path.
-		if lci, ok := fileChunkStore.(metadata.LocalChunkIndex); ok {
-			fsOpts.LocalChunkIndex = lci
-		}
+		// The LocalChunkIndex is derived from the same metadata backend inside
+		// NewWithOptions (mandatory: chunk persistence routes to the log-blob
+		// substrate + PutLocalLocation). All backends implement it.
 		store, err := fs.NewWithOptions(shareDir, maxDisk, fileChunkStore, fsOpts)
 		if err != nil {
 			return nil, err

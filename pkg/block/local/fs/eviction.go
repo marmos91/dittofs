@@ -14,32 +14,27 @@ import (
 )
 
 // ensureSpace enforces the local disk-capacity gate for the given number of
-// bytes on the Put (read-through staging) path. When over capacity it attempts
-// to free space via the in-process LRU (lruEvictOne unlinks the
-// least-recently-used evictable chunk and decrements bc.diskUsed); when no
-// evictable candidate remains it applies backpressure or returns ErrDiskFull as
-// described below. Note: with the per-chunk cas-file writer removed, the LRU is
-// not populated in steady state, so eviction frees nothing until blob-level
-// eviction is wired in — the capacity gate itself (diskUsed vs maxDisk) still
-// applies.
+// bytes on the Put (read-through staging) path. When over capacity it frees
+// space via whole-blob eviction of the oldest sealed, fully-synced log blob
+// (blobEvictOne), then compaction of unsynced-pinned blobs (compactBlobOne),
+// then a one-shot active-blob seal via Rotate; when nothing is evictable it
+// applies backpressure or returns ErrDiskFull as described below.
 //
 // Critical invariant (LSL-08): the eviction path must NOT consult the
-// FileChunkStore (the engine-level metadata store). On the write hot
-// path, eviction relies on on-disk presence and the in-process LRU index
-// for its accounting. Future changes to the engine API must not leak
-// FileChunkStore calls back into local storage decisions.
+// FileChunkStore (the engine-level metadata store). Future changes to the
+// engine API must not leak FileChunkStore calls back into local storage
+// decisions.
 //
 // It MAY, however, consult the SyncedHashStore — a distinct, narrow
-// interface that answers only per-hash sync state (IsSynced). lruEvictOne
-// uses it to refuse evicting an unsynced chunk before its first mirror
-// (evicting one destroys the only copy). SyncedHashStore is NOT the
-// FileChunkStore and is not covered by LSL-08; do not collapse the two
+// interface that answers only per-hash sync state (IsSynced). blobEvictOne
+// uses it to refuse evicting a blob holding unsynced chunks before their
+// first mirror (evicting one destroys the only copy). SyncedHashStore is NOT
+// the FileChunkStore and is not covered by LSL-08; do not collapse the two
 // when editing this path.
 //
 // Pin mode and the eviction-disabled flag short-circuit to ErrDiskFull
-// without touching the LRU. Retention TTL with a non-positive duration
-// behaves the same way: retention policy can keep blocks around
-// regardless of LRU position.
+// without evicting. Retention TTL with a non-positive duration behaves the
+// same way: retention policy can keep blocks around regardless.
 //
 // Concurrent ReadChunk that races an evict surfaces as
 // block.ErrChunkNotFound; the engine refetches from CAS
@@ -106,112 +101,98 @@ func (bc *FSStore) ensureSpace(ctx context.Context, needed int64) error {
 	}
 
 	for bc.usedBytes()+needed > bc.maxDisk {
-		freed, err := bc.lruEvictOne(ctx)
-		if errors.Is(err, errLRUEmpty) {
-			// CAS LRU exhausted: fall back to whole-blob eviction of the
-			// oldest sealed, fully-synced log blob (#1527 — post blocks-flip
-			// the bulk of the local tier lives in log blobs, invisible to the
-			// per-chunk LRU). blobEvictOne decrements logBlobDiskUsed itself.
-			// Like the lruEvictOne success path, do NOT release() here — the
-			// stall (if engaged) ends once the loop exits, keeping the
-			// engage/stall bookkeeping to one segment per ensureSpace call.
-			if bfreed, berr := bc.blobEvictOne(ctx); berr == nil && bfreed > 0 {
+		// Whole-blob eviction of the oldest sealed, fully-synced log blob
+		// (#1527 — the local tier lives in log blobs). blobEvictOne decrements
+		// logBlobDiskUsed itself; do NOT release() here — the stall (if
+		// engaged) ends once the loop exits, keeping the engage/stall
+		// bookkeeping to one segment per ensureSpace call.
+		if bfreed, berr := bc.blobEvictOne(ctx); berr == nil && bfreed > 0 {
+			continue
+		} else if berr != nil && !errors.Is(berr, errLRUEmpty) {
+			return fmt.Errorf("ensureSpace: %w", berr)
+		}
+
+		// No fully-synced blob to drop whole. Try compaction (#1497):
+		// relocate a sealed blob's unsynced survivors into the active blob
+		// and reclaim the dead remainder, so a few unsynced chunks no longer
+		// pin a whole blob and --local-store-size stays enforceable.
+		if cfreed, cerr := bc.compactBlobOne(ctx); cerr == nil && cfreed > 0 {
+			continue
+		} else if cerr != nil && !errors.Is(cerr, errLRUEmpty) {
+			return fmt.Errorf("ensureSpace: %w", cerr)
+		}
+
+		// blobEvictOne found no sealed, fully-synced blob to reclaim, yet
+		// log-blob bytes remain — they are sitting in the still-open active
+		// blob. This is the read-through cache case: a small maxDisk fills
+		// one active blob long before it reaches the roll threshold, so
+		// blobEvictOne (sealed-only) can never touch it. Seal it via Rotate
+		// so the next blobEvictOne can reclaim it. Capped at one rotation
+		// per call: an active blob of *unsynced* bytes is still refused by
+		// blobEvictOne and must fall through to backpressure below rather
+		// than spin out empty blobs. (#1497 replaces this whole-blob seal
+		// with finer-grained log-blob compaction.)
+		if !rotatedUnderPressure && bc.logBlob != nil && bc.logBlobDiskUsed.Load() > 0 {
+			if rerr := bc.logBlob.Rotate(); rerr == nil {
+				rotatedUnderPressure = true
 				continue
-			} else if berr != nil && !errors.Is(berr, errLRUEmpty) {
-				return fmt.Errorf("ensureSpace: %w", berr)
 			}
+		}
 
-			// No fully-synced blob to drop whole. Try compaction (#1497):
-			// relocate a sealed blob's unsynced survivors into the active blob
-			// and reclaim the dead remainder, so a few unsynced chunks no longer
-			// pin a whole blob and --local-store-size stays enforceable.
-			if cfreed, cerr := bc.compactBlobOne(ctx); cerr == nil && cfreed > 0 {
-				continue
-			} else if cerr != nil && !errors.Is(cerr, errLRUEmpty) {
-				return fmt.Errorf("ensureSpace: %w", cerr)
-			}
-
-			// blobEvictOne found no sealed, fully-synced blob to reclaim, yet
-			// log-blob bytes remain — they are sitting in the still-open active
-			// blob. This is the read-through cache case: a small maxDisk fills
-			// one active blob long before it reaches the roll threshold, so
-			// blobEvictOne (sealed-only) can never touch it. Seal it via Rotate
-			// so the next blobEvictOne can reclaim it. Capped at one rotation
-			// per call: an active blob of *unsynced* bytes is still refused by
-			// blobEvictOne and must fall through to backpressure below rather
-			// than spin out empty blobs. (#1497 replaces this whole-blob seal
-			// with finer-grained log-blob compaction.)
-			if !rotatedUnderPressure && bc.logBlob != nil && bc.logBlobDiskUsed.Load() > 0 {
-				if rerr := bc.logBlob.Rotate(); rerr == nil {
-					rotatedUnderPressure = true
-					continue
+		// No evictable sealed blob: every remaining byte is still unsynced
+		// (or lives in the active blob).
+		// Branch on whether a remote-backed syncer is wired:
+		//
+		//   - remote-backed (bpSource != nil): the local tier is a
+		//     write-through cache. If the remote is HEALTHY the syncer
+		//     can still drain unsynced chunks and free space, so engage
+		//     backpressure and stall up to the (longer) backpressure
+		//     window. If the remote is UNHEALTHY the syncer cannot
+		//     drain, so fail fast with ErrDiskFull rather than stalling
+		//     a writer that cannot make progress.
+		//   - local-only (bpSource == nil): wait the shorter evictMaxWait
+		//     for new evictable bytes (async rollup) to land.
+		if bc.bpSource != nil {
+			if !bc.bpSource.IsRemoteHealthy() {
+				// Remote cannot drain: fail fast (release if we had
+				// been stalling on a previously-healthy remote).
+				if engaged {
+					release("remote_unhealthy")
 				}
-			}
-
-			// No evictable CAS chunk or sealed blob: every remaining byte is
-			// still unsynced (or lives in the active blob).
-			// Branch on whether a remote-backed syncer is wired:
-			//
-			//   - remote-backed (bpSource != nil): the local tier is a
-			//     write-through cache. If the remote is HEALTHY the syncer
-			//     can still drain unsynced chunks and free space, so engage
-			//     backpressure and stall up to the (longer) backpressure
-			//     window. If the remote is UNHEALTHY the syncer cannot
-			//     drain, so fail fast with ErrDiskFull rather than stalling
-			//     a writer that cannot make progress.
-			//   - local-only (bpSource == nil): keep the legacy behavior —
-			//     wait the shorter evictMaxWait for new evictable chunks
-			//     (async StoreChunk from the rollup pool) to land.
-			if bc.bpSource != nil {
-				if !bc.bpSource.IsRemoteHealthy() {
-					// Remote cannot drain: fail fast (release if we had
-					// been stalling on a previously-healthy remote).
-					if engaged {
-						release("remote_unhealthy")
-					}
-					return ErrDiskFull
-				}
-				if !engaged {
-					// First time stalling on the remote-cache path for this
-					// request: arm the longer deadline, count the engage, and
-					// log it (rate-limited).
-					maxWait := bc.effectiveBackpressureMaxWait()
-					engaged = true
-					stallStart = time.Now()
-					deadline = stallStart.Add(maxWait)
-					bc.bpEngageCount.Add(1)
-					if bc.bpLogLimiter == nil || bc.bpLogLimiter.Allow() {
-						logger.Info("local cache backpressure engaged: waiting for syncer to drain",
-							"store", bc.baseDir,
-							"disk_used", bc.usedBytes(),
-							"max_disk", bc.maxDisk,
-							"needed", needed,
-							"unsynced_bytes", bc.bpSource.UnsyncedBytes(),
-							"remote_healthy", true,
-							"max_wait_ms", maxWait.Milliseconds())
-					}
-				}
-			}
-
-			if time.Now().After(deadline) {
-				release("window_exceeded")
 				return ErrDiskFull
 			}
-			select {
-			case <-ctx.Done():
-				release("ctx_cancelled")
-				return ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-				continue
+			if !engaged {
+				// First time stalling on the remote-cache path for this
+				// request: arm the longer deadline, count the engage, and
+				// log it (rate-limited).
+				maxWait := bc.effectiveBackpressureMaxWait()
+				engaged = true
+				stallStart = time.Now()
+				deadline = stallStart.Add(maxWait)
+				bc.bpEngageCount.Add(1)
+				if bc.bpLogLimiter == nil || bc.bpLogLimiter.Allow() {
+					logger.Info("local cache backpressure engaged: waiting for syncer to drain",
+						"store", bc.baseDir,
+						"disk_used", bc.usedBytes(),
+						"max_disk", bc.maxDisk,
+						"needed", needed,
+						"unsynced_bytes", bc.bpSource.UnsyncedBytes(),
+						"remote_healthy", true,
+						"max_wait_ms", maxWait.Milliseconds())
+				}
 			}
 		}
-		if err != nil {
-			return fmt.Errorf("ensureSpace: %w", err)
+
+		if time.Now().After(deadline) {
+			release("window_exceeded")
+			return ErrDiskFull
 		}
-		bc.subUsed(&bc.diskUsed, freed, "cas")
-		if ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
 			release("ctx_cancelled")
 			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			continue
 		}
 	}
 
@@ -644,13 +625,6 @@ func (bc *FSStore) DrainLocalSynced(ctx context.Context) (int64, error) {
 		if ctx.Err() != nil {
 			return total, ctx.Err()
 		}
-		if freed, err := bc.lruEvictOne(ctx); err == nil {
-			bc.subUsed(&bc.diskUsed, freed, "cas")
-			total += freed
-			continue
-		} else if !errors.Is(err, errLRUEmpty) {
-			return total, fmt.Errorf("drain local synced: %w", err)
-		}
 		bfreed, err := bc.blobEvictOne(ctx)
 		if err != nil {
 			if !errors.Is(err, errLRUEmpty) {
@@ -666,7 +640,7 @@ func (bc *FSStore) DrainLocalSynced(ctx context.Context) (int64, error) {
 				total += cfreed
 				continue
 			}
-			// CAS-LRU, sealed-blob eviction, and compaction are all exhausted,
+			// Sealed-blob eviction and compaction are both exhausted,
 			// yet log-blob bytes remain: they sit in the still-open ACTIVE blob
 			// (a store below the 1 GiB roll threshold never seals — #1465). Seal
 			// it once so the next blobEvictOne can reclaim it. Capped at one
@@ -793,13 +767,6 @@ func (bc *FSStore) reclaimSpace(ctx context.Context) {
 
 	for bc.usedBytes() > bc.maxDisk {
 		if ctx.Err() != nil {
-			return
-		}
-		if freed, err := bc.lruEvictOne(ctx); err == nil {
-			bc.subUsed(&bc.diskUsed, freed, "cas")
-			continue
-		} else if !errors.Is(err, errLRUEmpty) {
-			logger.Warn("reclaimSpace: CAS eviction failed", "dir", bc.baseDir, "error", err)
 			return
 		}
 		if bfreed, err := bc.blobEvictOne(ctx); err != nil {

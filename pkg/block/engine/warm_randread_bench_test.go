@@ -95,7 +95,6 @@ func buildWarmFSFixture(tb testing.TB) (*engine.Store, string, []block.ChunkRef,
 
 	// --- fs engine (mirrors newEngineOverStore; nil remote) ---
 	localStore, err := fs.NewWithOptions(tb.TempDir(), 256*1024*1024, ms, fs.FSStoreOptions{
-		LocalChunkIndex: ms,
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 3_600_000, // async rollup never fires; only explicit DrainRollups

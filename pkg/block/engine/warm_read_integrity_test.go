@@ -33,7 +33,6 @@ func newEngineWithRemote(t *testing.T, ms metadata.Store, mem *remotememory.Stor
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
 	}
 	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
-		LocalChunkIndex: ms,
 		MaxLogBytes:     128 * 1024 * 1024,
 		RollupWorkers:   2,
 		StabilizationMS: 3_600_000, // async rollup never fires; explicit DrainRollups only

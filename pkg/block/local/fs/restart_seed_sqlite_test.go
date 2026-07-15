@@ -34,8 +34,7 @@ func TestFSStore_ListUnsynced_SQLiteIndex(t *testing.T) {
 	// SyncedHashStore with nothing marked synced → every logblob chunk is
 	// unsynced. Wire the SQLite store as the LocalChunkIndex so the seed path
 	// must walk a production backend's index, not the memory one.
-	bc := newFSStoreForTest(t, FSStoreOptions{
-		LocalChunkIndex: idx,
+	bc := newFSStoreForTestWithFBS(t, idx, FSStoreOptions{
 		SyncedHashStore: memory.NewMemoryMetadataStoreWithDefaults(),
 	})
 

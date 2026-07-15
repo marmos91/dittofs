@@ -39,9 +39,7 @@ type carveFixture struct {
 func newCarveFixture(t *testing.T, rbs remote.RemoteStore, carveBytes int64) *carveFixture {
 	t.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{
-		LocalChunkIndex: ms,
-	})
+	local, err := fs.NewWithOptions(t.TempDir(), 0, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
@@ -284,7 +282,7 @@ func TestCarve_ThroughCompressEncryptRemote(t *testing.T) {
 func TestCarve_UnwiredSubstrateKeepsChunksPending(t *testing.T) {
 	ctx := context.Background()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{LocalChunkIndex: ms})
+	local, err := fs.NewWithOptions(t.TempDir(), 0, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
@@ -450,9 +448,7 @@ func TestCarve_CommitFailureRollsBackAtomically(t *testing.T) {
 		failOnCall:          2, // second chunk's tx.MarkSynced fails once
 	}
 
-	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{
-		LocalChunkIndex: realMS,
-	})
+	local, err := fs.NewWithOptions(t.TempDir(), 0, realMS, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
@@ -578,9 +574,7 @@ func TestCarve_DispatcherIdleFlush(t *testing.T) {
 	const uploadDelay = 100 * time.Millisecond
 
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{
-		LocalChunkIndex: ms,
-	})
+	local, err := fs.NewWithOptions(t.TempDir(), 0, ms, fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}

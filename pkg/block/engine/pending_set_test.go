@@ -31,7 +31,6 @@ func newPendingSetFixture(t *testing.T, startUploader bool, carveBytes int64) (*
 		StabilizationMS: 5,
 		RollupStore:     ms,
 		SyncedHashStore: ms,
-		LocalChunkIndex: ms,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
@@ -156,7 +155,6 @@ func TestSyncer_SeedPendingFromDisk_RecoversUnsynced(t *testing.T) {
 		StabilizationMS: 5,
 		RollupStore:     ms,
 		SyncedHashStore: ms,
-		LocalChunkIndex: ms,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)

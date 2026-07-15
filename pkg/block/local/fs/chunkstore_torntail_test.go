@@ -18,9 +18,7 @@ func newLogBlobStore(t *testing.T) (*FSStore, context.Context) {
 	t.Helper()
 	dir := t.TempDir()
 	idx := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc, err := NewWithOptions(dir, 0, nil, FSStoreOptions{
-		LocalChunkIndex: idx,
-	})
+	bc, err := NewWithOptions(dir, 0, idx, FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
 	}

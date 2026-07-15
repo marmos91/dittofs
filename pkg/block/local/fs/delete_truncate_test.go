@@ -239,12 +239,11 @@ func TestDelete_DuringActiveRollup_NoMetadataZombie(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
 	// Tiny stabilization so records become eligible for rollup within
 	// a few ms.
-	bc := newFSStoreForTest(t, FSStoreOptions{
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 2,
 		RollupStore:     rs,
-		LocalChunkIndex: rs,
 	})
 	ctx := context.Background()
 
@@ -310,12 +309,11 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 
 	// First, create an FSStore with append-log on, write one record so
 	// a log file exists, then close.
-	bc1, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc1, err := NewWithOptions(dir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
 		RollupStore:            rs,
-		LocalChunkIndex:        rs,
 		OrphanLogMinAgeSeconds: 1, // short window so the test can age past it
 	})
 	if err != nil {
@@ -339,12 +337,11 @@ func TestDelete_CrashBetweenMetadataAndUnlink_OrphanSwept(t *testing.T) {
 	// Crash-recovery pass on a fresh FSStore with the same RollupStore.
 	// rs has no entry for "crashed" (metadata step never committed) and
 	// nopFBS has no block-0 entry — so it qualifies as orphan.
-	bc2, err := NewWithOptions(dir, 1<<30, nopFBS{}, FSStoreOptions{
+	bc2, err := NewWithOptions(dir, 1<<30, rs, FSStoreOptions{
 		MaxLogBytes:            1 << 30,
 		RollupWorkers:          2,
 		StabilizationMS:        10,
 		RollupStore:            rs,
-		LocalChunkIndex:        rs,
 		OrphanLogMinAgeSeconds: 1,
 	})
 	if err != nil {
@@ -465,12 +462,11 @@ func TestTruncate_ClosedStore_ReturnsErrStoreClosed(t *testing.T) {
 // did not error.
 func TestTruncate_Rollup_SkipsBeyondBoundary(t *testing.T) {
 	rs := memmeta.NewMemoryMetadataStoreWithDefaults()
-	bc := newFSStoreForTest(t, FSStoreOptions{
+	bc := newFSStoreForTestWithFBS(t, rs, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 2,
 		RollupStore:     rs,
-		LocalChunkIndex: rs,
 	})
 	ctx := context.Background()
 

@@ -3,6 +3,7 @@ package fs
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"hash/crc32"
 	"os"
 	"path/filepath"
@@ -172,7 +173,12 @@ func (bc *FSStore) ForceRollupForTest(ctx context.Context, payloadID string) err
 // metadata. Caller MUST have Close()'d any prior FSStore on the same
 // directory first (concurrent opens race on the log fds).
 func ReopenForTest(baseDir string, rs metadata.RollupStore) (*FSStore, error) {
-	bc, err := NewWithOptions(baseDir, 1<<30, nopFBSForTest{}, FSStoreOptions{
+	// The metadata backend doubles as the mandatory FileChunkStore + LocalChunkIndex.
+	fbs, ok := rs.(block.EngineFileChunkStore)
+	if !ok {
+		return nil, fmt.Errorf("ReopenForTest: RollupStore must also implement block.EngineFileChunkStore")
+	}
+	bc, err := NewWithOptions(baseDir, 1<<30, fbs, FSStoreOptions{
 		MaxLogBytes:     1 << 30,
 		RollupWorkers:   2,
 		StabilizationMS: 50,
@@ -240,54 +246,4 @@ func (bc *FSStore) FBSCallCountForTest() int {
 		return c.TotalCount()
 	}
 	return 0
-}
-
-// nopFBSForTest is a no-op FileChunkStore used by the ReopenForTest
-// helper. Every read returns ErrFileChunkNotFound; every write is a
-// no-op. Sufficient for the append-log conformance suite because
-// AppendWrite does not consult FileChunkStore at all, and the
-// Recover walk over .blk files finds none in a test tempdir that only
-// holds logs/ + blocks/.
-//
-// This is defined here (not in an _test.go file) so external test
-// packages can call ReopenForTest without exporting the
-// FileChunkStore type separately.
-type nopFBSForTest struct{}
-
-// nopFBSForTest satisfies the wider block.EngineFileChunkStore (the
-// 6 narrowed FileChunkStore methods plus the engine-internal GetFileChunk
-// and ListFileChunks). All operations are no-ops or return
-// ErrFileChunkNotFound.
-func (nopFBSForTest) GetByHash(_ context.Context, _ block.ContentHash) (*block.FileChunk, error) {
-	return nil, nil
-}
-func (nopFBSForTest) Put(_ context.Context, _ *block.FileChunk) error { return nil }
-func (nopFBSForTest) Delete(_ context.Context, _ string) error {
-	return block.ErrFileChunkNotFound
-}
-func (nopFBSForTest) IncrementRefCount(_ context.Context, _ string) error { return nil }
-func (nopFBSForTest) DecrementRefCount(_ context.Context, _ string) (uint32, error) {
-	return 0, nil
-}
-func (nopFBSForTest) DecrementRefCountAndReap(_ context.Context, _ string) (uint32, error) {
-	return 0, nil
-}
-func (nopFBSForTest) AddRef(_ context.Context, _ block.ContentHash, _ string, _ block.ChunkRef) error {
-	// no-op test stub. Every hash is "unknown" so the
-	// LRU hit path in production would always fall back to the full
-	// Put path — but this stub is only used by ReopenForTest scenarios
-	// that don't exercise AddRef at all.
-	return block.ErrUnknownHash
-}
-
-// Legacy engine-internal surface (kept off the
-// public FileChunkStore interface but required by EngineFileChunkStore).
-func (nopFBSForTest) GetFileChunk(_ context.Context, _ string) (*block.FileChunk, error) {
-	return nil, block.ErrFileChunkNotFound
-}
-func (nopFBSForTest) ListFileChunks(_ context.Context, _ string) ([]*block.FileChunk, error) {
-	return nil, nil
-}
-func (nopFBSForTest) EnumeratePayloads(_ context.Context, _ func(payloadID string) error) error {
-	return nil
 }

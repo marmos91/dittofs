@@ -133,8 +133,7 @@ func TestReadPath_StandaloneLocatorServedViaFallback(t *testing.T) {
 	mem := remotememory.New()
 
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	local, err := fs.NewWithOptions(t.TempDir(), 0, nil, fs.FSStoreOptions{
-		LocalChunkIndex: metadatamemory.NewMemoryMetadataStoreWithDefaults()})
+	local, err := fs.NewWithOptions(t.TempDir(), 0, metadatamemory.NewMemoryMetadataStoreWithDefaults(), fs.FSStoreOptions{})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions: %v", err)
 	}
