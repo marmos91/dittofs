@@ -496,6 +496,16 @@ type Service struct {
 	// share). Self-guarded; runs warm runs on detached contexts cancelled on
 	// RemoveShare. See warm.go.
 	warmJobs *warmRegistry
+
+	// blockStoreCache is a lock-free mirror of registry[name].BlockStore keyed by
+	// share name. Every NFS/SMB data op resolves the per-share store here without
+	// touching s.mu, so the read/write hot path pays no reader-lock contention.
+	// It is written only under s.mu at the three points that change a share's
+	// store — AddShare (publish), RemoveShare (delete), RebindShareBlockStore
+	// (swap) — so it never lags the registry at a lock-release boundary. A miss
+	// falls through to the locked registry, which reproduces the exact
+	// not-found/no-store errors, so the cache holds only non-nil stores.
+	blockStoreCache sync.Map // shareName -> *engine.Store
 }
 
 func New() *Service {
@@ -695,6 +705,9 @@ func (s *Service) AddShare(
 		return fmt.Errorf("share %q already exists", config.Name)
 	}
 	s.registry[config.Name] = share
+	if share.BlockStore != nil {
+		s.blockStoreCache.Store(config.Name, share.BlockStore)
+	}
 	delete(s.reservations, config.Name)
 	reservationHeld = false
 	s.mu.Unlock()
@@ -1211,6 +1224,7 @@ func (s *Service) RebindShareBlockStore(
 		share.remoteConfigID = recovered.remoteConfigID
 		share.gcStateRoot = recovered.gcStateRoot
 		share.localStoreDir = recovered.localStoreDir
+		s.blockStoreCache.Store(name, share.BlockStore)
 		s.mu.Unlock()
 		if oldRemoteConfigID != "" {
 			s.releaseRemoteStore(oldRemoteConfigID)
@@ -1242,6 +1256,7 @@ func (s *Service) RebindShareBlockStore(
 	share.remoteConfigID = rebuilt.remoteConfigID
 	share.gcStateRoot = rebuilt.gcStateRoot
 	share.localStoreDir = rebuilt.localStoreDir
+	s.blockStoreCache.Store(name, share.BlockStore)
 	s.mu.Unlock()
 
 	// Drop the previous remote ref now that the new store holds its own.
@@ -1457,6 +1472,7 @@ func (s *Service) RemoveShare(name string) error {
 	remoteConfigID := share.remoteConfigID
 	localStoreDir := share.localStoreDir
 	delete(s.registry, name)
+	s.blockStoreCache.Delete(name)
 	s.mu.Unlock()
 
 	// Cancel any in-flight warm job for this share so it cannot keep fetching
@@ -2175,25 +2191,15 @@ func (s *Service) CountShares() int {
 }
 
 // GetBlockStoreForHandle decodes a file handle and resolves the per-share
-// BlockStore in a single mutex acquisition, avoiding the two-RLock overhead of
-// calling GetShareNameForHandle followed by GetBlockStoreForShare separately.
-func (s *Service) GetBlockStoreForHandle(ctx context.Context, handle metadata.FileHandle) (*engine.Store, error) {
+// BlockStore. The handle is decoded once for its share name, then the store is
+// read from the lock-free blockStoreCache — the read/write hot path never
+// touches s.mu.
+func (s *Service) GetBlockStoreForHandle(_ context.Context, handle metadata.FileHandle) (*engine.Store, error) {
 	shareName, _, err := metadata.DecodeFileHandle(handle)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode file handle: %w", err)
 	}
-
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	share, exists := s.registry[shareName]
-	if !exists {
-		return nil, fmt.Errorf("share %q not found", shareName)
-	}
-	if share.BlockStore == nil {
-		return nil, fmt.Errorf("share %q has no block store configured", shareName)
-	}
-	return share.BlockStore, nil
+	return s.GetBlockStoreForShare(shareName)
 }
 
 // XattrStreamReader returns a metadata.StreamContentReader that materialises a
@@ -2227,8 +2233,19 @@ func (s *Service) XattrStreamReader() metadata.StreamContentReader {
 	}
 }
 
-// GetBlockStoreForShare returns the BlockStore for a named share.
+// GetBlockStoreForShare returns the BlockStore for a named share. The common
+// case is served from the lock-free blockStoreCache; a miss falls through to
+// the locked registry, which produces the exact not-found / no-store errors.
+// Because the cache is written under s.mu alongside the registry, a miss after
+// RemoveShare always resolves to a not-found error — never a stale or closed
+// store.
 func (s *Service) GetBlockStoreForShare(name string) (*engine.Store, error) {
+	if v, ok := s.blockStoreCache.Load(name); ok {
+		if bs, ok := v.(*engine.Store); ok {
+			return bs, nil
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	share, exists := s.registry[name]

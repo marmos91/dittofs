@@ -211,7 +211,7 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	// ========================================================================
 
 	metaSvc := h.Registry.GetMetadataService()
-	blockStore, err := h.Registry.GetBlockStoreForHandle(ctx.Context, openFile.MetadataHandle)
+	blockStore, err := h.Registry.GetBlockStoreForShare(openFile.ShareName)
 	if err != nil {
 		logger.Warn("FLUSH: block store not available for handle", "path", openFile.Path, "error", err)
 		return &FlushResponse{SMBResponseBase: SMBResponseBase{Status: types.StatusInternalError}}, nil

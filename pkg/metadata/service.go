@@ -39,6 +39,7 @@ const DefaultLockGracePeriod = 90 * time.Second
 type Service struct {
 	mu                 sync.RWMutex
 	stores             map[string]Store                  // shareName -> store
+	storeCache         sync.Map                          // shareName -> Store; lock-free mirror of stores, read on every metadata op
 	lockManagers       map[string]*LockManager           // shareName -> lock manager (ephemeral, per-share)
 	unifiedViews       map[string]*UnifiedLockView       // shareName -> unified lock view (cross-protocol)
 	dirChangeNotifiers map[string]lock.DirChangeNotifier // shareName -> notifier for directory changes
@@ -292,6 +293,7 @@ func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
 		// This is atomic and visible under the lock we already hold. The lock
 		// manager is ephemeral and intentionally not replaced.
 		s.stores[shareName] = store
+		s.storeCache.Store(shareName, store)
 		s.mu.Unlock()
 		return nil
 	}
@@ -409,6 +411,7 @@ func (s *Service) RegisterStoreForShare(shareName string, store Store) error {
 	// lockManagerForHandle / storeForHandle that arrives during recovery sees
 	// neither and consistently reports the share as not-yet-ready.
 	s.stores[shareName] = store
+	s.storeCache.Store(shareName, store)
 	s.lockManagers[shareName] = lm
 	// Wire LockManager as DirChangeNotifier: mutations on this share will
 	// dispatch directory lease breaks via the lock manager.
@@ -464,6 +467,7 @@ func (s *Service) RemoveStoreForShare(shareName string) {
 	}
 
 	delete(s.stores, shareName)
+	s.storeCache.Delete(shareName)
 	delete(s.lockManagers, shareName)
 	delete(s.unifiedViews, shareName)
 	delete(s.dirChangeNotifiers, shareName)
@@ -616,10 +620,18 @@ func (s *Service) newGraceAwareLockManager(duration time.Duration) *LockManager 
 	return lm
 }
 
-// GetStoreForShare returns the metadata store for a specific share.
-// This is primarily for internal use and testing; protocol handlers
-// should use the high-level methods instead.
+// GetStoreForShare returns the metadata store for a specific share. Every
+// metadata op resolves through here, so the common case is served from the
+// lock-free storeCache without touching s.mu. The cache is written under s.mu
+// alongside s.stores, so a miss after RemoveStoreForShare falls through to the
+// locked map and yields the stale-handle error below — never a stale store.
 func (s *Service) GetStoreForShare(shareName string) (Store, error) {
+	if v, ok := s.storeCache.Load(shareName); ok {
+		if store, ok := v.(Store); ok {
+			return store, nil
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

@@ -704,6 +704,14 @@ func (r *Runtime) GetBlockStoreForHandle(ctx context.Context, handle metadata.Fi
 	return r.sharesSvc.GetBlockStoreForHandle(ctx, handle)
 }
 
+// GetBlockStoreForShare resolves the per-share BlockStore by name, skipping the
+// handle decode when the caller already knows the share (e.g. SMB handlers that
+// carry OpenFile.ShareName). Backed by the same lock-free cache as
+// GetBlockStoreForHandle.
+func (r *Runtime) GetBlockStoreForShare(name string) (*engine.Store, error) {
+	return r.sharesSvc.GetBlockStoreForShare(name)
+}
+
 // --- Lifecycle (delegated to lifecycle.Service) ---
 
 func (r *Runtime) SetAPIServer(server AuxiliaryServer) {
