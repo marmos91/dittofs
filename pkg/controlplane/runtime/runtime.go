@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/auth/netlogon"
@@ -104,6 +105,11 @@ type Runtime struct {
 
 	adapterProviders   map[string]any
 	adapterProvidersMu sync.RWMutex
+	// oplockBreaker mirrors the "oplock_breaker" adapter provider for the NFS
+	// read/write hot path: every op checks it, but it is set at most once (when
+	// SMB registers). An atomic load replaces the RWMutex+map lookup, so the
+	// common no-SMB case is a single nil-check instead of a locked map access.
+	oplockBreaker atomic.Value
 
 	// snapInFlight tracks per-share in-flight snapshot orchestration
 	// goroutines so RemoveShare and Runtime.Shutdown can
@@ -1180,8 +1186,27 @@ func (r *Runtime) GetSMBSettings() *models.SMBAdapterSettings {
 
 func (r *Runtime) SetAdapterProvider(key string, p any) {
 	r.adapterProvidersMu.Lock()
-	defer r.adapterProvidersMu.Unlock()
 	r.adapterProviders[key] = p
+	r.adapterProvidersMu.Unlock()
+
+	// Mirror the oplock breaker into an atomic for the NFS hot path. Keyed by
+	// the literal to avoid importing pkg/adapter (which imports runtime).
+	if key == oplockBreakerProviderKey {
+		r.oplockBreaker.Store(p)
+	}
+}
+
+// oplockBreakerProviderKey mirrors adapter.OplockBreakerProviderKey. It is
+// duplicated (not imported) because pkg/adapter imports this package; a
+// mismatch would surface immediately in cross-protocol oplock e2e tests.
+const oplockBreakerProviderKey = "oplock_breaker"
+
+// OplockBreakerProvider returns the registered cross-protocol oplock breaker
+// (as an opaque any the NFS handlers type-assert), or nil if none is
+// registered. A lock-free atomic load: the NFS read/write path calls this per
+// op and the no-SMB case must stay cheap.
+func (r *Runtime) OplockBreakerProvider() any {
+	return r.oplockBreaker.Load()
 }
 
 func (r *Runtime) GetAdapterProvider(key string) any {
