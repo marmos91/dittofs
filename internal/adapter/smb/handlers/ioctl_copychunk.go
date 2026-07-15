@@ -360,7 +360,7 @@ func (h *Handler) executeCopyChunks(
 	metaSvc := h.Registry.GetMetadataService()
 
 	// Get source block store and file metadata
-	srcBlockStore, err := h.Registry.GetBlockStoreForHandle(ctx.Context, srcOpen.MetadataHandle)
+	srcBlockStore, err := h.Registry.GetBlockStoreForShare(srcOpen.ShareName)
 	if err != nil {
 		logger.Warn("COPYCHUNK: source block store unavailable", "path", srcOpen.Path, "error", err)
 		return NewErrorResult(types.StatusInternalError), nil
@@ -373,7 +373,7 @@ func (h *Handler) executeCopyChunks(
 	}
 
 	// Get destination block store
-	dstBlockStore, err := h.Registry.GetBlockStoreForHandle(ctx.Context, dstOpen.MetadataHandle)
+	dstBlockStore, err := h.Registry.GetBlockStoreForShare(dstOpen.ShareName)
 	if err != nil {
 		logger.Warn("COPYCHUNK: destination block store unavailable", "path", dstOpen.Path, "error", err)
 		return NewErrorResult(types.StatusInternalError), nil
