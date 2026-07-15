@@ -41,11 +41,16 @@ import (
 // harmlessly (recording its reply is correct and cheap).
 
 const (
-	// drcMaxEntries bounds the cache. The Linux reply cache scales its hash
-	// table with RAM but caps the working set in the low thousands; 4096 covers
-	// the in-flight + recently-completed non-idempotent ops of many concurrent
-	// clients while bounding memory to a few MB of small reply blobs.
+	// drcMaxEntries bounds the cache across all shards. The Linux reply cache
+	// scales its hash table with RAM but caps the working set in the low
+	// thousands; 4096 covers the in-flight + recently-completed non-idempotent
+	// ops of many concurrent clients while bounding memory to a few MB of small
+	// reply blobs. Split evenly across drcShardCount shards.
 	drcMaxEntries = 4096
+
+	// drcShardCount partitions the cache so unrelated clients/XIDs don't
+	// serialize on one lock. Power of two so shard selection is a mask.
+	drcShardCount = 32
 
 	// drcTTL is how long a completed reply is retained for replay. NFS client
 	// retransmit timeouts are on the order of seconds and back off; a few
@@ -99,23 +104,51 @@ const (
 	drcInProgressDup
 )
 
+// drcShard is one lock-partitioned slice of the cache.
+type drcShard struct {
+	mu      sync.Mutex
+	entries map[drcKey]*drcEntry
+}
+
 // duplicateRequestCache is a server-wide bounded reply cache for non-idempotent
-// NFSv3 procedures. Safe for concurrent use.
+// NFSv3 procedures. It is partitioned into drcShardCount independently-locked
+// shards keyed by client/XID. Safe for concurrent use.
 type duplicateRequestCache struct {
-	mu         sync.Mutex
-	entries    map[drcKey]*drcEntry
-	maxEntries int
-	ttl        time.Duration
-	now        func() time.Time // injectable clock for tests
+	shards      [drcShardCount]drcShard
+	maxPerShard int
+	ttl         time.Duration
+	now         func() time.Time // injectable clock for tests
 }
 
 func newDuplicateRequestCache() *duplicateRequestCache {
-	return &duplicateRequestCache{
-		entries:    make(map[drcKey]*drcEntry),
-		maxEntries: drcMaxEntries,
-		ttl:        drcTTL,
-		now:        time.Now,
+	d := &duplicateRequestCache{
+		maxPerShard: drcMaxEntries / drcShardCount,
+		ttl:         drcTTL,
+		now:         time.Now,
 	}
+	for i := range d.shards {
+		d.shards[i].entries = make(map[drcKey]*drcEntry)
+	}
+	return d
+}
+
+// shard routes a request to its lock partition by hashing the client identity
+// and XID (FNV-1a). The body checksum is deliberately excluded so retransmits
+// of the same (client, XID) always land on the same shard.
+func (d *duplicateRequestCache) shard(srcAddr string, xid uint32) *drcShard {
+	const (
+		fnvOffset32 = 2166136261
+		fnvPrime32  = 16777619
+	)
+	h := uint32(fnvOffset32)
+	for i := 0; i < len(srcAddr); i++ {
+		h = (h ^ uint32(srcAddr[i])) * fnvPrime32
+	}
+	for i := 0; i < 4; i++ {
+		h = (h ^ (xid & 0xff)) * fnvPrime32
+		xid >>= 8
+	}
+	return &d.shards[h&(drcShardCount-1)]
 }
 
 // drcCachedProcs is the set of non-idempotent NFSv3 procedures whose replies
@@ -147,11 +180,12 @@ func isCacheable(procedure uint32) bool {
 // Callers must only invoke lookup for cacheable procedures (see isCacheable).
 func (d *duplicateRequestCache) lookup(srcAddr string, xid uint32, body []byte) (drcLookupResult, []byte) {
 	key := drcKey{srcAddr: srcAddr, xid: xid, checksum: crc32.ChecksumIEEE(body)}
+	s := d.shard(srcAddr, xid)
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	if e, ok := d.entries[key]; ok {
+	if e, ok := s.entries[key]; ok {
 		switch {
 		case e.state == drcInProgress:
 			return drcInProgressDup, nil
@@ -160,12 +194,12 @@ func (d *duplicateRequestCache) lookup(srcAddr string, xid uint32, body []byte) 
 		default:
 			// DONE but past TTL: expire lazily and fall through so a long-after
 			// XID reuse is treated as a fresh request, not a false replay.
-			delete(d.entries, key)
+			delete(s.entries, key)
 		}
 	}
 
-	d.evictIfNeeded()
-	d.entries[key] = &drcEntry{state: drcInProgress, inserted: d.now()}
+	d.evictIfNeeded(s)
+	s.entries[key] = &drcEntry{state: drcInProgress, inserted: d.now()}
 	return drcMiss, nil
 }
 
@@ -174,19 +208,20 @@ func (d *duplicateRequestCache) lookup(srcAddr string, xid uint32, body []byte) 
 // reply is copied so the caller may reuse the backing buffer.
 func (d *duplicateRequestCache) record(srcAddr string, xid uint32, body []byte, reply []byte) {
 	key := drcKey{srcAddr: srcAddr, xid: xid, checksum: crc32.ChecksumIEEE(body)}
+	s := d.shard(srcAddr, xid)
 
 	cp := make([]byte, len(reply))
 	copy(cp, reply)
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	e, ok := d.entries[key]
+	e, ok := s.entries[key]
 	if !ok {
 		// Slot evicted under cap pressure while the handler ran; re-insert as
 		// DONE so a retransmit still replays.
-		d.evictIfNeeded()
-		d.entries[key] = &drcEntry{state: drcDone, reply: cp, inserted: d.now()}
+		d.evictIfNeeded(s)
+		s.entries[key] = &drcEntry{state: drcDone, reply: cp, inserted: d.now()}
 		return
 	}
 	e.state = drcDone
@@ -199,29 +234,30 @@ func (d *duplicateRequestCache) record(srcAddr string, xid uint32, body []byte, 
 // leave a permanent in-progress slot that swallows later legitimate retries.
 func (d *duplicateRequestCache) abort(srcAddr string, xid uint32, body []byte) {
 	key := drcKey{srcAddr: srcAddr, xid: xid, checksum: crc32.ChecksumIEEE(body)}
+	s := d.shard(srcAddr, xid)
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if e, ok := d.entries[key]; ok && e.state == drcInProgress {
-		delete(d.entries, key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[key]; ok && e.state == drcInProgress {
+		delete(s.entries, key)
 	}
 }
 
-// evictIfNeeded enforces the entry cap. It first drops TTL-expired entries; if
-// still at capacity it evicts the oldest entry (approximate LRU by insertion/
-// completion time). Caller must hold d.mu.
-func (d *duplicateRequestCache) evictIfNeeded() {
-	if len(d.entries) < d.maxEntries {
+// evictIfNeeded enforces the per-shard entry cap. It first drops TTL-expired
+// entries; if still at capacity it evicts the oldest entry (approximate LRU by
+// insertion/completion time). Caller must hold s.mu.
+func (d *duplicateRequestCache) evictIfNeeded(s *drcShard) {
+	if len(s.entries) < d.maxPerShard {
 		return
 	}
 
 	now := d.now()
-	for k, e := range d.entries {
+	for k, e := range s.entries {
 		if now.Sub(e.inserted) >= d.ttl {
-			delete(d.entries, k)
+			delete(s.entries, k)
 		}
 	}
-	if len(d.entries) < d.maxEntries {
+	if len(s.entries) < d.maxPerShard {
 		return
 	}
 
@@ -229,12 +265,12 @@ func (d *duplicateRequestCache) evictIfNeeded() {
 	var oldestKey drcKey
 	var oldest time.Time
 	first := true
-	for k, e := range d.entries {
+	for k, e := range s.entries {
 		if first || e.inserted.Before(oldest) {
 			oldestKey, oldest, first = k, e.inserted, false
 		}
 	}
 	if !first {
-		delete(d.entries, oldestKey)
+		delete(s.entries, oldestKey)
 	}
 }
