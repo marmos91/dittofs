@@ -57,6 +57,8 @@ type Config struct {
 	CarveMaxAge      time.Duration // age-based carve batching cap
 	GCDeadRatioForce float64       // dead/total ratio that forces a repack
 	ShardCount       int           // number of shards, power of two, immutable per store
+	MaxLocalBytes    int64         // local on-disk cap that triggers eviction; 0 = unlimited
+	EvictMaxWait     time.Duration // write-path backpressure budget before ErrLocalStoreFull
 }
 
 const (
@@ -65,6 +67,7 @@ const (
 	defaultCarveMaxAge            = 5 * time.Second
 	defaultGCDeadRatioForce       = 0.5
 	defaultShardCount             = 16
+	defaultEvictMaxWait           = 30 * time.Second
 )
 
 func (c Config) withDefaults() Config {
@@ -83,6 +86,11 @@ func (c Config) withDefaults() Config {
 	if c.ShardCount <= 0 {
 		c.ShardCount = defaultShardCount
 	}
+	if c.EvictMaxWait <= 0 {
+		c.EvictMaxWait = defaultEvictMaxWait
+	}
+	// MaxLocalBytes intentionally has no default: 0 means "no local cap" (eviction
+	// off), the safe posture until the FSStore adapter wires --local-store-size.
 	return c
 }
 
@@ -116,9 +124,10 @@ type Store struct {
 	shards    []*shard
 	shardMask uint64
 
-	nextSeg  atomic.Uint64 // global segment-ID allocator
-	version  atomic.Uint64 // global monotonic LSN
-	unsynced atomic.Int64  // dirty bytes not yet carved to remote
+	nextSeg   atomic.Uint64 // global segment-ID allocator
+	version   atomic.Uint64 // global monotonic LSN
+	unsynced  atomic.Int64  // dirty bytes not yet carved to remote
+	diskBytes atomic.Int64  // total on-disk segment bytes (headers + records), the eviction gate input
 
 	writes    atomic.Int64
 	reads     atomic.Int64
@@ -267,11 +276,6 @@ func (s *Store) Stats() Stats {
 		sh.mu.Unlock()
 	}
 	return st
-}
-
-// Evict frees whole sealed segments under storage pressure. Not yet implemented.
-func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, error) {
-	return EvictResult{}, errNotImplemented
 }
 
 // Delete drops all of a file's cached ranges. Not yet implemented.
