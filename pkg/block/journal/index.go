@@ -103,13 +103,21 @@ func (fi *fileIndex) findRecord(fileOff int64, version uint64) int {
 	return -1
 }
 
+// segDead reports payload bytes in a segment that a newer write just made dead
+// (a superseded, non-cold interval), so the caller can charge them to that
+// segment's deadBytes counter — the size-tiered GC victim signal.
+type segDead struct {
+	seg   uint64
+	bytes int64
+}
+
 // insert records iv, resolving overlaps by version (highest wins). Existing
 // intervals with a higher version shadow iv; those with a lower version are
 // trimmed to make room. The result stays sorted and non-overlapping.
-// It returns the number of still-dirty (unsynced, non-cold) live bytes that this
-// insert superseded, so the caller can keep an unsynced-byte counter accurate
-// (dead bytes must leave the count).
-func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64) {
+// It returns the number of still-dirty (unsynced, non-cold) live bytes this
+// insert superseded (so the caller keeps the unsynced-byte counter accurate) and
+// the per-segment dead bytes it created (so the caller feeds GC victim selection).
+func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64, dead []segDead) {
 	ns, ne := iv.fileOff, iv.end()
 	// First interval that can overlap [ns, ne): end() is strictly increasing
 	// across the non-overlapping sorted set, so the predicate is monotone.
@@ -126,9 +134,11 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64) {
 			newFrags = subtractAll(newFrags, e.fileOff, e.end())
 		} else {
 			// New wins the overlap: keep only the parts of e outside iv. The
-			// removed slice of a dirty interval leaves the live dirty coverage.
-			if !e.synced && !e.cold {
-				if ov := min(e.end(), ne) - max(e.fileOff, ns); ov > 0 {
+			// removed slice's bytes are now dead in e's segment (a cold interval
+			// holds no local bytes, so it frees none).
+			if ov := min(e.end(), ne) - max(e.fileOff, ns); ov > 0 && !e.cold {
+				dead = append(dead, segDead{seg: e.loc.SegmentID, bytes: ov})
+				if !e.synced {
 					dirtyRemoved += ov
 				}
 			}
@@ -140,7 +150,7 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64) {
 	merged := append(survivors, newFrags...)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].fileOff < merged[j].fileOff })
 	fi.ivs = slices.Replace(fi.ivs, lo, hi, merged...)
-	return dirtyRemoved
+	return dirtyRemoved, dead
 }
 
 // subtractAll removes [rs, re) from every fragment, flattening the survivors.
@@ -224,24 +234,55 @@ func (s *Store) ReadAt(ctx context.Context, id FileID, offset int64, dst []byte)
 		return len(dst), false, nil
 	}
 	pieces := fi.plan(offset, int64(len(dst)))
+	// Resolve and read-guard each data piece's segment while the index and the
+	// segment set are still consistent under sh.mu. Holding the shared guard
+	// across the unlocked preads keeps a concurrent GC/eviction from reclaiming
+	// (and closing) the segment mid-read; the reclaimer removes it from the set
+	// and then blocks on the exclusive guard until these reads drain.
+	segs := make([]*segmentMeta, len(pieces))
+	for i, p := range pieces {
+		if p.hole || p.cold {
+			continue
+		}
+		seg := sh.segment(p.loc.SegmentID)
+		if seg == nil {
+			sh.mu.Unlock()
+			releaseGuards(segs)
+			return int(p.dstStart), false, fmt.Errorf("journal: unknown segment %d", p.loc.SegmentID)
+		}
+		seg.readGuard.RLock()
+		segs[i] = seg
+	}
 	sh.mu.Unlock()
+	defer releaseGuards(segs)
 
-	for _, p := range pieces {
-		seg := dst[p.dstStart:p.dstEnd]
+	for i, p := range pieces {
+		out := dst[p.dstStart:p.dstEnd]
 		switch {
 		case p.hole:
-			clear(seg)
+			clear(out)
 		case p.cold:
-			clear(seg)
+			clear(out)
 			cold = true
 			s.coldReads.Add(1)
 		default:
-			if _, err := s.readPayload(sh, p.loc, p.subOff, seg); err != nil {
-				return int(p.dstStart), false, err
+			seg := segs[i]
+			seg.lastAccess.Store(s.clock.Now().UnixNano())
+			if _, rerr := seg.fd.ReadAt(out, p.loc.Offset+p.subOff); rerr != nil {
+				return int(p.dstStart), false, fmt.Errorf("journal: read segment %d@%d: %w", p.loc.SegmentID, p.loc.Offset+p.subOff, rerr)
 			}
 		}
 	}
 	return len(dst), cold, nil
+}
+
+// releaseGuards drops every held read guard, tolerating the nil holes/cold slots.
+func releaseGuards(segs []*segmentMeta) {
+	for _, seg := range segs {
+		if seg != nil {
+			seg.readGuard.RUnlock()
+		}
+	}
 }
 
 // DataExtents returns the merged [start, end) byte ranges that hold written data

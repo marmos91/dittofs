@@ -14,7 +14,11 @@
 // in whether the record is born clean (already durable in the remote store) or
 // dirty (must be carved before it can be evicted).
 //
-// This package is built incrementally. The append/read/commit, recovery, carve
-// and pressure-gated eviction paths are live; gc and Delete are stubbed and
-// return errNotImplemented until their respective changes land.
+// This package is built incrementally: append/read/commit, recovery, carve,
+// pressure-gated eviction, delete and garbage collection are all live.
+//
+// GC never touches the remote store: repack relocates local cache bytes between
+// segments only. Remote-block refcount reclamation stays with the engine's
+// block-GC sweep, whose per-remote serialization is what makes a decrement safe
+// — journal must not drive one concurrently. See gc.go.
 package journal

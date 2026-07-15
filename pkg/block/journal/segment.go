@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -53,12 +54,16 @@ type segmentMeta struct {
 	records       atomic.Int64 // physical records appended (eviction synced-gate denominator)
 	syncedRecords atomic.Int64 // records with the synced flag set (eviction gate)
 	lastAccess    atomic.Int64 // unix nanos, approx-LRU victim key
-	// busy claims the segment for an exclusive whole-segment operation (evict, and
-	// GC repack once it lands). A claimer CAS-sets it true so eviction and GC never
-	// touch the same sealed segment concurrently; warm reads and carve don't claim.
+	// busy claims the segment for an exclusive whole-segment operation (evict or
+	// GC repack). A claimer CAS-sets it true so eviction and GC never touch the
+	// same sealed segment concurrently; warm reads and carve don't claim.
 	busy  atomic.Bool
 	fd    *os.File
 	idxFD *os.File // persistent append handle for the .idx sidecar (nil if unavailable)
+	// readGuard coordinates unlocked preads against a GC/eviction that unlinks the
+	// segment: readers hold it shared across a pread, the reclaimer holds it
+	// exclusive around close+unlink so no read touches a closed fd.
+	readGuard sync.RWMutex
 	// ponytail: the quotient-filter membership hint (rebuilt on repack) arrives
 	// with GC; a linear index scan suffices until segments are large.
 }
@@ -165,37 +170,41 @@ func fsyncDir(dir string) error {
 	return d.Close()
 }
 
-// sealSegment fsyncs the shard's active segment, flips its on-disk sealed bit,
-// fsyncs again, moves it into the sealed set and opens a fresh active segment.
-// Durability boundary: data is fsynced BEFORE the sealed bit is set, so a
-// commit that a size-cap rotation sealed between checkpoints never loses bytes.
+// sealInPlace makes an appended-into segment immutable: fsync its record bytes,
+// set the on-disk sealed bit, fsync again, then close its .idx append handle.
+// Durability boundary: data is fsynced BEFORE the sealed bit so recovery never
+// trusts a header whose records did not reach disk. The caller moves it into the
+// sealed set. Used both by rotation and by GC when it seals a repack target.
+func (m *segmentMeta) sealInPlace() error {
+	if err := m.fd.Sync(); err != nil {
+		return fmt.Errorf("journal: fsync before seal: %w", err)
+	}
+	// Preserve the original CreatedAt so age-gating stays correct.
+	if _, err := m.fd.WriteAt(encodeSegHeader(m.id, m.createdAt, segFlagSealed), 0); err != nil {
+		return fmt.Errorf("journal: set sealed bit: %w", err)
+	}
+	if err := m.fd.Sync(); err != nil {
+		return fmt.Errorf("journal: fsync after seal: %w", err)
+	}
+	if m.idxFD != nil {
+		_ = m.idxFD.Close()
+		m.idxFD = nil
+	}
+	m.sealed.Store(true)
+	return nil
+}
+
+// sealSegment seals the shard's active segment, moves it into the sealed set and
+// opens a fresh active segment. The segment's existing fd stays open and serves
+// warm reads from the sealed set; GC/eviction swap it only under its readGuard,
+// so readPayload's snapshot-then-unlocked-pread never touches a closed fd.
 //
 // Caller must hold sh.mu.
 func (s *Store) sealSegment(sh *shard) error {
 	old := sh.active
-	if err := old.fd.Sync(); err != nil {
-		return fmt.Errorf("journal: fsync before seal: %w", err)
+	if err := old.sealInPlace(); err != nil {
+		return err
 	}
-	// Rewrite the header with the sealed bit set, preserving the original
-	// CreatedAt so age-gating stays correct.
-	if _, err := old.fd.WriteAt(encodeSegHeader(old.id, old.createdAt, segFlagSealed), 0); err != nil {
-		return fmt.Errorf("journal: set sealed bit: %w", err)
-	}
-	if err := old.fd.Sync(); err != nil {
-		return fmt.Errorf("journal: fsync after seal: %w", err)
-	}
-	// A sealed segment is immutable: close its .idx append handle (the file
-	// stays on disk, read-only).
-	if old.idxFD != nil {
-		_ = old.idxFD.Close()
-		old.idxFD = nil
-	}
-	// Keep the segment's existing fd open and hand it to the sealed set — the
-	// same fd serves warm reads. It is set once at creation and never swapped,
-	// so readPayload's snapshot-then-unlocked-pread races nothing (mirrors how
-	// logblob pools the old active fd on rotate rather than reopening it). No
-	// append path touches a sealed segment, so the writable handle is harmless.
-	old.sealed.Store(true)
 	sh.sealed[old.id] = old
 
 	seg, err := s.createSegment()
@@ -303,7 +312,7 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	}
 
 	fi := sh.indexFor(id)
-	dirtyRemoved := fi.insert(interval{
+	dirtyRemoved, dead := fi.insert(interval{
 		fileOff: offset,
 		length:  int64(len(data)),
 		version: version,
@@ -311,6 +320,13 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 		synced:  synced,
 		loc:     SegmentLocation{SegmentID: seg.id, Offset: payloadOff, Length: int64(len(data))},
 	})
+	// Charge superseded bytes to their segment's dead counter: this is the
+	// size-tiered GC victim signal. sh.segment needs sh.mu, held here.
+	for _, d := range dead {
+		if ds := sh.segment(d.seg); ds != nil {
+			ds.deadBytes.Add(d.bytes)
+		}
+	}
 
 	s.writes.Add(1)
 	// unsynced tracks live dirty bytes: add this write if dirty, and always drop
@@ -331,9 +347,90 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	return nil
 }
 
+// appendTombstone frames a zero-payload tombstone record for id and fsyncs the
+// shard's active segment, returning the tombstone's Version. The fsync makes the
+// delete at least as durable as any data record it shadows (which was durable
+// only if fsynced), so recovery can never replay data whose tombstone was lost.
+// The record is indexed too (an idxEntry with flagTombstone), so rebuildIdx and
+// recovery suppress the file's older records without rescanning the .seg.
+func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	fileID := []byte(id)
+	if len(fileID) > maxFileIDLen {
+		return 0, fmt.Errorf("journal: FileID length %d exceeds max %d", len(fileID), maxFileIDLen)
+	}
+	if testFailTombstone != "" && id == testFailTombstone {
+		// Test seam: model a durability failure (e.g. a failed fsync) before any
+		// state is persisted. Delete must then leave its in-memory index untouched.
+		return 0, fmt.Errorf("journal: injected tombstone failure for %q", id)
+	}
+	recLen := recordLen(len(fileID), 0)
+
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	if sh.active.tail.Load()+recLen > s.cfg.SegmentSize {
+		if err := s.sealSegment(sh); err != nil {
+			sh.mu.Unlock()
+			return 0, err
+		}
+	}
+	seg := sh.active
+	version := s.nextVersion()
+	recStart, err := writeTombstoneRecord(seg, id, version)
+	if err != nil {
+		sh.mu.Unlock()
+		return 0, err
+	}
+	if seg.idxFD != nil {
+		_, _ = seg.idxFD.Write(idxEntry{
+			FileIDHash: fnv1a(string(id)),
+			Version:    version,
+			SegOffset:  uint64(recStart + recordHeaderSize + int64(len(fileID))),
+			Flags:      flagTombstone,
+		}.encode())
+	}
+	fd := seg.fd
+	sh.mu.Unlock()
+	if err := fd.Sync(); err != nil {
+		return 0, fmt.Errorf("journal: fsync tombstone: %w", err)
+	}
+	return version, nil
+}
+
+// testFailTombstone, when it equals a Delete's FileID, makes appendTombstone
+// return an error before persisting anything, modeling a durability failure.
+// Always empty in production.
+var testFailTombstone FileID
+
+// writeTombstoneRecord frames a zero-payload tombstone at seg's tail and advances
+// it. Shared by the delete path and by repack's tombstone carry-forward.
+func writeTombstoneRecord(seg *segmentMeta, id FileID, version uint64) (recStart int64, err error) {
+	fileID := []byte(id)
+	recStart = seg.tail.Load()
+	hdr := encodeHeader(recordHeader{
+		FileIDLen: uint16(len(fileID)),
+		Version:   version,
+		Flags:     flagTombstone,
+	}, fileID)
+	if _, err = seg.fd.WriteAt(hdr, recStart); err != nil {
+		return 0, fmt.Errorf("journal: write tombstone header: %w", err)
+	}
+	var crcBuf [payloadCRCSize]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc(nil))
+	if _, err = seg.fd.WriteAt(crcBuf[:], recStart+int64(len(hdr))); err != nil {
+		return 0, fmt.Errorf("journal: write tombstone CRC: %w", err)
+	}
+	seg.tail.Store(recStart + recordLen(len(fileID), 0))
+	return recStart, nil
+}
+
 // readPayload preads length bytes of a record payload starting subOffset into
 // the payload identified by loc, into dst. It snapshots the segment fd under
-// the shard lock, then preads unlocked.
+// the shard lock, then preads unlocked. Carve is its only caller and holds the
+// shard's carveMu, which GC/eviction also hold before closing a segment, so the
+// fd cannot close under it. (ReadAt does its own resolve-and-guard — see readAt.)
 func (s *Store) readPayload(sh *shard, loc SegmentLocation, subOffset int64, dst []byte) (int, error) {
 	sh.mu.Lock()
 	seg := sh.segment(loc.SegmentID)

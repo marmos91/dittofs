@@ -75,7 +75,8 @@ func (s *Store) recover() error {
 		maxVersion uint64
 		unsynced   int64
 		missingIdx int
-		opened     []*segmentMeta // every fd we opened, closed on error
+		opened     []*segmentMeta        // every fd we opened, closed on error
+		tombstones = map[FileID]uint64{} // deleted file -> highest tombstone version
 		ok         bool
 	)
 	defer func() {
@@ -177,6 +178,10 @@ func (s *Store) recover() error {
 				maxVersion = rec.header.Version
 			}
 			if rec.header.Flags&flagTombstone != 0 {
+				fid := FileID(rec.fileID)
+				if rec.header.Version > tombstones[fid] {
+					tombstones[fid] = rec.header.Version
+				}
 				continue
 			}
 			payloadOff := rec.segOff + recordHeaderSize + int64(len(rec.fileID))
@@ -222,6 +227,30 @@ func (s *Store) recover() error {
 	// nextVersion increments-then-returns, so storing maxVersion makes the next
 	// issued LSN exactly max(observed)+1 — strictly past every replayed record.
 	s.version.Store(maxVersion)
+
+	// Honor tombstones: a delete's tombstone Version exceeds every prior write to
+	// that file, so drop the file's intervals older than it. A rewrite after the
+	// delete carries a higher Version and survives, recreating the file.
+	for _, idxMap := range indexByShard {
+		for fid, fi := range idxMap {
+			tv, deleted := tombstones[fid]
+			if !deleted {
+				continue
+			}
+			kept := fi.ivs[:0]
+			for _, iv := range fi.ivs {
+				if iv.version > tv {
+					kept = append(kept, iv)
+				}
+			}
+			if len(kept) == 0 {
+				delete(idxMap, fid)
+			} else {
+				fi.ivs = kept
+			}
+		}
+	}
+
 	// Recompute unsynced from the final live coverage rather than the raw
 	// per-record sum: insert resolves overlaps, so a superseded record's bytes are
 	// dead and must not count toward the backpressure signal.

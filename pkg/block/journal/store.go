@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -17,10 +18,6 @@ type FileID string
 
 // BlockID is the opaque key of a packed block in the remote store.
 type BlockID string
-
-// errNotImplemented is returned by operations whose implementation lands in a
-// later change (carve, evict, gc, delete).
-var errNotImplemented = errors.New("journal: not yet implemented")
 
 // errClosed is returned by every operation attempted on a closed Store.
 var errClosed = errors.New("journal: store closed")
@@ -123,6 +120,12 @@ type Store struct {
 
 	shards    []*shard
 	shardMask uint64
+
+	// gcMu serializes GC passes against each other: only one pass runs at a time,
+	// so two passes never pick the same victim. It does NOT exclude Carve or Evict
+	// — a running GC pass keeps them off its segments via the per-shard carveMu it
+	// holds and the per-segment busy claim it CAS-sets on each victim, not gcMu.
+	gcMu sync.Mutex
 
 	nextSeg   atomic.Uint64 // global segment-ID allocator
 	version   atomic.Uint64 // global monotonic LSN
@@ -278,9 +281,63 @@ func (s *Store) Stats() Stats {
 	return st
 }
 
-// Delete drops all of a file's cached ranges. Not yet implemented.
+// Delete drops all of a file's cached ranges and persists a tombstone so
+// recovery does not resurrect the file from its still-on-disk records (they
+// linger in their segments until GC repacks them away). The tombstone's Version
+// exceeds every prior write to the file, so a rewrite after the delete — with a
+// higher Version — survives, recreating the file (correct create-after-unlink).
 func (s *Store) Delete(ctx context.Context, id FileID) error {
-	return errNotImplemented
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.closed.Load() {
+		return errClosed
+	}
+	// Durability first: persist and fsync the tombstone BEFORE touching the
+	// in-memory index or the counters. If the append fails, the file's ranges are
+	// left intact — a failed Delete never makes data disappear, and a crash can
+	// never resurrect a file whose tombstone is already durable. The returned
+	// Version fences which intervals the delete buries: only those at or below it
+	// (a concurrent rewrite that raced past it carries a higher Version and
+	// survives, recreating the file), mirroring recovery.
+	tombVer, err := s.appendTombstone(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	fi := sh.index[id]
+	var dirty int64
+	if fi != nil {
+		kept := fi.ivs[:0]
+		for _, iv := range fi.ivs {
+			if iv.version > tombVer {
+				kept = append(kept, iv) // raced past the delete: survives
+				continue
+			}
+			// Buried by the tombstone: its bytes become dead in their segment.
+			if iv.cold {
+				continue
+			}
+			if seg := sh.segment(iv.loc.SegmentID); seg != nil {
+				seg.deadBytes.Add(iv.length)
+			}
+			if !iv.synced {
+				dirty += iv.length
+			}
+		}
+		if len(kept) == 0 {
+			delete(sh.index, id)
+		} else {
+			fi.ivs = kept
+		}
+	}
+	sh.mu.Unlock()
+	if dirty != 0 {
+		s.unsynced.Add(-dirty)
+	}
+	return nil
 }
 
 // segPath returns the on-disk path of a segment by ID.
