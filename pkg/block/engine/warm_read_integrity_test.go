@@ -77,7 +77,12 @@ func TestWarmReadIntegrity_AfterDrainUploads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
 		}
-		defer func() { _ = ms.Close() }()
+		// Register ms.Close BEFORE building the engine so cleanups run LIFO:
+		// bs.Close() (registered inside newEngineWithRemote) joins the syncer's
+		// download/prefetch workers first, then the metadata store closes. A
+		// plain `defer ms.Close()` runs before t.Cleanup and closed badger out
+		// from under an in-flight prefetch worker -> "DB Closed" panic (#1722).
+		t.Cleanup(func() { _ = ms.Close() })
 		runWarmReadIntegrity(t, ms)
 	})
 }

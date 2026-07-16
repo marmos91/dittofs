@@ -162,7 +162,9 @@ func TestBadgerColdRead_ShrinkToZeros(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
 	}
-	defer func() { _ = ms.Close() }()
+	// Cleanup (not defer) so bs.Close() joins the syncer workers before the
+	// metadata store closes -- see #1722.
+	t.Cleanup(func() { _ = ms.Close() })
 	runShrinkToZeros(t, ms)
 }
 
@@ -171,6 +173,8 @@ func TestBadgerColdRead_BoundaryShiftStale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
 	}
-	defer func() { _ = ms.Close() }()
+	// Cleanup (not defer) so bs.Close() joins the syncer workers before the
+	// metadata store closes -- see #1722.
+	t.Cleanup(func() { _ = ms.Close() })
 	runBoundaryShiftStale(t, ms)
 }
