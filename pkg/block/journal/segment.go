@@ -60,7 +60,7 @@ type segmentMeta struct {
 	// record at or below a live snapshot's watermark and must not be evicted or
 	// GC-repacked while that snapshot lives (#1718). Set on the first append and
 	// reconstructed during the recovery scan and repack.
-	minVersion atomic.Int64
+	minVersion atomic.Uint64
 	// busy claims the segment for an exclusive whole-segment operation (evict or
 	// GC repack). A claimer CAS-sets it true so eviction and GC never touch the
 	// same sealed segment concurrently; warm reads and carve don't claim.
@@ -83,10 +83,10 @@ type segmentMeta struct {
 func (m *segmentMeta) noteMinVersion(v uint64) {
 	for {
 		cur := m.minVersion.Load()
-		if cur != 0 && cur <= int64(v) {
+		if cur != 0 && cur <= v {
 			return
 		}
-		if m.minVersion.CompareAndSwap(cur, int64(v)) {
+		if m.minVersion.CompareAndSwap(cur, v) {
 			return
 		}
 	}

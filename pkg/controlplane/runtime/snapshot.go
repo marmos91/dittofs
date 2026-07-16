@@ -1511,6 +1511,19 @@ func (r *Runtime) restoreSnapshot(
 		// dirty records reach the FileChunk manifest. The snapshot's pinned
 		// segments still hold the pre-overwrite bytes RestoreToVersion reads back
 		// (#1718).
+		//
+		// Fail closed on a journal-backed snapshot that carries no watermark but
+		// held data: JournalVersion==0 + ManifestCount>0 + a live journal that has
+		// really written records (bs.JournalVersion()>0) means the row predates
+		// #1718 watermark recording, so rewinding to v0 would silently tombstone
+		// real bytes. The three conditions together exclude the legitimate cases:
+		// an empty-FS snapshot (ManifestCount==0, correct to rewind-to-empty) and a
+		// non-journal local store (memory: bs.JournalVersion()==0, restore recovers
+		// from its own CAS, not RestoreToVersion).
+		if snap.JournalVersion == 0 && snap.ManifestCount > 0 && bs.JournalVersion() > 0 {
+			return safetySnapshotID, fmt.Errorf("restore snapshot %q: predates journal-version tracking (manifest_count=%d), local-only restore unavailable: %w",
+				snapID, snap.ManifestCount, models.ErrRestoreAborted)
+		}
 		if rerr := bs.RestoreToVersion(ctx, snap.JournalVersion); rerr != nil {
 			return safetySnapshotID, fmt.Errorf("restore snapshot %q: rewind journal to v%d (safety-snap=%s): %w: %v",
 				snapID, snap.JournalVersion, safetySnapshotID, models.ErrRestoreAborted, rerr)

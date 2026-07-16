@@ -334,7 +334,7 @@ func (s *Store) pinned(seg *segmentMeta) bool {
 		return false
 	}
 	mv := seg.minVersion.Load()
-	return mv != 0 && uint64(mv) <= pv
+	return mv != 0 && mv <= pv
 }
 
 // pickVictim returns the sealed segment with the highest dead fraction, or nil
