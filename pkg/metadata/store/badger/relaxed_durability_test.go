@@ -92,6 +92,73 @@ func TestRelaxedDurability_StrictModeNoInlineSync(t *testing.T) {
 		"strict mode must fsync via SyncWrites, never inline db.Sync")
 }
 
+// TestRelaxedDurability_FlushPendingWriteRouting pins the #1687 routing: the
+// metadata Service's FlushPendingWriteForFile must route its size/mtime commit to
+// WithTransactionRelaxed when durable=false (no inline fsync — the deferred hot
+// path) and to WithTransaction when durable=true (inline fsync — FILE_SYNC /
+// CLOSE / FLUSH / shutdown). If a future change inverted or dropped this routing,
+// the inline-sync count deltas below flip and this fails.
+func TestRelaxedDurability_FlushPendingWriteRouting(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "metadata.db")
+	store := openRelaxed(t, dbPath)
+	t.Cleanup(func() { _ = store.Close() })
+
+	const shareName = "/test"
+	root, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o777,
+	})
+	require.NoError(t, err)
+	rootHandle, err := metadata.EncodeShareHandle(shareName, root.ID)
+	require.NoError(t, err)
+
+	svc := metadata.New() // deferred commit is on by default
+	require.NoError(t, svc.RegisterStoreForShare(shareName, store))
+
+	authCtx := &metadata.AuthContext{
+		Context:    ctx,
+		AuthMethod: "unix",
+		Identity: &metadata.Identity{
+			UID:  metadata.Uint32Ptr(0),
+			GID:  metadata.Uint32Ptr(0),
+			GIDs: []uint32{0},
+		},
+	}
+
+	// stagePending creates a file and records a deferred (pending) size write, so
+	// FlushPendingWriteForFile has real work to commit.
+	stagePending := func(name string, size uint64) metadata.FileHandle {
+		_, _, cerr := svc.CreateFile(authCtx, rootHandle, name, &metadata.FileAttr{Mode: 0o644})
+		require.NoError(t, cerr)
+		h, gerr := store.GetChild(ctx, rootHandle, name)
+		require.NoError(t, gerr)
+		intent, perr := svc.PrepareWrite(authCtx, h, size)
+		require.NoError(t, perr)
+		_, cwErr := svc.CommitWrite(authCtx, intent)
+		require.NoError(t, cwErr)
+		return h
+	}
+
+	// durable=false → relaxed commit, NO inline fsync.
+	hRelaxed := stagePending("relaxed.bin", 4096)
+	before := store.InlineSyncCountForTest()
+	flushed, ferr := svc.FlushPendingWriteForFile(authCtx, hRelaxed, false)
+	require.NoError(t, ferr)
+	require.True(t, flushed, "relaxed flush must have pending size to commit")
+	require.Equal(t, before, store.InlineSyncCountForTest(),
+		"durable=false must route through WithTransactionRelaxed (no inline fsync)")
+
+	// durable=true → strict commit, exactly one inline fsync.
+	hDurable := stagePending("durable.bin", 4096)
+	before = store.InlineSyncCountForTest()
+	flushed, ferr = svc.FlushPendingWriteForFile(authCtx, hDurable, true)
+	require.NoError(t, ferr)
+	require.True(t, flushed, "durable flush must have pending size to commit")
+	require.Equal(t, before+1, store.InlineSyncCountForTest(),
+		"durable=true must route through WithTransaction (inline fsync)")
+}
+
 // TestRelaxedDurability_DurableWriteSurvivesReopen confirms a durable write on
 // the relaxed store persists across a clean close+reopen with no loss — the
 // everyday durability the deferred-fsync path must never compromise.

@@ -443,6 +443,11 @@ func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 // Do not use in production code.
 func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
 
+// Local returns the engine's underlying local store (the journal-backed tier),
+// or nil if the store has no local tier. Used by share startup to reconcile
+// metadata file sizes against the journal's durable high-water mark (#1687).
+func (bs *Store) Local() local.LocalStore { return bs.local }
+
 // LocalStore returns nil: the journal-backed local tier is a per-file byte
 // cache, not a content-addressed block.Store, so there is no hash-namespace to
 // sweep. The journal self-manages local segment reclaim (dead-byte GC +

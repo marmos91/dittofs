@@ -115,11 +115,17 @@ func (s *BadgerMetadataStore) WithTransaction(ctx context.Context, fn func(tx me
 // WithTransactionRelaxed runs fn exactly like WithTransaction but, in
 // relaxed-durability mode, does NOT force an inline fsync on commit — the write
 // becomes durable via the background syncer within durabilitySyncInterval
-// instead (#1573 Wall 1). Use ONLY for pure-namespace/attr writes
-// (create/remove/rename/mkdir/mode/owner/times) that are not paired with block
-// data. NEVER use it for file-size, block-manifest, or rollup-offset writes —
-// those are data-paired and must stay synchronous (WithTransaction) or #588
-// silent-zeros can recur. In strict mode this is identical to WithTransaction.
+// instead (#1573 Wall 1). Use for namespace/attr writes
+// (create/remove/rename/mkdir/mode/owner/times) and, since #1687, the deferrable
+// file-size commit on UNSTABLE WRITE / COMMIT / SMB inline WRITE. The relaxed
+// size commit is safe from #588 silent-zeros because the byte data is fsync'd
+// into the local journal before the WRITE is ACK'd, and
+// reconcileMetadataSizeFromJournal grows metadata.Size up to the journal's
+// durable high-water mark on share start (max-only, never shrinks) — a crash
+// before the deferred metadata fsync cannot truncate ACK'd data. NEVER use it for
+// the block-manifest or rollup-offset writes, which have no such reconcile and
+// must stay synchronous (WithTransaction). In strict mode this is identical to
+// WithTransaction.
 func (s *BadgerMetadataStore) WithTransactionRelaxed(ctx context.Context, fn func(tx metadata.Transaction) error) error {
 	return s.withTransaction(ctx, fn, false)
 }

@@ -116,7 +116,7 @@ func TestCopyChunk_SparseDest_LeadingGapReadsZeros(t *testing.T) {
 	if _, err := metaSvc.CommitWrite(authCtx, srcWriteOp); err != nil {
 		t.Fatalf("CommitWrite src: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, srcHandle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, srcHandle, true); err != nil {
 		t.Fatalf("Flush src: %v", err)
 	}
 
@@ -337,7 +337,7 @@ func TestCopyChunk_SparseDest_SurvivesPriorPayloadReuse(t *testing.T) {
 	if _, err := metaSvc.CommitWrite(authCtx, srcWriteOp); err != nil {
 		t.Fatalf("CommitWrite src: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, srcHandle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, srcHandle, true); err != nil {
 		t.Fatalf("Flush src: %v", err)
 	}
 
@@ -558,7 +558,7 @@ func TestPurgeBlockStorePayload_PreservesHardLinkedContent(t *testing.T) {
 	if _, err := metaSvc.CommitWrite(authCtx, wop); err != nil {
 		t.Fatalf("CommitWrite: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle, true); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
 	if _, err := metaSvc.CreateHardLink(authCtx, rootHandle, "b", handle); err != nil {

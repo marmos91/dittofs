@@ -52,8 +52,10 @@ func (s *Service) PunchHole(ctx *AuthContext, handle FileHandle, offset, length 
 	}
 
 	// Commit any pending write metadata first so file.Blocks/Size reflect the
-	// latest state before we mutate the block list.
-	if _, err := s.FlushPendingWriteForFile(ctx, handle); err != nil {
+	// latest state before we mutate the block list. Durable: this flush precedes a
+	// strict manifest-mutating PutFile, and DEALLOCATE/ALLOCATE are rare (not the
+	// hot WRITE path), so keep the metadata fsync inline.
+	if _, err := s.FlushPendingWriteForFile(ctx, handle, true); err != nil {
 		return nil, err
 	}
 
@@ -125,7 +127,8 @@ func (s *Service) Allocate(ctx *AuthContext, handle FileHandle, offset, length u
 		return nil, err
 	}
 
-	if _, err := s.FlushPendingWriteForFile(ctx, handle); err != nil {
+	// Durable flush (see PunchHole): precedes a strict PutFile, rare op.
+	if _, err := s.FlushPendingWriteForFile(ctx, handle, true); err != nil {
 		return nil, err
 	}
 

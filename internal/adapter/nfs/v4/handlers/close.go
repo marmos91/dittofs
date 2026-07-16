@@ -104,7 +104,9 @@ func (h *Handler) handleClose(ctx *types.CompoundContext, reader io.Reader) *typ
 			"error", metaErr, "client", ctx.ClientAddr)
 	} else {
 		fileHandle := metadata.FileHandle(ctx.CurrentFH)
-		flushed, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle)
+		// Relaxed metadata commit (#1687): NFSv4 CLOSE is not an fsync boundary
+		// (clients use COMMIT for durability); defer the metadata fsync.
+		flushed, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle, false)
 		if flushErr != nil {
 			logger.Warn("NFSv4 CLOSE metadata flush failed",
 				"error", flushErr, "client", ctx.ClientAddr)

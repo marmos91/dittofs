@@ -478,7 +478,9 @@ func (h *Handler) handleSetZeroData(ctx *SMBHandlerContext, body []byte) (*Handl
 	// SMB requires immediate cross-session metadata visibility (unlike NFS
 	// which uses explicit COMMIT). Flush deferred metadata so a subsequent
 	// QUERY_INFO sees the new size/timestamps without waiting for CLOSE.
-	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle); flushErr != nil {
+	// Relaxed (#1687): visibility from the metadata write, durability from the
+	// journal size reconcile on restart; CLOSE/FLUSH remain strict.
+	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
 		logger.Debug("IOCTL FSCTL_SET_ZERO_DATA: deferred metadata flush failed (non-fatal)",
 			"path", openFile.Path, "error", flushErr)
 	}
