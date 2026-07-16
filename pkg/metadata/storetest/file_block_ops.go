@@ -1766,6 +1766,7 @@ func testEnumerateFileChunks_UnlinkedFileExcludesManifest(t *testing.T, factory 
 		t.Fatalf("GetFile: %v", err)
 	}
 	f.Blocks = []block.ChunkRef{{Hash: want, Offset: 0, Size: 4 << 20}}
+	f.BlocksDirty = true
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile (linked): %v", err)
@@ -1807,6 +1808,7 @@ func testEnumerateFileChunks_HardLinkSurvivesOneRemoval(t *testing.T, factory St
 		t.Fatalf("GetFile: %v", err)
 	}
 	f.Blocks = []block.ChunkRef{{Hash: want, Offset: 0, Size: 4 << 20}}
+	f.BlocksDirty = true
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile: %v", err)

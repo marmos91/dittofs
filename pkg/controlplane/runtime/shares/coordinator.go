@@ -203,6 +203,8 @@ func (c *metadataCoordinator) PersistFileChunks(ctx context.Context, payloadID s
 		}
 		// FileAttr is embedded on metadata.File (not a pointer).
 		file.Blocks = blocks
+		// Post-Flush manifest write — must persist file_block_refs.
+		file.BlocksDirty = true
 		// Same-txn write of Blocks AND ObjectID.
 		file.ObjectID = objectID
 		if err := tx.PutFile(ctx, file); err != nil {

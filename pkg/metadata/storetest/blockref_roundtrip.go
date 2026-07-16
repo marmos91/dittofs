@@ -124,6 +124,7 @@ func putBlocks(t *testing.T, store metadata.Store, fileHandle metadata.FileHandl
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
 	file.Blocks = blocks
+	file.BlocksDirty = true
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile (%d blocks): %v", len(blocks), err)
 	}
@@ -202,6 +203,7 @@ func testChunkRef_RoundTripBasic(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
 	file.Blocks = blocks
+	file.BlocksDirty = true
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
 	}
@@ -251,6 +253,7 @@ func testChunkRef_NilBlocks(t *testing.T, factory StoreFactory) {
 	// Now explicitly set Blocks to nil and PutFile; round-trip should
 	// remain empty.
 	got.Blocks = nil
+	got.BlocksDirty = true // drop to nil must run the manifest DELETE
 	if err := store.PutFile(ctx, got); err != nil {
 		t.Fatalf("PutFile (nil Blocks): %v", err)
 	}
@@ -288,6 +291,7 @@ func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre 5): %v", err)
 	}
 	file.Blocks = five
+	file.BlocksDirty = true
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile (5 blocks): %v", err)
 	}
@@ -308,6 +312,7 @@ func testChunkRef_ReplaceBlocks(t *testing.T, factory StoreFactory) {
 		{Hash: hashOfSeed("rep-Y"), Offset: 2 << 20, Size: 2 << 20},
 	}
 	got5.Blocks = two
+	got5.BlocksDirty = true
 	if err := store.PutFile(ctx, got5); err != nil {
 		t.Fatalf("PutFile (2 blocks replace): %v", err)
 	}
@@ -355,6 +360,7 @@ func testChunkRef_CascadeDeleteOnFileDelete(t *testing.T, factory StoreFactory) 
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.Blocks = blocks
+	file.BlocksDirty = true
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
 	}

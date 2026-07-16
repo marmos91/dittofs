@@ -75,6 +75,7 @@ func testObjectID_RoundTripBasic(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
 	file.Blocks = blocks
+	file.BlocksDirty = true
 	file.ObjectID = wantOID
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
@@ -114,6 +115,7 @@ func testObjectID_ZeroSentinel(t *testing.T, factory StoreFactory) {
 
 	// Explicit PutFile with the zero sentinel.
 	got.Blocks = nil
+	got.BlocksDirty = true // zero-case: persist the emptied manifest
 	got.ObjectID = block.ObjectID{}
 	if err := store.PutFile(ctx, got); err != nil {
 		t.Fatalf("PutFile (zero ObjectID): %v", err)
@@ -159,6 +161,7 @@ func testObjectID_MutationLifecycle(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.Blocks = blocks
+	file.BlocksDirty = true
 	file.ObjectID = wantOID
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile (quiesced): %v", err)
@@ -237,6 +240,7 @@ func testObjectID_SortStability(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile: %v", err)
 	}
 	file.Blocks = blocks
+	file.BlocksDirty = true
 	file.ObjectID = a
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)

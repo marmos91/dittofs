@@ -49,6 +49,7 @@ func testObjectID_FindByObjectID(t *testing.T, factory StoreFactory) {
 			t.Fatalf("GetFile %s: %v", pair.label, err)
 		}
 		f.Blocks = pair.blocks
+		f.BlocksDirty = true
 		f.ObjectID = pair.oid
 		if err := store.PutFile(ctx, f); err != nil {
 			t.Fatalf("PutFile %s: %v", pair.label, err)
@@ -122,6 +123,7 @@ func testObjectID_RestartStability(t *testing.T, factory StoreFactory) {
 		t.Fatalf("GetFile (pre-put): %v", err)
 	}
 	file.Blocks = blocks
+	file.BlocksDirty = true
 	file.ObjectID = wantOID
 	if err := store.PutFile(ctx, file); err != nil {
 		t.Fatalf("PutFile: %v", err)
@@ -192,6 +194,7 @@ func testObjectID_ConcurrentQuiesceRace(t *testing.T, factory StoreFactory) {
 		f.Blocks = []block.ChunkRef{
 			{Hash: hashOfSeed(seed), Offset: 0, Size: 4096},
 		}
+		f.BlocksDirty = true
 		f.ObjectID = contested
 		return f
 	}
@@ -286,6 +289,7 @@ func testObjectID_CrossShareDedupScope(t *testing.T, factory StoreFactory) {
 			t.Fatalf("GetFile %s: %v", pair.label, err)
 		}
 		f.Blocks = pair.blocks
+		f.BlocksDirty = true
 		f.ObjectID = pair.oid
 		if err := store.PutFile(ctx, f); err != nil {
 			t.Fatalf("PutFile %s: %v", pair.label, err)

@@ -29,6 +29,13 @@ type PostgresMetadataStore struct {
 	// logger for structured logging
 	logger *slog.Logger
 
+	// manifestWrites counts how many times PutFile actually persisted the
+	// file_block_refs manifest (i.e. ran past the BlocksDirty gate). Test-only
+	// observability: it lets the conformance suite prove an attr-only write
+	// performed ZERO manifest writes (row-count alone cannot — a DELETE+INSERT
+	// of the same M rows leaves the same count). Never read in production.
+	manifestWrites atomic.Int64
+
 	// ctx is the store context (for graceful shutdown)
 	ctx context.Context
 

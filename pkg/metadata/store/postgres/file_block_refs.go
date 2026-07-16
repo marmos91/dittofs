@@ -53,6 +53,13 @@ func putFileChunkRefs(ctx context.Context, tx pgx.Tx, fileID uuid.UUID, blocks [
 	return nil
 }
 
+// PutFileChunkRefsCallCount returns how many times PutFile persisted the
+// file_block_refs manifest (ran past the BlocksDirty gate) since store open.
+// Test-only — proves attr-only writes perform ZERO manifest writes.
+func (s *PostgresMetadataStore) PutFileChunkRefsCallCount() int64 {
+	return s.manifestWrites.Load()
+}
+
 // deleteFileChunkRefs removes all rows for fileID. The FK cascade
 // handles this automatically when the files row is deleted; this helper
 // is exposed for callers that pre-clear refs without dropping the row.

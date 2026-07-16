@@ -182,6 +182,7 @@ func testSnapshot_LiveSetUnionsManifestNegativeControl(t *testing.T, factory Sna
 	// Manifest carries the hash; NO FileChunkStore.Put is issued, so the CAS
 	// index (file_blocks / fb: / fileChunkData.blocks) has no row for it.
 	f.Blocks = []block.ChunkRef{{Hash: manifestOnly, Offset: 0, Size: 4 << 20}}
+	f.BlocksDirty = true
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile: %v", err)
@@ -220,6 +221,7 @@ func testSnapshot_ExcludesUnlinkedFileChunks(t *testing.T, factory SnapshotableS
 		t.Fatalf("GetFile: %v", err)
 	}
 	f.Blocks = []block.ChunkRef{{Hash: dead, Offset: 0, Size: 4 << 20}}
+	f.BlocksDirty = true
 	f.Size = 4 << 20
 	if err := store.PutFile(ctx, f); err != nil {
 		t.Fatalf("PutFile: %v", err)
@@ -283,6 +285,7 @@ func populateTestData(t *testing.T, store metadata.Store, sharePrefix string) (s
 		{Hash: hashA0, Offset: 0, Size: 4 << 20},
 		{Hash: hashA1, Offset: 4 << 20, Size: 4 << 20},
 	}
+	fA.BlocksDirty = true
 	fA.Size = 8 << 20
 	if err := store.PutFile(ctx, fA); err != nil {
 		t.Fatalf("PutFile alpha: %v", err)
@@ -299,6 +302,7 @@ func populateTestData(t *testing.T, store metadata.Store, sharePrefix string) (s
 		{Hash: hashB0, Offset: 0, Size: 2 << 20},
 		{Hash: hashA0, Offset: 2 << 20, Size: 4 << 20}, // shared with alpha
 	}
+	fB.BlocksDirty = true
 	fB.Size = 6 << 20
 	if err := store.PutFile(ctx, fB); err != nil {
 		t.Fatalf("PutFile beta: %v", err)
@@ -487,6 +491,7 @@ func testSnapshot_ConcurrentWriter(t *testing.T, factory SnapshotableStoreFactor
 				Blocks: []block.ChunkRef{
 					{Hash: concurrentHash, Offset: 0, Size: 1 << 20},
 				},
+				BlocksDirty: true,
 			},
 		}
 		f.ID = id
@@ -748,6 +753,7 @@ func testSnapshot_HashSet_ExactMatch(t *testing.T, factory SnapshotableStoreFact
 		{Hash: hashes[0], Offset: 0, Size: 1 << 20},
 		{Hash: hashes[1], Offset: 1 << 20, Size: 1 << 20},
 	}
+	f1.BlocksDirty = true
 	if err := store.PutFile(ctx, f1); err != nil {
 		t.Fatalf("PutFile f1: %v", err)
 	}
@@ -762,6 +768,7 @@ func testSnapshot_HashSet_ExactMatch(t *testing.T, factory SnapshotableStoreFact
 		{Hash: hashes[2], Offset: 0, Size: 1 << 20},
 		{Hash: hashes[3], Offset: 1 << 20, Size: 1 << 20},
 	}
+	f2.BlocksDirty = true
 	if err := store.PutFile(ctx, f2); err != nil {
 		t.Fatalf("PutFile f2: %v", err)
 	}
@@ -775,6 +782,7 @@ func testSnapshot_HashSet_ExactMatch(t *testing.T, factory SnapshotableStoreFact
 	f3.Blocks = []block.ChunkRef{
 		{Hash: hashes[4], Offset: 0, Size: 1 << 20},
 	}
+	f3.BlocksDirty = true
 	if err := store.PutFile(ctx, f3); err != nil {
 		t.Fatalf("PutFile f3: %v", err)
 	}
@@ -820,6 +828,7 @@ func testSnapshot_HashSet_Dedup(t *testing.T, factory SnapshotableStoreFactory) 
 	fA.Blocks = []block.ChunkRef{
 		{Hash: sharedHash, Offset: 0, Size: 4 << 20},
 	}
+	fA.BlocksDirty = true
 	if err := store.PutFile(ctx, fA); err != nil {
 		t.Fatalf("PutFile dup-a: %v", err)
 	}
@@ -833,6 +842,7 @@ func testSnapshot_HashSet_Dedup(t *testing.T, factory SnapshotableStoreFactory) 
 	fB.Blocks = []block.ChunkRef{
 		{Hash: sharedHash, Offset: 0, Size: 4 << 20},
 	}
+	fB.BlocksDirty = true
 	if err := store.PutFile(ctx, fB); err != nil {
 		t.Fatalf("PutFile dup-b: %v", err)
 	}

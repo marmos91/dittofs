@@ -73,6 +73,8 @@ func CopyPayload(
 			return fmt.Errorf("fetch dst file attr: %w", err)
 		}
 		dstFile.Blocks = newBlocks
+		// Wholesale manifest replacement on the destination — persist refs.
+		dstFile.BlocksDirty = true
 		dstFile.Size = srcFile.Size
 		dstFile.Mtime = time.Now()
 		dstFile.Ctime = dstFile.Mtime // content change is also a metadata change

@@ -102,6 +102,18 @@ type FileAttr struct {
 	// Memory: typed slice held directly.
 	Blocks []block.ChunkRef `json:"blocks,omitempty"`
 
+	// BlocksDirty is a transient, request-scoped signal that this PutFile
+	// legitimately mutated the block manifest (Blocks was assigned/pruned),
+	// so the SQL backends must persist file_block_refs. It is NOT persisted:
+	// json:"-" keeps it out of the Badger f: blob, and Postgres/SQLite write
+	// explicit column lists so a struct field never reaches a row. It
+	// defaults to false, so attr-only writes (chmod/utimes/close/rename/
+	// xattr/…) skip the DELETE+INSERT manifest rewrite entirely on the SQL
+	// backends — the write-amplification fix (#1715 #8). Only the sites that
+	// actually change Blocks set it true; Memory/Badger ignore it and always
+	// hold Blocks inline.
+	BlocksDirty bool `json:"-"`
+
 	// ObjectID is the BLAKE3 Merkle root over ChunkRef.Hash values sorted
 	// by Offset, populated lazily at the post-Flush coordinator hook
 	// (). All-zero sentinel means

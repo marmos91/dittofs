@@ -55,6 +55,13 @@ type SQLiteMetadataStore struct {
 	// query on startup.
 	usedBytes atomic.Int64
 
+	// manifestWrites counts how many times PutFile actually persisted the
+	// file_block_refs manifest (i.e. ran past the BlocksDirty gate). Test-only
+	// observability: it lets the conformance suite prove an attr-only write
+	// performed ZERO manifest writes (row-count alone cannot — a DELETE+INSERT
+	// of the same M rows leaves the same count). Never read in production.
+	manifestWrites atomic.Int64
+
 	// userUsage / groupUsage track per-identity usage (bytes + file count) for
 	// regular files, keyed by owner uid / gid. Seeded from a GROUP BY query on
 	// startup and updated from each committed transaction's deltas. Guarded by

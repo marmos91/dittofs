@@ -61,6 +61,10 @@ func ProjectManifestToBlocks(ctx context.Context, tx Transaction, payloadID stri
 		return nil
 	}
 	file.Blocks = ManifestToChunkRefs(rows)
+	// Re-projection from the manifest IS a manifest write — persist it. This
+	// funnels carve/rollup commit (DefaultCommitBlock), the #953 reap+re-carve
+	// (ReapSupersededManifest), and coordinator.ReprojectBlocks.
+	file.BlocksDirty = true
 	return tx.PutFile(ctx, file)
 }
 
