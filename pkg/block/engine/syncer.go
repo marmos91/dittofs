@@ -777,13 +777,36 @@ func (m *Syncer) wireCarveTargets() {
 	if m.carveTargetsWired {
 		return
 	}
-	if m.remoteBlockStore == nil || m.blockCommitter == nil || m.syncedHashStore == nil {
+	if m.remoteBlockStore != nil {
+		if m.blockCommitter == nil || m.syncedHashStore == nil {
+			return // remote configured but deps not fully wired yet
+		}
+		deduper := engineDeduper{synced: m.syncedHashStore}
+		sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter}
+		m.local.SetCarveTargets(deduper, sink)
+		m.carveTargetsWired = true
 		return
 	}
-	deduper := engineDeduper{synced: m.syncedHashStore}
-	sink := engineBlockSink{sealer: m.chunkSealer, rbs: m.remoteBlockStore, committer: m.blockCommitter}
-	m.local.SetCarveTargets(deduper, sink)
+	// Local-only (no remote block store): carve cannot upload, but it must still
+	// populate the FileChunk manifest so a local-only DrainRollups is not a hard
+	// error and clone/snapshot/restore can resolve the file's chunks. Only wired
+	// from ensureCarveWired at Start, once we know no remote is coming — never
+	// from recomputeCarveActive (which gates on a present remote).
+	if m.fileChunkStore == nil {
+		return
+	}
+	m.local.SetCarveTargets(localDeduper{}, localBlockSink{fileChunkStore: m.fileChunkStore})
 	m.carveTargetsWired = true
+}
+
+// ensureCarveWired wires the carve collaborators at Start, after every Set*
+// dependency call has run. For a remote-backed share this is a no-op (already
+// wired via recomputeCarveActive); for a local-only share it installs the
+// remote-less carve sink so DrainRollups/Flush populate the FileChunk manifest.
+func (m *Syncer) ensureCarveWired() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.wireCarveTargets()
 }
 
 // SyncNow triggers an immediate carve drain of every locally stored chunk

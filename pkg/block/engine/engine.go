@@ -253,6 +253,12 @@ func (bs *Store) Start(ctx context.Context) error {
 		}
 	})
 
+	// Ensure carve collaborators are wired now that every Set* dependency has
+	// run. Remote shares are already wired via recomputeCarveActive; this
+	// installs the remote-less carve sink for local-only shares so DrainRollups
+	// populates the FileChunk manifest instead of failing "carve targets not wired".
+	bs.syncer.ensureCarveWired()
+
 	// Start syncer background goroutines (periodic uploader, transfer queue).
 	bs.syncer.Start(context.Background())
 

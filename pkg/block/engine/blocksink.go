@@ -27,6 +27,49 @@ func (d engineDeduper) IsChunkDurable(ctx context.Context, hash journal.ChunkHas
 	return d.synced.IsSynced(ctx, block.ContentHash(hash))
 }
 
+// localDeduper is the carve dedup oracle for a share with NO remote block store.
+// There is nothing to be "remote-durable" against, so every chunk is treated as
+// novel — carve packs it and localBlockSink records its FileChunk manifest row.
+type localDeduper struct{}
+
+func (localDeduper) IsChunkDurable(context.Context, journal.ChunkHash) (bool, error) {
+	return false, nil
+}
+
+// localBlockSink is the BlockSink for a remote-less (local-only) share. The
+// journal owns the bytes durably on local disk, so carve neither frames a block
+// nor uploads (no PutBlock) — it only records the per-file FileChunk manifest
+// rows (hash + DataSize, no remote block key). Those rows are what clone reads
+// (O(1) reflink of the ChunkRef list) and what snapshot/restore project into
+// FileAttr.Blocks; without them a local-only DrainRollups could not populate the
+// manifest at all (the whole point of the local carve path).
+//
+// ponytail: rows are written one Put per chunk, not one DefaultCommitBlock txn —
+// EngineFileChunkStore is always wired but the transactional blockCommitter is
+// not (it is derived from the SyncedHashStore, which remote-less fixtures skip).
+// A partial write just re-carves (idempotent Pending rows), and local-only reads
+// never resolve through the manifest, so per-row durability suffices. Upgrade to
+// the txn path if a local-only store ever needs atomic manifest commits.
+type localBlockSink struct {
+	fileChunkStore block.EngineFileChunkStore
+}
+
+func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
+	for i := range chunks {
+		c := chunks[i]
+		fc := &block.FileChunk{
+			ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
+			Hash:     block.ContentHash(c.Hash),
+			DataSize: uint32(len(c.Data)),
+			State:    block.BlockStatePending,
+		}
+		if err := s.fileChunkStore.Put(ctx, fc); err != nil {
+			return fmt.Errorf("local carve: put manifest row %s: %w", fc.ID, err)
+		}
+	}
+	return nil
+}
+
 // engineBlockSink is journal's production BlockSink: it seals each carved chunk,
 // frames them into one block via blockcodec, uploads the block with PutBlock,
 // and atomically commits the block record + synced locators + per-file manifest
