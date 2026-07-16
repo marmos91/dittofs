@@ -678,6 +678,20 @@ func (s *Service) AddShare(
 		}
 	}
 
+	// Phase 2.5: Reconcile metadata file sizes against the local journal's durable
+	// high-water mark (#1687 safety net). WRITE/COMMIT now commit file size via a
+	// relaxed (deferred-fsync) metadata transaction, so a crash between a relaxed
+	// size commit and its background fsync can leave metadata.Size smaller than the
+	// data actually made durable in the journal. This grows metadata.Size up to the
+	// journal size (max-only, never shrinks) BEFORE the share is registered and any
+	// protocol handler can read it, so ACK'd bytes are never truncated.
+	if config.LocalBlockStoreID != "" && share.BlockStore != nil {
+		if err := reconcileMetadataSizeFromJournal(ctx, metadataStore, share.BlockStore); err != nil {
+			cleanupShare()
+			return fmt.Errorf("failed to reconcile metadata sizes for share %q: %w", config.Name, err)
+		}
+	}
+
 	// Phase 3: Register metadata store. Safe to call unconditionally now: the
 	// Phase-0 reservation guarantees no other AddShare for this name is in
 	// flight, so this RegisterStoreForShare cannot be raced into a
@@ -714,6 +728,59 @@ func (s *Service) AddShare(
 
 	s.notifyShareChange()
 
+	return nil
+}
+
+// reconcileMetadataSizeFromJournal grows each file's metadata size up to the
+// local journal's durable high-water mark (#1687 crash-safety net). It is the
+// load-bearing counterpart to the relaxed (deferred-fsync) size commits done on
+// WRITE/COMMIT: if the server crashed after the data was fsync'd into the journal
+// but before the relaxed metadata size fsync ran, metadata.Size is stale/smaller
+// than the durable data. Reading that file would truncate ACK'd bytes (#588
+// class). This runs on share start, before the share is visible to handlers, and
+// only ever GROWS the size — a legitimate shrink (SetAttr/truncate) commits
+// strictly and is never rolled back here.
+//
+// bs.Local.ListFiles/FileSize are served from the journal's in-memory index
+// (populated by recover() at open), so the common no-mismatch case is cheap: a
+// point read of metadata per file, and a strict PutFile only on an actual gap.
+func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadata.Store, bs *engine.Store) error {
+	if bs == nil {
+		return nil
+	}
+	localStore := bs.Local()
+	if localStore == nil {
+		return nil
+	}
+	for _, id := range localStore.ListFiles(ctx) {
+		journalSize, ok := localStore.FileSize(ctx, id)
+		if !ok {
+			continue
+		}
+		f, err := metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(id))
+		if err != nil {
+			// Orphan journal entry (no metadata file) — nothing to reconcile.
+			continue
+		}
+		if int64(f.Size) >= journalSize {
+			continue
+		}
+		// Grow to the journal high-water mark under a STRICT transaction; re-read
+		// inside the txn so a concurrent legitimate update can't be clobbered.
+		if err := metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
+			cur, err := tx.GetFileByPayloadID(ctx, metadata.PayloadID(id))
+			if err != nil {
+				return err
+			}
+			if int64(cur.Size) >= journalSize {
+				return nil // another writer already caught up; never shrink
+			}
+			cur.Size = uint64(journalSize)
+			return tx.PutFile(ctx, cur)
+		}); err != nil {
+			return fmt.Errorf("reconcile size for payload %s: %w", id, err)
+		}
+	}
 	return nil
 }
 

@@ -435,7 +435,9 @@ func (h *Handler) executeCopyChunks(
 		if chunksWritten == 0 {
 			return
 		}
-		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, dstOpen.MetadataHandle); flushErr != nil {
+		// Relaxed (#1687): cross-session visibility comes from the metadata write,
+		// durability from the journal reconcile on restart; CLOSE/FLUSH stay strict.
+		if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, dstOpen.MetadataHandle, false); flushErr != nil {
 			logger.Debug("COPYCHUNK: deferred metadata flush failed (non-fatal)",
 				"dstPath", dstOpen.Path, "error", flushErr)
 		}

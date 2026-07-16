@@ -211,7 +211,10 @@ func (h *Handler) Commit(
 	authCtx, authErr := h.GetCachedAuthContext(ctx)
 	if authErr == nil {
 		// Flush pending metadata for this specific file
-		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle)
+		// Relaxed metadata commit (#1687): COMMIT already forced the block data
+		// durable above; the size/mtime fsync is deferred to the background syncer,
+		// with the journal size reconcile on restart as the crash-safety net.
+		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, handle, false)
 		if metaErr != nil {
 			logger.WarnCtx(ctx.Context, "COMMIT: metadata flush failed", "handle", fmt.Sprintf("0x%x", req.Handle), "error", metaErr)
 			// Continue - content is flushed, metadata will be fixed eventually

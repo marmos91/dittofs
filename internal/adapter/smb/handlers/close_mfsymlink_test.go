@@ -125,7 +125,7 @@ func setupMFsymlinkShare(t *testing.T, allowMFsymlink bool, target string) (*Han
 	if _, err := metaSvc.CommitWrite(authCtx, writeOp); err != nil {
 		t.Fatalf("CommitWrite: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle, true); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
 

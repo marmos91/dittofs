@@ -197,16 +197,23 @@ type BadgerMetadataStoreConfig struct {
 	// If nil, sensible defaults are used
 	BadgerOptions *badger.Options
 
-	// RelaxedDurability defers the per-transaction fsync for pure-namespace
-	// metadata writes (create/remove/rename/mkdir/attr) to a bounded-lag
+	// RelaxedDurability defers the per-transaction fsync to a bounded-lag
 	// background sync, honoring the same UNSTABLE-style tradeoff the block
-	// append-log took in #1584. Data-paired writes — file size on WRITE, the
-	// block manifest (DefaultCommitBlock), and the rollup offset — stay
-	// synchronous regardless, so this can never resurrect the #588 silent-zeros
-	// bug; only a hard crash can lose the last sub-100ms of namespace ops (the
-	// op vanishes / reappears, never corrupts). When false (the safe default at
-	// the store layer) every commit fsyncs, exactly reproducing pre-#1573
-	// behavior. The server product enables it via config (#1573 Wall 1).
+	// append-log took in #1584. It covers namespace/attr writes
+	// (create/remove/rename/mkdir/attr) and, since #1687, the deferrable file-size
+	// commit on UNSTABLE WRITE / COMMIT / SMB inline WRITE. The block manifest
+	// (DefaultCommitBlock) and the rollup offset still commit synchronously.
+	//
+	// A relaxed file-size commit no longer risks #588 silent-zeros: the byte data
+	// is already fsync'd into the local journal before the WRITE is ACK'd, and on
+	// share start reconcileMetadataSizeFromJournal grows metadata.Size up to the
+	// journal's durable high-water mark (max-only, never shrinks). So a crash
+	// between a relaxed size commit and its background fsync cannot truncate ACK'd
+	// data — the reconcile restores the size. Durability-critical paths (FILE_SYNC
+	// WRITE, SMB CLOSE/FLUSH, shutdown) still pass durable=true and fsync inline.
+	// When false (the safe default at the store layer) every commit fsyncs,
+	// exactly reproducing pre-#1573 behavior. The server product enables it via
+	// config (#1573 Wall 1).
 	RelaxedDurability bool `mapstructure:"relaxed_durability"`
 
 	// BlockCacheSizeMB is BadgerDB's block cache size in MiB. This caches

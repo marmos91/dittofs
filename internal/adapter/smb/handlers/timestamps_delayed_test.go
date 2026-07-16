@@ -35,7 +35,7 @@ func TestSmbDelayedWrite_VisibleMtimeUntilWindowExpires(t *testing.T) {
 	if _, err := metaSvc.CommitWrite(authCtx, op); err != nil {
 		t.Fatalf("CommitWrite: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fh); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fh, true); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
 	armSmbDelayedWrite(openFile, preWriteMtime, op.NewMtime)
@@ -64,14 +64,14 @@ func TestSmbDelayedWrite_SecondWriteDoesNotAdvanceVisibleMtime(t *testing.T) {
 
 	op1, _ := metaSvc.PrepareWrite(authCtx, fh, 1)
 	_, _ = metaSvc.CommitWrite(authCtx, op1)
-	_, _ = metaSvc.FlushPendingWriteForFile(authCtx, fh)
+	_, _ = metaSvc.FlushPendingWriteForFile(authCtx, fh, true)
 	armSmbDelayedWrite(openFile, pre, op1.NewMtime)
 	openFile.SmbWriteFlushAt = time.Now().Add(-time.Second) // simulate post-window
 
 	time.Sleep(20 * time.Millisecond)
 	op2, _ := metaSvc.PrepareWrite(authCtx, fh, 1)
 	_, _ = metaSvc.CommitWrite(authCtx, op2)
-	_, _ = metaSvc.FlushPendingWriteForFile(authCtx, fh)
+	_, _ = metaSvc.FlushPendingWriteForFile(authCtx, fh, true)
 	armSmbDelayedWrite(openFile, mustGet(t, h, fh, authCtx).Mtime, op2.NewMtime)
 
 	file := mustGet(t, h, fh, authCtx)
@@ -89,7 +89,7 @@ func TestSmbDelayedWrite_FlushCollapsesWindow(t *testing.T) {
 	pre := mustGet(t, h, fh, authCtx).Mtime
 	op, _ := metaSvc.PrepareWrite(authCtx, fh, 1)
 	_, _ = metaSvc.CommitWrite(authCtx, op)
-	_, _ = metaSvc.FlushPendingWriteForFile(authCtx, fh)
+	_, _ = metaSvc.FlushPendingWriteForFile(authCtx, fh, true)
 	armSmbDelayedWrite(openFile, pre, op.NewMtime)
 
 	// Without flush, override returns pre.
@@ -115,7 +115,7 @@ func TestSmbDelayedWrite_StickyWinsOverDelayedWindow(t *testing.T) {
 	pre := mustGet(t, h, fh, authCtx).Mtime
 	op, _ := metaSvc.PrepareWrite(authCtx, fh, 1)
 	_, _ = metaSvc.CommitWrite(authCtx, op)
-	_, _ = metaSvc.FlushPendingWriteForFile(authCtx, fh)
+	_, _ = metaSvc.FlushPendingWriteForFile(authCtx, fh, true)
 	armSmbDelayedWrite(openFile, pre, op.NewMtime)
 
 	future := time.Now().Add(24 * time.Hour).UTC()

@@ -213,7 +213,7 @@ func TestDelayedWrite_TwoWritesProduceDistinctTimestamps(t *testing.T) {
 	if _, err := metaSvc.CommitWrite(authCtx, op1); err != nil {
 		t.Fatalf("CommitWrite #1: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle, true); err != nil {
 		t.Fatalf("FlushPendingWriteForFile #1: %v", err)
 	}
 
@@ -236,7 +236,7 @@ func TestDelayedWrite_TwoWritesProduceDistinctTimestamps(t *testing.T) {
 	if _, err := metaSvc.CommitWrite(authCtx, op2); err != nil {
 		t.Fatalf("CommitWrite #2: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle, true); err != nil {
 		t.Fatalf("FlushPendingWriteForFile #2: %v", err)
 	}
 
@@ -277,7 +277,7 @@ func TestDelayedWrite_VsFlush(t *testing.T) {
 	if _, err := metaSvc.CommitWrite(authCtx, op); err != nil {
 		t.Fatalf("CommitWrite: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle, true); err != nil {
 		t.Fatalf("first flush: %v", err)
 	}
 
@@ -288,7 +288,7 @@ func TestDelayedWrite_VsFlush(t *testing.T) {
 	writeTime := file1.Mtime
 
 	// FLUSH equivalent — re-flush an empty pending state.
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle, true); err != nil {
 		t.Fatalf("second flush: %v", err)
 	}
 
@@ -337,7 +337,7 @@ func TestDelayedWrite_VsSetEOF(t *testing.T) {
 	if _, err := metaSvc.CommitWrite(authCtx, op); err != nil {
 		t.Fatalf("CommitWrite: %v", err)
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle); err != nil {
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, fileHandle, true); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
 	preWrite2, err := metaSvc.GetFile(authCtx.Context, fileHandle)

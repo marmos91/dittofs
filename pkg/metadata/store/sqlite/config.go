@@ -69,6 +69,13 @@ func (c *SQLiteMetadataStoreConfig) Validate() error {
 // crash between checkpoints can lose the last commits, acceptable for this store.
 // The pragmas are passed via the `_pragma` query parameters that
 // modernc.org/sqlite recognises, so they apply to every pooled connection.
+//
+// #1687 note: this store has no strict/relaxed durability split — WAL+NORMAL
+// applies unconditionally and it does not implement RelaxedTransactor, so
+// withRelaxedTransaction falls back to WithTransaction here. A durable=true flush
+// (FILE_SYNC WRITE, SMB CLOSE/FLUSH, shutdown) is therefore only best-effort on
+// sqlite (NORMAL fsyncs at checkpoint, not per commit). This is a pre-existing
+// property of the sqlite backend, documented here — not changed by #1687.
 func (c *SQLiteMetadataStoreConfig) DSN() string {
 	// An in-memory database must be shared across the connection pool, otherwise
 	// each connection would see its own empty database. The "file::memory:" +

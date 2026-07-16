@@ -350,7 +350,10 @@ func (h *Handler) flushStableWrite(
 	if err := common.CommitBlockStore(ctx.Context, blockStore, payloadID); err != nil {
 		return err
 	}
-	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle); err != nil {
+	// FILE_SYNC (stable>=2) promised durable metadata → strict inline fsync.
+	// DATA_SYNC/UNSTABLE defer it via the relaxed path (#1687); a later COMMIT or
+	// the journal size reconcile on restart makes the size durable.
+	if _, err := metaSvc.FlushPendingWriteForFile(authCtx, handle, stable >= FileSyncWrite); err != nil {
 		if stable >= FileSyncWrite {
 			// FILE_SYNC requires durable metadata; surface the failure.
 			return err

@@ -225,7 +225,8 @@ func (s *Service) CommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, 
 }
 
 // deferredCommitWrite records the write in pending state without touching the store.
-// The actual commit happens on FlushPendingWrites (called by NFS COMMIT).
+// The actual commit happens on FlushPendingWriteForFile (called by NFS COMMIT/CLOSE,
+// SMB WRITE/CLOSE/FLUSH, or shutdown).
 func (s *Service) deferredCommitWrite(ctx *AuthContext, intent *WriteOperation) (*File, error) {
 	// Determine if we need to clear setuid/setgid
 	clearSetuid := ctx.Identity != nil && ctx.Identity.UID != nil && *ctx.Identity.UID != 0
@@ -358,35 +359,17 @@ func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation)
 	return resultFile, nil
 }
 
-// FlushPendingWrites commits all pending metadata changes to the store.
-// This should be called on NFS COMMIT or when closing a file.
-// Returns the number of files flushed and any error encountered.
-func (s *Service) FlushPendingWrites(ctx *AuthContext) (int, error) {
-	entries := s.pendingWrites.PopAllPending()
-	if len(entries) == 0 {
-		return 0, nil
-	}
-
-	flushed := 0
-	var lastErr error
-
-	for _, entry := range entries {
-		if err := s.flushPendingWrite(ctx, entry.Handle, entry.State); err != nil {
-			lastErr = err
-			// Continue flushing other files
-		} else {
-			flushed++
-		}
-	}
-
-	return flushed, lastErr
-}
-
 // FlushPendingWriteForFile commits pending metadata for a specific file.
 // Returns true if there was pending data to flush.
 // Uses a per-file mutex to prevent concurrent flushes from causing BadgerDB
 // transaction conflicts (which trigger expensive retry loops with backoff).
-func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle) (bool, error) {
+//
+// durable controls the metadata commit's durability (#1687). Pass true only from
+// paths that promised the client stable metadata (FILE_SYNC WRITE, SMB
+// CLOSE/FLUSH, shutdown); pass false from the deferrable ack paths (UNSTABLE
+// WRITE, COMMIT, SMB inline WRITE) so the metadata fsync moves off the hot path.
+// See flushPendingWrite for the crash-safety argument (journal size reconcile).
+func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle, durable bool) (bool, error) {
 	// Serialize flushes per file to avoid BadgerDB conflict retries
 	mu := s.pendingWrites.GetFlushLock(handle)
 	mu.Lock()
@@ -410,7 +393,7 @@ func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle) 
 		return false, nil
 	}
 
-	if err := s.flushPendingWrite(ctx, handle, state); err != nil {
+	if err := s.flushPendingWrite(ctx, handle, state, durable); err != nil {
 		return true, err
 	}
 
@@ -425,13 +408,23 @@ func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle) 
 }
 
 // flushPendingWrite applies a single pending write to the store.
-func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *PendingWriteState) error {
+//
+// durable selects the commit's durability. When true the metadata commit fsyncs
+// inline (WithTransaction) — used for FILE_SYNC WRITE, SMB CLOSE/FLUSH, and
+// shutdown, where the client was promised stable metadata. When false the commit
+// routes through withRelaxedTransaction (#1687): the size/mtime write becomes
+// durable with bounded lag instead of an inline fsync, moving the metadata
+// db.Sync off the hot WRITE/COMMIT ack path. A crash after a relaxed size commit
+// but before the background fsync cannot truncate ACK'd data because
+// reconcileMetadataSizeFromJournal grows metadata.Size up to the journal's
+// durable high-water mark on share start (max-only, never shrinks).
+func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *PendingWriteState, durable bool) error {
 	store, err := s.storeForHandle(handle)
 	if err != nil {
 		return err
 	}
 
-	return store.WithTransaction(ctx.Context, func(tx Transaction) error {
+	commit := func(tx Transaction) error {
 		file, err := tx.GetFile(ctx.Context, handle)
 		if err != nil {
 			return err
@@ -454,7 +447,12 @@ func (s *Service) flushPendingWrite(ctx *AuthContext, handle FileHandle, state *
 		}
 
 		return tx.PutFile(ctx.Context, file)
-	})
+	}
+
+	if durable {
+		return store.WithTransaction(ctx.Context, commit)
+	}
+	return withRelaxedTransaction(store, ctx.Context, commit)
 }
 
 // GetPendingSize returns the pending size for a file if there are uncommitted writes.
@@ -472,9 +470,10 @@ func (s *Service) UpdatePendingMtime(handle FileHandle, mtime time.Time) bool {
 }
 
 // FlushAllPendingWritesForShutdown flushes all pending metadata writes during shutdown.
-// Unlike FlushPendingWrites, doesn't require an AuthContext and uses a
-// background context with a timeout. This should be called during graceful shutdown
-// to ensure all metadata changes are persisted before closing stores.
+// Doesn't require an AuthContext and uses a background context with a timeout.
+// This should be called during graceful shutdown to ensure all metadata changes
+// are persisted before closing stores. Flushes are durable (inline fsync): a clean
+// shutdown must leave every pending size/mtime on stable storage.
 func (s *Service) FlushAllPendingWritesForShutdown(timeout time.Duration) (int, error) {
 	entries := s.pendingWrites.PopAllPending()
 	if len(entries) == 0 {
@@ -494,7 +493,7 @@ func (s *Service) FlushAllPendingWritesForShutdown(timeout time.Duration) (int, 
 	var lastErr error
 
 	for _, entry := range entries {
-		if err := s.flushPendingWrite(authCtx, entry.Handle, entry.State); err != nil {
+		if err := s.flushPendingWrite(authCtx, entry.Handle, entry.State, true); err != nil {
 			lastErr = err
 			// Continue flushing other files
 		} else {

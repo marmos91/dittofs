@@ -224,7 +224,7 @@ func (s *Service) ListIdentityQuotas() []ConfiguredQuota {
 }
 
 // SetDeferredCommit enables or disables deferred metadata commits.
-// When enabled, CommitWrite batches updates until FlushPendingWrites is called.
+// When enabled, CommitWrite batches updates until FlushPendingWriteForFile is called.
 // This significantly improves write performance for sequential workloads.
 func (s *Service) SetDeferredCommit(enabled bool) {
 	s.deferredCommit.Store(enabled)

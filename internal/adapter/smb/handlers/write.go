@@ -442,7 +442,11 @@ func (h *Handler) Write(ctx *SMBHandlerContext, req *WriteRequest) (*WriteRespon
 	// SMB requires immediate metadata visibility across sessions (unlike NFS
 	// which has explicit COMMIT). Flush deferred metadata so that other sessions
 	// reading the same file see updated size/timestamps without a FLUSH command.
-	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle); flushErr != nil {
+	// Relaxed (#1687): visibility comes from the metadata write itself (applied
+	// in-txn), NOT from the fsync — so we can defer the metadata db.Sync off the
+	// per-WRITE ack path. CLOSE and FLUSH remain strict for durability; a crash
+	// before the background fsync is caught by the journal size reconcile.
+	if _, flushErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, false); flushErr != nil {
 		logger.Debug("WRITE: deferred metadata flush failed (non-fatal)", "path", openFile.Path, "error", flushErr)
 	}
 

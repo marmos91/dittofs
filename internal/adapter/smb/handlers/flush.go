@@ -264,7 +264,9 @@ func (h *Handler) Flush(ctx *SMBHandlerContext, req *FlushRequest) (*FlushRespon
 	if authErr != nil {
 		logger.Warn("FLUSH: failed to build auth context for metadata flush", "path", openFile.Path, "error", authErr)
 	} else {
-		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle)
+		// STRICT (durable=true): SMB FLUSH is an explicit client fsync request, so
+		// the metadata commit must fsync inline — deliberately NOT relaxed (#1687).
+		flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true)
 		if metaErr != nil {
 			logger.Warn("FLUSH: metadata flush failed", "path", openFile.Path, "error", metaErr)
 			// Continue - content is flushed, metadata will be fixed eventually

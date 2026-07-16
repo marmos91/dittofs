@@ -243,7 +243,11 @@ func (h *Handler) Close(ctx *SMBHandlerContext, req *CloseRequest) (*CloseRespon
 			logger.Warn("CLOSE: failed to build auth context for metadata flush", "path", openFile.Path, "error", authErr)
 		} else {
 			metaSvc := h.Registry.GetMetadataService()
-			flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle)
+			// STRICT (durable=true): CLOSE is a durability point (MS-SMB2 3.3.5.10,
+			// #1267). The client treats a successful CLOSE as a guarantee its
+			// metadata reached stable storage, so the fsync must stay inline — this
+			// is deliberately NOT relaxed by #1687.
+			flushed, metaErr := metaSvc.FlushPendingWriteForFile(authCtx, openFile.MetadataHandle, true)
 			if metaErr != nil {
 				logger.Warn("CLOSE: metadata flush failed", "path", openFile.Path, "error", metaErr)
 				// Surface the metadata-flush failure too (#1267): if the
