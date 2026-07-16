@@ -2,9 +2,82 @@ package metadata
 
 import (
 	"context"
+	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/marmos91/dittofs/pkg/block"
 )
+
+// ManifestToChunkRefs projects FileChunk manifest rows into the canonical
+// offset-sorted ChunkRef list. Rows with an unparseable ID are skipped. The
+// per-file FileChunk manifest is the switchover's single source of truth;
+// File.Blocks is a materialized projection of it, kept coherent-by-construction.
+func ManifestToChunkRefs(rows []*block.FileChunk) []block.ChunkRef {
+	refs := make([]block.ChunkRef, 0, len(rows))
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		off, ok := block.ParseChunkOffset(r.ID)
+		if !ok {
+			continue
+		}
+		refs = append(refs, block.ChunkRef{Hash: r.Hash, Offset: off, Size: r.DataSize})
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].Offset < refs[j].Offset })
+	if len(refs) == 0 {
+		return nil
+	}
+	return refs
+}
+
+// ProjectManifestToBlocks re-materializes File.Blocks for payloadID from the
+// current FileChunk manifest, within the caller's txn. Every manifest mutation
+// (carve commit, #953 reap + re-carve straddle, truncate) must call this in the
+// SAME txn that changed the rows, so File.Blocks == projection(rows) always and
+// the raw-row readers (snapshot WriteSnapshot, refcount audit) never see drift.
+// A missing file (deleted concurrently) is a no-op. ponytail: this is the
+// switchover bridge; the #1715 fb-split removes File.Blocks from the row entirely
+// and derives at read time, retiring this projection.
+func ProjectManifestToBlocks(ctx context.Context, tx Transaction, payloadID string) error {
+	if payloadID == "" {
+		return nil
+	}
+	rows, err := tx.ListFileChunks(ctx, payloadID)
+	if err != nil {
+		return fmt.Errorf("project blocks: list manifest for %s: %w", payloadID, err)
+	}
+	file, err := tx.GetFileByPayloadID(ctx, PayloadID(payloadID))
+	if err != nil {
+		// No File row (block-layer fixtures with synthetic payloadIDs, or a file
+		// deleted between carve and commit) → nothing to project onto, no-op.
+		if IsNotFoundError(err) {
+			return nil
+		}
+		return fmt.Errorf("project blocks: get file for %s: %w", payloadID, err)
+	}
+	if file == nil {
+		return nil
+	}
+	file.Blocks = ManifestToChunkRefs(rows)
+	return tx.PutFile(ctx, file)
+}
+
+// payloadIDFromChunks extracts the shared payloadID from a carve pass's FileChunk
+// rows (all rows of one carve belong to one file). Returns "" when the rows are
+// nil/empty or malformed, which callers treat as "skip projection".
+func payloadIDFromChunks(fileChunks []*block.FileChunk) string {
+	for _, fc := range fileChunks {
+		if fc == nil {
+			continue
+		}
+		if i := strings.LastIndexByte(fc.ID, '/'); i > 0 {
+			return fc.ID[:i]
+		}
+	}
+	return ""
+}
 
 // BlockRecordStore manages the lifecycle of log-blob block records.
 // Each record tracks the sync state, live chunk count, and hash of a
@@ -114,6 +187,9 @@ func DefaultCommitBlock(
 				return err
 			}
 		}
-		return nil
+		// Materialize File.Blocks from the manifest in this same txn so raw-row
+		// readers (snapshot, audit) stay coherent. Skipped for legacy callers
+		// that pass no fileChunks (nil payloadID).
+		return ProjectManifestToBlocks(ctx, tx, payloadIDFromChunks(fileChunks))
 	})
 }

@@ -44,30 +44,38 @@ func (localDeduper) IsChunkDurable(context.Context, journal.ChunkHash) (bool, er
 // FileAttr.Blocks; without them a local-only DrainRollups could not populate the
 // manifest at all (the whole point of the local carve path).
 //
-// ponytail: rows are written one Put per chunk, not one DefaultCommitBlock txn —
-// EngineFileChunkStore is always wired but the transactional blockCommitter is
-// not (it is derived from the SyncedHashStore, which remote-less fixtures skip).
-// A partial write just re-carves (idempotent Pending rows), and local-only reads
-// never resolve through the manifest, so per-row durability suffices. Upgrade to
-// the txn path if a local-only store ever needs atomic manifest commits.
+// Rows + the File.Blocks projection are written in one txn via the committer
+// (the per-share metadata store, wired unconditionally as SyncedHashStore). The
+// clone fixture has no committer, but its source has no dirty data so CommitBlock
+// never fires — a nil committer there is inert.
 type localBlockSink struct {
-	fileChunkStore block.EngineFileChunkStore
+	committer blockCommitter
 }
 
 func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
-	for i := range chunks {
-		c := chunks[i]
-		fc := &block.FileChunk{
-			ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
-			Hash:     block.ContentHash(c.Hash),
-			DataSize: uint32(len(c.Data)),
-			State:    block.BlockStatePending,
-		}
-		if err := s.fileChunkStore.Put(ctx, fc); err != nil {
-			return fmt.Errorf("local carve: put manifest row %s: %w", fc.ID, err)
-		}
+	if len(chunks) == 0 {
+		return nil
 	}
-	return nil
+	if s.committer == nil {
+		return fmt.Errorf("local carve: no transactional committer wired")
+	}
+	payloadID := string(chunks[0].FileID)
+	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		for i := range chunks {
+			c := chunks[i]
+			fc := &block.FileChunk{
+				ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
+				Hash:     block.ContentHash(c.Hash),
+				DataSize: uint32(len(c.Data)),
+				State:    block.BlockStatePending,
+			}
+			if err := tx.Put(ctx, fc); err != nil {
+				return fmt.Errorf("local carve: put manifest row %s: %w", fc.ID, err)
+			}
+		}
+		// Materialize File.Blocks from the manifest in the same txn (R).
+		return metadata.ProjectManifestToBlocks(ctx, tx, payloadID)
+	})
 }
 
 // engineBlockSink is journal's production BlockSink: it seals each carved chunk,

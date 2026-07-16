@@ -788,14 +788,13 @@ func (m *Syncer) wireCarveTargets() {
 		return
 	}
 	// Local-only (no remote block store): carve cannot upload, but it must still
-	// populate the FileChunk manifest so a local-only DrainRollups is not a hard
-	// error and clone/snapshot/restore can resolve the file's chunks. Only wired
-	// from ensureCarveWired at Start, once we know no remote is coming — never
-	// from recomputeCarveActive (which gates on a present remote).
-	if m.fileChunkStore == nil {
-		return
-	}
-	m.local.SetCarveTargets(localDeduper{}, localBlockSink{fileChunkStore: m.fileChunkStore})
+	// populate the FileChunk manifest (and project File.Blocks) so a local-only
+	// DrainRollups is not a hard error and clone/snapshot/restore resolve the
+	// file's chunks. Only wired from ensureCarveWired at Start, once we know no
+	// remote is coming — never from recomputeCarveActive (which gates on a
+	// present remote). blockCommitter is nil only for the clone fixture, whose
+	// source has no dirty data so CommitBlock never fires.
+	m.local.SetCarveTargets(localDeduper{}, localBlockSink{committer: m.blockCommitter})
 	m.carveTargetsWired = true
 }
 
