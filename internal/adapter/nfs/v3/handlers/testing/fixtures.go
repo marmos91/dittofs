@@ -348,7 +348,7 @@ func (f *HandlerTestFixture) SetMtime(handle metadata.FileHandle, mtime time.Tim
 	if _, err := f.MetadataService.SetFileAttributes(f.authContext(), handle, &metadata.SetAttrs{
 		Mtime: &mtime,
 	}); err != nil {
-		f.t.Fatalf("Failed to set mtime for handle: %v", err)
+		f.t.Fatalf("SetMtime(handle=%x, mtime=%s): %v", handle, mtime.Format(time.RFC3339Nano), err)
 	}
 }
 
