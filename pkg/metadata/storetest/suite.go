@@ -175,16 +175,10 @@ func RunConformanceSuite(t *testing.T, factory StoreFactory) {
 		runBlockRecordOps(t, factory(t))
 	})
 
-	// LocalIndexOps covers LocalChunkIndex: put/get round-trip, upsert
-	// overwrites, delete, missing-hash miss.
-	t.Run("LocalIndexOps", func(t *testing.T) {
-		runLocalIndexOps(t, factory(t))
-	})
-
-	// CommitBlockOps covers CommitBlock: full commit (record + local locations
-	// + synced markers, all in ONE transaction), idempotency (second call is
-	// no-op), atomic rollback on mid-commit failure, locator overwrite of
-	// pre-existing standalone markers, and zero-Local skip.
+	// CommitBlockOps covers CommitBlock: full commit (record + synced markers,
+	// all in ONE transaction), idempotency (second call is no-op), atomic
+	// rollback on mid-commit failure, and locator overwrite of pre-existing
+	// standalone markers.
 	t.Run("CommitBlockOps", func(t *testing.T) {
 		runCommitBlockOps(t, factory(t))
 	})

@@ -1,12 +1,12 @@
-// BlockRecordStore + LocalChunkIndex implementations for the SQLite metadata
-// store.  Both interfaces are required by metadata.Transaction, so every method
-// exists in two variants: a store-level (pool path) variant on
-// *SQLiteMetadataStore and a transaction-scoped variant on *sqliteTransaction.
+// BlockRecordStore implementation for the SQLite metadata store.  The interface
+// is required by metadata.Transaction, so every method exists in two variants: a
+// store-level (pool path) variant on *SQLiteMetadataStore and a
+// transaction-scoped variant on *sqliteTransaction.
 //
 // Semantics match the memory backend exactly:
-//   - PutBlockRecord / PutLocalLocation — idempotent upserts.
-//   - GetBlockRecord / GetLocalLocation — (_, false, nil) on miss.
-//   - DeleteBlockRecord / DeleteLocalLocation — idempotent (missing row → nil).
+//   - PutBlockRecord — idempotent upsert.
+//   - GetBlockRecord — (_, false, nil) on miss.
+//   - DeleteBlockRecord — idempotent (missing row → nil).
 //   - DecrLiveChunkCount — floors at 0; error when blockID absent.
 //   - WalkBlockRecords — enumerates all rows in implementation-defined order.
 //   - CommitBlock — delegates to metadata.DefaultCommitBlock.
@@ -22,13 +22,11 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
 
-// Compile-time assertions: the store and its transaction both satisfy the new
-// interfaces.  If a method signature drifts these lines will fail to compile
+// Compile-time assertions: the store and its transaction both satisfy the
+// interface.  If a method signature drifts these lines will fail to compile
 // before any test runs.
 var _ metadata.BlockRecordStore = (*SQLiteMetadataStore)(nil)
-var _ metadata.LocalChunkIndex = (*SQLiteMetadataStore)(nil)
 var _ metadata.BlockRecordStore = (*sqliteTransaction)(nil)
-var _ metadata.LocalChunkIndex = (*sqliteTransaction)(nil)
 
 // ============================================================================
 // Store-level BlockRecordStore (pool path)
@@ -123,94 +121,11 @@ func (s *SQLiteMetadataStore) DecrLiveChunkCount(ctx context.Context, blockID st
 }
 
 // ============================================================================
-// Store-level LocalChunkIndex (pool path)
-// ============================================================================
-
-// PutLocalLocation records or overwrites the local position for hash.
-func (s *SQLiteMetadataStore) PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, err := s.exec(ctx,
-		`INSERT INTO local_chunk_index (hash, log_blob_id, raw_offset, raw_length)
-		 VALUES (?1, ?2, ?3, ?4)
-		 ON CONFLICT (hash) DO UPDATE SET
-		     log_blob_id = EXCLUDED.log_blob_id,
-		     raw_offset  = EXCLUDED.raw_offset,
-		     raw_length  = EXCLUDED.raw_length`,
-		hash[:], loc.LogBlobID, loc.RawOffset, loc.RawLength)
-	if err != nil {
-		return fmt.Errorf("sqlite local_chunk_index put: %w", err)
-	}
-	return nil
-}
-
-// GetLocalLocation returns the local position for hash.
-// Returns (_, false, nil) when no entry exists.
-func (s *SQLiteMetadataStore) GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.LocalChunkLocation{}, false, err
-	}
-	loc, found, err := scanLocalLocation(s.queryRow(ctx,
-		`SELECT log_blob_id, raw_offset, raw_length FROM local_chunk_index WHERE hash = ?1`,
-		hash[:]))
-	if err != nil {
-		return block.LocalChunkLocation{}, false, fmt.Errorf("sqlite local_chunk_index get: %w", err)
-	}
-	return loc, found, nil
-}
-
-// DeleteLocalLocation removes the local position for hash. Idempotent.
-func (s *SQLiteMetadataStore) DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := s.exec(ctx,
-		`DELETE FROM local_chunk_index WHERE hash = ?1`,
-		hash[:]); err != nil {
-		return fmt.Errorf("sqlite local_chunk_index delete: %w", err)
-	}
-	return nil
-}
-
-// WalkLocalLocations calls fn for every stored content-hash -> log-blob
-// location. Read-only; deliberately NOT part of the LocalChunkIndex interface —
-// the local block store discovers it via a narrow consumer-side interface to
-// re-seed crash-stranded unsynced logblob chunks on restart (Walk / ListUnsynced).
-// Streams rows on the pool path, mirroring WalkBlockRecords.
-func (s *SQLiteMetadataStore) WalkLocalLocations(ctx context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	rows, err := s.query(ctx,
-		`SELECT hash, log_blob_id, raw_offset, raw_length FROM local_chunk_index`)
-	if err != nil {
-		return fmt.Errorf("sqlite local_chunk_index walk: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		// The local chunk index can be very large (one row per unique chunk),
-		// so re-check cancellation per row to stay responsive during a full walk.
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		h, loc, err := scanLocalLocationRow(rows)
-		if err != nil {
-			return fmt.Errorf("sqlite local_chunk_index walk scan: %w", err)
-		}
-		if err := fn(h, loc); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-// ============================================================================
 // CommitBlock (store-level, delegates to DefaultCommitBlock)
 // ============================================================================
 
-// CommitBlock atomically writes rec and all chunk local locations within a
-// single transaction, then marks each chunk synced.  Idempotent on BlockID.
+// CommitBlock atomically writes rec within a single transaction, then marks
+// each chunk synced.  Idempotent on BlockID.
 func (s *SQLiteMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
 	return metadata.DefaultCommitBlock(ctx, s, rec, chunks, nil)
 }
@@ -319,57 +234,6 @@ func (tx *sqliteTransaction) DecrLiveChunkCount(ctx context.Context, blockID str
 }
 
 // ============================================================================
-// Transaction-level LocalChunkIndex
-// ============================================================================
-
-// PutLocalLocation records or overwrites the local position for hash.
-func (tx *sqliteTransaction) PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, err := tx.tx.Exec(ctx,
-		`INSERT INTO local_chunk_index (hash, log_blob_id, raw_offset, raw_length)
-		 VALUES (?1, ?2, ?3, ?4)
-		 ON CONFLICT (hash) DO UPDATE SET
-		     log_blob_id = EXCLUDED.log_blob_id,
-		     raw_offset  = EXCLUDED.raw_offset,
-		     raw_length  = EXCLUDED.raw_length`,
-		hash[:], loc.LogBlobID, loc.RawOffset, loc.RawLength)
-	if err != nil {
-		return fmt.Errorf("sqlite tx local_chunk_index put: %w", err)
-	}
-	return nil
-}
-
-// GetLocalLocation returns the local position for hash.
-// Returns (_, false, nil) when no entry exists.
-func (tx *sqliteTransaction) GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.LocalChunkLocation{}, false, err
-	}
-	loc, found, err := scanLocalLocation(tx.tx.QueryRow(ctx,
-		`SELECT log_blob_id, raw_offset, raw_length FROM local_chunk_index WHERE hash = ?1`,
-		hash[:]))
-	if err != nil {
-		return block.LocalChunkLocation{}, false, fmt.Errorf("sqlite tx local_chunk_index get: %w", err)
-	}
-	return loc, found, nil
-}
-
-// DeleteLocalLocation removes the local position for hash. Idempotent.
-func (tx *sqliteTransaction) DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if _, err := tx.tx.Exec(ctx,
-		`DELETE FROM local_chunk_index WHERE hash = ?1`,
-		hash[:]); err != nil {
-		return fmt.Errorf("sqlite tx local_chunk_index delete: %w", err)
-	}
-	return nil
-}
-
-// ============================================================================
 // Scan helpers
 // ============================================================================
 
@@ -429,51 +293,5 @@ func scanBlockRecordRow(rows scanRows) (block.BlockRecord, bool, error) {
 		Length:         length,
 		LiveChunkCount: liveCount,
 		SyncState:      block.BlockState(syncState),
-	}, true, nil
-}
-
-// scanLocalLocationRow scans a streaming Rows cursor (from WalkLocalLocations),
-// including the hash key column. The caller drives rows.Next().
-func scanLocalLocationRow(rows scanRows) (block.ContentHash, block.LocalChunkLocation, error) {
-	var (
-		hashRaw   []byte
-		logBlobID string
-		rawOffset int64
-		rawLength int64
-	)
-	if err := rows.Scan(&hashRaw, &logBlobID, &rawOffset, &rawLength); err != nil {
-		return block.ContentHash{}, block.LocalChunkLocation{}, err
-	}
-	if len(hashRaw) != len(block.ContentHash{}) {
-		return block.ContentHash{}, block.LocalChunkLocation{}, fmt.Errorf("sqlite scanLocalLocationRow: malformed hash length %d", len(hashRaw))
-	}
-	var h block.ContentHash
-	copy(h[:], hashRaw)
-	return h, block.LocalChunkLocation{
-		LogBlobID: logBlobID,
-		RawOffset: rawOffset,
-		RawLength: rawLength,
-	}, nil
-}
-
-// scanLocalLocation scans a single-row query result into a LocalChunkLocation.
-// Returns (_, false, nil) on sql.ErrNoRows.
-func scanLocalLocation(row scanRow) (block.LocalChunkLocation, bool, error) {
-	var (
-		logBlobID string
-		rawOffset int64
-		rawLength int64
-	)
-	err := row.Scan(&logBlobID, &rawOffset, &rawLength)
-	if errors.Is(err, sql.ErrNoRows) {
-		return block.LocalChunkLocation{}, false, nil
-	}
-	if err != nil {
-		return block.LocalChunkLocation{}, false, err
-	}
-	return block.LocalChunkLocation{
-		LogBlobID: logBlobID,
-		RawOffset: rawOffset,
-		RawLength: rawLength,
 	}, true, nil
 }

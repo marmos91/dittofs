@@ -16,39 +16,6 @@ import (
 // Fault-injecting helpers for atomicity subtests
 // ===========================================================================
 
-// errPutLocalInjected is the sentinel returned by faultyLocalLocationStore.
-var errPutLocalInjected = errors.New("injected PutLocalLocation failure")
-
-// faultyLocalLocationStore wraps a Store and makes PutLocalLocation fail
-// inside WithTransaction. CommitBlock delegates to metadata.DefaultCommitBlock
-// with itself as the receiver so the injected WithTransaction is exercised.
-type faultyLocalLocationStore struct {
-	metadata.Store
-	errPut error
-}
-
-func (f *faultyLocalLocationStore) WithTransaction(ctx context.Context, fn func(metadata.Transaction) error) error {
-	return f.Store.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return fn(&faultyLocalLocationTx{Transaction: tx, errPut: f.errPut})
-	})
-}
-
-func (f *faultyLocalLocationStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
-	return metadata.DefaultCommitBlock(ctx, f, rec, chunks, nil)
-}
-
-type faultyLocalLocationTx struct {
-	metadata.Transaction
-	errPut error
-}
-
-func (tx *faultyLocalLocationTx) PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	if tx.errPut != nil {
-		return tx.errPut
-	}
-	return tx.Transaction.PutLocalLocation(ctx, hash, loc)
-}
-
 // errMarkSyncedInjected is the sentinel returned by faultyMarkSyncedStore.
 var errMarkSyncedInjected = errors.New("injected MarkSynced failure")
 
@@ -112,12 +79,10 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 			{
 				Hash:   makeHash(0x10),
 				Remote: block.ChunkLocator{BlockID: "commit-full", WireOffset: 0, WireLength: 1024},
-				Local:  block.LocalChunkLocation{LogBlobID: "log-001", RawOffset: 0, RawLength: 1024},
 			},
 			{
 				Hash:   makeHash(0x11),
 				Remote: block.ChunkLocator{BlockID: "commit-full", WireOffset: 1024, WireLength: 1024},
-				Local:  block.LocalChunkLocation{LogBlobID: "log-001", RawOffset: 1024, RawLength: 1024},
 			},
 		}
 
@@ -135,20 +100,6 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 		}
 		if got != rec {
 			t.Errorf("GetBlockRecord() = %+v, want %+v", got, rec)
-		}
-
-		// Local locations persisted.
-		for i, c := range chunks {
-			loc, found, err := store.GetLocalLocation(ctx, c.Hash)
-			if err != nil {
-				t.Fatalf("GetLocalLocation(chunk %d) error = %v", i, err)
-			}
-			if !found {
-				t.Fatalf("GetLocalLocation(chunk %d) found = false", i)
-			}
-			if loc != c.Local {
-				t.Errorf("GetLocalLocation(chunk %d) = %+v, want %+v", i, loc, c.Local)
-			}
 		}
 
 		// Remote locators synced.
@@ -185,7 +136,6 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 			{
 				Hash:   makeHash(0x20),
 				Remote: block.ChunkLocator{BlockID: "commit-idem", WireOffset: 0, WireLength: 512},
-				Local:  block.LocalChunkLocation{LogBlobID: "log-002", RawOffset: 0, RawLength: 512},
 			},
 		}
 
@@ -223,10 +173,9 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 			SyncState:      block.BlockStatePending,
 		}
 		remote := block.ChunkLocator{BlockID: "commit-dedup", WireOffset: 0, WireLength: 1024}
-		local := block.LocalChunkLocation{LogBlobID: "log-003", RawOffset: 0, RawLength: 1024}
 		chunks := []block.BlockChunkCommit{
-			{Hash: dupHash, Remote: remote, Local: local},
-			{Hash: dupHash, Remote: remote, Local: local},
+			{Hash: dupHash, Remote: remote},
+			{Hash: dupHash, Remote: remote},
 		}
 
 		if err := store.CommitBlock(ctx, rec, chunks); err != nil {
@@ -251,54 +200,9 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 		if locator != remote {
 			t.Errorf("GetLocator() = %+v, want %+v", locator, remote)
 		}
-
-		// And the single local location resolves correctly.
-		loc, found, err := store.GetLocalLocation(ctx, dupHash)
-		if err != nil {
-			t.Fatalf("GetLocalLocation() error = %v", err)
-		}
-		if !found {
-			t.Fatal("GetLocalLocation() found = false for deduped chunk")
-		}
-		if loc != local {
-			t.Errorf("GetLocalLocation() = %+v, want %+v", loc, local)
-		}
 	})
 
 	t.Run("Atomicity", func(t *testing.T) {
-		t.Run("InTxRollback", func(t *testing.T) {
-			t.Parallel()
-
-			rec := block.BlockRecord{
-				BlockID:        "atomicity-rollback",
-				BlockHash:      makeHash(0xA0),
-				Length:         1024,
-				LiveChunkCount: 1,
-				SyncState:      block.BlockStatePending,
-			}
-			chunks := []block.BlockChunkCommit{
-				{
-					Hash:   makeHash(0xA1),
-					Remote: block.ChunkLocator{BlockID: "atomicity-rollback", WireOffset: 0, WireLength: 1024},
-					Local:  block.LocalChunkLocation{LogBlobID: "log-atm-01", RawOffset: 0, RawLength: 1024},
-				},
-			}
-
-			faulty := &faultyLocalLocationStore{Store: store, errPut: errPutLocalInjected}
-			err := faulty.CommitBlock(ctx, rec, chunks)
-			require.Error(t, err, "CommitBlock must fail on injected PutLocalLocation error")
-			require.ErrorIs(t, err, errPutLocalInjected)
-
-			// Neither block record nor local location must have persisted: tx rolled back.
-			_, found, err := store.GetBlockRecord(ctx, rec.BlockID)
-			require.NoError(t, err)
-			assert.False(t, found, "block record must not persist after in-tx rollback")
-
-			_, found, err = store.GetLocalLocation(ctx, chunks[0].Hash)
-			require.NoError(t, err)
-			assert.False(t, found, "local location must not persist after in-tx rollback")
-		})
-
 		t.Run("MarkSyncedFailureRollsBack", func(t *testing.T) {
 			t.Parallel()
 
@@ -313,7 +217,6 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 				{
 					Hash:   makeHash(0xB1),
 					Remote: block.ChunkLocator{BlockID: "atomicity-retry", WireOffset: 0, WireLength: 512},
-					Local:  block.LocalChunkLocation{LogBlobID: "log-atm-02", RawOffset: 0, RawLength: 512},
 				},
 			}
 
@@ -329,10 +232,6 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 			require.NoError(t, err)
 			assert.False(t, found, "block record must not persist after MarkSynced rollback")
 
-			_, found, err = store.GetLocalLocation(ctx, chunks[0].Hash)
-			require.NoError(t, err)
-			assert.False(t, found, "local location must not persist after MarkSynced rollback")
-
 			synced, err := store.IsSynced(ctx, chunks[0].Hash)
 			require.NoError(t, err)
 			assert.False(t, synced, "chunk must not be synced after MarkSynced rollback")
@@ -346,11 +245,6 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 			require.True(t, found, "block record must be present after retry")
 			assert.Equal(t, rec.LiveChunkCount, got.LiveChunkCount,
 				"LiveChunkCount must not be doubled by the retry")
-
-			lloc, found, err := store.GetLocalLocation(ctx, chunks[0].Hash)
-			require.NoError(t, err)
-			require.True(t, found, "local location must be present after retry")
-			assert.Equal(t, chunks[0].Local, lloc)
 
 			synced, err = store.IsSynced(ctx, chunks[0].Hash)
 			require.NoError(t, err)
@@ -386,11 +280,7 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 		}
 		remote := block.ChunkLocator{BlockID: "commit-overwrite", WireOffset: 0, WireLength: 1024}
 		chunks := []block.BlockChunkCommit{
-			{
-				Hash:   h,
-				Remote: remote,
-				Local:  block.LocalChunkLocation{LogBlobID: "log-004", RawOffset: 0, RawLength: 1024},
-			},
+			{Hash: h, Remote: remote},
 		}
 		require.NoError(t, store.CommitBlock(ctx, rec, chunks))
 
@@ -399,38 +289,5 @@ func runCommitBlockOps(t *testing.T, store metadata.Store) {
 		require.True(t, found)
 		assert.Equal(t, remote, locator,
 			"CommitBlock must overwrite the standalone locator with the block locator")
-	})
-
-	t.Run("ZeroLocalLocationNotWritten", func(t *testing.T) {
-		// A chunk with a zero-valued Local location (a migrated chunk — its
-		// bytes exist only in the remote block, never in a local log-blob) must
-		// NOT get a local_chunk_index entry: a zero location would make local
-		// reads resolve to empty bytes.
-		h := makeHash(0x50)
-		rec := block.BlockRecord{
-			BlockID:        "commit-zero-local",
-			BlockHash:      makeHash(0x05),
-			Length:         1024,
-			LiveChunkCount: 1,
-			SyncState:      block.BlockStateRemote,
-		}
-		remote := block.ChunkLocator{BlockID: "commit-zero-local", WireOffset: 0, WireLength: 1024}
-		chunks := []block.BlockChunkCommit{
-			{Hash: h, Remote: remote}, // Local left zero-valued
-		}
-		require.NoError(t, store.CommitBlock(ctx, rec, chunks))
-
-		_, found, err := store.GetLocalLocation(ctx, h)
-		require.NoError(t, err)
-		assert.False(t, found, "zero-valued Local location must not be written")
-
-		// The synced marker + remote locator still land.
-		synced, err := store.IsSynced(ctx, h)
-		require.NoError(t, err)
-		assert.True(t, synced)
-		locator, found, err := store.GetLocator(ctx, h)
-		require.NoError(t, err)
-		require.True(t, found)
-		assert.Equal(t, remote, locator)
 	})
 }

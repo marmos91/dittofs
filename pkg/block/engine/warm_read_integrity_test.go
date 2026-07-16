@@ -24,9 +24,6 @@ import (
 // remote, no eviction.
 func newEngineWithRemote(t *testing.T, ms metadata.Store, mem *remotememory.Store) *engine.Store {
 	t.Helper()
-	if _, ok := ms.(metadata.RollupStore); !ok {
-		t.Fatalf("metadata store %T does not implement metadata.RollupStore", ms)
-	}
 	syncedHashStore, ok := ms.(metadata.SyncedHashStore)
 	if !ok {
 		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)

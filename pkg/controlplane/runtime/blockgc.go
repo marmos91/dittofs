@@ -683,7 +683,6 @@ func (r *Runtime) blockReclaimerForEntry(entry shares.RemoteStoreEntry) engine.B
 		u = append(u, &engine.BlockGCReclaimer{
 			Locators:     mds,
 			Records:      mds,
-			LocalIndex:   mds,
 			RemoteBlocks: rbs,
 		})
 	}

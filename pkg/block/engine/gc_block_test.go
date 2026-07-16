@@ -14,10 +14,10 @@ import (
 )
 
 // seedPackedBlock writes a block object to rbs and records, in st, the block
-// record (LiveChunkCount = len(chunks)), each chunk's local location, and each
-// chunk's synced block-locator backdated past the grace window. It mirrors what
-// the carver's DefaultCommitBlock produces, minus the real codec framing the GC
-// reclaim path never inspects.
+// record (LiveChunkCount = len(chunks)) and each chunk's synced block-locator
+// backdated past the grace window. It mirrors what the carver's
+// DefaultCommitBlock produces, minus the real codec framing the GC reclaim path
+// never inspects.
 func seedPackedBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStore, blockID string, chunks []block.ContentHash) {
 	t.Helper()
 	ctx := t.Context()
@@ -34,10 +34,6 @@ func seedPackedBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStor
 		t.Fatalf("PutBlockRecord(%s): %v", blockID, err)
 	}
 	for i, h := range chunks {
-		loc := block.LocalChunkLocation{LogBlobID: "0000000000000000", RawOffset: int64(i) * 64, RawLength: 64}
-		if err := st.PutLocalLocation(ctx, h, loc); err != nil {
-			t.Fatalf("PutLocalLocation(%s): %v", h, err)
-		}
 		if err := st.MarkSynced(ctx, h, block.ChunkLocator{BlockID: blockID, WireOffset: int64(i) * 80, WireLength: 80}); err != nil {
 			t.Fatalf("MarkSynced(%s): %v", h, err)
 		}
@@ -48,7 +44,7 @@ func seedPackedBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStor
 }
 
 func newBlockGCReclaimer(st metadata.Store, rbs remote.RemoteBlockStore) *BlockGCReclaimer {
-	return &BlockGCReclaimer{Locators: st, Records: st, LocalIndex: st, RemoteBlocks: rbs}
+	return &BlockGCReclaimer{Locators: st, Records: st, RemoteBlocks: rbs}
 }
 
 // ---------------------------------------------------------------------------
@@ -82,8 +78,8 @@ func TestBlockReclaimer_NoLocatorNotHandled(t *testing.T) {
 }
 
 // TestBlockReclaimer_PartialDecrement proves reclaiming one of a block's two
-// chunks decrements LiveChunkCount, drops that chunk's local location, but
-// leaves the block object + record intact (the other chunk is still live).
+// chunks decrements LiveChunkCount but leaves the block object + record intact
+// (the other chunk is still live).
 func TestBlockReclaimer_PartialDecrement(t *testing.T) {
 	ctx := t.Context()
 	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
@@ -111,12 +107,6 @@ func TestBlockReclaimer_PartialDecrement(t *testing.T) {
 	}
 	if rec.LiveChunkCount != 1 {
 		t.Errorf("LiveChunkCount = %d, want 1 after one chunk reaped", rec.LiveChunkCount)
-	}
-	if _, ok, _ := st.GetLocalLocation(ctx, h1); ok {
-		t.Errorf("h1 local location still present; reclaim must delete it")
-	}
-	if _, ok, _ := st.GetLocalLocation(ctx, h2); !ok {
-		t.Errorf("h2 local location wrongly deleted (still live)")
 	}
 	if _, err := rbs.GetBlock(ctx, "blk-partial"); err != nil {
 		t.Errorf("block object wrongly deleted on partial decrement: %v", err)
@@ -149,9 +139,6 @@ func TestBlockReclaimer_FreesBlockAtZero(t *testing.T) {
 	}
 	if _, err := rbs.GetBlock(ctx, "blk-solo"); err == nil {
 		t.Errorf("block object still present on remote after last chunk freed")
-	}
-	if _, ok, _ := st.GetLocalLocation(ctx, h); ok {
-		t.Errorf("local location still present after free")
 	}
 }
 
@@ -306,14 +293,8 @@ func TestGCBlockSweep_PartialUnlinkLeavesIntact(t *testing.T) {
 	if _, err := env.rs.GetBlock(ctx, "blk-part"); err != nil {
 		t.Errorf("block wrongly freed on partial unlink: %v", err)
 	}
-	if _, ok, _ := env.st.GetLocalLocation(ctx, h1); ok {
-		t.Errorf("h1 local location not deleted")
-	}
 	if ok, _ := env.st.IsSynced(ctx, h1); ok {
 		t.Errorf("h1 synced marker not cleared")
-	}
-	if _, ok, _ := env.st.GetLocalLocation(ctx, h2); !ok {
-		t.Errorf("h2 local location wrongly deleted (still live)")
 	}
 	if ok, _ := env.st.IsSynced(ctx, h2); !ok {
 		t.Errorf("h2 synced marker wrongly cleared (still live)")
@@ -420,61 +401,9 @@ func TestBlockReclaimer_RerunAfterCrashNoDoubleDecrement(t *testing.T) {
 	if freed != 0 {
 		t.Errorf("crash-recovery bytesFreed=%d, want 0 (block must not be freed)", freed)
 	}
-	// h2's local location and marker must remain intact — it is still live.
-	if _, ok, _ := st.GetLocalLocation(ctx, h2); !ok {
-		t.Errorf("h2 local location wrongly deleted during crash-recovery reclaim")
-	}
+	// h2's synced marker must remain intact — it is still live.
 	if ok, _ := st.IsSynced(ctx, h2); !ok {
 		t.Errorf("h2 synced marker wrongly cleared during crash-recovery reclaim (still live)")
-	}
-}
-
-// TestBlockReclaimer_ReclaimsAfterEviction is the #1637 regression guard. It
-// proves the reclaimer still frees a block whose chunks' LOCAL-index entries
-// were already dropped by EVICTION (pkg/block/local/fs/eviction.go
-// dropBlobIndexEntries deletes them WITHOUT decrementing LiveChunkCount) before
-// the GC sweep reached them. The synced marker — untouched by eviction — is the
-// decrement's idempotency token, so the decrement runs, LiveChunkCount reaches
-// 0, and both the block record AND the remote blocks/<id> object are reclaimed.
-//
-// Before the fix the reclaimer used the local-index entry as its token: the
-// evicted (now-absent) entry made it treat the chunk as already reclaimed, skip
-// the decrement, and leak the block object forever ("1 survived" in
-// TestBlocksFlipLifecycle step 3).
-func TestBlockReclaimer_ReclaimsAfterEviction(t *testing.T) {
-	ctx := t.Context()
-	st := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	rbs := remotememory.New()
-	defer func() { _ = rbs.Close() }()
-
-	h := hashFromString("evicted-only-chunk")
-	seedPackedBlock(t, st, rbs, "blk-evicted", []block.ContentHash{h})
-
-	// Simulate eviction of the sealed log blob: the local-index entry is dropped
-	// WITHOUT decrementing the block's LiveChunkCount; the synced marker stays.
-	if err := st.DeleteLocalLocation(ctx, h); err != nil {
-		t.Fatalf("simulate eviction DeleteLocalLocation: %v", err)
-	}
-	if ok, _ := st.IsSynced(ctx, h); !ok {
-		t.Fatalf("precondition: synced marker must survive eviction")
-	}
-
-	handled, freed, err := newBlockGCReclaimer(st, rbs).ReclaimDeadChunk(ctx, h)
-	if err != nil {
-		t.Fatalf("ReclaimDeadChunk: %v", err)
-	}
-	if !handled {
-		t.Fatalf("handled = false, want true for an evicted block-resident chunk")
-	}
-	if freed <= 0 {
-		t.Errorf("bytesFreed = %d, want the block Length (last chunk freed)", freed)
-	}
-	// The block record AND the remote object must be reclaimed — the whole bug.
-	if _, ok, _ := st.GetBlockRecord(ctx, "blk-evicted"); ok {
-		t.Errorf("block record survived reclaim after eviction (#1637: GC leaks the blocks/<id> object)")
-	}
-	if _, err := rbs.GetBlock(ctx, "blk-evicted"); err == nil {
-		t.Errorf("remote block object survived reclaim after eviction (#1637: 1 survived)")
 	}
 }
 
@@ -482,6 +411,5 @@ func TestBlockReclaimer_ReclaimsAfterEviction(t *testing.T) {
 var (
 	_ blockSyncedMarkerGC = (*metadatamemory.MemoryMetadataStore)(nil)
 	_ blockRecordGC       = (*metadatamemory.MemoryMetadataStore)(nil)
-	_ localChunkIndexGC   = (*metadatamemory.MemoryMetadataStore)(nil)
 	_ context.Context     = nil
 )

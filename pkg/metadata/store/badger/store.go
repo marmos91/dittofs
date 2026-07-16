@@ -154,7 +154,7 @@ type BadgerMetadataStore struct {
 
 	// relaxedDurability, when set, opens the DB with SyncWrites=false and
 	// defers namespace-op fsyncs to the background syncLoop below; durable
-	// writes (WithTransaction, SetRollupOffset) call db.Sync() explicitly.
+	// writes (WithTransaction) call db.Sync() explicitly.
 	// When false the DB is opened SyncWrites=true and every commit fsyncs, so
 	// WithTransactionRelaxed is indistinguishable from WithTransaction (the
 	// pre-#1573 posture). See BadgerMetadataStoreConfig.RelaxedDurability.
@@ -302,9 +302,9 @@ func NewBadgerMetadataStore(ctx context.Context, config BadgerMetadataStoreConfi
 	// Relaxed (RelaxedDurability=true, #1573 Wall 1): SyncWrites=false, so
 	// namespace-op commits return once the write lands in the memtable/WAL
 	// buffer. Durability is re-established two ways: (a) durable writes
-	// (WithTransaction, SetRollupOffset) call db.Sync() explicitly after commit
-	// — this keeps every DATA-PAIRED write (file size, block manifest, rollup
-	// offset) synchronous, so #588 silent-zeros cannot recur; (b) the
+	// (WithTransaction) call db.Sync() explicitly after commit
+	// — this keeps every DATA-PAIRED write (file size, block manifest)
+	// synchronous, so #588 silent-zeros cannot recur; (b) the
 	// background syncLoop fsyncs on a bounded interval so an un-barriered
 	// namespace op is durable within syncLoopInterval. A hard crash can lose
 	// only the last <interval of pure-namespace ops (the op vanishes/reappears,
@@ -476,7 +476,7 @@ func (s *BadgerMetadataStore) runDurabilitySync() {
 // syncIfRelaxed fsyncs the value log when running in relaxed mode, turning a
 // just-committed (SyncWrites=false) write durable. In strict mode SyncWrites=true
 // already fsynced on commit, so this is a no-op. Callers on the DATA-PAIRED
-// path (WithTransaction, SetRollupOffset) use it to keep #588 durability.
+// path (WithTransaction) use it to keep #588 durability.
 func (s *BadgerMetadataStore) syncIfRelaxed() error {
 	if !s.relaxedDurability {
 		return nil

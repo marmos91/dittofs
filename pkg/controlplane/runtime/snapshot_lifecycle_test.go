@@ -349,13 +349,6 @@ func mustSeedPackedRemote(t *testing.T, st *metadatamemory.MemoryMetadataStore, 
 	}); err != nil {
 		t.Fatalf("PutBlockRecord(%s): %v", blockID, err)
 	}
-	if err := st.PutLocalLocation(ctx, h, block.LocalChunkLocation{
-		LogBlobID: "0000000000000000",
-		RawOffset: 0,
-		RawLength: int64(len(data)),
-	}); err != nil {
-		t.Fatalf("PutLocalLocation(%x): %v", h[:4], err)
-	}
 	if err := st.MarkSynced(ctx, h, block.ChunkLocator{
 		BlockID:    blockID,
 		WireOffset: 0,

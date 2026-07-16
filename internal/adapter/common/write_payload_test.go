@@ -15,8 +15,8 @@ import (
 // helper. Used here instead of a mock because *engine.Store is a
 // concrete struct and the helper under test takes it directly.
 //
-// The FSStore is constructed with an inline RollupStore +
-// SyncedHashStore + a tight stabilization window, and StartRollup is
+// The FSStore is constructed with an inline SyncedHashStore + a tight
+// stabilization window, and StartRollup is
 // invoked so AppendWrite-staged bytes flow through the
 // rollup → CAS chunk → FileChunk-row pipeline that the engine's CAS
 // read path consumes.

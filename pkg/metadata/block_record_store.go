@@ -105,35 +105,16 @@ type BlockRecordStore interface {
 	DecrLiveChunkCount(ctx context.Context, blockID string, delta uint32) (remaining uint32, err error)
 }
 
-// LocalChunkIndex maps content hashes to their position in a local log-blob.
-// It mirrors SyncedHashStore in interface shape: idempotent put, safe miss on
-// get, idempotent delete.
-type LocalChunkIndex interface {
-	// PutLocalLocation records or overwrites the local position for hash.
-	PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error
-
-	// GetLocalLocation returns the local position for hash.
-	// Returns (_, false, nil) when no entry exists.
-	GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error)
-
-	// DeleteLocalLocation removes the local position for hash.
-	// Idempotent: deleting an absent entry returns nil.
-	DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error
-}
-
-// DefaultCommitBlock atomically writes a block record, all associated local
-// chunk locations, and every chunk's synced marker + remote locator within a
-// SINGLE transaction. Either the whole commit is visible or none of it is —
-// there is no partially-committed state to retry, so a commit error simply
-// propagates to the caller (whose existing requeue logic re-drives the batch).
+// DefaultCommitBlock atomically writes a block record and every chunk's synced
+// marker + remote locator within a SINGLE transaction. Either the whole commit
+// is visible or none of it is — there is no partially-committed state to retry,
+// so a commit error simply propagates to the caller (whose existing requeue
+// logic re-drives the batch).
 //
 // Semantics:
 //
 //   - Idempotent on BlockID: if the block record already exists the function
 //     is a no-op (LiveChunkCount is not double-counted, locators untouched).
-//   - A chunk's local location is written only when its Local field is
-//     non-zero. Migrated chunks (cas→blocks) have no local bytes; writing a
-//     zero-valued location would make local reads resolve to empty bytes.
 //   - Locator writes are LAST-WINS: DeleteSynced-then-MarkSynced inside the
 //     tx overwrites any existing locator with the new block locator. The
 //     direct MarkSynced method stays first-wins; CommitBlock needs overwrite
@@ -172,11 +153,6 @@ func DefaultCommitBlock(
 			}
 		}
 		for _, c := range chunks {
-			if c.Local != (block.LocalChunkLocation{}) {
-				if err := tx.PutLocalLocation(ctx, c.Hash, c.Local); err != nil {
-					return err
-				}
-			}
 			// DeleteSynced + MarkSynced = locator overwrite (last-wins), see
 			// the function comment. MarkSynced alone would be first-wins and
 			// leave a stale standalone locator in place.

@@ -7,7 +7,7 @@ package badger
 // retry-exhausted conflict path without spinning thousands of contending
 // goroutines. Production code never calls it.
 // InlineSyncCountForTest returns the number of explicit db.Sync() calls made on
-// the durable write path (WithTransaction / SetRollupOffset in relaxed mode).
+// the durable write path (WithTransaction in relaxed mode).
 // It excludes the background bounded-lag syncer, so a test can assert that a
 // durable commit fsynced inline and a relaxed commit did not. Production code
 // never calls it.

@@ -2,7 +2,6 @@ package badger
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,29 +18,13 @@ import (
 //
 // Block Record Store:
 //   br:{blockID}          value = JSON-encoded block.BlockRecord
-//
-// Local Chunk Index:
-//   li:{hex(hash)}        value = JSON-encoded block.LocalChunkLocation
-//
-// Hex-encoding the 32-byte hash keeps keys printable and unambiguous without
-// the separator complications that raw binary would require against the
-// br: prefix.
 // ============================================================================
 
-const (
-	prefixBlockRecord   = "br:"
-	prefixLocalChunkIdx = "li:"
-)
+const prefixBlockRecord = "br:"
 
 // keyBlockRecord builds the br:{blockID} key.
 func keyBlockRecord(blockID string) []byte {
 	return append([]byte(prefixBlockRecord), blockID...)
-}
-
-// keyLocalChunk builds the li:{hex(hash)} key.
-func keyLocalChunk(hash block.ContentHash) []byte {
-	h := hex.EncodeToString(hash[:])
-	return append([]byte(prefixLocalChunkIdx), h...)
 }
 
 // ============================================================================
@@ -58,18 +41,6 @@ func decodeBlockRecord(b []byte) (block.BlockRecord, error) {
 		return block.BlockRecord{}, fmt.Errorf("badger: decode BlockRecord: %w", err)
 	}
 	return rec, nil
-}
-
-func encodeLocalChunkLocation(loc block.LocalChunkLocation) ([]byte, error) {
-	return json.Marshal(loc)
-}
-
-func decodeLocalChunkLocation(b []byte) (block.LocalChunkLocation, error) {
-	var loc block.LocalChunkLocation
-	if err := json.Unmarshal(b, &loc); err != nil {
-		return block.LocalChunkLocation{}, fmt.Errorf("badger: decode LocalChunkLocation: %w", err)
-	}
-	return loc, nil
 }
 
 // ============================================================================
@@ -188,45 +159,6 @@ func (tx *badgerTransaction) DecrLiveChunkCount(_ context.Context, blockID strin
 		return 0, fmt.Errorf("badger DecrLiveChunkCount set: %w", err)
 	}
 	return rec.LiveChunkCount, nil
-}
-
-// ============================================================================
-// LocalChunkIndex — transaction level
-// ============================================================================
-
-func (tx *badgerTransaction) PutLocalLocation(_ context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	data, err := encodeLocalChunkLocation(loc)
-	if err != nil {
-		return fmt.Errorf("badger PutLocalLocation encode: %w", err)
-	}
-	return tx.txn.Set(keyLocalChunk(hash), data)
-}
-
-func (tx *badgerTransaction) GetLocalLocation(_ context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error) {
-	item, err := tx.txn.Get(keyLocalChunk(hash))
-	if errors.Is(err, badgerdb.ErrKeyNotFound) {
-		return block.LocalChunkLocation{}, false, nil
-	}
-	if err != nil {
-		return block.LocalChunkLocation{}, false, fmt.Errorf("badger GetLocalLocation: %w", err)
-	}
-	var loc block.LocalChunkLocation
-	if verr := item.Value(func(val []byte) error {
-		var decErr error
-		loc, decErr = decodeLocalChunkLocation(val)
-		return decErr
-	}); verr != nil {
-		return block.LocalChunkLocation{}, false, verr
-	}
-	return loc, true, nil
-}
-
-func (tx *badgerTransaction) DeleteLocalLocation(_ context.Context, hash block.ContentHash) error {
-	err := tx.txn.Delete(keyLocalChunk(hash))
-	if errors.Is(err, badgerdb.ErrKeyNotFound) {
-		return nil // idempotent
-	}
-	return err
 }
 
 // ============================================================================
@@ -380,163 +312,20 @@ func (s *BadgerMetadataStore) DecrLiveChunkCount(ctx context.Context, blockID st
 }
 
 // ============================================================================
-// LocalChunkIndex — store level
-// ============================================================================
-
-func (s *BadgerMetadataStore) PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	data, err := encodeLocalChunkLocation(loc)
-	if err != nil {
-		return fmt.Errorf("badger PutLocalLocation encode: %w", err)
-	}
-	if err := s.db.Update(func(txn *badgerdb.Txn) error {
-		return txn.Set(keyLocalChunk(hash), data)
-	}); err != nil {
-		return fmt.Errorf("badger PutLocalLocation: %w", err)
-	}
-	return nil
-}
-
-func (s *BadgerMetadataStore) GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.LocalChunkLocation{}, false, err
-	}
-	var (
-		loc   block.LocalChunkLocation
-		found bool
-	)
-	err := s.db.View(func(txn *badgerdb.Txn) error {
-		item, err := txn.Get(keyLocalChunk(hash))
-		if errors.Is(err, badgerdb.ErrKeyNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		found = true
-		return item.Value(func(val []byte) error {
-			var decErr error
-			loc, decErr = decodeLocalChunkLocation(val)
-			return decErr
-		})
-	})
-	if err != nil {
-		return block.LocalChunkLocation{}, false, fmt.Errorf("badger GetLocalLocation: %w", err)
-	}
-	return loc, found, nil
-}
-
-func (s *BadgerMetadataStore) DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	err := s.db.Update(func(txn *badgerdb.Txn) error {
-		err := txn.Delete(keyLocalChunk(hash))
-		if errors.Is(err, badgerdb.ErrKeyNotFound) {
-			return nil
-		}
-		return err
-	})
-	if err != nil {
-		return fmt.Errorf("badger DeleteLocalLocation: %w", err)
-	}
-	return nil
-}
-
-// WalkLocalLocations calls fn for every stored content-hash -> log-blob
-// location. Read-only; deliberately NOT part of the LocalChunkIndex interface —
-// the local block store discovers it via a narrow consumer-side interface to
-// re-seed crash-stranded unsynced logblob chunks on restart (Walk / ListUnsynced).
-// Collects all entries under a read-only View first, then calls fn outside the
-// iterator so the callback never runs with the iterator open (mirrors
-// WalkBlockRecords).
-func (s *BadgerMetadataStore) WalkLocalLocations(ctx context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	prefix := []byte(prefixLocalChunkIdx)
-
-	type entry struct {
-		hash block.ContentHash
-		loc  block.LocalChunkLocation
-	}
-	var entries []entry
-	if err := s.db.View(func(txn *badgerdb.Txn) error {
-		opts := badgerdb.DefaultIteratorOptions
-		opts.Prefix = prefix
-		it := txn.NewIterator(opts)
-		defer it.Close()
-		for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
-			// The local chunk index can be very large (one entry per unique
-			// chunk); re-check cancellation per entry to stay responsive.
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			item := it.Item()
-			hash, err := hashFromLocalChunkKey(item.Key())
-			if err != nil {
-				return err
-			}
-			var loc block.LocalChunkLocation
-			if verr := item.Value(func(val []byte) error {
-				var decErr error
-				loc, decErr = decodeLocalChunkLocation(val)
-				return decErr
-			}); verr != nil {
-				return verr
-			}
-			entries = append(entries, entry{hash: hash, loc: loc})
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("badger WalkLocalLocations: %w", err)
-	}
-
-	for _, e := range entries {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := fn(e.hash, e.loc); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// hashFromLocalChunkKey decodes a li:{hex(hash)} key back into a ContentHash.
-func hashFromLocalChunkKey(key []byte) (block.ContentHash, error) {
-	hexHash := key[len(prefixLocalChunkIdx):]
-	raw, err := hex.DecodeString(string(hexHash))
-	if err != nil {
-		return block.ContentHash{}, fmt.Errorf("badger: decode local-chunk key %q: %w", key, err)
-	}
-	if len(raw) != len(block.ContentHash{}) {
-		return block.ContentHash{}, fmt.Errorf("badger: local-chunk key %q decodes to %d bytes", key, len(raw))
-	}
-	var h block.ContentHash
-	copy(h[:], raw)
-	return h, nil
-}
-
-// ============================================================================
 // CommitBlock — delegate to shared DefaultCommitBlock logic
 // ============================================================================
 
-// CommitBlock atomically writes the block record and all local chunk locations
-// within a single transaction (via DefaultCommitBlock), then marks each chunk
-// synced. Idempotent: a second call for an already-committed block is a no-op.
+// CommitBlock atomically writes the block record within a single transaction
+// (via DefaultCommitBlock), then marks each chunk synced. Idempotent: a second
+// call for an already-committed block is a no-op.
 func (s *BadgerMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
 	return metadata.DefaultCommitBlock(ctx, s, rec, chunks, nil)
 }
 
-// Compile-time guards: both the store and its transaction implement the new
-// block-record and local-index contracts (store-level is not otherwise checked
-// via the Transaction interface).
+// Compile-time guards: both the store and its transaction implement the
+// block-record contract (store-level is not otherwise checked via the
+// Transaction interface).
 var (
 	_ metadata.BlockRecordStore = (*BadgerMetadataStore)(nil)
 	_ metadata.BlockRecordStore = (*badgerTransaction)(nil)
-	_ metadata.LocalChunkIndex  = (*BadgerMetadataStore)(nil)
-	_ metadata.LocalChunkIndex  = (*badgerTransaction)(nil)
 )
