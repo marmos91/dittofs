@@ -5,11 +5,31 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"sync"
 
 	"lukechampine.com/blake3"
 
 	"github.com/marmos91/dittofs/pkg/block/chunker"
 )
+
+// carveScratchPool recycles the chunker accumulator buffer (cap one max chunk)
+// across carve runs. Its contents are always overwritten before use and it never
+// escapes carveRun, so recycling it is a pure allocation win — no per-op scratch.
+var carveScratchPool = sync.Pool{New: func() any {
+	b := make([]byte, 0, chunker.MaxChunkSize)
+	return &b
+}}
+
+// carveArenaPool recycles the arena backing the pending chunk copies handed to the
+// sink. Both production sinks consume CarveChunk.Data synchronously inside
+// CommitBlock (localBlockSink reads only len; engineBlockSink seals/frames into its
+// own buffer before returning) — neither retains it — so the arena is safe to reuse
+// once flush's CommitBlock returns and pending is cleared.
+var carveArenaPool = sync.Pool{New: func() any {
+	var b []byte
+	return &b
+}}
 
 // Carve packs a shard's dirty ranges into fixed-size remote blocks and marks the
 // records it moved as synced. The flow, per file:
@@ -59,6 +79,10 @@ type CarveChunk struct {
 // leaves the covered records dirty to re-carve next pass. Content-addressed
 // commit makes a re-carve after a crash (or a duplicate concurrent carve) a
 // no-op.
+//
+// Lifetime contract: CarveChunk.Data slices are backed by a pooled arena that
+// the next carve flush reuses. An implementation MUST NOT retain any Data slice
+// after CommitBlock returns; copy the bytes first if it needs them longer.
 type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
@@ -229,6 +253,30 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// reap keeps this run's own rows and deletes only superseded ones (#953).
 	newOffsets := make(map[int64]struct{})
 
+	// arena backs every pending chunk copy in one recycled block-sized buffer, so
+	// a run allocates no per-chunk scratch. It holds at most one block's worth of
+	// pending bytes: pendingBytes flushes at CarveBlockSize and one appended chunk
+	// is at most MaxChunkSize, so CarveBlockSize + MaxChunkSize bounds it.
+	// arenaOff resets after each flush, once CommitBlock has consumed the copies.
+	// Compute in int64 and clamp before the int conversion so a pathological
+	// CarveBlockSize can't silently wrap on 32-bit platforms.
+	arenaCap64 := s.cfg.CarveBlockSize + int64(chunker.MaxChunkSize)
+	if arenaCap64 > math.MaxInt {
+		arenaCap64 = math.MaxInt
+	}
+	arenaCap := int(arenaCap64)
+	arenap := carveArenaPool.Get().(*[]byte)
+	arena := *arenap
+	if cap(arena) < arenaCap {
+		arena = make([]byte, arenaCap)
+	}
+	arena = arena[:cap(arena)]
+	arenaOff := 0
+	defer func() {
+		*arenap = arena
+		carveArenaPool.Put(arenap)
+	}()
+
 	// flush commits the buffered novel chunks (if any) then, since everything up
 	// to watermark is now durable, flips the run's records that end there. The
 	// commit strictly precedes the flip: that is the crash-safety ordering.
@@ -240,23 +288,29 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 			res.BlocksWritten++
 			pending = nil
 			pendingBytes = 0
+			arenaOff = 0
 		}
 		return s.flipUpTo(sh, id, run, &flipIdx, watermark)
 	}
 
 	// buf accumulates bytes for the chunker; it never exceeds one max chunk, so
-	// RAM stays at FastCDC-chunk scale even for a multi-GiB run.
-	buf := make([]byte, 0, chunker.MaxChunkSize)
-	readBuf := make([]byte, 256<<10)
+	// RAM stays at FastCDC-chunk scale even for a multi-GiB run. It is recycled
+	// across runs and read into directly (no separate read buffer).
+	bufp := carveScratchPool.Get().(*[]byte)
+	buf := (*bufp)[:0]
+	defer func() {
+		*bufp = buf
+		carveScratchPool.Put(bufp)
+	}()
 	eof := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		for !eof && len(buf) < chunker.MaxChunkSize {
-			n, err := rr.Read(readBuf)
+			n, err := rr.Read(buf[len(buf):cap(buf)])
 			if n > 0 {
-				buf = append(buf, readBuf[:n]...)
+				buf = buf[:len(buf)+n]
 			}
 			if errors.Is(err, io.EOF) {
 				eof = true
@@ -283,8 +337,19 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 			return err
 		}
 		if !durable {
-			data := make([]byte, boundary)
+			// Bound proof: pendingBytes < CarveBlockSize before this append (else
+			// the prior iteration flushed and reset arenaOff), and boundary <=
+			// MaxChunkSize, so arenaOff+boundary <= CarveBlockSize-1+MaxChunkSize <
+			// cap. The grow is a fail-loud belt: if that invariant ever breaks (e.g.
+			// a config change), realloc rather than slice out of bounds. Already-
+			// pending Data slices keep pointing at the old backing (still live), so
+			// no copy is needed — the new chunk just lands in the larger arena.
+			if arenaOff+boundary > cap(arena) {
+				arena = make([]byte, arenaOff+boundary)
+			}
+			data := arena[arenaOff : arenaOff+boundary : arenaOff+boundary]
 			copy(data, buf[:boundary])
+			arenaOff += boundary
 			pending = append(pending, CarveChunk{Hash: h, FileID: id, FileOffset: fileOff, Data: data})
 			pendingBytes += int64(boundary)
 			res.BytesCarved += int64(boundary)
