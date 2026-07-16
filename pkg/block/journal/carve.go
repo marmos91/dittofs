@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 
 	"lukechampine.com/blake3"
@@ -79,9 +80,9 @@ type CarveChunk struct {
 // commit makes a re-carve after a crash (or a duplicate concurrent carve) a
 // no-op.
 //
-// ponytail: CarveChunk.Data slices are backed by a pooled arena reused by the
-// next carve flush — an implementation MUST NOT retain any Data slice after
-// CommitBlock returns; copy the bytes first if it needs them longer.
+// Lifetime contract: CarveChunk.Data slices are backed by a pooled arena that
+// the next carve flush reuses. An implementation MUST NOT retain any Data slice
+// after CommitBlock returns; copy the bytes first if it needs them longer.
 type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
@@ -255,9 +256,15 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	// arena backs every pending chunk copy in one recycled block-sized buffer, so
 	// a run allocates no per-chunk scratch. It holds at most one block's worth of
 	// pending bytes: pendingBytes flushes at CarveBlockSize and one appended chunk
-	// is at most MaxChunkSize, so cap = CarveBlockSize + MaxChunkSize never overflows.
+	// is at most MaxChunkSize, so CarveBlockSize + MaxChunkSize bounds it.
 	// arenaOff resets after each flush, once CommitBlock has consumed the copies.
-	arenaCap := int(s.cfg.CarveBlockSize) + chunker.MaxChunkSize
+	// Compute in int64 and clamp before the int conversion so a pathological
+	// CarveBlockSize can't silently wrap on 32-bit platforms.
+	arenaCap64 := s.cfg.CarveBlockSize + int64(chunker.MaxChunkSize)
+	if arenaCap64 > math.MaxInt {
+		arenaCap64 = math.MaxInt
+	}
+	arenaCap := int(arenaCap64)
 	arenap := carveArenaPool.Get().(*[]byte)
 	arena := *arenap
 	if cap(arena) < arenaCap {
