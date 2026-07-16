@@ -117,7 +117,7 @@ type segDead struct {
 // It returns the number of still-dirty (unsynced, non-cold) live bytes this
 // insert superseded (so the caller keeps the unsynced-byte counter accurate) and
 // the per-segment dead bytes it created (so the caller feeds GC victim selection).
-func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64, dead []segDead) {
+func (fi *fileIndex) insert(iv interval) (dirtyRemoved, dirtyAdded int64, dead []segDead) {
 	ns, ne := iv.fileOff, iv.end()
 	// First interval that can overlap [ns, ne): end() is strictly increasing
 	// across the non-overlapping sorted set, so the predicate is monotone.
@@ -125,6 +125,7 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64, dead []segDead) {
 
 	newFrags := []interval{iv}
 	var survivors []interval
+	ivShadowed := false
 	hi := lo
 	for hi < len(fi.ivs) && fi.ivs[hi].fileOff < ne {
 		e := fi.ivs[hi]
@@ -132,6 +133,7 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64, dead []segDead) {
 			// Existing wins the overlap: keep it whole, carve iv around it.
 			survivors = append(survivors, e)
 			newFrags = subtractAll(newFrags, e.fileOff, e.end())
+			ivShadowed = true
 		} else {
 			// New wins the overlap: keep only the parts of e outside iv. The
 			// removed slice's bytes are now dead in e's segment (a cold interval
@@ -142,15 +144,47 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved int64, dead []segDead) {
 					dirtyRemoved += ov
 				}
 			}
-			survivors = append(survivors, e.without(ns, ne)...)
+			// #953: a partial overwrite of a warm (synced, non-cold) interval
+			// leaves surviving fragments still pointing at the old chunk's bytes,
+			// whose FileChunk manifest row now straddles the overwrite. Re-mark
+			// them dirty so the next carve re-chunks them into fresh, non-straddling
+			// rows (and the old straddling row is reaped in the commit txn). A cold
+			// fragment holds no local bytes to re-chunk — it is A's remainder-
+			// hydration tail, left as-is so its row still backs the cold range.
+			frags := e.without(ns, ne)
+			dirtyAdded += remarkFragmentsDirty(frags)
+			survivors = append(survivors, frags...)
 		}
 		hi++
+	}
+
+	// Recovery may replay an older synced record after a newer overwrite already
+	// shadowed part of it; the older record's surviving fragments then straddle
+	// too. Re-mark them the same way. No-op on the live append path, where iv is a
+	// fresh dirty write (synced=false) that nothing shadows.
+	if iv.synced && !iv.cold && ivShadowed {
+		dirtyAdded += remarkFragmentsDirty(newFrags)
 	}
 
 	merged := append(survivors, newFrags...)
 	sort.Slice(merged, func(i, j int) bool { return merged[i].fileOff < merged[j].fileOff })
 	fi.ivs = slices.Replace(fi.ivs, lo, hi, merged...)
-	return dirtyRemoved, dead
+	return dirtyRemoved, dirtyAdded, dead
+}
+
+// remarkFragmentsDirty flips warm (synced, non-cold) fragments of a
+// partially-superseded interval to dirty so the next carve re-chunks them into
+// fresh non-straddling manifest rows (#953-A). It returns the bytes newly made
+// dirty so the caller keeps the unsynced counter accurate. Cold fragments are
+// skipped — they hold no local bytes to re-chunk (the remainder-hydration tail).
+func remarkFragmentsDirty(frags []interval) (added int64) {
+	for i := range frags {
+		if frags[i].synced && !frags[i].cold {
+			frags[i].synced = false
+			added += frags[i].length
+		}
+	}
+	return added
 }
 
 // subtractAll removes [rs, re) from every fragment, flattening the survivors.

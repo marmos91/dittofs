@@ -60,21 +60,47 @@ func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveC
 		return fmt.Errorf("local carve: no transactional committer wired")
 	}
 	payloadID := string(chunks[0].FileID)
+	fileChunks := make([]*block.FileChunk, 0, len(chunks))
+	for i := range chunks {
+		c := chunks[i]
+		fileChunks = append(fileChunks, &block.FileChunk{
+			ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
+			Hash:     block.ContentHash(c.Hash),
+			DataSize: uint32(len(c.Data)),
+			State:    block.BlockStatePending,
+		})
+	}
 	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		for i := range chunks {
-			c := chunks[i]
-			fc := &block.FileChunk{
-				ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
-				Hash:     block.ContentHash(c.Hash),
-				DataSize: uint32(len(c.Data)),
-				State:    block.BlockStatePending,
-			}
+		for _, fc := range fileChunks {
 			if err := tx.Put(ctx, fc); err != nil {
 				return fmt.Errorf("local carve: put manifest row %s: %w", fc.ID, err)
 			}
 		}
-		// Materialize File.Blocks from the manifest in the same txn (R).
+		// Materialize File.Blocks from the manifest — same txn (R). Superseded-row
+		// reaping runs once at run end (ReapSupersededManifest), not per batch.
 		return metadata.ProjectManifestToBlocks(ctx, tx, payloadID)
+	})
+}
+
+// ReapSupersededManifest implements journal's optional run-end reap: once a carve
+// run's rows are all committed, delete the manifest rows the run superseded so the
+// per-file manifest tiles [0,size) with no stale straddler or gap (#953). A nil
+// committer (the clone fixture) has no manifest to reap.
+func (s localBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
+	if s.committer == nil {
+		return nil
+	}
+	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.ReapSupersededManifest(ctx, tx, string(id), runStart, runEnd, newOffsets)
+	})
+}
+
+// ReapSupersededManifest implements journal's optional run-end reap for the
+// remote-backed sink: delete the manifest rows the carve run superseded, atomic
+// with a re-projection of File.Blocks (#953).
+func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
+	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.ReapSupersededManifest(ctx, tx, string(id), runStart, runEnd, newOffsets)
 	})
 }
 

@@ -312,7 +312,7 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	}
 
 	fi := sh.indexFor(id)
-	dirtyRemoved, dead := fi.insert(interval{
+	dirtyRemoved, dirtyAdded, dead := fi.insert(interval{
 		fileOff: offset,
 		length:  int64(len(data)),
 		version: version,
@@ -329,17 +329,19 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	}
 
 	s.writes.Add(1)
-	// unsynced tracks live dirty bytes: add this write if dirty, and always drop
-	// the dirty bytes this write superseded (they are dead now, not evictable-
-	// pending). A synced (Hydrate) write adds nothing but can still supersede.
-	dirtyDelta := -dirtyRemoved
+	// unsynced tracks live dirty bytes: add this write if dirty, always drop the
+	// dirty bytes this write superseded (dead now, not evictable-pending), and add
+	// any warm fragments this write re-marked dirty for re-carve (#953-A). A synced
+	// (Hydrate) write adds nothing itself but can still supersede or re-dirty.
+	dirtyDelta := dirtyAdded - dirtyRemoved
 	if !synced {
 		dirtyDelta += int64(len(data))
-		// Stamp the file's dirty age on the first dirty record so carve's age gate
-		// has a reference without a per-interval timestamp.
-		if fi.firstDirtyNanos == 0 {
-			fi.firstDirtyNanos = s.clock.Now().UnixNano()
-		}
+	}
+	// Stamp the file's dirty age on the first dirty record so carve's age gate has
+	// a reference without a per-interval timestamp — including a write that only
+	// re-dirtied a straddle remainder.
+	if fi.firstDirtyNanos == 0 && (!synced || dirtyAdded > 0) {
+		fi.firstDirtyNanos = s.clock.Now().UnixNano()
 	}
 	if dirtyDelta != 0 {
 		s.unsynced.Add(dirtyDelta)

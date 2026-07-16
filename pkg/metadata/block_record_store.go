@@ -189,7 +189,57 @@ func DefaultCommitBlock(
 		}
 		// Materialize File.Blocks from the manifest in this same txn so raw-row
 		// readers (snapshot, audit) stay coherent. Skipped for legacy callers
-		// that pass no fileChunks (nil payloadID).
+		// that pass no fileChunks (nil payloadID). Superseded-row reaping happens
+		// once per carve run (ReapSupersededManifest), not per batch — see below.
 		return ProjectManifestToBlocks(ctx, tx, payloadIDFromChunks(fileChunks))
 	})
+}
+
+// ReapSupersededManifest deletes the manifest rows a carve run supersedes and
+// re-projects File.Blocks, atomically. A partial overwrite re-chunks the dirty
+// range (plus its warm straddle remainders, re-marked dirty by the journal) into
+// fresh rows; the old rows those supersede must be reaped or the per-file manifest
+// no longer tiles [0,size) — a cold read then resolves a stale straddling row
+// (returns old bytes) or hits a gap (zero-fills). That is #953.
+//
+// Reaped set: every existing row for payloadID whose start offset lies in the
+// run's [runStart, runEnd) span and is NOT one of the offsets this run just wrote
+// (newOffsets). Running once at run end — after all of the run's batches have
+// committed their rows — is what makes it correct across a multi-batch run: a
+// straddler spanning a batch seam has no single batch span that contains it, and
+// reaping per batch by the run span would delete a sibling batch's fresh rows.
+// The run span covers only re-carved (dirty) bytes, so an un-recarved cold
+// remainder falls outside it and is never reaped — no gap. newOffsets excludes
+// this run's own rows so they survive.
+//
+// ponytail: this fixes read-coherence — the corruption. Decrementing the reaped
+// chunk's CAS refcount to reclaim its remote space is a separate, tracked
+// follow-up (#1715): under-counting only leaks space, it never drops live data.
+func ReapSupersededManifest(ctx context.Context, tx Transaction, payloadID string, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
+	if payloadID == "" || runEnd <= runStart {
+		return nil
+	}
+	rows, err := tx.ListFileChunks(ctx, payloadID)
+	if err != nil {
+		return fmt.Errorf("reap superseded: list manifest for %s: %w", payloadID, err)
+	}
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		off, ok := block.ParseChunkOffset(r.ID)
+		if !ok {
+			continue
+		}
+		if int64(off) < runStart || int64(off) >= runEnd {
+			continue // outside the re-carved run — untouched (incl. cold remainders)
+		}
+		if _, isNew := newOffsets[int64(off)]; isNew {
+			continue // a row this run just wrote — keep it
+		}
+		if err := tx.Delete(ctx, r.ID); err != nil {
+			return fmt.Errorf("reap superseded: delete %s: %w", r.ID, err)
+		}
+	}
+	return ProjectManifestToBlocks(ctx, tx, payloadID)
 }
