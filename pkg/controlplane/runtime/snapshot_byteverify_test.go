@@ -536,7 +536,6 @@ func runByteVerifyCycle(t *testing.T, fx *byteVerifyFixture) {
 // DITTOFS_TEST_POSTGRES_DSN is set (the integration-tagged file supplies the
 // postgres case constructor).
 func TestSnapshotByteVerify_Matrix(t *testing.T) {
-	t.Skip("#1718: local-only snapshot-restore under the journal (segment-pinning), follow-up")
 	for _, bk := range byteVerifyBackends(t) {
 		bk := bk
 		t.Run(bk.name, func(t *testing.T) {

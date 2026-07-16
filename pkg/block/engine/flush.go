@@ -125,6 +125,48 @@ func (bs *Store) SeedCold(ctx context.Context, payloadID string, offset, length 
 	return cs.SeedCold(ctx, journal.FileID(payloadID), offset, length)
 }
 
+// RestoreToVersion rewinds the local journal to a snapshot's version watermark
+// and re-materializes that point-in-time view durably at the log head. It is the
+// local-only snapshot-restore primitive the runtime calls instead of
+// ResetLocalState when the share has no remote store (the journal is the only
+// durable copy of the bytes). No-op when the local store is not journal-backed
+// (e.g. the in-memory test store), which the caller only reaches off this path.
+func (bs *Store) RestoreToVersion(ctx context.Context, v uint64) error {
+	if err := bs.enter(); err != nil {
+		return err
+	}
+	defer bs.closeMu.RUnlock()
+	type restorer interface {
+		RestoreToVersion(ctx context.Context, v uint64) error
+	}
+	r, ok := bs.local.(restorer)
+	if !ok {
+		return nil
+	}
+	return r.RestoreToVersion(ctx, v)
+}
+
+// SetPinVersion sets the local journal's snapshot pin watermark so GC/eviction
+// keep the bytes of every at-or-below-watermark record (the durable copy for a
+// live local-only snapshot). No-op when the local store is not journal-backed.
+func (bs *Store) SetPinVersion(v uint64) {
+	type pinner interface{ SetPinVersion(v uint64) }
+	if p, ok := bs.local.(pinner); ok {
+		p.SetPinVersion(v)
+	}
+}
+
+// JournalVersion returns the local journal's current LSN watermark, captured by
+// snapshot create (after DrainRollups) to record the snapshot's version. Returns
+// 0 when the local store is not journal-backed.
+func (bs *Store) JournalVersion() uint64 {
+	type versioner interface{ JournalVersion() uint64 }
+	if j, ok := bs.local.(versioner); ok {
+		return j.JournalVersion()
+	}
+	return 0
+}
+
 func (bs *Store) ResetLocalState(ctx context.Context) error {
 	if err := bs.enter(); err != nil {
 		return err

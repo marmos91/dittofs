@@ -137,10 +137,17 @@ type Store struct {
 	// holds and the per-segment busy claim it CAS-sets on each victim, not gcMu.
 	gcMu sync.Mutex
 
-	nextSeg   atomic.Uint64 // global segment-ID allocator
-	version   atomic.Uint64 // global monotonic LSN
-	unsynced  atomic.Int64  // dirty bytes not yet carved to remote
-	diskBytes atomic.Int64  // total on-disk segment bytes (headers + records), the eviction gate input
+	nextSeg atomic.Uint64 // global segment-ID allocator
+	version atomic.Uint64 // global monotonic LSN
+	// pinVersion is the highest snapshot watermark still held by a live snapshot
+	// (0 = none). A segment whose minVersion is at or below it is kept off the
+	// eviction/GC path so a local-only snapshot's bytes — the only durable copy —
+	// survive until the snapshot is deleted. DERIVED: the runtime recomputes it as
+	// max(JournalVersion) over live snapshots and calls SetPinVersion; the journal
+	// only reads it (reclaim.go). See #1718.
+	pinVersion atomic.Uint64
+	unsynced   atomic.Int64 // dirty bytes not yet carved to remote
+	diskBytes  atomic.Int64 // total on-disk segment bytes (headers + records), the eviction gate input
 
 	writes    atomic.Int64
 	reads     atomic.Int64
@@ -543,3 +550,179 @@ func (s *Store) idxPath(id uint64) string {
 
 // nextVersion returns the next global LSN.
 func (s *Store) nextVersion() uint64 { return s.version.Add(1) }
+
+// JournalVersion returns the current global LSN watermark: every record written
+// so far carries a Version at or below it. Snapshot create captures this after
+// draining rollups so the snapshot pins exactly the records that make up its
+// point-in-time view (#1718).
+func (s *Store) JournalVersion() uint64 { return s.version.Load() }
+
+// SetPinVersion sets the highest live-snapshot watermark. The runtime derives it
+// as max(JournalVersion) over live snapshots and raises it before a snapshot is
+// marked ready / lowers it only after a delete commits, so GC only ever grows
+// more conservative. Reads are a single atomic load on the reclaim path.
+func (s *Store) SetPinVersion(v uint64) { s.pinVersion.Store(v) }
+
+// PinVersion reports the current pin watermark (0 = no live snapshot).
+func (s *Store) PinVersion() uint64 { return s.pinVersion.Load() }
+
+// RestoreToVersion rewinds every file to its point-in-time view as of the global
+// LSN watermark V and re-materializes that view durably at the log head, so a
+// crash-reopen reconstructs V and the pre-restore records (which a safety snapshot
+// still pins for rollback) stay intact. It is the local-only snapshot-restore
+// primitive: the journal is the only durable copy of the bytes, so a plain rewind
+// is not restart-safe (recover() would resurrect the >V head) and the >V records
+// cannot be deleted. See #1718.
+//
+// Two phases:
+//
+//  1. Ceiling replay: scan every on-disk record and rebuild each file's coverage
+//     as of V — data records with Version<=V resolved newest-wins, tombstones and
+//     truncate markers with Version<=V honored, everything above V ignored. The
+//     pre-overwrite records survive because a live snapshot pinned their segments.
+//  2. Re-materialize: for each file, read the V-view bytes from their pinned
+//     source records and re-append them as fresh dirty records at the head (a
+//     tombstone first to bury the current head, then the V-view data). Fresh
+//     versions exceed everything, so recover() rebuilds V on reopen; a file
+//     present at head but absent at V is tombstoned away.
+//
+// The caller (restore orchestration) drains rollups afterward and holds the share
+// disabled, so no concurrent writer races this.
+func (s *Store) RestoreToVersion(ctx context.Context, v uint64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.closed.Load() {
+		return errClosed
+	}
+
+	// --- phase 1: ceiling replay over the on-disk records ---
+	vIndex := map[FileID]*fileIndex{}
+	tombstones := map[FileID]uint64{}
+	truncations := map[FileID]truncMark{}
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		segs := make([]*segmentMeta, 0, len(sh.sealed)+1)
+		if sh.active != nil {
+			segs = append(segs, sh.active)
+		}
+		for _, seg := range sh.sealed {
+			segs = append(segs, seg)
+		}
+		sh.mu.Unlock()
+
+		for _, seg := range segs {
+			recs, _ := scanValidRecords(seg.fd, s.cfg.SegmentSize, s.cfg.SegmentSize)
+			for _, rec := range recs {
+				if rec.header.Version > v {
+					continue // above the watermark: belongs to a post-snapshot state
+				}
+				fid := FileID(rec.fileID)
+				switch {
+				case rec.header.Flags&flagTombstone != 0:
+					if rec.header.Version > tombstones[fid] {
+						tombstones[fid] = rec.header.Version
+					}
+				case rec.header.Flags&flagTruncate != 0:
+					if cur, ok := truncations[fid]; !ok || rec.header.Version > cur.version {
+						truncations[fid] = truncMark{version: rec.header.Version, newSize: int64(rec.header.FileOffset)}
+					}
+				default:
+					fi := vIndex[fid]
+					if fi == nil {
+						fi = &fileIndex{}
+						vIndex[fid] = fi
+					}
+					fi.insert(interval{
+						fileOff: int64(rec.header.FileOffset),
+						length:  int64(rec.header.PayloadLen),
+						version: rec.header.Version,
+						synced:  rec.header.Flags&flagSynced != 0,
+						loc: SegmentLocation{
+							SegmentID: seg.id,
+							Offset:    rec.segOff + recordHeaderSize + int64(len(rec.fileID)),
+							Length:    int64(rec.header.PayloadLen),
+						},
+					})
+				}
+			}
+		}
+	}
+	// Honor tombstones and truncate markers at or below V, mirroring recover().
+	for fid, fi := range vIndex {
+		if tv, ok := tombstones[fid]; ok {
+			kept := fi.ivs[:0]
+			for _, iv := range fi.ivs {
+				if iv.version > tv {
+					kept = append(kept, iv)
+				}
+			}
+			fi.ivs = kept
+		}
+		if tm, ok := truncations[fid]; ok {
+			kept := fi.ivs[:0]
+			for _, iv := range fi.ivs {
+				if iv.version > tm.version || iv.end() <= tm.newSize {
+					kept = append(kept, iv)
+					continue
+				}
+				if iv.fileOff < tm.newSize {
+					kept = append(kept, iv.clamp(iv.fileOff, tm.newSize))
+				}
+			}
+			fi.ivs = kept
+		}
+		if len(fi.ivs) == 0 {
+			delete(vIndex, fid)
+		}
+	}
+
+	// --- phase 2: re-materialize the V-view at the head ---
+	head := map[FileID]struct{}{}
+	for _, id := range s.ListFiles(ctx) {
+		head[id] = struct{}{}
+	}
+	for id, fi := range vIndex {
+		type extent struct {
+			off  int64
+			data []byte
+		}
+		exts := make([]extent, 0, len(fi.ivs))
+		sh := s.shardFor(id)
+		for _, iv := range fi.ivs {
+			if iv.length <= 0 {
+				continue
+			}
+			sh.mu.Lock()
+			seg := sh.segment(iv.loc.SegmentID)
+			sh.mu.Unlock()
+			if seg == nil {
+				return fmt.Errorf("journal: restore: source segment %d gone for %q@%d", iv.loc.SegmentID, id, iv.fileOff)
+			}
+			buf := make([]byte, iv.length)
+			if _, err := seg.fd.ReadAt(buf, iv.loc.Offset); err != nil {
+				return fmt.Errorf("journal: restore: read %q@%d from segment %d: %w", id, iv.fileOff, iv.loc.SegmentID, err)
+			}
+			exts = append(exts, extent{off: iv.fileOff, data: buf})
+		}
+		// Bury the current head (tombstone Version > head), then re-assert the
+		// V-view as fresh dirty records on top of it.
+		if err := s.Delete(ctx, id); err != nil {
+			return fmt.Errorf("journal: restore: bury head for %q: %w", id, err)
+		}
+		for _, e := range exts {
+			if err := s.WriteAt(ctx, id, e.off, e.data); err != nil {
+				return fmt.Errorf("journal: restore: re-materialize %q@%d: %w", id, e.off, err)
+			}
+		}
+		delete(head, id)
+	}
+	// Files present at head but not in the V-view were created after V: tombstone
+	// them so recover() and reads agree they are gone.
+	for id := range head {
+		if err := s.Delete(ctx, id); err != nil {
+			return fmt.Errorf("journal: restore: tombstone post-V file %q: %w", id, err)
+		}
+	}
+	return nil
+}

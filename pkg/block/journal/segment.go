@@ -54,6 +54,13 @@ type segmentMeta struct {
 	records       atomic.Int64 // physical records appended (eviction synced-gate denominator)
 	syncedRecords atomic.Int64 // records with the synced flag set (eviction gate)
 	lastAccess    atomic.Int64 // unix nanos, approx-LRU victim key
+	// minVersion is the lowest record Version stored in this segment (0 = empty).
+	// Segments fill sequentially, so a segment's records span a contiguous
+	// [minVersion, maxVersion]; minVersion<=pinVersion means the segment holds a
+	// record at or below a live snapshot's watermark and must not be evicted or
+	// GC-repacked while that snapshot lives (#1718). Set on the first append and
+	// reconstructed during the recovery scan and repack.
+	minVersion atomic.Int64
 	// busy claims the segment for an exclusive whole-segment operation (evict or
 	// GC repack). A claimer CAS-sets it true so eviction and GC never touch the
 	// same sealed segment concurrently; warm reads and carve don't claim.
@@ -66,6 +73,23 @@ type segmentMeta struct {
 	readGuard sync.RWMutex
 	// ponytail: the quotient-filter membership hint (rebuilt on repack) arrives
 	// with GC; a linear index scan suffices until segments are large.
+}
+
+// noteMinVersion records v as a candidate lowest record Version for the segment,
+// keeping the minimum ever seen (0 = unset). The pin predicate (reclaim.go) reads
+// it to keep a segment holding at-or-below-pinVersion records off the eviction/GC
+// path. Caller holds the shard lock on the append path; the CAS loop tolerates the
+// recovery/repack callers that set it without one.
+func (m *segmentMeta) noteMinVersion(v uint64) {
+	for {
+		cur := m.minVersion.Load()
+		if cur != 0 && cur <= int64(v) {
+			return
+		}
+		if m.minVersion.CompareAndSwap(cur, int64(v)) {
+			return
+		}
+	}
 }
 
 // close closes the segment's data and index file descriptors.
@@ -291,6 +315,7 @@ func (s *Store) appendRecord(ctx context.Context, id FileID, offset int64, data 
 	seg.tail.Store(segOff + recLen)
 	seg.liveBytes.Add(int64(len(data)))
 	seg.records.Add(1)
+	seg.noteMinVersion(version)
 	seg.lastAccess.Store(s.clock.Now().UnixNano())
 	s.diskBytes.Add(recLen)
 	if synced {
@@ -385,6 +410,7 @@ func (s *Store) appendTombstone(ctx context.Context, id FileID) (uint64, error) 
 		sh.mu.Unlock()
 		return 0, err
 	}
+	seg.noteMinVersion(version)
 	if seg.idxFD != nil {
 		_, _ = seg.idxFD.Write(idxEntry{
 			FileIDHash: fnv1a(string(id)),
@@ -439,6 +465,7 @@ func (s *Store) appendTruncateMarker(ctx context.Context, id FileID, newSize int
 		sh.mu.Unlock()
 		return 0, err
 	}
+	seg.noteMinVersion(version)
 	if seg.idxFD != nil {
 		_, _ = seg.idxFD.Write(idxEntry{
 			FileIDHash: fnv1a(string(id)),

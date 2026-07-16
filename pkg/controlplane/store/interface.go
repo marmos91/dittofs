@@ -612,7 +612,9 @@ type SnapshotStore interface {
 	// Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
 	// Returns models.ErrSnapshotStateConflict if the row exists but is
 	// not in state='creating'.
-	MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64) error
+	// journalVersion records the local-journal LSN watermark the snapshot pins
+	// (0 for remote-only shares); a local-only restore rewinds to it.
+	MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64, journalVersion uint64) error
 }
 
 // SnapshotPolicyStore provides per-share snapshot policy CRUD for the
