@@ -45,7 +45,7 @@ var _ block.FileChunkStore = (*PostgresMetadataStore)(nil)
 // FileChunkStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *PostgresMetadataStore) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE id = $1`
 	row := s.queryRow(ctx, query, id)
 
@@ -77,10 +77,6 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileChu
 		h := block.Hash.String()
 		hashStr = &h
 	}
-	var blockStoreKey *string
-	if block.BlockStoreKey != "" {
-		blockStoreKey = &block.BlockStoreKey
-	}
 	// persist LastSyncAttemptAt as NULL when zero so the
 	// janitor's WHERE last_sync_attempt_at < cutoff predicate excludes
 	// never-claimed rows naturally instead of matching every Pending row.
@@ -99,17 +95,16 @@ func (s *PostgresMetadataStore) Put(ctx context.Context, block *metadata.FileChu
 	// Increment/Decrement. hash uses COALESCE so a zero-hash Put never NULLs
 	// a previously-persisted good hash.
 	query := `
-		INSERT INTO file_blocks (id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO file_blocks (id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE SET
 			hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
 			data_size = EXCLUDED.data_size,
-			block_store_key = EXCLUDED.block_store_key,
 			last_access = EXCLUDED.last_access,
 			state = EXCLUDED.state,
 			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
 	_, err := s.exec(ctx, query,
-		block.ID, hashStr, block.DataSize, blockStoreKey,
+		block.ID, hashStr, block.DataSize,
 		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
 	if err != nil {
 		return fmt.Errorf("put file chunk: %w", err)
@@ -262,7 +257,7 @@ func (s *PostgresMetadataStore) AddRef(ctx context.Context, hash block.ContentHa
 // Pending or Syncing rows have not been confirmed on the remote and
 // are unsafe dedup targets.
 func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`
 	row := s.queryRow(ctx, query, hash.String())
 
@@ -281,7 +276,7 @@ func (s *PostgresMetadataStore) GetByHash(ctx context.Context, hash metadata.Con
 // Not on the narrowed FileChunkStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *PostgresMetadataStore) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks
 		WHERE id LIKE $1
 		ORDER BY id ASC`
@@ -471,10 +466,9 @@ func scanFileChunk(row pgx.Row) (*metadata.FileChunk, error) {
 	var (
 		block             metadata.FileChunk
 		hashStr           sql.NullString
-		blockStoreKey     sql.NullString
 		lastSyncAttemptAt sql.NullTime
 	)
-	if err := row.Scan(&block.ID, &hashStr, &block.DataSize, &blockStoreKey,
+	if err := row.Scan(&block.ID, &hashStr, &block.DataSize,
 		&block.RefCount, &block.LastAccess, &block.CreatedAt, &block.State, &lastSyncAttemptAt); err != nil {
 		return nil, err
 	}
@@ -487,9 +481,6 @@ func scanFileChunk(row pgx.Row) (*metadata.FileChunk, error) {
 				block.ID, hashStr.String, perr)
 		}
 		block.Hash = h
-	}
-	if blockStoreKey.Valid {
-		block.BlockStoreKey = blockStoreKey.String
 	}
 	if lastSyncAttemptAt.Valid {
 		block.LastSyncAttemptAt = lastSyncAttemptAt.Time
@@ -530,7 +521,7 @@ func (tx *postgresTransaction) GetFileChunk(ctx context.Context, id string) (*me
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE id = $1`
 	row := tx.tx.QueryRow(ctx, query, id)
 	block, err := scanFileChunk(row)
@@ -552,10 +543,6 @@ func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileChun
 		h := block.Hash.String()
 		hashStr = &h
 	}
-	var blockStoreKey *string
-	if block.BlockStoreKey != "" {
-		blockStoreKey = &block.BlockStoreKey
-	}
 	var lastSyncAttemptAt *time.Time
 	if !block.LastSyncAttemptAt.IsZero() {
 		t := block.LastSyncAttemptAt
@@ -565,17 +552,16 @@ func (tx *postgresTransaction) Put(ctx context.Context, block *metadata.FileChun
 	// Put). RefCount mutates only via Increment/Decrement. hash uses COALESCE
 	// so a zero-hash Put never NULLs a previously-persisted good hash.
 	query := `
-		INSERT INTO file_blocks (id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO file_blocks (id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE SET
 			hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
 			data_size = EXCLUDED.data_size,
-			block_store_key = EXCLUDED.block_store_key,
 			last_access = EXCLUDED.last_access,
 			state = EXCLUDED.state,
 			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
 	_, err := tx.tx.Exec(ctx, query,
-		block.ID, hashStr, block.DataSize, blockStoreKey,
+		block.ID, hashStr, block.DataSize,
 		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
 	if err != nil {
 		return fmt.Errorf("put file chunk: %w", err)
@@ -672,7 +658,7 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = $1 AND state = 2 /* Remote */`
 	row := tx.tx.QueryRow(ctx, query, hash.String())
 	block, err := scanFileChunk(row)
@@ -692,7 +678,7 @@ func (tx *postgresTransaction) GetByHash(ctx context.Context, hash metadata.Cont
 // (read-after-write violation; the SQL is otherwise identical to the
 // store-level methods).
 func (tx *postgresTransaction) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks
 		WHERE id LIKE $1
 		ORDER BY id ASC`
@@ -759,10 +745,10 @@ func (tx *postgresTransaction) EnumerateFileChunks(ctx context.Context, fn func(
 func (s *PostgresMetadataStore) InjectCorruptHashRow(ctx context.Context, blockID string, badHash string) error {
 	now := time.Now()
 	_, err := s.exec(ctx, `
-		INSERT INTO file_blocks (id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO file_blocks (id, hash, data_size, ref_count, last_access, created_at, state, last_sync_attempt_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE SET hash = EXCLUDED.hash`,
-		blockID, badHash, uint32(64), nil, uint32(1), now, now, int(block.BlockStateRemote), nil,
+		blockID, badHash, uint32(64), uint32(1), now, now, int(block.BlockStateRemote), nil,
 	)
 	if err != nil {
 		return fmt.Errorf("inject corrupt hash row: %w", err)

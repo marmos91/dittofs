@@ -244,14 +244,13 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 
 		hash := hashOfSeed("reap-at-zero")
 		fb := &block.FileChunk{
-			ID:            "file-reap/0",
-			Hash:          hash,
-			State:         block.BlockStateRemote,
-			BlockStoreKey: "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String(),
-			DataSize:      4096,
-			RefCount:      1,
-			LastAccess:    time.Now(),
-			CreatedAt:     time.Now(),
+			ID:         "file-reap/0",
+			Hash:       hash,
+			State:      block.BlockStateRemote,
+			DataSize:   4096,
+			RefCount:   1,
+			LastAccess: time.Now(),
+			CreatedAt:  time.Now(),
 		}
 		if err := store.Put(ctx, fb); err != nil {
 			t.Fatalf("Put: %v", err)
@@ -288,14 +287,13 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 
 		hash := hashOfSeed("reap-survives")
 		fb := &block.FileChunk{
-			ID:            "file-survive/0",
-			Hash:          hash,
-			State:         block.BlockStateRemote,
-			BlockStoreKey: "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String(),
-			DataSize:      4096,
-			RefCount:      1,
-			LastAccess:    time.Now(),
-			CreatedAt:     time.Now(),
+			ID:         "file-survive/0",
+			Hash:       hash,
+			State:      block.BlockStateRemote,
+			DataSize:   4096,
+			RefCount:   1,
+			LastAccess: time.Now(),
+			CreatedAt:  time.Now(),
 		}
 		if err := store.Put(ctx, fb); err != nil {
 			t.Fatalf("Put: %v", err)
@@ -576,7 +574,7 @@ func testListFileChunks(t *testing.T, factory StoreFactory) {
 	blocks := []*block.FileChunk{
 		{ID: "file-A/0", State: block.BlockStatePending, DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 		{ID: "file-A/1", State: block.BlockStatePending, DataSize: 200, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-A/2", State: block.BlockStateRemote, BlockStoreKey: "s3://a2", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/2", State: block.BlockStateRemote, DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 		{ID: "file-B/0", State: block.BlockStatePending, DataSize: 400, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 		{ID: "file-B/1", State: block.BlockStatePending, DataSize: 500, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 	}
@@ -681,9 +679,6 @@ func testListFileChunksMixedStates(t *testing.T, factory StoreFactory) {
 			ID: fmt.Sprintf("file-mix/%d", i), State: state,
 			DataSize: uint32((i + 1) * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
-		}
-		if state == block.BlockStateRemote {
-			b.BlockStoreKey = "s3://mix"
 		}
 		if err := store.Put(ctx, b); err != nil {
 			t.Fatalf("Put(%s) failed: %v", b.ID, err)
@@ -908,28 +903,24 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	hash := hashOfSeed("shared-content")
-	keyA := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
-	keyB := keyA // CAS keys are identical for the same hash; that's the point
 
 	a := &block.FileChunk{
-		ID:            "file-A/0",
-		Hash:          hash,
-		State:         block.BlockStateRemote,
-		BlockStoreKey: keyA,
-		DataSize:      4096,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         "file-A/0",
+		Hash:       hash,
+		State:      block.BlockStateRemote,
+		DataSize:   4096,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}
 	b := &block.FileChunk{
-		ID:            "file-B/0",
-		Hash:          hash, // SAME content hash, different ID
-		State:         block.BlockStateRemote,
-		BlockStoreKey: keyB,
-		DataSize:      4096,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         "file-B/0",
+		Hash:       hash, // SAME content hash, different ID
+		State:      block.BlockStateRemote,
+		DataSize:   4096,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}
 
 	if err := store.Put(ctx, a); err != nil {
@@ -1069,14 +1060,13 @@ func testEnumerateFileChunks_SingleFile(t *testing.T, factory StoreFactory) {
 		h := hashOfSeed(fmt.Sprintf("single-%d", i))
 		want[h] = true
 		b := &block.FileChunk{
-			ID:            fmt.Sprintf("file-single/%d", i),
-			Hash:          h,
-			State:         block.BlockStateRemote,
-			BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
-			DataSize:      128,
-			RefCount:      1,
-			LastAccess:    time.Now(),
-			CreatedAt:     time.Now(),
+			ID:         fmt.Sprintf("file-single/%d", i),
+			Hash:       h,
+			State:      block.BlockStateRemote,
+			DataSize:   128,
+			RefCount:   1,
+			LastAccess: time.Now(),
+			CreatedAt:  time.Now(),
 		}
 		if err := store.Put(ctx, b); err != nil {
 			t.Fatalf("Put(%s) failed: %v", b.ID, err)
@@ -1116,14 +1106,13 @@ func testEnumerateFileChunks_LargeFanout(t *testing.T, factory StoreFactory) {
 			h := hashOfSeed(fmt.Sprintf("fanout-%d-%d", f, i))
 			want[h]++
 			b := &block.FileChunk{
-				ID:            fmt.Sprintf("file-fan-%d/%d", f, i),
-				Hash:          h,
-				State:         block.BlockStateRemote,
-				BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
-				DataSize:      64,
-				RefCount:      1,
-				LastAccess:    time.Now(),
-				CreatedAt:     time.Now(),
+				ID:         fmt.Sprintf("file-fan-%d/%d", f, i),
+				Hash:       h,
+				State:      block.BlockStateRemote,
+				DataSize:   64,
+				RefCount:   1,
+				LastAccess: time.Now(),
+				CreatedAt:  time.Now(),
 			}
 			if err := store.Put(ctx, b); err != nil {
 				t.Fatalf("Put(%s) failed: %v", b.ID, err)
@@ -1273,14 +1262,13 @@ func testEnumerateFileChunks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 		t.Fatalf("Put(zero) failed: %v", err)
 	}
 	finalized := &block.FileChunk{
-		ID:            "file-zero/1",
-		Hash:          hashOfSeed("non-zero"),
-		State:         block.BlockStateRemote,
-		BlockStoreKey: "cas/12/34/" + hashOfSeed("non-zero").String(),
-		DataSize:      64,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         "file-zero/1",
+		Hash:       hashOfSeed("non-zero"),
+		State:      block.BlockStateRemote,
+		DataSize:   64,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}
 	if err := store.Put(ctx, finalized); err != nil {
 		t.Fatalf("Put(finalized) failed: %v", err)
@@ -1334,14 +1322,13 @@ func testEnumerateFileChunks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 	// Seed one well-formed Remote block so enumeration has something to walk
 	// past before reaching the corrupt row.
 	good := &block.FileChunk{
-		ID:            "file-corrupt/0",
-		Hash:          hashOfSeed("good"),
-		State:         block.BlockStateRemote,
-		BlockStoreKey: "cas/aa/bb/" + hashOfSeed("good").String(),
-		DataSize:      64,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         "file-corrupt/0",
+		Hash:       hashOfSeed("good"),
+		State:      block.BlockStateRemote,
+		DataSize:   64,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}
 	if err := store.Put(ctx, good); err != nil {
 		t.Fatalf("Put(good) failed: %v", err)
@@ -1464,14 +1451,13 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 		}
 
 		fb := &block.FileChunk{
-			ID:            payloadID + "/0",
-			Hash:          hash,
-			State:         block.BlockStateRemote,
-			BlockStoreKey: "cas/a1/b2/" + hash.String(),
-			DataSize:      4096,
-			RefCount:      1,
-			LastAccess:    time.Now(),
-			CreatedAt:     time.Now(),
+			ID:         payloadID + "/0",
+			Hash:       hash,
+			State:      block.BlockStateRemote,
+			DataSize:   4096,
+			RefCount:   1,
+			LastAccess: time.Now(),
+			CreatedAt:  time.Now(),
 		}
 		if putErr := tx.Put(ctx, fb); putErr != nil {
 			return fmt.Errorf("tx.Put: %w", putErr)
@@ -1536,16 +1522,14 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 	ctx := t.Context()
 
 	hash := hashOfSeed("addref-existing-hash")
-	casKey := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
 	seed := &block.FileChunk{
-		ID:            "file-addref/0",
-		Hash:          hash,
-		State:         block.BlockStateRemote,
-		BlockStoreKey: casKey,
-		DataSize:      4096,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         "file-addref/0",
+		Hash:       hash,
+		State:      block.BlockStateRemote,
+		DataSize:   4096,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}
 	if err := store.Put(ctx, seed); err != nil {
 		t.Fatalf("seed Put: %v", err)
@@ -1619,16 +1603,14 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 	ctx := t.Context()
 
 	hash := hashOfSeed("addref-concurrent-cascade")
-	casKey := "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String()
 	seed := &block.FileChunk{
-		ID:            "file-addref-conc/0",
-		Hash:          hash,
-		State:         block.BlockStateRemote,
-		BlockStoreKey: casKey,
-		DataSize:      4096,
-		RefCount:      10,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         "file-addref-conc/0",
+		Hash:       hash,
+		State:      block.BlockStateRemote,
+		DataSize:   4096,
+		RefCount:   10,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}
 	if err := store.Put(ctx, seed); err != nil {
 		t.Fatalf("seed Put: %v", err)

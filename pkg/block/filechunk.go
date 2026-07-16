@@ -30,7 +30,7 @@ type FileChunkStore interface {
 	// (nil, nil) when absent. The "any" wording matters: legacy data
 	// may have multiple rows per hash; callers (the engine dedup
 	// short-circuit) treat the result as best-effort and proceed with
-	// any one row's BlockStoreKey. Renamed from FindFileChunkByHash.
+	// any one row's chunk. Renamed from FindFileChunkByHash.
 	GetByHash(ctx context.Context, hash ContentHash) (*FileChunk, error)
 
 	// Put creates or replaces a FileChunk by ID.
@@ -57,7 +57,7 @@ type FileChunkStore interface {
 	// hash-already-present-on-another-row case. GetByHash MAY
 	// return either of the colliding rows. Callers (the dedup short-
 	// circuit in engine.uploadOne) treat the lookup as best-effort —
-	// they re-PUT with the donor's BlockStoreKey regardless.
+	// they re-PUT with the donor's chunk regardless.
 	//
 	// The conformance test storetest.testPut_TwoIDsSameHash
 	// pins this contract across all three backends. Renamed from

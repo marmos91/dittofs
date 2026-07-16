@@ -73,13 +73,12 @@ func seedAuditTestStore(t *testing.T) (store *metadatamemory.MemoryMetadataStore
 			off := uint64(bi) * 4096
 			blockID := payloadID + "/" + jstr(int(off))
 			fb := &block.FileChunk{
-				ID:            blockID,
-				Hash:          h,
-				State:         block.BlockStatePending,
-				BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
-				DataSize:      4096,
-				LastAccess:    now,
-				CreatedAt:     now,
+				ID:         blockID,
+				Hash:       h,
+				State:      block.BlockStatePending,
+				DataSize:   4096,
+				LastAccess: now,
+				CreatedAt:  now,
 			}
 			if err := store.Put(ctx, fb); err != nil {
 				t.Fatalf("Put block %s: %v", blockID, err)
@@ -247,13 +246,12 @@ func TestAuditRefcounts_DetectsHashMismatch(t *testing.T) {
 		t.Fatal("wrongHash must be non-zero to exercise the mismatch path")
 	}
 	wrongRow := &block.FileChunk{
-		ID:            mismatchID,
-		Hash:          wrongHash,
-		State:         block.BlockStatePending,
-		BlockStoreKey: "cas/" + wrongHash.String()[0:2] + "/" + wrongHash.String()[2:4] + "/" + wrongHash.String(),
-		DataSize:      4096,
-		LastAccess:    now,
-		CreatedAt:     now,
+		ID:         mismatchID,
+		Hash:       wrongHash,
+		State:      block.BlockStatePending,
+		DataSize:   4096,
+		LastAccess: now,
+		CreatedAt:  now,
 	}
 	if err := store.Put(ctx, wrongRow); err != nil {
 		t.Fatalf("Put mismatched row %q: %v", mismatchID, err)
