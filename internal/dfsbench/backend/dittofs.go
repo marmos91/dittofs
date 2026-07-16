@@ -186,7 +186,10 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind) err
 	// bringup fails "JWT secret must be at least 32 characters") and a known admin
 	// password (background mode generates an unrecoverable one otherwise), then
 	// wait for its NFS port before driving dfsctl.
-	start := fmt.Sprintf("DITTOFS_CONTROLPLANE_SECRET=%s DITTOFS_ADMIN_INITIAL_PASSWORD=%s "+
+	// DITTOFS_LOGGING_LEVEL=WARN pins per-op logging off for the benched server
+	// regardless of the binary's default, so log volume is uniform across A/B runs
+	// (belt-and-suspenders alongside #1738 demoting per-op logs to Debug).
+	start := fmt.Sprintf("DITTOFS_LOGGING_LEVEL=WARN DITTOFS_CONTROLPLANE_SECRET=%s DITTOFS_ADMIN_INITIAL_PASSWORD=%s "+
 		"dfs start >/var/log/bench-dittofs.log 2>&1 &", dittofsSecret, dittofsAdminPass)
 	if err := exec.Sh(ctx, "sh", "-c", start); err != nil {
 		return err
@@ -247,7 +250,10 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 		opts = "nfsvers=3,tcp,port=" + dittofsNFSPort + ",mountport=" + dittofsNFSPort + ",actimeo=1,nconnect=4,nolock"
 	case ProtoNFS4:
 		typ, src = "nfs", "127.0.0.1:/"+dittofsShare
-		opts = "vers=4.1,tcp,port=" + dittofsNFSPort
+		// Same attr-cache + parallelism as the v3 cell and the re-export v4.1 mount
+		// (no nolock — v4 has integrated locking), so native and re-export v4.1 are
+		// identical and the comparison stays clean.
+		opts = "vers=4.1,tcp,port=" + dittofsNFSPort + ",actimeo=1,nconnect=4"
 	case ProtoSMB3:
 		typ, src = "cifs", "//127.0.0.1/"+dittofsShare
 		opts = "port=" + dittofsSMBPort + ",guest,vers=3.0"

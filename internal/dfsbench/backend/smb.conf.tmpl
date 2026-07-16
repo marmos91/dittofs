@@ -9,8 +9,10 @@
    read only = no
    guest ok = yes
    force user = root
-   # Async writes (Samba's fast path): ack from cache, don't fsync per write.
-   # Matches the NFS export's `async` so SMB and NFS compare on the same
-   # (fastest) durability tier.
-   strict sync = no
+   # Durable at FLUSH/CLOSE: smbd honors the client's flush/close fsync but doesn't
+   # fsync every write. Matches DittoFS's own SMB path (per-write relaxed, strict at
+   # FLUSH/CLOSE — #1687/#1267) and the knfsd `sync` export (durable at COMMIT, not
+   # per-write), so SMB and NFS compare on the same DURABLE tier as the subject.
+   # (sync always = yes would fsync every write — stricter than both, so it's off.)
+   strict sync = yes
    sync always = no
