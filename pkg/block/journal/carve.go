@@ -78,6 +78,10 @@ type CarveChunk struct {
 // leaves the covered records dirty to re-carve next pass. Content-addressed
 // commit makes a re-carve after a crash (or a duplicate concurrent carve) a
 // no-op.
+//
+// ponytail: CarveChunk.Data slices are backed by a pooled arena reused by the
+// next carve flush — an implementation MUST NOT retain any Data slice after
+// CommitBlock returns; copy the bytes first if it needs them longer.
 type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
@@ -326,6 +330,16 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 			return err
 		}
 		if !durable {
+			// Bound proof: pendingBytes < CarveBlockSize before this append (else
+			// the prior iteration flushed and reset arenaOff), and boundary <=
+			// MaxChunkSize, so arenaOff+boundary <= CarveBlockSize-1+MaxChunkSize <
+			// cap. The grow is a fail-loud belt: if that invariant ever breaks (e.g.
+			// a config change), realloc rather than slice out of bounds. Already-
+			// pending Data slices keep pointing at the old backing (still live), so
+			// no copy is needed — the new chunk just lands in the larger arena.
+			if arenaOff+boundary > cap(arena) {
+				arena = make([]byte, arenaOff+boundary)
+			}
 			data := arena[arenaOff : arenaOff+boundary : arenaOff+boundary]
 			copy(data, buf[:boundary])
 			arenaOff += boundary
