@@ -67,16 +67,14 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 // signature returns []ChunkRef so the caller can persist
 // FileAttr.Blocks in the same metadata txn.
 //
-// WriteAt remains a per-write append into the local store — it does
-// NOT chunk or assemble ChunkRefs. The FastCDC chunker runs at the
-// local-store rollup layer (pkg/block/local/fs/rollup.go
-// rollupFile), which produces Pending FileChunks carrying chunk
-// hashes. Syncer.Flush projects ListFileChunks(payloadID) into the
-// canonical sorted []ChunkRef list at quiesce time and invokes either
-// the file-level dedup short-circuit or the per-block
-// upload pump + post-Flush hook. FileAttr.Blocks
-// AND FileAttr.ObjectID are written in the same metadata transaction
-// by the runtime coordinator's PersistFileChunks.
+// WriteAt remains a per-write append into the journal-backed local
+// store — it does NOT chunk or assemble ChunkRefs. The FastCDC chunker
+// runs at carve time in the journal (pkg/block/journal, carve.go
+// carveRun), which produces Pending FileChunks carrying chunk hashes.
+// The carve BlockSink writes those FileChunk manifest rows, and the
+// post-Flush hook projects them into the canonical sorted []ChunkRef
+// list; FileAttr.Blocks AND FileAttr.ObjectID are written in the same
+// metadata transaction by the runtime coordinator's PersistFileChunks.
 //
 // Returns currentBlocks unchanged — the canonical projection happens
 // at Flush time, not WriteAt time.
@@ -99,8 +97,8 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	// a no-op (Null Object).
 	bs.loadCache().OnRead(payloadID, nil, 0)
 	// the FastCDC chunker output is
-	// produced by the local-store rollup pump
-	// (pkg/block/local/fs/rollup.go:rollupFile) and lands as
+	// produced at carve time in the journal (pkg/block/journal
+	// carve.go carveRun) and lands as
 	// Pending FileChunks with chunk-hash populated. The canonical
 	// []ChunkRef projection is built at Flush time from
 	// ListFileChunks(payloadID) — see Syncer.snapshotChunkRefs
