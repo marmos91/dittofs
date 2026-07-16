@@ -291,16 +291,58 @@ func (s *Store) Commit(ctx context.Context, id FileID) error {
 		return errClosed
 	}
 	sh := s.shardFor(id)
+	return sh.groupCommit()
+}
+
+// groupCommit fsyncs the shard so every write buffered so far is durable, but
+// coalesces concurrent callers: the first to arrive leads and issues one fsync
+// of the active fd (which flushes all its dirty bytes); everyone who enqueued
+// before that fsync started piggybacks on its result instead of issuing their
+// own barrier. Correctness rests on two durability points — a completed active-fd
+// fsync, and segment rotation (sealInPlace fsyncs the segment it seals) — so a
+// caller whose bytes are on a since-sealed segment is durable no matter which fd
+// the leader synced. This is the per-shard sync-leader the fio rand-write-4k
+// burst (iodepth=32 × numjobs=4) needs; without it every one of ~128 in-flight
+// commits pays a full disk barrier (#1736).
+func (sh *shard) groupCommit() error {
+	sh.commitMu.Lock()
+	myGen := sh.reqSeq
+	sh.reqSeq++
+	for {
+		// A fsync that started after this caller enqueued (so after its write
+		// completed) has finished and covered it.
+		if sh.doneSeq > myGen {
+			err := sh.syncErr
+			sh.commitMu.Unlock()
+			return err
+		}
+		if !sh.syncing {
+			break // become the leader for this batch
+		}
+		sh.commitCond.Wait()
+	}
+	sh.syncing = true
+	batchUpTo := sh.reqSeq // every commit enqueued so far rides this fsync
+	sh.commitMu.Unlock()
+
+	// Grab the current active fd fresh: if it rotated while we waited, the old fd
+	// was already fsynced by sealInPlace, so fsyncing the new one still leaves the
+	// whole batch durable.
 	sh.mu.Lock()
 	fd := sh.active.fd
 	sh.mu.Unlock()
-	// ponytail: direct per-shard fsync. syncLeader coalescing (fs/sync_leader.go)
-	// is a throughput optimization for concurrent commits on one shard, not a
-	// correctness requirement; port it here if commit contention shows up.
-	if err := fd.Sync(); err != nil {
-		return fmt.Errorf("journal: commit fsync: %w", err)
+	err := fd.Sync()
+
+	sh.commitMu.Lock()
+	if err != nil {
+		err = fmt.Errorf("journal: commit fsync: %w", err)
 	}
-	return nil
+	sh.syncErr = err
+	sh.doneSeq = batchUpTo
+	sh.syncing = false
+	sh.commitCond.Broadcast()
+	sh.commitMu.Unlock()
+	return err
 }
 
 // UnsyncedBytes reports dirty bytes not yet carved to the remote store. The
