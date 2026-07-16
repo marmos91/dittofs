@@ -1570,8 +1570,8 @@ func TestMetadataService_CommitWrite(t *testing.T) {
 		assert.Equal(t, frozenMtime, fileGet.Mtime, "GetFile must return frozen mtime")
 		assert.Equal(t, frozenMtime, fileGet.Ctime, "GetFile ctime must match frozen mtime")
 
-		// Flush pending writes (simulates COMMIT)
-		flushed, err := fx.service.FlushPendingWriteForFile(fx.rootContext(), handle, true)
+		// Flush pending writes (simulates COMMIT — relaxed durability post-#1687)
+		flushed, err := fx.service.FlushPendingWriteForFile(fx.rootContext(), handle, false)
 		require.NoError(t, err)
 		assert.True(t, flushed)
 

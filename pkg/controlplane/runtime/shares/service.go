@@ -759,10 +759,20 @@ func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadat
 		}
 		f, err := metadataStore.GetFileByPayloadID(ctx, metadata.PayloadID(id))
 		if err != nil {
-			// Orphan journal entry (no metadata file) — nothing to reconcile.
+			if metadata.IsNotFoundError(err) {
+				// Orphan journal entry (no metadata file) — nothing to reconcile.
+				continue
+			}
+			// A real store error (I/O, corruption) must not be silently swallowed —
+			// skipping would leave metadata.Size stale and truncate reads.
+			return fmt.Errorf("reconcile size: lookup payload %s: %w", id, err)
+		}
+		if f == nil {
 			continue
 		}
-		if int64(f.Size) >= journalSize {
+		// max-only, overflow-safe: f.Size is uint64, journalSize a non-negative
+		// offset; compare in uint64 so a huge Size can never cast negative and shrink.
+		if journalSize < 0 || f.Size >= uint64(journalSize) {
 			continue
 		}
 		// Grow to the journal high-water mark under a STRICT transaction; re-read
@@ -772,7 +782,7 @@ func reconcileMetadataSizeFromJournal(ctx context.Context, metadataStore metadat
 			if err != nil {
 				return err
 			}
-			if int64(cur.Size) >= journalSize {
+			if cur == nil || journalSize < 0 || cur.Size >= uint64(journalSize) {
 				return nil // another writer already caught up; never shrink
 			}
 			cur.Size = uint64(journalSize)
