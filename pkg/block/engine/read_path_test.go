@@ -26,8 +26,8 @@ func TestReadPath_BlockLocator_Plaintext(t *testing.T) {
 	data := bytes.Repeat([]byte("read-path-plain-"), 512)
 	h := f.storeChunk(t, ctx, data)
 
-	if err := f.syncer.carveFlush(ctx, true); err != nil {
-		t.Fatalf("carveFlush: %v", err)
+	if err := f.syncer.SyncNow(ctx); err != nil {
+		t.Fatalf("SyncNow: %v", err)
 	}
 
 	loc, synced, err := f.ms.GetLocator(ctx, h)
@@ -61,8 +61,8 @@ func TestReadPath_BlockLocator_ThroughCompress(t *testing.T) {
 	data := bytes.Repeat([]byte("XXXX-YYYY-ZZZZ-"), 4096)
 	h := f.storeChunk(t, ctx, data)
 
-	if err := f.syncer.carveFlush(ctx, true); err != nil {
-		t.Fatalf("carveFlush: %v", err)
+	if err := f.syncer.SyncNow(ctx); err != nil {
+		t.Fatalf("SyncNow: %v", err)
 	}
 
 	loc, synced, lerr := f.ms.GetLocator(ctx, h)
@@ -100,8 +100,8 @@ func TestReadPath_BlockLocator_ThroughCompressEncrypt(t *testing.T) {
 	data := bytes.Repeat([]byte("secret-read-path-"), 1024)
 	h := f.storeChunk(t, ctx, data)
 
-	if err := f.syncer.carveFlush(ctx, true); err != nil {
-		t.Fatalf("carveFlush: %v", err)
+	if err := f.syncer.SyncNow(ctx); err != nil {
+		t.Fatalf("SyncNow: %v", err)
 	}
 
 	loc, synced, lerr := f.ms.GetLocator(ctx, h)
@@ -202,8 +202,8 @@ func TestReadPath_CorruptBlock_FailClosed(t *testing.T) {
 	data := bytes.Repeat([]byte("corrupt-check-data-"), 256)
 	h := f.storeChunk(t, ctx, data)
 
-	if err := f.syncer.carveFlush(ctx, true); err != nil {
-		t.Fatalf("carveFlush: %v", err)
+	if err := f.syncer.SyncNow(ctx); err != nil {
+		t.Fatalf("SyncNow: %v", err)
 	}
 
 	loc, synced, err := f.ms.GetLocator(ctx, h)

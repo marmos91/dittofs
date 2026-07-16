@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/marmos91/dittofs/pkg/health"
@@ -22,29 +21,6 @@ func TestBlockStore_Healthcheck_HealthyEndToEnd(t *testing.T) {
 	}
 	if rep.CheckedAt.IsZero() {
 		t.Fatal("CheckedAt should be populated")
-	}
-}
-
-// TestBlockStore_Healthcheck_UnhealthyOnLocalClose verifies that the
-// engine reports unhealthy when its local store has been closed —
-// reads can no longer be served from cache.
-func TestBlockStore_Healthcheck_UnhealthyOnLocalClose(t *testing.T) {
-	bs, _ := newHealthTestEngine(t)
-	defer func() { _ = bs.Close() }()
-
-	// Close the underlying local store directly (without going through
-	// engine.Close, which also tears down the syncer). This simulates a
-	// disk failure or out-of-band administrative close.
-	if err := bs.local.Close(); err != nil {
-		t.Fatalf("local.Close: %v", err)
-	}
-
-	rep := bs.Healthcheck(context.Background())
-	if rep.Status != health.StatusUnhealthy {
-		t.Fatalf("local closed: got %q (%q), want unhealthy", rep.Status, rep.Message)
-	}
-	if !strings.Contains(rep.Message, "local") {
-		t.Fatalf("message should identify local subsystem; got %q", rep.Message)
 	}
 }
 

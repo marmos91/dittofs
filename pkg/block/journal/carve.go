@@ -63,6 +63,18 @@ type BlockSink interface {
 	CommitBlock(ctx context.Context, chunks []CarveChunk) error
 }
 
+// supersededReaper is an optional BlockSink capability. After a carve run has
+// committed every row it produced, journal calls ReapSupersededManifest so the
+// sink can delete the manifest rows the run superseded — keeping the per-file
+// FileChunk manifest a gap-free, overlap-free tiling of [0,size) after a partial
+// overwrite (#953). runStart/runEnd bound the re-carved (dirty) range; newOffsets
+// are the chunk offsets this run wrote (so the reap keeps them and deletes only
+// stale straddlers/interior rows). Sinks without a metadata store (test fakes)
+// simply don't implement it and the reap is skipped.
+type supersededReaper interface {
+	ReapSupersededManifest(ctx context.Context, id FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error
+}
+
 // errCarveNotWired is returned by Carve when the dedup/sink collaborators have
 // not been injected via SetCarveTargets.
 var errCarveNotWired = errors.New("journal: carve targets not wired (SetCarveTargets)")
@@ -213,6 +225,9 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	flipIdx := 0
 	var pending []CarveChunk
 	var pendingBytes int64
+	// Offsets of every chunk this run tiles (novel or deduped), so the run-end
+	// reap keeps this run's own rows and deletes only superseded ones (#953).
+	newOffsets := make(map[int64]struct{})
 
 	// flush commits the buffered novel chunks (if any) then, since everything up
 	// to watermark is now durable, flips the run's records that end there. The
@@ -274,6 +289,7 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 			pendingBytes += int64(boundary)
 			res.BytesCarved += int64(boundary)
 		}
+		newOffsets[fileOff] = struct{}{}
 		fileOff += int64(boundary)
 		buf = append(buf[:0], buf[boundary:]...)
 
@@ -288,7 +304,21 @@ func (s *Store) carveRun(ctx context.Context, sh *shard, id FileID, run []interv
 	}
 	// Tail: commit any remainder and flip through the end of the run (records
 	// covered only by already-durable chunks flip here too).
-	return flush(run[len(run)-1].end())
+	if err := flush(run[len(run)-1].end()); err != nil {
+		return err
+	}
+	// #953: with every row this run produced now committed, reap the manifest rows
+	// the run superseded (stale straddlers / interior chunks the fresh tiling
+	// replaced). One pass at run end is correct across a multi-batch run — no single
+	// batch span contains a seam-spanning straddler, and reaping the run span per
+	// batch would delete a sibling batch's fresh rows. Optional: sinks without a
+	// metadata store (test fakes) skip it.
+	if r, ok := s.sink.(supersededReaper); ok {
+		if err := r.ReapSupersededManifest(ctx, id, run[0].fileOff, run[len(run)-1].end(), newOffsets); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // flipUpTo advances the durable frontier to watermark. It marks each live

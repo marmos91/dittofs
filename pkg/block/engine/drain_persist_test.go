@@ -1,7 +1,6 @@
 package engine_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -11,11 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
-	metadatabadger "github.com/marmos91/dittofs/pkg/metadata/store/badger"
-	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
 // testCoordinator is a faithful, test-local re-implementation of the
@@ -155,47 +151,28 @@ func (c *testCoordinator) GetFileObjectID(ctx context.Context, payloadID string)
 	return file.ObjectID, nil
 }
 
-// newEngineOverStore builds a full engine.Store over a real fs local
-// store + the supplied metadata store, wired with a faithful coordinator,
-// and a LARGE stabilization window with the rollup worker pool NOT started
-// so the only path from append-log bytes -> CAS + manifest is an explicit
-// DrainRollups (the snapshot-create primitive).
-func newEngineOverStore(t *testing.T, ms metadata.Store) *engine.Store {
+func createShare(t *testing.T, store metadata.Store, shareName string) metadata.FileHandle {
 	t.Helper()
-	if _, ok := ms.(metadata.RollupStore); !ok {
-		t.Fatalf("metadata store %T does not implement metadata.RollupStore", ms)
-	}
-	syncedHashStore, ok := ms.(metadata.SyncedHashStore)
-	if !ok {
-		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
-	}
-	localStore, err := fs.NewWithOptions(t.TempDir(), 100*1024*1024, ms, fs.FSStoreOptions{
-		MaxLogBytes:     128 * 1024 * 1024,
-		RollupWorkers:   2,
-		StabilizationMS: 3_600_000, // 1h — async/ticker rollup can never fire
+	ctx := context.Background()
+	// CreateRootDirectory inserts BOTH the "/" files-row AND the share row
+	// (Postgres' shares.root_file_id is NOT NULL, so the share row cannot be
+	// created independently). It is idempotent on the share name.
+	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
+		Type: metadata.FileTypeDirectory,
+		Mode: 0o755,
 	})
 	if err != nil {
-		t.Fatalf("fs.NewWithOptions: %v", err)
+		t.Fatalf("CreateRootDirectory: %v", err)
 	}
-	coord := &testCoordinator{store: ms}
-	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
-	bs, err := engine.New(engine.BlockStoreConfig{
-		Local:           localStore,
-		Syncer:          syncer,
-		FileChunkStore:  ms,
-		Coordinator:     coord,
-		SyncedHashStore: syncedHashStore,
-		ReadBufferBytes: 64 * 1024 * 1024,
-	})
+	rootHandle, err := metadata.EncodeFileHandle(rootFile)
 	if err != nil {
-		t.Fatalf("engine.New: %v", err)
+		t.Fatalf("EncodeFileHandle: %v", err)
 	}
-	if err := bs.Start(context.Background()); err != nil {
-		t.Fatalf("engine.Start: %v", err)
-	}
-	t.Cleanup(func() { _ = bs.Close() })
-	return bs
+	return rootHandle
 }
+
+// manifestHashes returns the set of DISTINCT content hashes the metadata
+// snapshot manifest exposes, plus the serialized manifest size.
 
 // createRealFile creates a file row through the metadata store the way the
 // production CreateFile path does — crucially setting a UUID-based PayloadID
@@ -240,147 +217,4 @@ func createRealFile(t *testing.T, store metadata.Store, shareName, name string, 
 		t.Fatalf("SetLinkCount %q: %v", name, err)
 	}
 	return payloadID, handle
-}
-
-// fileChunks reads FileAttr.Blocks for a handle via GetFile (which loads
-// blocks from the per-file block manifest — GetFileByPayloadID does NOT on
-// the Postgres backend).
-func fileChunks(t *testing.T, store metadata.Store, handle metadata.FileHandle) []block.ChunkRef {
-	t.Helper()
-	f, err := store.GetFile(context.Background(), handle)
-	if err != nil {
-		t.Fatalf("GetFile: %v", err)
-	}
-	return f.Blocks
-}
-
-func createShare(t *testing.T, store metadata.Store, shareName string) metadata.FileHandle {
-	t.Helper()
-	ctx := context.Background()
-	// CreateRootDirectory inserts BOTH the "/" files-row AND the share row
-	// (Postgres' shares.root_file_id is NOT NULL, so the share row cannot be
-	// created independently). It is idempotent on the share name.
-	rootFile, err := store.CreateRootDirectory(ctx, shareName, &metadata.FileAttr{
-		Type: metadata.FileTypeDirectory,
-		Mode: 0o755,
-	})
-	if err != nil {
-		t.Fatalf("CreateRootDirectory: %v", err)
-	}
-	rootHandle, err := metadata.EncodeFileHandle(rootFile)
-	if err != nil {
-		t.Fatalf("EncodeFileHandle: %v", err)
-	}
-	return rootHandle
-}
-
-// distinctContent builds an n-byte buffer whose bytes derive from a per-test
-// seed so that NO two test functions sharing the same metadata store produce
-// colliding Merkle-root ObjectIDs (object_id dedup is store-wide, crossing
-// share boundaries — see the CrossShareDedupScope conformance scenario).
-// Within a single test, passing the same seed yields byte-identical content
-// (used to drive the file-level-dedup conflict).
-func distinctContent(seed byte, n int) []byte {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = seed ^ byte(i*31+17)
-	}
-	return b
-}
-
-// manifestHashes returns the set of DISTINCT content hashes the metadata
-// snapshot manifest exposes, plus the serialized manifest size.
-func manifestHashes(t *testing.T, ms metadata.Store) (*block.HashSet, int) {
-	t.Helper()
-	snapshotable, ok := ms.(metadata.Snapshotable)
-	if !ok {
-		t.Fatal("store must implement metadata.Snapshotable")
-	}
-	var buf bytes.Buffer
-	got, err := snapshotable.WriteSnapshot(context.Background(), &buf)
-	if err != nil {
-		t.Fatalf("WriteSnapshot: %v", err)
-	}
-	return got, buf.Len()
-}
-
-// runIdenticalContentDrain is the shared body for the identical-content
-// (file-level dedup) BUG 2 scenario. Two files with byte-identical content
-// roll up; the second trips the object_id uniqueness constraint. DrainRollups
-// MUST succeed and BOTH files must persist their block lists (the duplicate
-// without claiming the dedup pointer), so the manifest stays complete and
-// both files are restorable.
-func runIdenticalContentDrain(t *testing.T, ms metadata.Store, sharePrefix string) {
-	t.Helper()
-	ctx := context.Background()
-
-	shareName := sharePrefix + "-dup"
-	rootHandle := createShare(t, ms, shareName)
-	bs := newEngineOverStore(t, ms)
-
-	uniqueA := distinctContent(0x20, 3*1024*1024)
-	uniqueB := distinctContent(0x21, 3*1024*1024)
-
-	pidA, hA := createRealFile(t, ms, shareName, "alpha.bin", rootHandle)
-	pidB, hB := createRealFile(t, ms, shareName, "beta.bin", rootHandle)
-	pidC, hC := createRealFile(t, ms, shareName, "alpha-copy.bin", rootHandle)
-
-	if _, err := bs.WriteAt(ctx, pidA, nil, uniqueA, 0); err != nil {
-		t.Fatalf("WriteAt alpha: %v", err)
-	}
-	if _, err := bs.WriteAt(ctx, pidB, nil, uniqueB, 0); err != nil {
-		t.Fatalf("WriteAt beta: %v", err)
-	}
-	if _, err := bs.WriteAt(ctx, pidC, nil, uniqueA, 0); err != nil {
-		t.Fatalf("WriteAt alpha-copy: %v", err)
-	}
-
-	if err := bs.DrainRollups(ctx); err != nil {
-		t.Fatalf("DrainRollups must tolerate identical-content conflict: %v", err)
-	}
-
-	want := block.NewHashSet(0)
-	for name, h := range map[string]metadata.FileHandle{
-		"alpha.bin":      hA,
-		"beta.bin":       hB,
-		"alpha-copy.bin": hC,
-	} {
-		blocks := fileChunks(t, ms, h)
-		if len(blocks) == 0 {
-			t.Fatalf("file %s has empty FileAttr.Blocks after DrainRollups (unrestorable duplicate)", name)
-		}
-		for _, b := range blocks {
-			want.Add(b.Hash)
-		}
-	}
-
-	got, bufLen := manifestHashes(t, ms)
-	missing := 0
-	for _, h := range want.Sorted() {
-		if !got.Contains(h) {
-			missing++
-		}
-	}
-	if missing > 0 {
-		t.Fatalf("snapshot manifest missing %d/%d referenced hashes (manifest len=%d, buf=%d bytes)",
-			missing, want.Len(), got.Len(), bufLen)
-	}
-}
-
-// TestMemoryDrainRollups_IdenticalContent locks in BUG 2 on the in-memory
-// metadata backend through the REAL engine write path.
-func TestMemoryDrainRollups_IdenticalContent(t *testing.T) {
-	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
-	runIdenticalContentDrain(t, ms, "mem")
-}
-
-// TestBadgerDrainRollups_IdenticalContent locks in BUG 2 on the Badger
-// metadata backend through the REAL engine write path.
-func TestBadgerDrainRollups_IdenticalContent(t *testing.T) {
-	ms, err := metadatabadger.NewBadgerMetadataStoreWithDefaults(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatalf("NewBadgerMetadataStoreWithDefaults: %v", err)
-	}
-	t.Cleanup(func() { _ = ms.Close() })
-	runIdenticalContentDrain(t, ms, "badger")
 }

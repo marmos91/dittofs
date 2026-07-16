@@ -64,18 +64,12 @@ func buildHealthTestEngine(t *testing.T) (*Store, *fakeRemoteStore) {
 	tmpDir := t.TempDir()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(tmpDir, 100*1024*1024, ms, fs.FSStoreOptions{
-		MaxLogBytes:     128 * 1024 * 1024,
-		RollupWorkers:   2,
-		StabilizationMS: 50,
+		MaxLogBytes: 128 * 1024 * 1024,
 	})
 	if err != nil {
 		t.Fatalf("fs.NewWithOptions() error = %v", err)
 	}
-	// Bring up the rollup worker pool so AppendWrite-staged bytes get
-	// chunked into CAS objects deterministically inside the test.
-	if err := localStore.StartRollup(context.Background()); err != nil {
-		t.Fatalf("StartRollup: %v", err)
-	}
+	// No rollup pool: the journal chunks at carve time, driven by the syncer.
 
 	fakeRemote := newFakeRemoteStore()
 

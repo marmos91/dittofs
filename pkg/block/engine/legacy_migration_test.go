@@ -146,32 +146,6 @@ func TestMigrateLegacyCAS_DecoratedStack(t *testing.T) {
 	}
 }
 
-// TestMigrateLegacyCAS_LocalCopyPreferred proves the no-download path: when
-// the chunk bytes are local, migration repacks from the local tier even if
-// the standalone remote object is already gone.
-func TestMigrateLegacyCAS_LocalCopyPreferred(t *testing.T) {
-	ctx := context.Background()
-	base := remotememory.New()
-	f := newCarveFixture(t, base, 1<<20)
-
-	data := []byte("locally cached standalone chunk")
-	h := f.storeChunk(t, ctx, data) // log-blob resident
-	// Standalone marker but NO remote object — only the local copy survives.
-	if err := f.ms.MarkSynced(ctx, h, block.ChunkLocator{}); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := f.syncer.migrateLegacyCASRemote(ctx); err != nil {
-		t.Fatalf("migrateLegacyCASRemote: %v", err)
-	}
-	assertMigrated(t, ctx, f, h, data)
-
-	// The local index entry must survive the commit (local location preserved).
-	if _, ok, err := f.ms.GetLocalLocation(ctx, h); err != nil || !ok {
-		t.Fatalf("local index entry lost: ok=%v err=%v", ok, err)
-	}
-}
-
 // TestMigrateLegacyCAS_LostChunkDropsMarker proves the pre-existing-data-loss
 // path: a marker with no bytes anywhere is dropped (loudly) and does not
 // abort the rest of the migration.

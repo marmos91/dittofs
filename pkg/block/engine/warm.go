@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/marmos91/dittofs/pkg/block"
-	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 )
 
 // WarmResult summarizes a WarmAll run: how many blocks were fetched from the
@@ -92,10 +92,9 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 			if _, ok := block.ParseChunkOffset(fb.ID); !ok {
 				continue
 			}
-			if m.blockIsLocalFromRow(ctx, fb) {
-				alreadyLocal++
-				continue
-			}
+			// ponytail: no per-hash local-presence probe (journal is not
+			// hash-keyed), so warm every covering chunk. Re-hydrating an
+			// already-warm chunk is idempotent — a redundant GET at worst.
 			targets = append(targets, warmTarget{payloadID: payloadID, fb: fb})
 		}
 	}
@@ -149,7 +148,7 @@ func (m *Syncer) WarmAll(ctx context.Context, progress func(done, total int64)) 
 		g.Go(func() error {
 			data, err := m.fetchResolvedBlock(gctx, t.fb)
 			if err != nil {
-				if errors.Is(err, fs.ErrDiskFull) {
+				if errors.Is(err, journal.ErrLocalStoreFull) {
 					return fmt.Errorf("warm: local tier full while fetching %s (raise local_store_size or evict): %w",
 						t.fb.ID, err)
 				}

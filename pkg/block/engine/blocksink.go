@@ -27,6 +27,83 @@ func (d engineDeduper) IsChunkDurable(ctx context.Context, hash journal.ChunkHas
 	return d.synced.IsSynced(ctx, block.ContentHash(hash))
 }
 
+// localDeduper is the carve dedup oracle for a share with NO remote block store.
+// There is nothing to be "remote-durable" against, so every chunk is treated as
+// novel — carve packs it and localBlockSink records its FileChunk manifest row.
+type localDeduper struct{}
+
+func (localDeduper) IsChunkDurable(context.Context, journal.ChunkHash) (bool, error) {
+	return false, nil
+}
+
+// localBlockSink is the BlockSink for a remote-less (local-only) share. The
+// journal owns the bytes durably on local disk, so carve neither frames a block
+// nor uploads (no PutBlock) — it only records the per-file FileChunk manifest
+// rows (hash + DataSize, no remote block key). Those rows are what clone reads
+// (O(1) reflink of the ChunkRef list) and what snapshot/restore project into
+// FileAttr.Blocks; without them a local-only DrainRollups could not populate the
+// manifest at all (the whole point of the local carve path).
+//
+// Rows + the File.Blocks projection are written in one txn via the committer
+// (the per-share metadata store, wired unconditionally as SyncedHashStore). The
+// clone fixture has no committer, but its source has no dirty data so CommitBlock
+// never fires — a nil committer there is inert.
+type localBlockSink struct {
+	committer blockCommitter
+}
+
+func (s localBlockSink) CommitBlock(ctx context.Context, chunks []journal.CarveChunk) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+	if s.committer == nil {
+		return fmt.Errorf("local carve: no transactional committer wired")
+	}
+	payloadID := string(chunks[0].FileID)
+	fileChunks := make([]*block.FileChunk, 0, len(chunks))
+	for i := range chunks {
+		c := chunks[i]
+		fileChunks = append(fileChunks, &block.FileChunk{
+			ID:       fmt.Sprintf("%s/%d", c.FileID, c.FileOffset),
+			Hash:     block.ContentHash(c.Hash),
+			DataSize: uint32(len(c.Data)),
+			State:    block.BlockStatePending,
+		})
+	}
+	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		for _, fc := range fileChunks {
+			if err := tx.Put(ctx, fc); err != nil {
+				return fmt.Errorf("local carve: put manifest row %s: %w", fc.ID, err)
+			}
+		}
+		// Materialize File.Blocks from the manifest — same txn (R). Superseded-row
+		// reaping runs once at run end (ReapSupersededManifest), not per batch.
+		return metadata.ProjectManifestToBlocks(ctx, tx, payloadID)
+	})
+}
+
+// ReapSupersededManifest implements journal's optional run-end reap: once a carve
+// run's rows are all committed, delete the manifest rows the run superseded so the
+// per-file manifest tiles [0,size) with no stale straddler or gap (#953). A nil
+// committer (the clone fixture) has no manifest to reap.
+func (s localBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
+	if s.committer == nil {
+		return nil
+	}
+	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.ReapSupersededManifest(ctx, tx, string(id), runStart, runEnd, newOffsets)
+	})
+}
+
+// ReapSupersededManifest implements journal's optional run-end reap for the
+// remote-backed sink: delete the manifest rows the carve run superseded, atomic
+// with a re-projection of File.Blocks (#953).
+func (s engineBlockSink) ReapSupersededManifest(ctx context.Context, id journal.FileID, runStart, runEnd int64, newOffsets map[int64]struct{}) error {
+	return s.committer.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.ReapSupersededManifest(ctx, tx, string(id), runStart, runEnd, newOffsets)
+	})
+}
+
 // engineBlockSink is journal's production BlockSink: it seals each carved chunk,
 // frames them into one block via blockcodec, uploads the block with PutBlock,
 // and atomically commits the block record + synced locators + per-file manifest

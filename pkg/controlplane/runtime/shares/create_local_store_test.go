@@ -1,13 +1,12 @@
 package shares
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
-	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
 	metamem "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -62,14 +61,13 @@ func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 		t.Fatalf("returned store type = %T, want *fs.FSStore", store)
 	}
 
-	// AppendWrite must succeed unconditionally — append is mandatory.
-	if err := fsStore.AppendWrite(ctx, "test-payload", []byte("hello phase 17"), 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
+	// WriteAt must succeed — the journal-backed store accepts writes immediately.
+	if err := fsStore.WriteAt(ctx, "test-payload", 0, []byte("hello phase 17")); err != nil {
+		t.Fatalf("WriteAt: %v", err)
 	}
 
 	// Sanity check: the share root was created at the expected location.
-	// baseDir is shareDir, not shareDir/blocks; the FSStore creates
-	// `blocks/` (CAS) + `logs/` (append log) inside.
+	// The FSStore opens the journal under `journal/` inside the share dir.
 	expectedShareDir := filepath.Join(tmp, "shares", "test-share")
 	if _, statErr := statDir(expectedShareDir); statErr != nil {
 		t.Errorf("share dir %q not created: %v", expectedShareDir, statErr)
@@ -103,10 +101,10 @@ func TestCreateLocalStoreFromConfig_InvalidTypesIgnored(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	// Defaults still produce a working append path.
+	// Defaults still produce a working write path.
 	fsStore := store.(*fs.FSStore)
-	if err := fsStore.AppendWrite(ctx, "p", []byte("x"), 0); err != nil {
-		t.Fatalf("AppendWrite under invalid-types config: %v", err)
+	if err := fsStore.WriteAt(ctx, "p", 0, []byte("x")); err != nil {
+		t.Fatalf("WriteAt under invalid-types config: %v", err)
 	}
 }
 
@@ -119,12 +117,13 @@ func TestCreateLocalStoreFromConfig_InvalidTypesIgnored(t *testing.T) {
 // never mirrored to a remote) — the exact bug a contributor hit (files on
 // the mount, empty S3 bucket, block stats all zero).
 //
-// This test reproduces that lifecycle: it cancels the context right after
-// CreateLocalStoreFromConfig returns, then writes through the append log and
-// asserts the rollup ticker still converts it to CAS. With the bug
-// (StartRollup(ctx)) the cancellation kills the pool and no FileChunk rows
-// ever appear; the fix (StartRollup(context.WithoutCancel(ctx))) keeps the
-// pool alive — shutdown is driven by store.Close instead.
+// Under the journal switchover the local store owns no background goroutine
+// (Start is a no-op; carve is engine-driven with a background context), so the
+// caller-ctx-capture bug is structurally gone at this layer. This test now guards
+// the surviving kernel: it cancels the context right after
+// CreateLocalStoreFromConfig returns, then writes and reads back through the
+// store, asserting it stays fully operational rather than dying with the caller's
+// context. See the inline note at the assertion for the full rationale.
 func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	tmp := t.TempDir()
@@ -162,35 +161,27 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 	for i := range data {
 		data[i] = byte(i*7 + 1)
 	}
-	if err := fsStore.AppendWrite(context.Background(), payloadID, data, 0); err != nil {
-		t.Fatalf("AppendWrite: %v", err)
+	if err := fsStore.WriteAt(context.Background(), payloadID, 0, data); err != nil {
+		t.Fatalf("WriteAt: %v", err)
 	}
 
-	// Poll for the rollup ticker (50ms stabilization) to fold the append log
-	// into chunks. A live pool converts within a few ticks; a pool killed by the
-	// cancelled caller context never does. With the block-storage flip
-	// (#1414/PR3) CreateLocalStoreFromConfig wires a LocalChunkIndex, so the
-	// rollup routes chunks to the log-blob substrate and records their positions
-	// in the index rather than writing cas/<hash> files. We assert on those index
-	// entries — the observable proof that the rollup pool ran despite the
-	// cancelled caller context.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		n := 0
-		if err := mds.WalkLocalLocations(context.Background(), func(block.ContentHash, block.LocalChunkLocation) error {
-			n++
-			return nil
-		}); err != nil {
-			t.Fatalf("WalkLocalLocations: %v", err)
-		}
-		if n > 0 {
-			return // rollup ran despite the cancelled caller context — fixed.
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("rollup never recorded log-blob chunks after caller-context cancel (#1405): " +
-				"0 LocalChunkIndex entries")
-		}
-		time.Sleep(50 * time.Millisecond)
+	// #1405 originally guarded that the rollup pool did not bind the caller's
+	// request context (which the HTTP handler cancels on return), killing an
+	// in-flight rollup. Under the journal switchover the local store owns no
+	// background goroutine at all — Start is a no-op and carve is driven by the
+	// engine layer with a background context, so the caller-ctx-capture class of
+	// bug is structurally gone here. The surviving invariant this test protects is
+	// that a store BUILT with the now-cancelled ctx stays fully operational: the
+	// post-cancel WriteAt above succeeded, and the bytes read back intact. A store
+	// that had bound the caller ctx into its lifetime would fail one of these.
+	got := make([]byte, len(data))
+	n, _, err := fsStore.ReadAt(context.Background(), payloadID, 0, got)
+	if err != nil {
+		t.Fatalf("ReadAt after caller-context cancel (#1405): %v", err)
+	}
+	if n != len(data) || !bytes.Equal(got, data) {
+		t.Fatalf("read-back after caller-context cancel (#1405): got %d/%d bytes, content match=%v",
+			n, len(data), bytes.Equal(got, data))
 	}
 }
 

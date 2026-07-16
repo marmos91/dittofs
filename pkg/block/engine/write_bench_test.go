@@ -58,15 +58,10 @@ func newWriteBenchEngine(tb testing.TB) *Store {
 	tb.Helper()
 	ms := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	localStore, err := fs.NewWithOptions(tb.TempDir(), 0, ms, fs.FSStoreOptions{
-		MaxLogBytes:     writeBenchLogBudget,
-		RollupWorkers:   writeBenchRollupWorkers,
-		StabilizationMS: writeBenchStabilizationMS,
+		MaxLogBytes: writeBenchLogBudget,
 	})
 	if err != nil {
 		tb.Fatalf("fs.NewWithOptions: %v", err)
-	}
-	if err := localStore.StartRollup(context.Background()); err != nil {
-		tb.Fatalf("StartRollup: %v", err)
 	}
 	rem := remotememory.New()
 	syncer := NewSyncer(localStore, rem, ms, DefaultConfig())

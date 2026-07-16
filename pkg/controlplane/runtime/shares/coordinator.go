@@ -160,6 +160,17 @@ func (c *metadataCoordinator) DecrementRefCountAndReap(ctx context.Context, payl
 	return count, nil
 }
 
+// ReprojectBlocks re-materializes FileAttr.Blocks from the surviving FileChunk
+// manifest for payloadID, in one txn. The engine calls it after a Truncate /
+// PunchHole reap loop so the R-materialized Blocks projection stays == the
+// manifest once the reaped tail rows are gone (a stale Blocks list otherwise
+// makes snapshot/audit over-count). Satisfies engine's optional blocksReprojector.
+func (c *metadataCoordinator) ReprojectBlocks(ctx context.Context, payloadID string) error {
+	return c.metadataStore.WithTransaction(ctx, func(tx metadata.Transaction) error {
+		return metadata.ProjectManifestToBlocks(ctx, tx, payloadID)
+	})
+}
+
 // PersistFileChunks atomically updates FileAttr.Blocks AND
 // FileAttr.ObjectID for the file identified by payloadID in a single
 // metadata transaction. The runtime wrapper resolves

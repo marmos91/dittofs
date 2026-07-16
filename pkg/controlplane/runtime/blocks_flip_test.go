@@ -229,8 +229,8 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 	if err := common.CommitBlockStore(ctx, bs, payload); err != nil {
 		t.Fatalf("CommitBlockStore: %v", err)
 	}
-	// Force rollup (append-log → log-blob + LocalChunkIndex + FileChunks) then
-	// carve/mirror. On a flipped share this drains the carve set into blocks/.
+	// Force carve (journal → FastCDC chunks + FileChunk manifest rows) and drain
+	// the carve set into blocks/ on the remote.
 	if err := bs.DrainAllUploads(ctx); err != nil {
 		t.Fatalf("DrainAllUploads: %v", err)
 	}
@@ -249,10 +249,11 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 		t.Fatalf("new write produced %d cas/ object(s) — mirrorChunk ran (flip not wired)", got)
 	}
 
-	// T2 carryover on sqlite: every carved chunk keeps a LocalChunkIndex entry
-	// (carve commits the local location; only GC removes it). Pick the payload's
-	// chunk hashes and assert GetLocalLocation resolves — the same lookup the
-	// index-hit read path uses (GetLocalLocation → ReadLocalAt).
+	// Carve writes the per-file FileChunk manifest rows with populated content
+	// hashes. Under the journal model the journal owns the local bytes
+	// (BlockChunkCommit.Local is always zero, no LocalChunkIndex), so the old
+	// GetLocalLocation carryover no longer applies — the manifest rows + a
+	// byte-identical read-back below are the new contract.
 	rows, err := metaStore.ListFileChunks(ctx, string(payload))
 	if err != nil {
 		t.Fatalf("ListFileChunks: %v", err)
@@ -261,18 +262,11 @@ func TestBlocksFlip_NewWriteCarvesToBlocks(t *testing.T) {
 		t.Fatal("no FileChunk rows persisted for payload")
 	}
 	for _, fb := range rows {
-		if fb == nil || fb.Hash.IsZero() {
-			continue
+		if fb == nil {
+			t.Fatal("nil FileChunk row persisted")
 		}
-		loc, ok, err := metaStore.GetLocalLocation(ctx, fb.Hash)
-		if err != nil {
-			t.Fatalf("GetLocalLocation(%s): %v", fb.Hash, err)
-		}
-		if !ok {
-			t.Fatalf("GetLocalLocation(%s): not found — carve did not persist local index on sqlite", fb.Hash)
-		}
-		if loc.RawLength == 0 {
-			t.Fatalf("GetLocalLocation(%s): zero RawLength", fb.Hash)
+		if fb.Hash.IsZero() {
+			t.Fatalf("FileChunk row %s has zero hash — carve did not populate the manifest", fb.ID)
 		}
 	}
 

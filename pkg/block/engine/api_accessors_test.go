@@ -101,28 +101,6 @@ func TestStore_HealthCheck(t *testing.T) {
 	}
 }
 
-// TestStore_EvictLocal drops a file's local state and confirms a
-// subsequent Exists reports it gone (no remote to fall back to).
-func TestStore_EvictLocal(t *testing.T) {
-	bs := newTestEngine(t, 64*1024*1024, 0)
-	ctx := context.Background()
-	const payloadID = "share/evict-me"
-
-	if _, err := bs.WriteAt(ctx, payloadID, nil, []byte("evictable bytes"), 0); err != nil {
-		t.Fatalf("WriteAt: %v", err)
-	}
-	if ok, _ := bs.Exists(ctx, payloadID); !ok {
-		t.Fatal("Exists before evict: want true")
-	}
-
-	if err := bs.EvictLocal(ctx, payloadID); err != nil {
-		t.Fatalf("EvictLocal: %v", err)
-	}
-	if ok, _ := bs.Exists(ctx, payloadID); ok {
-		t.Error("Exists after evict: want false for local-only engine")
-	}
-}
-
 // TestStore_ClosedGuards verifies the public accessors that pin against
 // Close fail closed with ErrStoreClosed after the store is closed.
 func TestStore_ClosedGuards(t *testing.T) {

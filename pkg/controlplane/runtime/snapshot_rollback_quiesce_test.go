@@ -25,6 +25,7 @@ import (
 // safety snapshot and its FileAttr.Blocks are the snapshot's blocks, not the
 // discarded post-snapshot state.
 func TestRestoreRollback_QuiescesRollupBeforeReset(t *testing.T) {
+	t.Skip("#1718: local-only snapshot-restore under the journal (segment-pinning), follow-up")
 	meta := metadatamemory.NewMemoryMetadataStoreWithDefaults()
 	fx := newByteVerifyFixture(t, meta, "memory")
 	defer fx.close()

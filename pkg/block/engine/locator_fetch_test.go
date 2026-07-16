@@ -140,8 +140,8 @@ func TestDispatchRemoteFetch_CarvedChunkRoundTrip(t *testing.T) {
 	data := bytes.Repeat([]byte("carved-round-trip-"), 512)
 	hash := f.storeChunk(t, ctx, data)
 
-	if err := f.syncer.carveFlush(ctx, true); err != nil {
-		t.Fatalf("carveFlush: %v", err)
+	if err := f.syncer.SyncNow(ctx); err != nil {
+		t.Fatalf("SyncNow: %v", err)
 	}
 
 	loc, synced, err := f.ms.GetLocator(ctx, hash)

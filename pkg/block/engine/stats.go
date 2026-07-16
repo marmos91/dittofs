@@ -77,7 +77,7 @@ func (bs *Store) Stats() (*block.Stats, error) {
 	}
 	defer bs.closeMu.RUnlock()
 	localStats := bs.local.Stats()
-	files := bs.local.ListFiles()
+	files := bs.local.ListFiles(context.Background())
 	used := uint64(localStats.DiskUsed)
 	total := uint64(localStats.MaxDisk)
 	avail := uint64(0)
@@ -126,19 +126,14 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 
 	cacheStats := bs.loadCache().Stats()
 
-	// Source sync stats from the live carve path (pending-carve set +
-	// completed/failed counters), NOT the vestigial SyncQueue, whose Stats()
-	// always read zero because it has no production upload callers (#1266).
-	// The dead-queue numbers made operators believe nothing synced even when
-	// uploads provably succeeded (#1405 diagnosis).
-	//
-	// In local-only mode (no remote) these counters are meaningless: addPendingHash
-	// still records rolled-up chunks but nothing ever carves them, so a nonzero
-	// PendingUploads would falsely imply an upload backlog. Report zeros when there
-	// is no remote — there is nothing to sync.
-	var pendingUploads, completed, failed int
+	// Completed/failed carve counters come from the carve dispatcher. There is
+	// no per-chunk "pending" count anymore (the journal tracks dirty BYTES, not
+	// a chunk set) — the real backpressure signal is UnsyncedBytes below, so the
+	// pending-count fields report 0. In local-only mode (no remote) nothing ever
+	// carves, so report zeros.
+	var completed, failed int
+	pendingUploads := 0
 	if bs.remote != nil {
-		pendingUploads = bs.syncer.PendingCount()
 		completed, failed = bs.syncer.SyncCounts()
 	}
 
@@ -149,7 +144,7 @@ func (bs *Store) getStats(withBlockCounts bool) BlockStoreStats {
 		// FileCount is the cheap local-only count here; the full-stats path
 		// (withBlockCounts) overwrites it with the authoritative distinct-payload
 		// count from the metadata so it reflects rolled-up files too (#1374).
-		FileCount:           len(bs.local.ListFiles()),
+		FileCount:           len(bs.local.ListFiles(context.Background())),
 		LocalDiskUsed:       localStats.DiskUsed,
 		LocalDiskMax:        localStats.MaxDisk,
 		LocalMemUsed:        localStats.MemUsed,
@@ -215,24 +210,11 @@ func (bs *Store) populateBlockCounts(stats *BlockStoreStats) {
 func (bs *Store) classifyBlocks(ctx context.Context, stats *BlockStoreStats, blocks []*block.FileChunk) {
 	for _, b := range blocks {
 		stats.BlocksTotal++
-		// Classify by PHYSICAL presence in the local CAS store, not by sync
-		// state. A block fetched from remote keeps a BlockStateRemote row
-		// even though its CAS chunk now sits on local disk; classifying by
-		// state alone reported it as remote, so a fully read-cached share
-		// showed "Blocks Local: 0" while du showed the cache was full
-		// (#1362). A zero hash means the block is genuinely dirty/in-flight
-		// (rollup not yet complete) and cannot be present.
-		if !b.Hash.IsZero() {
-			if present, herr := bs.local.Has(ctx, b.Hash); herr == nil && present {
-				stats.BlocksLocal++
-				if b.State == block.BlockStateRemote {
-					// On disk yet the row says remote: read-through-cached.
-					stats.BlocksCached++
-				}
-				continue
-			}
-		}
-		// Not physically present (or zero hash): fall back to sync state.
+		// ponytail: classify by sync STATE only. The journal-backed local tier
+		// is (payloadID,offset)-keyed, not hash-keyed, so there is no cheap
+		// per-hash physical-presence probe; the read-through-cached distinction
+		// (#1362 BlocksCached) is no longer observable and stays zero. Physical
+		// residency lives in the journal's Stats (LocalDiskUsed).
 		switch b.State {
 		case block.BlockStatePending:
 			if b.Hash.IsZero() {

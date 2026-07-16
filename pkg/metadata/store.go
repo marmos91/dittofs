@@ -264,6 +264,12 @@ type Transaction interface {
 	BlockRecordStore // Log-blob block record lifecycle
 	LocalChunkIndex  // Content-hash → local log-blob position
 	SyncedHashStore  // Per-hash remote-mirror state (read-your-writes within the tx)
+
+	// ListFileChunks returns every FileChunk row for payloadID, read-your-writes
+	// within the tx. Needed so a carve/reap can re-project File.Blocks from the
+	// authoritative manifest in the same txn (ProjectManifestToBlocks). All four
+	// backend transactions already implement it.
+	ListFileChunks(ctx context.Context, payloadID string) ([]*block.FileChunk, error)
 }
 
 // ============================================================================

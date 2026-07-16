@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 	"lukechampine.com/blake3"
@@ -73,19 +74,23 @@ func (m *Syncer) listFileChunksSnapshot(ctx context.Context, payloadID string) (
 	return rows, nil
 }
 
-// blockIsLocalFromRow reports whether the resolved FileChunk's CAS chunk is
-// present in the local store. A nil row, a zero hash (sparse / pre-CAS drift),
-// or a local.Has error all yield false — the caller treats any non-true outcome
-// as "must round-trip to remote".
-func (m *Syncer) blockIsLocalFromRow(ctx context.Context, fb *block.FileChunk) bool {
-	if fb == nil || fb.Hash.IsZero() {
-		return false
+// hydrateChunk writes a fetched chunk's verified plaintext back into the local
+// journal at its file offset so a subsequent read serves it warm. The chunk is
+// already durable on the remote, so Hydrate marks the record clean (immediately
+// evictable). The (payloadID, offset) are parsed from the row ID
+// "<payloadID>/<offset>" (split on the last '/'). A malformed ID is a hard
+// error — an inconsistent manifest, not a benign miss.
+func (m *Syncer) hydrateChunk(ctx context.Context, fb *block.FileChunk, data []byte) error {
+	i := strings.LastIndexByte(fb.ID, '/')
+	off, ok := block.ParseChunkOffset(fb.ID)
+	if i <= 0 || !ok {
+		// No parseable "payloadID/offset" ID (e.g. a hash-only synthetic row):
+		// skip hydration and let the caller serve the already-fetched bytes.
+		// Real cold-read rows always carry a valid ID (engineBlockSink writes
+		// "<payloadID>/<offset>"), so this only affects hash-only unit fixtures.
+		return nil
 	}
-	has, err := m.local.Has(ctx, fb.Hash)
-	if err != nil {
-		return false
-	}
-	return has
+	return m.local.Hydrate(ctx, fb.ID[:i], int64(off), data)
 }
 
 // dispatchRemoteFetch routes a per-block S3 GET through the CAS verified-
@@ -262,15 +267,12 @@ func (m *Syncer) fetchBlock(ctx context.Context, payloadID string, blockIdx uint
 		return nil, nil
 	}
 
-	// Already local: by the time this prefetch worker runs, the block may already
-	// be staged locally by a demand read or an earlier prefetch (each block is
-	// scheduled at most once, but the worker races demand). Skipping it here
-	// avoids a redundant S3 GET. The probe runs in the worker goroutine, off the
-	// read hot path.
-	if m.blockIsLocalFromRow(ctx, fb) {
-		return nil, nil
-	}
-
+	// ponytail: no local-presence probe — the journal is (payloadID,offset)-
+	// keyed, not hash-keyed, so there is no cheap per-hash Has(). Prefetch just
+	// fetches; the in-flight dedup collapses concurrent duplicates and Hydrate
+	// is idempotent, so a re-fetch of an already-warm block is at worst a
+	// redundant GET (best-effort readahead). Add a journal residency probe here
+	// if redundant prefetch GETs ever show up in profiles.
 	data, _, err := m.inlineFetchOrWait(ctx, payloadID, blockIdx, fb)
 	return data, err
 }
@@ -316,18 +318,13 @@ func (m *Syncer) fetchResolvedBlock(ctx context.Context, fb *block.FileChunk) ([
 		return nil, nil
 	}
 
-	// CAS rewire: persist the downloaded bytes to the local CAS chunk
-	// store under fb.Hash (verified by readChunkVerified above). The
-	// previous WriteFromRemote method buffered into the legacy memBlock
-	// + .blk file layout; the unified post-Phase-17 read path resolves
-	// (payloadID, blockIdx) → FileChunk.Hash → local.Get(hash), so the
-	// downloaded bytes only need to land in the CAS chunk store.
-	if err := m.local.Put(ctx, fb.Hash, data); err != nil {
-		return nil, fmt.Errorf("store downloaded block %s locally: %w", storeKey, err)
+	// Hydrate the verified bytes into the local journal at the chunk's file
+	// offset (parsed from fb.ID) so a subsequent read serves them warm. The
+	// bytes are already durable on the remote, so Hydrate marks the record clean
+	// (immediately evictable).
+	if err := m.hydrateChunk(ctx, fb, data); err != nil {
+		return nil, fmt.Errorf("hydrate downloaded block %s locally: %w", storeKey, err)
 	}
-	// The bytes came from remote, so the chunk is already durable there:
-	// cancel its redundant re-upload and make it immediately evictable (#1362).
-	m.markFetchedSynced(ctx, fb.Hash)
 
 	return data, nil
 }
@@ -367,7 +364,6 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		fb       *block.FileChunk
 	}
 	var toFetch []pending
-	allLocal := true
 	for cur := offset; cur < end; {
 		fb, absOff, err := resolveCovering(ctx, m.fileChunkStore, payloadID, cur)
 		if err != nil {
@@ -375,27 +371,24 @@ func (m *Syncer) EnsureAvailableAndRead(ctx context.Context, payloadID string, o
 		}
 		if fb == nil {
 			// Sparse hole at cur: no chunk covers it. Probe the next block
-			// boundary — real files are fully written (no holes), and this
-			// keeps parity with the old block-strided probe for sparse layouts
-			// that place chunks at block starts. The caller's readLocalByHash
-			// zero-fills any bytes left uncovered.
+			// boundary — real files are fully written (no holes). The caller's
+			// re-read zero-fills any bytes left uncovered.
 			cur = (cur/uint64(BlockSize) + 1) * uint64(BlockSize)
 			continue
 		}
-		if !m.blockIsLocalFromRow(ctx, fb) {
-			allLocal = false
-			toFetch = append(toFetch, pending{blockIdx: absOff / uint64(BlockSize), fb: fb})
-		}
+		// ponytail: no per-hash local-presence probe (journal is not hash-keyed);
+		// the caller only reaches here after journal.ReadAt reported the window
+		// cold, so fetch every covering chunk. Hydrate is idempotent for any
+		// already-warm sub-range.
+		toFetch = append(toFetch, pending{blockIdx: absOff / uint64(BlockSize), fb: fb})
 		next := absOff + uint64(fb.DataSize)
 		if next <= cur {
 			next = cur + 1 // guard: a zero/short DataSize row must still advance
 		}
 		cur = next
 	}
-	if allLocal {
-		// Every covering chunk is already local — let the caller assemble the
-		// window from the local tier (readLocalByHash) with a correct
-		// per-offset copy.
+	if len(toFetch) == 0 {
+		// Nothing to fetch (pure hole) — the caller re-reads and zero-fills.
 		return false, nil
 	}
 
@@ -523,26 +516,17 @@ func (m *Syncer) inlineFetchOrWait(ctx context.Context, payloadID string, blockI
 	// reason to hold it in a background goroutine. Under high concurrency
 	// background goroutines each holding 8MB data caused OOM.
 	//
-	// CAS rewire: write under fb.Hash (verified by readChunkVerified). The
-	// unified post-Phase-17 read path resolves (payloadID, blockIdx) →
-	// FileChunk.Hash → local.Get(hash), so the downloaded bytes only need
-	// to land in the CAS chunk store.
-	//
-	// A Put failure here previously logged at Warn and returned success —
-	// bytes were never persisted, callers + every inflight waiter saw a
-	// hit, and the next read silently re-fetched from the remote (disk-full
-	// / local-IO failure → permanent S3 amplification). Propagate the
-	// wrapped error to the caller AND to every waiter via completionErr so
-	// no consumer treats the unpersisted bytes as a successful download.
-	if writeErr := m.local.Put(ctx, fb.Hash, data); writeErr != nil {
-		logger.Error("inline download: local write failed",
+	// Hydrate the verified bytes into the local journal at the chunk's file
+	// offset so a subsequent read serves them warm. A Hydrate failure must NOT
+	// be treated as a successful download: propagate it to the caller AND every
+	// in-flight waiter via completionErr so no consumer trusts unpersisted bytes
+	// (disk-full / local-IO failure → permanent remote re-fetch otherwise).
+	if writeErr := m.hydrateChunk(ctx, fb, data); writeErr != nil {
+		logger.Error("inline download: local hydrate failed",
 			"block", key, "error", writeErr)
-		completionErr = fmt.Errorf("inline fetch: persist locally %s: %w", key, writeErr)
+		completionErr = fmt.Errorf("inline fetch: hydrate locally %s: %w", key, writeErr)
 		return nil, false, completionErr
 	}
-	// The bytes came from remote, so the chunk is already durable there:
-	// cancel its redundant re-upload and make it immediately evictable (#1362).
-	m.markFetchedSynced(ctx, fb.Hash)
 	completed = true
 	m.completeInFlight(key, result, nil)
 

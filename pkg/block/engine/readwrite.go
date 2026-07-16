@@ -40,8 +40,8 @@ func (bs *Store) GetSize(ctx context.Context, payloadID string) (uint64, error) 
 		return 0, err
 	}
 	defer bs.closeMu.RUnlock()
-	if size, found := bs.local.GetFileSize(ctx, payloadID); found {
-		return size, nil
+	if size, found := bs.local.FileSize(ctx, payloadID); found {
+		return uint64(size), nil
 	}
 	return bs.syncer.GetFileSize(ctx, payloadID)
 }
@@ -53,7 +53,7 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 		return false, err
 	}
 	defer bs.closeMu.RUnlock()
-	if _, found := bs.local.GetFileSize(ctx, payloadID); found {
+	if _, found := bs.local.FileSize(ctx, payloadID); found {
 		return true, nil
 	}
 	return bs.syncer.Exists(ctx, payloadID)
@@ -67,16 +67,14 @@ func (bs *Store) Exists(ctx context.Context, payloadID string) (bool, error) {
 // signature returns []ChunkRef so the caller can persist
 // FileAttr.Blocks in the same metadata txn.
 //
-// WriteAt remains a per-write append into the local store — it does
-// NOT chunk or assemble ChunkRefs. The FastCDC chunker runs at the
-// local-store rollup layer (pkg/block/local/fs/rollup.go
-// rollupFile), which produces Pending FileChunks carrying chunk
-// hashes. Syncer.Flush projects ListFileChunks(payloadID) into the
-// canonical sorted []ChunkRef list at quiesce time and invokes either
-// the file-level dedup short-circuit or the per-block
-// upload pump + post-Flush hook. FileAttr.Blocks
-// AND FileAttr.ObjectID are written in the same metadata transaction
-// by the runtime coordinator's PersistFileChunks.
+// WriteAt remains a per-write append into the journal-backed local
+// store — it does NOT chunk or assemble ChunkRefs. The FastCDC chunker
+// runs at carve time in the journal (pkg/block/journal, carve.go
+// carveRun), which produces Pending FileChunks carrying chunk hashes.
+// The carve BlockSink writes those FileChunk manifest rows, and the
+// post-Flush hook projects them into the canonical sorted []ChunkRef
+// list; FileAttr.Blocks AND FileAttr.ObjectID are written in the same
+// metadata transaction by the runtime coordinator's PersistFileChunks.
 //
 // Returns currentBlocks unchanged — the canonical projection happens
 // at Flush time, not WriteAt time.
@@ -88,7 +86,7 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	if len(data) == 0 {
 		return currentBlocks, nil
 	}
-	if err := bs.local.AppendWrite(ctx, payloadID, data, offset); err != nil {
+	if err := bs.local.WriteAt(ctx, payloadID, int64(offset), data); err != nil {
 		return currentBlocks, err
 	}
 	// Cache invalidation lives in common.WriteToBlockStore (post-txn)
@@ -99,8 +97,8 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 	// a no-op (Null Object).
 	bs.loadCache().OnRead(payloadID, nil, 0)
 	// the FastCDC chunker output is
-	// produced by the local-store rollup pump
-	// (pkg/block/local/fs/rollup.go:rollupFile) and lands as
+	// produced at carve time in the journal (pkg/block/journal
+	// carve.go carveRun) and lands as
 	// Pending FileChunks with chunk-hash populated. The canonical
 	// []ChunkRef projection is built at Flush time from
 	// ListFileChunks(payloadID) — see Syncer.snapshotChunkRefs
@@ -121,6 +119,14 @@ func (bs *Store) WriteAt(ctx context.Context, payloadID string, currentBlocks []
 // hash. The new []ChunkRef list is returned for the caller to persist
 // via PutFile. When currentBlocks is empty the legacy path runs and
 // the returned slice is empty (dual-read shim semantics).
+// blocksReprojector is an optional coordinator capability: re-materialize
+// FileAttr.Blocks from the surviving FileChunk manifest after a reap. The
+// production metadataCoordinator implements it; unit-test coordinator fakes that
+// don't touch Blocks projection simply don't, and the reproject is skipped.
+type blocksReprojector interface {
+	ReprojectBlocks(ctx context.Context, payloadID string) error
+}
+
 func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks []block.ChunkRef, newSize uint64) ([]block.ChunkRef, error) {
 	if err := bs.enter(); err != nil {
 		return currentBlocks, err
@@ -180,10 +186,18 @@ func (bs *Store) Truncate(ctx context.Context, payloadID string, currentBlocks [
 					return currentBlocks, fmt.Errorf("reap block on truncate-drop %s/%d: %w", payloadID, b.Offset, err)
 				}
 			}
+			// Re-materialize File.Blocks from the surviving manifest (R): the reap
+			// dropped the tail rows, so the projection must catch up or snapshot/audit
+			// over-count. Optional capability — test fakes skip it.
+			if rp, ok := bs.coordinator.(blocksReprojector); ok {
+				if err := rp.ReprojectBlocks(ctx, payloadID); err != nil {
+					return currentBlocks, fmt.Errorf("reproject after truncate %s: %w", payloadID, err)
+				}
+			}
 		}
 	}
 
-	if err := bs.local.Truncate(ctx, payloadID, newSize); err != nil {
+	if err := bs.local.Truncate(ctx, payloadID, int64(newSize)); err != nil {
 		return currentBlocks, fmt.Errorf("local truncate failed: %w", err)
 	}
 
@@ -267,6 +281,13 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 					return currentBlocks, fmt.Errorf("reap block on punch %s/%d: %w", payloadID, b.Offset, err)
 				}
 			}
+			// Re-materialize File.Blocks from the surviving manifest (R) after the
+			// reap dropped the punched rows. Optional capability — test fakes skip it.
+			if rp, ok := bs.coordinator.(blocksReprojector); ok {
+				if err := rp.ReprojectBlocks(ctx, payloadID); err != nil {
+					return currentBlocks, fmt.Errorf("reproject after punch %s: %w", payloadID, err)
+				}
+			}
 		}
 	}
 
@@ -280,7 +301,7 @@ func (bs *Store) PunchHole(ctx context.Context, payloadID string, currentBlocks 
 		if n > zeroChunk {
 			n = zeroChunk
 		}
-		if err := bs.local.AppendWrite(ctx, payloadID, zeros[:n], pos); err != nil {
+		if err := bs.local.WriteAt(ctx, payloadID, int64(pos), zeros[:n]); err != nil {
 			return currentBlocks, fmt.Errorf("zero punched range %s [%d,%d): %w", payloadID, pos, pos+n, err)
 		}
 		pos += n
@@ -316,12 +337,8 @@ func (bs *Store) Delete(ctx context.Context, payloadID string, blocks []block.Ch
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	bs.local.SyncFileChunksForFile(ctx, payloadID)
-	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
-		return fmt.Errorf("local evict memory failed: %w", err)
-	}
-	if err := bs.local.DeleteAppendLog(ctx, payloadID); err != nil {
-		return fmt.Errorf("local delete append log failed: %w", err)
+	if err := bs.local.Delete(ctx, payloadID); err != nil {
+		return fmt.Errorf("local delete failed: %w", err)
 	}
 	// Resolve the manifest to reap. The file-removal path (NFS REMOVE, SMB
 	// delete) unlinks a file without carrying its block list, passing nil.
@@ -595,86 +612,4 @@ func (bs *Store) CopyPayload(ctx context.Context, srcPayloadID, dstPayloadID str
 	_ = srcPayloadID
 
 	return dst, nil
-}
-
-// reapSupersededFileChunks deletes the per-file FileChunk rows that a
-// rollup pass's re-chunk superseded (#953). A row is superseded when its
-// chunk offset falls inside the byte region this pass rewrote
-// (newBlocks span) but is NOT one of the new chunk offsets — i.e. an
-// old-generation chunk that an in-place overwrite re-chunked onto
-// different FastCDC boundaries. Left behind, such rows accumulate in the
-// CAS manifest (ListFileChunks) and the cold read path mixes generations,
-// returning stale bytes after log compaction or local-state eviction.
-//
-// Region-scoped + by-exact-ID, mirroring the engine Delete/Truncate reap
-// contract:
-//   - Only rows whose offset is in [regionStart, regionEnd) are eligible —
-//     a row strictly before the region (a straddling predecessor the FS
-//     rollup could not boundary-align because its chunk was not locally
-//     readable) is KEPT so its non-overwritten head still serves bytes.
-//   - Rows whose offset is reused by a new chunk (overwritten in place by
-//     FileChunk.Put above) are skipped — they are the current generation.
-//   - Reap by EXACT ID "{payloadID}/{offset}" via DecrementRefCountAndReap.
-//     Each {payloadID}/offset row is independent; reaping this file's own
-//     row never touches another file's row. Cross-file dedup keep-alive is
-//     by-hash in the GC live set (EnumerateFileChunks): the chunk is
-//     reclaimed only when no row anywhere references the hash, so a hash a
-//     sibling file still uses stays alive even after this row is reaped.
-//
-// No-ops when the coordinator is unwired or when priorOffsets is empty
-// (first write). When newBlocks is empty all prior rows are reaped
-// unconditionally (file truncated to zero bytes this pass).
-func (bs *Store) reapSupersededFileChunks(ctx context.Context, payloadID string, priorOffsets []uint64, newBlocks []block.ChunkRef) error {
-	if bs.coordinator == nil || len(priorOffsets) == 0 {
-		return nil
-	}
-
-	// superseded decides whether a prior offset is reaped this pass.
-	//
-	// When newBlocks is empty no chunks were produced (file truncated to zero
-	// bytes, or the reconstructed stream was entirely clipped by the
-	// truncation fence): every prior row is unconditionally superseded.
-	// Otherwise a prior offset is superseded only when it falls inside the
-	// rewritten region [regionStart, regionEnd) and is not itself a reused
-	// offset (those rows were overwritten in place by FileChunk.Put and are
-	// the current generation).
-	var superseded func(off uint64) bool
-	if len(newBlocks) == 0 {
-		superseded = func(uint64) bool { return true }
-	} else {
-		regionStart := newBlocks[0].Offset
-		var regionEnd uint64
-		newOffsets := make(map[uint64]struct{}, len(newBlocks))
-		for _, b := range newBlocks {
-			if b.Offset < regionStart {
-				regionStart = b.Offset
-			}
-			if end := b.Offset + uint64(b.Size); end > regionEnd {
-				regionEnd = end
-			}
-			newOffsets[b.Offset] = struct{}{}
-		}
-		superseded = func(off uint64) bool {
-			if off < regionStart || off >= regionEnd {
-				return false // outside the rewritten region — untouched, keep.
-			}
-			_, isNew := newOffsets[off]
-			return !isNew // reused offset is the current generation — keep.
-		}
-	}
-
-	reaped := make(map[uint64]struct{}, len(priorOffsets))
-	for _, off := range priorOffsets {
-		if !superseded(off) {
-			continue
-		}
-		if _, done := reaped[off]; done {
-			continue
-		}
-		reaped[off] = struct{}{}
-		if _, err := bs.coordinator.DecrementRefCountAndReap(ctx, payloadID, off); err != nil {
-			return fmt.Errorf("reap superseded block %s/%d: %w", payloadID, off, err)
-		}
-	}
-	return nil
 }

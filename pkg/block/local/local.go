@@ -2,10 +2,10 @@ package local
 
 import (
 	"context"
-	"iter"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/journal"
 	"github.com/marmos91/dittofs/pkg/health"
 )
 
@@ -19,193 +19,111 @@ type Stats struct {
 	MemBlockCount int   // Number of in-memory dirty blocks
 }
 
-// LocalStore is the host-side admin interface for the on-node block
-// store. It EMBEDS [block.BlockStoreAppend] (the byte-access +
-// append-log surface tested by
-// [blockstoretest.BlockStoreAppendConformance]) and adds lifecycle
-// eviction, retention, and observability methods that are caller-
-// visible only from within the daemon process.
+// LocalStore is the host-side admin interface for the on-node block store. It is
+// the narrowed, journal-native surface: the local tier is now a per-file byte
+// cache (WriteAt/ReadAt keyed by payloadID + offset), NOT a content-addressed
+// (hash-keyed) blob store. The two production implementations are the
+// journal-backed *fs.FSStore and the in-memory *memory.MemoryStore.
+//
+// The carve seam is journal's: SetCarveTargets injects the dedup oracle + block
+// sink, and Carve packs dirty ranges into remote blocks (writing the FileChunk
+// manifest rows inside the sink's commit transaction). Cold reads resolve
+// through the block-hash → locator + FileChunk rows and Hydrate the fetched
+// bytes back into the local tier.
 type LocalStore interface {
-	// Embedding contributes Put, Get, GetRange, Has, Delete, Head
-	// Walk from BlockStore plus AppendWrite and DeleteAppendLog from
-	// BlockStoreAppend. The Get signature is byte-identical to the
-	// LocalStore.Get this interface supersedes — engine
-	// call sites that currently type-assert a *fs.FSStore continue
-	// to compile when narrowed to local.LocalStore (or further to
-	// block.BlockStore).
-	block.BlockStoreAppend
+	// --- Data plane (payloadID + offset keyed) ---
 
-	// ListUnsynced returns a push iterator over every CAS hash present
-	// in the local store that has not yet been marked synced in the
-	// injected SyncedHashStore. The iterator uses snapshot-at-start
-	// semantics: the hash set existing at iteration begin is captured
-	// up front; chunks that land after iteration begins are picked up
-	// on the NEXT pass — no live-tail catch-up. Iteration stops on the
-	// first non-nil error yielded; the yielded error position surfaces
-	// any per-hash backend error.
-	//
-	// When no SyncedHashStore is wired (local-only configurations where
-	// no remote mirror is configured), the iterator yields nothing —
-	// the synced set is empty by definition and the unsynced set is its
-	// strict-subset complement, which collapses to the empty set under
-	// the "nothing to mirror anywhere" invariant.
-	ListUnsynced(ctx context.Context) iter.Seq2[block.ContentHash, error]
+	// WriteAt buffers a dirty client write at offset. It never fsyncs;
+	// durability is a separate Commit.
+	WriteAt(ctx context.Context, payloadID string, offset int64, data []byte) error
 
-	// ReadPayloadAt serves bytes for [offset, offset+len(dest)) from the
-	// local store, consulting BOTH the in-flight append log (pre-rollup
-	// bytes that have not yet been chunked into CAS) AND the rolled-up
-	// CAS chunks via the FileChunk manifest. This is the primary
-	// payload-keyed read entry on the local store interface; the engine
-	// calls this BEFORE falling back to a CAS-hash-keyed walk on miss.
-	//
-	// Returns (len(dest), nil) when every requested byte was satisfied
-	// from local storage. Returns (0, block.ErrFileChunkNotFound)
-	// when no part of the requested range exists in either the append
-	// log or the FileChunk manifest — the caller treats this as "must
-	// fall back to remote-fetch + zero-fill". Returns (n, err) for
-	// genuine I/O errors.
-	//
-	// The semantics are payload-keyed (payloadID + offset), NOT
-	// CAS-hash-keyed: callers do not need to know which chunk covers
-	// which byte. This is the critical entry that closes the pre-rollup
-	// read-after-write gap; without it, freshly-appended bytes return
-	// zeros until the async rollup commits FileChunk rows.
-	ReadPayloadAt(ctx context.Context, payloadID string, dest []byte, offset uint64) (int, error)
+	// ReadAt fills dst with the file's bytes at offset. Never-written ranges are
+	// POSIX holes and are zero-filled. Ranges written but evicted return
+	// cold=true (dst zero-filled as a placeholder) so the caller hydrates from
+	// the remote store and retries.
+	ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (n int, cold bool, err error)
 
-	// DataExtents returns the sorted, non-overlapping byte ranges
-	// [start, end) within [0, fileSize) that the LOCAL tier knows hold
-	// data — the in-flight append log plus any in-memory write buffer,
-	// i.e. the pre-rollup bytes that are NOT yet in the persisted CAS
-	// FileChunk manifest. It deliberately does NOT include the CAS
-	// blocks: the engine unions those (via ListFileChunks) on top of
-	// this result so SEEK / READ_PLUS see the SAME data/hole map READ
-	// reconstructs across all tiers.
-	//
-	// This closes the NFSv4.2 SEEK data-loss gap (#1481): deriving the
-	// hole map from the persisted CAS block list alone reports a hole
-	// where written-but-not-yet-rolled-up data exists, which RFC 7862
-	// forbids (a sparse-copy client would skip real data). Backends may
-	// be conservative — reporting a written span as one data extent even
-	// if it has interior gaps — because over-reporting data is always
-	// RFC-safe; under-reporting (a false hole) is the bug.
-	DataExtents(ctx context.Context, payloadID string, fileSize uint64) ([][2]uint64, error)
+	// Hydrate writes bytes fetched from the remote store during a cold read.
+	// Same append primitive as WriteAt, but the record is born clean (already
+	// durable remotely) so it is immediately evictable.
+	Hydrate(ctx context.Context, payloadID string, offset int64, data []byte) error
 
-	// SyncPayload makes every byte written to payloadID's append log durable
-	// on stable storage. It is the durability barrier for the deferred
-	// (NFS UNSTABLE) write path: the WRITE handler leaves records in the page
-	// cache and the fsync is paid here, at COMMIT / DATA_SYNC/FILE_SYNC WRITE
-	// / SMB Flush — all of which route through engine.Store.Flush before
-	// reporting durable. Backends without a durable append log (the in-memory
-	// store) implement it as a no-op returning nil.
-	SyncPayload(ctx context.Context, payloadID string) error
+	// Commit fsyncs the file's buffered writes so they become durable. NFS
+	// COMMIT / SMB Flush land here. Backends without a durable substrate (the
+	// in-memory store) implement it as a no-op returning nil.
+	Commit(ctx context.Context, payloadID string) error
 
-	// --- Snapshot drain / reset ---
+	// FileSize reports a file's data high-water mark (max end offset over its
+	// live intervals); ok is false when the file has no local entry.
+	FileSize(ctx context.Context, payloadID string) (int64, bool)
 
-	// DrainRollups forces rollup of ALL currently-dirty payloads to
-	// completion, bypassing the stabilization-window gate, and waits for
-	// any in-flight rollup-worker passes to finish. After it returns,
-	// every byte written via AppendWrite has been flushed into CAS AND
-	// into the FileChunk manifest (FileAttr.Blocks), so a metadata
-	// Backup() taken next observes a fully-populated manifest rather than
-	// an empty/partial one.
-	//
-	// This is the snapshot-create primitive. Backends without an
-	// asynchronous rollup (the in-memory store, whose rollup is inline on
-	// every AppendWrite) implement it as a no-op returning nil.
-	DrainRollups(ctx context.Context) error
+	// DataExtents returns the sorted, non-overlapping byte ranges [start, end)
+	// within [0, fileSize) that the LOCAL tier knows hold data (including
+	// evicted/cold ranges, which are still logically present). Closes the
+	// NFSv4.2 SEEK data-loss gap (#1481): the engine unions this with the CAS
+	// FileChunk manifest so SEEK/READ_PLUS see the same data/hole map READ does.
+	DataExtents(ctx context.Context, payloadID string, fileSize int64) ([][2]uint64, error)
 
-	// ResetLocalState clears ALL per-payload append-log state — in-memory
-	// indices, dirty intervals, rollup offsets, truncation boundaries —
-	// and removes any on-disk `.log` files, so subsequent reads resolve
-	// purely through the (restored) CAS manifest with no stale append-log
-	// overlay.
-	//
-	// This is the snapshot-restore primitive: after the metadata store is
-	// reset to a prior dump, the block store's per-payload append log may
-	// still hold post-snapshot write records that ReadPayloadAt would
-	// otherwise replay on top of the restored CAS content ("last record
-	// wins"), corrupting in-place-modified files. ResetLocalState drops
-	// that overlay. Callers MUST have quiesced writes (share disabled)
-	// before invoking it; it is safe only because the restored snapshot
-	// (and the pre-restore safety snapshot) drained rollups, so all
-	// content that must survive is already durable in CAS.
-	ResetLocalState(ctx context.Context) error
+	// Truncate shrinks a file to newSize: live intervals past newSize are
+	// dropped and a straddling interval is clipped. Growing is a no-op here.
+	Truncate(ctx context.Context, payloadID string, newSize int64) error
+
+	// Delete drops all of a file's cached ranges (crash-safe tombstone) so a
+	// subsequent read resolves purely through the restored/remote manifest.
+	Delete(ctx context.Context, payloadID string) error
+
+	// ListFiles returns every payloadID with live local data, in no guaranteed
+	// order. Lets a caller drive a bulk reset (Delete every file).
+	ListFiles(ctx context.Context) []string
+
+	// --- Carve (local → remote) ---
+
+	// SetCarveTargets injects the carve collaborators (the remote-durable dedup
+	// oracle and the block sink that seals/frames/uploads/commits). Call once
+	// before the first Carve. Backends with no real carve (memory) may store
+	// them and drive them from Carve, or ignore them.
+	SetCarveTargets(deduper journal.Deduper, sink journal.BlockSink)
+
+	// Carve packs eligible files' dirty ranges into remote blocks and flips the
+	// carved records to synced. opts.Force bypasses the age/size batching gate;
+	// opts.FileID (empty = all files) scopes it to one file.
+	Carve(ctx context.Context, opts journal.CarveOptions) (journal.CarveResult, error)
+
+	// UnsyncedBytes reports dirty bytes not yet carved to the remote store — the
+	// eviction backpressure signal.
+	UnsyncedBytes() int64
+
+	// --- Eviction ---
+
+	// Evict frees local storage under pressure, coldest first, until targetBytes
+	// have been freed (targetBytes <= 0 evicts a single unit). Only fully-synced
+	// data qualifies so eviction never destroys the only copy of dirty bytes.
+	Evict(ctx context.Context, targetBytes int64) (journal.EvictResult, error)
+
+	// SetEvictionEnabled gates eviction. Health-driven: while the remote is
+	// unhealthy, cold-marking a range would strand unrecoverable bytes, so
+	// eviction is paused.
+	SetEvictionEnabled(enabled bool)
+
+	// SetRetentionPolicy is a compatibility no-op on the journal-native local
+	// store: the journal evicts whole fully-synced segments approx-LRU and does
+	// not honor a pin/ttl/lru knob. Retained so the health/admin path compiles.
+	SetRetentionPolicy(policy block.RetentionPolicy, ttl time.Duration)
 
 	// --- Lifecycle ---
 
-	// Start launches background goroutines (e.g., periodic metadata
-	// persistence).
+	// Start launches background goroutines (if any). Close flushes and marks the
+	// store closed.
 	Start(ctx context.Context)
-
-	// Close flushes pending metadata and marks the store as closed.
 	Close() error
-
-	// --- Per-file admin ---
-
-	// GetFileSize returns the tracked file size and whether the file
-	// is tracked. This is a fast in-memory lookup — no disk or store
-	// access.
-	GetFileSize(ctx context.Context, payloadID string) (uint64, bool)
-
-	// Truncate discards local blocks beyond newSize.
-	Truncate(ctx context.Context, payloadID string, newSize uint64) error
-
-	// EvictMemory removes all in-memory data and disk tracking for a
-	// file.
-	EvictMemory(ctx context.Context, payloadID string) error
-
-	// DrainLocalSynced evicts every locally-resident block whose bytes are
-	// already durable on the remote, on demand, returning the bytes freed.
-	// Unsynced (remote-missing) blocks are never dropped. Used by the
-	// block-store evict admin path to force reads back onto the remote (e.g.
-	// cold-read benchmarking). A backend with no evictable local tier returns 0.
-	DrainLocalSynced(ctx context.Context) (int64, error)
-
-	// ListFiles returns the payloadIDs of all files currently tracked
-	// in the local store.
-	ListFiles() []string
-
-	// GetStoredFileSize returns the total stored data size for a file
-	// by summing the DataSize of all FileChunk records in the metadata
-	// store.
-	GetStoredFileSize(ctx context.Context, payloadID string) (uint64, error)
-
-	// --- Metadata sync ---
-
-	// SyncFileChunks persists all queued FileChunk metadata updates to
-	// the store.
-	SyncFileChunks(ctx context.Context)
-
-	// SyncFileChunksForFile persists queued FileChunk metadata only for
-	// blocks belonging to the given payloadID.
-	SyncFileChunksForFile(ctx context.Context, payloadID string)
-
-	// --- Retention / eviction policy ---
-
-	// SetEvictionEnabled controls whether the local store can evict
-	// blocks to make room.
-	SetEvictionEnabled(enabled bool)
-
-	// SetRetentionPolicy updates the retention policy for eviction
-	// decisions.
-	//   - pin: never evict local blocks
-	//   - ttl: evict only after file last-access exceeds ttl duration
-	//   - lru: evict least-recently-accessed blocks first (default)
-	SetRetentionPolicy(policy block.RetentionPolicy, ttl time.Duration)
 
 	// --- Observability ---
 
 	// Stats returns a snapshot of current local store statistics.
 	Stats() Stats
 
-	// Healthcheck returns the current health of the local store as a
-	// structured [health.Report]. Implementations must satisfy
-	// [health.Checker] so the upstream API layer can wrap them with a
-	// [health.CachedChecker] and serve /status routes.
-	//
-	// Implementations should be cheap to call (no full directory
-	// scans, no large I/O) and idempotent. The expectation is
-	// something on the order of a stat() and possibly a write probe —
-	// see fs.FSStore.Healthcheck for the canonical pattern.
+	// Healthcheck returns the current health of the local store. Implementations
+	// must satisfy [health.Checker] so the API layer can wrap them with a
+	// [health.CachedChecker].
 	Healthcheck(ctx context.Context) health.Report
 }

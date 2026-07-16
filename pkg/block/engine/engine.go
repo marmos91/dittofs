@@ -13,7 +13,6 @@ import (
 	"github.com/marmos91/dittofs/pkg/block/local"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/metadata"
-	mderrors "github.com/marmos91/dittofs/pkg/metadata/errors"
 )
 
 // Compile-time interface satisfaction check.
@@ -191,189 +190,11 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	if cfg.SyncedHashStore != nil {
 		cfg.Syncer.SetSyncedHashStore(cfg.SyncedHashStore)
 	}
-	// Wire the per-store chunk-lifecycle callbacks via the named
-	// [local.ChunkLifecycleHooks] capability surface. Three setters
-	// install closures that downstream FileChunk metadata and the read
-	// cache depend on; each implementation may treat any setter as a
-	// no-op when its data path doesn't reach that hook (FSStore's
-	// rollup-completion path covers ObjectIDPersister + OnChunkComplete;
-	// the in-memory backend covers ChunkEmitter). Foreign local stores
-	// that don't satisfy the interface silently skip all three installs.
-	hooks, hasHooks := cfg.Local.(local.ChunkLifecycleHooks)
-	if hasHooks {
-		// (1) Install the rollup-completion ObjectIDPersister callback.
-		// The callback writes per-block FileChunk rows so the engine's
-		// CAS read path (readLocalByHash → resolveFileChunk) can
-		// resolve (payloadID, blockIdx) → hash and delegates to the
-		// coordinator's PersistFileChunks so FileAttr.Blocks and
-		// FileAttr.ObjectID land in a single metadata txn at rollup
-		// time. Stores that don't drive a rollup-completion path
-		// (in-memory / fixtures use the parallel ChunkEmitter hook
-		// below) install a no-op setter — ObjectID compute still runs
-		// inside rollup but the persist step is no-op.
-		fbs := cfg.FileChunkStore
-		hooks.SetObjectIDPersister(func(ctx context.Context, payloadID string, blocks []block.ChunkRef, objectID block.ObjectID) error {
-			// (1) Per-chunk FileChunk rows. The row ID encodes the
-			//     chunk's absolute byte Offset directly (rather than
-			//     a synthetic blockIdx = Offset / BlockSize); the
-			//     engine's CAS read path uses the parsed Offset to
-			//     locate which chunk covers a given byte range under
-			//     FastCDC's variable chunk geometry. The trailing
-			//     numeric component is the chunk Offset in bytes.
-			// #953: snapshot the per-file FileChunk row offsets that exist
-			// BEFORE this pass writes its new rows. After the new rows are
-			// durable we reap any prior row that this pass's re-chunk
-			// SUPERSEDED — a row whose offset falls inside the byte region
-			// this pass rewrote but is NOT one of the new chunk offsets.
-			// Without this the per-file CAS manifest accumulates stale,
-			// overlapping rows from multiple write generations; the cold
-			// read path (fillFromCASManifest / readLocalByHash) then mixes
-			// generations and a stale row clobbers freshly-written bytes
-			// (silent corruption after log compaction / local-state
-			// eviction). Snapshot now, reap after PersistFileChunks below.
-			var priorOffsets []uint64
-			if bs.fileChunkStore != nil {
-				priorRows, lerr := bs.fileChunkStore.ListFileChunks(ctx, payloadID)
-				if lerr != nil {
-					return fmt.Errorf("ObjectIDPersister: list prior blocks for %s: %w", payloadID, lerr)
-				}
-				priorOffsets = make([]uint64, 0, len(priorRows))
-				for _, pr := range priorRows {
-					if pr == nil {
-						continue
-					}
-					if off, ok := block.ParseChunkOffset(pr.ID); ok {
-						priorOffsets = append(priorOffsets, off)
-					}
-				}
-			}
-
-			if fbs != nil {
-				for _, b := range blocks {
-					if b.Hash.IsZero() {
-						continue
-					}
-					fb := &block.FileChunk{
-						ID:       fmt.Sprintf("%s/%d", payloadID, b.Offset),
-						Hash:     b.Hash,
-						DataSize: b.Size,
-						State:    block.BlockStatePending,
-					}
-					// Crash-consistency (#583): surface the put error so
-					// a failed FileChunk row write fails the rollup pass
-					// rather than silently losing the manifest entry.
-					// Without this surfacing the engine continues into
-					// PersistFileChunks below, the rollup_offset advances
-					// past records whose manifest row never landed, and
-					// subsequent reads hit the sparse-block zero-fill
-					// branch — silent data loss.
-					if err := fbs.Put(ctx, fb); err != nil {
-						return fmt.Errorf("ObjectIDPersister: FileChunk.Put(%s): %w", fb.ID, err)
-					}
-				}
-			}
-			// (2) Manifest + ObjectID coordinator txn.
-			if bs.coordinator == nil {
-				return nil
-			}
-			// The persister fires once per rollup PASS, carrying only the
-			// chunks rolled in THAT pass. FileAttr.Blocks (the snapshot
-			// manifest source, read by metadata Backup) must reflect the
-			// COMPLETE file, so a multi-pass rollup (append, or a large
-			// write split across stabilization windows) cannot persist the
-			// partial pass list here — that REPLACES FileAttr.Blocks with
-			// only the last pass's chunks, silently dropping every prior
-			// pass from the manifest (#789, backend-agnostic — Postgres
-			// just hits multi-pass more often via slower txns).
-			//
-			// Merge this pass's blocks into the already-persisted list
-			// (read back via the coordinator — file_block_refs / encoded
-			// FileAttr.Blocks, both of which store the content hash, unlike
-			// the per-file FileChunk index whose Pending rows carry a NULL
-			// hash on Postgres). The merge is offset-keyed: this pass's
-			// blocks overlay any overlapping byte ranges (in-place rewrite)
-			// and extend the rest (append). Recompute the Merkle-root
-			// ObjectID over the COMPLETE list so it matches a single-pass
-			// write of identical content and file-level dedup still resolves.
-			persistBlocks, persistObjID := blocks, objectID
-			existing, gerr := bs.coordinator.GetPersistedBlocks(ctx, payloadID)
-			if gerr != nil {
-				return fmt.Errorf("ObjectIDPersister: read persisted blocks for %s: %w", payloadID, gerr)
-			}
-			if len(existing) > 0 {
-				persistBlocks = block.MergeChunkRefsByOffset(existing, blocks)
-				persistObjID = block.ComputeObjectID(persistBlocks)
-			}
-			if err := bs.persistRollupBlocksConverging(ctx, payloadID, persistBlocks, persistObjID); err != nil {
-				return err
-			}
-			return bs.reapSupersededFileChunks(ctx, payloadID, priorOffsets, blocks)
-		})
-
-		// (2) Install the chunk-completion callback (production
-		// *fs.FSStore wires this on the chunkstore hot path; the
-		// in-memory backend no-ops since its writes don't materialize
-		// through the CAS chunkstore.StoreChunk + lruTouch path). The
-		// closure delegates every successful chunkstore write to
-		// bs.cache.Put: the engine Cache becomes warm on the write
-		// side, so the NFS COMMIT-then-READ pattern never goes back to
-		// disk for the just-written chunk. The closure captures bs
-		// (not bs.cache) so the Null-Object→real-Cache swap performed
-		// by Store.Start is observed transparently. The path arg
-		// is intentionally discarded (`_ string`) — Cache.Put doesn't
-		// consume it; the firing-site contract still passes it to
-		// enable future mmap-or-copy strategies. Cache.Put is
-		// nil-safe, closed-safe, and max-bytes-safe, so this binding
-		// is the canonical safe wiring (RAM ceiling bounded by Cache's
-		// existing LRU). Same lifecycle precedent as the persister
-		// above — install once at construction; FSStore guarantees no
-		// chunk activity fires before Start completes.
-		hooks.SetOnChunkComplete(func(hash block.ContentHash, data []byte, _ string) {
-			bs.loadCache().Put(hash, data)
-			// Register the freshly-stored chunk for carve without a
-			// directory walk (B1). The carve dispatcher drains this set;
-			// harmless when no remote is configured. The byte size feeds
-			// the syncer's unsynced-bytes backpressure counter.
-			bs.syncer.addPendingHash(hash, int64(len(data)))
-		})
-
-		// (3) Install the per-chunk emitter (the in-memory backend
-		// uses this; *fs.FSStore no-ops since it drives the equivalent
-		// rollup-side path through the ObjectIDPersister callback
-		// above). The emitter mirrors each freshly-emitted CAS chunk
-		// into a FileChunk row keyed by {payloadID}/{chunkStart} so the
-		// engine's CAS read path (readLocalByHash) can resolve
-		// (payloadID, offset) → hash without a separate manifest.
-		// Requires a FileChunkStore — fixtures running without one
-		// rely on the no-op default.
-		if cfg.FileChunkStore != nil {
-			fbs := cfg.FileChunkStore
-			hooks.SetChunkEmitter(func(payloadID string, chunkStart uint64, size uint32, hash block.ContentHash) {
-				fb := &block.FileChunk{
-					ID:       fmt.Sprintf("%s/%d", payloadID, chunkStart),
-					Hash:     hash,
-					DataSize: size,
-					State:    block.BlockStatePending,
-				}
-				// Crash-consistency (#583): emitter signature is void
-				// by contract; a put failure here means the manifest
-				// row never landed and reads will sparse-zero that
-				// range. Log at Error so operators see the loss
-				// instead of silently swallowing it. Follow-up:
-				// promote emitter to return an error so the caller
-				// can fail the rollup pass.
-				if err := fbs.Put(context.Background(), fb); err != nil {
-					logger.Error("ChunkEmitter: FileChunk.Put failed", "id", fb.ID, "error", err)
-				}
-				// Register for carve (B1). The in-memory backend creates
-				// chunks via this emitter rather than onChunkComplete, so
-				// without this the pending-carve set would never see
-				// memory-backend chunks. size is the chunk's byte
-				// length, feeding the unsynced-bytes backpressure counter.
-				bs.syncer.addPendingHash(hash, int64(size))
-			})
-		}
-	}
+	// Chunk-lifecycle hooks are gone with the journal switchover: chunking now
+	// happens at carve time inside the journal, and the carve BlockSink writes
+	// the per-(file,offset) FileChunk manifest rows atomically in its commit
+	// transaction (metadata.DefaultCommitBlock). There is no rollup-completion
+	// persister, no write-side cache warm hook, and no per-chunk emitter.
 	// wire the Store back-reference onto the Syncer so it can reach the
 	// owning Store for dataplane metrics (Syncer.dataplaneMetrics) and
 	// cache access (InvalidateFile on delete). Reading through the
@@ -385,195 +206,12 @@ func New(cfg BlockStoreConfig) (*Store, error) {
 	return bs, nil
 }
 
-// rollupPersistMaxAttempts bounds the converging retry loop in
-// persistRollupBlocksConverging. Each attempt re-resolves the canonical
-// object_id owner and, on a recognized conflict, converges toward the
-// zero-objectID write. The cap guarantees termination so a genuinely
-// pathological metadata-store fault surfaces a clear error instead of looping
-// forever (#1245-B).
-const rollupPersistMaxAttempts = 8
-
-// isObjectIDConflict reports whether err signals a
-// first-committer-wins concurrent-quiesce race. Recognises two shapes
-//
-//  1. errors.Is(err, ErrObjectIDConflict) — the runtime coordinator
-//     wraps backend conflict errors (Postgres 23505 on
-//     files_object_id_idx, mderrors.ErrConflict from Memory/Badger)
-//     into this sentinel via errors.Join.
-//  2. duck-typed `interface{ IsConflict() bool }` — accepted as a
-//     compatibility hook so test fakes (and any future low-level
-//     driver type that surfaces the same boolean) can flow through
-//     without coupling test code to the engine sentinel.
-func isObjectIDConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, ErrObjectIDConflict) {
-		return true
-	}
-	type conflictSignal interface {
-		IsConflict() bool
-	}
-	var sig conflictSignal
-	if errors.As(err, &sig) && sig.IsConflict() {
-		return true
-	}
-	return false
-}
-
-// isRollupPersistConflict reports whether err is a conflict the rollup
-// persister can converge past by falling back to the zero-objectID write. It
-// recognizes BOTH:
-//
-//   - isObjectIDConflict(err) — the deterministic first-committer-wins
-//     object_id conflict the coordinator maps to engine.ErrObjectIDConflict
-//     (Postgres 23505 on files_object_id_idx, the in-closure PutFile conflict
-//     on Memory/Badger); and
-//
-//   - mderrors.IsConflictError(err) — a raw store-level ErrConflict that
-//     bypasses the coordinator's in-closure mapObjectIDConflict because it is
-//     raised at COMMIT time, not by the PutFile call. Badger's SSI
-//     optimistic-concurrency abort under bulk same-content rollup is the
-//     canonical case (#1245-B): WithTransaction now returns a wrapped
-//     mderrors.StoreError{Code: ErrConflict} when its retry budget is
-//     exhausted, which surfaces here through the WithTransaction return value
-//     rather than through PutFile.
-//
-// Recognizing both keeps the converging fallback uniform across the
-// deterministic object_id conflict and the SSI hot-key conflict without
-// altering isObjectIDConflict (whose dedup-retry callers must keep their
-// narrower semantics).
-func isRollupPersistConflict(err error) bool {
-	return isObjectIDConflict(err) || mderrors.IsConflictError(err)
-}
-
-// persistRollupBlocksConverging persists a rollup pass's block list + ObjectID
-// for payloadID, guaranteeing convergence under the bulk same-content
-// (file-level dedup) race (#1245-B).
-//
-// Two cooperating mechanisms remove the livelock the naive single-fallback had:
-//
-//  1. Read-only pre-check. BEFORE attempting to claim the object_id, ask the
-//     coordinator whether a canonical owner already exists for this Merkle root
-//     (FindByObjectID). If so, this file is a duplicate-but-not-the-first; it
-//     persists its blocks with a ZERO object_id immediately and never enters
-//     the obj-key write/probe race at all. This eliminates the write-write
-//     contention for every identical file after the first, which is what
-//     turned a transient SSI abort into a sustained hot-key livelock.
-//
-//  2. Bounded converging backoff. The genuine first-committer race (two files
-//     reach PersistFileChunks before either has committed, so FindByObjectID
-//     missed for both) is still possible. On a recognized conflict
-//     (isRollupPersistConflict — uniform across the deterministic object_id
-//     conflict and Badger's wrapped commit-time SSI abort) the loop backs off,
-//     re-resolves FindByObjectID (a peer may have just become canonical), and
-//     retries — converging to the zero-objectID write. The attempt count is
-//     capped so a real fault terminates with a clear error rather than spinning
-//     the rollup ticker on the same payloadID forever.
-//
-// A duplicate's blocks are content-addressed and already durable in CAS; the
-// only thing it forfeits is ownership of the canonical object_id pointer (left
-// zero = "not the dedup target"), which the partial unique index skips so the
-// per-file block list lands cleanly and the file stays restorable.
-func (bs *Store) persistRollupBlocksConverging(ctx context.Context, payloadID string, persistBlocks []block.ChunkRef, persistObjID block.ObjectID) error {
-	var zeroObjectID block.ObjectID
-
-	// wantObjID is the object_id this file will TRY to claim. The pre-check and
-	// the conflict handler both narrow it to zero once a canonical owner is
-	// known to exist, after which the file persists its blocks as a benign
-	// duplicate.
-	wantObjID := persistObjID
-
-	// (1) Read-only pre-check: if a canonical owner already exists for this
-	// Merkle root, target the zero object_id from the start so this file never
-	// races on the obj-key write. Skip on a zero objectID (nothing to dedup
-	// against) and treat a lookup error as non-fatal — fall through to the
-	// write loop, which re-surfaces any real fault. The actual write still goes
-	// through the bounded backoff below so a concurrent SSI abort on the
-	// (still-hot) file row / content-hash rows converges instead of failing.
-	if !persistObjID.IsZero() && bs.canonicalOwnerExists(ctx, persistObjID) {
-		logger.Debug("rollup persist: canonical object_id owner already exists; persisting duplicate's blocks with zero object_id (pre-check)",
-			"payloadID", payloadID, "objectID", persistObjID.String())
-		wantObjID = zeroObjectID
-	}
-
-	// (2) Bounded converging backoff around the claim. The first successful
-	// committer wins the object_id; every subsequent committer recognizes the
-	// conflict, re-resolves, and converges to the zero-objectID write. A
-	// zero-objectID write that itself aborts (SSI on a still-hot file row /
-	// content-hash row under bulk identical content) is retried until it
-	// commits.
-	backoff := time.Millisecond
-	var lastErr error
-	for attempt := 0; attempt < rollupPersistMaxAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		err := bs.coordinator.PersistFileChunks(ctx, payloadID, persistBlocks, wantObjID)
-		if err == nil {
-			return nil
-		}
-		if !isRollupPersistConflict(err) {
-			return err
-		}
-		lastErr = err
-
-		// Conflict recognized. If we were still trying to claim the canonical
-		// object_id, re-resolve: a peer may have just committed and become the
-		// canonical owner, in which case we converge to the zero-objectID write
-		// on the next attempt. If we already targeted zero, the conflict is on
-		// a still-hot non-object_id key (SSI abort on the file row / content-
-		// hash rows under bulk identical content) — back off and retry the
-		// same zero-objectID write until it commits.
-		if !wantObjID.IsZero() && bs.canonicalOwnerExists(ctx, wantObjID) {
-			logger.Debug("rollup persist: object_id now owned by another file; converging to zero-objectID write",
-				"payloadID", payloadID, "objectID", wantObjID.String(), "attempt", attempt)
-			wantObjID = zeroObjectID
-		}
-
-		// Back off, but stay responsive to cancellation: a plain time.Sleep would
-		// let a canceled rollup linger for the full remaining backoff window. On
-		// cancellation during backoff, fail rather than silently succeed,
-		// preferring the ctx error but reporting the last conflict for context.
-		select {
-		case <-time.After(backoff):
-		case <-ctx.Done():
-			return fmt.Errorf("rollup persist: canceled during backoff (payloadID=%s, lastErr=%v): %w",
-				payloadID, lastErr, ctx.Err())
-		}
-		if backoff < 50*time.Millisecond {
-			backoff *= 2
-		}
-	}
-	return fmt.Errorf("rollup persist: did not converge after %d attempts (payloadID=%s): %w",
-		rollupPersistMaxAttempts, payloadID, lastErr)
-}
-
-// canonicalOwnerExists reports whether a file already owns objectID as its
-// canonical Merkle-root pointer. A lookup error is treated as "unknown owner"
-// (non-fatal): the caller falls through to the bounded write loop, which
-// re-surfaces any real fault. Callers must guard against a zero objectID.
-func (bs *Store) canonicalOwnerExists(ctx context.Context, objectID block.ObjectID) bool {
-	owner, err := bs.coordinator.FindByObjectID(ctx, objectID)
-	return err == nil && owner != nil
-}
-
-// Start initializes the store and starts background goroutines.
-// Recovery runs on the local store first (if supported), then the syncer
-// and local store background goroutines are started. Finally, the prefetcher
-// is created if both the read buffer and prefetch workers are configured.
+// Start initializes the store and starts background goroutines. The journal
+// local store recovers its own index on Open, so there is no engine-driven
+// recovery step; the syncer and (optional) migration/cache goroutines start
+// here.
 func (bs *Store) Start(ctx context.Context) error {
-	// Run recovery on local store if it supports it (FSStore has Recover).
-	type recoverer interface {
-		Recover(ctx context.Context) error
-	}
-	if r, ok := bs.local.(recoverer); ok {
-		if err := r.Recover(ctx); err != nil {
-			logger.Warn("Store: local store recovery encountered errors", "error", err)
-		}
-	}
-
-	// Start local store background goroutines (e.g., periodic FileChunk metadata persistence).
+	// Start local store background goroutines (no-op for the journal store).
 	// Use background context so these outlive the calling request context.
 	bs.local.Start(context.Background())
 
@@ -615,6 +253,12 @@ func (bs *Store) Start(ctx context.Context) error {
 		}
 	})
 
+	// Ensure carve collaborators are wired now that every Set* dependency has
+	// run. Remote shares are already wired via recomputeCarveActive; this
+	// installs the remote-less carve sink for local-only shares so DrainRollups
+	// populates the FileChunk manifest instead of failing "carve targets not wired".
+	bs.syncer.ensureCarveWired()
+
 	// Start syncer background goroutines (periodic uploader, transfer queue).
 	bs.syncer.Start(context.Background())
 
@@ -655,8 +299,13 @@ func (bs *Store) Start(ctx context.Context) error {
 // best-effort and shouldn't block on a remote round-trip; if the
 // block isn't local, the next on-path read will pull it via the
 // syncer.
-func (bs *Store) loadByHash(ctx context.Context, hash block.ContentHash) ([]byte, error) {
-	return bs.local.Get(ctx, hash)
+func (bs *Store) loadByHash(_ context.Context, _ block.ContentHash) ([]byte, error) {
+	// The journal local store is (payloadID,offset)-keyed, not hash-keyed, so
+	// there is no local content-addressed read to prefetch through. Prefetch by
+	// hash is therefore a no-op miss; cold reads hydrate covering chunks from
+	// the remote on demand (read_internal.go). ponytail: the CAS read cache is
+	// now hint-only.
+	return nil, block.ErrChunkNotFound
 }
 
 // enter is the lifecycle-gate entry every public data op calls before
@@ -794,12 +443,13 @@ func (bs *Store) SetMetrics(rec local.MetricsRecorder) {
 // Do not use in production code.
 func (bs *Store) LocalForTest() local.LocalStore { return bs.local }
 
-// LocalStore exposes the engine's local block store as a block.Store. The GC
-// uses only its Walk + Delete methods to sweep orphaned chunks off disk via
-// per-share local GC (CollectGarbageLocal); returning block.Store rather than
-// the concrete local.LocalStore keeps GC callers off the admin/rollup surface
-// (#1433).
-func (bs *Store) LocalStore() block.Store { return bs.local }
+// LocalStore returns nil: the journal-backed local tier is a per-file byte
+// cache, not a content-addressed block.Store, so there is no hash-namespace to
+// sweep. The journal self-manages local segment reclaim (dead-byte GC +
+// pressure eviction) internally, and the remote-tier FileChunk reap/refcount
+// GC runs on gc_block.go. Controlplane's ShareLocalStores() skips a nil local
+// store, so per-share local GC (CollectGarbageLocal) is a natural no-op.
+func (bs *Store) LocalStore() block.Store { return nil }
 
 // LocalDurable reports whether the engine's local store survives a process
 // crash / restart (block.DurabilityReporter). It is the localDurable input to
@@ -842,41 +492,39 @@ func (bs *Store) SetRequireDurableCommit(v bool) {
 // cross-package tests for shared-remote identity checks.
 func (bs *Store) RemoteStore() remote.RemoteStore { return bs.remote }
 
-// ListFiles returns the payloadIDs of all files tracked in the local store.
-// This reflects only locally-present payloads (those with a live append log);
-// it goes empty after rollup. Callers needing every payload (including
-// rolled-up ones) should enumerate the authoritative metadata via the
-// fileChunk store's EnumeratePayloads instead.
-func (bs *Store) ListFiles() []string { return bs.local.ListFiles() }
+// ListFiles returns the payloadIDs of all files with live local data in the
+// journal. Callers needing every payload (including fully-carved-and-evicted
+// ones) should enumerate the authoritative metadata via the fileChunk store's
+// EnumeratePayloads instead.
+func (bs *Store) ListFiles() []string { return bs.local.ListFiles(context.Background()) }
 
-// EvictLocal removes all local per-file state (memory tracking, files
-// map, accessTracker, append log) for a file. CAS chunks are NOT
-// removed here — they may be shared with other files via file-level
-// dedup and are reclaimed via the refcount → GC path (engine.Delete
-// decrements per dropped hash and the mark-sweep GC reaps orphans).
+// EvictLocal drops a file's local cached bytes. In the journal model the local
+// tier is segment-oriented and self-evicts under storage pressure; there is no
+// per-file "drop-but-keep-rehydratable" primitive (Delete tombstones the file
+// so it would not re-hydrate). Callers that need to force a file cold should
+// use DrainLocalSynced. ponytail: per-file forced evict is a no-op — the
+// journal owns eviction.
 func (bs *Store) EvictLocal(ctx context.Context, payloadID string) error {
 	if err := bs.enter(); err != nil {
 		return err
 	}
 	defer bs.closeMu.RUnlock()
-	if err := bs.local.EvictMemory(ctx, payloadID); err != nil {
-		return err
-	}
-	return bs.local.DeleteAppendLog(ctx, payloadID)
+	_ = payloadID
+	return nil
 }
 
-// DrainLocalSynced evicts every locally-resident block already durable on the
-// remote, returning the bytes freed. Unlike EvictLocal (which clears per-file
-// append-log/memory state and whose ListFiles source goes empty after rollup),
-// this reclaims the sealed log-blob tier that holds the bulk of resident bytes
-// post-rollup — the on-demand path the shares evict admin uses to force reads
-// back onto the remote. Never drops unsynced (remote-missing) data.
+// DrainLocalSynced evicts every locally-resident, remote-durable segment,
+// returning the bytes freed. It is the on-demand path the shares evict admin
+// uses to force reads back onto the remote (cold-read benchmarking). Unsynced
+// (remote-missing) data is never dropped — journal.Evict skips any segment
+// holding a dirty record.
 func (bs *Store) DrainLocalSynced(ctx context.Context) (int64, error) {
 	if err := bs.enter(); err != nil {
 		return 0, err
 	}
 	defer bs.closeMu.RUnlock()
-	return bs.local.DrainLocalSynced(ctx)
+	res, err := bs.local.Evict(ctx, 1<<62)
+	return res.BytesFreed, err
 }
 
 // WarmAll proactively fetches every remote block of every payload in this
