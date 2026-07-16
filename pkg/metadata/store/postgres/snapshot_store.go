@@ -37,7 +37,9 @@ const (
 	// Pre-1.0 backups are not forward-portable across schema versions.
 	// v5 adds the block_records and local_chunk_index table sections (#1493 PR2),
 	// raising the backup table count from 15 to 17.
-	postgresSchemaVersion = uint32(5)
+	// v6 drops the dead local_chunk_index and rollup_offsets sections
+	// post-journal-switchover, lowering the backup table count from 17 to 15.
+	postgresSchemaVersion = uint32(6)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order
@@ -61,10 +63,8 @@ var backupTables = []string{
 	"nsm_client_registrations",
 	"durable_handles",
 	"v4_client_recovery",
-	"rollup_offsets",
 	"synced_hashes",
 	"block_records",
-	"local_chunk_index",
 }
 
 // Compile-time assertion: PostgresMetadataStore implements Snapshotable.

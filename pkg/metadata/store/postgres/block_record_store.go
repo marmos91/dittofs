@@ -1,7 +1,6 @@
-// Block-record and local-chunk-index implementation for the PostgreSQL
-// metadata backend. See metadata.BlockRecordStore and metadata.LocalChunkIndex
-// for the contracts; pkg/metadata/store/memory/ is the canonical semantic
-// reference.
+// Block-record implementation for the PostgreSQL metadata backend. See
+// metadata.BlockRecordStore for the contract; pkg/metadata/store/memory/ is the
+// canonical semantic reference.
 package postgres
 
 import (
@@ -16,11 +15,9 @@ import (
 )
 
 // Compile-time assertions: the store and its transaction both satisfy the
-// interfaces.
+// interface.
 var _ metadata.BlockRecordStore = (*PostgresMetadataStore)(nil)
-var _ metadata.LocalChunkIndex = (*PostgresMetadataStore)(nil)
 var _ metadata.BlockRecordStore = (*postgresTransaction)(nil)
-var _ metadata.LocalChunkIndex = (*postgresTransaction)(nil)
 
 // ============================================================================
 // Transaction-level BlockRecordStore
@@ -106,50 +103,6 @@ func (tx *postgresTransaction) DecrLiveChunkCount(ctx context.Context, blockID s
 }
 
 // ============================================================================
-// Transaction-level LocalChunkIndex
-// ============================================================================
-
-func (tx *postgresTransaction) PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, err := tx.tx.Exec(ctx, `
-		INSERT INTO local_chunk_index (hash, log_blob_id, raw_offset, raw_length)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (hash) DO UPDATE SET
-			log_blob_id = EXCLUDED.log_blob_id,
-			raw_offset  = EXCLUDED.raw_offset,
-			raw_length  = EXCLUDED.raw_length`,
-		hash[:], loc.LogBlobID, loc.RawOffset, loc.RawLength,
-	)
-	if err != nil {
-		return fmt.Errorf("postgres PutLocalLocation: %w", err)
-	}
-	return nil
-}
-
-func (tx *postgresTransaction) GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.LocalChunkLocation{}, false, err
-	}
-	return scanLocalLocation(tx.tx.QueryRow(ctx,
-		`SELECT log_blob_id, raw_offset, raw_length FROM local_chunk_index WHERE hash = $1`,
-		hash[:],
-	))
-}
-
-func (tx *postgresTransaction) DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, err := tx.tx.Exec(ctx, `DELETE FROM local_chunk_index WHERE hash = $1`, hash[:])
-	if err != nil {
-		return fmt.Errorf("postgres DeleteLocalLocation: %w", err)
-	}
-	return nil
-}
-
-// ============================================================================
 // Store-level BlockRecordStore (delegates writes through WithTransaction)
 // ============================================================================
 
@@ -201,84 +154,12 @@ func (s *PostgresMetadataStore) DecrLiveChunkCount(ctx context.Context, blockID 
 }
 
 // ============================================================================
-// Store-level LocalChunkIndex
-// ============================================================================
-
-func (s *PostgresMetadataStore) PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.PutLocalLocation(ctx, hash, loc)
-	})
-}
-
-func (s *PostgresMetadataStore) GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return block.LocalChunkLocation{}, false, err
-	}
-	return scanLocalLocation(s.queryRow(ctx,
-		`SELECT log_blob_id, raw_offset, raw_length FROM local_chunk_index WHERE hash = $1`,
-		hash[:],
-	))
-}
-
-func (s *PostgresMetadataStore) DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error {
-	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.DeleteLocalLocation(ctx, hash)
-	})
-}
-
-// WalkLocalLocations calls fn for every stored content-hash -> log-blob
-// location. Read-only; deliberately NOT part of the LocalChunkIndex interface —
-// the local block store discovers it via a narrow consumer-side interface to
-// re-seed crash-stranded unsynced logblob chunks on restart (Walk / ListUnsynced).
-func (s *PostgresMetadataStore) WalkLocalLocations(ctx context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	rows, err := s.query(ctx,
-		`SELECT hash, log_blob_id, raw_offset, raw_length FROM local_chunk_index`)
-	if err != nil {
-		return fmt.Errorf("postgres WalkLocalLocations: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		// The local chunk index can be very large (one row per unique chunk),
-		// so re-check cancellation per row to stay responsive during a full walk.
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		var (
-			hashRaw   []byte
-			logBlobID string
-			rawOffset int64
-			rawLength int64
-		)
-		if err := rows.Scan(&hashRaw, &logBlobID, &rawOffset, &rawLength); err != nil {
-			return fmt.Errorf("postgres WalkLocalLocations scan: %w", err)
-		}
-		if len(hashRaw) != len(block.ContentHash{}) {
-			return fmt.Errorf("postgres WalkLocalLocations: malformed hash length %d", len(hashRaw))
-		}
-		var h block.ContentHash
-		copy(h[:], hashRaw)
-		if err := fn(h, block.LocalChunkLocation{
-			LogBlobID: logBlobID,
-			RawOffset: rawOffset,
-			RawLength: rawLength,
-		}); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-// ============================================================================
 // CommitBlock
 // ============================================================================
 
-// CommitBlock atomically writes rec and all chunk local locations within a
-// single transaction, then marks each chunk synced outside the transaction.
-// Delegates to DefaultCommitBlock for idempotency logic — identical to the
-// memory and badger backends.
+// CommitBlock atomically writes rec within a single transaction, then marks
+// each chunk synced. Delegates to DefaultCommitBlock for idempotency logic —
+// identical to the memory and badger backends.
 func (s *PostgresMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
 	return metadata.DefaultCommitBlock(ctx, s, rec, chunks, nil)
 }
@@ -333,26 +214,4 @@ func iterBlockRecordRows(rows pgx.Rows, fn func(block.BlockRecord) error) error 
 		}
 	}
 	return rows.Err()
-}
-
-// scanLocalLocation reads a LocalChunkLocation from a single row.
-// Returns (_, false, nil) on a missing row.
-func scanLocalLocation(row pgx.Row) (block.LocalChunkLocation, bool, error) {
-	var (
-		logBlobID string
-		rawOffset int64
-		rawLength int64
-	)
-	err := row.Scan(&logBlobID, &rawOffset, &rawLength)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return block.LocalChunkLocation{}, false, nil
-	}
-	if err != nil {
-		return block.LocalChunkLocation{}, false, fmt.Errorf("postgres scanLocalLocation: %w", err)
-	}
-	return block.LocalChunkLocation{
-		LogBlobID: logBlobID,
-		RawOffset: rawOffset,
-		RawLength: rawLength,
-	}, true, nil
 }

@@ -148,14 +148,12 @@ type Syncer struct {
 
 // blockCommitter is the narrow consumer-side slice of metadata.Store the carver
 // needs: transactional block-record commit (DefaultCommitBlock takes a
-// Transactor+SyncedHashStore), the synced-marker writes it performs, and the
-// local-chunk-index lookup that resolves a hash to its log-blob position. The
-// production per-share metadata store satisfies all three; defining it here
-// keeps the engine off the wider metadata.Store surface.
+// Transactor+SyncedHashStore) and the synced-marker writes it performs. The
+// production per-share metadata store satisfies both; defining it here keeps the
+// engine off the wider metadata.Store surface.
 type blockCommitter interface {
 	metadata.Transactor
 	metadata.SyncedHashStore
-	metadata.LocalChunkIndex
 }
 
 // UnsyncedBytes returns the on-disk size of local ranges not yet carved to the

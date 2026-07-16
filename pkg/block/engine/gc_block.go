@@ -52,22 +52,14 @@ type blockRecordGC interface {
 	DeleteBlockRecord(ctx context.Context, blockID string) error
 }
 
-// localChunkIndexGC is the narrow LocalChunkIndex surface the block reclaimer
-// needs: an idempotent delete of a chunk's local-index entry. Satisfied by the
-// per-share metadata store (metadata.LocalChunkIndex).
-type localChunkIndexGC interface {
-	DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error
-}
-
 // BlockGCReclaimer is the reference BlockReclaimer the remote GC sweep uses to
 // reclaim block-resident chunks. It binds the per-share metadata store's
-// locator/record/local-index surfaces and the block-keyed remote store. The
-// runtime constructs one per remote-store sweep scope and sets it on
+// locator/record surfaces and the block-keyed remote store. The runtime
+// constructs one per remote-store sweep scope and sets it on
 // engine.Options.BlockReclaimer.
 type BlockGCReclaimer struct {
 	Locators     blockSyncedMarkerGC
 	Records      blockRecordGC
-	LocalIndex   localChunkIndexGC
 	RemoteBlocks remote.RemoteBlockStore
 }
 
@@ -125,12 +117,8 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 		return false, 0, fmt.Errorf("block reclaim: get record %s: %w", blockID, err)
 	}
 	if !ok {
-		// Orphan locator pointing at an already-freed block: drop its local entry
-		// and report handled — the block bookkeeping for this hash is complete
-		// (the sweep clears the marker).
-		if derr := r.LocalIndex.DeleteLocalLocation(ctx, hash); derr != nil {
-			return false, 0, fmt.Errorf("block reclaim: delete local location %s: %w", hash, derr)
-		}
+		// Orphan locator pointing at an already-freed block: the block
+		// bookkeeping for this hash is complete (the sweep clears the marker).
 		return true, 0, nil
 	}
 
@@ -150,12 +138,6 @@ func (r *BlockGCReclaimer) ReclaimDeadChunk(ctx context.Context, hash block.Cont
 	remaining, err := r.Records.DecrLiveChunkCount(ctx, blockID, 1)
 	if err != nil {
 		return false, 0, fmt.Errorf("block reclaim: decr live chunk count %s: %w", blockID, err)
-	}
-
-	// Drop the local-index entry (idempotent — eviction may already have removed
-	// it). A crash before this leaves an orphan entry the local reconcile reaps.
-	if derr := r.LocalIndex.DeleteLocalLocation(ctx, hash); derr != nil {
-		return false, 0, fmt.Errorf("block reclaim: delete local location %s: %w", hash, derr)
 	}
 
 	if remaining > 0 {

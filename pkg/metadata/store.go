@@ -262,7 +262,6 @@ type Transaction interface {
 	FileChunkStore   // Content-addressed block management
 	lock.LockStore   // Lock persistence for NLM/SMB
 	BlockRecordStore // Log-blob block record lifecycle
-	LocalChunkIndex  // Content-hash → local log-blob position
 	SyncedHashStore  // Per-hash remote-mirror state (read-your-writes within the tx)
 
 	// ListFileChunks returns every FileChunk row for payloadID, read-your-writes
@@ -383,7 +382,6 @@ type Store interface {
 	FileChunkStore   // Content-addressed block management
 	SyncedHashStore  // Per-hash remote-mirror state
 	BlockRecordStore // Log-blob block record lifecycle
-	LocalChunkIndex  // Content-hash → local log-blob position
 
 	// EnumerateFileChunks streams every FileChunk's ContentHash through fn
 	// in implementation-defined order. Returns the first non-nil error

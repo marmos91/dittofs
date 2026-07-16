@@ -19,7 +19,11 @@ const sqliteEngineTag = "sqlite"
 
 // sqliteSchemaVersion is bumped whenever the on-disk schema changes in a way
 // that makes an older backup unrestorable. RestoreSnapshot rejects a mismatch.
-const sqliteSchemaVersion uint32 = 1
+// v2 removes the dead rollup_offsets section post-journal-switchover. Migration
+// 000006 also drops local_chunk_index, but that table was never in this backup
+// (it is not listed in backupTables — it was pg-snapshot-only), so dropping it
+// does not change the sqlite snapshot payload and only rollup_offsets bumps this.
+const sqliteSchemaVersion uint32 = 2
 
 // backupTables lists every table dumped by WriteSnapshot and reloaded by RestoreSnapshot, in a
 // FK-safe order for restore (parents before children). inodes must precede
@@ -36,7 +40,6 @@ var backupTables = []string{
 	"nsm_client_registrations",
 	"durable_handles",
 	"v4_client_recovery",
-	"rollup_offsets",
 	"synced_hashes",
 	"server_config",
 	"server_epoch",

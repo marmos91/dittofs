@@ -65,8 +65,7 @@ func (bs *Store) migrateLegacyCAS(ctx context.Context) error {
 }
 
 // localHasLogBlobSubstrate reports whether the local store can receive
-// migrated chunks (log-blob + chunk index wired). Probed via the narrow
-// LocalChunkIndex setter contract the engine already uses for wiring.
+// migrated chunks (log-blob substrate wired), probed via a narrow prober iface.
 func (bs *Store) localHasLogBlobSubstrate() bool {
 	type prober interface{ HasLogBlobSubstrate() bool }
 	if p, ok := bs.local.(prober); ok {
@@ -157,13 +156,10 @@ func (m *Syncer) migrateLegacyCASRemote(ctx context.Context) error {
 	return nil
 }
 
-// migrationChunk is one chunk staged for re-packing: its plaintext plus the
-// local log-blob location when the bytes are also local-resident (zero
-// otherwise — the commit skips the local index entry in that case).
+// migrationChunk is one chunk staged for re-packing: its plaintext keyed by hash.
 type migrationChunk struct {
-	hash  block.ContentHash
-	data  []byte
-	local block.LocalChunkLocation
+	hash block.ContentHash
+	data []byte
 }
 
 // repackStandaloneChunks packs the standalone chunks into carve-sized blocks.
@@ -212,7 +208,7 @@ func (m *Syncer) repackStandaloneChunks(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		data, localLoc, err := m.migrationChunkBytes(ctx, legacy, hasLegacy, h)
+		data, err := m.migrationChunkBytes(ctx, legacy, hasLegacy, h)
 		if err != nil {
 			if errors.Is(err, block.ErrChunkNotFound) {
 				// Pre-existing data loss: the marker points at an object that no
@@ -231,7 +227,7 @@ func (m *Syncer) repackStandaloneChunks(
 			return fmt.Errorf("cas→blocks migration: read standalone chunk %s: %w", h, err)
 		}
 
-		batch = append(batch, migrationChunk{hash: h, data: data, local: localLoc})
+		batch = append(batch, migrationChunk{hash: h, data: data})
 		batchBytes += int64(len(data))
 		if batchBytes >= target {
 			if err := flush(); err != nil {
@@ -250,29 +246,23 @@ func (m *Syncer) repackStandaloneChunks(
 	return nil
 }
 
-// migrationChunkBytes returns the plaintext for hash, preferring the local
-// tier (no download) and falling back to a BLAKE3-verified legacy remote read.
-// The local read is verified here too — migration is the last gate before the
+// migrationChunkBytes returns the BLAKE3-verified plaintext for hash, read from
+// the legacy remote. Verified here because migration is the last gate before the
 // standalone copy is deleted.
 func (m *Syncer) migrationChunkBytes(
 	ctx context.Context,
 	legacy remote.LegacyCASStore,
 	hasLegacy bool,
 	h block.ContentHash,
-) ([]byte, block.LocalChunkLocation, error) {
-	var zero block.LocalChunkLocation
+) ([]byte, error) {
 	// The journal local tier is (payloadID,offset)-keyed, not hash-keyed, so
-	// there is no local-first read here anymore: the migration reads standalone
-	// chunks straight from the legacy remote. Pre-flip local per-chunk files no
-	// longer exist under the journal store.
+	// there is no local-first read here: the migration reads standalone chunks
+	// straight from the legacy remote. Pre-flip local per-chunk files no longer
+	// exist under the journal store.
 	if !hasLegacy {
-		return nil, zero, fmt.Errorf("chunk %s: %w", h, block.ErrChunkNotFound)
+		return nil, fmt.Errorf("chunk %s: %w", h, block.ErrChunkNotFound)
 	}
-	data, err := legacy.ReadLegacyChunkVerified(ctx, h)
-	if err != nil {
-		return nil, zero, err
-	}
-	return data, zero, nil
+	return legacy.ReadLegacyChunkVerified(ctx, h)
 }
 
 // legacyCAS returns the migration-only legacy CAS accessor derived from the
@@ -347,7 +337,6 @@ func (m *Syncer) packAndCommitMigrated(
 		commits = append(commits, block.BlockChunkCommit{
 			Hash:   c.hash,
 			Remote: chunkLoc,
-			Local:  c.local,
 		})
 	}
 	if _, err := builder.Finish(); err != nil {

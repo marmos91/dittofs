@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/store/badger"
 	"github.com/marmos91/dittofs/pkg/metadata/storetest"
@@ -50,11 +51,11 @@ func TestConformance_RelaxedDurability(t *testing.T) {
 }
 
 // TestRelaxedDurability_DurablePathFsyncsInline pins the durable/relaxed
-// classification: in relaxed mode a durable commit (WithTransaction) and a
-// data-paired write (SetRollupOffset) fsync inline, while a relaxed commit
-// (WithTransactionRelaxed) does not. If a future change accidentally routed a
-// data-paired write through the relaxed path (reintroducing the #588
-// silent-zeros hazard), the inline-sync count would not advance and this fails.
+// classification: in relaxed mode a durable commit (WithTransaction) fsyncs
+// inline, while a relaxed commit (WithTransactionRelaxed) does not. If a future
+// change accidentally routed a durable write through the relaxed path
+// (reintroducing the #588 silent-zeros hazard), the inline-sync count would not
+// advance and this fails.
 func TestRelaxedDurability_DurablePathFsyncsInline(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "metadata.db")
@@ -72,13 +73,6 @@ func TestRelaxedDurability_DurablePathFsyncsInline(t *testing.T) {
 	require.NoError(t, store.WithTransactionRelaxed(ctx, func(tx metadata.Transaction) error { return nil }))
 	require.Equal(t, before, store.InlineSyncCountForTest(),
 		"relaxed WithTransactionRelaxed must NOT fsync inline")
-
-	// SetRollupOffset is data-paired with the append-log fsync → must fsync.
-	before = store.InlineSyncCountForTest()
-	_, err := store.SetRollupOffset(ctx, "payload-A", 4096)
-	require.NoError(t, err)
-	require.Greater(t, store.InlineSyncCountForTest(), before,
-		"SetRollupOffset must fsync inline (data-paired)")
 }
 
 // TestRelaxedDurability_StrictModeNoInlineSync verifies that with relaxed
@@ -94,27 +88,27 @@ func TestRelaxedDurability_StrictModeNoInlineSync(t *testing.T) {
 	before := store.InlineSyncCountForTest()
 	require.NoError(t, store.WithTransaction(ctx, func(tx metadata.Transaction) error { return nil }))
 	require.NoError(t, store.WithTransactionRelaxed(ctx, func(tx metadata.Transaction) error { return nil }))
-	_, err := store.SetRollupOffset(ctx, "payload-A", 4096)
-	require.NoError(t, err)
 	require.Equal(t, before, store.InlineSyncCountForTest(),
 		"strict mode must fsync via SyncWrites, never inline db.Sync")
 }
 
-// TestRelaxedDurability_DurableWriteSurvivesReopen confirms a data-paired write
-// on the relaxed store persists across a clean close+reopen with no loss — the
+// TestRelaxedDurability_DurableWriteSurvivesReopen confirms a durable write on
+// the relaxed store persists across a clean close+reopen with no loss — the
 // everyday durability the deferred-fsync path must never compromise.
 func TestRelaxedDurability_DurableWriteSurvivesReopen(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "metadata.db")
 
+	rec := block.BlockRecord{BlockID: "blk-A", Length: 8192, LiveChunkCount: 1, SyncState: block.BlockStateRemote}
+
 	store := openRelaxed(t, dbPath)
-	_, err := store.SetRollupOffset(ctx, "payload-A", 8192)
-	require.NoError(t, err)
-	require.NoError(t, store.Close()) // clean close flushes everything durably
+	require.NoError(t, store.PutBlockRecord(ctx, rec)) // durable write path
+	require.NoError(t, store.Close())                  // clean close flushes everything durably
 
 	reopened := openRelaxed(t, dbPath)
 	t.Cleanup(func() { _ = reopened.Close() })
-	got, err := reopened.GetRollupOffset(ctx, "payload-A")
+	got, found, err := reopened.GetBlockRecord(ctx, "blk-A")
 	require.NoError(t, err)
-	require.Equal(t, uint64(8192), got, "durable rollup offset must survive close+reopen")
+	require.True(t, found, "durable block record must survive close+reopen")
+	require.Equal(t, rec, got, "durable block record must survive close+reopen")
 }

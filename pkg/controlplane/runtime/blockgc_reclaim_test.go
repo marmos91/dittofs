@@ -51,9 +51,6 @@ func seedShareBlock(t *testing.T, st metadata.Store, rbs remote.RemoteBlockStore
 	}); err != nil {
 		t.Fatalf("PutBlockRecord(%s): %v", blockID, err)
 	}
-	if err := st.PutLocalLocation(ctx, h, block.LocalChunkLocation{LogBlobID: "0000000000000000", RawLength: 64}); err != nil {
-		t.Fatalf("PutLocalLocation: %v", err)
-	}
 	if err := st.MarkSynced(ctx, h, block.ChunkLocator{BlockID: blockID, WireLength: 80}); err != nil {
 		t.Fatalf("MarkSynced: %v", err)
 	}
@@ -78,8 +75,8 @@ func TestUnionBlockReclaimer_ReclaimsEveryShare(t *testing.T) {
 	lenB := seedShareBlock(t, stB, rbs, "blk-b", h)
 
 	u := unionBlockReclaimer{
-		{Locators: stA, Records: stA, LocalIndex: stA, RemoteBlocks: rbs},
-		{Locators: stB, Records: stB, LocalIndex: stB, RemoteBlocks: rbs},
+		{Locators: stA, Records: stA, RemoteBlocks: rbs},
+		{Locators: stB, Records: stB, RemoteBlocks: rbs},
 	}
 
 	handled, freed, err := u.ReclaimDeadChunk(ctx, h)

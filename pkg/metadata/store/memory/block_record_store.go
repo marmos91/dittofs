@@ -53,26 +53,6 @@ func (tx *memoryTransaction) DecrLiveChunkCount(_ context.Context, blockID strin
 	return r.LiveChunkCount, nil
 }
 
-// Transaction-level LocalChunkIndex (runs under store.mu write lock)
-
-func (tx *memoryTransaction) PutLocalLocation(_ context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	tx.store.localChunks[hash] = loc
-	return nil
-}
-
-func (tx *memoryTransaction) GetLocalLocation(_ context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error) {
-	loc, ok := tx.store.localChunks[hash]
-	if !ok {
-		return block.LocalChunkLocation{}, false, nil
-	}
-	return loc, true, nil
-}
-
-func (tx *memoryTransaction) DeleteLocalLocation(_ context.Context, hash block.ContentHash) error {
-	delete(tx.store.localChunks, hash)
-	return nil
-}
-
 // ============================================================================
 // Store-level BlockRecordStore (delegates through WithTransaction for writes)
 // ============================================================================
@@ -121,56 +101,11 @@ func (s *MemoryMetadataStore) DecrLiveChunkCount(ctx context.Context, blockID st
 }
 
 // ============================================================================
-// Store-level LocalChunkIndex
-// ============================================================================
-
-func (s *MemoryMetadataStore) PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error {
-	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.PutLocalLocation(ctx, hash, loc)
-	})
-}
-
-func (s *MemoryMetadataStore) GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	loc, ok := s.localChunks[hash]
-	if !ok {
-		return block.LocalChunkLocation{}, false, nil
-	}
-	return loc, true, nil
-}
-
-func (s *MemoryMetadataStore) DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error {
-	return s.WithTransaction(ctx, func(tx metadata.Transaction) error {
-		return tx.DeleteLocalLocation(ctx, hash)
-	})
-}
-
-// WalkLocalLocations calls fn for every stored content-hash -> log-blob
-// location in arbitrary order. It is not part of the LocalChunkIndex
-// interface; the local store discovers it via a narrow consumer-side
-// interface to enumerate logblob-resident chunks (Walk / GC).
-func (s *MemoryMetadataStore) WalkLocalLocations(_ context.Context, fn func(block.ContentHash, block.LocalChunkLocation) error) error {
-	s.mu.RLock()
-	snapshot := make(map[block.ContentHash]block.LocalChunkLocation, len(s.localChunks))
-	for h, loc := range s.localChunks {
-		snapshot[h] = loc
-	}
-	s.mu.RUnlock()
-	for h, loc := range snapshot {
-		if err := fn(h, loc); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ============================================================================
 // CommitBlock
 // ============================================================================
 
-// CommitBlock atomically writes rec and all chunk local locations, then marks
-// each chunk synced. Delegates to DefaultCommitBlock for idempotency logic.
+// CommitBlock atomically writes rec, then marks each chunk synced. Delegates to
+// DefaultCommitBlock for idempotency logic.
 func (s *MemoryMetadataStore) CommitBlock(ctx context.Context, rec block.BlockRecord, chunks []block.BlockChunkCommit) error {
 	return metadata.DefaultCommitBlock(ctx, s, rec, chunks, nil)
 }

@@ -48,7 +48,6 @@ type memoryBackupSnapshot struct {
 	ServerConfig  metadata.MetadataServerConfig
 	Capabilities  metadata.FilesystemCapabilities
 	StoreID       string
-	RollupOffsets map[string]uint64
 	Synced        map[block.ContentHash]time.Time
 	// SyncedLocators preserves the remote block locator for synced hashes packed
 	// into a block (#1414). Without it a restore keeps the synced SET but drops
@@ -128,20 +127,9 @@ func (s *MemoryMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 		ObjectIndex:   s.objectIndex,
 	}
 
-	// Acquire rollupMu and syncedMu to read rollupOffsets and synced
-	// safely — these maps are governed by their own mutexes, not s.mu.
-	// Shallow-copy into fresh maps so the snapshot does not alias the
-	// live maps (rollupMu/syncedMu are released before gob encoding).
-	s.rollupMu.RLock()
-	if s.rollupOffsets != nil {
-		ro := make(map[string]uint64, len(s.rollupOffsets))
-		for k, v := range s.rollupOffsets {
-			ro[k] = v
-		}
-		snap.RollupOffsets = ro
-	}
-	s.rollupMu.RUnlock()
-
+	// Acquire syncedMu to read synced safely — governed by its own mutex, not
+	// s.mu. Shallow-copy into fresh maps so the snapshot does not alias the live
+	// maps (syncedMu is released before gob encoding).
 	s.syncedMu.RLock()
 	if s.synced != nil {
 		sy := make(map[block.ContentHash]time.Time, len(s.synced))
@@ -350,9 +338,6 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	s.serverConfig = snap.ServerConfig
 	s.capabilities = snap.Capabilities
 	s.storeID = snap.StoreID
-	s.rollupMu.Lock()
-	s.rollupOffsets = snap.RollupOffsets
-	s.rollupMu.Unlock()
 
 	s.syncedMu.Lock()
 	s.synced = snap.Synced
@@ -382,9 +367,6 @@ func (s *MemoryMetadataStore) RestoreSnapshot(ctx context.Context, r io.Reader) 
 	}
 	if s.pendingWrites == nil {
 		s.pendingWrites = make(map[string]*metadata.WriteOperation)
-	}
-	if s.rollupOffsets == nil {
-		s.rollupOffsets = make(map[string]uint64)
 	}
 	if s.objectIndex == nil {
 		s.objectIndex = make(map[block.ContentHash]string)

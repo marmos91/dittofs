@@ -44,7 +44,7 @@ func newEncryptionProvider(t *testing.T) keyprovider.KeyProvider {
 const carveFixturePayload = "share/p1"
 
 // carveFixture wires a journal-backed *fs.FSStore, a memory metadata store (the
-// blockCommitter: Transactor + SyncedHashStore + LocalChunkIndex), and the
+// blockCommitter: Transactor + SyncedHashStore), and the
 // provided block-keyed remote into a Syncer with the carve substrate fully
 // active (ManualSync — no background dispatcher racing assertions). carveBytes
 // sizes the block target.

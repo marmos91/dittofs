@@ -248,15 +248,6 @@ type MemoryMetadataStore struct {
 	// across calls on the same instance.
 	storeID string
 
-	// rollupMu guards rollupOffsets for rollup_offset persistence
-	// Kept separate from s.mu so rollup_offset read/compare/write
-	// does not contend with unrelated metadata operations. is enforced
-	// here: the read+compare+write all happen under rollupMu.
-	rollupMu sync.RWMutex
-	// rollupOffsets maps payloadID -> persisted rollup_offset. Lazily
-	// initialized on first Set; Get treats absence as zero.
-	rollupOffsets map[string]uint64
-
 	// syncedMu guards `synced` for SyncedHashStore. Kept separate from
 	// s.mu so per-hash sync markers do not contend with unrelated
 	// metadata operations. All three SyncedHashStore methods serialize
@@ -291,8 +282,6 @@ type MemoryMetadataStore struct {
 
 	// blockRecords maps BlockID → BlockRecord. Protected by mu.
 	blockRecords map[string]*block.BlockRecord
-	// localChunks maps ContentHash → LocalChunkLocation. Protected by mu.
-	localChunks map[block.ContentHash]block.LocalChunkLocation
 }
 
 // MemoryMetadataStoreConfig contains configuration for creating a memory metadata store.
@@ -358,8 +347,6 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		// though memory-backed stores do not survive restart, the
 		// identifier is stable for the lifetime of the instance.
 		storeID: ulid.Make().String(),
-		// rollup_offset persistence (see rollup.go).
-		rollupOffsets: make(map[string]uint64),
 		// ObjectID -> handle-key secondary index.
 		objectIndex: make(map[block.ContentHash]string),
 		// per-identity quota usage counters.
@@ -367,7 +354,6 @@ func NewMemoryMetadataStore(config MemoryMetadataStoreConfig) *MemoryMetadataSto
 		groupUsage: make(map[uint32]*metadata.UsageStat),
 		// Block packing record store.
 		blockRecords: make(map[string]*block.BlockRecord),
-		localChunks:  make(map[block.ContentHash]block.LocalChunkLocation),
 	}
 
 	return store

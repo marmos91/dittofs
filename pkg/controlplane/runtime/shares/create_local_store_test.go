@@ -29,9 +29,8 @@ func (f *fakeBlockStoreConfig) GetConfig() (map[string]any, error) {
 }
 
 // TestCreateLocalStoreFromConfig_AppendLogMandatory exercises the config
-// wiring: append is mandatory on the local tier. With a metadata backend
-// that satisfies metadata.RollupStore, CreateLocalStoreFromConfig must
-// build an FSStore via NewWithOptions, start the rollup pool, and return
+// wiring: append is mandatory on the local tier. CreateLocalStoreFromConfig
+// must build an FSStore via NewWithOptions, start the rollup pool, and return
 // a store whose AppendWrite path succeeds.
 func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 	ctx := context.Background()
