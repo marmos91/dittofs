@@ -44,7 +44,7 @@ var _ block.FileChunkStore = (*SQLiteMetadataStore)(nil)
 // FileChunkStore interface; kept as a backend
 // method for engine-internal callers.
 func (s *SQLiteMetadataStore) GetFileChunk(ctx context.Context, id string) (*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE id = ?1`
 	row := s.queryRow(ctx, query, id)
 
@@ -80,10 +80,6 @@ func (s *SQLiteMetadataStore) Put(ctx context.Context, block *metadata.FileChunk
 	if block.BlockStoreKey != "" {
 		blockStoreKey = &block.BlockStoreKey
 	}
-	var cachePath *string
-	if block.LocalPath != "" {
-		cachePath = &block.LocalPath
-	}
 	// persist LastSyncAttemptAt as NULL when zero so the
 	// janitor's WHERE last_sync_attempt_at < cutoff predicate excludes
 	// never-claimed rows naturally instead of matching every Pending row.
@@ -102,18 +98,17 @@ func (s *SQLiteMetadataStore) Put(ctx context.Context, block *metadata.FileChunk
 	// Increment/Decrement. hash uses COALESCE so a zero-hash Put never NULLs
 	// a previously-persisted good hash.
 	query := `
-		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+		INSERT INTO file_blocks (id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
 		ON CONFLICT (id) DO UPDATE SET
 			hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
 			data_size = EXCLUDED.data_size,
-			cache_path = EXCLUDED.cache_path,
 			block_store_key = EXCLUDED.block_store_key,
 			last_access = EXCLUDED.last_access,
 			state = EXCLUDED.state,
 			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
 	_, err := s.exec(ctx, query,
-		block.ID, hashStr, block.DataSize, cachePath, blockStoreKey,
+		block.ID, hashStr, block.DataSize, blockStoreKey,
 		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
 	if err != nil {
 		return fmt.Errorf("put file chunk: %w", err)
@@ -266,7 +261,7 @@ func (s *SQLiteMetadataStore) AddRef(ctx context.Context, hash block.ContentHash
 // Pending or Syncing rows have not been confirmed on the remote and
 // are unsafe dedup targets.
 func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.ContentHash) (*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`
 	row := s.queryRow(ctx, query, hash.String())
 
@@ -285,7 +280,7 @@ func (s *SQLiteMetadataStore) GetByHash(ctx context.Context, hash metadata.Conte
 // Not on the narrowed FileChunkStore interface;
 // kept as a backend method for engine-internal callers.
 func (s *SQLiteMetadataStore) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks
 		WHERE id LIKE ?1
 		ORDER BY id ASC`
@@ -477,11 +472,10 @@ func scanFileChunk(row scanRow) (*metadata.FileChunk, error) {
 	var (
 		block             metadata.FileChunk
 		hashStr           sql.NullString
-		cachePath         sql.NullString
 		blockStoreKey     sql.NullString
 		lastSyncAttemptAt sql.NullTime
 	)
-	if err := row.Scan(&block.ID, &hashStr, &block.DataSize, &cachePath, &blockStoreKey,
+	if err := row.Scan(&block.ID, &hashStr, &block.DataSize, &blockStoreKey,
 		&block.RefCount, &block.LastAccess, &block.CreatedAt, &block.State, &lastSyncAttemptAt); err != nil {
 		return nil, err
 	}
@@ -494,9 +488,6 @@ func scanFileChunk(row scanRow) (*metadata.FileChunk, error) {
 				block.ID, hashStr.String, perr)
 		}
 		block.Hash = h
-	}
-	if cachePath.Valid {
-		block.LocalPath = cachePath.String
 	}
 	if blockStoreKey.Valid {
 		block.BlockStoreKey = blockStoreKey.String
@@ -540,7 +531,7 @@ func (tx *sqliteTransaction) GetFileChunk(ctx context.Context, id string) (*meta
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE id = ?1`
 	row := tx.tx.QueryRow(ctx, query, id)
 	block, err := scanFileChunk(row)
@@ -566,10 +557,6 @@ func (tx *sqliteTransaction) Put(ctx context.Context, block *metadata.FileChunk)
 	if block.BlockStoreKey != "" {
 		blockStoreKey = &block.BlockStoreKey
 	}
-	var cachePath *string
-	if block.LocalPath != "" {
-		cachePath = &block.LocalPath
-	}
 	var lastSyncAttemptAt *time.Time
 	if !block.LastSyncAttemptAt.IsZero() {
 		t := block.LastSyncAttemptAt
@@ -579,18 +566,17 @@ func (tx *sqliteTransaction) Put(ctx context.Context, block *metadata.FileChunk)
 	// Put). RefCount mutates only via Increment/Decrement. hash uses COALESCE
 	// so a zero-hash Put never NULLs a previously-persisted good hash.
 	query := `
-		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+		INSERT INTO file_blocks (id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
 		ON CONFLICT (id) DO UPDATE SET
 			hash = COALESCE(EXCLUDED.hash, file_blocks.hash),
 			data_size = EXCLUDED.data_size,
-			cache_path = EXCLUDED.cache_path,
 			block_store_key = EXCLUDED.block_store_key,
 			last_access = EXCLUDED.last_access,
 			state = EXCLUDED.state,
 			last_sync_attempt_at = EXCLUDED.last_sync_attempt_at`
 	_, err := tx.tx.Exec(ctx, query,
-		block.ID, hashStr, block.DataSize, cachePath, blockStoreKey,
+		block.ID, hashStr, block.DataSize, blockStoreKey,
 		block.RefCount, block.LastAccess, block.CreatedAt, block.State, lastSyncAttemptAt)
 	if err != nil {
 		return fmt.Errorf("put file chunk: %w", err)
@@ -687,7 +673,7 @@ func (tx *sqliteTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks WHERE hash = ?1 AND state = 2 /* Remote */`
 	row := tx.tx.QueryRow(ctx, query, hash.String())
 	block, err := scanFileChunk(row)
@@ -708,7 +694,7 @@ func (tx *sqliteTransaction) GetByHash(ctx context.Context, hash metadata.Conten
 // store-level methods).
 
 func (tx *sqliteTransaction) ListFileChunks(ctx context.Context, payloadID string) ([]*metadata.FileChunk, error) {
-	query := `SELECT id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
+	query := `SELECT id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at
 		FROM file_blocks
 		WHERE id LIKE ?1
 		ORDER BY id ASC`
@@ -775,10 +761,10 @@ func (tx *sqliteTransaction) EnumerateFileChunks(ctx context.Context, fn func(bl
 func (s *SQLiteMetadataStore) InjectCorruptHashRow(ctx context.Context, blockID string, badHash string) error {
 	now := time.Now()
 	_, err := s.exec(ctx, `
-		INSERT INTO file_blocks (id, hash, data_size, cache_path, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
-		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+		INSERT INTO file_blocks (id, hash, data_size, block_store_key, ref_count, last_access, created_at, state, last_sync_attempt_at)
+		VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
 		ON CONFLICT (id) DO UPDATE SET hash = EXCLUDED.hash`,
-		blockID, badHash, uint32(64), nil, nil, uint32(1), now, now, int(block.BlockStateRemote), nil,
+		blockID, badHash, uint32(64), nil, uint32(1), now, now, int(block.BlockStateRemote), nil,
 	)
 	if err != nil {
 		return fmt.Errorf("inject corrupt hash row: %w", err)

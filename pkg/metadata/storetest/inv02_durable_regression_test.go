@@ -43,7 +43,6 @@ func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
 			ID:            blockID,
 			Hash:          sharedHash,
 			State:         block.BlockStateRemote,
-			LocalPath:     "/cache/" + blockID,
 			BlockStoreKey: "cas/shared/" + sharedHash.String(),
 			DataSize:      4096,
 			RefCount:      3,

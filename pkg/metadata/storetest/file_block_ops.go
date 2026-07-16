@@ -248,7 +248,6 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 			Hash:          hash,
 			State:         block.BlockStateRemote,
 			BlockStoreKey: "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String(),
-			LocalPath:     "/cache/reap0",
 			DataSize:      4096,
 			RefCount:      1,
 			LastAccess:    time.Now(),
@@ -293,7 +292,6 @@ func testDecrementRefCountAndReap(t *testing.T, factory StoreFactory) {
 			Hash:          hash,
 			State:         block.BlockStateRemote,
 			BlockStoreKey: "cas/" + hash.String()[0:2] + "/" + hash.String()[2:4] + "/" + hash.String(),
-			LocalPath:     "/cache/survive0",
 			DataSize:      4096,
 			RefCount:      1,
 			LastAccess:    time.Now(),
@@ -576,11 +574,11 @@ func testListFileChunks(t *testing.T, factory StoreFactory) {
 
 	// Create blocks for 2 different files
 	blocks := []*block.FileChunk{
-		{ID: "file-A/0", State: block.BlockStatePending, LocalPath: "/cache/a0", DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-A/1", State: block.BlockStatePending, LocalPath: "/cache/a1", DataSize: 200, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-A/2", State: block.BlockStateRemote, LocalPath: "/cache/a2", BlockStoreKey: "s3://a2", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-B/0", State: block.BlockStatePending, LocalPath: "/cache/b0", DataSize: 400, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
-		{ID: "file-B/1", State: block.BlockStatePending, LocalPath: "/cache/b1", DataSize: 500, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/0", State: block.BlockStatePending, DataSize: 100, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/1", State: block.BlockStatePending, DataSize: 200, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-A/2", State: block.BlockStateRemote, BlockStoreKey: "s3://a2", DataSize: 300, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-B/0", State: block.BlockStatePending, DataSize: 400, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
+		{ID: "file-B/1", State: block.BlockStatePending, DataSize: 500, RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now()},
 	}
 	for _, b := range blocks {
 		if err := store.Put(ctx, b); err != nil {
@@ -641,7 +639,7 @@ func testListFileChunksOrdering(t *testing.T, factory StoreFactory) {
 	for _, idx := range indices {
 		b := &block.FileChunk{
 			ID: fmt.Sprintf("file-sort/%d", idx), State: block.BlockStatePending,
-			LocalPath: fmt.Sprintf("/cache/s%d", idx), DataSize: uint32(idx * 100),
+			DataSize: uint32(idx * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
 		}
 		if err := store.Put(ctx, b); err != nil {
@@ -681,7 +679,7 @@ func testListFileChunksMixedStates(t *testing.T, factory StoreFactory) {
 	for i, state := range states {
 		b := &block.FileChunk{
 			ID: fmt.Sprintf("file-mix/%d", i), State: state,
-			LocalPath: fmt.Sprintf("/cache/m%d", i), DataSize: uint32((i + 1) * 100),
+			DataSize: uint32((i + 1) * 100),
 			RefCount: 1, LastAccess: time.Now(), CreatedAt: time.Now(),
 		}
 		if state == block.BlockStateRemote {
@@ -763,7 +761,6 @@ func testEnumeratePayloads(t *testing.T, factory StoreFactory) {
 			b := &block.FileChunk{
 				ID:         fmt.Sprintf("%s/%d", payloadID, i),
 				State:      block.BlockStatePending,
-				LocalPath:  fmt.Sprintf("/cache/%s-%d", payloadID, i),
 				DataSize:   128,
 				RefCount:   1,
 				LastAccess: time.Now(),
@@ -837,7 +834,6 @@ func testPutGet_LastSyncAttemptAt(t *testing.T, factory StoreFactory) {
 	in := &block.FileChunk{
 		ID:                "file-sync-attempt/0",
 		State:             block.BlockStateSyncing,
-		LocalPath:         "/cache/sa0",
 		DataSize:          128,
 		RefCount:          1,
 		LastAccess:        time.Now(),
@@ -872,7 +868,6 @@ func testPutGet_LastSyncAttemptAt_Zero(t *testing.T, factory StoreFactory) {
 	in := &block.FileChunk{
 		ID:         "file-sync-zero/0",
 		State:      block.BlockStatePending,
-		LocalPath:  "/cache/sz0",
 		DataSize:   64,
 		RefCount:   1,
 		LastAccess: time.Now(),
@@ -920,7 +915,6 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 		ID:            "file-A/0",
 		Hash:          hash,
 		State:         block.BlockStateRemote,
-		LocalPath:     "/cache/A0",
 		BlockStoreKey: keyA,
 		DataSize:      4096,
 		RefCount:      1,
@@ -931,7 +925,6 @@ func testPut_TwoIDsSameHash(t *testing.T, factory StoreFactory) {
 		ID:            "file-B/0",
 		Hash:          hash, // SAME content hash, different ID
 		State:         block.BlockStateRemote,
-		LocalPath:     "/cache/B0",
 		BlockStoreKey: keyB,
 		DataSize:      4096,
 		RefCount:      1,
@@ -1079,7 +1072,6 @@ func testEnumerateFileChunks_SingleFile(t *testing.T, factory StoreFactory) {
 			ID:            fmt.Sprintf("file-single/%d", i),
 			Hash:          h,
 			State:         block.BlockStateRemote,
-			LocalPath:     fmt.Sprintf("/cache/single-%d", i),
 			BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
 			DataSize:      128,
 			RefCount:      1,
@@ -1127,7 +1119,6 @@ func testEnumerateFileChunks_LargeFanout(t *testing.T, factory StoreFactory) {
 				ID:            fmt.Sprintf("file-fan-%d/%d", f, i),
 				Hash:          h,
 				State:         block.BlockStateRemote,
-				LocalPath:     fmt.Sprintf("/cache/fan-%d-%d", f, i),
 				BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
 				DataSize:      64,
 				RefCount:      1,
@@ -1182,7 +1173,6 @@ func testEnumerateFileChunks_FnErrorAborts(t *testing.T, factory StoreFactory) {
 			ID:         fmt.Sprintf("file-fnerr/%d", i),
 			Hash:       h,
 			State:      block.BlockStateRemote,
-			LocalPath:  fmt.Sprintf("/cache/fnerr-%d", i),
 			DataSize:   64,
 			RefCount:   1,
 			LastAccess: time.Now(),
@@ -1234,7 +1224,6 @@ func testEnumerateFileChunks_ContextCancellation(t *testing.T, factory StoreFact
 			ID:         fmt.Sprintf("file-ctx/%d", i),
 			Hash:       h,
 			State:      block.BlockStateRemote,
-			LocalPath:  fmt.Sprintf("/cache/ctx-%d", i),
 			DataSize:   64,
 			RefCount:   1,
 			LastAccess: time.Now(),
@@ -1274,7 +1263,6 @@ func testEnumerateFileChunks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 	legacy := &block.FileChunk{
 		ID:         "file-zero/0",
 		State:      block.BlockStatePending,
-		LocalPath:  "/cache/zero",
 		DataSize:   64,
 		RefCount:   1,
 		LastAccess: time.Now(),
@@ -1288,7 +1276,6 @@ func testEnumerateFileChunks_ZeroHashEmitted(t *testing.T, factory StoreFactory)
 		ID:            "file-zero/1",
 		Hash:          hashOfSeed("non-zero"),
 		State:         block.BlockStateRemote,
-		LocalPath:     "/cache/nz",
 		BlockStoreKey: "cas/12/34/" + hashOfSeed("non-zero").String(),
 		DataSize:      64,
 		RefCount:      1,
@@ -1350,7 +1337,6 @@ func testEnumerateFileChunks_CorruptHashFailsClosed(t *testing.T, factory StoreF
 		ID:            "file-corrupt/0",
 		Hash:          hashOfSeed("good"),
 		State:         block.BlockStateRemote,
-		LocalPath:     "/cache/good",
 		BlockStoreKey: "cas/aa/bb/" + hashOfSeed("good").String(),
 		DataSize:      64,
 		RefCount:      1,
@@ -1481,7 +1467,6 @@ func testTx_ListReadAfterWrite(t *testing.T, factory StoreFactory) {
 			ID:            payloadID + "/0",
 			Hash:          hash,
 			State:         block.BlockStateRemote,
-			LocalPath:     "/cache/raw",
 			BlockStoreKey: "cas/a1/b2/" + hash.String(),
 			DataSize:      4096,
 			RefCount:      1,
@@ -1556,7 +1541,6 @@ func testAddRef_ExistingHash_BumpsRefCount(t *testing.T, factory StoreFactory) {
 		ID:            "file-addref/0",
 		Hash:          hash,
 		State:         block.BlockStateRemote,
-		LocalPath:     "/cache/addref0",
 		BlockStoreKey: casKey,
 		DataSize:      4096,
 		RefCount:      1,
@@ -1640,7 +1624,6 @@ func testAddRef_Concurrent_With_DecrementRefCountCascade(t *testing.T, factory S
 		ID:            "file-addref-conc/0",
 		Hash:          hash,
 		State:         block.BlockStateRemote,
-		LocalPath:     "/cache/addref-conc0",
 		BlockStoreKey: casKey,
 		DataSize:      4096,
 		RefCount:      10,
@@ -1771,7 +1754,6 @@ func seedStrandedBlocks(t *testing.T, ctx context.Context, store metadata.Store,
 		b := &block.FileChunk{
 			ID:         fmt.Sprintf("%s/%d", payloadID, i),
 			State:      block.BlockStatePending,
-			LocalPath:  fmt.Sprintf("/cache/%s-%d", payloadID, i),
 			DataSize:   128,
 			RefCount:   1,
 			LastAccess: time.Now(),
