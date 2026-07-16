@@ -442,6 +442,9 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// without inline decrements.
 		if *attrs.Size < file.Size && len(file.Blocks) > 0 {
 			file.Blocks = block.PruneChunkRefsToSize(file.Blocks, *attrs.Size)
+			// The manifest actually changed (tail pruned) — the SQL backends
+			// must persist the shortened file_block_refs list.
+			file.BlocksDirty = true
 			// Keep ObjectID (the Merkle root over Blocks) consistent with the
 			// trimmed list, or zero it when no blocks remain so the file reads
 			// as "never quiesced" instead of carrying a stale dedup pointer.

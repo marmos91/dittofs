@@ -81,6 +81,8 @@ func (s *Service) PunchHole(ctx *AuthContext, handle FileHandle, offset, length 
 	res.PreOpBlocks = file.Blocks
 	newBlocks := block.PunchHole(file.Blocks, offset, length)
 	file.Blocks = newBlocks
+	// PunchHole rewrote the manifest — persist the new file_block_refs list.
+	file.BlocksDirty = true
 	if !file.ObjectID.IsZero() {
 		if len(newBlocks) == 0 {
 			file.ObjectID = block.ObjectID{}

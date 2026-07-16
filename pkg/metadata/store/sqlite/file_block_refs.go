@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/block"
@@ -35,18 +36,41 @@ func putFileChunkRefs(ctx context.Context, tx execer, fileID uuid.UUID, blocks [
 	if len(blocks) == 0 {
 		return nil
 	}
-	// SQLite has no batch protocol; insert each ref with a prepared-statement
-	// reuse via the same tx connection. The (file_id, "offset") PK rejects a
-	// duplicate offset.
-	for _, b := range blocks {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO file_block_refs (file_id, "offset", size, hash) VALUES (?1, ?2, ?3, ?4)`,
-			fileID, int64(b.Offset), int32(b.Size), b.Hash[:],
-		); err != nil {
-			return fmt.Errorf("insert file_block_ref: %w", err)
+	// Multi-row INSERT: one statement per batch instead of one Exec per ref
+	// (#1715 #8b). Batches are capped so the bound-parameter count stays under
+	// SQLite's default limit (SQLITE_MAX_VARIABLE_NUMBER); 4 columns per row →
+	// 200 rows = 800 params. The (file_id, "offset") PK rejects a duplicate
+	// offset within any batch.
+	const colsPerRow = 4
+	const rowsPerBatch = 200
+	for start := 0; start < len(blocks); start += rowsPerBatch {
+		end := start + rowsPerBatch
+		if end > len(blocks) {
+			end = len(blocks)
+		}
+		batch := blocks[start:end]
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO file_block_refs (file_id, "offset", size, hash) VALUES `)
+		args := make([]any, 0, len(batch)*colsPerRow)
+		for i, b := range batch {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			sb.WriteString("(?, ?, ?, ?)")
+			args = append(args, fileID, int64(b.Offset), int32(b.Size), b.Hash[:])
+		}
+		if _, err := tx.Exec(ctx, sb.String(), args...); err != nil {
+			return fmt.Errorf("insert file_block_refs batch: %w", err)
 		}
 	}
 	return nil
+}
+
+// PutFileChunkRefsCallCount returns how many times PutFile persisted the
+// file_block_refs manifest (ran past the BlocksDirty gate) since store open.
+// Test-only — proves attr-only writes perform ZERO manifest writes.
+func (s *SQLiteMetadataStore) PutFileChunkRefsCallCount() int64 {
+	return s.manifestWrites.Load()
 }
 
 // deleteFileChunkRefs removes all rows for fileID. The FK cascade

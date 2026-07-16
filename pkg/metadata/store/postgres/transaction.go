@@ -468,11 +468,15 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 			"size", file.Size)
 	}
 
-	// persist FileAttr.Blocks into file_block_refs.
-	// Atomic with the files-row UPDATE/INSERT above (same tx). Only regular
-	// files carry ChunkRef payloads. Empty/nil Blocks performs a DELETE-only
-	// pass, ensuring no stale rows survive a write that drops Blocks.
-	if file.Type == metadata.FileTypeRegular {
+	// persist FileAttr.Blocks into file_block_refs — but ONLY when the caller
+	// signalled the manifest legitimately changed (BlocksDirty). Attr-only
+	// writes (chmod/utimes/close/rename/xattr/…) leave BlocksDirty false, so
+	// they skip the DELETE+INSERT entirely instead of rewriting the whole
+	// chunk list on every write (#1715 #8 write-amplification fix). Only
+	// regular files carry ChunkRef payloads; empty/nil Blocks under a dirty
+	// flag performs a DELETE-only pass so no stale rows survive a drop.
+	if file.Type == metadata.FileTypeRegular && file.BlocksDirty {
+		tx.store.manifestWrites.Add(1)
 		if err := putFileChunkRefs(ctx, tx.tx, file.ID, file.Blocks); err != nil {
 			return mapPgError(err, "PutFile", "blocks")
 		}
