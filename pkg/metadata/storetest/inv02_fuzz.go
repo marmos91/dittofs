@@ -273,14 +273,13 @@ func fuzzCreateFile(ctx context.Context, store metadata.Store, shareName string,
 		h := hashOfSeed(hashSeed)
 		blockID := fmt.Sprintf("%s/%d", payloadID, i)
 		fb := &block.FileChunk{
-			ID:            blockID,
-			Hash:          h,
-			State:         block.BlockStateRemote,
-			BlockStoreKey: "cas/" + h.String()[0:2] + "/" + h.String()[2:4] + "/" + h.String(),
-			DataSize:      4096,
-			RefCount:      1,
-			LastAccess:    now,
-			CreatedAt:     now,
+			ID:         blockID,
+			Hash:       h,
+			State:      block.BlockStateRemote,
+			DataSize:   4096,
+			RefCount:   1,
+			LastAccess: now,
+			CreatedAt:  now,
 		}
 		if err := store.Put(ctx, fb); err != nil {
 			return fmt.Errorf("put block %s: %w", blockID, err)

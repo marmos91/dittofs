@@ -66,7 +66,7 @@ func ParseContentHash(s string) (ContentHash, error) {
 //
 // - Remote (2): PUT + metadata-txn confirmed; eligible for local eviction.
 //
-// Write-after-sync resets Remote -> Pending (clears Hash + BlockStoreKey).
+// Write-after-sync resets Remote -> Pending (clears Hash).
 type BlockState uint8
 
 const (
@@ -233,9 +233,9 @@ func PruneChunkRefsToSize(refs []ChunkRef, size uint64) []ChunkRef {
 // chunks with the same hash are shared across files for dedup.
 //
 // Lifecycle
-// 1. Pending — created on write (BlockStoreKey empty).
+// 1. Pending — created on write.
 // 2. Syncing — claim batch flipped State and stamped LastSyncAttemptAt.
-// 3. Remote — PUT + metadata-txn confirmed (BlockStoreKey set).
+// 3. Remote — PUT + metadata-txn confirmed.
 type FileChunk struct {
 	// ID is a stable UUID for this chunk.
 	ID string
@@ -245,10 +245,6 @@ type FileChunk struct {
 
 	// DataSize is the actual bytes written in this chunk.
 	DataSize uint32
-
-	// BlockStoreKey is the opaque key in the remote block store (S3 key, FS path, etc.).
-	// Empty means not synced to remote.
-	BlockStoreKey string
 
 	// RefCount is the number of files referencing this chunk.
 	RefCount uint32
@@ -270,14 +266,8 @@ type FileChunk struct {
 }
 
 // IsRemote returns true if the chunk has been synced to the remote block store.
-// Dual-read fallback: legacy zero-valued rows (State==Pending) that
-// already carry a BlockStoreKey were uploaded under the legacy non-CAS path
-// and must still be treated as Remote during the dual-read window.
 func (b *FileChunk) IsRemote() bool {
-	if b.State == BlockStateRemote {
-		return true
-	}
-	return b.State == BlockStatePending && b.BlockStoreKey != ""
+	return b.State == BlockStateRemote
 }
 
 // IsFinalized returns true if the chunk's upload is complete (State==Remote).

@@ -40,14 +40,13 @@ func TestReconcileINV02_DuplicateHashRowsVisible(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		blockID := payloadID + "/" + string(rune('0'+i))
 		fb := &block.FileChunk{
-			ID:            blockID,
-			Hash:          sharedHash,
-			State:         block.BlockStateRemote,
-			BlockStoreKey: "cas/shared/" + sharedHash.String(),
-			DataSize:      4096,
-			RefCount:      3,
-			LastAccess:    now,
-			CreatedAt:     now,
+			ID:         blockID,
+			Hash:       sharedHash,
+			State:      block.BlockStateRemote,
+			DataSize:   4096,
+			RefCount:   3,
+			LastAccess: now,
+			CreatedAt:  now,
 		}
 		if err := store.Put(ctx, fb); err != nil {
 			t.Fatalf("Put(%s): %v", blockID, err)

@@ -159,11 +159,10 @@ func TestFileChunkStore_FindByHash_Found(t *testing.T) {
 	id := uuid.New().String()
 	hash := sha256.Sum256([]byte("unique content"))
 	block := &metadata.FileChunk{
-		ID:            id,
-		Hash:          hash,
-		DataSize:      2048,
-		RefCount:      1,
-		BlockStoreKey: "s3://bucket/key",
+		ID:       id,
+		Hash:     hash,
+		DataSize: 2048,
+		RefCount: 1,
 		// IsFinalized() now means State==Remote — only
 		// Remote rows enter the hash index for dedup lookups.
 		State: metadata.BlockStateRemote,
@@ -205,12 +204,11 @@ func TestFileChunkStore_DedupFlow(t *testing.T) {
 	// only matches confirmed remote blocks per the collapse).
 	id1 := uuid.New().String()
 	block := &metadata.FileChunk{
-		ID:            id1,
-		Hash:          hash,
-		DataSize:      uint32(len(content)),
-		RefCount:      1,
-		BlockStoreKey: "s3://bucket/key",
-		State:         metadata.BlockStateRemote,
+		ID:       id1,
+		Hash:     hash,
+		DataSize: uint32(len(content)),
+		RefCount: 1,
+		State:    metadata.BlockStateRemote,
 	}
 
 	err := store.Put(ctx, block)

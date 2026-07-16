@@ -25,7 +25,9 @@ const sqliteEngineTag = "sqlite"
 // does not change the sqlite snapshot payload and only rollup_offsets bumps this.
 // v3 drops the dead cache_path column from file_blocks (migration 000007);
 // file_blocks IS in backupTables, so the dumped row shape changes one column.
-const sqliteSchemaVersion uint32 = 3
+// v4 drops the dead block_store_key column from file_blocks (migration 000008);
+// file_blocks IS in backupTables, so the dumped row shape changes one column.
+const sqliteSchemaVersion uint32 = 4
 
 // backupTables lists every table dumped by WriteSnapshot and reloaded by RestoreSnapshot, in a
 // FK-safe order for restore (parents before children). inodes must precede

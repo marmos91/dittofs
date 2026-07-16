@@ -60,14 +60,13 @@ func (r *gcMSReconciler) SharesForGC() []string { return append([]string(nil), r
 func putPendingBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
 	if err := st.Put(t.Context(), &block.FileChunk{
-		ID:            id,
-		Hash:          h,
-		State:         block.BlockStatePending,
-		BlockStoreKey: h.String(),
-		DataSize:      64,
-		RefCount:      0,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         id,
+		Hash:       h,
+		State:      block.BlockStatePending,
+		DataSize:   64,
+		RefCount:   0,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}); err != nil {
 		t.Fatalf("PutFileChunk(%s): %v", id, err)
 	}
@@ -77,14 +76,13 @@ func putPendingBlock(t *testing.T, st metadata.Store, id string, h block.Content
 func putBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 	t.Helper()
 	if err := st.Put(t.Context(), &block.FileChunk{
-		ID:            id,
-		Hash:          h,
-		State:         block.BlockStateRemote,
-		BlockStoreKey: h.String(),
-		DataSize:      64,
-		RefCount:      1,
-		LastAccess:    time.Now(),
-		CreatedAt:     time.Now(),
+		ID:         id,
+		Hash:       h,
+		State:      block.BlockStateRemote,
+		DataSize:   64,
+		RefCount:   1,
+		LastAccess: time.Now(),
+		CreatedAt:  time.Now(),
 	}); err != nil {
 		t.Fatalf("PutFileChunk(%s): %v", id, err)
 	}
