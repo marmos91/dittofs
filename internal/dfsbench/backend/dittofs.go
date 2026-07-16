@@ -234,7 +234,17 @@ func dittofsMount(ctx context.Context, proto Protocol) (string, error) {
 	switch proto {
 	case ProtoNFS3:
 		typ, src = "nfs", "127.0.0.1:/"+dittofsShare
-		opts = "nfsvers=3,tcp,port=" + dittofsNFSPort + ",mountport=" + dittofsNFSPort + ",actimeo=0,nolock"
+		// Mount as a real user would, and at the same caching tier as the FUSE
+		// competitors we compare against. actimeo=1 gives a 1s attribute cache
+		// (matching JuiceFS's default --attr-cache=1s); the old actimeo=0 disabled
+		// it entirely, forcing a GETATTR revalidation RPC + metadata-store lookup on
+		// essentially every op — a tax the FUSE re-exports never pay, which inflated
+		// our metadata numbers. nconnect=4 parallelises RPCs over 4 TCP connections,
+		// the wire analog of FUSE's inherent request parallelism. nolock stays: the
+		// harness wires no NLM statd and locking doesn't affect create throughput.
+		// Keep IDENTICAL to the zerofs nfs3 cell so the native-vs-native comparison
+		// stays clean (see zerofs.go).
+		opts = "nfsvers=3,tcp,port=" + dittofsNFSPort + ",mountport=" + dittofsNFSPort + ",actimeo=1,nconnect=4,nolock"
 	case ProtoNFS4:
 		typ, src = "nfs", "127.0.0.1:/"+dittofsShare
 		opts = "vers=4.1,tcp,port=" + dittofsNFSPort

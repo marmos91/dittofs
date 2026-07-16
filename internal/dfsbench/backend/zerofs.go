@@ -138,10 +138,12 @@ func zerofsMount(ctx context.Context, proto Protocol) (string, error) {
 	}
 	// zerofs serves NFSv3 on :2049 from its own userspace server (no knfsd) — the
 	// same native path dittofs-s3 takes. Use the IDENTICAL option set as the
-	// dittofs-s3 nfs3 cell (actimeo=0,nolock) so attribute-cache behavior can't
-	// skew the native-vs-native comparison; rsize/wsize negotiate to the kernel
-	// default (1 MiB over TCP) for both.
-	opts := "nfsvers=3,tcp,port=" + zerofsNFSPort + ",mountport=" + zerofsNFSPort + ",actimeo=0,nolock"
+	// dittofs-s3 nfs3 cell (actimeo=1,nconnect=4,nolock) so attribute-cache
+	// behavior can't skew the native-vs-native comparison; rsize/wsize negotiate to
+	// the kernel default (1 MiB over TCP) for both. actimeo=1 (was 0) matches the
+	// FUSE competitors' ~1s attribute cache instead of disabling it entirely — see
+	// dittofs.go for the rationale.
+	opts := "nfsvers=3,tcp,port=" + zerofsNFSPort + ",mountport=" + zerofsNFSPort + ",actimeo=1,nconnect=4,nolock"
 	// zerofs logs "Starting NFS server" (the zerofsStart gate) within a few
 	// seconds of launch, but doesn't actually answer MOUNT/NFS RPCs until it has
 	// loaded the encryption key and warmed the LSM from S3 — ~35s on a cold cache.
