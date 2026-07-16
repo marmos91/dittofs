@@ -504,6 +504,11 @@ func (r *Runtime) AddShare(ctx context.Context, config *ShareConfig) error {
 	if err := r.ReconcileShareRootACL(ctx, config.Name); err != nil {
 		logger.Warn("failed to reconcile share root ACL", "share", config.Name, "error", err)
 	}
+	// Reconstruct the local-only journal snapshot pin from the durable snapshot
+	// list so GC/eviction keep the segments backing every live snapshot's bytes
+	// across a restart, before any background reclaim runs. No-op for remote
+	// shares and shares without snapshots (#1718).
+	r.recomputePinVersion(ctx, config.Name)
 	return nil
 }
 

@@ -545,6 +545,13 @@ func (r *Runtime) runSnapshotOrchestration(
 	}
 	logger.Debug("snapshot create: drain rollups+carve complete", "snapshot_id", snapID, "share", shareName)
 
+	// Capture the local-journal LSN watermark now that rollups are drained: every
+	// record making up this snapshot's point-in-time view carries a Version at or
+	// below it. Persisted with the ready flip and used to (a) pin the journal
+	// segments that back a local-only snapshot and (b) drive RestoreToVersion.
+	// 0 on a local store that is not journal-backed (#1718).
+	journalVersion := bs.JournalVersion()
+
 	// --- Step 1: WriteSnapshot -> metadata.dump (atomic temp+rename) ---
 	dumpPath := snap.MetadataDumpPath(localStoreDir)
 	logger.Debug("snapshot create: write start",
@@ -610,7 +617,8 @@ func (r *Runtime) runSnapshotOrchestration(
 		// left to the column default. This way the post-create row
 		// state is fully deterministic on success and not subject to
 		// schema-default drift.
-		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount)); err != nil {
+		raisePinForLocalOnly(bs, journalVersion)
+		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount), journalVersion); err != nil {
 			terminalErr = fmt.Errorf("snapshot create %s: mark ready (no-verify): %w: %v",
 				snapID, models.ErrSnapshotBackupFailed, err)
 			r.failSnap(shareName, snapID, terminalErr)
@@ -682,7 +690,8 @@ func (r *Runtime) runSnapshotOrchestration(
 	// remote_durable=false rather than failing (#791). Mirrors the
 	// restore-side no-remote skip so create and restore agree.
 	if remoteStore == nil {
-		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount)); err != nil {
+		raisePinForLocalOnly(bs, journalVersion)
+		if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, false, int64(manifestCount), journalVersion); err != nil {
 			terminalErr = fmt.Errorf("snapshot create %s: mark ready (local-only): %w: %v",
 				snapID, models.ErrSnapshotBackupFailed, err)
 			r.failSnap(shareName, snapID, terminalErr)
@@ -748,7 +757,8 @@ func (r *Runtime) runSnapshotOrchestration(
 	// crash mid-update produces ready+remote_durable=false — visually
 	// indistinguishable from the intentional --no-verify result and
 	// a false negative for restore's durability gate.
-	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true, int64(manifestCount)); err != nil {
+	raisePinForLocalOnly(bs, journalVersion)
+	if err := r.store.MarkSnapshotReady(ctx, shareName, snapID, true, int64(manifestCount), journalVersion); err != nil {
 		terminalErr = fmt.Errorf("snapshot create %s: mark ready: %w: %v",
 			snapID, models.ErrSnapshotBackupFailed, err)
 		r.failSnap(shareName, snapID, terminalErr)
@@ -1481,15 +1491,54 @@ func (r *Runtime) restoreSnapshot(
 	// WaitForSnapshot above, so the safety snap's DrainRollups completed),
 	// so every byte that must survive is already durable in CAS and there
 	// are no dirty intervals left to flush.
-	if rerr := bs.ResetLocalState(ctx); rerr != nil {
-		return safetySnapshotID, fmt.Errorf("restore snapshot %q: reset block-store local state (safety-snap=%s): %w: %v",
-			snapID, safetySnapshotID, models.ErrRestoreAborted, rerr)
+	if remoteVerify {
+		// Remote-backed: drop the local append-log overlay; post-restore reads
+		// resolve through the restored CAS manifest + remote (cold-seeded below).
+		if rerr := bs.ResetLocalState(ctx); rerr != nil {
+			return safetySnapshotID, fmt.Errorf("restore snapshot %q: reset block-store local state (safety-snap=%s): %w: %v",
+				snapID, safetySnapshotID, models.ErrRestoreAborted, rerr)
+		}
+		logger.Info("snapshot restore: block-store local state reset",
+			"snapshot_id", snapID,
+			"share", shareName,
+			"safety_snap_id", safetySnapshotID,
+		)
+	} else {
+		// Local-only: the journal is the only durable copy of the bytes, so there
+		// is nothing to re-seed from remote. Rewind the journal to the snapshot's
+		// version watermark and re-materialize that point-in-time view durably at
+		// the head (RestoreToVersion), then drain rollups so the re-materialized
+		// dirty records reach the FileChunk manifest. The snapshot's pinned
+		// segments still hold the pre-overwrite bytes RestoreToVersion reads back
+		// (#1718).
+		//
+		// Fail closed on a journal-backed snapshot that carries no watermark but
+		// held data: JournalVersion==0 + ManifestCount>0 + a live journal that has
+		// really written records (bs.JournalVersion()>0) means the row predates
+		// #1718 watermark recording, so rewinding to v0 would silently tombstone
+		// real bytes. The three conditions together exclude the legitimate cases:
+		// an empty-FS snapshot (ManifestCount==0, correct to rewind-to-empty) and a
+		// non-journal local store (memory: bs.JournalVersion()==0, restore recovers
+		// from its own CAS, not RestoreToVersion).
+		if snap.JournalVersion == 0 && snap.ManifestCount > 0 && bs.JournalVersion() > 0 {
+			return safetySnapshotID, fmt.Errorf("restore snapshot %q: predates journal-version tracking (manifest_count=%d), local-only restore unavailable: %w",
+				snapID, snap.ManifestCount, models.ErrRestoreAborted)
+		}
+		if rerr := bs.RestoreToVersion(ctx, snap.JournalVersion); rerr != nil {
+			return safetySnapshotID, fmt.Errorf("restore snapshot %q: rewind journal to v%d (safety-snap=%s): %w: %v",
+				snapID, snap.JournalVersion, safetySnapshotID, models.ErrRestoreAborted, rerr)
+		}
+		if derr := bs.DrainRollups(ctx); derr != nil {
+			return safetySnapshotID, fmt.Errorf("restore snapshot %q: drain rollups after journal rewind (safety-snap=%s): %w: %v",
+				snapID, safetySnapshotID, models.ErrRestoreAborted, derr)
+		}
+		logger.Info("snapshot restore: journal rewound to snapshot watermark",
+			"snapshot_id", snapID,
+			"share", shareName,
+			"safety_snap_id", safetySnapshotID,
+			"journal_version", snap.JournalVersion,
+		)
 	}
-	logger.Info("snapshot restore: block-store local state reset",
-		"snapshot_id", snapID,
-		"share", shareName,
-		"safety_snap_id", safetySnapshotID,
-	)
 	r.advanceRestoreMarker(ctx, internal, shareName, snapID, safetySnapshotID, models.RestoreStepLocalReset)
 
 	logger.Info("snapshot restore: reset start",
@@ -1627,6 +1676,45 @@ func (r *Runtime) seedColdFromManifest(ctx context.Context, bs *engine.Store, me
 		}
 		return nil
 	})
+}
+
+// raisePinForLocalOnly bumps a local-only share's journal snapshot pin to jv
+// before a snapshot is marked ready, so GC/eviction keep the segments that back
+// the snapshot's point-in-time view — on a local-only share the journal is the
+// sole durable copy of those bytes (#1718). A remote-backed share needs no pin
+// (its bytes also live remotely, cold reads rehydrate) and pinning would strand
+// local disk, so it is skipped. A freshly-created snapshot always carries the
+// highest watermark, so a bare Set is the correct new max.
+func raisePinForLocalOnly(bs *engine.Store, jv uint64) {
+	if bs != nil && !bs.HasRemoteStore() {
+		bs.SetPinVersion(jv)
+	}
+}
+
+// recomputePinVersion re-derives a local-only share's journal pin as the max
+// JournalVersion over its live (ready) snapshots and applies it. Called at share
+// start (crash-safe reconstruction from the durable snapshot list) and after a
+// snapshot delete commits (lowering the pin once its watermark is no longer
+// held). No-op for remote-backed shares and best-effort — a lookup failure only
+// leaves GC more conservative, never less (#1718).
+func (r *Runtime) recomputePinVersion(ctx context.Context, shareName string) {
+	bs, err := r.sharesSvc.GetBlockStoreForShare(shareName)
+	if err != nil || bs == nil || bs.HasRemoteStore() {
+		return
+	}
+	snaps, err := r.store.ListSnapshots(ctx, shareName)
+	if err != nil {
+		logger.Warn("pin: list snapshots to recompute journal pin failed (leaving pin as-is)",
+			"share", shareName, "error", err)
+		return
+	}
+	var maxV uint64
+	for _, s := range snaps {
+		if s != nil && s.State == models.StateReady && s.JournalVersion > maxV {
+			maxV = s.JournalVersion
+		}
+	}
+	bs.SetPinVersion(maxV)
 }
 
 // putRestoreMarker upserts the per-share restore marker at the given step.
@@ -1798,6 +1886,12 @@ func (r *Runtime) DeleteSnapshot(ctx context.Context, share, snapID string) (err
 	if err := r.store.DeleteSnapshot(ctx, share, snapID); err != nil {
 		return err
 	}
+
+	// Lower the journal pin now the delete has committed: this snapshot's
+	// watermark is no longer held, so GC/eviction may reclaim segments no
+	// remaining live snapshot needs. Recompute (not just clear) so other live
+	// snapshots keep their pin. No-op for remote-backed shares (#1718).
+	r.recomputePinVersion(ctx, share)
 
 	logger.Info("snapshot deleted",
 		"share", share, "snapshot_id", snapID)

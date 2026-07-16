@@ -95,6 +95,12 @@ func (s *Store) claimColdestEvictable() (*segmentMeta, *shard) {
 				if !evictable(seg) {
 					continue
 				}
+				if s.pinned(seg) {
+					// Pinned by a live snapshot: its bytes are the only durable copy
+					// of an at-or-below-watermark record (local-only) — never evict
+					// (#1718).
+					continue
+				}
 				if la := seg.lastAccess.Load(); best == nil || la < bestAccess {
 					best, bestShard, bestAccess = seg, sh, la
 				}
@@ -317,6 +323,20 @@ func (s *Store) gcShard(ctx context.Context, sh *shard, opts GCOptions) (reclaim
 	}
 }
 
+// pinned reports whether a live snapshot's watermark protects any record in seg:
+// its lowest record Version is at or below pinVersion. Whole-segment granularity —
+// segments fill sequentially, so a non-empty segment's records span a contiguous
+// version range and minVersion alone decides. pinVersion 0 (no live snapshot) or a
+// still-empty segment (minVersion 0) pins nothing (#1718).
+func (s *Store) pinned(seg *segmentMeta) bool {
+	pv := s.pinVersion.Load()
+	if pv == 0 {
+		return false
+	}
+	mv := seg.minVersion.Load()
+	return mv != 0 && mv <= pv
+}
+
 // pickVictim returns the sealed segment with the highest dead fraction, or nil
 // if none qualifies. A segment carrying no dead bytes is never a victim (there
 // is nothing to reclaim), which is also what keeps a tombstone-only segment from
@@ -348,6 +368,12 @@ func (s *Store) pickVictim(sh *shard, opts GCOptions) *segmentMeta {
 	for id, seg := range sh.sealed {
 		if seg.busy.Load() {
 			continue // claimed by eviction or an in-flight repack
+		}
+		if s.pinned(seg) {
+			// Pinned by a live snapshot: repack relocates bytes but a crash mid-move
+			// plus a rollback needs the pinned records intact at their original
+			// versions — keep the whole segment until the snapshot releases (#1718).
+			continue
 		}
 		if seg.deadBytes.Load() <= 0 {
 			// Nothing to reclaim. This skips a tombstone-only segment (records with
@@ -478,6 +504,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 		if m.synced {
 			syncedCount++
 		}
+		target.noteMinVersion(m.version)
 	}
 	for _, mk := range markers {
 		var werr error
@@ -490,6 +517,7 @@ func (s *Store) repackSegment(sh *shard, victim *segmentMeta) (int64, error) {
 			cleanup()
 			return 0, werr
 		}
+		target.noteMinVersion(mk.version)
 	}
 
 	// 3. Bytes durable: fsync + seal the target before any index entry names it.

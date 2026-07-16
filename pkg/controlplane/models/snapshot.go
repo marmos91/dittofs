@@ -27,6 +27,11 @@ type Snapshot struct {
 	MetadataEngine string `gorm:"not null;size:20" json:"metadata_engine"`
 	ManifestCount  int64  `gorm:"not null;default:0" json:"manifest_count"`
 	RemoteDurable  bool   `gorm:"not null;default:false" json:"remote_durable"`
+	// JournalVersion is the local-journal LSN watermark captured when the
+	// snapshot became ready. A local-only restore rewinds the journal to it
+	// (RestoreToVersion), and the share derives its GC pin as the max over live
+	// snapshots. 0 for pre-#1718 rows and remote-only shares that never pin.
+	JournalVersion uint64 `gorm:"not null;default:0" json:"journal_version"`
 	// Scheduled marks snapshots created by the background snapshot scheduler.
 	// Only scheduled snapshots are eligible for automatic retention pruning;
 	// manually-created snapshots are never auto-pruned.

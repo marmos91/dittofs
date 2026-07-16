@@ -185,6 +185,9 @@ func (s *Store) recover() error {
 			if rec.header.Version > maxVersion {
 				maxVersion = rec.header.Version
 			}
+			// Reconstruct the segment's pin watermark: minVersion is the lowest
+			// record Version it holds, so a live snapshot keeps it off GC (#1718).
+			m.noteMinVersion(rec.header.Version)
 			if rec.header.Flags&flagTombstone != 0 {
 				fid := FileID(rec.fileID)
 				if rec.header.Version > tombstones[fid] {

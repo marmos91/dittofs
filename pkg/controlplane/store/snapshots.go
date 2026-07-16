@@ -201,15 +201,16 @@ func (s *GORMStore) UpdateSnapshotDurable(ctx context.Context, shareName, id str
 // Returns models.ErrSnapshotNotFound if no row matches (shareName, id).
 // Returns models.ErrSnapshotStateConflict if the row exists but is not in
 // state='creating'.
-func (s *GORMStore) MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64) error {
+func (s *GORMStore) MarkSnapshotReady(ctx context.Context, shareName, id string, durable bool, manifestCount int64, journalVersion uint64) error {
 	db := s.db.WithContext(ctx)
 	res := db.Model(&models.Snapshot{}).
 		Where("share_name = ? AND id = ? AND state = ?", shareName, id, models.StateCreating).
 		Updates(map[string]any{
-			"state":          models.StateReady,
-			"remote_durable": durable,
-			"manifest_count": manifestCount,
-			"updated_at":     time.Now(),
+			"state":           models.StateReady,
+			"remote_durable":  durable,
+			"manifest_count":  manifestCount,
+			"journal_version": journalVersion,
+			"updated_at":      time.Now(),
 		})
 	if res.Error != nil {
 		return res.Error
