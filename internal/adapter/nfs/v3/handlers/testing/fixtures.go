@@ -8,6 +8,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
 	"github.com/marmos91/dittofs/pkg/block/engine"
@@ -333,6 +334,22 @@ func (f *HandlerTestFixture) CreateFile(path string, content []byte) metadata.Fi
 	}
 
 	return mustEncodeHandle(f.t, file)
+}
+
+// SetMtime sets the mtime of the file or directory identified by handle to the
+// given time. It is used to deterministically advance a directory's mtime — and
+// therefore its READDIR/READDIRPLUS cookie verifier, which is derived from the
+// directory mtime — without depending on wall-clock resolution. Coarse clocks
+// (e.g. Windows ~15ms) can leave two rapid mutations sharing an identical mtime,
+// which would otherwise make verifier-change assertions flaky.
+func (f *HandlerTestFixture) SetMtime(handle metadata.FileHandle, mtime time.Time) {
+	f.t.Helper()
+
+	if _, err := f.MetadataService.SetFileAttributes(f.authContext(), handle, &metadata.SetAttrs{
+		Mtime: &mtime,
+	}); err != nil {
+		f.t.Fatalf("Failed to set mtime for handle: %v", err)
+	}
 }
 
 // CreateSymlink creates a symbolic link at the given path pointing to target.

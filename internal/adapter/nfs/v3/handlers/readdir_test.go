@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/marmos91/dittofs/internal/adapter/nfs/types"
 	"github.com/marmos91/dittofs/internal/adapter/nfs/v3/handlers"
@@ -393,8 +394,14 @@ func TestReadDir_StaleVerifierBadCookie(t *testing.T) {
 	require.NotZero(t, resumeCookie, "resume cookie must be non-zero to exercise the verifier check path")
 	require.NotZero(t, savedVerifier, "saved verifier must be non-zero to exercise the verifier check path")
 
-	// Modify the directory (changes mtime, invalidates verifier)
+	// Modify the directory (changes mtime, invalidates verifier). Force the
+	// directory mtime strictly forward so the verifier provably changes even on
+	// coarse-resolution clocks (e.g. Windows ~15ms), where two rapid mutations
+	// can share an identical mtime and thus an identical verifier.
 	fx.CreateFile("stale/file3.txt", []byte("3"))
+	dir := fx.GetFile("stale")
+	require.NotNil(t, dir, "directory must exist to advance its mtime")
+	fx.SetMtime(dirHandle, dir.Mtime.Add(time.Second))
 
 	// Second read with old verifier and a real non-zero cookie — must return BAD_COOKIE.
 	resp2, err := fx.Handler.ReadDir(fx.Context(), &handlers.ReadDirRequest{
