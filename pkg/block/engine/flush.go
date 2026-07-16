@@ -108,6 +108,23 @@ func (bs *Store) DrainRollups(ctx context.Context) error {
 // intervals for a background rollup worker to flush into the freshly-restored
 // metadata, so a file modified in place after the snapshot is not served from
 // a stale append-log record overlaid on the restored CAS bytes.
+// SeedCold marks [offset, offset+length) of payloadID as remote-durable-but-not-
+// local so a subsequent read faults it in from the remote store rather than
+// zero-filling. Snapshot restore calls it (per restored FileChunk extent, remote
+// shares only) to re-arm cold reads after ResetLocalState wiped the local tier.
+// No-op when the local store has no remote-hydration support (e.g. the in-memory
+// test store), which the caller only hits on non-remote paths anyway.
+func (bs *Store) SeedCold(ctx context.Context, payloadID string, offset, length int64) error {
+	type coldSeeder interface {
+		SeedCold(ctx context.Context, id journal.FileID, offset, length int64) error
+	}
+	cs, ok := bs.local.(coldSeeder)
+	if !ok {
+		return nil
+	}
+	return cs.SeedCold(ctx, journal.FileID(payloadID), offset, length)
+}
+
 func (bs *Store) ResetLocalState(ctx context.Context) error {
 	if err := bs.enter(); err != nil {
 		return err

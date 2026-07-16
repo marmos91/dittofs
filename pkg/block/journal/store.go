@@ -246,6 +246,34 @@ func (s *Store) Hydrate(ctx context.Context, id FileID, offset int64, data []byt
 	return s.appendRecord(ctx, id, offset, data, true)
 }
 
+// SeedCold registers a byte range as remote-durable-but-not-local: a read of it
+// reports cold so the engine hydrates it from the remote store instead of
+// zero-filling. Snapshot restore seeds the restored FileChunk manifest's extents
+// this way after ResetLocalState wiped the local tier — the bytes live in remote,
+// addressed by the restored manifest. The caller (restore, remote-backed shares
+// only) guarantees the range is remotely backed; a hydrate replaces the seeded
+// cold interval with the fetched warm bytes on first read.
+func (s *Store) SeedCold(_ context.Context, id FileID, offset, length int64) error {
+	if s.closed.Load() {
+		return errClosed
+	}
+	if length <= 0 {
+		return nil
+	}
+	sh := s.shardFor(id)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	fi := sh.indexFor(id)
+	fi.insert(interval{
+		fileOff: offset,
+		length:  length,
+		version: s.nextVersion(),
+		synced:  true,
+		cold:    true,
+	})
+	return nil
+}
+
 // Commit fsyncs the file's shard so buffered writes become durable. NFS COMMIT
 // and SMB Flush land here.
 func (s *Store) Commit(ctx context.Context, id FileID) error {

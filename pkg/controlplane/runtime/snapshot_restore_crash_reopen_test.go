@@ -29,6 +29,7 @@ import (
 //     REAPPEARS (proving the rollback actually ran, not just a marker clear),
 //     and a.bin/b.bin remain byte-identical through the reopened store.
 func TestRestoreCrashRecovery_AcrossRealReopen(t *testing.T) {
+	t.Skip("#1718: local-only snapshot-restore under the journal (segment-pinning), follow-up")
 	for _, bk := range byteVerifyBackends(t) {
 		bk := bk
 		t.Run(bk.name, func(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmos91/dittofs/internal/logger"
 	"github.com/marmos91/dittofs/pkg/block"
+	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/remote"
 	"github.com/marmos91/dittofs/pkg/controlplane/models"
 	"github.com/marmos91/dittofs/pkg/controlplane/runtime/shares"
@@ -1525,6 +1526,20 @@ func (r *Runtime) restoreSnapshot(
 	)
 	r.advanceRestoreMarker(ctx, internal, shareName, snapID, safetySnapshotID, models.RestoreStepRestored)
 
+	// Re-arm cold reads: ResetLocalState wiped the local tier, so the restored
+	// manifest's extents have no journal interval and a read would zero-fill. Seed
+	// them cold from the restored FileChunk manifest so reads fault in from remote.
+	// Remote-backed shares only — a local-only share has no remote to hydrate from
+	// (that restore path is tracked in #1718).
+	if remoteVerify {
+		if serr := r.seedColdFromManifest(ctx, bs, metaStore); serr != nil {
+			return safetySnapshotID, fmt.Errorf("restore snapshot %q: seed cold intervals (safety-snap=%s): %w: %v",
+				snapID, safetySnapshotID, models.ErrRestoreAborted, serr)
+		}
+		logger.Info("snapshot restore: cold intervals seeded from restored manifest",
+			"snapshot_id", snapID, "share", shareName)
+	}
+
 	// --- post-verify ---
 	restoredHashes, err := snapshot.HashSetFromMetadataStore(ctx, metaStore)
 	if err != nil {
@@ -1585,6 +1600,33 @@ func (r *Runtime) restoreSnapshot(
 		"restored_count", restoredCount,
 	)
 	return safetySnapshotID, nil
+}
+
+// seedColdFromManifest seeds a cold journal interval for every FileChunk in the
+// restored manifest so post-restore reads fault the bytes in from remote instead
+// of zero-filling (the local tier was just wiped by ResetLocalState). Remote
+// shares only — the caller gates on that. One ListFileChunks per payload; carve
+// steady-state keeps that O(chunks), and restore is a rare control-plane op.
+func (r *Runtime) seedColdFromManifest(ctx context.Context, bs *engine.Store, metaStore metadata.Store) error {
+	return metaStore.EnumeratePayloads(ctx, func(payloadID string) error {
+		rows, err := metaStore.ListFileChunks(ctx, payloadID)
+		if err != nil {
+			return fmt.Errorf("list manifest for %s: %w", payloadID, err)
+		}
+		for _, row := range rows {
+			if row == nil {
+				continue
+			}
+			off, ok := block.ParseChunkOffset(row.ID)
+			if !ok {
+				continue
+			}
+			if err := bs.SeedCold(ctx, payloadID, int64(off), int64(row.DataSize)); err != nil {
+				return fmt.Errorf("seed cold %s: %w", row.ID, err)
+			}
+		}
+		return nil
+	})
 }
 
 // putRestoreMarker upserts the per-share restore marker at the given step.
