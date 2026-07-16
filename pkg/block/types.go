@@ -233,10 +233,9 @@ func PruneChunkRefsToSize(refs []ChunkRef, size uint64) []ChunkRef {
 // chunks with the same hash are shared across files for dedup.
 //
 // Lifecycle
-// 1. Pending — created on write (LocalPath set, BlockStoreKey empty).
+// 1. Pending — created on write (BlockStoreKey empty).
 // 2. Syncing — claim batch flipped State and stamped LastSyncAttemptAt.
 // 3. Remote — PUT + metadata-txn confirmed (BlockStoreKey set).
-// 4. Evicted — LocalPath cleared; data lives only in the remote store.
 type FileChunk struct {
 	// ID is a stable UUID for this chunk.
 	ID string
@@ -246,9 +245,6 @@ type FileChunk struct {
 
 	// DataSize is the actual bytes written in this chunk.
 	DataSize uint32
-
-	// LocalPath is the local file path. Empty means not stored locally.
-	LocalPath string
 
 	// BlockStoreKey is the opaque key in the remote block store (S3 key, FS path, etc.).
 	// Empty means not synced to remote.

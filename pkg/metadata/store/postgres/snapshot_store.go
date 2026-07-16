@@ -39,7 +39,9 @@ const (
 	// raising the backup table count from 15 to 17.
 	// v6 drops the dead local_chunk_index and rollup_offsets sections
 	// post-journal-switchover, lowering the backup table count from 17 to 15.
-	postgresSchemaVersion = uint32(6)
+	// v7 drops the dead cache_path column from file_blocks (migration 000040);
+	// file_blocks is in backupTables, so the dumped row shape changes one column.
+	postgresSchemaVersion = uint32(7)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order

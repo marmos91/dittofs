@@ -311,7 +311,6 @@ func mustPutBlock(t *testing.T, st metadata.Store, id string, h block.ContentHas
 		ID:         id,
 		Hash:       h,
 		State:      block.BlockStateRemote,
-		LocalPath:  "/cache/" + id,
 		DataSize:   64,
 		RefCount:   1,
 		LastAccess: time.Now(),

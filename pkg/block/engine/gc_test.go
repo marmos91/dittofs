@@ -64,7 +64,6 @@ func putPendingBlock(t *testing.T, st metadata.Store, id string, h block.Content
 		Hash:          h,
 		State:         block.BlockStatePending,
 		BlockStoreKey: h.String(),
-		LocalPath:     "/cache/" + id,
 		DataSize:      64,
 		RefCount:      0,
 		LastAccess:    time.Now(),
@@ -82,7 +81,6 @@ func putBlock(t *testing.T, st metadata.Store, id string, h block.ContentHash) {
 		Hash:          h,
 		State:         block.BlockStateRemote,
 		BlockStoreKey: h.String(),
-		LocalPath:     "/cache/" + id,
 		DataSize:      64,
 		RefCount:      1,
 		LastAccess:    time.Now(),
@@ -192,11 +190,10 @@ func TestGCMarkSweep_MarkPopulatesLiveSet(t *testing.T) {
 	}
 	// One legacy row with zero hash.
 	if err := st.Put(ctx, &block.FileChunk{
-		ID:        "legacy/0",
-		State:     block.BlockStatePending,
-		LocalPath: "/cache/legacy",
-		DataSize:  32,
-		RefCount:  1,
+		ID:       "legacy/0",
+		State:    block.BlockStatePending,
+		DataSize: 32,
+		RefCount: 1,
 	}); err != nil {
 		t.Fatalf("PutFileChunk(legacy): %v", err)
 	}

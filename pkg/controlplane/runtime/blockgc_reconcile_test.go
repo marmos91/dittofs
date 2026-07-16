@@ -19,7 +19,6 @@ func seedReconcileFB(t *testing.T, ctx context.Context, store metadata.Store, pa
 		b := &block.FileChunk{
 			ID:         fmt.Sprintf("%s/%d", payloadID, i),
 			State:      block.BlockStatePending,
-			LocalPath:  fmt.Sprintf("/cache/%s-%d", payloadID, i),
 			DataSize:   128,
 			RefCount:   1,
 			LastAccess: created,
