@@ -55,9 +55,9 @@ type FileChunkStore interface {
 	//
 	// The pinned contract: Put returns nil for any
 	// hash-already-present-on-another-row case. GetByHash MAY
-	// return either of the colliding rows. Callers (the dedup short-
-	// circuit in engine.uploadOne) treat the lookup as best-effort —
-	// they re-PUT with the donor's chunk regardless.
+	// return either of the colliding rows. The dedup short-circuit
+	// treats the lookup as best-effort — a miss just means the caller
+	// re-PUTs the chunk, never data loss.
 	//
 	// The conformance test storetest.testPut_TwoIDsSameHash
 	// pins this contract across all three backends. Renamed from
