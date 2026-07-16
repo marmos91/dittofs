@@ -142,7 +142,7 @@ func (h *Handler) Mknod(
 		mode = *req.Attr.Mode
 	}
 
-	logger.InfoCtx(ctx.Context, "MKNOD", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "MKNOD", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateMknodRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "MKNOD validation failed", "name", req.Name, "type", req.Type, "client", clientIP, "error", err)
@@ -298,7 +298,7 @@ func (h *Handler) Mknod(
 	// H9: use the parent attributes captured atomically with the create.
 	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, parentHandle, dirWcc, wccBefore)
 
-	logger.InfoCtx(ctx.Context, "MKNOD successful", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newFile.Mode), "major", req.Spec.SpecData1, "minor", req.Spec.SpecData2, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "MKNOD successful", "name", req.Name, "type", specialFileTypeName(req.Type), "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newFile.Mode), "major", req.Spec.SpecData1, "minor", req.Spec.SpecData2, "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "MKNOD details", "handle", fmt.Sprintf("%x", newHandle), "uid", newFile.UID, "gid", newFile.GID, "parent", fmt.Sprintf("%x", parentHandle))
 

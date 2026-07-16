@@ -181,7 +181,7 @@ func (h *Handler) FsInfo(
 	// Build NFS properties bitmask from capabilities
 	properties := buildNFSProperties(capabilities)
 
-	logger.InfoCtx(ctx.Context, "FSINFO successful", "client", ctx.ClientAddr, "rtmax", bytesize.ByteSize(capabilities.MaxReadSize), "wtmax", bytesize.ByteSize(capabilities.MaxWriteSize), "maxfilesize", bytesize.ByteSize(capabilities.MaxFileSize), "properties", fmt.Sprintf("0x%x", properties))
+	logger.DebugCtx(ctx.Context, "FSINFO successful", "client", ctx.ClientAddr, "rtmax", bytesize.ByteSize(capabilities.MaxReadSize), "wtmax", bytesize.ByteSize(capabilities.MaxWriteSize), "maxfilesize", bytesize.ByteSize(capabilities.MaxFileSize), "properties", fmt.Sprintf("0x%x", properties))
 
 	// Build response with data from store
 	// Map the standardized FilesystemCapabilities to NFS wire format

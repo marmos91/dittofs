@@ -74,7 +74,7 @@ func (h *Handler) Rmdir(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "RMDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "RMDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "RMDIR cancelled", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
@@ -182,7 +182,7 @@ func (h *Handler) Rmdir(
 	// H9: use the parent attributes captured atomically with the removal.
 	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, parentHandle, dirWcc, wccBefore)
 
-	logger.InfoCtx(ctx.Context, "RMDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+	logger.DebugCtx(ctx.Context, "RMDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "RMDIR details", "parent_handle", fmt.Sprintf("%x", parentHandle))
 

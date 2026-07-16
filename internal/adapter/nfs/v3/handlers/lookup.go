@@ -79,7 +79,7 @@ func (h *Handler) Lookup(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "LOOKUP",
+	logger.DebugCtx(ctx.Context, "LOOKUP",
 		"name", req.Filename,
 		"handle", fmt.Sprintf("%x", req.DirHandle),
 		"client", clientIP,
@@ -239,7 +239,7 @@ func (h *Handler) Lookup(
 	nfsChildAttr := h.convertFileAttrToNFS(childHandle, &childFile.FileAttr)
 	nfsDirAttr := h.convertFileAttrToNFS(dirHandle, &dirFile.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "LOOKUP successful",
+	logger.DebugCtx(ctx.Context, "LOOKUP successful",
 		"name", req.Filename,
 		"handle", fmt.Sprintf("%x", childHandle),
 		"type", nfsChildAttr.Type,

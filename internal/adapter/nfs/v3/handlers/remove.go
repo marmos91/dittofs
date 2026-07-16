@@ -79,7 +79,7 @@ func (h *Handler) Remove(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "REMOVE", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "REMOVE", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateRemoveRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "REMOVE validation failed", "name", req.Filename, "client", clientIP, "error", err)
@@ -213,7 +213,7 @@ func (h *Handler) Remove(
 	// falling back to a fresh read only if the store did not return them.
 	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, dirHandle, dirWcc, wccBefore)
 
-	logger.InfoCtx(ctx.Context, "REMOVE successful", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
+	logger.DebugCtx(ctx.Context, "REMOVE successful", "name", req.Filename, "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP)
 
 	// Convert internal type to NFS type for logging
 	nfsType := uint32(removedFileAttr.Type) + 1 // Internal types are 0-based, NFS types are 1-based

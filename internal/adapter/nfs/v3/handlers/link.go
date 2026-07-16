@@ -78,7 +78,7 @@ func (h *Handler) Link(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "LINK", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "LINK", "file_handle", fmt.Sprintf("%x", req.FileHandle), "name", req.Name, "dir_handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	// LINK involves multiple operations, so respect cancellation to avoid
 	// wasting resources on abandoned requests
@@ -246,7 +246,7 @@ func (h *Handler) Link(
 	// H9: use the directory attributes captured atomically with the link.
 	dirWccBefore, nfsDirAttr := h.dirWccPair(ctx, metaSvc, dirHandle, dirWcc, dirWccBefore)
 
-	logger.InfoCtx(ctx.Context, "LINK successful", "name", req.Name, "file_handle", fmt.Sprintf("%x", req.FileHandle), "nlink", nfsFileAttr.Nlink, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "LINK successful", "name", req.Name, "file_handle", fmt.Sprintf("%x", req.FileHandle), "nlink", nfsFileAttr.Nlink, "client", clientIP)
 
 	return &LinkResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

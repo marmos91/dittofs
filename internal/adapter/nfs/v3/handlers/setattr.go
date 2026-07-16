@@ -97,7 +97,7 @@ func (h *Handler) SetAttr(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "SETATTR",
+	logger.DebugCtx(ctx.Context, "SETATTR",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"guard", req.Guard.Check,
 		"client", clientIP,
@@ -338,7 +338,7 @@ func (h *Handler) SetAttr(
 	// actually transitioned from. The WCC subject for SETATTR is the file itself.
 	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, fileHandle, setWcc, wccBefore)
 
-	logger.InfoCtx(ctx.Context, "SETATTR successful",
+	logger.DebugCtx(ctx.Context, "SETATTR successful",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"client", clientIP)
 

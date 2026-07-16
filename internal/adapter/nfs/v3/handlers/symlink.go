@@ -102,7 +102,7 @@ func (h *Handler) Symlink(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "SYMLINK", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "SYMLINK", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateSymlinkRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "SYMLINK validation failed", "name", req.Name, "target", req.Target, "client", clientIP, "error", err)
@@ -239,7 +239,7 @@ func (h *Handler) Symlink(
 	// H9: use the directory attributes captured atomically with the create.
 	wccBefore, wccAfter := h.dirWccPair(ctx, metaSvc, dirHandle, dirWcc, wccBefore)
 
-	logger.InfoCtx(ctx.Context, "SYMLINK successful", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "handle", fmt.Sprintf("0x%x", symlinkHandle), "client", clientIP)
+	logger.DebugCtx(ctx.Context, "SYMLINK successful", "name", req.Name, "target", req.Target, "dir", fmt.Sprintf("0x%x", req.DirHandle), "handle", fmt.Sprintf("0x%x", symlinkHandle), "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "SYMLINK details", "symlink_handle", fmt.Sprintf("0x%x", symlinkHandle), "mode", fmt.Sprintf("%o", createdSymlink.Mode), "uid", createdSymlink.UID, "gid", createdSymlink.GID, "size", createdSymlink.Size, "target_len", len(req.Target))
 

@@ -95,7 +95,7 @@ func (h *Handler) Rename(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "RENAME", "from", req.FromName, "from_dir", fmt.Sprintf("0x%x", req.FromDirHandle), "to", req.ToName, "to_dir", fmt.Sprintf("0x%x", req.ToDirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "RENAME", "from", req.FromName, "from_dir", fmt.Sprintf("0x%x", req.FromDirHandle), "to", req.ToName, "to_dir", fmt.Sprintf("0x%x", req.ToDirHandle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateRenameRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "RENAME validation failed", "from", req.FromName, "to", req.ToName, "client", clientIP, "error", err)
@@ -337,7 +337,7 @@ func (h *Handler) Rename(
 	fromDirWccBefore, fromDirWccAfter = h.dirWccPair(ctx, metaSvc, fromDirHandle, fromWcc, fromDirWccBefore)
 	toDirWccBefore, toDirWccAfter := h.dirWccPair(ctx, metaSvc, toDirHandle, toWcc, toDirWccBefore)
 
-	logger.InfoCtx(ctx.Context, "RENAME successful", "from", req.FromName, "to", req.ToName, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "RENAME successful", "from", req.FromName, "to", req.ToName, "client", clientIP)
 
 	// Extract IDs for debug logging
 	fromDirID := xdr.ExtractFileID(fromDirHandle)

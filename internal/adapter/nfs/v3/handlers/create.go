@@ -92,7 +92,7 @@ func (h *Handler) Create(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "CREATE", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "mode", createModeName(req.Mode), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "CREATE", "file", req.Filename, "dir", fmt.Sprintf("0x%x", req.DirHandle), "mode", createModeName(req.Mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateCreateRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "CREATE validation failed", "file", req.Filename, "client", clientIP, "error", err)
@@ -205,7 +205,7 @@ func (h *Handler) Create(
 			// rather than being mis-flagged as a conflict.
 			if existingFile.IdempotencyToken == req.Verf {
 				// Token matches - this is a retry of a successful create
-				logger.InfoCtx(ctx.Context, "CREATE EXCLUSIVE retry detected",
+				logger.DebugCtx(ctx.Context, "CREATE EXCLUSIVE retry detected",
 					"file", req.Filename, "token", fmt.Sprintf("0x%016x", req.Verf), "client", clientIP)
 
 				existingHandle, err := metadata.EncodeFileHandle(existingFile)
@@ -327,7 +327,7 @@ func (h *Handler) Create(
 	// unchanged, so dirWccPair falls back to a fresh read.
 	dirWccBefore, nfsDirAttr := h.dirWccPair(ctx, metaSvc, parentHandle, createDirWcc, dirWccBefore)
 
-	logger.InfoCtx(ctx.Context, "CREATE successful", "file", req.Filename, "handle", fmt.Sprintf("0x%x", fileHandle), "mode", fmt.Sprintf("0%o", fileAttr.Mode), "size", fileAttr.Size, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "CREATE successful", "file", req.Filename, "handle", fmt.Sprintf("0x%x", fileHandle), "mode", fmt.Sprintf("0%o", fileAttr.Mode), "size", fileAttr.Size, "client", clientIP)
 
 	return &CreateResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},

@@ -86,7 +86,7 @@ func (h *Handler) Commit(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "COMMIT", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "COMMIT", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "COMMIT cancelled", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP, "error", ctx.Context.Err())
@@ -157,7 +157,7 @@ func (h *Handler) Commit(
 	// Check if there's content to flush
 	if file.PayloadID == "" {
 		logger.DebugCtx(ctx.Context, "COMMIT: no content to flush")
-		logger.InfoCtx(ctx.Context, "COMMIT successful (no content)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
+		logger.DebugCtx(ctx.Context, "COMMIT successful (no content)", "handle", fmt.Sprintf("0x%x", req.Handle), "offset", req.Offset, "count", req.Count, "client", clientIP)
 		return &CommitResponse{
 			NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 			AttrBefore:      wccBefore,
@@ -166,7 +166,7 @@ func (h *Handler) Commit(
 		}, nil
 	}
 
-	logger.InfoCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
+	logger.DebugCtx(ctx.Context, "COMMIT: flushing data", "share", ctx.Share)
 
 	blockStore, err := common.ResolveForWrite(ctx.Context, h.Registry, handle)
 	if err != nil {
@@ -227,7 +227,7 @@ func (h *Handler) Commit(
 	// writes merged (size, mtime applied). FlushPendingWriteForFile persists those
 	// same values to BadgerDB -- no need to read them back.
 
-	logger.InfoCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "COMMIT successful", "file", file.PayloadID, "offset", req.Offset, "count", req.Count, "client", clientIP)
 	return &CommitResponse{
 		NFSResponseBase: NFSResponseBase{Status: types.NFS3OK},
 		AttrBefore:      wccBefore,

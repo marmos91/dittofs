@@ -107,7 +107,7 @@ func (h *Handler) Mkdir(
 		mode = *req.Attr.Mode
 	}
 
-	logger.InfoCtx(ctx.Context, "MKDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "MKDIR", "name", req.Name, "handle", fmt.Sprintf("%x", req.DirHandle), "mode", fmt.Sprintf("%o", mode), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateMkdirRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "MKDIR validation failed", "name", req.Name, "client", clientIP, "error", err)
@@ -299,7 +299,7 @@ func (h *Handler) Mkdir(
 	// H9: use the parent attributes captured atomically with the create.
 	wccBefore, wccAfter = h.dirWccPair(ctx, metaSvc, parentHandle, dirWcc, wccBefore)
 
-	logger.InfoCtx(ctx.Context, "MKDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newDirFile.Mode), "size", newDirFile.Size, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "MKDIR successful", "name", req.Name, "handle", fmt.Sprintf("%x", newHandle), "mode", fmt.Sprintf("%o", newDirFile.Mode), "size", newDirFile.Size, "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "MKDIR details", "handle", fmt.Sprintf("%x", newHandle), "uid", newDirFile.UID, "gid", newDirFile.GID, "parent_handle", fmt.Sprintf("%x", parentHandle))
 

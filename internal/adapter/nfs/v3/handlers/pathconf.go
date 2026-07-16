@@ -100,7 +100,7 @@ func (h *Handler) PathConf(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "PATHCONF", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "PATHCONF", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "PATHCONF cancelled", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", ctx.Context.Err())
@@ -150,7 +150,7 @@ func (h *Handler) PathConf(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "PATHCONF successful", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
+	logger.DebugCtx(ctx.Context, "PATHCONF successful", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP)
 	logger.DebugCtx(ctx.Context, "PATHCONF properties", "linkmax", caps.MaxHardLinkCount, "namemax", caps.MaxFilenameLen, "no_trunc", !caps.TruncatesLongNames, "chown_restricted", caps.ChownRestricted, "case_insensitive", !caps.CaseSensitive, "case_preserving", caps.CasePreserving)
 
 	// Map FilesystemCapabilities fields to PATHCONF response fields
