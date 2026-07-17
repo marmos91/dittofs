@@ -248,7 +248,7 @@ func (h *Handler) getFileOrError(
 
 // buildAuthContextWithWCCError builds an auth context or returns WCC error data.
 // This helper consolidates the common pattern in mutation handlers of:
-//  1. Calling BuildAuthContextWithMapping
+//  1. Resolving the auth context via the cache (GetCachedAuthContext)
 //  2. Checking for context cancellation
 //  3. Logging appropriate error messages
 //  4. Constructing WCC after attributes for error responses
