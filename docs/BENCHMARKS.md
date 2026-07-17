@@ -1,45 +1,100 @@
 # DittoFS Performance Benchmarks
 
 Performance of DittoFS (S3 backend) against the S3-backed network filesystems the
-`dfsbench` harness supports — **JuiceFS, rclone, s3fs, and ZeroFS** — plus
-**local-disk** as the raw-hardware ceiling. All systems run on one disposable
-Scaleway VM, driven by the same `fio` workloads over the same protocol.
+`dfsbench` harness supports, on the **apples-to-apples harness**
+([#1739](https://github.com/marmos91/dittofs/issues/1739)): every backend runs
+under **identical** conditions — durability matched (competitors re-exported
+`sync`, not `async`), identical NFS mount options (`actimeo=1,nconnect=4`), and a
+pinned log level. All systems run on one disposable Scaleway VM, driven by the
+same `fio` workloads over NFSv3.
 
 > **Read these with the rig in mind.** Each cell is a single 30 s `fio` run on a
-> shared cloud VM. Trust the **shape and order of magnitude**, not the third
-> digit. Medium-file sequential-read is first-touch noise and is omitted.
+> shared cloud VM. Trust the **shape and order of magnitude**, not the third digit.
+
+> **`local-disk` is not a hardware ceiling.** It is a plain ext4 directory
+> re-exported over the kernel NFS server with a durable (`sync`) export and **no
+> application writeback cache** — so it is the ceiling only for *uncached,
+> write-through* I/O. Any backend with its own writeback/metadata cache (JuiceFS,
+> and DittoFS's own local journal) can and does beat it on cached workloads — which
+> is why JuiceFS out-runs it on both metadata and sequential write below.
 
 ## Test setup
 
 | | |
 |---|---|
-| Date | 2026-07-14 |
-| DittoFS | `develop` @ `38679f1c` |
-| Harness | `internal/dfsbench` (fio driver + SCW orchestration) |
-| Host | Scaleway `fr-par-1`, single VM, Ubuntu 24.04 |
-| Protocol | **NFSv3** — the only protocol all backends share (ZeroFS is NFSv3-only) |
+| Date | 2026-07-17 |
+| DittoFS | `develop` @ `5777fa5d` (incl. #1687 flush→relaxed, #1740 group-commit) |
+| Harness | `internal/dfsbench`, **fair mode** (#1739 / PR #1741) |
+| Host | Scaleway `fr-par-1`, single POP2-8C-32G VM, Ubuntu 24.04 |
+| Protocol | **NFSv3** — the only protocol all backends share |
 | Object store | Scaleway Object Storage, `s3.fr-par.scw.cloud` |
-| fio | 4 threads, 30 s/cell, **warm pass only** this cycle |
-| Sizes | medium = 1 MiB, large = 1 GiB |
-| Result | 6 systems, 82 cells, **0 workload errors** |
+| fio | 4 threads, 30 s/cell, warm pass |
+| Systems | DittoFS-badger, JuiceFS, ZeroFS, local-disk |
+| Size | medium = 1 MiB |
 
-> **Coverage caveats for this run.** Warm-only — the cold/post-evict pass was
-> dropped this cycle to avoid a `drain-uploads` stall on the metadata working
-> set, so the cold column is pending a follow-up. **s3ql** was not run (its SCW
-> setup hit an eventual-consistency flake). The **sqlite** and **postgres**
-> DittoFS metadata backends were excluded after `dittofs-sqlite` hard-wedged on
-> the buffered large-write cell (server RSS → 3.1 GB, fio stuck in `D` state 12
-> min) — tracked in [#1667](https://github.com/marmos91/dittofs/issues/1667).
+> **Scope this cycle.** 4 systems, medium size, warm pass. Large-size, the
+> cold/post-evict pass, and the rclone/s3fs/sqlite/postgres backends are a pending
+> full fair re-run — the **prior-cycle tables further down were on the old,
+> non-durable harness** (competitors acked from knfsd RAM) and are superseded.
 
-**A note on durability.** DittoFS and ZeroFS are *native* NFS→S3 servers; the
-others (JuiceFS, rclone, s3fs) are FUSE/mount filesystems **re-exported** over
-the kernel NFS server, so their warm reads are served from the server-side
-kernel page cache. DittoFS writes through to its local block store before
-acknowledging; several competitors acknowledge from a RAM/writeback cache. So
-DittoFS's lower sequential-write throughput is partly the cost of a durable
-local write, and the re-exports' warm-read lead is partly a kernel-page-cache
-free ride — neither is a like-for-like loss. **The fair comparison is DittoFS vs
-ZeroFS**, the only other native NFS→S3 server.
+**Durability tiers, now matched.** DittoFS acknowledges an NFS COMMIT once the
+write is durable in its **local journal**, uploading to S3 asynchronously via the
+syncer. JuiceFS `--writeback` is the same tier (local-cache ack + async S3), and
+the `sync` re-export makes the FUSE competitors ack from stable storage too — so
+writes now compare durable-vs-durable. The one structural asymmetry left is on
+**warm reads**: the FUSE re-exports are served from the kernel page cache, which
+native userspace servers (DittoFS, ZeroFS) don't get — so **warm reads are only
+like-for-like against ZeroFS.**
+
+## Results — medium files (1 MiB), warm, fair harness
+
+Sequential rows are MB/s; random / metadata / mixed are IOPS (metadata = ops/s).
+**Bold** = DittoFS. 🏆 = DittoFS leads the field.
+
+| Workload | **DittoFS** | ZeroFS | JuiceFS | local-disk |
+|---|--:|--:|--:|--:|
+| seq-write (MB/s) | **272** | 63 | 560 | 391 |
+| seq-read (MB/s) | **800** | 364 | 800 | 1333 |
+| rand-write 4k (IOPS) | **4611** 🏆 | 1242 | 668 | 2029 |
+| rand-read 4k (IOPS) | **58733** | 3905 | 109837 | 110953 |
+| metadata (ops/s) | **486** | 947 | 1766 | 888 |
+| mixed-rw (IOPS) | **6115** 🏆 | 1210 | 3191 | 7265 |
+
+**What the fair harness shows**
+
+1. **Random write: DittoFS leads the entire field** — 4611 IOPS, 6.9× JuiceFS and
+   3.7× ZeroFS, ahead even of local-disk. This is the group-commit fix
+   ([#1740](https://github.com/marmos91/dittofs/pull/1740)) coalescing the
+   concurrent per-write `fsync` barriers a durable random-write burst pays.
+
+2. **Mixed r/w leads** (6115, 1.9× JuiceFS); **seq-read ties JuiceFS** (800).
+   Against **ZeroFS** — the fair native-durable peer — DittoFS wins every row
+   (rand-read 15×, seq-write 4.3×, rand-write 3.7×, mixed 5×) except metadata.
+
+3. **Metadata is the one real deficit** — 486 ops/s, last. `#1687` doubled it
+   (239→486), but with durability, logging, and attr-cache now all neutralized it
+   is still 3.6× behind JuiceFS, so the deficit is real. The residual is the
+   **userspace NFS adapter's per-create cost**
+   ([#1735](https://github.com/marmos91/dittofs/issues/1735)): `Service.CreateFile`
+   is 27 µs and the server sustains ~15.6k creates/s over loopback — the store is
+   not the wall; a kernel NFS server re-exporting a fast local-meta FUSE mount just
+   beats our userspace CREATE path. **This is the #1 perf target.**
+
+4. **Sequential write (272 vs JuiceFS 560) is latency-bound, not compute-bound.**
+   DittoFS runs this cell at **15 % CPU** with the disk unsaturated (291 MB/s) and
+   ~3× JuiceFS's per-write latency (p50 12.4 ms vs 4.4 ms) — it is *waiting*, not
+   working. The throttle is the same per-op adapter + commit round-trip as metadata
+   (#1735), not encryption or chunking (which would show as high CPU). Exact split
+   pending a write-path pprof.
+
+---
+
+> ⚠️ **The tables below are from the prior cycle (2026-07-14, pre-#1739 harness)**
+> and are **superseded**. They ran with the non-durable `async` re-export and
+> `actimeo=0` mount, so competitor write numbers were inflated (acked from knfsd
+> RAM) and DittoFS's metadata was penalized by per-op revalidation + logging. They
+> are kept only for the large-file / cold-read / latency shape until a full fair
+> re-run lands. Read the fair medium table above for the current head-to-head.
 
 ## Throughput & IOPS — large files (1 GiB), warm
 
