@@ -79,7 +79,7 @@ func (h *Handler) ReadLink(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "READLINK", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "READLINK", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateReadLinkRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "READLINK validation failed", "handle", fmt.Sprintf("%x", req.Handle), "client", clientIP, "error", err)
@@ -130,7 +130,7 @@ func (h *Handler) ReadLink(
 		// (SMB-created symlink not yet converted on CLOSE)
 		mfsResult := h.checkMFsymlinkByHandle(ctx, fileHandle)
 		if mfsResult.IsMFsymlink {
-			logger.InfoCtx(ctx.Context, "READLINK successful (MFsymlink)",
+			logger.DebugCtx(ctx.Context, "READLINK successful (MFsymlink)",
 				"handle", fmt.Sprintf("%x", req.Handle),
 				"target", mfsResult.Target,
 				"client", clientIP)
@@ -153,7 +153,7 @@ func (h *Handler) ReadLink(
 
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "READLINK successful", "handle", fmt.Sprintf("%x", req.Handle), "target", target, "target_len", len(target), "client", clientIP)
+	logger.DebugCtx(ctx.Context, "READLINK successful", "handle", fmt.Sprintf("%x", req.Handle), "target", target, "target_len", len(target), "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "READLINK details", "handle", fmt.Sprintf("%x", fileHandle), "mode", fmt.Sprintf("%o", file.Mode), "uid", file.UID, "gid", file.GID, "size", file.Size)
 

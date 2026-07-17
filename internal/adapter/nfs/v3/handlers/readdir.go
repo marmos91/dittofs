@@ -106,7 +106,7 @@ func (h *Handler) ReadDir(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "READDIR", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "READDIR", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "count", req.Count, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if err := validateReadDirRequest(req); err != nil {
 		logger.WarnCtx(ctx.Context, "READDIR validation failed", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", err)
@@ -262,7 +262,7 @@ func (h *Handler) ReadDir(
 	// EOF is true when there are no more pages
 	eof := !page.HasMore
 
-	logger.InfoCtx(ctx.Context, "READDIR successful", "handle", fmt.Sprintf("%x", req.DirHandle), "entries", len(nfsEntries), "eof", eof, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "READDIR successful", "handle", fmt.Sprintf("%x", req.DirHandle), "entries", len(nfsEntries), "eof", eof, "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "READDIR details", "cookie_start", req.Cookie, "cookie_end", getLastCookie(nfsEntries), "count_limit", req.Count)
 

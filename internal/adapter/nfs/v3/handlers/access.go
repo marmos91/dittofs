@@ -82,7 +82,7 @@ func (h *Handler) Access(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "ACCESS",
+	logger.DebugCtx(ctx.Context, "ACCESS",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"requested", fmt.Sprintf("0x%x", req.Access),
 		"client", clientIP,
@@ -184,7 +184,7 @@ func (h *Handler) Access(
 	// Generate file ID from handle for NFS attributes
 	nfsAttr := h.convertFileAttrToNFS(fileHandle, &file.FileAttr)
 
-	logger.InfoCtx(ctx.Context, "ACCESS successful",
+	logger.DebugCtx(ctx.Context, "ACCESS successful",
 		"handle", fmt.Sprintf("%x", req.Handle),
 		"granted", fmt.Sprintf("0x%x", grantedAccess),
 		"requested", fmt.Sprintf("0x%x", req.Access),

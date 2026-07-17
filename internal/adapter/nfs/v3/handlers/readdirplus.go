@@ -160,7 +160,7 @@ func (h *Handler) ReadDirPlus(
 	// Extract client IP for logging
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	logger.InfoCtx(ctx.Context, "READDIRPLUS", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "dircount", req.DirCount, "maxcount", req.MaxCount, "client", clientIP, "auth", ctx.AuthFlavor)
+	logger.DebugCtx(ctx.Context, "READDIRPLUS", "handle", fmt.Sprintf("%x", req.DirHandle), "cookie", req.Cookie, "dircount", req.DirCount, "maxcount", req.MaxCount, "client", clientIP, "auth", ctx.AuthFlavor)
 
 	if ctx.isContextCancelled() {
 		logger.WarnCtx(ctx.Context, "READDIRPLUS cancelled", "handle", fmt.Sprintf("%x", req.DirHandle), "client", clientIP, "error", ctx.Context.Err())
@@ -414,7 +414,7 @@ func (h *Handler) ReadDirPlus(
 	// client resumes from the last emitted cookie (RFC 1813 Section 3.3.17).
 	eof := !page.HasMore && !budgetExhausted && len(entries) == len(page.Entries)
 
-	logger.InfoCtx(ctx.Context, "READDIRPLUS successful", "handle", fmt.Sprintf("%x", req.DirHandle), "entries", len(entries), "eof", eof, "client", clientIP)
+	logger.DebugCtx(ctx.Context, "READDIRPLUS successful", "handle", fmt.Sprintf("%x", req.DirHandle), "entries", len(entries), "eof", eof, "client", clientIP)
 
 	logger.DebugCtx(ctx.Context, "READDIRPLUS details", "handle", fmt.Sprintf("%x", dirHandle), "total_entries", len(page.Entries), "eof", eof)
 
