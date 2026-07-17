@@ -131,10 +131,11 @@ func TestParentMtimeContention(t *testing.T) {
 
 	// Regression guard for #1573: with the parent-inode bump coalesced out of the
 	// create transaction, same-dir concurrent creates must no longer be penalized
-	// vs distinct-dir (they were ~0.5x before, walled by SSI conflict-retry). A
-	// generous floor absorbs scheduler noise on loaded CI while still catching a
-	// reintroduced shared-key write (which drops the ratio well below 0.7).
-	require.Greater(t, ratio, 0.7,
+	// vs distinct-dir (they were ~0.5x before, walled by SSI conflict-retry). The
+	// floor must sit between that regressed ~0.5x and the scheduler noise a loaded
+	// CI runner adds to a healthy run (observed as low as ~0.69). 0.6 catches a
+	// reintroduced shared-key write while absorbing that noise.
+	require.Greater(t, ratio, 0.6,
 		"same-dir concurrent creates are contention-bound again; a parent-inode write was reintroduced into the create txn (#1573)")
 }
 
