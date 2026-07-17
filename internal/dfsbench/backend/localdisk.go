@@ -7,6 +7,7 @@ package backend
 func init() {
 	register(newSrcBackend(srcBackend{
 		name:   "local-disk",
+		tier:   "durable-to-disk, no S3 (protocol-overhead ceiling); knfsd sync export",
 		protos: []Protocol{ProtoNFS3, ProtoNFS4, ProtoSMB3},
 		srcDir: "/srv/bench-local-disk",
 	}))

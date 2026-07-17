@@ -138,6 +138,11 @@ func init() {
 		register(&Backend{
 			Name:     v.name,
 			S3Backed: true,
+			// Default durability tier: metadata + block writes are durable on local
+			// disk (badger fsync + fs block cache) before the op acks; the S3 upload
+			// is async writeback. No --require-durable-commit, so it is NOT per-op
+			// S3-synchronous — the same tier as JuiceFS --writeback.
+			Tier:     "durable-to-local (badger fsync + fs block cache) + async S3 writeback",
 			Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
 			Setup:    func(ctx context.Context, env BackendEnv) error { return dittofsSetup(ctx, env, kind) },
 			Mount:    dittofsMount,

@@ -49,6 +49,14 @@ type Backend struct {
 	S3Backed bool
 	Support  map[Protocol]Support
 
+	// Tier states the effective durability tier the backend acks writes from, so
+	// the run log makes the apples-to-apples comparison auditable: a competitor
+	// acking from RAM would be the unfair inflation (#1739). The fair cohort is
+	// "durable-to-local + async S3 writeback" (DittoFS default == JuiceFS
+	// --writeback); the re-export layer's knfsd `sync` export keeps NFS/SMB on
+	// that same durable tier. Logged once per system after Setup.
+	Tier string
+
 	// Setup installs+starts the backend (idempotent); Mount exports it over
 	// proto and returns the client mount dir; Evict forces the next read
 	// cold-from-S3; Unmount/Teardown reverse Mount/Setup. Any may be nil while

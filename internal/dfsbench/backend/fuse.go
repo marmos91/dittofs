@@ -32,18 +32,22 @@ func init() {
 	// the local cache wholesale.
 	register(newSrcBackend(srcBackend{
 		name: "rclone", s3Backed: true, protos: all, srcDir: rcloneMnt,
+		tier:  "durable-to-local (vfs-cache-mode=writes) + async S3; knfsd sync export",
 		setup: rcloneSetup, teardown: fuseUnmount(rcloneMnt), remount: rcloneRemount,
 	}))
 	register(newSrcBackend(srcBackend{
 		name: "s3ql", s3Backed: true, protos: all, srcDir: s3qlMnt,
+		tier:  "durable-to-local cache + async S3; knfsd sync export",
 		setup: s3qlSetup, teardown: s3qlTeardown, remount: s3qlRemount,
 	}))
 	register(newSrcBackend(srcBackend{
 		name: "juicefs", s3Backed: true, protos: all, srcDir: juicefsMnt,
+		tier:  "durable-to-local (--writeback local cache) + async S3; knfsd sync export",
 		setup: juicefsSetup, teardown: juicefsTeardown, remount: juicefsRemount,
 	}))
 	register(newSrcBackend(srcBackend{
 		name: "s3fs", s3Backed: true, protos: all, srcDir: s3fsMnt,
+		tier:  "durable-on-close to S3 (no writeback); knfsd sync export",
 		setup: s3fsSetup, teardown: fuseUnmount(s3fsMnt), remount: s3fsRemount,
 	}))
 }

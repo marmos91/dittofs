@@ -37,14 +37,22 @@ func SizeBytes(s string) int64 {
 // KnownWorkloads are the fio job files shipped in bench/workloads. Each maps to
 // <name>.fio. Kept as an explicit list (not a dir scan) so --workloads
 // selection and `list` have a stable, ordered set.
+//
+// metadata runs FIRST, before any write-heavy workload (#1739). The warm pass
+// runs every workload sequentially against one live server/mount, so if metadata
+// ran last it would measure creates while the block syncer is still draining the
+// GBs of async S3 backlog that seq-write/rand-write/mixed queued — IO-wait
+// contention that, on a full matrix's accumulated backlog, degrades the create
+// cell into a near-hang (the "8 ops in 240s" garbage). Measuring metadata on a
+// quiesced store isolates the metadata engine, which is what this cell is for.
 var KnownWorkloads = []string{
+	"metadata",
 	"seq-write",
 	"seq-write-buffered",
 	"seq-read",
 	"rand-write-4k",
 	"rand-read-4k",
 	"mixed-rw",
-	"metadata",
 }
 
 // SizeClasses map a friendly size name to the fio --size value. Explicit sizes

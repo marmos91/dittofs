@@ -36,6 +36,13 @@ func init() {
 	register(&Backend{
 		Name:     "zerofs",
 		S3Backed: true,
+		// zerofs default (sync_writes=false): writes land in an in-memory memtable
+		// backed by a WAL, flushed to S3 every ~30s; an explicit fsync forces a seal
+		// + flush. So it is durable-on-fsync but buffered between fsyncs — the
+		// closest fair native comparator to DittoFS's local-durable tier, but not
+		// identical (seq-write's fsync_on_close makes its acks durable; a no-fsync
+		// create acks from RAM+WAL). Logged so the table's tier column is honest.
+		Tier: "memtable + WAL, periodic ~30s S3 flush (sync_writes=false); durable on fsync/close",
 		// Native NFSv3 only. nfs4/smb3 are NA (zerofs speaks neither) and auto-skip.
 		Support:  map[Protocol]Support{ProtoNFS3: Native},
 		Setup:    zerofsSetup,

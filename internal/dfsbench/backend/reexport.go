@@ -152,6 +152,7 @@ func smbReexport(ctx context.Context, srcDir string) (string, error) {
 type srcBackend struct {
 	name     string
 	s3Backed bool
+	tier     string // effective durability tier, surfaced as Backend.Tier
 	protos   []Protocol
 	srcDir   string
 	setup    func(ctx context.Context, env BackendEnv) error // install + FUSE-mount at srcDir; nil = plain dir
@@ -170,6 +171,7 @@ func newSrcBackend(sb srcBackend) *Backend {
 	b := &Backend{
 		Name:     sb.name,
 		S3Backed: sb.s3Backed,
+		Tier:     sb.tier,
 		Support:  support,
 		Setup: func(ctx context.Context, env BackendEnv) error {
 			if sb.setup != nil {
