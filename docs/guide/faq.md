@@ -549,6 +549,49 @@ Both are NFS implementations in Go, but with different goals:
 5. **Pure Go**: Easy deployment, no C dependencies
 6. **Modern Architecture**: Designed for cloud-native deployments
 
+## Durability & caching
+
+**What durability guarantee does a write get?**
+
+DittoFS follows the standard NFS and SMB durability contract — the same one a stock
+Linux kernel NFS server or Samba gives you:
+
+- **Writes are buffered and acknowledged fast; durability is guaranteed at COMMIT
+  (NFSv3), or at FLUSH / CLOSE (SMB2/3).** This is exactly what the protocols
+  specify. A Linux `knfsd` export defaults to `sync` (durable at COMMIT); Samba
+  defaults to `strict sync = yes` (honor client FLUSH). DittoFS matches both. The
+  `async` knfsd mode some setups use is a non-default, explicitly-unsafe opt-in that
+  can silently lose data on a crash — DittoFS does **not** do that by default.
+- **At COMMIT/FLUSH the data is made durable in DittoFS's local block store**
+  (fsync'd to local disk), and is uploaded to the object store (S3) **asynchronously**
+  by the background syncer. So a write that has been COMMIT-acked is **crash-durable**
+  — it survives a server process crash or power loss via the local journal — and its
+  object-store copy follows shortly after. This is the same "local-durable, async to
+  object store" tier as JuiceFS `--writeback` or a kernel NFS server over a local
+  disk. It means a *total node loss* (local disk destroyed) between COMMIT and the
+  syncer catching up can lose the not-yet-uploaded tail; use snapshots / the syncer's
+  drain for stronger guarantees before decommissioning a node.
+
+**Do I need to configure durability?**
+
+Usually no — the tradeoff is already in your hands through the **standard protocol**,
+and DittoFS honors whatever the client asks:
+
+- NFSv3 clients tag each write `UNSTABLE` / `FILE_SYNC` and decide when to COMMIT
+  (on `fsync`/`close`/cache pressure). Want maximum speed? Let the client buffer and
+  COMMIT less often, or the application skip `fsync`. Want stricter safety? The client
+  can mount `sync` or issue `FILE_SYNC` writes. DittoFS obeys the flag either way.
+- SMB2/3 clients get the same via the write-through flag + SMB2 FLUSH.
+
+There is no DittoFS-specific durability knob to learn — you tune it the way you'd tune
+any NFS/SMB server: with mount options and application `fsync` behavior.
+
+**Caching and read performance.** DittoFS is a *native userspace* server (no kernel
+FUSE), so warm reads are served from the standard NFS/SMB **client** page cache (as
+with any server) plus DittoFS's own local block-store cache. Standard client mount
+tunings — `actimeo` (attribute cache), `nconnect` (parallel connections, default 1),
+`rsize`/`wsize` — apply exactly as they would to a kernel NFS server.
+
 ## Known Limitations
 
 ### NFS Protocol Limitations

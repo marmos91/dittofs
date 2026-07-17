@@ -46,6 +46,16 @@ writes now compare durable-vs-durable. The one structural asymmetry left is on
 native userspace servers (DittoFS, ZeroFS) don't get — so **warm reads are only
 like-for-like against ZeroFS.**
 
+> **Defaults vs tunings.** Most of the normalized mount settings are the *standard
+> kernel/Samba defaults*, not a handicap: knfsd exports default to `sync` (the
+> `async` the old harness used is an explicitly-unsafe opt-in that can lose data on
+> crash), Samba defaults to `strict sync = yes`, and the NFS client default already
+> caches attributes (`actimeo=0` was the pessimal outlier). DittoFS's durable-at-COMMIT
+> behavior *is* that default. The one genuine **tuning** here is **`nconnect=4`** (the
+> client default is 1) — applied symmetrically to every backend, so this is a
+> *well-tuned-vs-well-tuned* comparison, not strictly default-vs-default. See
+> [Durability & caching](guide/faq.md#durability--caching) for the contract.
+
 ## Results — medium files (1 MiB), warm, fair harness
 
 Sequential rows are MB/s; random / metadata / mixed are IOPS (metadata = ops/s).
