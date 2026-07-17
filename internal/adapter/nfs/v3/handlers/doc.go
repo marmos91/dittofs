@@ -276,7 +276,12 @@ func (h *Handler) buildAuthContextWithWCCError(
 ) (*metadata.AuthContext, *types.NFSFileAttr, uint32, error) {
 	clientIP := xdr.LazyClientIP(ctx.ClientAddr)
 
-	authCtx, err := BuildAuthContextWithMapping(ctx, h.Registry, ctx.Share)
+	// Route through the resolved-permission cache (shared with the READ family):
+	// mutation handlers were resolving share permission against the control-plane
+	// store on every op (GetShare + GetUserByUID), the CREATE-path serialization
+	// wall (#1735). The cache is keyed Share+AuthFlavor+uid+gid+GIDs and cleared
+	// via ClearAuthCache on any share/identity change, so policy stays correct.
+	authCtx, err := h.GetCachedAuthContext(ctx)
 	if err != nil {
 		// Check if the error is due to context cancellation
 		if ctx.Context.Err() != nil {
