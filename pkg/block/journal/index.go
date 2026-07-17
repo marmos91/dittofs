@@ -123,6 +123,37 @@ func (fi *fileIndex) insert(iv interval) (dirtyRemoved, dirtyAdded int64, dead [
 	// across the non-overlapping sorted set, so the predicate is monotone.
 	lo := sort.Search(len(fi.ivs), func(k int) bool { return fi.ivs[k].end() > ns })
 
+	// Fast paths for the two overwhelmingly common write shapes, avoiding the
+	// three per-insert slice allocations (newFrags, survivors, merged) and the
+	// sort.Slice the general punch-and-merge path below pays. These dominate a
+	// random-4K workload: the fill phase is all gap insertions, the steady state
+	// all exact-offset overwrites (#1736).
+	switch {
+	case lo == len(fi.ivs) || fi.ivs[lo].fileOff >= ne:
+		// (a) Gap insertion: [ns, ne) overlaps nothing (the search guarantees the
+		// left neighbour ends at or before ns; the right neighbour starts at or
+		// after ne). A single shift, no allocation, no sort. Supersedes nothing.
+		fi.ivs = slices.Insert(fi.ivs, lo, iv)
+		return 0, 0, nil
+	case fi.ivs[lo].fileOff == ns && fi.ivs[lo].end() == ne &&
+		(lo+1 == len(fi.ivs) || fi.ivs[lo+1].fileOff >= ne):
+		// (b) Exact-range overwrite: iv replaces exactly one existing interval and
+		// overlaps no other. Newer wins in place (zero shift); an older/equal
+		// version (a recovery replay landing under a newer record) is shadowed.
+		e := fi.ivs[lo]
+		if iv.version <= e.version {
+			return 0, 0, nil // iv shadowed: keep the existing interval
+		}
+		if !e.cold {
+			dead = []segDead{{seg: e.loc.SegmentID, bytes: e.length}}
+			if !e.synced {
+				dirtyRemoved = e.length
+			}
+		}
+		fi.ivs[lo] = iv
+		return dirtyRemoved, 0, dead
+	}
+
 	newFrags := []interval{iv}
 	var survivors []interval
 	ivShadowed := false
