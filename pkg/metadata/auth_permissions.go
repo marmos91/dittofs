@@ -647,10 +647,32 @@ func (s *Service) CheckParentCreateAccess(ctx *AuthContext, parentHandle FileHan
 		return err
 	}
 
+	return s.CheckParentCreateAccessFile(ctx, parentHandle, file, isDirectory)
+}
+
+// CheckParentCreateAccessFile is CheckParentCreateAccess on an already-loaded
+// parent directory: it runs the identical create-permission evaluation without
+// re-reading the parent inode via store.GetFile. A caller that already holds the
+// parent File — e.g. createEntry, which loads it once to validate the directory
+// type — passes it here so a single CreateFile no longer loads the same parent
+// handle three times (#1737). The no-ACL path routes through the file-passing
+// checkWritePermissionFile so it too avoids a re-fetch. Semantics are
+// byte-for-byte those of CheckParentCreateAccess (same NFSv4 ADD_FILE vs
+// ADD_SUBDIRECTORY mask, same read-only ordering); only the redundant reads go.
+func (s *Service) CheckParentCreateAccessFile(ctx *AuthContext, parentHandle FileHandle, file *File, isDirectory bool) error {
+	store, err := s.storeForHandle(parentHandle)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Context.Err(); err != nil {
+		return err
+	}
+
 	// Without an ACL there's nothing to refine — fall back to the generic
-	// POSIX-write check so mode bits / share-level grants apply uniformly.
+	// POSIX-write check so mode bits / share-level grants apply uniformly. Reuse
+	// the already-loaded parent so the write check does not re-fetch the inode.
 	if file.ACL == nil {
-		return s.checkWritePermission(ctx, parentHandle)
+		return s.checkWritePermissionFile(ctx, parentHandle, file)
 	}
 
 	shareOpts, _ := store.GetShareOptions(ctx.Context, file.ShareName)
