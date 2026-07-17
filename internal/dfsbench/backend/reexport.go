@@ -101,10 +101,11 @@ func nfsReexport(ctx context.Context, srcDir, vers string) (string, error) {
 	}
 	src := "127.0.0.1:" + srcDir
 	// Match the native DittoFS client mount opts so every client mount is identical
-	// (same attr-cache + parallelism): actimeo=1 + nconnect=4. nolock is NFSv3-only
-	// (v4 has integrated locking and the native v4.1 mount omits it), so it's added
-	// only for vers=3.
-	opts := "vers=" + vers + ",actimeo=1,nconnect=4"
+	// (same transport, attr-cache + parallelism): tcp + actimeo=1 + nconnect=4.
+	// tcp is explicit because nconnect is TCP-specific and the native mounts set it
+	// too. nolock is NFSv3-only (v4 has integrated locking and the native v4.1 mount
+	// omits it), so it's added only for vers=3.
+	opts := "vers=" + vers + ",tcp,actimeo=1,nconnect=4"
 	if vers == "3" {
 		opts += ",nolock"
 	} else {
