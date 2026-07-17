@@ -46,16 +46,31 @@ type shard struct {
 	commitMu   sync.Mutex
 	commitCond *sync.Cond
 	reqSeq     uint64 // commits enqueued so far (monotonic)
-	doneSeq    uint64 // commits made durable by a completed fsync (monotonic)
+	doneSeq    uint64 // commits released by a completed fsync, any outcome (monotonic)
 	syncing    bool   // a leader is mid-fsync
-	syncErr    error  // error from the most recent completed fsync batch
+	// errSeq is the highest batchUpTo whose fsync ERRORED; syncErr is that error.
+	// Both are sticky — never cleared by a later successful batch — so a waiter
+	// covered by an errored batch (its gen < errSeq) always reads the failure
+	// instead of a newer batch's nil. Under Linux fsync-error semantics a post-error
+	// fsync can report success for pages the kernel already dropped, so a false
+	// "success" would be silent data loss; that is the direction we must never take.
+	// The cost is a rare, benign spurious error to a waiter a later success actually
+	// covered (safe direction). See groupCommit (#1736).
+	errSeq  uint64
+	syncErr error
+	// segSync fsyncs a segment's backing file. Per-shard indirection so durability
+	// tests can substitute a spy that counts syncs and can be forced to fail — the
+	// group-commit's whole guarantee rests on this call, so it needs a seam a test
+	// can neutralize. Production uses the real (*os.File).Sync via seg.fd.
+	segSync func(*segmentMeta) error
 }
 
 func newShard(active *segmentMeta) *shard {
 	sh := &shard{
-		active: active,
-		sealed: make(map[uint64]*segmentMeta),
-		index:  make(map[FileID]*fileIndex),
+		active:  active,
+		sealed:  make(map[uint64]*segmentMeta),
+		index:   make(map[FileID]*fileIndex),
+		segSync: func(seg *segmentMeta) error { return seg.fd.Sync() },
 	}
 	sh.commitCond = sync.NewCond(&sh.commitMu)
 	return sh

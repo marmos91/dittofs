@@ -310,9 +310,14 @@ func (sh *shard) groupCommit() error {
 	sh.reqSeq++
 	for {
 		// A fsync that started after this caller enqueued (so after its write
-		// completed) has finished and covered it.
+		// completed) has finished and covered it. Return that batch's outcome:
+		// the error is sticky per errSeq, so a covered waiter can never read a
+		// later batch's nil in place of its own batch's failure (fsyncgate).
 		if sh.doneSeq > myGen {
-			err := sh.syncErr
+			var err error
+			if myGen < sh.errSeq {
+				err = sh.syncErr
+			}
 			sh.commitMu.Unlock()
 			return err
 		}
@@ -325,19 +330,22 @@ func (sh *shard) groupCommit() error {
 	batchUpTo := sh.reqSeq // every commit enqueued so far rides this fsync
 	sh.commitMu.Unlock()
 
-	// Grab the current active fd fresh: if it rotated while we waited, the old fd
-	// was already fsynced by sealInPlace, so fsyncing the new one still leaves the
-	// whole batch durable.
+	// Grab the current active segment fresh: if it rotated while we waited, the old
+	// fd was already fsynced by sealInPlace, so fsyncing the new one still leaves
+	// the whole batch durable.
 	sh.mu.Lock()
-	fd := sh.active.fd
+	seg := sh.active
 	sh.mu.Unlock()
-	err := fd.Sync()
+	err := sh.segSync(seg)
 
 	sh.commitMu.Lock()
 	if err != nil {
 		err = fmt.Errorf("journal: commit fsync: %w", err)
+		// Sticky: mark every commit in this batch as failed so covered waiters
+		// (gen < batchUpTo) read the failure even after a later batch succeeds.
+		sh.errSeq = batchUpTo
+		sh.syncErr = err
 	}
-	sh.syncErr = err
 	sh.doneSeq = batchUpTo
 	sh.syncing = false
 	sh.commitCond.Broadcast()
