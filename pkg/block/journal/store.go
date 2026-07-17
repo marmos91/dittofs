@@ -281,6 +281,10 @@ func (s *Store) SeedCold(_ context.Context, id FileID, offset, length int64) err
 	return nil
 }
 
+// asyncCommitDiag, when DITTOFS_JOURNAL_ASYNC_COMMIT=1, makes groupCommit skip the
+// per-COMMIT fsync (perf diagnostic — see groupCommit). Read once at package init.
+var asyncCommitDiag = os.Getenv("DITTOFS_JOURNAL_ASYNC_COMMIT") == "1"
+
 // Commit fsyncs the file's shard so buffered writes become durable. NFS COMMIT
 // and SMB Flush land here.
 func (s *Store) Commit(ctx context.Context, id FileID) error {
@@ -336,7 +340,14 @@ func (sh *shard) groupCommit() error {
 	sh.mu.Lock()
 	seg := sh.active
 	sh.mu.Unlock()
-	err := sh.segSync(seg)
+	// DIAGNOSTIC (perf/writeback-commit-diag, DITTOFS_JOURNAL_ASYNC_COMMIT=1): skip the
+	// COMMIT fsync to emulate JuiceFS --writeback (ack from local buffer; durability comes
+	// from the async S3 upload, not a per-COMMIT local barrier). Measures whether the
+	// journal COMMIT fsync is the create/seq-write wall vs JuiceFS. NOT for production.
+	var err error
+	if !asyncCommitDiag {
+		err = sh.segSync(seg)
+	}
 
 	sh.commitMu.Lock()
 	if err != nil {
