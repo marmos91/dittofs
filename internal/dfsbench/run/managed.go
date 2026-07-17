@@ -116,6 +116,12 @@ func runPlan(ctx context.Context, p backend.Plan, env backend.BackendEnv, wls, s
 	if err := b.Setup(ctx, env); err != nil {
 		return fmt.Errorf("setup: %w", err)
 	}
+	// Log the effective durability tier so the run is auditable as apples-to-apples
+	// (#1739): every cell in the fair cohort must ack from the same tier, and a
+	// competitor acking from RAM is the unfair inflation this makes visible.
+	if b.Tier != "" {
+		_, _ = fmt.Fprintf(exec.CmdOut, "tier %s: %s\n", p.SystemLabel(), b.Tier)
+	}
 
 	mnt, err := b.Mount(ctx, p.Protocol)
 	if err != nil {
