@@ -84,9 +84,12 @@ func nfsReexport(ctx context.Context, srcDir, vers string) (string, error) {
 		return "", err
 	}
 	// fsid=0 makes srcDir the NFSv4 pseudo-root (v4 mounts "/"); v3 mounts the path.
-	// async: the server acks before committing (knfsd's fast path), matching
-	// Samba's async so SMB and NFS compare on the same (fastest) durability tier.
-	line := fmt.Sprintf("%s 127.0.0.1(rw,async,no_subtree_check,no_root_squash,fsid=0)\n", srcDir)
+	// sync: knfsd acks writes/COMMIT only after the underlying FUSE filesystem (and
+	// its S3 backend) has committed — the durable tier. This matches DittoFS's
+	// native durable commit and Samba's `strict sync`, so NFS and SMB compare on the
+	// same DURABLE tier as each other AND as the subject. (async would let knfsd ack
+	// from RAM, benchmarking competitors non-durably against a durable DittoFS.)
+	line := fmt.Sprintf("%s 127.0.0.1(rw,sync,no_subtree_check,no_root_squash,fsid=0)\n", srcDir)
 	if err := os.WriteFile(nfsExportsFile, []byte(line), 0o644); err != nil {
 		return "", err
 	}
@@ -97,10 +100,18 @@ func nfsReexport(ctx context.Context, srcDir, vers string) (string, error) {
 		return "", err
 	}
 	src := "127.0.0.1:" + srcDir
-	if vers != "3" {
+	// Match the native DittoFS client mount opts so every client mount is identical
+	// (same transport, attr-cache + parallelism): tcp + actimeo=1 + nconnect=4.
+	// tcp is explicit because nconnect is TCP-specific and the native mounts set it
+	// too. nolock is NFSv3-only (v4 has integrated locking and the native v4.1 mount
+	// omits it), so it's added only for vers=3.
+	opts := "vers=" + vers + ",tcp,actimeo=1,nconnect=4"
+	if vers == "3" {
+		opts += ",nolock"
+	} else {
 		src = "127.0.0.1:/"
 	}
-	if err := exec.Sh(ctx, "mount", "-t", "nfs", "-o", "vers="+vers, src, clientMntDir); err != nil {
+	if err := exec.Sh(ctx, "mount", "-t", "nfs", "-o", opts, src, clientMntDir); err != nil {
 		return "", err
 	}
 	return clientMntDir, nil
