@@ -245,9 +245,18 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, dur
 	// Pass the durability tier (#1758) through the local block store config. The
 	// "durability" enum (local|writeback|remote) is read by resolveDurabilityTier
 	// at share create; "local" is the default so it's harmless to set explicitly.
+	//
+	// max_size gives the local journal generous headroom. The writeback tier
+	// relaxes the metadata fsync that otherwise paces writes, so a sustained
+	// fio write burst outruns the async S3 syncer; with the small default
+	// capacity the journal saturates ("all segments pinned by unsynced bytes")
+	// and writes fail EIO. A realistic writeback cache is sized for the working
+	// set (JuiceFS --writeback does the same), so 32 GiB here measures the tier
+	// at throughput instead of at its saturation cliff.
 	localCfg, err := json.Marshal(map[string]any{
 		"path":       dittofsDataDir + "/blocks",
 		"durability": durability,
+		"max_size":   int64(32) * 1024 * 1024 * 1024,
 	})
 	if err != nil {
 		return err
