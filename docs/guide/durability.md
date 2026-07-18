@@ -17,9 +17,15 @@ dirent) → asynchronous upload to the remote (S3) block store. Two independent
 
 | Tier | What must be durable before ack | Survives | Relative speed |
 |---|---|---|---|
-| **Writeback** | nothing synchronously — local write, deferred `fsync` | bounded-loss only | fastest |
+| **Writeback** ‡ | nothing synchronously — local write, deferred `fsync` | bounded-loss only | fastest |
 | **Local-durable** *(default)* | local journal + metadata `fsync` | process/node **crash** | middle |
 | **Synchronous-to-S3** | data acknowledged **in S3** | total node loss | slowest |
+
+‡ The full Writeback tier (defer *both* the data-journal and metadata `fsync`)
+needs the journal async-commit half, which is not yet a supported config — see
+[#1758](https://github.com/marmos91/dittofs/issues/1758). The shipped `writeback`
+flag below relaxes **metadata only** (data stays journal-`fsync`'d), which lands
+*between* local-durable and full writeback.
 
 There is no data-corruption risk in any tier: on restart,
 `reconcileMetadataSizeFromJournal` repairs each file's metadata size from the
@@ -34,17 +40,21 @@ Neither is set by default (both `false` = the local-durable default tier).
 ### `writeback` — relax metadata durability *(new)*
 
 Downgrades the per-op metadata flush on `FILE_SYNC` writes and `CLOSE` from a
-synchronous `badger.DB.Sync` to the deferred relaxed path (flushed by a 100 ms
-background syncer). Data is still journalled; only metadata (size/mtime/dirent)
-durability is deferred, bounded to a ≤ 150 ms loss window.
+synchronous `badger.DB.Sync` to the deferred relaxed path (flushed by the 100 ms
+background syncer, `durabilitySyncInterval`). Data is still journalled; only
+metadata (size/mtime/dirent) durability is deferred, bounded to roughly that
+100 ms interval.
 
 ```bash
 dfsctl store block local edit <share> --config '{"writeback": true}'
 ```
 
-Use it for create/write-heavy workloads that can tolerate losing the last fraction
-of a second of *metadata* on a hard crash (scratch space, CI artifacts, re-derivable
-data). It is the single biggest create-throughput lever — see the numbers below.
+Use it for create/write-heavy workloads that can tolerate losing the last ~100 ms
+of *metadata* on a hard crash (scratch space, CI artifacts, re-derivable data). On
+its own this flag lands in the **local-durable** band (data still journal-`fsync`'d,
+metadata relaxed — ~1680 ops/s below); combined with the journal async-commit half
+([#1758](https://github.com/marmos91/dittofs/issues/1758)) it reaches the full
+writeback tier. It is the single biggest create-throughput lever — see below.
 
 ### `require_durable_commit` — synchronous-to-S3
 
@@ -68,7 +78,7 @@ full method and competitor comparison in [BENCHMARKS.md](../BENCHMARKS.md#create
 | `writeback: true` + async journal | writeback | ~5700 |
 | `writeback: true` | local-durable (metadata relaxed) | ~1680 |
 | *default* | local-durable | ~900 |
-| `require_durable_commit: true` | synchronous-to-S3 | see note |
+| `require_durable_commit: true` | synchronous-to-S3 | not yet benchmarked (#1758) |
 
 For context, at a matched writeback guarantee DittoFS sustains **3.0× JuiceFS
 `--writeback`**; the local-durable middle tier is one no S3 filesystem competitor

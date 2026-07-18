@@ -112,8 +112,10 @@ Sequential rows are MB/s; random / metadata / mixed are IOPS (metadata = ops/s).
 The metadata create path was the standing #1 target. A dedicated study
 ([#1735](https://github.com/marmos91/dittofs/issues/1735)) settled that the
 plateau is per-op **durable metadata flush** (`badger.DB.Sync` on the `FILE_SYNC`
-branch) — not the metadata store (badger/postgres/sqlite measure identically), not
-the NFS transport, and not the block layer. The fix is therefore a **durability
+branch) — not the metadata *backend* (badger/postgres/sqlite measure identically)
+and not the block layer. (Once that fsync wall is removed the residual per-op cost
+is CPU in the userspace NFS adapter + store path, per #1735 — not the wire.) The
+fix is therefore a **durability
 choice**, not a group-commit trick: cross-shard fsync coalescing was refuted
 ([#1742](https://github.com/marmos91/dittofs/issues/1742),
 [#1747](https://github.com/marmos91/dittofs/issues/1747)) because per-op durable
