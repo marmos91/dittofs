@@ -89,7 +89,7 @@ The default tier acknowledges a write once the data is safely on local disk, and
 replicates to object storage afterward. DittoFS runs this at around **900 ops/sec**,
 with an intermediate mode that relaxes only metadata timing reaching about **1,700**.
 
-What is notable is that **no competitor offers this middle ground at all.** JuiceFS,
+Notably, **no competitor offers this middle ground at all.** JuiceFS,
 s3fs, and the others step directly from a bounded-loss local cache to a full
 synchronous upload to object storage. DittoFS's local-durable tier survives a
 machine crash *without* paying an object-storage round-trip on every file — a
@@ -114,8 +114,7 @@ Measured across repeated runs on the same machine:
 **DittoFS and JuiceFS finish in a dead heat**, and both are roughly ten times faster
 than s3fs's naive write-through. This tier is entirely bound by object-storage
 round-trip time, so individual runs swing widely — anywhere from about 18 to 40
-operations per second for *both* systems — which is exactly why the comparison uses
-many runs on one machine rather than a single measurement.
+operations per second for *both* systems.
 
 Two systems could not be included fairly. rclone's no-cache mode cannot honor a
 synchronous flush at all — the flush errors out and only a zero-byte placeholder
@@ -136,7 +135,7 @@ sequential and random access, all at the durable default over NFSv3, on medium-s
 | Sequential read (MB/s) | **800** | 364 | 800 | 1,333 |
 | Random write, 4 KiB (IOPS) | **4,611** 🏆 | 1,242 | 668 | 2,029 |
 | Random read, 4 KiB (IOPS) | **58,733** | 3,905 | 109,837 | 110,953 |
-| Mixed read/write (IOPS) | **6,115** 🏆 | 1,210 | 3,191 | 7,265 |
+| Mixed read/write (IOPS) | **6,115** | 1,210 | 3,191 | 7,265 |
 
 A few things stand out:
 
@@ -144,7 +143,9 @@ A few things stand out:
   ahead even of a plain local disk. A durable random-write burst normally pays a
   separate disk-sync barrier for every write; DittoFS coalesces the concurrent
   barriers into shared group commits, which is what puts it in front.
-- **Mixed read/write also leads**, and **sequential reads tie JuiceFS.** Against
+- **Mixed read/write is well clear of both real filesystems** (JuiceFS and ZeroFS),
+  though a plain uncached local disk edges slightly ahead; **sequential reads tie
+  JuiceFS.** Against
   ZeroFS — the other system that, like DittoFS, serves the network protocol itself
   rather than being re-exported — DittoFS wins every single row, often by large
   margins.
