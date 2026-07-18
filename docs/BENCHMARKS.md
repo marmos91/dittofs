@@ -195,7 +195,7 @@ EOF
 # Provision a disposable machine, run the matrix, collect results, tear it down.
 dfsbench setup
 dfsbench run --remote --config bench.yaml \
-  --systems dittofs-s3-nfs3,zerofs,juicefs,local-disk \
+  --systems dittofs-s3-nfs3,zerofs-nfs3,juicefs-nfs3,local-disk-nfs3 \
   --sizes medium
 dfsbench report --results ./bench-results
 dfsbench teardown
