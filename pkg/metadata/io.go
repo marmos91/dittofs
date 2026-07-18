@@ -3,11 +3,23 @@ package metadata
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/internal/logger"
 )
+
+// metadataWritebackDiag downgrades the per-op durable metadata flush to the
+// relaxed (deferred-fsync) path even when the caller requested durable
+// (FILE_SYNC WRITE, SMB CLOSE/FLUSH). This emulates a JuiceFS --writeback
+// metadata tier for the create-perf A/B (#1757): the metadata db.Sync moves off
+// the hot path onto the background durability syncer, bounded by the sync
+// interval and reconciled from the journal high-water mark on restart. Shutdown
+// (FlushAllPendingWritesForShutdown) calls flushPendingWrite directly with
+// durable=true and is intentionally NOT downgraded. Diagnostic gate only — the
+// shippable form is a per-share config tier.
+var metadataWritebackDiag = os.Getenv("DITTOFS_METADATA_WRITEBACK") == "1"
 
 // WriteOperation represents a validated intent to write to a file.
 //
@@ -370,6 +382,12 @@ func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation)
 // WRITE, COMMIT, SMB inline WRITE) so the metadata fsync moves off the hot path.
 // See flushPendingWrite for the crash-safety argument (journal size reconcile).
 func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle, durable bool) (bool, error) {
+	// #1757 writeback tier: downgrade a durable per-op flush to the relaxed path
+	// so the metadata db.Sync leaves the hot path (bounded loss, reconciled from
+	// the journal high-water mark on restart). Shutdown flushes bypass this func.
+	if metadataWritebackDiag {
+		durable = false
+	}
 	// Serialize flushes per file to avoid BadgerDB conflict retries
 	mu := s.pendingWrites.GetFlushLock(handle)
 	mu.Lock()
