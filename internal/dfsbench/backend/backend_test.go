@@ -173,6 +173,28 @@ func TestManagedMatrix_NoEvictSkipsColdPass(t *testing.T) {
 	}
 }
 
+// TestDittofsDurabilityTiers asserts the three badger durability-tier variants
+// (#1758) register under distinct names, all Native on every protocol, with
+// distinct Tier strings — the axis the QoS matrix expands over.
+func TestDittofsDurabilityTiers(t *testing.T) {
+	tiers := map[string]bool{} // Tier string per variant, must be distinct
+	for _, name := range []string{"dittofs-s3", "dittofs-s3-writeback", "dittofs-s3-remote"} {
+		b, ok := registry[name]
+		if !ok {
+			t.Fatalf("backend %q not registered", name)
+		}
+		for _, p := range managedProtocols {
+			if b.Support[p] != Native {
+				t.Errorf("%s: protocol %s support = %s, want native", name, p, b.Support[p])
+			}
+		}
+		if tiers[b.Tier] {
+			t.Errorf("%s: duplicate Tier string %q", name, b.Tier)
+		}
+		tiers[b.Tier] = true
+	}
+}
+
 func TestBackendNamesSorted(t *testing.T) {
 	withRegistry(t,
 		&Backend{Name: "s3fs"},
