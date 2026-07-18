@@ -32,41 +32,45 @@ There is no data-corruption risk in any tier: on restart,
 journal's durable high-water mark, so a relaxed metadata commit can only lose the
 *most recent* size/mtime update — never leave a file inconsistent.
 
-## Knobs available today
+## Selecting a tier
 
-Two independent per-share flags live in the share's **local block-store config**.
-Neither is set by default (both `false` = the local-durable default tier).
-
-### `writeback` — relax metadata durability *(new)*
-
-Downgrades the per-op metadata flush on `FILE_SYNC` writes and `CLOSE` from a
-synchronous `badger.DB.Sync` to the deferred relaxed path (flushed by the 100 ms
-background syncer, `durabilitySyncInterval`). Data is still journalled; only
-metadata (size/mtime/dirent) durability is deferred, bounded to roughly that
-100 ms interval.
+The recommended knob is the per-share **`durability`** enum in the share's
+**local block-store config** — `local` (default), `writeback`, or `remote`:
 
 ```bash
-dfsctl store block local edit <share> --config '{"writeback": true}'
+dfsctl store block local edit <share> --config '{"durability": "remote"}'
 ```
 
-Use it for create/write-heavy workloads that can tolerate losing the last ~100 ms
-of *metadata* on a hard crash (scratch space, CI artifacts, re-derivable data). On
-its own this flag lands in the **local-durable** band (data still journal-`fsync`'d,
-metadata relaxed — ~1680 ops/s below); combined with the journal async-commit half
-([#1758](https://github.com/marmos91/dittofs/issues/1758)) it reaches the full
-writeback tier. It is the single biggest create-throughput lever — see below.
+| `durability` | Ack after | Survives | ~ops/s (create nj=8) |
+|---|---|---|--:|
+| `local` *(default)* | local journal + metadata `fsync` | process/node crash | ~900 |
+| `writeback` | local write, metadata `fsync` deferred ~100 ms | crash, ≤ 100 ms metadata loss | ~1680 |
+| `remote` | data durable in S3 | node/disk loss | slow (by design) |
 
-### `require_durable_commit` — synchronous-to-S3
+- **`local`** — the default; unchanged from earlier releases.
+- **`writeback`** — relaxes the per-op `FILE_SYNC`/`CLOSE` metadata flush from a
+  synchronous `badger.DB.Sync` to the 100 ms deferred syncer
+  (`durabilitySyncInterval`). Data stays journal-`fsync`'d, so today this lands in
+  the **local-durable** band (metadata relaxed only). The full data-writeback tier
+  (~5700 ops/s) additionally needs the journal async-commit half — see
+  [Remaining work](#remaining-work-1758). Use it for create/write-heavy workloads
+  that tolerate losing the last ~100 ms of *metadata* on a hard crash.
+- **`remote`** — makes `CLOSE`/`COMMIT` block until the data is durable in the
+  remote (S3) store, so an acknowledged write survives losing the whole node. Slow
+  by design.
 
-The opposite direction: makes `CLOSE`/`COMMIT` block until the data is durably in
-the remote (S3) store, so an acknowledged write survives losing the whole node.
-Slow by design. See
-[Configuration → require_durable_commit](configuration.md#require_durable_commit)
-for the full CLOSE/COMMIT semantics.
+### Underlying flags (advanced / backward-compatible)
 
-```bash
-dfsctl store block local edit <share> --config '{"require_durable_commit": true}'
-```
+The enum composes two lower-level per-share bools, which still work directly if you
+need finer control. When `durability` is set it takes precedence; when it is
+absent these are honored unchanged:
+
+- **`writeback: true`** — the metadata-relaxed bool on its own (equivalent to
+  `durability: writeback`).
+- **`require_durable_commit: true`** — the strict CLOSE/COMMIT bool (equivalent to
+  `durability: remote`); see
+  [Configuration → require_durable_commit](configuration.md#require_durable_commit)
+  for the full semantics.
 
 ## Measured throughput per tier
 
@@ -75,29 +79,23 @@ full method and competitor comparison in [BENCHMARKS.md](../BENCHMARKS.md#create
 
 | Config | Tier | ops/s |
 |---|---|--:|
-| `writeback: true` + async journal | writeback | ~5700 |
-| `writeback: true` | local-durable (metadata relaxed) | ~1680 |
-| *default* | local-durable | ~900 |
-| `require_durable_commit: true` | synchronous-to-S3 | not yet benchmarked (#1758) |
+| `durability: writeback` + async journal | writeback | ~5700 |
+| `durability: writeback` | local-durable (metadata relaxed) | ~1680 |
+| `durability: local` *(default)* | local-durable | ~900 |
+| `durability: remote` | synchronous-to-S3 | not yet benchmarked |
 
 For context, at a matched writeback guarantee DittoFS sustains **3.0× JuiceFS
-`--writeback`**; the local-durable middle tier is one no S3 filesystem competitor
-offers at all.
+`--writeback`** and **3.6× s3ql**; the local-durable middle tier is one no S3
+filesystem competitor offers at all.
 
-## Planned: named `durability` tier (#1758)
+## Remaining work (#1758)
 
-Today you compose the tier from the two flags above. Two gaps remain:
-
-- The **writeback** row above still needs the journal's async-commit half, which is
-  a diagnostic toggle, not yet a supported config.
-- There is no single, discoverable per-share **`durability`** enum.
-
-[#1758](https://github.com/marmos91/dittofs/issues/1758) folds all of this into one
-per-share setting — `durability: writeback | local | remote` — composing journal
-async-commit, metadata `writeback`, and block `require_durable_commit` into three
-named tiers. The `remote` tier is the productionized synchronous-to-S3 path. Until
-that lands, use the two flags above; the default (neither set) is unchanged and
-remains local-durable.
+The `durability` enum is shipped: **`local`** and **`remote`** are fully functional,
+and **`writeback`** selects the metadata-relaxed path. One piece remains — the full
+**data-writeback** tier (~5700 ops/s) needs the journal async-commit half, still a
+diagnostic toggle rather than a supported config and gated on the journal
+switchover stabilizing. Until it lands, `durability: writeback` delivers the
+metadata-relaxed (local-durable) band; `local` and `remote` are complete.
 
 ## See also
 
