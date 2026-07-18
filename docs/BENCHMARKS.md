@@ -134,6 +134,7 @@ loss (median of 3):
 | **Bounded-loss writeback** | rclone `vfs-cache=writes` | local-ack, async S3 | 6216 |
 | | **DittoFS writeback** | local-async, async S3 | **5731** |
 | | JuiceFS `--writeback` | local-ack, async S3 | 1934 |
+| | s3ql (dedup+compress, SQLite meta) | local-cache ack, async S3 | 1573 |
 | **Local-durable** | **DittoFS meta-writeback** (#1759) | data journal-`fsync`; metadata ≤ 150 ms loss | **1682** |
 | | **DittoFS journal-writeback** | metadata `fsync`; data bounded loss | **1068** |
 | | **DittoFS default** | journal + metadata `fsync`, async S3 — node-crash-safe | **902** |
@@ -146,10 +147,13 @@ loss (median of 3):
 
 **Read by guarantee, the deficit inverts:**
 
-1. **Matched writeback tier: DittoFS 3.0× JuiceFS** (5731 vs 1934). The clean
-   apples-to-apples number. The "3.6× behind" from the fair table above compares
-   DittoFS-*durable* against JuiceFS-*writeback* — a stronger guarantee losing to a
-   weaker one; at the same guarantee DittoFS leads.
+1. **Matched writeback tier: DittoFS beats both real dedup filesystems** — 3.0×
+   JuiceFS `--writeback` (5731 vs 1934) and 3.6× s3ql (5731 vs 1573). Both peers
+   carry a real metadata engine + dedup, the same class as DittoFS; DittoFS is the
+   fastest of the three by a wide margin. (The "3.6× behind" from the fair table
+   above compares DittoFS-*durable* against JuiceFS-*writeback* — a stronger
+   guarantee losing to a weaker one; at the same guarantee DittoFS leads.) rclone
+   (6216) leads by 8 %, but it is a thin passthrough, not a peer — see point 3.
 2. **Local-durable is a tier no competitor offers.** DittoFS acks after a local
    `fsync` and replicates to S3 in the background (node-crash-safe). JuiceFS and
    s3fs jump straight from writeback to full S3-sync — the 902–1682 middle band has
