@@ -548,20 +548,35 @@ func (s *Service) SetFileAttributes(ctx *AuthContext, handle FileHandle, attrs *
 		// deliberately bypassed here in favor of withRelaxedTransaction to
 		// actually defer the write (#1573 Wall 1).
 		if attrs.Size != nil {
-			if err := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+			// A truncate/grow makes the committed size authoritative and
+			// supersedes any buffered WRITE. Hold the per-handle flush lock
+			// across the durable size commit AND the discard so a concurrent
+			// FlushPendingWriteForFile cannot pop a stale MaxSize and re-grow the
+			// file between the two — silently undoing the truncate (#1753).
+			mu := s.pendingWrites.GetFlushLock(handle)
+			mu.Lock()
+			err := store.WithTransaction(ctx.Context, func(tx Transaction) error {
+				return tx.PutFile(ctx.Context, file)
+			})
+			if err == nil {
+				// Discard, don't flush: a buffered MaxSize would resurrect the
+				// pre-truncate size on the next flush.
+				s.pendingWrites.PopPending(handle)
+			}
+			mu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			if err := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
 				return tx.PutFile(ctx.Context, file)
 			}); err != nil {
 				return nil, err
 			}
-		} else if err := withRelaxedTransaction(store, ctx.Context, func(tx Transaction) error {
-			return tx.PutFile(ctx.Context, file)
-		}); err != nil {
-			return nil, err
+			// Invalidate cached file in pending writes to ensure subsequent
+			// writes use fresh attributes (e.g., mode changes for SUID/SGID clearing)
+			s.pendingWrites.InvalidateCache(handle)
 		}
-
-		// Invalidate cached file in pending writes to ensure subsequent
-		// writes use fresh attributes (e.g., mode changes for SUID/SGID clearing)
-		s.pendingWrites.InvalidateCache(handle)
 	}
 
 	// An explicit directory-timestamp set supersedes any coalesced create/remove

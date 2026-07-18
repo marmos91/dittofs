@@ -130,6 +130,21 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 	wcc.Before = CopyFileAttr(&parent.FileAttr)
 	now := time.Now()
 
+	// lastLink records whether this unlink removed the final name for the inode.
+	// When it did, any buffered WRITE state for the (still-open) file must be
+	// discarded so a later flush cannot resurrect its size/mtime on the removed
+	// inode (#1753). A hard-link decrement leaves the file — and its legitimate
+	// buffered size — intact, so it is left untouched.
+	var lastLink bool
+
+	// Serialize the remove + discard against a concurrent
+	// FlushPendingWriteForFile (e.g. an in-flight COMMIT on the same file):
+	// hold the per-handle flush lock across both so a popped stale MaxSize
+	// cannot be re-applied to the inode after we drop it (#1753).
+	flushMu := s.pendingWrites.GetFlushLock(fileHandle)
+	flushMu.Lock()
+	defer flushMu.Unlock()
+
 	// Execute the child-removing writes in a single transaction. Like create,
 	// this transaction does NOT touch the parent inode — the parent timestamp
 	// bump that used to serialize concurrent same-dir removes on a BadgerDB SSI
@@ -173,6 +188,7 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 			}
 		} else {
 			// Last link - set nlink=0 but keep metadata for POSIX compliance
+			lastLink = true
 			returnFile.Nlink = 0
 			returnFile.Ctime = now
 
@@ -198,6 +214,12 @@ func (s *Service) RemoveFile(ctx *AuthContext, parentHandle FileHandle, name str
 
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// The unlink is authoritative; drop any buffered WRITE state so a later
+	// flush cannot resurrect size/mtime for the removed file (#1753).
+	if lastLink {
+		s.pendingWrites.PopPending(fileHandle)
 	}
 
 	// Coalesce the parent directory timestamp bump (Mtime/Ctime/Atime per
