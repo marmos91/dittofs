@@ -195,6 +195,64 @@ func TestDittofsDurabilityTiers(t *testing.T) {
 	}
 }
 
+// TestCompetitorVariants asserts the expanded competitor matrix (juicefs 6,
+// rclone 2, s3fs 2, zerofs 2, goofys, ganesha) registers under the expected
+// names with the right Support maps, and that each tool's two mode variants
+// carry distinct Tier strings — so the run log records which durability tier was
+// measured. Uses the real init-populated registry (like TestDittofsDurabilityTiers).
+func TestCompetitorVariants(t *testing.T) {
+	all := map[Protocol]Support{ProtoNFS3: Reexport, ProtoNFS4: Reexport, ProtoSMB3: Reexport}
+	nfs3Native := map[Protocol]Support{ProtoNFS3: Native}
+	nfs34Native := map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native}
+
+	want := map[string]map[Protocol]Support{
+		"juicefs":                  all,
+		"juicefs-durable":          all,
+		"juicefs-postgres":         all,
+		"juicefs-postgres-durable": all,
+		"juicefs-redis":            all,
+		"juicefs-redis-durable":    all,
+		"rclone":                   all,
+		"rclone-cachefull":         all,
+		"s3fs":                     all,
+		"s3fs-nocache":             all,
+		"goofys":                   all,
+		"zerofs":                   nfs3Native,
+		"zerofs-sync":              nfs3Native,
+		"ganesha":                  nfs34Native,
+	}
+	for name, sup := range want {
+		b, ok := registry[name]
+		if !ok {
+			t.Errorf("backend %q not registered", name)
+			continue
+		}
+		for p, s := range sup {
+			if b.Support[p] != s {
+				t.Errorf("%s: protocol %s support = %s, want %s", name, p, b.Support[p], s)
+			}
+		}
+		if len(sup) < 3 && b.Support[ProtoSMB3] != NA {
+			t.Errorf("%s: smb3 support = %s, want na", name, b.Support[ProtoSMB3])
+		}
+		if b.Tier == "" {
+			t.Errorf("%s: empty Tier string", name)
+		}
+	}
+
+	// Each tool's two modes must carry distinct Tier strings.
+	for _, p := range [][2]string{
+		{"juicefs", "juicefs-durable"},
+		{"rclone", "rclone-cachefull"},
+		{"s3fs", "s3fs-nocache"},
+		{"zerofs", "zerofs-sync"},
+	} {
+		if registry[p[0]].Tier == registry[p[1]].Tier {
+			t.Errorf("%s and %s share Tier %q; modes must differ", p[0], p[1], registry[p[0]].Tier)
+		}
+	}
+}
+
 func TestBackendNamesSorted(t *testing.T) {
 	withRegistry(t,
 		&Backend{Name: "s3fs"},

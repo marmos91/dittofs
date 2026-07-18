@@ -35,7 +35,7 @@ dfsbench run --dry-run ...             # print the cell matrix, run nothing
 # Full cloud run: provision one disposable VM → managed matrix → tear down
 dfsbench setup                         # SCW_* env picks type/zone/image; writes .bench-vm.json
 dfsbench run --remote --config bench.yaml \
-  --systems dittofs-s3-nfs3,dittofs-sqlite-s3-nfs3,dittofs-postgres-s3-nfs3,zerofs-nfs3,s3ql-nfs3,juicefs-nfs3,rclone-nfs3,s3fs-nfs3,local-disk-nfs3 \
+  --systems dittofs-s3-nfs3,dittofs-s3-writeback-nfs3,dittofs-s3-remote-nfs3,dittofs-sqlite-s3-nfs3,dittofs-postgres-s3-nfs3,zerofs-nfs3,zerofs-sync-nfs3,ganesha-nfs3,s3ql-nfs3,juicefs-nfs3,juicefs-durable-nfs3,juicefs-postgres-nfs3,juicefs-redis-nfs3,rclone-nfs3,rclone-cachefull-nfs3,s3fs-nfs3,s3fs-nocache-nfs3,goofys-nfs3,local-disk-nfs3 \
   --sizes medium,large
 dfsbench report --results ./bench-results   # re-render the comparison table
 dfsbench teardown                      # terminate the VM in .bench-vm.json
