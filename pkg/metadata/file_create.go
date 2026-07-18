@@ -1,11 +1,26 @@
 package metadata
 
 import (
+	"context"
 	"time"
 
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/lock"
 )
+
+// createCacheStore is the optional create-path fast path implemented by the
+// badger backend (#1735). It supplies cached, generation-guarded reads for the
+// two PRE-transaction lookups on the create path — the parent directory
+// (GetFileForCreate) and the outer existence check (GetChildForCreate) — plus
+// read-cache warming for a just-created file (WarmFileReadCache) so the trailing
+// WRITE/GETATTR/ACCESS hit warm. Backends that do not implement it fall back to
+// the plain Store methods, so behaviour is identical either way. None of these
+// is ever used for the authoritative in-transaction TOCTOU recheck.
+type createCacheStore interface {
+	GetFileForCreate(ctx context.Context, handle FileHandle) (*File, error)
+	GetChildForCreate(ctx context.Context, dirHandle FileHandle, name string) (FileHandle, error)
+	WarmFileReadCache(file *File)
+}
 
 // CreateFile creates a new regular file in a directory. The returned DirWcc
 // carries the parent's pre/post attributes captured atomically with the create
@@ -202,8 +217,17 @@ func (s *Service) createEntry(
 		return nil, nil, err
 	}
 
-	// Get parent entry
-	parent, err := store.GetFile(ctx.Context, parentHandle)
+	cc, hasCreateCache := store.(createCacheStore)
+
+	// Get parent entry. GetFileForCreate serves it from the path-carrying
+	// parentCache when warm (#1735); it returns a caller-owned copy with Path
+	// populated (needed below for the PATH_MAX check), identical to GetFile.
+	var parent *File
+	if hasCreateCache {
+		parent, err = cc.GetFileForCreate(ctx.Context, parentHandle)
+	} else {
+		parent, err = store.GetFile(ctx.Context, parentHandle)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -231,8 +255,16 @@ func (s *Service) createEntry(
 		return nil, nil, err
 	}
 
-	// Check if name already exists
-	_, err = store.GetChild(ctx.Context, parentHandle, name)
+	// Check if name already exists. This OUTER check is advisory only — the
+	// authoritative TOCTOU guard is the in-transaction recheck below (:~410),
+	// which MUST hit the real badger txn. So it is safe to serve this one from the
+	// dirent cache (GetChildForCreate) when warm (#1735); a stale answer at worst
+	// costs a wasted transaction that the in-txn recheck then rejects.
+	if hasCreateCache {
+		_, err = cc.GetChildForCreate(ctx.Context, parentHandle, name)
+	} else {
+		_, err = store.GetChild(ctx.Context, parentHandle, name)
+	}
 	if err == nil {
 		return nil, nil, &StoreError{
 			Code:    ErrAlreadyExists,
@@ -434,6 +466,15 @@ func (s *Service) createEntry(
 
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// Warm the read cache with the just-created inode so the immediately
+	// following WRITE/GETATTR/ACCESS on this new handle hit warm instead of
+	// re-decoding it from badger (#1735). Runs AFTER commit (and after the
+	// commit's own read-cache invalidation), so the generation captured inside
+	// WarmFileReadCache is post-commit and the populate is correctly ordered.
+	if hasCreateCache {
+		cc.WarmFileReadCache(newFile)
 	}
 
 	// Coalesce the parent directory timestamp bump. Per MS-FSA 2.1.4.4 a

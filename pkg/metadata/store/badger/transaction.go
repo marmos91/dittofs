@@ -48,6 +48,14 @@ type badgerTransaction struct {
 	// attempt like pendingDelta so a conflict-retry cannot leak a phantom
 	// invalidation. A stale entry is a wrong permission decision.
 	dirtyShares []string
+	// dirtyDirents collects (parentID,name) dirent-cache keys whose forward
+	// c:<parent>:<name> edge this transaction wrote (SetChild) or deleted
+	// (DeleteChild). Captured per attempt and, after a successful commit, used to
+	// invalidate the negative dirent cache (see withTransaction). Reset per
+	// attempt like dirtyFiles so a conflict-retry cannot leak a phantom
+	// invalidation. A stale entry is a spurious ENOENT (negative) or EEXIST
+	// (positive).
+	dirtyDirents []string
 }
 
 // badgerQuotaKey identifies a per-identity usage bucket inside a transaction's
@@ -149,6 +157,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 		var quotaDelta map[badgerQuotaKey]metadata.UsageStat
 		var dirtyFiles []string
 		var dirtyShares []string
+		var dirtyDirents []string
 		err := s.db.Update(func(txn *badgerdb.Txn) error {
 			tx := &badgerTransaction{store: s, txn: txn}
 			if fnErr := fn(tx); fnErr != nil {
@@ -158,6 +167,7 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			quotaDelta = tx.quotaDelta
 			dirtyFiles = tx.dirtyFiles
 			dirtyShares = tx.dirtyShares
+			dirtyDirents = tx.dirtyDirents
 			return nil
 		})
 
@@ -174,9 +184,19 @@ func (s *BadgerMetadataStore) withTransaction(ctx context.Context, fn func(tx me
 			// store loses). A stale share entry is a wrong permission decision.
 			for _, id := range dirtyFiles {
 				s.readCache.invalidate(id)
+				// The parentCache is keyed by the same fileID string; a mutation
+				// to an inode that is cached as some create's parent (chmod/chown/
+				// rename PutFiles it) must drop that stale parent entry too (#1735).
+				s.parentCache.invalidate(id)
 			}
 			for _, name := range dirtyShares {
 				s.shareCache.invalidate(name)
+			}
+			// Drop dirent-cache entries for every (parentID,name) whose forward
+			// edge this transaction wrote or deleted, so a subsequent existence
+			// check re-reads instead of serving a stale ABSENT/present (#1735).
+			for _, k := range dirtyDirents {
+				s.direntCache.invalidate(k)
 			}
 			// Durable (data-paired) commit in relaxed mode: fsync now so the
 			// write survives a crash. A sync failure must not falsely ack a
@@ -618,6 +638,10 @@ func (tx *badgerTransaction) SetChild(ctx context.Context, dirHandle metadata.Fi
 		}
 	}
 
+	// Record the dirent-cache key so the negative dirent cache is invalidated
+	// after this write commits (see withTransaction). Never served in-txn.
+	tx.dirtyDirents = append(tx.dirtyDirents, direntKey(dirID.String(), name))
+
 	// Store child UUID bytes plus the reverse edge cn:<parent>:<child> -> name
 	// so derivePath resolves the child's name under this parent in O(1) instead
 	// of scanning every c:<parent>:* entry (#1166).
@@ -662,6 +686,10 @@ func (tx *badgerTransaction) DeleteChild(ctx context.Context, dirHandle metadata
 	}); vErr != nil {
 		return vErr
 	}
+
+	// Record the dirent-cache key so a cached present/ABSENT entry for this
+	// (parent,name) is invalidated after the delete commits (see withTransaction).
+	tx.dirtyDirents = append(tx.dirtyDirents, direntKey(dirID.String(), name))
 
 	if err := tx.txn.Delete(keyChild(dirID, name)); err != nil {
 		return err
