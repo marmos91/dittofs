@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 
@@ -118,9 +117,11 @@ func (s *BadgerMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 			}
 
 			// Hash extraction: decode f: prefix entries for block hashes.
+			// decodeFile handles both the binary codec (new writes) and the
+			// legacy JSON records (dual-read, #1735).
 			if bytes.HasPrefix(key, filePrefix) {
-				var file metadata.File
-				if err := json.Unmarshal(val, &file); err != nil {
+				file, err := decodeFile(val)
+				if err != nil {
 					logger.Warn("backup: malformed f: entry, skipping hash extraction",
 						"key", string(key), "error", err)
 					continue
@@ -132,7 +133,7 @@ func (s *BadgerMetadataStore) WriteSnapshot(ctx context.Context, w io.Writer) (*
 				// (l: key), not the embedded File.Nlink which SetLinkCount does
 				// not rewrite. The raw f: record is still dumped verbatim above so
 				// a restore stays consistent (the file remains nlink=0, invisible).
-				if fileLinkCountTxn(txn, &file) == 0 {
+				if fileLinkCountTxn(txn, file) == 0 {
 					continue
 				}
 				for _, br := range file.Blocks {
