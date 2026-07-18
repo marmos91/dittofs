@@ -75,14 +75,14 @@ absent these are honored unchanged:
 ## Measured throughput per tier
 
 File-create + 4 KiB write, 8 threads, NFSv3, badger + S3 remote (median ops/s;
-full method and competitor comparison in [BENCHMARKS.md](../BENCHMARKS.md#create-throughput-across-durability-tiers-1735)):
+full method and competitor comparison in [BENCHMARKS.md](../BENCHMARKS.md)):
 
 | Config | Tier | ops/s |
 |---|---|--:|
 | `durability: writeback` + async journal | writeback | ~5700 |
 | `durability: writeback` | local-durable (metadata relaxed) | ~1680 |
 | `durability: local` *(default)* | local-durable | ~900 |
-| `durability: remote` | synchronous-to-S3 | not yet benchmarked |
+| `durability: remote` | synchronous-to-S3 | ≈ JuiceFS-default (parity) |
 
 For context, at a matched writeback guarantee DittoFS sustains **3.0× JuiceFS
 `--writeback`** and **3.6× s3ql**; the local-durable middle tier is one no S3
