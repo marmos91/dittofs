@@ -1,6 +1,7 @@
 package badger
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -8,6 +9,82 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 )
+
+// hotFile is the shape of an inode on the create/write hot path: a plain regular
+// file with no ACL, no EAs, no Blocks yet. This is the record decoded 4-5x per
+// create+write op — the one #1735 targets.
+func hotFile() *metadata.File {
+	return &metadata.File{
+		ID:        uuid.New(),
+		ShareName: "/bench",
+		Path:      "/data.bin",
+		FileAttr: metadata.FileAttr{
+			Type: metadata.FileTypeRegular, Mode: 0o644, UID: 1000, GID: 1000, Nlink: 1,
+			Size: 4096, Atime: time.Unix(1, 0), Mtime: time.Unix(2, 0),
+			Ctime: time.Unix(3, 0), CreationTime: time.Unix(4, 0),
+			PayloadID: "bench/data",
+		},
+	}
+}
+
+// BenchmarkDecodeFileJSON is the reflection-JSON baseline for the hot-path file,
+// the format decodeFile replaced. Compare ns/op against BenchmarkDecodeFileHot.
+func BenchmarkDecodeFileJSON(b *testing.B) {
+	f := hotFile()
+	f.Path = ""
+	enc, err := json.Marshal(f)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(enc)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var out metadata.File
+		if err := json.Unmarshal(enc, &out); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDecodeFileHot is the new binary decode on the same hot-path file.
+func BenchmarkDecodeFileHot(b *testing.B) {
+	enc, err := encodeFile(hotFile())
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(enc)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := decodeFile(enc); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkEncodeFileJSON(b *testing.B) {
+	f := hotFile()
+	f.Path = ""
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := json.Marshal(f); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkEncodeFileHot(b *testing.B) {
+	f := hotFile()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := encodeFile(f); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
 
 // bigFile builds a File with nBlocks ChunkRefs — the shape GetFileForRead
 // decodes on every read of a rolled-up file (a 1 GiB file at the ~1 MiB FastCDC
