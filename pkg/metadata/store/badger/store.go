@@ -64,6 +64,21 @@ type BadgerMetadataStore struct {
 	// decode. Invalidated after each committed write (see withTransaction).
 	readCache fileReadCache
 
+	// parentCache caches decoded parent-directory File records (WITH derived
+	// Path) for the create hot path so repeated creates in one directory skip the
+	// per-create badger View txn + decode + parent-edge path walk (#1735). Kept
+	// SEPARATE from readCache because it holds path-carrying entries, which must
+	// never pollute the shared readCache (whose consumers derive Path fresh,
+	// #1166). Invalidated in lockstep with readCache on the parent's own mutation
+	// (parentID in dirtyFiles) — see GetFileForCreate and withTransaction.
+	parentCache fileReadCache
+
+	// direntCache caches (parentID,name) -> childHandle|ABSENT for the
+	// pre-transaction existence check on the create path and LOOKUP (#1735).
+	// Populate-after-commit, generation-guarded; NEVER consulted for the in-txn
+	// TOCTOU recheck. Invalidated after each committed SetChild/DeleteChild.
+	direntCache direntCache
+
 	// gcStop signals the value-log GC goroutine to exit. Closed once by
 	// Close() (guarded by gcStopOnce); gcWG waits for the goroutine to
 	// drain before Close() shuts the DB so the GC never runs against a
