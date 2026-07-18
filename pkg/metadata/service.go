@@ -46,6 +46,7 @@ type Service struct {
 	dirChangeNotifiers map[string]lock.DirChangeNotifier // shareName -> notifier for directory changes
 	pendingWrites      *PendingWritesTracker             // deferred metadata commits for performance
 	dirTimes           *DirTimesTracker                  // coalesced directory mtime/ctime/atime bumps (#1573)
+	writebackShares    map[string]bool                   // shareName -> writeback tier (#1757): relax FILE_SYNC metadata flush
 	deferredCommit     atomic.Bool                       // if true, use deferred commits (default: true); read lock-free on the write hot path
 
 	// parentLinkShards is a fixed bank of mutexes that serialize the parent
@@ -147,6 +148,7 @@ func New() *Service {
 		quotas:             make(map[string]int64),
 		identityQuotas:     newQuotaLimits(),
 		removeGen:          make(map[string]uint64),
+		writebackShares:    make(map[string]bool),
 	}
 	s.deferredCommit.Store(true) // Enable deferred commits by default
 	return s
@@ -265,6 +267,28 @@ func (s *Service) SetByteRangeReleaseHook(fn func(handleKey string)) {
 // SetTrashPolicy installs the per-share recycle-bin policy. A nil policy
 // (the default) disables trash: deletes destroy content as before.
 func (s *Service) SetTrashPolicy(p TrashPolicy) { s.trashPolicy = p }
+
+// SetShareWriteback opts a share into (or out of) the metadata writeback tier
+// (#1757). When enabled, FlushPendingWriteForFile downgrades an otherwise
+// durable per-op flush (FILE_SYNC WRITE, SMB CLOSE/FLUSH) to the relaxed
+// deferred-fsync path, moving the metadata db.Sync off the request hot path.
+// Default (not set) is durable. Set at AddShare; cleared by RemoveStoreForShare.
+func (s *Service) SetShareWriteback(shareName string, writeback bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if writeback {
+		s.writebackShares[shareName] = true
+	} else {
+		delete(s.writebackShares, shareName)
+	}
+}
+
+// shareWriteback reports whether a share is in the writeback tier.
+func (s *Service) shareWriteback(shareName string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.writebackShares[shareName]
+}
 
 // RegisterStoreForShare associates a metadata store with a share.
 // Each share must have exactly one store. Calling this again for the same
@@ -472,6 +496,7 @@ func (s *Service) RemoveStoreForShare(shareName string) {
 	delete(s.unifiedViews, shareName)
 	delete(s.dirChangeNotifiers, shareName)
 	delete(s.quotas, shareName)
+	delete(s.writebackShares, shareName)
 
 	// Bump this share's removal generation so any RegisterStoreForShare recovering
 	// it outside s.mu declines to publish: the register snapshots removeGen before

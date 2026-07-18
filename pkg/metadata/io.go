@@ -370,6 +370,17 @@ func (s *Service) immediateCommitWrite(ctx *AuthContext, intent *WriteOperation)
 // WRITE, COMMIT, SMB inline WRITE) so the metadata fsync moves off the hot path.
 // See flushPendingWrite for the crash-safety argument (journal size reconcile).
 func (s *Service) FlushPendingWriteForFile(ctx *AuthContext, handle FileHandle, durable bool) (bool, error) {
+	// Writeback tier (#1757): if the share owning this handle opted in, downgrade
+	// an otherwise durable per-op flush to the relaxed (deferred-fsync) path even
+	// for FILE_SYNC WRITE / SMB CLOSE/FLUSH, moving the metadata db.Sync off the
+	// hot path. Bounded loss: a crash before the background fsync cannot truncate
+	// ACK'd data because reconcileMetadataSizeFromJournal grows metadata.Size up
+	// to the journal's durable high-water mark on share start. Only the
+	// FlushPendingWriteForFile entrypoint is downgraded; the shutdown flush calls
+	// flushPendingWrite directly with durable=true and stays durable.
+	if durable && s.shareWriteback(shareNameForHandle(handle)) {
+		durable = false
+	}
 	// Serialize flushes per file to avoid BadgerDB conflict retries
 	mu := s.pendingWrites.GetFlushLock(handle)
 	mu.Lock()

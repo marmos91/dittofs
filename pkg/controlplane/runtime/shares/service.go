@@ -140,6 +140,12 @@ type Share struct {
 	// stores at share creation; empty for in-memory backends — the status
 	// handler treats "" as "no journal available" rather than an error.
 	localStoreDir string
+
+	// writeback records whether this share opted into the metadata writeback
+	// tier (#1757) via the local store config's "writeback" bool. When true,
+	// AddShare tells the metadata service to relax the per-op FILE_SYNC flush
+	// for this share's handles. Default false (durable).
+	writeback bool
 }
 
 // GCStateRoot returns the per-share gc-state directory used by the GC
@@ -258,6 +264,13 @@ type MetadataServiceRegistrar interface {
 // share it refuses to finalize.
 type MetadataServiceDeregistrar interface {
 	RemoveStoreForShare(shareName string)
+}
+
+// MetadataWritebackSetter opts a share into the metadata writeback tier (#1757).
+// The concrete *metadata.Service satisfies it. AddShare calls it after
+// registering the store when the share's local config sets "writeback": true.
+type MetadataWritebackSetter interface {
+	SetShareWriteback(shareName string, writeback bool)
 }
 
 // BlockStoreConfigProvider resolves block store configurations from the control plane DB.
@@ -701,6 +714,14 @@ func (s *Service) AddShare(
 		return fmt.Errorf("failed to configure metadata for share: %w", err)
 	}
 
+	// Apply the per-share metadata writeback tier (#1757) parsed from the local
+	// store config in createBlockStoreForShare. Set explicitly (true or false) so
+	// a re-add that toggles writeback off is honored. Only the concrete
+	// *metadata.Service implements the setter.
+	if wb, ok := metadataSvc.(MetadataWritebackSetter); ok {
+		wb.SetShareWriteback(config.Name, share.writeback)
+	}
+
 	// Phase 4: Convert the reservation into a registry entry under s.mu.
 	// Only now is the share visible to protocol handlers. The reservation has
 	// held the name exclusively since Phase 0, so registry[name] cannot already
@@ -1123,6 +1144,10 @@ func (s *Service) createBlockStoreForShare(
 	// async). Set before Start so it governs the very first commit.
 	if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
 		applyRequireDurableCommit(bs, localStoreCfg, config.Name)
+		// Stash the metadata writeback-tier flag (#1757) from the same local
+		// config map. It is applied to the metadata service in AddShare (which
+		// holds the registrar), after RegisterStoreForShare.
+		share.writeback = parseWritebackConfig(localStoreCfg, config.Name)
 	} else {
 		logger.Warn("failed to read local block store config for require_durable_commit; defaulting to false",
 			"share", config.Name, "error", cfgErr)
@@ -3020,6 +3045,28 @@ func applyRequireDurableCommit(bs *engine.Store, config map[string]any, shareNam
 	if b {
 		logger.Info("strict honest-CLOSE/COMMIT durability enabled by config", "share", shareName)
 	}
+}
+
+// parseWritebackConfig reads the optional per-share "writeback" bool from the
+// local store config (#1757). Read the same conservative way as
+// config["require_durable_commit"]: absent or non-bool → false (default,
+// durable). When true, the share's per-op FILE_SYNC metadata flush takes the
+// relaxed deferred-fsync path (see metadata.Service.SetShareWriteback).
+func parseWritebackConfig(config map[string]any, shareName string) bool {
+	v, ok := config["writeback"]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	if !ok {
+		logger.Warn("block store config has writeback but it is not a bool; ignoring",
+			"share", shareName, "value", v)
+		return false
+	}
+	if b {
+		logger.Info("metadata writeback tier enabled by config", "share", shareName)
+	}
+	return b
 }
 
 // CreateRemoteStoreFromConfig creates a remote store from type and dynamic config.
