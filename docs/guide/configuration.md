@@ -428,6 +428,10 @@ background. Use `require_durable_commit = true` only when you need synchronous
 durability guarantees on a volatile-local + durable-remote share and can accept
 the added latency.
 
+> See [Durability & QoS tiers](durability.md) for how this flag and the metadata
+> `writeback` flag compose into the full durability spectrum, with per-tier
+> throughput numbers.
+
 `dfsctl store block stats` also shows `Pending Remote (bytes)` — the headline
 data-at-risk gauge (local CAS bytes not yet mirrored to the remote) — which is
 the way to observe the async mirror backlog under the default policy.
