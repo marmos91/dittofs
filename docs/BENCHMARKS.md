@@ -39,9 +39,15 @@ same `fio` workloads over NFSv3.
 
 **Durability tiers, now matched.** DittoFS acknowledges an NFS COMMIT once the
 write is durable in its **local journal**, uploading to S3 asynchronously via the
-syncer. JuiceFS `--writeback` is the same tier (local-cache ack + async S3), and
-the `sync` re-export makes the FUSE competitors ack from stable storage too — so
-writes now compare durable-vs-durable. The one structural asymmetry left is on
+syncer. JuiceFS `--writeback` is the same tier for *bulk data writes* (local-cache
+ack + async S3), and the `sync` re-export makes the FUSE competitors ack from
+stable storage too — so writes now compare durable-vs-durable. **One caveat on the
+metadata row:** DittoFS-default additionally `fsync`s the metadata store per
+`FILE_SYNC` create, whereas JuiceFS `--writeback` does not (~0.036 fsync/create) —
+so the `metadata` cell below is DittoFS's *stronger* durable guarantee against
+JuiceFS's weaker one. The matched-guarantee create comparison (and where that
+deficit inverts) is in [Create throughput across durability tiers](#create-throughput-across-durability-tiers-1735).
+The one structural asymmetry left is on
 **warm reads**: the FUSE re-exports are served from the kernel page cache, which
 native userspace servers (DittoFS, ZeroFS) don't get — so **warm reads are only
 like-for-like against ZeroFS.**
@@ -81,14 +87,18 @@ Sequential rows are MB/s; random / metadata / mixed are IOPS (metadata = ops/s).
    Against **ZeroFS** — the fair native-durable peer — DittoFS wins every row
    (rand-read 15×, seq-write 4.3×, rand-write 3.7×, mixed 5×) except metadata.
 
-3. **Metadata is the one real deficit** — 486 ops/s, last. `#1687` doubled it
-   (239→486), but with durability, logging, and attr-cache now all neutralized it
-   is still 3.6× behind JuiceFS, so the deficit is real. The residual is the
-   **userspace NFS adapter's per-create cost**
-   ([#1735](https://github.com/marmos91/dittofs/issues/1735)): `Service.CreateFile`
-   is 27 µs and the server sustains ~15.6k creates/s over loopback — the store is
-   not the wall; a kernel NFS server re-exporting a fast local-meta FUSE mount just
-   beats our userspace CREATE path. **This is the #1 perf target.**
+3. **Metadata (486 ops/s) is DittoFS's *stronger* durable guarantee measured
+   against a weaker one — and it inverts at matched tier.** This cell `fsync`s the
+   metadata store per `FILE_SYNC` create; JuiceFS's 1766 is `--writeback`, which
+   does not (~0.036 fsync/create). The
+   [#1735](https://github.com/marmos91/dittofs/issues/1735) study root-caused the
+   plateau as exactly that per-op durable `badger.DB.Sync` (not the store, the
+   transport, or the block layer), and shipped the fix as the per-share **writeback
+   tier** ([#1759](https://github.com/marmos91/dittofs/pull/1759)): at a *matched*
+   guarantee DittoFS does **5731 ops/s vs JuiceFS-`--writeback`'s 1934 — 3.0×
+   ahead**. The durable default stays the safe out-of-the-box choice; operators
+   trade a bounded-loss window for that throughput explicitly. Full spectrum in
+   [Create throughput across durability tiers](#create-throughput-across-durability-tiers-1735).
 
 4. **Sequential write (272 vs JuiceFS 560) is latency-bound, not compute-bound.**
    DittoFS runs this cell at **15 % CPU** with the disk unsaturated (291 MB/s) and
@@ -96,6 +106,68 @@ Sequential rows are MB/s; random / metadata / mixed are IOPS (metadata = ops/s).
    working. The throttle is the same per-op adapter + commit round-trip as metadata
    (#1735), not encryption or chunking (which would show as high CPU). Exact split
    pending a write-path pprof.
+
+## Create throughput across durability tiers (#1735)
+
+The metadata create path was the standing #1 target. A dedicated study
+([#1735](https://github.com/marmos91/dittofs/issues/1735)) settled that the
+plateau is per-op **durable metadata flush** (`badger.DB.Sync` on the `FILE_SYNC`
+branch) — not the metadata store (badger/postgres/sqlite measure identically), not
+the NFS transport, and not the block layer. The fix is therefore a **durability
+choice**, not a group-commit trick: cross-shard fsync coalescing was refuted
+([#1742](https://github.com/marmos91/dittofs/issues/1742),
+[#1747](https://github.com/marmos91/dittofs/issues/1747)) because per-op durable
+commits don't overlap in time. Shipping the per-share **writeback tier**
+([#1759](https://github.com/marmos91/dittofs/pull/1759)) lets an operator trade a
+bounded metadata-loss window for throughput.
+
+Co-measured on one VM (POP2-8C-32G, `fr-par-1`), `fio` create + 4 KiB write,
+**8 threads**, 45 s, badger + S3 remote; every competitor re-exported over knfsd
+`sync` (no async free ride). DittoFS ran last each round — most S3 backlog — so its
+margins are conservative. Rows grouped by the guarantee each config makes on power
+loss (median of 3):
+
+| Tier | System · config | Guarantee on power loss | ops/s |
+|---|---|---|--:|
+| **Bounded-loss writeback** | rclone `vfs-cache=writes` | local-ack, async S3 | 6216 |
+| | **DittoFS writeback** | local-async, async S3 | **5731** |
+| | JuiceFS `--writeback` | local-ack, async S3 | 1934 |
+| **Local-durable** | **DittoFS meta-writeback** (#1759) | data journal-`fsync`; metadata ≤ 150 ms loss | **1682** |
+| | **DittoFS journal-writeback** | metadata `fsync`; data bounded loss | **1068** |
+| | **DittoFS default** | journal + metadata `fsync`, async S3 — node-crash-safe | **902** |
+| **Synchronous to S3** | JuiceFS default | ack after S3 | 37 |
+| | s3fs write-through | ack after S3 | 4.5 |
+| | goofys | — | DNF ‡ |
+
+‡ goofys can't run the workload — its S3-object model has no metadata engine, so
+`fio` I/O-errors creating the first file. Structural, not a harness fault.
+
+**Read by guarantee, the deficit inverts:**
+
+1. **Matched writeback tier: DittoFS 3.0× JuiceFS** (5731 vs 1934). The clean
+   apples-to-apples number. The "3.6× behind" from the fair table above compares
+   DittoFS-*durable* against JuiceFS-*writeback* — a stronger guarantee losing to a
+   weaker one; at the same guarantee DittoFS leads.
+2. **Local-durable is a tier no competitor offers.** DittoFS acks after a local
+   `fsync` and replicates to S3 in the background (node-crash-safe). JuiceFS and
+   s3fs jump straight from writeback to full S3-sync — the 902–1682 middle band has
+   no competitor row.
+3. **rclone leads writeback by 8 %** (6216 vs 5731) — but `vfs-cache=writes` is a
+   thin local-file passthrough: no dedup, content-addressing, crash-consistent
+   metadata store, or second protocol. DittoFS stays within 8 % while carrying the
+   full engine.
+4. **Synchronous-to-S3 is not yet a DittoFS row.** The block layer already acks on
+   S3 (`require_durable_commit`); composing it into a named `remote` tier is
+   [#1758](https://github.com/marmos91/dittofs/issues/1758), after which DittoFS
+   enters this row against JuiceFS-default (37) and s3fs (4.5).
+
+Mechanism, profiled: the writeback metadata path drops per-op mutex-contention
+delay from **62 s → 5.3 s** — the durable `badger.DB.Sync` leaves the request path
+onto the 100 ms background syncer. Crash-safety backstop:
+`reconcileMetadataSizeFromJournal` repairs metadata size from the journal
+high-water mark on restart, so relaxed metadata is bounded-loss, never corrupt.
+
+See [Durability & QoS tiers](guide/durability.md) for the operator-facing config.
 
 ---
 
