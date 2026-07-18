@@ -138,7 +138,8 @@ loss (median of 3):
 | **Local-durable** | **DittoFS meta-writeback** (#1759) | data journal-`fsync`; metadata ≤ 150 ms loss | **1682** |
 | | **DittoFS journal-writeback** | metadata `fsync`; data bounded loss | **1068** |
 | | **DittoFS default** | journal + metadata `fsync`, async S3 — node-crash-safe | **902** |
-| **Synchronous to S3** | JuiceFS default | ack after S3 | 37 |
+| **Synchronous to S3** | **DittoFS `remote`** (#1758) | ack after data in S3 — verified | **≈ parity** † |
+| | JuiceFS default | ack after S3 | 37 |
 | | s3fs write-through | ack after S3 | 4.5 |
 | | goofys | — | DNF ‡ |
 
@@ -162,10 +163,15 @@ loss (median of 3):
    thin local-file passthrough: no dedup, content-addressing, crash-consistent
    metadata store, or second protocol. DittoFS stays within 8 % while carrying the
    full engine.
-4. **Synchronous-to-S3 is not yet a DittoFS row.** The block layer already acks on
-   S3 (`require_durable_commit`); composing it into a named `remote` tier is
-   [#1758](https://github.com/marmos91/dittofs/issues/1758), after which DittoFS
-   enters this row against JuiceFS-default (37) and s3fs (4.5).
+4. **Synchronous-to-S3: DittoFS `remote` shipped (#1758) and lands at parity with
+   JuiceFS.** The named `remote` tier (`durability: remote` → `require_durable_commit`,
+   block CLOSE/COMMIT blocks until data is durable in S3) is verified end-to-end on
+   real Scaleway S3: a 4 MiB file is in S3 the instant the write acks (the `local`
+   tier's identical test leaves S3 empty — async). In a dedicated 6-run same-VM study,
+   **DittoFS `remote` (26.1 ops/s) ≈ JuiceFS-default (26.2)** — a dead heat, both ~10×
+   faster than s3fs write-through (2.7). See [Sync-to-S3 (remote) tier](#sync-to-s3-remote-tier-1758)
+   below. († the create-tier matrix's 37/4.5 above are from a different VM/day; this
+   tier is highly S3-latency-variable, which is why the parity claim uses a same-VM run.)
 
 Mechanism, profiled: the writeback metadata path drops per-op mutex-contention
 delay from **62 s → 5.3 s** — the durable `badger.DB.Sync` leaves the request path
@@ -174,6 +180,44 @@ onto the 100 ms background syncer. Crash-safety backstop:
 high-water mark on restart, so relaxed metadata is bounded-loss, never corrupt.
 
 See [Durability & QoS tiers](guide/durability.md) for the operator-facing config.
+
+## Sync-to-S3 (remote) tier (#1758)
+
+`durability: remote` (`require_durable_commit`) blocks CLOSE/COMMIT until the data
+is durable in S3 — the strongest tier (survives node loss). **Verified end-to-end on
+real Scaleway S3:** after a 4 MiB write + fsync the object is in S3 immediately
+(4.00 MiB); the `local` tier's identical test leaves S3 empty (async upload). The
+write path is unchanged from `local` — journal append → journal Commit → an inline
+force-carve of the journal's ranges to S3 — with the carve made synchronous.
+
+Dedicated same-VM study, 6 runs each (POP2-8C-32G fr-par-1, fio create+4k-write
+nj=8, medians):
+
+| System | ops/s | durability verified |
+|---|--:|---|
+| **DittoFS `remote`** | **26.1** | ✅ 4 MiB in S3 on commit |
+| JuiceFS default | 26.2 | ✅ fsync blocks on the S3 PUT |
+| s3fs write-through | 2.7 | ✅ |
+| ~~rclone `--vfs-cache-mode off`~~ | ~~59~~ | ❌ fsync → EIO, only a 0-byte object at commit — **not durable; disqualified** |
+| goofys | DNF | structural — no metadata engine |
+
+**DittoFS `remote` and JuiceFS-default are a dead heat (26.1 vs 26.2)**, both ~10×
+faster than naive write-through (s3fs). Individual runs span **18–40 ops/s for
+both** — the tier is S3-round-trip-latency-bound, so small samples mislead: an early
+3-run pass showed a spurious 2.4× gap that 6 runs erased. rclone `--vfs-cache-mode
+off` is excluded — its fsync returns EIO and only a 0-byte placeholder reaches S3 at
+commit, so it is not the same guarantee (verified). ZeroFS (`sync_writes=true`) was
+attempted but wouldn't bind its NFS server headless (needs a controlling TTY) — a
+setup gap, deferred.
+
+**Headroom — the wall.** A `remote`-tier mutex profile puts ~98 % of lock contention
+on a single lock in `journal.Store.Carve` (path `CommitBlockStore → Syncer.Flush →
+Carve`): concurrent `remote` commits **serialize on the carve lock** instead of
+pipelining their S3 PUTs the way JuiceFS parallelizes 20 uploads. Relieving it
+(finer-grained carve concurrency, or dropping the lock across the network PUT) could
+push DittoFS `remote` *past* JuiceFS. It lives in the journal switchover zone
+(tracked as a follow-up) and is a **distinct axis** from the refuted COMMIT-fsync
+coalescing (#1742/#1747) — those merged local fsyncs; this pipelines remote uploads.
 
 ---
 
