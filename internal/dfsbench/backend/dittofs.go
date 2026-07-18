@@ -125,26 +125,30 @@ SQL`, dittofsPGDB, dittofsPGUser, dittofsPGPass)
 func init() {
 	// badger keeps the existing "dittofs-s3" name (result files key off it);
 	// sqlite/postgres get explicit variant names. Same S3 block store, so the
-	// only axis that moves between them is the metadata engine.
+	// metadata engine is the only axis moving between those three. The two extra
+	// badger rows move a SECOND axis — the per-share durability tier (#1758):
+	// "dittofs-s3" is the default local-durable tier (durable-to-local, async S3),
+	// "-writeback" relaxes metadata flush, "-remote" acks only after the S3 PUT.
+	// The tier is set by the "durability" key in the local block store config.
 	for _, v := range []struct {
-		name string
-		kind dittofsMetaKind
+		name       string
+		kind       dittofsMetaKind
+		durability string // local block store "durability": local|writeback|remote
+		tier       string
 	}{
-		{"dittofs-s3", metaBadger},
-		{"dittofs-sqlite-s3", metaSQLite},
-		{"dittofs-postgres-s3", metaPostgres},
+		{"dittofs-s3", metaBadger, "local", "durable-to-local (badger fsync + fs block cache) + async S3 writeback"},
+		{"dittofs-s3-writeback", metaBadger, "writeback", "local-ack (metadata flush relaxed) + async S3 writeback"},
+		{"dittofs-s3-remote", metaBadger, "remote", "ack-on-S3 (strict CLOSE/COMMIT sync to S3)"},
+		{"dittofs-sqlite-s3", metaSQLite, "local", "durable-to-local (sqlite + fs block cache) + async S3 writeback"},
+		{"dittofs-postgres-s3", metaPostgres, "local", "durable-to-local (postgres + fs block cache) + async S3 writeback"},
 	} {
-		kind := v.kind
+		kind, durability := v.kind, v.durability
 		register(&Backend{
 			Name:     v.name,
 			S3Backed: true,
-			// Default durability tier: metadata + block writes are durable on local
-			// disk (badger fsync + fs block cache) before the op acks; the S3 upload
-			// is async writeback. No --require-durable-commit, so it is NOT per-op
-			// S3-synchronous — the same tier as JuiceFS --writeback.
-			Tier:     "durable-to-local (badger fsync + fs block cache) + async S3 writeback",
+			Tier:     v.tier,
 			Support:  map[Protocol]Support{ProtoNFS3: Native, ProtoNFS4: Native, ProtoSMB3: Native},
-			Setup:    func(ctx context.Context, env BackendEnv) error { return dittofsSetup(ctx, env, kind) },
+			Setup:    func(ctx context.Context, env BackendEnv) error { return dittofsSetup(ctx, env, kind, durability) },
 			Mount:    dittofsMount,
 			Evict:    dittofsEvict,
 			Unmount:  func(ctx context.Context, _ Protocol) error { return exec.Sh(ctx, "umount", clientMntDir) },
@@ -153,7 +157,7 @@ func init() {
 	}
 }
 
-func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind) error {
+func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, durability string) error {
 	id, secret, err := s3Creds()
 	if err != nil {
 		return err
@@ -218,8 +222,18 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind) err
 	if err := dittofsAddMetadataStore(ctx, kind); err != nil {
 		return err
 	}
+	// Pass the durability tier (#1758) through the local block store config. The
+	// "durability" enum (local|writeback|remote) is read by resolveDurabilityTier
+	// at share create; "local" is the default so it's harmless to set explicitly.
+	localCfg, err := json.Marshal(map[string]any{
+		"path":       dittofsDataDir + "/blocks",
+		"durability": durability,
+	})
+	if err != nil {
+		return err
+	}
 	if err := exec.Sh(ctx, "dfsctl", "store", "block", "local", "add",
-		"--name", dittofsLocal, "--type", "fs", "--path", dittofsDataDir+"/blocks"); err != nil {
+		"--name", dittofsLocal, "--type", "fs", "--config", string(localCfg)); err != nil {
 		return err
 	}
 	if err := exec.Sh(ctx, "dfsctl", "store", "block", "remote", "add",
