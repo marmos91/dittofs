@@ -1137,19 +1137,19 @@ func (s *Service) createBlockStoreForShare(
 		return fmt.Errorf("failed to create BlockStore: %w", err)
 	}
 
-	// Apply the per-share strict honest-CLOSE/COMMIT policy (#1274). Read the
-	// optional "require_durable_commit" bool from the local store config the
-	// same way config["durable"] is read; absent or non-bool → false (default:
-	// the commit seam acks once Flush succeeds and the remote mirror stays
-	// async). Set before Start so it governs the very first commit.
+	// Apply the per-share durability tier (#1758), composed from the local store
+	// config. The "durability" enum (local|writeback|remote) selects the tier;
+	// when absent, the raw "require_durable_commit" (#1274) and "writeback"
+	// (#1757) bools are honored for backward compatibility. require_durable_commit
+	// is set before Start so it governs the very first commit; the metadata
+	// writeback flag is stashed and applied to the metadata service in AddShare
+	// (which holds the registrar), after RegisterStoreForShare.
 	if localStoreCfg, cfgErr := localCfg.GetConfig(); cfgErr == nil {
-		applyRequireDurableCommit(bs, localStoreCfg, config.Name)
-		// Stash the metadata writeback-tier flag (#1757) from the same local
-		// config map. It is applied to the metadata service in AddShare (which
-		// holds the registrar), after RegisterStoreForShare.
-		share.writeback = parseWritebackConfig(localStoreCfg, config.Name)
+		writeback, requireDurableCommit := resolveDurabilityTier(localStoreCfg, config.Name)
+		bs.SetRequireDurableCommit(requireDurableCommit)
+		share.writeback = writeback
 	} else {
-		logger.Warn("failed to read local block store config for require_durable_commit; defaulting to false",
+		logger.Warn("failed to read local block store config for durability tier; defaulting to local",
 			"share", config.Name, "error", cfgErr)
 	}
 
@@ -3023,27 +3023,64 @@ func applyDurableOverride(store any, config map[string]any, label, shareName str
 	logger.Info("block store durability overridden by config", "store", label, "share", shareName, "durable", b)
 }
 
-// applyRequireDurableCommit reads the optional per-share
-// "require_durable_commit" bool from the local store config and sets the
-// strict honest-CLOSE/COMMIT policy on the engine Store (#1274). Read the same
-// conservative way as config["durable"]: absent or non-bool → false (default),
-// so the commit seam acks once Flush succeeds and the remote mirror stays
-// async — ordinary NFS/POSIX writes never EIO. When true, CLOSE/COMMIT only
-// succeed once the data is on a durable store.
-func applyRequireDurableCommit(bs *engine.Store, config map[string]any, shareName string) {
+// parseRequireDurableCommit reads the optional per-share "require_durable_commit"
+// bool from the local store config (#1274). Read the same conservative way as
+// config["durable"]: absent or non-bool → false (default), so the commit seam
+// acks once Flush succeeds and the remote mirror stays async — ordinary
+// NFS/POSIX writes never EIO. When true, CLOSE/COMMIT only succeed once the data
+// is on a durable store.
+func parseRequireDurableCommit(config map[string]any, shareName string) bool {
 	v, ok := config["require_durable_commit"]
 	if !ok {
-		return
+		return false
 	}
 	b, ok := v.(bool)
 	if !ok {
 		logger.Warn("block store config has require_durable_commit but it is not a bool; ignoring",
 			"share", shareName, "value", v)
-		return
+		return false
 	}
-	bs.SetRequireDurableCommit(b)
-	if b {
-		logger.Info("strict honest-CLOSE/COMMIT durability enabled by config", "share", shareName)
+	return b
+}
+
+// resolveDurabilityTier composes the per-share durability knobs into the two
+// underlying behaviors (#1758). The optional "durability" enum in the local
+// store config selects a named tier; when absent, the older raw bools
+// ("writeback", "require_durable_commit") are honored unchanged for backward
+// compatibility. When "durability" is present it is authoritative — the raw
+// bools are ignored.
+//
+//	local     (default) — journal + metadata fsync, async S3 (node-crash-safe)
+//	writeback           — per-op FILE_SYNC metadata flush relaxed (deferred to
+//	                      the ticker); data still journal-fsync durable. The full
+//	                      data-writeback tier additionally needs the journal
+//	                      async-commit half, tracked separately.
+//	remote              — CLOSE/COMMIT block until data is durable in the remote
+//	                      (S3) store (require_durable_commit); survives node loss.
+func resolveDurabilityTier(config map[string]any, shareName string) (writeback, requireDurableCommit bool) {
+	v, ok := config["durability"]
+	if !ok {
+		return parseWritebackConfig(config, shareName), parseRequireDurableCommit(config, shareName)
+	}
+	tier, ok := v.(string)
+	if !ok {
+		logger.Warn("block store config has durability but it is not a string; defaulting to local",
+			"share", shareName, "value", v)
+		return false, false
+	}
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "", "local":
+		return false, false
+	case "writeback":
+		logger.Info("durability tier: writeback (metadata flush relaxed)", "share", shareName)
+		return true, false
+	case "remote":
+		logger.Info("durability tier: remote (ack-on-S3, strict CLOSE/COMMIT)", "share", shareName)
+		return false, true
+	default:
+		logger.Warn("unknown durability tier; defaulting to local",
+			"share", shareName, "durability", tier)
+		return false, false
 	}
 }
 
