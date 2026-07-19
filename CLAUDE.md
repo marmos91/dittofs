@@ -94,6 +94,13 @@ composition layer over six sub-services: `adapters/`, `stores/`, `shares/`, `mou
    that conformance suite. Block stores have a unified suite in `pkg/block/blockstoretest/`
    (`BlockStoreConformance` + `BlockStoreAppendConformance`).
 
+## Code comments
+
+- Comments describe the code's **behaviour** — what it does and why, in terms of
+  the code itself. Never reference things external to the code: no issue/PR
+  numbers, no CI/runner/OS names, no phase/plan/decision IDs. Those belong in
+  commit messages, PR descriptions, or `.planning/`, not in source.
+
 ## Commits & PRs
 
 - Never mention Claude Code, AI tools, or add `Co-Authored-By` lines for AI.
