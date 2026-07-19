@@ -108,8 +108,8 @@ func init() {
 	}{
 		{"s3fs", true, "", "durable-on-close to S3 (no writeback); knfsd sync export"},
 		{"s3fs-nocache", false, "", "durable-on-close to S3, no local cache; knfsd sync export"},
-		{"s3fs-cap256m", true, "256", "durable-on-close to S3; cache ensure_diskfree=256 MiB (see note); knfsd sync export"},
-		{"s3fs-cap2g", true, "2048", "durable-on-close to S3; cache ensure_diskfree=2048 MiB (see note); knfsd sync export"},
+		{"s3fs-cap256m", true, "256", "durable-on-close to S3; cache ensure_diskfree=256 MB (see note); knfsd sync export"},
+		{"s3fs-cap2g", true, "2048", "durable-on-close to S3; cache ensure_diskfree=2048 MB (see note); knfsd sync export"},
 	} {
 		useCache, ensureFreeMB := s.useCache, s.ensureFreeMB
 		register(newSrcBackend(srcBackend{

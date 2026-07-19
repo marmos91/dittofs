@@ -193,6 +193,22 @@ func TestDittofsDurabilityTiers(t *testing.T) {
 		}
 		tiers[b.Tier] = true
 	}
+
+	// Cache-cap writeback variants (cache-fill study) must also register with
+	// native support. They share the writeback tier semantics, so they are not
+	// part of the distinct-Tier check above.
+	for _, name := range []string{"dittofs-s3-writeback-cap256m", "dittofs-s3-writeback-cap2g"} {
+		b, ok := registry[name]
+		if !ok {
+			t.Errorf("backend %q not registered", name)
+			continue
+		}
+		for _, p := range managedProtocols {
+			if b.Support[p] != Native {
+				t.Errorf("%s: protocol %s support = %s, want native", name, p, b.Support[p])
+			}
+		}
+	}
 }
 
 // TestCompetitorVariants asserts the expanded competitor matrix (juicefs 6,
@@ -220,6 +236,13 @@ func TestCompetitorVariants(t *testing.T) {
 		"zerofs":                   nfs3Native,
 		"zerofs-sync":              nfs3Native,
 		"ganesha":                  nfs34Native,
+		// cache-cap variants (3-scenario cache-fill study)
+		"rclone-cap256m":   all,
+		"rclone-cap2g":     all,
+		"juicefs-cap256m":  all,
+		"juicefs-cap2g":    all,
+		"s3fs-cap256m":     all,
+		"s3fs-cap2g":       all,
 	}
 	for name, sup := range want {
 		b, ok := registry[name]
