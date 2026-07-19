@@ -21,11 +21,9 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// Engine wiring constants. Sized for short-lived benchmark runs:
+// Engine wiring constant. Sized for short-lived benchmark runs:
 // 256 MiB local cache budget.
-const (
-	writeBenchLogBudget = 256 * 1024 * 1024
-)
+const writeBenchLogBudget = 256 * 1024 * 1024
 
 // Default block sizes — match the legacy bench/blockstore shape so
 // historical results stay comparable. Sequential and dedup move 8 MiB
