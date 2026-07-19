@@ -2852,9 +2852,10 @@ func CreateLocalStoreFromConfig(
 	// are warned and ignored.
 	var fsOpts fs.FSStoreOptions
 	fsOpts.BackpressureMaxWait = backpressureMaxWait
-	// Append-log pressure budget default. Precedence (lowest first):
+	// Local-cache size-hint default. Precedence (lowest first):
 	// FSStore internal default < global/deduced default (plumbed via
 	// LocalStoreDefaults.MaxLogBytes) < per-store config["max_log_bytes"].
+	// max_log_bytes no longer gates writes; it only feeds the Stats size hint.
 	// Seed fsOpts.MaxLogBytes from the global/deduced default here; the
 	// per-store config branch below overrides it when present.
 	if defaults != nil && defaults.MaxLogBytes > 0 {
@@ -2879,7 +2880,7 @@ func CreateLocalStoreFromConfig(
 			logger.Warn("block store config has max_log_bytes but it is invalid or non-positive; ignoring", "value", v)
 		}
 	}
-	// chunk_size sets the FastCDC Min for this share's rollup chunker (#1569) —
+	// chunk_size sets the FastCDC Min for this share's carve chunker (#1569) —
 	// the dominant knob for effective chunk size and thus random-read
 	// amplification. Avg/Max are derived (4x/8x Min) unless chunk_max overrides
 	// the ceiling. Absent => the FSStore default (1M/4M/16M, byte-identical to

@@ -21,8 +21,8 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// Engine wiring constant. Sized for short-lived benchmark runs:
-// 256 MiB local cache budget.
+// Engine wiring constant: the fs store's MaxLogBytes Stats size hint (maxDisk
+// is passed 0 = uncapped, so this does not bound the bench).
 const writeBenchLogBudget = 256 * 1024 * 1024
 
 // Default block sizes — match the legacy bench/blockstore shape so
