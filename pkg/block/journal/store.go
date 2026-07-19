@@ -451,6 +451,13 @@ func (s *Store) Delete(ctx context.Context, id FileID) error {
 	if dirty != 0 {
 		s.unsynced.Add(-dirty)
 	}
+	// A tombstone can leave a segment holding no live bytes — most visibly the
+	// active segment after a cold read hydrated the just-removed file's bytes
+	// locally. Reclaim those now-dead segments so the unlink frees the local tier
+	// immediately instead of stranding it until the next rotation or force-evict.
+	// Best-effort: a reclaim failure never wedges the delete (the file is already
+	// tombstoned and the recovery sweep reclaims any orphan).
+	_ = s.reclaimEmptied(sh)
 	return nil
 }
 

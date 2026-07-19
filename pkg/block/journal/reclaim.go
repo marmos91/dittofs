@@ -312,6 +312,76 @@ func (s *Store) retireSegment(sh *shard, seg *segmentMeta) (int64, error) {
 	return freed, nil
 }
 
+// reclaimEmptied retires every segment in sh that now holds no live (non-cold)
+// interval and has every record synced — the state a just-completed tombstone
+// leaves behind when the removed file was a segment's only occupant. The most
+// visible case is the ACTIVE segment after a cold read hydrated the removed
+// file's bytes back into the local tier: eviction and GC only ever reclaim the
+// SEALED set, so without this an unlink-after-cold-read strands those bytes on
+// disk until the next rotation or an explicit force-evict.
+//
+// It only touches segments that back no live data, so it frees dead space
+// without evicting any warm read-cache and can never drop live bytes. A pinned
+// segment (a live snapshot's watermark) is left for the snapshot to release. A
+// fully-dead, fully-synced active segment is sealed first — the same force-seal
+// primitive the explicit evict path uses — so the reclaim tail can drop it.
+// carveMu is held so a concurrent carve can't flip synced bits on a segment
+// mid-retire; sealed victims are claimed via busy so eviction/GC never race the
+// same retire. Best-effort: a retire failure is returned (and its disk stays
+// counted, reclaimed later by the recovery sweep) but never wedges the unlink.
+func (s *Store) reclaimEmptied(sh *shard) error {
+	sh.carveMu.Lock()
+	defer sh.carveMu.Unlock()
+
+	sh.mu.Lock()
+	// Segments still backing at least one live (non-cold) interval must survive.
+	liveSegs := make(map[uint64]struct{})
+	for _, fi := range sh.index {
+		for _, iv := range fi.ivs {
+			if !iv.cold {
+				liveSegs[iv.loc.SegmentID] = struct{}{}
+			}
+		}
+	}
+	// Seal a fully-dead, fully-synced active segment so the retire below can drop
+	// it. records raises monotonically and syncedRecords only rises toward it, so
+	// the fully-synced check is stable under the shard lock.
+	if act := sh.active; act != nil && act.records.Load() > 0 &&
+		act.syncedRecords.Load() == act.records.Load() &&
+		!act.busy.Load() && !s.pinned(act) {
+		if _, live := liveSegs[act.id]; !live {
+			if err := s.sealSegment(sh); err != nil {
+				sh.mu.Unlock()
+				return err
+			}
+		}
+	}
+	// Collect the sealed segments this shard can now drop whole.
+	var victims []*segmentMeta
+	for id, seg := range sh.sealed {
+		if _, live := liveSegs[id]; live {
+			continue
+		}
+		if !evictable(seg) || s.pinned(seg) {
+			continue
+		}
+		victims = append(victims, seg)
+	}
+	sh.mu.Unlock()
+
+	for _, seg := range victims {
+		if !seg.busy.CompareAndSwap(false, true) {
+			continue // claimed by a concurrent eviction/GC — it will retire it
+		}
+		if _, err := s.retireSegment(sh, seg); err != nil {
+			seg.busy.Store(false)
+			logger.Warn("journal: reclaim emptied segment", "segment", seg.id, "err", err)
+			return err
+		}
+	}
+	return nil
+}
+
 // Garbage collection / repack.
 //
 // deadBytes on a segmentMeta grows whenever an interval-tree node is superseded
