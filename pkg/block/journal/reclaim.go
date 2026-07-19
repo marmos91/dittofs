@@ -46,8 +46,22 @@ type EvictResult struct {
 // only copy of dirty bytes (the synced-gate, mirroring logblob.EvictBlob). It
 // evicts until targetBytes have been freed; targetBytes <= 0 evicts a single
 // qualifying segment. It returns what it reclaimed — SegmentsEvicted == 0 means
-// nothing qualified (the caller should backpressure, see ensureSpace).
+// nothing qualified.
+//
+// Evict is the explicit force-evict entrypoint (the shares evict admin's
+// DrainLocalSynced). When the sealed set cannot satisfy the reclaim it force-seals
+// the fully-synced active segments so their bytes become evictable too: a working
+// set smaller than the segment-roll threshold otherwise sits entirely in the
+// never-sealed active segment, where nothing can reclaim it.
 func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, error) {
+	return s.evict(ctx, targetBytes, true)
+}
+
+// evict is the shared eviction loop. allowActiveSeal enables the force-seal
+// fall-through used by the explicit Evict path; the write-path capacity gate
+// (ensureSpace) passes false so a sustained writer backpressures on its own
+// unsynced bytes instead of sealing the very segment it is appending into.
+func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bool) (EvictResult, error) {
 	if err := ctx.Err(); err != nil {
 		return EvictResult{}, err
 	}
@@ -58,9 +72,24 @@ func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, erro
 		return EvictResult{}, nil
 	}
 	var res EvictResult
+	sealedActives := false
 	for {
 		seg, sh := s.claimColdestEvictable()
 		if seg == nil {
+			// Sealed set exhausted. On an explicit force-evict, seal the
+			// fully-synced active segments once so their bytes become evictable —
+			// the next iteration drains them. Bounded to a single pass so a fresh
+			// (empty) active segment is never sealed in a spin.
+			if allowActiveSeal && !sealedActives {
+				sealedActives = true
+				sealed, err := s.sealSyncedActives(ctx)
+				if err != nil {
+					return res, err
+				}
+				if sealed {
+					continue
+				}
+			}
 			return res, nil
 		}
 		freed, err := s.evictSegment(sh, seg)
@@ -73,6 +102,43 @@ func (s *Store) Evict(ctx context.Context, targetBytes int64) (EvictResult, erro
 			return res, nil
 		}
 	}
+}
+
+// sealSyncedActives force-seals each shard's active segment when it holds only
+// synced (remote-durable) records, moving it into the sealed set so eviction can
+// reclaim it. It never seals an empty active (nothing to gain, and a spin would
+// spew empty segments), an active holding any unsynced record (sealing would not
+// make it evictable and its dirty bytes must stay the local copy), or a pinned
+// active (a live snapshot needs those bytes local). A seal here is the same
+// primitive as a rotation, so it produces an identically valid sealed footer.
+// It returns whether it sealed any segment and surfaces a seal failure (fsync or
+// next-segment creation) rather than masking it as a no-op, and stops early if
+// ctx is cancelled. Caller holds no lock.
+func (s *Store) sealSyncedActives(ctx context.Context) (bool, error) {
+	sealedAny := false
+	for _, sh := range s.shards {
+		if err := ctx.Err(); err != nil {
+			return sealedAny, err
+		}
+		sh.mu.Lock()
+		act := sh.active
+		// records is frozen while sh.mu is held (appends need it), and carve only
+		// ever raises syncedRecords toward records, so the fully-synced check is
+		// stable across the seal.
+		if act != nil && act.records.Load() > 0 &&
+			act.syncedRecords.Load() == act.records.Load() &&
+			!act.busy.Load() && !s.pinned(act) {
+			err := s.sealSegment(sh)
+			sh.mu.Unlock()
+			if err != nil {
+				return sealedAny, err
+			}
+			sealedAny = true
+			continue
+		}
+		sh.mu.Unlock()
+	}
+	return sealedAny, nil
 }
 
 // claimColdestEvictable finds the coldest sealed, fully-synced, unclaimed segment
@@ -165,18 +231,35 @@ func (s *Store) ensureSpace(ctx context.Context, needed int64) error {
 		return nil
 	}
 	deadline := time.Now().Add(s.cfg.EvictMaxWait)
+	lastUnsynced := s.unsynced.Load()
 	warned := false
 	for s.diskBytes.Load()+needed > s.cfg.MaxLocalBytes {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		overage := s.diskBytes.Load() + needed - s.cfg.MaxLocalBytes
-		res, err := s.Evict(ctx, overage)
+		// Write-path eviction never force-seals the active segment: the bytes
+		// pinning the cap are this writer's own unsynced records, so the fix is to
+		// wait for carve to drain them, not to seal-and-strand them.
+		res, err := s.evict(ctx, overage, false)
 		if err != nil {
 			return err
 		}
 		if res.SegmentsEvicted > 0 {
+			deadline = time.Now().Add(s.cfg.EvictMaxWait) // reclaimed: extend the budget
+			lastUnsynced = s.unsynced.Load()
 			continue
+		}
+		// Nothing evictable. As long as carve keeps draining unsynced bytes to the
+		// remote, backpressure (slow) rather than error: refresh the budget on every
+		// observed drain so a writer that merely outpaces a live syncer waits for it
+		// instead of failing. ErrLocalStoreFull stays reserved for a genuine stall —
+		// the cap is pinned by unsynced bytes and no drain progress happens for the
+		// whole EvictMaxWait budget (no syncer, or sync disabled) — so the wait is
+		// bounded and never hangs.
+		if cur := s.unsynced.Load(); cur < lastUnsynced {
+			lastUnsynced = cur
+			deadline = time.Now().Add(s.cfg.EvictMaxWait)
 		}
 		if !warned {
 			logger.Warn("journal local store full: every segment pinned by unsynced bytes, backpressuring writes until carve drains to remote",
