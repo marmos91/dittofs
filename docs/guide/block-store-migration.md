@@ -19,8 +19,8 @@ standalone-CAS state — pre-flip per-chunk local files, remote `cas/`
 objects, or chunk locators that still point at standalone objects — and
 converts it **before the share starts serving**:
 
-1. Local per-chunk files are imported into the append-only log-blob tier
-   (BLAKE3-verified, deduplicated) and deleted.
+1. Local per-chunk files are imported into the local journal (the append-only
+   write-back cache; BLAKE3-verified, deduplicated) and deleted.
 2. Standalone remote chunks are re-packed into `blocks/<id>` containers.
    Each container's chunk locators and block record commit in a single
    metadata transaction, so a crash can never leave a half-pointed block.

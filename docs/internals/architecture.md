@@ -204,14 +204,14 @@ DittoFS uses a three-tier storage model for block data:
                │ cache miss
                ▼
 ┌─────────────────────────────────────┐
-│  Local Block Store                  │
-│  pkg/block/local/fs/           │
-│  - Filesystem-backed                │
-│  - Fast access (disk I/O)           │
+│  Local Journal (write-back cache)   │
+│  pkg/block/journal/                 │
+│  - Append-only, log-structured      │
+│  - Absorbs writes, local-ack        │
 │  - Persistent across restarts       │
-│  - Per-share isolated directories   │
+│  - Per-share isolated directory     │
 └──────────────┬──────────────────────┘
-               │ block not local
+               │ cold read (range not cached)
                ▼
 ┌─────────────────────────────────────┐
 │  Remote Store                       │
@@ -223,247 +223,127 @@ DittoFS uses a three-tier storage model for block data:
 └─────────────────────────────────────┘
 ```
 
-**Read Path**: Engine.ReadAt receives `[]ChunkRef` from caller, locates the
-covering chunks via `findChunksForRange` (binary search), serves bytes
-from the local log-blob tier or, on a miss, resolves the chunk's remote
-locator and issues a ranged read into its enclosing `blocks/<id>` object,
-decoding and BLAKE3-verifying end-to-end (fail-closed). `Cache.OnRead`
-updates the per-payload sequential tracker for prefetch hints.
+**Read Path**: `Engine.ReadAt` resolves a file's bytes by `(payloadID,
+offset)`. If the range is present in the local journal it is served straight
+from a journal segment. On a cold miss the engine resolves the chunk's remote
+locator from the FileChunk manifest, issues a ranged read into its enclosing
+`blocks/<id>` object, decodes and BLAKE3-verifies the chunk end-to-end
+(fail-closed), then hydrates the bytes back into the journal so subsequent
+reads are warm. A per-payload sequential tracker drives remote prefetch.
 
-**Write Path**: Engine.WriteAt receives `(currentChunks []ChunkRef, data,
-offset)`, FastCDC-rechunks the affected range, returns `newChunks
-[]ChunkRef` to the caller; caller persists newChunks alongside the
-metadata transaction (Mtime, Size, etc.). The syncer's carver packs
-synced-pending chunks into ~16 MiB blocks and uploads each with one PUT,
-committing the block record and per-chunk locators in a single metadata
-transaction.
+**Write Path**: `Engine.WriteAt` appends the dirty range to the local journal
+and acknowledges immediately (write-back) — there is no synchronous chunking,
+hashing, or upload on the client path. A background carve pass later packs the
+accumulated dirty ranges into remote blocks (see below). How durable the ack is
+depends on the configured durability tier (`writeback` / `local-durable` /
+`remote`; see the [durability guide](../guide/durability.md)).
 
 **Eviction**:
-- Cache: LRU eviction when budget reached. No data loss (local CAS has the data). Cache is per-share but cross-file inside a share — the same hash referenced by two files shares one entry.
-- Local store: whole-blob eviction reclaims log-blob bytes once every chunk in a sealed blob is synced to remote; manual eviction via `dfsctl store block evict`. Only synced data is evictable (safety check prevents data loss).
+- Cache: LRU eviction when the RAM budget is reached. No data loss (the journal still holds the bytes). The cache is per-share but cross-file inside a share — the same content hash referenced by two files shares one entry.
+- Journal: whole fully-synced segments are evicted approx-LRU under disk pressure. Only ranges already carved to the remote qualify, so eviction never destroys the only copy of dirty bytes. Manual eviction via `dfsctl store block evict`.
 
-## Block Store -- Local Append-Log Tier
+## Block Store — Local Journal Tier
 
-The local filesystem store (`pkg/block/local/fs/`) writes through an
-append-only log per file. A rollup pool chunks the log via FastCDC, hashes
-each chunk with BLAKE3, and appends the chunk bytes to the local **log-blob**
-tier (`blobs/<id>.blob`), recording each chunk's position in the
-`LocalChunkIndex`. The log-blob substrate is mandatory: every local store is
-constructed with a `LocalChunkIndex`, and rolled-up chunks live only in the
-append-only blob tier. (Pre-flip per-chunk `blocks/{hh}/{hh}/{hex}` files, if
-any survive an upgrade, are imported into the blob tier by the one-shot
-migration at startup — see [Migration](#migration--block-layout-routing) — and
-never read on the live path.) See [Log-Blob Local Tier](#log-blob-local-tier)
-below.
+The per-share local tier is the **journal** (`pkg/block/journal/`): a single
+append-only, log-structured **write-back cache** in front of the remote store.
+It replaces the earlier two-tier design (a per-file append-only log plus a
+separate rolled-up "log-blob" tier) with one substrate. See the journal
+package's own doc comment for the authoritative model; this section covers it
+at architecture altitude.
 
-**New writes are packed into remote blocks.** On every share, the syncer's
-carver batches locally-rolled chunks and uploads them as packed **block
-objects** under the remote `blocks/<id>` prefix — one PUT per block of
-roughly 16 MiB of chunks (`BlockCarveBytes`), or sooner when the writer goes
-idle. It does **not** write one `cas/<hash>` object per chunk. Per-chunk
-deduplication and refcounting are preserved: a
-`ChunkLocator{BlockID, WireOffset, WireLength}` records where each chunk's
-bytes live inside its enclosing block, so identical chunks are still stored
-once and reclaimed by refcount. The remote store exposes only the block-keyed
-surface (`blocks/<id>`); there is no per-chunk `cas/<hash>` remote object on
-the live read or write path.
+A client write (`WriteAt`) appends a dirty record for `(payloadID, offset)` to
+a shared segment file and acknowledges immediately — it never chunks, hashes,
+or uploads on the client path, and it never fsyncs (durability is a separate
+`Commit`, driven by NFS COMMIT / SMB Flush and the configured durability tier).
+Cold-read hydration (`Hydrate`) funnels through the same append primitive, the
+only difference being that a hydrated record is born *clean* (already durable
+in the remote store, so immediately evictable) while a client write is born
+*dirty* (must be carved before it can be evicted). The journal is keyed by
+`(payloadID, offset)`, not by content hash.
 
-This is the only write path. A store still holding standalone-CAS state from a
-v0.16-v0.21 server is converted to packed blocks automatically at startup, and
-a pre-v0.16 `.blk` layout is refused with a directive to migrate with an
-earlier release (see [Migration](#migration--block-layout-routing)).
+`*fs.FSStore` (`pkg/block/local/fs/`) is now a **thin adapter** over
+`*journal.Store`: it bridges the `string`↔`journal.FileID` keyspace and the
+`local.LocalStore` admin surface, and forwards the data-plane calls. The
+journal owns its own segment layout, carve, eviction, and local garbage
+collection. Only `BackpressureMaxWait` and `ChunkParams` remain load-bearing
+knobs; the old rollup/append-log options (`max_log_bytes`, `rollup_workers`,
+`stabilization_ms`, `orphan_log_min_age_seconds`) are vestigial — the journal
+carves on its own age/size gate.
 
-See [Block Lifecycle (three-state)](#block-lifecycle-three-state) and
-[Garbage Collection (mark-sweep)](#garbage-collection-mark-sweep) below.
+### Carve: local → remote
 
-### Pipeline
+A background **carve** pass turns accumulated dirty ranges into remote blocks.
+The engine's carve dispatcher (`pkg/block/engine/carve_dispatch.go`) ticks
+every `UploadInterval` (default 2s) and asks the journal to carve each file;
+the journal applies its own age/size batching gate and serializes carve per
+shard internally. Carving a file FastCDC-chunks its dirty ranges (min 1 MiB /
+avg 4 MiB / max 16 MiB by default), BLAKE3-hashes each chunk, and — via the
+engine-supplied `BlockSink` — dedups against remote-durable chunks, seals each
+chunk (compression/encryption), frames the survivors into a packed block
+(~16 MiB, `BlockCarveBytes`), uploads the block with one `PutBlock`, and
+commits the block record, per-chunk synced markers, and per-file FileChunk
+manifest rows in a single metadata transaction (`metadata.DefaultCommitBlock`).
+`PutBlock` runs before the commit, so a crash in between leaves an orphan block
+object (reclaimed by GC), never an unbacked record; a re-carve targets a fresh
+block ID and never double-commits.
 
-```
-                                                       (log header + records)
-                                                       logs/{payloadID}.log
-  AppendWrite ---> per-file log (append-only)  ---------------+
-  (per-file mutex)   CRC per record                           |
-                                                              v
-                                                       chunkRollup pool
-                                                       (default 2 workers)
-                                                              |
-                                       BLAKE3 + FastCDC       |
-                                       (min 1 MiB / avg 4 MiB / max 16 MiB)
-                                                              |
-                                                              v
-                                                       StoreChunk
-                                                       blobs/<id>.blob (append)
-                                                       + LocalChunkIndex entry
-                                                              |
-                                        CommitChunks atomic:  |
-                                         1. metadata.SetRollupOffset (source of truth)
-                                         2. advanceRollupOffset + fsync log header
-                                         3. tree.ConsumeUpTo + logBytesTotal.Sub
-                                         4. non-blocking signal on pressureCh
-                                                              |
-                                                              v
-                                                       (blocked AppendWrite unblocks)
-```
+Dedup is answered by a durability oracle: a chunk is treated as already remote
+iff its hash is present in the per-share `SyncedHashStore`. A share with **no**
+remote block store still carves — the local block sink records only the
+FileChunk manifest rows (hash + `DataSize`, no remote block key) so clone,
+snapshot, and restore can resolve the file's chunks, but nothing is uploaded.
 
-### Layout
+The carve pass fans out across files: a single sequential pass (one file, one
+block, one `PutBlock` at a time) leaves the uplink almost idle. Concurrency is
+bounded by an **adaptive upload window** (`pkg/block/engine/upload_controller.go`):
+a pinned `--parallel-uploads` fixes the window, while the default (adaptive)
+mode ramps it between a floor and ceiling to track the goodput knee. Files in
+one shard still serialize on the journal's carve lock, so the window overlaps
+distinct shards' upload latency.
 
-```
-<baseDir>/logs/<payloadID>.log        per-file append-only log
-<baseDir>/blobs/<id>.blob             log-blob tier (rolled-up chunk bytes)
-<baseDir>/blocks/<hh>/<hh>/<hex>      pre-flip per-chunk files (imported + removed by startup migration)
-```
+Explicit `Flush` / `SyncNow` force-carve a file's (or all files') dirty ranges
+and serialize against the background dispatcher on the same per-shard lock, so
+the two never pack the same range twice. In `ManualSync` mode the background
+dispatcher is suppressed and `Flush`/`SyncNow` are the sole carve drivers.
 
-Log header (64 bytes): magic `DFLG` | version | `rollup_offset` | flags |
-`created_at` | header CRC | 32 B reserved. Record framing:
-`payload_len` (u32 LE) | `file_offset` (u64 LE) | `crc32c` (u32 LE) |
-payload.
+### Reads and integrity
 
-### Invariants
+`ReadAt` resolves by `(payloadID, offset)`. A range present in the journal is
+served straight from its segment. A range that was written but has since been
+evicted returns `cold=true`; the engine then resolves the chunk's remote
+locator from the FileChunk manifest, ranged-GETs its enclosing `blocks/<id>`
+object, decodes the wire frame, recomputes BLAKE3 over the chunk bytes, and —
+on success — hydrates the verified bytes back into the journal so subsequent
+reads are warm.
 
-- **`rollup_offset` is monotone:** metadata is the source of truth; the
-  filesystem header is idempotent derived state. Recovery reconciles the
-  header from metadata on boot.
-- **Log length is bounded:** `logBytesTotal <= max_log_bytes` per
-  `FSStore`. Writers block on `pressureCh` when the budget is exceeded;
-  rollup drains and non-blocking signals when bytes are reclaimed.
+Integrity is fail-closed: every remote fetch is BLAKE3-verified before the
+bytes reach the caller, and a mismatch is returned as an error (and counted),
+never as data. On the local side, integrity rests on the journal's own
+segment-recovery CRC scan at open — there is no per-read local-hash check, so
+a cold read that fails remote verification cannot be silently self-healed from
+local bytes.
 
-### Crash recovery
+### Eviction and local GC
 
-Recovery (`pkg/block/local/fs/recovery.go`) scans logs from
-`rollup_offset`, truncates at first bad CRC, and rebuilds per-file interval
-trees. Orphan logs (no metadata referrer, no live FileChunk, mtime older
-than `orphan_log_min_age_seconds`) are swept. Log-blob bytes are reclaimed by
-whole-blob eviction (see [Log-Blob Local Tier](#log-blob-local-tier)).
+Under disk pressure the journal evicts whole **fully-synced** segments
+approx-LRU; only ranges already carved to the remote qualify, so eviction
+never destroys the only copy of dirty bytes. Eviction is health-gated: while
+the remote is unhealthy, cold-marking a range would strand unrecoverable
+bytes, so eviction is paused. There is no pin/ttl/lru retention knob
+(`SetRetentionPolicy` is a no-op on the journal-native store).
+
+The journal's own garbage collection (repack) only relocates live cache bytes
+between local segments to reclaim dead space — it **never** touches the remote
+store. Reclaiming remote block objects by refcount stays with the engine's
+block-GC sweep (see [Garbage Collection](#garbage-collection-mark-sweep)),
+whose per-remote serialization is what makes a decrement safe.
 
 ### Per-`FSStore` surface
 
-Because block stores are per-share (see the invariants in `CLAUDE.md`),
-every local-tier field -- log-fd map, per-file mutex map, interval-tree
-map, rollup worker pool, pressure channel, `maxLogBytes` budget,
-stabilization window -- lives inside `*FSStore`. No global state across
-shares.
-
-See `docs/CONFIGURATION.md` (`max_log_bytes`, `rollup_workers`,
-`stabilization_ms`, `orphan_log_min_age_seconds`) for the tunables.
-
-## Log-Blob Local Tier
-
-`pkg/block/local/logblob` is a raw append-only file manager that holds the
-local durable copy of freshly-written chunks. **This substrate is live.**
-Locally-rolled chunks are appended to log-blobs, and the engine carver reads
-them back by position (`LocalChunkLocation{LogBlobID, RawOffset, RawLength}`)
-to pack them into the remote block objects described in
-[Block Store — Local Append-Log Tier](#block-store----local-append-log-tier).
-Reads resolve through the local chunk index first — a positioned `pread(2)`
-against the log-blob — and fall back to the remote block only on a local
-miss (see [Block Reads](#block-reads-verified)).
-
-### Layout
-
-A `Manager` owns a directory of flat binary files called log-blobs (`*.blob`):
-
-```
-<dir>/0000000000000000.blob    ← active blob (accepts appends)
-<dir>/0000000000000001.blob    ← sealed (read-only, eligible for eviction)
-...
-```
-
-Blob IDs are zero-padded 16-digit decimals, giving lexicographic sort order
-matching creation order. Chunks are stored raw — no per-record framing, no
-checksum inside the blob — so the single read primitive is a positioned
-`pread(2)` against a `LocalChunkLocation{LogBlobID, RawOffset, RawLength}`.
-Durability is caller-controlled: call `Sync` at commit boundaries.
-
-### API
-
-```go
-// Open opens (or creates) a Manager rooted at dir.
-// On a fresh directory it creates the first blob. On reopen the
-// highest-numbered blob becomes active and appends resume at its tail.
-func Open(dir string, opts Options) (*Manager, error)
-
-// Append writes p to the tail of the active blob and returns the chunk's
-// position. Rotates automatically when the active blob would exceed SizeCap
-// (default 1 GiB). Empty payloads are rejected.
-func (m *Manager) Append(ctx context.Context, p []byte) (block.LocalChunkLocation, error)
-
-// ReadAt reads loc.RawLength bytes from blob loc.LogBlobID at loc.RawOffset
-// into dst (len(dst) >= loc.RawLength). Safe to call concurrently with Append.
-func (m *Manager) ReadAt(ctx context.Context, loc block.LocalChunkLocation, dst []byte) (int, error)
-
-// Rotate seals the active blob and opens a fresh one. Callers can rotate
-// at application-defined boundaries without waiting for SizeCap.
-func (m *Manager) Rotate() error
-
-// Sync fsyncs the active blob to durable storage.
-func (m *Manager) Sync() error
-
-// ListBlobs returns metadata for every blob, sorted by creation order.
-// Includes the active blob.
-func (m *Manager) ListBlobs() ([]BlobInfo, error)
-
-// EvictBlob removes a sealed blob from disk and the in-memory fd cache.
-// The caller supplies a synced func that reports whether the blob's bytes
-// are durable elsewhere; eviction is refused with ErrUnsyncedBytes if not.
-// Idempotent: a second call on an already-evicted blob returns nil.
-// After eviction, ReadAt on that blob returns ErrEvicted.
-func (m *Manager) EvictBlob(ctx context.Context, logBlobID string, synced func(string) bool) error
-
-// Recover truncates logBlobID to validUpToOffset, discarding torn tail bytes.
-// For the active blob it also updates the in-memory tail pointer.
-// Rejects offset > current blob size to prevent POSIX ftruncate from
-// zero-filling. Callers must quiesce concurrent I/O before calling Recover.
-func (m *Manager) Recover(ctx context.Context, logBlobID string, validUpToOffset int64) error
-```
-
-### Concurrency
-
-`Append` and `Rotate` are mutex-serialized. `ReadAt` acquires the mutex
-briefly to snapshot the active blob's identity and file descriptor, then
-releases it before the `pread(2)` call. Reads and appends on non-overlapping
-byte ranges therefore proceed concurrently. The race detector is clean.
-
-### Sentinel errors
-
-| Error | Condition |
-|---|---|
-| `logblob.ErrClosed` | Operation attempted after `Close` |
-| `logblob.ErrBlobNotFound` | `ReadAt` targets a non-existent blob ID |
-| `logblob.ErrEvicted` | `ReadAt` or `Recover` targets an evicted blob |
-| `logblob.ErrActiveBlob` | `EvictBlob` called on the current active blob |
-| `logblob.ErrUnsyncedBytes` | `EvictBlob` refused because the caller's `synced` func returned false |
-
-### Data flow (once wired in)
-
-```
-Chunk bytes
-    │
-    ▼ logblob.Manager.Append
-LocalChunkLocation{LogBlobID, RawOffset, RawLength}
-    │
-    ├─▶ metadata.LocalChunkIndex.PutLocalLocation  ─┐
-    └─▶ metadata.BlockRecordStore.PutBlockRecord   ─┴─ single transaction
-            via metadata.DefaultCommitBlock            (one fsync per block —
-                                                        the local durable commit)
-            then, after that transaction commits:
-    └─▶ metadata.SyncedHashStore.MarkSynced (per chunk, remote locator)
-            runs as a separate idempotent post-commit phase — SyncedHashStore is
-            on Store but not Transaction, so remote locators are written outside
-            the block transaction and re-driven safely on retry.
-
-Read path:
-    ContentHash
-    │
-    ▼ metadata.LocalChunkIndex.GetLocalLocation
-    LocalChunkLocation
-    │
-    ▼ logblob.Manager.ReadAt
-    chunk bytes
-```
-
-The `metadata.LocalChunkIndex` and `metadata.BlockRecordStore` contracts
-that feed this flow are described in
-[Block Record and Local Chunk Index](implementing-stores.md#block-record-and-local-chunk-index).
+Per the per-share block-store invariants (in `CLAUDE.md`), all journal state —
+segments, interval index, carve/eviction machinery, disk budget — lives inside
+the per-share `*journal.Store` behind `*FSStore`. No global state is shared
+across shares; local storage directories are always isolated.
 
 ## Block Lifecycle (three-state)
 
@@ -495,14 +375,12 @@ requeues any `Syncing` row whose `last_sync_attempt_at` is older than
 content-defined so a duplicate re-upload writes the same bytes to the
 same key — idempotent by construction.
 
-**Known limitation — restart seeding.** Chunks that were appended to the
-local log-blob but not yet carved into a remote block when the process
-crashed are durable on local disk, but they are **not** re-seeded into the
-pending-carve set on restart. They stay local-only — fully readable — until
-the file they belong to is written to again, which re-queues them for
-carving. No data is lost; the only effect is that such chunks are not
-uploaded to the remote until touched again. Re-seeding the carve set from the
-local index on boot is a follow-up item.
+**Restart re-drain.** Ranges written to the journal but not yet carved into a
+remote block when the process crashed are durable on local disk and are
+re-drained automatically on restart: the journal's recovered interval index
+re-marks every not-yet-carved record dirty at `Open`, so the carve dispatcher
+picks them up on its next tick without any separate reconcile walk or
+metadata-side pending set.
 
 **Why a metadata write for every claim?** The Pending → Syncing
 transition is the serialization point against duplicate uploads across
@@ -794,20 +672,19 @@ For the full operator runbook see
 
 ## Block Reads (verified)
 
-Every block read resolves by metadata key — one DB lookup per chunk, not
-remote trial-and-error, so there is no doubled GET cost — and takes one of
-two paths:
+A read resolves by `(payloadID, offset)` — no remote trial-and-error — and
+takes one of two paths:
 
-1. **Local log-blob hit.** If the chunk is still on local disk, its bytes are
-   served straight from the log-blob via a positioned `pread(2)` at its
-   `LocalChunkLocation`. This is the steady-state path for recently-written
-   and recently-read data.
-2. **Remote packed block.** On a local miss, the engine resolves the chunk's
-   `ChunkLocator` (`BlockID` + `[WireOffset, WireOffset+WireLength)`) and
-   issues a ranged GET against the packed remote object `blocks/<BlockID>`,
-   decodes the wire frame, and recomputes BLAKE3 over the chunk bytes. A
-   verified chunk is re-staged into the local tier so subsequent reads take
-   path 1.
+1. **Local journal hit.** If the range is present in the local journal, its
+   bytes are served straight from the journal segment. This is the steady-state
+   path for recently-written and recently-read data.
+2. **Remote packed block.** On a cold miss (the range was written but has been
+   evicted), the engine resolves the chunk's `ChunkLocator`
+   (`BlockID` + `[WireOffset, WireOffset+WireLength)`) from the FileChunk
+   manifest, issues a ranged GET against the packed remote object
+   `blocks/<BlockID>`, decodes the wire frame, and recomputes BLAKE3 over the
+   chunk bytes. A verified chunk is hydrated back into the journal so subsequent
+   reads take path 1.
 
 A synced chunk whose locator is empty (standalone) or missing is
 **post-migration drift** — the startup migration rewrites every standalone
@@ -816,14 +693,10 @@ refused fail-closed rather than read.
 
 **Fail-closed integrity.** Every remote fetch is BLAKE3-verified before the
 bytes reach the caller. A mismatch is never surfaced as data: the read returns
-an error and increments a corruption metric.
-
-**Self-heal.** The two tiers are treated asymmetrically on a verification
-failure. A *local* mismatch (a bit-rotted log-blob) is self-healing — the
-engine discards the bad local pointer, re-fetches the chunk from its remote
-block, verifies it, and re-stages it locally. A *remote* mismatch cannot be
-recovered locally, so it fails closed: the read errors and the corruption is
-recorded rather than papered over.
+an error and increments a corruption metric. Local integrity rests on the
+journal's segment-recovery CRC scan at open; there is no per-read local-hash
+check, so a cold read that fails remote verification is not silently
+self-healed from local bytes — it fails closed and the corruption is recorded.
 
 The pre-v0.16 non-CAS layout (`{payloadID}/block-{N}`) is no longer read at
 runtime. A store directory still on that layout is refused on open, directing
@@ -1081,11 +954,11 @@ dittofs/
 │   │   ├── errors.go             # BlockStore error types
 │   │   ├── chunker/              # FastCDC content-defined chunker
 │   │   │                         # min=1 MiB / avg=4 MiB / max=16 MiB, lvl 2;
-│   │   │                         # BLAKE3 hashing; consumed by local rollup pool
+│   │   │                         # BLAKE3 hashing; consumed by the carve pass
 │   │   ├── engine/               # BlockStore orchestrator + read cache + syncer + GC
+│   │   ├── journal/              # Local write-back cache (append-only segments)
 │   │   ├── local/                # Local store interface
-│   │   │   ├── fs/               # Filesystem-backed local store
-│   │   │   │                     # (append-log + CAS blocks/ tier)
+│   │   │   ├── fs/               # Thin adapter over pkg/block/journal
 │   │   │   └── memory/           # In-memory local store (testing)
 │   │   └── remote/               # Remote store interface
 │   │       ├── s3/               # S3-backed remote store
@@ -1575,7 +1448,7 @@ carrying leftover standalone-CAS state — pre-flip per-chunk local files, remot
 converted at `engine.Store.Start`, blocking until done, by
 `engine.Store.migrateLegacyCAS` (`pkg/block/engine/legacy_migration.go`):
 
-1. **Phase L** imports pre-flip per-chunk local files into the log-blob tier
+1. **Phase L** imports pre-flip per-chunk local files into the local journal
    (BLAKE3-verified, deduplicated) and deletes them
    (`fs.FSStore.MigrateLegacyChunkFiles`).
 2. **Phase R** re-packs every chunk whose synced marker still carries a

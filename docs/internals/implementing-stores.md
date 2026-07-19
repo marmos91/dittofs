@@ -303,17 +303,20 @@ without per-backend `t.Skip` (the `ObjectIDIndexAccessor` capability is
 the only legitimate type-assertion-skip; backends without that accessor
 are still required to pass the functional scenarios).
 
-### Block Record and Local Chunk Index
+### Block Record Store
 
-Two additional metadata interfaces persist the bookkeeping needed by the
-blocks-only storage path. All four backends (memory, badger, sqlite, postgres)
-implement both and pass the corresponding conformance groups.
+`BlockRecordStore` persists the bookkeeping needed by the blocks-only storage
+path. All four backends (memory, badger, sqlite, postgres) implement it and pass
+the corresponding conformance group. (There is no separate local-chunk-index
+metadata contract: the local journal owns its own `(payloadID, offset)`-keyed
+byte cache internally, and the per-file **FileChunk manifest** — written by the
+carve `BlockSink` — is the only metadata record of a carved chunk.)
 
 #### BlockRecordStore
 
-Tracks each log-blob block object: its content hash, byte length, live chunk
-count, and sync state. The syncer uses this to decide which blocks are safe to
-upload; the GC uses it to decide which may be deleted.
+Tracks each packed remote block object: its content hash, byte length, live
+chunk count, and sync state. The carver uses this to decide which blocks are
+safe to upload; the GC uses it to decide which may be deleted.
 
 ```go
 // pkg/block/block_record.go
@@ -354,45 +357,6 @@ Conformance: `storetest` group **BlockRecordOps** covers put/get round-trip,
 missing-key (returns `false`, not an error), delete idempotency, walk, and
 `DecrLiveChunkCount` with floor clamping.
 
-#### LocalChunkIndex
-
-Maps a chunk's content hash to its position in a local log-blob file. It is
-the local-tier analog of `SyncedHashStore`: both are keyed by `ContentHash`,
-both carry a physical locator, and both follow the same idempotent-put /
-safe-miss-on-get / idempotent-delete contract.
-
-| Interface         | Key           | Value                        | Tier   |
-|-------------------|---------------|------------------------------|--------|
-| `SyncedHashStore` | `ContentHash` | `block.ChunkLocator`         | Remote |
-| `LocalChunkIndex` | `ContentHash` | `block.LocalChunkLocation`   | Local  |
-
-```go
-// pkg/block/block_record.go
-type LocalChunkLocation struct {
-    LogBlobID string // blob filename stem, e.g. "0000000000000001"
-    RawOffset int64  // byte offset within that blob
-    RawLength int64  // byte length of the raw chunk
-}
-```
-
-```go
-// pkg/metadata/block_record_store.go
-type LocalChunkIndex interface {
-    // PutLocalLocation records or overwrites the local position for hash.
-    PutLocalLocation(ctx context.Context, hash block.ContentHash, loc block.LocalChunkLocation) error
-
-    // GetLocalLocation returns the local position for hash.
-    // Returns (_, false, nil) when no entry exists.
-    GetLocalLocation(ctx context.Context, hash block.ContentHash) (block.LocalChunkLocation, bool, error)
-
-    // DeleteLocalLocation removes the local position for hash. Idempotent.
-    DeleteLocalLocation(ctx context.Context, hash block.ContentHash) error
-}
-```
-
-Conformance: group **LocalIndexOps** covers put/get round-trip, upsert
-overwrites (second write wins), missing-key, and delete idempotency.
-
 #### DefaultCommitBlock — one fsync per block
 
 `metadata.DefaultCommitBlock` atomically commits an entire block's metadata
@@ -402,12 +366,10 @@ in a single transaction — one fsync per block, not one per chunk:
 // pkg/metadata/block_record_store.go
 func DefaultCommitBlock(
     ctx context.Context,
-    s interface {
-        Transactor
-        SyncedHashStore
-    },
+    s Transactor,
     rec block.BlockRecord,
     chunks []block.BlockChunkCommit,
+    fileChunks []*block.FileChunk,
 ) error
 ```
 
@@ -417,24 +379,25 @@ func DefaultCommitBlock(
 // pkg/block/block_record.go
 type BlockChunkCommit struct {
     Hash   block.ContentHash
-    Remote block.ChunkLocator      // remote locator passed to MarkSynced
-    Local  block.LocalChunkLocation // local locator stored in LocalChunkIndex
+    Remote block.ChunkLocator // remote locator recorded via MarkSynced
 }
 ```
 
-Inside `WithTransaction`, `DefaultCommitBlock`:
+Everything commits in a **single** `WithTransaction`, so either the whole block
+is visible or none of it is — a commit error just propagates to the caller,
+whose requeue logic re-drives the batch. Inside the transaction,
+`DefaultCommitBlock`:
 
 1. Calls `GetBlockRecord` — if the block record already exists the whole
-   function is a no-op (idempotent restart path; no double-counting).
+   function is a no-op (idempotent restart path; no double-counting, locators
+   untouched).
 2. Calls `PutBlockRecord` with `rec`.
-3. Calls `PutLocalLocation` for every chunk in `chunks`.
-
-After the transaction commits, it calls `MarkSynced` on `SyncedHashStore`
-for every chunk, recording the remote locator. `MarkSynced` runs outside
-the transaction and is itself idempotent, so a crash between the committed
-transaction and the last `MarkSynced` call is safe: the next retry skips the
-transaction (block record already exists) and re-runs only the `MarkSynced`
-loop.
+3. Writes each per-file **FileChunk manifest** row in `fileChunks` — the carver
+   passes one per chunk (`ID = {payloadID}/{offset}`, `Hash`, `DataSize`);
+   legacy callers pass `nil` and write no rows.
+4. Records every chunk's synced marker + remote locator. Locator writes are
+   last-wins (delete-then-mark inside the tx), so the cas→blocks migration can
+   rewrite a standalone locator to point into the new block.
 
 Backends expose `CommitBlock` on the `Store` interface and SHOULD delegate to
 `DefaultCommitBlock`:
@@ -469,100 +432,62 @@ Local stores provide fast, per-share block storage. Each share gets an isolated 
 
 ### The LocalStore Interface
 
-The `pkg/block/local.LocalStore` interface defines the contract. Storage is
-**content-addressed** — chunks are keyed by their BLAKE3 `block.ContentHash`,
-not by a block ID + offset. The interface embeds the content-addressed
-`block.BlockStoreAppend` surface and adds lifecycle, per-payload admin,
-rollup-drain, and retention methods. See `pkg/block/local/local.go` for the
-authoritative definition; the embedded CAS contract is:
+The `pkg/block/local.LocalStore` interface defines the contract. The local tier
+is the **journal** (`pkg/block/journal/`) — an append-only, log-structured
+write-back cache — so the surface is keyed by `(payloadID, offset)`, **not** by
+content hash. See `pkg/block/local/local.go` for the authoritative definition
+and per-method contract; the representative methods are:
 
 ```go
-type Store interface { // block.Store, embedded by LocalStore via BlockStoreAppend
-    // Put writes data under the key derived from hash (idempotent for
-    // identical bytes). Returns an error on a zero hash.
-    Put(ctx context.Context, hash ContentHash, data []byte) error
+type LocalStore interface {
+    // --- Data plane (payloadID + offset keyed) ---
+    WriteAt(ctx context.Context, payloadID string, offset int64, data []byte) error
+    ReadAt(ctx context.Context, payloadID string, offset int64, dst []byte) (n int, cold bool, err error)
+    Hydrate(ctx context.Context, payloadID string, offset int64, data []byte) error // fill from remote on cold read
+    Commit(ctx context.Context, payloadID string) error                             // fsync buffered writes
+    FileSize(ctx context.Context, payloadID string) (int64, bool)
+    DataExtents(ctx context.Context, payloadID string, fileSize int64) ([][2]uint64, error)
+    Truncate(ctx context.Context, payloadID string, newSize int64) error
+    Delete(ctx context.Context, payloadID string) error
+    ListFiles(ctx context.Context) []string
 
-    // Get returns the chunk bytes addressed by hash (freshly allocated,
-    // never aliasing internal storage). Returns ErrChunkNotFound if absent.
-    Get(ctx context.Context, hash ContentHash) ([]byte, error)
-
-    // GetRange returns the byte sub-range [offset, offset+length).
-    GetRange(ctx context.Context, hash ContentHash, offset, length int64) ([]byte, error)
-
-    // Has reports whether the store holds the object addressed by hash.
-    Has(ctx context.Context, hash ContentHash) (bool, error)
-
-    // Delete removes the object addressed by hash.
-    Delete(ctx context.Context, hash ContentHash) error
-
-    // Head returns object metadata (size, last-modified) without the body.
-    Head(ctx context.Context, hash ContentHash) (ObjectInfo, error)
-
-    // Walk enumerates every stored object. Return ErrStopWalk to exit early.
-    Walk(ctx context.Context, fn func(ObjectInfo) error) error
+    // --- Carve (local → remote) + eviction ---
+    SetCarveTargets(deduper journal.Deduper, sink journal.BlockSink)
+    Carve(ctx context.Context, opts journal.CarveOptions) (journal.CarveResult, error)
+    UnsyncedBytes() int64
+    Evict(ctx context.Context, targetBytes int64) (journal.EvictResult, error)
+    SetEvictionEnabled(enabled bool)
+    // ... plus lifecycle (Start, Close), Stats, Healthcheck, and a
+    // no-op SetRetentionPolicy retained for admin-path compatibility.
 }
 ```
 
-`BlockStoreAppend` adds `AppendWrite` and `DeleteAppendLog` for the append-log
-write path. `LocalStore` then layers on lifecycle (`Start`, `Close`),
-per-payload admin (`Truncate`, `EvictMemory`, `GetFileSize`, `ListFiles`,
-`ReadPayloadAt`), snapshot drain/reset (`DrainRollups`, `ResetLocalState`),
-and retention policy (`SetRetentionPolicy`, `SetEvictionEnabled`) — consult
-`pkg/block/local/local.go` for the full method set and per-method contract.
+A write buffers a dirty range and local-acks without fsync; `Commit` is the
+durability point. On a cold read `ReadAt` returns `cold=true` and the engine
+`Hydrate`s the range back from the remote store. `Carve` packs a file's dirty
+ranges into remote blocks via the injected `BlockSink` (see the carve pass in
+[the architecture doc](architecture.md#carve-local--remote)); `Evict` frees
+whole fully-synced segments under pressure.
 
 ### Reference Implementation
 
-See `pkg/block/local/fs/` for a complete filesystem-backed local store implementation that handles:
-- Per-share isolated directories
-- Atomic writes
-- Block listing for sync operations
-
-### Append-log + CAS chunk tier
-
-The local filesystem store (`*fs.FSStore`) writes through an append-only
-log per file and rolls it up into content-addressed (CAS) chunks. The
-chunk-tier methods on `*fs.FSStore` are: `AppendWrite`, `StoreChunk`,
-`ReadChunk`, `HasChunk`, `DeleteChunk`, `DeleteAppendLog`,
-`TruncateAppendLog`, and `StartRollup`.
-
-A per-file metadata surface `metadata.RollupStore` (two methods:
-`SetRollupOffset`, `GetRollupOffset`) persists the log's `rollup_offset`.
-The built-in memory, Badger, and Postgres backends all implement it. New
-metadata backends must add equivalent persistence keyed by `payloadID`,
-backed by an atomic upsert (metadata is the source of truth for
-`rollup_offset`; see `docs/ARCHITECTURE.md`).
+The filesystem-backed store `*fs.FSStore` (`pkg/block/local/fs/`) is a thin
+adapter over `*journal.Store`: it bridges the `string`↔`journal.FileID`
+keyspace and forwards the data-plane calls; the journal owns segment layout,
+carve, eviction, and local GC. The in-memory store (`pkg/block/local/memory/`)
+is the other reference. There is no separate append-log or rollup tier and no
+`metadata.RollupStore` contract — those were removed when the journal replaced
+the two-tier local design.
 
 ### Conformance Tests
 
-Test your local store with the conformance suite:
-
-```go
-package mylocal_test
-
-import (
-    "testing"
-
-    "github.com/marmos91/dittofs/pkg/block"
-    "github.com/marmos91/dittofs/pkg/block/blockstoretest"
-)
-
-func TestMyLocalStore(t *testing.T) {
-    // The factory returns a fresh store plus a cleanup closure per subtest.
-    factory := func(t *testing.T) (block.Store, func()) {
-        store, cleanup := createTestStore(t)
-        return store, cleanup
-    }
-    blockstoretest.BlockStoreConformance(t, factory)
-
-    // If your store implements the append-write absorber (block.BlockStoreAppend),
-    // also run the append conformance suite:
-    appendFactory := func(t *testing.T) (block.BlockStoreAppend, func()) {
-        store, cleanup := createTestAppendStore(t)
-        return store, cleanup
-    }
-    blockstoretest.BlockStoreAppendConformance(t, appendFactory)
-}
-```
+The journal-native `LocalStore` surface is `(payloadID, offset)`-keyed, not the
+content-addressed `block.Store` surface, so the `blockstoretest` suites below
+(`BlockStoreConformance` / `BlockStoreAppendConformance`) do **not** apply to a
+local store — they target the CAS `block.Store` surface that remote stores
+implement (see [Implementing a Remote Store](#implementing-a-remote-store)). The
+in-tree local stores are exercised by their own package tests under
+`pkg/block/journal/` and `pkg/block/local/`; model a new local store on those.
 
 ## Implementing a Remote Store
 

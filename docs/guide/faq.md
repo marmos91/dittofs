@@ -122,7 +122,7 @@ The lack of FUSE overhead and optimized Go implementation provides competitive p
 That message means the BadgerDB metadata engine's in-memory **block cache** is
 undersized for your working set, so it is thrashing: most lookups miss the cache
 and hit disk. A low hit-ratio also widens the window for the dedup
-transaction-conflict race and the append-log "pressure wait timed out" stall, so
+transaction-conflict race and the local-cache write-path backpressure stall, so
 it is worth fixing.
 
 By default the block and index caches **auto-size from the memory available to

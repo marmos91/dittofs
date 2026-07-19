@@ -61,8 +61,9 @@ cache** in front of the remote — it is not the source of truth once a remote i
   Spaces, Alibaba OSS, Oracle OCI, Storj, etc. all work —
   see the verified endpoint snippets in [Configuration § Block Store](configuration.md#6-block-store-configuration).
 - Dedup happens automatically across files in a share; identical content is stored once.
-- Tune append-log pressure (`max_log_bytes`, default ~25% of capacity) and durability
-  (`require_durable_commit`) per store — see [Configuration](configuration.md).
+- Pick a durability tier per store (`require_durable_commit`; see the
+  [durability guide](durability.md)) — it sets how far a write must land before it
+  is acknowledged — and size the local write-back cache to your hot set (above).
 - To migrate a legacy block layout to the content-addressed layout, see
   [Block store migration](block-store-migration.md).
 
