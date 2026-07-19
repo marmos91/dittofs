@@ -88,6 +88,11 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 		return nil, err
 	}
 
+	// Serialize concurrent links onto this exact (dir, name) so the
+	// in-transaction existence recheck below stays atomic on a READ COMMITTED
+	// store, matching the create path.
+	defer s.lockCreateName(dirHandle, name)()
+
 	// Get directory entry
 	dir, err := store.GetFile(ctx.Context, dirHandle)
 	if err != nil {
@@ -216,6 +221,13 @@ func (s *Service) createEntry(
 	if err := ValidateName(name); err != nil {
 		return nil, nil, err
 	}
+
+	// Serialize concurrent creates of this exact (parent, name) so the
+	// in-transaction existence recheck below is atomic even on a store whose
+	// create transaction runs at READ COMMITTED. Held across the whole create,
+	// including the commit, so a losing racer observes the committed entry and
+	// returns ErrAlreadyExists. Distinct names stay concurrent.
+	defer s.lockCreateName(parentHandle, name)()
 
 	cc, hasCreateCache := store.(createCacheStore)
 

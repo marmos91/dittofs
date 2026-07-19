@@ -61,8 +61,19 @@ type Service struct {
 	// per-parent map) bounds memory: distinct parents may hash to one shard —
 	// harmless extra serialization on a rare path, never an unbounded map.
 	parentLinkShards [parentLinkShardCount]sync.Mutex
-	cookies          *CookieManager   // NFS/SMB cookie to store token translation
-	quotas           map[string]int64 // shareName -> quota in bytes (0 = unlimited)
+
+	// createNameShards serializes concurrent creation of the same (parent, name)
+	// entry. The in-transaction existence recheck in the create path is only
+	// atomic on a store that aborts read-write conflicts (BadgerDB SSI); a store
+	// running the create transaction at READ COMMITTED (PostgreSQL) lets two
+	// racers both read the name as absent and both commit, so the SetChild upsert
+	// re-links the last writer and orphans the loser's inode — surfacing as
+	// several successful exclusive creates of one name. This bank closes that
+	// window uniformly. See lockCreateName.
+	createNameShards [parentLinkShardCount]sync.Mutex
+
+	cookies *CookieManager   // NFS/SMB cookie to store token translation
+	quotas  map[string]int64 // shareName -> quota in bytes (0 = unlimited)
 
 	// identityQuotas holds hot-updatable per-user / per-group quota limits,
 	// loaded from the control-plane DB and consulted on the write/create hot
@@ -935,6 +946,18 @@ func (s *Service) lockParentLinks(a, b FileHandle) func() {
 	lo.Lock()
 	hi.Lock()
 	return func() { hi.Unlock(); lo.Unlock() }
+}
+
+// lockCreateName serializes creation of one (parent, name) so two concurrent
+// creates of the same name in the same directory cannot both pass the
+// in-transaction existence recheck and each insert a distinct inode. Creates of
+// different names hash to (likely) different shards and stay fully concurrent.
+// See the createNameShards field for why the recheck alone is insufficient on a
+// READ COMMITTED store. Callers defer the returned unlock.
+func (s *Service) lockCreateName(parentHandle FileHandle, name string) func() {
+	mu := &s.createNameShards[parentLinkShard(handleKey(parentHandle)+"\x00"+name)]
+	mu.Lock()
+	return mu.Unlock
 }
 
 // mergeDirTimes overlays a directory's coalesced (not-yet-persisted) mtime/
