@@ -3,6 +3,7 @@ package metadata_test
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -90,7 +91,7 @@ func TestParentMtimeContention(t *testing.T) {
 		wg.Wait()
 		require.Equal(t, int64(concurrency*perWorker), done)
 		return float64(done) / time.Since(start).Seconds()
-	}()
+	}
 
 	// Case C: concurrent creates, each worker in its OWN dir — no shared key.
 	distinctDirOps := func() float64 {
@@ -121,13 +122,27 @@ func TestParentMtimeContention(t *testing.T) {
 		wg.Wait()
 		require.Equal(t, int64(concurrency*perWorker), done)
 		return float64(done) / time.Since(start).Seconds()
-	}()
+	}
 
-	ratio := sameDirOps / distinctDirOps
+	// A single trial's ratio swings with runner scheduling — one stall in the
+	// same-dir phase artificially depresses it. Take the median of a few trials
+	// so a lone noisy sample can't trip the guard, while a genuine reintroduced
+	// shared-key write (which depresses every trial) still fails.
+	const trials = 3
+	ratios := make([]float64, trials)
+	var lastSame, lastDistinct float64
+	for i := range ratios {
+		lastSame = sameDirOps()
+		lastDistinct = distinctDirOps()
+		ratios[i] = lastSame / lastDistinct
+	}
+	sort.Float64s(ratios)
+	ratio := ratios[trials/2]
+
 	t.Logf("sequential  (1 dir, 1 thread):   %8.0f creates/s", seqOps)
-	t.Logf("concurrent  (1 dir, %2d threads): %8.0f creates/s", concurrency, sameDirOps)
-	t.Logf("concurrent  (%2d dirs,%2d threads): %8.0f creates/s", concurrency, concurrency, distinctDirOps)
-	t.Logf("same-dir / distinct-dir ratio:    %.2f   (was ~0.5 pre-#1573)", ratio)
+	t.Logf("concurrent  (1 dir, %2d threads): %8.0f creates/s", concurrency, lastSame)
+	t.Logf("concurrent  (%2d dirs,%2d threads): %8.0f creates/s", concurrency, concurrency, lastDistinct)
+	t.Logf("same-dir / distinct-dir ratio (median of %d): %.2f   (was ~0.5 pre-#1573)", trials, ratio)
 
 	// Regression guard for #1573: with the parent-inode bump coalesced out of the
 	// create transaction, same-dir concurrent creates must no longer be penalized
