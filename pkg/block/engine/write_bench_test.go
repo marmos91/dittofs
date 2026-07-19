@@ -21,13 +21,9 @@ import (
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
 
-// Engine wiring constants. Sized for short-lived benchmark runs:
-// 256 MiB rollup log budget, 2 rollup workers, 5 ms stabilization.
-const (
-	writeBenchLogBudget       = 256 * 1024 * 1024
-	writeBenchRollupWorkers   = 2
-	writeBenchStabilizationMS = 5
-)
+// Engine wiring constant: the fs store's MaxLogBytes Stats size hint (maxDisk
+// is passed 0 = uncapped, so this does not bound the bench).
+const writeBenchLogBudget = 256 * 1024 * 1024
 
 // Default block sizes — match the legacy bench/blockstore shape so
 // historical results stay comparable. Sequential and dedup move 8 MiB

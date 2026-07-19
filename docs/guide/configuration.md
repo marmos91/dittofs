@@ -302,22 +302,17 @@ server will start.
 
 These keys live inside the per-share `local` block store's `config` JSON
 (passed via `dfsctl store block local add --config '{...}'` or the REST API).
-They only take effect when the local store type is `fs`. (A legacy
-`use_append_log` key is accepted but ignored — appending is mandatory — and
-logs a startup warning.)
+They only take effect when the local store type is `fs`. Legacy keys from the
+pre-journal design — `use_append_log`, `rollup_workers`, `stabilization_ms`,
+`orphan_log_min_age_seconds` — are no longer parsed; if present they are
+silently ignored.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `max_log_bytes` | int | deduced (25% of RAM, floor 1 GiB) | **Per-share** local-cache size hint. Still accepted and resolved (per-store value takes **precedence** over the global `blockstore.local.max_log_bytes` and the system-deduced default), but it no longer drives write backpressure — the journal caps on-disk usage and evicts on its own budget. Values above 2^53 (~9 PiB) lose precision through JSON parsing. |
-| `rollup_workers` | int | `2` | **Legacy, inert.** Accepted for config compatibility; the journal carves on its own age/size gate, so this no longer starts any goroutines. |
-| `stabilization_ms` | int | `250` | **Legacy, inert.** Accepted for config compatibility; superseded by the journal's carve batching gate. |
-| `orphan_log_min_age_seconds` | int | `3600` (1h) | **Legacy, inert.** Accepted for config compatibility; there is no separate append-log to orphan-sweep under the journal. |
 
 Env-var mapping follows the dot-path convention:
-`DITTOFS_BLOCKSTORE_LOCAL_FS_MAX_LOG_BYTES`,
-`DITTOFS_BLOCKSTORE_LOCAL_FS_ROLLUP_WORKERS`,
-`DITTOFS_BLOCKSTORE_LOCAL_FS_STABILIZATION_MS`,
-`DITTOFS_BLOCKSTORE_LOCAL_FS_ORPHAN_LOG_MIN_AGE_SECONDS`.
+`DITTOFS_BLOCKSTORE_LOCAL_FS_MAX_LOG_BYTES`.
 
 There is no `metadata.RollupStore` backend requirement any more — the journal
 owns its local-cache state; a metadata backend only needs the block-record and

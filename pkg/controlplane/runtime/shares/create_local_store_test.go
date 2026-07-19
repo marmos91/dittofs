@@ -30,19 +30,16 @@ func (f *fakeBlockStoreConfig) GetConfig() (map[string]any, error) {
 
 // TestCreateLocalStoreFromConfig_AppendLogMandatory exercises the config
 // wiring: append is mandatory on the local tier. CreateLocalStoreFromConfig
-// must build an FSStore via NewWithOptions, start the rollup pool, and return
-// a store whose AppendWrite path succeeds.
+// must build an FSStore via NewWithOptions and return a store whose write
+// path succeeds.
 func TestCreateLocalStoreFromConfig_AppendLogMandatory(t *testing.T) {
 	ctx := context.Background()
 	tmp := t.TempDir()
 
 	cfg := &fakeBlockStoreConfig{
 		cfg: map[string]any{
-			"path":                       tmp,
-			"max_log_bytes":              float64(2_000_000_000), // 2 GB
-			"rollup_workers":             float64(4),
-			"stabilization_ms":           float64(500),
-			"orphan_log_min_age_seconds": float64(7200),
+			"path":          tmp,
+			"max_log_bytes": float64(2_000_000_000), // 2 GB
 		},
 	}
 
@@ -82,12 +79,8 @@ func TestCreateLocalStoreFromConfig_InvalidTypesIgnored(t *testing.T) {
 
 	cfg := &fakeBlockStoreConfig{
 		cfg: map[string]any{
-			"path":                       tmp,
-			"use_append_log":             "not-a-bool", // accepted then warned (no-op)
-			"max_log_bytes":              "not-a-number",
-			"rollup_workers":             float64(-1),
-			"stabilization_ms":           float64(0),
-			"orphan_log_min_age_seconds": "nope",
+			"path":          tmp,
+			"max_log_bytes": "not-a-number",
 		},
 	}
 
@@ -129,10 +122,8 @@ func TestCreateLocalStoreFromConfig_RollupSurvivesCallerCancel(t *testing.T) {
 
 	cfg := &fakeBlockStoreConfig{
 		cfg: map[string]any{
-			"path":             tmp,
-			"max_log_bytes":    float64(2_000_000_000),
-			"rollup_workers":   float64(2),
-			"stabilization_ms": float64(50), // roll up quickly once idle
+			"path":          tmp,
+			"max_log_bytes": float64(2_000_000_000),
 		},
 	}
 
