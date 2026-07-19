@@ -46,6 +46,17 @@ func CopyPayload(
 	srcFileHandle, dstFileHandle metadata.FileHandle,
 	srcPayloadID, dstPayloadID metadata.PayloadID,
 ) error {
+	// Local-only shares cannot serve a manifest-only reflink (the destination
+	// would carry rows whose bytes live only in the source's journal, so a read
+	// zero-fills). Materialize real bytes into the destination's own journal
+	// instead; remote shares keep the O(1) reflink below.
+	if !blockStore.HasRemoteStore() {
+		if err := blockStore.DrainRollups(ctx); err != nil {
+			return fmt.Errorf("CopyPayload: drain source rollups: %w", err)
+		}
+		return materializeLocalClone(ctx, blockStore, metadataStore, cache, srcFileHandle, dstFileHandle, dstPayloadID)
+	}
+
 	srcFile, err := metadataStore.GetFile(ctx, srcFileHandle)
 	if err != nil {
 		return fmt.Errorf("CopyPayload: fetch src file attr: %w", err)
