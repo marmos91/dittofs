@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/logger"
@@ -51,21 +52,84 @@ func (m *Syncer) carveDispatcher(ctx context.Context) {
 			if !m.carveActive.Load() || !m.IsRemoteHealthy() {
 				continue
 			}
-			res, err := m.local.Carve(ctx, journal.CarveOptions{})
+			m.carvePass(ctx)
+		}
+	}
+}
+
+// carvePass packs every file with local data into remote blocks, carving files
+// concurrently so multiple blocks are uploaded at once. A single sequential
+// pass (one file, one block, one PutBlock at a time) leaves the uplink almost
+// idle — the block-upload latency, not the link or CPU, caps throughput.
+//
+// Concurrency is bounded by the adaptive upload window: the loop acquires
+// uploadLimiter before starting each file's carve and releases it when that
+// file's blocks are committed, so at most Limit() carves — and thus block
+// PUTs — are in flight. Acquiring the window is also what lets the goodput
+// controller observe real in-flight concurrency (TakePeak) and ramp the window;
+// without it the window is never consumed and stays pinned at the floor. Files
+// in one shard still serialize on the journal's internal carve lock, so the
+// concurrency here overlaps distinct shards' upload latency.
+func (m *Syncer) carvePass(ctx context.Context) {
+	files := m.local.ListFiles(ctx)
+	if len(files) == 0 {
+		return
+	}
+	// stopCh is not observed once blocked inside uploadLimiter.Acquire or a
+	// file's Carve, so derive a pass context that a stop cancels — otherwise a
+	// shutdown while the window is full (or a carve is stuck on a slow PutBlock)
+	// would hang the dispatcher until the slot frees.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-m.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	var wg sync.WaitGroup
+	for _, id := range files {
+		stop := false
+		select {
+		case <-ctx.Done():
+			stop = true
+		case <-m.stopCh:
+			stop = true
+		default:
+		}
+		if stop {
+			break
+		}
+		if m.uploadLimiter != nil {
+			// Blocks here when the window is full, throttling both concurrency
+			// and goroutine spawn to the current limit; released by the worker.
+			if err := m.uploadLimiter.Acquire(ctx); err != nil {
+				break // context cancelled
+			}
+		}
+		wg.Add(1)
+		go func(fileID string) {
+			defer wg.Done()
+			if m.uploadLimiter != nil {
+				defer m.uploadLimiter.Release()
+			}
+			res, err := m.local.Carve(ctx, journal.CarveOptions{FileID: journal.FileID(fileID)})
 			if err != nil {
 				m.uploadErrWindow.Add(1)
 				m.failedSyncs.Add(1)
-				logger.Warn("carve dispatcher: carve pass failed", "error", err)
-				continue
+				logger.Warn("carve dispatcher: file carve failed", "file", fileID, "error", err)
+				return
 			}
 			if res.BytesCarved > 0 {
 				// Feed the adaptive-upload goodput sample and the lifetime
-				// completed-sync counter (blocks committed this pass).
+				// completed-sync counter (blocks committed for this file).
 				m.uploadedBytesWindow.Add(res.BytesCarved)
 				m.completedSyncs.Add(int64(res.BlocksWritten))
 			}
-		}
+		}(id)
 	}
+	wg.Wait()
 }
 
 // newBlockID returns a fresh, unguessable block object key. crypto/rand keeps it
