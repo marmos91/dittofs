@@ -142,6 +142,11 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 	// captured inside the transaction below (H9).
 	wcc := &DirWcc{}
 
+	// Serialize concurrent links onto this exact (dir, name) so the
+	// in-transaction existence recheck stays atomic on a READ COMMITTED store,
+	// matching the create path. Released once the commit returns.
+	unlockCreateName := s.lockCreateName(dirHandle, name)
+
 	// Execute all write operations in a single transaction for better performance.
 	// Relaxed durability (#1573 Wall 1): a create writes only child keys (+
 	// parent nlink for mkdir) — pure namespace, not paired with block data — so
@@ -189,6 +194,7 @@ func (s *Service) CreateHardLink(ctx *AuthContext, dirHandle FileHandle, name st
 		wcc.After = CopyFileAttr(&dir.FileAttr)
 		return tx.PutFile(ctx.Context, dir)
 	})
+	unlockCreateName()
 	if err != nil {
 		return nil, err
 	}
@@ -416,6 +422,13 @@ func (s *Service) createEntry(
 	// losers — escaping under load as ErrConflict (#1571). Serialize just that
 	// bump per-parent so the counter stays exact and atomic with the child write;
 	// file creates never take this lock and stay fully concurrent.
+	// Serialize concurrent creates of this exact (parent, name) so the
+	// in-transaction existence recheck below is atomic even on a store whose
+	// create transaction runs at READ COMMITTED. Held across the recheck and the
+	// commit — a losing racer then rechecks against the committed row and returns
+	// ErrAlreadyExists — and released once the commit returns, before the
+	// post-commit cache/timestamp work. Distinct names stay concurrent.
+	unlockCreateName := s.lockCreateName(parentHandle, name)
 	if fileType == FileTypeDirectory {
 		defer s.lockParentLink(parentHandle)()
 	}
@@ -463,6 +476,7 @@ func (s *Service) createEntry(
 		}
 		return nil
 	})
+	unlockCreateName()
 
 	if err != nil {
 		return nil, nil, err

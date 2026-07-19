@@ -61,8 +61,19 @@ type Service struct {
 	// per-parent map) bounds memory: distinct parents may hash to one shard —
 	// harmless extra serialization on a rare path, never an unbounded map.
 	parentLinkShards [parentLinkShardCount]sync.Mutex
-	cookies          *CookieManager   // NFS/SMB cookie to store token translation
-	quotas           map[string]int64 // shareName -> quota in bytes (0 = unlimited)
+
+	// createNameShards serializes concurrent creation of the same (parent, name)
+	// entry. The in-transaction existence recheck in the create path is only
+	// atomic on a store that aborts read-write conflicts (BadgerDB SSI); a store
+	// running the create transaction at READ COMMITTED (PostgreSQL) lets two
+	// racers both read the name as absent and both commit, so the SetChild upsert
+	// re-links the last writer and orphans the loser's inode — surfacing as
+	// several successful exclusive creates of one name. This bank closes that
+	// window uniformly. See lockCreateName.
+	createNameShards [parentLinkShardCount]sync.Mutex
+
+	cookies *CookieManager   // NFS/SMB cookie to store token translation
+	quotas  map[string]int64 // shareName -> quota in bytes (0 = unlimited)
 
 	// identityQuotas holds hot-updatable per-user / per-group quota limits,
 	// loaded from the control-plane DB and consulted on the write/create hot
@@ -935,6 +946,38 @@ func (s *Service) lockParentLinks(a, b FileHandle) func() {
 	lo.Lock()
 	hi.Lock()
 	return func() { hi.Unlock(); lo.Unlock() }
+}
+
+// createNameShard maps a (parent, name) pair to a shard via FNV-1a over the
+// parent handle key, a separator byte, and the name — computed without
+// allocating the concatenated string. Uses the same FNV constants as
+// parentLinkShard so the distribution is identical.
+func createNameShard(parentHandle FileHandle, name string) uint32 {
+	key := handleKey(parentHandle)
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	h *= 16777619 // separator byte 0x00: XOR is a no-op, only the FNV mix applies
+	for i := 0; i < len(name); i++ {
+		h ^= uint32(name[i])
+		h *= 16777619
+	}
+	return h % parentLinkShardCount
+}
+
+// lockCreateName serializes creation of one (parent, name) so two concurrent
+// creates of the same name in the same directory cannot both pass the
+// in-transaction existence recheck and each insert a distinct inode. Creates of
+// different names hash to (likely) different shards and stay fully concurrent.
+// See the createNameShards field for why the recheck alone is insufficient on a
+// READ COMMITTED store. The returned unlock is released right after the create
+// transaction commits (covering the recheck and commit), not at function end.
+func (s *Service) lockCreateName(parentHandle FileHandle, name string) func() {
+	mu := &s.createNameShards[createNameShard(parentHandle, name)]
+	mu.Lock()
+	return mu.Unlock
 }
 
 // mergeDirTimes overlays a directory's coalesced (not-yet-persisted) mtime/
