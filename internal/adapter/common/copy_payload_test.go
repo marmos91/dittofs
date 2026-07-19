@@ -11,6 +11,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/block/engine"
 	"github.com/marmos91/dittofs/pkg/block/local/fs"
+	remotememory "github.com/marmos91/dittofs/pkg/block/remote/memory"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	metadatamemory "github.com/marmos91/dittofs/pkg/metadata/store/memory"
 )
@@ -366,14 +367,26 @@ func newCopyTestEngineWithMS(t *testing.T, coord *fakeCoordinator, ms *metadatam
 		t.Fatalf("fs.NewWithOptions failed: %v", err)
 	}
 
-	syncer := engine.NewSyncer(localStore, nil, ms, engine.DefaultConfig())
+	// Wire a remote store so HasRemoteStore() is true: the O(1) manifest-row
+	// reflink these tests assert is the remote-share path. A local-only share
+	// (no remote) materializes real bytes instead — covered separately by the
+	// journal-backed engine test.
+	mem := remotememory.New()
+	syncedHashStore, ok := metadata.Store(ms).(metadata.SyncedHashStore)
+	if !ok {
+		t.Fatalf("metadata store %T does not implement metadata.SyncedHashStore", ms)
+	}
+	syncer := engine.NewSyncer(localStore, mem, ms, engine.DefaultConfig())
+	syncer.SetSyncedHashStore(syncedHashStore)
+	syncer.SetRemoteBlockStore(mem)
 
 	bs, err := engine.New(engine.BlockStoreConfig{
 		Local:           localStore,
-		Remote:          nil,
+		Remote:          mem,
 		Syncer:          syncer,
 		FileChunkStore:  ms,
 		Coordinator:     coord,
+		SyncedHashStore: syncedHashStore,
 		ReadBufferBytes: 0,
 		PrefetchWorkers: 0,
 	})
