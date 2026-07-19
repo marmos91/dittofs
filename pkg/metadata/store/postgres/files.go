@@ -13,6 +13,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/block"
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
 // ============================================================================
@@ -57,7 +58,7 @@ func (s *PostgresMetadataStore) GetFile(ctx context.Context, handle metadata.Fil
 	`
 
 	row := s.queryRow(ctx, query, id, shareName)
-	file, err := fileRowToFileWithNlinkAndBlocks(row, true)
+	file, err := sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true)
 	if err != nil {
 		return nil, mapPgError(err, "GetFile", "")
 	}
@@ -304,10 +305,10 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        pgNanosToTime(atime),
-			Mtime:        pgNanosToTime(mtime),
-			Ctime:        pgNanosToTime(ctime),
-			CreationTime: pgNanosToTime(creationTime),
+			Atime:        sqlcodec.FiletimeToTime(atime),
+			Mtime:        sqlcodec.FiletimeToTime(mtime),
+			Ctime:        sqlcodec.FiletimeToTime(ctime),
+			CreationTime: sqlcodec.FiletimeToTime(creationTime),
 			Hidden:       hidden,
 		}
 		if len(objectIDRaw) > 0 {
@@ -322,15 +323,15 @@ func (s *PostgresMetadataStore) ListChildren(ctx context.Context, dirHandle meta
 
 		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
 		// enumeration via listing reflects recycle state without a re-read.
-		// deleted_at is BIGINT unix-nanoseconds; decode via pgNanosToTime.
+		// deleted_at is BIGINT unix-nanoseconds; decode via sqlcodec.FiletimeToTime.
 		if deletedAt.Valid {
-			t := pgNanosToTime(deletedAt.Int64)
+			t := sqlcodec.FiletimeToTime(deletedAt.Int64)
 			attr.DeletedAt = &t
 		}
 		attr.OriginalPath = originalPath
 		attr.DeletedBy = deletedBy
 
-		// Refs #532 (PR #536 review): mirror fileRowToFileWithNlink. A
+		// Refs #532 (PR #536 review): mirror sqlcodec.FileRowToFileWithNlink. A
 		// malformed ACL row is treated as "no ACL" rather than failing the
 		// whole listing — same lenient behaviour the GetFile path has had
 		// since the column was introduced.
@@ -467,7 +468,7 @@ func (s *PostgresMetadataStore) GetFileByPayloadID(ctx context.Context, payloadI
 	`
 
 	row := s.queryRow(ctx, query, string(payloadID))
-	file, err := fileRowToFileWithNlink(row)
+	file, err := sqlcodec.FileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "GetFileByPayloadID", string(payloadID))
 	}
