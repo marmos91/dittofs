@@ -239,6 +239,16 @@ func dittofsSetup(ctx context.Context, env BackendEnv, kind dittofsMetaKind, dur
 		"--server", dittofsAPIURL, "--username", "admin", "--password", dittofsAdminPass); err != nil {
 		return fmt.Errorf("dfsctl login: %w", err)
 	}
+	// NFS is served by default, but SMB is not — the smb3 cells mount //127.0.0.1
+	// on dittofsSMBPort, so the SMB adapter must be enabled explicitly or every
+	// smb3 mount fails ECONNREFUSED. Idempotent (enable creates the record if
+	// absent); takes effect without a restart.
+	if err := exec.Sh(ctx, "dfsctl", "adapter", "enable", "smb", "--port", dittofsSMBPort); err != nil {
+		return fmt.Errorf("dfsctl adapter enable smb: %w", err)
+	}
+	if err := waitPort(ctx, dittofsSMBPort); err != nil {
+		return fmt.Errorf("dfs did not open SMB port %s: %w", dittofsSMBPort, err)
+	}
 	if err := dittofsAddMetadataStore(ctx, kind); err != nil {
 		return err
 	}

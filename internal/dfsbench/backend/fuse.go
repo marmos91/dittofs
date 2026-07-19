@@ -386,7 +386,9 @@ func juicefsPrepareMeta(ctx context.Context, metaKind string) (string, error) {
 			return "", err
 		}
 		_ = os.Setenv("META_PASSWORD", "juicefs")
-		return "postgres://juicefs:juicefs@127.0.0.1:5432/juicefs_meta?sslmode=disable", nil
+		// No password in the URL — juicefs reads it from META_PASSWORD (set above),
+		// so it never lands in argv/run.log.
+		return "postgres://juicefs@127.0.0.1:5432/juicefs_meta?sslmode=disable", nil
 	case "redis":
 		if err := ensureRedis(ctx); err != nil {
 			return "", err

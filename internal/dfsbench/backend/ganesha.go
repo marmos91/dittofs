@@ -127,6 +127,13 @@ func ganeshaStop(ctx context.Context) error {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	// Still alive after ~10s: escalate to SIGKILL, then report if it survives so a
+	// following export/teardown doesn't silently race a process holding :2049.
+	_ = exec.Sh(ctx, "sh", "-c", "pkill -9 -x ganesha.nfsd || true")
+	time.Sleep(500 * time.Millisecond)
+	if exec.Sh(ctx, "sh", "-c", "! pgrep -x ganesha.nfsd >/dev/null 2>&1") != nil {
+		return fmt.Errorf("ganesha.nfsd still running after SIGTERM+SIGKILL")
+	}
 	return nil
 }
 
