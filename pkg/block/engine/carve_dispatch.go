@@ -75,6 +75,19 @@ func (m *Syncer) carvePass(ctx context.Context) {
 	if len(files) == 0 {
 		return
 	}
+	// stopCh is not observed once blocked inside uploadLimiter.Acquire or a
+	// file's Carve, so derive a pass context that a stop cancels — otherwise a
+	// shutdown while the window is full (or a carve is stuck on a slow PutBlock)
+	// would hang the dispatcher until the slot frees.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-m.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	var wg sync.WaitGroup
 	for _, id := range files {
 		stop := false
