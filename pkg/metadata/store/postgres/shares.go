@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
 // ============================================================================
@@ -276,7 +277,7 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 				int32(existingRoot.Mode),
 				int32(existingRoot.UID),
 				int32(existingRoot.GID),
-				timeToPGNanos(now),
+				sqlcodec.TimeToFiletime(now),
 				existingRoot.ID,
 			)
 			if err != nil {
@@ -332,10 +333,10 @@ func (s *PostgresMetadataStore) CreateRootDirectory(
 		int32(uid),                        // uid
 		int32(gid),                        // gid
 		int64(0),                          // size
-		timeToPGNanos(now),                // atime
-		timeToPGNanos(now),                // mtime
-		timeToPGNanos(now),                // ctime
-		timeToPGNanos(now),                // creation_time
+		sqlcodec.TimeToFiletime(now),      // atime
+		sqlcodec.TimeToFiletime(now),      // mtime
+		sqlcodec.TimeToFiletime(now),      // ctime
+		sqlcodec.TimeToFiletime(now),      // creation_time
 		nil,                               // content_id (NULL for directories)
 		nil,                               // link_target (NULL)
 		nil,                               // device_major (NULL)
@@ -450,10 +451,10 @@ func (s *PostgresMetadataStore) getExistingRootDirectory(ctx context.Context, sh
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        pgNanosToTime(atime),
-			Mtime:        pgNanosToTime(mtime),
-			Ctime:        pgNanosToTime(ctime),
-			CreationTime: pgNanosToTime(creationTime),
+			Atime:        sqlcodec.FiletimeToTime(atime),
+			Mtime:        sqlcodec.FiletimeToTime(mtime),
+			Ctime:        sqlcodec.FiletimeToTime(ctime),
+			CreationTime: sqlcodec.FiletimeToTime(creationTime),
 			Hidden:       hidden,
 		},
 	}, nil

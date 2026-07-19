@@ -16,6 +16,7 @@ import (
 	"github.com/marmos91/dittofs/pkg/metadata"
 	"github.com/marmos91/dittofs/pkg/metadata/acl"
 	"github.com/marmos91/dittofs/pkg/metadata/store/internal/quota"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
 // Transaction retry policy (#1769). Under write contention DittoFS must
@@ -267,7 +268,7 @@ func (tx *postgresTransaction) GetFile(ctx context.Context, handle metadata.File
 	`
 
 	row := tx.tx.QueryRow(ctx, query, id, shareName)
-	file, err := fileRowToFileWithNlinkAndBlocks(row, true)
+	file, err := sqlcodec.FileRowToFileWithNlinkAndBlocks(row, true)
 	if err != nil {
 		return nil, mapPgError(err, "GetFile", "")
 	}
@@ -390,12 +391,12 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 
 	// deleted_at is a BIGINT Windows-FILETIME column (#190), nullable: NULL marks
 	// a live node, a value records the recycle instant losslessly (same encoding
-	// as the other file timestamps — must use timeToPGNanos, not UnixNano, so it
-	// decodes back correctly via pgNanosToTime). Pass *int64 so a nil DeletedAt
+	// as the other file timestamps — must use sqlcodec.TimeToFiletime, not UnixNano, so it
+	// decodes back correctly via sqlcodec.FiletimeToTime). Pass *int64 so a nil DeletedAt
 	// writes SQL NULL.
 	var deletedAtArg *int64
 	if file.DeletedAt != nil {
-		n := timeToPGNanos(*file.DeletedAt)
+		n := sqlcodec.TimeToFiletime(*file.DeletedAt)
 		deletedAtArg = &n
 	}
 
@@ -409,8 +410,8 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 	updated := true
 	scanErr := tx.tx.QueryRow(ctx, updateQuery,
 		file.Type, file.Mode, file.UID, file.GID, file.Size,
-		timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
-		timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
+		sqlcodec.TimeToFiletime(file.Atime), sqlcodec.TimeToFiletime(file.Mtime),
+		sqlcodec.TimeToFiletime(file.Ctime), sqlcodec.TimeToFiletime(file.CreationTime),
 		payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 		file.Hidden, aclJSON, easJSON, objectIDArg,
 		deletedAtArg, file.OriginalPath, file.DeletedBy,
@@ -469,8 +470,8 @@ func (tx *postgresTransaction) PutFile(ctx context.Context, file *metadata.File)
 		if _, err := tx.tx.Exec(ctx, insertQuery,
 			file.ID, file.ShareName,
 			file.Type, file.Mode, file.UID, file.GID, file.Size,
-			timeToPGNanos(file.Atime), timeToPGNanos(file.Mtime),
-			timeToPGNanos(file.Ctime), timeToPGNanos(file.CreationTime),
+			sqlcodec.TimeToFiletime(file.Atime), sqlcodec.TimeToFiletime(file.Mtime),
+			sqlcodec.TimeToFiletime(file.Ctime), sqlcodec.TimeToFiletime(file.CreationTime),
 			payloadIDPtr, linkTargetPtr, deviceMajor, deviceMinor,
 			file.Hidden, aclJSON, easJSON, objectIDArg,
 			deletedAtArg, file.OriginalPath, file.DeletedBy,
@@ -745,10 +746,10 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        pgNanosToTime(atime),
-			Mtime:        pgNanosToTime(mtime),
-			Ctime:        pgNanosToTime(ctime),
-			CreationTime: pgNanosToTime(creationTime),
+			Atime:        sqlcodec.FiletimeToTime(atime),
+			Mtime:        sqlcodec.FiletimeToTime(mtime),
+			Ctime:        sqlcodec.FiletimeToTime(ctime),
+			CreationTime: sqlcodec.FiletimeToTime(creationTime),
 			Hidden:       hidden,
 		}
 		if len(objectIDRaw) > 0 {
@@ -764,15 +765,15 @@ func (tx *postgresTransaction) ListChildren(ctx context.Context, dirHandle metad
 		// Recycle-bin metadata (#190): carried on DirEntry.Attr so trash
 		// enumeration via listing reflects recycle state without a re-read,
 		// matching the pool-query path. deleted_at is BIGINT unix-nanoseconds;
-		// decode via pgNanosToTime.
+		// decode via sqlcodec.FiletimeToTime.
 		if deletedAt.Valid {
-			t := pgNanosToTime(deletedAt.Int64)
+			t := sqlcodec.FiletimeToTime(deletedAt.Int64)
 			attr.DeletedAt = &t
 		}
 		attr.OriginalPath = originalPath
 		attr.DeletedBy = deletedBy
 
-		// Refs #532 (PR #536 review): mirror fileRowToFileWithNlink — soft
+		// Refs #532 (PR #536 review): mirror sqlcodec.FileRowToFileWithNlink — soft
 		// failure on malformed ACL JSON, same as the pool-query path.
 		if len(aclJSON) > 0 {
 			var fileACL acl.ACL
@@ -1219,10 +1220,10 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 				UID:          uint32(existingUID),
 				GID:          uint32(existingGID),
 				Size:         uint64(size),
-				Atime:        pgNanosToTime(atime),
-				Mtime:        pgNanosToTime(mtime),
-				Ctime:        pgNanosToTime(ctime),
-				CreationTime: pgNanosToTime(creationTime),
+				Atime:        sqlcodec.FiletimeToTime(atime),
+				Mtime:        sqlcodec.FiletimeToTime(mtime),
+				Ctime:        sqlcodec.FiletimeToTime(ctime),
+				CreationTime: sqlcodec.FiletimeToTime(creationTime),
 				Hidden:       hidden,
 			},
 		}, nil
@@ -1259,10 +1260,10 @@ func (tx *postgresTransaction) CreateRootDirectory(ctx context.Context, shareNam
 		int32(uid),                        // uid
 		int32(gid),                        // gid
 		int64(0),                          // size
-		timeToPGNanos(now),                // atime
-		timeToPGNanos(now),                // mtime
-		timeToPGNanos(now),                // ctime
-		timeToPGNanos(now),                // creation_time
+		sqlcodec.TimeToFiletime(now),      // atime
+		sqlcodec.TimeToFiletime(now),      // mtime
+		sqlcodec.TimeToFiletime(now),      // ctime
+		sqlcodec.TimeToFiletime(now),      // creation_time
 		nil,                               // content_id (NULL for directories)
 		nil,                               // link_target (NULL)
 		nil,                               // device_major (NULL)
@@ -1419,7 +1420,7 @@ func (tx *postgresTransaction) GetFileByPayloadID(ctx context.Context, payloadID
 	`
 
 	row := tx.tx.QueryRow(ctx, query, string(payloadID))
-	file, err := fileRowToFileWithNlink(row)
+	file, err := sqlcodec.FileRowToFileWithNlink(row)
 	if err != nil {
 		return nil, mapPgError(err, "GetFileByPayloadID", string(payloadID))
 	}

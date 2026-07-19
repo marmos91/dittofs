@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/marmos91/dittofs/pkg/metadata"
+	"github.com/marmos91/dittofs/pkg/metadata/store/internal/sqlcodec"
 )
 
 // ============================================================================
@@ -276,7 +277,7 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 				int32(existingRoot.Mode),
 				int32(existingRoot.UID),
 				int32(existingRoot.GID),
-				timeToNanos(now),
+				sqlcodec.TimeToFiletime(now),
 				existingRoot.ID,
 			)
 			if err != nil {
@@ -338,10 +339,10 @@ func (s *SQLiteMetadataStore) CreateRootDirectory(
 		int32(uid),                        // uid
 		int32(gid),                        // gid
 		int64(0),                          // size
-		timeToNanos(now),                  // atime
-		timeToNanos(now),                  // mtime
-		timeToNanos(now),                  // ctime
-		timeToNanos(now),                  // creation_time
+		sqlcodec.TimeToFiletime(now),      // atime
+		sqlcodec.TimeToFiletime(now),      // mtime
+		sqlcodec.TimeToFiletime(now),      // ctime
+		sqlcodec.TimeToFiletime(now),      // creation_time
 		nil,                               // content_id (NULL for directories)
 		nil,                               // link_target (NULL)
 		nil,                               // device_major (NULL)
@@ -457,10 +458,10 @@ func (s *SQLiteMetadataStore) getExistingRootDirectory(ctx context.Context, shar
 			UID:          uint32(uid),
 			GID:          uint32(gid),
 			Size:         uint64(size),
-			Atime:        nanosToTime(atime),
-			Mtime:        nanosToTime(mtime),
-			Ctime:        nanosToTime(ctime),
-			CreationTime: nanosToTime(creationTime),
+			Atime:        sqlcodec.FiletimeToTime(atime),
+			Mtime:        sqlcodec.FiletimeToTime(mtime),
+			Ctime:        sqlcodec.FiletimeToTime(ctime),
+			CreationTime: sqlcodec.FiletimeToTime(creationTime),
 			Hidden:       hidden,
 		},
 	}, nil

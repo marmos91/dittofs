@@ -1,17 +1,15 @@
-package postgres
+package sqlcodec
 
 import (
 	"testing"
 	"time"
 )
 
-// TestTimestampRoundTrip mirrors the SQLite store's test: it locks in
-// FILETIME-encoded timestamp fidelity across the full range and at the sentinel
-// boundary. The extreme cases are the exact values smbtorture
-// smb2.timestamps.time_t_* set — they regressed on the old unix-nanosecond
-// encoding (overflow past year ~2262; unix epoch colliding with the zero-time
-// sentinel). Keeping this in lockstep with the SQLite test guards against the
-// two verbatim-port codecs drifting apart.
+// TestTimestampRoundTrip locks in FILETIME-encoded timestamp fidelity across the
+// full range and at the sentinel boundary. The extreme cases are the exact
+// values smbtorture smb2.timestamps.time_t_* set — they regressed on the old
+// unix-nanosecond encoding (overflow past year ~2262; unix epoch colliding with
+// the zero-time sentinel).
 func TestTimestampRoundTrip(t *testing.T) {
 	cases := []struct {
 		name string
@@ -26,20 +24,23 @@ func TestTimestampRoundTrip(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := pgNanosToTime(timeToPGNanos(c.in))
+			got := FiletimeToTime(TimeToFiletime(c.in))
 			if !got.Equal(c.in) {
 				t.Fatalf("round-trip mismatch: in=%v got=%v", c.in, got)
 			}
 		})
 	}
 
-	if n := timeToPGNanos(time.Time{}); n != 0 {
+	// The zero time.Time must survive as the unset sentinel (stored as 0) and
+	// must NOT be confused with the unix epoch above.
+	if n := TimeToFiletime(time.Time{}); n != 0 {
 		t.Fatalf("zero time should encode to 0 sentinel, got %d", n)
 	}
-	if got := pgNanosToTime(0); !got.IsZero() {
+	if got := FiletimeToTime(0); !got.IsZero() {
 		t.Fatalf("0 sentinel should decode to zero time, got %v", got)
 	}
-	if timeToPGNanos(time.Unix(0, 0)) == 0 {
+	// Epoch must be distinct from the sentinel.
+	if TimeToFiletime(time.Unix(0, 0)) == 0 {
 		t.Fatal("unix epoch must not collide with the 0 zero-time sentinel")
 	}
 }
