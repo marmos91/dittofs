@@ -123,6 +123,31 @@ posts would be misleading. And goofys has no metadata engine — it maps files
 one-to-one onto objects and cannot run a file-creation workload, failing at the first
 create regardless of tier.
 
+### Does the choice of metadata engine matter?
+
+DittoFS can keep its metadata in an embedded engine (badger) or in an external SQL
+database (SQLite or PostgreSQL); JuiceFS can use SQLite, PostgreSQL, or Redis. A
+natural question is whether that choice changes the numbers above. We ran the whole
+create-and-write workload against every engine, and the answer depends entirely on
+the tier:
+
+- **At the synchronous-to-object-storage tier, the engine is invisible.** DittoFS
+  turns in 10–12 ops/sec whether the metadata lives in badger, SQLite, or Postgres;
+  JuiceFS turns in 15–18 across SQLite, Postgres, and Redis. The write is gated by a
+  network round-trip to object storage, and that round-trip dwarfs anything the
+  metadata database does. Pick the engine you want to operate — it will not change
+  your durable-write throughput.
+- **At the local-ack tier, the engine matters for DittoFS.** With the object-store
+  round-trip out of the hot path, the metadata engine becomes visible: badger leads,
+  SQLite is roughly half its rate, and Postgres a little behind that (about a 2–3×
+  spread). JuiceFS, by contrast, stays flat across its engines, because it commits
+  metadata synchronously to its database even in writeback mode.
+
+The practical takeaway: choose the metadata engine for operability — an embedded
+store for a self-contained deployment, a shared SQL database when you want to point
+external tooling at it — not for durable-write speed, where it makes no measurable
+difference.
+
 ## Throughput and IOPS across mixed workloads
 
 Beyond file creation, the following shows sustained bandwidth and I/O rates for
@@ -157,7 +182,11 @@ A few things stand out:
 Note that "local disk" here is not a hardware ceiling — it is a plain local
 directory re-exported with a durable export and no application-level write cache, so
 it represents uncached, write-through I/O. Any system with its own local cache
-(including DittoFS's local journal) can and does beat it on cached workloads.
+(including DittoFS's local journal) can and does beat it on cached workloads. For
+reference, the raw block device on the test machine sustains about **1.7 GB/s** for
+direct, synchronous sequential writes, and the network path to object storage adds a
+round-trip of roughly 20 ms — so the durable-tier numbers above are bounded by that
+object-storage round-trip, not by local hardware.
 
 ## Where DittoFS stands, in plain terms
 
