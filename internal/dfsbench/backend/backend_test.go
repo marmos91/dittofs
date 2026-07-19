@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -291,5 +292,25 @@ func TestBackendNamesSorted(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("got %v, want %v", got, want)
 		}
+	}
+}
+
+// TestBenchPath covers the data-volume fallback: with a volume mounted, cache/
+// data dirs consolidate under it; disabled (--data-volume-gb=0) they keep the
+// exact legacy root-disk path so old behaviour is preserved.
+func TestBenchPath(t *testing.T) {
+	saved := benchDataDir
+	t.Cleanup(func() { benchDataDir = saved })
+
+	benchDataDir = ""
+	if got := benchPath("/var/cache/bench-rclone", "rclone"); got != "/var/cache/bench-rclone" {
+		t.Fatalf("disabled: got %q, want legacy path", got)
+	}
+	benchDataDir = "/bench-data"
+	// Build the expectation the same way benchPath does, so the comparison holds
+	// regardless of the path separator the platform uses.
+	want := filepath.Join("/bench-data", "rclone")
+	if got := benchPath("/var/cache/bench-rclone", "rclone"); got != want {
+		t.Fatalf("enabled: got %q, want %q", got, want)
 	}
 }

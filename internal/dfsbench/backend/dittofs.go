@@ -5,10 +5,42 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/marmos91/dittofs/internal/dfsbench/exec"
 )
+
+// benchDataMount is the isolated data volume `dfsbench setup --data-volume-gb`
+// attaches (see cloud.attachAndMountDataVolume). Kept in sync with that const.
+const benchDataMount = "/bench-data"
+
+// benchDataMarker is the file the mount script drops after a successful mount
+// (see cloud.benchDataMarker). Its presence — not the dir's — is what proves the
+// volume is mounted, so a failed mount that left a bare /bench-data dir on the
+// root disk doesn't silently re-contaminate the root disk. Kept in sync.
+const benchDataMarker = ".dfsbench-data-volume"
+
+// benchDataDir is benchDataMount when the data volume is mounted, else "" (fall
+// back to legacy root-disk paths). Resolved once at startup: the remote dfsbench
+// binary can't see setup's --data-volume-gb flag, so it detects the mount via
+// the marker file the mount script wrote.
+var benchDataDir = func() string {
+	if _, err := os.Stat(filepath.Join(benchDataMount, benchDataMarker)); err == nil {
+		return benchDataMount
+	}
+	return ""
+}()
+
+// benchPath returns sub under the isolated data volume when one is mounted, else
+// legacyRoot — the exact root-disk path preserved for --data-volume-gb=0. This
+// keeps all backend cache/data off the OS root disk when a data volume exists.
+func benchPath(legacyRoot, sub string) string {
+	if benchDataDir != "" {
+		return filepath.Join(benchDataDir, sub)
+	}
+	return legacyRoot
+}
 
 // dittofs-s3 is the subject: DittoFS serving badger metadata + an S3 remote
 // block store, mounted over its NATIVE nfs3/nfs4/smb3 servers (no re-export
@@ -23,7 +55,6 @@ const (
 	dittofsNFSPort = "12049"
 	dittofsSMBPort = "12445"
 	dittofsShare   = "bench"
-	dittofsDataDir = "/var/lib/bench-dittofs"
 	dittofsAPIPort = "8080"
 	dittofsAPIURL  = "http://127.0.0.1:" + dittofsAPIPort
 	dittofsMeta    = "bench-meta"
@@ -35,6 +66,11 @@ const (
 	dittofsSecret    = "dfsbench-controlplane-secret-0123456789ab"
 	dittofsAdminPass = "dfsbench-admin-pw"
 )
+
+// dittofsDataDir holds the subject's metadata (/meta, /meta.db) and local block
+// cache (/blocks). It lives on the isolated data volume when one is mounted,
+// else the legacy root-disk path.
+var dittofsDataDir = benchPath("/var/lib/bench-dittofs", "dittofs")
 
 // dittofsMetaKind selects the metadata-store engine. The block store (fs local
 // cache + S3 remote) is identical across all three, so a badger/sqlite/postgres
