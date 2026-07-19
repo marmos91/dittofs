@@ -82,7 +82,11 @@ func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bo
 			// (empty) active segment is never sealed in a spin.
 			if allowActiveSeal && !sealedActives {
 				sealedActives = true
-				if s.sealSyncedActives() {
+				sealed, err := s.sealSyncedActives(ctx)
+				if err != nil {
+					return res, err
+				}
+				if sealed {
 					continue
 				}
 			}
@@ -107,10 +111,15 @@ func (s *Store) evict(ctx context.Context, targetBytes int64, allowActiveSeal bo
 // make it evictable and its dirty bytes must stay the local copy), or a pinned
 // active (a live snapshot needs those bytes local). A seal here is the same
 // primitive as a rotation, so it produces an identically valid sealed footer.
-// It returns whether it sealed any segment. Caller holds no lock.
-func (s *Store) sealSyncedActives() bool {
+// It returns whether it sealed any segment and surfaces a seal failure (fsync or
+// next-segment creation) rather than masking it as a no-op, and stops early if
+// ctx is cancelled. Caller holds no lock.
+func (s *Store) sealSyncedActives(ctx context.Context) (bool, error) {
 	sealedAny := false
 	for _, sh := range s.shards {
+		if err := ctx.Err(); err != nil {
+			return sealedAny, err
+		}
 		sh.mu.Lock()
 		act := sh.active
 		// records is frozen while sh.mu is held (appends need it), and carve only
@@ -119,13 +128,17 @@ func (s *Store) sealSyncedActives() bool {
 		if act != nil && act.records.Load() > 0 &&
 			act.syncedRecords.Load() == act.records.Load() &&
 			!act.busy.Load() && !s.pinned(act) {
-			if err := s.sealSegment(sh); err == nil {
-				sealedAny = true
+			err := s.sealSegment(sh)
+			sh.mu.Unlock()
+			if err != nil {
+				return sealedAny, err
 			}
+			sealedAny = true
+			continue
 		}
 		sh.mu.Unlock()
 	}
-	return sealedAny
+	return sealedAny, nil
 }
 
 // claimColdestEvictable finds the coldest sealed, fully-synced, unclaimed segment
