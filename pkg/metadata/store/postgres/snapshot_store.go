@@ -43,7 +43,9 @@ const (
 	// file_blocks is in backupTables, so the dumped row shape changes one column.
 	// v8 drops the dead block_store_key column from file_blocks (migration 000041);
 	// file_blocks is in backupTables, so the dumped row shape changes one column.
-	postgresSchemaVersion = uint32(8)
+	// v9 drops the dead pending_writes table (migration 000042), lowering the
+	// backup table count by one.
+	postgresSchemaVersion = uint32(9)
 )
 
 // backupTables lists every metadata table in FK-safe dependency order
@@ -59,7 +61,6 @@ var backupTables = []string{
 	"inodes",
 	"shares",
 	"parent_child_map",
-	"pending_writes",
 	"file_block_refs",
 	"file_blocks",
 	"locks",
