@@ -15,6 +15,15 @@ func (s *BadgerMetadataStore) InlineSyncCountForTest() int64 {
 	return s.inlineSyncs.Load()
 }
 
+// TransactionConflictsForTest returns the number of SSI ErrConflict aborts the
+// withTransaction retry loop has observed so far. It is a disk-speed-independent
+// contention fingerprint: a workload of transactions touching disjoint keys
+// leaves it at zero, so a test can assert that concurrent operations did not
+// serialize on a shared hot key. Production code never calls it.
+func (s *BadgerMetadataStore) TransactionConflictsForTest() int64 {
+	return s.txnConflicts.Load()
+}
+
 func SetMaxTransactionRetriesForTest(n int) func() {
 	prev := maxTransactionRetries.Load()
 	// Clamp to at least 1: a value <= 0 would make WithTransaction run zero

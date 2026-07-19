@@ -186,6 +186,13 @@ type BadgerMetadataStore struct {
 	// (syncIfRelaxed), NOT the background ticker. Tests read it to assert the
 	// durable/relaxed classification is wired correctly.
 	inlineSyncs atomic.Int64
+
+	// txnConflicts counts SSI ErrConflict aborts observed by the withTransaction
+	// retry loop (one per retried attempt). It is a pure contention fingerprint:
+	// transactions that touch disjoint keys never bump it, so concurrent writers
+	// sharing a hot key (e.g. a parent inode) are the only thing that drives it
+	// up. Tests read it to assert a workload stays conflict-free.
+	txnConflicts atomic.Int64
 }
 
 // BadgerMetadataStoreConfig contains configuration for creating a BadgerDB metadata store.
